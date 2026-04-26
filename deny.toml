@@ -8,7 +8,11 @@ all-features = true
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked  = "deny"
-ignore  = []
+ignore  = [
+    # Transitive through simba -> nalgebra 0.34.2. RustSec marks paste
+    # unmaintained, but there is no safe upstream upgrade path today.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 allow = [
@@ -50,4 +54,5 @@ deny = [
 [sources]
 unknown-registry = "deny"
 unknown-git      = "deny"
-allow-org        = []
+
+[sources.allow-org]

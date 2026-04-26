@@ -660,7 +660,11 @@ all-features = true
 [advisories]
 db-urls    = ["https://github.com/rustsec/advisory-db"]
 yanked     = "deny"
-ignore     = []                           # populated as we encounter exceptions
+ignore     = [
+    # Transitive through simba -> nalgebra 0.34.2. RustSec marks paste
+    # unmaintained, but there is no safe upstream upgrade path today.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 allow = [
@@ -701,7 +705,8 @@ unused        = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git      = "deny"
-allow-org        = []
+
+[sources.allow-org]
 ```
 
 `tokio` is **not** banned globally because the bridge crate needs it,
@@ -714,7 +719,8 @@ Key elements (full file written during sub-phase 1.0):
 
 - One job per gate, fail-fast off so all gates surface their findings.
 - `actions-rust-lang/setup-rust-toolchain@v1.16.0` everywhere.
-- Cache via `Swatinem/rust-cache@v3` (the de facto standard; pin major).
+- Cache via `Swatinem/rust-cache@v2.9.1` (pinned because no `v3` tag
+  exists upstream as of April 2026).
 - `cargo nextest run --workspace --all-features` as the test runner.
 - Determinism gate runs on `ubuntu-latest`, x86_64.
 - Cross-platform matrix runs on `macos-latest`, `windows-latest`,
