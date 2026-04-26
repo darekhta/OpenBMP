@@ -1,0 +1,50 @@
+# Constant-acceleration drop — analytic-toy scenario.
+#
+# A 1 kg point mass at the ECI origin with zero initial velocity falls
+# under constant gravity g = 9.80665 m/s² along -z for 10 s. The
+# closed-form solution is
+#
+#   z(t) = -0.5 g t²,
+#   vz(t) = -g t,
+#
+# which the kernel's RK4 fixed-step integrator reproduces exactly for a
+# constant force on a constant mass. This scenario is the headline
+# Phase-1 end-to-end validation case (`docs/phase-1-plan.md § 1.8`).
+
+openbmp.scenario = 1
+
+[meta]
+name = "constant-acceleration-drop"
+description = "1 kg point mass dropped under constant gravity for 10 s; analytic-toy validation."
+validation = "validated-toy"
+provenance = "synthetic; closed-form drop under constant gravity; no external data"
+
+[time]
+start_s = 0.0
+stop_s  = 10.0
+dt_s    = 0.01
+seed    = 0x0afe_f00d_dead_beef
+
+[vehicle]
+kind                       = "point_mass"
+mass_kg                    = 1.0
+initial_position_eci_m     = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s   = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv     = "out/constant-acceleration-drop.csv"
+output.parquet = "out/constant-acceleration-drop.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
