@@ -19,6 +19,7 @@ source_title:     >-
   with CD0(M) a piecewise drag-rise curve peaking transonically.
 source_authors:   OpenBMP (Dmitri Arekhta)
 source_id:        synthetic; not derived from any fielded vehicle
+source_url:       https://github.com/openbmp/openbmp/blob/main/data/aero/synthetic-finned-cylinder.toml
 publication_date: 2026-04-26
 methodology_reference: >-
   Niskanen, S. (2009). *Development of an Open-Source Model Rocket
@@ -31,34 +32,43 @@ methodology_urls:
 license_or_terms: >-
   Synthetic OpenBMP-authored content; CC0 / public domain. No
   third-party data is incorporated.
+source_hash_sha256: c5c7ad2af72659bbf351b33fb805b56d911f797fe9804e105fc13ed4bc8399a2
 retrieved_utc:    2026-04-26
 transformation:
   method: >-
     Hand-derived closed-form generators (see source_title above)
     evaluated on the (mach, alpha_deg, beta_deg) grid and pasted
     into the TOML deck file. No transcription from a published
-    deck. The numerical values are exactly the closed-form output
-    rounded to a fixed precision per coefficient channel; the
-    Phase-2.5.C regression test recomputes the closed forms and
-    asserts bit-equality after TOML parse.
+    deck. The numerical values are emitted from the integer-scaled
+    rational generator documented in the deck header and mirrored by
+    `crates/openbmp-aero/tests/regression.rs`:
+      M_tenths = 10 · M
+      CN = α_deg · (140 + M_tenths) / 2000
+      CD = (CD0_milli(M) + α_deg²) / 1000
+      CM = -15 · CN_numerator / 200000
+    with +0.0 preserved explicitly at α = 0.
   script: none
+  script_hash_sha256: not-applicable; generator is embedded in the compiled regression test
 verification:
   method: >-
     Compile-time round-trip: `crates/openbmp-aero/tests/regression.rs`
     loads the deck via `include_str!` + `AeroDeck::load_from_str`,
-    asserts CN(α = 0) == 0 exactly for every Mach, asserts
-    CD > 0 on every grid point, asserts CM == -0.15 · CN on every
-    grid point (the deck's restoring-moment definition), and
-    re-runs the lookup at the centroid of every cube to verify
-    bit-stability. The `synthetic_finned_cylinder` deck is the
-    only aero data file shipped in Phase 2; Phase-3 will add
-    additional shapes (sphere, cone) under the same provenance
-    contract.
+    asserts every parsed CN/CD/CM grid value matches the
+    integer-scaled generator bit-for-bit, asserts CN(α = 0) and
+    CM(α = 0) are +0.0 exactly for every Mach, asserts CD > 0 on
+    every grid point, checks the CM = -0.15 · CN physical identity
+    within tight f64 tolerance, and re-runs the lookup at the
+    centroid of every cube to verify bit-stability. The
+    `synthetic_finned_cylinder` deck is the only aero data file
+    shipped in Phase 2; Phase-3 will add additional shapes (sphere,
+    cone) under the same provenance contract.
   test:   crates/openbmp-aero/tests/regression.rs
   tolerance: >-
-    CN(α = 0) and CM(α = 0): exact zero (bit equality after parse).
-    CD > 0 on every grid point: strict positivity.
-    CM = -0.15 · CN: bit equality after parse for every grid point.
+    Integer-scaled generator versus parsed CN/CD/CM at every grid
+    point: bit equality. CN(α = 0) and CM(α = 0): exact +0.0 (bit
+    equality after parse). CD > 0 on every grid point: strict
+    positivity. CM = -0.15 · CN physical identity: 1e-12 absolute
+    tolerance under ordinary f64 arithmetic.
     Bit-stability across two lookups: bit equality on the reference
     platform profile.
 validation_status: validated-toy

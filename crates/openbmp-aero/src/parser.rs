@@ -8,7 +8,7 @@
 //! reference.area_m2  = 0.196
 //! reference.length_m = 0.5
 //! provenance         = "synthetic textbook example"
-//! validation         = "validated-toy"
+//! validation         = "validated-toy"  # project validation label
 //! extrapolation      = "fail-closed"   # optional; default fail-closed
 //!
 //! [grid]
@@ -46,7 +46,7 @@ struct DeckFile {
     #[allow(dead_code)] // surfaced through provenance.md, not the runtime deck.
     provenance: String,
     #[allow(dead_code)] // ditto — used by the audit walk, not the lookup path.
-    validation: String,
+    validation: DeckValidationStatus,
     grid: Grid,
     coefficients: Coefficients,
     #[serde(default)]
@@ -88,6 +88,15 @@ struct CoefficientTable {
     data: Vec<f64>,
 }
 
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum DeckValidationStatus {
+    Experimental,
+    Checked,
+    ValidatedToy,
+    Research,
+}
+
 impl AeroDeck {
     /// Parse a Schema-1 deck from a TOML string.
     ///
@@ -95,8 +104,9 @@ impl AeroDeck {
     ///
     /// Returns [`AeroError::MalformedDeck`] for parser failures
     /// (syntax error, missing required field, unknown field, wrong
-    /// schema version, unrecognised `extrapolation` value) or for
-    /// any structural invariant rejected by [`AeroDeck::new`].
+    /// schema version, unrecognised `validation` / `extrapolation`
+    /// value) or for any structural invariant rejected by
+    /// [`AeroDeck::new`].
     /// Returns [`AeroError::NonFinite`] / [`AeroError::InvalidParameter`]
     /// for value-level issues from [`AeroDeck::new`].
     pub fn load_from_str(s: &str) -> Result<Self, AeroError> {
@@ -224,6 +234,18 @@ data = [0.0, 1.0, 2.0, 3.0]
     #[test]
     fn parser_rejects_unknown_extrapolation_value() {
         let toml_str = format!("extrapolation = \"linear\"\n{}", minimal_deck_toml());
+        assert!(matches!(
+            AeroDeck::load_from_str(&toml_str),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_unknown_validation_label() {
+        let toml_str = minimal_deck_toml().replace(
+            "validation         = \"validated-toy\"",
+            "validation         = \"validatd-toy\"",
+        );
         assert!(matches!(
             AeroDeck::load_from_str(&toml_str),
             Err(AeroError::MalformedDeck { .. }),

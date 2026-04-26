@@ -8,8 +8,9 @@
 //! Second, the deck values match the closed-form generators
 //! documented in `data/aero/provenance.md`: `CN = alpha *
 //! (0.07 + 0.005 * M)`, `CM = -0.15 * CN`, `CD = CD0(M) + 0.001 *
-//! alpha^2`. These identities are bit-exact at the grid points
-//! because the deck rounds to the same precision the generator does.
+//! alpha^2`. The deck values are emitted from integer-scaled rational
+//! forms of those expressions, so the grid-point checks below can assert
+//! bit equality after TOML parse.
 //!
 //! Third, sanity invariants of the deck are preserved: `CN` at zero
 //! alpha is exact zero for every Mach, `CD > 0` on every grid point,
@@ -25,7 +26,8 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::float_cmp,
-    clippy::doc_markdown
+    clippy::doc_markdown,
+    clippy::similar_names
 )]
 
 use approx::assert_abs_diff_eq;
@@ -61,6 +63,69 @@ fn closed_form_cd0(mach: f64) -> f64 {
     }
 }
 
+fn mach_tenths(mach: f64) -> i32 {
+    [
+        (0.0, 0),
+        (0.5, 5),
+        (0.8, 8),
+        (1.0, 10),
+        (1.2, 12),
+        (1.5, 15),
+        (2.0, 20),
+        (3.0, 30),
+    ]
+    .into_iter()
+    .find_map(|(grid_value, tenths)| (mach == grid_value).then_some(tenths))
+    .expect("synthetic finned-cylinder Mach grid must be locked")
+}
+
+fn alpha_degrees(alpha: f64) -> i32 {
+    [-10, -5, -2, 0, 2, 5, 10]
+        .into_iter()
+        .find(|&grid_value| alpha == f64::from(grid_value))
+        .expect("synthetic finned-cylinder alpha grid must be locked")
+}
+
+fn closed_form_cd0_milli(mach_tenths: i32) -> i32 {
+    match mach_tenths {
+        0 | 5 => 450,
+        8 | 20 => 550,
+        10 => 750,
+        12 => 850,
+        15 => 700,
+        30 => 400,
+        _ => unreachable!("synthetic finned-cylinder Mach grid is locked"),
+    }
+}
+
+fn scaled_ratio(numerator: i32, denominator: i32) -> f64 {
+    if numerator == 0 {
+        0.0
+    } else {
+        f64::from(numerator) / f64::from(denominator)
+    }
+}
+
+fn expected_grid_coefficients(mach: f64, alpha: f64) -> (f64, f64, f64) {
+    let mach_tenths = mach_tenths(mach);
+    let alpha_deg = alpha_degrees(alpha);
+
+    // Integer-scaled generator equivalent to:
+    //   CN = alpha_deg * (0.07 + 0.005 * M)
+    // where M is represented as tenths and CN has denominator 2000.
+    let cn_numerator = alpha_deg * (140 + mach_tenths);
+    let cn = scaled_ratio(cn_numerator, 2_000);
+
+    // CD0 and alpha-induced drag are emitted in thousandths.
+    let cd_milli = closed_form_cd0_milli(mach_tenths) + alpha_deg * alpha_deg;
+    let cd = scaled_ratio(cd_milli, 1_000);
+
+    // CM = -0.15 * CN = -15 * CN / 100. Preserve +0.0 at alpha = 0.
+    let cm = scaled_ratio(-15 * cn_numerator, 200_000);
+
+    (cn, cd, cm)
+}
+
 #[test]
 fn deck_parses_and_carries_reference_geometry() {
     let deck = deck();
@@ -69,6 +134,40 @@ fn deck_parses_and_carries_reference_geometry() {
     assert_eq!(deck.mach_grid().len(), 8);
     assert_eq!(deck.alpha_grid_deg().len(), 7);
     assert_eq!(deck.beta_grid_deg().len(), 1);
+}
+
+#[test]
+fn every_grid_value_matches_locked_integer_scaled_generator() {
+    let deck = deck();
+    let machs: Vec<f64> = deck.mach_grid().to_vec();
+    let alphas: Vec<f64> = deck.alpha_grid_deg().to_vec();
+    let betas: Vec<f64> = deck.beta_grid_deg().to_vec();
+    for &mach in &machs {
+        for &alpha in &alphas {
+            for &beta in &betas {
+                let r = deck
+                    .lookup(mach, alpha, beta)
+                    .expect("grid point in-envelope");
+                let (expected_cn, expected_cd, expected_cm) =
+                    expected_grid_coefficients(mach, alpha);
+                assert_eq!(
+                    r.cn.to_bits(),
+                    expected_cn.to_bits(),
+                    "CN mismatch at (M={mach}, α={alpha}, β={beta})",
+                );
+                assert_eq!(
+                    r.cd.to_bits(),
+                    expected_cd.to_bits(),
+                    "CD mismatch at (M={mach}, α={alpha}, β={beta})",
+                );
+                assert_eq!(
+                    r.cm.to_bits(),
+                    expected_cm.to_bits(),
+                    "CM mismatch at (M={mach}, α={alpha}, β={beta})",
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -145,10 +244,9 @@ fn cm_equals_minus_fifteen_percent_of_cn_on_every_grid_point() {
     for &mach in &machs {
         for &alpha in &alphas {
             let r = deck.lookup(mach, alpha, 0.0).unwrap();
-            // The shipped deck rounds both CN and CM to the same
-            // precision per the closed form CM = -0.15 · CN, so the
-            // identity holds bit-exactly when CN is non-zero. At
-            // α = 0 both are exactly zero (verified separately).
+            // This exercises the physical identity using ordinary f64
+            // arithmetic. The exact emitted deck values are covered by
+            // `every_grid_value_matches_locked_integer_scaled_generator`.
             let expected = -0.15 * r.cn;
             assert_abs_diff_eq!(r.cm, expected, epsilon = 1.0e-12);
         }

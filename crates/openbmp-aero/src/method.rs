@@ -138,7 +138,17 @@ impl AeroMethod for DeckLookup {
             self.deck.lookup(ctx.mach, ctx.alpha_deg, ctx.beta_deg)?;
 
         let q_s = ctx.dynamic_pressure_pa * self.deck.reference_area_m2();
+        if !q_s.is_finite() {
+            return Err(AeroError::NonFinite {
+                reason: "dynamic pressure times reference area is non-finite",
+            });
+        }
         let q_s_l = q_s * self.deck.reference_length_m();
+        if !q_s_l.is_finite() {
+            return Err(AeroError::NonFinite {
+                reason: "dynamic pressure times reference area and length is non-finite",
+            });
+        }
 
         // Schema-1 reduced mapping (small-angle / axisymmetric):
         //   F_body = q·S · (-CD, 0, -CN)
@@ -147,6 +157,17 @@ impl AeroMethod for DeckLookup {
         // (and × L for the moment).
         let force_n_body = Vector3::new(-cd * q_s, 0.0, -cn * q_s);
         let moment_n_m_body = Vector3::new(0.0, cm * q_s_l, 0.0);
+        if !(force_n_body.x.is_finite()
+            && force_n_body.y.is_finite()
+            && force_n_body.z.is_finite()
+            && moment_n_m_body.x.is_finite()
+            && moment_n_m_body.y.is_finite()
+            && moment_n_m_body.z.is_finite())
+        {
+            return Err(AeroError::NonFinite {
+                reason: "body-frame aero force or moment is non-finite",
+            });
+        }
 
         Ok(AeroForceMomentBody {
             force_n_body,
@@ -294,6 +315,56 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, AeroError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn overflowing_force_component_is_rejected() {
+        let deck = AeroDeck::new(
+            vec![0.0],
+            vec![0.0],
+            vec![0.0],
+            vec![2.0],
+            vec![2.0],
+            vec![0.0],
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        let method = DeckLookup::new(deck);
+        let err = method
+            .aero_force_moment_body(&AeroContext {
+                mach: 0.0,
+                alpha_deg: 0.0,
+                beta_deg: 0.0,
+                dynamic_pressure_pa: f64::MAX,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AeroError::NonFinite { .. }));
+    }
+
+    #[test]
+    fn overflowing_moment_scale_is_rejected() {
+        let deck = AeroDeck::new(
+            vec![0.0],
+            vec![0.0],
+            vec![0.0],
+            vec![0.0],
+            vec![0.0],
+            vec![1.0],
+            1.0,
+            2.0,
+        )
+        .unwrap();
+        let method = DeckLookup::new(deck);
+        let err = method
+            .aero_force_moment_body(&AeroContext {
+                mach: 0.0,
+                alpha_deg: 0.0,
+                beta_deg: 0.0,
+                dynamic_pressure_pa: f64::MAX,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AeroError::NonFinite { .. }));
     }
 
     #[test]

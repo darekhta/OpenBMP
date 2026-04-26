@@ -1058,6 +1058,15 @@ Trilinear interpolation is the default. Out-of-grid samples produce a
 `ValidationError` (fail-closed) unless the deck explicitly opts into
 extrapolation with a documented strategy (e.g., `extrapolation = "clamp"`).
 
+Schema 1 is the reduced axisymmetric form. `beta_deg` may be present as a
+grid axis for deck-family continuity, but there is no separate `CY`, yaw
+moment, or body-`y` force channel in this schema: the body-frame mapping is
+`F_body = q · S · (-CD, 0, -CN)` and `M_body = q · S · L · (0, CM, 0)`.
+For non-zero beta grids, a deck author either encodes the intended reduced
+normal-force behaviour into `CN(M, alpha, beta)` or accepts that Schema 1 does
+not model side force/yaw moment. Full six-coefficient decks are the Phase 3
+schema extension.
+
 Decks must include provenance and a validation label. **Real fielded-vehicle
 aero decks are explicitly rejected.** The MVP ships only synthetic textbook
 decks for canonical shapes (sphere, cone, simple finned cylinder).

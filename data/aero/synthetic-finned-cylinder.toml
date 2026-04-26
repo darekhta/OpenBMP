@@ -13,6 +13,13 @@
 #   CN(M, α_deg) = α_deg * (0.07 + 0.005 * M)
 #   CM(M, α_deg) = -0.15 * CN(M, α_deg)         (15% static margin)
 #
+# The emitted deck values use the integer-scaled rational form pinned in
+# `crates/openbmp-aero/tests/regression.rs`, preserving +0.0 at α = 0:
+#   M_tenths = 10 · M
+#   CN = α_deg · (140 + M_tenths) / 2000
+#   CD = (CD0_milli(M) + α_deg²) / 1000
+#   CM = -15 · CN_numerator / 200000
+#
 # CD0(M) is a piecewise drag-rise curve peaking transonically and
 # falling supersonically. Sanity checks: CD > 0 everywhere on the
 # grid, CN(α = 0) = 0 exactly for every Mach, CM and CN have
