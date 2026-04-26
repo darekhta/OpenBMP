@@ -8,5 +8,20 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP foundation: math, units, frames, time, deterministic RNG."
 
+[dependencies]
+nalgebra    = { workspace = true }
+uom         = { workspace = true }
+rand        = { workspace = true }
+rand_chacha = { workspace = true }
+serde       = { workspace = true }
+thiserror   = { workspace = true }
+# num-traits will return as a dependency in Phase 1.2/1.3 when state
+# types and integrators need generic numeric traits; removed here
+# until then per cargo-machete.
+
+[dev-dependencies]
+approx   = { workspace = true }
+proptest = { workspace = true }
+
 [lints]
 workspace = true
