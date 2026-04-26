@@ -328,11 +328,18 @@ where
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 fn assert_clean_mxcsr() -> Result<(), SimulationError> {
-    use core::arch::x86_64::_mm_getcsr;
-    // SAFETY: `_mm_getcsr` is a pure-read intrinsic; it reads the
-    // MXCSR control register, has no preconditions, performs no memory
-    // accesses, and is always sound to call on any x86_64 target.
-    let csr = unsafe { _mm_getcsr() };
+    let mut csr = 0_u32;
+    let csr_ptr = core::ptr::addr_of_mut!(csr);
+    // SAFETY: `stmxcsr` stores the MXCSR control register into the
+    // provided 32-bit memory location. `csr_ptr` points to a live local
+    // `u32`, is properly aligned, and is valid for this single write.
+    unsafe {
+        core::arch::asm!(
+            "stmxcsr [{0}]",
+            in(reg) csr_ptr,
+            options(nostack, preserves_flags),
+        );
+    }
     let ftz = (csr >> 15) & 1;
     let daz = (csr >> 6) & 1;
     let rounding_mode = (csr >> 13) & 0b11;
