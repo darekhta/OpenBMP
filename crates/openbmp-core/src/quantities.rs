@@ -9,14 +9,14 @@
 //! at compile time.
 
 pub use uom::si::f64::{
-    Acceleration, Angle, AngularAcceleration, AngularVelocity, Force, Frequency, Length, Mass,
-    MassDensity, MassRate, Power, Pressure, ThermodynamicTemperature, Velocity, Volume,
+    Acceleration, Angle, AngularAcceleration, AngularVelocity, Energy, Force, Frequency,
+    HeatFluxDensity, Length, MagneticFluxDensity, Mass, MassDensity, MassRate, MomentOfInertia,
+    Power, Pressure, SpecificHeatCapacity, ThermalConductivity, ThermodynamicTemperature, Velocity,
+    Volume,
 };
 
-// Phase-6 aerothermal quantities (HeatFlux, SpecificEnergy,
-// SpecificHeatCapacity, ThermalConductivity, MagneticFluxDensity, etc.)
-// will be re-exported here once `openbmp-aerothermal` lands and the
-// uom paths are confirmed for the chosen feature set.
+// `uom` 0.38 names surface heat flux as `HeatFluxDensity`; OpenBMP docs
+// often use the shorter domain term "heat flux" for the same W/m^2 quantity.
 
 #[cfg(test)]
 mod tests {

@@ -30,9 +30,9 @@
 //! # Modules
 //!
 //! * [`time`] — [`SimTime`], [`Duration`], [`StepIndex`].
-//! * [`frames`] — frame tag types, [`Position3`], [`Velocity3`],
-//!   [`AngularVelocity3`], [`Quaternion`], [`FrameContext`],
-//!   [`FrameTransform`].
+//! * [`frames`] — frame tag types, [`Position3`], [`Displacement3`],
+//!   [`Velocity3`], [`Acceleration3`], [`AngularVelocity3`],
+//!   [`Quaternion`], [`FrameContext`], [`FrameTransform`].
 //! * [`quantities`] — `uom`-typed re-exports for the public API
 //!   surface.
 //! * [`rng`] — [`DeterministicRng`].
@@ -50,10 +50,11 @@ pub mod validation;
 
 pub use error::{CoreError, FrameError, TimeError};
 pub use frames::{
-    AngularVelocity3, Body, Ecef, Eci, Enu, Frame, FrameContext, FrameId, FrameProfile,
-    FrameTransform, Ned, Position3, Quaternion, Velocity3,
+    Acceleration3, AngularVelocity3, Body, Displacement3, Ecef, Eci, Enu, Frame, FrameContext,
+    FrameId, FrameProfile, FrameTransform, Ned, Position3, Quaternion, Velocity3, VelocityDelta3,
 };
 pub use ids::{ChannelId, ModelId, ScenarioId};
+pub use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 pub use rng::DeterministicRng;
 pub use time::{Duration, SimTime, StepIndex};
 pub use validation::ValidationStatus;

@@ -3,7 +3,7 @@
 L0 foundation crate. Math, units, coordinate frames, simulation time,
 deterministic RNG, project-wide error and validation primitives.
 
-**Status:** Phase 1.1 — stub. Compiles but provides no functionality.
+**Status:** Phase 1.1 — implemented foundation crate.
 
 ## Purpose
 
@@ -11,14 +11,16 @@ Provides the foundational vocabulary used by every other OpenBMP crate:
 
 - `SimTime`, `Duration`, `StepIndex` newtypes.
 - Frame tag types (`ECI`, `ECEF`, `NED`, `ENU`, `Body`) and parametric
-  `Position3<F>`, `Velocity3<F>`, `AngularVelocity3<F>`,
-  `Quaternion<From, To>`.
+  `Position3<F>`, `Displacement3<F>`, `Velocity3<F>`,
+  `Acceleration3<F>`, `AngularVelocity3<F>`, `Quaternion<From, To>`.
 - `FrameContext`, `FrameTransform` traits.
 - `uom`-typed quantity re-exports.
 - `DeterministicRng` wrapping `rand_chacha::ChaCha8Rng`.
 - `ChannelId`, `ModelId`, `ScenarioId` newtypes.
 - `ValidationStatus` enum.
 - Project-wide error types.
+- Re-exported `nalgebra` primitives (`Vector3`, `Matrix3`,
+  `UnitQuaternion`) used by downstream state and model crates.
 
 ## Inputs and Outputs
 
@@ -47,7 +49,9 @@ OpenBMP. See `docs/software-architecture.md` § Determinism Profile.
 
 ## Validation
 
-`experimental` (stub).
+`checked` for the Phase-1.1 foundation surface: unit and property tests cover
+time monotonicity, frame identity transforms, typed frame arithmetic, quaternion
+round trips and composition, deterministic RNG replay, and validation labels.
 
 ## Data Provenance
 

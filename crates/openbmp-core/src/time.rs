@@ -41,19 +41,41 @@ impl SimTime {
         self.0.is_finite()
     }
 
-    /// Validate that `next` is finite and not earlier than `self`.
+    /// Returns `true` if the value is finite and not before scenario
+    /// start.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        self.is_finite() && self.0 >= 0.0
+    }
+
+    /// Validate that this value is a usable simulation time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::NotFinite`] if the value is `NaN` or
+    /// infinite; returns [`TimeError::NegativeTime`] if the value is
+    /// before scenario start.
+    pub fn require_valid(self) -> Result<Self, TimeError> {
+        if !self.is_finite() {
+            return Err(TimeError::NotFinite { value: self.0 });
+        }
+        if self.0 < 0.0 {
+            return Err(TimeError::NegativeTime { seconds: self.0 });
+        }
+        Ok(self)
+    }
+
+    /// Validate that `next` is a valid simulation time and not earlier
+    /// than `self`.
     ///
     /// # Errors
     ///
     /// Returns [`TimeError::NotFinite`] if either `self` or `next` is
-    /// not finite, and [`TimeError::NotMonotonic`] if `next < self`.
+    /// not finite, [`TimeError::NegativeTime`] if either value is before
+    /// scenario start, and [`TimeError::NotMonotonic`] if `next < self`.
     pub fn check_advance_to(self, next: Self) -> Result<(), TimeError> {
-        if !self.is_finite() {
-            return Err(TimeError::NotFinite { value: self.0 });
-        }
-        if !next.is_finite() {
-            return Err(TimeError::NotFinite { value: next.0 });
-        }
+        self.require_valid()?;
+        next.require_valid()?;
         if next.0 < self.0 {
             return Err(TimeError::NotMonotonic {
                 prior_s: self.0,
@@ -109,6 +131,12 @@ impl Duration {
     #[must_use]
     pub fn from_millis(milliseconds: f64) -> Self {
         Self(milliseconds * 1.0e-3)
+    }
+
+    /// Construct a [`Duration`] from milliseconds.
+    #[must_use]
+    pub fn from_milliseconds(milliseconds: f64) -> Self {
+        Self::from_millis(milliseconds)
     }
 
     /// Returns the underlying value in seconds.
@@ -200,13 +228,28 @@ impl StepIndex {
         self.0
     }
 
-    /// Returns the next step in sequence.
+    /// Returns the next step in sequence, or `None` at `u64::MAX`.
     ///
-    /// Saturates at `u64::MAX` rather than panicking; in practice the
-    /// kernel will halt long before reaching that bound.
+    /// The deterministic kernel should use [`StepIndex::checked_next`]
+    /// when it needs a structured error.
     #[must_use]
-    pub const fn next(self) -> Self {
-        Self(self.0.saturating_add(1))
+    pub const fn next(self) -> Option<Self> {
+        match self.0.checked_add(1) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    /// Returns the next step in sequence, failing instead of saturating.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::StepOverflow`] when called at `u64::MAX`.
+    pub const fn checked_next(self) -> Result<Self, TimeError> {
+        match self.next() {
+            Some(value) => Ok(value),
+            None => Err(TimeError::StepOverflow { value: self.0 }),
+        }
     }
 }
 
@@ -265,10 +308,16 @@ mod tests {
     }
 
     #[test]
+    fn sim_time_require_valid_rejects_negative() {
+        let err = SimTime::from_seconds(-1.0).require_valid().unwrap_err();
+        assert!(matches!(err, TimeError::NegativeTime { .. }));
+    }
+
+    #[test]
     fn step_index_next_is_monotonic() {
         let s0 = StepIndex::ZERO;
-        let s1 = s0.next();
-        let s2 = s1.next();
+        let s1 = s0.next().unwrap();
+        let s2 = s1.next().unwrap();
         assert!(s0 < s1);
         assert!(s1 < s2);
         assert_eq!(s1.value(), 1);
@@ -276,9 +325,9 @@ mod tests {
     }
 
     #[test]
-    fn step_index_saturates_at_u64_max() {
+    fn step_index_next_reports_none_at_u64_max() {
         let s = StepIndex::new(u64::MAX);
-        assert_eq!(s.next().value(), u64::MAX);
+        assert!(s.next().is_none());
     }
 
     #[test]
@@ -298,9 +347,23 @@ mod tests {
     }
 
     #[test]
+    fn check_advance_rejects_negative_prior() {
+        let prior = SimTime::from_seconds(-1.0);
+        let next = SimTime::ZERO;
+        let err = prior.check_advance_to(next).unwrap_err();
+        assert!(matches!(err, TimeError::NegativeTime { .. }));
+    }
+
+    #[test]
     fn check_advance_accepts_equal_time() {
         let t = SimTime::from_seconds(7.0);
         assert!(t.check_advance_to(t).is_ok());
+    }
+
+    #[test]
+    fn checked_step_index_next_reports_overflow() {
+        let err = StepIndex::new(u64::MAX).checked_next().unwrap_err();
+        assert!(matches!(err, TimeError::StepOverflow { .. }));
     }
 
     proptest! {
@@ -331,7 +394,7 @@ mod tests {
         #[test]
         fn property_step_index_next_increments(v in 0_u64..u64::MAX - 1) {
             let s = StepIndex::new(v);
-            let n = s.next();
+            let n = s.next().unwrap();
             prop_assert_eq!(n.value(), v + 1);
             prop_assert!(s < n);
         }

@@ -26,6 +26,12 @@ pub enum TimeError {
         /// The offending raw value in seconds.
         value: f64,
     },
+    /// A simulation time was before scenario start.
+    #[error("simulation time is before scenario start: {seconds} s")]
+    NegativeTime {
+        /// The offending simulation time in seconds.
+        seconds: f64,
+    },
     /// A monotonicity invariant was violated.
     #[error("time would go backward: prior={prior_s} s, next={next_s} s")]
     NotMonotonic {
@@ -39,6 +45,12 @@ pub enum TimeError {
     NotPositive {
         /// The offending duration in seconds.
         seconds: f64,
+    },
+    /// A step counter could not advance without overflowing.
+    #[error("step index overflow at {value}")]
+    StepOverflow {
+        /// The step index value that could not advance.
+        value: u64,
     },
 }
 
@@ -57,6 +69,12 @@ pub enum FrameError {
         /// The actual magnitude.
         magnitude: f64,
         /// The acceptable tolerance.
+        tolerance: f64,
+    },
+    /// A tolerance argument was outside the valid range `[0, 1)`.
+    #[error("invalid tolerance: {tolerance}")]
+    InvalidTolerance {
+        /// The offending tolerance value.
         tolerance: f64,
     },
     /// A required transform is not implemented in the active

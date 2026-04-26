@@ -60,19 +60,36 @@ impl DeterministicRng {
         // zero so Phase-1 outputs are stable.
         Self::from_raw_seed(bytes)
     }
+
+    /// Return the next `u32` from the deterministic stream.
+    #[must_use]
+    pub fn next_u32(&mut self) -> u32 {
+        self.inner.next_u32()
+    }
+
+    /// Return the next `u64` from the deterministic stream.
+    #[must_use]
+    pub fn next_u64(&mut self) -> u64 {
+        self.inner.next_u64()
+    }
+
+    /// Fill a byte slice from the deterministic stream.
+    pub fn fill_bytes(&mut self, dest: &mut [u8]) {
+        self.inner.fill_bytes(dest);
+    }
 }
 
 impl RngCore for DeterministicRng {
     fn next_u32(&mut self) -> u32 {
-        self.inner.next_u32()
+        Self::next_u32(self)
     }
 
     fn next_u64(&mut self) -> u64 {
-        self.inner.next_u64()
+        Self::next_u64(self)
     }
 
     fn fill_bytes(&mut self, dest: &mut [u8]) {
-        self.inner.fill_bytes(dest);
+        Self::fill_bytes(self, dest);
     }
 }
 
@@ -136,6 +153,23 @@ mod tests {
         a.fill_bytes(&mut buf_a);
         b.fill_bytes(&mut buf_b);
         assert_eq!(buf_a, buf_b);
+    }
+
+    #[test]
+    fn for_channel_reference_stream_is_locked() {
+        let mut rng = DeterministicRng::for_channel(
+            0x0123_4567_89ab_cdef,
+            StepIndex::new(0x1020_3040_5060_7080),
+            ChannelId::new(0x1122_3344_5566_7788),
+        );
+        let mut actual = [0u8; 32];
+        rng.fill_bytes(&mut actual);
+        let expected = [
+            0xfc, 0x90, 0x2a, 0x70, 0x4d, 0x27, 0xb6, 0x7e, 0x01, 0xff, 0x31, 0xb7, 0x74, 0x36,
+            0x57, 0x9b, 0xbc, 0x81, 0x14, 0xad, 0x98, 0x06, 0x4c, 0x4d, 0xa1, 0x11, 0x3a, 0x37,
+            0x5f, 0x15, 0x52, 0xd8,
+        ];
+        assert_eq!(actual, expected);
     }
 
     proptest! {
