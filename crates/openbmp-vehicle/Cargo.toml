@@ -9,15 +9,18 @@ authors.workspace       = true
 description             = "OpenBMP vehicle composition: rigid-body trait, mass models, force/moment composition."
 
 [dependencies]
-nalgebra      = { workspace = true }
-openbmp-core  = { workspace = true }
-openbmp-sim   = { workspace = true }
-openbmp-state = { workspace = true }
-thiserror     = { workspace = true }
+nalgebra          = { workspace = true }
+openbmp-aero      = { workspace = true }
+openbmp-core      = { workspace = true }
+openbmp-env       = { workspace = true }
+openbmp-propulsion = { workspace = true }
+openbmp-sim       = { workspace = true }
+openbmp-state     = { workspace = true }
+thiserror         = { workspace = true }
+uom               = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
-uom    = { workspace = true }
 
 [lints]
 workspace = true

@@ -1318,7 +1318,10 @@ version = "0.0.1"
 dependencies = [
  "approx",
  "nalgebra",
+ "openbmp-aero",
  "openbmp-core",
+ "openbmp-env",
+ "openbmp-propulsion",
  "openbmp-sim",
  "openbmp-state",
  "thiserror",

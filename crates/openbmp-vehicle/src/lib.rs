@@ -49,9 +49,13 @@
 //! their own physics-side traits and the kernel-side adapter at
 //! Phase 2.10 wires the two together.
 
+pub mod adapters;
 pub mod error;
 pub mod vehicle;
 
+pub use adapters::{
+    AxialDragForceAdapter, GravityForceAdapter, MotorMassAdapter, MotorThrustForceAdapter,
+};
 pub use error::VehicleError;
 pub use vehicle::{
     BasicVehicle, BoxedMassModel, ForceBreakdown, MomentBreakdown, NamedForceModel,
