@@ -49,15 +49,13 @@ data ships in the repository.
 - Earth-orbit-decay re-entry studies (uncontrolled and lifting).
 - **Reusable second-stage / lifting-body re-entry studies** using
   textbook geometry and the public flight-mechanics literature. The
-  belly-first lifting attitude with body-flap pitch trim (e.g., the
-  textbook "Apollo-derived flat plate at high alpha" lifting profile, or
-  the public "lifting-body with aft body flaps" academic configuration)
-  is supported through the standard `ControlEffector` trait described in
+  high-angle-of-attack lifting attitude with body-flap pitch trim is
+  supported through the standard `ControlEffector` trait described in
   [software-architecture.md § Control Effectors](software-architecture.md#control-effectors)
   — body flaps appear as effectors with rate limits, saturation, and
-  hinge-moment back-pressure exactly like aerodynamic surfaces on any
-  other vehicle. No real fielded reusable-vehicle TPS, mass, or
-  aerodynamic data ships in the repository; the cookbook in
+  hinge-moment loads like aerodynamic surfaces on any other vehicle.
+  No real fielded reusable-vehicle TPS, mass, or aerodynamic data ships
+  in the repository; the cookbook in
   [real-rocket-integration.md](real-rocket-integration.md) walks through
   the lifting-reentry assembly using fictional ARV-Reference numbers.
 
