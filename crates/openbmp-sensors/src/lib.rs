@@ -32,8 +32,17 @@
 //! wires sensors into the kernel's measurement chain lands in
 //! Phase 2.10.
 
+pub mod barometer;
 pub mod error;
+pub mod ideal;
+pub mod imu;
 pub mod noise;
+pub mod parser;
+pub mod sensor;
 
+pub use barometer::SyntheticBarometer;
 pub use error::SensorError;
+pub use ideal::IdealStateSensor;
+pub use imu::{ImuNoiseBudget, SyntheticImu, TriaxialNoiseBudget};
 pub use noise::{BoxMullerGaussian, IntegratedWhiteNoise, OrnsteinUhlenbeck};
+pub use sensor::{SensorMeasurement, SensorTruth, SyntheticSensor};

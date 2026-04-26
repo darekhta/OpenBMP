@@ -1,0 +1,44 @@
+# Synthetic tactical-grade IMU noise budget (Schema 1).
+#
+# Envelope sized to a typical fibre-optic-gyro tactical-grade IMU
+# (e.g. ARW ~ 0.05 °/√h ≈ 2.4e-7 rad/√s, gyro bias instability
+# ~ 1 °/h ≈ 4.8e-6 rad/s with τ_BI ~ 100 s). Values here are
+# OpenBMP-authored academic-envelope numbers — NOT lifted from any
+# vendor data sheet. The methodology citation (El-Sheimy / Hou /
+# Niu 2008 IEEE T.I.M.) tracks the academic reference for this
+# IEEE-952 five-component decomposition; see
+# `data/sensors/provenance.md` for the full record.
+#
+# Units: SI on the model side. Inside this file:
+#   arw_per_sqrt_s       — rad/√s for gyro, (m/s²)/√s for accel
+#   bias_ou_theta        — 1/s
+#   bias_ou_sigma        — rad/s/√s for gyro, (m/s²)/√s for accel
+#   rrw_sigma_per_sqrt_s — same units as bias_ou_sigma
+#   scale_factor_ppm     — dimensionless (× 1e-6)
+#   quantization_lsb     — rad/s for gyro, m/s² for accel; 0 disables.
+
+openbmp.imu_noise_budget = 1
+
+[meta]
+name       = "imu-tactical"
+provenance = "synthetic OpenBMP-authored tactical-grade envelope; methodology cites El-Sheimy 2008"
+validation = "validated-toy"
+
+[sample]
+dt_s = 0.005   # 200 Hz IMU sample rate
+
+[gyro]
+arw_per_sqrt_s        = 2.4e-7   # ≈ 0.05 °/√h
+bias_ou_theta         = 0.01     # τ_BI ~ 100 s
+bias_ou_sigma         = 4.8e-7   # stationary stddev ≈ 1 °/h ≈ 4.8e-6 rad/s
+rrw_sigma_per_sqrt_s  = 1.0e-9   # very small RRW
+scale_factor_ppm      = 50.0
+quantization_lsb      = 0.0
+
+[accel]
+arw_per_sqrt_s        = 1.0e-4   # ≈ 100 µg/√Hz (open-circuit accel noise)
+bias_ou_theta         = 0.01
+bias_ou_sigma         = 1.0e-4   # bias instability ~ tens of µg
+rrw_sigma_per_sqrt_s  = 1.0e-7
+scale_factor_ppm      = 50.0
+quantization_lsb      = 0.0

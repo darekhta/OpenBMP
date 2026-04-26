@@ -1,0 +1,37 @@
+# Synthetic consumer-MEMS IMU noise budget (Schema 1).
+#
+# Envelope sized to a typical consumer-MEMS IMU (e.g. ARW ~ 1 °/√h
+# ≈ 4.8e-6 rad/√s, gyro bias instability ~ 50 °/h ≈ 2.4e-4 rad/s
+# with shorter τ_BI ~ 10 s). Values here are OpenBMP-authored
+# academic-envelope numbers — NOT lifted from any vendor data sheet.
+#
+# Two orders of magnitude noisier than the tactical-grade budget on
+# both gyro and accel channels, with a much shorter bias-instability
+# correlation time. See `data/sensors/provenance.md` for the
+# methodology citation.
+
+openbmp.imu_noise_budget = 1
+
+[meta]
+name       = "imu-consumer-mems"
+provenance = "synthetic OpenBMP-authored consumer-MEMS envelope; methodology cites El-Sheimy 2008"
+validation = "validated-toy"
+
+[sample]
+dt_s = 0.01    # 100 Hz IMU sample rate
+
+[gyro]
+arw_per_sqrt_s        = 4.8e-6   # ≈ 1 °/√h
+bias_ou_theta         = 0.1      # τ_BI ~ 10 s
+bias_ou_sigma         = 2.4e-5   # stationary stddev ≈ 50 °/h ≈ 2.4e-4 rad/s
+rrw_sigma_per_sqrt_s  = 1.0e-7
+scale_factor_ppm      = 1000.0   # 1000 ppm is realistic for MEMS
+quantization_lsb      = 1.0e-5   # 16-bit gyro at ~30 °/s full-scale
+
+[accel]
+arw_per_sqrt_s        = 1.0e-2   # ≈ 100 µg/√Hz × ~30 (MEMS noise floor higher)
+bias_ou_theta         = 0.1
+bias_ou_sigma         = 1.0e-2   # bias instability ~ mg-class
+rrw_sigma_per_sqrt_s  = 1.0e-5
+scale_factor_ppm      = 1000.0
+quantization_lsb      = 1.0e-3
