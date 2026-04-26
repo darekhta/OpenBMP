@@ -64,11 +64,17 @@ Accept contributions that are limited to:
 - Software-in-the-loop (SIL) tests where the virtual flight controller, models,
   and sensors run in-process with the kernel.
 - Hardware-in-the-loop (HIL) **patterns** in the form of an optional socket
-  bridge between the simulator and an external client, using an in-house wire
-  format. The bridge ships with **no real device drivers, no real bus
-  protocols, no MAVLink/CAN/I2C/SPI integrations.** The bridge is
-  intentionally generic: it sends simulated sensor packets out and accepts
-  abstract normalized command packets in.
+  bridge between the simulator and an external client, using an in-house
+  wire format. The bridge is **a generic lab-HIL adapter owned by the
+  downstream user**: OpenBMP ships only the simulator side of the socket
+  and the abstract message schema. The bridge ships with **no real device
+  drivers, no real bus protocols, no MAVLink/CAN/I2C/SPI integrations, no
+  real flight-computer firmware, and no real sensor-bus glue**. It sends
+  simulated sensor packets out and accepts abstract normalized command
+  packets in. Any concrete protocol adapter that talks to physical
+  hardware is the downstream user's responsibility under their own
+  export-control and qualification posture, and lives in their own
+  repository — not in OpenBMP.
 - Deterministic test harnesses, golden telemetry, scenario fuzzing, property
   tests, snapshot tests, analytic-toy validation, and microbenchmarks.
 - Read-only telemetry visualization and local playback tools that consume
