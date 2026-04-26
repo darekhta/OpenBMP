@@ -1,7 +1,56 @@
 //! `openbmp-vehicle` — OpenBMP vehicle composition.
 //!
-//! Rigid-body / point-mass vehicle traits, mass models
-//! (constant, linear-burn, table-burn, multi-stage), and the
-//! force / moment provider composition machinery.
+//! Phase 2.8 ships:
 //!
-//! **Status:** Phase 2 stub.
+//! * [`vehicle::Vehicle`] trait — the architecture's long-term
+//!   force / moment / mass composition surface, parameterised over
+//!   `S: SimState` so it serves both point-mass and rigid-body
+//!   kernels.
+//! * [`vehicle::BasicVehicle`] — Phase-2 implementation that
+//!   composes ordered force-model and moment-model lists.
+//!   `BasicVehicle::force_n_eci` evaluates the list in declared
+//!   order with locked operand sum and short-circuits on the first
+//!   model error. The Phase-2 plan documents the contract
+//!   *order matters* — floating-point summation is not associative,
+//!   so reordering the list changes the byte output.
+//! * [`vehicle::ForceBreakdown`] / [`vehicle::MomentBreakdown`] —
+//!   per-model components plus total. The kernel-side adapter at
+//!   Phase 2.10 reads `evaluate_force_breakdown` per step to
+//!   publish `force.<name>.{x,y,z}` telemetry channels.
+//! * [`vehicle::BoxedMassModel`] — convenience wrapper around
+//!   `Box<dyn MassModel>` for symmetry with `BasicVehicle`. Phase 3
+//!   will add `MultiStageMass` as a richer composition.
+//! * [`error::VehicleError`].
+//!
+//! # Phase-1 byte-stability preservation
+//!
+//! Single-element vehicles wrapping a single `ForceModel<S>` produce
+//! byte-identical output to the raw model — the
+//! `single_force_model_vehicle_byte_matches_raw_model` test asserts
+//! this. The Phase-1 `analytic_toy` regression continues to use the
+//! kernel's existing generic `F: ForceModel<PointMassState>`
+//! surface, so swapping in `BasicVehicle` is a future-Phase opt-in.
+//!
+//! # Determinism
+//!
+//! Pure arithmetic on `f64`; locked operand order on the summation
+//! left fold; no FMA, no wall-clock, no system RNG, no network, no
+//! file I/O.
+//!
+//! # Crate layering
+//!
+//! `openbmp-vehicle` is an L1 crate alongside `openbmp-sim`. Both
+//! own kernel-facing trait surfaces (`ForceModel`, `MomentModel`,
+//! `MassModel`, `Vehicle`); L2 crates (`openbmp-env`,
+//! `openbmp-aero`, `openbmp-propulsion`, `openbmp-sensors`) define
+//! their own physics-side traits and the kernel-side adapter at
+//! Phase 2.10 wires the two together.
+
+pub mod error;
+pub mod vehicle;
+
+pub use error::VehicleError;
+pub use vehicle::{
+    BasicVehicle, BoxedMassModel, ForceBreakdown, MomentBreakdown, NamedForceModel,
+    NamedMomentModel, Vehicle,
+};

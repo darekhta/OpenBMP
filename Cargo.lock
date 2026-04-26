@@ -1315,6 +1315,15 @@ dependencies = [
 [[package]]
 name = "openbmp-vehicle"
 version = "0.0.1"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "openbmp-core",
+ "openbmp-sim",
+ "openbmp-state",
+ "thiserror",
+ "uom",
+]
 
 [[package]]
 name = "ordered-float"
