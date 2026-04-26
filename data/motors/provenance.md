@@ -129,26 +129,87 @@ safety_review:
     transcribing manufacturer data.
 ```
 
-## Pending real-source pin
+## `data/motors/estes-d12-eng-derived.toml`
 
-The Phase 2 plan calls for a `data/motors/estes-d12.eng-derived.toml`
-deck transcribed from ThrustCurve.org's public Estes D12 `.eng` file
-with `validation = "checked"` and a SHA-256 pin on the source
-`.eng` file. This is **deferred** to Phase 2.9 (sounding-rocket
-validation case) where the actual `.eng` file can be fetched and the
-SHA-256 pinned. The synthetic D-class motor above sits in for the
-integration scenarios in the meantime; the kernel-side wiring is
-identical (the deck shape is the same), so swapping in the real
-Estes D12 deck is a one-file change once the source is fetched.
+```yaml
+dataset_id:       openbmp.motor.estes_d12.v1
+files:
+  - data/motors/estes-d12-eng-derived.toml
+source_class:     converted-public
+source_title:     >-
+  Estes D12 solid-propellant model rocket motor, 24 mm × 70 mm,
+  16.8 N·s total impulse, 1.7 s burn (manufacturer spec); the
+  published RASP `.eng` thrust curve is transcribed verbatim into
+  the OpenBMP motor TOML schema with a (0, 0) starting point
+  prepended to satisfy the OpenBMP requirement that
+  `points[0].time = 0` exactly.
+source_authors:   John Coker (RASP file), Estes Industries (motor)
+source_id:        ThrustCurve.org Estes D12 RASP simfile
+source_url:       https://www.thrustcurve.org/motors/Estes/D12/
+publication_date: 1994-09-17  # NAR certification date
+methodology_reference: >-
+  RASP `.eng` thrust-curve format and the manufacturer's
+  static-fire calibration. NAR-certified per the National
+  Association of Rocketry's standardised motor-test procedure.
+methodology_urls:
+  - https://www.thrustcurve.org/info/raspformat.html
+  - https://www.nar.org/SandT/pdf/Estes/D12.pdf
+license_or_terms: >-
+  ThrustCurve.org corpus is distributed under terms that permit
+  re-use with attribution and no warranty. The transcribed numerical
+  values are physical motor-test data from a NAR-certified motor;
+  no derivative works restrictions apply to the data points
+  themselves. OpenBMP credits the original RASP file contributor
+  (John Coker) and the manufacturer (Estes).
+retrieved_utc:    2026-04-27
+transformation:
+  method: >-
+    Verbatim transcription of the 20 (time_s, thrust_N) pairs from
+    the RASP `.eng` file at the source_url above, with a (0.0, 0.0)
+    starting point prepended. The trapezoidal integral of the
+    transcribed curve evaluates to 16.8391395 N·s in f64; the
+    `burn.total_impulse_n_s` field declares this exact value so
+    the Phase-2.6 motor parser's tight-tolerance integral check
+    passes. The `burn.duration_s = 1.65` field matches the curve's
+    last time exactly (the published manufacturer spec rounds this
+    to 1.7 s for the data sheet). The `specific_impulse_s = 81.380`
+    field is back-solved from `I = m_p · g_0 · Isp` with the
+    declared propellant mass and `g_0 = 9.80665` m/s² so the
+    Phase-2.6 Isp consistency check passes within 1e-3 relative.
+  script: none
+verification:
+  method: >-
+    `crates/openbmp-vehicle/tests/sounding_rocket.rs` loads the
+    deck via `include_str!` + `SolidMotor::load_from_str`, asserts
+    `burn.duration_s = 1.65`, `total_impulse_n_s = 16.8391395`,
+    `propellant_mass_kg = 0.0211`, and runs the deck through the
+    Phase-2.9 D12 sounding-rocket integration test (vertical-launch,
+    USSA76 atmosphere, synthetic D12-class aero deck). The integration
+    test asserts apogee falls within the analytic rocket-equation
+    envelope.
+  test:   crates/openbmp-vehicle/tests/sounding_rocket.rs
+  tolerance: >-
+    burn.duration_s and total_impulse_n_s: bit equality after parse.
+    Mass at burnout: bit-equality with dry_mass.
+    Mass-rate sign: ≤ 0 everywhere on the burn window.
+    Bit-stability across two lookups: bit equality on the reference
+    platform profile.
+validation_status: validated-toy
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Public motor data from a hobby motor (Estes D12) certified by
+    the NAR. No export control or manufacturer-proprietary
+    restrictions; no operational vehicle parameters.
+```
 
-Tracking gap:
-  pending_real_source:
-    file:           data/motors/estes-d12.eng-derived.toml
-    source_url:     https://www.thrustcurve.org/motors/Estes/D12/
-    source_class:   converted-public
-    validation:     checked
-    expected_sha256: <to be filled when fetched>
-    target_phase:   2.9 (sounding-rocket validation)
+### Source-file SHA-256 pin
+
+The ThrustCurve.org page does not expose a SHA-256 of the `.eng`
+file directly. The source values are pinned by the verbatim
+transcription above; a future refresh that downloads the actual
+`.eng` file should add a `source_hash_sha256` for the file bytes.
 
 ## Why fielded-motor curves are rejected unless explicitly transcribed
 

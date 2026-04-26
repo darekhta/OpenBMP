@@ -159,3 +159,65 @@ USSA76 layer-pressure pin and the WGS84 J2 constant — a future
 Phase-2.10 `openbmp check-provenance` walk will perform the same
 check repository-wide so a typo in either the deck file or the
 generator breaks CI before release.
+
+## `data/aero/synthetic-d12-class-rocket.toml`
+
+```yaml
+dataset_id:       openbmp.aero.synthetic_d12_class_rocket.v1
+files:
+  - data/aero/synthetic-d12-class-rocket.toml
+source_class:     synthetic-openbmp
+source_title:     >-
+  Synthetic OpenBMP-authored aerodynamic deck for a 24 mm-diameter,
+  0.30 m-long model-rocket airframe sized to the Estes D12 motor
+  envelope. Used by the Phase-2.9 sounding-rocket validation case
+  alongside the real Estes D12 motor data.
+source_authors:   OpenBMP (Dmitri Arekhta)
+source_id:        synthetic; not derived from any fielded vehicle
+publication_date: 2026-04-27
+methodology_reference: >-
+  Same Barrowman-style component build-up convention as the
+  Phase-2.5 `synthetic-finned-cylinder.toml` deck — Niskanen 2009
+  thesis §5 component build-up. CN slope and CD0(M) values chosen
+  to match the D-class model-rocket envelope (CD0 ≈ 0.6 subsonic,
+  rising through transonic).
+methodology_urls:
+  - https://openrocket.info/documentation.html
+license_or_terms: >-
+  Synthetic OpenBMP-authored content; CC0 / public domain. No
+  third-party data is incorporated.
+retrieved_utc:    2026-04-27
+transformation:
+  method: >-
+    Hand-derived integer-scaled rational generators (same family as
+    the Phase-2.5 finned-cylinder deck):
+      M_tenths = 10 · M
+      CN = α_deg · (140 + M_tenths) / 2000
+      CD = (CD0_milli(M) + α_deg²) / 1000
+      CM = -15 · CN_numerator / 200000
+    with CD0_milli specialised for the D-class envelope:
+      M=0.0: 600  (CD0 = 0.60)
+      M=0.3: 650  (CD0 = 0.65)
+      M=0.5: 700  (CD0 = 0.70)
+      M=0.8: 850  (CD0 = 0.85)
+      M=1.0: 1000 (CD0 = 1.00)
+  script: none
+verification:
+  method: >-
+    `crates/openbmp-vehicle/tests/sounding_rocket.rs` loads the
+    deck via `include_str!` + `AeroDeck::load_from_str`, asserts
+    grid sizes (5 × 5 × 1) and the (M=0, α=0) corner CD = 0.6
+    bit-exactly, and runs the deck through the Phase-2.9 D12
+    sounding-rocket integration test.
+  test:   crates/openbmp-vehicle/tests/sounding_rocket.rs
+  tolerance: >-
+    Grid-corner lookups: bit equality after parse. Apogee envelope
+    on the integration test: 200–750 m for a 70 g airframe.
+validation_status: validated-toy
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Synthetic OpenBMP-authored content sized to the D-class
+    envelope. Not a transcription of any published deck.
+```

@@ -1,0 +1,84 @@
+# Synthetic D-class model rocket aerodynamic deck (Schema 1).
+#
+# Sized to a 24 mm-diameter, 0.30 m-long airframe matching the
+# Estes D12 motor envelope. Values are OpenBMP-authored from a
+# documented closed-form generator — NOT transcribed from a
+# fielded vehicle. Used by the Phase-2.9 sounding-rocket
+# validation case.
+#
+# Closed-form generators (same family as
+# `synthetic-finned-cylinder.toml` from Phase 2.5):
+#   CD(M, α_deg) = CD0(M) + 0.001 · α_deg²
+#   CN(M, α_deg) = α_deg · (0.07 + 0.005 · M)
+#   CM(M, α_deg) = -0.15 · CN(M, α_deg)         (15% static margin)
+#
+# Integer-scaled rational form (mirrored by the regression test):
+#   M_tenths = 10 · M
+#   CN = α_deg · (140 + M_tenths) / 2000
+#   CD = (CD0_milli(M) + α_deg²) / 1000
+#   CM = -15 · CN_numerator / 200000
+#
+# CD0(M): 0.60 (M ≤ 0.3), 0.70 (M = 0.5), 0.85 (M = 0.8),
+#         1.00 (M = 1.0). Higher subsonic baseline than the
+#         finned-cylinder deck because the D12-class rocket has
+#         worse fineness ratio (24 mm × 300 mm = 12.5).
+
+openbmp.aero_deck = 1
+
+reference.area_m2  = 0.000452389342  # π × 0.012²
+reference.length_m = 0.3
+
+provenance = "synthetic OpenBMP-authored D-class rocket deck sized to the Estes D12 envelope"
+validation = "validated-toy"
+
+[grid]
+mach      = [0.0, 0.3, 0.5, 0.8, 1.0]
+alpha_deg = [-5.0, -2.0, 0.0, 2.0, 5.0]
+beta_deg  = [0.0]
+
+[coefficients.cn]
+# CN(M, α) = α_deg · (140 + M_tenths) / 2000.
+data = [
+  # M = 0.0
+  -0.350, -0.140, 0.000, 0.140, 0.350,
+  # M = 0.3
+  -0.3575, -0.143, 0.000, 0.143, 0.3575,
+  # M = 0.5
+  -0.3625, -0.145, 0.000, 0.145, 0.3625,
+  # M = 0.8
+  -0.370, -0.148, 0.000, 0.148, 0.370,
+  # M = 1.0
+  -0.375, -0.150, 0.000, 0.150, 0.375,
+]
+
+[coefficients.cd]
+# CD(M, α) = (CD0_milli(M) + α_deg²) / 1000.
+# CD0_milli: 600 (M=0), 650 (M=0.3), 700 (M=0.5), 850 (M=0.8),
+#            1000 (M=1.0).
+data = [
+  # M = 0.0
+  0.625, 0.604, 0.600, 0.604, 0.625,
+  # M = 0.3
+  0.675, 0.654, 0.650, 0.654, 0.675,
+  # M = 0.5
+  0.725, 0.704, 0.700, 0.704, 0.725,
+  # M = 0.8
+  0.875, 0.854, 0.850, 0.854, 0.875,
+  # M = 1.0
+  1.025, 1.004, 1.000, 1.004, 1.025,
+]
+
+[coefficients.cm]
+# CM = -0.15 · CN. 15% static margin from base.
+data = [
+  # M = 0.0
+  0.05250, 0.02100, 0.00000, -0.02100, -0.05250,
+  # M = 0.3
+  0.053625, 0.02145, 0.00000, -0.02145, -0.053625,
+  # M = 0.5
+  0.054375, 0.02175, 0.00000, -0.02175, -0.054375,
+  # M = 0.8
+  0.05550, 0.02220, 0.00000, -0.02220, -0.05550,
+  # M = 1.0
+  0.056250, 0.02250, 0.00000, -0.02250, -0.056250,
+]

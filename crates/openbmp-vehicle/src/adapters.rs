@@ -133,12 +133,13 @@ impl<M: Motor> ForceModel<PointMassState> for MotorThrustForceAdapter<M> {
         ctx: ForceContext<'_, PointMassState>,
     ) -> Result<Vector3<f64>, ModelEvalError> {
         let t_since = ctx.time.as_seconds() - self.ignition_time_s;
-        let thrust_n = self.motor.thrust_n_at(t_since).map_err(|_| {
-            ModelEvalError::OutOfEnvelope {
-                model: self.model_id,
-                reason: Cow::Borrowed("motor thrust query failed"),
-            }
-        })?;
+        let thrust_n =
+            self.motor
+                .thrust_n_at(t_since)
+                .map_err(|_| ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed("motor thrust query failed"),
+                })?;
         if !thrust_n.is_finite() {
             return Err(ModelEvalError::NonFinite {
                 model: self.model_id,
@@ -198,12 +199,13 @@ impl<M> MotorMassAdapter<M> {
 impl<M: Motor> MassModel for MotorMassAdapter<M> {
     fn mass_kg(&self, t: SimTime) -> Result<f64, ModelEvalError> {
         let t_since = t.as_seconds() - self.ignition_time_s;
-        let motor_mass = self.motor.mass_kg(t_since).map_err(|_| {
-            ModelEvalError::OutOfEnvelope {
-                model: self.model_id,
-                reason: Cow::Borrowed("motor mass query failed"),
-            }
-        })?;
+        let motor_mass =
+            self.motor
+                .mass_kg(t_since)
+                .map_err(|_| ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed("motor mass query failed"),
+                })?;
         let total = self.dry_vehicle_mass_kg + motor_mass;
         if !total.is_finite() {
             return Err(ModelEvalError::NonFinite {
@@ -215,12 +217,13 @@ impl<M: Motor> MassModel for MotorMassAdapter<M> {
 
     fn mass_rate_kg_s(&self, t: SimTime) -> Result<f64, ModelEvalError> {
         let t_since = t.as_seconds() - self.ignition_time_s;
-        let rate = self.motor.mass_rate_kg_s(t_since).map_err(|_| {
-            ModelEvalError::OutOfEnvelope {
-                model: self.model_id,
-                reason: Cow::Borrowed("motor mass-rate query failed"),
-            }
-        })?;
+        let rate =
+            self.motor
+                .mass_rate_kg_s(t_since)
+                .map_err(|_| ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed("motor mass-rate query failed"),
+                })?;
         if !rate.is_finite() {
             return Err(ModelEvalError::NonFinite {
                 model: self.model_id,
@@ -303,7 +306,11 @@ impl<Atm: AtmosphereModel> ForceModel<PointMassState> for AxialDragForceAdapter<
         let speed = speed_sq.sqrt();
 
         // Altitude proxy: ECI z (vertical-launch simplification).
-        let altitude_m = ctx.state.position.vector.z;
+        // Clamp to zero so sub-surface descent (e.g. simulation
+        // tail past apogee) doesn't trip the atmosphere model's
+        // sub-zero rejection — the rocket is "on the ground" at
+        // z ≤ 0 and aerodynamics there is academic.
+        let altitude_m = ctx.state.position.vector.z.max(0.0);
         let atm_sample = self.atmosphere.sample(altitude_m, ctx.time).map_err(|_| {
             ModelEvalError::OutOfEnvelope {
                 model: self.model_id,
@@ -320,12 +327,13 @@ impl<Atm: AtmosphereModel> ForceModel<PointMassState> for AxialDragForceAdapter<
         }
 
         let mach = speed / speed_of_sound;
-        let coefficients = self.deck.lookup(mach, 0.0, 0.0).map_err(|_| {
-            ModelEvalError::OutOfEnvelope {
-                model: self.model_id,
-                reason: Cow::Borrowed("aero deck out of envelope at (mach, 0, 0)"),
-            }
-        })?;
+        let coefficients =
+            self.deck
+                .lookup(mach, 0.0, 0.0)
+                .map_err(|_| ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed("aero deck out of envelope at (mach, 0, 0)"),
+                })?;
 
         // Locked operand order: q = 0.5 · ρ · |v|².
         let q = 0.5 * atm_sample.density_kg_m3 * speed_sq;
@@ -490,15 +498,11 @@ mod tests {
         let adapter = MotorMassAdapter::new(motor, 5.0, 0.0, ModelId::new(0));
         // Pre and post burn: rate = 0.
         assert_eq!(
-            adapter
-                .mass_rate_kg_s(SimTime::from_seconds(-0.1))
-                .unwrap(),
+            adapter.mass_rate_kg_s(SimTime::from_seconds(-0.1)).unwrap(),
             0.0
         );
         assert_eq!(
-            adapter
-                .mass_rate_kg_s(SimTime::from_seconds(10.0))
-                .unwrap(),
+            adapter.mass_rate_kg_s(SimTime::from_seconds(10.0)).unwrap(),
             0.0
         );
         // Mid-burn: rate ≤ 0.
