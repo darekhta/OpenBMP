@@ -303,37 +303,57 @@ byte-identical telemetry across runs.
 ## Simulation Kernel
 
 `openbmp-sim` owns time progression and state propagation in **lockstep**:
-each step, the kernel evaluates models, integrates state, runs sensors,
-calls the controller, applies commands, and emits telemetry. The
-controller never advances faster than the kernel, and the kernel never
-advances faster than the controller.
+each step, the kernel applies deterministic events, advances effectors
+from held controller commands, evaluates models, integrates state, runs
+sensors, calls the controller, and emits telemetry. The controller never
+advances faster than the kernel, and the kernel never advances faster
+than the controller.
 
 ### Step Pseudocode
 
 ```rust
 pub fn step(&mut self) -> Result<(), SimulationError> {
-    // 1. Sample environment at current state.
+    let active = self.schedule.active_groups(self.step_index);
+
+    // 1. Apply deterministic events and advance effectors from the command
+    // held over from the previous controller tick. This avoids an algebraic
+    // loop from controller -> effector -> force -> state -> sensor -> controller
+    // within one base tick.
+    let t = self.state.time;
+    self.events.apply_due(&mut self.state, t, self.step_index)?;
+    self.effectors.step(&self.cmd, self.dt)?;
+
+    // 2. Sample environment at current state.
     let env = self.env.sample(EnvironmentQuery::from(&self.state));
 
-    // 2. Evaluate forces, moments, mass-property update.
-    let force = self.force.force(ForceInput::new(&self.state, &env, &self.cmd));
-    let moment = self.moment.moment(MomentInput::new(&self.state, &env, &self.cmd));
+    // 3. Evaluate forces, moments, mass-property update.
+    let force = self.force.force(ForceInput::new(&self.state, &env, &self.effectors));
+    let moment = self.moment.moment(MomentInput::new(&self.state, &env, &self.effectors));
     let mass_dot = self.mass.derivative(self.state.time);
 
-    // 3. Integrate (RK4 fixed-step or alternative).
+    // 4. Integrate (RK4 fixed-step or alternative).
     self.state = self.integrator.advance(&self.state, force, moment, mass_dot, self.dt)?;
 
-    // 4. Generate synthetic sensor measurements from new truth.
-    let measurements = self.sensors.sample(&self.state, self.rng.for_step(self.step_index));
+    // 5. Generate synthetic sensor measurements from new truth when due.
+    let measurements = self.sensors.sample_if_due(
+        &self.state,
+        self.rng.for_step(self.step_index),
+        active.sensor_groups_due(),
+    );
 
-    // 5. Tick virtual flight controller.
-    let cmd = self.fc.update(VirtualControlInput::new(&measurements, self.state.time))?;
-    self.cmd = cmd;
+    // 6. Tick virtual flight controller when due. The resulting command is
+    // consumed by effectors on the next base tick and is zero-order-held
+    // between controller ticks.
+    if active.controller_due() {
+        self.cmd = self.fc.update(VirtualControlInput::new(&measurements, self.state.time))?;
+    }
 
-    // 6. Publish telemetry channels (truth, sensors, commands, mission phase).
-    self.telemetry.publish_step(&self.state, &measurements, &cmd, self.step_index);
+    // 7. Publish telemetry channels (truth, sensors, commands, mission phase).
+    if active.telemetry_due() {
+        self.telemetry.publish_step(&self.state, &measurements, &self.cmd, self.step_index);
+    }
 
-    // 7. Run validation rules; check stop conditions.
+    // 8. Run validation rules; check stop conditions.
     self.validation.check(&self.state)?;
     self.step_index = self.step_index.next();
     self.state.time = self.state.time + self.dt;
@@ -372,20 +392,22 @@ fixed list every step:
 ```rust
 // openbmp-sim::schedule
 pub struct RatePlan {
-    pub base_dt: Duration,                    // master tick (e.g., 1 ms)
+    pub base_hz: NonZeroU32,                  // master tick (e.g., 1000 Hz)
+    pub base_dt: Duration,                    // derived once from base_hz
     pub groups: Vec<RateGroup>,
 }
 
 pub struct RateGroup {
     pub label: &'static str,                  // "env" | "fc" | "telemetry" | ...
-    pub divisor: u32,                         // every N base ticks
+    pub hz: NonZeroU32,                       // must divide base_hz exactly
+    pub divisor: NonZeroU32,                  // every N base ticks
     pub members: Vec<SubsystemId>,
 }
 
 impl RatePlan {
     /// Resolve into a flat per-base-tick `Vec<Vec<SubsystemId>>` so each
-    /// `step()` is a constant-time list walk. No HashMap, no dyn dispatch
-    /// at runtime, no rate-decision branching inside the hot loop.
+    /// `step()` is a constant-time list walk. No HashMap lookups and no
+    /// rate-decision branching inside the hot loop.
     pub fn flatten(&self) -> Vec<Vec<SubsystemId>>;
 }
 ```
@@ -394,7 +416,7 @@ Scenario syntax:
 
 ```toml
 [schedule]
-base_dt_s = 0.001                             # 1 kHz master tick
+base_hz = 1000                                # 1 kHz master tick
 
 [[schedule.group]]
 label = "env"
@@ -419,14 +441,17 @@ members = ["telemetry"]
 
 Rules:
 
-- Every group's `hz` must divide `1.0 / base_dt_s` evenly. The loader
-  rejects non-integer divisors at scenario load time, not at runtime.
+- Every group's `hz` must divide `base_hz` evenly (`base_hz % hz == 0`).
+  The loader rejects non-integer divisors at scenario load time, not at
+  runtime. Floating-point equality is never used to decide a schedule.
 - The dynamics integrator runs every base tick — it is implicitly the
   highest rate. Anything below the integrator rate is a sub-rate.
 - Rate-group ordering inside a single base tick is fixed and documented
-  in [Step Pseudocode](#step-pseudocode); env first, then forces /
-  moments / mass, then integrator, then effectors, sensors, controller,
-  telemetry. Same order on every tick that activates the group.
+  in [Step Pseudocode](#step-pseudocode): events and effectors first,
+  then environment / forces / moments / mass, then integrator, then
+  sensors, controller, telemetry. Controller output is consumed by the
+  next effector tick and held between controller ticks. Same order on
+  every tick that activates the group.
 - Multi-rate output remains **bit-stable** because the schedule is
   resolved at scenario start and the kernel walks the same list every
   tick.
@@ -494,7 +519,7 @@ fixed step shape and just consults the resolved event list each tick.
 | Integrator | Order | Step | Use |
 |---|---|---|---|
 | **RK4** | 4 | fixed | Default. Byte-stable. Easy to reason about. |
-| **DOPRI5** (Dormand-Prince 4(5)) | 5 | adaptive | Stiffer scenarios. Behind a `--profile=adaptive` flag. |
+| **DOPRI5** (Dormand-Prince 4(5)) | 5 | adaptive | Non-stiff scenarios needing local error control or event-gradient accuracy. Behind a `--profile=adaptive` flag. |
 | **DOPRI8** (8(5,3)) | 8 | adaptive | High-accuracy validation runs. |
 | **Analytic** | n/a | n/a | Toy validation: closed-form propagation for analytic-toy scenarios. |
 
@@ -503,6 +528,13 @@ keeps RK4 fixed-step as canonical because LSODA-style adaptive switching
 breaks bit-stable replay across runs that visit different stiffness
 regimes. Adaptive integrators ship behind explicit profile flags only and
 are tagged `state-stable, not bit-stable`.
+
+DOPRI5/8 are adaptive **explicit** Runge-Kutta methods. They are not the
+stiff-chemistry answer for hypersonic nonequilibrium, ablation chemistry,
+or tightly coupled aerothermal submodels. Those Phase-6 submodels use
+declared fixed sub-stepping with implicit Euler and, for harder cases, a
+profile-gated Rosenbrock-Wanner variant as described in
+[hypersonic-extensions.md](hypersonic-extensions.md).
 
 ```rust
 pub trait Integrator {
@@ -891,9 +923,12 @@ Available `MovingMassModel` implementations:
 - `BaffledPendulum` — equivalent pendulum with `BaffleModel`-supplied
   damping increment.
 
-All four use **textbook propellant ranges and textbook tank geometries
-only**. Real fielded propellant data and real fielded tank geometry are
-rejected (see [safety-boundaries.md](safety-boundaries.md)).
+OpenBMP-shipped reference implementations use **textbook propellant
+ranges and textbook tank geometries only**. Upstream PRs that add real
+fielded propellant data or real fielded tank geometry are rejected (see
+[safety-boundaries.md](safety-boundaries.md)). Downstream users may bind
+their own data through the real-data package path in their own
+repositories.
 
 ### Multi-Body Separation Events
 
@@ -1572,8 +1607,11 @@ The complete sidecar schema, field semantics, loader behaviour, and the
 list of rejected packages live in
 [data-provenance.md § Real-Data Package Credibility Format](data-provenance.md#real-data-package-credibility-format).
 The architecture-level commitment here is just that this is the
-**only** path for external data: ad-hoc CSV / JSON / TOML loaded
-directly into a model is rejected at code review.
+**only** path for external data in OpenBMP-shipped models: ad-hoc CSV /
+JSON / TOML loaded directly into a model is rejected in upstream code
+review. Downstream users can write their own loaders, but they lose the
+OpenBMP package-level credibility and replay metadata unless they follow
+this contract.
 
 The cookbook in
 [real-rocket-integration.md](real-rocket-integration.md) shows the full
@@ -1841,8 +1879,9 @@ logic, payload-delivery code, operational mission planning.
 OpenBMP's trait surfaces and crate boundaries are deliberately designed
 to be **extensible by downstream consumers**. The OpenBMP repository
 itself ships only academic, public, synthetic, or textbook content under
-the safety boundaries; the architecture does not preclude production use
-by downstream consumers in their own repositories.
+the safety boundaries; downstream consumers may build research,
+engineering, or independently qualified applications in their own
+repositories, with their own data and compliance posture.
 
 ### What downstream consumers may build on top of OpenBMP
 
@@ -1852,9 +1891,10 @@ by downstream consumers in their own repositories.
   `MissionStateMachine`, `Fdir`, `HeatTransferModel`, `BoundaryLayer`,
   `AblationModel`, `NonequilibriumAir`, `BridgeFunction`, `Integrator`,
   `FaultModel`.
-- Real hardware drivers integrated via the optional generic socket bridge
-  (`openbmp-bridge`), in their own repositories, with their own
-  export-control posture.
+- Lab-specific hardware adapters that translate between a downstream
+  test rig and the optional generic socket bridge (`openbmp-bridge`), in
+  their own repositories, with their own export-control and qualification
+  posture. OpenBMP does not ship those adapters.
 - Production gain sets, validated aerodynamic decks, real motor data,
   operationally-tuned sensor noise budgets, fielded-vehicle mass
   properties — all kept in downstream repositories with downstream
@@ -1887,9 +1927,9 @@ by downstream consumers in their own repositories.
 
 OpenBMP's safety boundaries (`safety-boundaries.md`) apply to the
 **OpenBMP repository** — to what code, data, and documentation live in
-this tree. They do **not** dictate what downstream consumers do in their
-own repositories. A downstream consumer integrating OpenBMP into a
-production flight stack is responsible for:
+this tree. They do **not** certify or endorse what downstream consumers
+do in their own repositories. A downstream consumer integrating OpenBMP
+into any qualified or operational stack is responsible for:
 
 - Their own provenance and licensing compliance for any vehicle data
   they bring.
@@ -1901,10 +1941,9 @@ production flight stack is responsible for:
   validation labels (`experimental`, `checked`, `validated-toy`,
   `research`) attach to OpenBMP-shipped models only.
 
-The clean separation lets OpenBMP serve as a pristine academic core
-without preventing downstream production use, and lets downstream
-integrators carry their own compliance burden without contaminating the
-academic core.
+The clean separation lets OpenBMP serve as a pristine academic core and
+lets downstream integrators carry their own compliance burden without
+contaminating the academic core.
 
 Downstream extensions that add real protocols, real hardware drivers,
 restricted data, production gain sets, or operational parameter sets are not
@@ -1919,9 +1958,10 @@ Tracked here so the next contributor can see what hasn't been decided:
 1. **Telemetry canonical format.** Parquet is recommended above; if the
    community preference is JSON-as-canonical with Parquet as export, decide
    before Phase 2.
-2. **Many-body roadmap.** If multi-vehicle scenarios become a goal, the
-   kernel should adopt a `World`-style container in Phase 1 to avoid an ECS
-   migration later.
+2. **Many-body container shape.** Phase-5 staging now requires a
+   `World`-style container for multiple `VehicleAssembly` instances. The
+   open decision is whether the Phase-1/2 single-state kernel should grow
+   a compatibility wrapper early or wait for the Phase-5 refactor.
 3. **Frame-aware arithmetic strictness.** Type-tagged frames are
    compile-time-enforced above; if this becomes too friction-heavy in
    practice, evaluate a `WithFrame<T>` runtime-tagged alternative — but not
