@@ -51,7 +51,7 @@ approx      = { version = "0.5.1",  default-features = false }
 ndarray     = { version = "0.17.2", default-features = false }
 
 # --- Determinism
-rand        = { version = "0.9.4",  default-features = false, features = ["std", "std_rng"] }
+rand        = { version = "0.10.1",  default-features = false, features = ["std", "std_rng"] }
 rand_chacha = { version = "0.9.0",  default-features = false }
 
 # --- Statistics
