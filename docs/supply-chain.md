@@ -23,18 +23,43 @@ out of the kernel.
 
 ## Required Tools
 
-Phase 1 CI should include:
+Phase 1 CI and release tooling include:
 
 | Tool | Purpose |
 |---|---|
 | `cargo deny` | Licenses, advisories, duplicate/banned crates, source policy |
-| `cargo vet` | Third-party Rust dependency audit records |
-| `cargo cyclonedx` | CycloneDX SBOM for release artifacts |
-| `cargo audit` | Optional advisory check when not covered by `cargo deny` |
+| `cargo cyclonedx` | CycloneDX SBOM bundle for release artifacts |
+| `cargo audit` | Advisory check in CI and release artifact generation |
+| `cargo machete` | Unused dependency detection |
 
 `cargo deny` should be blocking for licenses, banned crates, and sources.
 Advisories may start as warning-only in early development to avoid surprise CI
 breakage, then become blocking for releases.
+
+`cargo vet` remains the intended third-party dependency audit ledger, but it is
+not wired as a Phase-1 gate until the repository carries a
+`supply-chain/audits.toml` policy. Do not describe dependencies as vetted before
+that configuration lands.
+
+## Toolchain and Policy Pins
+
+The Phase-1 reference toolchain is pinned in `rust-toolchain.toml`: Rust
+`1.95`, `rustfmt`, `clippy`, and the `x86_64-unknown-linux-gnu` target. The
+workspace MSRV remains `1.93` and is checked by CI with a separate Rust `1.93`
+build. Byte-stable replay is guaranteed only inside the reference platform
+profile documented in [verification.md](verification.md) and
+[software-architecture.md](software-architecture.md).
+
+The repository-level `.cargo/config.toml` disables incremental compilation and
+turns off FMA code generation for the reference Linux target. That setting is
+part of the deterministic numerics contract: a future change to target CPU,
+target features, or FMA policy is a behavior change and must trigger
+golden-output review.
+
+The `deny.toml` graph uses `all-features = true` so policy checks include
+optional workspace surfaces, not only the default dependency set. Its explicit
+ban list records known yanked or deprecated dependency versions from the Phase-1
+dependency survey so a routine `cargo update` cannot reintroduce them.
 
 ## Banned Dependency Patterns
 
@@ -59,11 +84,14 @@ Every release should include:
 - Source archive.
 - Built CLI binary, if releases publish binaries.
 - `Cargo.lock`.
-- CycloneDX SBOM.
-- Dependency audit/vet summary.
-- Data provenance report.
-- Scenario and golden-test manifest.
-- Non-suitability disclaimer from [safety-boundaries.md](safety-boundaries.md).
+- CycloneDX SBOM bundle with one JSON BOM per workspace crate.
+- Dependency audit report; release-time advisory checks are blocking.
+- Build manifest naming the commit, Rust toolchain, target triple, profile, and
+  feature set.
+- Scenario and golden-test manifest with hashes for committed scenario files and
+  expected validation tables.
+- Data provenance report once `data/` ships files.
+- Non-suitability disclaimer from the top-level `DISCLAIMER.md`.
 
 Release metadata should include the build platform, Rust toolchain, target
 triple, enabled features, and simulation profile.

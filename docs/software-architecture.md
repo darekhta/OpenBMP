@@ -35,7 +35,7 @@ list and [design-concept.md](design-concept.md) for the project framing.
 | Telemetry archive | Parquet with explicit unit/frame metadata |
 | Testing | proptest, insta, cargo-fuzz, criterion, golden CSV |
 | Data provenance | Required `provenance.md` for every shipped data source |
-| Supply chain | `cargo deny`, `cargo vet`, CycloneDX SBOM for releases |
+| Supply chain | `cargo deny`, `cargo audit`, `cargo machete`, CycloneDX SBOM for releases; `cargo vet` once the audit ledger lands |
 | Hardware path | None shipped (HIL pattern is a generic socket bridge) |
 
 ## Crate Selection and Rationale
@@ -66,7 +66,7 @@ Development and release tooling:
 | Concern | Tool | Rationale |
 |---|---|---|
 | Dependency policy | **cargo-deny** | License, advisory, banned-crate, duplicate, and source checks in CI. |
-| Dependency audits | **cargo-vet** | Records third-party Rust dependency audits by trusted reviewers. |
+| Dependency audits | **cargo-vet** | Planned ledger for third-party Rust dependency audits by trusted reviewers. |
 | SBOM | **cargo-cyclonedx** | Produces CycloneDX SBOMs for release artifacts. |
 | Build provenance | **SLSA-style attestations** | Records builder, source, inputs, and artifact hashes for releases. |
 
@@ -1827,7 +1827,7 @@ Required documentation set:
 | `frames-time.md` | Frame profiles, Earth model, epoch metadata, time scales, telemetry frame metadata |
 | `scenario-format.md` | Formal grammar of the scenario DSL (Phase 1) |
 | `verification.md` | Test taxonomy, validation labels, golden process (Phase 1) |
-| `supply-chain.md` | Rust dependency policy, release SBOM, audit/vet checks, build provenance |
+| `supply-chain.md` | Rust dependency policy, release SBOM, dependency checks, build provenance |
 | `modeling-guide.md` | How to write a new model, document assumptions (Phase 5) |
 | `glossary.md` | Vocabulary (frames, time systems, validation labels) (Phase 1) |
 

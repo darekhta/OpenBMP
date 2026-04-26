@@ -590,7 +590,7 @@ OpenBMP provides:
 - Tracing + tooling
 - Cross-validation harness against in-tree analytic-toy + public-benchmark
   cases
-- The CI gates (deny / vet / determinism / golden / typos / etc.)
+- The CI gates (deny / audit / determinism / golden / typos / etc.)
 
 ## Cross-validation methodology
 

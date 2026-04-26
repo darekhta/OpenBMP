@@ -35,7 +35,7 @@ No OpenBMP artifact uses labels such as `flight-qualified`, `certified`,
 | Doc test | `rustdoc` | Public examples compile | Every PR |
 | Microbenchmark | `criterion` | Performance trend detection | Nightly |
 | Provenance check | `openbmp check-provenance` | Data source review | Every PR once data exists |
-| Supply-chain check | `cargo deny`, `cargo vet` | Dependency policy | Every PR or dependency PR |
+| Supply-chain check | `cargo deny`, `cargo audit`, `cargo machete` | Dependency policy | Every PR or dependency PR |
 
 ## Golden Telemetry
 

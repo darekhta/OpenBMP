@@ -14,12 +14,12 @@ framework.
 
 ## Status
 
-**Phase 1 — Deterministic Core** (in progress).
+**Phase 1 — Deterministic Core** is complete.
 
-The repository's documentation set is complete (Phase 0). Phase 1
-implements the deterministic kernel, telemetry, scenario format, CLI,
-and CI gates per [`docs/phase-1-plan.md`](docs/phase-1-plan.md). No
-crate ships physics fidelity yet; that arrives in Phase 2.
+The repository's documentation set is complete (Phase 0). Phase 1 landed
+the deterministic kernel, telemetry, scenario format, CLI, analytic-toy
+validation case, and CI gates. No crate ships physics fidelity yet; that
+arrives in Phase 2.
 
 ## Documentation
 
@@ -36,7 +36,6 @@ All authoritative project documentation is in [`docs/`](docs/):
 - [Supply Chain](docs/supply-chain.md)
 - [Modeling Guide](docs/modeling-guide.md)
 - [Glossary](docs/glossary.md)
-- [Phase 1 Plan](docs/phase-1-plan.md)
 
 ## Workspace Layout
 

@@ -6,7 +6,8 @@ name: Release
 # - release-mode `openbmp` CLI binary for x86_64-unknown-linux-gnu
 # - committed Cargo.lock
 # - CycloneDX SBOM via cargo-cyclonedx
-# - cargo-audit report (informational; CI gates already block on it)
+# - cargo-audit report
+# - build and scenario/golden manifests
 # - the non-suitability disclaimer (a static markdown file in this repo)
 #
 # Future Phase-1.10 follow-ons (not in scope for this workflow):
@@ -23,7 +24,6 @@ on:
 
 permissions:
   contents: write   # to attach artefacts to a Release
-  id-token: write   # reserved for future SLSA / Trusted Publishing
 
 env:
   CARGO_TERM_COLOR: always
@@ -60,15 +60,15 @@ jobs:
         run: |
           mkdir -p dist
           TAG="${{ steps.tag.outputs.tag }}"
-          cp target/release/openbmp dist/openbmp-${TAG}-x86_64-unknown-linux-gnu
+          cp target/release/openbmp "dist/openbmp-${TAG}-x86_64-unknown-linux-gnu"
           cp Cargo.lock dist/Cargo.lock
-          cp DISCLAIMER.md dist/DISCLAIMER.md 2>/dev/null || true
+          cp DISCLAIMER.md dist/DISCLAIMER.md
 
       - name: Source archive
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          git archive --format=tar.gz --prefix=openbmp-${TAG}/ \
-              -o dist/openbmp-${TAG}-source.tar.gz HEAD
+          git archive --format=tar.gz --prefix="openbmp-${TAG}/" \
+              -o "dist/openbmp-${TAG}-source.tar.gz" HEAD
 
       - name: Install cargo-cyclonedx
         uses: taiki-e/install-action@v2
@@ -78,11 +78,14 @@ jobs:
       - name: Generate CycloneDX SBOM
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          cargo cyclonedx --format json --output-pattern bom --all
-          # Aggregate per-crate boms into a single per-release artefact.
+          cargo cyclonedx --format json --all --target x86_64-unknown-linux-gnu
+
           mkdir -p dist/sbom
-          find . -maxdepth 4 -name "bom.json" -not -path "./target/*" \
+          find . -maxdepth 4 -name "*.cdx.json" \
+              -not -path "./target/*" \
+              -not -path "./dist/*" \
               -exec cp --parents {} dist/sbom/ \;
+          test -n "$(find dist/sbom -name "*.cdx.json" -print -quit)"
           tar -czf dist/openbmp-${TAG}-sbom.tar.gz -C dist/sbom .
 
       - name: Install cargo-audit
@@ -93,13 +96,34 @@ jobs:
       - name: Generate audit report
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          cargo audit --json > dist/openbmp-${TAG}-audit.json || true
+          cargo audit --json > dist/openbmp-${TAG}-audit.json
+
+      - name: Generate release manifests
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          {
+            echo "openbmp_release_manifest = 1"
+            echo "tag = \"${TAG}\""
+            echo "commit = \"$(git rev-parse HEAD)\""
+            echo "rustc = \"$(rustc --version)\""
+            echo "cargo = \"$(cargo --version)\""
+            echo "target = \"x86_64-unknown-linux-gnu\""
+            echo "profile = \"release\""
+            echo "features = \"workspace default features\""
+          } > "dist/openbmp-${TAG}-build-manifest.txt"
+
+          find scenarios crates -type f \
+              \( -path "scenarios/*" -o -path "*/tests/expected/*" \) \
+              -print0 | sort -z > target/release-manifest-files.txt
+          xargs -0 sha256sum < target/release-manifest-files.txt \
+              > "dist/openbmp-${TAG}-scenario-manifest.txt"
 
       - name: Compute artefact hashes
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           cd dist
-          sha256sum openbmp-${TAG}-* Cargo.lock > openbmp-${TAG}-sha256sums.txt
+          sha256sum openbmp-"${TAG}"-* Cargo.lock DISCLAIMER.md \
+              > openbmp-${TAG}-sha256sums.txt
 
       - name: Upload artefacts (Release)
         if: startsWith(github.ref, 'refs/tags/')
@@ -110,10 +134,12 @@ jobs:
             dist/openbmp-*-source.tar.gz
             dist/openbmp-*-sbom.tar.gz
             dist/openbmp-*-audit.json
+            dist/openbmp-*-build-manifest.txt
+            dist/openbmp-*-scenario-manifest.txt
             dist/openbmp-*-sha256sums.txt
             dist/Cargo.lock
             dist/DISCLAIMER.md
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
           generate_release_notes: true
 
       - name: Upload artefacts (workflow_dispatch)

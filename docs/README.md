@@ -31,7 +31,7 @@ rocket-class and launch-vehicle-class flight simulation.
 - [Data Provenance](data-provenance.md) — required source records, source
   classes, transformation rules, validation status, and machine checks.
 - [Supply Chain](supply-chain.md) — Rust dependency policy, release SBOM,
-  audit/vet checks, and build-provenance expectations.
+  dependency checks, and build-provenance expectations.
 - [Modeling Guide](modeling-guide.md) — stable placeholder for model author
   contracts, documentation template, validation evidence, and safety posture.
 - [Glossary](glossary.md) — shared vocabulary for frames, time, determinism,

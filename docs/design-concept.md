@@ -385,8 +385,9 @@ and any operational mission profile.
   twice + tracing-no-leak verification), and a cross-platform
   state-stable matrix.
 - Release artefacts in `.github/workflows/release.yml`: source tarball,
-  Linux `openbmp` binary, Cargo.lock, CycloneDX SBOM, audit report,
-  sha256 manifest, non-suitability disclaimer.
+  Linux `openbmp` binary, Cargo.lock, CycloneDX SBOM bundle, audit
+  report, build manifest, scenario/golden manifest, sha256 manifest,
+  non-suitability disclaimer.
 - Per-crate `README.md` files compliant with `docs/modeling-guide.md`
   (purpose / inputs / units / frames / assumptions / validity range /
   determinism / validation / data provenance / safety boundary).

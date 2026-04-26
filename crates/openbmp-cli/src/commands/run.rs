@@ -4,9 +4,9 @@
 //! `--output-csv`, `--output-json`, and `--output-parquet` flags
 //! override the scenario's declared path for that archive type. An
 //! override always takes precedence; if a kind has no scenario path
-//! and no override, that archive is not written. At least one of the
-//! three (scenario or override) must resolve, otherwise the scenario
-//! parser already rejected the configuration.
+//! and no override, that archive is not written. The scenario schema
+//! still requires at least one declared telemetry output before CLI
+//! overrides are applied.
 
 use std::fs::{File, create_dir_all};
 use std::io::BufWriter;

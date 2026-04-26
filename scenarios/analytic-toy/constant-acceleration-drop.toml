@@ -8,8 +8,8 @@
 #   vz(t) = -g t,
 #
 # which the kernel's RK4 fixed-step integrator reproduces exactly for a
-# constant force on a constant mass. This scenario is the headline
-# Phase-1 end-to-end validation case (`docs/phase-1-plan.md § 1.8`).
+# constant force on a constant mass. This scenario is the Phase-1
+# end-to-end validation case described in `docs/verification.md`.
 
 openbmp.scenario = 1
 

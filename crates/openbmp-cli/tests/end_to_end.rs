@@ -137,6 +137,45 @@ fn constant_acceleration_drop_is_byte_stable_across_two_runs() {
     );
 }
 
+#[test]
+fn output_overrides_replace_declared_paths_and_add_missing_kinds() {
+    let temp = tempdir_for("openbmp_e2e_output_overrides");
+    let override_dir = temp.path().join("override");
+
+    let staged = stage_scenario(temp.path(), "declared");
+    let declared_csv = temp.path().join("declared.csv");
+    let declared_parquet = temp.path().join("declared.parquet");
+    let override_csv = override_dir.join("drop.csv");
+    let override_json = override_dir.join("drop.json");
+    let override_parquet = override_dir.join("drop.parquet");
+
+    let overrides = run::OutputOverrides::new(
+        Some(override_csv.clone()),
+        Some(override_json.clone()),
+        Some(override_parquet.clone()),
+    );
+    let report = run::run_with_overrides(&staged, &overrides).expect("run with overrides");
+
+    assert!(override_csv.exists(), "CSV override should be written");
+    assert!(override_json.exists(), "JSON override should be written");
+    assert!(
+        override_parquet.exists(),
+        "Parquet override should be written"
+    );
+    assert!(
+        !declared_csv.exists(),
+        "declared CSV path should not be written when overridden"
+    );
+    assert!(
+        !declared_parquet.exists(),
+        "declared Parquet path should not be written when overridden"
+    );
+    assert_eq!(
+        report.written,
+        vec![override_csv, override_json, override_parquet]
+    );
+}
+
 // ---------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------
