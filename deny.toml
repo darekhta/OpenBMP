@@ -44,7 +44,12 @@ deny = [
     { crate = "cargo-deny@=0.19.3",         reason = "yanked" },
     # Deprecated upstream — use replacements
     { crate = "serde_yaml",                 reason = "deprecated; use serde_norway" },
-    { crate = "chrono",                     reason = "prefer jiff for new code" },
+    { crate = "chrono", wrappers = [
+        "arrow-arith",
+        "arrow-array",
+        "arrow-cast",
+        "parquet",
+    ], reason = "prefer jiff for new code; Arrow/Parquet require chrono transitively" },
 ]
 
 # Tokio is permitted only in openbmp-bridge. Workspace policy enforced via
