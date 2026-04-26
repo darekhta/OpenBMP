@@ -1,0 +1,35 @@
+# WGS84 gravity coefficients used by `openbmp-env::gravity`.
+#
+# Authoritative source: NIMA TR 8350.2, *Department of Defense World
+# Geodetic System 1984*, 3rd ed. (2000), tables 3.1 and 3.5. Cited
+# live at the NGA WGS84 portal (see provenance.md).
+#
+# OpenBMP loads the constants from `openbmp-core::frames` (compiled
+# in) and from `openbmp-env::gravity::WGS84_J2`. This file is the
+# project-side declarative pin: any future `cargo run --bin openbmp
+# -- check-provenance` walk verifies that the in-source values match
+# what is declared here. The tooling check is Phase-2.10 work; the
+# file is committed now so the values have one canonical home with a
+# provenance record.
+#
+# Units: SI (m, s, dimensionless).
+
+dataset_id          = "openbmp.wgs84.gravity.j2.v1"
+schema_version      = "openbmp.gravity.coefficient.v1"
+
+# Equatorial radius (semi-major axis) of the WGS84 reference
+# ellipsoid.
+semi_major_axis_m   = 6378137.0
+
+# Inverse flattening of the WGS84 reference ellipsoid.
+inverse_flattening  = 298.257223563
+
+# Earth gravitational parameter, GM, including the atmosphere.
+gravitational_parameter_m3_s2 = 3.986004418e14
+
+# Mean Earth angular rotation rate.
+angular_velocity_rad_s        = 7.2921151467e-5
+
+# Second-degree zonal harmonic (unnormalised). The normalised form
+# C̄₂₀ equals -J2 / sqrt(5).
+j2_unnormalised               = 1.082626683e-3
