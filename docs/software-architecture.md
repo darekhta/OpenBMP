@@ -118,10 +118,14 @@ openbmp/
 │   ├── openbmp-sim/                     # L1: kernel, scheduler, integrators
 │   ├── openbmp-state/                   # L1: state types (point-mass, rigid)
 │   ├── openbmp-env/                     # L2: atmosphere, gravity, wind, mag
-│   ├── openbmp-vehicle/                 # L2: rigid body, mass models
+│   ├── openbmp-vehicle/                 # L2: rigid body, mass models,
+│   │   ├── assembly/                    #     VehicleAssembly tree (Phase 3)
+│   │   ├── effector/                    #     ControlEffector trait (Phase 3)
+│   │   └── tank/                        #     TankModel + MovingMassModel (Phase 3)
 │   ├── openbmp-aero/                    # L2: aero decks + hypersonic methods
 │   ├── openbmp-aerothermal/             # L2: heat transfer, BL, thermal toy
-│   ├── openbmp-propulsion/              # L2: motors, thrust curves
+│   ├── openbmp-propulsion/              # L2: motors, EngineModel + EngineCluster
+│   │                                    #     (Phase 3)
 │   ├── openbmp-sensors/                 # L3: synthetic sensors, fault models
 │   ├── openbmp-fc/                      # L4: virtual flight controller
 │   │   ├── estimator/                   #     EKF, MEKF
@@ -146,6 +150,7 @@ openbmp/
 │   ├── verification.md                  # (Phase 1)
 │   ├── supply-chain.md                  # dependency and release policy
 │   ├── modeling-guide.md                # (Phase 5)
+│   ├── real-rocket-integration.md       # downstream-user assembly cookbook
 │   └── glossary.md                      # (Phase 1)
 ├── scenarios/
 │   ├── analytic-toy/                    # closed-form validation
@@ -358,11 +363,129 @@ The kernel does **not**:
 
 ### Scheduling
 
-The default schedule is a single fixed step `dt` for everything. Multi-rate
-scheduling is supported via per-subsystem **frame rates** that are integer
-divisors of the base step (e.g., environment 100 Hz, controller 50 Hz, telemetry
-20 Hz). Multi-rate output remains deterministic because the schedule is fixed
-at scenario start.
+The default schedule is a single fixed step `dt` for everything.
+**Multi-rate scheduling** is supported via per-subsystem rate groups
+expressed as integer divisors of the base step. The scheduler resolves
+the rate plan once at scenario start and the kernel walks the same
+fixed list every step:
+
+```rust
+// openbmp-sim::schedule
+pub struct RatePlan {
+    pub base_dt: Duration,                    // master tick (e.g., 1 ms)
+    pub groups: Vec<RateGroup>,
+}
+
+pub struct RateGroup {
+    pub label: &'static str,                  // "env" | "fc" | "telemetry" | ...
+    pub divisor: u32,                         // every N base ticks
+    pub members: Vec<SubsystemId>,
+}
+
+impl RatePlan {
+    /// Resolve into a flat per-base-tick `Vec<Vec<SubsystemId>>` so each
+    /// `step()` is a constant-time list walk. No HashMap, no dyn dispatch
+    /// at runtime, no rate-decision branching inside the hot loop.
+    pub fn flatten(&self) -> Vec<Vec<SubsystemId>>;
+}
+```
+
+Scenario syntax:
+
+```toml
+[schedule]
+base_dt_s = 0.001                             # 1 kHz master tick
+
+[[schedule.group]]
+label = "env"
+hz = 100                                      # divisor = 10
+members = ["atmosphere", "gravity", "wind"]
+
+[[schedule.group]]
+label = "fc"
+hz = 50                                       # divisor = 20
+members = ["estimator", "autopilot", "fdir", "mission_fsm"]
+
+[[schedule.group]]
+label = "effector"
+hz = 200                                      # divisor = 5
+members = ["effector_bank"]
+
+[[schedule.group]]
+label = "telemetry"
+hz = 20                                       # divisor = 50
+members = ["telemetry"]
+```
+
+Rules:
+
+- Every group's `hz` must divide `1.0 / base_dt_s` evenly. The loader
+  rejects non-integer divisors at scenario load time, not at runtime.
+- The dynamics integrator runs every base tick — it is implicitly the
+  highest rate. Anything below the integrator rate is a sub-rate.
+- Rate-group ordering inside a single base tick is fixed and documented
+  in [Step Pseudocode](#step-pseudocode); env first, then forces /
+  moments / mass, then integrator, then effectors, sensors, controller,
+  telemetry. Same order on every tick that activates the group.
+- Multi-rate output remains **bit-stable** because the schedule is
+  resolved at scenario start and the kernel walks the same list every
+  tick.
+
+### Event / Phase Timeline
+
+Events and phases are first-class scheduler inputs alongside rate
+groups. They drive things like staging, engine start / shutdown,
+parachute deploy, mission-phase transitions, and effector deflection
+schedules:
+
+```rust
+// openbmp-sim::events
+pub trait EventTrigger {
+    /// Evaluated once per base tick (or per group tick if a divisor is set).
+    fn fired(&self, state: &VehicleState, t: SimTime, step: StepIndex) -> bool;
+}
+
+pub enum BuiltInEventTrigger {
+    AtTime(SimTime),
+    AtAltitudeAscending { meters: f64 },
+    AtAltitudeDescending { meters: f64 },
+    AtApogee,
+    AtMassFraction { remaining: f64 },
+    AtDynamicPressure { pa: f64, falling: bool },
+    Scripted { label: &'static str },         // fires when scenario sets the flag
+}
+
+pub struct EventBinding {
+    pub trigger: BuiltInEventTrigger,
+    pub action: EventAction,
+    pub once: bool,                           // most events fire exactly once
+}
+
+pub enum EventAction {
+    EnterPhase(PhaseId),
+    EngineCommand { engine: EngineId, cmd: EngineCommand },
+    EffectorOverride { effector: EffectorId, schedule: EffectorSchedule },
+    Separation(SeparationEvent),
+    DeployRecovery(RecoveryDeviceId),
+    EmitTelemetryMarker { tag: &'static str },
+}
+
+pub struct MissionPhaseGraph {
+    pub phases: Vec<Phase>,
+    pub transitions: Vec<PhaseTransition>,
+}
+
+pub struct Phase {
+    pub id: PhaseId,
+    pub label: &'static str,                  // "ascent" | "coast" | "powered_descent" | ...
+    pub allowed_effectors: Vec<EffectorId>,   // optional gate
+    pub allowed_engines: Vec<EngineId>,
+}
+```
+
+The graph and the event list together replace the Phase-1 ad-hoc
+"hard-coded apogee detection in the kernel". The kernel keeps the same
+fixed step shape and just consults the resolved event list each tick.
 
 ## Numerical Integrators
 
@@ -536,6 +659,282 @@ Mass models:
 - `MultiStage` — composed of stages with separation events at scripted
   conditions; scenario-driven, not target-driven.
 
+The flat `Vehicle` trait above is the single-stick MVP shape. Anything
+larger than a textbook rocket — multi-engine boosters, multi-tank stages,
+control-effector banks — composes through `VehicleAssembly` instead. The
+flat trait remains supported as the trivial assembly degenerate case.
+
+## VehicleAssembly Tree
+
+Past a single rigid stick, vehicles are composed from typed sub-parts in a
+tree: bodies, propulsion, effectors, tanks, sensors, mass properties.
+`openbmp-vehicle::assembly` ships the trait surface; the scenario file
+declares the tree and the loader resolves it into the kernel's flat
+force / moment / mass / sensor lists at startup.
+
+```rust
+// openbmp-vehicle::assembly
+pub trait VehicleAssembly {
+    fn id(&self) -> VehicleId;
+
+    /// Rigid bodies that make up this assembly.
+    /// MVP: single body. Phase-5 multi-body: N bodies that may detach.
+    fn bodies(&self) -> &[Body];
+
+    /// Propulsion: motors, engines, engine clusters.
+    fn propulsion(&self) -> &PropulsionTree;
+
+    /// Control effectors: aero surfaces, gimbals, RCS thrusters,
+    /// body flaps, grid fins. Each is rate/saturation/latency-bounded.
+    fn effectors(&self) -> &[Box<dyn ControlEffector>];
+
+    /// Tanks (and the moving-mass content inside them — slosh, baffles).
+    fn tanks(&self) -> &[Tank];
+
+    /// Sensor instances (truth-to-measurement converters).
+    fn sensors(&self) -> &[Box<dyn SyntheticSensor>];
+
+    /// Resolve into the flat MassProperties used by the kernel.
+    fn mass_properties(&self, t: SimTime) -> MassProperties;
+
+    /// Resolve into the kernel's force / moment / mass lists once.
+    fn into_kernel_models(self) -> KernelModelBundle;
+}
+
+pub struct Body {
+    pub id: BodyId,                   // referenced by tank/effector parents
+    pub geometry: BodyGeometry,       // reference area, length, span, body axes
+    pub dry_mass_kg: f64,
+    pub dry_inertia_body: Matrix3<f64>,
+}
+
+pub struct KernelModelBundle {
+    pub force_models: Vec<Box<dyn ForceModel>>,
+    pub moment_models: Vec<Box<dyn MomentModel>>,
+    pub mass_model: Box<dyn MassModel>,
+    pub sensors: Vec<Box<dyn SyntheticSensor>>,
+}
+```
+
+The tree is **declarative**: the scenario lists parts and parents, the
+loader walks the tree once, and the kernel sees a flat model list. The
+tree exists for authoring ergonomics and for the cookbook in
+[real-rocket-integration.md](real-rocket-integration.md); the kernel hot
+path stays flat-list and synchronous as today.
+
+### Propulsion: EngineModel and EngineCluster
+
+Solid motors keep the existing `Motor: ForceModel + MassModel` shape from
+the [Propulsion](#propulsion) section. Liquid engines and multi-engine
+vehicles use the new `EngineModel` + `EngineCluster` traits:
+
+```rust
+// openbmp-propulsion::engine
+pub trait EngineModel {
+    fn id(&self) -> EngineId;
+
+    /// Per-engine commanded throttle and gimbal axis angles.
+    fn apply_command(&mut self, cmd: EngineCommand);
+
+    /// Body-frame thrust force at the engine's mount point.
+    fn thrust_body(&self, ctx: &EngineCtx) -> Vector3<Force>;
+
+    /// Mass flow out of this engine right now (kg/s, ≥ 0).
+    fn mass_flow_kg_per_s(&self, ctx: &EngineCtx) -> f64;
+
+    /// Engine lifecycle: ignition allowed, shut down, hard-fail.
+    fn state(&self) -> EngineState;
+
+    fn validation(&self) -> ValidationStatus;
+}
+
+pub struct EngineCommand {
+    pub throttle_unit: f64,           // 0.0..=1.0
+    pub gimbal_pitch_rad: f64,
+    pub gimbal_yaw_rad: f64,
+    pub ignite: bool,
+    pub shutdown: bool,
+}
+
+pub enum EngineState { Idle, Igniting, Burning, Shutdown, Failed }
+
+/// N engines on a stage. The cluster owns mount geometry, summed thrust /
+/// moment about the body origin, summed mass-flow, and per-engine fault
+/// state. A Falcon-class 9-engine layout is one cluster, not nine
+/// hand-summed force models.
+pub struct EngineCluster {
+    pub engines: Vec<Box<dyn EngineModel>>,
+    pub mount_points_body: Vec<Position3<Body>>,
+    pub layout: ClusterLayout,        // axial, ring, octaweb, etc.
+}
+
+impl ForceModel  for EngineCluster { /* sums per-engine thrust, body→ECI */ }
+impl MomentModel for EngineCluster { /* sums per-engine moment about origin */ }
+impl MassModel   for EngineCluster { /* d/dt(mass) = -Σ mdot_i */ }
+```
+
+`EngineCluster` is a force *and* moment *and* mass model — its body-frame
+thrust at non-axial mount points contributes a moment about the body
+origin without any extra wiring. Per-engine ignition and gimbal axes are
+addressed by index in the controller's command bundle, so a 9-engine
+shutdown after engine-out is a per-engine `shutdown = true`, not a
+cluster-level rebuild.
+
+### Control Effectors
+
+Control effectors are **how the controller talks to the physics**: aero
+surfaces, gimbals, body flaps, grid fins, RCS thrusters, parachutes,
+drogues. They are kept distinct from aero decks and engines so that rate
+limits, saturation, latency, deadband, and fault modes live in one
+place.
+
+```rust
+// openbmp-vehicle::effector
+pub trait ControlEffector {
+    fn id(&self) -> EffectorId;
+
+    /// Per-step: take the controller's commanded position, apply rate
+    /// limit / saturation / latency / deadband / fault model, advance
+    /// internal effector state, and report the *actual* deflection /
+    /// gimbal angle / valve position the physics sees.
+    fn step(&mut self, cmd: f64, dt: Duration) -> EffectorState;
+
+    /// Authority envelope for sanity checks (controller can ask).
+    fn limits(&self) -> EffectorLimits;
+
+    /// Inject a scenario-defined fault mode at runtime.
+    fn inject_fault(&mut self, fault: EffectorFault);
+}
+
+pub struct EffectorLimits {
+    pub min: f64,
+    pub max: f64,
+    pub max_rate_per_s: f64,
+    pub deadband: f64,
+    pub latency: Duration,
+}
+
+pub struct EffectorState {
+    pub commanded: f64,               // what controller asked for
+    pub actual: f64,                  // what physics gets
+    pub saturated: bool,
+    pub rate_limited: bool,
+    pub fault: Option<EffectorFault>,
+}
+
+pub enum EffectorFault {
+    Jam { at: f64 },                  // stuck at this value
+    Runaway { rate_per_s: f64 },      // commanded ignored, drives at this rate
+    ReducedRate { factor: f64 },      // 0..1
+    Hardover { to: f64 },             // jumps to extreme then jams
+}
+```
+
+Effectors feed the aerodynamics through the deck's effector axes (see
+[Deck Format extensions](#deck-format-extensions-control-effector-axes))
+and feed the propulsion through `EngineCommand.gimbal_pitch_rad /
+gimbal_yaw_rad`. The controller does not see effector state directly; it
+sees telemetry channels `effector.<id>.commanded`,
+`effector.<id>.actual`, `effector.<id>.saturated`, etc.
+
+### Tanks and Slosh as Moving-Mass Dynamics
+
+Liquid propellant inside a tank is a moving mass: as the body
+accelerates and rotates, the liquid sloshes, the CG shifts, and a
+coupled-pendulum or equivalent moving-mass term loads the rigid body.
+OpenBMP treats this as **generic moving-mass dynamics** rather than a
+liquid-specific model, so the same machinery covers slosh, deployable
+masses, and shifting payloads.
+
+```rust
+// openbmp-vehicle::tank
+pub struct Tank {
+    pub id: TankId,
+    pub geometry: TankGeometry,       // cylinder / sphere / textbook ellipsoid
+    pub mounted_to: BodyId,
+    pub mount_point_body: Position3<Body>,
+    pub propellant: PropellantSpec,   // toy / textbook only — no fielded data
+    pub initial_fill_fraction: f64,
+    pub baffle_model: Option<BaffleModel>,
+    pub moving_mass: Box<dyn MovingMassModel>,
+}
+
+pub trait MovingMassModel {
+    /// Update the moving-mass internal state (slosh angle/rate, etc.)
+    /// given the current rigid-body acceleration and angular rate.
+    fn step(&mut self, accel_body: Vector3<f64>, omega_body: Vector3<f64>, dt: Duration);
+
+    /// Effective contribution to mass / CG / inertia at this moment.
+    fn mass_contribution(&self) -> MassContribution;
+
+    /// Reaction force / moment back on the parent body in body-frame.
+    fn reaction_body(&self) -> ForceMomentBody;
+
+    /// Drain rate (kg/s) commanded by the parent EngineCluster.
+    fn drain(&mut self, kg_per_s: f64);
+}
+
+pub struct MassContribution {
+    pub mass_kg: f64,
+    pub cg_offset_body_m: Vector3<f64>,    // relative to tank mount point
+    pub inertia_delta_body: Matrix3<f64>,  // additive to dry inertia
+}
+```
+
+Available `MovingMassModel` implementations:
+
+- `RigidLiquid` — toy, no slosh; the simplest baseline.
+- `EquivalentPendulum` — Abramson-style equivalent pendulum; one or
+  more pendulum modes per axis with textbook frequency / damping.
+- `EquivalentSpringMass` — alternative equivalent representation for
+  high-fill-fraction studies.
+- `BaffledPendulum` — equivalent pendulum with `BaffleModel`-supplied
+  damping increment.
+
+All four use **textbook propellant ranges and textbook tank geometries
+only**. Real fielded propellant data and real fielded tank geometry are
+rejected (see [safety-boundaries.md](safety-boundaries.md)).
+
+### Multi-Body Separation Events
+
+Phase-5 multi-body promotes separation to first class: after a separation
+event, two or more `VehicleAssembly` instances fly simultaneously, each
+with its own state vector, its own `ForceModel` / `MomentModel` /
+`MassModel` lists, and its own controller (or no controller, for spent
+stages). The kernel's environment sample is shared.
+
+```rust
+pub struct SeparationEvent {
+    pub at: SeparationTrigger,        // time, altitude, mass-fraction, scripted
+    pub split: SeparationSplit,
+    pub momentum_exchange: Option<SeparationImpulse>,
+}
+
+pub enum SeparationTrigger {
+    AtTime(SimTime),
+    AtAltitude { meters: f64, ascending: bool },
+    AtMassFraction { remaining: f64 },
+    Scripted { label: &'static str },
+}
+
+pub struct SeparationSplit {
+    pub upper: VehicleAssembly,       // continues with the controller
+    pub lower: VehicleAssembly,       // becomes ballistic / spent stage
+}
+
+pub struct SeparationImpulse {
+    pub upper_delta_v_body_m_s: Vector3<f64>,
+    pub lower_delta_v_body_m_s: Vector3<f64>,
+    /// Conservation check: m_u·Δv_u + m_l·Δv_l ≈ 0 (within tolerance).
+    pub conserve_momentum: bool,
+}
+```
+
+The Phase-3 scripted-staging hack remains supported for the single-body
+"spent stage falls behind, ignored" case. The Phase-5 multi-body path
+kicks in when the scenario declares more than one post-separation
+assembly should be propagated.
+
 ## Aerodynamics
 
 `openbmp-aero` handles aerodynamic force and moment computation. The crate
@@ -599,6 +998,60 @@ Simulation Software*, Helsinki University of Technology, is the canonical
 academic reference for the Barrowman extended component build-up applied
 to model-rocket aerodynamics). OpenBMP itself does not ship a Barrowman
 pre-processor; the deck is the boundary.
+
+### Deck Format Extensions: Control-Effector Axes
+
+The basic deck above is `(Mach, alpha, beta) → coefficients`. When the
+dataset was built with control-effector deflections varied, the deck
+adds extra axes:
+
+```toml
+openbmp.aero_deck = 1
+openbmp.aero_deck.schema = 2          # axes-with-effectors schema
+
+reference.length_m = 1.250
+reference.area_m2  = 1.227
+provenance = "synthetic ARV-Reference winged-second-stage example"
+validation = "experimental"
+
+[grid]
+mach        = [0.3, 0.6, 0.9, 1.2, 1.6, 2.0, 3.0, 5.0]
+alpha_deg   = [-5, 0, 5, 10, 15, 20]
+beta_deg    = [-4, 0, 4]
+delta_e_deg = [-20, -10, 0, 10, 20]   # body-flap pitch deflection
+delta_a_deg = [-15, 0, 15]            # body-flap roll deflection
+delta_r_deg = [0]                     # not used on this airframe
+
+[axis_order]
+# locked reduction order — part of determinism contract
+order = ["mach", "alpha", "beta", "delta_e", "delta_a", "delta_r"]
+
+[coefficients.cn]
+data = [ /* row-major 6D table */ ]
+
+[coefficients.cm]
+data = [ /* row-major 6D table */ ]
+
+[interpolation]
+method = "multilinear"
+extrapolation = "error"               # fail-closed; control surfaces saturate
+                                      # via the ControlEffector layer instead
+```
+
+The deck reports **influence coefficients** as a function of effector
+position; the `ControlEffector` layer reports **what the effector is
+actually doing** (rate-limited, saturated, possibly faulted). The
+multiplication of the two gives the live aerodynamics. Decks built
+without effector axes degrade to the schema-1 `(Mach, alpha, beta)` form
+and the loader treats effector deflections as untracked.
+
+Effector axes follow the `(positive deflection)` sign convention
+declared in the deck's `[frames]` block (see
+[data-provenance.md § Real-Data Package Credibility Format](data-provenance.md#real-data-package-credibility-format)
+for the full sidecar schema). Axis names are not prescribed beyond the
+common `delta_e / delta_a / delta_r` and `body_flap_left /
+body_flap_right / grid_fin_<n>`; the deck declares names and units, the
+`ControlEffector` set declares names and limits, the loader matches.
 
 ### Aero Force / Moment Computation
 
@@ -1095,6 +1548,37 @@ require_monotonic_time = true
 A separate `scenario-format.md` document maintains the formal grammar; the
 parser includes a fuzz target to ensure malformed scenarios produce
 diagnostics, not panics.
+
+## Real-Data Package Format
+
+External datasets (aero decks, engine performance tables, mass / inertia
+builds, sensor-noise budgets, controller gain schedules) ship as
+**real-data packages**: the dataset file alongside a strict
+credibility-metadata sidecar. The kernel-side loader:
+
+- Reads the sidecar first, validates schema, and refuses unknown fields.
+- Recomputes each shipped file's `sha256` and refuses on mismatch.
+- Parses the dataset and binds it to the declared units, frames, and
+  reference geometry — no implicit conversions, no axis re-ordering, no
+  silent unit promotion.
+- Records the package id / version / hash / credibility levels into the
+  scenario telemetry header so a downstream consumer can reproduce the
+  run from the archive alone.
+- Hard-rejects scenario queries outside the package's `envelope`. The
+  `extrapolation` policy (`error` default, `clamp` and `linear`
+  opt-in) is consulted only inside the envelope.
+
+The complete sidecar schema, field semantics, loader behaviour, and the
+list of rejected packages live in
+[data-provenance.md § Real-Data Package Credibility Format](data-provenance.md#real-data-package-credibility-format).
+The architecture-level commitment here is just that this is the
+**only** path for external data: ad-hoc CSV / JSON / TOML loaded
+directly into a model is rejected at code review.
+
+The cookbook in
+[real-rocket-integration.md](real-rocket-integration.md) shows the full
+end-to-end pattern using the fictional ARV-Reference vehicle: scenario
+file, package layout, sidecar, loader behaviour, telemetry header.
 
 ## SIL Test Harness
 
