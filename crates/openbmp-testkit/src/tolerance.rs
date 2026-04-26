@@ -5,12 +5,17 @@
 //! with the canonical reference values and tolerances. This module
 //! parses that file and provides per-metric checks.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use openbmp_core::ValidationStatus;
 use serde::Deserialize;
 
 use crate::error::TestkitError;
+
+/// Floor used when computing relative error for an expected value near
+/// zero.
+pub const RELATIVE_DENOMINATOR_FLOOR: f64 = f64::MIN_POSITIVE;
 
 /// Top-level tolerance-table document.
 #[derive(Clone, Debug, Deserialize)]
@@ -35,7 +40,7 @@ pub struct MetricTolerance {
     pub expected: f64,
     /// Maximum allowed `|expected - actual|`.
     pub absolute_tolerance: f64,
-    /// Maximum allowed `|expected - actual| / max(|expected|, ε)`.
+    /// Maximum allowed `|expected - actual| / max(|expected|, eps)`.
     pub relative_tolerance: f64,
 }
 
@@ -46,7 +51,9 @@ impl ToleranceTable {
     ///
     /// Returns [`TestkitError::ParseToml`] on parser failure.
     pub fn from_toml_str(s: &str) -> Result<Self, TestkitError> {
-        toml::from_str(s).map_err(|source| TestkitError::ParseToml { source })
+        let table: Self = toml::from_str(s).map_err(|source| TestkitError::ParseToml { source })?;
+        table.require_valid()?;
+        Ok(table)
     }
 
     /// Read and parse a tolerance table from `path`.
@@ -71,34 +78,114 @@ impl ToleranceTable {
         self.metrics.iter().find(|m| m.name == name)
     }
 
+    /// Validate table-level and metric-level invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TestkitError`] if there are no metrics, a metric
+    /// name is empty or duplicated, an expected value is not finite, or
+    /// either tolerance is negative or not finite.
+    pub fn require_valid(&self) -> Result<(), TestkitError> {
+        if self.metrics.is_empty() {
+            return Err(TestkitError::EmptyToleranceTable);
+        }
+        let mut names = BTreeSet::new();
+        for metric in &self.metrics {
+            if metric.name.trim().is_empty() {
+                return Err(TestkitError::EmptyMetricName);
+            }
+            if !names.insert(metric.name.as_str()) {
+                return Err(TestkitError::DuplicateMetric {
+                    name: metric.name.clone(),
+                });
+            }
+            metric.require_valid()?;
+        }
+        Ok(())
+    }
+
     /// Check that an actual value is within tolerance for the named
     /// metric.
     ///
     /// # Errors
     ///
     /// Returns [`TestkitError::UnknownMetric`] if the metric name is
-    /// not declared, or [`TestkitError::MetricOutOfTolerance`] if the
-    /// actual value exceeds the absolute *and* relative envelopes.
+    /// not declared, [`TestkitError::MetricActualNotFinite`] if the
+    /// actual value is not finite, or
+    /// [`TestkitError::MetricOutOfTolerance`] if the actual value
+    /// exceeds the absolute *and* relative envelopes.
     pub fn check_metric(&self, name: &str, actual: f64) -> Result<(), TestkitError> {
         let metric = self
             .metric(name)
             .ok_or_else(|| TestkitError::UnknownMetric {
                 name: name.to_string(),
             })?;
-        let abs_diff = (metric.expected - actual).abs();
-        let rel_denominator = metric.expected.abs().max(f64::MIN_POSITIVE);
-        let within_abs = abs_diff <= metric.absolute_tolerance;
-        let within_rel = (abs_diff / rel_denominator) <= metric.relative_tolerance;
+        metric.check(actual)
+    }
+}
+
+impl MetricTolerance {
+    /// Validate metric invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TestkitError`] if the expected value is not finite or
+    /// a tolerance is negative or not finite.
+    pub fn require_valid(&self) -> Result<(), TestkitError> {
+        if !self.expected.is_finite() {
+            return Err(TestkitError::InvalidMetricValue {
+                name: self.name.clone(),
+                field: "expected",
+                value: self.expected,
+            });
+        }
+        if !self.absolute_tolerance.is_finite() || self.absolute_tolerance < 0.0 {
+            return Err(TestkitError::InvalidMetricValue {
+                name: self.name.clone(),
+                field: "absolute_tolerance",
+                value: self.absolute_tolerance,
+            });
+        }
+        if !self.relative_tolerance.is_finite() || self.relative_tolerance < 0.0 {
+            return Err(TestkitError::InvalidMetricValue {
+                name: self.name.clone(),
+                field: "relative_tolerance",
+                value: self.relative_tolerance,
+            });
+        }
+        Ok(())
+    }
+
+    /// Check an actual value against this metric's tolerance envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestkitError::MetricActualNotFinite`] if `actual` is
+    /// not finite, or [`TestkitError::MetricOutOfTolerance`] if it
+    /// exceeds the absolute and relative envelopes.
+    pub fn check(&self, actual: f64) -> Result<(), TestkitError> {
+        if !actual.is_finite() {
+            return Err(TestkitError::MetricActualNotFinite {
+                name: self.name.clone(),
+                actual,
+            });
+        }
+        let abs_diff = (self.expected - actual).abs();
+        let rel_denominator = self.expected.abs().max(RELATIVE_DENOMINATOR_FLOOR);
+        let rel_diff = abs_diff / rel_denominator;
+        let within_abs = abs_diff <= self.absolute_tolerance;
+        let within_rel = rel_diff <= self.relative_tolerance;
         if within_abs || within_rel {
             Ok(())
         } else {
             Err(TestkitError::MetricOutOfTolerance {
-                name: name.to_string(),
-                expected: metric.expected,
+                name: self.name.clone(),
+                expected: self.expected,
                 actual,
                 abs_diff,
-                absolute_tolerance: metric.absolute_tolerance,
-                relative_tolerance: metric.relative_tolerance,
+                rel_diff,
+                absolute_tolerance: self.absolute_tolerance,
+                relative_tolerance: self.relative_tolerance,
             })
         }
     }
@@ -155,6 +242,55 @@ mod tests {
         let table = ToleranceTable::from_toml_str(SAMPLE).unwrap();
         let err = table.check_metric("nonexistent_metric", 0.0).unwrap_err();
         assert!(matches!(err, TestkitError::UnknownMetric { .. }));
+    }
+
+    #[test]
+    fn duplicate_metric_is_rejected_at_parse_time() {
+        let duplicate = r#"
+            case = "case"
+            source = "source"
+            validation = "experimental"
+
+            [[metric]]
+            name = "x"
+            expected = 1.0
+            absolute_tolerance = 0.1
+            relative_tolerance = 0.1
+
+            [[metric]]
+            name = "x"
+            expected = 1.0
+            absolute_tolerance = 0.1
+            relative_tolerance = 0.1
+        "#;
+        let err = ToleranceTable::from_toml_str(duplicate).unwrap_err();
+        assert!(matches!(err, TestkitError::DuplicateMetric { .. }));
+    }
+
+    #[test]
+    fn invalid_tolerance_is_rejected_at_parse_time() {
+        let invalid = r#"
+            case = "case"
+            source = "source"
+            validation = "experimental"
+
+            [[metric]]
+            name = "x"
+            expected = 1.0
+            absolute_tolerance = -0.1
+            relative_tolerance = 0.1
+        "#;
+        let err = ToleranceTable::from_toml_str(invalid).unwrap_err();
+        assert!(matches!(err, TestkitError::InvalidMetricValue { .. }));
+    }
+
+    #[test]
+    fn check_metric_rejects_nan_actual() {
+        let table = ToleranceTable::from_toml_str(SAMPLE).unwrap();
+        let err = table
+            .check_metric("peak_deceleration_g", f64::NAN)
+            .unwrap_err();
+        assert!(matches!(err, TestkitError::MetricActualNotFinite { .. }));
     }
 
     #[test]

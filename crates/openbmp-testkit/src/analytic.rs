@@ -7,6 +7,47 @@
 //!
 //! No state, no IO, no RNG — pure functions only.
 
+use nalgebra::Vector2;
+use thiserror::Error;
+
+/// Convergence tolerance used by the Kepler solver.
+pub const KEPLER_TOLERANCE: f64 = 1.0e-12;
+
+/// Errors produced by checked Keplerian helper methods.
+#[derive(Copy, Clone, Debug, Error, PartialEq)]
+pub enum KeplerError {
+    /// Orbital elements or query time were outside the supported
+    /// elliptical two-body domain.
+    #[error(
+        "invalid Keplerian elements: a={semi_major_axis_m}, e={eccentricity}, \
+         mu={mu_m3_s2}, t={time_s}"
+    )]
+    InvalidElements {
+        /// Semi-major axis in metres.
+        semi_major_axis_m: f64,
+        /// Eccentricity.
+        eccentricity: f64,
+        /// Standard gravitational parameter in m^3/s^2.
+        mu_m3_s2: f64,
+        /// Query time in seconds.
+        time_s: f64,
+    },
+    /// The caller supplied zero Newton iterations.
+    #[error("Kepler solver requires at least one iteration")]
+    NonPositiveMaxIterations,
+    /// Newton's method did not meet [`KEPLER_TOLERANCE`].
+    #[error(
+        "Kepler solver did not converge in {max_iter} iterations; \
+         residual={residual}"
+    )]
+    DidNotConverge {
+        /// Maximum iterations attempted.
+        max_iter: u32,
+        /// Final residual in Kepler's equation.
+        residual: f64,
+    },
+}
+
 /// 1-D constant-acceleration drop.
 ///
 /// Position: `x(t) = x0 + v0·t + ½·a·t²`
@@ -88,39 +129,146 @@ pub struct TwoBodyKeplerian {
 }
 
 impl TwoBodyKeplerian {
+    /// Validate that the elements represent a finite elliptical orbit
+    /// at finite query time `t`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeplerError::InvalidElements`] for non-finite values,
+    /// non-positive `a` or `mu`, or eccentricity outside `[0, 1)`.
+    pub fn require_valid_at(&self, t: f64) -> Result<(), KeplerError> {
+        if self.semi_major_axis_m.is_finite()
+            && self.semi_major_axis_m > 0.0
+            && self.eccentricity.is_finite()
+            && (0.0..1.0).contains(&self.eccentricity)
+            && self.mu_m3_s2.is_finite()
+            && self.mu_m3_s2 > 0.0
+            && self.mean_anomaly_at_epoch_rad.is_finite()
+            && t.is_finite()
+        {
+            Ok(())
+        } else {
+            Err(KeplerError::InvalidElements {
+                semi_major_axis_m: self.semi_major_axis_m,
+                eccentricity: self.eccentricity,
+                mu_m3_s2: self.mu_m3_s2,
+                time_s: t,
+            })
+        }
+    }
+
+    /// Mean motion `n = sqrt(mu / a^3)` in rad/s.
+    #[must_use]
+    pub fn mean_motion_rad_s(&self) -> f64 {
+        (self.mu_m3_s2 / self.semi_major_axis_m.powi(3)).sqrt()
+    }
+
     /// Mean anomaly at time `t` (seconds from epoch).
     #[must_use]
     pub fn mean_anomaly_at(&self, t: f64) -> f64 {
-        let n = (self.mu_m3_s2 / self.semi_major_axis_m.powi(3)).sqrt();
-        self.mean_anomaly_at_epoch_rad + n * t
+        self.mean_anomaly_at_epoch_rad + self.mean_motion_rad_s() * t
     }
 
     /// Eccentric anomaly via Newton's method on Kepler's equation
     /// `M = E - e·sin(E)`.
     ///
-    /// Converges in `max_iter` iterations to a tolerance of
-    /// `1.0e-12` for `e < 1`.
+    /// This convenience method returns `NaN` when checked solving
+    /// fails. Use [`TwoBodyKeplerian::eccentric_anomaly_at_checked`]
+    /// when tests need diagnostics.
     #[must_use]
     pub fn eccentric_anomaly_at(&self, t: f64, max_iter: u32) -> f64 {
-        let m = self.mean_anomaly_at(t);
-        let mut e = m;
+        self.eccentric_anomaly_at_checked(t, max_iter)
+            .unwrap_or(f64::NAN)
+    }
+
+    /// Checked eccentric anomaly solver via Newton's method on
+    /// Kepler's equation `M = E - e*sin(E)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeplerError`] when the elements are invalid,
+    /// `max_iter == 0`, or the solver does not reach
+    /// [`KEPLER_TOLERANCE`].
+    pub fn eccentric_anomaly_at_checked(&self, t: f64, max_iter: u32) -> Result<f64, KeplerError> {
+        self.require_valid_at(t)?;
+        if max_iter == 0 {
+            return Err(KeplerError::NonPositiveMaxIterations);
+        }
+
+        let mean_anomaly = self
+            .mean_anomaly_at(t)
+            .rem_euclid(2.0 * std::f64::consts::PI);
+        let mut eccentric_anomaly = if self.eccentricity < 0.8 {
+            mean_anomaly
+        } else {
+            std::f64::consts::PI
+        };
         for _ in 0..max_iter {
-            let f = e - self.eccentricity * e.sin() - m;
-            let fp = 1.0 - self.eccentricity * e.cos();
+            let f = eccentric_anomaly - self.eccentricity * eccentric_anomaly.sin() - mean_anomaly;
+            let fp = 1.0 - self.eccentricity * eccentric_anomaly.cos();
             let delta = f / fp;
-            e -= delta;
-            if delta.abs() < 1.0e-12 {
-                break;
+            eccentric_anomaly -= delta;
+            if delta.abs() < KEPLER_TOLERANCE {
+                return Ok(eccentric_anomaly);
             }
         }
-        e
+        let residual =
+            eccentric_anomaly - self.eccentricity * eccentric_anomaly.sin() - mean_anomaly;
+        Err(KeplerError::DidNotConverge { max_iter, residual })
     }
 
     /// In-plane radius at time `t`.
     #[must_use]
     pub fn radius_at(&self, t: f64) -> f64 {
-        let e_anom = self.eccentric_anomaly_at(t, 64);
-        self.semi_major_axis_m * (1.0 - self.eccentricity * e_anom.cos())
+        self.radius_at_checked(t).unwrap_or(f64::NAN)
+    }
+
+    /// Checked in-plane radius at time `t`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeplerError`] when the elements are invalid or the
+    /// eccentric-anomaly solver does not converge.
+    pub fn radius_at_checked(&self, t: f64) -> Result<f64, KeplerError> {
+        let eccentric_anomaly = self.eccentric_anomaly_at_checked(t, 64)?;
+        Ok(self.semi_major_axis_m * (1.0 - self.eccentricity * eccentric_anomaly.cos()))
+    }
+
+    /// Checked position in the orbital plane at time `t`.
+    ///
+    /// The returned vector is `(x, y)` in the perifocal plane. Phase
+    /// 1.6 intentionally does not rotate this into ECI because the
+    /// inclination/RAAN/argument-of-periapsis surface is not part of
+    /// the Phase-1.6 fixture contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeplerError`] when the elements are invalid or the
+    /// eccentric-anomaly solver does not converge.
+    pub fn position_in_orbital_plane_at(&self, t: f64) -> Result<Vector2<f64>, KeplerError> {
+        let eccentric_anomaly = self.eccentric_anomaly_at_checked(t, 64)?;
+        let one_minus_e2 = 1.0 - self.eccentricity * self.eccentricity;
+        Ok(Vector2::new(
+            self.semi_major_axis_m * (eccentric_anomaly.cos() - self.eccentricity),
+            self.semi_major_axis_m * one_minus_e2.sqrt() * eccentric_anomaly.sin(),
+        ))
+    }
+
+    /// Checked velocity in the orbital plane at time `t`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeplerError`] when the elements are invalid or the
+    /// eccentric-anomaly solver does not converge.
+    pub fn velocity_in_orbital_plane_at(&self, t: f64) -> Result<Vector2<f64>, KeplerError> {
+        let eccentric_anomaly = self.eccentric_anomaly_at_checked(t, 64)?;
+        let denominator = 1.0 - self.eccentricity * eccentric_anomaly.cos();
+        let scale = self.mean_motion_rad_s() * self.semi_major_axis_m / denominator;
+        let one_minus_e2 = 1.0 - self.eccentricity * self.eccentricity;
+        Ok(Vector2::new(
+            -scale * eccentric_anomaly.sin(),
+            scale * one_minus_e2.sqrt() * eccentric_anomaly.cos(),
+        ))
     }
 }
 
@@ -205,5 +353,43 @@ mod tests {
         let r0 = orbit.radius_at(0.0);
         // At periapsis: r = a(1-e).
         assert_abs_diff_eq!(r0, 7.0e6 * 0.9, epsilon = 1.0);
+    }
+
+    #[test]
+    fn keplerian_checked_solver_rejects_invalid_elements() {
+        let orbit = TwoBodyKeplerian {
+            semi_major_axis_m: -7.0e6,
+            eccentricity: 0.1,
+            mu_m3_s2: 3.986e14,
+            mean_anomaly_at_epoch_rad: 0.0,
+        };
+        let err = orbit.eccentric_anomaly_at_checked(0.0, 64).unwrap_err();
+        assert!(matches!(err, KeplerError::InvalidElements { .. }));
+    }
+
+    #[test]
+    fn keplerian_checked_solver_reports_non_convergence() {
+        let orbit = TwoBodyKeplerian {
+            semi_major_axis_m: 7.0e6,
+            eccentricity: 0.9,
+            mu_m3_s2: 3.986e14,
+            mean_anomaly_at_epoch_rad: 1.0,
+        };
+        let err = orbit.eccentric_anomaly_at_checked(100.0, 1).unwrap_err();
+        assert!(matches!(err, KeplerError::DidNotConverge { .. }));
+    }
+
+    #[test]
+    fn keplerian_orbital_plane_position_velocity_are_finite() {
+        let orbit = TwoBodyKeplerian {
+            semi_major_axis_m: 7.0e6,
+            eccentricity: 0.1,
+            mu_m3_s2: 3.986e14,
+            mean_anomaly_at_epoch_rad: 0.2,
+        };
+        let position = orbit.position_in_orbital_plane_at(10.0).unwrap();
+        let velocity = orbit.velocity_in_orbital_plane_at(10.0).unwrap();
+        assert!(position.iter().all(|component| component.is_finite()));
+        assert!(velocity.iter().all(|component| component.is_finite()));
     }
 }

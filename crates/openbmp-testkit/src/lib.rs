@@ -4,14 +4,14 @@
 //! OpenBMP crate. It provides:
 //!
 //! - [`strategies`] — `proptest::Strategy` constructors for the
-//!   foundation and state types.
+//!   foundation vector, time, ID, and state types.
 //! - [`analytic`] — closed-form solutions used by analytic-toy
-//!   validation cases (constant-acceleration drop, torque-free Euler
-//!   rigid-body, two-body Keplerian, harmonic oscillator).
+//!   validation cases (constant-acceleration drop, harmonic
+//!   oscillator, two-body Keplerian).
 //! - [`tolerance`] — `expected.toml` parser per
 //!   `docs/verification.md § Tolerance Tables`.
-//! - [`determinism`] — byte-stable diff utility for the determinism
-//!   oracle.
+//! - [`determinism`] — byte-stable diff and replay utilities for the
+//!   determinism oracle.
 //! - [`filters`] — placeholder for the Phase-4 `compare_filters`
 //!   harness.
 //!

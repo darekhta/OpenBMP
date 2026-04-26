@@ -3,20 +3,21 @@
 L6 test helpers crate. Used as a `dev-dependency` by every other
 crate.
 
-**Status:** Phase 1.6 — stub.
+**Status:** Phase 1.6 — implemented shared test helpers.
 
 ## Purpose
 
 - `proptest::Strategy` constructors for `SimTime`, `Duration`,
-  `StepIndex`, `Position3`, `Velocity3`, `Quaternion`,
-  `MassProperties`, `PointMassState`, `RigidBodyState`.
-- Analytic-toy scenario generators: constant-acceleration drop,
-  torque-free Euler rigid-body, two-body Keplerian, harmonic
-  oscillator.
+  `StepIndex`, IDs, frame-tagged vectors, `Quaternion`,
+  `MassProperties`, `PointMassState`, and `RigidBodyState`.
+- Analytic-toy references: constant-acceleration drop, harmonic
+  oscillator, and checked two-body Keplerian helpers. Torque-free Euler
+  remains deferred until the Phase 1.3 integrator interface exists.
 - Tolerance-table parser for `expected.toml` files per
   `docs/verification.md` § Tolerance Tables.
 - `compare_filters` helper (NorthStarUAS pattern).
-- Determinism oracle: run scenario twice, byte-compare outputs.
+- Determinism oracle: byte diff plus a closure-based replay scaffold
+  that runs a fixture twice and compares outputs.
 
 ## Inputs and Outputs
 
@@ -46,7 +47,8 @@ seeded RNG.
 
 ## Validation
 
-`experimental` (stub). Each helper ships self-tests when implemented.
+`checked` for the Phase 1.6 helper surface. Each helper ships
+self-tests.
 
 ## Data Provenance
 

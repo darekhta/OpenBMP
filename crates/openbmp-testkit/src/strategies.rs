@@ -7,8 +7,8 @@
 
 use nalgebra::{UnitQuaternion, Vector3};
 use openbmp_core::{
-    AngularVelocity3, Body, ChannelId, Duration, Eci, Frame, ModelId, Position3, Quaternion,
-    ScenarioId, SimTime, StepIndex, Velocity3,
+    Acceleration3, AngularVelocity3, Body, ChannelId, Displacement3, Duration, Eci, Frame, ModelId,
+    Position3, Quaternion, ScenarioId, SimTime, StepIndex, Velocity3, VelocityDelta3,
 };
 use openbmp_state::{MassProperties, PointMassState, RigidBodyState};
 use proptest::prelude::*;
@@ -90,6 +90,15 @@ pub fn position3<F: Frame + std::fmt::Debug>(
     vector3(min, max).prop_map(Position3::from_vector)
 }
 
+/// Strategy for a finite [`Displacement3<F>`] with each component in
+/// `[min, max]`.
+pub fn displacement3<F: Frame + std::fmt::Debug>(
+    min: f64,
+    max: f64,
+) -> impl Strategy<Value = Displacement3<F>> {
+    vector3(min, max).prop_map(Displacement3::from_vector)
+}
+
 /// Strategy for a finite [`Velocity3<F>`] with each component in
 /// `[min, max]`.
 pub fn velocity3<F: Frame + std::fmt::Debug>(
@@ -97,6 +106,24 @@ pub fn velocity3<F: Frame + std::fmt::Debug>(
     max: f64,
 ) -> impl Strategy<Value = Velocity3<F>> {
     vector3(min, max).prop_map(Velocity3::from_vector)
+}
+
+/// Strategy for a finite [`Acceleration3<F>`] with each component in
+/// `[min, max]`.
+pub fn acceleration3<F: Frame + std::fmt::Debug>(
+    min: f64,
+    max: f64,
+) -> impl Strategy<Value = Acceleration3<F>> {
+    vector3(min, max).prop_map(Acceleration3::from_vector)
+}
+
+/// Strategy for a finite [`VelocityDelta3<F>`] with each component in
+/// `[min, max]`.
+pub fn velocity_delta3<F: Frame + std::fmt::Debug>(
+    min: f64,
+    max: f64,
+) -> impl Strategy<Value = VelocityDelta3<F>> {
+    vector3(min, max).prop_map(VelocityDelta3::from_vector)
 }
 
 /// Strategy for a finite [`AngularVelocity3<F>`] with each component
@@ -142,12 +169,16 @@ pub fn quaternion<From: Frame + std::fmt::Debug, To: Frame + std::fmt::Debug>()
 /// Strategy for a strictly-positive [`Mass`] in kilograms within
 /// `[min_kg, max_kg]`.
 pub fn mass_kg(min_kg: f64, max_kg: f64) -> impl Strategy<Value = Mass> {
-    (min_kg..=max_kg).prop_map(Mass::new::<kilogram>)
+    (min_kg..=max_kg)
+        .prop_filter("mass must be finite and positive", |mass_kg| {
+            mass_kg.is_finite() && *mass_kg > 0.0
+        })
+        .prop_map(Mass::new::<kilogram>)
 }
 
 /// Strategy for [`MassProperties`] with strictly-positive diagonal
-/// inertia within `[i_min, i_max]` (kg·m²) and zero off-diagonal
-/// terms.
+/// inertia within `[i_min, i_max]` (kg*m^2), rigid-body triangle
+/// inequalities, and zero off-diagonal terms.
 pub fn mass_properties_diagonal(
     mass_min_kg: f64,
     mass_max_kg: f64,
@@ -157,10 +188,24 @@ pub fn mass_properties_diagonal(
     (
         mass_kg(mass_min_kg, mass_max_kg),
         position3::<Body>(-1.0, 1.0),
-        i_min..=i_max,
-        i_min..=i_max,
-        i_min..=i_max,
+        finite_component(i_min, i_max),
+        finite_component(i_min, i_max),
+        finite_component(i_min, i_max),
     )
+        .prop_filter(
+            "principal moments must satisfy triangle inequalities",
+            |(_, _, ixx, iyy, izz)| {
+                let ixx = *ixx;
+                let iyy = *iyy;
+                let izz = *izz;
+                ixx > 0.0
+                    && iyy > 0.0
+                    && izz > 0.0
+                    && ixx + iyy >= izz
+                    && ixx + izz >= iyy
+                    && iyy + izz >= ixx
+            },
+        )
         .prop_map(|(mass, com, ixx, iyy, izz)| {
             MassProperties::with_diagonal_inertia(mass, com, ixx, iyy, izz)
         })
@@ -234,6 +279,21 @@ mod tests {
         #[test]
         fn position3_strategy_finite(p in position3::<Eci>(-1e6, 1e6)) {
             prop_assert!(p.is_finite());
+        }
+
+        #[test]
+        fn displacement3_strategy_finite(d in displacement3::<Eci>(-1e6, 1e6)) {
+            prop_assert!(d.is_finite());
+        }
+
+        #[test]
+        fn acceleration3_strategy_finite(a in acceleration3::<Eci>(-100.0, 100.0)) {
+            prop_assert!(a.is_finite());
+        }
+
+        #[test]
+        fn velocity_delta3_strategy_finite(dv in velocity_delta3::<Eci>(-100.0, 100.0)) {
+            prop_assert!(dv.is_finite());
         }
 
         #[test]

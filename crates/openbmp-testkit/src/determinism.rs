@@ -19,6 +19,26 @@ pub struct ByteDiff {
     pub actual: Option<u8>,
 }
 
+/// Error returned by [`require_replay_byte_stable`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayError<E> {
+    /// The first run failed.
+    FirstRun {
+        /// Underlying runner error.
+        source: E,
+    },
+    /// The second run failed.
+    SecondRun {
+        /// Underlying runner error.
+        source: E,
+    },
+    /// Both runs succeeded but their bytes differed.
+    Diff {
+        /// First divergent byte.
+        diff: ByteDiff,
+    },
+}
+
 /// Compare two byte streams for byte-stable equality.
 ///
 /// Returns `Some(ByteDiff)` describing the first divergence, or
@@ -56,6 +76,25 @@ pub fn require_byte_stable(expected: &[u8], actual: &[u8]) -> Result<(), ByteDif
         None => Ok(()),
         Some(diff) => Err(diff),
     }
+}
+
+/// Run a deterministic fixture twice and require byte-identical output.
+///
+/// The closure shape lets Phase 1.8 pass a scenario runner once the
+/// kernel exists, while Phase 1.6 can still validate the replay
+/// contract with pure byte fixtures.
+///
+/// # Errors
+///
+/// Returns [`ReplayError::FirstRun`] or [`ReplayError::SecondRun`] if
+/// the runner fails, or [`ReplayError::Diff`] if both runs succeed but
+/// produce different bytes.
+pub fn require_replay_byte_stable<E>(
+    mut run: impl FnMut() -> Result<Vec<u8>, E>,
+) -> Result<(), ReplayError<E>> {
+    let first = run().map_err(|source| ReplayError::FirstRun { source })?;
+    let second = run().map_err(|source| ReplayError::SecondRun { source })?;
+    require_byte_stable(&first, &second).map_err(|diff| ReplayError::Diff { diff })
 }
 
 #[cfg(test)]
@@ -116,5 +155,35 @@ mod tests {
         let a: Vec<u8> = vec![];
         let b: Vec<u8> = vec![];
         assert_eq!(diff_bytes(&a, &b), None);
+    }
+
+    #[test]
+    fn replay_helper_accepts_identical_runs() {
+        let result = require_replay_byte_stable::<()>(|| Ok(vec![1_u8, 2, 3]));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn replay_helper_reports_diff() {
+        let mut count = 0_u8;
+        let result = require_replay_byte_stable::<()>(|| {
+            count += 1;
+            Ok(vec![count])
+        });
+        assert!(matches!(result, Err(ReplayError::Diff { .. })));
+    }
+
+    #[test]
+    fn replay_helper_reports_second_run_error() {
+        let mut count = 0_u8;
+        let result = require_replay_byte_stable(|| {
+            count += 1;
+            if count == 1 {
+                Ok(vec![1_u8])
+            } else {
+                Err("second")
+            }
+        });
+        assert!(matches!(result, Err(ReplayError::SecondRun { .. })));
     }
 }
