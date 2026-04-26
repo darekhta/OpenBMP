@@ -27,7 +27,7 @@
 use openbmp_core::{Duration, SimTime};
 
 use crate::derivative::SimStateDerivative;
-use crate::error::IntegratorError;
+use crate::error::{IntegratorError, ModelEvalError};
 
 /// State that an [`Integrator`] can advance.
 ///
@@ -91,7 +91,10 @@ pub enum IntegratorDeterminism {
 ///
 /// `S` is the state type the integrator advances. The derivative
 /// closure `derive_fn` is called at each Runge-Kutta sub-step with the
-/// intermediate state and the corresponding sub-step time.
+/// intermediate state and the corresponding sub-step time. It returns
+/// either the derivative or a typed model-evaluation error; the
+/// integrator short-circuits before any state mutation on the first
+/// failing stage.
 pub trait Integrator<S: SimState> {
     /// Determinism class declared by this integrator.
     #[must_use]
@@ -102,17 +105,22 @@ pub trait Integrator<S: SimState> {
     /// `derive_fn` is the user-supplied closure that computes
     /// `dy/dt` at the given (state, time) pair. The integrator may
     /// call it multiple times per step at intermediate sub-step states.
+    /// A `ModelEvalError` returned by the closure short-circuits the
+    /// step (no state mutation, no later RK stages run) and surfaces
+    /// as [`IntegratorError::ModelEval`].
     ///
     /// # Errors
     ///
     /// Returns [`IntegratorError::InvalidStep`] if `dt` is not strictly
     /// positive and finite, [`IntegratorError::NonFiniteDerivative`] if
-    /// any RK stage produces a `NaN`/`Inf` derivative, or
+    /// any RK stage produces a `NaN`/`Inf` derivative,
     /// [`IntegratorError::NonFiniteState`] if any start, intermediate,
-    /// or final state is not valid for integration.
+    /// or final state is not valid for integration, or
+    /// [`IntegratorError::ModelEval`] if any stage's derivative
+    /// closure reports a typed model failure.
     fn advance<F>(&self, state: &S, derive_fn: F, dt: Duration) -> Result<S, IntegratorError>
     where
-        F: Fn(&S, SimTime) -> S::Derivative;
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>;
 }
 
 /// Canonical fixed-step Runge-Kutta 4 integrator.
@@ -129,7 +137,7 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
 
     fn advance<F>(&self, state: &S, derive_fn: F, dt: Duration) -> Result<S, IntegratorError>
     where
-        F: Fn(&S, SimTime) -> S::Derivative,
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
     {
         let h = dt.as_seconds();
         if !h.is_finite() || h <= 0.0 {
@@ -146,7 +154,7 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
         let t_end = SimTime::from_seconds(t0_s + h);
 
         // Stage 1: derivative at the start of the step.
-        let k1 = derive_fn(state, t0);
+        let k1 = derive_fn(state, t0)?;
         if !k1.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
@@ -156,7 +164,7 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
         if !mid_k2.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
         }
-        let k2 = derive_fn(&mid_k2, t_mid);
+        let k2 = derive_fn(&mid_k2, t_mid)?;
         if !k2.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
@@ -166,7 +174,7 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
         if !mid_k3.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
         }
-        let k3 = derive_fn(&mid_k3, t_mid);
+        let k3 = derive_fn(&mid_k3, t_mid)?;
         if !k3.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
@@ -176,7 +184,7 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
         if !end_k4.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
         }
-        let k4 = derive_fn(&end_k4, t_end);
+        let k4 = derive_fn(&end_k4, t_end)?;
         if !k4.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
@@ -281,7 +289,7 @@ mod tests {
         let state = one_kg_at_origin();
         let result = Rk4FixedStep.advance(
             &state,
-            |_s, _t| PointMassDerivative::zero(),
+            |_s, _t| Ok(PointMassDerivative::zero()),
             Duration::from_seconds(0.0),
         );
         assert!(matches!(result, Err(IntegratorError::InvalidStep { .. })));
@@ -292,7 +300,7 @@ mod tests {
         let state = one_kg_at_origin();
         let result = Rk4FixedStep.advance(
             &state,
-            |_s, _t| PointMassDerivative::zero(),
+            |_s, _t| Ok(PointMassDerivative::zero()),
             Duration::from_seconds(-0.01),
         );
         assert!(matches!(result, Err(IntegratorError::InvalidStep { .. })));
@@ -308,7 +316,7 @@ mod tests {
         );
         let dt = Duration::from_seconds(0.5);
         let next = Rk4FixedStep
-            .advance(&state, |_s, _t| PointMassDerivative::zero(), dt)
+            .advance(&state, |_s, _t| Ok(PointMassDerivative::zero()), dt)
             .expect("zero derivative must succeed");
         assert_abs_diff_eq!(next.time.as_seconds(), 1.5);
         // Position and velocity unchanged because derivative is zero.
@@ -327,13 +335,14 @@ mod tests {
         let state = one_kg_at_origin();
         let g_eci = Vector3::new(0.0, 0.0, -9.81);
 
-        let derive = |s: &PointMassState, _t: SimTime| -> PointMassDerivative {
-            PointMassDerivative {
-                velocity_m_s: s.velocity.vector,
-                acceleration_m_s2: g_eci, // mass=1, so force/mass = g.
-                mass_rate_kg_s: 0.0,
-            }
-        };
+        let derive =
+            |s: &PointMassState, _t: SimTime| -> Result<PointMassDerivative, ModelEvalError> {
+                Ok(PointMassDerivative {
+                    velocity_m_s: s.velocity.vector,
+                    acceleration_m_s2: g_eci, // mass=1, so force/mass = g.
+                    mass_rate_kg_s: 0.0,
+                })
+            };
 
         let dt = Duration::from_seconds(0.01);
         let next = Rk4FixedStep
@@ -368,13 +377,14 @@ mod tests {
             Velocity3::zero(),
             Mass::new::<kilogram>(1.0),
         );
-        let derive = |s: &PointMassState, _t: SimTime| -> PointMassDerivative {
-            PointMassDerivative {
-                velocity_m_s: Vector3::zeros(),
-                acceleration_m_s2: Vector3::zeros(),
-                mass_rate_kg_s: -s.mass.get::<kilogram>(),
-            }
-        };
+        let derive =
+            |s: &PointMassState, _t: SimTime| -> Result<PointMassDerivative, ModelEvalError> {
+                Ok(PointMassDerivative {
+                    velocity_m_s: Vector3::zeros(),
+                    acceleration_m_s2: Vector3::zeros(),
+                    mass_rate_kg_s: -s.mass.get::<kilogram>(),
+                })
+            };
 
         let dt = Duration::from_seconds(0.1);
         for _ in 0..10 {
@@ -387,13 +397,14 @@ mod tests {
     #[test]
     fn rk4_propagates_non_finite_derivative_as_error() {
         let state = one_kg_at_origin();
-        let derive = |_s: &PointMassState, _t: SimTime| -> PointMassDerivative {
-            PointMassDerivative {
-                velocity_m_s: Vector3::new(f64::NAN, 0.0, 0.0),
-                acceleration_m_s2: Vector3::zeros(),
-                mass_rate_kg_s: 0.0,
-            }
-        };
+        let derive =
+            |_s: &PointMassState, _t: SimTime| -> Result<PointMassDerivative, ModelEvalError> {
+                Ok(PointMassDerivative {
+                    velocity_m_s: Vector3::new(f64::NAN, 0.0, 0.0),
+                    acceleration_m_s2: Vector3::zeros(),
+                    mass_rate_kg_s: 0.0,
+                })
+            };
         let dt = Duration::from_seconds(0.01);
         let result = Rk4FixedStep.advance(&state, derive, dt);
         assert!(matches!(result, Err(IntegratorError::NonFiniteDerivative)));
@@ -409,7 +420,7 @@ mod tests {
         );
         let result = Rk4FixedStep.advance(
             &state,
-            |_s, _t| PointMassDerivative::zero(),
+            |_s, _t| Ok(PointMassDerivative::zero()),
             Duration::from_seconds(0.01),
         );
         assert!(matches!(result, Err(IntegratorError::NonFiniteState)));
@@ -423,11 +434,14 @@ mod tests {
             Velocity3::zero(),
             Mass::new::<kilogram>(1.0),
         );
-        let derive = |_s: &PointMassState, _t: SimTime| PointMassDerivative {
-            velocity_m_s: Vector3::zeros(),
-            acceleration_m_s2: Vector3::zeros(),
-            mass_rate_kg_s: -10.0,
-        };
+        let derive =
+            |_s: &PointMassState, _t: SimTime| -> Result<PointMassDerivative, ModelEvalError> {
+                Ok(PointMassDerivative {
+                    velocity_m_s: Vector3::zeros(),
+                    acceleration_m_s2: Vector3::zeros(),
+                    mass_rate_kg_s: -10.0,
+                })
+            };
         let result = Rk4FixedStep.advance(&state, derive, Duration::from_seconds(1.0));
         assert!(matches!(result, Err(IntegratorError::NonFiniteState)));
     }
@@ -441,13 +455,14 @@ mod tests {
             Mass::new::<kilogram>(1.5),
         );
         let g = Vector3::new(0.1, -0.2, -9.81);
-        let derive = |s: &PointMassState, _t: SimTime| -> PointMassDerivative {
-            PointMassDerivative {
-                velocity_m_s: s.velocity.vector,
-                acceleration_m_s2: g,
-                mass_rate_kg_s: 0.0,
-            }
-        };
+        let derive =
+            |s: &PointMassState, _t: SimTime| -> Result<PointMassDerivative, ModelEvalError> {
+                Ok(PointMassDerivative {
+                    velocity_m_s: s.velocity.vector,
+                    acceleration_m_s2: g,
+                    mass_rate_kg_s: 0.0,
+                })
+            };
 
         let dt = Duration::from_seconds(0.01);
         let a = Rk4FixedStep.advance(&state, derive, dt).expect("step a");

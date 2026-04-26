@@ -38,8 +38,14 @@ use uom::si::mass::kilogram;
 use crate::error::CliError;
 
 /// Concrete kernel type assembled by the Phase-1 runner.
-pub type Phase1Kernel =
-    SimulationKernel<Rk4FixedStep, ConstantGravityForce, ConstantMass, NullEnvironment, EndTime>;
+pub type Phase1Kernel = SimulationKernel<
+    PointMassState,
+    Rk4FixedStep,
+    ConstantGravityForce,
+    ConstantMass,
+    NullEnvironment,
+    EndTime,
+>;
 
 /// Outcome of a scenario run.
 #[derive(Debug)]

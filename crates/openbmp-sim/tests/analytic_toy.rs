@@ -39,7 +39,14 @@ const STOP_S: f64 = 10.0;
 
 fn build_kernel(
     stop_at_s: f64,
-) -> SimulationKernel<Rk4FixedStep, ConstantGravityForce, ConstantMass, NullEnvironment, EndTime> {
+) -> SimulationKernel<
+    PointMassState,
+    Rk4FixedStep,
+    ConstantGravityForce,
+    ConstantMass,
+    NullEnvironment,
+    EndTime,
+> {
     let initial = PointMassState::new(
         SimTime::ZERO,
         Position3::origin(),

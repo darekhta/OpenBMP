@@ -36,21 +36,24 @@ use crate::stop::StopCondition;
 
 /// Configuration for [`SimulationKernel`].
 ///
-/// Generic over the integrator, force model, mass model, environment
-/// model, and stop condition. Phase 1.3's state type is fixed to
-/// [`PointMassState`]; rigid-body lands in a follow-on sub-phase.
+/// Generic over the integrated state type `S`, the integrator, force
+/// model, mass model, environment model, and stop condition. Phase
+/// 2.1.A introduces the `S: SimState` parameter; the kernel's `step()`
+/// is currently impl'd only for `S = PointMassState`. Sub-phase 2.1.B
+/// adds the `RigidBodyState` impl.
 #[derive(Debug)]
-pub struct SimulationConfig<I, F, MM, E, SC>
+pub struct SimulationConfig<S, I, F, MM, E, SC>
 where
-    I: Integrator<PointMassState>,
-    F: ForceModel,
+    S: SimState,
+    I: Integrator<S>,
+    F: ForceModel<S>,
     MM: MassModel,
     E: EnvironmentModel,
-    SC: StopCondition,
+    SC: StopCondition<S>,
 {
-    /// Initial point-mass state. Must satisfy
-    /// `PointMassState::require_valid()`.
-    pub initial_state: PointMassState,
+    /// Initial state. Must satisfy the state type's structural
+    /// validation (e.g. positive mass, finite components).
+    pub initial_state: S,
     /// Integrator instance.
     pub integrator: I,
     /// Force model.
@@ -70,17 +73,22 @@ where
 }
 
 /// The lockstep simulation kernel.
+///
+/// Generic over `S: SimState`. The Phase-1 / Phase-2.1.A surface
+/// only impls `step()` for `S = PointMassState`; rigid-body lands in
+/// 2.1.B.
 #[derive(Debug)]
-pub struct SimulationKernel<I, F, MM, E, SC>
+pub struct SimulationKernel<S, I, F, MM, E, SC>
 where
-    I: Integrator<PointMassState>,
-    F: ForceModel,
+    S: SimState,
+    I: Integrator<S>,
+    F: ForceModel<S>,
     MM: MassModel,
     E: EnvironmentModel,
-    SC: StopCondition,
+    SC: StopCondition<S>,
 {
-    state: PointMassState,
-    initial_state: PointMassState,
+    state: S,
+    initial_state: S,
     initial_time_s: f64,
     step_index: StepIndex,
     integrator: I,
@@ -94,13 +102,17 @@ where
     stopped: Option<StopReason>,
 }
 
-impl<I, F, MM, E, SC> SimulationKernel<I, F, MM, E, SC>
+/// Phase-1 type alias for the point-mass kernel shape used by the
+/// existing CLI runner and analytic-toy tests.
+pub type Phase1Kernel<I, F, MM, E, SC> = SimulationKernel<PointMassState, I, F, MM, E, SC>;
+
+impl<I, F, MM, E, SC> SimulationKernel<PointMassState, I, F, MM, E, SC>
 where
     I: Integrator<PointMassState>,
-    F: ForceModel,
+    F: ForceModel<PointMassState>,
     MM: MassModel,
     E: EnvironmentModel,
-    SC: StopCondition,
+    SC: StopCondition<PointMassState>,
 {
     /// Construct from a [`SimulationConfig`].
     ///
@@ -112,7 +124,9 @@ where
     /// [`SimulationError::FpEnvironmentDirty`] on x86_64 if the
     /// MXCSR register is not in the canonical (round-to-nearest,
     /// FTZ/DAZ off) state required for bit-stable replay.
-    pub fn new(config: SimulationConfig<I, F, MM, E, SC>) -> Result<Self, SimulationError> {
+    pub fn new(
+        config: SimulationConfig<PointMassState, I, F, MM, E, SC>,
+    ) -> Result<Self, SimulationError> {
         let dt_s = config.dt.as_seconds();
         if !dt_s.is_finite() || dt_s <= 0.0 {
             return Err(SimulationError::InvalidConfig {
@@ -198,27 +212,30 @@ where
         let mass_model = &self.mass_model;
         let environment = &self.environment;
 
-        let derive = |s: &PointMassState, t: SimTime| -> PointMassDerivative {
+        let derive = |s: &PointMassState,
+                      t: SimTime|
+         -> Result<PointMassDerivative, crate::error::ModelEvalError> {
             let env = environment.sample(EnvironmentQuery {
                 time: t,
                 position_eci: s.position,
-            });
+            })?;
+            let mass_kg = s.mass.get::<kilogram>();
             let force_n_eci = force_model.force_n_eci(ForceContext {
                 state: s,
                 environment: &env,
+                mass_kg,
                 time: t,
-            });
-            let mass_kg = s.mass.get::<kilogram>();
-            let mass_rate_kg_s = mass_model.mass_rate_kg_s(t);
+            })?;
+            let mass_rate_kg_s = mass_model.mass_rate_kg_s(t)?;
             // Locked order: (force / mass) gives acceleration. We
             // tolerate a non-positive intermediate mass producing
             // NaN/Inf — the integrator's per-stage finite check
             // catches it.
-            PointMassDerivative {
+            Ok(PointMassDerivative {
                 velocity_m_s: s.velocity.vector,
                 acceleration_m_s2: force_n_eci / mass_kg,
                 mass_rate_kg_s,
-            }
+            })
         };
 
         let raw_new = match self.integrator.advance(&self.state, derive, self.dt) {
@@ -388,8 +405,14 @@ mod tests {
     fn one_kg_drop_kernel(
         dt_s: f64,
         stop_s: f64,
-    ) -> SimulationKernel<Rk4FixedStep, ConstantGravityForce, ConstantMass, NullEnvironment, EndTime>
-    {
+    ) -> SimulationKernel<
+        PointMassState,
+        Rk4FixedStep,
+        ConstantGravityForce,
+        ConstantMass,
+        NullEnvironment,
+        EndTime,
+    > {
         let config = SimulationConfig {
             initial_state: PointMassState::new(
                 SimTime::ZERO,
@@ -622,7 +645,10 @@ mod tests {
             _dt: Duration,
         ) -> Result<PointMassState, IntegratorError>
         where
-            DF: Fn(&PointMassState, SimTime) -> PointMassDerivative,
+            DF: Fn(
+                &PointMassState,
+                SimTime,
+            ) -> Result<PointMassDerivative, crate::error::ModelEvalError>,
         {
             Ok(PointMassState::new(
                 state.time,

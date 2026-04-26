@@ -40,6 +40,7 @@ use uom::si::mass::kilogram;
 fn build_kernel(
     dt_s: f64,
 ) -> SimulationKernel<
+    PointMassState,
     Rk4FixedStep,
     ConstantGravityForce,
     ConstantMass,

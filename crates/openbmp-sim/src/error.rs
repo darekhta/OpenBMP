@@ -2,9 +2,12 @@
 //!
 //! Errors compose: [`SimulationError`] wraps lower-level errors via
 //! `#[from]` so the kernel's `step()` and `run()` can use `?` against
-//! [`IntegratorError`], [`TimeError`], and [`StateError`].
+//! [`IntegratorError`], [`TimeError`], [`StateError`], and
+//! [`ModelEvalError`].
 
-use openbmp_core::{StepIndex, TimeError};
+use std::borrow::Cow;
+
+use openbmp_core::{ModelId, StepIndex, TimeError};
 use openbmp_state::StateError;
 use thiserror::Error;
 
@@ -54,7 +57,7 @@ pub enum SimulationError {
 }
 
 /// Errors produced by an [`crate::Integrator`] implementation.
-#[derive(Debug, Clone, Copy, PartialEq, Error)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum IntegratorError {
     /// One of the RK4 stages returned a derivative containing `NaN` or
     /// infinity.
@@ -69,6 +72,52 @@ pub enum IntegratorError {
     InvalidStep {
         /// The offending `dt` in seconds.
         dt_seconds: f64,
+    },
+    /// A model returned a typed evaluation error mid-step.
+    #[error(transparent)]
+    ModelEval(#[from] ModelEvalError),
+}
+
+/// Typed evaluation error returned by a fallible model
+/// (`EnvironmentModel`, `ForceModel`, `MomentModel`, `MassModel`,
+/// `AeroDeck`, `Motor`, etc.) when its inputs leave its validity
+/// envelope.
+///
+/// Carries the `ModelId` of the offending model so the kernel can
+/// surface `(step_index, model_id, error)` to the user without a
+/// silent clamp / NaN / panic. Phase-2 models *must* return one of
+/// these variants instead of a panic or `NaN`.
+///
+/// See `docs/phase-2-plan.md § Implementation Seams Locked Before
+/// Coding` and `docs/software-architecture.md § Model Interfaces` for
+/// the contract.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ModelEvalError {
+    /// The model's inputs were outside its declared validity envelope
+    /// (e.g. atmosphere queried above its altitude ceiling, aero deck
+    /// queried outside its (Mach, alpha, beta) grid, motor queried
+    /// before ignition).
+    #[error("model {model:?} out of envelope: {reason}")]
+    OutOfEnvelope {
+        /// Offending model's id.
+        model: ModelId,
+        /// Short human-readable reason.
+        reason: Cow<'static, str>,
+    },
+    /// The model produced a non-finite output (`NaN` or `Inf`).
+    #[error("model {model:?} produced non-finite output")]
+    NonFinite {
+        /// Offending model's id.
+        model: ModelId,
+    },
+    /// The state passed to the model was structurally invalid for
+    /// the model's purposes.
+    #[error("model {model:?} received invalid state: {reason}")]
+    InvalidState {
+        /// Offending model's id.
+        model: ModelId,
+        /// Short human-readable reason.
+        reason: Cow<'static, str>,
     },
 }
 

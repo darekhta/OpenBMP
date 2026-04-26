@@ -1,16 +1,20 @@
-//! Model trait declarations and Phase-1.3 simple implementations.
+//! Model trait declarations and Phase-1 simple implementations.
 //!
-//! Phase 1.3 ships:
+//! Phase-2 generalisations applied here:
 //!
-//! * [`ForceModel`] + [`ConstantGravityForce`].
-//! * [`MassModel`] + [`ConstantMass`] (and [`LinearBurnMass`] for
-//!   testing variable-mass integrator behaviour).
-//! * [`EnvironmentModel`] + [`NullEnvironment`].
+//! * Every fallible-evaluation method returns `Result<_,
+//!   crate::ModelEvalError>` per the architecture's locked seam.
+//! * [`ForceModel`] is generic over the [`crate::SimState`] it consumes
+//!   — the Phase-1 [`ConstantGravityForce`] / [`ZeroForce`] models impl
+//!   `ForceModel<PointMassState>`. Rigid-body impls land with sub-phase
+//!   2.1.C.
+//! * [`MomentModel`] is the parallel rigid-body trait; it is declared
+//!   here for `S` symmetry but only impls land in 2.1.C.
 //!
-//! The trait shapes intentionally take a `PointMassState`-flavoured
-//! [`ForceContext`] for now. When rigid-body integration lands they
-//! will either be made generic over the state type or replaced by
-//! parallel `MomentModel` / rigid-body-specific contexts.
+//! The Phase-1 byte-stable contract is preserved: each existing model's
+//! arithmetic is unchanged, the new fallibility never short-circuits
+//! when used through the Phase-1 CLI runner, and the
+//! `mass_kg`/`mass_rate_kg_s` accessors keep their behaviour.
 //!
 //! No model in this module accesses wall-clock time, system RNG,
 //! network, or the file system.
@@ -20,6 +24,9 @@ use openbmp_core::{Eci, Position3, SimTime, ValidationStatus};
 use openbmp_state::PointMassState;
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
+
+use crate::error::ModelEvalError;
+use crate::integrator::SimState;
 
 // ---------------------------------------------------------------------
 // Environment
@@ -36,8 +43,8 @@ pub struct EnvironmentQuery {
 
 /// One environment sample returned by an [`EnvironmentModel`].
 ///
-/// Phase 1.3 carries only a gravity field; atmosphere, wind, and
-/// magnetic field land in Phase 2.
+/// Phase 1 carries only a gravity field; atmosphere, wind, and
+/// magnetic field land in Phase-2 sub-phases 2.3 / 2.4.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct EnvironmentSample {
     /// Local gravitational acceleration in `Eci`, m/s².
@@ -47,7 +54,12 @@ pub struct EnvironmentSample {
 /// Trait implemented by environment-providing models.
 pub trait EnvironmentModel {
     /// Sample the environment at the given query.
-    fn sample(&self, query: EnvironmentQuery) -> EnvironmentSample;
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ModelEvalError`] when the query leaves the model's
+    /// validity envelope or the model produces non-finite output.
+    fn sample(&self, query: EnvironmentQuery) -> Result<EnvironmentSample, ModelEvalError>;
 
     /// Validation status declared by this model.
     #[must_use]
@@ -61,8 +73,8 @@ pub trait EnvironmentModel {
 pub struct NullEnvironment;
 
 impl EnvironmentModel for NullEnvironment {
-    fn sample(&self, _query: EnvironmentQuery) -> EnvironmentSample {
-        EnvironmentSample::default()
+    fn sample(&self, _query: EnvironmentQuery) -> Result<EnvironmentSample, ModelEvalError> {
+        Ok(EnvironmentSample::default())
     }
 
     fn validation(&self) -> ValidationStatus {
@@ -76,15 +88,19 @@ impl EnvironmentModel for NullEnvironment {
 
 /// Inputs passed to a [`ForceModel::force_n_eci`] call.
 ///
-/// Borrowed lifetime ties to the kernel's owned models / environment;
-/// the model receives an immutable view of the current state, the
-/// current environment sample, and the current sub-step time.
+/// Generic over the [`SimState`] the model consumes. The kernel
+/// pre-extracts `mass_kg` so force models do not need to know the
+/// concrete state's mass-access pattern (point-mass `state.mass` vs.
+/// rigid-body `state.mass_props.mass`).
 #[derive(Copy, Clone, Debug)]
-pub struct ForceContext<'a> {
+pub struct ForceContext<'a, S: SimState> {
     /// Current (possibly sub-step) state.
-    pub state: &'a PointMassState,
+    pub state: &'a S,
     /// Environment sample evaluated at this state and time.
     pub environment: &'a EnvironmentSample,
+    /// Total mass of the body at this sub-step (kg). Pre-extracted by
+    /// the kernel so this trait stays state-agnostic.
+    pub mass_kg: f64,
     /// Sub-step time. May be the kernel's published time
     /// (start-of-step) or one of the RK4 intermediate times.
     pub time: SimTime,
@@ -92,11 +108,20 @@ pub struct ForceContext<'a> {
 
 /// Trait implemented by force-providing models.
 ///
-/// The model returns a total force in `Eci`, in Newtons. The
-/// integrator divides by mass to get acceleration.
-pub trait ForceModel {
+/// Generic over `S: SimState` so the same model trait can serve point-
+/// mass and rigid-body kernels. The Phase-1 models impl
+/// `ForceModel<PointMassState>`; rigid-body impls land with 2.1.C.
+///
+/// The model returns total force in `Eci`, in Newtons. The integrator
+/// divides by mass to get acceleration.
+pub trait ForceModel<S: SimState> {
     /// Total force in `Eci`, in Newtons.
-    fn force_n_eci(&self, ctx: ForceContext<'_>) -> Vector3<f64>;
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ModelEvalError`] when the model is queried outside
+    /// its validity envelope or produces non-finite output.
+    fn force_n_eci(&self, ctx: ForceContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError>;
 
     /// Validation status declared by this model.
     #[must_use]
@@ -135,11 +160,13 @@ impl ConstantGravityForce {
     }
 }
 
-impl ForceModel for ConstantGravityForce {
-    fn force_n_eci(&self, ctx: ForceContext<'_>) -> Vector3<f64> {
-        let mass_kg = ctx.state.mass.get::<kilogram>();
+impl ForceModel<PointMassState> for ConstantGravityForce {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, PointMassState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
         // Locked order: scalar * vector, no FMA.
-        mass_kg * self.g_eci_m_s2
+        Ok(ctx.mass_kg * self.g_eci_m_s2)
     }
 
     fn validation(&self) -> ValidationStatus {
@@ -151,9 +178,66 @@ impl ForceModel for ConstantGravityForce {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ZeroForce;
 
-impl ForceModel for ZeroForce {
-    fn force_n_eci(&self, _ctx: ForceContext<'_>) -> Vector3<f64> {
-        Vector3::zeros()
+impl ForceModel<PointMassState> for ZeroForce {
+    fn force_n_eci(
+        &self,
+        _ctx: ForceContext<'_, PointMassState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        Ok(Vector3::zeros())
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+// ---------------------------------------------------------------------
+// Moment (Phase-2.1.C trait surface; no built-in impls yet)
+// ---------------------------------------------------------------------
+
+/// Inputs passed to a [`MomentModel::moment_n_m_body`] call.
+///
+/// Generic over the [`SimState`] the model consumes. Body-frame
+/// moments require attitude / inertia information, which is why the
+/// trait is parameterised over the state type.
+#[derive(Copy, Clone, Debug)]
+pub struct MomentContext<'a, S: SimState> {
+    /// Current (possibly sub-step) state.
+    pub state: &'a S,
+    /// Environment sample evaluated at this state and time.
+    pub environment: &'a EnvironmentSample,
+    /// Sub-step time.
+    pub time: SimTime,
+}
+
+/// Trait implemented by moment-providing models.
+///
+/// Returns total body-frame moment in `N·m`. Phase-2.1.C lands the
+/// first impls (aero moment, gravity-gradient toy).
+pub trait MomentModel<S: SimState> {
+    /// Total moment in `Body`, in `N·m`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ModelEvalError`] when the model is queried outside
+    /// its validity envelope or produces non-finite output.
+    fn moment_n_m_body(&self, ctx: MomentContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError>;
+
+    /// Validation status declared by this model.
+    #[must_use]
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Experimental
+    }
+}
+
+/// Zero-moment model. The torque-free Phase-2.1.D analytic-toy uses
+/// this for the headline rigid-body validation case.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct ZeroMoment;
+
+impl<S: SimState> MomentModel<S> for ZeroMoment {
+    fn moment_n_m_body(&self, _ctx: MomentContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError> {
+        Ok(Vector3::zeros())
     }
 
     fn validation(&self) -> ValidationStatus {
@@ -167,21 +251,35 @@ impl ForceModel for ZeroForce {
 
 /// Trait implemented by mass-property-providing models.
 ///
-/// Phase 1.3 surfaces only mass and mass-rate (point-mass). Full
-/// rigid-body mass-property models land with Phase 1.4 (inertia
-/// tensor + center of mass evolution).
+/// Phase 1 surfaces only mass and mass-rate (point-mass). Full
+/// rigid-body mass-property models (`MassProperties` derivatives —
+/// inertia tensor, CG offset, their time derivatives) land in
+/// sub-phase 2.1.C alongside [`MomentModel`] impls.
 pub trait MassModel {
     /// Total mass at simulation time `t` (kg).
-    fn mass_kg(&self, t: SimTime) -> f64;
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ModelEvalError`] when the model is queried outside
+    /// its validity envelope or produces non-finite output.
+    fn mass_kg(&self, t: SimTime) -> Result<f64, ModelEvalError>;
 
     /// Time derivative of mass at `t` (kg/s). Negative for mass loss
     /// (propellant burn). Zero for [`ConstantMass`].
-    fn mass_rate_kg_s(&self, t: SimTime) -> f64;
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ModelEvalError`] when the model is queried outside
+    /// its validity envelope or produces non-finite output.
+    fn mass_rate_kg_s(&self, t: SimTime) -> Result<f64, ModelEvalError>;
 
     /// Convenience: typed mass at `t`.
-    #[must_use]
-    fn mass(&self, t: SimTime) -> Mass {
-        Mass::new::<kilogram>(self.mass_kg(t))
+    ///
+    /// # Errors
+    ///
+    /// Forwards the [`ModelEvalError`] returned by [`Self::mass_kg`].
+    fn mass(&self, t: SimTime) -> Result<Mass, ModelEvalError> {
+        Ok(Mass::new::<kilogram>(self.mass_kg(t)?))
     }
 
     /// Validation status declared by this model.
@@ -208,12 +306,12 @@ impl ConstantMass {
 }
 
 impl MassModel for ConstantMass {
-    fn mass_kg(&self, _t: SimTime) -> f64 {
-        self.mass_kg
+    fn mass_kg(&self, _t: SimTime) -> Result<f64, ModelEvalError> {
+        Ok(self.mass_kg)
     }
 
-    fn mass_rate_kg_s(&self, _t: SimTime) -> f64 {
-        0.0
+    fn mass_rate_kg_s(&self, _t: SimTime) -> Result<f64, ModelEvalError> {
+        Ok(0.0)
     }
 
     fn validation(&self) -> ValidationStatus {
@@ -248,12 +346,12 @@ impl LinearBurnMass {
 }
 
 impl MassModel for LinearBurnMass {
-    fn mass_kg(&self, t: SimTime) -> f64 {
-        self.m0_kg + self.rate_kg_s * (t.as_seconds() - self.t0_s)
+    fn mass_kg(&self, t: SimTime) -> Result<f64, ModelEvalError> {
+        Ok(self.m0_kg + self.rate_kg_s * (t.as_seconds() - self.t0_s))
     }
 
-    fn mass_rate_kg_s(&self, _t: SimTime) -> f64 {
-        self.rate_kg_s
+    fn mass_rate_kg_s(&self, _t: SimTime) -> Result<f64, ModelEvalError> {
+        Ok(self.rate_kg_s)
     }
 
     fn validation(&self) -> ValidationStatus {
@@ -282,11 +380,14 @@ mod tests {
         let g = ConstantGravityForce::down_z(9.80665);
         let state = sample_state();
         let env = EnvironmentSample::default();
-        let f = g.force_n_eci(ForceContext {
-            state: &state,
-            environment: &env,
-            time: SimTime::ZERO,
-        });
+        let f = g
+            .force_n_eci(ForceContext {
+                state: &state,
+                environment: &env,
+                mass_kg: state.mass.get::<kilogram>(),
+                time: SimTime::ZERO,
+            })
+            .expect("force eval must succeed");
         // mass=2.5, g=9.80665 → force_z = -2.5 * 9.80665 = -24.516625
         assert_abs_diff_eq!(f.x, 0.0);
         assert_abs_diff_eq!(f.y, 0.0);
@@ -297,48 +398,58 @@ mod tests {
     fn zero_force_returns_zero_vector() {
         let state = sample_state();
         let env = EnvironmentSample::default();
-        let f = ZeroForce.force_n_eci(ForceContext {
-            state: &state,
-            environment: &env,
-            time: SimTime::ZERO,
-        });
+        let f = ZeroForce
+            .force_n_eci(ForceContext {
+                state: &state,
+                environment: &env,
+                mass_kg: state.mass.get::<kilogram>(),
+                time: SimTime::ZERO,
+            })
+            .expect("zero force eval must succeed");
         assert_abs_diff_eq!(f.norm(), 0.0);
     }
 
     #[test]
     fn constant_mass_returns_constant_value() {
         let m = ConstantMass::new(1.5);
-        assert_abs_diff_eq!(m.mass_kg(SimTime::ZERO), 1.5);
-        assert_abs_diff_eq!(m.mass_kg(SimTime::from_seconds(100.0)), 1.5);
-        assert_abs_diff_eq!(m.mass_rate_kg_s(SimTime::ZERO), 0.0);
+        assert_abs_diff_eq!(m.mass_kg(SimTime::ZERO).unwrap(), 1.5);
+        assert_abs_diff_eq!(m.mass_kg(SimTime::from_seconds(100.0)).unwrap(), 1.5);
+        assert_abs_diff_eq!(m.mass_rate_kg_s(SimTime::ZERO).unwrap(), 0.0);
     }
 
     #[test]
     fn linear_burn_mass_evolves_linearly() {
         let m = LinearBurnMass::new(0.0, 10.0, -0.5);
-        assert_abs_diff_eq!(m.mass_kg(SimTime::ZERO), 10.0);
-        assert_abs_diff_eq!(m.mass_kg(SimTime::from_seconds(2.0)), 9.0);
-        assert_abs_diff_eq!(m.mass_kg(SimTime::from_seconds(20.0)), 0.0);
-        assert_abs_diff_eq!(m.mass_rate_kg_s(SimTime::ZERO), -0.5);
+        assert_abs_diff_eq!(m.mass_kg(SimTime::ZERO).unwrap(), 10.0);
+        assert_abs_diff_eq!(m.mass_kg(SimTime::from_seconds(2.0)).unwrap(), 9.0);
+        assert_abs_diff_eq!(m.mass_kg(SimTime::from_seconds(20.0)).unwrap(), 0.0);
+        assert_abs_diff_eq!(m.mass_rate_kg_s(SimTime::ZERO).unwrap(), -0.5);
     }
 
     #[test]
     fn null_environment_returns_zero_gravity() {
         let env = NullEnvironment;
-        let s = env.sample(EnvironmentQuery {
-            time: SimTime::ZERO,
-            position_eci: Position3::origin(),
-        });
+        let s = env
+            .sample(EnvironmentQuery {
+                time: SimTime::ZERO,
+                position_eci: Position3::origin(),
+            })
+            .expect("null env sample must succeed");
         assert_abs_diff_eq!(s.gravity_eci_m_s2.norm(), 0.0);
     }
 
     #[test]
     fn validation_labels_are_checked_for_phase_1_3_models() {
         assert_eq!(
-            ConstantGravityForce::down_z(9.81).validation(),
+            <ConstantGravityForce as ForceModel<PointMassState>>::validation(
+                &ConstantGravityForce::down_z(9.81)
+            ),
             ValidationStatus::Checked
         );
-        assert_eq!(ZeroForce.validation(), ValidationStatus::Checked);
+        assert_eq!(
+            <ZeroForce as ForceModel<PointMassState>>::validation(&ZeroForce),
+            ValidationStatus::Checked
+        );
         assert_eq!(
             ConstantMass::new(1.0).validation(),
             ValidationStatus::Checked

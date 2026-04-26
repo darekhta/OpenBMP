@@ -49,11 +49,12 @@ pub mod models;
 pub mod stop;
 
 pub use derivative::{PointMassDerivative, SimStateDerivative};
-pub use error::{IntegratorError, SimulationError, StopReason};
+pub use error::{IntegratorError, ModelEvalError, SimulationError, StopReason};
 pub use integrator::{Integrator, IntegratorDeterminism, Rk4FixedStep, SimState};
-pub use kernel::{SimulationConfig, SimulationKernel};
+pub use kernel::{Phase1Kernel, SimulationConfig, SimulationKernel};
 pub use models::{
     ConstantGravityForce, ConstantMass, EnvironmentModel, EnvironmentQuery, EnvironmentSample,
-    ForceContext, ForceModel, LinearBurnMass, MassModel, NullEnvironment, ZeroForce,
+    ForceContext, ForceModel, LinearBurnMass, MassModel, MomentContext, MomentModel,
+    NullEnvironment, ZeroForce, ZeroMoment,
 };
 pub use stop::{AlwaysContinue, EndTime, MaxSteps, StopCondition};

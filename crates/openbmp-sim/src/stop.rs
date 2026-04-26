@@ -3,11 +3,17 @@
 //! Stop conditions are checked **before** each kernel step. When a
 //! condition fires, the kernel records the [`crate::StopReason`] and
 //! `step()` becomes a no-op until the kernel is recreated.
+//!
+//! Phase-2 generalisation: `StopCondition` is now generic over
+//! `S: SimState` so the same trait serves point-mass and rigid-body
+//! kernels. The Phase-1 stops (`AlwaysContinue`, `EndTime`,
+//! `MaxSteps`) only need `state.time()` from the trait, so they
+//! impl `StopCondition<S>` for **any** `S`.
 
 use openbmp_core::{SimTime, StepIndex};
-use openbmp_state::PointMassState;
 
 use crate::error::StopReason;
+use crate::integrator::SimState;
 
 /// Trait implemented by stop conditions.
 ///
@@ -15,9 +21,13 @@ use crate::error::StopReason;
 /// continue. The kernel evaluates this at the **start** of each step;
 /// the state passed in is the state that step would have advanced
 /// from.
-pub trait StopCondition {
+///
+/// Generic over the [`SimState`] the kernel integrates. Most stops
+/// only inspect `state.time()` and the step counter, so they impl
+/// `StopCondition<S>` for any `S`.
+pub trait StopCondition<S: SimState> {
     /// Evaluate the condition.
-    fn evaluate(&self, state: &PointMassState, step: StepIndex) -> Option<StopReason>;
+    fn evaluate(&self, state: &S, step: StepIndex) -> Option<StopReason>;
 }
 
 /// Stop condition that never fires.
@@ -27,8 +37,8 @@ pub trait StopCondition {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct AlwaysContinue;
 
-impl StopCondition for AlwaysContinue {
-    fn evaluate(&self, _state: &PointMassState, _step: StepIndex) -> Option<StopReason> {
+impl<S: SimState> StopCondition<S> for AlwaysContinue {
+    fn evaluate(&self, _state: &S, _step: StepIndex) -> Option<StopReason> {
         None
     }
 }
@@ -49,11 +59,12 @@ impl EndTime {
     }
 }
 
-impl StopCondition for EndTime {
-    fn evaluate(&self, state: &PointMassState, _step: StepIndex) -> Option<StopReason> {
-        if state.time.as_seconds() >= self.stop_at.as_seconds() {
+impl<S: SimState> StopCondition<S> for EndTime {
+    fn evaluate(&self, state: &S, _step: StepIndex) -> Option<StopReason> {
+        let t = state.time();
+        if t.as_seconds() >= self.stop_at.as_seconds() {
             Some(StopReason::EndTime {
-                reached_s: state.time.as_seconds(),
+                reached_s: t.as_seconds(),
             })
         } else {
             None
@@ -76,8 +87,8 @@ impl MaxSteps {
     }
 }
 
-impl StopCondition for MaxSteps {
-    fn evaluate(&self, _state: &PointMassState, step: StepIndex) -> Option<StopReason> {
+impl<S: SimState> StopCondition<S> for MaxSteps {
+    fn evaluate(&self, _state: &S, step: StepIndex) -> Option<StopReason> {
         if step.value() >= self.max_steps {
             Some(StopReason::UserRequested { label: "max-steps" })
         } else {
@@ -91,6 +102,7 @@ impl StopCondition for MaxSteps {
 mod tests {
     use super::*;
     use openbmp_core::{Position3, Velocity3};
+    use openbmp_state::PointMassState;
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
 
@@ -105,34 +117,56 @@ mod tests {
 
     #[test]
     fn always_continue_never_fires() {
+        let s = state_at(0.0);
         assert!(
-            AlwaysContinue
-                .evaluate(&state_at(0.0), StepIndex::ZERO)
-                .is_none()
+            <AlwaysContinue as StopCondition<PointMassState>>::evaluate(
+                &AlwaysContinue,
+                &s,
+                StepIndex::ZERO
+            )
+            .is_none()
         );
+        let s = state_at(1.0e9);
         assert!(
-            AlwaysContinue
-                .evaluate(&state_at(1.0e9), StepIndex::new(1_000_000))
-                .is_none()
+            <AlwaysContinue as StopCondition<PointMassState>>::evaluate(
+                &AlwaysContinue,
+                &s,
+                StepIndex::new(1_000_000)
+            )
+            .is_none()
         );
     }
 
     #[test]
     fn end_time_does_not_fire_before_stop() {
         let cond = EndTime::new(SimTime::from_seconds(10.0));
-        assert!(cond.evaluate(&state_at(0.0), StepIndex::ZERO).is_none());
         assert!(
-            cond.evaluate(&state_at(9.99), StepIndex::new(999))
-                .is_none()
+            <EndTime as StopCondition<PointMassState>>::evaluate(
+                &cond,
+                &state_at(0.0),
+                StepIndex::ZERO
+            )
+            .is_none()
+        );
+        assert!(
+            <EndTime as StopCondition<PointMassState>>::evaluate(
+                &cond,
+                &state_at(9.99),
+                StepIndex::new(999)
+            )
+            .is_none()
         );
     }
 
     #[test]
     fn end_time_fires_at_or_past_stop() {
         let cond = EndTime::new(SimTime::from_seconds(10.0));
-        let reason = cond
-            .evaluate(&state_at(10.0), StepIndex::new(1000))
-            .expect("should fire at stop");
+        let reason = <EndTime as StopCondition<PointMassState>>::evaluate(
+            &cond,
+            &state_at(10.0),
+            StepIndex::new(1000),
+        )
+        .expect("should fire at stop");
         match reason {
             StopReason::EndTime { reached_s } => {
                 assert!((reached_s - 10.0).abs() < 1.0e-12);
@@ -144,8 +178,18 @@ mod tests {
     #[test]
     fn max_steps_fires_on_count() {
         let cond = MaxSteps::new(100);
-        assert!(cond.evaluate(&state_at(0.0), StepIndex::new(99)).is_none());
-        assert!(cond.evaluate(&state_at(0.0), StepIndex::new(100)).is_some());
-        assert!(cond.evaluate(&state_at(0.0), StepIndex::new(101)).is_some());
+        let s = state_at(0.0);
+        assert!(
+            <MaxSteps as StopCondition<PointMassState>>::evaluate(&cond, &s, StepIndex::new(99))
+                .is_none()
+        );
+        assert!(
+            <MaxSteps as StopCondition<PointMassState>>::evaluate(&cond, &s, StepIndex::new(100))
+                .is_some()
+        );
+        assert!(
+            <MaxSteps as StopCondition<PointMassState>>::evaluate(&cond, &s, StepIndex::new(101))
+                .is_some()
+        );
     }
 }
