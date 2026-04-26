@@ -259,6 +259,142 @@ mod point_mass_impl {
     }
 }
 
+// ---------------------------------------------------------------------
+// SimState impl for openbmp_state::RigidBodyState
+// ---------------------------------------------------------------------
+//
+// Phase-2.1.B impl. The integration shape is:
+//
+//   position_new = position + h * velocity_eci
+//   velocity_new = velocity + h * acceleration_eci
+//   q_new        = q        + h * q_dot     (NON-UNIT until project())
+//   ω_new        = ω        + h * ω_dot
+//   mass_new     = mass     + h * mass_rate
+//   inertia_new  = inertia  + h * inertia_rate
+//
+// `project()` re-normalises the orientation quaternion to unit
+// magnitude after the integrator's final weighted sum so the state
+// stays on the SO(3) manifold. The post-step kernel hook calls
+// `project()` exactly once per step (RK4 stages may produce non-unit
+// intermediate quaternions, which is correct for the linear sum and
+// is the locked convention).
+//
+// Quaternion kinematics convention (locked, see
+// `docs/phase-2-plan.md § 2.1`):
+//
+//   q_dot = 0.5 · q_body_to_eci ⊗ [0, ω_body]
+//
+// Computed by the user-supplied derivative closure in 2.1.C/D; this
+// `SimState` impl only handles the *integration* of `q_dot` and the
+// post-step renormalisation.
+//
+// `is_valid_for_integration` calls `RigidBodyState::require_valid` with
+// loose intermediate quaternion / inertia tolerances so RK4 sub-step
+// states (with non-unit quaternions) are accepted; the kernel's
+// post-step validation uses tight tolerances.
+
+mod rigid_body_impl {
+    use nalgebra::Quaternion as NalgebraQuaternion;
+    use openbmp_core::{
+        AngularVelocity3, Position3, Quaternion, SimTime, UnitQuaternion, Velocity3,
+    };
+    use openbmp_state::{MassProperties, RigidBodyState};
+    use uom::si::f64::Mass;
+    use uom::si::mass::kilogram;
+
+    use crate::derivative::RigidBodyDerivative;
+
+    use super::SimState;
+
+    /// Tolerances used when `RigidBodyState` is treated as valid for
+    /// RK4 sub-step purposes. The integrator accepts intermediate
+    /// states with mildly non-unit quaternions; the kernel's post-step
+    /// validation uses much tighter tolerances.
+    const SUBSTEP_QUATERNION_TOL: f64 = 1.0e-2;
+    const SUBSTEP_INERTIA_SYMMETRY_TOL: f64 = 1.0e-6;
+
+    impl SimState for RigidBodyState {
+        type Derivative = RigidBodyDerivative;
+
+        fn time(&self) -> SimTime {
+            self.time
+        }
+
+        fn is_finite(&self) -> bool {
+            RigidBodyState::is_finite(self)
+        }
+
+        fn is_valid_for_integration(&self) -> bool {
+            self.require_valid(SUBSTEP_QUATERNION_TOL, SUBSTEP_INERTIA_SYMMETRY_TOL)
+                .is_ok()
+        }
+
+        fn with_time(mut self, t: SimTime) -> Self {
+            self.time = t;
+            self
+        }
+
+        fn advance_by(&self, h_seconds: f64, d: &RigidBodyDerivative) -> Self {
+            // DETERMINISM: explicit `(scaled) + base` order on every
+            // component; single multiplication; no FMA.
+
+            let new_time = SimTime::from_seconds(self.time.as_seconds() + h_seconds);
+            let new_position =
+                Position3::from_vector(self.position.vector + h_seconds * d.velocity_m_s_eci);
+            let new_velocity =
+                Velocity3::from_vector(self.velocity.vector + h_seconds * d.acceleration_m_s2_eci);
+
+            // Linear-sum the quaternion's underlying coords. Result is
+            // intentionally non-unit; project() restores the manifold
+            // constraint after the final weighted sum.
+            let q_new_coords = self.orientation.q.coords + h_seconds * d.quaternion_rate.coords;
+            let q_new_raw = NalgebraQuaternion::from(q_new_coords);
+            let new_orientation =
+                Quaternion::<openbmp_core::Body, openbmp_core::Eci>::from_unit_quaternion(
+                    UnitQuaternion::new_unchecked(q_new_raw),
+                );
+
+            let new_angular_velocity = AngularVelocity3::from_vector(
+                self.angular_velocity.vector + h_seconds * d.angular_acceleration_rad_s2_body,
+            );
+
+            let mass_kg = self.mass_props.mass.get::<kilogram>();
+            let new_mass_kg = mass_kg + h_seconds * d.mass_rate_kg_s;
+            let new_mass = Mass::new::<kilogram>(new_mass_kg);
+            let new_inertia = self.mass_props.inertia_body + h_seconds * d.inertia_rate_body;
+            let new_mass_props =
+                MassProperties::new(new_mass, self.mass_props.center_of_mass_body, new_inertia);
+
+            Self::new(
+                new_time,
+                new_position,
+                new_velocity,
+                new_orientation,
+                new_angular_velocity,
+                new_mass_props,
+            )
+        }
+
+        fn project(&mut self) {
+            // Quaternion renormalisation. Single sqrt + four divisions;
+            // no rotation matrix construction.
+            let q = self.orientation.q.into_inner();
+            let n2 = q.coords.x * q.coords.x
+                + q.coords.y * q.coords.y
+                + q.coords.z * q.coords.z
+                + q.coords.w * q.coords.w;
+            if n2 > 0.0 {
+                let inv = 1.0 / n2.sqrt();
+                let normalised = NalgebraQuaternion::from(q.coords * inv);
+                self.orientation =
+                    Quaternion::<openbmp_core::Body, openbmp_core::Eci>::from_unit_quaternion(
+                        UnitQuaternion::new_unchecked(normalised),
+                    );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
@@ -486,5 +622,147 @@ mod tests {
             <Rk4FixedStep as Integrator<PointMassState>>::determinism(&i),
             IntegratorDeterminism::BitStable
         );
+    }
+
+    // -----------------------------------------------------------------
+    // RigidBodyState SimState impl tests (Phase 2.1.B)
+    // -----------------------------------------------------------------
+
+    mod rigid_body {
+        use super::ModelEvalError;
+        use super::*;
+        use crate::derivative::RigidBodyDerivative;
+        use approx::assert_abs_diff_eq;
+        use nalgebra::{
+            Matrix3, Quaternion as NalgebraQuaternion, UnitQuaternion as NalgebraUnitQuaternion,
+            Vector3,
+        };
+        use openbmp_core::{
+            AngularVelocity3, Body, Eci, Position3, Quaternion, SimTime, UnitQuaternion, Velocity3,
+        };
+        use openbmp_state::{MassProperties, RigidBodyState};
+        use uom::si::f64::Mass;
+        use uom::si::mass::kilogram;
+
+        fn unit_state() -> RigidBodyState {
+            RigidBodyState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+                AngularVelocity3::zero(),
+                MassProperties::with_uniform_inertia(
+                    Mass::new::<kilogram>(1.0),
+                    Position3::origin(),
+                    1.0,
+                ),
+            )
+        }
+
+        #[test]
+        fn advance_by_zero_derivative_only_advances_time() {
+            let s = unit_state();
+            let d = RigidBodyDerivative::zero();
+            let s2 = s.advance_by(0.5, &d);
+            assert_abs_diff_eq!(s2.time.as_seconds(), 0.5);
+            assert_abs_diff_eq!(s2.position.vector.x, 0.0);
+            assert_abs_diff_eq!(s2.velocity.vector.x, 0.0);
+            assert_abs_diff_eq!(s2.angular_velocity.vector.x, 0.0);
+            assert_abs_diff_eq!(s2.mass_props.mass.get::<kilogram>(), 1.0);
+        }
+
+        #[test]
+        fn project_renormalises_unit_quaternion() {
+            let mut s = unit_state();
+            // Inflate the quaternion to magnitude 2 to test the
+            // renormalisation path.
+            let inflated = NalgebraQuaternion::new(2.0, 0.0, 0.0, 0.0);
+            s.orientation = Quaternion::<Body, Eci>::from_unit_quaternion(
+                NalgebraUnitQuaternion::new_unchecked(inflated),
+            );
+            // Sanity: non-unit before project.
+            let before = s.orientation.q.coords;
+            assert_abs_diff_eq!((before.x.powi(2) + before.w.powi(2)).sqrt(), 2.0);
+            <RigidBodyState as SimState>::project(&mut s);
+            let after = s.orientation.q.coords;
+            let n = (after.x.powi(2) + after.y.powi(2) + after.z.powi(2) + after.w.powi(2)).sqrt();
+            assert_abs_diff_eq!(n, 1.0, epsilon = 1.0e-15);
+        }
+
+        #[test]
+        fn rk4_zero_derivative_runs_to_completion_under_rk4() {
+            let state = unit_state();
+            let dt = Duration::from_seconds(0.01);
+            let derive =
+                |_s: &RigidBodyState, _t: SimTime| -> Result<RigidBodyDerivative, ModelEvalError> {
+                    Ok(RigidBodyDerivative::zero())
+                };
+            let next = Rk4FixedStep
+                .advance(&state, derive, dt)
+                .expect("rk4 zero step must succeed");
+            assert_abs_diff_eq!(next.time.as_seconds(), 0.01);
+            // Quaternion still unit after project().
+            let n2 = next.orientation.q.coords.x.powi(2)
+                + next.orientation.q.coords.y.powi(2)
+                + next.orientation.q.coords.z.powi(2)
+                + next.orientation.q.coords.w.powi(2);
+            assert_abs_diff_eq!(n2, 1.0, epsilon = 1.0e-15);
+        }
+
+        /// Sign / convention check: integrate a constant body-axis
+        /// rate `ω = (1, 0, 0)` rad/s (1 rad/s about body +x) for one
+        /// small step and compare against the expected finite rotation.
+        ///
+        /// With locked convention `q_dot = 0.5 · q ⊗ [0, ω_body]`,
+        /// starting from identity quaternion and ω = (1, 0, 0), the
+        /// quaternion-rate at t=0 is `0.5 · 1 ⊗ (0+1i) = 0.5i`. After
+        /// `dt = 0.01 s` of integration, the quaternion's i-component
+        /// is approximately `0.5 * 0.01 = 0.005` (and w drops slightly
+        /// after renorm). The exact closed-form rotation is
+        /// `q(dt) = (cos(dt/2), sin(dt/2), 0, 0)`.
+        ///
+        /// Note that this *does* require the user-supplied derivative
+        /// closure to compute `q_dot` correctly. Phase-2.1.B ships
+        /// only the integration shape; the closure is supplied by the
+        /// kernel in 2.1.D's torque-free scenario. The test here builds
+        /// the closure inline, exercising only `advance_by` /
+        /// `project()` from this sub-phase.
+        #[test]
+        fn quaternion_kinematics_sign_test_for_single_step() {
+            let state = unit_state();
+            let omega_body = Vector3::new(1.0, 0.0, 0.0); // 1 rad/s about +x
+            let dt_s = 0.01;
+
+            let derive =
+                |s: &RigidBodyState, _t: SimTime| -> Result<RigidBodyDerivative, ModelEvalError> {
+                    // q_dot = 0.5 · q ⊗ [0, ω]
+                    let q = s.orientation.q.into_inner();
+                    let omega_quat =
+                        NalgebraQuaternion::new(0.0, omega_body[0], omega_body[1], omega_body[2]);
+                    let q_dot = q * omega_quat * 0.5;
+                    Ok(RigidBodyDerivative {
+                        velocity_m_s_eci: Vector3::zeros(),
+                        acceleration_m_s2_eci: Vector3::zeros(),
+                        quaternion_rate: q_dot,
+                        angular_acceleration_rad_s2_body: Vector3::zeros(),
+                        mass_rate_kg_s: 0.0,
+                        inertia_rate_body: Matrix3::zeros(),
+                    })
+                };
+
+            let next = Rk4FixedStep
+                .advance(&state, derive, Duration::from_seconds(dt_s))
+                .expect("step must succeed");
+
+            // Closed form: (cos(dt/2), sin(dt/2), 0, 0). Note nalgebra's
+            // coords order is (i, j, k, w).
+            let expected_w = (dt_s / 2.0).cos();
+            let expected_i = (dt_s / 2.0).sin();
+            let coords = next.orientation.q.coords;
+            assert_abs_diff_eq!(coords.w, expected_w, epsilon = 1.0e-12);
+            assert_abs_diff_eq!(coords.x, expected_i, epsilon = 1.0e-12);
+            assert_abs_diff_eq!(coords.y, 0.0, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(coords.z, 0.0, epsilon = 1.0e-15);
+        }
     }
 }
