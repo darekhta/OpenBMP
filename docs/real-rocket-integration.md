@@ -688,6 +688,19 @@ civilian-academic and free of restricted content; OpenBMP does not make
 an EAR, ITAR, MTCR, or national export-control classification for any
 downstream integration.
 
+For hypersonic or re-entry integrations, the same rule applies with stricter
+metadata. Downstream users may load their own real-data packages for civilian
+or academic vehicles, but those packages live outside this repository and must
+declare solver/profile assumptions, validity envelopes, uncertainty,
+provenance, and safety review. Typical downstream package kinds are
+`continuum_cfd_aero`, `rarefied_dsmc_aero`, `radiation_reference`,
+`thermal_response_reference`, `thermochemistry_reference`, and
+`trajectory_reference`; see
+[data-provenance.md § Real-Data Package Credibility Format](data-provenance.md#real-data-package-credibility-format).
+OpenBMP records package ids and hashes in telemetry so runs are reproducible,
+but the downstream owner remains responsible for data rights, export-control
+posture, and validation claims.
+
 ## Validation-against-public-references playbook
 
 Recommended workflow for any downstream integration:

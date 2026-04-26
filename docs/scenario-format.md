@@ -32,6 +32,8 @@ verbose fields over compact syntax.
 | `[validation]` | yes | Runtime validation rules |
 | `[epoch]` | no | Absolute time metadata |
 | `[frames]` | no | Frame profile and local origins |
+| `[solver]` | no | Integrator / solver profile; required for Phase-6 hypersonic scenarios |
+| `[data_packages]` | no | External real-data or high-fidelity reference package sidecars |
 | `[sensors]` | no | Synthetic sensor models |
 | `[fc]` | no | Simulator-local virtual flight controller |
 | `[faults]` | no | Scenario-injected fault models |
@@ -105,6 +107,57 @@ Allowed `validation` values are `experimental`, `checked`,
 
 `dt_s` is the base kernel step. Multi-rate schedules are integer divisors of
 the base step and must be declared under subsystem-specific `rate_hz` fields.
+
+## Solver Profile
+
+`[solver]` is optional for Phase 1 and defaults to fixed-step RK4. Phase-6
+hypersonic scenarios must declare it explicitly because solver choice,
+tolerances, dense-output event policy, and source-term sub-stepping are part of
+the validation claim.
+
+```toml
+[solver]
+profile = "fixed-step-explicit"
+# Allowed: fixed-step-explicit, adaptive-explicit, implicit-source-term,
+# partitioned-hypersonic.
+trajectory_method = "rk4"           # rk4 | dopri54 | dopri853 | rkf78
+determinism = "bit-stable"          # bit-stable | state-stable
+
+[solver.adaptive]
+rtol = 1.0e-9
+atol = 1.0e-12
+min_dt_s = 1.0e-5
+max_dt_s = 0.1
+dense_output = true
+
+[solver.source_terms]
+chemistry_method = "implicit-euler" # implicit-euler | rosenbrock-wanner | bdf
+chemistry_substeps = 16
+material_method = "implicit-euler"
+material_substeps = 8
+nonlinear_tolerance = 1.0e-10
+nonlinear_max_iter = 12
+```
+
+The parser rejects adaptive or implicit profiles without explicit tolerances.
+For `bit-stable` scenarios, adaptive fields must be absent unless the method is
+used only to generate a non-golden reference run.
+
+## Data Packages
+
+External data packages are declared by sidecar path. The loader validates hashes,
+source class, units, frames, envelopes, uncertainty, credibility metadata, and
+high-fidelity solver assumptions before the scenario starts.
+
+```toml
+[data_packages]
+aero = "data/arv-reference/aero/data-package.yaml"
+thermal_response = "data/external_refs/thermal_response/package.yaml"
+trajectory_reference = "data/external_refs/trajectory/post2-like-reference.yaml"
+```
+
+Packages that include `downstream-private` source data must live outside the
+OpenBMP repository and are the downstream user's compliance responsibility.
 
 ## Epoch and Frames
 

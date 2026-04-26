@@ -122,6 +122,39 @@ Benchmarks from real operational systems are rejected unless the case is a
 public civilian/academic reference and does not introduce real fielded-vehicle
 parameter sets outside the safety boundary.
 
+## Hypersonic V&V and UQ Ladder
+
+Hypersonic models require stronger evidence than ordinary toy rocket models
+because chemistry, radiation, rarefaction, material response, and coupling
+errors can dominate trajectory error. Phase-6 evidence is built in layers:
+
+1. **Code verification** — manufactured solutions, exact scalar stiff ODEs,
+   exact shock / expansion relations, conservation checks, and convergence-rate
+   tests for smooth problems.
+2. **Model verification** — comparison against textbook correlations and public
+   tools such as NASA CEA for equilibrium chemistry, NRLMSIS / HWM reference
+   tables for atmosphere and wind, and published Fay-Riddell / Sutton-Graves /
+   Tauber-Sutton examples for heating.
+3. **Code-to-code reference checks** — offline package comparisons against
+   public or user-generated CFD, DSMC, radiation, thermal-response, or
+   trajectory outputs. Examples include DPLR / LAURA / US3D / FUN3D-style CFD,
+   NEQAIR-style radiation, SPARTA-style DSMC, FIAT / PATO / CHAR-style material
+   response, and POST2 / GMAT / Orekit-style trajectory references. OpenBMP
+   consumes these as data packages; it does not ship the solvers.
+4. **Public flight / mission benchmarks** — Apollo-class, Stardust-class, and
+   other public civilian or academic references with documented geometry,
+   initial conditions, data pedigree, and tolerance limits.
+5. **Uncertainty reporting** — every hypersonic validation case carries an error
+   budget covering numerical tolerance, model-form uncertainty, data pedigree,
+   interpolation/extrapolation, atmosphere variability, and external-reference
+   uncertainty.
+
+A Phase-6 model cannot be promoted to `research` unless it has at least one
+analytic or manufactured code-verification case, one public reference
+comparison, a declared validity envelope, and a documented uncertainty story.
+Code-to-code agreement alone is not validation; it is evidence that must be
+paired with provenance and uncertainty.
+
 ## Review Checklist
 
 Before accepting a model:

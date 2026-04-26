@@ -7,9 +7,10 @@ boundary-layer state, continuum-to-rarefied bridging, re-entry trajectory
 infrastructure, and the validation suite.
 
 The extensions are designed to plug into the existing trait surfaces defined
-in [software-architecture.md](software-architecture.md) without changing the
-deterministic kernel. They are **research extensions**, scheduled for Phase 6,
-and are subject to the additional accept/reject rules in
+in [software-architecture.md](software-architecture.md) while extending the
+solver, coupling, validation, and data-package infrastructure needed for
+research-grade hypersonic work. They are **research extensions**, scheduled for
+Phase 6, and are subject to the additional accept/reject rules in
 [safety-boundaries.md § Hypersonic Extensions](safety-boundaries.md#hypersonic-extensions).
 
 ## Scope
@@ -67,10 +68,107 @@ data ships in the repository.
 - Any vehicle whose modeled performance is benchmarked against operational
   miss-distance or impact-dispersion criteria.
 
+## Research Baseline
+
+The Phase-6 target is not "RK4 plus hypersonic coefficients". A credible
+hypersonic rocket / re-entry simulator needs a layered infrastructure similar
+to the public NASA / academic reference frame:
+
+- **Trajectory and mission propagation** comparable in shape to public
+  launch / entry trajectory tools such as POST2: multi-segment 3-DOF / 6-DOF
+  propagation, event localization, atmosphere / gravity / propulsion model
+  replacement, and per-segment fidelity selection.
+- **High-enthalpy flow references** from public aerothermodynamics practice:
+  continuum CFD, nonequilibrium chemistry, radiation, thermal response, and
+  rarefied-flow references are used as offline validation or deck-generation
+  sources, not as live OpenBMP solvers.
+- **Solver profiles beyond RK4**: high-order explicit adaptive methods for
+  smooth trajectories, dense output for event finding, fixed sub-stepping for
+  byte-stable regression, and implicit / IMEX methods for stiff chemistry and
+  material response.
+- **Credibility and uncertainty accounting**: every model and external dataset
+  declares its validity envelope, numerical-error evidence, source pedigree,
+  uncertainty model, and validation status.
+
+This document therefore treats RK4 as the deterministic baseline integrator,
+not as the hypersonic fidelity ceiling.
+
 ## Architectural Extension Points
 
-The hypersonic extensions plug into four existing extension points and add
-one new crate.
+The hypersonic extensions plug into the existing trait surfaces and add the
+solver/data infrastructure required to support them:
+
+1. Solver profiles and multiphysics coupling.
+2. AtmosphereModel extensions for high-altitude, winds, real-gas, and regime
+   state.
+3. AeroMethod extensions for hypersonic continuum, bridge, and free-molecular
+   methods.
+4. `openbmp-aerothermal` for heating, boundary layer, thermal response, and
+   ablation toys.
+5. Boundary-layer and Knudsen-regime models.
+6. Offline high-fidelity reference data packages.
+
+### 0. Solver profiles and multiphysics coupling
+
+The kernel remains deterministic by default, but hypersonic scenarios select a
+declared solver profile. The profile is part of the scenario hash and telemetry
+header.
+
+```rust
+pub enum SolverProfile {
+    /// Fixed-step RK4 or fixed-step high-order explicit RK.
+    /// Used for byte-stable golden tests and deterministic replay.
+    FixedStepExplicit {
+        method: ExplicitMethod,
+        dt: Duration,
+    },
+
+    /// Adaptive explicit RK with embedded error estimate and dense output.
+    /// Used for smooth trajectories and event-gradient accuracy.
+    AdaptiveExplicit {
+        method: ExplicitMethod,
+        rtol: f64,
+        atol: f64,
+        min_dt: Duration,
+        max_dt: Duration,
+    },
+
+    /// Stiff source-term integration for chemistry / thermal response.
+    /// Used as a sub-stepper inside a trajectory step or in research profiles.
+    ImplicitSourceTerm {
+        method: ImplicitMethod,
+        substeps: usize,
+        nonlinear_tolerance: f64,
+        nonlinear_max_iter: usize,
+    },
+}
+
+pub enum ExplicitMethod {
+    Rk4,
+    DormandPrince54,
+    DormandPrince853,
+    RungeKuttaFehlberg78,
+}
+
+pub enum ImplicitMethod {
+    ImplicitEuler,
+    RosenbrockWanner,
+    Bdf,
+}
+```
+
+Coupling is partitioned and explicit in the scenario:
+
+```text
+environment -> aero -> aerothermal -> material_response -> mass/geometry -> dynamics
+```
+
+Each coupling edge declares whether feedback is disabled, lagged one kernel
+step, sub-iterated to a fixed count, or solved with a profile-gated implicit
+coupling method. The default research-safe path is lagged one-step coupling
+with telemetry that reports the lag. Fully implicit coupled flow/material
+solves are out of scope for OpenBMP as code; OpenBMP may ingest their offline
+results through data packages.
 
 ### 1. AtmosphereModel — extended with optional real-gas state
 
@@ -275,6 +373,23 @@ pub struct LinearKnudsenBridge {    // smoothstep over [Kn_lo, Kn_hi]
 
 ## Atmosphere — High-Altitude Models
 
+### Layered atmosphere model set
+
+No single atmosphere model covers every hypersonic use case well. Phase 6 uses
+a layered registry:
+
+| Model | Role | Repository policy |
+|---|---|---|
+| US Standard Atmosphere 1976 | deterministic lower/middle-atmosphere baseline | ship public table with provenance |
+| NRLMSISE-00 | stable high-altitude baseline from ground to thermosphere | in-house Rust port with public coefficients |
+| NRLMSIS 2.x | modern whole-atmosphere / thermosphere reference, including 2.1 NO number density | optional research profile after 00 is validated |
+| HWM14 | horizontal neutral winds for upper/middle/lower atmosphere | optional wind model with public coefficients |
+| Earth-GRAM | engineering atmosphere with mean values and statistical variations | external-reference / validation oracle first; ship only if licensing and provenance are clean |
+
+Scenario authors pick the model and hand-off altitude explicitly. Solar,
+geomagnetic, latitude, longitude, local solar time, and wind inputs become part
+of the determinism profile.
+
 ### NRLMSISE-00 (in-house Rust port)
 
 NRLMSISE-00 (Naval Research Laboratory Mass Spectrometer and Incoherent Scatter
@@ -331,11 +446,33 @@ For altitudes 0–86 km the model agrees with US Standard 1976 within a few
 percent; the scenario can stitch them deterministically using a smooth
 hand-off.
 
-### JB-2008 (deferred)
+### NRLMSIS 2.x and HWM14 (research follow-on)
 
-Jacchia-Bowman 2008 is similar in spirit, more accurate above 200 km, less
-useful for re-entry flight. Add only if a hypersonic scenario specifically
-requires it.
+NRLMSIS 2.1 is the current public CCMC-hosted MSIS-family reference as of
+April 2026. It extends NRLMSIS 2.0 by adding nitric-oxide number density from
+approximately 73 km to the exobase while retaining the standard MSIS input set
+(date/time, geodetic position, local solar time, F10.7, and Ap). OpenBMP keeps
+NRLMSISE-00 as the first implementation target because it is a stable
+well-known baseline, then adds an `Nrlmsis2x` trait implementation once the
+validation tables and provenance are ready.
+
+HWM14 is the companion empirical horizontal-wind model. It provides zonal and
+meridional winds as a function of latitude, longitude, time, altitude, and Ap.
+Hypersonic cases that opt into HWM14 must record the wind model, coefficient
+version, Ap source, and any static defaults in telemetry.
+
+### Earth-GRAM and JB-2008 (deferred)
+
+Earth-GRAM is an engineering-oriented atmosphere that estimates mean values and
+statistical variations of Earth atmospheric properties. It is useful as a
+reference frame for uncertainty envelopes and Monte Carlo density perturbations,
+but OpenBMP should treat it as an external-reference oracle first because the
+licensing and redistribution story differs from a clean-room Rust port.
+
+Jacchia-Bowman 2008 is similar in spirit to the MSIS family for thermospheric
+density, more useful above roughly 200 km than in the denser re-entry corridor.
+Add only if a hypersonic scenario specifically requires it and provenance is
+clear.
 
 ### Real-gas thermodynamics
 
@@ -1018,6 +1155,42 @@ C_X(Kn) = (1 - α(Kn)) · C_X,continuum + α(Kn) · C_X,FM
 
 This is a deterministic blending; `α` only depends on Kn.
 
+## Offline High-Fidelity Reference Packages
+
+OpenBMP is a flight-dynamics simulator, not a CFD, DSMC, radiation-transport,
+or thermal-response code. For world-class hypersonic work, however, the
+simulator must be able to consume outputs generated by those tools as offline
+reference packages.
+
+Accepted package kinds:
+
+| Package kind | Typical source | OpenBMP use |
+|---|---|---|
+| `continuum_cfd_aero` | DPLR, LAURA, US3D, FUN3D, SU2, in-house academic CFD | aero coefficient deck, pressure/force/moment validation |
+| `radiation_reference` | NEQAIR or published radiative-heating tables | `q_rad` validation and uncertainty envelope |
+| `rarefied_dsmc_aero` | SPARTA, DS2V/DS3V, or published DSMC cases | free-molecular / transition-regime aero coefficients |
+| `thermal_response_reference` | FIAT, TITAN, 3dFIAT, Icarus, CHAR, PATO, or published arc-jet cases | surface-temperature, recession, and heat-load validation |
+| `trajectory_reference` | POST2, GMAT, Orekit, RocketPy, published mission reports | trajectory and event-timing validation |
+| `thermochemistry_reference` | NASA CEA, Cantera, Mutation++, published tables | equilibrium / frozen composition, transport, and source-term checks |
+
+Each package is loaded through the data-package mechanism in
+[data-provenance.md](data-provenance.md). The sidecar must record:
+
+- Solver/tool name, version, license, and retrieval path.
+- Governing equations or model family: Euler, Navier-Stokes, RANS, laminar,
+  nonequilibrium Navier-Stokes, DSMC, radiation line-by-line, thermal response.
+- Chemistry, transport, turbulence, wall-catalysis, accommodation, and material
+  assumptions.
+- Grid or particle convergence evidence where relevant.
+- Boundary conditions, reference geometry, reference area/length, axes, moment
+  reference point, and interpolation policy.
+- Uncertainty model and validity envelope over Mach, Reynolds, Knudsen,
+  altitude, angle of attack/sideslip, heat flux, and temperature.
+
+The loader never treats an external package as more authoritative than its
+declared envelope. Queries outside the envelope fail closed unless the scenario
+explicitly selects a documented extrapolation policy.
+
 ## Trajectory Infrastructure
 
 ### Re-entry interface state
@@ -1133,6 +1306,13 @@ public-benchmark (against published academic results).
 | **Blowing-correction limits** | analytic-toy | At `B → 0`: `q_blow → q_no-blow`. At large `B`: `q_blow → 0`. Smooth and monotonic. |
 | **Ablation mass-coupling consistency** | property | Total mass loss = integral of recession × surface density × area, to rounding |
 | **Ablation energy conservation** | property | Incoming heat flux integral = re-radiation + conduction + ablation enthalpy + sensible heating, within 0.1 % |
+| **Adaptive explicit dense-output event** | analytic-toy | DOPRI853 / RKF78 event time on a smooth manufactured trajectory matches closed form within declared tolerance |
+| **Implicit source-term stiffness** | analytic-toy | BDF / Rosenbrock-Wanner source step reproduces stiff scalar decay and two-rate chemistry toy without instability |
+| **NASA CEA equilibrium oracle** | reference | Equilibrium composition / `gamma_eff` reference tables generated from documented CEA inputs match stored hashes and tolerances |
+| **NRLMSIS 2.x / HWM14 reference table** | reference | Optional 2.x atmosphere and HWM14 wind samples reproduce public reference values within model tolerance |
+| **Earth-GRAM perturbation envelope** | reference | Density mean and statistical variation samples match public Earth-GRAM examples when redistribution is allowed |
+| **External package contract** | property | CFD / DSMC / radiation / thermal-response packages reject missing provenance, envelope gaps, hash mismatches, and unknown solver assumptions |
+| **Method of manufactured solutions** | code-verification | Hypersonic source-term and coupling modules demonstrate expected convergence order on smooth manufactured states |
 
 Each case lives in `tests/validation/hypersonic/` and ships with the
 expected reference data file (and provenance entry).
@@ -1141,6 +1321,12 @@ expected reference data file (and provenance entry).
 
 | Channel | Units | Frame |
 |---|---|---|
+| `solver.profile` | enum string | — |
+| `solver.method` | enum string | — |
+| `solver.dt_accepted` | s | — |
+| `solver.error_estimate` | scenario-defined | — |
+| `solver.substeps_chemistry` | count | — |
+| `solver.substeps_material` | count | — |
 | `airdata.mach` | dimensionless | — |
 | `airdata.dynamic_pressure` | Pa | — |
 | `airdata.knudsen` | dimensionless | — |
@@ -1170,6 +1356,9 @@ expected reference data file (and provenance entry).
 | `aerothermal.q_conv_with_blowing[i]` | W/m² | ablation only |
 | `aerothermal.pyrolysis_progress[i]` | [0,1] | charring ablator only |
 | `aerothermal.pyrolysis_gas_mdot[i]` | kg/(m²·s) | charring ablator only |
+| `reference.package_id[i]` | string | external packages used |
+| `reference.package_hash[i]` | string | external package content hash |
+| `reference.envelope_margin[i]` | dimensionless | nearest normalized distance to package envelope |
 
 These channels are first-class: declared in the telemetry schema, exported
 to Parquet with full unit/frame metadata, and available for golden-test
@@ -1197,11 +1386,20 @@ data/
     park90_reactions.toml        # NEW: Park 1990 11-species set
     park93_reactions.toml        # NEW: Park 1993 updated rates
     millikan_white_taus.toml     # NEW: vibrational relaxation times
-  materials/
-    toy_ablators.toml            # NEW: generic textbook ablator set
-                                 # (no real fielded TPS materials)
-  validation/
-    hypersonic/
+	  materials/
+	    toy_ablators.toml            # NEW: generic textbook ablator set
+	                                 # (no real fielded TPS materials)
+	  external_refs/
+	    cfd/
+	      package.example.yaml       # NEW: offline CFD deck sidecar example
+	    dsmc/
+	      package.example.yaml       # NEW: offline DSMC deck sidecar example
+	    radiation/
+	      package.example.yaml       # NEW: NEQAIR-like reference sidecar
+	    thermal_response/
+	      package.example.yaml       # NEW: FIAT/PATO/CHAR-like sidecar
+	  validation/
+	    hypersonic/
       allen_eggers_reference.toml
       apollo_class_reference.toml
       stardust_reference.toml
@@ -1228,12 +1426,15 @@ tests/
 
 ## Determinism Notes
 
-Hypersonic scenarios stress the integrator more than rocket-class scenarios:
+Hypersonic scenarios stress the solver more than rocket-class scenarios:
 - Peak decelerations of 10–50 g require small steps during max-q.
 - Stagnation heat flux peaks scale like `V³`, sharpening the time-accuracy
   requirement.
 - Real-gas iteration introduces convergence behavior that must be
   deterministic.
+- Stiff finite-rate chemistry and thermal response can invalidate explicit
+  trajectory-step assumptions even when the rigid-body trajectory itself is
+  smooth.
 
 Specific determinism rules for the hypersonic crates:
 
@@ -1250,18 +1451,33 @@ Specific determinism rules for the hypersonic crates:
 5. **OneDThermalToy** uses fixed-step explicit FTCS; the scenario must
    declare a step that satisfies `Fo < 0.5` (Fourier number stability).
    Violations fail closed.
-6. **Adaptive integrators** (DOPRI5/8) for hypersonic scenarios produce
-   `StateStable` (not `BitStable`) determinism. Byte-stable golden tests
-   for hypersonic scenarios use RK4 fixed-step at a documented step size.
+6. **Adaptive explicit integrators** (DOPRI5/8, DOPRI853, RKF78) for
+   hypersonic scenarios produce `StateStable` (not `BitStable`)
+   determinism. Byte-stable golden tests use fixed-step RK4 or a fixed-step
+   high-order explicit method at a documented step size.
+7. **Implicit source-term solvers** (implicit Euler, Rosenbrock-Wanner, BDF)
+   must declare nonlinear tolerance, maximum iteration count, linear-solver
+   tolerance, sub-step count, and failure policy in the scenario. Any
+   convergence failure is a fail-closed simulation error.
+8. **External reference packages** record solver/tool version, input hashes,
+   output hashes, validity envelope, and uncertainty model. The kernel records
+   package ids and hashes in telemetry so a run can be reproduced.
 
 ## Roadmap (Phase 6)
 
-Phase 6 is decomposed into nine sub-phases. Each sub-phase has its own
+Phase 6 is decomposed into fourteen sub-phases. Each sub-phase has its own
 acceptance gate (analytic-toy or public-benchmark validation case passing
 in CI).
 
+- **6.0 — Hypersonic solver stack.** Solver profile schema, fixed-step
+  high-order explicit RK, adaptive explicit DOPRI853/RKF78 with dense output,
+  event localization, implicit source-term sub-steppers, and deterministic
+  coupling telemetry. Acceptance: adaptive event analytic-toy and implicit
+  stiffness toy cases.
 - **6.1 — High-altitude atmosphere.** NRLMSISE-00 in-house Rust port (static
-  defaults mode first). Acceptance: NRLMSISE-00-vs-published-table case.
+  defaults mode first), with NRLMSIS 2.x and HWM14 follow-ons. Acceptance:
+  NRLMSISE-00-vs-published-table case; optional 2.x / HWM14 reference-table
+  cases.
 - **6.2 — Real-gas thermodynamics.** Tannehill 5-species equilibrium air;
   `gamma_eff`, speed of sound. Acceptance: equilibrium-air `gamma_eff` case.
 - **6.3 — Hypersonic aero methods.** Modified Newtonian, tangent-cone,
@@ -1299,6 +1515,16 @@ in CI).
   only — no real fielded TPS materials. Acceptance: graphite sublimation
   steady-state case, charring pyrolysis-front case, blowing-correction
   limits case, mass-coupling consistency, energy conservation.
+- **6.12 — Offline high-fidelity reference packages.** Data-package schema
+  extensions for CFD, DSMC, radiation, thermal-response, trajectory, and
+  thermochemistry references, including V&V evidence, uncertainty, solver
+  assumptions, and envelope checks. Acceptance: external-package contract
+  property tests and at least one public benign reference deck.
+- **6.13 — Hypersonic UQ and credibility reporting.** Scenario-level error
+  budgets, parameter uncertainty propagation, sensitivity reports, package
+  credibility metadata, and NASA-STD-7009B-style evidence summaries without
+  making operational suitability claims. Acceptance: UQ report generated for
+  the full hypersonic validation suite.
 
 Phase 6 is research-grade material: every sub-phase declares its validation
 status (`experimental` → `checked` → `validated-toy` → `research`) and never
@@ -1321,12 +1547,18 @@ Permanently out of scope, regardless of demand:
 - Real fielded TPS material parameters (PICA, AVCOAT, RCC, SLA-561V, FRSI,
   AFRSI, LI-900, MA-25S, etc.). Generic textbook ablators are scheduled in
   sub-phase 6.11.
-- DSMC (Direct Simulation Monte Carlo). Out of scope as code; OpenBMP can
-  consume DSMC-derived aero coefficients via the deck format if the user
-  generates them externally with public tools and ships provenance.
-- CFD coupling. OpenBMP is a flight-dynamics simulator, not a CFD code.
-  CFD-derived aero decks may be ingested via the `AeroDeck` format with
-  provenance.
+- DSMC (Direct Simulation Monte Carlo) as an in-repo solver or live-coupled
+  co-simulation engine. OpenBMP can consume DSMC-derived aero / heating
+  coefficients through offline reference packages if the user generates them
+  externally with public tools and ships provenance.
+- CFD as an in-repo solver or live-coupled flow solver. OpenBMP is a
+  flight-dynamics simulator, not a CFD code. CFD-derived aero decks,
+  pressure maps, or heat-flux histories may be ingested offline with
+  provenance and V&V evidence.
+- Automatic design optimization for real hypersonic vehicles. UQ and
+  sensitivity studies are acceptable for academic scenarios; vehicle-sizing,
+  trajectory optimization, TPS sizing, or control-law tuning for a specific
+  real operational vehicle is out of scope.
 - Non-Earth atmospheres (Mars, Titan, Venus, Jupiter) and interplanetary
   aerocapture / aerobraking. The framework could host them later via a
   planet-aware atmosphere registry, but no planetary atmosphere data
@@ -1395,6 +1627,34 @@ None of these is imported as data; all algorithms are reimplemented in-house.
   validation data.
 - Gordon, S. and McBride, B. J. *Computer Program for Calculation of Complex
   Chemical Equilibrium Compositions and Applications*, NASA RP-1311, 1994.
+- NASA Glenn Research Center, *Chemical Equilibrium with Applications (CEA)*,
+  public software description and documentation:
+  https://www.nasa.gov/glenn/research/chemical-equilibrium-with-applications/
+- NASA Ames Aerothermodynamics Branch, *Software Tools* (DPLR and NEQAIR
+  descriptions):
+  https://www.nasa.gov/general/aerothermodynamics-branch-software-tools/
+- NASA Ames Aerothermodynamics Branch, *Modeling and Analysis* (DPLR, US3D,
+  NEQAIR, entry physics / chemistry):
+  https://www.nasa.gov/general/aerothermodynamics-branch-modeling-and-analysis/
+- Lawrence Livermore National Laboratory, *SUNDIALS CVODE* (Adams/BDF stiff
+  and non-stiff ODE solver reference):
+  https://computing.llnl.gov/projects/sundials/cvode
+- NASA, *Program to Optimize Simulated Trajectories II (POST2)* overview:
+  https://www.nasa.gov/post2/overview/
+- NASA NTRS, *Earth Global Reference Atmospheric Model (Earth-GRAM): User
+  Guide*, NASA/TM-20210022157:
+  https://ntrs.nasa.gov/citations/20210022157
+- NASA CCMC, *NRLMSIS 2.1* model page:
+  https://ccmc.gsfc.nasa.gov/models/NRLMSIS~2.1/
+- NASA CCMC, *HWM14* model page:
+  https://ccmc.gsfc.nasa.gov/models/HWM14~2014/
+- Sandia National Laboratories, *SPARTA* DSMC software description:
+  https://www.sandia.gov/ccr/ccr-software/
+- NASA Ames Thermal Protection Materials Branch, *Design and Analysis*
+  (FIAT, TITAN, 3dFIAT, Icarus):
+  https://www.nasa.gov/general/thermal-protection-materials-branch-design-and-analysis/
+- NASA Glenn, *Overview of CFD Verification & Validation*:
+  https://www.grc.nasa.gov/WWW/wind/valid/tutorial/overview.html
 - NASA Apollo Mission Reports (Apollo 4 entry trajectory data are
   publicly documented in the NASA technical archives).
 

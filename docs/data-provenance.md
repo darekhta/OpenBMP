@@ -18,6 +18,8 @@ Provenance is required for:
 - Magnetic-field coefficients.
 - Synthetic motor curves and converted public motor curves.
 - Aerodynamic decks and coefficient tables.
+- Offline high-fidelity reference outputs from CFD, DSMC, radiation,
+  thermal-response, thermochemistry, and trajectory tools.
 - Sensor-noise presets.
 - Public benchmark reference trajectories.
 - Hypersonic real-gas, reaction-rate, heating, ablation, and validation
@@ -38,8 +40,10 @@ Every dataset declares exactly one source class:
 | `textbook-derived` | Generated from public textbook equations | Accepted with citation |
 | `public-standard` | Public standard or public agency table | Accepted with license review |
 | `public-academic` | Peer-reviewed or university/NASA/ESA/NACA report data | Accepted with license review |
+| `public-civilian-flight` | Public civilian / academic mission data with stable source and non-operational framing | Accepted for validation references only |
 | `converted-public` | Converted from an allowed public format | Accepted if original provenance survives and the source is non-operational |
 | `external-generated` | Produced by an external public tool from allowed inputs | Accepted if inputs, tool version, tool configuration, and output hash are documented |
+| `downstream-private` | User-owned institutional or company data loaded outside the OpenBMP repository | Not accepted into the repository; loadable only by downstream users under their own compliance review |
 | `unknown` | Unclear source, unclear license, or unverifiable | Rejected |
 | `operational-reporting` | News, defense-industry, or programme reporting about real systems | Rejected |
 | `restricted` | ITAR, EAR, MTCR, Wassenaar, classified, proprietary, or controlled | Rejected |
@@ -97,6 +101,10 @@ A dataset is accepted only when all of these are true:
 - `converted-public` and `external-generated` datasets are generated only from
   accepted source classes; a public tool output derived from rejected inputs is
   still rejected.
+- `downstream-private` data is never committed to the OpenBMP repository,
+  examples, release archives, or CI fixtures. The loader may consume it in a
+  downstream workspace only when the sidecar states that the downstream owner
+  has performed their own export-control, license, and safety review.
 
 If any item is uncertain, the dataset is rejected until the uncertainty is
 resolved. "Publicly visible" is not sufficient; provenance must also be
@@ -171,7 +179,11 @@ fields the kernel needs to interpret the numbers.
 ```yaml
 # data-package.yaml — sits next to the dataset file(s) it describes.
 package_id: arv-reference.aero.deck.v3
-package_kind: aero_deck                # aero_deck | engine_curve | tank | mass_inertia | sensor_noise | controller_gains | environment
+package_kind: aero_deck
+# Allowed: aero_deck, engine_curve, tank, mass_inertia, sensor_noise,
+# controller_gains, environment, continuum_cfd_aero, rarefied_dsmc_aero,
+# radiation_reference, thermal_response_reference, thermochemistry_reference,
+# trajectory_reference.
 files:
   - data/arv-reference/aero/deck-v3.toml
 
@@ -221,6 +233,8 @@ extrapolation:
 # 6. Validity envelope -------------------------------------------------
 envelope:
   mach:    { min: 0.1,  max: 6.0 }
+  reynolds: { min: 1.0e5, max: 1.0e8 }
+  knudsen:  { min: 0.0,  max: 0.01 }
   alpha:   { min: -10,  max: 25 }
   beta:    { min: -8,   max:  8 }
   altitude_m: { min: 0, max: 80000 }
@@ -262,6 +276,18 @@ credibility:
 
 # 11. OpenBMP validation label (project-internal) ----------------------
 validation_status: validated-toy
+
+# 12. Optional high-fidelity reference metadata -------------------------
+solver_reference:
+  tool: "example-cfd"
+  version: "1.2.3"
+  governing_equations: "RANS Navier-Stokes"
+  chemistry_model: "equilibrium-air"
+  transport_model: "mixture-averaged"
+  turbulence_model: "SST"
+  wall_catalysis: "non-catalytic"
+  grid_or_particle_convergence: "provenance.md#grid-convergence"
+  boundary_conditions: "provenance.md#boundary-conditions"
 ```
 
 ### Field semantics
@@ -310,6 +336,11 @@ validation_status: validated-toy
   [verification.md § External V&V Reference Frames](verification.md#external-vv-reference-frames)
   for how OpenBMP's `experimental` / `checked` / `validated-toy` /
   `research` labels relate to the 7009B factor scale.
+- **solver_reference** — required for CFD, DSMC, radiation, thermal-response,
+  thermochemistry, and trajectory reference packages. It records the tool,
+  version, governing equations, model assumptions, convergence evidence, and
+  boundary-condition record needed to interpret the data. OpenBMP records this
+  metadata; it does not certify the external solver.
 
 > Note 1 — control-effector axes (`delta_e`, `delta_a`, `delta_r`, body
 > flaps, grid fins, gimbal angles) are part of the deck only when the
@@ -338,8 +369,15 @@ metadata is:
 
 - A `provenance.md` source class on the rejected list (see § Source
   Classes above): `unknown`, `operational-reporting`, `restricted`.
-- Real fielded-vehicle parameter sets (operational missile decks,
-  fielded engine performance tables, real TPS material data).
+- Real fielded-vehicle parameter sets for operational missiles, HGVs, MaRVs,
+  hypersonic cruise weapons, or any controlled / non-public operational system.
+- Real fielded TPS material data, controller gains, sensor parameters, or
+  operational engine performance tables for a specific fielded vehicle.
+- Public civilian flight data used as a validation reference is allowed only
+  when it is source-classed `public-civilian-flight`, limited to externally
+  observable trajectory / timing / environment facts, and does not include
+  restricted material, propulsion, control, targeting, or operational
+  performance data.
 - Datasets whose `notes` describe targeting, terminal homing, defence
   penetration, or any other use that crosses the
   [safety-boundaries.md](safety-boundaries.md) reject list.

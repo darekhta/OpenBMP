@@ -69,9 +69,11 @@ OpenBMP is designed to simulate the following classes of virtual vehicles:
   aerocapture / aerobraking textbook problems. See
   [hypersonic-extensions.md](hypersonic-extensions.md).
 - **Hypersonic research configurations** (Phase 6) — Mach 5–25+ flight at
-  high altitude, with real-gas thermodynamics, aerothermal heating,
-  boundary-layer transition, and continuum-to-rarefied bridging. Driven by
-  scenario waypoints in inertial space, never by real-world targets.
+  high altitude, with solver profiles beyond RK4, real-gas thermodynamics,
+  aerothermal heating, boundary-layer transition, continuum-to-rarefied
+  bridging, offline high-fidelity reference packages, and uncertainty
+  reporting. Driven by scenario waypoints in inertial space, never by
+  real-world targets.
 
 OpenBMP does not simulate:
 
@@ -448,8 +450,11 @@ and any operational mission profile.
   before the first `step()`.
 
 **Phase 6 — Hypersonic extensions** (research-grade)
+- 6.0 Hypersonic solver stack (fixed high-order explicit RK, adaptive
+  DOPRI853/RKF78 with dense output, implicit source-term sub-steppers,
+  coupling policies, solver telemetry).
 - 6.1 NRLMSISE-00 high-altitude atmosphere (in-house Rust port, public
-  coefficients).
+  coefficients), with NRLMSIS 2.x and HWM14 follow-ons.
 - 6.2 Real-gas thermodynamics (Tannehill equilibrium air, gamma_eff,
   composition).
 - 6.3 Hypersonic aero methods (Modified Newtonian, tangent-cone, hypersonic
@@ -470,6 +475,11 @@ and any operational mission profile.
   reaction sets only, sub-stepped implicit-Euler integration).
 - 6.11 Generic surface-ablation toy (steady-state and charring variants;
   textbook materials only — no real fielded TPS materials).
+- 6.12 Offline high-fidelity reference packages (CFD, DSMC, radiation,
+  thermal-response, thermochemistry, trajectory references with provenance).
+- 6.13 Hypersonic UQ and credibility reporting (uncertainty propagation,
+  sensitivity reports, NASA-STD-7009B-style evidence summaries without
+  operational suitability claims).
 
 Phase 6 details are in [hypersonic-extensions.md](hypersonic-extensions.md).
 All Phase 6 work is **Earth-atmosphere only**; non-Earth atmospheres

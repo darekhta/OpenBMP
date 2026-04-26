@@ -26,7 +26,7 @@ list and [design-concept.md](design-concept.md) for the project framing.
 | Frames | Type-tagged: `ECI`, `ECEF`, `NED`, `ENU`, `Body` |
 | Frame/time policy | Explicit frame profiles; WGS84 default; optional pinned epoch data |
 | Default integrator | RK4 fixed-step |
-| Optional integrators | DOPRI5, DOPRI8 (behind profile flags) |
+| Optional integrators | DOPRI5, DOPRI853, RKF78, implicit source-term profiles (behind explicit profile flags) |
 | Concurrency in kernel | Synchronous, single-threaded |
 | Async | Only for optional socket-bridge tooling, never in kernel |
 | Scenario format | In-house, TOML-shaped, versioned, reject unknown fields |
@@ -520,7 +520,11 @@ fixed step shape and just consults the resolved event list each tick.
 |---|---|---|---|
 | **RK4** | 4 | fixed | Default. Byte-stable. Easy to reason about. |
 | **DOPRI5** (Dormand-Prince 4(5)) | 5 | adaptive | Non-stiff scenarios needing local error control or event-gradient accuracy. Behind a `--profile=adaptive` flag. |
-| **DOPRI8** (8(5,3)) | 8 | adaptive | High-accuracy validation runs. |
+| **DOPRI853 / DOPRI8** | 8 | adaptive | High-accuracy trajectory and event-localization runs with dense output. |
+| **RKF78** | 7/8 | adaptive | Independent high-order explicit RK cross-check for smooth hypersonic trajectory segments. |
+| **Implicit Euler** | 1 | fixed sub-step | Deterministic stiff source-term baseline for chemistry / material-response submodels. |
+| **Rosenbrock-Wanner** | varies | fixed/adaptive sub-step | Profile-gated stiff source-term solver for nonequilibrium chemistry. |
+| **BDF** | 1-5 | adaptive | Research profile for stiff ODE systems; state-stable, never byte-stable. |
 | **Analytic** | n/a | n/a | Toy validation: closed-form propagation for analytic-toy scenarios. |
 
 RocketPy uses LSODA (auto-switching stiff/non-stiff) as default; OpenBMP
@@ -529,12 +533,19 @@ breaks bit-stable replay across runs that visit different stiffness
 regimes. Adaptive integrators ship behind explicit profile flags only and
 are tagged `state-stable, not bit-stable`.
 
-DOPRI5/8 are adaptive **explicit** Runge-Kutta methods. They are not the
-stiff-chemistry answer for hypersonic nonequilibrium, ablation chemistry,
-or tightly coupled aerothermal submodels. Those Phase-6 submodels use
-declared fixed sub-stepping with implicit Euler and, for harder cases, a
-profile-gated Rosenbrock-Wanner variant as described in
+DOPRI5/8, DOPRI853, and RKF78 are adaptive **explicit** Runge-Kutta methods.
+They are useful for smooth trajectory propagation and event localization, but
+they are not the stiff-chemistry answer for hypersonic nonequilibrium,
+ablation chemistry, or tightly coupled aerothermal submodels. Those Phase-6
+submodels use declared fixed sub-stepping with implicit Euler and, for harder
+cases, profile-gated Rosenbrock-Wanner or BDF variants as described in
 [hypersonic-extensions.md](hypersonic-extensions.md).
+
+For hypersonic scenarios, the scenario selects a `SolverProfile` rather than
+only an integrator. The profile declares the trajectory integrator, dense-output
+event policy, stiff source-term solver, coupling policy, tolerances, fixed
+sub-step counts, and determinism class. RK4 remains the canonical deterministic
+baseline; it is not the upper bound of planned hypersonic fidelity.
 
 ```rust
 pub trait Integrator {
@@ -632,6 +643,12 @@ scenario. The scenario file lists `force_models = ["aero", "gravity_force",
   Rust from the public coefficients with a `provenance.md` entry. Each of
   the model's ~25 configuration flags is documented for its deterministic
   effect.
+- `Nrlmsis2x` and `Hwm14` (Phase 6 follow-ons) — modern high-altitude
+  atmosphere and horizontal-wind references. These are profile-gated until
+  reference-table validation and provenance are complete.
+- `EarthGramReference` (Phase 6 follow-on) — external-reference atmosphere
+  profile for density / wind uncertainty envelopes when redistribution terms
+  permit; not the default deterministic atmosphere.
 
 ```rust
 pub struct AtmosphereSample {
@@ -1861,13 +1878,15 @@ the phased plan. The short version:
 - **Phase 5** — Adaptive integrators behind profile flags, public-benchmark
   validation, optional socket-bridge HIL pattern, optional many-body
   groundwork.
-- **Phase 6** — Hypersonic extensions (Earth atmosphere only): high-altitude
-  atmosphere (NRLMSISE-00), real-gas equilibrium thermodynamics, hypersonic
+- **Phase 6** — Hypersonic extensions (Earth atmosphere only): solver
+  profiles beyond RK4, high-altitude atmosphere (NRLMSISE-00 first, NRLMSIS
+  2.x / HWM14 follow-ons), real-gas equilibrium thermodynamics, hypersonic
   aero methods, the `openbmp-aerothermal` crate, boundary-layer models,
   continuum-to-rarefied bridging, re-entry trajectory infrastructure,
-  hypersonic validation suite (sub-phases 6.1–6.9), Park two-temperature
-  nonequilibrium thermochemistry (6.10), generic surface ablation toy
-  (6.11). Detailed in [hypersonic-extensions.md](hypersonic-extensions.md).
+  hypersonic validation suite, Park two-temperature nonequilibrium
+  thermochemistry, generic surface ablation toy, offline high-fidelity
+  reference packages, and UQ / credibility reporting. Detailed in
+  [hypersonic-extensions.md](hypersonic-extensions.md).
 
 **Out-of-roadmap (explicitly never):** real device drivers, real bus
 protocols, deployable executive, real-time scheduling guarantees, real
