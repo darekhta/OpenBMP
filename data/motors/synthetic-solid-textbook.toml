@@ -10,12 +10,11 @@
 #   I_total = 0.5·1000·0.5  +  1000·3.0  +  0.5·1000·0.5
 #          =      250       +    3000    +      250       = 3500 N·s
 #
-# `specific_impulse_s` is declared as a nominal informational field
-# (per the architecture spec) and is not numerically consistent with
-# `total_impulse_n_s = m_p · g_0 · Isp` for this synthetic motor —
-# the back-solved Isp would be 357 s for `m_p = 1.0 kg`. Phase-2 mass
-# integration uses `dm/dt = -F(t) · m_p / I_total` directly and does
-# not consume `specific_impulse_s`.
+# `specific_impulse_s` is the back-solved value for
+# `total_impulse_n_s = m_p · g_0 · Isp` with `m_p = 1.0 kg` and
+# `g_0 = 9.80665 m/s²`. Phase-2 mass integration still uses
+# `dm/dt = -F(t) · m_p / I_total` directly; the Isp field is checked
+# at load time as a consistency guard.
 
 openbmp.motor = 1
 
@@ -27,7 +26,7 @@ validation = "validated-toy"
 [burn]
 duration_s         = 4.0
 total_impulse_n_s  = 3500.0
-specific_impulse_s = 220.0
+specific_impulse_s = 356.9006745422749
 propellant_mass_kg = 1.0
 dry_mass_kg        = 0.5
 

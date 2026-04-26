@@ -18,6 +18,8 @@ source_title:     >-
   Designed as the canonical small-deck unit-test fixture.
 source_authors:   OpenBMP (Dmitri Arekhta)
 source_id:        synthetic; not derived from any fielded motor
+source_url:       https://github.com/openbmp/openbmp/blob/main/data/motors/synthetic-solid-textbook.toml
+source_hash_sha256: 1b8b9c6f299617a7bbee2b1e54ce097e486cec66b6a42a190e04d12337dbce7d
 publication_date: 2026-04-27
 methodology_reference: >-
   RASP `.eng` thrust-curve format (ThrustCurve.org public corpus
@@ -76,10 +78,13 @@ source_title:     >-
   Synthetic OpenBMP-authored boost-sustain solid motor sized
   to the D-class envelope (10–20 N·s total impulse, sub-2 s
   burn). Nominal envelope tracks the Estes D12 hobby motor
-  (~16.8 N·s, ~1.4 s burn) but the values are NOT transcribed
-  from any published thrust curve.
+  (~16.8 N·s, ~1.7 s burn, ~10 N average thrust, ~30 N peak
+  thrust) but the values are NOT transcribed from any published
+  thrust curve.
 source_authors:   OpenBMP (Dmitri Arekhta)
 source_id:        synthetic; not derived from any fielded motor
+source_url:       https://github.com/openbmp/openbmp/blob/main/data/motors/synthetic-solid-d-class.toml
+source_hash_sha256: 76eed36d6fded4a727c1766a2d8e83da09526a3d3138df59f33348f26bbafc0c
 publication_date: 2026-04-27
 methodology_reference: >-
   RASP `.eng` thrust-curve format and the boost-sustain profile
@@ -128,7 +133,7 @@ safety_review:
 
 The Phase 2 plan calls for a `data/motors/estes-d12.eng-derived.toml`
 deck transcribed from ThrustCurve.org's public Estes D12 `.eng` file
-with `validation = "manufacturer"` and a SHA-256 pin on the source
+with `validation = "checked"` and a SHA-256 pin on the source
 `.eng` file. This is **deferred** to Phase 2.9 (sounding-rocket
 validation case) where the actual `.eng` file can be fetched and the
 SHA-256 pinned. The synthetic D-class motor above sits in for the
@@ -140,6 +145,8 @@ Tracking gap:
   pending_real_source:
     file:           data/motors/estes-d12.eng-derived.toml
     source_url:     https://www.thrustcurve.org/motors/Estes/D12/
+    source_class:   converted-public
+    validation:     checked
     expected_sha256: <to be filled when fetched>
     target_phase:   2.9 (sounding-rocket validation)
 
@@ -157,4 +164,4 @@ The architecture's
 [§ Motor Format (in-house TOML)](../../docs/software-architecture.md#motor-format-in-house-toml)
 documents this policy. The two motor decks shipped here both
 carry `source_class: synthetic-openbmp`; the Phase 2.9 D12 deck
-will carry `source_class: public-corpus` with the SHA pin.
+will carry `source_class: converted-public` with the SHA pin.

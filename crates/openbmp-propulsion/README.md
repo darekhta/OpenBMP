@@ -2,23 +2,24 @@
 
 L2 propulsion crate.
 
-**Status:** Phase 2 — stub.
+**Status:** Phase 2.6 — synthetic solid motor.
 
 ## Purpose
 
-- `Motor` trait combining `ForceModel` + `MassModel`.
-- Variants: `Solid`, `Liquid`, `Hybrid`, `ColdGas`.
+- Crate-local `Motor` trait exposing thrust, mass, and mass-rate lookups.
+- Variant: `Solid`. Liquid, hybrid, cold-gas, and kernel
+  `ForceModel` / `MassModel` adapters are deferred.
 - In-house TOML thrust-curve format (RASP `.eng`-shaped).
-- `MultiStageMotor` for staged academic launchers.
+- Impulse-weighted propellant mass depletion.
 
 ## Inputs and Outputs
 
-Time → thrust force (`ECI`) and mass-flow derivative.
+Time since ignition → thrust, motor mass, and mass-flow derivative.
 
 ## Units and Frames
 
-Thrust in `Body`, transformed to `ECI` via vehicle attitude. Mass flow
-in kg/s.
+Thrust in newtons. Kernel-side frame transformation lands with the Phase 2.10
+adapter. Mass flow is in kg/s.
 
 ## Assumptions
 
@@ -27,19 +28,17 @@ The crate models simulator-local thrust and mass flow only.
 
 ## Validity Range
 
-Each motor declares burn-time, thrust-curve, chamber/exit, and interpolation
-validity ranges. Samples outside the declared range fail closed unless an
-explicit shutdown or clamp rule is documented.
+Each motor declares burn time, thrust curve, and nozzle exit geometry. Thrust
+and mass rate are zero outside the burn window; mass clamps to the pre-ignition
+or post-burn boundary value.
 
 ## Determinism
 
-Thrust curves are tabulated and interpolated linearly with documented
-out-of-range behaviour (fail-closed unless extrapolation declared).
+Thrust curves are tabulated and interpolated linearly with locked operand order.
 
 ## Validation
 
-`experimental` (stub). Phase 2 validation starts with synthetic impulse and
-mass-flow consistency checks.
+Phase 2.6 validation uses synthetic impulse and mass-flow consistency checks.
 
 ## Data Provenance
 

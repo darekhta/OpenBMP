@@ -2,11 +2,12 @@
 #
 # A boost-sustain motor sized to the D-class envelope (10–20 N·s
 # total impulse, sub-2 s burn). Nominal envelope tracks the
-# Estes D12 hobby motor (~16.8 N·s total impulse, ~1.4 s burn,
-# ~12 N average thrust), but the values here are OpenBMP-authored
-# synthetic — not transcribed from any published thrust curve.
-# A real ThrustCurve.org-derived deck (with `validation =
-# "manufacturer"` and a SHA-256-pinned source `.eng` file) is
+# Estes D12 hobby motor (~16.8 N·s total impulse, ~1.7 s burn,
+# ~10 N average thrust, ~30 N peak thrust), but the values here are
+# OpenBMP-authored synthetic — not transcribed from any published
+# thrust curve.
+# A real ThrustCurve.org-derived deck (with `validation = "checked"`
+# and a SHA-256-pinned source `.eng` file) is
 # deferred to Phase 2.9 (sounding-rocket validation case) where
 # the user can fetch the actual file and pin its hash; see
 # `data/motors/provenance.md` for the gap.
@@ -29,7 +30,7 @@ validation = "validated-toy"
 [burn]
 duration_s         = 1.4
 total_impulse_n_s  = 15.0
-specific_impulse_s = 100.0
+specific_impulse_s = 101.97162129779284
 propellant_mass_kg = 0.015
 dry_mass_kg        = 0.025
 

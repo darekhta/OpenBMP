@@ -8,12 +8,12 @@
 //! [meta]
 //! name       = "synthetic-solid-A"
 //! provenance = "synthetic, designed for OpenBMP analytic-toy validation"
-//! validation = "validated-toy"   # validated-toy | validated-against-data | experimental | manufacturer
+//! validation = "validated-toy"   # experimental | checked | validated-toy | research
 //!
 //! [burn]
 //! duration_s         = 4.0
-//! total_impulse_n_s  = 2400.0
-//! specific_impulse_s = 220.0
+//! total_impulse_n_s  = 2444.5
+//! specific_impulse_s = 226.60875296586778
 //! propellant_mass_kg = 1.10
 //! dry_mass_kg        = 0.40
 //!
@@ -111,13 +111,13 @@ impl SolidMotor {
             });
         }
         let validation = match parsed.meta.validation.as_str() {
-            "validated-toy" => Validation::ValidatedToy,
-            "validated-against-data" => Validation::ValidatedAgainstData,
             "experimental" => Validation::Experimental,
-            "manufacturer" => Validation::Manufacturer,
+            "checked" => Validation::Checked,
+            "validated-toy" => Validation::ValidatedToy,
+            "research" => Validation::Research,
             _ => {
                 return Err(MotorError::MalformedMotor {
-                    reason: "meta.validation must be one of validated-toy, validated-against-data, experimental, manufacturer",
+                    reason: "meta.validation must be one of experimental, checked, validated-toy, research",
                 });
             }
         };
@@ -182,7 +182,7 @@ validation = "validated-toy"
 [burn]
 duration_s         = 4.0
 total_impulse_n_s  = 3500.0
-specific_impulse_s = 220.0
+specific_impulse_s = 356.9006745422749
 propellant_mass_kg = 1.0
 dry_mass_kg        = 0.5
 
@@ -211,10 +211,10 @@ ambient_pressure_correction  = "constant"
     #[test]
     fn parser_recognises_each_validation_label() {
         for (label, expected) in [
-            ("validated-toy", Validation::ValidatedToy),
-            ("validated-against-data", Validation::ValidatedAgainstData),
             ("experimental", Validation::Experimental),
-            ("manufacturer", Validation::Manufacturer),
+            ("checked", Validation::Checked),
+            ("validated-toy", Validation::ValidatedToy),
+            ("research", Validation::Research),
         ] {
             let toml_str = minimal_motor_toml().replace(
                 "validation = \"validated-toy\"",

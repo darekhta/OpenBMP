@@ -1165,12 +1165,12 @@ openbmp.motor = 1
 [meta]
 name = "synthetic-solid-A"
 provenance = "synthetic, designed for OpenBMP analytic-toy validation"
-validation = "checked"
+validation = "validated-toy"          # experimental | checked | validated-toy | research
 
 [burn]
 duration_s = 4.0
-total_impulse_n_s = 2400.0
-specific_impulse_s = 220.0          # nominal, for ΔV consistency check
+total_impulse_n_s = 2444.5
+specific_impulse_s = 226.60875296586778  # total_impulse = m_p · g0 · Isp
 propellant_mass_kg = 1.10
 dry_mass_kg = 0.40
 

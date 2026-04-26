@@ -23,9 +23,9 @@
 //! `m(t) = m_dry + m_p · (1 − I_consumed(t) / I_total)`. This
 //! matches the RASP / OpenRocket convention (mass loss tracks
 //! instantaneous thrust, not elapsed time) and ensures
-//! `m(burn_duration) = m_dry` exactly when the declared
-//! `total_impulse_n_s` equals the trapezoidal integral of the
-//! thrust curve.
+//! `m(burn_duration) = m_dry` exactly. The constructor rejects decks
+//! whose declared `total_impulse_n_s` differs from the trapezoidal
+//! integral of the thrust curve by more than 1e-6 relative.
 //!
 //! Outside the burn window (`t < 0` or `t > burn_duration`) thrust
 //! is identically zero and mass holds at its boundary value
@@ -39,6 +39,10 @@
 //! wall-clock, no system RNG, no network, no file I/O on the hot path.
 
 use crate::error::MotorError;
+
+const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
+const TOTAL_IMPULSE_REL_TOL: f64 = 1.0e-6;
+const SPECIFIC_IMPULSE_REL_TOL: f64 = 1.0e-6;
 
 // ---------------------------------------------------------------------
 // MotorVariant
@@ -119,18 +123,19 @@ pub trait Motor {
 // ---------------------------------------------------------------------
 
 /// Validation status flag carried in the motor file's `[meta]`
-/// block. Mirrors the typed-enum pattern used by the aero deck.
+/// block. Mirrors the project-wide validation labels used by the
+/// aero deck and provenance records.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum Validation {
-    /// Synthetic / textbook motor; no real-world calibration.
+    /// Implemented or drafted, not independently checked.
+    Experimental,
+    /// Internally consistent against unit/property tests.
+    Checked,
+    /// Compared against analytic or simple public examples.
     #[default]
     ValidatedToy,
-    /// Motor calibration validated against measured static-fire data.
-    ValidatedAgainstData,
-    /// Experimental; values may be revised.
-    Experimental,
-    /// Manufacturer-published thrust curve, transcribed verbatim.
-    Manufacturer,
+    /// Compared with public academic benchmark cases.
+    Research,
 }
 
 /// `[meta]` block of the motor file.
@@ -151,7 +156,7 @@ pub struct BurnSpec {
     pub duration_s: f64,
     /// Declared total impulse (N·s).
     pub total_impulse_n_s: f64,
-    /// Nominal specific impulse (s); used for ΔV consistency checks.
+    /// Specific impulse (s); checked against total impulse and propellant mass.
     pub specific_impulse_s: f64,
     /// Propellant mass at ignition (kg).
     pub propellant_mass_kg: f64,
@@ -182,6 +187,8 @@ impl ThrustCurve {
     /// Returns [`MotorError::NonFinite`] for any non-finite value.
     /// Returns [`MotorError::InvalidParameter`] for a negative thrust
     /// value (negative thrust is a Phase-3 concern; Phase 2 rejects).
+    /// Phase 2 also requires the first and final thrust values to be
+    /// zero, matching the in-house RASP-shaped schema contract.
     pub fn new(points: Vec<[f64; 2]>) -> Result<Self, MotorError> {
         if points.len() < 2 {
             return Err(MotorError::MalformedMotor {
@@ -212,6 +219,16 @@ impl ThrustCurve {
                 reason: "thrust curve must start at t = 0",
             });
         }
+        if points[0][1] != 0.0 {
+            return Err(MotorError::MalformedMotor {
+                reason: "thrust curve must start at zero thrust",
+            });
+        }
+        if points[points.len() - 1][1] != 0.0 {
+            return Err(MotorError::MalformedMotor {
+                reason: "thrust curve final point must have zero thrust",
+            });
+        }
 
         // Precompute cumulative trapezoidal impulse at each grid
         // point. Locked operand order: `0.5 * (F_i + F_{i+1}) *
@@ -222,7 +239,13 @@ impl ThrustCurve {
             let dt = points[i + 1][0] - points[i][0];
             let avg_thrust = 0.5 * (points[i][1] + points[i + 1][1]);
             let segment_impulse = avg_thrust * dt;
-            cumulative.push(cumulative[i] + segment_impulse);
+            let next = cumulative[i] + segment_impulse;
+            if !segment_impulse.is_finite() || !next.is_finite() {
+                return Err(MotorError::NonFinite {
+                    reason: "thrust-curve impulse integral is NaN or infinite",
+                });
+            }
+            cumulative.push(next);
         }
 
         Ok(Self {
@@ -349,6 +372,8 @@ impl SolidMotor {
                 reason: "thrust-curve last point time must equal burn.duration_s exactly",
             });
         }
+        validate_total_impulse_matches_curve(&burn, &thrust_curve)?;
+        validate_specific_impulse_consistency(&burn)?;
         Ok(Self {
             meta,
             burn,
@@ -511,6 +536,43 @@ fn validate_burn(burn: &BurnSpec) -> Result<(), MotorError> {
     Ok(())
 }
 
+fn validate_total_impulse_matches_curve(
+    burn: &BurnSpec,
+    thrust_curve: &ThrustCurve,
+) -> Result<(), MotorError> {
+    let integrated = thrust_curve.integrated_impulse_n_s();
+    if !integrated.is_finite() {
+        return Err(MotorError::NonFinite {
+            reason: "integrated thrust-curve impulse is NaN or infinite",
+        });
+    }
+    let rel = (integrated - burn.total_impulse_n_s).abs() / burn.total_impulse_n_s.abs();
+    if rel > TOTAL_IMPULSE_REL_TOL {
+        return Err(MotorError::InvalidParameter {
+            reason: "declared total impulse does not match thrust-curve integral",
+        });
+    }
+    Ok(())
+}
+
+fn validate_specific_impulse_consistency(burn: &BurnSpec) -> Result<(), MotorError> {
+    let expected_total_impulse =
+        burn.propellant_mass_kg * STANDARD_GRAVITY_M_S2 * burn.specific_impulse_s;
+    if !expected_total_impulse.is_finite() {
+        return Err(MotorError::NonFinite {
+            reason: "specific impulse consistency check produced NaN or infinity",
+        });
+    }
+    let rel =
+        (expected_total_impulse - burn.total_impulse_n_s).abs() / burn.total_impulse_n_s.abs();
+    if rel > SPECIFIC_IMPULSE_REL_TOL {
+        return Err(MotorError::InvalidParameter {
+            reason: "propellant mass, standard gravity, and specific impulse do not match total impulse",
+        });
+    }
+    Ok(())
+}
+
 fn validate_geometry(geometry: MotorGeometry) -> Result<(), MotorError> {
     if !geometry.exit_area_m2.is_finite() {
         return Err(MotorError::NonFinite {
@@ -543,7 +605,7 @@ mod tests {
         let burn = BurnSpec {
             duration_s: 4.0,
             total_impulse_n_s: 3500.0,
-            specific_impulse_s: 220.0,
+            specific_impulse_s: 356.900_674_542_274_9,
             propellant_mass_kg: 1.0,
             dry_mass_kg: 0.5,
         };
@@ -741,6 +803,22 @@ mod tests {
     }
 
     #[test]
+    fn thrust_curve_rejects_non_zero_first_thrust() {
+        assert!(matches!(
+            ThrustCurve::new(vec![[0.0, 1.0], [1.0, 0.0]]),
+            Err(MotorError::MalformedMotor { .. })
+        ));
+    }
+
+    #[test]
+    fn thrust_curve_rejects_non_zero_final_thrust() {
+        assert!(matches!(
+            ThrustCurve::new(vec![[0.0, 0.0], [1.0, 1.0]]),
+            Err(MotorError::MalformedMotor { .. })
+        ));
+    }
+
+    #[test]
     fn thrust_curve_rejects_non_monotone_time_grid() {
         assert!(matches!(
             ThrustCurve::new(vec![[0.0, 0.0], [1.0, 100.0], [0.5, 50.0]]),
@@ -788,7 +866,7 @@ mod tests {
         BurnSpec {
             duration_s: 1.0,
             total_impulse_n_s: 50.0,
-            specific_impulse_s: 100.0,
+            specific_impulse_s: 101.971_621_297_792_84,
             propellant_mass_kg: 0.05,
             dry_mass_kg: 0.05,
         }
@@ -830,6 +908,23 @@ mod tests {
     fn solid_motor_rejects_non_positive_total_impulse() {
         let mut burn = valid_burn();
         burn.total_impulse_n_s = 0.0;
+        let err = SolidMotor::new(valid_meta(), burn, valid_curve(), valid_geom()).unwrap_err();
+        assert!(matches!(err, MotorError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn solid_motor_rejects_total_impulse_curve_mismatch() {
+        let mut burn = valid_burn();
+        burn.total_impulse_n_s = 49.0;
+        burn.specific_impulse_s = 49.0 / (burn.propellant_mass_kg * STANDARD_GRAVITY_M_S2);
+        let err = SolidMotor::new(valid_meta(), burn, valid_curve(), valid_geom()).unwrap_err();
+        assert!(matches!(err, MotorError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn solid_motor_rejects_specific_impulse_inconsistency() {
+        let mut burn = valid_burn();
+        burn.specific_impulse_s *= 0.5;
         let err = SolidMotor::new(valid_meta(), burn, valid_curve(), valid_geom()).unwrap_err();
         assert!(matches!(err, MotorError::InvalidParameter { .. }));
     }
