@@ -7,7 +7,8 @@
 //!   `S: SimState` so it serves both point-mass and rigid-body
 //!   kernels.
 //! * [`vehicle::BasicVehicle`] — Phase-2 implementation that
-//!   composes ordered force-model and moment-model lists.
+//!   composes ordered force-model and moment-model lists and carries a
+//!   single mass model.
 //!   `BasicVehicle::force_n_eci` evaluates the list in declared
 //!   order with locked operand sum and short-circuits on the first
 //!   model error. The Phase-2 plan documents the contract
@@ -15,20 +16,22 @@
 //!   so reordering the list changes the byte output.
 //! * [`vehicle::ForceBreakdown`] / [`vehicle::MomentBreakdown`] —
 //!   per-model components plus total. The kernel-side adapter at
-//!   Phase 2.10 reads `evaluate_force_breakdown` per step to
-//!   publish `force.<name>.{x,y,z}` telemetry channels.
+//!   Phase 2.10 evaluates the breakdown once per step, uses its total
+//!   for dynamics, and publishes `force.<name>.{x,y,z}` telemetry
+//!   channels.
 //! * [`vehicle::BoxedMassModel`] — convenience wrapper around
-//!   `Box<dyn MassModel>` for symmetry with `BasicVehicle`. Phase 3
-//!   will add `MultiStageMass` as a richer composition.
+//!   `Box<dyn MassModel>` for the vehicle-owned mass model. Phase 3 will
+//!   add `MultiStageMass` as a richer composition.
 //! * [`error::VehicleError`].
 //!
 //! # Phase-1 byte-stability preservation
 //!
-//! Single-element vehicles wrapping a single `ForceModel<S>` produce
-//! byte-identical output to the raw model — the
-//! `single_force_model_vehicle_byte_matches_raw_model` test asserts
-//! this. The Phase-1 `analytic_toy` regression continues to use the
-//! kernel's existing generic `F: ForceModel<PointMassState>`
+//! The Phase-1 analytic toy gravity path remains byte-identical when
+//! the single gravity force is wrapped in a one-element `BasicVehicle`;
+//! the `single_force_model_vehicle_byte_matches_raw_model` test asserts
+//! the direct model result, and the kernel integration test asserts the
+//! final state. The Phase-1 `analytic_toy` regression continues to use
+//! the kernel's existing generic `F: ForceModel<PointMassState>`
 //! surface, so swapping in `BasicVehicle` is a future-Phase opt-in.
 //!
 //! # Determinism

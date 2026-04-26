@@ -711,11 +711,20 @@ classification. See [hypersonic-extensions.md](hypersonic-extensions.md).
 ## Vehicle and Mass Models
 
 ```rust
-pub trait Vehicle {
-    fn id(&self) -> VehicleId;
-    fn force_models(&self) -> &[Box<dyn ForceModel>];
-    fn moment_models(&self) -> &[Box<dyn MomentModel>];
+pub trait Vehicle<S: SimState>: ForceModel<S> + MomentModel<S> {
+    fn force_models(&self) -> &[Box<dyn ForceModel<S>>];
+    fn moment_models(&self) -> &[Box<dyn MomentModel<S>>];
     fn mass_model(&self) -> &dyn MassModel;
+    fn force_model_names(&self) -> Vec<String>;
+    fn moment_model_names(&self) -> Vec<String>;
+    fn evaluate_force_breakdown(
+        &self,
+        ctx: ForceContext<'_, S>,
+    ) -> Result<ForceBreakdown, ModelEvalError>;
+    fn evaluate_moment_breakdown(
+        &self,
+        ctx: MomentContext<'_, S>,
+    ) -> Result<MomentBreakdown, ModelEvalError>;
 }
 ```
 

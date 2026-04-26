@@ -3,19 +3,18 @@
 //! The architecture's long-term `Vehicle` trait is:
 //!
 //! ```rust,ignore
-//! pub trait Vehicle {
-//!     fn force_models(&self) -> &[Box<dyn ForceModel>];
-//!     fn moment_models(&self) -> &[Box<dyn MomentModel>];
+//! pub trait Vehicle<S: SimState>: ForceModel<S> + MomentModel<S> {
+//!     fn force_models(&self) -> &[Box<dyn ForceModel<S>>];
+//!     fn moment_models(&self) -> &[Box<dyn MomentModel<S>>];
 //!     fn mass_model(&self) -> &dyn MassModel;
 //! }
 //! ```
 //!
-//! Phase 2.8 ships [`BasicVehicle`], which composes ordered force /
-//! moment lists into a single `ForceModel<S>` / `MomentModel<S>`
-//! impl that the kernel consumes through its existing generic
-//! surface. The mass model is carried by the kernel separately
-//! (Phase-3 `MultiStageMass` will be a single `MassModel` impl that
-//! composes child stage masses).
+//! Phase 2.8 ships [`BasicVehicle`], which carries ordered force /
+//! moment lists plus a single mass model. It also implements
+//! `ForceModel<S>` / `MomentModel<S>` so the Phase-1 kernel can consume
+//! the force and moment composition through its existing generic
+//! surface while the mass model is passed to the kernel separately.
 //!
 //! # Composition order
 //!
@@ -37,11 +36,12 @@
 //! # Per-model breakdown for telemetry
 //!
 //! [`BasicVehicle::evaluate_force_breakdown`] /
-//! [`BasicVehicle::evaluate_moment_breakdown`] re-evaluate the lists
-//! and return a [`ForceBreakdown`] / [`MomentBreakdown`] carrying both
+//! [`BasicVehicle::evaluate_moment_breakdown`] evaluate the lists and
+//! return a [`ForceBreakdown`] / [`MomentBreakdown`] carrying both
 //! per-model components and the total. The kernel-side adapter at
-//! Phase 2.10 hooks these into the telemetry layer to produce
-//! `force.<name>.{x,y,z}` channels per the plan's exit criterion.
+//! Phase 2.10 evaluates the breakdown once per step, uses the total for
+//! dynamics, and hooks the components into telemetry as
+//! `force.<name>.{x,y,z}` channels.
 //!
 //! # Determinism
 //!
@@ -149,15 +149,24 @@ pub struct MomentBreakdown {
 /// Generic over `S: SimState` so the same trait surface serves
 /// point-mass and rigid-body kernels.
 ///
-/// The Phase-2 plan exit criterion is "scenario with `forces =
-/// ["gravity", "aero", "thrust"]` runs and produces telemetry with
-/// per-model breakdowns". The `Vehicle` trait expose the
-/// per-model lists via [`force_model_names`](Self::force_model_names)
-/// and [`moment_model_names`](Self::moment_model_names), and the
-/// kernel-side adapter at Phase 2.10 reads
+/// The Phase-2.8 close criteria are the flat force / moment / mass
+/// composition surface plus deterministic breakdown evaluation. The
+/// `Vehicle` trait exposes the per-model lists via
+/// [`force_model_names`](Self::force_model_names) and
+/// [`moment_model_names`](Self::moment_model_names), and the kernel-side
+/// adapter at Phase 2.10 reads
 /// [`evaluate_force_breakdown`](Self::evaluate_force_breakdown) per
 /// step to publish the breakdown channels.
 pub trait Vehicle<S: SimState>: ForceModel<S> + MomentModel<S> {
+    /// Registered force models in declared order.
+    fn force_models(&self) -> &[Box<dyn ForceModel<S>>];
+
+    /// Registered moment models in declared order.
+    fn moment_models(&self) -> &[Box<dyn MomentModel<S>>];
+
+    /// Mass model associated with this vehicle.
+    fn mass_model(&self) -> &dyn MassModel;
+
     /// Names of the registered force models in declared order.
     fn force_model_names(&self) -> Vec<String>;
 
@@ -196,53 +205,58 @@ pub trait Vehicle<S: SimState>: ForceModel<S> + MomentModel<S> {
 // ---------------------------------------------------------------------
 
 /// Phase-2 vehicle composition: ordered force-model and moment-model
-/// lists over a single [`SimState`] type.
-///
-/// Mass-model composition is left to the kernel-side adapter — Phase
-/// 2 ships `BasicVehicle` for force and moment composition only;
-/// `MassModel` impls (constant, linear-burn, multi-stage in Phase 3)
-/// flow into the kernel directly.
+/// lists plus one mass model over a single [`SimState`] type.
 pub struct BasicVehicle<S: SimState> {
-    force_models: Vec<NamedForceModel<S>>,
-    moment_models: Vec<NamedMomentModel<S>>,
+    force_model_names: Vec<String>,
+    force_models: Vec<Box<dyn ForceModel<S>>>,
+    moment_model_names: Vec<String>,
+    moment_models: Vec<Box<dyn MomentModel<S>>>,
+    mass_model: BoxedMassModel,
 }
 
 impl<S: SimState> std::fmt::Debug for BasicVehicle<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BasicVehicle")
-            .field("force_models", &self.force_models)
-            .field("moment_models", &self.moment_models)
+            .field("force_model_names", &self.force_model_names)
+            .field("force_models", &"<dyn ForceModel list>")
+            .field("moment_model_names", &self.moment_model_names)
+            .field("moment_models", &"<dyn MomentModel list>")
+            .field("mass_model", &self.mass_model)
             .finish()
     }
 }
 
 impl<S: SimState> BasicVehicle<S> {
-    /// Construct from explicit ordered lists.
+    /// Construct from explicit ordered force / moment lists and a mass
+    /// model.
     ///
     /// # Errors
     ///
     /// Returns [`VehicleError::MalformedVehicle`] if any model name
-    /// is empty. Returns [`VehicleError::InvalidParameter`] if a name
-    /// is duplicated within the force list or within the moment list
-    /// (duplicates would make per-model telemetry breakdowns
-    /// ambiguous).
+    /// is empty, contains whitespace, or contains `.`. Returns
+    /// [`VehicleError::InvalidParameter`] if a name is duplicated within
+    /// the force list or within the moment list (duplicates would make
+    /// per-model telemetry breakdowns ambiguous).
     pub fn new(
         force_models: Vec<NamedForceModel<S>>,
         moment_models: Vec<NamedMomentModel<S>>,
+        mass_model: Box<dyn MassModel>,
     ) -> Result<Self, VehicleError> {
         for m in &force_models {
-            if m.name.is_empty() {
-                return Err(VehicleError::MalformedVehicle {
-                    reason: "force-model name is empty",
-                });
-            }
+            validate_model_name(
+                &m.name,
+                "force-model name is empty",
+                "force-model name contains whitespace",
+                "force-model name contains telemetry separator '.'",
+            )?;
         }
         for m in &moment_models {
-            if m.name.is_empty() {
-                return Err(VehicleError::MalformedVehicle {
-                    reason: "moment-model name is empty",
-                });
-            }
+            validate_model_name(
+                &m.name,
+                "moment-model name is empty",
+                "moment-model name contains whitespace",
+                "moment-model name contains telemetry separator '.'",
+            )?;
         }
         // Duplicate-name detection (O(n²) for tiny n; the lists are
         // typically 2..6 long).
@@ -264,9 +278,21 @@ impl<S: SimState> BasicVehicle<S> {
                 }
             }
         }
+        let (force_model_names, force_models) = force_models
+            .into_iter()
+            .map(|entry| (entry.name, entry.model))
+            .unzip();
+        let (moment_model_names, moment_models) = moment_models
+            .into_iter()
+            .map(|entry| (entry.name, entry.model))
+            .unzip();
+
         Ok(Self {
+            force_model_names,
             force_models,
+            moment_model_names,
             moment_models,
+            mass_model: BoxedMassModel(mass_model),
         })
     }
 
@@ -282,17 +308,22 @@ impl<S: SimState> BasicVehicle<S> {
         self.moment_models.len()
     }
 
-    /// Read-only access to the force-model entries (for tests and
-    /// telemetry routing).
+    /// Read-only access to the force models in declared order.
     #[must_use]
-    pub fn force_models(&self) -> &[NamedForceModel<S>] {
+    pub fn force_models(&self) -> &[Box<dyn ForceModel<S>>] {
         &self.force_models
     }
 
-    /// Read-only access to the moment-model entries.
+    /// Read-only access to the moment models in declared order.
     #[must_use]
-    pub fn moment_models(&self) -> &[NamedMomentModel<S>] {
+    pub fn moment_models(&self) -> &[Box<dyn MomentModel<S>>] {
         &self.moment_models
+    }
+
+    /// Read-only access to the mass model.
+    #[must_use]
+    pub fn mass_model(&self) -> &dyn MassModel {
+        self.mass_model.0.as_ref()
     }
 }
 
@@ -301,7 +332,7 @@ impl<S: SimState> ForceModel<S> for BasicVehicle<S> {
         // Locked left fold in declared order. No FMA.
         let mut total = Vector3::zeros();
         for f in &self.force_models {
-            let component = f.model.force_n_eci(ctx)?;
+            let component = f.force_n_eci(ctx)?;
             total += component;
         }
         Ok(total)
@@ -312,7 +343,7 @@ impl<S: SimState> MomentModel<S> for BasicVehicle<S> {
     fn moment_n_m_body(&self, ctx: MomentContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError> {
         let mut total = Vector3::zeros();
         for m in &self.moment_models {
-            let component = m.model.moment_n_m_body(ctx)?;
+            let component = m.moment_n_m_body(ctx)?;
             total += component;
         }
         Ok(total)
@@ -320,12 +351,24 @@ impl<S: SimState> MomentModel<S> for BasicVehicle<S> {
 }
 
 impl<S: SimState> Vehicle<S> for BasicVehicle<S> {
+    fn force_models(&self) -> &[Box<dyn ForceModel<S>>] {
+        &self.force_models
+    }
+
+    fn moment_models(&self) -> &[Box<dyn MomentModel<S>>] {
+        &self.moment_models
+    }
+
+    fn mass_model(&self) -> &dyn MassModel {
+        self.mass_model.0.as_ref()
+    }
+
     fn force_model_names(&self) -> Vec<String> {
-        self.force_models.iter().map(|f| f.name.clone()).collect()
+        self.force_model_names.clone()
     }
 
     fn moment_model_names(&self) -> Vec<String> {
-        self.moment_models.iter().map(|m| m.name.clone()).collect()
+        self.moment_model_names.clone()
     }
 
     fn evaluate_force_breakdown(
@@ -334,9 +377,9 @@ impl<S: SimState> Vehicle<S> for BasicVehicle<S> {
     ) -> Result<ForceBreakdown, ModelEvalError> {
         let mut total = Vector3::zeros();
         let mut components = Vec::with_capacity(self.force_models.len());
-        for f in &self.force_models {
-            let component = f.model.force_n_eci(ctx)?;
-            components.push((f.name.clone(), component));
+        for (name, model) in self.force_model_names.iter().zip(&self.force_models) {
+            let component = model.force_n_eci(ctx)?;
+            components.push((name.clone(), component));
             total += component;
         }
         Ok(ForceBreakdown { components, total })
@@ -348,13 +391,37 @@ impl<S: SimState> Vehicle<S> for BasicVehicle<S> {
     ) -> Result<MomentBreakdown, ModelEvalError> {
         let mut total = Vector3::zeros();
         let mut components = Vec::with_capacity(self.moment_models.len());
-        for m in &self.moment_models {
-            let component = m.model.moment_n_m_body(ctx)?;
-            components.push((m.name.clone(), component));
+        for (name, model) in self.moment_model_names.iter().zip(&self.moment_models) {
+            let component = model.moment_n_m_body(ctx)?;
+            components.push((name.clone(), component));
             total += component;
         }
         Ok(MomentBreakdown { components, total })
     }
+}
+
+fn validate_model_name(
+    name: &str,
+    empty_reason: &'static str,
+    whitespace_reason: &'static str,
+    separator_reason: &'static str,
+) -> Result<(), VehicleError> {
+    if name.trim().is_empty() {
+        return Err(VehicleError::MalformedVehicle {
+            reason: empty_reason,
+        });
+    }
+    if name.chars().any(char::is_whitespace) {
+        return Err(VehicleError::MalformedVehicle {
+            reason: whitespace_reason,
+        });
+    }
+    if name.contains('.') {
+        return Err(VehicleError::MalformedVehicle {
+            reason: separator_reason,
+        });
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------
@@ -399,7 +466,9 @@ impl MassModel for BoxedMassModel {
 mod tests {
     use super::*;
     use openbmp_core::{Position3, SimTime, Velocity3};
-    use openbmp_sim::{ConstantGravityForce, EnvironmentSample, ZeroForce, ZeroMoment};
+    use openbmp_sim::{
+        ConstantGravityForce, ConstantMass, EnvironmentSample, ZeroForce, ZeroMoment,
+    };
     use openbmp_state::PointMassState;
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
@@ -429,9 +498,14 @@ mod tests {
         EnvironmentSample::default()
     }
 
+    fn test_mass_model() -> Box<dyn MassModel> {
+        Box::new(ConstantMass::new(1.0))
+    }
+
     #[test]
     fn empty_vehicle_returns_zero_force() {
-        let v: BasicVehicle<PointMassState> = BasicVehicle::new(vec![], vec![]).unwrap();
+        let v: BasicVehicle<PointMassState> =
+            BasicVehicle::new(vec![], vec![], test_mass_model()).unwrap();
         let state = fixture_state();
         let env = null_env();
         let f = v.force_n_eci(ctx(&state, &env)).unwrap();
@@ -441,8 +515,12 @@ mod tests {
     #[test]
     fn single_force_model_vehicle_byte_matches_raw_model() {
         let g = ConstantGravityForce::down_z(9.806_65);
-        let v: BasicVehicle<PointMassState> =
-            BasicVehicle::new(vec![NamedForceModel::new("gravity", Box::new(g))], vec![]).unwrap();
+        let v: BasicVehicle<PointMassState> = BasicVehicle::new(
+            vec![NamedForceModel::new("gravity", Box::new(g))],
+            vec![],
+            test_mass_model(),
+        )
+        .unwrap();
 
         let state = fixture_state();
         let env = null_env();
@@ -466,6 +544,7 @@ mod tests {
                 NamedForceModel::new("b", Box::new(g2)),
             ],
             vec![],
+            test_mass_model(),
         )
         .unwrap();
         let state = fixture_state();
@@ -484,6 +563,7 @@ mod tests {
                 NamedForceModel::new("b", Box::new(g2)),
             ],
             vec![],
+            test_mass_model(),
         )
         .unwrap();
         let state = fixture_state();
@@ -521,6 +601,7 @@ mod tests {
                 NamedForceModel::new("gravity", Box::new(ConstantGravityForce::down_z(9.806_65))),
             ],
             vec![],
+            test_mass_model(),
         )
         .unwrap();
         let state = fixture_state();
@@ -548,6 +629,7 @@ mod tests {
                 NamedForceModel::new("small", Box::new(small)),
             ],
             vec![],
+            test_mass_model(),
         )
         .unwrap();
 
@@ -559,6 +641,7 @@ mod tests {
                 NamedForceModel::new("neg_big", Box::new(neg_big)),
             ],
             vec![],
+            test_mass_model(),
         )
         .unwrap();
 
@@ -584,6 +667,7 @@ mod tests {
                 NamedForceModel::new("b", Box::new(g2)),
             ],
             vec![],
+            test_mass_model(),
         )
         .unwrap();
         let state = fixture_state();
@@ -598,8 +682,12 @@ mod tests {
     #[test]
     fn moment_models_compose_in_declared_order() {
         let zm = ZeroMoment;
-        let v: BasicVehicle<PointMassState> =
-            BasicVehicle::new(vec![], vec![NamedMomentModel::new("zero", Box::new(zm))]).unwrap();
+        let v: BasicVehicle<PointMassState> = BasicVehicle::new(
+            vec![],
+            vec![NamedMomentModel::new("zero", Box::new(zm))],
+            test_mass_model(),
+        )
+        .unwrap();
         let state = fixture_state();
         let env = null_env();
         let m = v
@@ -618,6 +706,29 @@ mod tests {
         let err = BasicVehicle::<PointMassState>::new(
             vec![NamedForceModel::new("", Box::new(zf))],
             vec![],
+            test_mass_model(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, VehicleError::MalformedVehicle { .. }));
+    }
+
+    #[test]
+    fn constructor_rejects_whitespace_force_model_name() {
+        let err = BasicVehicle::<PointMassState>::new(
+            vec![NamedForceModel::new("bad name", Box::new(ZeroForce))],
+            vec![],
+            test_mass_model(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, VehicleError::MalformedVehicle { .. }));
+    }
+
+    #[test]
+    fn constructor_rejects_telemetry_separator_in_force_model_name() {
+        let err = BasicVehicle::<PointMassState>::new(
+            vec![NamedForceModel::new("bad.name", Box::new(ZeroForce))],
+            vec![],
+            test_mass_model(),
         )
         .unwrap_err();
         assert!(matches!(err, VehicleError::MalformedVehicle { .. }));
@@ -631,6 +742,7 @@ mod tests {
                 NamedForceModel::new("dup", Box::new(ZeroForce)),
             ],
             vec![],
+            test_mass_model(),
         )
         .unwrap_err();
         assert!(matches!(err, VehicleError::InvalidParameter { .. }));
@@ -644,9 +756,23 @@ mod tests {
                 NamedMomentModel::new("dup", Box::new(ZeroMoment)),
                 NamedMomentModel::new("dup", Box::new(ZeroMoment)),
             ],
+            test_mass_model(),
         )
         .unwrap_err();
         assert!(matches!(err, VehicleError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn vehicle_trait_exposes_mass_model() {
+        let v: BasicVehicle<PointMassState> =
+            BasicVehicle::new(vec![], vec![], test_mass_model()).unwrap();
+        assert_eq!(v.mass_model().mass_kg(SimTime::ZERO).unwrap(), 1.0);
+        assert_eq!(
+            <BasicVehicle<PointMassState> as Vehicle<PointMassState>>::mass_model(&v)
+                .mass_kg(SimTime::ZERO)
+                .unwrap(),
+            1.0
+        );
     }
 
     #[test]
@@ -658,6 +784,7 @@ mod tests {
                 NamedForceModel::new("thrust", Box::new(ZeroForce)),
             ],
             vec![],
+            test_mass_model(),
         )
         .unwrap();
         let names = v.force_model_names();

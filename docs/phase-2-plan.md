@@ -642,11 +642,12 @@ so the RNG seeding scheme has to be locked carefully.
 
 ### 2.8 — Force / moment / mass composition
 
-**Scope.** Wire multiple force / moment / mass models into one
-`Vehicle`. The kernel sums their outputs in **declared order** every
-step. The `Vehicle` trait is the trivial-case degenerate of the
-Phase-3 `VehicleAssembly` tree — designed so Phase 3 can subsume it
-without breaking changes.
+**Scope.** Wire multiple force / moment models plus one mass model into
+one `Vehicle`. `BasicVehicle` sums force and moment outputs in
+**declared order** and carries the mass model required by the flat
+vehicle surface. The kernel still consumes the Phase-1 generic
+force/moment/mass inputs directly; the Phase-2.10 kernel adapter wires a
+`Vehicle` into that surface and publishes per-model telemetry.
 
 **Tasks.**
 
@@ -654,20 +655,18 @@ without breaking changes.
   - `Vehicle` trait per architecture
     [§ Vehicle and Mass Models](software-architecture.md#vehicle-and-mass-models).
   - `BasicVehicle { force_models, moment_models, mass_model }` —
-    ordered `Vec<Box<dyn _Model>>` lists.
-- `crates/openbmp-sim/src/kernel.rs`:
-  - Step pseudocode evaluates the fallible force / moment / mass lists
-    in declared order, sums successful outputs in declared order, no FMA,
-    no parallelism.
-  - The first model error stops the step before any state mutation and
-    reports `(step_index, model_id, error)`.
-  - Telemetry channel for the per-model contribution
-    (`force.<name>.x`, `force.<name>.y`, `force.<name>.z`) so a
-    consumer can debug "which force is dominating".
+    ordered force / moment trait-object lists with stable names for
+    Phase-2.10 telemetry routing.
+  - `ForceBreakdown` / `MomentBreakdown` return declared-order
+    per-model components plus totals.
+- `crates/openbmp-sim/src/kernel.rs`: no Phase-2.8 code change. The
+  Phase-2.10 adapter evaluates breakdowns once per step, uses the
+  breakdown total for dynamics, short-circuits on the first model error,
+  and publishes `force.<name>.{x,y,z}` telemetry channels.
 
 **Tests.**
 
-- Unit: `BasicVehicle::force_eci(...)` with two force models returns
+- Unit: `BasicVehicle::force_n_eci(...)` with two force models returns
   the ordered sum.
 - Unit: the first failing force model short-circuits later models and
   leaves the state unchanged.
@@ -677,8 +676,13 @@ without breaking changes.
 
 **Exit criteria.**
 
-- A scenario with `forces = ["gravity", "aero", "thrust"]` runs and
-  produces telemetry with per-model breakdowns.
+- `BasicVehicle` composes declared-order force / moment lists and exposes
+  the associated mass model through the flat `Vehicle` trait.
+- The Phase-1 analytic-toy path remains byte-stable directly and through
+  a one-force `BasicVehicle` wrapper.
+- Scenario-format wiring for `forces = ["gravity", "aero", "thrust"]`
+  and `force.<name>.{x,y,z}` telemetry publishing are deferred to
+  Phase 2.10.
 
 **Effort.** Small-medium (~0.7 week).
 

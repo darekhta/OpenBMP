@@ -57,6 +57,7 @@ fn run_with_basic_vehicle() -> PointMassState {
             Box::new(ConstantGravityForce::new(Vector3::new(0.0, 0.0, -G_M_S2))),
         )],
         vec![],
+        Box::new(ConstantMass::new(1.0)),
     )
     .expect("vehicle construction");
     let config = SimulationConfig {
