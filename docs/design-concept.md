@@ -147,8 +147,9 @@ The OpenBMP repository ships no supported path from its virtual-controller
 code to physical sensors, real buses, real actuators, or real flight
 computers. The optional HIL pattern is a generic socket bridge with no
 real device drivers and no real bus protocols. Downstream consumers
-integrating OpenBMP into production stacks may add such paths in their
-own repositories under their own export-control and qualification posture
+building lab or independently qualified hardware integrations may add
+such paths in their own repositories under their own export-control and
+qualification posture
 (see [software-architecture.md § Extensibility for Downstream
 Integration](software-architecture.md#extensibility-for-downstream-integration));
 the OpenBMP core repository itself will not.
@@ -387,8 +388,9 @@ and any operational mission profile.
 - `TankModel` and `MovingMassModel` for slosh as **generic moving-mass
   dynamics**: liquid mass inside a tank shifts CG and adds a coupled
   pendulum or Abramson-style equivalent moving-mass term to the rigid
-  body. No fielded propellant data; toy and textbook tank geometries
-  only.
+  body. OpenBMP-shipped reference models use toy / textbook propellant
+  properties and tank geometries only; downstream real-data packages live
+  outside this repository.
 - `VehicleAssembly` framework: a `Bodies / Propulsion / Effectors /
   Tanks / Sensors / MassProperties` tree composed in the scenario file
   and resolved into the kernel's force / moment / mass model lists at
@@ -439,7 +441,7 @@ and any operational mission profile.
   and shared environment sampling. Replaces the Phase-3 single-vehicle
   staging hack.
 - **Multi-rate scheduling** as a first-class scheduler concept: rate
-  groups expressed as integer divisors of the base step (`env_rate_hz`,
+  groups expressed as integer divisors of the base tick rate (`env_rate_hz`,
   `controller_rate_hz`, `telemetry_rate_hz`, `effector_rate_hz`), with
   determinism preserved because the schedule is fixed at scenario
   start. The kernel resolves rate groups into a static sub-step plan
