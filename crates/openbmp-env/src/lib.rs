@@ -1,14 +1,18 @@
 //! `openbmp-env` — OpenBMP environment models.
 //!
-//! Phase 2.2 ships:
+//! Phase 2.2 + 2.3 ship:
 //!
 //! * [`gravity`] — [`gravity::ConstantGravity`],
 //!   [`gravity::PointMassGravity`], [`gravity::J2Gravity`]. WGS84
 //!   defaults pinned to NIMA TR 8350.2 values.
+//! * [`atmosphere`] — [`atmosphere::AtmosphereSample`],
+//!   [`atmosphere::AtmosphereModel`] trait,
+//!   [`atmosphere::IsothermalAtmosphere`] (toy), and
+//!   [`atmosphere::UsStandard1976`] (geopotential 0–86 km, in-house
+//!   port of NOAA-S/T 76-1562 / NASA-TM-X-74335).
 //!
-//! Atmosphere (Phase 2.3 — US Standard 1976), wind (Phase 2.4 —
-//! `NoWind` and `ConstantWind`), and magnetic field (Phase 5+) land
-//! in their own sub-phases.
+//! Wind (Phase 2.4 — `NoWind` and `ConstantWind`) and magnetic field
+//! (Phase 5+) land in their own sub-phases.
 //!
 //! # Determinism
 //!
@@ -22,8 +26,12 @@
 //! models into its `ForceModel` / `EnvironmentModel` surfaces at a
 //! higher layer. See `docs/phase-2-plan.md § Implementation Seams`.
 
+pub mod atmosphere;
 pub mod error;
 pub mod gravity;
 
+pub use atmosphere::{
+    AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, IsothermalAtmosphere, UsStandard1976,
+};
 pub use error::EnvError;
 pub use gravity::{ConstantGravity, GravityModel, J2Gravity, PointMassGravity, WGS84_J2};
