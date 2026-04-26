@@ -1,6 +1,6 @@
 //! `openbmp-env` — OpenBMP environment models.
 //!
-//! Phase 2.2 + 2.3 ship:
+//! Phase 2.2 – 2.4 ship:
 //!
 //! * [`gravity`] — [`gravity::ConstantGravity`],
 //!   [`gravity::PointMassGravity`], [`gravity::J2Gravity`]. WGS84
@@ -10,9 +10,11 @@
 //!   [`atmosphere::IsothermalAtmosphere`] (toy), and
 //!   [`atmosphere::UsStandard1976`] (geopotential 0–86 km, in-house
 //!   port of NOAA-S/T 76-1562 / NASA-TM-X-74335).
+//! * [`wind`] — [`wind::WindModel`] trait, [`wind::NoWind`] (toy),
+//!   and [`wind::ConstantWind`]. Layered profiles, gust spectra, and
+//!   altitude-shear winds are deferred to Phase 3.
 //!
-//! Wind (Phase 2.4 — `NoWind` and `ConstantWind`) and magnetic field
-//! (Phase 5+) land in their own sub-phases.
+//! Magnetic field (Phase 5+) lands in its own sub-phase.
 //!
 //! # Determinism
 //!
@@ -29,9 +31,11 @@
 pub mod atmosphere;
 pub mod error;
 pub mod gravity;
+pub mod wind;
 
 pub use atmosphere::{
     AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, IsothermalAtmosphere, UsStandard1976,
 };
 pub use error::EnvError;
 pub use gravity::{ConstantGravity, GravityModel, J2Gravity, PointMassGravity, WGS84_J2};
+pub use wind::{ConstantWind, NoWind, WindModel};
