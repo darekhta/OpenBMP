@@ -1,0 +1,12 @@
+[package]
+name                    = "openbmp-aero"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP aerodynamics: deck format, aero methods (incl. hypersonic Phase 6)."
+
+[lints]
+workspace = true

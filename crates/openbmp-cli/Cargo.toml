@@ -1,0 +1,20 @@
+[package]
+name                    = "openbmp-cli"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP command-line: scenario runner, golden diff, scenario lint, batch sweep."
+
+[[bin]]
+name = "openbmp"
+path = "src/main.rs"
+
+[features]
+default = []
+bridge  = []
+
+[lints]
+workspace = true

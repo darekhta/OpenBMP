@@ -1,0 +1,12 @@
+[package]
+name                    = "openbmp-fc"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP virtual flight controller: estimator, autopilot, mission FSM, FDIR, academic guidance."
+
+[lints]
+workspace = true

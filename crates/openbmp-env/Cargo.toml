@@ -1,0 +1,12 @@
+[package]
+name                    = "openbmp-env"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP environment models: atmosphere, gravity, wind, magnetic field."
+
+[lints]
+workspace = true

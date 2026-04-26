@@ -1,0 +1,53 @@
+# OpenBMP cargo-deny policy.
+#
+# See https://embarkstudios.github.io/cargo-deny/ for full documentation.
+
+[graph]
+all-features = true
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked  = "deny"
+ignore  = []
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards         = "deny"
+
+# Yanked-version landmines from the April 2026 ecosystem survey.
+deny = [
+    { crate = "ndarray@=0.17.0",            reason = "yanked" },
+    { crate = "tracing@=0.1.42",            reason = "yanked" },
+    { crate = "tracing-subscriber@=0.3.21", reason = "yanked" },
+    { crate = "color-eyre@=0.6.4",          reason = "yanked" },
+    { crate = "approx@=0.6.0-rc1",          reason = "yanked" },
+    { crate = "cargo-deny@=0.19.3",         reason = "yanked" },
+    # Deprecated upstream — use replacements
+    { crate = "serde_yaml",                 reason = "deprecated; use serde_norway" },
+    { crate = "chrono",                     reason = "prefer jiff for new code" },
+]
+
+# Tokio is permitted only in openbmp-bridge. Workspace policy enforced via
+# code review (a `cargo deny`-level per-crate restriction is on the
+# Phase-1.10 follow-on to add once cargo-deny lands proper per-crate bans).
+
+[sources]
+unknown-registry = "deny"
+unknown-git      = "deny"
+allow-org        = []

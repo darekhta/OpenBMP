@@ -1,0 +1,128 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/openbmp-core",
+    "crates/openbmp-state",
+    "crates/openbmp-sim",
+    "crates/openbmp-env",
+    "crates/openbmp-vehicle",
+    "crates/openbmp-aero",
+    "crates/openbmp-aerothermal",
+    "crates/openbmp-propulsion",
+    "crates/openbmp-sensors",
+    "crates/openbmp-fc",
+    "crates/openbmp-telemetry",
+    "crates/openbmp-scenario",
+    "crates/openbmp-testkit",
+    "crates/openbmp-cli",
+    "crates/openbmp-bridge",
+]
+
+[workspace.package]
+version      = "0.0.1"
+edition      = "2024"
+rust-version = "1.93"
+license      = "Apache-2.0 OR MIT"
+repository   = "https://github.com/openbmp/openbmp"
+authors      = ["OpenBMP contributors"]
+description  = "Open Body Motion Platform — academic Rust simulation-only research platform."
+
+[workspace.lints.rust]
+missing_docs                  = "deny"
+missing_debug_implementations = "warn"
+unsafe_code                   = "deny"
+unused_must_use               = "deny"
+
+[workspace.lints.clippy]
+pedantic    = { level = "warn", priority = -1 }
+all         = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic       = "warn"
+float_cmp   = "deny"
+
+[workspace.dependencies]
+# --- Math / numerics
+nalgebra    = { version = "0.34.2", default-features = false, features = ["std"] }
+num-traits  = { version = "0.2.19", default-features = false }
+num-complex = { version = "0.4.6",  default-features = false }
+uom         = { version = "0.38.0", default-features = false, features = ["f64", "si", "std", "autoconvert"] }
+approx      = { version = "0.5.1",  default-features = false }
+ndarray     = { version = "0.17.2", default-features = false }
+
+# --- Determinism
+rand        = { version = "0.9.4",  default-features = false, features = ["std", "std_rng"] }
+rand_chacha = { version = "0.9.0",  default-features = false }
+
+# --- Statistics
+statrs      = { version = "0.18.0", default-features = false }
+
+# --- Serialization & config
+serde        = { version = "1.0.228", features = ["derive"] }
+serde_with   = { version = "3.18.0" }
+serde_norway = { version = "0.9.42" }
+toml         = { version = "1.1.2"  }
+toml_edit    = { version = "0.25.11" }
+postcard     = { version = "1.1.3", default-features = false, features = ["alloc"] }
+
+# --- Telemetry archive
+arrow   = { version = "58.1.0", default-features = false, features = ["ipc"] }
+parquet = { version = "58.1.0", default-features = false, features = ["arrow", "snap"] }
+
+# --- CLI / errors / logging
+clap               = { version = "4.6.1", features = ["derive", "env", "wrap_help"] }
+miette             = { version = "7.6.0", features = ["fancy"] }
+thiserror          = { version = "2.0.18" }
+anyhow             = { version = "1.0.102" }
+tracing            = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter"] }
+
+# --- Containers
+indexmap = { version = "2.14.0" }
+bytemuck = { version = "1.25.0", features = ["derive"] }
+
+# --- Builders
+bon = { version = "3.9.1" }
+
+# --- Time (scenario boundaries; NOT in kernel)
+jiff     = { version = "0.2.24" }
+hifitime = { version = "4.2.6", default-features = false, features = ["std"] }
+
+# --- Async (bridge crate ONLY)
+tokio = { version = "1.52.1", default-features = false, features = ["rt", "macros", "io-util"] }
+
+# --- Test / bench / fuzz
+proptest        = { version = "1.11.0", default-features = false, features = ["std"] }
+proptest-derive = { version = "0.8.0" }
+insta           = { version = "1.47.2", features = ["yaml"] }
+criterion       = { version = "0.8.2", default-features = false, features = ["plotters"] }
+
+# --- Build helpers
+duct = { version = "1.1.1" }
+
+# --- Internal
+openbmp-core       = { version = "0.0.1", path = "crates/openbmp-core" }
+openbmp-state      = { version = "0.0.1", path = "crates/openbmp-state" }
+openbmp-sim        = { version = "0.0.1", path = "crates/openbmp-sim" }
+openbmp-env        = { version = "0.0.1", path = "crates/openbmp-env" }
+openbmp-vehicle    = { version = "0.0.1", path = "crates/openbmp-vehicle" }
+openbmp-aero       = { version = "0.0.1", path = "crates/openbmp-aero" }
+openbmp-aerothermal = { version = "0.0.1", path = "crates/openbmp-aerothermal" }
+openbmp-propulsion = { version = "0.0.1", path = "crates/openbmp-propulsion" }
+openbmp-sensors    = { version = "0.0.1", path = "crates/openbmp-sensors" }
+openbmp-fc         = { version = "0.0.1", path = "crates/openbmp-fc" }
+openbmp-telemetry  = { version = "0.0.1", path = "crates/openbmp-telemetry" }
+openbmp-scenario   = { version = "0.0.1", path = "crates/openbmp-scenario" }
+openbmp-testkit    = { version = "0.0.1", path = "crates/openbmp-testkit" }
+
+[profile.release]
+# trim-paths = "object"   # nightly-only as of Rust 1.95; revisit when stabilised
+debug           = "line-tables-only"
+codegen-units   = 1
+lto             = "thin"
+overflow-checks = false
+panic           = "abort"
+strip           = "none"
+
+[profile.dev]
+overflow-checks = true

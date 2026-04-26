@@ -1,0 +1,221 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Cancel in-progress runs for the same PR/branch on new pushes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ----------------------------------------------------------------------
+  # Format
+  # ----------------------------------------------------------------------
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # ----------------------------------------------------------------------
+  # Clippy (deny warnings)
+  # ----------------------------------------------------------------------
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+          components: clippy
+      - uses: Swatinem/rust-cache@v3
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  # ----------------------------------------------------------------------
+  # Build (workspace)
+  # ----------------------------------------------------------------------
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v3
+      - run: cargo build --workspace --all-features --locked
+
+  # ----------------------------------------------------------------------
+  # Test (cargo-nextest)
+  # ----------------------------------------------------------------------
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v3
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.133
+      - run: cargo nextest run --workspace --all-features --locked
+
+  # ----------------------------------------------------------------------
+  # Doc tests
+  # ----------------------------------------------------------------------
+  doc-tests:
+    name: doc-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v3
+      - run: cargo test --doc --workspace --all-features --locked
+
+  # ----------------------------------------------------------------------
+  # Supply-chain: cargo-deny
+  # ----------------------------------------------------------------------
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.4
+      - run: cargo deny check
+
+  # ----------------------------------------------------------------------
+  # Supply-chain: cargo-audit
+  # ----------------------------------------------------------------------
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.1
+      - run: cargo audit
+
+  # ----------------------------------------------------------------------
+  # Supply-chain: cargo-machete (unused deps)
+  # ----------------------------------------------------------------------
+  machete:
+    name: cargo-machete
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete@0.9.2
+      - run: cargo machete
+
+  # ----------------------------------------------------------------------
+  # Feature powerset (empty today, catches accidental feature coupling later)
+  # ----------------------------------------------------------------------
+  feature-powerset:
+    name: cargo-hack feature powerset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v3
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack@0.6.44
+      - run: cargo hack check --workspace --feature-powerset --locked
+
+  # ----------------------------------------------------------------------
+  # MSRV verification
+  # ----------------------------------------------------------------------
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.93"
+      - uses: Swatinem/rust-cache@v3
+      - run: cargo build --workspace --all-features --locked
+
+  # ----------------------------------------------------------------------
+  # Spelling
+  # ----------------------------------------------------------------------
+  typos:
+    name: typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: typos-cli@1.45.1
+      - run: typos
+
+  # ----------------------------------------------------------------------
+  # Documentation builds (no warnings)
+  # ----------------------------------------------------------------------
+  rustdoc:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v3
+      - run: cargo doc --workspace --all-features --no-deps --document-private-items
+
+  # ----------------------------------------------------------------------
+  # Determinism gate (skeleton — populated in sub-phase 1.9)
+  # ----------------------------------------------------------------------
+  determinism:
+    name: determinism-gate
+    runs-on: ubuntu-latest
+    if: false # enabled in sub-phase 1.9 once the first scenario lands
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v3
+      - name: Run canonical scenario twice
+        run: |
+          cargo build --release --workspace --locked
+          ./target/release/openbmp run scenarios/analytic-toy/constant-acceleration-drop.toml \
+              --output target/run-1.parquet
+          ./target/release/openbmp run scenarios/analytic-toy/constant-acceleration-drop.toml \
+              --output target/run-2.parquet
+          ./target/release/openbmp diff target/run-1.parquet target/run-2.parquet

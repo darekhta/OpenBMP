@@ -1,0 +1,29 @@
+# OpenBMP cargo configuration.
+#
+# Determinism note: target-feature=-fma disables fused multiply-add codegen on
+# x86_64. Cross-CPU FMA pathway differences silently break bit-stable replay,
+# so the reference platform compiles without it. See
+# docs/software-architecture.md § Determinism Profile.
+
+[build]
+incremental = false
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C", "target-feature=-fma",
+    "-C", "force-frame-pointers=yes",
+    "-C", "strip=none",
+]
+
+[alias]
+ci-build       = "build --workspace --all-features --locked"
+ci-test        = "nextest run --workspace --all-features --locked"
+ci-fmt         = "fmt --all -- --check"
+ci-clippy      = "clippy --workspace --all-targets --all-features --locked -- -D warnings"
+ci-doc         = "doc --workspace --all-features --no-deps --document-private-items"
+ci-deny        = "deny check"
+ci-audit       = "audit"
+ci-msrv        = "msrv verify"
+ci-machete     = "machete"
+ci-hack        = "hack check --workspace --feature-powerset --locked"
+ci-determinism = "run --release --bin openbmp -- run scenarios/analytic-toy/constant-acceleration-drop.toml --output target/determinism-run.parquet"

@@ -1,0 +1,30 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# Cargo lock is COMMITTED for reproducibility (this is a workspace with
+# binaries; we want byte-stable dependency resolution).
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Determinism / golden artifacts that should not be committed
+out/
+*.parquet.tmp
+*.csv.tmp
+
+# Fuzz corpora (committed selectively per cargo-fuzz convention)
+crates/*/fuzz/corpus/
+crates/*/fuzz/artifacts/
+
+# Provenance reports generated at release time
+release-artifacts/
