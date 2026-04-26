@@ -369,12 +369,39 @@ and any operational mission profile.
 - Telemetry CSV + JSON + Parquet exporters.
 
 **Phase 3 — Modular models**
-- Aerodynamic deck format (TOML, in-house).
+- Aerodynamic deck format (TOML, in-house) with optional control-effector
+  axes (`delta_e`, `delta_a`, `delta_r`, body flaps, grid fins) so the
+  deck can express full configuration aerodynamics when the dataset was
+  built that way.
 - Synthetic solid-motor model with thrust-curve loader.
+- `EngineModel` and `EngineCluster` traits for liquid-engine and
+  multi-engine vehicles: per-engine throttle, gimbal angle, mass-flow
+  derivative, ignition / shutdown events. Authoritative summed thrust /
+  moment / mass-flow at the cluster level so a vehicle with N engines is
+  one composition step, not N hand-summed forces.
+- `ControlEffector` trait separate from aero decks: rate limits,
+  saturation, latency, deadband, fault modes (jam, runaway,
+  reduced-rate). Effectors are how the controller talks to the
+  aerodynamics or the engines; the deck reports influence coefficients,
+  the effector reports actuator state.
+- `TankModel` and `MovingMassModel` for slosh as **generic moving-mass
+  dynamics**: liquid mass inside a tank shifts CG and adds a coupled
+  pendulum or Abramson-style equivalent moving-mass term to the rigid
+  body. No fielded propellant data; toy and textbook tank geometries
+  only.
+- `VehicleAssembly` framework: a `Bodies / Propulsion / Effectors /
+  Tanks / Sensors / MassProperties` tree composed in the scenario file
+  and resolved into the kernel's force / moment / mass model lists at
+  startup. Replaces ad-hoc `force_models = ["aero", "thrust"]` lists for
+  any vehicle past a single rigid stick.
+- Event / phase timeline as a first-class scheduler input:
+  time-triggered events (T+x), state-triggered events (apogee, altitude
+  threshold, dynamic pressure threshold, mass-fraction threshold), and
+  named mission phases ordered into a `MissionPhaseGraph`.
 - Wind models (constant, layered, gust).
-- Recovery / descent models for academic rockets: parachute or drag-device
-  deployment events, descent telemetry, and toy recovery-area checks with no
-  landing-target optimization.
+- Recovery / descent models for academic rockets: parachute or
+  drag-device deployment events, descent telemetry, and toy
+  recovery-area checks with no landing-target optimization.
 - Additional synthetic sensors (barometer, GNSS, magnetometer).
 - Property tests, fuzz tests, microbenchmarks.
 
@@ -382,20 +409,41 @@ and any operational mission profile.
 - Estimator framework: EKF, MEKF (quaternion attitude).
 - Three-loop autopilot scaffold with academic gains.
 - Mission state machine: pre-launch / ascent / coast / apogee / descent /
-  recovery.
+  recovery, plus configurable user-defined phases sourced from the
+  Phase-3 `MissionPhaseGraph`.
 - Academic guidance laws: attitude tracking, scripted reference state,
   waypoint navigation between scenario-defined points.
-- FDIR framework: scenario-injected fault models.
+- Powered-descent guidance scaffold: lossless-convexification soft-landing
+  (LCvxLD, Acikmese & Ploen 2007) and SCvx successive-convexification
+  variant for academic powered-descent studies (e.g., reusable-vehicle
+  return-to-pad textbook problem). Scenario-defined landing site, not a
+  real-world target.
+- Linear MPC framework reusing the same effector / engine models, for
+  attitude tracking and trim hold; convex-QP solver via in-house Rust or
+  a vetted permissive-licence crate.
+- FDIR framework: scenario-injected fault models that exercise the
+  Phase-3 effector and engine fault modes.
 
 **Phase 5 — Test harness expansion**
 - DOPRI5/8 adaptive integrators (behind explicit profile flags, not
   default).
 - Public-benchmark validation cases (RocketPy/OpenRocket-equivalent
   reference rockets).
-- Optional socket-bridge HIL pattern (in-house wire format).
-- Many-body groundwork (separation events, multi-stage simultaneous
-  flight) — only if academic demand justifies it; ECS migration evaluated
-  here.
+- Optional socket-bridge HIL pattern (in-house wire format) — the
+  generic lab-HIL adapter pattern; downstream users wire concrete
+  device adapters in their own repositories under their own
+  export-control posture.
+- **Multi-body / staging promoted to first-class**: simultaneous flight
+  of multiple `VehicleAssembly` instances after a separation event, with
+  momentum exchange at the separation moment, separate state vectors,
+  and shared environment sampling. Replaces the Phase-3 single-vehicle
+  staging hack.
+- **Multi-rate scheduling** as a first-class scheduler concept: rate
+  groups expressed as integer divisors of the base step (`env_rate_hz`,
+  `controller_rate_hz`, `telemetry_rate_hz`, `effector_rate_hz`), with
+  determinism preserved because the schedule is fixed at scenario
+  start. The kernel resolves rate groups into a static sub-step plan
+  before the first `step()`.
 
 **Phase 6 — Hypersonic extensions** (research-grade)
 - 6.1 NRLMSISE-00 high-altitude atmosphere (in-house Rust port, public
