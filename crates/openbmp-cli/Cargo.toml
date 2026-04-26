@@ -8,6 +8,10 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP command-line: scenario runner, golden diff, scenario lint, batch sweep."
 
+[lib]
+name = "openbmp_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "openbmp"
 path = "src/main.rs"
@@ -15,6 +19,29 @@ path = "src/main.rs"
 [features]
 default = []
 bridge  = []
+
+[dependencies]
+anyhow             = { workspace = true }
+arrow              = { workspace = true }
+clap               = { workspace = true }
+miette             = { workspace = true }
+openbmp-core       = { workspace = true }
+openbmp-scenario   = { workspace = true }
+openbmp-sim        = { workspace = true }
+openbmp-state      = { workspace = true }
+openbmp-telemetry  = { workspace = true }
+parquet            = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+uom                = { workspace = true }
+
+[dev-dependencies]
+assert_cmd        = { workspace = true }
+insta             = { workspace = true }
+insta-cmd         = { workspace = true }
+openbmp-testkit   = { workspace = true }
+predicates        = { workspace = true }
 
 [lints]
 workspace = true

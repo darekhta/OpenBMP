@@ -2,8 +2,11 @@
 
 L7 command-line entry point. Produces the binary `openbmp`.
 
-**Status:** Phase 1.7 — stub binary that prints a deferred-implementation
-message and exits with code 2.
+**Status:** Phase 1.7 — implemented `run`, `diff`, `check`, and
+`check-provenance` subcommands; lib + bin shape with `assert_cmd` /
+`insta-cmd` snapshot tests on the binary surface and a Phase-1.8
+end-to-end golden test for the analytic-toy constant-acceleration
+drop scenario.
 
 ## Purpose
 
@@ -55,8 +58,12 @@ optional socket-bridge tooling.
 
 ## Validation
 
-`experimental` (stub). Phase 1.7 adds command-level snapshot tests and one
-end-to-end analytic-toy scenario run.
+`checked` for the Phase-1.7 surface. Snapshot tests cover help-text
+shape; integration tests cover scenario-run success, structured-error
+behaviour for malformed scenarios, and `diff`'s self-compare-identical
+golden path. The Phase-1.8 e2e test asserts tolerance compliance and
+same-machine byte-stability of Parquet output for the analytic-toy
+drop scenario.
 
 ## Data Provenance
 
