@@ -1,9 +1,10 @@
 //! `openbmp-state` — state types for OpenBMP scenarios.
 //!
 //! Pure data types for [`PointMassState`], [`RigidBodyState`], and
-//! [`MassProperties`], plus structural validators (`is_finite`,
-//! `is_normalised`) and Result-returning `require_valid` helpers that
-//! compose with [`openbmp_core`]'s error types via `?`.
+//! [`MassProperties`], plus literal finiteness checks, structural
+//! validators (`is_valid`, `is_normalised`), and Result-returning
+//! `require_valid` helpers that compose with [`openbmp_core`]'s error
+//! types via `?`.
 //!
 //! # Frames
 //!

@@ -47,14 +47,19 @@ impl PointMassState {
         self.mass.get::<kilogram>()
     }
 
-    /// Returns `true` if every component is finite and mass is
-    /// strictly positive.
+    /// Returns `true` if every numeric component is finite.
     #[must_use]
     pub fn is_finite(&self) -> bool {
-        self.time.is_finite() && self.position.is_finite() && self.velocity.is_finite() && {
-            let m = self.mass_kg();
-            m.is_finite() && m > 0.0
-        }
+        self.time.is_finite()
+            && self.position.is_finite()
+            && self.velocity.is_finite()
+            && self.mass_kg().is_finite()
+    }
+
+    /// Returns `true` if all point-mass state invariants hold.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.require_valid().is_ok()
     }
 
     /// Validate the state.
@@ -70,7 +75,10 @@ impl PointMassState {
         self.position.require_finite()?;
         self.velocity.require_finite()?;
         let mass_kg = self.mass_kg();
-        if !mass_kg.is_finite() || mass_kg <= 0.0 {
+        if !mass_kg.is_finite() {
+            return Err(StateError::MassNotFinite { mass_kg });
+        }
+        if mass_kg <= 0.0 {
             return Err(StateError::NonPositiveMass { mass_kg });
         }
         Ok(())
@@ -110,6 +118,7 @@ mod tests {
         );
         assert!(state.require_valid().is_ok());
         assert!(state.is_finite());
+        assert!(state.is_valid());
     }
 
     #[test]
@@ -145,5 +154,17 @@ mod tests {
         );
         let err = state.require_valid().unwrap_err();
         assert!(matches!(err, StateError::NonPositiveMass { .. }));
+    }
+
+    #[test]
+    fn require_valid_rejects_nan_mass() {
+        let state = PointMassState::new(
+            SimTime::ZERO,
+            Position3::origin(),
+            Velocity3::zero(),
+            Mass::new::<kilogram>(f64::NAN),
+        );
+        let err = state.require_valid().unwrap_err();
+        assert!(matches!(err, StateError::MassNotFinite { .. }));
     }
 }

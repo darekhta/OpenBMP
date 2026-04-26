@@ -3,7 +3,7 @@
 L1 state types crate. Sits between `openbmp-core` (foundation) and
 `openbmp-sim` (kernel).
 
-**Status:** Phase 1.2 — stub. Compiles but provides no functionality.
+**Status:** Phase 1.2 — implemented state-type layer.
 
 ## Purpose
 
@@ -12,12 +12,16 @@ L1 state types crate. Sits between `openbmp-core` (foundation) and
   angular velocity / mass properties.
 - `MassProperties` — mass, body-frame center of mass, body-frame
   inertia tensor.
-- `From` / `TryFrom` between point-mass and rigid-body states.
-- Validation: `is_finite`, `is_normalised`, etc.
+- Projection from rigid-body to point-mass state and validating
+  point-mass promotion to rigid-body state.
+- Validation: literal finiteness checks, structural validity checks,
+  quaternion normalisation, positive mass, symmetric positive-definite
+  inertia, and rigid-body inertia triangle inequalities.
 
 ## Inputs and Outputs
 
-Pure data containers; no IO. Builders via `bon`.
+Pure data containers; no IO. Explicit constructors are used in Phase
+1.2; builders remain a future ergonomic addition.
 
 ## Units and Frames
 
@@ -43,7 +47,7 @@ types. Pure data, no system access.
 
 ## Validation
 
-`experimental` (stub).
+`checked` for Phase 1.2 structural validation helpers.
 
 ## Data Provenance
 

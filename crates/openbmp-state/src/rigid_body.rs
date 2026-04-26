@@ -49,15 +49,15 @@ impl RigidBodyState {
         }
     }
 
-    /// Returns `true` if every numeric component is finite and the
-    /// mass-properties are valid (mass and inertia diagonal strictly
-    /// positive). Does **not** check quaternion normalisation; use
-    /// [`RigidBodyState::is_normalised`] for that.
+    /// Returns `true` if every numeric component is finite. Does
+    /// **not** check quaternion normalisation or structural mass
+    /// property validity; use [`RigidBodyState::is_valid`] for that.
     #[must_use]
     pub fn is_finite(&self) -> bool {
         self.time.is_finite()
             && self.position.is_finite()
             && self.velocity.is_finite()
+            && self.orientation.is_finite()
             && self.angular_velocity.is_finite()
             && self.mass_props.is_finite()
     }
@@ -67,6 +67,13 @@ impl RigidBodyState {
     #[must_use]
     pub fn is_normalised(&self, tolerance: f64) -> bool {
         self.orientation.is_normalised(tolerance)
+    }
+
+    /// Returns `true` if all rigid-body state invariants hold.
+    #[must_use]
+    pub fn is_valid(&self, quaternion_tolerance: f64, inertia_symmetry_tolerance: f64) -> bool {
+        self.require_valid(quaternion_tolerance, inertia_symmetry_tolerance)
+            .is_ok()
     }
 
     /// Validate the state.
@@ -131,6 +138,26 @@ impl PointMassState {
             mass_props: mass_properties,
         }
     }
+
+    /// Promote a point-mass state to a rigid-body state and validate
+    /// the result before returning it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateError`] if the supplied rigid-body fields or the
+    /// carried point-mass fields violate state invariants.
+    pub fn try_into_rigid_body(
+        self,
+        orientation: Quaternion<Body, Eci>,
+        angular_velocity: AngularVelocity3<Body>,
+        mass_properties: MassProperties,
+        quaternion_tolerance: f64,
+        inertia_symmetry_tolerance: f64,
+    ) -> Result<RigidBodyState, StateError> {
+        let state = self.into_rigid_body(orientation, angular_velocity, mass_properties);
+        state.require_valid(quaternion_tolerance, inertia_symmetry_tolerance)?;
+        Ok(state)
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +165,7 @@ impl PointMassState {
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+    use nalgebra::Quaternion as NalgebraQuaternion;
     use openbmp_core::{Position3, UnitQuaternion, Velocity3};
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
@@ -167,6 +195,7 @@ mod tests {
         assert!(s.is_finite());
         assert!(s.is_normalised(1.0e-12));
         assert!(s.require_valid(1.0e-12, 1.0e-12).is_ok());
+        assert!(s.is_valid(1.0e-12, 1.0e-12));
     }
 
     #[test]
@@ -200,6 +229,26 @@ mod tests {
     }
 
     #[test]
+    fn try_promote_point_mass_validates_result() {
+        let pm = PointMassState::new(
+            SimTime::ZERO,
+            Position3::origin(),
+            Velocity3::zero(),
+            one_kg(),
+        );
+        let rb = pm
+            .try_into_rigid_body(
+                Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+                AngularVelocity3::zero(),
+                unit_inertia_props(),
+                1.0e-12,
+                1.0e-12,
+            )
+            .unwrap();
+        assert!(rb.require_valid(1.0e-12, 1.0e-12).is_ok());
+    }
+
+    #[test]
     fn require_valid_rejects_nan_angular_velocity() {
         let mut s = canonical_state();
         s.angular_velocity = AngularVelocity3::new(f64::NAN, 0.0, 0.0);
@@ -217,15 +266,21 @@ mod tests {
     #[test]
     fn require_valid_rejects_unnormalised_quaternion() {
         let mut s = canonical_state();
-        // Wrap a non-unit quaternion via from_unit_quaternion's bypass:
-        // build a known-unit quaternion, then perturb it would require
-        // bypassing nalgebra's invariant. The cleaner test is to use
-        // from_wxyz_checked with a tight tolerance, which exercises the
-        // require_normalised path directly. Here we take a separate
-        // route: scale via construction is not exposed, so instead we
-        // verify the validator accepts the identity case.
-        s.mass_props = unit_inertia_props();
-        assert!(s.require_valid(1.0e-12, 1.0e-12).is_ok());
+        s.orientation = Quaternion::<Body, Eci>::from_unit_quaternion(
+            UnitQuaternion::new_unchecked(NalgebraQuaternion::new(2.0, 0.0, 0.0, 0.0)),
+        );
+        let err = s.require_valid(1.0e-12, 1.0e-12).unwrap_err();
+        assert!(matches!(err, StateError::Frame(_)));
+    }
+
+    #[test]
+    fn require_valid_rejects_nonfinite_quaternion() {
+        let mut s = canonical_state();
+        s.orientation = Quaternion::<Body, Eci>::from_unit_quaternion(
+            UnitQuaternion::new_unchecked(NalgebraQuaternion::new(f64::NAN, 0.0, 0.0, 0.0)),
+        );
+        let err = s.require_valid(1.0e-12, 1.0e-12).unwrap_err();
+        assert!(matches!(err, StateError::Frame(_)));
     }
 
     #[test]

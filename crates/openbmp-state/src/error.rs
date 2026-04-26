@@ -12,7 +12,13 @@ pub enum StateError {
     /// A wrapped [`FrameError`] from `openbmp_core::frames`.
     #[error(transparent)]
     Frame(#[from] FrameError),
-    /// Mass was non-finite or not strictly positive.
+    /// Mass was `NaN` or infinite.
+    #[error("mass is not finite: {mass_kg} kg")]
+    MassNotFinite {
+        /// The offending mass in kilograms.
+        mass_kg: f64,
+    },
+    /// Mass was not strictly positive.
     #[error("mass is not strictly positive: {mass_kg} kg")]
     NonPositiveMass {
         /// The offending mass in kilograms.
@@ -25,7 +31,7 @@ pub enum StateError {
     /// strictly positive.
     #[error(
         "inertia tensor diagonal is not strictly positive: \
-         (Ixx={ixx}, Iyy={iyy}, Izz={izz}) kg·m²"
+         (Ixx={ixx}, Iyy={iyy}, Izz={izz}) kg*m^2"
     )]
     InertiaDiagonalNotPositive {
         /// `I_xx`.
@@ -34,6 +40,33 @@ pub enum StateError {
         iyy: f64,
         /// `I_zz`.
         izz: f64,
+    },
+    /// Diagonal inertia moments violated rigid-body triangle
+    /// inequalities.
+    #[error(
+        "inertia tensor diagonal violates triangle inequalities: \
+         (Ixx={ixx}, Iyy={iyy}, Izz={izz}) kg*m^2"
+    )]
+    InertiaTriangleInequalityViolated {
+        /// `I_xx`.
+        ixx: f64,
+        /// `I_yy`.
+        iyy: f64,
+        /// `I_zz`.
+        izz: f64,
+    },
+    /// A symmetric inertia tensor was not positive-definite.
+    #[error(
+        "inertia tensor is not positive-definite: \
+         leading minors were ({leading_minor_1}, {leading_minor_2}, {determinant})"
+    )]
+    InertiaNotPositiveDefinite {
+        /// First leading principal minor.
+        leading_minor_1: f64,
+        /// Second leading principal minor.
+        leading_minor_2: f64,
+        /// Full determinant.
+        determinant: f64,
     },
     /// Off-diagonal entries violated symmetry within tolerance.
     #[error(
