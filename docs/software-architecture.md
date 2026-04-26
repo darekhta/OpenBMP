@@ -224,13 +224,18 @@ to a `Position3<ECEF>`. Conversion is explicit:
 
 ```rust
 pub trait FrameTransform<From: Frame, To: Frame> {
-    fn transform_position(&self, p: Position3<From>) -> Position3<To>;
-    fn transform_velocity(&self, v: Velocity3<From>, p: Position3<From>) -> Velocity3<To>;
+    fn transform_position(&self, t: SimTime, p: Position3<From>) -> Position3<To>;
+    fn transform_velocity(
+        &self,
+        t: SimTime,
+        v: Velocity3<From>,
+        p: Position3<From>,
+    ) -> Velocity3<To>;
 }
 ```
 
 A `FrameContext` (snapshotted at scenario time) holds the canonical
-transforms (Earth rotation rate, geodetic origin, etc.) used to construct
+transforms (Earth rotation rate, geodetic origin, etc.) used by
 `FrameTransform` instances at simulation time.
 
 The detailed frame and time convention policy is maintained in
@@ -283,7 +288,8 @@ pub struct MassProperties {
 
 ECI is the canonical inertial frame for state propagation. Body-frame is the
 canonical frame for vehicle-fixed quantities. All other frames are derived via
-`FrameTransform`.
+time-aware `FrameTransform` calls or explicit `FrameContext` helpers such as
+the WGS84/NED local-origin transforms.
 
 ### Determinism Primitives
 

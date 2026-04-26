@@ -457,6 +457,26 @@ mod tests {
     }
 
     #[test]
+    fn j2_equatorial_perturbation_scales_at_geo_radius() {
+        // On the equatorial axis, the J2 perturbation ratio has a
+        // simple independent form:
+        //   |g_J2| / |g_central| = 1.5 · J2 · (R_e / r)^2
+        // This large-r check catches exponent mistakes in the r^5
+        // denominator that surface-level sign tests can miss.
+        let g_pm = PointMassGravity::wgs84();
+        let g_j2 = J2Gravity::wgs84();
+        let geo_radius_m = 42_164_000.0;
+        let r = at_x(geo_radius_m);
+        let pm = g_pm.gravity_eci_m_s2(r, SimTime::ZERO).unwrap();
+        let total = g_j2.gravity_eci_m_s2(r, SimTime::ZERO).unwrap();
+
+        let perturbation = total.x - pm.x;
+        let expected_ratio = 1.5 * WGS84_J2 * (WGS84_A_M / geo_radius_m).powi(2);
+        let actual_ratio = perturbation.abs() / pm.x.abs();
+        assert_abs_diff_eq!(actual_ratio, expected_ratio, epsilon = 1.0e-15);
+    }
+
+    #[test]
     fn j2_gravity_rejects_invalid_parameters() {
         assert!(J2Gravity::new(0.0, WGS84_A_M, WGS84_J2).is_err());
         assert!(J2Gravity::new(WGS84_MU_M3_S2, 0.0, WGS84_J2).is_err());

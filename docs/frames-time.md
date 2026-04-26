@@ -106,6 +106,11 @@ Local origins are accepted for academic scenarios and validation cases. They
 must not be described as targets, aimpoints, strike points, terminal points, or
 payload-delivery objectives.
 
+For WGS84 local frames, `NED +down` is anti-parallel to the outward geodetic
+normal at the declared latitude and longitude. It is not generally the same as
+the geocentric radial direction toward Earth's centre; the two differ at
+non-equatorial latitudes on the ellipsoid.
+
 ## Telemetry Metadata
 
 Telemetry archives must record:

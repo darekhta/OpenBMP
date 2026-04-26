@@ -23,7 +23,7 @@
 //!
 //! Coordinate frames are encoded in the type system. A
 //! [`Position3<Eci>`] cannot be added to a [`Position3<Ecef>`]; the
-//! compiler refuses. Conversions are explicit through the
+//! compiler refuses. Conversions are explicit through the time-aware
 //! [`FrameTransform`] trait, parameterised by an immutable
 //! [`FrameContext`] snapshot taken at scenario start.
 //!

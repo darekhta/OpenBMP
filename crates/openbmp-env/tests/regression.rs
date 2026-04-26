@@ -24,6 +24,21 @@ use approx::assert_abs_diff_eq;
 use openbmp_core::{Position3, SimTime};
 use openbmp_env::{ConstantGravity, GravityModel, J2Gravity, PointMassGravity, WGS84_J2};
 
+const WGS84_J2_DATA: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../data/gravity/wgs84-j2.toml"
+));
+
+fn wgs84_j2_data_pin() -> toml::Value {
+    toml::from_str(WGS84_J2_DATA).expect("WGS84 J2 data file must parse as TOML")
+}
+
+fn f64_field(data: &toml::Value, key: &str) -> f64 {
+    data.get(key)
+        .and_then(toml::Value::as_float)
+        .expect("WGS84 J2 data file must contain requested float field")
+}
+
 /// Phase-1 toy used `g = (0, 0, -9.80665)`. Verify
 /// `ConstantGravity::down_z` produces exactly that vector.
 #[test]
@@ -77,18 +92,35 @@ fn j2_with_zero_coefficient_reduces_to_point_mass_through_public_api() {
 
 #[test]
 fn wgs84_j2_constant_matches_data_pin() {
-    // Sanity: the in-source J2 constant matches what
-    // `data/gravity/wgs84-j2.toml` declares. The Phase-2.10
-    // `check-provenance` walk will be the machine-readable equivalent;
-    // for now this hand-coded check guards against a typo.
-    assert_eq!(WGS84_J2, 1.082_626_683e-3);
+    let data = wgs84_j2_data_pin();
+    assert_eq!(
+        data.get("dataset_id").and_then(toml::Value::as_str),
+        Some("openbmp.wgs84.gravity.j2.v1"),
+    );
+    assert_eq!(
+        data.get("schema_version").and_then(toml::Value::as_str),
+        Some("openbmp.gravity.coefficient.v1"),
+    );
+    assert_eq!(WGS84_J2, f64_field(&data, "j2_unnormalised"));
 }
 
 #[test]
 fn wgs84_constants_match_nima_tr_8350_2() {
-    // Defining values from NIMA TR 8350.2 tables 3.1 / 3.5.
-    assert_eq!(openbmp_core::WGS84_A_M, 6_378_137.0);
-    assert_eq!(openbmp_core::WGS84_INV_FLATTENING, 298.257_223_563);
-    assert_eq!(openbmp_core::WGS84_MU_M3_S2, 3.986_004_418e14);
-    assert_eq!(openbmp_core::WGS84_OMEGA_RAD_S, 7.292_115_146_7e-5);
+    let data = wgs84_j2_data_pin();
+    assert_eq!(
+        openbmp_core::WGS84_A_M,
+        f64_field(&data, "semi_major_axis_m")
+    );
+    assert_eq!(
+        openbmp_core::WGS84_INV_FLATTENING,
+        f64_field(&data, "inverse_flattening"),
+    );
+    assert_eq!(
+        openbmp_core::WGS84_MU_M3_S2,
+        f64_field(&data, "gravitational_parameter_m3_s2"),
+    );
+    assert_eq!(
+        openbmp_core::WGS84_OMEGA_RAD_S,
+        f64_field(&data, "angular_velocity_rad_s"),
+    );
 }

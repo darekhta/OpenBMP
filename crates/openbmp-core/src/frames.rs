@@ -5,12 +5,13 @@
 //! parameterised by frame: a [`Position3<Eci>`] is a different type
 //! from a [`Position3<Ecef>`] and the compiler refuses to mix them.
 //!
-//! Conversions between frames are explicit through the
-//! [`FrameTransform`] trait. The active [`FrameContext`] determines
-//! which transforms exist; Phase-1 ships only the
-//! [`FrameProfile::ToyFixedEarth`] profile, in which `ECI` and `ECEF`
-//! coincide and local-frame transforms are identity for matching
-//! frames.
+//! Conversions between frames are explicit through time-aware
+//! [`FrameTransform`] implementations or the profile-specific helper
+//! methods on [`FrameContext`]. The active [`FrameContext`] determines
+//! which transforms exist; [`FrameProfile::ToyFixedEarth`] keeps `ECI`
+//! and `ECEF` coincident, while
+//! [`FrameProfile::Wgs84UniformRotation`] rotates `ECEF` relative to
+//! `ECI` as a pure function of [`SimTime`].
 //!
 //! No type in this module accesses wall-clock time, system RNG, or any
 //! external Earth-orientation data. Higher-fidelity frame profiles in
@@ -1155,8 +1156,8 @@ impl FrameContext {
     // angle at simulation time `t` is `θ(t) = ω_e · t`.
     //
     // The ToyFixedEarth profile returns identity for all of these
-    // (consistent with the existing `FrameTransform<Eci, Ecef>` impl
-    // below).
+    // and the `FrameTransform<Eci, Ecef>` impl delegates here so it
+    // stays time-aware for WGS84.
     // ---------------------------------------------------------------
 
     /// Earth rotation angle at simulation time `t`, in radians.
@@ -1273,6 +1274,9 @@ impl FrameContext {
     /// local origin.
     ///
     /// `p_ned = R_ecef_to_ned · (p_ecef - origin_ecef)`.
+    /// The local vertical is the WGS84 geodetic normal at the
+    /// declared latitude/longitude, not the geocentric radial except
+    /// at the equator and poles.
     ///
     /// # Errors
     ///
@@ -1296,6 +1300,9 @@ impl FrameContext {
     /// Transform an ECEF *vector* (e.g., a velocity) to NED. Pure
     /// rotation, no origin offset.
     ///
+    /// `+down` is anti-parallel to the WGS84 geodetic normal at the
+    /// declared origin, not generally toward Earth's centre.
+    ///
     /// # Errors
     ///
     /// Returns [`FrameError::LocalOriginRequired`] when no local
@@ -1316,6 +1323,9 @@ impl FrameContext {
 
     /// Transform an NED *vector* (e.g., a wind velocity) to ECEF.
     /// Pure rotation; inverse of [`Self::ecef_to_ned_velocity`].
+    ///
+    /// `+down` is anti-parallel to the WGS84 geodetic normal at the
+    /// declared origin, not generally toward Earth's centre.
     ///
     /// # Errors
     ///
@@ -1345,48 +1355,70 @@ impl FrameContext {
     }
 }
 
-/// Conversion from frame `From` to frame `To`.
+/// Time-aware conversion from frame `From` to frame `To`.
 ///
 /// Implementations are provided by [`FrameContext`] for frame pairs that
 /// exist in the compiled profile surface. Unsupported static pairs have
 /// no trait implementation and therefore fail at compile time. Runtime
 /// profile-gated transforms in later phases should expose fallible helper
 /// constructors that use [`FrameError::TransformNotAvailable`].
+///
+/// ECI/ECEF transforms take [`SimTime`] because all non-toy Earth-fixed
+/// profiles are time-dependent. The [`FrameProfile::ToyFixedEarth`]
+/// implementation ignores time and remains identity.
 pub trait FrameTransform<From: Frame, To: Frame> {
-    /// Convert a position vector from `From` to `To`.
-    fn transform_position(&self, p: Position3<From>) -> Position3<To>;
+    /// Convert a position vector from `From` to `To` at simulation time
+    /// `t`.
+    fn transform_position(&self, t: SimTime, p: Position3<From>) -> Position3<To>;
     /// Convert a velocity vector from `From` to `To` at the given
-    /// position. Position is needed for non-inertial frame transforms
-    /// (Coriolis, transport rate); the toy profile ignores it.
-    fn transform_velocity(&self, v: Velocity3<From>, p: Position3<From>) -> Velocity3<To>;
+    /// simulation time and position. Position is needed for
+    /// non-inertial frame transforms (transport rate); same-frame and
+    /// toy-profile transforms ignore it.
+    fn transform_velocity(
+        &self,
+        t: SimTime,
+        v: Velocity3<From>,
+        p: Position3<From>,
+    ) -> Velocity3<To>;
 }
 
 // Identity transform for any same-frame pair, in any profile.
 impl<F: Frame> FrameTransform<F, F> for FrameContext {
-    fn transform_position(&self, p: Position3<F>) -> Position3<F> {
+    fn transform_position(&self, _t: SimTime, p: Position3<F>) -> Position3<F> {
         p
     }
-    fn transform_velocity(&self, v: Velocity3<F>, _p: Position3<F>) -> Velocity3<F> {
+    fn transform_velocity(&self, _t: SimTime, v: Velocity3<F>, _p: Position3<F>) -> Velocity3<F> {
         v
     }
 }
 
-// Toy-fixed-earth: ECI ↔ ECEF identity (Earth not rotating).
+// ECI ↔ ECEF. Toy-fixed-earth is identity for every `t`; WGS84 uniform
+// rotation delegates to the time-aware helpers above.
 impl FrameTransform<Eci, Ecef> for FrameContext {
-    fn transform_position(&self, p: Position3<Eci>) -> Position3<Ecef> {
-        Position3::from_vector(p.vector)
+    fn transform_position(&self, t: SimTime, p: Position3<Eci>) -> Position3<Ecef> {
+        self.eci_to_ecef_position(t, p)
     }
-    fn transform_velocity(&self, v: Velocity3<Eci>, _p: Position3<Eci>) -> Velocity3<Ecef> {
-        Velocity3::from_vector(v.vector)
+    fn transform_velocity(
+        &self,
+        t: SimTime,
+        v: Velocity3<Eci>,
+        p: Position3<Eci>,
+    ) -> Velocity3<Ecef> {
+        self.eci_to_ecef_velocity(t, v, p)
     }
 }
 
 impl FrameTransform<Ecef, Eci> for FrameContext {
-    fn transform_position(&self, p: Position3<Ecef>) -> Position3<Eci> {
-        Position3::from_vector(p.vector)
+    fn transform_position(&self, t: SimTime, p: Position3<Ecef>) -> Position3<Eci> {
+        self.ecef_to_eci_position(t, p)
     }
-    fn transform_velocity(&self, v: Velocity3<Ecef>, _p: Position3<Ecef>) -> Velocity3<Eci> {
-        Velocity3::from_vector(v.vector)
+    fn transform_velocity(
+        &self,
+        t: SimTime,
+        v: Velocity3<Ecef>,
+        p: Position3<Ecef>,
+    ) -> Velocity3<Eci> {
+        self.ecef_to_eci_velocity(t, v, p)
     }
 }
 
@@ -1596,7 +1628,7 @@ mod tests {
     fn frame_context_eci_to_ecef_identity_in_toy() {
         let ctx = FrameContext::toy_fixed_earth();
         let p_eci: Position3<Eci> = Position3::new(7000.0, 0.0, 0.0);
-        let p_ecef: Position3<Ecef> = ctx.transform_position(p_eci);
+        let p_ecef: Position3<Ecef> = ctx.transform_position(SimTime::from_seconds(10.0), p_eci);
         assert_abs_diff_eq!(p_ecef.vector.x, 7000.0);
         assert_abs_diff_eq!(p_ecef.vector.y, 0.0);
         assert_abs_diff_eq!(p_ecef.vector.z, 0.0);
@@ -1606,8 +1638,9 @@ mod tests {
     fn frame_context_round_trip_eci_ecef_eci() {
         let ctx = FrameContext::toy_fixed_earth();
         let p_in: Position3<Eci> = Position3::new(1.0, 2.0, 3.0);
-        let p_ecef: Position3<Ecef> = ctx.transform_position(p_in);
-        let p_back: Position3<Eci> = ctx.transform_position(p_ecef);
+        let t = SimTime::from_seconds(10.0);
+        let p_ecef: Position3<Ecef> = ctx.transform_position(t, p_in);
+        let p_back: Position3<Eci> = ctx.transform_position(t, p_ecef);
         assert_abs_diff_eq!(p_in.vector.x, p_back.vector.x);
         assert_abs_diff_eq!(p_in.vector.y, p_back.vector.y);
         assert_abs_diff_eq!(p_in.vector.z, p_back.vector.z);
@@ -1735,6 +1768,23 @@ mod tests {
             assert_abs_diff_eq!(p_back.vector.x, p_eci.vector.x, epsilon = 1.0e-6);
             assert_abs_diff_eq!(p_back.vector.y, p_eci.vector.y, epsilon = 1.0e-6);
             assert_abs_diff_eq!(p_back.vector.z, p_eci.vector.z, epsilon = 1.0e-6);
+        }
+
+        #[test]
+        fn frame_transform_trait_is_time_aware_for_wgs84_eci_ecef() {
+            let ctx = FrameContext::wgs84_uniform_rotation(None);
+            let t = SimTime::from_seconds(1234.5);
+            let p_eci: Position3<Eci> = Position3::new(7_000_000.0, 1_500_000.0, 800_000.0);
+            let via_trait: Position3<Ecef> = ctx.transform_position(t, p_eci);
+            let via_helper = ctx.eci_to_ecef_position(t, p_eci);
+
+            assert_abs_diff_eq!(via_trait.vector.x, via_helper.vector.x, epsilon = 0.0);
+            assert_abs_diff_eq!(via_trait.vector.y, via_helper.vector.y, epsilon = 0.0);
+            assert_abs_diff_eq!(via_trait.vector.z, via_helper.vector.z, epsilon = 0.0);
+            assert!(
+                (via_trait.vector.y - p_eci.vector.y).abs() > 1.0e-6,
+                "WGS84 ECI/ECEF trait transform must not silently be identity at t != 0",
+            );
         }
 
         #[test]
