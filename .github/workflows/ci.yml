@@ -198,12 +198,18 @@ jobs:
       - run: cargo doc --workspace --all-features --no-deps --document-private-items
 
   # ----------------------------------------------------------------------
-  # Determinism gate (skeleton — populated in sub-phase 1.9)
+  # Determinism gate
+  #
+  # The headline policy gate. Runs the canonical analytic-toy scenario
+  # twice on x86_64-unknown-linux-gnu and asserts byte-identical
+  # Parquet output across the two runs. Then re-runs once with a noisy
+  # tracing subscriber redirected to /dev/null and diffs again — this
+  # verifies tracing-emitted bytes do not leak into deterministic
+  # output (the determinism contract per docs/verification.md).
   # ----------------------------------------------------------------------
   determinism:
     name: determinism-gate
     runs-on: ubuntu-latest
-    if: false # enabled in sub-phase 1.9 once the first scenario lands
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
@@ -211,11 +217,61 @@ jobs:
           toolchain: "1.95"
           targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2.9.1
-      - name: Run canonical scenario twice
+      - name: Build release binary
+        run: cargo build --release --workspace --locked
+      - name: Run canonical scenario twice (clean tracing)
         run: |
-          cargo build --release --workspace --locked
-          ./target/release/openbmp run scenarios/analytic-toy/constant-acceleration-drop.toml \
-              --output target/run-1.parquet
-          ./target/release/openbmp run scenarios/analytic-toy/constant-acceleration-drop.toml \
-              --output target/run-2.parquet
-          ./target/release/openbmp diff target/run-1.parquet target/run-2.parquet
+          mkdir -p target/det/run1 target/det/run2
+          ./target/release/openbmp run \
+              scenarios/analytic-toy/constant-acceleration-drop.toml \
+              --output-parquet target/det/run1/drop.parquet \
+              --output-csv     target/det/run1/drop.csv
+          ./target/release/openbmp run \
+              scenarios/analytic-toy/constant-acceleration-drop.toml \
+              --output-parquet target/det/run2/drop.parquet \
+              --output-csv     target/det/run2/drop.csv
+      - name: Diff Parquet bytes
+        run: |
+          ./target/release/openbmp diff \
+              target/det/run1/drop.parquet \
+              target/det/run2/drop.parquet
+      - name: Diff CSV bytes
+        run: diff -q target/det/run1/drop.csv target/det/run2/drop.csv
+      - name: Run again with noisy tracing redirected (no-leak verification)
+        run: |
+          mkdir -p target/det/run3
+          RUST_LOG=trace ./target/release/openbmp -ttt run \
+              scenarios/analytic-toy/constant-acceleration-drop.toml \
+              --output-parquet target/det/run3/drop.parquet \
+              --output-csv     target/det/run3/drop.csv \
+              2> /dev/null
+      - name: Diff after tracing redirect
+        run: |
+          ./target/release/openbmp diff \
+              target/det/run1/drop.parquet \
+              target/det/run3/drop.parquet
+          diff -q target/det/run1/drop.csv target/det/run3/drop.csv
+
+  # ----------------------------------------------------------------------
+  # Cross-platform state-stable gate
+  #
+  # macOS and Windows runners build and run the same scenario but only
+  # assert tolerance compliance via the e2e test, not bit-stability.
+  # The Phase-1 plan calls these "state-stable, not bit-stable"
+  # platforms; bit equality is enforced only on the
+  # x86_64-unknown-linux-gnu reference profile.
+  # ----------------------------------------------------------------------
+  cross-platform:
+    name: cross-platform-state-stable (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: cargo test -p openbmp-cli --tests --locked

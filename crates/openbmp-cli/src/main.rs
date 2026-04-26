@@ -32,8 +32,14 @@ fn main() -> ExitCode {
 
 fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
     match command {
-        Command::Run { scenario } => {
-            let report = run::run(&scenario)?;
+        Command::Run {
+            scenario,
+            output_csv,
+            output_json,
+            output_parquet,
+        } => {
+            let overrides = run::OutputOverrides::new(output_csv, output_json, output_parquet);
+            let report = run::run_with_overrides(&scenario, &overrides)?;
             println!(
                 "openbmp run: ok — {} steps, t = {:.6} s, stop = {}",
                 report.final_step, report.final_time_s, report.stop_label,

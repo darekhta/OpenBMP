@@ -29,6 +29,15 @@ pub enum Command {
     Run {
         /// Scenario TOML file.
         scenario: PathBuf,
+        /// Override the scenario's declared CSV output path.
+        #[arg(long = "output-csv")]
+        output_csv: Option<PathBuf>,
+        /// Override the scenario's declared JSON output path.
+        #[arg(long = "output-json")]
+        output_json: Option<PathBuf>,
+        /// Override the scenario's declared Parquet output path.
+        #[arg(long = "output-parquet")]
+        output_parquet: Option<PathBuf>,
     },
     /// Compare two telemetry archives byte-for-byte.
     Diff {
