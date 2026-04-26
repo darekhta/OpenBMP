@@ -1227,6 +1227,13 @@ version = "0.0.1"
 [[package]]
 name = "openbmp-propulsion"
 version = "0.0.1"
+dependencies = [
+ "approx",
+ "proptest",
+ "serde",
+ "thiserror",
+ "toml",
+]
 
 [[package]]
 name = "openbmp-scenario"

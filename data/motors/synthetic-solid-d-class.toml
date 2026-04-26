@@ -1,0 +1,47 @@
+# Synthetic D-class solid motor (Schema 1).
+#
+# A boost-sustain motor sized to the D-class envelope (10–20 N·s
+# total impulse, sub-2 s burn). Nominal envelope tracks the
+# Estes D12 hobby motor (~16.8 N·s total impulse, ~1.4 s burn,
+# ~12 N average thrust), but the values here are OpenBMP-authored
+# synthetic — not transcribed from any published thrust curve.
+# A real ThrustCurve.org-derived deck (with `validation =
+# "manufacturer"` and a SHA-256-pinned source `.eng` file) is
+# deferred to Phase 2.9 (sounding-rocket validation case) where
+# the user can fetch the actual file and pin its hash; see
+# `data/motors/provenance.md` for the gap.
+#
+# Closed-form trapezoidal integral of the curve below:
+#   0.0 → 0.05: 0.5·30·0.05  = 0.75
+#   0.05 → 0.15: 0.5·(30+10)·0.10 = 2.0
+#   0.15 → 1.35: 10·1.20      = 12.0
+#   1.35 → 1.4: 0.5·10·0.05   = 0.25
+#   ----------------------------------
+#   I_total                   = 15.0 N·s
+
+openbmp.motor = 1
+
+[meta]
+name       = "synthetic-solid-d-class"
+provenance = "synthetic OpenBMP-authored boost-sustain motor; sized to the D-class envelope"
+validation = "validated-toy"
+
+[burn]
+duration_s         = 1.4
+total_impulse_n_s  = 15.0
+specific_impulse_s = 100.0
+propellant_mass_kg = 0.015
+dry_mass_kg        = 0.025
+
+[thrust_curve]
+points = [
+  [0.00, 0.0],
+  [0.05, 30.0],
+  [0.15, 10.0],
+  [1.35, 10.0],
+  [1.40, 0.0],
+]
+
+[geometry]
+exit_area_m2                 = 0.00007
+ambient_pressure_correction  = "constant"
