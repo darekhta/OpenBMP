@@ -1248,6 +1248,15 @@ dependencies = [
 [[package]]
 name = "openbmp-sensors"
 version = "0.0.1"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "openbmp-core",
+ "proptest",
+ "serde",
+ "thiserror",
+ "toml",
+]
 
 [[package]]
 name = "openbmp-sim"
