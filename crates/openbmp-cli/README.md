@@ -18,23 +18,21 @@ batch sweeps.
 
 | Subcommand | Purpose |
 |---|---|
-| `openbmp run <scenario.toml> --output <path>` | Run the scenario through the kernel and write telemetry. |
-| `openbmp diff <golden.parquet> <actual.parquet>` | Report the first divergent row with channel + field + values + scenario hash. |
+| `openbmp run <scenario.toml>` | Run the scenario through the kernel and write declared telemetry outputs. |
+| `openbmp diff <golden.parquet> <actual.parquet>` | Report the first divergent row and column with strict value strings. |
 | `openbmp check <scenario.toml>` | Lint: schema, provenance, units / frames, safety names, deterministic schedule. |
 | `openbmp check-provenance <data/>` | Walk a data tree and verify provenance records (Phase 2 full implementation). |
-| `openbmp batch <sweep.toml>` | Parametric sweep / Monte-Carlo dispersion runs (Phase 5 fuller). |
 
 ## Errors and Diagnostics
 
-Errors via `miette` for source-span pointing into TOML scenarios.
-Structured output with `--json`. Tracing subscriber configurable via
-`RUST_LOG` / `--trace`.
+Errors are printed to stderr with stable exit-code classes. Structured JSON
+output is planned for a later CLI phase. Tracing subscriber verbosity is
+configurable via `RUST_LOG` / `--trace`.
 
 ## Inputs and Outputs
 
 Inputs are local scenario, telemetry, provenance, and batch-manifest files.
-Outputs are telemetry archives, structured diagnostics, and optional JSON
-reports.
+Outputs are telemetry archives and human-readable diagnostics.
 
 ## Units and Frames
 

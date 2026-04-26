@@ -21,10 +21,8 @@ default = []
 bridge  = []
 
 [dependencies]
-anyhow             = { workspace = true }
 arrow              = { workspace = true }
 clap               = { workspace = true }
-miette             = { workspace = true }
 openbmp-core       = { workspace = true }
 openbmp-scenario   = { workspace = true }
 openbmp-sim        = { workspace = true }
@@ -42,6 +40,7 @@ insta             = { workspace = true }
 insta-cmd         = { workspace = true }
 openbmp-testkit   = { workspace = true }
 predicates        = { workspace = true }
+tempfile          = { workspace = true }
 
 [lints]
 workspace = true

@@ -9,7 +9,7 @@
 //! Snapshots are stored under `tests/snapshots/`. Update with
 //! `cargo insta review` after deliberate UX changes.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
 use insta_cmd::assert_cmd_snapshot;
+use tempfile::{Builder, TempDir};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -30,14 +31,11 @@ fn openbmp() -> std::process::Command {
     std::process::Command::cargo_bin("openbmp").expect("binary built")
 }
 
-fn unique_temp(label: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let path =
-        std::env::temp_dir().join(format!("openbmp-snap-{label}-{}-{n}", std::process::id()));
-    fs::create_dir_all(&path).expect("temp dir");
-    path
+fn tempdir(label: &str) -> TempDir {
+    Builder::new()
+        .prefix(&format!("openbmp-snap-{label}-"))
+        .tempdir()
+        .expect("temp dir")
 }
 
 #[test]
@@ -67,8 +65,8 @@ fn check_on_canonical_scenario_succeeds() {
 
 #[test]
 fn check_with_unknown_field_fails_with_structured_error() {
-    let temp = unique_temp("badfield");
-    let staged = temp.join("scenario.toml");
+    let temp = tempdir("badfield");
+    let staged = temp.path().join("scenario.toml");
     let original = fs::read_to_string(
         workspace_root().join("scenarios/analytic-toy/constant-acceleration-drop.toml"),
     )
@@ -100,10 +98,10 @@ fn check_with_unknown_field_fails_with_structured_error() {
 
 #[test]
 fn run_writes_telemetry_outputs_and_reports_stop_reason() {
-    let temp = unique_temp("run");
-    let staged = temp.join("scenario.toml");
-    let csv = temp.join("out.csv");
-    let parquet = temp.join("out.parquet");
+    let temp = tempdir("run");
+    let staged = temp.path().join("scenario.toml");
+    let csv = temp.path().join("out.csv");
+    let parquet = temp.path().join("out.parquet");
     let original = fs::read_to_string(
         workspace_root().join("scenarios/analytic-toy/constant-acceleration-drop.toml"),
     )
@@ -131,11 +129,41 @@ fn run_writes_telemetry_outputs_and_reports_stop_reason() {
 }
 
 #[test]
+fn run_rejects_negative_gravity_magnitude() {
+    let temp = tempdir("negative_gravity");
+    let staged = temp.path().join("scenario.toml");
+    let original = fs::read_to_string(
+        workspace_root().join("scenarios/analytic-toy/constant-acceleration-drop.toml"),
+    )
+    .expect("read canonical");
+    fs::write(
+        &staged,
+        original.replace("gravity_m_s2  = 9.80665", "gravity_m_s2  = -9.80665"),
+    )
+    .expect("write staged");
+
+    let mut cmd = openbmp();
+    cmd.arg("run").arg(&staged);
+    let assert = cmd.assert();
+    let output = assert.get_output();
+    assert!(
+        !output.status.success(),
+        "exit status should be non-zero, was {:?}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("non-negative magnitude"),
+        "stderr should explain the rejected gravity magnitude, got: {stderr}"
+    );
+}
+
+#[test]
 fn diff_reports_identical_for_self_compare() {
-    let temp = unique_temp("diff_identical");
-    let staged = temp.join("scenario.toml");
-    let parquet = temp.join("out.parquet");
-    let csv = temp.join("out.csv");
+    let temp = tempdir("diff_identical");
+    let staged = temp.path().join("scenario.toml");
+    let parquet = temp.path().join("out.parquet");
+    let csv = temp.path().join("out.csv");
     let original = fs::read_to_string(
         workspace_root().join("scenarios/analytic-toy/constant-acceleration-drop.toml"),
     )
@@ -160,4 +188,5 @@ fn diff_reports_identical_for_self_compare() {
         stdout.contains("openbmp diff: identical"),
         "stdout was: {stdout}"
     );
+    assert!(stdout.contains("9 columns matched"), "stdout was: {stdout}");
 }

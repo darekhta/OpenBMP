@@ -1,7 +1,7 @@
 # Constant-acceleration drop — analytic-toy scenario.
 #
 # A 1 kg point mass at the ECI origin with zero initial velocity falls
-# under constant gravity g = 9.80665 m/s² along -z for 10 s. The
+# under constant gravity magnitude g = 9.80665 m/s² along -z for 10 s. The
 # closed-form solution is
 #
 #   z(t) = -0.5 g t²,

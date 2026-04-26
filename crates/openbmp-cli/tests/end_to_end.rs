@@ -14,7 +14,6 @@
 
 #![allow(
     clippy::expect_used,
-    clippy::unwrap_used,
     clippy::float_cmp,
     clippy::panic,
     clippy::similar_names
@@ -25,6 +24,7 @@ use std::path::{Path, PathBuf};
 
 use openbmp_cli::commands::run;
 use openbmp_testkit::tolerance::ToleranceTable;
+use tempfile::{Builder, TempDir};
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -70,9 +70,8 @@ fn stage_scenario(temp_dir: &Path, label: &str) -> PathBuf {
 
 #[test]
 fn constant_acceleration_drop_meets_tolerance_table() {
-    let temp =
-        tempdir_for("openbmp_e2e_tolerance").expect("tempdir for tolerance test must construct");
-    let staged = stage_scenario(&temp, "tolerance");
+    let temp = tempdir_for("openbmp_e2e_tolerance");
+    let staged = stage_scenario(temp.path(), "tolerance");
 
     let report = run::run(&staged).expect("scenario run must succeed");
 
@@ -105,10 +104,10 @@ fn constant_acceleration_drop_meets_tolerance_table() {
 
 #[test]
 fn constant_acceleration_drop_is_byte_stable_across_two_runs() {
-    let temp = tempdir_for("openbmp_e2e_bytestable").expect("tempdir must construct");
+    let temp = tempdir_for("openbmp_e2e_bytestable");
 
-    let staged_a = stage_scenario(&temp, "run_a");
-    let staged_b = stage_scenario(&temp, "run_b");
+    let staged_a = stage_scenario(temp.path(), "run_a");
+    let staged_b = stage_scenario(temp.path(), "run_b");
 
     let report_a = run::run(&staged_a).expect("run a");
     let report_b = run::run(&staged_b).expect("run b");
@@ -188,17 +187,9 @@ fn read_final_state(parquet_path: &Path) -> FinalState {
     }
 }
 
-/// Tiny tempdir helper that doesn't pull a tempfile dependency.
-/// Creates a uniquely-named directory under `std::env::temp_dir`,
-/// returns its path, and arranges for it to live for the test process
-/// lifetime (we don't bother cleaning it up; CI nukes /tmp anyway, and
-/// this avoids drop-order surprises around `Path` aliases).
-fn tempdir_for(label: &str) -> std::io::Result<PathBuf> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let pid = std::process::id();
-    let path = std::env::temp_dir().join(format!("{label}-{pid}-{n}"));
-    fs::create_dir_all(&path)?;
-    Ok(path)
+fn tempdir_for(label: &str) -> TempDir {
+    Builder::new()
+        .prefix(&format!("{label}-"))
+        .tempdir()
+        .expect("tempdir must construct")
 }

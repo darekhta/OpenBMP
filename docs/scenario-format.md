@@ -80,6 +80,10 @@ require_finite_state = true
 require_monotonic_time = true
 ```
 
+In Phase 1, `environment.gravity_m_s2` is a non-negative magnitude. The
+analytic-toy runner applies it along the toy `-z` direction; explicit gravity
+vectors are a later scenario-format extension.
+
 ## Metadata
 
 `[meta]` fields:
@@ -103,10 +107,14 @@ Allowed `validation` values are `experimental`, `checked`,
 | `start_s` | float | yes | finite |
 | `stop_s` | float | yes | `stop_s > start_s` |
 | `dt_s` | float | yes | positive finite |
-| `seed` | integer | yes | unsigned 64-bit |
+| `seed` | integer | yes | unsigned 64-bit in memory; TOML integer literals are limited to the non-negative `i64` range until string seed parsing lands |
 
 `dt_s` is the base kernel step. Multi-rate schedules are integer divisors of
 the base step and must be declared under subsystem-specific `rate_hz` fields.
+
+Phase-1 TOML seed literals should stay in `0..=i64::MAX`. The scenario model
+stores seeds as `u64`, but TOML integer syntax itself cannot represent values
+above signed 64-bit range portably.
 
 ## Solver Profile
 

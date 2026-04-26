@@ -48,8 +48,7 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
             if report.identical {
                 println!(
                     "openbmp diff: identical ({} rows, {} columns matched)",
-                    report.golden_rows,
-                    report.first_divergence.as_ref().map_or(0, |_| 0_usize)
+                    report.golden_rows, report.columns_matched,
                 );
                 Ok(())
             } else {

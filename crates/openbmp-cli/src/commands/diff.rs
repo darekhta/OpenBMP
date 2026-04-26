@@ -10,6 +10,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray, UInt64Array};
+use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -25,6 +26,8 @@ pub struct DiffReport {
     pub golden_rows: usize,
     /// Row count seen on the actual side.
     pub actual_rows: usize,
+    /// Number of columns matched when schemas and rows are identical.
+    pub columns_matched: usize,
     /// First divergence, if any.
     pub first_divergence: Option<Divergence>,
 }
@@ -59,6 +62,23 @@ pub fn run(golden: &Path, actual: &Path) -> Result<DiffReport, CliError> {
             summary: format!("column set differs: golden=[{golden_cols}], actual=[{actual_cols}]"),
         });
     }
+    if golden_table.column_types != actual_table.column_types {
+        let mismatch = golden_table
+            .column_types
+            .iter()
+            .zip(&actual_table.column_types)
+            .enumerate()
+            .find(|(_, (golden_type, actual_type))| golden_type != actual_type)
+            .map_or(0, |(index, _)| index);
+        return Err(CliError::Diff {
+            summary: format!(
+                "column type differs for {}: golden={}, actual={}",
+                golden_table.column_names[mismatch],
+                golden_table.column_types[mismatch],
+                actual_table.column_types[mismatch],
+            ),
+        });
+    }
 
     let row_count = golden_table.row_count.min(actual_table.row_count);
     for row in 0..row_count {
@@ -76,6 +96,7 @@ pub fn run(golden: &Path, actual: &Path) -> Result<DiffReport, CliError> {
                     identical: false,
                     golden_rows: golden_table.row_count,
                     actual_rows: actual_table.row_count,
+                    columns_matched: golden_table.column_names.len(),
                     first_divergence: Some(divergence),
                 });
             }
@@ -87,6 +108,7 @@ pub fn run(golden: &Path, actual: &Path) -> Result<DiffReport, CliError> {
             identical: false,
             golden_rows: golden_table.row_count,
             actual_rows: actual_table.row_count,
+            columns_matched: golden_table.column_names.len(),
             first_divergence: Some(Divergence {
                 row: row_count,
                 column: "<row-count>".to_owned(),
@@ -100,12 +122,14 @@ pub fn run(golden: &Path, actual: &Path) -> Result<DiffReport, CliError> {
         identical: true,
         golden_rows: golden_table.row_count,
         actual_rows: actual_table.row_count,
+        columns_matched: golden_table.column_names.len(),
         first_divergence: None,
     })
 }
 
 struct DecodedTable {
     column_names: Vec<String>,
+    column_types: Vec<DataType>,
     row_count: usize,
     columns: Vec<Vec<String>>,
 }
@@ -133,6 +157,11 @@ fn read_parquet(path: &Path) -> Result<DecodedTable, CliError> {
         .iter()
         .map(|field| field.name().clone())
         .collect::<Vec<_>>();
+    let column_types = schema
+        .fields()
+        .iter()
+        .map(|field| field.data_type().clone())
+        .collect::<Vec<_>>();
     let column_count = column_names.len();
     let mut columns: Vec<Vec<String>> = vec![Vec::new(); column_count];
 
@@ -149,6 +178,7 @@ fn read_parquet(path: &Path) -> Result<DecodedTable, CliError> {
 
     Ok(DecodedTable {
         column_names,
+        column_types,
         row_count,
         columns,
     })
@@ -161,7 +191,7 @@ fn decode_column(array: &dyn Array, into: &mut Vec<String>) {
                 "<null>".to_owned()
             } else {
                 let bits = values.value(i).to_bits();
-                format!("f64:0x{bits:016x}")
+                format!("f64:0x{bits:016x} (={})", values.value(i))
             });
         }
     } else if let Some(values) = array.as_any().downcast_ref::<UInt64Array>() {

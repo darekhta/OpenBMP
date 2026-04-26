@@ -27,52 +27,19 @@
 use openbmp_core::{ChannelId, Duration, Position3, SimTime, Velocity3};
 use openbmp_scenario::Scenario;
 use openbmp_sim::{
-    AlwaysContinue, ConstantGravityForce, ConstantMass, EndTime, NullEnvironment, Rk4FixedStep,
-    SimulationConfig, SimulationKernel, StopReason,
+    ConstantGravityForce, ConstantMass, EndTime, NullEnvironment, Rk4FixedStep, SimulationConfig,
+    SimulationKernel, StopReason,
 };
 use openbmp_state::PointMassState;
-use openbmp_telemetry::{
-    ChannelMetadata, TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable,
-    TelemetryValueKind,
-};
+use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
 
 use crate::error::CliError;
 
 /// Concrete kernel type assembled by the Phase-1 runner.
-pub type Phase1Kernel = SimulationKernel<
-    Rk4FixedStep,
-    ConstantGravityForce,
-    ConstantMass,
-    NullEnvironment,
-    Phase1StopCondition,
->;
-
-/// One of the two stop-condition shapes the Phase-1 runner produces:
-/// scenario-driven `EndTime`, or `AlwaysContinue` when the test driver
-/// will stop the kernel manually. Modelled as an enum (rather than two
-/// kernel monomorphisations) to keep the public CLI types stable.
-#[derive(Copy, Clone, Debug)]
-pub enum Phase1StopCondition {
-    /// Kernel halts at or after this simulation time.
-    EndTime(EndTime),
-    /// Kernel never halts on its own.
-    AlwaysContinue(AlwaysContinue),
-}
-
-impl openbmp_sim::StopCondition for Phase1StopCondition {
-    fn evaluate(
-        &self,
-        state: &PointMassState,
-        step: openbmp_core::StepIndex,
-    ) -> Option<StopReason> {
-        match self {
-            Self::EndTime(condition) => condition.evaluate(state, step),
-            Self::AlwaysContinue(condition) => condition.evaluate(state, step),
-        }
-    }
-}
+pub type Phase1Kernel =
+    SimulationKernel<Rk4FixedStep, ConstantGravityForce, ConstantMass, NullEnvironment, EndTime>;
 
 /// Outcome of a scenario run.
 #[derive(Debug)]
@@ -87,60 +54,72 @@ pub struct RunOutcome {
     pub final_time_s: f64,
 }
 
-/// Build the Phase-1 telemetry schema (fixed channel order).
-fn build_schema() -> Result<TelemetrySchema, CliError> {
-    let channels = vec![
-        ChannelMetadata::new(
-            ChannelId::new(1),
-            "position_x_m",
-            "m",
-            Some("ECI"),
-            TelemetryValueKind::Float64,
-        )?,
-        ChannelMetadata::new(
-            ChannelId::new(2),
-            "position_y_m",
-            "m",
-            Some("ECI"),
-            TelemetryValueKind::Float64,
-        )?,
-        ChannelMetadata::new(
-            ChannelId::new(3),
-            "position_z_m",
-            "m",
-            Some("ECI"),
-            TelemetryValueKind::Float64,
-        )?,
-        ChannelMetadata::new(
-            ChannelId::new(4),
-            "velocity_x_m_s",
-            "m/s",
-            Some("ECI"),
-            TelemetryValueKind::Float64,
-        )?,
-        ChannelMetadata::new(
-            ChannelId::new(5),
-            "velocity_y_m_s",
-            "m/s",
-            Some("ECI"),
-            TelemetryValueKind::Float64,
-        )?,
-        ChannelMetadata::new(
-            ChannelId::new(6),
-            "velocity_z_m_s",
-            "m/s",
-            Some("ECI"),
-            TelemetryValueKind::Float64,
-        )?,
-        ChannelMetadata::new(
-            ChannelId::new(7),
-            "mass_kg",
-            "kg",
-            None::<&str>,
-            TelemetryValueKind::Float64,
-        )?,
-    ];
-    Ok(TelemetrySchema::new(channels)?)
+#[derive(Debug)]
+struct Phase1TelemetryChannels {
+    position_x: TelemetryChannel<f64>,
+    position_y: TelemetryChannel<f64>,
+    position_z: TelemetryChannel<f64>,
+    velocity_x: TelemetryChannel<f64>,
+    velocity_y: TelemetryChannel<f64>,
+    velocity_z: TelemetryChannel<f64>,
+    mass: TelemetryChannel<f64>,
+}
+
+impl Phase1TelemetryChannels {
+    fn new() -> Result<Self, CliError> {
+        Ok(Self {
+            position_x: TelemetryChannel::<f64>::new(
+                ChannelId::new(1),
+                "position_x_m",
+                "m",
+                Some("ECI"),
+            )?,
+            position_y: TelemetryChannel::<f64>::new(
+                ChannelId::new(2),
+                "position_y_m",
+                "m",
+                Some("ECI"),
+            )?,
+            position_z: TelemetryChannel::<f64>::new(
+                ChannelId::new(3),
+                "position_z_m",
+                "m",
+                Some("ECI"),
+            )?,
+            velocity_x: TelemetryChannel::<f64>::new(
+                ChannelId::new(4),
+                "velocity_x_m_s",
+                "m/s",
+                Some("ECI"),
+            )?,
+            velocity_y: TelemetryChannel::<f64>::new(
+                ChannelId::new(5),
+                "velocity_y_m_s",
+                "m/s",
+                Some("ECI"),
+            )?,
+            velocity_z: TelemetryChannel::<f64>::new(
+                ChannelId::new(6),
+                "velocity_z_m_s",
+                "m/s",
+                Some("ECI"),
+            )?,
+            mass: TelemetryChannel::<f64>::new(ChannelId::new(7), "mass_kg", "kg", None::<&str>)?,
+        })
+    }
+
+    /// Build the Phase-1 telemetry schema (fixed channel order).
+    fn schema(&self) -> Result<TelemetrySchema, CliError> {
+        Ok(TelemetrySchema::new(vec![
+            self.position_x.metadata().clone(),
+            self.position_y.metadata().clone(),
+            self.position_z.metadata().clone(),
+            self.velocity_x.metadata().clone(),
+            self.velocity_y.metadata().clone(),
+            self.velocity_z.metadata().clone(),
+            self.mass.metadata().clone(),
+        ])?)
+    }
 }
 
 /// Build the Phase-1 kernel from a scenario document.
@@ -184,7 +163,7 @@ pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
     }
 
     // Forces: only `["gravity"]`.
-    if document.forces.models.as_slice() != ["gravity".to_owned()].as_slice() {
+    if document.forces.models.len() != 1 || document.forces.models[0] != "gravity" {
         return Err(CliError::UnsupportedScenario {
             what: format!("forces.models = {:?}", document.forces.models),
         });
@@ -196,6 +175,11 @@ pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
         .ok_or_else(|| CliError::UnsupportedScenario {
             what: "environment.gravity_m_s2 missing for constant gravity".to_owned(),
         })?;
+    if g < 0.0 {
+        return Err(CliError::UnsupportedScenario {
+            what: "environment.gravity_m_s2 must be a non-negative magnitude; Phase-1 constant gravity is down_z".to_owned(),
+        });
+    }
 
     let initial_position = document.vehicle.initial_position_eci_m;
     let initial_velocity = document.vehicle.initial_velocity_eci_m_s;
@@ -214,8 +198,7 @@ pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
         Mass::new::<kilogram>(document.vehicle.mass_kg),
     );
 
-    let stop =
-        Phase1StopCondition::EndTime(EndTime::new(SimTime::from_seconds(document.time.stop_s)));
+    let stop = EndTime::new(SimTime::from_seconds(document.time.stop_s));
 
     let config = SimulationConfig {
         initial_state,
@@ -241,13 +224,13 @@ pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
 /// added.
 pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
     let mut kernel = build_kernel(scenario)?;
-    let schema = build_schema()?;
-    let mut table = TelemetryTable::new(schema);
+    let channels = Phase1TelemetryChannels::new()?;
+    let mut table = TelemetryTable::new(channels.schema()?);
 
-    record_step(&mut table, &kernel)?;
+    record_step(&mut table, &kernel, &channels)?;
     while kernel.stop_reason().is_none() {
         kernel.step()?;
-        record_step(&mut table, &kernel)?;
+        record_step(&mut table, &kernel, &channels)?;
     }
 
     let stop_reason = kernel
@@ -263,31 +246,21 @@ pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
     })
 }
 
-fn record_step(table: &mut TelemetryTable, kernel: &Phase1Kernel) -> Result<(), CliError> {
+fn record_step(
+    table: &mut TelemetryTable,
+    kernel: &Phase1Kernel,
+    channels: &Phase1TelemetryChannels,
+) -> Result<(), CliError> {
     let state = kernel.current_state();
     let mut row = TelemetryRow::new(state.time, kernel.current_step())?;
 
-    let position_x =
-        TelemetryChannel::<f64>::new(ChannelId::new(1), "position_x_m", "m", Some("ECI"))?;
-    let position_y =
-        TelemetryChannel::<f64>::new(ChannelId::new(2), "position_y_m", "m", Some("ECI"))?;
-    let position_z =
-        TelemetryChannel::<f64>::new(ChannelId::new(3), "position_z_m", "m", Some("ECI"))?;
-    let velocity_x =
-        TelemetryChannel::<f64>::new(ChannelId::new(4), "velocity_x_m_s", "m/s", Some("ECI"))?;
-    let velocity_y =
-        TelemetryChannel::<f64>::new(ChannelId::new(5), "velocity_y_m_s", "m/s", Some("ECI"))?;
-    let velocity_z =
-        TelemetryChannel::<f64>::new(ChannelId::new(6), "velocity_z_m_s", "m/s", Some("ECI"))?;
-    let mass = TelemetryChannel::<f64>::new(ChannelId::new(7), "mass_kg", "kg", None::<&str>)?;
-
-    row.insert(&position_x, state.position.vector.x)?;
-    row.insert(&position_y, state.position.vector.y)?;
-    row.insert(&position_z, state.position.vector.z)?;
-    row.insert(&velocity_x, state.velocity.vector.x)?;
-    row.insert(&velocity_y, state.velocity.vector.y)?;
-    row.insert(&velocity_z, state.velocity.vector.z)?;
-    row.insert(&mass, state.mass.get::<kilogram>())?;
+    row.insert(&channels.position_x, state.position.vector.x)?;
+    row.insert(&channels.position_y, state.position.vector.y)?;
+    row.insert(&channels.position_z, state.position.vector.z)?;
+    row.insert(&channels.velocity_x, state.velocity.vector.x)?;
+    row.insert(&channels.velocity_y, state.velocity.vector.y)?;
+    row.insert(&channels.velocity_z, state.velocity.vector.z)?;
+    row.insert(&channels.mass, state.mass.get::<kilogram>())?;
 
     table.push_row(row)?;
     Ok(())
