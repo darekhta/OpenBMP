@@ -1,0 +1,102 @@
+# Synthetic axisymmetric finned-cylinder aerodynamic deck (Schema 1).
+#
+# This deck is a hand-derived stylised Barrowman-style build-up for a
+# generic 80 mm-diameter, 1.0 m-long sounding-rocket airframe with
+# trapezoidal fins. It is **not** a transcription of any fielded
+# vehicle's deck. The methodology — Barrowman component build-up,
+# axisymmetric reduced (CN, CD, CM) — follows the convention of
+# Niskanen 2009 (the OpenRocket master's thesis); see
+# `data/aero/provenance.md` for the full provenance record.
+#
+# Closed-form generators used to produce the values below:
+#   CD(M, α_deg) = CD0(M) + 0.001 * α_deg^2
+#   CN(M, α_deg) = α_deg * (0.07 + 0.005 * M)
+#   CM(M, α_deg) = -0.15 * CN(M, α_deg)         (15% static margin)
+#
+# CD0(M) is a piecewise drag-rise curve peaking transonically and
+# falling supersonically. Sanity checks: CD > 0 everywhere on the
+# grid, CN(α = 0) = 0 exactly for every Mach, CM and CN have
+# opposite sign (restoring moment), and the grid is symmetric in α.
+
+openbmp.aero_deck = 1
+
+reference.area_m2  = 0.005026548
+reference.length_m = 1.0
+
+provenance = "synthetic Barrowman-style build-up for a stylised 80 mm finned cylinder; methodology cites Niskanen 2009"
+validation = "validated-toy"
+
+[grid]
+mach      = [0.0, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0]
+alpha_deg = [-10.0, -5.0, -2.0, 0.0, 2.0, 5.0, 10.0]
+beta_deg  = [0.0]
+
+# Coefficient tables are row-major over (mach, alpha, beta). Beta has
+# only one breakpoint here (pure axisymmetric), so the table layout
+# reads naturally as 8 mach rows × 7 alpha columns.
+
+[coefficients.cn]
+# CN(M, α) = α_deg · (0.07 + 0.005 · M).
+data = [
+  # M = 0.0
+  -0.700, -0.350, -0.140, 0.000, 0.140, 0.350, 0.700,
+  # M = 0.5
+  -0.725, -0.3625, -0.145, 0.000, 0.145, 0.3625, 0.725,
+  # M = 0.8
+  -0.740, -0.370, -0.148, 0.000, 0.148, 0.370, 0.740,
+  # M = 1.0
+  -0.750, -0.375, -0.150, 0.000, 0.150, 0.375, 0.750,
+  # M = 1.2
+  -0.760, -0.380, -0.152, 0.000, 0.152, 0.380, 0.760,
+  # M = 1.5
+  -0.775, -0.3875, -0.155, 0.000, 0.155, 0.3875, 0.775,
+  # M = 2.0
+  -0.800, -0.400, -0.160, 0.000, 0.160, 0.400, 0.800,
+  # M = 3.0
+  -0.850, -0.425, -0.170, 0.000, 0.170, 0.425, 0.850,
+]
+
+[coefficients.cd]
+# CD(M, α) = CD0(M) + 0.001 · α_deg².
+# CD0: 0.450 (M ≤ 0.5), 0.550 (M = 0.8), 0.750 (M = 1.0),
+#      0.850 (M = 1.2 transonic peak), 0.700 (M = 1.5),
+#      0.550 (M = 2.0), 0.400 (M = 3.0).
+data = [
+  # M = 0.0
+  0.550, 0.475, 0.454, 0.450, 0.454, 0.475, 0.550,
+  # M = 0.5
+  0.550, 0.475, 0.454, 0.450, 0.454, 0.475, 0.550,
+  # M = 0.8
+  0.650, 0.575, 0.554, 0.550, 0.554, 0.575, 0.650,
+  # M = 1.0
+  0.850, 0.775, 0.754, 0.750, 0.754, 0.775, 0.850,
+  # M = 1.2
+  0.950, 0.875, 0.854, 0.850, 0.854, 0.875, 0.950,
+  # M = 1.5
+  0.800, 0.725, 0.704, 0.700, 0.704, 0.725, 0.800,
+  # M = 2.0
+  0.650, 0.575, 0.554, 0.550, 0.554, 0.575, 0.650,
+  # M = 3.0
+  0.500, 0.425, 0.404, 0.400, 0.404, 0.425, 0.500,
+]
+
+[coefficients.cm]
+# CM(M, α) = -0.15 · CN(M, α). 15% static margin from base.
+data = [
+  # M = 0.0
+  0.10500, 0.05250, 0.02100, 0.00000, -0.02100, -0.05250, -0.10500,
+  # M = 0.5
+  0.10875, 0.054375, 0.02175, 0.00000, -0.02175, -0.054375, -0.10875,
+  # M = 0.8
+  0.11100, 0.05550, 0.02220, 0.00000, -0.02220, -0.05550, -0.11100,
+  # M = 1.0
+  0.11250, 0.056250, 0.02250, 0.00000, -0.02250, -0.056250, -0.11250,
+  # M = 1.2
+  0.11400, 0.05700, 0.02280, 0.00000, -0.02280, -0.05700, -0.11400,
+  # M = 1.5
+  0.11625, 0.058125, 0.02325, 0.00000, -0.02325, -0.058125, -0.11625,
+  # M = 2.0
+  0.12000, 0.06000, 0.02400, 0.00000, -0.02400, -0.06000, -0.12000,
+  # M = 3.0
+  0.12750, 0.063750, 0.02550, 0.00000, -0.02550, -0.063750, -0.12750,
+]
