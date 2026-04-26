@@ -1,0 +1,41 @@
+# Tolerance table for the Phase-1.3 headline analytic-toy validation.
+#
+# Scenario: 1 kg point mass at rest at the origin, falling under
+# constant gravity g = -9.80665 m/s² (along ECI -Z), integrated for
+# 1000 steps of dt = 0.01 s with RK4FixedStep.
+#
+# Closed-form analytic reference (textbook):
+#   x(t) = x0 + v0·t + ½·a·t²
+#   v(t) = v0 + a·t
+#
+# At t = 10 s with x0 = v0 = 0:
+#   x(10) = ½ · (-9.80665) · 100 = -490.3325 m
+#   v(10) = (-9.80665) · 10      = -98.0665 m/s
+#
+# RK4 is exact (in infinite precision) for polynomials of degree ≤ 4.
+# Constant acceleration produces a quadratic position trajectory and a
+# linear velocity trajectory — both well within RK4's exactness range.
+# The only error comes from floating-point rounding accumulated over
+# 1000 steps; observed empirically as ~1e-12 relative.
+
+case = "constant-acceleration-drop-1000-steps"
+source = "Analytic closed-form: x(t) = x0 + v0·t + 0.5·a·t² (textbook)"
+validation = "validated-toy"
+
+[[metric]]
+name = "final_time_s"
+expected = 10.0
+absolute_tolerance = 1.0e-12
+relative_tolerance = 1.0e-12
+
+[[metric]]
+name = "final_position_z_m"
+expected = -490.3325
+absolute_tolerance = 1.0e-9
+relative_tolerance = 1.0e-12
+
+[[metric]]
+name = "final_velocity_z_m_s"
+expected = -98.0665
+absolute_tolerance = 1.0e-9
+relative_tolerance = 1.0e-12
