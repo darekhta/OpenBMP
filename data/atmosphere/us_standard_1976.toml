@@ -1,8 +1,9 @@
 # US Standard Atmosphere 1976 — defining constants and layer table.
 #
 # Authoritative source: NOAA-S/T 76-1562 / NASA-TM-X-74335,
-# *U.S. Standard Atmosphere, 1976* (NTRS 19770009539). All values
-# transcribed by hand from the published document; see
+# *U.S. Standard Atmosphere, 1976* (NTRS 19770009539). Constants and
+# layer structure are transcribed from the published document; base
+# pressures are the locked recurrence through the standard formulas. See
 # `data/atmosphere/provenance.md` for the full provenance record.
 #
 # OpenBMP loads the constants from
@@ -52,7 +53,9 @@ reference_radius_m = 6356766.0
 
 # Top of the 7-layer model. USSA76 documents 86 km geometric and
 # 84 852 m geopotential as the upper boundary; both endpoints are
-# pinned in the standard rather than derived one from the other.
+# pinned in the standard rather than derived one from the other. With
+# the pinned reference radius, h'(86000 m) = 84852.04584490575 m', so
+# the public geometric sampler clamps that residual to 84852 m'.
 max_geometric_altitude_m    = 86000.0
 max_geopotential_altitude_m = 84852.0
 
@@ -62,17 +65,17 @@ max_geopotential_altitude_m = 84852.0
 #
 # Seven geopotential layers from 0 m' to 84 852 m'. Each row gives
 # the base geopotential altitude, base temperature, lapse rate, and
-# base pressure as published in the standard. Within a layer:
+# recursive base pressure. Within a layer:
 #
 #   T(h') = T_b + L · (h' - h'_b)
 #   p(h') = p_b · (T_b / T(h'))^(g₀' · M / (R · L))      if L ≠ 0
 #   p(h') = p_b · exp(-g₀' · M · (h' - h'_b) / (R · T_b)) if L = 0
 #
-# The base-pressure column was originally derived recursively from
-# the layer-0 sea-level value by chaining the formulas above across
-# each previous layer. The published values in table 4 are the
-# canonical truth and are reproduced here to the precision listed in
-# the standard.
+# The base-pressure column is derived recursively from the layer-0
+# sea-level value by chaining the formulas above across each previous
+# layer with the same locked f64 operand order used by the Rust model.
+# This avoids pressure discontinuities from mixing rounded display
+# values with runtime recurrence values.
 
 [[layers]]
 index                  = 0
@@ -86,39 +89,39 @@ index                  = 1
 base_geopotential_m    = 11000.0
 base_temperature_k     = 216.65
 lapse_rate_k_per_m     = 0.0
-base_pressure_pa       = 22632.0639609553
+base_pressure_pa       = 22632.06397346291
 
 [[layers]]
 index                  = 2
 base_geopotential_m    = 20000.0
 base_temperature_k     = 216.65
 lapse_rate_k_per_m     = 0.001
-base_pressure_pa       = 5474.88866984344
+base_pressure_pa       = 5474.888669677775
 
 [[layers]]
 index                  = 3
 base_geopotential_m    = 32000.0
 base_temperature_k     = 228.65
 lapse_rate_k_per_m     = 0.0028
-base_pressure_pa       = 868.01868475551
+base_pressure_pa       = 868.0186847552282
 
 [[layers]]
 index                  = 4
 base_geopotential_m    = 47000.0
 base_temperature_k     = 270.65
 lapse_rate_k_per_m     = 0.0
-base_pressure_pa       = 110.906305312205
+base_pressure_pa       = 110.90630555496611
 
 [[layers]]
 index                  = 5
 base_geopotential_m    = 51000.0
 base_temperature_k     = 270.65
 lapse_rate_k_per_m     = -0.0028
-base_pressure_pa       = 66.9388733638732
+base_pressure_pa       = 66.9388731186874
 
 [[layers]]
 index                  = 6
 base_geopotential_m    = 71000.0
 base_temperature_k     = 214.65
 lapse_rate_k_per_m     = -0.002
-base_pressure_pa       = 3.95639202655446
+base_pressure_pa       = 3.9564204280407327

@@ -61,6 +61,15 @@ fn f64_field(data: &toml::Value, key: &str) -> f64 {
         .expect("data file must contain requested float field")
 }
 
+fn assert_relative(actual: f64, expected: f64, tol: f64, label: &str) {
+    let denom = expected.abs().max(1.0e-30);
+    let rel = (actual - expected).abs() / denom;
+    assert!(
+        rel <= tol,
+        "{label}: actual = {actual}, expected = {expected}, relative error = {rel}",
+    );
+}
+
 /// Phase-1 toy used `g = (0, 0, -9.80665)`. Verify
 /// `ConstantGravity::down_z` produces exactly that vector.
 #[test]
@@ -198,8 +207,8 @@ fn ussa76_constants_match_noaa_st_76_1562() {
 /// matches what the in-source layer table produces. The private
 /// `LAYERS` array is exercised through the public
 /// `sample_at_geopotential` API: at `h = h_b` the model returns
-/// exactly `(T_b, p_b)` from the standard, and the layer's lapse
-/// rate is recovered from a small offset query.
+/// exactly the pinned `(T_b, p_b)`, and the layer's lapse rate is
+/// recovered from a small offset query.
 #[test]
 fn ussa76_layer_table_matches_data_pin() {
     let data = ussa76_data_pin();
@@ -227,7 +236,7 @@ fn ussa76_layer_table_matches_data_pin() {
         let base_pressure_pa = f64_field(layer, "base_pressure_pa");
         let lapse_rate_k_per_m = f64_field(layer, "lapse_rate_k_per_m");
 
-        // 1. T(h_b) and p(h_b) match the published constants exactly
+        // 1. T(h_b) and p(h_b) match the TOML pin exactly
         //    (within f64 representation precision).
         let s = atm
             .sample_at_geopotential(base_geopotential_m)
@@ -249,4 +258,118 @@ fn ussa76_layer_table_matches_data_pin() {
         let observed_lapse = (s_off.temperature_k - s.temperature_k) / offset_m;
         assert_abs_diff_eq!(observed_lapse, lapse_rate_k_per_m, epsilon = 1.0e-12);
     }
+}
+
+#[derive(Copy, Clone, Debug)]
+struct Ussa76ReferenceSample {
+    temperature_k: f64,
+    pressure_pa: f64,
+    density_kg_m3: f64,
+}
+
+fn ussa76_layers(data: &toml::Value) -> &[toml::Value] {
+    data.get("layers")
+        .and_then(toml::Value::as_array)
+        .expect("USSA76 data pin must contain a `layers` array")
+}
+
+fn ussa76_reference_at_geopotential(
+    data: &toml::Value,
+    h_geopotential_m: f64,
+) -> Ussa76ReferenceSample {
+    let layers = ussa76_layers(data);
+    let mut layer = layers
+        .first()
+        .expect("USSA76 data pin must contain at least one layer");
+    for candidate in layers {
+        if h_geopotential_m >= f64_field(candidate, "base_geopotential_m") {
+            layer = candidate;
+        } else {
+            break;
+        }
+    }
+
+    let standard_gravity_m_s2 = f64_field(data, "standard_gravity_m_s2");
+    let universal_gas_constant_j_kmol_k = f64_field(data, "universal_gas_constant_j_kmol_k");
+    let mean_molecular_weight_air_kg_kmol = f64_field(data, "mean_molecular_weight_air_kg_kmol");
+
+    let base_geopotential_m = f64_field(layer, "base_geopotential_m");
+    let base_temperature_k = f64_field(layer, "base_temperature_k");
+    let base_pressure_pa = f64_field(layer, "base_pressure_pa");
+    let lapse_rate_k_per_m = f64_field(layer, "lapse_rate_k_per_m");
+
+    let temperature_k =
+        base_temperature_k + lapse_rate_k_per_m * (h_geopotential_m - base_geopotential_m);
+    let pressure_pa = if lapse_rate_k_per_m == 0.0 {
+        let coeff = standard_gravity_m_s2 * mean_molecular_weight_air_kg_kmol
+            / (universal_gas_constant_j_kmol_k * base_temperature_k);
+        let dh = h_geopotential_m - base_geopotential_m;
+        base_pressure_pa * (-coeff * dh).exp()
+    } else {
+        let exponent = standard_gravity_m_s2 * mean_molecular_weight_air_kg_kmol
+            / (universal_gas_constant_j_kmol_k * lapse_rate_k_per_m);
+        let temperature_ratio = base_temperature_k / temperature_k;
+        base_pressure_pa * temperature_ratio.powf(exponent)
+    };
+    let density_kg_m3 = pressure_pa * mean_molecular_weight_air_kg_kmol
+        / (universal_gas_constant_j_kmol_k * temperature_k);
+
+    Ussa76ReferenceSample {
+        temperature_k,
+        pressure_pa,
+        density_kg_m3,
+    }
+}
+
+#[test]
+fn ussa76_matches_data_pin_reference_every_geopotential_kilometre() {
+    let data = ussa76_data_pin();
+    let atm = UsStandard1976::new();
+    let mut h_geopotential_m = 0.0_f64;
+    while h_geopotential_m <= 84_000.0 {
+        let actual = atm
+            .sample_at_geopotential(h_geopotential_m)
+            .expect("reference kilometre is inside USSA76 envelope");
+        let expected = ussa76_reference_at_geopotential(&data, h_geopotential_m);
+        assert_abs_diff_eq!(
+            actual.temperature_k,
+            expected.temperature_k,
+            epsilon = 1.0e-12,
+        );
+        assert_relative(
+            actual.pressure_pa,
+            expected.pressure_pa,
+            1.0e-11,
+            "USSA76 pressure",
+        );
+        assert_relative(
+            actual.density_kg_m3,
+            expected.density_kg_m3,
+            1.0e-11,
+            "USSA76 density",
+        );
+        h_geopotential_m += 1_000.0;
+    }
+
+    let actual = atm
+        .sample_at_geopotential(USSA76_MAX_GEOPOTENTIAL_M)
+        .expect("USSA76 ceiling is inside envelope");
+    let expected = ussa76_reference_at_geopotential(&data, USSA76_MAX_GEOPOTENTIAL_M);
+    assert_abs_diff_eq!(
+        actual.temperature_k,
+        expected.temperature_k,
+        epsilon = 1.0e-12,
+    );
+    assert_relative(
+        actual.pressure_pa,
+        expected.pressure_pa,
+        1.0e-11,
+        "USSA76 ceiling pressure",
+    );
+    assert_relative(
+        actual.density_kg_m3,
+        expected.density_kg_m3,
+        1.0e-11,
+        "USSA76 ceiling density",
+    );
 }

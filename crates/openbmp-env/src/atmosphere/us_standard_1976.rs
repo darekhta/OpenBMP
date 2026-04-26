@@ -11,16 +11,17 @@
 //!
 //! # Reference
 //!
-//! Defining constants and layer table per NOAA-S/T 76-1562 §1.2-§1.3.
-//! All values transcribed by hand from the published document; the
-//! Phase-2.3 regression test verifies the in-source pin against
-//! `data/atmosphere/us_standard_1976.toml` and asserts that the
-//! computed values reproduce the standard's table 4 to 1e-6 relative.
+//! Defining constants and layer structure per NOAA-S/T 76-1562
+//! §1.2-§1.3. The base-pressure column is the locked f64 recurrence
+//! from the sea-level pressure through the standard barometric
+//! formulas. Phase-2.3 regression tests verify the in-source pin
+//! against `data/atmosphere/us_standard_1976.toml` and check
+//! per-kilometre samples against a TOML-derived reference.
 //!
 //! # Determinism
 //!
 //! Pure arithmetic on `f64`; locked operand order on every
-//! barometric formula; no `f64::mul_add` / FMA. The two layer
+//! barometric formula; no fused multiply-add call sites. The two layer
 //! formulas (gradient `L ≠ 0` vs. isothermal `L = 0`) are split into
 //! distinct branches; both produce bit-stable output on the
 //! reference platform profile.
@@ -74,10 +75,13 @@ pub const USSA76_REFERENCE_RADIUS_M: f64 = 6_356_766.0;
 /// extension.
 pub const USSA76_MAX_GEOPOTENTIAL_M: f64 = 84_852.0;
 
-/// Top of the 7-layer USSA76 model in **geometric** metres. Equal to
-/// 86000 m by USSA76's definition (the geopotential cap of 84852 m'
-/// converts to exactly 86000 m geometric using
-/// `USSA76_REFERENCE_RADIUS_M`).
+/// Top of the 7-layer USSA76 model in **geometric** metres.
+///
+/// USSA76 pins both the 86000 m geometric ceiling and the 84852 m'
+/// geopotential ceiling. The closed-form conversion with the pinned
+/// reference radius gives `h'(86000 m) = 84852.04584490575 m'`; callers
+/// using geometric altitude treat 86000 m as in-envelope and clamp that
+/// small residual to the geopotential ceiling.
 pub const USSA76_MAX_GEOMETRIC_M: f64 = 86_000.0;
 
 // ---------------------------------------------------------------------
@@ -100,13 +104,11 @@ struct Layer {
 
 /// USSA76 layer table per NOAA-S/T 76-1562 §1.2 (table 4).
 ///
-/// The base-pressure column was originally derived recursively from
-/// the layer-0 sea-level value by chaining the barometric formulas
-/// across each previous layer. The published numerical values in
-/// table 4 are the canonical truth; they are reproduced here to the
-/// precision listed in the standard. The Phase-2.3.C regression
-/// test verifies the in-formula computation matches these base
-/// values to 1e-6 relative when chaining through the layers.
+/// The base-pressure column is derived recursively from the layer-0
+/// sea-level value by chaining the barometric formulas across each
+/// previous layer using the locked operand order in this module. This
+/// keeps pressure continuous at layer bases and avoids mixing rounded
+/// table-display values with the runtime recurrence.
 const LAYERS: [Layer; 7] = [
     Layer {
         base_geopotential_m: 0.0,
@@ -118,37 +120,37 @@ const LAYERS: [Layer; 7] = [
         base_geopotential_m: 11_000.0,
         base_temperature_k: 216.65,
         lapse_rate_k_per_m: 0.0,
-        base_pressure_pa: 22_632.063_960_955_3,
+        base_pressure_pa: 22_632.063_973_462_91,
     },
     Layer {
         base_geopotential_m: 20_000.0,
         base_temperature_k: 216.65,
         lapse_rate_k_per_m: 1.0e-3,
-        base_pressure_pa: 5_474.888_669_843_44,
+        base_pressure_pa: 5_474.888_669_677_775,
     },
     Layer {
         base_geopotential_m: 32_000.0,
         base_temperature_k: 228.65,
         lapse_rate_k_per_m: 2.8e-3,
-        base_pressure_pa: 868.018_684_755_51,
+        base_pressure_pa: 868.018_684_755_228_2,
     },
     Layer {
         base_geopotential_m: 47_000.0,
         base_temperature_k: 270.65,
         lapse_rate_k_per_m: 0.0,
-        base_pressure_pa: 110.906_305_312_205,
+        base_pressure_pa: 110.906_305_554_966_11,
     },
     Layer {
         base_geopotential_m: 51_000.0,
         base_temperature_k: 270.65,
         lapse_rate_k_per_m: -2.8e-3,
-        base_pressure_pa: 66.938_873_363_873_2,
+        base_pressure_pa: 66.938_873_118_687_4,
     },
     Layer {
         base_geopotential_m: 71_000.0,
         base_temperature_k: 214.65,
         lapse_rate_k_per_m: -2.0e-3,
-        base_pressure_pa: 3.956_392_026_554_46,
+        base_pressure_pa: 3.956_420_428_040_732_7,
     },
 ];
 
@@ -230,7 +232,7 @@ impl UsStandard1976 {
     /// takes geometric altitude through [`AtmosphereModel::sample`];
     /// this entry point is exposed for callers that already have
     /// geopotential altitude (e.g., the regression test against the
-    /// published table) and the layer-by-layer pin verification.
+    /// data-pin reference) and the layer-by-layer pin verification.
     ///
     /// # Errors
     ///
@@ -307,7 +309,8 @@ impl AtmosphereModel for UsStandard1976 {
                 reason: "geometric altitude below 0 m; USSA76 not defined for sub-surface",
             });
         }
-        let h_geopotential_m = geopotential_from_geometric(altitude_geometric_m);
+        let h_geopotential_m =
+            geopotential_from_geometric(altitude_geometric_m).min(USSA76_MAX_GEOPOTENTIAL_M);
         self.sample_at_geopotential(h_geopotential_m)
     }
 }
@@ -413,8 +416,8 @@ mod tests {
         // conversion `h' = R · z / (R + z)` with the pinned
         // `R = 6356766.0` gives `84852.046` for `z = 86000`. The
         // standard pins both endpoints separately rather than
-        // deriving one from the other; we accept the ~5 cm
-        // residual and document it.
+        // deriving one from the other; the public geometric sampler
+        // clamps this residual to the geopotential ceiling.
         let h = geopotential_from_geometric(USSA76_MAX_GEOMETRIC_M);
         assert_abs_diff_eq!(h, USSA76_MAX_GEOPOTENTIAL_M, epsilon = 0.1);
     }
@@ -432,8 +435,8 @@ mod tests {
         //   a = 340.294 m/s.
         assert_abs_diff_eq!(s.temperature_k, 288.150, epsilon = 1.0e-6);
         assert_abs_diff_eq!(s.pressure_pa, 101_325.0, epsilon = 1.0e-9);
-        assert_relative(s.density_kg_m3, 1.225, 1.0e-4, "sea-level ρ");
-        assert_relative(s.speed_of_sound_m_s, 340.294, 1.0e-4, "sea-level a");
+        assert_abs_diff_eq!(s.density_kg_m3, 1.225, epsilon = 1.0e-6);
+        assert_abs_diff_eq!(s.speed_of_sound_m_s, 340.294, epsilon = 5.0e-4);
     }
 
     // -----------------------------------------------------------------
@@ -469,10 +472,7 @@ mod tests {
         }
     }
 
-    /// At the boundary itself the pressure equals the published
-    /// `p_b`, which exercises the full chained barometric integration
-    /// (the higher layers' base pressures were derived from layer 0
-    /// by the same formulas in this file).
+    /// At the boundary itself the pressure equals the pinned `p_b`.
     #[test]
     fn pressure_at_layer_base_matches_table() {
         let atm = UsStandard1976::new();
@@ -489,6 +489,26 @@ mod tests {
         }
     }
 
+    /// Recompute each next layer's base pressure from the previous
+    /// layer using the runtime branch and locked operand order. This
+    /// guards against drift between the pinned base-pressure table and
+    /// the recurrence used inside each layer.
+    #[test]
+    fn pressure_base_table_matches_locked_recurrence_to_bits() {
+        for pair in LAYERS.windows(2) {
+            let layer = pair[0];
+            let next = pair[1];
+            let temperature_k = temperature_in_layer(layer, next.base_geopotential_m);
+            let pressure_pa = pressure_in_layer(layer, next.base_geopotential_m, temperature_k);
+            assert_eq!(
+                pressure_pa.to_bits(),
+                next.base_pressure_pa.to_bits(),
+                "p_b recurrence mismatch at h_b = {} m'",
+                next.base_geopotential_m,
+            );
+        }
+    }
+
     // -----------------------------------------------------------------
     // Per-altitude regression (mid-layer T values, computed from the
     // layer constants by the closed-form formula)
@@ -498,7 +518,7 @@ mod tests {
     // table 4 reference; they verify the chosen formula branch
     // (gradient vs. isothermal) produces the correct intra-layer
     // value. Layer-base values are verified separately against the
-    // published constants.
+    // pinned constants.
     // -----------------------------------------------------------------
 
     #[test]
@@ -521,11 +541,10 @@ mod tests {
         }
     }
 
-    /// At the base of each layer, the sample must match the
-    /// published `(T_b, p_b)` from the standard exactly (within f64
-    /// precision). The layer constants are the canonical truth.
+    /// At the base of each layer, the sample must match the pinned
+    /// `(T_b, p_b)` constants exactly (within f64 precision).
     #[test]
-    fn sample_at_layer_base_matches_published_constants() {
+    fn sample_at_layer_base_matches_pinned_constants() {
         let atm = UsStandard1976::new();
         for layer in LAYERS {
             let s = atm
@@ -571,6 +590,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pressure_monotonically_decreases_throughout_envelope() {
+        let atm = UsStandard1976::new();
+        let mut h = 0.0_f64;
+        let mut previous_pressure_pa = atm.sample_at_geopotential(h).unwrap().pressure_pa;
+        h += 100.0;
+        while h <= USSA76_MAX_GEOPOTENTIAL_M {
+            let pressure_pa = atm.sample_at_geopotential(h).unwrap().pressure_pa;
+            assert!(
+                pressure_pa < previous_pressure_pa,
+                "p did not decrease from h = {} to h = {h}",
+                h - 100.0,
+            );
+            previous_pressure_pa = pressure_pa;
+            h += 100.0;
+        }
+    }
+
     // -----------------------------------------------------------------
     // Out-of-envelope behaviour
     // -----------------------------------------------------------------
@@ -580,6 +617,31 @@ mod tests {
         let atm = UsStandard1976::new();
         let err = atm.sample(86_001.0, SimTime::ZERO).unwrap_err();
         assert!(matches!(err, EnvError::OutOfEnvelope { .. }));
+    }
+
+    #[test]
+    fn exact_86_km_geometric_is_inside_envelope() {
+        let atm = UsStandard1976::new();
+        let geometric = atm.sample(USSA76_MAX_GEOMETRIC_M, SimTime::ZERO).unwrap();
+        let geopotential = atm
+            .sample_at_geopotential(USSA76_MAX_GEOPOTENTIAL_M)
+            .unwrap();
+        assert_eq!(
+            geometric.density_kg_m3.to_bits(),
+            geopotential.density_kg_m3.to_bits(),
+        );
+        assert_eq!(
+            geometric.pressure_pa.to_bits(),
+            geopotential.pressure_pa.to_bits(),
+        );
+        assert_eq!(
+            geometric.temperature_k.to_bits(),
+            geopotential.temperature_k.to_bits(),
+        );
+        assert_eq!(
+            geometric.speed_of_sound_m_s.to_bits(),
+            geopotential.speed_of_sound_m_s.to_bits(),
+        );
     }
 
     #[test]
@@ -612,6 +674,16 @@ mod tests {
         assert_eq!(s.pressure_pa, 0.0);
         assert!(s.temperature_k > 0.0);
         assert!(s.speed_of_sound_m_s > 0.0);
+    }
+
+    #[test]
+    fn exoatmospheric_policy_does_not_trigger_at_exact_86_km() {
+        let atm = UsStandard1976::with_exoatmospheric_policy(
+            ExoatmosphericPolicy::ZeroDensityAboveCeiling,
+        );
+        let s = atm.sample(USSA76_MAX_GEOMETRIC_M, SimTime::ZERO).unwrap();
+        assert!(s.density_kg_m3 > 0.0);
+        assert!(s.pressure_pa > 0.0);
     }
 
     // -----------------------------------------------------------------

@@ -395,14 +395,16 @@ when queried above the documented ceiling.
   unit-test fixtures; no provenance file needed.
 - `data/atmosphere/us_standard_1976.toml` — derived layer table for
   cross-checking, with `provenance.md` citing NOAA-S/T 76-1562.
-- Update `EnvironmentSample` in `openbmp-sim/src/models.rs` to
-  carry the `AtmosphereSample` (today it's gravity-only).
+- Defer `EnvironmentSample` expansion to Phase 2.10 so the Phase-1
+  analytic-toy telemetry bytes remain unchanged through the environment
+  model landing sequence.
 
 **Tests.**
 
-- Regression test: at every kilometre between 0 and 86 km, the
-  computed temperature, pressure, and density agree with the
-  published NOAA tables within 1e-6 relative.
+- Regression test: at every geopotential kilometre in the 0–84852 m'
+  envelope, plus the ceiling, computed temperature, pressure, and
+  density agree with the TOML data-pin reference derived from the
+  NOAA-S/T 76-1562 constants and barometric formulas.
 - Layer-boundary continuity: `T(11 km - ε)` and `T(11 km + ε)` agree
   to within `1 ULP` (the standard defines piecewise-continuous T).
 - Property: `density(z) > 0` for `z ∈ [0, 86 km]`.
@@ -859,7 +861,7 @@ the Phase-1 closure pattern.
 | Fallible model evaluation spills wider than expected through integrator / kernel generics | Medium | High | Lock `ModelEvalError` in 2.1, make RK stages short-circuit before mutation, and keep Phase-1 aliases byte-stable |
 | Frame/local-origin implementation contaminates altitude, wind, and launch-vertical semantics | Medium | High | Implement `wgs84-uniform-rotation` + local origin before validation; add round-trip frame tests and scenario metadata assertions |
 | RK4 + renormalisation accumulates attitude error fast enough that 2.9 fails its tolerance | Low | Medium | Pre-design RKMK4 swap-in point; keep `Integrator<RigidBodyState>` open to alternative impls |
-| USSA76 transcription bug at a layer boundary | Medium | Medium | Per-km regression test against the published table; layer-boundary continuity test to ULP |
+| USSA76 transcription bug at a layer boundary | Medium | Medium | Per-km regression test against the data-pin reference; layer-boundary continuity test to ULP |
 | Trilinear FMA bug breaks bit-stability across rustc upgrades | Low | High | Locked reduction order test that runs in CI; FMA disabled at workspace level |
 | IMU Allan-variance generator's RNG keying breaks bit-stable replay when sensors are reordered | Medium | Medium | Per-component RNG sub-streams keyed by `(seed, step, sensor_id, component_id)`; explicit reordering test |
 | Niskanen 2009 thesis lacks enough detail to build the aero deck cleanly | Medium | Medium | RocketPy Calisto as fallback validation case; cross-tool sanity check |

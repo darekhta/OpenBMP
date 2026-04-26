@@ -21,20 +21,21 @@ source_urls:
   - https://ntrs.nasa.gov/citations/19770009539
   - https://www.ngdc.noaa.gov/stp/space-weather/online-publications/miscellaneous/us-standard-atmosphere-1976/us-standard-atmosphere_st76-1562_noaa.pdf
 license_or_terms: U.S. government technical report; public domain.
+source_hash_sha256: 820a1d7c6bd533e3a845696601cc74013d7d851babac4dab35bee3b1feae35cf
 retrieved_utc:    2026-04-26
 transformation:
   method: >-
-    Manual transcription of the six defining constants
+    Manual transcription of the defining constants
     (standard gravity, universal gas constant R*, mean molecular
     weight of dry air, ratio of specific heats γ, effective Earth
     radius, and the geopotential / geometric ceiling pair) and the
-    seven-layer base-state table (base geopotential altitude, base
-    temperature, lapse rate, base pressure) from §1.2 and table 4
-    of the cited document into a TOML file. No derivation, no fit,
-    no scaling. The base-pressure column was originally derived in
-    the standard by chaining the barometric formulas recursively
-    from the layer-0 sea-level value; the published values
-    reproduced here are the canonical truth.
+    seven-layer structure (base geopotential altitude, base
+    temperature, lapse rate) from §1.2 and table 4
+    of the cited document into a TOML file. No fit and no scaling.
+    The base-pressure column is regenerated from the layer-0
+    sea-level value by chaining the standard barometric formulas
+    recursively with the same locked f64 operand order used by the
+    Rust model.
   script: none
 verification:
   method: >-
@@ -48,10 +49,19 @@ verification:
     `crates/openbmp-env/tests/regression.rs` loads this TOML at
     test time via `include_str!` and asserts the in-source
     constants and per-layer base values match the pin to bit
-    precision. Sea-level temperature, pressure, density, and
-    speed of sound match published NOAA-S/T 76-1562 table 1
-    values to better than 1e-4 relative.
+    precision. In-crate tests also recompute each next layer's base
+    pressure from the previous layer and assert bit equality, check
+    per-kilometre TOML-derived reference samples, and verify
+    sea-level temperature, pressure, density, and speed of sound
+    against NOAA-S/T 76-1562 table 1 values.
   test:   crates/openbmp-env/tests/regression.rs
+  tolerance: >-
+    Constants and layer-base pins: bit equality after TOML parse.
+    Layer-pressure recurrence: bit equality on the reference platform
+    profile. Per-kilometre reference samples: 1e-11 relative for
+    pressure and density, 1e-12 absolute for temperature. Sea-level
+    table-1 anchors: exact for T/p display values, 1e-6 kg/m^3 for
+    density, 5e-4 m/s for speed of sound.
 validation_status: validated-toy
 safety_review:
   reviewer: dmitri.arekhta
@@ -83,8 +93,9 @@ sound derive from the ideal-gas law and the standard `γ` and `R/M`.
 USSA76 is a U.S. government joint-agency standard with a stable
 NTRS citation and a freely downloadable PDF on the NOAA NGDC
 publications portal. The values used here are the standard's own
-defining constants and base-state table — not derived from any
-fielded vehicle's atmospheric measurements, and not subject to
+defining constants and layer structure, with base pressures
+regenerated from the standard barometric formulas — not derived from
+any fielded vehicle's atmospheric measurements, and not subject to
 export control.
 
 ## Why the values are pinned in code as well
@@ -103,13 +114,13 @@ defines.
 | Layer | Base geopotential | Base T (K) | Lapse rate (K/m) | Base p (Pa)        |
 |-------|-------------------|------------|------------------|--------------------|
 | 0     | 0 m'              | 288.15     | -0.0065          | 101325.0           |
-| 1     | 11 000 m'         | 216.65     | 0.0              | 22632.0639609553   |
-| 2     | 20 000 m'         | 216.65     | +0.001           | 5474.88866984344   |
-| 3     | 32 000 m'         | 228.65     | +0.0028          | 868.01868475551    |
-| 4     | 47 000 m'         | 270.65     | 0.0              | 110.906305312205   |
-| 5     | 51 000 m'         | 270.65     | -0.0028          | 66.9388733638732   |
-| 6     | 71 000 m'         | 214.65     | -0.002           | 3.95639202655446   |
-| top   | 84 852 m'         | 186.946    | (model ceiling)  | 0.373384 (derived) |
+| 1     | 11 000 m'         | 216.65     | 0.0              | 22632.06397346291  |
+| 2     | 20 000 m'         | 216.65     | +0.001           | 5474.888669677775  |
+| 3     | 32 000 m'         | 228.65     | +0.0028          | 868.0186847552282  |
+| 4     | 47 000 m'         | 270.65     | 0.0              | 110.90630555496611 |
+| 5     | 51 000 m'         | 270.65     | -0.0028          | 66.9388731186874   |
+| 6     | 71 000 m'         | 214.65     | -0.002           | 3.9564204280407327 |
+| top   | 84 852 m'         | 186.946    | (model ceiling)  | 0.373383589976216  |
 
 The top temperature value `186.946 K` is the linear-extrapolation
 result `T_6 + L_6 · (84852 - 71000)` and is shown here for
