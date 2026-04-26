@@ -19,9 +19,9 @@
 //! No model in this module accesses wall-clock time, system RNG,
 //! network, or the file system.
 
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 use openbmp_core::{Eci, Position3, SimTime, ValidationStatus};
-use openbmp_state::PointMassState;
+use openbmp_state::{MassProperties, PointMassState};
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
 
@@ -178,11 +178,8 @@ impl ForceModel<PointMassState> for ConstantGravityForce {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ZeroForce;
 
-impl ForceModel<PointMassState> for ZeroForce {
-    fn force_n_eci(
-        &self,
-        _ctx: ForceContext<'_, PointMassState>,
-    ) -> Result<Vector3<f64>, ModelEvalError> {
+impl<S: SimState> ForceModel<S> for ZeroForce {
+    fn force_n_eci(&self, _ctx: ForceContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError> {
         Ok(Vector3::zeros())
     }
 
@@ -352,6 +349,160 @@ impl MassModel for LinearBurnMass {
 
     fn mass_rate_kg_s(&self, _t: SimTime) -> Result<f64, ModelEvalError> {
         Ok(self.rate_kg_s)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+// ---------------------------------------------------------------------
+// Rigid-body mass models (Phase 2.1.C)
+// ---------------------------------------------------------------------
+
+/// Time derivative of [`MassProperties`].
+///
+/// Returned by [`RigidMassModel::mass_properties_rate`]. Phase-2
+/// simplification: the centre-of-mass derivative is fixed at zero (CG
+/// is treated as fixed within rigid-body integration); a full motor /
+/// tank model with shifting CG lands in Phase 3 alongside
+/// `MovingMassModel`.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct MassPropertiesRate {
+    /// `dmass/dt` in kg/s.
+    pub mass_rate_kg_s: f64,
+    /// `dI_body/dt` in kg·m²/s.
+    pub inertia_rate_body: Matrix3<f64>,
+}
+
+impl MassPropertiesRate {
+    /// All-zero rate (constant mass and inertia).
+    #[must_use]
+    pub fn zero() -> Self {
+        Self::default()
+    }
+}
+
+/// Trait implemented by rigid-body mass-property-providing models.
+///
+/// Returns full [`MassProperties`] (mass, body-frame CG, body-frame
+/// inertia tensor) plus their time derivatives. Phase-2 ships
+/// [`ConstantMassRigid`] and [`LinearBurnMassRigid`]; the latter
+/// declares fixed inertia per the audited plan's simplification
+/// (motor inertia rate is zero unless the scenario explicitly says
+/// otherwise).
+pub trait RigidMassModel {
+    /// Mass properties at simulation time `t`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ModelEvalError`] when the model is queried outside
+    /// its validity envelope or produces non-finite output.
+    fn mass_properties(&self, t: SimTime) -> Result<MassProperties, ModelEvalError>;
+
+    /// Time derivative of mass properties at `t`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ModelEvalError`] when the model is queried outside
+    /// its validity envelope or produces non-finite output.
+    fn mass_properties_rate(&self, t: SimTime) -> Result<MassPropertiesRate, ModelEvalError>;
+
+    /// Validation status declared by this model.
+    #[must_use]
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Experimental
+    }
+}
+
+/// Constant-mass-and-inertia rigid-body model.
+///
+/// Wraps a fixed [`MassProperties`] and returns it for all times.
+/// Mass-properties rate is zero. Useful for torque-free precession
+/// validation cases and for any rigid-body scenario whose mass
+/// budget is dominated by the dry vehicle.
+#[derive(Copy, Clone, Debug)]
+pub struct ConstantMassRigid {
+    properties: MassProperties,
+}
+
+impl ConstantMassRigid {
+    /// Construct from explicit [`MassProperties`].
+    #[must_use]
+    pub const fn new(properties: MassProperties) -> Self {
+        Self { properties }
+    }
+}
+
+impl RigidMassModel for ConstantMassRigid {
+    fn mass_properties(&self, _t: SimTime) -> Result<MassProperties, ModelEvalError> {
+        Ok(self.properties)
+    }
+
+    fn mass_properties_rate(&self, _t: SimTime) -> Result<MassPropertiesRate, ModelEvalError> {
+        Ok(MassPropertiesRate::zero())
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+/// Linearly-burning rigid-body mass with fixed body-frame inertia.
+///
+/// Phase-2 simplification per the audited plan: the inertia tensor
+/// stays at the constructor value while mass varies linearly. A motor
+/// with a real inertia derivative is Phase-3 work alongside
+/// `EngineCluster`.
+#[derive(Copy, Clone, Debug)]
+pub struct LinearBurnMassRigid {
+    /// Burn-start time (s).
+    pub t0_s: f64,
+    /// Mass at `t0` (kg).
+    pub m0_kg: f64,
+    /// Burn rate (kg/s); typically negative for mass loss.
+    pub rate_kg_s: f64,
+    /// Body-frame centre of mass (held fixed during Phase 2).
+    pub center_of_mass_body: Position3<openbmp_core::Body>,
+    /// Body-frame inertia tensor (held fixed during Phase 2).
+    pub inertia_body: Matrix3<f64>,
+}
+
+impl LinearBurnMassRigid {
+    /// Construct.
+    #[must_use]
+    pub const fn new(
+        t0_s: f64,
+        m0_kg: f64,
+        rate_kg_s: f64,
+        center_of_mass_body: Position3<openbmp_core::Body>,
+        inertia_body: Matrix3<f64>,
+    ) -> Self {
+        Self {
+            t0_s,
+            m0_kg,
+            rate_kg_s,
+            center_of_mass_body,
+            inertia_body,
+        }
+    }
+}
+
+impl RigidMassModel for LinearBurnMassRigid {
+    fn mass_properties(&self, t: SimTime) -> Result<MassProperties, ModelEvalError> {
+        let m_kg = self.m0_kg + self.rate_kg_s * (t.as_seconds() - self.t0_s);
+        Ok(MassProperties::new(
+            Mass::new::<kilogram>(m_kg),
+            self.center_of_mass_body,
+            self.inertia_body,
+        ))
+    }
+
+    fn mass_properties_rate(&self, _t: SimTime) -> Result<MassPropertiesRate, ModelEvalError> {
+        Ok(MassPropertiesRate {
+            mass_rate_kg_s: self.rate_kg_s,
+            inertia_rate_body: Matrix3::zeros(),
+        })
     }
 
     fn validation(&self) -> ValidationStatus {

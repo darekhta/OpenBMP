@@ -38,16 +38,20 @@ use crate::stop::StopCondition;
 ///
 /// Generic over the integrated state type `S`, the integrator, force
 /// model, mass model, environment model, and stop condition. Phase
-/// 2.1.A introduces the `S: SimState` parameter; the kernel's `step()`
-/// is currently impl'd only for `S = PointMassState`. Sub-phase 2.1.B
-/// adds the `RigidBodyState` impl.
+/// 2.1.A introduces the `S: SimState` parameter; Phase 2.1.C adds the
+/// rigid-body `step()` impl alongside the existing point-mass one.
+///
+/// `MM` is intentionally unconstrained at the struct level so the same
+/// kernel struct can carry both Phase-1 [`MassModel`] (point-mass
+/// scalar mass) and Phase-2.1.C [`crate::models::RigidMassModel`]
+/// (full mass / inertia / CG). Each impl block constrains `MM`
+/// per the integrated state type.
 #[derive(Debug)]
 pub struct SimulationConfig<S, I, F, MM, E, SC>
 where
     S: SimState,
     I: Integrator<S>,
     F: ForceModel<S>,
-    MM: MassModel,
     E: EnvironmentModel,
     SC: StopCondition<S>,
 {
@@ -74,16 +78,15 @@ where
 
 /// The lockstep simulation kernel.
 ///
-/// Generic over `S: SimState`. The Phase-1 / Phase-2.1.A surface
-/// only impls `step()` for `S = PointMassState`; rigid-body lands in
-/// 2.1.B.
+/// Generic over `S: SimState`. Phase-1 / Phase-2.1.A impls `step()`
+/// for `S = PointMassState` (`MM: MassModel`); Phase 2.1.C adds the
+/// `S = RigidBodyState` impl (`MM = RigidModels<MOM, RigidMassModel>`).
 #[derive(Debug)]
 pub struct SimulationKernel<S, I, F, MM, E, SC>
 where
     S: SimState,
     I: Integrator<S>,
     F: ForceModel<S>,
-    MM: MassModel,
     E: EnvironmentModel,
     SC: StopCondition<S>,
 {
@@ -336,6 +339,272 @@ where
     #[must_use]
     pub const fn initial_state(&self) -> &PointMassState {
         &self.initial_state
+    }
+}
+
+// ---------------------------------------------------------------------
+// Rigid-body kernel `step()` (Phase 2.1.C)
+//
+// Parallel to the point-mass impl above. Differences:
+//
+//   - state type is `RigidBodyState`
+//   - mass model is `RigidMassModel` (full MassProperties, not scalar)
+//   - the derivative closure builds `RigidBodyDerivative` from
+//     ForceModel + MomentModel + RigidMassModel + EnvironmentModel
+//   - quaternion kinematics: `q_dot = 0.5 · q ⊗ [0, ω_body]`
+//   - Euler equation: `ω_dot = I⁻¹ (M − ω × Iω − I_dot · ω)`
+// ---------------------------------------------------------------------
+
+/// Phase-2 type alias for the rigid-body kernel shape.
+pub type RigidBodyKernel<I, F, MOM, MM, E, SC> =
+    SimulationKernel<openbmp_state::RigidBodyState, I, F, RigidModels<MOM, MM>, E, SC>;
+
+/// Quaternion-magnitude tolerance for post-step validation in the
+/// rigid-body kernel. Loose enough to accept the post-`project()`
+/// renormalisation residue, tight enough to flag a divergent state.
+const POST_STEP_QUATERNION_TOL: f64 = 1.0e-9;
+
+/// Inertia-tensor symmetry tolerance for post-step validation.
+const POST_STEP_INERTIA_TOL: f64 = 1.0e-9;
+
+/// Wrapper bundle so the rigid-body kernel can carry a moment model
+/// and a rigid mass model in the single `MM` slot of
+/// `SimulationKernel`. Phase 3's `VehicleAssembly` work removes this
+/// wrapping; for Phase 2 it keeps the kernel struct's six type
+/// parameters stable.
+///
+/// Implementing nothing on its own — the rigid-body impl block uses
+/// the bundled types directly.
+#[derive(Copy, Clone, Debug)]
+pub struct RigidModels<MOM, MM> {
+    /// Moment model.
+    pub moment_model: MOM,
+    /// Rigid-body mass model.
+    pub mass_model: MM,
+}
+
+impl<MOM, MM> RigidModels<MOM, MM> {
+    /// Construct from a moment model and a rigid-body mass model.
+    pub const fn new(moment_model: MOM, mass_model: MM) -> Self {
+        Self {
+            moment_model,
+            mass_model,
+        }
+    }
+}
+
+impl<I, F, MOM, MM, E, SC>
+    SimulationKernel<openbmp_state::RigidBodyState, I, F, RigidModels<MOM, MM>, E, SC>
+where
+    I: Integrator<openbmp_state::RigidBodyState>,
+    F: ForceModel<openbmp_state::RigidBodyState>,
+    MOM: crate::models::MomentModel<openbmp_state::RigidBodyState>,
+    MM: crate::models::RigidMassModel,
+    E: EnvironmentModel,
+    SC: StopCondition<openbmp_state::RigidBodyState>,
+{
+    /// Construct.
+    ///
+    /// # Errors
+    ///
+    /// Same shape as the point-mass `new`: rejects non-positive `dt`,
+    /// invalid initial state, or dirty MXCSR.
+    pub fn new_rigid(
+        config: SimulationConfig<openbmp_state::RigidBodyState, I, F, RigidModels<MOM, MM>, E, SC>,
+    ) -> Result<Self, SimulationError> {
+        let dt_s = config.dt.as_seconds();
+        if !dt_s.is_finite() || dt_s <= 0.0 {
+            return Err(SimulationError::InvalidConfig {
+                reason: format!("dt must be strictly positive and finite, got {dt_s} s"),
+            });
+        }
+        config
+            .initial_state
+            .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)?;
+        assert_clean_mxcsr()?;
+        let initial_time_s = config.initial_state.time.as_seconds();
+        Ok(Self {
+            state: config.initial_state,
+            initial_state: config.initial_state,
+            initial_time_s,
+            step_index: StepIndex::ZERO,
+            integrator: config.integrator,
+            force_model: config.force_model,
+            mass_model: config.mass_model,
+            environment: config.environment,
+            stop_condition: config.stop_condition,
+            dt: config.dt,
+            dt_s,
+            scenario_seed: config.scenario_seed,
+            stopped: None,
+        })
+    }
+
+    /// Advance the rigid-body kernel by one step.
+    ///
+    /// # Errors
+    ///
+    /// Same shape as the point-mass `step()`.
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    pub fn step(&mut self) -> Result<(), SimulationError> {
+        if self.stopped.is_some() {
+            return Ok(());
+        }
+        if let Some(reason) = self.stop_condition.evaluate(&self.state, self.step_index) {
+            tracing::debug!(
+                step = self.step_index.value(),
+                stop = reason.label(),
+                "stop condition fired"
+            );
+            self.stopped = Some(reason);
+            return Ok(());
+        }
+        let next_step = match self.step_index.checked_next() {
+            Ok(step) => step,
+            Err(err) => {
+                self.stopped = Some(StopReason::StepOverflow {
+                    step: self.step_index,
+                });
+                return Err(SimulationError::Time(err));
+            }
+        };
+
+        let force_model = &self.force_model;
+        let moment_model = &self.mass_model.moment_model;
+        let mass_model = &self.mass_model.mass_model;
+        let environment = &self.environment;
+
+        let derive = |s: &openbmp_state::RigidBodyState,
+                      t: SimTime|
+         -> Result<
+            crate::derivative::RigidBodyDerivative,
+            crate::error::ModelEvalError,
+        > {
+            let env = environment.sample(EnvironmentQuery {
+                time: t,
+                position_eci: s.position,
+            })?;
+            let mass_kg = s.mass_props.mass.get::<kilogram>();
+            let force_n_eci = force_model.force_n_eci(ForceContext {
+                state: s,
+                environment: &env,
+                mass_kg,
+                time: t,
+            })?;
+            let moment_n_m_body = moment_model.moment_n_m_body(crate::models::MomentContext {
+                state: s,
+                environment: &env,
+                time: t,
+            })?;
+            let rate = mass_model.mass_properties_rate(t)?;
+
+            // Quaternion kinematics: q_dot = 0.5 · q ⊗ [0, ω_body].
+            let q = s.orientation.q.into_inner();
+            let omega_quat = nalgebra::Quaternion::new(
+                0.0,
+                s.angular_velocity.vector.x,
+                s.angular_velocity.vector.y,
+                s.angular_velocity.vector.z,
+            );
+            let q_dot = q * omega_quat * 0.5;
+
+            // Euler equation: ω_dot = I⁻¹ (M − ω × I ω − I_dot · ω).
+            let inertia = s.mass_props.inertia_body;
+            let i_omega = inertia * s.angular_velocity.vector;
+            let omega_cross_iomega = s.angular_velocity.vector.cross(&i_omega);
+            let i_dot_omega = rate.inertia_rate_body * s.angular_velocity.vector;
+            let net = moment_n_m_body - omega_cross_iomega - i_dot_omega;
+            let inv_inertia = inertia.try_inverse().ok_or_else(|| {
+                crate::error::ModelEvalError::InvalidState {
+                    model: openbmp_core::ModelId::default(),
+                    reason: "inertia tensor is not invertible".into(),
+                }
+            })?;
+            let omega_dot = inv_inertia * net;
+
+            Ok(crate::derivative::RigidBodyDerivative {
+                velocity_m_s_eci: s.velocity.vector,
+                acceleration_m_s2_eci: force_n_eci / mass_kg,
+                quaternion_rate: q_dot,
+                angular_acceleration_rad_s2_body: omega_dot,
+                mass_rate_kg_s: rate.mass_rate_kg_s,
+                inertia_rate_body: rate.inertia_rate_body,
+            })
+        };
+
+        let raw_new = match self.integrator.advance(&self.state, derive, self.dt) {
+            Ok(state) => state,
+            Err(err @ (IntegratorError::NonFiniteDerivative | IntegratorError::NonFiniteState)) => {
+                self.stopped = Some(StopReason::NonFiniteState { step: next_step });
+                return Err(SimulationError::Integrator(err));
+            }
+            Err(err) => return Err(SimulationError::Integrator(err)),
+        };
+
+        let canonical_time_s = self.initial_time_s + (next_step.value() as f64) * self.dt_s;
+        let new_state = raw_new.with_time(SimTime::from_seconds(canonical_time_s));
+
+        if let Err(source) =
+            new_state.require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
+        {
+            self.stopped = Some(StopReason::NonFiniteState { step: next_step });
+            return Err(SimulationError::InvalidPostStepState {
+                step: next_step,
+                source,
+            });
+        }
+
+        self.state = new_state;
+        self.step_index = next_step;
+
+        tracing::trace!(
+            step = next_step.value(),
+            time_s = canonical_time_s,
+            "rigid-body kernel step complete"
+        );
+
+        Ok(())
+    }
+
+    /// Run until the stop condition fires.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the first [`SimulationError`] from any `step()` call.
+    pub fn run(&mut self) -> Result<&StopReason, SimulationError> {
+        while self.stopped.is_none() {
+            self.step()?;
+        }
+        match self.stopped.as_ref() {
+            Some(reason) => Ok(reason),
+            None => Err(SimulationError::InvalidConfig {
+                reason: "internal invariant: run() loop exited with no stop reason".into(),
+            }),
+        }
+    }
+
+    /// Current state.
+    #[must_use]
+    pub const fn current_state(&self) -> &openbmp_state::RigidBodyState {
+        &self.state
+    }
+
+    /// Current step counter.
+    #[must_use]
+    pub const fn current_step(&self) -> StepIndex {
+        self.step_index
+    }
+
+    /// Current simulation time.
+    #[must_use]
+    pub const fn current_time(&self) -> SimTime {
+        self.state.time
+    }
+
+    /// Stop reason (`Some` after the kernel has halted).
+    #[must_use]
+    pub const fn stop_reason(&self) -> Option<&StopReason> {
+        self.stopped.as_ref()
     }
 }
 

@@ -51,10 +51,11 @@ pub mod stop;
 pub use derivative::{PointMassDerivative, RigidBodyDerivative, SimStateDerivative};
 pub use error::{IntegratorError, ModelEvalError, SimulationError, StopReason};
 pub use integrator::{Integrator, IntegratorDeterminism, Rk4FixedStep, SimState};
-pub use kernel::{Phase1Kernel, SimulationConfig, SimulationKernel};
+pub use kernel::{Phase1Kernel, RigidBodyKernel, RigidModels, SimulationConfig, SimulationKernel};
 pub use models::{
-    ConstantGravityForce, ConstantMass, EnvironmentModel, EnvironmentQuery, EnvironmentSample,
-    ForceContext, ForceModel, LinearBurnMass, MassModel, MomentContext, MomentModel,
-    NullEnvironment, ZeroForce, ZeroMoment,
+    ConstantGravityForce, ConstantMass, ConstantMassRigid, EnvironmentModel, EnvironmentQuery,
+    EnvironmentSample, ForceContext, ForceModel, LinearBurnMass, LinearBurnMassRigid, MassModel,
+    MassPropertiesRate, MomentContext, MomentModel, NullEnvironment, RigidMassModel, ZeroForce,
+    ZeroMoment,
 };
 pub use stop::{AlwaysContinue, EndTime, MaxSteps, StopCondition};
