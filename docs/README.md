@@ -40,6 +40,14 @@ rocket-class and launch-vehicle-class flight simulation.
   implementation phase: workspace scaffolding, sub-phases with exit
   criteria, version-pinned dependencies (April 2026 ecosystem state), CI
   gates, and Phase-2 hand-off.
+- [Real-Rocket Integration Cookbook](real-rocket-integration.md) — how a
+  downstream user assembles a rocket-class vehicle on top of OpenBMP using
+  the fictional `ARV-Reference` worked example: `VehicleAssembly` tree,
+  `EngineCluster`, `ControlEffector`, tank/slosh moving-mass dynamics,
+  event/phase timeline, multi-rate scheduling, the real-data package
+  credibility contract, the cross-validation playbook, and the generic
+  lab-HIL adapter pattern. Public-data integration (e.g., a peer-reviewed
+  Starship-class study) is treated as a downstream-user example only.
 
 The doc set above is the authoritative source for the project's scope,
 architecture, safety posture, and data policy.
