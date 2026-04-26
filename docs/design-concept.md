@@ -345,23 +345,51 @@ and any operational mission profile.
 
 ## Phase Roadmap
 
-**Phase 0 — Documentation and boundaries** (now)
-- Publish design concept and software architecture.
-- Publish safety boundary checklist.
-- Publish Phase-1 documentation stubs for scenario format, verification,
+**Phase 0 — Documentation and boundaries** (complete)
+- Published design concept and software architecture.
+- Published safety boundary checklist.
+- Published Phase-1 documentation set: scenario format, verification,
   glossary, data provenance, frames/time, modeling, and supply chain.
-- Decide on canonical telemetry archive format (Parquet vs JSON-as-canonical).
+- Canonical telemetry archive format chosen: Parquet (with explicit
+  unit/frame metadata in column descriptors).
 
-**Phase 1 — Deterministic core**
-- Create Rust workspace scaffold.
-- Implement `openbmp-core` (math, units, frames, time, RNG).
-- Implement RK4 fixed-step kernel with lockstep semantics.
-- Implement no-op model and analytic-toy fixtures.
-- Add golden-test infrastructure and CI.
-- Add `openbmp check` for scenario lint, provenance lint, deterministic
-  schedule checks, and safety-limited naming checks.
-- Add dependency and release-artifact CI checks (`cargo deny`, `cargo vet`,
-  SBOM generation for releases).
+**Phase 1 — Deterministic core** (complete)
+- Rust workspace scaffold with the 15-crate layout.
+- `openbmp-core` foundation: math, units, frames, time, deterministic
+  RNG, validation labels.
+- `openbmp-state`: 3-DOF `PointMassState` and 6-DOF `RigidBodyState`
+  with structural validation (finiteness, positive mass, normalised
+  quaternion, symmetric positive-definite inertia, triangle
+  inequalities).
+- `openbmp-sim`: RK4 fixed-step lockstep kernel for point-mass with
+  the locked weighted-sum order, the canonical `start + step * dt`
+  time advance, and the MXCSR floating-point-environment guard on
+  x86_64.
+- `openbmp-telemetry`: typed channels, ring buffer, deterministic CSV
+  / JSON / Parquet exporters with locked archive column order.
+- `openbmp-scenario`: strict TOML parser with
+  `serde(deny_unknown_fields)`, model-name registry, safety-name lint,
+  unit-suffix and frame-infix linting, source-rooted path resolution.
+- `openbmp-testkit`: `proptest` strategies, analytic-toy reference
+  solutions, tolerance-table parser, byte-stable replay helper.
+- `openbmp-cli`: `openbmp run / diff / check / check-provenance`
+  commands; binary + library shape with `assert_cmd` / `insta-cmd`
+  snapshot tests on the user surface.
+- First end-to-end golden test: the constant-acceleration drop
+  scenario passes the closed-form tolerance table and is byte-stable
+  across same-machine reruns.
+- CI gates wired in `.github/workflows/ci.yml`: rustfmt, clippy
+  `-D warnings`, build, `cargo nextest run`, doc-tests, `cargo deny`,
+  `cargo audit`, `cargo machete`, feature-powerset, MSRV pin, typos,
+  rustdoc warnings, the headline determinism gate (canonical scenario
+  twice + tracing-no-leak verification), and a cross-platform
+  state-stable matrix.
+- Release artefacts in `.github/workflows/release.yml`: source tarball,
+  Linux `openbmp` binary, Cargo.lock, CycloneDX SBOM, audit report,
+  sha256 manifest, non-suitability disclaimer.
+- Per-crate `README.md` files compliant with `docs/modeling-guide.md`
+  (purpose / inputs / units / frames / assumptions / validity range /
+  determinism / validation / data provenance / safety boundary).
 
 **Phase 2 — Toy physics**
 - 3-DOF point-mass and 6-DOF rigid-body states.

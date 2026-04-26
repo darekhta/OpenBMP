@@ -36,10 +36,6 @@ rocket-class and launch-vehicle-class flight simulation.
   contracts, documentation template, validation evidence, and safety posture.
 - [Glossary](glossary.md) — shared vocabulary for frames, time, determinism,
   validation labels, safety terms, and hypersonic terms.
-- [Phase 1 Plan](phase-1-plan.md) — executable plan for the first
-  implementation phase: workspace scaffolding, sub-phases with exit
-  criteria, version-pinned dependencies (April 2026 ecosystem state), CI
-  gates, and Phase-2 hand-off.
 - [Real-Rocket Integration Cookbook](real-rocket-integration.md) — how a
   downstream user assembles a rocket-class vehicle on top of OpenBMP using
   the fictional `ARV-Reference` worked example: `VehicleAssembly` tree,
