@@ -51,7 +51,9 @@ pub mod validation;
 pub use error::{CoreError, FrameError, TimeError};
 pub use frames::{
     Acceleration3, AngularVelocity3, Body, Displacement3, Ecef, Eci, Enu, Frame, FrameContext,
-    FrameId, FrameProfile, FrameTransform, Ned, Position3, Quaternion, Velocity3, VelocityDelta3,
+    FrameId, FrameProfile, FrameTransform, LocalGeodeticOrigin, Ned, Position3, Quaternion,
+    Velocity3, VelocityDelta3, WGS84_A_M, WGS84_ECCENTRICITY_SQUARED, WGS84_FLATTENING,
+    WGS84_INV_FLATTENING, WGS84_MU_M3_S2, WGS84_OMEGA_RAD_S,
 };
 pub use ids::{ChannelId, ModelId, ScenarioId};
 pub use nalgebra::{Matrix3, UnitQuaternion, Vector3};

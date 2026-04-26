@@ -88,4 +88,23 @@ pub enum FrameError {
         /// Active profile name.
         profile: &'static str,
     },
+    /// A NED-frame transform required a scenario-declared local
+    /// geodetic origin but the active [`crate::frames::FrameContext`]
+    /// did not carry one.
+    #[error(
+        "NED-frame transform requires a scenario local origin in profile {profile} \
+         but none was declared"
+    )]
+    LocalOriginRequired {
+        /// Active profile name.
+        profile: &'static str,
+    },
+    /// A geodetic-coordinate value was outside the WGS84 validity
+    /// envelope (latitude `[-π/2, π/2]`, longitude `[-π, π]`,
+    /// finite height).
+    #[error("geodetic coordinate out of envelope: {reason}")]
+    InvalidGeodeticCoordinate {
+        /// Short human-readable reason.
+        reason: &'static str,
+    },
 }
