@@ -152,7 +152,7 @@ ordering, monotonicity, and safety-naming at parse time.
 trigger = "time"
 at_s = 12.7
 event = "engine-cluster-ignition"
-target = "booster.main-cluster"
+component = "booster.main-cluster"
 parameters = { engines = "all", throttle = 0.65 }
 
 [[events]]
@@ -268,10 +268,9 @@ credibility:
   people_qualifications: 4               # subject-matter-expert review
 ```
 
-The OpenBMP scenario parser **rejects** any data file referenced from
-`scenarios/` without a parseable manifest, and the runtime **refuses to
-extrapolate beyond `validity_envelope`** unless the package opts in
-explicitly.
+The OpenBMP scenario parser **rejects** any real-data package reference
+without a parseable manifest, and the runtime **refuses to extrapolate
+beyond `validity_envelope`** unless the package opts in explicitly.
 
 This is the credibility contract. It is the difference between "we
 loaded a CSV" and "we are simulating with a known-quality dataset whose
@@ -385,7 +384,7 @@ via **rate groups**, integer divisors of a base micro-tick:
 
 ```toml
 [scheduling]
-base_tick_hz = 1000     # 1 kHz micro-tick — also the integrator step
+base_hz = 1000          # 1 kHz micro-tick — also the integrator step
 
 [[scheduling.rate_groups]]
 name = "imu-sample"
@@ -404,8 +403,8 @@ name = "telemetry"
 hz = 10                 # every 100 micro-ticks
 ```
 
-Rate groups fire deterministically: `time mod period == 0` triggers the
-group. Iteration order within a tick is by `(priority, registration)`,
+Rate groups fire deterministically: `step_index % divisor == 0` triggers
+the group. Iteration order within a tick is by `(priority, registration)`,
 both fixed at scenario start. This preserves bit-stable replay regardless
 of which rate groups fire on a given tick.
 
@@ -497,7 +496,7 @@ dt_s = 0.001
 seed = 42
 
 [scheduling]
-base_tick_hz = 1000
+base_hz = 1000
 
 [[scheduling.rate_groups]]
 name = "imu"
@@ -541,14 +540,14 @@ mounting = "central"
 trigger = "time"
 at_s = 0.0
 event = "engine-cluster-ignition"
-target = "booster.main-cluster"
+component = "booster.main-cluster"
 parameters = { engines = "all", throttle = 0.65 }
 
 [[events]]
 trigger = "state"
 condition = "booster.fuel_mass_kg < 5000.0"
 event = "stage-meco"
-target = "booster.main-cluster"
+component = "booster.main-cluster"
 
 [[events]]
 trigger = "time-after"
@@ -613,8 +612,8 @@ Cross-validation tactics for downstream integrations:
 
 | Reference | Use it to validate |
 |---|---|
-| **GMAT** (NASA, open) | Orbital propagation segments of your trajectory |
-| **POST2** (NASA, open) | Atmospheric ascent trajectory |
+| **GMAT** (NASA, open-source) | Orbital propagation segments of your trajectory |
+| **POST2** (NASA, access-controlled) or published POST2 cases | Atmospheric ascent / entry trajectory, when your institution is eligible |
 | **RocketPy** (MIT) | Sounding-rocket-class trajectory and apogee |
 | **JSBSim** (LGPL) | Atmospheric flight dynamics, control-surface decks |
 | **Your wind-tunnel data** | Aero deck cells in the tested envelope |
@@ -674,17 +673,20 @@ credibility scoring**:
   webcasts and regulatory filings) — note explicitly which flight tests
   the data was calibrated against.
 
-A representative published example of this pattern in 2026 academic
-literature is the *CEAS Space Journal* analysis using only public flight-
-test data from a high-cadence reusable-launch programme to calibrate
-mass / engine / aero estimates and validate predictions. Downstream
-consumers replicating this pattern with OpenBMP get the kernel +
-infrastructure for free; they own the data-quality story.
+A representative published example of this pattern is Herberhold et al.,
+"Comparison of SpaceX's Starship with winged heavy-lift launcher options
+for Europe" (*CEAS Space Journal*, 2026 issue), which describes a
+methodology for validating Starship models with public flight-test data.
+The older Wilken and Callsen point-to-point reusable-launch study is also
+useful as a public, academic re-entry comparison case. Downstream
+consumers replicating this pattern with OpenBMP get the kernel and
+infrastructure; they own the data-quality story.
 
 OpenBMP itself never ships parameter sets for any specific real vehicle,
-operator, or programme. The framework remains EAR99-compatible and
-strictly civilian-academic; downstream consumers' own integrations are
-their own responsibility.
+operator, or programme. The framework is intended to remain strictly
+civilian-academic and free of restricted content; OpenBMP does not make
+an EAR, ITAR, MTCR, or national export-control classification for any
+downstream integration.
 
 ## Validation-against-public-references playbook
 
@@ -695,8 +697,9 @@ Recommended workflow for any downstream integration:
 2. **Run it.** `openbmp run my_scenario.toml --output out/run.parquet`.
 3. **Diff it.** Use OpenBMP's golden-test workflow against committed
    reference outputs to confirm bit-stability across reruns.
-4. **Cross-validate it.** Run the same scenario through GMAT / POST2 /
-   RocketPy as appropriate; compare key metrics.
+4. **Cross-validate it.** Run the same scenario through GMAT, RocketPy,
+   JSBSim, eligible POST2 installations, or published POST2 benchmark
+   cases as appropriate; compare key metrics.
 5. **Score it.** Fill out the credibility block; submit for peer review
    if publishing.
 6. **Document its limits.** Validity envelope, known unmodelled physics,
@@ -734,3 +737,10 @@ Things downstream consumers should NOT do:
 - AIAA G-077-1998. *Guide for the Verification and Validation of
   Computational Fluid Dynamics Simulations*.
   <https://netforum.aiaa.org/eweb/DynamicPage.aspx?WebCode=ProdDetailAdd&ivd_prc_prd_key=BA93ABAF-C987-4FCD-9471-C61E95860FBB>
+- Herberhold, M., Bussler, L., Sippel, M., et al. "Comparison of SpaceX's
+  Starship with winged heavy-lift launcher options for Europe." *CEAS
+  Space Journal* 18, 121-144 (2026).
+  <https://doi.org/10.1007/s12567-025-00625-8>
+- Wilken, J., Callsen, S. "Mission design for point-to-point passenger
+  transport with reusable launch vehicles." *CEAS Space Journal* 16,
+  319-332 (2024). <https://doi.org/10.1007/s12567-023-00498-9>
