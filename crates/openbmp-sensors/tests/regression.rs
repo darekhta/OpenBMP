@@ -60,20 +60,46 @@ fn zero_truth() -> SensorTruth {
     }
 }
 
+fn assert_triaxial_bits(
+    actual: TriaxialNoiseBudget,
+    arw_per_sqrt_s: f64,
+    bias_ou_theta: f64,
+    bias_ou_sigma: f64,
+    rrw_sigma_per_sqrt_s: f64,
+    scale_factor_ppm: f64,
+    quantization_lsb: f64,
+) {
+    assert_eq!(actual.arw_per_sqrt_s.to_bits(), arw_per_sqrt_s.to_bits());
+    assert_eq!(actual.bias_ou_theta.to_bits(), bias_ou_theta.to_bits());
+    assert_eq!(actual.bias_ou_sigma.to_bits(), bias_ou_sigma.to_bits());
+    assert_eq!(
+        actual.rrw_sigma_per_sqrt_s.to_bits(),
+        rrw_sigma_per_sqrt_s.to_bits()
+    );
+    assert_eq!(
+        actual.scale_factor_ppm.to_bits(),
+        scale_factor_ppm.to_bits()
+    );
+    assert_eq!(
+        actual.quantization_lsb.to_bits(),
+        quantization_lsb.to_bits()
+    );
+}
+
 #[test]
 fn tactical_budget_parses_and_carries_expected_fields() {
     let b = ImuNoiseBudget::load_from_str(TACTICAL_BUDGET).unwrap();
     assert_eq!(b.dt_s.to_bits(), 0.005_f64.to_bits());
-    assert_eq!(b.gyro.arw_per_sqrt_s.to_bits(), 2.4e-7_f64.to_bits());
-    assert_eq!(b.accel.arw_per_sqrt_s.to_bits(), 1.0e-4_f64.to_bits());
+    assert_triaxial_bits(b.gyro, 2.4e-7, 0.01, 6.8e-7, 1.0e-9, 50.0, 0.0);
+    assert_triaxial_bits(b.accel, 1.0e-4, 0.01, 1.0e-4, 1.0e-7, 50.0, 0.0);
 }
 
 #[test]
 fn consumer_mems_budget_parses_and_carries_expected_fields() {
     let b = ImuNoiseBudget::load_from_str(CONSUMER_MEMS_BUDGET).unwrap();
     assert_eq!(b.dt_s.to_bits(), 0.01_f64.to_bits());
-    assert_eq!(b.gyro.arw_per_sqrt_s.to_bits(), 4.8e-6_f64.to_bits());
-    assert_eq!(b.accel.arw_per_sqrt_s.to_bits(), 1.0e-2_f64.to_bits());
+    assert_triaxial_bits(b.gyro, 4.8e-6, 0.1, 1.1e-4, 1.0e-7, 1000.0, 1.0e-5);
+    assert_triaxial_bits(b.accel, 1.0e-2, 0.1, 1.0e-2, 1.0e-5, 1000.0, 1.0e-3);
 }
 
 /// Compute the overlapping Allan variance of a sample sequence at

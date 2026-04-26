@@ -1,8 +1,8 @@
 # openbmp-sensors
 
-L3 synthetic sensors and fault models.
+L2 synthetic sensors.
 
-**Status:** Phase 2/3 — stub.
+**Status:** Phase 2.7 implemented; Phase 3 sensor extensions deferred.
 
 ## Purpose
 
@@ -10,11 +10,13 @@ Synthesize noisy measurements from simulated truth state. **No device
 drivers, no real bus protocols, no real sensor parameters.**
 
 - `SyntheticSensor` trait.
-- `IdealStateSensor` — full truth (test only).
-- `SyntheticImu` — Allan-variance per IEEE 1139.
-- `SyntheticBarometer`, `SyntheticGnss`, `SyntheticMagnetometer`,
-  `SyntheticStarTracker`.
-- `FaultModel` family for scenario-injected faults.
+- `SensorTruth` / `SensorMeasurement` typed surface.
+- `IdealStateSensor` -- bit-equal truth echo.
+- `SyntheticImu` -- IEEE 952 five-component noise model.
+- `SyntheticBarometer` -- Gaussian pressure noise plus OU bias drift.
+
+GNSS, magnetometer, star tracker, multi-rate scheduling, per-axis IMU
+budgets, and sensor fault models are Phase 3 work.
 
 ## Inputs and Outputs
 
@@ -22,8 +24,9 @@ Truth state + environment + deterministic RNG → noisy measurement.
 
 ## Units and Frames
 
-IMU outputs in `Body`. GNSS in `ECI`. Barometer scalar (Pa).
-Magnetometer in `Body`.
+IMU outputs angular rate and specific force in `Body`. Barometer output
+is scalar static pressure in Pa. `IdealStateSensor` echoes the whole
+truth bag.
 
 ## Assumptions
 
@@ -32,24 +35,29 @@ drivers and do not model any specific fielded sensor package.
 
 ## Validity Range
 
-Each synthetic sensor declares rate, noise-class, dropout, and bias validity
-ranges. Invalid rates and unsupported noise classes fail closed.
+Noise budgets use SI units and validate finite, non-negative noise
+parameters plus positive sample intervals. Unsupported sensor classes
+are not present in Phase 2.7.
 
 ## Determinism
 
-RNG seeded per `(scenario_seed, step_index, channel_id)` from
-`openbmp-core::DeterministicRng`. Same seed → same measurement.
+RNG seeded per `(scenario_seed, step_index, sensor_id, component_id)`
+through `openbmp-core::DeterministicRng::for_sensor_component`.
+`SensorId` is path-derived and the sensor-component constructor is
+domain-separated from telemetry `for_channel` streams.
 
 ## Validation
 
-`experimental` (stub). Phase 2/3 validation covers deterministic noise replay
-and academic noise-budget checks.
+`validated-toy` for the shipped synthetic budgets. Phase 2.7 validates
+deterministic replay, schema parsing, and the ARW Allan-deviation
+`-1/2` slope on a synthetic ARW-only IMU stream.
 
 ## Data Provenance
 
-Noise budgets drawn from published academic textbook noise classes
-(tactical-grade / consumer-grade IMU, etc.). **No noise budgets lifted
-from real fielded sensor datasheets** — academic ranges only.
+Noise budgets are OpenBMP-authored synthetic envelopes shaped by
+published academic methodology (tactical-grade / consumer-MEMS IMU
+classes). **No noise budgets are lifted from real fielded sensor
+datasheets** -- academic ranges only.
 
 ## Safety Boundary
 
@@ -72,6 +80,6 @@ there.
 
 ## References
 
-- IEEE 1139-2008.
-- Niskanen 2009.
-- Generic published academic noise budgets only.
+- IEEE Std 952-2020.
+- El-Sheimy, Hou, and Niu 2008.
+- Hou 2004.

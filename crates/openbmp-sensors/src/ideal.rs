@@ -90,6 +90,23 @@ mod tests {
     }
 
     #[test]
+    fn ideal_state_sensor_rejects_invalid_truth_time() {
+        let mut s = IdealStateSensor::new(SensorId::from_path("sensors.ideal_state"));
+        let mut truth = fixture_truth();
+        truth.time = SimTime::from_seconds(f64::NAN);
+        assert!(matches!(
+            s.measure(&truth, StepIndex::new(0), 0),
+            Err(SensorError::NonFinite { .. }),
+        ));
+
+        truth.time = SimTime::from_seconds(-1.0);
+        assert!(matches!(
+            s.measure(&truth, StepIndex::new(0), 0),
+            Err(SensorError::InvalidParameter { .. }),
+        ));
+    }
+
+    #[test]
     fn ideal_state_sensor_id_is_path_derived() {
         let s = IdealStateSensor::new(SensorId::from_path("sensors.ideal_state"));
         assert_eq!(s.sensor_id(), SensorId::from_path("sensors.ideal_state"));

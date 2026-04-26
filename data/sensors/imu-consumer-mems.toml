@@ -14,7 +14,7 @@ openbmp.imu_noise_budget = 1
 
 [meta]
 name       = "imu-consumer-mems"
-provenance = "synthetic OpenBMP-authored consumer-MEMS envelope; methodology cites El-Sheimy 2008"
+provenance = "synthetic OpenBMP-authored consumer-MEMS envelope; methodology cites Hou 2004"
 validation = "validated-toy"
 
 [sample]
@@ -23,7 +23,7 @@ dt_s = 0.01    # 100 Hz IMU sample rate
 [gyro]
 arw_per_sqrt_s        = 4.8e-6   # ≈ 1 °/√h
 bias_ou_theta         = 0.1      # τ_BI ~ 10 s
-bias_ou_sigma         = 2.4e-5   # stationary stddev ≈ 50 °/h ≈ 2.4e-4 rad/s
+bias_ou_sigma         = 1.1e-4   # stationary stddev ≈ 50 °/h ≈ 2.4e-4 rad/s
 rrw_sigma_per_sqrt_s  = 1.0e-7
 scale_factor_ppm      = 1000.0   # 1000 ppm is realistic for MEMS
 quantization_lsb      = 1.0e-5   # 16-bit gyro at ~30 °/s full-scale

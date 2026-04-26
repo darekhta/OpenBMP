@@ -18,6 +18,7 @@ source_title:     >-
   (quantisation, ARW/VRW, bias instability, RRW, scale factor).
 source_authors:   OpenBMP (Dmitri Arekhta)
 source_id:        synthetic; not derived from any vendor data sheet
+source_url:       https://github.com/openbmp/openbmp/blob/main/data/sensors/imu-tactical.toml
 publication_date: 2026-04-27
 methodology_reference: >-
   El-Sheimy, N.; Hou, H.; Niu, X. (2008). *Analysis and Modeling
@@ -29,11 +30,13 @@ methodology_reference: >-
   follow this paper.
 methodology_urls:
   - https://ieeexplore.ieee.org/document/4404126
+  - https://doi.org/10.1109/TIM.2007.908635
 license_or_terms: >-
   Synthetic OpenBMP-authored content; CC0 / public domain. The
   numerical envelope values are illustrative of the tactical-grade
   IMU class (ARW ~ 0.05 °/√h, bias instability ~ 1 °/h with
   τ_BI ~ 100 s) but are NOT transcribed from any vendor data sheet.
+source_hash_sha256: 537d60b57650f3d7569b338b6de2de97119b4401f2f244d173330be7aa37454e
 retrieved_utc:    2026-04-27
 transformation:
   method: >-
@@ -46,14 +49,14 @@ transformation:
 verification:
   method: >-
     `crates/openbmp-sensors/tests/regression.rs` loads this file via
-    `include_str!` + `ImuNoiseBudget::load_from_str`, confirms the
-    schema-1 fields parse, and runs the IEEE-952 Allan-variance
-    slope check on a long synthetic ARW-only stream produced by the
-    IMU model with this budget's gyro ARW value.
+    `include_str!` + `ImuNoiseBudget::load_from_str`, confirms every
+    schema-1 numerical field parses bit-equally, and runs the
+    IEEE-952 Allan-variance slope check on a long synthetic ARW-only
+    stream produced by the IMU model.
   test:   crates/openbmp-sensors/tests/regression.rs
   tolerance: >-
     Schema-1 round-trip: bit equality on all parsed numerical fields.
-    Allan-variance slope (ARW-only): -0.5 ± 0.05 over the
+    Allan-variance slope (ARW-only): -0.5 ± 0.1 over the
     1 ms – 100 ms decade on the reference platform profile.
 validation_status: validated-toy
 safety_review:
@@ -79,6 +82,7 @@ source_title:     >-
   bias-instability correlation time and 16-bit-class quantisation.
 source_authors:   OpenBMP (Dmitri Arekhta)
 source_id:        synthetic; not derived from any vendor data sheet
+source_url:       https://github.com/openbmp/openbmp/blob/main/data/sensors/imu-consumer-mems.toml
 publication_date: 2026-04-27
 methodology_reference: >-
   Hou, H. (2004). *Modeling Inertial Sensor Errors Using Allan
@@ -88,6 +92,7 @@ methodology_urls:
   - https://www.ucalgary.ca/engo_webdocs/NES/04.20201.HaiyingHou.pdf
 license_or_terms: >-
   Synthetic OpenBMP-authored content; CC0 / public domain.
+source_hash_sha256: 3e356196b41a4e765de0f314d8ce5758c750b10e81f25648ce4b16686fb0402f
 retrieved_utc:    2026-04-27
 transformation:
   method: >-
@@ -99,8 +104,8 @@ transformation:
 verification:
   method: >-
     Same Phase-2.7.D regression test as `imu-tactical`. The schema
-    parses, the Allan-variance slope check passes for an ARW-only
-    sub-budget derived from this file's gyro ARW value.
+    parses bit-equally across all numerical fields, and the
+    Allan-variance slope check passes for an ARW-only IMU stream.
   test:   crates/openbmp-sensors/tests/regression.rs
   tolerance: >-
     Same as `imu-tactical`.

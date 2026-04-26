@@ -32,6 +32,7 @@
 
 use std::path::Path;
 
+use openbmp_core::ValidationStatus;
 use serde::Deserialize;
 
 use crate::error::SensorError;
@@ -64,7 +65,7 @@ struct MetaSection {
     #[allow(dead_code)]
     provenance: String,
     #[allow(dead_code)]
-    validation: String,
+    validation: ValidationStatus,
 }
 
 #[derive(Deserialize)]
@@ -218,6 +219,18 @@ quantization_lsb      = 0.0
         assert!(matches!(
             ImuNoiseBudget::load_from_str(&s),
             Err(SensorError::InvalidParameter { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_unknown_validation_label() {
+        let s = minimal_budget_toml().replace(
+            "validation = \"validated-toy\"",
+            "validation = \"validatd-toy\"",
+        );
+        assert!(matches!(
+            ImuNoiseBudget::load_from_str(&s),
+            Err(SensorError::MalformedBudget { .. }),
         ));
     }
 }

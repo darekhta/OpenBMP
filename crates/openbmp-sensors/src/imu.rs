@@ -431,7 +431,7 @@ impl SyntheticSensor for SyntheticImu {
 mod tests {
     use super::*;
     use nalgebra::UnitQuaternion;
-    use openbmp_core::{Position3, SimTime, Velocity3};
+    use openbmp_core::{ChannelId, Position3, SimTime, Velocity3};
 
     fn fixture_truth() -> SensorTruth {
         SensorTruth {
@@ -532,27 +532,25 @@ mod tests {
     }
 
     /// Reordering scenario sensors must not shift any sensor's RNG
-    /// stream, because `SensorId` is path-derived. Verify by
-    /// constructing two IMUs with the same path but in different
-    /// surrounding contexts (here, just constructed sequentially)
-    /// and asserting their measurement streams are identical.
+    /// stream, because `SensorId` is path-derived and sensor-component
+    /// RNGs are domain-separated from telemetry-channel RNGs.
     #[test]
     fn imu_stream_is_independent_of_sibling_sensors() {
         let truth = fixture_truth();
+        let imu_id = SensorId::from_path("sensors.imu");
 
         // Run A: build the IMU, take 50 measurements.
-        let mut imu_a =
-            SyntheticImu::new(SensorId::from_path("sensors.imu"), small_noise_budget()).unwrap();
+        let mut imu_a = SyntheticImu::new(imu_id, small_noise_budget()).unwrap();
         let mut stream_a = Vec::new();
         for k in 0..50 {
             stream_a.push(imu_a.measure(&truth, StepIndex::new(k), 7).unwrap());
         }
 
-        // Run B: construct a barometer first (a "sibling" sensor),
-        // then the IMU. The IMU stream must be byte-identical to A
-        // because `for_sensor_component` keys on the IMU's path-derived
-        // id, not on construction order.
-        let _baro = crate::barometer::SyntheticBarometer::new(
+        // Run B: construct and measure a sibling barometer before the
+        // IMU on every step. The IMU stream must be byte-identical to A
+        // because each noise stream is keyed by (sensor_id, component_id),
+        // not construction or measurement order.
+        let mut baro = crate::barometer::SyntheticBarometer::new(
             SensorId::from_path("sensors.barometer"),
             10.0,
             1.0,
@@ -560,11 +558,20 @@ mod tests {
             0.01,
         )
         .unwrap();
-        let mut imu_b =
-            SyntheticImu::new(SensorId::from_path("sensors.imu"), small_noise_budget()).unwrap();
+        let mut imu_b = SyntheticImu::new(imu_id, small_noise_budget()).unwrap();
         let mut stream_b = Vec::new();
         for k in 0..50 {
-            stream_b.push(imu_b.measure(&truth, StepIndex::new(k), 7).unwrap());
+            let step = StepIndex::new(k);
+            let _ = baro.measure(&truth, step, 7).unwrap();
+
+            // The most collision-prone payload overlap still differs
+            // because sensor-component RNG seeds carry the SENS domain tag.
+            let mut channel_rng =
+                DeterministicRng::for_channel(7, step, ChannelId::new(imu_id.value()));
+            let mut sensor_rng = DeterministicRng::for_sensor_component(7, step, imu_id, SUB_ARW);
+            assert_ne!(channel_rng.next_u64(), sensor_rng.next_u64());
+
+            stream_b.push(imu_b.measure(&truth, step, 7).unwrap());
         }
 
         assert_eq!(stream_a, stream_b);

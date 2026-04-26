@@ -30,7 +30,7 @@ dt_s = 0.005   # 200 Hz IMU sample rate
 [gyro]
 arw_per_sqrt_s        = 2.4e-7   # ≈ 0.05 °/√h
 bias_ou_theta         = 0.01     # τ_BI ~ 100 s
-bias_ou_sigma         = 4.8e-7   # stationary stddev ≈ 1 °/h ≈ 4.8e-6 rad/s
+bias_ou_sigma         = 6.8e-7   # stationary stddev ≈ 1 °/h ≈ 4.8e-6 rad/s
 rrw_sigma_per_sqrt_s  = 1.0e-9   # very small RRW
 scale_factor_ppm      = 50.0
 quantization_lsb      = 0.0

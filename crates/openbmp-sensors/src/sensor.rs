@@ -115,9 +115,10 @@ pub trait SyntheticSensor {
 // Helpers used by sensor implementations
 // ---------------------------------------------------------------------
 
-/// Validate that every component of the supplied truth bag is
-/// finite. Returns [`SensorError::NonFinite`] on the first
-/// non-finite component.
+/// Validate that every component of the supplied truth bag is finite,
+/// and that the simulation timestamp is valid. Returns
+/// [`SensorError::NonFinite`] / [`SensorError::InvalidParameter`] on
+/// the first invalid component.
 pub(crate) fn require_truth_finite(truth: &SensorTruth) -> Result<(), SensorError> {
     let p = truth.position_eci.vector;
     let v = truth.velocity_eci.vector;
@@ -147,6 +148,16 @@ pub(crate) fn require_truth_finite(truth: &SensorTruth) -> Result<(), SensorErro
                 reason: "sensor truth contains a non-finite component",
             });
         }
+    }
+    if !truth.time.is_finite() {
+        return Err(SensorError::NonFinite {
+            reason: "sensor truth time is NaN or infinite",
+        });
+    }
+    if truth.time.as_seconds() < 0.0 {
+        return Err(SensorError::InvalidParameter {
+            reason: "sensor truth time must not be negative",
+        });
     }
     Ok(())
 }
