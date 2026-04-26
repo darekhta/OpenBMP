@@ -6,7 +6,20 @@ rust-version.workspace  = true
 license.workspace       = true
 repository.workspace    = true
 authors.workspace       = true
-description             = "OpenBMP test helpers: proptest strategies, analytic-toy fixtures, scenario fuzzers."
+description             = "OpenBMP test helpers: proptest strategies, analytic-toy fixtures, tolerance tables, determinism oracle."
+
+[dependencies]
+openbmp-core  = { workspace = true }
+openbmp-state = { workspace = true }
+nalgebra      = { workspace = true }
+proptest      = { workspace = true }
+serde         = { workspace = true }
+thiserror     = { workspace = true }
+toml          = { workspace = true }
+uom           = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
 
 [lints]
 workspace = true

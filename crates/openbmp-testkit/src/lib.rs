@@ -1,9 +1,28 @@
-//! `openbmp-testkit` — OpenBMP test helpers.
+//! `openbmp-testkit` — shared test helpers for the OpenBMP workspace.
 //!
-//! `proptest::Strategy` constructors for core types, analytic-toy
-//! scenario generators (constant-acceleration drop, torque-free Euler
-//! dynamics, two-body Keplerian), tolerance-table parser
-//! (per `docs/verification.md`), `compare_filters` helper, and the
-//! determinism oracle for byte-stable replay verification.
+//! This crate is intended to be a `dev-dependency` of every other
+//! OpenBMP crate. It provides:
 //!
-//! **Status:** Phase 1.6 stub.
+//! - [`strategies`] — `proptest::Strategy` constructors for the
+//!   foundation and state types.
+//! - [`analytic`] — closed-form solutions used by analytic-toy
+//!   validation cases (constant-acceleration drop, torque-free Euler
+//!   rigid-body, two-body Keplerian, harmonic oscillator).
+//! - [`tolerance`] — `expected.toml` parser per
+//!   `docs/verification.md § Tolerance Tables`.
+//! - [`determinism`] — byte-stable diff utility for the determinism
+//!   oracle.
+//! - [`filters`] — placeholder for the Phase-4 `compare_filters`
+//!   harness.
+//!
+//! All helpers respect the OpenBMP determinism contract: no
+//! wall-clock time, no system RNG, seeded RNG only.
+
+pub mod analytic;
+pub mod determinism;
+pub mod error;
+pub mod filters;
+pub mod strategies;
+pub mod tolerance;
+
+pub use error::TestkitError;
