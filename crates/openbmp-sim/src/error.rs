@@ -23,6 +23,10 @@ pub enum SimulationError {
     /// A wrapped [`IntegratorError`] from this crate's integrator.
     #[error(transparent)]
     Integrator(#[from] IntegratorError),
+    /// A wrapped [`ModelEvalError`] raised while validating model
+    /// configuration before the integrator is entered.
+    #[error(transparent)]
+    ModelEval(#[from] ModelEvalError),
     /// The configuration passed to `SimulationKernel::new` was rejected.
     #[error("invalid simulation configuration: {reason}")]
     InvalidConfig {

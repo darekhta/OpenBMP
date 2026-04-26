@@ -132,7 +132,7 @@ impl SimStateDerivative for PointMassDerivative {
 
 /// Time-derivative of an [`openbmp_state::RigidBodyState`].
 ///
-/// Six fields, mirroring the six elements of the rigid-body state:
+/// Seven fields, mirroring the rigid-body state rates:
 ///
 /// * `velocity_m_s_eci` — `dposition/dt`. Equals the state's velocity.
 /// * `acceleration_m_s2_eci` — `dvelocity/dt`. Equals
@@ -149,6 +149,7 @@ impl SimStateDerivative for PointMassDerivative {
 ///   essential when the mass model returns a non-zero
 ///   `inertia_rate_body`.
 /// * `mass_rate_kg_s` — scalar mass rate (kg/s). Negative for burn.
+/// * `center_of_mass_rate_body_m_s` — body-frame CG offset rate.
 /// * `inertia_rate_body` — `dI_body/dt`. Zero for the Phase-2
 ///   `ConstantMassRigid` model; non-zero for `LinearBurnMassRigid` if
 ///   the scenario declares an inertia derivative explicitly.
@@ -165,6 +166,8 @@ pub struct RigidBodyDerivative {
     pub angular_acceleration_rad_s2_body: Vector3<f64>,
     /// `dmass/dt` in kg/s.
     pub mass_rate_kg_s: f64,
+    /// `d(center_of_mass_body)/dt` in m/s, body-frame components.
+    pub center_of_mass_rate_body_m_s: Vector3<f64>,
     /// `dI_body/dt` in kg·m²/s.
     pub inertia_rate_body: Matrix3<f64>,
 }
@@ -178,6 +181,7 @@ impl RigidBodyDerivative {
         quaternion_rate: NalgebraQuaternion<f64>,
         angular_acceleration_rad_s2_body: Vector3<f64>,
         mass_rate_kg_s: f64,
+        center_of_mass_rate_body_m_s: Vector3<f64>,
         inertia_rate_body: Matrix3<f64>,
     ) -> Self {
         Self {
@@ -186,6 +190,7 @@ impl RigidBodyDerivative {
             quaternion_rate,
             angular_acceleration_rad_s2_body,
             mass_rate_kg_s,
+            center_of_mass_rate_body_m_s,
             inertia_rate_body,
         }
     }
@@ -200,6 +205,7 @@ impl RigidBodyDerivative {
             quaternion_rate: NalgebraQuaternion::new(0.0, 0.0, 0.0, 0.0),
             angular_acceleration_rad_s2_body: Vector3::zeros(),
             mass_rate_kg_s: 0.0,
+            center_of_mass_rate_body_m_s: Vector3::zeros(),
             inertia_rate_body: Matrix3::zeros(),
         }
     }
@@ -215,6 +221,10 @@ impl SimStateDerivative for RigidBodyDerivative {
                 .iter()
                 .all(|v| v.is_finite())
             && self.mass_rate_kg_s.is_finite()
+            && self
+                .center_of_mass_rate_body_m_s
+                .iter()
+                .all(|v| v.is_finite())
             && self.inertia_rate_body.iter().all(|v| v.is_finite())
     }
 
@@ -258,6 +268,12 @@ impl SimStateDerivative for RigidBodyDerivative {
             + k4.mass_rate_kg_s)
             * SIXTH;
 
+        let center_of_mass_rate_body_m_s = (((k1.center_of_mass_rate_body_m_s
+            + TWO * k2.center_of_mass_rate_body_m_s)
+            + TWO * k3.center_of_mass_rate_body_m_s)
+            + k4.center_of_mass_rate_body_m_s)
+            * SIXTH;
+
         let inertia_rate_body = (((k1.inertia_rate_body + TWO * k2.inertia_rate_body)
             + TWO * k3.inertia_rate_body)
             + k4.inertia_rate_body)
@@ -269,6 +285,7 @@ impl SimStateDerivative for RigidBodyDerivative {
             quaternion_rate,
             angular_acceleration_rad_s2_body,
             mass_rate_kg_s,
+            center_of_mass_rate_body_m_s,
             inertia_rate_body,
         }
     }
@@ -372,6 +389,7 @@ mod tests {
             NalgebraQuaternion::new(scalar, scalar, scalar, scalar),
             Vector3::new(scalar, scalar, scalar),
             scalar,
+            Vector3::new(scalar, scalar, scalar),
             Matrix3::from_element(scalar),
         )
     }
@@ -405,6 +423,10 @@ mod tests {
         assert!(!d.is_finite());
 
         let mut d = rigid_zero();
+        d.center_of_mass_rate_body_m_s.x = f64::NAN;
+        assert!(!d.is_finite());
+
+        let mut d = rigid_zero();
         d.inertia_rate_body[(0, 0)] = f64::NAN;
         assert!(!d.is_finite());
     }
@@ -419,6 +441,7 @@ mod tests {
         assert_abs_diff_eq!(s.quaternion_rate.coords[0], 0.0);
         assert_abs_diff_eq!(s.angular_acceleration_rad_s2_body.x, 0.0);
         assert_abs_diff_eq!(s.mass_rate_kg_s, 0.0);
+        assert_abs_diff_eq!(s.center_of_mass_rate_body_m_s.x, 0.0);
         assert_abs_diff_eq!(s.inertia_rate_body[(0, 0)], 0.0);
     }
 
@@ -431,6 +454,7 @@ mod tests {
         assert_abs_diff_eq!(s.quaternion_rate.coords[3], 1.5, epsilon = 1.0e-15);
         assert_abs_diff_eq!(s.angular_acceleration_rad_s2_body.z, 1.5, epsilon = 1.0e-15);
         assert_abs_diff_eq!(s.mass_rate_kg_s, 1.5, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(s.center_of_mass_rate_body_m_s.y, 1.5, epsilon = 1.0e-15);
         assert_abs_diff_eq!(s.inertia_rate_body[(2, 2)], 1.5, epsilon = 1.0e-15);
     }
 
@@ -456,6 +480,10 @@ mod tests {
             b.angular_acceleration_rad_s2_body.y.to_bits(),
         );
         assert_eq!(a.mass_rate_kg_s.to_bits(), b.mass_rate_kg_s.to_bits());
+        assert_eq!(
+            a.center_of_mass_rate_body_m_s.z.to_bits(),
+            b.center_of_mass_rate_body_m_s.z.to_bits(),
+        );
         assert_eq!(
             a.inertia_rate_body[(1, 1)].to_bits(),
             b.inertia_rate_body[(1, 1)].to_bits(),

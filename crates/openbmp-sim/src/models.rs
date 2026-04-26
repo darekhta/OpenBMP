@@ -363,14 +363,16 @@ impl MassModel for LinearBurnMass {
 /// Time derivative of [`MassProperties`].
 ///
 /// Returned by [`RigidMassModel::mass_properties_rate`]. Phase-2
-/// simplification: the centre-of-mass derivative is fixed at zero (CG
-/// is treated as fixed within rigid-body integration); a full motor /
-/// tank model with shifting CG lands in Phase 3 alongside
-/// `MovingMassModel`.
+/// built-in models return zero centre-of-mass rate, but the field is
+/// present so the Phase-2.1 rigid-body derivative already covers the
+/// full mass / CG / inertia rate shape expected by later motor and
+/// tank models.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct MassPropertiesRate {
     /// `dmass/dt` in kg/s.
     pub mass_rate_kg_s: f64,
+    /// `d(center_of_mass_body)/dt` in m/s, body-frame components.
+    pub center_of_mass_rate_body_m_s: Vector3<f64>,
     /// `dI_body/dt` in kg·m²/s.
     pub inertia_rate_body: Matrix3<f64>,
 }
@@ -501,6 +503,7 @@ impl RigidMassModel for LinearBurnMassRigid {
     fn mass_properties_rate(&self, _t: SimTime) -> Result<MassPropertiesRate, ModelEvalError> {
         Ok(MassPropertiesRate {
             mass_rate_kg_s: self.rate_kg_s,
+            center_of_mass_rate_body_m_s: Vector3::zeros(),
             inertia_rate_body: Matrix3::zeros(),
         })
     }

@@ -2,10 +2,9 @@
 //! and the canonical fixed-step Runge-Kutta 4 implementation
 //! [`Rk4FixedStep`].
 //!
-//! The integrator is generic over [`SimState`]. Phase 1.3 ships only
-//! the [`openbmp_state::PointMassState`] implementation; rigid-body
-//! integration with quaternion attitude is deferred to a follow-on
-//! sub-phase.
+//! The integrator is generic over [`SimState`]. OpenBMP implements it
+//! for [`openbmp_state::PointMassState`] and
+//! [`openbmp_state::RigidBodyState`].
 //!
 //! # Determinism contract
 //!
@@ -18,8 +17,8 @@
 //!    (not by accumulating across steps — the kernel handles
 //!    cross-step time via canonical multiplication).
 //! 4. Post-step `project()` call to apply manifold constraints (no-op
-//!    for `PointMassState`; quaternion renormalisation when rigid-body
-//!    integration lands).
+//!    for `PointMassState`; quaternion renormalisation for
+//!    `RigidBodyState`).
 //!
 //! See `docs/software-architecture.md § Determinism Profile` for the
 //! rationale (locked weighted-sum order, no FMA, MXCSR guard).
@@ -195,8 +194,7 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
         let mut new_state = state.advance_by(h, &weighted);
 
         // Apply manifold constraints (no-op for PointMassState;
-        // quaternion renormalisation for RigidBodyState in a future
-        // sub-phase).
+        // quaternion renormalisation for RigidBodyState).
         new_state.project();
 
         if !new_state.is_valid_for_integration() {
@@ -270,6 +268,7 @@ mod point_mass_impl {
 //   q_new        = q        + h * q_dot     (NON-UNIT until project())
 //   ω_new        = ω        + h * ω_dot
 //   mass_new     = mass     + h * mass_rate
+//   cg_new       = cg       + h * cg_rate
 //   inertia_new  = inertia  + h * inertia_rate
 //
 // `project()` re-normalises the orientation quaternion to unit
@@ -361,9 +360,12 @@ mod rigid_body_impl {
             let mass_kg = self.mass_props.mass.get::<kilogram>();
             let new_mass_kg = mass_kg + h_seconds * d.mass_rate_kg_s;
             let new_mass = Mass::new::<kilogram>(new_mass_kg);
+            let new_center_of_mass = Position3::from_vector(
+                self.mass_props.center_of_mass_body.vector
+                    + h_seconds * d.center_of_mass_rate_body_m_s,
+            );
             let new_inertia = self.mass_props.inertia_body + h_seconds * d.inertia_rate_body;
-            let new_mass_props =
-                MassProperties::new(new_mass, self.mass_props.center_of_mass_body, new_inertia);
+            let new_mass_props = MassProperties::new(new_mass, new_center_of_mass, new_inertia);
 
             Self::new(
                 new_time,
@@ -672,6 +674,17 @@ mod tests {
         }
 
         #[test]
+        fn advance_by_integrates_center_of_mass_rate() {
+            let s = unit_state();
+            let mut d = RigidBodyDerivative::zero();
+            d.center_of_mass_rate_body_m_s = Vector3::new(0.2, -0.4, 0.6);
+            let s2 = s.advance_by(0.5, &d);
+            assert_abs_diff_eq!(s2.mass_props.center_of_mass_body.vector.x, 0.1);
+            assert_abs_diff_eq!(s2.mass_props.center_of_mass_body.vector.y, -0.2);
+            assert_abs_diff_eq!(s2.mass_props.center_of_mass_body.vector.z, 0.3);
+        }
+
+        #[test]
         fn project_renormalises_unit_quaternion() {
             let mut s = unit_state();
             // Inflate the quaternion to magnitude 2 to test the
@@ -746,6 +759,7 @@ mod tests {
                         quaternion_rate: q_dot,
                         angular_acceleration_rad_s2_body: Vector3::zeros(),
                         mass_rate_kg_s: 0.0,
+                        center_of_mass_rate_body_m_s: Vector3::zeros(),
                         inertia_rate_body: Matrix3::zeros(),
                     })
                 };

@@ -1,23 +1,24 @@
 //! `openbmp-sim` — OpenBMP lockstep simulation kernel.
 //!
-//! Phase 1.3: a deterministic, fixed-step Runge-Kutta 4 kernel for
-//! [`openbmp_state::PointMassState`] under user-supplied force, mass,
-//! environment, and stop-condition models. Rigid-body integration
-//! (with quaternion attitude) is deferred to a follow-on sub-phase.
+//! Phase 2.1: a deterministic, fixed-step Runge-Kutta 4 kernel for
+//! [`openbmp_state::PointMassState`] and [`openbmp_state::RigidBodyState`]
+//! under user-supplied force, moment, mass, environment, and
+//! stop-condition models.
 //!
 //! # Architecture
 //!
 //! * [`SimState`] — trait implemented by states an integrator can
-//!   advance. Phase 1.3 implements it for `PointMassState`.
+//!   advance. Implemented for `PointMassState` and `RigidBodyState`.
 //! * [`SimStateDerivative`] — trait implemented by the time-derivative
 //!   of a state. Carries the canonical RK4 weighted-sum with locked
 //!   evaluation order.
 //! * [`Integrator`] — trait for numerical integrators. Phase 1.3 ships
 //!   [`Rk4FixedStep`].
-//! * [`ForceModel`], [`MassModel`], [`EnvironmentModel`] — model
-//!   trait surfaces. Phase 1.3 ships [`ConstantGravityForce`],
-//!   [`ZeroForce`], [`ConstantMass`], [`LinearBurnMass`], and
-//!   [`NullEnvironment`].
+//! * [`ForceModel`], [`MomentModel`], [`MassModel`], [`RigidMassModel`],
+//!   [`EnvironmentModel`] — model trait surfaces. The crate ships
+//!   [`ConstantGravityForce`], [`ZeroForce`], [`ZeroMoment`],
+//!   [`ConstantMass`], [`LinearBurnMass`], [`ConstantMassRigid`],
+//!   [`LinearBurnMassRigid`], and [`NullEnvironment`].
 //! * [`StopCondition`] — trait for halt-the-kernel predicates. Phase
 //!   1.3 ships [`AlwaysContinue`], [`EndTime`], [`MaxSteps`].
 //! * [`SimulationKernel`] — owns the integrator + models + stop

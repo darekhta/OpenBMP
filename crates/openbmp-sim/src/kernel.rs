@@ -367,6 +367,36 @@ const POST_STEP_QUATERNION_TOL: f64 = 1.0e-9;
 /// Inertia-tensor symmetry tolerance for post-step validation.
 const POST_STEP_INERTIA_TOL: f64 = 1.0e-9;
 
+/// Sentinel model id for kernel-internal rigid-body equation checks.
+/// Real Phase-3 vehicle models will supply stable model ids; this
+/// avoids overloading `ModelId::default()` for an internal algebraic
+/// failure.
+const RIGID_BODY_EQUATIONS_MODEL_ID: openbmp_core::ModelId = openbmp_core::ModelId::new(u64::MAX);
+
+fn mass_properties_bits_equal(
+    a: &openbmp_state::MassProperties,
+    b: &openbmp_state::MassProperties,
+) -> bool {
+    if a.mass.get::<kilogram>().to_bits() != b.mass.get::<kilogram>().to_bits() {
+        return false;
+    }
+    for axis in 0..3 {
+        if a.center_of_mass_body.vector[axis].to_bits()
+            != b.center_of_mass_body.vector[axis].to_bits()
+        {
+            return false;
+        }
+    }
+    for row in 0..3 {
+        for col in 0..3 {
+            if a.inertia_body[(row, col)].to_bits() != b.inertia_body[(row, col)].to_bits() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Wrapper bundle so the rigid-body kernel can carry a moment model
 /// and a rigid mass model in the single `MM` slot of
 /// `SimulationKernel`. Phase 3's `VehicleAssembly` work removes this
@@ -421,6 +451,17 @@ where
         config
             .initial_state
             .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)?;
+        let model_initial_props = config
+            .mass_model
+            .mass_model
+            .mass_properties(config.initial_state.time)?;
+        model_initial_props.require_valid(POST_STEP_INERTIA_TOL)?;
+        if !mass_properties_bits_equal(&config.initial_state.mass_props, &model_initial_props) {
+            return Err(SimulationError::InvalidConfig {
+                reason: "initial rigid-body mass properties must match the rigid mass model at initial time"
+                    .into(),
+            });
+        }
         assert_clean_mxcsr()?;
         let initial_time_s = config.initial_state.time.as_seconds();
         Ok(Self {
@@ -516,7 +557,7 @@ where
             let net = moment_n_m_body - omega_cross_iomega - i_dot_omega;
             let inv_inertia = inertia.try_inverse().ok_or_else(|| {
                 crate::error::ModelEvalError::InvalidState {
-                    model: openbmp_core::ModelId::default(),
+                    model: RIGID_BODY_EQUATIONS_MODEL_ID,
                     reason: "inertia tensor is not invertible".into(),
                 }
             })?;
@@ -528,6 +569,7 @@ where
                 quaternion_rate: q_dot,
                 angular_acceleration_rad_s2_body: omega_dot,
                 mass_rate_kg_s: rate.mass_rate_kg_s,
+                center_of_mass_rate_body_m_s: rate.center_of_mass_rate_body_m_s,
                 inertia_rate_body: rate.inertia_rate_body,
             })
         };
@@ -601,10 +643,29 @@ where
         self.state.time
     }
 
+    /// Configured time step.
+    #[must_use]
+    pub const fn dt(&self) -> Duration {
+        self.dt
+    }
+
+    /// Scenario seed. Downstream RNG-driven models derive deterministic
+    /// streams from this.
+    #[must_use]
+    pub const fn scenario_seed(&self) -> u64 {
+        self.scenario_seed
+    }
+
     /// Stop reason (`Some` after the kernel has halted).
     #[must_use]
     pub const fn stop_reason(&self) -> Option<&StopReason> {
         self.stopped.as_ref()
+    }
+
+    /// Initial state (preserved across the run for replay / reset).
+    #[must_use]
+    pub const fn initial_state(&self) -> &openbmp_state::RigidBodyState {
+        &self.initial_state
     }
 }
 

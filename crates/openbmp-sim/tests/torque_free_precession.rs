@@ -117,6 +117,57 @@ fn quaternion_unit_residual(state: &RigidBodyState) -> f64 {
     (n2.sqrt() - 1.0).abs()
 }
 
+fn assert_rigid_states_bit_equal(a: &RigidBodyState, b: &RigidBodyState) {
+    assert_eq!(a.time.as_seconds().to_bits(), b.time.as_seconds().to_bits());
+
+    for axis in 0..3 {
+        assert_eq!(
+            a.position.vector[axis].to_bits(),
+            b.position.vector[axis].to_bits(),
+            "position axis {axis} differs",
+        );
+        assert_eq!(
+            a.velocity.vector[axis].to_bits(),
+            b.velocity.vector[axis].to_bits(),
+            "velocity axis {axis} differs",
+        );
+        assert_eq!(
+            a.angular_velocity.vector[axis].to_bits(),
+            b.angular_velocity.vector[axis].to_bits(),
+            "angular velocity axis {axis} differs",
+        );
+        assert_eq!(
+            a.mass_props.center_of_mass_body.vector[axis].to_bits(),
+            b.mass_props.center_of_mass_body.vector[axis].to_bits(),
+            "center of mass axis {axis} differs",
+        );
+    }
+
+    for axis in 0..4 {
+        assert_eq!(
+            a.orientation.q.coords[axis].to_bits(),
+            b.orientation.q.coords[axis].to_bits(),
+            "orientation coord {axis} differs",
+        );
+    }
+
+    assert_eq!(
+        a.mass_props.mass.get::<kilogram>().to_bits(),
+        b.mass_props.mass.get::<kilogram>().to_bits(),
+        "mass differs",
+    );
+
+    for row in 0..3 {
+        for col in 0..3 {
+            assert_eq!(
+                a.mass_props.inertia_body[(row, col)].to_bits(),
+                b.mass_props.inertia_body[(row, col)].to_bits(),
+                "inertia entry ({row}, {col}) differs",
+            );
+        }
+    }
+}
+
 #[test]
 fn torque_free_precession_runs_to_completion() {
     let mut kernel = build_kernel(10.0);
@@ -227,22 +278,6 @@ fn torque_free_precession_is_byte_stable_across_two_runs() {
     let mut b = build_kernel(2.0);
     a.run().expect("run a");
     b.run().expect("run b");
-    let sa = a.current_state();
-    let sb = b.current_state();
-    assert_eq!(
-        sa.orientation.q.coords.x.to_bits(),
-        sb.orientation.q.coords.x.to_bits(),
-    );
-    assert_eq!(
-        sa.orientation.q.coords.w.to_bits(),
-        sb.orientation.q.coords.w.to_bits(),
-    );
-    assert_eq!(
-        sa.angular_velocity.vector.x.to_bits(),
-        sb.angular_velocity.vector.x.to_bits(),
-    );
-    assert_eq!(
-        sa.angular_velocity.vector.z.to_bits(),
-        sb.angular_velocity.vector.z.to_bits(),
-    );
+    assert_eq!(a.current_step(), b.current_step());
+    assert_rigid_states_bit_equal(a.current_state(), b.current_state());
 }
