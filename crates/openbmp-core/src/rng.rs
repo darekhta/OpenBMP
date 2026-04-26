@@ -7,7 +7,8 @@
 //!
 //! No type in this module reads from system entropy.
 
-use rand::{RngCore, SeedableRng};
+use rand::rand_core::Infallible;
+use rand::{Rng as _, SeedableRng, TryRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::ids::ChannelId;
@@ -15,7 +16,7 @@ use crate::time::StepIndex;
 
 /// Deterministic pseudo-random number generator.
 ///
-/// Implements [`rand::RngCore`] and is therefore usable anywhere the
+/// Implements [`rand::Rng`] and is therefore usable anywhere the
 /// `rand` ecosystem expects an RNG. The same seed always produces the
 /// same byte stream.
 #[derive(Debug, Clone)]
@@ -79,17 +80,20 @@ impl DeterministicRng {
     }
 }
 
-impl RngCore for DeterministicRng {
-    fn next_u32(&mut self) -> u32 {
-        Self::next_u32(self)
+impl TryRng for DeterministicRng {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(Self::next_u32(self))
     }
 
-    fn next_u64(&mut self) -> u64 {
-        Self::next_u64(self)
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(Self::next_u64(self))
     }
 
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
         Self::fill_bytes(self, dest);
+        Ok(())
     }
 }
 
