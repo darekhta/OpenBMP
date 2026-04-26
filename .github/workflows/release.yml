@@ -1,0 +1,125 @@
+name: Release
+
+# Triggered on tag push (vX.Y.Z) or manually. Produces:
+#
+# - source archive (tar.gz) of the working tree at the tag
+# - release-mode `openbmp` CLI binary for x86_64-unknown-linux-gnu
+# - committed Cargo.lock
+# - CycloneDX SBOM via cargo-cyclonedx
+# - cargo-audit report (informational; CI gates already block on it)
+# - the non-suitability disclaimer (a static markdown file in this repo)
+#
+# Future Phase-1.10 follow-ons (not in scope for this workflow):
+#
+# - SLSA Build Level 2 provenance via slsa-framework/slsa-github-generator
+# - macOS / Windows / aarch64-Linux release artefacts
+# - Trusted Publishing for `cargo publish` (post-Phase-1)
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to attach artefacts to a Release
+  id-token: write   # reserved for future SLSA / Trusted Publishing
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-artifacts:
+    name: build-and-upload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            TAG="manual-$(git rev-parse --short HEAD)"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build release CLI binary
+        run: cargo build --release --workspace --locked
+
+      - name: Stage release artefacts
+        run: |
+          mkdir -p dist
+          TAG="${{ steps.tag.outputs.tag }}"
+          cp target/release/openbmp dist/openbmp-${TAG}-x86_64-unknown-linux-gnu
+          cp Cargo.lock dist/Cargo.lock
+          cp DISCLAIMER.md dist/DISCLAIMER.md 2>/dev/null || true
+
+      - name: Source archive
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          git archive --format=tar.gz --prefix=openbmp-${TAG}/ \
+              -o dist/openbmp-${TAG}-source.tar.gz HEAD
+
+      - name: Install cargo-cyclonedx
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx@0.5.7
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          cargo cyclonedx --format json --output-pattern bom --all
+          # Aggregate per-crate boms into a single per-release artefact.
+          mkdir -p dist/sbom
+          find . -maxdepth 4 -name "bom.json" -not -path "./target/*" \
+              -exec cp --parents {} dist/sbom/ \;
+          tar -czf dist/openbmp-${TAG}-sbom.tar.gz -C dist/sbom .
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.1
+
+      - name: Generate audit report
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          cargo audit --json > dist/openbmp-${TAG}-audit.json || true
+
+      - name: Compute artefact hashes
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          cd dist
+          sha256sum openbmp-${TAG}-* Cargo.lock > openbmp-${TAG}-sha256sums.txt
+
+      - name: Upload artefacts (Release)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/openbmp-*-x86_64-unknown-linux-gnu
+            dist/openbmp-*-source.tar.gz
+            dist/openbmp-*-sbom.tar.gz
+            dist/openbmp-*-audit.json
+            dist/openbmp-*-sha256sums.txt
+            dist/Cargo.lock
+            dist/DISCLAIMER.md
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+
+      - name: Upload artefacts (workflow_dispatch)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.tag.outputs.tag }}
+          path: dist/
+          retention-days: 14
