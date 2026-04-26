@@ -112,7 +112,7 @@ reports, and user interaction. Cross-layer dependencies point downward only.
 ```text
 openbmp/
 ├── Cargo.toml                           # workspace
-├── rust-toolchain.toml                  # pinned MSRV
+├── rust-toolchain.toml                  # pinned working toolchain
 ├── crates/
 │   ├── openbmp-core/                    # L0: math, units, frames, time, RNG
 │   ├── openbmp-sim/                     # L1: kernel, scheduler, integrators
@@ -585,8 +585,14 @@ document assumptions, validity range, units, frames, and validation status.
 ### Environment
 
 ```rust
+pub enum ModelEvalError {
+    OutOfEnvelope { model: ModelId, reason: String },
+    NonFinite { model: ModelId },
+    InvalidState { model: ModelId, reason: String },
+}
+
 pub trait EnvironmentModel {
-    fn sample(&self, q: EnvironmentQuery) -> EnvironmentSample;
+    fn sample(&self, q: EnvironmentQuery) -> Result<EnvironmentSample, ModelEvalError>;
     fn validation(&self) -> ValidationStatus;
 }
 
@@ -597,28 +603,35 @@ pub struct EnvironmentQuery {
 
 pub struct EnvironmentSample {
     pub atmosphere: AtmosphereSample,    // density, pressure, temperature, speed of sound
-    pub gravity: Vector3<Acceleration, ECEF>,
+    pub gravity: Vector3<Acceleration, ECI>,
     pub wind: Velocity3<NED>,
     pub magnetic_field: Vector3<MagneticFluxDensity, NED>,
 }
 ```
 
+Model evaluation is fallible at the kernel boundary. Envelope violations
+(atmosphere ceiling, aero deck envelope, invalid motor time range, etc.) return
+typed errors that the kernel records with the step and model id before halting;
+they are not represented by `NaN`, silent clamping, or panics. Scenario
+validation should catch obvious envelope mismatches up front, but runtime model
+errors remain fail-closed.
+
 ### Force / Moment / Mass
 
 ```rust
 pub trait ForceModel {
-    fn force(&self, input: ForceInput) -> ForceOutput<ECI>;
+    fn force(&self, input: ForceInput) -> Result<ForceOutput<ECI>, ModelEvalError>;
     fn validation(&self) -> ValidationStatus;
 }
 
 pub trait MomentModel {
-    fn moment(&self, input: MomentInput) -> MomentOutput<Body>;
+    fn moment(&self, input: MomentInput) -> Result<MomentOutput<Body>, ModelEvalError>;
     fn validation(&self) -> ValidationStatus;
 }
 
 pub trait MassModel {
-    fn mass_properties(&self, time: SimTime) -> MassProperties;
-    fn derivative(&self, time: SimTime) -> MassDerivative;
+    fn mass_properties(&self, time: SimTime) -> Result<MassProperties, ModelEvalError>;
+    fn derivative(&self, time: SimTime) -> Result<MassDerivative, ModelEvalError>;
     fn validation(&self) -> ValidationStatus;
 }
 ```
@@ -1114,13 +1127,13 @@ pub struct AeroModel {
 }
 
 impl ForceModel for AeroModel {
-    fn force(&self, input: ForceInput) -> ForceOutput<ECI> {
+    fn force(&self, input: ForceInput) -> Result<ForceOutput<ECI>, ModelEvalError> {
         let q = dynamic_pressure(input.atmosphere, input.airspeed_body);
         let (mach, alpha, beta) = airdata(input.airspeed_body, input.atmosphere);
-        let coeffs = self.deck.lookup(mach, alpha, beta);
+        let coeffs = self.deck.lookup(mach, alpha, beta)?;
         let f_body = aero_force_body(q, &self.reference, &coeffs);
         let f_eci = transform_to_eci(f_body, input.orientation);
-        ForceOutput { force: f_eci, /* ... */ }
+        Ok(ForceOutput { force: f_eci, /* ... */ })
     }
 }
 ```
@@ -1204,7 +1217,7 @@ pub trait SyntheticSensor {
 | Sensor | Measurement | Noise Model |
 |---|---|---|
 | `IdealStateSensor` | full truth (test only) | none |
-| `SyntheticImu` | body accel + body angular rate | Allan-variance per **IEEE 1139** overlapping-estimator convention: ARW (angle random walk), bias instability (flicker-frequency minimum), RRW (rate random walk), scale-factor error |
+| `SyntheticImu` | body accel + body angular rate | IEEE 952-style inertial-sensor noise decomposition: ARW / VRW, bias instability, RRW, quantization, and scale-factor error |
 | `SyntheticBarometer` | pressure → altitude | additive Gaussian + bias drift |
 | `SyntheticGnss` | position + velocity (with delay, dropout) | additive Gaussian + dropout windows |
 | `SyntheticMagnetometer` | mag field in body | additive Gaussian + hard-iron offset |
@@ -1659,7 +1672,7 @@ logging side-effects do not leak into deterministic outputs. Failures
 here block merging.
 
 The reference platform profile is `x86_64-unknown-linux-gnu` with the
-pinned MSRV from `rust-toolchain.toml` and the `default` simulation
+pinned working toolchain from `rust-toolchain.toml` and the `default` simulation
 profile. Other platform profiles (macOS, ARM Linux, Windows) are
 exercised in nightly CI as `state-stable, not bit-stable`: cross-platform
 diffs are expected; intra-platform-profile bit identity is required.
@@ -1740,7 +1753,7 @@ simulation_profile)` declared in CI. Byte-identical replay is guaranteed
 within a platform profile; cross-platform-profile diffs are expected and
 are documented in the determinism CI gate as `state-stable, not
 bit-stable`. The reference platform profile is
-`x86_64-unknown-linux-gnu`, the pinned MSRV from `rust-toolchain.toml`,
+`x86_64-unknown-linux-gnu`, the pinned working toolchain from `rust-toolchain.toml`,
 and `default` simulation profile.
 
 The default determinism profile guarantees:
@@ -1855,9 +1868,9 @@ The architecture draws on, and modules cite as appropriate:
 - NACA Report 1135 (1953), *Equations, Tables, and Charts for Compressible
   Flow* — public foundational compressible-flow reference for Mach,
   dynamic pressure, oblique-shock, and Taylor-Maccoll relations.
-- IEEE 1139-2008 — *Standard Definitions of Physical Quantities for
-  Fundamental Frequency and Time Metrology — Random Instabilities* —
-  Allan-variance overlapping-estimator standard.
+- IEEE Std 952-2020 — *Single-Axis Interferometric Fiber Optic Gyros* —
+  inertial-sensor noise terms and Allan-variance conventions used by the
+  synthetic IMU model.
 
 No restricted, ITAR-controlled, EAR-controlled, MTCR-controlled, or
 operationally-classified document is consulted, cited, or implemented from.
