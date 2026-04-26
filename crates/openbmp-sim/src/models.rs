@@ -25,7 +25,7 @@ use uom::si::mass::kilogram;
 // Environment
 // ---------------------------------------------------------------------
 
-/// Query a model with for an environment sample.
+/// Query passed to an environment model when requesting a sample.
 #[derive(Copy, Clone, Debug)]
 pub struct EnvironmentQuery {
     /// Sub-step time at which the sample is requested.
@@ -235,6 +235,18 @@ pub struct LinearBurnMass {
     pub rate_kg_s: f64,
 }
 
+impl LinearBurnMass {
+    /// Construct a linear-burn mass model.
+    #[must_use]
+    pub const fn new(t0_s: f64, m0_kg: f64, rate_kg_s: f64) -> Self {
+        Self {
+            t0_s,
+            m0_kg,
+            rate_kg_s,
+        }
+    }
+}
+
 impl MassModel for LinearBurnMass {
     fn mass_kg(&self, t: SimTime) -> f64 {
         self.m0_kg + self.rate_kg_s * (t.as_seconds() - self.t0_s)
@@ -303,11 +315,7 @@ mod tests {
 
     #[test]
     fn linear_burn_mass_evolves_linearly() {
-        let m = LinearBurnMass {
-            t0_s: 0.0,
-            m0_kg: 10.0,
-            rate_kg_s: -0.5,
-        };
+        let m = LinearBurnMass::new(0.0, 10.0, -0.5);
         assert_abs_diff_eq!(m.mass_kg(SimTime::ZERO), 10.0);
         assert_abs_diff_eq!(m.mass_kg(SimTime::from_seconds(2.0)), 9.0);
         assert_abs_diff_eq!(m.mass_kg(SimTime::from_seconds(20.0)), 0.0);

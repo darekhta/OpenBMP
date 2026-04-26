@@ -104,19 +104,17 @@ impl SimStateDerivative for PointMassDerivative {
         const TWO: f64 = 2.0;
         const SIXTH: f64 = 1.0 / 6.0;
 
-        let velocity_m_s =
-            (k1.velocity_m_s + TWO * k2.velocity_m_s + TWO * k3.velocity_m_s + k4.velocity_m_s)
-                * SIXTH;
+        let velocity_m_s = (((k1.velocity_m_s + TWO * k2.velocity_m_s) + TWO * k3.velocity_m_s)
+            + k4.velocity_m_s)
+            * SIXTH;
 
-        let acceleration_m_s2 = (k1.acceleration_m_s2
-            + TWO * k2.acceleration_m_s2
-            + TWO * k3.acceleration_m_s2
+        let acceleration_m_s2 = (((k1.acceleration_m_s2 + TWO * k2.acceleration_m_s2)
+            + TWO * k3.acceleration_m_s2)
             + k4.acceleration_m_s2)
             * SIXTH;
 
-        let mass_rate_kg_s = (k1.mass_rate_kg_s
-            + TWO * k2.mass_rate_kg_s
-            + TWO * k3.mass_rate_kg_s
+        let mass_rate_kg_s = (((k1.mass_rate_kg_s + TWO * k2.mass_rate_kg_s)
+            + TWO * k3.mass_rate_kg_s)
             + k4.mass_rate_kg_s)
             * SIXTH;
 

@@ -23,7 +23,7 @@ use nalgebra::Vector3;
 use openbmp_core::{Duration, Position3, SimTime, Velocity3};
 use openbmp_sim::{
     AlwaysContinue, ConstantGravityForce, ConstantMass, EndTime, NullEnvironment, Rk4FixedStep,
-    SimulationConfig, SimulationKernel,
+    SimulationConfig, SimulationKernel, ZeroForce,
 };
 use openbmp_state::PointMassState;
 use openbmp_testkit::{
@@ -182,8 +182,25 @@ fn run_can_be_resumed_step_by_step_with_same_result_as_continuous_run() {
 }
 
 #[test]
-fn idle_kernel_pretends_to_be_a_test_that_uses_alwayscontinue() {
-    // Sanity: AlwaysContinue exists and compiles in this test context;
-    // real continuous runs are not exercised here (would never stop).
-    let _ = AlwaysContinue;
+fn always_continue_kernel_can_be_driven_one_step_manually() {
+    let initial = PointMassState::new(
+        SimTime::ZERO,
+        Position3::origin(),
+        Velocity3::zero(),
+        Mass::new::<kilogram>(1.0),
+    );
+    let config = SimulationConfig {
+        initial_state: initial,
+        integrator: Rk4FixedStep,
+        force_model: ZeroForce,
+        mass_model: ConstantMass::new(1.0),
+        environment: NullEnvironment,
+        stop_condition: AlwaysContinue,
+        dt: Duration::from_seconds(DT_S),
+        scenario_seed: 0,
+    };
+    let mut kernel = SimulationKernel::new(config).expect("valid configuration");
+    kernel.step().expect("one manual step");
+    assert_eq!(kernel.current_step().value(), 1);
+    assert!(kernel.stop_reason().is_none());
 }

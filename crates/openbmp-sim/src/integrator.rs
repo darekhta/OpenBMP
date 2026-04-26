@@ -41,6 +41,20 @@ pub trait SimState: Copy + std::fmt::Debug {
     #[must_use]
     fn time(&self) -> SimTime;
 
+    /// Returns `true` if every numeric component is finite.
+    #[must_use]
+    fn is_finite(&self) -> bool;
+
+    /// Returns `true` if the state is valid for integration.
+    ///
+    /// The default only checks finiteness. State implementations with
+    /// structural invariants, such as strictly-positive mass, should
+    /// override this method.
+    #[must_use]
+    fn is_valid_for_integration(&self) -> bool {
+        self.is_finite()
+    }
+
     /// Returns a copy of this state with its time field replaced by
     /// `t`. Used by the kernel to overwrite the integrator's accumulated
     /// time with the canonical `start + step * dt` value, eliminating
@@ -94,8 +108,8 @@ pub trait Integrator<S: SimState> {
     /// Returns [`IntegratorError::InvalidStep`] if `dt` is not strictly
     /// positive and finite, [`IntegratorError::NonFiniteDerivative`] if
     /// any RK stage produces a `NaN`/`Inf` derivative, or
-    /// [`IntegratorError::NonFiniteState`] if the integrated state is
-    /// non-finite.
+    /// [`IntegratorError::NonFiniteState`] if any start, intermediate,
+    /// or final state is not valid for integration.
     fn advance<F>(&self, state: &S, derive_fn: F, dt: Duration) -> Result<S, IntegratorError>
     where
         F: Fn(&S, SimTime) -> S::Derivative;
@@ -121,6 +135,9 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
         if !h.is_finite() || h <= 0.0 {
             return Err(IntegratorError::InvalidStep { dt_seconds: h });
         }
+        if !state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
         let half_h = h * 0.5;
 
         let t0 = state.time();
@@ -136,6 +153,9 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
 
         // Stage 2: midpoint state predicted by k1.
         let mid_k2 = state.advance_by(half_h, &k1);
+        if !mid_k2.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
         let k2 = derive_fn(&mid_k2, t_mid);
         if !k2.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
@@ -143,6 +163,9 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
 
         // Stage 3: midpoint state predicted by k2.
         let mid_k3 = state.advance_by(half_h, &k2);
+        if !mid_k3.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
         let k3 = derive_fn(&mid_k3, t_mid);
         if !k3.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
@@ -150,6 +173,9 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
 
         // Stage 4: end-state predicted by k3.
         let end_k4 = state.advance_by(h, &k3);
+        if !end_k4.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
         let k4 = derive_fn(&end_k4, t_end);
         if !k4.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
@@ -164,6 +190,10 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
         // quaternion renormalisation for RigidBodyState in a future
         // sub-phase).
         new_state.project();
+
+        if !new_state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
 
         Ok(new_state)
     }
@@ -188,6 +218,14 @@ mod point_mass_impl {
 
         fn time(&self) -> SimTime {
             self.time
+        }
+
+        fn is_finite(&self) -> bool {
+            PointMassState::is_finite(self)
+        }
+
+        fn is_valid_for_integration(&self) -> bool {
+            self.require_valid().is_ok()
         }
 
         fn with_time(mut self, t: SimTime) -> Self {
@@ -359,6 +397,39 @@ mod tests {
         let dt = Duration::from_seconds(0.01);
         let result = Rk4FixedStep.advance(&state, derive, dt);
         assert!(matches!(result, Err(IntegratorError::NonFiniteDerivative)));
+    }
+
+    #[test]
+    fn rk4_rejects_invalid_initial_state() {
+        let state = PointMassState::new(
+            SimTime::ZERO,
+            Position3::origin(),
+            Velocity3::zero(),
+            Mass::new::<kilogram>(0.0),
+        );
+        let result = Rk4FixedStep.advance(
+            &state,
+            |_s, _t| PointMassDerivative::zero(),
+            Duration::from_seconds(0.01),
+        );
+        assert!(matches!(result, Err(IntegratorError::NonFiniteState)));
+    }
+
+    #[test]
+    fn rk4_rejects_invalid_intermediate_state() {
+        let state = PointMassState::new(
+            SimTime::ZERO,
+            Position3::origin(),
+            Velocity3::zero(),
+            Mass::new::<kilogram>(1.0),
+        );
+        let derive = |_s: &PointMassState, _t: SimTime| PointMassDerivative {
+            velocity_m_s: Vector3::zeros(),
+            acceleration_m_s2: Vector3::zeros(),
+            mass_rate_kg_s: -10.0,
+        };
+        let result = Rk4FixedStep.advance(&state, derive, Duration::from_seconds(1.0));
+        assert!(matches!(result, Err(IntegratorError::NonFiniteState)));
     }
 
     #[test]

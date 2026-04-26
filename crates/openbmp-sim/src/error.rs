@@ -26,17 +26,19 @@ pub enum SimulationError {
         /// Human-readable reason.
         reason: String,
     },
-    /// The post-step state contained `NaN` or infinite components, or
-    /// failed `is_finite()` (which for `PointMassState` also requires
-    /// strictly-positive mass).
-    #[error("non-finite or invalid state at step {step:?}")]
-    NonFiniteState {
+    /// The post-step state failed structural validation after the
+    /// kernel assigned canonical time.
+    #[error("invalid post-step state at step {step:?}: {source}")]
+    InvalidPostStepState {
         /// Step at which the failure was observed.
         step: StepIndex,
+        /// Underlying state validation error.
+        #[source]
+        source: StateError,
     },
     /// The floating-point environment was not in the strictly defined
-    /// state required by the determinism contract (FTZ / DAZ flushed
-    /// to zero, round-to-nearest-ties-to-even rounding mode).
+    /// state required by the determinism contract (FTZ / DAZ off,
+    /// round-to-nearest-ties-to-even rounding mode).
     #[error(
         "floating-point environment is dirty (ftz={ftz}, daz={daz}, \
          rounding_mode={rounding_mode}); cannot guarantee bit-stable replay"
@@ -58,9 +60,9 @@ pub enum IntegratorError {
     /// infinity.
     #[error("integrator derivative is not finite (one of the RK4 stages produced NaN/Inf)")]
     NonFiniteDerivative,
-    /// The integrated state contained non-finite components after
-    /// summation.
-    #[error("integrated state is not finite")]
+    /// A start, intermediate, or integrated state was not valid for
+    /// integration.
+    #[error("integrator state is not valid for integration")]
     NonFiniteState,
     /// The integration step `dt` was not strictly positive and finite.
     #[error("integrator step is not strictly positive and finite: {dt_seconds} s")]

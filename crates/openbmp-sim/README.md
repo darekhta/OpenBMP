@@ -2,28 +2,32 @@
 
 L1 lockstep simulation kernel.
 
-**Status:** Phase 1.3 — stub. Compiles but provides no functionality.
+**Status:** Phase 1.3 — implemented point-mass lockstep kernel.
 
 ## Purpose
 
 - `Integrator` trait + `IntegratorDeterminism` enum.
-- `RK4FixedStep` integrator (Phase 1.3 default).
+- `Rk4FixedStep` integrator (Phase 1.3 default).
 - `SimulationKernel` struct with the canonical step loop:
-  environment → forces / moments → integrate → sensors → controller →
-  telemetry → validation → stop check.
-- `EventQueue` for stop conditions.
+  stop check → overflow-checked step candidate → environment sample →
+  force model → mass-rate model → integrate → canonical time overwrite
+  → validation.
+- `StopCondition` trait and simple stop conditions.
 - `SimulationError`, `IntegratorError`, `StopReason` error types.
 
 ## Inputs and Outputs
 
-- Inputs: a validated scenario, an environment provider, force / moment
-  providers, a mass model, sensors, a virtual flight controller.
-- Outputs: telemetry samples per step, stop reason on termination.
+- Inputs: a valid initial `PointMassState`, an environment provider, a
+  force model, a mass-rate model, an integrator, a stop condition, a
+  fixed time step, and a scenario seed.
+- Outputs: current state, current step/time, and stop reason on
+  termination. Telemetry wiring lands in a later phase.
 
 ## Units and Frames
 
-State propagation in `ECI`. Body-frame inputs from the controller and
-moments. See `docs/frames-time.md`.
+Point-mass state propagation is in `ECI`. Rigid-body body-frame
+moments and quaternion attitude integration are deferred to the
+rigid-body extension.
 
 ## Assumptions
 
@@ -43,8 +47,8 @@ FMA-disabled on the reference platform per `.cargo/config.toml`. See
 
 ## Validation
 
-`experimental` (stub). Validated against analytic-toy
-constant-acceleration drop in Phase 1.8.
+`checked` for the Phase 1.3 point-mass kernel surface. The crate is
+validated against the analytic-toy constant-acceleration drop.
 
 ## Data Provenance
 

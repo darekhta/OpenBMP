@@ -28,7 +28,7 @@ use openbmp_state::PointMassState;
 use uom::si::mass::kilogram;
 
 use crate::derivative::PointMassDerivative;
-use crate::error::{SimulationError, StopReason};
+use crate::error::{IntegratorError, SimulationError, StopReason};
 use crate::integrator::{Integrator, SimState};
 use crate::models::{EnvironmentModel, EnvironmentQuery, ForceContext, ForceModel, MassModel};
 use crate::stop::StopCondition;
@@ -146,22 +146,22 @@ where
     ///    after a stop.
     /// 2. Evaluate the stop condition against the **current** state.
     ///    If it fires, record the reason and return.
-    /// 3. Build the derivative closure capturing the models and
+    /// 3. Advance the step counter candidate (overflow-checked).
+    /// 4. Build the derivative closure capturing the models and
     ///    environment.
-    /// 4. Call `integrator.advance` (which evaluates the closure four
+    /// 5. Call `integrator.advance` (which evaluates the closure four
     ///    times for RK4).
-    /// 5. Advance the step counter (overflow-checked).
     /// 6. Overwrite the new state's time with the canonical
     ///    `start + step * dt` value.
-    /// 7. Validate post-step state (`is_finite()`, mass > 0).
+    /// 7. Validate post-step state.
     /// 8. Emit a `tracing::trace!` event.
     ///
     /// # Errors
     ///
     /// Returns [`SimulationError::Integrator`] if the integrator
     /// fails, [`SimulationError::Time`] if the step counter overflows,
-    /// or [`SimulationError::NonFiniteState`] if the integrated state
-    /// fails post-step validation.
+    /// or [`SimulationError::InvalidPostStepState`] if the integrated
+    /// state fails post-step validation.
     #[allow(clippy::cast_precision_loss)] // step values stay well under 2^52
     pub fn step(&mut self) -> Result<(), SimulationError> {
         if self.stopped.is_some() {
@@ -177,6 +177,19 @@ where
             self.stopped = Some(reason);
             return Ok(());
         }
+
+        // Advance the step counter candidate before model evaluation;
+        // if it cannot advance, no derivative call for an uncommittable
+        // step is allowed to run.
+        let next_step = match self.step_index.checked_next() {
+            Ok(step) => step,
+            Err(err) => {
+                self.stopped = Some(StopReason::StepOverflow {
+                    step: self.step_index,
+                });
+                return Err(SimulationError::Time(err));
+            }
+        };
 
         // Capture refs into locals so the closure does not borrow
         // `&self` and we can still mutate `self.state` after the call.
@@ -207,10 +220,14 @@ where
             }
         };
 
-        let raw_new = self.integrator.advance(&self.state, derive, self.dt)?;
-
-        // Advance the step counter (overflow-checked via openbmp-core).
-        let next_step = self.step_index.checked_next()?;
+        let raw_new = match self.integrator.advance(&self.state, derive, self.dt) {
+            Ok(state) => state,
+            Err(err @ (IntegratorError::NonFiniteDerivative | IntegratorError::NonFiniteState)) => {
+                self.stopped = Some(StopReason::NonFiniteState { step: next_step });
+                return Err(SimulationError::Integrator(err));
+            }
+            Err(err) => return Err(SimulationError::Integrator(err)),
+        };
 
         // Overwrite the integrated time with the canonical
         // `start + step * dt` (single multiplication, no accumulation
@@ -218,11 +235,13 @@ where
         let canonical_time_s = self.initial_time_s + (next_step.value() as f64) * self.dt_s;
         let new_state = raw_new.with_time(SimTime::from_seconds(canonical_time_s));
 
-        // Post-step validation. PointMassState::is_finite also checks
-        // mass > 0, so this catches mass-loss-to-zero failures.
-        if !new_state.is_finite() {
+        // Post-step validation after canonical time assignment.
+        if let Err(source) = new_state.require_valid() {
             self.stopped = Some(StopReason::NonFiniteState { step: next_step });
-            return Err(SimulationError::NonFiniteState { step: next_step });
+            return Err(SimulationError::InvalidPostStepState {
+                step: next_step,
+                source,
+            });
         }
 
         self.state = new_state;
@@ -346,11 +365,15 @@ fn assert_clean_mxcsr() -> Result<(), SimulationError> {
 )]
 mod tests {
     use super::*;
-    use crate::integrator::Rk4FixedStep;
-    use crate::models::{ConstantGravityForce, ConstantMass, NullEnvironment};
+    use crate::integrator::{IntegratorDeterminism, Rk4FixedStep};
+    use crate::models::{
+        ConstantGravityForce, ConstantMass, LinearBurnMass, NullEnvironment, ZeroForce,
+    };
     use crate::stop::{AlwaysContinue, EndTime, MaxSteps};
     use approx::assert_abs_diff_eq;
     use openbmp_core::{Position3, SimTime, Velocity3};
+    use openbmp_testkit::strategies;
+    use proptest::prelude::*;
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
 
@@ -442,6 +465,19 @@ mod tests {
     }
 
     #[test]
+    fn run_overshoots_end_time_to_next_step_boundary() {
+        let mut kernel = one_kg_drop_kernel(0.01, 0.015);
+        let reason = kernel.run().expect("run must succeed");
+        match reason {
+            StopReason::EndTime { reached_s } => {
+                assert_abs_diff_eq!(*reached_s, 0.02, epsilon = 1.0e-15);
+            }
+            other => panic!("unexpected stop reason: {other:?}"),
+        }
+        assert_eq!(kernel.current_step().value(), 2);
+    }
+
+    #[test]
     fn run_with_max_steps_terminates_on_count() {
         let config = SimulationConfig {
             initial_state: PointMassState::new(
@@ -465,12 +501,154 @@ mod tests {
     }
 
     #[test]
+    fn always_continue_allows_manual_steps() {
+        let config = SimulationConfig {
+            initial_state: PointMassState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Mass::new::<kilogram>(1.0),
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ZeroForce,
+            mass_model: ConstantMass::new(1.0),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(0.01),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new(config).expect("construct");
+        kernel.step().expect("manual step");
+        assert_eq!(kernel.current_step().value(), 1);
+        assert!(kernel.stop_reason().is_none());
+    }
+
+    #[test]
+    fn linear_burn_mass_integrates_linearly() {
+        let config = SimulationConfig {
+            initial_state: PointMassState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Mass::new::<kilogram>(10.0),
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ZeroForce,
+            mass_model: LinearBurnMass::new(0.0, 10.0, -0.5),
+            environment: NullEnvironment,
+            stop_condition: EndTime::new(SimTime::from_seconds(1.0)),
+            dt: Duration::from_seconds(0.1),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new(config).expect("construct");
+        kernel.run().expect("run");
+        assert_abs_diff_eq!(
+            kernel.current_state().mass.get::<kilogram>(),
+            9.5,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
     fn step_after_stop_is_no_op() {
         let mut kernel = one_kg_drop_kernel(0.01, 0.05);
         kernel.run().expect("run");
         let stopped_step = kernel.current_step();
         kernel.step().expect("idempotent");
         assert_eq!(kernel.current_step(), stopped_step);
+    }
+
+    #[test]
+    fn step_overflow_sets_stop_reason() {
+        let mut kernel = one_kg_drop_kernel(0.01, 1.0);
+        kernel.step_index = StepIndex::new(u64::MAX);
+        let err = kernel.step().unwrap_err();
+        assert!(matches!(err, SimulationError::Time(_)));
+        assert!(matches!(
+            kernel.stop_reason(),
+            Some(StopReason::StepOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn invalid_integrated_state_sets_stop_reason() {
+        let config = SimulationConfig {
+            initial_state: PointMassState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Mass::new::<kilogram>(1.0),
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ZeroForce,
+            mass_model: LinearBurnMass::new(0.0, 1.0, -10.0),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(1.0),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new(config).expect("construct");
+        let err = kernel.step().unwrap_err();
+        assert!(matches!(err, SimulationError::Integrator(_)));
+        assert!(matches!(
+            kernel.stop_reason(),
+            Some(StopReason::NonFiniteState { .. })
+        ));
+        let step = kernel.current_step();
+        kernel.step().expect("stopped step is no-op");
+        assert_eq!(kernel.current_step(), step);
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    struct BadIntegrator;
+
+    impl Integrator<PointMassState> for BadIntegrator {
+        fn determinism(&self) -> IntegratorDeterminism {
+            IntegratorDeterminism::BitStable
+        }
+
+        fn advance<DF>(
+            &self,
+            state: &PointMassState,
+            _derive_fn: DF,
+            _dt: Duration,
+        ) -> Result<PointMassState, IntegratorError>
+        where
+            DF: Fn(&PointMassState, SimTime) -> PointMassDerivative,
+        {
+            Ok(PointMassState::new(
+                state.time,
+                Position3::new(f64::NAN, 0.0, 0.0),
+                state.velocity,
+                state.mass,
+            ))
+        }
+    }
+
+    #[test]
+    fn invalid_post_step_state_sets_stop_reason() {
+        let config = SimulationConfig {
+            initial_state: PointMassState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Mass::new::<kilogram>(1.0),
+            ),
+            integrator: BadIntegrator,
+            force_model: ZeroForce,
+            mass_model: ConstantMass::new(1.0),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(0.01),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new(config).expect("construct");
+        let err = kernel.step().unwrap_err();
+        assert!(matches!(err, SimulationError::InvalidPostStepState { .. }));
+        assert!(matches!(
+            kernel.stop_reason(),
+            Some(StopReason::NonFiniteState { .. })
+        ));
     }
 
     #[test]
@@ -557,5 +735,33 @@ mod tests {
         let kernel = one_kg_drop_kernel(0.01, 0.01);
         // Simply constructing did not error.
         let _ = kernel.current_step();
+    }
+
+    proptest! {
+        #[test]
+        fn one_zero_force_step_preserves_valid_generated_state(
+            initial in strategies::point_mass_state(60.0, 1.0e6, 1.0e3, 1.0, 1.0e3),
+            dt_s in 1.0e-6_f64..1.0,
+        ) {
+            let initial_time_s = initial.time.as_seconds();
+            let config = SimulationConfig {
+                initial_state: initial,
+                integrator: Rk4FixedStep,
+                force_model: ZeroForce,
+                mass_model: ConstantMass::new(initial.mass_kg()),
+                environment: NullEnvironment,
+                stop_condition: AlwaysContinue,
+                dt: Duration::from_seconds(dt_s),
+                scenario_seed: 0,
+            };
+            let mut kernel = SimulationKernel::new(config).expect("construct");
+            kernel.step().expect("step");
+            prop_assert_eq!(kernel.current_step().value(), 1);
+            prop_assert!(kernel.current_state().require_valid().is_ok());
+            prop_assert_eq!(
+                kernel.current_time().as_seconds().to_bits(),
+                (initial_time_s + dt_s).to_bits()
+            );
+        }
     }
 }

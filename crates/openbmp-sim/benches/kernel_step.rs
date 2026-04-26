@@ -25,7 +25,7 @@
     clippy::unusual_byte_groupings
 )]
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use nalgebra::Vector3;
 use openbmp_core::{Duration, Position3, SimTime, Velocity3};
 use openbmp_sim::{
@@ -66,7 +66,9 @@ fn build_kernel(
 
 fn bench_single_step(c: &mut Criterion) {
     let mut kernel = build_kernel(0.001);
-    c.bench_function("kernel_step_point_mass_constant_gravity_dt_001", |b| {
+    let mut group = c.benchmark_group("kernel_step");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("point_mass_constant_gravity_dt_001", |b| {
         b.iter(|| {
             // black_box the kernel reference so the optimizer cannot
             // hoist work out of the loop or constant-fold the gravity
@@ -76,10 +78,13 @@ fn bench_single_step(c: &mut Criterion) {
             black_box(k.current_state());
         });
     });
+    group.finish();
 }
 
 fn bench_run_to_end(c: &mut Criterion) {
-    c.bench_function("kernel_run_100_steps", |b| {
+    let mut group = c.benchmark_group("kernel_run");
+    group.throughput(Throughput::Elements(100));
+    group.bench_function("100_steps", |b| {
         b.iter_with_setup(
             || {
                 let config = SimulationConfig {
@@ -105,6 +110,7 @@ fn bench_run_to_end(c: &mut Criterion) {
             },
         );
     });
+    group.finish();
 }
 
 criterion_group!(benches, bench_single_step, bench_run_to_end);
