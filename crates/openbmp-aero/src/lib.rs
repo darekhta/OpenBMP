@@ -6,9 +6,15 @@
 //!   indexed by `(mach, alpha_deg, beta_deg)` returning the three
 //!   reduced coefficients `(CN, CD, CM)`. Locked-order trilinear
 //!   interpolation per Demmel & Nguyen 2020; FMA disabled.
+//! * [`parser`] — TOML deck-file parser for the architecture-locked
+//!   Schema-1 schema with `serde(deny_unknown_fields)`.
+//! * [`method`] — [`method::AeroMethod`] trait, [`method::AeroContext`]
+//!   input, [`method::AeroForceMomentBody`] output, and the
+//!   [`method::DeckLookup`] implementation that composes
+//!   `(CN, CD, CM)` into body-frame `(force, moment)`.
 //! * [`error`] — [`error::AeroError`], the crate's typed error
 //!   surface (out-of-envelope, non-finite, invalid parameter,
-//!   malformed deck).
+//!   malformed deck, deck I/O).
 //!
 //! The full six-coefficient `CX/CY/CZ/Cl/Cm/Cn` deck and
 //! control-effector axes are deferred to Phase 3. Hypersonic methods
@@ -33,6 +39,9 @@
 
 pub mod deck;
 pub mod error;
+pub mod method;
+pub mod parser;
 
 pub use deck::{AeroCoefficients, AeroDeck, ExtrapolationPolicy};
 pub use error::AeroError;
+pub use method::{AeroContext, AeroForceMomentBody, AeroMethod, DeckLookup};
