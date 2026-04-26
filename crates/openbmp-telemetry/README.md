@@ -2,7 +2,8 @@
 
 L5 telemetry crate.
 
-**Status:** Phase 1.4 — stub.
+**Status:** Phase 1.4 — implemented typed telemetry, ring buffer, and
+deterministic CSV / JSON / Parquet exporters.
 
 ## Purpose
 
@@ -36,13 +37,14 @@ version. Unknown schema versions fail closed.
 
 ## Determinism
 
-CSV format `"{:.17e}"` for floats; deterministic key ordering in JSON
-via `IndexMap`; Parquet column order locked by schema version.
+CSV format `"{:.17e}"` for floats; deterministic JSON object ordering is
+written explicitly; Parquet column order is locked by schema version.
 
 ## Validation
 
-`experimental` (stub). Phase 1.4 adds round-trip, snapshot, and byte-stability
-tests for canonical channels.
+`checked` for the Phase 1.4 telemetry surface. Unit tests cover typed
+channels, bounded retention, CSV / JSON stability, Parquet byte stability,
+schema duplicate rejection, and non-finite float rejection.
 
 ## Data Provenance
 

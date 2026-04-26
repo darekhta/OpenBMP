@@ -2,7 +2,8 @@
 
 L6 scenario parser and validator.
 
-**Status:** Phase 1.5 — stub.
+**Status:** Phase 1.5 — implemented strict TOML parser, Phase-1 model
+registry, unit/frame linting, safety-name linting, and path resolution.
 
 ## Purpose
 
@@ -18,7 +19,7 @@ L6 scenario parser and validator.
 ## Inputs and Outputs
 
 Scenario file path → validated `Scenario` value, or structured
-`miette` diagnostic on error.
+`ScenarioError` on error.
 
 ## Units and Frames
 
@@ -37,13 +38,16 @@ fields, invalid units, invalid frames, and rejected vocabulary fail closed.
 
 ## Determinism
 
-Parser is pure; deterministic ordering preserved via `IndexMap`.
+Parser is pure; deterministic ordering is preserved via `BTreeMap`
+for registry and resolved path outputs.
 Unknown fields produce parse errors (fail-closed).
 
 ## Validation
 
-`experimental` (stub). Phase 1.5 adds parser unit tests, snapshot diagnostics,
-property tests, and a fuzz target.
+`checked` for the Phase 1.5 parser surface. Unit tests cover the minimal
+scenario, path resolution, unknown-field rejection, model registry rejection,
+safety-name linting, unit/frame suffix linting, empty force lists, invalid
+time ranges, and missing telemetry outputs.
 
 ## Data Provenance
 

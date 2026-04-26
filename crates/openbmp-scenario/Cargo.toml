@@ -8,5 +8,11 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP scenario format: TOML parser, model registry, validator, safety-name lint."
 
+[dependencies]
+openbmp-core = { workspace = true }
+serde        = { workspace = true }
+thiserror    = { workspace = true }
+toml         = { workspace = true }
+
 [lints]
 workspace = true

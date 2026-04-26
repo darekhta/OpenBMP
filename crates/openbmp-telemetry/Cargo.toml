@@ -8,5 +8,12 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP telemetry: typed channels, ring buffer, exporters (CSV, JSON, Parquet)."
 
+[dependencies]
+arrow        = { workspace = true }
+openbmp-core = { workspace = true }
+parquet      = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+
 [lints]
 workspace = true
