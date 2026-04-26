@@ -1,0 +1,124 @@
+# US Standard Atmosphere 1976 — defining constants and layer table.
+#
+# Authoritative source: NOAA-S/T 76-1562 / NASA-TM-X-74335,
+# *U.S. Standard Atmosphere, 1976* (NTRS 19770009539). All values
+# transcribed by hand from the published document; see
+# `data/atmosphere/provenance.md` for the full provenance record.
+#
+# OpenBMP loads the constants from
+# `openbmp-env::atmosphere::us_standard_1976` (compiled in). This file
+# is the project-side declarative pin: the Phase-2.3.C regression test
+# verifies that the in-source values match what is declared here, and
+# the future Phase-2.10 `openbmp check-provenance` walk performs the
+# same check across every shipped data file.
+#
+# Units: SI on the model side (m, K, Pa, kg/m³, kg/mol). The USSA76
+# document expresses molecular weight in `kg/kmol` and the universal
+# gas constant in `J/(kmol·K)`; OpenBMP keeps both forms (the kmol
+# form is what appears in the standard's barometric formulas).
+
+dataset_id     = "openbmp.atmosphere.us_standard_1976.v1"
+schema_version = "openbmp.atmosphere.layered_model.v1"
+
+# ---------------------------------------------------------------------
+# Defining constants (NOAA-S/T 76-1562 §1.2 – §1.3)
+# ---------------------------------------------------------------------
+
+# Standard acceleration of gravity used in the barometric formulas
+# (m·s⁻² per geopotential metre). Pinned by USSA76 §1.2.
+standard_gravity_m_s2 = 9.80665
+
+# Universal gas constant `R*` as pinned by USSA76 §1.2 in
+# J / (kmol · K). Note this is `1000 ×` the modern CODATA `R` because
+# the standard uses `kmol` rather than `mol`. Tabulated values were
+# computed with this exact pin, so OpenBMP uses it for table-value
+# compatibility.
+universal_gas_constant_j_kmol_k = 8314.32
+
+# Mean molecular weight of dry air at sea level (kg/kmol). USSA76
+# §1.2 (table 8). Equivalent to 0.0289644 kg/mol.
+mean_molecular_weight_air_kg_kmol = 28.9644
+
+# Ratio of specific heats for dry air (Cp/Cv). Dimensionless. USSA76
+# §1.3, used in the speed-of-sound formula `a = √(γ R T / M)`.
+ratio_of_specific_heats_air = 1.40
+
+# Effective Earth radius used in the geopotential / geometric
+# conversion `h' = R · z / (R + z)`. Pinned by USSA76 §1.2 to
+# 6 356 766 m. **Not** the WGS84 semi-major axis (6 378 137 m); the
+# standard's effective radius bakes latitude-mean and local-gravity
+# reduction into a single scalar.
+reference_radius_m = 6356766.0
+
+# Top of the 7-layer model. USSA76 documents 86 km geometric and
+# 84 852 m geopotential as the upper boundary; both endpoints are
+# pinned in the standard rather than derived one from the other.
+max_geometric_altitude_m    = 86000.0
+max_geopotential_altitude_m = 84852.0
+
+# ---------------------------------------------------------------------
+# Layer table (NOAA-S/T 76-1562 §1.2 table 4)
+# ---------------------------------------------------------------------
+#
+# Seven geopotential layers from 0 m' to 84 852 m'. Each row gives
+# the base geopotential altitude, base temperature, lapse rate, and
+# base pressure as published in the standard. Within a layer:
+#
+#   T(h') = T_b + L · (h' - h'_b)
+#   p(h') = p_b · (T_b / T(h'))^(g₀' · M / (R · L))      if L ≠ 0
+#   p(h') = p_b · exp(-g₀' · M · (h' - h'_b) / (R · T_b)) if L = 0
+#
+# The base-pressure column was originally derived recursively from
+# the layer-0 sea-level value by chaining the formulas above across
+# each previous layer. The published values in table 4 are the
+# canonical truth and are reproduced here to the precision listed in
+# the standard.
+
+[[layers]]
+index                  = 0
+base_geopotential_m    = 0.0
+base_temperature_k     = 288.15
+lapse_rate_k_per_m     = -0.0065
+base_pressure_pa       = 101325.0
+
+[[layers]]
+index                  = 1
+base_geopotential_m    = 11000.0
+base_temperature_k     = 216.65
+lapse_rate_k_per_m     = 0.0
+base_pressure_pa       = 22632.0639609553
+
+[[layers]]
+index                  = 2
+base_geopotential_m    = 20000.0
+base_temperature_k     = 216.65
+lapse_rate_k_per_m     = 0.001
+base_pressure_pa       = 5474.88866984344
+
+[[layers]]
+index                  = 3
+base_geopotential_m    = 32000.0
+base_temperature_k     = 228.65
+lapse_rate_k_per_m     = 0.0028
+base_pressure_pa       = 868.01868475551
+
+[[layers]]
+index                  = 4
+base_geopotential_m    = 47000.0
+base_temperature_k     = 270.65
+lapse_rate_k_per_m     = 0.0
+base_pressure_pa       = 110.906305312205
+
+[[layers]]
+index                  = 5
+base_geopotential_m    = 51000.0
+base_temperature_k     = 270.65
+lapse_rate_k_per_m     = -0.0028
+base_pressure_pa       = 66.9388733638732
+
+[[layers]]
+index                  = 6
+base_geopotential_m    = 71000.0
+base_temperature_k     = 214.65
+lapse_rate_k_per_m     = -0.002
+base_pressure_pa       = 3.95639202655446
