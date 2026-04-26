@@ -137,3 +137,65 @@ Before accepting a model:
 - Does the model stay inside the safety boundary?
 
 If any answer is unclear, the validation label remains `experimental`.
+
+## External V&V Reference Frames
+
+OpenBMP is academic and does not certify under any safety-critical regime
+(see [safety-boundaries.md § Non-Compliance Statement](safety-boundaries.md)).
+Two civilian standards are nonetheless useful as **vocabulary and
+practice-level references** for organising V&V evidence. OpenBMP borrows
+their *terminology and structure*, not their compliance machinery.
+
+### NASA-STD-7009B — Standard for Models and Simulations
+
+NASA-STD-7009B (March 2024 revision) defines uniform practices for the
+development, documentation, operation, and assessment of models and
+simulations (M&S), and codifies a **credibility assessment scale** with
+eight credibility factors (verification, validation, input pedigree,
+results uncertainty, results robustness, use history, M&S management, and
+people qualifications) used to produce M&S **credibility products** for
+decision-makers.
+
+- Source: [`standards.nasa.gov/standard/NASA/NASA-STD-7009`](https://standards.nasa.gov/standard/NASA/NASA-STD-7009)
+
+How OpenBMP uses it:
+
+- The four-level **validation labels** above (`experimental` → `research`)
+  are mapped onto the relevant NASA-STD-7009B credibility-factor levels
+  in each model's `README.md` and in tolerance-table headers, so a reader
+  can see at a glance which credibility dimensions a model has earned and
+  which remain `experimental`.
+- The real-data package **credibility metadata** described in
+  [data-provenance.md § Real-Data Package Credibility Format](data-provenance.md#real-data-package-credibility-format)
+  is structured around the same eight factors so that a downstream user
+  can drop OpenBMP outputs into a 7009B-style credibility product without
+  re-keying.
+- OpenBMP itself never makes the recommendation or decision-grade claim;
+  the standard is a vocabulary contract, not a certification path.
+
+### AIAA G-077-1998 — CFD V&V Guide
+
+AIAA G-077-1998 ("Guide for the Verification and Validation of
+Computational Fluid Dynamics Simulations") is the canonical civilian
+reference for V&V terminology applied specifically to CFD (verification
+vs. validation, code verification vs. solution verification, code-to-code
+comparisons, grid-convergence studies, validation hierarchy from unit
+problems to complete systems).
+
+- Source: [`netforum.aiaa.org/eweb/DynamicPage.aspx?WebCode=ProdDetailAdd&ivd_prc_prd_key=BA93ABAF-C987-4FCD-9471-C61E95860FBB`](https://netforum.aiaa.org/eweb/DynamicPage.aspx?WebCode=ProdDetailAdd&ivd_prc_prd_key=BA93ABAF-C987-4FCD-9471-C61E95860FBB)
+
+How OpenBMP uses it:
+
+- Aero-deck and CFD-derived dataset provenance entries that include
+  grid-convergence studies, code-to-code comparison, or experimental
+  validation reference G-077 to keep V&V vocabulary consistent
+  ("verification" = solving the equations right; "validation" =
+  solving the right equations).
+- OpenBMP does not ship a CFD solver. G-077 is the framing for any
+  *external* CFD result a downstream user feeds into OpenBMP via the
+  real-data package; OpenBMP records the V&V evidence type so users can
+  trust or reject the deck on its own merits.
+
+Both standards are **referenced, not implemented**: OpenBMP does not
+distribute either document, and citing them does not make any OpenBMP
+artifact safety-qualified.
