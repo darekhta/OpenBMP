@@ -54,7 +54,21 @@ from real fielded sensor datasheets** — academic ranges only.
 ## Safety Boundary
 
 Synthetic sensors are not deployable, not real device drivers, not
-hardware integrations.
+hardware integrations. The project-wide accept/reject list lives in
+[`docs/safety-boundaries.md`](../../docs/safety-boundaries.md); the
+sensor naming rules and the "no fielded data" policy are summarised
+there.
+
+## See Also
+
+- [`docs/software-architecture.md § Synthetic Sensors`](../../docs/software-architecture.md#synthetic-sensors)
+  — the trait surface, the noise-budget rule, and the fault-model
+  framework this crate implements.
+- [`docs/data-provenance.md`](../../docs/data-provenance.md) — the
+  provenance contract noise-budget tables must satisfy when they
+  ship.
+- [`docs/modeling-guide.md`](../../docs/modeling-guide.md) — the
+  per-model documentation contract.
 
 ## References
 

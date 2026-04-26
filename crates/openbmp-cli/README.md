@@ -71,4 +71,15 @@ scenarios reference.
 ## Safety Boundary
 
 CLI is a thin wrapper. All safety enforcement lives in the underlying
-crates.
+crates. The project-wide accept/reject list and the rejected-naming
+rules live in [`docs/safety-boundaries.md`](../../docs/safety-boundaries.md).
+
+## See Also
+
+- [`docs/software-architecture.md`](../../docs/software-architecture.md)
+  — the workspace layout and the `openbmp-cli` crate's place in it.
+- [`docs/scenario-format.md`](../../docs/scenario-format.md) — the
+  scenario TOML schema this CLI parses and runs.
+- [`docs/verification.md`](../../docs/verification.md) — golden
+  telemetry, tolerance tables, and the determinism CI gate that
+  consumes `openbmp diff`.

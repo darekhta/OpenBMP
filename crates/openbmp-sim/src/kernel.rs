@@ -21,7 +21,8 @@
 //!    output; the determinism CI gate runs once with the subscriber
 //!    redirected to verify this.
 //!
-//! See `docs/phase-1-plan.md § 1.3` for the full Phase-1.3 contract.
+//! See `docs/software-architecture.md § Simulation Kernel` for the
+//! full kernel contract.
 
 use openbmp_core::{Duration, SimTime, StepIndex};
 use openbmp_state::PointMassState;

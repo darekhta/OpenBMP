@@ -14,7 +14,9 @@
 //! - [`commands::provenance::run`] — list files lacking sibling
 //!   `provenance.md`.
 //!
-//! See `docs/phase-1-plan.md § 1.7` for scope.
+//! See `docs/software-architecture.md § Workspace Layout` for the
+//! crate's place in the workspace and `docs/scenario-format.md` for
+//! the scenario TOML schema this CLI parses.
 
 pub mod cli;
 pub mod commands;

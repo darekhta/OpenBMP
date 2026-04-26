@@ -21,8 +21,8 @@
 //!    for `PointMassState`; quaternion renormalisation when rigid-body
 //!    integration lands).
 //!
-//! See `docs/phase-1-plan.md § 1.3 Key Design Decision D5` for the
-//! rationale.
+//! See `docs/software-architecture.md § Determinism Profile` for the
+//! rationale (locked weighted-sum order, no FMA, MXCSR guard).
 
 use openbmp_core::{Duration, SimTime};
 

@@ -38,7 +38,7 @@
 //! * Tracing-emitted bytes are not part of deterministic output; the
 //!   determinism CI gate verifies this.
 //!
-//! See `docs/phase-1-plan.md § 1.3` and
+//! See `docs/software-architecture.md § Simulation Kernel` and
 //! `docs/software-architecture.md § Determinism Profile`.
 
 pub mod derivative;

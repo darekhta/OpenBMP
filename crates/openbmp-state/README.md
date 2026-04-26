@@ -55,4 +55,17 @@ This crate ships no data files.
 
 ## Safety Boundary
 
-State types are physics-neutral; no operational vocabulary.
+State types are physics-neutral; no operational vocabulary. The
+project's full accept/reject list lives in
+[`docs/safety-boundaries.md`](../../docs/safety-boundaries.md).
+
+## See Also
+
+- [`docs/software-architecture.md`](../../docs/software-architecture.md)
+  — frame conventions, state-type contracts, and the kernel's
+  determinism profile that this crate's types satisfy.
+- [`docs/frames-time.md`](../../docs/frames-time.md) — the canonical
+  ECI / ECEF / NED / ENU / Body frame profile vocabulary used by the
+  type-tagged `Position3` / `Velocity3` / `Quaternion` here.
+- [`docs/glossary.md`](../../docs/glossary.md) — shared vocabulary
+  for state, time, frames, validation labels, and determinism.

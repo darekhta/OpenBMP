@@ -19,8 +19,8 @@
 //!   emulation rounds twice — cross-platform bit-stable replay requires
 //!   two explicit roundings).
 //!
-//! See `docs/software-architecture.md § Determinism Profile` and
-//! `docs/phase-1-plan.md § 1.3` for the full contract.
+//! See `docs/software-architecture.md § Determinism Profile` for
+//! the full contract.
 
 use nalgebra::Vector3;
 
