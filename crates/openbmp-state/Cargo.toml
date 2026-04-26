@@ -8,5 +8,15 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP state types: PointMassState, RigidBodyState, MassProperties."
 
+[dependencies]
+openbmp-core = { workspace = true }
+nalgebra     = { workspace = true }
+uom          = { workspace = true }
+thiserror    = { workspace = true }
+
+[dev-dependencies]
+approx   = { workspace = true }
+proptest = { workspace = true }
+
 [lints]
 workspace = true
