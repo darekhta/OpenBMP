@@ -16,13 +16,15 @@
 //!
 //! # Frame convention
 //!
-//! Wind is reported as a [`Velocity3<Ned>`] anchored at the active
-//! [`FrameContext`]'s `local_origin`. Consumers that need wind in
-//! body or ECI must transform through the frame context — `NoWind`
-//! and `ConstantWind` themselves never touch the position or frame
-//! arguments, but the trait surface carries them so future altitude-
-//! dependent and location-dependent wind models can use them without
-//! a trait-method break.
+//! Wind is reported as a [`Velocity3<Ned>`] with `(north, east, down)`
+//! components in m/s; the third component is positive downward by the
+//! NED convention. The vector is anchored at the active
+//! [`FrameContext`]'s `local_origin`. `NoWind` and `ConstantWind`
+//! themselves do not require a local origin, but consumers that
+//! transform nonzero NED wind into body or ECI must require one through
+//! the frame context. The trait surface carries position, frame, and
+//! time so future altitude-dependent and location-dependent wind models
+//! can use them without a trait-method break.
 //!
 //! # Determinism
 //!
@@ -37,11 +39,15 @@ use crate::error::EnvError;
 
 /// Trait implemented by wind-providing environment models.
 ///
-/// Returns the wind velocity in the local-NED frame anchored at the
-/// active [`FrameContext`]'s `local_origin`. The position and frame
-/// are passed for forward compatibility with future altitude- or
-/// location-dependent models; the Phase-2.4 implementations
-/// ([`NoWind`], [`ConstantWind`]) ignore them.
+/// Returns wind velocity in local-NED `(north, east, down)` components,
+/// in m/s. The NED `down` component is positive downward. The vector is
+/// anchored at the active [`FrameContext`]'s `local_origin`, but this
+/// method does not itself require an origin unless a specific model
+/// needs one. Consumers transforming nonzero NED wind into body or ECI
+/// are responsible for requiring a local origin from the frame context.
+/// The position and frame are passed for forward compatibility with
+/// future altitude- or location-dependent models; the Phase-2.4
+/// implementations ([`NoWind`], [`ConstantWind`]) ignore them.
 pub trait WindModel {
     /// Wind velocity in local-NED, in m/s.
     ///
@@ -101,6 +107,7 @@ pub struct ConstantWind {
 
 impl ConstantWind {
     /// Construct from explicit `(north, east, down)` components, in m/s.
+    /// The `down` component is positive downward.
     ///
     /// # Errors
     ///
@@ -141,6 +148,7 @@ impl WindModel for ConstantWind {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn frame() -> FrameContext {
         FrameContext::toy_fixed_earth()
@@ -243,6 +251,33 @@ mod tests {
             ConstantWind::new(0.0, 0.0, f64::NEG_INFINITY),
             Err(EnvError::NonFinite { .. })
         ));
+    }
+
+    fn finite_component() -> impl Strategy<Value = f64> {
+        any::<f64>().prop_filter("component must be finite", |v| v.is_finite())
+    }
+
+    fn non_finite_component() -> impl Strategy<Value = f64> {
+        prop_oneof![Just(f64::NAN), Just(f64::INFINITY), Just(f64::NEG_INFINITY),]
+    }
+
+    proptest! {
+        #[test]
+        fn constant_wind_rejects_any_non_finite_component(
+            north in finite_component(),
+            east in finite_component(),
+            down in finite_component(),
+            bad in non_finite_component(),
+            bad_index in 0_usize..3,
+        ) {
+            let mut components = [north, east, down];
+            components[bad_index] = bad;
+            let rejected_as_non_finite = matches!(
+                ConstantWind::new(components[0], components[1], components[2]),
+                Err(EnvError::NonFinite { .. })
+            );
+            prop_assert!(rejected_as_non_finite);
+        }
     }
 
     #[test]

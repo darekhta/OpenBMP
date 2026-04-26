@@ -433,19 +433,20 @@ gusts cheap to evaluate.
   - `WindModel::wind_ned_m_s(&self, position_eci: Position3<Eci>, frame: &FrameContext, t: SimTime) -> Result<Velocity3<Ned>, WindError>`.
   - `NoWind`.
   - `ConstantWind { wind_ned_m_s: [f64; 3] }`.
-- Extend `EnvironmentSample` to carry the wind sample.
-  `ConstantWind` requires a scenario local origin when any consumer asks
+- Do not extend `EnvironmentSample` in this sub-phase. Phase 2.10 owns
+  the locked sample expansion so the Phase-1 analytic-toy telemetry bytes
+  remain unchanged through the environment model landing sequence.
+- `ConstantWind` requires a scenario local origin when any consumer asks
   for NED-to-body or NED-to-ECI transforms; `NoWind` does not.
 
 **Tests.**
 
 - Unit: `NoWind` returns zero everywhere and at every time.
 - Unit: `ConstantWind` returns the constant.
-- Property test on the `ConstantWind` constructor's NaN rejection.
+- Property test on the `ConstantWind` constructor's non-finite rejection.
 
-**Exit criteria.** Both models compile and unit-test green; the
-`EnvironmentSample` now carries gravity + atmosphere + wind in a
-locked order documented in the type's doc comment.
+**Exit criteria.** Both models compile and unit-test green;
+`EnvironmentSample` remains unchanged until Phase 2.10.
 
 **Effort.** Small (~0.4 week).
 

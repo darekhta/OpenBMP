@@ -1207,6 +1207,7 @@ dependencies = [
  "approx",
  "nalgebra",
  "openbmp-core",
+ "proptest",
  "thiserror",
  "toml",
 ]
