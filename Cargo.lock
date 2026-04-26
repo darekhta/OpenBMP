@@ -1203,6 +1203,12 @@ dependencies = [
 [[package]]
 name = "openbmp-env"
 version = "0.0.1"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "openbmp-core",
+ "thiserror",
+]
 
 [[package]]
 name = "openbmp-fc"

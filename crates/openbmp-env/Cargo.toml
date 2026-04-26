@@ -8,5 +8,13 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP environment models: atmosphere, gravity, wind, magnetic field."
 
+[dependencies]
+nalgebra     = { workspace = true }
+openbmp-core = { workspace = true }
+thiserror    = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+
 [lints]
 workspace = true
