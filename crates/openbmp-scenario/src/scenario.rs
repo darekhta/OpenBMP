@@ -191,7 +191,7 @@ impl Scenario {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::document::WGS84_J2_DEFAULT;
@@ -709,5 +709,267 @@ kind = "isothermal""#,
                 .expect("parse");
         let err = scenario.resolved_files().unwrap_err();
         assert!(matches!(err, ScenarioError::Sha256Mismatch { .. }));
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 3.2: `[mission]` block parser tests
+    // -----------------------------------------------------------------
+
+    /// Append a `[mission]` block to the analytic-toy MINIMAL scenario.
+    fn with_mission(mission_block: &str) -> String {
+        format!("{MINIMAL}\n{mission_block}")
+    }
+
+    #[test]
+    fn parses_minimal_mission_block() {
+        let scenario = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "pre_launch"
+
+[[mission.phases]]
+id    = "pre_launch"
+label = "pre-launch hold"
+
+[[mission.phases]]
+id    = "ascent"
+label = "powered + coast ascent"
+
+[[mission.events]]
+id      = "ignition"
+trigger = { kind = "at_time", time_s = 0.0 }
+action  = { kind = "enter_phase", phase = "ascent" }
+
+[[mission.transitions]]
+from  = "pre_launch"
+to    = "ascent"
+event = "ignition"
+"#,
+        ))
+        .expect("parse");
+
+        let mission = scenario
+            .document
+            .mission
+            .as_ref()
+            .expect("mission block parsed");
+        assert_eq!(mission.initial_phase, "pre_launch");
+        assert_eq!(mission.phases.len(), 2);
+        assert_eq!(mission.events.len(), 1);
+        assert_eq!(mission.transitions.len(), 1);
+        // `once` defaults to true.
+        assert!(mission.events[0].once);
+    }
+
+    #[test]
+    fn rejects_unknown_field_in_mission_phase() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+unknown_extra_field = true
+"#,
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::ParseToml(_)),
+            "expected ParseToml on deny_unknown_fields, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_scripted_trigger_kind() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "scripted" }
+action  = { kind = "stop", label = "scripted-stop" }
+"#,
+        ))
+        .unwrap_err();
+        match err {
+            ScenarioError::UnsupportedTriggerKind { kind, .. } => {
+                assert_eq!(kind, "scripted");
+            }
+            other => panic!("expected UnsupportedTriggerKind, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_engine_command_action_kind() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_apogee" }
+action  = { kind = "engine_command" }
+"#,
+        ))
+        .unwrap_err();
+        match err {
+            ScenarioError::UnsupportedActionKind { kind, deferred_to } => {
+                assert_eq!(kind, "engine_command");
+                assert!(deferred_to.contains("3.6"));
+            }
+            other => panic!("expected UnsupportedActionKind, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_separation_action_kind() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_apogee" }
+action  = { kind = "separation" }
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::UnsupportedActionKind { ref kind, .. } if kind == "separation"
+        ));
+    }
+
+    #[test]
+    fn rejects_deploy_recovery_action_kind() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_apogee" }
+action  = { kind = "deploy_recovery" }
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::UnsupportedActionKind { ref kind, deferred_to: _ }
+                if kind == "deploy_recovery"
+        ));
+    }
+
+    #[test]
+    fn rejects_effector_override_action_kind() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_apogee" }
+action  = { kind = "effector_override" }
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::UnsupportedActionKind { ref kind, .. }
+                if kind == "effector_override"
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_phase_list() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(err, ScenarioError::EmptyList { .. }));
+    }
+
+    #[test]
+    fn rejects_mass_fraction_out_of_range() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_mass_fraction", remaining = 1.5 }
+action  = { kind = "stop", label = "burnout" }
+"#,
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { .. }),
+            "expected InvalidNumber, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_dynamic_pressure_non_positive() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_dynamic_pressure", pressure_pa = 0.0, falling = false }
+action  = { kind = "stop", label = "max-q" }
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(err, ScenarioError::InvalidNumber { .. }));
+    }
+
+    #[test]
+    fn legacy_scenario_without_mission_block_parses_unchanged() {
+        // The Phase-3.2 mission block is optional; pre-3.2 scenarios
+        // must continue to parse identically.
+        let scenario = Scenario::from_toml_str(MINIMAL).expect("parse");
+        assert!(scenario.document.mission.is_none());
     }
 }

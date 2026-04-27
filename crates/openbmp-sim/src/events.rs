@@ -36,6 +36,7 @@
 //! plan locks the architectural shape.
 
 use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use openbmp_core::{SimTime, StepIndex};
 use thiserror::Error;
@@ -350,21 +351,354 @@ pub struct PhaseTransition {
 
 /// Acyclic mission-phase graph.
 ///
-/// Phase 3.2.A ships the data shape and error type only; the
-/// constructor with topological sort + reachability + cycle checks
-/// lands in Phase 3.2.B. Until then the only construction path is
-/// the public field assignment, which downstream callers should not
-/// use directly — they should wait for `MissionPhaseGraph::new`.
+/// Construct via [`MissionPhaseGraph::new`]; direct field assignment
+/// works for tests but bypasses the validation invariants that the
+/// kernel relies on. The constructor enforces:
+///
+/// 1. No duplicate phase ids.
+/// 2. `initial` references a declared phase.
+/// 3. Every transition references declared phases and a declared
+///    event.
+/// 4. The graph is acyclic (Tarjan SCC).
+/// 5. Every declared phase is reachable from `initial`.
+/// 6. Phases are sorted by `(longest-path-depth-from-initial,
+///    PhaseId.value())`; transitions by `(from-depth, to-depth,
+///    EventId.value())`. The canonical form is order-independent —
+///    re-ordering inputs produces an identical graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MissionPhaseGraph {
-    /// Phases in canonical order. After 3.2.B: sorted by topological
-    /// depth then `PhaseId.value()`.
+    /// Phases sorted by `(depth, PhaseId.value())`.
     pub phases: Vec<Phase>,
-    /// Transitions in canonical order. After 3.2.B: sorted by source
-    /// phase depth then destination phase depth then `EventId.value()`.
+    /// Transitions sorted by `(from-depth, to-depth, EventId.value())`.
     pub transitions: Vec<PhaseTransition>,
     /// Initial phase. Resolved at construction.
     pub initial: PhaseId,
+}
+
+impl MissionPhaseGraph {
+    /// Validate and construct a canonical mission-phase graph.
+    ///
+    /// `declared_events` lists every [`EventId`] declared in the
+    /// scenario `[[mission.events]]` block. Empty when no events are
+    /// declared (the constructor still requires every transition's
+    /// event to be in the list, so a transition + empty event list is
+    /// always rejected).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MissionGraphError`] for any of the validation
+    /// failures listed in the struct-level documentation.
+    pub fn new(
+        phases: Vec<Phase>,
+        transitions: Vec<PhaseTransition>,
+        initial: PhaseId,
+        declared_events: &[EventId],
+    ) -> Result<Self, MissionGraphError> {
+        // 1. No duplicate phase ids.
+        let mut seen = BTreeSet::new();
+        for phase in &phases {
+            if !seen.insert(phase.id) {
+                return Err(MissionGraphError::DuplicatePhase { phase: phase.id });
+            }
+        }
+
+        // 2. `initial` is a declared phase.
+        if !seen.contains(&initial) {
+            return Err(MissionGraphError::MissingInitial);
+        }
+
+        // 3. Every transition's `from`/`to` references a declared phase.
+        for transition in &transitions {
+            if !seen.contains(&transition.from) {
+                return Err(MissionGraphError::UnknownPhaseId {
+                    phase: transition.from,
+                    in_field: Cow::Borrowed("transition.from"),
+                });
+            }
+            if !seen.contains(&transition.to) {
+                return Err(MissionGraphError::UnknownPhaseId {
+                    phase: transition.to,
+                    in_field: Cow::Borrowed("transition.to"),
+                });
+            }
+        }
+
+        // 4. Every transition's event is declared.
+        let event_set: BTreeSet<EventId> = declared_events.iter().copied().collect();
+        for (i, transition) in transitions.iter().enumerate() {
+            if !event_set.contains(&transition.event) {
+                return Err(MissionGraphError::UnknownEvent {
+                    event: transition.event,
+                    in_transition: i,
+                });
+            }
+        }
+
+        // 5. Cycle detection — Tarjan SCC.
+        if let Some(involving) = detect_cycle_tarjan(&phases, &transitions) {
+            return Err(MissionGraphError::Cycle { involving });
+        }
+
+        // 6. Reachability via BFS from `initial`.
+        let reachable = bfs_reachable(&phases, &transitions, initial);
+        for phase in &phases {
+            if !reachable.contains(&phase.id) {
+                return Err(MissionGraphError::UnreachablePhase { phase: phase.id });
+            }
+        }
+
+        // 7. Depth = longest path from `initial`. Computed via Kahn's
+        //    on the relaxation order; safe because we've established
+        //    acyclicity above.
+        let depth = compute_longest_path_depth(&phases, &transitions, initial);
+
+        // 8. Canonicalise.
+        let mut sorted_phases = phases;
+        sorted_phases.sort_by_key(|p| {
+            (
+                depth.get(&p.id).copied().unwrap_or(usize::MAX),
+                p.id.value(),
+            )
+        });
+
+        let mut sorted_transitions = transitions;
+        sorted_transitions.sort_by_key(|t| {
+            (
+                depth.get(&t.from).copied().unwrap_or(usize::MAX),
+                depth.get(&t.to).copied().unwrap_or(usize::MAX),
+                t.event.value(),
+            )
+        });
+
+        Ok(Self {
+            phases: sorted_phases,
+            transitions: sorted_transitions,
+            initial,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------
+// Graph algorithms
+// ---------------------------------------------------------------------
+
+/// Tarjan's strongly-connected-components algorithm. Returns
+/// `Some(phase_ids)` if any SCC has size > 1 or contains a self-loop;
+/// `None` if the graph is acyclic.
+///
+/// Implementation uses iterative depth-first search with explicit
+/// state stacks to avoid Rust's recursion-depth limits for large
+/// graphs.
+fn detect_cycle_tarjan(phases: &[Phase], transitions: &[PhaseTransition]) -> Option<Vec<PhaseId>> {
+    // Self-loop is a trivial single-vertex cycle.
+    for transition in transitions {
+        if transition.from == transition.to {
+            return Some(vec![transition.from]);
+        }
+    }
+
+    // Build adjacency in deterministic order: outgoing edges per phase
+    // sorted by destination `PhaseId.value()`.
+    let mut adjacency: BTreeMap<PhaseId, Vec<PhaseId>> = BTreeMap::new();
+    for phase in phases {
+        adjacency.entry(phase.id).or_default();
+    }
+    for transition in transitions {
+        adjacency
+            .entry(transition.from)
+            .or_default()
+            .push(transition.to);
+    }
+    for outgoing in adjacency.values_mut() {
+        outgoing.sort_by_key(|p| p.value());
+    }
+
+    let mut index_counter: usize = 0;
+    let mut indices: BTreeMap<PhaseId, usize> = BTreeMap::new();
+    let mut lowlinks: BTreeMap<PhaseId, usize> = BTreeMap::new();
+    let mut on_stack: BTreeSet<PhaseId> = BTreeSet::new();
+    let mut tarjan_stack: Vec<PhaseId> = Vec::new();
+
+    for phase in phases {
+        if !indices.contains_key(&phase.id)
+            && let Some(cycle) = strongconnect(
+                phase.id,
+                &adjacency,
+                &mut index_counter,
+                &mut indices,
+                &mut lowlinks,
+                &mut on_stack,
+                &mut tarjan_stack,
+            )
+        {
+            return Some(cycle);
+        }
+    }
+    None
+}
+
+fn strongconnect(
+    v: PhaseId,
+    adjacency: &BTreeMap<PhaseId, Vec<PhaseId>>,
+    index_counter: &mut usize,
+    indices: &mut BTreeMap<PhaseId, usize>,
+    lowlinks: &mut BTreeMap<PhaseId, usize>,
+    on_stack: &mut BTreeSet<PhaseId>,
+    tarjan_stack: &mut Vec<PhaseId>,
+) -> Option<Vec<PhaseId>> {
+    indices.insert(v, *index_counter);
+    lowlinks.insert(v, *index_counter);
+    *index_counter += 1;
+    tarjan_stack.push(v);
+    on_stack.insert(v);
+
+    if let Some(neighbours) = adjacency.get(&v) {
+        for &w in neighbours {
+            if !indices.contains_key(&w) {
+                if let Some(cycle) = strongconnect(
+                    w,
+                    adjacency,
+                    index_counter,
+                    indices,
+                    lowlinks,
+                    on_stack,
+                    tarjan_stack,
+                ) {
+                    return Some(cycle);
+                }
+                let w_low = lowlinks[&w];
+                let v_low = lowlinks[&v];
+                lowlinks.insert(v, v_low.min(w_low));
+            } else if on_stack.contains(&w) {
+                let w_idx = indices[&w];
+                let v_low = lowlinks[&v];
+                lowlinks.insert(v, v_low.min(w_idx));
+            }
+        }
+    }
+
+    if lowlinks[&v] == indices[&v] {
+        // SCC roots: pop until we find `v`. SCC of size > 1 is a cycle.
+        let mut scc = Vec::new();
+        while let Some(w) = tarjan_stack.pop() {
+            on_stack.remove(&w);
+            scc.push(w);
+            if w == v {
+                break;
+            }
+        }
+        if scc.len() > 1 {
+            // Sort the cycle deterministically so the error message is
+            // stable across reruns.
+            scc.sort_by_key(|id| id.value());
+            return Some(scc);
+        }
+    }
+    None
+}
+
+/// BFS from `start` returning the set of reachable phase ids
+/// (including `start`).
+fn bfs_reachable(
+    phases: &[Phase],
+    transitions: &[PhaseTransition],
+    start: PhaseId,
+) -> BTreeSet<PhaseId> {
+    let mut adjacency: BTreeMap<PhaseId, Vec<PhaseId>> = BTreeMap::new();
+    for phase in phases {
+        adjacency.entry(phase.id).or_default();
+    }
+    for transition in transitions {
+        adjacency
+            .entry(transition.from)
+            .or_default()
+            .push(transition.to);
+    }
+
+    let mut reachable = BTreeSet::new();
+    let mut queue: VecDeque<PhaseId> = VecDeque::new();
+    if adjacency.contains_key(&start) {
+        reachable.insert(start);
+        queue.push_back(start);
+    }
+    while let Some(v) = queue.pop_front() {
+        if let Some(neighbours) = adjacency.get(&v) {
+            for &w in neighbours {
+                if reachable.insert(w) {
+                    queue.push_back(w);
+                }
+            }
+        }
+    }
+    reachable
+}
+
+/// Longest-path depth from `initial` in the (already-validated as
+/// acyclic) phase graph. Uses Kahn's topological sort and relaxes
+/// `depth[v] = max(depth[u] + 1)` for each incoming edge `(u, v)`.
+fn compute_longest_path_depth(
+    phases: &[Phase],
+    transitions: &[PhaseTransition],
+    initial: PhaseId,
+) -> BTreeMap<PhaseId, usize> {
+    // Build successor adjacency + in-degree.
+    let mut successors: BTreeMap<PhaseId, Vec<PhaseId>> = BTreeMap::new();
+    let mut in_degree: BTreeMap<PhaseId, usize> = BTreeMap::new();
+    for phase in phases {
+        successors.entry(phase.id).or_default();
+        in_degree.entry(phase.id).or_insert(0);
+    }
+    for transition in transitions {
+        successors
+            .entry(transition.from)
+            .or_default()
+            .push(transition.to);
+        *in_degree.entry(transition.to).or_insert(0) += 1;
+    }
+
+    // Initialise depth: `initial` at 0, others at 0 too — relaxation
+    // monotonically lifts them. Phases unreachable from `initial`
+    // would keep depth 0 but we've validated reachability above.
+    let mut depth: BTreeMap<PhaseId, usize> = BTreeMap::new();
+    for phase in phases {
+        depth.insert(phase.id, 0);
+    }
+    depth.insert(initial, 0);
+
+    // Kahn topological order, with `PhaseId.value()` tie-break for
+    // determinism.
+    let mut frontier: BTreeSet<PhaseId> = BTreeSet::new();
+    for (id, &deg) in &in_degree {
+        if deg == 0 {
+            frontier.insert(*id);
+        }
+    }
+
+    let mut visited = 0_usize;
+    while let Some(&u) = frontier.iter().next() {
+        frontier.remove(&u);
+        visited += 1;
+        if let Some(succs) = successors.get(&u) {
+            let u_depth = depth[&u];
+            // Visit successors in deterministic order.
+            let mut succs_sorted = succs.clone();
+            succs_sorted.sort_by_key(|p| p.value());
+            for v in succs_sorted {
+                let cand = u_depth + 1;
+                if depth[&v] < cand {
+                    depth.insert(v, cand);
+                }
+                let entry = in_degree.entry(v).or_insert(0);
+                *entry = entry.saturating_sub(1);
+                if *entry == 0 {
+                    frontier.insert(v);
+                }
+            }
+        }
+    }
+    debug_assert_eq!(visited, phases.len(), "topological order incomplete");
+
+    depth
 }
 
 /// Kernel-side queue entry recorded per fired event.

@@ -74,6 +74,14 @@ pub struct ScenarioDocument {
     pub faults: Option<BTreeMap<String, toml::Value>>,
     /// Optional batch metadata.
     pub batch: Option<BatchConfig>,
+    /// Optional declarative mission block (Phase 3.2).
+    ///
+    /// When present, the runner builds an [`openbmp_sim::MissionPhaseGraph`]
+    /// and a list of `openbmp_sim::EventBinding`s from the parsed
+    /// config. When absent, the kernel runs in legacy mode with no
+    /// event evaluation — Phase-1 and pre-3.2 Phase-2 scenarios stay
+    /// byte-stable.
+    pub mission: Option<MissionConfig>,
 }
 
 impl ScenarioDocument {
@@ -155,6 +163,9 @@ impl ScenarioDocument {
         }
         if let Some(batch) = &self.batch {
             batch.validate()?;
+        }
+        if let Some(mission) = &self.mission {
+            mission.validate()?;
         }
         Ok(())
     }
@@ -907,6 +918,283 @@ impl BatchConfig {
                 rule: "must be less than batch.worker_count",
             });
         }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------
+// Mission block (Phase 3.2)
+// ---------------------------------------------------------------------
+
+/// Top-level `[mission]` block.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MissionConfig {
+    /// Id of the initial phase.
+    pub initial_phase: String,
+    /// Declared phases.
+    #[serde(default)]
+    pub phases: Vec<PhaseConfig>,
+    /// Declared events.
+    #[serde(default)]
+    pub events: Vec<EventConfig>,
+    /// Declared transitions between phases.
+    #[serde(default)]
+    pub transitions: Vec<PhaseTransitionConfig>,
+}
+
+impl MissionConfig {
+    /// Validate structural shape: id non-emptiness, kind enums, finite
+    /// numeric values, deferred-action rejection. Graph-shape
+    /// validation (cycles, reachability, unknown ids) happens at
+    /// runner-construction time when the runner builds the
+    /// [`openbmp_sim::MissionPhaseGraph`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScenarioError`] for any structural violation.
+    pub fn validate(&self) -> Result<(), ScenarioError> {
+        require_non_empty("mission.initial_phase", &self.initial_phase)?;
+        if self.phases.is_empty() {
+            return Err(ScenarioError::EmptyList {
+                field: "mission.phases".to_owned(),
+            });
+        }
+        for (i, phase) in self.phases.iter().enumerate() {
+            phase.validate(i)?;
+        }
+        for (i, event) in self.events.iter().enumerate() {
+            event.validate(i)?;
+        }
+        for (i, transition) in self.transitions.iter().enumerate() {
+            transition.validate(i)?;
+        }
+        Ok(())
+    }
+}
+
+/// One declared mission phase.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PhaseConfig {
+    /// Stable phase id (`snake_case` scenario-text identifier).
+    pub id: String,
+    /// Human-readable label.
+    pub label: String,
+    /// Optional list of effector ids permitted while this phase is
+    /// active. Phase-3.2 leaves this informational; Phase-3.4 will
+    /// enforce it.
+    #[serde(default)]
+    pub allowed_effectors: Vec<String>,
+    /// Optional list of engine ids permitted while this phase is
+    /// active. Phase-3.6 will enforce; Phase-3.2 leaves it
+    /// informational.
+    #[serde(default)]
+    pub allowed_engines: Vec<String>,
+}
+
+impl PhaseConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("mission.phases[{index}].id"), &self.id)?;
+        require_non_empty(&format!("mission.phases[{index}].label"), &self.label)?;
+        Ok(())
+    }
+}
+
+/// One declared mission event (binding of trigger → action).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EventConfig {
+    /// Stable event id (`snake_case` scenario-text identifier).
+    pub id: String,
+    /// Trigger predicate.
+    pub trigger: EventTriggerConfig,
+    /// Action taken when the trigger fires.
+    pub action: EventActionConfig,
+    /// Whether the event fires at most once per simulation run.
+    /// Defaults to `true` — most events have one-shot semantics.
+    #[serde(default = "default_once")]
+    pub once: bool,
+}
+
+const fn default_once() -> bool {
+    true
+}
+
+impl EventConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("mission.events[{index}].id"), &self.id)?;
+        self.trigger.validate(index)?;
+        self.action.validate(index)?;
+        Ok(())
+    }
+}
+
+/// Trigger predicate. Tagged enum dispatched on the `kind` string.
+///
+/// `kind = "scripted"` is rejected at parse time with a typed
+/// deferral error pointing at Phase 3.4.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EventTriggerConfig {
+    /// Time-bound crossing.
+    AtTime {
+        /// Trigger threshold in seconds.
+        time_s: f64,
+    },
+    /// Altitude crossing on the way up.
+    AtAltitudeAscending {
+        /// Altitude threshold (m).
+        altitude_m: f64,
+    },
+    /// Altitude crossing on the way down.
+    AtAltitudeDescending {
+        /// Altitude threshold (m).
+        altitude_m: f64,
+    },
+    /// Velocity sign-flip apogee detector.
+    AtApogee,
+    /// Mass-fraction crossing (current/initial mass below threshold).
+    AtMassFraction {
+        /// Threshold mass fraction in `[0, 1]`.
+        remaining: f64,
+    },
+    /// Dynamic-pressure rising or falling-edge crossing.
+    AtDynamicPressure {
+        /// Threshold dynamic pressure (Pa).
+        pressure_pa: f64,
+        /// `false`: rising-edge crossing. `true`: falling-edge.
+        falling: bool,
+    },
+    /// Phase-3.4 deferred: rejected at parse time.
+    Scripted,
+}
+
+impl EventTriggerConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("mission.events[{index}].trigger.{field}");
+        match self {
+            Self::AtTime { time_s } => {
+                require_finite(&path("time_s"), *time_s)?;
+            }
+            Self::AtAltitudeAscending { altitude_m }
+            | Self::AtAltitudeDescending { altitude_m } => {
+                require_finite(&path("altitude_m"), *altitude_m)?;
+            }
+            Self::AtApogee => {}
+            Self::AtMassFraction { remaining } => {
+                require_finite(&path("remaining"), *remaining)?;
+                require_in_range(&path("remaining"), *remaining, 0.0, 1.0)?;
+            }
+            Self::AtDynamicPressure { pressure_pa, .. } => {
+                require_finite(&path("pressure_pa"), *pressure_pa)?;
+                require_positive(&path("pressure_pa"), *pressure_pa)?;
+            }
+            Self::Scripted => {
+                return Err(ScenarioError::UnsupportedTriggerKind {
+                    kind: "scripted".to_owned(),
+                    reason: "scripted triggers ship in Phase 3.4 alongside ControlEffector"
+                        .to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Action taken when an event fires. Tagged enum dispatched on the
+/// `kind` string.
+///
+/// `engine_command`, `effector_override`, `separation`, and
+/// `deploy_recovery` are rejected at parse time with typed deferral
+/// errors pointing at the future phase that will land them.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EventActionConfig {
+    /// Transition the active mission phase.
+    EnterPhase {
+        /// Destination phase id.
+        phase: String,
+    },
+    /// Emit a `bool` telemetry marker.
+    EmitTelemetryMarker {
+        /// Marker channel tag.
+        tag: String,
+    },
+    /// Halt the kernel with a [`openbmp_sim::StopReason::MissionEnded`].
+    Stop {
+        /// Human-readable label for the stop reason.
+        label: String,
+    },
+    /// Phase-3.6 deferred.
+    EngineCommand,
+    /// Phase-3.4 deferred.
+    EffectorOverride,
+    /// Phase-3.6 / 3.7 deferred.
+    Separation,
+    /// Phase-3.9 deferred.
+    DeployRecovery,
+}
+
+impl EventActionConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("mission.events[{index}].action.{field}");
+        match self {
+            Self::EnterPhase { phase } => {
+                require_non_empty(&path("phase"), phase)?;
+            }
+            Self::EmitTelemetryMarker { tag } => {
+                require_non_empty(&path("tag"), tag)?;
+            }
+            Self::Stop { label } => {
+                require_non_empty(&path("label"), label)?;
+            }
+            Self::EngineCommand => {
+                return Err(ScenarioError::UnsupportedActionKind {
+                    kind: "engine_command".to_owned(),
+                    deferred_to: "Phase 3.6".to_owned(),
+                });
+            }
+            Self::EffectorOverride => {
+                return Err(ScenarioError::UnsupportedActionKind {
+                    kind: "effector_override".to_owned(),
+                    deferred_to: "Phase 3.4".to_owned(),
+                });
+            }
+            Self::Separation => {
+                return Err(ScenarioError::UnsupportedActionKind {
+                    kind: "separation".to_owned(),
+                    deferred_to: "Phase 3.6 / 3.7".to_owned(),
+                });
+            }
+            Self::DeployRecovery => {
+                return Err(ScenarioError::UnsupportedActionKind {
+                    kind: "deploy_recovery".to_owned(),
+                    deferred_to: "Phase 3.9".to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One declared mission transition: `from --event--> to`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PhaseTransitionConfig {
+    /// Source phase id.
+    pub from: String,
+    /// Destination phase id.
+    pub to: String,
+    /// Event id whose firing triggers this transition.
+    pub event: String,
+}
+
+impl PhaseTransitionConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("mission.transitions[{index}].from"), &self.from)?;
+        require_non_empty(&format!("mission.transitions[{index}].to"), &self.to)?;
+        require_non_empty(&format!("mission.transitions[{index}].event"), &self.event)?;
         Ok(())
     }
 }

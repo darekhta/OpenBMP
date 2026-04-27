@@ -221,6 +221,9 @@ fn is_dimensionless_key(key: &str) -> bool {
             | "rtol"
             | "atol"
             | "j2"
+            // Phase-3.2 mission-block trigger fields: a mass fraction
+            // ratio in [0, 1].
+            | "remaining"
     )
 }
 

@@ -169,4 +169,28 @@ pub enum ScenarioError {
         /// Model name that rejects the field.
         name: String,
     },
+    /// A scenario-declared event trigger kind is not yet supported.
+    #[error("trigger kind {kind} is not supported: {reason}")]
+    UnsupportedTriggerKind {
+        /// Trigger kind string (e.g. `"scripted"`).
+        kind: String,
+        /// Why this kind is rejected (typically a future-phase deferral).
+        reason: String,
+    },
+    /// A scenario-declared event action kind is reserved for a future
+    /// phase and rejected at parse time in Phase 3.2.
+    #[error("action kind {kind} is reserved for {deferred_to}")]
+    UnsupportedActionKind {
+        /// Action kind string (e.g. `"engine_command"`).
+        kind: String,
+        /// Future phase that will land this action.
+        deferred_to: String,
+    },
+    /// A mission-graph shape error (cycle, unreachable phase, unknown
+    /// id reference, etc.). The full diagnostic is in `reason`.
+    #[error("mission graph error: {reason}")]
+    MissionGraph {
+        /// Human-readable description from the graph validator.
+        reason: String,
+    },
 }
