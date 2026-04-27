@@ -44,6 +44,7 @@
 
 pub mod derivative;
 pub mod error;
+pub mod events;
 pub mod integrator;
 pub mod kernel;
 pub mod models;
@@ -51,6 +52,11 @@ pub mod stop;
 
 pub use derivative::{PointMassDerivative, RigidBodyDerivative, SimStateDerivative};
 pub use error::{IntegratorError, ModelEvalError, SimulationError, StopReason};
+pub use events::{
+    BuiltInEventTrigger, EventAction, EventBinding, EventEvalState, EventId, EventScalars,
+    EventTrigger, FiredEvent, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
+    PhaseTransition,
+};
 pub use integrator::{Integrator, IntegratorDeterminism, Rk4FixedStep, SimState};
 pub use kernel::{Phase1Kernel, RigidBodyKernel, RigidModels, SimulationConfig, SimulationKernel};
 pub use models::{

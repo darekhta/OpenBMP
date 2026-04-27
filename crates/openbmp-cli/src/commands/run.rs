@@ -48,8 +48,10 @@ pub struct RunReport {
     pub final_step: u64,
     /// Final simulation time in seconds.
     pub final_time_s: f64,
-    /// Stop reason label (e.g., `"end-time"`).
-    pub stop_label: &'static str,
+    /// Stop reason label (e.g., `"end-time"`). Owned because
+    /// scenario-declared `EventAction::Stop` actions carry runtime
+    /// labels that are not `'static`.
+    pub stop_label: String,
     /// Output paths that were written, sorted lexicographically.
     pub written: Vec<PathBuf>,
 }
@@ -120,7 +122,7 @@ pub fn run_with_overrides(
     Ok(RunReport {
         final_step: outcome.final_step,
         final_time_s: outcome.final_time_s,
-        stop_label: outcome.stop_reason.label(),
+        stop_label: outcome.stop_reason.label().to_owned(),
         written,
     })
 }

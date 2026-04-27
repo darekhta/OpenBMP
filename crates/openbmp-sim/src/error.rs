@@ -11,6 +11,8 @@ use openbmp_core::{ModelId, StepIndex, TimeError};
 use openbmp_state::StateError;
 use thiserror::Error;
 
+use crate::events::{MissionGraphError, PhaseId};
+
 /// Aggregated error type returned by [`crate::SimulationKernel`] methods.
 #[derive(Debug, Error)]
 pub enum SimulationError {
@@ -27,6 +29,10 @@ pub enum SimulationError {
     /// configuration before the integrator is entered.
     #[error(transparent)]
     ModelEval(#[from] ModelEvalError),
+    /// A wrapped [`MissionGraphError`] raised while validating the
+    /// scenario-declared mission graph.
+    #[error(transparent)]
+    MissionGraph(#[from] MissionGraphError),
     /// The configuration passed to `SimulationKernel::new` was rejected.
     #[error("invalid simulation configuration: {reason}")]
     InvalidConfig {
@@ -148,17 +154,32 @@ pub enum StopReason {
         /// The step that could not advance.
         step: StepIndex,
     },
+    /// A scenario-declared `EventAction::Stop` fired and ended the
+    /// run cleanly. Distinct from [`Self::UserRequested`] so
+    /// determinism telemetry can distinguish CLI-driven stops from
+    /// scenario-driven mission ends.
+    MissionEnded {
+        /// Active phase at the time the mission ended, if a mission
+        /// graph was wired.
+        phase: Option<PhaseId>,
+        /// Scenario-declared label for the stop reason.
+        label: String,
+    },
 }
 
 impl StopReason {
     /// Canonical short label, useful for telemetry tags and diagnostics.
+    ///
+    /// Returns `&str` rather than `&'static str` because
+    /// [`Self::MissionEnded`] carries a scenario-declared owned label.
     #[must_use]
-    pub const fn label(&self) -> &'static str {
+    pub fn label(&self) -> &str {
         match self {
             Self::EndTime { .. } => "end-time",
             Self::UserRequested { label } => label,
             Self::NonFiniteState { .. } => "non-finite-state",
             Self::StepOverflow { .. } => "step-overflow",
+            Self::MissionEnded { label, .. } => label,
         }
     }
 }
