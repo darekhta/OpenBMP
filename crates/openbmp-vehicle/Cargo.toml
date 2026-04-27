@@ -21,6 +21,8 @@ uom               = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+serde  = { workspace = true }
+toml   = { workspace = true }
 
 [lints]
 workspace = true

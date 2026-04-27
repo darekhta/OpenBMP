@@ -1,0 +1,67 @@
+# Niskanen 2009 Chapter-6 small-rocket benchmark — scenario pin.
+#
+# Vehicle geometry, mass, axial-CD assumption, and reference apogees
+# from Niskanen 2009 ("Development of an Open-Source Model Rocket
+# Simulation Software", M.Sc. thesis, Helsinki UT) Chapter 6 Table
+# 6.1 + the surrounding text. The OpenBMP scenario format is
+# extended in Phase 2.10; this file uses a minimal benchmark schema
+# that the Phase-2.9 sounding-rocket integration test consumes
+# directly via a small serde shim. Phase 2.10 will roll this into
+# the canonical scenario format.
+#
+# Reference apogees: experimental, OpenRocket, and RockSim values
+# from the published Chapter-6 comparison table for the B4-class
+# and C6-class motors. The Phase-2.9 OpenBMP benchmark integrates
+# against the C6 experimental apogee with a 5% relative tolerance.
+
+openbmp.benchmark = 1
+
+[meta]
+name        = "niskanen-2009-chapter6"
+provenance  = "Niskanen 2009 Chapter 6 small-rocket benchmark; geometry and reference apogees from the published table"
+validation  = "checked"
+
+[references]
+# Relative paths from this file. Future Phase-2.10 scenario runner
+# will resolve these and SHA-pin them in the run header.
+motor_file = "../motors/estes-c6-eng-derived.toml"
+aero_file  = "../aero/synthetic-niskanen-ch6-rocket.toml"
+
+[vehicle]
+# Body geometry from Niskanen 2009 Chapter 6. Body length includes
+# the nose cone; nose length is split out for documentation only
+# (the reduced point-mass model uses body length as the reference
+# length).
+body_length_m         = 0.56
+body_diameter_m       = 0.029
+nose_length_m         = 0.10
+# Dry-airframe mass (no motor). Niskanen's Chapter-6 small rocket
+# carries an 80 g airframe.
+dry_vehicle_mass_kg   = 0.080
+# Constant axial CD assumption for the point-mass reduced model
+# (see the aero deck file for context).
+axial_cd              = 0.8
+
+[simulation]
+# Vertical-launch from sea level. The Phase-2.9 integration test
+# fixes ignition at t = 0 and runs the kernel for 20 s at dt = 1 ms.
+ignition_time_s = 0.0
+dt_s            = 0.001
+stop_s          = 20.0
+
+[reference_apogees_m]
+# From Niskanen 2009 Chapter 6 Table 6.1.
+# Both Estes B4 and C6 motors are tabulated; OpenBMP integrates
+# against the C6 experimental value with 5% relative tolerance.
+b4_experimental = 64.0
+b4_openrocket   = 74.4
+b4_rocksim      = 79.1
+c6_experimental = 151.5
+c6_openrocket   = 161.4
+c6_rocksim      = 180.1
+
+[tolerance]
+# Relative tolerance on apogee comparison. The Phase-2.9 benchmark
+# asserts the simulated C6 apogee falls within ±5% of the published
+# experimental value.
+apogee_relative = 0.05

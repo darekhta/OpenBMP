@@ -6,20 +6,18 @@
 //! USSA76 atmosphere, and ECI-`+z` constant gravity. The kernel
 //! integrates the point-mass equations of motion and the test
 //! computes apogee, max velocity, and max acceleration from the
-//! trace, asserting against a tolerance table derived from the
-//! analytic rocket-equation envelope and the published Estes D12
-//! motor specs.
+//! trace.
 //!
-//! # Niskanen 2009 deferral
+//! # Niskanen 2009 reference
 //!
-//! The Phase-2 plan calls for comparing against Niskanen 2009
-//! thesis §6 worked-example apogee. The thesis PDF is not text-
-//! extractable from the project's research environment, so the
-//! Phase-2.9 case is built around the **real Estes D12** (which is
-//! transcribable from ThrustCurve.org) plus a **synthetic D12-
-//! class airframe**. The Niskanen-specific numerical comparison
-//! stays as a deferred follow-up where the thesis values can be
-//! extracted.
+//! The public OpenRocket technical-documentation text derived from
+//! Niskanen 2009 Chapter 6 gives the small-rocket geometry and Table
+//! 6.1 apogees. The full component mass/CG override table is not
+//! published in that extract, so the benchmark below is a reduced
+//! point-mass reconstruction: published 56 cm × 29 mm geometry,
+//! published C6-family apogee, an Estes C6 RASP thrust-curve shape
+//! scaled to Niskanen's published 7.5 N·s C6 impulse, and explicit
+//! airframe/CD assumptions encoded as constants.
 
 #![allow(missing_docs)]
 #![allow(
@@ -35,13 +33,14 @@ use openbmp_core::{Duration, ModelId, Position3, SimTime, Velocity3};
 use openbmp_env::{IsothermalAtmosphere, UsStandard1976};
 use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_sim::{
-    ConstantGravityForce, EndTime, NullEnvironment, Rk4FixedStep, SimulationConfig,
-    SimulationKernel,
+    ConstantGravityForce, EndTime, EnvironmentModel, ForceModel, Integrator, MassModel,
+    NullEnvironment, Rk4FixedStep, SimulationConfig, SimulationKernel, StopCondition,
 };
 use openbmp_state::PointMassState;
 use openbmp_vehicle::{
     AxialDragForceAdapter, BasicVehicle, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel,
 };
+use serde::Deserialize;
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
 
@@ -55,6 +54,21 @@ const D12_AERO_DECK: &str = include_str!(concat!(
     "/../../data/aero/synthetic-d12-class-rocket.toml"
 ));
 
+const NISKANEN_C6_MOTOR_DECK: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../data/motors/estes-c6-eng-derived.toml"
+));
+
+const NISKANEN_AERO_DECK: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../data/aero/synthetic-niskanen-ch6-rocket.toml"
+));
+
+const NISKANEN_SCENARIO: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../data/scenarios/niskanen-2009-chapter6.toml"
+));
+
 // Vehicle parameters for the canonical D12 sounding-rocket case.
 // 70 g dry-airframe mass matches the lower end of the Estes
 // Alpha-III / Big-Bertha class small rockets that the D12 motor
@@ -63,17 +77,130 @@ const DRY_VEHICLE_MASS_KG: f64 = 0.070;
 const IGNITION_TIME_S: f64 = 0.0;
 const G_M_S2: f64 = 9.80665;
 const DT_S: f64 = 0.001; // 1 ms — fine enough for D12 burn dynamics
-const STOP_S: f64 = 8.0; // covers ascent + apogee; stops before the
-// rocket would re-enter z=0 (the USSA76 atmosphere rejects sub-surface
-// queries). Apogee for a D12 + 50 g airframe occurs at ~5–7 s; 8 s
-// gives a clean post-apogee margin without falling back through 0.
+const STOP_S: f64 = 20.0; // covers ascent + true post-apogee descent
+
+const D12_DRAG_MODEL_ID: ModelId = ModelId::new(1);
+const D12_THRUST_MODEL_ID: ModelId = ModelId::new(2);
+const D12_MASS_MODEL_ID: ModelId = ModelId::new(3);
+const NISKANEN_DRAG_MODEL_ID: ModelId = ModelId::new(11);
+const NISKANEN_THRUST_MODEL_ID: ModelId = ModelId::new(12);
+const NISKANEN_MASS_MODEL_ID: ModelId = ModelId::new(13);
+
+const D12_PINNED_FINAL_STATE_HASH: u64 = 18_411_426_573_570_814_820;
+const D12_PINNED_APOGEE_ALTITUDE_M: f64 = 497.837_685_347_295_23;
+const D12_PINNED_APOGEE_TIME_S: f64 = 9.421;
+const D12_PINNED_MAX_VELOCITY_M_S: f64 = 127.932_725_498_234_65;
+const D12_PINNED_MAX_ACCELERATION_M_S2: f64 = 263.440_645_283_683_47;
+
+// Niskanen Chapter-6 vehicle parameters, simulation settings, and
+// reference apogees live in `data/scenarios/niskanen-2009-chapter6.toml`.
+// The `niskanen_chapter6_scenario_file_matches_published_table` test
+// asserts every parsed value bit-exactly matches the Chapter-6
+// published source.
 
 fn load_d12_motor() -> SolidMotor {
     SolidMotor::load_from_str(D12_DECK).expect("D12 motor deck must parse")
 }
 
+fn load_niskanen_c6_motor() -> SolidMotor {
+    SolidMotor::load_from_str(NISKANEN_C6_MOTOR_DECK).expect("C6 motor deck must parse")
+}
+
 fn load_d12_aero_deck() -> AeroDeck {
     AeroDeck::load_from_str(D12_AERO_DECK).expect("D12 aero deck must parse")
+}
+
+fn load_niskanen_aero_deck() -> AeroDeck {
+    AeroDeck::load_from_str(NISKANEN_AERO_DECK)
+        .expect("Niskanen Chapter 6 reduced aero deck must parse")
+}
+
+// ---------------------------------------------------------------------
+// Niskanen Chapter 6 scenario file (TOML) — minimal benchmark schema
+// ---------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NiskanenScenarioFile {
+    openbmp: NiskanenSchemaMarker,
+    #[allow(dead_code)] // documented in provenance.md, not consumed at runtime.
+    meta: NiskanenMeta,
+    #[allow(dead_code)] // resolved by the Phase-2.10 scenario runner; the
+    // Phase-2.9 test loads the referenced files via include_str! directly.
+    references: NiskanenReferences,
+    vehicle: NiskanenVehicle,
+    simulation: NiskanenSimulation,
+    reference_apogees_m: NiskanenReferenceApogees,
+    tolerance: NiskanenTolerance,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NiskanenSchemaMarker {
+    benchmark: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NiskanenMeta {
+    #[allow(dead_code)]
+    name: String,
+    #[allow(dead_code)]
+    provenance: String,
+    #[allow(dead_code)]
+    validation: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NiskanenReferences {
+    #[allow(dead_code)]
+    motor_file: String,
+    #[allow(dead_code)]
+    aero_file: String,
+}
+
+#[derive(Deserialize, Copy, Clone)]
+#[serde(deny_unknown_fields)]
+struct NiskanenVehicle {
+    body_length_m: f64,
+    body_diameter_m: f64,
+    nose_length_m: f64,
+    dry_vehicle_mass_kg: f64,
+    axial_cd: f64,
+}
+
+#[derive(Deserialize, Copy, Clone)]
+#[serde(deny_unknown_fields)]
+#[allow(clippy::struct_field_names)] // physics fields carry their unit suffix per project convention.
+struct NiskanenSimulation {
+    ignition_time_s: f64,
+    dt_s: f64,
+    stop_s: f64,
+}
+
+#[derive(Deserialize, Copy, Clone)]
+#[serde(deny_unknown_fields)]
+struct NiskanenReferenceApogees {
+    b4_experimental: f64,
+    b4_openrocket: f64,
+    b4_rocksim: f64,
+    c6_experimental: f64,
+    c6_openrocket: f64,
+    c6_rocksim: f64,
+}
+
+#[derive(Deserialize, Copy, Clone)]
+#[serde(deny_unknown_fields)]
+struct NiskanenTolerance {
+    apogee_relative: f64,
+}
+
+fn load_niskanen_scenario() -> NiskanenScenarioFile {
+    let parsed: NiskanenScenarioFile =
+        toml::from_str(NISKANEN_SCENARIO).expect("Niskanen scenario file must parse");
+    assert_eq!(parsed.openbmp.benchmark, 1);
+    parsed
 }
 
 fn build_initial_state() -> PointMassState {
@@ -94,8 +221,8 @@ fn build_d12_vehicle() -> BasicVehicle<PointMassState> {
 
     // Three force models in declared order: gravity, drag, thrust.
     let gravity = ConstantGravityForce::new(Vector3::new(0.0, 0.0, -G_M_S2));
-    let drag = AxialDragForceAdapter::new(deck, atmosphere, ModelId::new(1));
-    let thrust = MotorThrustForceAdapter::new(motor, IGNITION_TIME_S, ModelId::new(2));
+    let drag = AxialDragForceAdapter::new(deck, atmosphere, D12_DRAG_MODEL_ID);
+    let thrust = MotorThrustForceAdapter::new(motor, IGNITION_TIME_S, D12_THRUST_MODEL_ID);
 
     BasicVehicle::new(
         vec![
@@ -104,13 +231,58 @@ fn build_d12_vehicle() -> BasicVehicle<PointMassState> {
             NamedForceModel::new("thrust", Box::new(thrust)),
         ],
         vec![],
-        Box::new(openbmp_sim::ConstantMass::new(
-            DRY_VEHICLE_MASS_KG
-                + load_d12_motor().dry_mass_kg()
-                + load_d12_motor().propellant_mass_kg(),
+        Box::new(MotorMassAdapter::new(
+            load_d12_motor(),
+            DRY_VEHICLE_MASS_KG,
+            IGNITION_TIME_S,
+            D12_MASS_MODEL_ID,
         )),
     )
     .expect("vehicle construction must succeed")
+}
+
+fn build_niskanen_initial_state(scenario: &NiskanenScenarioFile) -> PointMassState {
+    let motor = load_niskanen_c6_motor();
+    let initial_total_mass =
+        scenario.vehicle.dry_vehicle_mass_kg + motor.dry_mass_kg() + motor.propellant_mass_kg();
+    PointMassState::new(
+        SimTime::ZERO,
+        Position3::new(0.0, 0.0, 0.0),
+        Velocity3::new(0.0, 0.0, 0.0),
+        Mass::new::<kilogram>(initial_total_mass),
+    )
+}
+
+fn build_niskanen_chapter6_vehicle(
+    scenario: &NiskanenScenarioFile,
+) -> BasicVehicle<PointMassState> {
+    let motor = load_niskanen_c6_motor();
+    let deck = load_niskanen_aero_deck();
+    let atmosphere = UsStandard1976::new();
+
+    let gravity = ConstantGravityForce::new(Vector3::new(0.0, 0.0, -G_M_S2));
+    let drag = AxialDragForceAdapter::new(deck, atmosphere, NISKANEN_DRAG_MODEL_ID);
+    let thrust = MotorThrustForceAdapter::new(
+        motor,
+        scenario.simulation.ignition_time_s,
+        NISKANEN_THRUST_MODEL_ID,
+    );
+
+    BasicVehicle::new(
+        vec![
+            NamedForceModel::new("gravity", Box::new(gravity)),
+            NamedForceModel::new("drag", Box::new(drag)),
+            NamedForceModel::new("thrust", Box::new(thrust)),
+        ],
+        vec![],
+        Box::new(MotorMassAdapter::new(
+            load_niskanen_c6_motor(),
+            scenario.vehicle.dry_vehicle_mass_kg,
+            scenario.simulation.ignition_time_s,
+            NISKANEN_MASS_MODEL_ID,
+        )),
+    )
+    .expect("Niskanen vehicle construction must succeed")
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -119,40 +291,26 @@ struct TraceMetrics {
     apogee_time_s: f64,
     max_velocity_m_s: f64,
     max_acceleration_m_s2: f64,
+    final_velocity_z_m_s: f64,
     final_state_byte_hash: u64,
 }
 
-fn run_d12_scenario_and_collect_trace() -> TraceMetrics {
-    let vehicle = build_d12_vehicle();
-    let mass_model = MotorMassAdapter::new(
-        load_d12_motor(),
-        DRY_VEHICLE_MASS_KG,
-        IGNITION_TIME_S,
-        ModelId::new(3),
-    );
-
-    let config = SimulationConfig {
-        initial_state: build_initial_state(),
-        integrator: Rk4FixedStep,
-        force_model: vehicle,
-        mass_model,
-        environment: NullEnvironment,
-        stop_condition: EndTime::new(SimTime::from_seconds(STOP_S)),
-        dt: Duration::from_seconds(DT_S),
-        scenario_seed: 0x00C0_FFEE_BEEF_F00D,
-    };
-
-    let mut kernel = SimulationKernel::new(config).expect("valid kernel");
-
+fn collect_trace<I, F, MM, E, SC>(
+    kernel: &mut SimulationKernel<PointMassState, I, F, MM, E, SC>,
+) -> TraceMetrics
+where
+    I: Integrator<PointMassState>,
+    F: ForceModel<PointMassState>,
+    MM: MassModel,
+    E: EnvironmentModel,
+    SC: StopCondition<PointMassState>,
+{
     // Step the kernel, recording the per-step state for trace metrics.
     let mut max_altitude_m = 0.0_f64;
     let mut apogee_time_s = 0.0_f64;
     let mut max_velocity_m_s = 0.0_f64;
     let mut max_accel_m_s2 = 0.0_f64;
     let mut prev_velocity_z: f64 = 0.0;
-
-    let initial = kernel.current_state();
-    let initial_altitude = initial.position.vector.z;
 
     while kernel.stop_reason().is_none() {
         kernel.step().expect("step must succeed");
@@ -184,51 +342,117 @@ fn run_d12_scenario_and_collect_trace() -> TraceMetrics {
         ^ final_state.velocity.vector.z.to_bits()
         ^ final_state.mass.get::<kilogram>().to_bits();
 
-    let _ = initial_altitude; // launch altitude is 0; keep for clarity
     TraceMetrics {
         apogee_altitude_m: max_altitude_m,
         apogee_time_s,
         max_velocity_m_s,
         max_acceleration_m_s2: max_accel_m_s2,
+        final_velocity_z_m_s: final_state.velocity.vector.z,
         final_state_byte_hash,
     }
+}
+
+fn run_d12_scenario_and_collect_trace() -> TraceMetrics {
+    let vehicle = build_d12_vehicle();
+    let mass_model = MotorMassAdapter::new(
+        load_d12_motor(),
+        DRY_VEHICLE_MASS_KG,
+        IGNITION_TIME_S,
+        D12_MASS_MODEL_ID,
+    );
+    assert_eq!(
+        vehicle
+            .mass_model()
+            .mass_kg(SimTime::ZERO)
+            .unwrap()
+            .to_bits(),
+        mass_model.mass_kg(SimTime::ZERO).unwrap().to_bits(),
+        "vehicle-owned and kernel mass models must agree at start",
+    );
+
+    let config = SimulationConfig {
+        initial_state: build_initial_state(),
+        integrator: Rk4FixedStep,
+        force_model: vehicle,
+        mass_model,
+        environment: NullEnvironment,
+        stop_condition: EndTime::new(SimTime::from_seconds(STOP_S)),
+        dt: Duration::from_seconds(DT_S),
+        scenario_seed: 0x00C0_FFEE_BEEF_F00D,
+    };
+
+    let mut kernel = SimulationKernel::new(config).expect("valid kernel");
+    collect_trace(&mut kernel)
+}
+
+fn run_niskanen_scenario_and_collect_trace() -> TraceMetrics {
+    let scenario = load_niskanen_scenario();
+    let vehicle = build_niskanen_chapter6_vehicle(&scenario);
+    let mass_model = MotorMassAdapter::new(
+        load_niskanen_c6_motor(),
+        scenario.vehicle.dry_vehicle_mass_kg,
+        scenario.simulation.ignition_time_s,
+        NISKANEN_MASS_MODEL_ID,
+    );
+    assert_eq!(
+        vehicle
+            .mass_model()
+            .mass_kg(SimTime::ZERO)
+            .unwrap()
+            .to_bits(),
+        mass_model.mass_kg(SimTime::ZERO).unwrap().to_bits(),
+        "vehicle-owned and kernel mass models must agree at start",
+    );
+
+    let config = SimulationConfig {
+        initial_state: build_niskanen_initial_state(&scenario),
+        integrator: Rk4FixedStep,
+        force_model: vehicle,
+        mass_model,
+        environment: NullEnvironment,
+        stop_condition: EndTime::new(SimTime::from_seconds(scenario.simulation.stop_s)),
+        dt: Duration::from_seconds(scenario.simulation.dt_s),
+        scenario_seed: 0x004E_4953_4B41_4E45,
+    };
+
+    let mut kernel = SimulationKernel::new(config).expect("valid Niskanen kernel");
+    collect_trace(&mut kernel)
 }
 
 #[test]
 fn d12_sounding_rocket_apogee_matches_envelope() {
     let metrics = run_d12_scenario_and_collect_trace();
 
-    // Envelope-based tolerance asserts. With a 70 g dry airframe +
-    // Estes D12 (16.84 N·s impulse, 1.65 s burn), the analytic
-    // rocket-equation envelope (delta_V ≈ I/m_avg minus gravity drag,
-    // followed by ballistic coast with axial drag) produces an
-    // apogee in the 250–650 m band depending on the assumed drag
-    // coefficient. Apogee time falls in the 6–9 s band. These
-    // envelopes derive from the closed-form rocket equation plus
-    // published D12 motor-spec values, NOT from a third-party
-    // benchmark — see the deferral note at the top of the file.
+    // Tight physical sanity ranges around the pinned D12 trace below.
+    // These ranges catch wrong units or sign errors without replacing
+    // the exact replay pin.
     assert!(
-        (200.0..=750.0).contains(&metrics.apogee_altitude_m),
-        "apogee {} m outside envelope [200, 750]",
+        (450.0..=550.0).contains(&metrics.apogee_altitude_m),
+        "apogee {} m outside envelope [450, 550]",
         metrics.apogee_altitude_m,
     );
     assert!(
-        (3.0..=12.0).contains(&metrics.apogee_time_s),
-        "apogee time {} s outside envelope [3, 12]",
+        (8.5..=10.5).contains(&metrics.apogee_time_s),
+        "apogee time {} s outside envelope [8.5, 10.5]",
         metrics.apogee_time_s,
     );
     assert!(
-        (50.0..=250.0).contains(&metrics.max_velocity_m_s),
-        "max velocity {} m/s outside envelope [50, 250]",
+        (110.0..=140.0).contains(&metrics.max_velocity_m_s),
+        "max velocity {} m/s outside envelope [110, 140]",
         metrics.max_velocity_m_s,
     );
-    // Peak D12 thrust 29.73 N ÷ initial total mass.
-    // (70 + 21.5 + 21.1 = 112.6 g) gives ~264 m/s² peak acceleration.
-    // Numerical-derivative noise broadens the envelope.
     assert!(
-        (100.0..=500.0).contains(&metrics.max_acceleration_m_s2),
-        "max accel {} m/s² outside envelope [100, 500]",
+        (240.0..=285.0).contains(&metrics.max_acceleration_m_s2),
+        "max accel {} m/s² outside envelope [240, 285]",
         metrics.max_acceleration_m_s2,
+    );
+    assert!(
+        metrics.apogee_time_s < STOP_S - DT_S,
+        "apogee must occur before the final sample: {metrics:?}",
+    );
+    assert!(
+        metrics.final_velocity_z_m_s < 0.0,
+        "run must continue into post-apogee descent: {metrics:?}",
     );
 }
 
@@ -244,6 +468,28 @@ fn d12_sounding_rocket_run_is_byte_stable_across_two_reruns() {
     assert_eq!(a.apogee_altitude_m.to_bits(), b.apogee_altitude_m.to_bits());
     assert_eq!(a.apogee_time_s.to_bits(), b.apogee_time_s.to_bits());
     assert_eq!(a.max_velocity_m_s.to_bits(), b.max_velocity_m_s.to_bits());
+    assert_eq!(
+        a.max_acceleration_m_s2.to_bits(),
+        b.max_acceleration_m_s2.to_bits()
+    );
+
+    assert_eq!(a.final_state_byte_hash, D12_PINNED_FINAL_STATE_HASH);
+    assert_eq!(
+        a.apogee_altitude_m.to_bits(),
+        D12_PINNED_APOGEE_ALTITUDE_M.to_bits()
+    );
+    assert_eq!(
+        a.apogee_time_s.to_bits(),
+        D12_PINNED_APOGEE_TIME_S.to_bits()
+    );
+    assert_eq!(
+        a.max_velocity_m_s.to_bits(),
+        D12_PINNED_MAX_VELOCITY_M_S.to_bits()
+    );
+    assert_eq!(
+        a.max_acceleration_m_s2.to_bits(),
+        D12_PINNED_MAX_ACCELERATION_M_S2.to_bits()
+    );
 }
 
 #[test]
@@ -273,4 +519,86 @@ fn ussa76_atmosphere_loads_via_default_constructor() {
     // above; if construction fails the run would never start.
     // Sanity: USSA76 isothermal-fixture for a sea-level reference.
     let _atm_iso = IsothermalAtmosphere::ussa_sea_level();
+}
+
+#[test]
+fn niskanen_chapter6_scenario_file_matches_published_table() {
+    // Scenario TOML round-trips bit-exactly to the published Chapter-6
+    // values. This is the data-pin counterpart of the published-value
+    // reference: a typo in the TOML or in the published table fails
+    // CI before the integration test reaches the kernel.
+    let s = load_niskanen_scenario();
+    assert_eq!(s.vehicle.body_length_m.to_bits(), 0.56_f64.to_bits());
+    assert_eq!(s.vehicle.body_diameter_m.to_bits(), 0.029_f64.to_bits());
+    assert_eq!(s.vehicle.nose_length_m.to_bits(), 0.10_f64.to_bits());
+    assert_eq!(s.vehicle.dry_vehicle_mass_kg.to_bits(), 0.080_f64.to_bits());
+    assert_eq!(s.vehicle.axial_cd.to_bits(), 0.8_f64.to_bits());
+    assert_eq!(
+        s.reference_apogees_m.b4_experimental.to_bits(),
+        64.0_f64.to_bits()
+    );
+    assert_eq!(
+        s.reference_apogees_m.b4_openrocket.to_bits(),
+        74.4_f64.to_bits()
+    );
+    assert_eq!(
+        s.reference_apogees_m.b4_rocksim.to_bits(),
+        79.1_f64.to_bits()
+    );
+    assert_eq!(
+        s.reference_apogees_m.c6_experimental.to_bits(),
+        151.5_f64.to_bits()
+    );
+    assert_eq!(
+        s.reference_apogees_m.c6_openrocket.to_bits(),
+        161.4_f64.to_bits()
+    );
+    assert_eq!(
+        s.reference_apogees_m.c6_rocksim.to_bits(),
+        180.1_f64.to_bits()
+    );
+    assert_eq!(s.tolerance.apogee_relative.to_bits(), 0.05_f64.to_bits());
+    assert_eq!(s.simulation.stop_s.to_bits(), 20.0_f64.to_bits());
+    assert_eq!(s.simulation.dt_s.to_bits(), 0.001_f64.to_bits());
+}
+
+#[test]
+fn niskanen_chapter6_c6_apogee_matches_published_experiment() {
+    let scenario = load_niskanen_scenario();
+    let metrics = run_niskanen_scenario_and_collect_trace();
+
+    let experimental = scenario.reference_apogees_m.c6_experimental;
+    let tol = scenario.tolerance.apogee_relative;
+    let low = experimental * (1.0 - tol);
+    let high = experimental * (1.0 + tol);
+
+    assert!(
+        (low..=high).contains(&metrics.apogee_altitude_m),
+        "Niskanen C6 apogee {} m outside [{low}, {high}] m: {metrics:?}",
+        metrics.apogee_altitude_m,
+    );
+    assert!(
+        metrics.apogee_time_s < scenario.simulation.stop_s - scenario.simulation.dt_s,
+        "Niskanen apogee must occur before the final sample: {metrics:?}",
+    );
+    assert!(
+        metrics.final_velocity_z_m_s < 0.0,
+        "Niskanen run must continue into post-apogee descent: {metrics:?}",
+    );
+}
+
+#[test]
+fn sounding_rocket_model_ids_are_distinct() {
+    let mut ids = [
+        D12_DRAG_MODEL_ID.value(),
+        D12_THRUST_MODEL_ID.value(),
+        D12_MASS_MODEL_ID.value(),
+        NISKANEN_DRAG_MODEL_ID.value(),
+        NISKANEN_THRUST_MODEL_ID.value(),
+        NISKANEN_MASS_MODEL_ID.value(),
+    ];
+    ids.sort_unstable();
+    for pair in ids.windows(2) {
+        assert_ne!(pair[0], pair[1]);
+    }
 }

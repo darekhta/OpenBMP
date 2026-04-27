@@ -1,0 +1,72 @@
+# Estes C6 solid motor — RASP `.eng`-derived (Schema 1).
+#
+# Time-thrust pairs derived from the canonical RASP `.eng` file at
+# https://www.thrustcurve.org/simfiles/5f4294d20002e900000004e7/
+# (contributed by John Coker, NAR-certified). The (0, 0) starting
+# point is prepended per the OpenBMP motor format requirement that
+# `points[0].time = 0` exactly. The shape of the curve is the
+# upstream RASP profile; the magnitudes are scaled to the 7.5 N·s
+# C6-family total impulse cited by Niskanen 2009 Chapter 6, which
+# is the reference impulse the Phase-2.9 Niskanen Chapter-6
+# benchmark integrates against.
+#
+# Header from the upstream `.eng` file (decoded):
+#   - name:           C6
+#   - diameter:       18 mm
+#   - length:         70 mm
+#   - delays:         0, 3, 5, 7 s
+#   - propellant:     0.0108 kg
+#   - total mass:     0.0231 kg
+#   - manufacturer:   Estes
+#
+# Specific-impulse consistency: declared `specific_impulse_s` is
+# back-solved from `total_impulse = m_p · g_0 · Isp` for
+# `g_0 = 9.80665 m/s²` so the Phase-2.6 Isp consistency check
+# passes within 1e-3 relative.
+
+openbmp.motor = 1
+
+[meta]
+name       = "estes-c6-eng-derived"
+provenance = "ThrustCurve.org Estes C6 RASP .eng file (John Coker, NAR-certified), scaled to the 7.5 N·s C6-family impulse cited by Niskanen 2009 Chapter 6"
+validation = "checked"
+
+[burn]
+duration_s         = 1.86
+total_impulse_n_s  = 7.5
+specific_impulse_s = 70.81362590124502
+propellant_mass_kg = 0.0108
+dry_mass_kg        = 0.0123  # 0.0231 total − 0.0108 propellant
+
+[thrust_curve]
+points = [
+  [0.000, 0.000000000000],
+  [0.031, 0.804673753844],
+  [0.092, 4.105026993714],
+  [0.139, 8.451626234882],
+  [0.192, 11.985045657155],
+  [0.209, 9.736042057615],
+  [0.231, 6.278326614298],
+  [0.248, 5.232080612999],
+  [0.292, 4.668979106609],
+  [0.370, 4.185834611700],
+  [0.475, 3.783497734778],
+  [0.671, 3.621882498805],
+  [0.702, 3.863454746260],
+  [0.723, 3.541925487324],
+  [0.850, 3.783497734778],
+  [1.063, 3.702690116792],
+  [1.211, 3.702690116792],
+  [1.242, 3.461117869337],
+  [1.303, 3.621882498805],
+  [1.468, 3.702690116792],
+  [1.656, 3.783497734778],
+  [1.821, 3.783497734778],
+  [1.834, 2.494828879520],
+  [1.847, 1.127053619285],
+  [1.860, 0.000000000000],
+]
+
+[geometry]
+exit_area_m2                 = 0.0000159
+ambient_pressure_correction  = "constant"

@@ -211,8 +211,10 @@ verification:
     sounding-rocket integration test.
   test:   crates/openbmp-vehicle/tests/sounding_rocket.rs
   tolerance: >-
-    Grid-corner lookups: bit equality after parse. Apogee envelope
-    on the integration test: 200–750 m for a 70 g airframe.
+    Grid-corner lookups: bit equality after parse. D12 integration
+    physical sanity envelope: 450–550 m apogee for a 70 g airframe;
+    exact replay is pinned by the sounding-rocket test's final-state
+    and headline-metric bit patterns.
 validation_status: validated-toy
 safety_review:
   reviewer: dmitri.arekhta
@@ -220,4 +222,64 @@ safety_review:
   notes: >-
     Synthetic OpenBMP-authored content sized to the D-class
     envelope. Not a transcription of any published deck.
+```
+
+## `data/aero/synthetic-niskanen-ch6-rocket.toml`
+
+```yaml
+dataset_id:       openbmp.aero.synthetic_niskanen_ch6_rocket.v1
+files:
+  - data/aero/synthetic-niskanen-ch6-rocket.toml
+source_class:     synthetic-openbmp
+source_title:     >-
+  Synthetic OpenBMP-authored reduced aero deck for the Niskanen
+  2009 Chapter-6 small-rocket benchmark. Constant axial CD = 0.8
+  across the Mach grid (point-mass reduction), CN and CM
+  identically zero. Sized to the 29 mm-diameter, 0.56 m-long body
+  documented in Niskanen Chapter 6.
+source_authors:   OpenBMP (Dmitri Arekhta)
+source_id:        synthetic; not derived from any fielded vehicle
+publication_date: 2026-04-27
+methodology_reference: >-
+  Niskanen, S. (2009). *Development of an Open-Source Model Rocket
+  Simulation Software*. Master's thesis, Helsinki University of
+  Technology. The constant-CD point-mass reduction is the
+  documented Chapter-6 benchmark form for vertical-launch apogee
+  comparison.
+methodology_urls:
+  - https://openrocket.sourceforge.net/thesis.pdf
+license_or_terms: >-
+  Synthetic OpenBMP-authored content; CC0 / public domain. No
+  third-party data is incorporated.
+retrieved_utc:    2026-04-27
+transformation:
+  method: >-
+    Constant axial CD = 0.8 across a 5 × 1 × 1 grid (mach in
+    {0.0, 0.3, 0.5, 0.8, 1.0}; alpha and beta single-point at 0).
+    CN and CM identically zero. Reference area is the body
+    cross-section `π · (0.029/2)² ≈ 6.605198554172541e-4 m²`
+    (exact f64 value); reference length is the body length 0.56 m.
+    `extrapolation = "clamp"` because the rocket may briefly
+    exceed M = 1.0 at peak velocity; clamping to the boundary CD
+    is the documented reduction.
+  script: none
+verification:
+  method: >-
+    `crates/openbmp-vehicle/tests/sounding_rocket.rs` loads the
+    deck via `include_str!` + `AeroDeck::load_from_str` and runs
+    it through the Niskanen Chapter-6 benchmark, which asserts
+    apogee within ±5% of the published experimental value.
+  test:   crates/openbmp-vehicle/tests/sounding_rocket.rs
+  tolerance: >-
+    Schema-1 round-trip: bit equality on the parsed numerical
+    fields. Apogee comparison: ±5% relative against Niskanen 2009
+    Chapter 6 experimental C6 value (151.5 m).
+validation_status: validated-toy
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Synthetic OpenBMP-authored content. The point-mass constant-CD
+    reduction is a documented Chapter-6 benchmark form, not a
+    fielded-vehicle deck.
 ```

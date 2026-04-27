@@ -122,6 +122,40 @@ Benchmarks from real operational systems are rejected unless the case is a
 public civilian/academic reference and does not introduce real fielded-vehicle
 parameter sets outside the safety boundary.
 
+## Sounding-Rocket Reference Case
+
+Phase 2.9 carries two sounding-rocket checks in
+`crates/openbmp-vehicle/tests/sounding_rocket.rs`:
+
+- **Niskanen 2009 Chapter 6 C6 case** (`research`): reduced point-mass
+  reconstruction of the public OpenRocket technical-documentation example.
+  Published inputs used directly: 56 cm rocket length, 29 mm body diameter,
+  10 cm tangent-ogive nose, and Table 6.1 apogees. The C6 assertion compares
+  OpenBMP apogee against the published experimental C6-3 apogee of 151.5 m
+  with ±5% tolerance. The test records the unpublished assumptions explicitly:
+  80 g dry vehicle mass, constant axial `CD = 0.8`, no wind, vertical launch,
+  and an Estes C6 RASP curve shape scaled to Niskanen's cited 7.5 N·s C6-family
+  total impulse.
+- **Estes D12 integration case** (`validated-toy`): real Estes D12 RASP motor
+  data from ThrustCurve.org plus the synthetic D12-class OpenBMP aero deck.
+  This case is not the public benchmark; it is the L1/L2 adapter stack sanity
+  run. It has tight physical sanity ranges and exact replay pins for final
+  state, apogee, max velocity, and max acceleration.
+
+The Niskanen case is intentionally reduced because the public Chapter 6 text
+does not publish the component mass and CG override table used by OpenRocket
+and RockSim. If those original design files become available, this test should
+replace the surrogate mass/CD constants with the original values and move to
+the scenario-format path.
+
+Sources:
+
+- Niskanen / OpenRocket technical documentation v13.05, Chapter 6:
+  <https://dokk.org/library/openrocket_technical_documentation_v13.05_2013_Niskanen>
+- Estes C6 RASP curve-shape source before impulse scaling:
+  <https://www.thrustcurve.org/simfiles/5f4294d20002e900000004e7/download/Estes_C6.eng>,
+  SHA-256 `90fa89edab96583266994ade8a8afd5b30a169f3a73d6db3a379495f24033570`.
+
 ## Hypersonic V&V and UQ Ladder
 
 Hypersonic models require stronger evidence than ordinary toy rocket models

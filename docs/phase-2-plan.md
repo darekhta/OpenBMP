@@ -689,11 +689,21 @@ force/moment/mass inputs directly; the Phase-2.10 kernel adapter wires a
 ### 2.9 — Sounding-rocket validation case
 
 **Scope.** The headline Phase-2 outcome. Run the Niskanen 2009 thesis
-example rocket (geometry + Estes D12 motor) through the assembled
-stack, compare the predicted apogee against the published value, and
-lock the result in a tolerance table. This sub-phase is executed after
-the minimal scenario-format work in 2.10, even though the document keeps
-the validation case first as the user-facing milestone.
+example rocket through the assembled stack, compare the predicted
+apogee against the published value, and lock the result in a tolerance
+table. This sub-phase is executed after the minimal scenario-format
+work in 2.10, even though the document keeps the validation case first
+as the user-facing milestone.
+
+**Implementation note (Phase 2.9 audit follow-up).** The extractable
+Niskanen Chapter 6 public values are the small model rocket's geometry
+and Table 6.1 B4-4/C6-3 apogees, not a D12 scenario. Until Phase 2.10
+wires the scenario-format runner, the benchmark lives in
+`crates/openbmp-vehicle/tests/sounding_rocket.rs` as a reduced
+point-mass C6-family reconstruction with explicit surrogate mass/CD
+assumptions and a ±5% assertion against the published 151.5 m
+experimental C6-3 apogee. The same file keeps the Estes D12 motor as the
+L1/L2 adapter-stack integration sanity case, with exact replay pins.
 
 **Decision sources.**
 
@@ -708,28 +718,37 @@ the validation case first as the user-facing milestone.
 
 **Tasks.**
 
-- `scenarios/public-benchmark/niskanen-2009-example.toml`:
-  - Vehicle geometry from thesis §6 (length, diameter, fin area).
-  - Aero deck: synthetic Barrowman build-up matching the thesis
-    parameters, in `data/aero/niskanen-2009-example.toml`.
-  - Motor: Estes D12 from Phase-2.6.
+- `crates/openbmp-vehicle/tests/sounding_rocket.rs` until the Phase
+  2.10 scenario runner can host the same case:
+  - Vehicle geometry from thesis §6 extract (56 cm length, 29 mm body
+    diameter, 10 cm tangent-ogive nose).
+  - Aero deck: reduced constant-axial-CD point-mass surrogate with the
+    surrogate values documented next to the test.
+  - Motor: C6-family RASP curve-shape surrogate scaled to the 7.5 N·s
+    C6 impulse cited in the thesis text; the D12 motor remains a
+    separate adapter-stack integration sanity case.
   - Atmosphere: USSA76.
-  - Gravity: J2.
+  - Gravity: constant sea-level `g` for the Phase-2 point-mass adapter
+    test; J2 belongs to the scenario-format follow-up.
   - Wind: NoWind.
-  - Frames: `wgs84-uniform-rotation`, local geodetic origin declared in
-    `[frames.local_origin]`.
-  - Initial state: WGS84 height 0 m, body `+x` aligned with local up.
-  - Stop: `EndTime(60 s)` (covers ascent + apogee).
-- `crates/openbmp-cli/tests/expected/niskanen-2009-example.toml` —
-  tolerance table:
-  - `apogee_altitude_m` — Niskanen's published value ± 5%.
-  - `apogee_time_s` — Niskanen's published value ± 5%.
+  - Frames: vertical ECI-`+z` launch proxy for the Phase-2 point-mass
+    adapter test; `wgs84-uniform-rotation` + local origin belongs to
+    the Phase-2.10 scenario-format follow-up.
+  - Initial state: height 0 m, zero velocity.
+  - Stop: `EndTime(20 s)` (covers ascent + post-apogee descent).
+- Tolerance table:
+  - `apogee_altitude_m` — Niskanen Table 6.1 C6-3 experimental value
+    151.5 m ± 5%.
+  - `apogee_time_s` — post-apogee guard only until a public time value
+    is available.
   - `max_velocity_m_s` — sanity envelope.
   - `max_acceleration_m_s2` — sanity envelope.
-- Integration test in `crates/openbmp-cli/tests/sounding_rocket.rs`:
-  - Run the scenario.
-  - Compute apogee / max-Q / max-Mach / max-acceleration from the
-    Parquet output.
+- Integration test in `crates/openbmp-vehicle/tests/sounding_rocket.rs`
+  now, moving to `crates/openbmp-cli/tests/sounding_rocket.rs` after
+  Phase 2.10:
+  - Run the kernel configuration.
+  - Compute apogee / max-velocity / max-acceleration from the in-memory
+    trace (max-Q / max-Mach from Parquet telemetry after Phase 2.10).
   - Assert against the tolerance table.
   - Assert byte-stability of two reruns.
 - Documentation: `docs/verification.md` gains a "sounding-rocket

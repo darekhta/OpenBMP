@@ -1324,7 +1324,9 @@ dependencies = [
  "openbmp-propulsion",
  "openbmp-sim",
  "openbmp-state",
+ "serde",
  "thiserror",
+ "toml",
  "uom",
 ]
 

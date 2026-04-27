@@ -1,0 +1,55 @@
+# Synthetic reduced aero deck for the Niskanen 2009 Chapter-6
+# small-rocket benchmark (Schema 1).
+#
+# Sized to the 29 mm-diameter, 0.56 m-long body documented in
+# Niskanen 2009 Chapter 6. The deck is intentionally a reduced
+# point-mass deck:
+#   - One single-point alpha and beta axis (point-mass: zero AoA).
+#   - Constant axial CD = 0.8 across the Mach grid (the published
+#     Chapter-6 small-rocket case stays subsonic; the constant-CD
+#     reduction is documented in the Niskanen benchmark literature
+#     as a valid reference reduction for vertical-launch apogee
+#     comparison).
+#   - CN and CM identically zero (no normal force in the reduced
+#     point-mass model).
+# `extrapolation = "clamp"` is set because the Mach grid covers
+# `[0.0, 1.0]` and the rocket may briefly exceed M = 1.0 at peak
+# velocity; clamping to the boundary CD (= 0.8) is the documented
+# reduction.
+#
+# Reference area is the body cross-section
+# `π · (0.029/2)² = 6.605198554172541e-4 m²` in f64; the value below
+# is the exact f64 representation of that product.
+# Reference length is the body length `0.56 m`.
+#
+# This deck is **synthetic-openbmp**: the constant-CD reduction is
+# OpenBMP-authored. The body geometry (29 mm × 0.56 m) is the
+# extractable Chapter-6 published geometry; the constant-CD value
+# (0.8) is a documented reduced-deck assumption for the Phase-2.9
+# benchmark.
+
+openbmp.aero_deck = 1
+
+reference.area_m2  = 6.605198554172541e-4
+reference.length_m = 0.56
+
+provenance = "synthetic OpenBMP-authored reduced aero deck for the Niskanen 2009 Chapter-6 small-rocket benchmark; constant-CD point-mass reduction"
+validation = "validated-toy"
+
+extrapolation = "clamp"
+
+[grid]
+mach      = [0.0, 0.3, 0.5, 0.8, 1.0]
+alpha_deg = [0.0]
+beta_deg  = [0.0]
+
+[coefficients.cn]
+data = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+[coefficients.cd]
+# Constant axial CD = 0.8 across the Mach grid (point-mass
+# reduction; see file header).
+data = [0.8, 0.8, 0.8, 0.8, 0.8]
+
+[coefficients.cm]
+data = [0.0, 0.0, 0.0, 0.0, 0.0]
