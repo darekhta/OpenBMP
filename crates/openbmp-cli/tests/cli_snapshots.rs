@@ -64,6 +64,124 @@ fn check_on_canonical_scenario_succeeds() {
 }
 
 #[test]
+fn check_on_niskanen_scenario_resolves_aero_motor_and_pins() {
+    // Phase-2.10 canonical scenario: parses, validates, resolves the
+    // aero deck and Estes C6 motor file, and surfaces the SHA-256
+    // digests of both. Pin verification is exercised by the negative
+    // tests below.
+    let scenario = workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6.toml");
+    let mut cmd = openbmp();
+    cmd.arg("check").arg(&scenario);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    assert!(
+        stdout.starts_with("openbmp check: ok"),
+        "stdout was: {stdout}"
+    );
+    assert!(stdout.contains("niskanen-2009-chapter6"));
+    assert!(stdout.contains("Checked"));
+    // Aero deck reference resolved with declared pin.
+    assert!(
+        stdout.contains("aero.deck -> ")
+            && stdout.contains(
+                "(sha256:cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27)"
+            ),
+        "stdout was: {stdout}"
+    );
+    // Motor reference resolved with declared pin.
+    assert!(
+        stdout.contains("propulsion.motor.file -> ")
+            && stdout.contains(
+                "(sha256:da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e)"
+            ),
+        "stdout was: {stdout}"
+    );
+}
+
+#[test]
+fn check_on_niskanen_with_corrupt_pin_fails_closed() {
+    // Take the canonical Niskanen scenario, swap in an obviously-wrong
+    // pin for the aero deck, and confirm the parser fails closed with
+    // a SHA-256 mismatch error rather than silently running.
+    let temp = tempdir("badpin");
+    let staged = temp.path().join("scenario.toml");
+    let canonical = workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6.toml");
+    let original = fs::read_to_string(&canonical).expect("read canonical");
+    let bad_pin = "0".repeat(64);
+    let rewritten = original.replace(
+        "deck_sha256  = \"cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27\"",
+        &format!("deck_sha256  = \"{bad_pin}\""),
+    );
+    // Sanity: the replace actually did something.
+    assert_ne!(rewritten, original, "pin field not found in canonical");
+    fs::write(&staged, rewritten).expect("write staged");
+    // Materialise the referenced files via copy so the resolver can
+    // read them from `<temp>/../../data/...`.
+    let data_dir = temp.path().join("../../data");
+    let aero_dir = data_dir.join("aero");
+    let motor_dir = data_dir.join("motors");
+    fs::create_dir_all(&aero_dir).expect("aero dir");
+    fs::create_dir_all(&motor_dir).expect("motor dir");
+    fs::copy(
+        workspace_root().join("data/aero/synthetic-niskanen-ch6-rocket.toml"),
+        aero_dir.join("synthetic-niskanen-ch6-rocket.toml"),
+    )
+    .expect("copy deck");
+    fs::copy(
+        workspace_root().join("data/motors/estes-c6-eng-derived.toml"),
+        motor_dir.join("estes-c6-eng-derived.toml"),
+    )
+    .expect("copy motor");
+
+    let mut cmd = openbmp();
+    cmd.arg("check").arg(&staged);
+    let assert = cmd.assert();
+    let output = assert.get_output();
+    assert!(
+        !output.status.success(),
+        "exit status should be non-zero, was {:?}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("SHA-256 mismatch"),
+        "stderr should explain the failure, got: {stderr}"
+    );
+}
+
+#[test]
+fn check_on_niskanen_with_missing_motor_file_fails_closed() {
+    // Take the canonical Niskanen scenario, repoint the motor at a
+    // non-existent path, and confirm the parser fails closed with the
+    // referenced-file-missing error rather than silently running.
+    let temp = tempdir("missingmotor");
+    let staged = temp.path().join("scenario.toml");
+    let canonical = workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6.toml");
+    let original = fs::read_to_string(&canonical).expect("read canonical");
+    let rewritten = original.replace(
+        "../../data/motors/estes-c6-eng-derived.toml",
+        "../../data/motors/no-such-motor.toml",
+    );
+    assert_ne!(rewritten, original, "motor path not found in canonical");
+    fs::write(&staged, rewritten).expect("write staged");
+
+    let mut cmd = openbmp();
+    cmd.arg("check").arg(&staged);
+    let assert = cmd.assert();
+    let output = assert.get_output();
+    assert!(
+        !output.status.success(),
+        "exit status should be non-zero, was {:?}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("could not be read"),
+        "stderr should explain the failure, got: {stderr}"
+    );
+}
+
+#[test]
 fn check_with_unknown_field_fails_with_structured_error() {
     let temp = tempdir("badfield");
     let staged = temp.path().join("scenario.toml");

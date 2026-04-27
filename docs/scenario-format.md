@@ -4,8 +4,14 @@ OpenBMP scenarios are TOML-shaped, versioned configuration files. They define
 models, initial state, deterministic schedule, telemetry outputs, and
 validation rules for one simulation run.
 
-This document is the Phase-1 format contract. It intentionally favors strict,
-verbose fields over compact syntax.
+The schema header is `openbmp.scenario = 1`. Phase 2 added optional blocks
+(`[aero]`, `[propulsion]`, `[wind]`, `[atmosphere]`, `[frames.local_origin]`,
+`[sensors]`) without bumping the schema version, so all Phase-1 scenarios
+continue to parse byte-identically. Phase-2 specifics live in the
+[Phase-2 Extensions](#phase-2-extensions) section at the bottom.
+
+This document is the format contract. It intentionally favors strict, verbose
+fields over compact syntax.
 
 ## Format Rules
 
@@ -32,6 +38,10 @@ verbose fields over compact syntax.
 | `[validation]` | yes | Runtime validation rules |
 | `[epoch]` | no | Absolute time metadata |
 | `[frames]` | no | Frame profile and local origins |
+| `[aero]` | no | External aerodynamic deck reference (Phase 2.10) |
+| `[propulsion]` | no | Motor reference; ignition time (Phase 2.10) |
+| `[wind]` | no | Structured wind block; overrides `environment.wind` (Phase 2.10) |
+| `[atmosphere]` | no | Structured atmosphere block; overrides `environment.atmosphere` (Phase 2.10) |
 | `[solver]` | no | Integrator / solver profile; required for Phase-6 hypersonic scenarios |
 | `[data_packages]` | no | External real-data or high-fidelity reference package sidecars |
 | `[sensors]` | no | Synthetic sensor models |
@@ -250,3 +260,182 @@ Phase 1 should provide `openbmp check scenario.toml`. The check should:
 - Report all diagnostics before returning failure when possible.
 
 The same check runs in CI for every committed scenario.
+
+## Phase 2 Extensions
+
+Phase 2.10 added scenario-format extensions for sounding-rocket scenarios.
+Every new block is optional; existing Phase-1 scenarios parse unchanged.
+The canonical worked example is
+[`scenarios/sounding-rocket/niskanen-2009-chapter6.toml`](../scenarios/sounding-rocket/niskanen-2009-chapter6.toml).
+
+### Rigid-body initial state
+
+When `[vehicle].kind = "rigid_body"`, two additional fields are required:
+
+```toml
+[vehicle]
+kind                                 = "rigid_body"
+mass_kg                              = 1.5
+initial_position_eci_m               = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s             = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw  = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s  = [0.0, 0.0, 0.0]
+```
+
+The quaternion is the body-to-ECI rotation in `[x, y, z, w]` order;
+the parser checks unit-norm to 1e-9. The two rigid-body fields are
+rejected when `kind = "point_mass"`.
+
+### Gravity coefficients
+
+`[environment].gravity` selects one of `constant`, `point_mass`, or `j2`,
+each with its own required-coefficient set:
+
+| `gravity` | Required | Rejected |
+|---|---|---|
+| `"constant"` | `gravity_m_s2` | `mu_m3_s2`, `r_e_m`, `j2` |
+| `"point_mass"` | `mu_m3_s2` | `gravity_m_s2` |
+| `"j2"` | `mu_m3_s2`, `r_e_m` | `gravity_m_s2` |
+
+For `gravity = "j2"` the dimensionless `j2` coefficient defaults to the
+WGS84 value (1.082626683 × 10⁻³) when omitted.
+
+### Frames local origin
+
+When `[frames]` is present, an optional local origin anchors NED wind,
+altitude, and the WGS84 launch initialisation:
+
+```toml
+[frames]
+profile = "wgs84-uniform-rotation"
+
+[frames.local_origin]
+latitude_deg  = 60.18
+longitude_deg = 24.83
+height_m      = 0.0
+source        = "Helsinki proxy launch site (Niskanen 2009 Chapter 6)."
+```
+
+Latitude is in `[-90, 90]`, longitude in `[-180, 180]`. The `source`
+field is a free-form provenance string for the declared origin and is
+not optional.
+
+### Aero deck reference
+
+```toml
+[aero]
+deck         = "../../data/aero/synthetic-niskanen-ch6-rocket.toml"
+deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27"
+```
+
+`deck` is resolved relative to the scenario file directory. The optional
+`deck_sha256` field pins the file's SHA-256 digest; mismatches fail
+closed. The deck format itself is the Phase-2.5 schema-1 deck
+documented in [`software-architecture.md § Deck Format`](software-architecture.md#deck-format-in-house-toml).
+
+### Motor reference
+
+```toml
+[propulsion.motor]
+file         = "../../data/motors/estes-c6-eng-derived.toml"
+ignite_at_s  = 0.0
+variant      = "solid"
+file_sha256  = "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e"
+```
+
+`variant` is optional; when present, must match the variant the motor
+file declares. `ignite_at_s` is the time since scenario start when the
+motor begins burning; finite-required, no positivity rule (negative
+values are an explicit pre-roll convention).
+
+### Wind block
+
+`[wind]` is the structured wind selection. When present, its `kind`
+must agree with the flat `environment.wind` (unless the latter is
+`"none"`, in which case the structured block wins):
+
+```toml
+[environment]
+wind = "constant"
+
+[wind]
+kind         = "constant"
+wind_ned_m_s = [3.0, 0.0, 0.0]
+```
+
+`wind_ned_m_s` is required when `kind = "constant"`, rejected
+otherwise.
+
+### Atmosphere block
+
+Symmetric to `[wind]`:
+
+```toml
+[environment]
+atmosphere = "us_standard_1976"
+
+[atmosphere]
+kind = "us_standard_1976"
+```
+
+When `kind = "isothermal"`, the block requires `density_kg_m3`,
+`pressure_pa`, and `temperature_k`. For `us_standard_1976` no
+additional state is required (the model is parameterless).
+
+### Sensors
+
+`[sensors.<name>]` declares one synthetic sensor per entry. The
+`<name>` becomes the sensor's stable identifier; reordering entries
+does not shift RNG streams (per Phase 2.7).
+
+```toml
+[sensors.imu]
+kind         = "imu"
+file         = "../../data/sensors/imu-tactical.toml"
+file_sha256  = "537d60b57650f3d7569b338b6de2de97119b4401f2f244d173330be7aa37454e"
+
+[sensors.barometer]
+kind = "barometer"
+file = "../../data/sensors/baro-consumer.toml"
+
+[sensors.truth]
+kind = "ideal_state"
+```
+
+`kind = "ideal_state"` carries no noise budget and rejects `file`;
+`kind = "imu" | "barometer"` requires `file`.
+
+### Force model registry (Phase 2)
+
+Phase-2 force-model names accepted in `[forces].models`:
+
+| Name | Source | Notes |
+|---|---|---|
+| `gravity` | `openbmp-env` | Constant, point-mass, or J2 (selected by `[environment].gravity`) |
+| `aero` | `openbmp-aero` | Requires `[aero]` block |
+| `thrust` | `openbmp-propulsion` | Requires `[propulsion.motor]` block |
+
+The list is ordered and deterministic; reordering changes telemetry
+bytes.
+
+### Hash pinning
+
+Every external file referenced by the scenario can carry an optional
+`*_sha256` companion field (`aero.deck_sha256`,
+`propulsion.motor.file_sha256`, `sensors.<name>.file_sha256`). When
+present, the parser computes the file's SHA-256 digest at load time
+and fails closed on mismatch. When absent, the digest is still
+computed and recorded in the telemetry header for replay verification.
+
+`openbmp check` surfaces resolved digests in its output:
+
+```
+openbmp check: ok — niskanen-2009-chapter6 (Checked)
+  telemetry.output.parquet -> .../out/niskanen-2009-chapter6.parquet
+  aero.deck -> .../data/aero/...toml (sha256:cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27)
+  propulsion.motor.file -> .../data/motors/estes-c6-eng-derived.toml (sha256:da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e)
+```
+
+The digest is the SHA-256 of the file bytes encoded as 64 lower-case
+hex characters; pin strings are normalised before comparison so
+upper-case input still verifies.

@@ -1,0 +1,84 @@
+# Niskanen 2009 Chapter-6 small-rocket benchmark — canonical Phase-2.10 scenario.
+#
+# Vehicle geometry, mass, axial-CD assumption, motor (Estes C6), and
+# reference apogee come from Niskanen 2009 ("Development of an
+# Open-Source Model Rocket Simulation Software", M.Sc. thesis, Helsinki
+# UT) Chapter 6 Table 6.1 + the surrounding text. The Phase-2.9
+# integration test in `crates/openbmp-vehicle/tests/sounding_rocket.rs`
+# already exercises this benchmark via include_str! against the same
+# data files; this canonical scenario is the Phase-2.10 form that the
+# Phase-2.11 runner will consume end-to-end via the standard
+# `openbmp run` command.
+#
+# Coordinate system. Phase-2.9 chose vertical ECI-`+z` launch as a
+# point-mass adapter-test convention. We keep the same convention here
+# so the scenario reproduces the Phase-2.9 hash. Phase-3 will replace
+# this with a proper local-NED launch initialisation after the rigid
+# body integrator lands.
+#
+# Pinned digests are SHA-256 of the referenced files at the commit
+# that ships this scenario; mismatches fail closed.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "niskanen-2009-chapter6"
+description = "Niskanen 2009 Chapter-6 small model rocket; Estes C6 motor, point-mass reduction with constant axial CD."
+validation  = "checked"
+provenance  = "Niskanen 2009 Chapter 6, Helsinki UT MSc thesis; reference apogees in `data/scenarios/niskanen-2009-chapter6.toml`."
+
+[time]
+start_s = 0.0
+stop_s  = 20.0
+dt_s    = 0.001
+seed    = 0x4e69_736b_616e_656e
+
+[vehicle]
+kind                     = "point_mass"
+# Dry-airframe mass; Niskanen Chapter-6 small rocket carries an 80 g
+# airframe.
+mass_kg                  = 0.080
+initial_position_eci_m   = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "wgs84-uniform-rotation"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "us_standard_1976"
+wind          = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[frames]
+profile = "wgs84-uniform-rotation"
+
+[frames.local_origin]
+# Helsinki proxy launch site (no exact site published by Niskanen
+# Chapter 6). Latitude / longitude carry the launch-site geodetic
+# reference; height_m is sea level.
+latitude_deg  = 60.18
+longitude_deg = 24.83
+height_m      = 0.0
+source        = "Helsinki proxy launch site (Niskanen 2009 Chapter 6 does not publish exact coordinates)."
+
+[aero]
+deck         = "../../data/aero/synthetic-niskanen-ch6-rocket.toml"
+deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27"
+
+[propulsion.motor]
+file         = "../../data/motors/estes-c6-eng-derived.toml"
+ignite_at_s  = 0.0
+variant      = "solid"
+file_sha256  = "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e"
+
+[forces]
+models = ["gravity", "thrust", "aero"]
+
+[telemetry]
+output.parquet = "out/niskanen-2009-chapter6.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true

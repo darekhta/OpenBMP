@@ -86,6 +86,12 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
             for (key, path) in report.resolved_paths {
                 println!("  {key} -> {path}");
             }
+            for entry in report.resolved_files {
+                println!(
+                    "  {} -> {} (sha256:{})",
+                    entry.field, entry.path, entry.sha256_hex,
+                );
+            }
             Ok(())
         }
         Command::CheckProvenance { root } => {
