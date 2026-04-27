@@ -1,0 +1,93 @@
+# Phase-2.10 sounding-rocket-shaped parser fixture.
+#
+# This file is intentionally synthetic. Every numeric value here is a
+# clean round number chosen to exercise parser shape, NOT a real
+# benchmark physical constant. The Phase-2.10 parser tests in
+# `crates/openbmp-scenario/src/scenario.rs` mutate this fixture with
+# `replace(...)` to construct negative-test variants.
+#
+# Real validation cases live elsewhere:
+# - Canonical scenarios under `scenarios/<category>/<name>.toml` with
+#   real WGS84 constants and SHA-256-pinned external references
+#   (e.g., `scenarios/sounding-rocket/niskanen-2009-chapter6.toml`).
+# - Reference physical constants under `data/<category>/<name>.toml`
+#   with sibling `provenance.md`.
+#
+# DO NOT introduce real benchmark numbers here. The CI tripwire in
+# `crates/openbmp-testkit/tests/inline_data_tripwire.rs` will fail the
+# build if known WGS84 / NIMA / NIST constants appear in this file.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "sounding-rocket-fixture"
+description = "Phase-2.10 parser fixture exercising rigid body, aero deck, motor, structured wind/atmosphere, frames local origin, sensors. Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 20.0
+dt_s    = 0.001
+seed    = 0xdeadbeef
+
+[vehicle]
+kind                                 = "rigid_body"
+mass_kg                              = 1.5
+initial_position_eci_m               = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s             = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw  = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s  = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "wgs84-uniform-rotation"
+gravity       = "j2"
+mu_m3_s2      = 4.0e14
+r_e_m         = 6_400_000.0
+j2            = 1.0e-3
+atmosphere    = "us_standard_1976"
+wind          = "constant"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[wind]
+kind         = "constant"
+wind_ned_m_s = [0.0, 0.0, 0.0]
+
+[frames]
+profile = "wgs84-uniform-rotation"
+
+[frames.local_origin]
+latitude_deg  = 0.0
+longitude_deg = 0.0
+height_m      = 0.0
+source        = "Synthetic origin (parser fixture, not a launch site)."
+
+[aero]
+deck = "../aero/synthetic-finned-cylinder.toml"
+
+[propulsion.motor]
+file        = "../motors/synthetic-solid-textbook.toml"
+ignite_at_s = 0.0
+variant     = "solid"
+
+[forces]
+models = ["gravity", "aero", "thrust"]
+
+[sensors.imu]
+kind = "imu"
+file = "../sensors/imu-tactical.toml"
+
+[sensors.barometer]
+kind = "barometer"
+file = "../sensors/baro.toml"
+
+[sensors.truth]
+kind = "ideal_state"
+
+[telemetry]
+output.parquet = "out/sounding-rocket.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true

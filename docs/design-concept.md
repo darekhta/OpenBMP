@@ -164,6 +164,13 @@ record naming the source, license, retrieval date, and verification method.
 Datasets without acceptable provenance are removed. The required provenance
 record is defined in [data-provenance.md](data-provenance.md).
 
+The four-pillar contract is enforced at `cargo test` time by the
+inline-data tripwires (see
+[data-provenance.md § Inline Data Tripwires](data-provenance.md#inline-data-tripwires)).
+The tripwires fail the build on module-level raw-string TOML in `*.rs`
+source and on high-precision benchmark constants outside their declared
+source-of-truth files, so benchmark-data smuggling cannot pass review.
+
 ### 9. Explicit frames, time, and numerics
 
 Frame transforms, time scales, Earth models, and deterministic floating-point

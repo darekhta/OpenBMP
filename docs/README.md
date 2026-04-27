@@ -29,7 +29,8 @@ rocket-class and launch-vehicle-class flight simulation.
 - [Frames and Time](frames-time.md) — frame profiles, WGS84/ECI/ECEF/local
   frame conventions, epoch metadata, leap-second and EOP handling.
 - [Data Provenance](data-provenance.md) — required source records, source
-  classes, transformation rules, validation status, and machine checks.
+  classes, transformation rules, validation status, machine checks, and the
+  inline-data tripwires that fail the build on benchmark-data smuggling.
 - [Supply Chain](supply-chain.md) — Rust dependency policy, release SBOM,
   dependency checks, and build-provenance expectations.
 - [Modeling Guide](modeling-guide.md) — stable placeholder for model author

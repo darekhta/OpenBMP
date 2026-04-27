@@ -196,31 +196,17 @@ impl MetricTolerance {
 mod tests {
     use super::*;
 
-    // Parser-test fixture. The `case`, `source`, metric names, and
-    // numerical values are intentionally synthetic — clean integers
-    // chosen so the abs/rel tolerance arithmetic in the assertions
-    // below is easy to verify by hand. This fixture does NOT
-    // represent any real benchmark; real validation cases ship as
-    // their own files under `data/scenarios/` (or
-    // `crates/<crate>/tests/expected/`) with full provenance per
-    // `docs/data-provenance.md`.
-    const SAMPLE: &str = r#"
-        case = "test-tolerance-fixture"
-        source = "test fixture"
-        validation = "validated-toy"
-
-        [[metric]]
-        name = "metric_a"
-        expected = 10.0
-        absolute_tolerance = 0.05
-        relative_tolerance = 0.01
-
-        [[metric]]
-        name = "metric_b"
-        expected = 100.0
-        absolute_tolerance = 0.5
-        relative_tolerance = 0.01
-    "#;
+    // Parser-test fixture loaded from a sibling file so the four-pillar
+    // provenance contract is unambiguous: the file lives under
+    // `tests/fixtures/`, marking it as a synthetic parser test
+    // artefact, not a benchmark. The constants inside are
+    // intentionally synthetic round numbers — see the CI tripwire in
+    // `crates/openbmp-testkit/tests/inline_data_tripwire.rs` and the
+    // "Inline Data Tripwires" section of `docs/data-provenance.md`.
+    const SAMPLE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/tolerance-sample.toml"
+    ));
 
     #[test]
     fn parses_valid_document() {

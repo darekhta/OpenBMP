@@ -310,89 +310,22 @@ mod tests {
         assert!(matches!(err, ScenarioError::MissingTelemetryOutput));
     }
 
-    // Phase-2.10 sounding-rocket-shaped fixture. Exercises every new
-    // optional block (`[aero]`, `[propulsion.motor]`, `[wind]`,
-    // `[atmosphere]`, `[frames.local_origin]`, `[sensors.<name>]`)
-    // plus the rigid-body initial-state fields. The Phase-2.10 parser
-    // tests below mutate this fixture with `replace(...)` to construct
-    // negative-test variants; the canonical Niskanen scenario lives at
-    // `scenarios/sounding-rocket/niskanen-2009-chapter6.toml`.
-    const SOUNDING_ROCKET: &str = r#"
-openbmp.scenario = 1
-
-[meta]
-name = "sounding-rocket-fixture"
-description = "Phase-2.10 parser fixture exercising rigid body, aero deck, motor, structured wind/atmosphere, frames local origin, sensors."
-validation = "experimental"
-
-[time]
-start_s = 0.0
-stop_s = 20.0
-dt_s = 0.001
-seed = 0xdeadbeef
-
-[vehicle]
-kind = "rigid_body"
-mass_kg = 1.5
-initial_position_eci_m = [0.0, 0.0, 0.0]
-initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
-initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
-initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
-
-[environment]
-frame_profile = "wgs84-uniform-rotation"
-gravity = "j2"
-mu_m3_s2 = 3.986004418e14
-r_e_m = 6378137.0
-j2 = 1.082626683e-3
-atmosphere = "us_standard_1976"
-wind = "constant"
-
-[atmosphere]
-kind = "us_standard_1976"
-
-[wind]
-kind = "constant"
-wind_ned_m_s = [0.0, 0.0, 0.0]
-
-[frames]
-profile = "wgs84-uniform-rotation"
-
-[frames.local_origin]
-latitude_deg = 60.18
-longitude_deg = 24.83
-height_m = 0.0
-source = "Helsinki proxy launch site"
-
-[aero]
-deck = "../aero/synthetic-finned-cylinder.toml"
-
-[propulsion.motor]
-file = "../motors/synthetic-solid-textbook.toml"
-ignite_at_s = 0.0
-variant = "solid"
-
-[forces]
-models = ["gravity", "aero", "thrust"]
-
-[sensors.imu]
-kind = "imu"
-file = "../sensors/imu-tactical.toml"
-
-[sensors.barometer]
-kind = "barometer"
-file = "../sensors/baro.toml"
-
-[sensors.truth]
-kind = "ideal_state"
-
-[telemetry]
-output.parquet = "out/sounding-rocket.parquet"
-
-[validation]
-require_finite_state = true
-require_monotonic_time = true
-"#;
+    // Phase-2.10 sounding-rocket-shaped fixture. Loaded from a sibling
+    // file so the four-pillar provenance contract is unambiguous: the
+    // file lives under `tests/fixtures/`, marking it as a synthetic
+    // parser test artefact, not a benchmark scenario. The constants
+    // inside are intentionally synthetic round numbers — see the
+    // CI tripwire in
+    // `crates/openbmp-testkit/tests/inline_data_tripwire.rs` and the
+    // "Inline Data Tripwires" section of `docs/data-provenance.md`.
+    //
+    // Real validation cases live under `scenarios/sounding-rocket/...`
+    // (e.g., `niskanen-2009-chapter6.toml`); reference physical
+    // constants live under `data/<category>/...` with provenance.
+    const SOUNDING_ROCKET: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sounding-rocket.toml"
+    ));
 
     #[test]
     fn parses_sounding_rocket_scenario() {
@@ -414,7 +347,7 @@ require_monotonic_time = true
     #[test]
     fn rejects_rigid_body_without_quaternion() {
         let toml = SOUNDING_ROCKET.replace(
-            "initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]\n",
+            "initial_quaternion_body_to_eci_xyzw  = [0.0, 0.0, 0.0, 1.0]\n",
             "",
         );
         let err = Scenario::from_toml_str(&toml).unwrap_err();
@@ -426,7 +359,10 @@ require_monotonic_time = true
 
     #[test]
     fn rejects_point_mass_with_quaternion() {
-        let toml = SOUNDING_ROCKET.replace(r#"kind = "rigid_body""#, r#"kind = "point_mass""#);
+        let toml = SOUNDING_ROCKET.replace(
+            r#"kind                                 = "rigid_body""#,
+            r#"kind                                 = "point_mass""#,
+        );
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "vehicle.initial_quaternion_body_to_eci_xyzw"),
@@ -437,8 +373,8 @@ require_monotonic_time = true
     #[test]
     fn rejects_non_unit_quaternion() {
         let toml = SOUNDING_ROCKET.replace(
-            "initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]",
-            "initial_quaternion_body_to_eci_xyzw = [1.0, 0.0, 0.0, 1.0]",
+            "initial_quaternion_body_to_eci_xyzw  = [0.0, 0.0, 0.0, 1.0]",
+            "initial_quaternion_body_to_eci_xyzw  = [1.0, 0.0, 0.0, 1.0]",
         );
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
@@ -449,7 +385,7 @@ require_monotonic_time = true
 
     #[test]
     fn rejects_latitude_out_of_range() {
-        let toml = SOUNDING_ROCKET.replace("latitude_deg = 60.18", "latitude_deg = 91.0");
+        let toml = SOUNDING_ROCKET.replace("latitude_deg  = 0.0", "latitude_deg  = 91.0");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "frames.local_origin.latitude_deg"),
@@ -460,8 +396,8 @@ require_monotonic_time = true
     #[test]
     fn rejects_atmosphere_kind_disagreement() {
         let toml = SOUNDING_ROCKET.replace(
-            r#"atmosphere = "us_standard_1976""#,
-            r#"atmosphere = "isothermal""#,
+            r#"atmosphere    = "us_standard_1976""#,
+            r#"atmosphere    = "isothermal""#,
         );
         // The structured `[atmosphere].kind = "us_standard_1976"` now
         // conflicts with `environment.atmosphere = "isothermal"`.
@@ -475,8 +411,8 @@ require_monotonic_time = true
     #[test]
     fn rejects_wind_kind_disagreement() {
         let toml = SOUNDING_ROCKET.replace(
-            "[wind]\nkind = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]",
-            "[wind]\nkind = \"none\"",
+            "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]",
+            "[wind]\nkind         = \"none\"",
         );
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
@@ -509,8 +445,8 @@ require_monotonic_time = true
     fn rejects_isothermal_atmosphere_without_state() {
         let toml = SOUNDING_ROCKET
             .replace(
-                r#"atmosphere = "us_standard_1976""#,
-                r#"atmosphere = "isothermal""#,
+                r#"atmosphere    = "us_standard_1976""#,
+                r#"atmosphere    = "isothermal""#,
             )
             .replace(
                 r#"[atmosphere]
@@ -583,8 +519,8 @@ kind = "isothermal""#,
     #[test]
     fn rejects_constant_gravity_with_mu() {
         let toml = SOUNDING_ROCKET.replace(
-            "gravity = \"j2\"\nmu_m3_s2 = 3.986004418e14\nr_e_m = 6378137.0\nj2 = 1.082626683e-3",
-            "gravity = \"constant\"\ngravity_m_s2 = 9.80665\nmu_m3_s2 = 3.986004418e14",
+            "gravity       = \"j2\"\nmu_m3_s2      = 4.0e14\nr_e_m         = 6_400_000.0\nj2            = 1.0e-3",
+            "gravity       = \"constant\"\ngravity_m_s2  = 9.80665\nmu_m3_s2      = 4.0e14",
         );
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
@@ -595,7 +531,7 @@ kind = "isothermal""#,
 
     #[test]
     fn rejects_j2_gravity_without_r_e() {
-        let toml = SOUNDING_ROCKET.replace("r_e_m = 6378137.0\n", "");
+        let toml = SOUNDING_ROCKET.replace("r_e_m         = 6_400_000.0\n", "");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "environment.r_e_m"),
@@ -605,10 +541,8 @@ kind = "isothermal""#,
 
     #[test]
     fn rejects_point_mass_gravity_with_j2_coefficients() {
-        let toml = SOUNDING_ROCKET.replace(
-            "gravity = \"j2\"\nmu_m3_s2 = 3.986004418e14\nr_e_m = 6378137.0\nj2 = 1.082626683e-3",
-            "gravity = \"point_mass\"\nmu_m3_s2 = 3.986004418e14\nr_e_m = 6378137.0\nj2 = 1.082626683e-3",
-        );
+        let toml =
+            SOUNDING_ROCKET.replace("gravity       = \"j2\"", "gravity       = \"point_mass\"");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "environment.r_e_m / environment.j2"),
@@ -618,7 +552,7 @@ kind = "isothermal""#,
 
     #[test]
     fn j2_gravity_uses_wgs84_default_when_j2_is_omitted() {
-        let toml = SOUNDING_ROCKET.replace("j2 = 1.082626683e-3\n", "");
+        let toml = SOUNDING_ROCKET.replace("j2            = 1.0e-3\n", "");
         let scenario = Scenario::from_toml_str(&toml).unwrap();
         assert_eq!(
             scenario
@@ -633,7 +567,7 @@ kind = "isothermal""#,
 
     #[test]
     fn rejects_unknown_motor_variant() {
-        let toml = SOUNDING_ROCKET.replace(r#"variant = "solid""#, r#"variant = "liquid""#);
+        let toml = SOUNDING_ROCKET.replace(r#"variant     = "solid""#, r#"variant     = "liquid""#);
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::UnknownModel { .. }),

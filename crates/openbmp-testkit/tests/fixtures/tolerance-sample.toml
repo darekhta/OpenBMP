@@ -1,0 +1,28 @@
+# Tolerance-table parser fixture.
+#
+# The `case`, `source`, metric names, and numerical values are
+# intentionally synthetic — clean integers chosen so the abs/rel
+# tolerance arithmetic in the openbmp-testkit tolerance tests is easy
+# to verify by hand. This fixture does NOT represent any real
+# benchmark; real validation cases ship as their own files under
+# `data/scenarios/` (or `crates/<crate>/tests/expected/`) with full
+# provenance per `docs/data-provenance.md`.
+#
+# DO NOT introduce real benchmark numbers here. The CI tripwire in
+# `crates/openbmp-testkit/tests/inline_data_tripwire.rs` enforces this.
+
+case       = "test-tolerance-fixture"
+source     = "test fixture"
+validation = "validated-toy"
+
+[[metric]]
+name               = "metric_a"
+expected           = 10.0
+absolute_tolerance = 0.05
+relative_tolerance = 0.01
+
+[[metric]]
+name               = "metric_b"
+expected           = 100.0
+absolute_tolerance = 0.5
+relative_tolerance = 0.01

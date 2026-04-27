@@ -404,3 +404,76 @@ Phase 1 should add `openbmp check-provenance` or an equivalent CI task that:
 
 The check is advisory during Phase 0 documentation work and blocking once the
 first public data file is committed.
+
+## Inline Data Tripwires
+
+Real benchmark physical constants — WGS84 GM, J2, equatorial radius, motor
+thrust curves, atmospheric tables, aero coefficients — must live in
+`data/<category>/<name>.toml` files with sibling `provenance.md` and
+SHA-256 pinning. Inlining real benchmark numbers as Rust string literals,
+constants, or test fixtures is the historical "Niskanen-class" violation
+pattern: the value reaches the codebase without provenance, becomes hard to
+trace, and accumulates copy-paste callers.
+
+This contract is enforced at `cargo test` time by the workspace tripwires
+in
+[`crates/openbmp-testkit/tests/inline_data_tripwire.rs`](../crates/openbmp-testkit/tests/inline_data_tripwire.rs).
+The tripwires fail the build on:
+
+1. **Module-level raw-string TOML in `*.rs` source.** Any
+   `const FOO: &str = r#"…"#;` (or `pub const`, `static`) whose body
+   contains an OpenBMP schema header (`openbmp.scenario`,
+   `openbmp.aero_deck`, `openbmp.motor`, `openbmp.imu_noise_budget`,
+   `openbmp.benchmark`) or a `[[metric]]` table marker. TOML test
+   fixtures must live in a sibling file under
+   `crates/<crate>/tests/fixtures/<name>.toml` and be loaded via
+   `include_str!`. Function-local raw strings in test bodies (e.g.,
+   `let toml = r#"…"#;` inside one negative-test function) are allowed
+   because they do not accumulate cross-test reuse.
+2. **High-precision benchmark constants outside their declared
+   source-of-truth.** The current tripwire table:
+
+   | Constant | Needle | Allowed in |
+   |---|---|---|
+   | WGS84 GM | `3.986004418` | `data/gravity/wgs84-j2.toml`, `data/gravity/provenance.md`, `docs/phase-2-plan.md` |
+   | WGS84 J2 (unnormalised) | `1.082626683` | `data/gravity/wgs84-j2.toml`, `data/gravity/provenance.md`, `docs/phase-2-plan.md`, `docs/scenario-format.md`, `crates/openbmp-env/src/gravity.rs` |
+   | WGS84 equatorial radius | `6378137.0` | `data/gravity/wgs84-j2.toml`, `data/gravity/provenance.md`, `docs/phase-2-plan.md`, `crates/openbmp-env/src/atmosphere/us_standard_1976.rs` |
+
+   The Rust source-of-truth for the J2 default lives at
+   `crates/openbmp-scenario/src/document.rs::WGS84_J2_DEFAULT`, written in
+   the underscored form `1.082_626_683e-3` so it does not match the
+   canonical-form needle by accident.
+
+### Where test fixtures go
+
+| File location | Provenance requirement | Example |
+|---|---|---|
+| `data/<category>/<name>.toml` | Sibling `provenance.md` + SHA-256 pin | `data/gravity/wgs84-j2.toml` |
+| `scenarios/<category>/<name>.toml` | Real validation case; references `data/` files with pinned digests | `scenarios/sounding-rocket/niskanen-2009-chapter6.toml` |
+| `crates/<crate>/tests/fixtures/<name>.toml` | Synthetic test artefact; no benchmark numbers | `crates/openbmp-scenario/tests/fixtures/sounding-rocket.toml` |
+| `crates/<crate>/tests/expected/<name>.toml` | Tolerance tables; clean integers, no benchmark provenance | `crates/openbmp-cli/tests/expected/constant-acceleration-drop.toml` |
+
+A fixture in `tests/fixtures/` must be obviously synthetic — clean round
+numbers, fictional names, no published-reference values. The header comment
+of the file should state "Synthetic; not a benchmark." so future readers
+cannot mistake it for a validation case.
+
+### Adding a new tripwire entry
+
+When the project ships a new physical constant from an external
+authoritative reference (e.g., a new gravity model, a new propellant
+constant), the path is:
+
+1. Land the value in a `data/<category>/<name>.toml` file with a sibling
+   `provenance.md` entry citing the source.
+2. If the value is also needed at compile time, add a single
+   `pub const NAME: f64 = …;` in the appropriate crate with a citation
+   comment naming the same source.
+3. Add a `Tripwire` entry to
+   `crates/openbmp-testkit/tests/inline_data_tripwire.rs` listing the
+   source-of-truth files in `allow_list`. The
+   `tripwire_finds_known_examples_in_allow_listed_files` test enforces
+   that the allow-list does not go stale.
+
+The allow-list itself is reviewable in PR; reviewers can verify the new
+constant has provenance before extending the list.
