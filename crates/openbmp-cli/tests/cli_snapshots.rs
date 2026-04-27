@@ -73,10 +73,7 @@ fn check_with_unknown_field_fails_with_structured_error() {
     .expect("read canonical");
     fs::write(
         &staged,
-        original.replace(
-            "mass_kg                    = 1.0",
-            "mass_kg = 1.0\nextra_kg = 2.0",
-        ),
+        original.replace("mass_kg = 1.0", "mass_kg = 1.0\nextra_kg = 2.0"),
     )
     .expect("write staged");
 
@@ -108,8 +105,8 @@ fn run_writes_telemetry_outputs_and_reports_stop_reason() {
     .expect("read canonical");
     let rewritten = original
         .replace(
-            "output.csv     = \"out/constant-acceleration-drop.csv\"",
-            &format!("output.csv     = \"{}\"", csv.display()),
+            "output.csv = \"out/constant-acceleration-drop.csv\"",
+            &format!("output.csv = \"{}\"", csv.display()),
         )
         .replace(
             "output.parquet = \"out/constant-acceleration-drop.parquet\"",
@@ -170,8 +167,8 @@ fn diff_reports_identical_for_self_compare() {
     .expect("read canonical");
     let rewritten = original
         .replace(
-            "output.csv     = \"out/constant-acceleration-drop.csv\"",
-            &format!("output.csv     = \"{}\"", csv.display()),
+            "output.csv = \"out/constant-acceleration-drop.csv\"",
+            &format!("output.csv = \"{}\"", csv.display()),
         )
         .replace(
             "output.parquet = \"out/constant-acceleration-drop.parquet\"",

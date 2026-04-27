@@ -21,15 +21,15 @@ provenance = "synthetic; closed-form drop under constant gravity; no external da
 
 [time]
 start_s = 0.0
-stop_s  = 10.0
-dt_s    = 0.01
-seed    = 0x0afe_f00d_dead_beef
+stop_s = 10.0
+dt_s = 0.01
+seed = 0x0afe_f00d_dead_beef
 
 [vehicle]
-kind                       = "point_mass"
-mass_kg                    = 1.0
-initial_position_eci_m     = [0.0, 0.0, 0.0]
-initial_velocity_eci_m_s   = [0.0, 0.0, 0.0]
+kind = "point_mass"
+mass_kg = 1.0
+initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
 
 [environment]
 frame_profile = "toy-fixed-earth"
@@ -42,9 +42,9 @@ wind          = "none"
 models = ["gravity"]
 
 [telemetry]
-output.csv     = "out/constant-acceleration-drop.csv"
+output.csv = "out/constant-acceleration-drop.csv"
 output.parquet = "out/constant-acceleration-drop.parquet"
 
 [validation]
-require_finite_state   = true
+require_finite_state = true
 require_monotonic_time = true

@@ -138,44 +138,18 @@ mod tests {
     use super::*;
     use openbmp_core::ValidationStatus;
 
-    const MINIMAL: &str = r#"
-openbmp.scenario = 1
-
-[meta]
-name = "constant-acceleration-drop"
-description = "Analytic toy scenario for vertical acceleration."
-validation = "validated-toy"
-
-[time]
-start_s = 0.0
-stop_s = 10.0
-dt_s = 0.01
-seed = 42
-
-[vehicle]
-kind = "point_mass"
-mass_kg = 1.0
-initial_position_eci_m = [0.0, 0.0, 0.0]
-initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
-
-[environment]
-frame_profile = "toy-fixed-earth"
-gravity = "constant"
-gravity_m_s2 = 9.80665
-atmosphere = "none"
-wind = "none"
-
-[forces]
-models = ["gravity"]
-
-[telemetry]
-output.csv = "out/constant-acceleration-drop.csv"
-output.parquet = "out/constant-acceleration-drop.parquet"
-
-[validation]
-require_finite_state = true
-require_monotonic_time = true
-"#;
+    // Parser-test fixture loaded from the canonical Phase-1
+    // analytic-toy scenario at
+    // `scenarios/analytic-toy/constant-acceleration-drop.toml`.
+    // This is the single source of truth for the analytic-toy
+    // scenario; the parser tests below mutate this string via
+    // `replace(...)` to construct negative-test variants. Real
+    // validation cases live in `data/scenarios/` or `scenarios/`
+    // per `docs/data-provenance.md`.
+    const MINIMAL: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scenarios/analytic-toy/constant-acceleration-drop.toml"
+    ));
 
     #[test]
     fn parses_minimal_scenario() {
