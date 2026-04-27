@@ -147,7 +147,9 @@ pub fn run(
     let metadata = build_schema_metadata(resolved_files);
     let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
-    // Step 0 has no fired events.
+    // Step 0 has no fired events. The effector snapshot at step 0 is
+    // each effector's load-time at-rest state (initial position).
+    let initial_snapshot = effector_rack.snapshot();
     record_step(
         &mut table,
         &kernel,
@@ -155,6 +157,7 @@ pub fn run(
         &breakdown_vehicle,
         breakdown_atmosphere.as_ref(),
         &[],
+        &initial_snapshot,
     )?;
     while kernel.stop_reason().is_none() {
         kernel.step()?;
@@ -163,6 +166,7 @@ pub fn run(
             effector_rack.apply_overrides(&fired);
             effector_rack.step(kernel.current_time())?;
         }
+        let snapshot = effector_rack.snapshot();
         record_step(
             &mut table,
             &kernel,
@@ -170,6 +174,7 @@ pub fn run(
             &breakdown_vehicle,
             breakdown_atmosphere.as_ref(),
             &fired,
+            &snapshot,
         )?;
     }
 
@@ -477,6 +482,11 @@ struct Phase2ChannelSet {
     atmosphere_speed_of_sound: Option<TelemetryChannel<f64>>,
     /// Force-model components in declared order.
     force_components: ForceComponentChannels,
+    /// Phase-3.4 effector deflection channels, in scenario-declared
+    /// order. One `effector.<id>.actual` `f64` channel per declared
+    /// effector. Allocated AFTER force breakdown channels and BEFORE
+    /// mission markers — this ordering is the determinism contract.
+    effector_actuals: Vec<TelemetryChannel<f64>>,
     /// Phase-3.2 mission-event telemetry markers, keyed by tag.
     /// `BTreeMap` order is alphabetical for deterministic channel
     /// allocation regardless of scenario-text declaration order.
@@ -578,6 +588,24 @@ impl Phase2ChannelSet {
             force_components.push((name.clone(), x_channel, y_channel, z_channel));
         }
 
+        // Phase-3.4 effector deflection channels, in scenario-
+        // declared order. One `effector.<id>.actual` channel per
+        // declared effector. Allocated BEFORE mission markers so
+        // adding effectors to a scenario does not shift marker
+        // channel ids.
+        let mut effector_actuals: Vec<TelemetryChannel<f64>> = Vec::new();
+        if let Some(assembly) = &document.vehicle.assembly {
+            for config in &assembly.effectors {
+                let channel = TelemetryChannel::<f64>::new(
+                    alloc(),
+                    format!("effector.{}.actual", config.id),
+                    "1",
+                    None::<&str>,
+                )?;
+                effector_actuals.push(channel);
+            }
+        }
+
         // Phase-3.2 mission marker channels. `BTreeMap` ordering on
         // tag keys keeps channel id allocation deterministic even
         // when the scenario reorders `[[mission.events]]` blocks.
@@ -608,6 +636,7 @@ impl Phase2ChannelSet {
             atmosphere_temperature,
             atmosphere_speed_of_sound,
             force_components,
+            effector_actuals,
             mission_markers,
         })
     }
@@ -638,6 +667,12 @@ impl Phase2ChannelSet {
             channels.push(y.metadata().clone());
             channels.push(z.metadata().clone());
         }
+        // Phase-3.4 effector deflection channels, in scenario-declared
+        // order. Allocated AFTER force breakdown channels and BEFORE
+        // mission markers — this ordering is the determinism contract.
+        for actual in &self.effector_actuals {
+            channels.push(actual.metadata().clone());
+        }
         // Marker channels last, in alphabetical (BTreeMap) order.
         for marker in self.mission_markers.values() {
             channels.push(marker.metadata().clone());
@@ -654,6 +689,7 @@ fn record_step<I, F, MM, E, SC>(
     breakdown_vehicle: &BasicVehicle<PointMassState>,
     breakdown_atmosphere: Option<&UsStandard1976>,
     fired_events: &[openbmp_sim::FiredEvent],
+    effector_snapshot: &[openbmp_vehicle::EffectorState],
 ) -> Result<(), CliError>
 where
     I: openbmp_sim::Integrator<PointMassState>,
@@ -725,6 +761,19 @@ where
         row.insert(x_channel, component.x)?;
         row.insert(y_channel, component.y)?;
         row.insert(z_channel, component.z)?;
+    }
+
+    // Phase-3.4 effector deflection channels. The snapshot is in
+    // scenario-declared order, matching `channels.effector_actuals`.
+    // When the rack is empty (legacy scenarios) the snapshot is empty
+    // and the loop is a no-op.
+    debug_assert_eq!(effector_snapshot.len(), channels.effector_actuals.len());
+    for (channel, state) in channels
+        .effector_actuals
+        .iter()
+        .zip(effector_snapshot.iter())
+    {
+        row.insert(channel, state.actual)?;
     }
 
     // Phase-3.2 marker channels: write `true` for any tag whose

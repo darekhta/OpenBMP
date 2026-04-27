@@ -1,0 +1,69 @@
+# Phase-3.4 single-elevon scenario — exit-criterion case.
+#
+# A point-mass vehicle with a single elevon-shaped linear actuator.
+# The effector's `command_schedule` issues a step command at
+# t = 0.5 s, ramping from 0 rad to 0.087 rad (≈ 5°). The actuator
+# carries a 0.020 s pure-delay latency, a 5.236 rad/s max slew rate,
+# and a 0.05 s first-order lag.
+#
+# Phase-3.4 limitations:
+# - Aero deck stays schema-1; the effector deflection is observable
+#   in the Parquet but is NOT consumed by force / moment evaluation.
+#   Schema-2 deck consumption arrives in Phase 3.5.
+# - Gravity-only — the kernel propagates a 1 kg test mass downward
+#   from 100 m initial altitude over 2 seconds. The effector
+#   telemetry is the smoke test, not a coupled physics signal.
+#
+# Synthetic round numbers; NOT a published benchmark.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "single-elevon-elevator-step"
+description = "Phase-3.4 exit-criterion: a single elevon effector tracks a step elevator command. Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 2.0
+dt_s    = 0.001
+seed    = 0x456c_6576_4f6e_3034   # "ElevOn04"
+
+[vehicle]
+kind                     = "point_mass"
+mass_kg                  = 1.0
+initial_position_eci_m   = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "single-elevon"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 0.5 }
+dry_mass_kg   = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[[vehicle.assembly.effectors]]
+id               = "delta_e"
+kind             = { kind = "linear_actuator", tau_s = 0.05 }
+limits           = { min = -0.349, max = 0.349, max_rate_per_s = 5.236, deadband = 0.0, latency_s = 0.020 }
+initial_position = 0.0
+command_schedule = { kind = "step_at", time_s = 0.5, before = 0.0, after = 0.087 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.parquet = "out/single-elevon-elevator-step.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true

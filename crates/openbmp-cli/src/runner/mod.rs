@@ -101,8 +101,21 @@ pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
 /// atmosphere/wind, single-element `["gravity"]` force list, and no
 /// Phase-2 structured blocks. Anything else routes through
 /// [`phase2_point_mass`] (or fails closed for `rigid_body`).
+///
+/// Phase-3.4 carve-out: scenarios that declare
+/// `[[vehicle.assembly.effectors]]` route through
+/// [`phase2_point_mass`] even when the rest of the surface is
+/// phase-1-shaped, so the runner-side `EffectorRack` and the
+/// effector telemetry channels are wired. The phase-1 path has no
+/// effector rack — routing an effector scenario through phase-1
+/// would silently drop the deflection telemetry.
 fn is_phase1_byte_stable_shape(scenario: &Scenario) -> bool {
     let document = &scenario.document;
+    let has_effectors = document
+        .vehicle
+        .assembly
+        .as_ref()
+        .is_some_and(|a| !a.effectors.is_empty());
     document.vehicle.kind == "point_mass"
         && document.environment.gravity == "constant"
         && document.environment.atmosphere == "none"
@@ -113,4 +126,5 @@ fn is_phase1_byte_stable_shape(scenario: &Scenario) -> bool {
         && document.propulsion.is_none()
         && document.wind.is_none()
         && document.atmosphere.is_none()
+        && !has_effectors
 }
