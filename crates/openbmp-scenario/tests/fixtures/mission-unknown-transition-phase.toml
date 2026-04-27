@@ -1,0 +1,16 @@
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_apogee" }
+action  = { kind = "stop", label = "apogee" }
+
+[[mission.transitions]]
+from  = "ascent"
+to    = "descent"
+event = "evt"

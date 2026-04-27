@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
-use tempfile::{Builder, TempDir};
+use tempfile::{Builder, NamedTempFile, TempDir};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -42,6 +42,28 @@ fn tempdir(label: &str) -> TempDir {
         .prefix(&format!("openbmp-{label}-"))
         .tempdir()
         .expect("tempdir")
+}
+
+fn with_reversed_mission_phase_blocks(toml: &str) -> String {
+    let phase_start = toml
+        .find("[[mission.phases]]")
+        .expect("mission phase block start");
+    let event_start = toml
+        .find("[[mission.events]]")
+        .expect("mission event block start");
+    let phase_region = &toml[phase_start..event_start];
+    let mut phase_blocks: Vec<String> = phase_region
+        .split("[[mission.phases]]")
+        .skip(1)
+        .map(|block| format!("[[mission.phases]]{block}"))
+        .collect();
+    phase_blocks.reverse();
+    format!(
+        "{}{}{}",
+        &toml[..phase_start],
+        phase_blocks.concat(),
+        &toml[event_start..]
+    )
 }
 
 /// Niskanen 2009 Chapter-6 Table 6.1 experimental C6 apogee (m).
@@ -507,5 +529,39 @@ fn niskanen_with_mission_emits_apogee_marker() {
     assert!(
         (0.0..=5.0).contains(&altitude_gap_m),
         "apogee marker should fire within 5 m of recorded apogee, gap = {altitude_gap_m:.3} m",
+    );
+}
+
+#[test]
+fn mission_phase_declaration_order_does_not_change_parquet_bytes() {
+    let scenario_dir = workspace_root().join("scenarios/sounding-rocket");
+    let scenario = scenario_dir.join("niskanen-2009-chapter6-with-mission.toml");
+    let original = fs::read_to_string(&scenario).expect("read mission scenario");
+    let reordered = with_reversed_mission_phase_blocks(&original);
+    let variant = NamedTempFile::new_in(&scenario_dir).expect("temp scenario in scenario dir");
+    fs::write(variant.path(), reordered).expect("write reordered scenario");
+
+    let temp = tempdir("niskanen-mission-order");
+    let parquet_a = temp.path().join("original.parquet");
+    let parquet_b = temp.path().join("reordered.parquet");
+
+    let runs: [(&Path, &Path); 2] = [
+        (scenario.as_path(), parquet_a.as_path()),
+        (variant.path(), parquet_b.as_path()),
+    ];
+    for (scenario_path, parquet) in runs {
+        let mut cmd = openbmp();
+        cmd.arg("run")
+            .arg(scenario_path)
+            .arg("--output-parquet")
+            .arg(parquet);
+        cmd.assert().success();
+    }
+
+    let bytes_a = fs::read(&parquet_a).expect("read original parquet");
+    let bytes_b = fs::read(&parquet_b).expect("read reordered parquet");
+    assert_eq!(
+        bytes_a, bytes_b,
+        "reordering mission phase declarations changed Parquet bytes",
     );
 }

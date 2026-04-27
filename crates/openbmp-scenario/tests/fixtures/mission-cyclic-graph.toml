@@ -1,0 +1,30 @@
+[mission]
+initial_phase = "a"
+
+[[mission.phases]]
+id    = "a"
+label = "a"
+
+[[mission.phases]]
+id    = "b"
+label = "b"
+
+[[mission.events]]
+id      = "e1"
+trigger = { kind = "at_time", time_s = 1.0 }
+action  = { kind = "emit_telemetry_marker", tag = "e1" }
+
+[[mission.events]]
+id      = "e2"
+trigger = { kind = "at_time", time_s = 2.0 }
+action  = { kind = "emit_telemetry_marker", tag = "e2" }
+
+[[mission.transitions]]
+from  = "a"
+to    = "b"
+event = "e1"
+
+[[mission.transitions]]
+from  = "b"
+to    = "a"
+event = "e2"

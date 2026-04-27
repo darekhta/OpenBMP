@@ -511,7 +511,7 @@ return `false` on step 0 because no previous-step snapshot exists.
 | `at_altitude_descending` | `altitude_m: f64` | Fires when altitude crosses down through `altitude_m`. |
 | `at_apogee` | — | Fires when vertical velocity flips from `> 0` to `<= 0`. |
 | `at_mass_fraction` | `remaining: f64` (in `[0, 1]`) | Fires when mass fraction (current / initial) drops to or below `remaining`. |
-| `at_dynamic_pressure` | `pressure_pa: f64`, `falling: bool` | Fires on rising-edge (`falling = false`) or falling-edge crossing of `pressure_pa`. **Phase-3.2 limitation:** the kernel does not yet wire the atmosphere model into the trigger eval, so dynamic pressure is reported as `0.0` regardless of altitude — this trigger will not fire as expected until Phase 3.4 lands the atmosphere hook. |
+| `at_dynamic_pressure` | `pressure_pa: f64`, `falling: bool` | Deferred to Phase 3.4, when atmosphere is wired into event evaluation. Phase 3.2 rejects this trigger at parse time with `UnsupportedTriggerKind`. |
 
 The `kind = "scripted"` trigger is rejected at parse time with a
 typed deferral error: scripted triggers ship in Phase 3.4 alongside
@@ -545,8 +545,8 @@ Reordering `[[mission.phases]]`, `[[mission.events]]`, or
 `[[mission.transitions]]` blocks in the TOML produces an identical
 graph, identical bindings, and identical Parquet bytes. The
 phase graph is canonicalised by `(longest-path-depth-from-initial,
-PhaseId.value())`; transitions by `(from-depth, to-depth,
-EventId.value())`. Cycles, unreachable phases, unknown id
+PhaseId.value())`; transitions by `(from-depth, from-id, to-depth,
+to-id, EventId.value())`. Cycles, unreachable phases, unknown id
 references, and duplicate phase ids are rejected at scenario load
 time with `ScenarioError::MissionGraph`.
 
@@ -559,7 +559,7 @@ The parser enforces:
 - All event ids are unique.
 - All `transitions[i].{from, to}` reference declared phases.
 - All `transitions[i].event` references a declared event.
-- Numeric trigger fields are finite; `remaining` is in `[0, 1]`;
-  `pressure_pa` is strictly positive.
+- Each `(from, event)` transition pair has at most one target phase.
+- Numeric trigger fields are finite; `remaining` is in `[0, 1]`.
 - The graph is acyclic and every phase is reachable from
   `initial_phase`.

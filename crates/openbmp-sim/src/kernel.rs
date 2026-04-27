@@ -289,6 +289,15 @@ where
         // Phase-3.2 event evaluation. Early-exit when no events are
         // declared so legacy scenarios stay bit-stable.
         if !self.events.is_empty() {
+            if self.previous_event_scalars.is_none() {
+                self.previous_event_scalars = Some(crate::events::EventScalars {
+                    time_s: self.state.time.as_seconds(),
+                    altitude_m: self.state.position.vector.z,
+                    vertical_velocity_m_s: self.state.velocity.vector.z,
+                    mass_fraction: self.state.mass.get::<kilogram>() / self.initial_mass_kg,
+                    dynamic_pressure_pa: 0.0,
+                });
+            }
             let scalars = crate::events::EventScalars {
                 time_s: canonical_time_s,
                 altitude_m: new_state.position.vector.z,
@@ -443,11 +452,20 @@ where
     /// graph references events not present in `events`.
     pub fn with_mission(
         mut self,
-        events: Vec<crate::events::EventBinding>,
+        mut events: Vec<crate::events::EventBinding>,
         mission_graph: Option<crate::events::MissionPhaseGraph>,
     ) -> Result<Self, SimulationError> {
+        let mut event_ids = std::collections::BTreeSet::new();
+        for event in &events {
+            if !event_ids.insert(event.id) {
+                return Err(SimulationError::MissionGraph(
+                    crate::events::MissionGraphError::DuplicateEvent { event: event.id },
+                ));
+            }
+        }
+        events.sort_by_key(|event| event.id.value());
+
         if let Some(graph) = &mission_graph {
-            let event_ids: std::collections::BTreeSet<_> = events.iter().map(|b| b.id).collect();
             for (i, transition) in graph.transitions.iter().enumerate() {
                 if !event_ids.contains(&transition.event) {
                     return Err(SimulationError::MissionGraph(
@@ -508,6 +526,20 @@ where
                 time,
                 action: binding.action.clone(),
             });
+            let graph_transition_to = self.mission_graph.as_ref().and_then(|graph| {
+                self.current_phase.and_then(|current_phase| {
+                    graph
+                        .transitions
+                        .iter()
+                        .find(|transition| {
+                            transition.from == current_phase && transition.event == binding.id
+                        })
+                        .map(|transition| transition.to)
+                })
+            });
+            if let Some(phase) = graph_transition_to {
+                self.current_phase = Some(phase);
+            }
             match &binding.action {
                 EventAction::EnterPhase(phase) => {
                     self.current_phase = Some(*phase);
@@ -795,6 +827,16 @@ where
         // Phase-3.2 event evaluation. Early-exit when no events are
         // declared so legacy byte-stability is preserved.
         if !self.events.is_empty() {
+            if self.previous_event_scalars.is_none() {
+                self.previous_event_scalars = Some(crate::events::EventScalars {
+                    time_s: self.state.time.as_seconds(),
+                    altitude_m: self.state.position.vector.z,
+                    vertical_velocity_m_s: self.state.velocity.vector.z,
+                    mass_fraction: self.state.mass_props.mass.get::<kilogram>()
+                        / self.initial_mass_kg,
+                    dynamic_pressure_pa: 0.0,
+                });
+            }
             let scalars = crate::events::EventScalars {
                 time_s: canonical_time_s,
                 altitude_m: new_state.position.vector.z,
@@ -1103,6 +1145,102 @@ mod tests {
         kernel.step().expect("manual step");
         assert_eq!(kernel.current_step().value(), 1);
         assert!(kernel.stop_reason().is_none());
+    }
+
+    fn zero_force_always_continue_kernel(
+        dt_s: f64,
+    ) -> SimulationKernel<
+        PointMassState,
+        Rk4FixedStep,
+        ZeroForce,
+        ConstantMass,
+        NullEnvironment,
+        AlwaysContinue,
+    > {
+        let config = SimulationConfig {
+            initial_state: PointMassState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::new(0.0, 0.0, 1.0),
+                Mass::new::<kilogram>(1.0),
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ZeroForce,
+            mass_model: ConstantMass::new(1.0),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(dt_s),
+            scenario_seed: 1,
+        };
+        SimulationKernel::new(config).expect("construct")
+    }
+
+    #[test]
+    fn event_crossing_between_initial_state_and_first_step_fires() {
+        let event_id = crate::events::EventId::from_path("mission.events.stop_half_second");
+        let events = vec![crate::events::EventBinding {
+            id: event_id,
+            trigger: crate::events::BuiltInEventTrigger::AtTime { time_s: 0.5 },
+            action: crate::events::EventAction::Stop {
+                label: "half-second".to_owned(),
+            },
+            once: true,
+        }];
+        let mut kernel = zero_force_always_continue_kernel(1.0)
+            .with_mission(events, None)
+            .expect("mission wiring");
+
+        kernel.step().expect("step");
+
+        assert!(matches!(
+            kernel.stop_reason(),
+            Some(StopReason::MissionEnded { label, .. }) if label == "half-second"
+        ));
+    }
+
+    #[test]
+    fn mission_graph_transition_applies_when_event_fires_in_current_phase() {
+        let ascent = crate::events::PhaseId::from_path("mission.phases.ascent");
+        let descent = crate::events::PhaseId::from_path("mission.phases.descent");
+        let event_id = crate::events::EventId::from_path("mission.events.at_half_second");
+        let phases = vec![
+            crate::events::Phase {
+                id: ascent,
+                label: "ascent".to_owned(),
+                allowed_effectors: Vec::new(),
+                allowed_engines: Vec::new(),
+            },
+            crate::events::Phase {
+                id: descent,
+                label: "descent".to_owned(),
+                allowed_effectors: Vec::new(),
+                allowed_engines: Vec::new(),
+            },
+        ];
+        let transitions = vec![crate::events::PhaseTransition {
+            from: ascent,
+            to: descent,
+            event: event_id,
+        }];
+        let graph = crate::events::MissionPhaseGraph::new(phases, transitions, ascent, &[event_id])
+            .expect("valid graph");
+        let events = vec![crate::events::EventBinding {
+            id: event_id,
+            trigger: crate::events::BuiltInEventTrigger::AtTime { time_s: 0.5 },
+            action: crate::events::EventAction::EmitTelemetryMarker {
+                tag: "at_half_second".to_owned(),
+            },
+            once: true,
+        }];
+        let mut kernel = zero_force_always_continue_kernel(1.0)
+            .with_mission(events, Some(graph))
+            .expect("mission wiring");
+
+        assert_eq!(kernel.current_phase(), Some(ascent));
+        kernel.step().expect("step");
+
+        assert_eq!(kernel.current_phase(), Some(descent));
+        assert_eq!(kernel.drain_events().len(), 1);
     }
 
     #[test]

@@ -51,11 +51,12 @@ pub fn build_mission_runtime(
         .collect();
 
     let phases: Vec<Phase> = mission.phases.iter().map(build_phase).collect();
-    let event_bindings: Vec<EventBinding> = mission
+    let mut event_bindings: Vec<EventBinding> = mission
         .events
         .iter()
         .map(|e| build_event_binding(e, &phase_id_lookup))
         .collect::<Result<_, _>>()?;
+    event_bindings.sort_by_key(|event| event.id.value());
     let transitions: Vec<PhaseTransition> = mission
         .transitions
         .iter()
@@ -110,14 +111,14 @@ fn build_event_binding(
 ) -> Result<EventBinding, CliError> {
     Ok(EventBinding {
         id: event_id(&config.id),
-        trigger: build_trigger(&config.trigger),
+        trigger: build_trigger(&config.trigger)?,
         action: build_action(&config.action, phase_id_lookup)?,
         once: config.once,
     })
 }
 
-fn build_trigger(config: &EventTriggerConfig) -> BuiltInEventTrigger {
-    match config {
+fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, CliError> {
+    Ok(match config {
         EventTriggerConfig::AtTime { time_s } => BuiltInEventTrigger::AtTime { time_s: *time_s },
         EventTriggerConfig::AtAltitudeAscending { altitude_m } => {
             BuiltInEventTrigger::AtAltitudeAscending {
@@ -133,19 +134,24 @@ fn build_trigger(config: &EventTriggerConfig) -> BuiltInEventTrigger {
         EventTriggerConfig::AtMassFraction { remaining } => BuiltInEventTrigger::AtMassFraction {
             remaining: *remaining,
         },
-        EventTriggerConfig::AtDynamicPressure {
-            pressure_pa,
-            falling,
-        } => BuiltInEventTrigger::AtDynamicPressure {
-            pa: *pressure_pa,
-            falling: *falling,
-        },
-        EventTriggerConfig::Scripted => {
-            // Parser rejects this variant; kernel will never see it.
-            // Defensive default: treat as never-firing AtApogee.
-            BuiltInEventTrigger::AtApogee
+        EventTriggerConfig::AtDynamicPressure { .. } => {
+            return Err(CliError::Scenario(
+                openbmp_scenario::ScenarioError::UnsupportedTriggerKind {
+                    kind: "at_dynamic_pressure".to_owned(),
+                    reason: "dynamic-pressure triggers ship in Phase 3.4 when atmosphere is wired into event evaluation".to_owned(),
+                },
+            ));
         }
-    }
+        EventTriggerConfig::Scripted => {
+            return Err(CliError::Scenario(
+                openbmp_scenario::ScenarioError::UnsupportedTriggerKind {
+                    kind: "scripted".to_owned(),
+                    reason: "scripted triggers ship in Phase 3.4 alongside ControlEffector"
+                        .to_owned(),
+                },
+            ));
+        }
+    })
 }
 
 fn build_action(

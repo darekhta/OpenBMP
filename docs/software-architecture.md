@@ -525,16 +525,14 @@ fixed step shape and just consults the resolved event list each tick.
 > The four `EventAction` variants `EngineCommand`, `EffectorOverride`,
 > `Separation`, and `DeployRecovery` exist in the enum (so 3.4 / 3.6 /
 > 3.7 / 3.9 do not need to expand it) but are likewise parser-rejected
-> in 3.2. `EnterPhase`, `EmitTelemetryMarker`, and a new `Stop` action
-> are wired end-to-end. `EventTrigger::fired` takes an `EventEvalState`
+> in 3.2. `AtDynamicPressure` is also parser-rejected until Phase 3.4
+> wires atmosphere into event evaluation. `EnterPhase`,
+> `EmitTelemetryMarker`, and a new `Stop` action are wired end-to-end.
+> `EventTrigger::fired` takes an `EventEvalState`
 > snapshot rather than the full `VehicleState` shown above — the
 > snapshot carries only the derived scalars triggers need (altitude,
 > vertical velocity, mass fraction, dynamic pressure) plus the
-> previous-step values for crossing detection. The
-> `at_dynamic_pressure` trigger is a partial Phase-3.2 deliverable:
-> the kernel does not yet wire the atmosphere model into the trigger
-> eval, so dynamic pressure is reported as `0.0` until Phase 3.4
-> hooks atmosphere into the event evaluator.
+> previous-step values for crossing detection.
 
 ## Numerical Integrators
 

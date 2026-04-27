@@ -720,6 +720,23 @@ kind = "isothermal""#,
         format!("{MINIMAL}\n{mission_block}")
     }
 
+    const MISSION_ONCE_FALSE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/mission-once-false.toml"
+    ));
+    const MISSION_DUPLICATE_EVENT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/mission-duplicate-event.toml"
+    ));
+    const MISSION_UNKNOWN_TRANSITION_PHASE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/mission-unknown-transition-phase.toml"
+    ));
+    const MISSION_CYCLIC_GRAPH: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/mission-cyclic-graph.toml"
+    ));
+
     #[test]
     fn parses_minimal_mission_block() {
         let scenario = Scenario::from_toml_str(&with_mission(
@@ -759,6 +776,13 @@ event = "ignition"
         assert_eq!(mission.transitions.len(), 1);
         // `once` defaults to true.
         assert!(mission.events[0].once);
+    }
+
+    #[test]
+    fn parses_mission_event_once_false() {
+        let scenario = Scenario::from_toml_str(&with_mission(MISSION_ONCE_FALSE)).expect("parse");
+        let mission = scenario.document.mission.as_ref().expect("mission");
+        assert!(!mission.events[0].once);
     }
 
     #[test]
@@ -945,7 +969,7 @@ action  = { kind = "stop", label = "burnout" }
     }
 
     #[test]
-    fn rejects_dynamic_pressure_non_positive() {
+    fn rejects_dynamic_pressure_trigger_kind() {
         let err = Scenario::from_toml_str(&with_mission(
             r#"
 [mission]
@@ -962,7 +986,34 @@ action  = { kind = "stop", label = "max-q" }
 "#,
         ))
         .unwrap_err();
-        assert!(matches!(err, ScenarioError::InvalidNumber { .. }));
+        assert!(matches!(
+            err,
+            ScenarioError::UnsupportedTriggerKind { ref kind, .. }
+                if kind == "at_dynamic_pressure"
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_mission_event_ids() {
+        let err = Scenario::from_toml_str(&with_mission(MISSION_DUPLICATE_EVENT)).unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::DuplicateValue { ref field, ref value }
+                if field == "mission.events.id" && value == "evt"
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_transition_phase_at_parse_time() {
+        let err =
+            Scenario::from_toml_str(&with_mission(MISSION_UNKNOWN_TRANSITION_PHASE)).unwrap_err();
+        assert!(matches!(err, ScenarioError::MissionGraph { .. }));
+    }
+
+    #[test]
+    fn rejects_cyclic_mission_graph_at_parse_time() {
+        let err = Scenario::from_toml_str(&with_mission(MISSION_CYCLIC_GRAPH)).unwrap_err();
+        assert!(matches!(err, ScenarioError::MissionGraph { .. }));
     }
 
     #[test]

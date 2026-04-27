@@ -4,7 +4,7 @@
 //! Validation is performed in [`ScenarioDocument::validate`], which the
 //! [`crate::scenario::Scenario`] entry point calls after deserialisation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
 use openbmp_core::ValidationStatus;
@@ -945,10 +945,8 @@ pub struct MissionConfig {
 
 impl MissionConfig {
     /// Validate structural shape: id non-emptiness, kind enums, finite
-    /// numeric values, deferred-action rejection. Graph-shape
-    /// validation (cycles, reachability, unknown ids) happens at
-    /// runner-construction time when the runner builds the
-    /// [`openbmp_sim::MissionPhaseGraph`].
+    /// numeric values, deferred-action rejection, plus graph-shape
+    /// validation (cycles, reachability, unknown ids).
     ///
     /// # Errors
     ///
@@ -969,8 +967,169 @@ impl MissionConfig {
         for (i, transition) in self.transitions.iter().enumerate() {
             transition.validate(i)?;
         }
+        self.validate_graph_shape()?;
         Ok(())
     }
+
+    fn validate_graph_shape(&self) -> Result<(), ScenarioError> {
+        let phase_ids: Vec<String> = self.phases.iter().map(|phase| phase.id.clone()).collect();
+        let event_ids: Vec<String> = self.events.iter().map(|event| event.id.clone()).collect();
+        require_unique("mission.phases.id", &phase_ids)?;
+        require_unique("mission.events.id", &event_ids)?;
+
+        let phase_set: BTreeSet<&str> = phase_ids.iter().map(String::as_str).collect();
+        let event_set: BTreeSet<&str> = event_ids.iter().map(String::as_str).collect();
+
+        if !phase_set.contains(self.initial_phase.as_str()) {
+            return Err(ScenarioError::MissionGraph {
+                reason: format!(
+                    "mission.initial_phase = `{}` does not match any declared phase",
+                    self.initial_phase
+                ),
+            });
+        }
+
+        let mut transition_keys = BTreeSet::new();
+        for (index, transition) in self.transitions.iter().enumerate() {
+            if !phase_set.contains(transition.from.as_str()) {
+                return Err(ScenarioError::MissionGraph {
+                    reason: format!(
+                        "transition #{index}.from = `{}` is not a declared phase",
+                        transition.from
+                    ),
+                });
+            }
+            if !phase_set.contains(transition.to.as_str()) {
+                return Err(ScenarioError::MissionGraph {
+                    reason: format!(
+                        "transition #{index}.to = `{}` is not a declared phase",
+                        transition.to
+                    ),
+                });
+            }
+            if !event_set.contains(transition.event.as_str()) {
+                return Err(ScenarioError::MissionGraph {
+                    reason: format!(
+                        "transition #{index}.event = `{}` is not a declared event",
+                        transition.event
+                    ),
+                });
+            }
+            if !transition_keys.insert((transition.from.as_str(), transition.event.as_str())) {
+                return Err(ScenarioError::MissionGraph {
+                    reason: format!(
+                        "phase `{}` has multiple transitions for event `{}`",
+                        transition.from, transition.event
+                    ),
+                });
+            }
+        }
+
+        if let Some(involving) = mission_cycle_involving(&phase_ids, &self.transitions) {
+            return Err(ScenarioError::MissionGraph {
+                reason: format!("mission graph contains a cycle involving phases {involving:?}"),
+            });
+        }
+
+        let reachable = mission_reachable(&phase_ids, &self.transitions, &self.initial_phase);
+        for phase_id in &phase_ids {
+            if !reachable.contains(phase_id) {
+                return Err(ScenarioError::MissionGraph {
+                    reason: format!("phase `{phase_id}` is unreachable from the initial phase"),
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn mission_cycle_involving(
+    phase_ids: &[String],
+    transitions: &[PhaseTransitionConfig],
+) -> Option<Vec<String>> {
+    let mut successors: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut in_degree: BTreeMap<&str, usize> = BTreeMap::new();
+    for phase_id in phase_ids {
+        successors.entry(phase_id.as_str()).or_default();
+        in_degree.entry(phase_id.as_str()).or_insert(0);
+    }
+    for transition in transitions {
+        successors
+            .entry(transition.from.as_str())
+            .or_default()
+            .push(transition.to.as_str());
+        *in_degree.entry(transition.to.as_str()).or_insert(0) += 1;
+    }
+
+    let mut frontier = BTreeSet::new();
+    for (phase_id, degree) in &in_degree {
+        if *degree == 0 {
+            frontier.insert(*phase_id);
+        }
+    }
+
+    let mut visited = BTreeSet::new();
+    while let Some(phase_id) = frontier.iter().next().copied() {
+        frontier.remove(phase_id);
+        visited.insert(phase_id);
+        if let Some(next) = successors.get(phase_id) {
+            for successor in next {
+                let degree = in_degree.entry(successor).or_insert(0);
+                *degree = degree.saturating_sub(1);
+                if *degree == 0 {
+                    frontier.insert(*successor);
+                }
+            }
+        }
+    }
+
+    if visited.len() == phase_ids.len() {
+        None
+    } else {
+        Some(
+            phase_ids
+                .iter()
+                .filter(|phase_id| !visited.contains(phase_id.as_str()))
+                .cloned()
+                .collect(),
+        )
+    }
+}
+
+fn mission_reachable(
+    phase_ids: &[String],
+    transitions: &[PhaseTransitionConfig],
+    start: &str,
+) -> BTreeSet<String> {
+    let phase_set: BTreeSet<&str> = phase_ids.iter().map(String::as_str).collect();
+    let mut successors: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for phase_id in phase_ids {
+        successors.entry(phase_id.as_str()).or_default();
+    }
+    for transition in transitions {
+        successors
+            .entry(transition.from.as_str())
+            .or_default()
+            .push(transition.to.as_str());
+    }
+
+    let mut reachable = BTreeSet::new();
+    let mut queue = VecDeque::new();
+    if phase_set.contains(start) {
+        reachable.insert(start.to_owned());
+        queue.push_back(start);
+    }
+    while let Some(phase_id) = queue.pop_front() {
+        if let Some(next) = successors.get(phase_id) {
+            for successor in next {
+                if reachable.insert((*successor).to_owned()) {
+                    queue.push_back(*successor);
+                }
+            }
+        }
+    }
+    reachable
 }
 
 /// One declared mission phase.
@@ -1059,7 +1218,8 @@ pub enum EventTriggerConfig {
         /// Threshold mass fraction in `[0, 1]`.
         remaining: f64,
     },
-    /// Dynamic-pressure rising or falling-edge crossing.
+    /// Phase-3.4 deferred: rejected at parse time until atmosphere is
+    /// wired into event evaluation.
     AtDynamicPressure {
         /// Threshold dynamic pressure (Pa).
         pressure_pa: f64,
@@ -1086,9 +1246,11 @@ impl EventTriggerConfig {
                 require_finite(&path("remaining"), *remaining)?;
                 require_in_range(&path("remaining"), *remaining, 0.0, 1.0)?;
             }
-            Self::AtDynamicPressure { pressure_pa, .. } => {
-                require_finite(&path("pressure_pa"), *pressure_pa)?;
-                require_positive(&path("pressure_pa"), *pressure_pa)?;
+            Self::AtDynamicPressure { .. } => {
+                return Err(ScenarioError::UnsupportedTriggerKind {
+                    kind: "at_dynamic_pressure".to_owned(),
+                    reason: "dynamic-pressure triggers ship in Phase 3.4 when atmosphere is wired into event evaluation".to_owned(),
+                });
             }
             Self::Scripted => {
                 return Err(ScenarioError::UnsupportedTriggerKind {

@@ -145,9 +145,9 @@ pub struct EventScalars {
     pub vertical_velocity_m_s: f64,
     /// Current mass divided by initial mass.
     pub mass_fraction: f64,
-    /// Dynamic pressure (Pa). NaN when no atmosphere model is wired —
-    /// the parser rejects [`BuiltInEventTrigger::AtDynamicPressure`]
-    /// in that case.
+    /// Dynamic pressure (Pa). Phase 3.2 leaves this at `0.0`; scenario
+    /// parsing rejects [`BuiltInEventTrigger::AtDynamicPressure`] until
+    /// Phase 3.4 wires atmosphere into event evaluation.
     pub dynamic_pressure_pa: f64,
 }
 
@@ -358,18 +358,20 @@ pub struct PhaseTransition {
 /// 1. No duplicate phase ids.
 /// 2. `initial` references a declared phase.
 /// 3. Every transition references declared phases and a declared
-///    event.
-/// 4. The graph is acyclic (Tarjan SCC).
-/// 5. Every declared phase is reachable from `initial`.
-/// 6. Phases are sorted by `(longest-path-depth-from-initial,
-///    PhaseId.value())`; transitions by `(from-depth, to-depth,
-///    EventId.value())`. The canonical form is order-independent —
-///    re-ordering inputs produces an identical graph.
+///    event; event ids are unique.
+/// 4. Each `(from phase, event)` pair selects at most one target.
+/// 5. The graph is acyclic (Tarjan SCC).
+/// 6. Every declared phase is reachable from `initial`.
+/// 7. Phases are sorted by `(longest-path-depth-from-initial,
+///    PhaseId.value())`; transitions by `(from-depth, from-id,
+///    to-depth, to-id, EventId.value())`. The canonical form is
+///    order-independent — re-ordering inputs produces an identical graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MissionPhaseGraph {
     /// Phases sorted by `(depth, PhaseId.value())`.
     pub phases: Vec<Phase>,
-    /// Transitions sorted by `(from-depth, to-depth, EventId.value())`.
+    /// Transitions sorted by `(from-depth, from-id, to-depth, to-id,
+    /// EventId.value())`.
     pub transitions: Vec<PhaseTransition>,
     /// Initial phase. Resolved at construction.
     pub initial: PhaseId,
@@ -425,11 +427,31 @@ impl MissionPhaseGraph {
 
         // 4. Every transition's event is declared.
         let event_set: BTreeSet<EventId> = declared_events.iter().copied().collect();
+        if event_set.len() != declared_events.len() {
+            let mut seen_events = BTreeSet::new();
+            for event in declared_events {
+                if !seen_events.insert(*event) {
+                    return Err(MissionGraphError::DuplicateEvent { event: *event });
+                }
+            }
+        }
         for (i, transition) in transitions.iter().enumerate() {
             if !event_set.contains(&transition.event) {
                 return Err(MissionGraphError::UnknownEvent {
                     event: transition.event,
                     in_transition: i,
+                });
+            }
+        }
+
+        // Each `(from phase, event)` pair must select at most one target
+        // phase. Otherwise runtime transition application is ambiguous.
+        let mut transition_keys = BTreeSet::new();
+        for transition in &transitions {
+            if !transition_keys.insert((transition.from, transition.event)) {
+                return Err(MissionGraphError::AmbiguousTransition {
+                    from: transition.from,
+                    event: transition.event,
                 });
             }
         }
@@ -465,7 +487,9 @@ impl MissionPhaseGraph {
         sorted_transitions.sort_by_key(|t| {
             (
                 depth.get(&t.from).copied().unwrap_or(usize::MAX),
+                t.from.value(),
                 depth.get(&t.to).copied().unwrap_or(usize::MAX),
+                t.to.value(),
                 t.event.value(),
             )
         });
@@ -486,9 +510,9 @@ impl MissionPhaseGraph {
 /// `Some(phase_ids)` if any SCC has size > 1 or contains a self-loop;
 /// `None` if the graph is acyclic.
 ///
-/// Implementation uses iterative depth-first search with explicit
-/// state stacks to avoid Rust's recursion-depth limits for large
-/// graphs.
+/// Implementation uses recursive depth-first search. Mission graphs are
+/// expected to be small in Phase 3; switch to an explicit stack if that
+/// assumption changes.
 fn detect_cycle_tarjan(phases: &[Phase], transitions: &[PhaseTransition]) -> Option<Vec<PhaseId>> {
     // Self-loop is a trivial single-vertex cycle.
     for transition in transitions {
@@ -752,6 +776,20 @@ pub enum MissionGraphError {
     DuplicatePhase {
         /// Duplicated phase id.
         phase: PhaseId,
+    },
+    /// Two event declarations share the same id.
+    #[error("duplicate event id {event:?}")]
+    DuplicateEvent {
+        /// Duplicated event id.
+        event: EventId,
+    },
+    /// More than one transition leaves the same phase on the same event.
+    #[error("phase {from:?} has multiple transitions for event {event:?}")]
+    AmbiguousTransition {
+        /// Source phase.
+        from: PhaseId,
+        /// Event whose firing would be ambiguous.
+        event: EventId,
     },
     /// `initial_phase` references an unknown id, or is otherwise
     /// missing.

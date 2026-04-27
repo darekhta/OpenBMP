@@ -145,6 +145,36 @@ fn unknown_event_in_transition_rejected() {
 }
 
 #[test]
+fn duplicate_event_id_rejected() {
+    let phases = vec![phase("ascent", "ascent"), phase("descent", "descent")];
+    let transitions = vec![transition("ascent", "descent", "at_apogee_marker")];
+    let initial = PhaseId::from_path("ascent");
+    let events = vec![
+        EventId::from_path("at_apogee_marker"),
+        EventId::from_path("at_apogee_marker"),
+    ];
+    let err = MissionPhaseGraph::new(phases, transitions, initial, &events).unwrap_err();
+    assert!(matches!(err, MissionGraphError::DuplicateEvent { .. }));
+}
+
+#[test]
+fn ambiguous_transition_rejected() {
+    let phases = vec![
+        phase("ascent", "ascent"),
+        phase("descent", "descent"),
+        phase("abort", "abort"),
+    ];
+    let transitions = vec![
+        transition("ascent", "descent", "at_apogee_marker"),
+        transition("ascent", "abort", "at_apogee_marker"),
+    ];
+    let initial = PhaseId::from_path("ascent");
+    let events = vec![EventId::from_path("at_apogee_marker")];
+    let err = MissionPhaseGraph::new(phases, transitions, initial, &events).unwrap_err();
+    assert!(matches!(err, MissionGraphError::AmbiguousTransition { .. }));
+}
+
+#[test]
 fn cycle_rejected() {
     let phases = vec![phase("a", "a"), phase("b", "b"), phase("c", "c")];
     let transitions = vec![
@@ -176,6 +206,27 @@ fn self_loop_rejected() {
         panic!("expected Cycle, got {err:?}");
     };
     assert_eq!(involving, vec![PhaseId::from_path("a")]);
+}
+
+#[test]
+fn self_loop_on_middle_phase_rejected() {
+    let phases = vec![phase("a", "a"), phase("b", "b"), phase("c", "c")];
+    let transitions = vec![
+        transition("a", "b", "e1"),
+        transition("b", "b", "loop"),
+        transition("b", "c", "e2"),
+    ];
+    let initial = PhaseId::from_path("a");
+    let events = vec![
+        EventId::from_path("e1"),
+        EventId::from_path("loop"),
+        EventId::from_path("e2"),
+    ];
+    let err = MissionPhaseGraph::new(phases, transitions, initial, &events).unwrap_err();
+    let MissionGraphError::Cycle { involving } = err else {
+        panic!("expected Cycle, got {err:?}");
+    };
+    assert_eq!(involving, vec![PhaseId::from_path("b")]);
 }
 
 #[test]
