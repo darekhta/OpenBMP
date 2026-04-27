@@ -11,8 +11,12 @@ description             = "OpenBMP scenario format: TOML parser, model registry,
 [dependencies]
 openbmp-core = { workspace = true }
 serde        = { workspace = true }
+sha2         = { workspace = true }
 thiserror    = { workspace = true }
 toml         = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

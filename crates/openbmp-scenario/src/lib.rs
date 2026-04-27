@@ -20,6 +20,7 @@
 pub mod checks;
 pub mod document;
 pub mod error;
+pub mod files;
 mod lint;
 pub mod registry;
 pub mod scenario;
@@ -31,6 +32,7 @@ pub use document::{
     TelemetryOutputConfig, TimeConfig, ValidationConfig, VehicleConfig,
 };
 pub use error::ScenarioError;
+pub use files::ResolvedFile;
 pub use registry::{ModelDescriptor, ModelRegistry, ModelRole};
 pub use scenario::Scenario;
 pub use solver::{AdaptiveSolverConfig, SolverConfig, SourceTermSolverConfig};

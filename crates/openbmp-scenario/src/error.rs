@@ -110,4 +110,63 @@ pub enum ScenarioError {
         /// Unsupported value.
         value: String,
     },
+    /// A scenario-referenced external file could not be read.
+    #[error("referenced file {path} could not be read")]
+    ReferencedFileMissing {
+        /// Resolved file path that could not be read.
+        path: PathBuf,
+        /// Source IO error.
+        source: std::io::Error,
+    },
+    /// A scenario-referenced external file's SHA-256 digest disagreed
+    /// with the declared pin.
+    #[error("SHA-256 mismatch for {path}: expected {expected}, got {actual}")]
+    Sha256Mismatch {
+        /// Resolved file path whose digest disagrees with the pin.
+        path: PathBuf,
+        /// Lower-case hex pin declared in the scenario.
+        expected: String,
+        /// Lower-case hex digest computed at load time.
+        actual: String,
+    },
+    /// A SHA-256 pin string was not 64 hex characters.
+    #[error("invalid SHA-256 pin for {path}: {value}")]
+    InvalidSha256Pin {
+        /// Resolved file path whose pin is malformed.
+        path: PathBuf,
+        /// Malformed pin string.
+        value: String,
+    },
+    /// Two scenario sections disagreed about the same model selection.
+    #[error("{field_a}={value_a} disagrees with {field_b}={value_b}")]
+    InconsistentSection {
+        /// First field.
+        field_a: String,
+        /// First value.
+        value_a: String,
+        /// Second field.
+        field_b: String,
+        /// Second value.
+        value_b: String,
+    },
+    /// A field was required for the selected model but is absent.
+    #[error("{field} is required for {role}={name}")]
+    MissingRequiredField {
+        /// Required field path.
+        field: String,
+        /// Role for which the field is required.
+        role: ModelRole,
+        /// Model name that demands the field.
+        name: String,
+    },
+    /// A field was provided but the selected model does not accept it.
+    #[error("{field} is not accepted for {role}={name}")]
+    UnexpectedField {
+        /// Provided field path.
+        field: String,
+        /// Role for which the field is unexpected.
+        role: ModelRole,
+        /// Model name that rejects the field.
+        name: String,
+    },
 }
