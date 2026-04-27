@@ -44,8 +44,8 @@ impl ForbiddenTerm {
 }
 
 const UNIT_SUFFIXES: &[&str] = &[
-    "_dt_s", "_m_s2", "_m_s", "_m3_s2", "_n_m", "_n_s", "_rad_s", "_hz", "_kg", "_m", "_n", "_pa",
-    "_rad", "_s", "_k", "_deg",
+    "_dt_s", "_m_s2", "_m_s", "_m3_s2", "_n_m", "_n_s", "_rad_s", "_hz", "_kg_m2", "_kg", "_m",
+    "_n", "_pa", "_rad", "_s", "_k", "_deg",
 ];
 
 const FRAME_INFIXES: &[&str] = &["_eci_", "_ecef_", "_ned_", "_enu_", "_body_"];

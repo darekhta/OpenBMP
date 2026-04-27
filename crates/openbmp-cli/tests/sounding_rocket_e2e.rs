@@ -117,6 +117,79 @@ fn run_byte_stable_across_two_invocations() {
     );
 }
 
+/// Phase-3.1: the rigid-body Niskanen scenario produces an apogee
+/// physically equivalent to the point-mass case. With identity
+/// initial orientation, zero angular velocity, `ZeroMoment`, and
+/// axisymmetric drag, the rigid-body kernel sees no body-frame
+/// torque and the trajectory matches the point-mass Niskanen
+/// trajectory within IEEE 754 reduction-order noise. We assert
+/// the same ±5% physical envelope as the point-mass test.
+#[test]
+fn run_on_niskanen_rigid_apogee_within_tolerance() {
+    let scenario =
+        workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6-rigid.toml");
+    let temp = tempdir("niskanen-rigid-e2e");
+    let parquet = temp.path().join("niskanen-rigid-out.parquet");
+
+    let mut cmd = openbmp();
+    cmd.arg("run")
+        .arg(&scenario)
+        .arg("--output-parquet")
+        .arg(&parquet);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    assert!(
+        stdout.starts_with("openbmp run: ok"),
+        "stdout was: {stdout}"
+    );
+    assert!(parquet.exists(), "parquet file should have been written");
+
+    let apogee_m = read_max_altitude(&parquet);
+    let lower = NISKANEN_C6_EXPERIMENTAL_APOGEE_M * (1.0 - NISKANEN_C6_RELATIVE_TOLERANCE);
+    let upper = NISKANEN_C6_EXPERIMENTAL_APOGEE_M * (1.0 + NISKANEN_C6_RELATIVE_TOLERANCE);
+    assert!(
+        (lower..=upper).contains(&apogee_m),
+        "rigid-body apogee {apogee_m:.2} m outside ±5% of Niskanen C6 \
+         experimental {NISKANEN_C6_EXPERIMENTAL_APOGEE_M} m \
+         (envelope [{lower:.2}, {upper:.2}])",
+    );
+}
+
+/// Cross-path consistency check: rigid-body Niskanen and point-mass
+/// Niskanen apogees agree within 1% relative. Floating-point
+/// reduction order differs (the kernel's RK4 chains through
+/// quaternion-renormalisation in the rigid path), so bit-equality
+/// is not claimed — the assertion is physical equivalence.
+#[test]
+fn niskanen_rigid_and_point_mass_apogees_agree_within_one_percent() {
+    let pm_scenario =
+        workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6.toml");
+    let rb_scenario =
+        workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6-rigid.toml");
+    let temp = tempdir("niskanen-cross-path");
+    let pm_parquet = temp.path().join("pm.parquet");
+    let rb_parquet = temp.path().join("rb.parquet");
+
+    for (scenario, parquet) in [(&pm_scenario, &pm_parquet), (&rb_scenario, &rb_parquet)] {
+        let mut cmd = openbmp();
+        cmd.arg("run")
+            .arg(scenario)
+            .arg("--output-parquet")
+            .arg(parquet);
+        cmd.assert().success();
+    }
+
+    let pm_apogee = read_max_altitude(&pm_parquet);
+    let rb_apogee = read_max_altitude(&rb_parquet);
+    let denom = pm_apogee.abs().max(1.0);
+    let rel_err = (pm_apogee - rb_apogee).abs() / denom;
+    assert!(
+        rel_err < 0.01,
+        "rigid-body apogee {rb_apogee:.6} m and point-mass apogee {pm_apogee:.6} m \
+         differ by {rel_err:.6} relative; expected < 1%",
+    );
+}
+
 fn read_max_altitude(parquet_path: &Path) -> f64 {
     use arrow::array::Float64Array;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;

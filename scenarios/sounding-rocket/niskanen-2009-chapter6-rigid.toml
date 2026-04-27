@@ -1,0 +1,89 @@
+# Niskanen 2009 Chapter-6 small-rocket benchmark — Phase-3.1 rigid-body variant.
+#
+# Same physics as the canonical point-mass Niskanen scenario at
+# `niskanen-2009-chapter6.toml`, but with `vehicle.kind = "rigid_body"`
+# and the rigid-body initial-state fields declared. The vehicle
+# inertia tensor is a rod-shaped academic estimate sized to a 56 cm
+# body length (Niskanen 2009 Chapter 6 small-rocket geometry).
+#
+# Phase-3.1 simplification: the body starts with identity orientation
+# (body axes aligned with ECI), zero angular velocity, and a moment
+# model of `ZeroMoment` (gravity through CG, thrust along body +z,
+# axisymmetric drag — none produce a body-frame moment). With identity
+# orientation maintained throughout the flight, the trajectory matches
+# the point-mass Niskanen scenario within IEEE 754 reduction-order
+# noise.
+#
+# Pinned digests are SHA-256 of the referenced files at the commit
+# that ships this scenario; mismatches fail closed.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "niskanen-2009-chapter6-rigid"
+description = "Niskanen 2009 Chapter-6 small model rocket as a rigid body; identity initial orientation + ZeroMoment so the trajectory matches the point-mass case within reduction-order noise."
+validation  = "checked"
+provenance  = "Niskanen 2009 Chapter 6, Helsinki UT MSc thesis; rigid-body variant of the canonical Niskanen scenario."
+
+[time]
+start_s = 0.0
+stop_s  = 20.0
+dt_s    = 0.001
+seed    = 0x4e69_736b_616e_6552  # same seed root with last byte 'R' for rigid
+
+[vehicle]
+kind                                 = "rigid_body"
+mass_kg                              = 0.080
+initial_position_eci_m               = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s             = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw  = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s  = [0.0, 0.0, 0.0]
+# Rod-shaped academic inertia tensor for a 56 cm body length × 80 g
+# airframe. I_xx = I_yy = (1/12)·m·L² for a thin rod transverse to its
+# axis; I_zz uses a small body-radius approximation. These values are
+# academic placeholders — Phase-3.7 tank/slosh and Phase-3.6 motor
+# inertia derivatives will refine the inertia model.
+inertia_tensor_body_kg_m2 = [
+  [0.00209, 0.0,     0.0],
+  [0.0,     0.00209, 0.0],
+  [0.0,     0.0,     0.00002],
+]
+
+[environment]
+frame_profile = "wgs84-uniform-rotation"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "us_standard_1976"
+wind          = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[frames]
+profile = "wgs84-uniform-rotation"
+
+[frames.local_origin]
+latitude_deg  = 60.18
+longitude_deg = 24.83
+height_m      = 0.0
+source        = "Helsinki proxy launch site (Niskanen 2009 Chapter 6 does not publish exact coordinates)."
+
+[aero]
+deck         = "../../data/aero/synthetic-niskanen-ch6-rocket.toml"
+deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27"
+
+[propulsion.motor]
+file         = "../../data/motors/estes-c6-eng-derived.toml"
+ignite_at_s  = 0.0
+variant      = "solid"
+file_sha256  = "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e"
+
+[forces]
+models = ["gravity", "thrust", "aero"]
+
+[telemetry]
+output.parquet = "out/niskanen-2009-chapter6-rigid.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true

@@ -271,6 +271,14 @@ pub struct VehicleConfig {
     /// Initial body-frame angular velocity in rad/s. Required when
     /// `kind = "rigid_body"`, rejected otherwise.
     pub initial_angular_velocity_body_rad_s: Option<[f64; 3]>,
+    /// Body-frame inertia tensor in kg·m², row-major
+    /// `[[Ixx, Ixy, Ixz], [Ixy, Iyy, Iyz], [Ixz, Iyz, Izz]]`.
+    /// Required when `kind = "rigid_body"`, rejected otherwise.
+    /// Validated finite, symmetric, and positive-diagonal at parse
+    /// time; full positive-definite + triangle-inequality validation
+    /// happens at kernel construction via
+    /// `MassProperties::require_valid`.
+    pub inertia_tensor_body_kg_m2: Option<[[f64; 3]; 3]>,
 }
 
 impl VehicleConfig {
@@ -311,6 +319,14 @@ impl VehicleConfig {
                     }
                 })?;
                 require_finite_array("vehicle.initial_angular_velocity_body_rad_s", &angular)?;
+                let inertia = self.inertia_tensor_body_kg_m2.ok_or_else(|| {
+                    ScenarioError::MissingRequiredField {
+                        field: "vehicle.inertia_tensor_body_kg_m2".to_owned(),
+                        role: ModelRole::Vehicle,
+                        name: "rigid_body".to_owned(),
+                    }
+                })?;
+                validate_inertia_tensor(&inertia)?;
             }
             other => {
                 if self.initial_quaternion_body_to_eci_xyzw.is_some() {
@@ -327,10 +343,56 @@ impl VehicleConfig {
                         name: other.to_owned(),
                     });
                 }
+                if self.inertia_tensor_body_kg_m2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "vehicle.inertia_tensor_body_kg_m2".to_owned(),
+                        role: ModelRole::Vehicle,
+                        name: other.to_owned(),
+                    });
+                }
             }
         }
         Ok(())
     }
+}
+
+fn validate_inertia_tensor(inertia: &[[f64; 3]; 3]) -> Result<(), ScenarioError> {
+    // Finiteness, symmetry (within 1e-9 tolerance), and positive
+    // diagonal entries. Full positive-definite + triangle-inequality
+    // validation lives in `MassProperties::require_valid` at kernel
+    // construction.
+    for (i, row) in inertia.iter().enumerate() {
+        for (j, value) in row.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(ScenarioError::InvalidNumber {
+                    field: format!("vehicle.inertia_tensor_body_kg_m2[{i}][{j}]"),
+                    value: *value,
+                    rule: "must be finite",
+                });
+            }
+        }
+        if row[i] <= 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("vehicle.inertia_tensor_body_kg_m2[{i}][{i}]"),
+                value: row[i],
+                rule: "diagonal moment must be strictly positive",
+            });
+        }
+    }
+    let symmetry_tolerance = 1.0e-9;
+    let off_diagonals = [((0, 1), (1, 0)), ((0, 2), (2, 0)), ((1, 2), (2, 1))];
+    for ((i, j), (ji, jj)) in off_diagonals {
+        let upper = inertia[i][j];
+        let lower = inertia[ji][jj];
+        if (upper - lower).abs() > symmetry_tolerance {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("vehicle.inertia_tensor_body_kg_m2[{i}][{j}]"),
+                value: upper - lower,
+                rule: "inertia tensor must be symmetric",
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Environment model table.

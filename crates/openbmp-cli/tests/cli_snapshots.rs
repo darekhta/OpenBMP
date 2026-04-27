@@ -361,16 +361,16 @@ fn run_on_niskanen_with_corrupt_pin_fails_before_simulation() {
 }
 
 #[test]
-fn run_on_rigid_body_scenario_fails_with_unsupported() {
-    // Phase-2.11.A: `vehicle.kind = "rigid_body"` is rejected closed
-    // until Phase 3 ships rigid mass-property scenario fields and
-    // rigid force adapters. Verify the diagnostic surfaces clearly.
-    let temp = tempdir("rigid_body_unsupported");
+fn run_on_rigid_body_scenario_without_inertia_tensor_fails_closed() {
+    // Phase-3.1: `vehicle.kind = "rigid_body"` runs through the new
+    // rigid-body runner path, but the parser still requires
+    // `inertia_tensor_body_kg_m2`. A scenario that converts to
+    // rigid_body without declaring the inertia must fail closed at
+    // parse time with `MissingRequiredField`.
+    let temp = tempdir("rigid_body_no_inertia");
     let staged = temp.path().join("scenario.toml");
     let canonical = workspace_root().join("scenarios/analytic-toy/constant-acceleration-drop.toml");
     let original = fs::read_to_string(&canonical).expect("read canonical");
-    // Convert the analytic-toy point-mass scenario to a rigid_body
-    // shape just enough to trip the runner's vehicle-kind dispatch.
     let rewritten = original
         .replace("kind = \"point_mass\"", "kind = \"rigid_body\"")
         .replace(
@@ -392,8 +392,8 @@ initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]",
     );
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
-        stderr.contains("rigid_body") && stderr.contains("Phase 3"),
-        "stderr should explain rigid_body is deferred, got: {stderr}"
+        stderr.contains("inertia_tensor_body_kg_m2"),
+        "stderr should explain the missing inertia tensor, got: {stderr}"
     );
 }
 

@@ -11,10 +11,18 @@
 //!   atmosphere. Force-model order is the scenario-declared
 //!   [`forces.models`](openbmp_scenario::ForcesConfig) order, which is
 //!   the determinism contract.
-//! - `vehicle.kind = "rigid_body"` — fail-closed in 2.11.A. The rigid
-//!   body kernel is wired by Phase 3 once rigid-body adapters and the
-//!   `[vehicle].inertia_tensor_body_kg_m2` / `cg_body_m` scenario
-//!   fields land.
+//! - [`phase2_rigid_body`] — Phase-3.1 rigid-body path. Same scenario
+//!   shape as `phase2_point_mass` but with
+//!   `vehicle.kind = "rigid_body"` plus the parser-required
+//!   `initial_quaternion_body_to_eci_xyzw`,
+//!   `initial_angular_velocity_body_rad_s`, and
+//!   `inertia_tensor_body_kg_m2` fields. Wires the rigid-body
+//!   adapter family (`GravityForceAdapter` /
+//!   `MotorThrustForceAdapter` / `AxialDragForceAdapter` over
+//!   `RigidBodyState`, plus `RigidMotorMassAdapter`) into a
+//!   `RigidBodyKernel` with `ZeroMoment`. Wind, body-frame moments,
+//!   and rigid-body aero side-force / pitching moment land in
+//!   Phase 3.4 / 3.5 / 3.8.
 //!
 //! Pin verification: when the scenario references external files
 //! (`[aero].deck`, `[propulsion.motor].file`,
@@ -25,6 +33,7 @@
 
 pub mod phase1;
 pub mod phase2_point_mass;
+pub mod phase2_rigid_body;
 
 use openbmp_scenario::Scenario;
 use openbmp_sim::StopReason;
@@ -71,11 +80,7 @@ pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
     let document = &scenario.document;
 
     if document.vehicle.kind == "rigid_body" {
-        return Err(CliError::UnsupportedScenario {
-            what: "vehicle.kind = \"rigid_body\" — rigid-body runner pending Phase 3 \
-                   rigid mass-property scenario fields and rigid force adapters"
-                .to_owned(),
-        });
+        return phase2_rigid_body::run(scenario, &resolved_files);
     }
 
     if is_phase1_byte_stable_shape(scenario) {

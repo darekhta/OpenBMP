@@ -55,6 +55,7 @@ pub mod vehicle;
 
 pub use adapters::{
     AxialDragForceAdapter, GravityForceAdapter, MotorMassAdapter, MotorThrustForceAdapter,
+    RigidMotorMassAdapter,
 };
 pub use error::VehicleError;
 pub use vehicle::{
