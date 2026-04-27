@@ -232,7 +232,8 @@ source_title:     >-
   exactly.
 source_authors:   John Coker (RASP file), Estes Industries (motor)
 source_id:        ThrustCurve.org Estes C6 RASP simfile
-source_url:       https://www.thrustcurve.org/simfiles/5f4294d20002e900000004e7/
+source_url:       https://www.thrustcurve.org/simfiles/5f4294d20002e900000004e7/download/Estes_C6.eng
+source_hash_sha256: 90fa89edab96583266994ade8a8afd5b30a169f3a73d6db3a379495f24033570
 publication_date: 1994-09-17  # NAR certification date for the C6
 methodology_reference: >-
   RASP `.eng` thrust-curve format and the manufacturer's
@@ -253,10 +254,13 @@ transformation:
     the RASP `.eng` file at the `source_url` above, with thrust
     magnitudes scaled to the 7.5 N·s C6-family total impulse cited
     by Niskanen 2009 Chapter 6 and a (0.0, 0.0) starting point
-    prepended. The trapezoidal integral evaluates to exactly
-    7.5 N·s in f64 so the Phase-2.6 motor parser's tight-tolerance
-    integral check passes. `burn.duration_s = 1.86` matches the
-    curve's last time. `specific_impulse_s` back-solved from
+    prepended. The upstream trapezoidal integral is 8.817238 N·s;
+    OpenBMP scales every upstream thrust value by
+    0.8506065051209915 (= 7.5 / 8.817238). The committed decimal
+    values integrate to 7.4999999999999485 N·s in f64, which matches
+    the declared 7.5 N·s within the Phase-2.6 motor parser's
+    tight-tolerance integral check. `burn.duration_s = 1.86` matches
+    the curve's last time. `specific_impulse_s` back-solved from
     `I = m_p · g_0 · Isp` for `g_0 = 9.80665 m/s²` so the
     Phase-2.6 Isp consistency check passes within 1e-3 relative.
   script: none

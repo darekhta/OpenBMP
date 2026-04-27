@@ -91,6 +91,11 @@ const D12_PINNED_APOGEE_ALTITUDE_M: f64 = 497.837_685_347_295_23;
 const D12_PINNED_APOGEE_TIME_S: f64 = 9.421;
 const D12_PINNED_MAX_VELOCITY_M_S: f64 = 127.932_725_498_234_65;
 const D12_PINNED_MAX_ACCELERATION_M_S2: f64 = 263.440_645_283_683_47;
+const NISKANEN_PINNED_FINAL_STATE_HASH: u64 = 9_201_412_638_053_891_872;
+const NISKANEN_PINNED_APOGEE_ALTITUDE_M: f64 = 150.844_023_363_995_77;
+const NISKANEN_PINNED_APOGEE_TIME_S: f64 = 6.042;
+const NISKANEN_PINNED_MAX_VELOCITY_M_S: f64 = 52.293_275_581_836_824;
+const NISKANEN_PINNED_MAX_ACCELERATION_M_S2: f64 = 107.552_665_036_573_46;
 
 // Niskanen Chapter-6 vehicle parameters, simulation settings, and
 // reference apogees live in `data/scenarios/niskanen-2009-chapter6.toml`.
@@ -297,6 +302,7 @@ struct TraceMetrics {
 
 fn collect_trace<I, F, MM, E, SC>(
     kernel: &mut SimulationKernel<PointMassState, I, F, MM, E, SC>,
+    dt_s: f64,
 ) -> TraceMetrics
 where
     I: Integrator<PointMassState>,
@@ -327,7 +333,7 @@ where
             max_velocity_m_s = speed;
         }
         // Numerical derivative of velocity for max acceleration.
-        let accel = (velocity_z - prev_velocity_z).abs() / DT_S;
+        let accel = (velocity_z - prev_velocity_z).abs() / dt_s;
         if accel > max_accel_m_s2 {
             max_accel_m_s2 = accel;
         }
@@ -382,7 +388,7 @@ fn run_d12_scenario_and_collect_trace() -> TraceMetrics {
     };
 
     let mut kernel = SimulationKernel::new(config).expect("valid kernel");
-    collect_trace(&mut kernel)
+    collect_trace(&mut kernel, DT_S)
 }
 
 fn run_niskanen_scenario_and_collect_trace() -> TraceMetrics {
@@ -416,7 +422,7 @@ fn run_niskanen_scenario_and_collect_trace() -> TraceMetrics {
     };
 
     let mut kernel = SimulationKernel::new(config).expect("valid Niskanen kernel");
-    collect_trace(&mut kernel)
+    collect_trace(&mut kernel, scenario.simulation.dt_s)
 }
 
 #[test]
@@ -584,6 +590,41 @@ fn niskanen_chapter6_c6_apogee_matches_published_experiment() {
     assert!(
         metrics.final_velocity_z_m_s < 0.0,
         "Niskanen run must continue into post-apogee descent: {metrics:?}",
+    );
+}
+
+#[test]
+fn niskanen_chapter6_run_is_byte_stable_across_two_reruns() {
+    let a = run_niskanen_scenario_and_collect_trace();
+    let b = run_niskanen_scenario_and_collect_trace();
+    assert_eq!(
+        a.final_state_byte_hash, b.final_state_byte_hash,
+        "byte-stable replay required: {a:?} vs {b:?}",
+    );
+    assert_eq!(a.apogee_altitude_m.to_bits(), b.apogee_altitude_m.to_bits());
+    assert_eq!(a.apogee_time_s.to_bits(), b.apogee_time_s.to_bits());
+    assert_eq!(a.max_velocity_m_s.to_bits(), b.max_velocity_m_s.to_bits());
+    assert_eq!(
+        a.max_acceleration_m_s2.to_bits(),
+        b.max_acceleration_m_s2.to_bits()
+    );
+
+    assert_eq!(a.final_state_byte_hash, NISKANEN_PINNED_FINAL_STATE_HASH);
+    assert_eq!(
+        a.apogee_altitude_m.to_bits(),
+        NISKANEN_PINNED_APOGEE_ALTITUDE_M.to_bits()
+    );
+    assert_eq!(
+        a.apogee_time_s.to_bits(),
+        NISKANEN_PINNED_APOGEE_TIME_S.to_bits()
+    );
+    assert_eq!(
+        a.max_velocity_m_s.to_bits(),
+        NISKANEN_PINNED_MAX_VELOCITY_M_S.to_bits()
+    );
+    assert_eq!(
+        a.max_acceleration_m_s2.to_bits(),
+        NISKANEN_PINNED_MAX_ACCELERATION_M_S2.to_bits()
     );
 }
 
