@@ -115,6 +115,156 @@ impl SensorId {
     }
 }
 
+/// Internal FNV-1a-64 used by every path-derived id type. Same pinned
+/// constants as [`SensorId::from_path`] so existing pinned hashes
+/// stay valid across builds.
+const fn fnv1a_64(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET_BASIS_64: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME_64: u64 = 0x100_0000_01b3;
+
+    let mut hash = FNV_OFFSET_BASIS_64;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(FNV_PRIME_64);
+        i += 1;
+    }
+    hash
+}
+
+/// Stable identifier for a [`crate::Body`]-frame member of a
+/// `VehicleAssembly` (Phase 3.3).
+///
+/// Derived from the canonical scenario body path (e.g.
+/// `"vehicle.assembly.bodies.main"`) via FNV-1a-64 so that
+/// reordering `[[vehicle.assembly.bodies]]` blocks cannot shift any
+/// body's id.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct BodyId(u64);
+
+impl BodyId {
+    /// Construct from a raw integer value. Prefer
+    /// [`BodyId::from_path`] for scenario-declared bodies.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Construct from a stable canonical scenario path (e.g.
+    /// `"vehicle.assembly.bodies.main"`) via FNV-1a-64.
+    #[must_use]
+    pub const fn from_path(path: &str) -> Self {
+        Self(fnv1a_64(path.as_bytes()))
+    }
+
+    /// Returns the underlying integer value.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Stable identifier for a control-effector instance (Phase 3.4).
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct EffectorId(u64);
+
+impl EffectorId {
+    /// Construct from a raw integer value.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Construct from a canonical scenario effector path.
+    #[must_use]
+    pub const fn from_path(path: &str) -> Self {
+        Self(fnv1a_64(path.as_bytes()))
+    }
+
+    /// Returns the underlying integer value.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Stable identifier for a tank instance (Phase 3.7).
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct TankId(u64);
+
+impl TankId {
+    /// Construct from a raw integer value.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Construct from a canonical scenario tank path.
+    #[must_use]
+    pub const fn from_path(path: &str) -> Self {
+        Self(fnv1a_64(path.as_bytes()))
+    }
+
+    /// Returns the underlying integer value.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Stable identifier for an engine instance within an `EngineCluster`
+/// (Phase 3.6).
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct EngineId(u64);
+
+impl EngineId {
+    /// Construct from a raw integer value.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Construct from a canonical scenario engine path.
+    #[must_use]
+    pub const fn from_path(path: &str) -> Self {
+        Self(fnv1a_64(path.as_bytes()))
+    }
+
+    /// Returns the underlying integer value.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Stable identifier for a `VehicleAssembly` instance (Phase 3.3).
+///
+/// Carries the scenario's overall vehicle name. Defaults to the FNV
+/// hash of the scenario `meta.name` field when no explicit
+/// `vehicle.assembly.id` is declared.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct VehicleId(u64);
+
+impl VehicleId {
+    /// Construct from a raw integer value.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Construct from a canonical vehicle path or scenario meta.name.
+    #[must_use]
+    pub const fn from_path(path: &str) -> Self {
+        Self(fnv1a_64(path.as_bytes()))
+    }
+
+    /// Returns the underlying integer value.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

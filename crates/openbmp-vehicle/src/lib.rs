@@ -50,12 +50,17 @@
 //! Phase 2.10 wires the two together.
 
 pub mod adapters;
+pub mod assembly;
 pub mod error;
 pub mod vehicle;
 
 pub use adapters::{
     AxialDragForceAdapter, GravityForceAdapter, MotorMassAdapter, MotorThrustForceAdapter,
     RigidMotorMassAdapter,
+};
+pub use assembly::{
+    AssemblyError, BasicAssembly, BasicAssemblyBuilder, Body, BodyGeometry, KernelModelBundle,
+    KernelModelBundleRigid, VehicleAssembly,
 };
 pub use error::VehicleError;
 pub use vehicle::{

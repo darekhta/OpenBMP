@@ -55,7 +55,9 @@ pub use frames::{
     Velocity3, VelocityDelta3, WGS84_A_M, WGS84_ECCENTRICITY_SQUARED, WGS84_FLATTENING,
     WGS84_INV_FLATTENING, WGS84_MU_M3_S2, WGS84_OMEGA_RAD_S,
 };
-pub use ids::{ChannelId, ModelId, ScenarioId, SensorId};
+pub use ids::{
+    BodyId, ChannelId, EffectorId, EngineId, ModelId, ScenarioId, SensorId, TankId, VehicleId,
+};
 pub use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 pub use rng::DeterministicRng;
 pub use time::{Duration, SimTime, StepIndex};
