@@ -1,0 +1,31 @@
+# Minimal IMU noise-budget parser fixture.
+#
+# Synthetic round numbers; not a real device noise budget. Real
+# device budgets ship under `data/sensors/` with provenance and
+# SHA-256 pinning.
+
+openbmp.imu_noise_budget = 1
+
+[meta]
+name       = "test-budget"
+provenance = "test fixture"
+validation = "validated-toy"
+
+[sample]
+dt_s = 0.001
+
+[gyro]
+arw_per_sqrt_s        = 0.001
+bias_ou_theta         = 1.0
+bias_ou_sigma         = 0.0
+rrw_sigma_per_sqrt_s  = 0.0
+scale_factor_ppm      = 0.0
+quantization_lsb      = 0.0
+
+[accel]
+arw_per_sqrt_s        = 0.01
+bias_ou_theta         = 1.0
+bias_ou_sigma         = 0.0
+rrw_sigma_per_sqrt_s  = 0.0
+scale_factor_ppm      = 0.0
+quantization_lsb      = 0.0

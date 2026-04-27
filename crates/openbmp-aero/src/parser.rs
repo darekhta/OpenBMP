@@ -160,32 +160,16 @@ mod tests {
     use super::*;
     use crate::AeroCoefficients;
 
+    /// Minimal-deck parser fixture loaded from
+    /// `crates/openbmp-aero/tests/fixtures/minimal-deck.toml`. Per the
+    /// inline-data tripwire (`docs/data-provenance.md § Inline Data
+    /// Tripwires`), parser test fixtures live in sibling files, not
+    /// inline raw strings.
     fn minimal_deck_toml() -> String {
-        // 2 x 2 x 1 deck with CN/CD/CM tables holding 0..3 in
-        // row-major (mach, alpha, beta) order. Reference area 1 m²,
-        // reference length 1 m.
-        r#"
-openbmp.aero_deck = 1
-
-reference.area_m2  = 1.0
-reference.length_m = 1.0
-provenance         = "test fixture; no real source"
-validation         = "validated-toy"
-
-[grid]
-mach      = [0.0, 1.0]
-alpha_deg = [0.0, 1.0]
-beta_deg  = [0.0]
-
-[coefficients.cn]
-data = [0.0, 1.0, 2.0, 3.0]
-
-[coefficients.cd]
-data = [0.0, 1.0, 2.0, 3.0]
-
-[coefficients.cm]
-data = [0.0, 1.0, 2.0, 3.0]
-"#
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/minimal-deck.toml"
+        ))
         .to_string()
     }
 
@@ -283,29 +267,10 @@ data = [0.0, 1.0, 2.0, 3.0]
 
     #[test]
     fn parser_rejects_inconsistent_coefficient_table_size() {
-        // 4-element CN with a 3 x 3 x 1 grid → mismatch.
-        let toml_str = r#"
-openbmp.aero_deck = 1
-
-reference.area_m2  = 1.0
-reference.length_m = 1.0
-provenance         = "test fixture"
-validation         = "validated-toy"
-
-[grid]
-mach      = [0.0, 1.0, 2.0]
-alpha_deg = [0.0, 1.0, 2.0]
-beta_deg  = [0.0]
-
-[coefficients.cn]
-data = [0.0, 1.0, 2.0, 3.0]
-
-[coefficients.cd]
-data = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-
-[coefficients.cm]
-data = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-"#;
+        let toml_str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/inconsistent-coefficient-table.toml"
+        ));
         assert!(matches!(
             AeroDeck::load_from_str(toml_str),
             Err(AeroError::MalformedDeck { .. }),

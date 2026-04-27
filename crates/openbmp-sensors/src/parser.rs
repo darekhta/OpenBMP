@@ -151,34 +151,16 @@ impl ImuNoiseBudget {
 mod tests {
     use super::*;
 
+    /// Minimal IMU noise-budget parser fixture loaded from
+    /// `crates/openbmp-sensors/tests/fixtures/minimal-imu-budget.toml`.
+    /// Per the inline-data tripwire (`docs/data-provenance.md §
+    /// Inline Data Tripwires`), parser test fixtures live in sibling
+    /// files, not inline raw strings.
     fn minimal_budget_toml() -> &'static str {
-        r#"
-openbmp.imu_noise_budget = 1
-
-[meta]
-name       = "test-budget"
-provenance = "test fixture"
-validation = "validated-toy"
-
-[sample]
-dt_s = 0.001
-
-[gyro]
-arw_per_sqrt_s        = 0.001
-bias_ou_theta         = 1.0
-bias_ou_sigma         = 0.0
-rrw_sigma_per_sqrt_s  = 0.0
-scale_factor_ppm      = 0.0
-quantization_lsb      = 0.0
-
-[accel]
-arw_per_sqrt_s        = 0.01
-bias_ou_theta         = 1.0
-bias_ou_sigma         = 0.0
-rrw_sigma_per_sqrt_s  = 0.0
-scale_factor_ppm      = 0.0
-quantization_lsb      = 0.0
-"#
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/minimal-imu-budget.toml"
+        ))
     }
 
     #[test]

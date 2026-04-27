@@ -1,0 +1,26 @@
+# Minimal aero-deck parser fixture.
+#
+# 2 × 2 × 1 deck with CN/CD/CM tables holding 0..3 in row-major
+# (mach, alpha, beta) order. Reference area 1 m², reference length
+# 1 m. Synthetic round numbers; not a benchmark deck.
+
+openbmp.aero_deck = 1
+
+reference.area_m2  = 1.0
+reference.length_m = 1.0
+provenance         = "test fixture; no real source"
+validation         = "validated-toy"
+
+[grid]
+mach      = [0.0, 1.0]
+alpha_deg = [0.0, 1.0]
+beta_deg  = [0.0]
+
+[coefficients.cn]
+data = [0.0, 1.0, 2.0, 3.0]
+
+[coefficients.cd]
+data = [0.0, 1.0, 2.0, 3.0]
+
+[coefficients.cm]
+data = [0.0, 1.0, 2.0, 3.0]

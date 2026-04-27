@@ -1,0 +1,13 @@
+# Tolerance-table negative-test fixture: a metric with a negative
+# absolute tolerance. Synthetic; verifies the parser rejects invalid
+# values.
+
+case       = "case"
+source     = "source"
+validation = "experimental"
+
+[[metric]]
+name               = "x"
+expected           = 1.0
+absolute_tolerance = -0.1
+relative_tolerance = 0.1

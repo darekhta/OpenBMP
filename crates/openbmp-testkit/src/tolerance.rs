@@ -240,40 +240,20 @@ mod tests {
 
     #[test]
     fn duplicate_metric_is_rejected_at_parse_time() {
-        let duplicate = r#"
-            case = "case"
-            source = "source"
-            validation = "experimental"
-
-            [[metric]]
-            name = "x"
-            expected = 1.0
-            absolute_tolerance = 0.1
-            relative_tolerance = 0.1
-
-            [[metric]]
-            name = "x"
-            expected = 1.0
-            absolute_tolerance = 0.1
-            relative_tolerance = 0.1
-        "#;
+        let duplicate = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/duplicate-metric.toml"
+        ));
         let err = ToleranceTable::from_toml_str(duplicate).unwrap_err();
         assert!(matches!(err, TestkitError::DuplicateMetric { .. }));
     }
 
     #[test]
     fn invalid_tolerance_is_rejected_at_parse_time() {
-        let invalid = r#"
-            case = "case"
-            source = "source"
-            validation = "experimental"
-
-            [[metric]]
-            name = "x"
-            expected = 1.0
-            absolute_tolerance = -0.1
-            relative_tolerance = 0.1
-        "#;
+        let invalid = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/invalid-tolerance.toml"
+        ));
         let err = ToleranceTable::from_toml_str(invalid).unwrap_err();
         assert!(matches!(err, TestkitError::InvalidMetricValue { .. }));
     }

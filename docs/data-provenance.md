@@ -420,16 +420,17 @@ in
 [`crates/openbmp-testkit/tests/inline_data_tripwire.rs`](../crates/openbmp-testkit/tests/inline_data_tripwire.rs).
 The tripwires fail the build on:
 
-1. **Module-level raw-string TOML in `*.rs` source.** Any
-   `const FOO: &str = r#"…"#;` (or `pub const`, `static`) whose body
-   contains an OpenBMP schema header (`openbmp.scenario`,
-   `openbmp.aero_deck`, `openbmp.motor`, `openbmp.imu_noise_budget`,
-   `openbmp.benchmark`) or a `[[metric]]` table marker. TOML test
-   fixtures must live in a sibling file under
+1. **Multi-line raw-string TOML in `*.rs` source.** Any `r#"…"#` raw
+   string in a `*.rs` file whose body contains an OpenBMP schema
+   header (`openbmp.scenario`, `openbmp.aero_deck`, `openbmp.motor`,
+   `openbmp.imu_noise_budget`, `openbmp.benchmark`) or a `[[metric]]`
+   table marker is forbidden, regardless of enclosing context
+   (module-level `const`, function-local `let`, helper `fn` returning
+   `String`). TOML fixtures must live in a sibling file under
    `crates/<crate>/tests/fixtures/<name>.toml` and be loaded via
-   `include_str!`. Function-local raw strings in test bodies (e.g.,
-   `let toml = r#"…"#;` inside one negative-test function) are allowed
-   because they do not accumulate cross-test reuse.
+   `include_str!`. Single-line raw strings used as `.replace(needle,
+   replacement)` patterns are not flagged because they do not carry
+   schema headers across line breaks.
 2. **High-precision benchmark constants outside their declared
    source-of-truth.** The current tripwire table:
 
@@ -449,7 +450,7 @@ The tripwires fail the build on:
 | File location | Provenance requirement | Example |
 |---|---|---|
 | `data/<category>/<name>.toml` | Sibling `provenance.md` + SHA-256 pin | `data/gravity/wgs84-j2.toml` |
-| `scenarios/<category>/<name>.toml` | Real validation case; references `data/` files with pinned digests | `scenarios/sounding-rocket/niskanen-2009-chapter6.toml` |
+| `scenarios/<category>/<name>.toml` | Sibling `provenance.md`; real validation case; references `data/` files with pinned digests | `scenarios/sounding-rocket/niskanen-2009-chapter6.toml` |
 | `crates/<crate>/tests/fixtures/<name>.toml` | Synthetic test artefact; no benchmark numbers | `crates/openbmp-scenario/tests/fixtures/sounding-rocket.toml` |
 | `crates/<crate>/tests/expected/<name>.toml` | Tolerance tables; clean integers, no benchmark provenance | `crates/openbmp-cli/tests/expected/constant-acceleration-drop.toml` |
 
@@ -457,6 +458,20 @@ A fixture in `tests/fixtures/` must be obviously synthetic — clean round
 numbers, fictional names, no published-reference values. The header comment
 of the file should state "Synthetic; not a benchmark." so future readers
 cannot mistake it for a validation case.
+
+The tripwires also enforce two structural rules:
+
+3. **Test TOML lives in fixture / data directories, not `src/`.** Every
+   `include_str!(… ".toml")` in `*.rs` source must resolve to a path
+   under `tests/fixtures/`, `tests/expected/`, `data/`, or
+   `scenarios/`. Stashing a `.toml` data file alongside Rust code in
+   `crates/<crate>/src/` is a structural mistake — `src/` is for code,
+   not data — and the build fails closed.
+4. **Real-data TOML lives next to provenance.** Every `*.toml` under
+   `data/` or `scenarios/` (or any of their subdirectories) must have
+   a sibling `provenance.md` in the same directory. This mirrors the
+   `openbmp check-provenance` CLI command but enforces it under
+   `cargo test`, so the contract holds even when the CLI is not run.
 
 ### Adding a new tripwire entry
 

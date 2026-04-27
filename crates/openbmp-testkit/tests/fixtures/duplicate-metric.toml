@@ -1,0 +1,18 @@
+# Tolerance-table negative-test fixture: two metrics with the same
+# name. Synthetic; verifies the parser rejects duplicates.
+
+case       = "case"
+source     = "source"
+validation = "experimental"
+
+[[metric]]
+name               = "x"
+expected           = 1.0
+absolute_tolerance = 0.1
+relative_tolerance = 0.1
+
+[[metric]]
+name               = "x"
+expected           = 1.0
+absolute_tolerance = 0.1
+relative_tolerance = 0.1

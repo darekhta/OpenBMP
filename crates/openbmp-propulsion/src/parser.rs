@@ -170,29 +170,16 @@ mod tests {
     use super::*;
     use crate::motor::Motor;
 
+    /// Minimal solid-motor parser fixture loaded from
+    /// `crates/openbmp-propulsion/tests/fixtures/minimal-motor.toml`.
+    /// Per the inline-data tripwire (`docs/data-provenance.md §
+    /// Inline Data Tripwires`), parser test fixtures live in sibling
+    /// files, not inline raw strings.
     fn minimal_motor_toml() -> String {
-        r#"
-openbmp.motor = 1
-
-[meta]
-name       = "test-trapezoidal"
-provenance = "test fixture; synthetic"
-validation = "validated-toy"
-
-[burn]
-duration_s         = 4.0
-total_impulse_n_s  = 3500.0
-specific_impulse_s = 356.9006745422749
-propellant_mass_kg = 1.0
-dry_mass_kg        = 0.5
-
-[thrust_curve]
-points = [[0.0, 0.0], [0.5, 1000.0], [3.5, 1000.0], [4.0, 0.0]]
-
-[geometry]
-exit_area_m2                 = 0.0019
-ambient_pressure_correction  = "constant"
-"#
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/minimal-motor.toml"
+        ))
         .to_string()
     }
 

@@ -1,0 +1,25 @@
+# Aero-deck parser negative-test fixture.
+#
+# 4-element CN with a 3 × 3 × 1 grid → mismatch. Used to verify the
+# parser rejects inconsistent table sizes. Synthetic values.
+
+openbmp.aero_deck = 1
+
+reference.area_m2  = 1.0
+reference.length_m = 1.0
+provenance         = "test fixture"
+validation         = "validated-toy"
+
+[grid]
+mach      = [0.0, 1.0, 2.0]
+alpha_deg = [0.0, 1.0, 2.0]
+beta_deg  = [0.0]
+
+[coefficients.cn]
+data = [0.0, 1.0, 2.0, 3.0]
+
+[coefficients.cd]
+data = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+[coefficients.cm]
+data = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

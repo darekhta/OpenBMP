@@ -1,0 +1,29 @@
+# Minimal solid-motor parser fixture.
+#
+# Synthetic trapezoidal thrust curve: 4 s burn, 3500 N·s impulse,
+# 1.0 kg propellant, 0.5 kg dry mass, constant-pressure correction.
+# The Isp value is the derived Isp = total_impulse / (propellant
+# mass × g0) for g0 = 9.80665 m/s². Not a real motor. Real motor
+# files live under `data/motors/` with provenance and SHA-256
+# pinning.
+
+openbmp.motor = 1
+
+[meta]
+name       = "test-trapezoidal"
+provenance = "test fixture; synthetic"
+validation = "validated-toy"
+
+[burn]
+duration_s         = 4.0
+total_impulse_n_s  = 3500.0
+specific_impulse_s = 356.9006745422749
+propellant_mass_kg = 1.0
+dry_mass_kg        = 0.5
+
+[thrust_curve]
+points = [[0.0, 0.0], [0.5, 1000.0], [3.5, 1000.0], [4.0, 0.0]]
+
+[geometry]
+exit_area_m2                 = 0.0019
+ambient_pressure_correction  = "constant"
