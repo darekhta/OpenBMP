@@ -196,20 +196,28 @@ impl MetricTolerance {
 mod tests {
     use super::*;
 
+    // Parser-test fixture. The `case`, `source`, metric names, and
+    // numerical values are intentionally synthetic — clean integers
+    // chosen so the abs/rel tolerance arithmetic in the assertions
+    // below is easy to verify by hand. This fixture does NOT
+    // represent any real benchmark; real validation cases ship as
+    // their own files under `data/scenarios/` (or
+    // `crates/<crate>/tests/expected/`) with full provenance per
+    // `docs/data-provenance.md`.
     const SAMPLE: &str = r#"
-        case = "allen-eggers-ballistic-entry"
-        source = "NACA Report 1381"
+        case = "test-tolerance-fixture"
+        source = "test fixture"
         validation = "validated-toy"
 
         [[metric]]
-        name = "peak_deceleration_g"
-        expected = 12.3
+        name = "metric_a"
+        expected = 10.0
         absolute_tolerance = 0.05
         relative_tolerance = 0.01
 
         [[metric]]
-        name = "peak_altitude_km"
-        expected = 50.0
+        name = "metric_b"
+        expected = 100.0
         absolute_tolerance = 0.5
         relative_tolerance = 0.01
     "#;
@@ -217,7 +225,7 @@ mod tests {
     #[test]
     fn parses_valid_document() {
         let table = ToleranceTable::from_toml_str(SAMPLE).unwrap();
-        assert_eq!(table.case, "allen-eggers-ballistic-entry");
+        assert_eq!(table.case, "test-tolerance-fixture");
         assert_eq!(table.metrics.len(), 2);
         assert_eq!(table.validation, ValidationStatus::ValidatedToy);
     }
@@ -225,15 +233,15 @@ mod tests {
     #[test]
     fn check_metric_passes_within_tolerance() {
         let table = ToleranceTable::from_toml_str(SAMPLE).unwrap();
-        // 12.31 vs expected 12.3, abs_diff 0.01 < 0.05 → pass.
-        assert!(table.check_metric("peak_deceleration_g", 12.31).is_ok());
+        // 10.01 vs expected 10.0, abs_diff 0.01 < 0.05 → pass.
+        assert!(table.check_metric("metric_a", 10.01).is_ok());
     }
 
     #[test]
     fn check_metric_fails_outside_tolerance() {
         let table = ToleranceTable::from_toml_str(SAMPLE).unwrap();
-        // 13.0 vs 12.3, abs 0.7 > 0.05 and rel 0.0569 > 0.01 → fail.
-        let err = table.check_metric("peak_deceleration_g", 13.0).unwrap_err();
+        // 11.0 vs 10.0, abs 1.0 > 0.05 and rel 0.1 > 0.01 → fail.
+        let err = table.check_metric("metric_a", 11.0).unwrap_err();
         assert!(matches!(err, TestkitError::MetricOutOfTolerance { .. }));
     }
 
@@ -287,18 +295,16 @@ mod tests {
     #[test]
     fn check_metric_rejects_nan_actual() {
         let table = ToleranceTable::from_toml_str(SAMPLE).unwrap();
-        let err = table
-            .check_metric("peak_deceleration_g", f64::NAN)
-            .unwrap_err();
+        let err = table.check_metric("metric_a", f64::NAN).unwrap_err();
         assert!(matches!(err, TestkitError::MetricActualNotFinite { .. }));
     }
 
     #[test]
     fn check_metric_passes_when_relative_tolerance_satisfies() {
         let table = ToleranceTable::from_toml_str(SAMPLE).unwrap();
-        // 12.42 vs 12.3 → abs_diff 0.12 > 0.05 (abs fails),
-        // but 0.12/12.3 = 0.0098 < 0.01 (rel passes). Either-or
+        // 10.06 vs 10.0 → abs_diff 0.06 > 0.05 (abs fails),
+        // but 0.06/10.0 = 0.006 < 0.01 (rel passes). Either-or
         // semantics: pass.
-        assert!(table.check_metric("peak_deceleration_g", 12.42).is_ok());
+        assert!(table.check_metric("metric_a", 10.06).is_ok());
     }
 }
