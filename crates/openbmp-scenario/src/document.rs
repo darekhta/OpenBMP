@@ -22,6 +22,12 @@ use crate::solver::SolverConfig;
 /// Scenario schema version supported by this crate.
 pub const SUPPORTED_SCENARIO_VERSION: u16 = 1;
 
+/// Default unnormalised WGS84 J2 zonal coefficient used when a scenario
+/// selects `gravity = "j2"` and omits `environment.j2`.
+///
+/// Source: NIMA TR 8350.2 (NGA WGS84), 3rd edition (2000), table 3.5.
+pub const WGS84_J2_DEFAULT: f64 = 1.082_626_683e-3;
+
 /// Strict Phase-1 scenario document.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -87,6 +93,14 @@ impl ScenarioDocument {
         self.telemetry.validate()?;
         if let Some(frames) = &self.frames {
             frames.validate()?;
+            if self.environment.frame_profile != frames.profile {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "environment.frame_profile".to_owned(),
+                    value_a: self.environment.frame_profile.clone(),
+                    field_b: "frames.profile".to_owned(),
+                    value_b: frames.profile.clone(),
+                });
+            }
         }
         if let Some(aero) = &self.aero {
             aero.validate()?;
@@ -104,6 +118,12 @@ impl ScenarioDocument {
                     value_b: wind.kind.clone(),
                 });
             }
+        } else if self.environment.wind == "constant" {
+            return Err(ScenarioError::MissingRequiredField {
+                field: "wind".to_owned(),
+                role: ModelRole::Wind,
+                name: "constant".to_owned(),
+            });
         }
         if let Some(atmosphere) = &self.atmosphere {
             atmosphere.validate(registry)?;
@@ -117,7 +137,14 @@ impl ScenarioDocument {
                     value_b: atmosphere.kind.clone(),
                 });
             }
+        } else if self.environment.atmosphere == "isothermal" {
+            return Err(ScenarioError::MissingRequiredField {
+                field: "atmosphere".to_owned(),
+                role: ModelRole::Atmosphere,
+                name: "isothermal".to_owned(),
+            });
         }
+        self.validate_force_dependencies()?;
         if let Some(sensors) = &self.sensors {
             for (name, config) in sensors {
                 config.validate(name, registry)?;
@@ -128,6 +155,29 @@ impl ScenarioDocument {
         }
         if let Some(batch) = &self.batch {
             batch.validate()?;
+        }
+        Ok(())
+    }
+
+    fn validate_force_dependencies(&self) -> Result<(), ScenarioError> {
+        if self.forces.models.iter().any(|model| model == "aero") && self.aero.is_none() {
+            return Err(ScenarioError::MissingRequiredField {
+                field: "aero".to_owned(),
+                role: ModelRole::Force,
+                name: "aero".to_owned(),
+            });
+        }
+        let has_motor = self
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.motor.as_ref())
+            .is_some();
+        if self.forces.models.iter().any(|model| model == "thrust") && !has_motor {
+            return Err(ScenarioError::MissingRequiredField {
+                field: "propulsion.motor".to_owned(),
+                role: ModelRole::Force,
+                name: "thrust".to_owned(),
+            });
         }
         Ok(())
     }
@@ -299,7 +349,7 @@ pub struct EnvironmentConfig {
     pub mu_m3_s2: Option<f64>,
     /// Equatorial radius in metres. Required when `gravity = "j2"`.
     pub r_e_m: Option<f64>,
-    /// J2 zonal coefficient (dimensionless). Required when
+    /// J2 zonal coefficient (dimensionless). Optional when
     /// `gravity = "j2"`; defaults to the WGS84 value when absent.
     pub j2: Option<f64>,
     /// Atmosphere model name.
@@ -355,6 +405,13 @@ impl EnvironmentConfig {
                         name: "point_mass".to_owned(),
                     });
                 }
+                if self.r_e_m.is_some() || self.j2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "environment.r_e_m / environment.j2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "point_mass".to_owned(),
+                    });
+                }
             }
             "j2" => {
                 let mu = self
@@ -392,6 +449,17 @@ impl EnvironmentConfig {
             require_supported("environment.magnetic", magnetic, &["none"])?;
         }
         Ok(())
+    }
+
+    /// Return the scenario J2 coefficient after applying the WGS84
+    /// default for `gravity = "j2"`.
+    #[must_use]
+    pub fn j2_or_wgs84_default(&self) -> Option<f64> {
+        if self.gravity == "j2" {
+            Some(self.j2.unwrap_or(WGS84_J2_DEFAULT))
+        } else {
+            None
+        }
     }
 }
 
@@ -724,13 +792,26 @@ impl SensorConfig {
                         name: "ideal_state".to_owned(),
                     });
                 }
+                if self.file_sha256.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: format!("sensors.{name}.file_sha256"),
+                        role: ModelRole::Sensor,
+                        name: "ideal_state".to_owned(),
+                    });
+                }
             }
             kind => {
-                if self.file.is_none() {
-                    return Err(ScenarioError::MissingRequiredField {
+                let file =
+                    self.file
+                        .as_ref()
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("sensors.{name}.file"),
+                            role: ModelRole::Sensor,
+                            name: kind.to_owned(),
+                        })?;
+                if file.as_os_str().is_empty() {
+                    return Err(ScenarioError::EmptyField {
                         field: format!("sensors.{name}.file"),
-                        role: ModelRole::Sensor,
-                        name: kind.to_owned(),
                     });
                 }
             }

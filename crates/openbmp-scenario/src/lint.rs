@@ -45,14 +45,14 @@ impl ForbiddenTerm {
 
 const UNIT_SUFFIXES: &[&str] = &[
     "_dt_s", "_m_s2", "_m_s", "_m3_s2", "_n_m", "_n_s", "_rad_s", "_hz", "_kg", "_m", "_n", "_pa",
-    "_rad", "_s", "_k", "_deg", "_xyzw",
+    "_rad", "_s", "_k", "_deg",
 ];
 
 const FRAME_INFIXES: &[&str] = &["_eci_", "_ecef_", "_ned_", "_enu_", "_body_"];
 
-/// Field-name infixes that mark a 4-vector as carrying its component
-/// order explicitly (e.g., the quaternion `_xyzw` order).
-const QUATERNION_INFIXES: &[&str] = &["_xyzw"];
+/// Dimensionless suffixes that declare component ordering rather than
+/// physical units.
+const DIMENSIONLESS_COMPONENT_ORDER_SUFFIXES: &[&str] = &["_xyzw"];
 
 /// Top-level lint entry point.
 ///
@@ -165,7 +165,11 @@ fn check_dimensional_field(
     key: &str,
     value: &toml::Value,
 ) -> Result<(), ScenarioError> {
-    if is_numeric_value(value) && !is_dimensionless_key(key) && !key_has_unit_suffix(key) {
+    if is_numeric_value(value)
+        && !is_dimensionless_key(key)
+        && !key_has_unit_suffix(key)
+        && !key_has_dimensionless_component_order_suffix(key)
+    {
         return Err(ScenarioError::MissingUnitSuffix {
             field: path.to_owned(),
         });
@@ -175,7 +179,10 @@ fn check_dimensional_field(
             field: path.to_owned(),
         });
     }
-    if is_numeric_4vector(value) && !key_has_quaternion_infix(key) && !key_has_frame_infix(key) {
+    if is_numeric_4vector(value)
+        && !key_has_dimensionless_component_order_suffix(key)
+        && !key_has_frame_infix(key)
+    {
         return Err(ScenarioError::MissingFrameSuffix {
             field: path.to_owned(),
         });
@@ -225,6 +232,8 @@ fn key_has_frame_infix(key: &str) -> bool {
     FRAME_INFIXES.iter().any(|infix| key.contains(infix))
 }
 
-fn key_has_quaternion_infix(key: &str) -> bool {
-    QUATERNION_INFIXES.iter().any(|infix| key.contains(infix))
+fn key_has_dimensionless_component_order_suffix(key: &str) -> bool {
+    DIMENSIONLESS_COMPONENT_ORDER_SUFFIXES
+        .iter()
+        .any(|suffix| key.ends_with(suffix))
 }

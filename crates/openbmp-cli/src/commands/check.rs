@@ -25,7 +25,7 @@ pub struct CheckReport {
 pub struct ResolvedFileEntry {
     /// Field path (e.g., `aero.deck`, `propulsion.motor.file`).
     pub field: String,
-    /// Resolved absolute path.
+    /// Scenario-resolved path.
     pub path: String,
     /// Lower-case hex SHA-256 digest.
     pub sha256_hex: String,

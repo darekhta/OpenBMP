@@ -30,7 +30,8 @@ pub use document::{
     AeroConfig, AtmosphereConfig, BatchConfig, EnvironmentConfig, EpochConfig, ForcesConfig,
     FramesConfig, LocalOriginConfig, MetaConfig, MotorConfig, OpenBmpHeader, PropulsionConfig,
     SUPPORTED_SCENARIO_VERSION, ScenarioDocument, SensorConfig, TelemetryConfig,
-    TelemetryOutputConfig, TimeConfig, ValidationConfig, VehicleConfig, WindConfig,
+    TelemetryOutputConfig, TimeConfig, ValidationConfig, VehicleConfig, WGS84_J2_DEFAULT,
+    WindConfig,
 };
 pub use error::ScenarioError;
 pub use files::ResolvedFile;

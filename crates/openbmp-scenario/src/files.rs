@@ -2,9 +2,9 @@
 //!
 //! Phase 2.10 introduces external file references for aero decks, motor
 //! curves, atmosphere tables, and sensor noise budgets. This module
-//! resolves a scenario-relative path to an absolute path, computes the
-//! SHA-256 digest of the file's bytes once, and (optionally) verifies
-//! that digest against a pinned hex string declared in the scenario.
+//! records the scenario-resolved path, computes the SHA-256 digest of
+//! the file's bytes once, and (optionally) verifies that digest against
+//! a pinned hex string declared in the scenario.
 //!
 //! The scenario `Scenario::resolved_files()` API exposes the resulting
 //! `BTreeMap<field, ResolvedFile>` so the runner can record content
@@ -21,12 +21,12 @@ use crate::error::ScenarioError;
 /// Resolved scenario-referenced external file with its content digest.
 ///
 /// The digest is the SHA-256 of the file bytes at load time, encoded as
-/// 64 lower-case hexadecimal characters. The struct carries the resolved
-/// absolute path so downstream consumers (telemetry header, snapshot
-/// formatter) can render a deterministic representation.
+/// 64 lower-case hexadecimal characters. The struct carries the path
+/// after scenario-relative resolution so downstream consumers (telemetry
+/// header, snapshot formatter) can render a deterministic representation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedFile {
-    /// Resolved absolute path to the file.
+    /// Scenario-resolved path to the file.
     pub path: PathBuf,
     /// Lower-case hex SHA-256 digest of the file bytes.
     pub sha256_hex: String,

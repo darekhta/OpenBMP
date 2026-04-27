@@ -194,6 +194,7 @@ impl Scenario {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::document::WGS84_J2_DEFAULT;
     use openbmp_core::ValidationStatus;
 
     // Parser-test fixture loaded from the canonical Phase-1
@@ -495,6 +496,16 @@ require_monotonic_time = true
     }
 
     #[test]
+    fn rejects_flat_constant_wind_without_structured_block() {
+        let toml = MINIMAL.replace(r#"wind          = "none""#, r#"wind          = "constant""#);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "wind"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
     fn rejects_isothermal_atmosphere_without_state() {
         let toml = SOUNDING_ROCKET
             .replace(
@@ -515,6 +526,19 @@ kind = "isothermal""#,
     }
 
     #[test]
+    fn rejects_flat_isothermal_atmosphere_without_structured_block() {
+        let toml = MINIMAL.replace(
+            r#"atmosphere    = "none""#,
+            r#"atmosphere    = "isothermal""#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "atmosphere"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
     fn rejects_ideal_state_sensor_with_file() {
         let toml = SOUNDING_ROCKET.replace(
             "[sensors.truth]\nkind = \"ideal_state\"",
@@ -523,6 +547,22 @@ kind = "isothermal""#,
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "sensors.truth.file"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_ideal_state_sensor_with_pin_only() {
+        let toml = SOUNDING_ROCKET.replace(
+            "[sensors.truth]\nkind = \"ideal_state\"",
+            &format!(
+                "[sensors.truth]\nkind = \"ideal_state\"\nfile_sha256 = \"{}\"",
+                "0".repeat(64)
+            ),
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "sensors.truth.file_sha256"),
             "got {err:?}",
         );
     }
@@ -564,12 +604,73 @@ kind = "isothermal""#,
     }
 
     #[test]
+    fn rejects_point_mass_gravity_with_j2_coefficients() {
+        let toml = SOUNDING_ROCKET.replace(
+            "gravity = \"j2\"\nmu_m3_s2 = 3.986004418e14\nr_e_m = 6378137.0\nj2 = 1.082626683e-3",
+            "gravity = \"point_mass\"\nmu_m3_s2 = 3.986004418e14\nr_e_m = 6378137.0\nj2 = 1.082626683e-3",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "environment.r_e_m / environment.j2"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn j2_gravity_uses_wgs84_default_when_j2_is_omitted() {
+        let toml = SOUNDING_ROCKET.replace("j2 = 1.082626683e-3\n", "");
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        assert_eq!(
+            scenario
+                .document
+                .environment
+                .j2_or_wgs84_default()
+                .unwrap()
+                .to_bits(),
+            WGS84_J2_DEFAULT.to_bits()
+        );
+    }
+
+    #[test]
     fn rejects_unknown_motor_variant() {
         let toml = SOUNDING_ROCKET.replace(r#"variant = "solid""#, r#"variant = "liquid""#);
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::UnknownModel { .. }),
             "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_aero_force_without_aero_block() {
+        let toml = MINIMAL.replace(r#"models = ["gravity"]"#, r#"models = ["gravity", "aero"]"#);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "aero"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_thrust_force_without_motor_block() {
+        let toml = MINIMAL.replace(
+            r#"models = ["gravity"]"#,
+            r#"models = ["gravity", "thrust"]"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "propulsion.motor"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_environment_and_frames_profile_disagreement() {
+        let toml = format!("{MINIMAL}\n[frames]\nprofile = \"wgs84-uniform-rotation\"\n");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { .. }),
+            "got {err:?}",
         );
     }
 

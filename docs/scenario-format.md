@@ -294,7 +294,7 @@ each with its own required-coefficient set:
 | `gravity` | Required | Rejected |
 |---|---|---|
 | `"constant"` | `gravity_m_s2` | `mu_m3_s2`, `r_e_m`, `j2` |
-| `"point_mass"` | `mu_m3_s2` | `gravity_m_s2` |
+| `"point_mass"` | `mu_m3_s2` | `gravity_m_s2`, `r_e_m`, `j2` |
 | `"j2"` | `mu_m3_s2`, `r_e_m` | `gravity_m_s2` |
 
 For `gravity = "j2"` the dimensionless `j2` coefficient defaults to the
@@ -318,7 +318,8 @@ source        = "Helsinki proxy launch site (Niskanen 2009 Chapter 6)."
 
 Latitude is in `[-90, 90]`, longitude in `[-180, 180]`. The `source`
 field is a free-form provenance string for the declared origin and is
-not optional.
+not optional. If both `[environment].frame_profile` and
+`[frames].profile` are declared, they must match.
 
 ### Aero deck reference
 
@@ -343,10 +344,12 @@ variant      = "solid"
 file_sha256  = "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e"
 ```
 
-`variant` is optional; when present, must match the variant the motor
-file declares. `ignite_at_s` is the time since scenario start when the
-motor begins burning; finite-required, no positivity rule (negative
-values are an explicit pre-roll convention).
+`variant` is optional; when present, it must resolve to a registered
+motor variant. Cross-checking it against the variant declared by the
+motor file happens when the Phase-2.11 runner loads that file.
+`ignite_at_s` is the time since scenario start when the motor begins
+burning; finite-required, no positivity rule (negative values are an
+explicit pre-roll convention).
 
 ### Wind block
 
@@ -364,7 +367,8 @@ wind_ned_m_s = [3.0, 0.0, 0.0]
 ```
 
 `wind_ned_m_s` is required when `kind = "constant"`, rejected
-otherwise.
+otherwise. Selecting `environment.wind = "constant"` therefore requires
+the structured `[wind]` block.
 
 ### Atmosphere block
 
@@ -379,8 +383,10 @@ kind = "us_standard_1976"
 ```
 
 When `kind = "isothermal"`, the block requires `density_kg_m3`,
-`pressure_pa`, and `temperature_k`. For `us_standard_1976` no
-additional state is required (the model is parameterless).
+`pressure_pa`, and `temperature_k`, so selecting
+`environment.atmosphere = "isothermal"` requires the structured
+`[atmosphere]` block. For `us_standard_1976` no additional state is
+required (the model is parameterless).
 
 ### Sensors
 
@@ -424,8 +430,9 @@ Every external file referenced by the scenario can carry an optional
 `*_sha256` companion field (`aero.deck_sha256`,
 `propulsion.motor.file_sha256`, `sensors.<name>.file_sha256`). When
 present, the parser computes the file's SHA-256 digest at load time
-and fails closed on mismatch. When absent, the digest is still
-computed and recorded in the telemetry header for replay verification.
+and fails closed on mismatch. When absent, the digest is still computed
+and surfaced by `openbmp check`; recording those digests in telemetry
+headers is runner-side Phase-2.11 work.
 
 `openbmp check` surfaces resolved digests in its output:
 
