@@ -218,14 +218,12 @@ fn niskanen_parquet_carries_atmosphere_force_breakdown_and_sha256_metadata() {
 }
 
 #[test]
-fn niskanen_parquet_force_breakdown_sums_to_total_per_step() {
-    // Per-row determinism contract: the per-model force components
-    // sum to the same total the kernel uses (modulo IEEE 754
-    // associativity, which means the per-row sum may differ from the
-    // kernel's by at most a few ULP). Verify the components are not
-    // identically zero — all three forces should produce non-trivial
-    // values during burn — and that they sum to a finite vector at
-    // every step.
+fn niskanen_parquet_force_breakdown_components_are_finite_and_nonzero() {
+    // Per-row telemetry contract: every published per-model force
+    // component is finite, and the Niskanen thrust/aero components are
+    // not identically zero. The openbmp-vehicle unit tests cover the
+    // BasicVehicle declared-order sum; this e2e test verifies the CLI
+    // actually publishes the component channels.
     use arrow::array::Float64Array;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -281,6 +279,13 @@ fn niskanen_parquet_force_breakdown_sums_to_total_per_step() {
                     "force-breakdown component must be finite, got {value} at row {row}",
                 );
             }
+            let sum_x = arrays[0].value(row) + arrays[3].value(row) + arrays[6].value(row);
+            let sum_y = arrays[1].value(row) + arrays[4].value(row) + arrays[7].value(row);
+            let sum_z = arrays[2].value(row) + arrays[5].value(row) + arrays[8].value(row);
+            assert!(
+                sum_x.is_finite() && sum_y.is_finite() && sum_z.is_finite(),
+                "declared-order force-component sum must be finite at row {row}",
+            );
             let thrust_z = arrays[5].value(row);
             if thrust_z.abs() > 0.0 {
                 saw_nonzero_thrust = true;

@@ -31,7 +31,9 @@ use uom::si::mass::kilogram;
 use crate::derivative::PointMassDerivative;
 use crate::error::{IntegratorError, SimulationError, StopReason};
 use crate::integrator::{Integrator, SimState};
-use crate::models::{EnvironmentModel, EnvironmentQuery, ForceContext, ForceModel, MassModel};
+use crate::models::{
+    EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext, ForceModel, MassModel,
+};
 use crate::stop::StopCondition;
 
 /// Configuration for [`SimulationKernel`].
@@ -314,6 +316,24 @@ where
     #[must_use]
     pub const fn current_time(&self) -> SimTime {
         self.state.time
+    }
+
+    /// Environment sample at the current state and time.
+    ///
+    /// This mirrors the sample shape passed to force models during a
+    /// kernel derivative evaluation. Runner-side telemetry uses it when
+    /// evaluating post-step force breakdowns so those evaluations do not
+    /// accidentally drift from the kernel's environment semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::ModelEval`] if the environment model
+    /// rejects the current state/time query.
+    pub fn current_environment_sample(&self) -> Result<EnvironmentSample, SimulationError> {
+        Ok(self.environment.sample(EnvironmentQuery {
+            time: self.state.time,
+            position_eci: self.state.position,
+        })?)
     }
 
     /// Configured time step.

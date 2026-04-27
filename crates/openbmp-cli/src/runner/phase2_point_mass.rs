@@ -39,19 +39,19 @@
 use std::collections::BTreeMap;
 
 use nalgebra::Vector3;
-use openbmp_aero::AeroDeck;
+use openbmp_aero::{AeroDeck, AeroError};
 use openbmp_core::{ChannelId, Duration, ModelId, Position3, SimTime, Velocity3};
 use openbmp_env::{AtmosphereModel, UsStandard1976};
-use openbmp_propulsion::{Motor, SolidMotor};
+use openbmp_propulsion::{Motor, MotorError, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
-    ConstantGravityForce, EndTime, EnvironmentSample, ForceContext, ForceModel, NullEnvironment,
-    Rk4FixedStep, SimulationConfig, SimulationKernel, StopReason,
+    ConstantGravityForce, ConstantMass, EndTime, ForceContext, ForceModel, MassModel,
+    NullEnvironment, Rk4FixedStep, SimulationConfig, SimulationKernel, StopReason,
 };
 use openbmp_state::PointMassState;
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
-    AxialDragForceAdapter, BasicVehicle, MotorMassAdapter, MotorThrustForceAdapter,
+    AxialDragForceAdapter, BasicVehicle, BoxedMassModel, MotorMassAdapter, MotorThrustForceAdapter,
     NamedForceModel, Vehicle,
 };
 use uom::si::f64::Mass;
@@ -70,6 +70,12 @@ use crate::runner::RunOutcome;
 const PHASE2_AERO_MODEL_ID: ModelId = ModelId::new(102);
 const PHASE2_THRUST_MODEL_ID: ModelId = ModelId::new(103);
 const PHASE2_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(104);
+
+#[derive(Clone, Debug, Default)]
+struct LoadedModels {
+    aero_deck: Option<AeroDeck>,
+    motor: Option<SolidMotor>,
+}
 
 /// Run a Phase-2 point-mass scenario through a freshly-built kernel
 /// and return the populated telemetry table.
@@ -93,8 +99,9 @@ pub fn run(
     let document = &scenario.document;
     require_supported_shape(document)?;
 
-    let initial_state = build_initial_state(scenario)?;
-    let kernel_vehicle = build_vehicle(scenario)?;
+    let loaded_models = load_models(document, resolved_files)?;
+    let initial_state = build_initial_state(document, &loaded_models)?;
+    let kernel_vehicle = build_vehicle(document, &loaded_models)?;
     // The runner-side breakdown vehicle is a *separate* construction
     // of the same models. `BasicVehicle::evaluate_force_breakdown`
     // takes `&self`, but `BasicVehicle` is not `Clone` (the inner
@@ -102,8 +109,8 @@ pub fn run(
     // avoids interior-mutability or Arc gymnastics; both copies are
     // stateless and evaluate identically per the Phase-2.6/2.5
     // contracts.
-    let breakdown_vehicle = build_vehicle(scenario)?;
-    let mass_model = build_mass_model(scenario)?;
+    let breakdown_vehicle = build_vehicle(document, &loaded_models)?;
+    let mass_model = BoxedMassModel(build_mass_model(document, &loaded_models)?);
 
     let config = SimulationConfig {
         initial_state,
@@ -222,19 +229,78 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
     Ok(())
 }
 
-fn build_initial_state(scenario: &Scenario) -> Result<PointMassState, CliError> {
-    let document = &scenario.document;
+fn load_models(
+    document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<LoadedModels, CliError> {
+    let aero_deck = if document.aero.is_some() {
+        let resolved = required_resolved_file(resolved_files, "aero.deck")?;
+        let text = std::str::from_utf8(&resolved.bytes).map_err(|e| {
+            CliError::Aero(AeroError::Io {
+                reason: format!(
+                    "could not read deck file {} as UTF-8: {e}",
+                    resolved.path.display()
+                ),
+            })
+        })?;
+        Some(AeroDeck::load_from_str(text)?)
+    } else {
+        None
+    };
+
+    let motor = if document
+        .propulsion
+        .as_ref()
+        .and_then(|p| p.motor.as_ref())
+        .is_some()
+    {
+        let resolved = required_resolved_file(resolved_files, "propulsion.motor.file")?;
+        let text = std::str::from_utf8(&resolved.bytes).map_err(|e| {
+            CliError::Motor(MotorError::Io {
+                reason: format!(
+                    "could not read motor file {} as UTF-8: {e}",
+                    resolved.path.display()
+                ),
+            })
+        })?;
+        Some(SolidMotor::load_from_str(text)?)
+    } else {
+        None
+    };
+
+    Ok(LoadedModels { aero_deck, motor })
+}
+
+fn required_resolved_file<'a>(
+    resolved_files: &'a BTreeMap<String, ResolvedFile>,
+    field: &str,
+) -> Result<&'a ResolvedFile, CliError> {
+    resolved_files
+        .get(field)
+        .ok_or_else(|| CliError::UnsupportedScenario {
+            what: format!(
+                "internal invariant: resolved file `{field}` missing after pin verification"
+            ),
+        })
+}
+
+fn build_initial_state(
+    document: &ScenarioDocument,
+    loaded_models: &LoadedModels,
+) -> Result<PointMassState, CliError> {
     let p = document.vehicle.initial_position_eci_m;
     let v = document.vehicle.initial_velocity_eci_m_s;
 
-    // Total mass at t=0 = scenario `mass_kg` PLUS the motor's loaded
-    // mass when a motor is declared. The scenario-side `mass_kg` is
-    // the dry-airframe mass (no motor). MotorMassAdapter mirrors this
-    // by adding `dry_mass_kg + propellant_mass_kg` from the motor file
-    // at ignition time.
-    let total_mass_kg = if let Some(motor_path) = motor_file_path(scenario) {
-        let motor = SolidMotor::load_from_toml(motor_path.as_path())?;
-        document.vehicle.mass_kg + motor.dry_mass_kg() + motor.propellant_mass_kg()
+    // Total mass at the initial state = scenario `mass_kg` PLUS the
+    // motor's current mass when a motor is declared. The scenario-side
+    // `mass_kg` is the dry-airframe mass (no motor). MotorMassAdapter
+    // mirrors this by adding the motor mass at the initial state time.
+    // `ignite_at_s` is relative to scenario start, while kernel model
+    // adapters take absolute simulation time, so pre-roll / delayed
+    // ignition scenarios stay consistent.
+    let total_mass_kg = if let Some(motor) = &loaded_models.motor {
+        let t_since_ignition_s = motor_elapsed_at_start_s(document)?;
+        document.vehicle.mass_kg + motor.mass_kg(t_since_ignition_s)?
     } else {
         document.vehicle.mass_kg
     };
@@ -247,8 +313,10 @@ fn build_initial_state(scenario: &Scenario) -> Result<PointMassState, CliError> 
     ))
 }
 
-fn build_vehicle(scenario: &Scenario) -> Result<BasicVehicle<PointMassState>, CliError> {
-    let document = &scenario.document;
+fn build_vehicle(
+    document: &ScenarioDocument,
+    loaded_models: &LoadedModels,
+) -> Result<BasicVehicle<PointMassState>, CliError> {
     let mut named: Vec<NamedForceModel<PointMassState>> = Vec::new();
 
     for name in &document.forces.models {
@@ -270,27 +338,25 @@ fn build_vehicle(scenario: &Scenario) -> Result<BasicVehicle<PointMassState>, Cl
                 named.push(NamedForceModel::new("gravity", Box::new(force)));
             }
             "aero" => {
-                let aero_path =
-                    aero_deck_path(scenario).ok_or_else(|| CliError::UnsupportedScenario {
+                let deck = loaded_models.aero_deck.clone().ok_or_else(|| {
+                    CliError::UnsupportedScenario {
                         what: "forces includes `aero` but [aero] block is missing".to_owned(),
-                    })?;
-                let deck = AeroDeck::load_from_toml(aero_path.as_path())?;
+                    }
+                })?;
                 let atmosphere = UsStandard1976::new();
                 let drag = AxialDragForceAdapter::new(deck, atmosphere, PHASE2_AERO_MODEL_ID);
                 named.push(NamedForceModel::new("aero", Box::new(drag)));
             }
             "thrust" => {
-                let motor_path =
-                    motor_file_path(scenario).ok_or_else(|| CliError::UnsupportedScenario {
-                        what: "forces includes `thrust` but [propulsion.motor] is missing"
-                            .to_owned(),
-                    })?;
-                let motor = SolidMotor::load_from_toml(motor_path.as_path())?;
-                let ignition_time_s = document
-                    .propulsion
-                    .as_ref()
-                    .and_then(|p| p.motor.as_ref())
-                    .map_or(0.0, |m| m.ignite_at_s);
+                let motor =
+                    loaded_models
+                        .motor
+                        .clone()
+                        .ok_or_else(|| CliError::UnsupportedScenario {
+                            what: "forces includes `thrust` but [propulsion.motor] is missing"
+                                .to_owned(),
+                        })?;
+                let ignition_time_s = motor_ignition_time_s(document)?;
                 let thrust =
                     MotorThrustForceAdapter::new(motor, ignition_time_s, PHASE2_THRUST_MODEL_ID);
                 named.push(NamedForceModel::new("thrust", Box::new(thrust)));
@@ -302,50 +368,42 @@ fn build_vehicle(scenario: &Scenario) -> Result<BasicVehicle<PointMassState>, Cl
     // BasicVehicle requires a mass model even for vehicle-internal
     // queries (Phase-2.8 contract). The kernel's mass model is built
     // separately in `build_mass_model` because it owns its own copy.
-    let vehicle_mass = build_mass_model(scenario)?;
-    BasicVehicle::new(named, vec![], Box::new(vehicle_mass)).map_err(|e| {
-        CliError::UnsupportedScenario {
-            what: format!("BasicVehicle construction failed: {e}"),
-        }
+    let vehicle_mass = build_mass_model(document, loaded_models)?;
+    BasicVehicle::new(named, vec![], vehicle_mass).map_err(|e| CliError::UnsupportedScenario {
+        what: format!("BasicVehicle construction failed: {e}"),
     })
 }
 
-fn build_mass_model(scenario: &Scenario) -> Result<MotorMassAdapter<SolidMotor>, CliError> {
-    let document = &scenario.document;
-    let motor_path = motor_file_path(scenario).ok_or_else(|| CliError::UnsupportedScenario {
-        what: "Phase-2.11.A point-mass runner requires [propulsion.motor]; \
-               Phase-1 byte-stable runner handles motorless cases"
-            .to_owned(),
-    })?;
-    let motor = SolidMotor::load_from_toml(motor_path.as_path())?;
-    let ignition_time_s = document
+fn build_mass_model(
+    document: &ScenarioDocument,
+    loaded_models: &LoadedModels,
+) -> Result<Box<dyn MassModel>, CliError> {
+    if let Some(motor) = &loaded_models.motor {
+        let ignition_time_s = motor_ignition_time_s(document)?;
+        Ok(Box::new(MotorMassAdapter::new(
+            motor.clone(),
+            document.vehicle.mass_kg,
+            ignition_time_s,
+            PHASE2_MOTOR_MASS_MODEL_ID,
+        )))
+    } else {
+        Ok(Box::new(ConstantMass::new(document.vehicle.mass_kg)))
+    }
+}
+
+fn motor_ignition_time_s(document: &ScenarioDocument) -> Result<f64, CliError> {
+    let motor = document
         .propulsion
         .as_ref()
         .and_then(|p| p.motor.as_ref())
-        .map_or(0.0, |m| m.ignite_at_s);
-    Ok(MotorMassAdapter::new(
-        motor,
-        document.vehicle.mass_kg,
-        ignition_time_s,
-        PHASE2_MOTOR_MASS_MODEL_ID,
-    ))
+        .ok_or_else(|| CliError::UnsupportedScenario {
+            what: "[propulsion.motor] block missing".to_owned(),
+        })?;
+    Ok(document.time.start_s + motor.ignite_at_s)
 }
 
-fn aero_deck_path(scenario: &Scenario) -> Option<std::path::PathBuf> {
-    scenario
-        .document
-        .aero
-        .as_ref()
-        .map(|a| scenario.resolve_path(&a.deck))
-}
-
-fn motor_file_path(scenario: &Scenario) -> Option<std::path::PathBuf> {
-    scenario
-        .document
-        .propulsion
-        .as_ref()
-        .and_then(|p| p.motor.as_ref())
-        .map(|m| scenario.resolve_path(&m.file))
+fn motor_elapsed_at_start_s(document: &ScenarioDocument) -> Result<f64, CliError> {
+    Ok(document.time.start_s - motor_ignition_time_s(document)?)
 }
 
 fn build_schema_metadata(
@@ -585,7 +643,7 @@ where
     // models the kernel uses; both are stateless and evaluate
     // identically. The breakdown is therefore the per-model
     // contribution to the kernel's total at the step boundary.
-    let env_sample = EnvironmentSample::default();
+    let env_sample = kernel.current_environment_sample()?;
     let ctx = ForceContext {
         state,
         environment: &env_sample,
@@ -602,7 +660,12 @@ where
             .components
             .iter()
             .find(|(name, _)| name == declared_name)
-            .map_or_else(Vector3::<f64>::zeros, |(_, vector)| *vector);
+            .map(|(_, vector)| *vector)
+            .ok_or_else(|| CliError::UnsupportedScenario {
+                what: format!(
+                    "force-breakdown component `{declared_name}` missing from vehicle evaluation"
+                ),
+            })?;
         row.insert(x_channel, component.x)?;
         row.insert(y_channel, component.y)?;
         row.insert(z_channel, component.z)?;
@@ -610,4 +673,117 @@ where
 
     table.push_row(row)?;
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use openbmp_telemetry::TelemetryValue;
+
+    use super::*;
+
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .expect("workspace root must exist")
+    }
+
+    fn niskanen_scenario() -> Scenario {
+        Scenario::from_file(
+            workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6.toml"),
+        )
+        .expect("canonical Niskanen scenario must parse")
+    }
+
+    fn first_mass_kg(outcome: &RunOutcome) -> f64 {
+        let mass_channel = outcome
+            .table
+            .schema()
+            .channels()
+            .iter()
+            .find(|channel| channel.name == "mass_kg")
+            .expect("mass channel must exist");
+        let row = outcome.table.rows().first().expect("initial row exists");
+        match row.get(mass_channel.id) {
+            Some(TelemetryValue::Float64(value)) => *value,
+            other => panic!("unexpected mass value: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phase2_point_mass_supports_motorless_aero_scenarios() {
+        let mut scenario = niskanen_scenario();
+        scenario.document.time.stop_s = 0.010;
+        scenario.document.propulsion = None;
+        scenario.document.forces.models = vec!["gravity".to_owned(), "aero".to_owned()];
+
+        let resolved_files = scenario.resolved_files().expect("resolve aero deck");
+        assert!(resolved_files.contains_key("aero.deck"));
+        assert!(!resolved_files.contains_key("propulsion.motor.file"));
+
+        let outcome = run(&scenario, &resolved_files).expect("motorless aero run succeeds");
+        assert_eq!(outcome.final_step, 10);
+        assert!(
+            outcome
+                .table
+                .schema()
+                .channels()
+                .iter()
+                .any(|channel| channel.name == "force.aero.z_n"),
+            "aero force channel should be present"
+        );
+    }
+
+    #[test]
+    fn motor_ignition_time_is_relative_to_scenario_start() {
+        let mut scenario = niskanen_scenario();
+        scenario.document.time.start_s = 10.0;
+        scenario.document.time.stop_s = 10.001;
+        scenario.document.time.dt_s = 0.001;
+        scenario
+            .document
+            .propulsion
+            .as_mut()
+            .and_then(|propulsion| propulsion.motor.as_mut())
+            .expect("canonical scenario has motor")
+            .ignite_at_s = 0.0;
+
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let loaded_models = load_models(&scenario.document, &resolved_files).expect("load models");
+        let motor = loaded_models.motor.as_ref().expect("motor loaded");
+        let expected_initial_mass_kg = scenario.document.vehicle.mass_kg
+            + motor
+                .mass_kg(0.0)
+                .expect("motor mass at scenario-relative ignition");
+
+        let initial_state =
+            build_initial_state(&scenario.document, &loaded_models).expect("initial state");
+        assert_eq!(
+            initial_state.time.as_seconds().to_bits(),
+            10.0_f64.to_bits()
+        );
+        assert_eq!(
+            initial_state.mass.get::<kilogram>().to_bits(),
+            expected_initial_mass_kg.to_bits()
+        );
+
+        let mass_model = build_mass_model(&scenario.document, &loaded_models).expect("mass model");
+        assert_eq!(
+            mass_model
+                .mass_kg(SimTime::from_seconds(10.0))
+                .expect("mass at scenario start")
+                .to_bits(),
+            expected_initial_mass_kg.to_bits()
+        );
+
+        let outcome = run(&scenario, &resolved_files).expect("run succeeds");
+        assert_eq!(
+            first_mass_kg(&outcome).to_bits(),
+            expected_initial_mass_kg.to_bits()
+        );
+    }
 }

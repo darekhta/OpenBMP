@@ -210,9 +210,11 @@ jobs:
   #    byte-identical (the no-tracing-leak contract).
   #
   # 2. `scenarios/sounding-rocket/niskanen-2009-chapter6.toml` —
-  #    Phase-2.10 canonical sounding-rocket scenario. Runs twice with
-  #    clean tracing; the Parquet outputs (including the SHA-256
-  #    schema metadata Phase-2.11.B records) must be byte-identical.
+  #    Phase-2.10 canonical sounding-rocket scenario. Runs three times:
+  #    two with clean tracing, one with `RUST_LOG=trace` + stderr
+  #    redirected to /dev/null. The Parquet outputs (including the
+  #    SHA-256 schema metadata Phase-2.11.B records) must be
+  #    byte-identical.
   #
   # Cross-platform matrix (macos/windows) runs the same scenarios as
   # state-stable smoke tests via `cargo test -p openbmp-cli --tests`.

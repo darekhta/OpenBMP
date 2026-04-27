@@ -12,9 +12,11 @@
 #
 # Coordinate system. Phase-2.9 chose vertical ECI-`+z` launch as a
 # point-mass adapter-test convention. We keep the same convention here
-# so the scenario reproduces the Phase-2.9 hash. Phase-3 will replace
-# this with a proper local-NED launch initialisation after the rigid
-# body integrator lands.
+# so the physical benchmark stays comparable. The Phase-2.11 CLI
+# baseline is byte-stable on its own; it is not the Phase-2.9 hash
+# because the CLI uses scenario-declared force ordering. Phase-3 will
+# replace this with a proper local-NED launch initialisation after the
+# rigid body integrator lands.
 #
 # Pinned digests are SHA-256 of the referenced files at the commit
 # that ships this scenario; mismatches fail closed.

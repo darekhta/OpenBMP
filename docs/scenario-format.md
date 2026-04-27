@@ -94,6 +94,11 @@ In Phase 1, `environment.gravity_m_s2` is a non-negative magnitude. The
 analytic-toy runner applies it along the toy `-z` direction; explicit gravity
 vectors are a later scenario-format extension.
 
+Vehicle mass semantics depend on propulsion declaration in schema version 1.
+Without `[propulsion.motor]`, `vehicle.mass_kg` is the total point mass. With a
+motor block, `vehicle.mass_kg` is the dry airframe mass excluding the motor; the
+Phase-2.11 runner adds the motor's time-varying mass from the pinned motor file.
+
 ## Metadata
 
 `[meta]` fields:
@@ -345,8 +350,7 @@ file_sha256  = "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e
 ```
 
 `variant` is optional; when present, it must resolve to a registered
-motor variant. Cross-checking it against the variant declared by the
-motor file happens when the Phase-2.11 runner loads that file.
+motor variant. Phase 2.11 wires only the `solid` motor variant.
 `ignite_at_s` is the time since scenario start when the motor begins
 burning; finite-required, no positivity rule (negative values are an
 explicit pre-roll convention).
