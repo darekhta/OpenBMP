@@ -1,0 +1,7 @@
+# Keep deterministic byte-pinned text artifacts stable across platforms.
+*.toml text eol=lf
+*.md text eol=lf
+*.rs text eol=lf
+*.csv text eol=lf
+*.json text eol=lf
+Cargo.lock text eol=lf
