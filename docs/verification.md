@@ -63,18 +63,19 @@ The diff tool reports:
 
 ## Tolerance Tables
 
-Every analytic or benchmark validation case has an `expected.toml` file:
+Every analytic or benchmark validation case has a tolerance-table TOML file (for example,
+`crates/openbmp-sim/tests/expected/constant-acceleration-drop.toml`):
 
 ```toml
-case = "allen-eggers-ballistic-entry"
-source = "NACA Report 1381"
+case = "constant-acceleration-drop-1000-steps"
+source = "Analytic closed-form: x(t) = x0 + v0·t + 0.5·a·t² (textbook)"
 validation = "validated-toy"
 
 [[metric]]
-name = "peak_deceleration_g"
-expected = 12.3
-absolute_tolerance = 0.05
-relative_tolerance = 0.01
+name = "final_position_z_m"
+expected = -490.3325
+absolute_tolerance = 1.0e-9
+relative_tolerance = 1.0e-12
 ```
 
 The tolerance file is part of the validation claim. If a tolerance is widened,

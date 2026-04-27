@@ -34,7 +34,7 @@ pub struct ToleranceTable {
 /// One metric entry in a tolerance table.
 #[derive(Clone, Debug, Deserialize)]
 pub struct MetricTolerance {
-    /// Metric name (e.g., `peak_deceleration_g`).
+    /// Metric name (e.g., `final_position_z_m`).
     pub name: String,
     /// Reference value.
     pub expected: f64,
