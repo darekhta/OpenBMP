@@ -815,6 +815,27 @@ tree exists for authoring ergonomics and for the cookbook in
 [real-rocket-integration.md](real-rocket-integration.md); the kernel hot
 path stays flat-list and synchronous as today.
 
+> **Phase-3.3 status note.** The Phase-3.3 implementation in
+> `openbmp-vehicle::assembly` ships the trait surface, `Body`,
+> `BodyGeometry`, `BasicAssembly`, `KernelModelBundle`,
+> `KernelModelBundleRigid`, plus the path-derived stable ids
+> (`BodyId`, `EffectorId`, `TankId`, `EngineId`, `VehicleId`) in
+> `openbmp-core`. The `propulsion` / `effectors` / `tanks` /
+> `sensors` accessors shown above are reserved for future phases
+> (3.4 / 3.6 / 3.7 / 3.10) and are *not* part of the Phase-3.3
+> trait surface. The `into_kernel_models` method shown above is
+> also deferred — Phase-3.3 ships the resolver as a free-function
+> bridge in `crates/openbmp-cli/src/runner/assembly.rs` rather
+> than a trait method, because the resolver needs access to the
+> scenario document's `[forces].models` ordering and the L2
+> loader's already-parsed `LoadedModels` (aero deck, motor) which
+> the assembly tree itself does not carry. The resolver bridges
+> scenario → assembly tree, and Phase-3.4+ will land the
+> kernel-side bundle resolver as the assembly tree gains real
+> propulsion / effector / tank content. The `[vehicle.assembly]`
+> scenario block is documented in
+> [`scenario-format.md § Vehicle assembly`](scenario-format.md#vehicle-assembly-phase-33).
+
 ### Propulsion: EngineModel and EngineCluster
 
 Solid motors keep the existing `Motor: ForceModel + MassModel` shape from

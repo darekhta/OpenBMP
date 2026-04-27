@@ -563,3 +563,99 @@ The parser enforces:
 - Numeric trigger fields are finite; `remaining` is in `[0, 1]`.
 - The graph is acyclic and every phase is reachable from
   `initial_phase`.
+
+### Vehicle assembly (Phase 3.3)
+
+When `[vehicle.assembly]` is declared, the scenario describes the
+vehicle as a tree of bodies. Phase-3.3 supports single-body and
+multi-body assemblies; future phases will add propulsion / effectors
+/ tanks / sensors as child blocks of the assembly. The flat
+`[vehicle].mass_kg` field stays required and must equal the sum of
+declared body dry masses (consistency check, 1e-9 tolerance).
+
+The canonical multi-body example mirrors
+[`scenarios/multi-body/two-body-fairing.toml`](../scenarios/multi-body/two-body-fairing.toml):
+
+```toml
+[vehicle]
+kind                     = "point_mass"
+mass_kg                  = 0.085   # = sum of body dry masses
+initial_position_eci_m   = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "two-body-fairing"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "cylinder", length_m = 0.56, diameter_m = 0.029 }
+dry_mass_kg   = 0.080
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[[vehicle.assembly.bodies]]
+id            = "fairing"
+geometry      = { kind = "cone", length_m = 0.05, base_diameter_m = 0.029 }
+dry_mass_kg   = 0.005
+dry_cg_body_m = [0.0, 0.0, 0.6]
+```
+
+#### Geometry vocabulary
+
+`geometry.kind` is one of `cylinder` / `cone` / `reference`:
+
+| `kind` | Required fields | Reference area |
+|---|---|---|
+| `cylinder` | `length_m`, `diameter_m` | π·(diameter_m / 2)² |
+| `cone` | `length_m`, `base_diameter_m` | π·(base_diameter_m / 2)² |
+| `reference` | `length_m`, `area_m2` | declared `area_m2` directly |
+
+The `reference` variant is the escape hatch for non-axisymmetric or
+pre-computed geometry, mirroring the aero-deck reference.
+
+#### Reserved future-phase children
+
+The following child blocks are reserved and **rejected at parse time
+in Phase 3.3** with a typed `UnsupportedAssemblyChild` error:
+
+- `[[vehicle.assembly.effectors]]` → Phase 3.4 (`ControlEffector`).
+- `[[vehicle.assembly.engines]]` → Phase 3.6 (`EngineCluster`).
+- `[[vehicle.assembly.tanks]]` → Phase 3.7 (`Tank` + slosh).
+
+#### Determinism
+
+Body ids are FNV-1a-64 hashes of the canonical scenario body path
+(`vehicle.assembly.bodies.<id>`). Reordering `[[vehicle.assembly.bodies]]`
+does not shift any body's id. The multi-body summation in
+`BasicAssembly::mass_properties` is a left fold in scenario-declared
+order with locked operand order; the same assembly built from
+different declaration orders produces the same body-id set but may
+produce slightly different summed bytes (matches the existing
+`[forces].models` declared-order convention).
+
+#### Validation invariants
+
+Enforced at scenario-parse time:
+
+- `bodies` must be non-empty.
+- All body ids are unique.
+- `[vehicle].mass_kg` equals `sum(bodies[*].dry_mass_kg)` within
+  1e-9.
+- Per-body: `dry_mass_kg` finite + positive, `dry_cg_body_m`
+  components finite, geometry components finite + positive.
+- Inertia tensor (when present): finite, symmetric within 1e-9,
+  positive diagonal.
+- The four reserved future-phase child blocks (`effectors`,
+  `engines`, `tanks`) must be empty.
+
+#### Phase-3.3 limitations
+
+- The kernel still drives off the flat `[vehicle].mass_kg` field.
+  The assembly tree is *advisory* in 3.3 — the resolver builds and
+  validates a `BasicAssembly` from the scenario, but kernel
+  construction continues through the existing per-runner
+  `build_vehicle` / `build_mass_model` paths. Phase-3.4+ will land
+  the kernel-side mass-model resolver as the assembly tree gains
+  real propulsion / effector / tank content.
+- Rigid-body multi-body scenarios with non-trivial body inertia
+  tensors are deferred to Phase-3.4+ alongside the
+  ControlEffector / engine / tank tree extensions.
