@@ -28,7 +28,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 
 use approx::assert_abs_diff_eq;
-use openbmp_core::{Position3, SimTime};
+use openbmp_core::{Position3, SimTime, WGS84_A_M};
 use openbmp_env::{
     ConstantGravity, GravityModel, J2Gravity, PointMassGravity, UsStandard1976, WGS84_J2,
     atmosphere::us_standard_1976::{
@@ -89,7 +89,7 @@ fn constant_gravity_is_independent_of_position_and_time() {
     let positions = [
         Position3::origin(),
         Position3::new(1_000_000.0, 0.0, 0.0),
-        Position3::new(0.0, 0.0, 6_378_137.0),
+        Position3::new(0.0, 0.0, WGS84_A_M),
         Position3::new(7_000_000.0, 1_500_000.0, 800_000.0),
     ];
     let times = [

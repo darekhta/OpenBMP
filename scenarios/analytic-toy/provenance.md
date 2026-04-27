@@ -11,7 +11,7 @@ contract this record satisfies.
 dataset_id:       openbmp.scenario.analytic_toy.constant_acceleration_drop.v1
 files:
   - scenarios/analytic-toy/constant-acceleration-drop.toml
-source_class:     synthetic
+source_class:     synthetic-openbmp
 source_title:     >-
   Phase-1 closed-form analytic-toy validation scenario: a 1 kg
   point mass at the ECI origin, zero initial velocity, falling
@@ -36,15 +36,36 @@ license_or_terms: >-
   restrictions. Released under the same dual MIT/Apache-2.0
   licensing as the rest of the workspace.
 retrieved_utc:    2026-01-01
+transformation:
+  method: >-
+    OpenBMP-authored closed-form constant-acceleration scenario
+    written directly in the canonical scenario schema. No external
+    benchmark table is transcribed. The standard-gravity value is
+    cited as a scalar convention for the toy analytic drop, not as
+    fielded-vehicle data.
+  script: none
+verification:
+  method: >-
+    The Phase-1 byte-stability gate replays the scenario through the
+    kernel and compares Parquet telemetry byte-for-byte against the
+    pinned reference. Closed-form residuals are also asserted through
+    the CLI tolerance table for constant acceleration.
+  test: >-
+    crates/openbmp-sim/tests/analytic_toy.rs;
+    crates/openbmp-cli/tests/expected/constant-acceleration-drop.toml
+  tolerance: >-
+    Byte-stable replay for telemetry output; analytic residuals
+    within the tolerance table declared by the CLI expected file.
+validation_status: validated-toy
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Synthetic analytic toy scenario. It contains no operational
+    mission profile, no real vehicle calibration, and no fielded
+    vehicle data.
 units:            metres, metres-per-second, metres-per-second-squared, seconds, kilograms
 frame_profile:    toy-fixed-earth
-verification_method: >-
-  The Phase-1 byte-stability gate
-  (`crates/openbmp-sim::tests::analytic_toy`) replays the scenario
-  through the kernel and compares Parquet telemetry byte-for-byte
-  against the pinned reference. Closed-form residuals are also
-  asserted via `crates/openbmp-cli/tests/expected/constant-acceleration-drop.toml`.
-related_validation_label: validated-toy
 related_files:
   - crates/openbmp-cli/tests/expected/constant-acceleration-drop.toml
   - crates/openbmp-sim/tests/expected/constant-acceleration-drop.toml

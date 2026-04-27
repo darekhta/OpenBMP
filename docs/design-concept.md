@@ -167,9 +167,10 @@ record is defined in [data-provenance.md](data-provenance.md).
 The four-pillar contract is enforced at `cargo test` time by the
 inline-data tripwires (see
 [data-provenance.md § Inline Data Tripwires](data-provenance.md#inline-data-tripwires)).
-The tripwires fail the build on module-level raw-string TOML in `*.rs`
-source and on high-precision benchmark constants outside their declared
-source-of-truth files, so benchmark-data smuggling cannot pass review.
+The tripwires fail the build on multi-line Rust string TOML in `*.rs`
+source, on high-precision benchmark constants outside their declared
+source-of-truth files, and on TOML includes that do not resolve under
+fixture/data directories, so benchmark-data smuggling cannot pass review.
 
 ### 9. Explicit frames, time, and numerics
 

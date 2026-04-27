@@ -420,15 +420,16 @@ in
 [`crates/openbmp-testkit/tests/inline_data_tripwire.rs`](../crates/openbmp-testkit/tests/inline_data_tripwire.rs).
 The tripwires fail the build on:
 
-1. **Multi-line raw-string TOML in `*.rs` source.** Any `r#"…"#` raw
-   string in a `*.rs` file whose body contains an OpenBMP schema
-   header (`openbmp.scenario`, `openbmp.aero_deck`, `openbmp.motor`,
-   `openbmp.imu_noise_budget`, `openbmp.benchmark`) or a `[[metric]]`
-   table marker is forbidden, regardless of enclosing context
-   (module-level `const`, function-local `let`, helper `fn` returning
-   `String`). TOML fixtures must live in a sibling file under
+1. **Multi-line Rust string TOML in `*.rs` source.** Any cooked or raw
+   string literal in a `*.rs` file whose body contains an OpenBMP
+   schema header (`openbmp.scenario`, `openbmp.aero_deck`,
+   `openbmp.motor`, `openbmp.imu_noise_budget`, `openbmp.benchmark`)
+   or a `[[metric]]` table marker is forbidden when it carries actual
+   newlines or escaped `\n` separators, regardless of enclosing
+   context (module-level `const`, function-local `let`, helper `fn`
+   returning `String`). TOML fixtures must live in a sibling file under
    `crates/<crate>/tests/fixtures/<name>.toml` and be loaded via
-   `include_str!`. Single-line raw strings used as `.replace(needle,
+   `include_str!`. Single-line strings used as `.replace(needle,
    replacement)` patterns are not flagged because they do not carry
    schema headers across line breaks.
 2. **High-precision benchmark constants outside their declared
@@ -436,14 +437,15 @@ The tripwires fail the build on:
 
    | Constant | Needle | Allowed in |
    |---|---|---|
-   | WGS84 GM | `3.986004418` | `data/gravity/wgs84-j2.toml`, `data/gravity/provenance.md`, `docs/phase-2-plan.md` |
-   | WGS84 J2 (unnormalised) | `1.082626683` | `data/gravity/wgs84-j2.toml`, `data/gravity/provenance.md`, `docs/phase-2-plan.md`, `docs/scenario-format.md`, `crates/openbmp-env/src/gravity.rs` |
-   | WGS84 equatorial radius | `6378137.0` | `data/gravity/wgs84-j2.toml`, `data/gravity/provenance.md`, `docs/phase-2-plan.md`, `crates/openbmp-env/src/atmosphere/us_standard_1976.rs` |
+   | WGS84 GM | `3.986004418` | `data/gravity/wgs84-j2.toml`, `docs/phase-2-plan.md`, `docs/data-provenance.md`, `crates/openbmp-core/src/frames.rs` |
+   | WGS84 J2 (unnormalised) | `1.082626683` | `data/gravity/wgs84-j2.toml`, `docs/phase-2-plan.md`, `docs/scenario-format.md`, `docs/data-provenance.md`, `crates/openbmp-env/src/gravity.rs`, `crates/openbmp-scenario/src/document.rs` |
+   | WGS84 equatorial radius | `6378137.0` | `data/gravity/wgs84-j2.toml`, `docs/phase-2-plan.md`, `docs/data-provenance.md`, `crates/openbmp-core/src/frames.rs`, `crates/openbmp-env/src/atmosphere/us_standard_1976.rs` |
 
-   The Rust source-of-truth for the J2 default lives at
-   `crates/openbmp-scenario/src/document.rs::WGS84_J2_DEFAULT`, written in
-   the underscored form `1.082_626_683e-3` so it does not match the
-   canonical-form needle by accident.
+   The Rust-side constants are intentionally written with Rust numeric
+   separators where that improves readability. The tripwire normalises
+   underscores before matching, so `3.986_004_418e14`,
+   `1.082_626_683e-3`, and `6_378_137.0` are covered by the same
+   needles as the canonical source text.
 
 ### Where test fixtures go
 
@@ -462,16 +464,21 @@ cannot mistake it for a validation case.
 The tripwires also enforce two structural rules:
 
 3. **Test TOML lives in fixture / data directories, not `src/`.** Every
-   `include_str!(… ".toml")` in `*.rs` source must resolve to a path
-   under `tests/fixtures/`, `tests/expected/`, `data/`, or
-   `scenarios/`. Stashing a `.toml` data file alongside Rust code in
+   `include_str!(… ".toml")` in `*.rs` source must lexically resolve
+   to a path under `tests/fixtures/`, `tests/expected/`, `data/`, or
+   `scenarios/`. The audit resolves relative paths and
+   `env!("CARGO_MANIFEST_DIR")` concat forms before checking the
+   directory, so path traversal through an allowed-looking substring
+   does not pass. Stashing a `.toml` data file alongside Rust code in
    `crates/<crate>/src/` is a structural mistake — `src/` is for code,
    not data — and the build fails closed.
 4. **Real-data TOML lives next to provenance.** Every `*.toml` under
    `data/` or `scenarios/` (or any of their subdirectories) must have
-   a sibling `provenance.md` in the same directory. This mirrors the
-   `openbmp check-provenance` CLI command but enforces it under
-   `cargo test`, so the contract holds even when the CLI is not run.
+   a sibling `provenance.md` in the same directory, and that provenance
+   file must list the TOML file by repository-relative path. This
+   mirrors the `openbmp check-provenance` CLI command but enforces it
+   under `cargo test`, so the contract holds even when the CLI is not
+   run.
 
 ### Adding a new tripwire entry
 
@@ -481,14 +488,15 @@ constant), the path is:
 
 1. Land the value in a `data/<category>/<name>.toml` file with a sibling
    `provenance.md` entry citing the source.
-2. If the value is also needed at compile time, add a single
-   `pub const NAME: f64 = …;` in the appropriate crate with a citation
-   comment naming the same source.
+2. If the value is also needed at compile time, add only the minimal
+   `pub const NAME: f64 = …;` surfaces needed by crate layering, each
+   with a citation comment naming the same source.
 3. Add a `Tripwire` entry to
    `crates/openbmp-testkit/tests/inline_data_tripwire.rs` listing the
    source-of-truth files in `allow_list`. The
    `tripwire_finds_known_examples_in_allow_listed_files` test enforces
-   that the allow-list does not go stale.
+   that every non-self allow-list entry still contains the covered
+   value after underscore normalisation.
 
 The allow-list itself is reviewable in PR; reviewers can verify the new
 constant has provenance before extending the list.

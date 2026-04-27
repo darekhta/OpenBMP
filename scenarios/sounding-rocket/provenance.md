@@ -41,6 +41,39 @@ license_or_terms: >-
   apogees; no derivative works restrictions apply to the numerical
   facts themselves. OpenBMP credits Niskanen as the source.
 retrieved_utc:    2026-04-27
+transformation:
+  method: >-
+    Render the already-provenanced Phase-2.9 Niskanen C6 benchmark
+    inputs into the Phase-2.10 scenario schema. The scenario file
+    references the aero deck and motor data by relative path and
+    pins each reference with the SHA-256 digest shipped in the same
+    commit. Launch-site coordinates use the documented Helsinki
+    proxy because the thesis does not publish exact coordinates.
+  script: none
+verification:
+  method: >-
+    `openbmp check` parses the scenario and resolves the pinned aero
+    deck and motor file digests. The Phase-2.9 sounding-rocket
+    integration test independently replays the same Niskanen C6
+    reduction and compares simulated apogee against the published
+    151.5 m experimental value with ±5% tolerance. The Phase-2.11
+    runner will consume this scenario file directly.
+  test: >-
+    crates/openbmp-cli/tests/cli_snapshots.rs;
+    crates/openbmp-vehicle/tests/sounding_rocket.rs
+  tolerance: >-
+    Parser/check path requires exact SHA-256 pin matches. Physics
+    regression tolerance remains the Phase-2.9 ±5% apogee envelope
+    against the published C6 experimental value.
+validation_status: checked
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Public academic benchmark from a master's thesis. The modeled
+    object is a hobby-class sounding/model rocket reduction, not an
+    operational vehicle. The scenario contains no targeting, no
+    real device drivers, and no restricted or fielded-vehicle data.
 units:            metres, metres-per-second, metres-per-second-squared, seconds, kilograms, degrees
 frame_profile:    wgs84-uniform-rotation
 local_origin:     >-
@@ -48,15 +81,6 @@ local_origin:     >-
   0.0 m). Niskanen Chapter 6 does not publish exact launch-site
   coordinates; this proxy is documented in the scenario's
   `[frames.local_origin].source` field.
-verification_method: >-
-  The Phase-2.9 sounding-rocket integration test
-  (`crates/openbmp-vehicle/tests/sounding_rocket.rs`) replays the
-  Niskanen C6 reduction and compares simulated apogee against the
-  published 151.5 m experimental value with ±5% tolerance. The
-  Phase-2.11 runner will consume this scenario file through
-  `openbmp run` and record the resolved file SHA-256 digests in
-  the telemetry header for replay verification.
-related_validation_label: checked
 related_files:
   - data/scenarios/niskanen-2009-chapter6.toml
   - data/aero/synthetic-niskanen-ch6-rocket.toml
