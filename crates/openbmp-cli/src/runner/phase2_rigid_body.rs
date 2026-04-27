@@ -91,6 +91,9 @@ pub fn run(
     let document = &scenario.document;
     require_supported_shape(document)?;
     let assembly = crate::runner::assembly::synthesize_assembly(document)?;
+    // Phase-3.4: same effector-rack pattern as the point-mass
+    // runner. Empty rack means no per-step effector operations.
+    let mut effector_rack = crate::runner::effectors::EffectorRack::build(document)?;
 
     let loaded = load_models(document, resolved_files)?;
     let initial_state = build_initial_state(document, &loaded, &assembly)?;
@@ -137,6 +140,10 @@ pub fn run(
     while kernel.stop_reason().is_none() {
         kernel.step()?;
         let fired = kernel.drain_events();
+        if !effector_rack.is_empty() {
+            effector_rack.apply_overrides(&fired);
+            effector_rack.step(kernel.current_time())?;
+        }
         record_step(
             &mut table,
             &kernel,

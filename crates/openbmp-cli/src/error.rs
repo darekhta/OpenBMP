@@ -27,6 +27,14 @@ pub enum CliError {
         /// Human-readable assembly construction failure.
         reason: String,
     },
+    /// A control effector failed to construct or step.
+    #[error("effector error at {field}: {reason}")]
+    Effector {
+        /// Scenario field path where the failure occurred.
+        field: String,
+        /// Human-readable effector failure.
+        reason: String,
+    },
     /// The kernel could not be constructed or stepped.
     #[error("simulation error")]
     Simulation(#[from] SimulationError),
@@ -84,6 +92,7 @@ impl CliError {
             Self::Diff { .. } => 1,
             Self::Scenario(_)
             | Self::Assembly { .. }
+            | Self::Effector { .. }
             | Self::UnsupportedScenario { .. }
             | Self::Aero(_)
             | Self::Motor(_)

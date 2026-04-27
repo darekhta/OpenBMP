@@ -15,8 +15,11 @@ use crate::assembly::{AssemblyError, VehicleAssembly};
 use crate::error::VehicleError;
 
 /// Flat-tree [`VehicleAssembly`] implementation. Holds the bodies in
-/// scenario-declared order; future phases extend with effectors /
-/// engines / tanks / sensors.
+/// scenario-declared order; Phase-3.4 effectors live on a separate
+/// runner-side rack (`crates/openbmp-cli/src/runner/effectors.rs`)
+/// to avoid coupling the assembly's `Clone` with `Box<dyn
+/// ControlEffector>` trait objects (which are not Cloneable).
+/// Engines / tanks / sensors materialise in 3.6 / 3.7 / 3.10.
 #[derive(Clone, Debug)]
 pub struct BasicAssembly {
     id: VehicleId,

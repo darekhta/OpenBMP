@@ -76,6 +76,13 @@ pub trait VehicleAssembly {
     fn mass_properties(&self, t: SimTime) -> Result<MassProperties, VehicleError>;
 }
 
+// Phase-3.4 note: effectors live on the runner-side `EffectorRack`
+// (see `crates/openbmp-cli/src/runner/effectors.rs`), not on the
+// assembly. Keeping `Box<dyn ControlEffector>` off the trait surface
+// keeps `BasicAssembly: Clone` and avoids interior-mutability
+// complications. Future phases (3.6 engines, 3.7 tanks) will add
+// their own subsystem accessors as needed.
+
 /// Error type for assembly construction and resolution.
 ///
 /// Surfaces through [`crate::VehicleError`] / `CliError` boundaries
