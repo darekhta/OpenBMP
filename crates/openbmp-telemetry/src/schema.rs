@@ -1,8 +1,16 @@
 //! Telemetry archive schema: an ordered list of [`ChannelMetadata`]
 //! whose ids and names are unique. The schema fixes archive column
 //! order, which is part of the byte-stable archive contract.
+//!
+//! The schema also carries optional table-level metadata as an
+//! ordered `BTreeMap<String, String>`. Telemetry consumers (Parquet
+//! writer in particular) merge this map into the archive's
+//! schema-level metadata. The Phase-2.11.B runner uses it to record
+//! resolved-file SHA-256 digests in the Parquet header — the
+//! determinism gate can then verify pin matches at replay time
+//! without re-loading the scenario.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use openbmp_core::ChannelId;
 
@@ -13,10 +21,15 @@ use crate::error::TelemetryError;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TelemetrySchema {
     channels: Vec<ChannelMetadata>,
+    metadata: BTreeMap<String, String>,
 }
 
 impl TelemetrySchema {
     /// Create a telemetry schema from channels in archive-column order.
+    ///
+    /// The schema starts with no table-level metadata; use
+    /// [`Self::with_metadata`] to attach SHA-256 pins or other
+    /// header keys.
     ///
     /// # Errors
     ///
@@ -38,13 +51,31 @@ impl TelemetrySchema {
                 });
             }
         }
-        Ok(Self { channels })
+        Ok(Self {
+            channels,
+            metadata: BTreeMap::new(),
+        })
+    }
+
+    /// Replace the table-level metadata. The map is persisted in
+    /// archive iteration order via [`BTreeMap`], so two schemas with
+    /// the same key-value pairs serialise identically.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: BTreeMap<String, String>) -> Self {
+        self.metadata = metadata;
+        self
     }
 
     /// Channels in archive-column order.
     #[must_use]
     pub fn channels(&self) -> &[ChannelMetadata] {
         &self.channels
+    }
+
+    /// Table-level metadata in deterministic key order.
+    #[must_use]
+    pub fn metadata(&self) -> &BTreeMap<String, String> {
+        &self.metadata
     }
 
     /// Resolve a channel by id.

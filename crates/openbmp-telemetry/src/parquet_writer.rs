@@ -73,6 +73,12 @@ fn arrow_schema(table: &TelemetryTable) -> Schema {
         "openbmp.schema_version".to_owned(),
         TELEMETRY_SCHEMA_VERSION.to_owned(),
     );
+    // Copy the schema's table-level metadata into the Arrow schema.
+    // Iteration is BTreeMap-ordered (the source) so the output is
+    // deterministic.
+    for (key, value) in table.schema().metadata() {
+        metadata.insert(key.clone(), value.clone());
+    }
     Schema::new_with_metadata(fields, metadata)
 }
 

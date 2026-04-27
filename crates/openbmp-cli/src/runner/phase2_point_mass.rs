@@ -19,26 +19,40 @@
 //! `forces.models` order; this is the determinism contract. Bad
 //! SHA-256 pins fail closed before kernel construction (via
 //! [`Scenario::resolved_files`] called in
-//! [`crate::runner::dispatch`]).
+//! [`crate::runner::run`]).
 //!
-//! Telemetry stays on the Phase-1 seven-channel schema in 2.11.A;
-//! atmosphere sample, per-model force breakdown, and resolved-file
-//! digests in the header land in 2.11.B.
+//! Telemetry layout (Phase-2.11.B): the seven Phase-1 base channels
+//! (position×3, velocity×3, mass) plus, conditionally:
+//!
+//! - **Atmosphere sample** when `[atmosphere].kind = "us_standard_1976"`:
+//!   `atmosphere.density_kg_m3`, `atmosphere.pressure_pa`,
+//!   `atmosphere.temperature_k`, `atmosphere.speed_of_sound_m_s`
+//!   (atmospheric scalars; no frame metadata).
+//! - **Per-model force breakdown** for every entry in `forces.models`:
+//!   `force.<name>.x_n`, `.y_n`, `.z_n` with frame metadata `"ECI"`.
+//!   `<name>` matches the scenario-declared model name (`gravity`,
+//!   `thrust`, `aero`).
+//!
+//! The schema also carries the resolved-file SHA-256 digests as
+//! Arrow schema metadata under `openbmp.scenario_files.<field>` keys.
+
+use std::collections::BTreeMap;
 
 use nalgebra::Vector3;
 use openbmp_aero::AeroDeck;
 use openbmp_core::{ChannelId, Duration, ModelId, Position3, SimTime, Velocity3};
-use openbmp_env::UsStandard1976;
+use openbmp_env::{AtmosphereModel, UsStandard1976};
 use openbmp_propulsion::{Motor, SolidMotor};
-use openbmp_scenario::{Scenario, ScenarioDocument};
+use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
-    ConstantGravityForce, EndTime, EnvironmentModel, ForceModel, Integrator, MassModel,
-    NullEnvironment, Rk4FixedStep, SimulationConfig, SimulationKernel, StopCondition, StopReason,
+    ConstantGravityForce, EndTime, EnvironmentSample, ForceContext, ForceModel, NullEnvironment,
+    Rk4FixedStep, SimulationConfig, SimulationKernel, StopReason,
 };
 use openbmp_state::PointMassState;
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
-    AxialDragForceAdapter, BasicVehicle, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel,
+    AxialDragForceAdapter, BasicVehicle, MotorMassAdapter, MotorThrustForceAdapter,
+    NamedForceModel, Vehicle,
 };
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -51,81 +65,19 @@ use crate::runner::RunOutcome;
 // mapped to these; the constant-gravity force is registered via
 // `ConstantGravityForce::new` which carries its own internal id.
 // Phase-2.7 uses model-ids in the determinism oracle; the runner
-// picks fixed values so the per-model telemetry stream (Phase 2.11.B)
-// is keyed deterministically.
+// picks fixed values so the per-model telemetry stream is keyed
+// deterministically.
 const PHASE2_AERO_MODEL_ID: ModelId = ModelId::new(102);
 const PHASE2_THRUST_MODEL_ID: ModelId = ModelId::new(103);
 const PHASE2_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(104);
 
-#[derive(Debug)]
-struct Phase2TelemetryChannels {
-    position_x: TelemetryChannel<f64>,
-    position_y: TelemetryChannel<f64>,
-    position_z: TelemetryChannel<f64>,
-    velocity_x: TelemetryChannel<f64>,
-    velocity_y: TelemetryChannel<f64>,
-    velocity_z: TelemetryChannel<f64>,
-    mass: TelemetryChannel<f64>,
-}
-
-impl Phase2TelemetryChannels {
-    fn new() -> Result<Self, CliError> {
-        Ok(Self {
-            position_x: TelemetryChannel::<f64>::new(
-                ChannelId::new(1),
-                "position_x_m",
-                "m",
-                Some("ECI"),
-            )?,
-            position_y: TelemetryChannel::<f64>::new(
-                ChannelId::new(2),
-                "position_y_m",
-                "m",
-                Some("ECI"),
-            )?,
-            position_z: TelemetryChannel::<f64>::new(
-                ChannelId::new(3),
-                "position_z_m",
-                "m",
-                Some("ECI"),
-            )?,
-            velocity_x: TelemetryChannel::<f64>::new(
-                ChannelId::new(4),
-                "velocity_x_m_s",
-                "m/s",
-                Some("ECI"),
-            )?,
-            velocity_y: TelemetryChannel::<f64>::new(
-                ChannelId::new(5),
-                "velocity_y_m_s",
-                "m/s",
-                Some("ECI"),
-            )?,
-            velocity_z: TelemetryChannel::<f64>::new(
-                ChannelId::new(6),
-                "velocity_z_m_s",
-                "m/s",
-                Some("ECI"),
-            )?,
-            mass: TelemetryChannel::<f64>::new(ChannelId::new(7), "mass_kg", "kg", None::<&str>)?,
-        })
-    }
-
-    fn schema(&self) -> Result<TelemetrySchema, CliError> {
-        Ok(TelemetrySchema::new(vec![
-            self.position_x.metadata().clone(),
-            self.position_y.metadata().clone(),
-            self.position_z.metadata().clone(),
-            self.velocity_x.metadata().clone(),
-            self.velocity_y.metadata().clone(),
-            self.velocity_z.metadata().clone(),
-            self.mass.metadata().clone(),
-        ])?)
-    }
-}
-
 /// Run a Phase-2 point-mass scenario through a freshly-built kernel
 /// and return the populated telemetry table.
+///
+/// `resolved_files` is the digest map produced by
+/// [`Scenario::resolved_files`]; the runner records each entry as
+/// `openbmp.scenario_files.<field>` schema metadata so the Parquet
+/// header carries the SHA-256 pins for replay verification.
 ///
 /// # Errors
 ///
@@ -134,18 +86,29 @@ impl Phase2TelemetryChannels {
 /// [`CliError::Aero`] / [`CliError::Motor`] / [`CliError::Env`] for
 /// loader failures, and [`CliError::Simulation`] / [`CliError::Telemetry`]
 /// for kernel- or telemetry-side failures.
-pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
+pub fn run(
+    scenario: &Scenario,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<RunOutcome, CliError> {
     let document = &scenario.document;
     require_supported_shape(document)?;
 
     let initial_state = build_initial_state(scenario)?;
-    let vehicle = build_vehicle(scenario)?;
+    let kernel_vehicle = build_vehicle(scenario)?;
+    // The runner-side breakdown vehicle is a *separate* construction
+    // of the same models. `BasicVehicle::evaluate_force_breakdown`
+    // takes `&self`, but `BasicVehicle` is not `Clone` (the inner
+    // `Box<dyn ForceModel>` lists are not). Re-building from scratch
+    // avoids interior-mutability or Arc gymnastics; both copies are
+    // stateless and evaluate identically per the Phase-2.6/2.5
+    // contracts.
+    let breakdown_vehicle = build_vehicle(scenario)?;
     let mass_model = build_mass_model(scenario)?;
 
     let config = SimulationConfig {
         initial_state,
         integrator: Rk4FixedStep,
-        force_model: vehicle,
+        force_model: kernel_vehicle,
         mass_model,
         environment: NullEnvironment,
         stop_condition: EndTime::new(SimTime::from_seconds(document.time.stop_s)),
@@ -154,13 +117,31 @@ pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
     };
 
     let mut kernel = SimulationKernel::new(config)?;
-    let channels = Phase2TelemetryChannels::new()?;
-    let mut table = TelemetryTable::new(channels.schema()?);
+    let channel_set = Phase2ChannelSet::new(document)?;
+    let breakdown_atmosphere = if channel_set.has_atmosphere {
+        Some(UsStandard1976::new())
+    } else {
+        None
+    };
+    let metadata = build_schema_metadata(resolved_files);
+    let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
-    record_step(&mut table, &kernel, &channels)?;
+    record_step(
+        &mut table,
+        &kernel,
+        &channel_set,
+        &breakdown_vehicle,
+        breakdown_atmosphere.as_ref(),
+    )?;
     while kernel.stop_reason().is_none() {
         kernel.step()?;
-        record_step(&mut table, &kernel, &channels)?;
+        record_step(
+            &mut table,
+            &kernel,
+            &channel_set,
+            &breakdown_vehicle,
+            breakdown_atmosphere.as_ref(),
+        )?;
     }
 
     let stop_reason = kernel
@@ -367,17 +348,205 @@ fn motor_file_path(scenario: &Scenario) -> Option<std::path::PathBuf> {
         .map(|m| scenario.resolve_path(&m.file))
 }
 
+fn build_schema_metadata(
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::new();
+    for (field, file) in resolved_files {
+        metadata.insert(
+            format!("openbmp.scenario_files.{field}"),
+            file.sha256_hex.clone(),
+        );
+    }
+    metadata
+}
+
+// ---------------------------------------------------------------------
+// Phase-2 channel set: base + atmosphere + per-model force breakdown
+// ---------------------------------------------------------------------
+
+/// Per-model force-component channels in declared order.
+/// Each entry is `(declared_name, x_channel, y_channel, z_channel)`.
+type ForceComponentChannels = Vec<(
+    String,
+    TelemetryChannel<f64>,
+    TelemetryChannel<f64>,
+    TelemetryChannel<f64>,
+)>;
+
+#[derive(Debug)]
+struct Phase2ChannelSet {
+    position_x: TelemetryChannel<f64>,
+    position_y: TelemetryChannel<f64>,
+    position_z: TelemetryChannel<f64>,
+    velocity_x: TelemetryChannel<f64>,
+    velocity_y: TelemetryChannel<f64>,
+    velocity_z: TelemetryChannel<f64>,
+    mass: TelemetryChannel<f64>,
+    has_atmosphere: bool,
+    atmosphere_density: Option<TelemetryChannel<f64>>,
+    atmosphere_pressure: Option<TelemetryChannel<f64>>,
+    atmosphere_temperature: Option<TelemetryChannel<f64>>,
+    atmosphere_speed_of_sound: Option<TelemetryChannel<f64>>,
+    /// Force-model components in declared order.
+    force_components: ForceComponentChannels,
+}
+
+impl Phase2ChannelSet {
+    fn new(document: &ScenarioDocument) -> Result<Self, CliError> {
+        let mut next_id: u64 = 1;
+        let mut alloc = || {
+            let id = ChannelId::new(next_id);
+            next_id += 1;
+            id
+        };
+
+        let position_x = TelemetryChannel::<f64>::new(alloc(), "position_x_m", "m", Some("ECI"))?;
+        let position_y = TelemetryChannel::<f64>::new(alloc(), "position_y_m", "m", Some("ECI"))?;
+        let position_z = TelemetryChannel::<f64>::new(alloc(), "position_z_m", "m", Some("ECI"))?;
+        let velocity_x =
+            TelemetryChannel::<f64>::new(alloc(), "velocity_x_m_s", "m/s", Some("ECI"))?;
+        let velocity_y =
+            TelemetryChannel::<f64>::new(alloc(), "velocity_y_m_s", "m/s", Some("ECI"))?;
+        let velocity_z =
+            TelemetryChannel::<f64>::new(alloc(), "velocity_z_m_s", "m/s", Some("ECI"))?;
+        let mass = TelemetryChannel::<f64>::new(alloc(), "mass_kg", "kg", None::<&str>)?;
+
+        // Atmosphere channels: only when the scenario declares
+        // [atmosphere].kind = "us_standard_1976".
+        let atmosphere_kind = document
+            .atmosphere
+            .as_ref()
+            .map_or(document.environment.atmosphere.as_str(), |a| {
+                a.kind.as_str()
+            });
+        let has_atmosphere = atmosphere_kind == "us_standard_1976";
+        let (
+            atmosphere_density,
+            atmosphere_pressure,
+            atmosphere_temperature,
+            atmosphere_speed_of_sound,
+        ) = if has_atmosphere {
+            let density = TelemetryChannel::<f64>::new(
+                alloc(),
+                "atmosphere.density_kg_m3",
+                "kg/m^3",
+                None::<&str>,
+            )?;
+            let pressure = TelemetryChannel::<f64>::new(
+                alloc(),
+                "atmosphere.pressure_pa",
+                "Pa",
+                None::<&str>,
+            )?;
+            let temperature = TelemetryChannel::<f64>::new(
+                alloc(),
+                "atmosphere.temperature_k",
+                "K",
+                None::<&str>,
+            )?;
+            let speed_of_sound = TelemetryChannel::<f64>::new(
+                alloc(),
+                "atmosphere.speed_of_sound_m_s",
+                "m/s",
+                None::<&str>,
+            )?;
+            (
+                Some(density),
+                Some(pressure),
+                Some(temperature),
+                Some(speed_of_sound),
+            )
+        } else {
+            (None, None, None, None)
+        };
+
+        // Per-model force breakdown channels, in scenario-declared
+        // order — the same order the kernel uses for the RK4 sum.
+        let mut force_components = Vec::with_capacity(document.forces.models.len());
+        for name in &document.forces.models {
+            let x_channel = TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("force.{name}.x_n"),
+                "N",
+                Some("ECI"),
+            )?;
+            let y_channel = TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("force.{name}.y_n"),
+                "N",
+                Some("ECI"),
+            )?;
+            let z_channel = TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("force.{name}.z_n"),
+                "N",
+                Some("ECI"),
+            )?;
+            force_components.push((name.clone(), x_channel, y_channel, z_channel));
+        }
+
+        Ok(Self {
+            position_x,
+            position_y,
+            position_z,
+            velocity_x,
+            velocity_y,
+            velocity_z,
+            mass,
+            has_atmosphere,
+            atmosphere_density,
+            atmosphere_pressure,
+            atmosphere_temperature,
+            atmosphere_speed_of_sound,
+            force_components,
+        })
+    }
+
+    fn schema(&self, metadata: BTreeMap<String, String>) -> Result<TelemetrySchema, CliError> {
+        let mut channels = vec![
+            self.position_x.metadata().clone(),
+            self.position_y.metadata().clone(),
+            self.position_z.metadata().clone(),
+            self.velocity_x.metadata().clone(),
+            self.velocity_y.metadata().clone(),
+            self.velocity_z.metadata().clone(),
+            self.mass.metadata().clone(),
+        ];
+        if let (Some(d), Some(p), Some(t), Some(s)) = (
+            &self.atmosphere_density,
+            &self.atmosphere_pressure,
+            &self.atmosphere_temperature,
+            &self.atmosphere_speed_of_sound,
+        ) {
+            channels.push(d.metadata().clone());
+            channels.push(p.metadata().clone());
+            channels.push(t.metadata().clone());
+            channels.push(s.metadata().clone());
+        }
+        for (_, x, y, z) in &self.force_components {
+            channels.push(x.metadata().clone());
+            channels.push(y.metadata().clone());
+            channels.push(z.metadata().clone());
+        }
+        Ok(TelemetrySchema::new(channels)?.with_metadata(metadata))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn record_step<I, F, MM, E, SC>(
     table: &mut TelemetryTable,
     kernel: &SimulationKernel<PointMassState, I, F, MM, E, SC>,
-    channels: &Phase2TelemetryChannels,
+    channels: &Phase2ChannelSet,
+    breakdown_vehicle: &BasicVehicle<PointMassState>,
+    breakdown_atmosphere: Option<&UsStandard1976>,
 ) -> Result<(), CliError>
 where
-    I: Integrator<PointMassState>,
+    I: openbmp_sim::Integrator<PointMassState>,
     F: ForceModel<PointMassState>,
-    MM: MassModel,
-    E: EnvironmentModel,
-    SC: StopCondition<PointMassState>,
+    MM: openbmp_sim::MassModel,
+    E: openbmp_sim::EnvironmentModel,
+    SC: openbmp_sim::StopCondition<PointMassState>,
 {
     let state = kernel.current_state();
     let mut row = TelemetryRow::new(state.time, kernel.current_step())?;
@@ -389,6 +558,55 @@ where
     row.insert(&channels.velocity_y, state.velocity.vector.y)?;
     row.insert(&channels.velocity_z, state.velocity.vector.z)?;
     row.insert(&channels.mass, state.mass.get::<kilogram>())?;
+
+    // Atmosphere sample at the post-step state. The runner uses ECI
+    // +z as the altitude proxy, matching the AxialDragForceAdapter
+    // convention. Sub-zero altitudes are clamped to 0 m so the
+    // atmosphere model does not reject post-apogee descent past
+    // ground.
+    if let Some(atmosphere) = breakdown_atmosphere {
+        let altitude_m = state.position.vector.z.max(0.0);
+        let sample = atmosphere.sample(altitude_m, state.time)?;
+        if let (Some(d), Some(p), Some(t), Some(s)) = (
+            &channels.atmosphere_density,
+            &channels.atmosphere_pressure,
+            &channels.atmosphere_temperature,
+            &channels.atmosphere_speed_of_sound,
+        ) {
+            row.insert(d, sample.density_kg_m3)?;
+            row.insert(p, sample.pressure_pa)?;
+            row.insert(t, sample.temperature_k)?;
+            row.insert(s, sample.speed_of_sound_m_s)?;
+        }
+    }
+
+    // Per-model force breakdown evaluated at the post-step state.
+    // The breakdown vehicle is a separate construction of the same
+    // models the kernel uses; both are stateless and evaluate
+    // identically. The breakdown is therefore the per-model
+    // contribution to the kernel's total at the step boundary.
+    let env_sample = EnvironmentSample::default();
+    let ctx = ForceContext {
+        state,
+        environment: &env_sample,
+        mass_kg: state.mass.get::<kilogram>(),
+        time: state.time,
+    };
+    let breakdown = breakdown_vehicle
+        .evaluate_force_breakdown(ctx)
+        .map_err(|e| CliError::UnsupportedScenario {
+            what: format!("force-breakdown evaluation failed: {e}"),
+        })?;
+    for (declared_name, x_channel, y_channel, z_channel) in &channels.force_components {
+        let component = breakdown
+            .components
+            .iter()
+            .find(|(name, _)| name == declared_name)
+            .map_or_else(Vector3::<f64>::zeros, |(_, vector)| *vector);
+        row.insert(x_channel, component.x)?;
+        row.insert(y_channel, component.y)?;
+        row.insert(z_channel, component.z)?;
+    }
 
     table.push_row(row)?;
     Ok(())

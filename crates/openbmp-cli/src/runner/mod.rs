@@ -63,8 +63,10 @@ pub struct RunOutcome {
 ///   telemetry-side failures.
 pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
     // Pin verification fires before kernel construction so a bad
-    // SHA-256 cannot reach the integrator.
-    let _ = scenario.resolved_files()?;
+    // SHA-256 cannot reach the integrator. Resolved digests are then
+    // threaded into the Phase-2 telemetry header so a downstream
+    // Parquet reader can verify the same pins at replay time.
+    let resolved_files = scenario.resolved_files()?;
 
     let document = &scenario.document;
 
@@ -81,7 +83,7 @@ pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
         return Ok(outcome);
     }
 
-    phase2_point_mass::run(scenario)
+    phase2_point_mass::run(scenario, &resolved_files)
 }
 
 /// Phase-1 byte-stable analytic-toy shape detector.

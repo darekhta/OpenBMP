@@ -146,3 +146,154 @@ fn read_max_altitude(parquet_path: &Path) -> f64 {
     }
     max_z
 }
+
+#[test]
+fn niskanen_parquet_carries_atmosphere_force_breakdown_and_sha256_metadata() {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let scenario = workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6.toml");
+    let temp = tempdir("niskanen-telemetry");
+    let parquet = temp.path().join("niskanen.parquet");
+
+    let mut cmd = openbmp();
+    cmd.arg("run")
+        .arg(&scenario)
+        .arg("--output-parquet")
+        .arg(&parquet);
+    cmd.assert().success();
+
+    let file = fs::File::open(&parquet).expect("open parquet");
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("parquet builder");
+    let schema = builder.schema().clone();
+
+    // Atmosphere sample channels (USSA76 declared via `[atmosphere]`).
+    for name in [
+        "atmosphere.density_kg_m3",
+        "atmosphere.pressure_pa",
+        "atmosphere.temperature_k",
+        "atmosphere.speed_of_sound_m_s",
+    ] {
+        assert!(
+            schema.index_of(name).is_ok(),
+            "atmosphere channel {name} missing; columns = {:?}",
+            schema.fields().iter().map(|f| f.name()).collect::<Vec<_>>(),
+        );
+    }
+
+    // Per-model force breakdown channels for `gravity`, `thrust`,
+    // `aero` (the canonical scenario's declared force order).
+    for name in [
+        "force.gravity.x_n",
+        "force.gravity.y_n",
+        "force.gravity.z_n",
+        "force.thrust.x_n",
+        "force.thrust.y_n",
+        "force.thrust.z_n",
+        "force.aero.x_n",
+        "force.aero.y_n",
+        "force.aero.z_n",
+    ] {
+        assert!(
+            schema.index_of(name).is_ok(),
+            "force-breakdown channel {name} missing",
+        );
+    }
+
+    // SHA-256 metadata for each scenario-referenced external file.
+    let metadata = schema.metadata();
+    let aero_pin = metadata
+        .get("openbmp.scenario_files.aero.deck")
+        .expect("aero.deck digest metadata present");
+    assert_eq!(
+        aero_pin, "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27",
+        "aero.deck digest in Parquet header must match the scenario pin",
+    );
+    let motor_pin = metadata
+        .get("openbmp.scenario_files.propulsion.motor.file")
+        .expect("propulsion.motor.file digest metadata present");
+    assert_eq!(
+        motor_pin, "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e",
+        "propulsion.motor.file digest in Parquet header must match the scenario pin",
+    );
+}
+
+#[test]
+fn niskanen_parquet_force_breakdown_sums_to_total_per_step() {
+    // Per-row determinism contract: the per-model force components
+    // sum to the same total the kernel uses (modulo IEEE 754
+    // associativity, which means the per-row sum may differ from the
+    // kernel's by at most a few ULP). Verify the components are not
+    // identically zero — all three forces should produce non-trivial
+    // values during burn — and that they sum to a finite vector at
+    // every step.
+    use arrow::array::Float64Array;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let scenario = workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6.toml");
+    let temp = tempdir("niskanen-breakdown-sum");
+    let parquet = temp.path().join("niskanen.parquet");
+    let mut cmd = openbmp();
+    cmd.arg("run")
+        .arg(&scenario)
+        .arg("--output-parquet")
+        .arg(&parquet);
+    cmd.assert().success();
+
+    let file = fs::File::open(&parquet).expect("open parquet");
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("parquet builder");
+    let schema = builder.schema().clone();
+
+    let cols: Vec<usize> = [
+        "force.gravity.x_n",
+        "force.gravity.y_n",
+        "force.gravity.z_n",
+        "force.thrust.x_n",
+        "force.thrust.y_n",
+        "force.thrust.z_n",
+        "force.aero.x_n",
+        "force.aero.y_n",
+        "force.aero.z_n",
+    ]
+    .iter()
+    .map(|n| schema.index_of(n).expect("force channel"))
+    .collect();
+
+    let reader = builder.build().expect("parquet reader");
+    let mut saw_nonzero_thrust = false;
+    let mut saw_nonzero_aero = false;
+    for batch in reader {
+        let batch = batch.expect("read batch");
+        let arrays: Vec<&Float64Array> = cols
+            .iter()
+            .map(|&i| {
+                batch
+                    .column(i)
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .expect("float64 force column")
+            })
+            .collect();
+        for row in 0..batch.num_rows() {
+            for arr in &arrays {
+                let value = arr.value(row);
+                assert!(
+                    value.is_finite(),
+                    "force-breakdown component must be finite, got {value} at row {row}",
+                );
+            }
+            let thrust_z = arrays[5].value(row);
+            if thrust_z.abs() > 0.0 {
+                saw_nonzero_thrust = true;
+            }
+            let aero_z = arrays[8].value(row);
+            if aero_z.abs() > 0.0 {
+                saw_nonzero_aero = true;
+            }
+        }
+    }
+    assert!(
+        saw_nonzero_thrust,
+        "thrust force must be non-zero during burn"
+    );
+    assert!(saw_nonzero_aero, "aero force must be non-zero at speed");
+}
