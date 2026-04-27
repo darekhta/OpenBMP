@@ -203,8 +203,8 @@ mod tests {
     // This is the single source of truth for the analytic-toy
     // scenario; the parser tests below mutate this string via
     // `replace(...)` to construct negative-test variants. Real
-    // validation cases live in `data/scenarios/` or `scenarios/`
-    // per `docs/data-provenance.md`.
+    // validation cases live under `scenarios/<category>/` per
+    // `docs/data-provenance.md`.
     const MINIMAL: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../scenarios/analytic-toy/constant-acceleration-drop.toml"

@@ -30,6 +30,38 @@ Purely analytic scenarios with no external data still include a short
 provenance note stating that the case is analytic and naming the textbook or
 derivation used.
 
+### `data/` vs `scenarios/` — the layout principle
+
+These are distinct, non-overlapping trees with provenance:
+
+- **`data/<thing>/<name>.toml`** — *physical-constant reference data files*.
+  An aero deck, a motor thrust curve, an atmosphere model, a gravity model,
+  a sensor noise budget. Each is a self-contained constant table consumed
+  by a model implementation in a Rust crate. **Never** put an `openbmp.scenario`
+  or `openbmp.benchmark` file here. The schema markers permitted under `data/`
+  are `openbmp.aero_deck`, `openbmp.motor`, `openbmp.imu_noise_budget`, and
+  the schema-less constant TOMLs read directly by `crates/openbmp-{core,env}/`
+  (atmosphere, gravity).
+- **`scenarios/<category>/<name>.toml`** — *runnable scenario specifications*
+  consumed by the `openbmp run` CLI runner. Each scenario carries an
+  `openbmp.scenario = 1` marker and references `data/<thing>/<name>.toml`
+  files by relative path with SHA-256 pin. **Never** put a constant table
+  (an aero deck, a motor curve, etc.) here.
+- **Cross-tool benchmark validation envelopes** (e.g., the published Niskanen
+  Chapter-6 C6 experimental apogee of 151.5 m and the project-declared ±5%
+  tolerance) are pinned as **Rust constants in the integration / e2e test
+  file** with a citation comment. They do not get their own TOML file.
+  This applies even when the scenario itself ships under `scenarios/<…>/`.
+
+Both `data/<thing>/` and `scenarios/<category>/` require a sibling
+`provenance.md` listing every shipped TOML by repository-relative path. The
+workspace tripwire `data_and_scenario_tomls_have_sibling_provenance` enforces
+this at `cargo test` time.
+
+A `data/scenarios/` directory is a category error: a scenario file does not
+belong under `data/`. The workspace tripwire `data_does_not_contain_scenario_tomls`
+fails closed if one is reintroduced.
+
 ## Source Classes
 
 Every dataset declares exactly one source class:
@@ -461,7 +493,7 @@ numbers, fictional names, no published-reference values. The header comment
 of the file should state "Synthetic; not a benchmark." so future readers
 cannot mistake it for a validation case.
 
-The tripwires also enforce two structural rules:
+The tripwires also enforce three structural rules:
 
 3. **Test TOML lives in fixture / data directories, not `src/`.** Every
    `include_str!(… ".toml")` in `*.rs` source must lexically resolve
@@ -479,6 +511,13 @@ The tripwires also enforce two structural rules:
    mirrors the `openbmp check-provenance` CLI command but enforces it
    under `cargo test`, so the contract holds even when the CLI is not
    run.
+5. **`data/` and `scenarios/` carry the right schema markers.** A TOML
+   under `data/` may not contain an `openbmp.scenario` or
+   `openbmp.benchmark` schema marker (those belong in `scenarios/`),
+   and a TOML under `scenarios/` may not contain an `openbmp.aero_deck`,
+   `openbmp.motor`, or `openbmp.imu_noise_budget` schema marker (those
+   belong in `data/`). This enforces the layout principle described in
+   § Scope; mis-filed schemas fail closed at `cargo test` time.
 
 ### Adding a new tripwire entry
 

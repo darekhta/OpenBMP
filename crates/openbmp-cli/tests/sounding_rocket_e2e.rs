@@ -47,9 +47,8 @@ fn tempdir(label: &str) -> TempDir {
 /// Niskanen 2009 Chapter-6 Table 6.1 experimental C6 apogee (m).
 const NISKANEN_C6_EXPERIMENTAL_APOGEE_M: f64 = 151.5;
 
-/// Tolerance the published scenario declares; matches the
-/// `[tolerance].apogee_relative` field in
-/// `data/scenarios/niskanen-2009-chapter6.toml`.
+/// Project-declared tolerance on the apogee comparison: ±5%
+/// against the published Niskanen Chapter-6 C6 experimental value.
 const NISKANEN_C6_RELATIVE_TOLERANCE: f64 = 0.05;
 
 #[test]

@@ -27,7 +27,7 @@ openbmp.scenario = 1
 name        = "niskanen-2009-chapter6"
 description = "Niskanen 2009 Chapter-6 small model rocket; Estes C6 motor, point-mass reduction with constant axial CD."
 validation  = "checked"
-provenance  = "Niskanen 2009 Chapter 6, Helsinki UT MSc thesis; reference apogees in `data/scenarios/niskanen-2009-chapter6.toml`."
+provenance  = "Niskanen 2009 Chapter 6, Helsinki UT MSc thesis; reference apogee 151.5 m (C6 experimental) and 5% tolerance pinned alongside this scenario in the Phase-2.9 integration test `crates/openbmp-vehicle/tests/sounding_rocket.rs` and the Phase-2.11 e2e test `crates/openbmp-cli/tests/sounding_rocket_e2e.rs`."
 
 [time]
 start_s = 0.0

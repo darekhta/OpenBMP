@@ -5,8 +5,8 @@
 # tolerance arithmetic in the openbmp-testkit tolerance tests is easy
 # to verify by hand. This fixture does NOT represent any real
 # benchmark; real validation cases ship as their own files under
-# `data/scenarios/` (or `crates/<crate>/tests/expected/`) with full
-# provenance per `docs/data-provenance.md`.
+# `scenarios/<category>/` (or `crates/<crate>/tests/expected/`) with
+# full provenance per `docs/data-provenance.md`.
 #
 # DO NOT introduce real benchmark numbers here. The CI tripwire in
 # `crates/openbmp-testkit/tests/inline_data_tripwire.rs` enforces this.

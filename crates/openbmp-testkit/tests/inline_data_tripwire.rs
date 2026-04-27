@@ -985,3 +985,130 @@ fn data_and_scenario_tomls_have_sibling_provenance() {
         panic!("{report}");
     }
 }
+
+/// Scenario-shaped schema markers that belong only under `scenarios/`.
+const SCENARIO_SCHEMA_MARKERS: &[&str] = &["openbmp.scenario", "openbmp.benchmark"];
+
+/// Data-shaped schema markers that belong only under `data/`.
+const DATA_SCHEMA_MARKERS: &[&str] = &[
+    "openbmp.aero_deck",
+    "openbmp.motor",
+    "openbmp.imu_noise_budget",
+];
+
+/// True if `content` declares the dotted-key TOML schema marker
+/// `<marker> = …` on a non-comment line. The current detector matches
+/// the canonical dotted-key form OpenBMP scenario / data files use; if
+/// the project ever adopts the `[openbmp]\n<key> = 1` table form, this
+/// detector must be extended.
+fn toml_declares_schema_marker(content: &str, marker: &str) -> bool {
+    for raw_line in content.lines() {
+        let trimmed = raw_line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix(marker) else {
+            continue;
+        };
+        let rest_trimmed = rest.trim_start();
+        if rest_trimmed.starts_with('=') {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn data_and_scenarios_carry_correct_schema_markers() {
+    let root = workspace_root();
+    let mut violations: Vec<String> = Vec::new();
+
+    let data_path = root.join("data");
+    if data_path.is_dir() {
+        let mut tomls = Vec::new();
+        collect_files_with_extension(&data_path, "toml", &mut tomls);
+        for toml_path in &tomls {
+            let Ok(content) = fs::read_to_string(toml_path) else {
+                continue;
+            };
+            for marker in SCENARIO_SCHEMA_MARKERS {
+                if toml_declares_schema_marker(&content, marker) {
+                    let rel = relative_path(&root, toml_path);
+                    violations.push(format!(
+                        "{rel} declares `{marker}` — scenario / benchmark TOMLs belong under \
+                         `scenarios/<category>/`, not `data/`",
+                    ));
+                }
+            }
+        }
+    }
+
+    let scenarios_path = root.join("scenarios");
+    if scenarios_path.is_dir() {
+        let mut tomls = Vec::new();
+        collect_files_with_extension(&scenarios_path, "toml", &mut tomls);
+        for toml_path in &tomls {
+            let Ok(content) = fs::read_to_string(toml_path) else {
+                continue;
+            };
+            for marker in DATA_SCHEMA_MARKERS {
+                if toml_declares_schema_marker(&content, marker) {
+                    let rel = relative_path(&root, toml_path);
+                    violations.push(format!(
+                        "{rel} declares `{marker}` — aero deck / motor / sensor-budget TOMLs \
+                         belong under `data/<thing>/`, not `scenarios/`",
+                    ));
+                }
+            }
+        }
+    }
+
+    if !violations.is_empty() {
+        let mut report = String::from(
+            "Layout principle: `data/<thing>/` is for physical-constant reference data \
+             (aero decks, motor curves, atmosphere / gravity tables, sensor noise budgets); \
+             `scenarios/<category>/` is for runnable scenario specifications. Mis-filed \
+             schema markers fail closed.\n\
+             See `docs/data-provenance.md § `data/` vs `scenarios/` — the layout principle`.\n\n\
+             Violations:\n",
+        );
+        for v in &violations {
+            let _ = writeln!(report, "  - {v}");
+        }
+        panic!("{report}");
+    }
+}
+
+#[test]
+fn schema_marker_detector_recognises_canonical_forms() {
+    assert!(toml_declares_schema_marker(
+        "openbmp.scenario = 1\n",
+        "openbmp.scenario",
+    ));
+    assert!(toml_declares_schema_marker(
+        "  openbmp.scenario = 1\n",
+        "openbmp.scenario",
+    ));
+    assert!(toml_declares_schema_marker(
+        "openbmp.scenario\t=\t1\n",
+        "openbmp.scenario",
+    ));
+}
+
+#[test]
+fn schema_marker_detector_ignores_comments_and_substrings() {
+    assert!(!toml_declares_schema_marker(
+        "# uses openbmp.scenario = 1 schema\n",
+        "openbmp.scenario",
+    ));
+    // Pluralised key — should not match the singular marker.
+    assert!(!toml_declares_schema_marker(
+        "openbmp.scenarios = 1\n",
+        "openbmp.scenario",
+    ));
+    // Different marker.
+    assert!(!toml_declares_schema_marker(
+        "openbmp.aero_deck = 1\n",
+        "openbmp.scenario",
+    ));
+}

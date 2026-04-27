@@ -926,14 +926,15 @@ RocketPy-published reference (3349 m AGL).
   from `data/rockets/calisto/powerOffDragCurve.csv`.
 - `data/aero/calisto-power-on.toml` (new): power-on drag-curve
   schema-2 deck.
-- `data/scenarios/rocketpy-calisto.toml` (new): the full Calisto
-  scenario with the assembly tree (single body, single-motor
-  cluster, drogue + main recovery), Spaceport America launch
-  site, 5.2 m rail at 85° inclination.
 - `scenarios/sounding-rocket/rocketpy-calisto.toml` (new): the
-  canonical Phase-3 scenario, mirroring the
-  `data/scenarios/rocketpy-calisto.toml` benchmark fixture but in
-  the canonical scenario format.
+  canonical Phase-3 scenario with the assembly tree (single body,
+  single-motor cluster, drogue + main recovery), Spaceport America
+  launch site, 5.2 m rail at 85° inclination. Sibling provenance
+  entry cites RocketPy's published Calisto example as the
+  cross-tool reference. The e2e test pins the published reference
+  apogee (3349 m AGL) and tolerance as Rust constants in the test
+  file, matching the Niskanen pattern in
+  `crates/openbmp-cli/tests/sounding_rocket_e2e.rs`.
 - `crates/openbmp-cli/tests/calisto_e2e.rs` (new): integration
   test that runs the Calisto scenario end-to-end via
   `openbmp run`, parses the Parquet, and asserts apogee ± 1% of

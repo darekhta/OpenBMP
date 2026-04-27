@@ -82,9 +82,10 @@ local_origin:     >-
   coordinates; this proxy is documented in the scenario's
   `[frames.local_origin].source` field.
 related_files:
-  - data/scenarios/niskanen-2009-chapter6.toml
   - data/aero/synthetic-niskanen-ch6-rocket.toml
   - data/motors/estes-c6-eng-derived.toml
+  - crates/openbmp-vehicle/tests/sounding_rocket.rs
+  - crates/openbmp-cli/tests/sounding_rocket_e2e.rs
 notes: >-
   Each external file reference (`aero.deck`, `propulsion.motor.file`)
   carries an optional `*_sha256` pin that fails closed on mismatch.
