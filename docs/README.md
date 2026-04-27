@@ -45,13 +45,5 @@ rocket-class and launch-vehicle-class flight simulation.
   credibility contract, the cross-validation playbook, and the generic
   lab-HIL adapter pattern. Public-data integration (e.g., a peer-reviewed
   Starship-class study) is treated as a downstream-user example only.
-- [Phase 2 Plan](phase-2-plan.md) — executable plan for the second
-  implementation phase: 6-DOF rigid-body kernel, US Standard
-  Atmosphere 1976, J2 gravity, tabulated aerodynamic deck, synthetic
-  solid motor, synthetic IMU/barometer, force-model composition, and
-  the Niskanen 2009 sounding-rocket validation case. Sub-phased with
-  exit criteria and a risk register; removed at Phase 2 closure
-  per the Phase 1 precedent.
-
 The doc set above is the authoritative source for the project's scope,
 architecture, safety posture, and data policy.

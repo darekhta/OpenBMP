@@ -2,14 +2,27 @@
 
 L2 vehicle composition crate.
 
-**Status:** Phase 2 — stub.
+**Status:** Phase 2 — `Vehicle` trait + `BasicVehicle` composition +
+kernel-side adapter family. The `VehicleAssembly` tree (Bodies /
+Propulsion / Effectors / Tanks / Sensors) and rigid-body adapters
+land in Phase 3.
 
 ## Purpose
 
 - `Vehicle` trait per `docs/software-architecture.md`.
-- Mass models: `ConstantMass`, `LinearBurn`, `TableBurn`, `MultiStage`.
-- Vehicle composition logic: a vehicle is a list of force / moment /
-  mass providers registered in the scenario.
+- `BasicVehicle<S>`: ordered force / moment lists + one mass model
+  over a single `SimState` type. `evaluate_force_breakdown` returns
+  per-model components plus the total for runner-side telemetry.
+- `NamedForceModel` / `NamedMomentModel` wrap each model with a
+  scenario-declared name for telemetry routing.
+- Kernel-side adapter family wrapping L2 physics into point-mass
+  `ForceModel` / `MassModel` impls: `GravityForceAdapter`,
+  `MotorThrustForceAdapter`, `MotorMassAdapter`,
+  `AxialDragForceAdapter`. The rigid-body adapter family lands in
+  Phase 3.
+- Phase-2.9 Niskanen sounding-rocket integration test exercises the
+  adapter stack end-to-end with the Estes C6 motor and a reduced-CD
+  aero deck against the published 151.5 m experimental apogee.
 
 ## Inputs and Outputs
 
@@ -38,8 +51,11 @@ the kernel hot path once Phase 2 closes.
 
 ## Validation
 
-`experimental` (stub). Phase 2 validation starts with constant-mass and
-linear-burn consistency checks.
+`validated-toy` for the Phase-2.8 `BasicVehicle` composition and the
+Phase-2.9 adapter stack. Validated against ordered-sum correctness,
+first-failing-model short-circuit, declared-order determinism, and
+the Niskanen 2009 Chapter-6 sounding-rocket benchmark (apogee within
+±5% of the 151.5 m experimental value).
 
 ## Data Provenance
 

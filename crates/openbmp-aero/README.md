@@ -2,7 +2,9 @@
 
 L2 aerodynamics crate.
 
-**Status:** Phase 2 — stub. Hypersonic extensions in Phase 6.
+**Status:** Phase 2 — schema-1 deck shipped (`AeroDeck` +
+`DeckLookup`). Schema-2 with control-effector axes lands in Phase 3.
+Hypersonic extensions in Phase 6.
 
 ## Purpose
 
@@ -42,8 +44,10 @@ Trilinear interpolation with documented out-of-grid behaviour
 
 ## Validation
 
-`experimental` (stub). Phase 2 starts with synthetic deck parser tests and
-Phase 6 adds analytic hypersonic method checks.
+`validated-toy` for the Phase-2.5 schema-1 deck surface. Validated
+against per-corner exact-equality regression, eight-corner-centroid
+average lookup, single-axis sub-grid lookup, and bit-stable
+clone-equivalence. Phase 6 adds analytic hypersonic method checks.
 
 ## Data Provenance
 

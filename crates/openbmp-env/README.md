@@ -2,9 +2,11 @@
 
 L2 environment models.
 
-**Status:** Phase 2 — stub. Phase 1 uses a constant-gravity scaffold
-inside `openbmp-sim` for the analytic-toy scenario; that scaffold
-moves here at the start of Phase 2.
+**Status:** Phase 2 — gravity (`ConstantGravity`, `PointMassGravity`,
+`J2Gravity`), atmosphere (`IsothermalAtmosphere`, `UsStandard1976`),
+and wind (`NoWind`, `ConstantWind`) shipped. Layered / gust wind
+lands in Phase 3; NRLMSISE-00 atmosphere and EGM truncated gravity
+land in Phase 6.
 
 ## Purpose
 
@@ -45,8 +47,12 @@ No wall-clock, no network, no system RNG.
 
 ## Validation
 
-`experimental` (stub). Phase 2 starts with constant/J2 gravity and
-US Standard Atmosphere checks against public tables.
+`validated-toy` for the shipped Phase-2.2/2.3/2.4 surface. WGS84 J2
+coefficient pinned per NIMA TR 8350.2 with provenance file under
+`data/gravity/`. USSA76 validated against per-kilometre regression
+to the published table within 1e-6 relative across the 0–86 km
+envelope, with layer-boundary continuity to ULP. Wind models covered
+by property tests on `ConstantWind` finiteness.
 
 ## Data Provenance
 

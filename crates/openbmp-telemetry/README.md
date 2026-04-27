@@ -2,8 +2,10 @@
 
 L5 telemetry crate.
 
-**Status:** Phase 1.4 — implemented typed telemetry, ring buffer, and
-deterministic CSV / JSON / Parquet exporters.
+**Status:** Phase 2.11 — typed telemetry, ring buffer, deterministic
+CSV / JSON / Parquet exporters, plus optional schema-level metadata
+(used by the Phase-2 runner to record SHA-256 digests of every
+scenario-referenced external input file in the Parquet header).
 
 ## Purpose
 
@@ -42,9 +44,13 @@ written explicitly; Parquet column order is locked by schema version.
 
 ## Validation
 
-`checked` for the Phase 1.4 telemetry surface. Unit tests cover typed
-channels, bounded retention, CSV / JSON stability, Parquet byte stability,
-schema duplicate rejection, and non-finite float rejection.
+`checked` for the Phase-2.11 telemetry surface. Unit tests cover
+typed channels, bounded retention, CSV / JSON stability, Parquet byte
+stability, schema duplicate rejection, non-finite float rejection,
+and BTreeMap-ordered schema metadata serialisation. The
+`openbmp-cli` end-to-end suite verifies the SHA-256 metadata appears
+correctly in Niskanen Parquet output and that the per-model force
+breakdown channels carry finite values.
 
 ## Data Provenance
 

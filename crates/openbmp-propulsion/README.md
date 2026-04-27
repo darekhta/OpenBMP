@@ -2,15 +2,22 @@
 
 L2 propulsion crate.
 
-**Status:** Phase 2.6 — synthetic solid motor.
+**Status:** Phase 2 — synthetic solid motor + four NAR-certified
+Estes motors (A8, B4, C6, D12) shipped as `data/motors/*.toml`.
+Liquid / hybrid / cold-gas variants land in Phase 3 alongside
+`EngineModel` and `EngineCluster`.
 
 ## Purpose
 
-- Crate-local `Motor` trait exposing thrust, mass, and mass-rate lookups.
-- Variant: `Solid`. Liquid, hybrid, cold-gas, and kernel
-  `ForceModel` / `MassModel` adapters are deferred.
-- In-house TOML thrust-curve format (RASP `.eng`-shaped).
+- Crate-local `Motor` trait exposing thrust, mass, and mass-rate
+  lookups.
+- Variant: `Solid`. Liquid, hybrid, and cold-gas variants are
+  deferred to Phase 3.
+- In-house TOML thrust-curve format (RASP `.eng`-shaped) with strict
+  `serde(deny_unknown_fields)` schema-1 parser.
 - Impulse-weighted propellant mass depletion.
+- Kernel-side adapters (`MotorThrustForceAdapter`,
+  `MotorMassAdapter`) live in `openbmp-vehicle`.
 
 ## Inputs and Outputs
 
@@ -38,13 +45,22 @@ Thrust curves are tabulated and interpolated linearly with locked operand order.
 
 ## Validation
 
-Phase 2.6 validation uses synthetic impulse and mass-flow consistency checks.
+`validated-toy` for the shipped synthetic motors (`textbook`,
+`d-class`); `checked` for the four ThrustCurve.org-derived Estes
+motors (A8, B4, C6, D12). The Phase-2.6 regression suite asserts
+integrated impulse vs. declared total to 1e-12 relative,
+mass-at-burnout bit-equality with `dry_mass`, mass-rate ≤ 0
+everywhere, monotone mass decrease, thrust-at-grid-corner
+exact-equality, thrust-outside-window zero, and bit-stable lookups
+across two evaluations.
 
 ## Data Provenance
 
-Synthetic textbook motors only (see
-`docs/data-provenance.md` source classes). **Real fielded operational
-motor data is categorically rejected.**
+Synthetic textbook motors plus four NAR-certified Estes hobby motors
+(A8, B4, C6, D12) derived from the public ThrustCurve.org RASP
+corpus, each with a SHA-256-pinned source digest in
+`data/motors/provenance.md`. **Real fielded operational motor data
+is categorically rejected.**
 
 ## Safety Boundary
 

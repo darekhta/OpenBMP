@@ -108,7 +108,6 @@ const TRIPWIRES: &[Tripwire] = &[
         needle: "3.986004418",
         allow_list: &[
             "data/gravity/wgs84-j2.toml",
-            "docs/phase-2-plan.md",
             "docs/data-provenance.md",
             "crates/openbmp-core/src/frames.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
@@ -119,7 +118,6 @@ const TRIPWIRES: &[Tripwire] = &[
         needle: "1.082626683",
         allow_list: &[
             "data/gravity/wgs84-j2.toml",
-            "docs/phase-2-plan.md",
             "docs/scenario-format.md",
             "docs/data-provenance.md",
             "crates/openbmp-env/src/gravity.rs",
@@ -132,7 +130,6 @@ const TRIPWIRES: &[Tripwire] = &[
         needle: "6378137.0",
         allow_list: &[
             "data/gravity/wgs84-j2.toml",
-            "docs/phase-2-plan.md",
             "docs/data-provenance.md",
             "crates/openbmp-core/src/frames.rs",
             "crates/openbmp-env/src/atmosphere/us_standard_1976.rs",

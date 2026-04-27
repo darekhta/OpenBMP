@@ -400,20 +400,69 @@ and any operational mission profile.
   (purpose / inputs / units / frames / assumptions / validity range /
   determinism / validation / data provenance / safety boundary).
 
-**Phase 2 — Toy physics**
-- 3-DOF point-mass and 6-DOF rigid-body states.
-- Constant gravity, J2, US Standard Atmosphere 1976.
-- Constant-mass and linear-burn mass models.
-- Analytic-toy force/moment providers (constant force, simple drag).
-- Ideal-state synthetic sensor; synthetic IMU.
-- Telemetry CSV + JSON + Parquet exporters.
+**Phase 2 — Sounding-rocket physics** (complete)
+- 6-DOF rigid-body kernel (`RigidBodyKernel`) added alongside the
+  Phase-1 point-mass kernel; `Rk4FixedStep` extended over `SimState`
+  with quaternion renormalisation; analytic-toy torque-free
+  precession validation.
+- Environment models in `openbmp-env`: `ConstantGravity`,
+  `PointMassGravity`, `J2Gravity` (NIMA TR 8350.2 J2 coefficient),
+  US Standard Atmosphere 1976 in-house port (0–86 km), `NoWind`,
+  `ConstantWind`.
+- Minimal Earth-frame support in `openbmp-core`:
+  `wgs84-uniform-rotation` profile + scenario-declared local geodetic
+  origin.
+- Aerodynamic deck in `openbmp-aero`: schema-1 reduced sounding-rocket
+  deck `(Mach, alpha, beta) → (CN, CD, CM)` with locked-order
+  trilinear interpolation, fail-closed extrapolation; one shipped
+  synthetic finned-cylinder deck.
+- Synthetic solid motor in `openbmp-propulsion`: in-house RASP-shaped
+  TOML thrust-curve format, piecewise-linear interpolation,
+  impulse-weighted mass model. Shipped: synthetic textbook + D-class
+  motors plus four NAR-certified Estes motors (A8, B4, C6, D12)
+  derived from ThrustCurve.org with SHA-256-pinned provenance.
+- Synthetic sensors in `openbmp-sensors`: `IdealStateSensor`,
+  `SyntheticImu` (IEEE 952 five-component noise model), and
+  `SyntheticBarometer` (Gaussian + OU bias drift).
+- Vehicle composition in `openbmp-vehicle`: flat `Vehicle` trait with
+  `BasicVehicle` carrying ordered force / moment / mass model lists
+  and per-step force-breakdown evaluation. Kernel-side adapter
+  family (`GravityForceAdapter`, `MotorThrustForceAdapter`,
+  `MotorMassAdapter`, `AxialDragForceAdapter`) wraps L2 physics into
+  point-mass `ForceModel` / `MassModel` impls.
+- Scenario format extensions in `openbmp-scenario`: structured
+  `[aero]`, `[propulsion.motor]`, `[wind]`, `[atmosphere]`,
+  `[frames.local_origin]` blocks plus typed `[sensors.<name>]`
+  entries. Optional rigid-body initial-state fields. SHA-256 pin
+  fields per external-file reference; pin verification fails closed
+  before kernel construction.
+- CLI integration in `openbmp-cli`: dispatcher selects between the
+  Phase-1 byte-stable analytic-toy path and the Phase-2
+  point-mass-with-adapters path by scenario shape; `vehicle.kind =
+  "rigid_body"` returns a typed Phase-3 deferral message.
+- Telemetry extensions: per-model force-breakdown channels
+  (`force.<name>.x_n` etc.), atmosphere sample channels (density,
+  pressure, temperature, speed of sound), and SHA-256 scenario-file
+  digests recorded as Parquet schema metadata.
+- Public-benchmark validation: Niskanen 2009 thesis Chapter-6
+  sounding-rocket case, with the canonical scenario and Estes C6
+  motor producing simulated apogee within ±5% of the published
+  151.5 m experimental value.
+- Inline-data prevention: workspace tripwires reject inline TOML in
+  `*.rs` source, high-precision benchmark constants outside their
+  declared source-of-truth files, and any `*.toml` under
+  `data/`/`scenarios/` lacking a sibling `provenance.md`.
+- Determinism CI gate runs both the analytic-toy and the Niskanen
+  scenarios twice on `x86_64-unknown-linux-gnu` and asserts
+  byte-identical Parquet across reruns; cross-platform matrix runs
+  the same scenarios as state-stable smoke tests.
 
-**Phase 3 — Modular models**
-- Aerodynamic deck format (TOML, in-house) with optional control-effector
-  axes (`delta_e`, `delta_a`, `delta_r`, body flaps, grid fins) so the
-  deck can express full configuration aerodynamics when the dataset was
-  built that way.
-- Synthetic solid-motor model with thrust-curve loader.
+**Phase 3 — Modular composable rocket**
+- `VehicleAssembly` framework: a `Bodies / Propulsion / Effectors /
+  Tanks / Sensors / MassProperties` tree composed in the scenario file
+  and resolved into the kernel's force / moment / mass model lists at
+  startup. Replaces ad-hoc `force_models = ["aero", "thrust"]` lists for
+  any vehicle past a single rigid stick.
 - `EngineModel` and `EngineCluster` traits for liquid-engine and
   multi-engine vehicles: per-engine throttle, gimbal angle, mass-flow
   derivative, ignition / shutdown events. Authoritative summed thrust /
@@ -421,7 +470,7 @@ and any operational mission profile.
   one composition step, not N hand-summed forces.
 - `ControlEffector` trait separate from aero decks: rate limits,
   saturation, latency, deadband, fault modes (jam, runaway,
-  reduced-rate). Effectors are how the controller talks to the
+  reduced-rate, hardover). Effectors are how the controller talks to the
   aerodynamics or the engines; the deck reports influence coefficients,
   the effector reports actuator state.
 - `TankModel` and `MovingMassModel` for slosh as **generic moving-mass
@@ -430,20 +479,28 @@ and any operational mission profile.
   body. OpenBMP-shipped reference models use toy / textbook propellant
   properties and tank geometries only; downstream real-data packages live
   outside this repository.
-- `VehicleAssembly` framework: a `Bodies / Propulsion / Effectors /
-  Tanks / Sensors / MassProperties` tree composed in the scenario file
-  and resolved into the kernel's force / moment / mass model lists at
-  startup. Replaces ad-hoc `force_models = ["aero", "thrust"]` lists for
-  any vehicle past a single rigid stick.
+- Aerodynamic deck schema-2 with optional control-effector axes
+  (`delta_e`, `delta_a`, `delta_r`, body flaps, grid fins) so the
+  deck can express full configuration aerodynamics when the dataset was
+  built that way.
 - Event / phase timeline as a first-class scheduler input:
   time-triggered events (T+x), state-triggered events (apogee, altitude
   threshold, dynamic pressure threshold, mass-fraction threshold), and
   named mission phases ordered into a `MissionPhaseGraph`.
-- Wind models (constant, layered, gust).
+- Rigid-body adapter family completing the Phase-2.11 deferral:
+  `ForceModel<RigidBodyState>` impls for gravity, thrust, and aero so
+  the runner accepts `vehicle.kind = "rigid_body"`.
+- Wind extensions: `LayeredWind` (per-altitude table) and `GustWind`
+  (Dryden / Karman model).
 - Recovery / descent models for academic rockets: parachute or
   drag-device deployment events, descent telemetry, and toy
   recovery-area checks with no landing-target optimization.
-- Additional synthetic sensors (barometer, GNSS, magnetometer).
+- Additional synthetic sensors: `SyntheticGnss`,
+  `SyntheticMagnetometer`, `SyntheticStarTracker` (the Phase-2 set
+  shipped `IdealStateSensor`, `SyntheticImu`, `SyntheticBarometer`).
+- Public-benchmark cross-tool validation: RocketPy "Calisto"
+  (Cesaroni Pro75 M1670) reference rocket runs in both OpenBMP and
+  RocketPy with apogee / max-Q / max-Mach side-by-side.
 - Property tests, fuzz tests, microbenchmarks.
 
 **Phase 4 — Virtual flight controller**

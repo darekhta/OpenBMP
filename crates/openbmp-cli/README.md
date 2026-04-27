@@ -2,11 +2,13 @@
 
 L7 command-line entry point. Produces the binary `openbmp`.
 
-**Status:** Phase 1.7 — implemented `run`, `diff`, `check`, and
-`check-provenance` subcommands; lib + bin shape with `assert_cmd` /
-`insta-cmd` snapshot tests on the binary surface and a Phase-1.8
-end-to-end golden test for the analytic-toy constant-acceleration
-drop scenario.
+**Status:** Phase 2.11 — runner dispatcher with the byte-stable
+analytic-toy path (Phase-1) and the Phase-2 point-mass-with-adapters
+path (Niskanen-class sounding rocket). `vehicle.kind = "rigid_body"`
+returns a typed Phase-3 deferral message. SHA-256 pin verification
+fires before kernel construction. Telemetry extends to atmosphere
+sample, per-model force breakdown, and SHA-256 schema metadata for
+the Phase-2 path.
 
 ## Purpose
 
@@ -14,14 +16,14 @@ Expose the supported user entry points for running scenarios, comparing
 golden telemetry, checking scenario/provenance policy, and later running
 batch sweeps.
 
-## Subcommands (Phase 1.7)
+## Subcommands
 
 | Subcommand | Purpose |
 |---|---|
-| `openbmp run <scenario.toml>` | Run the scenario through the kernel and write declared telemetry outputs. |
+| `openbmp run <scenario.toml>` | Run the scenario through the kernel and write declared telemetry outputs. Dispatcher selects between Phase-1 byte-stable analytic-toy and Phase-2 point-mass-with-adapters paths. |
 | `openbmp diff <golden.parquet> <actual.parquet>` | Report the first divergent row and column with strict value strings. |
-| `openbmp check <scenario.toml>` | Lint: schema, provenance, units / frames, safety names, deterministic schedule. |
-| `openbmp check-provenance <data/>` | Walk a data tree and verify provenance records (Phase 2 full implementation). |
+| `openbmp check <scenario.toml>` | Lint: schema, provenance, units / frames, safety names, deterministic schedule. Surfaces the SHA-256 digests for every external-file reference. |
+| `openbmp check-provenance <data/>` | Walk a data tree and verify provenance records. |
 
 ## Errors and Diagnostics
 
@@ -56,12 +58,17 @@ optional socket-bridge tooling.
 
 ## Validation
 
-`checked` for the Phase-1.7 surface. Snapshot tests cover help-text
-shape; integration tests cover scenario-run success, structured-error
-behaviour for malformed scenarios, and `diff`'s self-compare-identical
-golden path. The Phase-1.8 e2e test asserts tolerance compliance and
-same-machine byte-stability of Parquet output for the analytic-toy
-drop scenario.
+`checked` for the Phase-2.11 surface. Snapshot tests cover help-text
+shape, scenario-run success on the analytic-toy path, structured-error
+behaviour for malformed scenarios, `diff`'s self-compare-identical
+golden path, the Niskanen-scenario `check` digest report, corrupt-pin
+fail-closed, missing-motor-file fail-closed, and `rigid_body`
+unsupported-scenario rejection. The end-to-end suite asserts tolerance
+compliance + same-machine byte-stability of Parquet output for both
+the analytic-toy drop and the Niskanen sounding-rocket scenarios.
+The CI determinism gate runs both scenarios twice with byte-diff and
+once with `RUST_LOG=trace` redirected to verify no tracing leak into
+deterministic output.
 
 ## Data Provenance
 
