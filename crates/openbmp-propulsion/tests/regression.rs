@@ -33,6 +33,16 @@ const D_CLASS: &str = include_str!(concat!(
     "/../../data/motors/synthetic-solid-d-class.toml"
 ));
 
+const ESTES_A8: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../data/motors/estes-a8-eng-derived.toml"
+));
+
+const ESTES_B4: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../data/motors/estes-b4-eng-derived.toml"
+));
+
 fn shipped_motors() -> Vec<(&'static str, SolidMotor)> {
     vec![
         (
@@ -43,13 +53,21 @@ fn shipped_motors() -> Vec<(&'static str, SolidMotor)> {
             "synthetic-solid-d-class",
             SolidMotor::load_from_str(D_CLASS).expect("d-class deck must parse"),
         ),
+        (
+            "estes-a8-eng-derived",
+            SolidMotor::load_from_str(ESTES_A8).expect("Estes A8 deck must parse"),
+        ),
+        (
+            "estes-b4-eng-derived",
+            SolidMotor::load_from_str(ESTES_B4).expect("Estes B4 deck must parse"),
+        ),
     ]
 }
 
 #[test]
-fn both_decks_parse_and_carry_expected_metadata() {
+fn every_shipped_deck_parses_and_carries_expected_metadata() {
     let motors = shipped_motors();
-    assert_eq!(motors.len(), 2);
+    assert_eq!(motors.len(), 4);
     for (name, m) in &motors {
         assert_eq!(m.meta().name, *name);
         assert!(!m.meta().provenance.is_empty(), "{name}: provenance empty");
