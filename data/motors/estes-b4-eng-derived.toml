@@ -2,19 +2,18 @@
 #
 # Time-thrust pairs from the canonical RASP `.eng` file at
 # https://www.thrustcurve.org/simfiles/5f4294d20002e90000000834/
-# (contributed by John Coker, NAR-certified). The (0, 0) starting
-# point is prepended per the OpenBMP motor format requirement that
-# `points[0].time = 0` exactly. The upstream file is named "B4-4"
-# (B4 motor with the 4-second-delay variant), but the thrust profile
-# is the B4 burn — delay timing is a downstream ejection-charge
-# concern that OpenBMP's Phase-2 motor model does not simulate.
+# (contributed by Nicholas Domansky; ThrustCurve data source `user`;
+# license tag `PD`). The (0, 0) starting point is prepended per the
+# OpenBMP motor format requirement that `points[0].time = 0` exactly.
+# The upstream file is named "B4-4", but the thrust profile is the B4
+# burn; delay and ejection-charge behaviour are outside OpenBMP's
+# Phase-2 motor model.
 #
 # Header from the upstream `.eng` file (decoded):
 #   - name:           B4-4
 #   - diameter:       18 mm
 #   - length:         70 mm
-#   - delays:         P (plugged casing in this RASP variant; the
-#                     B4-4 designation embeds the 4 s nominal delay)
+#   - delays:         P (RASP header value; ignored by OpenBMP)
 #   - propellant:     0.006 kg
 #   - total mass:     0.0195 kg
 #   - manufacturer:   Estes (E)
@@ -22,9 +21,9 @@
 # Niskanen 2009 Chapter 6 cross-reference. The B4-4 motor is one of
 # the two motors Niskanen Table 6.1 tabulates against experimental,
 # OpenRocket, and RockSim apogees for the small-rocket benchmark.
-# The published experimental B4 apogee is 64.0 m. Importing this
-# motor enables a second cross-tool validation point alongside the
-# existing C6 (151.5 m).
+# The published experimental B4 apogee is 64.0 m. This import can
+# support a second cross-tool validation point alongside the existing
+# C6 (151.5 m) once a B4 scenario is authored.
 #
 # Specific-impulse consistency: declared `specific_impulse_s` is
 # back-solved from `total_impulse = m_p · g_0 · Isp` for
@@ -35,7 +34,7 @@ openbmp.motor = 1
 
 [meta]
 name       = "estes-b4-eng-derived"
-provenance = "ThrustCurve.org Estes B4-4 RASP .eng file (John Coker, NAR-certified). Trapezoidal integral 5.0922 N·s vs. manufacturer-rounded 5.0 N·s spec; integrated value declared as simulation truth per the D12 precedent."
+provenance = "ThrustCurve.org Estes B4-4 RASP .eng file (Nicholas Domansky, user-contributed, PD license tag). Trapezoidal integral 5.0922 N·s vs. manufacturer-rounded 5.0 N·s spec; integrated value declared as simulation truth per the D12 precedent. Parser-checked only; no end-to-end B4 scenario yet."
 validation = "checked"
 
 [burn]

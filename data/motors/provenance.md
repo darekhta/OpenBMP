@@ -289,84 +289,37 @@ safety_review:
     operational vehicle parameters.
 ```
 
-## `data/motors/estes-a8-eng-derived.toml`
+### Public motor import policy
 
-```yaml
-dataset_id:       openbmp.motor.estes_a8.v1
-files:
-  - data/motors/estes-a8-eng-derived.toml
-source_class:     converted-public
-source_title:     >-
-  Estes A8 solid-propellant model rocket motor, 18 mm × 70 mm,
-  manufacturer-spec total impulse 2.5 N·s; the published RASP `.eng`
-  thrust curve is transcribed verbatim into the OpenBMP motor TOML
-  schema with a (0, 0) starting point prepended to satisfy the
-  OpenBMP requirement that `points[0].time = 0` exactly.
-source_authors:   John Coker (RASP file), Estes Industries (motor)
-source_id:        ThrustCurve.org Estes A8 RASP simfile
-source_url:       https://www.thrustcurve.org/simfiles/5f4294d20002e90000000897/download/data.eng
-source_hash_sha256: 41afbe5a4dc23b7626b065351280286101573333910debb2c07f68a0303f9891
-publication_date: 2011-03-03  # RASP file production date per the .eng header comment
-methodology_reference: >-
-  RASP `.eng` thrust-curve format and the manufacturer's static-fire
-  calibration. NAR-certified per the National Association of
-  Rocketry's standardised motor-test procedure. The upstream file
-  documents in its header that "the curve drawn with these data
-  points is as close to the certification curve as can be with such
-  a limited number of points (32) allowed with wRASP up to v1.6."
-methodology_urls:
-  - https://www.thrustcurve.org/info/raspformat.html
-  - https://www.thrustcurve.org/motors/Estes/A8/
-license_or_terms: >-
-  ThrustCurve.org corpus is distributed under terms that permit
-  re-use with attribution and no warranty. The transcribed numerical
-  values are physical motor-test data from a NAR-certified motor;
-  no derivative works restrictions apply to the data points
-  themselves. OpenBMP credits the original RASP file contributor
-  (John Coker) and the manufacturer (Estes).
-retrieved_utc:    2026-04-27
-transformation:
-  method: >-
-    Verbatim transcription of the 25 (time_s, thrust_N) pairs from
-    the RASP `.eng` file at the `source_url` above, with a
-    (0.0, 0.0) starting point prepended. Trapezoidal integration of
-    the 26-point committed curve evaluates to 2.1503979999999996 N·s
-    in f64; OpenBMP declares this as the simulation truth so the
-    Phase-2.6 motor parser's tight-tolerance integral check passes.
-    The Estes manufacturer spec rounds the static-test total impulse
-    to 2.5 N·s; the discrepancy is the wRASP-v1.6 32-point
-    approximation limit documented in the upstream file header. No
-    magnitude rescaling is applied — committed values are the
-    upstream RASP values verbatim.
-    The `burn.duration_s = 0.534` field matches the curve's last
-    time exactly. The `specific_impulse_s = 57.10405481654455` field
-    is back-solved from `I = m_p · g_0 · Isp` with the declared
-    propellant mass and `g_0 = 9.80665` m/s² so the Phase-2.6 Isp
-    consistency check passes within 1e-3 relative.
-  script: none
-verification:
-  method: >-
-    `crates/openbmp-propulsion/tests/regression.rs` parses this file
-    via `SolidMotor::load_from_toml`, asserts the integrated impulse
-    matches the declared `total_impulse_n_s` to 1e-12 relative, mass
-    at burnout equals dry mass exactly, mass-rate ≤ 0 across the
-    burn, and bit-stable lookups across two evaluations.
-  test:   crates/openbmp-propulsion/tests/regression.rs
-  tolerance: >-
-    Integrated impulse vs declared total: 1e-12 relative. Mass at
-    burnout: bit-equality with dry_mass. Mass-rate sign: ≤ 0
-    everywhere. Bit-stability across two lookups: bit equality on
-    the reference platform profile.
-validation_status: checked
-safety_review:
-  reviewer: dmitri.arekhta
-  decision: accepted
-  notes: >-
-    Public motor data from a hobby motor (Estes A8) certified by the
-    NAR. The smallest standard impulse class in the Estes hobby line
-    (A class). No export control or manufacturer-proprietary
-    restrictions; no operational vehicle parameters.
-```
+New third-party motor imports must identify an explicit compatible license
+or public-domain statement for the source artifact. ThrustCurve.org license
+tags are per-file metadata, not a corpus-wide grant. A source with an absent
+or unknown per-file license is rejected until that uncertainty is resolved,
+even if the motor class itself is public or NAR-certified.
+
+Imported RASP thrust curves declare the trapezoidal integral of the
+committed piecewise-linear points as simulation truth by default. Magnitude
+rescaling is allowed only when a scenario-specific validation case cites a
+published reference impulse and documents the scale factor, as with the
+Niskanen C6 benchmark entry above.
+
+For delay-bearing hobby motors, the OpenBMP filename may omit the delay
+suffix when the Phase-2 motor model does not simulate ejection charges or
+delays. The upstream RASP designation remains recorded in `source_title`
+and file comments.
+
+The `exit_area_m2` field on imported 18 mm Estes motors is currently an
+inert Phase-2 placeholder. With `ambient_pressure_correction = "constant"`,
+OpenBMP uses the thrust curve as-given. Unless a future pressure correction
+model consumes the value, it is documented as copied from the existing 18 mm
+C6 convention, not as a per-motor measured nozzle area.
+
+The Estes A8 RASP simfile at
+`https://www.thrustcurve.org/simfiles/5f4294d20002e90000000897/` was
+audited on 2026-04-27 and intentionally not imported: the file hash
+reproduced, but ThrustCurve's page/API did not expose a per-file license
+tag. Under `docs/data-provenance.md`, unclear license terms are rejected
+until resolved.
 
 ## `data/motors/estes-b4-eng-derived.toml`
 
@@ -380,34 +333,36 @@ source_title:     >-
   manufacturer-spec total impulse 5.0 N·s; the published RASP `.eng`
   thrust curve is transcribed verbatim into the OpenBMP motor TOML
   schema with a (0, 0) starting point prepended. The upstream file
-  is named "B4-4" (the B4 motor with the 4-second-delay variant);
-  the thrust profile is the B4 burn — delay timing is a downstream
-  ejection-charge concern OpenBMP's Phase-2 motor model does not
-  simulate. The B4 motor is one of the two motors Niskanen 2009
+  is named "B4-4", but the thrust profile is the B4 burn; delay and
+  ejection-charge behaviour are outside OpenBMP's Phase-2 motor
+  model. The B4 motor is one of the two motors Niskanen 2009
   Chapter 6 Table 6.1 tabulates against experimental, OpenRocket,
-  and RockSim apogees for the small-rocket benchmark; importing
-  this motor enables a second cross-tool validation point alongside
-  the existing C6 (Niskanen experimental B4 apogee = 64.0 m).
-source_authors:   John Coker (RASP file), Estes Industries (motor)
+  and RockSim apogees for the small-rocket benchmark; importing this
+  motor makes a future B4 scenario possible alongside the existing C6
+  validation case (Niskanen experimental B4 apogee = 64.0 m).
+source_authors:   Nicholas Domansky (RASP file), Estes Industries (motor)
 source_id:        ThrustCurve.org Estes B4 RASP simfile
 source_url:       https://www.thrustcurve.org/simfiles/5f4294d20002e90000000834/download/data.eng
 source_hash_sha256: e36ced570b2fc3baf5006236a311dfc1f10af8d26d2210a5c1c178ba2dbdb5be
-publication_date: 1994-09-17  # NAR certification date for the B4 motor class
+publication_date: 2014-12-02  # ThrustCurve simfile submission date
 methodology_reference: >-
-  RASP `.eng` thrust-curve format and the manufacturer's static-fire
-  calibration. NAR-certified per the National Association of
-  Rocketry's standardised motor-test procedure.
+  RASP `.eng` thrust-curve format. ThrustCurve identifies this
+  specific simfile as user-contributed with source tag `user` and
+  per-file license tag `PD`. The Estes B4 motor class is
+  NAR-certified, but this imported data file is not represented as a
+  cert-org source file.
 methodology_urls:
+  - https://www.thrustcurve.org/simfiles/5f4294d20002e90000000834/
+  - https://www.thrustcurve.org/info/contribute.html
   - https://www.thrustcurve.org/info/raspformat.html
   - https://www.thrustcurve.org/motors/Estes/B4/
   - https://openrocket.sourceforge.net/thesis.pdf
 license_or_terms: >-
-  ThrustCurve.org corpus is distributed under terms that permit
-  re-use with attribution and no warranty. The transcribed numerical
-  values are physical motor-test data from a NAR-certified motor;
-  no derivative works restrictions apply to the data points
-  themselves. OpenBMP credits the original RASP file contributor
-  (John Coker) and the manufacturer (Estes).
+  Public Domain, based on the ThrustCurve per-file license tag `PD`
+  for simfile `5f4294d20002e90000000834`. ThrustCurve's contribution
+  documentation defines Public Domain as the least restrictive class:
+  anyone may do anything with the file. OpenBMP credits the RASP file
+  contributor (Nicholas Domansky) and the manufacturer (Estes).
 retrieved_utc:    2026-04-27
 transformation:
   method: >-
@@ -424,7 +379,10 @@ transformation:
     last time exactly. The `specific_impulse_s = 86.54396931334008`
     field is back-solved from `I = m_p · g_0 · Isp` with the
     declared propellant mass and `g_0 = 9.80665` m/s² so the
-    Phase-2.6 Isp consistency check passes within 1e-3 relative.
+    Phase-2.6 Isp consistency check passes within 1e-3 relative. The
+    `exit_area_m2 = 0.0000159` field is copied from the existing
+    18 mm Estes C6 convention and is inert while
+    `ambient_pressure_correction = "constant"` is selected.
   script: none
 verification:
   method: >-
@@ -432,7 +390,8 @@ verification:
     via `SolidMotor::load_from_toml`, asserts the integrated impulse
     matches the declared `total_impulse_n_s` to 1e-12 relative, mass
     at burnout equals dry mass exactly, mass-rate ≤ 0 across the
-    burn, and bit-stable lookups across two evaluations.
+    burn, and bit-stable lookups across two evaluations. No B4
+    end-to-end apogee scenario has been authored yet.
   test:   crates/openbmp-propulsion/tests/regression.rs
   tolerance: >-
     Integrated impulse vs declared total: 1e-12 relative. Mass at
@@ -444,11 +403,12 @@ safety_review:
   reviewer: dmitri.arekhta
   decision: accepted
   notes: >-
-    Public motor data from a hobby motor (Estes B4) certified by the
-    NAR. Cross-references Niskanen 2009 Chapter 6 Table 6.1
-    experimental apogee (64.0 m). No export control or
-    manufacturer-proprietary restrictions; no operational vehicle
-    parameters.
+    Public-domain user-contributed simfile for the Estes B4 hobby
+    motor. The source is an 18 mm model-rocket motor curve and
+    cross-references Niskanen 2009 Chapter 6 Table 6.1 experimental
+    apogee (64.0 m) only as future validation context. No export
+    control or manufacturer-proprietary restrictions; no operational
+    vehicle parameters.
 ```
 
 ## Why fielded-motor curves are rejected unless explicitly transcribed

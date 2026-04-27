@@ -2,8 +2,8 @@
 
 L2 propulsion crate.
 
-**Status:** Phase 2 — synthetic solid motor + four NAR-certified
-Estes motors (A8, B4, C6, D12) shipped as `data/motors/*.toml`.
+**Status:** Phase 2 — synthetic solid motor + public Estes hobby
+motor files (B4, C6, D12) shipped as `data/motors/*.toml`.
 Liquid / hybrid / cold-gas variants land in Phase 3 alongside
 `EngineModel` and `EngineCluster`.
 
@@ -46,19 +46,19 @@ Thrust curves are tabulated and interpolated linearly with locked operand order.
 ## Validation
 
 `validated-toy` for the shipped synthetic motors (`textbook`,
-`d-class`); `checked` for the four ThrustCurve.org-derived Estes
-motors (A8, B4, C6, D12). The Phase-2.6 regression suite asserts
+`d-class`) and scenario-backed Estes C6/D12 cases; `checked` for
+the standalone B4 import. The Phase-2.6 regression suite asserts
 integrated impulse vs. declared total to 1e-12 relative,
 mass-at-burnout bit-equality with `dry_mass`, mass-rate ≤ 0
 everywhere, monotone mass decrease, thrust-at-grid-corner
 exact-equality, thrust-outside-window zero, and bit-stable lookups
-across two evaluations.
+across two evaluations for the parser-level decks it covers.
 
 ## Data Provenance
 
-Synthetic textbook motors plus four NAR-certified Estes hobby motors
-(A8, B4, C6, D12) derived from the public ThrustCurve.org RASP
-corpus, each with a SHA-256-pinned source digest in
+Synthetic textbook motors plus public Estes hobby motor files (B4,
+C6, D12) derived from ThrustCurve.org RASP data, each with a
+SHA-256-pinned source digest in
 `data/motors/provenance.md`. **Real fielded operational motor data
 is categorically rejected.**
 

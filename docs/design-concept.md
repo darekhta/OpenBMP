@@ -419,8 +419,8 @@ and any operational mission profile.
 - Synthetic solid motor in `openbmp-propulsion`: in-house RASP-shaped
   TOML thrust-curve format, piecewise-linear interpolation,
   impulse-weighted mass model. Shipped: synthetic textbook + D-class
-  motors plus four NAR-certified Estes motors (A8, B4, C6, D12)
-  derived from ThrustCurve.org with SHA-256-pinned provenance.
+  motors plus public Estes hobby motor files (B4, C6, D12) derived
+  from ThrustCurve.org with SHA-256-pinned provenance.
 - Synthetic sensors in `openbmp-sensors`: `IdealStateSensor`,
   `SyntheticImu` (IEEE 952 five-component noise model), and
   `SyntheticBarometer` (Gaussian + OU bias drift).

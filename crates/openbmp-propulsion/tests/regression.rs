@@ -1,17 +1,15 @@
 //! Phase 2.6.B regression — synthetic solid-motor data pins.
 //!
-//! Both shipped motor files
-//! (`data/motors/synthetic-solid-textbook.toml` and
-//! `data/motors/synthetic-solid-d-class.toml`) parse against
-//! Schema 1, integrate to their declared `total_impulse_n_s` to bit
-//! precision, satisfy the impulse-weighted mass-flow conservation
-//! identity (`m(burn_duration) == dry_mass`), and are bit-stable
-//! across two evaluations of the same query.
+//! Shipped solid-motor data files parse against Schema 1, integrate to
+//! their declared `total_impulse_n_s` to bit precision, satisfy the
+//! impulse-weighted mass-flow conservation identity
+//! (`m(burn_duration) == dry_mass`), and are bit-stable across two
+//! evaluations of the same query.
 //!
 //! These tests are the same shape the Phase-2.10
 //! `openbmp check-provenance` walk will perform; we do them locally
-//! now so a typo in either deck file or in the `Motor` mass-model
-//! arithmetic breaks CI before release.
+//! now so a typo in a deck file or in the `Motor` mass-model arithmetic
+//! breaks CI before release.
 
 #![allow(
     clippy::expect_used,
@@ -33,11 +31,6 @@ const D_CLASS: &str = include_str!(concat!(
     "/../../data/motors/synthetic-solid-d-class.toml"
 ));
 
-const ESTES_A8: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../data/motors/estes-a8-eng-derived.toml"
-));
-
 const ESTES_B4: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../data/motors/estes-b4-eng-derived.toml"
@@ -54,10 +47,6 @@ fn shipped_motors() -> Vec<(&'static str, SolidMotor)> {
             SolidMotor::load_from_str(D_CLASS).expect("d-class deck must parse"),
         ),
         (
-            "estes-a8-eng-derived",
-            SolidMotor::load_from_str(ESTES_A8).expect("Estes A8 deck must parse"),
-        ),
-        (
             "estes-b4-eng-derived",
             SolidMotor::load_from_str(ESTES_B4).expect("Estes B4 deck must parse"),
         ),
@@ -67,7 +56,7 @@ fn shipped_motors() -> Vec<(&'static str, SolidMotor)> {
 #[test]
 fn every_shipped_deck_parses_and_carries_expected_metadata() {
     let motors = shipped_motors();
-    assert_eq!(motors.len(), 4);
+    assert_eq!(motors.len(), 3);
     for (name, m) in &motors {
         assert_eq!(m.meta().name, *name);
         assert!(!m.meta().provenance.is_empty(), "{name}: provenance empty");
