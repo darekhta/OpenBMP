@@ -1,0 +1,56 @@
+# Phase-3.3 assembly-tree parser fixture exercising the
+# mass-consistency check.
+#
+# `mass_kg = 0.085` declared in the flat block disagrees with the
+# sum of body dry masses (0.080 + 0.005 = 0.085 — but here we set
+# the flat to 0.090 to deliberately cause the consistency check to
+# fail). Synthetic; not a benchmark.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "assembly-mass-mismatch-fixture"
+description = "Phase-3.3 parser fixture; flat mass disagrees with assembly body sum. Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 1.0
+dt_s    = 0.01
+seed    = 0xdead_beef
+
+[vehicle]
+kind                     = "point_mass"
+mass_kg                  = 0.090
+initial_position_eci_m   = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "two-body-mismatch"
+
+[[vehicle.assembly.bodies]]
+id           = "main"
+geometry     = { kind = "cylinder", length_m = 0.56, diameter_m = 0.029 }
+dry_mass_kg  = 0.080
+
+[[vehicle.assembly.bodies]]
+id           = "fairing"
+geometry     = { kind = "cone", length_m = 0.05, base_diameter_m = 0.029 }
+dry_mass_kg  = 0.005
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/fixture.csv"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true

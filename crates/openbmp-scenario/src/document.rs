@@ -290,6 +290,17 @@ pub struct VehicleConfig {
     /// happens at kernel construction via
     /// `MassProperties::require_valid`.
     pub inertia_tensor_body_kg_m2: Option<[[f64; 3]; 3]>,
+    /// Optional declarative vehicle composition tree (Phase 3.3+).
+    ///
+    /// When present, the runner builds an
+    /// [`openbmp_vehicle::BasicAssembly`] from the declared bodies
+    /// and resolves it into the kernel's flat model lists. The
+    /// legacy `mass_kg` and `inertia_tensor_body_kg_m2` flat fields
+    /// must agree with the assembly's summed body masses / inertias
+    /// — mutual consistency rather than mutual exclusivity, so
+    /// existing scenarios can opt into the assembly tree without
+    /// removing fields.
+    pub assembly: Option<AssemblyConfig>,
 }
 
 impl VehicleConfig {
@@ -362,6 +373,9 @@ impl VehicleConfig {
                     });
                 }
             }
+        }
+        if let Some(assembly) = &self.assembly {
+            assembly.validate(self.mass_kg)?;
         }
         Ok(())
     }
@@ -1357,6 +1371,185 @@ impl PhaseTransitionConfig {
         require_non_empty(&format!("mission.transitions[{index}].from"), &self.from)?;
         require_non_empty(&format!("mission.transitions[{index}].to"), &self.to)?;
         require_non_empty(&format!("mission.transitions[{index}].event"), &self.event)?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------
+// Vehicle assembly block (Phase 3.3)
+// ---------------------------------------------------------------------
+
+/// Top-level `[vehicle.assembly]` block.
+///
+/// Declares the vehicle as a tree of bodies. The Phase-3.3 sub-trees
+/// for `effectors` / `engines` / `tanks` are reserved-but-rejected:
+/// declarations parse via serde but the validator surfaces a typed
+/// `UnsupportedAssemblyChild` error pointing at the future phase
+/// that will land them.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AssemblyConfig {
+    /// Optional assembly id. Defaults to FNV(scenario.meta.name)
+    /// when absent (resolved at runtime).
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Bodies in scenario-declared order.
+    #[serde(default)]
+    pub bodies: Vec<AssemblyBodyConfig>,
+    /// Phase-3.4 deferred — rejected at parse time when non-empty.
+    #[serde(default)]
+    pub effectors: Vec<toml::Value>,
+    /// Phase-3.6 deferred.
+    #[serde(default)]
+    pub engines: Vec<toml::Value>,
+    /// Phase-3.7 deferred.
+    #[serde(default)]
+    pub tanks: Vec<toml::Value>,
+}
+
+impl AssemblyConfig {
+    /// Validate the assembly block. `flat_mass_kg` is the
+    /// `[vehicle].mass_kg` field used for cross-consistency
+    /// checking; the validator requires the sum of body dry masses
+    /// to equal `flat_mass_kg` within 1e-9 tolerance.
+    pub(crate) fn validate(&self, flat_mass_kg: f64) -> Result<(), ScenarioError> {
+        if self.bodies.is_empty() {
+            return Err(ScenarioError::EmptyList {
+                field: "vehicle.assembly.bodies".to_owned(),
+            });
+        }
+        let mut seen_ids: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for (index, body) in self.bodies.iter().enumerate() {
+            body.validate(index)?;
+            if !seen_ids.insert(body.id.as_str()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("vehicle.assembly.bodies[{index}].id"),
+                    value: body.id.clone(),
+                });
+            }
+        }
+        let body_mass_sum: f64 = self.bodies.iter().map(|b| b.dry_mass_kg).sum();
+        if (body_mass_sum - flat_mass_kg).abs() > 1.0e-9 {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "vehicle.mass_kg".to_owned(),
+                value_a: format!("{flat_mass_kg}"),
+                field_b: "vehicle.assembly.bodies[*].dry_mass_kg sum".to_owned(),
+                value_b: format!("{body_mass_sum}"),
+            });
+        }
+        if !self.effectors.is_empty() {
+            return Err(ScenarioError::UnsupportedAssemblyChild {
+                kind: "effectors".to_owned(),
+                deferred_to: "Phase 3.4".to_owned(),
+            });
+        }
+        if !self.engines.is_empty() {
+            return Err(ScenarioError::UnsupportedAssemblyChild {
+                kind: "engines".to_owned(),
+                deferred_to: "Phase 3.6".to_owned(),
+            });
+        }
+        if !self.tanks.is_empty() {
+            return Err(ScenarioError::UnsupportedAssemblyChild {
+                kind: "tanks".to_owned(),
+                deferred_to: "Phase 3.7".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// One declared body within `[vehicle.assembly]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AssemblyBodyConfig {
+    /// Stable body id (`snake_case` scenario-text identifier).
+    pub id: String,
+    /// Geometry descriptor.
+    pub geometry: BodyGeometryConfig,
+    /// Dry mass (kg). Strictly positive, finite.
+    pub dry_mass_kg: f64,
+    /// Body-frame center of mass. Defaults to origin.
+    #[serde(default = "zero_vec3_meters")]
+    pub dry_cg_body_m: [f64; 3],
+    /// Body-frame inertia tensor (kg·m²). Required when the
+    /// scenario uses `kind = "rigid_body"`; ignored for point-mass.
+    #[serde(default)]
+    pub dry_inertia_body_kg_m2: Option<[[f64; 3]; 3]>,
+}
+
+const fn zero_vec3_meters() -> [f64; 3] {
+    [0.0, 0.0, 0.0]
+}
+
+impl AssemblyBodyConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("vehicle.assembly.bodies[{index}].id"), &self.id)?;
+        require_finite(
+            &format!("vehicle.assembly.bodies[{index}].dry_mass_kg"),
+            self.dry_mass_kg,
+        )?;
+        require_positive(
+            &format!("vehicle.assembly.bodies[{index}].dry_mass_kg"),
+            self.dry_mass_kg,
+        )?;
+        require_finite_array(
+            &format!("vehicle.assembly.bodies[{index}].dry_cg_body_m"),
+            &self.dry_cg_body_m,
+        )?;
+        self.geometry.validate(index)?;
+        if let Some(inertia) = &self.dry_inertia_body_kg_m2 {
+            validate_inertia_tensor(inertia)?;
+        }
+        Ok(())
+    }
+}
+
+/// Body geometry descriptor — tagged enum dispatched on `kind`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BodyGeometryConfig {
+    /// Right circular cylinder.
+    Cylinder {
+        /// Length (m).
+        length_m: f64,
+        /// Diameter (m).
+        diameter_m: f64,
+    },
+    /// Right circular cone.
+    Cone {
+        /// Length / height (m).
+        length_m: f64,
+        /// Base diameter (m).
+        base_diameter_m: f64,
+    },
+    /// Pre-computed reference geometry.
+    Reference {
+        /// Reference length (m).
+        length_m: f64,
+        /// Reference area (m²).
+        area_m2: f64,
+    },
+}
+
+impl BodyGeometryConfig {
+    fn validate(&self, body_index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.bodies[{body_index}].geometry.{field}");
+        let (a_name, a, b_name, b) = match self {
+            Self::Cylinder {
+                length_m,
+                diameter_m,
+            } => ("length_m", *length_m, "diameter_m", *diameter_m),
+            Self::Cone {
+                length_m,
+                base_diameter_m,
+            } => ("length_m", *length_m, "base_diameter_m", *base_diameter_m),
+            Self::Reference { length_m, area_m2 } => ("length_m", *length_m, "area_m2", *area_m2),
+        };
+        require_finite(&path(a_name), a)?;
+        require_positive(&path(a_name), a)?;
+        require_finite(&path(b_name), b)?;
+        require_positive(&path(b_name), b)?;
         Ok(())
     }
 }

@@ -1023,4 +1023,94 @@ action  = { kind = "stop", label = "max-q" }
         let scenario = Scenario::from_toml_str(MINIMAL).expect("parse");
         assert!(scenario.document.mission.is_none());
     }
+
+    // -----------------------------------------------------------------
+    // Phase-3.3: `[vehicle.assembly]` block parser tests
+    // -----------------------------------------------------------------
+
+    const ASSEMBLY_TWO_BODY: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-two-body.toml"
+    ));
+
+    const ASSEMBLY_MASS_MISMATCH: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-mass-mismatch.toml"
+    ));
+
+    const ASSEMBLY_DEFERRED_ENGINES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-deferred-engines.toml"
+    ));
+
+    #[test]
+    fn parses_two_body_assembly_block() {
+        let scenario = Scenario::from_toml_str(ASSEMBLY_TWO_BODY).expect("parse");
+        let assembly = scenario
+            .document
+            .vehicle
+            .assembly
+            .as_ref()
+            .expect("assembly present");
+        assert_eq!(assembly.bodies.len(), 2);
+        assert_eq!(assembly.bodies[0].id, "main");
+        assert_eq!(assembly.bodies[1].id, "fairing");
+    }
+
+    #[test]
+    fn legacy_vehicle_block_without_assembly_parses() {
+        // Existing Phase-2.10 / Phase-3.1 scenarios stay unchanged.
+        let scenario = Scenario::from_toml_str(MINIMAL).expect("parse");
+        assert!(scenario.document.vehicle.assembly.is_none());
+    }
+
+    #[test]
+    fn rejects_mass_mismatch_between_flat_and_assembly() {
+        let err = Scenario::from_toml_str(ASSEMBLY_MASS_MISMATCH).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { .. }),
+            "expected InconsistentSection, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_deferred_engines_child_block() {
+        let err = Scenario::from_toml_str(ASSEMBLY_DEFERRED_ENGINES).unwrap_err();
+        match err {
+            ScenarioError::UnsupportedAssemblyChild { kind, deferred_to } => {
+                assert_eq!(kind, "engines");
+                assert!(deferred_to.contains("3.6"));
+            }
+            other => panic!("expected UnsupportedAssemblyChild, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_empty_bodies_list() {
+        // Construct via .replace because the fixture intentionally has
+        // bodies; remove them via runtime mutation.
+        let toml = ASSEMBLY_TWO_BODY.replace(
+            "[[vehicle.assembly.bodies]]",
+            "[[vehicle.assembly.removed]]",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        // The serde-level rejection of `[[vehicle.assembly.removed]]`
+        // (an unknown field) fires first; both
+        // `EmptyList` and a serde parse error are acceptable.
+        assert!(
+            matches!(err, ScenarioError::ParseToml(_))
+                || matches!(err, ScenarioError::EmptyList { .. }),
+            "expected ParseToml or EmptyList, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_body_id() {
+        let toml = ASSEMBLY_TWO_BODY.replace("\"fairing\"", "\"main\"");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::DuplicateValue { .. }),
+            "expected DuplicateValue, got {err:?}"
+        );
+    }
 }

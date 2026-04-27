@@ -193,4 +193,14 @@ pub enum ScenarioError {
         /// Human-readable description from the graph validator.
         reason: String,
     },
+    /// A `[vehicle.assembly]` child block (effectors, engines, tanks)
+    /// is reserved for a future phase and rejected at parse time in
+    /// Phase 3.3.
+    #[error("vehicle.assembly child {kind} is reserved for {deferred_to}")]
+    UnsupportedAssemblyChild {
+        /// Child kind string (`"effectors"`, `"engines"`, `"tanks"`).
+        kind: String,
+        /// Future phase that will land this child.
+        deferred_to: String,
+    },
 }

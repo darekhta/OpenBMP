@@ -27,10 +27,11 @@ pub mod scenario;
 pub mod solver;
 
 pub use document::{
-    AeroConfig, AtmosphereConfig, BatchConfig, EnvironmentConfig, EpochConfig, EventActionConfig,
-    EventConfig, EventTriggerConfig, ForcesConfig, FramesConfig, LocalOriginConfig, MetaConfig,
-    MissionConfig, MotorConfig, OpenBmpHeader, PhaseConfig, PhaseTransitionConfig,
-    PropulsionConfig, SUPPORTED_SCENARIO_VERSION, ScenarioDocument, SensorConfig, TelemetryConfig,
+    AeroConfig, AssemblyBodyConfig, AssemblyConfig, AtmosphereConfig, BatchConfig,
+    BodyGeometryConfig, EnvironmentConfig, EpochConfig, EventActionConfig, EventConfig,
+    EventTriggerConfig, ForcesConfig, FramesConfig, LocalOriginConfig, MetaConfig, MissionConfig,
+    MotorConfig, OpenBmpHeader, PhaseConfig, PhaseTransitionConfig, PropulsionConfig,
+    SUPPORTED_SCENARIO_VERSION, ScenarioDocument, SensorConfig, TelemetryConfig,
     TelemetryOutputConfig, TimeConfig, ValidationConfig, VehicleConfig, WGS84_J2_DEFAULT,
     WindConfig,
 };
