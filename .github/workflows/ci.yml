@@ -200,12 +200,22 @@ jobs:
   # ----------------------------------------------------------------------
   # Determinism gate
   #
-  # The headline policy gate. Runs the canonical analytic-toy scenario
-  # twice on x86_64-unknown-linux-gnu and asserts byte-identical
-  # Parquet output across the two runs. Then re-runs once with a noisy
-  # tracing subscriber redirected to /dev/null and diffs again — this
-  # verifies tracing-emitted bytes do not leak into deterministic
-  # output (the determinism contract per docs/verification.md).
+  # The headline policy gate on x86_64-unknown-linux-gnu. Two
+  # canonical scenarios are gated:
+  #
+  # 1. `scenarios/analytic-toy/constant-acceleration-drop.toml` —
+  #    Phase-1 byte-stable analytic-toy. Runs three times: two with
+  #    clean tracing, one with `RUST_LOG=trace` + stderr redirected
+  #    to /dev/null. All three Parquet+CSV outputs must be
+  #    byte-identical (the no-tracing-leak contract).
+  #
+  # 2. `scenarios/sounding-rocket/niskanen-2009-chapter6.toml` —
+  #    Phase-2.10 canonical sounding-rocket scenario. Runs twice with
+  #    clean tracing; the Parquet outputs (including the SHA-256
+  #    schema metadata Phase-2.11.B records) must be byte-identical.
+  #
+  # Cross-platform matrix (macos/windows) runs the same scenarios as
+  # state-stable smoke tests via `cargo test -p openbmp-cli --tests`.
   # ----------------------------------------------------------------------
   determinism:
     name: determinism-gate
@@ -219,7 +229,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.1
       - name: Build release binary
         run: cargo build --release --workspace --locked
-      - name: Run canonical scenario twice (clean tracing)
+      # ----- Analytic-toy byte-stability gate --------------------------
+      - name: Run analytic-toy twice (clean tracing)
         run: |
           mkdir -p target/det/run1 target/det/run2
           ./target/release/openbmp run \
@@ -230,14 +241,14 @@ jobs:
               scenarios/analytic-toy/constant-acceleration-drop.toml \
               --output-parquet target/det/run2/drop.parquet \
               --output-csv     target/det/run2/drop.csv
-      - name: Diff Parquet bytes
+      - name: Diff analytic-toy Parquet bytes
         run: |
           ./target/release/openbmp diff \
               target/det/run1/drop.parquet \
               target/det/run2/drop.parquet
-      - name: Diff CSV bytes
+      - name: Diff analytic-toy CSV bytes
         run: diff -q target/det/run1/drop.csv target/det/run2/drop.csv
-      - name: Run again with noisy tracing redirected (no-leak verification)
+      - name: Run analytic-toy with noisy tracing redirected (no-leak verification)
         run: |
           mkdir -p target/det/run3
           RUST_LOG=trace ./target/release/openbmp -ttt run \
@@ -245,12 +256,39 @@ jobs:
               --output-parquet target/det/run3/drop.parquet \
               --output-csv     target/det/run3/drop.csv \
               2> /dev/null
-      - name: Diff after tracing redirect
+      - name: Diff analytic-toy after tracing redirect
         run: |
           ./target/release/openbmp diff \
               target/det/run1/drop.parquet \
               target/det/run3/drop.parquet
           diff -q target/det/run1/drop.csv target/det/run3/drop.csv
+      # ----- Niskanen sounding-rocket byte-stability gate --------------
+      - name: Run Niskanen scenario twice (clean tracing)
+        run: |
+          mkdir -p target/det/niskanen1 target/det/niskanen2
+          ./target/release/openbmp run \
+              scenarios/sounding-rocket/niskanen-2009-chapter6.toml \
+              --output-parquet target/det/niskanen1/niskanen.parquet
+          ./target/release/openbmp run \
+              scenarios/sounding-rocket/niskanen-2009-chapter6.toml \
+              --output-parquet target/det/niskanen2/niskanen.parquet
+      - name: Diff Niskanen Parquet bytes
+        run: |
+          diff -q \
+              target/det/niskanen1/niskanen.parquet \
+              target/det/niskanen2/niskanen.parquet
+      - name: Run Niskanen with noisy tracing redirected (no-leak verification)
+        run: |
+          mkdir -p target/det/niskanen3
+          RUST_LOG=trace ./target/release/openbmp -ttt run \
+              scenarios/sounding-rocket/niskanen-2009-chapter6.toml \
+              --output-parquet target/det/niskanen3/niskanen.parquet \
+              2> /dev/null
+      - name: Diff Niskanen after tracing redirect
+        run: |
+          diff -q \
+              target/det/niskanen1/niskanen.parquet \
+              target/det/niskanen3/niskanen.parquet
 
   # ----------------------------------------------------------------------
   # Cross-platform state-stable gate
