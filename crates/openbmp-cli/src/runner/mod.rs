@@ -1,0 +1,106 @@
+//! Scenario → kernel → telemetry dispatcher.
+//!
+//! Three runner paths, selected by scenario shape:
+//!
+//! - [`phase1`] — byte-stable analytic-toy: `vehicle.kind = "point_mass"`
+//!   with `gravity = "constant"`, no Phase-2 structured blocks, and
+//!   `forces = ["gravity"]`. Telemetry layout is the seven-channel
+//!   schema pinned by `crates/openbmp-cli/tests/expected/`.
+//! - [`phase2_point_mass`] — Phase-2 point-mass with Phase-2.10
+//!   structured blocks: `[aero]`, `[propulsion.motor]`, USSA76
+//!   atmosphere. Force-model order is the scenario-declared
+//!   [`forces.models`](openbmp_scenario::ForcesConfig) order, which is
+//!   the determinism contract.
+//! - `vehicle.kind = "rigid_body"` — fail-closed in 2.11.A. The rigid
+//!   body kernel is wired by Phase 3 once rigid-body adapters and the
+//!   `[vehicle].inertia_tensor_body_kg_m2` / `cg_body_m` scenario
+//!   fields land.
+//!
+//! Pin verification: when the scenario references external files
+//! (`[aero].deck`, `[propulsion.motor].file`,
+//! `[sensors.<name>].file`), the dispatcher calls
+//! [`Scenario::resolved_files`] before any kernel state advances. A
+//! malformed pin, missing file, or mismatch fails closed with a
+//! [`CliError::Scenario`] (exit code 2).
+
+pub mod phase1;
+pub mod phase2_point_mass;
+
+use openbmp_scenario::Scenario;
+use openbmp_sim::StopReason;
+use openbmp_telemetry::TelemetryTable;
+
+use crate::error::CliError;
+
+pub use phase1::Phase1Kernel;
+
+/// Outcome of a scenario run.
+#[derive(Debug)]
+pub struct RunOutcome {
+    /// Telemetry table populated step-by-step.
+    pub table: TelemetryTable,
+    /// Stop reason reported by the kernel.
+    pub stop_reason: StopReason,
+    /// Final step index.
+    pub final_step: u64,
+    /// Final simulation time in seconds.
+    pub final_time_s: f64,
+}
+
+/// Run a scenario through the appropriate kernel path.
+///
+/// # Errors
+///
+/// Returns the wrapped error from whichever runner path matches:
+///
+/// - [`CliError::Scenario`] for parse / SHA-256 pin failures (raised
+///   before kernel construction).
+/// - [`CliError::UnsupportedScenario`] when the scenario shape does
+///   not match any wired runner path.
+/// - [`CliError::Aero`], [`CliError::Motor`], [`CliError::Env`] for
+///   loader-side failures inside the Phase-2 path.
+/// - [`CliError::Simulation`] / [`CliError::Telemetry`] for kernel- or
+///   telemetry-side failures.
+pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
+    // Pin verification fires before kernel construction so a bad
+    // SHA-256 cannot reach the integrator.
+    let _ = scenario.resolved_files()?;
+
+    let document = &scenario.document;
+
+    if document.vehicle.kind == "rigid_body" {
+        return Err(CliError::UnsupportedScenario {
+            what: "vehicle.kind = \"rigid_body\" — rigid-body runner pending Phase 3 \
+                   rigid mass-property scenario fields and rigid force adapters"
+                .to_owned(),
+        });
+    }
+
+    if is_phase1_byte_stable_shape(scenario) {
+        let outcome = phase1::run(scenario)?;
+        return Ok(outcome);
+    }
+
+    phase2_point_mass::run(scenario)
+}
+
+/// Phase-1 byte-stable analytic-toy shape detector.
+///
+/// True iff the scenario uses only the byte-stable analytic-toy
+/// surface: `point_mass` vehicle, `constant` gravity, `none` for
+/// atmosphere/wind, single-element `["gravity"]` force list, and no
+/// Phase-2 structured blocks. Anything else routes through
+/// [`phase2_point_mass`] (or fails closed for `rigid_body`).
+fn is_phase1_byte_stable_shape(scenario: &Scenario) -> bool {
+    let document = &scenario.document;
+    document.vehicle.kind == "point_mass"
+        && document.environment.gravity == "constant"
+        && document.environment.atmosphere == "none"
+        && document.environment.wind == "none"
+        && document.forces.models.len() == 1
+        && document.forces.models[0] == "gravity"
+        && document.aero.is_none()
+        && document.propulsion.is_none()
+        && document.wind.is_none()
+        && document.atmosphere.is_none()
+}

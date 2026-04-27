@@ -23,11 +23,16 @@ bridge  = []
 [dependencies]
 arrow              = { workspace = true }
 clap               = { workspace = true }
+nalgebra           = { workspace = true }
+openbmp-aero       = { workspace = true }
 openbmp-core       = { workspace = true }
+openbmp-env        = { workspace = true }
+openbmp-propulsion = { workspace = true }
 openbmp-scenario   = { workspace = true }
 openbmp-sim        = { workspace = true }
 openbmp-state      = { workspace = true }
 openbmp-telemetry  = { workspace = true }
+openbmp-vehicle    = { workspace = true }
 parquet            = { workspace = true }
 thiserror          = { workspace = true }
 tracing            = { workspace = true }

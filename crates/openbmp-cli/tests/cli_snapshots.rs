@@ -301,6 +301,103 @@ fn run_rejects_negative_gravity_magnitude() {
 }
 
 #[test]
+fn run_on_niskanen_with_corrupt_pin_fails_before_simulation() {
+    // Phase-2.11.A: SHA-256 pin verification fires *before* the kernel
+    // is constructed. A bad pin must surface as a scenario error with
+    // exit-code 2 ("SHA-256 mismatch"), never as a partial-success run
+    // that silently dropped the pin check.
+    let temp = tempdir("niskanen_run_badpin");
+    let staged = temp.path().join("scenarios/sounding-rocket/scenario.toml");
+    fs::create_dir_all(staged.parent().expect("scenario parent")).expect("scenario dir");
+    let canonical = workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6.toml");
+    let original = fs::read_to_string(&canonical).expect("read canonical");
+    let bad_pin = "0".repeat(64);
+    let rewritten = original.replace(
+        "deck_sha256  = \"cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27\"",
+        &format!("deck_sha256  = \"{bad_pin}\""),
+    );
+    assert_ne!(rewritten, original, "pin field not found in canonical");
+    fs::write(&staged, rewritten).expect("write staged");
+
+    // Materialise the referenced files via copy so the resolver can
+    // read them from `<temp>/scenarios/sounding-rocket/../../data/...`.
+    let aero_dir = temp.path().join("data/aero");
+    let motor_dir = temp.path().join("data/motors");
+    fs::create_dir_all(&aero_dir).expect("aero dir");
+    fs::create_dir_all(&motor_dir).expect("motor dir");
+    fs::copy(
+        workspace_root().join("data/aero/synthetic-niskanen-ch6-rocket.toml"),
+        aero_dir.join("synthetic-niskanen-ch6-rocket.toml"),
+    )
+    .expect("copy deck");
+    fs::copy(
+        workspace_root().join("data/motors/estes-c6-eng-derived.toml"),
+        motor_dir.join("estes-c6-eng-derived.toml"),
+    )
+    .expect("copy motor");
+
+    let parquet = temp.path().join("out.parquet");
+    let mut cmd = openbmp();
+    cmd.arg("run")
+        .arg(&staged)
+        .arg("--output-parquet")
+        .arg(&parquet);
+    let assert = cmd.assert();
+    let output = assert.get_output();
+    assert!(
+        !output.status.success(),
+        "exit status should be non-zero, was {:?}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("SHA-256 mismatch"),
+        "stderr should explain the failure, got: {stderr}"
+    );
+    assert!(
+        !parquet.exists(),
+        "parquet must not be written when pin verification fails"
+    );
+}
+
+#[test]
+fn run_on_rigid_body_scenario_fails_with_unsupported() {
+    // Phase-2.11.A: `vehicle.kind = "rigid_body"` is rejected closed
+    // until Phase 3 ships rigid mass-property scenario fields and
+    // rigid force adapters. Verify the diagnostic surfaces clearly.
+    let temp = tempdir("rigid_body_unsupported");
+    let staged = temp.path().join("scenario.toml");
+    let canonical = workspace_root().join("scenarios/analytic-toy/constant-acceleration-drop.toml");
+    let original = fs::read_to_string(&canonical).expect("read canonical");
+    // Convert the analytic-toy point-mass scenario to a rigid_body
+    // shape just enough to trip the runner's vehicle-kind dispatch.
+    let rewritten = original
+        .replace("kind = \"point_mass\"", "kind = \"rigid_body\"")
+        .replace(
+            "initial_velocity_eci_m_s = [0.0, 0.0, 0.0]",
+            "initial_velocity_eci_m_s = [0.0, 0.0, 0.0]\n\
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]\n\
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]",
+        );
+    fs::write(&staged, rewritten).expect("write staged");
+
+    let mut cmd = openbmp();
+    cmd.arg("run").arg(&staged);
+    let assert = cmd.assert();
+    let output = assert.get_output();
+    assert!(
+        !output.status.success(),
+        "exit status should be non-zero, was {:?}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("rigid_body") && stderr.contains("Phase 3"),
+        "stderr should explain rigid_body is deferred, got: {stderr}"
+    );
+}
+
+#[test]
 fn diff_reports_identical_for_self_compare() {
     let temp = tempdir("diff_identical");
     let staged = temp.path().join("scenario.toml");

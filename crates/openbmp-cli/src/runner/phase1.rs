@@ -1,8 +1,5 @@
-//! Scenario → kernel → telemetry adapter for the Phase-1 CLI.
-//!
-//! This module is the only place that knows how to assemble a
-//! [`SimulationKernel`] from a parsed [`Scenario`]. The Phase-1.7
-//! adapter is intentionally narrow.
+//! Scenario → kernel → telemetry adapter for the byte-stable Phase-1
+//! analytic-toy path.
 //!
 //! Accepted scenario shape:
 //!
@@ -11,13 +8,18 @@
 //! - `environment.atmosphere = "none"`
 //! - `environment.wind = "none"`
 //! - `forces = ["gravity"]`
+//! - no `[aero]` / `[propulsion]` / `[wind]` / `[atmosphere]` blocks
 //!
-//! Anything else is rejected with [`CliError::UnsupportedScenario`].
-//! Phase-2 broadens the surface.
+//! Phase-2 scenarios that declare any of the structured Phase-2.10
+//! blocks (or use `vehicle.kind = "rigid_body"`) are routed through
+//! [`crate::runner::phase2_point_mass`] (or rejected with
+//! `UnsupportedScenario` for `rigid_body`). This module is the
+//! byte-stable analytic-toy runner; do not extend it without
+//! updating the Phase-1 byte-stability baseline.
 //!
-//! The runner records every kernel step into a [`TelemetryTable`] with
-//! seven channels: `position_x_m`, `position_y_m`, `position_z_m`
-//! (frame `ECI`), `velocity_x_m_s`, `velocity_y_m_s`, `velocity_z_m_s`
+//! Records every kernel step into a [`TelemetryTable`] with seven
+//! channels: `position_x_m`, `position_y_m`, `position_z_m` (frame
+//! `ECI`), `velocity_x_m_s`, `velocity_y_m_s`, `velocity_z_m_s`
 //! (frame `ECI`), and `mass_kg`. Step `0` is the initial state.
 //!
 //! Determinism: the runner only feeds the kernel; it does not reorder
@@ -37,6 +39,8 @@ use uom::si::mass::kilogram;
 
 use crate::error::CliError;
 
+use crate::runner::RunOutcome;
+
 /// Concrete kernel type assembled by the Phase-1 runner.
 pub type Phase1Kernel = SimulationKernel<
     PointMassState,
@@ -46,19 +50,6 @@ pub type Phase1Kernel = SimulationKernel<
     NullEnvironment,
     EndTime,
 >;
-
-/// Outcome of a scenario run.
-#[derive(Debug)]
-pub struct RunOutcome {
-    /// Telemetry table populated step-by-step.
-    pub table: TelemetryTable,
-    /// Stop reason reported by the kernel.
-    pub stop_reason: StopReason,
-    /// Final step index.
-    pub final_step: u64,
-    /// Final simulation time in seconds.
-    pub final_time_s: f64,
-}
 
 #[derive(Debug)]
 struct Phase1TelemetryChannels {
@@ -132,16 +123,15 @@ impl Phase1TelemetryChannels {
 ///
 /// # Errors
 ///
-/// Returns [`CliError::UnsupportedScenario`] when the scenario uses a
-/// model the Phase-1 runner does not yet wire (any vehicle other than
-/// `point_mass`, any non-`constant` gravity, anything but `none` for
-/// atmosphere or wind, or any force list other than `["gravity"]`).
-/// Returns [`CliError::Simulation`] when the kernel rejects the
-/// configuration (invalid `dt`, invalid initial state, dirty FP env).
+/// Returns [`CliError::UnsupportedScenario`] when the scenario shape
+/// does not match the byte-stable analytic-toy contract documented in
+/// the module header. Returns [`CliError::Simulation`] when the kernel
+/// rejects the configuration (invalid `dt`, invalid initial state,
+/// dirty FP env).
 pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
     let document = &scenario.document;
 
-    // Vehicle: only `point_mass` is wired in Phase 1.
+    // Vehicle: only `point_mass` is wired by the analytic-toy runner.
     if document.vehicle.kind != "point_mass" {
         return Err(CliError::UnsupportedScenario {
             what: format!("vehicle.kind = {}", document.vehicle.kind),
@@ -172,6 +162,24 @@ pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
     if document.forces.models.len() != 1 || document.forces.models[0] != "gravity" {
         return Err(CliError::UnsupportedScenario {
             what: format!("forces.models = {:?}", document.forces.models),
+        });
+    }
+
+    // Phase-2 structured blocks must be absent on the analytic-toy
+    // path. Any of them present routes through Phase-2 dispatch.
+    if document.aero.is_some() {
+        return Err(CliError::UnsupportedScenario {
+            what: "[aero] block present (Phase-2 path)".to_owned(),
+        });
+    }
+    if document.propulsion.is_some() {
+        return Err(CliError::UnsupportedScenario {
+            what: "[propulsion] block present (Phase-2 path)".to_owned(),
+        });
+    }
+    if document.wind.is_some() || document.atmosphere.is_some() {
+        return Err(CliError::UnsupportedScenario {
+            what: "[wind] / [atmosphere] block present (Phase-2 path)".to_owned(),
         });
     }
 

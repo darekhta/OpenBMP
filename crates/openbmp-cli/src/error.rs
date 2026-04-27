@@ -5,6 +5,9 @@
 
 use std::path::PathBuf;
 
+use openbmp_aero::AeroError;
+use openbmp_env::EnvError;
+use openbmp_propulsion::MotorError;
 use openbmp_scenario::ScenarioError;
 use openbmp_sim::SimulationError;
 use openbmp_telemetry::TelemetryError;
@@ -50,6 +53,15 @@ pub enum CliError {
     /// An Arrow read failed.
     #[error("arrow read error")]
     Arrow(#[from] arrow::error::ArrowError),
+    /// An aerodynamic-deck loader or sample evaluation failed.
+    #[error("aerodynamic deck error")]
+    Aero(#[from] AeroError),
+    /// A motor-file loader or thrust-curve evaluation failed.
+    #[error("motor error")]
+    Motor(#[from] MotorError),
+    /// An environment-model construction or evaluation failed.
+    #[error("environment error")]
+    Env(#[from] EnvError),
 }
 
 impl CliError {
@@ -62,7 +74,11 @@ impl CliError {
     pub const fn exit_code(&self) -> u8 {
         match self {
             Self::Diff { .. } => 1,
-            Self::Scenario(_) | Self::UnsupportedScenario { .. } => 2,
+            Self::Scenario(_)
+            | Self::UnsupportedScenario { .. }
+            | Self::Aero(_)
+            | Self::Motor(_)
+            | Self::Env(_) => 2,
             Self::Io { .. } => 3,
             _ => 4,
         }
