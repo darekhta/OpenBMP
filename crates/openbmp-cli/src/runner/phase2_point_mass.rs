@@ -98,6 +98,14 @@ pub fn run(
 ) -> Result<RunOutcome, CliError> {
     let document = &scenario.document;
     require_supported_shape(document)?;
+    // Phase-3.3: validate the scenario's vehicle composition into a
+    // `BasicAssembly`. The assembly is currently advisory — kernel
+    // construction still flows through `build_vehicle` /
+    // `build_mass_model` below — but constructing it here surfaces
+    // any L1-side validation failures (geometry / inertia /
+    // duplicate-id) before the kernel runs. Multi-body propagation
+    // through the kernel lands in 3.3.D.
+    let _assembly = crate::runner::assembly::synthesize_assembly(document)?;
 
     let loaded_models = load_models(document, resolved_files)?;
     let initial_state = build_initial_state(document, &loaded_models)?;

@@ -31,6 +31,7 @@
 //! malformed pin, missing file, or mismatch fails closed with a
 //! [`CliError::Scenario`] (exit code 2).
 
+pub mod assembly;
 pub mod mission;
 pub mod phase1;
 pub mod phase2_point_mass;
