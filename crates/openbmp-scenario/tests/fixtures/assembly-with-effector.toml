@@ -1,0 +1,55 @@
+# Phase-3.4 assembly + effector fixture (synthetic).
+#
+# Single-body assembly + one elevon-shaped effector with a step
+# command schedule. Synthetic round numbers; not a benchmark.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "assembly-with-effector-fixture"
+description = "Phase-3.4 parser fixture exercising the [[vehicle.assembly.effectors]] block. Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 1.0
+dt_s    = 0.001
+seed    = 0xdead_beef
+
+[vehicle]
+kind                     = "point_mass"
+mass_kg                  = 1.0
+initial_position_eci_m   = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "assembly-with-effector"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 0.5 }
+dry_mass_kg   = 1.0
+
+[[vehicle.assembly.effectors]]
+id               = "delta_e"
+kind             = { kind = "linear_actuator", tau_s = 0.05 }
+limits           = { min = -0.349, max = 0.349, max_rate_per_s = 5.236, deadband = 0.0, latency_s = 0.020 }
+initial_position = 0.0
+command_schedule = { kind = "step_at", time_s = 0.5, before = 0.0, after = 0.087 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/fixture.csv"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true

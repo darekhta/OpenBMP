@@ -1308,8 +1308,15 @@ pub enum EventActionConfig {
     },
     /// Phase-3.6 deferred.
     EngineCommand,
-    /// Phase-3.4 deferred.
-    EffectorOverride,
+    /// Phase-3.4: scenario-driven effector command override. Targets
+    /// a declared `[[vehicle.assembly.effectors]]` by id and commits
+    /// `command` at fire time (single-shot).
+    EffectorOverride {
+        /// Target effector id (must reference a declared effector).
+        id: String,
+        /// Command value (post-fault, pre-clamp).
+        command: f64,
+    },
     /// Phase-3.6 / 3.7 deferred.
     Separation,
     /// Phase-3.9 deferred.
@@ -1335,11 +1342,9 @@ impl EventActionConfig {
                     deferred_to: "Phase 3.6".to_owned(),
                 });
             }
-            Self::EffectorOverride => {
-                return Err(ScenarioError::UnsupportedActionKind {
-                    kind: "effector_override".to_owned(),
-                    deferred_to: "Phase 3.4".to_owned(),
-                });
+            Self::EffectorOverride { id, command } => {
+                require_non_empty(&path("id"), id)?;
+                require_finite(&path("command"), *command)?;
             }
             Self::Separation => {
                 return Err(ScenarioError::UnsupportedActionKind {
@@ -1400,9 +1405,11 @@ pub struct AssemblyConfig {
     /// Bodies in scenario-declared order.
     #[serde(default)]
     pub bodies: Vec<AssemblyBodyConfig>,
-    /// Phase-3.4 deferred — rejected at parse time when non-empty.
+    /// Phase-3.4: control effectors in scenario-declared order. The
+    /// runner builds `Box<dyn ControlEffector>` instances from these
+    /// configs and adds them to the assembly's effector vec.
     #[serde(default)]
-    pub effectors: Vec<toml::Value>,
+    pub effectors: Vec<EffectorConfig>,
     /// Phase-3.6 deferred.
     #[serde(default)]
     pub engines: Vec<toml::Value>,
@@ -1473,11 +1480,16 @@ impl AssemblyConfig {
                 }
             }
         }
-        if !self.effectors.is_empty() {
-            return Err(ScenarioError::UnsupportedAssemblyChild {
-                kind: "effectors".to_owned(),
-                deferred_to: "Phase 3.4".to_owned(),
-            });
+        let mut seen_effector_ids: std::collections::BTreeSet<&str> =
+            std::collections::BTreeSet::new();
+        for (index, effector) in self.effectors.iter().enumerate() {
+            effector.validate(index)?;
+            if !seen_effector_ids.insert(effector.id.as_str()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("vehicle.assembly.effectors[{index}].id"),
+                    value: effector.id.clone(),
+                });
+            }
         }
         if !self.engines.is_empty() {
             return Err(ScenarioError::UnsupportedAssemblyChild {
@@ -1638,6 +1650,256 @@ impl BodyGeometryConfig {
         require_positive(&path(a_name), a)?;
         require_finite(&path(b_name), b)?;
         require_positive(&path(b_name), b)?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------
+// Effector block (Phase 3.4)
+// ---------------------------------------------------------------------
+
+/// One declared control effector within `[vehicle.assembly]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EffectorConfig {
+    /// Stable effector id (`snake_case` scenario-text identifier).
+    pub id: String,
+    /// Effector kind + per-kind parameters (tagged on `kind`).
+    pub kind: EffectorKindConfig,
+    /// Position / rate / latency limits.
+    pub limits: EffectorLimitsConfig,
+    /// Optional initial position (defaults to 0.0). Must lie within
+    /// `[limits.min, limits.max]`.
+    #[serde(default)]
+    pub initial_position: Option<f64>,
+    /// Optional fault mounted at scenario load time.
+    #[serde(default)]
+    pub fault: Option<EffectorFaultConfig>,
+    /// Optional deterministic command schedule. Resolves the
+    /// per-step command at runtime; superseded by an
+    /// `EventAction::EffectorOverride` event firing on the same step.
+    #[serde(default)]
+    pub command_schedule: Option<EffectorCommandScheduleConfig>,
+}
+
+impl EffectorConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.effectors[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        self.limits.validate(index)?;
+        if let Some(initial) = self.initial_position {
+            require_finite(&path("initial_position"), initial)?;
+            if initial < self.limits.min || initial > self.limits.max {
+                return Err(ScenarioError::InvalidNumber {
+                    field: path("initial_position"),
+                    value: initial,
+                    rule: "must lie within [limits.min, limits.max]",
+                });
+            }
+        }
+        if let Some(fault) = &self.fault {
+            fault.validate(index, &self.limits)?;
+        }
+        if let Some(schedule) = &self.command_schedule {
+            schedule.validate(index)?;
+        }
+        Ok(())
+    }
+}
+
+/// Effector kind tagged enum. Phase 3.4 ships `linear_actuator` only.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EffectorKindConfig {
+    /// First-order linear actuator with optional time constant.
+    LinearActuator {
+        /// Optional first-order lag time constant (s). Defaults to 0
+        /// (pure rate-clamped tracker).
+        #[serde(default)]
+        tau_s: Option<f64>,
+    },
+}
+
+/// Position / rate / latency limits.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EffectorLimitsConfig {
+    /// Minimum permitted deflection.
+    pub min: f64,
+    /// Maximum permitted deflection.
+    pub max: f64,
+    /// Maximum slew rate magnitude (units / s).
+    pub max_rate_per_s: f64,
+    /// Deadband.
+    pub deadband: f64,
+    /// Pure-delay latency (s).
+    pub latency_s: f64,
+}
+
+impl EffectorLimitsConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.effectors[{index}].limits.{field}");
+        require_finite(&path("min"), self.min)?;
+        require_finite(&path("max"), self.max)?;
+        if self.min >= self.max {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("min"),
+                value: self.min,
+                rule: "must be strictly less than max",
+            });
+        }
+        require_finite(&path("max_rate_per_s"), self.max_rate_per_s)?;
+        require_positive(&path("max_rate_per_s"), self.max_rate_per_s)?;
+        require_finite(&path("deadband"), self.deadband)?;
+        if self.deadband < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("deadband"),
+                value: self.deadband,
+                rule: "must be non-negative",
+            });
+        }
+        require_finite(&path("latency_s"), self.latency_s)?;
+        if self.latency_s < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("latency_s"),
+                value: self.latency_s,
+                rule: "must be non-negative",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Effector fault tagged enum.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EffectorFaultConfig {
+    /// Effector locked at `at`. `at` must lie within `[min, max]`.
+    Jam {
+        /// Locked deflection.
+        at: f64,
+    },
+    /// Effector slews at `rate_per_s` ignoring command.
+    Runaway {
+        /// Signed slew rate (units / s).
+        rate_per_s: f64,
+    },
+    /// Effector tracks the command but at a reduced max rate.
+    /// `factor ∈ [0, 1]`.
+    ReducedRate {
+        /// Multiplier on the max rate.
+        factor: f64,
+    },
+    /// Effector steps to `to` then jams.
+    Hardover {
+        /// Target deflection.
+        to: f64,
+    },
+}
+
+impl EffectorFaultConfig {
+    fn validate(&self, index: usize, limits: &EffectorLimitsConfig) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.effectors[{index}].fault.{field}");
+        match self {
+            Self::Jam { at } => {
+                require_finite(&path("at"), *at)?;
+                if *at < limits.min || *at > limits.max {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("at"),
+                        value: *at,
+                        rule: "must lie within [limits.min, limits.max]",
+                    });
+                }
+            }
+            Self::Runaway { rate_per_s } => {
+                require_finite(&path("rate_per_s"), *rate_per_s)?;
+            }
+            Self::ReducedRate { factor } => {
+                require_finite(&path("factor"), *factor)?;
+                require_in_range(&path("factor"), *factor, 0.0, 1.0)?;
+            }
+            Self::Hardover { to } => {
+                require_finite(&path("to"), *to)?;
+                if *to < limits.min || *to > limits.max {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("to"),
+                        value: *to,
+                        rule: "must lie within [limits.min, limits.max]",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Optional deterministic command schedule. Resolves the per-step
+/// command at runtime when no override fires.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EffectorCommandScheduleConfig {
+    /// Constant command for the whole run.
+    Constant {
+        /// Command value.
+        value: f64,
+    },
+    /// Step at `time_s`: emit `before` until `time_s`, then `after`.
+    StepAt {
+        /// Step time (s).
+        time_s: f64,
+        /// Pre-step command.
+        before: f64,
+        /// Post-step command.
+        after: f64,
+    },
+    /// Linear ramp from `start` at `start_time_s` to `end` at
+    /// `end_time_s`. Holds at endpoints outside the interval.
+    LinearRamp {
+        /// Ramp start time (s).
+        start_time_s: f64,
+        /// Ramp end time (s).
+        end_time_s: f64,
+        /// Command at `start_time_s`.
+        start: f64,
+        /// Command at `end_time_s`.
+        end: f64,
+    },
+}
+
+impl EffectorCommandScheduleConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path =
+            |field: &str| format!("vehicle.assembly.effectors[{index}].command_schedule.{field}");
+        match self {
+            Self::Constant { value } => require_finite(&path("value"), *value)?,
+            Self::StepAt {
+                time_s,
+                before,
+                after,
+            } => {
+                require_finite(&path("time_s"), *time_s)?;
+                require_finite(&path("before"), *before)?;
+                require_finite(&path("after"), *after)?;
+            }
+            Self::LinearRamp {
+                start_time_s,
+                end_time_s,
+                start,
+                end,
+            } => {
+                require_finite(&path("start_time_s"), *start_time_s)?;
+                require_finite(&path("end_time_s"), *end_time_s)?;
+                require_finite(&path("start"), *start)?;
+                require_finite(&path("end"), *end)?;
+                if *start_time_s >= *end_time_s {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("end_time_s"),
+                        value: *end_time_s,
+                        rule: "must be strictly greater than start_time_s",
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }

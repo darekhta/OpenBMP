@@ -176,12 +176,17 @@ fn build_action(
         EventActionConfig::Stop { label } => EventAction::Stop {
             label: label.clone(),
         },
+        // Phase-3.4: effector override resolves the scenario-text id
+        // to a stable `EffectorId` (FNV of canonical effector path).
+        EventActionConfig::EffectorOverride { id, command } => EventAction::EffectorOverride {
+            id: openbmp_core::EffectorId::from_path(&format!("vehicle.assembly.effectors.{id}")),
+            command: *command,
+        },
         // Parser-rejected variants — defensively map to a stop-like
         // no-op. The runner does not normally reach these arms; if
         // they were to appear, the kernel's match for reserved
         // variants is a no-op.
         EventActionConfig::EngineCommand => EventAction::EngineCommand,
-        EventActionConfig::EffectorOverride => EventAction::EffectorOverride,
         EventActionConfig::Separation => EventAction::Separation,
         EventActionConfig::DeployRecovery => EventAction::DeployRecovery,
     })

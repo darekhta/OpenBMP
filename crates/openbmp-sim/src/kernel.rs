@@ -553,8 +553,13 @@ where
                         label: label.clone(),
                     });
                 }
+                EventAction::EffectorOverride { .. } => {
+                    // Phase-3.4: kernel records the firing in
+                    // `pending_events`; the runner's `EffectorRack`
+                    // drains and applies it via
+                    // `apply_overrides(&fired)` before stepping.
+                }
                 EventAction::EngineCommand
-                | EventAction::EffectorOverride
                 | EventAction::Separation
                 | EventAction::DeployRecovery => {
                     // Reserved-but-unwired actions are parser-rejected

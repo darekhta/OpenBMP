@@ -295,8 +295,17 @@ pub enum EventAction {
     /// Phase-3.6 deferred: gimbal / throttle / ignition / shutdown
     /// command to a named engine.
     EngineCommand,
-    /// Phase-3.4 deferred: override a control-effector deflection.
-    EffectorOverride,
+    /// Phase-3.4: scenario-driven effector command override. Targets
+    /// a declared effector by [`openbmp_core::EffectorId`]; the
+    /// runner-side `EffectorRack::apply_overrides` consumes the
+    /// fired event and stores the override into the rack's
+    /// per-effector override map.
+    EffectorOverride {
+        /// Target effector id.
+        id: openbmp_core::EffectorId,
+        /// Command value.
+        command: f64,
+    },
     /// Phase-3.6 / 3.7 deferred: stage-separation event.
     Separation,
     /// Phase-3.9 deferred: deploy a recovery device.

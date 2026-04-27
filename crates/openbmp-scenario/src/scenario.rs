@@ -908,7 +908,38 @@ action  = { kind = "deploy_recovery" }
     }
 
     #[test]
-    fn rejects_effector_override_action_kind() {
+    fn accepts_effector_override_action_kind() {
+        // Phase 3.4 wires `EventAction::EffectorOverride { id, command }`.
+        let parse_result = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_apogee" }
+action  = { kind = "effector_override", id = "delta_e", command = 0.087 }
+"#,
+        ));
+        let scenario = match parse_result {
+            Ok(s) => s,
+            Err(e) => panic!("parse with EffectorOverride action failed: {e:?}"),
+        };
+        let mission = scenario.document.mission.as_ref().expect("mission present");
+        let action = &mission.events[0].action;
+        assert!(matches!(
+            action,
+            crate::EventActionConfig::EffectorOverride { id, command }
+                if id == "delta_e" && (command - 0.087).abs() < 1e-12
+        ));
+    }
+
+    #[test]
+    fn rejects_effector_override_action_with_empty_id() {
         let err = Scenario::from_toml_str(&with_mission(
             r#"
 [mission]
@@ -921,15 +952,11 @@ label = "ascent"
 [[mission.events]]
 id      = "evt"
 trigger = { kind = "at_apogee" }
-action  = { kind = "effector_override" }
+action  = { kind = "effector_override", id = "", command = 0.0 }
 "#,
         ))
         .unwrap_err();
-        assert!(matches!(
-            err,
-            ScenarioError::UnsupportedActionKind { ref kind, .. }
-                if kind == "effector_override"
-        ));
+        assert!(matches!(err, ScenarioError::EmptyField { .. }));
     }
 
     #[test]
@@ -1043,6 +1070,11 @@ action  = { kind = "stop", label = "max-q" }
         "/tests/fixtures/assembly-deferred-engines.toml"
     ));
 
+    const ASSEMBLY_WITH_EFFECTOR: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-with-effector.toml"
+    ));
+
     const ASSEMBLY_RIGID_MISSING_BODY_INERTIA: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/assembly-rigid-missing-body-inertia.toml"
@@ -1133,6 +1165,79 @@ action  = { kind = "stop", label = "max-q" }
             }
             other => panic!("expected UnsupportedAssemblyChild, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_assembly_with_effector_block() {
+        let scenario = match Scenario::from_toml_str(ASSEMBLY_WITH_EFFECTOR) {
+            Ok(s) => s,
+            Err(e) => panic!("parse failed: {e:?}"),
+        };
+        let assembly = scenario
+            .document
+            .vehicle
+            .assembly
+            .as_ref()
+            .expect("assembly present");
+        assert_eq!(assembly.effectors.len(), 1);
+        let effector = &assembly.effectors[0];
+        assert_eq!(effector.id, "delta_e");
+        match &effector.kind {
+            crate::EffectorKindConfig::LinearActuator { tau_s } => {
+                assert!((tau_s.unwrap_or(0.0) - 0.05).abs() < 1e-12);
+            }
+        }
+        assert!((effector.limits.max_rate_per_s - 5.236).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rejects_effector_jam_at_outside_limits() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+            "fault = { kind = \"jam\", at = 999.0 }",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field.contains("fault.at")),
+            "expected InvalidNumber on fault.at, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_effector_min_geq_max() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("min = -0.349, max = 0.349", "min = 0.349, max = -0.349");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field.contains("limits.min")),
+            "expected InvalidNumber on limits.min, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_effector_reduced_rate_factor_out_of_range() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+            "fault = { kind = \"reduced_rate\", factor = 2.0 }",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field.contains("fault.factor")),
+            "expected InvalidNumber on fault.factor, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_effector_id() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "[[vehicle.assembly.effectors]]\nid               = \"delta_e\"",
+            "[[vehicle.assembly.effectors]]\nid               = \"delta_e\"\nkind             = { kind = \"linear_actuator\" }\nlimits           = { min = -1.0, max = 1.0, max_rate_per_s = 1.0, deadband = 0.0, latency_s = 0.0 }\n[[vehicle.assembly.effectors]]\nid               = \"delta_e\"",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::DuplicateValue { ref field, .. } if field.contains("effectors")),
+            "expected DuplicateValue on effectors id, got {err:?}",
+        );
     }
 
     #[test]
