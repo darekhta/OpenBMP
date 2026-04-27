@@ -59,6 +59,8 @@ use uom::si::mass::kilogram;
 
 use crate::error::CliError;
 use crate::runner::RunOutcome;
+use crate::runner::assembly::dry_mass_kg_at;
+use openbmp_vehicle::BasicAssembly;
 
 // Stable model-ids assigned to each force / mass model the runner
 // wires. Scenario-supplied force-model names ("aero", "thrust") are
@@ -98,18 +100,11 @@ pub fn run(
 ) -> Result<RunOutcome, CliError> {
     let document = &scenario.document;
     require_supported_shape(document)?;
-    // Phase-3.3: validate the scenario's vehicle composition into a
-    // `BasicAssembly`. The assembly is currently advisory — kernel
-    // construction still flows through `build_vehicle` /
-    // `build_mass_model` below — but constructing it here surfaces
-    // any L1-side validation failures (geometry / inertia /
-    // duplicate-id) before the kernel runs. Multi-body propagation
-    // through the kernel lands in 3.3.D.
-    let _assembly = crate::runner::assembly::synthesize_assembly(document)?;
+    let assembly = crate::runner::assembly::synthesize_assembly(document)?;
 
     let loaded_models = load_models(document, resolved_files)?;
-    let initial_state = build_initial_state(document, &loaded_models)?;
-    let kernel_vehicle = build_vehicle(document, &loaded_models)?;
+    let initial_state = build_initial_state(document, &loaded_models, &assembly)?;
+    let kernel_vehicle = build_vehicle(document, &loaded_models, &assembly)?;
     // The runner-side breakdown vehicle is a *separate* construction
     // of the same models. `BasicVehicle::evaluate_force_breakdown`
     // takes `&self`, but `BasicVehicle` is not `Clone` (the inner
@@ -117,8 +112,8 @@ pub fn run(
     // avoids interior-mutability or Arc gymnastics; both copies are
     // stateless and evaluate identically per the Phase-2.6/2.5
     // contracts.
-    let breakdown_vehicle = build_vehicle(document, &loaded_models)?;
-    let mass_model = BoxedMassModel(build_mass_model(document, &loaded_models)?);
+    let breakdown_vehicle = build_vehicle(document, &loaded_models, &assembly)?;
+    let mass_model = BoxedMassModel(build_mass_model(document, &loaded_models, &assembly)?);
 
     let config = SimulationConfig {
         initial_state,
@@ -305,11 +300,14 @@ fn required_resolved_file<'a>(
 fn build_initial_state(
     document: &ScenarioDocument,
     loaded_models: &LoadedModels,
+    assembly: &BasicAssembly,
 ) -> Result<PointMassState, CliError> {
     let p = document.vehicle.initial_position_eci_m;
     let v = document.vehicle.initial_velocity_eci_m_s;
+    let start_time = SimTime::from_seconds(document.time.start_s);
+    let dry_mass_kg = dry_mass_kg_at(assembly, start_time, "vehicle.assembly")?;
 
-    // Total mass at the initial state = scenario `mass_kg` PLUS the
+    // Total mass at the initial state = assembly dry mass PLUS the
     // motor's current mass when a motor is declared. The scenario-side
     // `mass_kg` is the dry-airframe mass (no motor). MotorMassAdapter
     // mirrors this by adding the motor mass at the initial state time.
@@ -318,13 +316,13 @@ fn build_initial_state(
     // ignition scenarios stay consistent.
     let total_mass_kg = if let Some(motor) = &loaded_models.motor {
         let t_since_ignition_s = motor_elapsed_at_start_s(document)?;
-        document.vehicle.mass_kg + motor.mass_kg(t_since_ignition_s)?
+        dry_mass_kg + motor.mass_kg(t_since_ignition_s)?
     } else {
-        document.vehicle.mass_kg
+        dry_mass_kg
     };
 
     Ok(PointMassState::new(
-        SimTime::from_seconds(document.time.start_s),
+        start_time,
         Position3::new(p[0], p[1], p[2]),
         Velocity3::new(v[0], v[1], v[2]),
         Mass::new::<kilogram>(total_mass_kg),
@@ -334,6 +332,7 @@ fn build_initial_state(
 fn build_vehicle(
     document: &ScenarioDocument,
     loaded_models: &LoadedModels,
+    assembly: &BasicAssembly,
 ) -> Result<BasicVehicle<PointMassState>, CliError> {
     let mut named: Vec<NamedForceModel<PointMassState>> = Vec::new();
 
@@ -386,7 +385,7 @@ fn build_vehicle(
     // BasicVehicle requires a mass model even for vehicle-internal
     // queries (Phase-2.8 contract). The kernel's mass model is built
     // separately in `build_mass_model` because it owns its own copy.
-    let vehicle_mass = build_mass_model(document, loaded_models)?;
+    let vehicle_mass = build_mass_model(document, loaded_models, assembly)?;
     BasicVehicle::new(named, vec![], vehicle_mass).map_err(|e| CliError::UnsupportedScenario {
         what: format!("BasicVehicle construction failed: {e}"),
     })
@@ -395,17 +394,20 @@ fn build_vehicle(
 fn build_mass_model(
     document: &ScenarioDocument,
     loaded_models: &LoadedModels,
+    assembly: &BasicAssembly,
 ) -> Result<Box<dyn MassModel>, CliError> {
+    let start_time = SimTime::from_seconds(document.time.start_s);
+    let dry_mass_kg = dry_mass_kg_at(assembly, start_time, "vehicle.assembly")?;
     if let Some(motor) = &loaded_models.motor {
         let ignition_time_s = motor_ignition_time_s(document)?;
         Ok(Box::new(MotorMassAdapter::new(
             motor.clone(),
-            document.vehicle.mass_kg,
+            dry_mass_kg,
             ignition_time_s,
             PHASE2_MOTOR_MASS_MODEL_ID,
         )))
     } else {
-        Ok(Box::new(ConstantMass::new(document.vehicle.mass_kg)))
+        Ok(Box::new(ConstantMass::new(dry_mass_kg)))
     }
 }
 
@@ -816,14 +818,16 @@ mod tests {
 
         let resolved_files = scenario.resolved_files().expect("resolve files");
         let loaded_models = load_models(&scenario.document, &resolved_files).expect("load models");
+        let assembly =
+            crate::runner::assembly::synthesize_assembly(&scenario.document).expect("assembly");
         let motor = loaded_models.motor.as_ref().expect("motor loaded");
         let expected_initial_mass_kg = scenario.document.vehicle.mass_kg
             + motor
                 .mass_kg(0.0)
                 .expect("motor mass at scenario-relative ignition");
 
-        let initial_state =
-            build_initial_state(&scenario.document, &loaded_models).expect("initial state");
+        let initial_state = build_initial_state(&scenario.document, &loaded_models, &assembly)
+            .expect("initial state");
         assert_eq!(
             initial_state.time.as_seconds().to_bits(),
             10.0_f64.to_bits()
@@ -833,7 +837,8 @@ mod tests {
             expected_initial_mass_kg.to_bits()
         );
 
-        let mass_model = build_mass_model(&scenario.document, &loaded_models).expect("mass model");
+        let mass_model =
+            build_mass_model(&scenario.document, &loaded_models, &assembly).expect("mass model");
         assert_eq!(
             mass_model
                 .mass_kg(SimTime::from_seconds(10.0))
@@ -846,6 +851,45 @@ mod tests {
         assert_eq!(
             first_mass_kg(&outcome).to_bits(),
             expected_initial_mass_kg.to_bits()
+        );
+    }
+
+    #[test]
+    fn mass_construction_uses_resolved_assembly_mass() {
+        let mut scenario = niskanen_scenario();
+        scenario.document.aero = None;
+        scenario.document.propulsion = None;
+        scenario.document.forces.models = vec!["gravity".to_owned()];
+
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let loaded_models = load_models(&scenario.document, &resolved_files).expect("load models");
+        let assembly = BasicAssembly::single_body_legacy(
+            openbmp_core::VehicleId::from_path("test.vehicle"),
+            openbmp_core::BodyId::from_path("test.vehicle.body"),
+            12.5,
+            None,
+            openbmp_vehicle::BodyGeometry::Reference {
+                length_m: 1.0,
+                area_m2: 1.0,
+            },
+        )
+        .expect("assembly");
+
+        let initial_state = build_initial_state(&scenario.document, &loaded_models, &assembly)
+            .expect("initial state");
+        assert_eq!(
+            initial_state.mass.get::<kilogram>().to_bits(),
+            12.5_f64.to_bits()
+        );
+
+        let mass_model =
+            build_mass_model(&scenario.document, &loaded_models, &assembly).expect("mass model");
+        assert_eq!(
+            mass_model
+                .mass_kg(SimTime::ZERO)
+                .expect("mass from model")
+                .to_bits(),
+            12.5_f64.to_bits()
         );
     }
 }

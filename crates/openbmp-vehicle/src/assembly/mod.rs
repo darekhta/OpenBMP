@@ -8,13 +8,13 @@
 //!
 //! # Resolution
 //!
-//! The resolver in [`resolver`] takes a parsed
-//! [`openbmp_scenario::ScenarioDocument`] plus the L2 loader's
-//! [`crate::adapters`]-ready `LoadedModels` bundle and produces a
-//! [`KernelModelBundle`] (point-mass) or [`KernelModelBundleRigid`]
-//! (rigid-body). The runner consumes the bundle and constructs the
-//! kernel exactly as today's per-runner ad-hoc wiring does — no
-//! behavioural change for legacy scenarios.
+//! The runner-side resolver takes a parsed scenario document and
+//! produces a [`BasicAssembly`]. Phase-3.3 runners consume the
+//! assembly's dry mass properties during kernel mass construction while
+//! force / moment plumbing remains on the existing per-runner paths.
+//! [`KernelModelBundle`] and [`KernelModelBundleRigid`] are forward
+//! scaffolding for the later resolver that will flatten propulsion,
+//! effectors, tanks, and sensors into kernel model lists.
 //!
 //! # Determinism
 //!

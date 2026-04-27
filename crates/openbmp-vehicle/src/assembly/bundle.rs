@@ -1,8 +1,10 @@
 //! Phase-3.3 [`KernelModelBundle`] — flat lists the kernel consumes.
 //!
-//! The runner replaces its inline `build_vehicle` / `build_mass_model`
-//! plumbing with a call to the assembly resolver, which returns a
-//! bundle of this shape. Two parallel forms cover the point-mass /
+//! The full assembly-to-kernel resolver will return bundles of this
+//! shape once propulsion, effectors, tanks, and sensors are represented
+//! in the assembly tree. Phase-3.3 runners consume assembly dry mass
+//! properties directly and keep force / moment plumbing on the existing
+//! runner paths. Two parallel bundle forms cover the point-mass /
 //! rigid-body kernel split established in Phase-3.1:
 //!
 //! - [`KernelModelBundle<S>`] for kernels parameterised over a

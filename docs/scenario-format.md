@@ -571,7 +571,8 @@ vehicle as a tree of bodies. Phase-3.3 supports single-body and
 multi-body assemblies; future phases will add propulsion / effectors
 / tanks / sensors as child blocks of the assembly. The flat
 `[vehicle].mass_kg` field stays required and must equal the sum of
-declared body dry masses (consistency check, 1e-9 tolerance).
+declared body dry masses (consistency check: max(1e-12 absolute,
+1e-9 relative tolerance)).
 
 The canonical multi-body example mirrors
 [`scenarios/multi-body/two-body-fairing.toml`](../scenarios/multi-body/two-body-fairing.toml):
@@ -639,23 +640,23 @@ Enforced at scenario-parse time:
 - `bodies` must be non-empty.
 - All body ids are unique.
 - `[vehicle].mass_kg` equals `sum(bodies[*].dry_mass_kg)` within
-  1e-9.
+  max(1e-12 absolute, 1e-9 relative tolerance).
 - Per-body: `dry_mass_kg` finite + positive, `dry_cg_body_m`
   components finite, geometry components finite + positive.
 - Inertia tensor (when present): finite, symmetric within 1e-9,
   positive diagonal.
-- The four reserved future-phase child blocks (`effectors`,
+- Rigid-body scenarios: every body declares
+  `dry_inertia_body_kg_m2`, and the flat
+  `vehicle.inertia_tensor_body_kg_m2` matches the assembled dry
+  inertia tensor within the same consistency tolerance.
+- The three reserved future-phase child blocks (`effectors`,
   `engines`, `tanks`) must be empty.
 
 #### Phase-3.3 limitations
 
-- The kernel still drives off the flat `[vehicle].mass_kg` field.
-  The assembly tree is *advisory* in 3.3 — the resolver builds and
-  validates a `BasicAssembly` from the scenario, but kernel
-  construction continues through the existing per-runner
-  `build_vehicle` / `build_mass_model` paths. Phase-3.4+ will land
-  the kernel-side mass-model resolver as the assembly tree gains
-  real propulsion / effector / tank content.
-- Rigid-body multi-body scenarios with non-trivial body inertia
-  tensors are deferred to Phase-3.4+ alongside the
-  ControlEffector / engine / tank tree extensions.
+- The runner consumes the assembly's dry mass properties for kernel
+  mass construction. Force / moment construction still uses the
+  existing per-runner paths until the effectors / engines / tanks
+  assembly children land in later Phase-3 sub-phases.
+- Point-mass propagation only uses the assembled dry mass; body CG and
+  inertia affect rigid-body mass properties, not point-mass dynamics.

@@ -1043,6 +1043,16 @@ action  = { kind = "stop", label = "max-q" }
         "/tests/fixtures/assembly-deferred-engines.toml"
     ));
 
+    const ASSEMBLY_RIGID_MISSING_BODY_INERTIA: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-rigid-missing-body-inertia.toml"
+    ));
+
+    const ASSEMBLY_RIGID_INERTIA_MISMATCH: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-rigid-inertia-mismatch.toml"
+    ));
+
     #[test]
     fn parses_two_body_assembly_block() {
         let scenario = Scenario::from_toml_str(ASSEMBLY_TWO_BODY).expect("parse");
@@ -1067,6 +1077,46 @@ action  = { kind = "stop", label = "max-q" }
     #[test]
     fn rejects_mass_mismatch_between_flat_and_assembly() {
         let err = Scenario::from_toml_str(ASSEMBLY_MASS_MISMATCH).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { .. }),
+            "expected InconsistentSection, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_small_mass_mismatch_with_relative_tolerance() {
+        let toml = ASSEMBLY_TWO_BODY
+            .replace(
+                "mass_kg                  = 0.085",
+                "mass_kg                  = 0.000000001",
+            )
+            .replace("dry_mass_kg  = 0.080", "dry_mass_kg  = 0.000000000001")
+            .replace("dry_mass_kg  = 0.005", "dry_mass_kg  = 0.000000000001");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { .. }),
+            "expected InconsistentSection, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_rigid_assembly_body_without_inertia() {
+        let err = Scenario::from_toml_str(ASSEMBLY_RIGID_MISSING_BODY_INERTIA).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::MissingRequiredField {
+                    ref field,
+                    ..
+                } if field == "vehicle.assembly.bodies[0].dry_inertia_body_kg_m2"
+            ),
+            "expected MissingRequiredField for per-body inertia, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_rigid_flat_and_assembly_inertia_mismatch() {
+        let err = Scenario::from_toml_str(ASSEMBLY_RIGID_INERTIA_MISMATCH).unwrap_err();
         assert!(
             matches!(err, ScenarioError::InconsistentSection { .. }),
             "expected InconsistentSection, got {err:?}",

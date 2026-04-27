@@ -11,16 +11,17 @@
 //!   preserves byte-identical kernel construction for every
 //!   Phase-2.10 / 3.1 scenario.
 //!
-//! Phase-3.3 leaves the runner's existing `build_vehicle` /
-//! `build_mass_model` paths in place — the resolver's output is
-//! validated but does not yet drive kernel construction. The actual
-//! multi-body mass-property propagation lands with the multi-body
-//! scenario fixture in 3.3.D.
+//! Phase-3.3 keeps the runner's existing force / moment construction
+//! paths in place, but the resolved assembly now supplies dry mass
+//! properties for kernel mass construction. Propulsion, effectors, and
+//! tanks still flow through the legacy runner paths until their
+//! assembly children land in later Phase-3 sub-phases.
 
 use nalgebra::Matrix3;
-use openbmp_core::{BodyId, VehicleId};
+use openbmp_core::{BodyId, SimTime, VehicleId};
 use openbmp_scenario::{BodyGeometryConfig, ScenarioDocument};
-use openbmp_vehicle::{BasicAssembly, Body, BodyGeometry};
+use openbmp_state::MassProperties;
+use openbmp_vehicle::{BasicAssembly, Body, BodyGeometry, VehicleAssembly};
 
 use crate::error::CliError;
 
@@ -52,32 +53,74 @@ pub fn synthesize_assembly(document: &ScenarioDocument) -> Result<BasicAssembly,
                 .dry_inertia_body_kg_m2
                 .map_or_else(default_inertia, matrix_from_rows);
             let body = Body::new(body_id, geometry, config.dry_mass_kg, cg_body, inertia).map_err(
-                |err| {
-                    CliError::Scenario(openbmp_scenario::ScenarioError::InvalidNumber {
-                        field: format!("vehicle.assembly.bodies[{index}]"),
-                        value: f64::NAN,
-                        rule: leak_static_str(format!("{err}")),
-                    })
+                |err| CliError::Assembly {
+                    field: format!("vehicle.assembly.bodies[{index}]"),
+                    reason: err.to_string(),
                 },
             )?;
-            builder = builder.add_body(body).map_err(|err| {
-                CliError::Scenario(openbmp_scenario::ScenarioError::InvalidNumber {
-                    field: format!("vehicle.assembly.bodies[{index}]"),
-                    value: f64::NAN,
-                    rule: leak_static_str(format!("{err}")),
-                })
+            builder = builder.add_body(body).map_err(|err| CliError::Assembly {
+                field: format!("vehicle.assembly.bodies[{index}]"),
+                reason: err.to_string(),
             })?;
         }
-        builder.build().map_err(|err| {
-            CliError::Scenario(openbmp_scenario::ScenarioError::InvalidNumber {
-                field: "vehicle.assembly".to_owned(),
-                value: f64::NAN,
-                rule: leak_static_str(format!("{err}")),
-            })
+        builder.build().map_err(|err| CliError::Assembly {
+            field: "vehicle.assembly".to_owned(),
+            reason: err.to_string(),
         })
     } else {
         synthesize_legacy_single_body(document, vehicle_id)
     }
+}
+
+/// Return the assembly's dry mass properties at `time`.
+///
+/// Phase-3.3 assemblies are dry/static, but threading the time through
+/// this helper keeps the runner shape aligned with later engine/tank
+/// mass-property models.
+///
+/// # Errors
+///
+/// Returns [`CliError::Assembly`] if the resolved assembly cannot
+/// produce dry mass properties.
+pub fn dry_mass_properties_at(
+    assembly: &BasicAssembly,
+    time: SimTime,
+    field: &str,
+) -> Result<MassProperties, CliError> {
+    assembly
+        .mass_properties(time)
+        .map_err(|err| CliError::Assembly {
+            field: field.to_owned(),
+            reason: err.to_string(),
+        })
+}
+
+/// Return the assembly dry mass in kilograms at `time`.
+///
+/// # Errors
+///
+/// Returns [`CliError::Assembly`] if the assembly is structurally
+/// empty. Normal scenario resolution rejects that earlier.
+pub fn dry_mass_kg_at(
+    assembly: &BasicAssembly,
+    _time: SimTime,
+    field: &str,
+) -> Result<f64, CliError> {
+    let bodies = assembly.bodies();
+    if bodies.is_empty() {
+        return Err(CliError::Assembly {
+            field: field.to_owned(),
+            reason: "assembly must contain at least one body".to_owned(),
+        });
+    }
+    if bodies.len() == 1 {
+        return Ok(bodies[0].dry_mass_kg());
+    }
+    let mut total_mass_kg = 0.0_f64;
+    for body in bodies {
+        total_mass_kg += body.dry_mass_kg();
+    }
+    Ok(total_mass_kg)
 }
 
 fn scenario_vehicle_id(document: &ScenarioDocument) -> VehicleId {
@@ -112,12 +155,9 @@ fn synthesize_legacy_single_body(
         Some(inertia),
         geometry,
     )
-    .map_err(|err| {
-        CliError::Scenario(openbmp_scenario::ScenarioError::InvalidNumber {
-            field: "vehicle (legacy synthesis)".to_owned(),
-            value: f64::NAN,
-            rule: leak_static_str(format!("{err}")),
-        })
+    .map_err(|err| CliError::Assembly {
+        field: "vehicle (legacy synthesis)".to_owned(),
+        reason: err.to_string(),
     })
 }
 
@@ -153,13 +193,4 @@ fn matrix_from_rows(rows: [[f64; 3]; 3]) -> Matrix3<f64> {
 
 fn default_inertia() -> Matrix3<f64> {
     Matrix3::from_diagonal(&nalgebra::Vector3::new(1.0, 1.0, 1.0))
-}
-
-/// `ScenarioError::InvalidNumber.rule` is `&'static str`; assembly
-/// errors carry runtime strings. Leak them so the static-str
-/// requirement is satisfied without changing the error shape. Used
-/// only on the parse-error path where an extra allocation is
-/// negligible.
-fn leak_static_str(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
 }

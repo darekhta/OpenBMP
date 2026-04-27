@@ -38,8 +38,9 @@ use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
 
 use crate::error::CliError;
-
 use crate::runner::RunOutcome;
+use crate::runner::assembly::dry_mass_kg_at;
+use openbmp_vehicle::BasicAssembly;
 
 /// Concrete kernel type assembled by the Phase-1 runner.
 pub type Phase1Kernel = SimulationKernel<
@@ -129,6 +130,14 @@ impl Phase1TelemetryChannels {
 /// rejects the configuration (invalid `dt`, invalid initial state,
 /// dirty FP env).
 pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
+    let assembly = crate::runner::assembly::synthesize_assembly(&scenario.document)?;
+    build_kernel_with_assembly(scenario, &assembly)
+}
+
+fn build_kernel_with_assembly(
+    scenario: &Scenario,
+    assembly: &BasicAssembly,
+) -> Result<Phase1Kernel, CliError> {
     let document = &scenario.document;
 
     // Vehicle: only `point_mass` is wired by the analytic-toy runner.
@@ -195,10 +204,13 @@ pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
         });
     }
 
+    let start_time = SimTime::from_seconds(document.time.start_s);
+    let dry_mass_kg = dry_mass_kg_at(assembly, start_time, "vehicle.assembly")?;
+
     let initial_position = document.vehicle.initial_position_eci_m;
     let initial_velocity = document.vehicle.initial_velocity_eci_m_s;
     let initial_state = PointMassState::new(
-        SimTime::from_seconds(document.time.start_s),
+        start_time,
         Position3::new(
             initial_position[0],
             initial_position[1],
@@ -209,7 +221,7 @@ pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
             initial_velocity[1],
             initial_velocity[2],
         ),
-        Mass::new::<kilogram>(document.vehicle.mass_kg),
+        Mass::new::<kilogram>(dry_mass_kg),
     );
 
     let stop = EndTime::new(SimTime::from_seconds(document.time.stop_s));
@@ -218,7 +230,7 @@ pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
         initial_state,
         integrator: Rk4FixedStep,
         force_model: ConstantGravityForce::down_z(g),
-        mass_model: ConstantMass::new(document.vehicle.mass_kg),
+        mass_model: ConstantMass::new(dry_mass_kg),
         environment: NullEnvironment,
         stop_condition: stop,
         dt: Duration::from_seconds(document.time.dt_s),
@@ -237,14 +249,11 @@ pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
 /// kernel step fails, and [`CliError::Telemetry`] if a row cannot be
 /// added.
 pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
-    // Phase-3.3: validate the scenario's vehicle composition into a
-    // `BasicAssembly`. Advisory in 3.3 — does not change kernel
-    // construction. Works on Phase-1 scenarios too because legacy
-    // scenarios synthesise a single-body assembly from the flat
-    // `vehicle.mass_kg` field; the kernel hot path is untouched.
-    let _assembly = crate::runner::assembly::synthesize_assembly(&scenario.document)?;
+    // Phase-3.3: resolve the scenario's vehicle composition into a
+    // `BasicAssembly` and use its dry mass for kernel construction.
+    let assembly = crate::runner::assembly::synthesize_assembly(&scenario.document)?;
 
-    let mut kernel = build_kernel(scenario)?;
+    let mut kernel = build_kernel_with_assembly(scenario, &assembly)?;
     let channels = Phase1TelemetryChannels::new()?;
     let mut table = TelemetryTable::new(channels.schema()?);
 

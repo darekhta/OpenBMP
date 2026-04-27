@@ -35,7 +35,7 @@
 
 use std::collections::BTreeMap;
 
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::Vector3;
 use openbmp_aero::{AeroDeck, AeroError};
 use openbmp_core::{
     AngularVelocity3, Body, ChannelId, Duration, ModelId, Position3, Quaternion, SimTime, Velocity3,
@@ -50,7 +50,7 @@ use openbmp_sim::{
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
-    AxialDragForceAdapter, BasicVehicle, BoxedMassModel, GravityForceAdapter,
+    AxialDragForceAdapter, BasicAssembly, BasicVehicle, BoxedMassModel, GravityForceAdapter,
     MotorThrustForceAdapter, NamedForceModel, RigidMotorMassAdapter, Vehicle,
 };
 use uom::si::f64::Mass;
@@ -58,6 +58,7 @@ use uom::si::mass::kilogram;
 
 use crate::error::CliError;
 use crate::runner::RunOutcome;
+use crate::runner::assembly::{dry_mass_kg_at, dry_mass_properties_at};
 
 // Stable model-ids assigned to each force / mass model the rigid
 // runner wires. Reserves a separate range from the Phase-2 point-mass
@@ -89,16 +90,13 @@ pub fn run(
 ) -> Result<RunOutcome, CliError> {
     let document = &scenario.document;
     require_supported_shape(document)?;
-    // Phase-3.3: validate the scenario's vehicle composition into a
-    // `BasicAssembly`. Advisory in 3.3 — kernel construction still
-    // flows through `build_vehicle` / `build_mass_model` below.
-    let _assembly = crate::runner::assembly::synthesize_assembly(document)?;
+    let assembly = crate::runner::assembly::synthesize_assembly(document)?;
 
     let loaded = load_models(document, resolved_files)?;
-    let initial_state = build_initial_state(document, &loaded)?;
-    let kernel_vehicle = build_vehicle(document, &loaded)?;
-    let breakdown_vehicle = build_vehicle(document, &loaded)?;
-    let mass_model = build_mass_model(document, &loaded)?;
+    let initial_state = build_initial_state(document, &loaded, &assembly)?;
+    let kernel_vehicle = build_vehicle(document, &loaded, &assembly)?;
+    let breakdown_vehicle = build_vehicle(document, &loaded, &assembly)?;
+    let mass_model = build_mass_model(document, &loaded, &assembly)?;
     let rigid_models = RigidModels::new(ZeroMoment, mass_model);
 
     let config = SimulationConfig {
@@ -284,6 +282,7 @@ fn required_resolved_file<'a>(
 fn build_initial_state(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
+    assembly: &BasicAssembly,
 ) -> Result<RigidBodyState, CliError> {
     let p = document.vehicle.initial_position_eci_m;
     let v = document.vehicle.initial_velocity_eci_m_s;
@@ -301,29 +300,25 @@ fn build_initial_state(
             what: "internal invariant: initial_angular_velocity missing for rigid_body scenario"
                 .to_owned(),
         })?;
-    let inertia_rows = document.vehicle.inertia_tensor_body_kg_m2.ok_or_else(|| {
-        CliError::UnsupportedScenario {
-            what: "internal invariant: inertia_tensor missing for rigid_body scenario".to_owned(),
-        }
-    })?;
+    let start_time = SimTime::from_seconds(document.time.start_s);
+    let dry_props = dry_mass_properties_at(assembly, start_time, "vehicle.assembly")?;
 
-    // Total mass at the initial state = scenario `mass_kg` PLUS the
+    // Total mass at the initial state = assembly dry mass PLUS the
     // motor's current mass when a motor is declared. Mirrors the
     // point-mass runner so a rigid-body Niskanen reproduces the
     // point-mass Niskanen physics under an identity orientation.
-    let total_mass_kg = if let Some(motor) = &loaded.motor {
+    let mass_props = if let Some(motor) = &loaded.motor {
         let t_since_ignition_s = motor_elapsed_at_start_s(document)?;
-        document.vehicle.mass_kg + motor.mass_kg(t_since_ignition_s)?
+        MassProperties::new(
+            Mass::new::<kilogram>(
+                dry_props.mass.get::<kilogram>() + motor.mass_kg(t_since_ignition_s)?,
+            ),
+            dry_props.center_of_mass_body,
+            dry_props.inertia_body,
+        )
     } else {
-        document.vehicle.mass_kg
+        dry_props
     };
-
-    let inertia_body = matrix3_from_rows(inertia_rows);
-    let mass_props = MassProperties::new(
-        Mass::new::<kilogram>(total_mass_kg),
-        Position3::origin(),
-        inertia_body,
-    );
 
     // Quaternion is [x, y, z, w] in the scenario file; nalgebra
     // expects (w, x, y, z) for `Quaternion::new`. Validation in the
@@ -334,7 +329,7 @@ fn build_initial_state(
         Quaternion::<openbmp_core::Body, openbmp_core::Eci>::from_unit_quaternion(unit);
 
     Ok(RigidBodyState::new(
-        SimTime::from_seconds(document.time.start_s),
+        start_time,
         Position3::new(p[0], p[1], p[2]),
         Velocity3::new(v[0], v[1], v[2]),
         orientation,
@@ -343,16 +338,10 @@ fn build_initial_state(
     ))
 }
 
-fn matrix3_from_rows(rows: [[f64; 3]; 3]) -> Matrix3<f64> {
-    Matrix3::new(
-        rows[0][0], rows[0][1], rows[0][2], rows[1][0], rows[1][1], rows[1][2], rows[2][0],
-        rows[2][1], rows[2][2],
-    )
-}
-
 fn build_vehicle(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
+    assembly: &BasicAssembly,
 ) -> Result<BasicVehicle<RigidBodyState>, CliError> {
     let mut named: Vec<NamedForceModel<RigidBodyState>> = Vec::new();
     for name in &document.forces.models {
@@ -408,7 +397,7 @@ fn build_vehicle(
     // its own state propagation. We give the vehicle a scalar
     // `BoxedMassModel` view so the breakdown evaluator can query mass
     // when it needs to.
-    let vehicle_mass = build_vehicle_scalar_mass_model(document, loaded)?;
+    let vehicle_mass = build_vehicle_scalar_mass_model(document, loaded, assembly)?;
     BasicVehicle::new(named, vec![], Box::new(vehicle_mass)).map_err(|e| {
         CliError::UnsupportedScenario {
             what: format!("BasicVehicle construction failed: {e}"),
@@ -419,26 +408,29 @@ fn build_vehicle(
 fn build_vehicle_scalar_mass_model(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
+    assembly: &BasicAssembly,
 ) -> Result<BoxedMassModel, CliError> {
     use openbmp_sim::{ConstantMass, MassModel};
     use openbmp_vehicle::MotorMassAdapter;
 
+    let start_time = SimTime::from_seconds(document.time.start_s);
+    let dry_mass_kg = dry_mass_kg_at(assembly, start_time, "vehicle.assembly")?;
     let inner: Box<dyn MassModel> = if let Some(motor) = &loaded.motor {
         Box::new(MotorMassAdapter::new(
             motor.clone(),
-            document.vehicle.mass_kg,
+            dry_mass_kg,
             motor_ignition_time_s(document)?,
             PHASE3_MOTOR_MASS_MODEL_ID,
         ))
     } else {
-        Box::new(ConstantMass::new(document.vehicle.mass_kg))
+        Box::new(ConstantMass::new(dry_mass_kg))
     };
     Ok(BoxedMassModel(inner))
 }
 
 /// Build the kernel's rigid mass model. When a motor is declared
 /// the runner uses `RigidMotorMassAdapter`; otherwise
-/// `ConstantMassRigid` over the dry-vehicle mass + scenario inertia.
+/// `ConstantMassRigid` over assembly dry mass properties.
 type RigidMassEither = RigidMassEitherKind;
 
 #[derive(Debug)]
@@ -469,30 +461,23 @@ impl openbmp_sim::RigidMassModel for RigidMassEitherKind {
 fn build_mass_model(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
+    assembly: &BasicAssembly,
 ) -> Result<RigidMassEither, CliError> {
-    let inertia_rows = document.vehicle.inertia_tensor_body_kg_m2.ok_or_else(|| {
-        CliError::UnsupportedScenario {
-            what: "internal invariant: inertia_tensor missing for rigid_body scenario".to_owned(),
-        }
-    })?;
-    let inertia_body = matrix3_from_rows(inertia_rows);
+    let start_time = SimTime::from_seconds(document.time.start_s);
+    let dry_props = dry_mass_properties_at(assembly, start_time, "vehicle.assembly")?;
 
     if let Some(motor) = &loaded.motor {
         Ok(RigidMassEitherKind::Motor(RigidMotorMassAdapter::new(
             motor.clone(),
-            document.vehicle.mass_kg,
-            Position3::origin(),
-            inertia_body,
+            dry_props.mass.get::<kilogram>(),
+            dry_props.center_of_mass_body,
+            dry_props.inertia_body,
             motor_ignition_time_s(document)?,
             PHASE3_MOTOR_MASS_MODEL_ID,
         )))
     } else {
         Ok(RigidMassEitherKind::Constant(ConstantMassRigid::new(
-            MassProperties::new(
-                Mass::new::<kilogram>(document.vehicle.mass_kg),
-                Position3::origin(),
-                inertia_body,
-            ),
+            dry_props,
         )))
     }
 }

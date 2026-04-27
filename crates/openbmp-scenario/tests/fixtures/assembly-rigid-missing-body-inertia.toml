@@ -1,0 +1,48 @@
+# Phase-3.3 assembly-tree parser fixture exercising rigid-body
+# per-body inertia requirements. Synthetic; not a benchmark.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "assembly-rigid-missing-body-inertia-fixture"
+description = "Phase-3.3 parser fixture; rigid assembly body omits dry_inertia_body_kg_m2. Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 1.0
+dt_s    = 0.01
+seed    = 0xdead_beef
+
+[vehicle]
+kind                                  = "rigid_body"
+mass_kg                               = 0.080
+initial_position_eci_m                = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s              = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw   = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s   = [0.0, 0.0, 0.0]
+inertia_tensor_body_kg_m2             = [[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.001]]
+
+[vehicle.assembly]
+
+[[vehicle.assembly.bodies]]
+id           = "main"
+geometry     = { kind = "cylinder", length_m = 0.56, diameter_m = 0.029 }
+dry_mass_kg  = 0.080
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/fixture.csv"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true

@@ -19,6 +19,14 @@ pub enum CliError {
     /// The scenario file could not be parsed or validated.
     #[error("scenario error")]
     Scenario(#[from] ScenarioError),
+    /// The parsed scenario could not be resolved into a vehicle assembly.
+    #[error("vehicle assembly error at {field}: {reason}")]
+    Assembly {
+        /// Scenario field path where resolution failed.
+        field: String,
+        /// Human-readable assembly construction failure.
+        reason: String,
+    },
     /// The kernel could not be constructed or stepped.
     #[error("simulation error")]
     Simulation(#[from] SimulationError),
@@ -75,6 +83,7 @@ impl CliError {
         match self {
             Self::Diff { .. } => 1,
             Self::Scenario(_)
+            | Self::Assembly { .. }
             | Self::UnsupportedScenario { .. }
             | Self::Aero(_)
             | Self::Motor(_)

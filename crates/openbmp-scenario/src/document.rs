@@ -375,7 +375,11 @@ impl VehicleConfig {
             }
         }
         if let Some(assembly) = &self.assembly {
-            assembly.validate(self.mass_kg)?;
+            assembly.validate(
+                descriptor.name.as_str(),
+                self.mass_kg,
+                self.inertia_tensor_body_kg_m2.as_ref(),
+            )?;
         }
         Ok(())
     }
@@ -1411,16 +1415,23 @@ impl AssemblyConfig {
     /// Validate the assembly block. `flat_mass_kg` is the
     /// `[vehicle].mass_kg` field used for cross-consistency
     /// checking; the validator requires the sum of body dry masses
-    /// to equal `flat_mass_kg` within 1e-9 tolerance.
-    pub(crate) fn validate(&self, flat_mass_kg: f64) -> Result<(), ScenarioError> {
+    /// to equal `flat_mass_kg` within the assembly consistency
+    /// tolerance.
+    pub(crate) fn validate(
+        &self,
+        vehicle_kind: &str,
+        flat_mass_kg: f64,
+        flat_inertia_body_kg_m2: Option<&[[f64; 3]; 3]>,
+    ) -> Result<(), ScenarioError> {
         if self.bodies.is_empty() {
             return Err(ScenarioError::EmptyList {
                 field: "vehicle.assembly.bodies".to_owned(),
             });
         }
+        let rigid_body = vehicle_kind == "rigid_body";
         let mut seen_ids: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for (index, body) in self.bodies.iter().enumerate() {
-            body.validate(index)?;
+            body.validate(index, rigid_body)?;
             if !seen_ids.insert(body.id.as_str()) {
                 return Err(ScenarioError::DuplicateValue {
                     field: format!("vehicle.assembly.bodies[{index}].id"),
@@ -1429,13 +1440,38 @@ impl AssemblyConfig {
             }
         }
         let body_mass_sum: f64 = self.bodies.iter().map(|b| b.dry_mass_kg).sum();
-        if (body_mass_sum - flat_mass_kg).abs() > 1.0e-9 {
+        if !assembly_values_consistent(body_mass_sum, flat_mass_kg) {
             return Err(ScenarioError::InconsistentSection {
                 field_a: "vehicle.mass_kg".to_owned(),
                 value_a: format!("{flat_mass_kg}"),
                 field_b: "vehicle.assembly.bodies[*].dry_mass_kg sum".to_owned(),
                 value_b: format!("{body_mass_sum}"),
             });
+        }
+        if rigid_body {
+            let flat_inertia =
+                flat_inertia_body_kg_m2.ok_or_else(|| ScenarioError::MissingRequiredField {
+                    field: "vehicle.inertia_tensor_body_kg_m2".to_owned(),
+                    role: ModelRole::Vehicle,
+                    name: "rigid_body".to_owned(),
+                })?;
+            let assembly_inertia = summed_assembly_inertia_body_kg_m2(&self.bodies);
+            for i in 0..3 {
+                for j in 0..3 {
+                    let assembly_value = assembly_inertia[i][j];
+                    let flat_value = flat_inertia[i][j];
+                    if !assembly_values_consistent(assembly_value, flat_value) {
+                        return Err(ScenarioError::InconsistentSection {
+                            field_a: format!("vehicle.inertia_tensor_body_kg_m2[{i}][{j}]"),
+                            value_a: format!("{flat_value}"),
+                            field_b: format!(
+                                "vehicle.assembly summed dry_inertia_body_kg_m2[{i}][{j}]"
+                            ),
+                            value_b: format!("{assembly_value}"),
+                        });
+                    }
+                }
+            }
         }
         if !self.effectors.is_empty() {
             return Err(ScenarioError::UnsupportedAssemblyChild {
@@ -1457,6 +1493,51 @@ impl AssemblyConfig {
         }
         Ok(())
     }
+}
+
+const ASSEMBLY_CONSISTENCY_ABS_TOL: f64 = 1.0e-12;
+const ASSEMBLY_CONSISTENCY_REL_TOL: f64 = 1.0e-9;
+
+fn assembly_values_consistent(a: f64, b: f64) -> bool {
+    let scale = a.abs().max(b.abs());
+    let tolerance = ASSEMBLY_CONSISTENCY_ABS_TOL.max(ASSEMBLY_CONSISTENCY_REL_TOL * scale);
+    (a - b).abs() <= tolerance
+}
+
+fn summed_assembly_inertia_body_kg_m2(bodies: &[AssemblyBodyConfig]) -> [[f64; 3]; 3] {
+    let total_mass: f64 = bodies.iter().map(|body| body.dry_mass_kg).sum();
+    let mut weighted_cg = [0.0_f64; 3];
+    for body in bodies {
+        for (axis, component) in weighted_cg.iter_mut().enumerate() {
+            *component += body.dry_cg_body_m[axis] * body.dry_mass_kg;
+        }
+    }
+    let assembly_cg = [
+        weighted_cg[0] / total_mass,
+        weighted_cg[1] / total_mass,
+        weighted_cg[2] / total_mass,
+    ];
+
+    let mut assembly_inertia = [[0.0_f64; 3]; 3];
+    for body in bodies {
+        let Some(inertia) = body.dry_inertia_body_kg_m2 else {
+            continue;
+        };
+        let r = [
+            body.dry_cg_body_m[0] - assembly_cg[0],
+            body.dry_cg_body_m[1] - assembly_cg[1],
+            body.dry_cg_body_m[2] - assembly_cg[2],
+        ];
+        let r_dot_r = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+        for i in 0..3 {
+            for j in 0..3 {
+                let identity_component = if i == j { r_dot_r } else { 0.0 };
+                let parallel_axis = identity_component - r[i] * r[j];
+                assembly_inertia[i][j] += inertia[i][j] + body.dry_mass_kg * parallel_axis;
+            }
+        }
+    }
+    assembly_inertia
 }
 
 /// One declared body within `[vehicle.assembly]`.
@@ -1483,7 +1564,7 @@ const fn zero_vec3_meters() -> [f64; 3] {
 }
 
 impl AssemblyBodyConfig {
-    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+    fn validate(&self, index: usize, rigid_body: bool) -> Result<(), ScenarioError> {
         require_non_empty(&format!("vehicle.assembly.bodies[{index}].id"), &self.id)?;
         require_finite(
             &format!("vehicle.assembly.bodies[{index}].dry_mass_kg"),
@@ -1498,6 +1579,13 @@ impl AssemblyBodyConfig {
             &self.dry_cg_body_m,
         )?;
         self.geometry.validate(index)?;
+        if rigid_body && self.dry_inertia_body_kg_m2.is_none() {
+            return Err(ScenarioError::MissingRequiredField {
+                field: format!("vehicle.assembly.bodies[{index}].dry_inertia_body_kg_m2"),
+                role: ModelRole::Vehicle,
+                name: "rigid_body".to_owned(),
+            });
+        }
         if let Some(inertia) = &self.dry_inertia_body_kg_m2 {
             validate_inertia_tensor(inertia)?;
         }

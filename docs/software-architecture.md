@@ -826,14 +826,13 @@ path stays flat-list and synchronous as today.
 > trait surface. The `into_kernel_models` method shown above is
 > also deferred — Phase-3.3 ships the resolver as a free-function
 > bridge in `crates/openbmp-cli/src/runner/assembly.rs` rather
-> than a trait method, because the resolver needs access to the
-> scenario document's `[forces].models` ordering and the L2
-> loader's already-parsed `LoadedModels` (aero deck, motor) which
-> the assembly tree itself does not carry. The resolver bridges
-> scenario → assembly tree, and Phase-3.4+ will land the
-> kernel-side bundle resolver as the assembly tree gains real
-> propulsion / effector / tank content. The `[vehicle.assembly]`
-> scenario block is documented in
+> than a trait method, avoiding an `openbmp-vehicle ->
+> openbmp-scenario` dependency edge. Phase-3.3 runners consume the
+> resolved assembly's dry mass properties during kernel mass
+> construction; force / moment construction remains on the existing
+> runner paths. Phase-3.4+ will land the full kernel-side bundle
+> resolver as the assembly tree gains real propulsion / effector /
+> tank content. The `[vehicle.assembly]` scenario block is documented in
 > [`scenario-format.md § Vehicle assembly`](scenario-format.md#vehicle-assembly-phase-33).
 
 ### Propulsion: EngineModel and EngineCluster
