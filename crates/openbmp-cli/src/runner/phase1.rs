@@ -237,6 +237,13 @@ pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
 /// kernel step fails, and [`CliError::Telemetry`] if a row cannot be
 /// added.
 pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
+    // Phase-3.3: validate the scenario's vehicle composition into a
+    // `BasicAssembly`. Advisory in 3.3 — does not change kernel
+    // construction. Works on Phase-1 scenarios too because legacy
+    // scenarios synthesise a single-body assembly from the flat
+    // `vehicle.mass_kg` field; the kernel hot path is untouched.
+    let _assembly = crate::runner::assembly::synthesize_assembly(&scenario.document)?;
+
     let mut kernel = build_kernel(scenario)?;
     let channels = Phase1TelemetryChannels::new()?;
     let mut table = TelemetryTable::new(channels.schema()?);

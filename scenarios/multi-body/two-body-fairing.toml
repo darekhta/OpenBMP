@@ -1,0 +1,69 @@
+# Two-body fairing-on-rocket scenario — Phase-3.3 exit-criterion case.
+#
+# Demonstrates the new declarative `[vehicle.assembly]` block with
+# two bodies: an 80 g main rocket body (cylinder) and a 5 g
+# top-mounted fairing (cone). The flat `[vehicle].mass_kg = 0.085`
+# kg matches the sum of body dry masses (consistency check).
+#
+# Phase-3.3 limitations:
+# - Point-mass kernel only; the kernel still drives off the flat
+#   `mass_kg` field. The assembly tree is advisory in 3.3 and is
+#   round-tripped through the L1 vehicle types as a validation
+#   pass, but does not yet drive the kernel's mass model directly.
+# - No motor, no aero — gravity-only descent demonstrates the
+#   end-to-end load-and-propagate path through the kernel.
+#
+# All numeric values here are synthetic round numbers chosen to
+# exercise the assembly tree shape; this is NOT a published
+# benchmark.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "two-body-fairing"
+description = "Phase-3.3 multi-body scenario; main rocket cylinder + top-mounted fairing cone. Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 1.0
+dt_s    = 0.01
+seed    = 0x4d_756c_7469_426f  # "MultiBo"
+
+[vehicle]
+kind                     = "point_mass"
+mass_kg                  = 0.085
+initial_position_eci_m   = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "two-body-fairing"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "cylinder", length_m = 0.56, diameter_m = 0.029 }
+dry_mass_kg   = 0.080
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[[vehicle.assembly.bodies]]
+id            = "fairing"
+geometry      = { kind = "cone", length_m = 0.05, base_diameter_m = 0.029 }
+dry_mass_kg   = 0.005
+dry_cg_body_m = [0.0, 0.0, 0.6]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.parquet = "out/two-body-fairing.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
