@@ -51,6 +51,7 @@
 
 pub mod adapters;
 pub mod assembly;
+pub mod effector;
 pub mod error;
 pub mod vehicle;
 
@@ -61,6 +62,9 @@ pub use adapters::{
 pub use assembly::{
     AssemblyError, BasicAssembly, BasicAssemblyBuilder, Body, BodyGeometry, KernelModelBundle,
     KernelModelBundleRigid, VehicleAssembly,
+};
+pub use effector::{
+    ControlEffector, EffectorError, EffectorFault, EffectorLimits, EffectorState, LinearActuator,
 };
 pub use error::VehicleError;
 pub use vehicle::{
