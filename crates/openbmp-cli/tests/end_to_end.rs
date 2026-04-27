@@ -47,6 +47,15 @@ fn tolerance_table_path() -> PathBuf {
     manifest_dir().join("tests/expected/constant-acceleration-drop.toml")
 }
 
+fn toml_literal_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    assert!(
+        !path.contains('\''),
+        "test temp paths must be representable as TOML literal strings: {path}",
+    );
+    format!("'{path}'")
+}
+
 /// Copy the canonical scenario into a temp dir and rewrite the
 /// telemetry output paths to point under that temp dir, so test runs
 /// don't litter `out/` next to the committed scenario.
@@ -57,11 +66,11 @@ fn stage_scenario(temp_dir: &Path, label: &str) -> PathBuf {
     let rewritten = original
         .replace(
             "output.csv     = \"out/constant-acceleration-drop.csv\"",
-            &format!("output.csv     = \"{}\"", csv.display()),
+            &format!("output.csv     = {}", toml_literal_path(&csv)),
         )
         .replace(
             "output.parquet = \"out/constant-acceleration-drop.parquet\"",
-            &format!("output.parquet = \"{}\"", parquet.display()),
+            &format!("output.parquet = {}", toml_literal_path(&parquet)),
         );
     let staged = temp_dir.join(format!("{label}-scenario.toml"));
     fs::write(&staged, rewritten).expect("write staged scenario");
