@@ -108,7 +108,13 @@ pub fn run(
         scenario_seed: document.time.seed,
     };
 
-    let mut kernel = SimulationKernel::new_rigid(config)?;
+    let kernel_base = SimulationKernel::new_rigid(config)?;
+    let mut kernel = if let Some(mission) = &document.mission {
+        let (events, graph) = crate::runner::mission::build_mission_runtime(mission)?;
+        kernel_base.with_mission(events, Some(graph))?
+    } else {
+        kernel_base
+    };
     let channel_set = RigidChannelSet::new(document)?;
     let breakdown_atmosphere = if channel_set.has_atmosphere {
         Some(UsStandard1976::new())
@@ -124,15 +130,18 @@ pub fn run(
         &channel_set,
         &breakdown_vehicle,
         breakdown_atmosphere.as_ref(),
+        &[],
     )?;
     while kernel.stop_reason().is_none() {
         kernel.step()?;
+        let fired = kernel.drain_events();
         record_step(
             &mut table,
             &kernel,
             &channel_set,
             &breakdown_vehicle,
             breakdown_atmosphere.as_ref(),
+            &fired,
         )?;
     }
 
@@ -545,6 +554,8 @@ struct RigidChannelSet {
     atmosphere_temperature: Option<TelemetryChannel<f64>>,
     atmosphere_speed_of_sound: Option<TelemetryChannel<f64>>,
     force_components: ForceComponentChannels,
+    /// Phase-3.2 mission-event telemetry markers, keyed by tag.
+    mission_markers: BTreeMap<String, TelemetryChannel<bool>>,
 }
 
 impl RigidChannelSet {
@@ -665,6 +676,20 @@ impl RigidChannelSet {
             force_components.push((name.clone(), x_channel, y_channel, z_channel));
         }
 
+        // Phase-3.2 mission marker channels.
+        let mut mission_markers: BTreeMap<String, TelemetryChannel<bool>> = BTreeMap::new();
+        if let Some(mission) = &document.mission {
+            for tag in crate::runner::mission::marker_tags(mission) {
+                let channel = TelemetryChannel::<bool>::new(
+                    alloc(),
+                    format!("mission.marker.{tag}"),
+                    "bool",
+                    None::<&str>,
+                )?;
+                mission_markers.insert(tag, channel);
+            }
+        }
+
         Ok(Self {
             position_x,
             position_y,
@@ -686,6 +711,7 @@ impl RigidChannelSet {
             atmosphere_temperature,
             atmosphere_speed_of_sound,
             force_components,
+            mission_markers,
         })
     }
 
@@ -722,6 +748,10 @@ impl RigidChannelSet {
             channels.push(y.metadata().clone());
             channels.push(z.metadata().clone());
         }
+        // Marker channels last, in alphabetical (BTreeMap) order.
+        for marker in self.mission_markers.values() {
+            channels.push(marker.metadata().clone());
+        }
         Ok(TelemetrySchema::new(channels)?.with_metadata(metadata))
     }
 }
@@ -733,6 +763,7 @@ fn record_step<I, F, MOM, MM, E, SC>(
     channels: &RigidChannelSet,
     breakdown_vehicle: &BasicVehicle<RigidBodyState>,
     breakdown_atmosphere: Option<&UsStandard1976>,
+    fired_events: &[openbmp_sim::FiredEvent],
 ) -> Result<(), CliError>
 where
     I: openbmp_sim::Integrator<RigidBodyState>,
@@ -808,6 +839,18 @@ where
         row.insert(x_channel, component.x)?;
         row.insert(y_channel, component.y)?;
         row.insert(z_channel, component.z)?;
+    }
+
+    // Phase-3.2 marker channels.
+    let mut fired_tags: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for fired in fired_events {
+        if let openbmp_sim::EventAction::EmitTelemetryMarker { tag } = &fired.action {
+            fired_tags.insert(tag.as_str());
+        }
+    }
+    for (tag, channel) in &channels.mission_markers {
+        let value = fired_tags.contains(tag.as_str());
+        row.insert(channel, value)?;
     }
 
     table.push_row(row)?;

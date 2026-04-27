@@ -411,3 +411,101 @@ fn niskanen_parquet_force_breakdown_components_are_finite_and_nonzero() {
     );
     assert!(saw_nonzero_aero, "aero force must be non-zero at speed");
 }
+
+/// Phase-3.2: the mission-block variant of the Niskanen scenario
+/// declares an `at_apogee` event with `emit_telemetry_marker {
+/// tag = "at_apogee_marker" }`. The runner must:
+/// 1. Allocate a `bool` channel `mission.marker.at_apogee_marker`.
+/// 2. Write `true` exactly once on the apogee step.
+/// 3. Write `false` on every other step.
+/// 4. Produce an apogee within ±5% of 151.5 m (same physics as the
+///    canonical point-mass scenario).
+#[test]
+fn niskanen_with_mission_emits_apogee_marker() {
+    use arrow::array::{BooleanArray, Float64Array};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let scenario =
+        workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6-with-mission.toml");
+    let temp = tempdir("niskanen-mission");
+    let parquet = temp.path().join("niskanen-mission.parquet");
+
+    let mut cmd = openbmp();
+    cmd.arg("run")
+        .arg(&scenario)
+        .arg("--output-parquet")
+        .arg(&parquet);
+    cmd.assert().success();
+    assert!(parquet.exists(), "parquet file must be written");
+
+    // Apogee envelope: same gate as the point-mass scenario.
+    let apogee_m = read_max_altitude(&parquet);
+    let lower = NISKANEN_C6_EXPERIMENTAL_APOGEE_M * (1.0 - NISKANEN_C6_RELATIVE_TOLERANCE);
+    let upper = NISKANEN_C6_EXPERIMENTAL_APOGEE_M * (1.0 + NISKANEN_C6_RELATIVE_TOLERANCE);
+    assert!(
+        (lower..=upper).contains(&apogee_m),
+        "apogee {apogee_m:.2} m outside ±5% envelope [{lower:.2}, {upper:.2}]",
+    );
+
+    // Marker channel: walk the parquet, count `true` rows and
+    // record the row index where the marker fires.
+    let file = fs::File::open(&parquet).expect("open parquet");
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("parquet builder");
+    let schema = builder.schema().clone();
+    let marker_col = schema
+        .index_of("mission.marker.at_apogee_marker")
+        .expect("mission.marker.at_apogee_marker column present");
+    let position_z_col = schema
+        .index_of("position_z_m")
+        .expect("position_z_m column present");
+
+    let reader = builder.build().expect("parquet reader");
+    let mut total_rows = 0_usize;
+    let mut total_fires = 0_usize;
+    let mut fired_at_altitude_m = f64::NAN;
+    let mut max_alt_at_any_row = f64::NEG_INFINITY;
+    for batch in reader {
+        let batch = batch.expect("read batch");
+        let marker = batch
+            .column(marker_col)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("marker column is bool");
+        let position_z = batch
+            .column(position_z_col)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("position_z is float64");
+        for i in 0..batch.num_rows() {
+            total_rows += 1;
+            let alt = position_z.value(i);
+            if alt > max_alt_at_any_row {
+                max_alt_at_any_row = alt;
+            }
+            if marker.value(i) {
+                total_fires += 1;
+                fired_at_altitude_m = alt;
+            }
+        }
+    }
+    assert!(
+        total_rows > 100,
+        "scenario must produce a meaningful trace, got {total_rows} rows",
+    );
+    assert_eq!(
+        total_fires, 1,
+        "at_apogee_marker must fire exactly once (got {total_fires})",
+    );
+    // The fire altitude is the post-flip value, not the apogee
+    // altitude itself; under fixed-step integration it sits within
+    // a few m below the recorded apogee.
+    assert!(
+        fired_at_altitude_m.is_finite(),
+        "marker fire altitude must be finite",
+    );
+    let altitude_gap_m = max_alt_at_any_row - fired_at_altitude_m;
+    assert!(
+        (0.0..=5.0).contains(&altitude_gap_m),
+        "apogee marker should fire within 5 m of recorded apogee, gap = {altitude_gap_m:.3} m",
+    );
+}

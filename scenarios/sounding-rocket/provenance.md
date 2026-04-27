@@ -207,3 +207,96 @@ notes: >-
   introduce non-trivial body-frame moments (aero coefficient deck,
   thrust offset, slosh) that produce attitude dynamics.
 ```
+
+## `scenarios/sounding-rocket/niskanen-2009-chapter6-with-mission.toml`
+
+```yaml
+dataset_id:       openbmp.scenario.sounding_rocket.niskanen_2009_chapter6_with_mission.v1
+files:
+  - scenarios/sounding-rocket/niskanen-2009-chapter6-with-mission.toml
+source_class:     converted-public
+source_title:     >-
+  Phase-3.2 mission-block variant of the canonical Niskanen 2009
+  Chapter-6 scenario. Same physics as the point-mass scenario at
+  `niskanen-2009-chapter6.toml`, plus a `[mission]` block declaring
+  two phases (`ascent`, `descent`), one event (`at_apogee_marker`,
+  `AtApogee` trigger + `emit_telemetry_marker` action), and a
+  single transition from ascent to descent on the apogee event.
+  Exercises the Phase-3.2 declarative event-driven scheduling
+  surface end-to-end through the runner.
+source_authors:   Niskanen, S. (2009 thesis); OpenBMP (Dmitri Arekhta) for the OpenBMP-schema rendering and the Phase-3.2 mission variant
+source_id:        Niskanen 2009 Chapter 6 small-rocket benchmark, Phase-3.2 mission variant
+source_url:       https://openrocket.sourceforge.net/thesis.pdf
+publication_date: 2009-05-20
+methodology_reference: >-
+  Niskanen, S. (2009). *Development of an Open-Source Model Rocket
+  Simulation Software*. Master's thesis, Helsinki University of
+  Technology. Chapter 6 documents a small-rocket benchmark
+  comparing simulated apogees against flight experiments for both
+  Estes B4 and C6 motors. The Phase-3.2 mission variant adds the
+  declarative scheduling block on top of the point-mass scenario;
+  the simulated trajectory is identical to the point-mass case
+  modulo the new `mission.marker.at_apogee_marker` `bool`
+  telemetry channel that flips `true` on the apogee step.
+methodology_urls:
+  - https://openrocket.sourceforge.net/thesis.pdf
+license_or_terms: >-
+  Same as the canonical Niskanen scenario: the thesis is
+  distributed under terms permitting academic re-use with
+  attribution; OpenBMP credits Niskanen as the source.
+retrieved_utc:    2026-04-27
+transformation:
+  method: >-
+    Clone the Phase-2.10 Niskanen C6 scenario file and append a
+    Phase-3.2 `[mission]` block declaring two phases (ascent,
+    descent), one apogee event (`AtApogee` trigger +
+    `emit_telemetry_marker` action), and one transition from
+    ascent to descent on the apogee event. Bump the seed root by
+    one byte (last byte 'M' for mission) so the rigid, mission,
+    and point-mass replays are distinguishable. The same SHA-256-
+    pinned aero deck and motor file are reused.
+  script: none
+verification:
+  method: >-
+    `openbmp check` parses the scenario and resolves the pinned
+    aero deck and motor file digests. The Phase-3.2 e2e test
+    `niskanen_with_mission_emits_apogee_marker` asserts the
+    runner allocates a `mission.marker.at_apogee_marker` `bool`
+    channel and writes `true` exactly once on the apogee step,
+    `false` everywhere else; the apogee-altitude envelope is the
+    same ±5% gate as the point-mass scenario.
+  test: >-
+    crates/openbmp-cli/tests/sounding_rocket_e2e.rs
+  tolerance: >-
+    Parser/check path requires exact SHA-256 pin matches. Physics
+    regression tolerance remains the ±5% apogee envelope against
+    the published Niskanen C6 experimental value.
+validation_status: checked
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Public academic benchmark from a master's thesis, rendered as
+    the mission-block variant of an already-accepted scenario. No
+    targeting, no real device drivers, no restricted or fielded-
+    vehicle data.
+units:            metres, metres-per-second, metres-per-second-squared, seconds, kilograms, degrees
+frame_profile:    wgs84-uniform-rotation
+local_origin:     >-
+  Helsinki proxy site (latitude 60.18°, longitude 24.83°, height
+  0.0 m). Inherited from the point-mass scenario.
+related_files:
+  - scenarios/sounding-rocket/niskanen-2009-chapter6.toml
+  - data/aero/synthetic-niskanen-ch6-rocket.toml
+  - data/motors/estes-c6-eng-derived.toml
+  - crates/openbmp-cli/tests/sounding_rocket_e2e.rs
+notes: >-
+  The mission block uses the canonical Phase-3.2 vocabulary: phase
+  ids and event ids are scenario-text identifiers; the runner
+  derives stable `PhaseId` / `EventId` values via FNV-1a-64 of the
+  canonical paths `mission.phases.<id>` and `mission.events.<id>`.
+  Reordering `[[mission.phases]]` / `[[mission.events]]` /
+  `[[mission.transitions]]` blocks does not change the simulator's
+  output bytes — this is the load-bearing declaration-order-
+  independence determinism contract.
+```

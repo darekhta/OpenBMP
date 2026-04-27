@@ -95,6 +95,7 @@ where
     state: S,
     initial_state: S,
     initial_time_s: f64,
+    initial_mass_kg: f64,
     step_index: StepIndex,
     integrator: I,
     force_model: F,
@@ -105,6 +106,25 @@ where
     dt_s: f64,
     scenario_seed: u64,
     stopped: Option<StopReason>,
+    /// Phase-3.2 event bindings. Empty when no `[mission]` block is
+    /// declared; the kernel hot path early-exits in that case so
+    /// legacy scenarios stay byte-stable.
+    events: Vec<crate::events::EventBinding>,
+    /// Phase-3.2 mission graph. `None` when no `[mission]` block is
+    /// declared.
+    mission_graph: Option<crate::events::MissionPhaseGraph>,
+    /// Active mission phase. Initialised to `mission_graph.initial`
+    /// when a graph is wired, else `None`.
+    current_phase: Option<crate::events::PhaseId>,
+    /// Per-step queue of fired events drained by the runner via
+    /// [`Self::drain_events`]. Cleared every step.
+    pending_events: Vec<crate::events::FiredEvent>,
+    /// Set of binding ids that have fired and are flagged `once: true`.
+    /// `BTreeSet` (not `HashSet`) defeats macOS `SipHash` randomisation.
+    fired_once_events: std::collections::BTreeSet<crate::events::EventId>,
+    /// Previous-step `EventScalars`, fed into the trigger evaluator
+    /// for crossing detection. `None` on step 0.
+    previous_event_scalars: Option<crate::events::EventScalars>,
 }
 
 /// Phase-1 type alias for the point-mass kernel shape used by the
@@ -141,10 +161,12 @@ where
         config.initial_state.require_valid()?;
         assert_clean_mxcsr()?;
         let initial_time_s = config.initial_state.time.as_seconds();
+        let initial_mass_kg = config.initial_state.mass.get::<kilogram>();
         Ok(Self {
             state: config.initial_state,
             initial_state: config.initial_state,
             initial_time_s,
+            initial_mass_kg,
             step_index: StepIndex::ZERO,
             integrator: config.integrator,
             force_model: config.force_model,
@@ -155,6 +177,12 @@ where
             dt_s,
             scenario_seed: config.scenario_seed,
             stopped: None,
+            events: Vec::new(),
+            mission_graph: None,
+            current_phase: None,
+            pending_events: Vec::new(),
+            fired_once_events: std::collections::BTreeSet::new(),
+            previous_event_scalars: None,
         })
     }
 
@@ -258,6 +286,23 @@ where
         let canonical_time_s = self.initial_time_s + (next_step.value() as f64) * self.dt_s;
         let new_state = raw_new.with_time(SimTime::from_seconds(canonical_time_s));
 
+        // Phase-3.2 event evaluation. Early-exit when no events are
+        // declared so legacy scenarios stay bit-stable.
+        if !self.events.is_empty() {
+            let scalars = crate::events::EventScalars {
+                time_s: canonical_time_s,
+                altitude_m: new_state.position.vector.z,
+                vertical_velocity_m_s: new_state.velocity.vector.z,
+                mass_fraction: new_state.mass.get::<kilogram>() / self.initial_mass_kg,
+                // Phase-3.2: kernel does not yet wire atmosphere into
+                // the trigger eval; dynamic pressure is reported as
+                // 0.0 regardless of altitude. Phase 3.4 will route
+                // the atmosphere model here.
+                dynamic_pressure_pa: 0.0,
+            };
+            self.evaluate_events(scalars, next_step, SimTime::from_seconds(canonical_time_s));
+        }
+
         // Post-step validation after canonical time assignment.
         if let Err(source) = new_state.require_valid() {
             self.stopped = Some(StopReason::NonFiniteState { step: next_step });
@@ -359,6 +404,139 @@ where
     #[must_use]
     pub const fn initial_state(&self) -> &PointMassState {
         &self.initial_state
+    }
+}
+
+// ---------------------------------------------------------------------
+// Shared event-evaluation helper (Phase 3.2)
+// ---------------------------------------------------------------------
+
+impl<S, I, F, MM, E, SC> SimulationKernel<S, I, F, MM, E, SC>
+where
+    S: SimState,
+    I: Integrator<S>,
+    F: ForceModel<S>,
+    E: EnvironmentModel,
+    SC: StopCondition<S>,
+{
+    /// Active mission phase id (Phase 3.2).
+    #[must_use]
+    pub const fn current_phase(&self) -> Option<crate::events::PhaseId> {
+        self.current_phase
+    }
+
+    /// Wire a Phase-3.2 mission (event bindings + optional phase
+    /// graph) into a freshly-constructed kernel.
+    ///
+    /// `mission_graph.is_some()` initialises `current_phase` to the
+    /// graph's `initial`. Every transition's `event` must reference an
+    /// `EventBinding` in `events`; otherwise this function returns
+    /// `MissionGraphError::UnknownEvent`.
+    ///
+    /// Calling this with `events.is_empty()` and
+    /// `mission_graph.is_none()` is a no-op and the kernel stays in
+    /// legacy (byte-stable) mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::MissionGraph`] if the supplied
+    /// graph references events not present in `events`.
+    pub fn with_mission(
+        mut self,
+        events: Vec<crate::events::EventBinding>,
+        mission_graph: Option<crate::events::MissionPhaseGraph>,
+    ) -> Result<Self, SimulationError> {
+        if let Some(graph) = &mission_graph {
+            let event_ids: std::collections::BTreeSet<_> = events.iter().map(|b| b.id).collect();
+            for (i, transition) in graph.transitions.iter().enumerate() {
+                if !event_ids.contains(&transition.event) {
+                    return Err(SimulationError::MissionGraph(
+                        crate::events::MissionGraphError::UnknownEvent {
+                            event: transition.event,
+                            in_transition: i,
+                        },
+                    ));
+                }
+            }
+            self.current_phase = Some(graph.initial);
+        }
+        self.events = events;
+        self.mission_graph = mission_graph;
+        Ok(self)
+    }
+
+    /// Drain the per-step fired-event queue. The runner calls this
+    /// after each `step()` to fan events out to telemetry markers.
+    pub fn drain_events(&mut self) -> Vec<crate::events::FiredEvent> {
+        std::mem::take(&mut self.pending_events)
+    }
+
+    /// Evaluate every declared event binding against a post-step
+    /// `EventScalars` snapshot. Records fired bindings in
+    /// `pending_events` for the runner's drain queue, applies the
+    /// fired action (`EnterPhase` / `Stop` / `EmitTelemetryMarker`),
+    /// and updates the once-fired set.
+    ///
+    /// Caller must early-exit when `self.events.is_empty()` to
+    /// preserve legacy byte-stability.
+    #[allow(clippy::match_same_arms)] // Phase-3.2 deferred actions vs. runner-side markers
+    fn evaluate_events(
+        &mut self,
+        scalars: crate::events::EventScalars,
+        step: StepIndex,
+        time: SimTime,
+    ) {
+        use crate::events::{EventAction, EventEvalState, EventTrigger};
+        let eval_state = EventEvalState {
+            current: scalars,
+            previous: self.previous_event_scalars,
+            current_phase: self.current_phase,
+        };
+        for binding in &self.events {
+            if binding.once && self.fired_once_events.contains(&binding.id) {
+                continue;
+            }
+            if !binding.trigger.fired(&eval_state, time, step) {
+                continue;
+            }
+            // Record the fired event before applying the action so
+            // the runner sees marker emissions even on stop-action
+            // events.
+            self.pending_events.push(crate::events::FiredEvent {
+                binding_id: binding.id,
+                step,
+                time,
+                action: binding.action.clone(),
+            });
+            match &binding.action {
+                EventAction::EnterPhase(phase) => {
+                    self.current_phase = Some(*phase);
+                }
+                EventAction::EmitTelemetryMarker { .. } => {
+                    // Runner-side fan-out; kernel records the fire.
+                }
+                EventAction::Stop { label } => {
+                    self.stopped = Some(StopReason::MissionEnded {
+                        phase: self.current_phase,
+                        label: label.clone(),
+                    });
+                }
+                EventAction::EngineCommand
+                | EventAction::EffectorOverride
+                | EventAction::Separation
+                | EventAction::DeployRecovery => {
+                    // Reserved-but-unwired actions are parser-rejected
+                    // in 3.2; their presence in a live binding is a
+                    // programmer error. Treat as a no-op rather than
+                    // panic to preserve forward compatibility — the
+                    // future-phase handlers will replace this arm.
+                }
+            }
+            if binding.once {
+                self.fired_once_events.insert(binding.id);
+            }
+        }
+        self.previous_event_scalars = Some(scalars);
     }
 }
 
@@ -484,10 +662,12 @@ where
         }
         assert_clean_mxcsr()?;
         let initial_time_s = config.initial_state.time.as_seconds();
+        let initial_mass_kg = config.initial_state.mass_props.mass.get::<kilogram>();
         Ok(Self {
             state: config.initial_state,
             initial_state: config.initial_state,
             initial_time_s,
+            initial_mass_kg,
             step_index: StepIndex::ZERO,
             integrator: config.integrator,
             force_model: config.force_model,
@@ -498,6 +678,12 @@ where
             dt_s,
             scenario_seed: config.scenario_seed,
             stopped: None,
+            events: Vec::new(),
+            mission_graph: None,
+            current_phase: None,
+            pending_events: Vec::new(),
+            fired_once_events: std::collections::BTreeSet::new(),
+            previous_event_scalars: None,
         })
     }
 
@@ -605,6 +791,21 @@ where
 
         let canonical_time_s = self.initial_time_s + (next_step.value() as f64) * self.dt_s;
         let new_state = raw_new.with_time(SimTime::from_seconds(canonical_time_s));
+
+        // Phase-3.2 event evaluation. Early-exit when no events are
+        // declared so legacy byte-stability is preserved.
+        if !self.events.is_empty() {
+            let scalars = crate::events::EventScalars {
+                time_s: canonical_time_s,
+                altitude_m: new_state.position.vector.z,
+                vertical_velocity_m_s: new_state.velocity.vector.z,
+                mass_fraction: new_state.mass_props.mass.get::<kilogram>() / self.initial_mass_kg,
+                // Phase-3.2: see point-mass kernel comment — atmosphere
+                // is not yet wired into the trigger eval.
+                dynamic_pressure_pa: 0.0,
+            };
+            self.evaluate_events(scalars, next_step, SimTime::from_seconds(canonical_time_s));
+        }
 
         if let Err(source) =
             new_state.require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)

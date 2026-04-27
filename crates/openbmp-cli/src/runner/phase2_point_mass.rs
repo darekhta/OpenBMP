@@ -123,7 +123,13 @@ pub fn run(
         scenario_seed: document.time.seed,
     };
 
-    let mut kernel = SimulationKernel::new(config)?;
+    let kernel_base = SimulationKernel::new(config)?;
+    let mut kernel = if let Some(mission) = &document.mission {
+        let (events, graph) = crate::runner::mission::build_mission_runtime(mission)?;
+        kernel_base.with_mission(events, Some(graph))?
+    } else {
+        kernel_base
+    };
     let channel_set = Phase2ChannelSet::new(document)?;
     let breakdown_atmosphere = if channel_set.has_atmosphere {
         Some(UsStandard1976::new())
@@ -133,21 +139,25 @@ pub fn run(
     let metadata = build_schema_metadata(resolved_files);
     let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
+    // Step 0 has no fired events.
     record_step(
         &mut table,
         &kernel,
         &channel_set,
         &breakdown_vehicle,
         breakdown_atmosphere.as_ref(),
+        &[],
     )?;
     while kernel.stop_reason().is_none() {
         kernel.step()?;
+        let fired = kernel.drain_events();
         record_step(
             &mut table,
             &kernel,
             &channel_set,
             &breakdown_vehicle,
             breakdown_atmosphere.as_ref(),
+            &fired,
         )?;
     }
 
@@ -448,9 +458,14 @@ struct Phase2ChannelSet {
     atmosphere_speed_of_sound: Option<TelemetryChannel<f64>>,
     /// Force-model components in declared order.
     force_components: ForceComponentChannels,
+    /// Phase-3.2 mission-event telemetry markers, keyed by tag.
+    /// `BTreeMap` order is alphabetical for deterministic channel
+    /// allocation regardless of scenario-text declaration order.
+    mission_markers: BTreeMap<String, TelemetryChannel<bool>>,
 }
 
 impl Phase2ChannelSet {
+    #[allow(clippy::too_many_lines)] // Phase-2/3 channel inventory grows with each schema extension
     fn new(document: &ScenarioDocument) -> Result<Self, CliError> {
         let mut next_id: u64 = 1;
         let mut alloc = || {
@@ -544,6 +559,22 @@ impl Phase2ChannelSet {
             force_components.push((name.clone(), x_channel, y_channel, z_channel));
         }
 
+        // Phase-3.2 mission marker channels. `BTreeMap` ordering on
+        // tag keys keeps channel id allocation deterministic even
+        // when the scenario reorders `[[mission.events]]` blocks.
+        let mut mission_markers: BTreeMap<String, TelemetryChannel<bool>> = BTreeMap::new();
+        if let Some(mission) = &document.mission {
+            for tag in crate::runner::mission::marker_tags(mission) {
+                let channel = TelemetryChannel::<bool>::new(
+                    alloc(),
+                    format!("mission.marker.{tag}"),
+                    "bool",
+                    None::<&str>,
+                )?;
+                mission_markers.insert(tag, channel);
+            }
+        }
+
         Ok(Self {
             position_x,
             position_y,
@@ -558,6 +589,7 @@ impl Phase2ChannelSet {
             atmosphere_temperature,
             atmosphere_speed_of_sound,
             force_components,
+            mission_markers,
         })
     }
 
@@ -587,6 +619,10 @@ impl Phase2ChannelSet {
             channels.push(y.metadata().clone());
             channels.push(z.metadata().clone());
         }
+        // Marker channels last, in alphabetical (BTreeMap) order.
+        for marker in self.mission_markers.values() {
+            channels.push(marker.metadata().clone());
+        }
         Ok(TelemetrySchema::new(channels)?.with_metadata(metadata))
     }
 }
@@ -598,6 +634,7 @@ fn record_step<I, F, MM, E, SC>(
     channels: &Phase2ChannelSet,
     breakdown_vehicle: &BasicVehicle<PointMassState>,
     breakdown_atmosphere: Option<&UsStandard1976>,
+    fired_events: &[openbmp_sim::FiredEvent],
 ) -> Result<(), CliError>
 where
     I: openbmp_sim::Integrator<PointMassState>,
@@ -669,6 +706,23 @@ where
         row.insert(x_channel, component.x)?;
         row.insert(y_channel, component.y)?;
         row.insert(z_channel, component.z)?;
+    }
+
+    // Phase-3.2 marker channels: write `true` for any tag whose
+    // event fired this step, `false` for the rest. The marker
+    // channel order is alphabetical (BTreeMap iteration); the
+    // `fired_events` slice is in scenario-declared event order, so
+    // a tag may match more than one fired event in a single step
+    // (the row is `true` if any matched).
+    let mut fired_tags: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for fired in fired_events {
+        if let openbmp_sim::EventAction::EmitTelemetryMarker { tag } = &fired.action {
+            fired_tags.insert(tag.as_str());
+        }
+    }
+    for (tag, channel) in &channels.mission_markers {
+        let value = fired_tags.contains(tag.as_str());
+        row.insert(channel, value)?;
     }
 
     table.push_row(row)?;
