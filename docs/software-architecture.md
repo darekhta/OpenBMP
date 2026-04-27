@@ -518,6 +518,24 @@ The graph and the event list together replace the Phase-1 ad-hoc
 "hard-coded apogee detection in the kernel". The kernel keeps the same
 fixed step shape and just consults the resolved event list each tick.
 
+> **Phase-3.2 status note.** The Phase-3.2 implementation in
+> `openbmp-sim::events` ships every variant of `BuiltInEventTrigger`
+> except `Scripted`, which is rejected at scenario parse time with a
+> typed deferral error pointing at Phase 3.4 alongside `ControlEffector`.
+> The four `EventAction` variants `EngineCommand`, `EffectorOverride`,
+> `Separation`, and `DeployRecovery` exist in the enum (so 3.4 / 3.6 /
+> 3.7 / 3.9 do not need to expand it) but are likewise parser-rejected
+> in 3.2. `EnterPhase`, `EmitTelemetryMarker`, and a new `Stop` action
+> are wired end-to-end. `EventTrigger::fired` takes an `EventEvalState`
+> snapshot rather than the full `VehicleState` shown above — the
+> snapshot carries only the derived scalars triggers need (altitude,
+> vertical velocity, mass fraction, dynamic pressure) plus the
+> previous-step values for crossing detection. The
+> `at_dynamic_pressure` trigger is a partial Phase-3.2 deliverable:
+> the kernel does not yet wire the atmosphere model into the trigger
+> eval, so dynamic pressure is reported as `0.0` until Phase 3.4
+> hooks atmosphere into the event evaluator.
+
 ## Numerical Integrators
 
 `openbmp-sim` ships at minimum:

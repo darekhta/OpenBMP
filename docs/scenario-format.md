@@ -458,3 +458,108 @@ openbmp check: ok — niskanen-2009-chapter6 (Checked)
 The digest is the SHA-256 of the file bytes encoded as 64 lower-case
 hex characters; pin strings are normalised before comparison so
 upper-case input still verifies.
+
+## Phase 3 Extensions
+
+Phase 3.2 adds the optional declarative `[mission]` block. When
+declared, the runner builds an event-driven mission graph from the
+scenario; legacy scenarios without `[mission]` parse and run
+identically to pre-3.2.
+
+### Mission block
+
+The `[mission]` block declares phases, events, and transitions. The
+canonical example mirrors the
+[`niskanen-2009-chapter6-with-mission.toml`](../scenarios/sounding-rocket/niskanen-2009-chapter6-with-mission.toml)
+scenario:
+
+```toml
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "powered + coast ascent"
+
+[[mission.phases]]
+id    = "descent"
+label = "post-apogee descent"
+
+[[mission.events]]
+id      = "at_apogee_marker"
+trigger = { kind = "at_apogee" }
+action  = { kind = "emit_telemetry_marker", tag = "at_apogee_marker" }
+once    = true            # default; may be omitted
+
+[[mission.transitions]]
+from  = "ascent"
+to    = "descent"
+event = "at_apogee_marker"
+```
+
+#### Trigger vocabulary
+
+Triggers are crossing detectors: each fires on the step where the
+monitored value transitions across the trigger threshold, never
+re-firing while the value remains on the same side. All triggers
+return `false` on step 0 because no previous-step snapshot exists.
+
+| `trigger.kind` | Required fields | Semantics |
+|---|---|---|
+| `at_time` | `time_s: f64` | Fires when post-step time crosses `time_s`. |
+| `at_altitude_ascending` | `altitude_m: f64` | Fires when altitude crosses up through `altitude_m` (previous below, current at or above). |
+| `at_altitude_descending` | `altitude_m: f64` | Fires when altitude crosses down through `altitude_m`. |
+| `at_apogee` | — | Fires when vertical velocity flips from `> 0` to `<= 0`. |
+| `at_mass_fraction` | `remaining: f64` (in `[0, 1]`) | Fires when mass fraction (current / initial) drops to or below `remaining`. |
+| `at_dynamic_pressure` | `pressure_pa: f64`, `falling: bool` | Fires on rising-edge (`falling = false`) or falling-edge crossing of `pressure_pa`. **Phase-3.2 limitation:** the kernel does not yet wire the atmosphere model into the trigger eval, so dynamic pressure is reported as `0.0` regardless of altitude — this trigger will not fire as expected until Phase 3.4 lands the atmosphere hook. |
+
+The `kind = "scripted"` trigger is rejected at parse time with a
+typed deferral error: scripted triggers ship in Phase 3.4 alongside
+`ControlEffector`.
+
+#### Action vocabulary
+
+| `action.kind` | Required fields | Semantics |
+|---|---|---|
+| `enter_phase` | `phase: string` (declared phase id) | Sets the active mission phase; visible via runner-side telemetry / diagnostics. |
+| `emit_telemetry_marker` | `tag: string` (snake_case) | Allocates a `bool` telemetry channel `mission.marker.<tag>`; runner writes `true` on every step the event fires, `false` on every other step. Channel allocation is alphabetical by tag for declaration-order independence. |
+| `stop` | `label: string` | Halts the run with `StopReason::MissionEnded { label }`. Distinct from `EndTime` so determinism telemetry can distinguish CLI-driven stops from scenario-driven mission ends. |
+
+The four reserved actions `engine_command` / `effector_override` /
+`separation` / `deploy_recovery` are rejected at parse time with
+typed deferral errors pointing at Phase 3.6 / 3.4 / 3.6 / 3.9.
+
+#### `once` semantics
+
+`once = true` (default) makes the binding fire at most once per
+simulation run. `once = false` allows the binding to re-fire on
+every crossing — useful when a trajectory may legitimately cross
+the same threshold more than once (e.g. multi-stage altitude
+descent).
+
+#### Determinism
+
+Phase ids and event ids are FNV-1a-64 hashes of the canonical
+scenario paths `mission.phases.<id>` and `mission.events.<id>`.
+Reordering `[[mission.phases]]`, `[[mission.events]]`, or
+`[[mission.transitions]]` blocks in the TOML produces an identical
+graph, identical bindings, and identical Parquet bytes. The
+phase graph is canonicalised by `(longest-path-depth-from-initial,
+PhaseId.value())`; transitions by `(from-depth, to-depth,
+EventId.value())`. Cycles, unreachable phases, unknown id
+references, and duplicate phase ids are rejected at scenario load
+time with `ScenarioError::MissionGraph`.
+
+#### Validation invariants
+
+The parser enforces:
+
+- `mission.initial_phase` references a declared phase id.
+- All phase ids are unique and non-empty.
+- All event ids are unique.
+- All `transitions[i].{from, to}` reference declared phases.
+- All `transitions[i].event` references a declared event.
+- Numeric trigger fields are finite; `remaining` is in `[0, 1]`;
+  `pressure_pa` is strictly positive.
+- The graph is acyclic and every phase is reachable from
+  `initial_phase`.
