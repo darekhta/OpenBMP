@@ -143,7 +143,7 @@ impl<G: GravityModel> ForceModel<RigidBodyState> for GravityForceAdapter<G> {
 /// [`ForceModel<PointMassState>`].
 ///
 /// Phase-2 vertical-launch convention: thrust is applied along ECI
-/// `+z`. Future rigid-body adapter rotates body-`+x` thrust into
+/// `+z`. The rigid-body adapter rotates body-`+z` thrust into
 /// ECI via the attitude quaternion.
 #[derive(Copy, Clone, Debug)]
 pub struct MotorThrustForceAdapter<M> {

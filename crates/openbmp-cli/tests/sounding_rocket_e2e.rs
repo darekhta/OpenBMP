@@ -116,6 +116,43 @@ fn run_byte_stable_across_two_invocations() {
     );
 }
 
+#[test]
+fn rigid_run_byte_stable_across_two_invocations() {
+    // Phase-3.1 determinism gate: the same rigid-body scenario
+    // invoked twice produces byte-identical Parquet on the reference
+    // platform. This is the CLI-side mirror of the rigid kernel
+    // byte-stability gate.
+    let scenario =
+        workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6-rigid.toml");
+    let temp_a = tempdir("niskanen-rigid-stable-a");
+    let temp_b = tempdir("niskanen-rigid-stable-b");
+    let parquet_a = temp_a.path().join("a.parquet");
+    let parquet_b = temp_b.path().join("b.parquet");
+
+    for parquet in [&parquet_a, &parquet_b] {
+        let mut cmd = openbmp();
+        cmd.arg("run")
+            .arg(&scenario)
+            .arg("--output-parquet")
+            .arg(parquet);
+        cmd.assert().success();
+    }
+
+    let bytes_a = fs::read(&parquet_a).expect("read rigid parquet a");
+    let bytes_b = fs::read(&parquet_b).expect("read rigid parquet b");
+    assert_eq!(
+        bytes_a.len(),
+        bytes_b.len(),
+        "Rigid Niskanen Parquet outputs differ in length: {} vs {}",
+        bytes_a.len(),
+        bytes_b.len(),
+    );
+    assert!(
+        bytes_a == bytes_b,
+        "Rigid Niskanen Parquet outputs differ at the byte level - runner is not deterministic",
+    );
+}
+
 /// Phase-3.1: the rigid-body Niskanen scenario produces an apogee
 /// physically equivalent to the point-mass case. With identity
 /// initial orientation, zero angular velocity, `ZeroMoment`, and

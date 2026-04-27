@@ -325,9 +325,10 @@ the sub-phase; multiply by your own discount factor.
     MotorThrustForceAdapter<M>` — body-frame thrust along `+z`
     transformed to ECI via `state.orientation.rotate(thrust_body)`.
   - `impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for
-    AxialDragForceAdapter<Atm>` — wind-relative airspeed in body
-    frame uses `state.angular_velocity.vector` for the per-aero-point
-    velocity contribution; sub-zero altitude clamp is unchanged.
+    AxialDragForceAdapter<Atm>` — Phase-3.1 rigid drag delegates to
+    the shared translational ECI-velocity axial-drag computation;
+    aero-point rotational velocity, wind-relative body-frame
+    sideslip, and aero moments remain Phase-3 follow-ons.
   - `impl<M: Motor> RigidMassModel for MotorMassAdapter<M>` —
     `MassProperties` with constant inertia tensor (Phase-2 motors do
     not publish inertia derivatives; deferred to Phase 3.6 engines).
@@ -337,10 +338,10 @@ the sub-phase; multiply by your own discount factor.
   `vehicle.kind = "rigid_body"`, route to the new module.
 - `crates/openbmp-scenario/src/document.rs`: extend the rigid-body
   initial-state fields (already present from Phase 2.10) with
-  optional `inertia_tensor_body_kg_m2: [[f64; 3]; 3]` for full
-  mass-property declaration. Default is the diagonal identity
-  scaled by `mass_kg / 12 * length²` (a reasonable rod-shape
-  default for a sounding rocket).
+  required `inertia_tensor_body_kg_m2: [[f64; 3]; 3]` for full
+  mass-property declaration. The parser performs finite, symmetric,
+  and positive-diagonal checks; kernel mass-property construction
+  performs the full positive-definite and triangle-inequality checks.
 
 **Tests.**
 

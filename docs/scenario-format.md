@@ -275,7 +275,7 @@ The canonical worked example is
 
 ### Rigid-body initial state
 
-When `[vehicle].kind = "rigid_body"`, two additional fields are required:
+When `[vehicle].kind = "rigid_body"`, three additional fields are required:
 
 ```toml
 [vehicle]
@@ -285,11 +285,19 @@ initial_position_eci_m               = [0.0, 0.0, 0.0]
 initial_velocity_eci_m_s             = [0.0, 0.0, 0.0]
 initial_quaternion_body_to_eci_xyzw  = [0.0, 0.0, 0.0, 1.0]
 initial_angular_velocity_body_rad_s  = [0.0, 0.0, 0.0]
+inertia_tensor_body_kg_m2            = [
+  [0.10, 0.0,  0.0],
+  [0.0,  0.10, 0.0],
+  [0.0,  0.0,  0.01],
+]
 ```
 
 The quaternion is the body-to-ECI rotation in `[x, y, z, w]` order;
-the parser checks unit-norm to 1e-9. The two rigid-body fields are
-rejected when `kind = "point_mass"`.
+the parser checks unit-norm to 1e-9. The inertia tensor is declared in
+body axes as a 3x3 kg m^2 matrix; the parser requires finite symmetric
+entries with strictly positive diagonal moments, and rigid-kernel
+construction applies the full physical validity checks. The
+rigid-body-only fields are rejected when `kind = "point_mass"`.
 
 ### Gravity coefficients
 
