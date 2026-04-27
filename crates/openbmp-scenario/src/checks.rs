@@ -102,6 +102,23 @@ pub(crate) fn require_positive_u32(field: &str, value: u32) -> Result<(), Scenar
     }
 }
 
+pub(crate) fn require_in_range(
+    field: &str,
+    value: f64,
+    min: f64,
+    max: f64,
+) -> Result<(), ScenarioError> {
+    require_finite(field, value)?;
+    if value < min || value > max {
+        return Err(ScenarioError::InvalidNumber {
+            field: field.to_owned(),
+            value,
+            rule: "must be within declared range",
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_frame_profile(field: &str, value: &str) -> Result<(), ScenarioError> {
     require_supported(
         field,

@@ -11,9 +11,9 @@ use openbmp_core::ValidationStatus;
 use serde::Deserialize;
 
 use crate::checks::{
-    require_finite, require_finite_array, require_non_empty, require_non_empty_list,
-    require_positive, require_positive_u32, require_supported, require_unique,
-    validate_frame_profile,
+    require_finite, require_finite_array, require_in_range, require_non_empty,
+    require_non_empty_list, require_positive, require_positive_u32, require_supported,
+    require_unique, validate_frame_profile,
 };
 use crate::error::ScenarioError;
 use crate::registry::{ModelRegistry, ModelRole};
@@ -46,12 +46,22 @@ pub struct ScenarioDocument {
     pub epoch: Option<EpochConfig>,
     /// Optional frame profile metadata.
     pub frames: Option<FramesConfig>,
+    /// Optional aerodynamic deck reference.
+    pub aero: Option<AeroConfig>,
+    /// Optional propulsion table.
+    pub propulsion: Option<PropulsionConfig>,
+    /// Optional structured wind block (overrides
+    /// [`EnvironmentConfig::wind`] when both are present).
+    pub wind: Option<WindConfig>,
+    /// Optional structured atmosphere block (overrides
+    /// [`EnvironmentConfig::atmosphere`] when both are present).
+    pub atmosphere: Option<AtmosphereConfig>,
     /// Optional solver profile metadata.
     pub solver: Option<SolverConfig>,
     /// Optional data-package sidecar paths.
     pub data_packages: Option<BTreeMap<String, PathBuf>>,
-    /// Optional synthetic sensor hook table.
-    pub sensors: Option<BTreeMap<String, toml::Value>>,
+    /// Optional synthetic sensor table.
+    pub sensors: Option<BTreeMap<String, SensorConfig>>,
     /// Optional virtual flight-controller hook table.
     pub fc: Option<BTreeMap<String, toml::Value>>,
     /// Optional fault-injection hook table.
@@ -76,7 +86,42 @@ impl ScenarioDocument {
         self.forces.validate(registry)?;
         self.telemetry.validate()?;
         if let Some(frames) = &self.frames {
-            validate_frame_profile("frames.profile", &frames.profile)?;
+            frames.validate()?;
+        }
+        if let Some(aero) = &self.aero {
+            aero.validate()?;
+        }
+        if let Some(propulsion) = &self.propulsion {
+            propulsion.validate(registry)?;
+        }
+        if let Some(wind) = &self.wind {
+            wind.validate(registry)?;
+            if self.environment.wind != "none" && self.environment.wind != wind.kind {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "environment.wind".to_owned(),
+                    value_a: self.environment.wind.clone(),
+                    field_b: "wind.kind".to_owned(),
+                    value_b: wind.kind.clone(),
+                });
+            }
+        }
+        if let Some(atmosphere) = &self.atmosphere {
+            atmosphere.validate(registry)?;
+            if self.environment.atmosphere != "none"
+                && self.environment.atmosphere != atmosphere.kind
+            {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "environment.atmosphere".to_owned(),
+                    value_a: self.environment.atmosphere.clone(),
+                    field_b: "atmosphere.kind".to_owned(),
+                    value_b: atmosphere.kind.clone(),
+                });
+            }
+        }
+        if let Some(sensors) = &self.sensors {
+            for (name, config) in sensors {
+                config.validate(name, registry)?;
+            }
         }
         if let Some(solver) = &self.solver {
             solver.validate()?;
@@ -170,11 +215,17 @@ pub struct VehicleConfig {
     pub initial_position_eci_m: [f64; 3],
     /// Initial inertial velocity in metres per second.
     pub initial_velocity_eci_m_s: [f64; 3],
+    /// Initial body-to-ECI quaternion `[x, y, z, w]`. Required when
+    /// `kind = "rigid_body"`, rejected otherwise.
+    pub initial_quaternion_body_to_eci_xyzw: Option<[f64; 4]>,
+    /// Initial body-frame angular velocity in rad/s. Required when
+    /// `kind = "rigid_body"`, rejected otherwise.
+    pub initial_angular_velocity_body_rad_s: Option<[f64; 3]>,
 }
 
 impl VehicleConfig {
     fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
-        registry.resolve(ModelRole::Vehicle, &self.kind)?;
+        let descriptor = registry.resolve(ModelRole::Vehicle, &self.kind)?;
         require_positive("vehicle.mass_kg", self.mass_kg)?;
         require_finite_array(
             "vehicle.initial_position_eci_m",
@@ -184,6 +235,50 @@ impl VehicleConfig {
             "vehicle.initial_velocity_eci_m_s",
             &self.initial_velocity_eci_m_s,
         )?;
+        match descriptor.name.as_str() {
+            "rigid_body" => {
+                let quaternion = self.initial_quaternion_body_to_eci_xyzw.ok_or_else(|| {
+                    ScenarioError::MissingRequiredField {
+                        field: "vehicle.initial_quaternion_body_to_eci_xyzw".to_owned(),
+                        role: ModelRole::Vehicle,
+                        name: "rigid_body".to_owned(),
+                    }
+                })?;
+                require_finite_array("vehicle.initial_quaternion_body_to_eci_xyzw", &quaternion)?;
+                let norm_sq: f64 = quaternion.iter().map(|q| q * q).sum();
+                if (norm_sq - 1.0).abs() > 1.0e-9 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: "vehicle.initial_quaternion_body_to_eci_xyzw".to_owned(),
+                        value: norm_sq,
+                        rule: "must be a unit quaternion (||q||² = 1)",
+                    });
+                }
+                let angular = self.initial_angular_velocity_body_rad_s.ok_or_else(|| {
+                    ScenarioError::MissingRequiredField {
+                        field: "vehicle.initial_angular_velocity_body_rad_s".to_owned(),
+                        role: ModelRole::Vehicle,
+                        name: "rigid_body".to_owned(),
+                    }
+                })?;
+                require_finite_array("vehicle.initial_angular_velocity_body_rad_s", &angular)?;
+            }
+            other => {
+                if self.initial_quaternion_body_to_eci_xyzw.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "vehicle.initial_quaternion_body_to_eci_xyzw".to_owned(),
+                        role: ModelRole::Vehicle,
+                        name: other.to_owned(),
+                    });
+                }
+                if self.initial_angular_velocity_body_rad_s.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "vehicle.initial_angular_velocity_body_rad_s".to_owned(),
+                        role: ModelRole::Vehicle,
+                        name: other.to_owned(),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -197,7 +292,16 @@ pub struct EnvironmentConfig {
     /// Gravity model name.
     pub gravity: String,
     /// Constant gravity magnitude in metres per second squared.
+    /// Required when `gravity = "constant"`.
     pub gravity_m_s2: Option<f64>,
+    /// Earth gravitational parameter in m³/s². Required when
+    /// `gravity = "point_mass"` or `gravity = "j2"`.
+    pub mu_m3_s2: Option<f64>,
+    /// Equatorial radius in metres. Required when `gravity = "j2"`.
+    pub r_e_m: Option<f64>,
+    /// J2 zonal coefficient (dimensionless). Required when
+    /// `gravity = "j2"`; defaults to the WGS84 value when absent.
+    pub j2: Option<f64>,
     /// Atmosphere model name.
     pub atmosphere: String,
     /// Wind model name.
@@ -209,16 +313,78 @@ pub struct EnvironmentConfig {
 impl EnvironmentConfig {
     fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
         validate_frame_profile("environment.frame_profile", &self.frame_profile)?;
-        registry.resolve(ModelRole::Gravity, &self.gravity)?;
-        if self.gravity == "constant" {
-            let gravity_m_s2 = self
-                .gravity_m_s2
-                .ok_or_else(|| ScenarioError::InvalidNumber {
-                    field: "environment.gravity_m_s2".to_owned(),
-                    value: f64::NAN,
-                    rule: "required for constant gravity",
-                })?;
-            require_finite("environment.gravity_m_s2", gravity_m_s2)?;
+        let gravity_descriptor = registry.resolve(ModelRole::Gravity, &self.gravity)?;
+        match gravity_descriptor.name.as_str() {
+            "constant" => {
+                let gravity_m_s2 =
+                    self.gravity_m_s2
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: "environment.gravity_m_s2".to_owned(),
+                            role: ModelRole::Gravity,
+                            name: "constant".to_owned(),
+                        })?;
+                require_finite("environment.gravity_m_s2", gravity_m_s2)?;
+                if self.mu_m3_s2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "environment.mu_m3_s2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "constant".to_owned(),
+                    });
+                }
+                if self.r_e_m.is_some() || self.j2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "environment.r_e_m / environment.j2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "constant".to_owned(),
+                    });
+                }
+            }
+            "point_mass" => {
+                let mu = self
+                    .mu_m3_s2
+                    .ok_or_else(|| ScenarioError::MissingRequiredField {
+                        field: "environment.mu_m3_s2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "point_mass".to_owned(),
+                    })?;
+                require_positive("environment.mu_m3_s2", mu)?;
+                if self.gravity_m_s2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "environment.gravity_m_s2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "point_mass".to_owned(),
+                    });
+                }
+            }
+            "j2" => {
+                let mu = self
+                    .mu_m3_s2
+                    .ok_or_else(|| ScenarioError::MissingRequiredField {
+                        field: "environment.mu_m3_s2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "j2".to_owned(),
+                    })?;
+                require_positive("environment.mu_m3_s2", mu)?;
+                let r_e = self
+                    .r_e_m
+                    .ok_or_else(|| ScenarioError::MissingRequiredField {
+                        field: "environment.r_e_m".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "j2".to_owned(),
+                    })?;
+                require_positive("environment.r_e_m", r_e)?;
+                if let Some(j2) = self.j2 {
+                    require_finite("environment.j2", j2)?;
+                }
+                if self.gravity_m_s2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "environment.gravity_m_s2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "j2".to_owned(),
+                    });
+                }
+            }
+            _ => {}
         }
         registry.resolve(ModelRole::Atmosphere, &self.atmosphere)?;
         registry.resolve(ModelRole::Wind, &self.wind)?;
@@ -302,11 +468,275 @@ pub struct EpochConfig {
 }
 
 /// Optional frames table.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FramesConfig {
     /// Frame profile.
     pub profile: String,
+    /// Optional declared scenario local origin (geodetic).
+    pub local_origin: Option<LocalOriginConfig>,
+}
+
+impl FramesConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        validate_frame_profile("frames.profile", &self.profile)?;
+        if let Some(local_origin) = &self.local_origin {
+            local_origin.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// Geodetic launch-site reference declared by the scenario.
+///
+/// Phase-2 scenarios that select `frames.profile =
+/// "wgs84-uniform-rotation"` declare a local origin so altitude, NED
+/// wind, and vertical-launch initialisation are anchored to a stable
+/// reference. The Phase-2.11 runner consumes this block; Phase 2.10
+/// only validates the field shapes.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LocalOriginConfig {
+    /// Geodetic latitude in degrees, range \[−90, 90\].
+    pub latitude_deg: f64,
+    /// Geodetic longitude in degrees, range \[−180, 180\].
+    pub longitude_deg: f64,
+    /// WGS84 height in metres above the reference ellipsoid.
+    pub height_m: f64,
+    /// Provenance string for the declared origin.
+    pub source: String,
+}
+
+impl LocalOriginConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_in_range(
+            "frames.local_origin.latitude_deg",
+            self.latitude_deg,
+            -90.0,
+            90.0,
+        )?;
+        require_in_range(
+            "frames.local_origin.longitude_deg",
+            self.longitude_deg,
+            -180.0,
+            180.0,
+        )?;
+        require_finite("frames.local_origin.height_m", self.height_m)?;
+        require_non_empty("frames.local_origin.source", &self.source)?;
+        Ok(())
+    }
+}
+
+/// Aerodynamic deck reference.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroConfig {
+    /// Path to a Phase-2.5 aero deck TOML file (resolved relative to
+    /// the scenario directory).
+    pub deck: PathBuf,
+    /// Optional pinned SHA-256 digest (lower-case hex). When present,
+    /// a mismatch with the file's actual digest fails closed.
+    pub deck_sha256: Option<String>,
+}
+
+impl AeroConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if self.deck.as_os_str().is_empty() {
+            return Err(ScenarioError::EmptyField {
+                field: "aero.deck".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Propulsion table.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropulsionConfig {
+    /// Optional motor reference.
+    pub motor: Option<MotorConfig>,
+}
+
+impl PropulsionConfig {
+    fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
+        if let Some(motor) = &self.motor {
+            motor.validate(registry)?;
+        }
+        Ok(())
+    }
+}
+
+/// Motor reference inside `[propulsion.motor]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MotorConfig {
+    /// Path to a Phase-2.6 motor TOML file (resolved relative to the
+    /// scenario directory).
+    pub file: PathBuf,
+    /// Ignition time in seconds since scenario start.
+    pub ignite_at_s: f64,
+    /// Optional motor variant (defaults to whatever the motor file
+    /// declares; when present, must match).
+    pub variant: Option<String>,
+    /// Optional pinned SHA-256 digest of the motor file.
+    pub file_sha256: Option<String>,
+}
+
+impl MotorConfig {
+    fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
+        if self.file.as_os_str().is_empty() {
+            return Err(ScenarioError::EmptyField {
+                field: "propulsion.motor.file".to_owned(),
+            });
+        }
+        require_finite("propulsion.motor.ignite_at_s", self.ignite_at_s)?;
+        if let Some(variant) = &self.variant {
+            registry.resolve(ModelRole::Motor, variant)?;
+        }
+        Ok(())
+    }
+}
+
+/// Structured wind block.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WindConfig {
+    /// Wind model name (must match a registered wind model).
+    pub kind: String,
+    /// Constant wind in NED frame, m/s. Required when
+    /// `kind = "constant"`.
+    pub wind_ned_m_s: Option<[f64; 3]>,
+}
+
+impl WindConfig {
+    fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
+        registry.resolve(ModelRole::Wind, &self.kind)?;
+        match self.kind.as_str() {
+            "constant" => {
+                let vector =
+                    self.wind_ned_m_s
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: "wind.wind_ned_m_s".to_owned(),
+                            role: ModelRole::Wind,
+                            name: "constant".to_owned(),
+                        })?;
+                require_finite_array("wind.wind_ned_m_s", &vector)?;
+            }
+            other => {
+                if self.wind_ned_m_s.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "wind.wind_ned_m_s".to_owned(),
+                        role: ModelRole::Wind,
+                        name: other.to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Structured atmosphere block.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AtmosphereConfig {
+    /// Atmosphere model name (must match a registered atmosphere model).
+    pub kind: String,
+    /// Density in kg/m³. Required when `kind = "isothermal"`.
+    pub density_kg_m3: Option<f64>,
+    /// Pressure in pascals. Required when `kind = "isothermal"`.
+    pub pressure_pa: Option<f64>,
+    /// Temperature in kelvin. Required when `kind = "isothermal"`.
+    pub temperature_k: Option<f64>,
+}
+
+impl AtmosphereConfig {
+    fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
+        registry.resolve(ModelRole::Atmosphere, &self.kind)?;
+        match self.kind.as_str() {
+            "isothermal" => {
+                let density =
+                    self.density_kg_m3
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: "atmosphere.density_kg_m3".to_owned(),
+                            role: ModelRole::Atmosphere,
+                            name: "isothermal".to_owned(),
+                        })?;
+                require_positive("atmosphere.density_kg_m3", density)?;
+                let pressure =
+                    self.pressure_pa
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: "atmosphere.pressure_pa".to_owned(),
+                            role: ModelRole::Atmosphere,
+                            name: "isothermal".to_owned(),
+                        })?;
+                require_positive("atmosphere.pressure_pa", pressure)?;
+                let temperature =
+                    self.temperature_k
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: "atmosphere.temperature_k".to_owned(),
+                            role: ModelRole::Atmosphere,
+                            name: "isothermal".to_owned(),
+                        })?;
+                require_positive("atmosphere.temperature_k", temperature)?;
+            }
+            other => {
+                if self.density_kg_m3.is_some()
+                    || self.pressure_pa.is_some()
+                    || self.temperature_k.is_some()
+                {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "atmosphere.density_kg_m3 / pressure_pa / temperature_k".to_owned(),
+                        role: ModelRole::Atmosphere,
+                        name: other.to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Synthetic-sensor entry under `[sensors.<name>]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SensorConfig {
+    /// Sensor kind (must match a registered sensor model).
+    pub kind: String,
+    /// Path to the sensor's noise-budget TOML file (Phase-2.7 schema).
+    /// Required for `kind = "imu"` and `kind = "barometer"`, rejected
+    /// for `kind = "ideal_state"`.
+    pub file: Option<PathBuf>,
+    /// Optional pinned SHA-256 digest of the sensor noise budget file.
+    pub file_sha256: Option<String>,
+}
+
+impl SensorConfig {
+    fn validate(&self, name: &str, registry: &ModelRegistry) -> Result<(), ScenarioError> {
+        registry.resolve(ModelRole::Sensor, &self.kind)?;
+        match self.kind.as_str() {
+            "ideal_state" => {
+                if self.file.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: format!("sensors.{name}.file"),
+                        role: ModelRole::Sensor,
+                        name: "ideal_state".to_owned(),
+                    });
+                }
+            }
+            kind => {
+                if self.file.is_none() {
+                    return Err(ScenarioError::MissingRequiredField {
+                        field: format!("sensors.{name}.file"),
+                        role: ModelRole::Sensor,
+                        name: kind.to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Optional batch metadata.

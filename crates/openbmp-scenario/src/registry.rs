@@ -25,6 +25,10 @@ pub enum ModelRole {
     Controller,
     /// Force-model entry in deterministic force ordering.
     Force,
+    /// Synthetic sensor model.
+    Sensor,
+    /// Propulsion motor model.
+    Motor,
 }
 
 impl ModelRole {
@@ -38,6 +42,8 @@ impl ModelRole {
             Self::Wind => "wind",
             Self::Controller => "controller",
             Self::Force => "force",
+            Self::Sensor => "sensor",
+            Self::Motor => "motor",
         }
     }
 }
@@ -91,6 +97,46 @@ impl ModelRegistry {
         ])
     }
 
+    /// Phase-2 registry.
+    ///
+    /// Extends the Phase-1 registry with the L2 physics models shipped
+    /// across Phase 2.2 through 2.7: `j2` and `point_mass` gravity,
+    /// `us_standard_1976` and `isothermal` atmosphere, `constant` wind,
+    /// `aero` and `thrust` force terms, the `rigid_body` vehicle kind,
+    /// the three synthetic sensors (`ideal_state`, `imu`, `barometer`),
+    /// and the `solid` motor variant.
+    #[must_use]
+    pub fn phase2() -> Self {
+        Self::from_descriptors([
+            // Phase 1 entries.
+            ModelDescriptor::new("point_mass", ModelRole::Vehicle),
+            ModelDescriptor::new("constant", ModelRole::Gravity),
+            ModelDescriptor::new("none", ModelRole::Atmosphere),
+            ModelDescriptor::new("none", ModelRole::Wind),
+            ModelDescriptor::new("noop", ModelRole::Controller),
+            ModelDescriptor::new("gravity", ModelRole::Force),
+            // Phase 2 vehicle.
+            ModelDescriptor::new("rigid_body", ModelRole::Vehicle),
+            // Phase 2.2 gravity.
+            ModelDescriptor::new("point_mass", ModelRole::Gravity),
+            ModelDescriptor::new("j2", ModelRole::Gravity),
+            // Phase 2.3 atmosphere.
+            ModelDescriptor::new("isothermal", ModelRole::Atmosphere),
+            ModelDescriptor::new("us_standard_1976", ModelRole::Atmosphere),
+            // Phase 2.4 wind.
+            ModelDescriptor::new("constant", ModelRole::Wind),
+            // Phase 2.5/2.6 force terms.
+            ModelDescriptor::new("aero", ModelRole::Force),
+            ModelDescriptor::new("thrust", ModelRole::Force),
+            // Phase 2.7 sensors.
+            ModelDescriptor::new("ideal_state", ModelRole::Sensor),
+            ModelDescriptor::new("imu", ModelRole::Sensor),
+            ModelDescriptor::new("barometer", ModelRole::Sensor),
+            // Phase 2.6 motor variants.
+            ModelDescriptor::new("solid", ModelRole::Motor),
+        ])
+    }
+
     fn from_descriptors<I>(descriptors: I) -> Self
     where
         I: IntoIterator<Item = ModelDescriptor>,
@@ -140,7 +186,7 @@ impl ModelRegistry {
 
 impl Default for ModelRegistry {
     fn default() -> Self {
-        Self::phase1()
+        Self::phase2()
     }
 }
 
@@ -180,5 +226,51 @@ mod tests {
             }
             other => panic!("unexpected error variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn phase2_registers_aero_thrust_and_rigid_body() {
+        let registry = ModelRegistry::phase2();
+        registry
+            .resolve(ModelRole::Vehicle, "rigid_body")
+            .expect("rigid_body");
+        registry.resolve(ModelRole::Force, "aero").expect("aero");
+        registry
+            .resolve(ModelRole::Force, "thrust")
+            .expect("thrust");
+        registry
+            .resolve(ModelRole::Atmosphere, "us_standard_1976")
+            .expect("us_standard_1976");
+        registry
+            .resolve(ModelRole::Wind, "constant")
+            .expect("wind constant");
+        registry.resolve(ModelRole::Sensor, "imu").expect("imu");
+        registry.resolve(ModelRole::Motor, "solid").expect("solid");
+    }
+
+    #[test]
+    fn phase2_resolves_same_name_under_each_registered_role() {
+        // `constant` is both a gravity and a wind model in Phase 2.
+        // The resolver must return the role-specific entry, not bail
+        // with WrongModelRole.
+        let registry = ModelRegistry::phase2();
+        let gravity = registry.resolve(ModelRole::Gravity, "constant").unwrap();
+        assert_eq!(gravity.role, ModelRole::Gravity);
+        let wind = registry.resolve(ModelRole::Wind, "constant").unwrap();
+        assert_eq!(wind.role, ModelRole::Wind);
+    }
+
+    #[test]
+    fn phase2_keeps_phase1_entries() {
+        let registry = ModelRegistry::phase2();
+        registry
+            .resolve(ModelRole::Vehicle, "point_mass")
+            .expect("point_mass");
+        registry
+            .resolve(ModelRole::Gravity, "constant")
+            .expect("constant gravity");
+        registry
+            .resolve(ModelRole::Force, "gravity")
+            .expect("gravity force");
     }
 }

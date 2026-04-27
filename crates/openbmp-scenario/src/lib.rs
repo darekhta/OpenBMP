@@ -27,9 +27,10 @@ pub mod scenario;
 pub mod solver;
 
 pub use document::{
-    BatchConfig, EnvironmentConfig, EpochConfig, ForcesConfig, FramesConfig, MetaConfig,
-    OpenBmpHeader, SUPPORTED_SCENARIO_VERSION, ScenarioDocument, TelemetryConfig,
-    TelemetryOutputConfig, TimeConfig, ValidationConfig, VehicleConfig,
+    AeroConfig, AtmosphereConfig, BatchConfig, EnvironmentConfig, EpochConfig, ForcesConfig,
+    FramesConfig, LocalOriginConfig, MetaConfig, MotorConfig, OpenBmpHeader, PropulsionConfig,
+    SUPPORTED_SCENARIO_VERSION, ScenarioDocument, SensorConfig, TelemetryConfig,
+    TelemetryOutputConfig, TimeConfig, ValidationConfig, VehicleConfig, WindConfig,
 };
 pub use error::ScenarioError;
 pub use files::ResolvedFile;

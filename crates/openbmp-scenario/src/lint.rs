@@ -44,10 +44,15 @@ impl ForbiddenTerm {
 }
 
 const UNIT_SUFFIXES: &[&str] = &[
-    "_dt_s", "_m_s2", "_m_s", "_n_m", "_rad_s", "_hz", "_kg", "_m", "_n", "_pa", "_rad", "_s", "_k",
+    "_dt_s", "_m_s2", "_m_s", "_m3_s2", "_n_m", "_n_s", "_rad_s", "_hz", "_kg", "_m", "_n", "_pa",
+    "_rad", "_s", "_k", "_deg", "_xyzw",
 ];
 
 const FRAME_INFIXES: &[&str] = &["_eci_", "_ecef_", "_ned_", "_enu_", "_body_"];
+
+/// Field-name infixes that mark a 4-vector as carrying its component
+/// order explicitly (e.g., the quaternion `_xyzw` order).
+const QUATERNION_INFIXES: &[&str] = &["_xyzw"];
 
 /// Top-level lint entry point.
 ///
@@ -170,6 +175,11 @@ fn check_dimensional_field(
             field: path.to_owned(),
         });
     }
+    if is_numeric_4vector(value) && !key_has_quaternion_infix(key) && !key_has_frame_infix(key) {
+        return Err(ScenarioError::MissingFrameSuffix {
+            field: path.to_owned(),
+        });
+    }
     Ok(())
 }
 
@@ -186,6 +196,11 @@ fn is_numeric_3vector(value: &toml::Value) -> bool {
         if values.len() == 3 && values.iter().all(is_numeric_value))
 }
 
+fn is_numeric_4vector(value: &toml::Value) -> bool {
+    matches!(value, toml::Value::Array(values)
+        if values.len() == 4 && values.iter().all(is_numeric_value))
+}
+
 fn is_dimensionless_key(key: &str) -> bool {
     matches!(
         key,
@@ -198,6 +213,7 @@ fn is_dimensionless_key(key: &str) -> bool {
             | "nonlinear_max_iter"
             | "rtol"
             | "atol"
+            | "j2"
     )
 }
 
@@ -207,4 +223,8 @@ fn key_has_unit_suffix(key: &str) -> bool {
 
 fn key_has_frame_infix(key: &str) -> bool {
     FRAME_INFIXES.iter().any(|infix| key.contains(infix))
+}
+
+fn key_has_quaternion_infix(key: &str) -> bool {
+    QUATERNION_INFIXES.iter().any(|infix| key.contains(infix))
 }
