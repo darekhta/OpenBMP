@@ -216,7 +216,7 @@ mod tests {
     fn parser_rejects_unknown_validation_label() {
         let toml_str = minimal_motor_toml().replace(
             "validation = \"validated-toy\"",
-            "validation = \"validted-toy\"",
+            "validation = \"invalid-validation-label\"",
         );
         assert!(matches!(
             SolidMotor::load_from_str(&toml_str),

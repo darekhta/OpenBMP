@@ -74,7 +74,7 @@ impl DeterministicRng {
     /// Phase 2.7 adds this constructor for synthetic sensors. The
     /// seed is derived from
     /// `(scenario_seed, step_index, sensor_id, component_id)` plus
-    /// the [`SENSOR_COMPONENT_DOMAIN_TAG`] in the trailing 4 bytes.
+    /// the `SENSOR_COMPONENT_DOMAIN_TAG` in the trailing 4 bytes.
     /// The domain tag guarantees no collision with [`Self::for_channel`]
     /// even if the integer payloads happen to overlap — `for_channel`
     /// leaves bytes [24..32] zero and this constructor writes a

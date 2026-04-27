@@ -22,7 +22,7 @@
 //!
 //! Determinism: the runner only feeds the kernel; it does not reorder
 //! channels or mutate floats. Telemetry channel ordering is fixed in
-//! [`build_schema`].
+//! `Phase1TelemetryChannels::schema`.
 
 use openbmp_core::{ChannelId, Duration, Position3, SimTime, Velocity3};
 use openbmp_scenario::Scenario;

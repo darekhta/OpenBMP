@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
-use insta_cmd::assert_cmd_snapshot;
 use tempfile::{Builder, TempDir};
 
 fn workspace_root() -> PathBuf {
@@ -38,11 +37,53 @@ fn tempdir(label: &str) -> TempDir {
         .expect("temp dir")
 }
 
+fn niskanen_stage_path(temp: &TempDir) -> PathBuf {
+    let scenario_dir = temp.path().join("scenarios/sounding-rocket");
+    fs::create_dir_all(&scenario_dir).expect("scenario dir");
+    scenario_dir.join("scenario.toml")
+}
+
+fn materialise_niskanen_refs(temp: &TempDir) {
+    let data_dir = temp.path().join("data");
+    let aero_dir = data_dir.join("aero");
+    let motor_dir = data_dir.join("motors");
+    fs::create_dir_all(&aero_dir).expect("aero dir");
+    fs::create_dir_all(&motor_dir).expect("motor dir");
+    fs::copy(
+        workspace_root().join("data/aero/synthetic-niskanen-ch6-rocket.toml"),
+        aero_dir.join("synthetic-niskanen-ch6-rocket.toml"),
+    )
+    .expect("copy deck");
+    fs::copy(
+        workspace_root().join("data/motors/estes-c6-eng-derived.toml"),
+        motor_dir.join("estes-c6-eng-derived.toml"),
+    )
+    .expect("copy motor");
+}
+
+fn toml_literal_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    assert!(
+        !path.contains('\''),
+        "test temp paths must be representable as TOML literal strings: {path}",
+    );
+    format!("'{path}'")
+}
+
 #[test]
 fn help_lists_all_subcommands() {
     let mut cmd = openbmp();
     cmd.arg("--help");
-    assert_cmd_snapshot!("help", cmd);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout)
+        .replace("Usage: openbmp.exe", "Usage: openbmp");
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    insta::assert_snapshot!(
+        "help",
+        format!(
+            "success: true\nexit_code: 0\n----- stdout -----\n{stdout}\n----- stderr -----\n{stderr}"
+        )
+    );
 }
 
 #[test]
@@ -104,7 +145,7 @@ fn check_on_niskanen_with_corrupt_pin_fails_closed() {
     // pin for the aero deck, and confirm the parser fails closed with
     // a SHA-256 mismatch error rather than silently running.
     let temp = tempdir("badpin");
-    let staged = temp.path().join("scenario.toml");
+    let staged = niskanen_stage_path(&temp);
     let canonical = workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6.toml");
     let original = fs::read_to_string(&canonical).expect("read canonical");
     let bad_pin = "0".repeat(64);
@@ -116,22 +157,8 @@ fn check_on_niskanen_with_corrupt_pin_fails_closed() {
     assert_ne!(rewritten, original, "pin field not found in canonical");
     fs::write(&staged, rewritten).expect("write staged");
     // Materialise the referenced files via copy so the resolver can
-    // read them from `<temp>/../../data/...`.
-    let data_dir = temp.path().join("../../data");
-    let aero_dir = data_dir.join("aero");
-    let motor_dir = data_dir.join("motors");
-    fs::create_dir_all(&aero_dir).expect("aero dir");
-    fs::create_dir_all(&motor_dir).expect("motor dir");
-    fs::copy(
-        workspace_root().join("data/aero/synthetic-niskanen-ch6-rocket.toml"),
-        aero_dir.join("synthetic-niskanen-ch6-rocket.toml"),
-    )
-    .expect("copy deck");
-    fs::copy(
-        workspace_root().join("data/motors/estes-c6-eng-derived.toml"),
-        motor_dir.join("estes-c6-eng-derived.toml"),
-    )
-    .expect("copy motor");
+    // read them from `<temp>/scenarios/sounding-rocket/../../data/...`.
+    materialise_niskanen_refs(&temp);
 
     let mut cmd = openbmp();
     cmd.arg("check").arg(&staged);
@@ -155,7 +182,7 @@ fn check_on_niskanen_with_missing_motor_file_fails_closed() {
     // non-existent path, and confirm the parser fails closed with the
     // referenced-file-missing error rather than silently running.
     let temp = tempdir("missingmotor");
-    let staged = temp.path().join("scenario.toml");
+    let staged = niskanen_stage_path(&temp);
     let canonical = workspace_root().join("scenarios/sounding-rocket/niskanen-2009-chapter6.toml");
     let original = fs::read_to_string(&canonical).expect("read canonical");
     let rewritten = original.replace(
@@ -224,11 +251,11 @@ fn run_writes_telemetry_outputs_and_reports_stop_reason() {
     let rewritten = original
         .replace(
             "output.csv = \"out/constant-acceleration-drop.csv\"",
-            &format!("output.csv = \"{}\"", csv.display()),
+            &format!("output.csv = {}", toml_literal_path(&csv)),
         )
         .replace(
             "output.parquet = \"out/constant-acceleration-drop.parquet\"",
-            &format!("output.parquet = \"{}\"", parquet.display()),
+            &format!("output.parquet = {}", toml_literal_path(&parquet)),
         );
     fs::write(&staged, rewritten).expect("write staged");
 
@@ -286,11 +313,11 @@ fn diff_reports_identical_for_self_compare() {
     let rewritten = original
         .replace(
             "output.csv = \"out/constant-acceleration-drop.csv\"",
-            &format!("output.csv = \"{}\"", csv.display()),
+            &format!("output.csv = {}", toml_literal_path(&csv)),
         )
         .replace(
             "output.parquet = \"out/constant-acceleration-drop.parquet\"",
-            &format!("output.parquet = \"{}\"", parquet.display()),
+            &format!("output.parquet = {}", toml_literal_path(&parquet)),
         );
     fs::write(&staged, rewritten).expect("write staged");
     openbmp().arg("run").arg(&staged).assert().success();
