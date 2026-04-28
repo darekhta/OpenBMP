@@ -212,4 +212,20 @@ pub enum ScenarioError {
         /// Future phase that will land this child.
         deferred_to: String,
     },
+    /// A mission or phase entry references an engine id that is not
+    /// declared in `[[vehicle.assembly.engines]]`.
+    #[error("{field} references unknown engine id {id}")]
+    UnknownEngineReference {
+        /// Field path.
+        field: String,
+        /// Referenced scenario-text engine id.
+        id: String,
+    },
+    /// A scenario simultaneously declares both `[propulsion.motor]`
+    /// and `[[vehicle.assembly.engines]]`. Phase 3.6 contract: a
+    /// vehicle uses one propulsion path or the other, never both.
+    #[error(
+        "scenario declares both [propulsion.motor] and [[vehicle.assembly.engines]]; pick one path per vehicle"
+    )]
+    AmbiguousPropulsion,
 }

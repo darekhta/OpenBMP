@@ -168,6 +168,57 @@ impl ScenarioDocument {
             mission.validate()?;
         }
         self.validate_effector_references()?;
+        self.validate_engine_references()?;
+        self.validate_propulsion_unambiguous()?;
+        Ok(())
+    }
+
+    fn validate_propulsion_unambiguous(&self) -> Result<(), ScenarioError> {
+        let has_motor = self.propulsion.as_ref().is_some_and(|p| p.motor.is_some());
+        let has_engines = self
+            .vehicle
+            .assembly
+            .as_ref()
+            .is_some_and(|a| !a.engines.is_empty());
+        if has_motor && has_engines {
+            return Err(ScenarioError::AmbiguousPropulsion);
+        }
+        Ok(())
+    }
+
+    fn validate_engine_references(&self) -> Result<(), ScenarioError> {
+        let Some(mission) = &self.mission else {
+            return Ok(());
+        };
+        let declared: BTreeSet<&str> = self
+            .vehicle
+            .assembly
+            .as_ref()
+            .map(|assembly| assembly.engines.iter().map(|e| e.id.as_str()).collect())
+            .unwrap_or_default();
+
+        for (phase_index, phase) in mission.phases.iter().enumerate() {
+            for (engine_index, id) in phase.allowed_engines.iter().enumerate() {
+                if !declared.contains(id.as_str()) {
+                    return Err(ScenarioError::UnknownEngineReference {
+                        field: format!(
+                            "mission.phases[{phase_index}].allowed_engines[{engine_index}]"
+                        ),
+                        id: id.clone(),
+                    });
+                }
+            }
+        }
+        for (event_index, event) in mission.events.iter().enumerate() {
+            if let EventActionConfig::EngineCommand { id, .. } = &event.action
+                && !declared.contains(id.as_str())
+            {
+                return Err(ScenarioError::UnknownEngineReference {
+                    field: format!("mission.events[{event_index}].action.id"),
+                    id: id.clone(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -1343,8 +1394,16 @@ pub enum EventActionConfig {
         /// Human-readable label for the stop reason.
         label: String,
     },
-    /// Phase-3.6 deferred.
-    EngineCommand,
+    /// Phase-3.6: per-engine command targeting a declared
+    /// `[[vehicle.assembly.engines]]` by id. The kernel records the
+    /// firing; the runner-side `EngineRack` drains and applies the
+    /// command on the next rack tick.
+    EngineCommand {
+        /// Target engine id (must reference a declared engine).
+        id: String,
+        /// Command payload.
+        command: EngineCommandConfig,
+    },
     /// Phase-3.4: scenario-driven effector command override. Targets
     /// a declared `[[vehicle.assembly.effectors]]` by id and commits
     /// `command` at fire time (single-shot).
@@ -1373,11 +1432,9 @@ impl EventActionConfig {
             Self::Stop { label } => {
                 require_non_empty(&path("label"), label)?;
             }
-            Self::EngineCommand => {
-                return Err(ScenarioError::UnsupportedActionKind {
-                    kind: "engine_command".to_owned(),
-                    deferred_to: "Phase 3.6".to_owned(),
-                });
+            Self::EngineCommand { id, command } => {
+                require_non_empty(&path("id"), id)?;
+                command.validate(&path("command"))?;
             }
             Self::EffectorOverride { id, command } => {
                 require_non_empty(&path("id"), id)?;
@@ -1447,9 +1504,17 @@ pub struct AssemblyConfig {
     /// configs and adds them to the assembly's effector vec.
     #[serde(default)]
     pub effectors: Vec<EffectorConfig>,
-    /// Phase-3.6 deferred.
+    /// Phase-3.6: liquid engines in scenario-declared order. The
+    /// runner builds `Box<dyn EngineModel>` instances from these
+    /// configs and assembles them into a runner-side `EngineRack`.
+    /// A scenario that also declares `[propulsion.motor]` is
+    /// rejected with `ScenarioError::AmbiguousPropulsion`.
     #[serde(default)]
-    pub engines: Vec<toml::Value>,
+    pub engines: Vec<EngineConfig>,
+    /// Phase-3.6: optional cluster-layout tag for telemetry / docs.
+    /// Defaults to `Custom` when omitted.
+    #[serde(default)]
+    pub cluster_layout: Option<ClusterLayoutConfig>,
     /// Phase-3.7 deferred.
     #[serde(default)]
     pub tanks: Vec<toml::Value>,
@@ -1529,11 +1594,16 @@ impl AssemblyConfig {
                 });
             }
         }
-        if !self.engines.is_empty() {
-            return Err(ScenarioError::UnsupportedAssemblyChild {
-                kind: "engines".to_owned(),
-                deferred_to: "Phase 3.6".to_owned(),
-            });
+        let mut seen_engine_ids: std::collections::BTreeSet<&str> =
+            std::collections::BTreeSet::new();
+        for (index, engine) in self.engines.iter().enumerate() {
+            engine.validate(index)?;
+            if !seen_engine_ids.insert(engine.id.as_str()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("vehicle.assembly.engines[{index}].id"),
+                    value: engine.id.clone(),
+                });
+            }
         }
         if !self.tanks.is_empty() {
             return Err(ScenarioError::UnsupportedAssemblyChild {
@@ -1992,6 +2062,245 @@ impl EffectorCommandScheduleConfig {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------
+// EngineConfig (Phase 3.6)
+// ---------------------------------------------------------------------
+
+/// Cluster-layout tag for telemetry / docs. Phase-3.6 has no
+/// behavioural use; later sub-phases may key symmetry-aware fault
+/// scenarios off the layout.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ClusterLayoutConfig {
+    /// Single axial engine.
+    Axial,
+    /// Ring of N engines around the body `+z` axis.
+    Ring,
+    /// Octaweb: 1 axial + N ring-mounted.
+    Octaweb,
+    /// Custom geometry (default).
+    #[default]
+    Custom,
+}
+
+/// One declared liquid-engine entry under
+/// `[[vehicle.assembly.engines]]`. The runner builds a
+/// `Box<dyn EngineModel>` from this config and adds it to the
+/// per-step `EngineRack`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EngineConfig {
+    /// Stable engine id (`snake_case` scenario-text identifier).
+    pub id: String,
+    /// Engine kind + per-kind parameters (tagged on `kind`).
+    pub kind: EngineKindConfig,
+    /// Body-frame mount point (m). `[x, y, z]`.
+    pub mount_point_body_m: [f64; 3],
+    /// Position / rate / gimbal limits.
+    pub limits: EngineLimitsConfig,
+    /// Optional fault mounted at scenario load time.
+    #[serde(default)]
+    pub fault: Option<EngineFaultConfig>,
+}
+
+impl EngineConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.engines[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        self.kind.validate(index)?;
+        self.limits.validate(index)?;
+        require_finite_array(&path("mount_point_body_m"), &self.mount_point_body_m)?;
+        if let Some(fault) = &self.fault {
+            fault.validate(index, &self.limits)?;
+        }
+        Ok(())
+    }
+}
+
+/// Engine kind tagged enum. Phase 3.6 ships `liquid_engine` only.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EngineKindConfig {
+    /// Phase-3.6 reference impl: linear ignition + constant burn +
+    /// linear shutdown transients.
+    LiquidEngine,
+}
+
+impl EngineKindConfig {
+    // The `Result` return is forward-compat: future engine kinds
+    // (hybrid, cold-gas) will carry payload that needs validation.
+    // Phase 3.6 ships only `LiquidEngine` with no payload, so this
+    // arm always returns `Ok(())`.
+    #[allow(clippy::unnecessary_wraps)]
+    fn validate(&self, _index: usize) -> Result<(), ScenarioError> {
+        match self {
+            Self::LiquidEngine => Ok(()),
+        }
+    }
+}
+
+/// Engine limits.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EngineLimitsConfig {
+    /// Maximum thrust at full throttle (N).
+    pub max_thrust_n: f64,
+    /// Specific impulse (s).
+    pub isp_s: f64,
+    /// Linear ignition transient duration (s). `0.0` →
+    /// instantaneous ignition.
+    pub ignition_transient_s: f64,
+    /// Linear shutdown transient duration (s). `0.0` →
+    /// instantaneous shutdown.
+    pub shutdown_transient_s: f64,
+    /// Maximum absolute gimbal angle on either axis (rad). `0.0` →
+    /// fixed-axis engine (no gimbal).
+    pub max_gimbal_rad: f64,
+}
+
+impl EngineLimitsConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.engines[{index}].limits.{field}");
+        require_finite(&path("max_thrust_n"), self.max_thrust_n)?;
+        require_positive(&path("max_thrust_n"), self.max_thrust_n)?;
+        require_finite(&path("isp_s"), self.isp_s)?;
+        require_positive(&path("isp_s"), self.isp_s)?;
+        require_finite(&path("ignition_transient_s"), self.ignition_transient_s)?;
+        if self.ignition_transient_s < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("ignition_transient_s"),
+                value: self.ignition_transient_s,
+                rule: "must be non-negative",
+            });
+        }
+        require_finite(&path("shutdown_transient_s"), self.shutdown_transient_s)?;
+        if self.shutdown_transient_s < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("shutdown_transient_s"),
+                value: self.shutdown_transient_s,
+                rule: "must be non-negative",
+            });
+        }
+        require_finite(&path("max_gimbal_rad"), self.max_gimbal_rad)?;
+        if self.max_gimbal_rad < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("max_gimbal_rad"),
+                value: self.max_gimbal_rad,
+                rule: "must be non-negative",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Engine fault tagged enum. Phase-3.6 ships four canonical modes;
+/// load-time injection only.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EngineFaultConfig {
+    /// Throttle stuck at `at_throttle ∈ [0, 1]`.
+    Stuck {
+        /// Stuck throttle value.
+        at_throttle: f64,
+    },
+    /// Engine off and never restarts.
+    HardOff,
+    /// Thrust scaled by `factor` (≥ 0, finite).
+    OverThrust {
+        /// Thrust multiplier.
+        factor: f64,
+    },
+    /// Gimbal frozen at the given angles (rad). Both must lie within
+    /// `±max_gimbal_rad`.
+    GimbalLocked {
+        /// Locked pitch angle.
+        pitch_rad: f64,
+        /// Locked yaw angle.
+        yaw_rad: f64,
+    },
+}
+
+impl EngineFaultConfig {
+    fn validate(&self, index: usize, limits: &EngineLimitsConfig) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.engines[{index}].fault.{field}");
+        match *self {
+            Self::Stuck { at_throttle } => {
+                require_finite(&path("at_throttle"), at_throttle)?;
+                if !(0.0..=1.0).contains(&at_throttle) {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("at_throttle"),
+                        value: at_throttle,
+                        rule: "must lie in [0, 1]",
+                    });
+                }
+            }
+            Self::HardOff => {}
+            Self::OverThrust { factor } => {
+                require_finite(&path("factor"), factor)?;
+                if factor < 0.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("factor"),
+                        value: factor,
+                        rule: "must be non-negative",
+                    });
+                }
+            }
+            Self::GimbalLocked { pitch_rad, yaw_rad } => {
+                require_finite(&path("pitch_rad"), pitch_rad)?;
+                require_finite(&path("yaw_rad"), yaw_rad)?;
+                if pitch_rad.abs() > limits.max_gimbal_rad || yaw_rad.abs() > limits.max_gimbal_rad
+                {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("pitch_rad"),
+                        value: pitch_rad,
+                        rule: "must lie within [-max_gimbal_rad, max_gimbal_rad]",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Per-engine command payload. Mirrors the `EngineCommand` struct in
+/// `openbmp-propulsion`; the runner translates `EngineCommandConfig
+/// → EngineCommand` at mission-event resolution time.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EngineCommandConfig {
+    /// Throttle setting in `[0, 1]`. Values outside are rejected at
+    /// parse time (the runtime engine clamps but the scenario format
+    /// is strict).
+    pub throttle_unit: f64,
+    /// Gimbal pitch angle (rad). Finite; runtime clamping is per
+    /// engine `max_gimbal_rad`.
+    pub gimbal_pitch_rad: f64,
+    /// Gimbal yaw angle (rad). Finite; runtime clamping is per
+    /// engine `max_gimbal_rad`.
+    pub gimbal_yaw_rad: f64,
+    /// Ignition request. Honoured only from `Idle`.
+    pub ignite: bool,
+    /// Shutdown request. Honoured only from `Igniting` / `Burning`.
+    pub shutdown: bool,
+}
+
+impl EngineCommandConfig {
+    fn validate(&self, prefix: &str) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("{prefix}.{field}");
+        require_finite(&path("throttle_unit"), self.throttle_unit)?;
+        if !(0.0..=1.0).contains(&self.throttle_unit) {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("throttle_unit"),
+                value: self.throttle_unit,
+                rule: "must lie in [0, 1]",
+            });
+        }
+        require_finite(&path("gimbal_pitch_rad"), self.gimbal_pitch_rad)?;
+        require_finite(&path("gimbal_yaw_rad"), self.gimbal_yaw_rad)?;
         Ok(())
     }
 }

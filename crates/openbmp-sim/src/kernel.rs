@@ -594,9 +594,14 @@ where
                     // drains and applies it on the next rack tick via
                     // `apply_overrides(&fired)`.
                 }
-                EventAction::EngineCommand
-                | EventAction::Separation
-                | EventAction::DeployRecovery => {
+                EventAction::EngineCommand { .. } => {
+                    // Phase-3.6: kernel records the firing in
+                    // `pending_events`; the runner's `EngineRack`
+                    // drains and applies it on the next rack tick via
+                    // `apply_commands(&fired)`. Same kernel-records /
+                    // runner-consumes split as `EffectorOverride`.
+                }
+                EventAction::Separation | EventAction::DeployRecovery => {
                     // Reserved-but-unwired actions are parser-rejected
                     // in 3.2; their presence in a live binding is a
                     // programmer error. Treat as a no-op rather than

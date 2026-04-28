@@ -28,13 +28,14 @@ pub mod solver;
 
 pub use document::{
     AeroConfig, AssemblyBodyConfig, AssemblyConfig, AtmosphereConfig, BatchConfig,
-    BodyGeometryConfig, EffectorCommandScheduleConfig, EffectorConfig, EffectorFaultConfig,
-    EffectorKindConfig, EffectorLimitsConfig, EnvironmentConfig, EpochConfig, EventActionConfig,
-    EventConfig, EventTriggerConfig, ForcesConfig, FramesConfig, LocalOriginConfig, MetaConfig,
-    MissionConfig, MotorConfig, OpenBmpHeader, PhaseConfig, PhaseTransitionConfig,
-    PropulsionConfig, SUPPORTED_SCENARIO_VERSION, ScenarioDocument, SensorConfig, TelemetryConfig,
-    TelemetryOutputConfig, TimeConfig, ValidationConfig, VehicleConfig, WGS84_J2_DEFAULT,
-    WindConfig,
+    BodyGeometryConfig, ClusterLayoutConfig, EffectorCommandScheduleConfig, EffectorConfig,
+    EffectorFaultConfig, EffectorKindConfig, EffectorLimitsConfig, EngineCommandConfig,
+    EngineConfig, EngineFaultConfig, EngineKindConfig, EngineLimitsConfig, EnvironmentConfig,
+    EpochConfig, EventActionConfig, EventConfig, EventTriggerConfig, ForcesConfig, FramesConfig,
+    LocalOriginConfig, MetaConfig, MissionConfig, MotorConfig, OpenBmpHeader, PhaseConfig,
+    PhaseTransitionConfig, PropulsionConfig, SUPPORTED_SCENARIO_VERSION, ScenarioDocument,
+    SensorConfig, TelemetryConfig, TelemetryOutputConfig, TimeConfig, ValidationConfig,
+    VehicleConfig, WGS84_J2_DEFAULT, WindConfig,
 };
 pub use error::ScenarioError;
 pub use files::ResolvedFile;

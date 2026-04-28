@@ -288,13 +288,20 @@ pub enum EventAction {
         label: String,
     },
     // -------------------------------------------------------------
-    // Phase-3.4 / 3.6 / 3.7 / 3.9 deferred actions. The variants
-    // exist in the enum so 3.4+ does not need to expand it (which
-    // would touch every match site); the parser rejects them in 3.2.
+    // Phase-3.4 / 3.6 / 3.7 / 3.9 actions. Variants exist in the
+    // enum so future sub-phases don't need to expand it (which would
+    // touch every match site).
     // -------------------------------------------------------------
-    /// Phase-3.6 deferred: gimbal / throttle / ignition / shutdown
-    /// command to a named engine.
-    EngineCommand,
+    /// Phase-3.6: per-engine command targeting a declared engine by
+    /// [`openbmp_core::EngineId`]. The kernel records the firing;
+    /// the runner-side `EngineRack::apply_commands` drains it and
+    /// applies the command to the engine on the next rack tick.
+    EngineCommand {
+        /// Target engine id.
+        id: openbmp_core::EngineId,
+        /// Command payload (throttle, gimbal, ignite, shutdown).
+        command: openbmp_propulsion::EngineCommand,
+    },
     /// Phase-3.4: scenario-driven effector command override. Targets
     /// a declared effector by [`openbmp_core::EffectorId`]; the
     /// runner-side `EffectorRack::apply_overrides` consumes the

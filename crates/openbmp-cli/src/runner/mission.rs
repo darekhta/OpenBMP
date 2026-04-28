@@ -181,11 +181,24 @@ fn build_action(
             id: openbmp_core::EffectorId::from_path(&format!("vehicle.assembly.effectors.{id}")),
             command: *command,
         },
+        // Phase-3.6: engine command resolves the scenario-text id to
+        // a stable `EngineId` (FNV of canonical engine path) and
+        // translates the scenario `EngineCommandConfig` payload to
+        // the propulsion-side `EngineCommand` runtime type.
+        EventActionConfig::EngineCommand { id, command } => EventAction::EngineCommand {
+            id: openbmp_core::EngineId::from_path(&format!("vehicle.assembly.engines.{id}")),
+            command: openbmp_propulsion::EngineCommand {
+                throttle_unit: command.throttle_unit,
+                gimbal_pitch_rad: command.gimbal_pitch_rad,
+                gimbal_yaw_rad: command.gimbal_yaw_rad,
+                ignite: command.ignite,
+                shutdown: command.shutdown,
+            },
+        },
         // Parser-rejected variants — defensively map to a stop-like
         // no-op. The runner does not normally reach these arms; if
         // they were to appear, the kernel's match for reserved
         // variants is a no-op.
-        EventActionConfig::EngineCommand => EventAction::EngineCommand,
         EventActionConfig::Separation => EventAction::Separation,
         EventActionConfig::DeployRecovery => EventAction::DeployRecovery,
     })

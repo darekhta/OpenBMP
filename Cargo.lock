@@ -1323,6 +1323,7 @@ dependencies = [
  "criterion",
  "nalgebra",
  "openbmp-core",
+ "openbmp-propulsion",
  "openbmp-state",
  "openbmp-testkit",
  "proptest",

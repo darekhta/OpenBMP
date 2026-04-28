@@ -839,8 +839,9 @@ action  = { kind = "stop", label = "scripted-stop" }
     }
 
     #[test]
-    fn rejects_engine_command_action_kind() {
-        let err = Scenario::from_toml_str(&with_mission(
+    fn accepts_engine_command_action_with_typed_payload() {
+        let toml = format!(
+            "{ASSEMBLY_WITH_ENGINE_CLUSTER}\n{}",
             r#"
 [mission]
 initial_phase = "ascent"
@@ -852,17 +853,88 @@ label = "ascent"
 [[mission.events]]
 id      = "evt"
 trigger = { kind = "at_apogee" }
-action  = { kind = "engine_command" }
+action  = { kind = "engine_command", id = "engine_a", command = { throttle_unit = 0.5, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 "#,
-        ))
-        .unwrap_err();
-        match err {
-            ScenarioError::UnsupportedActionKind { kind, deferred_to } => {
-                assert_eq!(kind, "engine_command");
-                assert!(deferred_to.contains("3.6"));
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let mission = scenario.document.mission.as_ref().expect("mission present");
+        assert_eq!(mission.events.len(), 1);
+        match &mission.events[0].action {
+            crate::EventActionConfig::EngineCommand { id, command } => {
+                assert_eq!(id, "engine_a");
+                assert!((command.throttle_unit - 0.5).abs() < 1e-12);
+                assert!(command.ignite);
+                assert!(!command.shutdown);
             }
-            other => panic!("expected UnsupportedActionKind, got {other:?}"),
+            other => panic!("expected EngineCommand action, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rejects_engine_command_action_referencing_unknown_engine_id() {
+        let toml = format!(
+            "{ASSEMBLY_WITH_ENGINE_CLUSTER}\n{}",
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_apogee" }
+action  = { kind = "engine_command", id = "engine_typo", command = { throttle_unit = 0.5, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::UnknownEngineReference { ref id, .. } if id == "engine_typo"
+            ),
+            "expected UnknownEngineReference, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_engine_command_with_throttle_above_one() {
+        let toml = format!(
+            "{ASSEMBLY_WITH_ENGINE_CLUSTER}\n{}",
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_apogee" }
+action  = { kind = "engine_command", id = "engine_a", command = { throttle_unit = 1.5, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { .. }),
+            "expected InvalidNumber, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_scenario_with_both_motor_and_engines_blocks() {
+        // Append a `[propulsion.motor]` block to the engine-cluster
+        // fixture so both propulsion paths are declared.
+        let toml = format!(
+            "{ASSEMBLY_WITH_ENGINE_CLUSTER}\n[propulsion.motor]\nfile         = \"motors/dummy.toml\"\nignite_at_s  = 0.0\n",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::AmbiguousPropulsion),
+            "expected AmbiguousPropulsion, got {err:?}",
+        );
     }
 
     #[test]
@@ -1099,9 +1171,9 @@ action  = { kind = "stop", label = "max-q" }
         "/tests/fixtures/assembly-mass-mismatch.toml"
     ));
 
-    const ASSEMBLY_DEFERRED_ENGINES: &str = include_str!(concat!(
+    const ASSEMBLY_WITH_ENGINE_CLUSTER: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/assembly-deferred-engines.toml"
+        "/tests/fixtures/assembly-with-engine-cluster.toml"
     ));
 
     const ASSEMBLY_WITH_EFFECTOR: &str = include_str!(concat!(
@@ -1190,15 +1262,79 @@ action  = { kind = "stop", label = "max-q" }
     }
 
     #[test]
-    fn rejects_deferred_engines_child_block() {
-        let err = Scenario::from_toml_str(ASSEMBLY_DEFERRED_ENGINES).unwrap_err();
-        match err {
-            ScenarioError::UnsupportedAssemblyChild { kind, deferred_to } => {
-                assert_eq!(kind, "engines");
-                assert!(deferred_to.contains("3.6"));
-            }
-            other => panic!("expected UnsupportedAssemblyChild, got {other:?}"),
-        }
+    fn parses_assembly_with_engine_cluster() {
+        let scenario = match Scenario::from_toml_str(ASSEMBLY_WITH_ENGINE_CLUSTER) {
+            Ok(s) => s,
+            Err(e) => panic!("parse failed: {e:?}"),
+        };
+        let assembly = scenario
+            .document
+            .vehicle
+            .assembly
+            .as_ref()
+            .expect("assembly present");
+        assert_eq!(assembly.engines.len(), 2);
+        assert_eq!(assembly.engines[0].id, "engine_a");
+        assert_eq!(assembly.engines[1].id, "engine_b");
+        assert!((assembly.engines[0].limits.max_thrust_n - 1000.0).abs() < 1e-12);
+        assert_eq!(
+            assembly.cluster_layout,
+            Some(crate::ClusterLayoutConfig::Ring)
+        );
+    }
+
+    #[test]
+    fn rejects_engine_with_zero_thrust() {
+        let toml =
+            ASSEMBLY_WITH_ENGINE_CLUSTER.replace("max_thrust_n = 1000.0", "max_thrust_n = 0.0");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { .. }),
+            "expected InvalidNumber, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_engine_with_negative_isp() {
+        let toml = ASSEMBLY_WITH_ENGINE_CLUSTER.replace("isp_s = 250.0", "isp_s = -100.0");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { .. }),
+            "expected InvalidNumber, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_engine_with_negative_ignition_transient() {
+        let toml = ASSEMBLY_WITH_ENGINE_CLUSTER
+            .replace("ignition_transient_s = 0.1", "ignition_transient_s = -0.05");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { .. }),
+            "expected InvalidNumber, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_engine_id() {
+        // Replace second engine id to match the first.
+        let toml = ASSEMBLY_WITH_ENGINE_CLUSTER.replace(
+            "id                  = \"engine_b\"",
+            "id                  = \"engine_a\"",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::DuplicateValue { ref field, .. } if field.contains("engines")),
+            "expected DuplicateValue, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_cluster_layout() {
+        let toml = ASSEMBLY_WITH_ENGINE_CLUSTER
+            .replace("cluster_layout = \"ring\"", "cluster_layout = \"flower\"");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(err, ScenarioError::ParseToml(_)));
     }
 
     #[test]

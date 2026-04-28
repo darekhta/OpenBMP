@@ -9,12 +9,13 @@ authors.workspace       = true
 description             = "OpenBMP lockstep simulation kernel: scheduler, integrators, state propagation."
 
 [dependencies]
-openbmp-core  = { workspace = true }
-openbmp-state = { workspace = true }
-nalgebra      = { workspace = true }
-thiserror     = { workspace = true }
-tracing       = { workspace = true }
-uom           = { workspace = true }
+openbmp-core       = { workspace = true }
+openbmp-propulsion = { workspace = true }
+openbmp-state      = { workspace = true }
+nalgebra           = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+uom                = { workspace = true }
 
 [dev-dependencies]
 approx          = { workspace = true }

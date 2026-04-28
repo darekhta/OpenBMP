@@ -253,9 +253,29 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
+    // Phase-3.6 engine-block fields. `throttle_unit` is dimensionless
+    // by convention; `at_throttle` is the same scalar; `factor` is a
+    // dimensionless multiplier on thrust.
+    if path.starts_with("$.vehicle.assembly.engines")
+        && matches!(key, "throttle_unit" | "at_throttle" | "factor")
+    {
+        return true;
+    }
+
     // Mission effector overrides use the same unit-agnostic command
     // scalar as the target effector.
-    path.starts_with("$.mission.events") && path.ends_with(".action.command") && key == "command"
+    if path.starts_with("$.mission.events") && path.ends_with(".action.command") && key == "command"
+    {
+        return true;
+    }
+
+    // Phase-3.6 mission engine commands carry a typed payload
+    // including a dimensionless `throttle_unit` and lifecycle bools
+    // (the bools never trip this lint, but `throttle_unit` would
+    // without an exemption).
+    path.starts_with("$.mission.events")
+        && path.contains(".action.command")
+        && key == "throttle_unit"
 }
 
 fn key_has_unit_suffix(key: &str) -> bool {
