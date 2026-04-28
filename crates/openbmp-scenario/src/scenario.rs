@@ -593,14 +593,14 @@ kind = "isothermal""#,
     }
 
     #[test]
-    fn rejects_thrust_force_without_motor_block() {
+    fn rejects_thrust_force_without_motor_block_or_engine_cluster() {
         let toml = MINIMAL.replace(
             r#"models = ["gravity"]"#,
             r#"models = ["gravity", "thrust"]"#,
         );
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
-            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "propulsion.motor"),
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "propulsion.motor or vehicle.assembly.engines"),
             "got {err:?}",
         );
     }

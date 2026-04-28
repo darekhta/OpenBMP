@@ -1,0 +1,129 @@
+# Phase-3.6.D exit-criterion scenario — 4-engine cluster with one
+# engine commanded to shutdown mid-flight.
+#
+# Octaweb-style cluster (1 axial + 3 ring-mounted) on a 100 kg
+# point-mass vehicle. Each `liquid_engine` produces 5000 N at full
+# throttle with Isp = 250 s. The mission ignites all four engines
+# at the start, runs at full thrust until the cluster reaches
+# altitude 200 m (≈ T+1.5 s), then commands `engine_d` shutdown to
+# demonstrate the documented mass-flow drop (~25%) and lateral
+# thrust asymmetry.
+#
+# Synthetic round numbers; not a benchmark.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "four-engine-shutdown"
+description = "Phase-3.6.D exit-criterion: 4-engine cluster, engine_d shutdown at altitude=200m demonstrates mass-flow drop and lateral asymmetry. Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 10.0
+dt_s    = 0.001
+seed    = 0x4f637461_77656230   # "Octaweb0"
+
+[vehicle]
+kind                     = "point_mass"
+mass_kg                  = 100.0
+initial_position_eci_m   = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 100.0]
+
+[vehicle.assembly]
+id             = "octaweb-four-engine"
+cluster_layout = "octaweb"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 2.0, area_m2 = 0.5 }
+dry_mass_kg   = 100.0
+
+# Axial engine — pure +z thrust, no gimbal.
+[[vehicle.assembly.engines]]
+id                  = "engine_a"
+kind                = { kind = "liquid_engine" }
+mount_point_body_m  = [0.0, 0.0, 0.0]
+limits              = { max_thrust_n = 5000.0, isp_s = 250.0, ignition_transient_s = 0.1, shutdown_transient_s = 0.1, max_gimbal_rad = 0.087 }
+
+# Ring-east engine — gimbal pitch tilts thrust toward +x.
+[[vehicle.assembly.engines]]
+id                  = "engine_b"
+kind                = { kind = "liquid_engine" }
+mount_point_body_m  = [0.5, 0.0, 0.0]
+limits              = { max_thrust_n = 5000.0, isp_s = 250.0, ignition_transient_s = 0.1, shutdown_transient_s = 0.1, max_gimbal_rad = 0.087 }
+
+# Ring-north engine — gimbal yaw tilts thrust toward +y.
+[[vehicle.assembly.engines]]
+id                  = "engine_c"
+kind                = { kind = "liquid_engine" }
+mount_point_body_m  = [0.0, 0.5, 0.0]
+limits              = { max_thrust_n = 5000.0, isp_s = 250.0, ignition_transient_s = 0.1, shutdown_transient_s = 0.1, max_gimbal_rad = 0.087 }
+
+# Ring-west engine — gimbal pitch tilts thrust toward -x. Cancels
+# engine_b's lateral component while all four are firing; once this
+# engine shuts down, the cluster's lateral thrust gains a +x
+# component (asymmetric thrust signal).
+[[vehicle.assembly.engines]]
+id                  = "engine_d"
+kind                = { kind = "liquid_engine" }
+mount_point_body_m  = [-0.5, 0.0, 0.0]
+limits              = { max_thrust_n = 5000.0, isp_s = 250.0, ignition_transient_s = 0.1, shutdown_transient_s = 0.1, max_gimbal_rad = 0.087 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity", "thrust"]
+
+[telemetry]
+output.parquet = "out/four-engine-shutdown.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "boost"
+
+[[mission.phases]]
+id    = "boost"
+label = "boost"
+
+# Ignite all four engines as soon as the vehicle starts ascending.
+# Initial velocity is 100 m/s ECI +z, so altitude crosses 0.001 m on
+# step 1 (t = 0.001 s). At ignition, each engine receives a full
+# throttle command + the gimbal pitch/yaw appropriate to its ring
+# position.
+
+[[mission.events]]
+id      = "ignite_a"
+trigger = { kind = "at_altitude_ascending", altitude_m = 0.001 }
+action  = { kind = "engine_command", id = "engine_a", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "ignite_b"
+trigger = { kind = "at_altitude_ascending", altitude_m = 0.001 }
+action  = { kind = "engine_command", id = "engine_b", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.05, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "ignite_c"
+trigger = { kind = "at_altitude_ascending", altitude_m = 0.001 }
+action  = { kind = "engine_command", id = "engine_c", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.05, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "ignite_d"
+trigger = { kind = "at_altitude_ascending", altitude_m = 0.001 }
+action  = { kind = "engine_command", id = "engine_d", command = { throttle_unit = 1.0, gimbal_pitch_rad = -0.05, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+# At altitude 200 m (≈ T+1.5 s with full-thrust acceleration), shut
+# down engine_d. Cluster mass-flow drops by 25%; lateral thrust
+# component on +x stops being cancelled by engine_b's +x tilt.
+[[mission.events]]
+id      = "shutdown_d"
+trigger = { kind = "at_altitude_ascending", altitude_m = 200.0 }
+action  = { kind = "engine_command", id = "engine_d", command = { throttle_unit = 0.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = false, shutdown = true } }

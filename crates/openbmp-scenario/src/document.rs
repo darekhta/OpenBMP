@@ -271,9 +271,19 @@ impl ScenarioDocument {
             .as_ref()
             .and_then(|propulsion| propulsion.motor.as_ref())
             .is_some();
-        if self.forces.models.iter().any(|model| model == "thrust") && !has_motor {
+        // Phase 3.6: `forces.models = ["thrust"]` is satisfied by
+        // EITHER a `[propulsion.motor]` block OR a non-empty
+        // `[[vehicle.assembly.engines]]` block (cluster path).
+        // Ambiguous co-declaration is rejected separately by
+        // `validate_propulsion_unambiguous`.
+        let has_engines = self
+            .vehicle
+            .assembly
+            .as_ref()
+            .is_some_and(|a| !a.engines.is_empty());
+        if self.forces.models.iter().any(|model| model == "thrust") && !has_motor && !has_engines {
             return Err(ScenarioError::MissingRequiredField {
-                field: "propulsion.motor".to_owned(),
+                field: "propulsion.motor or vehicle.assembly.engines".to_owned(),
                 role: ModelRole::Force,
                 name: "thrust".to_owned(),
             });

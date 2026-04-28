@@ -451,6 +451,20 @@ impl MassModel for BoxedMassModel {
         self.0.mass_rate_kg_s(t)
     }
 
+    // Phase-3.6: forward the context-carrying entry points through
+    // to the boxed inner model. Without these the kernel's calls to
+    // `mass_kg_at` / `mass_rate_kg_s_at` would hit the default
+    // forward in the trait, dropping the engine snapshot — and
+    // `EngineClusterMassAdapter` would never see per-engine
+    // `consumed_kg` / `mass_flow_kg_per_s`.
+    fn mass_kg_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+        self.0.mass_kg_at(ctx)
+    }
+
+    fn mass_rate_kg_s_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+        self.0.mass_rate_kg_s_at(ctx)
+    }
+
     fn validation(&self) -> openbmp_core::ValidationStatus {
         self.0.validation()
     }
