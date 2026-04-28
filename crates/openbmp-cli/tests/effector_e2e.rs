@@ -95,9 +95,15 @@ fn single_elevon_scenario_runs_to_completion() {
     let file = fs::File::open(&parquet).expect("open parquet");
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("parquet builder");
     let schema = builder.schema().clone();
-    let _ = schema
+    let effector_col = schema
         .index_of("effector.delta_e.actual")
         .expect("effector.delta_e.actual column present");
+    let unit = schema
+        .field(effector_col)
+        .metadata()
+        .get("openbmp.unit")
+        .expect("effector unit metadata present");
+    assert_eq!(unit, "rad");
 
     let times = read_time_column(&parquet);
     let actuals = read_f64_column(&parquet, "effector.delta_e.actual");

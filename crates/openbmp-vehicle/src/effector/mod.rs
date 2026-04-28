@@ -234,8 +234,14 @@ pub trait ControlEffector: std::fmt::Debug + Send + Sync {
     /// Return the configured limits.
     fn limits(&self) -> EffectorLimits;
 
-    /// Inject a fault. Replaces any prior fault.
-    fn inject_fault(&mut self, fault: EffectorFault);
+    /// Inject a fault. Replaces any prior fault after validating the
+    /// fault payload against this effector's limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EffectorError::InvalidFault`] when the fault payload
+    /// is non-finite or outside the effector's authority envelope.
+    fn inject_fault(&mut self, fault: EffectorFault) -> Result<(), EffectorError>;
 
     /// Return the most recent [`EffectorState`] snapshot. Useful for
     /// telemetry without re-stepping.

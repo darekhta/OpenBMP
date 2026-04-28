@@ -193,6 +193,15 @@ pub enum ScenarioError {
         /// Human-readable description from the graph validator.
         reason: String,
     },
+    /// A mission or phase entry references an effector id that is not
+    /// declared in `[[vehicle.assembly.effectors]]`.
+    #[error("{field} references unknown effector id {id}")]
+    UnknownEffectorReference {
+        /// Field path.
+        field: String,
+        /// Referenced scenario-text effector id.
+        id: String,
+    },
     /// A `[vehicle.assembly]` child block (effectors, engines, tanks)
     /// is reserved for a future phase and rejected at parse time in
     /// Phase 3.3.

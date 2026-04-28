@@ -495,7 +495,7 @@ pub struct EventBinding {
 pub enum EventAction {
     EnterPhase(PhaseId),
     EngineCommand { engine: EngineId, cmd: EngineCommand },
-    EffectorOverride { effector: EffectorId, schedule: EffectorSchedule },
+    EffectorOverride { id: EffectorId, command: f64 },
     Separation(SeparationEvent),
     DeployRecovery(RecoveryDeviceId),
     EmitTelemetryMarker { tag: &'static str },
@@ -521,9 +521,10 @@ fixed step shape and just consults the resolved event list each tick.
 > **Phase-3.4 status note.** Phase 3.4 wires `ControlEffector` and
 > the `EffectorOverride` action: a mission event whose action is
 > `effector_override { id, command }` is recorded by the kernel,
-> drained by the runner each step, and applied to the runner-side
-> `EffectorRack` before the rack steps. Override beats schedule for
-> the next step only. The `EventAction::EffectorOverride` enum
+> drained by the runner, and applied to the runner-side `EffectorRack`
+> on the next rack tick before the kernel step. Override beats schedule
+> for that rack tick only. Unknown effector ids are rejected during
+> scenario validation. The `EventAction::EffectorOverride` enum
 > variant carries `{ id: EffectorId, command: f64 }` (was a unit
 > variant pre-3.4 — the runner consumes it, so the kernel never
 > dispatches it itself).
@@ -929,7 +930,7 @@ pub trait ControlEffector {
     fn limits(&self) -> EffectorLimits;
 
     /// Inject a scenario-defined fault mode at runtime.
-    fn inject_fault(&mut self, fault: EffectorFault);
+    fn inject_fault(&mut self, fault: EffectorFault) -> Result<(), EffectorError>;
 }
 
 pub struct EffectorLimits {
@@ -968,7 +969,8 @@ sees telemetry channels `effector.<id>.commanded`,
 > the runner-side `EffectorRack`, and one `effector.<id>.actual`
 > `f64` telemetry channel per declared effector. The implemented
 > `step(cmd, dt)` returns `Result<EffectorState, EffectorError>`
-> (the design fragment above is simplified). The
+> and `inject_fault(fault)` validates payloads and returns
+> `Result<(), EffectorError>` (the design fragment above is simplified). The
 > aerodynamics-side coupling is **not** wired in 3.4 — the aero
 > deck stays schema-1 and the deflection telemetry is observable
 > but does not perturb force / moment evaluation. Schema-2 deck

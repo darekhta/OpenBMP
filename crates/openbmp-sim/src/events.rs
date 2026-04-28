@@ -299,7 +299,7 @@ pub enum EventAction {
     /// a declared effector by [`openbmp_core::EffectorId`]; the
     /// runner-side `EffectorRack::apply_overrides` consumes the
     /// fired event and stores the override into the rack's
-    /// per-effector override map.
+    /// per-effector override map for the next rack tick.
     EffectorOverride {
         /// Target effector id.
         id: openbmp_core::EffectorId,
@@ -331,16 +331,17 @@ pub struct EventBinding {
 // ---------------------------------------------------------------------
 
 /// Mission-phase node. `allowed_effectors` and `allowed_engines` are
-/// declared but unenforced in Phase 3.2 — the kernel does not yet
-/// consult them. Phase 3.4 / 3.6 will wire the enforcement.
+/// declared but not actively gated by the kernel yet. Scenario loading
+/// validates effector references in Phase 3.4; active command gating
+/// lands with the later controller / propulsion phases.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Phase {
     /// Path-derived stable id.
     pub id: PhaseId,
     /// Human-readable label for telemetry / diagnostics.
     pub label: String,
-    /// Effectors permitted while this phase is active. Phase-3.4
-    /// will enforce; Phase-3.2 leaves the list informational.
+    /// Effectors permitted while this phase is active. Scenario loading
+    /// validates ids; active command gating is deferred.
     pub allowed_effectors: Vec<String>,
     /// Engines permitted while this phase is active. Phase-3.6 will
     /// enforce; Phase-3.2 leaves the list informational.

@@ -49,6 +49,7 @@ id               = "delta_e"
 kind             = { kind = "linear_actuator", tau_s = 0.05 }
 limits           = { min = -0.349, max = 0.349, max_rate_per_s = 5.236, deadband = 0.0, latency_s = 0.020 }
 initial_position = 0.0
+unit             = "rad"
 command_schedule = { kind = "step_at", time_s = 0.5, before = 0.0, after = 0.087 }
 
 [environment]

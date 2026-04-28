@@ -166,7 +166,7 @@ fn check_dimensional_field(
     value: &toml::Value,
 ) -> Result<(), ScenarioError> {
     if is_numeric_value(value)
-        && !is_dimensionless_key(key)
+        && !is_dimensionless_key(path, key)
         && !key_has_unit_suffix(key)
         && !key_has_dimensionless_component_order_suffix(key)
     {
@@ -208,8 +208,8 @@ fn is_numeric_4vector(value: &toml::Value) -> bool {
         if values.len() == 4 && values.iter().all(is_numeric_value))
 }
 
-fn is_dimensionless_key(key: &str) -> bool {
-    matches!(
+fn is_dimensionless_key(path: &str, key: &str) -> bool {
+    if matches!(
         key,
         "scenario"
             | "seed"
@@ -224,23 +224,38 @@ fn is_dimensionless_key(key: &str) -> bool {
             // Phase-3.2 mission-block trigger fields: a mass fraction
             // ratio in [0, 1].
             | "remaining"
-            // Phase-3.4 effector-block fields: dimensionless quantities
-            // and unit-agnostic command magnitudes (units depend on
-            // the effector kind — rad, m, percent throttle, etc.).
-            | "command"
-            | "before"
-            | "after"
-            | "start"
-            | "end"
-            | "value"
-            | "factor"
-            | "min"
-            | "max"
-            | "deadband"
-            | "at"
-            | "to"
-            | "initial_position"
-    )
+    ) {
+        return true;
+    }
+
+    // Phase-3.4 effector-block fields are unit-agnostic command
+    // magnitudes: their concrete unit depends on the effector kind
+    // (rad, m, fraction, etc.). Keep this exemption path-scoped so
+    // arbitrary extension tables do not accidentally accept unlabeled
+    // dimensional fields named `min`, `max`, or `value`.
+    if path.starts_with("$.vehicle.assembly.effectors")
+        && matches!(
+            key,
+            "before"
+                | "after"
+                | "start"
+                | "end"
+                | "value"
+                | "factor"
+                | "min"
+                | "max"
+                | "deadband"
+                | "at"
+                | "to"
+                | "initial_position"
+        )
+    {
+        return true;
+    }
+
+    // Mission effector overrides use the same unit-agnostic command
+    // scalar as the target effector.
+    path.starts_with("$.mission.events") && path.ends_with(".action.command") && key == "command"
 }
 
 fn key_has_unit_suffix(key: &str) -> bool {

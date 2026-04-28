@@ -47,9 +47,13 @@ pub struct EffectorRack {
     /// effector (defaults to commanding the initial position
     /// indefinitely).
     schedules: Vec<Option<EffectorSchedule>>,
+    /// Baseline hold command for effectors without a schedule. This is
+    /// the configured initial position, not the most recent commanded
+    /// value, so one-shot overrides do not become sticky.
+    hold_commands: Vec<f64>,
     /// One-shot command overrides drained from the kernel's
-    /// `EventAction::EffectorOverride` events. Cleared after each
-    /// `step()`.
+    /// `EventAction::EffectorOverride` events. Applied on the next
+    /// rack tick and cleared after each `step()`.
     overrides: BTreeMap<EffectorId, f64>,
     /// Construction-time `dt`; stepped at exactly this rate.
     dt: Duration,
@@ -162,6 +166,7 @@ impl EffectorRack {
         let mut string_ids: Vec<String> = Vec::new();
         let mut id_index: BTreeMap<EffectorId, usize> = BTreeMap::new();
         let mut schedules: Vec<Option<EffectorSchedule>> = Vec::new();
+        let mut hold_commands: Vec<f64> = Vec::new();
 
         if let Some(assembly) = &document.vehicle.assembly {
             for (index, config) in assembly.effectors.iter().enumerate() {
@@ -176,6 +181,7 @@ impl EffectorRack {
                         .as_ref()
                         .map(EffectorSchedule::from_config),
                 );
+                hold_commands.push(config.initial_position.unwrap_or(0.0));
             }
         }
 
@@ -184,6 +190,7 @@ impl EffectorRack {
             string_ids,
             id_index,
             schedules,
+            hold_commands,
             overrides: BTreeMap::new(),
             dt,
         })
@@ -211,22 +218,35 @@ impl EffectorRack {
 
     /// Apply any `EventAction::EffectorOverride` actions drained
     /// from the kernel's per-step fired-event queue. Override values
-    /// take precedence over the schedule for the next step only.
-    pub fn apply_overrides(&mut self, fired: &[FiredEvent]) {
+    /// take precedence over the schedule for the next rack tick only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliError::Effector`] when an override references an
+    /// effector id that is not present in this rack.
+    pub fn apply_overrides(&mut self, fired: &[FiredEvent]) -> Result<(), CliError> {
         for event in fired {
-            if let EventAction::EffectorOverride { id, command } = event.action
-                && self.id_index.contains_key(&id)
-            {
+            if let EventAction::EffectorOverride { id, command } = event.action {
+                if !self.id_index.contains_key(&id) {
+                    return Err(CliError::Effector {
+                        field: "mission.events[*].action.id".to_owned(),
+                        reason: format!(
+                            "effector_override references unknown effector id value {}",
+                            id.value()
+                        ),
+                    });
+                }
                 self.overrides.insert(id, command);
             }
         }
+        Ok(())
     }
 
     /// Step every effector by one kernel base tick.
     ///
     /// Command resolution: override (if present) wins; else the
     /// schedule's command at `time` (if a schedule is declared);
-    /// else the effector's `current_state().commanded` (hold).
+    /// else the configured initial-position hold command.
     /// Overrides are cleared after the step.
     ///
     /// # Errors
@@ -241,7 +261,7 @@ impl EffectorRack {
             } else if let Some(schedule) = &self.schedules[index] {
                 schedule.command_at(time)
             } else {
-                effector.current_state().commanded
+                self.hold_commands[index]
             };
             effector
                 .step(cmd, self.dt)
@@ -296,7 +316,68 @@ fn build_effector(
             EffectorFaultConfig::ReducedRate { factor } => EffectorFault::ReducedRate { factor },
             EffectorFaultConfig::Hardover { to } => EffectorFault::Hardover { to },
         };
-        actuator.inject_fault(fault);
+        actuator
+            .inject_fault(fault)
+            .map_err(|err| CliError::Assembly {
+                field: format!("vehicle.assembly.effectors[{index}].fault"),
+                reason: err.to_string(),
+            })?;
     }
     Ok(actuator)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use openbmp_core::{EffectorId, SimTime, StepIndex};
+    use openbmp_scenario::Scenario;
+    use openbmp_sim::{EventAction, EventId, FiredEvent};
+
+    use super::*;
+
+    const ASSEMBLY_WITH_EFFECTOR: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/openbmp-scenario/tests/fixtures/assembly-with-effector.toml"
+    ));
+
+    fn scenario_without_schedule() -> Scenario {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+            "",
+        );
+        Scenario::from_toml_str(&toml).expect("scenario parses")
+    }
+
+    fn override_event(id: EffectorId, command: f64) -> FiredEvent {
+        FiredEvent {
+            binding_id: EventId::from_path("mission.events.override"),
+            step: StepIndex::new(1),
+            time: SimTime::from_seconds(0.0),
+            action: EventAction::EffectorOverride { id, command },
+        }
+    }
+
+    #[test]
+    fn unscheduled_override_is_one_step_only() {
+        let scenario = scenario_without_schedule();
+        let mut rack = EffectorRack::build(&scenario.document).unwrap();
+        let id = EffectorId::from_path("vehicle.assembly.effectors.delta_e");
+
+        rack.apply_overrides(&[override_event(id, 0.087)]).unwrap();
+        rack.step(SimTime::from_seconds(0.0)).unwrap();
+        assert!((rack.snapshot()[0].commanded - 0.087).abs() < 1.0e-12);
+
+        rack.step(SimTime::from_seconds(0.001)).unwrap();
+        assert!(rack.snapshot()[0].commanded.abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn runtime_override_unknown_id_fails_closed() {
+        let scenario = scenario_without_schedule();
+        let mut rack = EffectorRack::build(&scenario.document).unwrap();
+        let err = rack
+            .apply_overrides(&[override_event(EffectorId::from_path("unknown"), 0.087)])
+            .unwrap_err();
+        assert!(matches!(err, CliError::Effector { .. }));
+    }
 }

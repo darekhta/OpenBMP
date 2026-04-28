@@ -146,8 +146,7 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Cli
             return Err(CliError::Scenario(
                 openbmp_scenario::ScenarioError::UnsupportedTriggerKind {
                     kind: "scripted".to_owned(),
-                    reason: "scripted triggers ship in Phase 3.4 alongside ControlEffector"
-                        .to_owned(),
+                    reason: "scripted triggers are deferred to a later Phase-3 sub-phase; use effector command_schedule for deterministic actuator scripts".to_owned(),
                 },
             ));
         }

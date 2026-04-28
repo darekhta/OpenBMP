@@ -277,6 +277,13 @@ mod tests {
     }
 
     #[test]
+    fn rejects_effector_dimensionless_keys_outside_effector_paths() {
+        let toml = format!("{MINIMAL}\n[fc.example]\nmin = 1.0\n");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(err, ScenarioError::MissingUnitSuffix { .. }));
+    }
+
+    #[test]
     fn rejects_missing_frame_suffix_on_numeric_vector() {
         let toml = MINIMAL.replace(
             "initial_position_eci_m = [0.0, 0.0, 0.0]",
@@ -910,7 +917,8 @@ action  = { kind = "deploy_recovery" }
     #[test]
     fn accepts_effector_override_action_kind() {
         // Phase 3.4 wires `EventAction::EffectorOverride { id, command }`.
-        let parse_result = Scenario::from_toml_str(&with_mission(
+        let parse_result = Scenario::from_toml_str(&format!(
+            "{ASSEMBLY_WITH_EFFECTOR}\n{}",
             r#"
 [mission]
 initial_phase = "ascent"
@@ -957,6 +965,32 @@ action  = { kind = "effector_override", id = "", command = 0.0 }
         ))
         .unwrap_err();
         assert!(matches!(err, ScenarioError::EmptyField { .. }));
+    }
+
+    #[test]
+    fn rejects_effector_override_action_with_unknown_id() {
+        let err = Scenario::from_toml_str(&format!(
+            "{ASSEMBLY_WITH_EFFECTOR}\n{}",
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_apogee" }
+action  = { kind = "effector_override", id = "delta_typo", command = 0.087 }
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::UnknownEffectorReference { ref field, ref id }
+                if field.contains("mission.events") && id == "delta_typo"
+        ));
     }
 
     #[test]
@@ -1188,6 +1222,7 @@ action  = { kind = "stop", label = "max-q" }
             }
         }
         assert!((effector.limits.max_rate_per_s - 5.236).abs() < 1e-12);
+        assert_eq!(effector.unit.as_deref(), Some("rad"));
     }
 
     #[test]
@@ -1211,6 +1246,36 @@ action  = { kind = "stop", label = "max-q" }
         assert!(
             matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field.contains("limits.min")),
             "expected InvalidNumber on limits.min, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_effector_deadband_larger_than_range() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace("deadband = 0.0", "deadband = 1.0");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field.contains("limits.deadband")),
+            "expected InvalidNumber on limits.deadband, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_effector_latency_not_integer_multiple_of_dt() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace("latency_s = 0.020", "latency_s = 0.0015");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field.contains("limits.latency_s")),
+            "expected InvalidNumber on limits.latency_s, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_negative_effector_tau() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace("tau_s = 0.05", "tau_s = -0.05");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field.contains("kind.tau_s")),
+            "expected InvalidNumber on kind.tau_s, got {err:?}",
         );
     }
 

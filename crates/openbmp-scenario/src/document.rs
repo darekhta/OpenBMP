@@ -95,7 +95,7 @@ impl ScenarioDocument {
         self.validate_header()?;
         self.meta.validate()?;
         self.time.validate()?;
-        self.vehicle.validate(registry)?;
+        self.vehicle.validate(registry, self.time.dt_s)?;
         self.environment.validate(registry)?;
         self.forces.validate(registry)?;
         self.telemetry.validate()?;
@@ -166,6 +166,43 @@ impl ScenarioDocument {
         }
         if let Some(mission) = &self.mission {
             mission.validate()?;
+        }
+        self.validate_effector_references()?;
+        Ok(())
+    }
+
+    fn validate_effector_references(&self) -> Result<(), ScenarioError> {
+        let Some(mission) = &self.mission else {
+            return Ok(());
+        };
+        let declared: BTreeSet<&str> = self
+            .vehicle
+            .assembly
+            .as_ref()
+            .map(|assembly| assembly.effectors.iter().map(|e| e.id.as_str()).collect())
+            .unwrap_or_default();
+
+        for (phase_index, phase) in mission.phases.iter().enumerate() {
+            for (effector_index, id) in phase.allowed_effectors.iter().enumerate() {
+                if !declared.contains(id.as_str()) {
+                    return Err(ScenarioError::UnknownEffectorReference {
+                        field: format!(
+                            "mission.phases[{phase_index}].allowed_effectors[{effector_index}]"
+                        ),
+                        id: id.clone(),
+                    });
+                }
+            }
+        }
+        for (event_index, event) in mission.events.iter().enumerate() {
+            if let EventActionConfig::EffectorOverride { id, .. } = &event.action
+                && !declared.contains(id.as_str())
+            {
+                return Err(ScenarioError::UnknownEffectorReference {
+                    field: format!("mission.events[{event_index}].action.id"),
+                    id: id.clone(),
+                });
+            }
         }
         Ok(())
     }
@@ -304,7 +341,7 @@ pub struct VehicleConfig {
 }
 
 impl VehicleConfig {
-    fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
+    fn validate(&self, registry: &ModelRegistry, dt_s: f64) -> Result<(), ScenarioError> {
         let descriptor = registry.resolve(ModelRole::Vehicle, &self.kind)?;
         require_positive("vehicle.mass_kg", self.mass_kg)?;
         require_finite_array(
@@ -379,6 +416,7 @@ impl VehicleConfig {
                 descriptor.name.as_str(),
                 self.mass_kg,
                 self.inertia_tensor_body_kg_m2.as_ref(),
+                dt_s,
             )?;
         }
         Ok(())
@@ -1159,8 +1197,8 @@ pub struct PhaseConfig {
     /// Human-readable label.
     pub label: String,
     /// Optional list of effector ids permitted while this phase is
-    /// active. Phase-3.2 leaves this informational; Phase-3.4 will
-    /// enforce it.
+    /// active. Phase 3.4 validates references; active-phase command
+    /// gating is deferred.
     #[serde(default)]
     pub allowed_effectors: Vec<String>,
     /// Optional list of engine ids permitted while this phase is
@@ -1273,8 +1311,7 @@ impl EventTriggerConfig {
             Self::Scripted => {
                 return Err(ScenarioError::UnsupportedTriggerKind {
                     kind: "scripted".to_owned(),
-                    reason: "scripted triggers ship in Phase 3.4 alongside ControlEffector"
-                        .to_owned(),
+                    reason: "scripted triggers are deferred to a later Phase-3 sub-phase; use effector command_schedule for deterministic actuator scripts".to_owned(),
                 });
             }
         }
@@ -1429,6 +1466,7 @@ impl AssemblyConfig {
         vehicle_kind: &str,
         flat_mass_kg: f64,
         flat_inertia_body_kg_m2: Option<&[[f64; 3]; 3]>,
+        dt_s: f64,
     ) -> Result<(), ScenarioError> {
         if self.bodies.is_empty() {
             return Err(ScenarioError::EmptyList {
@@ -1483,7 +1521,7 @@ impl AssemblyConfig {
         let mut seen_effector_ids: std::collections::BTreeSet<&str> =
             std::collections::BTreeSet::new();
         for (index, effector) in self.effectors.iter().enumerate() {
-            effector.validate(index)?;
+            effector.validate(index, dt_s)?;
             if !seen_effector_ids.insert(effector.id.as_str()) {
                 return Err(ScenarioError::DuplicateValue {
                     field: format!("vehicle.assembly.effectors[{index}].id"),
@@ -1672,21 +1710,29 @@ pub struct EffectorConfig {
     /// `[limits.min, limits.max]`.
     #[serde(default)]
     pub initial_position: Option<f64>,
+    /// Optional telemetry unit label for this scalar effector axis.
+    /// Defaults to `"1"` when omitted.
+    #[serde(default)]
+    pub unit: Option<String>,
     /// Optional fault mounted at scenario load time.
     #[serde(default)]
     pub fault: Option<EffectorFaultConfig>,
     /// Optional deterministic command schedule. Resolves the
     /// per-step command at runtime; superseded by an
-    /// `EventAction::EffectorOverride` event firing on the same step.
+    /// `EventAction::EffectorOverride` on the next rack tick.
     #[serde(default)]
     pub command_schedule: Option<EffectorCommandScheduleConfig>,
 }
 
 impl EffectorConfig {
-    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+    fn validate(&self, index: usize, dt_s: f64) -> Result<(), ScenarioError> {
         let path = |field: &str| format!("vehicle.assembly.effectors[{index}].{field}");
         require_non_empty(&path("id"), &self.id)?;
-        self.limits.validate(index)?;
+        self.kind.validate(index)?;
+        self.limits.validate(index, dt_s)?;
+        if let Some(unit) = &self.unit {
+            require_non_empty(&path("unit"), unit)?;
+        }
         if let Some(initial) = self.initial_position {
             require_finite(&path("initial_position"), initial)?;
             if initial < self.limits.min || initial > self.limits.max {
@@ -1720,6 +1766,27 @@ pub enum EffectorKindConfig {
     },
 }
 
+impl EffectorKindConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.effectors[{index}].kind.{field}");
+        match self {
+            Self::LinearActuator { tau_s } => {
+                if let Some(tau_s) = tau_s {
+                    require_finite(&path("tau_s"), *tau_s)?;
+                    if *tau_s < 0.0 {
+                        return Err(ScenarioError::InvalidNumber {
+                            field: path("tau_s"),
+                            value: *tau_s,
+                            rule: "must be non-negative",
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Position / rate / latency limits.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -1737,7 +1804,7 @@ pub struct EffectorLimitsConfig {
 }
 
 impl EffectorLimitsConfig {
-    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+    fn validate(&self, index: usize, dt_s: f64) -> Result<(), ScenarioError> {
         let path = |field: &str| format!("vehicle.assembly.effectors[{index}].limits.{field}");
         require_finite(&path("min"), self.min)?;
         require_finite(&path("max"), self.max)?;
@@ -1758,6 +1825,13 @@ impl EffectorLimitsConfig {
                 rule: "must be non-negative",
             });
         }
+        if self.deadband > (self.max - self.min) {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("deadband"),
+                value: self.deadband,
+                rule: "must be at most (max - min)",
+            });
+        }
         require_finite(&path("latency_s"), self.latency_s)?;
         if self.latency_s < 0.0 {
             return Err(ScenarioError::InvalidNumber {
@@ -1765,6 +1839,24 @@ impl EffectorLimitsConfig {
                 value: self.latency_s,
                 rule: "must be non-negative",
             });
+        }
+        if self.latency_s > 0.0 && self.latency_s + 1.0e-12 < dt_s {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("latency_s"),
+                value: self.latency_s,
+                rule: "must be either zero or at least time.dt_s",
+            });
+        }
+        if self.latency_s > 0.0 {
+            let ratio = self.latency_s / dt_s;
+            let rounded = ratio.round();
+            if (ratio - rounded).abs() > 1.0e-9 * ratio {
+                return Err(ScenarioError::InvalidNumber {
+                    field: path("latency_s"),
+                    value: self.latency_s,
+                    rule: "must be an integer multiple of time.dt_s",
+                });
+            }
         }
         Ok(())
     }

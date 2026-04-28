@@ -556,8 +556,8 @@ where
                 EventAction::EffectorOverride { .. } => {
                     // Phase-3.4: kernel records the firing in
                     // `pending_events`; the runner's `EffectorRack`
-                    // drains and applies it via
-                    // `apply_overrides(&fired)` before stepping.
+                    // drains and applies it on the next rack tick via
+                    // `apply_overrides(&fired)`.
                 }
                 EventAction::EngineCommand
                 | EventAction::Separation

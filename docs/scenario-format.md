@@ -527,7 +527,7 @@ common scripted-command case without a separate trigger surface.
 | `enter_phase` | `phase: string` (declared phase id) | Sets the active mission phase; visible via runner-side telemetry / diagnostics. |
 | `emit_telemetry_marker` | `tag: string` (snake_case) | Allocates a `bool` telemetry channel `mission.marker.<tag>`; runner writes `true` on every step the event fires, `false` on every other step. Channel allocation is alphabetical by tag for declaration-order independence. |
 | `stop` | `label: string` | Halts the run with `StopReason::MissionEnded { label }`. Distinct from `EndTime` so determinism telemetry can distinguish CLI-driven stops from scenario-driven mission ends. |
-| `effector_override` | `id: string` (declared effector id), `command: f64` (finite) | One-shot command override for the named effector on the next runner step. Resolves the declared id against the runner's effector rack via FNV-1a-64 of `vehicle.assembly.effectors.<id>`. The kernel records the action; the runner drains it from the per-step fired-event queue and applies it on the rack before stepping. Override wins over any declared `command_schedule` for that step only. Unknown ids are silently ignored — unknown-id rejection is a parse-time concern, not a run-time one. |
+| `effector_override` | `id: string` (declared effector id), `command: f64` (finite) | One-shot command override for the named effector on the next runner step. Resolves the declared id against the runner's effector rack via FNV-1a-64 of `vehicle.assembly.effectors.<id>`. Unknown ids are rejected by `openbmp check`. The kernel records the action; the runner drains it from the per-step fired-event queue and applies it on the next rack tick before the kernel step. Override wins over any declared `command_schedule` for that rack tick only. |
 
 The three reserved actions `engine_command` / `separation` /
 `deploy_recovery` are still rejected at parse time with typed
@@ -689,6 +689,7 @@ id               = "delta_e"
 kind             = { kind = "linear_actuator", tau_s = 0.05 }
 limits           = { min = -0.349, max = 0.349, max_rate_per_s = 5.236, deadband = 0.0, latency_s = 0.020 }
 initial_position = 0.0
+unit             = "rad"
 command_schedule = { kind = "step_at", time_s = 0.5, before = 0.0, after = 0.087 }
 ```
 
@@ -717,6 +718,10 @@ actuators.
 `initial_position` (optional, default `0.0`) must lie in
 `[min, max]`. The rack pre-fills the actuator's pure-delay buffer
 with `initial_position` so step 0 reflects the at-rest state.
+
+`unit` is optional telemetry metadata for the scalar effector axis.
+When omitted, the runner records unit `"1"`; angular surfaces should
+declare `unit = "rad"`.
 
 #### Command schedules
 
@@ -752,8 +757,8 @@ deferred to a later sub-phase.
 #### Telemetry
 
 For each declared effector, the runner allocates one telemetry
-channel `effector.<id>.actual` (`f64`, dimensionless `"1"` unit
-metadata). The channels are allocated in scenario-declared order,
+channel `effector.<id>.actual` (`f64`, using the effector's declared
+`unit`, or `"1"` when omitted). The channels are allocated in scenario-declared order,
 **after** the per-model force breakdown and **before** any mission
 markers — that ordering is the determinism contract for channel
 ids.
@@ -782,14 +787,15 @@ Enforced at scenario-parse time:
   `deadband <= (max - min)`; `latency_s >= 0`.
 - `initial_position`, when present, finite and in `[min, max]`.
 - `command_schedule` finite numeric fields; `linear_ramp` requires
-  `start_time_s <= end_time_s`.
+  `start_time_s < end_time_s`.
+- `unit`, when present, non-empty.
 - `fault` when present: `jam.at` and `hardover.to` in `[min, max]`;
   `runaway.rate_per_s` finite; `reduced_rate.factor` in `[0, 1]`.
 - `linear_actuator.tau_s` (when present) finite and `>= 0`.
 
-The runner additionally rejects at construction time any latency
-that is not an integer multiple of the scenario `time.dt_s` (the
-fixed-step pure-delay buffer cannot represent sub-`dt` latency).
+`openbmp check` rejects any latency that is not an integer multiple of
+the scenario `time.dt_s` (the fixed-step pure-delay buffer cannot
+represent sub-`dt` latency).
 
 #### Phase-3.4 limitations
 

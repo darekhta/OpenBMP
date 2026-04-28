@@ -159,13 +159,14 @@ pub fn run(
         &[],
         &initial_snapshot,
     )?;
+    let mut pending_effector_events = Vec::new();
     while kernel.stop_reason().is_none() {
-        kernel.step()?;
-        let fired = kernel.drain_events();
+        effector_rack.apply_overrides(&pending_effector_events)?;
         if !effector_rack.is_empty() {
-            effector_rack.apply_overrides(&fired);
             effector_rack.step(kernel.current_time())?;
         }
+        kernel.step()?;
+        let fired = kernel.drain_events();
         let snapshot = effector_rack.snapshot();
         record_step(
             &mut table,
@@ -176,6 +177,7 @@ pub fn run(
             &fired,
             &snapshot,
         )?;
+        pending_effector_events = fired;
     }
 
     let stop_reason = kernel
@@ -599,7 +601,7 @@ impl Phase2ChannelSet {
                 let channel = TelemetryChannel::<f64>::new(
                     alloc(),
                     format!("effector.{}.actual", config.id),
-                    "1",
+                    config.unit.as_deref().unwrap_or("1"),
                     None::<&str>,
                 )?;
                 effector_actuals.push(channel);

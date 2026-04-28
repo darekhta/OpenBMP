@@ -107,6 +107,55 @@ impl LinearActuator {
             fault: None,
         })
     }
+
+    fn validate_fault(&self, fault: EffectorFault) -> Result<(), EffectorError> {
+        match fault {
+            EffectorFault::Jam { at } => {
+                if !at.is_finite() {
+                    return Err(EffectorError::InvalidFault {
+                        reason: "Jam.at must be finite",
+                    });
+                }
+                if at < self.limits.min || at > self.limits.max {
+                    return Err(EffectorError::InvalidFault {
+                        reason: "Jam.at must lie within [min, max]",
+                    });
+                }
+            }
+            EffectorFault::Runaway { rate_per_s } => {
+                if !rate_per_s.is_finite() {
+                    return Err(EffectorError::InvalidFault {
+                        reason: "Runaway.rate_per_s must be finite",
+                    });
+                }
+            }
+            EffectorFault::ReducedRate { factor } => {
+                if !factor.is_finite() {
+                    return Err(EffectorError::InvalidFault {
+                        reason: "ReducedRate.factor must be finite",
+                    });
+                }
+                if !(0.0..=1.0).contains(&factor) {
+                    return Err(EffectorError::InvalidFault {
+                        reason: "ReducedRate.factor must lie in [0, 1]",
+                    });
+                }
+            }
+            EffectorFault::Hardover { to } => {
+                if !to.is_finite() {
+                    return Err(EffectorError::InvalidFault {
+                        reason: "Hardover.to must be finite",
+                    });
+                }
+                if to < self.limits.min || to > self.limits.max {
+                    return Err(EffectorError::InvalidFault {
+                        reason: "Hardover.to must lie within [min, max]",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Compute the fixed-step pure-delay buffer depth from the
@@ -157,10 +206,12 @@ impl ControlEffector for LinearActuator {
             match fault {
                 EffectorFault::Jam { at } => {
                     self.actual = at;
+                    let saturated =
+                        self.actual <= self.limits.min || self.actual >= self.limits.max;
                     let state = EffectorState {
                         commanded: cmd,
                         actual: self.actual,
-                        saturated: false,
+                        saturated,
                         rate_limited: true,
                         fault: Some(fault),
                     };
@@ -170,7 +221,8 @@ impl ControlEffector for LinearActuator {
                 EffectorFault::Hardover { to } => {
                     let max_rate = self.limits.max_rate_per_s;
                     let step_limit = max_rate * dt.as_seconds();
-                    let delta = (to - self.actual).clamp(-step_limit, step_limit);
+                    let raw_delta = to - self.actual;
+                    let delta = raw_delta.clamp(-step_limit, step_limit);
                     self.actual = (self.actual + delta).clamp(self.limits.min, self.limits.max);
                     let saturated =
                         self.actual <= self.limits.min || self.actual >= self.limits.max;
@@ -182,6 +234,9 @@ impl ControlEffector for LinearActuator {
                         fault: Some(fault),
                     };
                     self.last_state = state;
+                    if raw_delta.abs() <= step_limit + 1.0e-12 {
+                        self.fault = Some(EffectorFault::Jam { at: self.actual });
+                    }
                     return Ok(state);
                 }
                 EffectorFault::Runaway { rate_per_s } => {
@@ -269,8 +324,10 @@ impl ControlEffector for LinearActuator {
         self.limits
     }
 
-    fn inject_fault(&mut self, fault: EffectorFault) {
+    fn inject_fault(&mut self, fault: EffectorFault) -> Result<(), EffectorError> {
+        self.validate_fault(fault)?;
         self.fault = Some(fault);
+        Ok(())
     }
 
     fn current_state(&self) -> EffectorState {
@@ -288,6 +345,7 @@ impl ControlEffector for LinearActuator {
 mod tests {
     use super::*;
     use openbmp_core::EffectorId;
+    use proptest::prelude::*;
 
     fn dt() -> Duration {
         Duration::from_seconds(0.001)
@@ -345,7 +403,7 @@ mod tests {
     #[test]
     fn jam_locks_position_independent_of_command() {
         let mut a = fresh_actuator();
-        a.inject_fault(EffectorFault::Jam { at: 0.05 });
+        a.inject_fault(EffectorFault::Jam { at: 0.05 }).unwrap();
         let state = a.step(0.087, dt()).unwrap();
         assert!((state.actual - 0.05).abs() < 1e-12);
         // Subsequent steps stay at 0.05 regardless of command.
@@ -356,7 +414,8 @@ mod tests {
     #[test]
     fn runaway_drives_at_fault_rate_ignoring_command() {
         let mut a = fresh_actuator();
-        a.inject_fault(EffectorFault::Runaway { rate_per_s: 0.5 });
+        a.inject_fault(EffectorFault::Runaway { rate_per_s: 0.5 })
+            .unwrap();
         let state = a.step(0.0, dt()).unwrap();
         // Expect actual = 0 + 0.5*0.001 = 0.0005
         assert!((state.actual - 0.000_5).abs() < 1e-12);
@@ -368,7 +427,8 @@ mod tests {
     #[test]
     fn reduced_rate_scales_max_rate() {
         let mut a = fresh_actuator();
-        a.inject_fault(EffectorFault::ReducedRate { factor: 0.5 });
+        a.inject_fault(EffectorFault::ReducedRate { factor: 0.5 })
+            .unwrap();
         // Half the slew rate: first step covers 0.5236*0.001*0.5 ≈ 0.002618.
         let state = a.step(0.087, dt()).unwrap();
         assert!((state.actual - 0.002_618).abs() < 1e-9);
@@ -377,7 +437,8 @@ mod tests {
     #[test]
     fn hardover_steps_to_extreme_then_jams() {
         let mut a = fresh_actuator();
-        a.inject_fault(EffectorFault::Hardover { to: 0.349 });
+        a.inject_fault(EffectorFault::Hardover { to: 0.349 })
+            .unwrap();
         // Hard-rail toward 0.349 at full max rate; reaches in ~67 steps.
         for _ in 0..70 {
             a.step(0.0, dt()).unwrap();
@@ -385,6 +446,7 @@ mod tests {
         let state = a.current_state();
         assert!((state.actual - 0.349).abs() < 1e-9);
         assert!(state.saturated);
+        assert!(matches!(state.fault, Some(EffectorFault::Jam { .. })));
     }
 
     #[test]
@@ -413,6 +475,32 @@ mod tests {
         // Third step sees the first commanded value (0.087).
         let s3 = a.step(0.087, dt()).unwrap();
         assert!(s3.actual > 0.0);
+    }
+
+    #[test]
+    fn latency_one_dt_produces_one_step_delay() {
+        let limits = EffectorLimits {
+            latency: Duration::from_seconds(0.001),
+            ..make_limits()
+        };
+        let mut a =
+            LinearActuator::new(EffectorId::from_path("test.delay"), limits, dt(), 0.0, 0.0)
+                .unwrap();
+        let s1 = a.step(0.087, dt()).unwrap();
+        assert!(s1.actual.abs() < 1e-12);
+        let s2 = a.step(0.087, dt()).unwrap();
+        assert!(s2.actual > 0.0);
+    }
+
+    #[test]
+    fn latency_non_integer_multiple_rejected() {
+        let limits = EffectorLimits {
+            latency: Duration::from_seconds(0.0015),
+            ..make_limits()
+        };
+        let err = LinearActuator::new(EffectorId::from_path("test.delay"), limits, dt(), 0.0, 0.0)
+            .unwrap_err();
+        assert!(matches!(err, EffectorError::InvalidLimits { .. }));
     }
 
     #[test]
@@ -473,5 +561,75 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, EffectorError::InvalidLimits { .. }));
+    }
+
+    #[test]
+    fn invalid_runtime_fault_rejected_without_mutating_existing_fault() {
+        let mut a = fresh_actuator();
+        a.inject_fault(EffectorFault::ReducedRate { factor: 0.5 })
+            .unwrap();
+        let err = a.inject_fault(EffectorFault::Jam { at: 10.0 }).unwrap_err();
+        assert!(matches!(err, EffectorError::InvalidFault { .. }));
+        let state = a.step(0.087, dt()).unwrap();
+        assert!(matches!(
+            state.fault,
+            Some(EffectorFault::ReducedRate { factor }) if (factor - 0.5).abs() < 1e-12
+        ));
+    }
+
+    proptest! {
+        #[test]
+        fn property_nominal_never_exits_limits_and_respects_rate(
+            commands in proptest::collection::vec(-2.0_f64..2.0, 1..200)
+        ) {
+            let mut a = fresh_actuator();
+            let mut previous = a.current_state().actual;
+            let max_step = a.limits().max_rate_per_s * dt().as_seconds();
+            for command in commands {
+                let state = a.step(command, dt()).unwrap();
+                prop_assert!(state.actual >= a.limits().min - 1.0e-12);
+                prop_assert!(state.actual <= a.limits().max + 1.0e-12);
+                prop_assert!((state.actual - previous).abs() <= max_step + 1.0e-12);
+                previous = state.actual;
+            }
+        }
+
+        #[test]
+        fn property_reduced_rate_never_exits_limits_and_respects_scaled_rate(
+            commands in proptest::collection::vec(-2.0_f64..2.0, 1..200),
+            factor in 0.0_f64..1.0
+        ) {
+            let mut a = fresh_actuator();
+            a.inject_fault(EffectorFault::ReducedRate { factor }).unwrap();
+            let mut previous = a.current_state().actual;
+            let max_step = a.limits().max_rate_per_s * factor * dt().as_seconds();
+            for command in commands {
+                let state = a.step(command, dt()).unwrap();
+                prop_assert!(state.actual >= a.limits().min - 1.0e-12);
+                prop_assert!(state.actual <= a.limits().max + 1.0e-12);
+                prop_assert!((state.actual - previous).abs() <= max_step + 1.0e-12);
+                previous = state.actual;
+            }
+        }
+
+        #[test]
+        fn property_fault_modes_never_exit_limits(
+            commands in proptest::collection::vec(-2.0_f64..2.0, 1..200),
+            fault_case in 0_u8..4
+        ) {
+            let mut a = fresh_actuator();
+            let fault = match fault_case {
+                0 => EffectorFault::Jam { at: 0.123 },
+                1 => EffectorFault::Runaway { rate_per_s: 50.0 },
+                2 => EffectorFault::ReducedRate { factor: 0.25 },
+                _ => EffectorFault::Hardover { to: -0.349 },
+            };
+            a.inject_fault(fault).unwrap();
+            for command in commands {
+                let state = a.step(command, dt()).unwrap();
+                prop_assert!(state.actual >= a.limits().min - 1.0e-12);
+                prop_assert!(state.actual <= a.limits().max + 1.0e-12);
+            }
+        }
     }
 }
