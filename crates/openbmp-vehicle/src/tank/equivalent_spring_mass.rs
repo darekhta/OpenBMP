@@ -26,14 +26,14 @@ use nalgebra::Vector3;
 use openbmp_core::Duration;
 
 use super::{
-    point_mass_inertia_about_origin, ForceMomentBody, MassContribution, MovingMassModel,
-    PropellantSpec, TankError, TankGeometry,
+    ForceMomentBody, MassContribution, MovingMassModel, PropellantSpec, TankError, TankGeometry,
+    point_mass_inertia_about_origin,
 };
 
 /// First root of `J_1'(x) = 0` (Abramson SP-106 Table 7.1).
 /// Mirrors [`crate::tank::equivalent_pendulum::KSI_1`]; both models
 /// share the cylindrical-tank Bessel-root form.
-const KSI_1: f64 = 1.841;
+const KSI_1: f64 = 1.841_183_781_340_659_3;
 
 /// Phase-3.7.C equivalent-spring-mass slosh model.
 #[derive(Debug, Clone)]
@@ -73,7 +73,9 @@ impl EquivalentSpringMass {
         geometry.require_valid()?;
         propellant.require_valid()?;
         if !fill_fraction.is_finite() || !(0.0..=1.0).contains(&fill_fraction) {
-            return Err(TankError::InvalidFillFraction { value: fill_fraction });
+            return Err(TankError::InvalidFillFraction {
+                value: fill_fraction,
+            });
         }
         if !mount_point_body_m.iter().all(|c| c.is_finite()) {
             return Err(TankError::InvalidMountPoint);
@@ -83,7 +85,11 @@ impl EquivalentSpringMass {
                 reason: "damping_ratio_zeta must be finite and non-negative",
             });
         }
-        let TankGeometry::Cylinder { radius_m, height_m: _ } = geometry else {
+        let TankGeometry::Cylinder {
+            radius_m,
+            height_m: _,
+        } = geometry
+        else {
             return Err(TankError::InvalidGeometry {
                 reason: "EquivalentSpringMass requires a Cylinder geometry",
             });
@@ -205,6 +211,15 @@ impl MovingMassModel for EquivalentSpringMass {
         let drained_kg = self.pending_drain_kg_per_s * dt_s;
         let next = self.fluid_kg - drained_kg;
         self.fluid_kg = if next > 0.0 { next } else { 0.0 };
+        if self.fluid_kg == 0.0 {
+            self.displacement_x_m = 0.0;
+            self.velocity_x_m_s = 0.0;
+            self.displacement_y_m = 0.0;
+            self.velocity_y_m_s = 0.0;
+            self.last_accel_x_m_s2 = 0.0;
+            self.last_accel_y_m_s2 = 0.0;
+            return Ok(());
+        }
 
         let axial_accel = accel_body_m_s2.z;
         let lateral_accel_x = accel_body_m_s2.x;
@@ -236,6 +251,9 @@ impl MovingMassModel for EquivalentSpringMass {
 
     fn mass_contribution(&self) -> MassContribution {
         let m = self.fluid_kg;
+        if m == 0.0 {
+            return MassContribution::default();
+        }
         let cg_offset = Vector3::new(self.displacement_x_m, self.displacement_y_m, 0.0);
         let r_total = self.mount_point_body_m + cg_offset;
         MassContribution {
@@ -247,7 +265,14 @@ impl MovingMassModel for EquivalentSpringMass {
 
     fn reaction_body(&self) -> ForceMomentBody {
         let m = self.fluid_kg;
-        let force = Vector3::new(-m * self.last_accel_x_m_s2, -m * self.last_accel_y_m_s2, 0.0);
+        if m == 0.0 {
+            return ForceMomentBody::default();
+        }
+        let force = Vector3::new(
+            -m * self.last_accel_x_m_s2,
+            -m * self.last_accel_y_m_s2,
+            0.0,
+        );
         let moment = self.mount_point_body_m.cross(&force);
         ForceMomentBody {
             force_body_n: force,
@@ -302,22 +327,12 @@ mod tests {
 
     #[test]
     fn omega_n_matches_pendulum_at_same_state() {
-        let spring = EquivalentSpringMass::new(
-            cylinder_a05_h2(),
-            water(),
-            0.7,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
-        let pendulum = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            0.7,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let spring =
+            EquivalentSpringMass::new(cylinder_a05_h2(), water(), 0.7, Vector3::zeros(), 0.0)
+                .unwrap();
+        let pendulum =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 0.7, Vector3::zeros(), 0.0)
+                .unwrap();
         let axial = 9.81;
         assert_eq!(
             spring.omega_n_squared_rad2_s2(axial).to_bits(),
@@ -327,14 +342,9 @@ mod tests {
 
     #[test]
     fn free_response_oscillation_frequency_matches_closed_form() {
-        let mut spring = EquivalentSpringMass::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let mut spring =
+            EquivalentSpringMass::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.0)
+                .unwrap();
         spring.set_initial_slosh((0.05, 0.0), (0.0, 0.0)).unwrap();
         let g = 9.81;
         let omega_sq = spring.omega_n_squared_rad2_s2(g);
@@ -372,14 +382,9 @@ mod tests {
 
     #[test]
     fn energy_is_conserved_within_one_percent_over_100_cycles() {
-        let mut spring = EquivalentSpringMass::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let mut spring =
+            EquivalentSpringMass::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.0)
+                .unwrap();
         spring.set_initial_slosh((0.05, 0.0), (0.0, 0.0)).unwrap();
         let g = 9.81;
         let omega_sq = spring.omega_n_squared_rad2_s2(g);
@@ -412,14 +417,9 @@ mod tests {
 
     #[test]
     fn lateral_acceleration_excites_displacement() {
-        let mut spring = EquivalentSpringMass::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let mut spring =
+            EquivalentSpringMass::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.0)
+                .unwrap();
         let g = 9.81;
         let dt = Duration::from_seconds(0.001);
         for _ in 0..100 {
@@ -428,7 +428,41 @@ mod tests {
                 .unwrap();
         }
         let (x, _) = spring.displacement_m();
-        assert!(x.abs() > 1e-3, "lateral kick must excite displacement; got {x}");
+        assert!(
+            x.abs() > 1e-3,
+            "lateral kick must excite displacement; got {x}"
+        );
+    }
+
+    #[test]
+    fn empty_tank_resets_slosh_state() {
+        let mut spring =
+            EquivalentSpringMass::new(cylinder_a05_h2(), water(), 0.001, Vector3::zeros(), 0.0)
+                .unwrap();
+        spring
+            .set_initial_slosh((0.05, -0.02), (0.1, -0.1))
+            .unwrap();
+        spring.drain(1e6).unwrap();
+        spring
+            .step(
+                Vector3::new(3.0, -4.0, 9.81),
+                Vector3::zeros(),
+                Duration::from_seconds(1.0),
+            )
+            .unwrap();
+
+        assert_eq!(spring.fluid_remaining_kg().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(spring.displacement_m().0.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(spring.displacement_m().1.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(spring.velocity_m_s().0.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(spring.velocity_m_s().1.to_bits(), 0.0_f64.to_bits());
+        assert!(
+            spring
+                .reaction_body()
+                .force_body_n
+                .iter()
+                .all(|c| c.to_bits() == 0.0_f64.to_bits())
+        );
     }
 
     #[test]
@@ -447,7 +481,11 @@ mod tests {
         let dt = Duration::from_seconds(0.001);
         for step in 0_i32..10_000 {
             let phase = f64::from(step) * 0.001;
-            let accel = Vector3::new(0.5 * phase.sin(), 0.3 * phase.cos(), 9.81 + 0.2 * phase.sin());
+            let accel = Vector3::new(
+                0.5 * phase.sin(),
+                0.3 * phase.cos(),
+                9.81 + 0.2 * phase.sin(),
+            );
             let drain = 0.5 * (1.0 + phase.sin().abs());
             a.drain(drain).unwrap();
             b.drain(drain).unwrap();
@@ -457,7 +495,10 @@ mod tests {
             let (b_x, b_y) = b.displacement_m();
             assert_eq!(a_x.to_bits(), b_x.to_bits());
             assert_eq!(a_y.to_bits(), b_y.to_bits());
-            assert_eq!(a.fluid_remaining_kg().to_bits(), b.fluid_remaining_kg().to_bits());
+            assert_eq!(
+                a.fluid_remaining_kg().to_bits(),
+                b.fluid_remaining_kg().to_bits()
+            );
         }
     }
 }

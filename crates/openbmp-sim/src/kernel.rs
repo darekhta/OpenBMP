@@ -33,8 +33,7 @@ use crate::error::{IntegratorError, SimulationError, StopReason};
 use crate::integrator::{Integrator, SimState};
 use crate::models::{
     EffectorActualsView, EngineSnapshotView, EnvironmentModel, EnvironmentQuery, EnvironmentSample,
-    TankSnapshot, TankSnapshotView,
-    ForceContext, ForceModel, MassContext, MassModel,
+    ForceContext, ForceModel, MassContext, MassModel, TankSnapshot, TankSnapshotView,
 };
 use crate::stop::StopCondition;
 
@@ -603,9 +602,7 @@ where
 
     /// Read-only access to the current per-tank snapshot.
     #[must_use]
-    pub fn tank_snapshot(
-        &self,
-    ) -> &std::collections::BTreeMap<openbmp_core::TankId, TankSnapshot> {
+    pub fn tank_snapshot(&self) -> &std::collections::BTreeMap<openbmp_core::TankId, TankSnapshot> {
         &self.tank_snapshot
     }
 

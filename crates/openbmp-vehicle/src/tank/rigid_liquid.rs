@@ -25,8 +25,8 @@ use nalgebra::Vector3;
 use openbmp_core::Duration;
 
 use super::{
-    point_mass_inertia_about_origin, ForceMomentBody, MassContribution, MovingMassModel,
-    PropellantSpec, TankError, TankGeometry,
+    ForceMomentBody, MassContribution, MovingMassModel, PropellantSpec, TankError, TankGeometry,
+    point_mass_inertia_about_origin,
 };
 
 /// Phase-3.7 no-slosh toy moving mass.
@@ -54,7 +54,9 @@ impl RigidLiquid {
         geometry.require_valid()?;
         propellant.require_valid()?;
         if !fill_fraction.is_finite() || !(0.0..=1.0).contains(&fill_fraction) {
-            return Err(TankError::InvalidFillFraction { value: fill_fraction });
+            return Err(TankError::InvalidFillFraction {
+                value: fill_fraction,
+            });
         }
         if !mount_point_body_m.iter().all(|c| c.is_finite()) {
             return Err(TankError::InvalidMountPoint);
@@ -146,20 +148,24 @@ mod tests {
 
     #[test]
     fn initial_fluid_matches_volume_density_fill() {
-        let model = RigidLiquid::new(unit_sphere(), finite_propellant(), 0.5, Vector3::zeros())
-            .unwrap();
+        let model =
+            RigidLiquid::new(unit_sphere(), finite_propellant(), 0.5, Vector3::zeros()).unwrap();
         let expected = (4.0 / 3.0) * std::f64::consts::PI * 1000.0 * 0.5;
         assert!((model.fluid_remaining_kg() - expected).abs() < 1e-9);
     }
 
     #[test]
     fn drain_reduces_fluid_by_rate_times_dt() {
-        let mut model = RigidLiquid::new(unit_sphere(), finite_propellant(), 1.0, Vector3::zeros())
-            .unwrap();
+        let mut model =
+            RigidLiquid::new(unit_sphere(), finite_propellant(), 1.0, Vector3::zeros()).unwrap();
         let initial = model.fluid_remaining_kg();
         model.drain(10.0).unwrap();
         model
-            .step(Vector3::zeros(), Vector3::zeros(), Duration::from_seconds(0.5))
+            .step(
+                Vector3::zeros(),
+                Vector3::zeros(),
+                Duration::from_seconds(0.5),
+            )
             .unwrap();
         let expected = initial - 10.0 * 0.5;
         assert!((model.fluid_remaining_kg() - expected).abs() < 1e-9);
@@ -167,19 +173,23 @@ mod tests {
 
     #[test]
     fn drain_clamps_at_zero_when_depleted() {
-        let mut model = RigidLiquid::new(unit_sphere(), finite_propellant(), 0.001, Vector3::zeros())
-            .unwrap();
+        let mut model =
+            RigidLiquid::new(unit_sphere(), finite_propellant(), 0.001, Vector3::zeros()).unwrap();
         model.drain(1000.0).unwrap();
         model
-            .step(Vector3::zeros(), Vector3::zeros(), Duration::from_seconds(1.0))
+            .step(
+                Vector3::zeros(),
+                Vector3::zeros(),
+                Duration::from_seconds(1.0),
+            )
             .unwrap();
         assert!((model.fluid_remaining_kg() - 0.0).abs() < 1e-12);
     }
 
     #[test]
     fn drain_rejects_negative_rate() {
-        let mut model = RigidLiquid::new(unit_sphere(), finite_propellant(), 1.0, Vector3::zeros())
-            .unwrap();
+        let mut model =
+            RigidLiquid::new(unit_sphere(), finite_propellant(), 1.0, Vector3::zeros()).unwrap();
         assert!(matches!(
             model.drain(-1.0),
             Err(TankError::InvalidDrainRate { .. })
@@ -188,8 +198,8 @@ mod tests {
 
     #[test]
     fn drain_rejects_nan_rate() {
-        let mut model = RigidLiquid::new(unit_sphere(), finite_propellant(), 1.0, Vector3::zeros())
-            .unwrap();
+        let mut model =
+            RigidLiquid::new(unit_sphere(), finite_propellant(), 1.0, Vector3::zeros()).unwrap();
         assert!(matches!(
             model.drain(f64::NAN),
             Err(TankError::InvalidDrainRate { .. })
@@ -198,8 +208,8 @@ mod tests {
 
     #[test]
     fn step_rejects_non_finite_accel() {
-        let mut model = RigidLiquid::new(unit_sphere(), finite_propellant(), 1.0, Vector3::zeros())
-            .unwrap();
+        let mut model =
+            RigidLiquid::new(unit_sphere(), finite_propellant(), 1.0, Vector3::zeros()).unwrap();
         assert!(matches!(
             model.step(
                 Vector3::new(f64::NAN, 0.0, 0.0),
@@ -212,11 +222,21 @@ mod tests {
 
     #[test]
     fn mass_contribution_at_zero_mount_has_zero_inertia() {
-        let model = RigidLiquid::new(unit_sphere(), finite_propellant(), 1.0, Vector3::zeros())
-            .unwrap();
+        let model =
+            RigidLiquid::new(unit_sphere(), finite_propellant(), 1.0, Vector3::zeros()).unwrap();
         let contribution = model.mass_contribution();
-        assert!(contribution.inertia_delta_body_kg_m2.iter().all(|c| c.abs() < 1e-9));
-        assert!(contribution.cg_offset_body_m.iter().all(|c| c.abs() < 1e-12));
+        assert!(
+            contribution
+                .inertia_delta_body_kg_m2
+                .iter()
+                .all(|c| c.abs() < 1e-9)
+        );
+        assert!(
+            contribution
+                .cg_offset_body_m
+                .iter()
+                .all(|c| c.abs() < 1e-12)
+        );
         assert!(contribution.mass_kg > 0.0);
     }
 
@@ -239,8 +259,13 @@ mod tests {
 
     #[test]
     fn reaction_force_is_always_zero() {
-        let mut model = RigidLiquid::new(unit_sphere(), finite_propellant(), 1.0, Vector3::new(1.0, 2.0, 3.0))
-            .unwrap();
+        let mut model = RigidLiquid::new(
+            unit_sphere(),
+            finite_propellant(),
+            1.0,
+            Vector3::new(1.0, 2.0, 3.0),
+        )
+        .unwrap();
         // Apply some accel/omega and verify reaction stays zero.
         model
             .step(
@@ -272,7 +297,10 @@ mod tests {
                 .unwrap();
             b.step(Vector3::new(0.0, 0.0, -9.81), Vector3::zeros(), dt)
                 .unwrap();
-            assert_eq!(a.fluid_remaining_kg().to_bits(), b.fluid_remaining_kg().to_bits());
+            assert_eq!(
+                a.fluid_remaining_kg().to_bits(),
+                b.fluid_remaining_kg().to_bits()
+            );
         }
     }
 }

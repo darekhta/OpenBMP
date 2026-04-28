@@ -532,16 +532,11 @@ fn build_vehicle(
             .tanks
             .iter()
             .map(|t| {
-                openbmp_core::TankId::from_path(&format!(
-                    "vehicle.assembly.tanks.{id}",
-                    id = t.id
-                ))
+                openbmp_core::TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = t.id))
             })
             .collect();
-        let tank_force = openbmp_vehicle::TankRackForceAdapter::new(
-            tank_ids,
-            PHASE3_TANK_RACK_FORCE_MODEL_ID,
-        );
+        let tank_force =
+            openbmp_vehicle::TankRackForceAdapter::new(tank_ids, PHASE3_TANK_RACK_FORCE_MODEL_ID);
         named.push(NamedForceModel::new("tank_reaction", Box::new(tank_force)));
     }
 
@@ -705,10 +700,7 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
             .tanks
             .iter()
             .map(|t| {
-                openbmp_core::TankId::from_path(&format!(
-                    "vehicle.assembly.tanks.{id}",
-                    id = t.id
-                ))
+                openbmp_core::TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = t.id))
             })
             .collect();
         Some(openbmp_vehicle::TankRackMomentAdapter::new(

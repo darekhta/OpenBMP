@@ -20,8 +20,8 @@ use nalgebra::Vector3;
 use openbmp_core::Duration;
 
 use super::{
-    equivalent_pendulum::EquivalentPendulum, BaffleModel, ForceMomentBody, MassContribution,
-    MovingMassModel, PropellantSpec, TankError, TankGeometry,
+    BaffleModel, ForceMomentBody, MassContribution, MovingMassModel, PropellantSpec, TankError,
+    TankGeometry, equivalent_pendulum::EquivalentPendulum,
 };
 
 /// Phase-3.7.C baffled equivalent-pendulum slosh model.
@@ -161,7 +161,9 @@ mod tests {
             1.0,
             Vector3::zeros(),
             -0.01,
-            BaffleModel { damping_increment_zeta: 0.05 },
+            BaffleModel {
+                damping_increment_zeta: 0.05,
+            },
         );
         assert!(matches!(result, Err(TankError::InvalidBaffle { .. })));
     }
@@ -174,28 +176,27 @@ mod tests {
             1.0,
             Vector3::zeros(),
             0.0,
-            BaffleModel { damping_increment_zeta: -0.05 },
+            BaffleModel {
+                damping_increment_zeta: -0.05,
+            },
         );
         assert!(matches!(result, Err(TankError::InvalidBaffle { .. })));
     }
 
     #[test]
     fn baffled_decays_faster_than_unbaffled() {
-        let mut bare = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.005,
-        )
-        .unwrap();
+        let mut bare =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.005)
+                .unwrap();
         let mut baffled = BaffledPendulum::new(
             cylinder_a05_h2(),
             water(),
             1.0,
             Vector3::zeros(),
             0.005,
-            BaffleModel { damping_increment_zeta: 0.05 },
+            BaffleModel {
+                damping_increment_zeta: 0.05,
+            },
         )
         .unwrap();
         bare.set_initial_slosh((0.05, 0.0), (0.0, 0.0)).unwrap();
@@ -227,21 +228,18 @@ mod tests {
         // With baffle increment = 0 and same base damping, the
         // BaffledPendulum's state evolution is byte-equal to the
         // bare EquivalentPendulum.
-        let mut bare = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.005,
-        )
-        .unwrap();
+        let mut bare =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.005)
+                .unwrap();
         let mut baffled = BaffledPendulum::new(
             cylinder_a05_h2(),
             water(),
             1.0,
             Vector3::zeros(),
             0.005,
-            BaffleModel { damping_increment_zeta: 0.0 },
+            BaffleModel {
+                damping_increment_zeta: 0.0,
+            },
         )
         .unwrap();
         bare.set_initial_slosh((0.05, 0.0), (0.0, 0.0)).unwrap();
@@ -264,7 +262,9 @@ mod tests {
 
     #[test]
     fn determinism_byte_stable_replay() {
-        let baffle = BaffleModel { damping_increment_zeta: 0.03 };
+        let baffle = BaffleModel {
+            damping_increment_zeta: 0.03,
+        };
         let mut a = BaffledPendulum::new(
             cylinder_a05_h2(),
             water(),
@@ -280,7 +280,11 @@ mod tests {
         let dt = Duration::from_seconds(0.001);
         for step in 0_i32..10_000 {
             let phase = f64::from(step) * 0.001;
-            let accel = Vector3::new(0.5 * phase.sin(), 0.3 * phase.cos(), 9.81 + 0.2 * phase.sin());
+            let accel = Vector3::new(
+                0.5 * phase.sin(),
+                0.3 * phase.cos(),
+                9.81 + 0.2 * phase.sin(),
+            );
             let drain = 0.5 * (1.0 + phase.sin().abs());
             a.drain(drain).unwrap();
             b.drain(drain).unwrap();

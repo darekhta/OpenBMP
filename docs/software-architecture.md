@@ -1138,8 +1138,8 @@ repositories.
 > intended as its propellant store overcount mass; (3) the
 > rigid-body cluster mass adapter (Phase-3.6 deferral) is still
 > `ConstantMassRigid` — slosh inertia perturbations are published
-> in the snapshot but only consumed by the force / moment
-> adapters; (4) slosh telemetry channels are deferred to a future
+> in the snapshot but are not consumed by the rigid mass-properties
+> model; (4) slosh telemetry channels are deferred to a future
 > phase, with determinism currently asserted via full-Parquet byte
 > equality.
 >

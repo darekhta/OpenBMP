@@ -40,8 +40,8 @@
 //!   mass contribution). The runner caches `(accel, omega)` from
 //!   step `n` and feeds them to `step()` at the start of step
 //!   `n+1`. The first step uses zeros.
-//! - Forward-Euler default (single sub-step inside the main RK4).
-//!   Bit-stable across reruns at fixed sub-step count; per-tank
+//! - Semi-implicit Euler default (single sub-step inside the main
+//!   RK4). Bit-stable across reruns at fixed sub-step count; per-tank
 //!   `slosh_substeps` opt-in for higher fidelity changes the byte
 //!   output and is documented as a per-scenario lock.
 //!
@@ -318,9 +318,7 @@ impl Tank {
         if let Some(baffle) = &baffle_model {
             baffle.require_valid()?;
         }
-        if !initial_fill_fraction.is_finite()
-            || !(0.0..=1.0).contains(&initial_fill_fraction)
-        {
+        if !initial_fill_fraction.is_finite() || !(0.0..=1.0).contains(&initial_fill_fraction) {
             return Err(TankError::InvalidFillFraction {
                 value: initial_fill_fraction,
             });
@@ -557,7 +555,10 @@ pub enum TankError {
 /// the subtraction. Used by every `MovingMassModel` impl to compose
 /// the body-origin inertia delta.
 #[must_use]
-pub(crate) fn point_mass_inertia_about_origin(mass_kg: f64, offset_body_m: Vector3<f64>) -> Matrix3<f64> {
+pub(crate) fn point_mass_inertia_about_origin(
+    mass_kg: f64,
+    offset_body_m: Vector3<f64>,
+) -> Matrix3<f64> {
     let r_dot_r = offset_body_m.dot(&offset_body_m);
     let r_outer_r = offset_body_m * offset_body_m.transpose();
     let identity = Matrix3::<f64>::identity();
@@ -610,7 +611,10 @@ mod tests {
             radius_m: 0.0,
             height_m: 1.0,
         };
-        assert!(matches!(bad.require_valid(), Err(TankError::InvalidGeometry { .. })));
+        assert!(matches!(
+            bad.require_valid(),
+            Err(TankError::InvalidGeometry { .. })
+        ));
     }
 
     #[test]
@@ -619,7 +623,10 @@ mod tests {
             density_kg_m3: 0.0,
             label: "x",
         };
-        assert!(matches!(bad.require_valid(), Err(TankError::InvalidPropellant { .. })));
+        assert!(matches!(
+            bad.require_valid(),
+            Err(TankError::InvalidPropellant { .. })
+        ));
     }
 
     #[test]
@@ -627,7 +634,10 @@ mod tests {
         let bad = BaffleModel {
             damping_increment_zeta: -0.1,
         };
-        assert!(matches!(bad.require_valid(), Err(TankError::InvalidBaffle { .. })));
+        assert!(matches!(
+            bad.require_valid(),
+            Err(TankError::InvalidBaffle { .. })
+        ));
     }
 
     #[test]
@@ -641,7 +651,9 @@ mod tests {
             finite_propellant(),
             1.5,
             None,
-            Box::new(RigidLiquid::new(geometry, finite_propellant(), 1.0, Vector3::zeros()).unwrap()),
+            Box::new(
+                RigidLiquid::new(geometry, finite_propellant(), 1.0, Vector3::zeros()).unwrap(),
+            ),
         );
         assert!(matches!(result, Err(TankError::InvalidFillFraction { .. })));
     }

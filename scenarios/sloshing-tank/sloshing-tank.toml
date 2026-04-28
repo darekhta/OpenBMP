@@ -16,11 +16,12 @@
 #     to the rigid-body force / moment evaluation.
 #
 # Phase-3.7 known limitation: the cluster mass adapter and the
-# TankRackMassAdapter both contribute mass; for a tank intended as
-# the cluster's propellant store this overcounts the propellant.
-# This scenario sizes the tank at 50 kg (5% of vehicle dry mass) so
-# the overcount is small. Phase-3.X future work unifies the
-# accounting.
+# TankRackMassAdapter both contribute mass in point-mass cluster+tank
+# assemblies; for a tank intended as the cluster's propellant store
+# this overcounts the propellant. This scenario keeps the tank fluid
+# at about 49 kg (4.9% of vehicle dry mass) so the known accounting
+# gap stays small in scalar-mass paths. Phase-3.X future work unifies
+# the accounting.
 #
 # Synthetic round numbers; not a benchmark.
 
@@ -67,7 +68,7 @@ dry_inertia_body_kg_m2 = [
 
 # Single axial engine providing constant +z body thrust. Net axial
 # accel after burn ramp ≈ (50000 - 1000·9.81)/1000 ≈ 40 m/s², so
-# pendulum ω_n² ≈ (40/0.5)·1.841·tanh(...) ≈ 147, ω_n ≈ 12.1 rad/s,
+# pendulum ω_n² ≈ (40/0.5)·1.84118·tanh(...) ≈ 147, ω_n ≈ 12.1 rad/s,
 # period ≈ 0.52 s. Over the 5 s simulation, the slosh oscillates
 # ≈ 10 cycles and decays under the 0.005 damping ratio.
 [[vehicle.assembly.engines]]
@@ -77,7 +78,9 @@ mount_point_body_m  = [0.0, 0.0, 0.0]
 limits = { max_thrust_n = 50000.0, isp_s = 250.0, ignition_transient_s = 0.1, shutdown_transient_s = 0.1, max_gimbal_rad = 0.0 }
 
 # Cylindrical tank with EquivalentPendulum slosh dynamics and a
-# 0.05 rad initial perturbation on the body-x slosh axis.
+# 0.05 rad initial perturbation on the body-x slosh axis. The
+# synthetic liquid density keeps fluid mass near 5% of dry mass while
+# preserving the fill height used by the slosh-frequency comment above.
 # Drain rate is zero in Phase 3.7 (engine-tank coupling deferred
 # to Phase 3.X).
 [[vehicle.assembly.tanks]]
@@ -85,7 +88,7 @@ id                       = "fuel_tank"
 mounted_to               = "main"
 mount_point_body_m       = [0.0, 0.0, 1.5]
 geometry                 = { kind = "cylinder", radius_m = 0.5, height_m = 0.5 }
-propellant               = { density_kg_m3 = 1000.0, label = "water_textbook" }
+propellant               = { density_kg_m3 = 250.0, label = "synthetic_low_density_liquid" }
 initial_fill_fraction    = 0.5
 moving_mass              = { kind = "equivalent_pendulum", damping_ratio_zeta = 0.005 }
 drain_rate_kg_per_s      = 0.0

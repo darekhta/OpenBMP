@@ -1632,12 +1632,11 @@ impl AssemblyConfig {
                 });
             }
         }
-        let mut seen_tank_ids: std::collections::BTreeSet<&str> =
-            std::collections::BTreeSet::new();
+        let mut seen_tank_ids: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         let body_ids: std::collections::BTreeSet<&str> =
             self.bodies.iter().map(|b| b.id.as_str()).collect();
         for (index, tank) in self.tanks.iter().enumerate() {
-            tank.validate(index, vehicle_kind, &body_ids)?;
+            tank.validate(index, vehicle_kind, &body_ids, dt_s)?;
             if !seen_tank_ids.insert(tank.id.as_str()) {
                 return Err(ScenarioError::DuplicateValue {
                     field: format!("vehicle.assembly.tanks[{index}].id"),
@@ -2387,6 +2386,7 @@ impl TankConfig {
         index: usize,
         vehicle_kind: &str,
         body_ids: &std::collections::BTreeSet<&str>,
+        dt_s: f64,
     ) -> Result<(), ScenarioError> {
         let path = |field: &str| format!("vehicle.assembly.tanks[{index}].{field}");
         require_non_empty(&path("id"), &self.id)?;
@@ -2398,10 +2398,7 @@ impl TankConfig {
             });
         }
         require_finite_array(&path("mount_point_body_m"), &self.mount_point_body_m)?;
-        require_finite(
-            &path("initial_fill_fraction"),
-            self.initial_fill_fraction,
-        )?;
+        require_finite(&path("initial_fill_fraction"), self.initial_fill_fraction)?;
         if !(0.0..=1.0).contains(&self.initial_fill_fraction) {
             return Err(ScenarioError::InvalidNumber {
                 field: path("initial_fill_fraction"),
@@ -2411,9 +2408,21 @@ impl TankConfig {
         }
         self.geometry.validate(index)?;
         self.propellant.validate(index)?;
-        self.moving_mass.validate(index, &self.geometry, vehicle_kind)?;
+        self.moving_mass
+            .validate(index, &self.geometry, vehicle_kind)?;
         if let Some(baffle) = &self.baffle_model {
             baffle.validate(index)?;
+            if !matches!(
+                self.moving_mass,
+                MovingMassKindConfig::BaffledPendulum { .. }
+            ) {
+                return Err(ScenarioError::IncompatibleAssemblyEntry {
+                    field: path("baffle_model"),
+                    reason:
+                        "baffle_model is only consumed by moving_mass.kind = \"baffled_pendulum\""
+                            .to_owned(),
+                });
+            }
         }
         if let Some(rate) = self.drain_rate_kg_per_s {
             require_finite(&path("drain_rate_kg_per_s"), rate)?;
@@ -2424,9 +2433,20 @@ impl TankConfig {
                     rule: "must be non-negative",
                 });
             }
+            let drained_per_step_kg = rate * dt_s;
+            let initial_fluid_kg = self.geometry.volume_m3()
+                * self.propellant.density_kg_m3
+                * self.initial_fill_fraction;
+            if drained_per_step_kg > initial_fluid_kg {
+                return Err(ScenarioError::InvalidNumber {
+                    field: path("drain_rate_kg_per_s"),
+                    value: rate,
+                    rule: "must not empty the tank in a single time.dt_s step",
+                });
+            }
         }
         if let Some(initial) = &self.initial_slosh {
-            initial.validate(index)?;
+            initial.validate(index, self.moving_mass)?;
         }
         Ok(())
     }
@@ -2460,6 +2480,20 @@ pub enum TankGeometryConfig {
 }
 
 impl TankGeometryConfig {
+    fn volume_m3(&self) -> f64 {
+        match *self {
+            Self::Cylinder { radius_m, height_m } => {
+                std::f64::consts::PI * radius_m * radius_m * height_m
+            }
+            Self::Sphere { radius_m } => {
+                (4.0 / 3.0) * std::f64::consts::PI * radius_m * radius_m * radius_m
+            }
+            Self::EllipsoidTextbook { a_m, b_m, c_m } => {
+                (4.0 / 3.0) * std::f64::consts::PI * a_m * b_m * c_m
+            }
+        }
+    }
+
     fn validate(&self, index: usize) -> Result<(), ScenarioError> {
         let path = |field: &str| format!("vehicle.assembly.tanks[{index}].geometry.{field}");
         match *self {
@@ -2542,18 +2576,16 @@ impl MovingMassKindConfig {
         geometry: &TankGeometryConfig,
         vehicle_kind: &str,
     ) -> Result<(), ScenarioError> {
-        let path =
-            |field: &str| format!("vehicle.assembly.tanks[{index}].moving_mass.{field}");
+        let path = |field: &str| format!("vehicle.assembly.tanks[{index}].moving_mass.{field}");
         let requires_cylinder = !matches!(self, Self::RigidLiquid);
         if requires_cylinder && !matches!(geometry, TankGeometryConfig::Cylinder { .. }) {
             return Err(ScenarioError::IncompatibleAssemblyEntry {
                 field: format!("vehicle.assembly.tanks[{index}]"),
-                reason: "non-RigidLiquid moving_mass requires Cylinder geometry"
-                    .to_owned(),
+                reason: "non-RigidLiquid moving_mass requires Cylinder geometry".to_owned(),
             });
         }
-        let non_rigid_in_point_mass = !matches!(self, Self::RigidLiquid)
-            && vehicle_kind == "point_mass";
+        let non_rigid_in_point_mass =
+            !matches!(self, Self::RigidLiquid) && vehicle_kind == "point_mass";
         if non_rigid_in_point_mass {
             return Err(ScenarioError::IncompatibleAssemblyEntry {
                 field: format!("vehicle.assembly.tanks[{index}]"),
@@ -2603,8 +2635,7 @@ pub struct BaffleModelConfig {
 
 impl BaffleModelConfig {
     fn validate(self, index: usize) -> Result<(), ScenarioError> {
-        let path =
-            |field: &str| format!("vehicle.assembly.tanks[{index}].baffle_model.{field}");
+        let path = |field: &str| format!("vehicle.assembly.tanks[{index}].baffle_model.{field}");
         require_finite(&path("damping_increment_zeta"), self.damping_increment_zeta)?;
         if self.damping_increment_zeta < 0.0 {
             return Err(ScenarioError::InvalidNumber {
@@ -2617,25 +2648,110 @@ impl BaffleModelConfig {
     }
 }
 
-/// Optional initial slosh perturbation. For pendulum / baffled-pendulum
-/// these are angles + rates; for spring-mass these are displacements +
-/// velocities. The runner picks the appropriate setter.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+/// Optional initial slosh perturbation. Pendulum variants use angle /
+/// angular-rate fields; spring-mass uses displacement / velocity fields.
+/// The runner picks the appropriate setter.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct InitialSloshConfig {
     /// `(theta_x_rad, theta_y_rad)` for pendulum kinds, or
-    /// `(displacement_x_m, displacement_y_m)` for spring-mass.
-    pub angles_rad: [f64; 2],
-    /// `(theta_dot_x_rad_s, theta_dot_y_rad_s)` for pendulum, or
-    /// `(velocity_x_m_s, velocity_y_m_s)` for spring-mass.
-    pub rates_rad_s: [f64; 2],
+    /// absent for spring-mass.
+    #[serde(default)]
+    pub angles_rad: Option<[f64; 2]>,
+    /// `(theta_dot_x_rad_s, theta_dot_y_rad_s)` for pendulum kinds, or
+    /// absent for spring-mass.
+    #[serde(default)]
+    pub rates_rad_s: Option<[f64; 2]>,
+    /// `(displacement_x_m, displacement_y_m)` for spring-mass, or
+    /// absent for pendulum kinds.
+    #[serde(default)]
+    pub displacement_body_m: Option<[f64; 2]>,
+    /// `(velocity_x_m_s, velocity_y_m_s)` for spring-mass, or absent
+    /// for pendulum kinds.
+    #[serde(default)]
+    pub velocity_body_m_s: Option<[f64; 2]>,
 }
 
 impl InitialSloshConfig {
-    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+    fn validate(
+        &self,
+        index: usize,
+        moving_mass: MovingMassKindConfig,
+    ) -> Result<(), ScenarioError> {
         let path = |field: &str| format!("vehicle.assembly.tanks[{index}].initial_slosh.{field}");
-        require_finite_array(&path("angles_rad"), &self.angles_rad)?;
-        require_finite_array(&path("rates_rad_s"), &self.rates_rad_s)?;
+        match moving_mass {
+            MovingMassKindConfig::RigidLiquid => {
+                return Err(ScenarioError::IncompatibleAssemblyEntry {
+                    field: format!("vehicle.assembly.tanks[{index}].initial_slosh"),
+                    reason: "rigid_liquid has no slosh state to initialise".to_owned(),
+                });
+            }
+            MovingMassKindConfig::EquivalentPendulum { .. }
+            | MovingMassKindConfig::BaffledPendulum { .. } => {
+                let angles =
+                    self.angles_rad
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: path("angles_rad"),
+                            role: ModelRole::Vehicle,
+                            name: "equivalent_pendulum".to_owned(),
+                        })?;
+                let rates =
+                    self.rates_rad_s
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: path("rates_rad_s"),
+                            role: ModelRole::Vehicle,
+                            name: "equivalent_pendulum".to_owned(),
+                        })?;
+                require_finite_array(&path("angles_rad"), &angles)?;
+                require_finite_array(&path("rates_rad_s"), &rates)?;
+                if self.displacement_body_m.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: path("displacement_body_m"),
+                        role: ModelRole::Vehicle,
+                        name: "equivalent_pendulum".to_owned(),
+                    });
+                }
+                if self.velocity_body_m_s.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: path("velocity_body_m_s"),
+                        role: ModelRole::Vehicle,
+                        name: "equivalent_pendulum".to_owned(),
+                    });
+                }
+            }
+            MovingMassKindConfig::EquivalentSpringMass { .. } => {
+                let displacement = self.displacement_body_m.ok_or_else(|| {
+                    ScenarioError::MissingRequiredField {
+                        field: path("displacement_body_m"),
+                        role: ModelRole::Vehicle,
+                        name: "equivalent_spring_mass".to_owned(),
+                    }
+                })?;
+                let velocity =
+                    self.velocity_body_m_s
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: path("velocity_body_m_s"),
+                            role: ModelRole::Vehicle,
+                            name: "equivalent_spring_mass".to_owned(),
+                        })?;
+                require_finite_array(&path("displacement_body_m"), &displacement)?;
+                require_finite_array(&path("velocity_body_m_s"), &velocity)?;
+                if self.angles_rad.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: path("angles_rad"),
+                        role: ModelRole::Vehicle,
+                        name: "equivalent_spring_mass".to_owned(),
+                    });
+                }
+                if self.rates_rad_s.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: path("rates_rad_s"),
+                        role: ModelRole::Vehicle,
+                        name: "equivalent_spring_mass".to_owned(),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }

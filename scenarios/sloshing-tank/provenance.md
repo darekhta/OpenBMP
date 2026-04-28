@@ -13,8 +13,8 @@ source_class:     synthetic-openbmp
 source_title:     >-
   Phase-3.7.E exit-criterion scenario. Rigid-body 1000 kg vehicle
   with one axial liquid engine (50 kN at full throttle, Isp 250 s)
-  and a cylindrical tank (radius 0.5 m, height 0.5 m, 50 kg
-  water-density propellant at 50 % fill) carrying an
+  and a cylindrical tank (radius 0.5 m, height 0.5 m, about 49 kg
+  synthetic liquid at 50 % fill) carrying an
   EquivalentPendulum slosh model with a 0.05 rad initial
   perturbation on the body-x slosh axis. The engine ignites at
   altitude 0.001 m (≈ T+0 s with initial velocity 100 m/s ECI +z)
@@ -43,14 +43,14 @@ validation_status: experimental
 - Vehicle dimensions, inertia, engine thrust, and tank size are
   synthetic round-number placeholders chosen to produce a clean
   multi-cycle slosh demonstration over the 5 s simulation. The
-  tank fluid mass is sized at 5 % of the vehicle dry mass so the
+  tank fluid mass is sized at about 5 % of the vehicle dry mass so the
   Phase-3.7-known mass overcount (`TankRackMassAdapter` adds
   `tank.mass_kg` on top of the engine cluster's propellant
   accounting) is small in absolute terms.
-- Propellant is `water_textbook` (1000 kg/m³). Phase-3.7 ships
-  textbook-density propellants only per
-  `docs/safety-boundaries.md`; fielded propellant data is
-  rejected.
+- Propellant is a synthetic low-density liquid (250 kg/m³), chosen so
+  the tank contributes about 49 kg while preserving the 50 % fill
+  height used by the slosh-frequency calculation. Phase-3.7 rejects
+  fielded propellant data per `docs/safety-boundaries.md`.
 - The 0.05 rad initial slosh perturbation is small-angle (≈ 2.9°),
   inside the regime where the linearised Abramson Eq 7-25 is
   valid.
@@ -78,15 +78,14 @@ validation_status: experimental
   tank's fluid mass is constant. Phase-3.X future work ties them.
 - Mass overcount: `EngineClusterMassAdapter` publishes
   `dry_mass - cluster.consumed_kg`; `TankRackMassAdapter` adds
-  `tank.mass_kg = 50 kg` on top. With `drain_rate = 0`, the
-  overcount is constant (= 50 kg, 5 % of dry mass) rather than
+  `tank.mass_kg ≈ 49.09 kg` on top. With `drain_rate = 0`, the
+  overcount is constant (about 4.9 % of dry mass) rather than
   growing.
 - The kernel-side rigid mass adapter for engine clusters is still
   `ConstantMassRigid` over assembly dry properties (Phase-3.6
   deferral); the `RigidMotorMassAdapter` family does not
-  participate. Slosh inertia delta is published in
-  `TankSnapshot` but consumed only by force / moment adapters in
-  Phase 3.7.
+  participate. Slosh inertia delta is published in `TankSnapshot`
+  but is not consumed by the rigid mass-properties model in Phase 3.7.
 
 ### Validation
 

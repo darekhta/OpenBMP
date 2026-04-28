@@ -21,13 +21,14 @@
 //!
 //! where `a` is the tank radius, `h` is the current liquid depth,
 //! `g_eff` is the axial acceleration at the mount, and
-//! `ξ_1 = 1.841` is the first root of `J_1'(x) = 0` (Abramson Table
-//! 7.1, cylindrical-tank entry).
+//! `ξ_1 = 1.8411837813406593` is the first root of `J_1'(x) = 0`
+//! (Abramson Table 7.1, cylindrical-tank entry).
 //!
 //! Phase 3.7.B parameterises the pendulum by **two** independent
 //! tilt angles `(θ_x, θ_y)` representing swing in the body x-z and
 //! y-z planes respectively, each obeying the small-angle linearised
-//! Abramson Eq 7-25:
+//! Abramson Eq 7-25 after small-angle linearisation
+//! (`sin(θ) ≈ θ`, `cos(θ) ≈ 1`):
 //!
 //! ```text
 //! θ̈ + 2ζω_n θ̇ + ω_n² θ = a_lateral / L_pend
@@ -99,14 +100,14 @@ use nalgebra::Vector3;
 use openbmp_core::Duration;
 
 use super::{
-    point_mass_inertia_about_origin, ForceMomentBody, MassContribution, MovingMassModel,
-    PropellantSpec, TankError, TankGeometry,
+    ForceMomentBody, MassContribution, MovingMassModel, PropellantSpec, TankError, TankGeometry,
+    point_mass_inertia_about_origin,
 };
 
 /// First root of `J_1'(x) = 0`, the Bessel-function eigenvalue
 /// associated with the antisymmetric fundamental sloshing mode in
 /// a cylindrical tank (Abramson SP-106 Table 7.1).
-const KSI_1: f64 = 1.841;
+const KSI_1: f64 = 1.841_183_781_340_659_3;
 
 /// Phase-3.7.B equivalent-pendulum slosh model.
 #[derive(Debug, Clone)]
@@ -152,7 +153,9 @@ impl EquivalentPendulum {
         geometry.require_valid()?;
         propellant.require_valid()?;
         if !fill_fraction.is_finite() || !(0.0..=1.0).contains(&fill_fraction) {
-            return Err(TankError::InvalidFillFraction { value: fill_fraction });
+            return Err(TankError::InvalidFillFraction {
+                value: fill_fraction,
+            });
         }
         if !mount_point_body_m.iter().all(|c| c.is_finite()) {
             return Err(TankError::InvalidMountPoint);
@@ -162,7 +165,11 @@ impl EquivalentPendulum {
                 reason: "damping_ratio_zeta must be finite and non-negative",
             });
         }
-        let TankGeometry::Cylinder { radius_m, height_m: _ } = geometry else {
+        let TankGeometry::Cylinder {
+            radius_m,
+            height_m: _,
+        } = geometry
+        else {
             return Err(TankError::InvalidGeometry {
                 reason: "EquivalentPendulum requires a Cylinder geometry",
             });
@@ -253,8 +260,9 @@ impl EquivalentPendulum {
     }
 
     /// Closed-form pendulum length at the current fluid level.
-    /// Falls back to the tank radius when fluid is depleted (matches
-    /// the asymptotic formula limit and avoids division by zero).
+    /// Falls back to the tank radius when fluid is depleted. The empty
+    /// case has no physical pendulum; the finite fallback only keeps
+    /// observers well-defined after the state has been reset.
     #[must_use]
     pub fn pendulum_length_m(&self) -> f64 {
         let h = self.fluid_height_m();
@@ -306,6 +314,16 @@ impl MovingMassModel for EquivalentPendulum {
         let drained_kg = self.pending_drain_kg_per_s * dt_s;
         let next = self.fluid_kg - drained_kg;
         self.fluid_kg = if next > 0.0 { next } else { 0.0 };
+        if self.fluid_kg == 0.0 {
+            self.theta_x_rad = 0.0;
+            self.theta_dot_x_rad_s = 0.0;
+            self.theta_y_rad = 0.0;
+            self.theta_dot_y_rad_s = 0.0;
+            self.last_theta_ddot_x_rad_s2 = 0.0;
+            self.last_theta_ddot_y_rad_s2 = 0.0;
+            self.last_pendulum_length_m = self.tank_radius_m;
+            return Ok(());
+        }
 
         // 2. Recompute ω_n² and L_pend at the post-drain fluid level.
         let axial_accel = accel_body_m_s2.z;
@@ -319,7 +337,7 @@ impl MovingMassModel for EquivalentPendulum {
         // 3. θ̈ for x axis (locked operand order: damping, restoring,
         //    forcing, then theta_ddot = forcing - damping - restoring).
         let damping_x = 2.0 * self.damping_ratio_zeta * omega_n * self.theta_dot_x_rad_s;
-        let restoring_x = omega_n_squared * self.theta_x_rad.sin();
+        let restoring_x = omega_n_squared * self.theta_x_rad;
         let forcing_x = lateral_accel_x / l_pend;
         let theta_ddot_x = forcing_x - damping_x - restoring_x;
         self.last_theta_ddot_x_rad_s2 = theta_ddot_x;
@@ -331,7 +349,7 @@ impl MovingMassModel for EquivalentPendulum {
 
         // 5. Same for y axis (declared after x).
         let damping_y = 2.0 * self.damping_ratio_zeta * omega_n * self.theta_dot_y_rad_s;
-        let restoring_y = omega_n_squared * self.theta_y_rad.sin();
+        let restoring_y = omega_n_squared * self.theta_y_rad;
         let forcing_y = lateral_accel_y / l_pend;
         let theta_ddot_y = forcing_y - damping_y - restoring_y;
         self.last_theta_ddot_y_rad_s2 = theta_ddot_y;
@@ -344,12 +362,11 @@ impl MovingMassModel for EquivalentPendulum {
 
     fn mass_contribution(&self) -> MassContribution {
         let m = self.fluid_kg;
+        if m == 0.0 {
+            return MassContribution::default();
+        }
         let l = self.last_pendulum_length_m;
-        let cg_offset = Vector3::new(
-            l * self.theta_x_rad.sin(),
-            l * self.theta_y_rad.sin(),
-            -l,
-        );
+        let cg_offset = Vector3::new(l * self.theta_x_rad, l * self.theta_y_rad, -l);
         let r_total = self.mount_point_body_m + cg_offset;
         MassContribution {
             mass_kg: m,
@@ -360,6 +377,9 @@ impl MovingMassModel for EquivalentPendulum {
 
     fn reaction_body(&self) -> ForceMomentBody {
         let m = self.fluid_kg;
+        if m == 0.0 {
+            return ForceMomentBody::default();
+        }
         let l = self.last_pendulum_length_m;
         let force = Vector3::new(
             -m * l * self.last_theta_ddot_x_rad_s2,
@@ -420,26 +440,15 @@ mod tests {
 
     #[test]
     fn rejects_negative_damping() {
-        let result = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            -0.01,
-        );
+        let result =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), -0.01);
         assert!(matches!(result, Err(TankError::InvalidBaffle { .. })));
     }
 
     #[test]
     fn omega_n_squared_zero_at_zero_axial_accel() {
-        let pend = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let pend = EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.0)
+            .unwrap();
         assert!(pend.omega_n_squared_rad2_s2(0.0).abs() < 1e-12);
         assert!(pend.omega_n_squared_rad2_s2(-9.81).abs() < 1e-12);
     }
@@ -448,14 +457,8 @@ mod tests {
     fn omega_n_squared_matches_closed_form() {
         // a = 0.5 m, full tank h = 2 m, g = 9.81: arg = 1.841·2/0.5 = 7.364, tanh ≈ 1.0
         // ω_n² = (9.81/0.5) · 1.841 · 1.0 ≈ 36.12
-        let pend = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let pend = EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.0)
+            .unwrap();
         let omega_sq = pend.omega_n_squared_rad2_s2(9.81);
         let arg = KSI_1 * 2.0 / 0.5;
         let expected = (9.81 / 0.5) * KSI_1 * arg.tanh();
@@ -464,14 +467,9 @@ mod tests {
 
     #[test]
     fn pendulum_length_falls_back_when_fluid_empty() {
-        let mut pend = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            0.001,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let mut pend =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 0.001, Vector3::zeros(), 0.0)
+                .unwrap();
         // Drain it dry.
         pend.drain(1e6).unwrap();
         pend.step(
@@ -485,17 +483,39 @@ mod tests {
     }
 
     #[test]
+    fn empty_tank_resets_slosh_state() {
+        let mut pend =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 0.001, Vector3::zeros(), 0.0)
+                .unwrap();
+        pend.set_initial_slosh((0.05, -0.02), (0.1, -0.1)).unwrap();
+        pend.drain(1e6).unwrap();
+        pend.step(
+            Vector3::new(3.0, -4.0, 9.81),
+            Vector3::zeros(),
+            Duration::from_seconds(1.0),
+        )
+        .unwrap();
+
+        assert_eq!(pend.fluid_remaining_kg().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(pend.slosh_angles_rad().0.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(pend.slosh_angles_rad().1.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(pend.slosh_rates_rad_s().0.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(pend.slosh_rates_rad_s().1.to_bits(), 0.0_f64.to_bits());
+        assert!(
+            pend.reaction_body()
+                .force_body_n
+                .iter()
+                .all(|c| c.to_bits() == 0.0_f64.to_bits())
+        );
+    }
+
+    #[test]
     fn free_response_oscillation_frequency_matches_closed_form() {
         // Set initial angle, no damping, no lateral accel; integrate
         // and measure period via zero crossings.
-        let mut pend = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let mut pend =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.0)
+                .unwrap();
         pend.set_initial_slosh((0.05, 0.0), (0.0, 0.0)).unwrap();
         let g = 9.81;
         let omega_sq = pend.omega_n_squared_rad2_s2(g);
@@ -536,23 +556,18 @@ mod tests {
     #[test]
     fn energy_is_conserved_within_one_percent_over_100_cycles() {
         // ½θ̇² + ½ω_n² θ² across 100 cycles.
-        let mut pend = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let mut pend =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.0)
+                .unwrap();
         pend.set_initial_slosh((0.05, 0.0), (0.0, 0.0)).unwrap();
         let g = 9.81;
         let omega_sq = pend.omega_n_squared_rad2_s2(g);
         let initial_energy = 0.5 * omega_sq * 0.05_f64.powi(2);
         let dt = Duration::from_seconds(0.001);
         let cycles_target = 100;
-        let total_steps =
-            ((cycles_target as f64) * (2.0 * std::f64::consts::PI / omega_sq.sqrt()) / dt.as_seconds())
-                .ceil() as usize;
+        let total_steps = ((cycles_target as f64) * (2.0 * std::f64::consts::PI / omega_sq.sqrt())
+            / dt.as_seconds())
+        .ceil() as usize;
 
         let mut min_e = initial_energy;
         let mut max_e = initial_energy;
@@ -626,14 +641,9 @@ mod tests {
 
     #[test]
     fn damping_decays_amplitude_when_zeta_positive() {
-        let mut pend = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.05,
-        )
-        .unwrap();
+        let mut pend =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.05)
+                .unwrap();
         pend.set_initial_slosh((0.05, 0.0), (0.0, 0.0)).unwrap();
         let g = 9.81;
         let dt = Duration::from_seconds(0.001);
@@ -664,27 +674,21 @@ mod tests {
 
     #[test]
     fn lateral_acceleration_excites_pendulum() {
-        let mut pend = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let mut pend =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.0)
+                .unwrap();
         let g = 9.81;
         let dt = Duration::from_seconds(0.001);
         // Apply lateral accel for a brief window then release.
         for _ in 0..100 {
-            pend.step(
-                Vector3::new(2.0, 0.0, g),
-                Vector3::zeros(),
-                dt,
-            )
-            .unwrap();
+            pend.step(Vector3::new(2.0, 0.0, g), Vector3::zeros(), dt)
+                .unwrap();
         }
         let (theta_after_kick, _) = pend.slosh_angles_rad();
-        assert!(theta_after_kick.abs() > 1e-3, "lateral kick must excite the pendulum, got {theta_after_kick}");
+        assert!(
+            theta_after_kick.abs() > 1e-3,
+            "lateral kick must excite the pendulum, got {theta_after_kick}"
+        );
     }
 
     #[test]
@@ -703,7 +707,11 @@ mod tests {
         let dt = Duration::from_seconds(0.001);
         for step in 0_i32..10_000 {
             let phase = f64::from(step) * 0.001;
-            let accel = Vector3::new(0.5 * phase.sin(), 0.3 * phase.cos(), 9.81 + 0.2 * phase.sin());
+            let accel = Vector3::new(
+                0.5 * phase.sin(),
+                0.3 * phase.cos(),
+                9.81 + 0.2 * phase.sin(),
+            );
             let omega = Vector3::zeros();
             let drain = 0.5 * (1.0 + phase.sin().abs());
             a.drain(drain).unwrap();
@@ -714,20 +722,18 @@ mod tests {
             let (b_x, b_y) = b.slosh_angles_rad();
             assert_eq!(a_x.to_bits(), b_x.to_bits());
             assert_eq!(a_y.to_bits(), b_y.to_bits());
-            assert_eq!(a.fluid_remaining_kg().to_bits(), b.fluid_remaining_kg().to_bits());
+            assert_eq!(
+                a.fluid_remaining_kg().to_bits(),
+                b.fluid_remaining_kg().to_bits()
+            );
         }
     }
 
     #[test]
     fn reaction_force_is_zero_when_pendulum_at_rest() {
-        let mut pend = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let mut pend =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.0)
+                .unwrap();
         pend.step(
             Vector3::new(0.0, 0.0, 9.81),
             Vector3::zeros(),
@@ -740,14 +746,9 @@ mod tests {
 
     #[test]
     fn reaction_force_appears_when_pendulum_excited() {
-        let mut pend = EquivalentPendulum::new(
-            cylinder_a05_h2(),
-            water(),
-            1.0,
-            Vector3::zeros(),
-            0.0,
-        )
-        .unwrap();
+        let mut pend =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.0)
+                .unwrap();
         pend.set_initial_slosh((0.05, 0.0), (0.0, 0.0)).unwrap();
         // Step once with axial accel only — this lets the spring
         // restoring term build a non-trivial θ̈_x that backreacts.
@@ -758,6 +759,9 @@ mod tests {
         )
         .unwrap();
         let r = pend.reaction_body();
-        assert!(r.force_body_n.x.abs() > 0.0, "expected non-zero reaction force x; got {r:?}");
+        assert!(
+            r.force_body_n.x.abs() > 0.0,
+            "expected non-zero reaction force x; got {r:?}"
+        );
     }
 }

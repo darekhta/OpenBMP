@@ -887,6 +887,98 @@ action  = { kind = "stop", label = "scripted-stop" }
         );
     }
 
+    const SLOSHING_TANK: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scenarios/sloshing-tank/sloshing-tank.toml"
+    ));
+
+    #[test]
+    fn parses_sloshing_tank_scenario() {
+        let scenario = Scenario::from_toml_str(SLOSHING_TANK).expect("sloshing tank parses");
+        let tanks = &scenario.document.vehicle.assembly.as_ref().unwrap().tanks;
+        assert_eq!(tanks.len(), 1);
+        assert!(
+            tanks[0]
+                .initial_slosh
+                .as_ref()
+                .unwrap()
+                .angles_rad
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn rejects_initial_slosh_on_rigid_liquid() {
+        let toml = SLOSHING_TANK.replace(
+            r#"moving_mass              = { kind = "equivalent_pendulum", damping_ratio_zeta = 0.005 }"#,
+            r#"moving_mass              = { kind = "rigid_liquid" }"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, .. } if field == "vehicle.assembly.tanks[0].initial_slosh"),
+            "expected IncompatibleAssemblyEntry, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_baffle_model_without_baffled_pendulum() {
+        let toml = SLOSHING_TANK.replace(
+            "drain_rate_kg_per_s      = 0.0",
+            "baffle_model             = { damping_increment_zeta = 0.02 }\ndrain_rate_kg_per_s      = 0.0",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, .. } if field == "vehicle.assembly.tanks[0].baffle_model"),
+            "expected IncompatibleAssemblyEntry, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_tank_drain_that_empties_in_one_step() {
+        let toml = SLOSHING_TANK.replace(
+            "drain_rate_kg_per_s      = 0.0",
+            "drain_rate_kg_per_s      = 1.0e9",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "vehicle.assembly.tanks[0].drain_rate_kg_per_s"),
+            "expected InvalidNumber, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_spring_mass_initial_slosh_with_angle_fields() {
+        let toml = SLOSHING_TANK.replace(
+            r#"moving_mass              = { kind = "equivalent_pendulum", damping_ratio_zeta = 0.005 }"#,
+            r#"moving_mass              = { kind = "equivalent_spring_mass", damping_ratio_zeta = 0.005 }"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "vehicle.assembly.tanks[0].initial_slosh.displacement_body_m"),
+            "expected MissingRequiredField, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn accepts_spring_mass_initial_slosh_with_linear_fields() {
+        let toml = SLOSHING_TANK
+            .replace(
+                r#"moving_mass              = { kind = "equivalent_pendulum", damping_ratio_zeta = 0.005 }"#,
+                r#"moving_mass              = { kind = "equivalent_spring_mass", damping_ratio_zeta = 0.005 }"#,
+            )
+            .replace(
+                "initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] }",
+                "initial_slosh            = { displacement_body_m = [0.05, 0.0], velocity_body_m_s = [0.0, 0.0] }",
+            );
+        let scenario = Scenario::from_toml_str(&toml).expect("spring-mass tank parses");
+        let initial = scenario.document.vehicle.assembly.as_ref().unwrap().tanks[0]
+            .initial_slosh
+            .as_ref()
+            .unwrap();
+        assert!(initial.displacement_body_m.is_some());
+        assert!(initial.velocity_body_m_s.is_some());
+    }
+
     #[test]
     fn rejects_separation_action_kind() {
         let err = Scenario::from_toml_str(&with_mission(

@@ -219,11 +219,12 @@ fn build_tank(config: &TankConfig) -> Result<(TankId, Tank), CliError> {
 
     let moving_mass: Box<dyn MovingMassModel> = match config.moving_mass {
         MovingMassKindConfig::RigidLiquid => Box::new(
-            RigidLiquid::new(geometry, propellant, config.initial_fill_fraction, mount)
-                .map_err(|err| CliError::Tank {
+            RigidLiquid::new(geometry, propellant, config.initial_fill_fraction, mount).map_err(
+                |err| CliError::Tank {
                     field: path.clone(),
                     reason: err.to_string(),
-                })?,
+                },
+            )?,
         ),
         MovingMassKindConfig::EquivalentPendulum { damping_ratio_zeta } => {
             let mut model = EquivalentPendulum::new(
@@ -326,11 +327,16 @@ fn apply_initial_slosh_pendulum(
     let Some(initial) = initial else {
         return Ok(());
     };
+    let angles = initial.angles_rad.ok_or_else(|| CliError::Tank {
+        field: "vehicle.assembly.tanks[*].initial_slosh.angles_rad".to_owned(),
+        reason: "required for equivalent_pendulum".to_owned(),
+    })?;
+    let rates = initial.rates_rad_s.ok_or_else(|| CliError::Tank {
+        field: "vehicle.assembly.tanks[*].initial_slosh.rates_rad_s".to_owned(),
+        reason: "required for equivalent_pendulum".to_owned(),
+    })?;
     model
-        .set_initial_slosh(
-            (initial.angles_rad[0], initial.angles_rad[1]),
-            (initial.rates_rad_s[0], initial.rates_rad_s[1]),
-        )
+        .set_initial_slosh((angles[0], angles[1]), (rates[0], rates[1]))
         .map_err(|err| CliError::Tank {
             field: "vehicle.assembly.tanks[*].initial_slosh".to_owned(),
             reason: err.to_string(),
@@ -344,10 +350,18 @@ fn apply_initial_slosh_spring_mass(
     let Some(initial) = initial else {
         return Ok(());
     };
+    let displacement = initial.displacement_body_m.ok_or_else(|| CliError::Tank {
+        field: "vehicle.assembly.tanks[*].initial_slosh.displacement_body_m".to_owned(),
+        reason: "required for equivalent_spring_mass".to_owned(),
+    })?;
+    let velocity = initial.velocity_body_m_s.ok_or_else(|| CliError::Tank {
+        field: "vehicle.assembly.tanks[*].initial_slosh.velocity_body_m_s".to_owned(),
+        reason: "required for equivalent_spring_mass".to_owned(),
+    })?;
     model
         .set_initial_slosh(
-            (initial.angles_rad[0], initial.angles_rad[1]),
-            (initial.rates_rad_s[0], initial.rates_rad_s[1]),
+            (displacement[0], displacement[1]),
+            (velocity[0], velocity[1]),
         )
         .map_err(|err| CliError::Tank {
             field: "vehicle.assembly.tanks[*].initial_slosh".to_owned(),
@@ -362,11 +376,16 @@ fn apply_initial_slosh_baffled_pendulum(
     let Some(initial) = initial else {
         return Ok(());
     };
+    let angles = initial.angles_rad.ok_or_else(|| CliError::Tank {
+        field: "vehicle.assembly.tanks[*].initial_slosh.angles_rad".to_owned(),
+        reason: "required for baffled_pendulum".to_owned(),
+    })?;
+    let rates = initial.rates_rad_s.ok_or_else(|| CliError::Tank {
+        field: "vehicle.assembly.tanks[*].initial_slosh.rates_rad_s".to_owned(),
+        reason: "required for baffled_pendulum".to_owned(),
+    })?;
     model
-        .set_initial_slosh(
-            (initial.angles_rad[0], initial.angles_rad[1]),
-            (initial.rates_rad_s[0], initial.rates_rad_s[1]),
-        )
+        .set_initial_slosh((angles[0], angles[1]), (rates[0], rates[1]))
         .map_err(|err| CliError::Tank {
             field: "vehicle.assembly.tanks[*].initial_slosh".to_owned(),
             reason: err.to_string(),

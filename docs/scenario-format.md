@@ -1154,9 +1154,11 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
   engine clusters. Defaults to `0.0` (no drain). Future phase ties
   this to the engine-cluster total mdot.
 - `initial_slosh = { angles_rad: [θ_x, θ_y], rates_rad_s: [θ̇_x,
-  θ̇_y] }` — initial slosh perturbation. For `equivalent_spring_mass`,
-  `angles_rad` and `rates_rad_s` are reinterpreted as
-  displacement (m) and velocity (m/s).
+  θ̇_y] }` — initial slosh perturbation for `equivalent_pendulum`
+  and `baffled_pendulum`.
+- `initial_slosh = { displacement_body_m: [x, y], velocity_body_m_s:
+  [ẋ, ẏ] }` — initial slosh perturbation for
+  `equivalent_spring_mass`.
 
 #### Cross-block validation
 
@@ -1168,6 +1170,11 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
   degenerate (no body-frame orientation, lateral reaction force has
   no rotational coupling). The validator fails loud rather than
   silently producing a no-op tank.
+- `initial_slosh` is rejected for `rigid_liquid`; `baffle_model` is
+  rejected unless `moving_mass.kind = "baffled_pendulum"`.
+- `drain_rate_kg_per_s × time.dt_s` must not exceed the initial tank
+  fluid mass; Phase 3.7 rejects single-step emptying rather than
+  silently clamping away the moving-mass dynamics.
 
 #### Determinism
 
@@ -1197,14 +1204,14 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
   store this overcounts the propellant (the cluster's
   `EngineClusterMassAdapter` already debits consumed propellant
   from the dry mass). The Phase-3.7.E exit-criterion scenario
-  sizes the tank at 5 % of vehicle dry mass to keep the overcount
-  small; future phase unifies the accounting.
+  sizes the tank at about 5 % of vehicle dry mass to keep the
+  overcount small; future phase unifies the accounting.
 - Rigid-body cluster mass-properties (with inertia tensor
   evolution from per-engine `consumed_kg`) are still deferred —
   rigid scenarios with engine clusters use `ConstantMassRigid` for
   kernel mass-properties (Phase-3.6 deferral). The
   `TankSnapshot.inertia_delta_body_kg_m2` is published in the
-  snapshot but consumed only by force / moment adapters in
+  snapshot but is not consumed by the rigid mass-properties model in
   Phase 3.7.
 - Slosh telemetry channels (`tank.<id>.slosh_angle_rad`,
   `tank.<id>.fluid_kg`, etc.) are deferred to a Phase-3.X

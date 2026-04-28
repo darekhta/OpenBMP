@@ -533,10 +533,7 @@ fn build_vehicle(
             .tanks
             .iter()
             .map(|t| {
-                openbmp_core::TankId::from_path(&format!(
-                    "vehicle.assembly.tanks.{id}",
-                    id = t.id
-                ))
+                openbmp_core::TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = t.id))
             })
             .collect();
         let tank_force = TankRackForceAdapter::new(tank_ids, PHASE3_TANK_RACK_FORCE_MODEL_ID);
@@ -603,10 +600,7 @@ fn build_mass_model(
             .tanks
             .iter()
             .map(|t| {
-                openbmp_core::TankId::from_path(&format!(
-                    "vehicle.assembly.tanks.{id}",
-                    id = t.id
-                ))
+                openbmp_core::TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = t.id))
             })
             .collect();
         Ok(Box::new(TankRackMassAdapter::new(
