@@ -1,42 +1,76 @@
 //! `openbmp-propulsion` — OpenBMP propulsion.
 //!
-//! Phase 2.6 ships:
+//! Phase 2.6 / 3.6 ships:
 //!
 //! * [`motor`] — [`motor::Motor`] trait, [`motor::MotorVariant`]
-//!   (`Solid` only in Phase 2; `Liquid`, `Hybrid`, `ColdGas`
-//!   deferred to Phase 3), and [`motor::SolidMotor`] with
-//!   piecewise-linear thrust-curve interpolation and an
-//!   impulse-weighted mass model.
-//! * [`error`] — [`error::MotorError`], the crate's typed error
-//!   surface (out-of-envelope, non-finite, invalid parameter,
-//!   malformed motor, file I/O).
+//!   (`Solid` only), and [`motor::SolidMotor`] with piecewise-linear
+//!   thrust-curve interpolation and an impulse-weighted mass model.
+//!   The `Motor` trait is purely time-driven (`thrust_n_at(t)`,
+//!   `mass_kg(t)`, `mass_rate_kg_s(t)`); no state machine, no
+//!   gimbal, no throttle. Used for solid-propellant rockets (e.g.
+//!   the Niskanen Chapter-6 benchmark).
+//! * [`engine`] — Phase-3.6 [`engine::EngineModel`] trait with
+//!   per-engine throttle / gimbal / ignition lifecycle.
+//!   [`engine::LiquidEngine`] is the reference impl: linear ignition
+//!   and shutdown transients, constant-throttle burn, gimbal applied
+//!   as a locked-order pitch-then-yaw rotation. Mass flow is
+//!   `thrust / (g0 · isp)`. Used for liquid (and later hybrid /
+//!   cold-gas) propulsion.
+//! * [`cluster`] — Phase-3.6 [`cluster::EngineCluster`] container:
+//!   `Vec<Box<dyn EngineModel>>` plus body-frame mount points and a
+//!   layout tag. Not a kernel-side force model — the kernel-side
+//!   adapter trio in `openbmp-vehicle::adapters` consumes the
+//!   per-step [`engine::EngineSnapshot`] map via the runner-pushed
+//!   kernel snapshot path.
+//! * [`error`] — typed error surface. [`error::MotorError`] for the
+//!   solid-motor trait, [`error::EngineError`] for the liquid-engine
+//!   trait. The two trait families don't intersect, so they keep
+//!   separate error surfaces.
 //!
 //! Multi-stage motor composition (`MultiStageMotor` +
-//! `SeparationEvent`) and liquid / hybrid / cold-gas variants ship
-//! in Phase 3.
+//! `SeparationEvent`) ships in Phase 3.9. Hybrid and cold-gas engine
+//! variants are deferred past 3.6.
+//!
+//! # Trait families
+//!
+//! `Motor` (Phase 2) and `EngineModel` (Phase 3.6) are **parallel,
+//! non-intersecting** trait families. Solid-propellant rockets use
+//! the `Motor` path through the legacy `[propulsion.motor]`
+//! scenario block; liquid-engine clusters use the `EngineModel` /
+//! `EngineCluster` path through `[[vehicle.assembly.engines]]`.
+//! Scenarios that try to declare both blocks are rejected at parse
+//! time.
 //!
 //! # Determinism
 //!
 //! Pure arithmetic on `f64`; locked operand order on the
-//! cumulative-impulse trapezoidal table built at construction; no
-//! FMA, no wall-clock, no system RNG, no network, no file I/O on the
+//! cumulative-impulse trapezoidal table built at motor construction
+//! and on the gimbal rotation in [`engine::LiquidEngine`]; no FMA,
+//! no wall-clock, no system RNG, no network, no file I/O on the
 //! hot path. The TOML parser performs file I/O at motor-load time
 //! only.
 //!
 //! # Crate layering
 //!
 //! `openbmp-propulsion` is an L2 crate. It depends only on
-//! third-party `serde` / `toml` / `thiserror` and **not** on
-//! `openbmp-sim` (L1) — the kernel-side `ForceModel` / `MassModel`
-//! adapter that wraps a [`motor::Motor`] lands in Phase 2.10
-//! alongside the gravity / atmosphere / wind / aero adapters. See
-//! `docs/phase-2-plan.md § Implementation Seams`.
+//! `openbmp-core`, `nalgebra`, `serde`, `toml`, and `thiserror` —
+//! **not** on `openbmp-sim` (L1). The kernel-side `ForceModel` /
+//! `MassModel` adapters that wrap [`motor::Motor`] (Phase 2.10) and
+//! [`cluster::EngineCluster`] (Phase 3.6.C) live in `openbmp-vehicle`
+//! alongside the gravity / atmosphere / wind / aero adapters.
 
+pub mod cluster;
+pub mod engine;
 pub mod error;
 pub mod motor;
 pub mod parser;
 
-pub use error::MotorError;
+pub use cluster::{ClusterLayout, EngineCluster};
+pub use engine::{
+    EngineCommand, EngineFault, EngineLimits, EngineModel, EngineSnapshot, EngineState,
+    LiquidEngine,
+};
+pub use error::{EngineError, MotorError};
 pub use motor::{
     AmbientPressureCorrection, BurnSpec, Motor, MotorGeometry, MotorMeta, MotorVariant, SolidMotor,
     ThrustCurve, Validation,

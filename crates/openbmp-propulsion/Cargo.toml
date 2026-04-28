@@ -9,9 +9,11 @@ authors.workspace       = true
 description             = "OpenBMP propulsion: motor models, thrust curves (in-house RASP-shaped TOML format)."
 
 [dependencies]
-serde     = { workspace = true }
-thiserror = { workspace = true }
-toml      = { workspace = true }
+nalgebra      = { workspace = true }
+openbmp-core  = { workspace = true }
+serde         = { workspace = true }
+thiserror     = { workspace = true }
+toml          = { workspace = true }
 
 [dev-dependencies]
 approx   = { workspace = true }

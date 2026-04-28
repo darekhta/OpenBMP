@@ -1282,6 +1282,8 @@ name = "openbmp-propulsion"
 version = "0.0.1"
 dependencies = [
  "approx",
+ "nalgebra",
+ "openbmp-core",
  "proptest",
  "serde",
  "thiserror",
