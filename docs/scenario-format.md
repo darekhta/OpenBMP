@@ -874,6 +874,8 @@ extrapolation = "error"         # required; control surfaces saturate
   `_rad`. The runner uses this suffix to verify the matching scenario
   effector's `unit` field at runner build time (see Unit-matching
   contract below).
+- Effector axis names must be unique after stripping `_deg` / `_rad`;
+  a deck cannot declare both `delta_e_deg` and `delta_e_rad`.
 - Up to 3 effector axes (6 axes total) are supported in Phase 3.5.
   Larger decks are deferred to a later sub-phase.
 - The `[grid]` table must declare exactly the axes in `axis_order` —
@@ -902,9 +904,11 @@ the unit suffix matches:
 | any other custom axis name with `_<unit>` suffix | the suffix string |
 
 The matcher strips the unit suffix from the deck axis name to find the
-scenario effector by `id`. Mismatches (no matching effector,
-mismatched unit) fail closed at runner build time with
-`CliError::AeroEffectorMismatch`, before any kernel step is taken.
+scenario effector by `id`; therefore deck axis order is independent of
+the scenario effector declaration order. Mismatches (duplicate
+stripped deck axis, no matching effector, mismatched unit) fail closed
+at runner build time with `CliError::AeroEffectorMismatch`, before any
+kernel step is taken.
 Schema-1 decks and decks without effector axes skip this check
 entirely.
 

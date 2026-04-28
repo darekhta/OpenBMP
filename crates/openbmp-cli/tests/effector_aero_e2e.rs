@@ -275,3 +275,19 @@ fn schema2_run_byte_stable_across_two_invocations() {
         "two runs of the same schema-2 scenario must produce byte-identical Parquet"
     );
 }
+
+#[test]
+fn schema2_baseline_run_byte_stable_across_two_invocations() {
+    let temp = tempdir("effector-elevon-aero-baseline-bytestable");
+    let scenario = write_baseline_scenario(temp.path());
+    let a = temp.path().join("baseline-a.parquet");
+    let b = temp.path().join("baseline-b.parquet");
+    run_scenario(&scenario, &a);
+    run_scenario(&scenario, &b);
+    let bytes_a = fs::read(&a).expect("read baseline a");
+    let bytes_b = fs::read(&b).expect("read baseline b");
+    assert_eq!(
+        bytes_a, bytes_b,
+        "two baseline schema-2 runs must produce byte-identical Parquet"
+    );
+}

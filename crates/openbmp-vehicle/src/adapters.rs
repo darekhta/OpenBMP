@@ -33,7 +33,7 @@
 
 use nalgebra::Vector3;
 
-use openbmp_aero::AeroDeck;
+use openbmp_aero::{AeroDeck, AeroError};
 use openbmp_env::{AtmosphereModel, GravityModel};
 use openbmp_propulsion::Motor;
 use openbmp_sim::{
@@ -495,14 +495,9 @@ fn compute_axial_drag<Atm: AtmosphereModel>(
             deflections.insert(axis_name.as_str(), value);
         }
     }
-    let coefficients =
-        deck.lookup(mach, 0.0, 0.0, &deflections)
-            .map_err(|_| ModelEvalError::OutOfEnvelope {
-                model: model_id,
-                reason: Cow::Borrowed(
-                    "aero deck out of envelope at (mach, alpha, beta, deflections)",
-                ),
-            })?;
+    let coefficients = deck
+        .lookup(mach, 0.0, 0.0, &deflections)
+        .map_err(|err| map_aero_lookup_error(model_id, err))?;
 
     // Locked operand order: q = 0.5 · ρ · |v|².
     let q = 0.5 * atm_sample.density_kg_m3 * speed_sq;
@@ -515,6 +510,26 @@ fn compute_axial_drag<Atm: AtmosphereModel>(
         return Err(ModelEvalError::NonFinite { model: model_id });
     }
     Ok(f)
+}
+
+fn map_aero_lookup_error(model_id: ModelId, err: AeroError) -> ModelEvalError {
+    match err {
+        AeroError::OutOfEnvelope { reason } => ModelEvalError::OutOfEnvelope {
+            model: model_id,
+            reason: Cow::Borrowed(reason),
+        },
+        AeroError::NonFinite { .. } => ModelEvalError::NonFinite { model: model_id },
+        AeroError::InvalidParameter { reason } | AeroError::MalformedDeck { reason } => {
+            ModelEvalError::InvalidState {
+                model: model_id,
+                reason: Cow::Borrowed(reason),
+            }
+        }
+        AeroError::Io { reason } => ModelEvalError::InvalidState {
+            model: model_id,
+            reason: Cow::Owned(reason),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -811,6 +826,36 @@ mod tests {
         // velocity is purely along z; -0.0 emerges from the negation).
         assert_eq!(f.x, 0.0);
         assert_eq!(f.y, 0.0);
+    }
+
+    #[test]
+    fn axial_drag_adapter_maps_missing_schema2_deflection_to_invalid_state() {
+        let deck = AeroDeck::new_n_d(
+            vec![
+                "mach".to_string(),
+                "alpha".to_string(),
+                "beta".to_string(),
+                "delta_e_deg".to_string(),
+            ],
+            vec![vec![0.0, 1.0], vec![0.0], vec![0.0], vec![-20.0, 20.0]],
+            vec![0.0; 4],
+            vec![0.5; 4],
+            vec![0.0; 4],
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        let adapter = AxialDragForceAdapter::new(
+            deck,
+            IsothermalAtmosphere::ussa_sea_level(),
+            ModelId::new(0),
+        );
+        let state = fixture_state(0.0, 50.0);
+        let env = null_env();
+        let err = adapter
+            .force_n_eci(ctx(&state, &env, 1.0, 0.0))
+            .unwrap_err();
+        assert!(matches!(err, ModelEvalError::InvalidState { .. }));
     }
 
     // =================================================================

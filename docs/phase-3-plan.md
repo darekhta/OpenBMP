@@ -271,11 +271,11 @@ reopen the architecture by accident:
   stage from the active vehicle (mass / inertia removed; the spent
   stage's state is *not* propagated). Phase-5 multi-body propagates
   both halves with momentum exchange.
-- **Aero deck schema-2 fallback.** Loader detects
-  `openbmp.aero_deck.schema = 2` vs. legacy missing-`schema` field
-  (= schema-1). Schema-2 decks ignore effector axes when the
-  `[axis_order]` doesn't declare them; legacy schema-1 decks
-  silently degrade to single-effector-state lookup.
+- **Aero deck schema-2 fallback.** Loader detects the integer marker
+  `openbmp.aero_deck = 2` vs. legacy `openbmp.aero_deck = 1`.
+  Schema-2 decks declare effector axes through `[axis_order]`;
+  legacy schema-1 decks have no effector axes and ignore the
+  deflection map.
 - **WMM 2025 model timeline.** The model is valid only through
   2030-01-01. Scenarios that declare an epoch outside this range
   fail closed with a typed `MagneticOutOfEpoch` error. Phase 3
@@ -572,20 +572,19 @@ table.
 
 **Tasks.**
 
-- `crates/openbmp-aero/src/deck.rs`: extend `AeroDeck` to carry
-  optional `effector_axes: HashMap<String, Vec<f64>>` and
-  `coefficients` indexed by the cartesian product of declared axes.
-  Lookup signature: `lookup(mach, alpha, beta, effector_state:
-  &HashMap<String, f64>) -> Result<AeroCoefficients, AeroError>`.
+- `crates/openbmp-aero/src/deck.rs`: extend `AeroDeck` to carry an
+  explicit `axis_order: Vec<String>`, `axes: Vec<Vec<f64>>`, and flat
+  coefficient tables indexed by the cartesian product of declared axes.
+  Lookup signature: `lookup(mach, alpha, beta, deflections:
+  &BTreeMap<&str, f64>) -> Result<AeroCoefficients, AeroError>`.
 - `crates/openbmp-aero/src/parser.rs`: schema discriminator —
   schema-1 (no `[axis_order]` section) loads as before;
-  schema-2 (`openbmp.aero_deck.schema = 2`) loads the 4D/5D/6D
-  table.
+  schema-2 (`openbmp.aero_deck = 2`) loads the 4D/5D/6D table.
 - `crates/openbmp-aero/src/method.rs`: `DeckLookup` extends to
-  query effector states from the runner's effector registry.
-  Effector deflections are the *actual* (rate-limited / saturated /
-  faulted) values from `EffectorState.actual`, not the commanded
-  values.
+  consume the runner's effector-actuals snapshot through the
+  kernel-side adapters. Effector deflections are the *actual*
+  (rate-limited / saturated / faulted) values from
+  `EffectorState.actual`, not the commanded values.
 
 **Tests.**
 

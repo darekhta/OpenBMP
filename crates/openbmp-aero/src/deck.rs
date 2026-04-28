@@ -182,6 +182,7 @@ impl AeroDeck {
     /// - `axis_order.len() == axes.len()`
     /// - `axis_order` is non-empty and contains no duplicates
     /// - the first three names are exactly `["mach", "alpha", "beta"]`
+    /// - at most 6 axes are declared (3 base axes + 3 effector axes)
     /// - every axis is non-empty, finite, and strictly monotone-increasing
     /// - every coefficient table length equals the product of axis lengths
     ///
@@ -203,7 +204,11 @@ impl AeroDeck {
         for (axis, name) in axes.iter().zip(axis_order.iter()) {
             validate_axis(axis, axis_label(name))?;
         }
-        let expected: usize = axes.iter().map(Vec::len).product();
+        let expected = axes.iter().try_fold(1usize, |acc, axis| {
+            acc.checked_mul(axis.len()).ok_or(AeroError::MalformedDeck {
+                reason: "axis size product overflows usize",
+            })
+        })?;
         validate_table(&cn, expected, "CN table")?;
         validate_table(&cd, expected, "CD table")?;
         validate_table(&cm, expected, "CM table")?;
@@ -443,6 +448,11 @@ fn validate_axis_order(axis_order: &[String], axes_len: usize) -> Result<(), Aer
     if axis_order.len() != axes_len {
         return Err(AeroError::MalformedDeck {
             reason: "axis_order length does not match the number of axis grids",
+        });
+    }
+    if axis_order.len() > 6 {
+        return Err(AeroError::MalformedDeck {
+            reason: "schema-2 deck supports at most 3 effector axes (6 axes total)",
         });
     }
     for (k, required) in REQUIRED_PREFIX.iter().enumerate() {
@@ -1038,6 +1048,23 @@ mod tests {
     }
 
     #[test]
+    fn new_n_d_rejects_more_than_six_axes() {
+        let axis_order = vec![
+            "mach".to_string(),
+            "alpha".to_string(),
+            "beta".to_string(),
+            "delta_1_deg".to_string(),
+            "delta_2_deg".to_string(),
+            "delta_3_deg".to_string(),
+            "delta_4_deg".to_string(),
+        ];
+        let axes = vec![vec![0.0]; axis_order.len()];
+        let err = AeroDeck::new_n_d(axis_order, axes, vec![0.0], vec![0.0], vec![0.0], 1.0, 1.0)
+            .unwrap_err();
+        assert!(matches!(err, AeroError::MalformedDeck { .. }));
+    }
+
+    #[test]
     fn axis_order_returns_canonical_prefix_for_schema1() {
         let deck = cube_deck();
         assert_eq!(
@@ -1099,6 +1126,87 @@ mod tests {
         (1.0 - fm) * v0 + fm * v1
     }
 
+    /// Independent 4-D reference written as an explicit innermost-first
+    /// reduction: axis 3, then axis 2, then axis 1, then axis 0.
+    #[allow(clippy::too_many_arguments)]
+    fn quadlinear_reference(
+        axis0: &[f64],
+        axis1: &[f64],
+        axis2: &[f64],
+        axis3: &[f64],
+        table: &[f64],
+        q0: f64,
+        q1: f64,
+        q2: f64,
+        q3: f64,
+    ) -> f64 {
+        let bracket_local = |axis: &[f64], q: f64| -> (usize, f64) {
+            let n = axis.len();
+            let upper = axis.partition_point(|&x| x <= q);
+            let i_lo = upper.saturating_sub(1).min(n - 2);
+            let denom = axis[i_lo + 1] - axis[i_lo];
+            (i_lo, (q - axis[i_lo]) / denom)
+        };
+        let (i0, f0) = bracket_local(axis0, q0);
+        let (i1, f1) = bracket_local(axis1, q1);
+        let (i2, f2) = bracket_local(axis2, q2);
+        let (i3, f3) = bracket_local(axis3, q3);
+        let i0n = i0 + 1;
+        let i1n = i1 + 1;
+        let i2n = i2 + 1;
+        let i3n = i3 + 1;
+        let s0 = axis1.len() * axis2.len() * axis3.len();
+        let s1 = axis2.len() * axis3.len();
+        let s2 = axis3.len();
+        let idx = |a: usize, b: usize, c: usize, d: usize| a * s0 + b * s1 + c * s2 + d;
+        let lerp = |f: f64, lo: f64, hi: f64| (1.0 - f) * lo + f * hi;
+
+        let v000 = lerp(f3, table[idx(i0, i1, i2, i3)], table[idx(i0, i1, i2, i3n)]);
+        let v001 = lerp(
+            f3,
+            table[idx(i0, i1, i2n, i3)],
+            table[idx(i0, i1, i2n, i3n)],
+        );
+        let v010 = lerp(
+            f3,
+            table[idx(i0, i1n, i2, i3)],
+            table[idx(i0, i1n, i2, i3n)],
+        );
+        let v011 = lerp(
+            f3,
+            table[idx(i0, i1n, i2n, i3)],
+            table[idx(i0, i1n, i2n, i3n)],
+        );
+        let v100 = lerp(
+            f3,
+            table[idx(i0n, i1, i2, i3)],
+            table[idx(i0n, i1, i2, i3n)],
+        );
+        let v101 = lerp(
+            f3,
+            table[idx(i0n, i1, i2n, i3)],
+            table[idx(i0n, i1, i2n, i3n)],
+        );
+        let v110 = lerp(
+            f3,
+            table[idx(i0n, i1n, i2, i3)],
+            table[idx(i0n, i1n, i2, i3n)],
+        );
+        let v111 = lerp(
+            f3,
+            table[idx(i0n, i1n, i2n, i3)],
+            table[idx(i0n, i1n, i2n, i3n)],
+        );
+
+        let v00 = lerp(f2, v000, v001);
+        let v01 = lerp(f2, v010, v011);
+        let v10 = lerp(f2, v100, v101);
+        let v11 = lerp(f2, v110, v111);
+        let v0 = lerp(f1, v00, v01);
+        let v1 = lerp(f1, v10, v11);
+        lerp(f0, v0, v1)
+    }
+
     proptest! {
         /// 1000 random (n_mach, n_alpha, n_beta) grids and random
         /// query points; multilinear at N=3 must be bit-identical to
@@ -1142,6 +1250,58 @@ mod tests {
                 ours.cn.to_bits(), expected.to_bits(),
                 "CN bit-mismatch at m={}, a={}, b={}", m_q, a_q, b_q
             );
+            prop_assert_eq!(ours.cd.to_bits(), expected.to_bits());
+            prop_assert_eq!(ours.cm.to_bits(), expected.to_bits());
+        }
+
+        /// 4-D schema-2 lookup must match an independent explicit
+        /// quadlinear reference with the same locked operand order.
+        #[test]
+        fn multilinear_at_n4_matches_hand_rolled_quadlinear_bit_identical(
+            seed in 0u64..1024,
+        ) {
+            let mut s = seed.wrapping_mul(0xA076_1D64_78BD_642F);
+            let mut rng = || {
+                s = s.wrapping_mul(0xE703_7ED1_A0B4_28DB).wrapping_add(0x8EBC_6AF0_9C88_C6E3);
+                ((s >> 33) as u32) as f64 / u32::MAX as f64
+            };
+            let n0 = 2 + (rng() * 3.0) as usize; // 2..=4
+            let n1 = 2 + (rng() * 3.0) as usize;
+            let n2 = 2 + (rng() * 3.0) as usize;
+            let n3 = 2 + (rng() * 3.0) as usize;
+            let mut a0: Vec<f64> = (0..n0).map(|i| i as f64 + 0.25 * rng()).collect();
+            let mut a1: Vec<f64> = (0..n1).map(|i| i as f64 - 2.0 + 0.25 * rng()).collect();
+            let mut a2: Vec<f64> = (0..n2).map(|i| i as f64 - 1.0 + 0.25 * rng()).collect();
+            let mut a3: Vec<f64> = (0..n3).map(|i| -20.0 + 10.0 * i as f64 + rng()).collect();
+            for k in 1..a0.len() { if a0[k] <= a0[k-1] { a0[k] = a0[k-1] + 1.0; } }
+            for k in 1..a1.len() { if a1[k] <= a1[k-1] { a1[k] = a1[k-1] + 1.0; } }
+            for k in 1..a2.len() { if a2[k] <= a2[k-1] { a2[k] = a2[k-1] + 1.0; } }
+            for k in 1..a3.len() { if a3[k] <= a3[k-1] { a3[k] = a3[k-1] + 1.0; } }
+            let count = n0 * n1 * n2 * n3;
+            let table: Vec<f64> = (0..count).map(|_| rng() * 20.0 - 10.0).collect();
+            let deck = AeroDeck::new_n_d(
+                vec![
+                    "mach".to_string(),
+                    "alpha".to_string(),
+                    "beta".to_string(),
+                    "delta_e_deg".to_string(),
+                ],
+                vec![a0.clone(), a1.clone(), a2.clone(), a3.clone()],
+                table.clone(),
+                table.clone(),
+                table.clone(),
+                1.0,
+                1.0,
+            ).unwrap();
+            let q0 = a0[0] + rng() * (a0[a0.len() - 1] - a0[0]);
+            let q1 = a1[0] + rng() * (a1[a1.len() - 1] - a1[0]);
+            let q2 = a2[0] + rng() * (a2[a2.len() - 1] - a2[0]);
+            let q3 = a3[0] + rng() * (a3[a3.len() - 1] - a3[0]);
+            let mut def = BTreeMap::new();
+            def.insert("delta_e_deg", q3);
+            let ours = deck.lookup(q0, q1, q2, &def).unwrap();
+            let expected = quadlinear_reference(&a0, &a1, &a2, &a3, &table, q0, q1, q2, q3);
+            prop_assert_eq!(ours.cn.to_bits(), expected.to_bits());
             prop_assert_eq!(ours.cd.to_bits(), expected.to_bits());
             prop_assert_eq!(ours.cm.to_bits(), expected.to_bits());
         }
@@ -1193,12 +1353,17 @@ mod tests {
     fn schema2_corner_lookup_returns_stored_value_exactly() {
         let deck = elevon_4d_deck();
         let mut def = BTreeMap::new();
-        def.insert("delta_e_deg", 20.0);
-        // (m=1, a=1, b=0, delta=20) → 1 + 1 + 0.1*20 = 4.0
-        let r = deck.lookup(1.0, 1.0, 0.0, &def).unwrap();
-        assert_eq!(r.cn.to_bits(), 4.0_f64.to_bits());
-        assert_eq!(r.cd.to_bits(), 1.0_f64.to_bits()); // 0.05 * 20
-        assert_eq!(r.cm.to_bits(), 20.0_f64.to_bits());
+        for &m in &[0.0, 1.0] {
+            for &a in &[0.0, 1.0] {
+                for &d in &[-20.0, 0.0, 20.0] {
+                    def.insert("delta_e_deg", d);
+                    let r = deck.lookup(m, a, 0.0, &def).unwrap();
+                    assert_eq!(r.cn.to_bits(), (m + a + 0.1 * d).to_bits());
+                    assert_eq!(r.cd.to_bits(), (0.05 * d).to_bits());
+                    assert_eq!(r.cm.to_bits(), d.to_bits());
+                }
+            }
+        }
     }
 
     #[test]

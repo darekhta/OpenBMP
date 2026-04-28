@@ -293,9 +293,10 @@ files:
 source_class:     synthetic-openbmp
 source_title:     >-
   Synthetic OpenBMP-authored Schema-2 aerodynamic deck for the
-  Phase 3.5.B exit-criterion. Single elevon axis (`delta_e_deg`)
+  Phase 3.5 exit-criterion. Single elevon axis (`delta_e_deg`)
   added to a Phase-2.5-style finned-cylinder deck so a non-zero
-  control-surface deflection perturbs the normal-force coefficient.
+  control-surface deflection perturbs the normal-force, drag, and
+  pitching-moment coefficients.
   Used by the Phase 3.5.D single-elevon-aero scenario to demonstrate
   that an effector deflection actually changes the body-frame aero
   force at runtime (vs. Phase 3.4's gravity-only telemetry-only
@@ -306,10 +307,10 @@ publication_date: 2026-04-28
 methodology_reference: >-
   Same Barrowman-style component build-up as the Phase-2.5
   `synthetic-finned-cylinder.toml` deck (Niskanen 2009 §5),
-  extended with a small linear elevon-deflection perturbation in
+  extended with linear / absolute elevon-deflection perturbations in
   CN, CD, and CM. The elevon coefficients are illustrative — chosen
-  so a 5° deflection moves CN by ~0.10 — not derived from any
-  specific airframe.
+  so a 5° deflection moves CN by ~0.10 and a 20° deflection adds
+  0.20 to CD — not derived from any specific airframe.
 methodology_urls:
   - https://openrocket.info/documentation.html
 license_or_terms: >-
@@ -322,10 +323,13 @@ transformation:
     product of (mach, alpha_deg, beta_deg, delta_e_deg):
       CN(M, α, β, δ_e) = α_deg · (0.07 + 0.005 · M)
                        + 0.020 · δ_e_deg
-      CD(M, α, β, δ_e) = CD0(M) + 0.001 · α_deg² + 0.0005 · |δ_e_deg|
+      CD(M, α, β, δ_e) = CD0(M) + 0.001 · α_deg² + 0.010 · |δ_e_deg|
       CM(M, α, β, δ_e) = -0.15 · CN(M, α, β, 0) + 0.050 · δ_e_deg
     with CD0 the Phase-2.5 finned-cylinder transonic curve at the
-    Mach grid points. Pasted into the deck file by hand; no script.
+    Mach grid points. The CD perturbation was strengthened during
+    Phase 3.5.D so the e2e baseline-vs-deflected force signal is well
+    above telemetry noise. Pasted into the deck file by hand; no
+    script.
   script: none
 verification:
   method: >-
@@ -342,7 +346,8 @@ verification:
     Parser round-trip and grid-corner lookups: bit equality on
     parsed CN/CD/CM. Schema-1 companion at delta_e_deg = 0: bit
     equality between Schema-1 and Schema-2 lookups at the same
-    (mach, alpha, beta) grid points.
+    (mach, alpha, beta) grid points. E2e baseline-vs-deflected
+    force comparison: at least 5% relative difference at t = 2.5 s.
 validation_status: validated-toy
 safety_review:
   reviewer: dmitri.arekhta

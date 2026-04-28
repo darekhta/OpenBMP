@@ -69,6 +69,8 @@ pub fn assert_axes_match_effectors(
         .unwrap_or_default();
 
     let mut bindings = Vec::with_capacity(axis_names.len());
+    let mut seen_bare_axis_names: std::collections::BTreeSet<&str> =
+        std::collections::BTreeSet::new();
     for axis_name in axis_names {
         let (bare_name, suffix) =
             split_unit_suffix(axis_name).ok_or(CliError::AeroEffectorMismatch {
@@ -78,6 +80,16 @@ pub fn assert_axes_match_effectors(
                  schema-2 axes are declared with explicit units"
                 ),
             })?;
+        if !seen_bare_axis_names.insert(bare_name) {
+            return Err(CliError::AeroEffectorMismatch {
+                field: format!("aero.deck.axis_order[{axis_name}]"),
+                reason: format!(
+                    "deck declares more than one effector axis for `{bare_name}` after stripping \
+                     `_deg` / `_rad`; declare a single axis in the same unit as the scenario \
+                     effector"
+                ),
+            });
+        }
         let (index, config) = effectors
             .iter()
             .enumerate()
@@ -250,6 +262,36 @@ mod tests {
         let deck = elevon_4d_deck();
         // Deck axis is `delta_e_deg` but scenario declares `unit = "rad"`.
         let scenario = elevon_scenario_with_unit(Some("rad"));
+        let err = assert_axes_match_effectors(Some(&deck), &scenario.document).unwrap_err();
+        assert!(matches!(err, CliError::AeroEffectorMismatch { .. }));
+    }
+
+    #[test]
+    fn match_fails_when_two_deck_axes_strip_to_same_effector_id() {
+        let mach = vec![0.0, 1.0];
+        let alpha = vec![0.0, 1.0];
+        let beta = vec![0.0];
+        let delta_deg = vec![-20.0, 0.0, 20.0];
+        let delta_rad = vec![-0.3, 0.0, 0.3];
+        let table =
+            vec![0.0; mach.len() * alpha.len() * beta.len() * delta_deg.len() * delta_rad.len()];
+        let deck = AeroDeck::new_n_d(
+            vec![
+                "mach".to_string(),
+                "alpha".to_string(),
+                "beta".to_string(),
+                "delta_e_deg".to_string(),
+                "delta_e_rad".to_string(),
+            ],
+            vec![mach, alpha, beta, delta_deg, delta_rad],
+            table.clone(),
+            table.clone(),
+            table,
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        let scenario = elevon_scenario_with_unit(Some("deg"));
         let err = assert_axes_match_effectors(Some(&deck), &scenario.document).unwrap_err();
         assert!(matches!(err, CliError::AeroEffectorMismatch { .. }));
     }

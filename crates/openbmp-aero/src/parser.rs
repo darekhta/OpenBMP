@@ -334,13 +334,6 @@ fn validate_schema2_axis_order(order: &[String]) -> Result<(), AeroError> {
             });
         }
     }
-    for name in &order[3..] {
-        if !(name.ends_with("_deg") || name.ends_with("_rad")) {
-            return Err(AeroError::MalformedDeck {
-                reason: "schema-2 effector axis names must end with `_deg` or `_rad`",
-            });
-        }
-    }
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for name in order {
         if !seen.insert(name.as_str()) {
@@ -357,7 +350,26 @@ fn validate_schema2_axis_order(order: &[String]) -> Result<(), AeroError> {
             reason: "schema-2 deck supports at most 3 effector axes (6 axes total)",
         });
     }
+    let mut seen_bare_effector_names: BTreeSet<&str> = BTreeSet::new();
+    for name in &order[3..] {
+        let (bare, _unit) = schema2_effector_unit_suffix(name).ok_or(AeroError::MalformedDeck {
+            reason: "schema-2 effector axis names must end with `_deg` or `_rad`",
+        })?;
+        if !seen_bare_effector_names.insert(bare) {
+            return Err(AeroError::MalformedDeck {
+                reason: "schema-2 effector axis names must be unique after stripping unit suffix",
+            });
+        }
+    }
     Ok(())
+}
+
+fn schema2_effector_unit_suffix(name: &str) -> Option<(&str, &str)> {
+    if let Some(bare) = name.strip_suffix("_deg") {
+        Some((bare, "deg"))
+    } else {
+        name.strip_suffix("_rad").map(|bare| (bare, "rad"))
+    }
 }
 
 fn validate_schema2_interpolation(interp: &InterpolationConfig) -> Result<(), AeroError> {
@@ -733,6 +745,18 @@ mod tests {
         let toml_str = minimal_schema2_deck_toml().replace(
             "order = [\"mach\", \"alpha\", \"beta\", \"delta_e_deg\"]",
             "order = [\"mach\", \"alpha\", \"beta\", \"delta_e_deg\", \"delta_e_deg\"]",
+        );
+        assert!(matches!(
+            AeroDeck::load_from_str(&toml_str),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn schema2_rejects_duplicate_effector_axis_name_after_unit_strip() {
+        let toml_str = minimal_schema2_deck_toml().replace(
+            "order = [\"mach\", \"alpha\", \"beta\", \"delta_e_deg\"]",
+            "order = [\"mach\", \"alpha\", \"beta\", \"delta_e_deg\", \"delta_e_rad\"]",
         );
         assert!(matches!(
             AeroDeck::load_from_str(&toml_str),

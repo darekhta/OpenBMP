@@ -1171,8 +1171,7 @@ dataset was built with control-effector deflections varied, the deck
 adds extra axes:
 
 ```toml
-openbmp.aero_deck = 1
-openbmp.aero_deck.schema = 2          # axes-with-effectors schema
+openbmp.aero_deck = 2                 # axes-with-effectors schema
 
 reference.length_m = 1.250
 reference.area_m2  = 1.227
@@ -1189,7 +1188,7 @@ delta_r_deg = [0]                     # not used on this airframe
 
 [axis_order]
 # locked reduction order — part of determinism contract
-order = ["mach", "alpha", "beta", "delta_e", "delta_a", "delta_r"]
+order = ["mach", "alpha", "beta", "delta_e_deg", "delta_a_deg", "delta_r_deg"]
 
 [coefficients.cn]
 data = [ /* row-major 6D table */ ]
@@ -1211,7 +1210,7 @@ without effector axes degrade to the schema-1 `(Mach, alpha, beta)` form
 and the loader treats effector deflections as untracked.
 
 Effector axes follow the `(positive deflection)` sign convention
-declared in the deck's `[frames]` block (see
+declared in the deck provenance sidecar (see
 [data-provenance.md § Real-Data Package Credibility Format](data-provenance.md#real-data-package-credibility-format)
 for the full sidecar schema). Axis names are not prescribed beyond the
 common `delta_e / delta_a / delta_r` and `body_flap_left /
@@ -1223,10 +1222,9 @@ body_flap_right / grid_fin_<n>`; the deck declares names and units, the
 >
 > - The deck file's schema discriminator is the integer marker:
 >   `openbmp.aero_deck = 1` (schema-1) or `= 2` (schema-2). The
->   architecture-spec form `openbmp.aero_deck.schema = 2` shown earlier
->   in this section was an illustrative draft — actual TOML semantics
->   prevent an integer + sub-table at the same dotted key, so the
->   shipping wire format bumps the integer instead.
+>   earlier draft form `openbmp.aero_deck.schema = 2` was discarded:
+>   actual TOML semantics prevent an integer + sub-table at the same
+>   dotted key, so the shipping wire format bumps the integer instead.
 > - The runtime `AeroDeck` is N-D internally: an `axis_order:
 >   Vec<String>` (always starting with `["mach", "alpha", "beta"]`),
 >   `axes: Vec<Vec<f64>>`, and three flat row-major coefficient
@@ -1250,8 +1248,9 @@ body_flap_right / grid_fin_<n>`; the deck declares names and units, the
 >   `_deg` or `_rad` suffix. The runner's `aero_effector_match`
 >   helper pairs each deck axis with a scenario effector by stripped
 >   name and asserts the effector's declared `unit` matches the
->   suffix. Mismatches → `CliError::AeroEffectorMismatch` at runner
->   build time, before any kernel step.
+>   suffix. Duplicate stripped deck-axis names and unit mismatches →
+>   `CliError::AeroEffectorMismatch` at runner build time, before any
+>   kernel step.
 > - Schema-2 supports up to 3 effector axes (6 axes total) in 3.5.
 >   The full six-coefficient `(CY, Cl, Cn-yaw)` deck is deferred past
 >   3.5; schema-2 still ships only `(CN, CD, CM)`. The
