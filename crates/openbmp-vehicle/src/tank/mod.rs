@@ -59,8 +59,10 @@
 //!
 //! [`safety-boundaries`]: ../../../../../docs/safety-boundaries.md
 
+pub mod equivalent_pendulum;
 pub mod rigid_liquid;
 
+pub use equivalent_pendulum::EquivalentPendulum;
 pub use rigid_liquid::RigidLiquid;
 
 use nalgebra::{Matrix3, Vector3};
