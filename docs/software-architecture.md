@@ -518,21 +518,34 @@ The graph and the event list together replace the Phase-1 ad-hoc
 "hard-coded apogee detection in the kernel". The kernel keeps the same
 fixed step shape and just consults the resolved event list each tick.
 
-> **Phase-3.2 status note.** The Phase-3.2 implementation in
-> `openbmp-sim::events` ships every variant of `BuiltInEventTrigger`
-> except `Scripted`, which is rejected at scenario parse time with a
-> typed deferral error pointing at Phase 3.4 alongside `ControlEffector`.
-> The four `EventAction` variants `EngineCommand`, `EffectorOverride`,
-> `Separation`, and `DeployRecovery` exist in the enum (so 3.4 / 3.6 /
-> 3.7 / 3.9 do not need to expand it) but are likewise parser-rejected
-> in 3.2. `AtDynamicPressure` is also parser-rejected until Phase 3.4
-> wires atmosphere into event evaluation. `EnterPhase`,
-> `EmitTelemetryMarker`, and a new `Stop` action are wired end-to-end.
-> `EventTrigger::fired` takes an `EventEvalState`
-> snapshot rather than the full `VehicleState` shown above — the
-> snapshot carries only the derived scalars triggers need (altitude,
-> vertical velocity, mass fraction, dynamic pressure) plus the
-> previous-step values for crossing detection.
+> **Phase-3.4 status note.** Phase 3.4 wires `ControlEffector` and
+> the `EffectorOverride` action: a mission event whose action is
+> `effector_override { id, command }` is recorded by the kernel,
+> drained by the runner each step, and applied to the runner-side
+> `EffectorRack` before the rack steps. Override beats schedule for
+> the next step only. The `EventAction::EffectorOverride` enum
+> variant carries `{ id: EffectorId, command: f64 }` (was a unit
+> variant pre-3.4 — the runner consumes it, so the kernel never
+> dispatches it itself).
+>
+> **Phase-3.2 status note (still current).** The Phase-3.2
+> implementation in `openbmp-sim::events` ships every variant of
+> `BuiltInEventTrigger` except `Scripted`, which is rejected at
+> scenario parse time with a typed deferral error: scripted
+> triggers are deferred to a later sub-phase, and the per-effector
+> `command_schedule` covers the common scripted-command case.
+> The remaining `EventAction` variants `EngineCommand`,
+> `Separation`, and `DeployRecovery` exist in the enum (so 3.6 /
+> 3.6 / 3.9 do not need to expand it) but are still
+> parser-rejected. `AtDynamicPressure` is parser-rejected until a
+> later sub-phase wires atmosphere into event evaluation.
+> `EnterPhase`, `EmitTelemetryMarker`, `Stop`, and (Phase 3.4)
+> `EffectorOverride` are wired end-to-end. `EventTrigger::fired`
+> takes an `EventEvalState` snapshot rather than the full
+> `VehicleState` shown above — the snapshot carries only the
+> derived scalars triggers need (altitude, vertical velocity, mass
+> fraction, dynamic pressure) plus the previous-step values for
+> crossing detection.
 
 ## Numerical Integrators
 
@@ -949,6 +962,24 @@ and feed the propulsion through `EngineCommand.gimbal_pitch_rad /
 gimbal_yaw_rad`. The controller does not see effector state directly; it
 sees telemetry channels `effector.<id>.commanded`,
 `effector.<id>.actual`, `effector.<id>.saturated`, etc.
+
+> **Phase-3.4 status note.** Phase 3.4 ships `ControlEffector`, the
+> `LinearActuator` reference impl, the four canonical fault modes,
+> the runner-side `EffectorRack`, and one `effector.<id>.actual`
+> `f64` telemetry channel per declared effector. The implemented
+> `step(cmd, dt)` returns `Result<EffectorState, EffectorError>`
+> (the design fragment above is simplified). The
+> aerodynamics-side coupling is **not** wired in 3.4 — the aero
+> deck stays schema-1 and the deflection telemetry is observable
+> but does not perturb force / moment evaluation. Schema-2 deck
+> consumption arrives in Phase 3.5. Faults are scenario-loaded
+> only in 3.4; run-time fault injection is deferred. The
+> `EffectorRack` lives on the runner side (mirrors `mission.rs`),
+> not on `BasicAssembly`, so the assembly stays `Clone` and legacy
+> scenarios with no `[[vehicle.assembly.effectors]]` short-circuit
+> every per-step rack operation on `is_empty()` and produce
+> byte-identical Parquet to pre-3.4. See `scenarios/effector-elevon/`
+> for the canonical exit-criterion case.
 
 ### Tanks and Slosh as Moving-Mass Dynamics
 

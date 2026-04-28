@@ -511,11 +511,14 @@ return `false` on step 0 because no previous-step snapshot exists.
 | `at_altitude_descending` | `altitude_m: f64` | Fires when altitude crosses down through `altitude_m`. |
 | `at_apogee` | — | Fires when vertical velocity flips from `> 0` to `<= 0`. |
 | `at_mass_fraction` | `remaining: f64` (in `[0, 1]`) | Fires when mass fraction (current / initial) drops to or below `remaining`. |
-| `at_dynamic_pressure` | `pressure_pa: f64`, `falling: bool` | Deferred to Phase 3.4, when atmosphere is wired into event evaluation. Phase 3.2 rejects this trigger at parse time with `UnsupportedTriggerKind`. |
+| `at_dynamic_pressure` | `pressure_pa: f64`, `falling: bool` | Deferred to Phase 3.5, when atmosphere is wired into event evaluation. Phase 3.4 rejects this trigger at parse time with `UnsupportedTriggerKind`. |
 
 The `kind = "scripted"` trigger is rejected at parse time with a
-typed deferral error: scripted triggers ship in Phase 3.4 alongside
-`ControlEffector`.
+typed deferral error: scripted triggers are deferred to a later
+Phase-3 sub-phase. Phase 3.4 ships `ControlEffector` itself; the
+deterministic per-effector `command_schedule` (see
+[Control effectors](#control-effectors-phase-34) below) covers the
+common scripted-command case without a separate trigger surface.
 
 #### Action vocabulary
 
@@ -524,10 +527,13 @@ typed deferral error: scripted triggers ship in Phase 3.4 alongside
 | `enter_phase` | `phase: string` (declared phase id) | Sets the active mission phase; visible via runner-side telemetry / diagnostics. |
 | `emit_telemetry_marker` | `tag: string` (snake_case) | Allocates a `bool` telemetry channel `mission.marker.<tag>`; runner writes `true` on every step the event fires, `false` on every other step. Channel allocation is alphabetical by tag for declaration-order independence. |
 | `stop` | `label: string` | Halts the run with `StopReason::MissionEnded { label }`. Distinct from `EndTime` so determinism telemetry can distinguish CLI-driven stops from scenario-driven mission ends. |
+| `effector_override` | `id: string` (declared effector id), `command: f64` (finite) | One-shot command override for the named effector on the next runner step. Resolves the declared id against the runner's effector rack via FNV-1a-64 of `vehicle.assembly.effectors.<id>`. The kernel records the action; the runner drains it from the per-step fired-event queue and applies it on the rack before stepping. Override wins over any declared `command_schedule` for that step only. Unknown ids are silently ignored — unknown-id rejection is a parse-time concern, not a run-time one. |
 
-The four reserved actions `engine_command` / `effector_override` /
-`separation` / `deploy_recovery` are rejected at parse time with
-typed deferral errors pointing at Phase 3.6 / 3.4 / 3.6 / 3.9.
+The three reserved actions `engine_command` / `separation` /
+`deploy_recovery` are still rejected at parse time with typed
+deferral errors pointing at Phase 3.6 / 3.6 / 3.9. Phase 3.4 wires
+`effector_override`; the rest follow when their assembly children
+land.
 
 #### `once` semantics
 
@@ -615,10 +621,11 @@ pre-computed geometry, mirroring the aero-deck reference.
 
 #### Reserved future-phase children
 
-The following child blocks are reserved and **rejected at parse time
-in Phase 3.3** with a typed `UnsupportedAssemblyChild` error:
+`[[vehicle.assembly.effectors]]` ships in Phase 3.4 — see
+[Control effectors](#control-effectors-phase-34) below. The
+remaining child blocks are reserved and **rejected at parse time**
+with a typed `UnsupportedAssemblyChild` error:
 
-- `[[vehicle.assembly.effectors]]` → Phase 3.4 (`ControlEffector`).
 - `[[vehicle.assembly.engines]]` → Phase 3.6 (`EngineCluster`).
 - `[[vehicle.assembly.tanks]]` → Phase 3.7 (`Tank` + slosh).
 
@@ -649,14 +656,146 @@ Enforced at scenario-parse time:
   `dry_inertia_body_kg_m2`, and the flat
   `vehicle.inertia_tensor_body_kg_m2` matches the assembled dry
   inertia tensor within the same consistency tolerance.
-- The three reserved future-phase child blocks (`effectors`,
-  `engines`, `tanks`) must be empty.
+- The two remaining reserved future-phase child blocks (`engines`,
+  `tanks`) must be empty. `effectors` ships in Phase 3.4 and is
+  validated by the rules in [Control effectors](#control-effectors-phase-34).
 
 #### Phase-3.3 limitations
 
 - The runner consumes the assembly's dry mass properties for kernel
   mass construction. Force / moment construction still uses the
-  existing per-runner paths until the effectors / engines / tanks
-  assembly children land in later Phase-3 sub-phases.
+  existing per-runner paths until the engines / tanks assembly
+  children land in later Phase-3 sub-phases.
 - Point-mass propagation only uses the assembled dry mass; body CG and
   inertia affect rigid-body mass properties, not point-mass dynamics.
+
+### Control effectors (Phase 3.4)
+
+`[[vehicle.assembly.effectors]]` declares one or more
+`ControlEffector` instances mounted on the assembly. Phase 3.4 ships
+the effector state machine, a deterministic `command_schedule`, the
+runner-side `EffectorRack`, and per-effector deflection telemetry.
+The effector deflection is observable in the Parquet via
+`effector.<id>.actual` but is **not yet consumed by force / moment
+evaluation** — the aero deck stays schema-1 in 3.4. Schema-2 deck
+consumption arrives in Phase 3.5.
+
+The canonical example mirrors
+[`scenarios/effector-elevon/single-elevon-elevator-step.toml`](../scenarios/effector-elevon/single-elevon-elevator-step.toml):
+
+```toml
+[[vehicle.assembly.effectors]]
+id               = "delta_e"
+kind             = { kind = "linear_actuator", tau_s = 0.05 }
+limits           = { min = -0.349, max = 0.349, max_rate_per_s = 5.236, deadband = 0.0, latency_s = 0.020 }
+initial_position = 0.0
+command_schedule = { kind = "step_at", time_s = 0.5, before = 0.0, after = 0.087 }
+```
+
+#### Effector kinds
+
+`kind.kind` is tagged on the inner `kind` field. Phase 3.4 ships
+one variant; future phases will add nonlinear / multi-axis / smart
+actuators.
+
+| `kind.kind` | Required fields | Semantics |
+|---|---|---|
+| `linear_actuator` | `tau_s: f64` (optional, default `0.0`) | First-order lag with rate clamp + saturation + deadband + pure-delay buffer. `tau_s = 0` collapses to a rate-clamped tracker (no lag). The latency must be an integer multiple of the scenario's `time.dt_s` (sub-`dt` latency is rejected at construction). |
+
+#### Limits vocabulary
+
+`limits` is a flat table with five required fields:
+
+| Field | Units | Constraint |
+|---|---|---|
+| `min` | rad (or whatever the actuator drives) | finite, `min < max` |
+| `max` | same | finite |
+| `max_rate_per_s` | unit / s | finite, strictly positive |
+| `deadband` | unit | finite, `>= 0`, `<= (max - min)` |
+| `latency_s` | s | finite, `>= 0`, integer multiple of `time.dt_s` |
+
+`initial_position` (optional, default `0.0`) must lie in
+`[min, max]`. The rack pre-fills the actuator's pure-delay buffer
+with `initial_position` so step 0 reflects the at-rest state.
+
+#### Command schedules
+
+`command_schedule` is optional. When omitted, the effector holds
+`initial_position` indefinitely. When present, it carries one of
+three deterministic shapes:
+
+| `command_schedule.kind` | Required fields | Semantics |
+|---|---|---|
+| `constant` | `value: f64` | Commands `value` at every step. |
+| `step_at` | `time_s`, `before`, `after` (all `f64`) | Commands `before` while `t < time_s`; `after` thereafter. |
+| `linear_ramp` | `start_time_s`, `end_time_s`, `start`, `end` (all `f64`) | Holds `start` while `t <= start_time_s`; ramps linearly to `end` over `[start_time_s, end_time_s]`; holds `end` thereafter. |
+
+A scenario-declared `command_schedule` is the deterministic baseline.
+A mission `effector_override` action (see
+[Action vocabulary](#action-vocabulary)) wins over the schedule for
+the next step only.
+
+#### Faults
+
+`fault` is optional and load-time only in Phase 3.4: a fault
+declared in the scenario is injected at construction and persists
+for the run. Run-time fault injection (mid-mission failures) is
+deferred to a later sub-phase.
+
+| `fault.kind` | Required fields | Semantics |
+|---|---|---|
+| `jam` | `at: f64` (in `[min, max]`) | Effector freezes at `at`; commands ignored. |
+| `runaway` | `rate_per_s: f64` (finite) | Actual position drifts at the constant signed rate, clamped to `[min, max]`. |
+| `reduced_rate` | `factor: f64` (in `[0, 1]`) | Effective `max_rate_per_s` is scaled by `factor`. Saturation, deadband, and lag remain in effect. |
+| `hardover` | `to: f64` (in `[min, max]`) | Actual position slews at `max_rate_per_s` toward `to` regardless of command. |
+
+#### Telemetry
+
+For each declared effector, the runner allocates one telemetry
+channel `effector.<id>.actual` (`f64`, dimensionless `"1"` unit
+metadata). The channels are allocated in scenario-declared order,
+**after** the per-model force breakdown and **before** any mission
+markers — that ordering is the determinism contract for channel
+ids.
+
+#### Determinism
+
+Effector ids are FNV-1a-64 hashes of the canonical scenario path
+`vehicle.assembly.effectors.<id>`. Reordering
+`[[vehicle.assembly.effectors]]` blocks does not shift any
+effector's id. The rack iterates effectors in scenario-declared
+order; per-step command resolution is `override > schedule > hold`.
+Override events are stored in a `BTreeMap<EffectorId, f64>` so
+iteration order is locked across platforms (defeats macOS
+`SipHash` randomisation). Empty rack → byte-identical legacy
+scenarios: every per-step rack operation is gated on
+`!rack.is_empty()`.
+
+#### Validation invariants
+
+Enforced at scenario-parse time:
+
+- `id` non-empty; effector ids unique within the assembly.
+- `kind.kind` is a wired variant (`linear_actuator`).
+- `limits.{min, max, max_rate_per_s, deadband, latency_s}` finite;
+  `min < max`; `max_rate_per_s > 0`; `deadband >= 0` and
+  `deadband <= (max - min)`; `latency_s >= 0`.
+- `initial_position`, when present, finite and in `[min, max]`.
+- `command_schedule` finite numeric fields; `linear_ramp` requires
+  `start_time_s <= end_time_s`.
+- `fault` when present: `jam.at` and `hardover.to` in `[min, max]`;
+  `runaway.rate_per_s` finite; `reduced_rate.factor` in `[0, 1]`.
+- `linear_actuator.tau_s` (when present) finite and `>= 0`.
+
+The runner additionally rejects at construction time any latency
+that is not an integer multiple of the scenario `time.dt_s` (the
+fixed-step pure-delay buffer cannot represent sub-`dt` latency).
+
+#### Phase-3.4 limitations
+
+- The aero deck stays schema-1; the effector deflection is
+  observable in the Parquet but is **not** consumed by force /
+  moment evaluation. Schema-2 deck consumption arrives in Phase 3.5.
+- Faults are load-time only; run-time fault injection is deferred.
+- Only the `linear_actuator` kind ships. Nonlinear / multi-axis /
+  smart-actuator variants follow in later sub-phases.
