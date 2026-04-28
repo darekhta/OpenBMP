@@ -907,6 +907,69 @@ addressed by index in the controller's command bundle, so a 9-engine
 shutdown after engine-out is a per-engine `shutdown = true`, not a
 cluster-level rebuild.
 
+> **Phase-3.6 status note.** Phase 3.6 ships:
+>
+> - `EngineModel` trait (`apply_command(cmd)`, `step(dt)`,
+>   `limits()`, `inject_fault(fault)`, `current_state()`,
+>   `current_snapshot()`, `id()`, `validation()`); `LiquidEngine`
+>   reference impl with linear ignition / shutdown transients,
+>   constant-throttle burn, mass flow `mdot = thrust / (g0 · Isp)`,
+>   and locked-order pitch-then-yaw gimbal rotation. State machine
+>   is one-shot: `Shutdown` and `Failed` are terminal.
+> - Four canonical fault modes: `Stuck`, `HardOff`, `OverThrust`,
+>   `GimbalLocked` (mirrors Phase-3.4 effector fault taxonomy).
+>   Faults are scenario-loaded at construction; run-time injection
+>   is deferred.
+> - `EngineCommand` payload `{ throttle_unit, gimbal_pitch_rad,
+>   gimbal_yaw_rad, ignite, shutdown }`. `EventAction::EngineCommand
+>   { id, command }` is wired end-to-end: kernel records, runner
+>   drains, `EngineRack::apply_commands` routes by id.
+> - Architecture-spec'd "cluster as ForceModel + MomentModel +
+>   MassModel" is split between propulsion and vehicle crates to
+>   keep `openbmp-propulsion` L2 (no kernel dependency): the
+>   propulsion-side `EngineCluster` is a pure container of
+>   `Vec<Box<dyn EngineModel>>` + mount points; the kernel-side
+>   adapter trio (`EngineClusterForceAdapter`,
+>   `EngineClusterMassAdapter`, plus a deferred rigid-moment
+>   adapter) lives in `openbmp-vehicle::adapters` and consumes a
+>   per-step snapshot via `EngineSnapshotView` on
+>   `ForceContext` / `MomentContext` / `MassContext`.
+> - The runner-side `EngineRack` (in `openbmp-cli/src/runner/`)
+>   owns the engines and pushes a fresh `BTreeMap<EngineId,
+>   EngineSnapshot>` to the kernel before each `step()` so all four
+>   RK4 stages see the same snapshot — same pattern as Phase-3.4
+>   `EffectorRack` and Phase-3.5 `EffectorActualsView`.
+> - `MassModel` gains `mass_kg_at(MassContext)` and
+>   `mass_rate_kg_s_at(MassContext)` with default forwards to
+>   `mass_kg(t)` / `mass_rate_kg_s(t)` so legacy models are
+>   byte-identical; only `EngineClusterMassAdapter` overrides.
+>   `BoxedMassModel` forwards both new methods through to its
+>   inner box (a load-bearing fix caught by the e2e test's
+>   mass-monotonicity assertion).
+> - Single-motor and no-propulsion scenarios short-circuit every
+>   rack-related operation on `engine_rack.is_empty()`; the
+>   kernel's `engine_snapshot` field stays at the empty `BTreeMap`
+>   set in `new()`, the cluster adapters are never instantiated,
+>   and legacy scenarios produce byte-identical Parquet to pre-3.6.
+> - Rigid-body cluster mass-properties (inertia tensor evolution)
+>   are deferred to Phase 3.7's tank-driven dynamics work. Rigid
+>   scenarios with engine clusters use `ConstantMassRigid` for
+>   kernel mass-properties; the cluster's force adapter still
+>   applies thrust normally.
+> - Six-engine clusters (octaweb-style) work; the
+>   `cluster_layout` enum carries through to telemetry but has no
+>   behavioural effect in 3.6.
+> - The Phase-3.6 exit-criterion scenario ships at
+>   `scenarios/multi-engine-octaweb/four-engine-shutdown.toml`
+>   and its e2e test at
+>   `crates/openbmp-cli/tests/engine_cluster_e2e.rs`. The test
+>   asserts mass strictly decreases (proves the kernel's RK4
+>   integrator is consuming `mass_rate_kg_s_at` from the cluster
+>   adapter), z-thrust drops by ~25 % after one of four engines
+>   shuts down, and lateral x-thrust grows non-zero (proves
+>   per-engine gimbal-applied `thrust_body` from the snapshot is
+>   actually consumed by the cluster's force summation).
+
 ### Control Effectors
 
 Control effectors are **how the controller talks to the physics**: aero

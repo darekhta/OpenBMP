@@ -536,12 +536,13 @@ common scripted-command case without a separate trigger surface.
 | `emit_telemetry_marker` | `tag: string` (snake_case) | Allocates a `bool` telemetry channel `mission.marker.<tag>`; runner writes `true` on every step the event fires, `false` on every other step. Channel allocation is alphabetical by tag for declaration-order independence. |
 | `stop` | `label: string` | Halts the run with `StopReason::MissionEnded { label }`. Distinct from `EndTime` so determinism telemetry can distinguish CLI-driven stops from scenario-driven mission ends. |
 | `effector_override` | `id: string` (declared effector id), `command: f64` (finite) | One-shot command override for the named effector on the next runner step. Resolves the declared id against the runner's effector rack via FNV-1a-64 of `vehicle.assembly.effectors.<id>`. Unknown ids are rejected by `openbmp check`. The kernel records the action; the runner drains it from the per-step fired-event queue and applies it on the next rack tick before the kernel step. Override wins over any declared `command_schedule` for that rack tick only. |
+| `engine_command` | `id: string` (declared engine id), `command: { throttle_unit: f64 ∈ [0,1], gimbal_pitch_rad: f64, gimbal_yaw_rad: f64, ignite: bool, shutdown: bool }` | Per-engine command targeting a declared `[[vehicle.assembly.engines]]` by id. Resolves the declared id via FNV-1a-64 of `vehicle.assembly.engines.<id>`. Unknown ids are rejected by `openbmp check`. Kernel records; runner-side `EngineRack` drains and applies on the next rack tick before the kernel step. `ignite=true` is honoured only from `Idle`; `shutdown=true` only from `Igniting` / `Burning`. Throttle / gimbal values are clamped to engine limits at apply time. |
 
-The three reserved actions `engine_command` / `separation` /
-`deploy_recovery` are still rejected at parse time with typed
-deferral errors pointing at Phase 3.6 / 3.6 / 3.9. Phase 3.4 wires
-`effector_override`; the rest follow when their assembly children
-land.
+The two remaining reserved actions `separation` / `deploy_recovery`
+are still rejected at parse time with typed deferral errors
+pointing at Phase 3.6 / 3.9. Phase 3.4 wires `effector_override`,
+Phase 3.6 wires `engine_command`; the rest follow when their
+assembly children land.
 
 #### `once` semantics
 
@@ -630,11 +631,12 @@ pre-computed geometry, mirroring the aero-deck reference.
 #### Reserved future-phase children
 
 `[[vehicle.assembly.effectors]]` ships in Phase 3.4 — see
-[Control effectors](#control-effectors-phase-34) below. The
-remaining child blocks are reserved and **rejected at parse time**
-with a typed `UnsupportedAssemblyChild` error:
+[Control effectors](#control-effectors-phase-34) below.
+`[[vehicle.assembly.engines]]` ships in Phase 3.6 — see
+[Engine clusters](#engine-clusters-phase-36) below. The remaining
+child blocks are reserved and **rejected at parse time** with a
+typed `UnsupportedAssemblyChild` error:
 
-- `[[vehicle.assembly.engines]]` → Phase 3.6 (`EngineCluster`).
 - `[[vehicle.assembly.tanks]]` → Phase 3.7 (`Tank` + slosh).
 
 #### Determinism
@@ -937,3 +939,161 @@ The canonical schema-2 example ships at
 [`scenarios/effector-elevon-aero/single-elevon-aero-deflected.toml`](../scenarios/effector-elevon-aero/single-elevon-aero-deflected.toml)
 and the deck at
 [`data/aero/synthetic-elevon-1d.toml`](../data/aero/synthetic-elevon-1d.toml).
+
+### Engine clusters (Phase 3.6)
+
+`[[vehicle.assembly.engines]]` declares one or more `EngineModel`
+instances mounted on the assembly. Phase 3.6 ships the
+`LiquidEngine` reference impl plus the runner-side `EngineRack`
+and the kernel-side cluster adapters (force, mass). Engines
+respond to per-engine `engine_command` mission events; per-engine
+`command_schedule` (effector-style scripted commands) is **not**
+in scope for 3.6 — scripted command sequences flow through the
+`mission.events[*]` timeline.
+
+A scenario uses **either** the legacy `[propulsion.motor]` block
+(single solid motor) **or** `[[vehicle.assembly.engines]]`
+(multi-engine liquid cluster) — never both. Co-declaration is
+rejected at parse time with `ScenarioError::AmbiguousPropulsion`.
+
+The canonical example mirrors
+[`scenarios/multi-engine-octaweb/four-engine-shutdown.toml`](../scenarios/multi-engine-octaweb/four-engine-shutdown.toml):
+
+```toml
+[vehicle.assembly]
+id             = "octaweb-four-engine"
+cluster_layout = "octaweb"
+
+[[vehicle.assembly.engines]]
+id                  = "engine_a"
+kind                = { kind = "liquid_engine" }
+mount_point_body_m  = [0.0, 0.0, 0.0]
+limits              = { max_thrust_n = 5000.0, isp_s = 250.0,
+                        ignition_transient_s = 0.1,
+                        shutdown_transient_s = 0.1,
+                        max_gimbal_rad = 0.087 }
+```
+
+#### Engine kinds
+
+`kind.kind` is tagged on the inner `kind` field. Phase 3.6 ships
+one variant; later phases add hybrid / cold-gas / chamber-pressure
+models.
+
+| `kind.kind` | Required fields | Semantics |
+|---|---|---|
+| `liquid_engine` | (none) | Linear ignition transient (0 → commanded thrust over `ignition_transient_s`), constant-throttle burn, linear shutdown transient (current → 0 over `shutdown_transient_s`). Mass flow `mdot = thrust / (g0 · isp_s)` with `g0 = 9.80665`. Gimbal applied as locked-order pitch-around-body-y then yaw-around-body-x rotation of nominal body-`+z` thrust. |
+
+#### Limits vocabulary
+
+`limits` is a flat table with five required fields:
+
+| Field | Units | Constraint |
+|---|---|---|
+| `max_thrust_n` | N | finite, strictly positive |
+| `isp_s` | s | finite, strictly positive |
+| `ignition_transient_s` | s | finite, `>= 0` (`0.0` → instantaneous ignition) |
+| `shutdown_transient_s` | s | finite, `>= 0` (`0.0` → instantaneous shutdown) |
+| `max_gimbal_rad` | rad | finite, `>= 0` (`0.0` → fixed-axis engine) |
+
+#### Mount geometry
+
+`mount_point_body_m: [x, y, z]` — body-frame mount position in
+metres. Used by the rigid-body kernel's cluster moment adapter
+(Phase 3.6 ships only the force adapter; rigid moments are
+deferred to a later sub-phase). Point-mass scenarios store the
+mount points but don't use them.
+
+#### Cluster layout
+
+Optional `cluster_layout` on `[vehicle.assembly]`: one of
+`axial | ring | octaweb | custom` (default: `custom`). The tag
+informs telemetry and docs; Phase 3.6 has no behavioural use for
+it. Future sub-phases may use the layout to drive symmetry-aware
+fault scenarios or controller-side allocation tables.
+
+#### Faults
+
+`fault` is optional and load-time only in Phase 3.6: a fault
+declared in the scenario is injected at construction and persists
+for the run. Run-time fault injection is deferred to a later
+sub-phase (mirrors Phase-3.4 effector faults).
+
+| `fault.kind` | Required fields | Semantics |
+|---|---|---|
+| `stuck` | `at_throttle: f64` (in `[0, 1]`) | Throttle stuck at `at_throttle`; engine ignores command throttle but still honours ignite / shutdown lifecycle. |
+| `hard_off` | — | Engine commanded off and never restarts. Sets state to `Failed` on first step. |
+| `over_thrust` | `factor: f64` (finite, `>= 0`) | Thrust scaled by `factor`. `>= 1` → over-thrust; `< 1` → under-thrust. |
+| `gimbal_locked` | `pitch_rad: f64`, `yaw_rad: f64` (each in `±max_gimbal_rad`) | Gimbal frozen at the given angles regardless of command. |
+
+#### Lifecycle and command resolution
+
+Engine state machine: `Idle → Igniting → Burning → Shutdown`.
+`Shutdown` and `Failed` are terminal — engines do not re-ignite.
+
+Per-step command resolution: `engine_command` event firing →
+runner drains and applies → engine latches `(throttle, gimbal)`
+and processes `(ignite, shutdown)` lifecycle flags. Multiple
+events targeting the same engine in one step apply in fired
+order (last-write-wins per field).
+
+#### Determinism
+
+Engine ids are FNV-1a-64 hashes of the canonical scenario path
+`vehicle.assembly.engines.<id>`. Reordering
+`[[vehicle.assembly.engines]]` blocks does not shift any engine's
+id. The runner-side `EngineRack` iterates engines in
+scenario-declared order; the kernel-side
+`EngineClusterForceAdapter` sums per-engine thrust contributions
+in the same order with locked left-fold operand order. The
+kernel-pushed snapshot map is `BTreeMap<EngineId, EngineSnapshot>`
+(not `HashMap`) — deterministic iteration on macOS `SipHash`
+builds.
+
+Single-motor and no-propulsion scenarios short-circuit every
+rack-related operation on `engine_rack.is_empty()`; the kernel's
+`engine_snapshot` field stays at the empty `BTreeMap` set in
+`new()`, the cluster adapters are never instantiated, and legacy
+scenarios produce byte-identical Parquet to pre-3.6.
+
+#### Validation invariants
+
+Enforced at scenario-parse time:
+
+- `engines` non-empty when declared (zero-engine cluster is
+  rejected).
+- All engine ids unique within the assembly.
+- `limits.{max_thrust_n, isp_s}` finite + strictly positive.
+- `limits.{ignition_transient_s, shutdown_transient_s, max_gimbal_rad}`
+  finite + non-negative.
+- `mount_point_body_m` finite components.
+- `kind.kind` is a wired variant (`liquid_engine`).
+- `fault` when present: `stuck.at_throttle` in `[0, 1]`;
+  `over_thrust.factor` non-negative; `gimbal_locked.{pitch,yaw}_rad`
+  in `±max_gimbal_rad`.
+- Cross-validate `mission.events[*].action.id` (when action kind
+  is `engine_command`) against declared engine ids.
+- Reject scenarios that declare both `[propulsion.motor]` and
+  `[[vehicle.assembly.engines]]` (`AmbiguousPropulsion`).
+- `cluster_layout`, when present, is one of
+  `axial | ring | octaweb | custom`.
+- `engine_command.command.throttle_unit` finite and in `[0, 1]`;
+  gimbal angles finite (runtime engine clamps to its
+  `max_gimbal_rad`).
+
+#### Phase-3.6 limitations
+
+- Rigid-body cluster mass-properties (with inertia tensor
+  evolution as propellant is consumed) are deferred to Phase 3.7
+  alongside tank-driven dynamics. Rigid scenarios with engine
+  clusters use `ConstantMassRigid` for kernel mass-properties;
+  the cluster's force / moment adapters still apply thrust
+  normally.
+- Faults are load-time only.
+- Only the `liquid_engine` kind ships.
+- Per-engine `command_schedule` (effector-style declarative
+  scripts) is out of scope for 3.6; engines drive only via
+  `mission.events[*].action.engine_command`.
+
+The canonical Phase-3.6 example ships at
+[`scenarios/multi-engine-octaweb/four-engine-shutdown.toml`](../scenarios/multi-engine-octaweb/four-engine-shutdown.toml).

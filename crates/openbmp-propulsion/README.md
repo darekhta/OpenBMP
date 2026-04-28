@@ -2,22 +2,33 @@
 
 L2 propulsion crate.
 
-**Status:** Phase 2 — synthetic solid motor + public Estes hobby
-motor files (B4, C6, D12) shipped as `data/motors/*.toml`.
-Liquid / hybrid / cold-gas variants land in Phase 3 alongside
-`EngineModel` and `EngineCluster`.
+**Status:** Phase 2 / 3.6 — solid motors (synthetic + public Estes
+B4/C6/D12 in `data/motors/*.toml`) plus liquid engines and engine
+clusters (Phase 3.6). Hybrid / cold-gas / chamber-pressure engine
+variants are deferred past 3.6.
 
 ## Purpose
 
-- Crate-local `Motor` trait exposing thrust, mass, and mass-rate
-  lookups.
-- Variant: `Solid`. Liquid, hybrid, and cold-gas variants are
-  deferred to Phase 3.
+- Phase-2 `Motor` trait + `SolidMotor` impl: time-driven thrust /
+  mass / mass-rate lookups; impulse-weighted propellant depletion.
+  Used for the legacy `[propulsion.motor]` scenario block.
+- Phase-3.6 `EngineModel` trait + `LiquidEngine` reference impl:
+  per-engine throttle / gimbal / ignition lifecycle. State machine
+  is `Idle → Igniting → Burning → Shutdown`. Mass flow `mdot =
+  thrust / (g0 · Isp)`. Gimbal applied as locked-order pitch-then-yaw
+  rotation of nominal body-`+z` thrust.
+- Phase-3.6 `EngineCluster` propulsion-side container: holds
+  `Vec<Box<dyn EngineModel>>`, body-frame mount points, and a
+  layout tag (`Axial | Ring | Octaweb | Custom`). Supports
+  `apply_command(id, cmd)` and `step(dt)`.
+- Four canonical fault modes for both `Motor` and `EngineModel`:
+  load-time injection only.
 - In-house TOML thrust-curve format (RASP `.eng`-shaped) with strict
-  `serde(deny_unknown_fields)` schema-1 parser.
-- Impulse-weighted propellant mass depletion.
-- Kernel-side adapters (`MotorThrustForceAdapter`,
-  `MotorMassAdapter`) live in `openbmp-vehicle`.
+  `serde(deny_unknown_fields)` schema-1 parser for solid motors.
+- Kernel-side adapters (`MotorThrustForceAdapter`, `MotorMassAdapter`,
+  `EngineClusterForceAdapter`, `EngineClusterMassAdapter`) live in
+  `openbmp-vehicle`. The propulsion crate stays L2 — no kernel
+  dependency.
 
 ## Inputs and Outputs
 
@@ -45,14 +56,23 @@ Thrust curves are tabulated and interpolated linearly with locked operand order.
 
 ## Validation
 
-`validated-toy` for the shipped synthetic motors (`textbook`,
-`d-class`) and scenario-backed Estes C6/D12 cases; `checked` for
-the standalone B4 import. The Phase-2.6 regression suite asserts
-integrated impulse vs. declared total to 1e-12 relative,
-mass-at-burnout bit-equality with `dry_mass`, mass-rate ≤ 0
-everywhere, monotone mass decrease, thrust-at-grid-corner
+Solid motors: `validated-toy` for the shipped synthetic motors
+(`textbook`, `d-class`) and scenario-backed Estes C6/D12 cases;
+`checked` for the standalone B4 import. The Phase-2.6 regression
+suite asserts integrated impulse vs. declared total to 1e-12
+relative, mass-at-burnout bit-equality with `dry_mass`, mass-rate
+≤ 0 everywhere, monotone mass decrease, thrust-at-grid-corner
 exact-equality, thrust-outside-window zero, and bit-stable lookups
-across two evaluations for the parser-level decks it covers.
+across two evaluations.
+
+Liquid engines: `Checked` per `LiquidEngine::validation()`.
+Phase-3.6 in-crate tests cover the lifecycle state machine,
+ignition / shutdown transient linearity, throttle clamping, gimbal
+clamping + locked-order rotation, mass-flow derivation from thrust
+/ Isp, all four fault modes, bit-stable replay, and cluster
+summation. End-to-end exercise via
+`crates/openbmp-cli/tests/engine_cluster_e2e.rs` against the
+canonical 4-engine octaweb scenario.
 
 ## Data Provenance
 
