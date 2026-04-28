@@ -517,7 +517,7 @@ The tripwires also enforce three structural rules:
    and a TOML under `scenarios/` may not contain an `openbmp.aero_deck`,
    `openbmp.motor`, or `openbmp.imu_noise_budget` schema marker (those
    belong in `data/`). This enforces the layout principle described in
-   § Scope; mis-filed schemas fail closed at `cargo test` time.
+   § Scope; misplaced schemas fail closed at `cargo test` time.
 
 ### Adding a new tripwire entry
 

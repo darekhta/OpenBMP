@@ -76,7 +76,7 @@ pub struct ScenarioDocument {
     pub batch: Option<BatchConfig>,
     /// Optional declarative mission block (Phase 3.2).
     ///
-    /// When present, the runner builds an [`openbmp_sim::MissionPhaseGraph`]
+    /// When present, the runner builds an `openbmp_sim::MissionPhaseGraph`
     /// and a list of `openbmp_sim::EventBinding`s from the parsed
     /// config. When absent, the kernel runs in legacy mode with no
     /// event evaluation — Phase-1 and pre-3.2 Phase-2 scenarios stay
@@ -330,7 +330,7 @@ pub struct VehicleConfig {
     /// Optional declarative vehicle composition tree (Phase 3.3+).
     ///
     /// When present, the runner builds an
-    /// [`openbmp_vehicle::BasicAssembly`] from the declared bodies
+    /// `openbmp_vehicle::BasicAssembly` from the declared bodies
     /// and resolves it into the kernel's flat model lists. The
     /// legacy `mass_kg` and `inertia_tensor_body_kg_m2` flat fields
     /// must agree with the assembly's summed body masses / inertias
@@ -1338,7 +1338,7 @@ pub enum EventActionConfig {
         /// Marker channel tag.
         tag: String,
     },
-    /// Halt the kernel with a [`openbmp_sim::StopReason::MissionEnded`].
+    /// Halt the kernel with an `openbmp_sim::StopReason::MissionEnded`.
     Stop {
         /// Human-readable label for the stop reason.
         label: String,

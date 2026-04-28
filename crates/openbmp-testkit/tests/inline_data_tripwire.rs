@@ -1067,7 +1067,7 @@ fn data_and_scenarios_carry_correct_schema_markers() {
         let mut report = String::from(
             "Layout principle: `data/<thing>/` is for physical-constant reference data \
              (aero decks, motor curves, atmosphere / gravity tables, sensor noise budgets); \
-             `scenarios/<category>/` is for runnable scenario specifications. Mis-filed \
+             `scenarios/<category>/` is for runnable scenario specifications. Misplaced \
              schema markers fail closed.\n\
              See `docs/data-provenance.md § `data/` vs `scenarios/` — the layout principle`.\n\n\
              Violations:\n",

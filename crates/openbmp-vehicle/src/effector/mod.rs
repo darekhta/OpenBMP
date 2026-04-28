@@ -43,8 +43,9 @@ use thiserror::Error;
 ///
 /// Validated finite at construction. Limit types are scalars with
 /// the `_per_s` suffix carrying the SI rate convention; the
-/// `latency` is a [`Duration`] so it composes with [`SimTime`] /
-/// [`StepIndex`] arithmetic without unit drift.
+/// `latency` is a [`Duration`] so it composes with
+/// [`openbmp_core::SimTime`] / [`openbmp_core::StepIndex`]
+/// arithmetic without unit drift.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EffectorLimits {
     /// Minimum permitted deflection (rad, m, or whatever the
