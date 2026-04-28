@@ -265,6 +265,39 @@ impl VehicleId {
     }
 }
 
+/// Phase-3.8 wind-axis tag for the Dryden gust filter.
+///
+/// The Dryden rational-spectrum shaping filter uses three independent
+/// per-axis state variables — longitudinal `u`, lateral `v`, and
+/// vertical `w` — each driven by its own white-noise stream. Carrying
+/// the axis as a typed enum (rather than a raw `u32`) makes
+/// axis-mismatch a compile error at every `for_wind_component` call
+/// site and keeps the RNG-seed shape self-documenting.
+///
+/// Used by [`crate::DeterministicRng::for_wind_component`] in the
+/// trailing 4 bytes (after the `b"WIND"` domain tag) of the seed
+/// material.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[repr(u32)]
+pub enum WindAxis {
+    /// Longitudinal axis (along the relative-airspeed vector).
+    U = 0,
+    /// Lateral axis (perpendicular to the relative-airspeed vector,
+    /// in the local horizontal plane).
+    V = 1,
+    /// Vertical axis (perpendicular to both `U` and `V`).
+    W = 2,
+}
+
+impl WindAxis {
+    /// Returns the underlying `u32` value used in the RNG seed
+    /// material. Matches the discriminant numbering above.
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self as u32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,6 +375,20 @@ mod tests {
         // Print for any future regression that needs a fresh check —
         // expected output if the hashes ever drift would fail this
         // test long before any sensor file regressed.
+    }
+
+    #[test]
+    fn wind_axis_values_match_discriminants() {
+        assert_eq!(WindAxis::U.value(), 0);
+        assert_eq!(WindAxis::V.value(), 1);
+        assert_eq!(WindAxis::W.value(), 2);
+    }
+
+    #[test]
+    fn wind_axis_variants_are_distinct() {
+        assert_ne!(WindAxis::U, WindAxis::V);
+        assert_ne!(WindAxis::U, WindAxis::W);
+        assert_ne!(WindAxis::V, WindAxis::W);
     }
 
     #[test]

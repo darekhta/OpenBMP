@@ -57,6 +57,7 @@ pub use frames::{
 };
 pub use ids::{
     BodyId, ChannelId, EffectorId, EngineId, ModelId, ScenarioId, SensorId, TankId, VehicleId,
+    WindAxis,
 };
 pub use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 pub use rng::DeterministicRng;

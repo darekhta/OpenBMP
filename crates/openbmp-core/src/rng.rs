@@ -11,7 +11,7 @@ use rand::rand_core::Infallible;
 use rand::{Rng as _, SeedableRng, TryRng};
 use rand_chacha::ChaCha8Rng;
 
-use crate::ids::{ChannelId, EffectorId, SensorId};
+use crate::ids::{ChannelId, EffectorId, SensorId, WindAxis};
 use crate::time::StepIndex;
 
 /// Domain tag bytes placed in the trailing 4 bytes of the RNG seed
@@ -26,6 +26,12 @@ const SENSOR_COMPONENT_DOMAIN_TAG: [u8; 4] = *b"SENS";
 /// sensor RNG streams never collide even if their integer payloads
 /// happen to overlap.
 const EFFECTOR_COMPONENT_DOMAIN_TAG: [u8; 4] = *b"EFFC";
+
+/// Domain tag for [`DeterministicRng::for_wind_component`].
+/// Distinct from the other domain tags so the Dryden gust filter's
+/// per-axis noise streams never collide with channel / sensor /
+/// effector streams even if integer payloads happen to overlap.
+const WIND_COMPONENT_DOMAIN_TAG: [u8; 4] = *b"WIND";
 
 /// Deterministic pseudo-random number generator.
 ///
@@ -133,6 +139,42 @@ impl DeterministicRng {
         bytes[16..24].copy_from_slice(&effector_id.value().to_le_bytes());
         bytes[24..28].copy_from_slice(&component_id.to_le_bytes());
         bytes[28..32].copy_from_slice(&EFFECTOR_COMPONENT_DOMAIN_TAG);
+        Self::from_raw_seed(bytes)
+    }
+
+    /// Construct a per-wind-axis deterministic stream.
+    ///
+    /// Phase 3.8 adds this constructor for the Dryden rational-spectrum
+    /// shaping filter. The seed is derived from
+    /// `(scenario_seed, step_index, axis)` plus the
+    /// `WIND_COMPONENT_DOMAIN_TAG` in the trailing 4 bytes.
+    ///
+    /// Seed layout (locked, mirrors [`Self::for_effector_component`]):
+    ///
+    /// | bytes  | content                                |
+    /// |--------|----------------------------------------|
+    /// | 0..8   | `scenario_seed.to_le_bytes()`          |
+    /// | 8..16  | `step.value().to_le_bytes()`           |
+    /// | 16..24 | reserved zero (future `WindModelId`)   |
+    /// | 24..28 | `axis.value().to_le_bytes()` (u32)     |
+    /// | 28..32 | `b"WIND"`                              |
+    ///
+    /// Bytes [16..24] are reserved zero so a future Phase-3.X
+    /// `WindModelId` can be introduced (multiple wind sources
+    /// composing) without re-pinning the stream. The domain tag
+    /// guarantees no collision with [`Self::for_channel`] (zero in
+    /// [24..32]), [`Self::for_sensor_component`] (`b"SENS"` in
+    /// [28..32]), or [`Self::for_effector_component`] (`b"EFFC"` in
+    /// [28..32]).
+    #[must_use]
+    pub fn for_wind_component(scenario_seed: u64, step: StepIndex, axis: WindAxis) -> Self {
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(&scenario_seed.to_le_bytes());
+        bytes[8..16].copy_from_slice(&step.value().to_le_bytes());
+        // bytes[16..24] left zero — reserved for a future
+        // `WindModelId` if multi-source wind composition lands.
+        bytes[24..28].copy_from_slice(&axis.value().to_le_bytes());
+        bytes[28..32].copy_from_slice(&WIND_COMPONENT_DOMAIN_TAG);
         Self::from_raw_seed(bytes)
     }
 
@@ -438,6 +480,117 @@ mod tests {
         0x72, 0x33, 0xae, 0x9e, 0x83, 0xfd, 0xb1, 0x2b, 0x86, 0xee, 0xf2, 0x75, 0xd0, 0x51, 0xbf,
         0x54, 0x63, 0xcb, 0x7b, 0xbd, 0x57, 0x4c, 0x51, 0x42, 0xa4, 0x96, 0x3c, 0x25, 0x94, 0xac,
         0x99, 0xee,
+    ];
+
+    // -----------------------------------------------------------------
+    // for_wind_component (Phase 3.8.A)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn for_wind_component_is_deterministic() {
+        let scenario = 0xdead_beef;
+        let step = StepIndex::new(123);
+        let mut a = DeterministicRng::for_wind_component(scenario, step, WindAxis::U);
+        let mut b = DeterministicRng::for_wind_component(scenario, step, WindAxis::U);
+        for _ in 0..1024 {
+            assert_eq!(a.next_u64(), b.next_u64());
+        }
+    }
+
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn for_wind_component_distinct_axes_diverge() {
+        let scenario = 1u64;
+        let step = StepIndex::new(0);
+        let mut rng_u = DeterministicRng::for_wind_component(scenario, step, WindAxis::U);
+        let mut rng_v = DeterministicRng::for_wind_component(scenario, step, WindAxis::V);
+        let mut rng_w = DeterministicRng::for_wind_component(scenario, step, WindAxis::W);
+        let any_uv = (0..8).any(|_| rng_u.next_u64() != rng_v.next_u64());
+        let any_uw = (0..8).any(|_| rng_u.next_u64() != rng_w.next_u64());
+        let any_vw = (0..8).any(|_| rng_v.next_u64() != rng_w.next_u64());
+        assert!(any_uv, "U and V axes must diverge");
+        assert!(any_uw, "U and W axes must diverge");
+        assert!(any_vw, "V and W axes must diverge");
+    }
+
+    #[test]
+    fn for_wind_component_distinct_steps_diverge() {
+        let scenario = 1u64;
+        let mut a =
+            DeterministicRng::for_wind_component(scenario, StepIndex::new(0), WindAxis::U);
+        let mut b =
+            DeterministicRng::for_wind_component(scenario, StepIndex::new(1), WindAxis::U);
+        let any_diff = (0..8).any(|_| a.next_u64() != b.next_u64());
+        assert!(any_diff, "distinct steps must produce distinct streams");
+    }
+
+    #[test]
+    fn for_wind_component_never_collides_with_for_channel() {
+        // `b"WIND"` in bytes [28..32] vs `for_channel`'s zero-filled
+        // [24..32]. Distinct payloads guarantee no stream sharing
+        // even when the integer-position fields happen to overlap.
+        let scenario = 0x1234_5678u64;
+        let step = StepIndex::new(99);
+        let payload = 0xCAFEu64;
+        let mut chan_rng = DeterministicRng::for_channel(scenario, step, ChannelId::new(payload));
+        let mut wind_rng = DeterministicRng::for_wind_component(scenario, step, WindAxis::U);
+        let any_diff = (0..8).any(|_| chan_rng.next_u64() != wind_rng.next_u64());
+        assert!(
+            any_diff,
+            "for_channel and for_wind_component must produce distinct streams",
+        );
+    }
+
+    #[test]
+    fn for_wind_component_never_collides_with_for_sensor_component() {
+        let scenario = 0x9999_aaaau64;
+        let step = StepIndex::new(7);
+        let payload = 0xBABEu64;
+        let mut sensor_rng =
+            DeterministicRng::for_sensor_component(scenario, step, SensorId::new(payload), 0);
+        let mut wind_rng = DeterministicRng::for_wind_component(scenario, step, WindAxis::U);
+        let any_diff = (0..8).any(|_| sensor_rng.next_u64() != wind_rng.next_u64());
+        assert!(
+            any_diff,
+            "for_sensor_component and for_wind_component must produce distinct streams",
+        );
+    }
+
+    #[test]
+    fn for_wind_component_never_collides_with_for_effector_component() {
+        let scenario = 0x1111_2222u64;
+        let step = StepIndex::new(13);
+        let payload = 0xFEEDu64;
+        let mut eff_rng =
+            DeterministicRng::for_effector_component(scenario, step, EffectorId::new(payload), 0);
+        let mut wind_rng = DeterministicRng::for_wind_component(scenario, step, WindAxis::U);
+        let any_diff = (0..8).any(|_| eff_rng.next_u64() != wind_rng.next_u64());
+        assert!(
+            any_diff,
+            "for_effector_component and for_wind_component must produce distinct streams",
+        );
+    }
+
+    #[test]
+    fn for_wind_component_reference_stream_is_locked() {
+        let mut rng = DeterministicRng::for_wind_component(
+            0x0123_4567_89ab_cdef,
+            StepIndex::new(0x1020_3040_5060_7080),
+            WindAxis::U,
+        );
+        let mut actual = [0u8; 32];
+        rng.fill_bytes(&mut actual);
+        let expected = PINNED_WIND_REFERENCE_STREAM_U;
+        assert_eq!(actual, expected);
+    }
+
+    /// Pinned reference stream for `for_wind_component_reference_stream_is_locked`.
+    /// Values captured at Phase-3.8.A; drift fails the locked test before
+    /// it can perturb downstream Dryden gust filter telemetry.
+    const PINNED_WIND_REFERENCE_STREAM_U: [u8; 32] = [
+        0x7c, 0xcd, 0x0e, 0xe2, 0x1e, 0x12, 0xfe, 0x5d, 0x3b, 0xec, 0x18, 0x5f, 0x05, 0x30, 0xb9,
+        0xbd, 0xc2, 0x1d, 0x36, 0x02, 0xdd, 0xd1, 0x9d, 0x15, 0x4b, 0x3d, 0xb5, 0x84, 0xea, 0x7f,
+        0xa6, 0x79,
     ];
 
     proptest! {
