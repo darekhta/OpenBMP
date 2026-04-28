@@ -72,6 +72,17 @@ pub enum CliError {
     /// An aerodynamic-deck loader or sample evaluation failed.
     #[error("aerodynamic deck error")]
     Aero(#[from] AeroError),
+    /// A schema-2 aero deck axis could not be matched against a
+    /// scenario effector at runner build time (Phase 3.5.C).
+    #[error("aero/effector mismatch at {field}: {reason}")]
+    AeroEffectorMismatch {
+        /// Scenario or deck field path where the mismatch was
+        /// detected.
+        field: String,
+        /// Human-readable description of the mismatch (missing
+        /// effector, unit suffix mismatch, etc.).
+        reason: String,
+    },
     /// A motor-file loader or thrust-curve evaluation failed.
     #[error("motor error")]
     Motor(#[from] MotorError),
@@ -95,6 +106,7 @@ impl CliError {
             | Self::Effector { .. }
             | Self::UnsupportedScenario { .. }
             | Self::Aero(_)
+            | Self::AeroEffectorMismatch { .. }
             | Self::Motor(_)
             | Self::Env(_) => 2,
             Self::Io { .. } => 3,

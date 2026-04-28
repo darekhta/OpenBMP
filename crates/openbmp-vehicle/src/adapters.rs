@@ -392,6 +392,7 @@ impl<Atm: AtmosphereModel> ForceModel<PointMassState> for AxialDragForceAdapter<
             ctx.state.velocity.vector,
             ctx.state.position.vector.z,
             ctx.time,
+            ctx.effector_actuals,
         )
     }
 
@@ -418,6 +419,7 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for AxialDragForceAdapter<
             ctx.state.velocity.vector,
             ctx.state.position.vector.z,
             ctx.time,
+            ctx.effector_actuals,
         )
     }
 
@@ -430,6 +432,13 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for AxialDragForceAdapter<
 /// and rigid-body `AxialDragForceAdapter` impls. Operand order is
 /// locked here so a future refactor can't accidentally diverge the
 /// two paths.
+///
+/// Phase-3.5: when the loaded deck is schema-2, the helper builds a
+/// `BTreeMap<&str, f64>` keyed by deck-axis name from the kernel's
+/// `EffectorActualsView`, then calls `deck.lookup` with the map.
+/// Schema-1 decks have `effector_axis_names() == []`, the loop is
+/// zero-iteration, and the lookup ignores the empty map — the
+/// schema-1 path is byte-identical to pre-3.5.
 fn compute_axial_drag<Atm: AtmosphereModel>(
     deck: &AeroDeck,
     atmosphere: &Atm,
@@ -437,6 +446,7 @@ fn compute_axial_drag<Atm: AtmosphereModel>(
     velocity_eci: Vector3<f64>,
     position_eci_z: f64,
     time: SimTime,
+    effector_actuals: openbmp_sim::EffectorActualsView<'_>,
 ) -> Result<Vector3<f64>, ModelEvalError> {
     let v = velocity_eci;
     let speed_sq = v.x * v.x + v.y * v.y + v.z * v.z;
@@ -470,15 +480,28 @@ fn compute_axial_drag<Atm: AtmosphereModel>(
     }
 
     let mach = speed / speed_of_sound;
-    // Phase-3.5: Schema-1 decks ignore the deflections map. Schema-2
-    // adapter wiring lands in 3.5.C; for now the `AxialDragForceAdapter`
-    // continues to query at (mach, 0, 0) with no effector axes.
-    let deflections = std::collections::BTreeMap::<&str, f64>::new();
+    // Phase-3.5: build the deflections map keyed by deck-axis name
+    // from the kernel's effector-actuals view. For schema-1 decks
+    // `deck.effector_axis_names()` is empty, the loop is
+    // zero-iteration, and `deflections` stays empty. For schema-2
+    // decks, every declared effector axis must have a value (the
+    // runner's pre-step `assert_axes_match_effectors` check at
+    // construction time guarantees the rack populates each one);
+    // a missing key here would surface as `AeroError::InvalidParameter`
+    // from the deck.
+    let mut deflections: std::collections::BTreeMap<&str, f64> = std::collections::BTreeMap::new();
+    for axis_name in deck.effector_axis_names() {
+        if let Some(value) = effector_actuals.get(axis_name) {
+            deflections.insert(axis_name.as_str(), value);
+        }
+    }
     let coefficients =
         deck.lookup(mach, 0.0, 0.0, &deflections)
             .map_err(|_| ModelEvalError::OutOfEnvelope {
                 model: model_id,
-                reason: Cow::Borrowed("aero deck out of envelope at (mach, 0, 0)"),
+                reason: Cow::Borrowed(
+                    "aero deck out of envelope at (mach, alpha, beta, deflections)",
+                ),
             })?;
 
     // Locked operand order: q = 0.5 · ρ · |v|².
@@ -633,6 +656,7 @@ mod tests {
             environment: env,
             mass_kg,
             time: SimTime::from_seconds(time_s),
+            effector_actuals: openbmp_sim::EffectorActualsView::empty(),
         }
     }
 
@@ -828,6 +852,7 @@ mod tests {
             environment: env,
             mass_kg,
             time: SimTime::from_seconds(time_s),
+            effector_actuals: openbmp_sim::EffectorActualsView::empty(),
         }
     }
 

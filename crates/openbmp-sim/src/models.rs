@@ -19,6 +19,8 @@
 //! No model in this module accesses wall-clock time, system RNG,
 //! network, or the file system.
 
+use std::collections::BTreeMap;
+
 use nalgebra::{Matrix3, Vector3};
 use openbmp_core::{Eci, Position3, SimTime, ValidationStatus};
 use openbmp_state::{MassProperties, PointMassState};
@@ -27,6 +29,76 @@ use uom::si::mass::kilogram;
 
 use crate::error::ModelEvalError;
 use crate::integrator::SimState;
+
+// ---------------------------------------------------------------------
+// EffectorActualsView (Phase 3.5.C)
+// ---------------------------------------------------------------------
+
+/// Read-only view of the kernel's per-step effector-actuals snapshot.
+///
+/// Phase 3.5 wires the runner-side `EffectorRack` into the deck
+/// lookup: before each `kernel.step()`, the runner pushes the rack's
+/// `EffectorState.actual` values into a kernel-owned
+/// `BTreeMap<String, f64>` keyed by deck-axis name. The kernel's
+/// derive closure then exposes that snapshot to every
+/// [`ForceModel::force_n_eci`] / [`MomentModel::moment_n_m_body`]
+/// call inside the RK4 stages via this view.
+///
+/// Legacy / Schema-1 scenarios use [`EffectorActualsView::empty`],
+/// which holds no map at all — every `get` returns `None`. Schema-1
+/// decks ignore the view entirely, so legacy code paths are
+/// byte-identical to pre-3.5.
+///
+/// `BTreeMap` (not `HashMap`) defeats macOS `SipHash` randomisation
+/// and matches the rest of the codebase's deterministic-collection
+/// convention.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct EffectorActualsView<'a> {
+    inner: Option<&'a BTreeMap<String, f64>>,
+}
+
+impl<'a> EffectorActualsView<'a> {
+    /// Wrap a borrowed snapshot map.
+    #[must_use]
+    pub const fn new(map: &'a BTreeMap<String, f64>) -> Self {
+        Self { inner: Some(map) }
+    }
+
+    /// Construct an empty view. Used by every legacy caller and by
+    /// kernel/model tests that don't exercise the schema-2 path.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { inner: None }
+    }
+
+    /// Look up a deck-axis name. Returns `None` for missing keys and
+    /// for the empty view.
+    #[must_use]
+    pub fn get(&self, deck_axis_name: &str) -> Option<f64> {
+        self.inner.and_then(|m| m.get(deck_axis_name).copied())
+    }
+
+    /// `true` if the view holds no entries (or is the empty
+    /// constructor).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_none_or(BTreeMap::is_empty)
+    }
+
+    /// Number of entries in the view (`0` for the empty constructor).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.map_or(0, BTreeMap::len)
+    }
+
+    /// Iterate `(deck_axis_name, actual)` pairs. Empty for the empty
+    /// view. Iteration order is `BTreeMap`-deterministic.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, f64)> + '_ {
+        self.inner
+            .into_iter()
+            .flat_map(|m| m.iter().map(|(k, v)| (k.as_str(), *v)))
+    }
+}
 
 // ---------------------------------------------------------------------
 // Environment
@@ -104,6 +176,13 @@ pub struct ForceContext<'a, S: SimState> {
     /// Sub-step time. May be the kernel's published time
     /// (start-of-step) or one of the RK4 intermediate times.
     pub time: SimTime,
+    /// Phase-3.5: read-only view of the kernel's effector-actuals
+    /// snapshot, keyed by deck-axis name. Empty for legacy /
+    /// Schema-1 scenarios; populated by the runner before each
+    /// `kernel.step()` for Schema-2 scenarios. All four RK4 stages
+    /// see the same snapshot — matches the architecture's "effectors
+    /// step at the kernel base tick" cadence.
+    pub effector_actuals: EffectorActualsView<'a>,
 }
 
 /// Trait implemented by force-providing models.
@@ -205,6 +284,11 @@ pub struct MomentContext<'a, S: SimState> {
     pub environment: &'a EnvironmentSample,
     /// Sub-step time.
     pub time: SimTime,
+    /// Phase-3.5: read-only effector-actuals view (same shape as
+    /// `ForceContext.effector_actuals`). Schema-2 moment models
+    /// (Phase 3.6+) consume the deflection axes that perturb `CM`
+    /// in the same way schema-2 force models do.
+    pub effector_actuals: EffectorActualsView<'a>,
 }
 
 /// Trait implemented by moment-providing models.
@@ -540,6 +624,7 @@ mod tests {
                 environment: &env,
                 mass_kg: state.mass.get::<kilogram>(),
                 time: SimTime::ZERO,
+                effector_actuals: EffectorActualsView::empty(),
             })
             .expect("force eval must succeed");
         // mass=2.5, g=9.80665 → force_z = -2.5 * 9.80665 = -24.516625
@@ -558,6 +643,7 @@ mod tests {
                 environment: &env,
                 mass_kg: state.mass.get::<kilogram>(),
                 time: SimTime::ZERO,
+                effector_actuals: EffectorActualsView::empty(),
             })
             .expect("zero force eval must succeed");
         assert_abs_diff_eq!(f.norm(), 0.0);

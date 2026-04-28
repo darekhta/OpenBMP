@@ -32,7 +32,8 @@ use crate::derivative::PointMassDerivative;
 use crate::error::{IntegratorError, SimulationError, StopReason};
 use crate::integrator::{Integrator, SimState};
 use crate::models::{
-    EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext, ForceModel, MassModel,
+    EffectorActualsView, EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext,
+    ForceModel, MassModel,
 };
 use crate::stop::StopCondition;
 
@@ -125,6 +126,14 @@ where
     /// Previous-step `EventScalars`, fed into the trigger evaluator
     /// for crossing detection. `None` on step 0.
     previous_event_scalars: Option<crate::events::EventScalars>,
+    /// Phase-3.5: kernel-owned snapshot of effector-actuals values
+    /// keyed by deck-axis name. The runner refreshes this map via
+    /// [`Self::set_effector_actuals`] before each `step()` call so
+    /// every RK4 stage sees the same snapshot. Empty `BTreeMap` for
+    /// legacy / Schema-1 scenarios — schema-1 decks ignore the view
+    /// the closure passes through, so legacy code paths produce
+    /// byte-identical Parquet to pre-3.5.
+    effector_actuals: std::collections::BTreeMap<String, f64>,
 }
 
 /// Phase-1 type alias for the point-mass kernel shape used by the
@@ -183,6 +192,7 @@ where
             pending_events: Vec::new(),
             fired_once_events: std::collections::BTreeSet::new(),
             previous_event_scalars: None,
+            effector_actuals: std::collections::BTreeMap::new(),
         })
     }
 
@@ -244,6 +254,7 @@ where
         let force_model = &self.force_model;
         let mass_model = &self.mass_model;
         let environment = &self.environment;
+        let effector_actuals = &self.effector_actuals;
 
         let derive = |s: &PointMassState,
                       t: SimTime|
@@ -258,6 +269,7 @@ where
                 environment: &env,
                 mass_kg,
                 time: t,
+                effector_actuals: EffectorActualsView::new(effector_actuals),
             })?;
             let mass_rate_kg_s = mass_model.mass_rate_kg_s(t)?;
             // Locked order: (force / mass) gives acceleration. We
@@ -487,6 +499,29 @@ where
     /// after each `step()` to fan events out to telemetry markers.
     pub fn drain_events(&mut self) -> Vec<crate::events::FiredEvent> {
         std::mem::take(&mut self.pending_events)
+    }
+
+    /// Replace the effector-actuals snapshot consumed by per-step
+    /// force / moment evaluation. Phase-3.5 contract: the runner
+    /// calls this **before** every `step()` invocation, with a map
+    /// keyed by deck-axis name and valued by the rack's
+    /// `EffectorState.actual` for the matching effector. The
+    /// snapshot is held for the entire `step()` call, so all four
+    /// RK4 stages see the same value.
+    ///
+    /// Legacy / Schema-1 scenarios skip the call entirely; the
+    /// internal map starts empty and stays empty.
+    pub fn set_effector_actuals(&mut self, snapshot: std::collections::BTreeMap<String, f64>) {
+        self.effector_actuals = snapshot;
+    }
+
+    /// Read-only access to the current effector-actuals snapshot.
+    /// Mainly useful for tests; production callers consume the
+    /// snapshot via [`crate::models::EffectorActualsView`] inside
+    /// `ForceContext` / `MomentContext`.
+    #[must_use]
+    pub fn effector_actuals(&self) -> &std::collections::BTreeMap<String, f64> {
+        &self.effector_actuals
     }
 
     /// Evaluate every declared event binding against a post-step
@@ -721,6 +756,7 @@ where
             pending_events: Vec::new(),
             fired_once_events: std::collections::BTreeSet::new(),
             previous_event_scalars: None,
+            effector_actuals: std::collections::BTreeMap::new(),
         })
     }
 
@@ -757,6 +793,7 @@ where
         let moment_model = &self.mass_model.moment_model;
         let mass_model = &self.mass_model.mass_model;
         let environment = &self.environment;
+        let effector_actuals = &self.effector_actuals;
 
         let derive = |s: &openbmp_state::RigidBodyState,
                       t: SimTime|
@@ -774,11 +811,13 @@ where
                 environment: &env,
                 mass_kg,
                 time: t,
+                effector_actuals: EffectorActualsView::new(effector_actuals),
             })?;
             let moment_n_m_body = moment_model.moment_n_m_body(crate::models::MomentContext {
                 state: s,
                 environment: &env,
                 time: t,
+                effector_actuals: EffectorActualsView::new(effector_actuals),
             })?;
             let rate = mass_model.mass_properties_rate(t)?;
 

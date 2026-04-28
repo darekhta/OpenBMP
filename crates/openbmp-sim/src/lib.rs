@@ -60,9 +60,9 @@ pub use events::{
 pub use integrator::{Integrator, IntegratorDeterminism, Rk4FixedStep, SimState};
 pub use kernel::{Phase1Kernel, RigidBodyKernel, RigidModels, SimulationConfig, SimulationKernel};
 pub use models::{
-    ConstantGravityForce, ConstantMass, ConstantMassRigid, EnvironmentModel, EnvironmentQuery,
-    EnvironmentSample, ForceContext, ForceModel, LinearBurnMass, LinearBurnMassRigid, MassModel,
-    MassPropertiesRate, MomentContext, MomentModel, NullEnvironment, RigidMassModel, ZeroForce,
-    ZeroMoment,
+    ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EnvironmentModel,
+    EnvironmentQuery, EnvironmentSample, ForceContext, ForceModel, LinearBurnMass,
+    LinearBurnMassRigid, MassModel, MassPropertiesRate, MomentContext, MomentModel,
+    NullEnvironment, RigidMassModel, ZeroForce, ZeroMoment,
 };
 pub use stop::{AlwaysContinue, EndTime, MaxSteps, StopCondition};

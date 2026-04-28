@@ -147,9 +147,25 @@ pub fn run(
     let metadata = build_schema_metadata(resolved_files);
     let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
+    // Phase-3.5.C: pair schema-2 deck axes with scenario effectors.
+    // Schema-1 decks and decks without effector axes produce empty
+    // bindings; the per-step snapshot push then short-circuits and
+    // the kernel's effector-actuals map stays empty (byte-stable).
+    let deck_bindings = crate::runner::aero_effector_match::assert_axes_match_effectors(
+        loaded_models.aero_deck.as_ref(),
+        document,
+    )?;
+
     // Step 0 has no fired events. The effector snapshot at step 0 is
     // each effector's load-time at-rest state (initial position).
     let initial_snapshot = effector_rack.snapshot();
+    if !deck_bindings.is_empty() {
+        let snapshot_map = crate::runner::aero_effector_match::build_snapshot_map(
+            &deck_bindings,
+            &initial_snapshot,
+        );
+        kernel.set_effector_actuals(snapshot_map);
+    }
     record_step(
         &mut table,
         &kernel,
@@ -164,6 +180,17 @@ pub fn run(
         effector_rack.apply_overrides(&pending_effector_events)?;
         if !effector_rack.is_empty() {
             effector_rack.step(kernel.current_time())?;
+        }
+        // Phase-3.5.C: push the rack's actuals snapshot to the kernel
+        // BEFORE `step()` so all four RK4 stages see the same view.
+        // Empty bindings → zero allocation, zero state change.
+        if !deck_bindings.is_empty() {
+            let rack_snapshot = effector_rack.snapshot();
+            let snapshot_map = crate::runner::aero_effector_match::build_snapshot_map(
+                &deck_bindings,
+                &rack_snapshot,
+            );
+            kernel.set_effector_actuals(snapshot_map);
         }
         kernel.step()?;
         let fired = kernel.drain_events();
@@ -737,12 +764,20 @@ where
     // models the kernel uses; both are stateless and evaluate
     // identically. The breakdown is therefore the per-model
     // contribution to the kernel's total at the step boundary.
+    //
+    // Phase-3.5.C: the breakdown's `effector_actuals` view mirrors
+    // the kernel's snapshot via `kernel.effector_actuals()`. For
+    // schema-1 scenarios this is the empty map and the breakdown is
+    // byte-identical to pre-3.5; for schema-2 scenarios the
+    // breakdown sees the same deflections the kernel just consumed.
     let env_sample = kernel.current_environment_sample()?;
+    let kernel_actuals = kernel.effector_actuals();
     let ctx = ForceContext {
         state,
         environment: &env_sample,
         mass_kg: state.mass.get::<kilogram>(),
         time: state.time,
+        effector_actuals: openbmp_sim::EffectorActualsView::new(kernel_actuals),
     };
     let breakdown = breakdown_vehicle
         .evaluate_force_breakdown(ctx)

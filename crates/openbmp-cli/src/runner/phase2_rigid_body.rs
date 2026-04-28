@@ -129,7 +129,20 @@ pub fn run(
     let metadata = build_schema_metadata(resolved_files);
     let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
+    // Phase-3.5.C: see phase2_point_mass.rs sibling for the rationale.
+    let deck_bindings = crate::runner::aero_effector_match::assert_axes_match_effectors(
+        loaded.aero_deck.as_ref(),
+        document,
+    )?;
+
     let initial_snapshot = effector_rack.snapshot();
+    if !deck_bindings.is_empty() {
+        let snapshot_map = crate::runner::aero_effector_match::build_snapshot_map(
+            &deck_bindings,
+            &initial_snapshot,
+        );
+        kernel.set_effector_actuals(snapshot_map);
+    }
     record_step(
         &mut table,
         &kernel,
@@ -144,6 +157,14 @@ pub fn run(
         effector_rack.apply_overrides(&pending_effector_events)?;
         if !effector_rack.is_empty() {
             effector_rack.step(kernel.current_time())?;
+        }
+        if !deck_bindings.is_empty() {
+            let rack_snapshot = effector_rack.snapshot();
+            let snapshot_map = crate::runner::aero_effector_match::build_snapshot_map(
+                &deck_bindings,
+                &rack_snapshot,
+            );
+            kernel.set_effector_actuals(snapshot_map);
         }
         kernel.step()?;
         let fired = kernel.drain_events();
@@ -849,12 +870,16 @@ where
         }
     }
 
+    // Phase-3.5.C: see phase2_point_mass.rs sibling for the
+    // breakdown / kernel snapshot symmetry rationale.
     let env_sample = EnvironmentSample::default();
+    let kernel_actuals = kernel.effector_actuals();
     let ctx = ForceContext {
         state,
         environment: &env_sample,
         mass_kg: state.mass_props.mass_kg(),
         time: state.time,
+        effector_actuals: openbmp_sim::EffectorActualsView::new(kernel_actuals),
     };
     let breakdown = breakdown_vehicle
         .evaluate_force_breakdown(ctx)

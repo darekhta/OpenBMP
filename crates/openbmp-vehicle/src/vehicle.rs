@@ -491,6 +491,7 @@ mod tests {
             environment: env,
             mass_kg: 1.0,
             time: SimTime::ZERO,
+            effector_actuals: openbmp_sim::EffectorActualsView::empty(),
         }
     }
 
@@ -695,6 +696,7 @@ mod tests {
                 state: &state,
                 environment: &env,
                 time: SimTime::ZERO,
+                effector_actuals: openbmp_sim::EffectorActualsView::empty(),
             })
             .unwrap();
         assert_eq!(m, Vector3::zeros());

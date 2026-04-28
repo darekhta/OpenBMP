@@ -31,6 +31,7 @@
 //! malformed pin, missing file, or mismatch fails closed with a
 //! [`CliError::Scenario`] (exit code 2).
 
+pub mod aero_effector_match;
 pub mod assembly;
 pub mod effectors;
 pub mod mission;
