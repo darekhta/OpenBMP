@@ -326,13 +326,12 @@ impl AeroDeck {
         )?);
         for axis_index in 3..n {
             let name = self.axis_order[axis_index].as_str();
-            let value =
-                deflections
-                    .get(name)
-                    .copied()
-                    .ok_or(AeroError::InvalidParameter {
-                        reason: "deck lookup missing effector deflection",
-                    })?;
+            let value = deflections
+                .get(name)
+                .copied()
+                .ok_or(AeroError::InvalidParameter {
+                    reason: "deck lookup missing effector deflection",
+                })?;
             indices.push(bracket(
                 &self.axes[axis_index],
                 value,

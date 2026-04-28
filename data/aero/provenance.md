@@ -283,3 +283,72 @@ safety_review:
     reduction is a documented Chapter-6 benchmark form, not a
     fielded-vehicle deck.
 ```
+
+## `data/aero/synthetic-elevon-1d.toml`
+
+```yaml
+dataset_id:       openbmp.aero.synthetic_elevon_1d.v1
+files:
+  - data/aero/synthetic-elevon-1d.toml
+source_class:     synthetic-openbmp
+source_title:     >-
+  Synthetic OpenBMP-authored Schema-2 aerodynamic deck for the
+  Phase 3.5.B exit-criterion. Single elevon axis (`delta_e_deg`)
+  added to a Phase-2.5-style finned-cylinder deck so a non-zero
+  control-surface deflection perturbs the normal-force coefficient.
+  Used by the Phase 3.5.D single-elevon-aero scenario to demonstrate
+  that an effector deflection actually changes the body-frame aero
+  force at runtime (vs. Phase 3.4's gravity-only telemetry-only
+  case).
+source_authors:   OpenBMP (Dmitri Arekhta)
+source_id:        synthetic; not derived from any fielded vehicle
+publication_date: 2026-04-28
+methodology_reference: >-
+  Same Barrowman-style component build-up as the Phase-2.5
+  `synthetic-finned-cylinder.toml` deck (Niskanen 2009 §5),
+  extended with a small linear elevon-deflection perturbation in
+  CN, CD, and CM. The elevon coefficients are illustrative — chosen
+  so a 5° deflection moves CN by ~0.10 — not derived from any
+  specific airframe.
+methodology_urls:
+  - https://openrocket.info/documentation.html
+license_or_terms: >-
+  Synthetic OpenBMP-authored content; CC0 / public domain. No
+  third-party data is incorporated.
+retrieved_utc:    2026-04-28
+transformation:
+  method: >-
+    Hand-derived linear generators evaluated on the cartesian
+    product of (mach, alpha_deg, beta_deg, delta_e_deg):
+      CN(M, α, β, δ_e) = α_deg · (0.07 + 0.005 · M)
+                       + 0.020 · δ_e_deg
+      CD(M, α, β, δ_e) = CD0(M) + 0.001 · α_deg² + 0.0005 · |δ_e_deg|
+      CM(M, α, β, δ_e) = -0.15 · CN(M, α, β, 0) + 0.050 · δ_e_deg
+    with CD0 the Phase-2.5 finned-cylinder transonic curve at the
+    Mach grid points. Pasted into the deck file by hand; no script.
+  script: none
+verification:
+  method: >-
+    Schema-2 parser load via `AeroDeck::load_from_str`. The Phase
+    3.5.B parser-test suite validates round-trip metadata, lookup at
+    `delta_e_deg = 0` matching a Schema-1 companion bit-for-bit, and
+    grid-corner exact-equality. The Phase 3.5.D e2e test loads this
+    deck, runs the single-elevon-aero scenario, and asserts the
+    aero force telemetry differs between a 0° baseline run and a
+    deflected-elevon run (the schema-2 effector-axis consumption
+    contract).
+  test:   crates/openbmp-aero/src/parser.rs (mod tests)
+  tolerance: >-
+    Parser round-trip and grid-corner lookups: bit equality on
+    parsed CN/CD/CM. Schema-1 companion at delta_e_deg = 0: bit
+    equality between Schema-1 and Schema-2 lookups at the same
+    (mach, alpha, beta) grid points.
+validation_status: validated-toy
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Synthetic OpenBMP-authored content. The elevon perturbation
+    coefficients are illustrative round numbers, not transcribed
+    from any published wind-tunnel dataset.
+```

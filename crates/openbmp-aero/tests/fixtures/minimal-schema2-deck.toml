@@ -1,0 +1,60 @@
+# Minimal Schema-2 aero-deck parser fixture.
+#
+# 2 × 2 × 1 × 3 deck (mach × alpha × beta × delta_e_deg) with
+# CN = mach + alpha + 0.1 * delta, CD = 0, CM = 0.
+# Reference area 1 m^2, reference length 1 m. Synthetic round
+# numbers; not a benchmark deck.
+#
+# At delta_e_deg = 0, this deck is bit-equivalent to a Schema-1 deck
+# with CN(M, alpha) = M + alpha. The schema-2 parser test asserts
+# that property.
+
+openbmp.aero_deck = 2
+
+reference.area_m2  = 1.0
+reference.length_m = 1.0
+provenance         = "test fixture; schema-2 round-trip; not a benchmark"
+validation         = "validated-toy"
+
+[grid]
+mach = [0.0, 1.0]
+alpha_deg = [0.0, 1.0]
+beta_deg = [0.0]
+delta_e_deg = [-20.0, 0.0, 20.0]
+
+[axis_order]
+order = ["mach", "alpha", "beta", "delta_e_deg"]
+
+[coefficients.cn]
+# Row-major over (mach, alpha, beta, delta_e_deg) = 2*2*1*3 = 12.
+# CN(m, a, b, delta) = m + a + 0.1 * delta
+# (m=0, a=0): -2,  0,  2
+# (m=0, a=1): -1,  1,  3
+# (m=1, a=0): -1,  1,  3
+# (m=1, a=1):  0,  2,  4
+data = [
+    -2.0,  0.0,  2.0,
+    -1.0,  1.0,  3.0,
+    -1.0,  1.0,  3.0,
+     0.0,  2.0,  4.0,
+]
+
+[coefficients.cd]
+data = [
+    0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0,
+]
+
+[coefficients.cm]
+data = [
+    0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0,
+]
+
+[interpolation]
+method        = "multilinear"
+extrapolation = "error"
