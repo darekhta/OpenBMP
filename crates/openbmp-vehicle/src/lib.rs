@@ -70,8 +70,8 @@ pub use effector::{
 };
 pub use error::VehicleError;
 pub use tank::{
-    BaffleModel, EquivalentPendulum, ForceMomentBody, MassContribution, MovingMassModel,
-    PropellantSpec, RigidLiquid, Tank, TankError, TankGeometry,
+    BaffleModel, BaffledPendulum, EquivalentPendulum, EquivalentSpringMass, ForceMomentBody,
+    MassContribution, MovingMassModel, PropellantSpec, RigidLiquid, Tank, TankError, TankGeometry,
 };
 pub use vehicle::{
     BasicVehicle, BoxedMassModel, ForceBreakdown, MomentBreakdown, NamedForceModel,
