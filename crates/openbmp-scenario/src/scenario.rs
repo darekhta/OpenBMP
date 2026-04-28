@@ -1146,6 +1146,11 @@ action  = { kind = "stop", label = "max-q" }
         "/tests/fixtures/assembly-engine-cluster-and-motor.toml"
     ));
 
+    const ASSEMBLY_ENGINE_CLUSTER_WITHOUT_THRUST: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-engine-cluster-without-thrust.toml"
+    ));
+
     const ASSEMBLY_WITH_EFFECTOR: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/assembly-with-effector.toml"
@@ -1305,6 +1310,22 @@ action  = { kind = "stop", label = "max-q" }
             .replace("cluster_layout = \"ring\"", "cluster_layout = \"flower\"");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(matches!(err, ScenarioError::ParseToml(_)));
+    }
+
+    #[test]
+    fn rejects_engine_cluster_without_thrust_force_model() {
+        let err = Scenario::from_toml_str(ASSEMBLY_ENGINE_CLUSTER_WITHOUT_THRUST).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InconsistentSection {
+                    ref field_a,
+                    ref field_b,
+                    ..
+                } if field_a == "vehicle.assembly.engines" && field_b == "forces.models"
+            ),
+            "expected InconsistentSection for missing thrust force, got {err:?}",
+        );
     }
 
     #[test]

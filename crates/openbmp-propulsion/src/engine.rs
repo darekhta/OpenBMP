@@ -130,6 +130,13 @@ impl EngineLimits {
 /// Per-engine command payload. Carried by mission events
 /// (`EventAction::EngineCommand { id, command }` in Phase-3.6.B) and
 /// by the runner-side rack's per-step bookkeeping.
+///
+/// When both `ignite` and `shutdown` are `true` in the same command,
+/// **shutdown wins**: from `Igniting` / `Burning`, the engine
+/// transitions to `Shutdown`; from `Idle`, the command is a no-op
+/// (no transition). Phase-3.6 does not reject ambiguous commands at
+/// the trait level — the scenario's parse-time validation is the
+/// right place if the operator wants strictness.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EngineCommand {
     /// Throttle setting in `[0, 1]`. Values outside the range are

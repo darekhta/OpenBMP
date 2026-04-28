@@ -37,7 +37,8 @@ use openbmp_aero::{AeroDeck, AeroError};
 use openbmp_env::{AtmosphereModel, GravityModel};
 use openbmp_propulsion::Motor;
 use openbmp_sim::{
-    ForceContext, ForceModel, MassModel, MassPropertiesRate, ModelEvalError, RigidMassModel,
+    ForceContext, ForceModel, MassModel, MassPropertiesRate, ModelEvalError, MomentContext,
+    MomentModel, RigidMassModel,
 };
 use openbmp_state::{MassProperties, PointMassState, RigidBodyState};
 
@@ -641,6 +642,83 @@ impl ForceModel<RigidBodyState> for EngineClusterForceAdapter {
     }
 }
 
+/// Phase-3.6 kernel-side moment adapter for a rigid-body engine cluster.
+///
+/// Reads each engine's body-frame thrust from the kernel snapshot and
+/// combines it with the matching body-frame mount point. The returned
+/// moment is `mount_point_body × thrust_body`, summed in
+/// scenario-declared order with locked left-fold operand order.
+#[derive(Clone, Debug)]
+pub struct EngineClusterMomentAdapter {
+    engine_ids: Vec<openbmp_core::EngineId>,
+    mount_points_body: Vec<Position3<Body>>,
+    model_id: ModelId,
+}
+
+impl EngineClusterMomentAdapter {
+    /// Construct from parallel `engine_ids` and `mount_points_body`
+    /// arrays in scenario-declared order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelEvalError::InvalidState`] when the arrays are not
+    /// the same length.
+    pub fn new(
+        engine_ids: Vec<openbmp_core::EngineId>,
+        mount_points_body: Vec<Position3<Body>>,
+        model_id: ModelId,
+    ) -> Result<Self, ModelEvalError> {
+        if engine_ids.len() != mount_points_body.len() {
+            return Err(ModelEvalError::InvalidState {
+                model: model_id,
+                reason: Cow::Borrowed(
+                    "engine cluster moment adapter: engine_ids and mount_points_body must have the same length",
+                ),
+            });
+        }
+        Ok(Self {
+            engine_ids,
+            mount_points_body,
+            model_id,
+        })
+    }
+}
+
+impl MomentModel<RigidBodyState> for EngineClusterMomentAdapter {
+    fn moment_n_m_body(
+        &self,
+        ctx: MomentContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let mut total_moment_body = Vector3::zeros();
+        for (id, mount) in self.engine_ids.iter().zip(self.mount_points_body.iter()) {
+            let snap = ctx
+                .engine_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "engine cluster moment adapter: snapshot missing declared engine id",
+                    ),
+                })?;
+            let moment_body = mount.vector.cross(&snap.thrust_body);
+            total_moment_body += moment_body;
+        }
+        if !total_moment_body.x.is_finite()
+            || !total_moment_body.y.is_finite()
+            || !total_moment_body.z.is_finite()
+        {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(total_moment_body)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
 /// Phase-3.6 kernel-side mass adapter for an engine cluster.
 ///
 /// Reports `mass_kg = dry_vehicle_mass_kg - Σ consumed_kg` where
@@ -693,7 +771,16 @@ impl MassModel for EngineClusterMassAdapter {
     fn mass_kg_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
         let mut consumed = 0.0_f64;
         for id in &self.engine_ids {
-            consumed += ctx.engine_snapshot.get(*id).map_or(0.0, |s| s.consumed_kg);
+            let snap = ctx
+                .engine_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "engine cluster mass adapter: snapshot missing declared engine id",
+                    ),
+                })?;
+            consumed += snap.consumed_kg;
         }
         let mass = self.dry_vehicle_mass_kg - consumed;
         if !mass.is_finite() {
@@ -707,10 +794,16 @@ impl MassModel for EngineClusterMassAdapter {
     fn mass_rate_kg_s_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
         let mut total = 0.0_f64;
         for id in &self.engine_ids {
-            total += ctx
+            let snap = ctx
                 .engine_snapshot
                 .get(*id)
-                .map_or(0.0, |s| s.mass_flow_kg_per_s);
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "engine cluster mass adapter: snapshot missing declared engine id",
+                    ),
+                })?;
+            total += snap.mass_flow_kg_per_s;
         }
         let rate = -total;
         if !rate.is_finite() {
@@ -838,10 +931,13 @@ impl<M: Motor> RigidMassModel for RigidMotorMassAdapter<M> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use openbmp_core::{Position3, SimTime, Velocity3};
+    use std::collections::BTreeMap;
+
+    use openbmp_core::{EngineId, Position3, SimTime, Velocity3};
     use openbmp_env::{ConstantGravity, IsothermalAtmosphere};
-    use openbmp_propulsion::SolidMotor;
+    use openbmp_propulsion::{EngineSnapshot, EngineState, SolidMotor};
     use openbmp_sim::EnvironmentSample;
+    use proptest::prelude::*;
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
 
@@ -1097,6 +1193,20 @@ mod tests {
         }
     }
 
+    fn rigid_moment_ctx<'a>(
+        state: &'a RigidBodyState,
+        env: &'a EnvironmentSample,
+        snapshot: &'a BTreeMap<EngineId, EngineSnapshot>,
+    ) -> MomentContext<'a, RigidBodyState> {
+        MomentContext {
+            state,
+            environment: env,
+            time: SimTime::ZERO,
+            effector_actuals: openbmp_sim::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_sim::EngineSnapshotView::new(snapshot),
+        }
+    }
+
     // -----------------------------------------------------------------
     // Rigid GravityForceAdapter
     // -----------------------------------------------------------------
@@ -1255,5 +1365,69 @@ mod tests {
         assert_eq!(rate.inertia_rate_body, nalgebra::Matrix3::zeros());
         // Mass-rate is non-positive in the burn window.
         assert!(rate.mass_rate_kg_s <= 0.0);
+    }
+
+    // -----------------------------------------------------------------
+    // EngineClusterMomentAdapter
+    // -----------------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn engine_cluster_moment_equals_literal_cross_product_sum(
+            entries in proptest::collection::vec(
+                (
+                    -10.0_f64..10.0,
+                    -10.0_f64..10.0,
+                    -10.0_f64..10.0,
+                    -10_000.0_f64..10_000.0,
+                    -10_000.0_f64..10_000.0,
+                    -10_000.0_f64..10_000.0,
+                ),
+                2..=9,
+            )
+        ) {
+            let mut engine_ids = Vec::with_capacity(entries.len());
+            let mut mount_points_body = Vec::with_capacity(entries.len());
+            let mut snapshot = BTreeMap::new();
+
+            for (index, (mx, my, mz, tx, ty, tz)) in entries.iter().copied().enumerate() {
+                let id = EngineId::from_path(&format!("test.cluster.engine_{index}"));
+                engine_ids.push(id);
+                mount_points_body.push(Position3::<Body>::new(mx, my, mz));
+                snapshot.insert(
+                    id,
+                    EngineSnapshot {
+                        thrust_body: Vector3::new(tx, ty, tz),
+                        mass_flow_kg_per_s: 0.0,
+                        consumed_kg: 0.0,
+                        state: EngineState::Burning,
+                    },
+                );
+            }
+
+            let adapter = EngineClusterMomentAdapter::new(
+                engine_ids,
+                mount_points_body.clone(),
+                ModelId::new(999),
+            )
+            .unwrap();
+            let state = rigid_state_with_orientation(0.0, 0.0, identity_body_to_eci());
+            let env = null_env();
+            let got = adapter
+                .moment_n_m_body(rigid_moment_ctx(&state, &env, &snapshot))
+                .unwrap();
+
+            let mut expected = Vector3::zeros();
+            for (mount, (_, _, _, tx, ty, tz)) in mount_points_body
+                .iter()
+                .zip(entries.iter().copied())
+            {
+                expected += mount.vector.cross(&Vector3::new(tx, ty, tz));
+            }
+
+            prop_assert_eq!(got.x.to_bits(), expected.x.to_bits());
+            prop_assert_eq!(got.y.to_bits(), expected.y.to_bits());
+            prop_assert_eq!(got.z.to_bits(), expected.z.to_bits());
+        }
     }
 }

@@ -57,7 +57,8 @@ pub mod vehicle;
 
 pub use adapters::{
     AxialDragForceAdapter, EngineClusterForceAdapter, EngineClusterMassAdapter,
-    GravityForceAdapter, MotorMassAdapter, MotorThrustForceAdapter, RigidMotorMassAdapter,
+    EngineClusterMomentAdapter, GravityForceAdapter, MotorMassAdapter, MotorThrustForceAdapter,
+    RigidMotorMassAdapter,
 };
 pub use assembly::{
     AssemblyError, BasicAssembly, BasicAssemblyBuilder, Body, BodyGeometry, KernelModelBundle,

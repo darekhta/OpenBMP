@@ -118,8 +118,16 @@ fn four_engine_shutdown_scenario_runs_to_completion() {
     assert!((mass[0] - 100.0).abs() < 1.0e-9);
 
     // After ignition + a few seconds of burn, the cluster has
-    // consumed propellant. Mass strictly decreases (or stays
-    // flat — never increases).
+    // consumed propellant. The rack-pushed snapshot path must never
+    // let the published mass increase between adjacent samples.
+    for window in mass.windows(2) {
+        assert!(
+            window[1] <= window[0] + 1.0e-9,
+            "mass must be monotone non-increasing across the run; got {:.6} -> {:.6}",
+            window[0],
+            window[1],
+        );
+    }
     let last_mass = *mass.last().expect("at least one row");
     assert!(
         last_mass < 100.0,
@@ -146,20 +154,24 @@ fn engine_shutdown_event_drops_thrust_and_makes_lateral_component_non_zero() {
     assert_eq!(times.len(), thrust_z.len());
 
     // Find a sample mid-burn before the shutdown trigger
-    // (`engine_d` shuts down at altitude = 200 m, ~T+0.5 s in
-    // the run with the cluster's full thrust). We sample at
-    // t = 0.4 s, well after the ignition transient (0.1 s) and
-    // before altitude crosses 200 m.
+    // (`engine_d` shuts down at altitude = 3000 m, roughly T+5 s in
+    // the run with the cluster's full thrust). We sample at t = 4 s,
+    // well after the ignition transient (0.1 s) and before the
+    // altitude trigger.
     let pre_idx = times
         .iter()
-        .position(|&t| t >= 0.4)
-        .expect("scenario must include t >= 0.4");
+        .position(|&t| t >= 4.0)
+        .expect("scenario must include t >= 4.0");
     let pre_thrust_z = thrust_z[pre_idx];
     let pre_thrust_x = thrust_x[pre_idx];
 
     // Find a sample after the shutdown completes. Shutdown
-    // transient is 0.1 s; we sample at the run's last entry.
-    let post_idx = times.len() - 1;
+    // transient is 0.1 s; t = 7 s is cleanly after the retuned
+    // altitude proxy for T+5 s.
+    let post_idx = times
+        .iter()
+        .position(|&t| t >= 7.0)
+        .expect("scenario must include t >= 7.0");
     let post_thrust_z = thrust_z[post_idx];
     let post_thrust_x = thrust_x[post_idx];
 

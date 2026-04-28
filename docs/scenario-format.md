@@ -1000,9 +1000,8 @@ models.
 
 `mount_point_body_m: [x, y, z]` — body-frame mount position in
 metres. Used by the rigid-body kernel's cluster moment adapter
-(Phase 3.6 ships only the force adapter; rigid moments are
-deferred to a later sub-phase). Point-mass scenarios store the
-mount points but don't use them.
+(`mount × thrust_body`, summed in scenario-declared order).
+Point-mass scenarios store the mount points but don't use them.
 
 #### Cluster layout
 
@@ -1034,8 +1033,8 @@ Engine state machine: `Idle → Igniting → Burning → Shutdown`.
 Per-step command resolution: `engine_command` event firing →
 runner drains and applies → engine latches `(throttle, gimbal)`
 and processes `(ignite, shutdown)` lifecycle flags. Multiple
-events targeting the same engine in one step apply in fired
-order (last-write-wins per field).
+events targeting the same engine in one step are rejected by the
+runner; declare a single `engine_command` per engine per step.
 
 #### Determinism
 
@@ -1073,6 +1072,8 @@ Enforced at scenario-parse time:
   in `±max_gimbal_rad`.
 - Cross-validate `mission.events[*].action.id` (when action kind
   is `engine_command`) against declared engine ids.
+- Reject engine clusters that omit `thrust` from `forces.models`;
+  declared engines must be dynamically active, not mass-only.
 - Reject scenarios that declare both `[propulsion.motor]` and
   `[[vehicle.assembly.engines]]` (`AmbiguousPropulsion`).
 - `cluster_layout`, when present, is one of
@@ -1087,8 +1088,8 @@ Enforced at scenario-parse time:
   evolution as propellant is consumed) are deferred to Phase 3.7
   alongside tank-driven dynamics. Rigid scenarios with engine
   clusters use `ConstantMassRigid` for kernel mass-properties;
-  the cluster's force / moment adapters still apply thrust
-  normally.
+  the cluster's force and moment adapters still consume the
+  per-engine snapshot normally.
 - Faults are load-time only.
 - Only the `liquid_engine` kind ships.
 - Per-engine `command_schedule` (effector-style declarative

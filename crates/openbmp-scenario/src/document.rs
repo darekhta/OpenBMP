@@ -266,6 +266,7 @@ impl ScenarioDocument {
                 name: "aero".to_owned(),
             });
         }
+        let has_thrust_force = self.forces.models.iter().any(|model| model == "thrust");
         let has_motor = self
             .propulsion
             .as_ref()
@@ -276,12 +277,21 @@ impl ScenarioDocument {
         // `[[vehicle.assembly.engines]]` block (cluster path).
         // Ambiguous co-declaration is rejected separately by
         // `validate_propulsion_unambiguous`.
-        let has_engines = self
+        let engine_count = self
             .vehicle
             .assembly
             .as_ref()
-            .is_some_and(|a| !a.engines.is_empty());
-        if self.forces.models.iter().any(|model| model == "thrust") && !has_motor && !has_engines {
+            .map_or(0, |a| a.engines.len());
+        let has_engines = engine_count > 0;
+        if has_engines && !has_thrust_force {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "vehicle.assembly.engines".to_owned(),
+                value_a: format!("{engine_count} declared engine(s)"),
+                field_b: "forces.models".to_owned(),
+                value_b: "no `\"thrust\"` entry".to_owned(),
+            });
+        }
+        if has_thrust_force && !has_motor && !has_engines {
             return Err(ScenarioError::MissingRequiredField {
                 field: "propulsion.motor or vehicle.assembly.engines".to_owned(),
                 role: ModelRole::Force,

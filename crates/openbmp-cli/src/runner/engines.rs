@@ -22,15 +22,15 @@
 //! - Engines are stored in scenario-declared order on the
 //!   propulsion-side [`openbmp_propulsion::EngineCluster`]; the
 //!   rack iterates that order verbatim.
-//! - `apply_commands` walks the fired-event slice in order;
-//!   multiple commands targeting the same engine in one step are
-//!   resolved last-write-wins by the order the kernel pushed them
-//!   into `pending_events`.
+//! - `apply_commands` walks the fired-event slice in order and
+//!   rejects multiple commands targeting the same engine in one step.
+//!   This keeps same-step command bundles explicit instead of
+//!   depending on event-id ordering.
 //! - The kernel-pushed snapshot map is `BTreeMap<EngineId,
 //!   EngineSnapshot>` (not `HashMap`) — deterministic iteration on
 //!   macOS `SipHash` builds.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use openbmp_core::{Body, Duration, EngineId, Position3};
 use openbmp_propulsion::{
@@ -128,17 +128,29 @@ impl EngineRack {
 
     /// Apply any `EventAction::EngineCommand` actions drained from
     /// the kernel's per-step fired-event queue. Multiple commands
-    /// targeting the same engine in one step are applied in fired
-    /// order — last write wins per field.
+    /// targeting the same engine in one step are rejected so the
+    /// scenario author must resolve the command bundle explicitly.
     ///
     /// # Errors
     ///
     /// Returns [`CliError::Engine`] when an event references an
     /// engine id that is not present in this rack, or when the
-    /// engine's `apply_command` rejects (non-finite payload).
+    /// engine's `apply_command` rejects (non-finite payload), or
+    /// when more than one command targets the same engine in this
+    /// rack tick.
     pub fn apply_commands(&mut self, fired: &[FiredEvent]) -> Result<(), CliError> {
+        let mut seen: BTreeSet<EngineId> = BTreeSet::new();
         for event in fired {
             if let EventAction::EngineCommand { id, command } = event.action {
+                if !seen.insert(id) {
+                    return Err(CliError::Engine {
+                        field: format!(
+                            "mission.events[*].action.engine_command.{id_value}",
+                            id_value = id.value()
+                        ),
+                        reason: "multiple `engine_command` events fired for the same engine in one step; resolve to a single command per engine per step".to_owned(),
+                    });
+                }
                 self.cluster
                     .apply_command(id, command)
                     .map_err(|err| CliError::Engine {
@@ -226,4 +238,86 @@ fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, Cli
         })?;
     }
     Ok(engine)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use openbmp_core::{SimTime, StepIndex};
+    use openbmp_propulsion::{EngineCluster, EngineCommand, EngineLimits};
+    use openbmp_sim::EventId;
+
+    fn test_limits() -> EngineLimits {
+        EngineLimits {
+            max_thrust_n: 1000.0,
+            isp_s: 250.0,
+            ignition_transient_s: 0.1,
+            shutdown_transient_s: 0.1,
+            max_gimbal_rad: 0.1,
+        }
+    }
+
+    fn one_engine_rack() -> (EngineRack, EngineId) {
+        let id = EngineId::from_path("vehicle.assembly.engines.engine_a");
+        let engine = LiquidEngine::new(id, test_limits()).unwrap();
+        let cluster = EngineCluster::new(
+            vec![Box::new(engine)],
+            vec![Position3::<Body>::new(0.0, 0.0, 0.0)],
+            vec![id],
+            PropulsionClusterLayout::Axial,
+        )
+        .unwrap();
+        (
+            EngineRack {
+                cluster,
+                dt: Duration::from_seconds(0.001),
+            },
+            id,
+        )
+    }
+
+    fn engine_event(name: &str, id: EngineId, command: EngineCommand) -> FiredEvent {
+        FiredEvent {
+            binding_id: EventId::from_path(name),
+            step: StepIndex::ZERO,
+            time: SimTime::ZERO,
+            action: EventAction::EngineCommand { id, command },
+        }
+    }
+
+    #[test]
+    fn duplicate_engine_commands_in_one_step_fail_closed() {
+        let (mut rack, id) = one_engine_rack();
+        let events = vec![
+            engine_event(
+                "mission.events.ignite_a",
+                id,
+                EngineCommand {
+                    throttle_unit: 1.0,
+                    gimbal_pitch_rad: 0.0,
+                    gimbal_yaw_rad: 0.0,
+                    ignite: true,
+                    shutdown: false,
+                },
+            ),
+            engine_event(
+                "mission.events.shutdown_a",
+                id,
+                EngineCommand {
+                    throttle_unit: 0.0,
+                    gimbal_pitch_rad: 0.0,
+                    gimbal_yaw_rad: 0.0,
+                    ignite: false,
+                    shutdown: true,
+                },
+            ),
+        ];
+
+        let err = rack.apply_commands(&events).unwrap_err();
+        assert!(
+            matches!(err, CliError::Engine { .. }),
+            "expected CliError::Engine, got {err:?}",
+        );
+    }
 }

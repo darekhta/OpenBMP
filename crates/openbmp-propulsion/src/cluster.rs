@@ -288,9 +288,28 @@ mod tests {
 
     #[test]
     fn cluster_summed_thrust_equals_scalar_sum_of_per_engine_thrust() {
-        let mut c = fresh_two_engine_cluster();
-        let id_a = c.engine_ids()[0];
-        let id_b = c.engine_ids()[1];
+        let limits = EngineLimits {
+            max_thrust_n: 5000.0,
+            ..make_limits()
+        };
+        let mut engines: Vec<Box<dyn EngineModel>> = Vec::new();
+        let mut mount_points = Vec::new();
+        let mut engine_ids = Vec::new();
+        for index in 0..9 {
+            let id = EngineId::from_path(&format!("test.octaweb.engine_{index}"));
+            engines.push(Box::new(LiquidEngine::new(id, limits).unwrap()));
+            let mount = if index == 0 {
+                Position3::<Body>::new(0.0, 0.0, 0.0)
+            } else {
+                let angle = f64::from(index - 1) * std::f64::consts::TAU / 8.0;
+                Position3::<Body>::new(angle.cos(), angle.sin(), 0.0)
+            };
+            mount_points.push(mount);
+            engine_ids.push(id);
+        }
+        let mut c =
+            EngineCluster::new(engines, mount_points, engine_ids, ClusterLayout::Octaweb).unwrap();
+        let ids = c.engine_ids().to_vec();
         let cmd = EngineCommand {
             throttle_unit: 1.0,
             gimbal_pitch_rad: 0.0,
@@ -298,17 +317,18 @@ mod tests {
             ignite: true,
             shutdown: false,
         };
-        c.apply_command(id_a, cmd).unwrap();
-        c.apply_command(id_b, cmd).unwrap();
+        for id in ids {
+            c.apply_command(id, cmd).unwrap();
+        }
         // Step through ignition transient.
         for _ in 0..101 {
             c.step(Duration::from_seconds(0.001)).unwrap();
         }
         let snaps = c.current_snapshot();
-        // At full throttle, no gimbal: each engine produces 1000 N
+        // At full throttle, no gimbal: each engine produces 5000 N
         // along body +z.
         let summed_z: f64 = snaps.iter().map(|s| s.thrust_body.z).sum();
-        assert_eq!(summed_z.to_bits(), 2000.0_f64.to_bits());
+        assert_eq!(summed_z.to_bits(), (9.0_f64 * 5000.0).to_bits());
     }
 
     #[test]

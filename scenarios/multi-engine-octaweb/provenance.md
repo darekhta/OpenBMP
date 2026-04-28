@@ -17,7 +17,7 @@ source_title:     >-
   vehicle. Each `liquid_engine` produces 5000 N at full throttle
   with Isp = 250 s. Mission ignites all four engines at altitude
   0.001 m (≈ T+0 s with initial velocity 100 m/s ECI +z), runs
-  full thrust until altitude 200 m (≈ T+1.5 s), then commands
+  full thrust until altitude 3000 m (≈ T+5 s), then commands
   `engine_d` shutdown to demonstrate the documented mass-flow drop
   (~25 %) and the lateral thrust asymmetry that emerges when
   `engine_b`'s gimbal-induced +x component stops being cancelled
@@ -92,5 +92,10 @@ notes: >-
   asymmetric-thrust signal that lets the e2e test prove the
   cluster path actually consumes per-engine state — without
   gimbals the lateral thrust would stay zero regardless of which
-  engine is firing.
+  engine is firing. Phase 3.2 does not ship an `at_time` trigger,
+  so the shutdown event uses altitude as a deterministic proxy for
+  T+5s. With full-thrust net acceleration around 190 m/s² and
+  initial vertical speed 100 m/s, `altitude = v0*t + 0.5*a*t²`
+  reaches roughly 3000 m at t ≈ 5 s; the 0.1 s ignition transient
+  only shifts the crossing slightly.
 ```

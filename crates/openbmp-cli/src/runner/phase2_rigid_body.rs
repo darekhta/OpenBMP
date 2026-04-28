@@ -19,13 +19,12 @@
 //!   `vehicle.inertia_tensor_body_kg_m2` declared (parser already
 //!   enforces these for `kind = "rigid_body"`).
 //!
-//! Wind models, body-frame moments, and aero side-force / pitching
-//! moment are deferred to Phase 3.4 / 3.5 / 3.8. Phase 3.1 ships
-//! the *adapter* family and a runner that exercises it on the
-//! Niskanen scenario; the moment model defaults to `ZeroMoment` so
-//! identity-orientation scenarios produce trajectories
-//! indistinguishable (within IEEE 754 reduction order) from the
-//! point-mass path.
+//! Wind models and aero side-force / pitching moment are deferred to
+//! later Phase-3 sub-phases. Phase 3.6 wires rigid-body engine-cluster
+//! moments through `EngineClusterMomentAdapter`; scenarios without
+//! engine clusters still default to `ZeroMoment` so identity-orientation
+//! single-motor scenarios produce trajectories indistinguishable
+//! (within IEEE 754 reduction order) from the point-mass path.
 //!
 //! Telemetry layout: same as the point-mass path
 //! ([`crate::runner::phase2_point_mass`]) plus four quaternion
@@ -38,7 +37,8 @@ use std::collections::BTreeMap;
 use nalgebra::Vector3;
 use openbmp_aero::{AeroDeck, AeroError};
 use openbmp_core::{
-    AngularVelocity3, Body, ChannelId, Duration, ModelId, Position3, Quaternion, SimTime, Velocity3,
+    AngularVelocity3, Body, ChannelId, Duration, ModelId, Position3, Quaternion, SimTime,
+    ValidationStatus, Velocity3,
 };
 use openbmp_env::{AtmosphereModel, ConstantGravity, UsStandard1976};
 use openbmp_propulsion::{Motor, MotorError, SolidMotor};
@@ -51,8 +51,8 @@ use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
     AxialDragForceAdapter, BasicAssembly, BasicVehicle, BoxedMassModel, EngineClusterForceAdapter,
-    EngineClusterMassAdapter, GravityForceAdapter, MotorThrustForceAdapter, NamedForceModel,
-    RigidMotorMassAdapter, Vehicle,
+    EngineClusterMassAdapter, EngineClusterMomentAdapter, GravityForceAdapter,
+    MotorThrustForceAdapter, NamedForceModel, RigidMotorMassAdapter, Vehicle,
 };
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -73,6 +73,7 @@ const PHASE3_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(304);
 // rigid-body kernel.
 const PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(320);
 const PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(321);
+const PHASE3_ENGINE_CLUSTER_MOMENT_MODEL_ID: ModelId = ModelId::new(322);
 
 /// Run a Phase-2 rigid-body scenario through a freshly-built kernel
 /// and return the populated telemetry table.
@@ -108,7 +109,8 @@ pub fn run(
     let kernel_vehicle = build_vehicle(document, &loaded, &assembly)?;
     let breakdown_vehicle = build_vehicle(document, &loaded, &assembly)?;
     let mass_model = build_mass_model(document, &loaded, &assembly)?;
-    let rigid_models = RigidModels::new(ZeroMoment, mass_model);
+    let moment_model = build_moment_model(document)?;
+    let rigid_models = RigidModels::new(moment_model, mass_model);
 
     let config = SimulationConfig {
         initial_state,
@@ -533,6 +535,80 @@ fn build_vehicle_scalar_mass_model(
         Box::new(ConstantMass::new(dry_mass_kg))
     };
     Ok(BoxedMassModel(inner))
+}
+
+type RigidMomentEither = RigidMomentEitherKind;
+
+#[derive(Debug)]
+enum RigidMomentEitherKind {
+    Zero(ZeroMoment),
+    EngineCluster(EngineClusterMomentAdapter),
+}
+
+impl openbmp_sim::MomentModel<RigidBodyState> for RigidMomentEitherKind {
+    fn moment_n_m_body(
+        &self,
+        ctx: openbmp_sim::MomentContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, openbmp_sim::ModelEvalError> {
+        match self {
+            Self::Zero(z) => {
+                <ZeroMoment as openbmp_sim::MomentModel<RigidBodyState>>::moment_n_m_body(z, ctx)
+            }
+            Self::EngineCluster(c) => <EngineClusterMomentAdapter as openbmp_sim::MomentModel<
+                RigidBodyState,
+            >>::moment_n_m_body(c, ctx),
+        }
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        match self {
+            Self::Zero(z) => {
+                <ZeroMoment as openbmp_sim::MomentModel<RigidBodyState>>::validation(z)
+            }
+            Self::EngineCluster(c) => <EngineClusterMomentAdapter as openbmp_sim::MomentModel<
+                RigidBodyState,
+            >>::validation(c),
+        }
+    }
+}
+
+fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, CliError> {
+    if let Some(scenario_assembly) = &document.vehicle.assembly
+        && !scenario_assembly.engines.is_empty()
+    {
+        let engine_ids: Vec<openbmp_core::EngineId> = scenario_assembly
+            .engines
+            .iter()
+            .map(|e| {
+                openbmp_core::EngineId::from_path(&format!(
+                    "vehicle.assembly.engines.{id}",
+                    id = e.id
+                ))
+            })
+            .collect();
+        let mount_points_body: Vec<Position3<Body>> = scenario_assembly
+            .engines
+            .iter()
+            .map(|e| {
+                Position3::<Body>::new(
+                    e.mount_point_body_m[0],
+                    e.mount_point_body_m[1],
+                    e.mount_point_body_m[2],
+                )
+            })
+            .collect();
+        let adapter = EngineClusterMomentAdapter::new(
+            engine_ids,
+            mount_points_body,
+            PHASE3_ENGINE_CLUSTER_MOMENT_MODEL_ID,
+        )
+        .map_err(|err| CliError::UnsupportedScenario {
+            what: format!("EngineClusterMomentAdapter construction failed: {err}"),
+        })?;
+        Ok(RigidMomentEitherKind::EngineCluster(adapter))
+    } else {
+        Ok(RigidMomentEitherKind::Zero(ZeroMoment))
+    }
 }
 
 /// Build the kernel's rigid mass model. When a motor is declared

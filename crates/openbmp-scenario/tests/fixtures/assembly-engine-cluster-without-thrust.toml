@@ -1,12 +1,12 @@
-# Phase-3.6 assembly-tree parser fixture exercising the
-# [[vehicle.assembly.engines]] block (typed `EngineConfig` parser).
-# Synthetic two-engine cluster; not a benchmark.
+# Phase-3.6 negative parser fixture: engine cluster declared without
+# `forces.models = ["thrust"]`. Used for
+# `rejects_engine_cluster_without_thrust_force_model`.
 
 openbmp.scenario = 1
 
 [meta]
-name        = "assembly-with-engine-cluster-fixture"
-description = "Phase-3.6 parser fixture exercising the [[vehicle.assembly.engines]] block. Synthetic; not a benchmark."
+name        = "assembly-engine-cluster-without-thrust-fixture"
+description = "Phase-3.6 negative parser fixture: engines declared but thrust force omitted."
 validation  = "experimental"
 
 [time]
@@ -50,7 +50,7 @@ atmosphere    = "none"
 wind          = "none"
 
 [forces]
-models = ["gravity", "thrust"]
+models = ["gravity"]
 
 [telemetry]
 output.csv = "out/fixture.csv"

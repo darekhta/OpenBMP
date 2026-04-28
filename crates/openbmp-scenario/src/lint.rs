@@ -274,7 +274,9 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     // (the bools never trip this lint, but `throttle_unit` would
     // without an exemption).
     path.starts_with("$.mission.events")
-        && path.contains(".action.command")
+        && path
+            .strip_suffix(".throttle_unit")
+            .is_some_and(|parent| parent.ends_with(".action.command"))
         && key == "throttle_unit"
 }
 

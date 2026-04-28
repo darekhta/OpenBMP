@@ -50,7 +50,7 @@ atmosphere    = "none"
 wind          = "none"
 
 [forces]
-models = ["gravity"]
+models = ["gravity", "thrust"]
 
 [telemetry]
 output.csv = "out/fixture.csv"

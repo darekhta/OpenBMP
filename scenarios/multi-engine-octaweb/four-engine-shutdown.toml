@@ -5,7 +5,7 @@
 # point-mass vehicle. Each `liquid_engine` produces 5000 N at full
 # throttle with Isp = 250 s. The mission ignites all four engines
 # at the start, runs at full thrust until the cluster reaches
-# altitude 200 m (≈ T+1.5 s), then commands `engine_d` shutdown to
+# altitude 3000 m (≈ T+5 s), then commands `engine_d` shutdown to
 # demonstrate the documented mass-flow drop (~25%) and lateral
 # thrust asymmetry.
 #
@@ -120,10 +120,10 @@ id      = "ignite_d"
 trigger = { kind = "at_altitude_ascending", altitude_m = 0.001 }
 action  = { kind = "engine_command", id = "engine_d", command = { throttle_unit = 1.0, gimbal_pitch_rad = -0.05, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-# At altitude 200 m (≈ T+1.5 s with full-thrust acceleration), shut
+# At altitude 3000 m (≈ T+5 s with full-thrust acceleration), shut
 # down engine_d. Cluster mass-flow drops by 25%; lateral thrust
 # component on +x stops being cancelled by engine_b's +x tilt.
 [[mission.events]]
 id      = "shutdown_d"
-trigger = { kind = "at_altitude_ascending", altitude_m = 200.0 }
+trigger = { kind = "at_altitude_ascending", altitude_m = 3000.0 }
 action  = { kind = "engine_command", id = "engine_d", command = { throttle_unit = 0.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = false, shutdown = true } }

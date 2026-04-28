@@ -930,8 +930,8 @@ cluster-level rebuild.
 >   propulsion-side `EngineCluster` is a pure container of
 >   `Vec<Box<dyn EngineModel>>` + mount points; the kernel-side
 >   adapter trio (`EngineClusterForceAdapter`,
->   `EngineClusterMassAdapter`, plus a deferred rigid-moment
->   adapter) lives in `openbmp-vehicle::adapters` and consumes a
+>   `EngineClusterMomentAdapter`, `EngineClusterMassAdapter`) lives
+>   in `openbmp-vehicle::adapters` and consumes a
 >   per-step snapshot via `EngineSnapshotView` on
 >   `ForceContext` / `MomentContext` / `MassContext`.
 > - The runner-side `EngineRack` (in `openbmp-cli/src/runner/`)
@@ -951,11 +951,12 @@ cluster-level rebuild.
 >   kernel's `engine_snapshot` field stays at the empty `BTreeMap`
 >   set in `new()`, the cluster adapters are never instantiated,
 >   and legacy scenarios produce byte-identical Parquet to pre-3.6.
-> - Rigid-body cluster mass-properties (inertia tensor evolution)
->   are deferred to Phase 3.7's tank-driven dynamics work. Rigid
->   scenarios with engine clusters use `ConstantMassRigid` for
->   kernel mass-properties; the cluster's force adapter still
->   applies thrust normally.
+> - Rigid-body engine-cluster moments wired in 3.6 via
+>   `EngineClusterMomentAdapter`: per-engine `mount × thrust_body`
+>   cross product, summed in scenario-declared order with locked
+>   left-fold operand order. Rigid-body cluster mass-properties
+>   evolution (inertia tensor as propellant is consumed) stays
+>   deferred to Phase 3.7's tank-driven dynamics work.
 > - Six-engine clusters (octaweb-style) work; the
 >   `cluster_layout` enum carries through to telemetry but has no
 >   behavioural effect in 3.6.
