@@ -1115,6 +1115,45 @@ fielded propellant data or real fielded tank geometry are rejected (see
 their own data through the real-data package path in their own
 repositories.
 
+> **Status — Phase 3.7 implemented.** The trait surface above ships
+> in `crates/openbmp-vehicle/src/tank/`: `MovingMassModel`, `Tank`,
+> `MassContribution`, `ForceMomentBody`, plus four implementations
+> (`RigidLiquid`, `EquivalentPendulum`, `EquivalentSpringMass`,
+> `BaffledPendulum`). The kernel-side `TankRackForceAdapter` /
+> `TankRackMomentAdapter` / `TankRackMassAdapter` consume the
+> per-step `TankSnapshotView` populated by the runner-side
+> `TankRack` (mirror of the Phase-3.6 `EngineRack`). The
+> Phase-3.7.E exit-criterion scenario at
+> `scenarios/sloshing-tank/sloshing-tank.toml` exercises the full
+> hot path on a rigid-body vehicle with an axial liquid engine and
+> a cylindrical tank carrying an `EquivalentPendulum` slosh model.
+>
+> Phase-3.7 known limitations (each tracked for Phase-3.X follow-on):
+> (1) tank drain is decoupled from the engine cluster — tanks
+> declare a scalar `drain_rate_kg_per_s` rather than receiving the
+> cluster's total mdot; (2) the `TankRackMassAdapter` adds each
+> tank's `mass_kg` to the vehicle total without checking whether
+> the cluster already accounts for the same propellant, so
+> scenarios that declare both an engine cluster and a tank
+> intended as its propellant store overcount mass; (3) the
+> rigid-body cluster mass adapter (Phase-3.6 deferral) is still
+> `ConstantMassRigid` — slosh inertia perturbations are published
+> in the snapshot but only consumed by the force / moment
+> adapters; (4) slosh telemetry channels are deferred to a future
+> phase, with determinism currently asserted via full-Parquet byte
+> equality.
+>
+> Phase-3.7 deviates from the phase-3-plan's literal "forward
+> Euler" prescription: explicit Euler is unstable for the
+> undamped harmonic oscillator (energy growth `(dt·ω)²` per step)
+> and cannot meet the 1 %-over-100-cycles energy-conservation
+> property test at any practical `dt`. The shipped implementation
+> uses semi-implicit (symplectic) Euler with locked operand order
+> — still single-step explicit, still bit-stable for fixed `dt`,
+> and exact-conserves a modified Hamiltonian. The
+> `EquivalentPendulum` and `EquivalentSpringMass` unit tests
+> verify the 1 % gate at `dt = 1 ms` over 100 cycles.
+
 ### Multi-Body Separation Events
 
 Phase-5 multi-body promotes separation to first class: after a separation

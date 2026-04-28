@@ -1,0 +1,123 @@
+# Phase-3.7.E exit-criterion scenario — single-engine rigid-body
+# vehicle with one cylindrical tank carrying an EquivalentPendulum
+# slosh model with a non-zero initial slosh angle.
+#
+# The scenario demonstrates the full Phase-3.7 path:
+#   - tank scenario block parses through the structured TankConfig
+#     family (Phase 3.7.D);
+#   - the runner-side TankRack is built, the Tank is constructed
+#     with EquivalentPendulum + initial slosh perturbation;
+#   - per-step the rack drains the tank (drain rate 0 here, the
+#     fluid mass stays constant), advances slosh state with prior-
+#     step body-frame accel/omega, and pushes a TankSnapshot to the
+#     kernel;
+#   - the kernel-side TankRackForceAdapter and TankRackMomentAdapter
+#     read the snapshot and add the tank's reaction force / moment
+#     to the rigid-body force / moment evaluation.
+#
+# Phase-3.7 known limitation: the cluster mass adapter and the
+# TankRackMassAdapter both contribute mass; for a tank intended as
+# the cluster's propellant store this overcounts the propellant.
+# This scenario sizes the tank at 50 kg (5% of vehicle dry mass) so
+# the overcount is small. Phase-3.X future work unifies the
+# accounting.
+#
+# Synthetic round numbers; not a benchmark.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "sloshing-tank"
+description = "Phase-3.7.E exit-criterion: rigid-body vehicle with single axial engine and a cylindrical tank carrying an equivalent-pendulum slosh model with 0.05 rad initial perturbation. Demonstrates the full tank-rack hot path. Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 5.0
+dt_s    = 0.001
+seed    = 0x536c_6f73_6854_616e   # "SloshTan"
+
+[vehicle]
+kind                                = "rigid_body"
+mass_kg                             = 1000.0
+initial_position_eci_m              = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s            = [0.0, 0.0, 100.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+inertia_tensor_body_kg_m2 = [
+  [500.0,   0.0, 0.0],
+  [  0.0, 500.0, 0.0],
+  [  0.0,   0.0, 50.0],
+]
+
+[vehicle.assembly]
+id             = "sloshing-tank"
+cluster_layout = "axial"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 5.0, area_m2 = 1.0 }
+dry_mass_kg   = 1000.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [
+  [500.0,   0.0, 0.0],
+  [  0.0, 500.0, 0.0],
+  [  0.0,   0.0, 50.0],
+]
+
+# Single axial engine providing constant +z body thrust. Net axial
+# accel after burn ramp ≈ (50000 - 1000·9.81)/1000 ≈ 40 m/s², so
+# pendulum ω_n² ≈ (40/0.5)·1.841·tanh(...) ≈ 147, ω_n ≈ 12.1 rad/s,
+# period ≈ 0.52 s. Over the 5 s simulation, the slosh oscillates
+# ≈ 10 cycles and decays under the 0.005 damping ratio.
+[[vehicle.assembly.engines]]
+id                  = "engine_main"
+kind                = { kind = "liquid_engine" }
+mount_point_body_m  = [0.0, 0.0, 0.0]
+limits = { max_thrust_n = 50000.0, isp_s = 250.0, ignition_transient_s = 0.1, shutdown_transient_s = 0.1, max_gimbal_rad = 0.0 }
+
+# Cylindrical tank with EquivalentPendulum slosh dynamics and a
+# 0.05 rad initial perturbation on the body-x slosh axis.
+# Drain rate is zero in Phase 3.7 (engine-tank coupling deferred
+# to Phase 3.X).
+[[vehicle.assembly.tanks]]
+id                       = "fuel_tank"
+mounted_to               = "main"
+mount_point_body_m       = [0.0, 0.0, 1.5]
+geometry                 = { kind = "cylinder", radius_m = 0.5, height_m = 0.5 }
+propellant               = { density_kg_m3 = 1000.0, label = "water_textbook" }
+initial_fill_fraction    = 0.5
+moving_mass              = { kind = "equivalent_pendulum", damping_ratio_zeta = 0.005 }
+drain_rate_kg_per_s      = 0.0
+initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity", "thrust"]
+
+[telemetry]
+output.parquet = "out/sloshing-tank.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "boost"
+
+[[mission.phases]]
+id    = "boost"
+label = "boost"
+
+# Ignite engine_main at t = 0.001 (first step crosses 0.1 m altitude
+# from initial 100 m/s upward velocity).
+[[mission.events]]
+id      = "ignite_engine"
+trigger = { kind = "at_altitude_ascending", altitude_m = 0.001 }
+action  = { kind = "engine_command", id = "engine_main", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }

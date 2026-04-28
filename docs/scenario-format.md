@@ -633,11 +633,9 @@ pre-computed geometry, mirroring the aero-deck reference.
 `[[vehicle.assembly.effectors]]` ships in Phase 3.4 — see
 [Control effectors](#control-effectors-phase-34) below.
 `[[vehicle.assembly.engines]]` ships in Phase 3.6 — see
-[Engine clusters](#engine-clusters-phase-36) below. The remaining
-child blocks are reserved and **rejected at parse time** with a
-typed `UnsupportedAssemblyChild` error:
-
-- `[[vehicle.assembly.tanks]]` → Phase 3.7 (`Tank` + slosh).
+[Engine clusters](#engine-clusters-phase-36) below.
+`[[vehicle.assembly.tanks]]` ships in Phase 3.7 — see
+[Tanks and slosh](#tanks-and-slosh-phase-37) below.
 
 #### Determinism
 
@@ -1098,3 +1096,120 @@ Enforced at scenario-parse time:
 
 The canonical Phase-3.6 example ships at
 [`scenarios/multi-engine-octaweb/four-engine-shutdown.toml`](../scenarios/multi-engine-octaweb/four-engine-shutdown.toml).
+
+### Tanks and slosh (Phase 3.7)
+
+Phase 3.7 lands the `[[vehicle.assembly.tanks]]` block and the
+runner-side tank rack that drives moving-mass dynamics through the
+kernel snapshot path (mirroring the Phase-3.6 engine-cluster
+pattern). Each declared tank produces a body-frame reaction force +
+moment on the parent body, contributes its `mass_kg` to the vehicle
+total mass, and tracks fluid-mass evolution under a scenario-
+declared drain rate.
+
+```toml
+[[vehicle.assembly.tanks]]
+id                       = "fuel_tank"
+mounted_to               = "main"
+mount_point_body_m       = [0.0, 0.0, 1.5]
+geometry                 = { kind = "cylinder", radius_m = 0.5, height_m = 1.5 }
+propellant               = { density_kg_m3 = 1000.0, label = "water_textbook" }
+initial_fill_fraction    = 0.7
+moving_mass              = { kind = "equivalent_pendulum", damping_ratio_zeta = 0.005 }
+drain_rate_kg_per_s      = 0.0
+initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] }
+```
+
+#### Required fields
+
+- `id` — `snake_case` scenario-text identifier; must be unique
+  across `[[vehicle.assembly.tanks]]`.
+- `mounted_to` — id of the parent body in
+  `[[vehicle.assembly.bodies]]`. References to undeclared bodies
+  fail at parse with `UnknownBodyReference`.
+- `mount_point_body_m` — `[x, y, z]` body-frame mount point, m.
+- `geometry` — `kind`-tagged enum: `cylinder` (`radius_m`,
+  `height_m`), `sphere` (`radius_m`), or `ellipsoid_textbook`
+  (`a_m`, `b_m`, `c_m`).
+- `propellant` — `{ density_kg_m3, label }`. Phase-3 ships textbook
+  density only; fielded propellant data is rejected per
+  `safety-boundaries.md`.
+- `initial_fill_fraction` — `[0, 1]`. Initial fluid mass is
+  `geometry.volume × density × fill`.
+- `moving_mass` — `kind`-tagged enum:
+  - `rigid_liquid` — no slosh (Phase 3.7.A toy);
+  - `equivalent_pendulum { damping_ratio_zeta }` — Abramson
+    cylindrical-tank antisymmetric fundamental mode (Phase 3.7.B);
+  - `equivalent_spring_mass { damping_ratio_zeta }` — translational
+    alternative;
+  - `baffled_pendulum { base_damping_ratio_zeta }` — pendulum +
+    `baffle_model.damping_increment_zeta`.
+
+#### Optional fields
+
+- `baffle_model = { damping_increment_zeta }` — additive damping
+  increment consumed only by `baffled_pendulum`. Phase-3.7
+  minimum: a scalar increment per Abramson Eq 7-46 simplified.
+- `drain_rate_kg_per_s` — Phase-3.7 ships drain decoupled from
+  engine clusters. Defaults to `0.0` (no drain). Future phase ties
+  this to the engine-cluster total mdot.
+- `initial_slosh = { angles_rad: [θ_x, θ_y], rates_rad_s: [θ̇_x,
+  θ̇_y] }` — initial slosh perturbation. For `equivalent_spring_mass`,
+  `angles_rad` and `rates_rad_s` are reinterpreted as
+  displacement (m) and velocity (m/s).
+
+#### Cross-block validation
+
+- Non-`rigid_liquid` `moving_mass` on a non-cylindrical geometry is
+  rejected (Abramson cylindrical-tank closed forms apply only to
+  cylinders).
+- Non-`rigid_liquid` `moving_mass` in a `vehicle.kind = "point_mass"`
+  scenario is rejected — slosh dynamics in a point-mass kernel are
+  degenerate (no body-frame orientation, lateral reaction force has
+  no rotational coupling). The validator fails loud rather than
+  silently producing a no-op tank.
+
+#### Determinism
+
+- Tank ids are FNV-1a-64 of `vehicle.assembly.tanks.<id>`; the
+  runner-side rack stores them in a `BTreeMap<TankId, Tank>` for
+  deterministic iteration on macOS `SipHash` builds.
+- Slosh integration is semi-implicit (symplectic) Euler with
+  locked operand order — single sub-step per kernel base tick.
+  Phase-3.7 documents the deviation from the phase-3-plan's
+  literal "forward Euler" wording: pure explicit Euler is unstable
+  for an undamped harmonic oscillator and cannot meet the 1%
+  energy-conservation gate over 100 oscillations at any
+  practical `dt`.
+- The slosh state advances using **prior step's** `(accel_body,
+  omega_body)` — the documented one-step lag that breaks the
+  circular dependency between the tank's reaction force and the
+  kernel's per-step force evaluation. The first step uses zeros.
+
+#### Phase-3.7 limitations
+
+- Engine-cluster ↔ tank drain coupling is **not** wired. Tanks
+  declare a constant `drain_rate_kg_per_s` (default 0); engines
+  continue to track their own propellant accounting from Phase 3.6.
+  Future phase unifies the two.
+- The `TankRackMassAdapter` adds each tank's `mass_kg` to the
+  vehicle total. For a tank intended as the cluster's propellant
+  store this overcounts the propellant (the cluster's
+  `EngineClusterMassAdapter` already debits consumed propellant
+  from the dry mass). The Phase-3.7.E exit-criterion scenario
+  sizes the tank at 5 % of vehicle dry mass to keep the overcount
+  small; future phase unifies the accounting.
+- Rigid-body cluster mass-properties (with inertia tensor
+  evolution from per-engine `consumed_kg`) are still deferred —
+  rigid scenarios with engine clusters use `ConstantMassRigid` for
+  kernel mass-properties (Phase-3.6 deferral). The
+  `TankSnapshot.inertia_delta_body_kg_m2` is published in the
+  snapshot but consumed only by force / moment adapters in
+  Phase 3.7.
+- Slosh telemetry channels (`tank.<id>.slosh_angle_rad`,
+  `tank.<id>.fluid_kg`, etc.) are deferred to a Phase-3.X
+  follow-on; the Phase-3.7.E e2e test verifies determinism via
+  full-Parquet byte equality rather than per-tank channels.
+
+The canonical Phase-3.7 example ships at
+[`scenarios/sloshing-tank/sloshing-tank.toml`](../scenarios/sloshing-tank/sloshing-tank.toml).
