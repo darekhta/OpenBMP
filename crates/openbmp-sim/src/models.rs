@@ -22,7 +22,8 @@
 use std::collections::BTreeMap;
 
 use nalgebra::{Matrix3, Vector3};
-use openbmp_core::{Eci, Position3, SimTime, ValidationStatus};
+use openbmp_core::{Eci, EngineId, Position3, SimTime, ValidationStatus};
+use openbmp_propulsion::EngineSnapshot;
 use openbmp_state::{MassProperties, PointMassState};
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -97,6 +98,76 @@ impl<'a> EffectorActualsView<'a> {
         self.inner
             .into_iter()
             .flat_map(|m| m.iter().map(|(k, v)| (k.as_str(), *v)))
+    }
+}
+
+// ---------------------------------------------------------------------
+// EngineSnapshotView (Phase 3.6.C)
+// ---------------------------------------------------------------------
+
+/// Read-only view of the kernel's per-step engine snapshot.
+///
+/// Phase 3.6 wires the runner-side `EngineRack` into the cluster
+/// adapters: before each `kernel.step()`, the runner pushes a
+/// `BTreeMap<EngineId, EngineSnapshot>` into the kernel via
+/// `set_engine_snapshot(...)`. The kernel's derive closure then
+/// exposes that snapshot to every [`ForceModel::force_n_eci`] /
+/// [`MomentModel::moment_n_m_body`] / `MassModel::mass_kg_at` call
+/// inside the RK4 stages via this view.
+///
+/// Legacy / non-cluster scenarios use [`EngineSnapshotView::empty`],
+/// which holds no map at all — every `get` returns `None`. The
+/// kernel-side cluster adapters short-circuit on the empty view, so
+/// the legacy single-motor path is byte-identical.
+///
+/// `BTreeMap` (not `HashMap`) defeats macOS `SipHash` randomisation
+/// and matches the rest of the codebase's deterministic-collection
+/// convention.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct EngineSnapshotView<'a> {
+    inner: Option<&'a BTreeMap<EngineId, EngineSnapshot>>,
+}
+
+impl<'a> EngineSnapshotView<'a> {
+    /// Wrap a borrowed snapshot map.
+    #[must_use]
+    pub const fn new(map: &'a BTreeMap<EngineId, EngineSnapshot>) -> Self {
+        Self { inner: Some(map) }
+    }
+
+    /// Construct an empty view. Used by every legacy caller and by
+    /// kernel/model tests that don't exercise the cluster path.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { inner: None }
+    }
+
+    /// Look up an engine by id. Returns `None` for missing keys and
+    /// for the empty view.
+    #[must_use]
+    pub fn get(&self, id: EngineId) -> Option<EngineSnapshot> {
+        self.inner.and_then(|m| m.get(&id).copied())
+    }
+
+    /// `true` if the view holds no entries (or is the empty
+    /// constructor).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_none_or(BTreeMap::is_empty)
+    }
+
+    /// Number of entries in the view (`0` for the empty constructor).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.map_or(0, BTreeMap::len)
+    }
+
+    /// Iterate `(EngineId, EngineSnapshot)` pairs. Empty for the
+    /// empty view. Iteration order is `BTreeMap`-deterministic.
+    pub fn iter(&self) -> impl Iterator<Item = (EngineId, EngineSnapshot)> + '_ {
+        self.inner
+            .into_iter()
+            .flat_map(|m| m.iter().map(|(k, v)| (*k, *v)))
     }
 }
 
@@ -183,6 +254,12 @@ pub struct ForceContext<'a, S: SimState> {
     /// see the same snapshot — matches the architecture's "effectors
     /// step at the kernel base tick" cadence.
     pub effector_actuals: EffectorActualsView<'a>,
+    /// Phase-3.6: read-only view of the kernel's per-engine
+    /// snapshot, keyed by `EngineId`. Empty for legacy single-motor
+    /// scenarios; populated by the runner's `EngineRack` before
+    /// each `kernel.step()` for cluster scenarios. All four RK4
+    /// stages see the same snapshot.
+    pub engine_snapshot: EngineSnapshotView<'a>,
 }
 
 /// Trait implemented by force-providing models.
@@ -289,6 +366,11 @@ pub struct MomentContext<'a, S: SimState> {
     /// (Phase 3.6+) consume the deflection axes that perturb `CM`
     /// in the same way schema-2 force models do.
     pub effector_actuals: EffectorActualsView<'a>,
+    /// Phase-3.6: read-only engine snapshot view. The rigid-body
+    /// `EngineClusterMomentAdapter` reads per-engine thrust + mount
+    /// point from this view to compute the cluster moment about
+    /// the body origin.
+    pub engine_snapshot: EngineSnapshotView<'a>,
 }
 
 /// Trait implemented by moment-providing models.
@@ -330,6 +412,26 @@ impl<S: SimState> MomentModel<S> for ZeroMoment {
 // Mass
 // ---------------------------------------------------------------------
 
+/// Inputs passed to a [`MassModel::mass_kg_at`] /
+/// [`MassModel::mass_rate_kg_s_at`] call.
+///
+/// Phase 3.6 introduces this context-carrying entry point so the
+/// `EngineClusterMassAdapter` can read the kernel's per-engine
+/// snapshot. Existing time-only models keep the no-op default
+/// forwarding from the legacy `mass_kg(t)` / `mass_rate_kg_s(t)`
+/// methods — every Phase-2 / 3.5 mass model is byte-identical
+/// because the default forward calls the original method.
+#[derive(Copy, Clone, Debug)]
+pub struct MassContext<'a> {
+    /// Sub-step time. May be the kernel's published time
+    /// (start-of-step) or one of the RK4 intermediate times.
+    pub time: SimTime,
+    /// Phase-3.6: read-only engine snapshot view. Empty for legacy
+    /// scenarios; populated by the runner before each `step()` for
+    /// cluster scenarios.
+    pub engine_snapshot: EngineSnapshotView<'a>,
+}
+
 /// Trait implemented by mass-property-providing models.
 ///
 /// Phase 1 surfaces only mass and mass-rate (point-mass). Full
@@ -353,6 +455,31 @@ pub trait MassModel {
     /// Returns a [`ModelEvalError`] when the model is queried outside
     /// its validity envelope or produces non-finite output.
     fn mass_rate_kg_s(&self, t: SimTime) -> Result<f64, ModelEvalError>;
+
+    /// Phase-3.6 context-carrying entry point. The default
+    /// implementation forwards to [`Self::mass_kg`], preserving
+    /// byte-identical legacy behaviour. The
+    /// `EngineClusterMassAdapter` overrides this method to read
+    /// the per-engine `consumed_kg` from the kernel snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Forwards the [`ModelEvalError`] from the override or the
+    /// default's inner [`Self::mass_kg`] call.
+    fn mass_kg_at(&self, ctx: MassContext<'_>) -> Result<f64, ModelEvalError> {
+        self.mass_kg(ctx.time)
+    }
+
+    /// Phase-3.6 context-carrying entry point. The default forwards
+    /// to [`Self::mass_rate_kg_s`].
+    ///
+    /// # Errors
+    ///
+    /// Forwards the [`ModelEvalError`] from the override or the
+    /// default's inner [`Self::mass_rate_kg_s`] call.
+    fn mass_rate_kg_s_at(&self, ctx: MassContext<'_>) -> Result<f64, ModelEvalError> {
+        self.mass_rate_kg_s(ctx.time)
+    }
 
     /// Convenience: typed mass at `t`.
     ///
@@ -625,6 +752,7 @@ mod tests {
                 mass_kg: state.mass.get::<kilogram>(),
                 time: SimTime::ZERO,
                 effector_actuals: EffectorActualsView::empty(),
+                engine_snapshot: EngineSnapshotView::empty(),
             })
             .expect("force eval must succeed");
         // mass=2.5, g=9.80665 → force_z = -2.5 * 9.80665 = -24.516625
@@ -644,6 +772,7 @@ mod tests {
                 mass_kg: state.mass.get::<kilogram>(),
                 time: SimTime::ZERO,
                 effector_actuals: EffectorActualsView::empty(),
+                engine_snapshot: EngineSnapshotView::empty(),
             })
             .expect("zero force eval must succeed");
         assert_abs_diff_eq!(f.norm(), 0.0);

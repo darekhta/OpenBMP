@@ -35,6 +35,14 @@ pub enum CliError {
         /// Human-readable effector failure.
         reason: String,
     },
+    /// An engine failed to construct, command, or step.
+    #[error("engine error at {field}: {reason}")]
+    Engine {
+        /// Scenario field path where the failure occurred.
+        field: String,
+        /// Human-readable engine failure.
+        reason: String,
+    },
     /// The kernel could not be constructed or stepped.
     #[error("simulation error")]
     Simulation(#[from] SimulationError),
@@ -104,6 +112,7 @@ impl CliError {
             Self::Scenario(_)
             | Self::Assembly { .. }
             | Self::Effector { .. }
+            | Self::Engine { .. }
             | Self::UnsupportedScenario { .. }
             | Self::Aero(_)
             | Self::AeroEffectorMismatch { .. }

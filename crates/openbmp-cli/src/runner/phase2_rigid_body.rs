@@ -50,8 +50,9 @@ use openbmp_sim::{
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
-    AxialDragForceAdapter, BasicAssembly, BasicVehicle, BoxedMassModel, GravityForceAdapter,
-    MotorThrustForceAdapter, NamedForceModel, RigidMotorMassAdapter, Vehicle,
+    AxialDragForceAdapter, BasicAssembly, BasicVehicle, BoxedMassModel, EngineClusterForceAdapter,
+    EngineClusterMassAdapter, GravityForceAdapter, MotorThrustForceAdapter, NamedForceModel,
+    RigidMotorMassAdapter, Vehicle,
 };
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -68,6 +69,10 @@ const PHASE3_GRAVITY_MODEL_ID: ModelId = ModelId::new(301);
 const PHASE3_AERO_MODEL_ID: ModelId = ModelId::new(302);
 const PHASE3_THRUST_MODEL_ID: ModelId = ModelId::new(303);
 const PHASE3_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(304);
+// Phase-3.6: distinct model ids for the engine-cluster path on the
+// rigid-body kernel.
+const PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(320);
+const PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(321);
 
 /// Run a Phase-2 rigid-body scenario through a freshly-built kernel
 /// and return the populated telemetry table.
@@ -84,6 +89,7 @@ const PHASE3_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(304);
 /// [`CliError::Aero`] / [`CliError::Motor`] / [`CliError::Env`] for
 /// loader failures, and [`CliError::Simulation`] / [`CliError::Telemetry`]
 /// for kernel- or telemetry-side failures.
+#[allow(clippy::too_many_lines)] // Phase-3.6: per-step orchestration grew
 pub fn run(
     scenario: &Scenario,
     resolved_files: &BTreeMap<String, ResolvedFile>,
@@ -94,6 +100,8 @@ pub fn run(
     // Phase-3.4: same effector-rack pattern as the point-mass
     // runner. Empty rack means no per-step effector operations.
     let mut effector_rack = crate::runner::effectors::EffectorRack::build(document)?;
+    // Phase-3.6: see phase2_point_mass.rs for the rationale.
+    let mut engine_rack = crate::runner::engines::EngineRack::build(document)?;
 
     let loaded = load_models(document, resolved_files)?;
     let initial_state = build_initial_state(document, &loaded, &assembly)?;
@@ -143,6 +151,9 @@ pub fn run(
         );
         kernel.set_effector_actuals(snapshot_map);
     }
+    if !engine_rack.is_empty() {
+        kernel.set_engine_snapshot(engine_rack.snapshot_map());
+    }
     record_step(
         &mut table,
         &kernel,
@@ -153,10 +164,15 @@ pub fn run(
         &initial_snapshot,
     )?;
     let mut pending_effector_events = Vec::new();
+    let mut pending_engine_events: Vec<openbmp_sim::FiredEvent> = Vec::new();
     while kernel.stop_reason().is_none() {
         effector_rack.apply_overrides(&pending_effector_events)?;
         if !effector_rack.is_empty() {
             effector_rack.step(kernel.current_time())?;
+        }
+        if !engine_rack.is_empty() {
+            engine_rack.apply_commands(&pending_engine_events)?;
+            engine_rack.step()?;
         }
         if !deck_bindings.is_empty() {
             let rack_snapshot = effector_rack.snapshot();
@@ -165,6 +181,9 @@ pub fn run(
                 &rack_snapshot,
             );
             kernel.set_effector_actuals(snapshot_map);
+        }
+        if !engine_rack.is_empty() {
+            kernel.set_engine_snapshot(engine_rack.snapshot_map());
         }
         kernel.step()?;
         let fired = kernel.drain_events();
@@ -178,6 +197,11 @@ pub fn run(
             &fired,
             &snapshot,
         )?;
+        pending_engine_events = fired
+            .iter()
+            .filter(|e| matches!(e.action, openbmp_sim::EventAction::EngineCommand { .. }))
+            .cloned()
+            .collect();
         pending_effector_events = fired;
     }
 
@@ -410,17 +434,46 @@ fn build_vehicle(
                 named.push(NamedForceModel::new("aero", Box::new(drag)));
             }
             "thrust" => {
-                let motor = loaded
-                    .motor
-                    .clone()
-                    .ok_or_else(|| CliError::UnsupportedScenario {
-                        what: "forces includes `thrust` but [propulsion.motor] is missing"
-                            .to_owned(),
-                    })?;
-                let ignition_time_s = motor_ignition_time_s(document)?;
-                let thrust =
-                    MotorThrustForceAdapter::new(motor, ignition_time_s, PHASE3_THRUST_MODEL_ID);
-                named.push(NamedForceModel::new("thrust", Box::new(thrust)));
+                // Phase-3.6: dispatch between single-motor and
+                // engine-cluster paths. AmbiguousPropulsion is
+                // rejected at parse time.
+                if let Some(scenario_assembly) = &document.vehicle.assembly
+                    && !scenario_assembly.engines.is_empty()
+                {
+                    let engine_ids: Vec<openbmp_core::EngineId> = scenario_assembly
+                        .engines
+                        .iter()
+                        .map(|e| {
+                            openbmp_core::EngineId::from_path(&format!(
+                                "vehicle.assembly.engines.{id}",
+                                id = e.id
+                            ))
+                        })
+                        .collect();
+                    let thrust = EngineClusterForceAdapter::new(
+                        engine_ids,
+                        PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID,
+                    );
+                    named.push(NamedForceModel::new("thrust", Box::new(thrust)));
+                } else {
+                    let motor =
+                        loaded
+                            .motor
+                            .clone()
+                            .ok_or_else(|| CliError::UnsupportedScenario {
+                                what:
+                                    "forces includes `thrust` but neither [propulsion.motor] nor \
+                                   [[vehicle.assembly.engines]] is declared"
+                                        .to_owned(),
+                            })?;
+                    let ignition_time_s = motor_ignition_time_s(document)?;
+                    let thrust = MotorThrustForceAdapter::new(
+                        motor,
+                        ignition_time_s,
+                        PHASE3_THRUST_MODEL_ID,
+                    );
+                    named.push(NamedForceModel::new("thrust", Box::new(thrust)));
+                }
             }
             other => unreachable!("require_supported_shape rejects unknown force model `{other}`"),
         }
@@ -449,7 +502,27 @@ fn build_vehicle_scalar_mass_model(
 
     let start_time = SimTime::from_seconds(document.time.start_s);
     let dry_mass_kg = dry_mass_kg_at(assembly, start_time, "vehicle.assembly")?;
-    let inner: Box<dyn MassModel> = if let Some(motor) = &loaded.motor {
+    let inner: Box<dyn MassModel> = if let Some(scenario_assembly) = &document.vehicle.assembly
+        && !scenario_assembly.engines.is_empty()
+    {
+        // Phase-3.6 cluster path: engine-cluster mass adapter
+        // tracks per-engine `consumed_kg` from the kernel snapshot.
+        let engine_ids: Vec<openbmp_core::EngineId> = scenario_assembly
+            .engines
+            .iter()
+            .map(|e| {
+                openbmp_core::EngineId::from_path(&format!(
+                    "vehicle.assembly.engines.{id}",
+                    id = e.id
+                ))
+            })
+            .collect();
+        Box::new(EngineClusterMassAdapter::new(
+            dry_mass_kg,
+            engine_ids,
+            PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID,
+        ))
+    } else if let Some(motor) = &loaded.motor {
         Box::new(MotorMassAdapter::new(
             motor.clone(),
             dry_mass_kg,
@@ -500,7 +573,19 @@ fn build_mass_model(
     let start_time = SimTime::from_seconds(document.time.start_s);
     let dry_props = dry_mass_properties_at(assembly, start_time, "vehicle.assembly")?;
 
-    if let Some(motor) = &loaded.motor {
+    // Phase-3.6 rigid + engine cluster: propellant deficit isn't
+    // tracked in rigid mass-properties yet (that's Phase 3.7's
+    // tank-driven mass-property dynamics work). Fall through to
+    // `ConstantMassRigid` — the cluster's `EngineClusterForceAdapter`
+    // still applies thrust normally; only mass-properties is
+    // simplified.
+    if let Some(scenario_assembly) = &document.vehicle.assembly
+        && !scenario_assembly.engines.is_empty()
+    {
+        Ok(RigidMassEitherKind::Constant(ConstantMassRigid::new(
+            dry_props,
+        )))
+    } else if let Some(motor) = &loaded.motor {
         Ok(RigidMassEitherKind::Motor(RigidMotorMassAdapter::new(
             motor.clone(),
             dry_props.mass.get::<kilogram>(),
@@ -874,12 +959,14 @@ where
     // breakdown / kernel snapshot symmetry rationale.
     let env_sample = EnvironmentSample::default();
     let kernel_actuals = kernel.effector_actuals();
+    let kernel_engine_snapshot = kernel.engine_snapshot();
     let ctx = ForceContext {
         state,
         environment: &env_sample,
         mass_kg: state.mass_props.mass_kg(),
         time: state.time,
         effector_actuals: openbmp_sim::EffectorActualsView::new(kernel_actuals),
+        engine_snapshot: openbmp_sim::EngineSnapshotView::new(kernel_engine_snapshot),
     };
     let breakdown = breakdown_vehicle
         .evaluate_force_breakdown(ctx)

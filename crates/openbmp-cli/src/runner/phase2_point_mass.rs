@@ -51,8 +51,8 @@ use openbmp_sim::{
 use openbmp_state::PointMassState;
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
-    AxialDragForceAdapter, BasicVehicle, BoxedMassModel, MotorMassAdapter, MotorThrustForceAdapter,
-    NamedForceModel, Vehicle,
+    AxialDragForceAdapter, BasicVehicle, BoxedMassModel, EngineClusterForceAdapter,
+    EngineClusterMassAdapter, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel, Vehicle,
 };
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -72,6 +72,11 @@ use openbmp_vehicle::BasicAssembly;
 const PHASE2_AERO_MODEL_ID: ModelId = ModelId::new(102);
 const PHASE2_THRUST_MODEL_ID: ModelId = ModelId::new(103);
 const PHASE2_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(104);
+// Phase-3.6: distinct model ids for the engine-cluster path so the
+// determinism oracle can tell legacy single-motor scenarios apart
+// from cluster scenarios in the per-model force breakdown.
+const PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(120);
+const PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(121);
 
 #[derive(Clone, Debug, Default)]
 struct LoadedModels {
@@ -94,6 +99,7 @@ struct LoadedModels {
 /// [`CliError::Aero`] / [`CliError::Motor`] / [`CliError::Env`] for
 /// loader failures, and [`CliError::Simulation`] / [`CliError::Telemetry`]
 /// for kernel- or telemetry-side failures.
+#[allow(clippy::too_many_lines)] // Phase-3.6: per-step orchestration grew
 pub fn run(
     scenario: &Scenario,
     resolved_files: &BTreeMap<String, ResolvedFile>,
@@ -106,6 +112,11 @@ pub fn run(
     // case every per-step rack operation short-circuits and the
     // legacy byte-stable kernel path is preserved.
     let mut effector_rack = crate::runner::effectors::EffectorRack::build(document)?;
+    // Phase-3.6: build the runner-side engine rack. Empty when no
+    // `[[vehicle.assembly.engines]]` are declared, in which case
+    // every per-step rack operation short-circuits and the legacy
+    // single-motor byte-stable path is preserved.
+    let mut engine_rack = crate::runner::engines::EngineRack::build(document)?;
 
     let loaded_models = load_models(document, resolved_files)?;
     let initial_state = build_initial_state(document, &loaded_models, &assembly)?;
@@ -166,6 +177,12 @@ pub fn run(
         );
         kernel.set_effector_actuals(snapshot_map);
     }
+    // Phase-3.6: at step 0, push the rack's initial (Idle) snapshot
+    // to the kernel so the breakdown's mass adapter sees the same
+    // empty-consumption view the kernel will see on its first step.
+    if !engine_rack.is_empty() {
+        kernel.set_engine_snapshot(engine_rack.snapshot_map());
+    }
     record_step(
         &mut table,
         &kernel,
@@ -176,10 +193,17 @@ pub fn run(
         &initial_snapshot,
     )?;
     let mut pending_effector_events = Vec::new();
+    let mut pending_engine_events: Vec<openbmp_sim::FiredEvent> = Vec::new();
     while kernel.stop_reason().is_none() {
         effector_rack.apply_overrides(&pending_effector_events)?;
         if !effector_rack.is_empty() {
             effector_rack.step(kernel.current_time())?;
+        }
+        // Phase-3.6: drain pending engine commands from the previous
+        // kernel step, apply to the rack, then advance the rack.
+        if !engine_rack.is_empty() {
+            engine_rack.apply_commands(&pending_engine_events)?;
+            engine_rack.step()?;
         }
         // Phase-3.5.C: push the rack's actuals snapshot to the kernel
         // BEFORE `step()` so all four RK4 stages see the same view.
@@ -191,6 +215,14 @@ pub fn run(
                 &rack_snapshot,
             );
             kernel.set_effector_actuals(snapshot_map);
+        }
+        // Phase-3.6: push the rack's engine snapshot to the kernel
+        // BEFORE `step()` so all four RK4 stages see the same view.
+        // Empty rack → zero allocation, zero state change (the
+        // kernel's `engine_snapshot` field stays at the empty
+        // `BTreeMap` set in `new()`).
+        if !engine_rack.is_empty() {
+            kernel.set_engine_snapshot(engine_rack.snapshot_map());
         }
         kernel.step()?;
         let fired = kernel.drain_events();
@@ -204,6 +236,17 @@ pub fn run(
             &fired,
             &snapshot,
         )?;
+        // Partition fired events: engine commands go to the engine
+        // rack on the next step; everything else (effector
+        // overrides, etc.) stays with the effector pending queue.
+        // The kernel's match arm is exhaustive, so any FiredEvent
+        // whose action is `EngineCommand` only flows through
+        // `pending_engine_events`.
+        pending_engine_events = fired
+            .iter()
+            .filter(|e| matches!(e.action, openbmp_sim::EventAction::EngineCommand { .. }))
+            .cloned()
+            .collect();
         pending_effector_events = fired;
     }
 
@@ -408,18 +451,46 @@ fn build_vehicle(
                 named.push(NamedForceModel::new("aero", Box::new(drag)));
             }
             "thrust" => {
-                let motor =
-                    loaded_models
-                        .motor
-                        .clone()
-                        .ok_or_else(|| CliError::UnsupportedScenario {
-                            what: "forces includes `thrust` but [propulsion.motor] is missing"
+                // Phase-3.6: dispatch between single-motor (legacy)
+                // and engine-cluster paths based on whether
+                // `[[vehicle.assembly.engines]]` is declared. The
+                // scenario validator rejects scenarios that declare
+                // both blocks (`AmbiguousPropulsion`), so exactly
+                // one path resolves.
+                if let Some(assembly) = &document.vehicle.assembly
+                    && !assembly.engines.is_empty()
+                {
+                    let engine_ids: Vec<openbmp_core::EngineId> = assembly
+                        .engines
+                        .iter()
+                        .map(|e| {
+                            openbmp_core::EngineId::from_path(&format!(
+                                "vehicle.assembly.engines.{id}",
+                                id = e.id
+                            ))
+                        })
+                        .collect();
+                    let thrust = EngineClusterForceAdapter::new(
+                        engine_ids,
+                        PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID,
+                    );
+                    named.push(NamedForceModel::new("thrust", Box::new(thrust)));
+                } else {
+                    let motor = loaded_models.motor.clone().ok_or_else(|| {
+                        CliError::UnsupportedScenario {
+                            what: "forces includes `thrust` but neither [propulsion.motor] nor \
+                                   [[vehicle.assembly.engines]] is declared"
                                 .to_owned(),
-                        })?;
-                let ignition_time_s = motor_ignition_time_s(document)?;
-                let thrust =
-                    MotorThrustForceAdapter::new(motor, ignition_time_s, PHASE2_THRUST_MODEL_ID);
-                named.push(NamedForceModel::new("thrust", Box::new(thrust)));
+                        }
+                    })?;
+                    let ignition_time_s = motor_ignition_time_s(document)?;
+                    let thrust = MotorThrustForceAdapter::new(
+                        motor,
+                        ignition_time_s,
+                        PHASE2_THRUST_MODEL_ID,
+                    );
+                    named.push(NamedForceModel::new("thrust", Box::new(thrust)));
+                }
             }
             other => unreachable!("require_supported_shape rejects unknown force model `{other}`"),
         }
@@ -441,7 +512,29 @@ fn build_mass_model(
 ) -> Result<Box<dyn MassModel>, CliError> {
     let start_time = SimTime::from_seconds(document.time.start_s);
     let dry_mass_kg = dry_mass_kg_at(assembly, start_time, "vehicle.assembly")?;
-    if let Some(motor) = &loaded_models.motor {
+    // Phase-3.6: dispatch to the cluster mass adapter when
+    // `[[vehicle.assembly.engines]]` is declared. Scenarios with
+    // both motor and engines are rejected at parse time
+    // (`AmbiguousPropulsion`), so the three arms are exclusive.
+    if let Some(scenario_assembly) = &document.vehicle.assembly
+        && !scenario_assembly.engines.is_empty()
+    {
+        let engine_ids: Vec<openbmp_core::EngineId> = scenario_assembly
+            .engines
+            .iter()
+            .map(|e| {
+                openbmp_core::EngineId::from_path(&format!(
+                    "vehicle.assembly.engines.{id}",
+                    id = e.id
+                ))
+            })
+            .collect();
+        Ok(Box::new(EngineClusterMassAdapter::new(
+            dry_mass_kg,
+            engine_ids,
+            PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID,
+        )))
+    } else if let Some(motor) = &loaded_models.motor {
         let ignition_time_s = motor_ignition_time_s(document)?;
         Ok(Box::new(MotorMassAdapter::new(
             motor.clone(),
@@ -772,12 +865,14 @@ where
     // breakdown sees the same deflections the kernel just consumed.
     let env_sample = kernel.current_environment_sample()?;
     let kernel_actuals = kernel.effector_actuals();
+    let kernel_engine_snapshot = kernel.engine_snapshot();
     let ctx = ForceContext {
         state,
         environment: &env_sample,
         mass_kg: state.mass.get::<kilogram>(),
         time: state.time,
         effector_actuals: openbmp_sim::EffectorActualsView::new(kernel_actuals),
+        engine_snapshot: openbmp_sim::EngineSnapshotView::new(kernel_engine_snapshot),
     };
     let breakdown = breakdown_vehicle
         .evaluate_force_breakdown(ctx)

@@ -32,8 +32,8 @@ use crate::derivative::PointMassDerivative;
 use crate::error::{IntegratorError, SimulationError, StopReason};
 use crate::integrator::{Integrator, SimState};
 use crate::models::{
-    EffectorActualsView, EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext,
-    ForceModel, MassModel,
+    EffectorActualsView, EngineSnapshotView, EnvironmentModel, EnvironmentQuery, EnvironmentSample,
+    ForceContext, ForceModel, MassContext, MassModel,
 };
 use crate::stop::StopCondition;
 
@@ -134,6 +134,15 @@ where
     /// the closure passes through, so legacy code paths produce
     /// byte-identical Parquet to pre-3.5.
     effector_actuals: std::collections::BTreeMap<String, f64>,
+    /// Phase-3.6: kernel-owned snapshot of per-engine state, keyed
+    /// by `EngineId`. The runner refreshes this map via
+    /// [`Self::set_engine_snapshot`] before each `step()` call so
+    /// every RK4 stage sees the same snapshot. Empty `BTreeMap` for
+    /// legacy single-motor scenarios — the cluster adapters
+    /// short-circuit on the empty view, so legacy code paths
+    /// produce byte-identical Parquet.
+    engine_snapshot:
+        std::collections::BTreeMap<openbmp_core::EngineId, openbmp_propulsion::EngineSnapshot>,
 }
 
 /// Phase-1 type alias for the point-mass kernel shape used by the
@@ -193,6 +202,7 @@ where
             fired_once_events: std::collections::BTreeSet::new(),
             previous_event_scalars: None,
             effector_actuals: std::collections::BTreeMap::new(),
+            engine_snapshot: std::collections::BTreeMap::new(),
         })
     }
 
@@ -255,6 +265,7 @@ where
         let mass_model = &self.mass_model;
         let environment = &self.environment;
         let effector_actuals = &self.effector_actuals;
+        let engine_snapshot = &self.engine_snapshot;
 
         let derive = |s: &PointMassState,
                       t: SimTime|
@@ -270,8 +281,12 @@ where
                 mass_kg,
                 time: t,
                 effector_actuals: EffectorActualsView::new(effector_actuals),
+                engine_snapshot: EngineSnapshotView::new(engine_snapshot),
             })?;
-            let mass_rate_kg_s = mass_model.mass_rate_kg_s(t)?;
+            let mass_rate_kg_s = mass_model.mass_rate_kg_s_at(MassContext {
+                time: t,
+                engine_snapshot: EngineSnapshotView::new(engine_snapshot),
+            })?;
             // Locked order: (force / mass) gives acceleration. We
             // tolerate a non-positive intermediate mass producing
             // NaN/Inf — the integrator's per-stage finite check
@@ -524,6 +539,37 @@ where
         &self.effector_actuals
     }
 
+    /// Replace the per-engine snapshot consumed by force / moment /
+    /// mass evaluation. Phase-3.6 contract: the runner's
+    /// `EngineRack` calls this before every `step()` invocation,
+    /// keyed by `EngineId` and valued by the engine's
+    /// `EngineSnapshot` at the time the snapshot was taken. Held
+    /// for the entire `step()` call, so all four RK4 stages see the
+    /// same snapshot.
+    ///
+    /// Legacy single-motor scenarios skip the call; the internal
+    /// map stays empty.
+    pub fn set_engine_snapshot(
+        &mut self,
+        snapshot: std::collections::BTreeMap<
+            openbmp_core::EngineId,
+            openbmp_propulsion::EngineSnapshot,
+        >,
+    ) {
+        self.engine_snapshot = snapshot;
+    }
+
+    /// Read-only access to the current per-engine snapshot.
+    /// Production consumers read via [`crate::models::EngineSnapshotView`]
+    /// inside `ForceContext` / `MomentContext` / `MassContext`.
+    #[must_use]
+    pub fn engine_snapshot(
+        &self,
+    ) -> &std::collections::BTreeMap<openbmp_core::EngineId, openbmp_propulsion::EngineSnapshot>
+    {
+        &self.engine_snapshot
+    }
+
     /// Evaluate every declared event binding against a post-step
     /// `EventScalars` snapshot. Records fired bindings in
     /// `pending_events` for the runner's drain queue, applies the
@@ -762,6 +808,7 @@ where
             fired_once_events: std::collections::BTreeSet::new(),
             previous_event_scalars: None,
             effector_actuals: std::collections::BTreeMap::new(),
+            engine_snapshot: std::collections::BTreeMap::new(),
         })
     }
 
@@ -799,6 +846,7 @@ where
         let mass_model = &self.mass_model.mass_model;
         let environment = &self.environment;
         let effector_actuals = &self.effector_actuals;
+        let engine_snapshot = &self.engine_snapshot;
 
         let derive = |s: &openbmp_state::RigidBodyState,
                       t: SimTime|
@@ -817,12 +865,14 @@ where
                 mass_kg,
                 time: t,
                 effector_actuals: EffectorActualsView::new(effector_actuals),
+                engine_snapshot: EngineSnapshotView::new(engine_snapshot),
             })?;
             let moment_n_m_body = moment_model.moment_n_m_body(crate::models::MomentContext {
                 state: s,
                 environment: &env,
                 time: t,
                 effector_actuals: EffectorActualsView::new(effector_actuals),
+                engine_snapshot: EngineSnapshotView::new(engine_snapshot),
             })?;
             let rate = mass_model.mass_properties_rate(t)?;
 

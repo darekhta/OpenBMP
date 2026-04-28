@@ -34,6 +34,7 @@
 pub mod aero_effector_match;
 pub mod assembly;
 pub mod effectors;
+pub mod engines;
 pub mod mission;
 pub mod phase1;
 pub mod phase2_point_mass;
@@ -117,6 +118,11 @@ fn is_phase1_byte_stable_shape(scenario: &Scenario) -> bool {
         .assembly
         .as_ref()
         .is_some_and(|a| !a.effectors.is_empty());
+    let has_engines = document
+        .vehicle
+        .assembly
+        .as_ref()
+        .is_some_and(|a| !a.engines.is_empty());
     document.vehicle.kind == "point_mass"
         && document.environment.gravity == "constant"
         && document.environment.atmosphere == "none"
@@ -128,4 +134,5 @@ fn is_phase1_byte_stable_shape(scenario: &Scenario) -> bool {
         && document.wind.is_none()
         && document.atmosphere.is_none()
         && !has_effectors
+        && !has_engines
 }

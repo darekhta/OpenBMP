@@ -533,6 +533,200 @@ fn map_aero_lookup_error(model_id: ModelId, err: AeroError) -> ModelEvalError {
 }
 
 // ---------------------------------------------------------------------
+// EngineCluster adapters (Phase 3.6.C)
+// ---------------------------------------------------------------------
+
+/// Phase-3.6 kernel-side force adapter for an engine cluster.
+///
+/// Reads the kernel's per-engine snapshot via
+/// [`openbmp_sim::EngineSnapshotView`] and sums per-engine
+/// `thrust_body` in scenario-declared engine order. Operand order
+/// is locked left-fold; FMA disabled.
+///
+/// Point-mass impl: the cluster sums full body-frame `thrust_body`
+/// vectors and treats the sum as ECI directly. Point-mass kernels
+/// have no orientation, so gimbal-induced lateral components map
+/// to ECI x/y. The asymmetric-thrust signal (one engine off in a
+/// non-symmetric cluster) appears in the lateral components.
+///
+/// Rigid-body impl: rotates each engine's body-frame thrust through
+/// the attitude quaternion before summing, matching
+/// [`MotorThrustForceAdapter`]'s rigid-body convention.
+#[derive(Clone, Debug)]
+pub struct EngineClusterForceAdapter {
+    engine_ids: Vec<openbmp_core::EngineId>,
+    model_id: ModelId,
+}
+
+impl EngineClusterForceAdapter {
+    /// Construct from a parallel `engine_ids` array (scenario-
+    /// declared order) and a stable model id.
+    #[must_use]
+    pub fn new(engine_ids: Vec<openbmp_core::EngineId>, model_id: ModelId) -> Self {
+        Self {
+            engine_ids,
+            model_id,
+        }
+    }
+}
+
+impl ForceModel<PointMassState> for EngineClusterForceAdapter {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, PointMassState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let mut force_eci = Vector3::zeros();
+        for id in &self.engine_ids {
+            let snap = ctx
+                .engine_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "engine cluster force adapter: snapshot missing declared engine id",
+                    ),
+                })?;
+            // Point-mass kernel has no orientation; the cluster's
+            // body-frame thrust is treated as ECI directly. This
+            // maps gimbal lateral components onto ECI x/y, which is
+            // how the 3.6.D exit-criterion scenario detects
+            // asymmetric thrust.
+            force_eci += snap.thrust_body;
+        }
+        if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(force_eci)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+impl ForceModel<RigidBodyState> for EngineClusterForceAdapter {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let mut force_eci = Vector3::zeros();
+        for id in &self.engine_ids {
+            let snap = ctx
+                .engine_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "engine cluster force adapter: snapshot missing declared engine id",
+                    ),
+                })?;
+            // Rotate each engine's body-frame thrust through the
+            // attitude quaternion. Same locked rotation order as
+            // `MotorThrustForceAdapter::force_n_eci<RigidBodyState>`.
+            let f_eci = ctx.state.orientation.q * snap.thrust_body;
+            force_eci += f_eci;
+        }
+        if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(force_eci)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+/// Phase-3.6 kernel-side mass adapter for an engine cluster.
+///
+/// Reports `mass_kg = dry_vehicle_mass_kg - Σ consumed_kg` where
+/// `consumed_kg` is the cumulative propellant deficit per engine
+/// from the kernel snapshot. The runner's `EngineRack` accumulates
+/// the deficit forward; the kernel never re-integrates from
+/// `mass_flow`, which would drift relative to the rack and break
+/// determinism.
+///
+/// Phase-3.6 supports point-mass only; rigid-body cluster mass is
+/// deferred to Phase 3.7 alongside tank-driven mass-property
+/// dynamics.
+#[derive(Clone, Debug)]
+pub struct EngineClusterMassAdapter {
+    dry_vehicle_mass_kg: f64,
+    engine_ids: Vec<openbmp_core::EngineId>,
+    model_id: ModelId,
+}
+
+impl EngineClusterMassAdapter {
+    /// Construct from a dry-vehicle mass, a parallel `engine_ids`
+    /// array (scenario-declared order), and a stable model id.
+    #[must_use]
+    pub fn new(
+        dry_vehicle_mass_kg: f64,
+        engine_ids: Vec<openbmp_core::EngineId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            dry_vehicle_mass_kg,
+            engine_ids,
+            model_id,
+        }
+    }
+}
+
+impl MassModel for EngineClusterMassAdapter {
+    fn mass_kg(&self, _t: SimTime) -> Result<f64, ModelEvalError> {
+        // Time-only fallback (used outside the kernel hot path):
+        // assume zero consumption. Production callers go through
+        // `mass_kg_at(MassContext)` which reads the kernel snapshot.
+        Ok(self.dry_vehicle_mass_kg)
+    }
+
+    fn mass_rate_kg_s(&self, _t: SimTime) -> Result<f64, ModelEvalError> {
+        // Time-only fallback: zero rate.
+        Ok(0.0)
+    }
+
+    fn mass_kg_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+        let mut consumed = 0.0_f64;
+        for id in &self.engine_ids {
+            consumed += ctx.engine_snapshot.get(*id).map_or(0.0, |s| s.consumed_kg);
+        }
+        let mass = self.dry_vehicle_mass_kg - consumed;
+        if !mass.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(mass)
+    }
+
+    fn mass_rate_kg_s_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+        let mut total = 0.0_f64;
+        for id in &self.engine_ids {
+            total += ctx
+                .engine_snapshot
+                .get(*id)
+                .map_or(0.0, |s| s.mass_flow_kg_per_s);
+        }
+        let rate = -total;
+        if !rate.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(rate)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+// ---------------------------------------------------------------------
 // RigidMotorMassAdapter
 // ---------------------------------------------------------------------
 
@@ -672,6 +866,7 @@ mod tests {
             mass_kg,
             time: SimTime::from_seconds(time_s),
             effector_actuals: openbmp_sim::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
         }
     }
 
@@ -898,6 +1093,7 @@ mod tests {
             mass_kg,
             time: SimTime::from_seconds(time_s),
             effector_actuals: openbmp_sim::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
         }
     }
 
