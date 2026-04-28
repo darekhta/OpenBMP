@@ -1,12 +1,21 @@
-//! Aerodynamic deck (Schema 1, axisymmetric reduced sounding-rocket
-//! deck) and locked-order trilinear interpolation.
+//! Aerodynamic deck and locked-order multilinear interpolation.
 //!
 //! # Schema
 //!
-//! Phase 2.5 ships **Schema 1**: a three-axis tabulated deck indexed
+//! Phase 2.5 shipped **Schema 1**: a three-axis tabulated deck indexed
 //! by `(mach, alpha_deg, beta_deg)` and producing the three reduced
-//! coefficients `(CN, CD, CM)`. The semantics are pinned by
-//! `docs/phase-2-plan.md § Implementation Seams Locked Before Coding`:
+//! coefficients `(CN, CD, CM)`. Phase 3.5 generalises the internal
+//! representation to an **N-axis** deck (Schema 2): the same three
+//! base axes plus 1–3 optional control-effector axes. Schema-1 decks
+//! parse to an N=3 instance with no effector axes — the lookup at
+//! N=3 is bit-identical to the original trilinear path.
+//!
+//! `axis_order[0..3]` is always `["mach", "alpha", "beta"]`;
+//! `axis_order[3..]` (when present) names the effector axes (e.g.
+//! `delta_e_deg`) declared by the schema-2 deck.
+//!
+//! The semantics are pinned by `docs/phase-2-plan.md § Implementation
+//! Seams Locked Before Coding`:
 //!
 //! * `CN` — normal-force coefficient in the wind / body longitudinal
 //!   plane.
@@ -14,42 +23,41 @@
 //! * `CM` — pitching-moment coefficient about the body lateral axis;
 //!   roll moment is identically zero by axisymmetry.
 //!
-//! The full six-coefficient `CX/CY/CZ/Cl/Cm/Cn` deck and
-//! control-effector axes are deferred to Phase 3.
+//! Six-coefficient `CX/CY/CZ/Cl/Cm/Cn` decks are deferred past 3.5.
 //!
 //! # Storage layout
 //!
 //! Each coefficient table is a flat `Vec<f64>` of length
-//! `n_mach · n_alpha · n_beta`, stored in **row-major** order over
-//! `(mach, alpha, beta)` so that `beta` varies fastest. The index
-//! map is:
+//! `axes[0].len() · axes[1].len() · ... · axes[N-1].len()`, stored in
+//! **row-major** order over `axis_order` so that the **last axis
+//! varies fastest**. At N=3 with `axis_order = ["mach", "alpha", "beta"]`
+//! this matches the Schema-1 layout exactly:
 //!
 //! ```text
 //! index(im, ia, ib) = im · (n_alpha · n_beta) + ia · n_beta + ib
 //! ```
 //!
-//! This places `beta` in the innermost reduction slot of the
-//! trilinear lookup, which the locked operand order below is keyed to.
+//! # Multilinear interpolation
 //!
-//! # Trilinear interpolation
-//!
-//! Locked operand order per Demmel & Nguyen 2020 (*Algorithms for
-//! Efficient Reproducible Floating Point Summation*, ACM TOMS 46:3):
+//! Locked operand order, **innermost-axis-first** reduction. At N=3
+//! this collapses to the Schema-1 trilinear form bit-for-bit — beta
+//! reduces first, then alpha, then mach. Per Demmel & Nguyen 2020
+//! (*Algorithms for Efficient Reproducible Floating Point Summation*,
+//! ACM TOMS 46:3) the operand order is part of the byte-stability
+//! contract and is asserted by a property test that compares the
+//! N-D multilinear output against the literal Schema-1 closed-form
+//! trilinear expression at random query points.
 //!
 //! ```text
-//! v00 = (1-c) · c000 + c · c001
-//! v01 = (1-c) · c010 + c · c011
-//! v10 = (1-c) · c100 + c · c101
-//! v11 = (1-c) · c110 + c · c111
-//! v0  = (1-b) · v00  + b · v01
-//! v1  = (1-b) · v10  + b · v11
-//! r   = (1-a) · v0   + a · v1
+//! Step k (0-indexed, innermost-first):
+//!   axis_index = N - 1 - k
+//!   f          = fractions[axis_index]
+//!   for each adjacent corner pair (buf[2i], buf[2i + 1]):
+//!     buf[i] = (1 - f) * buf[2i] + f * buf[2i + 1]
 //! ```
 //!
-//! where `a = mach-fraction`, `b = alpha-fraction`,
-//! `c = beta-fraction` (innermost). FMA is disabled — the formula
-//! is written so each term reads as a single `Mul + Add` instruction
-//! the compiler cannot collapse to `mul_add`.
+//! FMA is disabled — each `(1 - f) * x + f * y` is two separate
+//! `fmul + fadd` instructions the compiler cannot fold to `mul_add`.
 //!
 //! # Out-of-grid behaviour
 //!
@@ -60,6 +68,8 @@
 //! offered — the OpenRocket / Niskanen 2009 corpus shows linear
 //! extrapolation produces nonsensical drag for high Mach decks.
 
+use std::collections::BTreeMap;
+
 use crate::error::AeroError;
 
 // ---------------------------------------------------------------------
@@ -67,7 +77,7 @@ use crate::error::AeroError;
 // ---------------------------------------------------------------------
 
 /// The three reduced coefficients returned by an aerodynamic deck
-/// lookup. Schema 1.
+/// lookup. Schema 1 / Schema 2.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct AeroCoefficients {
     /// Normal-force coefficient (dimensionless).
@@ -100,18 +110,24 @@ pub enum ExtrapolationPolicy {
 // AeroDeck
 // ---------------------------------------------------------------------
 
-/// Schema-1 tabulated aerodynamic deck.
+/// Tabulated aerodynamic deck. Holds the locked axis names, the
+/// per-axis grids, and the row-major coefficient tables.
 ///
-/// Constructed via [`AeroDeck::new`] with strictly monotone-increasing
-/// axes, finite values throughout, and coefficient tables sized to
-/// the product of the three axis lengths. The Phase-2.5.B TOML parser
-/// builds an `AeroDeck` from a deck file; this constructor is the
-/// in-memory entry point used by tests and by the parser internally.
+/// At N=3 (Schema 1) `axis_order = ["mach", "alpha", "beta"]` and the
+/// lookup is the original trilinear form. At N > 3 (Schema 2)
+/// `axis_order[3..]` names the additional effector axes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AeroDeck {
-    mach: Vec<f64>,
-    alpha_deg: Vec<f64>,
-    beta_deg: Vec<f64>,
+    /// Locked axis names. Always starts with
+    /// `["mach", "alpha", "beta"]`; Schema 2 appends effector-axis
+    /// names (each ending with `_deg` or `_rad`).
+    axis_order: Vec<String>,
+    /// One axis grid per name. Strictly monotone-increasing, finite,
+    /// non-empty. Same length and order as `axis_order`.
+    axes: Vec<Vec<f64>>,
+    /// Coefficient tables, each row-major over the cartesian product
+    /// of `axes`. Length = product of axis lengths. The last axis in
+    /// `axis_order` varies fastest in storage.
     cn: Vec<f64>,
     cd: Vec<f64>,
     cm: Vec<f64>,
@@ -121,8 +137,11 @@ pub struct AeroDeck {
 }
 
 impl AeroDeck {
-    /// Construct an in-memory deck and validate its structural and
-    /// finiteness invariants.
+    /// Construct a Schema-1 (3-axis) in-memory deck.
+    ///
+    /// Equivalent to [`AeroDeck::new_n_d`] with
+    /// `axis_order = ["mach", "alpha", "beta"]`. Phase-2.5 callers and
+    /// the Schema-1 parser use this entry point.
     ///
     /// # Errors
     ///
@@ -133,7 +152,7 @@ impl AeroDeck {
     /// in an axis, in a coefficient table, or in `reference_*`.
     /// Returns [`AeroError::InvalidParameter`] when a `reference_*`
     /// is non-positive.
-    #[allow(clippy::too_many_arguments)] // mirrors the deck-file schema; the TOML parser is the primary user.
+    #[allow(clippy::too_many_arguments)] // mirrors the Schema-1 deck-file shape; the TOML parser is the primary user.
     pub fn new(
         mach: Vec<f64>,
         alpha_deg: Vec<f64>,
@@ -144,19 +163,55 @@ impl AeroDeck {
         reference_area_m2: f64,
         reference_length_m: f64,
     ) -> Result<Self, AeroError> {
-        validate_axis(&mach, "mach axis")?;
-        validate_axis(&alpha_deg, "alpha axis")?;
-        validate_axis(&beta_deg, "beta axis")?;
-        let expected = mach.len() * alpha_deg.len() * beta_deg.len();
+        Self::new_n_d(
+            vec!["mach".to_string(), "alpha".to_string(), "beta".to_string()],
+            vec![mach, alpha_deg, beta_deg],
+            cn,
+            cd,
+            cm,
+            reference_area_m2,
+            reference_length_m,
+        )
+    }
+
+    /// Construct an N-axis deck with explicit `axis_order` and per-axis
+    /// grids. Schema-2 decks (with effector axes) use this entry point.
+    ///
+    /// Validates that:
+    ///
+    /// - `axis_order.len() == axes.len()`
+    /// - `axis_order` is non-empty and contains no duplicates
+    /// - the first three names are exactly `["mach", "alpha", "beta"]`
+    /// - every axis is non-empty, finite, and strictly monotone-increasing
+    /// - every coefficient table length equals the product of axis lengths
+    ///
+    /// # Errors
+    ///
+    /// See [`AeroDeck::new`] — same error class. Adds
+    /// [`AeroError::MalformedDeck`] for `axis_order` violations.
+    #[allow(clippy::too_many_arguments)] // matches the deck-file schema; the parser is the primary user.
+    pub fn new_n_d(
+        axis_order: Vec<String>,
+        axes: Vec<Vec<f64>>,
+        cn: Vec<f64>,
+        cd: Vec<f64>,
+        cm: Vec<f64>,
+        reference_area_m2: f64,
+        reference_length_m: f64,
+    ) -> Result<Self, AeroError> {
+        validate_axis_order(&axis_order, axes.len())?;
+        for (axis, name) in axes.iter().zip(axis_order.iter()) {
+            validate_axis(axis, axis_label(name))?;
+        }
+        let expected: usize = axes.iter().map(Vec::len).product();
         validate_table(&cn, expected, "CN table")?;
         validate_table(&cd, expected, "CD table")?;
         validate_table(&cm, expected, "CM table")?;
         validate_reference(reference_area_m2, "reference area")?;
         validate_reference(reference_length_m, "reference length")?;
         Ok(Self {
-            mach,
-            alpha_deg,
-            beta_deg,
+            axis_order,
+            axes,
             cn,
             cd,
             cm,
@@ -192,106 +247,231 @@ impl AeroDeck {
         self.reference_length_m
     }
 
+    /// All declared axis names in canonical order.
+    /// Always starts with `["mach", "alpha", "beta"]`.
+    #[must_use]
+    pub fn axis_order(&self) -> &[String] {
+        &self.axis_order
+    }
+
+    /// Effector-axis names declared by this deck (Schema 2 only).
+    /// Empty for Schema-1 decks.
+    #[must_use]
+    pub fn effector_axis_names(&self) -> &[String] {
+        &self.axis_order[3..]
+    }
+
     /// Mach grid (read-only access; ordered low-to-high).
     #[must_use]
     pub fn mach_grid(&self) -> &[f64] {
-        &self.mach
+        &self.axes[0]
     }
 
     /// Angle-of-attack grid in degrees (read-only; ordered low-to-high).
     #[must_use]
     pub fn alpha_grid_deg(&self) -> &[f64] {
-        &self.alpha_deg
+        &self.axes[1]
     }
 
     /// Side-slip grid in degrees (read-only; ordered low-to-high).
     #[must_use]
     pub fn beta_grid_deg(&self) -> &[f64] {
-        &self.beta_deg
+        &self.axes[2]
     }
 
-    /// Look up the deck at `(mach, alpha_deg, beta_deg)` using
-    /// locked-order trilinear interpolation.
+    /// Look up the deck at `(mach, alpha_deg, beta_deg, deflections)`
+    /// using locked-order multilinear interpolation.
+    ///
+    /// Schema-1 decks ignore `deflections` entirely. Schema-2 decks
+    /// require a value for every declared effector axis (missing key
+    /// returns [`AeroError::InvalidParameter`]). Extra keys in
+    /// `deflections` not declared by the deck are silently ignored
+    /// (forward-compatible).
     ///
     /// # Errors
     ///
     /// Returns [`AeroError::NonFinite`] when any input is `NaN` or
     /// `Inf`. Returns [`AeroError::OutOfEnvelope`] when the input is
     /// outside the grid on any axis and the deck is configured
-    /// [`ExtrapolationPolicy::FailClosed`] (the default).
-    #[allow(clippy::similar_names)] // im/ia/ib + im_next/ia_next/ib_next match the trilinear notation.
+    /// [`ExtrapolationPolicy::FailClosed`] (the default). Returns
+    /// [`AeroError::InvalidParameter`] when a Schema-2 deck axis has
+    /// no entry in `deflections`.
     pub fn lookup(
         &self,
         mach: f64,
         alpha_deg: f64,
         beta_deg: f64,
+        deflections: &BTreeMap<&str, f64>,
     ) -> Result<AeroCoefficients, AeroError> {
-        let (im, fm) = bracket(
-            &self.mach,
+        let n = self.axis_order.len();
+        // Per-axis (i_lo, fraction) pairs in axis_order.
+        let mut indices: Vec<(usize, f64)> = Vec::with_capacity(n);
+        indices.push(bracket(
+            &self.axes[0],
             mach,
             self.extrapolation,
             "mach outside deck envelope",
-        )?;
-        let (ia, fa) = bracket(
-            &self.alpha_deg,
+        )?);
+        indices.push(bracket(
+            &self.axes[1],
             alpha_deg,
             self.extrapolation,
             "alpha outside deck envelope",
-        )?;
-        let (ib, fb) = bracket(
-            &self.beta_deg,
+        )?);
+        indices.push(bracket(
+            &self.axes[2],
             beta_deg,
             self.extrapolation,
             "beta outside deck envelope",
-        )?;
+        )?);
+        for axis_index in 3..n {
+            let name = self.axis_order[axis_index].as_str();
+            let value =
+                deflections
+                    .get(name)
+                    .copied()
+                    .ok_or(AeroError::InvalidParameter {
+                        reason: "deck lookup missing effector deflection",
+                    })?;
+            indices.push(bracket(
+                &self.axes[axis_index],
+                value,
+                self.extrapolation,
+                "effector deflection outside deck envelope",
+            )?);
+        }
 
-        // Single-point axes: i_next = i and the corresponding fraction
-        // is 0, so the (1 - f)·c[i] + f·c[i_next] reduction degenerates
-        // to c[i] without any out-of-bounds access.
-        let im_next = if self.mach.len() == 1 { im } else { im + 1 };
-        let ia_next = if self.alpha_deg.len() == 1 {
-            ia
-        } else {
-            ia + 1
-        };
-        let ib_next = if self.beta_deg.len() == 1 { ib } else { ib + 1 };
-
-        let n_beta = self.beta_deg.len();
-        let n_ab = self.alpha_deg.len() * n_beta;
-
-        let i000 = im * n_ab + ia * n_beta + ib;
-        let i001 = im * n_ab + ia * n_beta + ib_next;
-        let i010 = im * n_ab + ia_next * n_beta + ib;
-        let i011 = im * n_ab + ia_next * n_beta + ib_next;
-        let i100 = im_next * n_ab + ia * n_beta + ib;
-        let i101 = im_next * n_ab + ia * n_beta + ib_next;
-        let i110 = im_next * n_ab + ia_next * n_beta + ib;
-        let i111 = im_next * n_ab + ia_next * n_beta + ib_next;
-
-        let interp = |table: &[f64]| -> f64 {
-            // Locked order: c (innermost = beta), then b (alpha),
-            // then a (mach). FMA disabled — each `(1 - f) * x + f * y`
-            // is two separate fmul + fadd instructions.
-            let v00 = (1.0 - fb) * table[i000] + fb * table[i001];
-            let v01 = (1.0 - fb) * table[i010] + fb * table[i011];
-            let v10 = (1.0 - fb) * table[i100] + fb * table[i101];
-            let v11 = (1.0 - fb) * table[i110] + fb * table[i111];
-            let v0 = (1.0 - fa) * v00 + fa * v01;
-            let v1 = (1.0 - fa) * v10 + fa * v11;
-            (1.0 - fm) * v0 + fm * v1
-        };
+        // Pre-compute storage strides and the corner stencil.
+        let strides = compute_strides(&self.axes);
+        let corners = collect_corner_indices(&self.axes, &indices, &strides);
+        let fractions: Vec<f64> = indices.iter().map(|(_, f)| *f).collect();
 
         Ok(AeroCoefficients {
-            cn: interp(&self.cn),
-            cd: interp(&self.cd),
-            cm: interp(&self.cm),
+            cn: multilinear_reduce(&self.cn, &corners, &fractions),
+            cd: multilinear_reduce(&self.cd, &corners, &fractions),
+            cm: multilinear_reduce(&self.cm, &corners, &fractions),
         })
     }
 }
 
 // ---------------------------------------------------------------------
-// Internal helpers
+// Internal helpers — multilinear lookup
 // ---------------------------------------------------------------------
+
+/// Per-axis row-major strides. `strides[k]` is the number of
+/// `Vec<f64>` entries one step along `axes[k]` advances.
+fn compute_strides(axes: &[Vec<f64>]) -> Vec<usize> {
+    let n = axes.len();
+    let mut strides = vec![1usize; n];
+    for k in (0..n - 1).rev() {
+        strides[k] = strides[k + 1] * axes[k + 1].len();
+    }
+    strides
+}
+
+/// Collect the `2^N` corner indices around `indices` in row-major
+/// order over `axis_order`. The k-th axis varies in the bit at
+/// position `(N - 1 - k)` of the corner-array index, so the **last
+/// axis varies fastest** in the corner array — matching the storage
+/// layout. This is the layout the innermost-first reduction below
+/// expects.
+fn collect_corner_indices(
+    axes: &[Vec<f64>],
+    indices: &[(usize, f64)],
+    strides: &[usize],
+) -> Vec<usize> {
+    let n = axes.len();
+    let count = 1usize << n;
+    let mut out = Vec::with_capacity(count);
+    for corner in 0..count {
+        let mut idx = 0usize;
+        for k in 0..n {
+            // Bit at position (N - 1 - k) selects this axis's offset.
+            let bit = (corner >> (n - 1 - k)) & 1;
+            // Single-point axis: i_next = i and bit-1 maps to the same
+            // index as bit-0, so the (1 - f)·c[i] + f·c[i_next]
+            // reduction degenerates to c[i].
+            let next = if axes[k].len() == 1 {
+                indices[k].0
+            } else {
+                indices[k].0 + bit
+            };
+            idx += next * strides[k];
+        }
+        out.push(idx);
+    }
+    out
+}
+
+/// Locked-order multilinear reduction.
+///
+/// `corners.len() == 2^N`, in row-major order over `axis_order`
+/// (last axis fastest). `fractions[k]` is the bracket fraction for
+/// `axes[k]` in `axis_order`. Reduction collapses the **innermost
+/// axis first** (k = N - 1), then walks outward to k = 0. At N = 3
+/// with `axis_order = ["mach", "alpha", "beta"]` this is bit-identical
+/// to the Schema-1 trilinear formula.
+fn multilinear_reduce(table: &[f64], corners: &[usize], fractions: &[f64]) -> f64 {
+    let n = fractions.len();
+    let mut buf: Vec<f64> = corners.iter().map(|&i| table[i]).collect();
+    // Reduce innermost-first: k = N-1, N-2, ..., 0.
+    for k in (0..n).rev() {
+        let f = fractions[k];
+        let one_minus_f = 1.0 - f;
+        let half = buf.len() / 2;
+        for i in 0..half {
+            let lo = buf[2 * i];
+            let hi = buf[2 * i + 1];
+            buf[i] = one_minus_f * lo + f * hi;
+        }
+        buf.truncate(half);
+    }
+    buf[0]
+}
+
+// ---------------------------------------------------------------------
+// Internal helpers — validation
+// ---------------------------------------------------------------------
+
+const REQUIRED_PREFIX: [&str; 3] = ["mach", "alpha", "beta"];
+
+fn validate_axis_order(axis_order: &[String], axes_len: usize) -> Result<(), AeroError> {
+    if axis_order.is_empty() {
+        return Err(AeroError::MalformedDeck {
+            reason: "axis_order must declare at least mach/alpha/beta",
+        });
+    }
+    if axis_order.len() != axes_len {
+        return Err(AeroError::MalformedDeck {
+            reason: "axis_order length does not match the number of axis grids",
+        });
+    }
+    for (k, required) in REQUIRED_PREFIX.iter().enumerate() {
+        if axis_order.get(k).map(String::as_str) != Some(*required) {
+            return Err(AeroError::MalformedDeck {
+                reason: "axis_order must start with [mach, alpha, beta]",
+            });
+        }
+    }
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for name in axis_order {
+        if !seen.insert(name.as_str()) {
+            return Err(AeroError::MalformedDeck {
+                reason: "axis_order contains a duplicate name",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn axis_label(name: &str) -> &'static str {
+    match name {
+        "mach" => "mach axis",
+        "alpha" => "alpha axis",
+        "beta" => "beta axis",
+        _ => "effector axis",
+    }
+}
 
 fn validate_axis(axis: &[f64], label: &'static str) -> Result<(), AeroError> {
     if axis.is_empty() {
@@ -400,10 +580,25 @@ fn bracket(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+    use proptest::prelude::*;
+
+    /// Empty deflections map for Schema-1 lookup calls.
+    fn nd() -> BTreeMap<&'static str, f64> {
+        BTreeMap::new()
+    }
 
     // -----------------------------------------------------------------
     // Fixtures
@@ -469,7 +664,7 @@ mod tests {
             (1.0, 1.0, 1.0, 7.0),
         ];
         for (m, a, b, expected) in cases {
-            let r = deck.lookup(m, a, b).unwrap();
+            let r = deck.lookup(m, a, b, &nd()).unwrap();
             assert_eq!(r.cn.to_bits(), expected.to_bits(), "CN at ({m},{a},{b})");
             assert_eq!(r.cd.to_bits(), expected.to_bits(), "CD at ({m},{a},{b})");
             assert_eq!(r.cm.to_bits(), expected.to_bits(), "CM at ({m},{a},{b})");
@@ -483,7 +678,7 @@ mod tests {
         // fm = fa = fb = 0.5 produces 0.125 · sum which equals 3.5
         // bit-exactly under f64.
         let deck = cube_deck();
-        let r = deck.lookup(0.5, 0.5, 0.5).unwrap();
+        let r = deck.lookup(0.5, 0.5, 0.5, &nd()).unwrap();
         assert_eq!(r.cn.to_bits(), 3.5_f64.to_bits());
         assert_eq!(r.cd.to_bits(), 3.5_f64.to_bits());
         assert_eq!(r.cm.to_bits(), 3.5_f64.to_bits());
@@ -500,7 +695,7 @@ mod tests {
         for b_query in [0.0, 0.25, 0.5, 0.75, 1.0] {
             // Stored corners at (0,0,0) = 0 and (0,0,1) = 1.
             let expected = (1.0 - b_query) * 0.0 + b_query * 1.0;
-            let r = deck.lookup(m, a, b_query).unwrap();
+            let r = deck.lookup(m, a, b_query, &nd()).unwrap();
             assert_eq!(r.cn.to_bits(), expected.to_bits(), "beta = {b_query}");
         }
     }
@@ -509,7 +704,7 @@ mod tests {
     fn lookup_recovers_distinct_coefficients_per_channel() {
         let deck = small_3x3x1_deck();
         // Centre point (mach = 1, alpha = 0).
-        let r = deck.lookup(1.0, 0.0, 0.0).unwrap();
+        let r = deck.lookup(1.0, 0.0, 0.0, &nd()).unwrap();
         assert_abs_diff_eq!(r.cn, 1.0); // 1 + 0
         assert_abs_diff_eq!(r.cd, 0.0); // 1 * 0
         assert_abs_diff_eq!(r.cm, 1.0); // 1 - 0
@@ -529,8 +724,8 @@ mod tests {
             (1.0, 1.0, 1.0),
         ];
         for q in queries {
-            let a = deck.lookup(q.0, q.1, q.2).unwrap();
-            let b = deck.lookup(q.0, q.1, q.2).unwrap();
+            let a = deck.lookup(q.0, q.1, q.2, &nd()).unwrap();
+            let b = deck.lookup(q.0, q.1, q.2, &nd()).unwrap();
             assert_eq!(a.cn.to_bits(), b.cn.to_bits());
             assert_eq!(a.cd.to_bits(), b.cd.to_bits());
             assert_eq!(a.cm.to_bits(), b.cm.to_bits());
@@ -542,8 +737,8 @@ mod tests {
         let deck1 = cube_deck();
         let deck2 = deck1.clone();
         let q = (0.123_456, 0.789_012, 0.345_678);
-        let a = deck1.lookup(q.0, q.1, q.2).unwrap();
-        let b = deck2.lookup(q.0, q.1, q.2).unwrap();
+        let a = deck1.lookup(q.0, q.1, q.2, &nd()).unwrap();
+        let b = deck2.lookup(q.0, q.1, q.2, &nd()).unwrap();
         assert_eq!(a.cn.to_bits(), b.cn.to_bits());
         assert_eq!(a.cd.to_bits(), b.cd.to_bits());
         assert_eq!(a.cm.to_bits(), b.cm.to_bits());
@@ -557,15 +752,15 @@ mod tests {
     fn fail_closed_below_grid_returns_out_of_envelope() {
         let deck = cube_deck();
         assert!(matches!(
-            deck.lookup(-0.1, 0.5, 0.5),
+            deck.lookup(-0.1, 0.5, 0.5, &nd()),
             Err(AeroError::OutOfEnvelope { .. })
         ));
         assert!(matches!(
-            deck.lookup(0.5, -0.1, 0.5),
+            deck.lookup(0.5, -0.1, 0.5, &nd()),
             Err(AeroError::OutOfEnvelope { .. })
         ));
         assert!(matches!(
-            deck.lookup(0.5, 0.5, -0.1),
+            deck.lookup(0.5, 0.5, -0.1, &nd()),
             Err(AeroError::OutOfEnvelope { .. })
         ));
     }
@@ -574,15 +769,15 @@ mod tests {
     fn fail_closed_above_grid_returns_out_of_envelope() {
         let deck = cube_deck();
         assert!(matches!(
-            deck.lookup(1.1, 0.5, 0.5),
+            deck.lookup(1.1, 0.5, 0.5, &nd()),
             Err(AeroError::OutOfEnvelope { .. })
         ));
         assert!(matches!(
-            deck.lookup(0.5, 1.1, 0.5),
+            deck.lookup(0.5, 1.1, 0.5, &nd()),
             Err(AeroError::OutOfEnvelope { .. })
         ));
         assert!(matches!(
-            deck.lookup(0.5, 0.5, 1.1),
+            deck.lookup(0.5, 0.5, 1.1, &nd()),
             Err(AeroError::OutOfEnvelope { .. })
         ));
     }
@@ -591,7 +786,7 @@ mod tests {
     fn clamp_below_grid_returns_first_corner_value() {
         let deck = cube_deck().with_extrapolation_policy(ExtrapolationPolicy::Clamp);
         // Below all three lower bounds → corner (0,0,0) value.
-        let r = deck.lookup(-1.0, -1.0, -1.0).unwrap();
+        let r = deck.lookup(-1.0, -1.0, -1.0, &nd()).unwrap();
         assert_eq!(r.cn.to_bits(), 0.0_f64.to_bits());
     }
 
@@ -599,7 +794,7 @@ mod tests {
     fn clamp_above_grid_returns_last_corner_value() {
         let deck = cube_deck().with_extrapolation_policy(ExtrapolationPolicy::Clamp);
         // Above all three upper bounds → corner (1,1,1) value = 7.
-        let r = deck.lookup(2.0, 2.0, 2.0).unwrap();
+        let r = deck.lookup(2.0, 2.0, 2.0, &nd()).unwrap();
         assert_eq!(r.cn.to_bits(), 7.0_f64.to_bits());
     }
 
@@ -607,15 +802,15 @@ mod tests {
     fn lookup_rejects_non_finite_query() {
         let deck = cube_deck();
         assert!(matches!(
-            deck.lookup(f64::NAN, 0.5, 0.5),
+            deck.lookup(f64::NAN, 0.5, 0.5, &nd()),
             Err(AeroError::NonFinite { .. })
         ));
         assert!(matches!(
-            deck.lookup(0.5, f64::INFINITY, 0.5),
+            deck.lookup(0.5, f64::INFINITY, 0.5, &nd()),
             Err(AeroError::NonFinite { .. })
         ));
         assert!(matches!(
-            deck.lookup(0.5, 0.5, f64::NEG_INFINITY),
+            deck.lookup(0.5, 0.5, f64::NEG_INFINITY, &nd()),
             Err(AeroError::NonFinite { .. })
         ));
     }
@@ -627,7 +822,7 @@ mod tests {
     #[test]
     fn single_point_beta_axis_handles_lookup_at_the_point() {
         let deck = small_3x3x1_deck();
-        let r = deck.lookup(0.5, 0.5, 0.0).unwrap();
+        let r = deck.lookup(0.5, 0.5, 0.0, &nd()).unwrap();
         // At (m=0.5, a=0.5, b=0): CN = m + a = 1.0 (linear in the
         // 4 corners (0,0)=0, (0,1)=1, (1,0)=1, (1,1)=2 → centre 1.0).
         assert_abs_diff_eq!(r.cn, 1.0);
@@ -637,7 +832,7 @@ mod tests {
     fn single_point_beta_axis_off_point_fails_closed_by_default() {
         let deck = small_3x3x1_deck();
         assert!(matches!(
-            deck.lookup(0.5, 0.5, 0.5),
+            deck.lookup(0.5, 0.5, 0.5, &nd()),
             Err(AeroError::OutOfEnvelope { .. })
         ));
     }
@@ -645,8 +840,8 @@ mod tests {
     #[test]
     fn single_point_beta_axis_off_point_clamps_when_opted_in() {
         let deck = small_3x3x1_deck().with_extrapolation_policy(ExtrapolationPolicy::Clamp);
-        let r_at = deck.lookup(0.5, 0.5, 0.0).unwrap();
-        let r_off = deck.lookup(0.5, 0.5, 5.0).unwrap();
+        let r_at = deck.lookup(0.5, 0.5, 0.0, &nd()).unwrap();
+        let r_off = deck.lookup(0.5, 0.5, 5.0, &nd()).unwrap();
         assert_eq!(r_at.cn.to_bits(), r_off.cn.to_bits());
     }
 
@@ -780,5 +975,296 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, AeroError::InvalidParameter { .. }));
+    }
+
+    // -----------------------------------------------------------------
+    // N-D axis_order validation (Phase 3.5.A)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn new_n_d_rejects_axis_order_not_starting_mach_alpha_beta() {
+        let err = AeroDeck::new_n_d(
+            vec!["alpha".to_string(), "mach".to_string(), "beta".to_string()],
+            vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+            (0..8).map(f64::from).collect(),
+            (0..8).map(f64::from).collect(),
+            (0..8).map(f64::from).collect(),
+            1.0,
+            1.0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AeroError::MalformedDeck { .. }));
+    }
+
+    #[test]
+    fn new_n_d_rejects_axis_order_length_mismatch() {
+        let err = AeroDeck::new_n_d(
+            vec!["mach".to_string(), "alpha".to_string()],
+            vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+            (0..8).map(f64::from).collect(),
+            (0..8).map(f64::from).collect(),
+            (0..8).map(f64::from).collect(),
+            1.0,
+            1.0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AeroError::MalformedDeck { .. }));
+    }
+
+    #[test]
+    fn new_n_d_rejects_duplicate_axis_name() {
+        let err = AeroDeck::new_n_d(
+            vec![
+                "mach".to_string(),
+                "alpha".to_string(),
+                "beta".to_string(),
+                "delta_e_deg".to_string(),
+                "delta_e_deg".to_string(),
+            ],
+            vec![
+                vec![0.0, 1.0],
+                vec![0.0, 1.0],
+                vec![0.0, 1.0],
+                vec![-1.0, 1.0],
+                vec![-1.0, 1.0],
+            ],
+            vec![0.0; 32],
+            vec![0.0; 32],
+            vec![0.0; 32],
+            1.0,
+            1.0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AeroError::MalformedDeck { .. }));
+    }
+
+    #[test]
+    fn axis_order_returns_canonical_prefix_for_schema1() {
+        let deck = cube_deck();
+        assert_eq!(
+            deck.axis_order(),
+            &["mach".to_string(), "alpha".to_string(), "beta".to_string()]
+        );
+        assert!(deck.effector_axis_names().is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Multilinear-at-N3 ↔ Schema-1 trilinear bit-equality
+    // -----------------------------------------------------------------
+
+    /// Independent reference: the literal Schema-1 trilinear formula
+    /// transcribed verbatim from `software-architecture.md` and from
+    /// the pre-3.5.A `AeroDeck::lookup` body. Compared against
+    /// `AeroDeck::lookup` to anchor byte-stability.
+    fn trilinear_reference(
+        mach: &[f64],
+        alpha: &[f64],
+        beta: &[f64],
+        table: &[f64],
+        m_q: f64,
+        a_q: f64,
+        b_q: f64,
+    ) -> f64 {
+        let bracket_local = |axis: &[f64], q: f64| -> (usize, f64) {
+            let n = axis.len();
+            if n == 1 {
+                return (0, 0.0);
+            }
+            let upper = axis.partition_point(|&x| x <= q);
+            let i_lo = upper.saturating_sub(1).min(n - 2);
+            let denom = axis[i_lo + 1] - axis[i_lo];
+            (i_lo, (q - axis[i_lo]) / denom)
+        };
+        let (im, fm) = bracket_local(mach, m_q);
+        let (ia, fa) = bracket_local(alpha, a_q);
+        let (ib, fb) = bracket_local(beta, b_q);
+        let im_next = if mach.len() == 1 { im } else { im + 1 };
+        let ia_next = if alpha.len() == 1 { ia } else { ia + 1 };
+        let ib_next = if beta.len() == 1 { ib } else { ib + 1 };
+        let n_beta = beta.len();
+        let n_ab = alpha.len() * n_beta;
+        let i000 = im * n_ab + ia * n_beta + ib;
+        let i001 = im * n_ab + ia * n_beta + ib_next;
+        let i010 = im * n_ab + ia_next * n_beta + ib;
+        let i011 = im * n_ab + ia_next * n_beta + ib_next;
+        let i100 = im_next * n_ab + ia * n_beta + ib;
+        let i101 = im_next * n_ab + ia * n_beta + ib_next;
+        let i110 = im_next * n_ab + ia_next * n_beta + ib;
+        let i111 = im_next * n_ab + ia_next * n_beta + ib_next;
+        let v00 = (1.0 - fb) * table[i000] + fb * table[i001];
+        let v01 = (1.0 - fb) * table[i010] + fb * table[i011];
+        let v10 = (1.0 - fb) * table[i100] + fb * table[i101];
+        let v11 = (1.0 - fb) * table[i110] + fb * table[i111];
+        let v0 = (1.0 - fa) * v00 + fa * v01;
+        let v1 = (1.0 - fa) * v10 + fa * v11;
+        (1.0 - fm) * v0 + fm * v1
+    }
+
+    proptest! {
+        /// 1000 random (n_mach, n_alpha, n_beta) grids and random
+        /// query points; multilinear at N=3 must be bit-identical to
+        /// the literal Schema-1 trilinear closed-form. This is the
+        /// byte-stability anchor for 3.5.A — every other byte-stable
+        /// claim downstream rests on this property holding.
+        #[test]
+        fn multilinear_at_n3_matches_schema1_trilinear_bit_identical(
+            seed in 0u64..1024,
+        ) {
+            // Deterministic seed → grids and queries.
+            let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut rng = || {
+                s = s.wrapping_mul(0x5851_F42D_4C95_7F2D).wrapping_add(0x1405_7B7E_F767_814F);
+                ((s >> 33) as u32) as f64 / u32::MAX as f64
+            };
+            let n_m = 2 + (rng() * 4.0) as usize; // 2..=5
+            let n_a = 2 + (rng() * 4.0) as usize;
+            let n_b = 2 + (rng() * 4.0) as usize;
+            let mut mach: Vec<f64> = (0..n_m).map(|i| i as f64 + 0.5 * rng()).collect();
+            let mut alpha: Vec<f64> = (0..n_a).map(|i| i as f64 - (n_a as f64) / 2.0 + 0.5 * rng()).collect();
+            let mut beta: Vec<f64> = (0..n_b).map(|i| i as f64 - (n_b as f64) / 2.0 + 0.5 * rng()).collect();
+            // Force strict monotone (defeats coincident-point edge cases from rng).
+            for k in 1..mach.len() { if mach[k] <= mach[k-1] { mach[k] = mach[k-1] + 1.0; } }
+            for k in 1..alpha.len() { if alpha[k] <= alpha[k-1] { alpha[k] = alpha[k-1] + 1.0; } }
+            for k in 1..beta.len() { if beta[k] <= beta[k-1] { beta[k] = beta[k-1] + 1.0; } }
+            let count = n_m * n_a * n_b;
+            let table: Vec<f64> = (0..count).map(|_| rng() * 10.0 - 5.0).collect();
+            let deck = AeroDeck::new(
+                mach.clone(), alpha.clone(), beta.clone(),
+                table.clone(), table.clone(), table.clone(),
+                1.0, 1.0,
+            ).unwrap();
+            // Random query inside the envelope.
+            let m_q = mach[0] + rng() * (mach[mach.len() - 1] - mach[0]);
+            let a_q = alpha[0] + rng() * (alpha[alpha.len() - 1] - alpha[0]);
+            let b_q = beta[0] + rng() * (beta[beta.len() - 1] - beta[0]);
+            let ours = deck.lookup(m_q, a_q, b_q, &nd()).unwrap();
+            let expected = trilinear_reference(&mach, &alpha, &beta, &table, m_q, a_q, b_q);
+            prop_assert_eq!(
+                ours.cn.to_bits(), expected.to_bits(),
+                "CN bit-mismatch at m={}, a={}, b={}", m_q, a_q, b_q
+            );
+            prop_assert_eq!(ours.cd.to_bits(), expected.to_bits());
+            prop_assert_eq!(ours.cm.to_bits(), expected.to_bits());
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Schema-2 path (4-D N=4 deck with one effector axis)
+    // -----------------------------------------------------------------
+
+    /// 2x2x1x3 N=4 deck: (mach, alpha, beta, `delta_e_deg`) where
+    /// CN = m + a + 0.1 * delta. `delta_e_deg` ∈ [-20, 0, 20].
+    fn elevon_4d_deck() -> AeroDeck {
+        let mach = vec![0.0, 1.0];
+        let alpha = vec![0.0, 1.0];
+        let beta = vec![0.0];
+        let delta = vec![-20.0, 0.0, 20.0];
+        let mut cn = Vec::new();
+        let mut cd = Vec::new();
+        let mut cm = Vec::new();
+        for m in &mach {
+            for a in &alpha {
+                for _b in &beta {
+                    for d in &delta {
+                        cn.push(m + a + 0.1 * d);
+                        cd.push(0.05 * d);
+                        cm.push(*d);
+                    }
+                }
+            }
+        }
+        AeroDeck::new_n_d(
+            vec![
+                "mach".to_string(),
+                "alpha".to_string(),
+                "beta".to_string(),
+                "delta_e_deg".to_string(),
+            ],
+            vec![mach, alpha, beta, delta],
+            cn,
+            cd,
+            cm,
+            1.0,
+            1.0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn schema2_corner_lookup_returns_stored_value_exactly() {
+        let deck = elevon_4d_deck();
+        let mut def = BTreeMap::new();
+        def.insert("delta_e_deg", 20.0);
+        // (m=1, a=1, b=0, delta=20) → 1 + 1 + 0.1*20 = 4.0
+        let r = deck.lookup(1.0, 1.0, 0.0, &def).unwrap();
+        assert_eq!(r.cn.to_bits(), 4.0_f64.to_bits());
+        assert_eq!(r.cd.to_bits(), 1.0_f64.to_bits()); // 0.05 * 20
+        assert_eq!(r.cm.to_bits(), 20.0_f64.to_bits());
+    }
+
+    #[test]
+    fn schema2_lookup_at_zero_deflection_matches_schema1_companion() {
+        // Build the schema-1 deck with the same (m, a, b) slice as
+        // the 4-D deck at delta_e_deg = 0. CN = m + a.
+        let mach = vec![0.0, 1.0];
+        let alpha = vec![0.0, 1.0];
+        let beta = vec![0.0];
+        let mut cn1 = Vec::new();
+        let mut cd1 = Vec::new();
+        let mut cm1 = Vec::new();
+        for m in &mach {
+            for a in &alpha {
+                for _b in &beta {
+                    cn1.push(m + a);
+                    cd1.push(0.0);
+                    cm1.push(0.0);
+                }
+            }
+        }
+        let s1 = AeroDeck::new(mach, alpha, beta, cn1, cd1, cm1, 1.0, 1.0).unwrap();
+        let s2 = elevon_4d_deck();
+        let mut def = BTreeMap::new();
+        def.insert("delta_e_deg", 0.0);
+        for (m, a) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (0.123_456, 0.789_012)] {
+            let r1 = s1.lookup(m, a, 0.0, &nd()).unwrap();
+            let r2 = s2.lookup(m, a, 0.0, &def).unwrap();
+            assert_eq!(
+                r1.cn.to_bits(),
+                r2.cn.to_bits(),
+                "CN diverges at (m={m}, a={a}, delta_e_deg=0)"
+            );
+            assert_eq!(r1.cd.to_bits(), r2.cd.to_bits());
+            assert_eq!(r1.cm.to_bits(), r2.cm.to_bits());
+        }
+    }
+
+    #[test]
+    fn schema2_lookup_rejects_missing_effector_axis() {
+        let deck = elevon_4d_deck();
+        let err = deck.lookup(0.5, 0.5, 0.0, &nd()).unwrap_err();
+        assert!(matches!(err, AeroError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn schema2_lookup_ignores_unknown_extra_keys() {
+        let deck = elevon_4d_deck();
+        let mut def = BTreeMap::new();
+        def.insert("delta_e_deg", 0.0);
+        def.insert("delta_a_deg", 99.0); // not declared by this deck
+        let r = deck.lookup(0.5, 0.5, 0.0, &def).unwrap();
+        // Same as if delta_a_deg were absent (deck doesn't reference it).
+        assert!(r.cn.is_finite());
+    }
+
+    #[test]
+    fn schema2_corner_lookup_is_bit_stable_across_two_invocations() {
+        let deck = elevon_4d_deck();
+        let mut def = BTreeMap::new();
+        def.insert("delta_e_deg", 10.5);
+        let r1 = deck.lookup(0.4, 0.7, 0.0, &def).unwrap();
+        let r2 = deck.lookup(0.4, 0.7, 0.0, &def).unwrap();
+        assert_eq!(r1.cn.to_bits(), r2.cn.to_bits());
+        assert_eq!(r1.cd.to_bits(), r2.cd.to_bits());
+        assert_eq!(r1.cm.to_bits(), r2.cm.to_bits());
     }
 }

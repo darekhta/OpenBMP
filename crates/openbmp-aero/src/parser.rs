@@ -178,7 +178,9 @@ mod tests {
         let deck = AeroDeck::load_from_str(&minimal_deck_toml()).unwrap();
         // Corner (mach=1, alpha=1, beta=0) should be the last
         // row-major entry: index 1·2·1 + 1·1 + 0 = 3 → 3.0.
-        let r = deck.lookup(1.0, 1.0, 0.0).unwrap();
+        let r = deck
+            .lookup(1.0, 1.0, 0.0, &std::collections::BTreeMap::new())
+            .unwrap();
         assert_eq!(r.cn.to_bits(), 3.0_f64.to_bits());
         assert_eq!(r.cd.to_bits(), 3.0_f64.to_bits());
         assert_eq!(r.cm.to_bits(), 3.0_f64.to_bits());
@@ -283,7 +285,9 @@ mod tests {
         // (mach=0.5, alpha=0.5, beta=0): centroid of the 4 corners
         // 0,1,2,3 → 1.5 (the 4-corner average for a 2x2 face when beta
         // is single-valued).
-        let r = deck.lookup(0.5, 0.5, 0.0).unwrap();
+        let r = deck
+            .lookup(0.5, 0.5, 0.0, &std::collections::BTreeMap::new())
+            .unwrap();
         let expected = AeroCoefficients {
             cn: 1.5,
             cd: 1.5,

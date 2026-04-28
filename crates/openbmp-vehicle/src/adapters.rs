@@ -470,12 +470,16 @@ fn compute_axial_drag<Atm: AtmosphereModel>(
     }
 
     let mach = speed / speed_of_sound;
-    let coefficients = deck
-        .lookup(mach, 0.0, 0.0)
-        .map_err(|_| ModelEvalError::OutOfEnvelope {
-            model: model_id,
-            reason: Cow::Borrowed("aero deck out of envelope at (mach, 0, 0)"),
-        })?;
+    // Phase-3.5: Schema-1 decks ignore the deflections map. Schema-2
+    // adapter wiring lands in 3.5.C; for now the `AxialDragForceAdapter`
+    // continues to query at (mach, 0, 0) with no effector axes.
+    let deflections = std::collections::BTreeMap::<&str, f64>::new();
+    let coefficients =
+        deck.lookup(mach, 0.0, 0.0, &deflections)
+            .map_err(|_| ModelEvalError::OutOfEnvelope {
+                model: model_id,
+                reason: Cow::Borrowed("aero deck out of envelope at (mach, 0, 0)"),
+            })?;
 
     // Locked operand order: q = 0.5 · ρ · |v|².
     let q = 0.5 * atm_sample.density_kg_m3 * speed_sq;

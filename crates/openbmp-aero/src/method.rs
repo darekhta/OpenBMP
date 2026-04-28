@@ -134,8 +134,14 @@ impl AeroMethod for DeckLookup {
             });
         }
 
+        // Phase-3.5: schema-1 decks ignore the deflections map. Schema-2
+        // consumers thread the live `EffectorActualsView` from the kernel
+        // through a higher-level adapter (Phase 3.5.C); this method-level
+        // entry point keeps a Schema-1-only signature for now.
+        let deflections = std::collections::BTreeMap::<&str, f64>::new();
         let AeroCoefficients { cn, cd, cm } =
-            self.deck.lookup(ctx.mach, ctx.alpha_deg, ctx.beta_deg)?;
+            self.deck
+                .lookup(ctx.mach, ctx.alpha_deg, ctx.beta_deg, &deflections)?;
 
         let q_s = ctx.dynamic_pressure_pa * self.deck.reference_area_m2();
         if !q_s.is_finite() {

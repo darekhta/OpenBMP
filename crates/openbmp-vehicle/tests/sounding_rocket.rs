@@ -430,7 +430,9 @@ fn d12_motor_and_aero_decks_load_independently() {
     assert_eq!(deck.alpha_grid_deg().len(), 5);
     assert_eq!(deck.beta_grid_deg().len(), 1);
     // CD at (M=0, α=0) = 0.6 per the closed form.
-    let coeffs = deck.lookup(0.0, 0.0, 0.0).unwrap();
+    let coeffs = deck
+        .lookup(0.0, 0.0, 0.0, &std::collections::BTreeMap::new())
+        .unwrap();
     assert_eq!(coeffs.cd.to_bits(), 0.6_f64.to_bits());
     assert_eq!(coeffs.cn.to_bits(), 0.0_f64.to_bits());
 }
