@@ -1,0 +1,81 @@
+# Phase-3.5.D exit-criterion scenario — single elevon perturbing aero.
+#
+# Point-mass vehicle with one elevon-shaped linear actuator. The
+# scenario's `[aero]` block points at a Schema-2 deck declaring a
+# `delta_e_deg` axis, so the actual rate-limited / saturated
+# `EffectorState.actual` from the runner-side `EffectorRack` flows
+# into the deck lookup and modulates `CD`. A 20° elevon deflection
+# adds 0.20 to CD on top of CD0 ≈ 0.45 — a ~44% drag-coefficient
+# change at maximum deflection.
+#
+# Effector schedule:
+#   t < 1.0 s   →  command = 0°   (baseline drag)
+#   t ≥ 1.0 s   →  command = 20°  (elevon deflected; +44% CD)
+#
+# The Phase-3.5.D e2e test runs this scenario plus a baseline variant
+# (the same scenario with the step's `after` value swapped to 0°) and
+# asserts the aero-force telemetry differs between the two by more
+# than a 5% tolerance during the deflection window — proof the
+# Schema-2 deck path is actually consuming the live deflection.
+#
+# Synthetic round numbers; not a benchmark.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "single-elevon-aero-deflected"
+description = "Phase-3.5.D exit-criterion: a single elevon effector perturbs CD via Schema-2 deck axis. Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 3.0
+dt_s    = 0.01
+seed    = 0x456c_6576_4f6e_3035   # "ElevOn05"
+
+[vehicle]
+kind                     = "point_mass"
+mass_kg                  = 1.0
+initial_position_eci_m   = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 30.0]
+
+[vehicle.assembly]
+id = "single-elevon-aero"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 0.05 }
+dry_mass_kg   = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[[vehicle.assembly.effectors]]
+id               = "delta_e"
+kind             = { kind = "linear_actuator", tau_s = 0.05 }
+limits           = { min = -25.0, max = 25.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.020 }
+initial_position = 0.0
+unit             = "deg"
+command_schedule = { kind = "step_at", time_s = 1.0, before = 0.0, after = 20.0 }
+
+[environment]
+frame_profile = "wgs84-uniform-rotation"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "us_standard_1976"
+wind          = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[aero]
+deck         = "../../data/aero/synthetic-elevon-1d.toml"
+deck_sha256  = "a145e3d234ac141ed97b22bc3d247ffcefaf32da3660bc98a6615c4e802107bd"
+
+[forces]
+models = ["gravity", "aero"]
+
+[telemetry]
+output.parquet = "out/single-elevon-aero-deflected.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
