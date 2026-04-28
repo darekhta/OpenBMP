@@ -279,12 +279,23 @@ pub struct EnvironmentQuery {
 
 /// One environment sample returned by an [`EnvironmentModel`].
 ///
-/// Phase 1 carries only a gravity field; atmosphere, wind, and
-/// magnetic field land in Phase-2 sub-phases 2.3 / 2.4.
+/// Phase 1 carried only a gravity field; Phase 3.8 adds a NED wind
+/// vector populated by the runner-side `WindRack` before each
+/// `kernel.step()`. The default-zero wind keeps pre-3.8 scenarios
+/// byte-stable: a runner that does not declare `[wind] kind != "none"`
+/// never calls `kernel.set_wind_sample`, so the kernel keeps the
+/// `EnvironmentSample::default()` zero vector and downstream
+/// consumers (Phase-2 axial drag, which still ignores wind in 3.8)
+/// see no change.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct EnvironmentSample {
     /// Local gravitational acceleration in `Eci`, m/s².
     pub gravity_eci_m_s2: Vector3<f64>,
+    /// Phase-3.8: NED wind vector at the kernel's current step,
+    /// `(north, east, down)`, m/s. Defaults to zero — the runner
+    /// pushes a non-zero value via `kernel.set_wind_sample` only for
+    /// scenarios that declare a non-`none` `[wind]` kind.
+    pub wind_ned_m_s: Vector3<f64>,
 }
 
 /// Trait implemented by environment-providing models.

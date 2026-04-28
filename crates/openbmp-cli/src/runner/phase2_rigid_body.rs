@@ -107,6 +107,10 @@ pub fn run(
     let mut engine_rack = crate::runner::engines::EngineRack::build(document)?;
     // Phase-3.7: tank rack mirroring the point-mass runner.
     let mut tank_rack = crate::runner::tanks::TankRack::build(document)?;
+    // Phase-3.8: build the runner-side wind rack. Inactive when no
+    // `[wind]` block is declared (or `kind = "none"`).
+    let wind_rack = crate::runner::wind::WindRack::build(document)?;
+    wind_rack.reset();
 
     let loaded = load_models(document, resolved_files)?;
     let initial_state = build_initial_state(document, &loaded, &assembly)?;
@@ -163,6 +167,12 @@ pub fn run(
     if !tank_rack.is_empty() {
         kernel.set_tank_snapshot(tank_rack.snapshot_map());
     }
+    if !wind_rack.is_inactive() {
+        let s = kernel.current_state();
+        let frame = openbmp_core::FrameContext::toy_fixed_earth();
+        let wind = wind_rack.sample(s.position, &frame, s.time)?;
+        kernel.set_wind_sample(wind);
+    }
     record_step(
         &mut table,
         &kernel,
@@ -204,6 +214,13 @@ pub fn run(
         }
         if !tank_rack.is_empty() {
             kernel.set_tank_snapshot(tank_rack.snapshot_map());
+        }
+        if !wind_rack.is_inactive() {
+            wind_rack.advance(kernel.current_step());
+            let s = kernel.current_state();
+            let frame = openbmp_core::FrameContext::toy_fixed_earth();
+            let wind = wind_rack.sample(s.position, &frame, s.time)?;
+            kernel.set_wind_sample(wind);
         }
         let prev_velocity_eci = kernel.current_state().velocity.vector;
         let prev_orientation = kernel.current_state().orientation.q;

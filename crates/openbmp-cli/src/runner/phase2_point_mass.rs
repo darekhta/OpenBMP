@@ -125,6 +125,12 @@ pub fn run(
     // per-step rack operation short-circuits and the legacy
     // byte-stable path is preserved.
     let mut tank_rack = crate::runner::tanks::TankRack::build(document)?;
+    // Phase-3.8: build the runner-side wind rack. Inactive when no
+    // `[wind]` block is declared (or `kind = "none"`); the per-step
+    // rack op short-circuits and the kernel's wind override stays
+    // `None`, preserving pre-3.8 byte output.
+    let wind_rack = crate::runner::wind::WindRack::build(document)?;
+    wind_rack.reset();
 
     let loaded_models = load_models(document, resolved_files)?;
     let initial_state = build_initial_state(document, &loaded_models, &assembly)?;
@@ -197,6 +203,15 @@ pub fn run(
     if !tank_rack.is_empty() {
         kernel.set_tank_snapshot(tank_rack.snapshot_map());
     }
+    // Phase-3.8: at step 0, sample the wind at the initial state
+    // and push to the kernel so the breakdown's force adapter sees
+    // the same wind the kernel will see on its first step.
+    if !wind_rack.is_inactive() {
+        let initial_state = kernel.current_state();
+        let frame = openbmp_core::FrameContext::toy_fixed_earth();
+        let wind = wind_rack.sample(initial_state.position, &frame, initial_state.time)?;
+        kernel.set_wind_sample(wind);
+    }
     record_step(
         &mut table,
         &kernel,
@@ -250,6 +265,17 @@ pub fn run(
         // `step()` so all four RK4 stages see the same view.
         if !tank_rack.is_empty() {
             kernel.set_tank_snapshot(tank_rack.snapshot_map());
+        }
+        // Phase-3.8: advance the wind rack and push the new sample
+        // to the kernel before `step()`. For `GustWind` this rolls
+        // the Dryden filter forward by one tick; the time-only
+        // models are no-ops.
+        if !wind_rack.is_inactive() {
+            wind_rack.advance(kernel.current_step());
+            let s = kernel.current_state();
+            let frame = openbmp_core::FrameContext::toy_fixed_earth();
+            let wind = wind_rack.sample(s.position, &frame, s.time)?;
+            kernel.set_wind_sample(wind);
         }
         kernel.step()?;
         let fired = kernel.drain_events();

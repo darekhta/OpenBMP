@@ -38,4 +38,6 @@ pub use atmosphere::{
 };
 pub use error::EnvError;
 pub use gravity::{ConstantGravity, GravityModel, J2Gravity, PointMassGravity, WGS84_J2};
-pub use wind::{ConstantWind, LayerEntry, LayeredWind, NoWind, WindModel};
+pub use wind::{
+    ConstantWind, GustWind, GustWindParams, LayerEntry, LayeredWind, NoWind, WindModel,
+};

@@ -40,6 +40,7 @@ pub mod phase1;
 pub mod phase2_point_mass;
 pub mod phase2_rigid_body;
 pub mod tanks;
+pub mod wind;
 
 use openbmp_scenario::Scenario;
 use openbmp_sim::StopReason;

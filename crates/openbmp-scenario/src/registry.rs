@@ -127,6 +127,7 @@ impl ModelRegistry {
             ModelDescriptor::new("constant", ModelRole::Wind),
             // Phase 3.8 wind extensions.
             ModelDescriptor::new("layered", ModelRole::Wind),
+            ModelDescriptor::new("gust", ModelRole::Wind),
             // Phase 2.5/2.6 force terms.
             ModelDescriptor::new("aero", ModelRole::Force),
             ModelDescriptor::new("thrust", ModelRole::Force),

@@ -151,6 +151,14 @@ where
     /// adapters short-circuit on the empty view, preserving pre-3.7
     /// byte output.
     tank_snapshot: std::collections::BTreeMap<openbmp_core::TankId, TankSnapshot>,
+    /// Phase-3.8: optional kernel-owned NED wind sample pushed by the
+    /// runner-side `WindRack`. When `Some`, the kernel splices it
+    /// into the `EnvironmentSample.wind_ned_m_s` field at every RK4
+    /// stage so all four stages see the same wind. When `None` (no
+    /// `[wind]` block, or `kind = "none"`), the environment sample's
+    /// default-zero wind flows through, preserving pre-3.8 byte
+    /// output.
+    wind_sample_override: Option<nalgebra::Vector3<f64>>,
 }
 
 /// Phase-1 type alias for the point-mass kernel shape used by the
@@ -212,6 +220,7 @@ where
             effector_actuals: std::collections::BTreeMap::new(),
             engine_snapshot: std::collections::BTreeMap::new(),
             tank_snapshot: std::collections::BTreeMap::new(),
+            wind_sample_override: None,
         })
     }
 
@@ -239,7 +248,7 @@ where
     /// fails, [`SimulationError::Time`] if the step counter overflows,
     /// or [`SimulationError::InvalidPostStepState`] if the integrated
     /// state fails post-step validation.
-    #[allow(clippy::cast_precision_loss)] // step values stay well under 2^52
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)] // step values stay well under 2^52; Phase 3.8 added wind splice
     pub fn step(&mut self) -> Result<(), SimulationError> {
         if self.stopped.is_some() {
             return Ok(());
@@ -276,14 +285,18 @@ where
         let effector_actuals = &self.effector_actuals;
         let engine_snapshot = &self.engine_snapshot;
         let tank_snapshot = &self.tank_snapshot;
+        let wind_override = self.wind_sample_override;
 
         let derive = |s: &PointMassState,
                       t: SimTime|
          -> Result<PointMassDerivative, crate::error::ModelEvalError> {
-            let env = environment.sample(EnvironmentQuery {
+            let mut env = environment.sample(EnvironmentQuery {
                 time: t,
                 position_eci: s.position,
             })?;
+            if let Some(wind) = wind_override {
+                env.wind_ned_m_s = wind;
+            }
             let mass_kg = s.mass.get::<kilogram>();
             let force_n_eci = force_model.force_n_eci(ForceContext {
                 state: s,
@@ -606,6 +619,21 @@ where
         &self.tank_snapshot
     }
 
+    /// Replace the kernel-spliced NED wind sample (Phase 3.8). The
+    /// runner's `WindRack` calls this before every `step()` so all
+    /// four RK4 stages observe the same wind. Scenarios without a
+    /// non-`none` `[wind]` block skip the call; the kernel splices
+    /// in `Vector3::zeros()` and pre-3.8 outputs stay byte-identical.
+    pub fn set_wind_sample(&mut self, wind_ned_m_s: nalgebra::Vector3<f64>) {
+        self.wind_sample_override = Some(wind_ned_m_s);
+    }
+
+    /// Read-only access to the current wind override.
+    #[must_use]
+    pub fn wind_sample(&self) -> Option<nalgebra::Vector3<f64>> {
+        self.wind_sample_override
+    }
+
     /// Evaluate every declared event binding against a post-step
     /// `EventScalars` snapshot. Records fired bindings in
     /// `pending_events` for the runner's drain queue, applies the
@@ -846,6 +874,7 @@ where
             effector_actuals: std::collections::BTreeMap::new(),
             engine_snapshot: std::collections::BTreeMap::new(),
             tank_snapshot: std::collections::BTreeMap::new(),
+            wind_sample_override: None,
         })
     }
 
@@ -885,6 +914,7 @@ where
         let effector_actuals = &self.effector_actuals;
         let engine_snapshot = &self.engine_snapshot;
         let tank_snapshot = &self.tank_snapshot;
+        let wind_override = self.wind_sample_override;
 
         let derive = |s: &openbmp_state::RigidBodyState,
                       t: SimTime|
@@ -892,10 +922,13 @@ where
             crate::derivative::RigidBodyDerivative,
             crate::error::ModelEvalError,
         > {
-            let env = environment.sample(EnvironmentQuery {
+            let mut env = environment.sample(EnvironmentQuery {
                 time: t,
                 position_eci: s.position,
             })?;
+            if let Some(wind) = wind_override {
+                env.wind_ned_m_s = wind;
+            }
             let mass_kg = s.mass_props.mass.get::<kilogram>();
             let force_n_eci = force_model.force_n_eci(ForceContext {
                 state: s,

@@ -882,9 +882,29 @@ pub struct WindConfig {
     /// must be strictly ascending in altitude.
     #[serde(default)]
     pub layers: Option<Vec<WindLayerConfig>>,
+    /// Phase-3.8.C: Dryden gust intensities `[σ_u, σ_v, σ_w]`, m/s.
+    /// Required when `kind = "gust"`; rejected for every other kind.
+    /// All non-negative.
+    #[serde(default)]
+    pub intensity_m_s: Option<[f64; 3]>,
+    /// Phase-3.8.C: Dryden gust length scales `[L_u, L_v, L_w]`, m.
+    /// Required when `kind = "gust"`; rejected for every other kind.
+    /// All strictly positive.
+    #[serde(default)]
+    pub length_scale_m: Option<[f64; 3]>,
+    /// Phase-3.8.C: reference airspeed used to convert length scale
+    /// to time scale, m/s. Required when `kind = "gust"`; rejected
+    /// for every other kind. Strictly positive.
+    #[serde(default)]
+    pub airspeed_m_s: Option<f64>,
+    /// Phase-3.8.C: optional mean wind in NED, m/s. Defaults to
+    /// `[0, 0, 0]`. Accepted only when `kind = "gust"`.
+    #[serde(default)]
+    pub mean_wind_ned_m_s: Option<[f64; 3]>,
 }
 
 impl WindConfig {
+    #[allow(clippy::too_many_lines)] // Phase 3.8 added kind = "gust" + cross-field rejection arms.
     fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
         registry.resolve(ModelRole::Wind, &self.kind)?;
         match self.kind.as_str() {
@@ -904,6 +924,7 @@ impl WindConfig {
                         name: "constant".to_owned(),
                     });
                 }
+                self.reject_gust_fields("constant")?;
             }
             "layered" => {
                 if self.wind_ned_m_s.is_some() {
@@ -913,6 +934,7 @@ impl WindConfig {
                         name: "layered".to_owned(),
                     });
                 }
+                self.reject_gust_fields("layered")?;
                 let layers = self
                     .layers
                     .as_ref()
@@ -939,6 +961,73 @@ impl WindConfig {
                     }
                 }
             }
+            "gust" => {
+                if self.wind_ned_m_s.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "wind.wind_ned_m_s".to_owned(),
+                        role: ModelRole::Wind,
+                        name: "gust".to_owned(),
+                    });
+                }
+                if self.layers.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "wind.layers".to_owned(),
+                        role: ModelRole::Wind,
+                        name: "gust".to_owned(),
+                    });
+                }
+                let intensity =
+                    self.intensity_m_s
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: "wind.intensity_m_s".to_owned(),
+                            role: ModelRole::Wind,
+                            name: "gust".to_owned(),
+                        })?;
+                require_finite_array("wind.intensity_m_s", &intensity)?;
+                for (axis, value) in ['u', 'v', 'w'].iter().zip(intensity.iter()) {
+                    if *value < 0.0 {
+                        return Err(ScenarioError::InvalidNumber {
+                            field: format!("wind.intensity_m_s[{axis}]"),
+                            value: *value,
+                            rule: "must be non-negative",
+                        });
+                    }
+                }
+                let length_scale = self.length_scale_m.ok_or_else(|| {
+                    ScenarioError::MissingRequiredField {
+                        field: "wind.length_scale_m".to_owned(),
+                        role: ModelRole::Wind,
+                        name: "gust".to_owned(),
+                    }
+                })?;
+                require_finite_array("wind.length_scale_m", &length_scale)?;
+                for (axis, value) in ['u', 'v', 'w'].iter().zip(length_scale.iter()) {
+                    if *value <= 0.0 {
+                        return Err(ScenarioError::InvalidNumber {
+                            field: format!("wind.length_scale_m[{axis}]"),
+                            value: *value,
+                            rule: "must be strictly positive",
+                        });
+                    }
+                }
+                let airspeed =
+                    self.airspeed_m_s.ok_or_else(|| ScenarioError::MissingRequiredField {
+                        field: "wind.airspeed_m_s".to_owned(),
+                        role: ModelRole::Wind,
+                        name: "gust".to_owned(),
+                    })?;
+                require_finite("wind.airspeed_m_s", airspeed)?;
+                if airspeed <= 0.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: "wind.airspeed_m_s".to_owned(),
+                        value: airspeed,
+                        rule: "must be strictly positive",
+                    });
+                }
+                if let Some(mean) = self.mean_wind_ned_m_s {
+                    require_finite_array("wind.mean_wind_ned_m_s", &mean)?;
+                }
+            }
             other => {
                 if self.wind_ned_m_s.is_some() {
                     return Err(ScenarioError::UnexpectedField {
@@ -954,7 +1043,40 @@ impl WindConfig {
                         name: other.to_owned(),
                     });
                 }
+                self.reject_gust_fields(other)?;
             }
+        }
+        Ok(())
+    }
+
+    fn reject_gust_fields(&self, kind: &str) -> Result<(), ScenarioError> {
+        if self.intensity_m_s.is_some() {
+            return Err(ScenarioError::UnexpectedField {
+                field: "wind.intensity_m_s".to_owned(),
+                role: ModelRole::Wind,
+                name: kind.to_owned(),
+            });
+        }
+        if self.length_scale_m.is_some() {
+            return Err(ScenarioError::UnexpectedField {
+                field: "wind.length_scale_m".to_owned(),
+                role: ModelRole::Wind,
+                name: kind.to_owned(),
+            });
+        }
+        if self.airspeed_m_s.is_some() {
+            return Err(ScenarioError::UnexpectedField {
+                field: "wind.airspeed_m_s".to_owned(),
+                role: ModelRole::Wind,
+                name: kind.to_owned(),
+            });
+        }
+        if self.mean_wind_ned_m_s.is_some() {
+            return Err(ScenarioError::UnexpectedField {
+                field: "wind.mean_wind_ned_m_s".to_owned(),
+                role: ModelRole::Wind,
+                name: kind.to_owned(),
+            });
         }
         Ok(())
     }

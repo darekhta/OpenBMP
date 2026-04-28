@@ -531,6 +531,92 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------
+    // Phase 3.8.C gust wind
+    // -----------------------------------------------------------------
+
+    fn gust_wind_block() -> &'static str {
+        "[wind]\nkind = \"gust\"\nintensity_m_s = [2.5, 2.0, 1.5]\nlength_scale_m = [533.0, 533.0, 100.0]\nairspeed_m_s = 250.0\n"
+    }
+
+    #[test]
+    fn accepts_gust_wind_with_well_formed_block() {
+        let toml = SOUNDING_ROCKET
+            .replace(r#"wind          = "constant""#, r#"wind          = "gust""#)
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                gust_wind_block(),
+            );
+        let scenario = Scenario::from_toml_str(&toml).expect("gust wind scenario must parse");
+        let wind = scenario
+            .document
+            .wind
+            .as_ref()
+            .expect("wind block present");
+        assert_eq!(wind.kind, "gust");
+        assert_eq!(wind.intensity_m_s.unwrap()[0].to_bits(), 2.5_f64.to_bits());
+        assert_eq!(wind.length_scale_m.unwrap()[2].to_bits(), 100.0_f64.to_bits());
+        assert_eq!(wind.airspeed_m_s.unwrap().to_bits(), 250.0_f64.to_bits());
+    }
+
+    #[test]
+    fn rejects_gust_wind_without_intensity() {
+        let toml = SOUNDING_ROCKET
+            .replace(r#"wind          = "constant""#, r#"wind          = "gust""#)
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "[wind]\nkind = \"gust\"\nlength_scale_m = [533.0, 533.0, 100.0]\nairspeed_m_s = 250.0\n",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "wind.intensity_m_s"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_gust_wind_with_negative_sigma() {
+        let toml = SOUNDING_ROCKET
+            .replace(r#"wind          = "constant""#, r#"wind          = "gust""#)
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "[wind]\nkind = \"gust\"\nintensity_m_s = [-1.0, 2.0, 1.5]\nlength_scale_m = [533.0, 533.0, 100.0]\nairspeed_m_s = 250.0\n",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "wind.intensity_m_s[u]"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_gust_wind_with_zero_length_scale() {
+        let toml = SOUNDING_ROCKET
+            .replace(r#"wind          = "constant""#, r#"wind          = "gust""#)
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "[wind]\nkind = \"gust\"\nintensity_m_s = [2.5, 2.0, 1.5]\nlength_scale_m = [0.0, 533.0, 100.0]\nairspeed_m_s = 250.0\n",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "wind.length_scale_m[u]"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_constant_wind_with_gust_field() {
+        let toml = SOUNDING_ROCKET.replace(
+            "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+            "[wind]\nkind = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\nintensity_m_s = [1.0, 1.0, 1.0]\n",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "wind.intensity_m_s"),
+            "got {err:?}",
+        );
+    }
+
     #[test]
     fn rejects_isothermal_atmosphere_without_state() {
         let toml = SOUNDING_ROCKET

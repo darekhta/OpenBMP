@@ -194,7 +194,10 @@ fn check_dimensional_field(
             field: path.to_owned(),
         });
     }
-    if is_numeric_3vector(value) && !key_has_frame_infix(key) {
+    if is_numeric_3vector(value)
+        && !key_has_frame_infix(key)
+        && !is_frame_exempt_3vector(path, key)
+    {
         return Err(ScenarioError::MissingFrameSuffix {
             field: path.to_owned(),
         });
@@ -221,6 +224,15 @@ fn is_numeric_value(value: &toml::Value) -> bool {
 fn is_numeric_3vector(value: &toml::Value) -> bool {
     matches!(value, toml::Value::Array(values)
         if values.len() == 3 && values.iter().all(is_numeric_value))
+}
+
+/// Whether the dimensional 3-vector at `(path, key)` is exempt from
+/// the frame-infix check. Phase-3.8 carries `intensity_m_s` and
+/// `length_scale_m` arrays under `[wind]`, both indexed by Dryden
+/// axis (u, v, w) rather than a spatial frame; the frame-infix
+/// requirement does not apply.
+fn is_frame_exempt_3vector(path: &str, key: &str) -> bool {
+    path.starts_with("$.wind") && matches!(key, "intensity_m_s" | "length_scale_m")
 }
 
 fn is_numeric_4vector(value: &toml::Value) -> bool {

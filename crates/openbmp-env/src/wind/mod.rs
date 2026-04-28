@@ -40,9 +40,11 @@
 //! once per kernel base tick by the runner-side `WindRack`.
 
 pub mod constant;
+pub mod gust;
 pub mod layered;
 
 pub use constant::{ConstantWind, NoWind};
+pub use gust::{GustWind, GustWindParams};
 pub use layered::{LayerEntry, LayeredWind};
 
 use openbmp_core::{Eci, FrameContext, Ned, Position3, SimTime, Velocity3};
