@@ -53,6 +53,7 @@ pub mod adapters;
 pub mod assembly;
 pub mod effector;
 pub mod error;
+pub mod tank;
 pub mod vehicle;
 
 pub use adapters::{
@@ -68,6 +69,10 @@ pub use effector::{
     ControlEffector, EffectorError, EffectorFault, EffectorLimits, EffectorState, LinearActuator,
 };
 pub use error::VehicleError;
+pub use tank::{
+    BaffleModel, ForceMomentBody, MassContribution, MovingMassModel, PropellantSpec, RigidLiquid,
+    Tank, TankError, TankGeometry,
+};
 pub use vehicle::{
     BasicVehicle, BoxedMassModel, ForceBreakdown, MomentBreakdown, NamedForceModel,
     NamedMomentModel, Vehicle,
