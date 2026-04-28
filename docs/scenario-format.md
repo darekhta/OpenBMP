@@ -344,8 +344,16 @@ deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27
 
 `deck` is resolved relative to the scenario file directory. The optional
 `deck_sha256` field pins the file's SHA-256 digest; mismatches fail
-closed. The deck format itself is the Phase-2.5 schema-1 deck
-documented in [`software-architecture.md § Deck Format`](software-architecture.md#deck-format-in-house-toml).
+closed.
+
+Two deck formats are supported. **Schema 1** is the Phase-2.5 three-axis
+`(mach, alpha, beta) → (CN, CD, CM)` deck documented in
+[`software-architecture.md § Deck Format`](software-architecture.md#deck-format-in-house-toml).
+**Schema 2** (Phase 3.5) extends Schema 1 with optional control-effector
+axes; see [Schema-2 aero decks](#schema-2-aero-decks-phase-35) below.
+The `[aero]` block stays the same in both cases — it's just a reference
+plus an optional digest pin. The schema discriminator lives inside the
+deck file itself (`openbmp.aero_deck = 1` or `= 2`).
 
 ### Motor reference
 
@@ -797,11 +805,131 @@ Enforced at scenario-parse time:
 the scenario `time.dt_s` (the fixed-step pure-delay buffer cannot
 represent sub-`dt` latency).
 
-#### Phase-3.4 limitations
+#### Phase-3.4 limitations (now lifted by Phase 3.5)
 
-- The aero deck stays schema-1; the effector deflection is
+- ~~The aero deck stays schema-1; the effector deflection is
   observable in the Parquet but is **not** consumed by force /
-  moment evaluation. Schema-2 deck consumption arrives in Phase 3.5.
+  moment evaluation. Schema-2 deck consumption arrives in Phase 3.5.~~
+  Phase 3.5 ships [Schema-2 aero decks](#schema-2-aero-decks-phase-35);
+  effector `actual` deflections now flow through the kernel into
+  the deck lookup.
 - Faults are load-time only; run-time fault injection is deferred.
 - Only the `linear_actuator` kind ships. Nonlinear / multi-axis /
   smart-actuator variants follow in later sub-phases.
+
+### Schema-2 aero decks (Phase 3.5)
+
+Phase 3.5 extends the aero deck format with optional **control-effector
+axes**. A schema-2 deck is identified by `openbmp.aero_deck = 2` in the
+deck file and adds an `[axis_order]` block declaring the locked axis
+ordering, plus per-effector grid axes (e.g. `delta_e_deg = [-20, 0,
+20]`). At runtime, the runner-side `EffectorRack` snapshot flows
+through the kernel's `EffectorActualsView` into the deck's multilinear
+lookup, so the rate-limited / saturated `EffectorState.actual` from
+Phase 3.4 actually modulates `(CN, CD, CM)`.
+
+Schema-1 decks continue to load and produce bit-identical lookups; the
+schema discriminator is purely additive.
+
+#### Wire format
+
+```toml
+openbmp.aero_deck = 2
+
+reference.area_m2  = 1.0
+reference.length_m = 1.0
+provenance         = "..."
+validation         = "experimental"
+
+[grid]
+mach        = [0.0, 0.5, 1.0]
+alpha_deg   = [-5.0, 0.0, 5.0]
+beta_deg    = [0.0]
+delta_e_deg = [-20.0, 0.0, 20.0]   # effector axis (Phase 3.5)
+
+[axis_order]
+order = ["mach", "alpha", "beta", "delta_e_deg"]
+
+[coefficients.cn]
+data = [/* row-major over the 4-axis cartesian product */]
+
+[coefficients.cd]
+data = [/* ... */]
+
+[coefficients.cm]
+data = [/* ... */]
+
+[interpolation]
+method        = "multilinear"   # required; only method wired in 3.5
+extrapolation = "error"         # required; control surfaces saturate
+                                # via the ControlEffector layer
+```
+
+#### Validation rules
+
+- `axis_order.order` must start with `["mach", "alpha", "beta"]` (the
+  three base axes are always present and always first in the locked
+  reduction order).
+- Effector axes (`axis_order.order[3..]`) must each end with `_deg` or
+  `_rad`. The runner uses this suffix to verify the matching scenario
+  effector's `unit` field at runner build time (see Unit-matching
+  contract below).
+- Up to 3 effector axes (6 axes total) are supported in Phase 3.5.
+  Larger decks are deferred to a later sub-phase.
+- The `[grid]` table must declare exactly the axes in `axis_order` —
+  extra keys are rejected, missing keys are rejected. The three base
+  axes use the existing schema-1 grid keys (`mach`, `alpha_deg`,
+  `beta_deg`); effector axes use their `axis_order` name verbatim.
+- `interpolation.method` must be `"multilinear"`. Other methods are
+  reserved for hypersonic Phase-6 work.
+- `interpolation.extrapolation` must be `"error"` (fail-closed).
+  Schema-2 decks do not expose `clamp` — control surfaces saturate
+  via the `ControlEffector` rate-limit / position-limit layer, not
+  via the deck's extrapolation policy.
+- Coefficient table lengths equal the cartesian product of axis
+  lengths.
+
+#### Unit-matching contract
+
+When the runner loads a scenario with a schema-2 deck, it pairs each
+declared effector axis with a scenario effector by name and asserts
+the unit suffix matches:
+
+| Deck axis name | Required scenario `unit` |
+|---|---|
+| `delta_e_deg` (or `delta_a_deg`, `delta_r_deg`, …) | `"deg"` |
+| `delta_e_rad` | `"rad"` |
+| any other custom axis name with `_<unit>` suffix | the suffix string |
+
+The matcher strips the unit suffix from the deck axis name to find the
+scenario effector by `id`. Mismatches (no matching effector,
+mismatched unit) fail closed at runner build time with
+`CliError::AeroEffectorMismatch`, before any kernel step is taken.
+Schema-1 decks and decks without effector axes skip this check
+entirely.
+
+#### Interpolation
+
+Multilinear over N axes (3 ≤ N ≤ 6). The reduction collapses the
+**innermost axis first** (the last axis in `axis_order`) and walks
+outward; this preserves bit-identical f64 outputs at N = 3 against the
+Phase-2.5 trilinear path. The locked operand order is part of the
+byte-stability contract and is asserted by a 1024-case property test
+in `crates/openbmp-aero/src/deck.rs`.
+
+#### Determinism
+
+Schema-1 fixtures are bit-identical under the schema-2 loader. Every
+existing scenario (D12, Niskanen point-mass, Niskanen rigid, Phase-1
+analytic-toy, Phase-3.4 effector e2e) continues to produce
+byte-identical Parquet under Phase 3.5. The kernel-owned
+`effector_actuals: BTreeMap<String, f64>` snapshot is empty by
+default; the runner only populates it when at least one schema-2 deck
+axis matches a scenario effector. Empty snapshot → empty
+`EffectorActualsView` → schema-1 lookups ignore the view → byte-stable
+legacy path.
+
+The canonical schema-2 example ships at
+[`scenarios/effector-elevon-aero/single-elevon-aero-deflected.toml`](../scenarios/effector-elevon-aero/single-elevon-aero-deflected.toml)
+and the deck at
+[`data/aero/synthetic-elevon-1d.toml`](../data/aero/synthetic-elevon-1d.toml).

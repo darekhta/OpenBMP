@@ -1,13 +1,22 @@
 //! `openbmp-aero` — OpenBMP aerodynamics.
 //!
-//! Phase 2.5 ships:
+//! Phase 2.5 / 3.5 ships:
 //!
-//! * [`deck`] — Schema-1 axisymmetric reduced sounding-rocket deck
-//!   indexed by `(mach, alpha_deg, beta_deg)` returning the three
-//!   reduced coefficients `(CN, CD, CM)`. Locked-order trilinear
-//!   interpolation per Demmel & Nguyen 2020; FMA disabled.
-//! * [`parser`] — TOML deck-file parser for the architecture-locked
-//!   Schema-1 schema with `serde(deny_unknown_fields)`.
+//! * [`deck`] — Tabulated aerodynamic deck. **Schema 1** is the
+//!   Phase-2.5 axisymmetric reduced sounding-rocket form indexed by
+//!   `(mach, alpha_deg, beta_deg)` returning the three reduced
+//!   coefficients `(CN, CD, CM)`. **Schema 2** (Phase 3.5) extends
+//!   the same struct with optional effector-axis dimensions
+//!   (e.g. `delta_e_deg`); the lookup signature gains a name-keyed
+//!   `BTreeMap<&str, f64>` for deflections. The internal
+//!   representation is N-D (3 ≤ N ≤ 6); at N = 3 the multilinear
+//!   reduction is bit-identical to the Phase-2.5 trilinear path,
+//!   per a 1024-case property test. Locked-order operand reduction
+//!   per Demmel & Nguyen 2020; FMA disabled.
+//! * [`parser`] — TOML deck-file parser. Auto-detects schema 1 vs.
+//!   schema 2 from the `openbmp.aero_deck` integer marker and
+//!   dispatches to the strict per-schema parser, both using
+//!   `serde(deny_unknown_fields)`.
 //! * [`method`] — [`method::AeroMethod`] trait, [`method::AeroContext`]
 //!   input, [`method::AeroForceMomentBody`] output, and the
 //!   [`method::DeckLookup`] implementation that composes
@@ -16,18 +25,18 @@
 //!   surface (out-of-envelope, non-finite, invalid parameter,
 //!   malformed deck, deck I/O).
 //!
-//! The full six-coefficient `CX/CY/CZ/Cl/Cm/Cn` deck and
-//! control-effector axes are deferred to Phase 3. Hypersonic methods
-//! (`ModifiedNewtonian`, `TangentCone`, `LocalInclinationPanels`,
+//! The full six-coefficient `CX/CY/CZ/Cl/Cm/Cn` deck is deferred past
+//! Phase 3.5; schema-2 still ships only `(CN, CD, CM)`. Hypersonic
+//! methods (`ModifiedNewtonian`, `TangentCone`, `LocalInclinationPanels`,
 //! `FreeMolecular`) and the `HybridAeroMethod` dispatch ship in
 //! Phase 6 — see `docs/hypersonic-extensions.md`.
 //!
 //! # Determinism
 //!
-//! Pure arithmetic on `f64`; locked operand order on the trilinear
-//! reduction; no FMA, no wall-clock, no system RNG, no network, no
-//! file I/O on the hot path. The TOML parser performs file I/O at
-//! deck-load time only.
+//! Pure arithmetic on `f64`; locked operand order on the multilinear
+//! reduction (bit-identical to the schema-1 trilinear at N = 3); no
+//! FMA, no wall-clock, no system RNG, no network, no file I/O on the
+//! hot path. The TOML parser performs file I/O at deck-load time only.
 //!
 //! # Crate layering
 //!

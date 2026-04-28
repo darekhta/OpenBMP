@@ -964,24 +964,31 @@ gimbal_yaw_rad`. The controller does not see effector state directly; it
 sees telemetry channels `effector.<id>.commanded`,
 `effector.<id>.actual`, `effector.<id>.saturated`, etc.
 
-> **Phase-3.4 status note.** Phase 3.4 ships `ControlEffector`, the
-> `LinearActuator` reference impl, the four canonical fault modes,
+> **Phase-3.4 + 3.5 status note.** Phase 3.4 shipped `ControlEffector`,
+> the `LinearActuator` reference impl, the four canonical fault modes,
 > the runner-side `EffectorRack`, and one `effector.<id>.actual`
-> `f64` telemetry channel per declared effector. The implemented
-> `step(cmd, dt)` returns `Result<EffectorState, EffectorError>`
-> and `inject_fault(fault)` validates payloads and returns
-> `Result<(), EffectorError>` (the design fragment above is simplified). The
-> aerodynamics-side coupling is **not** wired in 3.4 — the aero
-> deck stays schema-1 and the deflection telemetry is observable
-> but does not perturb force / moment evaluation. Schema-2 deck
-> consumption arrives in Phase 3.5. Faults are scenario-loaded
+> `f64` telemetry channel per declared effector. Phase 3.5 closed the
+> deck-side consumption loop: schema-2 aero decks declare effector
+> axes (e.g. `delta_e_deg`), the runner pushes the rack snapshot to a
+> kernel-owned `BTreeMap<String, f64>` before each `step()`, and
+> `ForceContext.effector_actuals: EffectorActualsView<'a>` exposes
+> that snapshot to the deck adapter inside every RK4 stage. See
+> [Phase-3.5 status note](#deck-format-extensions-control-effector-axes)
+> in §Deck Format Extensions for the full schema-2 wire format and
+> determinism contract.
+>
+> The implemented `step(cmd, dt)` returns
+> `Result<EffectorState, EffectorError>` and `inject_fault(fault)`
+> validates payloads and returns `Result<(), EffectorError>` (the
+> design fragment above is simplified). Faults are scenario-loaded
 > only in 3.4; run-time fault injection is deferred. The
 > `EffectorRack` lives on the runner side (mirrors `mission.rs`),
 > not on `BasicAssembly`, so the assembly stays `Clone` and legacy
 > scenarios with no `[[vehicle.assembly.effectors]]` short-circuit
 > every per-step rack operation on `is_empty()` and produce
 > byte-identical Parquet to pre-3.4. See `scenarios/effector-elevon/`
-> for the canonical exit-criterion case.
+> for the gravity-only exit-criterion case (3.4) and
+> `scenarios/effector-elevon-aero/` for the schema-2-deck case (3.5).
 
 ### Tanks and Slosh as Moving-Mass Dynamics
 
@@ -1210,6 +1217,57 @@ for the full sidecar schema). Axis names are not prescribed beyond the
 common `delta_e / delta_a / delta_r` and `body_flap_left /
 body_flap_right / grid_fin_<n>`; the deck declares names and units, the
 `ControlEffector` set declares names and limits, the loader matches.
+
+> **Phase-3.5 status note.** Phase 3.5 wires the schema-2 deck format
+> end-to-end:
+>
+> - The deck file's schema discriminator is the integer marker:
+>   `openbmp.aero_deck = 1` (schema-1) or `= 2` (schema-2). The
+>   architecture-spec form `openbmp.aero_deck.schema = 2` shown earlier
+>   in this section was an illustrative draft — actual TOML semantics
+>   prevent an integer + sub-table at the same dotted key, so the
+>   shipping wire format bumps the integer instead.
+> - The runtime `AeroDeck` is N-D internally: an `axis_order:
+>   Vec<String>` (always starting with `["mach", "alpha", "beta"]`),
+>   `axes: Vec<Vec<f64>>`, and three flat row-major coefficient
+>   `Vec<f64>`s. At N = 3 the multilinear lookup is bit-identical to
+>   the Phase-2.5 trilinear path — pinned by a 1024-case property test
+>   in `openbmp-aero::deck`.
+> - The lookup signature is
+>   `lookup(mach, alpha, beta, deflections: &BTreeMap<&str, f64>) ->
+>   Result<AeroCoefficients, AeroError>`. Schema-1 decks ignore
+>   `deflections`. Schema-2 decks require an entry per declared
+>   effector axis; missing-key returns `AeroError::InvalidParameter`.
+> - The kernel owns a `BTreeMap<String, f64>` snapshot
+>   (`SimulationKernel::set_effector_actuals` setter); the runner
+>   refreshes it before every `step()` call so all four RK4 stages
+>   see the same view. `ForceContext` and `MomentContext` carry an
+>   `EffectorActualsView<'a>` (a `Copy` borrow of the kernel-owned map
+>   wrapped in `Option`) that the deck adapter reads. Empty snapshot
+>   for legacy schema-1 scenarios → empty view → schema-1 lookups
+>   never touch the view → byte-stable legacy code paths.
+> - Unit-matching contract: schema-2 deck axis names carry an explicit
+>   `_deg` or `_rad` suffix. The runner's `aero_effector_match`
+>   helper pairs each deck axis with a scenario effector by stripped
+>   name and asserts the effector's declared `unit` matches the
+>   suffix. Mismatches → `CliError::AeroEffectorMismatch` at runner
+>   build time, before any kernel step.
+> - Schema-2 supports up to 3 effector axes (6 axes total) in 3.5.
+>   The full six-coefficient `(CY, Cl, Cn-yaw)` deck is deferred past
+>   3.5; schema-2 still ships only `(CN, CD, CM)`. The
+>   `AxialDragForceAdapter` keeps its hard-coded `(alpha, beta) =
+>   (0, 0)` query in 3.5; real alpha/beta consumption from
+>   `RigidBodyState` is Phase-3.6's
+>   `RigidAeroForceMomentAdapter` work.
+> - The exit-criterion scenario lives at
+>   `scenarios/effector-elevon-aero/single-elevon-aero-deflected.toml`
+>   with the schema-2 deck at `data/aero/synthetic-elevon-1d.toml`.
+>   The Phase-3.5.D e2e test in
+>   `crates/openbmp-cli/tests/effector_aero_e2e.rs` runs both a
+>   deflected scenario and a baseline (elevon held at 0°), asserts
+>   the per-step `force.aero.z_n` telemetry differs by ≥ 5% between
+>   the two — proof the schema-2 path is actually consuming the
+>   live deflection.
 
 ### Aero Force / Moment Computation
 

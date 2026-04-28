@@ -2,9 +2,15 @@
 
 L2 aerodynamics crate.
 
-**Status:** Phase 2 — schema-1 deck shipped (`AeroDeck` +
-`DeckLookup`). Schema-2 with control-effector axes lands in Phase 3.
-Hypersonic extensions in Phase 6.
+**Status:** Phase 3.5 — schema-1 and schema-2 decks both shipped
+(`AeroDeck` + `DeckLookup`). Schema-2 adds optional control-effector
+axes (e.g. `delta_e_deg`); the lookup signature gains a name-keyed
+`BTreeMap<&str, f64>` for deflections and the runner-side
+`EffectorRack` snapshot flows through the kernel into the deck. The
+internal representation is N-D (3 ≤ N ≤ 6); at N = 3 the multilinear
+reduction is bit-identical to the original schema-1 trilinear path.
+Six-coefficient decks (`CY`, `Cl`, `Cn-yaw`) and hypersonic
+extensions are deferred to Phase 6.
 
 ## Purpose
 
@@ -39,15 +45,20 @@ extrapolation policy is documented in the deck.
 
 ## Determinism
 
-Trilinear interpolation with documented out-of-grid behaviour
-(fail-closed unless explicit extrapolation policy declared).
+Multilinear interpolation (innermost-axis-first, locked operand order
+per Demmel & Nguyen 2020) with documented out-of-grid behaviour
+(fail-closed unless explicit extrapolation policy declared). FMA
+disabled. At N = 3 (schema-1) the reduction is bit-identical to the
+original trilinear formula, asserted by a 1024-case property test.
 
 ## Validation
 
-`validated-toy` for the Phase-2.5 schema-1 deck surface. Validated
-against per-corner exact-equality regression, eight-corner-centroid
-average lookup, single-axis sub-grid lookup, and bit-stable
-clone-equivalence. Phase 6 adds analytic hypersonic method checks.
+`validated-toy` for both the Phase-2.5 schema-1 deck surface and the
+Phase-3.5 schema-2 surface. Validated against per-corner
+exact-equality regression, eight-corner-centroid average lookup,
+single-axis sub-grid lookup, bit-stable clone-equivalence, and (3.5)
+schema-2 lookup at zero deflection matching the schema-1 companion
+bit-for-bit. Phase 6 adds analytic hypersonic method checks.
 
 ## Data Provenance
 
