@@ -74,6 +74,8 @@ const PHASE3_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(304);
 const PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(320);
 const PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(321);
 const PHASE3_ENGINE_CLUSTER_MOMENT_MODEL_ID: ModelId = ModelId::new(322);
+const PHASE3_TANK_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(340);
+const PHASE3_TANK_RACK_MOMENT_MODEL_ID: ModelId = ModelId::new(341);
 
 /// Run a Phase-2 rigid-body scenario through a freshly-built kernel
 /// and return the populated telemetry table.
@@ -103,6 +105,8 @@ pub fn run(
     let mut effector_rack = crate::runner::effectors::EffectorRack::build(document)?;
     // Phase-3.6: see phase2_point_mass.rs for the rationale.
     let mut engine_rack = crate::runner::engines::EngineRack::build(document)?;
+    // Phase-3.7: tank rack mirroring the point-mass runner.
+    let mut tank_rack = crate::runner::tanks::TankRack::build(document)?;
 
     let loaded = load_models(document, resolved_files)?;
     let initial_state = build_initial_state(document, &loaded, &assembly)?;
@@ -156,6 +160,9 @@ pub fn run(
     if !engine_rack.is_empty() {
         kernel.set_engine_snapshot(engine_rack.snapshot_map());
     }
+    if !tank_rack.is_empty() {
+        kernel.set_tank_snapshot(tank_rack.snapshot_map());
+    }
     record_step(
         &mut table,
         &kernel,
@@ -176,6 +183,14 @@ pub fn run(
             engine_rack.apply_commands(&pending_engine_events)?;
             engine_rack.step()?;
         }
+        // Phase-3.7: advance tanks using prior-step cached drivers.
+        // The drivers are updated post-step from the new rigid-body
+        // state's angular_velocity (omega_body) and a finite-
+        // difference body-frame acceleration; the first step uses
+        // zeros (initialised by `TankRack::build`).
+        if !tank_rack.is_empty() {
+            tank_rack.step()?;
+        }
         if !deck_bindings.is_empty() {
             let rack_snapshot = effector_rack.snapshot();
             let snapshot_map = crate::runner::aero_effector_match::build_snapshot_map(
@@ -187,7 +202,35 @@ pub fn run(
         if !engine_rack.is_empty() {
             kernel.set_engine_snapshot(engine_rack.snapshot_map());
         }
+        if !tank_rack.is_empty() {
+            kernel.set_tank_snapshot(tank_rack.snapshot_map());
+        }
+        let prev_velocity_eci = kernel.current_state().velocity.vector;
+        let prev_orientation = kernel.current_state().orientation.q;
         kernel.step()?;
+        // Phase-3.7: refresh tank-rack drivers from the post-step
+        // rigid-body state. `accel_body_m_s2` is finite-differenced
+        // from the velocity change rotated into the prior-step body
+        // frame; `omega_body_rad_s` is read directly from the new
+        // state. Slosh state on the next tick uses these drivers
+        // (one-step lag, see TankRack module docs).
+        if !tank_rack.is_empty() {
+            let dt_s = document.time.dt_s;
+            let new_state = kernel.current_state();
+            let dv_eci = new_state.velocity.vector - prev_velocity_eci;
+            let accel_eci = if dt_s > 0.0 {
+                dv_eci / dt_s
+            } else {
+                nalgebra::Vector3::zeros()
+            };
+            // Rotate ECI accel into prior-step body frame: the slosh
+            // dynamics react to body-frame accel, and the prior body
+            // frame matches the slosh state's reference.
+            let inverse_orientation = prev_orientation.inverse();
+            let accel_body = inverse_orientation * accel_eci;
+            let omega_body = new_state.angular_velocity.vector;
+            tank_rack.update_drivers(accel_body, omega_body);
+        }
         let fired = kernel.drain_events();
         let snapshot = effector_rack.snapshot();
         record_step(
@@ -481,6 +524,27 @@ fn build_vehicle(
         }
     }
 
+    // Phase-3.7: tank-rack reaction-force adapter (rigid).
+    if let Some(scenario_assembly) = &document.vehicle.assembly
+        && !scenario_assembly.tanks.is_empty()
+    {
+        let tank_ids: Vec<openbmp_core::TankId> = scenario_assembly
+            .tanks
+            .iter()
+            .map(|t| {
+                openbmp_core::TankId::from_path(&format!(
+                    "vehicle.assembly.tanks.{id}",
+                    id = t.id
+                ))
+            })
+            .collect();
+        let tank_force = openbmp_vehicle::TankRackForceAdapter::new(
+            tank_ids,
+            PHASE3_TANK_RACK_FORCE_MODEL_ID,
+        );
+        named.push(NamedForceModel::new("tank_reaction", Box::new(tank_force)));
+    }
+
     // BasicVehicle requires a mass model; the kernel keeps a separate
     // copy through `RigidMotorMassAdapter` / `ConstantMassRigid` for
     // its own state propagation. We give the vehicle a scalar
@@ -543,6 +607,11 @@ type RigidMomentEither = RigidMomentEitherKind;
 enum RigidMomentEitherKind {
     Zero(ZeroMoment),
     EngineCluster(EngineClusterMomentAdapter),
+    TankRack(openbmp_vehicle::TankRackMomentAdapter),
+    EngineClusterAndTankRack(
+        EngineClusterMomentAdapter,
+        openbmp_vehicle::TankRackMomentAdapter,
+    ),
 }
 
 impl openbmp_sim::MomentModel<RigidBodyState> for RigidMomentEitherKind {
@@ -557,6 +626,20 @@ impl openbmp_sim::MomentModel<RigidBodyState> for RigidMomentEitherKind {
             Self::EngineCluster(c) => <EngineClusterMomentAdapter as openbmp_sim::MomentModel<
                 RigidBodyState,
             >>::moment_n_m_body(c, ctx),
+            Self::TankRack(t) => {
+                <openbmp_vehicle::TankRackMomentAdapter as openbmp_sim::MomentModel<
+                    RigidBodyState,
+                >>::moment_n_m_body(t, ctx)
+            }
+            Self::EngineClusterAndTankRack(c, t) => {
+                let cluster = <EngineClusterMomentAdapter as openbmp_sim::MomentModel<
+                    RigidBodyState,
+                >>::moment_n_m_body(c, ctx)?;
+                let tank = <openbmp_vehicle::TankRackMomentAdapter as openbmp_sim::MomentModel<
+                    RigidBodyState,
+                >>::moment_n_m_body(t, ctx)?;
+                Ok(cluster + tank)
+            }
         }
     }
 
@@ -568,12 +651,17 @@ impl openbmp_sim::MomentModel<RigidBodyState> for RigidMomentEitherKind {
             Self::EngineCluster(c) => <EngineClusterMomentAdapter as openbmp_sim::MomentModel<
                 RigidBodyState,
             >>::validation(c),
+            Self::TankRack(t) | Self::EngineClusterAndTankRack(_, t) => {
+                <openbmp_vehicle::TankRackMomentAdapter as openbmp_sim::MomentModel<
+                    RigidBodyState,
+                >>::validation(t)
+            }
         }
     }
 }
 
 fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, CliError> {
-    if let Some(scenario_assembly) = &document.vehicle.assembly
+    let cluster_adapter = if let Some(scenario_assembly) = &document.vehicle.assembly
         && !scenario_assembly.engines.is_empty()
     {
         let engine_ids: Vec<openbmp_core::EngineId> = scenario_assembly
@@ -605,10 +693,38 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
         .map_err(|err| CliError::UnsupportedScenario {
             what: format!("EngineClusterMomentAdapter construction failed: {err}"),
         })?;
-        Ok(RigidMomentEitherKind::EngineCluster(adapter))
+        Some(adapter)
     } else {
-        Ok(RigidMomentEitherKind::Zero(ZeroMoment))
-    }
+        None
+    };
+
+    let tank_adapter = if let Some(scenario_assembly) = &document.vehicle.assembly
+        && !scenario_assembly.tanks.is_empty()
+    {
+        let tank_ids: Vec<openbmp_core::TankId> = scenario_assembly
+            .tanks
+            .iter()
+            .map(|t| {
+                openbmp_core::TankId::from_path(&format!(
+                    "vehicle.assembly.tanks.{id}",
+                    id = t.id
+                ))
+            })
+            .collect();
+        Some(openbmp_vehicle::TankRackMomentAdapter::new(
+            tank_ids,
+            PHASE3_TANK_RACK_MOMENT_MODEL_ID,
+        ))
+    } else {
+        None
+    };
+
+    Ok(match (cluster_adapter, tank_adapter) {
+        (Some(c), Some(t)) => RigidMomentEitherKind::EngineClusterAndTankRack(c, t),
+        (Some(c), None) => RigidMomentEitherKind::EngineCluster(c),
+        (None, Some(t)) => RigidMomentEitherKind::TankRack(t),
+        (None, None) => RigidMomentEitherKind::Zero(ZeroMoment),
+    })
 }
 
 /// Build the kernel's rigid mass model. When a motor is declared
@@ -1036,6 +1152,7 @@ where
     let env_sample = EnvironmentSample::default();
     let kernel_actuals = kernel.effector_actuals();
     let kernel_engine_snapshot = kernel.engine_snapshot();
+    let kernel_tank_snapshot = kernel.tank_snapshot();
     let ctx = ForceContext {
         state,
         environment: &env_sample,
@@ -1043,6 +1160,7 @@ where
         time: state.time,
         effector_actuals: openbmp_sim::EffectorActualsView::new(kernel_actuals),
         engine_snapshot: openbmp_sim::EngineSnapshotView::new(kernel_engine_snapshot),
+        tank_snapshot: openbmp_sim::TankSnapshotView::new(kernel_tank_snapshot),
     };
     let breakdown = breakdown_vehicle
         .evaluate_force_breakdown(ctx)

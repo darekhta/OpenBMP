@@ -507,6 +507,7 @@ mod tests {
             time: SimTime::ZERO,
             effector_actuals: openbmp_sim::EffectorActualsView::empty(),
             engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
         }
     }
 
@@ -713,6 +714,7 @@ mod tests {
                 time: SimTime::ZERO,
                 effector_actuals: openbmp_sim::EffectorActualsView::empty(),
                 engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
             })
             .unwrap();
         assert_eq!(m, Vector3::zeros());

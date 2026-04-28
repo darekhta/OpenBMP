@@ -1535,9 +1535,16 @@ pub struct AssemblyConfig {
     /// Defaults to `Custom` when omitted.
     #[serde(default)]
     pub cluster_layout: Option<ClusterLayoutConfig>,
-    /// Phase-3.7 deferred.
+    /// Phase-3.7: tanks in scenario-declared order. The runner
+    /// builds `Box<dyn MovingMassModel>` instances from these
+    /// configs and assembles them into a runner-side `TankRack`.
+    /// Tanks contribute their mass, CG offset, inertia delta, and
+    /// reaction force / moment to the vehicle dynamics. Phase-3.7
+    /// ships drain decoupled from engines (`drain_rate_kg_per_s`
+    /// is scenario-declared); engine-cluster drain coupling is a
+    /// Phase-3.X follow-on.
     #[serde(default)]
-    pub tanks: Vec<toml::Value>,
+    pub tanks: Vec<TankConfig>,
 }
 
 impl AssemblyConfig {
@@ -1625,11 +1632,18 @@ impl AssemblyConfig {
                 });
             }
         }
-        if !self.tanks.is_empty() {
-            return Err(ScenarioError::UnsupportedAssemblyChild {
-                kind: "tanks".to_owned(),
-                deferred_to: "Phase 3.7".to_owned(),
-            });
+        let mut seen_tank_ids: std::collections::BTreeSet<&str> =
+            std::collections::BTreeSet::new();
+        let body_ids: std::collections::BTreeSet<&str> =
+            self.bodies.iter().map(|b| b.id.as_str()).collect();
+        for (index, tank) in self.tanks.iter().enumerate() {
+            tank.validate(index, vehicle_kind, &body_ids)?;
+            if !seen_tank_ids.insert(tank.id.as_str()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("vehicle.assembly.tanks[{index}].id"),
+                    value: tank.id.clone(),
+                });
+            }
         }
         Ok(())
     }
@@ -2321,6 +2335,307 @@ impl EngineCommandConfig {
         }
         require_finite(&path("gimbal_pitch_rad"), self.gimbal_pitch_rad)?;
         require_finite(&path("gimbal_yaw_rad"), self.gimbal_yaw_rad)?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------
+// Tank block (Phase 3.7)
+// ---------------------------------------------------------------------
+
+/// One declared tank entry under `[[vehicle.assembly.tanks]]`.
+///
+/// The runner builds a `Box<dyn MovingMassModel>` from this config
+/// and assembles it into a runner-side `TankRack` mirroring the
+/// Phase-3.6 `EngineRack` pattern.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TankConfig {
+    /// Stable tank id (`snake_case` scenario-text identifier).
+    pub id: String,
+    /// `id` of the parent body the tank is rigidly mounted to.
+    /// Must match one of `vehicle.assembly.bodies[*].id`.
+    pub mounted_to: String,
+    /// Body-frame mount point (m). `[x, y, z]`.
+    pub mount_point_body_m: [f64; 3],
+    /// Closed-form geometry tagged on `kind`.
+    pub geometry: TankGeometryConfig,
+    /// Propellant constants. Toy / textbook only — fielded
+    /// propellant data is rejected per `safety-boundaries.md`.
+    pub propellant: PropellantSpecConfig,
+    /// Initial fill fraction in `[0, 1]`.
+    pub initial_fill_fraction: f64,
+    /// Moving-mass kind + per-kind parameters tagged on `kind`.
+    pub moving_mass: MovingMassKindConfig,
+    /// Optional baffle model (consumed only by `BaffledPendulum`).
+    #[serde(default)]
+    pub baffle_model: Option<BaffleModelConfig>,
+    /// Phase-3.7 decoupled drain. Constant `kg/s`; defaults to
+    /// `0.0` when omitted. Future phase ties this to the engine
+    /// cluster's per-step total mdot.
+    #[serde(default)]
+    pub drain_rate_kg_per_s: Option<f64>,
+    /// Optional initial slosh perturbation (used for free-response
+    /// scenarios and Phase-3.7.E exit-criterion testing).
+    #[serde(default)]
+    pub initial_slosh: Option<InitialSloshConfig>,
+}
+
+impl TankConfig {
+    pub(crate) fn validate(
+        &self,
+        index: usize,
+        vehicle_kind: &str,
+        body_ids: &std::collections::BTreeSet<&str>,
+    ) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.tanks[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        require_non_empty(&path("mounted_to"), &self.mounted_to)?;
+        if !body_ids.contains(self.mounted_to.as_str()) {
+            return Err(ScenarioError::UnknownBodyReference {
+                field: path("mounted_to"),
+                value: self.mounted_to.clone(),
+            });
+        }
+        require_finite_array(&path("mount_point_body_m"), &self.mount_point_body_m)?;
+        require_finite(
+            &path("initial_fill_fraction"),
+            self.initial_fill_fraction,
+        )?;
+        if !(0.0..=1.0).contains(&self.initial_fill_fraction) {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("initial_fill_fraction"),
+                value: self.initial_fill_fraction,
+                rule: "must lie in [0, 1]",
+            });
+        }
+        self.geometry.validate(index)?;
+        self.propellant.validate(index)?;
+        self.moving_mass.validate(index, &self.geometry, vehicle_kind)?;
+        if let Some(baffle) = &self.baffle_model {
+            baffle.validate(index)?;
+        }
+        if let Some(rate) = self.drain_rate_kg_per_s {
+            require_finite(&path("drain_rate_kg_per_s"), rate)?;
+            if rate < 0.0 {
+                return Err(ScenarioError::InvalidNumber {
+                    field: path("drain_rate_kg_per_s"),
+                    value: rate,
+                    rule: "must be non-negative",
+                });
+            }
+        }
+        if let Some(initial) = &self.initial_slosh {
+            initial.validate(index)?;
+        }
+        Ok(())
+    }
+}
+
+/// Closed-form tank geometry tagged enum.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TankGeometryConfig {
+    /// Right circular cylinder.
+    Cylinder {
+        /// Internal radius (m).
+        radius_m: f64,
+        /// Internal height (m).
+        height_m: f64,
+    },
+    /// Sphere.
+    Sphere {
+        /// Internal radius (m).
+        radius_m: f64,
+    },
+    /// Triaxial ellipsoid (a, b, c semi-axes, m).
+    EllipsoidTextbook {
+        /// Semi-axis along body x.
+        a_m: f64,
+        /// Semi-axis along body y.
+        b_m: f64,
+        /// Semi-axis along body z.
+        c_m: f64,
+    },
+}
+
+impl TankGeometryConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.tanks[{index}].geometry.{field}");
+        match *self {
+            Self::Cylinder { radius_m, height_m } => {
+                require_finite(&path("radius_m"), radius_m)?;
+                require_positive(&path("radius_m"), radius_m)?;
+                require_finite(&path("height_m"), height_m)?;
+                require_positive(&path("height_m"), height_m)?;
+            }
+            Self::Sphere { radius_m } => {
+                require_finite(&path("radius_m"), radius_m)?;
+                require_positive(&path("radius_m"), radius_m)?;
+            }
+            Self::EllipsoidTextbook { a_m, b_m, c_m } => {
+                require_finite(&path("a_m"), a_m)?;
+                require_positive(&path("a_m"), a_m)?;
+                require_finite(&path("b_m"), b_m)?;
+                require_positive(&path("b_m"), b_m)?;
+                require_finite(&path("c_m"), c_m)?;
+                require_positive(&path("c_m"), c_m)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Propellant spec scenario-side. The runner converts to
+/// `openbmp_vehicle::PropellantSpec` (which holds `label: &'static
+/// str`) by leaking the `label` String once at scenario load.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropellantSpecConfig {
+    /// Bulk liquid density at nominal storage conditions (kg/m³).
+    pub density_kg_m3: f64,
+    /// Display label (e.g. `"water_textbook"`).
+    pub label: String,
+}
+
+impl PropellantSpecConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.tanks[{index}].propellant.{field}");
+        require_finite(&path("density_kg_m3"), self.density_kg_m3)?;
+        require_positive(&path("density_kg_m3"), self.density_kg_m3)?;
+        require_non_empty(&path("label"), &self.label)?;
+        Ok(())
+    }
+}
+
+/// Moving-mass kind tagged enum. Phase 3.7 ships four impls.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MovingMassKindConfig {
+    /// Phase-3.7.A no-slosh toy.
+    RigidLiquid,
+    /// Phase-3.7.B Abramson cylindrical-tank equivalent pendulum.
+    EquivalentPendulum {
+        /// Bare-tank damping ratio (typical academic value `0.005`).
+        #[serde(default)]
+        damping_ratio_zeta: f64,
+    },
+    /// Phase-3.7.C linear translational alternative.
+    EquivalentSpringMass {
+        /// Bare-tank damping ratio.
+        #[serde(default)]
+        damping_ratio_zeta: f64,
+    },
+    /// Phase-3.7.C `EquivalentPendulum` with `BaffleModel`-supplied
+    /// damping increment.
+    BaffledPendulum {
+        /// Bare-tank base damping ratio.
+        #[serde(default)]
+        base_damping_ratio_zeta: f64,
+    },
+}
+
+impl MovingMassKindConfig {
+    fn validate(
+        &self,
+        index: usize,
+        geometry: &TankGeometryConfig,
+        vehicle_kind: &str,
+    ) -> Result<(), ScenarioError> {
+        let path =
+            |field: &str| format!("vehicle.assembly.tanks[{index}].moving_mass.{field}");
+        let requires_cylinder = !matches!(self, Self::RigidLiquid);
+        if requires_cylinder && !matches!(geometry, TankGeometryConfig::Cylinder { .. }) {
+            return Err(ScenarioError::IncompatibleAssemblyEntry {
+                field: format!("vehicle.assembly.tanks[{index}]"),
+                reason: "non-RigidLiquid moving_mass requires Cylinder geometry"
+                    .to_owned(),
+            });
+        }
+        let non_rigid_in_point_mass = !matches!(self, Self::RigidLiquid)
+            && vehicle_kind == "point_mass";
+        if non_rigid_in_point_mass {
+            return Err(ScenarioError::IncompatibleAssemblyEntry {
+                field: format!("vehicle.assembly.tanks[{index}]"),
+                reason: "non-RigidLiquid moving_mass requires vehicle.kind = \"rigid_body\""
+                    .to_owned(),
+            });
+        }
+        match self {
+            Self::RigidLiquid => {}
+            Self::EquivalentPendulum { damping_ratio_zeta }
+            | Self::EquivalentSpringMass { damping_ratio_zeta } => {
+                require_finite(&path("damping_ratio_zeta"), *damping_ratio_zeta)?;
+                if *damping_ratio_zeta < 0.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("damping_ratio_zeta"),
+                        value: *damping_ratio_zeta,
+                        rule: "must be non-negative",
+                    });
+                }
+            }
+            Self::BaffledPendulum {
+                base_damping_ratio_zeta,
+            } => {
+                require_finite(&path("base_damping_ratio_zeta"), *base_damping_ratio_zeta)?;
+                if *base_damping_ratio_zeta < 0.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("base_damping_ratio_zeta"),
+                        value: *base_damping_ratio_zeta,
+                        rule: "must be non-negative",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Baffle model.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BaffleModelConfig {
+    /// Damping-ratio increment added to the inner pendulum's
+    /// `damping_ratio_zeta`. Phase-3.7 minimum surface; future
+    /// phases may add baffle-area integration per Abramson Eq 7-46.
+    pub damping_increment_zeta: f64,
+}
+
+impl BaffleModelConfig {
+    fn validate(self, index: usize) -> Result<(), ScenarioError> {
+        let path =
+            |field: &str| format!("vehicle.assembly.tanks[{index}].baffle_model.{field}");
+        require_finite(&path("damping_increment_zeta"), self.damping_increment_zeta)?;
+        if self.damping_increment_zeta < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("damping_increment_zeta"),
+                value: self.damping_increment_zeta,
+                rule: "must be non-negative",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Optional initial slosh perturbation. For pendulum / baffled-pendulum
+/// these are angles + rates; for spring-mass these are displacements +
+/// velocities. The runner picks the appropriate setter.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct InitialSloshConfig {
+    /// `(theta_x_rad, theta_y_rad)` for pendulum kinds, or
+    /// `(displacement_x_m, displacement_y_m)` for spring-mass.
+    pub angles_rad: [f64; 2],
+    /// `(theta_dot_x_rad_s, theta_dot_y_rad_s)` for pendulum, or
+    /// `(velocity_x_m_s, velocity_y_m_s)` for spring-mass.
+    pub rates_rad_s: [f64; 2],
+}
+
+impl InitialSloshConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.tanks[{index}].initial_slosh.{field}");
+        require_finite_array(&path("angles_rad"), &self.angles_rad)?;
+        require_finite_array(&path("rates_rad_s"), &self.rates_rad_s)?;
         Ok(())
     }
 }

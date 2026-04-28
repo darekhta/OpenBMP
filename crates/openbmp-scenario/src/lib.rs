@@ -27,15 +27,16 @@ pub mod scenario;
 pub mod solver;
 
 pub use document::{
-    AeroConfig, AssemblyBodyConfig, AssemblyConfig, AtmosphereConfig, BatchConfig,
-    BodyGeometryConfig, ClusterLayoutConfig, EffectorCommandScheduleConfig, EffectorConfig,
-    EffectorFaultConfig, EffectorKindConfig, EffectorLimitsConfig, EngineCommandConfig,
-    EngineConfig, EngineFaultConfig, EngineKindConfig, EngineLimitsConfig, EnvironmentConfig,
-    EpochConfig, EventActionConfig, EventConfig, EventTriggerConfig, ForcesConfig, FramesConfig,
-    LocalOriginConfig, MetaConfig, MissionConfig, MotorConfig, OpenBmpHeader, PhaseConfig,
-    PhaseTransitionConfig, PropulsionConfig, SUPPORTED_SCENARIO_VERSION, ScenarioDocument,
-    SensorConfig, TelemetryConfig, TelemetryOutputConfig, TimeConfig, ValidationConfig,
-    VehicleConfig, WGS84_J2_DEFAULT, WindConfig,
+    AeroConfig, AssemblyBodyConfig, AssemblyConfig, AtmosphereConfig, BaffleModelConfig,
+    BatchConfig, BodyGeometryConfig, ClusterLayoutConfig, EffectorCommandScheduleConfig,
+    EffectorConfig, EffectorFaultConfig, EffectorKindConfig, EffectorLimitsConfig,
+    EngineCommandConfig, EngineConfig, EngineFaultConfig, EngineKindConfig, EngineLimitsConfig,
+    EnvironmentConfig, EpochConfig, EventActionConfig, EventConfig, EventTriggerConfig,
+    ForcesConfig, FramesConfig, InitialSloshConfig, LocalOriginConfig, MetaConfig, MissionConfig,
+    MotorConfig, MovingMassKindConfig, OpenBmpHeader, PhaseConfig, PhaseTransitionConfig,
+    PropellantSpecConfig, PropulsionConfig, SUPPORTED_SCENARIO_VERSION, ScenarioDocument,
+    SensorConfig, TankConfig, TankGeometryConfig, TelemetryConfig, TelemetryOutputConfig,
+    TimeConfig, ValidationConfig, VehicleConfig, WGS84_J2_DEFAULT, WindConfig,
 };
 pub use error::ScenarioError;
 pub use files::ResolvedFile;

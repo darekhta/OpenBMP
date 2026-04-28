@@ -927,6 +927,253 @@ impl<M: Motor> RigidMassModel for RigidMotorMassAdapter<M> {
     }
 }
 
+// ---------------------------------------------------------------------
+// TankRackForceAdapter (Phase 3.7.D)
+// ---------------------------------------------------------------------
+
+/// Phase-3.7 kernel-side force adapter for a tank rack.
+///
+/// Sums the body-frame reaction forces of every declared tank from
+/// the kernel's `TankSnapshotView` and returns the total in `Eci`.
+/// Point-mass: body-frame == ECI (no orientation), pass through.
+/// Rigid-body: rotate each tank's body-frame reaction force into
+/// ECI through `state.orientation`.
+///
+/// Operand order: scenario-declared `tank_ids` order with locked
+/// left-fold summation. Empty snapshot → zero force, byte-identical
+/// to pre-3.7.
+#[derive(Clone, Debug)]
+pub struct TankRackForceAdapter {
+    tank_ids: Vec<openbmp_core::TankId>,
+    model_id: ModelId,
+}
+
+impl TankRackForceAdapter {
+    /// Construct from a parallel `tank_ids` array (scenario-declared
+    /// order) and a stable model id.
+    #[must_use]
+    pub fn new(tank_ids: Vec<openbmp_core::TankId>, model_id: ModelId) -> Self {
+        Self { tank_ids, model_id }
+    }
+}
+
+impl ForceModel<PointMassState> for TankRackForceAdapter {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, PointMassState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let mut force_eci = Vector3::zeros();
+        for id in &self.tank_ids {
+            let snap = ctx
+                .tank_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "tank rack force adapter: snapshot missing declared tank id",
+                    ),
+                })?;
+            // Point-mass kernel has no orientation; body == ECI.
+            force_eci += snap.reaction_force_body_n;
+        }
+        if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(force_eci)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+impl ForceModel<RigidBodyState> for TankRackForceAdapter {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let mut force_eci = Vector3::zeros();
+        for id in &self.tank_ids {
+            let snap = ctx
+                .tank_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "tank rack force adapter: snapshot missing declared tank id",
+                    ),
+                })?;
+            let f_eci = ctx.state.orientation.q * snap.reaction_force_body_n;
+            force_eci += f_eci;
+        }
+        if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(force_eci)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+// ---------------------------------------------------------------------
+// TankRackMomentAdapter (Phase 3.7.D)
+// ---------------------------------------------------------------------
+
+/// Phase-3.7 kernel-side moment adapter for a tank rack (rigid-body).
+///
+/// Sums the body-frame reaction moments of every declared tank from
+/// the kernel's `TankSnapshotView` in scenario-declared order with
+/// locked left-fold operand order.
+#[derive(Clone, Debug)]
+pub struct TankRackMomentAdapter {
+    tank_ids: Vec<openbmp_core::TankId>,
+    model_id: ModelId,
+}
+
+impl TankRackMomentAdapter {
+    /// Construct from a parallel `tank_ids` array (scenario-declared
+    /// order) and a stable model id.
+    #[must_use]
+    pub fn new(tank_ids: Vec<openbmp_core::TankId>, model_id: ModelId) -> Self {
+        Self { tank_ids, model_id }
+    }
+}
+
+impl MomentModel<RigidBodyState> for TankRackMomentAdapter {
+    fn moment_n_m_body(
+        &self,
+        ctx: MomentContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let mut total = Vector3::zeros();
+        for id in &self.tank_ids {
+            let snap = ctx
+                .tank_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "tank rack moment adapter: snapshot missing declared tank id",
+                    ),
+                })?;
+            total += snap.reaction_moment_body_n_m;
+        }
+        if !total.x.is_finite() || !total.y.is_finite() || !total.z.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(total)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+// ---------------------------------------------------------------------
+// TankRackMassAdapter (Phase 3.7.D)
+// ---------------------------------------------------------------------
+
+/// Phase-3.7 kernel-side mass adapter for a tank rack (point-mass).
+///
+/// Wraps an inner [`MassModel`] and adds each declared tank's
+/// `mass_kg` from the kernel snapshot on top.
+///
+/// **Phase-3.7 limitation.** Tank fluid is not yet linked to the
+/// engine cluster's propellant accounting — scenarios that declare
+/// both `[[vehicle.assembly.engines]]` and a tank intended to be
+/// the cluster's propellant store will double-count that propellant
+/// (the cluster mass adapter already debits consumed propellant from
+/// `dry_vehicle_mass_kg`, and this adapter then adds the tank's
+/// `fluid_kg` on top). The Phase-3.7.E exit-criterion scenarios use
+/// non-engine sloshing setups to avoid the double-count; the
+/// engine-tank coupling is a Phase-3.X follow-on.
+pub struct TankRackMassAdapter {
+    inner: Box<dyn MassModel>,
+    tank_ids: Vec<openbmp_core::TankId>,
+    model_id: ModelId,
+}
+
+impl std::fmt::Debug for TankRackMassAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TankRackMassAdapter")
+            .field("tank_ids", &self.tank_ids)
+            .field("model_id", &self.model_id)
+            .field("inner", &"Box<dyn MassModel>")
+            .finish()
+    }
+}
+
+impl TankRackMassAdapter {
+    /// Construct from an inner mass model, a parallel `tank_ids`
+    /// array (scenario-declared order), and a stable model id.
+    #[must_use]
+    pub fn new(
+        inner: Box<dyn MassModel>,
+        tank_ids: Vec<openbmp_core::TankId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            inner,
+            tank_ids,
+            model_id,
+        }
+    }
+}
+
+impl MassModel for TankRackMassAdapter {
+    fn mass_kg(&self, t: SimTime) -> Result<f64, ModelEvalError> {
+        // Time-only fallback: no snapshot available, return inner's
+        // value. Production callers go through `mass_kg_at`.
+        self.inner.mass_kg(t)
+    }
+
+    fn mass_rate_kg_s(&self, t: SimTime) -> Result<f64, ModelEvalError> {
+        self.inner.mass_rate_kg_s(t)
+    }
+
+    fn mass_kg_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+        let mut total = self.inner.mass_kg_at(ctx)?;
+        for id in &self.tank_ids {
+            let snap = ctx
+                .tank_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "tank rack mass adapter: snapshot missing declared tank id",
+                    ),
+                })?;
+            total += snap.mass_kg;
+        }
+        if !total.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(total)
+    }
+
+    fn mass_rate_kg_s_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+        // Tank mass changes only via drain. The drain rate is set
+        // outside the kernel hot path (via `Tank::drain` in the
+        // runner), so the per-step mass-rate as far as the kernel
+        // is concerned is the inner's plus zero. Future phases
+        // unify this when tank-cluster drain coupling lands.
+        self.inner.mass_rate_kg_s_at(ctx)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
@@ -963,6 +1210,7 @@ mod tests {
             time: SimTime::from_seconds(time_s),
             effector_actuals: openbmp_sim::EffectorActualsView::empty(),
             engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
         }
     }
 
@@ -1190,6 +1438,7 @@ mod tests {
             time: SimTime::from_seconds(time_s),
             effector_actuals: openbmp_sim::EffectorActualsView::empty(),
             engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
         }
     }
 
@@ -1204,6 +1453,7 @@ mod tests {
             time: SimTime::ZERO,
             effector_actuals: openbmp_sim::EffectorActualsView::empty(),
             engine_snapshot: openbmp_sim::EngineSnapshotView::new(snapshot),
+            tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
         }
     }
 

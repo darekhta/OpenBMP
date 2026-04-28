@@ -262,6 +262,21 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
+    // Phase-3.7 tank-block fields. `initial_fill_fraction` is a
+    // ratio in [0, 1]; `damping_ratio_zeta`, `base_damping_ratio_zeta`,
+    // and `damping_increment_zeta` are dimensionless damping ratios.
+    if path.starts_with("$.vehicle.assembly.tanks")
+        && matches!(
+            key,
+            "initial_fill_fraction"
+                | "damping_ratio_zeta"
+                | "base_damping_ratio_zeta"
+                | "damping_increment_zeta"
+        )
+    {
+        return true;
+    }
+
     // Mission effector overrides use the same unit-agnostic command
     // scalar as the target effector.
     if path.starts_with("$.mission.events") && path.ends_with(".action.command") && key == "command"

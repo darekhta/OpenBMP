@@ -43,6 +43,14 @@ pub enum CliError {
         /// Human-readable engine failure.
         reason: String,
     },
+    /// A tank failed to construct, drain, or step.
+    #[error("tank error at {field}: {reason}")]
+    Tank {
+        /// Scenario field path where the failure occurred.
+        field: String,
+        /// Human-readable tank failure.
+        reason: String,
+    },
     /// The kernel could not be constructed or stepped.
     #[error("simulation error")]
     Simulation(#[from] SimulationError),
@@ -113,6 +121,7 @@ impl CliError {
             | Self::Assembly { .. }
             | Self::Effector { .. }
             | Self::Engine { .. }
+            | Self::Tank { .. }
             | Self::UnsupportedScenario { .. }
             | Self::Aero(_)
             | Self::AeroEffectorMismatch { .. }

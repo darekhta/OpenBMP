@@ -63,6 +63,7 @@ pub use models::{
     ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshotView,
     EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext, ForceModel,
     LinearBurnMass, LinearBurnMassRigid, MassContext, MassModel, MassPropertiesRate, MomentContext,
-    MomentModel, NullEnvironment, RigidMassModel, ZeroForce, ZeroMoment,
+    MomentModel, NullEnvironment, RigidMassModel, TankSnapshot, TankSnapshotView, ZeroForce,
+    ZeroMoment,
 };
 pub use stop::{AlwaysContinue, EndTime, MaxSteps, StopCondition};

@@ -228,4 +228,23 @@ pub enum ScenarioError {
         "scenario declares both [propulsion.motor] and [[vehicle.assembly.engines]]; pick one path per vehicle"
     )]
     AmbiguousPropulsion,
+    /// A tank references a body id that is not declared in
+    /// `[[vehicle.assembly.bodies]]`.
+    #[error("{field} references unknown body id {value}")]
+    UnknownBodyReference {
+        /// Field path.
+        field: String,
+        /// Referenced scenario-text body id.
+        value: String,
+    },
+    /// A `[vehicle.assembly]` entry is incompatible with another
+    /// declared field (e.g. non-`RigidLiquid` slosh in a point-mass
+    /// kernel, baffle declared on a non-cylindrical tank).
+    #[error("{field} is incompatible: {reason}")]
+    IncompatibleAssemblyEntry {
+        /// Field path.
+        field: String,
+        /// Human-readable reason.
+        reason: String,
+    },
 }

@@ -52,7 +52,8 @@ use openbmp_state::PointMassState;
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
     AxialDragForceAdapter, BasicVehicle, BoxedMassModel, EngineClusterForceAdapter,
-    EngineClusterMassAdapter, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel, Vehicle,
+    EngineClusterMassAdapter, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel,
+    TankRackForceAdapter, TankRackMassAdapter, Vehicle,
 };
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -77,6 +78,8 @@ const PHASE2_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(104);
 // from cluster scenarios in the per-model force breakdown.
 const PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(120);
 const PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(121);
+const PHASE3_TANK_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(330);
+const PHASE3_TANK_RACK_MASS_MODEL_ID: ModelId = ModelId::new(331);
 
 #[derive(Clone, Debug, Default)]
 struct LoadedModels {
@@ -117,6 +120,11 @@ pub fn run(
     // every per-step rack operation short-circuits and the legacy
     // single-motor byte-stable path is preserved.
     let mut engine_rack = crate::runner::engines::EngineRack::build(document)?;
+    // Phase-3.7: build the runner-side tank rack. Empty when no
+    // `[[vehicle.assembly.tanks]]` are declared, in which case every
+    // per-step rack operation short-circuits and the legacy
+    // byte-stable path is preserved.
+    let mut tank_rack = crate::runner::tanks::TankRack::build(document)?;
 
     let loaded_models = load_models(document, resolved_files)?;
     let initial_state = build_initial_state(document, &loaded_models, &assembly)?;
@@ -183,6 +191,12 @@ pub fn run(
     if !engine_rack.is_empty() {
         kernel.set_engine_snapshot(engine_rack.snapshot_map());
     }
+    // Phase-3.7: at step 0, push the rack's initial snapshot to the
+    // kernel so the breakdown's mass adapter and force adapter see
+    // the same view the kernel will see.
+    if !tank_rack.is_empty() {
+        kernel.set_tank_snapshot(tank_rack.snapshot_map());
+    }
     record_step(
         &mut table,
         &kernel,
@@ -205,6 +219,14 @@ pub fn run(
             engine_rack.apply_commands(&pending_engine_events)?;
             engine_rack.step()?;
         }
+        // Phase-3.7: advance the tank rack using prior-step cached
+        // drivers (set after the previous kernel step). For point-
+        // mass kernels the drivers are zeros — slosh in point-mass
+        // is RigidLiquid-only per the scenario validator (D10), so
+        // the dynamic drivers are irrelevant.
+        if !tank_rack.is_empty() {
+            tank_rack.step()?;
+        }
         // Phase-3.5.C: push the rack's actuals snapshot to the kernel
         // BEFORE `step()` so all four RK4 stages see the same view.
         // Empty bindings → zero allocation, zero state change.
@@ -223,6 +245,11 @@ pub fn run(
         // `BTreeMap` set in `new()`).
         if !engine_rack.is_empty() {
             kernel.set_engine_snapshot(engine_rack.snapshot_map());
+        }
+        // Phase-3.7: push tank snapshot to the kernel before
+        // `step()` so all four RK4 stages see the same view.
+        if !tank_rack.is_empty() {
+            kernel.set_tank_snapshot(tank_rack.snapshot_map());
         }
         kernel.step()?;
         let fired = kernel.drain_events();
@@ -496,6 +523,26 @@ fn build_vehicle(
         }
     }
 
+    // Phase-3.7: tank-rack reaction-force adapter (when tanks
+    // declared). Last in the named list so the locked left-fold
+    // operand order keeps prior force entries unchanged.
+    if let Some(scenario_assembly) = &document.vehicle.assembly
+        && !scenario_assembly.tanks.is_empty()
+    {
+        let tank_ids: Vec<openbmp_core::TankId> = scenario_assembly
+            .tanks
+            .iter()
+            .map(|t| {
+                openbmp_core::TankId::from_path(&format!(
+                    "vehicle.assembly.tanks.{id}",
+                    id = t.id
+                ))
+            })
+            .collect();
+        let tank_force = TankRackForceAdapter::new(tank_ids, PHASE3_TANK_RACK_FORCE_MODEL_ID);
+        named.push(NamedForceModel::new("tank_reaction", Box::new(tank_force)));
+    }
+
     // BasicVehicle requires a mass model even for vehicle-internal
     // queries (Phase-2.8 contract). The kernel's mass model is built
     // separately in `build_mass_model` because it owns its own copy.
@@ -516,7 +563,7 @@ fn build_mass_model(
     // `[[vehicle.assembly.engines]]` is declared. Scenarios with
     // both motor and engines are rejected at parse time
     // (`AmbiguousPropulsion`), so the three arms are exclusive.
-    if let Some(scenario_assembly) = &document.vehicle.assembly
+    let base: Box<dyn MassModel> = if let Some(scenario_assembly) = &document.vehicle.assembly
         && !scenario_assembly.engines.is_empty()
     {
         let engine_ids: Vec<openbmp_core::EngineId> = scenario_assembly
@@ -529,21 +576,46 @@ fn build_mass_model(
                 ))
             })
             .collect();
-        Ok(Box::new(EngineClusterMassAdapter::new(
+        Box::new(EngineClusterMassAdapter::new(
             dry_mass_kg,
             engine_ids,
             PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID,
-        )))
+        ))
     } else if let Some(motor) = &loaded_models.motor {
         let ignition_time_s = motor_ignition_time_s(document)?;
-        Ok(Box::new(MotorMassAdapter::new(
+        Box::new(MotorMassAdapter::new(
             motor.clone(),
             dry_mass_kg,
             ignition_time_s,
             PHASE2_MOTOR_MASS_MODEL_ID,
+        ))
+    } else {
+        Box::new(ConstantMass::new(dry_mass_kg))
+    };
+
+    // Phase-3.7: wrap the base mass model with a tank-rack mass
+    // adapter when tanks are declared. The wrapper adds each tank's
+    // `mass_kg` from the kernel snapshot to the base mass.
+    if let Some(scenario_assembly) = &document.vehicle.assembly
+        && !scenario_assembly.tanks.is_empty()
+    {
+        let tank_ids: Vec<openbmp_core::TankId> = scenario_assembly
+            .tanks
+            .iter()
+            .map(|t| {
+                openbmp_core::TankId::from_path(&format!(
+                    "vehicle.assembly.tanks.{id}",
+                    id = t.id
+                ))
+            })
+            .collect();
+        Ok(Box::new(TankRackMassAdapter::new(
+            base,
+            tank_ids,
+            PHASE3_TANK_RACK_MASS_MODEL_ID,
         )))
     } else {
-        Ok(Box::new(ConstantMass::new(dry_mass_kg)))
+        Ok(base)
     }
 }
 
@@ -866,6 +938,7 @@ where
     let env_sample = kernel.current_environment_sample()?;
     let kernel_actuals = kernel.effector_actuals();
     let kernel_engine_snapshot = kernel.engine_snapshot();
+    let kernel_tank_snapshot = kernel.tank_snapshot();
     let ctx = ForceContext {
         state,
         environment: &env_sample,
@@ -873,6 +946,7 @@ where
         time: state.time,
         effector_actuals: openbmp_sim::EffectorActualsView::new(kernel_actuals),
         engine_snapshot: openbmp_sim::EngineSnapshotView::new(kernel_engine_snapshot),
+        tank_snapshot: openbmp_sim::TankSnapshotView::new(kernel_tank_snapshot),
     };
     let breakdown = breakdown_vehicle
         .evaluate_force_breakdown(ctx)

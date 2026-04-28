@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 
 use nalgebra::{Matrix3, Vector3};
-use openbmp_core::{Eci, EngineId, Position3, SimTime, ValidationStatus};
+use openbmp_core::{Eci, EngineId, Position3, SimTime, TankId, ValidationStatus};
 use openbmp_propulsion::EngineSnapshot;
 use openbmp_state::{MassProperties, PointMassState};
 use uom::si::f64::Mass;
@@ -172,6 +172,99 @@ impl<'a> EngineSnapshotView<'a> {
 }
 
 // ---------------------------------------------------------------------
+// TankSnapshotView (Phase 3.7.D)
+// ---------------------------------------------------------------------
+
+/// Per-step snapshot of one tank's moving-mass dynamics.
+///
+/// Flat data carrier owned by `openbmp-sim` so the kernel-side
+/// adapters can read tank state without depending on
+/// `openbmp-vehicle::tank`. The runner's `TankRack` packs the
+/// `MovingMassModel::mass_contribution` and `reaction_body`
+/// observations into this struct each kernel base tick.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct TankSnapshot {
+    /// Current moving-mass `mass_kg` from
+    /// `MassContribution::mass_kg`.
+    pub mass_kg: f64,
+    /// Mount-relative CG offset, body frame, metres.
+    pub cg_offset_body_m: Vector3<f64>,
+    /// Body-origin inertia delta with parallel-axis applied,
+    /// kg · m².
+    pub inertia_delta_body_kg_m2: Matrix3<f64>,
+    /// Body-frame reaction force exerted on the parent body,
+    /// Newtons.
+    pub reaction_force_body_n: Vector3<f64>,
+    /// Body-frame reaction moment about parent body origin,
+    /// Newton-metres.
+    pub reaction_moment_body_n_m: Vector3<f64>,
+    /// Remaining fluid mass, kg. Reported for telemetry; the mass
+    /// contributions in the kernel use `mass_kg`, which equals
+    /// `fluid_remaining_kg` for the Phase-3.7 implementations.
+    pub fluid_remaining_kg: f64,
+}
+
+/// Read-only view of the kernel's per-step tank snapshot.
+///
+/// Phase 3.7 wires the runner-side `TankRack` into the kernel: every
+/// kernel base tick the runner advances each tank's slosh state
+/// using last step's `(accel_body, omega_body)`, packs the resulting
+/// `MovingMassModel` observations into a `BTreeMap<TankId,
+/// TankSnapshot>`, and pushes the map via `set_tank_snapshot(...)`.
+/// The kernel-side tank-rack adapters (`TankRackForceAdapter`,
+/// `TankRackMassAdapter`, `TankRackMomentAdapter` in
+/// `openbmp-vehicle`) read it through this view.
+///
+/// Legacy scenarios with no `[[vehicle.assembly.tanks]]` block use
+/// [`TankSnapshotView::empty`], every `get` returns `None`, and the
+/// rack adapters short-circuit on the empty view. Pre-3.7 byte
+/// output is preserved.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct TankSnapshotView<'a> {
+    inner: Option<&'a BTreeMap<TankId, TankSnapshot>>,
+}
+
+impl<'a> TankSnapshotView<'a> {
+    /// Wrap a borrowed snapshot map.
+    #[must_use]
+    pub const fn new(map: &'a BTreeMap<TankId, TankSnapshot>) -> Self {
+        Self { inner: Some(map) }
+    }
+
+    /// Construct an empty view.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { inner: None }
+    }
+
+    /// Look up a tank by id. Returns `None` for missing keys and
+    /// for the empty view.
+    #[must_use]
+    pub fn get(&self, id: TankId) -> Option<TankSnapshot> {
+        self.inner.and_then(|m| m.get(&id).copied())
+    }
+
+    /// `true` if the view holds no entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_none_or(BTreeMap::is_empty)
+    }
+
+    /// Number of entries in the view.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.map_or(0, BTreeMap::len)
+    }
+
+    /// Iterate `(TankId, TankSnapshot)` pairs in `BTreeMap` order.
+    pub fn iter(&self) -> impl Iterator<Item = (TankId, TankSnapshot)> + '_ {
+        self.inner
+            .into_iter()
+            .flat_map(|m| m.iter().map(|(k, v)| (*k, *v)))
+    }
+}
+
+// ---------------------------------------------------------------------
 // Environment
 // ---------------------------------------------------------------------
 
@@ -260,6 +353,12 @@ pub struct ForceContext<'a, S: SimState> {
     /// each `kernel.step()` for cluster scenarios. All four RK4
     /// stages see the same snapshot.
     pub engine_snapshot: EngineSnapshotView<'a>,
+    /// Phase-3.7: read-only view of the kernel's per-tank snapshot,
+    /// keyed by [`TankId`]. Empty for legacy scenarios with no
+    /// `[[vehicle.assembly.tanks]]` block; populated by the runner's
+    /// `TankRack` before each `kernel.step()`. All four RK4 stages
+    /// see the same snapshot.
+    pub tank_snapshot: TankSnapshotView<'a>,
 }
 
 /// Trait implemented by force-providing models.
@@ -371,6 +470,10 @@ pub struct MomentContext<'a, S: SimState> {
     /// point from this view to compute the cluster moment about
     /// the body origin.
     pub engine_snapshot: EngineSnapshotView<'a>,
+    /// Phase-3.7: read-only tank snapshot view. The rigid-body
+    /// `TankRackMomentAdapter` reads per-tank reaction moments from
+    /// this view.
+    pub tank_snapshot: TankSnapshotView<'a>,
 }
 
 /// Trait implemented by moment-providing models.
@@ -430,6 +533,10 @@ pub struct MassContext<'a> {
     /// scenarios; populated by the runner before each `step()` for
     /// cluster scenarios.
     pub engine_snapshot: EngineSnapshotView<'a>,
+    /// Phase-3.7: read-only tank snapshot view. Empty for legacy
+    /// scenarios; populated by the runner before each `step()` for
+    /// scenarios that declare `[[vehicle.assembly.tanks]]`.
+    pub tank_snapshot: TankSnapshotView<'a>,
 }
 
 /// Trait implemented by mass-property-providing models.
@@ -753,6 +860,7 @@ mod tests {
                 time: SimTime::ZERO,
                 effector_actuals: EffectorActualsView::empty(),
                 engine_snapshot: EngineSnapshotView::empty(),
+                tank_snapshot: TankSnapshotView::empty(),
             })
             .expect("force eval must succeed");
         // mass=2.5, g=9.80665 → force_z = -2.5 * 9.80665 = -24.516625
@@ -773,6 +881,7 @@ mod tests {
                 time: SimTime::ZERO,
                 effector_actuals: EffectorActualsView::empty(),
                 engine_snapshot: EngineSnapshotView::empty(),
+                tank_snapshot: TankSnapshotView::empty(),
             })
             .expect("zero force eval must succeed");
         assert_abs_diff_eq!(f.norm(), 0.0);
