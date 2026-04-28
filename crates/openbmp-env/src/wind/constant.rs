@@ -1,68 +1,10 @@
-//! Wind models.
-//!
-//! Phase 2.4 ships the two toy models the Phase-2 plan locks in:
-//!
-//! * [`NoWind`] — returns the zero wind vector at every query. The
-//!   default for analytic-toy scenarios where atmospheric quiescence
-//!   is the assumed condition.
-//! * [`ConstantWind`] — returns a caller-supplied constant wind in
-//!   the local-NED frame. Useful for steady-crosswind regression
-//!   tests and for sounding-rocket validation cases that pin a fixed
-//!   surface wind.
-//!
-//! Layered profiles, gust spectra, and altitude-shear winds are
-//! deferred to Phase 3 alongside the multi-rate scheduler that makes
-//! time-varying gusts cheap to evaluate.
-//!
-//! # Frame convention
-//!
-//! Wind is reported as a [`Velocity3<Ned>`] with `(north, east, down)`
-//! components in m/s; the third component is positive downward by the
-//! NED convention. The vector is anchored at the active
-//! [`FrameContext`]'s `local_origin`. `NoWind` and `ConstantWind`
-//! themselves do not require a local origin, but consumers that
-//! transform nonzero NED wind into body or ECI must require one through
-//! the frame context. The trait surface carries position, frame, and
-//! time so future altitude-dependent and location-dependent wind models
-//! can use them without a trait-method break.
-//!
-//! # Determinism
-//!
-//! Pure arithmetic on `f64`; no wall-clock, no system RNG, no
-//! network, no file I/O. `ConstantWind::new` validates finiteness at
-//! construction so the hot path returns the cached vector without
-//! re-checking.
+//! Phase-2.4 toy wind models: [`NoWind`] and [`ConstantWind`].
 
 use openbmp_core::{Eci, FrameContext, Ned, Position3, SimTime, Velocity3};
 
 use crate::error::EnvError;
 
-/// Trait implemented by wind-providing environment models.
-///
-/// Returns wind velocity in local-NED `(north, east, down)` components,
-/// in m/s. The NED `down` component is positive downward. The vector is
-/// anchored at the active [`FrameContext`]'s `local_origin`, but this
-/// method does not itself require an origin unless a specific model
-/// needs one. Consumers transforming nonzero NED wind into body or ECI
-/// are responsible for requiring a local origin from the frame context.
-/// The position and frame are passed for forward compatibility with
-/// future altitude- or location-dependent models; the Phase-2.4
-/// implementations ([`NoWind`], [`ConstantWind`]) ignore them.
-pub trait WindModel {
-    /// Wind velocity in local-NED, in m/s.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`EnvError`] when the model produces a non-finite
-    /// output or the position is outside the model's declared
-    /// validity envelope. The Phase-2.4 toy models never fail.
-    fn wind_ned_m_s(
-        &self,
-        position_eci: Position3<Eci>,
-        frame: &FrameContext,
-        time: SimTime,
-    ) -> Result<Velocity3<Ned>, EnvError>;
-}
+use super::WindModel;
 
 // ---------------------------------------------------------------------
 // NoWind

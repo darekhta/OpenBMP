@@ -448,6 +448,89 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------
+    // Phase 3.8.B layered wind
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn accepts_layered_wind_with_well_formed_table() {
+        let toml = SOUNDING_ROCKET
+            .replace(r#"wind          = "constant""#, r#"wind          = "layered""#)
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "[wind]\nkind = \"layered\"\nlayers = [\n  { altitude_m = 0.0, wind_ned_m_s = [5.0, 0.0, 0.0] },\n  { altitude_m = 3000.0, wind_ned_m_s = [12.0, 2.0, 0.0] },\n]\n",
+            );
+        let scenario =
+            Scenario::from_toml_str(&toml).expect("layered wind scenario must parse");
+        let layers = scenario
+            .document
+            .wind
+            .as_ref()
+            .and_then(|w| w.layers.as_ref())
+            .expect("layered wind must populate layers");
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0].altitude_m.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(layers[1].altitude_m.to_bits(), 3000.0_f64.to_bits());
+    }
+
+    #[test]
+    fn rejects_layered_wind_without_layers() {
+        let toml = SOUNDING_ROCKET
+            .replace(r#"wind          = "constant""#, r#"wind          = "layered""#)
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "[wind]\nkind = \"layered\"\n",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "wind.layers"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_layered_wind_with_descending_altitudes() {
+        let toml = SOUNDING_ROCKET
+            .replace(r#"wind          = "constant""#, r#"wind          = "layered""#)
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "[wind]\nkind = \"layered\"\nlayers = [\n  { altitude_m = 1000.0, wind_ned_m_s = [5.0, 0.0, 0.0] },\n  { altitude_m = 500.0, wind_ned_m_s = [10.0, 0.0, 0.0] },\n]\n",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "wind.layers[*].altitude_m"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_layered_wind_with_constant_field() {
+        let toml = SOUNDING_ROCKET
+            .replace(r#"wind          = "constant""#, r#"wind          = "layered""#)
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "[wind]\nkind = \"layered\"\nwind_ned_m_s = [5.0, 0.0, 0.0]\nlayers = [\n  { altitude_m = 0.0, wind_ned_m_s = [5.0, 0.0, 0.0] },\n]\n",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "wind.wind_ned_m_s"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_constant_wind_with_layers_field() {
+        let toml = SOUNDING_ROCKET.replace(
+            "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+            "[wind]\nkind = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\nlayers = [\n  { altitude_m = 0.0, wind_ned_m_s = [5.0, 0.0, 0.0] },\n]\n",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "wind.layers"),
+            "got {err:?}",
+        );
+    }
+
     #[test]
     fn rejects_isothermal_atmosphere_without_state() {
         let toml = SOUNDING_ROCKET

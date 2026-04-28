@@ -870,11 +870,18 @@ impl MotorConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct WindConfig {
-    /// Wind model name (must match a registered wind model).
+    /// Wind model name (must match a registered wind model). Phase
+    /// 2.4 ships `"none"` and `"constant"`; Phase 3.8 adds
+    /// `"layered"` and `"gust"`.
     pub kind: String,
     /// Constant wind in NED frame, m/s. Required when
-    /// `kind = "constant"`.
+    /// `kind = "constant"`; rejected for every other kind.
     pub wind_ned_m_s: Option<[f64; 3]>,
+    /// Phase-3.8.B: per-altitude NED wind table. Required when
+    /// `kind = "layered"`; rejected for every other kind. Layers
+    /// must be strictly ascending in altitude.
+    #[serde(default)]
+    pub layers: Option<Vec<WindLayerConfig>>,
 }
 
 impl WindConfig {
@@ -890,6 +897,47 @@ impl WindConfig {
                             name: "constant".to_owned(),
                         })?;
                 require_finite_array("wind.wind_ned_m_s", &vector)?;
+                if self.layers.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "wind.layers".to_owned(),
+                        role: ModelRole::Wind,
+                        name: "constant".to_owned(),
+                    });
+                }
+            }
+            "layered" => {
+                if self.wind_ned_m_s.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "wind.wind_ned_m_s".to_owned(),
+                        role: ModelRole::Wind,
+                        name: "layered".to_owned(),
+                    });
+                }
+                let layers = self
+                    .layers
+                    .as_ref()
+                    .ok_or_else(|| ScenarioError::MissingRequiredField {
+                        field: "wind.layers".to_owned(),
+                        role: ModelRole::Wind,
+                        name: "layered".to_owned(),
+                    })?;
+                if layers.is_empty() {
+                    return Err(ScenarioError::EmptyList {
+                        field: "wind.layers".to_owned(),
+                    });
+                }
+                for (index, layer) in layers.iter().enumerate() {
+                    layer.validate(index)?;
+                }
+                for window in layers.windows(2) {
+                    if window[1].altitude_m <= window[0].altitude_m {
+                        return Err(ScenarioError::InvalidNumber {
+                            field: "wind.layers[*].altitude_m".to_owned(),
+                            value: window[1].altitude_m,
+                            rule: "altitudes must be strictly ascending across layers",
+                        });
+                    }
+                }
             }
             other => {
                 if self.wind_ned_m_s.is_some() {
@@ -899,8 +947,41 @@ impl WindConfig {
                         name: other.to_owned(),
                     });
                 }
+                if self.layers.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "wind.layers".to_owned(),
+                        role: ModelRole::Wind,
+                        name: other.to_owned(),
+                    });
+                }
             }
         }
+        Ok(())
+    }
+}
+
+/// One row of a Phase-3.8.B `[[wind.layers]]` table.
+///
+/// `altitude_m` is metres above the launch-pad reference (matching
+/// the Phase-2.4 axial-drag adapter convention). `wind_ned_m_s` is
+/// the NED wind vector at that altitude. The runner builds a
+/// `LayeredWind` from the parsed table; layer ordering is
+/// scenario-declared (the validator rejects non-ascending altitudes
+/// at parse time).
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WindLayerConfig {
+    /// Altitude in metres at which this layer's wind applies.
+    pub altitude_m: f64,
+    /// NED wind vector in m/s.
+    pub wind_ned_m_s: [f64; 3],
+}
+
+impl WindLayerConfig {
+    fn validate(self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("wind.layers[{index}].{field}");
+        require_finite(&path("altitude_m"), self.altitude_m)?;
+        require_finite_array(&path("wind_ned_m_s"), &self.wind_ned_m_s)?;
         Ok(())
     }
 }
