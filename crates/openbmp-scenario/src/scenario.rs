@@ -840,23 +840,8 @@ action  = { kind = "stop", label = "scripted-stop" }
 
     #[test]
     fn accepts_engine_command_action_with_typed_payload() {
-        let toml = format!(
-            "{ASSEMBLY_WITH_ENGINE_CLUSTER}\n{}",
-            r#"
-[mission]
-initial_phase = "ascent"
-
-[[mission.phases]]
-id    = "ascent"
-label = "ascent"
-
-[[mission.events]]
-id      = "evt"
-trigger = { kind = "at_apogee" }
-action  = { kind = "engine_command", id = "engine_a", command = { throttle_unit = 0.5, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-"#,
-        );
-        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let scenario = Scenario::from_toml_str(ASSEMBLY_ENGINE_CLUSTER_WITH_ENGINE_COMMAND)
+            .expect("scenario parses");
         let mission = scenario.document.mission.as_ref().expect("mission present");
         assert_eq!(mission.events.len(), 1);
         match &mission.events[0].action {
@@ -872,23 +857,8 @@ action  = { kind = "engine_command", id = "engine_a", command = { throttle_unit 
 
     #[test]
     fn rejects_engine_command_action_referencing_unknown_engine_id() {
-        let toml = format!(
-            "{ASSEMBLY_WITH_ENGINE_CLUSTER}\n{}",
-            r#"
-[mission]
-initial_phase = "ascent"
-
-[[mission.phases]]
-id    = "ascent"
-label = "ascent"
-
-[[mission.events]]
-id      = "evt"
-trigger = { kind = "at_apogee" }
-action  = { kind = "engine_command", id = "engine_typo", command = { throttle_unit = 0.5, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-"#,
-        );
-        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        let err =
+            Scenario::from_toml_str(ASSEMBLY_ENGINE_CLUSTER_WITH_UNKNOWN_ENGINE_ID).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -900,23 +870,8 @@ action  = { kind = "engine_command", id = "engine_typo", command = { throttle_un
 
     #[test]
     fn rejects_engine_command_with_throttle_above_one() {
-        let toml = format!(
-            "{ASSEMBLY_WITH_ENGINE_CLUSTER}\n{}",
-            r#"
-[mission]
-initial_phase = "ascent"
-
-[[mission.phases]]
-id    = "ascent"
-label = "ascent"
-
-[[mission.events]]
-id      = "evt"
-trigger = { kind = "at_apogee" }
-action  = { kind = "engine_command", id = "engine_a", command = { throttle_unit = 1.5, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-"#,
-        );
-        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        let err =
+            Scenario::from_toml_str(ASSEMBLY_ENGINE_CLUSTER_WITH_THROTTLE_TOO_HIGH).unwrap_err();
         assert!(
             matches!(err, ScenarioError::InvalidNumber { .. }),
             "expected InvalidNumber, got {err:?}",
@@ -925,12 +880,7 @@ action  = { kind = "engine_command", id = "engine_a", command = { throttle_unit 
 
     #[test]
     fn rejects_scenario_with_both_motor_and_engines_blocks() {
-        // Append a `[propulsion.motor]` block to the engine-cluster
-        // fixture so both propulsion paths are declared.
-        let toml = format!(
-            "{ASSEMBLY_WITH_ENGINE_CLUSTER}\n[propulsion.motor]\nfile         = \"motors/dummy.toml\"\nignite_at_s  = 0.0\n",
-        );
-        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        let err = Scenario::from_toml_str(ASSEMBLY_ENGINE_CLUSTER_AND_MOTOR).unwrap_err();
         assert!(
             matches!(err, ScenarioError::AmbiguousPropulsion),
             "expected AmbiguousPropulsion, got {err:?}",
@@ -1174,6 +1124,26 @@ action  = { kind = "stop", label = "max-q" }
     const ASSEMBLY_WITH_ENGINE_CLUSTER: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/assembly-with-engine-cluster.toml"
+    ));
+
+    const ASSEMBLY_ENGINE_CLUSTER_WITH_ENGINE_COMMAND: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-engine-cluster-with-engine-command.toml"
+    ));
+
+    const ASSEMBLY_ENGINE_CLUSTER_WITH_UNKNOWN_ENGINE_ID: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-engine-cluster-with-unknown-engine-id.toml"
+    ));
+
+    const ASSEMBLY_ENGINE_CLUSTER_WITH_THROTTLE_TOO_HIGH: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-engine-cluster-with-throttle-too-high.toml"
+    ));
+
+    const ASSEMBLY_ENGINE_CLUSTER_AND_MOTOR: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-engine-cluster-and-motor.toml"
     ));
 
     const ASSEMBLY_WITH_EFFECTOR: &str = include_str!(concat!(

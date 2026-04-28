@@ -1,0 +1,60 @@
+# Phase-3.6 parser fixture: scenario declares BOTH a
+# `[propulsion.motor]` block AND a `[[vehicle.assembly.engines]]`
+# block. Used for the negative test
+# `rejects_scenario_with_both_motor_and_engines_blocks` to verify
+# the AmbiguousPropulsion cross-block check.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "assembly-engine-cluster-and-motor-fixture"
+description = "Phase-3.6 negative parser fixture: ambiguous propulsion (motor + engine cluster declared)."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 1.0
+dt_s    = 0.001
+seed    = 0xdead_beef
+
+[vehicle]
+kind                     = "point_mass"
+mass_kg                  = 1.0
+initial_position_eci_m   = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id             = "two-engine-cluster"
+cluster_layout = "ring"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 0.5 }
+dry_mass_kg   = 1.0
+
+[[vehicle.assembly.engines]]
+id                  = "engine_a"
+kind                = { kind = "liquid_engine" }
+mount_point_body_m  = [0.0, 0.0, 0.0]
+limits              = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.1, shutdown_transient_s = 0.1, max_gimbal_rad = 0.087 }
+
+[propulsion.motor]
+file         = "motors/dummy.toml"
+ignite_at_s  = 0.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/fixture.csv"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
