@@ -94,10 +94,11 @@ scope** — they belong to Phases 4 / 5 / 6.
   and the SHA-256 pin of the upstream file.
 - **Cesaroni Pro75 M1670 motor** in `data/motors/cesaroni-m1670.toml`:
   imported from ThrustCurve.org with the existing per-file license
-  + SHA-256-pin pattern. Used by the Calisto cross-tool validation
-  case.
+  + SHA-256-pin pattern. The Calisto cross-tool validation case uses
+  the sibling `data/motors/rocketpy-calisto-m1670.toml` variant so
+  the mass profile matches RocketPy's `SolidMotor` setup.
 - **RocketPy Calisto canonical scenario** in
-  `scenarios/sounding-rocket/rocketpy-calisto.toml`: the full Calisto
+  `scenarios/sounding-rocket/calisto/rocketpy-calisto.toml`: the full Calisto
   airframe (14.426 kg dry, 0.0635 m radius, Von Kármán nose, 4
   trapezoidal fins), Cesaroni Pro75 M1670 motor, dual-curve drag
   (power-off / power-on), Spaceport America launch site
@@ -906,23 +907,32 @@ ships as the magnetic field reference data.
 
 ### 3.11 — RocketPy "Calisto" cross-tool validation case
 
-**Status.** **Implemented (Phase 3.11.A–E).** The Cesaroni Pro75
-M1670 motor and the Calisto drag deck ship as Schema-1 OpenBMP
-artifacts pinned bit-precise against their upstream sources
-(`Cesaroni_M1670.eng` from ThrustCurve.org;
+**Status.** **Implemented (Phase 3.11.A–E), audited and fixed.**
+The Cesaroni Pro75 M1670 thrust curve and the Calisto drag deck
+ship as Schema-1 OpenBMP artifacts pinned bit-precise against
+their upstream sources (`Cesaroni_M1670.eng` from ThrustCurve.org;
 `powerOff/powerOnDragCurve.csv` from the RocketPy repo, byte-
-identical so they collapse to a single deck). The end-to-end
-scenario at `scenarios/sounding-rocket/calisto/rocketpy-calisto.toml`
-runs through the rigid-body kernel and produces an apogee within
-the Phase-3.11 risk-register fallback envelope of 5 % around
-RocketPy's published 3 349 m AGL. The 1 % stretch goal was not
-hit — the apparent residual is dominated by the integrator
-mismatch between RocketPy's LSODA adaptive step and OpenBMP's
-RK4 fixed-step kernel (anticipated in the risk register and
-mitigated by landing the wider fallback envelope here). Tightening
-toward 1 % is a follow-up that requires either an adaptive RK
-integrator on the OpenBMP side or a fixed-step replay of the
-RocketPy state at OpenBMP's `dt`.
+identical so they collapse to a single deck). The Calisto scenario
+uses `data/motors/rocketpy-calisto-m1670.toml`, a RocketPy-mass
+variant of the M1670 curve: RocketPy's notebook constructs the
+motor with `dry_mass = 1.815 kg` and grain-geometry propellant
+mass `2.9559119613920224 kg`, not the `.eng` header's 5.231 kg
+wet / 2.130 kg burnout manufacturer mass.
+
+The end-to-end scenario at
+`scenarios/sounding-rocket/calisto/rocketpy-calisto.toml` runs
+through the rigid-body kernel, reaches apogee at about 3 299.6 m
+AGL on the dev machine, and passes the audited 2 % envelope around
+RocketPy's published 3 349 m AGL. The 1 % stretch goal is still
+not hit. The Phase-3.11 audit falsified the earlier claim that the
+124 m pre-audit undershoot was dominated by RK4-vs-LSODA
+integrator mismatch: OpenBMP apogee at `dt_s = 0.001` and
+`dt_s = 0.0001` was unchanged to sub-millimetre precision. The
+dominant fixed discrepancy was the motor mass mismatch; the
+remaining ~49 m (1.5 %) is tracked as cross-tool model residual
+(atmosphere / rail / RocketPy-model differences), not RK4
+truncation error. The e2e gate also runs long enough to assert the
+drogue and main recovery phases in order.
 
 **Scope.** The headline Phase-3 outcome. The full Calisto rocket
 (Cesaroni Pro75 M1670 motor, 14.426 kg dry mass, dual-curve drag,
@@ -945,8 +955,13 @@ RocketPy-published reference (3349 m AGL).
 
 **Tasks.**
 
-- `data/motors/cesaroni-m1670.toml` (new): import of the Cesaroni
-  Pro75 M1670 motor from ThrustCurve.org. SHA-256-pinned source.
+- `data/motors/cesaroni-m1670.toml` (new): manufacturer-header
+  import of the Cesaroni Pro75 M1670 motor from ThrustCurve.org.
+  SHA-256-pinned source.
+- `data/motors/rocketpy-calisto-m1670.toml` (new after audit):
+  RocketPy-Calisto mass-profile variant of the same M1670 thrust
+  curve, used by the Calisto scenario to match RocketPy's
+  `SolidMotor` dry mass and grain geometry.
   Per the existing `data/motors/provenance.md` pattern, with
   reference to the RocketPy repo for cross-tool comparison.
 - `data/aero/calisto-power-off.toml` (new): power-off drag-curve
@@ -1015,7 +1030,7 @@ the Phase-1 / Phase-2 closure pattern.
 | Multi-engine model-id allocation collides with existing single-motor IDs | Low | Medium | Reserve ID range 200..300 for cluster engines; existing single-motor IDs in 100..200 unaffected. Conflict test in Phase-3.6 regression. |
 | Aero schema 2 tensor lookup operand order accidentally differs from schema 1 | Low | High | Re-use schema-1 reduction order (Demmel & Nguyen 2020). Per-corner exact-equality regression on a 6D test deck. |
 | `MissionPhaseGraph` creates non-determinism via cycle detection failures or unstable iteration | Medium | High | Topological sort at construction; reject cycles with typed error; iteration order is the topological order. Property test on graph-walk determinism. |
-| Calisto cross-tool case fails 1% tolerance due to RocketPy / OpenBMP integrator differences | High | Medium | Document the differences (RocketPy uses LSODA adaptive; OpenBMP uses RK4 fixed-step). Land Calisto as "best-effort cross-tool" with 1% tolerance first; if it fails, fall back to 5% or document the integrator-specific apogee. |
+| Calisto cross-tool case fails 1% tolerance due to RocketPy / OpenBMP model differences | High | Medium | Audit convergence before widening the envelope. Phase 3.11 found the pre-audit miss was mostly RocketPy/OpenBMP motor-mass mismatch, not RK4 truncation; the fixed case pins an audited 2% envelope and tracks the remaining atmosphere / rail / model residual. |
 | WMM 2025 expires 2030-01-01 mid-Phase-3 (unlikely but worth noting) | Low | Medium | Scenarios outside the validity range fail closed with `MagneticOutOfEpoch`. WMM 2030 lands in whichever phase is current when NGA releases. |
 | Effector pure-delay buffer adds memory overhead for high-latency scenarios | Low | Low | Buffer depth is `⌈latency/dt⌉`; for 100 ms latency at 1 ms `dt`, that's 100 entries. Acceptable for academic scenarios. |
 | RocketPy data files have ambiguous license posture | Low | Medium | RocketPy is MIT-licensed. Re-use the Cesaroni M1670 from ThrustCurve.org (existing pattern); the Calisto airframe is OpenBMP-authored from the public RocketPy paper + repo. Cite both sources in `provenance.md`. |
@@ -1039,11 +1054,11 @@ Phase 3 closes when **all** of the following are true:
 6. The Phase-2 `niskanen-2009-chapter6` sounding-rocket scenario
    continues to produce byte-identical Parquet vs. the Phase-2
    baseline (regression guard for the assembly tree resolver).
-7. The Phase-3 `rocketpy-calisto` scenario passes its apogee
-   tolerance on the dev machine. The Phase-3.11 closure pins the
-   risk-register's 5 % fallback envelope (RocketPy LSODA adaptive
-   vs. OpenBMP RK4 fixed-step integrator mismatch); tightening to
-   1 % is a follow-up.
+7. The Phase-3 `rocketpy-calisto` scenario passes its audited 2 %
+   apogee tolerance on the dev machine and exercises drogue and
+   main recovery deployment. The 1 % stretch remains open; the
+   remaining residual is model-equivalence work, not RK4 fixed-step
+   truncation.
 8. The CI determinism gate runs all three scenarios twice and
    asserts byte-stability of all three on
    `x86_64-unknown-linux-gnu`.

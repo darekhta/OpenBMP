@@ -382,7 +382,7 @@ source_authors:   >-
   RocketPy Team (Calisto example data); curve published in the
   RocketPy GitHub repository under MIT license.
 source_id:        RocketPy Calisto-example powerOffDragCurve.csv
-source_url:       https://raw.githubusercontent.com/RocketPy-Team/RocketPy/master/data/rockets/calisto/powerOffDragCurve.csv
+source_url:       https://raw.githubusercontent.com/RocketPy-Team/RocketPy/cb15a393ee2d9430cc21c57c98768dc1890a198a/data/rockets/calisto/powerOffDragCurve.csv
 source_hash_sha256: 94760a42d5f5fad4fb815f448db72201fafd2b2a3c6ec2d2c83618b2953207e0
 publication_date: 2022-08-01  # approximate; tracks the RocketPy v1.0 release
 methodology_reference: >-
@@ -425,10 +425,11 @@ verification:
   test:   crates/openbmp-aero/tests/calisto_deck_pin.rs
   tolerance: >-
     Every (mach, CD) pair: bit equality between deck lookup and
-    upstream CSV row. Phase-3.11.E will assert apogee ±1 % of
-    RocketPy's published 3 349 m AGL (or fall back to ±5 % per
-    the plan's risk register if the integrator-mismatch envelope
-    is wider).
+    upstream CSV row. The Phase-3.11 audit also verified the
+    commit-pinned `powerOnDragCurve.csv` at RocketPy commit
+    `cb15a393ee2d9430cc21c57c98768dc1890a198a` has the same
+    SHA-256, so the single-deck simplification covers both burn
+    states.
 validation_status: validated-toy
 safety_review:
   reviewer: dmitri.arekhta

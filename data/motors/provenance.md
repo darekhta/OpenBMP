@@ -444,9 +444,12 @@ source_title:     >-
   thrust curve published on ThrustCurve.org. RocketPy ships the
   same canonical Cesaroni `.eng` data in
   `data/motors/cesaroni/Cesaroni_M1670.eng` (same thrust profile;
-  trailing-whitespace differences only). This is the canonical
-  motor for the Phase-3.11 RocketPy Calisto cross-tool validation
-  case.
+  trailing-whitespace differences only). This manufacturer-mass
+  rendering is kept as the direct `.eng` header transcription; the
+  Phase-3.11 RocketPy Calisto scenario uses the separate
+  `rocketpy-calisto-m1670.toml` variant below because RocketPy
+  constructs the motor mass from `SolidMotor` dry-mass and grain-
+  geometry arguments instead of the `.eng` header mass.
 source_authors:   Cesaroni Technology Inc. (motor + RASP file)
 source_id:        ThrustCurve.org Cesaroni 6026M1670-P RASP simfile
 source_url:       https://www.thrustcurve.org/simfiles/5f4294d20002e9000000062c/download/data.eng
@@ -501,9 +504,10 @@ verification:
   test:   crates/openbmp-propulsion/tests/cesaroni_m1670_pin.rs
   tolerance: >-
     `total_impulse_n_s` and every (time, thrust) point: bit
-    equality. Phase-3.11.E will assert apogee ±1 % of RocketPy's
-    published 3 349 m AGL (or fall back to ±5 % per the plan's
-    risk register if the integrator-mismatch envelope is wider).
+    equality. Manufacturer-header mass values are pinned by
+    `cesaroni_m1670_toml_parses_with_expected_metadata`; the
+    RocketPy-specific mass profile is pinned by the sibling
+    `rocketpy_calisto_m1670_*` tests.
 validation_status: validated-toy
 safety_review:
   reviewer: dmitri.arekhta
@@ -515,6 +519,86 @@ safety_review:
     cross-tool Calisto example. No export-control or
     manufacturer-proprietary restrictions beyond the standard
     hobby-rocketry channels.
+```
+
+## `data/motors/rocketpy-calisto-m1670.toml`
+
+```yaml
+dataset_id:       openbmp.motor.rocketpy_calisto_m1670.v1
+files:
+  - data/motors/rocketpy-calisto-m1670.toml
+  - data/motors/Cesaroni_M1670.eng
+source_class:     converted-public
+source_title:     >-
+  RocketPy-Calisto rendering of the Cesaroni Pro75 M1670 motor:
+  the same CTI / ThrustCurve.org RASP thrust curve used by
+  `data/motors/cesaroni-m1670.toml`, but with RocketPy's
+  `SolidMotor` mass model inputs (`dry_mass = 1.815 kg` and
+  grain-geometry propellant mass = 2.9559119613920224 kg). The
+  resulting wet motor mass is 4.770911961392022 kg. This is the
+  motor file referenced by the Phase-3.11 RocketPy Calisto
+  cross-tool scenario.
+source_authors:   >-
+  Cesaroni Technology Inc. (motor + RASP file); RocketPy Team for
+  the Calisto `SolidMotor` dry-mass and grain-geometry parameters.
+source_id:        RocketPy Calisto M1670 SolidMotor rendering
+source_url:       https://raw.githubusercontent.com/RocketPy-Team/RocketPy/cb15a393ee2d9430cc21c57c98768dc1890a198a/docs/notebooks/getting_started.ipynb
+source_hash_sha256: b225a85c5dfecf72cb1247d9b085fcb3796e8910ef13e45696b9771b0591172d
+publication_date: 2026-04-29
+methodology_reference: >-
+  RocketPy's getting-started Calisto notebook constructs
+  `Pro75M1670 = SolidMotor(...)` with `dry_mass = 1.815`,
+  `grain_number = 5`, `grain_density = 1815 kg/m^3`,
+  `grain_outer_radius = 0.033 m`,
+  `grain_initial_inner_radius = 0.015 m`, and
+  `grain_initial_height = 0.120 m`. OpenBMP evaluates the same
+  grain-volume expression and keeps the upstream RASP thrust curve
+  unchanged.
+methodology_urls:
+  - https://github.com/RocketPy-Team/RocketPy
+  - https://docs.rocketpy.org/en/latest/notebooks/getting_started_colab.html
+  - https://www.thrustcurve.org/simfiles/5f4294d20002e9000000062c/download/data.eng
+license_or_terms: >-
+  RocketPy is MIT-licensed. The thrust curve remains the public
+  ThrustCurve.org / CTI RASP file described above; the RocketPy
+  dry-mass and grain-geometry parameters are MIT-licensed example
+  configuration data.
+retrieved_utc:    2026-04-29
+transformation:
+  method: >-
+    Copy the thrust-curve points from `data/motors/Cesaroni_M1670.eng`
+    with the OpenBMP-required (0.0, 0.0) prepend. Replace the
+    manufacturer-header mass values with the RocketPy Calisto
+    `SolidMotor` mass values:
+      propellant_mass_kg =
+        5 * pi * (0.033^2 - 0.015^2) * 0.120 * 1815
+        = 2.9559119613920224
+      dry_mass_kg = 1.815
+    `specific_impulse_s = 207.8941078199638` is back-solved from
+    `total_impulse_n_s = 6026.350` and the RocketPy propellant
+    mass using `g_0 = 9.80665 m/s^2`.
+  script: none
+verification:
+  method: >-
+    `crates/openbmp-propulsion/tests/cesaroni_m1670_pin.rs`
+    parses the RocketPy-mass TOML, asserts the dry / propellant /
+    wet mass values above, checks the thrust integral, and verifies
+    the thrust-curve points round-trip against
+    `data/motors/Cesaroni_M1670.eng`.
+  test:   crates/openbmp-propulsion/tests/cesaroni_m1670_pin.rs
+  tolerance: >-
+    Mass constants: bit equality after parse. Thrust integral:
+    1e-12 relative tolerance. Every (time, thrust) point: bit
+    equality against the upstream `.eng` file, modulo the
+    OpenBMP-required (0, 0) prepend.
+validation_status: checked
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Public RocketPy example configuration plus public hobby motor
+    thrust data. The file exists specifically to keep the Calisto
+    cross-tool comparison mass-equivalent to RocketPy.
 ```
 
 ### Source-file SHA-256 pin (Cesaroni M1670)

@@ -15,8 +15,9 @@ files:
 source_class:     converted-public
 source_title:     >-
   Phase-3.11 OpenBMP-schema rendering of the RocketPy Calisto
-  example. The scenario combines the Cesaroni Pro75 M1670 motor
-  port shipped at `data/motors/cesaroni-m1670.toml`, the
+  example. The scenario combines the RocketPy-mass Cesaroni
+  Pro75 M1670 motor port shipped at
+  `data/motors/rocketpy-calisto-m1670.toml`, the
   axisymmetric Calisto drag deck shipped at
   `data/aero/calisto-drag.toml` (sourced from RocketPy's byte-
   identical `powerOff/powerOnDragCurve.csv`), and the published
@@ -41,9 +42,12 @@ methodology_reference: >-
   configuration that this OpenBMP scenario reproduces. RocketPy
   reports a published apogee of approximately 3 349 m AGL for this
   configuration; the Phase-3.11.E end-to-end test pins the value
-  with a ±5% envelope (the risk-register fallback for the
-  RocketPy LSODA-adaptive vs. OpenBMP RK4-fixed-step integrator
-  mismatch documented in `docs/phase-3-plan.md §3.11`).
+  with an audited 2% envelope. The Phase-3.11 audit rejected the
+  original RK4-vs-LSODA explanation for the wider 5% envelope:
+  OpenBMP's dt = 0.001 s and dt = 0.0001 s apogees are unchanged
+  to sub-millimetre precision. The dominant fixed discrepancy was
+  the motor mass profile, now corrected by using RocketPy's
+  `SolidMotor` dry mass and grain-geometry propellant mass.
 methodology_urls:
   - https://github.com/RocketPy-Team/RocketPy
   - https://ascelibrary.org/doi/10.1061/%28ASCE%29AS.1943-5525.0001331
@@ -59,8 +63,9 @@ retrieved_utc:    2026-04-28
 transformation:
   method: >-
     Render the RocketPy Calisto example into the OpenBMP scenario
-    schema. The scenario references the Cesaroni M1670 motor and
-    the Calisto drag deck by relative path with SHA-256 pins. The
+    schema. The scenario references the RocketPy-mass Cesaroni
+    M1670 motor and the Calisto drag deck by relative path with
+    SHA-256 pins. The
     rigid-body initial state encodes the 5° rail tilt as a
     body-to-ECI quaternion (rotation about ECI +y by 5°). Spaceport
     America's 1 400 m elevation is encoded as a +z offset on the
@@ -68,34 +73,33 @@ transformation:
     altitude profile under the toy-fixed-earth frame profile.
     Recovery uses the Phase-3.9 `DrogueMainRecovery` device
     (drogue at apogee event, main at altitude_m = 1867.0, i.e.
-    467 m AGL on descent). The 30 s simulation horizon captures
-    the apogee with margin (apogee at t ≈ 24 s); the descent
-    phase is exercised by the runner but the apogee comparison is
-    the only quantitative gate.
+    467 m AGL on descent). The 180 s simulation horizon captures
+    apogee, drogue deployment, and main deployment so the declared
+    recovery workflow is exercised by the end-to-end gate.
   script: none
 verification:
   method: >-
     `openbmp check` parses the scenario and resolves the pinned
     aero deck and motor file digests. The Phase-3.11.E e2e test
-    `calisto_apogee_within_rocketpy_envelope` asserts the simulated
-    apogee AGL (max(z) − 1400 m offset) falls within ±5% of
-    RocketPy's published 3 349 m AGL. The companion test
-    `calisto_byte_stable_across_two_runs` asserts byte-stable
+    `calisto_apogee_recovery_and_byte_stability` asserts the
+    simulated apogee AGL (max(z) - 1400 m offset) falls within
+    2% of RocketPy's published 3 349 m AGL, checks the RocketPy
+    motor wet / burnout mass values, confirms drogue and main
+    recovery phases are reached in order, and asserts byte-stable
     Parquet across two reruns (Phase-3 determinism gate end-to-end
-    over the rigid-body hot path: scenario parse → motor load →
-    drag deck load → aero + thrust force adapters →
-    DrogueMainRecovery state machine → RK4 integrator →
+    over the rigid-body hot path: scenario parse -> motor load ->
+    drag deck load -> aero + thrust force adapters ->
+    DrogueMainRecovery state machine -> RK4 integrator ->
     Parquet sink).
   test: >-
     crates/openbmp-cli/tests/calisto_e2e.rs
   tolerance: >-
     Parser/check path requires exact SHA-256 pin matches. Physics
-    regression tolerance is the Phase-3.11 risk-register fallback
-    envelope of ±5% around the RocketPy 3 349 m AGL reference
-    (envelope = 167.45 m). Tightening to the 1% stretch-goal
-    envelope is a follow-up that requires either an adaptive RK
-    integrator on the OpenBMP side or a fixed-step replay of
-    RocketPy at OpenBMP's `dt`.
+    regression tolerance is the audited 2% envelope around the
+    RocketPy 3 349 m AGL reference (envelope = 66.98 m). The
+    remaining miss after the motor-mass fix is about 49 m (1.5%)
+    on the dev machine and is tracked as cross-tool model
+    residual, not RK4 truncation error.
 validation_status: checked
 safety_review:
   reviewer: dmitri.arekhta
@@ -116,8 +120,9 @@ local_origin:     >-
   frame with a 1 400 m altitude offset on initial position so the
   USSA76 atmosphere receives Spaceport's elevation; the toy frame
   drops Earth rotation and Coriolis, which is acceptable for the
-  sub-30-second Calisto flight per the Phase-3.11 risk register.
+  short Calisto validation flight per the Phase-3.11 risk register.
 related_files:
+  - data/motors/rocketpy-calisto-m1670.toml
   - data/motors/cesaroni-m1670.toml
   - data/motors/Cesaroni_M1670.eng
   - data/aero/calisto-drag.toml

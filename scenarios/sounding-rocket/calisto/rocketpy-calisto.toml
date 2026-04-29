@@ -3,10 +3,10 @@
 # Replicates the canonical RocketPy Calisto example
 # (Souza et al. 2022, https://github.com/RocketPy-Team/RocketPy)
 # in the OpenBMP rigid-body kernel. Cross-tool comparison target:
-# RocketPy's published apogee 3 349 m AGL within ±1 % (33.5 m
-# envelope), or ±5 % per the Phase-3 plan's risk register if the
-# integrator-mismatch envelope (RocketPy LSODA adaptive vs.
-# OpenBMP RK4 fixed-step) is wider.
+# RocketPy's published apogee 3 349 m AGL within the audited 2 %
+# cross-tool envelope. The 1 % stretch goal remains follow-up work;
+# the Phase-3.11 audit found the pre-audit 5 % envelope was masking
+# a RocketPy/OpenBMP motor-mass mismatch, not RK4 truncation error.
 #
 # Vehicle (from the RocketPy Calisto example):
 #   - body radius 0.0635 m (ref area = π · 0.0635² ≈ 0.01267 m²)
@@ -17,9 +17,10 @@
 #     and yaw inertias)
 #
 # Motor:
-#   - Cesaroni Pro75 M1670 (`data/motors/cesaroni-m1670.toml`)
-#   - 6 026 N·s total impulse, 3.9 s burn, 3.101 kg propellant,
-#     2.130 kg motor dry mass
+#   - Cesaroni Pro75 M1670 (`data/motors/rocketpy-calisto-m1670.toml`)
+#   - 6 026 N·s total impulse, 3.9 s burn, RocketPy SolidMotor
+#     mass profile: 2.9559119613920224 kg propellant and
+#     1.815 kg motor dry mass
 #
 # Aerodynamics:
 #   - Single-deck CD-vs-Mach curve from RocketPy's
@@ -57,16 +58,17 @@ openbmp.scenario = 1
 
 [meta]
 name        = "rocketpy-calisto"
-description = "RocketPy Calisto cross-tool validation: full Calisto airframe with Cesaroni Pro75 M1670 motor, dual-curve drag, drogue + main parachute, Spaceport America launch site. Headline Phase-3 outcome: apogee within 1% of RocketPy's published 3349 m AGL."
+description = "RocketPy Calisto cross-tool validation: full Calisto airframe with Cesaroni Pro75 M1670 motor, dual-curve drag, drogue + main parachute, Spaceport America launch site. Headline Phase-3 outcome: apogee within the audited cross-tool envelope around RocketPy's published 3349 m AGL."
 validation  = "checked"
-provenance  = "RocketPy Calisto example (Souza et al. 2022, https://github.com/RocketPy-Team/RocketPy); reference apogee 3349 m AGL pinned in the Phase-3.11.E e2e test with the 1% tolerance"
+provenance  = "RocketPy Calisto example (Souza et al. 2022, https://github.com/RocketPy-Team/RocketPy); reference apogee 3349 m AGL pinned in the Phase-3.11.E e2e test with the audited cross-tool tolerance"
 
 [time]
 start_s = 0.0
-# 30 s captures the apogee with margin (peak velocity ~ M 0.85 at
-# ~7 s post-ignition; apogee at t ≈ 24 s). The recovery descent
-# tail is not needed for the Phase-3.11 apogee comparison.
-stop_s  = 30.0
+# 180 s captures apogee, drogue deployment, and the main-chute
+# altitude crossing. The apogee still occurs at t ~= 26 s; the
+# longer horizon keeps the declared drogue + main recovery workflow
+# under the end-to-end gate.
+stop_s  = 180.0
 dt_s    = 0.001
 seed    = 0x4361_6c69_7374_6f00   # "Calisto\0"
 
@@ -129,10 +131,10 @@ deck         = "../../../data/aero/calisto-drag.toml"
 deck_sha256  = "93f51bd5a33fcf2e0a226bc7f328a71286e2db98c65a3dc166f70b2b4a0282d2"
 
 [propulsion.motor]
-file         = "../../../data/motors/cesaroni-m1670.toml"
+file         = "../../../data/motors/rocketpy-calisto-m1670.toml"
 ignite_at_s  = 0.0
 variant      = "solid"
-file_sha256  = "2a9d163eaf237ba79544085188be0f61cfa7403f032b3f5a06c53458800a8887"
+file_sha256  = "0aa6cbaa495e6a50fa337c99a2a92229c8166ce3ee183b2c49159e7d96e026c3"
 
 [forces]
 models = ["gravity", "thrust", "aero"]

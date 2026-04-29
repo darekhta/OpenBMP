@@ -1,0 +1,70 @@
+# Cesaroni Pro75 M1670 solid motor, rendered to match RocketPy Calisto.
+#
+# The thrust curve is the same CTI / ThrustCurve.org RASP `.eng`
+# profile shipped at `data/motors/Cesaroni_M1670.eng`, with the
+# OpenBMP-required (0, 0) point prepended. Unlike
+# `cesaroni-m1670.toml`, this file intentionally does NOT use the
+# `.eng` header's manufacturer mass values (3.101 kg propellant,
+# 5.231 kg total). RocketPy's Calisto example constructs the motor
+# with:
+#
+#   dry_mass = 1.815 kg
+#   grain_number = 5
+#   grain_density = 1815 kg/m^3
+#   grain_outer_radius = 0.033 m
+#   grain_initial_inner_radius = 0.015 m
+#   grain_initial_height = 0.120 m
+#
+# That gives propellant mass
+#   5 * pi * (0.033^2 - 0.015^2) * 0.120 * 1815
+#   = 2.9559119613920224 kg
+# and wet motor mass 4.770911961392022 kg. Phase-3.11's audit found
+# that using the manufacturer-header mass made OpenBMP about 0.46 kg
+# heavier at ignition and explained most of the Calisto apogee
+# deficit. This RocketPy-mass variant is therefore the one used by
+# `scenarios/sounding-rocket/calisto/rocketpy-calisto.toml`.
+#
+# Specific impulse is back-solved from the unchanged thrust integral:
+#   Isp = 6026.350 / (2.9559119613920224 * 9.80665)
+#       = 207.8941078199638 s
+
+openbmp.motor = 1
+
+[meta]
+name       = "rocketpy-calisto-m1670"
+provenance = "RocketPy Calisto M1670 rendering: CTI/ThrustCurve RASP thrust curve with RocketPy SolidMotor dry mass and grain-geometry propellant mass"
+validation = "checked"
+
+[burn]
+duration_s         = 3.9
+total_impulse_n_s  = 6026.350
+specific_impulse_s = 207.8941078199638
+propellant_mass_kg = 2.9559119613920224
+dry_mass_kg        = 1.815
+
+[geometry]
+# RocketPy's Calisto example declares nozzle_radius = 33 mm.
+# OpenBMP's Phase-2 `constant` ambient-pressure correction uses the
+# thrust curve as given; the exit area is retained as pinned geometry.
+exit_area_m2                 = 0.003421194
+ambient_pressure_correction  = "constant"
+
+[thrust_curve]
+points = [
+  [0.000,    0.0],
+  [0.055,  100.0],
+  [0.092, 1500.0],
+  [0.100, 2000.0],
+  [0.150, 2200.0],
+  [0.200, 1800.0],
+  [0.500, 1950.0],
+  [1.000, 2034.0],
+  [1.500, 2000.0],
+  [2.000, 1900.0],
+  [2.500, 1760.0],
+  [2.900, 1700.0],
+  [3.000, 1650.0],
+  [3.300,  530.0],
+  [3.400,  350.0],
+  [3.900,    0.0],
+]
