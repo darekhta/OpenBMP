@@ -294,6 +294,13 @@ mod tests {
     }
 
     #[test]
+    fn wind_axis_vector_frame_exemption_is_scoped_to_wind_block() {
+        let toml = format!("{MINIMAL}\n[wind_extra]\nintensity_m_s = [1.0, 1.0, 1.0]\n");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(err, ScenarioError::MissingFrameSuffix { .. }));
+    }
+
+    #[test]
     fn rejects_empty_force_model_list() {
         let toml = MINIMAL.replace(r#"models = ["gravity"]"#, "models = []");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
@@ -448,6 +455,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rejects_flat_gust_wind_without_structured_block() {
+        let toml = SOUNDING_ROCKET
+            .replace(r#"wind          = "constant""#, r#"wind          = "gust""#)
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, ref name, .. } if field == "wind" && name == "gust"),
+            "got {err:?}",
+        );
+    }
+
     // -----------------------------------------------------------------
     // Phase 3.8.B layered wind
     // -----------------------------------------------------------------
@@ -460,8 +482,7 @@ mod tests {
                 "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
                 "[wind]\nkind = \"layered\"\nlayers = [\n  { altitude_m = 0.0, wind_ned_m_s = [5.0, 0.0, 0.0] },\n  { altitude_m = 3000.0, wind_ned_m_s = [12.0, 2.0, 0.0] },\n]\n",
             );
-        let scenario =
-            Scenario::from_toml_str(&toml).expect("layered wind scenario must parse");
+        let scenario = Scenario::from_toml_str(&toml).expect("layered wind scenario must parse");
         let layers = scenario
             .document
             .wind
@@ -476,7 +497,10 @@ mod tests {
     #[test]
     fn rejects_layered_wind_without_layers() {
         let toml = SOUNDING_ROCKET
-            .replace(r#"wind          = "constant""#, r#"wind          = "layered""#)
+            .replace(
+                r#"wind          = "constant""#,
+                r#"wind          = "layered""#,
+            )
             .replace(
                 "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
                 "[wind]\nkind = \"layered\"\n",
@@ -548,14 +572,13 @@ mod tests {
                 gust_wind_block(),
             );
         let scenario = Scenario::from_toml_str(&toml).expect("gust wind scenario must parse");
-        let wind = scenario
-            .document
-            .wind
-            .as_ref()
-            .expect("wind block present");
+        let wind = scenario.document.wind.as_ref().expect("wind block present");
         assert_eq!(wind.kind, "gust");
         assert_eq!(wind.intensity_m_s.unwrap()[0].to_bits(), 2.5_f64.to_bits());
-        assert_eq!(wind.length_scale_m.unwrap()[2].to_bits(), 100.0_f64.to_bits());
+        assert_eq!(
+            wind.length_scale_m.unwrap()[2].to_bits(),
+            100.0_f64.to_bits()
+        );
         assert_eq!(wind.airspeed_m_s.unwrap().to_bits(), 250.0_f64.to_bits());
     }
 
@@ -1173,7 +1196,10 @@ action  = { kind = "separation" }
     }
 
     #[test]
-    fn rejects_deploy_recovery_action_kind() {
+    fn rejects_deploy_recovery_action_missing_fields() {
+        // Phase-3.9: `deploy_recovery` requires `id` and `command`
+        // fields. A bare `{ kind = "deploy_recovery" }` is a serde
+        // decode failure (missing fields).
         let err = Scenario::from_toml_str(&with_mission(
             r#"
 [mission]
@@ -1190,10 +1216,31 @@ action  = { kind = "deploy_recovery" }
 "#,
         ))
         .unwrap_err();
+        assert!(matches!(err, ScenarioError::ParseToml(_)));
+    }
+
+    #[test]
+    fn rejects_deploy_recovery_with_unknown_command_name() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_apogee" }
+action  = { kind = "deploy_recovery", id = "main", command = "unfurl" }
+"#,
+        ))
+        .unwrap_err();
         assert!(matches!(
             err,
-            ScenarioError::UnsupportedActionKind { ref kind, deferred_to: _ }
-                if kind == "deploy_recovery"
+            ScenarioError::UnsupportedValue { ref field, ref value }
+                if field.contains("command") && value == "unfurl"
         ));
     }
 
@@ -1415,6 +1462,11 @@ action  = { kind = "stop", label = "max-q" }
     const ASSEMBLY_WITH_EFFECTOR: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/assembly-with-effector.toml"
+    ));
+
+    const ASSEMBLY_WITH_RECOVERY: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/assembly-with-recovery.toml"
     ));
 
     const ASSEMBLY_RIGID_MISSING_BODY_INERTIA: &str = include_str!(concat!(
@@ -1720,5 +1772,155 @@ action  = { kind = "stop", label = "max-q" }
             matches!(err, ScenarioError::DuplicateValue { .. }),
             "expected DuplicateValue, got {err:?}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Phase-3.9 recovery
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn parses_assembly_with_recovery_block() {
+        let scenario = match Scenario::from_toml_str(ASSEMBLY_WITH_RECOVERY) {
+            Ok(s) => s,
+            Err(e) => panic!("parse failed: {e:?}"),
+        };
+        let assembly = scenario
+            .document
+            .vehicle
+            .assembly
+            .as_ref()
+            .expect("assembly present");
+        assert_eq!(assembly.recovery.len(), 3);
+        assert_eq!(assembly.recovery[0].id, "main_chute");
+        assert!(matches!(
+            assembly.recovery[0].kind,
+            crate::RecoveryKindConfig::ParachuteDrag {
+                c_d: 1.5,
+                area_inflated_m2: 2.0
+            }
+        ));
+        assert!(matches!(
+            assembly.recovery[1].kind,
+            crate::RecoveryKindConfig::DrogueMain { .. }
+        ));
+        assert!(matches!(
+            assembly.recovery[2].kind,
+            crate::RecoveryKindConfig::DragDevice { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_recovery_non_positive_c_d() {
+        let toml = ASSEMBLY_WITH_RECOVERY.replace("c_d = 1.5", "c_d = 0.0");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field.contains("c_d")),
+            "expected InvalidNumber on c_d, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_recovery_non_positive_area() {
+        let toml =
+            ASSEMBLY_WITH_RECOVERY.replace("area_inflated_m2 = 2.0", "area_inflated_m2 = -1.0");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field.contains("area")),
+            "expected InvalidNumber on area, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_recovery_id() {
+        // Replace the second declared id with the first so the
+        // duplicate-id validator fires.
+        let toml = ASSEMBLY_WITH_RECOVERY.replace(r#"id   = "drogue""#, r#"id   = "main_chute""#);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::DuplicateValue { ref field, .. } if field.contains("recovery")),
+            "expected DuplicateValue on recovery id, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_deploy_recovery_event_referencing_unknown_id() {
+        let toml = format!(
+            "{ASSEMBLY_WITH_RECOVERY}{}",
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt_deploy"
+trigger = { kind = "at_apogee" }
+action  = { kind = "deploy_recovery", id = "no_such_device", command = "deploy" }
+"#
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnknownRecoveryReference { ref id, .. } if id == "no_such_device"),
+            "expected UnknownRecoveryReference, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_deploy_drogue_against_parachute_drag_kind() {
+        // The `main_chute` device is `parachute_drag`, which only
+        // accepts `deploy`. `deploy_drogue` is incompatible.
+        let toml = format!(
+            "{ASSEMBLY_WITH_RECOVERY}{}",
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt_deploy"
+trigger = { kind = "at_apogee" }
+action  = { kind = "deploy_recovery", id = "main_chute", command = "deploy_drogue" }
+"#
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::IncompatibleRecoveryCommand { ref command, ref kind, .. }
+                    if command == "deploy_drogue" && kind == "parachute_drag"
+            ),
+            "expected IncompatibleRecoveryCommand, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_deploy_recovery_event_with_compatible_command() {
+        let toml = format!(
+            "{ASSEMBLY_WITH_RECOVERY}{}",
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt_deploy"
+trigger = { kind = "at_apogee" }
+action  = { kind = "deploy_recovery", id = "main_chute", command = "deploy" }
+"#
+        );
+        let scenario = match Scenario::from_toml_str(&toml) {
+            Ok(s) => s,
+            Err(e) => panic!("parse failed: {e:?}"),
+        };
+        let mission = scenario.document.mission.as_ref().expect("mission");
+        assert_eq!(mission.events.len(), 1);
     }
 }

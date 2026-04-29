@@ -1,0 +1,118 @@
+# Phase-3.9.E exit-criterion scenario — point-mass vehicle with
+# two-stage drogue + main parachute descent.
+#
+# The scenario demonstrates the full Phase-3.9 path:
+#   - recovery scenario block parses through the structured
+#     `RecoveryConfig` family (Phase 3.9.D);
+#   - the runner-side `RecoveryRack` is built with three devices
+#     (only `dual_chute` is exercised via deploy events; the others
+#     stay stowed with zero drag);
+#   - per-step the rack publishes a `RecoverySnapshot` to the kernel
+#     via `set_recovery_snapshot`;
+#   - the kernel-side `RecoveryRackForceAdapter` reads the snapshot
+#     and adds the deployed devices' drag force to the point-mass
+#     force-breakdown.
+#   - mission events drive the state machine: `at_apogee` fires
+#     `deploy_drogue` against the drogue+main device; an altitude
+#     crossing on the way down at 300 m AGL fires `deploy_main`.
+#
+# Vehicle starts at altitude 1000 m with upward velocity 50 m/s.
+# Apogee is at ≈ 1127 m (50 m/s + free-fall climb of 50²/(2g) ≈ 127 m).
+# After apogee, gravity pulls the vehicle back. Drogue opens (small
+# canopy) until altitude crosses 300 m, then main deploys (large
+# canopy) and the vehicle decelerates toward terminal velocity.
+#
+# Synthetic round numbers; not a benchmark.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "parachute-descent"
+description = "Phase-3.9.E exit-criterion: point-mass vehicle with two-stage drogue + main recovery driven by mission events. Demonstrates the full recovery-rack hot path. Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 120.0
+dt_s    = 0.01
+seed    = 0x52_6563_6f76_6572   # "Recover"
+
+[vehicle]
+kind                     = "point_mass"
+mass_kg                  = 5.0
+initial_position_eci_m   = [0.0, 0.0, 1000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 50.0]
+
+[vehicle.assembly]
+id = "parachute-descent"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 0.05 }
+dry_mass_kg   = 5.0
+
+# Two-stage drogue + main parachute. Drogue area is small (decelerates
+# the vehicle from terminal-velocity-no-chute to a manageable rate
+# before main inflation). Main area is large (slow descent to safe
+# touchdown). Coefficients per Knacke 1992 Chapter 5 typical values.
+[[vehicle.assembly.recovery]]
+id   = "dual_chute"
+kind = { kind = "drogue_main", drogue_c_d = 1.0, drogue_area_m2 = 0.5, main_c_d = 1.5, main_area_m2 = 4.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "us_standard_1976"
+wind          = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.parquet = "out/parachute-descent.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.phases]]
+id    = "drogue_descent"
+label = "drogue_descent"
+
+[[mission.phases]]
+id    = "main_descent"
+label = "main_descent"
+
+# Apogee fires `deploy_drogue` against the dual_chute device.
+[[mission.events]]
+id      = "evt_apogee"
+trigger = { kind = "at_apogee" }
+action  = { kind = "deploy_recovery", id = "dual_chute", command = "deploy_drogue" }
+
+# Crossing 300 m AGL on the way down fires `deploy_main`.
+[[mission.events]]
+id      = "evt_main"
+trigger = { kind = "at_altitude_descending", altitude_m = 300.0 }
+action  = { kind = "deploy_recovery", id = "dual_chute", command = "deploy_main" }
+
+# Phase transitions tracking the recovery state machine.
+[[mission.transitions]]
+from  = "ascent"
+to    = "drogue_descent"
+event = "evt_apogee"
+
+[[mission.transitions]]
+from  = "drogue_descent"
+to    = "main_descent"
+event = "evt_main"

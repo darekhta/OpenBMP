@@ -516,10 +516,8 @@ mod tests {
     #[test]
     fn for_wind_component_distinct_steps_diverge() {
         let scenario = 1u64;
-        let mut a =
-            DeterministicRng::for_wind_component(scenario, StepIndex::new(0), WindAxis::U);
-        let mut b =
-            DeterministicRng::for_wind_component(scenario, StepIndex::new(1), WindAxis::U);
+        let mut a = DeterministicRng::for_wind_component(scenario, StepIndex::new(0), WindAxis::U);
+        let mut b = DeterministicRng::for_wind_component(scenario, StepIndex::new(1), WindAxis::U);
         let any_diff = (0..8).any(|_| a.next_u64() != b.next_u64());
         assert!(any_diff, "distinct steps must produce distinct streams");
     }

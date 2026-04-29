@@ -1269,6 +1269,7 @@ dependencies = [
  "nalgebra",
  "openbmp-core",
  "proptest",
+ "static_assertions",
  "thiserror",
  "toml",
 ]
@@ -1836,6 +1837,12 @@ name = "snap"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
+
+[[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "strsim"

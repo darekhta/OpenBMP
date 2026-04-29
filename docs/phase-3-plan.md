@@ -810,10 +810,12 @@ from the Phase-3.2 `MissionPhaseGraph`.
   `DragDevice` — generic airbrake / drag-device coefficient
   change.
 - `crates/openbmp-scenario/src/document.rs`: new
-  `[recovery.<name>]` block declaring kind, deploy event, and
-  per-kind parameters.
-- Telemetry channels: `recovery.deployed`, `recovery.phase`,
-  `recovery.drag_area_m2`, `recovery.descent_rate_m_s`.
+  `[[vehicle.assembly.recovery]]` block declaring kind and
+  per-kind parameters; `mission.events[*].action.deploy_recovery`
+  drives state changes.
+- Telemetry channels per device:
+  `recovery.<id>.deployed`, `recovery.<id>.phase_index`,
+  `recovery.<id>.drag_area_m2`.
 
 **Tests.**
 

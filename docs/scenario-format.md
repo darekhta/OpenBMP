@@ -387,8 +387,12 @@ wind_ned_m_s = [3.0, 0.0, 0.0]
 ```
 
 `wind_ned_m_s` is required when `kind = "constant"`, rejected
-otherwise. Selecting `environment.wind = "constant"` therefore requires
-the structured `[wind]` block.
+otherwise. Phase 3.8 also accepts `kind = "layered"` with a `layers`
+table and `kind = "gust"` with Dryden `intensity_m_s`,
+`length_scale_m`, and `airspeed_m_s` parameters. Selecting any
+non-`none` `environment.wind` therefore requires the structured
+`[wind]` block; leaving `environment.wind = "none"` lets a structured
+`[wind]` block opt into the active model.
 
 ### Atmosphere block
 
@@ -537,12 +541,12 @@ common scripted-command case without a separate trigger surface.
 | `stop` | `label: string` | Halts the run with `StopReason::MissionEnded { label }`. Distinct from `EndTime` so determinism telemetry can distinguish CLI-driven stops from scenario-driven mission ends. |
 | `effector_override` | `id: string` (declared effector id), `command: f64` (finite) | One-shot command override for the named effector on the next runner step. Resolves the declared id against the runner's effector rack via FNV-1a-64 of `vehicle.assembly.effectors.<id>`. Unknown ids are rejected by `openbmp check`. The kernel records the action; the runner drains it from the per-step fired-event queue and applies it on the next rack tick before the kernel step. Override wins over any declared `command_schedule` for that rack tick only. |
 | `engine_command` | `id: string` (declared engine id), `command: { throttle_unit: f64 ∈ [0,1], gimbal_pitch_rad: f64, gimbal_yaw_rad: f64, ignite: bool, shutdown: bool }` | Per-engine command targeting a declared `[[vehicle.assembly.engines]]` by id. Resolves the declared id via FNV-1a-64 of `vehicle.assembly.engines.<id>`. Unknown ids are rejected by `openbmp check`. Kernel records; runner-side `EngineRack` drains and applies on the next rack tick before the kernel step. `ignite=true` is honoured only from `Idle`; `shutdown=true` only from `Igniting` / `Burning`. Throttle / gimbal values are clamped to engine limits at apply time. |
+| `deploy_recovery` | `id: string` (declared recovery id), `command: "deploy" \| "deploy_drogue" \| "deploy_main" \| "stow"` | Recovery-device command targeting a declared `[[vehicle.assembly.recovery]]` by id. Resolves via FNV-1a-64 of `vehicle.assembly.recovery.<id>`. Unknown ids and kind-incompatible commands are rejected by `openbmp check`; runner-side `RecoveryRack` drains accepted firings on the next rack tick before the kernel step. |
 
-The two remaining reserved actions `separation` / `deploy_recovery`
-are still rejected at parse time with typed deferral errors
-pointing at Phase 3.6 / 3.9. Phase 3.4 wires `effector_override`,
-Phase 3.6 wires `engine_command`; the rest follow when their
-assembly children land.
+The remaining reserved action `separation` is still rejected at parse
+time with a typed deferral error pointing at Phase 3.6 / 3.7.
+Phase 3.4 wires `effector_override`, Phase 3.6 wires
+`engine_command`, and Phase 3.9 wires `deploy_recovery`.
 
 #### `once` semantics
 
@@ -583,8 +587,9 @@ The parser enforces:
 
 When `[vehicle.assembly]` is declared, the scenario describes the
 vehicle as a tree of bodies. Phase-3.3 supports single-body and
-multi-body assemblies; future phases will add propulsion / effectors
-/ tanks / sensors as child blocks of the assembly. The flat
+multi-body assemblies. Phase-3 sub-phases add effectors, engine
+clusters, tanks, and recovery devices as child blocks of the
+assembly; sensors remain outside the assembly for now. The flat
 `[vehicle].mass_kg` field stays required and must equal the sum of
 declared body dry masses (consistency check: max(1e-12 absolute,
 1e-9 relative tolerance)).
@@ -636,6 +641,8 @@ pre-computed geometry, mirroring the aero-deck reference.
 [Engine clusters](#engine-clusters-phase-36) below.
 `[[vehicle.assembly.tanks]]` ships in Phase 3.7 — see
 [Tanks and slosh](#tanks-and-slosh-phase-37) below.
+`[[vehicle.assembly.recovery]]` ships in Phase 3.9 — see
+[Recovery and descent](#recovery-and-descent-phase-39) below.
 
 #### Determinism
 
@@ -664,9 +671,10 @@ Enforced at scenario-parse time:
   `dry_inertia_body_kg_m2`, and the flat
   `vehicle.inertia_tensor_body_kg_m2` matches the assembled dry
   inertia tensor within the same consistency tolerance.
-- The two remaining reserved future-phase child blocks (`engines`,
-  `tanks`) must be empty. `effectors` ships in Phase 3.4 and is
-  validated by the rules in [Control effectors](#control-effectors-phase-34).
+- Assembly child blocks are validated by their phase sections:
+  `effectors` (Phase 3.4), `engines` (Phase 3.6), `tanks`
+  (Phase 3.7), and `recovery` (Phase 3.9). Unknown child blocks
+  remain parse errors.
 
 #### Phase-3.3 limitations
 
@@ -1220,3 +1228,78 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
 
 The canonical Phase-3.7 example ships at
 [`scenarios/sloshing-tank/sloshing-tank.toml`](../scenarios/sloshing-tank/sloshing-tank.toml).
+
+### Recovery and descent (Phase 3.9)
+
+Phase 3.9 lands `[[vehicle.assembly.recovery]]` devices and the
+runner-side recovery rack. Recovery is force-only in this phase: the
+kernel applies drag at the body center of gravity, with no recovery
+mass contribution and no recovery moment.
+
+```toml
+[[vehicle.assembly.recovery]]
+id   = "dual_chute"
+kind = { kind = "drogue_main", drogue_c_d = 1.0, drogue_area_m2 = 0.5, main_c_d = 1.5, main_area_m2 = 4.0 }
+
+[[mission.events]]
+id      = "evt_apogee"
+trigger = { kind = "at_apogee" }
+action  = { kind = "deploy_recovery", id = "dual_chute", command = "deploy_drogue" }
+```
+
+#### Recovery kinds
+
+`kind` is a tagged enum:
+
+| `kind.kind` | Required fields | Commands |
+|---|---|---|
+| `parachute_drag` | `c_d`, `area_inflated_m2` | `deploy` |
+| `drogue_main` | `drogue_c_d`, `drogue_area_m2`, `main_c_d`, `main_area_m2` | `deploy_drogue`, `deploy_main` |
+| `drag_device` | `c_d`, `area_deployed_m2` | `deploy`, `stow` |
+
+All drag coefficients and areas must be finite and strictly positive.
+The runner publishes zero drag while a device is stowed.
+
+#### Event compatibility
+
+`deploy_recovery` actions target one declared recovery id. Scenario
+validation rejects unknown ids and rejects commands incompatible with
+the target kind. The accepted matrix is:
+
+| Recovery kind | `deploy` | `deploy_drogue` | `deploy_main` | `stow` |
+|---|---|---|---|---|
+| `parachute_drag` | accepted | rejected | rejected | rejected |
+| `drogue_main` | rejected | accepted | accepted | rejected |
+| `drag_device` | accepted | rejected | rejected | accepted |
+
+Multiple recovery commands for the same device in one kernel step are
+rejected by the runner; use separate event firings for ordered
+transitions such as deploy then stow.
+
+#### Telemetry
+
+Each declared recovery device allocates three channels in
+scenario-declared order, after effector channels and before mission
+markers:
+
+| Channel | Type | Units | Notes |
+|---|---|---|---|
+| `recovery.<id>.deployed` | bool | bool | `true` for any non-stowed phase |
+| `recovery.<id>.phase_index` | int64 | 1 | `0 = Stowed`, `1 = Drogue`, `2 = Main` |
+| `recovery.<id>.drag_area_m2` | float64 | m^2 | Current effective drag area |
+
+The recovery force adapter sums deployed `C_D A` terms in
+scenario-declared recovery order and short-circuits before atmosphere
+sampling when the sum is zero, preserving legacy byte-stability for
+scenarios with no recovery devices.
+
+#### Phase-3.9 limitations
+
+- Drag opposes ECI velocity, matching the existing axial-drag adapter.
+  Wind-relative parachute drag is deferred.
+- Canopy inflation transients are deferred; all Phase-3.9 recovery
+  state changes are instantaneous at the rack tick.
+- Recovery devices do not contribute mass or moments.
+
+The canonical Phase-3.9 example ships at
+[`scenarios/parachute-recovery/parachute-descent.toml`](../scenarios/parachute-recovery/parachute-descent.toml).

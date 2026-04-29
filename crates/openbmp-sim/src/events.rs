@@ -267,10 +267,9 @@ impl EventTrigger for BuiltInEventTrigger {
 
 /// Action taken when an event fires.
 ///
-/// The four `Engine*` / `Effector*` / `Separation` / `DeployRecovery`
-/// variants are reserved-but-unwired in Phase 3.2: scenarios that
-/// declare them are rejected at parse time with a typed deferral
-/// error pointing at the future phase that will land them.
+/// `Separation` is reserved-but-unwired in Phase 3.2: scenarios that
+/// declare it are rejected at parse time with a typed deferral
+/// error pointing at the future phase that will land it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EventAction {
     /// Transition the active mission phase.
@@ -315,8 +314,25 @@ pub enum EventAction {
     },
     /// Phase-3.6 / 3.7 deferred: stage-separation event.
     Separation,
-    /// Phase-3.9 deferred: deploy a recovery device.
-    DeployRecovery,
+    /// Phase-3.9: deploy / stow a recovery device. Targets a
+    /// declared recovery device by [`openbmp_core::RecoveryId`]; the
+    /// runner-side `RecoveryRack::apply_deploys` consumes the fired
+    /// event and applies the command to the device's state machine.
+    DeployRecovery {
+        /// Target recovery-device id.
+        id: openbmp_core::RecoveryId,
+        /// Command name (one of `"deploy"`, `"deploy_drogue"`,
+        /// `"deploy_main"`, `"stow"`). The string is the rack-side
+        /// canonical name; the rack maps it to the typed
+        /// `openbmp_vehicle::RecoveryCommand` enum at apply time.
+        ///
+        /// We carry the canonical-name `String` (rather than the
+        /// typed enum) because `openbmp-sim` is L1 — it cannot
+        /// depend on `openbmp-vehicle::recovery`. The rack lives in
+        /// the runner (`openbmp-cli`) which depends on both crates
+        /// and performs the typed-mapping there.
+        command: String,
+    },
 }
 
 /// One event's full declaration: trigger + action + once-flag.

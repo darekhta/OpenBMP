@@ -508,6 +508,7 @@ mod tests {
             effector_actuals: openbmp_sim::EffectorActualsView::empty(),
             engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
+            recovery_snapshot: openbmp_sim::RecoverySnapshotView::empty(),
         }
     }
 

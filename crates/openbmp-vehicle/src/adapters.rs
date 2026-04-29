@@ -1174,6 +1174,182 @@ impl MassModel for TankRackMassAdapter {
     }
 }
 
+// ---------------------------------------------------------------------
+// RecoveryRackForceAdapter (Phase 3.9.D)
+// ---------------------------------------------------------------------
+
+/// Phase-3.9 kernel-side force adapter for a recovery rack
+/// (parachutes / drag devices).
+///
+/// Sums the drag-area · drag-coefficient product across every
+/// declared recovery device from the kernel's
+/// [`openbmp_sim::RecoverySnapshotView`], queries the atmosphere for
+/// density at the body's altitude proxy (ECI z, clamped to ≥ 0 to
+/// match the [`AxialDragForceAdapter`] convention), and returns
+/// `F = -½ ρ |v|² · Σ(C_D · A) · v̂` in ECI per Knacke 1992 Chapter 5.
+///
+/// Drag is identical for point-mass and rigid-body kernels: it
+/// opposes the body's ECI velocity, magnitude depends only on
+/// altitude and speed, and the direction does not depend on body
+/// attitude. (Long parachute risers are assumed to decouple body
+/// rotation from drag direction — the academic Phase-3.9
+/// formulation.)
+///
+/// Operand order: scenario-declared `recovery_ids` order with locked
+/// left-fold summation of `(c_d, drag_area)` products. Empty snapshot
+/// → no recovery devices → zero force, byte-identical to pre-3.9.
+/// Stowed devices contribute `c_d = drag_area = 0` per
+/// [`crate::recovery::RecoveryModel::current_c_d`] /
+/// [`crate::recovery::RecoveryModel::current_drag_area_m2`], so the
+/// summation skips them naturally.
+pub struct RecoveryRackForceAdapter<Atm> {
+    recovery_ids: Vec<openbmp_core::RecoveryId>,
+    atmosphere: Atm,
+    model_id: ModelId,
+}
+
+impl<Atm: std::fmt::Debug> std::fmt::Debug for RecoveryRackForceAdapter<Atm> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecoveryRackForceAdapter")
+            .field("recovery_ids", &self.recovery_ids)
+            .field("atmosphere", &self.atmosphere)
+            .field("model_id", &self.model_id)
+            .finish()
+    }
+}
+
+impl<Atm> RecoveryRackForceAdapter<Atm> {
+    /// Construct from a parallel `recovery_ids` array
+    /// (scenario-declared order), an atmosphere model, and a stable
+    /// model id.
+    #[must_use]
+    pub const fn new(
+        recovery_ids: Vec<openbmp_core::RecoveryId>,
+        atmosphere: Atm,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            recovery_ids,
+            atmosphere,
+            model_id,
+        }
+    }
+}
+
+impl<Atm: AtmosphereModel> ForceModel<PointMassState> for RecoveryRackForceAdapter<Atm> {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, PointMassState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        compute_recovery_drag(
+            &self.recovery_ids,
+            &self.atmosphere,
+            self.model_id,
+            ctx.state.velocity.vector,
+            ctx.state.position.vector.z,
+            ctx.time,
+            ctx.recovery_snapshot,
+        )
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for RecoveryRackForceAdapter<Atm> {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        compute_recovery_drag(
+            &self.recovery_ids,
+            &self.atmosphere,
+            self.model_id,
+            ctx.state.velocity.vector,
+            ctx.state.position.vector.z,
+            ctx.time,
+            ctx.recovery_snapshot,
+        )
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+/// Shared recovery-drag computation for point-mass and rigid-body
+/// adapters. Locked operand order so future refactors can't diverge
+/// the byte output of the two kernels at zero-deflection points.
+#[allow(clippy::too_many_arguments)]
+fn compute_recovery_drag<Atm: AtmosphereModel>(
+    recovery_ids: &[openbmp_core::RecoveryId],
+    atmosphere: &Atm,
+    model_id: ModelId,
+    velocity_eci: Vector3<f64>,
+    position_eci_z: f64,
+    time: SimTime,
+    recovery_snapshot: openbmp_sim::RecoverySnapshotView<'_>,
+) -> Result<Vector3<f64>, ModelEvalError> {
+    // Sum (c_d * area) across every declared device. Locked operand
+    // order matches the scenario-declared `recovery_ids` Vec; same
+    // left-fold convention as TankRackForceAdapter / EngineCluster.
+    let mut sum_cd_area = 0.0_f64;
+    for id in recovery_ids {
+        let snap = recovery_snapshot
+            .get(*id)
+            .ok_or(ModelEvalError::OutOfEnvelope {
+                model: model_id,
+                reason: Cow::Borrowed(
+                    "recovery rack force adapter: snapshot missing declared recovery id",
+                ),
+            })?;
+        // Stowed devices have `deployed = false` and zero c_d / area
+        // — the multiplication contributes 0 and the summation
+        // doesn't need a special case.
+        sum_cd_area += snap.c_d * snap.drag_area_m2;
+    }
+    if sum_cd_area <= 0.0 {
+        // No deployed area. Skip the atmosphere lookup so legacy
+        // scenarios keep their byte output (no atmosphere queries
+        // are introduced when no recovery is declared).
+        return Ok(Vector3::zeros());
+    }
+
+    let v = velocity_eci;
+    let speed_sq = v.x * v.x + v.y * v.y + v.z * v.z;
+    if speed_sq <= 0.0 {
+        return Ok(Vector3::zeros());
+    }
+    let speed = speed_sq.sqrt();
+
+    // Altitude proxy: ECI z (vertical-launch simplification, matches
+    // AxialDragForceAdapter). Clamp to ≥ 0 so atmosphere out-of-
+    // envelope rejections don't fire on academic scenarios that
+    // start sub-surface or run past surface impact.
+    let altitude_m = position_eci_z.max(0.0);
+    let atm_sample =
+        atmosphere
+            .sample(altitude_m, time)
+            .map_err(|_| ModelEvalError::OutOfEnvelope {
+                model: model_id,
+                reason: Cow::Borrowed(
+                    "recovery rack force adapter: atmosphere out of envelope at altitude",
+                ),
+            })?;
+
+    // Locked operand order: q = 0.5 · ρ · |v|².
+    let q = 0.5 * atm_sample.density_kg_m3 * speed_sq;
+    let drag_magnitude = q * sum_cd_area;
+
+    let v_hat = v / speed;
+    let f = -drag_magnitude * v_hat;
+    if !f.x.is_finite() || !f.y.is_finite() || !f.z.is_finite() {
+        return Err(ModelEvalError::NonFinite { model: model_id });
+    }
+    Ok(f)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
@@ -1181,7 +1357,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use openbmp_core::{EngineId, Position3, SimTime, Velocity3};
-    use openbmp_env::{ConstantGravity, IsothermalAtmosphere};
+    use openbmp_env::{AtmosphereSample, ConstantGravity, EnvError, IsothermalAtmosphere};
     use openbmp_propulsion::{EngineSnapshot, EngineState, SolidMotor};
     use openbmp_sim::EnvironmentSample;
     use proptest::prelude::*;
@@ -1211,6 +1387,7 @@ mod tests {
             effector_actuals: openbmp_sim::EffectorActualsView::empty(),
             engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
+            recovery_snapshot: openbmp_sim::RecoverySnapshotView::empty(),
         }
     }
 
@@ -1439,6 +1616,7 @@ mod tests {
             effector_actuals: openbmp_sim::EffectorActualsView::empty(),
             engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
+            recovery_snapshot: openbmp_sim::RecoverySnapshotView::empty(),
         }
     }
 
@@ -1679,5 +1857,230 @@ mod tests {
             prop_assert_eq!(got.y.to_bits(), expected.y.to_bits());
             prop_assert_eq!(got.z.to_bits(), expected.z.to_bits());
         }
+    }
+
+    // -----------------------------------------------------------------
+    // RecoveryRackForceAdapter (Phase 3.9.D)
+    // -----------------------------------------------------------------
+
+    use openbmp_core::RecoveryId;
+    use openbmp_sim::{RecoverySnapshot, RecoverySnapshotView};
+
+    fn recovery_snapshot_map(
+        entries: &[(RecoveryId, bool, f64, f64)],
+    ) -> BTreeMap<RecoveryId, RecoverySnapshot> {
+        entries
+            .iter()
+            .copied()
+            .map(|(id, deployed, c_d, drag_area_m2)| {
+                (
+                    id,
+                    RecoverySnapshot {
+                        deployed,
+                        phase_index: if deployed { 2 } else { 0 },
+                        c_d,
+                        drag_area_m2,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn recovery_ctx<'a>(
+        state: &'a PointMassState,
+        env: &'a EnvironmentSample,
+        time_s: f64,
+        snapshot: &'a BTreeMap<RecoveryId, RecoverySnapshot>,
+    ) -> ForceContext<'a, PointMassState> {
+        ForceContext {
+            state,
+            environment: env,
+            mass_kg: state.mass.get::<kilogram>(),
+            time: SimTime::from_seconds(time_s),
+            effector_actuals: openbmp_sim::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
+            recovery_snapshot: RecoverySnapshotView::new(snapshot),
+        }
+    }
+
+    #[test]
+    fn recovery_rack_empty_ids_returns_zero_force() {
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let adapter = RecoveryRackForceAdapter::new(vec![], atm, ModelId::new(370));
+        let state = fixture_state(1000.0, -50.0);
+        let env = null_env();
+        let snapshot = BTreeMap::new();
+        let f = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+        assert_eq!(f.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(f.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(f.z.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn recovery_rack_all_stowed_returns_zero_force() {
+        let id_a = RecoveryId::from_path("recovery.a");
+        let id_b = RecoveryId::from_path("recovery.b");
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let adapter = RecoveryRackForceAdapter::new(vec![id_a, id_b], atm, ModelId::new(370));
+        let state = fixture_state(1000.0, -50.0);
+        let env = null_env();
+        // Both stowed: deployed = false, c_d = 0, area = 0.
+        let snapshot = recovery_snapshot_map(&[(id_a, false, 0.0, 0.0), (id_b, false, 0.0, 0.0)]);
+        let f = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+        assert_eq!(f.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(f.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(f.z.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    struct RejectingAtmosphere;
+
+    impl AtmosphereModel for RejectingAtmosphere {
+        fn sample(
+            &self,
+            _altitude_geometric_m: f64,
+            _time: SimTime,
+        ) -> Result<AtmosphereSample, EnvError> {
+            Err(EnvError::OutOfEnvelope {
+                reason: "test atmosphere should not be sampled",
+            })
+        }
+    }
+
+    #[test]
+    fn recovery_rack_all_stowed_skips_atmosphere_lookup() {
+        let id_a = RecoveryId::from_path("recovery.a");
+        let id_b = RecoveryId::from_path("recovery.b");
+        let adapter =
+            RecoveryRackForceAdapter::new(vec![id_a, id_b], RejectingAtmosphere, ModelId::new(370));
+        let state = fixture_state(1000.0, -50.0);
+        let env = null_env();
+        let snapshot = recovery_snapshot_map(&[(id_a, false, 0.0, 0.0), (id_b, false, 0.0, 0.0)]);
+        let f = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+        assert_eq!(f.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(f.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(f.z.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn recovery_rack_zero_velocity_returns_zero_force() {
+        let id_a = RecoveryId::from_path("recovery.a");
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let adapter = RecoveryRackForceAdapter::new(vec![id_a], atm, ModelId::new(370));
+        // velocity = 0 → drag = 0 regardless of deployment.
+        let state = fixture_state(0.0, 0.0);
+        let env = null_env();
+        let snapshot = recovery_snapshot_map(&[(id_a, true, 1.5, 2.0)]);
+        let f = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+        assert_eq!(f.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(f.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(f.z.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn recovery_rack_deployed_drag_opposes_velocity() {
+        let id_a = RecoveryId::from_path("recovery.main");
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let adapter = RecoveryRackForceAdapter::new(vec![id_a], atm, ModelId::new(370));
+        // -50 m/s descent (state z velocity points down).
+        let state = fixture_state(1000.0, -50.0);
+        let env = null_env();
+        let c_d = 1.5;
+        let area = 2.0;
+        let snapshot = recovery_snapshot_map(&[(id_a, true, c_d, area)]);
+        let f = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+
+        // Locked-order recomputation matches the impl exactly:
+        // sum_cd_area = 0.0 + c_d * area
+        let sum_cd_area = 0.0_f64 + c_d * area;
+        let speed_sq = 0.0_f64 * 0.0 + 0.0 * 0.0 + (-50.0) * (-50.0);
+        let atm_sample = atm.sample(1000.0, SimTime::ZERO).unwrap();
+        let q = 0.5 * atm_sample.density_kg_m3 * speed_sq;
+        let drag_magnitude = q * sum_cd_area;
+        // f = -drag_magnitude * v / speed; v_hat = v / sqrt(speed_sq).
+        let speed = speed_sq.sqrt();
+        let expected_z = -drag_magnitude * (-50.0_f64 / speed);
+
+        // x / y vanish by orthogonality but carry a -0.0 sign because
+        // `-drag_magnitude * (0.0/speed)` evaluates to negative zero;
+        // assert magnitude (numeric equality) for those.
+        assert_eq!(f.x, 0.0);
+        assert_eq!(f.y, 0.0);
+        assert_eq!(f.z.to_bits(), expected_z.to_bits());
+        assert!(expected_z > 0.0, "drag must oppose downward velocity");
+    }
+
+    #[test]
+    fn recovery_rack_sums_multiple_deployed_devices_in_declared_order() {
+        let id_a = RecoveryId::from_path("recovery.drogue");
+        let id_b = RecoveryId::from_path("recovery.main");
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let adapter = RecoveryRackForceAdapter::new(vec![id_a, id_b], atm, ModelId::new(370));
+        let state = fixture_state(500.0, -40.0);
+        let env = null_env();
+        let snapshot = recovery_snapshot_map(&[
+            (id_a, true, 1.0, 0.5), // drogue: small
+            (id_b, true, 1.5, 4.0), // main: large
+        ]);
+        let f = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+
+        // Locked-order recomputation matching the impl exactly:
+        // sum_cd_area = ((0.0 + 1.0 * 0.5) + 1.5 * 4.0)
+        let sum_cd_area = 0.0_f64 + 1.0 * 0.5 + 1.5 * 4.0;
+        let speed_sq = 0.0_f64 * 0.0 + 0.0 * 0.0 + (-40.0) * (-40.0);
+        let atm_sample = atm.sample(500.0, SimTime::ZERO).unwrap();
+        let q = 0.5 * atm_sample.density_kg_m3 * speed_sq;
+        let drag_magnitude = q * sum_cd_area;
+        let speed = speed_sq.sqrt();
+        let expected_z = -drag_magnitude * (-40.0_f64 / speed);
+        assert_eq!(f.z.to_bits(), expected_z.to_bits());
+    }
+
+    #[test]
+    fn recovery_rack_missing_id_in_snapshot_is_out_of_envelope() {
+        let id_a = RecoveryId::from_path("recovery.a");
+        let id_b = RecoveryId::from_path("recovery.b");
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let adapter = RecoveryRackForceAdapter::new(vec![id_a, id_b], atm, ModelId::new(370));
+        let state = fixture_state(1000.0, -50.0);
+        let env = null_env();
+        // Snapshot missing id_b.
+        let snapshot = recovery_snapshot_map(&[(id_a, true, 1.5, 2.0)]);
+        let err = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap_err();
+        assert!(matches!(err, ModelEvalError::OutOfEnvelope { .. }));
+    }
+
+    #[test]
+    fn recovery_rack_byte_stable_across_two_evaluations() {
+        let id_a = RecoveryId::from_path("recovery.main");
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let adapter = RecoveryRackForceAdapter::new(vec![id_a], atm, ModelId::new(370));
+        let state = fixture_state(1500.0, -42.0);
+        let env = null_env();
+        let snapshot = recovery_snapshot_map(&[(id_a, true, 1.6, 3.5)]);
+        let f1 = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+        let f2 = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+        assert_eq!(f1.x.to_bits(), f2.x.to_bits());
+        assert_eq!(f1.y.to_bits(), f2.y.to_bits());
+        assert_eq!(f1.z.to_bits(), f2.z.to_bits());
     }
 }

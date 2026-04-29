@@ -53,13 +53,15 @@ pub mod adapters;
 pub mod assembly;
 pub mod effector;
 pub mod error;
+pub mod recovery;
 pub mod tank;
 pub mod vehicle;
 
 pub use adapters::{
     AxialDragForceAdapter, EngineClusterForceAdapter, EngineClusterMassAdapter,
     EngineClusterMomentAdapter, GravityForceAdapter, MotorMassAdapter, MotorThrustForceAdapter,
-    RigidMotorMassAdapter, TankRackForceAdapter, TankRackMassAdapter, TankRackMomentAdapter,
+    RecoveryRackForceAdapter, RigidMotorMassAdapter, TankRackForceAdapter, TankRackMassAdapter,
+    TankRackMomentAdapter,
 };
 pub use assembly::{
     AssemblyError, BasicAssembly, BasicAssemblyBuilder, Body, BodyGeometry, KernelModelBundle,
@@ -69,6 +71,10 @@ pub use effector::{
     ControlEffector, EffectorError, EffectorFault, EffectorLimits, EffectorState, LinearActuator,
 };
 pub use error::VehicleError;
+pub use recovery::{
+    DragDevice, DrogueMainRecovery, ParachuteDrag, RecoveryCommand, RecoveryError, RecoveryModel,
+    RecoveryPhase,
+};
 pub use tank::{
     BaffleModel, BaffledPendulum, EquivalentPendulum, EquivalentSpringMass, ForceMomentBody,
     MassContribution, MovingMassModel, PropellantSpec, RigidLiquid, Tank, TankError, TankGeometry,

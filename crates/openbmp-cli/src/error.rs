@@ -51,6 +51,15 @@ pub enum CliError {
         /// Human-readable tank failure.
         reason: String,
     },
+    /// A recovery device failed to construct or accept a deploy /
+    /// stow command.
+    #[error("recovery error at {field}: {reason}")]
+    Recovery {
+        /// Scenario field path where the failure occurred.
+        field: String,
+        /// Human-readable recovery failure.
+        reason: String,
+    },
     /// The kernel could not be constructed or stepped.
     #[error("simulation error")]
     Simulation(#[from] SimulationError),
@@ -122,6 +131,7 @@ impl CliError {
             | Self::Effector { .. }
             | Self::Engine { .. }
             | Self::Tank { .. }
+            | Self::Recovery { .. }
             | Self::UnsupportedScenario { .. }
             | Self::Aero(_)
             | Self::AeroEffectorMismatch { .. }

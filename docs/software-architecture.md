@@ -1504,8 +1504,15 @@ path.
 
 Academic sounding-rocket and HPR scenarios need simple descent modeling, but
 OpenBMP must avoid operational landing or payload-delivery optimization.
-Recovery models live as simulator-local force/mass/event components, not as
+Recovery models live as simulator-local force/event components, not as
 hardware outputs.
+
+> **Implementation status (Phase 3.9).** Recovery is implemented as a
+> force-only runner rack plus kernel snapshot. Devices do not
+> contribute mass, moments, mount-point torques, or landing-target
+> guidance. Drag is evaluated against ECI velocity, matching the
+> existing axial-drag adapter; wind-relative canopy drag and inflation
+> transients remain future work.
 
 MVP-plus recovery models:
 
@@ -1522,10 +1529,9 @@ Telemetry channels:
 
 | Channel | Units | Notes |
 |---|---|---|
-| `recovery.deployed` | bool | Per recovery device |
-| `recovery.phase` | enum | Drogue, main, descent, recovered |
-| `recovery.drag_area` | m² | Effective drag area |
-| `recovery.descent_rate` | m/s | Derived from state |
+| `recovery.<id>.deployed` | bool | Per recovery device |
+| `recovery.<id>.phase_index` | 1 | `0 = Stowed`, `1 = Drogue`, `2 = Main` |
+| `recovery.<id>.drag_area_m2` | m² | Effective drag area |
 
 Validation cases include constant-density terminal-velocity checks,
 deployment-event ordering, and fail-closed behavior for invalid deployment
@@ -2264,6 +2270,7 @@ Tracked here so the next contributor can see what hasn't been decided:
    for v1 to avoid GUI scope creep. Any viewer that does ship must be
    read-only over telemetry archives or local playback, with no command path
    back into a running simulation.
-8. **Recovery-model scope.** Decide whether recovery/descent models belong
-   in `openbmp-vehicle` as force/event models or in a small
-   `openbmp-recovery` crate once Phase 3 starts.
+8. **Recovery-model scope.** Resolved in Phase 3.9: recovery state
+   machines live in `openbmp-vehicle`, runner orchestration lives in
+   `openbmp-cli`, and `openbmp-sim` carries only flat snapshots/events
+   to preserve layering.

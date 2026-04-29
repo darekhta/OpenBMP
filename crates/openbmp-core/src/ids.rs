@@ -265,6 +265,36 @@ impl VehicleId {
     }
 }
 
+/// Stable identifier for a recovery-device instance (Phase 3.9).
+///
+/// Derived from the canonical scenario recovery-device path
+/// (e.g. `"vehicle.assembly.recovery.main_chute"`) via FNV-1a-64 so
+/// that reordering the recovery-device declarations in a scenario
+/// file cannot shift any device's identity, deploy events, or
+/// telemetry channel.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct RecoveryId(u64);
+
+impl RecoveryId {
+    /// Construct from a raw integer value.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Construct from a canonical scenario recovery-device path.
+    #[must_use]
+    pub const fn from_path(path: &str) -> Self {
+        Self(fnv1a_64(path.as_bytes()))
+    }
+
+    /// Returns the underlying integer value.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
 /// Phase-3.8 wind-axis tag for the Dryden gust filter.
 ///
 /// The Dryden rational-spectrum shaping filter uses three independent

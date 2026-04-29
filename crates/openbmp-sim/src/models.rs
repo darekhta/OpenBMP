@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 
 use nalgebra::{Matrix3, Vector3};
-use openbmp_core::{Eci, EngineId, Position3, SimTime, TankId, ValidationStatus};
+use openbmp_core::{Eci, EngineId, Position3, RecoveryId, SimTime, TankId, ValidationStatus};
 use openbmp_propulsion::EngineSnapshot;
 use openbmp_state::{MassProperties, PointMassState};
 use uom::si::f64::Mass;
@@ -265,6 +265,98 @@ impl<'a> TankSnapshotView<'a> {
 }
 
 // ---------------------------------------------------------------------
+// RecoverySnapshotView (Phase 3.9.D)
+// ---------------------------------------------------------------------
+
+/// Per-step snapshot of one recovery device's deployment state.
+///
+/// Flat data carrier owned by `openbmp-sim` so the kernel-side
+/// recovery-rack adapter (`openbmp-vehicle::adapters::
+/// RecoveryRackForceAdapter`) can compute drag without depending on
+/// `openbmp-vehicle::recovery`. The runner's `RecoveryRack` packs the
+/// `RecoveryModel::phase`, `current_c_d`, and `current_drag_area_m2`
+/// observations into this struct each kernel base tick.
+///
+/// `phase_index` is the `openbmp_vehicle::RecoveryPhase` discriminant
+/// reproduced as a `u8` (0 = Stowed, 1 = Drogue, 2 = Main) so the
+/// `openbmp-sim` layer doesn't need to depend on `openbmp-vehicle`.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct RecoverySnapshot {
+    /// `true` for any non-`Stowed` phase. Drag evaluation derives
+    /// force from `c_d` and `drag_area_m2`; this flag exists for
+    /// telemetry and diagnostics.
+    pub deployed: bool,
+    /// Phase discriminant (0 = Stowed, 1 = Drogue, 2 = Main). Used by
+    /// telemetry channels.
+    pub phase_index: u8,
+    /// Current drag coefficient `C_D` at this phase. Zero in `Stowed`.
+    pub c_d: f64,
+    /// Current drag area `A` (m²) at this phase. Zero in `Stowed`.
+    pub drag_area_m2: f64,
+}
+
+/// Read-only view of the kernel's per-step recovery snapshot.
+///
+/// Phase 3.9 wires the runner-side `RecoveryRack` into the kernel:
+/// every kernel base tick the runner walks each recovery device's
+/// state machine (advancing it on any fired
+/// [`crate::EventAction::DeployRecovery`]), packs the resulting
+/// `(phase, c_d, area)` triple into a
+/// `BTreeMap<RecoveryId, RecoverySnapshot>`, and pushes the map via
+/// `set_recovery_snapshot(...)`. The kernel-side recovery-rack
+/// adapter reads it through this view.
+///
+/// Legacy scenarios with no `[[vehicle.assembly.recovery]]` block use
+/// [`RecoverySnapshotView::empty`]; every `get` returns `None`, and
+/// the rack adapter short-circuits on the empty view. Pre-3.9 byte
+/// output is preserved.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct RecoverySnapshotView<'a> {
+    inner: Option<&'a BTreeMap<RecoveryId, RecoverySnapshot>>,
+}
+
+impl<'a> RecoverySnapshotView<'a> {
+    /// Wrap a borrowed snapshot map.
+    #[must_use]
+    pub const fn new(map: &'a BTreeMap<RecoveryId, RecoverySnapshot>) -> Self {
+        Self { inner: Some(map) }
+    }
+
+    /// Construct an empty view.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { inner: None }
+    }
+
+    /// Look up a recovery device by id. Returns `None` for missing
+    /// keys and for the empty view.
+    #[must_use]
+    pub fn get(&self, id: RecoveryId) -> Option<RecoverySnapshot> {
+        self.inner.and_then(|m| m.get(&id).copied())
+    }
+
+    /// `true` if the view holds no entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_none_or(BTreeMap::is_empty)
+    }
+
+    /// Number of entries in the view.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.map_or(0, BTreeMap::len)
+    }
+
+    /// Iterate `(RecoveryId, RecoverySnapshot)` pairs in `BTreeMap`
+    /// order.
+    pub fn iter(&self) -> impl Iterator<Item = (RecoveryId, RecoverySnapshot)> + '_ {
+        self.inner
+            .into_iter()
+            .flat_map(|m| m.iter().map(|(k, v)| (*k, *v)))
+    }
+}
+
+// ---------------------------------------------------------------------
 // Environment
 // ---------------------------------------------------------------------
 
@@ -370,6 +462,15 @@ pub struct ForceContext<'a, S: SimState> {
     /// `TankRack` before each `kernel.step()`. All four RK4 stages
     /// see the same snapshot.
     pub tank_snapshot: TankSnapshotView<'a>,
+    /// Phase-3.9: read-only view of the kernel's per-recovery snapshot,
+    /// keyed by [`RecoveryId`]. Empty for legacy scenarios with no
+    /// `[[vehicle.assembly.recovery]]` block; populated by the
+    /// runner's `RecoveryRack` before each `kernel.step()`. All four
+    /// RK4 stages see the same snapshot — phase transitions only
+    /// happen on the kernel base tick (driven by `MissionPhaseGraph`
+    /// event firings), so per-stage drag area is constant within
+    /// one main step.
+    pub recovery_snapshot: RecoverySnapshotView<'a>,
 }
 
 /// Trait implemented by force-providing models.
@@ -872,6 +973,7 @@ mod tests {
                 effector_actuals: EffectorActualsView::empty(),
                 engine_snapshot: EngineSnapshotView::empty(),
                 tank_snapshot: TankSnapshotView::empty(),
+                recovery_snapshot: RecoverySnapshotView::empty(),
             })
             .expect("force eval must succeed");
         // mass=2.5, g=9.80665 → force_z = -2.5 * 9.80665 = -24.516625
@@ -893,6 +995,7 @@ mod tests {
                 effector_actuals: EffectorActualsView::empty(),
                 engine_snapshot: EngineSnapshotView::empty(),
                 tank_snapshot: TankSnapshotView::empty(),
+                recovery_snapshot: RecoverySnapshotView::empty(),
             })
             .expect("zero force eval must succeed");
         assert_abs_diff_eq!(f.norm(), 0.0);

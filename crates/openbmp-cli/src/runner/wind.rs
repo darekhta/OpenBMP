@@ -86,9 +86,11 @@ impl WindRack {
     }
 
     fn build_constant(wind: &WindConfig) -> Result<Self, CliError> {
-        let v = wind.wind_ned_m_s.ok_or_else(|| CliError::UnsupportedScenario {
-            what: "[wind].kind = \"constant\" requires wind_ned_m_s".to_owned(),
-        })?;
+        let v = wind
+            .wind_ned_m_s
+            .ok_or_else(|| CliError::UnsupportedScenario {
+                what: "[wind].kind = \"constant\" requires wind_ned_m_s".to_owned(),
+            })?;
         let model =
             ConstantWind::new(v[0], v[1], v[2]).map_err(|err| CliError::UnsupportedScenario {
                 what: format!("ConstantWind construction failed: {err}"),
@@ -189,15 +191,9 @@ impl WindRack {
     ) -> Result<Vector3<f64>, CliError> {
         match self {
             Self::Inactive => Ok(Vector3::zeros()),
-            Self::Constant(c) => Ok(c
-                .wind_ned_m_s(position_eci, frame, time)?
-                .vector),
-            Self::Layered(l) => Ok(l
-                .wind_ned_m_s(position_eci, frame, time)?
-                .vector),
-            Self::Gust(g) => Ok(g
-                .wind_ned_m_s(position_eci, frame, time)?
-                .vector),
+            Self::Constant(c) => Ok(c.wind_ned_m_s(position_eci, frame, time)?.vector),
+            Self::Layered(l) => Ok(l.wind_ned_m_s(position_eci, frame, time)?.vector),
+            Self::Gust(g) => Ok(g.wind_ned_m_s(position_eci, frame, time)?.vector),
         }
     }
 }

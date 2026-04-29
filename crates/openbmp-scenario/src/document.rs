@@ -126,11 +126,11 @@ impl ScenarioDocument {
                     value_b: wind.kind.clone(),
                 });
             }
-        } else if self.environment.wind == "constant" {
+        } else if self.environment.wind != "none" {
             return Err(ScenarioError::MissingRequiredField {
                 field: "wind".to_owned(),
                 role: ModelRole::Wind,
-                name: "constant".to_owned(),
+                name: self.environment.wind.clone(),
             });
         }
         if let Some(atmosphere) = &self.atmosphere {
@@ -169,6 +169,7 @@ impl ScenarioDocument {
         }
         self.validate_effector_references()?;
         self.validate_engine_references()?;
+        self.validate_recovery_references()?;
         self.validate_propulsion_unambiguous()?;
         Ok(())
     }
@@ -217,6 +218,43 @@ impl ScenarioDocument {
                     field: format!("mission.events[{event_index}].action.id"),
                     id: id.clone(),
                 });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_recovery_references(&self) -> Result<(), ScenarioError> {
+        let Some(mission) = &self.mission else {
+            return Ok(());
+        };
+        let recovery_kinds: BTreeMap<&str, &'static str> = self
+            .vehicle
+            .assembly
+            .as_ref()
+            .map(|assembly| {
+                assembly
+                    .recovery
+                    .iter()
+                    .map(|r| (r.id.as_str(), r.kind.kind_name()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for (event_index, event) in mission.events.iter().enumerate() {
+            if let EventActionConfig::DeployRecovery { id, command } = &event.action {
+                let Some(kind_name) = recovery_kinds.get(id.as_str()) else {
+                    return Err(ScenarioError::UnknownRecoveryReference {
+                        field: format!("mission.events[{event_index}].action.id"),
+                        id: id.clone(),
+                    });
+                };
+                if !is_recovery_command_compatible(kind_name, command) {
+                    return Err(ScenarioError::IncompatibleRecoveryCommand {
+                        field: format!("mission.events[{event_index}].action.command"),
+                        command: command.clone(),
+                        kind: (*kind_name).to_owned(),
+                    });
+                }
             }
         }
         Ok(())
@@ -935,14 +973,14 @@ impl WindConfig {
                     });
                 }
                 self.reject_gust_fields("layered")?;
-                let layers = self
-                    .layers
-                    .as_ref()
-                    .ok_or_else(|| ScenarioError::MissingRequiredField {
-                        field: "wind.layers".to_owned(),
-                        role: ModelRole::Wind,
-                        name: "layered".to_owned(),
-                    })?;
+                let layers =
+                    self.layers
+                        .as_ref()
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: "wind.layers".to_owned(),
+                            role: ModelRole::Wind,
+                            name: "layered".to_owned(),
+                        })?;
                 if layers.is_empty() {
                     return Err(ScenarioError::EmptyList {
                         field: "wind.layers".to_owned(),
@@ -993,13 +1031,13 @@ impl WindConfig {
                         });
                     }
                 }
-                let length_scale = self.length_scale_m.ok_or_else(|| {
-                    ScenarioError::MissingRequiredField {
-                        field: "wind.length_scale_m".to_owned(),
-                        role: ModelRole::Wind,
-                        name: "gust".to_owned(),
-                    }
-                })?;
+                let length_scale =
+                    self.length_scale_m
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: "wind.length_scale_m".to_owned(),
+                            role: ModelRole::Wind,
+                            name: "gust".to_owned(),
+                        })?;
                 require_finite_array("wind.length_scale_m", &length_scale)?;
                 for (axis, value) in ['u', 'v', 'w'].iter().zip(length_scale.iter()) {
                     if *value <= 0.0 {
@@ -1011,11 +1049,12 @@ impl WindConfig {
                     }
                 }
                 let airspeed =
-                    self.airspeed_m_s.ok_or_else(|| ScenarioError::MissingRequiredField {
-                        field: "wind.airspeed_m_s".to_owned(),
-                        role: ModelRole::Wind,
-                        name: "gust".to_owned(),
-                    })?;
+                    self.airspeed_m_s
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: "wind.airspeed_m_s".to_owned(),
+                            role: ModelRole::Wind,
+                            name: "gust".to_owned(),
+                        })?;
                 require_finite("wind.airspeed_m_s", airspeed)?;
                 if airspeed <= 0.0 {
                     return Err(ScenarioError::InvalidNumber {
@@ -1596,9 +1635,8 @@ impl EventTriggerConfig {
 /// Action taken when an event fires. Tagged enum dispatched on the
 /// `kind` string.
 ///
-/// `engine_command`, `effector_override`, `separation`, and
-/// `deploy_recovery` are rejected at parse time with typed deferral
-/// errors pointing at the future phase that will land them.
+/// `separation` is rejected at parse time with a typed deferral
+/// error pointing at the future phase that will land it.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EventActionConfig {
@@ -1638,8 +1676,20 @@ pub enum EventActionConfig {
     },
     /// Phase-3.6 / 3.7 deferred.
     Separation,
-    /// Phase-3.9 deferred.
-    DeployRecovery,
+    /// Phase-3.9: deploy / stow command targeting a declared
+    /// `[[vehicle.assembly.recovery]]` device by id. The command
+    /// string must be one of `"deploy"`, `"deploy_drogue"`,
+    /// `"deploy_main"`, or `"stow"`; scenario validation checks the
+    /// (kind, command) pairing and the runner-side `RecoveryRack`
+    /// defensively rejects unsupported transitions with a typed error.
+    DeployRecovery {
+        /// Target recovery-device id (must reference a declared
+        /// `[[vehicle.assembly.recovery]]` block).
+        id: String,
+        /// Command name (one of `"deploy"`, `"deploy_drogue"`,
+        /// `"deploy_main"`, `"stow"`).
+        command: String,
+    },
 }
 
 impl EventActionConfig {
@@ -1669,11 +1719,154 @@ impl EventActionConfig {
                     deferred_to: "Phase 3.6 / 3.7".to_owned(),
                 });
             }
-            Self::DeployRecovery => {
-                return Err(ScenarioError::UnsupportedActionKind {
-                    kind: "deploy_recovery".to_owned(),
-                    deferred_to: "Phase 3.9".to_owned(),
-                });
+            Self::DeployRecovery { id, command } => {
+                require_non_empty(&path("id"), id)?;
+                require_recovery_command_name(&path("command"), command)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Validate that a `deploy_recovery.command` value is one of the
+/// canonical names accepted by `openbmp_vehicle::RecoveryCommand`.
+fn require_recovery_command_name(path: &str, command: &str) -> Result<(), ScenarioError> {
+    match command {
+        "deploy" | "deploy_drogue" | "deploy_main" | "stow" => Ok(()),
+        other => Err(ScenarioError::UnsupportedValue {
+            field: path.to_owned(),
+            value: other.to_owned(),
+        }),
+    }
+}
+
+/// Returns `true` when the canonical command name is meaningful for
+/// the declared recovery kind. Used by
+/// `Self::validate_recovery_references` to fail-closed at scenario
+/// load when a `deploy_recovery` event names a command its target
+/// device cannot accept.
+///
+/// | kind            | deploy | deploy_drogue | deploy_main | stow |
+/// |-----------------|--------|---------------|-------------|------|
+/// | parachute_drag  | ✓      |               |             |      |
+/// | drogue_main     |        | ✓             | ✓           |      |
+/// | drag_device     | ✓      |               |             | ✓    |
+fn is_recovery_command_compatible(kind_name: &str, command: &str) -> bool {
+    matches!(
+        (kind_name, command),
+        ("parachute_drag", "deploy")
+            | ("drogue_main", "deploy_drogue" | "deploy_main")
+            | ("drag_device", "deploy" | "stow")
+    )
+}
+
+// ---------------------------------------------------------------------
+// RecoveryConfig (Phase 3.9.D)
+// ---------------------------------------------------------------------
+
+/// One declared recovery device within `[vehicle.assembly]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryConfig {
+    /// Stable recovery-device id (`snake_case` scenario-text
+    /// identifier). Resolved to a canonical
+    /// `vehicle.assembly.recovery.<id>` path and FNV-hashed into a
+    /// stable `RecoveryId` at scenario load.
+    pub id: String,
+    /// Recovery-device kind + per-kind parameters.
+    pub kind: RecoveryKindConfig,
+}
+
+impl RecoveryConfig {
+    pub(crate) fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("vehicle.assembly.recovery[{index}].id"), &self.id)?;
+        self.kind.validate(index)?;
+        Ok(())
+    }
+}
+
+/// Recovery-device kind tagged enum. Drives `RecoveryModel`
+/// construction in the runner.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RecoveryKindConfig {
+    /// Single-stage parachute (`Stowed → Main` on `deploy`).
+    ParachuteDrag {
+        /// Drag coefficient `C_D` after deployment. Strictly
+        /// positive, finite.
+        c_d: f64,
+        /// Inflated drag area, m². Strictly positive, finite.
+        area_inflated_m2: f64,
+    },
+    /// Two-stage drogue + main (`Stowed → Drogue → Main` on
+    /// `deploy_drogue` then `deploy_main`).
+    DrogueMain {
+        /// Drogue-stage drag coefficient. Strictly positive, finite.
+        drogue_c_d: f64,
+        /// Drogue-stage drag area, m². Strictly positive, finite.
+        drogue_area_m2: f64,
+        /// Main-stage drag coefficient. Strictly positive, finite.
+        main_c_d: f64,
+        /// Main-stage drag area, m². Strictly positive, finite.
+        main_area_m2: f64,
+    },
+    /// Generic airbrake. Cycles `Stowed ↔ Main` under `deploy` /
+    /// `stow` commands.
+    DragDevice {
+        /// Drag coefficient when deployed. Strictly positive, finite.
+        c_d: f64,
+        /// Deployed-state drag area, m². Strictly positive, finite.
+        area_deployed_m2: f64,
+    },
+}
+
+impl RecoveryKindConfig {
+    /// Stable kind discriminant string used in cross-reference
+    /// validation and telemetry tags.
+    #[must_use]
+    pub const fn kind_name(&self) -> &'static str {
+        match self {
+            Self::ParachuteDrag { .. } => "parachute_drag",
+            Self::DrogueMain { .. } => "drogue_main",
+            Self::DragDevice { .. } => "drag_device",
+        }
+    }
+
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.recovery[{index}].kind.{field}");
+        match self {
+            Self::ParachuteDrag {
+                c_d,
+                area_inflated_m2,
+            } => {
+                require_finite(&path("c_d"), *c_d)?;
+                require_positive(&path("c_d"), *c_d)?;
+                require_finite(&path("area_inflated_m2"), *area_inflated_m2)?;
+                require_positive(&path("area_inflated_m2"), *area_inflated_m2)?;
+            }
+            Self::DrogueMain {
+                drogue_c_d,
+                drogue_area_m2,
+                main_c_d,
+                main_area_m2,
+            } => {
+                require_finite(&path("drogue_c_d"), *drogue_c_d)?;
+                require_positive(&path("drogue_c_d"), *drogue_c_d)?;
+                require_finite(&path("drogue_area_m2"), *drogue_area_m2)?;
+                require_positive(&path("drogue_area_m2"), *drogue_area_m2)?;
+                require_finite(&path("main_c_d"), *main_c_d)?;
+                require_positive(&path("main_c_d"), *main_c_d)?;
+                require_finite(&path("main_area_m2"), *main_area_m2)?;
+                require_positive(&path("main_area_m2"), *main_area_m2)?;
+            }
+            Self::DragDevice {
+                c_d,
+                area_deployed_m2,
+            } => {
+                require_finite(&path("c_d"), *c_d)?;
+                require_positive(&path("c_d"), *c_d)?;
+                require_finite(&path("area_deployed_m2"), *area_deployed_m2)?;
+                require_positive(&path("area_deployed_m2"), *area_deployed_m2)?;
             }
         }
         Ok(())
@@ -1748,6 +1941,15 @@ pub struct AssemblyConfig {
     /// Phase-3.X follow-on.
     #[serde(default)]
     pub tanks: Vec<TankConfig>,
+    /// Phase-3.9: recovery devices (parachutes, drogue/main, drag
+    /// devices) in scenario-declared order. The runner builds
+    /// `Box<dyn RecoveryModel>` instances from these configs and
+    /// assembles them into a runner-side `RecoveryRack`. Deploy /
+    /// stow events are driven by `[mission.events]` declarations
+    /// with `action.kind = "deploy_recovery"` targeting the
+    /// device's id.
+    #[serde(default)]
+    pub recovery: Vec<RecoveryConfig>,
 }
 
 impl AssemblyConfig {
@@ -1844,6 +2046,17 @@ impl AssemblyConfig {
                 return Err(ScenarioError::DuplicateValue {
                     field: format!("vehicle.assembly.tanks[{index}].id"),
                     value: tank.id.clone(),
+                });
+            }
+        }
+        let mut seen_recovery_ids: std::collections::BTreeSet<&str> =
+            std::collections::BTreeSet::new();
+        for (index, recovery) in self.recovery.iter().enumerate() {
+            recovery.validate(index)?;
+            if !seen_recovery_ids.insert(recovery.id.as_str()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("vehicle.assembly.recovery[{index}].id"),
+                    value: recovery.id.clone(),
                 });
             }
         }
@@ -2956,5 +3169,32 @@ impl InitialSloshConfig {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod recovery_command_tests {
+    use super::is_recovery_command_compatible;
+
+    #[test]
+    fn recovery_command_compatibility_matrix_is_locked() {
+        let kinds = ["parachute_drag", "drogue_main", "drag_device"];
+        let commands = ["deploy", "deploy_drogue", "deploy_main", "stow"];
+
+        for kind in kinds {
+            for command in commands {
+                let expected = matches!(
+                    (kind, command),
+                    ("parachute_drag", "deploy")
+                        | ("drogue_main", "deploy_drogue" | "deploy_main")
+                        | ("drag_device", "deploy" | "stow")
+                );
+                assert_eq!(
+                    is_recovery_command_compatible(kind, command),
+                    expected,
+                    "unexpected recovery command compatibility for kind={kind}, command={command}",
+                );
+            }
+        }
     }
 }

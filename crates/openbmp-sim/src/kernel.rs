@@ -33,7 +33,8 @@ use crate::error::{IntegratorError, SimulationError, StopReason};
 use crate::integrator::{Integrator, SimState};
 use crate::models::{
     EffectorActualsView, EngineSnapshotView, EnvironmentModel, EnvironmentQuery, EnvironmentSample,
-    ForceContext, ForceModel, MassContext, MassModel, TankSnapshot, TankSnapshotView,
+    ForceContext, ForceModel, MassContext, MassModel, RecoverySnapshot, RecoverySnapshotView,
+    TankSnapshot, TankSnapshotView,
 };
 use crate::stop::StopCondition;
 
@@ -159,6 +160,14 @@ where
     /// default-zero wind flows through, preserving pre-3.8 byte
     /// output.
     wind_sample_override: Option<nalgebra::Vector3<f64>>,
+    /// Phase-3.9: kernel-owned snapshot of per-recovery-device state,
+    /// keyed by [`openbmp_core::RecoveryId`]. Refreshed via
+    /// [`Self::set_recovery_snapshot`] before each `step()` call so
+    /// every RK4 stage sees the same snapshot. Empty `BTreeMap` for
+    /// scenarios without `[[vehicle.assembly.recovery]]` — the
+    /// recovery-rack adapter short-circuits on the empty view,
+    /// preserving pre-3.9 byte output.
+    recovery_snapshot: std::collections::BTreeMap<openbmp_core::RecoveryId, RecoverySnapshot>,
 }
 
 /// Phase-1 type alias for the point-mass kernel shape used by the
@@ -221,6 +230,7 @@ where
             engine_snapshot: std::collections::BTreeMap::new(),
             tank_snapshot: std::collections::BTreeMap::new(),
             wind_sample_override: None,
+            recovery_snapshot: std::collections::BTreeMap::new(),
         })
     }
 
@@ -285,6 +295,7 @@ where
         let effector_actuals = &self.effector_actuals;
         let engine_snapshot = &self.engine_snapshot;
         let tank_snapshot = &self.tank_snapshot;
+        let recovery_snapshot = &self.recovery_snapshot;
         let wind_override = self.wind_sample_override;
 
         let derive = |s: &PointMassState,
@@ -306,6 +317,7 @@ where
                 effector_actuals: EffectorActualsView::new(effector_actuals),
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                recovery_snapshot: RecoverySnapshotView::new(recovery_snapshot),
             })?;
             let mass_rate_kg_s = mass_model.mass_rate_kg_s_at(MassContext {
                 time: t,
@@ -436,10 +448,14 @@ where
     /// Returns [`SimulationError::ModelEval`] if the environment model
     /// rejects the current state/time query.
     pub fn current_environment_sample(&self) -> Result<EnvironmentSample, SimulationError> {
-        Ok(self.environment.sample(EnvironmentQuery {
+        let mut env = self.environment.sample(EnvironmentQuery {
             time: self.state.time,
             position_eci: self.state.position,
-        })?)
+        })?;
+        if let Some(wind) = self.wind_sample_override {
+            env.wind_ned_m_s = wind;
+        }
+        Ok(env)
     }
 
     /// Configured time step.
@@ -619,11 +635,38 @@ where
         &self.tank_snapshot
     }
 
+    /// Replace the per-recovery-device snapshot consumed by force
+    /// evaluation. Phase-3.9 contract: the runner's `RecoveryRack`
+    /// calls this before every `step()` invocation, keyed by
+    /// [`openbmp_core::RecoveryId`] and valued by a
+    /// [`RecoverySnapshot`] with the device's current phase, drag
+    /// area, and drag coefficient. Held for the entire `step()` call,
+    /// so all four RK4 stages see the same snapshot.
+    ///
+    /// Scenarios without `[[vehicle.assembly.recovery]]` skip the call;
+    /// the internal map stays empty and the kernel-side recovery-rack
+    /// adapter short-circuits on the empty view.
+    pub fn set_recovery_snapshot(
+        &mut self,
+        snapshot: std::collections::BTreeMap<openbmp_core::RecoveryId, RecoverySnapshot>,
+    ) {
+        self.recovery_snapshot = snapshot;
+    }
+
+    /// Read-only access to the current per-recovery snapshot.
+    #[must_use]
+    pub fn recovery_snapshot(
+        &self,
+    ) -> &std::collections::BTreeMap<openbmp_core::RecoveryId, RecoverySnapshot> {
+        &self.recovery_snapshot
+    }
+
     /// Replace the kernel-spliced NED wind sample (Phase 3.8). The
     /// runner's `WindRack` calls this before every `step()` so all
     /// four RK4 stages observe the same wind. Scenarios without a
-    /// non-`none` `[wind]` block skip the call; the kernel splices
-    /// in `Vector3::zeros()` and pre-3.8 outputs stay byte-identical.
+    /// non-`none` `[wind]` block skip the call; the underlying
+    /// environment sample's default-zero wind flows through and pre-3.8
+    /// outputs stay byte-identical.
     pub fn set_wind_sample(&mut self, wind_ned_m_s: nalgebra::Vector3<f64>) {
         self.wind_sample_override = Some(wind_ned_m_s);
     }
@@ -711,9 +754,17 @@ where
                     // `apply_commands(&fired)`. Same kernel-records /
                     // runner-consumes split as `EffectorOverride`.
                 }
-                EventAction::Separation | EventAction::DeployRecovery => {
-                    // Reserved-but-unwired actions are parser-rejected
-                    // in 3.2; their presence in a live binding is a
+                EventAction::DeployRecovery { .. } => {
+                    // Phase-3.9: kernel records the firing in
+                    // `pending_events`; the runner's `RecoveryRack`
+                    // drains and applies it on the next rack tick via
+                    // `apply_deploys(&fired)`. Same kernel-records /
+                    // runner-consumes split as `EngineCommand` /
+                    // `EffectorOverride`.
+                }
+                EventAction::Separation => {
+                    // Reserved-but-unwired action is parser-rejected
+                    // in 3.2; its presence in a live binding is a
                     // programmer error. Treat as a no-op rather than
                     // panic to preserve forward compatibility — the
                     // future-phase handlers will replace this arm.
@@ -875,6 +926,7 @@ where
             engine_snapshot: std::collections::BTreeMap::new(),
             tank_snapshot: std::collections::BTreeMap::new(),
             wind_sample_override: None,
+            recovery_snapshot: std::collections::BTreeMap::new(),
         })
     }
 
@@ -914,6 +966,7 @@ where
         let effector_actuals = &self.effector_actuals;
         let engine_snapshot = &self.engine_snapshot;
         let tank_snapshot = &self.tank_snapshot;
+        let recovery_snapshot = &self.recovery_snapshot;
         let wind_override = self.wind_sample_override;
 
         let derive = |s: &openbmp_state::RigidBodyState,
@@ -938,6 +991,7 @@ where
                 effector_actuals: EffectorActualsView::new(effector_actuals),
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                recovery_snapshot: RecoverySnapshotView::new(recovery_snapshot),
             })?;
             let moment_n_m_body = moment_model.moment_n_m_body(crate::models::MomentContext {
                 state: s,
@@ -1076,6 +1130,27 @@ where
     #[must_use]
     pub const fn current_time(&self) -> SimTime {
         self.state.time
+    }
+
+    /// Environment sample at the current state and time.
+    ///
+    /// Mirrors the sample shape passed to force and moment models during
+    /// a kernel derivative evaluation, including the Phase-3.8 wind
+    /// override splice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::ModelEval`] if the environment model
+    /// rejects the current state/time query.
+    pub fn current_environment_sample(&self) -> Result<EnvironmentSample, SimulationError> {
+        let mut env = self.environment.sample(EnvironmentQuery {
+            time: self.state.time,
+            position_eci: self.state.position,
+        })?;
+        if let Some(wind) = self.wind_sample_override {
+            env.wind_ned_m_s = wind;
+        }
+        Ok(env)
     }
 
     /// Configured time step.

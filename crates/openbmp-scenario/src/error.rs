@@ -247,4 +247,28 @@ pub enum ScenarioError {
         /// Human-readable reason.
         reason: String,
     },
+    /// A mission event's `deploy_recovery` action references a
+    /// recovery-device id that is not declared in
+    /// `[[vehicle.assembly.recovery]]`.
+    #[error("{field} references unknown recovery id {id}")]
+    UnknownRecoveryReference {
+        /// Field path.
+        field: String,
+        /// Referenced scenario-text recovery-device id.
+        id: String,
+    },
+    /// A mission event's `deploy_recovery` command is incompatible
+    /// with the recovery device's declared kind (e.g.
+    /// `deploy_drogue` against a `parachute_drag`).
+    #[error("{field} command {command} is not supported by recovery kind {kind}")]
+    IncompatibleRecoveryCommand {
+        /// Field path of the offending event action.
+        field: String,
+        /// Command name (one of `deploy`, `deploy_drogue`,
+        /// `deploy_main`, `stow`).
+        command: String,
+        /// Declared recovery-device kind (`parachute_drag`,
+        /// `drogue_main`, or `drag_device`).
+        kind: String,
+    },
 }

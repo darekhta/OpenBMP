@@ -56,8 +56,8 @@ pub use frames::{
     WGS84_INV_FLATTENING, WGS84_MU_M3_S2, WGS84_OMEGA_RAD_S,
 };
 pub use ids::{
-    BodyId, ChannelId, EffectorId, EngineId, ModelId, ScenarioId, SensorId, TankId, VehicleId,
-    WindAxis,
+    BodyId, ChannelId, EffectorId, EngineId, ModelId, RecoveryId, ScenarioId, SensorId, TankId,
+    VehicleId, WindAxis,
 };
 pub use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 pub use rng::DeterministicRng;

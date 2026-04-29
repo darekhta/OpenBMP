@@ -200,7 +200,14 @@ fn build_action(
         // they were to appear, the kernel's match for reserved
         // variants is a no-op.
         EventActionConfig::Separation => EventAction::Separation,
-        EventActionConfig::DeployRecovery => EventAction::DeployRecovery,
+        // Phase-3.9: recovery-deploy resolves the scenario-text id to
+        // a stable `RecoveryId` (FNV of canonical recovery path) and
+        // forwards the canonical command-name string to the
+        // runner-side `RecoveryRack::apply_deploys`.
+        EventActionConfig::DeployRecovery { id, command } => EventAction::DeployRecovery {
+            id: openbmp_core::RecoveryId::from_path(&format!("vehicle.assembly.recovery.{id}")),
+            command: command.clone(),
+        },
     })
 }
 

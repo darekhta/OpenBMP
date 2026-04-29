@@ -408,6 +408,10 @@ fn sample_standard_normal(rng: &mut DeterministicRng) -> f64 {
 )]
 mod tests {
     use super::*;
+    use static_assertions::{assert_impl_all, assert_not_impl_any};
+
+    assert_impl_all!(GustWind: Send);
+    assert_not_impl_any!(GustWind: Sync);
 
     fn frame() -> FrameContext {
         FrameContext::toy_fixed_earth()

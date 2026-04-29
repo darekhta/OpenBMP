@@ -335,7 +335,9 @@ mod tests {
     #[test]
     fn wind_model_uses_position_z_as_altitude() {
         let lw = three_layer_table();
-        let v = lw.wind_ned_m_s(pos(1500.0), &frame(), SimTime::ZERO).unwrap();
+        let v = lw
+            .wind_ned_m_s(pos(1500.0), &frame(), SimTime::ZERO)
+            .unwrap();
         let expected = lw.lookup(1500.0);
         assert_eq!(v.vector.x.to_bits(), expected.vector.x.to_bits());
         assert_eq!(v.vector.y.to_bits(), expected.vector.y.to_bits());

@@ -66,6 +66,13 @@ fn with_reversed_mission_phase_blocks(toml: &str) -> String {
     )
 }
 
+fn with_gust_wind_block(toml: &str) -> String {
+    toml.replace(
+        r#"wind          = "none""#,
+        "wind          = \"none\"\n\n[wind]\nkind = \"gust\"\nintensity_m_s = [2.5, 2.0, 1.5]\nlength_scale_m = [533.0, 533.0, 100.0]\nairspeed_m_s = 250.0",
+    )
+}
+
 /// Niskanen 2009 Chapter-6 Table 6.1 experimental C6 apogee (m).
 const NISKANEN_C6_EXPERIMENTAL_APOGEE_M: f64 = 151.5;
 
@@ -135,6 +142,55 @@ fn run_byte_stable_across_two_invocations() {
     assert!(
         bytes_a == bytes_b,
         "Niskanen Parquet outputs differ at the byte level — runner is not deterministic",
+    );
+}
+
+#[test]
+fn gust_wind_scenarios_run_and_point_mass_is_byte_stable() {
+    let scenario_dir = workspace_root().join("scenarios/sounding-rocket");
+    let point_mass = scenario_dir.join("niskanen-2009-chapter6.toml");
+    let rigid = scenario_dir.join("niskanen-2009-chapter6-rigid.toml");
+
+    let point_mass_variant =
+        NamedTempFile::new_in(&scenario_dir).expect("temp point-mass scenario");
+    fs::write(
+        point_mass_variant.path(),
+        with_gust_wind_block(&fs::read_to_string(&point_mass).expect("read point-mass scenario")),
+    )
+    .expect("write point-mass gust scenario");
+    let rigid_variant = NamedTempFile::new_in(&scenario_dir).expect("temp rigid scenario");
+    fs::write(
+        rigid_variant.path(),
+        with_gust_wind_block(&fs::read_to_string(&rigid).expect("read rigid scenario")),
+    )
+    .expect("write rigid gust scenario");
+
+    let temp = tempdir("niskanen-gust");
+    let parquet_a = temp.path().join("gust-a.parquet");
+    let parquet_b = temp.path().join("gust-b.parquet");
+    let rigid_parquet = temp.path().join("rigid-gust.parquet");
+
+    for parquet in [&parquet_a, &parquet_b] {
+        let mut cmd = openbmp();
+        cmd.arg("run")
+            .arg(point_mass_variant.path())
+            .arg("--output-parquet")
+            .arg(parquet);
+        cmd.assert().success();
+    }
+    let mut rigid_cmd = openbmp();
+    rigid_cmd
+        .arg("run")
+        .arg(rigid_variant.path())
+        .arg("--output-parquet")
+        .arg(&rigid_parquet);
+    rigid_cmd.assert().success();
+
+    let bytes_a = fs::read(&parquet_a).expect("read gust parquet a");
+    let bytes_b = fs::read(&parquet_b).expect("read gust parquet b");
+    assert_eq!(
+        bytes_a, bytes_b,
+        "gust wind point-mass scenario changed Parquet bytes across reruns",
     );
 }
 

@@ -1,0 +1,60 @@
+# Phase-3.9 assembly + recovery fixture (synthetic).
+#
+# Single-body assembly + three recovery devices exercising every
+# kind. Synthetic round numbers; not a benchmark.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "assembly-with-recovery-fixture"
+description = "Phase-3.9 parser fixture exercising the [[vehicle.assembly.recovery]] block. Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 1.0
+dt_s    = 0.001
+seed    = 0xdead_beef
+
+[vehicle]
+kind                     = "point_mass"
+mass_kg                  = 1.0
+initial_position_eci_m   = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "assembly-with-recovery"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 0.5 }
+dry_mass_kg   = 1.0
+
+[[vehicle.assembly.recovery]]
+id   = "main_chute"
+kind = { kind = "parachute_drag", c_d = 1.5, area_inflated_m2 = 2.0 }
+
+[[vehicle.assembly.recovery]]
+id   = "drogue"
+kind = { kind = "drogue_main", drogue_c_d = 1.0, drogue_area_m2 = 0.5, main_c_d = 1.5, main_area_m2 = 4.0 }
+
+[[vehicle.assembly.recovery]]
+id   = "speed_brake"
+kind = { kind = "drag_device", c_d = 0.8, area_deployed_m2 = 0.05 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/fixture.csv"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true

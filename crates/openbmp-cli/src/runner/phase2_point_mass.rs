@@ -32,6 +32,9 @@
 //!   `force.<name>.x_n`, `.y_n`, `.z_n` with frame metadata `"ECI"`.
 //!   `<name>` matches the scenario-declared model name (`gravity`,
 //!   `thrust`, `aero`).
+//! - **Recovery state** when `[[vehicle.assembly.recovery]]` is
+//!   declared: `recovery.<id>.deployed`, `.phase_index`, and
+//!   `.drag_area_m2`.
 //!
 //! The schema also carries the resolved-file SHA-256 digests as
 //! Arrow schema metadata under `openbmp.scenario_files.<field>` keys.
@@ -40,7 +43,7 @@ use std::collections::BTreeMap;
 
 use nalgebra::Vector3;
 use openbmp_aero::{AeroDeck, AeroError};
-use openbmp_core::{ChannelId, Duration, ModelId, Position3, SimTime, Velocity3};
+use openbmp_core::{ChannelId, Duration, ModelId, Position3, RecoveryId, SimTime, Velocity3};
 use openbmp_env::{AtmosphereModel, UsStandard1976};
 use openbmp_propulsion::{Motor, MotorError, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
@@ -53,7 +56,7 @@ use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, Telemet
 use openbmp_vehicle::{
     AxialDragForceAdapter, BasicVehicle, BoxedMassModel, EngineClusterForceAdapter,
     EngineClusterMassAdapter, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel,
-    TankRackForceAdapter, TankRackMassAdapter, Vehicle,
+    RecoveryRackForceAdapter, TankRackForceAdapter, TankRackMassAdapter, Vehicle,
 };
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -80,6 +83,7 @@ const PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(120);
 const PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(121);
 const PHASE3_TANK_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(330);
 const PHASE3_TANK_RACK_MASS_MODEL_ID: ModelId = ModelId::new(331);
+const PHASE3_RECOVERY_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(370);
 
 #[derive(Clone, Debug, Default)]
 struct LoadedModels {
@@ -125,6 +129,12 @@ pub fn run(
     // per-step rack operation short-circuits and the legacy
     // byte-stable path is preserved.
     let mut tank_rack = crate::runner::tanks::TankRack::build(document)?;
+    // Phase-3.9: build the runner-side recovery rack. Empty when no
+    // `[[vehicle.assembly.recovery]]` are declared, in which case
+    // every per-step rack operation short-circuits and the kernel's
+    // recovery snapshot stays empty (byte-stable for pre-3.9
+    // scenarios).
+    let mut recovery_rack = crate::runner::recovery::RecoveryRack::build(document)?;
     // Phase-3.8: build the runner-side wind rack. Inactive when no
     // `[wind]` block is declared (or `kind = "none"`); the per-step
     // rack op short-circuits and the kernel's wind override stays
@@ -203,6 +213,12 @@ pub fn run(
     if !tank_rack.is_empty() {
         kernel.set_tank_snapshot(tank_rack.snapshot_map());
     }
+    // Phase-3.9: at step 0, push the rack's initial (Stowed)
+    // snapshot to the kernel so the breakdown's recovery-drag force
+    // adapter sees the same view the kernel will see.
+    if !recovery_rack.is_empty() {
+        kernel.set_recovery_snapshot(recovery_rack.snapshot_map());
+    }
     // Phase-3.8: at step 0, sample the wind at the initial state
     // and push to the kernel so the breakdown's force adapter sees
     // the same wind the kernel will see on its first step.
@@ -223,6 +239,7 @@ pub fn run(
     )?;
     let mut pending_effector_events = Vec::new();
     let mut pending_engine_events: Vec<openbmp_sim::FiredEvent> = Vec::new();
+    let mut pending_recovery_events: Vec<openbmp_sim::FiredEvent> = Vec::new();
     while kernel.stop_reason().is_none() {
         effector_rack.apply_overrides(&pending_effector_events)?;
         if !effector_rack.is_empty() {
@@ -241,6 +258,13 @@ pub fn run(
         // the dynamic drivers are irrelevant.
         if !tank_rack.is_empty() {
             tank_rack.step()?;
+        }
+        // Phase-3.9: drain pending deploy/stow events from the prior
+        // kernel step, apply to the rack, then advance internal state
+        // (no-op for the Phase-3.9 instantaneous-deploy models).
+        if !recovery_rack.is_empty() {
+            recovery_rack.apply_deploys(&pending_recovery_events)?;
+            recovery_rack.step(document.time.dt_s)?;
         }
         // Phase-3.5.C: push the rack's actuals snapshot to the kernel
         // BEFORE `step()` so all four RK4 stages see the same view.
@@ -266,6 +290,11 @@ pub fn run(
         if !tank_rack.is_empty() {
             kernel.set_tank_snapshot(tank_rack.snapshot_map());
         }
+        // Phase-3.9: push recovery snapshot to the kernel before
+        // `step()` so all four RK4 stages see the same view.
+        if !recovery_rack.is_empty() {
+            kernel.set_recovery_snapshot(recovery_rack.snapshot_map());
+        }
         // Phase-3.8: advance the wind rack and push the new sample
         // to the kernel before `step()`. For `GustWind` this rolls
         // the Dryden filter forward by one tick; the time-only
@@ -290,14 +319,17 @@ pub fn run(
             &snapshot,
         )?;
         // Partition fired events: engine commands go to the engine
-        // rack on the next step; everything else (effector
-        // overrides, etc.) stays with the effector pending queue.
-        // The kernel's match arm is exhaustive, so any FiredEvent
-        // whose action is `EngineCommand` only flows through
-        // `pending_engine_events`.
+        // rack on the next step; recovery deploys go to the recovery
+        // rack; everything else (effector overrides, etc.) stays
+        // with the effector pending queue.
         pending_engine_events = fired
             .iter()
             .filter(|e| matches!(e.action, openbmp_sim::EventAction::EngineCommand { .. }))
+            .cloned()
+            .collect();
+        pending_recovery_events = fired
+            .iter()
+            .filter(|e| matches!(e.action, openbmp_sim::EventAction::DeployRecovery { .. }))
             .cloned()
             .collect();
         pending_effector_events = fired;
@@ -341,41 +373,36 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
         }
     }
 
-    // Wind: only `none` is wired in 2.11.A.
-    if document.environment.wind != "none" {
-        return Err(CliError::UnsupportedScenario {
-            what: format!(
-                "environment.wind = {} (Phase-2.11.A wires no wind models)",
-                document.environment.wind
-            ),
-        });
-    }
-    if let Some(wind) = &document.wind
-        && wind.kind != "none"
-    {
-        return Err(CliError::UnsupportedScenario {
-            what: format!(
-                "[wind].kind = {} (Phase-2.11.A wires no wind models)",
-                wind.kind
-            ),
-        });
-    }
+    // Phase-3.8 wind models are resolved by WindRack. Scenario
+    // validation guarantees that non-`none` flat selections carry a
+    // structured `[wind]` block and that the kind names agree.
 
     // Atmosphere: when `aero` is in the force list, require USSA76.
+    let atmosphere_kind = document.atmosphere.as_ref().map_or_else(
+        || document.environment.atmosphere.as_str(),
+        |a| a.kind.as_str(),
+    );
     let has_aero = document.forces.models.iter().any(|m| m == "aero");
-    if has_aero {
-        let kind = document.atmosphere.as_ref().map_or_else(
-            || document.environment.atmosphere.as_str(),
-            |a| a.kind.as_str(),
-        );
-        if kind != "us_standard_1976" {
-            return Err(CliError::UnsupportedScenario {
-                what: format!(
-                    "atmosphere `{kind}` is not wired with the aero force in 2.11.A; \
-                     use `us_standard_1976`"
-                ),
-            });
-        }
+    if has_aero && atmosphere_kind != "us_standard_1976" {
+        return Err(CliError::UnsupportedScenario {
+            what: format!(
+                "atmosphere `{atmosphere_kind}` is not wired with the aero force in 2.11.A; \
+                 use `us_standard_1976`"
+            ),
+        });
+    }
+    let has_recovery = document
+        .vehicle
+        .assembly
+        .as_ref()
+        .is_some_and(|assembly| !assembly.recovery.is_empty());
+    if has_recovery && atmosphere_kind != "us_standard_1976" {
+        return Err(CliError::UnsupportedScenario {
+            what: format!(
+                "atmosphere `{atmosphere_kind}` is not wired with recovery drag in 3.9; \
+                 use `us_standard_1976`"
+            ),
+        });
     }
 
     Ok(())
@@ -468,6 +495,7 @@ fn build_initial_state(
     ))
 }
 
+#[allow(clippy::too_many_lines)] // Phase-3.9 added the recovery-rack force-adapter wiring branch
 fn build_vehicle(
     document: &ScenarioDocument,
     loaded_models: &LoadedModels,
@@ -564,6 +592,35 @@ fn build_vehicle(
             .collect();
         let tank_force = TankRackForceAdapter::new(tank_ids, PHASE3_TANK_RACK_FORCE_MODEL_ID);
         named.push(NamedForceModel::new("tank_reaction", Box::new(tank_force)));
+    }
+
+    // Phase-3.9: recovery-rack drag-force adapter (when recovery
+    // devices declared). Appended last so legacy force-list
+    // summation order is unchanged for pre-3.9 scenarios; the locked
+    // left-fold places recovery drag at the end of the breakdown.
+    if let Some(scenario_assembly) = &document.vehicle.assembly
+        && !scenario_assembly.recovery.is_empty()
+    {
+        let recovery_ids: Vec<openbmp_core::RecoveryId> = scenario_assembly
+            .recovery
+            .iter()
+            .map(|r| {
+                openbmp_core::RecoveryId::from_path(&format!(
+                    "vehicle.assembly.recovery.{id}",
+                    id = r.id
+                ))
+            })
+            .collect();
+        let atmosphere = UsStandard1976::new();
+        let recovery_force = RecoveryRackForceAdapter::new(
+            recovery_ids,
+            atmosphere,
+            PHASE3_RECOVERY_RACK_FORCE_MODEL_ID,
+        );
+        named.push(NamedForceModel::new(
+            "recovery_drag",
+            Box::new(recovery_force),
+        ));
     }
 
     // BasicVehicle requires a mass model even for vehicle-internal
@@ -680,6 +737,15 @@ type ForceComponentChannels = Vec<(
     TelemetryChannel<f64>,
 )>;
 
+/// Per-recovery telemetry channels in scenario-declared order.
+/// Each entry is `(id, deployed, phase_index, drag_area)`.
+type RecoveryTelemetryChannels = Vec<(
+    RecoveryId,
+    TelemetryChannel<bool>,
+    TelemetryChannel<i64>,
+    TelemetryChannel<f64>,
+)>;
+
 #[derive(Debug)]
 struct Phase2ChannelSet {
     position_x: TelemetryChannel<f64>,
@@ -701,6 +767,11 @@ struct Phase2ChannelSet {
     /// effector. Allocated AFTER force breakdown channels and BEFORE
     /// mission markers — this ordering is the determinism contract.
     effector_actuals: Vec<TelemetryChannel<f64>>,
+    /// Phase-3.9 recovery-state channels, in scenario-declared order.
+    /// Allocated after effectors and before mission markers so marker
+    /// ordering remains alphabetical and recovery-free scenarios keep
+    /// their legacy schema unchanged.
+    recovery_states: RecoveryTelemetryChannels,
     /// Phase-3.2 mission-event telemetry markers, keyed by tag.
     /// `BTreeMap` order is alphabetical for deterministic channel
     /// allocation regardless of scenario-text declaration order.
@@ -820,6 +891,38 @@ impl Phase2ChannelSet {
             }
         }
 
+        // Phase-3.9 recovery telemetry channels, one triple per
+        // declared device. Scenario-declared order matches the
+        // recovery force-adapter operand order.
+        let mut recovery_states: RecoveryTelemetryChannels = Vec::new();
+        if let Some(assembly) = &document.vehicle.assembly {
+            for config in &assembly.recovery {
+                let id = RecoveryId::from_path(&format!(
+                    "vehicle.assembly.recovery.{id}",
+                    id = config.id
+                ));
+                let deployed = TelemetryChannel::<bool>::new(
+                    alloc(),
+                    format!("recovery.{}.deployed", config.id),
+                    "bool",
+                    None::<&str>,
+                )?;
+                let phase_index = TelemetryChannel::<i64>::new(
+                    alloc(),
+                    format!("recovery.{}.phase_index", config.id),
+                    "1",
+                    None::<&str>,
+                )?;
+                let drag_area = TelemetryChannel::<f64>::new(
+                    alloc(),
+                    format!("recovery.{}.drag_area_m2", config.id),
+                    "m^2",
+                    None::<&str>,
+                )?;
+                recovery_states.push((id, deployed, phase_index, drag_area));
+            }
+        }
+
         // Phase-3.2 mission marker channels. `BTreeMap` ordering on
         // tag keys keeps channel id allocation deterministic even
         // when the scenario reorders `[[mission.events]]` blocks.
@@ -851,6 +954,7 @@ impl Phase2ChannelSet {
             atmosphere_speed_of_sound,
             force_components,
             effector_actuals,
+            recovery_states,
             mission_markers,
         })
     }
@@ -886,6 +990,13 @@ impl Phase2ChannelSet {
         // mission markers — this ordering is the determinism contract.
         for actual in &self.effector_actuals {
             channels.push(actual.metadata().clone());
+        }
+        // Phase-3.9 recovery channels, in scenario-declared order,
+        // between effectors and mission markers.
+        for (_, deployed, phase_index, drag_area) in &self.recovery_states {
+            channels.push(deployed.metadata().clone());
+            channels.push(phase_index.metadata().clone());
+            channels.push(drag_area.metadata().clone());
         }
         // Marker channels last, in alphabetical (BTreeMap) order.
         for marker in self.mission_markers.values() {
@@ -959,6 +1070,7 @@ where
     let kernel_actuals = kernel.effector_actuals();
     let kernel_engine_snapshot = kernel.engine_snapshot();
     let kernel_tank_snapshot = kernel.tank_snapshot();
+    let kernel_recovery_snapshot = kernel.recovery_snapshot();
     let ctx = ForceContext {
         state,
         environment: &env_sample,
@@ -967,6 +1079,7 @@ where
         effector_actuals: openbmp_sim::EffectorActualsView::new(kernel_actuals),
         engine_snapshot: openbmp_sim::EngineSnapshotView::new(kernel_engine_snapshot),
         tank_snapshot: openbmp_sim::TankSnapshotView::new(kernel_tank_snapshot),
+        recovery_snapshot: openbmp_sim::RecoverySnapshotView::new(kernel_recovery_snapshot),
     };
     let breakdown = breakdown_vehicle
         .evaluate_force_breakdown(ctx)
@@ -1002,6 +1115,12 @@ where
         row.insert(channel, state.actual)?;
     }
 
+    insert_recovery_state_channels(
+        &mut row,
+        kernel_recovery_snapshot,
+        &channels.recovery_states,
+    )?;
+
     // Phase-3.2 marker channels: write `true` for any tag whose
     // event fired this step, `false` for the rest. The marker
     // channel order is alphabetical (BTreeMap iteration); the
@@ -1020,6 +1139,27 @@ where
     }
 
     table.push_row(row)?;
+    Ok(())
+}
+
+fn insert_recovery_state_channels(
+    row: &mut TelemetryRow,
+    snapshot: &BTreeMap<RecoveryId, openbmp_sim::RecoverySnapshot>,
+    channels: &RecoveryTelemetryChannels,
+) -> Result<(), CliError> {
+    for (id, deployed, phase_index, drag_area) in channels {
+        let state = snapshot
+            .get(id)
+            .ok_or_else(|| CliError::UnsupportedScenario {
+                what: format!(
+                    "recovery telemetry snapshot missing declared recovery id {}",
+                    id.value()
+                ),
+            })?;
+        row.insert(deployed, state.deployed)?;
+        row.insert(phase_index, i64::from(state.phase_index))?;
+        row.insert(drag_area, state.drag_area_m2)?;
+    }
     Ok(())
 }
 
@@ -1047,6 +1187,13 @@ mod tests {
         .expect("canonical Niskanen scenario must parse")
     }
 
+    fn parachute_scenario() -> Scenario {
+        Scenario::from_file(
+            workspace_root().join("scenarios/parachute-recovery/parachute-descent.toml"),
+        )
+        .expect("canonical parachute scenario must parse")
+    }
+
     fn first_mass_kg(outcome: &RunOutcome) -> f64 {
         let mass_channel = outcome
             .table
@@ -1060,6 +1207,19 @@ mod tests {
             Some(TelemetryValue::Float64(value)) => *value,
             other => panic!("unexpected mass value: {other:?}"),
         }
+    }
+
+    fn first_row_value<'a>(outcome: &'a RunOutcome, name: &str) -> &'a TelemetryValue {
+        let channel = outcome
+            .table
+            .schema()
+            .channels()
+            .iter()
+            .find(|channel| channel.name == name)
+            .unwrap_or_else(|| panic!("channel `{name}` must exist"));
+        let row = outcome.table.rows().first().expect("initial row exists");
+        row.get(channel.id)
+            .unwrap_or_else(|| panic!("channel `{name}` must have an initial value"))
     }
 
     #[test]
@@ -1174,6 +1334,44 @@ mod tests {
                 .expect("mass from model")
                 .to_bits(),
             12.5_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn recovery_requires_explicit_ussa76_atmosphere() {
+        let mut scenario = parachute_scenario();
+        scenario.document.atmosphere = None;
+        scenario.document.environment.atmosphere = "none".to_owned();
+
+        let err = require_supported_shape(&scenario.document).unwrap_err();
+        assert!(
+            matches!(err, CliError::UnsupportedScenario { ref what }
+                if what.contains("recovery drag") && what.contains("us_standard_1976")),
+            "expected recovery atmosphere rejection, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn recovery_telemetry_channels_are_recorded() {
+        let mut scenario = parachute_scenario();
+        scenario.document.time.stop_s = scenario.document.time.dt_s;
+        let resolved_files = scenario
+            .resolved_files()
+            .expect("resolve parachute scenario");
+
+        let outcome = run(&scenario, &resolved_files).expect("short parachute run succeeds");
+
+        assert_eq!(
+            first_row_value(&outcome, "recovery.dual_chute.deployed"),
+            &TelemetryValue::Bool(false)
+        );
+        assert_eq!(
+            first_row_value(&outcome, "recovery.dual_chute.phase_index"),
+            &TelemetryValue::Int64(0)
+        );
+        assert_eq!(
+            first_row_value(&outcome, "recovery.dual_chute.drag_area_m2"),
+            &TelemetryValue::Float64(0.0)
         );
     }
 }

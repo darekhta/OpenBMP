@@ -34,9 +34,10 @@ pub use document::{
     EnvironmentConfig, EpochConfig, EventActionConfig, EventConfig, EventTriggerConfig,
     ForcesConfig, FramesConfig, InitialSloshConfig, LocalOriginConfig, MetaConfig, MissionConfig,
     MotorConfig, MovingMassKindConfig, OpenBmpHeader, PhaseConfig, PhaseTransitionConfig,
-    PropellantSpecConfig, PropulsionConfig, SUPPORTED_SCENARIO_VERSION, ScenarioDocument,
-    SensorConfig, TankConfig, TankGeometryConfig, TelemetryConfig, TelemetryOutputConfig,
-    TimeConfig, ValidationConfig, VehicleConfig, WGS84_J2_DEFAULT, WindConfig, WindLayerConfig,
+    PropellantSpecConfig, PropulsionConfig, RecoveryConfig, RecoveryKindConfig,
+    SUPPORTED_SCENARIO_VERSION, ScenarioDocument, SensorConfig, TankConfig, TankGeometryConfig,
+    TelemetryConfig, TelemetryOutputConfig, TimeConfig, ValidationConfig, VehicleConfig,
+    WGS84_J2_DEFAULT, WindConfig, WindLayerConfig,
 };
 pub use error::ScenarioError;
 pub use files::ResolvedFile;

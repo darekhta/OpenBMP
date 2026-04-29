@@ -194,9 +194,7 @@ fn check_dimensional_field(
             field: path.to_owned(),
         });
     }
-    if is_numeric_3vector(value)
-        && !key_has_frame_infix(key)
-        && !is_frame_exempt_3vector(path, key)
+    if is_numeric_3vector(value) && !key_has_frame_infix(key) && !is_frame_exempt_3vector(path, key)
     {
         return Err(ScenarioError::MissingFrameSuffix {
             field: path.to_owned(),
@@ -232,7 +230,10 @@ fn is_numeric_3vector(value: &toml::Value) -> bool {
 /// axis (u, v, w) rather than a spatial frame; the frame-infix
 /// requirement does not apply.
 fn is_frame_exempt_3vector(path: &str, key: &str) -> bool {
-    path.starts_with("$.wind") && matches!(key, "intensity_m_s" | "length_scale_m")
+    matches!(
+        (path, key),
+        ("$.wind.intensity_m_s", "intensity_m_s") | ("$.wind.length_scale_m", "length_scale_m")
+    )
 }
 
 fn is_numeric_4vector(value: &toml::Value) -> bool {
@@ -305,6 +306,15 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
                 | "base_damping_ratio_zeta"
                 | "damping_increment_zeta"
         )
+    {
+        return true;
+    }
+
+    // Phase-3.9 recovery-block fields. `c_d`, `drogue_c_d`, and
+    // `main_c_d` are dimensionless drag coefficients per Knacke
+    // 1992 Chapter 5.
+    if path.starts_with("$.vehicle.assembly.recovery")
+        && matches!(key, "c_d" | "drogue_c_d" | "main_c_d")
     {
         return true;
     }
