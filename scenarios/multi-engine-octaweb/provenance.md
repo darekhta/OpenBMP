@@ -27,9 +27,9 @@ source_authors:   OpenBMP (Dmitri Arekhta) for the Phase-3.6
 source_id:        Synthetic OpenBMP Phase-3.6 fixture
 publication_date: 2026-04-28
 methodology_reference: >-
-  Phase-3.6 of the OpenBMP Phase-3 plan
-  (`docs/phase-3-plan.md` § 3.6) introduces the `EngineModel`
-  trait, `LiquidEngine` reference impl, propulsion-side
+  `docs/scenario-format.md` § Engine clusters (Phase 3.6)
+  documents the `EngineModel` trait, `LiquidEngine` reference impl,
+  propulsion-side
   `EngineCluster`, runner-side `EngineRack`, and the kernel-side
   `EngineSnapshotView`. This scenario is the §3.6.D
   exit-criterion case: a 4-engine cluster with one engine

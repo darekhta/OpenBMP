@@ -7,11 +7,13 @@ analytic-toy path (Phase-1), the Phase-2 point-mass-with-adapters
 path (Niskanen-class sounding rocket), and the Phase-3 rigid-body
 runner consuming the assembly tree, engine clusters, control
 effectors, tanks / moving-mass models, recovery devices, mission
-events, layered + gust winds, and the Phase-3.10 synthetic
-sensors. SHA-256 pin verification fires before kernel construction.
-Telemetry extends to atmosphere sample, per-model force breakdown,
-SHA-256 schema metadata, mission-phase channels, recovery state
-channels, and Phase-3.11 motor mass channels.
+events, and layered + gust winds. Phase-3.10 sensor declarations
+parse and pin their external files; runner-side measurement
+telemetry remains future work. SHA-256 pin verification fires before
+kernel construction. Telemetry extends to atmosphere sample,
+per-model force breakdown, SHA-256 schema metadata, mission event
+marker channels, recovery state channels, and the mass column used
+to validate the Phase-3.11 Calisto motor-mass profile.
 
 ## Purpose
 

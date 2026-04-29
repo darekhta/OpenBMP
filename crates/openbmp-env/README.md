@@ -61,10 +61,10 @@ to the published table within 1e-6 relative across the 0–86 km
 envelope, with layer-boundary continuity to ULP. `LayeredWind`
 covered by per-altitude interpolation property tests; `GustWind`
 covered by long-run statistics matching the Dryden spectral
-intensity inputs. `Wmm2025` matches the 100 NOAA reference rows at `data/magnetic/wmm-test-values.csv` within 5 nT per
-component against `data/magnetic/WMM2025_TestValues.txt` — well
-inside the four-significant-figure tolerance the WMM publication
-declares.
+intensity inputs. `Wmm2025` matches the 100 NOAA reference rows in
+`data/magnetic/WMM2025_TestValues.txt` within 5 nT per component —
+well inside the four-significant-figure tolerance the WMM
+publication declares.
 
 ## Data Provenance
 

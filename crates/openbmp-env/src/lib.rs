@@ -11,10 +11,12 @@
 //!   [`atmosphere::UsStandard1976`] (geopotential 0–86 km, in-house
 //!   port of NOAA-S/T 76-1562 / NASA-TM-X-74335).
 //! * [`wind`] — [`wind::WindModel`] trait, [`wind::NoWind`] (toy),
-//!   and [`wind::ConstantWind`]. Layered profiles, gust spectra, and
-//!   altitude-shear winds are deferred to Phase 3.
+//!   [`wind::ConstantWind`], [`wind::LayeredWind`], and
+//!   [`wind::GustWind`].
 //!
-//! Magnetic field (Phase 5+) lands in its own sub-phase.
+//! Phase 3.10 adds [`magnetic::Wmm2025`] for the pinned WMM 2025
+//! reference field. NRLMSISE-00 atmosphere and EGM truncated gravity
+//! remain Phase-6 work.
 //!
 //! # Determinism
 //!

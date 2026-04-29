@@ -53,7 +53,7 @@
 //! ships in Phase 3.7.D and is the kernel-side bridge mirroring the
 //! Phase-3.6 [`crate::adapters::EngineClusterMassAdapter`] pattern.
 //!
-//! See `docs/phase-3-plan.md § 3.7` and
+//! See `docs/scenario-format.md § Tanks and slosh (Phase 3.7)` and
 //! `docs/software-architecture.md § Tanks and Slosh as Moving-Mass
 //! Dynamics` for the contract.
 //!

@@ -25,12 +25,12 @@ source_authors:   OpenBMP (Dmitri Arekhta)
 source_id:        Synthetic OpenBMP Phase-3.5.D fixture
 publication_date: 2026-04-28
 methodology_reference: >-
-  Phase-3.5 of the OpenBMP Phase-3 plan
-  (`docs/phase-3-plan.md` § 3.5) introduces the schema-2 aero deck
-  format, the kernel-side `EffectorActualsView` consumed by
-  `ForceContext`, and the runner-side `aero_effector_match`
-  matcher. This scenario is the §3.5.D exit-criterion case: a
-  scenario declaring a Schema-2 deck and a matching effector
+  `docs/scenario-format.md` § Schema-2 aero decks (Phase 3.5)
+  documents the schema-2 aero deck format, the kernel-side
+  `EffectorActualsView` consumed by `ForceContext`, and the
+  runner-side `aero_effector_match` matcher. This scenario is the
+  Phase-3.5.D exit-criterion case: a scenario declaring a Schema-2
+  deck and a matching effector
   produces aero-force telemetry that visibly differs between a
   zero-deflection baseline and a deflected-elevon run. The deck's
   `0.010 · |δ_e_deg|` perturbation on `CD` is illustrative round

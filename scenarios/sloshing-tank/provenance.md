@@ -29,11 +29,10 @@ source_authors:   OpenBMP (Dmitri Arekhta) for the Phase-3.7
 source_id:        Synthetic OpenBMP Phase-3.7 fixture
 publication_date: 2026-04-28
 methodology_reference: >-
-  Phase-3.7 of the OpenBMP Phase-3 plan
-  (`docs/phase-3-plan.md § 3.7`); slosh dynamics per Abramson
-  1966 NASA SP-106 §7.4 (cylindrical-tank antisymmetric
-  fundamental mode); the runner-side TankRack mirrors the
-  Phase-3.6 EngineRack pattern.
+  `docs/scenario-format.md` § Tanks and slosh (Phase 3.7);
+  slosh dynamics per Abramson 1966 NASA SP-106 §7.4
+  (cylindrical-tank antisymmetric fundamental mode); the runner-side
+  TankRack mirrors the Phase-3.6 EngineRack pattern.
 license:          public-domain (synthetic OpenBMP-authored test fixture)
 validation_status: experimental
 ```

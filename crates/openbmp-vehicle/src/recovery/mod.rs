@@ -16,7 +16,7 @@
 //! - [`drag_device::DragDevice`] — generic airbrake. Cycles
 //!   `Stowed ↔ Main` via deploy / stow commands.
 //!
-//! All three publish a [`RecoverySnapshot`] each kernel base tick
+//! All three publish a [`openbmp_sim::RecoverySnapshot`] each kernel base tick
 //! through the runner-side [`crate::recovery`]-rack adapter. Drag is
 //! evaluated by the Phase-3.9 [`crate::adapters::RecoveryRackForceAdapter`]
 //! using the kernel's atmosphere sample (density) and the body's ECI
@@ -27,7 +27,7 @@
 //! `F_drag = -½ ρ |v|² C_D · A · v̂` per Knacke 1992 *Parachute
 //! Recovery Systems Design Manual* Chapter 5. Drag opposes the body's
 //! ECI velocity; the academic formulation ignores wind-relative
-//! velocity (matches the Phase-3.5 [`AxialDragForceAdapter`]
+//! velocity (matches the Phase-3.5 [`crate::adapters::AxialDragForceAdapter`]
 //! convention). Drag is applied at the body CG; recovery devices
 //! contribute zero moment in Phase 3.9 (long risers are assumed to
 //! decouple body rotation from drag direction).
@@ -47,8 +47,9 @@
 //! [`crate::adapters`] and consumes the kernel's
 //! [`openbmp_sim::RecoverySnapshotView`] view.
 //!
-//! See `docs/phase-3-plan.md § 3.9` and `docs/software-architecture.md
-//! § Recovery and Descent Models` for the contract.
+//! See `docs/scenario-format.md § Recovery and descent (Phase 3.9)`
+//! and `docs/software-architecture.md § Recovery and Descent Models`
+//! for the contract.
 //!
 //! [`MissionPhaseGraph`]: openbmp_sim::MissionPhaseGraph
 //! [`EventAction::DeployRecovery`]: openbmp_sim::EventAction

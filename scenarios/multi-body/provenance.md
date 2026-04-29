@@ -26,10 +26,9 @@ source_id:        Synthetic OpenBMP Phase-3.3 multi-body fixture
 source_url:       —
 publication_date: 2026-04-27
 methodology_reference: >-
-  Phase-3.3 of the OpenBMP Phase-3 plan
-  (`docs/phase-3-plan.md`, lines 434-498) introduces the
-  declarative `VehicleAssembly` tree. This scenario is the exit-
-  criterion case: a multi-body assembly that loads and propagates
+  `docs/scenario-format.md` § Vehicle assembly (Phase 3.3)
+  documents the declarative `VehicleAssembly` tree. This scenario is
+  the exit-criterion case: a multi-body assembly that loads and propagates
   through the kernel via the new resolver. Body geometry, mass,
   and CG values are synthetic round numbers chosen to exercise the
   assembly tree shape; they are not derived from a published

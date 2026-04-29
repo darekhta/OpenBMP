@@ -28,10 +28,11 @@ Phase-3.7 slosh sub-step plumbing
 - `StopCondition` trait and simple stop conditions
   (`AlwaysContinue`, `EndTime`, `MaxSteps`).
 - Phase-3.2 mission scheduling: `EventTrigger` trait,
-  `BuiltInEventTrigger` (AtTime / AtAltitude / AtApogee /
-  AtMassFraction / AtDynamicPressure), `EventBinding`,
-  `EventAction`, `MissionPhaseGraph` with cycle-rejection at
-  construction time and event-driven phase transitions.
+  `BuiltInEventTrigger` (AtTime / AtAltitudeAscending /
+  AtAltitudeDescending / AtApogee / AtMassFraction /
+  AtDynamicPressure), `EventBinding`, `EventAction`,
+  `MissionPhaseGraph` with cycle-rejection at construction time and
+  event-driven phase transitions.
 - `ModelEvalError` typed error surface; RK stages short-circuit
   fail-closed and the kernel records `(step_index, model_id)`.
 - `SimulationError`, `IntegratorError`, `StopReason` error types.

@@ -458,25 +458,28 @@ and any operational mission profile.
   the same scenarios as state-stable smoke tests.
 
 **Phase 3 — Modular composable rocket** (complete)
-- Rigid-body kernel adapter family completing the Phase-2.11
-  deferral: `RigidGravityForceAdapter`,
-  `RigidMotorThrustForceAdapter`, `RigidMotorMassAdapter`,
-  `RigidAxialDragForceAdapter`, `RigidAeroDeckForceAdapter`,
-  `RigidEngineClusterAdapter`, `RecoveryRackForceAdapter`,
-  `MovingMassRackAdapter`. Runner now accepts
+- Rigid-body kernel adapter support completing the Phase-2.11
+  deferral: `GravityForceAdapter`, `MotorThrustForceAdapter`, and
+  `AxialDragForceAdapter` implement the rigid-body force path;
+  `RigidMotorMassAdapter`, the engine-cluster adapter trio,
+  tank-rack adapters, and `RecoveryRackForceAdapter` cover the new
+  Phase-3 mass / moment / recovery surfaces. Runner now accepts
   `vehicle.kind = "rigid_body"` end-to-end.
-- `VehicleAssembly` tree (`Bodies / Propulsion / Effectors / Tanks
-  / Sensors / Recovery`) composed in the scenario file and
-  resolved into the kernel's flat `KernelModelBundle` at startup.
+- `VehicleAssembly` tree (`Bodies / Effectors / Engines / Tanks /
+  Recovery`) composed in the scenario file and resolved into the
+  kernel's flat `KernelModelBundle` at startup. Synthetic sensors
+  remain scenario-level declarations in Phase 3.
 - `MissionPhaseGraph` with `EventTrigger` /
-  `BuiltInEventTrigger` (AtTime / AtAltitude / AtApogee /
-  AtMassFraction / AtDynamicPressure), `EventBinding`, and
-  declarative phase transitions. Cycle-rejecting at construction
-  time; iteration order is the topological order.
+  `BuiltInEventTrigger` (AtTime / AtAltitudeAscending /
+  AtAltitudeDescending / AtApogee / AtMassFraction /
+  AtDynamicPressure), `EventBinding`, and declarative phase
+  transitions. Cycle-rejecting at construction time; iteration order
+  is the topological order.
 - `ControlEffector` trait with rate / position / latency /
   deadband limits and the four canonical fault modes (Jam,
   Runaway, ReducedRate, Hardover). Effectors feed aero deck via
-  schema-2 effector axes and feed engines via `EngineCommand`.
+  schema-2 effector axes; mission events feed engines via
+  `EngineCommand`.
 - Aero deck schema-2 with optional control-effector axes
   (`delta_e_deg`, `delta_a_deg`, `delta_r_deg`, body flaps, grid
   fins). Schema-1 decks still parse byte-identically.
@@ -486,11 +489,12 @@ and any operational mission profile.
   scenario-declared mount points.
 - `Tank` + `MovingMassModel` (rigid-liquid, equivalent pendulum
   per Abramson SP-106 §7.4, equivalent spring-mass, baffled
-  pendulum with `BaffleModel` damping increment). Forward-Euler
-  sub-step is the bit-stable default; higher sub-step counts are
-  scenario opt-in but break bit-stability across changes (this
-  deviated from the original implicit-step plan; the per-sub-phase
-  commit history records the rationale).
+  pendulum with `BaffleModel` damping increment). A single
+  semi-implicit (symplectic) Euler sub-step is the bit-stable
+  default; higher sub-step counts are scenario opt-in but break
+  bit-stability across changes. This deviated from the original
+  explicit-Euler wording; the per-sub-phase commit history records
+  the rationale.
 - Wind extensions: `LayeredWind` (per-altitude table with linear
   interpolation between layers) and `GustWind` (Dryden rational-
   spectrum filter per MIL-STD-1797A; six parameters σ_u/σ_v/σ_w
@@ -521,8 +525,23 @@ and any operational mission profile.
 - Determinism CI gate runs the analytic-toy, Niskanen, and
   Calisto scenarios twice on `x86_64-unknown-linux-gnu` and
   asserts byte-stable Parquet across all three.
-- Property tests, fuzz tests, and microbenchmarks across the new
-  surface.
+- Property tests, parser/config tripwires, and microbenchmarks across
+  the new surface.
+
+**Phase-3 follow-up backlog carried forward**
+- Decide whether Phase-1 analytic-toy and Phase-2 Niskanen need
+  frozen baseline comparisons in addition to the Phase-3 same-binary
+  rerun byte-stability gate. The current CI determinism job asserts
+  rerun equality for the analytic-toy, Niskanen, and Calisto
+  scenarios.
+- Tighten the RocketPy Calisto cross-tool residual toward the
+  original 1 % stretch goal by reconciling atmosphere, rail, and
+  RocketPy `SolidMotor` modeling differences. Phase 3 closed on the
+  audited 2 % envelope.
+- Retire the Phase-3.7 tank/slosh limitations: engine-cluster drain
+  coupling, tank / engine propellant double-accounting guards,
+  rigid-body mass-properties consumption of tank inertia deltas, and
+  per-tank slosh telemetry channels.
 
 **Phase 4 — Virtual flight controller**
 - Estimator framework: EKF, MEKF (quaternion attitude).

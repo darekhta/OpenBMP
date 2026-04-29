@@ -29,8 +29,9 @@
 //! - The pure-delay buffer is sized at construction from a fixed
 //!   `dt`. Sub-`dt` latency is rejected at construction.
 //!
-//! See `docs/phase-3-plan.md § 3.4` for the contract; the Phase-3
-//! plan locks the architectural shape.
+//! See `docs/scenario-format.md § Control effectors (Phase 3.4)` and
+//! `docs/software-architecture.md § ControlEffectors` for the
+//! contract.
 
 pub mod linear;
 

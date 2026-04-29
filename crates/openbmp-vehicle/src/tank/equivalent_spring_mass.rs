@@ -31,7 +31,7 @@ use super::{
 };
 
 /// First root of `J_1'(x) = 0` (Abramson SP-106 Table 7.1).
-/// Mirrors [`crate::tank::equivalent_pendulum::KSI_1`]; both models
+/// Mirrors `equivalent_pendulum::KSI_1`; both models
 /// share the cylindrical-tank Bessel-root form.
 const KSI_1: f64 = 1.841_183_781_340_659_3;
 
@@ -154,7 +154,7 @@ impl EquivalentSpringMass {
     }
 
     /// Current liquid height. Same formula as
-    /// [`EquivalentPendulum::fluid_height_m`].
+    /// [`crate::tank::equivalent_pendulum::EquivalentPendulum::fluid_height_m`].
     #[must_use]
     pub fn fluid_height_m(&self) -> f64 {
         let cross_section = std::f64::consts::PI * self.tank_radius_m * self.tank_radius_m;

@@ -42,7 +42,7 @@
 //! # Integration scheme
 //!
 //! Phase-3.7 uses **semi-implicit (symplectic) Euler** rather than
-//! the pure-explicit form sketched in `phase-3-plan.md § 3.7`:
+//! the pure-explicit form sketched during early Phase-3.7 planning:
 //! explicit Euler is unstable for an undamped harmonic oscillator
 //! (energy grows by `(dt · ω)²` per step), and the property test
 //! for ≤1% energy conservation over 100 oscillations cannot be met

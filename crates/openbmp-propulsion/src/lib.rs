@@ -28,7 +28,7 @@
 //!   separate error surfaces.
 //!
 //! Multi-stage motor composition (`MultiStageMotor` +
-//! `SeparationEvent`) ships in Phase 3.9. Hybrid and cold-gas engine
+//! `SeparationEvent`) remains future work. Hybrid and cold-gas engine
 //! variants are deferred past 3.6.
 //!
 //! # Trait families

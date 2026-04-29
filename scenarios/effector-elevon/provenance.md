@@ -24,10 +24,10 @@ source_id:        Synthetic OpenBMP Phase-3.4 single-elevon fixture
 source_url:       —
 publication_date: 2026-04-28
 methodology_reference: >-
-  Phase-3.4 of the OpenBMP Phase-3 plan
-  (`docs/phase-3-plan.md` § 3.4) introduces the `ControlEffector`
-  trait, `LinearActuator` reference impl, and runner-side
-  `EffectorRack`. This scenario is the exit-criterion case: a
+  `docs/scenario-format.md` § Control effectors (Phase 3.4)
+  documents the `ControlEffector` trait, `LinearActuator` reference
+  impl, and runner-side `EffectorRack`. This scenario is the
+  exit-criterion case: a
   scenario declaring a single elevon effector with a `delta_e`
   command schedule produces deterministic deflection telemetry. The
   effector limits (±0.349 rad ≈ ±20°, 5.236 rad/s ≈ 300°/s slew,

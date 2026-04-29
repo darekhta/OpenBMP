@@ -45,9 +45,9 @@
 //! `EngineSnapshot` map via the kernel's `EngineSnapshotView` (the
 //! Phase-3.6.C runner-snapshot path).
 //!
-//! See `docs/phase-3-plan.md § 3.6` and
-//! `docs/software-architecture.md § Propulsion: EngineModel and
-//! EngineCluster` for the contract.
+//! See `docs/software-architecture.md § Propulsion: EngineModel and
+//! EngineCluster` and `docs/scenario-format.md § Engine clusters
+//! (Phase 3.6)` for the contract.
 
 use nalgebra::Vector3;
 use openbmp_core::{Duration, EngineId, ValidationStatus};

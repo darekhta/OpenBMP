@@ -32,8 +32,9 @@
 //!   crossings (e.g. a rocket bouncing through an altitude bound on
 //!   ascent and again on descent).
 //!
-//! See `docs/phase-3-plan.md § 3.2` for the contract; the Phase-3
-//! plan locks the architectural shape.
+//! See `docs/scenario-format.md § Mission blocks (Phase 3.2)` and
+//! `docs/software-architecture.md § MissionPhaseGraph and Event
+//! Scheduling` for the contract.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

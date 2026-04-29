@@ -10,8 +10,8 @@
 //!   event id in transition, duplicate phase id, missing initial.
 //!
 //! These cover the validation + canonicalisation contract described
-//! at [`openbmp_sim::MissionPhaseGraph`]. The Phase-3.2.B spec lives
-//! in `docs/phase-3-plan.md § 3.2`.
+//! at [`openbmp_sim::MissionPhaseGraph`] and in
+//! `docs/scenario-format.md § Mission blocks (Phase 3.2)`.
 
 #![allow(
     clippy::expect_used,

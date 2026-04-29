@@ -8,7 +8,9 @@
 //!   [`noise::IntegratedWhiteNoise`]. Building blocks of the IEEE
 //!   952 five-component IMU noise model.
 //!
-//! GNSS / magnetometer / star-tracker sensors are deferred to Phase 3.
+//! Phase 3.10 adds [`gnss::SyntheticGnss`],
+//! [`magnetometer::SyntheticMagnetometer`], and
+//! [`star_tracker::SyntheticStarTracker`].
 //!
 //! # Determinism
 //!
@@ -29,8 +31,8 @@
 //! `openbmp-sensors` is an L2 crate. It depends on `openbmp-core`
 //! (L0) for the deterministic RNG and the `SensorId` newtype, and
 //! **not** on `openbmp-sim` (L1) — the kernel-side adapter that
-//! wires sensors into the kernel's measurement chain lands in
-//! Phase 2.10.
+//! wires sensors into the runner's measurement chain remains a later
+//! integration phase.
 
 pub mod barometer;
 pub mod error;

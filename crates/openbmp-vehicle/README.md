@@ -4,13 +4,14 @@ L2 vehicle composition crate.
 
 **Status:** Phase 3 — Phase-2 `Vehicle` / `BasicVehicle` foundation
 plus the full Phase-3 modular composable rocket surface:
-rigid-body kernel adapter family, `VehicleAssembly` tree (Bodies /
-Propulsion / Effectors / Tanks / Sensors / Recovery), `EngineModel`
-+ `EngineCluster`, `ControlEffector` with rate / position /
-latency / deadband limits and the four canonical fault modes,
-`Tank` + `MovingMassModel` (rigid-liquid, equivalent-pendulum,
-equivalent-spring-mass, baffled-pendulum), and recovery devices
-(`ParachuteDrag`, `DrogueMainRecovery`, `DragDevice`).
+rigid-body implementations on the shared kernel adapter family, a
+`VehicleAssembly` tree (Bodies / Effectors / Engines / Tanks /
+Recovery), `EngineModel` + `EngineCluster`, `ControlEffector` with
+rate / position / latency / deadband limits and the four canonical
+fault modes, `Tank` + `MovingMassModel` (rigid-liquid,
+equivalent-pendulum, equivalent-spring-mass, baffled-pendulum), and
+recovery devices (`ParachuteDrag`, `DrogueMainRecovery`,
+`DragDevice`).
 
 ## Purpose
 
@@ -23,12 +24,12 @@ equivalent-spring-mass, baffled-pendulum), and recovery devices
 - Kernel-side adapter family wrapping L2 physics into point-mass
   `ForceModel` / `MassModel` impls: `GravityForceAdapter`,
   `MotorThrustForceAdapter`, `MotorMassAdapter`,
-  `AxialDragForceAdapter`. Phase 3 added the rigid-body
-  counterparts (`RigidGravityForceAdapter`,
-  `RigidMotorThrustForceAdapter`, `RigidMotorMassAdapter`,
-  `RigidAxialDragForceAdapter`, `RigidAeroDeckForceAdapter`,
-  `RigidEngineClusterAdapter`, `RecoveryRackForceAdapter`,
-  `MovingMassRackAdapter`).
+  `AxialDragForceAdapter`. Phase 3 added rigid-body impls on those
+  shared adapters plus `RigidMotorMassAdapter`,
+  `EngineClusterForceAdapter`, `EngineClusterMomentAdapter`,
+  `EngineClusterMassAdapter`, `TankRackForceAdapter`,
+  `TankRackMomentAdapter`, `TankRackMassAdapter`, and
+  `RecoveryRackForceAdapter`.
 - Phase-2.9 Niskanen sounding-rocket integration test exercises the
   adapter stack end-to-end with the Estes C6 motor and a reduced-CD
   aero deck against the published 151.5 m experimental apogee.
