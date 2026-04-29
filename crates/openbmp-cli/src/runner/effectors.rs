@@ -168,21 +168,19 @@ impl EffectorRack {
         let mut schedules: Vec<Option<EffectorSchedule>> = Vec::new();
         let mut hold_commands: Vec<f64> = Vec::new();
 
-        if let Some(assembly) = &document.vehicle.assembly {
-            for (index, config) in assembly.effectors.iter().enumerate() {
-                let actuator = build_effector(index, config, dt)?;
-                let id = actuator.id();
-                effectors.push(Box::new(actuator));
-                string_ids.push(config.id.clone());
-                id_index.insert(id, index);
-                schedules.push(
-                    config
-                        .command_schedule
-                        .as_ref()
-                        .map(EffectorSchedule::from_config),
-                );
-                hold_commands.push(config.initial_position.unwrap_or(0.0));
-            }
+        for (index, config) in document.vehicle.assembly.effectors.iter().enumerate() {
+            let actuator = build_effector(index, config, dt)?;
+            let id = actuator.id();
+            effectors.push(Box::new(actuator));
+            string_ids.push(config.id.clone());
+            id_index.insert(id, index);
+            schedules.push(
+                config
+                    .command_schedule
+                    .as_ref()
+                    .map(EffectorSchedule::from_config),
+            );
+            hold_commands.push(config.initial_position.unwrap_or(0.0));
         }
 
         Ok(Self {

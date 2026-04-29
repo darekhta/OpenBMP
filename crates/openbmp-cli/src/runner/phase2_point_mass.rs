@@ -391,11 +391,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
             ),
         });
     }
-    let has_recovery = document
-        .vehicle
-        .assembly
-        .as_ref()
-        .is_some_and(|assembly| !assembly.recovery.is_empty());
+    let has_recovery = !document.vehicle.assembly.recovery.is_empty();
     if has_recovery && atmosphere_kind != "us_standard_1976" {
         return Err(CliError::UnsupportedScenario {
             what: format!(
@@ -538,25 +534,7 @@ fn build_vehicle(
                 // scenario validator rejects scenarios that declare
                 // both blocks (`AmbiguousPropulsion`), so exactly
                 // one path resolves.
-                if let Some(assembly) = &document.vehicle.assembly
-                    && !assembly.engines.is_empty()
-                {
-                    let engine_ids: Vec<openbmp_core::EngineId> = assembly
-                        .engines
-                        .iter()
-                        .map(|e| {
-                            openbmp_core::EngineId::from_path(&format!(
-                                "vehicle.assembly.engines.{id}",
-                                id = e.id
-                            ))
-                        })
-                        .collect();
-                    let thrust = EngineClusterForceAdapter::new(
-                        engine_ids,
-                        PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID,
-                    );
-                    named.push(NamedForceModel::new("thrust", Box::new(thrust)));
-                } else {
+                if document.vehicle.assembly.engines.is_empty() {
                     let motor = loaded_models.motor.clone().ok_or_else(|| {
                         CliError::UnsupportedScenario {
                             what: "forces includes `thrust` but neither [propulsion.motor] nor \
@@ -571,6 +549,24 @@ fn build_vehicle(
                         PHASE2_THRUST_MODEL_ID,
                     );
                     named.push(NamedForceModel::new("thrust", Box::new(thrust)));
+                } else {
+                    let engine_ids: Vec<openbmp_core::EngineId> = document
+                        .vehicle
+                        .assembly
+                        .engines
+                        .iter()
+                        .map(|e| {
+                            openbmp_core::EngineId::from_path(&format!(
+                                "vehicle.assembly.engines.{id}",
+                                id = e.id
+                            ))
+                        })
+                        .collect();
+                    let thrust = EngineClusterForceAdapter::new(
+                        engine_ids,
+                        PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID,
+                    );
+                    named.push(NamedForceModel::new("thrust", Box::new(thrust)));
                 }
             }
             other => unreachable!("require_supported_shape rejects unknown force model `{other}`"),
@@ -580,10 +576,10 @@ fn build_vehicle(
     // Phase-3.7: tank-rack reaction-force adapter (when tanks
     // declared). Last in the named list so the locked left-fold
     // operand order keeps prior force entries unchanged.
-    if let Some(scenario_assembly) = &document.vehicle.assembly
-        && !scenario_assembly.tanks.is_empty()
-    {
-        let tank_ids: Vec<openbmp_core::TankId> = scenario_assembly
+    if !document.vehicle.assembly.tanks.is_empty() {
+        let tank_ids: Vec<openbmp_core::TankId> = document
+            .vehicle
+            .assembly
             .tanks
             .iter()
             .map(|t| {
@@ -598,10 +594,10 @@ fn build_vehicle(
     // devices declared). Appended last so legacy force-list
     // summation order is unchanged for pre-3.9 scenarios; the locked
     // left-fold places recovery drag at the end of the breakdown.
-    if let Some(scenario_assembly) = &document.vehicle.assembly
-        && !scenario_assembly.recovery.is_empty()
-    {
-        let recovery_ids: Vec<openbmp_core::RecoveryId> = scenario_assembly
+    if !document.vehicle.assembly.recovery.is_empty() {
+        let recovery_ids: Vec<openbmp_core::RecoveryId> = document
+            .vehicle
+            .assembly
             .recovery
             .iter()
             .map(|r| {
@@ -643,10 +639,10 @@ fn build_mass_model(
     // `[[vehicle.assembly.engines]]` is declared. Scenarios with
     // both motor and engines are rejected at parse time
     // (`AmbiguousPropulsion`), so the three arms are exclusive.
-    let base: Box<dyn MassModel> = if let Some(scenario_assembly) = &document.vehicle.assembly
-        && !scenario_assembly.engines.is_empty()
-    {
-        let engine_ids: Vec<openbmp_core::EngineId> = scenario_assembly
+    let base: Box<dyn MassModel> = if !document.vehicle.assembly.engines.is_empty() {
+        let engine_ids: Vec<openbmp_core::EngineId> = document
+            .vehicle
+            .assembly
             .engines
             .iter()
             .map(|e| {
@@ -676,10 +672,12 @@ fn build_mass_model(
     // Phase-3.7: wrap the base mass model with a tank-rack mass
     // adapter when tanks are declared. The wrapper adds each tank's
     // `mass_kg` from the kernel snapshot to the base mass.
-    if let Some(scenario_assembly) = &document.vehicle.assembly
-        && !scenario_assembly.tanks.is_empty()
-    {
-        let tank_ids: Vec<openbmp_core::TankId> = scenario_assembly
+    if document.vehicle.assembly.tanks.is_empty() {
+        Ok(base)
+    } else {
+        let tank_ids: Vec<openbmp_core::TankId> = document
+            .vehicle
+            .assembly
             .tanks
             .iter()
             .map(|t| {
@@ -691,8 +689,6 @@ fn build_mass_model(
             tank_ids,
             PHASE3_TANK_RACK_MASS_MODEL_ID,
         )))
-    } else {
-        Ok(base)
     }
 }
 
@@ -879,48 +875,42 @@ impl Phase2ChannelSet {
         // adding effectors to a scenario does not shift marker
         // channel ids.
         let mut effector_actuals: Vec<TelemetryChannel<f64>> = Vec::new();
-        if let Some(assembly) = &document.vehicle.assembly {
-            for config in &assembly.effectors {
-                let channel = TelemetryChannel::<f64>::new(
-                    alloc(),
-                    format!("effector.{}.actual", config.id),
-                    config.unit.as_deref().unwrap_or("1"),
-                    None::<&str>,
-                )?;
-                effector_actuals.push(channel);
-            }
+        for config in &document.vehicle.assembly.effectors {
+            let channel = TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("effector.{}.actual", config.id),
+                config.unit.as_deref().unwrap_or("1"),
+                None::<&str>,
+            )?;
+            effector_actuals.push(channel);
         }
 
         // Phase-3.9 recovery telemetry channels, one triple per
         // declared device. Scenario-declared order matches the
         // recovery force-adapter operand order.
         let mut recovery_states: RecoveryTelemetryChannels = Vec::new();
-        if let Some(assembly) = &document.vehicle.assembly {
-            for config in &assembly.recovery {
-                let id = RecoveryId::from_path(&format!(
-                    "vehicle.assembly.recovery.{id}",
-                    id = config.id
-                ));
-                let deployed = TelemetryChannel::<bool>::new(
-                    alloc(),
-                    format!("recovery.{}.deployed", config.id),
-                    "bool",
-                    None::<&str>,
-                )?;
-                let phase_index = TelemetryChannel::<i64>::new(
-                    alloc(),
-                    format!("recovery.{}.phase_index", config.id),
-                    "1",
-                    None::<&str>,
-                )?;
-                let drag_area = TelemetryChannel::<f64>::new(
-                    alloc(),
-                    format!("recovery.{}.drag_area_m2", config.id),
-                    "m^2",
-                    None::<&str>,
-                )?;
-                recovery_states.push((id, deployed, phase_index, drag_area));
-            }
+        for config in &document.vehicle.assembly.recovery {
+            let id =
+                RecoveryId::from_path(&format!("vehicle.assembly.recovery.{id}", id = config.id));
+            let deployed = TelemetryChannel::<bool>::new(
+                alloc(),
+                format!("recovery.{}.deployed", config.id),
+                "bool",
+                None::<&str>,
+            )?;
+            let phase_index = TelemetryChannel::<i64>::new(
+                alloc(),
+                format!("recovery.{}.phase_index", config.id),
+                "1",
+                None::<&str>,
+            )?;
+            let drag_area = TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("recovery.{}.drag_area_m2", config.id),
+                "m^2",
+                None::<&str>,
+            )?;
+            recovery_states.push((id, deployed, phase_index, drag_area));
         }
 
         // Phase-3.2 mission marker channels. `BTreeMap` ordering on
@@ -1265,7 +1255,13 @@ mod tests {
         let assembly =
             crate::runner::assembly::synthesize_assembly(&scenario.document).expect("assembly");
         let motor = loaded_models.motor.as_ref().expect("motor loaded");
-        let expected_initial_mass_kg = scenario.document.vehicle.mass_kg
+        let dry_mass_kg = crate::runner::assembly::dry_mass_kg_at(
+            &assembly,
+            SimTime::from_seconds(scenario.document.time.start_s),
+            "vehicle.assembly",
+        )
+        .expect("assembly dry mass");
+        let expected_initial_mass_kg = dry_mass_kg
             + motor
                 .mass_kg(0.0)
                 .expect("motor mass at scenario-relative ignition");
@@ -1304,20 +1300,23 @@ mod tests {
         scenario.document.aero = None;
         scenario.document.propulsion = None;
         scenario.document.forces.models = vec!["gravity".to_owned()];
+        // Override the assembly's single body's dry mass to a known
+        // 12.5 kg value so the assertion below is checking that the
+        // mass model picks up the assembly value (not the canonical
+        // Niskanen 0.080 kg).
+        let body = scenario
+            .document
+            .vehicle
+            .assembly
+            .bodies
+            .first_mut()
+            .expect("niskanen scenario has at least one body");
+        body.dry_mass_kg = 12.5;
 
         let resolved_files = scenario.resolved_files().expect("resolve files");
         let loaded_models = load_models(&scenario.document, &resolved_files).expect("load models");
-        let assembly = BasicAssembly::single_body_legacy(
-            openbmp_core::VehicleId::from_path("test.vehicle"),
-            openbmp_core::BodyId::from_path("test.vehicle.body"),
-            12.5,
-            None,
-            openbmp_vehicle::BodyGeometry::Reference {
-                length_m: 1.0,
-                area_m2: 1.0,
-            },
-        )
-        .expect("assembly");
+        let assembly =
+            crate::runner::assembly::synthesize_assembly(&scenario.document).expect("assembly");
 
         let initial_state = build_initial_state(&scenario.document, &loaded_models, &assembly)
             .expect("initial state");

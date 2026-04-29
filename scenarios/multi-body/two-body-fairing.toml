@@ -17,7 +17,7 @@
 # exercise the assembly tree shape; this is NOT a published
 # benchmark.
 
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name        = "two-body-fairing"
@@ -32,7 +32,6 @@ seed    = 0x4d_756c_7469_426f  # "MultiBo"
 
 [vehicle]
 kind                     = "point_mass"
-mass_kg                  = 0.085
 initial_position_eci_m   = [0.0, 0.0, 100.0]
 initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
 

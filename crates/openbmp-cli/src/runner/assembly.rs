@@ -27,9 +27,8 @@ use crate::error::CliError;
 
 /// Build the runtime [`BasicAssembly`] from the parsed scenario.
 ///
-/// When the scenario declares `[vehicle.assembly]`, the resolver
-/// uses it directly. Otherwise, it synthesises a one-body assembly
-/// from the legacy flat `[vehicle]` block.
+/// Build the runtime [`BasicAssembly`] from the parsed
+/// `[vehicle.assembly]` declaration.
 ///
 /// # Errors
 ///
@@ -38,38 +37,35 @@ use crate::error::CliError;
 /// inertia, duplicate body id, etc.).
 pub fn synthesize_assembly(document: &ScenarioDocument) -> Result<BasicAssembly, CliError> {
     let vehicle_id = scenario_vehicle_id(document);
-    if let Some(assembly) = &document.vehicle.assembly {
-        let mut builder = BasicAssembly::builder(vehicle_id);
-        for (index, config) in assembly.bodies.iter().enumerate() {
-            let body_id =
-                BodyId::from_path(&format!("vehicle.assembly.bodies.{id}", id = config.id));
-            let geometry = body_geometry_from_config(&config.geometry);
-            let cg_body = openbmp_core::Position3::new(
-                config.dry_cg_body_m[0],
-                config.dry_cg_body_m[1],
-                config.dry_cg_body_m[2],
-            );
-            let inertia = config
-                .dry_inertia_body_kg_m2
-                .map_or_else(default_inertia, matrix_from_rows);
-            let body = Body::new(body_id, geometry, config.dry_mass_kg, cg_body, inertia).map_err(
-                |err| CliError::Assembly {
+    let assembly = &document.vehicle.assembly;
+    let mut builder = BasicAssembly::builder(vehicle_id);
+    for (index, config) in assembly.bodies.iter().enumerate() {
+        let body_id = BodyId::from_path(&format!("vehicle.assembly.bodies.{id}", id = config.id));
+        let geometry = body_geometry_from_config(&config.geometry);
+        let cg_body = openbmp_core::Position3::new(
+            config.dry_cg_body_m[0],
+            config.dry_cg_body_m[1],
+            config.dry_cg_body_m[2],
+        );
+        let inertia = config
+            .dry_inertia_body_kg_m2
+            .map_or_else(default_inertia, matrix_from_rows);
+        let body =
+            Body::new(body_id, geometry, config.dry_mass_kg, cg_body, inertia).map_err(|err| {
+                CliError::Assembly {
                     field: format!("vehicle.assembly.bodies[{index}]"),
                     reason: err.to_string(),
-                },
-            )?;
-            builder = builder.add_body(body).map_err(|err| CliError::Assembly {
-                field: format!("vehicle.assembly.bodies[{index}]"),
-                reason: err.to_string(),
+                }
             })?;
-        }
-        builder.build().map_err(|err| CliError::Assembly {
-            field: "vehicle.assembly".to_owned(),
+        builder = builder.add_body(body).map_err(|err| CliError::Assembly {
+            field: format!("vehicle.assembly.bodies[{index}]"),
             reason: err.to_string(),
-        })
-    } else {
-        synthesize_legacy_single_body(document, vehicle_id)
+        })?;
     }
+    builder.build().map_err(|err| CliError::Assembly {
+        field: "vehicle.assembly".to_owned(),
+        reason: err.to_string(),
+    })
 }
 
 /// Return the assembly's dry mass properties at `time`.
@@ -124,41 +120,10 @@ pub fn dry_mass_kg_at(
 }
 
 fn scenario_vehicle_id(document: &ScenarioDocument) -> VehicleId {
-    if let Some(assembly) = &document.vehicle.assembly
-        && let Some(id) = &assembly.id
-    {
+    if let Some(id) = &document.vehicle.assembly.id {
         return VehicleId::from_path(&format!("vehicle.assembly.{id}"));
     }
     VehicleId::from_path(&format!("scenario.{}", document.meta.name))
-}
-
-fn synthesize_legacy_single_body(
-    document: &ScenarioDocument,
-    vehicle_id: VehicleId,
-) -> Result<BasicAssembly, CliError> {
-    let body_id = BodyId::from_path("vehicle.body");
-    // Reference geometry: pull from aero deck length / area_m2 if
-    // present, else use a unit reference. Phase-3.3 doesn't use the
-    // geometry on the kernel hot path, so the placeholder is safe.
-    let geometry = BodyGeometry::Reference {
-        length_m: 1.0,
-        area_m2: 1.0,
-    };
-    let inertia = document
-        .vehicle
-        .inertia_tensor_body_kg_m2
-        .map_or_else(default_inertia, matrix_from_rows);
-    BasicAssembly::single_body_legacy(
-        vehicle_id,
-        body_id,
-        document.vehicle.mass_kg,
-        Some(inertia),
-        geometry,
-    )
-    .map_err(|err| CliError::Assembly {
-        field: "vehicle (legacy synthesis)".to_owned(),
-        reason: err.to_string(),
-    })
 }
 
 fn body_geometry_from_config(config: &BodyGeometryConfig) -> BodyGeometry {

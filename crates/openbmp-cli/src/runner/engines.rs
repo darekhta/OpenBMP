@@ -67,21 +67,18 @@ impl EngineRack {
         let mut engines: Vec<Box<dyn EngineModel>> = Vec::new();
         let mut mount_points_body: Vec<Position3<Body>> = Vec::new();
         let mut engine_ids: Vec<EngineId> = Vec::new();
-        let mut layout = ClusterLayoutConfig::default();
-
-        if let Some(assembly) = &document.vehicle.assembly {
-            layout = assembly.cluster_layout.unwrap_or_default();
-            for (index, config) in assembly.engines.iter().enumerate() {
-                let engine = build_engine(index, config)?;
-                let id = engine.id();
-                engines.push(Box::new(engine));
-                mount_points_body.push(Position3::<Body>::new(
-                    config.mount_point_body_m[0],
-                    config.mount_point_body_m[1],
-                    config.mount_point_body_m[2],
-                ));
-                engine_ids.push(id);
-            }
+        let assembly = &document.vehicle.assembly;
+        let layout = assembly.cluster_layout.unwrap_or_default();
+        for (index, config) in assembly.engines.iter().enumerate() {
+            let engine = build_engine(index, config)?;
+            let id = engine.id();
+            engines.push(Box::new(engine));
+            mount_points_body.push(Position3::<Body>::new(
+                config.mount_point_body_m[0],
+                config.mount_point_body_m[1],
+                config.mount_point_body_m[2],
+            ));
+            engine_ids.push(id);
         }
 
         let propulsion_layout = match layout {

@@ -54,7 +54,7 @@
 # Pinned digests are SHA-256 of the referenced files at the
 # commit that ships this scenario; mismatches fail closed.
 
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name        = "rocketpy-calisto"
@@ -74,7 +74,6 @@ seed    = 0x4361_6c69_7374_6f00   # "Calisto\0"
 
 [vehicle]
 kind                                = "rigid_body"
-mass_kg                             = 14.426
 # Initial position: at the rail tip, in the toy-fixed-earth frame
 # with the launch-site geodetic origin at (0, 0, 1400 m). The
 # +z = +1400 m offset ensures the USSA76 atmosphere sees
@@ -88,11 +87,6 @@ initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
 # the body-to-ECI quaternion). Rotation about ECI +y axis by 5°.
 initial_quaternion_body_to_eci_xyzw = [0.0, 0.043619387365336, 0.0, 0.9990482215818578]
 initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
-inertia_tensor_body_kg_m2 = [
-  [6.321, 0.0,   0.0  ],
-  [0.0,   6.321, 0.0  ],
-  [0.0,   0.0,   0.034],
-]
 
 [vehicle.assembly]
 id = "rocketpy-calisto"

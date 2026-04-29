@@ -5,7 +5,7 @@
 //! materialising in 3.4 / 3.6 / 3.7 / 3.10.
 
 use nalgebra::{Matrix3, Vector3};
-use openbmp_core::{Body as BodyFrame, BodyId, Position3, SimTime, VehicleId};
+use openbmp_core::{Body as BodyFrame, Position3, SimTime, VehicleId};
 use openbmp_state::MassProperties;
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -32,37 +32,6 @@ impl BasicAssembly {
     #[must_use]
     pub fn builder(id: VehicleId) -> BasicAssemblyBuilder {
         BasicAssemblyBuilder::new(id)
-    }
-
-    /// Construct a single-body assembly directly from the legacy
-    /// flat `[vehicle]` block (used by the resolver when no
-    /// `[vehicle.assembly]` block is declared).
-    ///
-    /// `inertia_body_kg_m2` is `None` for point-mass scenarios; in
-    /// that case a unit identity tensor is used as a structural
-    /// placeholder. For rigid-body scenarios the inertia must be
-    /// provided.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AssemblyError`] for invalid inputs.
-    pub fn single_body_legacy(
-        vehicle_id: VehicleId,
-        body_id: BodyId,
-        dry_mass_kg: f64,
-        inertia_body_kg_m2: Option<Matrix3<f64>>,
-        reference_geometry: crate::assembly::BodyGeometry,
-    ) -> Result<Self, AssemblyError> {
-        let inertia = inertia_body_kg_m2
-            .unwrap_or_else(|| Matrix3::from_diagonal(&Vector3::new(1.0, 1.0, 1.0)));
-        let body = Body::new(
-            body_id,
-            reference_geometry,
-            dry_mass_kg,
-            Position3::origin(),
-            inertia,
-        )?;
-        Self::builder(vehicle_id).add_body(body)?.build()
     }
 }
 
@@ -189,6 +158,7 @@ mod tests {
     use super::*;
     use crate::assembly::body::BodyGeometry;
     use approx::assert_abs_diff_eq;
+    use openbmp_core::BodyId;
 
     fn unit_inertia() -> Matrix3<f64> {
         Matrix3::from_diagonal(&Vector3::new(0.01, 0.01, 0.001))
@@ -285,45 +255,5 @@ mod tests {
             f_props.mass.get::<kilogram>().to_bits(),
             r_props.mass.get::<kilogram>().to_bits()
         );
-    }
-
-    #[test]
-    fn legacy_single_body_constructor_round_trips() {
-        let assembly = BasicAssembly::single_body_legacy(
-            VehicleId::from_path("v"),
-            BodyId::from_path("vehicle"),
-            0.080,
-            Some(unit_inertia()),
-            BodyGeometry::Cylinder {
-                length_m: 0.56,
-                diameter_m: 0.029,
-            },
-        )
-        .unwrap();
-        assert_eq!(assembly.bodies().len(), 1);
-        let props = assembly.mass_properties(SimTime::ZERO).unwrap();
-        assert_abs_diff_eq!(props.mass.get::<kilogram>(), 0.080);
-    }
-
-    #[test]
-    fn legacy_single_body_uses_identity_inertia_when_unset() {
-        // Point-mass scenarios pass `None`; the placeholder identity
-        // tensor is structurally valid (positive diagonal, symmetric)
-        // so the kernel's mass-property check passes.
-        let assembly = BasicAssembly::single_body_legacy(
-            VehicleId::from_path("v"),
-            BodyId::from_path("vehicle"),
-            1.0,
-            None,
-            BodyGeometry::Reference {
-                length_m: 1.0,
-                area_m2: 1.0,
-            },
-        )
-        .unwrap();
-        let props = assembly.mass_properties(SimTime::ZERO).unwrap();
-        for diag in 0..3 {
-            assert!(props.inertia_body[(diag, diag)] > 0.0);
-        }
     }
 }

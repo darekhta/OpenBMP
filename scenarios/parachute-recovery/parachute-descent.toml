@@ -24,7 +24,7 @@
 #
 # Synthetic round numbers; not a benchmark.
 
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name        = "parachute-descent"
@@ -39,7 +39,6 @@ seed    = 0x52_6563_6f76_6572   # "Recover"
 
 [vehicle]
 kind                     = "point_mass"
-mass_kg                  = 5.0
 initial_position_eci_m   = [0.0, 0.0, 1000.0]
 initial_velocity_eci_m_s = [0.0, 0.0, 50.0]
 

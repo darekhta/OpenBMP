@@ -1,7 +1,7 @@
 # Phase-3.3 assembly-tree parser fixture exercising flat/assembly
 # rigid inertia consistency. Synthetic; not a benchmark.
 
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name        = "assembly-rigid-inertia-mismatch-fixture"
@@ -16,13 +16,10 @@ seed    = 0xdead_beef
 
 [vehicle]
 kind                                  = "rigid_body"
-mass_kg                               = 0.080
 initial_position_eci_m                = [0.0, 0.0, 0.0]
 initial_velocity_eci_m_s              = [0.0, 0.0, 0.0]
 initial_quaternion_body_to_eci_xyzw   = [0.0, 0.0, 0.0, 1.0]
 initial_angular_velocity_body_rad_s   = [0.0, 0.0, 0.0]
-inertia_tensor_body_kg_m2             = [[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.001]]
-
 [vehicle.assembly]
 
 [[vehicle.assembly.bodies]]

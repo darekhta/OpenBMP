@@ -348,11 +348,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
             ),
         });
     }
-    let has_recovery = document
-        .vehicle
-        .assembly
-        .as_ref()
-        .is_some_and(|assembly| !assembly.recovery.is_empty());
+    let has_recovery = !document.vehicle.assembly.recovery.is_empty();
     if has_recovery && atmosphere_kind != "us_standard_1976" {
         return Err(CliError::UnsupportedScenario {
             what: format!(
@@ -518,25 +514,7 @@ fn build_vehicle(
                 // Phase-3.6: dispatch between single-motor and
                 // engine-cluster paths. AmbiguousPropulsion is
                 // rejected at parse time.
-                if let Some(scenario_assembly) = &document.vehicle.assembly
-                    && !scenario_assembly.engines.is_empty()
-                {
-                    let engine_ids: Vec<openbmp_core::EngineId> = scenario_assembly
-                        .engines
-                        .iter()
-                        .map(|e| {
-                            openbmp_core::EngineId::from_path(&format!(
-                                "vehicle.assembly.engines.{id}",
-                                id = e.id
-                            ))
-                        })
-                        .collect();
-                    let thrust = EngineClusterForceAdapter::new(
-                        engine_ids,
-                        PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID,
-                    );
-                    named.push(NamedForceModel::new("thrust", Box::new(thrust)));
-                } else {
+                if document.vehicle.assembly.engines.is_empty() {
                     let motor =
                         loaded
                             .motor
@@ -554,6 +532,24 @@ fn build_vehicle(
                         PHASE3_THRUST_MODEL_ID,
                     );
                     named.push(NamedForceModel::new("thrust", Box::new(thrust)));
+                } else {
+                    let engine_ids: Vec<openbmp_core::EngineId> = document
+                        .vehicle
+                        .assembly
+                        .engines
+                        .iter()
+                        .map(|e| {
+                            openbmp_core::EngineId::from_path(&format!(
+                                "vehicle.assembly.engines.{id}",
+                                id = e.id
+                            ))
+                        })
+                        .collect();
+                    let thrust = EngineClusterForceAdapter::new(
+                        engine_ids,
+                        PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID,
+                    );
+                    named.push(NamedForceModel::new("thrust", Box::new(thrust)));
                 }
             }
             other => unreachable!("require_supported_shape rejects unknown force model `{other}`"),
@@ -561,10 +557,10 @@ fn build_vehicle(
     }
 
     // Phase-3.7: tank-rack reaction-force adapter (rigid).
-    if let Some(scenario_assembly) = &document.vehicle.assembly
-        && !scenario_assembly.tanks.is_empty()
-    {
-        let tank_ids: Vec<openbmp_core::TankId> = scenario_assembly
+    if !document.vehicle.assembly.tanks.is_empty() {
+        let tank_ids: Vec<openbmp_core::TankId> = document
+            .vehicle
+            .assembly
             .tanks
             .iter()
             .map(|t| {
@@ -577,10 +573,10 @@ fn build_vehicle(
     }
 
     // Phase-3.9: recovery-rack drag-force adapter (rigid).
-    if let Some(scenario_assembly) = &document.vehicle.assembly
-        && !scenario_assembly.recovery.is_empty()
-    {
-        let recovery_ids: Vec<openbmp_core::RecoveryId> = scenario_assembly
+    if !document.vehicle.assembly.recovery.is_empty() {
+        let recovery_ids: Vec<openbmp_core::RecoveryId> = document
+            .vehicle
+            .assembly
             .recovery
             .iter()
             .map(|r| {
@@ -625,12 +621,12 @@ fn build_vehicle_scalar_mass_model(
 
     let start_time = SimTime::from_seconds(document.time.start_s);
     let dry_mass_kg = dry_mass_kg_at(assembly, start_time, "vehicle.assembly")?;
-    let inner: Box<dyn MassModel> = if let Some(scenario_assembly) = &document.vehicle.assembly
-        && !scenario_assembly.engines.is_empty()
-    {
+    let inner: Box<dyn MassModel> = if !document.vehicle.assembly.engines.is_empty() {
         // Phase-3.6 cluster path: engine-cluster mass adapter
         // tracks per-engine `consumed_kg` from the kernel snapshot.
-        let engine_ids: Vec<openbmp_core::EngineId> = scenario_assembly
+        let engine_ids: Vec<openbmp_core::EngineId> = document
+            .vehicle
+            .assembly
             .engines
             .iter()
             .map(|e| {
@@ -717,11 +713,11 @@ impl openbmp_sim::MomentModel<RigidBodyState> for RigidMomentEitherKind {
     }
 }
 
+#[allow(clippy::if_not_else)]
 fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, CliError> {
-    let cluster_adapter = if let Some(scenario_assembly) = &document.vehicle.assembly
-        && !scenario_assembly.engines.is_empty()
-    {
-        let engine_ids: Vec<openbmp_core::EngineId> = scenario_assembly
+    let assembly = &document.vehicle.assembly;
+    let cluster_adapter = if !assembly.engines.is_empty() {
+        let engine_ids: Vec<openbmp_core::EngineId> = assembly
             .engines
             .iter()
             .map(|e| {
@@ -731,7 +727,7 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
                 ))
             })
             .collect();
-        let mount_points_body: Vec<Position3<Body>> = scenario_assembly
+        let mount_points_body: Vec<Position3<Body>> = assembly
             .engines
             .iter()
             .map(|e| {
@@ -755,10 +751,8 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
         None
     };
 
-    let tank_adapter = if let Some(scenario_assembly) = &document.vehicle.assembly
-        && !scenario_assembly.tanks.is_empty()
-    {
-        let tank_ids: Vec<openbmp_core::TankId> = scenario_assembly
+    let tank_adapter = if !assembly.tanks.is_empty() {
+        let tank_ids: Vec<openbmp_core::TankId> = assembly
             .tanks
             .iter()
             .map(|t| {
@@ -825,9 +819,7 @@ fn build_mass_model(
     // `ConstantMassRigid` — the cluster's `EngineClusterForceAdapter`
     // still applies thrust normally; only mass-properties is
     // simplified.
-    if let Some(scenario_assembly) = &document.vehicle.assembly
-        && !scenario_assembly.engines.is_empty()
-    {
+    if !document.vehicle.assembly.engines.is_empty() {
         Ok(RigidMassEitherKind::Constant(ConstantMassRigid::new(
             dry_props,
         )))
@@ -1052,48 +1044,42 @@ impl RigidChannelSet {
         // order. Allocated BEFORE mission markers so adding effectors
         // does not shift marker channel ids.
         let mut effector_actuals: Vec<TelemetryChannel<f64>> = Vec::new();
-        if let Some(assembly) = &document.vehicle.assembly {
-            for config in &assembly.effectors {
-                let channel = TelemetryChannel::<f64>::new(
-                    alloc(),
-                    format!("effector.{}.actual", config.id),
-                    config.unit.as_deref().unwrap_or("1"),
-                    None::<&str>,
-                )?;
-                effector_actuals.push(channel);
-            }
+        for config in &document.vehicle.assembly.effectors {
+            let channel = TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("effector.{}.actual", config.id),
+                config.unit.as_deref().unwrap_or("1"),
+                None::<&str>,
+            )?;
+            effector_actuals.push(channel);
         }
 
         // Phase-3.9 recovery telemetry channels, one triple per
         // declared device. Scenario-declared order matches the
         // recovery force-adapter operand order.
         let mut recovery_states: RecoveryTelemetryChannels = Vec::new();
-        if let Some(assembly) = &document.vehicle.assembly {
-            for config in &assembly.recovery {
-                let id = RecoveryId::from_path(&format!(
-                    "vehicle.assembly.recovery.{id}",
-                    id = config.id
-                ));
-                let deployed = TelemetryChannel::<bool>::new(
-                    alloc(),
-                    format!("recovery.{}.deployed", config.id),
-                    "bool",
-                    None::<&str>,
-                )?;
-                let phase_index = TelemetryChannel::<i64>::new(
-                    alloc(),
-                    format!("recovery.{}.phase_index", config.id),
-                    "1",
-                    None::<&str>,
-                )?;
-                let drag_area = TelemetryChannel::<f64>::new(
-                    alloc(),
-                    format!("recovery.{}.drag_area_m2", config.id),
-                    "m^2",
-                    None::<&str>,
-                )?;
-                recovery_states.push((id, deployed, phase_index, drag_area));
-            }
+        for config in &document.vehicle.assembly.recovery {
+            let id =
+                RecoveryId::from_path(&format!("vehicle.assembly.recovery.{id}", id = config.id));
+            let deployed = TelemetryChannel::<bool>::new(
+                alloc(),
+                format!("recovery.{}.deployed", config.id),
+                "bool",
+                None::<&str>,
+            )?;
+            let phase_index = TelemetryChannel::<i64>::new(
+                alloc(),
+                format!("recovery.{}.phase_index", config.id),
+                "1",
+                None::<&str>,
+            )?;
+            let drag_area = TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("recovery.{}.drag_area_m2", config.id),
+                "m^2",
+                None::<&str>,
+            )?;
+            recovery_states.push((id, deployed, phase_index, drag_area));
         }
 
         // Phase-3.2 mission marker channels.

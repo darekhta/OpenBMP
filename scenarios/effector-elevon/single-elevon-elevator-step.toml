@@ -16,7 +16,7 @@
 #
 # Synthetic round numbers; NOT a published benchmark.
 
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name        = "single-elevon-elevator-step"
@@ -31,7 +31,6 @@ seed    = 0x456c_6576_4f6e_3034   # "ElevOn04"
 
 [vehicle]
 kind                     = "point_mass"
-mass_kg                  = 1.0
 initial_position_eci_m   = [0.0, 0.0, 100.0]
 initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
 

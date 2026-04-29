@@ -21,7 +21,7 @@
 # Pinned digests are SHA-256 of the referenced files at the commit
 # that ships this scenario; mismatches fail closed.
 
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name        = "niskanen-2009-chapter6"
@@ -37,11 +37,18 @@ seed    = 0x4e69_736b_616e_656e
 
 [vehicle]
 kind                     = "point_mass"
-# Dry-airframe mass; Niskanen Chapter-6 small rocket carries an 80 g
-# airframe.
-mass_kg                  = 0.080
 initial_position_eci_m   = [0.0, 0.0, 0.0]
 initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "niskanen-c6"
+
+# Dry-airframe mass; Niskanen Chapter-6 small rocket carries an 80 g
+# airframe.
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 0.080
 
 [environment]
 frame_profile = "wgs84-uniform-rotation"

@@ -93,16 +93,14 @@ impl TankRack {
         let mut tanks: BTreeMap<TankId, Tank> = BTreeMap::new();
         let mut drain_rates: BTreeMap<TankId, f64> = BTreeMap::new();
 
-        if let Some(assembly) = &document.vehicle.assembly {
-            for config in &assembly.tanks {
-                let (id, tank) = build_tank(config)?;
-                drain_rates.insert(id, config.drain_rate_kg_per_s.unwrap_or(0.0));
-                if tanks.insert(id, tank).is_some() {
-                    return Err(CliError::Tank {
-                        field: format!("vehicle.assembly.tanks.{id}", id = config.id),
-                        reason: "duplicate tank id (collision in fnv1a-64 hash)".to_owned(),
-                    });
-                }
+        for config in &document.vehicle.assembly.tanks {
+            let (id, tank) = build_tank(config)?;
+            drain_rates.insert(id, config.drain_rate_kg_per_s.unwrap_or(0.0));
+            if tanks.insert(id, tank).is_some() {
+                return Err(CliError::Tank {
+                    field: format!("vehicle.assembly.tanks.{id}", id = config.id),
+                    reason: "duplicate tank id (collision in fnv1a-64 hash)".to_owned(),
+                });
             }
         }
 

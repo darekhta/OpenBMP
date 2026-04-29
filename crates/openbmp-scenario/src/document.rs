@@ -20,7 +20,13 @@ use crate::registry::{ModelRegistry, ModelRole};
 use crate::solver::SolverConfig;
 
 /// Scenario schema version supported by this crate.
-pub const SUPPORTED_SCENARIO_VERSION: u16 = 1;
+///
+/// Phase-3.13 retired the v1 flat scenario shape (top-level
+/// `vehicle.mass_kg` / `vehicle.inertia_tensor_body_kg_m2`).
+/// Every v2 scenario carries a mandatory `[vehicle.assembly]`
+/// block; per-body mass and inertia live on
+/// `[[vehicle.assembly.bodies]]`.
+pub const SUPPORTED_SCENARIO_VERSION: u16 = 2;
 
 /// Default unnormalised WGS84 J2 zonal coefficient used when a scenario
 /// selects `gravity = "j2"` and omits `environment.j2`.
@@ -176,11 +182,7 @@ impl ScenarioDocument {
 
     fn validate_propulsion_unambiguous(&self) -> Result<(), ScenarioError> {
         let has_motor = self.propulsion.as_ref().is_some_and(|p| p.motor.is_some());
-        let has_engines = self
-            .vehicle
-            .assembly
-            .as_ref()
-            .is_some_and(|a| !a.engines.is_empty());
+        let has_engines = !self.vehicle.assembly.engines.is_empty();
         if has_motor && has_engines {
             return Err(ScenarioError::AmbiguousPropulsion);
         }
@@ -194,9 +196,10 @@ impl ScenarioDocument {
         let declared: BTreeSet<&str> = self
             .vehicle
             .assembly
-            .as_ref()
-            .map(|assembly| assembly.engines.iter().map(|e| e.id.as_str()).collect())
-            .unwrap_or_default();
+            .engines
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
 
         for (phase_index, phase) in mission.phases.iter().enumerate() {
             for (engine_index, id) in phase.allowed_engines.iter().enumerate() {
@@ -230,15 +233,10 @@ impl ScenarioDocument {
         let recovery_kinds: BTreeMap<&str, &'static str> = self
             .vehicle
             .assembly
-            .as_ref()
-            .map(|assembly| {
-                assembly
-                    .recovery
-                    .iter()
-                    .map(|r| (r.id.as_str(), r.kind.kind_name()))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .recovery
+            .iter()
+            .map(|r| (r.id.as_str(), r.kind.kind_name()))
+            .collect();
 
         for (event_index, event) in mission.events.iter().enumerate() {
             if let EventActionConfig::DeployRecovery { id, command } = &event.action {
@@ -267,9 +265,10 @@ impl ScenarioDocument {
         let declared: BTreeSet<&str> = self
             .vehicle
             .assembly
-            .as_ref()
-            .map(|assembly| assembly.effectors.iter().map(|e| e.id.as_str()).collect())
-            .unwrap_or_default();
+            .effectors
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
 
         for (phase_index, phase) in mission.phases.iter().enumerate() {
             for (effector_index, id) in phase.allowed_effectors.iter().enumerate() {
@@ -315,11 +314,7 @@ impl ScenarioDocument {
         // `[[vehicle.assembly.engines]]` block (cluster path).
         // Ambiguous co-declaration is rejected separately by
         // `validate_propulsion_unambiguous`.
-        let engine_count = self
-            .vehicle
-            .assembly
-            .as_ref()
-            .map_or(0, |a| a.engines.len());
+        let engine_count = self.vehicle.assembly.engines.len();
         let has_engines = engine_count > 0;
         if has_engines && !has_thrust_force {
             return Err(ScenarioError::InconsistentSection {
@@ -416,8 +411,6 @@ impl TimeConfig {
 pub struct VehicleConfig {
     /// Vehicle model kind.
     pub kind: String,
-    /// Vehicle mass in kilograms.
-    pub mass_kg: f64,
     /// Initial inertial position in metres.
     pub initial_position_eci_m: [f64; 3],
     /// Initial inertial velocity in metres per second.
@@ -428,31 +421,20 @@ pub struct VehicleConfig {
     /// Initial body-frame angular velocity in rad/s. Required when
     /// `kind = "rigid_body"`, rejected otherwise.
     pub initial_angular_velocity_body_rad_s: Option<[f64; 3]>,
-    /// Body-frame inertia tensor in kg·m², row-major
-    /// `[[Ixx, Ixy, Ixz], [Ixy, Iyy, Iyz], [Ixz, Iyz, Izz]]`.
-    /// Required when `kind = "rigid_body"`, rejected otherwise.
-    /// Validated finite, symmetric, and positive-diagonal at parse
-    /// time; full positive-definite + triangle-inequality validation
-    /// happens at kernel construction via
-    /// `MassProperties::require_valid`.
-    pub inertia_tensor_body_kg_m2: Option<[[f64; 3]; 3]>,
-    /// Optional declarative vehicle composition tree (Phase 3.3+).
+    /// Mandatory declarative vehicle composition tree.
     ///
-    /// When present, the runner builds an
-    /// `openbmp_vehicle::BasicAssembly` from the declared bodies
-    /// and resolves it into the kernel's flat model lists. The
-    /// legacy `mass_kg` and `inertia_tensor_body_kg_m2` flat fields
-    /// must agree with the assembly's summed body masses / inertias
-    /// — mutual consistency rather than mutual exclusivity, so
-    /// existing scenarios can opt into the assembly tree without
-    /// removing fields.
-    pub assembly: Option<AssemblyConfig>,
+    /// The runner builds an `openbmp_vehicle::BasicAssembly` from
+    /// the declared bodies and resolves it into the kernel's flat
+    /// model lists. Per-body dry mass lives on
+    /// `[[vehicle.assembly.bodies]].dry_mass_kg`; per-body
+    /// inertia (rigid-body only) lives on
+    /// `[[vehicle.assembly.bodies]].dry_inertia_body_kg_m2`.
+    pub assembly: AssemblyConfig,
 }
 
 impl VehicleConfig {
     fn validate(&self, registry: &ModelRegistry, dt_s: f64) -> Result<(), ScenarioError> {
         let descriptor = registry.resolve(ModelRole::Vehicle, &self.kind)?;
-        require_positive("vehicle.mass_kg", self.mass_kg)?;
         require_finite_array(
             "vehicle.initial_position_eci_m",
             &self.initial_position_eci_m,
@@ -487,14 +469,6 @@ impl VehicleConfig {
                     }
                 })?;
                 require_finite_array("vehicle.initial_angular_velocity_body_rad_s", &angular)?;
-                let inertia = self.inertia_tensor_body_kg_m2.ok_or_else(|| {
-                    ScenarioError::MissingRequiredField {
-                        field: "vehicle.inertia_tensor_body_kg_m2".to_owned(),
-                        role: ModelRole::Vehicle,
-                        name: "rigid_body".to_owned(),
-                    }
-                })?;
-                validate_inertia_tensor(&inertia)?;
             }
             other => {
                 if self.initial_quaternion_body_to_eci_xyzw.is_some() {
@@ -511,23 +485,9 @@ impl VehicleConfig {
                         name: other.to_owned(),
                     });
                 }
-                if self.inertia_tensor_body_kg_m2.is_some() {
-                    return Err(ScenarioError::UnexpectedField {
-                        field: "vehicle.inertia_tensor_body_kg_m2".to_owned(),
-                        role: ModelRole::Vehicle,
-                        name: other.to_owned(),
-                    });
-                }
             }
         }
-        if let Some(assembly) = &self.assembly {
-            assembly.validate(
-                descriptor.name.as_str(),
-                self.mass_kg,
-                self.inertia_tensor_body_kg_m2.as_ref(),
-                dt_s,
-            )?;
-        }
+        self.assembly.validate(descriptor.name.as_str(), dt_s)?;
         Ok(())
     }
 }
@@ -1958,13 +1918,7 @@ impl AssemblyConfig {
     /// checking; the validator requires the sum of body dry masses
     /// to equal `flat_mass_kg` within the assembly consistency
     /// tolerance.
-    pub(crate) fn validate(
-        &self,
-        vehicle_kind: &str,
-        flat_mass_kg: f64,
-        flat_inertia_body_kg_m2: Option<&[[f64; 3]; 3]>,
-        dt_s: f64,
-    ) -> Result<(), ScenarioError> {
+    pub(crate) fn validate(&self, vehicle_kind: &str, dt_s: f64) -> Result<(), ScenarioError> {
         if self.bodies.is_empty() {
             return Err(ScenarioError::EmptyList {
                 field: "vehicle.assembly.bodies".to_owned(),
@@ -1979,40 +1933,6 @@ impl AssemblyConfig {
                     field: format!("vehicle.assembly.bodies[{index}].id"),
                     value: body.id.clone(),
                 });
-            }
-        }
-        let body_mass_sum: f64 = self.bodies.iter().map(|b| b.dry_mass_kg).sum();
-        if !assembly_values_consistent(body_mass_sum, flat_mass_kg) {
-            return Err(ScenarioError::InconsistentSection {
-                field_a: "vehicle.mass_kg".to_owned(),
-                value_a: format!("{flat_mass_kg}"),
-                field_b: "vehicle.assembly.bodies[*].dry_mass_kg sum".to_owned(),
-                value_b: format!("{body_mass_sum}"),
-            });
-        }
-        if rigid_body {
-            let flat_inertia =
-                flat_inertia_body_kg_m2.ok_or_else(|| ScenarioError::MissingRequiredField {
-                    field: "vehicle.inertia_tensor_body_kg_m2".to_owned(),
-                    role: ModelRole::Vehicle,
-                    name: "rigid_body".to_owned(),
-                })?;
-            let assembly_inertia = summed_assembly_inertia_body_kg_m2(&self.bodies);
-            for i in 0..3 {
-                for j in 0..3 {
-                    let assembly_value = assembly_inertia[i][j];
-                    let flat_value = flat_inertia[i][j];
-                    if !assembly_values_consistent(assembly_value, flat_value) {
-                        return Err(ScenarioError::InconsistentSection {
-                            field_a: format!("vehicle.inertia_tensor_body_kg_m2[{i}][{j}]"),
-                            value_a: format!("{flat_value}"),
-                            field_b: format!(
-                                "vehicle.assembly summed dry_inertia_body_kg_m2[{i}][{j}]"
-                            ),
-                            value_b: format!("{assembly_value}"),
-                        });
-                    }
-                }
             }
         }
         let mut seen_effector_ids: std::collections::BTreeSet<&str> =
@@ -2062,51 +1982,6 @@ impl AssemblyConfig {
         }
         Ok(())
     }
-}
-
-const ASSEMBLY_CONSISTENCY_ABS_TOL: f64 = 1.0e-12;
-const ASSEMBLY_CONSISTENCY_REL_TOL: f64 = 1.0e-9;
-
-fn assembly_values_consistent(a: f64, b: f64) -> bool {
-    let scale = a.abs().max(b.abs());
-    let tolerance = ASSEMBLY_CONSISTENCY_ABS_TOL.max(ASSEMBLY_CONSISTENCY_REL_TOL * scale);
-    (a - b).abs() <= tolerance
-}
-
-fn summed_assembly_inertia_body_kg_m2(bodies: &[AssemblyBodyConfig]) -> [[f64; 3]; 3] {
-    let total_mass: f64 = bodies.iter().map(|body| body.dry_mass_kg).sum();
-    let mut weighted_cg = [0.0_f64; 3];
-    for body in bodies {
-        for (axis, component) in weighted_cg.iter_mut().enumerate() {
-            *component += body.dry_cg_body_m[axis] * body.dry_mass_kg;
-        }
-    }
-    let assembly_cg = [
-        weighted_cg[0] / total_mass,
-        weighted_cg[1] / total_mass,
-        weighted_cg[2] / total_mass,
-    ];
-
-    let mut assembly_inertia = [[0.0_f64; 3]; 3];
-    for body in bodies {
-        let Some(inertia) = body.dry_inertia_body_kg_m2 else {
-            continue;
-        };
-        let r = [
-            body.dry_cg_body_m[0] - assembly_cg[0],
-            body.dry_cg_body_m[1] - assembly_cg[1],
-            body.dry_cg_body_m[2] - assembly_cg[2],
-        ];
-        let r_dot_r = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
-        for i in 0..3 {
-            for j in 0..3 {
-                let identity_component = if i == j { r_dot_r } else { 0.0 };
-                let parallel_axis = identity_component - r[i] * r[j];
-                assembly_inertia[i][j] += inertia[i][j] + body.dry_mass_kg * parallel_axis;
-            }
-        }
-    }
-    assembly_inertia
 }
 
 /// One declared body within `[vehicle.assembly]`.

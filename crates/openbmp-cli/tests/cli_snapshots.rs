@@ -392,7 +392,7 @@ initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]",
     );
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
-        stderr.contains("inertia_tensor_body_kg_m2"),
+        stderr.contains("dry_inertia_body_kg_m2"),
         "stderr should explain the missing inertia tensor, got: {stderr}"
     );
 }

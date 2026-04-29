@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn parses_minimal_scenario() {
         let scenario = Scenario::from_toml_str(MINIMAL).unwrap();
-        assert_eq!(scenario.document.openbmp.scenario, 1);
+        assert_eq!(scenario.document.openbmp.scenario, 2);
         assert_eq!(
             scenario.document.meta.validation,
             ValidationStatus::ValidatedToy
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_fields() {
-        let toml = MINIMAL.replace("mass_kg = 1.0", "mass_kg = 1.0\nextra_kg = 2.0");
+        let toml = MINIMAL.replace("dry_mass_kg = 1.0", "dry_mass_kg = 1.0\nextra_kg = 2.0");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(matches!(err, ScenarioError::ParseToml(_)));
     }
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_unit_suffix_before_serde_unknown_field() {
-        let toml = MINIMAL.replace("mass_kg = 1.0", "mass = 1.0");
+        let toml = MINIMAL.replace("dry_mass_kg = 1.0", "dry_mass = 1.0");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(matches!(err, ScenarioError::MissingUnitSuffix { .. }));
     }
@@ -813,7 +813,7 @@ kind = "isothermal""#,
         // continue to parse and validate identically under the Phase-2
         // model registry that 2.10.B installs.
         let scenario = Scenario::from_toml_str(MINIMAL).unwrap();
-        assert_eq!(scenario.document.openbmp.scenario, 1);
+        assert_eq!(scenario.document.openbmp.scenario, 2);
         assert_eq!(scenario.document.vehicle.kind, "point_mass");
     }
 
@@ -1087,7 +1087,7 @@ action  = { kind = "stop", label = "scripted-stop" }
     #[test]
     fn parses_sloshing_tank_scenario() {
         let scenario = Scenario::from_toml_str(SLOSHING_TANK).expect("sloshing tank parses");
-        let tanks = &scenario.document.vehicle.assembly.as_ref().unwrap().tanks;
+        let tanks = &&scenario.document.vehicle.assembly.tanks;
         assert_eq!(tanks.len(), 1);
         assert!(
             tanks[0]
@@ -1163,7 +1163,7 @@ action  = { kind = "stop", label = "scripted-stop" }
                 "initial_slosh            = { displacement_body_m = [0.05, 0.0], velocity_body_m_s = [0.0, 0.0] }",
             );
         let scenario = Scenario::from_toml_str(&toml).expect("spring-mass tank parses");
-        let initial = scenario.document.vehicle.assembly.as_ref().unwrap().tanks[0]
+        let initial = &scenario.document.vehicle.assembly.tanks[0]
             .initial_slosh
             .as_ref()
             .unwrap();
@@ -1482,25 +1482,26 @@ action  = { kind = "stop", label = "max-q" }
     #[test]
     fn parses_two_body_assembly_block() {
         let scenario = Scenario::from_toml_str(ASSEMBLY_TWO_BODY).expect("parse");
-        let assembly = scenario
-            .document
-            .vehicle
-            .assembly
-            .as_ref()
-            .expect("assembly present");
+        let assembly = &scenario.document.vehicle.assembly;
         assert_eq!(assembly.bodies.len(), 2);
         assert_eq!(assembly.bodies[0].id, "main");
         assert_eq!(assembly.bodies[1].id, "fairing");
     }
 
     #[test]
-    fn legacy_vehicle_block_without_assembly_parses() {
-        // Existing Phase-2.10 / Phase-3.1 scenarios stay unchanged.
+    fn minimal_scenario_carries_single_body_assembly() {
+        // Phase-3.13 v2 contract: every scenario has a non-empty
+        // [vehicle.assembly] block; the analytic-toy scenario is no
+        // exception.
         let scenario = Scenario::from_toml_str(MINIMAL).expect("parse");
-        assert!(scenario.document.vehicle.assembly.is_none());
+        let assembly = &scenario.document.vehicle.assembly;
+        assert_eq!(assembly.bodies.len(), 1);
+        assert_eq!(assembly.bodies[0].id, "main");
+        assert_eq!(assembly.bodies[0].dry_mass_kg.to_bits(), 1.0_f64.to_bits());
     }
 
     #[test]
+    #[ignore = "Phase-3.13 retired flat fields; cross-consistency check is now structurally impossible"]
     fn rejects_mass_mismatch_between_flat_and_assembly() {
         let err = Scenario::from_toml_str(ASSEMBLY_MASS_MISMATCH).unwrap_err();
         assert!(
@@ -1510,6 +1511,7 @@ action  = { kind = "stop", label = "max-q" }
     }
 
     #[test]
+    #[ignore = "Phase-3.13 retired flat fields; relative-tolerance cross-consistency is now structurally impossible"]
     fn rejects_small_mass_mismatch_with_relative_tolerance() {
         let toml = ASSEMBLY_TWO_BODY
             .replace(
@@ -1541,6 +1543,7 @@ action  = { kind = "stop", label = "max-q" }
     }
 
     #[test]
+    #[ignore = "Phase-3.13 retired flat fields; rigid inertia cross-consistency is now structurally impossible"]
     fn rejects_rigid_flat_and_assembly_inertia_mismatch() {
         let err = Scenario::from_toml_str(ASSEMBLY_RIGID_INERTIA_MISMATCH).unwrap_err();
         assert!(
@@ -1555,12 +1558,7 @@ action  = { kind = "stop", label = "max-q" }
             Ok(s) => s,
             Err(e) => panic!("parse failed: {e:?}"),
         };
-        let assembly = scenario
-            .document
-            .vehicle
-            .assembly
-            .as_ref()
-            .expect("assembly present");
+        let assembly = &scenario.document.vehicle.assembly;
         assert_eq!(assembly.engines.len(), 2);
         assert_eq!(assembly.engines[0].id, "engine_a");
         assert_eq!(assembly.engines[1].id, "engine_b");
@@ -1647,12 +1645,7 @@ action  = { kind = "stop", label = "max-q" }
             Ok(s) => s,
             Err(e) => panic!("parse failed: {e:?}"),
         };
-        let assembly = scenario
-            .document
-            .vehicle
-            .assembly
-            .as_ref()
-            .expect("assembly present");
+        let assembly = &scenario.document.vehicle.assembly;
         assert_eq!(assembly.effectors.len(), 1);
         let effector = &assembly.effectors[0];
         assert_eq!(effector.id, "delta_e");
@@ -1784,12 +1777,7 @@ action  = { kind = "stop", label = "max-q" }
             Ok(s) => s,
             Err(e) => panic!("parse failed: {e:?}"),
         };
-        let assembly = scenario
-            .document
-            .vehicle
-            .assembly
-            .as_ref()
-            .expect("assembly present");
+        let assembly = &scenario.document.vehicle.assembly;
         assert_eq!(assembly.recovery.len(), 3);
         assert_eq!(assembly.recovery[0].id, "main_chute");
         assert!(matches!(

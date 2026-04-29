@@ -17,7 +17,7 @@
 # Pinned digests are SHA-256 of the referenced files at the commit
 # that ships this scenario; mismatches fail closed.
 
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name        = "niskanen-2009-chapter6-rigid"
@@ -33,17 +33,24 @@ seed    = 0x4e69_736b_616e_6552  # same seed root with last byte 'R' for rigid
 
 [vehicle]
 kind                                 = "rigid_body"
-mass_kg                              = 0.080
 initial_position_eci_m               = [0.0, 0.0, 0.0]
 initial_velocity_eci_m_s             = [0.0, 0.0, 0.0]
 initial_quaternion_body_to_eci_xyzw  = [0.0, 0.0, 0.0, 1.0]
 initial_angular_velocity_body_rad_s  = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "niskanen-c6-rigid"
+
 # Rod-shaped academic inertia tensor for a 56 cm body length × 80 g
 # airframe. I_xx = I_yy = (1/12)·m·L² for a thin rod transverse to its
 # axis; I_zz uses a small body-radius approximation. These values are
 # academic placeholders — Phase-3.7 tank/slosh and Phase-3.6 motor
 # inertia derivatives will refine the inertia model.
-inertia_tensor_body_kg_m2 = [
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 0.080
+dry_inertia_body_kg_m2 = [
   [0.00209, 0.0,     0.0],
   [0.0,     0.00209, 0.0],
   [0.0,     0.0,     0.00002],

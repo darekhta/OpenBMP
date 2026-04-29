@@ -6,7 +6,7 @@
 # the flat to 0.090 to deliberately cause the consistency check to
 # fail). Synthetic; not a benchmark.
 
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name        = "assembly-mass-mismatch-fixture"
@@ -21,7 +21,6 @@ seed    = 0xdead_beef
 
 [vehicle]
 kind                     = "point_mass"
-mass_kg                  = 0.090
 initial_position_eci_m   = [0.0, 0.0, 0.0]
 initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
 

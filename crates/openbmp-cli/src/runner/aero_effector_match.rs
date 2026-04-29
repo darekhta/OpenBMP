@@ -61,12 +61,7 @@ pub fn assert_axes_match_effectors(
     if axis_names.is_empty() {
         return Ok(Vec::new());
     }
-    let effectors = document
-        .vehicle
-        .assembly
-        .as_ref()
-        .map(|a| a.effectors.as_slice())
-        .unwrap_or_default();
+    let effectors = document.vehicle.assembly.effectors.as_slice();
 
     let mut bindings = Vec::with_capacity(axis_names.len());
     let mut seen_bare_axis_names: std::collections::BTreeSet<&str> =

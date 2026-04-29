@@ -25,7 +25,7 @@
 #
 # Synthetic round numbers; not a benchmark.
 
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name        = "sloshing-tank"
@@ -40,16 +40,10 @@ seed    = 0x536c_6f73_6854_616e   # "SloshTan"
 
 [vehicle]
 kind                                = "rigid_body"
-mass_kg                             = 1000.0
 initial_position_eci_m              = [0.0, 0.0, 0.0]
 initial_velocity_eci_m_s            = [0.0, 0.0, 100.0]
 initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
 initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
-inertia_tensor_body_kg_m2 = [
-  [500.0,   0.0, 0.0],
-  [  0.0, 500.0, 0.0],
-  [  0.0,   0.0, 50.0],
-]
 
 [vehicle.assembly]
 id             = "sloshing-tank"

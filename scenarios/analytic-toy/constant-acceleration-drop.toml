@@ -11,7 +11,7 @@
 # constant force on a constant mass. This scenario is the Phase-1
 # end-to-end validation case described in `docs/verification.md`.
 
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name = "constant-acceleration-drop"
@@ -27,9 +27,16 @@ seed = 0x0afe_f00d_dead_beef
 
 [vehicle]
 kind = "point_mass"
-mass_kg = 1.0
 initial_position_eci_m = [0.0, 0.0, 0.0]
 initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "drop-test"
+
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
 
 [environment]
 frame_profile = "toy-fixed-earth"

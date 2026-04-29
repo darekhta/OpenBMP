@@ -80,18 +80,16 @@ impl RecoveryRack {
         let mut devices: BTreeMap<RecoveryId, Box<dyn RecoveryModel>> = BTreeMap::new();
         let mut scenario_ids: BTreeMap<RecoveryId, String> = BTreeMap::new();
 
-        if let Some(assembly) = &document.vehicle.assembly {
-            for config in &assembly.recovery {
-                let id = recovery_id_from_config(config);
-                let device = build_device(id, config)?;
-                if devices.insert(id, device).is_some() {
-                    return Err(CliError::Recovery {
-                        field: format!("vehicle.assembly.recovery.{id_text}", id_text = config.id),
-                        reason: "duplicate recovery id (collision in fnv1a-64 hash)".to_owned(),
-                    });
-                }
-                scenario_ids.insert(id, config.id.clone());
+        for config in &document.vehicle.assembly.recovery {
+            let id = recovery_id_from_config(config);
+            let device = build_device(id, config)?;
+            if devices.insert(id, device).is_some() {
+                return Err(CliError::Recovery {
+                    field: format!("vehicle.assembly.recovery.{id_text}", id_text = config.id),
+                    reason: "duplicate recovery id (collision in fnv1a-64 hash)".to_owned(),
+                });
             }
+            scenario_ids.insert(id, config.id.clone());
         }
 
         Ok(Self {

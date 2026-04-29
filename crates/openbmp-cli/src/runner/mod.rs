@@ -116,16 +116,8 @@ pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
 /// would silently drop the deflection telemetry.
 fn is_phase1_byte_stable_shape(scenario: &Scenario) -> bool {
     let document = &scenario.document;
-    let has_effectors = document
-        .vehicle
-        .assembly
-        .as_ref()
-        .is_some_and(|a| !a.effectors.is_empty());
-    let has_engines = document
-        .vehicle
-        .assembly
-        .as_ref()
-        .is_some_and(|a| !a.engines.is_empty());
+    let has_effectors = !document.vehicle.assembly.effectors.is_empty();
+    let has_engines = !document.vehicle.assembly.engines.is_empty();
     document.vehicle.kind == "point_mass"
         && document.environment.gravity == "constant"
         && document.environment.atmosphere == "none"

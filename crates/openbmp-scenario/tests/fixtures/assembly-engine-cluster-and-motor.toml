@@ -4,7 +4,7 @@
 # `rejects_scenario_with_both_motor_and_engines_blocks` to verify
 # the AmbiguousPropulsion cross-block check.
 
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name        = "assembly-engine-cluster-and-motor-fixture"
@@ -19,7 +19,6 @@ seed    = 0xdead_beef
 
 [vehicle]
 kind                     = "point_mass"
-mass_kg                  = 1.0
 initial_position_eci_m   = [0.0, 0.0, 0.0]
 initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
 
