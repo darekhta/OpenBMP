@@ -1,7 +1,7 @@
 //! Phase-3.3 declarative vehicle composition.
 //!
 //! `VehicleAssembly` is the L1-side trait the scenario layer
-//! resolves into. Phase-3.3 ships [`BasicAssembly`] — a flat-tree
+//! resolves into. Phase-3.3 ships [`Assembly`] — a flat-tree
 //! struct holding `Vec<Body>` plus empty placeholders for the
 //! Phase-3.4 / 3.6 / 3.7 / 3.10 sub-trees (effectors, engines, tanks,
 //! sensors).
@@ -9,7 +9,7 @@
 //! # Resolution
 //!
 //! The runner-side resolver takes a parsed scenario document and
-//! produces a [`BasicAssembly`]. Phase-3.3 runners consume the
+//! produces a [`Assembly`]. Phase-3.3 runners consume the
 //! assembly's dry mass properties during kernel mass construction while
 //! force / moment plumbing remains on the existing per-runner paths.
 //! [`KernelModelBundle`] and [`KernelModelBundleRigid`] are forward
@@ -29,7 +29,7 @@ pub mod basic;
 pub mod body;
 pub mod bundle;
 
-pub use basic::{BasicAssembly, BasicAssemblyBuilder};
+pub use basic::{Assembly, AssemblyBuilder};
 pub use body::{Body, BodyGeometry};
 pub use bundle::{KernelModelBundle, KernelModelBundleRigid};
 
@@ -43,7 +43,7 @@ use crate::error::VehicleError;
 
 /// Phase-3.3 mission-side declarative composition surface.
 ///
-/// `BasicAssembly` is the concrete impl OpenBMP ships;
+/// `Assembly` is the concrete impl OpenBMP ships;
 /// downstream-user vehicle composition shapes (e.g. an
 /// `ArvAssembly` for a particular reference vehicle) may implement
 /// the trait directly and route through the same resolver.
@@ -79,7 +79,7 @@ pub trait VehicleAssembly {
 // Phase-3.4 note: effectors live on the runner-side `EffectorRack`
 // (see `crates/openbmp-cli/src/runner/effectors.rs`), not on the
 // assembly. Keeping `Box<dyn ControlEffector>` off the trait surface
-// keeps `BasicAssembly: Clone` and avoids interior-mutability
+// keeps `Assembly: Clone` and avoids interior-mutability
 // complications. Future phases (3.6 engines, 3.7 tanks) will add
 // their own subsystem accessors as needed.
 

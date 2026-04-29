@@ -75,9 +75,6 @@ ignite_at_s  = 0.0
 variant      = "solid"
 file_sha256  = "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e"
 
-[forces]
-models = ["gravity", "thrust", "aero"]
-
 [telemetry]
 output.parquet = "out/niskanen-2009-chapter6-with-mission.parquet"
 

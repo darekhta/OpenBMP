@@ -130,9 +130,6 @@ ignite_at_s  = 0.0
 variant      = "solid"
 file_sha256  = "0aa6cbaa495e6a50fa337c99a2a92229c8166ce3ee183b2c49159e7d96e026c3"
 
-[forces]
-models = ["gravity", "thrust", "aero"]
-
 [telemetry]
 output.parquet = "out/rocketpy-calisto.parquet"
 

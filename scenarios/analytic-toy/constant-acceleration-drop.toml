@@ -45,6 +45,12 @@ gravity_m_s2  = 9.80665
 atmosphere    = "none"
 wind          = "none"
 
+# Phase-3.13.E: `[forces]` is optional and the loader auto-derives
+# `["gravity"]` from this minimal scenario when omitted. The
+# explicit declaration is retained because the parser unit tests in
+# `crates/openbmp-scenario/src/scenario.rs` substitute on this line
+# to construct negative test variants. Drop the block to exercise
+# the auto-derivation path.
 [forces]
 models = ["gravity"]
 

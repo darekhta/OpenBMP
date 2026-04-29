@@ -18,7 +18,7 @@
 //!   `initial_angular_velocity_body_rad_s`, and
 //!   `inertia_tensor_body_kg_m2` fields. Wires the rigid-body
 //!   adapter family (`GravityForceAdapter` /
-//!   `MotorThrustForceAdapter` / `AxialDragForceAdapter` over
+//!   `MotorThrustForceAdapter` / `DeckDragForceAdapter` over
 //!   `RigidBodyState`, plus `RigidMotorMassAdapter`) into a
 //!   `RigidBodyKernel` with `ZeroMoment`. Wind, body-frame moments,
 //!   and rigid-body aero side-force / pitching moment land in
@@ -122,8 +122,8 @@ fn is_phase1_byte_stable_shape(scenario: &Scenario) -> bool {
         && document.environment.gravity == "constant"
         && document.environment.atmosphere == "none"
         && document.environment.wind == "none"
-        && document.forces.models.len() == 1
-        && document.forces.models[0] == "gravity"
+        && document.force_models().len() == 1
+        && document.force_models()[0] == "gravity"
         && document.aero.is_none()
         && document.propulsion.is_none()
         && document.wind.is_none()

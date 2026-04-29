@@ -50,7 +50,18 @@ impl Scenario {
 
         // Re-decode from the parsed Value, avoiding a second round of
         // tokenisation.
-        let document: ScenarioDocument = value.try_into()?;
+        let mut document: ScenarioDocument = value.try_into()?;
+
+        // Phase-3.13.E: synthesise the default `[forces]` list from the
+        // assembly when the scenario does not declare one explicitly.
+        // After this point the rest of the runner sees a populated
+        // `Option<ForcesConfig>` and behaves as if the scenario had
+        // hand-listed the derived models.
+        if document.forces.is_none() {
+            document.forces = Some(crate::ForcesConfig {
+                models: document.resolved_force_models(),
+            });
+        }
 
         let scenario = Self {
             document,

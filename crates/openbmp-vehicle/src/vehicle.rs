@@ -1,4 +1,4 @@
-//! `Vehicle` trait and the Phase-2 [`BasicVehicle`] composition.
+//! `Vehicle` trait and the Phase-2 [`KernelVehicle`] composition.
 //!
 //! The architecture's long-term `Vehicle` trait is:
 //!
@@ -10,7 +10,7 @@
 //! }
 //! ```
 //!
-//! Phase 2.8 ships [`BasicVehicle`], which carries ordered force /
+//! Phase 2.8 ships [`KernelVehicle`], which carries ordered force /
 //! moment lists plus a single mass model. It also implements
 //! `ForceModel<S>` / `MomentModel<S>` so the Phase-1 kernel can consume
 //! the force and moment composition through its existing generic
@@ -18,7 +18,7 @@
 //!
 //! # Composition order
 //!
-//! `BasicVehicle::force_n_eci` evaluates the force-model list in
+//! `KernelVehicle::force_n_eci` evaluates the force-model list in
 //! **declared order** and sums components in a left fold with
 //! locked operand order:
 //!
@@ -35,8 +35,8 @@
 //!
 //! # Per-model breakdown for telemetry
 //!
-//! [`BasicVehicle::evaluate_force_breakdown`] /
-//! [`BasicVehicle::evaluate_moment_breakdown`] evaluate the lists and
+//! [`KernelVehicle::evaluate_force_breakdown`] /
+//! [`KernelVehicle::evaluate_moment_breakdown`] evaluate the lists and
 //! return a [`ForceBreakdown`] / [`MomentBreakdown`] carrying both
 //! per-model components and the total. The kernel-side adapter at
 //! Phase 2.10 evaluates the breakdown once per step, uses the total for
@@ -47,7 +47,7 @@
 //!
 //! Pure arithmetic on `f64`; locked operand order on the summation;
 //! no FMA. Vehicle composition is a pure-function operation over the
-//! provided context — `BasicVehicle` itself carries no per-step state.
+//! provided context — `KernelVehicle` itself carries no per-step state.
 
 use nalgebra::Vector3;
 
@@ -201,12 +201,12 @@ pub trait Vehicle<S: SimState>: ForceModel<S> + MomentModel<S> {
 }
 
 // ---------------------------------------------------------------------
-// BasicVehicle
+// KernelVehicle
 // ---------------------------------------------------------------------
 
 /// Phase-2 vehicle composition: ordered force-model and moment-model
 /// lists plus one mass model over a single [`SimState`] type.
-pub struct BasicVehicle<S: SimState> {
+pub struct KernelVehicle<S: SimState> {
     force_model_names: Vec<String>,
     force_models: Vec<Box<dyn ForceModel<S>>>,
     moment_model_names: Vec<String>,
@@ -214,9 +214,9 @@ pub struct BasicVehicle<S: SimState> {
     mass_model: BoxedMassModel,
 }
 
-impl<S: SimState> std::fmt::Debug for BasicVehicle<S> {
+impl<S: SimState> std::fmt::Debug for KernelVehicle<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BasicVehicle")
+        f.debug_struct("KernelVehicle")
             .field("force_model_names", &self.force_model_names)
             .field("force_models", &"<dyn ForceModel list>")
             .field("moment_model_names", &self.moment_model_names)
@@ -226,7 +226,7 @@ impl<S: SimState> std::fmt::Debug for BasicVehicle<S> {
     }
 }
 
-impl<S: SimState> BasicVehicle<S> {
+impl<S: SimState> KernelVehicle<S> {
     /// Construct from explicit ordered force / moment lists and a mass
     /// model.
     ///
@@ -327,7 +327,7 @@ impl<S: SimState> BasicVehicle<S> {
     }
 }
 
-impl<S: SimState> ForceModel<S> for BasicVehicle<S> {
+impl<S: SimState> ForceModel<S> for KernelVehicle<S> {
     fn force_n_eci(&self, ctx: ForceContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError> {
         // Locked left fold in declared order. No FMA.
         let mut total = Vector3::zeros();
@@ -339,7 +339,7 @@ impl<S: SimState> ForceModel<S> for BasicVehicle<S> {
     }
 }
 
-impl<S: SimState> MomentModel<S> for BasicVehicle<S> {
+impl<S: SimState> MomentModel<S> for KernelVehicle<S> {
     fn moment_n_m_body(&self, ctx: MomentContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError> {
         let mut total = Vector3::zeros();
         for m in &self.moment_models {
@@ -350,7 +350,7 @@ impl<S: SimState> MomentModel<S> for BasicVehicle<S> {
     }
 }
 
-impl<S: SimState> Vehicle<S> for BasicVehicle<S> {
+impl<S: SimState> Vehicle<S> for KernelVehicle<S> {
     fn force_models(&self) -> &[Box<dyn ForceModel<S>>] {
         &self.force_models
     }
@@ -430,7 +430,7 @@ fn validate_model_name(
 
 /// Convenience wrapper that turns any `Box<dyn MassModel>` into a
 /// type the kernel can take through its existing generic mass-model
-/// surface. Phase 2.8 ships this for symmetry with `BasicVehicle`;
+/// surface. Phase 2.8 ships this for symmetry with `KernelVehicle`;
 /// Phase 3 will introduce a `MultiStageMass` impl directly.
 pub struct BoxedMassModel(pub Box<dyn MassModel>);
 
@@ -522,8 +522,8 @@ mod tests {
 
     #[test]
     fn empty_vehicle_returns_zero_force() {
-        let v: BasicVehicle<PointMassState> =
-            BasicVehicle::new(vec![], vec![], test_mass_model()).unwrap();
+        let v: KernelVehicle<PointMassState> =
+            KernelVehicle::new(vec![], vec![], test_mass_model()).unwrap();
         let state = fixture_state();
         let env = null_env();
         let f = v.force_n_eci(ctx(&state, &env)).unwrap();
@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn single_force_model_vehicle_byte_matches_raw_model() {
         let g = ConstantGravityForce::down_z(9.806_65);
-        let v: BasicVehicle<PointMassState> = BasicVehicle::new(
+        let v: KernelVehicle<PointMassState> = KernelVehicle::new(
             vec![NamedForceModel::new("gravity", Box::new(g))],
             vec![],
             test_mass_model(),
@@ -556,7 +556,7 @@ mod tests {
     fn two_force_models_returns_ordered_left_fold_sum() {
         let g1 = ConstantGravityForce::new(Vector3::new(1.0, 0.0, 0.0));
         let g2 = ConstantGravityForce::new(Vector3::new(0.0, 2.0, 0.0));
-        let v: BasicVehicle<PointMassState> = BasicVehicle::new(
+        let v: KernelVehicle<PointMassState> = KernelVehicle::new(
             vec![
                 NamedForceModel::new("a", Box::new(g1)),
                 NamedForceModel::new("b", Box::new(g2)),
@@ -575,7 +575,7 @@ mod tests {
     fn force_breakdown_returns_per_model_components_and_total() {
         let g1 = ConstantGravityForce::new(Vector3::new(1.0, 0.0, 0.0));
         let g2 = ConstantGravityForce::new(Vector3::new(0.0, 2.0, 0.0));
-        let v: BasicVehicle<PointMassState> = BasicVehicle::new(
+        let v: KernelVehicle<PointMassState> = KernelVehicle::new(
             vec![
                 NamedForceModel::new("a", Box::new(g1)),
                 NamedForceModel::new("b", Box::new(g2)),
@@ -613,7 +613,7 @@ mod tests {
         // The fail model is FIRST. The trailing model would have side
         // effects (returns gravity); confirm it's not evaluated by
         // verifying the error is the fail model's error.
-        let v: BasicVehicle<PointMassState> = BasicVehicle::new(
+        let v: KernelVehicle<PointMassState> = KernelVehicle::new(
             vec![
                 NamedForceModel::new("fail", Box::new(AlwaysFail)),
                 NamedForceModel::new("gravity", Box::new(ConstantGravityForce::down_z(9.806_65))),
@@ -640,7 +640,7 @@ mod tests {
         let neg_big = ConstantGravityForce::new(Vector3::new(-1.0e16, 0.0, 0.0));
         let small = ConstantGravityForce::new(Vector3::new(1.0, 0.0, 0.0));
 
-        let forward: BasicVehicle<PointMassState> = BasicVehicle::new(
+        let forward: KernelVehicle<PointMassState> = KernelVehicle::new(
             vec![
                 NamedForceModel::new("big", Box::new(big)),
                 NamedForceModel::new("neg_big", Box::new(neg_big)),
@@ -652,7 +652,7 @@ mod tests {
         .unwrap();
 
         // Same models, different order: small first, then big, then neg_big.
-        let reordered: BasicVehicle<PointMassState> = BasicVehicle::new(
+        let reordered: KernelVehicle<PointMassState> = KernelVehicle::new(
             vec![
                 NamedForceModel::new("small", Box::new(small)),
                 NamedForceModel::new("big", Box::new(big)),
@@ -679,7 +679,7 @@ mod tests {
     fn force_n_eci_is_bit_stable_across_two_evaluations() {
         let g1 = ConstantGravityForce::new(Vector3::new(1.234_567, -2.345_678, 9.806_65));
         let g2 = ConstantGravityForce::new(Vector3::new(0.123_456, 0.234_567, -0.345_678));
-        let v: BasicVehicle<PointMassState> = BasicVehicle::new(
+        let v: KernelVehicle<PointMassState> = KernelVehicle::new(
             vec![
                 NamedForceModel::new("a", Box::new(g1)),
                 NamedForceModel::new("b", Box::new(g2)),
@@ -700,7 +700,7 @@ mod tests {
     #[test]
     fn moment_models_compose_in_declared_order() {
         let zm = ZeroMoment;
-        let v: BasicVehicle<PointMassState> = BasicVehicle::new(
+        let v: KernelVehicle<PointMassState> = KernelVehicle::new(
             vec![],
             vec![NamedMomentModel::new("zero", Box::new(zm))],
             test_mass_model(),
@@ -724,7 +724,7 @@ mod tests {
     #[test]
     fn constructor_rejects_empty_force_model_name() {
         let zf = ZeroForce;
-        let err = BasicVehicle::<PointMassState>::new(
+        let err = KernelVehicle::<PointMassState>::new(
             vec![NamedForceModel::new("", Box::new(zf))],
             vec![],
             test_mass_model(),
@@ -735,7 +735,7 @@ mod tests {
 
     #[test]
     fn constructor_rejects_whitespace_force_model_name() {
-        let err = BasicVehicle::<PointMassState>::new(
+        let err = KernelVehicle::<PointMassState>::new(
             vec![NamedForceModel::new("bad name", Box::new(ZeroForce))],
             vec![],
             test_mass_model(),
@@ -746,7 +746,7 @@ mod tests {
 
     #[test]
     fn constructor_rejects_telemetry_separator_in_force_model_name() {
-        let err = BasicVehicle::<PointMassState>::new(
+        let err = KernelVehicle::<PointMassState>::new(
             vec![NamedForceModel::new("bad.name", Box::new(ZeroForce))],
             vec![],
             test_mass_model(),
@@ -757,7 +757,7 @@ mod tests {
 
     #[test]
     fn constructor_rejects_duplicate_force_model_name() {
-        let err = BasicVehicle::<PointMassState>::new(
+        let err = KernelVehicle::<PointMassState>::new(
             vec![
                 NamedForceModel::new("dup", Box::new(ZeroForce)),
                 NamedForceModel::new("dup", Box::new(ZeroForce)),
@@ -771,7 +771,7 @@ mod tests {
 
     #[test]
     fn constructor_rejects_duplicate_moment_model_name() {
-        let err = BasicVehicle::<PointMassState>::new(
+        let err = KernelVehicle::<PointMassState>::new(
             vec![],
             vec![
                 NamedMomentModel::new("dup", Box::new(ZeroMoment)),
@@ -785,11 +785,11 @@ mod tests {
 
     #[test]
     fn vehicle_trait_exposes_mass_model() {
-        let v: BasicVehicle<PointMassState> =
-            BasicVehicle::new(vec![], vec![], test_mass_model()).unwrap();
+        let v: KernelVehicle<PointMassState> =
+            KernelVehicle::new(vec![], vec![], test_mass_model()).unwrap();
         assert_eq!(v.mass_model().mass_kg(SimTime::ZERO).unwrap(), 1.0);
         assert_eq!(
-            <BasicVehicle<PointMassState> as Vehicle<PointMassState>>::mass_model(&v)
+            <KernelVehicle<PointMassState> as Vehicle<PointMassState>>::mass_model(&v)
                 .mass_kg(SimTime::ZERO)
                 .unwrap(),
             1.0
@@ -798,7 +798,7 @@ mod tests {
 
     #[test]
     fn vehicle_trait_methods_return_declared_order_names() {
-        let v: BasicVehicle<PointMassState> = BasicVehicle::new(
+        let v: KernelVehicle<PointMassState> = KernelVehicle::new(
             vec![
                 NamedForceModel::new("gravity", Box::new(ConstantGravityForce::down_z(9.806_65))),
                 NamedForceModel::new("aero", Box::new(ZeroForce)),

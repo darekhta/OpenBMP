@@ -69,9 +69,6 @@ kind = "us_standard_1976"
 deck         = "../../data/aero/synthetic-elevon-1d.toml"
 deck_sha256  = "a145e3d234ac141ed97b22bc3d247ffcefaf32da3660bc98a6615c4e802107bd"
 
-[forces]
-models = ["gravity", "aero"]
-
 [telemetry]
 output.parquet = "out/single-elevon-aero-deflected.parquet"
 

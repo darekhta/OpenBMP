@@ -54,8 +54,8 @@ use openbmp_sim::{
 use openbmp_state::PointMassState;
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
-    AxialDragForceAdapter, BasicVehicle, BoxedMassModel, EngineClusterForceAdapter,
-    EngineClusterMassAdapter, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel,
+    BoxedMassModel, DeckDragForceAdapter, EngineClusterForceAdapter, EngineClusterMassAdapter,
+    KernelVehicle, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel,
     RecoveryRackForceAdapter, TankRackForceAdapter, TankRackMassAdapter, Vehicle,
 };
 use uom::si::f64::Mass;
@@ -64,7 +64,7 @@ use uom::si::mass::kilogram;
 use crate::error::CliError;
 use crate::runner::RunOutcome;
 use crate::runner::assembly::dry_mass_kg_at;
-use openbmp_vehicle::BasicAssembly;
+use openbmp_vehicle::Assembly;
 
 // Stable model-ids assigned to each force / mass model the runner
 // wires. Scenario-supplied force-model names ("aero", "thrust") are
@@ -146,8 +146,8 @@ pub fn run(
     let initial_state = build_initial_state(document, &loaded_models, &assembly)?;
     let kernel_vehicle = build_vehicle(document, &loaded_models, &assembly)?;
     // The runner-side breakdown vehicle is a *separate* construction
-    // of the same models. `BasicVehicle::evaluate_force_breakdown`
-    // takes `&self`, but `BasicVehicle` is not `Clone` (the inner
+    // of the same models. `KernelVehicle::evaluate_force_breakdown`
+    // takes `&self`, but `KernelVehicle` is not `Clone` (the inner
     // `Box<dyn ForceModel>` lists are not). Re-building from scratch
     // avoids interior-mutability or Arc gymnastics; both copies are
     // stateless and evaluate identically per the Phase-2.6/2.5
@@ -365,7 +365,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
 
     // Force list: subset of {gravity, aero, thrust}, scenario-declared
     // order is the determinism contract.
-    for name in &document.forces.models {
+    for name in document.force_models() {
         if !matches!(name.as_str(), "gravity" | "aero" | "thrust") {
             return Err(CliError::UnsupportedScenario {
                 what: format!("forces.models entry `{name}` (only gravity, aero, thrust wired)"),
@@ -382,7 +382,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
         || document.environment.atmosphere.as_str(),
         |a| a.kind.as_str(),
     );
-    let has_aero = document.forces.models.iter().any(|m| m == "aero");
+    let has_aero = document.force_models().iter().any(|m| m == "aero");
     if has_aero && atmosphere_kind != "us_standard_1976" {
         return Err(CliError::UnsupportedScenario {
             what: format!(
@@ -462,7 +462,7 @@ fn required_resolved_file<'a>(
 fn build_initial_state(
     document: &ScenarioDocument,
     loaded_models: &LoadedModels,
-    assembly: &BasicAssembly,
+    assembly: &Assembly,
 ) -> Result<PointMassState, CliError> {
     let p = document.vehicle.initial_position_eci_m;
     let v = document.vehicle.initial_velocity_eci_m_s;
@@ -495,11 +495,11 @@ fn build_initial_state(
 fn build_vehicle(
     document: &ScenarioDocument,
     loaded_models: &LoadedModels,
-    assembly: &BasicAssembly,
-) -> Result<BasicVehicle<PointMassState>, CliError> {
+    assembly: &Assembly,
+) -> Result<KernelVehicle<PointMassState>, CliError> {
     let mut named: Vec<NamedForceModel<PointMassState>> = Vec::new();
 
-    for name in &document.forces.models {
+    for name in document.force_models() {
         match name.as_str() {
             "gravity" => {
                 let g = document.environment.gravity_m_s2.ok_or_else(|| {
@@ -524,7 +524,7 @@ fn build_vehicle(
                     }
                 })?;
                 let atmosphere = UsStandard1976::new();
-                let drag = AxialDragForceAdapter::new(deck, atmosphere, PHASE2_AERO_MODEL_ID);
+                let drag = DeckDragForceAdapter::new(deck, atmosphere, PHASE2_AERO_MODEL_ID);
                 named.push(NamedForceModel::new("aero", Box::new(drag)));
             }
             "thrust" => {
@@ -619,19 +619,19 @@ fn build_vehicle(
         ));
     }
 
-    // BasicVehicle requires a mass model even for vehicle-internal
+    // KernelVehicle requires a mass model even for vehicle-internal
     // queries (Phase-2.8 contract). The kernel's mass model is built
     // separately in `build_mass_model` because it owns its own copy.
     let vehicle_mass = build_mass_model(document, loaded_models, assembly)?;
-    BasicVehicle::new(named, vec![], vehicle_mass).map_err(|e| CliError::UnsupportedScenario {
-        what: format!("BasicVehicle construction failed: {e}"),
+    KernelVehicle::new(named, vec![], vehicle_mass).map_err(|e| CliError::UnsupportedScenario {
+        what: format!("KernelVehicle construction failed: {e}"),
     })
 }
 
 fn build_mass_model(
     document: &ScenarioDocument,
     loaded_models: &LoadedModels,
-    assembly: &BasicAssembly,
+    assembly: &Assembly,
 ) -> Result<Box<dyn MassModel>, CliError> {
     let start_time = SimTime::from_seconds(document.time.start_s);
     let dry_mass_kg = dry_mass_kg_at(assembly, start_time, "vehicle.assembly")?;
@@ -846,8 +846,8 @@ impl Phase2ChannelSet {
 
         // Per-model force breakdown channels, in scenario-declared
         // order — the same order the kernel uses for the RK4 sum.
-        let mut force_components = Vec::with_capacity(document.forces.models.len());
-        for name in &document.forces.models {
+        let mut force_components = Vec::with_capacity(document.force_models().len());
+        for name in document.force_models() {
             let x_channel = TelemetryChannel::<f64>::new(
                 alloc(),
                 format!("force.{name}.x_n"),
@@ -1001,7 +1001,7 @@ fn record_step<I, F, MM, E, SC>(
     table: &mut TelemetryTable,
     kernel: &SimulationKernel<PointMassState, I, F, MM, E, SC>,
     channels: &Phase2ChannelSet,
-    breakdown_vehicle: &BasicVehicle<PointMassState>,
+    breakdown_vehicle: &KernelVehicle<PointMassState>,
     breakdown_atmosphere: Option<&UsStandard1976>,
     fired_events: &[openbmp_sim::FiredEvent],
     effector_snapshot: &[openbmp_vehicle::EffectorState],
@@ -1025,7 +1025,7 @@ where
     row.insert(&channels.mass, state.mass.get::<kilogram>())?;
 
     // Atmosphere sample at the post-step state. The runner uses ECI
-    // +z as the altitude proxy, matching the AxialDragForceAdapter
+    // +z as the altitude proxy, matching the DeckDragForceAdapter
     // convention. Sub-zero altitudes are clamped to 0 m so the
     // atmosphere model does not reject post-apogee descent past
     // ground.
@@ -1217,7 +1217,9 @@ mod tests {
         let mut scenario = niskanen_scenario();
         scenario.document.time.stop_s = 0.010;
         scenario.document.propulsion = None;
-        scenario.document.forces.models = vec!["gravity".to_owned(), "aero".to_owned()];
+        scenario.document.forces = Some(openbmp_scenario::ForcesConfig {
+            models: vec!["gravity".to_owned(), "aero".to_owned()],
+        });
 
         let resolved_files = scenario.resolved_files().expect("resolve aero deck");
         assert!(resolved_files.contains_key("aero.deck"));
@@ -1299,7 +1301,9 @@ mod tests {
         let mut scenario = niskanen_scenario();
         scenario.document.aero = None;
         scenario.document.propulsion = None;
-        scenario.document.forces.models = vec!["gravity".to_owned()];
+        scenario.document.forces = Some(openbmp_scenario::ForcesConfig {
+            models: vec!["gravity".to_owned()],
+        });
         // Override the assembly's single body's dry mass to a known
         // 12.5 kg value so the assertion below is checking that the
         // mass model picks up the assembly value (not the canonical

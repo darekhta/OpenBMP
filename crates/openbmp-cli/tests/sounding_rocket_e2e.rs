@@ -409,7 +409,7 @@ fn niskanen_parquet_force_breakdown_components_are_finite_and_nonzero() {
     // Per-row telemetry contract: every published per-model force
     // component is finite, and the Niskanen thrust/aero components are
     // not identically zero. The openbmp-vehicle unit tests cover the
-    // BasicVehicle declared-order sum; this e2e test verifies the CLI
+    // KernelVehicle declared-order sum; this e2e test verifies the CLI
     // actually publishes the component channels.
     use arrow::array::Float64Array;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;

@@ -17,7 +17,7 @@
 use approx::assert_abs_diff_eq;
 use nalgebra::{Matrix3, Vector3};
 use openbmp_core::{Body as BodyFrame, BodyId, Position3, SimTime, VehicleId};
-use openbmp_vehicle::{AssemblyError, BasicAssembly, Body, BodyGeometry, VehicleAssembly};
+use openbmp_vehicle::{Assembly, AssemblyError, Body, BodyGeometry, VehicleAssembly};
 use uom::si::mass::kilogram;
 
 fn rod_inertia(length_m: f64, mass_kg: f64) -> Matrix3<f64> {
@@ -41,7 +41,7 @@ fn make_body(id: &str, mass_kg: f64, cg: Position3<BodyFrame>, length_m: f64) ->
 
 #[test]
 fn single_body_assembly_lifts_mass() {
-    let assembly = BasicAssembly::builder(VehicleId::from_path("niskanen-rocket"))
+    let assembly = Assembly::builder(VehicleId::from_path("niskanen-rocket"))
         .add_body(make_body(
             "vehicle.assembly.bodies.main",
             0.080,
@@ -57,7 +57,7 @@ fn single_body_assembly_lifts_mass() {
 
 #[test]
 fn two_body_assembly_sums_mass_and_weights_cg() {
-    let assembly = BasicAssembly::builder(VehicleId::from_path("two-body-fairing"))
+    let assembly = Assembly::builder(VehicleId::from_path("two-body-fairing"))
         .add_body(make_body(
             "vehicle.assembly.bodies.main",
             0.080,
@@ -86,8 +86,8 @@ fn two_body_assembly_sums_mass_and_weights_cg() {
 
 #[test]
 fn build_twice_produces_bit_identical_mass_properties() {
-    fn build() -> BasicAssembly {
-        BasicAssembly::builder(VehicleId::from_path("v"))
+    fn build() -> Assembly {
+        Assembly::builder(VehicleId::from_path("v"))
             .add_body(make_body("main", 0.080, Position3::origin(), 0.56))
             .unwrap()
             .add_body(make_body(
@@ -126,7 +126,7 @@ fn build_twice_produces_bit_identical_mass_properties() {
 
 #[test]
 fn duplicate_body_id_rejected() {
-    let err = BasicAssembly::builder(VehicleId::from_path("v"))
+    let err = Assembly::builder(VehicleId::from_path("v"))
         .add_body(make_body("main", 0.080, Position3::origin(), 0.56))
         .unwrap()
         .add_body(make_body("main", 0.005, Position3::origin(), 0.05))
@@ -136,7 +136,7 @@ fn duplicate_body_id_rejected() {
 
 #[test]
 fn empty_assembly_rejected() {
-    let err = BasicAssembly::builder(VehicleId::from_path("v"))
+    let err = Assembly::builder(VehicleId::from_path("v"))
         .build()
         .unwrap_err();
     assert!(matches!(err, AssemblyError::EmptyBodies));

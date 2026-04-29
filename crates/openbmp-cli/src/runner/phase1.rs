@@ -40,7 +40,7 @@ use uom::si::mass::kilogram;
 use crate::error::CliError;
 use crate::runner::RunOutcome;
 use crate::runner::assembly::dry_mass_kg_at;
-use openbmp_vehicle::BasicAssembly;
+use openbmp_vehicle::Assembly;
 
 /// Concrete kernel type assembled by the Phase-1 runner.
 pub type Phase1Kernel = SimulationKernel<
@@ -136,7 +136,7 @@ pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
 
 fn build_kernel_with_assembly(
     scenario: &Scenario,
-    assembly: &BasicAssembly,
+    assembly: &Assembly,
 ) -> Result<Phase1Kernel, CliError> {
     let document = &scenario.document;
 
@@ -168,9 +168,9 @@ fn build_kernel_with_assembly(
     }
 
     // Forces: only `["gravity"]`.
-    if document.forces.models.len() != 1 || document.forces.models[0] != "gravity" {
+    if document.force_models().len() != 1 || document.force_models()[0] != "gravity" {
         return Err(CliError::UnsupportedScenario {
-            what: format!("forces.models = {:?}", document.forces.models),
+            what: format!("forces.models = {:?}", document.force_models()),
         });
     }
 
@@ -250,7 +250,7 @@ fn build_kernel_with_assembly(
 /// added.
 pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
     // Phase-3.3: resolve the scenario's vehicle composition into a
-    // `BasicAssembly` and use its dry mass for kernel construction.
+    // `Assembly` and use its dry mass for kernel construction.
     let assembly = crate::runner::assembly::synthesize_assembly(&scenario.document)?;
 
     let mut kernel = build_kernel_with_assembly(scenario, &assembly)?;

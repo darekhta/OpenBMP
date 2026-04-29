@@ -1,7 +1,7 @@
 //! Kernel-side adapters that wrap L2 physics models
 //! (`openbmp-env`, `openbmp-aero`, `openbmp-propulsion`) into
 //! `openbmp-sim` `ForceModel` / `MassModel` impls consumable by
-//! the kernel and by [`crate::BasicVehicle`].
+//! the kernel and by [`crate::KernelVehicle`].
 //!
 //! `openbmp-vehicle` is the architectural seam where L2 physics
 //! flow into L1 kernel surfaces. Each adapter owns a generic over
@@ -16,7 +16,7 @@
 //! the rigid-body counterparts:
 //!
 //! - The same `GravityForceAdapter`, `MotorThrustForceAdapter`, and
-//!   `AxialDragForceAdapter` structs gain `ForceModel<RigidBodyState>`
+//!   `DeckDragForceAdapter` structs gain `ForceModel<RigidBodyState>`
 //!   impls. Gravity and aero are state-symmetric (they read
 //!   `state.position` / `state.velocity`, both fields exist on both
 //!   states). Motor thrust differs: the rigid impl rotates body-`+z`
@@ -328,7 +328,7 @@ impl<M: Motor> MassModel for MotorMassAdapter<M> {
 }
 
 // ---------------------------------------------------------------------
-// AxialDragForceAdapter
+// DeckDragForceAdapter
 // ---------------------------------------------------------------------
 
 /// Point-mass axial-drag adapter.
@@ -350,13 +350,13 @@ impl<M: Motor> MassModel for MotorMassAdapter<M> {
 /// (CN, CM in body frame) is intentionally not consumed by this
 /// adapter — that is rigid-body work.
 #[derive(Clone, Debug)]
-pub struct AxialDragForceAdapter<Atm> {
+pub struct DeckDragForceAdapter<Atm> {
     deck: AeroDeck,
     atmosphere: Atm,
     model_id: ModelId,
 }
 
-impl<Atm> AxialDragForceAdapter<Atm> {
+impl<Atm> DeckDragForceAdapter<Atm> {
     /// Construct from a deck, an atmosphere model, and a stable
     /// model id.
     #[must_use]
@@ -381,7 +381,7 @@ impl<Atm> AxialDragForceAdapter<Atm> {
     }
 }
 
-impl<Atm: AtmosphereModel> ForceModel<PointMassState> for AxialDragForceAdapter<Atm> {
+impl<Atm: AtmosphereModel> ForceModel<PointMassState> for DeckDragForceAdapter<Atm> {
     fn force_n_eci(
         &self,
         ctx: ForceContext<'_, PointMassState>,
@@ -402,7 +402,7 @@ impl<Atm: AtmosphereModel> ForceModel<PointMassState> for AxialDragForceAdapter<
     }
 }
 
-impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for AxialDragForceAdapter<Atm> {
+impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for DeckDragForceAdapter<Atm> {
     fn force_n_eci(
         &self,
         ctx: ForceContext<'_, RigidBodyState>,
@@ -430,7 +430,7 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for AxialDragForceAdapter<
 }
 
 /// Shared axial-drag force computation used by both the point-mass
-/// and rigid-body `AxialDragForceAdapter` impls. Operand order is
+/// and rigid-body `DeckDragForceAdapter` impls. Operand order is
 /// locked here so a future refactor can't accidentally diverge the
 /// two paths.
 ///
@@ -1185,7 +1185,7 @@ impl MassModel for TankRackMassAdapter {
 /// declared recovery device from the kernel's
 /// [`openbmp_sim::RecoverySnapshotView`], queries the atmosphere for
 /// density at the body's altitude proxy (ECI z, clamped to ≥ 0 to
-/// match the [`AxialDragForceAdapter`] convention), and returns
+/// match the [`DeckDragForceAdapter`] convention), and returns
 /// `F = -½ ρ |v|² · Σ(C_D · A) · v̂` in ECI per Knacke 1992 Chapter 5.
 ///
 /// Drag is identical for point-mass and rigid-body kernels: it
@@ -1324,7 +1324,7 @@ fn compute_recovery_drag<Atm: AtmosphereModel>(
     let speed = speed_sq.sqrt();
 
     // Altitude proxy: ECI z (vertical-launch simplification, matches
-    // AxialDragForceAdapter). Clamp to ≥ 0 so atmosphere out-of-
+    // DeckDragForceAdapter). Clamp to ≥ 0 so atmosphere out-of-
     // envelope rejections don't fire on academic scenarios that
     // start sub-surface or run past surface impact.
     let altitude_m = position_eci_z.max(0.0);
@@ -1513,14 +1513,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // AxialDragForceAdapter
+    // DeckDragForceAdapter
     // -----------------------------------------------------------------
 
     #[test]
     fn axial_drag_adapter_zero_velocity_returns_zero_force() {
         let atm = IsothermalAtmosphere::ussa_sea_level();
         let deck = small_drag_deck();
-        let adapter = AxialDragForceAdapter::new(deck, atm, ModelId::new(0));
+        let adapter = DeckDragForceAdapter::new(deck, atm, ModelId::new(0));
         let state = fixture_state(0.0, 0.0);
         let env = null_env();
         let f = adapter.force_n_eci(ctx(&state, &env, 1.0, 0.0)).unwrap();
@@ -1532,7 +1532,7 @@ mod tests {
         // Small upward velocity at sea level. Drag should be in -z.
         let atm = IsothermalAtmosphere::ussa_sea_level();
         let deck = small_drag_deck();
-        let adapter = AxialDragForceAdapter::new(deck, atm, ModelId::new(0));
+        let adapter = DeckDragForceAdapter::new(deck, atm, ModelId::new(0));
         let state = fixture_state(0.0, 50.0);
         let env = null_env();
         let f = adapter.force_n_eci(ctx(&state, &env, 1.0, 0.0)).unwrap();
@@ -1561,7 +1561,7 @@ mod tests {
             1.0,
         )
         .unwrap();
-        let adapter = AxialDragForceAdapter::new(
+        let adapter = DeckDragForceAdapter::new(
             deck,
             IsothermalAtmosphere::ussa_sea_level(),
             ModelId::new(0),
@@ -1721,14 +1721,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Rigid AxialDragForceAdapter
+    // Rigid DeckDragForceAdapter
     // -----------------------------------------------------------------
 
     #[test]
     fn rigid_axial_drag_matches_point_mass_at_identity_orientation() {
         let atm = IsothermalAtmosphere::ussa_sea_level();
         let deck = small_drag_deck();
-        let adapter = AxialDragForceAdapter::new(deck, atm, ModelId::new(0));
+        let adapter = DeckDragForceAdapter::new(deck, atm, ModelId::new(0));
         let env = null_env();
         let pm_state = fixture_state(0.0, 50.0);
         let rb_state = rigid_state_with_orientation(0.0, 50.0, identity_body_to_eci());

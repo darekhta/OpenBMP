@@ -6,10 +6,10 @@
 //!   force / moment / mass composition surface, parameterised over
 //!   `S: SimState` so it serves both point-mass and rigid-body
 //!   kernels.
-//! * [`vehicle::BasicVehicle`] — Phase-2 implementation that
+//! * [`vehicle::KernelVehicle`] — Phase-2 implementation that
 //!   composes ordered force-model and moment-model lists and carries a
 //!   single mass model.
-//!   `BasicVehicle::force_n_eci` evaluates the list in declared
+//!   `KernelVehicle::force_n_eci` evaluates the list in declared
 //!   order with locked operand sum and short-circuits on the first
 //!   model error. The Phase-2 plan documents the contract
 //!   *order matters* — floating-point summation is not associative,
@@ -27,12 +27,12 @@
 //! # Phase-1 byte-stability preservation
 //!
 //! The Phase-1 analytic toy gravity path remains byte-identical when
-//! the single gravity force is wrapped in a one-element `BasicVehicle`;
+//! the single gravity force is wrapped in a one-element `KernelVehicle`;
 //! the `single_force_model_vehicle_byte_matches_raw_model` test asserts
 //! the direct model result, and the kernel integration test asserts the
 //! final state. The Phase-1 `analytic_toy` regression continues to use
 //! the kernel's existing generic `F: ForceModel<PointMassState>`
-//! surface, so swapping in `BasicVehicle` is a future-Phase opt-in.
+//! surface, so swapping in `KernelVehicle` is a future-Phase opt-in.
 //!
 //! # Determinism
 //!
@@ -58,13 +58,13 @@ pub mod tank;
 pub mod vehicle;
 
 pub use adapters::{
-    AxialDragForceAdapter, EngineClusterForceAdapter, EngineClusterMassAdapter,
+    DeckDragForceAdapter, EngineClusterForceAdapter, EngineClusterMassAdapter,
     EngineClusterMomentAdapter, GravityForceAdapter, MotorMassAdapter, MotorThrustForceAdapter,
     RecoveryRackForceAdapter, RigidMotorMassAdapter, TankRackForceAdapter, TankRackMassAdapter,
     TankRackMomentAdapter,
 };
 pub use assembly::{
-    AssemblyError, BasicAssembly, BasicAssemblyBuilder, Body, BodyGeometry, KernelModelBundle,
+    Assembly, AssemblyBuilder, AssemblyError, Body, BodyGeometry, KernelModelBundle,
     KernelModelBundleRigid, VehicleAssembly,
 };
 pub use effector::{
@@ -80,6 +80,6 @@ pub use tank::{
     MassContribution, MovingMassModel, PropellantSpec, RigidLiquid, Tank, TankError, TankGeometry,
 };
 pub use vehicle::{
-    BasicVehicle, BoxedMassModel, ForceBreakdown, MomentBreakdown, NamedForceModel,
+    BoxedMassModel, ForceBreakdown, KernelVehicle, MomentBreakdown, NamedForceModel,
     NamedMomentModel, Vehicle,
 };

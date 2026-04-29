@@ -58,9 +58,6 @@ gravity_m_s2  = 9.80665
 atmosphere    = "none"
 wind          = "none"
 
-[forces]
-models = ["gravity"]
-
 [telemetry]
 output.parquet = "out/single-elevon-elevator-step.parquet"
 

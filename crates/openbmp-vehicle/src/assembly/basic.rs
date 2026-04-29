@@ -1,4 +1,4 @@
-//! Concrete [`BasicAssembly`] — flat-tree [`crate::assembly::VehicleAssembly`] impl.
+//! Concrete [`Assembly`] — flat-tree [`crate::assembly::VehicleAssembly`] impl.
 //!
 //! Phase-3.3 ships the single-body and multi-body summation cases;
 //! propulsion / effectors / tanks / sensors are reserved slots
@@ -21,21 +21,21 @@ use crate::error::VehicleError;
 /// ControlEffector>` trait objects (which are not Cloneable).
 /// Engines / tanks / sensors materialise in 3.6 / 3.7 / 3.10.
 #[derive(Clone, Debug)]
-pub struct BasicAssembly {
+pub struct Assembly {
     id: VehicleId,
     bodies: Vec<Body>,
 }
 
-impl BasicAssembly {
-    /// Begin building a new assembly. Use [`BasicAssemblyBuilder::add_body`]
+impl Assembly {
+    /// Begin building a new assembly. Use [`AssemblyBuilder::add_body`]
     /// to append bodies in scenario-declared order.
     #[must_use]
-    pub fn builder(id: VehicleId) -> BasicAssemblyBuilder {
-        BasicAssemblyBuilder::new(id)
+    pub fn builder(id: VehicleId) -> AssemblyBuilder {
+        AssemblyBuilder::new(id)
     }
 }
 
-impl VehicleAssembly for BasicAssembly {
+impl VehicleAssembly for Assembly {
     fn id(&self) -> VehicleId {
         self.id
     }
@@ -100,14 +100,14 @@ fn sum_bodies_mass_properties(bodies: &[Body]) -> MassProperties {
     )
 }
 
-/// Builder for [`BasicAssembly`].
+/// Builder for [`Assembly`].
 #[derive(Debug)]
-pub struct BasicAssemblyBuilder {
+pub struct AssemblyBuilder {
     id: VehicleId,
     bodies: Vec<Body>,
 }
 
-impl BasicAssemblyBuilder {
+impl AssemblyBuilder {
     fn new(id: VehicleId) -> Self {
         Self {
             id,
@@ -130,17 +130,17 @@ impl BasicAssemblyBuilder {
         Ok(self)
     }
 
-    /// Finalise into [`BasicAssembly`].
+    /// Finalise into [`Assembly`].
     ///
     /// # Errors
     ///
     /// Returns [`AssemblyError::EmptyBodies`] when no bodies were
     /// added.
-    pub fn build(self) -> Result<BasicAssembly, AssemblyError> {
+    pub fn build(self) -> Result<Assembly, AssemblyError> {
         if self.bodies.is_empty() {
             return Err(AssemblyError::EmptyBodies);
         }
-        Ok(BasicAssembly {
+        Ok(Assembly {
             id: self.id,
             bodies: self.bodies,
         })
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn empty_assembly_rejected() {
-        let err = BasicAssembly::builder(VehicleId::from_path("v"))
+        let err = Assembly::builder(VehicleId::from_path("v"))
             .build()
             .unwrap_err();
         assert!(matches!(err, AssemblyError::EmptyBodies));
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn duplicate_body_id_rejected() {
-        let err = BasicAssembly::builder(VehicleId::from_path("v"))
+        let err = Assembly::builder(VehicleId::from_path("v"))
             .add_body(make_body("b", 1.0, Position3::origin()))
             .unwrap()
             .add_body(make_body("b", 2.0, Position3::origin()))
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn single_body_assembly_lifts_mass_properties() {
-        let assembly = BasicAssembly::builder(VehicleId::from_path("v"))
+        let assembly = Assembly::builder(VehicleId::from_path("v"))
             .add_body(make_body("only", 0.080, Position3::origin()))
             .unwrap()
             .build()
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn two_body_assembly_sums_masses() {
-        let assembly = BasicAssembly::builder(VehicleId::from_path("v"))
+        let assembly = Assembly::builder(VehicleId::from_path("v"))
             .add_body(make_body("main", 0.080, Position3::origin()))
             .unwrap()
             .add_body(make_body("fairing", 0.005, Position3::new(0.0, 0.0, 0.6)))
@@ -231,14 +231,14 @@ mod tests {
     fn body_declaration_order_changes_summed_cg_byte_output() {
         let body_main = make_body("main", 0.080, Position3::origin());
         let body_fairing = make_body("fairing", 0.005, Position3::new(0.0, 0.0, 0.6));
-        let forward = BasicAssembly::builder(VehicleId::from_path("v"))
+        let forward = Assembly::builder(VehicleId::from_path("v"))
             .add_body(body_main.clone())
             .unwrap()
             .add_body(body_fairing.clone())
             .unwrap()
             .build()
             .unwrap();
-        let reversed = BasicAssembly::builder(VehicleId::from_path("v"))
+        let reversed = Assembly::builder(VehicleId::from_path("v"))
             .add_body(body_fairing)
             .unwrap()
             .add_body(body_main)

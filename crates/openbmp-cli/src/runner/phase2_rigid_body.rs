@@ -50,8 +50,8 @@ use openbmp_sim::{
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
-    AxialDragForceAdapter, BasicAssembly, BasicVehicle, BoxedMassModel, EngineClusterForceAdapter,
-    EngineClusterMassAdapter, EngineClusterMomentAdapter, GravityForceAdapter,
+    Assembly, BoxedMassModel, DeckDragForceAdapter, EngineClusterForceAdapter,
+    EngineClusterMassAdapter, EngineClusterMomentAdapter, GravityForceAdapter, KernelVehicle,
     MotorThrustForceAdapter, NamedForceModel, RigidMotorMassAdapter, Vehicle,
 };
 use uom::si::f64::Mass;
@@ -325,7 +325,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
             ),
         });
     }
-    for name in &document.forces.models {
+    for name in document.force_models() {
         if !matches!(name.as_str(), "gravity" | "aero" | "thrust") {
             return Err(CliError::UnsupportedScenario {
                 what: format!("forces.models entry `{name}` (only gravity, aero, thrust wired)"),
@@ -339,7 +339,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
         || document.environment.atmosphere.as_str(),
         |a| a.kind.as_str(),
     );
-    let has_aero = document.forces.models.iter().any(|m| m == "aero");
+    let has_aero = document.force_models().iter().any(|m| m == "aero");
     if has_aero && atmosphere_kind != "us_standard_1976" {
         return Err(CliError::UnsupportedScenario {
             what: format!(
@@ -416,7 +416,7 @@ fn required_resolved_file<'a>(
 fn build_initial_state(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
-    assembly: &BasicAssembly,
+    assembly: &Assembly,
 ) -> Result<RigidBodyState, CliError> {
     let p = document.vehicle.initial_position_eci_m;
     let v = document.vehicle.initial_velocity_eci_m_s;
@@ -476,10 +476,10 @@ fn build_initial_state(
 fn build_vehicle(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
-    assembly: &BasicAssembly,
-) -> Result<BasicVehicle<RigidBodyState>, CliError> {
+    assembly: &Assembly,
+) -> Result<KernelVehicle<RigidBodyState>, CliError> {
     let mut named: Vec<NamedForceModel<RigidBodyState>> = Vec::new();
-    for name in &document.forces.models {
+    for name in document.force_models() {
         match name.as_str() {
             "gravity" => {
                 let g = document.environment.gravity_m_s2.ok_or_else(|| {
@@ -507,7 +507,7 @@ fn build_vehicle(
                             what: "forces includes `aero` but [aero] block is missing".to_owned(),
                         })?;
                 let atmosphere = UsStandard1976::new();
-                let drag = AxialDragForceAdapter::new(deck, atmosphere, PHASE3_AERO_MODEL_ID);
+                let drag = DeckDragForceAdapter::new(deck, atmosphere, PHASE3_AERO_MODEL_ID);
                 named.push(NamedForceModel::new("aero", Box::new(drag)));
             }
             "thrust" => {
@@ -598,15 +598,15 @@ fn build_vehicle(
         ));
     }
 
-    // BasicVehicle requires a mass model; the kernel keeps a separate
+    // KernelVehicle requires a mass model; the kernel keeps a separate
     // copy through `RigidMotorMassAdapter` / `ConstantMassRigid` for
     // its own state propagation. We give the vehicle a scalar
     // `BoxedMassModel` view so the breakdown evaluator can query mass
     // when it needs to.
     let vehicle_mass = build_vehicle_scalar_mass_model(document, loaded, assembly)?;
-    BasicVehicle::new(named, vec![], Box::new(vehicle_mass)).map_err(|e| {
+    KernelVehicle::new(named, vec![], Box::new(vehicle_mass)).map_err(|e| {
         CliError::UnsupportedScenario {
-            what: format!("BasicVehicle construction failed: {e}"),
+            what: format!("KernelVehicle construction failed: {e}"),
         }
     })
 }
@@ -614,7 +614,7 @@ fn build_vehicle(
 fn build_vehicle_scalar_mass_model(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
-    assembly: &BasicAssembly,
+    assembly: &Assembly,
 ) -> Result<BoxedMassModel, CliError> {
     use openbmp_sim::{ConstantMass, MassModel};
     use openbmp_vehicle::MotorMassAdapter;
@@ -808,7 +808,7 @@ impl openbmp_sim::RigidMassModel for RigidMassEitherKind {
 fn build_mass_model(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
-    assembly: &BasicAssembly,
+    assembly: &Assembly,
 ) -> Result<RigidMassEither, CliError> {
     let start_time = SimTime::from_seconds(document.time.start_s);
     let dry_props = dry_mass_properties_at(assembly, start_time, "vehicle.assembly")?;
@@ -1017,8 +1017,8 @@ impl RigidChannelSet {
             (None, None, None, None)
         };
 
-        let mut force_components = Vec::with_capacity(document.forces.models.len());
-        for name in &document.forces.models {
+        let mut force_components = Vec::with_capacity(document.force_models().len());
+        for name in document.force_models() {
             let x_channel = TelemetryChannel::<f64>::new(
                 alloc(),
                 format!("force.{name}.x_n"),
@@ -1181,7 +1181,7 @@ fn record_step<I, F, MOM, MM, E, SC>(
     table: &mut TelemetryTable,
     kernel: &SimulationKernel<RigidBodyState, I, F, RigidModels<MOM, MM>, E, SC>,
     channels: &RigidChannelSet,
-    breakdown_vehicle: &BasicVehicle<RigidBodyState>,
+    breakdown_vehicle: &KernelVehicle<RigidBodyState>,
     breakdown_atmosphere: Option<&UsStandard1976>,
     fired_events: &[openbmp_sim::FiredEvent],
     effector_snapshot: &[openbmp_vehicle::EffectorState],

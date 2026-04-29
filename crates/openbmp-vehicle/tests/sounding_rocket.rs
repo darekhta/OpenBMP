@@ -38,7 +38,7 @@ use openbmp_sim::{
 };
 use openbmp_state::PointMassState;
 use openbmp_vehicle::{
-    AxialDragForceAdapter, BasicVehicle, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel,
+    DeckDragForceAdapter, KernelVehicle, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel,
 };
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -142,17 +142,17 @@ fn build_initial_state() -> PointMassState {
     )
 }
 
-fn build_d12_vehicle() -> BasicVehicle<PointMassState> {
+fn build_d12_vehicle() -> KernelVehicle<PointMassState> {
     let motor = load_d12_motor();
     let deck = load_d12_aero_deck();
     let atmosphere = UsStandard1976::new();
 
     // Three force models in declared order: gravity, drag, thrust.
     let gravity = ConstantGravityForce::new(Vector3::new(0.0, 0.0, -G_M_S2));
-    let drag = AxialDragForceAdapter::new(deck, atmosphere, D12_DRAG_MODEL_ID);
+    let drag = DeckDragForceAdapter::new(deck, atmosphere, D12_DRAG_MODEL_ID);
     let thrust = MotorThrustForceAdapter::new(motor, IGNITION_TIME_S, D12_THRUST_MODEL_ID);
 
-    BasicVehicle::new(
+    KernelVehicle::new(
         vec![
             NamedForceModel::new("gravity", Box::new(gravity)),
             NamedForceModel::new("drag", Box::new(drag)),
@@ -181,17 +181,17 @@ fn build_niskanen_initial_state() -> PointMassState {
     )
 }
 
-fn build_niskanen_chapter6_vehicle() -> BasicVehicle<PointMassState> {
+fn build_niskanen_chapter6_vehicle() -> KernelVehicle<PointMassState> {
     let motor = load_niskanen_c6_motor();
     let deck = load_niskanen_aero_deck();
     let atmosphere = UsStandard1976::new();
 
     let gravity = ConstantGravityForce::new(Vector3::new(0.0, 0.0, -G_M_S2));
-    let drag = AxialDragForceAdapter::new(deck, atmosphere, NISKANEN_DRAG_MODEL_ID);
+    let drag = DeckDragForceAdapter::new(deck, atmosphere, NISKANEN_DRAG_MODEL_ID);
     let thrust =
         MotorThrustForceAdapter::new(motor, NISKANEN_IGNITION_TIME_S, NISKANEN_THRUST_MODEL_ID);
 
-    BasicVehicle::new(
+    KernelVehicle::new(
         vec![
             NamedForceModel::new("gravity", Box::new(gravity)),
             NamedForceModel::new("drag", Box::new(drag)),

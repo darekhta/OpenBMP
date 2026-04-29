@@ -68,9 +68,6 @@ wind          = "none"
 [atmosphere]
 kind = "us_standard_1976"
 
-[forces]
-models = ["gravity"]
-
 [telemetry]
 output.parquet = "out/parachute-descent.parquet"
 

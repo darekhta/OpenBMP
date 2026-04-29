@@ -4,18 +4,21 @@ OpenBMP scenarios are TOML-shaped, versioned configuration files. They define
 models, initial state, deterministic schedule, telemetry outputs, and
 validation rules for one simulation run.
 
-The schema header is `openbmp.scenario = 1`. Phase 2 added optional blocks
-(`[aero]`, `[propulsion]`, `[wind]`, `[atmosphere]`, `[frames.local_origin]`,
-`[sensors]`) without bumping the schema version, so all Phase-1 scenarios
-continue to parse byte-identically. Phase-2 specifics live in the
-[Phase-2 Extensions](#phase-2-extensions) section at the bottom.
+The schema header is `openbmp.scenario = 2`. Phase-3.13 retired the v1
+flat-vehicle shape (top-level `vehicle.mass_kg` and
+`vehicle.inertia_tensor_body_kg_m2`); every scenario now carries a
+mandatory `[vehicle.assembly]` block and per-body dry mass / inertia
+live on `[[vehicle.assembly.bodies]]`. v1 scenarios fail closed at the
+header check; the per-sub-phase commit history is the migration
+reference for downstream users with v1 files. Phase-2 specifics live in
+the [Phase-2 Extensions](#phase-2-extensions) section at the bottom.
 
 This document is the format contract. It intentionally favors strict, verbose
 fields over compact syntax.
 
 ## Format Rules
 
-- The root key `openbmp.scenario = 1` is mandatory.
+- The root key `openbmp.scenario = 2` is mandatory.
 - Unknown top-level tables and unknown fields are parse errors.
 - All dimensional fields include units in the field name.
 - All vector fields include frame names in the field name or table schema.

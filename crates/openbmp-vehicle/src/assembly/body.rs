@@ -1,6 +1,6 @@
 //! Phase-3.3 vehicle-assembly body data shape.
 //!
-//! A [`Body`] is one rigid member of a [`crate::assembly::BasicAssembly`].
+//! A [`Body`] is one rigid member of a [`crate::assembly::Assembly`].
 //! It carries dry mass, body-frame center of mass, body-frame inertia
 //! tensor, and a [`BodyGeometry`] descriptor used by the aero deck for
 //! reference-area / reference-length normalisation.
@@ -95,7 +95,7 @@ impl BodyGeometry {
     }
 }
 
-/// One rigid member of a [`crate::assembly::BasicAssembly`].
+/// One rigid member of a [`crate::assembly::Assembly`].
 #[derive(Clone, Debug)]
 #[allow(clippy::struct_field_names)] // mass-property fields carry the body-frame suffix per project convention
 pub struct Body {

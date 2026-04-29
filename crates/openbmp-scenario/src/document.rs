@@ -48,8 +48,14 @@ pub struct ScenarioDocument {
     pub vehicle: VehicleConfig,
     /// Environment model selection.
     pub environment: EnvironmentConfig,
-    /// Deterministic force ordering.
-    pub forces: ForcesConfig,
+    /// Deterministic force ordering. Optional in v2 — when absent the
+    /// loader derives the force list from the assembly (`gravity`
+    /// always; `thrust` when a motor or engine cluster is declared;
+    /// `aero` when an aero deck is declared). Scenarios that need a
+    /// non-default order or want to disable a specific force keep
+    /// declaring `[forces]` as an explicit override.
+    #[serde(default)]
+    pub forces: Option<ForcesConfig>,
     /// Telemetry output configuration.
     pub telemetry: TelemetryConfig,
     /// Runtime validation switches.
@@ -91,6 +97,51 @@ pub struct ScenarioDocument {
 }
 
 impl ScenarioDocument {
+    /// Borrow the resolved force-model list as a slice.
+    ///
+    /// Always populated after [`crate::Scenario::from_toml_str`] /
+    /// `from_file` because the parse layer synthesises a default list
+    /// from the assembly when `[forces]` is absent. Callers that
+    /// build a `ScenarioDocument` directly (without going through
+    /// `Scenario::from_*`) are expected to populate `forces`
+    /// themselves; the empty-slice fallback keeps this method total.
+    #[must_use]
+    pub fn force_models(&self) -> &[String] {
+        self.forces
+            .as_ref()
+            .map_or(&[][..], |f| f.models.as_slice())
+    }
+
+    /// Return the resolved force-model list. When `[forces]` is
+    /// declared explicitly, returns the declared list; otherwise
+    /// returns the list derived from the assembly:
+    ///
+    /// - `gravity` (always),
+    /// - `thrust` if `[propulsion.motor]` or
+    ///   `[[vehicle.assembly.engines]]` is present,
+    /// - `aero` if `[aero]` is present.
+    ///
+    /// The derived order matches the conventional Phase-3 ordering
+    /// `gravity → thrust → aero` so existing hand-listed scenarios
+    /// can drop `[forces]` and continue to produce the same kernel
+    /// hot path.
+    #[must_use]
+    pub fn resolved_force_models(&self) -> Vec<String> {
+        if let Some(forces) = &self.forces {
+            return forces.models.clone();
+        }
+        let mut models = vec!["gravity".to_owned()];
+        let has_thrust = self.propulsion.as_ref().is_some_and(|p| p.motor.is_some())
+            || !self.vehicle.assembly.engines.is_empty();
+        if has_thrust {
+            models.push("thrust".to_owned());
+        }
+        if self.aero.is_some() {
+            models.push("aero".to_owned());
+        }
+        models
+    }
+
     /// Validate semantic constraints against a model registry.
     ///
     /// # Errors
@@ -103,7 +154,9 @@ impl ScenarioDocument {
         self.time.validate()?;
         self.vehicle.validate(registry, self.time.dt_s)?;
         self.environment.validate(registry)?;
-        self.forces.validate(registry)?;
+        if let Some(forces) = &self.forces {
+            forces.validate(registry)?;
+        }
         self.telemetry.validate()?;
         if let Some(frames) = &self.frames {
             frames.validate()?;
@@ -296,14 +349,23 @@ impl ScenarioDocument {
     }
 
     fn validate_force_dependencies(&self) -> Result<(), ScenarioError> {
-        if self.forces.models.iter().any(|model| model == "aero") && self.aero.is_none() {
+        // Phase-3.13.E: `forces` is auto-synthesised at parse time
+        // from the assembly when absent, so this hook always sees a
+        // populated model list. The `unwrap_or` keeps the helper
+        // total-defined for future call paths that bypass parser
+        // synthesis.
+        let force_models: &[String] = self
+            .forces
+            .as_ref()
+            .map_or(&[][..], |f| f.models.as_slice());
+        if force_models.iter().any(|model| model == "aero") && self.aero.is_none() {
             return Err(ScenarioError::MissingRequiredField {
                 field: "aero".to_owned(),
                 role: ModelRole::Force,
                 name: "aero".to_owned(),
             });
         }
-        let has_thrust_force = self.forces.models.iter().any(|model| model == "thrust");
+        let has_thrust_force = force_models.iter().any(|model| model == "thrust");
         let has_motor = self
             .propulsion
             .as_ref()
@@ -423,7 +485,7 @@ pub struct VehicleConfig {
     pub initial_angular_velocity_body_rad_s: Option<[f64; 3]>,
     /// Mandatory declarative vehicle composition tree.
     ///
-    /// The runner builds an `openbmp_vehicle::BasicAssembly` from
+    /// The runner builds an `openbmp_vehicle::Assembly` from
     /// the declared bodies and resolves it into the kernel's flat
     /// model lists. Per-body dry mass lives on
     /// `[[vehicle.assembly.bodies]].dry_mass_kg`; per-body

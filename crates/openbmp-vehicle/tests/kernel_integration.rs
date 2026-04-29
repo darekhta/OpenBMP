@@ -1,5 +1,5 @@
 //! Phase-2.8 kernel integration: a kernel running with a
-//! single-element `BasicVehicle` wrapping `ConstantGravityForce`
+//! single-element `KernelVehicle` wrapping `ConstantGravityForce`
 //! produces byte-identical final state to a kernel running the
 //! raw `ConstantGravityForce` directly.
 //!
@@ -17,7 +17,7 @@ use openbmp_sim::{
     SimulationKernel,
 };
 use openbmp_state::PointMassState;
-use openbmp_vehicle::{BasicVehicle, NamedForceModel};
+use openbmp_vehicle::{KernelVehicle, NamedForceModel};
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
 
@@ -51,7 +51,7 @@ fn run_with_raw_force() -> PointMassState {
 }
 
 fn run_with_basic_vehicle() -> PointMassState {
-    let vehicle: BasicVehicle<PointMassState> = BasicVehicle::new(
+    let vehicle: KernelVehicle<PointMassState> = KernelVehicle::new(
         vec![NamedForceModel::new(
             "gravity",
             Box::new(ConstantGravityForce::new(Vector3::new(0.0, 0.0, -G_M_S2))),
@@ -82,7 +82,7 @@ fn single_element_vehicle_produces_byte_identical_final_state() {
     // The headline guarantee: a single-force vehicle must produce
     // byte-identical output to the raw-force kernel. This is the
     // Phase-1 `analytic_toy` byte-stability claim, exercised through
-    // the new BasicVehicle code path.
+    // the new KernelVehicle code path.
     assert_eq!(
         raw.time.as_seconds().to_bits(),
         via_vehicle.time.as_seconds().to_bits()

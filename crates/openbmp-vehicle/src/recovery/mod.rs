@@ -27,7 +27,7 @@
 //! `F_drag = -½ ρ |v|² C_D · A · v̂` per Knacke 1992 *Parachute
 //! Recovery Systems Design Manual* Chapter 5. Drag opposes the body's
 //! ECI velocity; the academic formulation ignores wind-relative
-//! velocity (matches the Phase-3.5 [`crate::adapters::AxialDragForceAdapter`]
+//! velocity (matches the Phase-3.5 [`crate::adapters::DeckDragForceAdapter`]
 //! convention). Drag is applied at the body CG; recovery devices
 //! contribute zero moment in Phase 3.9 (long risers are assumed to
 //! decouple body rotation from drag direction).

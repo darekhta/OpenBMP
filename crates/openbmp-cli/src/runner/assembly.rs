@@ -1,12 +1,12 @@
-//! Phase-3.3 scenario → [`openbmp_vehicle::BasicAssembly`] resolver.
+//! Phase-3.3 scenario → [`openbmp_vehicle::Assembly`] resolver.
 //!
 //! Bridges a parsed [`openbmp_scenario::ScenarioDocument`] to the
 //! `openbmp-vehicle` assembly tree. Two paths:
 //!
-//! - **`[vehicle.assembly]` declared** — build a [`BasicAssembly`]
+//! - **`[vehicle.assembly]` declared** — build a [`Assembly`]
 //!   from the declared bodies.
 //! - **No assembly declared (legacy)** — synthesise a single-body
-//!   `BasicAssembly` from `vehicle.mass_kg` and (if present)
+//!   `Assembly` from `vehicle.mass_kg` and (if present)
 //!   `inertia_tensor_body_kg_m2`. The single-body fast path
 //!   preserves byte-identical kernel construction for every
 //!   Phase-2.10 / 3.1 scenario.
@@ -21,24 +21,24 @@ use nalgebra::Matrix3;
 use openbmp_core::{BodyId, SimTime, VehicleId};
 use openbmp_scenario::{BodyGeometryConfig, ScenarioDocument};
 use openbmp_state::MassProperties;
-use openbmp_vehicle::{BasicAssembly, Body, BodyGeometry, VehicleAssembly};
+use openbmp_vehicle::{Assembly, Body, BodyGeometry, VehicleAssembly};
 
 use crate::error::CliError;
 
-/// Build the runtime [`BasicAssembly`] from the parsed scenario.
+/// Build the runtime [`Assembly`] from the parsed scenario.
 ///
-/// Build the runtime [`BasicAssembly`] from the parsed
+/// Build the runtime [`Assembly`] from the parsed
 /// `[vehicle.assembly]` declaration.
 ///
 /// # Errors
 ///
 /// Returns [`CliError::Scenario`] when the assembly fails
-/// `BasicAssembly` construction (invalid geometry, asymmetric
+/// `Assembly` construction (invalid geometry, asymmetric
 /// inertia, duplicate body id, etc.).
-pub fn synthesize_assembly(document: &ScenarioDocument) -> Result<BasicAssembly, CliError> {
+pub fn synthesize_assembly(document: &ScenarioDocument) -> Result<Assembly, CliError> {
     let vehicle_id = scenario_vehicle_id(document);
     let assembly = &document.vehicle.assembly;
-    let mut builder = BasicAssembly::builder(vehicle_id);
+    let mut builder = Assembly::builder(vehicle_id);
     for (index, config) in assembly.bodies.iter().enumerate() {
         let body_id = BodyId::from_path(&format!("vehicle.assembly.bodies.{id}", id = config.id));
         let geometry = body_geometry_from_config(&config.geometry);
@@ -79,7 +79,7 @@ pub fn synthesize_assembly(document: &ScenarioDocument) -> Result<BasicAssembly,
 /// Returns [`CliError::Assembly`] if the resolved assembly cannot
 /// produce dry mass properties.
 pub fn dry_mass_properties_at(
-    assembly: &BasicAssembly,
+    assembly: &Assembly,
     time: SimTime,
     field: &str,
 ) -> Result<MassProperties, CliError> {
@@ -97,11 +97,7 @@ pub fn dry_mass_properties_at(
 ///
 /// Returns [`CliError::Assembly`] if the assembly is structurally
 /// empty. Normal scenario resolution rejects that earlier.
-pub fn dry_mass_kg_at(
-    assembly: &BasicAssembly,
-    _time: SimTime,
-    field: &str,
-) -> Result<f64, CliError> {
+pub fn dry_mass_kg_at(assembly: &Assembly, _time: SimTime, field: &str) -> Result<f64, CliError> {
     let bodies = assembly.bodies();
     if bodies.is_empty() {
         return Err(CliError::Assembly {

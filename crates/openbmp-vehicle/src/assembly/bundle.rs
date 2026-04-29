@@ -19,14 +19,14 @@ use openbmp_sim::{MassModel, RigidMassModel, SimState};
 use openbmp_state::RigidBodyState;
 
 use crate::error::VehicleError;
-use crate::vehicle::{BasicVehicle, NamedForceModel, NamedMomentModel};
+use crate::vehicle::{KernelVehicle, NamedForceModel, NamedMomentModel};
 
 /// Flat lists the point-mass kernel consumes.
 ///
 /// `force_models` and `moment_models` carry scenario-declared order
 /// — that is the determinism contract every existing kernel test
 /// relies on. The bundle does not validate names; that happens
-/// downstream in [`BasicVehicle::new`].
+/// downstream in [`KernelVehicle::new`].
 pub struct KernelModelBundle<S: SimState> {
     /// Force models in scenario-declared order.
     pub force_models: Vec<NamedForceModel<S>>,
@@ -53,7 +53,7 @@ impl<S: SimState> KernelModelBundle<S> {
         self.force_models.len()
     }
 
-    /// Build a [`BasicVehicle`] from the bundle by consuming the
+    /// Build a [`KernelVehicle`] from the bundle by consuming the
     /// force / moment-model lists. Returns the constructed vehicle
     /// and the mass model passed in (the runner uses the mass model
     /// separately for the kernel's `MM` slot).
@@ -61,17 +61,17 @@ impl<S: SimState> KernelModelBundle<S> {
     /// The caller must supply the mass model rather than reading
     /// `self.mass_model` because [`MassModel`] is not [`Clone`]; the
     /// resolver hands out fresh mass-model instances for each
-    /// `BasicVehicle` (kernel + breakdown).
+    /// `KernelVehicle` (kernel + breakdown).
     ///
     /// # Errors
     ///
     /// Propagates [`VehicleError`] when the force / moment-model
-    /// names fail [`BasicVehicle::new`] validation.
+    /// names fail [`KernelVehicle::new`] validation.
     pub fn into_basic_vehicle(
         self,
         vehicle_owned_mass_model: Box<dyn MassModel>,
-    ) -> Result<BasicVehicle<S>, VehicleError> {
-        BasicVehicle::new(
+    ) -> Result<KernelVehicle<S>, VehicleError> {
+        KernelVehicle::new(
             self.force_models,
             self.moment_models,
             vehicle_owned_mass_model,
