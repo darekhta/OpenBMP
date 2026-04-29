@@ -2,7 +2,11 @@
 
 L1 lockstep simulation kernel.
 
-**Status:** Phase 2 — point-mass + 6-DOF rigid-body lockstep kernels.
+**Status:** Phase 3 — Phase-2 point-mass + 6-DOF rigid-body
+lockstep kernels plus the Phase-3.2 `EventTrigger` /
+`MissionPhaseGraph` event-driven scheduling surface and the
+Phase-3.7 slosh sub-step plumbing
+(`SimulationKernel::sub_step_count`).
 
 ## Purpose
 
@@ -23,6 +27,11 @@ L1 lockstep simulation kernel.
   in `openbmp-vehicle` is the Phase-2 path.
 - `StopCondition` trait and simple stop conditions
   (`AlwaysContinue`, `EndTime`, `MaxSteps`).
+- Phase-3.2 mission scheduling: `EventTrigger` trait,
+  `BuiltInEventTrigger` (AtTime / AtAltitude / AtApogee /
+  AtMassFraction / AtDynamicPressure), `EventBinding`,
+  `EventAction`, `MissionPhaseGraph` with cycle-rejection at
+  construction time and event-driven phase transitions.
 - `ModelEvalError` typed error surface; RK stages short-circuit
   fail-closed and the kernel records `(step_index, model_id)`.
 - `SimulationError`, `IntegratorError`, `StopReason` error types.
@@ -60,11 +69,13 @@ FMA-disabled on the reference platform per `.cargo/config.toml`. See
 
 ## Validation
 
-`checked` for the Phase-1 point-mass kernel surface and `validated-toy`
-for the Phase-2.1 rigid-body extension. Validated against the
-analytic-toy constant-acceleration drop (`tests/analytic_toy.rs`),
-torque-free precession (`tests/torque_free_precession.rs`), and the
-Phase-2.9/2.11 Niskanen sounding-rocket reduction (via the
+`checked` for the Phase-1 point-mass kernel surface and
+`validated-toy` for the Phase-2.1 rigid-body extension and the
+Phase-3.2 mission graph. Validated against the analytic-toy
+constant-acceleration drop (`tests/analytic_toy.rs`), torque-free
+precession (`tests/torque_free_precession.rs`), the
+Phase-2.9/2.11 Niskanen sounding-rocket reduction, and the
+Phase-3.11 RocketPy Calisto cross-tool case (via the
 `openbmp-vehicle` and `openbmp-cli` integration tests).
 
 ## Data Provenance

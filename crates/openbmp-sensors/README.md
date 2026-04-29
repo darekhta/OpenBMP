@@ -2,7 +2,14 @@
 
 L2 synthetic sensors.
 
-**Status:** Phase 2.7 implemented; Phase 3 sensor extensions deferred.
+**Status:** Phase 3 — Phase-2.7 `IdealStateSensor`, `SyntheticImu`,
+and `SyntheticBarometer` plus the Phase-3.10 sensor extensions:
+`SyntheticGnss` (per-axis Gaussian position / velocity noise +
+position-bias OU drift, IS-GPS-200 nominal noise budget),
+`SyntheticMagnetometer` (body-frame WMM 2025 truth + Gaussian
+noise + soft-iron + hard-iron bias), and `SyntheticStarTracker`
+(per-axis Gaussian quaternion-error injection). Multi-rate
+scheduling and sensor fault models remain Phase-5 work.
 
 ## Purpose
 
@@ -14,9 +21,15 @@ drivers, no real bus protocols, no real sensor parameters.**
 - `IdealStateSensor` -- bit-equal truth echo.
 - `SyntheticImu` -- IEEE 952 five-component noise model.
 - `SyntheticBarometer` -- Gaussian pressure noise plus OU bias drift.
+- `SyntheticGnss` -- IS-GPS-200 nominal noise budget plus tunable
+  position / velocity sigmas and OU position-bias drift.
+- `SyntheticMagnetometer` -- WMM 2025 body-frame truth plus
+  Gaussian noise and soft-iron / hard-iron biases.
+- `SyntheticStarTracker` -- per-axis Gaussian quaternion-error
+  injection (small-angle approximation).
 
-GNSS, magnetometer, star tracker, multi-rate scheduling, per-axis IMU
-budgets, and sensor fault models are Phase 3 work.
+Multi-rate scheduling, per-axis IMU budgets, and sensor fault
+models are Phase-5 work.
 
 ## Inputs and Outputs
 
@@ -36,8 +49,11 @@ drivers and do not model any specific fielded sensor package.
 ## Validity Range
 
 Noise budgets use SI units and validate finite, non-negative noise
-parameters plus positive sample intervals. Unsupported sensor classes
-are not present in Phase 2.7.
+parameters plus positive sample intervals. The Phase-3.10
+`SyntheticMagnetometer` requires a `MagneticModel` (the shipped
+`Wmm2025` is in-epoch through 2030-01-01); out-of-epoch queries
+fail closed. Unsupported sensor classes (multi-rate, fault
+injection) remain Phase-5 work.
 
 ## Determinism
 
@@ -48,9 +64,13 @@ domain-separated from telemetry `for_channel` streams.
 
 ## Validation
 
-`validated-toy` for the shipped synthetic budgets. Phase 2.7 validates
-deterministic replay, schema parsing, and the ARW Allan-deviation
-`-1/2` slope on a synthetic ARW-only IMU stream.
+`validated-toy` for the shipped synthetic budgets. Phase 2.7
+validates deterministic replay, schema parsing, and the ARW
+Allan-deviation `-1/2` slope on a synthetic ARW-only IMU stream.
+Phase-3.10 validates `SyntheticGnss` truth-bypass mode (zero
+noise = bit-equal truth), `SyntheticMagnetometer` against the WMM
+2025 body-frame field, and `SyntheticStarTracker` against the
+small-angle quaternion-error budget.
 
 ## Data Provenance
 

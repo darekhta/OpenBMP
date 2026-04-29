@@ -2,10 +2,15 @@
 
 L2 vehicle composition crate.
 
-**Status:** Phase 2 — `Vehicle` trait + `BasicVehicle` composition +
-kernel-side adapter family. The `VehicleAssembly` tree (Bodies /
-Propulsion / Effectors / Tanks / Sensors) and rigid-body adapters
-land in Phase 3.
+**Status:** Phase 3 — Phase-2 `Vehicle` / `BasicVehicle` foundation
+plus the full Phase-3 modular composable rocket surface:
+rigid-body kernel adapter family, `VehicleAssembly` tree (Bodies /
+Propulsion / Effectors / Tanks / Sensors / Recovery), `EngineModel`
++ `EngineCluster`, `ControlEffector` with rate / position /
+latency / deadband limits and the four canonical fault modes,
+`Tank` + `MovingMassModel` (rigid-liquid, equivalent-pendulum,
+equivalent-spring-mass, baffled-pendulum), and recovery devices
+(`ParachuteDrag`, `DrogueMainRecovery`, `DragDevice`).
 
 ## Purpose
 
@@ -18,11 +23,20 @@ land in Phase 3.
 - Kernel-side adapter family wrapping L2 physics into point-mass
   `ForceModel` / `MassModel` impls: `GravityForceAdapter`,
   `MotorThrustForceAdapter`, `MotorMassAdapter`,
-  `AxialDragForceAdapter`. The rigid-body adapter family lands in
-  Phase 3.
+  `AxialDragForceAdapter`. Phase 3 added the rigid-body
+  counterparts (`RigidGravityForceAdapter`,
+  `RigidMotorThrustForceAdapter`, `RigidMotorMassAdapter`,
+  `RigidAxialDragForceAdapter`, `RigidAeroDeckForceAdapter`,
+  `RigidEngineClusterAdapter`, `RecoveryRackForceAdapter`,
+  `MovingMassRackAdapter`).
 - Phase-2.9 Niskanen sounding-rocket integration test exercises the
   adapter stack end-to-end with the Estes C6 motor and a reduced-CD
   aero deck against the published 151.5 m experimental apogee.
+- Phase-3.11 RocketPy Calisto cross-tool case exercises the full
+  rigid-body stack (assembly tree → engine cluster → drogue + main
+  recovery → mission events → telemetry) end-to-end against
+  RocketPy's published 3349 m AGL apogee within an audited 2 %
+  cross-tool envelope.
 
 ## Inputs and Outputs
 
@@ -55,7 +69,10 @@ the kernel hot path once Phase 2 closes.
 Phase-2.9 adapter stack. Validated against ordered-sum correctness,
 first-failing-model short-circuit, declared-order determinism, and
 the Niskanen 2009 Chapter-6 sounding-rocket benchmark (apogee within
-±5% of the 151.5 m experimental value).
+±5% of the 151.5 m experimental value). Phase-3.11 adds the
+RocketPy Calisto cross-tool e2e covering the full assembly tree +
+engine cluster + drogue/main recovery hot path within an audited
+2 % apogee envelope.
 
 ## Data Provenance
 

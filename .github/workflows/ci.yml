@@ -200,7 +200,7 @@ jobs:
   # ----------------------------------------------------------------------
   # Determinism gate
   #
-  # The headline policy gate on x86_64-unknown-linux-gnu. Two
+  # The headline policy gate on x86_64-unknown-linux-gnu. Three
   # canonical scenarios are gated:
   #
   # 1. `scenarios/analytic-toy/constant-acceleration-drop.toml` —
@@ -215,6 +215,14 @@ jobs:
   #    redirected to /dev/null. The Parquet outputs (including the
   #    SHA-256 schema metadata Phase-2.11.B records) must be
   #    byte-identical.
+  #
+  # 3. `scenarios/sounding-rocket/calisto/rocketpy-calisto.toml` —
+  #    Phase-3.11 RocketPy Calisto cross-tool scenario. Runs three
+  #    times: two with clean tracing, one with `RUST_LOG=trace` +
+  #    stderr redirected to /dev/null. Exercises the rigid-body
+  #    runner end-to-end (assembly tree, engine cluster, mission
+  #    events, drogue + main recovery) so a regression on any of
+  #    those Phase-3 surfaces fails the gate.
   #
   # Cross-platform matrix (macos/windows) runs the same scenarios as
   # state-stable smoke tests via `cargo test -p openbmp-cli --tests`.
@@ -291,6 +299,33 @@ jobs:
           diff -q \
               target/det/niskanen1/niskanen.parquet \
               target/det/niskanen3/niskanen.parquet
+      # ----- Calisto cross-tool byte-stability gate --------------------
+      - name: Run Calisto scenario twice (clean tracing)
+        run: |
+          mkdir -p target/det/calisto1 target/det/calisto2
+          ./target/release/openbmp run \
+              scenarios/sounding-rocket/calisto/rocketpy-calisto.toml \
+              --output-parquet target/det/calisto1/calisto.parquet
+          ./target/release/openbmp run \
+              scenarios/sounding-rocket/calisto/rocketpy-calisto.toml \
+              --output-parquet target/det/calisto2/calisto.parquet
+      - name: Diff Calisto Parquet bytes
+        run: |
+          diff -q \
+              target/det/calisto1/calisto.parquet \
+              target/det/calisto2/calisto.parquet
+      - name: Run Calisto with noisy tracing redirected (no-leak verification)
+        run: |
+          mkdir -p target/det/calisto3
+          RUST_LOG=trace ./target/release/openbmp -ttt run \
+              scenarios/sounding-rocket/calisto/rocketpy-calisto.toml \
+              --output-parquet target/det/calisto3/calisto.parquet \
+              2> /dev/null
+      - name: Diff Calisto after tracing redirect
+        run: |
+          diff -q \
+              target/det/calisto1/calisto.parquet \
+              target/det/calisto3/calisto.parquet
 
   # ----------------------------------------------------------------------
   # Cross-platform state-stable gate

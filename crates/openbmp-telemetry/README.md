@@ -2,10 +2,13 @@
 
 L5 telemetry crate.
 
-**Status:** Phase 2.11 — typed telemetry, ring buffer, deterministic
-CSV / JSON / Parquet exporters, plus optional schema-level metadata
-(used by the Phase-2 runner to record SHA-256 digests of every
-scenario-referenced external input file in the Parquet header).
+**Status:** Phase 3 — Phase-2.11 typed telemetry, ring buffer, and
+deterministic CSV / JSON / Parquet exporters plus the Phase-3
+runner additions: per-engine cluster channels, per-effector
+channels, mission phase + event marker channels, recovery state
+channels (`recovery.<id>.deployed/phase_index/drag_area_m2`),
+tank moving-mass channels, and the Phase-3.11 Calisto motor mass
+column.
 
 ## Purpose
 

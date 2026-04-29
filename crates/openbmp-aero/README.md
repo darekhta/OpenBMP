@@ -63,9 +63,11 @@ bit-for-bit. Phase 6 adds analytic hypersonic method checks.
 ## Data Provenance
 
 All shipped decks are synthetic textbook examples (sphere, cone,
-finned cylinder) per `docs/data-provenance.md`. **Real fielded-vehicle
-aero decks are categorically rejected** per
-`docs/safety-boundaries.md`.
+finned cylinder) plus the Phase-3.11 axisymmetric Calisto drag
+deck rendered from RocketPy's MIT-licensed
+`powerOff/powerOnDragCurve.csv` (byte-identical upstream), per
+`docs/data-provenance.md`. **Real fielded-vehicle aero decks are
+categorically rejected** per `docs/safety-boundaries.md`.
 
 ## Safety Boundary
 

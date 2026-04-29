@@ -2,12 +2,17 @@
 
 L6 scenario parser and validator.
 
-**Status:** Phase 2.10 — Phase-2 structured blocks (`[aero]`,
+**Status:** Phase 3 — Phase-2 structured blocks (`[aero]`,
 `[propulsion.motor]`, `[wind]`, `[atmosphere]`,
-`[frames.local_origin]`, typed `[sensors.<name>]`) plus optional
-rigid-body initial-state fields and SHA-256 pin verification on
-external-file references. Schema header stays `openbmp.scenario = 1`
-(append-only — Phase-1 scenarios continue to parse byte-identically).
+`[frames.local_origin]`, typed `[sensors.<name>]`) plus the Phase-3
+additions: `[mission]` (phases / events / transitions),
+`[vehicle.assembly]` tree (bodies, propulsion, effectors, tanks,
+recovery), aero deck schema-2 (control-effector axes), engine
+clusters with per-engine throttle / gimbal / ignition / shutdown
+commands, layered + gust winds, and the Phase-3.10 sensor variants
+(`gnss`, `magnetometer`, `star_tracker`). Schema header stays
+`openbmp.scenario = 1` (append-only — Phase-1 scenarios continue
+to parse byte-identically).
 
 ## Purpose
 

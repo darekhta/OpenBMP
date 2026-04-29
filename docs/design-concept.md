@@ -457,51 +457,72 @@ and any operational mission profile.
   byte-identical Parquet across reruns; cross-platform matrix runs
   the same scenarios as state-stable smoke tests.
 
-**Phase 3 — Modular composable rocket**
-- `VehicleAssembly` framework: a `Bodies / Propulsion / Effectors /
-  Tanks / Sensors / MassProperties` tree composed in the scenario file
-  and resolved into the kernel's force / moment / mass model lists at
-  startup. Replaces ad-hoc `force_models = ["aero", "thrust"]` lists for
-  any vehicle past a single rigid stick.
-- `EngineModel` and `EngineCluster` traits for liquid-engine and
-  multi-engine vehicles: per-engine throttle, gimbal angle, mass-flow
-  derivative, ignition / shutdown events. Authoritative summed thrust /
-  moment / mass-flow at the cluster level so a vehicle with N engines is
-  one composition step, not N hand-summed forces.
-- `ControlEffector` trait separate from aero decks: rate limits,
-  saturation, latency, deadband, fault modes (jam, runaway,
-  reduced-rate, hardover). Effectors are how the controller talks to the
-  aerodynamics or the engines; the deck reports influence coefficients,
-  the effector reports actuator state.
-- `TankModel` and `MovingMassModel` for slosh as **generic moving-mass
-  dynamics**: liquid mass inside a tank shifts CG and adds a coupled
-  pendulum or Abramson-style equivalent moving-mass term to the rigid
-  body. OpenBMP-shipped reference models use toy / textbook propellant
-  properties and tank geometries only; downstream real-data packages live
-  outside this repository.
-- Aerodynamic deck schema-2 with optional control-effector axes
-  (`delta_e`, `delta_a`, `delta_r`, body flaps, grid fins) so the
-  deck can express full configuration aerodynamics when the dataset was
-  built that way.
-- Event / phase timeline as a first-class scheduler input:
-  time-triggered events (T+x), state-triggered events (apogee, altitude
-  threshold, dynamic pressure threshold, mass-fraction threshold), and
-  named mission phases ordered into a `MissionPhaseGraph`.
-- Rigid-body adapter family completing the Phase-2.11 deferral:
-  `ForceModel<RigidBodyState>` impls for gravity, thrust, and aero so
-  the runner accepts `vehicle.kind = "rigid_body"`.
-- Wind extensions: `LayeredWind` (per-altitude table) and `GustWind`
-  (Dryden / Karman model).
-- Recovery / descent models for academic rockets: parachute or
-  drag-device deployment events, descent telemetry, and toy
-  recovery-area checks with no landing-target optimization.
-- Additional synthetic sensors: `SyntheticGnss`,
-  `SyntheticMagnetometer`, `SyntheticStarTracker` (the Phase-2 set
-  shipped `IdealStateSensor`, `SyntheticImu`, `SyntheticBarometer`).
+**Phase 3 — Modular composable rocket** (complete)
+- Rigid-body kernel adapter family completing the Phase-2.11
+  deferral: `RigidGravityForceAdapter`,
+  `RigidMotorThrustForceAdapter`, `RigidMotorMassAdapter`,
+  `RigidAxialDragForceAdapter`, `RigidAeroDeckForceAdapter`,
+  `RigidEngineClusterAdapter`, `RecoveryRackForceAdapter`,
+  `MovingMassRackAdapter`. Runner now accepts
+  `vehicle.kind = "rigid_body"` end-to-end.
+- `VehicleAssembly` tree (`Bodies / Propulsion / Effectors / Tanks
+  / Sensors / Recovery`) composed in the scenario file and
+  resolved into the kernel's flat `KernelModelBundle` at startup.
+- `MissionPhaseGraph` with `EventTrigger` /
+  `BuiltInEventTrigger` (AtTime / AtAltitude / AtApogee /
+  AtMassFraction / AtDynamicPressure), `EventBinding`, and
+  declarative phase transitions. Cycle-rejecting at construction
+  time; iteration order is the topological order.
+- `ControlEffector` trait with rate / position / latency /
+  deadband limits and the four canonical fault modes (Jam,
+  Runaway, ReducedRate, Hardover). Effectors feed aero deck via
+  schema-2 effector axes and feed engines via `EngineCommand`.
+- Aero deck schema-2 with optional control-effector axes
+  (`delta_e_deg`, `delta_a_deg`, `delta_r_deg`, body flaps, grid
+  fins). Schema-1 decks still parse byte-identically.
+- `EngineModel` + `EngineCluster` for liquid / multi-engine
+  vehicles: per-engine throttle, gimbal, ignition / shutdown
+  state machine, cluster-summed thrust + moment + mass flow over
+  scenario-declared mount points.
+- `Tank` + `MovingMassModel` (rigid-liquid, equivalent pendulum
+  per Abramson SP-106 §7.4, equivalent spring-mass, baffled
+  pendulum with `BaffleModel` damping increment). Forward-Euler
+  sub-step is the bit-stable default; higher sub-step counts are
+  scenario opt-in but break bit-stability across changes (this
+  deviated from the original implicit-step plan; the per-sub-phase
+  commit history records the rationale).
+- Wind extensions: `LayeredWind` (per-altitude table with linear
+  interpolation between layers) and `GustWind` (Dryden rational-
+  spectrum filter per MIL-STD-1797A; six parameters σ_u/σ_v/σ_w
+  and L_u/L_v/L_w).
+- Recovery models: `ParachuteDrag`, `DrogueMainRecovery`, and
+  `DragDevice` deploy on `MissionPhaseGraph` triggers; recovery
+  state and drag area surface as telemetry channels.
+- Additional synthetic sensors: `SyntheticGnss` (IS-GPS-200
+  nominal noise budget), `SyntheticMagnetometer` (WMM 2025 body-
+  frame truth + Gaussian noise + soft / hard-iron biases), and
+  `SyntheticStarTracker` (per-axis Gaussian quaternion-error
+  injection).
+- WMM 2025 in `data/magnetic/WMM.COF`: verbatim public-domain
+  NOAA / NGA / UK DGC December 2024 release with sibling
+  `provenance.md` and SHA-256 pin. Validity expires 2030-01-01;
+  out-of-epoch queries fail closed.
 - Public-benchmark cross-tool validation: RocketPy "Calisto"
-  (Cesaroni Pro75 M1670) reference rocket runs in both OpenBMP and
-  RocketPy with apogee / max-Q / max-Mach side-by-side.
-- Property tests, fuzz tests, microbenchmarks.
+  (Cesaroni Pro75 M1670 via the RocketPy-mass
+  `rocketpy-calisto-m1670.toml` variant) runs end-to-end through
+  the rigid-body kernel and reaches apogee within an audited
+  ±2 % cross-tool envelope around RocketPy's published 3 349 m
+  AGL. The original ±1 % stretch goal was not hit; the residual
+  ~1.5 % is tracked as cross-tool model envelope (atmosphere,
+  rail, RocketPy `SolidMotor` differences), not RK4 truncation
+  error — the Phase-3.11 audit confirmed `dt = 0.001` and
+  `dt = 0.0001` apogees are unchanged to sub-millimetre
+  precision.
+- Determinism CI gate runs the analytic-toy, Niskanen, and
+  Calisto scenarios twice on `x86_64-unknown-linux-gnu` and
+  asserts byte-stable Parquet across all three.
+- Property tests, fuzz tests, and microbenchmarks across the new
+  surface.
 
 **Phase 4 — Virtual flight controller**
 - Estimator framework: EKF, MEKF (quaternion attitude).

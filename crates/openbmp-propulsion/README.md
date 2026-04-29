@@ -2,10 +2,13 @@
 
 L2 propulsion crate.
 
-**Status:** Phase 2 / 3.6 — solid motors (synthetic + public Estes
-B4/C6/D12 in `data/motors/*.toml`) plus liquid engines and engine
-clusters (Phase 3.6). Hybrid / cold-gas / chamber-pressure engine
-variants are deferred past 3.6.
+**Status:** Phase 3 — Phase-2 solid motors (synthetic + public
+Estes B4/C6/D12 in `data/motors/*.toml`) plus the Phase-3.6 liquid
+engines and engine clusters and the Phase-3.11 Cesaroni Pro75
+M1670 import (manufacturer-mass `cesaroni-m1670.toml` and
+RocketPy-mass `rocketpy-calisto-m1670.toml` variants). Hybrid /
+cold-gas / chamber-pressure engine variants remain deferred past
+this phase.
 
 ## Purpose
 
@@ -76,9 +79,10 @@ canonical 4-engine octaweb scenario.
 
 ## Data Provenance
 
-Synthetic textbook motors plus public Estes hobby motor files (B4,
-C6, D12) derived from ThrustCurve.org RASP data, each with a
-SHA-256-pinned source digest in
+Synthetic textbook motors, public Estes hobby motor files (B4,
+C6, D12) derived from ThrustCurve.org RASP data, and the Phase-3.11
+Cesaroni Pro75 M1670 import (manufacturer-mass and RocketPy-mass
+variants), each with a SHA-256-pinned source digest in
 `data/motors/provenance.md`. **Real fielded operational motor data
 is categorically rejected.**
 

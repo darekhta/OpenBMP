@@ -3,7 +3,13 @@
 L0 foundation crate. Math, units, coordinate frames, simulation time,
 deterministic RNG, project-wide error and validation primitives.
 
-**Status:** Phase 1.1 — implemented foundation crate.
+**Status:** Phase 1.1 — implemented foundation crate. Phase-3
+extensions are append-only typed-id and RNG constructors
+(`SensorId`, `EffectorId`, `TankId`, `EngineId`, `RecoveryId`,
+`WindAxis` plus matching `DeterministicRng::for_*` siblings) that
+domain-separate the per-step RNG streams; the foundation surface
+(frames, units, time, validation labels) is unchanged from
+Phase 1.1.
 
 ## Purpose
 

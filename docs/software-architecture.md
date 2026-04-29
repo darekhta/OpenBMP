@@ -1143,16 +1143,18 @@ repositories.
 > phase, with determinism currently asserted via full-Parquet byte
 > equality.
 >
-> Phase-3.7 deviates from the phase-3-plan's literal "forward
-> Euler" prescription: explicit Euler is unstable for the
-> undamped harmonic oscillator (energy growth `(dt·ω)²` per step)
-> and cannot meet the 1 %-over-100-cycles energy-conservation
-> property test at any practical `dt`. The shipped implementation
-> uses semi-implicit (symplectic) Euler with locked operand order
-> — still single-step explicit, still bit-stable for fixed `dt`,
-> and exact-conserves a modified Hamiltonian. The
-> `EquivalentPendulum` and `EquivalentSpringMass` unit tests
-> verify the 1 % gate at `dt = 1 ms` over 100 cycles.
+> Phase 3.7 shipped semi-implicit (symplectic) Euler rather than
+> the explicit Euler that the original sub-phase planning called
+> for: explicit Euler is unstable for the undamped harmonic
+> oscillator (energy growth `(dt·ω)²` per step) and cannot meet
+> the 1 %-over-100-cycles energy-conservation property test at any
+> practical `dt`. The shipped implementation uses semi-implicit
+> (symplectic) Euler with locked operand order — still single-step
+> explicit, still bit-stable for fixed `dt`, and exact-conserves a
+> modified Hamiltonian. The `EquivalentPendulum` and
+> `EquivalentSpringMass` unit tests verify the 1 % gate at
+> `dt = 1 ms` over 100 cycles. The per-sub-phase commit history
+> (Phase 3.7.B / 3.7.C) is the source of truth for this decision.
 
 ### Multi-Body Separation Events
 

@@ -2,11 +2,15 @@
 
 L2 environment models.
 
-**Status:** Phase 2 — gravity (`ConstantGravity`, `PointMassGravity`,
-`J2Gravity`), atmosphere (`IsothermalAtmosphere`, `UsStandard1976`),
-and wind (`NoWind`, `ConstantWind`) shipped. Layered / gust wind
-lands in Phase 3; NRLMSISE-00 atmosphere and EGM truncated gravity
-land in Phase 6.
+**Status:** Phase 3 — Phase-2 gravity (`ConstantGravity`,
+`PointMassGravity`, `J2Gravity`), atmosphere
+(`IsothermalAtmosphere`, `UsStandard1976`), and wind (`NoWind`,
+`ConstantWind`) plus the Phase-3 wind extensions (`LayeredWind`
+per-altitude table, `GustWind` Dryden rational-spectrum filter)
+and the Phase-3.10 magnetic-field reference (`Wmm2025` evaluating
+the WMM 2025 spherical-harmonic series against the pinned
+`data/magnetic/WMM.COF`). NRLMSISE-00 atmosphere and EGM truncated
+gravity remain Phase-6 work.
 
 ## Purpose
 
@@ -16,7 +20,10 @@ land in Phase 6.
 - Gravity: `ConstantGravity`, `PointMassGravity`, `J2Gravity`,
   `EgmTruncated` (Phase 6).
 - Wind: `NoWind`, `ConstantWind`, `LayeredWind`, `GustWind`.
-- Magnetic field: stubs for Phase 5+.
+- Magnetic field: `Wmm2025` (Phase 3.10) backed by the NOAA / NGA /
+  UK DGC December 2024 coefficient release at
+  `data/magnetic/WMM.COF`. Validity expires 2030-01-01; out-of-
+  epoch queries fail closed.
 
 ## Inputs and Outputs
 
@@ -51,12 +58,19 @@ No wall-clock, no network, no system RNG.
 coefficient pinned per NIMA TR 8350.2 with provenance file under
 `data/gravity/`. USSA76 validated against per-kilometre regression
 to the published table within 1e-6 relative across the 0–86 km
-envelope, with layer-boundary continuity to ULP. Wind models covered
-by property tests on `ConstantWind` finiteness.
+envelope, with layer-boundary continuity to ULP. `LayeredWind`
+covered by per-altitude interpolation property tests; `GustWind`
+covered by long-run statistics matching the Dryden spectral
+intensity inputs. `Wmm2025` matches the 100 NOAA reference rows at `data/magnetic/wmm-test-values.csv` within 5 nT per
+component against `data/magnetic/WMM2025_TestValues.txt` — well
+inside the four-significant-figure tolerance the WMM publication
+declares.
 
 ## Data Provenance
 
-US Standard Atmosphere 1976 — public NASA/NTRS document.
+US Standard Atmosphere 1976 — public NASA/NTRS document. WMM 2025
+— public NOAA / NGA / UK DGC release pinned at
+`data/magnetic/WMM.COF` with sibling `provenance.md`.
 NRLMSISE-00 — public NASA CCMC Fortran source. EGM coefficients —
 public NGA releases.
 
