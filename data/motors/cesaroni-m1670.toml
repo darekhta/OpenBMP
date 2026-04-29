@@ -1,0 +1,74 @@
+# Cesaroni Pro75 M1670 solid motor — RASP `.eng`-derived (Schema 1).
+#
+# Verbatim port of the (time, thrust) shape from the canonical
+# Cesaroni Technology Inc. (CTI) Pro75 M1670 RASP `.eng` file at
+# https://www.thrustcurve.org/simfiles/5f4294d20002e9000000062c/
+# (CTI, manufacturer-supplied). The upstream trapezoidal-integral
+# total impulse is 6 026.350 N·s when integrated with the
+# OpenBMP-required (0, 0) starting point prepended. The (0, 0)
+# starting point is added per the Phase-2.6 motor format
+# requirement that `points[0].time = 0` exactly; CTI's published
+# RASP file omits it.
+#
+# This is the canonical motor for the Phase-3.11 RocketPy Calisto
+# cross-tool validation case. RocketPy ships a byte-identical
+# thrust profile in `data/motors/cesaroni/Cesaroni_M1670.eng`
+# (same Cesaroni `.eng` data; trailing-whitespace differences only).
+#
+# Header from the upstream `.eng` file (decoded):
+#   - name:           M1670-BS
+#   - diameter:       75 mm  (Pro75 reload)
+#   - length:         757 mm
+#   - delays:         0 (P = plug, no ejection charge)
+#   - propellant:     3.101 kg
+#   - total mass:     5.231 kg
+#   - manufacturer:   CTI (Cesaroni Technology Inc.)
+#
+# Specific-impulse consistency: declared `specific_impulse_s` is
+# back-solved from `total_impulse = m_p · g_0 · Isp` for
+# `g_0 = 9.80665 m/s²` so the Phase-2.6 Isp consistency check
+# passes within 1e-3 relative.
+
+openbmp.motor = 1
+
+[meta]
+name       = "cesaroni-m1670"
+provenance = "ThrustCurve.org Cesaroni Pro75 M1670 RASP .eng file (CTI manufacturer); same canonical curve RocketPy ships for the Calisto validation case"
+validation = "checked"
+
+[burn]
+duration_s         = 3.9
+total_impulse_n_s  = 6026.350
+specific_impulse_s = 198.16728660381586
+propellant_mass_kg = 3.101
+dry_mass_kg        = 2.130       # 5.231 total − 3.101 propellant
+
+[geometry]
+# Nozzle exit area used by the "constant" ambient-pressure
+# correction (Phase 2.6). RocketPy's Calisto example declares
+# `nozzle_radius = 33 mm`; the same value is used here so the
+# Phase-3.11 cross-tool apogee comparison applies the same
+# vacuum-thrust correction OpenBMP-side and RocketPy-side.
+# A = π · 0.033² ≈ 3.421e-3 m².
+exit_area_m2                 = 0.003421194
+ambient_pressure_correction  = "constant"
+
+[thrust_curve]
+points = [
+  [0.000,    0.0],
+  [0.055,  100.0],
+  [0.092, 1500.0],
+  [0.100, 2000.0],
+  [0.150, 2200.0],
+  [0.200, 1800.0],
+  [0.500, 1950.0],
+  [1.000, 2034.0],
+  [1.500, 2000.0],
+  [2.000, 1900.0],
+  [2.500, 1760.0],
+  [2.900, 1700.0],
+  [3.000, 1650.0],
+  [3.300,  530.0],
+  [3.400,  350.0],
+  [3.900,    0.0],
+]

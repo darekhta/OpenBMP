@@ -1,0 +1,183 @@
+# Phase-3.11 RocketPy Calisto cross-tool validation scenario.
+#
+# Replicates the canonical RocketPy Calisto example
+# (Souza et al. 2022, https://github.com/RocketPy-Team/RocketPy)
+# in the OpenBMP rigid-body kernel. Cross-tool comparison target:
+# RocketPy's published apogee 3 349 m AGL within ±1 % (33.5 m
+# envelope), or ±5 % per the Phase-3 plan's risk register if the
+# integrator-mismatch envelope (RocketPy LSODA adaptive vs.
+# OpenBMP RK4 fixed-step) is wider.
+#
+# Vehicle (from the RocketPy Calisto example):
+#   - body radius 0.0635 m (ref area = π · 0.0635² ≈ 0.01267 m²)
+#   - dry rocket mass (without motor) 14.426 kg
+#   - inertia tensor (Ixx, Iyy, Izz) = (6.321, 6.321, 0.034) kg·m²
+#     about CG (axisymmetric body of revolution; small Izz is the
+#     roll-axis inertia, large Ixx = Iyy are the transverse pitch
+#     and yaw inertias)
+#
+# Motor:
+#   - Cesaroni Pro75 M1670 (`data/motors/cesaroni-m1670.toml`)
+#   - 6 026 N·s total impulse, 3.9 s burn, 3.101 kg propellant,
+#     2.130 kg motor dry mass
+#
+# Aerodynamics:
+#   - Single-deck CD-vs-Mach curve from RocketPy's
+#     `powerOffDragCurve.csv` and `powerOnDragCurve.csv` (byte-
+#     identical upstream — RocketPy treats Calisto with one CD
+#     curve regardless of motor burn state)
+#   - Axisymmetric reduced point-mass deck: CN ≡ 0, CM ≡ 0
+#
+# Launch site: Spaceport America, NM
+#   (32.99° N, 106.97° W, 1 401 m geodetic elevation).
+#   The OpenBMP scenario uses a `toy-fixed-earth` frame (no Earth
+#   rotation, no Coriolis) for direct apparent-trajectory
+#   comparison with RocketPy's flat-earth assumption over the
+#   short Calisto flight duration. Altitude is offset by 1400 m so
+#   the USSA76 atmosphere sees Spaceport's elevation.
+#
+# Rail: 5.2 m at 85° inclination from horizontal, heading 90°
+#   (due east). For Phase-3.11 we ship the kinematic-only initial
+#   condition — vehicle starts at the rail tip at rest, body +z
+#   aligned with the rail direction. Full rail-launcher dynamics
+#   (rail friction, unloaded-tip transient) are deferred to a
+#   future phase per the Phase-3.11 risk register; rail residence
+#   time is well below the 1 % apogee envelope's sensitivity.
+#
+# Recovery: drogue at apogee, main at altitude 467 m AGL on
+#   descent. CD·A values match the RocketPy Calisto example
+#   (drogue cd_s = 1.0; main cd_s = 10.0). OpenBMP splits CD·A
+#   into separate (CD, area) values; the physics is identical
+#   since drag = ½ ρ |v|² · CD · A.
+#
+# Pinned digests are SHA-256 of the referenced files at the
+# commit that ships this scenario; mismatches fail closed.
+
+openbmp.scenario = 1
+
+[meta]
+name        = "rocketpy-calisto"
+description = "RocketPy Calisto cross-tool validation: full Calisto airframe with Cesaroni Pro75 M1670 motor, dual-curve drag, drogue + main parachute, Spaceport America launch site. Headline Phase-3 outcome: apogee within 1% of RocketPy's published 3349 m AGL."
+validation  = "checked"
+provenance  = "RocketPy Calisto example (Souza et al. 2022, https://github.com/RocketPy-Team/RocketPy); reference apogee 3349 m AGL pinned in the Phase-3.11.E e2e test with the 1% tolerance"
+
+[time]
+start_s = 0.0
+# 30 s captures the apogee with margin (peak velocity ~ M 0.85 at
+# ~7 s post-ignition; apogee at t ≈ 24 s). The recovery descent
+# tail is not needed for the Phase-3.11 apogee comparison.
+stop_s  = 30.0
+dt_s    = 0.001
+seed    = 0x4361_6c69_7374_6f00   # "Calisto\0"
+
+[vehicle]
+kind                                = "rigid_body"
+mass_kg                             = 14.426
+# Initial position: at the rail tip, in the toy-fixed-earth frame
+# with the launch-site geodetic origin at (0, 0, 1400 m). The
+# +z = +1400 m offset ensures the USSA76 atmosphere sees
+# Spaceport's elevation rather than sea level.
+initial_position_eci_m              = [0.0, 0.0, 1400.0]
+initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
+# Body +z (nose direction) tilted 5° from vertical toward ECI +x
+# (= local-NED east, since the toy-fixed-earth NED basis at the
+# origin is x→N, y→E, z→D … but the ECI axes are aligned with
+# the geodetic origin; we encode the rail direction directly in
+# the body-to-ECI quaternion). Rotation about ECI +y axis by 5°.
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.043619387365336, 0.0, 0.9990482215818578]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+inertia_tensor_body_kg_m2 = [
+  [6.321, 0.0,   0.0  ],
+  [0.0,   6.321, 0.0  ],
+  [0.0,   0.0,   0.034],
+]
+
+[vehicle.assembly]
+id = "rocketpy-calisto"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 0.012667686977437444 }
+dry_mass_kg   = 14.426
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [
+  [6.321, 0.0,   0.0  ],
+  [0.0,   6.321, 0.0  ],
+  [0.0,   0.0,   0.034],
+]
+
+# Drogue + main parachute. CD·A values from the RocketPy Calisto
+# example: drogue cd_s = 1.0 (CD=1.0, A=1.0 m²); main cd_s = 10.0
+# (CD=1.0, A=10.0 m²). Phase-3.9 DrogueMainRecovery state machine
+# walks Stowed → Drogue → Main on consecutive deploy events.
+[[vehicle.assembly.recovery]]
+id   = "calisto_chute"
+kind = { kind = "drogue_main", drogue_c_d = 1.0, drogue_area_m2 = 1.0, main_c_d = 1.0, main_area_m2 = 10.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "us_standard_1976"
+wind          = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[aero]
+deck         = "../../../data/aero/calisto-drag.toml"
+deck_sha256  = "93f51bd5a33fcf2e0a226bc7f328a71286e2db98c65a3dc166f70b2b4a0282d2"
+
+[propulsion.motor]
+file         = "../../../data/motors/cesaroni-m1670.toml"
+ignite_at_s  = 0.0
+variant      = "solid"
+file_sha256  = "2a9d163eaf237ba79544085188be0f61cfa7403f032b3f5a06c53458800a8887"
+
+[forces]
+models = ["gravity", "thrust", "aero"]
+
+[telemetry]
+output.parquet = "out/rocketpy-calisto.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.phases]]
+id    = "drogue_descent"
+label = "drogue_descent"
+
+[[mission.phases]]
+id    = "main_descent"
+label = "main_descent"
+
+# Apogee → drogue (drogue stage of the dual-stage device).
+[[mission.events]]
+id      = "evt_apogee_deploy_drogue"
+trigger = { kind = "at_apogee" }
+action  = { kind = "deploy_recovery", id = "calisto_chute", command = "deploy_drogue" }
+
+# Altitude 467 m AGL on descent → main. With the 1400 m
+# scenario-z offset, the absolute altitude is 1867 m.
+[[mission.events]]
+id      = "evt_altitude_deploy_main"
+trigger = { kind = "at_altitude_descending", altitude_m = 1867.0 }
+action  = { kind = "deploy_recovery", id = "calisto_chute", command = "deploy_main" }
+
+[[mission.transitions]]
+from  = "ascent"
+to    = "drogue_descent"
+event = "evt_apogee_deploy_drogue"
+
+[[mission.transitions]]
+from  = "drogue_descent"
+to    = "main_descent"
+event = "evt_altitude_deploy_main"

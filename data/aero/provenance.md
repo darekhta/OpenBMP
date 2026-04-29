@@ -357,3 +357,86 @@ safety_review:
     coefficients are illustrative round numbers, not transcribed
     from any published wind-tunnel dataset.
 ```
+
+## `data/aero/calisto-drag.toml` + `data/aero/calisto-drag.csv`
+
+```yaml
+dataset_id:       openbmp.aero.calisto_drag.v1
+files:
+  - data/aero/calisto-drag.toml
+  - data/aero/calisto-drag.csv
+source_class:     converted-public
+source_title:     >-
+  Calisto drag-curve aero deck for the Phase-3.11 RocketPy cross-
+  tool validation case. Schema-1 deck with single-point alpha and
+  beta axes (axisymmetric reduced point-mass drag-only model);
+  CD-vs-Mach curve from RocketPy's published Calisto example
+  (`data/rockets/calisto/powerOffDragCurve.csv` and
+  `powerOnDragCurve.csv`, byte-identical upstream — Calisto is
+  treated with a single CD curve regardless of motor burn state).
+  CN and CM identically zero on every grid point. 200-point Mach
+  grid from M = 0.01 to M = 2.00 in 0.01 increments. Reference
+  area = π · 0.0635² m² (Calisto body radius from the RocketPy
+  Calisto example). `extrapolation = "clamp"`.
+source_authors:   >-
+  RocketPy Team (Calisto example data); curve published in the
+  RocketPy GitHub repository under MIT license.
+source_id:        RocketPy Calisto-example powerOffDragCurve.csv
+source_url:       https://raw.githubusercontent.com/RocketPy-Team/RocketPy/master/data/rockets/calisto/powerOffDragCurve.csv
+source_hash_sha256: 94760a42d5f5fad4fb815f448db72201fafd2b2a3c6ec2d2c83618b2953207e0
+publication_date: 2022-08-01  # approximate; tracks the RocketPy v1.0 release
+methodology_reference: >-
+  Souza, A. M. et al. *RocketPy: Six Degree-of-Freedom Rocket
+  Trajectory Simulator*. Journal of Aerospace Engineering 35:5
+  (2022). The Calisto example airframe is documented in §V of the
+  paper and ships as the canonical RocketPy validation case.
+methodology_urls:
+  - https://doi.org/10.1061/(ASCE)AS.1943-5525.0001331
+  - https://github.com/RocketPy-Team/RocketPy
+  - https://docs.rocketpy.org/en/latest/notebooks/getting_started_colab.html
+license_or_terms: >-
+  RocketPy is MIT-licensed. The Calisto example data ships as
+  part of the RocketPy repository and is re-distributable under
+  the MIT terms. OpenBMP cites the source repository and paper.
+retrieved_utc:    2026-04-29
+transformation:
+  method: >-
+    Upstream `powerOffDragCurve.csv` saved verbatim at
+    `data/aero/calisto-drag.csv` (SHA-256 pinned above). The
+    upstream `powerOnDragCurve.csv` is byte-identical and is not
+    re-shipped — the OpenBMP `calisto-drag.csv` covers both
+    motor burn states. The OpenBMP TOML at
+    `data/aero/calisto-drag.toml` transcribes the (mach, CD)
+    pairs verbatim into the Schema-1 grid format with single-
+    point alpha = [0.0] and beta = [0.0] axes. CN and CM tables
+    are filled with 0.0 on every grid point. Reference area
+    derived from RocketPy's documented `radius = 0.0635 m` as
+    π · 0.0635².
+  script: none
+verification:
+  method: >-
+    `crates/openbmp-aero/tests/calisto_deck_pin.rs` round-trips
+    the OpenBMP TOML against the upstream CSV: it parses both
+    files via `include_str!`, asserts the SHA-256 matches the
+    pin recorded above, and asserts every (mach, CD) pair in
+    the deck lookup matches the corresponding CSV row to bit
+    precision. Additional invariants: CN and CM identically
+    zero on every grid point; CD ≥ 0 on every grid point.
+  test:   crates/openbmp-aero/tests/calisto_deck_pin.rs
+  tolerance: >-
+    Every (mach, CD) pair: bit equality between deck lookup and
+    upstream CSV row. Phase-3.11.E will assert apogee ±1 % of
+    RocketPy's published 3 349 m AGL (or fall back to ±5 % per
+    the plan's risk register if the integrator-mismatch envelope
+    is wider).
+validation_status: validated-toy
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Public hobby-rocketry-class drag curve from the
+    MIT-licensed RocketPy Calisto example. No export-control or
+    manufacturer-proprietary restrictions; OpenBMP's use is
+    purely for cross-tool validation against a published
+    open-source rocket-trajectory simulator.
+```

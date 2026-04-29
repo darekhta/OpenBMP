@@ -426,3 +426,100 @@ The architecture's
 documents this policy. The synthetic motor decks carry
 `source_class: synthetic-openbmp`; the Phase 2.9 D12 deck carries
 `source_class: converted-public` with the SHA pin.
+
+## `data/motors/cesaroni-m1670.toml`
+
+```yaml
+dataset_id:       openbmp.motor.cesaroni_m1670.v1
+files:
+  - data/motors/cesaroni-m1670.toml
+  - data/motors/Cesaroni_M1670.eng
+source_class:     converted-public
+source_title:     >-
+  Cesaroni Technology Inc. (CTI) Pro75 M1670 reload solid motor,
+  75 mm × 757 mm hardware, total impulse 6 026.350 N·s
+  (trapezoidal integral of the upstream curve with the OpenBMP-
+  required (0, 0) prepend), burn duration 3.9 s, propellant mass
+  3.101 kg, total mass 5.231 kg. Manufacturer-supplied RASP `.eng`
+  thrust curve published on ThrustCurve.org. RocketPy ships the
+  same canonical Cesaroni `.eng` data in
+  `data/motors/cesaroni/Cesaroni_M1670.eng` (same thrust profile;
+  trailing-whitespace differences only). This is the canonical
+  motor for the Phase-3.11 RocketPy Calisto cross-tool validation
+  case.
+source_authors:   Cesaroni Technology Inc. (motor + RASP file)
+source_id:        ThrustCurve.org Cesaroni 6026M1670-P RASP simfile
+source_url:       https://www.thrustcurve.org/simfiles/5f4294d20002e9000000062c/download/data.eng
+source_hash_sha256: c0153d19c999021ad83686040fca5c35d82bb43efeebd0bd94f9e177484d9a3a
+publication_date: 2020-08-23  # ThrustCurve simfile registration
+methodology_reference: >-
+  RASP `.eng` thrust-curve format and the manufacturer's
+  static-fire calibration. The OpenBMP TOML is a verbatim
+  transcription of the RASP (time, thrust) pairs with the
+  OpenBMP-required (0, 0) starting point prepended; no fit, no
+  scaling. The trapezoidal integral matches the declared total
+  impulse to bit precision (Phase-2.6 motor parser tolerance).
+methodology_urls:
+  - https://www.thrustcurve.org/info/raspformat.html
+  - https://www.thrustcurve.org/motors/Cesaroni/6026M1670-P/
+license_or_terms: >-
+  ThrustCurve.org corpus is distributed under terms that permit
+  re-use with attribution and no warranty. The motor is a
+  publicly-sold high-power-rocketry reload (Cesaroni Pro75 M1670)
+  with no export-control or manufacturer-proprietary restrictions
+  beyond the standard hobby-rocketry channels.
+retrieved_utc:    2026-04-29
+transformation:
+  method: >-
+    Upstream `.eng` saved verbatim at
+    `data/motors/Cesaroni_M1670.eng` (SHA-256 pinned above). The
+    OpenBMP TOML at `data/motors/cesaroni-m1670.toml`
+    transcribes the (time_s, thrust_N) pairs with a (0.0, 0.0)
+    starting point prepended per the Phase-2.6 motor parser
+    contract. `burn.duration_s` matches the curve's last time
+    (3.9 s). `burn.total_impulse_n_s = 6026.350` is the
+    trapezoidal integral of the prepended curve in f64 with
+    locked operand order. `burn.specific_impulse_s ≈ 198.167` is
+    back-solved from `I = m_p · g_0 · Isp` for
+    `g_0 = 9.80665 m/s²`. `geometry.exit_area_m2 = 0.003421194`
+    matches RocketPy's Calisto example
+    (`nozzle_radius = 33 mm`, `A = π · 0.033²`) so the
+    Phase-3.11 cross-tool apogee comparison applies the same
+    vacuum-thrust correction on both sides.
+  script: none
+verification:
+  method: >-
+    `crates/openbmp-propulsion/tests/cesaroni_m1670_pin.rs` round-
+    trips the OpenBMP TOML against the upstream `.eng` byte-for-
+    byte: it parses the in-source `.eng` via `include_str!`,
+    asserts the SHA-256 matches the pin recorded above, parses
+    the in-source TOML, and asserts every (time, thrust) pair in
+    the TOML matches the corresponding pair in the `.eng` to bit
+    precision (modulo the OpenBMP-required (0, 0) prepend at
+    index 0). Total-impulse trapezoidal integral matches declared
+    `total_impulse_n_s = 6026.350` within 1e-12 relative.
+  test:   crates/openbmp-propulsion/tests/cesaroni_m1670_pin.rs
+  tolerance: >-
+    `total_impulse_n_s` and every (time, thrust) point: bit
+    equality. Phase-3.11.E will assert apogee ±1 % of RocketPy's
+    published 3 349 m AGL (or fall back to ±5 % per the plan's
+    risk register if the integrator-mismatch envelope is wider).
+validation_status: validated-toy
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Public hobby-rocketry reload from a publicly-sold motor
+    family (Cesaroni Pro75). The thrust curve is the manufacturer-
+    supplied RASP file used by RocketPy for the canonical
+    cross-tool Calisto example. No export-control or
+    manufacturer-proprietary restrictions beyond the standard
+    hobby-rocketry channels.
+```
+
+### Source-file SHA-256 pin (Cesaroni M1670)
+
+The upstream `Cesaroni_M1670.eng` ships verbatim at
+`data/motors/Cesaroni_M1670.eng` so the round-trip test in
+`cesaroni_m1670_pin.rs` can verify the OpenBMP TOML matches the
+manufacturer-supplied data point-for-point.
