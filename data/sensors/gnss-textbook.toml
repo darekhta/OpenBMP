@@ -1,0 +1,36 @@
+# GNSS receiver textbook noise budget — Phase 3.10.B.
+#
+# Synthetic isotropic noise budget for the `SyntheticGnss` model.
+# Values are in the textbook range published in IS-GPS-200 (NAVSTAR
+# GPS Space Segment / Navigation User Interfaces) for the
+# user-equivalent range error (UERE) decomposition at the
+# receiver-output level. Phase-3.10 is a *receiver-output* noise
+# model — it does not model satellite geometry, pseudorange,
+# ionosphere, troposphere, or multipath. Those are downstream-user
+# concerns.
+#
+# Conventions:
+#  - sigma_position_m / sigma_velocity_m_s — per-axis stddev of the
+#    additive Gaussian noise in ECI (the receiver output is in WGS-
+#    84 ECI per the IS-GPS-200 navigation message convention).
+#  - position_bias_ou_theta_per_s — OU mean-reversion rate (1/s) =
+#    1 / correlation_time. A 60-second correlation time yields θ =
+#    1/60.
+#  - position_bias_ou_sigma_m_sqrt_s — OU white-noise drive
+#    strength (m/√s). The continuous-time stationary distribution
+#    is N(0, σ² / (2θ)); for τ = 60 s and σ = 0.5 m/√s the
+#    steady-state position-bias stddev is 0.5 · √(1/(2·1/60)) =
+#    0.5 · √30 ≈ 2.74 m, comfortably inside the IS-GPS-200 nominal
+#    URE bias envelope.
+#
+# These are textbook synthetic numbers; not lifted from any real
+# fielded receiver's spec sheet (see safety-boundaries.md).
+
+dataset_id     = "openbmp.sensors.gnss_textbook.v1"
+schema_version = "openbmp.sensors.gnss_budget.v1"
+
+[budget]
+sigma_position_m                   = [3.0, 3.0, 3.0]
+sigma_velocity_m_s                 = [0.1, 0.1, 0.1]
+position_bias_ou_theta_per_s       = [0.0166666666666666666, 0.0166666666666666666, 0.0166666666666666666]
+position_bias_ou_sigma_m_sqrt_s    = [0.5, 0.5, 0.5]

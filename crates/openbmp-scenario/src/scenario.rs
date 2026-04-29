@@ -1923,4 +1923,63 @@ action  = { kind = "deploy_recovery", id = "main_chute", command = "deploy" }
         let mission = scenario.document.mission.as_ref().expect("mission");
         assert_eq!(mission.events.len(), 1);
     }
+
+    // -----------------------------------------------------------------
+    // Phase-3.10 sensors
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn parses_phase_3_10_sensor_kinds() {
+        let toml = SOUNDING_ROCKET.replace(
+            "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"",
+            r#"[sensors.imu]
+kind = "imu"
+file = "../sensors/imu-tactical.toml"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../sensors/gnss-textbook.toml"
+
+[sensors.mag]
+kind = "magnetometer"
+file = "../sensors/magnetometer-textbook.toml"
+
+[sensors.star]
+kind = "star_tracker"
+file = "../sensors/star-tracker-textbook.toml""#,
+        );
+        let scenario = match Scenario::from_toml_str(&toml) {
+            Ok(s) => s,
+            Err(e) => panic!("parse failed: {e:?}"),
+        };
+        let sensors = scenario.document.sensors.as_ref().expect("sensors");
+        assert_eq!(sensors.len(), 6);
+        assert_eq!(sensors.get("gnss").expect("gnss").kind, "gnss");
+        assert_eq!(sensors.get("mag").expect("mag").kind, "magnetometer");
+        assert_eq!(sensors.get("star").expect("star").kind, "star_tracker");
+    }
+
+    #[test]
+    fn rejects_phase_3_10_sensor_without_file() {
+        let toml = SOUNDING_ROCKET.replace(
+            "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"",
+            "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"\n\n[sensors.gnss]\nkind = \"gnss\"",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, ref name, .. } if field == "sensors.gnss.file" && name == "gnss"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_sensor_kind() {
+        let toml =
+            SOUNDING_ROCKET.replace(r#"kind = "imu""#, r#"kind = "magnetic_anomaly_detector""#);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnknownModel { ref name, .. } if name == "magnetic_anomaly_detector"),
+            "got {err:?}",
+        );
+    }
 }

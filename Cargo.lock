@@ -1269,6 +1269,7 @@ dependencies = [
  "nalgebra",
  "openbmp-core",
  "proptest",
+ "sha2",
  "static_assertions",
  "thiserror",
  "toml",

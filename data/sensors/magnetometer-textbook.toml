@@ -1,0 +1,27 @@
+# Magnetometer textbook noise budget — Phase 3.10.C.
+#
+# Synthetic isotropic noise budget for the `SyntheticMagnetometer`
+# model. The numerical envelope (50 nT per-axis stddev, hard-iron
+# offsets in the ±100 nT range, slight off-diagonal soft-iron
+# distortion) is illustrative of low-cost MEMS magnetometers used
+# in academic attitude-determination scenarios. Values are NOT
+# transcribed from any real fielded sensor's spec sheet.
+#
+# Phase 3.10 ships:
+#  - additive Gaussian per body axis (sigma_body_nt)
+#  - constant soft-iron 3x3 (linear-mix; identity = no soft iron)
+#  - constant hard-iron 3-vector (offset)
+#
+# No temperature drift, no spin-induced bias, no full hysteresis.
+
+dataset_id     = "openbmp.sensors.magnetometer_textbook.v1"
+schema_version = "openbmp.sensors.magnetometer_budget.v1"
+
+[budget]
+sigma_body_nt        = [50.0, 50.0, 50.0]
+hard_iron_body_nt    = [100.0, -50.0, 30.0]
+soft_iron_body       = [
+  [1.0,  0.005, 0.0],
+  [-0.005, 1.0, 0.0],
+  [0.0,    0.0, 1.0],
+]

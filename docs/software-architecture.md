@@ -1472,14 +1472,40 @@ pub trait SyntheticSensor {
 | `IdealStateSensor` | full truth (test only) | none |
 | `SyntheticImu` | body accel + body angular rate | IEEE 952-style inertial-sensor noise decomposition: ARW / VRW, bias instability, RRW, quantization, and scale-factor error |
 | `SyntheticBarometer` | pressure → altitude | additive Gaussian + bias drift |
-| `SyntheticGnss` | position + velocity (with delay, dropout) | additive Gaussian + dropout windows |
-| `SyntheticMagnetometer` | mag field in body | additive Gaussian + hard-iron offset |
-| `SyntheticStarTracker` | quaternion attitude (optional) | von-Mises-Fisher rotation noise |
+| `SyntheticGnss` | ECI position + velocity | per-axis additive Gaussian on position + velocity, OU bias drift on position |
+| `SyntheticMagnetometer` | body-frame magnetic field | additive Gaussian, constant 3×3 soft-iron, constant 3-vector hard-iron |
+| `SyntheticStarTracker` | quaternion attitude | small-angle Gaussian rotation-vector perturbation, isotropic per axis |
 
 Noise parameters come from **academic published budgets** (e.g., textbook
 Allan-variance specs for "tactical-grade" or "consumer-grade" classes); they
 are not lifted from any real fielded sensor's spec sheet. Sensor models
 declare their noise class explicitly.
+
+> **Implementation status (Phase 3.10).** WMM 2025 ships as the
+> canonical magnetic-field truth at
+> `data/magnetic/WMM.COF` (NOAA NCEI / NGA / UK DGC, December 2024
+> release; SHA-256-pinned in `data/magnetic/provenance.md`). The
+> [`Wmm2025`](../crates/openbmp-env/src/magnetic/wmm2025.rs)
+> implementation is a direct port of the NOAA reference algorithm
+> (Gauss-recursion with Schmidt-multiplied coefficients; all 100
+> shipped NOAA reference rows match within 5 nT per component).
+> All three Phase-3.10 synthetic sensors —
+> [`SyntheticGnss`](../crates/openbmp-sensors/src/gnss.rs),
+> [`SyntheticMagnetometer`](../crates/openbmp-sensors/src/magnetometer.rs),
+> and [`SyntheticStarTracker`](../crates/openbmp-sensors/src/star_tracker.rs)
+> — ship with truth-bypass exact equality, per-component RNG
+> independence, byte-stable replay, and empirical-stddev
+> convergence within 5 % of their declared budgets.
+>
+> Phase-3.10 known limitations (each tracked for Phase-3.X
+> follow-on): (1) GNSS is a receiver-output noise model only, no
+> pseudorange / satellite geometry / ionosphere; (2) magnetometer
+> reads `SensorTruth.magnetic_field_body_nt` pre-rotated by the
+> runner from WMM-truth NED via the truth attitude — the
+> magnetometer itself is frame-agnostic; (3) star tracker uses
+> the small-angle quaternion form (`σ ≤ 0.01 rad` enforced at
+> construction); (4) no fault models on the new sensors (Phase-4
+> controller-side concern).
 
 ### Fault Models
 

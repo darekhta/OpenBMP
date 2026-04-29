@@ -148,3 +148,203 @@ from bias instability, +1/2 slope at long τ from RRW).
 The Phase-2.7.D regression test exercises this by running a
 synthetic ARW-only stream and asserting the Allan deviation log-log
 slope is near –1/2 over the expected averaging-time decade.
+
+## `data/sensors/gnss-textbook.toml`
+
+```yaml
+dataset_id:       openbmp.sensors.gnss_textbook.v1
+files:
+  - data/sensors/gnss-textbook.toml
+source_class:     synthetic-openbmp
+source_title:     >-
+  Synthetic OpenBMP-authored GNSS receiver textbook noise envelope
+  parameterised at the receiver-output level (ECI position +
+  velocity Gaussian noise, plus an Ornstein-Uhlenbeck position-
+  bias drift).
+source_authors:   OpenBMP (Dmitri Arekhta)
+source_id:        synthetic; not transcribed from any vendor data sheet.
+publication_date: 2026-04-29
+methodology_reference: >-
+  IS-GPS-200 (NAVSTAR Global Positioning System Interface
+  Specification) — public US Government work — for the user-
+  equivalent range error (UERE) decomposition that the receiver-
+  output Gaussian + OU bias model approximates. The Phase-3.10
+  scope is intentionally a *receiver-output* model; satellite
+  geometry, pseudorange, ionosphere, and multipath are downstream-
+  user concerns.
+methodology_urls:
+  - https://www.gps.gov/technical/icwg/IS-GPS-200N.pdf
+license_or_terms: >-
+  Synthetic OpenBMP-authored content; CC0 / public domain. The
+  numerical envelope values (σ_pos = 3 m, σ_vel = 0.1 m/s,
+  60-second OU correlation, 0.5 m/√s OU drive, ~2.74 m steady-
+  state bias stddev) are illustrative of the IS-GPS-200 nominal
+  UERE bias envelope but are NOT transcribed from any vendor data
+  sheet.
+retrieved_utc:    2026-04-29
+transformation:
+  method: >-
+    Hand-derived envelope chosen to fall inside the IS-GPS-200
+    nominal UERE budget at the receiver output. The OpenBMP TOML
+    schema parameterises the OU bias drift by `θ` (mean-reversion
+    rate, 1/s) and `σ` (white-noise drive strength, m/√s), the
+    same parameterisation used by the Phase-2.7 IMU bias-
+    instability primitive.
+verification:
+  method: >-
+    Phase-3.10.B unit tests
+    (`crates/openbmp-sensors/src/gnss.rs::tests`) assert truth-
+    bypass exact equality, byte-stable replay across two reruns,
+    per-component RNG independence, and an empirical-stddev
+    convergence within 5 % of the σ_pos = 3 m budget over a
+    10 000-step run.
+```
+
+### Phase-3.10 known limitations
+
+- **Receiver output only.** No pseudorange, no satellite geometry,
+  no ionospheric / tropospheric / multipath modelling.
+- **Single constellation.** GPS only; GLONASS / Galileo / BeiDou
+  are out of scope for Phase 3.10.
+- **No fault models.** Dropout windows, stuck-output faults, and
+  noise-spike faults are Phase-4 controller-side concerns.
+- **No real fielded data.** Per `safety-boundaries.md`, the budget
+  is a textbook envelope, not a port of any vendor's data sheet.
+
+## `data/sensors/magnetometer-textbook.toml`
+
+```yaml
+dataset_id:       openbmp.sensors.magnetometer_textbook.v1
+files:
+  - data/sensors/magnetometer-textbook.toml
+source_class:     synthetic-openbmp
+source_title:     >-
+  Synthetic OpenBMP-authored magnetometer noise envelope
+  parameterised at the body-frame measurement level: per-axis
+  Gaussian noise plus constant soft-iron (3x3) and hard-iron
+  (3-vector) biases. The truth body-frame field is the
+  WMM 2025 NED-truth field rotated through the truth attitude;
+  the magnetometer applies its biases and noise on top.
+source_authors:   OpenBMP (Dmitri Arekhta)
+source_id:        synthetic; not transcribed from any vendor data sheet.
+publication_date: 2026-04-29
+methodology_reference: >-
+  Crassidis, J. L., Markley, F. L., Cheng, Y. *Survey of
+  Nonlinear Attitude Estimation Methods*. JGCD 30:1 (2007),
+  §3.2 — covers the noise budgets used in academic attitude-
+  determination case studies including the magnetometer
+  triaxial Gaussian + hard/soft iron biases that this budget
+  approximates.
+methodology_urls:
+  - https://doi.org/10.2514/1.22452
+license_or_terms: >-
+  Synthetic OpenBMP-authored content; CC0 / public domain.
+  The numerical envelope (50 nT per-axis stddev, ±100 nT hard
+  iron, near-identity soft iron with 0.5 % off-diagonal mix)
+  is illustrative of low-cost MEMS magnetometers; values are
+  NOT transcribed from any vendor's data sheet.
+retrieved_utc:    2026-04-29
+transformation:
+  method: >-
+    Hand-derived envelope chosen to match the academic-class
+    magnetometer noise documented in Crassidis 2007. The TOML
+    schema separates the three noise channels (Gaussian σ,
+    soft-iron 3×3, hard-iron 3-vector) so the OpenBMP
+    `MagnetometerNoiseBudget` constructor can validate each
+    independently.
+verification:
+  method: >-
+    Phase-3.10.C unit tests
+    (`crates/openbmp-sensors/src/magnetometer.rs::tests`)
+    assert truth-bypass exact equality, hard-iron-only constant
+    offset, soft-iron 2× scaling, byte-stable replay across two
+    reruns, per-component RNG independence, and an empirical
+    stddev convergence within 5 % of σ = 50 nT over a 10 000-
+    step run.
+```
+
+### Phase-3.10 magnetometer known limitations
+
+- **Body-frame truth supplied by the runner.** The Phase-3.10.C
+  magnetometer reads `SensorTruth.magnetic_field_body_nt` — a
+  pre-rotated truth field. The runner-side adapter (Phase
+  3.10.E) computes the WMM 2025 geodetic-NED field at the
+  vehicle's position and time, rotates it through the truth
+  attitude, and packs the result. The magnetometer itself is
+  frame-agnostic.
+- **Constant soft / hard iron only.** No temperature drift, no
+  spin-induced bias, no full hysteresis. Phase-3.10 keeps the
+  biases as compile-time constants from the budget.
+- **Isotropic Gaussian noise.** No correlated noise, no 1/f
+  spectrum. The architecture lists OU-style bias drift on
+  magnetometers as a future-phase extension.
+- **No fault models.** Stuck-axis, dropout, noise-spike faults
+  are Phase-4 controller-side concerns.
+
+## `data/sensors/star-tracker-textbook.toml`
+
+```yaml
+dataset_id:       openbmp.sensors.star_tracker_textbook.v1
+files:
+  - data/sensors/star-tracker-textbook.toml
+source_class:     synthetic-openbmp
+source_title:     >-
+  Synthetic OpenBMP-authored star-tracker noise envelope
+  parameterised as a single per-axis Gaussian stddev on the
+  rotation-vector perturbation. Small-angle quaternion form
+  q ≈ (1, θ/2) per axis.
+source_authors:   OpenBMP (Dmitri Arekhta)
+source_id:        synthetic; not transcribed from any vendor data sheet.
+publication_date: 2026-04-29
+methodology_reference: >-
+  Crassidis, J. L., Markley, F. L., Cheng, Y. *Survey of
+  Nonlinear Attitude Estimation Methods*. JGCD 30:1 (2007),
+  §3.2 — covers the per-axis Gaussian rotation-vector
+  perturbation noise budget OpenBMP uses here.
+  Liebe, C. C. *Accuracy Performance of Star Trackers*.
+  JGCD 18:5 (1995) — historical reference for arc-second-level
+  noise budgets in fielded star trackers.
+methodology_urls:
+  - https://doi.org/10.2514/1.22452
+  - https://doi.org/10.2514/3.21454
+license_or_terms: >-
+  Synthetic OpenBMP-authored content; CC0 / public domain.
+  The numerical envelope (5 arc-second per-axis stddev,
+  ≈ 24 µrad) is the Crassidis 2007 textbook value used in
+  academic attitude-estimation case studies. NOT transcribed
+  from any vendor's data sheet.
+retrieved_utc:    2026-04-29
+transformation:
+  method: >-
+    Hand-derived envelope chosen to match the Crassidis 2007
+    arc-second-level noise budget. The OpenBMP TOML schema
+    accepts the human-friendly arc-second form
+    (`sigma_per_axis_arcsec`); the runner converts to radians
+    via `ARCSEC_TO_RAD = π / 648 000` at scenario load.
+verification:
+  method: >-
+    Phase-3.10.D unit tests
+    (`crates/openbmp-sensors/src/star_tracker.rs::tests`)
+    assert truth-bypass exact equality, unit-norm
+    quaternion output for any seed (property test over 1 000
+    steps), byte-stable replay across two reruns, and an
+    empirical stddev convergence within 5 % of σ = 50″ over
+    a 10 000-step run. The constructor rejects budgets with
+    σ > 0.01 rad to keep the small-angle approximation valid.
+```
+
+### Phase-3.10 star-tracker known limitations
+
+- **Small-angle approximation only.** The constructor rejects
+  σ > 0.01 rad (~34′). For wider noise budgets the audit can
+  promote the model to the full quaternion-exponential form
+  (sin / cos of half-angle).
+- **Isotropic noise.** No per-axis variation, no correlated
+  noise, no bias drift. The architecture lists per-axis variance
+  and quaternion-bias drift as future-phase extensions.
+- **No occlusion / slew-rate / bright-object models.** The
+  star tracker is always "tracking" in Phase 3.10. Fault models
+  for boresight occlusion and slew-rate dropout are Phase-4
+  controller-side concerns.
+- **No fault models.** Stuck-attitude, dropout, noise-spike
+  faults are Phase-4 controller-side concerns.

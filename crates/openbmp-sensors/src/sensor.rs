@@ -43,6 +43,12 @@ pub struct SensorTruth {
     pub static_pressure_pa: f64,
     /// Geometric altitude above the model reference surface (m).
     pub altitude_geometric_m: f64,
+    /// Phase-3.10.C body-frame magnetic flux density (nT). The
+    /// runner-side adapter rotates the geodetic-NED WMM truth field
+    /// at the vehicle's position and time through the attitude into
+    /// the body frame and packs the result here. Defaults to zero
+    /// for legacy / non-magnetometer scenarios.
+    pub magnetic_field_body_nt: Vector3<f64>,
     /// Simulation wall-clock at this measurement.
     pub time: SimTime,
 }
@@ -73,6 +79,39 @@ pub enum SensorMeasurement {
         gyro_rad_s: Vector3<f64>,
         /// Reported specific force in body frame (m/s²).
         accel_m_s2: Vector3<f64>,
+    },
+    /// Phase-3.10.B GNSS receiver measurement: per-axis position
+    /// and velocity in ECI with additive Gaussian noise plus an OU
+    /// bias drift on the position channels. IS-GPS-200 nominal
+    /// noise budget; no satellite geometry, no pseudorange.
+    Gnss {
+        /// Reported position in ECI (m).
+        position_eci_m: Vector3<f64>,
+        /// Reported velocity in ECI (m/s).
+        velocity_eci_m_s: Vector3<f64>,
+        /// Per-axis OU bias state in ECI (m). Useful for telemetry
+        /// audit and for downstream estimators that benefit from
+        /// observability into the slowly-drifting bias.
+        position_bias_eci_m: Vector3<f64>,
+    },
+    /// Phase-3.10.C body-frame magnetometer measurement: WMM truth
+    /// field rotated into the body frame, with constant soft-iron
+    /// (3×3) and hard-iron (3-vector) biases plus per-axis
+    /// Gaussian noise.
+    Magnetometer {
+        /// Reported body-frame magnetic flux density (nT).
+        field_body_nt: Vector3<f64>,
+        /// Constant body-frame hard-iron offset (nT) declared by
+        /// the budget; reported for telemetry audit.
+        hard_iron_body_nt: Vector3<f64>,
+    },
+    /// Phase-3.10.D star-tracker attitude measurement: the truth
+    /// `attitude_eci_to_body` quaternion with a small-angle
+    /// Gaussian rotation-vector perturbation applied via right-
+    /// multiplication. Unit-norm by construction.
+    StarTracker {
+        /// Reported body-to-ECI attitude (unit quaternion).
+        attitude_eci_to_body: UnitQuaternion<f64>,
     },
 }
 
@@ -142,6 +181,9 @@ pub(crate) fn require_truth_finite(truth: &SensorTruth) -> Result<(), SensorErro
         truth.specific_force_body_m_s2.z,
         truth.static_pressure_pa,
         truth.altitude_geometric_m,
+        truth.magnetic_field_body_nt.x,
+        truth.magnetic_field_body_nt.y,
+        truth.magnetic_field_body_nt.z,
     ] {
         if !x.is_finite() {
             return Err(SensorError::NonFinite {

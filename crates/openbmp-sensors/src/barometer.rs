@@ -148,6 +148,7 @@ mod tests {
             specific_force_body_m_s2: Vector3::zeros(),
             static_pressure_pa: 101_325.0,
             altitude_geometric_m: 0.0,
+            magnetic_field_body_nt: Vector3::zeros(),
             time: SimTime::ZERO,
         }
     }

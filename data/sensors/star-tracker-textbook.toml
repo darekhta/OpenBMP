@@ -1,0 +1,24 @@
+# Star tracker textbook noise budget — Phase 3.10.D.
+#
+# Synthetic isotropic noise budget for the `SyntheticStarTracker`
+# model. The numerical envelope is illustrative of academic-class
+# attitude-determination star trackers (Crassidis 2007 §3.2 cites
+# 1″–10″ as typical for textbook noise budgets in the published
+# attitude-estimation case studies). NOT transcribed from any real
+# fielded sensor's spec sheet.
+#
+# Phase 3.10 ships the small-angle Gaussian rotation-vector
+# perturbation form (q ≈ (1, θ/2)). The constructor rejects σ
+# > 0.01 rad to keep the small-angle approximation valid.
+# Boresight occlusion, slew-rate dropout, and bright-object
+# exclusion are deferred.
+
+dataset_id     = "openbmp.sensors.star_tracker_textbook.v1"
+schema_version = "openbmp.sensors.star_tracker_budget.v1"
+
+[budget]
+# 5 arc-seconds per axis is the Crassidis 2007 textbook value
+# (≈ 24 µrad). The model loader can also accept a `sigma_per_axis_rad`
+# field directly; the runner-side parser converts arc-seconds via
+# `ARCSEC_TO_RAD = π / 648 000`.
+sigma_per_axis_arcsec = 5.0

@@ -17,8 +17,10 @@ external-file references. Schema header stays `openbmp.scenario = 1`
 - Model registry: `ModelRegistry::phase1()` (analytic-toy) and
   `ModelRegistry::phase2()` (sounding rocket — adds rigid-body
   vehicle, `j2`/`point_mass` gravity, `us_standard_1976` atmosphere,
-  `constant`/`layered`/`gust` wind, `aero`/`thrust` forces, three
-  sensor kinds, and the `solid` motor variant).
+  `constant`/`layered`/`gust` wind, `aero`/`thrust` forces, six
+  sensor kinds (Phase-2.7 `ideal_state` / `imu` / `barometer` plus
+  Phase-3.10 `gnss` / `magnetometer` / `star_tracker`), and the
+  `solid` motor variant).
 - Frame-suffix and unit-suffix linting (`_n_s`, `_m3_s2`, `_deg`,
   `_xyzw` added in Phase 2.10).
 - **Safety-name lint** — reject `target`, `seeker`, `warhead`,

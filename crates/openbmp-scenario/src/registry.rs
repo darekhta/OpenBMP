@@ -135,6 +135,10 @@ impl ModelRegistry {
             ModelDescriptor::new("ideal_state", ModelRole::Sensor),
             ModelDescriptor::new("imu", ModelRole::Sensor),
             ModelDescriptor::new("barometer", ModelRole::Sensor),
+            // Phase 3.10 sensors.
+            ModelDescriptor::new("gnss", ModelRole::Sensor),
+            ModelDescriptor::new("magnetometer", ModelRole::Sensor),
+            ModelDescriptor::new("star_tracker", ModelRole::Sensor),
             // Phase 2.6 motor variants.
             ModelDescriptor::new("solid", ModelRole::Motor),
         ])

@@ -82,15 +82,16 @@ scope** — they belong to Phases 4 / 5 / 6.
   academic descent), `DragDevice` (generic airbrake). Deploy events
   driven by `MissionPhaseGraph` triggers.
 - **Synthetic sensors** in `openbmp-sensors`: `SyntheticGnss`
-  (pseudorange-noise + bias drift; IS-GPS-200 nominal noise budget
-  plus tunable σ_pos and σ_vel), `SyntheticMagnetometer` (truth field
-  via WMM 2025 + Gaussian noise + soft/hard-iron bias),
+  (receiver-output position / velocity noise + position-bias drift;
+  IS-GPS-200 nominal noise budget plus tunable σ_pos and σ_vel),
+  `SyntheticMagnetometer` (body-frame WMM truth field + Gaussian
+  noise + soft/hard-iron bias),
   `SyntheticStarTracker` (per-axis Gaussian quaternion-error
   injection).
-- **WMM 2025** in `data/magnetic/wmm-2025.toml`: in-house port of
-  the public-domain WMM.COF coefficient table from NOAA / NGA / UK
-  DGC, with `provenance.md` citing the December 2024 release and
-  the SHA-256 pin of the upstream file.
+- **WMM 2025** in `data/magnetic/WMM.COF`: verbatim public-domain
+  coefficient table from NOAA / NGA / UK DGC, with
+  `data/magnetic/provenance.md` citing the December 2024 release
+  and the SHA-256 pin of the upstream file.
 - **Cesaroni Pro75 M1670 motor** in `data/motors/cesaroni-m1670.toml`:
   imported from ThrustCurve.org with the existing per-file license
   + SHA-256-pin pattern. Used by the Calisto cross-tool validation
@@ -837,6 +838,13 @@ from the Phase-3.2 `MissionPhaseGraph`.
 
 ### 3.10 — Synthetic sensors: GNSS, magnetometer, star tracker
 
+**Status.** **Implemented (Phase 3.10.A–E).** All three sensors
+ship and validate against their respective public references;
+WMM 2025 evaluation matches NOAA reference test values within
+5 nT per component (well inside the 4-significant-figure tolerance
+the WMM publication declares). Architecture status note flipped
+in `software-architecture.md § Synthetic Sensors`.
+
 **Scope.** Three new sensors per the architecture spec. WMM 2025
 ships as the magnetic field reference data.
 
@@ -845,10 +853,10 @@ ships as the magnetic field reference data.
 - `software-architecture.md § Synthetic Sensors` is the contract.
 - IS-GPS-200 (NAVSTAR Global Positioning System Interface
   Specification) — public US Government work — for the GNSS
-  pseudorange-noise model.
+  receiver-output noise budget.
 - WMM 2025 (NOAA NCEI / NGA / UK DGC) for the magnetic-field truth.
   Public domain. The 90-coefficient `WMM.COF` file ships as
-  `data/magnetic/wmm-2025.toml` with `provenance.md` citing the
+  `data/magnetic/WMM.COF` with `provenance.md` citing the
   December 2024 release.
 - Crassidis et al. 2007 *Survey of Nonlinear Attitude Estimation
   Methods* §3.2 for star-tracker noise budgets.
@@ -859,27 +867,27 @@ ships as the magnetic field reference data.
   per-axis Gaussian position noise + bias drift (Ornstein-Uhlenbeck
   per Phase-2.7 IMU pattern).
 - `crates/openbmp-sensors/src/magnetometer.rs` (new):
-  `SyntheticMagnetometer` — truth field via WMM 2025 plus Gaussian
-  noise + soft-iron + hard-iron bias.
+  `SyntheticMagnetometer` — body-frame WMM truth carrier plus
+  Gaussian noise + soft-iron + hard-iron bias.
 - `crates/openbmp-sensors/src/star_tracker.rs` (new):
   `SyntheticStarTracker` — per-axis Gaussian quaternion-error
   injection (small-angle approximation valid for typical
   arc-second-level noise).
-- `data/magnetic/wmm-2025.toml`: in-house port of the 90-coefficient
-  table from `WMM.COF` with `provenance.md` citing NOAA NCEI / NGA
-  / UK DGC December 2024 release. SHA-256 pin per the four-pillar
-  contract.
-- `crates/openbmp-env/src/magnetic.rs` (new):
-  `MagneticModel` trait surface; `Wmm2025` impl that evaluates the
-  spherical-harmonic series at a given (latitude, longitude,
-  altitude, time).
+- `data/magnetic/WMM.COF`: verbatim 90-coefficient table with
+  `data/magnetic/provenance.md` citing NOAA NCEI / NGA / UK DGC
+  December 2024 release. SHA-256 pin per the four-pillar contract.
+- `crates/openbmp-env/src/magnetic/mod.rs` (new): `MagneticModel`
+  trait surface.
+- `crates/openbmp-env/src/magnetic/wmm2025.rs` (new): `Wmm2025`
+  impl that evaluates the spherical-harmonic series at a given
+  (latitude, longitude, altitude, time).
 
 **Tests.**
 
 - Unit: `SyntheticGnss` truth-bypass mode (zero noise) returns
   position bit-equal to truth.
-- Unit: `Wmm2025` evaluation at `(0°, 0°, 0 km)` for epoch 2025.0
-  matches the published reference value to 4 sig figs.
+- Unit: `Wmm2025` parses all 100 shipped NOAA reference rows and
+  matches the published X / Y / Z values within 5 nT per component.
 - Statistical: `SyntheticGnss` long-run mean is zero (no drift in
   the noise component).
 - Determinism: each sensor's measurement stream is byte-stable
@@ -892,7 +900,7 @@ ships as the magnetic field reference data.
 - All three sensors compile, deterministic-replay correctly, and
   validate against their respective public references.
 - WMM 2025 evaluation matches the reference field within 4 sig
-  figs at sea-level test points.
+  figs across the shipped NOAA reference table.
 
 **Effort.** Medium (~1.0 week).
 

@@ -31,6 +31,7 @@
 pub mod atmosphere;
 pub mod error;
 pub mod gravity;
+pub mod magnetic;
 pub mod wind;
 
 pub use atmosphere::{
@@ -38,6 +39,7 @@ pub use atmosphere::{
 };
 pub use error::EnvError;
 pub use gravity::{ConstantGravity, GravityModel, J2Gravity, PointMassGravity, WGS84_J2};
+pub use magnetic::{MagneticModel, Wmm2025};
 pub use wind::{
     ConstantWind, GustWind, GustWindParams, LayerEntry, LayeredWind, NoWind, WindModel,
 };

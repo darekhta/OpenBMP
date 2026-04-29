@@ -430,10 +430,28 @@ file = "../../data/sensors/baro-consumer.toml"
 
 [sensors.truth]
 kind = "ideal_state"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../../data/sensors/gnss-textbook.toml"
+
+[sensors.mag]
+kind = "magnetometer"
+file = "../../data/sensors/magnetometer-textbook.toml"
+
+[sensors.star]
+kind = "star_tracker"
+file = "../../data/sensors/star-tracker-textbook.toml"
 ```
 
 `kind = "ideal_state"` carries no noise budget and rejects `file`;
-`kind = "imu" | "barometer"` requires `file`.
+all other kinds require `file`. The Phase-2.7 set is `imu` /
+`barometer`; the Phase-3.10 additions are `gnss` (IS-GPS-200
+receiver-output noise: per-axis Gaussian on position + velocity
+plus an OU position-bias drift), `magnetometer` (per-axis
+Gaussian on the body-frame WMM 2025 truth field plus constant
+3×3 soft-iron and 3-vector hard-iron biases), and `star_tracker`
+(small-angle Gaussian rotation-vector perturbation per axis).
 
 ### Force model registry (Phase 2)
 

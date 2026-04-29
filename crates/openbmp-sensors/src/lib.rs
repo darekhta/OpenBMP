@@ -34,15 +34,21 @@
 
 pub mod barometer;
 pub mod error;
+pub mod gnss;
 pub mod ideal;
 pub mod imu;
+pub mod magnetometer;
 pub mod noise;
 pub mod parser;
 pub mod sensor;
+pub mod star_tracker;
 
 pub use barometer::SyntheticBarometer;
 pub use error::SensorError;
+pub use gnss::{GnssNoiseBudget, SyntheticGnss};
 pub use ideal::IdealStateSensor;
 pub use imu::{ImuNoiseBudget, SyntheticImu, TriaxialNoiseBudget};
+pub use magnetometer::{MagnetometerNoiseBudget, SyntheticMagnetometer};
 pub use noise::{BoxMullerGaussian, IntegratedWhiteNoise, OrnsteinUhlenbeck};
 pub use sensor::{SensorMeasurement, SensorTruth, SyntheticSensor};
+pub use star_tracker::{ARCSEC_TO_RAD, StarTrackerNoiseBudget, SyntheticStarTracker};
