@@ -8,6 +8,16 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP synthetic sensors and fault models. No device drivers."
 
+[features]
+# Phase-3.14.D: synthetic noise infrastructure (the truth-driven
+# `SyntheticSensor` implementations and their `DeterministicRng`
+# dependency). Default-on for the simulator binary; hardware adopters
+# disable it via `default-features = false` so the crate compiles
+# down to just the `Sensor` trait + the typed measurement / truth
+# value shapes.
+default   = ["synthetic"]
+synthetic = []
+
 [dependencies]
 nalgebra     = { workspace = true }
 openbmp-core = { workspace = true }

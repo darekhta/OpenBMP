@@ -8,6 +8,17 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP environment models: atmosphere, gravity, wind, magnetic field."
 
+[features]
+# Phase-3.14.D: synthetic noise infrastructure. The current example
+# is `GustWind` (Dryden filter driven by `DeterministicRng`).
+# Default-on for the simulator binary; hardware adopters disable
+# via `default-features = false` so the env crate compiles down to
+# the deterministic atmosphere / gravity / layered-wind /
+# magnetic-field models that a real flight controller's environment
+# subsystem would consume from real sensors and lookup tables.
+default   = ["synthetic"]
+synthetic = []
+
 [dependencies]
 nalgebra     = { workspace = true }
 openbmp-core = { workspace = true }

@@ -7,17 +7,32 @@ during design, review, and testing.
 
 These boundaries are a **product requirement**, not a licensing note. The
 codebase should make unsafe use difficult by avoiding hardware-facing
-interfaces, by keeping all flight-controller APIs simulator-local, and by never
-shipping real fielded-vehicle parameter sets.
+interfaces *in this repository*, by keeping every flight-controller API
+the project itself ships consumable by simulator-local models, and by
+never shipping real fielded-vehicle parameter sets.
+
+Phase-3.14 reframed the architecture so the controller-side trait
+surfaces (`Sensor`, `ControlEffector`, mission graph, model traits) are
+re-implementable against real hardware via a downstream HAL. The
+*project* still ships only the simulator and only validates against
+academic / public-benchmark scenarios; *adopters* who write their own
+HAL accept their own qualification and deployment posture. The list
+below describes what the OpenBMP repository accepts or rejects — not
+what downstream HAL adopters may build under their own qualification
+posture in their own repositories.
 
 ## Project Definition
 
 OpenBMP means **Open Body Motion Platform** in this repository.
 
-The project may simulate generic virtual rigid bodies and rocket-class vehicles
-with synthetic or public/educational parameters. It must not become a weapon
-design tool, a deployable guidance stack, a hardware integration framework, or
-a distribution channel for restricted vehicle data.
+The project may simulate generic virtual rigid bodies and rocket-class
+vehicles with synthetic or public/educational parameters. It must not
+become a weapon design tool, a deployable guidance stack, **or** a
+distribution channel for restricted vehicle data. The OpenBMP
+repository itself ships no hardware abstraction layer and no real
+device drivers; downstream adopters who add a HAL on top of the
+controller-side trait surfaces do so in their own repositories under
+their own qualification posture.
 
 ## Accept
 
@@ -133,18 +148,28 @@ Reject contributions that add or request:
   that mixes textbook physics with real-vehicle parameters is rejected on
   the parameter set, not the physics. Use textbook or synthetic data only.
 
-### Hardware and deployment
-- Real device drivers, board support packages, real bus protocols (CAN,
-  MAVLink, DDS, MIL-STD-1553, etc.), real RTOS ports, real flight-computer
-  firmware, or shipped embedded binaries.
-- Real-time scheduling guarantees, hard deadline assertions, deployable
-  executive code, or anything that suggests the platform is suitable for
-  flight on a real vehicle.
-- Mission-control, command-and-control, or live-operations user interfaces
-  that can command a real system or imply operational readiness. Read-only
-  telemetry viewers are acceptable only as offline analysis tools.
-- Claims that OpenBMP is suitable for operational flight, weapon development,
-  field deployment, or live-fire testing.
+### Hardware and deployment (project-side rejection list)
+
+These rejections apply to **this repository**. Downstream adopters who
+build a HAL against the controller-side trait surfaces (`Sensor`,
+`ControlEffector`, mission graph, model traits) ship those integrations
+in their own repositories under their own export-control and
+qualification posture; OpenBMP itself does not host them.
+
+- Real device drivers, board support packages, real bus protocols
+  (CAN, MAVLink, DDS, MIL-STD-1553, etc.), real RTOS ports, real
+  flight-computer firmware, or shipped embedded binaries — none of
+  these land in the OpenBMP repository.
+- Real-time scheduling guarantees, hard deadline assertions,
+  deployable executive code, or anything that suggests *the OpenBMP
+  binary itself* is suitable for flight on a real vehicle.
+- Mission-control, command-and-control, or live-operations user
+  interfaces that can command a real system or imply operational
+  readiness from the OpenBMP binary. Read-only telemetry viewers are
+  acceptable only as offline analysis tools.
+- Claims that the OpenBMP-shipped binary or the OpenBMP-shipped
+  validation evidence is suitable for operational flight, weapon
+  development, field deployment, or live-fire testing.
 
 ## Review Questions
 
@@ -153,16 +178,20 @@ Before accepting a feature, answer:
 - Can this run without any physical hardware?
 - Does it avoid real fielded-vehicle parameters and operational performance
   claims?
-- Is every controller output consumed only by simulator-local models, or by
-  the optional generic socket bridge in test scenarios?
+- Within this repository, is every controller output consumed only by
+  simulator-local models, or by the optional generic socket bridge in
+  test scenarios? (Downstream HAL adopters wire to real hardware in
+  their own repositories; that integration is out of scope for this
+  question.)
 - Does it avoid targeting, terminal homing to real-world locations, and
   payload-delivery behaviour?
 - Is the feature useful for academic simulation even if all real-world
   vehicle data is removed?
 - Are assumptions, units, frames, noise models, and validation status
   documented?
-- Does the feature introduce hard real-time guarantees, real-bus protocols,
-  or device-driver code? (If yes, reject.)
+- Does the feature introduce hard real-time guarantees, real-bus
+  protocols, or device-driver code into *this repository*? (If yes,
+  reject — those belong in downstream HAL adopters' repositories.)
 
 If any answer is "no" for the first six, or "yes" for the last, the feature
 is outside the project boundary.
@@ -351,7 +380,7 @@ Every release artifact and the top-level README must include a
 non-suitability statement:
 
 > OpenBMP is an academic simulation platform. It is not validated for
-> operational flight, not suitable for hardware deployment, not a weapon
-> system, and not a substitute for any qualified flight-software stack.
-> No compliance claims are made under IEC 61508, ISO 26262, DO-178C, or
-> equivalent regimes.
+> operational flight, not suitable for hardware deployment, and not a
+> substitute for any qualified flight-software stack. No compliance
+> claims are made under IEC 61508, ISO 26262, DO-178C, or equivalent
+> regimes.

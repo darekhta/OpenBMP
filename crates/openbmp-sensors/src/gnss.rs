@@ -47,7 +47,9 @@ use openbmp_core::{DeterministicRng, SensorId, StepIndex};
 
 use crate::error::SensorError;
 use crate::noise::{BoxMullerGaussian, OrnsteinUhlenbeck};
-use crate::sensor::{SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite};
+use crate::sensor::{
+    Sensor, SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite,
+};
 
 const SUB_POS_NOISE_X: u32 = 0;
 const SUB_POS_NOISE_Y: u32 = 1;
@@ -221,11 +223,14 @@ impl SyntheticGnss {
     }
 }
 
-impl SyntheticSensor for SyntheticGnss {
+impl Sensor for SyntheticGnss {
+    type Output = SensorMeasurement;
     fn sensor_id(&self) -> SensorId {
         self.sensor_id
     }
+}
 
+impl SyntheticSensor for SyntheticGnss {
     fn measure(
         &mut self,
         truth: &SensorTruth,

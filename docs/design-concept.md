@@ -8,10 +8,11 @@ primary focus on **rocket-class and launch-vehicle-class flight simulation**.
 
 OpenBMP is intended for engineering education, simulation research, controller
 prototyping, autotest-driven aerospace software experiments, and reproducible
-trajectory studies. It is **not** a deployable flight stack, **not** a weapon
-design tool, and **not** a hardware integration framework. See
-[Safety Boundaries](safety-boundaries.md) for the full acceptance and
-rejection list.
+trajectory studies. The project ships a simulator; **its abstractions are
+designed to be re-implementable against real hardware** through a downstream
+HAL, but the OpenBMP repository itself ships no HAL and does not validate or
+support hardware deployment. See [Safety Boundaries](safety-boundaries.md)
+for the project-side acceptance and rejection list.
 
 ## Purpose
 
@@ -34,19 +35,23 @@ fielded-vehicle data.
 
 ## Safety Boundary (Summary)
 
-OpenBMP must remain **non-weapon, non-deployable, and non-hardware-integrating
-by design**. Targeting, intercept, terminal guidance to real-world locations,
-real fielded-vehicle parameters, real device drivers, real-time deployment,
-operational mission planning, and counter-defense techniques are all
-**out-of-scope and rejected**. Synthetic and public/educational physics
-parameters are accepted. Detailed acceptance and rejection rules are
-maintained in [safety-boundaries.md](safety-boundaries.md).
+The OpenBMP repository must remain **non-weapon and non-deployable by
+design**. Targeting, intercept, terminal guidance to real-world
+locations, real fielded-vehicle parameters, operational mission
+planning, and counter-defense techniques are all **out-of-scope and
+rejected**. Real device drivers, board support packages, and real bus
+protocols do not land in this repository — downstream HAL adopters who
+build those on top of the controller-side trait surfaces ship them in
+their own repositories under their own qualification posture.
+Synthetic and public/educational physics parameters are accepted.
+Detailed acceptance and rejection rules are maintained in
+[safety-boundaries.md](safety-boundaries.md).
 
 Every release artifact must include the non-suitability disclaimer:
 
 > OpenBMP is an academic simulation platform. It is not validated for
-> operational flight, not suitable for hardware deployment, not a weapon
-> system, and not a substitute for any qualified flight-software stack.
+> operational flight, not suitable for hardware deployment, and not a
+> substitute for any qualified flight-software stack.
 
 ## Vehicle Classes
 

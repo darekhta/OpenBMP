@@ -34,23 +34,51 @@
 //! wires sensors into the runner's measurement chain remains a later
 //! integration phase.
 
-pub mod barometer;
+// Always-available items: the abstract `Sensor` trait + the typed
+// measurement / truth value shapes. A HAL adopter compiles
+// `openbmp-sensors` with `default-features = false` and gets only
+// these.
 pub mod error;
-pub mod gnss;
-pub mod ideal;
-pub mod imu;
-pub mod magnetometer;
-pub mod noise;
-pub mod parser;
 pub mod sensor;
+
+// Synthetic-side parser for IMU noise-budget TOML configs. Stays
+// gated with the synthetic implementations because it parses
+// budgets that only the synthetic IMU consumes.
+#[cfg(feature = "synthetic")]
+pub mod parser;
+
+pub use error::SensorError;
+pub use sensor::{Sensor, SensorMeasurement, SensorTruth, SyntheticSensor};
+
+// Synthetic noise infrastructure — gated by the `synthetic` feature.
+// Default-on for the simulator binary; hardware adopters disable
+// via `default-features = false`.
+#[cfg(feature = "synthetic")]
+pub mod barometer;
+#[cfg(feature = "synthetic")]
+pub mod gnss;
+#[cfg(feature = "synthetic")]
+pub mod ideal;
+#[cfg(feature = "synthetic")]
+pub mod imu;
+#[cfg(feature = "synthetic")]
+pub mod magnetometer;
+#[cfg(feature = "synthetic")]
+pub mod noise;
+#[cfg(feature = "synthetic")]
 pub mod star_tracker;
 
+#[cfg(feature = "synthetic")]
 pub use barometer::SyntheticBarometer;
-pub use error::SensorError;
+#[cfg(feature = "synthetic")]
 pub use gnss::{GnssNoiseBudget, SyntheticGnss};
+#[cfg(feature = "synthetic")]
 pub use ideal::IdealStateSensor;
+#[cfg(feature = "synthetic")]
 pub use imu::{ImuNoiseBudget, SyntheticImu, TriaxialNoiseBudget};
+#[cfg(feature = "synthetic")]
 pub use magnetometer::{MagnetometerNoiseBudget, SyntheticMagnetometer};
+#[cfg(feature = "synthetic")]
 pub use noise::{BoxMullerGaussian, IntegratedWhiteNoise, OrnsteinUhlenbeck};
-pub use sensor::{SensorMeasurement, SensorTruth, SyntheticSensor};
+#[cfg(feature = "synthetic")]
 pub use star_tracker::{ARCSEC_TO_RAD, StarTrackerNoiseBudget, SyntheticStarTracker};

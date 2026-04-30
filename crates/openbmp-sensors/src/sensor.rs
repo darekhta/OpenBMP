@@ -116,10 +116,30 @@ pub enum SensorMeasurement {
 }
 
 // ---------------------------------------------------------------------
-// SyntheticSensor trait
+// Sensor (hardware-portable) + SyntheticSensor (sim-side) traits
 // ---------------------------------------------------------------------
 
-/// Trait implemented by Phase-2 synthetic sensors.
+/// Hardware-portable sensor abstraction.
+///
+/// Phase-3.14.C extracted this from [`SyntheticSensor`] so a real
+/// flight controller — and a downstream HAL adopter — can reason
+/// about a sensor by its stable id and output type without depending
+/// on the simulator's truth-port + per-step RNG mechanism. The
+/// controller subscribes to a `dyn Sensor<Output = …>` instance and
+/// the runner (sim) or HAL (hardware) drives the measurement
+/// pipeline through implementation-specific channels.
+pub trait Sensor {
+    /// Output type produced by this sensor.
+    type Output;
+
+    /// Stable identifier for this sensor instance, derived from the
+    /// canonical scenario sensor path via [`SensorId::from_path`] in
+    /// sim-side use; HAL adopters typically derive it from a
+    /// hardware-channel name.
+    fn sensor_id(&self) -> SensorId;
+}
+
+/// Trait implemented by simulator-side synthetic sensors.
 ///
 /// Each call to [`measure`](Self::measure) advances any per-sensor
 /// random state (OU bias, RRW walk) by one step, draws fresh noise
@@ -128,12 +148,12 @@ pub enum SensorMeasurement {
 /// the typed [`SensorMeasurement`].
 ///
 /// The mutable receiver (`&mut self`) is required because OU and
-/// RRW carry state across calls.
-pub trait SyntheticSensor {
-    /// Stable identifier for this sensor instance, derived from the
-    /// canonical scenario sensor path via [`SensorId::from_path`].
-    fn sensor_id(&self) -> SensorId;
-
+/// RRW carry state across calls. The `(truth, step, scenario_seed)`
+/// arguments are the simulation-side context — a HAL adopter does
+/// not implement this trait; they implement the supertrait
+/// [`Sensor`] directly and read from real hardware in their own
+/// runtime.
+pub trait SyntheticSensor: Sensor<Output = SensorMeasurement> {
     /// Produce one measurement at simulation step `step` from the
     /// supplied truth bag.
     ///
@@ -158,6 +178,7 @@ pub trait SyntheticSensor {
 /// and that the simulation timestamp is valid. Returns
 /// [`SensorError::NonFinite`] / [`SensorError::InvalidParameter`] on
 /// the first invalid component.
+#[cfg(feature = "synthetic")]
 pub(crate) fn require_truth_finite(truth: &SensorTruth) -> Result<(), SensorError> {
     let p = truth.position_eci.vector;
     let v = truth.velocity_eci.vector;

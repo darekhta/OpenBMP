@@ -8,7 +8,9 @@
 use openbmp_core::{SensorId, StepIndex};
 
 use crate::error::SensorError;
-use crate::sensor::{SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite};
+use crate::sensor::{
+    Sensor, SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite,
+};
 
 /// Ideal sensor that returns the truth bag verbatim.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -24,11 +26,14 @@ impl IdealStateSensor {
     }
 }
 
-impl SyntheticSensor for IdealStateSensor {
+impl Sensor for IdealStateSensor {
+    type Output = SensorMeasurement;
     fn sensor_id(&self) -> SensorId {
         self.sensor_id
     }
+}
 
+impl SyntheticSensor for IdealStateSensor {
     fn measure(
         &mut self,
         truth: &SensorTruth,

@@ -2,15 +2,16 @@
 
 OpenBMP is a Rust-first, simulation-only academic research platform for
 rigid-body dynamics with a primary focus on rocket-class and
-launch-vehicle-class flight simulation. It is **not** a deployable flight
-stack, **not** a weapon design tool, and **not** a hardware integration
-framework.
+launch-vehicle-class flight simulation. The project ships a simulator;
+**its abstractions are designed to be re-implementable against real
+hardware** through a downstream HAL, but the OpenBMP repository itself
+ships no HAL and does not validate or support hardware deployment.
 
 > OpenBMP is an academic simulation platform. It is not validated for
-> operational flight, not suitable for hardware deployment, not a weapon
-> system, and not a substitute for any qualified flight-software stack.
-> No compliance claims are made under IEC 61508, ISO 26262, DO-178C, or
-> equivalent regimes.
+> operational flight, not suitable for hardware deployment, and not a
+> substitute for any qualified flight-software stack. No compliance
+> claims are made under IEC 61508, ISO 26262, DO-178C, or equivalent
+> regimes.
 
 ## Status
 

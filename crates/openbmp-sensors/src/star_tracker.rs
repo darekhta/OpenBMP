@@ -41,7 +41,9 @@ use openbmp_core::{DeterministicRng, SensorId, StepIndex};
 
 use crate::error::SensorError;
 use crate::noise::BoxMullerGaussian;
-use crate::sensor::{SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite};
+use crate::sensor::{
+    Sensor, SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite,
+};
 
 const SUB_THETA_X: u32 = 0;
 const SUB_THETA_Y: u32 = 1;
@@ -135,11 +137,14 @@ impl SyntheticStarTracker {
     }
 }
 
-impl SyntheticSensor for SyntheticStarTracker {
+impl Sensor for SyntheticStarTracker {
+    type Output = SensorMeasurement;
     fn sensor_id(&self) -> SensorId {
         self.sensor_id
     }
+}
 
+impl SyntheticSensor for SyntheticStarTracker {
     fn measure(
         &mut self,
         truth: &SensorTruth,

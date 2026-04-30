@@ -40,12 +40,19 @@
 //! once per kernel base tick by the runner-side `WindRack`.
 
 pub mod constant;
-pub mod gust;
 pub mod layered;
 
 pub use constant::{ConstantWind, NoWind};
-pub use gust::{GustWind, GustWindParams};
 pub use layered::{LayerEntry, LayeredWind};
+
+// Phase-3.14.D: `GustWind` is the synthetic-noise wind model
+// (Dryden filter driven by `DeterministicRng`). Gated by the
+// `synthetic` feature; hardware adopters who consume `LayeredWind`
+// from real wind-table data don't pay for the gust machinery.
+#[cfg(feature = "synthetic")]
+pub mod gust;
+#[cfg(feature = "synthetic")]
+pub use gust::{GustWind, GustWindParams};
 
 use openbmp_core::{Eci, FrameContext, Ned, Position3, SimTime, Velocity3};
 

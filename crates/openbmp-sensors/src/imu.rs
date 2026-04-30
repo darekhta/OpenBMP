@@ -37,7 +37,9 @@ use openbmp_core::{DeterministicRng, SensorId, StepIndex};
 
 use crate::error::SensorError;
 use crate::noise::{BoxMullerGaussian, IntegratedWhiteNoise, OrnsteinUhlenbeck};
-use crate::sensor::{SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite};
+use crate::sensor::{
+    Sensor, SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite,
+};
 
 const COMPONENTS_PER_AXIS: u32 = 5;
 const SUB_ARW: u32 = 0;
@@ -320,11 +322,14 @@ impl SyntheticImu {
     }
 }
 
-impl SyntheticSensor for SyntheticImu {
+impl Sensor for SyntheticImu {
+    type Output = SensorMeasurement;
     fn sensor_id(&self) -> SensorId {
         self.sensor_id
     }
+}
 
+impl SyntheticSensor for SyntheticImu {
     fn measure(
         &mut self,
         truth: &SensorTruth,

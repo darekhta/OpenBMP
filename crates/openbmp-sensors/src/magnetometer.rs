@@ -44,7 +44,9 @@ use openbmp_core::{DeterministicRng, SensorId, StepIndex};
 
 use crate::error::SensorError;
 use crate::noise::BoxMullerGaussian;
-use crate::sensor::{SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite};
+use crate::sensor::{
+    Sensor, SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite,
+};
 
 const SUB_NOISE_X: u32 = 0;
 const SUB_NOISE_Y: u32 = 1;
@@ -163,11 +165,14 @@ impl SyntheticMagnetometer {
     }
 }
 
-impl SyntheticSensor for SyntheticMagnetometer {
+impl Sensor for SyntheticMagnetometer {
+    type Output = SensorMeasurement;
     fn sensor_id(&self) -> SensorId {
         self.sensor_id
     }
+}
 
+impl SyntheticSensor for SyntheticMagnetometer {
     fn measure(
         &mut self,
         truth: &SensorTruth,
