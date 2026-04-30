@@ -1,16 +1,15 @@
-# Phase-3.3 assembly-tree parser fixture exercising the
-# mass-consistency check.
+# Phase-3.3 assembly-tree parser fixture retained as an ignored
+# historical cross-consistency case.
 #
-# `mass_kg = 0.085` declared in the flat block disagrees with the
-# sum of body dry masses (0.080 + 0.005 = 0.085 — but here we set
-# the flat to 0.090 to deliberately cause the consistency check to
-# fail). Synthetic; not a benchmark.
+# Phase-3.13 retired the flat vehicle dry-mass field, so this TOML now
+# parses as an ordinary two-body assembly. The ignored test documents
+# the deleted v1 consistency check. Synthetic; not a benchmark.
 
 openbmp.scenario = 2
 
 [meta]
 name        = "assembly-mass-mismatch-fixture"
-description = "Phase-3.3 parser fixture; flat mass disagrees with assembly body sum. Synthetic; not a benchmark."
+description = "Phase-3.3 parser fixture retained as an ignored historical mass-consistency case. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

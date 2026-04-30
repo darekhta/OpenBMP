@@ -40,8 +40,8 @@ the Phase-3.9 [`RecoveryModel`] family. The state machine is
 `Stowed → Drogue → Main`, advanced one transition per
 `EventAction::DeployRecovery` firing. Drag follows the closed-form
 `F_drag = -½ ρ |v|² C_D A · v̂` per Knacke 1992 Chapter 5; the
-Phase-3.9 academic formulation ignores wind-relative velocity
-(matches the [`AxialDragForceAdapter`] convention) and applies drag
+  Phase-3.9 academic formulation ignores wind-relative velocity
+(matches the [`DeckDragForceAdapter`] convention) and applies drag
 at the body CG (no moment contribution).
 
 The drogue and main canopy parameters are textbook ranges for
@@ -60,7 +60,7 @@ matching the academic two-stage descent profile in Knacke Chapter 9.
 ### Phase-3.9 known limitations
 
 - **Wind-relative drag.** Recovery drag in Phase 3.9 opposes ECI
-  velocity (matches [`AxialDragForceAdapter`]), not air-relative
+  velocity (matches [`DeckDragForceAdapter`]), not air-relative
   velocity. Wind effects on parachute drag are deferred to a
   later phase.
 - **Instantaneous deploy.** Phase 3.9 ships closed-form
@@ -82,4 +82,4 @@ matching the academic two-stage descent profile in Knacke Chapter 9.
   descent profile.
 
 [`RecoveryModel`]: ../../crates/openbmp-vehicle/src/recovery/mod.rs
-[`AxialDragForceAdapter`]: ../../crates/openbmp-vehicle/src/adapters.rs
+[`DeckDragForceAdapter`]: ../../crates/openbmp-vehicle/src/adapters.rs

@@ -482,7 +482,7 @@ openbmp-cli        = "0.x"           # Phase 1.7
 ### A minimal scenario file
 
 ```toml
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name = "arv-reference-nominal-ascent"
@@ -514,11 +514,27 @@ hz = 50
 name = "telemetry"
 hz = 10
 
-[vehicle.assembly]
-kind = "arv-reference"                           # your custom assembly
-configuration = "nominal-ascent"
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
 
-[vehicle.aero]
+[vehicle.assembly]
+id = "arv-reference-nominal-ascent"
+
+[[vehicle.assembly.bodies]]
+id = "booster"
+geometry = { kind = "reference", length_m = 35.0, area_m2 = 12.0 }
+dry_mass_kg = 25000.0
+dry_inertia_body_kg_m2 = [
+  [1.0e6, 0.0, 0.0],
+  [0.0, 1.0e6, 0.0],
+  [0.0, 0.0, 1.0e5],
+]
+
+[aero]
 deck = "data/aero/arv_reference_v1.parquet"
 package = "data/aero/arv_reference_v1.openbmp-package.yaml"
 

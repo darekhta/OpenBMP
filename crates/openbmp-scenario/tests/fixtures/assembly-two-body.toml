@@ -1,8 +1,7 @@
 # Phase-3.3 assembly-tree parser fixture (synthetic).
 #
-# Two-body assembly with consistent mass between the flat
-# [vehicle].mass_kg field and the sum of body dry masses. The
-# scenario shape is otherwise minimal Phase-1 analytic-toy.
+# Two-body assembly whose body dry masses sum to 0.085 kg. The
+# scenario shape is otherwise minimal analytic-toy.
 
 openbmp.scenario = 2
 

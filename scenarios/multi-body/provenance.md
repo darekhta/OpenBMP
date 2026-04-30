@@ -17,10 +17,9 @@ source_title:     >-
   declarative `[vehicle.assembly]` block with two synthetic bodies
   — an 80 g main rocket cylinder and a 5 g top-mounted fairing
   cone. Gravity-only descent from 100 m initial altitude over
-  1 second; no motor, no aero, no wind. The kernel uses the flat
-  `vehicle.mass_kg = 0.085` field (sum of body dry masses); the
-  assembly tree is validated round-trip through the L1
-  `BasicAssembly` types as a validation pass.
+  1 second; no motor, no aero, no wind. The kernel initializes
+  point-mass dynamics from the assembly dry mass of 0.085 kg (the
+  sum of body dry masses) through the `Assembly` resolver.
 source_authors:   OpenBMP (Dmitri Arekhta) for the Phase-3.3 multi-body exit-criterion case
 source_id:        Synthetic OpenBMP Phase-3.3 multi-body fixture
 source_url:       —
@@ -35,7 +34,7 @@ methodology_reference: >-
   reference vehicle. The fairing CG offset of 0.6 m above the main
   body's CG produces a non-trivial mass-weighted assembly CG that
   exercises the multi-body summation path in
-  `BasicAssembly::mass_properties`.
+  `Assembly::mass_properties`.
 methodology_urls:
   - —
 license_or_terms: >-
@@ -75,11 +74,8 @@ local_origin:     >-
 related_files:
   - crates/openbmp-cli/tests/multi_body_e2e.rs
 notes: >-
-  The scenario uses point-mass kernel kind for Phase 3.3. The
-  rigid-body multi-body case (with non-trivial body inertia
-  tensors) waits on the Phase-3.4+ ControlEffector / engine /
-  tank tree extensions that will drive the rigid kernel from a
-  real assembly composition. In 3.3 the assembly is advisory:
-  validates type round-trip but does not yet replace the kernel's
-  flat-field mass-model construction.
+  The scenario uses point-mass kernel kind. The rigid-body
+  multi-body case (with non-trivial body inertia tensors) is covered
+  by later Phase-3 scenarios; this fixture stays focused on the
+  two-body dry-mass summation path.
 ```

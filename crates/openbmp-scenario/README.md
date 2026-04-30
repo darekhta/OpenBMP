@@ -10,9 +10,9 @@ additions: `[mission]` (phases / events / transitions),
 recovery), aero deck schema-2 (control-effector axes), engine
 clusters with per-engine throttle / gimbal / ignition / shutdown
 commands, layered + gust winds, and the Phase-3.10 sensor variants
-(`gnss`, `magnetometer`, `star_tracker`). Schema header stays
-`openbmp.scenario = 1` (append-only — Phase-1 scenarios continue
-to parse byte-identically).
+(`gnss`, `magnetometer`, `star_tracker`). Phase-3.13 bumped the
+schema header to `openbmp.scenario = 2` and retired the v1 flat
+vehicle shape; every scenario now declares `[vehicle.assembly]`.
 
 ## Purpose
 
@@ -65,7 +65,7 @@ Unknown fields produce parse errors (fail-closed).
 ## Validation
 
 `checked` for the Phase-2.10 parser surface. Unit tests cover the
-Phase-1 minimal scenario (byte-stability guard), path resolution,
+schema-v2 analytic-toy scenario (byte-stability guard), path resolution,
 unknown-field rejection, model-registry resolution under both
 `phase1` and `phase2` registries, safety-name linting, unit/frame
 suffix linting, empty force lists, invalid time ranges, missing

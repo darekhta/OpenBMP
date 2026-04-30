@@ -21,7 +21,9 @@ pub enum ScenarioError {
         source: std::io::Error,
     },
     /// Scenario schema version is unsupported.
-    #[error("unsupported scenario schema version {found}; expected {expected}")]
+    #[error(
+        "unsupported scenario schema version: found openbmp.scenario = {found}, expected {expected}; v1 flat-vehicle scenarios were retired in Phase 3.13, see docs/scenario-format.md#migrating-v1-scenarios-to-v2"
+    )]
     UnsupportedSchemaVersion {
         /// Version found in the scenario.
         found: u16,

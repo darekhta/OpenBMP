@@ -1,21 +1,13 @@
 //! Phase-3.3 scenario → [`openbmp_vehicle::Assembly`] resolver.
 //!
 //! Bridges a parsed [`openbmp_scenario::ScenarioDocument`] to the
-//! `openbmp-vehicle` assembly tree. Two paths:
+//! `openbmp-vehicle` assembly tree.
 //!
-//! - **`[vehicle.assembly]` declared** — build a [`Assembly`]
-//!   from the declared bodies.
-//! - **No assembly declared (legacy)** — synthesise a single-body
-//!   `Assembly` from `vehicle.mass_kg` and (if present)
-//!   `inertia_tensor_body_kg_m2`. The single-body fast path
-//!   preserves byte-identical kernel construction for every
-//!   Phase-2.10 / 3.1 scenario.
-//!
-//! Phase-3.3 keeps the runner's existing force / moment construction
-//! paths in place, but the resolved assembly now supplies dry mass
-//! properties for kernel mass construction. Propulsion, effectors, and
-//! tanks still flow through the legacy runner paths until their
-//! assembly children land in later Phase-3 sub-phases.
+//! Schema v2 requires `[vehicle.assembly]`; this resolver builds an
+//! [`Assembly`] from the declared bodies and supplies the dry mass
+//! properties used during kernel construction. Propulsion, effectors,
+//! tanks, and recovery devices are assembled by their runner-side
+//! racks from the child blocks declared under the same assembly tree.
 
 use nalgebra::Matrix3;
 use openbmp_core::{BodyId, SimTime, VehicleId};

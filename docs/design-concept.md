@@ -425,10 +425,10 @@ and any operational mission profile.
   `SyntheticImu` (IEEE 952 five-component noise model), and
   `SyntheticBarometer` (Gaussian + OU bias drift).
 - Vehicle composition in `openbmp-vehicle`: flat `Vehicle` trait with
-  `BasicVehicle` carrying ordered force / moment / mass model lists
+  `KernelVehicle` carrying ordered force / moment / mass model lists
   and per-step force-breakdown evaluation. Kernel-side adapter
   family (`GravityForceAdapter`, `MotorThrustForceAdapter`,
-  `MotorMassAdapter`, `AxialDragForceAdapter`) wraps L2 physics into
+  `MotorMassAdapter`, `DeckDragForceAdapter`) wraps L2 physics into
   point-mass `ForceModel` / `MassModel` impls.
 - Scenario format extensions in `openbmp-scenario`: structured
   `[aero]`, `[propulsion.motor]`, `[wind]`, `[atmosphere]`,
@@ -460,7 +460,7 @@ and any operational mission profile.
 **Phase 3 — Modular composable rocket** (complete)
 - Rigid-body kernel adapter support completing the Phase-2.11
   deferral: `GravityForceAdapter`, `MotorThrustForceAdapter`, and
-  `AxialDragForceAdapter` implement the rigid-body force path;
+  `DeckDragForceAdapter` implement the rigid-body force path;
   `RigidMotorMassAdapter`, the engine-cluster adapter trio,
   tank-rack adapters, and `RecoveryRackForceAdapter` cover the new
   Phase-3 mass / moment / recovery surfaces. Runner now accepts
@@ -542,6 +542,17 @@ and any operational mission profile.
   coupling, tank / engine propellant double-accounting guards,
   rigid-body mass-properties consumption of tank inertia deltas, and
   per-tank slosh telemetry channels.
+- Retire the single-motor adapter path by implementing a `SolidEngine`
+  `EngineModel` wrapper around `SolidMotor`, then route
+  `[propulsion.motor]` through the engine-cluster infrastructure and
+  remove `MotorThrustForceAdapter`, `MotorMassAdapter`, and
+  `RigidMotorMassAdapter`.
+- Collapse the duplicated point-mass and rigid-body Phase-2 runner
+  files into a generic runner once the moment-only rigid-body extras
+  have a shared abstraction.
+- Add a first-class v1 to v2 scenario migration command if downstream
+  users need automated conversion beyond the documented mechanical
+  rewrite in `docs/scenario-format.md`.
 
 **Phase 4 — Virtual flight controller**
 - Estimator framework: EKF, MEKF (quaternion attitude).

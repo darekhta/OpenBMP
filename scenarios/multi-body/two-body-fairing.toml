@@ -2,14 +2,12 @@
 #
 # Demonstrates the new declarative `[vehicle.assembly]` block with
 # two bodies: an 80 g main rocket body (cylinder) and a 5 g
-# top-mounted fairing (cone). The flat `[vehicle].mass_kg = 0.085`
-# kg matches the sum of body dry masses (consistency check).
+# top-mounted fairing (cone). The assembly dry mass is 0.085 kg,
+# the sum of body dry masses.
 #
-# Phase-3.3 limitations:
-# - Point-mass kernel only; the kernel still drives off the flat
-#   `mass_kg` field. The assembly tree is advisory in 3.3 and is
-#   round-tripped through the L1 vehicle types as a validation
-#   pass, but does not yet drive the kernel's mass model directly.
+# Phase-3.13 v2 shape:
+# - Point-mass kernel only; the kernel mass model is initialized from
+#   the assembly dry mass.
 # - No motor, no aero — gravity-only descent demonstrates the
 #   end-to-end load-and-propagate path through the kernel.
 #

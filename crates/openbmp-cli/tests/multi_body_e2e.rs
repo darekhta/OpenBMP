@@ -80,6 +80,6 @@ fn two_body_fairing_scenario_runs_to_completion() {
     let initial_mass = first_mass.expect("at least one row");
     assert!(
         (initial_mass - 0.085).abs() < 1.0e-9,
-        "initial mass should equal flat mass_kg = sum of body dry masses (0.085 kg), got {initial_mass}",
+        "initial mass should equal the assembly dry-mass sum (0.085 kg), got {initial_mass}",
     );
 }

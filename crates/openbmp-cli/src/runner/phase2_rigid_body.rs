@@ -15,9 +15,9 @@
 //! - `forces.models` entries permuted from `["gravity", "aero",
 //!   "thrust"]`
 //! - `vehicle.initial_quaternion_body_to_eci_xyzw`,
-//!   `vehicle.initial_angular_velocity_body_rad_s`, and
-//!   `vehicle.inertia_tensor_body_kg_m2` declared (parser already
-//!   enforces these for `kind = "rigid_body"`).
+//!   `vehicle.initial_angular_velocity_body_rad_s`, and per-body
+//!   `vehicle.assembly.bodies[*].dry_inertia_body_kg_m2` declared
+//!   (parser already enforces these for `kind = "rigid_body"`).
 //!
 //! Wind models and aero side-force / pitching moment are deferred to
 //! later Phase-3 sub-phases. Phase 3.6 wires rigid-body engine-cluster

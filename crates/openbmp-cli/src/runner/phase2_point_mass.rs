@@ -470,8 +470,8 @@ fn build_initial_state(
     let dry_mass_kg = dry_mass_kg_at(assembly, start_time, "vehicle.assembly")?;
 
     // Total mass at the initial state = assembly dry mass PLUS the
-    // motor's current mass when a motor is declared. The scenario-side
-    // `mass_kg` is the dry-airframe mass (no motor). MotorMassAdapter
+    // motor's current mass when a motor is declared. The assembly dry
+    // mass is the dry-airframe mass (no motor). MotorMassAdapter
     // mirrors this by adding the motor mass at the initial state time.
     // `ignite_at_s` is relative to scenario start, while kernel model
     // adapters take absolute simulation time, so pre-roll / delayed

@@ -831,7 +831,7 @@ path stays flat-list and synchronous as today.
 
 > **Phase-3.3 status note.** The Phase-3.3 implementation in
 > `openbmp-vehicle::assembly` ships the trait surface, `Body`,
-> `BodyGeometry`, `BasicAssembly`, `KernelModelBundle`,
+> `BodyGeometry`, `Assembly`, `KernelModelBundle`,
 > `KernelModelBundleRigid`, plus the path-derived stable ids
 > (`BodyId`, `EffectorId`, `TankId`, `EngineId`, `VehicleId`) in
 > `openbmp-core`. The `propulsion` / `effectors` / `tanks` /
@@ -1047,7 +1047,7 @@ sees telemetry channels `effector.<id>.commanded`,
 > design fragment above is simplified). Faults are scenario-loaded
 > only in 3.4; run-time fault injection is deferred. The
 > `EffectorRack` lives on the runner side (mirrors `mission.rs`),
-> not on `BasicAssembly`, so the assembly stays `Clone` and legacy
+> not on `Assembly`, so the assembly stays `Clone` and legacy
 > scenarios with no `[[vehicle.assembly.effectors]]` short-circuit
 > every per-step rack operation on `is_empty()` and produce
 > byte-identical Parquet to pre-3.4. See `scenarios/effector-elevon/`
@@ -1359,7 +1359,7 @@ body_flap_right / grid_fin_<n>`; the deck declares names and units, the
 > - Schema-2 supports up to 3 effector axes (6 axes total) in 3.5.
 >   The full six-coefficient `(CY, Cl, Cn-yaw)` deck is deferred past
 >   3.5; schema-2 still ships only `(CN, CD, CM)`. The
->   `AxialDragForceAdapter` keeps its hard-coded `(alpha, beta) =
+>   `DeckDragForceAdapter` keeps its hard-coded `(alpha, beta) =
 >   (0, 0)` query in 3.5; real alpha/beta consumption from
 >   `RigidBodyState` is Phase-3.6's
 >   `RigidAeroForceMomentAdapter` work.
@@ -1823,7 +1823,7 @@ fields by default.
 ### Example
 
 ```toml
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name = "rk4-attitude-damping-toy"
@@ -1838,24 +1838,39 @@ seed    = 42
 
 [vehicle]
 kind = "rigid_body"
-mass_kg = 10.0
-inertia_diag_kg_m2 = [1.0, 2.0, 1.5]
 initial_position_eci_m = [7000000.0, 0.0, 0.0]
 initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
-initial_quaternion_body_eci = [1.0, 0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
 initial_angular_velocity_body_rad_s = [0.5, 0.3, -0.2]
 
+[vehicle.assembly]
+id = "rk4-attitude-damping-toy"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 10.0
+dry_inertia_body_kg_m2 = [
+  [1.0, 0.0, 0.0],
+  [0.0, 2.0, 0.0],
+  [0.0, 0.0, 1.5],
+]
+
 [environment]
-gravity = "j2"
+frame_profile = "wgs84-uniform-rotation"
+gravity = "constant"
+gravity_m_s2 = 9.81
 atmosphere = "us_standard_1976"
-wind = "constant"
-wind_velocity_ned_m_s = [5.0, 0.0, 0.0]
+wind = "none"
 
 [forces]
 models = ["gravity", "aero"]
 
 [aero]
 deck = "data/aero/cone-toy.toml"
+
+[atmosphere]
+kind = "us_standard_1976"
 
 [sensors.imu]
 class = "synthetic_tactical"

@@ -5,13 +5,12 @@ models, initial state, deterministic schedule, telemetry outputs, and
 validation rules for one simulation run.
 
 The schema header is `openbmp.scenario = 2`. Phase-3.13 retired the v1
-flat-vehicle shape (top-level `vehicle.mass_kg` and
-`vehicle.inertia_tensor_body_kg_m2`); every scenario now carries a
-mandatory `[vehicle.assembly]` block and per-body dry mass / inertia
-live on `[[vehicle.assembly.bodies]]`. v1 scenarios fail closed at the
-header check; the per-sub-phase commit history is the migration
-reference for downstream users with v1 files. Phase-2 specifics live in
-the [Phase-2 Extensions](#phase-2-extensions) section at the bottom.
+flat-vehicle shape; every scenario now carries a mandatory
+`[vehicle.assembly]` block and per-body dry mass / inertia live on
+`[[vehicle.assembly.bodies]]`. v1 scenarios fail closed at the header
+check. See [Migrating v1 scenarios to v2](#migrating-v1-scenarios-to-v2)
+for the mechanical rewrite. Phase-2 specifics live in the
+[Phase-2 Extensions](#phase-2-extensions) section at the bottom.
 
 This document is the format contract. It intentionally favors strict, verbose
 fields over compact syntax.
@@ -36,7 +35,7 @@ fields over compact syntax.
 | `[time]` | yes | Start, stop, step, seed |
 | `[vehicle]` | yes | Vehicle kind and initial state |
 | `[environment]` | yes | Gravity, atmosphere, wind, magnetic models |
-| `[forces]` | yes | Force and moment model ordering |
+| `[forces]` | no | Optional force and moment model ordering override; omitted scenarios derive `["gravity", "thrust"?, "aero"?]` from the assembly and model blocks |
 | `[telemetry]` | yes | Output files and schema options |
 | `[validation]` | yes | Runtime validation rules |
 | `[epoch]` | no | Absolute time metadata |
@@ -55,7 +54,7 @@ fields over compact syntax.
 ## Minimal Example
 
 ```toml
-openbmp.scenario = 1
+openbmp.scenario = 2
 
 [meta]
 name = "constant-acceleration-drop"
@@ -70,9 +69,16 @@ seed = 42
 
 [vehicle]
 kind = "point_mass"
-mass_kg = 1.0
 initial_position_eci_m = [0.0, 0.0, 0.0]
 initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "constant-acceleration-drop"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
 
 [environment]
 frame_profile = "toy-fixed-earth"
@@ -97,10 +103,28 @@ In Phase 1, `environment.gravity_m_s2` is a non-negative magnitude. The
 analytic-toy runner applies it along the toy `-z` direction; explicit gravity
 vectors are a later scenario-format extension.
 
-Vehicle mass semantics depend on propulsion declaration in schema version 1.
-Without `[propulsion.motor]`, `vehicle.mass_kg` is the total point mass. With a
-motor block, `vehicle.mass_kg` is the dry airframe mass excluding the motor; the
-Phase-2.11 runner adds the motor's time-varying mass from the pinned motor file.
+In schema version 2, the assembly is the single dry-mass source of truth.
+Point-mass scenarios sum `[[vehicle.assembly.bodies]].dry_mass_kg` for the
+initial dry vehicle mass. With `[propulsion.motor]`, the runner adds the
+motor's time-varying mass from the pinned motor file; with
+`[[vehicle.assembly.engines]]`, the engine-cluster rack supplies the thrust and
+mass-flow path.
+
+## Migrating v1 Scenarios To v2
+
+The v1 to v2 rewrite is mechanical:
+
+- Change the header to `openbmp.scenario = 2`.
+- Remove top-level vehicle dry-mass and inertia fields from `[vehicle]`.
+- Add `[vehicle.assembly]` and at least one `[[vehicle.assembly.bodies]]`
+  entry.
+- Move the old dry mass into `dry_mass_kg` on the body. For rigid-body
+  scenarios, move the old inertia matrix into
+  `dry_inertia_body_kg_m2` on each body that contributes inertia.
+- Keep `[forces]` only when the scenario needs a non-default order or wants to
+  disable a derived force. When omitted, the loader derives `gravity`, then
+  `thrust` if propulsion or assembly engines are declared, then `aero` if an
+  aero deck is declared.
 
 ## Metadata
 
@@ -272,7 +296,8 @@ The same check runs in CI for every committed scenario.
 ## Phase 2 Extensions
 
 Phase 2.10 added scenario-format extensions for sounding-rocket scenarios.
-Every new block is optional; existing Phase-1 scenarios parse unchanged.
+Those blocks remain optional in schema v2 unless selected models require
+their matching structured table.
 The canonical worked example is
 [`scenarios/sounding-rocket/niskanen-2009-chapter6.toml`](../scenarios/sounding-rocket/niskanen-2009-chapter6.toml).
 
@@ -283,12 +308,19 @@ When `[vehicle].kind = "rigid_body"`, three additional fields are required:
 ```toml
 [vehicle]
 kind                                 = "rigid_body"
-mass_kg                              = 1.5
 initial_position_eci_m               = [0.0, 0.0, 0.0]
 initial_velocity_eci_m_s             = [0.0, 0.0, 0.0]
 initial_quaternion_body_to_eci_xyzw  = [0.0, 0.0, 0.0, 1.0]
 initial_angular_velocity_body_rad_s  = [0.0, 0.0, 0.0]
-inertia_tensor_body_kg_m2            = [
+
+[vehicle.assembly]
+id = "rigid-body-example"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.5
+dry_inertia_body_kg_m2 = [
   [0.10, 0.0,  0.0],
   [0.0,  0.10, 0.0],
   [0.0,  0.0,  0.01],
@@ -296,11 +328,12 @@ inertia_tensor_body_kg_m2            = [
 ```
 
 The quaternion is the body-to-ECI rotation in `[x, y, z, w]` order;
-the parser checks unit-norm to 1e-9. The inertia tensor is declared in
-body axes as a 3x3 kg m^2 matrix; the parser requires finite symmetric
-entries with strictly positive diagonal moments, and rigid-kernel
-construction applies the full physical validity checks. The
-rigid-body-only fields are rejected when `kind = "point_mass"`.
+the parser checks unit-norm to 1e-9. Per-body inertia tensors are
+declared in body axes as 3x3 kg m^2 matrices; the parser requires
+finite symmetric entries with strictly positive diagonal moments, and
+rigid-kernel construction applies the full physical validity checks.
+The rigid-body-only initial-state fields are rejected when
+`kind = "point_mass"`.
 
 ### Gravity coefficients
 
@@ -607,13 +640,12 @@ The parser enforces:
 ### Vehicle assembly (Phase 3.3)
 
 When `[vehicle.assembly]` is declared, the scenario describes the
-vehicle as a tree of bodies. Phase-3.3 supports single-body and
-multi-body assemblies. Phase-3 sub-phases add effectors, engine
-clusters, tanks, and recovery devices as child blocks of the
-assembly; sensors remain outside the assembly for now. The flat
-`[vehicle].mass_kg` field stays required and must equal the sum of
-declared body dry masses (consistency check: max(1e-12 absolute,
-1e-9 relative tolerance)).
+vehicle as a tree of bodies. Schema v2 requires this block for every
+scenario. Phase-3.3 introduced single-body and multi-body assemblies;
+later Phase-3 sub-phases added effectors, engine clusters, tanks, and
+recovery devices as child blocks of the assembly. Sensors remain
+outside the assembly for now. The assembly bodies are the dry mass and
+dry inertia source of truth.
 
 The canonical multi-body example mirrors
 [`scenarios/multi-body/two-body-fairing.toml`](../scenarios/multi-body/two-body-fairing.toml):
@@ -621,7 +653,6 @@ The canonical multi-body example mirrors
 ```toml
 [vehicle]
 kind                     = "point_mass"
-mass_kg                  = 0.085   # = sum of body dry masses
 initial_position_eci_m   = [0.0, 0.0, 100.0]
 initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
 
@@ -654,15 +685,15 @@ dry_cg_body_m = [0.0, 0.0, 0.6]
 The `reference` variant is the escape hatch for non-axisymmetric or
 pre-computed geometry, mirroring the aero-deck reference.
 
-#### Reserved future-phase children
+#### Assembly children
 
-`[[vehicle.assembly.effectors]]` ships in Phase 3.4 — see
+`[[vehicle.assembly.effectors]]` shipped in Phase 3.4 — see
 [Control effectors](#control-effectors-phase-34) below.
-`[[vehicle.assembly.engines]]` ships in Phase 3.6 — see
+`[[vehicle.assembly.engines]]` shipped in Phase 3.6 — see
 [Engine clusters](#engine-clusters-phase-36) below.
-`[[vehicle.assembly.tanks]]` ships in Phase 3.7 — see
+`[[vehicle.assembly.tanks]]` shipped in Phase 3.7 — see
 [Tanks and slosh](#tanks-and-slosh-phase-37) below.
-`[[vehicle.assembly.recovery]]` ships in Phase 3.9 — see
+`[[vehicle.assembly.recovery]]` shipped in Phase 3.9 — see
 [Recovery and descent](#recovery-and-descent-phase-39) below.
 
 #### Determinism
@@ -670,7 +701,7 @@ pre-computed geometry, mirroring the aero-deck reference.
 Body ids are FNV-1a-64 hashes of the canonical scenario body path
 (`vehicle.assembly.bodies.<id>`). Reordering `[[vehicle.assembly.bodies]]`
 does not shift any body's id. The multi-body summation in
-`BasicAssembly::mass_properties` is a left fold in scenario-declared
+`Assembly::mass_properties` is a left fold in scenario-declared
 order with locked operand order; the same assembly built from
 different declaration orders produces the same body-id set but may
 produce slightly different summed bytes (matches the existing
@@ -682,16 +713,12 @@ Enforced at scenario-parse time:
 
 - `bodies` must be non-empty.
 - All body ids are unique.
-- `[vehicle].mass_kg` equals `sum(bodies[*].dry_mass_kg)` within
-  max(1e-12 absolute, 1e-9 relative tolerance).
 - Per-body: `dry_mass_kg` finite + positive, `dry_cg_body_m`
   components finite, geometry components finite + positive.
 - Inertia tensor (when present): finite, symmetric within 1e-9,
   positive diagonal.
 - Rigid-body scenarios: every body declares
-  `dry_inertia_body_kg_m2`, and the flat
-  `vehicle.inertia_tensor_body_kg_m2` matches the assembled dry
-  inertia tensor within the same consistency tolerance.
+  `dry_inertia_body_kg_m2`.
 - Assembly child blocks are validated by their phase sections:
   `effectors` (Phase 3.4), `engines` (Phase 3.6), `tanks`
   (Phase 3.7), and `recovery` (Phase 3.9). Unknown child blocks
@@ -700,9 +727,9 @@ Enforced at scenario-parse time:
 #### Phase-3.3 limitations
 
 - The runner consumes the assembly's dry mass properties for kernel
-  mass construction. Force / moment construction still uses the
-  existing per-runner paths until the engines / tanks assembly
-  children land in later Phase-3 sub-phases.
+  mass construction. Force / moment construction still uses
+  runner-side adapters until the remaining single-motor adapter path
+  is retired behind the engine-cluster infrastructure.
 - Point-mass propagation only uses the assembled dry mass; body CG and
   inertia affect rigid-body mass properties, not point-mass dynamics.
 
@@ -952,9 +979,8 @@ in `crates/openbmp-aero/src/deck.rs`.
 
 #### Determinism
 
-Schema-1 fixtures are bit-identical under the schema-2 loader. Every
-existing scenario (D12, Niskanen point-mass, Niskanen rigid, Phase-1
-analytic-toy, Phase-3.4 effector e2e) continues to produce
+Schema-1 aero-deck fixtures are bit-identical under the schema-2 deck
+loader. The migrated schema-v2 scenarios continue to produce
 byte-identical Parquet under Phase 3.5. The kernel-owned
 `effector_actuals: BTreeMap<String, f64>` snapshot is empty by
 default; the runner only populates it when at least one schema-2 deck
@@ -1080,7 +1106,7 @@ Single-motor and no-propulsion scenarios short-circuit every
 rack-related operation on `engine_rack.is_empty()`; the kernel's
 `engine_snapshot` field stays at the empty `BTreeMap` set in
 `new()`, the cluster adapters are never instantiated, and legacy
-scenarios produce byte-identical Parquet to pre-3.6.
+single-motor scenarios preserve the same hot path.
 
 #### Validation invariants
 

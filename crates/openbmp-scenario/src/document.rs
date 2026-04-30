@@ -1,4 +1,4 @@
-//! Strict Phase-1 scenario document and per-section config structs.
+//! Strict scenario document and per-section config structs.
 //!
 //! All `Config`-suffixed structs use `#[serde(deny_unknown_fields)]`.
 //! Validation is performed in [`ScenarioDocument::validate`], which the
@@ -21,11 +21,9 @@ use crate::solver::SolverConfig;
 
 /// Scenario schema version supported by this crate.
 ///
-/// Phase-3.13 retired the v1 flat scenario shape (top-level
-/// `vehicle.mass_kg` / `vehicle.inertia_tensor_body_kg_m2`).
-/// Every v2 scenario carries a mandatory `[vehicle.assembly]`
-/// block; per-body mass and inertia live on
-/// `[[vehicle.assembly.bodies]]`.
+/// Phase-3.13 retired the v1 flat scenario shape. Every v2
+/// scenario carries a mandatory `[vehicle.assembly]` block;
+/// per-body mass and inertia live on `[[vehicle.assembly.bodies]]`.
 pub const SUPPORTED_SCENARIO_VERSION: u16 = 2;
 
 /// Default unnormalised WGS84 J2 zonal coefficient used when a scenario
@@ -34,7 +32,7 @@ pub const SUPPORTED_SCENARIO_VERSION: u16 = 2;
 /// Source: NIMA TR 8350.2 (NGA WGS84), 3rd edition (2000), table 3.5.
 pub const WGS84_J2_DEFAULT: f64 = 1.082_626_683e-3;
 
-/// Strict Phase-1 scenario document.
+/// Strict scenario document.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ScenarioDocument {
@@ -90,9 +88,8 @@ pub struct ScenarioDocument {
     ///
     /// When present, the runner builds an `openbmp_sim::MissionPhaseGraph`
     /// and a list of `openbmp_sim::EventBinding`s from the parsed
-    /// config. When absent, the kernel runs in legacy mode with no
-    /// event evaluation — Phase-1 and pre-3.2 Phase-2 scenarios stay
-    /// byte-stable.
+    /// config. When absent, the kernel runs in missionless mode with
+    /// no event evaluation.
     pub mission: Option<MissionConfig>,
 }
 
@@ -147,7 +144,7 @@ impl ScenarioDocument {
     /// # Errors
     ///
     /// Returns [`ScenarioError`] when the document violates the
-    /// Phase-1 contract.
+    /// scenario contract.
     pub fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
         self.validate_header()?;
         self.meta.validate()?;
@@ -554,7 +551,10 @@ impl VehicleConfig {
     }
 }
 
-fn validate_inertia_tensor(inertia: &[[f64; 3]; 3]) -> Result<(), ScenarioError> {
+fn validate_inertia_tensor(
+    field_prefix: &str,
+    inertia: &[[f64; 3]; 3],
+) -> Result<(), ScenarioError> {
     // Finiteness, symmetry (within 1e-9 tolerance), and positive
     // diagonal entries. Full positive-definite + triangle-inequality
     // validation lives in `MassProperties::require_valid` at kernel
@@ -563,7 +563,7 @@ fn validate_inertia_tensor(inertia: &[[f64; 3]; 3]) -> Result<(), ScenarioError>
         for (j, value) in row.iter().enumerate() {
             if !value.is_finite() {
                 return Err(ScenarioError::InvalidNumber {
-                    field: format!("vehicle.inertia_tensor_body_kg_m2[{i}][{j}]"),
+                    field: format!("{field_prefix}[{i}][{j}]"),
                     value: *value,
                     rule: "must be finite",
                 });
@@ -571,7 +571,7 @@ fn validate_inertia_tensor(inertia: &[[f64; 3]; 3]) -> Result<(), ScenarioError>
         }
         if row[i] <= 0.0 {
             return Err(ScenarioError::InvalidNumber {
-                field: format!("vehicle.inertia_tensor_body_kg_m2[{i}][{i}]"),
+                field: format!("{field_prefix}[{i}][{i}]"),
                 value: row[i],
                 rule: "diagonal moment must be strictly positive",
             });
@@ -584,7 +584,7 @@ fn validate_inertia_tensor(inertia: &[[f64; 3]; 3]) -> Result<(), ScenarioError>
         let lower = inertia[ji][jj];
         if (upper - lower).abs() > symmetry_tolerance {
             return Err(ScenarioError::InvalidNumber {
-                field: format!("vehicle.inertia_tensor_body_kg_m2[{i}][{j}]"),
+                field: format!("{field_prefix}[{i}][{j}]"),
                 value: upper - lower,
                 rule: "inertia tensor must be symmetric",
             });
@@ -1922,11 +1922,8 @@ impl PhaseTransitionConfig {
 
 /// Top-level `[vehicle.assembly]` block.
 ///
-/// Declares the vehicle as a tree of bodies. The Phase-3.3 sub-trees
-/// for `effectors` / `engines` / `tanks` are reserved-but-rejected:
-/// declarations parse via serde but the validator surfaces a typed
-/// `UnsupportedAssemblyChild` error pointing at the future phase
-/// that will land them.
+/// Declares the vehicle as a tree of bodies plus optional Phase-3
+/// child blocks for effectors, engines, tanks, and recovery devices.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AssemblyConfig {
@@ -1975,11 +1972,7 @@ pub struct AssemblyConfig {
 }
 
 impl AssemblyConfig {
-    /// Validate the assembly block. `flat_mass_kg` is the
-    /// `[vehicle].mass_kg` field used for cross-consistency
-    /// checking; the validator requires the sum of body dry masses
-    /// to equal `flat_mass_kg` within the assembly consistency
-    /// tolerance.
+    /// Validate the assembly block.
     pub(crate) fn validate(&self, vehicle_kind: &str, dt_s: f64) -> Result<(), ScenarioError> {
         if self.bodies.is_empty() {
             return Err(ScenarioError::EmptyList {
@@ -2093,7 +2086,10 @@ impl AssemblyBodyConfig {
             });
         }
         if let Some(inertia) = &self.dry_inertia_body_kg_m2 {
-            validate_inertia_tensor(inertia)?;
+            validate_inertia_tensor(
+                &format!("vehicle.assembly.bodies[{index}].dry_inertia_body_kg_m2"),
+                inertia,
+            )?;
         }
         Ok(())
     }

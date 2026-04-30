@@ -233,6 +233,29 @@ mod tests {
     }
 
     #[test]
+    fn rejects_v1_schema_with_migration_pointer() {
+        let legacy_version = 1_u16;
+        let toml = MINIMAL.replace(
+            "openbmp.scenario = 2",
+            &format!("openbmp.scenario = {legacy_version}"),
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains(&format!("found openbmp.scenario = {legacy_version}")),
+            "message should report found schema version: {message}"
+        );
+        assert!(
+            message.contains("expected 2"),
+            "message should report supported schema version: {message}"
+        );
+        assert!(
+            message.contains("docs/scenario-format.md#migrating-v1-scenarios-to-v2"),
+            "message should point at the migration section: {message}"
+        );
+    }
+
+    #[test]
     fn resolves_paths_against_source_dir() {
         let scenario =
             Scenario::from_toml_str_with_source_dir(MINIMAL, Some(PathBuf::from("/tmp/scenario")))
@@ -1490,6 +1513,28 @@ action  = { kind = "stop", label = "max-q" }
         "/tests/fixtures/assembly-rigid-inertia-mismatch.toml"
     ));
 
+    fn without_forces(toml: &str) -> String {
+        let start = toml.find("\n[forces]\n").expect("fixture has forces block");
+        let after_header = start + "\n[forces]\n".len();
+        let end = toml[after_header..]
+            .find("\n[telemetry]")
+            .map(|offset| after_header + offset)
+            .expect("fixture has telemetry block after forces");
+        let mut output = String::with_capacity(toml.len());
+        output.push_str(&toml[..start]);
+        output.push_str(&toml[end..]);
+        output
+    }
+
+    fn force_names(scenario: &Scenario) -> Vec<&str> {
+        scenario
+            .document
+            .force_models()
+            .iter()
+            .map(String::as_str)
+            .collect()
+    }
+
     #[test]
     fn parses_two_body_assembly_block() {
         let scenario = Scenario::from_toml_str(ASSEMBLY_TWO_BODY).expect("parse");
@@ -1509,6 +1554,38 @@ action  = { kind = "stop", label = "max-q" }
         assert_eq!(assembly.bodies.len(), 1);
         assert_eq!(assembly.bodies[0].id, "main");
         assert_eq!(assembly.bodies[0].dry_mass_kg.to_bits(), 1.0_f64.to_bits());
+    }
+
+    #[test]
+    fn derives_gravity_only_when_forces_absent() {
+        let scenario = Scenario::from_toml_str(&without_forces(MINIMAL)).expect("parse");
+        assert_eq!(force_names(&scenario), ["gravity"]);
+    }
+
+    #[test]
+    fn derives_thrust_and_aero_when_motor_and_deck_are_declared() {
+        let scenario = Scenario::from_toml_str(&without_forces(SOUNDING_ROCKET)).expect("parse");
+        assert_eq!(force_names(&scenario), ["gravity", "thrust", "aero"]);
+    }
+
+    #[test]
+    fn derives_thrust_when_engine_cluster_is_declared() {
+        let scenario =
+            Scenario::from_toml_str(&without_forces(ASSEMBLY_WITH_ENGINE_CLUSTER)).expect("parse");
+        assert_eq!(force_names(&scenario), ["gravity", "thrust"]);
+    }
+
+    #[test]
+    fn recovery_devices_do_not_derive_force_model_names() {
+        let scenario =
+            Scenario::from_toml_str(&without_forces(ASSEMBLY_WITH_RECOVERY)).expect("parse");
+        assert_eq!(force_names(&scenario), ["gravity"]);
+    }
+
+    #[test]
+    fn explicit_forces_override_derived_order() {
+        let scenario = Scenario::from_toml_str(SOUNDING_ROCKET).expect("parse");
+        assert_eq!(force_names(&scenario), ["gravity", "aero", "thrust"]);
     }
 
     #[test]

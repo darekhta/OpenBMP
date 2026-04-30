@@ -44,7 +44,7 @@ These are distinct, non-overlapping trees with provenance:
   (atmosphere, gravity).
 - **`scenarios/<category>/<name>.toml`** — *runnable scenario specifications*
   consumed by the `openbmp run` CLI runner. Each scenario carries an
-  `openbmp.scenario = 1` marker and references `data/<thing>/<name>.toml`
+  `openbmp.scenario = 2` marker and references `data/<thing>/<name>.toml`
   files by relative path with SHA-256 pin. **Never** put a constant table
   (an aero deck, a motor curve, etc.) here.
 - **Cross-tool benchmark validation envelopes** (e.g., the published Niskanen
