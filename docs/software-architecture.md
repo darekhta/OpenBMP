@@ -89,8 +89,8 @@ Development and release tooling:
 +------------------------------------------------------------------------+
 | L5  Telemetry channels, ring buffer, archive writers (Parquet/CSV/JSON)|
 +------------------------------------------------------------------------+
-| L4  Virtual flight controller: estimator, autopilot, mission FSM,      |
-|     FDIR, academic guidance                                            |
+| L4  Flight controller: clock, bus, scheduler, params, tables,          |
+|     commander, mixer, voter, estimator, autopilot, guidance, FDIR      |
 +------------------------------------------------------------------------+
 | L3  Synthetic sensors, fault models, command/actuator stubs            |
 +------------------------------------------------------------------------+
@@ -127,12 +127,22 @@ openbmp/
 │   ├── openbmp-propulsion/              # L2: motors, EngineModel + EngineCluster
 │   │                                    #     (Phase 3)
 │   ├── openbmp-sensors/                 # L3: synthetic sensors, fault models
-│   ├── openbmp-fc/                      # L4: virtual flight controller
-│   │   ├── estimator/                   #     EKF, MEKF
-│   │   ├── autopilot/                   #     three-loop, gain-scheduled
-│   │   ├── mission/                     #     phase state machine
-│   │   ├── guidance/                    #     academic guidance laws
-│   │   └── fdir/                        #     fault detection/isolation
+│   ├── openbmp-fc/                      # L4: flight controller
+│   │   ├── clock                        #     lockstep clock contract
+│   │   ├── bus                          #     typed pub/sub topics (uORB-shaped)
+│   │   ├── scheduler                    #     cyclic dispatcher + budget enforcement
+│   │   ├── params                       #     typed parameter sections
+│   │   ├── tables                       #     validated-then-activated tables
+│   │   ├── voter                        #     N-of-M sensor voter
+│   │   ├── sensor_ingest                #     per-sensor `Sensor::read` ingest jobs
+│   │   ├── estimator                    #     EKF, MEKF, UKF
+│   │   ├── commander                    #     single state-machine owner
+│   │   ├── autopilot                    #     three-loop, gain-scheduled
+│   │   ├── mixer                        #     phase-gated actuator authority
+│   │   ├── health                       #     failsafe-flag publisher
+│   │   ├── fdir                         #     detection / isolation / recovery
+│   │   ├── guidance                     #     academic guidance laws
+│   │   └── replay                       #     log-replay tooling
 │   ├── openbmp-telemetry/               # L5: channels, ring, exporters
 │   ├── openbmp-scenario/                # L6: parser, validator, registry
 │   ├── openbmp-testkit/                 # L6: helpers (proptest strategies,
@@ -1604,7 +1614,7 @@ Sensor fusion / state estimation. Available implementations:
 - `IdealEstimator` (pass-through truth, test only).
 - `Ekf` — standard Extended Kalman Filter for position/velocity.
 - `Mekf` — Multiplicative EKF for quaternion attitude.
-- `Ukf` — Unscented Kalman Filter (Phase 4+).
+- `Ukf` — Unscented Kalman Filter (Phase 4.C deferral; not in tree).
 
 ```rust
 pub trait Estimator {

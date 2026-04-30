@@ -78,8 +78,11 @@ pub struct ScenarioDocument {
     pub data_packages: Option<BTreeMap<String, PathBuf>>,
     /// Optional synthetic sensor table.
     pub sensors: Option<BTreeMap<String, SensorConfig>>,
-    /// Optional virtual flight-controller hook table.
-    pub fc: Option<BTreeMap<String, toml::Value>>,
+    /// Optional flight-controller configuration block (Phase 4.B).
+    /// When present, the runner constructs a [`openbmp_fc::FlightController`]
+    /// from this config and drives it lockstepped with the kernel
+    /// integrator.
+    pub fc: Option<FcConfig>,
     /// Optional fault-injection hook table.
     pub faults: Option<BTreeMap<String, toml::Value>>,
     /// Optional batch metadata.
@@ -222,6 +225,9 @@ impl ScenarioDocument {
         }
         if let Some(mission) = &self.mission {
             mission.validate()?;
+        }
+        if let Some(fc) = &self.fc {
+            fc.validate()?;
         }
         self.validate_effector_references()?;
         self.validate_engine_references()?;
@@ -3103,6 +3109,195 @@ impl InitialSloshConfig {
         }
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------
+// Flight-controller config (Phase 4.B)
+// ---------------------------------------------------------------------
+
+/// Flight-controller config parsed from a scenario `[fc]` block.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcConfig {
+    /// Estimator kind. Must be one of `ekf`, `mekf`.
+    pub estimator: FcEstimatorKind,
+    /// Autopilot kind. Must be `three_loop`.
+    pub autopilot: FcAutopilotKind,
+    /// Guidance kind. Must be one of `attitude_hold`, `waypoint`.
+    pub guidance: FcGuidanceKind,
+    /// Reference attitude quaternion `[x, y, z, w]` (optional; required
+    /// when `guidance = "attitude_hold"`).
+    pub reference_q_xyzw: Option<[f64; 4]>,
+    /// Base scheduler tick rate in Hz. Determines the kernel-tick to
+    /// FC-tick mapping.
+    pub base_rate_hz: u32,
+    /// Optional EKF parameter overrides. Required when
+    /// `estimator = "ekf"`.
+    pub ekf: Option<FcEkfConfig>,
+    /// Optional MEKF parameter overrides. Required when
+    /// `estimator = "mekf"`.
+    pub mekf: Option<FcMekfConfig>,
+    /// Optional autopilot anti-windup / trajectory-loop config.
+    pub autopilot_params: Option<FcAutopilotParams>,
+    /// Optional gain schedule keyed by `mission.phases.<name>` paths.
+    pub gain_schedule: Option<BTreeMap<String, FcGainsConfig>>,
+    /// Optional phase-authority mask keyed by mission-phase path.
+    pub phase_authority: Option<BTreeMap<String, FcPhaseAuthorityConfig>>,
+}
+
+impl FcConfig {
+    /// Validates internal cross-fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScenarioError::InvalidFc`] when:
+    /// - `estimator = ekf` and `[fc.ekf]` is missing
+    /// - `estimator = mekf` and `[fc.mekf]` is missing
+    /// - `guidance = attitude_hold` and `reference_q_xyzw` is missing
+    pub fn validate(&self) -> Result<(), ScenarioError> {
+        if matches!(self.estimator, FcEstimatorKind::Ekf) && self.ekf.is_none() {
+            return Err(ScenarioError::InvalidFc {
+                reason: "estimator = \"ekf\" requires [fc.ekf]".to_string(),
+            });
+        }
+        if matches!(self.estimator, FcEstimatorKind::Mekf) && self.mekf.is_none() {
+            return Err(ScenarioError::InvalidFc {
+                reason: "estimator = \"mekf\" requires [fc.mekf]".to_string(),
+            });
+        }
+        if matches!(self.guidance, FcGuidanceKind::AttitudeHold) && self.reference_q_xyzw.is_none()
+        {
+            return Err(ScenarioError::InvalidFc {
+                reason: "guidance = \"attitude_hold\" requires reference_q_xyzw".to_string(),
+            });
+        }
+        if self.base_rate_hz == 0 {
+            return Err(ScenarioError::InvalidFc {
+                reason: "base_rate_hz must be > 0".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Supported estimator kinds for the FC scenario block.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcEstimatorKind {
+    /// 15-state error-state Extended Kalman Filter.
+    Ekf,
+    /// 6-state Multiplicative EKF (attitude + gyro bias).
+    Mekf,
+}
+
+/// Supported autopilot kinds.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcAutopilotKind {
+    /// Stevens & Lewis 2015 academic three-loop autopilot.
+    ThreeLoop,
+}
+
+/// Supported guidance kinds.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcGuidanceKind {
+    /// Constant-attitude reference.
+    AttitudeHold,
+    /// Scenario-defined inertial-waypoint navigation.
+    Waypoint,
+}
+
+/// EKF parameter overrides.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcEkfConfig {
+    /// Process-noise stddev on attitude rate (rad/s).
+    pub sigma_w_gyro: Option<f64>,
+    /// Process-noise stddev on accel-bias random walk (m/s²/√s).
+    pub sigma_w_accel_bias: Option<f64>,
+    /// Process-noise stddev on gyro-bias random walk (rad/s/√s).
+    pub sigma_w_gyro_bias: Option<f64>,
+    /// Measurement-noise stddev on each GNSS position component (m).
+    pub sigma_gnss_pos_m: Option<f64>,
+    /// Measurement-noise stddev on each GNSS velocity component (m/s).
+    pub sigma_gnss_vel_m_s: Option<f64>,
+    /// Measurement-noise stddev on barometer altitude (m).
+    pub sigma_baro_alt_m: Option<f64>,
+    /// Measurement-noise stddev on each magnetometer component (nT).
+    pub sigma_mag_nt: Option<f64>,
+    /// Innovation-gate chi-square threshold.
+    pub innovation_gate: Option<f64>,
+    /// Dead-reckoning timeout (s).
+    pub dead_reckon_timeout_s: Option<f64>,
+}
+
+/// MEKF parameter overrides.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcMekfConfig {
+    /// Process-noise stddev on attitude rate (rad/s).
+    pub sigma_w_gyro: Option<f64>,
+    /// Process-noise stddev on gyro-bias random walk (rad/s/√s).
+    pub sigma_w_gyro_bias: Option<f64>,
+    /// Measurement-noise stddev on each magnetometer component (nT).
+    pub sigma_mag_nt: Option<f64>,
+    /// Innovation-gate chi-square threshold.
+    pub innovation_gate: Option<f64>,
+}
+
+/// Autopilot params overrides.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcAutopilotParams {
+    /// Anti-windup back-calculation gain.
+    pub anti_windup_gain: Option<f64>,
+    /// Rate-loop integrator deadband (rad/s).
+    pub rate_deadband_rad_s: Option<f64>,
+    /// Whether to enable the trajectory loop.
+    pub trajectory_loop_enabled: Option<bool>,
+}
+
+/// Per-phase three-loop gain entry.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcGainsConfig {
+    /// Rate-loop Kp triple `[roll, pitch, yaw]`.
+    pub rate_kp: Option<[f64; 3]>,
+    /// Rate-loop Ki triple.
+    pub rate_ki: Option<[f64; 3]>,
+    /// Rate-loop Kd triple.
+    pub rate_kd: Option<[f64; 3]>,
+    /// Attitude-loop Kp triple.
+    pub attitude_kp: Option<[f64; 3]>,
+    /// Attitude-loop Ki triple.
+    pub attitude_ki: Option<[f64; 3]>,
+    /// Attitude-loop Kd triple.
+    pub attitude_kd: Option<[f64; 3]>,
+    /// Trajectory-loop Kp triple.
+    pub trajectory_kp: Option<[f64; 3]>,
+    /// Trajectory-loop Ki triple.
+    pub trajectory_ki: Option<[f64; 3]>,
+    /// Trajectory-loop Kd triple.
+    pub trajectory_kd: Option<[f64; 3]>,
+    /// Aileron deflection limit (rad).
+    pub aileron_limit_rad: Option<f64>,
+    /// Elevator deflection limit (rad).
+    pub elevator_limit_rad: Option<f64>,
+    /// Rudder deflection limit (rad).
+    pub rudder_limit_rad: Option<f64>,
+    /// Throttle baseline.
+    pub throttle_baseline: Option<f64>,
+}
+
+/// Per-phase actuator-authority record.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcPhaseAuthorityConfig {
+    /// `true` if the phase permits autopilot actuator commands.
+    pub autopilot_allowed: bool,
+    /// `true` if the phase permits autopilot engine commands.
+    pub engines_allowed: bool,
 }
 
 #[cfg(test)]

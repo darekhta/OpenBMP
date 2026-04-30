@@ -6,7 +6,31 @@ rust-version.workspace  = true
 license.workspace       = true
 repository.workspace    = true
 authors.workspace       = true
-description             = "OpenBMP virtual flight controller: estimator, autopilot, mission FSM, FDIR, academic guidance."
+description             = "OpenBMP flight controller: bus, scheduler, commander, estimator, autopilot, FDIR. Simulator-local validation only."
+
+[features]
+# Default-on bridge to synthetic sensors so the simulator's runner can
+# wire `SyntheticSensorAdapter` into the controller's sensor-ingest
+# path. Hardware adopters disable via `default-features = false` so
+# the controller compiles down against the bare `Sensor` trait without
+# the `synthetic` noise machinery from `openbmp-sensors`.
+default     = ["sim-default"]
+sim-default = ["openbmp-sensors/synthetic"]
+serde       = ["dep:serde_json"]
+
+[dependencies]
+openbmp-core       = { workspace = true }
+openbmp-mission    = { workspace = true }
+openbmp-sensors    = { workspace = true }
+nalgebra           = { workspace = true }
+thiserror          = { workspace = true }
+serde_json         = { workspace = true, optional = true }
+indexmap           = { workspace = true }
+
+[dev-dependencies]
+approx   = { workspace = true }
+proptest = { workspace = true }
+rand     = { workspace = true }
 
 [lints]
 workspace = true

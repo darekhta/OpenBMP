@@ -32,12 +32,14 @@ pub use document::{
     EffectorConfig, EffectorFaultConfig, EffectorKindConfig, EffectorLimitsConfig,
     EngineCommandConfig, EngineConfig, EngineFaultConfig, EngineKindConfig, EngineLimitsConfig,
     EnvironmentConfig, EpochConfig, EventActionConfig, EventConfig, EventTriggerConfig,
-    ForcesConfig, FramesConfig, InitialSloshConfig, LocalOriginConfig, MetaConfig, MissionConfig,
-    MotorConfig, MovingMassKindConfig, OpenBmpHeader, PhaseConfig, PhaseTransitionConfig,
-    PropellantSpecConfig, PropulsionConfig, RecoveryConfig, RecoveryKindConfig,
-    SUPPORTED_SCENARIO_VERSION, ScenarioDocument, SensorConfig, TankConfig, TankGeometryConfig,
-    TelemetryConfig, TelemetryOutputConfig, TimeConfig, ValidationConfig, VehicleConfig,
-    WGS84_J2_DEFAULT, WindConfig, WindLayerConfig,
+    FcAutopilotKind, FcAutopilotParams, FcConfig, FcEkfConfig, FcEstimatorKind, FcGainsConfig,
+    FcGuidanceKind, FcMekfConfig, FcPhaseAuthorityConfig, ForcesConfig, FramesConfig,
+    InitialSloshConfig, LocalOriginConfig, MetaConfig, MissionConfig, MotorConfig,
+    MovingMassKindConfig, OpenBmpHeader, PhaseConfig, PhaseTransitionConfig, PropellantSpecConfig,
+    PropulsionConfig, RecoveryConfig, RecoveryKindConfig, SUPPORTED_SCENARIO_VERSION,
+    ScenarioDocument, SensorConfig, TankConfig, TankGeometryConfig, TelemetryConfig,
+    TelemetryOutputConfig, TimeConfig, ValidationConfig, VehicleConfig, WGS84_J2_DEFAULT,
+    WindConfig, WindLayerConfig,
 };
 pub use error::ScenarioError;
 pub use files::ResolvedFile;

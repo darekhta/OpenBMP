@@ -1,0 +1,37 @@
+# Closed-loop attitude-hold expected-values table.
+#
+# Tolerances are derived from the
+# `closed_loop_pipeline_runs_deterministically` integration test in
+# `crates/openbmp-fc/tests/closed_loop.rs`, which exercises the same
+# pipeline without the kernel-side bridging.
+#
+# Once the kernel↔FC bridge lands, this table provides the
+# regression checks for the scenario-driven run.
+
+case       = "closed-loop-attitude-hold"
+source     = "openbmp-fc internal pipeline integration test"
+validation = "experimental"
+
+[[metric]]
+name                = "final_position_z_m"
+expected            = 0.0
+absolute_tolerance  = 1.0e-3
+relative_tolerance  = 0.0
+
+[[metric]]
+name                = "final_velocity_z_m_s"
+expected            = 0.0
+absolute_tolerance  = 1.0e-3
+relative_tolerance  = 0.0
+
+[[metric]]
+name                = "attitude_quaternion_w_at_stop"
+expected            = 1.0
+absolute_tolerance  = 1.0e-2
+relative_tolerance  = 0.0
+
+[[metric]]
+name                = "actuator_command_elevator_at_stop_rad"
+expected            = 0.0
+absolute_tolerance  = 0.05
+relative_tolerance  = 0.0

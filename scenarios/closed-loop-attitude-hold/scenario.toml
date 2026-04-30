@@ -1,0 +1,136 @@
+# Phase-4.B closed-loop attitude-hold validation scenario.
+#
+# A point-mass vehicle with synthetic IMU + barometer + GNSS +
+# magnetometer feeds into a full flight-controller pipeline:
+#
+#   1. EKF (15-state error-state) consumes IMU/GNSS/baro/mag samples,
+#      with the academic-tier `ConstantGravityZ` gravity model and
+#      the `EarthDipoleField` magnetic-field model.
+#   2. Attitude-hold guidance against a constant identity-quaternion
+#      reference.
+#   3. Three-loop autopilot (rate / attitude / trajectory) with the
+#      default academic gain schedule.
+#   4. Phase-gated mixer with `PhaseAuthorityTable` permitting the
+#      autopilot to drive actuators only in the `ascent` phase.
+#   5. Health monitor and FDIR detector publishing `failsafe_flags`
+#      and `fdir.status` topics.
+#
+# Synthetic data; not a published benchmark. The closed-loop pipeline
+# itself is exercised by the `closed_loop_pipeline_runs_deterministically`
+# integration test in `crates/openbmp-fc/tests/closed_loop.rs`; this
+# scenario is the parser-side equivalent to demonstrate the
+# scenario `[fc]` block round-trips through `openbmp-scenario` and
+# validates clean.
+#
+# Kernel↔FC bridging in the runner is reserved for a follow-up phase;
+# this scenario is the schema fixture that feeds `cargo test -p
+# openbmp-scenario` and `cargo test -p openbmp-cli` without driving
+# the actual runtime loop.
+
+openbmp.scenario = 2
+
+[meta]
+name        = "closed-loop-attitude-hold"
+description = "Phase-4.B closed-loop attitude-hold validation. Synthetic; full FC pipeline (EKF + three-loop + mixer + health/FDIR)."
+validation  = "experimental"
+provenance  = "synthetic; full FC pipeline academic gains and noise levels"
+
+[time]
+start_s = 0.0
+stop_s  = 1.0
+dt_s    = 0.001
+seed    = 0x466c_6967_6843_7472   # "FligHCtr"
+
+[vehicle]
+kind                     = "point_mass"
+initial_position_eci_m   = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "fc-attitude-hold"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg   = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.parquet = "out/closed-loop-attitude-hold.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+# Mission graph: pad → ascent at t = 0.1 s.
+[mission]
+initial_phase = "mission.phases.pad"
+
+[[mission.phases]]
+id    = "mission.phases.pad"
+label = "pad"
+
+[[mission.phases]]
+id    = "mission.phases.ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "mission.events.liftoff"
+trigger = { kind = "at_time", time_s = 0.1 }
+action  = { kind = "enter_phase", phase = "mission.phases.ascent" }
+
+[[mission.transitions]]
+from  = "mission.phases.pad"
+to    = "mission.phases.ascent"
+event = "mission.events.liftoff"
+
+# Flight-controller block (Phase 4.B).
+[fc]
+estimator        = "ekf"
+autopilot        = "three_loop"
+guidance         = "attitude_hold"
+reference_q_xyzw = [0.0, 0.0, 0.0, 1.0]
+base_rate_hz     = 1000
+
+[fc.ekf]
+sigma_w_gyro          = 0.01
+sigma_w_accel_bias    = 1.0e-4
+sigma_w_gyro_bias     = 1.0e-5
+sigma_gnss_pos_m      = 5.0
+sigma_gnss_vel_m_s    = 0.5
+sigma_baro_alt_m      = 2.0
+sigma_mag_nt          = 100.0
+innovation_gate       = 9.0
+dead_reckon_timeout_s = 1.5
+
+[fc.autopilot_params]
+anti_windup_gain         = 1.0
+rate_deadband_rad_s      = 0.001
+trajectory_loop_enabled  = false
+
+[fc.gain_schedule."mission.phases.ascent"]
+rate_kp           = [0.5, 0.5, 0.5]
+rate_kd           = [0.05, 0.05, 0.05]
+attitude_kp       = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.phase_authority."mission.phases.pad"]
+autopilot_allowed = false
+engines_allowed   = false
+
+[fc.phase_authority."mission.phases.ascent"]
+autopilot_allowed = true
+engines_allowed   = true

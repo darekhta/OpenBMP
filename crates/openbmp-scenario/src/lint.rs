@@ -185,6 +185,13 @@ fn check_dimensional_field(
     key: &str,
     value: &toml::Value,
 ) -> Result<(), ScenarioError> {
+    // Phase-4.B `[fc]` block — typed validation in
+    // `FcConfig::validate` covers the FC tuning scalars and per-axis
+    // gain triples. Bypass the workspace-level unit/frame lints for
+    // any path under `$.fc`.
+    if path.starts_with("$.fc") {
+        return Ok(());
+    }
     if is_numeric_value(value)
         && !is_dimensionless_key(path, key)
         && !key_has_unit_suffix(key)

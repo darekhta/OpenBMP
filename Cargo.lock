@@ -1232,6 +1232,8 @@ dependencies = [
  "openbmp-aero",
  "openbmp-core",
  "openbmp-env",
+ "openbmp-fc",
+ "openbmp-mission",
  "openbmp-propulsion",
  "openbmp-scenario",
  "openbmp-sim",
@@ -1279,6 +1281,18 @@ dependencies = [
 [[package]]
 name = "openbmp-fc"
 version = "0.0.1"
+dependencies = [
+ "approx",
+ "indexmap",
+ "nalgebra",
+ "openbmp-core",
+ "openbmp-mission",
+ "openbmp-sensors",
+ "proptest",
+ "rand 0.10.1",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "openbmp-mission"

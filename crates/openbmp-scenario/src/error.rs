@@ -273,4 +273,11 @@ pub enum ScenarioError {
         /// `drogue_main`, or `drag_device`).
         kind: String,
     },
+    /// A scenario `[fc]` block is internally inconsistent
+    /// (missing required sub-block, invalid base rate, etc.).
+    #[error("[fc] block invalid: {reason}")]
+    InvalidFc {
+        /// Human-readable reason.
+        reason: String,
+    },
 }

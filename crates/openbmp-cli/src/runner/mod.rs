@@ -35,6 +35,7 @@ pub mod aero_effector_match;
 pub mod assembly;
 pub mod effectors;
 pub mod engines;
+pub mod fc;
 pub mod mission;
 pub mod phase1;
 pub mod phase2_point_mass;

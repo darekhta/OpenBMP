@@ -312,7 +312,12 @@ mod tests {
 
     #[test]
     fn rejects_effector_dimensionless_keys_outside_effector_paths() {
-        let toml = format!("{MINIMAL}\n[fc.example]\nmin = 1.0\n");
+        // The `min = 1.0` field is allowed inside
+        // `$.vehicle.assembly.effectors` but must not pass anywhere
+        // else. The `[faults.example]` extension table is open-typed
+        // (BTreeMap<String, toml::Value>) and exercises the lint
+        // before serde deserialisation.
+        let toml = format!("{MINIMAL}\n[faults.example]\nmin = 1.0\n");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(matches!(err, ScenarioError::MissingUnitSuffix { .. }));
     }
@@ -2057,5 +2062,26 @@ file = "../sensors/star-tracker-textbook.toml""#,
             matches!(err, ScenarioError::UnknownModel { ref name, .. } if name == "magnetic_anomaly_detector"),
             "got {err:?}",
         );
+    }
+
+    // Phase-4.B closed-loop scenario fixture.
+    const CLOSED_LOOP_ATTITUDE_HOLD: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scenarios/closed-loop-attitude-hold/scenario.toml"
+    ));
+
+    #[test]
+    fn parses_closed_loop_attitude_hold_scenario() {
+        let scenario = Scenario::from_toml_str(CLOSED_LOOP_ATTITUDE_HOLD).unwrap();
+        let fc = scenario
+            .document
+            .fc
+            .as_ref()
+            .expect("scenario must declare [fc] block");
+        assert_eq!(fc.estimator, crate::FcEstimatorKind::Ekf);
+        assert_eq!(fc.guidance, crate::FcGuidanceKind::AttitudeHold);
+        assert_eq!(fc.base_rate_hz, 1000);
+        assert!(fc.gain_schedule.as_ref().is_some_and(|m| !m.is_empty()));
+        assert!(fc.phase_authority.as_ref().is_some_and(|m| m.len() == 2));
     }
 }

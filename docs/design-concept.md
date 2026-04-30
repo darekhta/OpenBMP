@@ -593,24 +593,78 @@ and any operational mission profile.
   hardware monotonic proxy + controller tick). Doc-level only; no
   rename.
 
-**Phase 4 — Virtual flight controller**
-- Estimator framework: EKF, MEKF (quaternion attitude).
-- Three-loop autopilot scaffold with academic gains.
-- Mission state machine: pre-launch / ascent / coast / apogee / descent /
-  recovery, plus configurable user-defined phases sourced from the
-  Phase-3 `MissionPhaseGraph`.
-- Academic guidance laws: attitude tracking, scripted reference state,
-  waypoint navigation between scenario-defined points.
-- Powered-descent guidance scaffold: lossless-convexification soft-landing
-  (LCvxLD, Acikmese & Ploen 2007) and SCvx successive-convexification
-  variant for academic powered-descent studies (e.g., reusable-vehicle
-  return-to-pad textbook problem). Scenario-defined landing site, not a
-  real-world target.
-- Linear MPC framework reusing the same effector / engine models, for
-  attitude tracking and trim hold; convex-QP solver via in-house Rust or
-  a vetted permissive-licence crate.
-- FDIR framework: scenario-injected fault models that exercise the
-  Phase-3 effector and engine fault modes.
+**Phase 4 — Flight controller** (Phase 4.A + 4.B landed; 4.C deferred)
+- Autopilot binary skeleton in `openbmp-fc`: lockstep clock contract
+  (`std::time::*` banned in the crate, enforced by an
+  `openbmp-testkit` source-grep tripwire that runs in CI; `Clock`
+  trait is the only time source), internal pub/sub bus (uORB-shaped),
+  cyclic scheduler with declared-budget enforcement (AP_Scheduler-
+  shaped), parameter registry, validated-then-activated table
+  registry (NASA cFE TBL pattern), build-time JSON dictionary of
+  registered topics / params / tables / jobs.
+- Sensor ingest with voter trait (PassThrough simplex + MidValueSelect
+  triplex + WeightedMean): the seam exists even with one
+  `Sensor::read` source per channel; voter-aware `VotedImuIngest` /
+  `VotedBarometerIngest` / `VotedGnssIngest` /
+  `VotedMagnetometerIngest` jobs activate triplex when the embedder
+  registers a `Vec<S>` of redundant lanes, with no refactor of the
+  bus-side consumers.
+- Estimator framework: 15-state error-state EKF and 6-state
+  attitude-only MEKF, both with `GravityModel` (`ConstantGravityZ`
+  reference impl) and `MagneticFieldModel` (`EarthDipoleField`
+  academic-tier degree-1 dipole) abstractions. Each consumes bus
+  sensor topics, publishes `attitude` / `position` / `status` topics
+  with per-measurement chi-square innovation ratios and a
+  dead-reckoning flag. The EKF integrates inertial acceleration
+  (specific force + gravity) so a free-fall test reproduces analytic
+  kinematics within 5 cm over 10 s. Real sigma-point UKF deferred to
+  Phase 4.C.
+- Commander as the single state-machine owner: builds on the Phase-3.2
+  `MissionPhaseGraph`, evaluates `EventBinding`s each tick, owns
+  arming and liftoff transitions, publishes `vehicle_status`. An FDIR
+  trip blocks arming and latches a `safe_state_requested` flag in
+  `vehicle_status`. All other modules read phase from this topic —
+  no module owns its own copy of flight phase.
+- Phase-gated actuator mixer: actuator and engine commands are
+  zero-mixed unless the commander has armed *and* the active phase's
+  `PhaseAuthorityTable` entry permits the channel. A fall-through
+  default keeps an uninitialised mixer permissive, but a phase that
+  declares `autopilot_allowed = false` zero-mixes the actuator
+  command even when armed and in flight. A controller bug in one
+  phase cannot actuate in the wrong phase.
+- Three-loop autopilot: rate / attitude / trajectory loops,
+  gain-scheduled by phase via the `GainSchedule` table consulted on
+  every tick, anti-windup via back-calculation, saturation reporting
+  on the actuator topic. Stevens & Lewis 2015 formulation. Real MPC
+  deferred to Phase 4.C (gated on a vetted permissive-licence
+  convex-QP solver).
+- Health & arming module: aggregates sensor-staleness (bus-sequence-
+  based, not embedded-timestamp-based), estimator dead-reckoning,
+  scheduler overruns into a single `failsafe_flags` topic that the
+  commander treats as a hard arming-block.
+- FDIR module: residual-based detection on innovation chi-square
+  bursts and failsafe-flag bursts; commander reads `fdir.status` in
+  the arming chain.
+- Academic guidance laws: attitude-hold and scripted-waypoint
+  navigation in inertial space (no targeting, no terminal-homing,
+  no real-world-location guidance). Real LCvxLD / SCvx powered-descent
+  deferred to Phase 4.C.
+- Log-replay tooling: `BusRecorder` captures topic publishes for
+  offline analysis; `BusReplayer` re-injects a recorded log onto a
+  fresh bus for state-stable replay regression tests.
+- Scenario integration: `openbmp-scenario` parses a strict `[fc]`
+  block (`FcConfig`) and `openbmp-cli`'s `FcRunner`
+  (`crates/openbmp-cli/src/runner/fc.rs`) bridges the parsed config
+  to a fully wired `FlightController`. Kernel↔FC bus bridging in
+  the actual simulator runner is an in-progress increment beyond
+  Phase 4.B.
+- Closed-loop integration test: full pipeline (sensor ingest → EKF →
+  guidance → commander → autopilot → mixer → health → FDIR) runs
+  deterministically over 1 000 ticks with declared-budget overruns
+  required to be zero. Two runs of the same scenario produce
+  identical actuator streams (state-stable replay gate). Property
+  tests on the EKF check determinism, innovation-mean whitening,
+  and lag-1 autocorrelation.
 
 **Phase 5 — Test harness expansion**
 - API cleanup: deprecate simulator-crate re-export shims such as

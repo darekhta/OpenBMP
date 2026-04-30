@@ -27,6 +27,8 @@ nalgebra           = { workspace = true }
 openbmp-aero       = { workspace = true }
 openbmp-core       = { workspace = true }
 openbmp-env        = { workspace = true }
+openbmp-fc         = { workspace = true }
+openbmp-mission    = { workspace = true }
 openbmp-propulsion = { workspace = true }
 openbmp-scenario   = { workspace = true }
 openbmp-sim        = { workspace = true }

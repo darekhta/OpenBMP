@@ -122,7 +122,7 @@ openbmp-vehicle    = { version = "0.0.1", path = "crates/openbmp-vehicle" }
 openbmp-aero       = { version = "0.0.1", path = "crates/openbmp-aero" }
 openbmp-aerothermal = { version = "0.0.1", path = "crates/openbmp-aerothermal" }
 openbmp-propulsion = { version = "0.0.1", path = "crates/openbmp-propulsion" }
-openbmp-sensors    = { version = "0.0.1", path = "crates/openbmp-sensors" }
+openbmp-sensors    = { version = "0.0.1", path = "crates/openbmp-sensors", default-features = false }
 openbmp-fc         = { version = "0.0.1", path = "crates/openbmp-fc" }
 openbmp-telemetry  = { version = "0.0.1", path = "crates/openbmp-telemetry" }
 openbmp-scenario   = { version = "0.0.1", path = "crates/openbmp-scenario" }

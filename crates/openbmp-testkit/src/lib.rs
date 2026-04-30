@@ -14,6 +14,8 @@
 //!   determinism oracle.
 //! - [`filters`] — placeholder for the Phase-4 `compare_filters`
 //!   harness.
+//! - [`fc_lints`] — Phase 4.B tripwire that fails CI if
+//!   `openbmp-fc` ever imports `std::time` wall-clock APIs.
 //!
 //! All helpers respect the OpenBMP determinism contract: no
 //! wall-clock time, no system RNG, seeded RNG only.
@@ -21,6 +23,7 @@
 pub mod analytic;
 pub mod determinism;
 pub mod error;
+pub mod fc_lints;
 pub mod filters;
 pub mod strategies;
 pub mod tolerance;
