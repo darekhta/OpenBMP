@@ -1,5 +1,5 @@
 //! Phase-3.10.A regression test: the in-source `COEFFS` table in
-//! `openbmp_env::magnetic::wmm2025::coefficients` agrees byte-for-
+//! `openbmp_physics::magnetic::wmm2025::coefficients` agrees byte-for-
 //! byte with `data/magnetic/WMM.COF`, and the file's SHA-256 digest
 //! matches the `provenance.md` pin.
 //!
@@ -9,7 +9,7 @@
 
 #![allow(clippy::expect_used, clippy::float_cmp, clippy::unwrap_used)]
 
-use openbmp_env::Wmm2025;
+use openbmp_physics::Wmm2025;
 
 const WMM_COF: &str = include_str!("../../../data/magnetic/WMM.COF");
 

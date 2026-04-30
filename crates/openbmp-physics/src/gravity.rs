@@ -14,7 +14,7 @@
 //!   `µ`, `R_e`, and the NIMA TR 8350.2 `J2 = 1.082626683 × 10⁻³`.
 //!
 //! All three models implement the [`GravityModel`] trait and report
-//! failure via [`crate::error::EnvError`] (out-of-envelope, non-finite,
+//! failure via [`crate::error::PhysicsError`] (out-of-envelope, non-finite,
 //! invalid parameter). They never panic, never silent-clamp, and
 //! never return `NaN`.
 //!
@@ -22,19 +22,34 @@
 //! J2 sum; no FMA.
 
 use nalgebra::Vector3;
-use openbmp_core::{Eci, Position3, SimTime, WGS84_A_M, WGS84_MU_M3_S2};
+use openbmp_core::{Eci, Position3, SimTime};
 
-use crate::error::EnvError;
+use crate::error::PhysicsError;
 
-/// J2 zonal-harmonic coefficient for the WGS84 reference ellipsoid.
+/// WGS84 semi-major axis (equatorial radius), `a`, in metres.
 ///
-/// Source: NIMA TR 8350.2 (NGA WGS84), 3rd edition (2000), table 3.5.
-/// Cited live at the NGA WGS84 portal:
-/// <https://earth-info.nga.mil/index.php?dir=wgs84&action=wgs84>.
+/// Source: NIMA TR8350.2, WGS84 Implementation Manual, §3.
+pub const WGS84_A_M: f64 = 6_378_137.0;
+
+/// WGS84 gravitational parameter `µ = G · M`, in m³/s².
 ///
-/// `J2 = 1.082626683 × 10⁻³` (unnormalised). The corresponding
-/// normalised harmonic is `C̄₂₀ = -J2 / √5`.
+/// Source: NIMA TR8350.2, WGS84 Implementation Manual, §3.
+pub const WGS84_MU_M3_S2: f64 = 3.986_004_418e14;
+
+/// WGS84 unnormalised J2 zonal-harmonic coefficient.
+///
+/// Source: NIMA TR8350.2, WGS84 Implementation Manual, §3.
 pub const WGS84_J2: f64 = 1.082_626_683e-3;
+
+/// ISO / USSA76 standard gravity (m/s²).
+pub const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
+
+/// Constant ECI gravity vector along negative z using standard
+/// gravity.
+#[must_use]
+pub fn standard_down_z_eci_m_s2() -> Vector3<f64> {
+    Vector3::new(0.0, 0.0, -STANDARD_GRAVITY_M_S2)
+}
 
 /// Trait implemented by gravity-providing environment models.
 ///
@@ -47,14 +62,14 @@ pub trait GravityModel {
     ///
     /// # Errors
     ///
-    /// Returns an [`EnvError`] when the position is at a singular
+    /// Returns an [`PhysicsError`] when the position is at a singular
     /// location (e.g., Earth's centre for `PointMassGravity`) or the
     /// model produces a non-finite output.
     fn gravity_eci_m_s2(
         &self,
         position_eci: Position3<Eci>,
         time: SimTime,
-    ) -> Result<Vector3<f64>, EnvError>;
+    ) -> Result<Vector3<f64>, PhysicsError>;
 }
 
 // ---------------------------------------------------------------------
@@ -73,11 +88,11 @@ impl ConstantGravity {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::InvalidParameter`] if any component is
+    /// Returns [`PhysicsError::InvalidParameter`] if any component is
     /// non-finite.
-    pub fn new(g_eci_m_s2: Vector3<f64>) -> Result<Self, EnvError> {
+    pub fn new(g_eci_m_s2: Vector3<f64>) -> Result<Self, PhysicsError> {
         if !g_eci_m_s2.iter().all(|v| v.is_finite()) {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "constant gravity acceleration must be finite",
             });
         }
@@ -90,16 +105,16 @@ impl ConstantGravity {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::InvalidParameter`] if the magnitude is
+    /// Returns [`PhysicsError::InvalidParameter`] if the magnitude is
     /// negative or non-finite.
-    pub fn down_z(g_magnitude_m_s2: f64) -> Result<Self, EnvError> {
+    pub fn down_z(g_magnitude_m_s2: f64) -> Result<Self, PhysicsError> {
         if !g_magnitude_m_s2.is_finite() {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "constant gravity magnitude must be finite",
             });
         }
         if g_magnitude_m_s2 < 0.0 {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "constant gravity magnitude must be non-negative; \
                          use new(...) with an explicit vector for non-down directions",
             });
@@ -119,7 +134,7 @@ impl GravityModel for ConstantGravity {
         &self,
         _position_eci: Position3<Eci>,
         _time: SimTime,
-    ) -> Result<Vector3<f64>, EnvError> {
+    ) -> Result<Vector3<f64>, PhysicsError> {
         Ok(self.g_eci_m_s2)
     }
 }
@@ -143,11 +158,11 @@ impl PointMassGravity {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::InvalidParameter`] if `mu_m3_s2` is not
+    /// Returns [`PhysicsError::InvalidParameter`] if `mu_m3_s2` is not
     /// strictly positive and finite.
-    pub fn new(mu_m3_s2: f64) -> Result<Self, EnvError> {
+    pub fn new(mu_m3_s2: f64) -> Result<Self, PhysicsError> {
         if !mu_m3_s2.is_finite() || mu_m3_s2 <= 0.0 {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "gravitational parameter µ must be strictly positive and finite",
             });
         }
@@ -168,11 +183,11 @@ impl GravityModel for PointMassGravity {
         &self,
         position_eci: Position3<Eci>,
         _time: SimTime,
-    ) -> Result<Vector3<f64>, EnvError> {
+    ) -> Result<Vector3<f64>, PhysicsError> {
         let r = position_eci.vector;
         let r2 = r.dot(&r);
         if r2 == 0.0 {
-            return Err(EnvError::OutOfEnvelope {
+            return Err(PhysicsError::OutOfEnvelope {
                 reason: "PointMassGravity is singular at r = 0",
             });
         }
@@ -182,7 +197,7 @@ impl GravityModel for PointMassGravity {
         let coeff = -self.mu_m3_s2 / (r_norm * r2);
         let g = coeff * r;
         if !g.iter().all(|v| v.is_finite()) {
-            return Err(EnvError::NonFinite {
+            return Err(PhysicsError::NonFinite {
                 reason: "point-mass gravity produced non-finite acceleration",
             });
         }
@@ -227,22 +242,22 @@ impl J2Gravity {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::InvalidParameter`] if `mu_m3_s2` or `r_e_m`
+    /// Returns [`PhysicsError::InvalidParameter`] if `mu_m3_s2` or `r_e_m`
     /// is not strictly positive and finite, or if `j2` is non-finite.
     /// `j2 = 0` is permitted (the model degenerates to point-mass).
-    pub fn new(mu_m3_s2: f64, r_e_m: f64, j2: f64) -> Result<Self, EnvError> {
+    pub fn new(mu_m3_s2: f64, r_e_m: f64, j2: f64) -> Result<Self, PhysicsError> {
         if !mu_m3_s2.is_finite() || mu_m3_s2 <= 0.0 {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "µ must be strictly positive and finite",
             });
         }
         if !r_e_m.is_finite() || r_e_m <= 0.0 {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "Earth radius must be strictly positive and finite",
             });
         }
         if !j2.is_finite() {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "J2 must be finite",
             });
         }
@@ -287,11 +302,11 @@ impl GravityModel for J2Gravity {
         &self,
         position_eci: Position3<Eci>,
         _time: SimTime,
-    ) -> Result<Vector3<f64>, EnvError> {
+    ) -> Result<Vector3<f64>, PhysicsError> {
         let r = position_eci.vector;
         let r2 = r.dot(&r);
         if r2 == 0.0 {
-            return Err(EnvError::OutOfEnvelope {
+            return Err(PhysicsError::OutOfEnvelope {
                 reason: "J2Gravity is singular at r = 0",
             });
         }
@@ -316,7 +331,7 @@ impl GravityModel for J2Gravity {
         // Locked order: central + J2.
         let g = g_central + g_j2;
         if !g.iter().all(|v| v.is_finite()) {
-            return Err(EnvError::NonFinite {
+            return Err(PhysicsError::NonFinite {
                 reason: "J2 gravity produced non-finite acceleration",
             });
         }
@@ -354,7 +369,7 @@ mod tests {
     #[test]
     fn constant_gravity_down_z_rejects_negative_magnitude() {
         let err = ConstantGravity::down_z(-1.0).unwrap_err();
-        assert!(matches!(err, EnvError::InvalidParameter { .. }));
+        assert!(matches!(err, PhysicsError::InvalidParameter { .. }));
     }
 
     #[test]
@@ -375,7 +390,7 @@ mod tests {
         let err = g
             .gravity_eci_m_s2(Position3::origin(), SimTime::ZERO)
             .unwrap_err();
-        assert!(matches!(err, EnvError::OutOfEnvelope { .. }));
+        assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
     }
 
     #[test]

@@ -30,7 +30,7 @@
 use nalgebra::Vector3;
 use openbmp_aero::AeroDeck;
 use openbmp_core::{Duration, ModelId, Position3, SimTime, Velocity3};
-use openbmp_env::{IsothermalAtmosphere, UsStandard1976};
+use openbmp_physics::{IsothermalAtmosphere, UsStandard1976};
 use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_sim::{
     ConstantGravityForce, EndTime, EnvironmentModel, ForceModel, Integrator, MassModel,

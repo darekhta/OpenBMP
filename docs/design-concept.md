@@ -21,7 +21,7 @@ OpenBMP exists to make it easy to:
 - Define a virtual rigid body or rocket-class vehicle in a small text scenario.
 - Simulate its motion through atmosphere and gravity with deterministic 6-DOF
   dynamics.
-- Wire in synthetic sensors, a virtual flight controller, and a launch-phase
+- Wire in synthetic sensors, a simulator-local flight controller, and a launch-phase
   state machine.
 - Run regression-tested experiments with byte-stable telemetry and
   property-tested invariants.
@@ -207,7 +207,7 @@ Scenario file
   |
   +----> synthetic sensors (truth -> noisy measurement)
   |
-  +----> virtual flight controller
+  +----> simulator-local flight controller
   |        (estimator -> autopilot -> mission state machine -> commands)
   |
   +----> commands consumed by simulator-local actuator models
@@ -217,7 +217,7 @@ Scenario file
   +----> validation rules / golden output / reports
 ```
 
-The virtual flight controller is **inside the simulation loop only**. It does
+The flight controller shipped in this repository is **inside the simulation loop only**. It does
 not expose actuator packets to real hardware, real bus protocols, or
 deployable runtime hooks. The optional socket bridge for HIL-style external
 clients ships only an in-house wire format with no real protocol
@@ -259,10 +259,10 @@ OpenBMP is a workspace of small Rust crates organized in five layers:
             |
    openbmp-scenario     openbmp-telemetry    file IO, validation, archive
             |                  |
-              openbmp-fc                     virtual flight controller
+              openbmp-fc                     simulator-local flight controller
               openbmp-sensors                synthetic sensors
             |                  |
-   openbmp-vehicle    openbmp-env            physics models
+   openbmp-vehicle    openbmp-physics        physics models + traits
    openbmp-aero
    openbmp-propulsion
             |
@@ -329,7 +329,7 @@ The safe MVP is intentionally narrow:
 - `openbmp-sim`: RK4 fixed-step integrator; scheduler; event handling;
   state storage.
 - `openbmp-state`: 3-DOF point-mass and 6-DOF rigid-body state.
-- `openbmp-env`: constant gravity; J2 gravity; US Standard Atmosphere 1976;
+- `openbmp-physics`: constant gravity; J2 gravity; US Standard Atmosphere 1976;
   no-wind and constant-wind models.
 - `openbmp-vehicle`: rigid-body trait; constant-mass and linear-burn mass
   models; analytic-toy force/moment providers.
@@ -410,7 +410,7 @@ and any operational mission profile.
   Phase-1 point-mass kernel; `Rk4FixedStep` extended over `SimState`
   with quaternion renormalisation; analytic-toy torque-free
   precession validation.
-- Environment models in `openbmp-env`: `ConstantGravity`,
+- Environment models in `openbmp-physics`: `ConstantGravity`,
   `PointMassGravity`, `J2Gravity` (NIMA TR 8350.2 J2 coefficient),
   US Standard Atmosphere 1976 in-house port (0–86 km), `NoWind`,
   `ConstantWind`.
@@ -593,7 +593,7 @@ and any operational mission profile.
   hardware monotonic proxy + controller tick). Doc-level only; no
   rename.
 
-**Phase 4 — Flight controller** (Phase 4.A + 4.B landed; 4.C deferred)
+**Phase 4 — Flight controller** (Phase 4.C audit implementation pass)
 - Autopilot binary skeleton in `openbmp-fc`: lockstep clock contract
   (`std::time::*` banned in the crate, enforced by an
   `openbmp-testkit` source-grep tripwire that runs in CI; `Clock`
@@ -609,16 +609,15 @@ and any operational mission profile.
   `VotedMagnetometerIngest` jobs activate triplex when the embedder
   registers a `Vec<S>` of redundant lanes, with no refactor of the
   bus-side consumers.
-- Estimator framework: 15-state error-state EKF and 6-state
-  attitude-only MEKF, both with `GravityModel` (`ConstantGravityZ`
-  reference impl) and `MagneticFieldModel` (`EarthDipoleField`
-  academic-tier degree-1 dipole) abstractions. Each consumes bus
-  sensor topics, publishes `attitude` / `position` / `status` topics
-  with per-measurement chi-square innovation ratios and a
-  dead-reckoning flag. The EKF integrates inertial acceleration
-  (specific force + gravity) so a free-fall test reproduces analytic
-  kinematics within 5 cm over 10 s. Real sigma-point UKF deferred to
-  Phase 4.C.
+- Estimator framework: 15-state error-state EKF, 6-state attitude-only
+  MEKF, and a 6-state sigma-point UKF for attitude + gyro bias. The
+  EKF / MEKF paths use Joseph covariance updates, Gauss-Markov bias
+  dynamics, iterated magnetometer updates, and Markley-style MEKF
+  covariance reset. Gravity is abstracted through `GravityModel`,
+  including WGS84-J2 via `openbmp-physics`; magnetic-field support is
+  the `MagneticFieldModel` trait plus the academic-tier
+  `EarthDipoleField` baseline. Full WMM 2025 and full 15-state /
+  square-root UKF are Phase 5.
 - Commander as the single state-machine owner: builds on the Phase-3.2
   `MissionPhaseGraph`, evaluates `EventBinding`s each tick, owns
   arming and liftoff transitions, publishes `vehicle_status`. An FDIR
@@ -635,36 +634,45 @@ and any operational mission profile.
 - Three-loop autopilot: rate / attitude / trajectory loops,
   gain-scheduled by phase via the `GainSchedule` table consulted on
   every tick, anti-windup via back-calculation, saturation reporting
-  on the actuator topic. Stevens & Lewis 2015 formulation. Real MPC
-  deferred to Phase 4.C (gated on a vetted permissive-licence
-  convex-QP solver).
+  on the actuator topic, optional gyro notch filtering,
+  differential-flatness attitude-reference generation, and
+  feature-gated L1 adaptive rate-loop augmentation. Clarabel-backed
+  QP / SOCP primitives are feature-gated; full receding-horizon MPC
+  is Phase 5.
 - Health & arming module: aggregates sensor-staleness (bus-sequence-
   based, not embedded-timestamp-based), estimator dead-reckoning,
   scheduler overruns into a single `failsafe_flags` topic that the
   commander treats as a hard arming-block.
 - FDIR module: residual-based detection on innovation chi-square
-  bursts and failsafe-flag bursts; commander reads `fdir.status` in
-  the arming chain.
+  statistics, failsafe flags, and actuator saturation with
+  burst-counter, GLRT, and CUSUM detector families. The published
+  `tripped_mask` uses explicit sensor / scheduler / estimator /
+  autopilot bits; commander reads `fdir.status` in the arming chain.
 - Academic guidance laws: attitude-hold and scripted-waypoint
-  navigation in inertial space (no targeting, no terminal-homing,
-  no real-world-location guidance). Real LCvxLD / SCvx powered-descent
-  deferred to Phase 4.C.
+  navigation in inertial space, plus differential-flatness
+  attitude-reference generation for smooth academic trajectories
+  (no targeting, no terminal-homing, no real-world-location guidance).
+  Real LCvxLD / SCvx powered-descent trajectory reproduction is
+  Phase 5.
 - Log-replay tooling: `BusRecorder` captures topic publishes for
   offline analysis; `BusReplayer` re-injects a recorded log onto a
   fresh bus for state-stable replay regression tests.
 - Scenario integration: `openbmp-scenario` parses a strict `[fc]`
   block (`FcConfig`) and `openbmp-cli`'s `FcRunner`
   (`crates/openbmp-cli/src/runner/fc.rs`) bridges the parsed config
-  to a fully wired `FlightController`. Kernel↔FC bus bridging in
-  the actual simulator runner is an in-progress increment beyond
-  Phase 4.B.
+  to a fully wired `FlightController`. The kernel-side bridge in
+  `crates/openbmp-cli/src/runner/fc_bridge.rs` is optional and
+  lockstep: it primes synthetic sensors, steps the FC from the
+  `phase2_*.rs` runners, and applies FC effector / engine commands
+  before force / moment evaluation.
 - Closed-loop integration test: full pipeline (sensor ingest → EKF →
   guidance → commander → autopilot → mixer → health → FDIR) runs
   deterministically over 1 000 ticks with declared-budget overruns
   required to be zero. Two runs of the same scenario produce
-  identical actuator streams (state-stable replay gate). Property
-  tests on the EKF check determinism, innovation-mean whitening,
-  and lag-1 autocorrelation.
+  identical full bus histories and byte-identical kernel Parquet for
+  the FC-enabled scenario. Property tests check EKF determinism,
+  innovation whitening through lag 10, long-duration boundedness, and
+  textbook Kalman examples.
 
 **Phase 5 — Test harness expansion**
 - API cleanup: deprecate simulator-crate re-export shims such as

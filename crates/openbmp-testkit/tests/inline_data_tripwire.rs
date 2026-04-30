@@ -109,6 +109,7 @@ const TRIPWIRES: &[Tripwire] = &[
         allow_list: &[
             "data/gravity/wgs84-j2.toml",
             "docs/data-provenance.md",
+            "crates/openbmp-physics/src/gravity.rs",
             "crates/openbmp-core/src/frames.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
         ],
@@ -120,7 +121,7 @@ const TRIPWIRES: &[Tripwire] = &[
             "data/gravity/wgs84-j2.toml",
             "docs/scenario-format.md",
             "docs/data-provenance.md",
-            "crates/openbmp-env/src/gravity.rs",
+            "crates/openbmp-physics/src/gravity.rs",
             "crates/openbmp-scenario/src/document.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
         ],
@@ -131,8 +132,8 @@ const TRIPWIRES: &[Tripwire] = &[
         allow_list: &[
             "data/gravity/wgs84-j2.toml",
             "docs/data-provenance.md",
+            "crates/openbmp-physics/src/gravity.rs",
             "crates/openbmp-core/src/frames.rs",
-            "crates/openbmp-env/src/atmosphere/us_standard_1976.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
         ],
     },

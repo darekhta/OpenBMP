@@ -1,15 +1,15 @@
-# Phase-4.B closed-loop attitude-hold validation scenario.
+# Phase-4.C closed-loop attitude-hold validation scenario.
 #
-# A point-mass vehicle with synthetic IMU + barometer + GNSS +
-# magnetometer feeds into a full flight-controller pipeline:
+# A point-mass vehicle with synthetic IMU + GNSS + magnetometer feeds
+# into a full flight-controller pipeline:
 #
-#   1. EKF (15-state error-state) consumes IMU/GNSS/baro/mag samples,
+#   1. EKF (15-state error-state) consumes IMU/GNSS/mag samples,
 #      with the academic-tier `ConstantGravityZ` gravity model and
 #      the `EarthDipoleField` magnetic-field model.
 #   2. Attitude-hold guidance against a constant identity-quaternion
 #      reference.
-#   3. Three-loop autopilot (rate / attitude / trajectory) with the
-#      default academic gain schedule.
+#   3. Three-loop autopilot (rate / attitude / trajectory) with
+#      scenario-declared academic gains.
 #   4. Phase-gated mixer with `PhaseAuthorityTable` permitting the
 #      autopilot to drive actuators only in the `ascent` phase.
 #   5. Health monitor and FDIR detector publishing `failsafe_flags`
@@ -22,16 +22,15 @@
 # scenario `[fc]` block round-trips through `openbmp-scenario` and
 # validates clean.
 #
-# Kernel↔FC bridging in the runner is reserved for a follow-up phase;
-# this scenario is the schema fixture that feeds `cargo test -p
-# openbmp-scenario` and `cargo test -p openbmp-cli` without driving
-# the actual runtime loop.
+# Kernel↔FC bridging is exercised by the Phase 4.C runner bridge. The
+# point-mass kernel still has only gravity in its force list, so the
+# FC closes the loop without perturbing the Phase-1/2 force contract.
 
 openbmp.scenario = 2
 
 [meta]
 name        = "closed-loop-attitude-hold"
-description = "Phase-4.B closed-loop attitude-hold validation. Synthetic; full FC pipeline (EKF + three-loop + mixer + health/FDIR)."
+description = "Phase-4.C closed-loop attitude-hold validation. Synthetic; full FC pipeline (EKF + three-loop + mixer + health/FDIR)."
 validation  = "experimental"
 provenance  = "synthetic; full FC pipeline academic gains and noise levels"
 
@@ -65,6 +64,18 @@ wind          = "none"
 [forces]
 models = ["gravity"]
 
+[sensors.imu]
+kind = "imu"
+file = "../../data/sensors/imu-consumer-mems.toml"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../../data/sensors/gnss-textbook.toml"
+
+[sensors.mag]
+kind = "magnetometer"
+file = "../../data/sensors/magnetometer-textbook.toml"
+
 [telemetry]
 output.parquet = "out/closed-loop-attitude-hold.parquet"
 
@@ -94,29 +105,55 @@ from  = "mission.phases.pad"
 to    = "mission.phases.ascent"
 event = "mission.events.liftoff"
 
-# Flight-controller block (Phase 4.B).
+# Flight-controller block (Phase 4.C).
 [fc]
 estimator        = "ekf"
 autopilot        = "three_loop"
 guidance         = "attitude_hold"
 reference_q_xyzw = [0.0, 0.0, 0.0, 1.0]
 base_rate_hz     = 1000
+frame_budget_us  = 2000
 
 [fc.ekf]
 sigma_w_gyro          = 0.01
 sigma_w_accel_bias    = 1.0e-4
 sigma_w_gyro_bias     = 1.0e-5
+tau_gyro_bias_s       = 100.0
+tau_accel_bias_s      = 100.0
 sigma_gnss_pos_m      = 5.0
 sigma_gnss_vel_m_s    = 0.5
 sigma_baro_alt_m      = 2.0
 sigma_mag_nt          = 100.0
-innovation_gate       = 9.0
+innovation_false_alarm_rate = 0.01
 dead_reckon_timeout_s = 1.5
 
 [fc.autopilot_params]
 anti_windup_gain         = 1.0
 rate_deadband_rad_s      = 0.001
 trajectory_loop_enabled  = false
+trajectory_kind          = "pid"
+
+[fc.health]
+imu_stale_after_s       = 0.05
+gnss_stale_after_s      = 0.5
+baro_stale_after_s      = 10.0
+mag_stale_after_s       = 0.2
+overrun_burst_count     = 5
+
+[fc.fdir]
+detector_kind           = "burst_counter"
+innovation_threshold    = 25.0
+innovation_burst_count  = 5
+failsafe_burst_count    = 5
+
+[fc.gain_schedule."mission.phases.pad"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
 
 [fc.gain_schedule."mission.phases.ascent"]
 rate_kp           = [0.5, 0.5, 0.5]

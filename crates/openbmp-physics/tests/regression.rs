@@ -1,11 +1,11 @@
 //! Phase-2.2 + 2.3 regression guards.
 //!
-//! 1. `openbmp-env::gravity::ConstantGravity` produces byte-identical
+//! 1. `openbmp-physics::gravity::ConstantGravity` produces byte-identical
 //!    results to the Phase-1 `openbmp-sim::models::ConstantGravityForce`
 //!    scaffold over the analytic-toy drop scenario's coefficient grid.
 //!    This locks in the property the audited Phase-2 plan relies on:
 //!    when the higher-layer adapter swaps `ConstantGravityForce` for
-//!    `openbmp-env::ConstantGravity`, telemetry stays identical.
+//!    `openbmp-physics::ConstantGravity`, telemetry stays identical.
 //!
 //! 2. `J2Gravity` reduces to `PointMassGravity` when `j2 = 0` to within
 //!    1e-12 — the same property the in-crate unit test asserts, but
@@ -29,9 +29,9 @@
 
 use approx::assert_abs_diff_eq;
 use openbmp_core::{Position3, SimTime, WGS84_A_M};
-use openbmp_env::{
+use openbmp_physics::{
     ConstantGravity, GravityModel, J2Gravity, PointMassGravity, UsStandard1976, WGS84_J2,
-    atmosphere::us_standard_1976::{
+    atmosphere::{
         USSA76_G0_M_S2, USSA76_GAMMA_AIR, USSA76_MAX_GEOMETRIC_M, USSA76_MAX_GEOPOTENTIAL_M,
         USSA76_MOLAR_MASS_AIR_KG_KMOL, USSA76_REFERENCE_RADIUS_M, USSA76_UNIVERSAL_GAS_CONSTANT,
     },

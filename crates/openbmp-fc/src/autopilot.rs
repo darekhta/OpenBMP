@@ -10,13 +10,17 @@
 //! - Trajectory loop: `position_estimate -> attitude_command`.
 //!
 //! Each loop is a PID with anti-windup. When the actuator demand
-//! saturates, the integrator freezes (back-calculation).
+//! saturates, the integrator freezes (back-calculation). Phase 4.C
+//! keeps this baseline after the observer-form anti-windup review:
+//! no boundedness or determinism test in the current academic
+//! envelope justifies replacing the simpler back-calculation path.
 
 use std::collections::BTreeMap;
 
 use nalgebra::Vector3;
 
 use crate::error::ControllerError;
+use crate::filters::Biquad;
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::tables::Table;
@@ -97,6 +101,13 @@ pub struct AutopilotParams {
     /// `true` to enable the trajectory loop. When `false`, the
     /// reference attitude is taken directly from the guidance topic.
     pub trajectory_loop_enabled: bool,
+    /// Trajectory-loop strategy.
+    pub trajectory_kind: TrajectoryKind,
+    /// Optional per-axis gyro notch filters.
+    pub gyro_notch: Option<[crate::filters::NotchConfig; 3]>,
+    /// Optional L1 adaptive augmentation on the rate loop.
+    #[cfg(feature = "l1-adaptive")]
+    pub l1_adaptive: Option<crate::l1_adaptive::L1AdaptiveParams>,
 }
 
 impl Default for AutopilotParams {
@@ -105,6 +116,10 @@ impl Default for AutopilotParams {
             anti_windup_gain: 1.0,
             rate_deadband_rad_s: 1e-3,
             trajectory_loop_enabled: false,
+            trajectory_kind: TrajectoryKind::Pid,
+            gyro_notch: None,
+            #[cfg(feature = "l1-adaptive")]
+            l1_adaptive: None,
         }
     }
 }
@@ -119,6 +134,18 @@ struct PidState {
     last_error: f64,
 }
 
+/// Trajectory-loop strategy.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum TrajectoryKind {
+    /// Existing PID position-to-attitude correction.
+    #[default]
+    Pid,
+    /// Differential-flatness analytic attitude reference. Assumes
+    /// thrust-direction authority; fixed-thrust / low-authority
+    /// vehicles should keep [`TrajectoryKind::Pid`].
+    DifferentialFlatness,
+}
+
 /// Three-loop autopilot job.
 #[derive(Debug)]
 pub struct ThreeLoopAutopilot {
@@ -130,6 +157,9 @@ pub struct ThreeLoopAutopilot {
     last_attitude_seq: u64,
     schedule: GainSchedule,
     params: AutopilotParams,
+    gyro_notch_state: Option<[Biquad; 3]>,
+    #[cfg(feature = "l1-adaptive")]
+    l1_state: [crate::l1_adaptive::L1AdaptiveChannel; 3],
 }
 
 impl ThreeLoopAutopilot {
@@ -153,6 +183,9 @@ impl ThreeLoopAutopilot {
             last_attitude_seq: 0,
             schedule,
             params: AutopilotParams::default(),
+            gyro_notch_state: None,
+            #[cfg(feature = "l1-adaptive")]
+            l1_state: [crate::l1_adaptive::L1AdaptiveChannel::new(); 3],
         }
     }
 
@@ -167,6 +200,7 @@ impl ThreeLoopAutopilot {
     #[must_use]
     pub fn with_params(mut self, params: AutopilotParams) -> Self {
         self.params = params;
+        self.gyro_notch_state = None;
         self
     }
 
@@ -175,6 +209,31 @@ impl ThreeLoopAutopilot {
             .by_phase
             .get(&phase)
             .unwrap_or(&self.schedule.default)
+    }
+
+    fn filtered_omega_body(&mut self, omega_body_rad_s: Vector3<f64>, dt_s: f64) -> Vector3<f64> {
+        let Some(configs) = self.params.gyro_notch else {
+            return omega_body_rad_s;
+        };
+        if self.gyro_notch_state.is_none() {
+            let sample_rate_hz = 1.0 / dt_s;
+            let mut filters = [Biquad::default(); 3];
+            for (slot, config) in filters.iter_mut().zip(configs) {
+                let Ok(filter) = Biquad::notch(config, sample_rate_hz) else {
+                    return omega_body_rad_s;
+                };
+                *slot = filter;
+            }
+            self.gyro_notch_state = Some(filters);
+        }
+        let Some(filters) = &mut self.gyro_notch_state else {
+            return omega_body_rad_s;
+        };
+        Vector3::new(
+            filters[0].step(omega_body_rad_s.x),
+            filters[1].step(omega_body_rad_s.y),
+            filters[2].step(omega_body_rad_s.z),
+        )
     }
 }
 
@@ -276,6 +335,7 @@ impl Job for ThreeLoopAutopilot {
             return Ok(());
         }
         let gains = self.gains_for_phase(status.phase_id).clone();
+        let mut saturated = false;
 
         // Attitude loop input: small-angle error in body frame.
         let mut attitude_error =
@@ -288,32 +348,49 @@ impl Job for ThreeLoopAutopilot {
             && reference.position_eci_m.norm() > 0.0
             && let Some(pos) = position
         {
-            let pos_error_eci = reference.position_eci_m - pos.position_eci_m;
-            let q_est = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                attitude.q_body_to_eci_xyzw[3],
-                attitude.q_body_to_eci_xyzw[0],
-                attitude.q_body_to_eci_xyzw[1],
-                attitude.q_body_to_eci_xyzw[2],
-            ));
-            let r_eci_to_body = q_est.to_rotation_matrix().transpose();
-            let pos_error_body = r_eci_to_body * pos_error_eci;
-            for i in 0..3 {
-                let (cmd, _) = pid_step(
-                    &mut self.trajectory_state[i],
-                    &gains.trajectory[i],
-                    pos_error_body[i],
-                    dt,
-                    -1.0,
-                    1.0,
-                    self.params.anti_windup_gain,
-                );
-                attitude_error[i] += cmd;
+            match self.params.trajectory_kind {
+                TrajectoryKind::Pid => {
+                    let pos_error_eci = reference.position_eci_m - pos.position_eci_m;
+                    let q_est =
+                        nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                            attitude.q_body_to_eci_xyzw[3],
+                            attitude.q_body_to_eci_xyzw[0],
+                            attitude.q_body_to_eci_xyzw[1],
+                            attitude.q_body_to_eci_xyzw[2],
+                        ));
+                    let r_eci_to_body = q_est.to_rotation_matrix().transpose();
+                    let pos_error_body = r_eci_to_body * pos_error_eci;
+                    for i in 0..3 {
+                        let (cmd, sat) = pid_step(
+                            &mut self.trajectory_state[i],
+                            &gains.trajectory[i],
+                            pos_error_body[i],
+                            dt,
+                            -1.0,
+                            1.0,
+                            self.params.anti_windup_gain,
+                        );
+                        attitude_error[i] += cmd;
+                        saturated |= sat;
+                    }
+                }
+                TrajectoryKind::DifferentialFlatness => {
+                    let desired_accel = flatness_pd_accel(
+                        reference.position_eci_m,
+                        reference.velocity_eci_m_s,
+                        pos,
+                    );
+                    let q_flat = differential_flatness_attitude_reference(desired_accel, 0.0);
+                    let q = q_flat.into_inner();
+                    attitude_error =
+                        quaternion_error_axis(attitude.q_body_to_eci_xyzw, [q.i, q.j, q.k, q.w]);
+                }
             }
         }
 
         let mut rate_cmd = Vector3::zeros();
         for i in 0..3 {
-            let (cmd, _) = pid_step(
+            let (cmd, sat) = pid_step(
                 &mut self.attitude_state[i],
                 &gains.attitude[i],
                 attitude_error[i],
@@ -323,12 +400,13 @@ impl Job for ThreeLoopAutopilot {
                 self.params.anti_windup_gain,
             );
             rate_cmd[i] = cmd;
+            saturated |= sat;
         }
 
         // Rate loop: rate_cmd vs measured -> actuator deflection.
-        let rate_error = rate_cmd - attitude.omega_body_rad_s;
+        let omega_body_rad_s = self.filtered_omega_body(attitude.omega_body_rad_s, dt);
+        let rate_error = rate_cmd - omega_body_rad_s;
         let mut torque = Vector3::zeros();
-        let mut saturated = false;
         for i in 0..3 {
             let limit = match i {
                 0 => gains.aileron_limit_rad,
@@ -344,7 +422,18 @@ impl Job for ThreeLoopAutopilot {
                 limit,
                 self.params.anti_windup_gain,
             );
-            torque[i] = cmd;
+            #[cfg(feature = "l1-adaptive")]
+            let mut axis_cmd = cmd;
+            #[cfg(not(feature = "l1-adaptive"))]
+            let axis_cmd = cmd;
+            #[cfg(feature = "l1-adaptive")]
+            if let Some(l1_params) = self.params.l1_adaptive {
+                axis_cmd += self.l1_state[i].step(l1_params, rate_error[i], 0.0, dt);
+                let l1_limited = axis_cmd.clamp(-limit, limit);
+                saturated |= (axis_cmd - l1_limited).abs() > 0.0;
+                axis_cmd = l1_limited;
+            }
+            torque[i] = axis_cmd;
             saturated |= sat;
         }
 
@@ -369,6 +458,47 @@ impl Job for ThreeLoopAutopilot {
         let _ = ctx.bus.publish(engine);
         Ok(())
     }
+}
+
+fn flatness_pd_accel(
+    reference_position: Vector3<f64>,
+    reference_velocity: Vector3<f64>,
+    position: PositionEstimate,
+) -> Vector3<f64> {
+    let kp = 1.0;
+    let kd = 0.5;
+    kp * (reference_position - position.position_eci_m)
+        + kd * (reference_velocity - position.velocity_eci_m_s)
+        - Vector3::new(0.0, 0.0, openbmp_physics::gravity::STANDARD_GRAVITY_M_S2)
+}
+
+/// Differential-flatness attitude reference for a thrust-along-body-z
+/// vehicle with flat outputs `(x, y, z, yaw)`.
+#[must_use]
+pub fn differential_flatness_attitude_reference(
+    desired_accel_eci_m_s2: Vector3<f64>,
+    yaw_rad: f64,
+) -> nalgebra::UnitQuaternion<f64> {
+    let thrust_axis = if desired_accel_eci_m_s2.norm() > f64::EPSILON {
+        desired_accel_eci_m_s2.normalize()
+    } else {
+        Vector3::z_axis().into_inner()
+    };
+    let yaw_axis = Vector3::new(yaw_rad.cos(), yaw_rad.sin(), 0.0);
+    let body_y = thrust_axis
+        .cross(&yaw_axis)
+        .try_normalize(f64::EPSILON)
+        .unwrap_or_else(|| Vector3::y_axis().into_inner());
+    let body_x = body_y
+        .cross(&thrust_axis)
+        .try_normalize(f64::EPSILON)
+        .unwrap_or_else(|| Vector3::x_axis().into_inner());
+    let rot = nalgebra::Rotation3::from_matrix_unchecked(nalgebra::Matrix3::from_columns(&[
+        body_x,
+        body_y,
+        thrust_axis,
+    ]));
+    nalgebra::UnitQuaternion::from_rotation_matrix(&rot)
 }
 
 /// Default academic gain schedule — every phase falls through to the

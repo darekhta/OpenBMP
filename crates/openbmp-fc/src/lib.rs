@@ -15,10 +15,12 @@
 //! **No targeting, no terminal-homing, no real-world location
 //! guidance, no hardware protocols.**
 //!
-//! Phase 4.C deferrals (not in this crate today): real sigma-point
-//! UKF, real MPC backed by a vetted convex-QP solver, real
-//! `LCvxLD` / `SCvx` powered-descent guidance backed by a vetted SOCP
-//! solver, full WMM 2025 spherical-harmonic field model.
+//! Phase 4.C implemented a real 6-state sigma-point UKF, the
+//! kernel↔FC runner bridge, WGS84-J2 gravity, and feature-gated
+//! Clarabel QP / SOCP primitives. Full 15-state / square-root UKF,
+//! full receding-horizon MPC, full `LCvxLD` / `SCvx` trajectory
+//! reproduction, WMM 2025 in FC, NRLMSISE-00, and multi-instance
+//! estimator routing are Phase 5 / downstream scope.
 //!
 //! See `docs/phase-4-plan.md` (during Phase 4) and
 //! `docs/software-architecture.md § Flight Controller` (after closure)
@@ -35,16 +37,24 @@ pub mod dictionary;
 pub mod error;
 pub mod estimator;
 pub mod fdir;
+pub mod filters;
 pub mod guidance;
 pub mod health;
-pub mod magnetic;
+#[cfg(feature = "l1-adaptive")]
+pub mod l1_adaptive;
+#[cfg(feature = "mpc")]
+pub mod landing;
 pub mod mixer;
+#[cfg(feature = "mpc")]
+pub mod mpc;
 pub mod params;
 pub mod replay;
 pub mod scheduler;
 pub mod sensor_ingest;
 pub mod tables;
 pub mod topics;
+#[cfg(feature = "square-root-ekf")]
+pub mod ud;
 pub mod voter;
 
 pub use bus::{Bus, Sequence, Topic};

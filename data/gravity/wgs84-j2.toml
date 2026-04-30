@@ -1,11 +1,11 @@
-# WGS84 gravity coefficients used by `openbmp-env::gravity`.
+# WGS84 gravity coefficients used by `openbmp-physics::gravity`.
 #
 # Authoritative source: NIMA TR 8350.2, *Department of Defense World
 # Geodetic System 1984*, 3rd ed. (2000), tables 3.1 and 3.5. Cited
 # live at the NGA WGS84 portal (see provenance.md).
 #
 # OpenBMP loads the constants from `openbmp-core::frames` (compiled
-# in) and from `openbmp-env::gravity::WGS84_J2`. This file is the
+# in) and from `openbmp-physics::gravity::WGS84_J2`. This file is the
 # project-side declarative pin: any future `cargo run --bin openbmp
 # -- check-provenance` walk verifies that the in-source values match
 # what is declared here. The tooling check is Phase-2.10 work; the

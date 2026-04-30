@@ -2,7 +2,7 @@
 
 use openbmp_core::{Eci, FrameContext, Ned, Position3, SimTime, Velocity3};
 
-use crate::error::EnvError;
+use crate::error::PhysicsError;
 
 use super::WindModel;
 
@@ -28,7 +28,7 @@ impl WindModel for NoWind {
         _position_eci: Position3<Eci>,
         _frame: &FrameContext,
         _time: SimTime,
-    ) -> Result<Velocity3<Ned>, EnvError> {
+    ) -> Result<Velocity3<Ned>, PhysicsError> {
         Ok(Velocity3::new(0.0, 0.0, 0.0))
     }
 }
@@ -53,12 +53,12 @@ impl ConstantWind {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::NonFinite`] if any component is `NaN` or
+    /// Returns [`PhysicsError::NonFinite`] if any component is `NaN` or
     /// `Inf`. Negative components are valid (wind from any direction).
-    pub fn new(north_m_s: f64, east_m_s: f64, down_m_s: f64) -> Result<Self, EnvError> {
+    pub fn new(north_m_s: f64, east_m_s: f64, down_m_s: f64) -> Result<Self, PhysicsError> {
         for v in [north_m_s, east_m_s, down_m_s] {
             if !v.is_finite() {
-                return Err(EnvError::NonFinite {
+                return Err(PhysicsError::NonFinite {
                     reason: "constant-wind component is NaN or infinite",
                 });
             }
@@ -81,7 +81,7 @@ impl WindModel for ConstantWind {
         _position_eci: Position3<Eci>,
         _frame: &FrameContext,
         _time: SimTime,
-    ) -> Result<Velocity3<Ned>, EnvError> {
+    ) -> Result<Velocity3<Ned>, PhysicsError> {
         Ok(self.wind_ned_m_s)
     }
 }
@@ -183,15 +183,15 @@ mod tests {
     fn constant_wind_rejects_non_finite_inputs() {
         assert!(matches!(
             ConstantWind::new(f64::NAN, 0.0, 0.0),
-            Err(EnvError::NonFinite { .. })
+            Err(PhysicsError::NonFinite { .. })
         ));
         assert!(matches!(
             ConstantWind::new(0.0, f64::INFINITY, 0.0),
-            Err(EnvError::NonFinite { .. })
+            Err(PhysicsError::NonFinite { .. })
         ));
         assert!(matches!(
             ConstantWind::new(0.0, 0.0, f64::NEG_INFINITY),
-            Err(EnvError::NonFinite { .. })
+            Err(PhysicsError::NonFinite { .. })
         ));
     }
 
@@ -216,7 +216,7 @@ mod tests {
             components[bad_index] = bad;
             let rejected_as_non_finite = matches!(
                 ConstantWind::new(components[0], components[1], components[2]),
-                Err(EnvError::NonFinite { .. })
+                Err(PhysicsError::NonFinite { .. })
             );
             prop_assert!(rejected_as_non_finite);
         }

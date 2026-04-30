@@ -6,88 +6,84 @@
 > **an autopilot binary with the architecture and discipline of a
 > deployable flight controller, validated in SITL only**.
 
-## Phase 4.A + Phase 4.B landed (2026-04-30)
+## Phase 4.A + Phase 4.B + Phase 4.C Audit State (2026-04-30)
 
 Phase 4.A landed the architectural skeleton: bus, scheduler,
 commander, parameter registry, table registry, dictionary, voter,
 sensor-ingest, EKF (15-state error-state) with GNSS update, MEKF
-(attitude-only), three-loop autopilot (rate / attitude / trajectory)
-with anti-windup, attitude-hold and waypoint guidance, mixer,
-HealthMonitor, FdirJob, replay (in-memory recorder/replayer), and the
-`FlightController` façade. 32 unit tests + 2 integration tests passed.
+(attitude-only), three-loop autopilot, guidance, mixer,
+HealthMonitor, FdirJob, replay, and the `FlightController` façade.
 
-Phase 4.B (this commit) closed the gaps left in 4.A:
+Phase 4.B deleted over-claiming stubs (`mpc.rs`, `landing.rs`, and
+the mean-only `Ukf`), added barometer / magnetometer updates,
+gravity and magnetic model seams, trajectory-loop plumbing,
+bus-sequence staleness, gain schedule / phase authority / voter /
+FDIR runtime wiring, the `[fc]` parser, `FcRunner`, and the
+closed-loop-attitude-hold fixture.
 
-- Deleted misrepresenting stubs: the `mpc.rs` module with its
-  `LqrAttitudeMpc` constant-gain LQR scaffold, the `landing.rs` module
-  with `Lcvxld` / `Scvx` PD-controller scaffolds, and the `Ukf` type
-  whose `predict` propagated only the mean — none of which match the
-  algorithm names they wore.
-- Implemented missing math:
-  - Real `Ekf::update_baro` with US Standard Atmosphere 1976 inverse
-    pressure-altitude formula and chi-square innovation gate.
-  - Real `Ekf::update_mag` and `Mekf::update_mag` with skew-symmetric
-    Jacobian and chi-square innovation gate, backed by a new
-    `MagneticFieldModel` trait + `EarthDipoleField` reference impl
-    (`crates/openbmp-fc/src/magnetic.rs`).
-  - `GravityModel` trait + `ConstantGravityZ` reference impl plumbed
-    into `Ekf::predict` so the filter integrates inertial
-    acceleration (specific force + gravity) instead of treating
-    gravity as zero. Free-fall test reproduces analytic kinematics
-    within 5 cm over 10 s.
-  - Trajectory loop in `ThreeLoopAutopilot` (when params enable it
-    and the reference carries a non-zero position).
-  - `HealthMonitor` staleness rewritten to track bus sequence-counter
-    advances (rather than the sample's embedded timestamp), so a
-    misbehaving publisher with stale sample timestamps no longer
-    masks staleness.
-- Wired pre-existing types into the runtime:
-  - `GainSchedule` now consulted by `ThreeLoopAutopilot` per phase.
-  - `PhaseAuthorityTable` now consulted by `Mixer` per phase, with a
-    fall-through default; a phase that declares `autopilot_allowed =
-    false` zero-mixes the actuator command even when armed and in
-    flight.
-  - `VotedImuIngest` / `VotedBarometerIngest` / `VotedGnssIngest` /
-    `VotedMagnetometerIngest` introduced as voter-aware variants of
-    the existing simplex `*Ingest` jobs.
-  - `FdirStatus` now consulted by `Commander::try_arm`: an FDIR trip
-    blocks arming and latches a `safe_state_requested` flag in
-    `VehicleStatus`.
-- Quality gates met: `cargo fmt --all -- --check`, `cargo clippy
-  --workspace --all-targets --all-features -- -D warnings`,
-  `cargo test --workspace --all-features`, `cargo build -p openbmp-fc
-  --no-default-features`, `cargo deny check`, `cargo machete` are all
-  clean.
-- Property tests on the EKF (`crates/openbmp-fc/tests/ekf_properties.rs`):
-  determinism across reruns, innovation mean near zero, lag-1
-  autocorrelation < 0.2.
-- Lockstep-clock tripwire (`crates/openbmp-testkit/src/fc_lints.rs`):
-  fails CI if `Instant::now`, `SystemTime::now`, or `std::time` types
-  reappear inside `openbmp-fc/src/` or `openbmp-fc/tests/`.
-- Scenario `[fc]` block parser (`openbmp_scenario::FcConfig`) and
-  `FcRunner` (`crates/openbmp-cli/src/runner/fc.rs`) bridge a parsed
-  scenario block to a fully wired `FlightController`.
-- Closed-loop scenario fixture
-  (`scenarios/closed-loop-attitude-hold/scenario.toml`) parses clean
-  and demonstrates the full `[fc]` block.
+The Phase 4 audit corrected overstatements in the landed claim. The
+post-audit state is:
 
-### Phase 4.C deferrals
+- EKF / MEKF covariance updates use Joseph form, innovation gates are
+  derived per measurement dimension from a stated false-alarm rate
+  unless a legacy explicit gate is supplied, and quaternion propagation
+  explicitly renormalizes.
+- `openbmp-physics` now owns the **complete** HAL-portable physics
+  stack: gravity (`ConstantGravity`, `PointMassGravity`, `J2Gravity`),
+  atmosphere (`IsothermalAtmosphere`, full 7-layer `UsStandard1976`),
+  magnetic (`EarthDipoleField`, full WMM 2025 `Wmm2025`), wind
+  (`NoWind`, `ConstantWind`, `LayeredWind`, `GustWind`), `PhysicsError`,
+  and the trait surfaces. The simulator-side `openbmp-env` crate was
+  retired (folded into `openbmp-physics` per
+  `docs/physics-consolidation-plan.md`); both `openbmp-fc` and the
+  kernel-side adapters in `openbmp-vehicle` / `openbmp-cli` consume
+  physics directly. The FC's parallel `GravityModel` /
+  `MagneticFieldModel` traits and the `EarthDipoleField` /
+  `ConstantGravityZ` / `Wgs84J2GravityModel` impls were deleted in
+  the consolidation; the FC's estimators now use
+  `openbmp_physics::gravity::GravityModel` and
+  `openbmp_physics::magnetic::MagneticFieldEci` directly.
+- `EstimatorStatus::innovation_rejected` is no longer hard-coded
+  false; transient estimator diagnostics reset at the start of each
+  estimator scheduler tick.
+- `ActuatorCommand.saturated` reports trajectory-loop, attitude-loop,
+  and rate-loop saturation.
+- Voted IMU ingest publishes per-lane `sensor.status`, and an
+  integration test exercises `SyntheticSensorAdapter -> VotedImuIngest
+  -> bus`.
+- The mixer can publish `EffectorCommandSet` keyed by `EffectorId`
+  through an explicit `ActuatorChannelMap`; `FcRunner` derives phase
+  authority from mission graph allowed effectors / engines and `[fc]`
+  overrides.
+- `[fc]` now carries `frame_budget_us`; guidance/health/FDIR periods
+  derive from `base_rate_hz`.
 
-Carried forward from the earlier draft and re-affirmed by 4.B:
+The Phase 4.C audit execution added the kernel↔FC bridge and the
+first SOTA-adjacent algorithm pass:
 
-- A real sigma-point UKF (Phase 4.C; the earlier scaffold was an EKF
-  in disguise and was deleted).
-- A real receding-horizon convex-QP-driven MPC (Phase 4.C, gated on
-  vetted permissive-licence solver review).
-- Real LCvxLD / SCvx powered-descent guidance (Phase 4.C, same gate).
-- Full WMM 2025 spherical-harmonic geomagnetic field with the COF
-  dataset (Phase 4.C; the shipped `EarthDipoleField` is the academic-
-  tier degree-1 truncation, marked `validated-toy`).
-- End-to-end kernel↔FC integration in the simulator's runner so a
-  scenario `[fc]` block actually drives the kernel tick. Phase 4.B
-  ships the `FcRunner` library API and the parser side; the kernel-
-  to-FC bus bridging in `phase2_*.rs` is itself enough scope for a
-  separate increment.
+- `[fc]` scenarios now drive the `phase2_*.rs` kernel runners through
+  a lockstep bridge that primes synthetic sensors, steps the
+  `FlightController`, and applies FC effector / engine command sets to
+  the simulator racks. When `[fc]` is absent, the bridge is a no-op.
+- EKF / MEKF now include Gauss-Markov bias dynamics, iterated
+  magnetometer updates, Markley-style MEKF covariance reset, and
+  WGS84-J2 gravity through the HAL-portable `openbmp-physics` crate.
+- A real 6-state sigma-point UKF exists for attitude + gyro-bias
+  validation; full 15-state and square-root UKF variants are Phase 5.
+- Autopilot SOTA hooks include gyro notch filters,
+  differential-flatness attitude-reference generation, and a
+  feature-gated L1 adaptive rate-loop augmentation.
+- FDIR supports burst-counter, GLRT, and CUSUM detector families with
+  explicit tripped-mask bits; sensor lane status now covers IMU,
+  barometer, GNSS, and magnetometer ingest.
+- Clarabel v0.9 is vetted in `docs/clarabel-vetting.md` and is gated
+  behind the `mpc` feature for QP / SOCP primitives.
+
+The audit still does **not** claim full algorithm closure for every
+research item. Remaining Phase 5 work includes full WMM 2025,
+NRLMSISE-00, multi-instance estimator routing, full 15-state /
+square-root UKF, and full MPC / LCvxLD trajectory reproduction
+against published references.
 
 ## Goal
 
@@ -187,8 +183,9 @@ architecture above):**
 
 - **Estimator framework** in `openbmp-fc/estimator`: trait surface +
   reference impls. EKF (15-state error-state position / velocity /
-  attitude / accel-bias / gyro-bias) and MEKF (multiplicative
-  quaternion attitude). UKF deferred to Phase 4.C — see § 4.8 / 4.11.
+  attitude / accel-bias / gyro-bias), MEKF (multiplicative quaternion
+  attitude), and Phase 4.C 6-state sigma-point UKF for attitude +
+  gyro-bias validation — see § 4.8 / 4.11.
   Each consumes `Sensor::read()`
   measurements via the bus, publishes `estimator_status` (innovation
   ratios, dead-reckoning flag, lane health) so the commander can react
@@ -493,17 +490,17 @@ Safety-boundary `Reject` list applies categorically.
 
 **Effort.** Medium (~1.0 weeks).
 
-### 4.8 — MEKF (UKF deferred to 4.C)
+### 4.8 — MEKF + UKF
 
 **Scope.** MEKF for quaternion attitude with multiplicative error.
 Slots into the bus alongside the EKF; estimator selection is a
 parameter.
 
-A real sigma-point UKF is deferred to Phase 4.C: the academic-tier
-scaffold that initially shipped propagated only the mean and inflated
-the diagonal — that is an EKF, not a UKF — so it was deleted rather
-than left to misrepresent itself. A real UKF is ~150 lines + tests
-and is its own scope.
+The Phase 4.C audit pass restored UKF only as a real sigma-point
+filter: a 6-state attitude + gyro-bias Julier-Uhlmann implementation
+that propagates every sigma point and recombines quaternion attitude
+through an iterative mean. The old mean-only scaffold remains deleted.
+The full 15-state and square-root UKF variants are Phase 5 scope.
 
 **Effort.** Medium (~1.0 weeks; was 1.5 weeks with UKF in scope).
 
@@ -542,7 +539,7 @@ Phase-1 / 2 / 3 closure pattern.
 **Tasks.**
 - `docs/design-concept.md § Phase Roadmap` — Phase 4 in past tense
   with the actual deliverables.
-- `docs/software-architecture.md § Virtual Flight Controller` —
+- `docs/software-architecture.md § Flight Controller` —
   rewrite as "Flight Controller" with the architecture documented and
   the simulator-local validation status preserved.
 - `docs/README.md` — drop the link to `phase-4-plan.md`.
@@ -554,17 +551,19 @@ Phase-1 / 2 / 3 closure pattern.
 
 **Effort.** Small (~0.3 weeks).
 
-### 4.11 — (Deferred to Phase 4.C) Linear MPC + powered-descent guidance
+### 4.11 — Solver-backed MPC / powered-descent primitives
 
-**Status.** Deferred. Phase 4.A initially shipped scaffold modules
+**Status.** Partially implemented behind feature gates. Phase 4.A initially shipped scaffold modules
 (`mpc.rs` with `LqrAttitudeMpc`, `landing.rs` with `Lcvxld` / `Scvx`)
 that wore the algorithm names but were single-step PD / constant-gain
 LQR controllers under the hood. Phase 4.B deleted them rather than
 leave the misrepresenting names in the public API.
 
-**Phase 4.C scope.** Optional. Lands only if a vetted permissive-licence
-QP / SOCP solver passes `cargo deny` review (or an in-house
-implementation lands).
+**Phase 4.C state.** Clarabel v0.9 is the vetted permissive-licence
+conic solver (`docs/clarabel-vetting.md`). The `mpc` feature exposes
+deterministic QP / SOCP primitives and smoke tests. Full
+receding-horizon MPC and LCvxLD / SCvx trajectory reproduction remain
+Phase 5 research scope.
 
 **Tasks.**
 - QP / SOCP solver vetting: candidate crates evaluated against

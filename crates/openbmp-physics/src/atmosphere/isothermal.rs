@@ -14,7 +14,7 @@
 use openbmp_core::SimTime;
 
 use super::{AtmosphereModel, AtmosphereSample};
-use crate::error::EnvError;
+use crate::error::PhysicsError;
 
 /// Constant-everywhere atmosphere.
 ///
@@ -31,14 +31,14 @@ impl IsothermalAtmosphere {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::NonFinite`] or
-    /// [`EnvError::InvalidParameter`] via [`AtmosphereSample::new`].
+    /// Returns [`PhysicsError::NonFinite`] or
+    /// [`PhysicsError::InvalidParameter`] via [`AtmosphereSample::new`].
     pub fn new(
         density_kg_m3: f64,
         pressure_pa: f64,
         temperature_k: f64,
         speed_of_sound_m_s: f64,
-    ) -> Result<Self, EnvError> {
+    ) -> Result<Self, PhysicsError> {
         Ok(Self {
             sample: AtmosphereSample::new(
                 density_kg_m3,
@@ -77,7 +77,7 @@ impl AtmosphereModel for IsothermalAtmosphere {
         &self,
         _altitude_geometric_m: f64,
         _time: SimTime,
-    ) -> Result<AtmosphereSample, EnvError> {
+    ) -> Result<AtmosphereSample, PhysicsError> {
         Ok(self.sample)
     }
 }

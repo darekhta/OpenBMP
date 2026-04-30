@@ -4,7 +4,7 @@
 //! NOAA-S/T 76-1562 / NASA-TM-X-74335 (NTRS 19770009539). Covers the
 //! seven lower atmospheric layers (geopotential 0 m through 84852 m,
 //! corresponding to geometric 86 km). Above 86 km the model returns
-//! [`EnvError::OutOfEnvelope`] by default; opt-in
+//! [`PhysicsError::OutOfEnvelope`] by default; opt-in
 //! [`ExoatmosphericPolicy::ZeroDensityAboveCeiling`] returns a
 //! `(ρ ≈ 0, p ≈ 0, T = ceiling, a = ceiling)` sample so coast-phase
 //! integration through the upper atmosphere doesn't fault.
@@ -25,64 +25,25 @@
 //! formulas (gradient `L ≠ 0` vs. isothermal `L = 0`) are split into
 //! distinct branches; both produce bit-stable output on the
 //! reference platform profile.
+//!
+//! Full NRLMSISE-00 upper-atmosphere density is explicitly deferred
+//! to Phase 5. USSA76 remains the Phase 4.C academic baseline for
+//! troposphere / lower-stratosphere sounding-rocket scenarios.
 
 use openbmp_core::SimTime;
 
-use super::{AtmosphereModel, AtmosphereSample};
-use crate::error::EnvError;
+use super::{
+    AtmosphereModel, AtmosphereSample, USSA76_G0_M_S2, USSA76_GAMMA_AIR, USSA76_MAX_GEOMETRIC_M,
+    USSA76_MAX_GEOPOTENTIAL_M, USSA76_MOLAR_MASS_AIR_KG_KMOL, USSA76_SEA_LEVEL_PRESSURE_PA,
+    USSA76_SEA_LEVEL_TEMPERATURE_K, USSA76_TROPOPAUSE_GEOPOTENTIAL_M,
+    USSA76_TROPOPAUSE_PRESSURE_PA, USSA76_TROPOSPHERE_LAPSE_RATE_K_PER_M,
+    USSA76_UNIVERSAL_GAS_CONSTANT, geopotential_from_geometric,
+};
+use crate::error::PhysicsError;
 
 // ---------------------------------------------------------------------
 // USSA76 defining constants (NOAA-S/T 76-1562 §1.2-§1.3)
 // ---------------------------------------------------------------------
-
-/// Standard acceleration of gravity (m/s² per geopotential metre).
-///
-/// USSA76 defines geopotential altitude such that
-/// `dh' / dz = g(z) / g₀'` where `g₀' = 9.80665 m²/(s²·m')`. This
-/// matches the standard-gravity value used by ISO 80000-3 and is the
-/// quantity the standard's barometric formulas multiply against.
-pub const USSA76_G0_M_S2: f64 = 9.806_65;
-
-/// USSA76 universal gas constant `R*`, in J / (kmol · K). The 1976
-/// standard pins the value `8.31432 × 10³ N·m / (kmol · K)`. Modern
-/// CODATA gives `R = 8.314462618 J/(mol·K)` (a different factor of
-/// 1000 because of the `mol` vs `kmol` choice); the published USSA76
-/// tables were computed with this pinned value, so we use it for
-/// tabulated-value compatibility.
-pub const USSA76_UNIVERSAL_GAS_CONSTANT: f64 = 8_314.32;
-
-/// Mean molecular weight of dry air at sea level, kg/kmol.
-/// Pinned by USSA76 §1.2 (table 8). Equivalent to
-/// `0.0289644 kg/mol`.
-pub const USSA76_MOLAR_MASS_AIR_KG_KMOL: f64 = 28.9644;
-
-/// Same value expressed in kg/mol for `R` in J/(mol·K) units.
-pub const USSA76_MOLAR_MASS_AIR_KG_MOL: f64 = USSA76_MOLAR_MASS_AIR_KG_KMOL * 1.0e-3;
-
-/// Ratio of specific heats for dry air (`Cp / Cv`). Dimensionless.
-/// Pinned by USSA76 §1.3 to `1.40` for the speed-of-sound formula.
-pub const USSA76_GAMMA_AIR: f64 = 1.40;
-
-/// USSA76 effective Earth radius (m) used in the geopotential /
-/// geometric conversion. Pinned by USSA76 §1.2 to `6356766.0` m.
-/// Note this is **not** the WGS84 semi-major axis (`6378137.0`); the
-/// standard's effective radius accounts for latitude and the local
-/// gravity reduction in a single scalar.
-pub const USSA76_REFERENCE_RADIUS_M: f64 = 6_356_766.0;
-
-/// Top of the 7-layer USSA76 model in **geopotential** metres.
-/// Layer 6 ends at 84852 m'. Above this the model is a Phase-6
-/// extension.
-pub const USSA76_MAX_GEOPOTENTIAL_M: f64 = 84_852.0;
-
-/// Top of the 7-layer USSA76 model in **geometric** metres.
-///
-/// USSA76 pins both the 86000 m geometric ceiling and the 84852 m'
-/// geopotential ceiling. The closed-form conversion with the pinned
-/// reference radius gives `h'(86000 m) = 84852.04584490575 m'`; callers
-/// using geometric altitude treat 86000 m as in-envelope and clamp that
-/// small residual to the geopotential ceiling.
-pub const USSA76_MAX_GEOMETRIC_M: f64 = 86_000.0;
 
 // ---------------------------------------------------------------------
 // Layer table — NOAA-S/T 76-1562 table 4
@@ -112,15 +73,15 @@ struct Layer {
 const LAYERS: [Layer; 7] = [
     Layer {
         base_geopotential_m: 0.0,
-        base_temperature_k: 288.15,
-        lapse_rate_k_per_m: -6.5e-3,
-        base_pressure_pa: 101_325.0,
+        base_temperature_k: USSA76_SEA_LEVEL_TEMPERATURE_K,
+        lapse_rate_k_per_m: USSA76_TROPOSPHERE_LAPSE_RATE_K_PER_M,
+        base_pressure_pa: USSA76_SEA_LEVEL_PRESSURE_PA,
     },
     Layer {
-        base_geopotential_m: 11_000.0,
+        base_geopotential_m: USSA76_TROPOPAUSE_GEOPOTENTIAL_M,
         base_temperature_k: 216.65,
         lapse_rate_k_per_m: 0.0,
-        base_pressure_pa: 22_632.063_973_462_91,
+        base_pressure_pa: USSA76_TROPOPAUSE_PRESSURE_PA,
     },
     Layer {
         base_geopotential_m: 20_000.0,
@@ -155,35 +116,13 @@ const LAYERS: [Layer; 7] = [
 ];
 
 // ---------------------------------------------------------------------
-// Geopotential / geometric conversion
-// ---------------------------------------------------------------------
-
-/// Convert geometric altitude `z` (m) to geopotential altitude `h'`
-/// (m') using the USSA76 effective radius.
-///
-/// Closed form: `h' = R · z / (R + z)`. Locked operand order; no FMA.
-#[must_use]
-pub fn geopotential_from_geometric(z_geometric_m: f64) -> f64 {
-    let r = USSA76_REFERENCE_RADIUS_M;
-    r * z_geometric_m / (r + z_geometric_m)
-}
-
-/// Convert geopotential altitude `h'` (m') to geometric altitude `z`
-/// (m). Inverse of [`geopotential_from_geometric`].
-#[must_use]
-pub fn geometric_from_geopotential(h_geopotential_m: f64) -> f64 {
-    let r = USSA76_REFERENCE_RADIUS_M;
-    r * h_geopotential_m / (r - h_geopotential_m)
-}
-
-// ---------------------------------------------------------------------
 // Exoatmospheric policy
 // ---------------------------------------------------------------------
 
 /// What the model does for queries above its 86 km geometric ceiling.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum ExoatmosphericPolicy {
-    /// Default. Returns [`EnvError::OutOfEnvelope`] when the geometric
+    /// Default. Returns [`PhysicsError::OutOfEnvelope`] when the geometric
     /// altitude exceeds [`USSA76_MAX_GEOMETRIC_M`].
     #[default]
     FailClosed,
@@ -236,20 +175,20 @@ impl UsStandard1976 {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::OutOfEnvelope`] for `h' < 0` or
+    /// Returns [`PhysicsError::OutOfEnvelope`] for `h' < 0` or
     /// `h' > USSA76_MAX_GEOPOTENTIAL_M` (subject to the active
     /// exoatmospheric policy for the upper bound).
     pub fn sample_at_geopotential(
         &self,
         h_geopotential_m: f64,
-    ) -> Result<AtmosphereSample, EnvError> {
+    ) -> Result<AtmosphereSample, PhysicsError> {
         if !h_geopotential_m.is_finite() {
-            return Err(EnvError::NonFinite {
+            return Err(PhysicsError::NonFinite {
                 reason: "geopotential altitude is NaN or infinite",
             });
         }
         if h_geopotential_m < 0.0 {
-            return Err(EnvError::OutOfEnvelope {
+            return Err(PhysicsError::OutOfEnvelope {
                 reason: "geopotential altitude below 0 m'; USSA76 not defined for sub-surface",
             });
         }
@@ -272,9 +211,9 @@ impl UsStandard1976 {
         )
     }
 
-    fn exoatmospheric_sample(self) -> Result<AtmosphereSample, EnvError> {
+    fn exoatmospheric_sample(self) -> Result<AtmosphereSample, PhysicsError> {
         match self.exoatmospheric_policy {
-            ExoatmosphericPolicy::FailClosed => Err(EnvError::OutOfEnvelope {
+            ExoatmosphericPolicy::FailClosed => Err(PhysicsError::OutOfEnvelope {
                 reason: "geometric altitude above USSA76 86 km ceiling",
             }),
             ExoatmosphericPolicy::ZeroDensityAboveCeiling => {
@@ -295,9 +234,9 @@ impl AtmosphereModel for UsStandard1976 {
         &self,
         altitude_geometric_m: f64,
         _time: SimTime,
-    ) -> Result<AtmosphereSample, EnvError> {
+    ) -> Result<AtmosphereSample, PhysicsError> {
         if !altitude_geometric_m.is_finite() {
-            return Err(EnvError::NonFinite {
+            return Err(PhysicsError::NonFinite {
                 reason: "geometric altitude is NaN or infinite",
             });
         }
@@ -305,7 +244,7 @@ impl AtmosphereModel for UsStandard1976 {
             return self.exoatmospheric_sample();
         }
         if altitude_geometric_m < 0.0 {
-            return Err(EnvError::OutOfEnvelope {
+            return Err(PhysicsError::OutOfEnvelope {
                 reason: "geometric altitude below 0 m; USSA76 not defined for sub-surface",
             });
         }
@@ -380,6 +319,7 @@ fn speed_of_sound_from_t(temperature_k: f64) -> f64 {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
+    use crate::atmosphere::geometric_from_geopotential;
     use approx::assert_abs_diff_eq;
 
     fn assert_relative(actual: f64, expected: f64, tol: f64, label: &str) {
@@ -616,7 +556,7 @@ mod tests {
     fn fails_closed_above_86_km_by_default() {
         let atm = UsStandard1976::new();
         let err = atm.sample(86_001.0, SimTime::ZERO).unwrap_err();
-        assert!(matches!(err, EnvError::OutOfEnvelope { .. }));
+        assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
     }
 
     #[test]
@@ -648,7 +588,7 @@ mod tests {
     fn fails_closed_below_zero_altitude() {
         let atm = UsStandard1976::new();
         let err = atm.sample(-1.0, SimTime::ZERO).unwrap_err();
-        assert!(matches!(err, EnvError::OutOfEnvelope { .. }));
+        assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
     }
 
     #[test]
@@ -656,11 +596,11 @@ mod tests {
         let atm = UsStandard1976::new();
         assert!(matches!(
             atm.sample(f64::NAN, SimTime::ZERO),
-            Err(EnvError::NonFinite { .. })
+            Err(PhysicsError::NonFinite { .. })
         ));
         assert!(matches!(
             atm.sample(f64::INFINITY, SimTime::ZERO),
-            Err(EnvError::NonFinite { .. })
+            Err(PhysicsError::NonFinite { .. })
         ));
     }
 

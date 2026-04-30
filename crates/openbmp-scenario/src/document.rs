@@ -3131,6 +3131,8 @@ pub struct FcConfig {
     /// Base scheduler tick rate in Hz. Determines the kernel-tick to
     /// FC-tick mapping.
     pub base_rate_hz: u32,
+    /// Controller frame budget in microseconds.
+    pub frame_budget_us: u64,
     /// Optional EKF parameter overrides. Required when
     /// `estimator = "ekf"`.
     pub ekf: Option<FcEkfConfig>,
@@ -3139,8 +3141,15 @@ pub struct FcConfig {
     pub mekf: Option<FcMekfConfig>,
     /// Optional autopilot anti-windup / trajectory-loop config.
     pub autopilot_params: Option<FcAutopilotParams>,
-    /// Optional gain schedule keyed by `mission.phases.<name>` paths.
-    pub gain_schedule: Option<BTreeMap<String, FcGainsConfig>>,
+    /// Required health-monitor thresholds.
+    pub health: FcHealthConfig,
+    /// Optional FDIR detector configuration.
+    pub fdir: Option<FcFdirConfig>,
+    /// Optional semantic FC actuator-channel to vehicle effector-id
+    /// mapping.
+    pub actuator_channels: Option<FcActuatorChannelsConfig>,
+    /// Gain schedule keyed by `mission.phases.<name>` paths.
+    pub gain_schedule: BTreeMap<String, FcGainsConfig>,
     /// Optional phase-authority mask keyed by mission-phase path.
     pub phase_authority: Option<BTreeMap<String, FcPhaseAuthorityConfig>>,
 }
@@ -3175,6 +3184,34 @@ impl FcConfig {
             return Err(ScenarioError::InvalidFc {
                 reason: "base_rate_hz must be > 0".to_string(),
             });
+        }
+        if self.frame_budget_us == 0 {
+            return Err(ScenarioError::InvalidFc {
+                reason: "frame_budget_us must be > 0".to_string(),
+            });
+        }
+        if self.gain_schedule.is_empty() {
+            return Err(ScenarioError::InvalidFc {
+                reason: "[fc.gain_schedule] must declare at least one phase-specific tuning"
+                    .to_string(),
+            });
+        }
+        self.health.validate()?;
+        if let Some(ekf) = &self.ekf {
+            if let Some(v) = ekf.tau_gyro_bias_s {
+                require_positive("fc.ekf.tau_gyro_bias_s", v)?;
+            }
+            if let Some(v) = ekf.tau_accel_bias_s {
+                require_positive("fc.ekf.tau_accel_bias_s", v)?;
+            }
+        }
+        if let Some(mekf) = &self.mekf
+            && let Some(v) = mekf.tau_gyro_bias_s
+        {
+            require_positive("fc.mekf.tau_gyro_bias_s", v)?;
+        }
+        if let Some(fdir) = &self.fdir {
+            fdir.validate()?;
         }
         Ok(())
     }
@@ -3218,6 +3255,10 @@ pub struct FcEkfConfig {
     pub sigma_w_accel_bias: Option<f64>,
     /// Process-noise stddev on gyro-bias random walk (rad/s/√s).
     pub sigma_w_gyro_bias: Option<f64>,
+    /// First-order Gauss-Markov gyro-bias time constant (s).
+    pub tau_gyro_bias_s: Option<f64>,
+    /// First-order Gauss-Markov accelerometer-bias time constant (s).
+    pub tau_accel_bias_s: Option<f64>,
     /// Measurement-noise stddev on each GNSS position component (m).
     pub sigma_gnss_pos_m: Option<f64>,
     /// Measurement-noise stddev on each GNSS velocity component (m/s).
@@ -3226,8 +3267,12 @@ pub struct FcEkfConfig {
     pub sigma_baro_alt_m: Option<f64>,
     /// Measurement-noise stddev on each magnetometer component (nT).
     pub sigma_mag_nt: Option<f64>,
-    /// Innovation-gate chi-square threshold.
+    /// Legacy explicit innovation-gate chi-square threshold. Prefer
+    /// `innovation_false_alarm_rate` so the controller derives the
+    /// correct gate for each measurement dimension.
     pub innovation_gate: Option<f64>,
+    /// False-alarm probability used for chi-square innovation gates.
+    pub innovation_false_alarm_rate: Option<f64>,
     /// Dead-reckoning timeout (s).
     pub dead_reckon_timeout_s: Option<f64>,
 }
@@ -3240,10 +3285,15 @@ pub struct FcMekfConfig {
     pub sigma_w_gyro: Option<f64>,
     /// Process-noise stddev on gyro-bias random walk (rad/s/√s).
     pub sigma_w_gyro_bias: Option<f64>,
+    /// First-order Gauss-Markov gyro-bias time constant (s).
+    pub tau_gyro_bias_s: Option<f64>,
     /// Measurement-noise stddev on each magnetometer component (nT).
     pub sigma_mag_nt: Option<f64>,
-    /// Innovation-gate chi-square threshold.
+    /// Legacy explicit innovation-gate chi-square threshold. Prefer
+    /// `innovation_false_alarm_rate`.
     pub innovation_gate: Option<f64>,
+    /// False-alarm probability used for chi-square innovation gates.
+    pub innovation_false_alarm_rate: Option<f64>,
 }
 
 /// Autopilot params overrides.
@@ -3256,6 +3306,126 @@ pub struct FcAutopilotParams {
     pub rate_deadband_rad_s: Option<f64>,
     /// Whether to enable the trajectory loop.
     pub trajectory_loop_enabled: Option<bool>,
+    /// Trajectory-loop strategy.
+    pub trajectory_kind: Option<FcTrajectoryKind>,
+}
+
+/// Supported trajectory-loop kinds.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcTrajectoryKind {
+    /// Existing PID trajectory loop.
+    Pid,
+    /// Analytic differential-flatness attitude-reference generator.
+    DifferentialFlatness,
+}
+
+/// FC health-monitor thresholds.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcHealthConfig {
+    /// Maximum allowed IMU sample age (s).
+    pub imu_stale_after_s: f64,
+    /// Maximum allowed GNSS sample age (s).
+    pub gnss_stale_after_s: f64,
+    /// Maximum allowed barometer sample age (s).
+    pub baro_stale_after_s: f64,
+    /// Maximum allowed magnetometer sample age (s).
+    pub mag_stale_after_s: f64,
+    /// Consecutive scheduler overruns before health trips.
+    pub overrun_burst_count: u32,
+}
+
+impl FcHealthConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        for (name, value) in [
+            ("imu_stale_after_s", self.imu_stale_after_s),
+            ("gnss_stale_after_s", self.gnss_stale_after_s),
+            ("baro_stale_after_s", self.baro_stale_after_s),
+            ("mag_stale_after_s", self.mag_stale_after_s),
+        ] {
+            require_positive(&format!("fc.health.{name}"), value)?;
+        }
+        if self.overrun_burst_count == 0 {
+            return Err(ScenarioError::InvalidFc {
+                reason: "fc.health.overrun_burst_count must be > 0".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// FC FDIR detector configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcFdirConfig {
+    /// Detector family.
+    pub detector_kind: FcFdirDetectorKind,
+    /// Innovation chi-square threshold.
+    pub innovation_threshold: Option<f64>,
+    /// Consecutive innovation breaches before burst-counter trips.
+    pub innovation_burst_count: Option<u32>,
+    /// Consecutive failsafe breaches before burst-counter trips.
+    pub failsafe_burst_count: Option<u32>,
+    /// CUSUM drift term.
+    pub cusum_drift: Option<f64>,
+    /// CUSUM trip threshold.
+    pub cusum_threshold: Option<f64>,
+}
+
+impl FcFdirConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if let Some(v) = self.innovation_threshold {
+            require_positive("fc.fdir.innovation_threshold", v)?;
+        }
+        if let Some(v) = self.innovation_burst_count
+            && v == 0
+        {
+            return Err(ScenarioError::InvalidFc {
+                reason: "fc.fdir.innovation_burst_count must be > 0".to_string(),
+            });
+        }
+        if let Some(v) = self.failsafe_burst_count
+            && v == 0
+        {
+            return Err(ScenarioError::InvalidFc {
+                reason: "fc.fdir.failsafe_burst_count must be > 0".to_string(),
+            });
+        }
+        if let Some(v) = self.cusum_drift {
+            require_finite("fc.fdir.cusum_drift", v)?;
+        }
+        if let Some(v) = self.cusum_threshold {
+            require_positive("fc.fdir.cusum_threshold", v)?;
+        }
+        Ok(())
+    }
+}
+
+/// FDIR detector families.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcFdirDetectorKind {
+    /// Existing burst-counter detector.
+    BurstCounter,
+    /// Generalised likelihood-ratio detector.
+    Glrt,
+    /// Cumulative-sum detector.
+    Cusum,
+}
+
+/// Semantic FC actuator-channel to vehicle effector-id mapping.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FcActuatorChannelsConfig {
+    /// Effector id or canonical effector path for aileron commands.
+    pub aileron: Option<String>,
+    /// Effector id or canonical effector path for elevator commands.
+    pub elevator: Option<String>,
+    /// Effector id or canonical effector path for rudder commands.
+    pub rudder: Option<String>,
+    /// Effector id or canonical effector path for body-flap commands.
+    pub body_flap: Option<String>,
 }
 
 /// Per-phase three-loop gain entry.

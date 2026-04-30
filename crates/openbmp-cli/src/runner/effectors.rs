@@ -240,6 +240,36 @@ impl EffectorRack {
         Ok(())
     }
 
+    /// Apply one-tick FC commands keyed by `EffectorId::value()`.
+    ///
+    /// These commands share the same one-shot override path as
+    /// mission events, so the existing per-effector schedule remains
+    /// the fallback when the FC publishes no command for a lane.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliError::Effector`] when the FC references an
+    /// effector id that is not present in this rack.
+    pub fn apply_fc_commands(
+        &mut self,
+        commands: &openbmp_fc::topics::EffectorCommandSet,
+    ) -> Result<(), CliError> {
+        for command in commands.commands.iter().take(usize::from(commands.count)) {
+            let id = EffectorId::new(command.effector_id);
+            if !self.id_index.contains_key(&id) {
+                return Err(CliError::Effector {
+                    field: "fc.actuator.effector_cmds".to_owned(),
+                    reason: format!(
+                        "FC command references unknown effector id value {}",
+                        command.effector_id
+                    ),
+                });
+            }
+            self.overrides.insert(id, command.command);
+        }
+        Ok(())
+    }
+
     /// Step every effector by one kernel base tick.
     ///
     /// Command resolution: override (if present) wins; else the

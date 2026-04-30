@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use openbmp_aero::AeroError;
-use openbmp_env::EnvError;
+use openbmp_physics::PhysicsError;
 use openbmp_propulsion::MotorError;
 use openbmp_scenario::ScenarioError;
 use openbmp_sim::SimulationError;
@@ -111,9 +111,9 @@ pub enum CliError {
     /// A motor-file loader or thrust-curve evaluation failed.
     #[error("motor error")]
     Motor(#[from] MotorError),
-    /// An environment-model construction or evaluation failed.
-    #[error("environment error")]
-    Env(#[from] EnvError),
+    /// A physics-model construction or evaluation failed.
+    #[error("physics error")]
+    Env(#[from] PhysicsError),
 }
 
 impl CliError {

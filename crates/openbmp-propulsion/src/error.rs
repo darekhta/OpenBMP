@@ -1,7 +1,7 @@
 //! Error type for the openbmp-propulsion crate.
 //!
 //! Mirrors the shape of `openbmp-aero::AeroError` and
-//! `openbmp-env::EnvError` so the kernel-side adapter at Phase 2.10
+//! `openbmp-physics::PhysicsError` so the kernel-side adapter at Phase 2.10
 //! can fold motor failures into the same chain without
 //! `openbmp-propulsion` depending on `openbmp-sim`.
 

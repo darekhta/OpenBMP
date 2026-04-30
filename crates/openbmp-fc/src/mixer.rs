@@ -18,7 +18,35 @@ use openbmp_core::EffectorId;
 use crate::error::ControllerError;
 use crate::scheduler::{Job, JobContext};
 use crate::tables::Table;
-use crate::topics::{ActuatorCommand, EngineDemand, VehicleStatus};
+use crate::topics::{
+    ActuatorCommand, EffectorCommand, EffectorCommandSet, EngineCommand, EngineCommandSet,
+    EngineDemand, MAX_EFFECTOR_COMMANDS, MAX_ENGINE_COMMANDS, VehicleStatus,
+};
+
+/// Mapping from semantic FC actuator channels to scenario-declared
+/// control-effector ids. When no mapping is installed, the mixer keeps
+/// the legacy semantic command topic only; when a mapping is present,
+/// it also publishes an [`EffectorCommandSet`] keyed by `EffectorId`.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActuatorChannelMap {
+    /// Effector that consumes aileron-equivalent command.
+    pub aileron: Option<EffectorId>,
+    /// Effector that consumes elevator-equivalent command.
+    pub elevator: Option<EffectorId>,
+    /// Effector that consumes rudder-equivalent command.
+    pub rudder: Option<EffectorId>,
+    /// Effector that consumes body-flap command.
+    pub body_flap: Option<EffectorId>,
+}
+
+impl ActuatorChannelMap {
+    fn has_any_mapping(self) -> bool {
+        self.aileron.is_some()
+            || self.elevator.is_some()
+            || self.rudder.is_some()
+            || self.body_flap.is_some()
+    }
+}
 
 /// Per-phase mask of which effectors / engines are allowed authority.
 ///
@@ -96,6 +124,7 @@ pub struct Mixer {
     last_seen_actuator: u64,
     last_seen_engine: u64,
     authority: PhaseAuthorityTable,
+    channel_map: ActuatorChannelMap,
 }
 
 impl Mixer {
@@ -109,6 +138,7 @@ impl Mixer {
             last_seen_actuator: 0,
             last_seen_engine: 0,
             authority: PhaseAuthorityTable::default(),
+            channel_map: ActuatorChannelMap::default(),
         }
     }
 
@@ -117,6 +147,113 @@ impl Mixer {
     pub fn with_authority(mut self, authority: PhaseAuthorityTable) -> Self {
         self.authority = authority;
         self
+    }
+
+    /// Replaces the semantic-channel to effector-id map.
+    #[must_use]
+    pub fn with_actuator_channel_map(mut self, channel_map: ActuatorChannelMap) -> Self {
+        self.channel_map = channel_map;
+        self
+    }
+
+    fn channel_allowed(&self, authority: &PhaseAuthority, channel: Option<EffectorId>) -> bool {
+        if !authority.autopilot_allowed {
+            return false;
+        }
+        if !self.channel_map.has_any_mapping() {
+            return true;
+        }
+        channel.is_some_and(|id| authority.effectors.contains(&id))
+    }
+
+    fn gate_actuator_command(
+        &self,
+        cmd: ActuatorCommand,
+        armed_in_flight: bool,
+        authority: &PhaseAuthority,
+    ) -> ActuatorCommand {
+        if !armed_in_flight {
+            return ActuatorCommand {
+                time: cmd.time,
+                saturated: cmd.saturated,
+                ..ActuatorCommand::default()
+            };
+        }
+        ActuatorCommand {
+            time: cmd.time,
+            elevator_rad: if self.channel_allowed(authority, self.channel_map.elevator) {
+                cmd.elevator_rad
+            } else {
+                0.0
+            },
+            aileron_rad: if self.channel_allowed(authority, self.channel_map.aileron) {
+                cmd.aileron_rad
+            } else {
+                0.0
+            },
+            rudder_rad: if self.channel_allowed(authority, self.channel_map.rudder) {
+                cmd.rudder_rad
+            } else {
+                0.0
+            },
+            body_flap_rad: if self.channel_allowed(authority, self.channel_map.body_flap) {
+                cmd.body_flap_rad
+            } else {
+                0.0
+            },
+            saturated: cmd.saturated,
+        }
+    }
+
+    fn effector_command_set(&self, cmd: ActuatorCommand) -> EffectorCommandSet {
+        let mut set = EffectorCommandSet {
+            time: cmd.time,
+            saturated: cmd.saturated,
+            ..EffectorCommandSet::default()
+        };
+        let channels = [
+            (self.channel_map.aileron, cmd.aileron_rad),
+            (self.channel_map.elevator, cmd.elevator_rad),
+            (self.channel_map.rudder, cmd.rudder_rad),
+            (self.channel_map.body_flap, cmd.body_flap_rad),
+        ];
+        for (id, command) in channels {
+            let Some(id) = id else { continue };
+            let index = usize::from(set.count);
+            if index >= MAX_EFFECTOR_COMMANDS {
+                break;
+            }
+            set.commands[index] = EffectorCommand {
+                effector_id: id.value(),
+                command,
+                saturated: cmd.saturated,
+            };
+            set.count = set.count.saturating_add(1);
+        }
+        set
+    }
+
+    fn engine_command_set(cmd: EngineDemand, authority: &PhaseAuthority) -> EngineCommandSet {
+        let mut set = EngineCommandSet {
+            time: cmd.time,
+            ..EngineCommandSet::default()
+        };
+        for id in &authority.engines {
+            let index = usize::from(set.count);
+            if index >= MAX_ENGINE_COMMANDS {
+                break;
+            }
+            set.commands[index] = EngineCommand {
+                engine_id: id.value(),
+                throttle_unit: cmd.throttle_unit,
+                gimbal_pitch_rad: cmd.gimbal_pitch_rad,
+                gimbal_yaw_rad: cmd.gimbal_yaw_rad,
+                ignite: cmd.ignite,
+                shutdown: cmd.shutdown,
+            };
+            set.count = set.count.saturating_add(1);
+        }
+        set
     }
 }
 
@@ -144,18 +281,16 @@ impl Job for Mixer {
         {
             self.last_seen_actuator = seq.value();
             let gated = if actuator_allowed {
-                cmd
+                self.gate_actuator_command(cmd, true, authority)
             } else {
-                ActuatorCommand {
-                    time: cmd.time,
-                    elevator_rad: 0.0,
-                    aileron_rad: 0.0,
-                    rudder_rad: 0.0,
-                    body_flap_rad: 0.0,
-                    saturated: cmd.saturated,
-                }
+                self.gate_actuator_command(cmd, false, authority)
             };
-            let _ = ctx.bus.publish(gated);
+            if let Ok(new_seq) = ctx.bus.publish(gated) {
+                self.last_seen_actuator = new_seq.value();
+            }
+            if self.channel_map.has_any_mapping() {
+                let _ = ctx.bus.publish(self.effector_command_set(gated));
+            }
         }
 
         if let Ok(Some((cmd, seq))) = ctx.bus.latest::<EngineDemand>()
@@ -174,7 +309,12 @@ impl Job for Mixer {
                     shutdown: cmd.shutdown,
                 }
             };
-            let _ = ctx.bus.publish(gated);
+            if let Ok(new_seq) = ctx.bus.publish(gated) {
+                self.last_seen_engine = new_seq.value();
+            }
+            if !authority.engines.is_empty() {
+                let _ = ctx.bus.publish(Self::engine_command_set(gated, authority));
+            }
         }
 
         Ok(())
@@ -193,7 +333,9 @@ mod tests {
     fn build_bus() -> Bus {
         let bus = Bus::new();
         bus.register::<ActuatorCommand>().unwrap();
+        bus.register::<EffectorCommandSet>().unwrap();
         bus.register::<EngineDemand>().unwrap();
+        bus.register::<EngineCommandSet>().unwrap();
         bus.register::<VehicleStatus>().unwrap();
         bus
     }
@@ -290,5 +432,63 @@ mod tests {
 
         let (latest, _) = bus.latest::<ActuatorCommand>().unwrap().unwrap();
         assert!((latest.elevator_rad - 0.4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn channel_map_publishes_effector_id_commands() {
+        let bus = build_bus();
+        let clock = SimulatedClock::new();
+        let elevator = EffectorId::from_path("vehicle.assembly.effectors.delta_e");
+        let aileron = EffectorId::from_path("vehicle.assembly.effectors.delta_a");
+        let mut allowed = BTreeMap::new();
+        allowed.insert(
+            9,
+            PhaseAuthority {
+                effectors: vec![elevator],
+                engines: Vec::new(),
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+        let mut mixer = Mixer::new()
+            .with_authority(PhaseAuthorityTable {
+                allowed,
+                default: PhaseAuthority::default(),
+            })
+            .with_actuator_channel_map(ActuatorChannelMap {
+                elevator: Some(elevator),
+                aileron: Some(aileron),
+                rudder: None,
+                body_flap: None,
+            });
+
+        publish_status(&bus, true, true, 9);
+        bus.publish(ActuatorCommand {
+            time: SimTime::ZERO,
+            elevator_rad: 0.4,
+            aileron_rad: 0.2,
+            rudder_rad: 0.0,
+            body_flap_rad: 0.0,
+            saturated: false,
+        })
+        .unwrap();
+
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (semantic, _) = bus.latest::<ActuatorCommand>().unwrap().unwrap();
+        assert_eq!(semantic.elevator_rad, 0.4);
+        assert_eq!(semantic.aileron_rad, 0.0);
+
+        let (mapped, _) = bus.latest::<EffectorCommandSet>().unwrap().unwrap();
+        assert_eq!(mapped.count, 2);
+        assert_eq!(mapped.commands[0].effector_id, aileron.value());
+        assert_eq!(mapped.commands[0].command, 0.0);
+        assert_eq!(mapped.commands[1].effector_id, elevator.value());
+        assert_eq!(mapped.commands[1].command, 0.4);
     }
 }

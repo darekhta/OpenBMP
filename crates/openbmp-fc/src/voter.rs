@@ -5,6 +5,10 @@
 //! one barometer / one GNSS, the voter seam exists so a downstream
 //! HAL adopter wiring redundant lanes is a configuration change, not
 //! a refactor.
+//!
+//! Multi-instance estimator routing (PX4-style parallel filter lanes
+//! plus active-lane selection) is deferred to Phase 5 / downstream HAL
+//! integration. The voter trait surface is the intended hook.
 
 use std::cmp::Ordering;
 
@@ -26,6 +30,12 @@ pub trait Voter<T: Copy> {
     /// implementation — see [`PassThroughVoter`],
     /// [`MidValueSelectVoter`], [`WeightedMeanVoter`].
     fn vote(&self, samples: &[T]) -> Option<VotedReading<T>>;
+
+    /// Returns `true` if one sample diverges from an already-voted
+    /// value. Voters with no divergence concept may keep the default.
+    fn sample_diverges(&self, _sample: T, _voted: T) -> bool {
+        false
+    }
 }
 
 /// Simplex / pass-through voter. Always selects the first sample.
@@ -68,6 +78,10 @@ impl Voter<f64> for MidValueSelectScalar {
             divergent,
             contributed: samples.len(),
         })
+    }
+
+    fn sample_diverges(&self, sample: f64, voted: f64) -> bool {
+        (sample - voted).abs() > self.divergence_tol
     }
 }
 
@@ -112,6 +126,71 @@ impl Voter<f64> for WeightedMeanScalar {
             divergent,
             contributed: samples.len(),
         })
+    }
+
+    fn sample_diverges(&self, sample: f64, voted: f64) -> bool {
+        (sample - voted).abs() > self.divergence_tol
+    }
+}
+
+/// Covariance-weighted scalar voter. When per-lane variances are
+/// available, the voter fuses independent measurements with
+/// `w_i ∝ 1 / σ_i²`; otherwise it falls back to
+/// [`WeightedMeanScalar`].
+#[derive(Copy, Clone, Debug)]
+pub struct CovarianceWeightedScalar {
+    /// Fallback voter used when variances are unavailable.
+    pub fallback: WeightedMeanScalar,
+    /// Maximum allowed deviation from the covariance-weighted mean.
+    pub divergence_tol: f64,
+}
+
+impl CovarianceWeightedScalar {
+    /// Votes using explicit per-lane variances.
+    #[must_use]
+    pub fn vote_with_variances(
+        &self,
+        samples: &[f64],
+        variances: Option<&[f64]>,
+    ) -> Option<VotedReading<f64>> {
+        let Some(variances) = variances else {
+            return self.fallback.vote(samples);
+        };
+        if samples.is_empty() || variances.len() != samples.len() {
+            return None;
+        }
+        let mut weighted_sum = 0.0;
+        let mut total_weight = 0.0;
+        for (sample, variance) in samples.iter().zip(variances) {
+            if !sample.is_finite() || !variance.is_finite() || *variance <= 0.0 {
+                return None;
+            }
+            let weight = 1.0 / variance;
+            weighted_sum += weight * sample;
+            total_weight += weight;
+        }
+        if total_weight <= 0.0 {
+            return None;
+        }
+        let value = weighted_sum / total_weight;
+        let divergent = samples
+            .iter()
+            .any(|sample| (*sample - value).abs() > self.divergence_tol);
+        Some(VotedReading {
+            value,
+            divergent,
+            contributed: samples.len(),
+        })
+    }
+}
+
+impl Voter<f64> for CovarianceWeightedScalar {
+    fn vote(&self, samples: &[f64]) -> Option<VotedReading<f64>> {
+        self.fallback.vote(samples)
+    }
+
+    fn sample_diverges(&self, sample: f64, voted: f64) -> bool {
+        (sample - voted).abs() > self.divergence_tol
     }
 }
 
@@ -167,5 +246,35 @@ mod tests {
         // 0.5*10 + 0.25*0 + 0.25*0 = 5; total weight 1.0; mean = 5
         let r = v.vote(&[10.0, 0.0, 0.0]).unwrap();
         assert!((r.value - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn covariance_weighted_voter_prefers_low_variance_lane() {
+        let v = CovarianceWeightedScalar {
+            fallback: WeightedMeanScalar {
+                primary_weight: 0.5,
+                others_weight: 0.25,
+                divergence_tol: 10.0,
+            },
+            divergence_tol: 10.0,
+        };
+        let r = v
+            .vote_with_variances(&[0.0, 10.0], Some(&[1.0, 100.0]))
+            .unwrap();
+        assert!((r.value - (10.0 / 101.0)).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn covariance_weighted_voter_falls_back_without_variances() {
+        let v = CovarianceWeightedScalar {
+            fallback: WeightedMeanScalar {
+                primary_weight: 0.75,
+                others_weight: 0.25,
+                divergence_tol: 10.0,
+            },
+            divergence_tol: 10.0,
+        };
+        let r = v.vote_with_variances(&[10.0, 0.0], None).unwrap();
+        assert!((r.value - 7.5).abs() < f64::EPSILON);
     }
 }

@@ -1,24 +1,16 @@
-//! Magnetic-field models.
+//! Degree-1 dipole magnetic-field truncation.
 //!
-//! Provides:
-//! - [`MagneticFieldModel`] — trait abstracting the geomagnetic
-//!   field vector at an inertial position.
-//! - [`EarthDipoleField`] — academic-tier degree-1 truncation of the
-//!   World Magnetic Model (single dipole aligned with the ECI z-axis).
-//!   Marked **validated-toy**: accuracy is sufficient for
-//!   academic attitude-tracking scenarios but not for real-world
-//!   geomagnetic operations.
-//!
-//! The full WMM 2025 spherical-harmonic field with the COF dataset
-//! is a Phase 4.C deferral — pulling the dataset and the truncation
-//! arithmetic into `openbmp-fc` is heavyweight and is out of scope
-//! for the academic-tier reference shipped here.
+//! Academic-tier placeholder. The dipole axis is aligned with the
+//! ECI z-axis (geographic-pole coincidence), so the model is a
+//! low-fidelity approximation suitable for academic attitude-tracking
+//! scenarios where the magnetometer is one input among several. Full
+//! WMM 2025 is the [`super::Wmm2025`] sibling — it ships a 12-degree
+//! spherical-harmonic field and the canonical NOAA / NCEI dataset.
 //!
 //! # Convention
 //!
-//! ECI z is treated as the magnetic-dipole axis (geographic-pole
-//! coincidence). For a position `p = (x, y, z)`, with `r = |p|` and
-//! colatitude `θ` such that `cos(θ) = z/r`:
+//! ECI z is the magnetic-dipole axis. For a position `p = (x, y, z)`,
+//! with `r = |p|` and colatitude `θ` such that `cos(θ) = z/r`:
 //!
 //! ```text
 //!     B_r     = -2 · B_eq · (R_e/r)^3 · cos(θ)
@@ -32,21 +24,15 @@
 //! (downward into the planet, matching the magnetic-dip convention).
 
 use nalgebra::Vector3;
+use openbmp_core::SimTime;
 
-/// Mean Earth radius (m).
-const R_EARTH_M: f64 = 6_371_000.0;
-
-/// Magnetic-field model — abstracts the geomagnetic field vector at
-/// a given inertial position.
-pub trait MagneticFieldModel: std::fmt::Debug {
-    /// Returns the magnetic field vector in ECI (nT).
-    fn field_eci_nt(&self, position_eci_m: Vector3<f64>) -> Vector3<f64>;
-}
+use crate::earth;
+use crate::magnetic::{EARTH_DIPOLE_EQUATORIAL_FIELD_NT, MagneticFieldEci};
 
 /// Academic-tier dipole field with the dipole axis aligned with the
 /// ECI z-axis. Marked `validated-toy`. Configurable equatorial-surface
 /// magnitude (default 30 000 nT, the textbook value for Earth).
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct EarthDipoleField {
     /// Equatorial-surface field magnitude (nT). Default 30 000 nT.
     pub b_eq_nt: f64,
@@ -54,21 +40,23 @@ pub struct EarthDipoleField {
 
 impl Default for EarthDipoleField {
     fn default() -> Self {
-        Self { b_eq_nt: 30_000.0 }
+        Self {
+            b_eq_nt: EARTH_DIPOLE_EQUATORIAL_FIELD_NT,
+        }
     }
 }
 
-impl MagneticFieldModel for EarthDipoleField {
-    fn field_eci_nt(&self, position_eci_m: Vector3<f64>) -> Vector3<f64> {
+impl MagneticFieldEci for EarthDipoleField {
+    fn field_eci_nt(&self, position_eci_m: Vector3<f64>, _time: SimTime) -> Vector3<f64> {
         let r = position_eci_m.norm();
-        if r < R_EARTH_M * 0.5 {
+        if r < earth::MEAN_RADIUS_M * 0.5 {
             // Numerically tame the inside-the-Earth singularity for
             // simulator startup transients (position seeded at origin).
             // The field below 0.5·R_e is not physically meaningful in
             // a dipole approximation; clamp to the equatorial value.
             return Vector3::new(0.0, 0.0, self.b_eq_nt);
         }
-        let r_ratio_cubed = (R_EARTH_M / r).powi(3);
+        let r_ratio_cubed = (earth::MEAN_RADIUS_M / r).powi(3);
         let cos_theta = position_eci_m.z / r;
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
 
@@ -103,8 +91,8 @@ mod tests {
     #[test]
     fn dipole_at_equator_is_horizontal_toward_pole() {
         let model = EarthDipoleField::default();
-        let pos = Vector3::new(R_EARTH_M, 0.0, 0.0);
-        let b = model.field_eci_nt(pos);
+        let pos = Vector3::new(earth::MEAN_RADIUS_M, 0.0, 0.0);
+        let b = model.field_eci_nt(pos, SimTime::ZERO);
         // At the equator the field points along +z (toward magnetic
         // north pole) and has no x/y component.
         assert!(b.x.abs() < 1.0);
@@ -115,8 +103,8 @@ mod tests {
     #[test]
     fn dipole_at_pole_is_radial_inward() {
         let model = EarthDipoleField::default();
-        let pos = Vector3::new(0.0, 0.0, R_EARTH_M);
-        let b = model.field_eci_nt(pos);
+        let pos = Vector3::new(0.0, 0.0, earth::MEAN_RADIUS_M);
+        let b = model.field_eci_nt(pos, SimTime::ZERO);
         // At the pole the field points along −z (into the planet, the
         // magnetic dip).
         assert!(b.x.abs() < 1.0);
@@ -127,8 +115,12 @@ mod tests {
     #[test]
     fn dipole_decreases_with_altitude() {
         let model = EarthDipoleField::default();
-        let surface = model.field_eci_nt(Vector3::new(R_EARTH_M, 0.0, 0.0));
-        let aloft = model.field_eci_nt(Vector3::new(R_EARTH_M * 2.0, 0.0, 0.0));
+        let surface =
+            model.field_eci_nt(Vector3::new(earth::MEAN_RADIUS_M, 0.0, 0.0), SimTime::ZERO);
+        let aloft = model.field_eci_nt(
+            Vector3::new(earth::MEAN_RADIUS_M * 2.0, 0.0, 0.0),
+            SimTime::ZERO,
+        );
         // (R_e/(2 R_e))³ = 1/8 — magnitude should drop by ~8.
         let ratio = surface.norm() / aloft.norm();
         assert!((ratio - 8.0).abs() < 0.1);

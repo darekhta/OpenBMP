@@ -40,9 +40,9 @@ transformation:
 verification:
   method: >-
     Compile-time pinned in
-    `openbmp-env::magnetic::wmm2025::coefficients::COEFFS`. The
+    `openbmp-physics::magnetic::wmm2025::coefficients::COEFFS`. The
     Phase-3.10.A regression test
-    `crates/openbmp-env/tests/wmm_data_pin.rs` reads this file via
+    `crates/openbmp-physics/tests/wmm_data_pin.rs` reads this file via
     `include_bytes!`, hashes it, and asserts that the digest matches
     the pin recorded above and that the parsed coefficients agree
     with the in-source `COEFFS` table to bit precision. The 100
@@ -102,7 +102,7 @@ support contacts.
 WMM 2025 is authoritative for **decimal years
 `[2025.0, 2030.0)`** (the 5-year validity window NOAA publishes
 with each WMM release). Outside this range the
-[`Wmm2025`](../../crates/openbmp-env/src/magnetic/wmm2025.rs)
+[`Wmm2025`](../../crates/openbmp-physics/src/magnetic/wmm2025.rs)
 constructor and per-step evaluator fail closed with
 `EnvError::OutOfEnvelope`. The next release (WMM 2030) is
 expected at NOAA NCEI in late 2029; the OpenBMP port lands in

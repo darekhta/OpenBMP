@@ -27,7 +27,7 @@
 //! - The Dryden filter state lives inside the [`GustWind`]'s
 //!   `Cell<f64>` per-axis cells; the rack's `advance` writes them
 //!   exactly once per kernel base tick. The kernel's RK4 stages
-//!   read via [`openbmp_env::WindModel::wind_ned_m_s`] and all see
+//!   read via [`openbmp_physics::WindModel::wind_ned_m_s`] and all see
 //!   the same value.
 //! - `WindRack::reset` is called once at scenario start so reruns
 //!   produce bit-identical sample streams from step 0.
@@ -38,7 +38,7 @@
 
 use nalgebra::Vector3;
 use openbmp_core::{Eci, FrameContext, Position3, SimTime, StepIndex};
-use openbmp_env::{ConstantWind, GustWind, GustWindParams, LayerEntry, LayeredWind, WindModel};
+use openbmp_physics::{ConstantWind, GustWind, GustWindParams, LayerEntry, LayeredWind, WindModel};
 use openbmp_scenario::{ScenarioDocument, WindConfig};
 
 use crate::error::CliError;

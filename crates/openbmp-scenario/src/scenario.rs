@@ -2081,7 +2081,7 @@ file = "../sensors/star-tracker-textbook.toml""#,
         assert_eq!(fc.estimator, crate::FcEstimatorKind::Ekf);
         assert_eq!(fc.guidance, crate::FcGuidanceKind::AttitudeHold);
         assert_eq!(fc.base_rate_hz, 1000);
-        assert!(fc.gain_schedule.as_ref().is_some_and(|m| !m.is_empty()));
+        assert!(!fc.gain_schedule.is_empty());
         assert!(fc.phase_authority.as_ref().is_some_and(|m| m.len() == 2));
     }
 }

@@ -11,7 +11,7 @@
 //!   true state is the seed value used to drive the IMU.)
 //! - **Innovation whitening:** on a long run with consistent inputs,
 //!   the GNSS innovation sequence has near-zero mean and uncorrelated
-//!   samples (we check lag-1 autocorrelation < 0.2, a relaxed bound
+//!   samples (we check lag 1..10 autocorrelation < 0.2, a relaxed bound
 //!   that survives finite-sample noise).
 //!
 //! These are the standard filter-consistency checks; see Bar-Shalom,
@@ -154,7 +154,7 @@ fn ekf_innovation_mean_is_near_zero() {
 }
 
 #[test]
-fn ekf_innovation_lag1_autocorrelation_is_small() {
+fn ekf_innovation_lags_1_to_10_autocorrelation_are_small() {
     let mut ekf = Ekf::new(EkfParams::default());
     ekf.seed(
         Vector3::zeros(),
@@ -186,14 +186,17 @@ fn ekf_innovation_lag1_autocorrelation_is_small() {
     }
     let mean = innov.iter().sum::<f64>() / innov.len() as f64;
     let var = innov.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / innov.len() as f64;
-    let lag1: f64 = innov
-        .windows(2)
-        .map(|w| (w[0] - mean) * (w[1] - mean))
-        .sum::<f64>()
-        / (innov.len() as f64 - 1.0);
-    let autocorr = lag1 / var;
-    assert!(
-        autocorr.abs() < 0.2,
-        "lag-1 autocorrelation {autocorr} indicates the innovation sequence is not whitened"
-    );
+    for lag in 1..=10 {
+        let cov: f64 = innov
+            .iter()
+            .zip(innov.iter().skip(lag))
+            .map(|(a, b)| (a - mean) * (b - mean))
+            .sum::<f64>()
+            / (innov.len() as f64 - lag as f64);
+        let autocorr = cov / var;
+        assert!(
+            autocorr.abs() < 0.2,
+            "lag-{lag} autocorrelation {autocorr} indicates the innovation sequence is not whitened"
+        );
+    }
 }

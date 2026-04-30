@@ -181,6 +181,36 @@ impl EngineRack {
         Ok(())
     }
 
+    /// Apply one-tick FC engine commands keyed by `EngineId::value()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliError::Engine`] when the FC references an engine
+    /// id outside this rack, or when the propulsion-side command is
+    /// rejected.
+    pub fn apply_fc_commands(
+        &mut self,
+        commands: &openbmp_fc::topics::EngineCommandSet,
+    ) -> Result<(), CliError> {
+        for command in commands.commands.iter().take(usize::from(commands.count)) {
+            let id = EngineId::new(command.engine_id);
+            let payload = openbmp_propulsion::EngineCommand {
+                throttle_unit: command.throttle_unit,
+                gimbal_pitch_rad: command.gimbal_pitch_rad,
+                gimbal_yaw_rad: command.gimbal_yaw_rad,
+                ignite: command.ignite,
+                shutdown: command.shutdown,
+            };
+            self.cluster
+                .apply_command(id, payload)
+                .map_err(|err| CliError::Engine {
+                    field: "fc.actuator.engine_cmds".to_owned(),
+                    reason: err.to_string(),
+                })?;
+        }
+        Ok(())
+    }
+
     /// Step every engine in the rack by one kernel base tick.
     ///
     /// # Errors

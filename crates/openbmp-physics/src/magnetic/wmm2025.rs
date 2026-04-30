@@ -15,7 +15,7 @@
 //!
 //! WMM 2025 is authoritative for decimal years `[2025.0, 2030.0)`.
 //! Outside this range the model fails closed with
-//! [`EnvError::OutOfEnvelope`].
+//! [`PhysicsError::OutOfEnvelope`].
 //!
 //! # Convention
 //!
@@ -31,7 +31,7 @@
 //! Pure `f64` arithmetic; no FMA; locked operand order on the
 //! recursion and the field summation. Cross-platform last-bit
 //! determinism for `sin` / `cos` / `sqrt` is the same disposition
-//! as the rest of `openbmp-env` — Linux CI gate is the only proof
+//! as the rest of `openbmp-physics` — Linux CI gate is the only proof
 //! point.
 
 #![allow(
@@ -51,7 +51,7 @@ use nalgebra::Vector3;
 use openbmp_core::{Eci, FrameContext, Position3, SimTime, WGS84_A_M, WGS84_ECCENTRICITY_SQUARED};
 
 use super::MagneticModel;
-use crate::error::EnvError;
+use crate::error::PhysicsError;
 
 mod coefficients;
 
@@ -111,16 +111,16 @@ impl Wmm2025 {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::OutOfEnvelope`] when
+    /// Returns [`PhysicsError::OutOfEnvelope`] when
     /// `start_decimal_year` is outside `[2025.0, 2030.0)`.
-    pub fn new_for_decimal_year(start_decimal_year: f64) -> Result<Self, EnvError> {
+    pub fn new_for_decimal_year(start_decimal_year: f64) -> Result<Self, PhysicsError> {
         if !start_decimal_year.is_finite() {
-            return Err(EnvError::NonFinite {
+            return Err(PhysicsError::NonFinite {
                 reason: "WMM 2025 start_decimal_year is not finite",
             });
         }
         if !(EPOCH_DECIMAL_YEAR..VALIDITY_END_DECIMAL_YEAR).contains(&start_decimal_year) {
-            return Err(EnvError::OutOfEnvelope {
+            return Err(PhysicsError::OutOfEnvelope {
                 reason: "WMM 2025 is valid only for decimal years in [2025.0, 2030.0)",
             });
         }
@@ -209,9 +209,9 @@ impl Wmm2025 {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::OutOfEnvelope`] when the resolved
+    /// Returns [`PhysicsError::OutOfEnvelope`] when the resolved
     /// decimal-year falls outside `[2025.0, 2030.0)` and
-    /// [`EnvError::NonFinite`] on non-finite intermediate
+    /// [`PhysicsError::NonFinite`] on non-finite intermediate
     /// arithmetic.
     pub fn field_geodetic_ned_nt(
         &self,
@@ -219,21 +219,21 @@ impl Wmm2025 {
         longitude_rad: f64,
         height_m: f64,
         time: SimTime,
-    ) -> Result<Vector3<f64>, EnvError> {
+    ) -> Result<Vector3<f64>, PhysicsError> {
         let elapsed_years = time.as_seconds() / SECONDS_PER_JULIAN_YEAR;
         let decimal_year = self.start_decimal_year + elapsed_years;
         if !decimal_year.is_finite() {
-            return Err(EnvError::NonFinite {
+            return Err(PhysicsError::NonFinite {
                 reason: "WMM 2025 evaluation time is not finite",
             });
         }
         if !(EPOCH_DECIMAL_YEAR..VALIDITY_END_DECIMAL_YEAR).contains(&decimal_year) {
-            return Err(EnvError::OutOfEnvelope {
+            return Err(PhysicsError::OutOfEnvelope {
                 reason: "WMM 2025 is valid only for decimal years in [2025.0, 2030.0)",
             });
         }
         if !latitude_rad.is_finite() || !longitude_rad.is_finite() || !height_m.is_finite() {
-            return Err(EnvError::NonFinite {
+            return Err(PhysicsError::NonFinite {
                 reason: "WMM 2025: non-finite geodetic input",
             });
         }
@@ -261,7 +261,7 @@ impl Wmm2025 {
         let r2 = height_m * height_m + 2.0 * q1 + (a4 - c4 * srlat2) / (q * q);
         let r = r2.sqrt();
         if !(r > 0.0) {
-            return Err(EnvError::NonFinite {
+            return Err(PhysicsError::NonFinite {
                 reason: "WMM 2025: geocentric radius is zero",
             });
         }
@@ -356,7 +356,7 @@ impl Wmm2025 {
         let bx = -bt * ca - br * sa;
         let bz = bt * sa - br * ca;
         if !bx.is_finite() || !by.is_finite() || !bz.is_finite() {
-            return Err(EnvError::NonFinite {
+            return Err(PhysicsError::NonFinite {
                 reason: "WMM 2025: non-finite field component",
             });
         }
@@ -369,7 +369,7 @@ impl MagneticModel for Wmm2025 {
         &self,
         position_eci: Position3<Eci>,
         time: SimTime,
-    ) -> Result<Vector3<f64>, EnvError> {
+    ) -> Result<Vector3<f64>, PhysicsError> {
         // Phase-3.10: ECI → ECEF for the toy fixed-earth profile is
         // the identity. WGS-84 rotation profiles are the runner's
         // job to disambiguate at scenario load.
@@ -519,7 +519,7 @@ mod tests {
         let m = Wmm2025::new_for_decimal_year(2029.5).unwrap();
         let dt_seconds = 1.0 * SECONDS_PER_JULIAN_YEAR;
         let result = m.field_geodetic_ned_nt(0.0, 0.0, 0.0, SimTime::from_seconds(dt_seconds));
-        assert!(matches!(result, Err(EnvError::OutOfEnvelope { .. })));
+        assert!(matches!(result, Err(PhysicsError::OutOfEnvelope { .. })));
     }
 
     #[test]

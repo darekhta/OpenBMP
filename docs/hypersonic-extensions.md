@@ -173,7 +173,7 @@ results through data packages.
 ### 1. AtmosphereModel — extended with optional real-gas state
 
 ```rust
-// openbmp-env::atmosphere
+// openbmp-physics::atmosphere
 pub trait AtmosphereModel {
     fn sample(&self, q: AtmQuery) -> AtmosphereSample;
 
@@ -1374,7 +1374,7 @@ crates/
   openbmp-aero/                  # extended with hypersonic methods
   openbmp-aerothermal/           # NEW: heat transfer + BL + ablation
     ablation/                    #   Phase 6.11 module
-  openbmp-env/                   # extended with NRLMSISE-00 + real-gas
+  openbmp-physics/               # extended with NRLMSISE-00 + real-gas
                                  # + Park 2T nonequilibrium (Phase 6.10)
 data/
   atmosphere/

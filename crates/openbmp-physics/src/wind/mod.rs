@@ -56,7 +56,7 @@ pub use gust::{GustWind, GustWindParams};
 
 use openbmp_core::{Eci, FrameContext, Ned, Position3, SimTime, Velocity3};
 
-use crate::error::EnvError;
+use crate::error::PhysicsError;
 
 /// Trait implemented by wind-providing environment models.
 ///
@@ -74,7 +74,7 @@ pub trait WindModel {
     ///
     /// # Errors
     ///
-    /// Returns an [`EnvError`] when the model produces a non-finite
+    /// Returns an [`PhysicsError`] when the model produces a non-finite
     /// output or the position is outside the model's declared
     /// validity envelope. The Phase-2.4 toy models never fail.
     fn wind_ned_m_s(
@@ -82,5 +82,5 @@ pub trait WindModel {
         position_eci: Position3<Eci>,
         frame: &FrameContext,
         time: SimTime,
-    ) -> Result<Velocity3<Ned>, EnvError>;
+    ) -> Result<Velocity3<Ned>, PhysicsError>;
 }

@@ -45,7 +45,7 @@ crates/
   openbmp-core/        # L0  math, units, frames, time, RNG
   openbmp-state/       # L1  state types
   openbmp-sim/         # L1  kernel, scheduler, integrators
-  openbmp-env/         # L2  atmosphere, gravity, wind, magnetic
+  openbmp-physics/     # L2  atmosphere, gravity, wind, magnetic, error
   openbmp-vehicle/     # L2  rigid-body / mass models
   openbmp-aero/        # L2  aero decks + hypersonic methods
   openbmp-aerothermal/ # L2  heat transfer, BL, ablation toy

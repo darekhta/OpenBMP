@@ -29,6 +29,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 use openbmp_core::{SimTime, StepIndex};
 use openbmp_fc::FlightControllerBuilder;
 use openbmp_fc::autopilot::ThreeLoopAutopilot;
+use openbmp_fc::bus::{Bus, Topic};
 use openbmp_fc::commander::{Commander, CommanderParams};
 use openbmp_fc::estimator::{Ekf, EkfParams, EstimatorJob};
 use openbmp_fc::fdir::{FdirJob, FdirParams};
@@ -36,14 +37,108 @@ use openbmp_fc::guidance::AttitudeHoldGuidance;
 use openbmp_fc::health::{HealthMonitor, HealthParams};
 use openbmp_fc::mixer::Mixer;
 use openbmp_fc::topics::{
-    ActuatorCommand, AttitudeEstimate, BarometerSample, EngineDemand, EstimatorStatus,
-    FailsafeFlags, FdirStatus, GnssSample, ImuSample, MagnetometerSample, PositionEstimate,
-    ReferenceState, StarTrackerSample, VehicleStatus,
+    ActuatorCommand, AttitudeEstimate, BarometerSample, EffectorCommandSet, EngineCommandSet,
+    EngineDemand, EstimatorStatus, FailsafeFlags, FdirStatus, GnssSample, ImuSample,
+    MagnetometerSample, PositionEstimate, ReferenceState, SensorStatus, StarTrackerSample,
+    VehicleStatus,
 };
 use openbmp_mission::{
     BuiltInEventTrigger, EventAction, EventBinding, EventId, MissionPhaseGraph, Phase, PhaseId,
     PhaseTransition,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HistoryEntry {
+    topic: &'static str,
+    seq: u64,
+    time_bits: u64,
+    payload: String,
+}
+
+trait TopicSnapshot {
+    fn poll(&mut self, bus: &Bus, time: SimTime) -> Option<HistoryEntry>;
+}
+
+#[derive(Debug)]
+struct TopicRecorder<T: Topic + std::fmt::Debug> {
+    last_seq: u64,
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T: Topic + std::fmt::Debug> Default for TopicRecorder<T> {
+    fn default() -> Self {
+        Self {
+            last_seq: 0,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: Topic + std::fmt::Debug> TopicSnapshot for TopicRecorder<T> {
+    fn poll(&mut self, bus: &Bus, time: SimTime) -> Option<HistoryEntry> {
+        let seq = bus.sequence::<T>().ok()?.value();
+        if seq <= self.last_seq {
+            return None;
+        }
+        let (value, sequence) = bus.latest::<T>().ok()??;
+        self.last_seq = sequence.value();
+        Some(HistoryEntry {
+            topic: T::NAME,
+            seq: sequence.value(),
+            time_bits: time.as_seconds().to_bits(),
+            payload: format!("{value:?}"),
+        })
+    }
+}
+
+#[derive(Default)]
+struct BusHistoryRecorder {
+    recorders: Vec<Box<dyn TopicSnapshot>>,
+    entries: Vec<HistoryEntry>,
+}
+
+impl BusHistoryRecorder {
+    fn canonical_topics() -> Self {
+        let mut recorder = Self::default();
+        macro_rules! add {
+            ($ty:ty) => {
+                recorder
+                    .recorders
+                    .push(Box::new(TopicRecorder::<$ty>::default()));
+            };
+        }
+        add!(ImuSample);
+        add!(BarometerSample);
+        add!(GnssSample);
+        add!(MagnetometerSample);
+        add!(StarTrackerSample);
+        add!(SensorStatus);
+        add!(AttitudeEstimate);
+        add!(PositionEstimate);
+        add!(EstimatorStatus);
+        add!(VehicleStatus);
+        add!(FailsafeFlags);
+        add!(ReferenceState);
+        add!(ActuatorCommand);
+        add!(EffectorCommandSet);
+        add!(EngineDemand);
+        add!(EngineCommandSet);
+        add!(FdirStatus);
+        recorder
+    }
+
+    fn poll(&mut self, bus: &Bus, time: SimTime) {
+        for topic in &mut self.recorders {
+            if let Some(entry) = topic.poll(bus, time) {
+                self.entries.push(entry);
+            }
+        }
+    }
+
+    fn into_entries(self) -> Vec<HistoryEntry> {
+        self.entries
+    }
+}
 
 fn build_simple_graph() -> (MissionPhaseGraph, Vec<EventBinding>, PhaseId, PhaseId) {
     let pad = PhaseId::from_path("mission.phases.pad");
@@ -94,6 +189,7 @@ fn closed_loop_pipeline_runs_deterministically() {
     fc.bus().register::<GnssSample>().unwrap();
     fc.bus().register::<MagnetometerSample>().unwrap();
     fc.bus().register::<StarTrackerSample>().unwrap();
+    fc.bus().register::<SensorStatus>().unwrap();
     fc.bus().register::<AttitudeEstimate>().unwrap();
     fc.bus().register::<PositionEstimate>().unwrap();
     fc.bus().register::<EstimatorStatus>().unwrap();
@@ -101,7 +197,9 @@ fn closed_loop_pipeline_runs_deterministically() {
     fc.bus().register::<FailsafeFlags>().unwrap();
     fc.bus().register::<ReferenceState>().unwrap();
     fc.bus().register::<ActuatorCommand>().unwrap();
+    fc.bus().register::<EffectorCommandSet>().unwrap();
     fc.bus().register::<EngineDemand>().unwrap();
+    fc.bus().register::<EngineCommandSet>().unwrap();
     fc.bus().register::<FdirStatus>().unwrap();
 
     // Seed the EKF with an initial pose.
@@ -228,9 +326,7 @@ fn closed_loop_pipeline_runs_deterministically() {
 
 #[test]
 fn deterministic_replay_reproduces_actuator_stream() {
-    use openbmp_fc::replay::BusRecorder;
-
-    fn run(bus_seed: u64) -> Vec<f64> {
+    fn run(bus_seed: u64) -> Vec<HistoryEntry> {
         let mut fc = FlightControllerBuilder::new()
             .frame_budget_us(2_000)
             .build();
@@ -239,6 +335,7 @@ fn deterministic_replay_reproduces_actuator_stream() {
         fc.bus().register::<GnssSample>().unwrap();
         fc.bus().register::<MagnetometerSample>().unwrap();
         fc.bus().register::<StarTrackerSample>().unwrap();
+        fc.bus().register::<SensorStatus>().unwrap();
         fc.bus().register::<AttitudeEstimate>().unwrap();
         fc.bus().register::<PositionEstimate>().unwrap();
         fc.bus().register::<EstimatorStatus>().unwrap();
@@ -246,7 +343,9 @@ fn deterministic_replay_reproduces_actuator_stream() {
         fc.bus().register::<FailsafeFlags>().unwrap();
         fc.bus().register::<ReferenceState>().unwrap();
         fc.bus().register::<ActuatorCommand>().unwrap();
+        fc.bus().register::<EffectorCommandSet>().unwrap();
         fc.bus().register::<EngineDemand>().unwrap();
+        fc.bus().register::<EngineCommandSet>().unwrap();
         fc.bus().register::<FdirStatus>().unwrap();
 
         let mut ekf = Ekf::new(EkfParams::default());
@@ -278,7 +377,7 @@ fn deterministic_replay_reproduces_actuator_stream() {
             .register_periodic(1, 100, 25, Box::new(Mixer::new()))
             .unwrap();
 
-        let mut recorder = BusRecorder::<ActuatorCommand>::new();
+        let mut recorder = BusHistoryRecorder::canonical_topics();
         for k in 0..200u64 {
             let now = SimTime::from_seconds(k as f64 * 0.001);
             // Slightly perturb gyro by `bus_seed` so two distinct runs
@@ -293,17 +392,13 @@ fn deterministic_replay_reproduces_actuator_stream() {
             let _ = fc.step(now, StepIndex::new(k)).unwrap();
             recorder.poll(fc.bus(), now);
         }
-        recorder
-            .entries()
-            .iter()
-            .map(|e| e.value.elevator_rad)
-            .collect()
+        recorder.into_entries()
     }
 
-    let stream_a = run(0);
-    let stream_b = run(0);
+    let history_a = run(0);
+    let history_b = run(0);
     assert_eq!(
-        stream_a, stream_b,
-        "two runs of the same scenario must produce identical actuator streams"
+        history_a, history_b,
+        "two runs of the same scenario must produce identical bus histories"
     );
 }

@@ -26,17 +26,19 @@ clap               = { workspace = true }
 nalgebra           = { workspace = true }
 openbmp-aero       = { workspace = true }
 openbmp-core       = { workspace = true }
-openbmp-env        = { workspace = true }
 openbmp-fc         = { workspace = true }
 openbmp-mission    = { workspace = true }
+openbmp-physics    = { workspace = true }
 openbmp-propulsion = { workspace = true }
 openbmp-scenario   = { workspace = true }
+openbmp-sensors    = { workspace = true, features = ["synthetic"] }
 openbmp-sim        = { workspace = true }
 openbmp-state      = { workspace = true }
 openbmp-telemetry  = { workspace = true }
 openbmp-vehicle    = { workspace = true }
 parquet            = { workspace = true }
 thiserror          = { workspace = true }
+toml               = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 uom                = { workspace = true }

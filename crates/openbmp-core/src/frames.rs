@@ -979,7 +979,7 @@ impl FrameProfile {
 // and 3.5. Cited at the live NGA WGS84 portal:
 // https://earth-info.nga.mil/index.php?dir=wgs84&action=wgs84.
 //
-// J2 lives in `openbmp-env::gravity`; it's a gravity-model coefficient
+// J2 lives in `openbmp-physics::gravity`; it's a gravity-model coefficient
 // and not a frame primitive. Earth rotation rate, semi-major axis,
 // flattening, and gravitational parameter live here because they
 // describe the rotating reference ellipsoid every frame profile in

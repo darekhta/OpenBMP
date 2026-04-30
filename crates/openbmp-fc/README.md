@@ -2,7 +2,7 @@
 
 L4 flight controller.
 
-**Status:** Phase 4 — in progress.
+**Status:** Phase 4.C implementation pass — simulator-local validation only.
 
 ## Purpose
 
@@ -11,9 +11,10 @@ cyclic scheduler with budget enforcement, a commander as the single
 state-machine owner, a parameter registry, a sensor voter, a health /
 arming gate, a phase-gated actuator mixer, and the academic
 algorithms (estimator / autopilot / mission FSM / guidance / FDIR).
-Outputs are abstract normalized commands consumed by simulator-local
-actuator models or the optional generic socket bridge. **No real
-hardware protocols, no targeting, no terminal-homing.**
+Outputs are abstract semantic commands and optional `EffectorId` keyed
+command sets consumed by simulator-local actuator models or the
+optional generic socket bridge. **No real hardware protocols, no
+targeting, no terminal-homing.**
 
 The architecture is hardware-portable: the same binary, linked
 against a downstream HAL crate that implements the `Sensor` /
@@ -33,53 +34,78 @@ openbmp-fc/
 ├── tables         # validated-then-activated typed tables
 ├── dictionary     # build-time JSON dictionary of topics/params/tables/jobs
 ├── topics         # canonical bus topics (sensor / estimator / commander / ...)
-├── voter          # N-of-M sensor voter (simplex / triplex / weighted-mean)
-├── sensor_ingest  # per-sensor-kind ingest jobs that publish to the bus
-├── estimator      # Estimator trait + EKF (15-state error-state) + MEKF
-├── magnetic       # MagneticFieldModel trait + EarthDipoleField (academic)
+├── voter          # N-of-M voter (simplex / triplex / weighted / covariance)
+├── sensor_ingest  # per-sensor-kind ingest jobs + lane status
+├── estimator      # EKF/MEKF/UKF with Joseph updates + false-alarm gates;
+│                  # gravity / magnetic models consumed from openbmp-physics
 ├── commander      # mission FSM + arming chain
 ├── autopilot      # three-loop autopilot, gain-scheduled
+├── filters        # deterministic biquad / notch filters
 ├── mixer          # phase-gated actuator authority
 ├── health         # failsafe-flag publisher (bus-sequence staleness)
 ├── fdir           # residual-based detection (publishes status)
 ├── guidance       # attitude-hold + waypoint-track guidance
 ├── replay         # in-memory bus recorder/replayer for state-stable replay
+├── mpc            # feature-gated Clarabel QP primitives
+├── landing        # feature-gated Clarabel SOCP primitives
+├── ud             # feature-gated UD covariance factor helper
+├── l1_adaptive    # feature-gated L1 rate-loop augmentation
 └── controller     # FlightController façade (composes everything)
 ```
 
-### Phase 4.C deferrals
+### Phase 4.C State
 
-Not shipped in this crate today (gated on a vetted permissive-licence
-solver passing `cargo deny` review):
+Implemented in this crate today:
 
-- **UKF** — a real sigma-point unscented Kalman filter (the prior
-  `Ukf` scaffold propagated only the mean and inflated the diagonal —
-  that is an EKF, so it was deleted rather than left to mislead).
-- **MPC** — a real receding-horizon convex-QP-driven controller. The
-  `LqrAttitudeMpc` scaffold was constant-gain LQR; deleted.
-- **LCvxLD / SCvx powered descent** — real lossless-convexification
-  / successive-convexification soft-landing. The `Lcvxld` / `Scvx`
-  scaffolds were single-step PD controllers; deleted.
-- **Full WMM 2025** — 12-degree spherical-harmonic geomagnetic field
-  with the COF dataset. The shipped `EarthDipoleField` is the
-  degree-1 truncation, marked `validated-toy`.
+- **Kernel↔FC runner bridge** — `[fc]` scenarios build `FcRunner`,
+  prime synthetic sensors, step the controller lockstep from the
+  `phase2_*.rs` runners, and feed effector / engine command sets back
+  into the simulator racks.
+- **Estimator upgrades** — EKF / MEKF Joseph updates, Markley-style
+  MEKF covariance reset, Gauss-Markov bias dynamics, iterated
+  magnetometer update, WGS84-J2 gravity via `openbmp-physics`, and a
+  real 6-state sigma-point UKF for attitude + gyro bias.
+- **Autopilot upgrades** — optional gyro notch filters,
+  differential-flatness attitude-reference generation, and
+  feature-gated L1 adaptive rate-loop augmentation.
+- **FDIR / voter upgrades** — burst-counter / GLRT / CUSUM detector
+  families with explicit fault bits, per-kind sensor lane status, and
+  covariance-weighted scalar voting.
+- **Solver-backed primitives** — Clarabel v0.9 QP / SOCP smoke-tested
+  behind the `mpc` feature. The vetting record is
+  `docs/clarabel-vetting.md`.
+
+Explicitly deferred to Phase 5 or downstream work:
+
+- NRLMSISE-00 upper atmosphere.
+- Multi-instance estimator routing with active-lane selection.
+- Full 15-state / square-root UKF.
+- Full receding-horizon MPC and LCvxLD / SCvx trajectory reproduction
+  against published powered-descent references.
+
+Note: full WMM 2025 (`openbmp_physics::magnetic::Wmm2025`) is now
+available in the workspace via the `openbmp-physics` consolidation
+(`docs/physics-consolidation-plan.md`); the FC's degree-1
+`EarthDipoleField` placeholder is superseded for FC scenarios that
+opt into the full model.
 
 ## Inputs and Outputs
 
 Inputs: bus topics — `sensor.imu`, `sensor.barometer`, `sensor.gnss`,
 `sensor.magnetometer`, `sensor.star_tracker`, plus
-`guidance.reference` from a guidance job.
+`sensor.status` from voted ingest jobs and `guidance.reference` from a
+guidance job.
 
 Outputs: bus topics — `autopilot.actuator_cmd`,
-`autopilot.engine_cmd` (after the mixer's phase-gated republish),
-`commander.vehicle_status`, `health.failsafe_flags`,
-`estimator.attitude`, `estimator.position`, `estimator.status`,
-`fdir.status`.
+`actuator.effector_cmds`, `autopilot.engine_cmd` (after the mixer's
+phase-gated republish), `commander.vehicle_status`,
+`health.failsafe_flags`, `estimator.attitude`, `estimator.position`,
+`estimator.status`, `fdir.status`.
 
-The simulator's runner subscribes to `autopilot.actuator_cmd` /
-`autopilot.engine_cmd` and converts those into the
-`ControlEffector::step` / `EngineModel::apply_command` calls the
-kernel uses.
+The simulator's runner bridge subscribes to `actuator.effector_cmds`
+and `actuator.engine_cmds`, then converts those into the
+`ControlEffector::step` / `EngineModel::apply_command` calls used by
+the kernel racks. When `[fc]` is absent, the bridge is a no-op.
 
 ## Units and Frames
 
@@ -116,9 +142,10 @@ system RNG, no allocation on the hot path.
 ## Validation
 
 `experimental`. Phase 4 validation uses analytic attitude/rate
-tracking and synthetic-sensor scenarios; the closed-loop validation
-case (Phase 4.9) compares against a public reference within an
-academic tolerance.
+tracking, synthetic-sensor scenarios, full bus-history determinism,
+long-duration no-NaN / bounded-covariance checks, and textbook
+Kalman-filter examples. External flight-stack trajectory
+cross-validation is Phase 5 scope.
 
 ## Data Provenance
 

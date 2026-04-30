@@ -1,6 +1,6 @@
 //! Error type for the openbmp-aero crate.
 //!
-//! Mirrors the shape of `openbmp-env::EnvError` so kernel-side
+//! Mirrors the shape of `openbmp-physics::PhysicsError` so kernel-side
 //! adapters can fold environment and aerodynamics errors into the
 //! same `ModelEvalError` chain at a higher layer without
 //! `openbmp-aero` depending on `openbmp-sim`.

@@ -1,0 +1,31 @@
+[package]
+name                    = "openbmp-physics"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP HAL-portable physics: gravity, atmosphere, magnetic, wind, constants."
+
+[features]
+# `GustWind` (Dryden filter driven by `DeterministicRng`).
+# Default-on for the simulator binary; hardware adopters disable
+# via `default-features = false`.
+default   = ["synthetic"]
+synthetic = []
+
+[dependencies]
+nalgebra     = { workspace = true }
+openbmp-core = { workspace = true }
+thiserror    = { workspace = true }
+
+[dev-dependencies]
+approx           = { workspace = true }
+proptest         = { workspace = true }
+sha2             = { workspace = true }
+static_assertions = { workspace = true }
+toml             = { workspace = true }
+
+[lints]
+workspace = true

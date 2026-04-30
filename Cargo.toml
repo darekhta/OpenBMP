@@ -2,11 +2,11 @@
 resolver = "2"
 members = [
     "crates/openbmp-core",
+    "crates/openbmp-physics",
     "crates/openbmp-state",
     "crates/openbmp-models",
     "crates/openbmp-mission",
     "crates/openbmp-sim",
-    "crates/openbmp-env",
     "crates/openbmp-vehicle",
     "crates/openbmp-aero",
     "crates/openbmp-aerothermal",
@@ -51,6 +51,7 @@ num-complex = { version = "0.4.6",  default-features = false }
 uom         = { version = "0.38.0", default-features = false, features = ["f64", "si", "std", "autoconvert"] }
 approx      = { version = "0.5.1",  default-features = false }
 ndarray     = { version = "0.17.2", default-features = false }
+clarabel    = { version = "0.9", default-features = false, features = ["serde"] }
 
 # --- Determinism
 rand        = { version = "0.10.1",  default-features = false, features = ["std", "std_rng"] }
@@ -113,11 +114,11 @@ duct = { version = "1.1.1" }
 
 # --- Internal
 openbmp-core       = { version = "0.0.1", path = "crates/openbmp-core" }
+openbmp-physics    = { version = "0.0.1", path = "crates/openbmp-physics" }
 openbmp-state      = { version = "0.0.1", path = "crates/openbmp-state" }
 openbmp-models     = { version = "0.0.1", path = "crates/openbmp-models" }
 openbmp-mission    = { version = "0.0.1", path = "crates/openbmp-mission" }
 openbmp-sim        = { version = "0.0.1", path = "crates/openbmp-sim" }
-openbmp-env        = { version = "0.0.1", path = "crates/openbmp-env" }
 openbmp-vehicle    = { version = "0.0.1", path = "crates/openbmp-vehicle" }
 openbmp-aero       = { version = "0.0.1", path = "crates/openbmp-aero" }
 openbmp-aerothermal = { version = "0.0.1", path = "crates/openbmp-aerothermal" }

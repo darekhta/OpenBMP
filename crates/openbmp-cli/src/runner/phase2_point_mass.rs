@@ -44,7 +44,7 @@ use std::collections::BTreeMap;
 use nalgebra::Vector3;
 use openbmp_aero::{AeroDeck, AeroError};
 use openbmp_core::{ChannelId, Duration, ModelId, Position3, RecoveryId, SimTime, Velocity3};
-use openbmp_env::{AtmosphereModel, UsStandard1976};
+use openbmp_physics::{AtmosphereModel, UsStandard1976};
 use openbmp_propulsion::{Motor, MotorError, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
@@ -228,6 +228,7 @@ pub fn run(
         let wind = wind_rack.sample(initial_state.position, &frame, initial_state.time)?;
         kernel.set_wind_sample(wind);
     }
+    let mut fc_bridge = crate::runner::fc_bridge::FcBridge::maybe_new(scenario, resolved_files)?;
     record_step(
         &mut table,
         &kernel,
@@ -242,13 +243,32 @@ pub fn run(
     let mut pending_recovery_events: Vec<openbmp_sim::FiredEvent> = Vec::new();
     while kernel.stop_reason().is_none() {
         effector_rack.apply_overrides(&pending_effector_events)?;
-        if !effector_rack.is_empty() {
-            effector_rack.step(kernel.current_time())?;
-        }
         // Phase-3.6: drain pending engine commands from the previous
         // kernel step, apply to the rack, then advance the rack.
         if !engine_rack.is_empty() {
             engine_rack.apply_commands(&pending_engine_events)?;
+        }
+        if let Some(bridge) = &mut fc_bridge {
+            let gravity = Vector3::new(
+                0.0,
+                0.0,
+                -document
+                    .environment
+                    .gravity_m_s2
+                    .unwrap_or(openbmp_physics::gravity::STANDARD_GRAVITY_M_S2),
+            );
+            bridge.tick_point_mass(
+                kernel.current_state(),
+                kernel.current_step(),
+                gravity,
+                &mut effector_rack,
+                &mut engine_rack,
+            )?;
+        }
+        if !effector_rack.is_empty() {
+            effector_rack.step(kernel.current_time())?;
+        }
+        if !engine_rack.is_empty() {
             engine_rack.step()?;
         }
         // Phase-3.7: advance the tank rack using prior-step cached

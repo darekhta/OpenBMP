@@ -32,12 +32,12 @@ verification:
   method: >-
     Compile-time pinned in `openbmp-core::frames` (`WGS84_A_M`,
     `WGS84_INV_FLATTENING`, `WGS84_MU_M3_S2`, `WGS84_OMEGA_RAD_S`)
-    and `openbmp-env::gravity::WGS84_J2`. Unit tests in
-    `openbmp-env::gravity::tests` exercise the constants through the
+    and `openbmp-physics::gravity::WGS84_J2`. Unit tests in
+    `openbmp-physics::gravity::tests` exercise the constants through the
     three Phase-2 gravity models. A Phase-2.10 `openbmp
     check-provenance` walk will additionally cross-check the in-source
     values against this TOML pin.
-  test:   crates/openbmp-env/src/gravity.rs
+  test:   crates/openbmp-physics/src/gravity.rs
 validation_status: validated-toy
 safety_review:
   reviewer: dmitri.arekhta
@@ -68,7 +68,7 @@ control.
 
 OpenBMP's determinism contract requires every shipped data file to
 have its content hash recorded in telemetry metadata. The compiled
-`openbmp-core` and `openbmp-env` constants are the runtime source of
+`openbmp-core` and `openbmp-physics` constants are the runtime source of
 truth; this TOML file is the provenance pin. Phase 2.10 adds the
 machine check that compares the two so a typo in either file fails
 CI before a release.

@@ -40,13 +40,13 @@ transformation:
 verification:
   method: >-
     Compile-time pinned in
-    `openbmp-env::atmosphere::us_standard_1976` (constants:
+    `openbmp-physics::atmosphere::us_standard_1976` (constants:
     `USSA76_G0_M_S2`, `USSA76_UNIVERSAL_GAS_CONSTANT`,
     `USSA76_MOLAR_MASS_AIR_KG_KMOL`, `USSA76_GAMMA_AIR`,
     `USSA76_REFERENCE_RADIUS_M`, `USSA76_MAX_GEOPOTENTIAL_M`,
     `USSA76_MAX_GEOMETRIC_M`; layer table: private const
     `LAYERS: [Layer; 7]`). The Phase-2.3.C regression test
-    `crates/openbmp-env/tests/regression.rs` loads this TOML at
+    `crates/openbmp-physics/tests/regression.rs` loads this TOML at
     test time via `include_str!` and asserts the in-source
     constants and per-layer base values match the pin to bit
     precision. In-crate tests also recompute each next layer's base
@@ -54,7 +54,7 @@ verification:
     per-kilometre TOML-derived reference samples, and verify
     sea-level temperature, pressure, density, and speed of sound
     against NOAA-S/T 76-1562 table 1 values.
-  test:   crates/openbmp-env/tests/regression.rs
+  test:   crates/openbmp-physics/tests/regression.rs
   tolerance: >-
     Constants and layer-base pins: bit equality after TOML parse.
     Layer-pressure recurrence: bit equality on the reference platform
@@ -102,7 +102,7 @@ export control.
 
 OpenBMP's determinism contract requires every shipped data file
 to have its content hash recorded in telemetry metadata. The
-compiled `openbmp-env` constants and layer table are the runtime
+compiled `openbmp-physics` constants and layer table are the runtime
 source of truth; this TOML file is the provenance pin. Phase 2.10
 adds the machine check that compares the two so a typo in either
 file fails CI before a release. The Phase-2.3.C regression test

@@ -7,7 +7,7 @@
 # `data/atmosphere/provenance.md` for the full provenance record.
 #
 # OpenBMP loads the constants from
-# `openbmp-env::atmosphere::us_standard_1976` (compiled in). This file
+# `openbmp-physics::atmosphere::us_standard_1976` (compiled in). This file
 # is the project-side declarative pin: the Phase-2.3.C regression test
 # verifies that the in-source values match what is declared here, and
 # the future Phase-2.10 `openbmp check-provenance` walk performs the

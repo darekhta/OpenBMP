@@ -13,28 +13,31 @@
 use std::collections::BTreeMap;
 
 use nalgebra::{UnitQuaternion, Vector3};
-use openbmp_core::{SimTime, StepIndex};
+use openbmp_core::{EffectorId, EngineId, SimTime, StepIndex};
 use openbmp_fc::autopilot::{
-    GainSchedule, PidGains, ThreeLoopAutopilot, ThreeLoopGains, default_gains,
+    AutopilotParams, GainSchedule, PidGains, ThreeLoopAutopilot, ThreeLoopGains, TrajectoryKind,
+    default_gains,
 };
 use openbmp_fc::commander::{Commander, CommanderParams};
 use openbmp_fc::estimator::{Ekf, EkfParams, EstimatorJob, Mekf, MekfParams};
-use openbmp_fc::fdir::{FdirJob, FdirParams};
+use openbmp_fc::fdir::{DetectorKind, FdirJob, FdirParams};
 use openbmp_fc::guidance::{
     AttitudeHoldGuidance, GuidanceParams, WaypointGuidance, WaypointSequence,
 };
 use openbmp_fc::health::{HealthMonitor, HealthParams};
-use openbmp_fc::mixer::{Mixer, PhaseAuthority, PhaseAuthorityTable};
+use openbmp_fc::mixer::{ActuatorChannelMap, Mixer, PhaseAuthority, PhaseAuthorityTable};
 use openbmp_fc::topics::{
-    ActuatorCommand, AttitudeEstimate, BarometerSample, EngineDemand, EstimatorStatus,
-    FailsafeFlags, FdirStatus, GnssSample, ImuSample, MagnetometerSample, PositionEstimate,
-    ReferenceState, StarTrackerSample, VehicleStatus,
+    ActuatorCommand, AttitudeEstimate, BarometerSample, EffectorCommandSet, EngineCommandSet,
+    EngineDemand, EstimatorStatus, FailsafeFlags, FdirStatus, GnssSample, ImuSample,
+    MagnetometerSample, PositionEstimate, ReferenceState, SensorStatus, StarTrackerSample,
+    VehicleStatus,
 };
 use openbmp_fc::{DispatchSummary, FlightController, FlightControllerBuilder};
 use openbmp_mission::{EventBinding, MissionPhaseGraph, PhaseId};
 use openbmp_scenario::{
-    FcAutopilotKind, FcConfig, FcEkfConfig, FcEstimatorKind, FcGainsConfig, FcGuidanceKind,
-    FcMekfConfig, FcPhaseAuthorityConfig,
+    FcActuatorChannelsConfig, FcAutopilotKind, FcAutopilotParams, FcConfig, FcEkfConfig,
+    FcEstimatorKind, FcFdirConfig, FcFdirDetectorKind, FcGainsConfig, FcGuidanceKind,
+    FcHealthConfig, FcMekfConfig, FcPhaseAuthorityConfig, FcTrajectoryKind,
 };
 
 /// Bridges an [`FcConfig`] to a fully wired [`FlightController`].
@@ -67,17 +70,12 @@ impl FcRunner {
         start_phase: PhaseId,
     ) -> Result<Self, openbmp_fc::ControllerError> {
         let mut fc = FlightControllerBuilder::new()
-            .frame_budget_us(2_000)
+            .frame_budget_us(config.frame_budget_us)
             .build();
 
         Self::register_canonical_topics(&fc)?;
 
-        // Tick-rate ratio: the FC scheduler runs every kernel tick.
-        // `base_rate_hz` is informational at this layer (the kernel
-        // already drives at a known dt); we use it to translate
-        // higher-level "10 Hz guidance" into a tick count.
-        let kernel_tick_per_fc_tick = (1_000 / u64::from(config.base_rate_hz)).max(1);
-        let _ = kernel_tick_per_fc_tick;
+        let slow_period_ticks = period_ticks_for_hz(config.base_rate_hz, 100);
         let mut next_priority = 5_u8;
         match config.estimator {
             FcEstimatorKind::Ekf => {
@@ -115,13 +113,12 @@ impl FcRunner {
         }
         next_priority = next_priority.saturating_add(5);
 
-        // Guidance: 10× slower than the base FC tick (i.e. 100 Hz at
-        // 1 kHz base rate).
+        // Guidance: 100 Hz expressed as a period in configured base-rate ticks.
         match config.guidance {
             FcGuidanceKind::AttitudeHold => {
                 let q = config.reference_q_xyzw.unwrap_or([0.0, 0.0, 0.0, 1.0]);
                 fc.scheduler_mut().register_periodic(
-                    10,
+                    slow_period_ticks,
                     100,
                     next_priority,
                     Box::new(AttitudeHoldGuidance::new(q)),
@@ -132,7 +129,7 @@ impl FcRunner {
                     waypoints: Vec::new(),
                 };
                 fc.scheduler_mut().register_periodic(
-                    10,
+                    slow_period_ticks,
                     100,
                     next_priority,
                     Box::new(WaypointGuidance::new(sequence, GuidanceParams::default())),
@@ -140,6 +137,8 @@ impl FcRunner {
             }
         }
         next_priority = next_priority.saturating_add(5);
+
+        let authority = build_authority(&mission_graph, config.phase_authority.as_ref());
 
         // Commander.
         let commander = Commander::new(
@@ -154,36 +153,42 @@ impl FcRunner {
         next_priority = next_priority.saturating_add(5);
 
         // Autopilot.
-        let schedule = build_gain_schedule(config.gain_schedule.as_ref());
-        let autopilot = match config.autopilot {
+        let schedule = build_gain_schedule(&config.gain_schedule);
+        let mut autopilot = match config.autopilot {
             FcAutopilotKind::ThreeLoop => ThreeLoopAutopilot::with_schedule(schedule),
         };
+        if let Some(params) = &config.autopilot_params {
+            autopilot = autopilot.with_params(build_autopilot_params(params));
+        }
         fc.scheduler_mut()
             .register_periodic(1, 300, next_priority, Box::new(autopilot))?;
         next_priority = next_priority.saturating_add(5);
 
         // Mixer.
-        let authority = build_authority(config.phase_authority.as_ref());
-        let mixer = Mixer::new().with_authority(authority);
+        let mixer = Mixer::new()
+            .with_authority(authority)
+            .with_actuator_channel_map(build_actuator_channel_map(
+                config.actuator_channels.as_ref(),
+            ));
         fc.scheduler_mut()
             .register_periodic(1, 100, next_priority, Box::new(mixer))?;
         next_priority = next_priority.saturating_add(5);
 
-        // Health monitor (10 Hz at 1 kHz base rate).
+        // Health monitor (100 Hz).
         fc.scheduler_mut().register_periodic(
-            10,
+            slow_period_ticks,
             100,
             next_priority,
-            Box::new(HealthMonitor::new(HealthParams::default())),
+            Box::new(HealthMonitor::new(build_health_params(&config.health))),
         )?;
         next_priority = next_priority.saturating_add(5);
 
-        // FDIR (10 Hz).
+        // FDIR (100 Hz).
         fc.scheduler_mut().register_periodic(
-            10,
+            slow_period_ticks,
             100,
             next_priority,
-            Box::new(FdirJob::new(FdirParams::default())),
+            Box::new(FdirJob::new(build_fdir_params(config.fdir.as_ref()))),
         )?;
 
         Ok(Self { fc })
@@ -229,6 +234,11 @@ impl FcRunner {
         let _ = self.fc.bus().publish(sample);
     }
 
+    /// Publishes a star-tracker sample.
+    pub fn publish_star_tracker(&self, sample: StarTrackerSample) {
+        let _ = self.fc.bus().publish(sample);
+    }
+
     /// Returns the latest gated actuator command, if any.
     #[must_use]
     pub fn latest_actuator_command(&self) -> Option<ActuatorCommand> {
@@ -246,6 +256,28 @@ impl FcRunner {
         self.fc
             .bus()
             .latest::<EngineDemand>()
+            .ok()
+            .flatten()
+            .map(|(c, _)| c)
+    }
+
+    /// Returns the latest effector-id command set, if any.
+    #[must_use]
+    pub fn latest_effector_command_set(&self) -> Option<EffectorCommandSet> {
+        self.fc
+            .bus()
+            .latest::<EffectorCommandSet>()
+            .ok()
+            .flatten()
+            .map(|(c, _)| c)
+    }
+
+    /// Returns the latest engine-id command set, if any.
+    #[must_use]
+    pub fn latest_engine_command_set(&self) -> Option<EngineCommandSet> {
+        self.fc
+            .bus()
+            .latest::<EngineCommandSet>()
             .ok()
             .flatten()
             .map(|(c, _)| c)
@@ -291,6 +323,7 @@ impl FcRunner {
         bus.register::<GnssSample>()?;
         bus.register::<MagnetometerSample>()?;
         bus.register::<StarTrackerSample>()?;
+        bus.register::<SensorStatus>()?;
         bus.register::<AttitudeEstimate>()?;
         bus.register::<PositionEstimate>()?;
         bus.register::<EstimatorStatus>()?;
@@ -298,10 +331,18 @@ impl FcRunner {
         bus.register::<FailsafeFlags>()?;
         bus.register::<ReferenceState>()?;
         bus.register::<ActuatorCommand>()?;
+        bus.register::<EffectorCommandSet>()?;
         bus.register::<EngineDemand>()?;
+        bus.register::<EngineCommandSet>()?;
         bus.register::<FdirStatus>()?;
         Ok(())
     }
+}
+
+fn period_ticks_for_hz(base_rate_hz: u32, task_rate_hz: u32) -> u64 {
+    let base = u64::from(base_rate_hz);
+    let task = u64::from(task_rate_hz.max(1));
+    base.div_ceil(task).max(1)
 }
 
 fn apply_ekf_overrides(params: &mut EkfParams, cfg: &FcEkfConfig) {
@@ -313,6 +354,12 @@ fn apply_ekf_overrides(params: &mut EkfParams, cfg: &FcEkfConfig) {
     }
     if let Some(v) = cfg.sigma_w_gyro_bias {
         params.sigma_w_gyro_bias = v;
+    }
+    if let Some(v) = cfg.tau_gyro_bias_s {
+        params.tau_gyro_bias_s = v;
+    }
+    if let Some(v) = cfg.tau_accel_bias_s {
+        params.tau_accel_bias_s = v;
     }
     if let Some(v) = cfg.sigma_gnss_pos_m {
         params.sigma_gnss_pos_m = v;
@@ -329,6 +376,10 @@ fn apply_ekf_overrides(params: &mut EkfParams, cfg: &FcEkfConfig) {
     if let Some(v) = cfg.innovation_gate {
         params.innovation_gate = v;
     }
+    if let Some(v) = cfg.innovation_false_alarm_rate {
+        params.innovation_false_alarm_rate = v;
+        params.innovation_gate = f64::NAN;
+    }
     if let Some(v) = cfg.dead_reckon_timeout_s {
         params.dead_reckon_timeout_s = v;
     }
@@ -341,26 +392,87 @@ fn apply_mekf_overrides(params: &mut MekfParams, cfg: &FcMekfConfig) {
     if let Some(v) = cfg.sigma_w_gyro_bias {
         params.sigma_w_gyro_bias = v;
     }
+    if let Some(v) = cfg.tau_gyro_bias_s {
+        params.tau_gyro_bias_s = v;
+    }
     if let Some(v) = cfg.sigma_mag_nt {
         params.sigma_mag_nt = v;
     }
     if let Some(v) = cfg.innovation_gate {
         params.innovation_gate = v;
     }
+    if let Some(v) = cfg.innovation_false_alarm_rate {
+        params.innovation_false_alarm_rate = v;
+        params.innovation_gate = f64::NAN;
+    }
 }
 
-fn build_gain_schedule(cfg: Option<&BTreeMap<String, FcGainsConfig>>) -> GainSchedule {
+fn build_autopilot_params(cfg: &FcAutopilotParams) -> AutopilotParams {
+    let mut params = AutopilotParams::default();
+    if let Some(v) = cfg.anti_windup_gain {
+        params.anti_windup_gain = v;
+    }
+    if let Some(v) = cfg.rate_deadband_rad_s {
+        params.rate_deadband_rad_s = v;
+    }
+    if let Some(v) = cfg.trajectory_loop_enabled {
+        params.trajectory_loop_enabled = v;
+    }
+    if let Some(kind) = cfg.trajectory_kind {
+        params.trajectory_kind = match kind {
+            FcTrajectoryKind::Pid => TrajectoryKind::Pid,
+            FcTrajectoryKind::DifferentialFlatness => TrajectoryKind::DifferentialFlatness,
+        };
+    }
+    params
+}
+
+fn build_health_params(cfg: &FcHealthConfig) -> HealthParams {
+    HealthParams {
+        imu_stale_after_s: cfg.imu_stale_after_s,
+        gnss_stale_after_s: cfg.gnss_stale_after_s,
+        baro_stale_after_s: cfg.baro_stale_after_s,
+        mag_stale_after_s: cfg.mag_stale_after_s,
+        overrun_burst_count: cfg.overrun_burst_count,
+    }
+}
+
+fn build_fdir_params(cfg: Option<&FcFdirConfig>) -> FdirParams {
+    let mut params = FdirParams::default();
+    let Some(cfg) = cfg else { return params };
+    params.detector_kind = match cfg.detector_kind {
+        FcFdirDetectorKind::BurstCounter => DetectorKind::BurstCounter,
+        FcFdirDetectorKind::Glrt => DetectorKind::Glrt,
+        FcFdirDetectorKind::Cusum => DetectorKind::Cusum,
+    };
+    if let Some(v) = cfg.innovation_threshold {
+        params.innovation_threshold = v;
+    }
+    if let Some(v) = cfg.innovation_burst_count {
+        params.innovation_burst_count = v;
+    }
+    if let Some(v) = cfg.failsafe_burst_count {
+        params.failsafe_burst_count = v;
+    }
+    if let Some(v) = cfg.cusum_drift {
+        params.cusum_drift = v;
+    }
+    if let Some(v) = cfg.cusum_threshold {
+        params.cusum_threshold = v;
+    }
+    params
+}
+
+fn build_gain_schedule(cfg: &BTreeMap<String, FcGainsConfig>) -> GainSchedule {
     let mut schedule = GainSchedule {
         by_phase: BTreeMap::new(),
-        default: default_gains(),
+        default: ThreeLoopGains::default(),
     };
-    if let Some(map) = cfg {
-        for (path, gains) in map {
-            let phase_id = PhaseId::from_path(path);
-            let mut g = default_gains();
-            apply_gains_overrides(&mut g, gains);
-            schedule.by_phase.insert(phase_id.value(), g);
-        }
+    for (path, gains) in cfg {
+        let phase_id = PhaseId::from_path(path);
+        let mut g = default_gains();
+        apply_gains_overrides(&mut g, gains);
+        schedule.by_phase.insert(phase_id.value(), g);
     }
     schedule
 }
@@ -406,23 +518,67 @@ enum GainAxis {
     Kd,
 }
 
-fn build_authority(cfg: Option<&BTreeMap<String, FcPhaseAuthorityConfig>>) -> PhaseAuthorityTable {
+fn build_authority(
+    graph: &MissionPhaseGraph,
+    cfg: Option<&BTreeMap<String, FcPhaseAuthorityConfig>>,
+) -> PhaseAuthorityTable {
     let mut table = PhaseAuthorityTable::default();
+    for phase in &graph.phases {
+        table.allowed.insert(
+            phase.id.value(),
+            PhaseAuthority {
+                effectors: phase
+                    .allowed_effectors
+                    .iter()
+                    .map(|id| effector_id_from_config(id))
+                    .collect(),
+                engines: phase
+                    .allowed_engines
+                    .iter()
+                    .map(|id| engine_id_from_config(id))
+                    .collect(),
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+    }
     if let Some(map) = cfg {
         for (path, entry) in map {
             let phase_id = PhaseId::from_path(path);
-            table.allowed.insert(
-                phase_id.value(),
-                PhaseAuthority {
-                    effectors: Vec::new(),
-                    engines: Vec::new(),
-                    autopilot_allowed: entry.autopilot_allowed,
-                    engines_allowed: entry.engines_allowed,
-                },
-            );
+            let phase = table.allowed.entry(phase_id.value()).or_default();
+            phase.autopilot_allowed = entry.autopilot_allowed;
+            phase.engines_allowed = entry.engines_allowed;
         }
     }
     table
+}
+
+fn build_actuator_channel_map(cfg: Option<&FcActuatorChannelsConfig>) -> ActuatorChannelMap {
+    let Some(cfg) = cfg else {
+        return ActuatorChannelMap::default();
+    };
+    ActuatorChannelMap {
+        aileron: cfg.aileron.as_deref().map(effector_id_from_config),
+        elevator: cfg.elevator.as_deref().map(effector_id_from_config),
+        rudder: cfg.rudder.as_deref().map(effector_id_from_config),
+        body_flap: cfg.body_flap.as_deref().map(effector_id_from_config),
+    }
+}
+
+fn effector_id_from_config(id: &str) -> EffectorId {
+    if id.starts_with("vehicle.assembly.effectors.") {
+        EffectorId::from_path(id)
+    } else {
+        EffectorId::from_path(&format!("vehicle.assembly.effectors.{id}"))
+    }
+}
+
+fn engine_id_from_config(id: &str) -> EngineId {
+    if id.starts_with("vehicle.assembly.engines.") {
+        EngineId::from_path(id)
+    } else {
+        EngineId::from_path(&format!("vehicle.assembly.engines.{id}"))
+    }
 }
 
 #[cfg(test)]
@@ -468,16 +624,45 @@ mod tests {
 
     #[test]
     fn fc_runner_builds_from_attitude_hold_config() {
+        let mut gain_schedule = BTreeMap::new();
+        gain_schedule.insert(
+            "mission.phases.ascent".to_string(),
+            FcGainsConfig {
+                rate_kp: Some([0.5, 0.5, 0.5]),
+                rate_ki: None,
+                rate_kd: Some([0.05, 0.05, 0.05]),
+                attitude_kp: Some([2.0, 2.0, 1.0]),
+                attitude_ki: None,
+                attitude_kd: None,
+                trajectory_kp: None,
+                trajectory_ki: None,
+                trajectory_kd: None,
+                aileron_limit_rad: Some(0.35),
+                elevator_limit_rad: Some(0.35),
+                rudder_limit_rad: Some(0.35),
+                throttle_baseline: Some(0.0),
+            },
+        );
         let config = FcConfig {
             estimator: FcEstimatorKind::Ekf,
             autopilot: FcAutopilotKind::ThreeLoop,
             guidance: FcGuidanceKind::AttitudeHold,
             reference_q_xyzw: Some([0.0, 0.0, 0.0, 1.0]),
             base_rate_hz: 1_000,
+            frame_budget_us: 2_000,
             ekf: Some(FcEkfConfig::default()),
             mekf: None,
             autopilot_params: None,
-            gain_schedule: None,
+            health: FcHealthConfig {
+                imu_stale_after_s: 0.05,
+                gnss_stale_after_s: 0.5,
+                baro_stale_after_s: 10.0,
+                mag_stale_after_s: 0.2,
+                overrun_burst_count: 5,
+            },
+            fdir: None,
+            actuator_channels: None,
+            gain_schedule,
             phase_authority: None,
         };
         let (graph, bindings, pad) = minimal_graph();

@@ -17,15 +17,20 @@ description             = "OpenBMP flight controller: bus, scheduler, commander,
 default     = ["sim-default"]
 sim-default = ["openbmp-sensors/synthetic"]
 serde       = ["dep:serde_json"]
+mpc         = ["dep:clarabel"]
+square-root-ekf = []
+l1-adaptive = []
 
 [dependencies]
 openbmp-core       = { workspace = true }
+openbmp-physics    = { workspace = true }
 openbmp-mission    = { workspace = true }
 openbmp-sensors    = { workspace = true }
 nalgebra           = { workspace = true }
 thiserror          = { workspace = true }
 serde_json         = { workspace = true, optional = true }
 indexmap           = { workspace = true }
+clarabel           = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx   = { workspace = true }

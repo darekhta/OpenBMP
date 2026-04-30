@@ -44,7 +44,7 @@
 //!
 //! `openbmp-vehicle` is an L1 crate alongside `openbmp-sim`. Both
 //! own kernel-facing trait surfaces (`ForceModel`, `MomentModel`,
-//! `MassModel`, `Vehicle`); L2 crates (`openbmp-env`,
+//! `MassModel`, `Vehicle`); L2 crates (`openbmp-physics`,
 //! `openbmp-aero`, `openbmp-propulsion`, `openbmp-sensors`) define
 //! their own physics-side traits and the kernel-side adapter at
 //! Phase 2.10 wires the two together.

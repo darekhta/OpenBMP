@@ -81,7 +81,7 @@ use openbmp_core::{
     DeterministicRng, Eci, FrameContext, Ned, Position3, SimTime, StepIndex, Velocity3, WindAxis,
 };
 
-use crate::error::EnvError;
+use crate::error::PhysicsError;
 
 use super::WindModel;
 
@@ -141,11 +141,11 @@ impl GustWind {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::InvalidParameter`] if any intensity is
+    /// Returns [`PhysicsError::InvalidParameter`] if any intensity is
     /// negative, any length scale is non-positive, the airspeed is
     /// non-positive, or `dt_s` is non-positive. Returns
-    /// [`EnvError::NonFinite`] if any input is `NaN` / `Inf`.
-    pub fn new(params: GustWindParams) -> Result<Self, EnvError> {
+    /// [`PhysicsError::NonFinite`] if any input is `NaN` / `Inf`.
+    pub fn new(params: GustWindParams) -> Result<Self, PhysicsError> {
         let [sigma_u, sigma_v, sigma_w] = params.intensity_m_s;
         let [l_u, l_v, l_w] = params.length_scale_m;
         let [mean_n, mean_e, mean_d] = params.mean_wind_ned_m_s;
@@ -164,28 +164,28 @@ impl GustWind {
             mean_d,
         ] {
             if !v.is_finite() {
-                return Err(EnvError::NonFinite {
+                return Err(PhysicsError::NonFinite {
                     reason: "GustWind parameter is NaN or infinite",
                 });
             }
         }
         if sigma_u < 0.0 || sigma_v < 0.0 || sigma_w < 0.0 {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "GustWind axis intensity (σ) must be non-negative",
             });
         }
         if l_u <= 0.0 || l_v <= 0.0 || l_w <= 0.0 {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "GustWind axis length scale (L) must be strictly positive",
             });
         }
         if params.airspeed_m_s <= 0.0 {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "GustWind airspeed must be strictly positive",
             });
         }
         if params.dt_s <= 0.0 {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "GustWind dt_s must be strictly positive",
             });
         }
@@ -329,7 +329,7 @@ impl WindModel for GustWind {
         _position_eci: Position3<Eci>,
         _frame: &FrameContext,
         _time: SimTime,
-    ) -> Result<Velocity3<Ned>, EnvError> {
+    ) -> Result<Velocity3<Ned>, PhysicsError> {
         // Phase-3.8.C maps body-frame Dryden axes (u, v, w) directly
         // to NED (north, east, down). The body↔NED rotation is
         // decoupled work for the future wind-aware drag adapter.
@@ -343,7 +343,7 @@ impl WindModel for GustWind {
             || !result.vector.y.is_finite()
             || !result.vector.z.is_finite()
         {
-            return Err(EnvError::NonFinite {
+            return Err(PhysicsError::NonFinite {
                 reason: "GustWind output is NaN or infinite",
             });
         }
@@ -442,7 +442,7 @@ mod tests {
         p.intensity_m_s[0] = -1.0;
         assert!(matches!(
             GustWind::new(p),
-            Err(EnvError::InvalidParameter { .. })
+            Err(PhysicsError::InvalidParameter { .. })
         ));
     }
 
@@ -452,7 +452,7 @@ mod tests {
         p.length_scale_m[1] = 0.0;
         assert!(matches!(
             GustWind::new(p),
-            Err(EnvError::InvalidParameter { .. })
+            Err(PhysicsError::InvalidParameter { .. })
         ));
     }
 
@@ -462,7 +462,7 @@ mod tests {
         p.airspeed_m_s = 0.0;
         assert!(matches!(
             GustWind::new(p),
-            Err(EnvError::InvalidParameter { .. })
+            Err(PhysicsError::InvalidParameter { .. })
         ));
     }
 
@@ -472,7 +472,7 @@ mod tests {
         p.dt_s = -0.001;
         assert!(matches!(
             GustWind::new(p),
-            Err(EnvError::InvalidParameter { .. })
+            Err(PhysicsError::InvalidParameter { .. })
         ));
     }
 
@@ -480,7 +480,10 @@ mod tests {
     fn rejects_non_finite_inputs() {
         let mut p = medium_turbulence_params();
         p.mean_wind_ned_m_s[0] = f64::NAN;
-        assert!(matches!(GustWind::new(p), Err(EnvError::NonFinite { .. })));
+        assert!(matches!(
+            GustWind::new(p),
+            Err(PhysicsError::NonFinite { .. })
+        ));
     }
 
     // -----------------------------------------------------------------

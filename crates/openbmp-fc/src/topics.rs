@@ -108,6 +108,72 @@ impl Topic for StarTrackerSample {
     const NAME: &'static str = "sensor.star_tracker";
 }
 
+/// Maximum number of redundant lanes represented in a per-kind
+/// sensor-status publication.
+pub const MAX_SENSOR_STATUS_LANES: usize = 8;
+
+/// Sensor class represented by [`SensorStatus`].
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum SensorKind {
+    /// IMU lane status.
+    #[default]
+    Imu,
+    /// Barometer lane status.
+    Barometer,
+    /// GNSS lane status.
+    Gnss,
+    /// Magnetometer lane status.
+    Magnetometer,
+}
+
+/// Per-lane voter status for one redundant sensor source.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SensorLaneStatus {
+    /// `SensorId::value()` for this lane.
+    pub sensor_id: u64,
+    /// Lane index in deterministic ingest order.
+    pub lane_index: u8,
+    /// `true` if `read()` returned a measurement of the expected kind.
+    pub healthy: bool,
+    /// `true` if this lane diverged from the voted value this tick.
+    pub divergent: bool,
+}
+
+/// Per-sensor voter status emitted by voted ingest jobs.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct SensorStatus {
+    /// Publication timestamp.
+    pub time: SimTime,
+    /// Sensor class covered by this status sample.
+    pub kind: SensorKind,
+    /// Number of valid entries in [`SensorStatus::lanes`].
+    pub lane_count: u8,
+    /// Fixed-capacity lane records. Entries beyond `lane_count` are
+    /// zero-filled.
+    pub lanes: [SensorLaneStatus; MAX_SENSOR_STATUS_LANES],
+    /// `true` if any lane diverged from the voted value this tick.
+    pub any_divergent: bool,
+    /// `true` if more lanes existed than fit in this fixed record.
+    pub overflowed: bool,
+}
+
+impl Default for SensorStatus {
+    fn default() -> Self {
+        Self {
+            time: SimTime::ZERO,
+            kind: SensorKind::default(),
+            lane_count: 0,
+            lanes: [SensorLaneStatus::default(); MAX_SENSOR_STATUS_LANES],
+            any_divergent: false,
+            overflowed: false,
+        }
+    }
+}
+
+impl Topic for SensorStatus {
+    const NAME: &'static str = "sensor.status";
+}
+
 // ---------------------------------------------------------------------
 // Estimator output topics (Phase 4.3 / 4.8)
 // ---------------------------------------------------------------------
@@ -269,6 +335,50 @@ impl Topic for ActuatorCommand {
     const NAME: &'static str = "autopilot.actuator_cmd";
 }
 
+/// Maximum number of effector-specific commands published by the FC
+/// mixer in one tick.
+pub const MAX_EFFECTOR_COMMANDS: usize = 4;
+
+/// One effector-specific command after mixer phase gating.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct EffectorCommand {
+    /// `EffectorId::value()` for the target effectors rack entry.
+    pub effector_id: u64,
+    /// Scalar command in the effector's declared units.
+    pub command: f64,
+    /// `true` if the originating autopilot loop saturated.
+    pub saturated: bool,
+}
+
+/// Effector-specific command set emitted by the mixer for kernel
+/// consumption.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct EffectorCommandSet {
+    /// Demand timestamp.
+    pub time: SimTime,
+    /// Number of valid entries in [`EffectorCommandSet::commands`].
+    pub count: u8,
+    /// Fixed-capacity command records.
+    pub commands: [EffectorCommand; MAX_EFFECTOR_COMMANDS],
+    /// `true` if any originating loop saturated.
+    pub saturated: bool,
+}
+
+impl Default for EffectorCommandSet {
+    fn default() -> Self {
+        Self {
+            time: SimTime::ZERO,
+            count: 0,
+            commands: [EffectorCommand::default(); MAX_EFFECTOR_COMMANDS],
+            saturated: false,
+        }
+    }
+}
+
+impl Topic for EffectorCommandSet {
+    const NAME: &'static str = "actuator.effector_cmds";
+}
+
 /// Demanded engine throttle / gimbal command emitted by the autopilot,
 /// before the mixer applies phase-gated authority.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
@@ -289,6 +399,53 @@ pub struct EngineDemand {
 
 impl Topic for EngineDemand {
     const NAME: &'static str = "autopilot.engine_cmd";
+}
+
+/// One engine-specific command after mixer phase gating.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct EngineCommand {
+    /// `EngineId::value()` for the target engine-rack entry.
+    pub engine_id: u64,
+    /// Commanded throttle in `[0, 1]`.
+    pub throttle_unit: f64,
+    /// Commanded pitch gimbal angle (rad).
+    pub gimbal_pitch_rad: f64,
+    /// Commanded yaw gimbal angle (rad).
+    pub gimbal_yaw_rad: f64,
+    /// `true` if ignition is requested.
+    pub ignite: bool,
+    /// `true` if shutdown is requested.
+    pub shutdown: bool,
+}
+
+/// Maximum number of engine-specific commands published by the FC
+/// mixer in one tick.
+pub const MAX_ENGINE_COMMANDS: usize = 8;
+
+/// Engine-specific command set emitted by the mixer for kernel
+/// consumption.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct EngineCommandSet {
+    /// Demand timestamp.
+    pub time: SimTime,
+    /// Number of valid entries in [`EngineCommandSet::commands`].
+    pub count: u8,
+    /// Fixed-capacity command records.
+    pub commands: [EngineCommand; MAX_ENGINE_COMMANDS],
+}
+
+impl Default for EngineCommandSet {
+    fn default() -> Self {
+        Self {
+            time: SimTime::ZERO,
+            count: 0,
+            commands: [EngineCommand::default(); MAX_ENGINE_COMMANDS],
+        }
+    }
+}
+
+impl Topic for EngineCommandSet {
+    const NAME: &'static str = "actuator.engine_cmds";
 }
 
 // ---------------------------------------------------------------------

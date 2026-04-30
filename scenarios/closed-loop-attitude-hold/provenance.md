@@ -1,6 +1,6 @@
 # Provenance — `scenarios/closed-loop-attitude-hold/`
 
-Canonical OpenBMP provenance record for the Phase-4.B closed-loop
+Canonical OpenBMP provenance record for the Phase-4.C closed-loop
 attitude-hold scenario shipped under
 `scenarios/closed-loop-attitude-hold/`.
 
@@ -13,18 +13,18 @@ files:
   - scenarios/closed-loop-attitude-hold/expected.toml
 source_class:     synthetic-openbmp
 source_title:     >-
-  Phase-4.B closed-loop attitude-hold scenario. Demonstrates the
+  Phase-4.C closed-loop attitude-hold scenario. Demonstrates the
   declarative `[fc]` block driving the full FC pipeline (EKF +
   three-loop autopilot + mixer + health/FDIR) against a constant
   identity-quaternion attitude reference.
-source_authors:   OpenBMP (Dmitri Arekhta) for the Phase-4.B FC closure
-source_id:        Synthetic OpenBMP Phase-4.B FC fixture
+source_authors:   OpenBMP (Dmitri Arekhta) for the Phase-4.C FC audit pass
+source_id:        Synthetic OpenBMP Phase-4.C FC fixture
 source_url:       —
 publication_date: 2026-04-30
 methodology_reference: >-
-  `docs/phase-4b-plan.md § F3` documents the closed-loop scenario
-  contract; `crates/openbmp-fc/tests/closed_loop.rs` exercises the
-  same pipeline at the integration-test layer.
+  `docs/phase-4c-audit.md` documents the bridge and audit gates;
+  `crates/openbmp-fc/tests/closed_loop.rs` exercises the same
+  pipeline at the integration-test layer.
 ```
 
 ## Closed-loop attitude-hold validation — provenance
@@ -42,10 +42,10 @@ Not validated against any published flight-test record.
 `crates/openbmp-fc/tests/closed_loop.rs` runs on the same pipeline
 this scenario describes.
 
-`experimental` for the scenario-driven kernel run, since the
-kernel↔FC bridge is reserved for a follow-up phase. Until that
-bridge lands, this scenario is exercised by parser-side validation
-only (`cargo test -p openbmp-scenario`).
+`experimental` for the scenario-driven kernel run. The Phase 4.C
+bridge runs this scenario through the point-mass kernel and controller
+lockstep, but the case is still synthetic and is not a published
+flight-dynamics benchmark.
 
 ## Synthetic data declaration
 
@@ -60,33 +60,34 @@ Every input in this scenario is synthetic:
 - Barometer samples = 101 325 Pa (sea-level standard).
 - Magnetometer samples = 30 000 nT along ECI +z (equatorial-surface
   dipole).
-- EKF / autopilot / health / FDIR parameters are textbook
-  academic defaults (Stevens & Lewis 2015, Bar-Shalom-Li-Kirubarajan
-  §5.4).
+- EKF / autopilot / health / FDIR parameters are scenario-declared
+  academic tunings (Stevens & Lewis 2015,
+  Bar-Shalom-Li-Kirubarajan §5.4).
 - Mission phase graph: pad → ascent at t = 0.1 s.
 
 No external published reference informs any number in this file.
 
 ## Algorithms
 
-- EKF: 15-state error-state with the constant flat-Earth gravity
-  model and the Phase-4.B `EarthDipoleField` magnetic-field model
-  (degree-1 truncation of WMM).
+- EKF: 15-state error-state with constant flat-Earth gravity,
+  Gauss-Markov bias dynamics, iterated magnetometer update, and the
+  Phase-4.C `EarthDipoleField` magnetic-field model (degree-1
+  truncation of WMM).
 - Three-loop autopilot: rate / attitude / trajectory PID with
   anti-windup back-calculation.
 - Mixer: phase-gated actuator authority via `PhaseAuthorityTable`.
 - Health monitor: bus-sequence-based staleness detection.
 - FDIR: burst-counter detector publishing `fdir.status`.
 
-## Phase 4.C deferrals
+## Not exercised by this scenario
 
 This scenario does NOT exercise:
 
-- A real UKF (Phase 4.C deferral).
-- A real MPC backed by a vetted convex-QP solver (Phase 4.C).
-- LCvxLD / SCvx powered-descent guidance (Phase 4.C).
+- The UKF estimator path.
+- Real MPC / SOCP primitives behind the `mpc` feature.
+- LCvxLD / SCvx powered-descent trajectory reproduction.
 - Full WMM 2025 spherical-harmonic field with the COF dataset
-  (Phase 4.C).
+  (Phase 5).
 
 ## Sources
 
@@ -100,5 +101,11 @@ This scenario does NOT exercise:
 
 ## Pinned files
 
-This scenario references no external data files; all parameters are
-inline.
+This scenario references synthetic sensor files with their own
+provenance records:
+
+- `data/sensors/imu-consumer-mems.toml`
+- `data/sensors/gnss-textbook.toml`
+- `data/sensors/magnetometer-textbook.toml`
+
+Vehicle, FC, mission, and validation parameters are inline.

@@ -19,7 +19,8 @@ use openbmp_sensors::{Sensor, SensorMeasurement, Timestamped};
 use crate::error::ControllerError;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{
-    BarometerSample, GnssSample, ImuSample, MagnetometerSample, StarTrackerSample,
+    BarometerSample, GnssSample, ImuSample, MAX_SENSOR_STATUS_LANES, MagnetometerSample,
+    SensorKind, SensorStatus, StarTrackerSample,
 };
 use crate::voter::Voter;
 
@@ -317,16 +318,30 @@ fn vote_vec3<V: Voter<f64>>(voter: &V, samples: &[Vector3<f64>]) -> Option<(Vect
     if samples.is_empty() {
         return None;
     }
-    let xs: Vec<f64> = samples.iter().map(|s| s.x).collect();
-    let ys: Vec<f64> = samples.iter().map(|s| s.y).collect();
-    let zs: Vec<f64> = samples.iter().map(|s| s.z).collect();
-    let vx = voter.vote(&xs)?;
-    let vy = voter.vote(&ys)?;
-    let vz = voter.vote(&zs)?;
+    let count = samples.len().min(MAX_SENSOR_STATUS_LANES);
+    let mut xs = [0.0_f64; MAX_SENSOR_STATUS_LANES];
+    let mut ys = [0.0_f64; MAX_SENSOR_STATUS_LANES];
+    let mut zs = [0.0_f64; MAX_SENSOR_STATUS_LANES];
+    for (i, sample) in samples.iter().take(count).enumerate() {
+        xs[i] = sample.x;
+        ys[i] = sample.y;
+        zs[i] = sample.z;
+    }
+    let vx = voter.vote(&xs[..count])?;
+    let vy = voter.vote(&ys[..count])?;
+    let vz = voter.vote(&zs[..count])?;
     Some((
         Vector3::new(vx.value, vy.value, vz.value),
         vx.divergent || vy.divergent || vz.divergent,
     ))
+}
+
+fn vec3_sample_diverges<V: Voter<f64>>(
+    voter: &V,
+    sample: Vector3<f64>,
+    fused: Vector3<f64>,
+) -> bool {
+    (0..3).any(|axis| voter.sample_diverges(sample[axis], fused[axis]))
 }
 
 /// Voted ingest job for redundant IMU lanes. Reads every source on
@@ -375,10 +390,24 @@ where
         self.name
     }
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
-        let mut gyros = Vec::with_capacity(self.sensors.len());
-        let mut accels = Vec::with_capacity(self.sensors.len());
+        let mut gyros = [Vector3::zeros(); MAX_SENSOR_STATUS_LANES];
+        let mut accels = [Vector3::zeros(); MAX_SENSOR_STATUS_LANES];
+        let mut sample_lanes = [0_usize; MAX_SENSOR_STATUS_LANES];
+        let mut sample_count = 0_usize;
+        let mut status = SensorStatus {
+            time: ctx.clock.now(),
+            kind: SensorKind::Imu,
+            lane_count: u8::try_from(self.sensors.len().min(MAX_SENSOR_STATUS_LANES))
+                .unwrap_or(u8::MAX),
+            overflowed: self.sensors.len() > MAX_SENSOR_STATUS_LANES,
+            ..SensorStatus::default()
+        };
         let mut last_time = openbmp_core::SimTime::ZERO;
-        for sensor in &mut self.sensors {
+        for (lane_index, sensor) in self.sensors.iter_mut().enumerate() {
+            if lane_index < MAX_SENSOR_STATUS_LANES {
+                status.lanes[lane_index].sensor_id = sensor.sensor_id().value();
+                status.lanes[lane_index].lane_index = u8::try_from(lane_index).unwrap_or(u8::MAX);
+            }
             if let Ok(Timestamped {
                 time,
                 value:
@@ -388,23 +417,48 @@ where
                     },
             }) = sensor.read()
             {
-                gyros.push(gyro_rad_s);
-                accels.push(accel_m_s2);
+                if lane_index < MAX_SENSOR_STATUS_LANES {
+                    status.lanes[lane_index].healthy = true;
+                }
+                if sample_count < MAX_SENSOR_STATUS_LANES {
+                    gyros[sample_count] = gyro_rad_s;
+                    accels[sample_count] = accel_m_s2;
+                    sample_lanes[sample_count] = lane_index;
+                    sample_count += 1;
+                }
                 last_time = time;
             }
         }
-        let Some((gyro, gyro_divergent)) = vote_vec3(&self.voter, &gyros) else {
+        let Some((gyro, gyro_divergent)) = vote_vec3(&self.voter, &gyros[..sample_count]) else {
             return Ok(());
         };
-        let Some((accel, accel_divergent)) = vote_vec3(&self.voter, &accels) else {
+        let Some((accel, accel_divergent)) = vote_vec3(&self.voter, &accels[..sample_count]) else {
             return Ok(());
         };
+        for sample_index in 0..sample_count {
+            let lane_index = sample_lanes[sample_index];
+            if lane_index >= MAX_SENSOR_STATUS_LANES {
+                continue;
+            }
+            let gyro_lane_divergent = (0..3).any(|axis| {
+                self.voter
+                    .sample_diverges(gyros[sample_index][axis], gyro[axis])
+            });
+            let accel_lane_divergent = (0..3).any(|axis| {
+                self.voter
+                    .sample_diverges(accels[sample_index][axis], accel[axis])
+            });
+            let lane_divergent = gyro_lane_divergent || accel_lane_divergent;
+            status.lanes[lane_index].divergent = lane_divergent;
+            status.any_divergent |= lane_divergent;
+        }
         let _ = ctx.bus.publish(ImuSample {
             time: last_time,
             gyro_rad_s: gyro,
             accel_m_s2: accel,
             healthy: !(gyro_divergent || accel_divergent),
         });
+        let _ = ctx.bus.publish(status);
         Ok(())
     }
 }
@@ -455,8 +509,21 @@ where
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
         let mut pressures = Vec::with_capacity(self.sensors.len());
         let mut biases = Vec::with_capacity(self.sensors.len());
+        let mut sample_lanes = Vec::with_capacity(self.sensors.len());
+        let mut status = SensorStatus {
+            time: ctx.clock.now(),
+            kind: SensorKind::Barometer,
+            lane_count: u8::try_from(self.sensors.len().min(MAX_SENSOR_STATUS_LANES))
+                .unwrap_or(u8::MAX),
+            overflowed: self.sensors.len() > MAX_SENSOR_STATUS_LANES,
+            ..SensorStatus::default()
+        };
         let mut last_time = openbmp_core::SimTime::ZERO;
-        for sensor in &mut self.sensors {
+        for (lane_index, sensor) in self.sensors.iter_mut().enumerate() {
+            if lane_index < MAX_SENSOR_STATUS_LANES {
+                status.lanes[lane_index].sensor_id = sensor.sensor_id().value();
+                status.lanes[lane_index].lane_index = u8::try_from(lane_index).unwrap_or(u8::MAX);
+            }
             if let Ok(Timestamped {
                 time,
                 value:
@@ -466,8 +533,12 @@ where
                     },
             }) = sensor.read()
             {
+                if lane_index < MAX_SENSOR_STATUS_LANES {
+                    status.lanes[lane_index].healthy = true;
+                }
                 pressures.push(pressure_pa);
                 biases.push(bias_pa);
+                sample_lanes.push(lane_index);
                 last_time = time;
             }
         }
@@ -477,12 +548,22 @@ where
         let Some(b) = self.voter.vote(&biases) else {
             return Ok(());
         };
+        for (sample_index, lane_index) in sample_lanes.iter().copied().enumerate() {
+            if lane_index >= MAX_SENSOR_STATUS_LANES {
+                continue;
+            }
+            let lane_divergent = self.voter.sample_diverges(pressures[sample_index], p.value)
+                || self.voter.sample_diverges(biases[sample_index], b.value);
+            status.lanes[lane_index].divergent = lane_divergent;
+            status.any_divergent |= lane_divergent;
+        }
         let _ = ctx.bus.publish(BarometerSample {
             time: last_time,
             pressure_pa: p.value,
             bias_pa: b.value,
             healthy: !(p.divergent || b.divergent),
         });
+        let _ = ctx.bus.publish(status);
         Ok(())
     }
 }
@@ -534,8 +615,21 @@ where
         let mut positions = Vec::with_capacity(self.sensors.len());
         let mut velocities = Vec::with_capacity(self.sensors.len());
         let mut biases = Vec::with_capacity(self.sensors.len());
+        let mut sample_lanes = Vec::with_capacity(self.sensors.len());
+        let mut status = SensorStatus {
+            time: ctx.clock.now(),
+            kind: SensorKind::Gnss,
+            lane_count: u8::try_from(self.sensors.len().min(MAX_SENSOR_STATUS_LANES))
+                .unwrap_or(u8::MAX),
+            overflowed: self.sensors.len() > MAX_SENSOR_STATUS_LANES,
+            ..SensorStatus::default()
+        };
         let mut last_time = openbmp_core::SimTime::ZERO;
-        for sensor in &mut self.sensors {
+        for (lane_index, sensor) in self.sensors.iter_mut().enumerate() {
+            if lane_index < MAX_SENSOR_STATUS_LANES {
+                status.lanes[lane_index].sensor_id = sensor.sensor_id().value();
+                status.lanes[lane_index].lane_index = u8::try_from(lane_index).unwrap_or(u8::MAX);
+            }
             if let Ok(Timestamped {
                 time,
                 value:
@@ -546,9 +640,13 @@ where
                     },
             }) = sensor.read()
             {
+                if lane_index < MAX_SENSOR_STATUS_LANES {
+                    status.lanes[lane_index].healthy = true;
+                }
                 positions.push(position_eci_m);
                 velocities.push(velocity_eci_m_s);
                 biases.push(position_bias_eci_m);
+                sample_lanes.push(lane_index);
                 last_time = time;
             }
         }
@@ -561,6 +659,17 @@ where
         let Some((bias, bias_div)) = vote_vec3(&self.voter, &biases) else {
             return Ok(());
         };
+        for (sample_index, lane_index) in sample_lanes.iter().copied().enumerate() {
+            if lane_index >= MAX_SENSOR_STATUS_LANES {
+                continue;
+            }
+            let lane_divergent =
+                vec3_sample_diverges(&self.voter, positions[sample_index], position)
+                    || vec3_sample_diverges(&self.voter, velocities[sample_index], velocity)
+                    || vec3_sample_diverges(&self.voter, biases[sample_index], bias);
+            status.lanes[lane_index].divergent = lane_divergent;
+            status.any_divergent |= lane_divergent;
+        }
         let _ = ctx.bus.publish(GnssSample {
             time: last_time,
             position_eci_m: position,
@@ -568,6 +677,7 @@ where
             position_bias_eci_m: bias,
             healthy: !(position_div || velocity_div || bias_div),
         });
+        let _ = ctx.bus.publish(status);
         Ok(())
     }
 }
@@ -618,8 +728,21 @@ where
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
         let mut fields = Vec::with_capacity(self.sensors.len());
         let mut hard_irons = Vec::with_capacity(self.sensors.len());
+        let mut sample_lanes = Vec::with_capacity(self.sensors.len());
+        let mut status = SensorStatus {
+            time: ctx.clock.now(),
+            kind: SensorKind::Magnetometer,
+            lane_count: u8::try_from(self.sensors.len().min(MAX_SENSOR_STATUS_LANES))
+                .unwrap_or(u8::MAX),
+            overflowed: self.sensors.len() > MAX_SENSOR_STATUS_LANES,
+            ..SensorStatus::default()
+        };
         let mut last_time = openbmp_core::SimTime::ZERO;
-        for sensor in &mut self.sensors {
+        for (lane_index, sensor) in self.sensors.iter_mut().enumerate() {
+            if lane_index < MAX_SENSOR_STATUS_LANES {
+                status.lanes[lane_index].sensor_id = sensor.sensor_id().value();
+                status.lanes[lane_index].lane_index = u8::try_from(lane_index).unwrap_or(u8::MAX);
+            }
             if let Ok(Timestamped {
                 time,
                 value:
@@ -629,8 +752,12 @@ where
                     },
             }) = sensor.read()
             {
+                if lane_index < MAX_SENSOR_STATUS_LANES {
+                    status.lanes[lane_index].healthy = true;
+                }
                 fields.push(field_body_nt);
                 hard_irons.push(hard_iron_body_nt);
+                sample_lanes.push(lane_index);
                 last_time = time;
             }
         }
@@ -640,12 +767,22 @@ where
         let Some((hard_iron, hard_iron_div)) = vote_vec3(&self.voter, &hard_irons) else {
             return Ok(());
         };
+        for (sample_index, lane_index) in sample_lanes.iter().copied().enumerate() {
+            if lane_index >= MAX_SENSOR_STATUS_LANES {
+                continue;
+            }
+            let lane_divergent = vec3_sample_diverges(&self.voter, fields[sample_index], field)
+                || vec3_sample_diverges(&self.voter, hard_irons[sample_index], hard_iron);
+            status.lanes[lane_index].divergent = lane_divergent;
+            status.any_divergent |= lane_divergent;
+        }
         let _ = ctx.bus.publish(MagnetometerSample {
             time: last_time,
             field_body_nt: field,
             hard_iron_body_nt: hard_iron,
             healthy: !(field_div || hard_iron_div),
         });
+        let _ = ctx.bus.publish(status);
         Ok(())
     }
 }

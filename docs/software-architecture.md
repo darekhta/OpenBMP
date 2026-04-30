@@ -117,7 +117,7 @@ openbmp/
 │   ├── openbmp-core/                    # L0: math, units, frames, time, RNG
 │   ├── openbmp-sim/                     # L1: kernel, scheduler, integrators
 │   ├── openbmp-state/                   # L1: state types (point-mass, rigid)
-│   ├── openbmp-env/                     # L2: atmosphere, gravity, wind, mag
+│   ├── openbmp-physics/                 # L2: atmosphere, gravity, wind, magnetic, error
 │   ├── openbmp-vehicle/                 # L2: rigid body, mass models,
 │   │   ├── assembly/                    #     VehicleAssembly tree (Phase 3)
 │   │   ├── effector/                    #     ControlEffector trait (Phase 3)
@@ -357,7 +357,7 @@ pub fn step(&mut self) -> Result<(), SimulationError> {
         active.sensor_groups_due(),
     );
 
-    // 6. Tick virtual flight controller when due. The resulting command is
+    // 6. Tick simulator-local flight controller when due. The resulting command is
     // consumed by effectors on the next base tick and is zero-order-held
     // between controller ticks.
     if active.controller_due() {
@@ -690,7 +690,7 @@ scenario. The scenario file lists `force_models = ["aero", "gravity_force",
 
 ### Atmosphere
 
-`openbmp-env::atmosphere`:
+`openbmp-physics::atmosphere`:
 - `IsothermalAtmosphere` — `experimental` toy.
 - `UsStandard1976` — implemented in-house from public coefficients;
   validity range 0–86 km; status `validated-toy` once cross-checked against
@@ -1497,7 +1497,7 @@ declare their noise class explicitly.
 > canonical magnetic-field truth at
 > `data/magnetic/WMM.COF` (NOAA NCEI / NGA / UK DGC, December 2024
 > release; SHA-256-pinned in `data/magnetic/provenance.md`). The
-> [`Wmm2025`](../crates/openbmp-env/src/magnetic/wmm2025.rs)
+> [`Wmm2025`](../crates/openbmp-physics/src/magnetic/wmm2025.rs)
 > implementation is a direct port of the NOAA reference algorithm
 > (Gauss-recursion with Schmidt-multiplied coefficients; all 100
 > shipped NOAA reference rows match within 5 nT per component).
@@ -1575,12 +1575,12 @@ Validation cases include constant-density terminal-velocity checks,
 deployment-event ordering, and fail-closed behavior for invalid deployment
 conditions.
 
-## Virtual Flight Controller
+## Flight Controller
 
-`openbmp-fc` is the controller framework. It is **simulator-local**: every
-output is consumed by a simulator-internal model or by the optional generic
-socket bridge. There are no real bus protocols, no real device drivers, and
-no targeting / terminal-homing logic.
+`openbmp-fc` is the controller crate. It is **simulator-local** in this
+repository: every output is consumed by a simulator-internal model or by the
+optional generic socket bridge. There are no real bus protocols, no real
+device drivers, and no targeting / terminal-homing logic.
 
 Top-level structure:
 
@@ -1605,7 +1605,10 @@ pub struct FcOutput {
 }
 ```
 
-Internally, the controller is composed of four sub-modules.
+The public crate uses a typed bus, cyclic scheduler, commander, estimator,
+guidance, autopilot, mixer, health, FDIR, replay, and runner-facing command
+topics. The trait sketch above captures the architectural boundary; the
+actual crate exposes a `FlightController` façade over those jobs.
 
 ### Estimator
 
@@ -1614,7 +1617,7 @@ Sensor fusion / state estimation. Available implementations:
 - `IdealEstimator` (pass-through truth, test only).
 - `Ekf` — standard Extended Kalman Filter for position/velocity.
 - `Mekf` — Multiplicative EKF for quaternion attitude.
-- `Ukf` — Unscented Kalman Filter (Phase 4.C deferral; not in tree).
+- `Ukf` — 6-state sigma-point UKF for attitude + gyro-bias validation.
 
 ```rust
 pub trait Estimator {
@@ -1628,8 +1631,9 @@ Each implementation documents the process model, measurement models, noise
 covariances, and validation status. The `Ekf` implementation follows the
 canonical 15-state error-state academic formulation (position, velocity,
 attitude, accelerometer bias, gyroscope bias) used in NaveGo and the
-NorthStarUAS `insgnss_tools` library; magnetometer-augmented variants are
-a Phase-4 option. Filter validation borrows the side-by-side
+NorthStarUAS `insgnss_tools` library; magnetometer, barometer,
+Gauss-Markov bias dynamics, Joseph covariance updates, and WGS84-J2
+gravity are implemented in the Phase 4.C pass. Filter validation borrows the side-by-side
 filter-comparison harness pattern from those projects: two filters run on
 the same scenario with different noise settings and the testkit emits a
 compare report. References: NaveGo (Rodríguez et al., MATLAB/Octave),
@@ -1656,7 +1660,9 @@ pub struct ThreeLoopAutopilot {
 
 The three-loop architecture (inner rate, outer attitude, outer command) is
 the canonical academic formulation in Stevens, B. L. and Lewis, F. L.,
-*Aircraft Control and Simulation* (Wiley, 3rd ed., 2015). Gains are
+*Aircraft Control and Simulation* (Wiley, 3rd ed., 2015). Phase 4.C adds
+optional gyro notch filtering, differential-flatness attitude-reference
+generation, and feature-gated L1 adaptive rate-loop augmentation. Gains are
 scenario-supplied. The OpenBMP repository ships only **academic** gain
 sets for canonical toy vehicles; no real fielded tuning data is included.
 The trait surface, however, accepts any scenario-supplied gain table —
@@ -2198,7 +2204,7 @@ the phased plan. The short version:
   telemetry exporters.
 - **Phase 3** — Modular models (aero deck, motor format, wind, additional
   sensors), property + fuzz tests.
-- **Phase 4** — Virtual flight controller (estimator, autopilot, mission
+- **Phase 4** — Flight controller (estimator, autopilot, mission
   FSM, academic guidance, FDIR).
 - **Phase 5** — Adaptive integrators behind profile flags, public-benchmark
   validation, optional socket-bridge HIL pattern, optional many-body

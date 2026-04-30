@@ -1,5 +1,5 @@
 //! Kernel-side adapters that wrap L2 physics models
-//! (`openbmp-env`, `openbmp-aero`, `openbmp-propulsion`) into
+//! (`openbmp-physics`, `openbmp-aero`, `openbmp-propulsion`) into
 //! `openbmp-sim` `ForceModel` / `MassModel` impls consumable by
 //! the kernel and by [`crate::KernelVehicle`].
 //!
@@ -34,11 +34,11 @@
 use nalgebra::Vector3;
 
 use openbmp_aero::{AeroDeck, AeroError};
-use openbmp_env::{AtmosphereModel, GravityModel};
 use openbmp_models::{
     ForceContext, ForceModel, MassModel, MassPropertiesRate, ModelEvalError, MomentContext,
     MomentModel, RigidMassModel,
 };
+use openbmp_physics::{AtmosphereModel, GravityModel};
 use openbmp_propulsion::Motor;
 use openbmp_state::{MassProperties, PointMassState, RigidBodyState};
 
@@ -51,7 +51,7 @@ use uom::si::mass::kilogram;
 // GravityForceAdapter
 // ---------------------------------------------------------------------
 
-/// Wraps an [`openbmp_env::GravityModel`] as a kernel-side
+/// Wraps an [`openbmp_physics::GravityModel`] as a kernel-side
 /// [`ForceModel<PointMassState>`].
 ///
 /// The kernel passes `mass_kg` through `ForceContext`, so the
@@ -333,7 +333,7 @@ impl<M: Motor> MassModel for MotorMassAdapter<M> {
 
 /// Point-mass axial-drag adapter.
 ///
-/// Wraps an [`openbmp_aero::AeroDeck`] + [`openbmp_env::AtmosphereModel`]
+/// Wraps an [`openbmp_aero::AeroDeck`] + [`openbmp_physics::AtmosphereModel`]
 /// as a `ForceModel<PointMassState>` that produces only axial drag
 /// (`F = -CD · q · S · v_hat`) opposing the vehicle's ECI velocity.
 /// Wind is assumed zero — Phase-3 will introduce a wind-aware
@@ -1363,8 +1363,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use openbmp_core::{EngineId, Position3, SimTime, Velocity3};
-    use openbmp_env::{AtmosphereSample, ConstantGravity, EnvError, IsothermalAtmosphere};
     use openbmp_models::EnvironmentSample;
+    use openbmp_physics::{AtmosphereSample, ConstantGravity, IsothermalAtmosphere, PhysicsError};
     use openbmp_propulsion::{EngineSnapshot, EngineState, SolidMotor};
     use proptest::prelude::*;
     use uom::si::f64::Mass;
@@ -1951,8 +1951,8 @@ mod tests {
             &self,
             _altitude_geometric_m: f64,
             _time: SimTime,
-        ) -> Result<AtmosphereSample, EnvError> {
-            Err(EnvError::OutOfEnvelope {
+        ) -> Result<AtmosphereSample, PhysicsError> {
+            Err(PhysicsError::OutOfEnvelope {
                 reason: "test atmosphere should not be sampled",
             })
         }

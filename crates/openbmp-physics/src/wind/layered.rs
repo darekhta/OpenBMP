@@ -28,7 +28,7 @@
 
 use openbmp_core::{Eci, FrameContext, Ned, Position3, SimTime, Velocity3};
 
-use crate::error::EnvError;
+use crate::error::PhysicsError;
 
 use super::WindModel;
 
@@ -64,19 +64,19 @@ impl LayeredWind {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::InvalidParameter`] when the table is empty
+    /// Returns [`PhysicsError::InvalidParameter`] when the table is empty
     /// or altitudes are not strictly ascending. Returns
-    /// [`EnvError::NonFinite`] when any altitude or wind component is
+    /// [`PhysicsError::NonFinite`] when any altitude or wind component is
     /// non-finite.
-    pub fn new(layers: Vec<LayerEntry>) -> Result<Self, EnvError> {
+    pub fn new(layers: Vec<LayerEntry>) -> Result<Self, PhysicsError> {
         if layers.is_empty() {
-            return Err(EnvError::InvalidParameter {
+            return Err(PhysicsError::InvalidParameter {
                 reason: "LayeredWind requires at least one layer entry",
             });
         }
         for entry in &layers {
             if !entry.altitude_m.is_finite() {
-                return Err(EnvError::NonFinite {
+                return Err(PhysicsError::NonFinite {
                     reason: "LayeredWind layer altitude is NaN or infinite",
                 });
             }
@@ -84,14 +84,14 @@ impl LayeredWind {
                 || !entry.wind_ned_m_s.vector.y.is_finite()
                 || !entry.wind_ned_m_s.vector.z.is_finite()
             {
-                return Err(EnvError::NonFinite {
+                return Err(PhysicsError::NonFinite {
                     reason: "LayeredWind layer wind component is NaN or infinite",
                 });
             }
         }
         for window in layers.windows(2) {
             if window[1].altitude_m <= window[0].altitude_m {
-                return Err(EnvError::InvalidParameter {
+                return Err(PhysicsError::InvalidParameter {
                     reason: "LayeredWind layer altitudes must be strictly ascending",
                 });
             }
@@ -160,14 +160,14 @@ impl WindModel for LayeredWind {
         position_eci: Position3<Eci>,
         _frame: &FrameContext,
         _time: SimTime,
-    ) -> Result<Velocity3<Ned>, EnvError> {
+    ) -> Result<Velocity3<Ned>, PhysicsError> {
         // Phase-3.8 altitude proxy: position_eci.vector.z. See module
         // docstring — matches the Phase-2.4 axial-drag adapter
         // convention. A future geodetic-altitude resolver replaces
         // this for atmosphere and wind in lockstep.
         let altitude_m = position_eci.vector.z;
         if !altitude_m.is_finite() {
-            return Err(EnvError::NonFinite {
+            return Err(PhysicsError::NonFinite {
                 reason: "LayeredWind altitude proxy (position_eci.z) is non-finite",
             });
         }
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn rejects_empty_layer_list() {
         let result = LayeredWind::new(vec![]);
-        assert!(matches!(result, Err(EnvError::InvalidParameter { .. })));
+        assert!(matches!(result, Err(PhysicsError::InvalidParameter { .. })));
     }
 
     #[test]
@@ -214,7 +214,7 @@ mod tests {
             LayerEntry::new(1000.0, 0.0, 0.0, 0.0),
             LayerEntry::new(500.0, 0.0, 0.0, 0.0),
         ]);
-        assert!(matches!(result, Err(EnvError::InvalidParameter { .. })));
+        assert!(matches!(result, Err(PhysicsError::InvalidParameter { .. })));
     }
 
     #[test]
@@ -223,19 +223,19 @@ mod tests {
             LayerEntry::new(1000.0, 0.0, 0.0, 0.0),
             LayerEntry::new(1000.0, 5.0, 0.0, 0.0),
         ]);
-        assert!(matches!(result, Err(EnvError::InvalidParameter { .. })));
+        assert!(matches!(result, Err(PhysicsError::InvalidParameter { .. })));
     }
 
     #[test]
     fn rejects_non_finite_altitude() {
         let result = LayeredWind::new(vec![LayerEntry::new(f64::NAN, 0.0, 0.0, 0.0)]);
-        assert!(matches!(result, Err(EnvError::NonFinite { .. })));
+        assert!(matches!(result, Err(PhysicsError::NonFinite { .. })));
     }
 
     #[test]
     fn rejects_non_finite_wind_component() {
         let result = LayeredWind::new(vec![LayerEntry::new(0.0, f64::INFINITY, 0.0, 0.0)]);
-        assert!(matches!(result, Err(EnvError::NonFinite { .. })));
+        assert!(matches!(result, Err(PhysicsError::NonFinite { .. })));
     }
 
     #[test]
@@ -348,7 +348,7 @@ mod tests {
     fn wind_model_rejects_non_finite_altitude() {
         let lw = three_layer_table();
         let result = lw.wind_ned_m_s(pos(f64::NAN), &frame(), SimTime::ZERO);
-        assert!(matches!(result, Err(EnvError::NonFinite { .. })));
+        assert!(matches!(result, Err(PhysicsError::NonFinite { .. })));
     }
 
     // -----------------------------------------------------------------

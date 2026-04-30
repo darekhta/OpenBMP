@@ -138,4 +138,20 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn openbmp_cli_fc_bridge_has_no_wall_clock_calls() {
+        let bridge = project_root().join("crates/openbmp-cli/src/runner/fc_bridge.rs");
+        let mut findings = TripwireFindings::default();
+        scan_file(&bridge, &mut findings).expect("scan openbmp-cli fc_bridge");
+        if findings.has_violations() {
+            for (p, line, pat) in &findings.matches {
+                eprintln!("{}:{} matches banned pattern {}", p.display(), line, pat);
+            }
+            panic!(
+                "lockstep-clock contract violated: openbmp-cli fc_bridge must not \
+                 reach for std::time wall-clock APIs"
+            );
+        }
+    }
 }

@@ -23,7 +23,7 @@
 //! Schmidt-normalized Legendre recursion and the spherical-
 //! harmonic summation. Cross-platform last-bit determinism for
 //! `sin` / `cos` / `sqrt` is the same posture as the rest of
-//! `openbmp-env` — Linux CI gate is the only proof point.
+//! `openbmp-physics` — Linux CI gate is the only proof point.
 //!
 //! # Crate layering
 //!
@@ -33,33 +33,61 @@
 //! `MagneticModel` into the synthetic-magnetometer measurement
 //! chain ships with Phase 3.10.C.
 
+pub mod dipole;
 pub mod wmm2025;
 
+pub use dipole::EarthDipoleField;
 pub use wmm2025::Wmm2025;
 
 use nalgebra::Vector3;
 use openbmp_core::{Eci, Position3, SimTime};
 
-use crate::error::EnvError;
+use crate::error::PhysicsError;
 
-/// Trait implemented by magnetic-field models.
+/// Textbook equatorial surface magnetic-field magnitude (nT) for the
+/// degree-1 dipole placeholder.
+pub const EARTH_DIPOLE_EQUATORIAL_FIELD_NT: f64 = 30_000.0;
+
+/// Trait implemented by full geodetic-NED magnetic-field models.
 ///
-/// Phase 3.10 ships [`Wmm2025`] as the canonical impl. Future
-/// phases may add IGRF or higher-resolution regional models.
+/// [`Wmm2025`] is the canonical sim-side impl: full 12-degree
+/// spherical harmonic, NOAA / NCEI 2025 dataset, NED output. The
+/// kernel-side adapter rotates NED → body via the active
+/// [`openbmp_core::FrameContext`].
+///
+/// Models that produce ECI directly (e.g. [`EarthDipoleField`])
+/// implement [`MagneticFieldEci`] instead. Both traits coexist so
+/// FC-side estimators (which work in ECI without geodetic
+/// machinery) and sim-side magnetometer adapters (which work in NED
+/// + frame context) each consume the trait that fits.
 pub trait MagneticModel {
     /// Sample the geodetic-NED magnetic flux density at a given
     /// inertial position and time.
     ///
     /// # Errors
     ///
-    /// Returns [`EnvError::OutOfEnvelope`] when the model's
+    /// Returns [`PhysicsError::OutOfEnvelope`] when the model's
     /// validity envelope rejects the query (e.g. WMM 2025 outside
     /// `[2025.0, 2030.0]` decimal-year range), and
-    /// [`EnvError::NonFinite`] when intermediate evaluation
+    /// [`PhysicsError::NonFinite`] when intermediate evaluation
     /// produces a non-finite result.
     fn field_ned_nt(
         &self,
         position_eci: Position3<Eci>,
         time: SimTime,
-    ) -> Result<Vector3<f64>, EnvError>;
+    ) -> Result<Vector3<f64>, PhysicsError>;
+}
+
+/// Trait implemented by magnetic-field models that emit ECI vectors
+/// directly. Used by the FC's estimators which operate in ECI without
+/// dragging in geodetic-conversion machinery.
+///
+/// Out-of-envelope inputs return a finite vector (clamped to the
+/// nearest physical fallback), never an error — the FC's hot path
+/// must remain total. Models that need to surface envelope errors
+/// implement [`MagneticModel`] instead.
+pub trait MagneticFieldEci: std::fmt::Debug + Send + Sync {
+    /// Sample the magnetic flux density at an ECI position and
+    /// simulation time, in **nanotesla (nT)**, expressed in ECI.
+    fn field_eci_nt(&self, position_eci_m: Vector3<f64>, time: SimTime) -> Vector3<f64>;
 }

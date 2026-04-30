@@ -47,9 +47,90 @@ fields over compact syntax.
 | `[solver]` | no | Integrator / solver profile; required for Phase-6 hypersonic scenarios |
 | `[data_packages]` | no | External real-data or high-fidelity reference package sidecars |
 | `[sensors]` | no | Synthetic sensor models |
-| `[fc]` | no | Simulator-local virtual flight controller |
+| `[fc]` | no | Simulator-local flight controller |
 | `[faults]` | no | Scenario-injected fault models |
 | `[batch]` | no | Batch or Monte Carlo sweep metadata |
+
+## Flight Controller Block
+
+`[fc]` is simulator-local. It configures a controller that is
+safe-boundary constrained and does not imply hardware support.
+
+```toml
+[fc]
+estimator        = "ekf"          # "ekf" | "mekf"
+autopilot        = "three_loop"
+guidance         = "attitude_hold" # "attitude_hold" | "waypoint"
+reference_q_xyzw = [0.0, 0.0, 0.0, 1.0]
+base_rate_hz     = 1000
+frame_budget_us  = 2000
+
+[fc.ekf]
+sigma_w_gyro               = 0.01
+sigma_w_accel_bias         = 1.0e-4
+sigma_w_gyro_bias          = 1.0e-5
+tau_gyro_bias_s            = 100.0
+tau_accel_bias_s           = 100.0
+sigma_gnss_pos_m           = 5.0
+sigma_gnss_vel_m_s         = 0.5
+sigma_baro_alt_m           = 2.0
+sigma_mag_nt               = 100.0
+innovation_false_alarm_rate = 0.01
+dead_reckon_timeout_s      = 1.5
+
+[fc.autopilot_params]
+anti_windup_gain        = 1.0
+rate_deadband_rad_s     = 0.001
+trajectory_loop_enabled = false
+trajectory_kind         = "pid" # "pid" | "differential_flatness"
+
+[fc.health]
+imu_stale_after_s   = 0.05
+gnss_stale_after_s  = 0.5
+baro_stale_after_s  = 10.0
+mag_stale_after_s   = 0.2
+overrun_burst_count = 5
+
+[fc.fdir]
+detector_kind          = "burst_counter" # "burst_counter" | "glrt" | "cusum"
+innovation_threshold   = 25.0
+innovation_burst_count = 5
+failsafe_burst_count   = 5
+
+[fc.gain_schedule."mission.phases.ascent"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.actuator_channels]
+elevator = "delta_e"
+aileron  = "delta_a"
+rudder   = "delta_r"
+
+[fc.phase_authority."mission.phases.ascent"]
+autopilot_allowed = true
+engines_allowed   = true
+```
+
+`frame_budget_us` is required when `[fc]` is present. Legacy
+`innovation_gate` remains accepted for explicit chi-square thresholds,
+but new scenarios should prefer `innovation_false_alarm_rate` so the
+controller derives the correct threshold for 1-D, 3-D, and 6-D
+measurements. `fc.actuator_channels` maps semantic controller channels
+to `[[vehicle.assembly.effectors]]` ids; bare ids are resolved as
+`vehicle.assembly.effectors.<id>`.
+
+`[fc.health]` and at least one `[fc.gain_schedule.<phase>]` entry are
+required for every FC-enabled scenario. There is no hidden
+health-threshold or academic-gain fall-through in the scenario schema;
+the scenario provenance record must explain those tunings. `[fc.fdir]`
+is optional and defaults to the controller's burst-counter parameters
+when omitted. `tau_gyro_bias_s` / `tau_accel_bias_s` are optional;
+omitting them preserves random-walk bias dynamics (`tau = infinity`).
 
 ## Minimal Example
 
@@ -495,7 +576,7 @@ Phase-2 force-model names accepted in `[forces].models`:
 
 | Name | Source | Notes |
 |---|---|---|
-| `gravity` | `openbmp-env` | Constant, point-mass, or J2 (selected by `[environment].gravity`) |
+| `gravity` | `openbmp-physics` | Constant, point-mass, or J2 (selected by `[environment].gravity`) |
 | `aero` | `openbmp-aero` | Requires `[aero]` block |
 | `thrust` | `openbmp-propulsion` | Requires `[propulsion.motor]` block |
 
