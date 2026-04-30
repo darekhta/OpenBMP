@@ -282,7 +282,7 @@ pub enum EventAction {
         /// Channel tag (`snake_case`, e.g. `"at_apogee_marker"`).
         tag: String,
     },
-    /// Halt the kernel with a [`crate::StopReason::MissionEnded`].
+    /// Halt the kernel with the simulator-side mission-ended stop reason.
     Stop {
         /// Human-readable label for the stop reason.
         label: String,

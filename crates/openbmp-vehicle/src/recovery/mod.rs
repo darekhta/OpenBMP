@@ -4,8 +4,7 @@
 //! drogue / main two-stage chutes, and generic airbrakes. They produce
 //! an aerodynamic drag force opposing the body's ECI velocity once
 //! deployed; before deployment the force is zero. They are driven by
-//! [`MissionPhaseGraph`] events through the new
-//! [`EventAction::DeployRecovery`] action.
+//! mission-phase graph events through deploy-recovery actions.
 //!
 //! Phase 3.9 ships three implementations:
 //!
@@ -50,9 +49,6 @@
 //! See `docs/scenario-format.md § Recovery and descent (Phase 3.9)`
 //! and `docs/software-architecture.md § Recovery and Descent Models`
 //! for the contract.
-//!
-//! [`MissionPhaseGraph`]: openbmp_models::MissionPhaseGraph
-//! [`EventAction::DeployRecovery`]: openbmp_models::EventAction
 
 pub mod drag_device;
 pub mod drogue_main;
@@ -101,8 +97,8 @@ impl RecoveryPhase {
     }
 }
 
-/// Command targeting one recovery device, dispatched by an
-/// [`EventAction::DeployRecovery`] firing.
+/// Command targeting one recovery device, dispatched by a deploy-recovery
+/// event firing.
 ///
 /// Each command's effect depends on the receiving model's kind:
 ///
@@ -115,8 +111,6 @@ impl RecoveryPhase {
 ///
 /// Mismatched commands surface as
 /// [`RecoveryError::UnsupportedCommand`].
-///
-/// [`EventAction::DeployRecovery`]: openbmp_models::EventAction
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum RecoveryCommand {
     /// Open the device (single-stage).

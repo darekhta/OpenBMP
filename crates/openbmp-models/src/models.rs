@@ -299,8 +299,8 @@ pub struct RecoverySnapshot {
 ///
 /// Phase 3.9 wires the runner-side `RecoveryRack` into the kernel:
 /// every kernel base tick the runner walks each recovery device's
-/// state machine (advancing it on any fired
-/// [`crate::EventAction::DeployRecovery`]), packs the resulting
+/// state machine (advancing it on any fired deploy-recovery event),
+/// packs the resulting
 /// `(phase, c_d, area)` triple into a
 /// `BTreeMap<RecoveryId, RecoverySnapshot>`, and pushes the map via
 /// `set_recovery_snapshot(...)`. The kernel-side recovery-rack

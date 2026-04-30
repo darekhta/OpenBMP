@@ -3,8 +3,8 @@
 //! Phase-3.14.A: extracted from `openbmp-sim` so model trait surfaces
 //! (`ForceModel`, `MomentModel`, `MassModel`, `RigidMassModel`,
 //! `EnvironmentModel`) can be implemented without depending on the
-//! simulator. The simulator's broader [`crate::SimulationError`]
-//! family remains in `openbmp-sim`.
+//! simulator. The simulator's broader `SimulationError` family remains
+//! in `openbmp-sim`.
 
 use std::borrow::Cow;
 

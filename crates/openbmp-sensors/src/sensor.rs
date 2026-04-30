@@ -1,16 +1,19 @@
-//! `SyntheticSensor` trait, truth-bag, and measurement enum.
+//! Sensor traits, truth-bag, and measurement enum.
 //!
 //! The kernel-side adapter (Phase 2.10) constructs a [`SensorTruth`]
 //! once per step from the kernel's state, hands it to each registered
-//! [`SyntheticSensor::measure`] implementation, and routes the
-//! returned [`SensorMeasurement`] into telemetry.
+//! synthetic sensor implementation, and routes the returned
+//! [`SensorMeasurement`] into telemetry.
 //!
-//! Phase 2.7 ships three sensors: [`crate::ideal::IdealStateSensor`],
-//! [`crate::barometer::SyntheticBarometer`], [`crate::imu::SyntheticImu`].
+//! Phase 2.7 ships three synthetic sensors: `IdealStateSensor`,
+//! `SyntheticBarometer`, and `SyntheticImu`.
 
 use nalgebra::{UnitQuaternion, Vector3};
-use openbmp_core::{Eci, Position3, SensorId, SimTime, StepIndex, Velocity3};
+#[cfg(feature = "synthetic")]
+use openbmp_core::StepIndex;
+use openbmp_core::{Eci, Position3, SensorId, SimTime, Velocity3};
 
+#[cfg(feature = "synthetic")]
 use crate::error::SensorError;
 
 // ---------------------------------------------------------------------
@@ -57,7 +60,7 @@ pub struct SensorTruth {
 // SensorMeasurement
 // ---------------------------------------------------------------------
 
-/// A typed measurement returned by a [`SyntheticSensor`].
+/// A typed measurement returned by a synthetic or hardware-backed sensor.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SensorMeasurement {
     /// Bit-equal echo of the supplied [`SensorTruth`]. Useful for
@@ -121,7 +124,7 @@ pub enum SensorMeasurement {
 
 /// Hardware-portable sensor abstraction.
 ///
-/// Phase-3.14.C extracted this from [`SyntheticSensor`] so a real
+/// Phase-3.14.C extracted this from the simulator-side sensor trait so a real
 /// flight controller — and a downstream HAL adopter — can reason
 /// about a sensor by its stable id and output type without depending
 /// on the simulator's truth-port + per-step RNG mechanism. The
@@ -153,6 +156,7 @@ pub trait Sensor {
 /// not implement this trait; they implement the supertrait
 /// [`Sensor`] directly and read from real hardware in their own
 /// runtime.
+#[cfg(feature = "synthetic")]
 pub trait SyntheticSensor: Sensor<Output = SensorMeasurement> {
     /// Produce one measurement at simulation step `step` from the
     /// supplied truth bag.

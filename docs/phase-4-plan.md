@@ -127,8 +127,8 @@ public-benchmark scenarios.
   controller-state telemetry by calling controller getters; the
   controller does not emit Parquet directly.
 
-The rule is enforced at `Cargo.toml` review time and verified by
-the inline-data tripwire's crate-graph check.
+The rule is enforced by review and by
+`openbmp-testkit`'s flight-controller dependency tripwire.
 
 ### Hardware-portability check
 
@@ -263,7 +263,7 @@ the Phase-1 / Phase-2 / Phase-3 closure pattern.
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| `openbmp-fc` accidentally imports `openbmp-sim` | Medium | High | The sub-phase exit checklist runs `cargo build -p openbmp-fc --no-default-features` and grep-checks the dependency graph. CI gate flags any new `openbmp-sim` line in `crates/openbmp-fc/Cargo.toml`. |
+| `openbmp-fc` accidentally imports `openbmp-sim` | Medium | High | The sub-phase exit checklist runs `cargo build -p openbmp-fc --no-default-features`; `openbmp-testkit`'s dependency tripwire flags any forbidden controller edge in `crates/openbmp-fc/Cargo.toml`. |
 | EKF / MEKF / UKF accumulate non-bit-stable state across reruns | Medium | High | Determinism tests on the filter equivalent to the kernel-level twin-run gate. Locked operand order on every `predict`/`update` math op. |
 | Powered-descent QP solver pulls a heavy dependency | Medium | Medium | Vet the QP solver against the project's `cargo deny` policy before importing. Permissive license, no system-time dependency, no allocation on the solve loop. In-house implementation if no acceptable solver exists. |
 | Closed-loop validation case picks a reference with insufficient controller documentation | Medium | Medium | Pre-pick the reference (RocketPy attitude controller is a known candidate) before the sub-phase begins; spike a quick comparison run during 4.1. |
@@ -284,8 +284,9 @@ Phase 4 closes when **all** of the following are true:
    without any synthetic-feature crates active. The HAL-portability
    contract holds.
 6. `crates/openbmp-fc/Cargo.toml` carries no `openbmp-sim`,
-   `openbmp-cli`, `openbmp-scenario`, or `openbmp-telemetry`
-   dependency.
+   `openbmp-cli`, `openbmp-scenario`, `openbmp-telemetry`,
+   `openbmp-bridge`, or `openbmp-aerothermal` dependency; the
+   `openbmp-testkit` dependency tripwire enforces this in CI.
 7. The Phase-1 `constant-acceleration-drop`, Phase-2
    `niskanen-2009-chapter6`, and Phase-3 `rocketpy-calisto`
    scenarios continue to produce byte-identical Parquet across two

@@ -3,14 +3,13 @@
 //! Phase 2.7 ships:
 //!
 //! * [`error`] — [`error::SensorError`].
-//! * [`noise`] — three deterministic noise primitives:
-//!   [`noise::BoxMullerGaussian`], [`noise::OrnsteinUhlenbeck`],
-//!   [`noise::IntegratedWhiteNoise`]. Building blocks of the IEEE
-//!   952 five-component IMU noise model.
+//! * `noise` — three deterministic noise primitives:
+//!   `BoxMullerGaussian`, `OrnsteinUhlenbeck`, and
+//!   `IntegratedWhiteNoise`. Building blocks of the IEEE 952
+//!   five-component IMU noise model.
 //!
-//! Phase 3.10 adds [`gnss::SyntheticGnss`],
-//! [`magnetometer::SyntheticMagnetometer`], and
-//! [`star_tracker::SyntheticStarTracker`].
+//! Phase 3.10 adds `SyntheticGnss`, `SyntheticMagnetometer`, and
+//! `SyntheticStarTracker`.
 //!
 //! # Determinism
 //!
@@ -48,7 +47,9 @@ pub mod sensor;
 pub mod parser;
 
 pub use error::SensorError;
-pub use sensor::{Sensor, SensorMeasurement, SensorTruth, SyntheticSensor};
+#[cfg(feature = "synthetic")]
+pub use sensor::SyntheticSensor;
+pub use sensor::{Sensor, SensorMeasurement, SensorTruth};
 
 // Synthetic noise infrastructure — gated by the `synthetic` feature.
 // Default-on for the simulator binary; hardware adopters disable

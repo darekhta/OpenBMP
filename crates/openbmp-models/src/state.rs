@@ -2,8 +2,8 @@
 //!
 //! Phase-3.14.A: extracted from `openbmp-sim` so model trait surfaces
 //! can implement / consume `SimState` without depending on the
-//! integrator. The integrator algorithm itself ([`crate::Integrator`]
-//! in `openbmp-sim`) still consumes this trait.
+//! integrator. The integrator algorithm itself (in `openbmp-sim`)
+//! still consumes this trait.
 
 use openbmp_core::SimTime;
 
