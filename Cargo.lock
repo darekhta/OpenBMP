@@ -1281,6 +1281,30 @@ name = "openbmp-fc"
 version = "0.0.1"
 
 [[package]]
+name = "openbmp-mission"
+version = "0.0.1"
+dependencies = [
+ "openbmp-core",
+ "openbmp-propulsion",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
+name = "openbmp-models"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "openbmp-core",
+ "openbmp-propulsion",
+ "openbmp-state",
+ "proptest",
+ "thiserror",
+ "uom",
+]
+
+[[package]]
 name = "openbmp-propulsion"
 version = "0.0.1"
 dependencies = [
@@ -1327,6 +1351,8 @@ dependencies = [
  "criterion",
  "nalgebra",
  "openbmp-core",
+ "openbmp-mission",
+ "openbmp-models",
  "openbmp-propulsion",
  "openbmp-state",
  "openbmp-testkit",
@@ -1383,6 +1409,7 @@ dependencies = [
  "openbmp-aero",
  "openbmp-core",
  "openbmp-env",
+ "openbmp-models",
  "openbmp-propulsion",
  "openbmp-sim",
  "openbmp-state",

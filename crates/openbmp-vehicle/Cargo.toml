@@ -13,14 +13,15 @@ nalgebra          = { workspace = true }
 openbmp-aero      = { workspace = true }
 openbmp-core      = { workspace = true }
 openbmp-env       = { workspace = true }
+openbmp-models    = { workspace = true }
 openbmp-propulsion = { workspace = true }
-openbmp-sim       = { workspace = true }
 openbmp-state     = { workspace = true }
 thiserror         = { workspace = true }
 uom               = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+openbmp-sim = { workspace = true }
 proptest = { workspace = true }
 serde  = { workspace = true }
 toml   = { workspace = true }

@@ -16,7 +16,7 @@
 //! - [`drag_device::DragDevice`] — generic airbrake. Cycles
 //!   `Stowed ↔ Main` via deploy / stow commands.
 //!
-//! All three publish a [`openbmp_sim::RecoverySnapshot`] each kernel base tick
+//! All three publish a [`openbmp_models::RecoverySnapshot`] each kernel base tick
 //! through the runner-side [`crate::recovery`]-rack adapter. Drag is
 //! evaluated by the Phase-3.9 [`crate::adapters::RecoveryRackForceAdapter`]
 //! using the kernel's atmosphere sample (density) and the body's ECI
@@ -45,14 +45,14 @@
 //! engines / effectors. The runner-side rack ships with the Phase-3.9
 //! runner integration; the kernel-side adapter ships in
 //! [`crate::adapters`] and consumes the kernel's
-//! [`openbmp_sim::RecoverySnapshotView`] view.
+//! [`openbmp_models::RecoverySnapshotView`] view.
 //!
 //! See `docs/scenario-format.md § Recovery and descent (Phase 3.9)`
 //! and `docs/software-architecture.md § Recovery and Descent Models`
 //! for the contract.
 //!
-//! [`MissionPhaseGraph`]: openbmp_sim::MissionPhaseGraph
-//! [`EventAction::DeployRecovery`]: openbmp_sim::EventAction
+//! [`MissionPhaseGraph`]: openbmp_models::MissionPhaseGraph
+//! [`EventAction::DeployRecovery`]: openbmp_models::EventAction
 
 pub mod drag_device;
 pub mod drogue_main;
@@ -116,7 +116,7 @@ impl RecoveryPhase {
 /// Mismatched commands surface as
 /// [`RecoveryError::UnsupportedCommand`].
 ///
-/// [`EventAction::DeployRecovery`]: openbmp_sim::EventAction
+/// [`EventAction::DeployRecovery`]: openbmp_models::EventAction
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum RecoveryCommand {
     /// Open the device (single-stage).

@@ -1,0 +1,20 @@
+[package]
+name                    = "openbmp-mission"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP mission graph + event triggers — hardware-portable; no simulator dependency."
+
+[dependencies]
+openbmp-core       = { workspace = true }
+openbmp-propulsion = { workspace = true }
+thiserror          = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

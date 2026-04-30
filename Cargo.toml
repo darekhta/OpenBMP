@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/openbmp-core",
     "crates/openbmp-state",
+    "crates/openbmp-models",
+    "crates/openbmp-mission",
     "crates/openbmp-sim",
     "crates/openbmp-env",
     "crates/openbmp-vehicle",
@@ -112,6 +114,8 @@ duct = { version = "1.1.1" }
 # --- Internal
 openbmp-core       = { version = "0.0.1", path = "crates/openbmp-core" }
 openbmp-state      = { version = "0.0.1", path = "crates/openbmp-state" }
+openbmp-models     = { version = "0.0.1", path = "crates/openbmp-models" }
+openbmp-mission    = { version = "0.0.1", path = "crates/openbmp-mission" }
 openbmp-sim        = { version = "0.0.1", path = "crates/openbmp-sim" }
 openbmp-env        = { version = "0.0.1", path = "crates/openbmp-env" }
 openbmp-vehicle    = { version = "0.0.1", path = "crates/openbmp-vehicle" }

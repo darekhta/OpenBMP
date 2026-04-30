@@ -15,7 +15,7 @@
 //! Phase-3.3 leaves the `sensors: Vec<Box<dyn SyntheticSensor>>` slot
 //! empty — Phase-3.10 will populate it.
 
-use openbmp_sim::{MassModel, RigidMassModel, SimState};
+use openbmp_models::{MassModel, RigidMassModel, SimState};
 use openbmp_state::RigidBodyState;
 
 use crate::error::VehicleError;

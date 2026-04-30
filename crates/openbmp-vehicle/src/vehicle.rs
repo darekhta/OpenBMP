@@ -51,7 +51,7 @@
 
 use nalgebra::Vector3;
 
-use openbmp_sim::{
+use openbmp_models::{
     ForceContext, ForceModel, MassModel, ModelEvalError, MomentContext, MomentModel, SimState,
 };
 
@@ -457,11 +457,14 @@ impl MassModel for BoxedMassModel {
     // forward in the trait, dropping the engine snapshot — and
     // `EngineClusterMassAdapter` would never see per-engine
     // `consumed_kg` / `mass_flow_kg_per_s`.
-    fn mass_kg_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+    fn mass_kg_at(&self, ctx: openbmp_models::MassContext<'_>) -> Result<f64, ModelEvalError> {
         self.0.mass_kg_at(ctx)
     }
 
-    fn mass_rate_kg_s_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+    fn mass_rate_kg_s_at(
+        &self,
+        ctx: openbmp_models::MassContext<'_>,
+    ) -> Result<f64, ModelEvalError> {
         self.0.mass_rate_kg_s_at(ctx)
     }
 
@@ -480,7 +483,7 @@ impl MassModel for BoxedMassModel {
 mod tests {
     use super::*;
     use openbmp_core::{Position3, SimTime, Velocity3};
-    use openbmp_sim::{
+    use openbmp_models::{
         ConstantGravityForce, ConstantMass, EnvironmentSample, ZeroForce, ZeroMoment,
     };
     use openbmp_state::PointMassState;
@@ -505,10 +508,10 @@ mod tests {
             environment: env,
             mass_kg: 1.0,
             time: SimTime::ZERO,
-            effector_actuals: openbmp_sim::EffectorActualsView::empty(),
-            engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
-            tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
-            recovery_snapshot: openbmp_sim::RecoverySnapshotView::empty(),
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+            recovery_snapshot: openbmp_models::RecoverySnapshotView::empty(),
         }
     }
 
@@ -713,9 +716,9 @@ mod tests {
                 state: &state,
                 environment: &env,
                 time: SimTime::ZERO,
-                effector_actuals: openbmp_sim::EffectorActualsView::empty(),
-                engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
-                tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
+                effector_actuals: openbmp_models::EffectorActualsView::empty(),
+                engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+                tank_snapshot: openbmp_models::TankSnapshotView::empty(),
             })
             .unwrap();
         assert_eq!(m, Vector3::zeros());

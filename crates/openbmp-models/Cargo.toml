@@ -1,33 +1,24 @@
 [package]
-name                    = "openbmp-sim"
+name                    = "openbmp-models"
 version.workspace       = true
 edition.workspace       = true
 rust-version.workspace  = true
 license.workspace       = true
 repository.workspace    = true
 authors.workspace       = true
-description             = "OpenBMP lockstep simulation kernel: scheduler, integrators, state propagation."
+description             = "OpenBMP model trait surface (force, moment, mass, environment) — hardware-portable; no integrator dependency."
 
 [dependencies]
 openbmp-core       = { workspace = true }
-openbmp-mission    = { workspace = true }
-openbmp-models     = { workspace = true }
 openbmp-propulsion = { workspace = true }
 openbmp-state      = { workspace = true }
 nalgebra           = { workspace = true }
 thiserror          = { workspace = true }
-tracing            = { workspace = true }
 uom                = { workspace = true }
 
 [dev-dependencies]
 approx          = { workspace = true }
-criterion       = { workspace = true }
-openbmp-testkit = { workspace = true }
 proptest        = { workspace = true }
-
-[[bench]]
-name    = "kernel_step"
-harness = false
 
 [lints]
 workspace = true

@@ -5,13 +5,17 @@
 //! [`IntegratorError`], [`TimeError`], [`StateError`], and
 //! [`ModelEvalError`].
 
-use std::borrow::Cow;
-
-use openbmp_core::{ModelId, StepIndex, TimeError};
+use openbmp_core::{StepIndex, TimeError};
+use openbmp_mission::{MissionGraphError, PhaseId};
 use openbmp_state::StateError;
 use thiserror::Error;
 
-use crate::events::{MissionGraphError, PhaseId};
+/// Re-export of [`openbmp_models::ModelEvalError`] for back-compat.
+///
+/// Phase-3.14.A moved this error to `openbmp-models`. The
+/// `openbmp_sim::ModelEvalError` path stays valid so existing
+/// imports keep compiling during the transition phase.
+pub use openbmp_models::ModelEvalError;
 
 /// Aggregated error type returned by [`crate::SimulationKernel`] methods.
 #[derive(Debug, Error)]
@@ -86,49 +90,6 @@ pub enum IntegratorError {
     /// A model returned a typed evaluation error mid-step.
     #[error(transparent)]
     ModelEval(#[from] ModelEvalError),
-}
-
-/// Typed evaluation error returned by a fallible model
-/// (`EnvironmentModel`, `ForceModel`, `MomentModel`, `MassModel`,
-/// `AeroDeck`, `Motor`, etc.) when its inputs leave its validity
-/// envelope.
-///
-/// Carries the `ModelId` of the offending model so the kernel can
-/// surface `(step_index, model_id, error)` to the user without a
-/// silent clamp / NaN / panic. Phase-2 models *must* return one of
-/// these variants instead of a panic or `NaN`.
-///
-/// See `docs/phase-2-plan.md § Implementation Seams Locked Before
-/// Coding` and `docs/software-architecture.md § Model Interfaces` for
-/// the contract.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum ModelEvalError {
-    /// The model's inputs were outside its declared validity envelope
-    /// (e.g. atmosphere queried above its altitude ceiling, aero deck
-    /// queried outside its (Mach, alpha, beta) grid, motor queried
-    /// before ignition).
-    #[error("model {model:?} out of envelope: {reason}")]
-    OutOfEnvelope {
-        /// Offending model's id.
-        model: ModelId,
-        /// Short human-readable reason.
-        reason: Cow<'static, str>,
-    },
-    /// The model produced a non-finite output (`NaN` or `Inf`).
-    #[error("model {model:?} produced non-finite output")]
-    NonFinite {
-        /// Offending model's id.
-        model: ModelId,
-    },
-    /// The state passed to the model was structurally invalid for
-    /// the model's purposes.
-    #[error("model {model:?} received invalid state: {reason}")]
-    InvalidState {
-        /// Offending model's id.
-        model: ModelId,
-        /// Short human-readable reason.
-        reason: Cow<'static, str>,
-    },
 }
 
 /// Reason a simulation run terminated.

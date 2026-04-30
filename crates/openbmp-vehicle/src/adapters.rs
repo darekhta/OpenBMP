@@ -35,11 +35,11 @@ use nalgebra::Vector3;
 
 use openbmp_aero::{AeroDeck, AeroError};
 use openbmp_env::{AtmosphereModel, GravityModel};
-use openbmp_propulsion::Motor;
-use openbmp_sim::{
+use openbmp_models::{
     ForceContext, ForceModel, MassModel, MassPropertiesRate, ModelEvalError, MomentContext,
     MomentModel, RigidMassModel,
 };
+use openbmp_propulsion::Motor;
 use openbmp_state::{MassProperties, PointMassState, RigidBodyState};
 
 use openbmp_core::{Body, ModelId, Position3, SimTime, ValidationStatus};
@@ -447,7 +447,7 @@ fn compute_axial_drag<Atm: AtmosphereModel>(
     velocity_eci: Vector3<f64>,
     position_eci_z: f64,
     time: SimTime,
-    effector_actuals: openbmp_sim::EffectorActualsView<'_>,
+    effector_actuals: openbmp_models::EffectorActualsView<'_>,
 ) -> Result<Vector3<f64>, ModelEvalError> {
     let v = velocity_eci;
     let speed_sq = v.x * v.x + v.y * v.y + v.z * v.z;
@@ -540,7 +540,7 @@ fn map_aero_lookup_error(model_id: ModelId, err: AeroError) -> ModelEvalError {
 /// Phase-3.6 kernel-side force adapter for an engine cluster.
 ///
 /// Reads the kernel's per-engine snapshot via
-/// [`openbmp_sim::EngineSnapshotView`] and sums per-engine
+/// [`openbmp_models::EngineSnapshotView`] and sums per-engine
 /// `thrust_body` in scenario-declared engine order. Operand order
 /// is locked left-fold; FMA disabled.
 ///
@@ -768,7 +768,7 @@ impl MassModel for EngineClusterMassAdapter {
         Ok(0.0)
     }
 
-    fn mass_kg_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+    fn mass_kg_at(&self, ctx: openbmp_models::MassContext<'_>) -> Result<f64, ModelEvalError> {
         let mut consumed = 0.0_f64;
         for id in &self.engine_ids {
             let snap = ctx
@@ -791,7 +791,10 @@ impl MassModel for EngineClusterMassAdapter {
         Ok(mass)
     }
 
-    fn mass_rate_kg_s_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+    fn mass_rate_kg_s_at(
+        &self,
+        ctx: openbmp_models::MassContext<'_>,
+    ) -> Result<f64, ModelEvalError> {
         let mut total = 0.0_f64;
         for id in &self.engine_ids {
             let snap = ctx
@@ -1138,7 +1141,7 @@ impl MassModel for TankRackMassAdapter {
         self.inner.mass_rate_kg_s(t)
     }
 
-    fn mass_kg_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+    fn mass_kg_at(&self, ctx: openbmp_models::MassContext<'_>) -> Result<f64, ModelEvalError> {
         let mut total = self.inner.mass_kg_at(ctx)?;
         for id in &self.tank_ids {
             let snap = ctx
@@ -1160,7 +1163,10 @@ impl MassModel for TankRackMassAdapter {
         Ok(total)
     }
 
-    fn mass_rate_kg_s_at(&self, ctx: openbmp_sim::MassContext<'_>) -> Result<f64, ModelEvalError> {
+    fn mass_rate_kg_s_at(
+        &self,
+        ctx: openbmp_models::MassContext<'_>,
+    ) -> Result<f64, ModelEvalError> {
         // Tank mass changes only via drain. The drain rate is set
         // outside the kernel hot path (via `Tank::drain` in the
         // runner), so the per-step mass-rate as far as the kernel
@@ -1183,7 +1189,7 @@ impl MassModel for TankRackMassAdapter {
 ///
 /// Sums the drag-area · drag-coefficient product across every
 /// declared recovery device from the kernel's
-/// [`openbmp_sim::RecoverySnapshotView`], queries the atmosphere for
+/// [`openbmp_models::RecoverySnapshotView`], queries the atmosphere for
 /// density at the body's altitude proxy (ECI z, clamped to ≥ 0 to
 /// match the [`DeckDragForceAdapter`] convention), and returns
 /// `F = -½ ρ |v|² · Σ(C_D · A) · v̂` in ECI per Knacke 1992 Chapter 5.
@@ -1289,7 +1295,7 @@ fn compute_recovery_drag<Atm: AtmosphereModel>(
     velocity_eci: Vector3<f64>,
     position_eci_z: f64,
     time: SimTime,
-    recovery_snapshot: openbmp_sim::RecoverySnapshotView<'_>,
+    recovery_snapshot: openbmp_models::RecoverySnapshotView<'_>,
 ) -> Result<Vector3<f64>, ModelEvalError> {
     // Sum (c_d * area) across every declared device. Locked operand
     // order matches the scenario-declared `recovery_ids` Vec; same
@@ -1358,8 +1364,8 @@ mod tests {
 
     use openbmp_core::{EngineId, Position3, SimTime, Velocity3};
     use openbmp_env::{AtmosphereSample, ConstantGravity, EnvError, IsothermalAtmosphere};
+    use openbmp_models::EnvironmentSample;
     use openbmp_propulsion::{EngineSnapshot, EngineState, SolidMotor};
-    use openbmp_sim::EnvironmentSample;
     use proptest::prelude::*;
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
@@ -1384,10 +1390,10 @@ mod tests {
             environment: env,
             mass_kg,
             time: SimTime::from_seconds(time_s),
-            effector_actuals: openbmp_sim::EffectorActualsView::empty(),
-            engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
-            tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
-            recovery_snapshot: openbmp_sim::RecoverySnapshotView::empty(),
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+            recovery_snapshot: openbmp_models::RecoverySnapshotView::empty(),
         }
     }
 
@@ -1613,10 +1619,10 @@ mod tests {
             environment: env,
             mass_kg,
             time: SimTime::from_seconds(time_s),
-            effector_actuals: openbmp_sim::EffectorActualsView::empty(),
-            engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
-            tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
-            recovery_snapshot: openbmp_sim::RecoverySnapshotView::empty(),
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+            recovery_snapshot: openbmp_models::RecoverySnapshotView::empty(),
         }
     }
 
@@ -1629,9 +1635,9 @@ mod tests {
             state,
             environment: env,
             time: SimTime::ZERO,
-            effector_actuals: openbmp_sim::EffectorActualsView::empty(),
-            engine_snapshot: openbmp_sim::EngineSnapshotView::new(snapshot),
-            tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::new(snapshot),
+            tank_snapshot: openbmp_models::TankSnapshotView::empty(),
         }
     }
 
@@ -1864,7 +1870,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     use openbmp_core::RecoveryId;
-    use openbmp_sim::{RecoverySnapshot, RecoverySnapshotView};
+    use openbmp_models::{RecoverySnapshot, RecoverySnapshotView};
 
     fn recovery_snapshot_map(
         entries: &[(RecoveryId, bool, f64, f64)],
@@ -1897,9 +1903,9 @@ mod tests {
             environment: env,
             mass_kg: state.mass.get::<kilogram>(),
             time: SimTime::from_seconds(time_s),
-            effector_actuals: openbmp_sim::EffectorActualsView::empty(),
-            engine_snapshot: openbmp_sim::EngineSnapshotView::empty(),
-            tank_snapshot: openbmp_sim::TankSnapshotView::empty(),
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_models::TankSnapshotView::empty(),
             recovery_snapshot: RecoverySnapshotView::new(snapshot),
         }
     }
