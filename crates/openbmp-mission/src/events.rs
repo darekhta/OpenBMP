@@ -3,7 +3,7 @@
 //! Phase-3.2 introduced declarative event-driven scheduling that
 //! replaced the Phase-2 hard-coded apogee detector. Scenarios declare
 //! a `[mission]` block of phases, events, and transitions; the
-//! consumer (sim-side: kernel post-step hook; HAL-side: controller
+//! consumer (sim-side: post-integration tick; HAL-side: controller
 //! tick or hardware-timer ISR) evaluates events at its own cadence
 //! and either emits telemetry markers, transitions the active phase,
 //! or halts the run.
@@ -14,8 +14,9 @@
 //! mission graph itself is cadence-agnostic. `SimTime` and
 //! `StepIndex` arguments to [`EventTrigger::fired`] are
 //! "monotonic time at the tick" and "monotonic tick counter"
-//! respectively — sim-side they bind to scenario time + kernel step
-//! index; HAL-side they bind to wall-clock proxy + controller tick.
+//! respectively — sim-side they bind to elapsed scenario time +
+//! integration tick; HAL-side they bind to a hardware monotonic proxy
+//! + controller tick.
 //!
 //! # Module surface
 //!
@@ -27,16 +28,16 @@
 //! - [`EventTrigger`] — trait implemented by event predicates.
 //! - [`BuiltInEventTrigger`] — Phase-3.2 declarative trigger set.
 //! - [`EventBinding`], [`EventAction`] — bridges trigger → action.
-//! - [`EventEvalState`], [`EventScalars`] — per-step snapshot threaded
+//! - [`EventEvalState`], [`EventScalars`] — per-tick snapshot threaded
 //!   into trigger evaluation.
-//! - [`FiredEvent`] — kernel-side queue entry for runner fan-out.
+//! - [`FiredEvent`] — queue entry for consumer fan-out.
 //! - [`MissionGraphError`] — typed graph-construction errors.
 //!
 //! # Determinism
 //!
 //! - All ids are FNV-1a-64 of the canonical scenario path; reordering
 //!   declarations in the TOML cannot shift any id.
-//! - Triggers are crossing detectors: they fire on the step where the
+//! - Triggers are crossing detectors: they fire on the tick where the
 //!   monitored value transitions across the trigger threshold, never
 //!   re-firing while the value remains on the same side.
 //! - The `once: bool` flag guards against re-firing across multiple
@@ -141,12 +142,11 @@ const fn fnv1a_64(bytes: &[u8]) -> u64 {
 // Snapshots threaded into trigger evaluation
 // ---------------------------------------------------------------------
 
-/// Scalar values pre-computed by the kernel and threaded into
-/// [`EventTrigger::fired`] evaluation. The kernel builds one of these
-/// from each post-step state.
+/// Scalar values pre-computed by the event consumer and threaded into
+/// [`EventTrigger::fired`] evaluation.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct EventScalars {
-    /// Simulation time (seconds since scenario start).
+    /// Elapsed monotonic time in seconds.
     pub time_s: f64,
     /// ECI +z component of the position vector. Phase-3.2 treats this
     /// as the altitude proxy; multi-launch-site coordinates are deferred
@@ -163,17 +163,17 @@ pub struct EventScalars {
     pub dynamic_pressure_pa: f64,
 }
 
-/// Per-step snapshot threaded into trigger evaluation. Carries both
-/// the post-step scalars and the previous-step scalars (`None` on
-/// step 0) so triggers can detect crossings without interior
+/// Per-tick snapshot threaded into trigger evaluation. Carries both
+/// the current-tick scalars and the previous-tick scalars (`None` on
+/// the first tick) so triggers can detect crossings without interior
 /// mutability.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct EventEvalState {
-    /// Post-step scalar values.
+    /// Current-tick scalar values.
     pub current: EventScalars,
-    /// Previous-step scalar values. `None` on step 0.
+    /// Previous-tick scalar values. `None` on the first tick.
     pub previous: Option<EventScalars>,
-    /// Active phase id at the start of this step. `None` when no
+    /// Active phase id at the start of this tick. `None` when no
     /// mission graph is wired.
     pub current_phase: Option<PhaseId>,
 }
@@ -185,8 +185,8 @@ pub struct EventEvalState {
 /// Trait implemented by event triggers.
 ///
 /// Evaluated once per **event-evaluation tick** by the consumer. The
-/// simulator binds the tick to the kernel's `integrator.advance()`
-/// post-step hook; a HAL adopter binds it to whichever cadence is
+/// simulator binds the tick to its post-integration event hook; a HAL
+/// adopter binds it to whichever cadence is
 /// natural in their environment (sensor-sample tick, controller
 /// tick, hardware-timer interrupt). Returning `true` causes the
 /// consumer to record a [`FiredEvent`] for the binding.
@@ -194,8 +194,8 @@ pub struct EventEvalState {
 /// Phase-3.15.D clarification: the `t: SimTime` and `step: StepIndex`
 /// arguments are intentionally cadence-neutral — `SimTime` is the
 /// monotonic time at the tick (sim-side: scenario time; HAL-side:
-/// wall-clock proxy or hardware monotonic counter), and `step` is
-/// the monotonic tick counter (sim-side: kernel step index;
+/// hardware monotonic counter normalised to controller start), and
+/// `step` is the monotonic tick counter (sim-side: integration tick;
 /// HAL-side: any monotonic event-evaluation tick). The trait surface
 /// does not bake in any sim-specific cadence.
 pub trait EventTrigger {
@@ -204,7 +204,7 @@ pub trait EventTrigger {
 }
 
 /// Phase-3.2 declarative trigger set. Every variant is a crossing
-/// detector: it returns `true` only on the step where the monitored
+/// detector: it returns `true` only on the tick where the monitored
 /// value transitions across the trigger threshold.
 ///
 /// `Scripted` is intentionally not part of the enum — closure-based
@@ -213,30 +213,30 @@ pub trait EventTrigger {
 /// time.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BuiltInEventTrigger {
-    /// Fires the first step where simulation time crosses `time_s`.
+    /// Fires the first tick where elapsed monotonic time crosses `time_s`.
     AtTime {
         /// Trigger threshold in seconds since scenario start.
         time_s: f64,
     },
-    /// Fires the first step where altitude crosses up through
+    /// Fires the first tick where altitude crosses up through
     /// `meters` (i.e. `previous_alt < meters` and
     /// `current_alt >= meters`).
     AtAltitudeAscending {
         /// Altitude threshold (m).
         meters: f64,
     },
-    /// Fires the first step where altitude crosses down through
+    /// Fires the first tick where altitude crosses down through
     /// `meters`.
     AtAltitudeDescending {
         /// Altitude threshold (m).
         meters: f64,
     },
-    /// Fires the first step where vertical velocity flips from
-    /// strictly positive to non-positive — the apogee step under
-    /// fixed-step integration. Sub-step apogee localization is a
+    /// Fires the first tick where vertical velocity flips from
+    /// strictly positive to non-positive — the apogee tick under
+    /// fixed-step integration. Sub-tick apogee localization is a
     /// Phase-5 adaptive-integrator concern.
     AtApogee,
-    /// Fires the first step where mass fraction (current / initial)
+    /// Fires the first tick where mass fraction (current / initial)
     /// drops to or below `remaining`.
     AtMassFraction {
         /// Threshold mass fraction in `[0, 1]`.
@@ -256,7 +256,7 @@ pub enum BuiltInEventTrigger {
 impl EventTrigger for BuiltInEventTrigger {
     fn fired(&self, state: &EventEvalState, _t: SimTime, _step: StepIndex) -> bool {
         // All Phase-3.2 triggers are crossing detectors and return
-        // `false` on step 0 (no previous-step snapshot).
+        // `false` on the first tick (no previous-tick snapshot).
         let Some(prev) = state.previous.as_ref() else {
             return false;
         };
@@ -296,14 +296,14 @@ impl EventTrigger for BuiltInEventTrigger {
 pub enum EventAction {
     /// Transition the active mission phase.
     EnterPhase(PhaseId),
-    /// Emit a `bool` telemetry marker. The runner allocates a channel
-    /// named `tag` and writes `true` on every step the associated
+    /// Emit a `bool` telemetry marker. The consumer allocates a channel
+    /// named `tag` and writes `true` on every tick the associated
     /// event fires.
     EmitTelemetryMarker {
         /// Channel tag (`snake_case`, e.g. `"at_apogee_marker"`).
         tag: String,
     },
-    /// Halt the kernel with the simulator-side mission-ended stop reason.
+    /// Request mission termination with a human-readable reason.
     Stop {
         /// Human-readable label for the stop reason.
         label: String,
@@ -314,7 +314,7 @@ pub enum EventAction {
     // touch every match site).
     // -------------------------------------------------------------
     /// Phase-3.6: per-engine command targeting a declared engine by
-    /// [`openbmp_core::EngineId`]. The kernel records the firing;
+    /// [`openbmp_core::EngineId`]. The event consumer records the firing;
     /// the runner-side `EngineRack::apply_commands` drains it and
     /// applies the command to the engine on the next rack tick.
     ///
@@ -386,7 +386,7 @@ pub struct EventBinding {
     pub trigger: BuiltInEventTrigger,
     /// Action taken when the trigger fires.
     pub action: EventAction,
-    /// `true`: the binding fires at most once per simulation run.
+    /// `true`: the binding fires at most once per run.
     /// `false`: the binding may re-fire on every crossing.
     pub once: bool,
 }
@@ -396,9 +396,9 @@ pub struct EventBinding {
 // ---------------------------------------------------------------------
 
 /// Mission-phase node. `allowed_effectors` and `allowed_engines` are
-/// declared but not actively gated by the kernel yet. Scenario loading
-/// validates effector references in Phase 3.4; active command gating
-/// lands with the later controller / propulsion phases.
+/// declared but not actively gated yet. Scenario loading validates
+/// effector references in Phase 3.4; active command gating lands with
+/// the later controller / propulsion phases.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Phase {
     /// Path-derived stable id.
@@ -427,8 +427,8 @@ pub struct PhaseTransition {
 /// Acyclic mission-phase graph.
 ///
 /// Construct via [`MissionPhaseGraph::new`]; direct field assignment
-/// works for tests but bypasses the validation invariants that the
-/// kernel relies on. The constructor enforces:
+/// works for tests but bypasses the validation invariants that
+/// consumers rely on. The constructor enforces:
 ///
 /// 1. No duplicate phase ids.
 /// 2. `initial` references a declared phase.
@@ -800,17 +800,17 @@ fn compute_longest_path_depth(
     depth
 }
 
-/// Kernel-side queue entry recorded per fired event.
+/// Queue entry recorded per fired event.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FiredEvent {
     /// Binding that fired.
     pub binding_id: EventId,
-    /// Step at which the event fired.
+    /// Tick at which the event fired.
     pub step: StepIndex,
-    /// Simulation time at which the event fired.
+    /// Monotonic time at which the event fired.
     pub time: SimTime,
     /// Action to apply (cloned at fire time so the runner can drain
-    /// without holding a borrow on the kernel).
+    /// without holding a borrow on the event consumer).
     pub action: EventAction,
 }
 

@@ -37,7 +37,10 @@ use crate::error::{IntegratorError, ModelEvalError};
 /// Phase-3.14.A moved the `SimState` trait to `openbmp-models` so
 /// model code can implement it without depending on the simulator;
 /// the alias here keeps every existing `openbmp_sim::SimState`
-/// import path valid during the transition.
+/// import path valid through Phase 4. `openbmp_models::SimState`
+/// is the permanent marker trait; this simulator re-export is
+/// scheduled for Phase-5 API cleanup / deprecation once downstream
+/// users have had one full phase to migrate imports.
 pub use openbmp_models::SimState;
 
 /// Canonical RK4 weighted-sum helper.

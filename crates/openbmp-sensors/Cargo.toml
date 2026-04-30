@@ -16,14 +16,14 @@ description             = "OpenBMP synthetic sensors and fault models. No device
 # down to just the `Sensor` trait + the typed measurement / truth
 # value shapes.
 default   = ["synthetic"]
-synthetic = []
+synthetic = ["dep:serde", "dep:toml"]
 
 [dependencies]
 nalgebra     = { workspace = true }
 openbmp-core = { workspace = true }
-serde        = { workspace = true }
+serde        = { workspace = true, optional = true }
 thiserror    = { workspace = true }
-toml         = { workspace = true }
+toml         = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx   = { workspace = true }

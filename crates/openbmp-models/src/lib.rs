@@ -10,10 +10,11 @@
 //!
 //! # Module surface
 //!
-//! - [`SimState`] / [`SimStateDerivative`] — the data shape an
-//!   integrator (anywhere) advances. Implemented for
-//!   `openbmp_state::PointMassState` and
-//!   `openbmp_state::RigidBodyState`.
+//! - [`VehicleState`], [`TranslationalState`],
+//!   [`RigidBodyKinematicState`], [`Integratable`], [`SimState`], and
+//!   [`SimStateDerivative`] — hardware-portable state snapshot and
+//!   integration traits. Implemented for `openbmp_state::PointMassState`
+//!   and `openbmp_state::RigidBodyState`.
 //! - [`ForceModel`], [`MomentModel`], [`MassModel`],
 //!   [`RigidMassModel`], [`EnvironmentModel`] — model trait surfaces.
 //! - [`ForceContext`], [`MomentContext`], [`MassContext`],
@@ -49,4 +50,6 @@ pub use models::{
     MomentModel, NullEnvironment, RecoverySnapshot, RecoverySnapshotView, RigidMassModel,
     TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
 };
-pub use state::{Integratable, SimState, VehicleState};
+pub use state::{
+    Integratable, RigidBodyKinematicState, SimState, TranslationalState, VehicleState,
+};

@@ -7,11 +7,13 @@
 //!
 //! # Architecture
 //!
-//! * [`SimState`] — trait implemented by states an integrator can
-//!   advance. Implemented for `PointMassState` and `RigidBodyState`.
+//! * [`VehicleState`], [`TranslationalState`],
+//!   [`RigidBodyKinematicState`], [`Integratable`], and [`SimState`] —
+//!   model-side state snapshot / integration traits implemented for
+//!   `PointMassState` and `RigidBodyState`.
 //! * [`SimStateDerivative`] — trait implemented by the time-derivative
-//!   of a state. Carries the canonical RK4 weighted-sum with locked
-//!   evaluation order.
+//!   of a state. Exposes primitive linear arithmetic; RK4 combines
+//!   stages in the integrator.
 //! * [`Integrator`] — trait for numerical integrators. Phase 1.3 ships
 //!   [`Rk4FixedStep`].
 //! * [`ForceModel`], [`MomentModel`], [`MassModel`], [`RigidMassModel`],
@@ -66,4 +68,5 @@ pub use models::{
     MomentModel, NullEnvironment, RecoverySnapshot, RecoverySnapshotView, RigidMassModel,
     TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
 };
+pub use openbmp_models::{Integratable, RigidBodyKinematicState, TranslationalState, VehicleState};
 pub use stop::{AlwaysContinue, EndTime, MaxSteps, StopCondition};

@@ -14,7 +14,7 @@ use crate::error::StateError;
 /// [`crate::RigidBodyState`].
 #[derive(Copy, Clone, Debug)]
 pub struct PointMassState {
-    /// Simulation time at which this state holds.
+    /// Monotonic timestamp at which this state holds.
     pub time: SimTime,
     /// Position in the inertial (`Eci`) frame.
     pub position: Position3<Eci>,

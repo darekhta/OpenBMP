@@ -5,11 +5,10 @@
 //! `EventBinding` vocabulary does not transitively depend on the
 //! simulation kernel.
 //!
-//! The kernel-side per-step event evaluator (the `fired()` calls
-//! inside `SimulationKernel::step()`) stays in `openbmp-sim`; this
+//! The simulator-side event evaluator stays in `openbmp-sim`; this
 //! crate ships only the data shapes + the trigger trait + the graph
-//! validator, which are the items a real-hardware adopter would
-//! also need.
+//! validator, which are the items a real-hardware adopter would also
+//! need.
 
 mod events;
 

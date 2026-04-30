@@ -100,13 +100,15 @@ public-benchmark scenarios.
   `MassProperties`).
 - `openbmp-models` — model trait surfaces (`ForceModel`,
   `MomentModel`, `MassModel`, `RigidMassModel`, `EnvironmentModel`,
-  `VehicleState` data shape, `Integratable` integration extension,
-  `SimStateDerivative` with primitive `Add` + `Mul<f64>` ops,
-  `ModelEvalError`). Phase-3.15.E split the legacy `SimState` into
-  `VehicleState + Integratable`; the `SimState` marker trait
-  remains as a back-compat alias. RK4-specific weighted-sum logic
-  lives integrator-side as `openbmp_sim::rk4_weighted_sum`, not on
-  the derivative trait.
+  `VehicleState` base state shape, `TranslationalState` /
+  `RigidBodyKinematicState` read-only snapshot accessors,
+  `Integratable` integration extension, `SimStateDerivative` with
+  primitive `Add` + `Mul<f64>` ops, `ModelEvalError`). Phase-3.15.E
+  split the legacy `SimState` into `VehicleState + Integratable`;
+  the `SimState` marker trait remains as a permanent convenience for
+  callers that genuinely need both contracts. RK4-specific
+  weighted-sum logic lives integrator-side as
+  `openbmp_sim::rk4_weighted_sum`, not on the derivative trait.
 - `openbmp-mission` — mission graph, event triggers, phase
   transitions. Phase-3.15.C decoupled this from
   `openbmp-propulsion`; `EventAction::EngineCommand` carries
@@ -143,9 +145,18 @@ public-benchmark scenarios.
 - `openbmp-telemetry` — telemetry archive format. The runner emits
   controller-state telemetry by calling controller getters; the
   controller does not emit Parquet directly.
+- `openbmp-bridge` — HIL socket / bridge tooling. The controller is
+  embedded by a runner or downstream HAL crate; it does not own bridge
+  I/O.
+- `openbmp-aerothermal` — Phase-6 aerothermal model stub. The
+  controller must not depend on future high-fidelity simulation
+  infrastructure.
 
 The rule is enforced by review and by
-`openbmp-testkit`'s flight-controller dependency tripwire.
+`openbmp-testkit`'s flight-controller dependency tripwire. The
+tripwire resolves root `[workspace.dependencies]` aliases used through
+`workspace = true` and scans `dep:<name>` feature activations so
+renamed forbidden edges fail in CI.
 
 ### Hardware-portability check
 
@@ -174,6 +185,14 @@ state estimation entry point.
 - `crates/openbmp-fc/src/estimator/ekf.rs`: 15-state error-state EKF.
   Process model: `RigidBodyState` propagation. Measurement updates
   from `Sensor` measurements (IMU, GNSS, magnetometer, star tracker).
+- Bind estimator/controller state readers to
+  `TranslationalState` / `RigidBodyKinematicState` where generic
+  snapshot access is needed; use concrete `RigidBodyState` only where
+  the full state layout is part of the algorithm.
+- Before closed-loop simulation consumes sensors through the
+  controller, route simulator synthetic sensors through
+  `SyntheticSensorAdapter::prime` + `Sensor::read` so the synthetic
+  path exercises the same acquisition contract as HAL implementations.
 - Property tests: residual whitening (innovation sequence is
   zero-mean), filter consistency (NEES / NIS chi-square), and
   bit-stable replay.

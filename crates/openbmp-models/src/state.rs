@@ -2,10 +2,12 @@
 //!
 //! Phase-3.15.E split the integrator-shaped `SimState` trait into two:
 //!
-//! * [`VehicleState`] — the pure data-shape contract: a time
-//!   stamp, finiteness, and a way to overwrite the time field.
-//!   A controller that consumes vehicle-state snapshots from the
-//!   runner without running its own integrator depends on this.
+//! * [`VehicleState`] — the pure base state contract: a time stamp,
+//!   finiteness, and a way to overwrite the time field.
+//! * [`TranslationalState`] / [`RigidBodyKinematicState`] — read-only
+//!   snapshot accessors for controller / telemetry consumers that need
+//!   position, velocity, mass, attitude, or angular rate without the
+//!   integration extension.
 //! * [`Integratable`] — the integration extension. Adds the
 //!   derivative type, the `advance_by` step combinator, the
 //!   `is_valid_for_integration` validity check, and the
@@ -16,27 +18,29 @@
 //! The legacy [`SimState`] name persists as a marker that requires
 //! both — every existing `<S: SimState>` bound keeps compiling.
 //! New code that only needs the data shape (e.g., a controller's
-//! state-snapshot consumer) bounds on [`VehicleState`] alone.
+//! state-snapshot consumer) bounds on the narrowest snapshot trait it
+//! needs.
 
 use openbmp_core::SimTime;
 
 use crate::derivative::SimStateDerivative;
 
 // ---------------------------------------------------------------------
-// VehicleState — data shape
+// VehicleState — base state shape
 // ---------------------------------------------------------------------
 
-/// Hardware-portable data-shape contract for vehicle state values.
+/// Hardware-portable base contract for vehicle state values.
 ///
 /// Phase-3.15.E extracted this from the integrator-shaped
 /// [`SimState`] so a controller that *receives* state snapshots from
 /// the runner / HAL doesn't have to satisfy the integrator's
 /// `advance_by` / `project` / derivative-type contract. A real
-/// flight controller implementing position-velocity logging or
-/// state-history telemetry depends on `VehicleState` only.
+/// flight controller implementing generic timestamp handling or
+/// state-history validity checks depends on `VehicleState` only; code
+/// that needs kinematics should use [`TranslationalState`] or
+/// [`RigidBodyKinematicState`].
 pub trait VehicleState: Copy + std::fmt::Debug {
-    /// The state's current simulation (or wall-clock-derived
-    /// monotonic) time.
+    /// The state's current monotonic timestamp.
     #[must_use]
     fn time(&self) -> SimTime;
 
@@ -45,11 +49,52 @@ pub trait VehicleState: Copy + std::fmt::Debug {
     fn is_finite(&self) -> bool;
 
     /// Returns a copy of this state with its time field replaced by
-    /// `t`. Used by the kernel to overwrite the integrator's
-    /// accumulated time with the canonical `start + step * dt`
-    /// value, eliminating O(N · ε) drift.
+    /// `t`. Simulator code uses this to overwrite the integrator's
+    /// accumulated time with the canonical `start + tick * dt` value,
+    /// eliminating O(N · ε) drift.
     #[must_use]
     fn with_time(self, t: SimTime) -> Self;
+}
+
+// ---------------------------------------------------------------------
+// Snapshot-reader traits
+// ---------------------------------------------------------------------
+
+/// Read-only translational state snapshot.
+///
+/// A Phase-4 estimator, controller, telemetry sink, or HAL adapter can
+/// bound on this trait when it needs position / velocity / mass from a
+/// vehicle-state snapshot but must not require integrator operations.
+pub trait TranslationalState: VehicleState {
+    /// Position in the inertial (`Eci`) frame.
+    #[must_use]
+    fn position_eci(&self) -> openbmp_core::Position3<openbmp_core::Eci>;
+
+    /// Velocity in the inertial (`Eci`) frame.
+    #[must_use]
+    fn velocity_eci(&self) -> openbmp_core::Velocity3<openbmp_core::Eci>;
+
+    /// Total vehicle mass in kilograms.
+    #[must_use]
+    fn mass_kg(&self) -> f64;
+}
+
+/// Read-only rigid-body kinematic state snapshot.
+///
+/// Consumers that need attitude or angular rate can bound on this
+/// trait without depending on [`Integratable`]. The trait extends
+/// [`TranslationalState`] because rigid-body snapshots also expose the
+/// translational state inherited from the vehicle body.
+pub trait RigidBodyKinematicState: TranslationalState {
+    /// Body-to-inertial orientation quaternion.
+    #[must_use]
+    fn orientation_body_to_eci(
+        &self,
+    ) -> openbmp_core::Quaternion<openbmp_core::Body, openbmp_core::Eci>;
+
+    /// Angular velocity expressed in the body frame.
+    #[must_use]
+    fn angular_velocity_body(&self) -> openbmp_core::AngularVelocity3<openbmp_core::Body>;
 }
 
 // ---------------------------------------------------------------------
@@ -62,8 +107,8 @@ pub trait VehicleState: Copy + std::fmt::Debug {
 ///
 /// A consumer that only reads vehicle state (a controller, a
 /// telemetry sink, a HAL adapter) depends on [`VehicleState`] alone;
-/// only the integrator (the kernel, or a controller's internal
-/// process model) needs `Integratable`.
+/// only an integrator (the simulator's plant integrator, or a
+/// controller's internal process model) needs `Integratable`.
 pub trait Integratable: VehicleState {
     /// Time-derivative type for this state.
     type Derivative: SimStateDerivative;
@@ -95,14 +140,14 @@ pub trait Integratable: VehicleState {
 // SimState — back-compat marker
 // ---------------------------------------------------------------------
 
-/// Back-compat alias: `<S: SimState>` continues to mean "state shape
-/// + integratable" exactly as it did before Phase-3.15.E.
+/// Convenience marker: `<S: SimState>` means "base state shape +
+/// integratable" exactly as it did before Phase-3.15.E.
 ///
 /// New code should bound on the narrower trait it actually needs
-/// (`VehicleState` for state consumers, `Integratable` for the
-/// integrator). The marker exists so existing call sites in
-/// `openbmp-vehicle`, `openbmp-sim`, and downstream HAL adopters do
-/// not have to be rewritten in this phase.
+/// (`VehicleState`, [`TranslationalState`],
+/// [`RigidBodyKinematicState`], or `Integratable`). The marker is
+/// retained as a permanent convenience for code that genuinely needs
+/// both the state-shape and integration contracts.
 pub trait SimState: VehicleState + Integratable {}
 impl<T: VehicleState + Integratable> SimState for T {}
 
@@ -118,7 +163,7 @@ mod point_mass_impl {
 
     use crate::derivative::PointMassDerivative;
 
-    use super::{Integratable, VehicleState};
+    use super::{Integratable, TranslationalState, VehicleState};
 
     impl VehicleState for PointMassState {
         fn time(&self) -> SimTime {
@@ -132,6 +177,20 @@ mod point_mass_impl {
         fn with_time(mut self, t: SimTime) -> Self {
             self.time = t;
             self
+        }
+    }
+
+    impl TranslationalState for PointMassState {
+        fn position_eci(&self) -> Position3<openbmp_core::Eci> {
+            self.position
+        }
+
+        fn velocity_eci(&self) -> Velocity3<openbmp_core::Eci> {
+            self.velocity
+        }
+
+        fn mass_kg(&self) -> f64 {
+            PointMassState::mass_kg(self)
         }
     }
 
@@ -175,12 +234,12 @@ mod rigid_body_impl {
 
     use crate::derivative::RigidBodyDerivative;
 
-    use super::{Integratable, VehicleState};
+    use super::{Integratable, RigidBodyKinematicState, TranslationalState, VehicleState};
 
     /// Tolerances used when `RigidBodyState` is treated as valid for
     /// RK4 sub-step purposes. The integrator accepts intermediate
-    /// states with mildly non-unit quaternions; the kernel's
-    /// post-step validation uses much tighter tolerances.
+    /// states with mildly non-unit quaternions; simulator post-step
+    /// validation uses much tighter tolerances.
     const SUBSTEP_QUATERNION_TOL: f64 = 1.0e-2;
     const SUBSTEP_INERTIA_SYMMETRY_TOL: f64 = 1.0e-6;
 
@@ -196,6 +255,32 @@ mod rigid_body_impl {
         fn with_time(mut self, t: SimTime) -> Self {
             self.time = t;
             self
+        }
+    }
+
+    impl TranslationalState for RigidBodyState {
+        fn position_eci(&self) -> Position3<openbmp_core::Eci> {
+            self.position
+        }
+
+        fn velocity_eci(&self) -> Velocity3<openbmp_core::Eci> {
+            self.velocity
+        }
+
+        fn mass_kg(&self) -> f64 {
+            self.mass_props.mass.get::<kilogram>()
+        }
+    }
+
+    impl RigidBodyKinematicState for RigidBodyState {
+        fn orientation_body_to_eci(
+            &self,
+        ) -> openbmp_core::Quaternion<openbmp_core::Body, openbmp_core::Eci> {
+            self.orientation
+        }
+
+        fn angular_velocity_body(&self) -> openbmp_core::AngularVelocity3<openbmp_core::Body> {
+            self.angular_velocity
         }
     }
 

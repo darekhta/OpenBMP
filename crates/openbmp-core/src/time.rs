@@ -1,10 +1,11 @@
-//! Simulation time primitives.
+//! Monotonic time and tick primitives.
 //!
-//! [`SimTime`] is monotonic seconds since scenario start. It is **not a
-//! wall-clock value**; the simulation kernel's `step()` is the only
-//! advancer. [`Duration`] is a span between two [`SimTime`] values.
-//! [`StepIndex`] is a monotonic step counter used for deterministic
-//! scheduling and seeding.
+//! [`SimTime`] is seconds on a caller-owned monotonic timeline. The
+//! simulator binds it to elapsed scenario time; a HAL adopter may bind
+//! it to a hardware monotonic counter normalised to controller start.
+//! It is not UTC / civil wall-clock time. [`Duration`] is a span
+//! between two [`SimTime`] values. [`StepIndex`] is a monotonic tick
+//! counter used for deterministic scheduling and seeding.
 //!
 //! No type in this module accesses `std::time` or any system clock.
 
@@ -12,15 +13,16 @@ use std::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 
 use crate::error::TimeError;
 
-/// Monotonic simulation time, in seconds since scenario start.
+/// Monotonic elapsed time, in seconds since a caller-defined origin.
 ///
-/// `SimTime` is **not a wall-clock value**. The deterministic kernel's
-/// `step()` is the only operation that advances it.
+/// In simulator code the origin is scenario start. In HAL-backed code
+/// it can be a controller boot epoch or another hardware monotonic
+/// reference. The value is not UTC / civil wall-clock time.
 #[derive(Copy, Clone, Debug, Default, PartialEq, PartialOrd)]
 pub struct SimTime(f64);
 
 impl SimTime {
-    /// `t = 0` (scenario start).
+    /// `t = 0` at the caller-defined timeline origin.
     pub const ZERO: Self = Self(0.0);
 
     /// Construct a [`SimTime`] from seconds.
@@ -41,20 +43,20 @@ impl SimTime {
         self.0.is_finite()
     }
 
-    /// Returns `true` if the value is finite and not before scenario
-    /// start.
+    /// Returns `true` if the value is finite and not before the
+    /// timeline origin.
     #[must_use]
     pub fn is_valid(self) -> bool {
         self.is_finite() && self.0 >= 0.0
     }
 
-    /// Validate that this value is a usable simulation time.
+    /// Validate that this value is a usable monotonic timestamp.
     ///
     /// # Errors
     ///
     /// Returns [`TimeError::NotFinite`] if the value is `NaN` or
     /// infinite; returns [`TimeError::NegativeTime`] if the value is
-    /// before scenario start.
+    /// before the timeline origin.
     pub fn require_valid(self) -> Result<Self, TimeError> {
         if !self.is_finite() {
             return Err(TimeError::NotFinite { value: self.0 });
@@ -65,14 +67,15 @@ impl SimTime {
         Ok(self)
     }
 
-    /// Validate that `next` is a valid simulation time and not earlier
+    /// Validate that `next` is a valid timestamp and not earlier
     /// than `self`.
     ///
     /// # Errors
     ///
     /// Returns [`TimeError::NotFinite`] if either `self` or `next` is
     /// not finite, [`TimeError::NegativeTime`] if either value is before
-    /// scenario start, and [`TimeError::NotMonotonic`] if `next < self`.
+    /// the timeline origin, and [`TimeError::NotMonotonic`] if
+    /// `next < self`.
     pub fn check_advance_to(self, next: Self) -> Result<(), TimeError> {
         self.require_valid()?;
         next.require_valid()?;
@@ -208,12 +211,12 @@ impl Neg for Duration {
     }
 }
 
-/// Monotonic step counter.
+/// Monotonic tick counter.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StepIndex(u64);
 
 impl StepIndex {
-    /// Step zero.
+    /// Tick zero.
     pub const ZERO: Self = Self(0);
 
     /// Construct a [`StepIndex`] from an integer.
@@ -228,10 +231,10 @@ impl StepIndex {
         self.0
     }
 
-    /// Returns the next step in sequence, or `None` at `u64::MAX`.
+    /// Returns the next tick in sequence, or `None` at `u64::MAX`.
     ///
-    /// The deterministic kernel should use [`StepIndex::checked_next`]
-    /// when it needs a structured error.
+    /// Consumers should use [`StepIndex::checked_next`] when they need
+    /// a structured overflow error.
     #[must_use]
     pub const fn next(self) -> Option<Self> {
         match self.0.checked_add(1) {
@@ -240,7 +243,7 @@ impl StepIndex {
         }
     }
 
-    /// Returns the next step in sequence, failing instead of saturating.
+    /// Returns the next tick in sequence, failing instead of saturating.
     ///
     /// # Errors
     ///

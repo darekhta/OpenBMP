@@ -1,9 +1,10 @@
-//! Sensor traits, truth-bag, and measurement enum.
+//! Sensor traits, synthetic truth bag, and measurement enum.
 //!
-//! The kernel-side adapter (Phase 2.10) constructs a [`SensorTruth`]
-//! once per step from the kernel's state, hands it to each registered
-//! synthetic sensor implementation, and routes the returned
-//! [`SensorMeasurement`] into telemetry.
+//! Simulator-side code constructs a [`SensorTruth`] once per tick from
+//! the simulated vehicle state, hands it to each registered synthetic
+//! sensor implementation, and routes the returned [`SensorMeasurement`]
+//! into telemetry. HAL-backed code implements [`Sensor`] directly and
+//! does not need the synthetic truth port.
 //!
 //! Phase 2.7 ships three synthetic sensors: `IdealStateSensor`,
 //! `SyntheticBarometer`, and `SyntheticImu`.
@@ -19,14 +20,14 @@ use crate::error::SensorError;
 // SensorTruth
 // ---------------------------------------------------------------------
 
-/// Snapshot of the simulation truth state needed by Phase-2 sensors.
+/// Snapshot of simulator truth state needed by synthetic sensors.
 ///
-/// All fields are in SI units in their named frame. The kernel-side
-/// adapter at Phase 2.10 fills this from its `RigidBodyState` plus
-/// the active env-model outputs (atmosphere sample for barometer
-/// pressure / altitude). Phase-2 sensors never read the kernel state
-/// directly — they only consume `SensorTruth` — so the propulsion /
-/// sensors / aero crates stay L2 and never depend on `openbmp-sim`.
+/// All fields are in SI units in their named frame. The simulator
+/// fills this from its vehicle-state snapshot plus active environment
+/// outputs (atmosphere sample for barometer pressure / altitude).
+/// Synthetic sensors never read simulator state directly — they only
+/// consume `SensorTruth` — so the sensors crate does not depend on
+/// `openbmp-sim`.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct SensorTruth {
     /// Vehicle inertial position (m, ECI).
@@ -51,7 +52,7 @@ pub struct SensorTruth {
     /// the body frame and packs the result here. Defaults to zero
     /// for legacy / non-magnetometer scenarios.
     pub magnetic_field_body_nt: Vector3<f64>,
-    /// Simulation wall-clock at this measurement.
+    /// Truth timestamp on the caller-owned monotonic timeline.
     pub time: SimTime,
 }
 
@@ -126,9 +127,9 @@ pub enum SensorMeasurement {
 /// Phase-3.15.B introduced this so the controller-side
 /// [`Sensor::read`] surface carries a measurement timestamp without
 /// committing the controller to a particular time source. Sim-side
-/// the `time` is the kernel's `SimTime`; HAL adopters typically pin
-/// it to a wall-clock `SimTime::from_seconds` or a hardware
-/// monotonic counter.
+/// the `time` is elapsed scenario time; HAL adopters typically fill
+/// it from a hardware monotonic counter normalised to controller
+/// start.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Timestamped<T> {
     /// Sample-capture time.
@@ -154,13 +155,13 @@ impl<T> Timestamped<T> {
 /// Phase-3.14.C extracted this from the simulator-side sensor trait so
 /// a real flight controller — and a downstream HAL adopter — can
 /// reason about a sensor by its stable id and output type without
-/// depending on the simulator's truth-port + per-step RNG mechanism.
+/// depending on the simulator's truth-port + per-tick RNG mechanism.
 ///
 /// Phase-3.15.B added the [`read`](Self::read) acquisition method:
 /// the controller polls each sensor every controller tick, gets a
 /// [`Timestamped<Self::Output>`] back, and updates its estimator.
 /// Sim-side, [`SyntheticSensorAdapter`] wraps a [`SyntheticSensor`]
-/// with a runner-pushed truth port + step / seed pair, and forwards
+/// with a runner-pushed truth port + tick / seed pair, and forwards
 /// `read()` calls to the synthetic `measure()`. HAL adopters
 /// implement `read()` directly by reading from real hardware in their
 /// own runtime.
@@ -199,9 +200,9 @@ pub trait Sensor {
 /// Trait implemented by simulator-side synthetic sensors.
 ///
 /// Each call to [`measure`](Self::measure) advances any per-sensor
-/// random state (OU bias, RRW walk) by one step, draws fresh noise
+/// random state (OU bias, RRW walk) by one tick, draws fresh noise
 /// from a per-component RNG sub-stream keyed by
-/// `(scenario_seed, step, sensor_id, component_id)`, and produces
+/// `(scenario_seed, tick, sensor_id, component_id)`, and produces
 /// the typed [`SensorMeasurement`].
 ///
 /// The mutable receiver (`&mut self`) is required because OU and
@@ -219,12 +220,12 @@ pub trait SyntheticSensor {
     /// [`SensorId::from_path`].
     fn sensor_id(&self) -> SensorId;
 
-    /// Produce one measurement at simulation step `step` from the
+    /// Produce one measurement at simulator tick `step` from the
     /// supplied truth bag.
     ///
     /// # Errors
     ///
-    /// Returns [`SensorError::NonFinite`] when an arithmetic step
+    /// Returns [`SensorError::NonFinite`] when an arithmetic tick
     /// produces a non-finite value or when the supplied truth carries
     /// a non-finite component the sensor would propagate.
     fn measure(
@@ -247,13 +248,13 @@ pub trait SyntheticSensor {
 /// against either real-hardware impls (which implement [`Sensor`]
 /// directly) or simulator-side synthetic impls (wrapped here).
 ///
-/// The runner calls [`prime`](Self::prime) once per kernel base tick
-/// with the per-step truth + step + seed; the next [`Sensor::read`]
+/// The simulator runner calls [`prime`](Self::prime) once per base tick
+/// with the per-tick truth + tick + seed; the next [`Sensor::read`]
 /// call consumes that primed state, calls
 /// [`SyntheticSensor::measure`], and returns the [`Timestamped`]
 /// measurement. Reading without a primed truth port returns
-/// [`SensorError::NoSample`] — this matches the HAL contract where
-/// a real sensor that hasn't sampled yet returns the same error.
+/// [`SensorError::NoSample`] — this matches the HAL contract where a
+/// real sensor with no available sample returns the same error.
 #[cfg(feature = "synthetic")]
 #[derive(Debug)]
 pub struct SyntheticSensorAdapter<S> {
@@ -280,7 +281,7 @@ impl<S> SyntheticSensorAdapter<S> {
         }
     }
 
-    /// Push the per-step truth + step + seed pair the next
+    /// Push the per-tick truth + tick + seed pair the next
     /// [`Sensor::read`] call will consume. Idempotent — calling
     /// `prime` twice without an intervening `read` discards the
     /// earlier input (mirrors the typical "latest-wins" semantics of
@@ -336,7 +337,7 @@ impl<S: SyntheticSensor> Sensor for SyntheticSensorAdapter<S> {
 // ---------------------------------------------------------------------
 
 /// Validate that every component of the supplied truth bag is finite,
-/// and that the simulation timestamp is valid. Returns
+/// and that the truth timestamp is valid. Returns
 /// [`SensorError::NonFinite`] / [`SensorError::InvalidParameter`] on
 /// the first invalid component.
 #[cfg(feature = "synthetic")]
@@ -384,4 +385,107 @@ pub(crate) fn require_truth_finite(truth: &SensorTruth) -> Result<(), SensorErro
         });
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "synthetic"))]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use nalgebra::{UnitQuaternion, Vector3};
+    use openbmp_core::{Position3, SensorId, SimTime, StepIndex, Velocity3};
+
+    use super::{
+        Sensor, SensorError, SensorMeasurement, SensorTruth, SyntheticSensor,
+        SyntheticSensorAdapter,
+    };
+
+    #[derive(Debug)]
+    struct EchoSyntheticSensor {
+        id: SensorId,
+        expected_step: StepIndex,
+        expected_seed: u64,
+    }
+
+    impl SyntheticSensor for EchoSyntheticSensor {
+        fn sensor_id(&self) -> SensorId {
+            self.id
+        }
+
+        fn measure(
+            &mut self,
+            truth: &SensorTruth,
+            step: StepIndex,
+            scenario_seed: u64,
+        ) -> Result<SensorMeasurement, SensorError> {
+            assert_eq!(step, self.expected_step);
+            assert_eq!(scenario_seed, self.expected_seed);
+            Ok(SensorMeasurement::IdealState(*truth))
+        }
+    }
+
+    fn echo_sensor(expected_step: StepIndex, expected_seed: u64) -> EchoSyntheticSensor {
+        EchoSyntheticSensor {
+            id: SensorId::from_path("sensors.echo"),
+            expected_step,
+            expected_seed,
+        }
+    }
+
+    fn truth_at(time_s: f64) -> SensorTruth {
+        SensorTruth {
+            position_eci: Position3::new(0.0, 0.0, 0.0),
+            velocity_eci: Velocity3::new(0.0, 0.0, 0.0),
+            attitude_eci_to_body: UnitQuaternion::identity(),
+            angular_velocity_body_rad_s: Vector3::zeros(),
+            specific_force_body_m_s2: Vector3::zeros(),
+            static_pressure_pa: 101_325.0,
+            altitude_geometric_m: 0.0,
+            magnetic_field_body_nt: Vector3::zeros(),
+            time: SimTime::from_seconds(time_s),
+        }
+    }
+
+    #[test]
+    fn synthetic_adapter_read_without_prime_returns_no_sample() {
+        let mut adapter = SyntheticSensorAdapter::new(echo_sensor(StepIndex::new(0), 0xCAFE_BABE));
+
+        assert_eq!(adapter.read(), Err(SensorError::NoSample));
+    }
+
+    #[test]
+    fn synthetic_adapter_forwards_sensor_id() {
+        let adapter = SyntheticSensorAdapter::new(echo_sensor(StepIndex::new(0), 0xCAFE_BABE));
+
+        assert_eq!(adapter.sensor_id(), SensorId::from_path("sensors.echo"));
+    }
+
+    #[test]
+    fn synthetic_adapter_read_consumes_primed_truth_with_timestamp() {
+        let step = StepIndex::new(17);
+        let seed = 0xABCD_EF01;
+        let truth = truth_at(12.5);
+        let mut adapter = SyntheticSensorAdapter::new(echo_sensor(step, seed));
+
+        adapter.prime(truth, step, seed);
+        let sample = adapter.read().unwrap();
+
+        assert_eq!(sample.time, truth.time);
+        assert_eq!(sample.value, SensorMeasurement::IdealState(truth));
+        assert_eq!(adapter.read(), Err(SensorError::NoSample));
+    }
+
+    #[test]
+    fn synthetic_adapter_prime_is_latest_wins() {
+        let step = StepIndex::new(2);
+        let seed = 0x1234_5678;
+        let first = truth_at(1.0);
+        let second = truth_at(2.0);
+        let mut adapter = SyntheticSensorAdapter::new(echo_sensor(step, seed));
+
+        adapter.prime(first, StepIndex::new(1), seed);
+        adapter.prime(second, step, seed);
+        let sample = adapter.read().unwrap();
+
+        assert_eq!(sample.time, second.time);
+        assert_eq!(sample.value, SensorMeasurement::IdealState(second));
+    }
 }

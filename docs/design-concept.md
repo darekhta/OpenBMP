@@ -558,19 +558,27 @@ and any operational mission profile.
 - Add a first-class v1 to v2 scenario migration command if downstream
   users need automated conversion beyond the documented mechanical
   rewrite in `docs/scenario-format.md`.
+- Revisit the duplicated engine-command payload shape carried by
+  `openbmp-mission`, `openbmp-scenario`, `openbmp-propulsion`, and
+  runner conversion code. If Phase 4 adds more engine-command fields,
+  introduce a mission-local `EngineCommandPayload` or document the
+  layer-owned vocabulary as permanent.
 
 **Phase 3.15 architectural cleanup landed (post-3.14 audit follow-up):**
 - `openbmp-fc` dependency tripwire hardened against renamed
-  dependencies (`sim = { package = "openbmp-sim", ... }` is now
-  caught the same as a direct `openbmp-sim = ...` line).
+  dependencies, workspace-level aliases, target-conditional
+  dependencies, and `dep:<name>` feature activations.
 - `Sensor::read() -> Timestamped<Output>` ingestion contract
   added; `SyntheticSensorAdapter` bridges synthetic impls to the
   hardware-portable `Sensor` trait. Synthetic types no longer
   implement `Sensor` directly.
-- `SimState` split into `VehicleState` (data shape) +
-  `Integratable` (integration extension); `SimState` retained as a
-  back-compat marker. RK4 weighted-sum logic moved off
-  `SimStateDerivative` into the integrator-side
+- `SimState` split into `VehicleState` (base state shape),
+  `TranslationalState` / `RigidBodyKinematicState` (read-only
+  kinematic snapshot access), and `Integratable` (integration
+  extension); `SimState` retained as a permanent convenience marker
+  for code that genuinely needs both base-state and integration
+  contracts. RK4 weighted-sum logic moved off `SimStateDerivative`
+  into the integrator-side
   `openbmp_sim::rk4_weighted_sum` helper. The derivative trait now
   exposes only generic `Add` + `Mul<f64>` primitives, so future
   integrators (DOPRI5/8, RKF78) can build their own combiners
@@ -581,8 +589,9 @@ and any operational mission profile.
   command at apply time.
 - Mission-graph cadence vocabulary clarified: `EventTrigger::fired`
   takes "monotonic time at the tick" + "monotonic tick counter"
-  (sim-side: scenario time + kernel step; HAL-side: wall-clock
-  proxy + controller tick). Doc-level only; no rename.
+  (sim-side: scenario elapsed time + integration tick; HAL-side:
+  hardware monotonic proxy + controller tick). Doc-level only; no
+  rename.
 
 **Phase 4 — Virtual flight controller**
 - Estimator framework: EKF, MEKF (quaternion attitude).
@@ -604,6 +613,10 @@ and any operational mission profile.
   Phase-3 effector and engine fault modes.
 
 **Phase 5 — Test harness expansion**
+- API cleanup: deprecate simulator-crate re-export shims such as
+  `openbmp_sim::SimState` after Phase 4 has given downstream users one
+  full phase to migrate imports to the hardware-portable crates
+  (`openbmp-models`, `openbmp-mission`, `openbmp-sensors`).
 - DOPRI5/8 adaptive integrators (behind explicit profile flags, not
   default).
 - Public-benchmark validation cases (RocketPy/OpenRocket-equivalent
