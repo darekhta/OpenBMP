@@ -12,9 +12,7 @@ use openbmp_core::{DeterministicRng, SensorId, StepIndex};
 
 use crate::error::SensorError;
 use crate::noise::{BoxMullerGaussian, OrnsteinUhlenbeck};
-use crate::sensor::{
-    Sensor, SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite,
-};
+use crate::sensor::{SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite};
 
 const COMPONENT_ID_MEASUREMENT_NOISE: u32 = 0;
 const COMPONENT_ID_BIAS_DRIFT: u32 = 1;
@@ -81,14 +79,11 @@ impl SyntheticBarometer {
     }
 }
 
-impl Sensor for SyntheticBarometer {
-    type Output = SensorMeasurement;
+impl SyntheticSensor for SyntheticBarometer {
     fn sensor_id(&self) -> SensorId {
         self.sensor_id
     }
-}
 
-impl SyntheticSensor for SyntheticBarometer {
     fn measure(
         &mut self,
         truth: &SensorTruth,

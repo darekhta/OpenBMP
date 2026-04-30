@@ -47,9 +47,9 @@ pub mod sensor;
 pub mod parser;
 
 pub use error::SensorError;
+pub use sensor::{Sensor, SensorMeasurement, SensorTruth, Timestamped};
 #[cfg(feature = "synthetic")]
-pub use sensor::SyntheticSensor;
-pub use sensor::{Sensor, SensorMeasurement, SensorTruth};
+pub use sensor::{SyntheticSensor, SyntheticSensorAdapter};
 
 // Synthetic noise infrastructure — gated by the `synthetic` feature.
 // Default-on for the simulator binary; hardware adopters disable

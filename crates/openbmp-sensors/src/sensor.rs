@@ -119,18 +119,55 @@ pub enum SensorMeasurement {
 }
 
 // ---------------------------------------------------------------------
+// Timestamped<T> — measurement + capture-time wrapper
+// ---------------------------------------------------------------------
+
+/// A measurement value paired with the time it was captured.
+///
+/// Phase-3.15.B introduced this so the controller-side
+/// [`Sensor::read`] surface carries a measurement timestamp without
+/// committing the controller to a particular time source. Sim-side
+/// the `time` is the kernel's `SimTime`; HAL adopters typically pin
+/// it to a wall-clock `SimTime::from_seconds` or a hardware
+/// monotonic counter.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Timestamped<T> {
+    /// Sample-capture time.
+    pub time: SimTime,
+    /// Measurement value.
+    pub value: T,
+}
+
+impl<T> Timestamped<T> {
+    /// Construct from `(time, value)`.
+    #[must_use]
+    pub const fn new(time: SimTime, value: T) -> Self {
+        Self { time, value }
+    }
+}
+
+// ---------------------------------------------------------------------
 // Sensor (hardware-portable) + SyntheticSensor (sim-side) traits
 // ---------------------------------------------------------------------
 
 /// Hardware-portable sensor abstraction.
 ///
-/// Phase-3.14.C extracted this from the simulator-side sensor trait so a real
-/// flight controller — and a downstream HAL adopter — can reason
-/// about a sensor by its stable id and output type without depending
-/// on the simulator's truth-port + per-step RNG mechanism. The
-/// controller subscribes to a `dyn Sensor<Output = …>` instance and
-/// the runner (sim) or HAL (hardware) drives the measurement
-/// pipeline through implementation-specific channels.
+/// Phase-3.14.C extracted this from the simulator-side sensor trait so
+/// a real flight controller — and a downstream HAL adopter — can
+/// reason about a sensor by its stable id and output type without
+/// depending on the simulator's truth-port + per-step RNG mechanism.
+///
+/// Phase-3.15.B added the [`read`](Self::read) acquisition method:
+/// the controller polls each sensor every controller tick, gets a
+/// [`Timestamped<Self::Output>`] back, and updates its estimator.
+/// Sim-side, [`SyntheticSensorAdapter`] wraps a [`SyntheticSensor`]
+/// with a runner-pushed truth port + step / seed pair, and forwards
+/// `read()` calls to the synthetic `measure()`. HAL adopters
+/// implement `read()` directly by reading from real hardware in their
+/// own runtime.
+///
+/// The `&mut self` receiver allows stateful HAL impls (DMA buffer
+/// rotation, last-good-frame caching, sample-and-hold).
 pub trait Sensor {
     /// Output type produced by this sensor.
     type Output;
@@ -140,6 +177,24 @@ pub trait Sensor {
     /// sim-side use; HAL adopters typically derive it from a
     /// hardware-channel name.
     fn sensor_id(&self) -> SensorId;
+
+    /// Pull one measurement from this sensor at its native cadence.
+    ///
+    /// Implementations are expected to be non-blocking and to return
+    /// the latest available sample. A controller calls `read()` once
+    /// per controller tick; if the sensor has no new sample available
+    /// (rate mismatch, hardware missed-frame) the implementation
+    /// returns either the most recently captured value (sample-and-
+    /// hold) or [`SensorError::NoSample`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SensorError::NoSample`] when no measurement is
+    /// available, [`SensorError::NonFinite`] for non-finite arithmetic
+    /// in the synthetic path, or implementation-specific
+    /// [`SensorError::InvalidParameter`] when the underlying hardware
+    /// or noise budget is misconfigured.
+    fn read(&mut self) -> Result<Timestamped<Self::Output>, SensorError>;
 }
 
 /// Trait implemented by simulator-side synthetic sensors.
@@ -153,11 +208,18 @@ pub trait Sensor {
 /// The mutable receiver (`&mut self`) is required because OU and
 /// RRW carry state across calls. The `(truth, step, scenario_seed)`
 /// arguments are the simulation-side context — a HAL adopter does
-/// not implement this trait; they implement the supertrait
-/// [`Sensor`] directly and read from real hardware in their own
-/// runtime.
+/// not implement this trait; they implement [`Sensor`] directly and
+/// read from real hardware in their own runtime. A controller that
+/// needs to consume `dyn Sensor<Output = SensorMeasurement>` over
+/// either real-hardware or synthetic sensors uses
+/// [`SyntheticSensorAdapter`] to bridge the two surfaces.
 #[cfg(feature = "synthetic")]
-pub trait SyntheticSensor: Sensor<Output = SensorMeasurement> {
+pub trait SyntheticSensor {
+    /// Stable identifier for this synthetic sensor, derived from
+    /// the canonical scenario sensor path via
+    /// [`SensorId::from_path`].
+    fn sensor_id(&self) -> SensorId;
+
     /// Produce one measurement at simulation step `step` from the
     /// supplied truth bag.
     ///
@@ -172,6 +234,102 @@ pub trait SyntheticSensor: Sensor<Output = SensorMeasurement> {
         step: StepIndex,
         scenario_seed: u64,
     ) -> Result<SensorMeasurement, SensorError>;
+}
+
+// ---------------------------------------------------------------------
+// SyntheticSensorAdapter — bridges `SyntheticSensor` to `Sensor`
+// ---------------------------------------------------------------------
+
+/// Runner-side bridge that exposes a [`SyntheticSensor`] through the
+/// hardware-portable [`Sensor`] surface.
+///
+/// Phase-3.15.B added this so a controller written against
+/// `dyn Sensor<Output = SensorMeasurement>` can be instantiated
+/// against either real-hardware impls (which implement [`Sensor`]
+/// directly) or simulator-side synthetic impls (wrapped here).
+///
+/// The runner calls [`prime`](Self::prime) once per kernel base tick
+/// with the per-step truth + step + seed; the next [`Sensor::read`]
+/// call consumes that primed state, calls
+/// [`SyntheticSensor::measure`], and returns the [`Timestamped`]
+/// measurement. Reading without a primed truth port returns
+/// [`SensorError::NoSample`] — this matches the HAL contract where
+/// a real sensor that hasn't sampled yet returns the same error.
+#[cfg(feature = "synthetic")]
+#[derive(Debug)]
+pub struct SyntheticSensorAdapter<S> {
+    inner: S,
+    pending: Option<PendingSyntheticInput>,
+}
+
+#[cfg(feature = "synthetic")]
+#[derive(Copy, Clone, Debug)]
+struct PendingSyntheticInput {
+    truth: SensorTruth,
+    step: StepIndex,
+    scenario_seed: u64,
+}
+
+#[cfg(feature = "synthetic")]
+impl<S> SyntheticSensorAdapter<S> {
+    /// Wrap a [`SyntheticSensor`] for runner consumption.
+    #[must_use]
+    pub const fn new(inner: S) -> Self {
+        Self {
+            inner,
+            pending: None,
+        }
+    }
+
+    /// Push the per-step truth + step + seed pair the next
+    /// [`Sensor::read`] call will consume. Idempotent — calling
+    /// `prime` twice without an intervening `read` discards the
+    /// earlier input (mirrors the typical "latest-wins" semantics of
+    /// a HAL sample-and-hold register).
+    pub fn prime(&mut self, truth: SensorTruth, step: StepIndex, scenario_seed: u64) {
+        self.pending = Some(PendingSyntheticInput {
+            truth,
+            step,
+            scenario_seed,
+        });
+    }
+
+    /// Borrow the wrapped [`SyntheticSensor`] (for telemetry / audit /
+    /// determinism oracle access).
+    #[must_use]
+    pub const fn inner(&self) -> &S {
+        &self.inner
+    }
+
+    /// Mutably borrow the wrapped [`SyntheticSensor`]. Useful for
+    /// scenario-injected fault application that the synthetic impl
+    /// exposes via its own surface.
+    pub const fn inner_mut(&mut self) -> &mut S {
+        &mut self.inner
+    }
+
+    /// Consume the adapter and return the wrapped [`SyntheticSensor`].
+    #[must_use]
+    pub fn into_inner(self) -> S {
+        self.inner
+    }
+}
+
+#[cfg(feature = "synthetic")]
+impl<S: SyntheticSensor> Sensor for SyntheticSensorAdapter<S> {
+    type Output = SensorMeasurement;
+
+    fn sensor_id(&self) -> SensorId {
+        self.inner.sensor_id()
+    }
+
+    fn read(&mut self) -> Result<Timestamped<Self::Output>, SensorError> {
+        let pending = self.pending.take().ok_or(SensorError::NoSample)?;
+        let measurement =
+            self.inner
+                .measure(&pending.truth, pending.step, pending.scenario_seed)?;
+        Ok(Timestamped::new(pending.truth.time, measurement))
+    }
 }
 
 // ---------------------------------------------------------------------

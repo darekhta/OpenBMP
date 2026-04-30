@@ -35,4 +35,10 @@ pub enum SensorError {
         /// Path and underlying I/O error message.
         reason: String,
     },
+    /// The controller called [`crate::Sensor::read`] but no sample is
+    /// available yet (typical when the controller polls faster than
+    /// the sensor's native cadence, or when a synthetic sensor's
+    /// runner-pushed truth port has not been primed).
+    #[error("no sensor sample available")]
+    NoSample,
 }
