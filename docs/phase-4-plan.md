@@ -100,12 +100,29 @@ public-benchmark scenarios.
   `MassProperties`).
 - `openbmp-models` — model trait surfaces (`ForceModel`,
   `MomentModel`, `MassModel`, `RigidMassModel`, `EnvironmentModel`,
-  `SimState`, `SimStateDerivative`, `ModelEvalError`).
+  `VehicleState` data shape, `Integratable` integration extension,
+  `SimStateDerivative` with primitive `Add` + `Mul<f64>` ops,
+  `ModelEvalError`). Phase-3.15.E split the legacy `SimState` into
+  `VehicleState + Integratable`; the `SimState` marker trait
+  remains as a back-compat alias. RK4-specific weighted-sum logic
+  lives integrator-side as `openbmp_sim::rk4_weighted_sum`, not on
+  the derivative trait.
 - `openbmp-mission` — mission graph, event triggers, phase
-  transitions.
-- `openbmp-sensors` — `Sensor` trait + `SensorMeasurement` /
-  `SensorTruth` value shapes. (The `SyntheticSensor` trait is
-  Phase-3-side; the controller does not implement it.)
+  transitions. Phase-3.15.C decoupled this from
+  `openbmp-propulsion`; `EventAction::EngineCommand` carries
+  scalar fields (throttle, gimbal, ignite, shutdown) rather than a
+  typed `openbmp_propulsion::EngineCommand`. The runner's
+  `EngineRack::apply_commands` constructs the typed propulsion
+  command at apply time.
+- `openbmp-sensors` — `Sensor` trait + `Sensor::read()` ingestion
+  contract + `Timestamped<T>` wrapper + `SensorMeasurement` /
+  `SensorTruth` value shapes. Phase-3.15.B added `read()` so
+  controllers consume measurements via
+  `dyn Sensor<Output = SensorMeasurement>` without ever touching
+  `SensorTruth`. The `SyntheticSensor` trait stays Phase-3-side
+  (gated by the `synthetic` feature); the runner wraps each
+  synthetic with `SyntheticSensorAdapter` to expose it through
+  `Sensor`.
 - `openbmp-vehicle` — `ControlEffector` trait + `EngineModel` /
   `EngineCommand` types. The controller composes effector / engine
   commands; it does not run the actuator dynamics itself.

@@ -138,7 +138,15 @@ impl EngineRack {
     pub fn apply_commands(&mut self, fired: &[FiredEvent]) -> Result<(), CliError> {
         let mut seen: BTreeSet<EngineId> = BTreeSet::new();
         for event in fired {
-            if let EventAction::EngineCommand { id, command } = event.action {
+            if let EventAction::EngineCommand {
+                id,
+                throttle_unit,
+                gimbal_pitch_rad,
+                gimbal_yaw_rad,
+                ignite,
+                shutdown,
+            } = event.action
+            {
                 if !seen.insert(id) {
                     return Err(CliError::Engine {
                         field: format!(
@@ -148,6 +156,17 @@ impl EngineRack {
                         reason: "multiple `engine_command` events fired for the same engine in one step; resolve to a single command per engine per step".to_owned(),
                     });
                 }
+                // Phase-3.15.C: construct the typed propulsion-side
+                // `EngineCommand` here (the mission graph carries
+                // only the scalar fields, decoupling
+                // `openbmp-mission` from `openbmp-propulsion`).
+                let command = openbmp_propulsion::EngineCommand {
+                    throttle_unit,
+                    gimbal_pitch_rad,
+                    gimbal_yaw_rad,
+                    ignite,
+                    shutdown,
+                };
                 self.cluster
                     .apply_command(id, command)
                     .map_err(|err| CliError::Engine {
@@ -279,7 +298,16 @@ mod tests {
             binding_id: EventId::from_path(name),
             step: StepIndex::ZERO,
             time: SimTime::ZERO,
-            action: EventAction::EngineCommand { id, command },
+            // Phase-3.15.C: mission graph carries the scalar
+            // engine-command payload directly.
+            action: EventAction::EngineCommand {
+                id,
+                throttle_unit: command.throttle_unit,
+                gimbal_pitch_rad: command.gimbal_pitch_rad,
+                gimbal_yaw_rad: command.gimbal_yaw_rad,
+                ignite: command.ignite,
+                shutdown: command.shutdown,
+            },
         }
     }
 

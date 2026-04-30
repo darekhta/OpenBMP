@@ -1,23 +1,42 @@
-//! `SimState` trait — the data shape an integrator advances.
+//! `VehicleState` (data shape) + `Integratable` (integration extension).
 //!
-//! Phase-3.14.A: extracted from `openbmp-sim` so model trait surfaces
-//! can implement / consume `SimState` without depending on the
-//! integrator. The integrator algorithm itself (in `openbmp-sim`)
-//! still consumes this trait.
+//! Phase-3.15.E split the integrator-shaped `SimState` trait into two:
+//!
+//! * [`VehicleState`] — the pure data-shape contract: a time
+//!   stamp, finiteness, and a way to overwrite the time field.
+//!   A controller that consumes vehicle-state snapshots from the
+//!   runner without running its own integrator depends on this.
+//! * [`Integratable`] — the integration extension. Adds the
+//!   derivative type, the `advance_by` step combinator, the
+//!   `is_valid_for_integration` validity check, and the
+//!   post-step `project()` manifold hook. The integrator
+//!   (`openbmp_sim::Rk4FixedStep` today, future adaptive variants
+//!   in Phase 5+) consumes this.
+//!
+//! The legacy [`SimState`] name persists as a marker that requires
+//! both — every existing `<S: SimState>` bound keeps compiling.
+//! New code that only needs the data shape (e.g., a controller's
+//! state-snapshot consumer) bounds on [`VehicleState`] alone.
 
 use openbmp_core::SimTime;
 
 use crate::derivative::SimStateDerivative;
 
-/// State that an integrator can advance.
-///
-/// Implementations supply the linear-arithmetic glue and an optional
-/// post-step manifold projection hook.
-pub trait SimState: Copy + std::fmt::Debug {
-    /// Time-derivative type for this state.
-    type Derivative: SimStateDerivative;
+// ---------------------------------------------------------------------
+// VehicleState — data shape
+// ---------------------------------------------------------------------
 
-    /// The state's current simulation time.
+/// Hardware-portable data-shape contract for vehicle state values.
+///
+/// Phase-3.15.E extracted this from the integrator-shaped
+/// [`SimState`] so a controller that *receives* state snapshots from
+/// the runner / HAL doesn't have to satisfy the integrator's
+/// `advance_by` / `project` / derivative-type contract. A real
+/// flight controller implementing position-velocity logging or
+/// state-history telemetry depends on `VehicleState` only.
+pub trait VehicleState: Copy + std::fmt::Debug {
+    /// The state's current simulation (or wall-clock-derived
+    /// monotonic) time.
     #[must_use]
     fn time(&self) -> SimTime;
 
@@ -25,22 +44,40 @@ pub trait SimState: Copy + std::fmt::Debug {
     #[must_use]
     fn is_finite(&self) -> bool;
 
+    /// Returns a copy of this state with its time field replaced by
+    /// `t`. Used by the kernel to overwrite the integrator's
+    /// accumulated time with the canonical `start + step * dt`
+    /// value, eliminating O(N · ε) drift.
+    #[must_use]
+    fn with_time(self, t: SimTime) -> Self;
+}
+
+// ---------------------------------------------------------------------
+// Integratable — integration extension
+// ---------------------------------------------------------------------
+
+/// Integration-side extension trait. Adds the derivative type and the
+/// step combinator that an explicit Runge-Kutta family integrator
+/// needs.
+///
+/// A consumer that only reads vehicle state (a controller, a
+/// telemetry sink, a HAL adapter) depends on [`VehicleState`] alone;
+/// only the integrator (the kernel, or a controller's internal
+/// process model) needs `Integratable`.
+pub trait Integratable: VehicleState {
+    /// Time-derivative type for this state.
+    type Derivative: SimStateDerivative;
+
     /// Returns `true` if the state is valid for integration.
     ///
-    /// The default only checks finiteness. State implementations with
-    /// structural invariants, such as strictly-positive mass, should
+    /// The default only checks finiteness. State implementations
+    /// with structural invariants — strictly-positive mass,
+    /// near-unit quaternion within a sub-step tolerance — should
     /// override this method.
     #[must_use]
     fn is_valid_for_integration(&self) -> bool {
         self.is_finite()
     }
-
-    /// Returns a copy of this state with its time field replaced by
-    /// `t`. Used by the kernel to overwrite the integrator's accumulated
-    /// time with the canonical `start + step * dt` value, eliminating
-    /// O(N · ε) drift.
-    #[must_use]
-    fn with_time(self, t: SimTime) -> Self;
 
     /// Compute `state + h_seconds * derivative` componentwise. Time
     /// advances by `h_seconds * 1.0 = h_seconds` (the implicit
@@ -55,7 +92,22 @@ pub trait SimState: Copy + std::fmt::Debug {
 }
 
 // ---------------------------------------------------------------------
-// SimState impl for openbmp_state::PointMassState
+// SimState — back-compat marker
+// ---------------------------------------------------------------------
+
+/// Back-compat alias: `<S: SimState>` continues to mean "state shape
+/// + integratable" exactly as it did before Phase-3.15.E.
+///
+/// New code should bound on the narrower trait it actually needs
+/// (`VehicleState` for state consumers, `Integratable` for the
+/// integrator). The marker exists so existing call sites in
+/// `openbmp-vehicle`, `openbmp-sim`, and downstream HAL adopters do
+/// not have to be rewritten in this phase.
+pub trait SimState: VehicleState + Integratable {}
+impl<T: VehicleState + Integratable> SimState for T {}
+
+// ---------------------------------------------------------------------
+// VehicleState + Integratable impl for openbmp_state::PointMassState
 // ---------------------------------------------------------------------
 
 mod point_mass_impl {
@@ -66,11 +118,9 @@ mod point_mass_impl {
 
     use crate::derivative::PointMassDerivative;
 
-    use super::SimState;
+    use super::{Integratable, VehicleState};
 
-    impl SimState for PointMassState {
-        type Derivative = PointMassDerivative;
-
+    impl VehicleState for PointMassState {
         fn time(&self) -> SimTime {
             self.time
         }
@@ -79,13 +129,17 @@ mod point_mass_impl {
             PointMassState::is_finite(self)
         }
 
-        fn is_valid_for_integration(&self) -> bool {
-            self.require_valid().is_ok()
-        }
-
         fn with_time(mut self, t: SimTime) -> Self {
             self.time = t;
             self
+        }
+    }
+
+    impl Integratable for PointMassState {
+        type Derivative = PointMassDerivative;
+
+        fn is_valid_for_integration(&self) -> bool {
+            self.require_valid().is_ok()
         }
 
         fn advance_by(&self, h_seconds: f64, derivative: &PointMassDerivative) -> Self {
@@ -107,7 +161,7 @@ mod point_mass_impl {
 }
 
 // ---------------------------------------------------------------------
-// SimState impl for openbmp_state::RigidBodyState
+// VehicleState + Integratable impl for openbmp_state::RigidBodyState
 // ---------------------------------------------------------------------
 
 mod rigid_body_impl {
@@ -121,18 +175,16 @@ mod rigid_body_impl {
 
     use crate::derivative::RigidBodyDerivative;
 
-    use super::SimState;
+    use super::{Integratable, VehicleState};
 
     /// Tolerances used when `RigidBodyState` is treated as valid for
     /// RK4 sub-step purposes. The integrator accepts intermediate
-    /// states with mildly non-unit quaternions; the kernel's post-step
-    /// validation uses much tighter tolerances.
+    /// states with mildly non-unit quaternions; the kernel's
+    /// post-step validation uses much tighter tolerances.
     const SUBSTEP_QUATERNION_TOL: f64 = 1.0e-2;
     const SUBSTEP_INERTIA_SYMMETRY_TOL: f64 = 1.0e-6;
 
-    impl SimState for RigidBodyState {
-        type Derivative = RigidBodyDerivative;
-
+    impl VehicleState for RigidBodyState {
         fn time(&self) -> SimTime {
             self.time
         }
@@ -141,14 +193,18 @@ mod rigid_body_impl {
             RigidBodyState::is_finite(self)
         }
 
-        fn is_valid_for_integration(&self) -> bool {
-            self.require_valid(SUBSTEP_QUATERNION_TOL, SUBSTEP_INERTIA_SYMMETRY_TOL)
-                .is_ok()
-        }
-
         fn with_time(mut self, t: SimTime) -> Self {
             self.time = t;
             self
+        }
+    }
+
+    impl Integratable for RigidBodyState {
+        type Derivative = RigidBodyDerivative;
+
+        fn is_valid_for_integration(&self) -> bool {
+            self.require_valid(SUBSTEP_QUATERNION_TOL, SUBSTEP_INERTIA_SYMMETRY_TOL)
+                .is_ok()
         }
 
         fn advance_by(&self, h_seconds: f64, d: &RigidBodyDerivative) -> Self {

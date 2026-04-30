@@ -183,17 +183,19 @@ fn build_action(
         },
         // Phase-3.6: engine command resolves the scenario-text id to
         // a stable `EngineId` (FNV of canonical engine path) and
-        // translates the scenario `EngineCommandConfig` payload to
-        // the propulsion-side `EngineCommand` runtime type.
+        // forwards the scenario `EngineCommandConfig` scalar fields.
+        // Phase-3.15.C: the mission graph carries the scalar payload
+        // directly; the runner-side rack constructs the typed
+        // `openbmp_propulsion::EngineCommand` at apply time so the
+        // mission graph crate has zero dependency on actuator-domain
+        // crates.
         EventActionConfig::EngineCommand { id, command } => EventAction::EngineCommand {
             id: openbmp_core::EngineId::from_path(&format!("vehicle.assembly.engines.{id}")),
-            command: openbmp_propulsion::EngineCommand {
-                throttle_unit: command.throttle_unit,
-                gimbal_pitch_rad: command.gimbal_pitch_rad,
-                gimbal_yaw_rad: command.gimbal_yaw_rad,
-                ignite: command.ignite,
-                shutdown: command.shutdown,
-            },
+            throttle_unit: command.throttle_unit,
+            gimbal_pitch_rad: command.gimbal_pitch_rad,
+            gimbal_yaw_rad: command.gimbal_yaw_rad,
+            ignite: command.ignite,
+            shutdown: command.shutdown,
         },
         // Parser-rejected variants — defensively map to a stop-like
         // no-op. The runner does not normally reach these arms; if

@@ -49,4 +49,4 @@ pub use models::{
     MomentModel, NullEnvironment, RecoverySnapshot, RecoverySnapshotView, RigidMassModel,
     TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
 };
-pub use state::SimState;
+pub use state::{Integratable, SimState, VehicleState};

@@ -1,45 +1,49 @@
 //! State-space derivative types.
 //!
-//! A [`SimStateDerivative`] is the time-derivative of a [`crate::SimState`]
-//! and supports the linear-arithmetic operations an explicit Runge-Kutta
+//! A [`SimStateDerivative`] is the time-derivative of a
+//! [`crate::Integratable`] state and supports the primitive
+//! linear-arithmetic operations every explicit Runge-Kutta family
 //! integrator needs:
 //!
 //! * Per-component finiteness check.
-//! * The canonical RK4 weighted sum
-//!   `(k1 + 2·k2 + 2·k3 + k4) / 6` with **locked** evaluation order.
+//! * Componentwise scalar multiplication (`d * f64`) via
+//!   [`std::ops::Mul`].
+//! * Componentwise addition (`d + d`) via [`std::ops::Add`].
 //!
-//! The locked sum order is part of the OpenBMP determinism contract.
-//! Implementations must:
+//! Phase-3.15.E removed the old `rk4_weighted_sum` method that baked
+//! the RK4 stage scheme into the trait. The locked-operand-order
+//! weighted-sum logic now lives on the integrator side
+//! (`openbmp_sim::rk4_weighted_sum`); this trait exposes only the
+//! generic primitives, so future integrators (DOPRI5/8, RKF78,
+//! adaptive variants) can implement their own weighted-sum helpers
+//! using the same operand-order discipline without the trait surface
+//! advertising one specific stage scheme.
 //!
-//! * Use explicit parentheses to prevent any future compiler from
-//!   reassociating the sum.
-//! * Multiply by `1.0 / 6.0` once at the end (not pre-distribute the
-//!   `2/6` constant — that introduces an extra rounding before the sum).
-//! * Never use `f64::mul_add` (FMA hardware rounds once; software
-//!   emulation rounds twice — cross-platform bit-stable replay requires
-//!   two explicit roundings).
+//! Implementations of `Add` and `Mul<f64>` must use explicit
+//! componentwise arithmetic with locked operand order. Never use
+//! `f64::mul_add` (FMA hardware rounds once; software emulation
+//! rounds twice — cross-platform bit-stable replay requires two
+//! explicit roundings).
 //!
-//! See `docs/software-architecture.md § Determinism Profile` for
-//! the full contract.
+//! See `docs/software-architecture.md § Determinism Profile` for the
+//! full contract.
+
+use std::ops::{Add, Mul};
 
 use nalgebra::{Matrix3, Quaternion as NalgebraQuaternion, Vector3};
 
-/// Trait implemented by the time-derivative of every [`crate::SimState`].
+/// Trait implemented by the time-derivative of every
+/// [`crate::Integratable`] state.
 ///
 /// Only the operations the explicit Runge-Kutta family needs are
-/// required.
-pub trait SimStateDerivative: Copy + std::fmt::Debug {
+/// required: finiteness, addition, and scalar multiplication. The
+/// integrator combines stages itself.
+pub trait SimStateDerivative:
+    Copy + std::fmt::Debug + Add<Output = Self> + Mul<f64, Output = Self>
+{
     /// Returns `true` if every numeric component is finite.
     #[must_use]
     fn is_finite(&self) -> bool;
-
-    /// Compute the canonical RK4 weighted sum
-    /// `(k1 + 2·k2 + 2·k3 + k4) / 6`.
-    ///
-    /// Implementations **must** preserve the source-level order of
-    /// operations. The OpenBMP determinism contract depends on this.
-    #[must_use]
-    fn rk4_weighted_sum(k1: &Self, k2: &Self, k3: &Self, k4: &Self) -> Self;
 }
 
 /// Time-derivative of a [`openbmp_state::PointMassState`].
@@ -89,40 +93,38 @@ impl PointMassDerivative {
     }
 }
 
+impl Add for PointMassDerivative {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        // DETERMINISM: explicit componentwise sum; no FMA.
+        Self {
+            velocity_m_s: self.velocity_m_s + rhs.velocity_m_s,
+            acceleration_m_s2: self.acceleration_m_s2 + rhs.acceleration_m_s2,
+            mass_rate_kg_s: self.mass_rate_kg_s + rhs.mass_rate_kg_s,
+        }
+    }
+}
+
+impl Mul<f64> for PointMassDerivative {
+    type Output = Self;
+
+    fn mul(self, rhs: f64) -> Self {
+        // DETERMINISM: explicit componentwise scalar multiplication;
+        // no FMA.
+        Self {
+            velocity_m_s: self.velocity_m_s * rhs,
+            acceleration_m_s2: self.acceleration_m_s2 * rhs,
+            mass_rate_kg_s: self.mass_rate_kg_s * rhs,
+        }
+    }
+}
+
 impl SimStateDerivative for PointMassDerivative {
     fn is_finite(&self) -> bool {
         self.velocity_m_s.iter().all(|v| v.is_finite())
             && self.acceleration_m_s2.iter().all(|v| v.is_finite())
             && self.mass_rate_kg_s.is_finite()
-    }
-
-    fn rk4_weighted_sum(k1: &Self, k2: &Self, k3: &Self, k4: &Self) -> Self {
-        // DETERMINISM CONTRACT (see module docs):
-        // - Locked left-to-right summation order.
-        // - Single final divide by 6 (not pre-distributed 2/6).
-        // - No `f64::mul_add` anywhere.
-        const TWO: f64 = 2.0;
-        const SIXTH: f64 = 1.0 / 6.0;
-
-        let velocity_m_s = (((k1.velocity_m_s + TWO * k2.velocity_m_s) + TWO * k3.velocity_m_s)
-            + k4.velocity_m_s)
-            * SIXTH;
-
-        let acceleration_m_s2 = (((k1.acceleration_m_s2 + TWO * k2.acceleration_m_s2)
-            + TWO * k3.acceleration_m_s2)
-            + k4.acceleration_m_s2)
-            * SIXTH;
-
-        let mass_rate_kg_s = (((k1.mass_rate_kg_s + TWO * k2.mass_rate_kg_s)
-            + TWO * k3.mass_rate_kg_s)
-            + k4.mass_rate_kg_s)
-            * SIXTH;
-
-        Self {
-            velocity_m_s,
-            acceleration_m_s2,
-            mass_rate_kg_s,
-        }
     }
 }
 
@@ -211,6 +213,49 @@ impl RigidBodyDerivative {
     }
 }
 
+impl Add for RigidBodyDerivative {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        // DETERMINISM: explicit componentwise sum on every field.
+        // The quaternion is summed via its underlying `coords`
+        // Vector4; the result is intentionally non-unit (the
+        // integrator's `project()` restores the manifold constraint
+        // after the final weighted sum).
+        let quaternion_rate =
+            NalgebraQuaternion::from(self.quaternion_rate.coords + rhs.quaternion_rate.coords);
+        Self {
+            velocity_m_s_eci: self.velocity_m_s_eci + rhs.velocity_m_s_eci,
+            acceleration_m_s2_eci: self.acceleration_m_s2_eci + rhs.acceleration_m_s2_eci,
+            quaternion_rate,
+            angular_acceleration_rad_s2_body: self.angular_acceleration_rad_s2_body
+                + rhs.angular_acceleration_rad_s2_body,
+            mass_rate_kg_s: self.mass_rate_kg_s + rhs.mass_rate_kg_s,
+            center_of_mass_rate_body_m_s: self.center_of_mass_rate_body_m_s
+                + rhs.center_of_mass_rate_body_m_s,
+            inertia_rate_body: self.inertia_rate_body + rhs.inertia_rate_body,
+        }
+    }
+}
+
+impl Mul<f64> for RigidBodyDerivative {
+    type Output = Self;
+
+    fn mul(self, rhs: f64) -> Self {
+        // DETERMINISM: explicit componentwise scalar multiplication.
+        let quaternion_rate = NalgebraQuaternion::from(self.quaternion_rate.coords * rhs);
+        Self {
+            velocity_m_s_eci: self.velocity_m_s_eci * rhs,
+            acceleration_m_s2_eci: self.acceleration_m_s2_eci * rhs,
+            quaternion_rate,
+            angular_acceleration_rad_s2_body: self.angular_acceleration_rad_s2_body * rhs,
+            mass_rate_kg_s: self.mass_rate_kg_s * rhs,
+            center_of_mass_rate_body_m_s: self.center_of_mass_rate_body_m_s * rhs,
+            inertia_rate_body: self.inertia_rate_body * rhs,
+        }
+    }
+}
+
 impl SimStateDerivative for RigidBodyDerivative {
     fn is_finite(&self) -> bool {
         self.velocity_m_s_eci.iter().all(|v| v.is_finite())
@@ -226,68 +271,6 @@ impl SimStateDerivative for RigidBodyDerivative {
                 .iter()
                 .all(|v| v.is_finite())
             && self.inertia_rate_body.iter().all(|v| v.is_finite())
-    }
-
-    fn rk4_weighted_sum(k1: &Self, k2: &Self, k3: &Self, k4: &Self) -> Self {
-        // DETERMINISM CONTRACT: locked left-to-right summation order
-        // for every field; single final divide by 6 (not pre-distributed
-        // 2/6); no `f64::mul_add`.
-        const TWO: f64 = 2.0;
-        const SIXTH: f64 = 1.0 / 6.0;
-
-        let velocity_m_s_eci = (((k1.velocity_m_s_eci + TWO * k2.velocity_m_s_eci)
-            + TWO * k3.velocity_m_s_eci)
-            + k4.velocity_m_s_eci)
-            * SIXTH;
-
-        let acceleration_m_s2_eci = (((k1.acceleration_m_s2_eci + TWO * k2.acceleration_m_s2_eci)
-            + TWO * k3.acceleration_m_s2_eci)
-            + k4.acceleration_m_s2_eci)
-            * SIXTH;
-
-        // Quaternion rate is a non-unit `Quaternion<f64>`; sum the
-        // underlying `coords` Vector4 in locked order.
-        let q_coords = (((k1.quaternion_rate.coords + TWO * k2.quaternion_rate.coords)
-            + TWO * k3.quaternion_rate.coords)
-            + k4.quaternion_rate.coords)
-            * SIXTH;
-        // nalgebra `Quaternion::new(w, i, j, k)` reorders into
-        // `coords = (i, j, k, w)`; we already have `coords` in the
-        // correct internal order, so reconstruct from the pre-summed
-        // coords directly via `Quaternion::from(...)`.
-        let quaternion_rate = NalgebraQuaternion::from(q_coords);
-
-        let angular_acceleration_rad_s2_body = (((k1.angular_acceleration_rad_s2_body
-            + TWO * k2.angular_acceleration_rad_s2_body)
-            + TWO * k3.angular_acceleration_rad_s2_body)
-            + k4.angular_acceleration_rad_s2_body)
-            * SIXTH;
-
-        let mass_rate_kg_s = (((k1.mass_rate_kg_s + TWO * k2.mass_rate_kg_s)
-            + TWO * k3.mass_rate_kg_s)
-            + k4.mass_rate_kg_s)
-            * SIXTH;
-
-        let center_of_mass_rate_body_m_s = (((k1.center_of_mass_rate_body_m_s
-            + TWO * k2.center_of_mass_rate_body_m_s)
-            + TWO * k3.center_of_mass_rate_body_m_s)
-            + k4.center_of_mass_rate_body_m_s)
-            * SIXTH;
-
-        let inertia_rate_body = (((k1.inertia_rate_body + TWO * k2.inertia_rate_body)
-            + TWO * k3.inertia_rate_body)
-            + k4.inertia_rate_body)
-            * SIXTH;
-
-        Self {
-            velocity_m_s_eci,
-            acceleration_m_s2_eci,
-            quaternion_rate,
-            angular_acceleration_rad_s2_body,
-            mass_rate_kg_s,
-            center_of_mass_rate_body_m_s,
-            inertia_rate_body,
-        }
     }
 }
 
@@ -320,58 +303,48 @@ mod tests {
     }
 
     #[test]
-    fn rk4_sum_of_zeros_is_zero() {
-        let z = PointMassDerivative::zero();
-        let s = PointMassDerivative::rk4_weighted_sum(&z, &z, &z, &z);
-        assert_abs_diff_eq!(s.velocity_m_s.x, 0.0);
-        assert_abs_diff_eq!(s.acceleration_m_s2.x, 0.0);
-        assert_abs_diff_eq!(s.mass_rate_kg_s, 0.0);
+    fn add_componentwise_is_commutative_in_value() {
+        let a = deriv(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.5);
+        let b = deriv(0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 0.25);
+        let s = a + b;
+        assert_abs_diff_eq!(s.velocity_m_s.x, 1.5, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(s.acceleration_m_s2.z, 9.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(s.mass_rate_kg_s, 0.75, epsilon = 1.0e-15);
     }
 
     #[test]
-    fn rk4_sum_of_identical_derivatives_returns_that_derivative() {
-        // (k + 2k + 2k + k) / 6 = 6k / 6 = k.
+    fn scalar_mul_componentwise() {
+        let a = deriv(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.5);
+        let s = a * 2.0;
+        assert_abs_diff_eq!(s.velocity_m_s.x, 2.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(s.acceleration_m_s2.z, 12.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(s.mass_rate_kg_s, 1.0, epsilon = 1.0e-15);
+    }
+
+    #[test]
+    fn primitives_compose_into_rk4_weighted_sum() {
+        // (k + 2k + 2k + k) / 6 = 6k / 6 = k. Verifies the integrator-
+        // side weighted-sum helper builds correctly on top of the new
+        // primitive ops.
         let k = deriv(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.5);
-        let s = PointMassDerivative::rk4_weighted_sum(&k, &k, &k, &k);
+        let s = ((k + (k * 2.0)) + (k * 2.0) + k) * (1.0 / 6.0);
         assert_abs_diff_eq!(s.velocity_m_s.x, 1.0, epsilon = 1.0e-15);
         assert_abs_diff_eq!(s.velocity_m_s.y, 2.0, epsilon = 1.0e-15);
-        assert_abs_diff_eq!(s.velocity_m_s.z, 3.0, epsilon = 1.0e-15);
-        assert_abs_diff_eq!(s.acceleration_m_s2.x, 4.0, epsilon = 1.0e-15);
-        assert_abs_diff_eq!(s.acceleration_m_s2.y, 5.0, epsilon = 1.0e-15);
         assert_abs_diff_eq!(s.acceleration_m_s2.z, 6.0, epsilon = 1.0e-15);
         assert_abs_diff_eq!(s.mass_rate_kg_s, 0.5, epsilon = 1.0e-15);
     }
 
     #[test]
-    fn rk4_sum_is_bit_stable_across_reruns() {
-        // Exact bit-stability is the determinism contract.
+    fn primitives_are_bit_stable_across_reruns() {
         let k1 = deriv(1.1, 2.2, 3.3, 4.4, 5.5, 6.6, 0.7);
         let k2 = deriv(0.9, 1.8, 2.7, 3.6, 4.5, 5.4, 0.6);
         let k3 = deriv(1.05, 2.1, 3.15, 4.2, 5.25, 6.3, 0.65);
         let k4 = deriv(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.7);
-        let a = PointMassDerivative::rk4_weighted_sum(&k1, &k2, &k3, &k4);
-        let b = PointMassDerivative::rk4_weighted_sum(&k1, &k2, &k3, &k4);
-        // Bit-equality, not approximate.
+        let a = ((k1 + (k2 * 2.0)) + (k3 * 2.0) + k4) * (1.0 / 6.0);
+        let b = ((k1 + (k2 * 2.0)) + (k3 * 2.0) + k4) * (1.0 / 6.0);
         assert_eq!(a.velocity_m_s.x.to_bits(), b.velocity_m_s.x.to_bits());
         assert_eq!(a.velocity_m_s.y.to_bits(), b.velocity_m_s.y.to_bits());
-        assert_eq!(a.velocity_m_s.z.to_bits(), b.velocity_m_s.z.to_bits());
-        assert_eq!(
-            a.acceleration_m_s2.x.to_bits(),
-            b.acceleration_m_s2.x.to_bits()
-        );
         assert_eq!(a.mass_rate_kg_s.to_bits(), b.mass_rate_kg_s.to_bits());
-    }
-
-    #[test]
-    fn rk4_sum_handles_constant_acceleration_correctly() {
-        // For constant `k`, all four stages are equal so the weighted
-        // sum equals `k` modulo the rounding from the divide-by-6:
-        // `(k + 2k + 2k + k) / 6 = 6k / 6` differs from `k` by at most
-        // a couple of ULPs because 1/6 is not exactly representable
-        // in IEEE-754 binary64.
-        let g = deriv(0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0);
-        let s = PointMassDerivative::rk4_weighted_sum(&g, &g, &g, &g);
-        assert_abs_diff_eq!(s.velocity_m_s.z, -9.81, epsilon = 1.0e-13);
     }
 
     // -----------------------------------------------------------------
@@ -410,7 +383,6 @@ mod tests {
         assert!(!d.is_finite());
 
         let mut d = rigid_zero();
-        // Replace coords with one carrying a NaN.
         d.quaternion_rate = NalgebraQuaternion::new(f64::NAN, 0.0, 0.0, 0.0);
         assert!(!d.is_finite());
 
@@ -432,61 +404,12 @@ mod tests {
     }
 
     #[test]
-    fn rigid_rk4_sum_of_zeros_is_zero() {
-        let z = rigid_zero();
-        let s = RigidBodyDerivative::rk4_weighted_sum(&z, &z, &z, &z);
-        assert!(s.is_finite());
-        assert_abs_diff_eq!(s.velocity_m_s_eci.x, 0.0);
-        assert_abs_diff_eq!(s.acceleration_m_s2_eci.x, 0.0);
-        assert_abs_diff_eq!(s.quaternion_rate.coords[0], 0.0);
-        assert_abs_diff_eq!(s.angular_acceleration_rad_s2_body.x, 0.0);
-        assert_abs_diff_eq!(s.mass_rate_kg_s, 0.0);
-        assert_abs_diff_eq!(s.center_of_mass_rate_body_m_s.x, 0.0);
-        assert_abs_diff_eq!(s.inertia_rate_body[(0, 0)], 0.0);
-    }
-
-    #[test]
-    fn rigid_rk4_sum_of_identical_derivatives_returns_that_derivative() {
+    fn rigid_primitives_compose_into_rk4_weighted_sum() {
         let k = rigid_uniform(1.5);
-        let s = RigidBodyDerivative::rk4_weighted_sum(&k, &k, &k, &k);
+        let s = ((k + (k * 2.0)) + (k * 2.0) + k) * (1.0 / 6.0);
         assert_abs_diff_eq!(s.velocity_m_s_eci.x, 1.5, epsilon = 1.0e-15);
-        assert_abs_diff_eq!(s.acceleration_m_s2_eci.x, 1.5, epsilon = 1.0e-15);
         assert_abs_diff_eq!(s.quaternion_rate.coords[3], 1.5, epsilon = 1.0e-15);
-        assert_abs_diff_eq!(s.angular_acceleration_rad_s2_body.z, 1.5, epsilon = 1.0e-15);
         assert_abs_diff_eq!(s.mass_rate_kg_s, 1.5, epsilon = 1.0e-15);
-        assert_abs_diff_eq!(s.center_of_mass_rate_body_m_s.y, 1.5, epsilon = 1.0e-15);
         assert_abs_diff_eq!(s.inertia_rate_body[(2, 2)], 1.5, epsilon = 1.0e-15);
-    }
-
-    #[test]
-    fn rigid_rk4_sum_is_bit_stable_across_reruns() {
-        let k1 = rigid_uniform(1.1);
-        let k2 = rigid_uniform(0.9);
-        let k3 = rigid_uniform(1.05);
-        let k4 = rigid_uniform(1.0);
-        let a = RigidBodyDerivative::rk4_weighted_sum(&k1, &k2, &k3, &k4);
-        let b = RigidBodyDerivative::rk4_weighted_sum(&k1, &k2, &k3, &k4);
-        // Bit equality on a representative field from each kind.
-        assert_eq!(
-            a.velocity_m_s_eci.x.to_bits(),
-            b.velocity_m_s_eci.x.to_bits()
-        );
-        assert_eq!(
-            a.quaternion_rate.coords[0].to_bits(),
-            b.quaternion_rate.coords[0].to_bits(),
-        );
-        assert_eq!(
-            a.angular_acceleration_rad_s2_body.y.to_bits(),
-            b.angular_acceleration_rad_s2_body.y.to_bits(),
-        );
-        assert_eq!(a.mass_rate_kg_s.to_bits(), b.mass_rate_kg_s.to_bits());
-        assert_eq!(
-            a.center_of_mass_rate_body_m_s.z.to_bits(),
-            b.center_of_mass_rate_body_m_s.z.to_bits(),
-        );
-        assert_eq!(
-            a.inertia_rate_body[(1, 1)].to_bits(),
-            b.inertia_rate_body[(1, 1)].to_bits(),
-        );
     }
 }

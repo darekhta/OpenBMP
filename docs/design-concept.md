@@ -559,6 +559,31 @@ and any operational mission profile.
   users need automated conversion beyond the documented mechanical
   rewrite in `docs/scenario-format.md`.
 
+**Phase 3.15 architectural cleanup landed (post-3.14 audit follow-up):**
+- `openbmp-fc` dependency tripwire hardened against renamed
+  dependencies (`sim = { package = "openbmp-sim", ... }` is now
+  caught the same as a direct `openbmp-sim = ...` line).
+- `Sensor::read() -> Timestamped<Output>` ingestion contract
+  added; `SyntheticSensorAdapter` bridges synthetic impls to the
+  hardware-portable `Sensor` trait. Synthetic types no longer
+  implement `Sensor` directly.
+- `SimState` split into `VehicleState` (data shape) +
+  `Integratable` (integration extension); `SimState` retained as a
+  back-compat marker. RK4 weighted-sum logic moved off
+  `SimStateDerivative` into the integrator-side
+  `openbmp_sim::rk4_weighted_sum` helper. The derivative trait now
+  exposes only generic `Add` + `Mul<f64>` primitives, so future
+  integrators (DOPRI5/8, RKF78) can build their own combiners
+  without the trait advertising a stage scheme.
+- `openbmp-mission` decoupled from `openbmp-propulsion`.
+  `EventAction::EngineCommand` carries scalar fields instead of
+  a typed `EngineCommand` value; the runner constructs the typed
+  command at apply time.
+- Mission-graph cadence vocabulary clarified: `EventTrigger::fired`
+  takes "monotonic time at the tick" + "monotonic tick counter"
+  (sim-side: scenario time + kernel step; HAL-side: wall-clock
+  proxy + controller tick). Doc-level only; no rename.
+
 **Phase 4 — Virtual flight controller**
 - Estimator framework: EKF, MEKF (quaternion attitude).
 - Three-loop autopilot scaffold with academic gains.

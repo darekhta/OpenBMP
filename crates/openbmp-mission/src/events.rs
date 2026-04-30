@@ -1,10 +1,21 @@
 //! Event triggers and mission-phase graph (Phase 3.2).
 //!
-//! Phase-3.2 introduces declarative event-driven scheduling that
-//! replaces the Phase-2 hard-coded apogee detector. Scenarios declare
-//! a `[mission]` block of phases, events, and transitions; the kernel
-//! evaluates events post-step and either emits telemetry markers,
-//! transitions the active phase, or halts the run.
+//! Phase-3.2 introduced declarative event-driven scheduling that
+//! replaced the Phase-2 hard-coded apogee detector. Scenarios declare
+//! a `[mission]` block of phases, events, and transitions; the
+//! consumer (sim-side: kernel post-step hook; HAL-side: controller
+//! tick or hardware-timer ISR) evaluates events at its own cadence
+//! and either emits telemetry markers, transitions the active phase,
+//! or halts the run.
+//!
+//! Phase-3.15.D made the cadence vocabulary explicit: this crate
+//! ships only the data shapes + the trigger trait + the graph
+//! validator. The consumer drives the evaluation cadence; the
+//! mission graph itself is cadence-agnostic. `SimTime` and
+//! `StepIndex` arguments to [`EventTrigger::fired`] are
+//! "monotonic time at the tick" and "monotonic tick counter"
+//! respectively — sim-side they bind to scenario time + kernel step
+//! index; HAL-side they bind to wall-clock proxy + controller tick.
 //!
 //! # Module surface
 //!
@@ -173,12 +184,22 @@ pub struct EventEvalState {
 
 /// Trait implemented by event triggers.
 ///
-/// Evaluated once per kernel base tick after `integrator.advance()`
-/// completes and before post-step state validation. Returning `true`
-/// causes the kernel to record a [`FiredEvent`] for the binding;
-/// the runner fans the fired events out to telemetry markers.
+/// Evaluated once per **event-evaluation tick** by the consumer. The
+/// simulator binds the tick to the kernel's `integrator.advance()`
+/// post-step hook; a HAL adopter binds it to whichever cadence is
+/// natural in their environment (sensor-sample tick, controller
+/// tick, hardware-timer interrupt). Returning `true` causes the
+/// consumer to record a [`FiredEvent`] for the binding.
+///
+/// Phase-3.15.D clarification: the `t: SimTime` and `step: StepIndex`
+/// arguments are intentionally cadence-neutral — `SimTime` is the
+/// monotonic time at the tick (sim-side: scenario time; HAL-side:
+/// wall-clock proxy or hardware monotonic counter), and `step` is
+/// the monotonic tick counter (sim-side: kernel step index;
+/// HAL-side: any monotonic event-evaluation tick). The trait surface
+/// does not bake in any sim-specific cadence.
 pub trait EventTrigger {
-    /// Returns `true` if the trigger fires this step.
+    /// Returns `true` if the trigger fires this tick.
     fn fired(&self, state: &EventEvalState, t: SimTime, step: StepIndex) -> bool;
 }
 
@@ -296,11 +317,31 @@ pub enum EventAction {
     /// [`openbmp_core::EngineId`]. The kernel records the firing;
     /// the runner-side `EngineRack::apply_commands` drains it and
     /// applies the command to the engine on the next rack tick.
+    ///
+    /// Phase-3.15.C: the field shape is engine-domain-shaped but
+    /// the mission graph crate does *not* depend on
+    /// `openbmp-propulsion`. The runner translates these scalar
+    /// fields into a typed `openbmp_propulsion::EngineCommand` at
+    /// apply time — same pattern as [`Self::DeployRecovery`] which
+    /// carries a `String` command name and the runner maps it to
+    /// `openbmp_vehicle::RecoveryCommand`. Keeping the mission graph
+    /// free of actuator-domain dependencies is the load-bearing
+    /// HAL-portability rule for `openbmp-mission`.
     EngineCommand {
         /// Target engine id.
         id: openbmp_core::EngineId,
-        /// Command payload (throttle, gimbal, ignite, shutdown).
-        command: openbmp_propulsion::EngineCommand,
+        /// Throttle setting in `[0, 1]`. Clamped at apply time.
+        throttle_unit: f64,
+        /// Gimbal pitch angle in radians. Clamped at apply time.
+        gimbal_pitch_rad: f64,
+        /// Gimbal yaw angle in radians. Clamped at apply time.
+        gimbal_yaw_rad: f64,
+        /// Ignition request. Honoured only from `Idle`.
+        ignite: bool,
+        /// Shutdown request. Honoured only from `Igniting` or
+        /// `Burning`. When both `ignite` and `shutdown` are `true`,
+        /// shutdown wins.
+        shutdown: bool,
     },
     /// Phase-3.4: scenario-driven effector command override. Targets
     /// a declared effector by [`openbmp_core::EffectorId`]; the

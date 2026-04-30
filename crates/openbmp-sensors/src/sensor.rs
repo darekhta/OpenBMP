@@ -13,7 +13,6 @@ use nalgebra::{UnitQuaternion, Vector3};
 use openbmp_core::StepIndex;
 use openbmp_core::{Eci, Position3, SensorId, SimTime, Velocity3};
 
-#[cfg(feature = "synthetic")]
 use crate::error::SensorError;
 
 // ---------------------------------------------------------------------

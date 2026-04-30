@@ -1285,7 +1285,6 @@ name = "openbmp-mission"
 version = "0.0.1"
 dependencies = [
  "openbmp-core",
- "openbmp-propulsion",
  "proptest",
  "thiserror",
 ]

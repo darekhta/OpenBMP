@@ -9,9 +9,8 @@ authors.workspace       = true
 description             = "OpenBMP mission graph + event triggers — hardware-portable; no simulator dependency."
 
 [dependencies]
-openbmp-core       = { workspace = true }
-openbmp-propulsion = { workspace = true }
-thiserror          = { workspace = true }
+openbmp-core = { workspace = true }
+thiserror    = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

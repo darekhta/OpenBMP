@@ -11,7 +11,11 @@
 //! `Rk4FixedStep` is tagged [`IntegratorDeterminism::BitStable`]. The
 //! contract requires:
 //!
-//! 1. The locked weighted-sum order of [`crate::SimStateDerivative::rk4_weighted_sum`].
+//! 1. The locked weighted-sum order of [`rk4_weighted_sum`] —
+//!    Phase-3.15.E moved the combiner off the derivative trait
+//!    (where it baked in RK4 specifics) into this integrator-side
+//!    helper that uses the derivative's primitive `Add` + `Mul<f64>`
+//!    ops.
 //! 2. No `f64::mul_add` in the integrator hot path.
 //! 3. Sub-step times computed by addition from the current step time
 //!    (not by accumulating across steps — the kernel handles
@@ -35,6 +39,43 @@ use crate::error::{IntegratorError, ModelEvalError};
 /// the alias here keeps every existing `openbmp_sim::SimState`
 /// import path valid during the transition.
 pub use openbmp_models::SimState;
+
+/// Canonical RK4 weighted-sum helper.
+///
+/// Computes `(k1 + 2·k2 + 2·k3 + k4) / 6` using the derivative's
+/// primitive `Add` and `Mul<f64>` ops, with **locked** evaluation
+/// order:
+///
+/// 1. `k2 * 2` is computed first.
+/// 2. `k1 + (k2 * 2)` is the first addend.
+/// 3. `k3 * 2` is computed next.
+/// 4. The two scaled stages are added: `((k1 + 2·k2) + (k3 * 2))`.
+/// 5. `k4` is added last.
+/// 6. The whole sum is multiplied by `1/6` once at the end (not
+///    pre-distributed across stages — that introduces an extra
+///    rounding before the sum).
+///
+/// Phase-3.15.E moved this off [`SimStateDerivative`] so the
+/// derivative trait surface only requires the generic `Add` +
+/// `Mul<f64>` primitives. Future integrators (DOPRI5/8, RKF78)
+/// implement their own weighted-sum helpers using the same
+/// primitives and the same locked-order discipline, without the
+/// derivative trait advertising one specific stage scheme.
+///
+/// Never use `f64::mul_add` here: FMA hardware rounds once;
+/// software emulation rounds twice — cross-platform bit-stable
+/// replay requires two explicit roundings.
+#[must_use]
+pub fn rk4_weighted_sum<D>(k1: D, k2: D, k3: D, k4: D) -> D
+where
+    D: SimStateDerivative,
+{
+    const TWO: f64 = 2.0;
+    const SIXTH: f64 = 1.0 / 6.0;
+    // DETERMINISM CONTRACT: explicit parentheses prevent compiler
+    // re-association; single final scalar multiplication; no FMA.
+    ((k1 + (k2 * TWO)) + (k3 * TWO) + k4) * SIXTH
+}
 
 /// Determinism class of an integrator.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -152,8 +193,11 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
         }
 
         // Combine: state + h * (k1 + 2 k2 + 2 k3 + k4) / 6.
-        // Locked-order weighted sum lives in `SimStateDerivative`.
-        let weighted = S::Derivative::rk4_weighted_sum(&k1, &k2, &k3, &k4);
+        // Locked-order weighted sum is now an integrator-local
+        // helper (Phase-3.15.E moved it off the derivative trait so
+        // future integrators can implement their own combination
+        // without the trait surface advertising one stage scheme).
+        let weighted = rk4_weighted_sum(k1, k2, k3, k4);
         let mut new_state = state.advance_by(h, &weighted);
 
         // Apply manifold constraints (no-op for PointMassState;
@@ -413,6 +457,7 @@ mod tests {
         use openbmp_core::{
             AngularVelocity3, Body, Eci, Position3, Quaternion, SimTime, UnitQuaternion, Velocity3,
         };
+        use openbmp_models::Integratable;
         use openbmp_state::{MassProperties, RigidBodyState};
         use uom::si::f64::Mass;
         use uom::si::mass::kilogram;
@@ -467,7 +512,7 @@ mod tests {
             // Sanity: non-unit before project.
             let before = s.orientation.q.coords;
             assert_abs_diff_eq!((before.x.powi(2) + before.w.powi(2)).sqrt(), 2.0);
-            <RigidBodyState as SimState>::project(&mut s);
+            <RigidBodyState as Integratable>::project(&mut s);
             let after = s.orientation.q.coords;
             let n = (after.x.powi(2) + after.y.powi(2) + after.z.powi(2) + after.w.powi(2)).sqrt();
             assert_abs_diff_eq!(n, 1.0, epsilon = 1.0e-15);
