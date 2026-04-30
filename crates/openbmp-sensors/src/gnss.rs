@@ -460,7 +460,7 @@ mod tests {
             let SensorMeasurement::Gnss {
                 position_eci_m: pa,
                 velocity_eci_m_s: va,
-                position_bias_eci_m: ba,
+                position_bias_eci_m: bias_a,
             } = m_a
             else {
                 panic!("expected Gnss");
@@ -468,7 +468,7 @@ mod tests {
             let SensorMeasurement::Gnss {
                 position_eci_m: pb,
                 velocity_eci_m_s: vb,
-                position_bias_eci_m: bb,
+                position_bias_eci_m: bias_b,
             } = m_b
             else {
                 panic!("expected Gnss");
@@ -479,9 +479,9 @@ mod tests {
             assert_eq!(va.x.to_bits(), vb.x.to_bits());
             assert_eq!(va.y.to_bits(), vb.y.to_bits());
             assert_eq!(va.z.to_bits(), vb.z.to_bits());
-            assert_eq!(ba.x.to_bits(), bb.x.to_bits());
-            assert_eq!(ba.y.to_bits(), bb.y.to_bits());
-            assert_eq!(ba.z.to_bits(), bb.z.to_bits());
+            assert_eq!(bias_a.x.to_bits(), bias_b.x.to_bits());
+            assert_eq!(bias_a.y.to_bits(), bias_b.y.to_bits());
+            assert_eq!(bias_a.z.to_bits(), bias_b.z.to_bits());
         }
     }
 
