@@ -3,8 +3,14 @@
 //! Owns every physics formula and constant the workspace shares
 //! between the simulator-side environment and the flight controller:
 //!
+//! * [`frames`] — `FrameProfile`, `LocalGeodeticOrigin`, `FrameContext`,
+//!   the time-aware [`FrameTransform`](frames::FrameTransform) impls,
+//!   and the WGS84 ellipsoid constants
+//!   (`WGS84_A_M`, `WGS84_INV_FLATTENING`, `WGS84_FLATTENING`,
+//!   `WGS84_ECCENTRICITY_SQUARED`, `WGS84_MU_M3_S2`,
+//!   `WGS84_OMEGA_RAD_S`).
 //! * [`gravity`] — `GravityModel` trait + `ConstantGravity`,
-//!   `PointMassGravity`, `J2Gravity`, plus WGS84 / standard-gravity
+//!   `PointMassGravity`, `J2Gravity`, plus standard-gravity / J2
 //!   constants.
 //! * [`atmosphere`] — `AtmosphereModel` trait + `IsothermalAtmosphere`,
 //!   `UsStandard1976` (full 7-layer, 0–86 km), plus USSA76 constants
@@ -25,11 +31,11 @@
 //!
 //! `openbmp-physics` depends only on `openbmp-core` (foundation
 //! types: `SimTime`, `Position3`, `Eci`, `Ned`, `Velocity3`,
-//! `FrameContext`, WGS84 constants, `DeterministicRng`) and
-//! `nalgebra`. **Both `openbmp-fc` (controller-side) and
-//! `openbmp-sim` / `openbmp-cli` (simulator-side) consume this crate
-//! directly.** No simulator trait surfaces or scenario parsing live
-//! here.
+//! `Quaternion`, `FrameError`, `Frame` trait + tag types,
+//! `DeterministicRng`) and `nalgebra`. **Both `openbmp-fc`
+//! (controller-side) and `openbmp-sim` / `openbmp-cli`
+//! (simulator-side) consume this crate directly.** No simulator
+//! trait surfaces or scenario parsing live here.
 //!
 //! # Determinism
 //!
@@ -43,6 +49,7 @@
 
 pub mod atmosphere;
 pub mod error;
+pub mod frames;
 pub mod gravity;
 pub mod kinematics;
 pub mod magnetic;
@@ -54,9 +61,14 @@ pub use atmosphere::{
     AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, IsothermalAtmosphere, UsStandard1976,
 };
 pub use error::PhysicsError;
+pub use frames::{
+    FrameContext, FrameProfile, FrameTransform, LocalGeodeticOrigin, WGS84_A_M,
+    WGS84_ECCENTRICITY_SQUARED, WGS84_FLATTENING, WGS84_INV_FLATTENING, WGS84_MU_M3_S2,
+    WGS84_OMEGA_RAD_S,
+};
 pub use gravity::{
-    ConstantGravity, GravityModel, J2Gravity, PointMassGravity, STANDARD_GRAVITY_M_S2, WGS84_A_M,
-    WGS84_J2, WGS84_MU_M3_S2, standard_down_z_eci_m_s2,
+    ConstantGravity, GravityModel, J2Gravity, PointMassGravity, STANDARD_GRAVITY_M_S2, WGS84_J2,
+    standard_down_z_eci_m_s2,
 };
 pub use kinematics::{
     quaternion_from_axis_angle, quaternion_from_omega, renormalize_quaternion, skew_symmetric,
@@ -76,6 +88,6 @@ pub mod earth {
     /// (e.g. the `EarthDipoleField` magnetic placeholder).
     ///
     /// Distinct from the WGS84 semi-major axis used by geodetic and
-    /// J2 models — see [`crate::gravity::WGS84_A_M`].
+    /// J2 models — see [`crate::frames::WGS84_A_M`].
     pub const MEAN_RADIUS_M: f64 = 6_371_000.0;
 }

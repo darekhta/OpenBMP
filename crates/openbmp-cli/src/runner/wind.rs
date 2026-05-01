@@ -37,8 +37,10 @@
 //!   where one kernel base tick = one rack tick.
 
 use nalgebra::Vector3;
-use openbmp_core::{Eci, FrameContext, Position3, SimTime, StepIndex};
-use openbmp_physics::{ConstantWind, GustWind, GustWindParams, LayerEntry, LayeredWind, WindModel};
+use openbmp_core::{Eci, Position3, SimTime, StepIndex};
+use openbmp_physics::{
+    ConstantWind, FrameContext, GustWind, GustWindParams, LayerEntry, LayeredWind, WindModel,
+};
 use openbmp_scenario::{ScenarioDocument, WindConfig};
 
 use crate::error::CliError;

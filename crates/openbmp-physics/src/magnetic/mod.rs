@@ -53,7 +53,7 @@ pub const EARTH_DIPOLE_EQUATORIAL_FIELD_NT: f64 = 30_000.0;
 /// [`Wmm2025`] is the canonical sim-side impl: full 12-degree
 /// spherical harmonic, NOAA / NCEI 2025 dataset, NED output. The
 /// kernel-side adapter rotates NED → body via the active
-/// [`openbmp_core::FrameContext`].
+/// [`crate::frames::FrameContext`].
 ///
 /// FC-side estimators consume [`MagneticFieldEci`], which is also
 /// implemented by [`Wmm2025`] through a deterministic NED → fixed

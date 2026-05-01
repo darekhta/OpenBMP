@@ -48,10 +48,11 @@
 // NOAA C / pyGeoMag source for traceability.
 
 use nalgebra::Vector3;
-use openbmp_core::{Eci, FrameContext, Position3, SimTime, WGS84_A_M, WGS84_ECCENTRICITY_SQUARED};
+use openbmp_core::{Eci, Position3, SimTime};
 
 use super::{EarthDipoleField, MagneticFieldEci, MagneticModel};
 use crate::error::PhysicsError;
+use crate::frames::{FrameContext, WGS84_A_M, WGS84_ECCENTRICITY_SQUARED};
 
 mod coefficients;
 

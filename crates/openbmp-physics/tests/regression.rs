@@ -28,9 +28,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 
 use approx::assert_abs_diff_eq;
-use openbmp_core::{Position3, SimTime, WGS84_A_M};
+use openbmp_core::{Position3, SimTime};
 use openbmp_physics::{
-    ConstantGravity, GravityModel, J2Gravity, PointMassGravity, UsStandard1976, WGS84_J2,
+    ConstantGravity, GravityModel, J2Gravity, PointMassGravity, UsStandard1976, WGS84_A_M,
+    WGS84_INV_FLATTENING, WGS84_J2, WGS84_MU_M3_S2, WGS84_OMEGA_RAD_S,
     atmosphere::{
         USSA76_G0_M_S2, USSA76_GAMMA_AIR, USSA76_MAX_GEOMETRIC_M, USSA76_MAX_GEOPOTENTIAL_M,
         USSA76_MOLAR_MASS_AIR_KG_KMOL, USSA76_REFERENCE_RADIUS_M, USSA76_UNIVERSAL_GAS_CONSTANT,
@@ -111,8 +112,7 @@ fn constant_gravity_is_independent_of_position_and_time() {
 #[test]
 fn j2_with_zero_coefficient_reduces_to_point_mass_through_public_api() {
     let pm = PointMassGravity::wgs84();
-    let j2 =
-        J2Gravity::new(openbmp_core::WGS84_MU_M3_S2, openbmp_core::WGS84_A_M, 0.0).expect("valid");
+    let j2 = J2Gravity::new(WGS84_MU_M3_S2, WGS84_A_M, 0.0).expect("valid");
     let r = Position3::new(7_000_000.0, 1_500_000.0, 800_000.0);
     let pm_out = pm.gravity_eci_m_s2(r, SimTime::ZERO).unwrap();
     let j2_out = j2.gravity_eci_m_s2(r, SimTime::ZERO).unwrap();
@@ -138,20 +138,17 @@ fn wgs84_j2_constant_matches_data_pin() {
 #[test]
 fn wgs84_constants_match_nima_tr_8350_2() {
     let data = wgs84_j2_data_pin();
+    assert_eq!(WGS84_A_M, f64_field(&data, "semi_major_axis_m"));
     assert_eq!(
-        openbmp_core::WGS84_A_M,
-        f64_field(&data, "semi_major_axis_m")
-    );
-    assert_eq!(
-        openbmp_core::WGS84_INV_FLATTENING,
+        WGS84_INV_FLATTENING,
         f64_field(&data, "inverse_flattening"),
     );
     assert_eq!(
-        openbmp_core::WGS84_MU_M3_S2,
+        WGS84_MU_M3_S2,
         f64_field(&data, "gravitational_parameter_m3_s2"),
     );
     assert_eq!(
-        openbmp_core::WGS84_OMEGA_RAD_S,
+        WGS84_OMEGA_RAD_S,
         f64_field(&data, "angular_velocity_rad_s"),
     );
 }

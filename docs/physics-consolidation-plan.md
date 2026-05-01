@@ -27,37 +27,37 @@ A follow-up scan surfaced finer-grained inline-physics in the FC:
   tuning, scenario validation gates) shares the same operand
   ordering and rational-approximation coefficients.
 
-## Outstanding follow-up — frames + WGS84 constants
+## Frames + WGS84 constants consolidation (completed 2026-04-30)
 
-`openbmp-core::frames` currently owns `FrameContext`,
-`LocalGeodeticOrigin`, the WGS84 constants (`WGS84_A_M`,
-`WGS84_INV_FLATTENING`, `WGS84_FLATTENING`,
+`FrameContext`, `LocalGeodeticOrigin`, the WGS84 ellipsoid constants
+(`WGS84_A_M`, `WGS84_INV_FLATTENING`, `WGS84_FLATTENING`,
 `WGS84_ECCENTRICITY_SQUARED`, `WGS84_MU_M3_S2`,
-`WGS84_OMEGA_RAD_S`), and all the time-aware ECI ↔ ECEF and
-ECEF ↔ NED transformations. Two of those constants (`WGS84_A_M`,
-`WGS84_MU_M3_S2`) are also defined inline in
-`openbmp-physics::gravity`; the values match bit-for-bit but are
-maintained in two places.
+`WGS84_OMEGA_RAD_S`), `FrameProfile`, the time-aware ECI ↔ ECEF and
+ECEF ↔ NED transformations, and the `FrameTransform` trait + impls
+all moved from `openbmp-core::frames` to `openbmp-physics::frames`.
+The dual-residence of `WGS84_A_M` / `WGS84_MU_M3_S2` (previously
+declared inline in both `openbmp-core::frames` and
+`openbmp-physics::gravity`, guarded by a `static_assertions::const_assert!`
+tripwire) is gone; `openbmp-physics::frames` is the single source of
+truth and `openbmp-physics::gravity` imports the constants from
+that module.
 
-These are physics primitives. The principled fix is to move
-`FrameContext`, `LocalGeodeticOrigin`, and the WGS84 constants
-into `openbmp-physics::frames`, and trim `openbmp-core::frames` to
-the foundation types only (`Frame` trait, frame markers, value
-types `Position3<F>` / `Velocity3<F>` / `Acceleration3<F>` with
-their non-physics math methods, `Quaternion<From, To>` rotation
-methods, `FrameProfile` enum, `FrameError`).
+`openbmp-core::frames` now owns the type-level frame machinery only:
+the `Frame` trait, frame tag types (`Eci`, `Ecef`, `Ned`, `Enu`,
+`Body`), value types (`Position3<F>`, `Velocity3<F>`,
+`Acceleration3<F>`, `Displacement3<F>`, `VelocityDelta3<F>`,
+`AngularVelocity3<F>`), `Quaternion<From, To>` rotation, and
+`FrameError`.
 
-The consumer surface is small:
-`openbmp-physics::magnetic::wmm2025`, `openbmp-physics::wind::*`,
-`openbmp-cli::runner::wind`,
-`openbmp-cli::runner::phase2_*`, plus `core` itself. No state,
-sensors, mission, scenario, vehicle, fc, or telemetry consumer
-uses `FrameContext` directly. This keeps the migration tractable
-in a single workspace-wide commit, similar in shape to the
-`openbmp-env` retirement but smaller. The work is tracked as a
-follow-up in this document and is **not** yet executed; running it
-is gated on user authorisation since the move is workspace-shape
-in nature.
+Consumer migrations:
+- `openbmp-physics::magnetic::wmm2025` and `openbmp-physics::wind::{constant,gust,layered,mod}`
+  now `use crate::frames::FrameContext;` / `use crate::frames::{WGS84_A_M, WGS84_ECCENTRICITY_SQUARED};`.
+- `openbmp-cli::runner::wind` and `openbmp-cli::runner::phase2_{point_mass,rigid_body}`
+  reference `openbmp_physics::FrameContext` directly.
+- `openbmp-physics::tests::regression` imports the WGS84 constants
+  from `openbmp_physics` rather than `openbmp_core`.
+- `openbmp-testkit::tests::inline_data_tripwire` allow-list now
+  points at `crates/openbmp-physics/src/frames.rs` only.
 
 ## Why retire `openbmp-env`
 

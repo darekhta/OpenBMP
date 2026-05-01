@@ -23,16 +23,18 @@
 //!
 //! Coordinate frames are encoded in the type system. A
 //! [`Position3<Eci>`] cannot be added to a [`Position3<Ecef>`]; the
-//! compiler refuses. Conversions are explicit through the time-aware
-//! [`FrameTransform`] trait, parameterised by an immutable
-//! [`FrameContext`] snapshot taken at scenario start.
+//! compiler refuses. Conversions are explicit through time-aware
+//! transforms whose Earth-physics implementations live in
+//! `openbmp-physics::frames` (the WGS84 ellipsoid constants,
+//! `LocalGeodeticOrigin`, `FrameContext`, `FrameTransform` trait +
+//! impls).
 //!
 //! # Modules
 //!
 //! * [`time`] — [`SimTime`], [`Duration`], [`StepIndex`].
 //! * [`frames`] — frame tag types, [`Position3`], [`Displacement3`],
 //!   [`Velocity3`], [`Acceleration3`], [`AngularVelocity3`],
-//!   [`Quaternion`], [`FrameContext`], [`FrameTransform`].
+//!   [`Quaternion`].
 //! * [`quantities`] — `uom`-typed re-exports for the public API
 //!   surface.
 //! * [`rng`] — [`DeterministicRng`].
@@ -50,10 +52,8 @@ pub mod validation;
 
 pub use error::{CoreError, FrameError, TimeError};
 pub use frames::{
-    Acceleration3, AngularVelocity3, Body, Displacement3, Ecef, Eci, Enu, Frame, FrameContext,
-    FrameId, FrameProfile, FrameTransform, LocalGeodeticOrigin, Ned, Position3, Quaternion,
-    Velocity3, VelocityDelta3, WGS84_A_M, WGS84_ECCENTRICITY_SQUARED, WGS84_FLATTENING,
-    WGS84_INV_FLATTENING, WGS84_MU_M3_S2, WGS84_OMEGA_RAD_S,
+    Acceleration3, AngularVelocity3, Body, Displacement3, Ecef, Eci, Enu, Frame, FrameId, Ned,
+    Position3, Quaternion, Velocity3, VelocityDelta3,
 };
 pub use ids::{
     BodyId, ChannelId, EffectorId, EngineId, ModelId, RecoveryId, ScenarioId, SensorId, TankId,

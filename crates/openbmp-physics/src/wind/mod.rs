@@ -54,9 +54,10 @@ pub mod gust;
 #[cfg(feature = "synthetic")]
 pub use gust::{GustWind, GustWindParams};
 
-use openbmp_core::{Eci, FrameContext, Ned, Position3, SimTime, Velocity3};
+use openbmp_core::{Eci, Ned, Position3, SimTime, Velocity3};
 
 use crate::error::PhysicsError;
+use crate::frames::FrameContext;
 
 /// Trait implemented by wind-providing environment models.
 ///

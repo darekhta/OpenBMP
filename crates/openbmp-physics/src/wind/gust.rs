@@ -78,10 +78,11 @@
 use std::cell::Cell;
 
 use openbmp_core::{
-    DeterministicRng, Eci, FrameContext, Ned, Position3, SimTime, StepIndex, Velocity3, WindAxis,
+    DeterministicRng, Eci, Ned, Position3, SimTime, StepIndex, Velocity3, WindAxis,
 };
 
 use crate::error::PhysicsError;
+use crate::frames::FrameContext;
 
 use super::WindModel;
 

@@ -175,7 +175,7 @@ pub fn run(
     }
     if !wind_rack.is_inactive() {
         let s = kernel.current_state();
-        let frame = openbmp_core::FrameContext::toy_fixed_earth();
+        let frame = openbmp_physics::FrameContext::toy_fixed_earth();
         let wind = wind_rack.sample(s.position, &frame, s.time)?;
         kernel.set_wind_sample(wind);
     }
@@ -255,7 +255,7 @@ pub fn run(
         if !wind_rack.is_inactive() {
             wind_rack.advance(kernel.current_step());
             let s = kernel.current_state();
-            let frame = openbmp_core::FrameContext::toy_fixed_earth();
+            let frame = openbmp_physics::FrameContext::toy_fixed_earth();
             let wind = wind_rack.sample(s.position, &frame, s.time)?;
             kernel.set_wind_sample(wind);
         }

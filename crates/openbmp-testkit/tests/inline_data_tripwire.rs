@@ -106,16 +106,13 @@ const TRIPWIRES: &[Tripwire] = &[
     Tripwire {
         name: "WGS84 GM (NIMA TR 8350.2)",
         needle: "3.986004418",
-        // The literal currently appears in two crates: openbmp-core
-        // owns it for frame transformations, openbmp-physics owns it
-        // for gravity models. The full consolidation that moves
-        // FrameContext + WGS84 entirely into openbmp-physics is
-        // tracked in docs/physics-consolidation-plan.md.
+        // Single source of truth: openbmp-physics::frames carries the
+        // canonical WGS84 constants for both frame transformations and
+        // gravity models.
         allow_list: &[
             "data/gravity/wgs84-j2.toml",
             "docs/data-provenance.md",
-            "crates/openbmp-core/src/frames.rs",
-            "crates/openbmp-physics/src/gravity.rs",
+            "crates/openbmp-physics/src/frames.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
         ],
     },
@@ -134,13 +131,11 @@ const TRIPWIRES: &[Tripwire] = &[
     Tripwire {
         name: "WGS84 equatorial radius (NIMA TR 8350.2)",
         needle: "6378137.0",
-        // Same dual-residence as WGS84 GM until the full FrameContext
-        // + WGS84 move lands.
+        // Single source of truth: openbmp-physics::frames.
         allow_list: &[
             "data/gravity/wgs84-j2.toml",
             "docs/data-provenance.md",
-            "crates/openbmp-core/src/frames.rs",
-            "crates/openbmp-physics/src/gravity.rs",
+            "crates/openbmp-physics/src/frames.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
         ],
     },

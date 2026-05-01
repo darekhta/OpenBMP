@@ -19,10 +19,15 @@ This crate replaced and absorbed the former `openbmp-env` crate
 openbmp-physics/
 ├── earth        # Earth-radius constants for low-order toy models
 ├── error        # PhysicsError (out-of-envelope, non-finite, invalid parameter, frame)
+├── frames       # FrameProfile, LocalGeodeticOrigin, FrameContext,
+│                # FrameTransform trait + impls, and the WGS84 ellipsoid
+│                # constants (WGS84_A_M, WGS84_INV_FLATTENING,
+│                # WGS84_FLATTENING, WGS84_ECCENTRICITY_SQUARED,
+│                # WGS84_MU_M3_S2, WGS84_OMEGA_RAD_S)
 ├── gravity      # GravityModel trait + ConstantGravity, PointMassGravity, J2Gravity;
-│                # WGS84_A_M / WGS84_MU_M3_S2 live here during the
-│                # dual-residence migration and are const-checked against
-│                # openbmp-core, plus WGS84_J2 + STANDARD_GRAVITY_M_S2
+│                # WGS84_J2 + STANDARD_GRAVITY_M_S2 (constants for which
+│                # this crate is the only home — frame-shared WGS84
+│                # constants live in `frames` above)
 ├── atmosphere   # AtmosphereModel trait + AtmosphereSample + ExoatmosphericPolicy
 │   ├── isothermal           # IsothermalAtmosphere (toy)
 │   └── us_standard_1976    # Full 7-layer USSA76 (geopotential 0–86 km)
@@ -43,21 +48,20 @@ openbmp-physics/
 └── wind         # WindModel + NoWind, ConstantWind, LayeredWind, GustWind (synthetic)
 ```
 
-## Outstanding follow-up
+## Layering with `openbmp-core`
 
-`openbmp-core::frames` currently owns `FrameContext`, `LocalGeodeticOrigin`,
-and the WGS84 constants — all of which are physics primitives that should
-live in this crate. Two of the constants (`WGS84_A_M`, `WGS84_MU_M3_S2`)
-are duplicated inline in `openbmp-physics::gravity`; the values match
-bit-for-bit but are maintained in two places. Moving them, plus
-`FrameContext` and the time-aware frame transformations (which depend on
-those constants), into `openbmp-physics::frames` is tracked in
-`docs/physics-consolidation-plan.md § Outstanding follow-up — frames +
-WGS84 constants`. Frame *types* and *value types* (`Frame` trait, markers,
-`Position3<F>`, `Velocity3<F>`, `Quaternion<From, To>`) will stay in
-`openbmp-core` since they are foundation types and their non-physics math
-methods (`norm`, `is_finite`, basic arithmetic, frame-tag-only
-operations) don't depend on Earth-specific constants.
+`openbmp-core::frames` owns the *type-level* frame machinery only:
+the `Frame` trait, frame tag types (`Eci`, `Ecef`, `Ned`, `Enu`,
+`Body`), value types (`Position3<F>`, `Velocity3<F>`,
+`Acceleration3<F>`, `Displacement3<F>`, `VelocityDelta3<F>`,
+`AngularVelocity3<F>`), `Quaternion<From, To>` rotation, and
+`FrameError`. None of those depend on Earth-specific physics
+constants.
+
+`openbmp-physics::frames` owns the physics on top: the WGS84
+ellipsoid constants, `LocalGeodeticOrigin`, `FrameContext`, the
+time-aware ECI ↔ ECEF transforms, the ECEF ↔ NED helpers anchored at
+the local origin, and the `FrameTransform` trait + impls.
 
 ## Inputs and outputs
 
