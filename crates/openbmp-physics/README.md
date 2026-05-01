@@ -65,10 +65,11 @@ the local origin, and the `FrameTransform` trait + impls.
 
 ## Inputs and outputs
 
-Models take `Position3<Eci>` + `SimTime` (rich `MagneticModel` /
-`GravityModel` / `AtmosphereModel` / `WindModel`) or `Vector3<f64>` ECI
-+ `SimTime` (simple `MagneticFieldEci`). Output is the model's native
-quantity: gravity in m/s² ECI, atmosphere as
+`GravityModel` and rich `MagneticModel` take `Position3<Eci>` +
+`SimTime`; `AtmosphereModel` takes geometric altitude + `SimTime`;
+`WindModel` takes `Position3<Eci>` + `&FrameContext` + `SimTime`; and
+the simple `MagneticFieldEci` takes `Vector3<f64>` ECI + `SimTime`.
+Output is the model's native quantity: gravity in m/s² ECI, atmosphere as
 `AtmosphereSample { density, pressure, temperature, speed_of_sound }`,
 mag in nT, wind in m/s NED.
 
@@ -77,7 +78,7 @@ The two trait families coexist so:
   and `openbmp-cli::runner`) consumes the rich traits with full
   envelope error handling.
 - The FC's estimators (in `openbmp-fc::estimator`) consume the
-  simpler ECI traits without dragging in geodetic-conversion
+  simpler ECI trait without dragging in geodetic-conversion
   machinery.
 
 ## Validity ranges
@@ -100,7 +101,7 @@ Pure `f64` arithmetic with locked operand order on every model; no
 FMA, no wall-clock time, no system RNG, no network, no file I/O. The
 optional `GustWind` model uses
 `openbmp_core::DeterministicRng` whose seed is derived from
-`(scenario_seed, step, channel_id)`.
+`(scenario_seed, step, axis)`.
 
 ## Dependencies
 

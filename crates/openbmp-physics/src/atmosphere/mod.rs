@@ -16,8 +16,8 @@
 //!
 //! Layering: atmosphere models depend only on `openbmp-core` (L0)
 //! and `openbmp-physics::error`. The `AtmosphereSample` type lives here
-//! (in `openbmp-physics`) rather than in `openbmp-sim` so the env crate
-//! stays self-contained per the Phase-2 plan's L1/L2 layering rule.
+//! (in `openbmp-physics`) rather than in simulator crates so controller
+//! and simulator consumers share one HAL-portable atmosphere surface.
 
 pub mod isothermal;
 pub mod us_standard_1976;
@@ -130,6 +130,8 @@ pub fn pressure_altitude_troposphere_m(pressure_pa: f64) -> f64 {
 pub fn dynamic_pressure_pa(density_kg_m3: f64, velocity_m_s: f64) -> f64 {
     0.5 * density_kg_m3 * velocity_m_s * velocity_m_s
 }
+
+/// Atmosphere sample in SI units.
 ///
 /// All fields are raw `f64` in SI units, named with their unit
 /// suffix (matching the project's `_m_s2` / `_kg_m3` convention from

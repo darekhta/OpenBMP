@@ -52,7 +52,7 @@ use openbmp_core::{Eci, Position3, SimTime};
 
 use super::{EarthDipoleField, MagneticFieldEci, MagneticModel};
 use crate::error::PhysicsError;
-use crate::frames::{FrameContext, WGS84_A_M, WGS84_ECCENTRICITY_SQUARED};
+use crate::frames::{WGS84_A_M, WGS84_ECCENTRICITY_SQUARED};
 
 mod coefficients;
 
@@ -374,7 +374,6 @@ impl MagneticModel for Wmm2025 {
         // Phase-3.10: ECI → ECEF for the toy fixed-earth profile is
         // the identity. WGS-84 rotation profiles are the runner's
         // job to disambiguate at scenario load.
-        let _ = FrameContext::toy_fixed_earth();
         let (lat, lon, h) = ecef_to_geodetic(position_eci.vector);
         self.field_geodetic_ned_nt(lat, lon, h, time)
     }

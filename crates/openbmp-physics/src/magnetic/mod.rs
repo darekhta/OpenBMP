@@ -1,8 +1,10 @@
 //! Phase-3.10 magnetic-field models.
 //!
-//! [`MagneticModel`] is the trait surface; [`wmm2025::Wmm2025`] is
-//! the canonical Phase-3.10 implementation (NOAA / NGA / UK DGC
-//! World Magnetic Model 2025, valid through 2030-01-01).
+//! [`MagneticModel`] is the simulator-side geodetic-NED trait surface;
+//! [`MagneticFieldEci`] is the total ECI-vector trait consumed by FC
+//! estimators. [`wmm2025::Wmm2025`] is the canonical Phase-3.10
+//! implementation (NOAA / NGA / UK DGC World Magnetic Model 2025,
+//! valid through 2030-01-01).
 //!
 //! # Conventions
 //!

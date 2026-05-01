@@ -15,9 +15,9 @@
 //! * [`atmosphere`] — `AtmosphereModel` trait + `IsothermalAtmosphere`,
 //!   `UsStandard1976` (full 7-layer, 0–86 km), plus USSA76 constants
 //!   and closed-form helpers (`pressure_altitude_troposphere_m`).
-//! * [`magnetic`] — `MagneticModel` trait + `EarthDipoleField`
-//!   (degree-1 academic toy) + `Wmm2025` (NOAA / NCEI 2025 release,
-//!   12-degree spherical harmonic).
+//! * [`magnetic`] — `MagneticModel` and `MagneticFieldEci` traits,
+//!   `EarthDipoleField` (degree-1 academic toy), and `Wmm2025`
+//!   (NOAA / NCEI 2025 release, 12-degree spherical harmonic).
 //! * [`wind`] — `WindModel` trait + `NoWind`, `ConstantWind`,
 //!   `LayeredWind`, `GustWind` (Dryden, gated by the `synthetic`
 //!   feature).
