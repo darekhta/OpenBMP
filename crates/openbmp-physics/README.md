@@ -105,11 +105,12 @@ optional `GustWind` model uses
 ## Dependencies
 
 `openbmp-physics` depends only on `openbmp-core` (foundation types:
-`SimTime`, `Position3`, `Eci`, `Ned`, `Velocity3`, `FrameContext`,
-WGS84 constants, `DeterministicRng`) and `nalgebra`. **No simulator
-trait surfaces or scenario parsing live here.** Both `openbmp-fc`
-(controller) and `openbmp-sim` / `openbmp-cli` (simulator-side)
-consume this crate directly.
+`SimTime`, `Position3`, `Eci`, `Ned`, `Velocity3`,
+`DeterministicRng`, and typed frame machinery) and `nalgebra`. This
+crate itself owns `FrameContext` and the WGS84 constants in
+`openbmp-physics::frames`. **No simulator trait surfaces or scenario
+parsing live here.** Both `openbmp-fc` (controller) and `openbmp-sim`
+/ `openbmp-cli` (simulator-side) consume this crate directly.
 
 ## Features
 

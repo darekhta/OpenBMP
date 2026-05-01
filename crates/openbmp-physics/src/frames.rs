@@ -2,11 +2,11 @@
 //!
 //! `openbmp-core::frames` owns the *type-level* frame machinery — the
 //! [`Frame`](openbmp_core::Frame) trait and tag types
-//! ([`Eci`](openbmp_core::Eci), [`Ecef`](openbmp_core::Ecef),
-//! [`Ned`](openbmp_core::Ned), [`Enu`](openbmp_core::Enu),
+//! ([`Eci`], [`Ecef`],
+//! [`Ned`], [`Enu`](openbmp_core::Enu),
 //! [`Body`](openbmp_core::Body)), the value types
-//! ([`Position3`](openbmp_core::Position3),
-//! [`Velocity3`](openbmp_core::Velocity3), and friends), and
+//! ([`Position3`],
+//! [`Velocity3`], and friends), and
 //! [`Quaternion`](openbmp_core::Quaternion).
 //!
 //! This module owns the *physics* on top of those types — namely the
@@ -21,9 +21,7 @@
 //! Determinism: pure `f64` arithmetic with locked operand order; no
 //! FMA, no wall-clock time, no system RNG.
 
-use openbmp_core::{
-    Ecef, Eci, FrameError, Frame as CoreFrame, Ned, Position3, SimTime, Velocity3,
-};
+use openbmp_core::{Ecef, Eci, Frame as CoreFrame, FrameError, Ned, Position3, SimTime, Velocity3};
 
 // ---------------------------------------------------------------------
 // FrameProfile
@@ -573,9 +571,18 @@ mod tests {
 
         #[test]
         fn local_geodetic_origin_rejects_out_of_envelope() {
-            assert!(LocalGeodeticOrigin::new_degrees(91.0, 0.0, 0.0).is_err());
-            assert!(LocalGeodeticOrigin::new_degrees(0.0, 200.0, 0.0).is_err());
-            assert!(LocalGeodeticOrigin::new_degrees(0.0, 0.0, f64::NAN).is_err());
+            assert!(matches!(
+                LocalGeodeticOrigin::new_degrees(91.0, 0.0, 0.0),
+                Err(FrameError::InvalidGeodeticCoordinate { .. })
+            ));
+            assert!(matches!(
+                LocalGeodeticOrigin::new_degrees(0.0, 200.0, 0.0),
+                Err(FrameError::InvalidGeodeticCoordinate { .. })
+            ));
+            assert!(matches!(
+                LocalGeodeticOrigin::new_degrees(0.0, 0.0, f64::NAN),
+                Err(FrameError::InvalidGeodeticCoordinate { .. })
+            ));
         }
 
         #[test]

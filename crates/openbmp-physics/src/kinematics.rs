@@ -24,8 +24,8 @@ const SMALL_ROTATION_CUTOFF: f64 = 1.490_116_119_384_765_6e-8; // f64::EPSILON.s
 /// Quaternion from a body-frame rotation vector (axis-angle, with the
 /// magnitude carrying the angle in radians).
 ///
-/// Below [`SMALL_ROTATION_CUTOFF`] the result is the identity
-/// quaternion; above it `nalgebra`'s exact constructor is used.
+/// Below the small-rotation cutoff the result is the identity
+/// quaternion; above the cutoff `nalgebra`'s exact constructor is used.
 #[must_use]
 pub fn quaternion_from_axis_angle(axis_angle: Vector3<f64>) -> UnitQuaternion<f64> {
     let mag = axis_angle.norm();

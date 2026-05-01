@@ -77,8 +77,8 @@ pub enum FrameError {
         /// The offending tolerance value.
         tolerance: f64,
     },
-    /// A required transform is not implemented in the active
-    /// [`crate::frames::FrameProfile`].
+    /// A required transform is not implemented in the active frame
+    /// profile. The profile owner lives in `openbmp-physics::frames`.
     #[error("transform from {from:?} to {to:?} is not available in profile {profile}")]
     TransformNotAvailable {
         /// Source frame.
@@ -89,8 +89,8 @@ pub enum FrameError {
         profile: &'static str,
     },
     /// A NED-frame transform required a scenario-declared local
-    /// geodetic origin but the active [`crate::frames::FrameContext`]
-    /// did not carry one.
+    /// geodetic origin but the active frame context did not carry one.
+    /// The context owner lives in `openbmp-physics::frames`.
     #[error(
         "NED-frame transform requires a scenario local origin in profile {profile} \
          but none was declared"

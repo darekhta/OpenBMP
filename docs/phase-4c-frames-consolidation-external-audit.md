@@ -81,7 +81,7 @@
 
 6. **Updates the WGS84 inline-data tripwire allow-list** in
    `crates/openbmp-testkit/tests/inline_data_tripwire.rs` so the
-   needles `3.986004418` and `6378137.0` are allow-listed only at
+   WGS84 GM and equatorial-radius needles are allow-listed only at
    `crates/openbmp-physics/src/frames.rs` (not at
    `crates/openbmp-physics/src/gravity.rs` or
    `crates/openbmp-core/src/frames.rs`).
@@ -181,17 +181,17 @@ falsify:
 
 9. **"Tripwire allow-list is correctly tightened."** Open
    `crates/openbmp-testkit/tests/inline_data_tripwire.rs`. The
-   three needles (`3.986004418`, `1.082626683`, `6378137.0`) each
-   have a tightened allow-list:
-   - `3.986004418` (WGS84 GM): expected at
+   WGS84 GM, WGS84 J2, and WGS84 equatorial-radius needles each have
+   a tightened allow-list:
+   - WGS84 GM needle: expected at
      `data/gravity/wgs84-j2.toml`,
      `docs/data-provenance.md`,
      `crates/openbmp-physics/src/frames.rs`,
      `crates/openbmp-testkit/tests/inline_data_tripwire.rs`.
      Must NOT include `crates/openbmp-core/src/frames.rs` or
      `crates/openbmp-physics/src/gravity.rs`.
-   - `6378137.0` (WGS84 a): same shape.
-   - `1.082626683` (WGS84 J2 unnormalised): unchanged — J2 lives
+   - WGS84 equatorial-radius needle: same shape.
+   - WGS84 J2 unnormalised needle: unchanged — J2 lives
      only in physics::gravity.
 
    Run `cargo test -p openbmp-testkit --test inline_data_tripwire`
@@ -236,10 +236,9 @@ each:
 The math in this commit is supposed to be a pure relocation. Pick
 three:
 
-- **WGS84 GM and a**: derive `WGS84_A_M = 6_378_137.0` and
-  `WGS84_MU_M3_S2 = 3.986_004_418e14` from NIMA TR 8350.2 (the
-  citation the prior author claims). Confirm the constants in
-  `physics/frames.rs` match bit-for-bit.
+- **WGS84 GM and a**: derive `WGS84_A_M` and `WGS84_MU_M3_S2` from
+  NIMA TR 8350.2 (the citation the prior author claims). Confirm the
+  constants in `physics/frames.rs` match bit-for-bit.
 
 - **First-eccentricity squared**: `physics/frames.rs` defines
   `WGS84_ECCENTRICITY_SQUARED = WGS84_FLATTENING * (2.0 -
@@ -312,20 +311,28 @@ prior author's claim. Test it:
 ```bash
 mkdir -p /tmp/audit-frames-{old,new}
 git checkout 71edfdf
-for s in scenarios/sounding-rocket/calisto/rocketpy-calisto.toml \
-         scenarios/closed-loop-attitude-hold/scenario.toml \
-         scenarios/analytic-toy/constant-acceleration-drop.toml; do
-  cargo run --bin openbmp --release -- run "$s" \
-    --output /tmp/audit-frames-new 2>/dev/null
-done
+cargo run --bin openbmp --release -- run \
+  scenarios/sounding-rocket/calisto/rocketpy-calisto.toml \
+  --output-parquet /tmp/audit-frames-new/rocketpy-calisto.parquet
+cargo run --bin openbmp --release -- run \
+  scenarios/closed-loop-attitude-hold/scenario.toml \
+  --output-parquet /tmp/audit-frames-new/closed-loop-attitude-hold.parquet
+cargo run --bin openbmp --release -- run \
+  scenarios/analytic-toy/constant-acceleration-drop.toml \
+  --output-csv /tmp/audit-frames-new/constant-acceleration-drop.csv \
+  --output-parquet /tmp/audit-frames-new/constant-acceleration-drop.parquet
 
 git checkout 71edfdf~1
-for s in scenarios/sounding-rocket/calisto/rocketpy-calisto.toml \
-         scenarios/closed-loop-attitude-hold/scenario.toml \
-         scenarios/analytic-toy/constant-acceleration-drop.toml; do
-  cargo run --bin openbmp --release -- run "$s" \
-    --output /tmp/audit-frames-old 2>/dev/null
-done
+cargo run --bin openbmp --release -- run \
+  scenarios/sounding-rocket/calisto/rocketpy-calisto.toml \
+  --output-parquet /tmp/audit-frames-old/rocketpy-calisto.parquet
+cargo run --bin openbmp --release -- run \
+  scenarios/closed-loop-attitude-hold/scenario.toml \
+  --output-parquet /tmp/audit-frames-old/closed-loop-attitude-hold.parquet
+cargo run --bin openbmp --release -- run \
+  scenarios/analytic-toy/constant-acceleration-drop.toml \
+  --output-csv /tmp/audit-frames-old/constant-acceleration-drop.csv \
+  --output-parquet /tmp/audit-frames-old/constant-acceleration-drop.parquet
 
 git checkout 71edfdf  # leave tree at audited commit
 diff -r /tmp/audit-frames-old /tmp/audit-frames-new
@@ -471,19 +478,27 @@ grep -rn "3\.986004418\|6378137\.0\|1\.082626683" \
 # Byte-stable scenario regression (see § D)
 mkdir -p /tmp/audit-frames-{old,new}
 git checkout 71edfdf
-for s in scenarios/sounding-rocket/calisto/rocketpy-calisto.toml \
-         scenarios/closed-loop-attitude-hold/scenario.toml \
-         scenarios/analytic-toy/constant-acceleration-drop.toml; do
-  cargo run --bin openbmp --release -- run "$s" \
-    --output /tmp/audit-frames-new 2>/dev/null
-done
+cargo run --bin openbmp --release -- run \
+  scenarios/sounding-rocket/calisto/rocketpy-calisto.toml \
+  --output-parquet /tmp/audit-frames-new/rocketpy-calisto.parquet
+cargo run --bin openbmp --release -- run \
+  scenarios/closed-loop-attitude-hold/scenario.toml \
+  --output-parquet /tmp/audit-frames-new/closed-loop-attitude-hold.parquet
+cargo run --bin openbmp --release -- run \
+  scenarios/analytic-toy/constant-acceleration-drop.toml \
+  --output-csv /tmp/audit-frames-new/constant-acceleration-drop.csv \
+  --output-parquet /tmp/audit-frames-new/constant-acceleration-drop.parquet
 git checkout 71edfdf~1
-for s in scenarios/sounding-rocket/calisto/rocketpy-calisto.toml \
-         scenarios/closed-loop-attitude-hold/scenario.toml \
-         scenarios/analytic-toy/constant-acceleration-drop.toml; do
-  cargo run --bin openbmp --release -- run "$s" \
-    --output /tmp/audit-frames-old 2>/dev/null
-done
+cargo run --bin openbmp --release -- run \
+  scenarios/sounding-rocket/calisto/rocketpy-calisto.toml \
+  --output-parquet /tmp/audit-frames-old/rocketpy-calisto.parquet
+cargo run --bin openbmp --release -- run \
+  scenarios/closed-loop-attitude-hold/scenario.toml \
+  --output-parquet /tmp/audit-frames-old/closed-loop-attitude-hold.parquet
+cargo run --bin openbmp --release -- run \
+  scenarios/analytic-toy/constant-acceleration-drop.toml \
+  --output-csv /tmp/audit-frames-old/constant-acceleration-drop.csv \
+  --output-parquet /tmp/audit-frames-old/constant-acceleration-drop.parquet
 git checkout 71edfdf
 diff -r /tmp/audit-frames-old /tmp/audit-frames-new
 # Expected: no diff. Anything is a finding.

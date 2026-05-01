@@ -76,7 +76,8 @@ and `openbmp-cli/runner/`. Delete the `env` crate.
 
 ```
 openbmp-physics (HAL-portable, expanded)
-├── earth       — Earth geometric / WGS84 constants (re-exports from openbmp-core)
+├── frames      — FrameContext, LocalGeodeticOrigin, FrameProfile, FrameTransform, WGS84 constants
+├── earth       — mean Earth radius for low-order toy models
 ├── gravity     — GravityModel trait, ConstantGravity, PointMassGravity, J2Gravity (WGS84)
 ├── atmosphere  — AtmosphereModel trait, AtmosphereSample, ExoatmosphericPolicy,
 │                  IsothermalAtmosphere, UsStandard1976 (full 7-layer)
@@ -136,10 +137,11 @@ FC side cannot panic and cannot bail mid-tick; they must be
 deterministic and total. Sim-side callers that surfaced
 `EnvError::OutOfEnvelope` switch to an explicit pre-check.
 
-**No `FrameContext`.** Models accept ECI position and `SimTime`.
-Geodetic conversion (lat/lon/alt → ECI) happens **inside** the
-model, using WGS84 constants from `openbmp-core`. Callers that
-have non-ECI position do the conversion upstream.
+**Frame context stays in physics.** Model surfaces use ECI position
+and `SimTime`; wind additionally carries `FrameContext` because its
+native output is local-NED and anchored at the scenario local origin.
+Geodetic conversion and WGS84 constants are owned by
+`openbmp-physics::frames`, not `openbmp-core`.
 
 **`SimTime` is fine.** It's a `f64`-backed value type in
 `openbmp-core`, HAL-portable, no sim-side coupling.
@@ -263,20 +265,18 @@ as a Rust `const`) moves with the WMM 2025 source from
 Same for `data/atmosphere/us_standard_1976.toml` — stays put;
 provenance entries get re-targeted at `openbmp-physics`.
 
-### D-PC-9. WGS84 / Earth constants are in interim dual residence
+### D-PC-9. WGS84 / Earth constants live in `openbmp-physics::frames`
 
 The old "WGS84 stays in `openbmp-core` and physics re-exports it"
-plan is superseded by the follow-up at the top of this document.
-`openbmp-core::frames` still owns the frame-conversion constants
-for now, while `openbmp-physics::gravity` owns the gravity-model
-copies of `WGS84_A_M` and `WGS84_MU_M3_S2`. Normal `openbmp-physics`
-builds const-check the duplicate values against `openbmp-core` so
-drift is caught before the full `FrameContext` + WGS84 move lands.
+plan is superseded by the completed follow-up at the top of this
+document. `openbmp-physics::frames` now owns `FrameContext`,
+`LocalGeodeticOrigin`, the time-aware transforms, and all WGS84
+constants. `openbmp-physics::gravity` imports the shared WGS84 GM and
+semi-major axis from `frames`; J2 remains in `gravity` because it is a
+gravity-model coefficient.
 
-The final target remains `openbmp-physics::frames`: move
-`FrameContext`, `LocalGeodeticOrigin`, the time-aware transforms,
-and all WGS84 constants there, then leave only frame marker/value
-types and non-physics arithmetic in `openbmp-core`.
+`openbmp-core::frames` now keeps only frame marker/value types,
+quaternion rotation, and non-physics arithmetic.
 
 ### D-PC-10. Single workspace test pass per model class
 

@@ -469,9 +469,9 @@ The tripwires fail the build on:
 
    | Constant | Needle | Allowed in |
    |---|---|---|
-   | WGS84 GM | `3.986004418` | `data/gravity/wgs84-j2.toml`, `docs/data-provenance.md`, `crates/openbmp-core/src/frames.rs`, `crates/openbmp-physics/src/lib.rs` |
-   | WGS84 J2 (unnormalised) | `1.082626683` | `data/gravity/wgs84-j2.toml`, `docs/scenario-format.md`, `docs/data-provenance.md`, `crates/openbmp-physics/src/lib.rs`, `crates/openbmp-physics/src/gravity.rs`, `crates/openbmp-scenario/src/document.rs` |
-   | WGS84 equatorial radius | `6378137.0` | `data/gravity/wgs84-j2.toml`, `docs/data-provenance.md`, `crates/openbmp-core/src/frames.rs`, `crates/openbmp-physics/src/lib.rs` |
+   | WGS84 GM | `3.986004418` | `data/gravity/wgs84-j2.toml`, `docs/data-provenance.md`, `crates/openbmp-physics/src/frames.rs`, `crates/openbmp-testkit/tests/inline_data_tripwire.rs` |
+   | WGS84 J2 (unnormalised) | `1.082626683` | `data/gravity/wgs84-j2.toml`, `docs/scenario-format.md`, `docs/data-provenance.md`, `crates/openbmp-physics/src/gravity.rs`, `crates/openbmp-scenario/src/document.rs`, `crates/openbmp-testkit/tests/inline_data_tripwire.rs` |
+   | WGS84 equatorial radius | `6378137.0` | `data/gravity/wgs84-j2.toml`, `docs/data-provenance.md`, `crates/openbmp-physics/src/frames.rs`, `crates/openbmp-testkit/tests/inline_data_tripwire.rs` |
 
    The Rust-side constants are intentionally written with Rust numeric
    separators where that improves readability. The tripwire normalises

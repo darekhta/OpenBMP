@@ -4,7 +4,7 @@
 //! between the simulator-side environment and the flight controller:
 //!
 //! * [`frames`] — `FrameProfile`, `LocalGeodeticOrigin`, `FrameContext`,
-//!   the time-aware [`FrameTransform`](frames::FrameTransform) impls,
+//!   the time-aware [`FrameTransform`] impls,
 //!   and the WGS84 ellipsoid constants
 //!   (`WGS84_A_M`, `WGS84_INV_FLATTENING`, `WGS84_FLATTENING`,
 //!   `WGS84_ECCENTRICITY_SQUARED`, `WGS84_MU_M3_S2`,

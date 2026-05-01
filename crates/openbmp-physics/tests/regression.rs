@@ -139,10 +139,7 @@ fn wgs84_j2_constant_matches_data_pin() {
 fn wgs84_constants_match_nima_tr_8350_2() {
     let data = wgs84_j2_data_pin();
     assert_eq!(WGS84_A_M, f64_field(&data, "semi_major_axis_m"));
-    assert_eq!(
-        WGS84_INV_FLATTENING,
-        f64_field(&data, "inverse_flattening"),
-    );
+    assert_eq!(WGS84_INV_FLATTENING, f64_field(&data, "inverse_flattening"));
     assert_eq!(
         WGS84_MU_M3_S2,
         f64_field(&data, "gravitational_parameter_m3_s2"),

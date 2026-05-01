@@ -21,7 +21,9 @@ Provides the foundational vocabulary used by every other OpenBMP crate:
 - Frame tag types (`ECI`, `ECEF`, `NED`, `ENU`, `Body`) and parametric
   `Position3<F>`, `Displacement3<F>`, `Velocity3<F>`,
   `Acceleration3<F>`, `AngularVelocity3<F>`, `Quaternion<From, To>`.
-- `FrameContext`, time-aware `FrameTransform` traits.
+- Typed frame values and quaternion rotations only; time-aware
+  `FrameContext` / `FrameTransform` implementations live in
+  `openbmp-physics::frames`.
 - `uom`-typed quantity re-exports.
 - `DeterministicRng` wrapping `rand_chacha::ChaCha8Rng`.
 - `ChannelId`, `ModelId`, `ScenarioId` newtypes.

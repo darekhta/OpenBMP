@@ -7,7 +7,7 @@
 //!
 //! This module owns the *type-level* frame machinery — frame trait
 //! and tag types, value types, [`Quaternion`] rotation, and
-//! [`FrameError`](crate::FrameError) — without depending on any
+//! [`FrameError`] — without depending on any
 //! Earth-specific physics constants. Time-aware transforms between
 //! ECI, ECEF, and NED, the WGS84 ellipsoid constants,
 //! `LocalGeodeticOrigin`, `FrameContext`, and the `FrameTransform`
@@ -80,8 +80,8 @@ impl Frame for Eci {
 }
 
 /// Earth-Centered, Earth-Fixed frame tag. Rotates with Earth in
-/// higher-fidelity profiles; identity to ECI in
-/// [`FrameProfile::ToyFixedEarth`].
+/// higher-fidelity profiles; identity to ECI in toy fixed-earth
+/// profiles.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct Ecef;
 impl Frame for Ecef {
@@ -1129,7 +1129,6 @@ mod tests {
         ));
     }
 
-
     proptest! {
         #[test]
         fn property_position_finite_iff_components_finite(
@@ -1175,5 +1174,4 @@ mod tests {
             prop_assert!((back.vector.z - 3.0).abs() < 1.0e-9);
         }
     }
-
 }
