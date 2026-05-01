@@ -461,7 +461,7 @@ fn build_autopilot_params(cfg: &FcAutopilotParams) -> AutopilotParams {
     if let Some(kind) = cfg.trajectory_kind {
         params.trajectory_kind = match kind {
             FcTrajectoryKind::Pid => TrajectoryKind::Pid,
-            FcTrajectoryKind::DifferentialFlatness => TrajectoryKind::DifferentialFlatness,
+            FcTrajectoryKind::FlatnessInspired => TrajectoryKind::FlatnessInspired,
         };
     }
     params
@@ -482,7 +482,7 @@ fn build_fdir_params(cfg: Option<&FcFdirConfig>) -> FdirParams {
     let Some(cfg) = cfg else { return params };
     params.detector_kind = match cfg.detector_kind {
         FcFdirDetectorKind::BurstCounter => DetectorKind::BurstCounter,
-        FcFdirDetectorKind::Glrt => DetectorKind::Glrt,
+        FcFdirDetectorKind::SingleSampleGlrt => DetectorKind::SingleSampleGlrt,
         FcFdirDetectorKind::Cusum => DetectorKind::Cusum,
     };
     if let Some(v) = cfg.innovation_threshold {

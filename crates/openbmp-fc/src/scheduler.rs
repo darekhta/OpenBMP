@@ -90,7 +90,7 @@ pub trait Job {
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError>;
 }
 
-/// Event published on [`OverrunEvent::TOPIC`] when a job is skipped
+/// Event published on `scheduler.overrun` when a job is skipped
 /// because the remaining frame budget cannot accommodate it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct OverrunEvent {

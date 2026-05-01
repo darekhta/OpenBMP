@@ -416,7 +416,7 @@ Order:
 - NEES test on a synthetic-truth scenario: ensemble NEES within the
   95 % chi-square bound for a 6-state filter.
 - Comparison test vs MEKF on the same scenario: UKF NEES no worse
-  than MEKF NEES (else the UKF is mis-configured).
+  than MEKF NEES (else the UKF is misconfigured).
 
 ### Workstream D — Solver-backed control (P0–P3 mixed)
 

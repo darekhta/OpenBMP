@@ -4,11 +4,15 @@
 //! scalar projection and low-pass correction channel. It borrows the
 //! projection/filter shape used by L1 adaptive control literature, but
 //! it is not a full Cao-Hovakimyan state-predictor/reference-model
-//! implementation.
+//! implementation; that is Phase-5 work in `docs/phase-5-plan.md`.
+//!
+//! The feature flag is named `l1-adaptive` for downstream-API
+//! stability; the in-tree types use the `L1Inspired*` naming so the
+//! Rust API matches what is actually implemented.
 
 /// Tuning for the scalar L1-inspired augmentation.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct L1AdaptiveParams {
+pub struct L1InspiredParams {
     /// Adaptation gain for the matched-uncertainty estimate.
     pub adaptation_gain: f64,
     /// First-order low-pass cutoff in Hz.
@@ -17,7 +21,7 @@ pub struct L1AdaptiveParams {
     pub sigma_bound: f64,
 }
 
-impl Default for L1AdaptiveParams {
+impl Default for L1InspiredParams {
     fn default() -> Self {
         Self {
             adaptation_gain: 25.0,
@@ -27,14 +31,14 @@ impl Default for L1AdaptiveParams {
     }
 }
 
-/// Runtime state for one scalar L1 augmentation channel.
+/// Runtime state for one scalar L1-inspired augmentation channel.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
-pub struct L1AdaptiveChannel {
+pub struct L1InspiredChannel {
     sigma_hat: f64,
     filtered_correction: f64,
 }
 
-impl L1AdaptiveChannel {
+impl L1InspiredChannel {
     /// Constructs a zeroed channel.
     #[must_use]
     pub const fn new() -> Self {
@@ -61,7 +65,7 @@ impl L1AdaptiveChannel {
     #[must_use]
     pub fn step(
         &mut self,
-        params: L1AdaptiveParams,
+        params: L1InspiredParams,
         tracking_error: f64,
         measured_disturbance: f64,
         dt_s: f64,
@@ -87,12 +91,12 @@ mod tests {
 
     #[test]
     fn bounded_unit_step_disturbance_stays_projected() {
-        let params = L1AdaptiveParams {
+        let params = L1InspiredParams {
             adaptation_gain: 50.0,
             low_pass_cutoff_hz: 8.0,
             sigma_bound: 0.75,
         };
-        let mut channel = L1AdaptiveChannel::new();
+        let mut channel = L1InspiredChannel::new();
         for _ in 0..1_000 {
             let correction = channel.step(params, 0.0, 1.0, 0.001);
             assert!(correction.abs() <= params.sigma_bound + 1.0e-12);

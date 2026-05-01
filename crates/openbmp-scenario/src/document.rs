@@ -78,9 +78,9 @@ pub struct ScenarioDocument {
     pub data_packages: Option<BTreeMap<String, PathBuf>>,
     /// Optional synthetic sensor table.
     pub sensors: Option<BTreeMap<String, SensorConfig>>,
-    /// Optional flight-controller configuration block (Phase 4.B).
-    /// When present, the runner constructs a [`openbmp_fc::FlightController`]
-    /// from this config and drives it lockstepped with the kernel
+    /// Optional flight-controller configuration block. When present,
+    /// the runner constructs an `openbmp-fc` `FlightController` from
+    /// this config and drives it lockstepped with the kernel
     /// integrator.
     pub fc: Option<FcConfig>,
     /// Optional fault-injection hook table.
@@ -3351,8 +3351,9 @@ pub enum FcTrajectoryKind {
     /// Existing PID trajectory loop.
     Pid,
     /// Flatness-inspired attitude-reference generator from desired
-    /// acceleration.
-    DifferentialFlatness,
+    /// acceleration. Not the full Mellinger & Kumar 2011 minimum-snap
+    /// flat-output tracker; that is Phase-5 work.
+    FlatnessInspired,
 }
 
 /// FC health-monitor thresholds.
@@ -3443,8 +3444,12 @@ impl FcFdirConfig {
 pub enum FcFdirDetectorKind {
     /// Existing burst-counter detector.
     BurstCounter,
-    /// Generalised likelihood-ratio detector.
-    Glrt,
+    /// Single-sample GLRT detector. The chi-square innovation
+    /// statistic published by the estimator is the unconstrained
+    /// mean-shift GLRT statistic, so this variant thresholds it
+    /// directly. The windowed-mean-shift GLRT (Willsky 1976) is
+    /// Phase-5 work.
+    SingleSampleGlrt,
     /// Cumulative-sum detector.
     Cusum,
 }

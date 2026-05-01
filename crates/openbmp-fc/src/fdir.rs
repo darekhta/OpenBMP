@@ -32,8 +32,12 @@ pub enum DetectorKind {
     /// Consecutive-breach detector.
     #[default]
     BurstCounter,
-    /// Single-sample Gaussian innovation GLRT detector.
-    Glrt,
+    /// Single-sample Gaussian-innovation GLRT detector. The
+    /// chi-square innovation statistic published by the estimator is
+    /// the unconstrained mean-shift GLRT statistic, so this variant
+    /// thresholds it directly. The windowed-mean-shift GLRT
+    /// (Willsky 1976) is Phase-5 work.
+    SingleSampleGlrt,
     /// Cumulative-sum detector.
     Cusum,
 }
@@ -202,8 +206,8 @@ impl Job for FdirJob {
                     self.triggered_mask |= current_mask;
                 }
             }
-            DetectorKind::Glrt => {
-                let fault_mask = glrt_fault_mask(
+            DetectorKind::SingleSampleGlrt => {
+                let fault_mask = single_sample_glrt_fault_mask(
                     current_mask,
                     max_chi2,
                     max_chi2_mask,
@@ -238,7 +242,7 @@ impl Job for FdirJob {
     }
 }
 
-fn glrt_fault_mask(
+fn single_sample_glrt_fault_mask(
     current_mask: u64,
     innovation_chi2: f64,
     innovation_mask: u64,
@@ -247,6 +251,8 @@ fn glrt_fault_mask(
     // For a zero-mean Gaussian innovation with covariance S, the
     // unconstrained mean-shift GLRT has 2 log Lambda = r' S^-1 r,
     // i.e. the same chi-square statistic published by the estimator.
+    // We threshold a single sample of that statistic; the windowed
+    // mean-shift estimator from Willsky 1976 is Phase-5 work.
     let statistic = innovation_chi2.max(0.0);
     let innovation_fault = if statistic > innovation_threshold {
         innovation_mask
@@ -296,7 +302,7 @@ mod tests {
         })
         .unwrap();
         let mut job = FdirJob::new(FdirParams {
-            detector_kind: DetectorKind::Glrt,
+            detector_kind: DetectorKind::SingleSampleGlrt,
             innovation_threshold: 25.0,
             ..FdirParams::default()
         });
@@ -311,7 +317,7 @@ mod tests {
 
     #[test]
     fn single_sample_glrt_assigns_max_innovation_source_bit() {
-        let mask = glrt_fault_mask(0, 30.0, FDIR_BIT_BARO, 25.0);
+        let mask = single_sample_glrt_fault_mask(0, 30.0, FDIR_BIT_BARO, 25.0);
         assert_eq!(mask, FDIR_BIT_BARO);
     }
 

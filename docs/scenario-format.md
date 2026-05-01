@@ -84,7 +84,7 @@ dead_reckon_timeout_s      = 1.5
 anti_windup_gain        = 1.0
 rate_deadband_rad_s     = 0.001
 trajectory_loop_enabled = false
-trajectory_kind         = "pid" # "pid" | "differential_flatness" (flatness-inspired)
+trajectory_kind         = "pid" # "pid" | "flatness_inspired" (flatness-inspired attitude reference; not a full Mellinger-Kumar flat-output tracker)
 
 [fc.health]
 imu_stale_after_s   = 0.05
@@ -94,7 +94,7 @@ mag_stale_after_s   = 0.2
 overrun_burst_count = 5
 
 [fc.fdir]
-detector_kind          = "burst_counter" # "burst_counter" | "glrt" | "cusum"
+detector_kind          = "burst_counter" # "burst_counter" | "single_sample_glrt" | "cusum"
 innovation_threshold   = 25.0
 innovation_burst_count = 5
 failsafe_burst_count   = 5

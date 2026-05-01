@@ -1,4 +1,11 @@
-//! Local Kalman-filter algebra consistency checks.
+//! Local scalar Kalman-update algebra smoke tests.
+//!
+//! These exercise textbook identities on a 1-D scalar Kalman update —
+//! the information-form mean / variance composition law — using
+//! arbitrary numbers, not specific Bar-Shalom / Li / Kirubarajan
+//! examples. Treat them as algebra smoke tests; reproducing
+//! published textbook trajectories with their original parameters is
+//! Phase-5 work in `docs/phase-5-plan.md`.
 
 #![allow(clippy::float_cmp, clippy::many_single_char_names)]
 
@@ -26,13 +33,4 @@ fn scalar_update_matches_information_form_identity() {
     assert!((p_post - expected_p).abs() < 1.0e-12);
     assert!((x_post - expected_x).abs() < 1.0e-12);
     assert!((nis - (4.0 / 13.0)).abs() < 1.0e-12);
-}
-
-#[test]
-fn whitened_innovation_identity_is_unitless_smoke() {
-    let prior_p = 2.0_f64;
-    let r = 3.0_f64;
-    let innovation_variance: f64 = prior_p + r;
-    let whitened_unit_innovation = innovation_variance.sqrt() / innovation_variance.sqrt();
-    assert!((whitened_unit_innovation - 1.0).abs() < f64::EPSILON);
 }

@@ -150,7 +150,7 @@ pub enum EstimatorError {
     },
 }
 
-/// Errors raised by an [`Autopilot`](crate::autopilot::Autopilot) implementation.
+/// Errors raised by an autopilot implementation.
 #[derive(Debug, Error)]
 pub enum AutopilotError {
     /// A gain schedule lookup did not find an entry for the active

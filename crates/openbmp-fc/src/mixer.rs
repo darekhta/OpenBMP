@@ -7,7 +7,7 @@
 //! zero-mixes the demand and emits a warning event. This prevents a
 //! controller bug in one phase from actuating in the wrong phase.
 //!
-//! Phase 4.4 ships a static channel allowlist per [`PhaseId`] held
+//! Phase 4.4 ships a static channel allowlist per `PhaseId` held
 //! in a [`crate::tables`] entry; future revisions can add more
 //! sophisticated allocation matrices.
 

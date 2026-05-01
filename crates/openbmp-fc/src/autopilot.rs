@@ -107,7 +107,7 @@ pub struct AutopilotParams {
     pub gyro_notch: Option<[crate::filters::NotchConfig; 3]>,
     /// Optional L1-inspired augmentation on the rate loop.
     #[cfg(feature = "l1-adaptive")]
-    pub l1_adaptive: Option<crate::l1_adaptive::L1AdaptiveParams>,
+    pub l1_inspired: Option<crate::l1_adaptive::L1InspiredParams>,
 }
 
 impl Default for AutopilotParams {
@@ -119,7 +119,7 @@ impl Default for AutopilotParams {
             trajectory_kind: TrajectoryKind::Pid,
             gyro_notch: None,
             #[cfg(feature = "l1-adaptive")]
-            l1_adaptive: None,
+            l1_inspired: None,
         }
     }
 }
@@ -142,8 +142,10 @@ pub enum TrajectoryKind {
     Pid,
     /// Flatness-inspired attitude reference from a PD desired
     /// acceleration. This is not a full flat-output trajectory
-    /// tracker with higher-derivative feed-forward terms.
-    DifferentialFlatness,
+    /// tracker with higher-derivative feed-forward terms; the
+    /// Mellinger & Kumar 2011 minimum-snap formulation is tracked as
+    /// Phase-5 work in `docs/phase-5-plan.md`.
+    FlatnessInspired,
 }
 
 /// Three-loop autopilot job.
@@ -159,7 +161,7 @@ pub struct ThreeLoopAutopilot {
     params: AutopilotParams,
     gyro_notch_state: Option<[Biquad; 3]>,
     #[cfg(feature = "l1-adaptive")]
-    l1_state: [crate::l1_adaptive::L1AdaptiveChannel; 3],
+    l1_state: [crate::l1_adaptive::L1InspiredChannel; 3],
 }
 
 impl ThreeLoopAutopilot {
@@ -185,7 +187,7 @@ impl ThreeLoopAutopilot {
             params: AutopilotParams::default(),
             gyro_notch_state: None,
             #[cfg(feature = "l1-adaptive")]
-            l1_state: [crate::l1_adaptive::L1AdaptiveChannel::new(); 3],
+            l1_state: [crate::l1_adaptive::L1InspiredChannel::new(); 3],
         }
     }
 
@@ -374,13 +376,13 @@ impl Job for ThreeLoopAutopilot {
                         saturated |= sat;
                     }
                 }
-                TrajectoryKind::DifferentialFlatness => {
+                TrajectoryKind::FlatnessInspired => {
                     let desired_accel = flatness_pd_accel(
                         reference.position_eci_m,
                         reference.velocity_eci_m_s,
                         pos,
                     );
-                    let q_flat = differential_flatness_attitude_reference(desired_accel, 0.0);
+                    let q_flat = flatness_inspired_attitude_reference(desired_accel, 0.0);
                     let q = q_flat.into_inner();
                     attitude_error =
                         quaternion_error_axis(attitude.q_body_to_eci_xyzw, [q.i, q.j, q.k, q.w]);
@@ -427,7 +429,7 @@ impl Job for ThreeLoopAutopilot {
             #[cfg(not(feature = "l1-adaptive"))]
             let axis_cmd = cmd;
             #[cfg(feature = "l1-adaptive")]
-            if let Some(l1_params) = self.params.l1_adaptive {
+            if let Some(l1_params) = self.params.l1_inspired {
                 axis_cmd += self.l1_state[i].step(l1_params, rate_error[i], 0.0, dt);
                 let l1_limited = axis_cmd.clamp(-limit, limit);
                 saturated |= (axis_cmd - l1_limited).abs() > 0.0;
@@ -480,9 +482,12 @@ fn flatness_pd_accel(
 }
 
 /// Flatness-inspired attitude reference for a thrust-along-body-z
-/// vehicle from desired acceleration and yaw.
+/// vehicle from desired acceleration and yaw. The reference is
+/// computed from the desired acceleration vector only — no
+/// higher-order trajectory derivatives feed forward — so this is
+/// not a full Mellinger & Kumar 2011 differential-flatness tracker.
 #[must_use]
-pub fn differential_flatness_attitude_reference(
+pub fn flatness_inspired_attitude_reference(
     desired_accel_eci_m_s2: Vector3<f64>,
     yaw_rad: f64,
 ) -> nalgebra::UnitQuaternion<f64> {

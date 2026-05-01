@@ -3,31 +3,48 @@
 Purpose: close the audit deferrals without expanding OpenBMP beyond its
 simulator-local, non-deployable safety boundary.
 
-## Execution State (2026-04-30)
+## Execution State (2026-04-30, refined 2026-05-01)
 
 This plan has an initial implementation pass in tree:
 
 - P0 bridge is implemented in `crates/openbmp-cli/src/runner/fc_bridge.rs`
   and wired into the point-mass / rigid-body Phase-2 runners.
-- P2 landed Markley-style MEKF reset, Gauss-Markov bias dynamics,
-  iterated magnetometer updates, WGS84-J2 gravity through
-  `openbmp-physics`, a feature-gated UD covariance-factor helper, and
-  a real 6-state attitude + gyro-bias UKF.
-- P3 landed gyro notch filters, flatness-inspired attitude reference
-  generation, feature-gated L1-inspired rate-loop
-  augmentation, and the anti-windup decision note keeping
-  back-calculation as baseline.
+- P2 landed Markley-style MEKF reset, Gauss-Markov bias dynamics
+  (with the canonical `q·τ/2` stationary variance), iterated
+  magnetometer updates, WGS84-J2 gravity through `openbmp-physics`
+  (the `GravityAdapter` no longer silent-clamps), a feature-gated UD
+  covariance-factor helper, and a real 6-state attitude + gyro-bias
+  UKF.
+- P3 landed gyro notch filters, **flatness-inspired** attitude
+  reference generation (`TrajectoryKind::FlatnessInspired`;
+  `flatness_inspired_attitude_reference`), feature-gated
+  **L1-inspired** rate-loop augmentation (`L1InspiredParams` /
+  `L1InspiredChannel`; the `l1-adaptive` feature flag name is
+  retained for downstream-API stability), and the anti-windup
+  decision note keeping back-calculation as baseline.
 - P4 landed per-kind sensor lane status, covariance-weighted scalar
-  voting, and burst-counter / single-sample GLRT / CUSUM FDIR families.
-- P5 landed WGS84-J2 and WMM 2025. NRLMSISE-00, EGM2008,
-  multi-instance estimator routing, square-root UKF, and full
-  external trajectory cross-validation are tracked in
-  `docs/phase-5-plan.md`.
+  voting, and burst-counter / **single-sample** GLRT
+  (`DetectorKind::SingleSampleGlrt`) / CUSUM FDIR families.
+- P5 landed WGS84-J2 and WMM 2025 — and the FC scenario `mag_field =
+  "wmm_2025"` opt-in (`FcMagFieldKind`) is wired through the bridge.
+  NRLMSISE-00, EGM2008, multi-instance estimator routing,
+  square-root UKF, and full external trajectory cross-validation
+  are tracked in `docs/phase-5-plan.md`.
 
 The solver decision is recorded in `docs/clarabel-vetting.md`.
 Clarabel-backed QP / SOCP primitives are feature-gated; full
-receding-horizon MPC and LCvxLD / SCvx trajectory reproduction are not
-claimed by this implementation pass.
+receding-horizon MPC and LCvxLD / SCvx trajectory reproduction are
+not claimed by this implementation pass.
+
+### Naming-honesty rule
+
+Phase 4.C ships **inspired** variants of the SOTA references
+(Mellinger & Kumar 2011 differential flatness, Cao & Hovakimyan
+2010 L1 adaptive, Willsky 1976 windowed GLRT). The Rust API,
+scenario schema, and FDIR detector enum names all carry the
+honest `*Inspired` / `SingleSample*` qualifiers so consumers
+can't mistake them for the cited references. The cited-reference
+SOTA implementations are tracked in `docs/phase-5-plan.md`.
 
 ## Gates
 

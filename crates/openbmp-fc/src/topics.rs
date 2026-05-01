@@ -1,7 +1,7 @@
 //! Canonical bus topics published and consumed across the controller.
 //!
 //! The autopilot's modules communicate exclusively through the bus.
-//! Topics are typed Rust structures implementing the [`Topic`](crate::bus::Topic)
+//! Topics are typed Rust structures implementing the [`Topic`]
 //! trait. This module is the single registry of every topic the
 //! controller binary speaks; the dictionary generator walks this
 //! module to produce the build-time JSON dictionary.

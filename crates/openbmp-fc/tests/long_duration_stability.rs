@@ -1,4 +1,10 @@
 //! Direct EKF long-duration synthetic stability checks.
+//!
+//! This exercises the [`openbmp_fc::estimator::Ekf`] alone with
+//! synthetic measurement structs. It is **not** a full closed-loop
+//! pipeline soak; sensor ingest, scheduler, autopilot, mixer, and the
+//! kernel↔FC bridge are not exercised. A full-pipeline long-duration
+//! test is tracked as Phase-5 work in `docs/phase-5-plan.md`.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 

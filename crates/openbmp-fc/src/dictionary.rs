@@ -115,9 +115,8 @@ impl<'a> Dictionary<'a> {
     /// # Errors
     ///
     /// Returns [`DictionaryError::Serialize`] on serialisation
-    /// failure (only possible with the `serde` feature). With the
-    /// `serde` feature disabled, returns
-    /// [`DictionaryError::SerdeDisabled`].
+    /// failure. When the `serde` feature is disabled, the alternate
+    /// implementation returns `DictionaryError::SerdeDisabled`.
     #[cfg(feature = "serde")]
     pub fn dump_json(&self) -> Result<String, DictionaryError> {
         let payload = serde_json::json!({

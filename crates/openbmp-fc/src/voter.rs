@@ -28,7 +28,7 @@ pub struct VotedReading<T> {
 pub trait Voter<T: Copy> {
     /// Votes across `samples`. The semantic depends on the
     /// implementation — see [`PassThroughVoter`],
-    /// [`MidValueSelectVoter`], [`WeightedMeanVoter`].
+    /// [`MidValueSelectScalar`], and [`WeightedMeanScalar`].
     fn vote(&self, samples: &[T]) -> Option<VotedReading<T>>;
 
     /// Returns `true` if one sample diverges from an already-voted
