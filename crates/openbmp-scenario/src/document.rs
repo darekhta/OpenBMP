@@ -3511,6 +3511,7 @@ pub struct FcPhaseAuthorityConfig {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod fc_string_tests {
     use serde::{Deserialize, Serialize};
 

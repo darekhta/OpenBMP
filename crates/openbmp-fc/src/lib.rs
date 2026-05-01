@@ -23,9 +23,9 @@
 //! reproduction, NRLMSISE-00, and multi-instance estimator routing
 //! are Phase 5 / downstream scope.
 //!
-//! See `docs/phase-4-plan.md` (during Phase 4) and
-//! `docs/software-architecture.md § Flight Controller` (after closure)
-//! for the architectural contract.
+//! See `docs/software-architecture.md § Flight Controller` for the
+//! architectural contract and `docs/phase-5-plan.md` for the
+//! deferred SOTA work.
 
 #![forbid(unsafe_code)]
 
