@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 
 use nalgebra::Vector3;
+use openbmp_physics::kinematics::quaternion_error_small_angle;
 
 use crate::error::ControllerError;
 use crate::filters::Biquad;
@@ -90,6 +91,21 @@ impl Table for GainSchedule {
     }
 }
 
+impl ThreeLoopGains {
+    /// Returns `true` when every per-axis trajectory gain (kp, ki, kd)
+    /// is exactly zero. The gain schedule's default trajectory entry
+    /// is all-zero, so a scenario that enables the trajectory loop
+    /// without overriding this entry would silently run a no-op
+    /// trajectory loop. Callers that opt into the trajectory loop
+    /// should reject the configuration if this returns `true`.
+    #[must_use]
+    pub fn trajectory_gains_are_all_zero(&self) -> bool {
+        self.trajectory
+            .iter()
+            .all(|g| g.kp == 0.0 && g.ki == 0.0 && g.kd == 0.0)
+    }
+}
+
 /// Autopilot configuration parameters.
 #[derive(Clone, Debug)]
 pub struct AutopilotParams {
@@ -156,7 +172,6 @@ pub struct ThreeLoopAutopilot {
     attitude_state: [PidState; 3],
     trajectory_state: [PidState; 3],
     last_predict_time_s: f64,
-    last_attitude_seq: u64,
     schedule: GainSchedule,
     params: AutopilotParams,
     gyro_notch_state: Option<[Biquad; 3]>,
@@ -182,7 +197,6 @@ impl ThreeLoopAutopilot {
             attitude_state: <[PidState; 3] as Default>::default(),
             trajectory_state: <[PidState; 3] as Default>::default(),
             last_predict_time_s: 0.0,
-            last_attitude_seq: 0,
             schedule,
             params: AutopilotParams::default(),
             gyro_notch_state: None,
@@ -245,6 +259,7 @@ impl Default for ThreeLoopAutopilot {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pid_step(
     state: &mut PidState,
     gains: &PidGains,
@@ -253,8 +268,11 @@ fn pid_step(
     saturate_against_min: f64,
     saturate_against_max: f64,
     anti_windup: f64,
+    integrate: bool,
 ) -> (f64, bool) {
-    state.integral += error * dt;
+    if integrate {
+        state.integral += error * dt;
+    }
     let derivative = if dt > 0.0 {
         (error - state.last_error) / dt
     } else {
@@ -264,39 +282,12 @@ fn pid_step(
     let raw = gains.kp * error + gains.ki * state.integral + gains.kd * derivative;
     let clamped = raw.clamp(saturate_against_min, saturate_against_max);
     let saturated = (raw - clamped).abs() > 0.0;
-    if saturated {
+    if saturated && integrate {
         // Back-calculate anti-windup.
         let excess = raw - clamped;
         state.integral -= anti_windup * excess * dt;
     }
     (clamped, saturated)
-}
-
-fn quaternion_error_axis(q_estimate_xyzw: [f64; 4], q_reference_xyzw: [f64; 4]) -> Vector3<f64> {
-    // Compute the rotation that takes the estimate into the reference,
-    // expressed as a small-angle vector in body axes. This is the
-    // standard small-angle linearisation used in attitude PID
-    // controllers.
-    let q_est = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-        q_estimate_xyzw[3],
-        q_estimate_xyzw[0],
-        q_estimate_xyzw[1],
-        q_estimate_xyzw[2],
-    ));
-    let q_ref = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-        q_reference_xyzw[3],
-        q_reference_xyzw[0],
-        q_reference_xyzw[1],
-        q_reference_xyzw[2],
-    ));
-    let q_err = q_est.inverse() * q_ref;
-    // Small-angle: error_axis = 2 * (qx, qy, qz) * sign(qw)
-    let qx = q_err.i;
-    let qy = q_err.j;
-    let qz = q_err.k;
-    let qw = q_err.w;
-    let sign = if qw >= 0.0 { 1.0 } else { -1.0 };
-    Vector3::new(2.0 * qx * sign, 2.0 * qy * sign, 2.0 * qz * sign)
 }
 
 impl Job for ThreeLoopAutopilot {
@@ -317,12 +308,8 @@ impl Job for ThreeLoopAutopilot {
             return Ok(());
         }
 
-        let attitude = match ctx.bus.latest::<AttitudeEstimate>()? {
-            Some((a, seq)) => {
-                self.last_attitude_seq = seq.value();
-                a
-            }
-            None => return Ok(()),
+        let Some((attitude, _)) = ctx.bus.latest::<AttitudeEstimate>()? else {
+            return Ok(());
         };
         let position = ctx.bus.latest::<PositionEstimate>()?.map(|(p, _)| p);
         let reference = ctx
@@ -341,7 +328,7 @@ impl Job for ThreeLoopAutopilot {
 
         // Attitude loop input: small-angle error in body frame.
         let mut attitude_error =
-            quaternion_error_axis(attitude.q_body_to_eci_xyzw, reference.q_body_to_eci_xyzw);
+            quaternion_error_small_angle(attitude.q_body_to_eci_xyzw, reference.q_body_to_eci_xyzw);
 
         // Trajectory loop: feeds an attitude-error correction. Active
         // only when enabled by params and a position reference is
@@ -371,6 +358,7 @@ impl Job for ThreeLoopAutopilot {
                             -1.0,
                             1.0,
                             self.params.anti_windup_gain,
+                            true,
                         );
                         attitude_error[i] += cmd;
                         saturated |= sat;
@@ -381,11 +369,15 @@ impl Job for ThreeLoopAutopilot {
                         reference.position_eci_m,
                         reference.velocity_eci_m_s,
                         pos,
+                        &gains.trajectory,
                     );
-                    let q_flat = flatness_inspired_attitude_reference(desired_accel, 0.0);
+                    let yaw_rad = reference_yaw_rad(reference.q_body_to_eci_xyzw);
+                    let q_flat = flatness_inspired_attitude_reference(desired_accel, yaw_rad);
                     let q = q_flat.into_inner();
-                    attitude_error =
-                        quaternion_error_axis(attitude.q_body_to_eci_xyzw, [q.i, q.j, q.k, q.w]);
+                    attitude_error = quaternion_error_small_angle(
+                        attitude.q_body_to_eci_xyzw,
+                        [q.i, q.j, q.k, q.w],
+                    );
                 }
             }
         }
@@ -400,12 +392,16 @@ impl Job for ThreeLoopAutopilot {
                 -1e3,
                 1e3,
                 self.params.anti_windup_gain,
+                true,
             );
             rate_cmd[i] = cmd;
             saturated |= sat;
         }
 
         // Rate loop: rate_cmd vs measured -> actuator deflection.
+        // Per-axis integrator freeze when measured body rate is below
+        // the configured deadband — prevents integrator wind-up at
+        // very low rates where measurement noise dominates the signal.
         let omega_body_rad_s = self.filtered_omega_body(attitude.omega_body_rad_s, dt);
         let rate_error = rate_cmd - omega_body_rad_s;
         let mut torque = Vector3::zeros();
@@ -415,6 +411,7 @@ impl Job for ThreeLoopAutopilot {
                 1 => gains.elevator_limit_rad,
                 _ => gains.rudder_limit_rad,
             };
+            let integrate = omega_body_rad_s[i].abs() >= self.params.rate_deadband_rad_s;
             let (cmd, sat) = pid_step(
                 &mut self.rate_state[i],
                 &gains.rate[i],
@@ -423,6 +420,7 @@ impl Job for ThreeLoopAutopilot {
                 -limit,
                 limit,
                 self.params.anti_windup_gain,
+                integrate,
             );
             #[cfg(feature = "l1-adaptive")]
             let mut axis_cmd = cmd;
@@ -466,19 +464,40 @@ fn flatness_pd_accel(
     reference_position: Vector3<f64>,
     reference_velocity: Vector3<f64>,
     position: PositionEstimate,
+    trajectory_gains: &[PidGains; 3],
 ) -> Vector3<f64> {
     // Desired specific force = desired_inertial_accel − gravity_eci.
-    // PD on position / velocity error gives the inertial-accel
-    // correction; subtracting `standard_down_z_eci_m_s2()` (which is
-    // `(0, 0, −g)`) correctly adds `(0, 0, +g)` for hover-trim
-    // feedforward. Using the helper instead of an inline ±g vector
-    // also guards against the sign mistake `0.5 ± Vector3(0, 0, +g)`
-    // is prone to.
-    let kp = 1.0;
-    let kd = 0.5;
-    kp * (reference_position - position.position_eci_m)
-        + kd * (reference_velocity - position.velocity_eci_m_s)
-        - openbmp_physics::gravity::standard_down_z_eci_m_s2()
+    // Per-axis Kp / Kd come from the active phase's trajectory-loop
+    // gain entry so the FlatnessInspired path tracks the same gain
+    // schedule as the PID path. Subtracting `standard_down_z_eci_m_s2()`
+    // (which is `(0, 0, −g)`) correctly adds `(0, 0, +g)` for
+    // hover-trim feedforward; using the helper instead of an inline
+    // ±g vector also guards against the sign mistake
+    // `0.5 ± Vector3(0, 0, +g)` is prone to.
+    let pos_err = reference_position - position.position_eci_m;
+    let vel_err = reference_velocity - position.velocity_eci_m_s;
+    let pd = Vector3::new(
+        trajectory_gains[0].kp * pos_err.x + trajectory_gains[0].kd * vel_err.x,
+        trajectory_gains[1].kp * pos_err.y + trajectory_gains[1].kd * vel_err.y,
+        trajectory_gains[2].kp * pos_err.z + trajectory_gains[2].kd * vel_err.z,
+    );
+    pd - openbmp_physics::gravity::standard_down_z_eci_m_s2()
+}
+
+/// Extract the yaw (rotation about the inertial z-axis) of a body→ECI
+/// quaternion in scalar-last `[x, y, z, w]` ordering. Used by the
+/// flatness-inspired trajectory loop so the attitude reference
+/// inherits the scenario's commanded heading instead of pinning yaw
+/// to zero.
+fn reference_yaw_rad(q_body_to_eci_xyzw: [f64; 4]) -> f64 {
+    let q = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        q_body_to_eci_xyzw[3],
+        q_body_to_eci_xyzw[0],
+        q_body_to_eci_xyzw[1],
+        q_body_to_eci_xyzw[2],
+    ));
+    let (_roll, _pitch, yaw) = q.euler_angles();
+    yaw
 }
 
 /// Flatness-inspired attitude reference for a thrust-along-body-z
@@ -563,8 +582,16 @@ mod tests {
     use nalgebra::Vector3;
     use openbmp_core::SimTime;
 
-    use super::flatness_pd_accel;
+    use super::{PidGains, flatness_pd_accel, reference_yaw_rad};
     use crate::topics::PositionEstimate;
+
+    fn unit_pd_gains() -> [PidGains; 3] {
+        [PidGains {
+            kp: 1.0,
+            ki: 0.0,
+            kd: 0.5,
+        }; 3]
+    }
 
     #[test]
     fn flatness_pd_accel_adds_upward_gravity_compensation_at_trim() {
@@ -575,13 +602,63 @@ mod tests {
             accel_bias_body_m_s2: Vector3::zeros(),
         };
 
-        let desired_accel =
-            flatness_pd_accel(position.position_eci_m, position.velocity_eci_m_s, position);
+        let gains = unit_pd_gains();
+        let desired_accel = flatness_pd_accel(
+            position.position_eci_m,
+            position.velocity_eci_m_s,
+            position,
+            &gains,
+        );
 
         assert_eq!(
             desired_accel,
             -openbmp_physics::gravity::standard_down_z_eci_m_s2()
         );
         assert!(desired_accel.z > 0.0);
+    }
+
+    #[test]
+    fn flatness_pd_accel_uses_per_axis_trajectory_gains() {
+        // Distinct kp on each axis should produce a per-axis-scaled
+        // PD output, locking in the gain-schedule plumbing.
+        let position = PositionEstimate {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::zeros(),
+            velocity_eci_m_s: Vector3::zeros(),
+            accel_bias_body_m_s2: Vector3::zeros(),
+        };
+        let reference_position = Vector3::new(1.0, 1.0, 1.0);
+        let gains = [
+            PidGains {
+                kp: 2.0,
+                ki: 0.0,
+                kd: 0.0,
+            },
+            PidGains {
+                kp: 3.0,
+                ki: 0.0,
+                kd: 0.0,
+            },
+            PidGains {
+                kp: 4.0,
+                ki: 0.0,
+                kd: 0.0,
+            },
+        ];
+        let desired_accel =
+            flatness_pd_accel(reference_position, Vector3::zeros(), position, &gains);
+        // PD term = (kp_x, kp_y, kp_z), gravity feed-forward = +g·z
+        let expected =
+            Vector3::new(2.0, 3.0, 4.0) - openbmp_physics::gravity::standard_down_z_eci_m_s2();
+        assert_eq!(desired_accel, expected);
+    }
+
+    #[test]
+    fn reference_yaw_rad_recovers_z_rotation() {
+        let theta: f64 = 0.4;
+        let half = theta / 2.0;
+        let q_xyzw = [0.0, 0.0, half.sin(), half.cos()];
+        let yaw = reference_yaw_rad(q_xyzw);
+        assert!((yaw - theta).abs() < 1.0e-12);
     }
 }

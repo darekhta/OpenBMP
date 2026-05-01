@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
 use openbmp_core::ValidationStatus;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::checks::{
     require_finite, require_finite_array, require_in_range, require_non_empty,
@@ -3345,7 +3345,7 @@ pub struct FcAutopilotParams {
 }
 
 /// Supported trajectory-loop kinds.
-#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FcTrajectoryKind {
     /// Existing PID trajectory loop.
@@ -3439,7 +3439,7 @@ impl FcFdirConfig {
 }
 
 /// FDIR detector families.
-#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FcFdirDetectorKind {
     /// Existing burst-counter detector.
@@ -3508,6 +3508,52 @@ pub struct FcPhaseAuthorityConfig {
     pub autopilot_allowed: bool,
     /// `true` if the phase permits autopilot engine commands.
     pub engines_allowed: bool,
+}
+
+#[cfg(test)]
+mod fc_string_tests {
+    use serde::{Deserialize, Serialize};
+
+    use super::{FcFdirDetectorKind, FcTrajectoryKind};
+
+    #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+    struct TrajectoryWrapper {
+        trajectory_kind: FcTrajectoryKind,
+    }
+
+    #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+    struct DetectorWrapper {
+        detector_kind: FcFdirDetectorKind,
+    }
+
+    #[test]
+    fn fc_variant_strings_round_trip_and_old_spellings_reject() {
+        let traj: TrajectoryWrapper =
+            toml::from_str("trajectory_kind = \"flatness_inspired\"").unwrap();
+        assert_eq!(traj.trajectory_kind, FcTrajectoryKind::FlatnessInspired);
+        assert_eq!(
+            toml::to_string(&traj).unwrap(),
+            "trajectory_kind = \"flatness_inspired\"\n"
+        );
+        let old_flatness_spelling = ["differential", "flatness"].join("_");
+        let old_flatness_toml = format!("trajectory_kind = {old_flatness_spelling:?}");
+        assert!(toml::from_str::<TrajectoryWrapper>(&old_flatness_toml).is_err());
+        assert!(
+            toml::from_str::<TrajectoryWrapper>("trajectory_kind = \"flatness-inspired\"").is_err()
+        );
+
+        let detector: DetectorWrapper =
+            toml::from_str("detector_kind = \"single_sample_glrt\"").unwrap();
+        assert_eq!(detector.detector_kind, FcFdirDetectorKind::SingleSampleGlrt);
+        assert_eq!(
+            toml::to_string(&detector).unwrap(),
+            "detector_kind = \"single_sample_glrt\"\n"
+        );
+        assert!(toml::from_str::<DetectorWrapper>("detector_kind = \"glrt\"").is_err());
+        assert!(
+            toml::from_str::<DetectorWrapper>("detector_kind = \"single-sample-glrt\"").is_err()
+        );
+    }
 }
 
 #[cfg(test)]

@@ -71,7 +71,8 @@ pub use gravity::{
     standard_down_z_eci_m_s2,
 };
 pub use kinematics::{
-    quaternion_from_axis_angle, quaternion_from_omega, renormalize_quaternion, skew_symmetric,
+    quaternion_error_small_angle, quaternion_from_axis_angle, quaternion_from_omega,
+    renormalize_quaternion, skew_symmetric,
 };
 pub use magnetic::{
     EARTH_DIPOLE_EQUATORIAL_FIELD_NT, EarthDipoleField, MagneticFieldEci, MagneticModel, Wmm2025,

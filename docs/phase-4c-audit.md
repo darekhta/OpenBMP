@@ -220,29 +220,28 @@ Saturation reporting must include the L1 contribution.
 The feature must compile with `--no-default-features` (HAL
 portability is non-negotiable).
 
-### D10. Differential-flatness trajectory tracking
+### D10. Flatness-inspired trajectory tracking
 
 New alternative trajectory loop in
 `crates/openbmp-fc/src/autopilot.rs`. Selectable via
-`[fc.autopilot.trajectory_kind = "pid" | "differential_flatness"]`.
+`[fc.autopilot.trajectory_kind = "pid" | "flatness_inspired"]`.
 Default: `"pid"` (the existing per-axis loop).
 
-Implementation: Mellinger & Kumar 2011, "Minimum snap trajectory
-generation and control for quadrotors." Adapt to single-rigid-body
-rocketry — the flat outputs for a rocket-like vehicle are
-`(x, y, z, ψ)` (position + yaw) when thrust is along the body z-axis;
-the attitude reference is computed analytically from the trajectory
-derivatives.
+Implementation: a flatness-inspired attitude-reference assignment
+from desired acceleration and yaw. The full Mellinger & Kumar 2011
+"Minimum snap trajectory generation and control for quadrotors"
+tracker, including higher-derivative feed-forward from flat outputs,
+is Phase-5 work.
 
 Document the assumption: differential flatness presumes the vehicle
 has full thrust-direction authority. Phase 4.C scenarios that don't
 satisfy that assumption (fixed thrust direction, gimbal-only)
 should keep `"pid"`.
 
-### D11. GLRT / CUSUM FDIR — alternative detectors via config
+### D11. Single-sample GLRT / CUSUM FDIR — alternative detectors via config
 
 New detectors in `crates/openbmp-fc/src/fdir.rs`. Selectable via
-`[fc.fdir.detector_kind = "burst_counter" | "glrt" | "cusum"]`.
+`[fc.fdir.detector_kind = "burst_counter" | "single_sample_glrt" | "cusum"]`.
 Default: `"burst_counter"` (existing). All detectors publish the
 same `FdirStatus` topic shape but populate `tripped_mask` with
 detector-specific bits.

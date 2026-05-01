@@ -62,6 +62,47 @@ pub fn skew_symmetric(v: Vector3<f64>) -> Matrix3<f64> {
     )
 }
 
+/// Small-angle attitude-error vector from an estimate quaternion to a
+/// reference quaternion, expressed in the source frame of the
+/// estimate. Both inputs are `[x, y, z, w]`-ordered scalar arrays
+/// (the OpenBMP bus convention) and are interpreted as unit
+/// quaternions.
+///
+/// Returns `2 · sign(q_err.w) · vec(q_err)` where
+/// `q_err = q_estimate^{-1} · q_reference`. For small attitude errors
+/// this is the standard linearisation of the rotation vector that
+/// takes the estimate into the reference, with `sign(q_err.w)`
+/// resolving the quaternion double-cover ambiguity so the returned
+/// vector is the *short-arc* rotation.
+///
+/// Used by attitude PID controllers and MEKF reset paths to feed an
+/// error-state quaternion into a small-angle linear update.
+#[must_use]
+pub fn quaternion_error_small_angle(
+    q_estimate_xyzw: [f64; 4],
+    q_reference_xyzw: [f64; 4],
+) -> Vector3<f64> {
+    let q_est = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        q_estimate_xyzw[3],
+        q_estimate_xyzw[0],
+        q_estimate_xyzw[1],
+        q_estimate_xyzw[2],
+    ));
+    let q_ref = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        q_reference_xyzw[3],
+        q_reference_xyzw[0],
+        q_reference_xyzw[1],
+        q_reference_xyzw[2],
+    ));
+    let q_err = q_est.inverse() * q_ref;
+    let qx = q_err.i;
+    let qy = q_err.j;
+    let qz = q_err.k;
+    let qw = q_err.w;
+    let sign = if qw >= 0.0 { 1.0 } else { -1.0 };
+    Vector3::new(2.0 * qx * sign, 2.0 * qy * sign, 2.0 * qz * sign)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
@@ -127,5 +168,42 @@ mod tests {
         for entry in sum.iter() {
             assert_abs_diff_eq!(*entry, 0.0, epsilon = 1.0e-15);
         }
+    }
+
+    #[test]
+    fn quaternion_error_small_angle_identity_pair_is_zero() {
+        let identity = [0.0, 0.0, 0.0, 1.0];
+        let err = quaternion_error_small_angle(identity, identity);
+        assert_eq!(err, Vector3::zeros());
+    }
+
+    #[test]
+    fn quaternion_error_small_angle_small_z_rotation_recovers_axis_angle() {
+        // q_ref = R_z(theta), q_est = identity. Error in body axes
+        // should be ~ (0, 0, theta) for small theta.
+        let theta: f64 = 1.0e-3;
+        let half = theta / 2.0;
+        let q_ref = [0.0, 0.0, half.sin(), half.cos()];
+        let q_est = [0.0, 0.0, 0.0, 1.0];
+        let err = quaternion_error_small_angle(q_est, q_ref);
+        assert_abs_diff_eq!(err.x, 0.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(err.y, 0.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(err.z, theta, epsilon = 1.0e-9);
+    }
+
+    #[test]
+    fn quaternion_error_small_angle_resolves_short_arc() {
+        // q_err.w < 0 should flip sign so the returned axis points the
+        // short way around. Build a rotation just past pi about z so
+        // the quaternion's w is negative; the small-angle linearisation
+        // is no longer accurate here, but the sign-flip rule must keep
+        // the result on the short arc (negative z direction).
+        let half: f64 = f64::midpoint(std::f64::consts::PI, 0.1);
+        let q_ref = [0.0, 0.0, half.sin(), half.cos()];
+        let q_est = [0.0, 0.0, 0.0, 1.0];
+        let err = quaternion_error_small_angle(q_est, q_ref);
+        // Short-arc rotation away from a +z spin past pi is the
+        // residual -z spin; the sign flip is what produces this.
+        assert!(err.z < 0.0);
     }
 }
