@@ -58,6 +58,13 @@ pub const USSA76_SEA_LEVEL_TEMPERATURE_K: f64 = 288.15;
 /// Sea-level static pressure (Pa).
 pub const USSA76_SEA_LEVEL_PRESSURE_PA: f64 = 101_325.0;
 
+/// Sea-level standard mass density of dry air (kg/m³).
+///
+/// Derived from the ideal-gas law at sea-level pressure and
+/// temperature with the USSA76 mean molecular weight; matches the
+/// canonical 1.225 kg/m³ value cited in the standard.
+pub const USSA76_SEA_LEVEL_DENSITY_KG_M3: f64 = 1.225;
+
 /// Troposphere lapse rate (K / m).
 pub const USSA76_TROPOSPHERE_LAPSE_RATE_K_PER_M: f64 = -6.5e-3;
 
@@ -112,7 +119,17 @@ pub fn pressure_altitude_troposphere_m(pressure_pa: f64) -> f64 {
         * (ratio.powf(exponent_recip) - 1.0)
 }
 
-/// Atmospheric state at a single altitude / time.
+/// Closed-form dynamic pressure `q = ½ · ρ · v²` (Pa) for given mass
+/// density (kg/m³) and total airspeed magnitude (m/s).
+///
+/// Both inputs must be non-negative for a physically meaningful
+/// result; this helper does no clamping, mirroring the project
+/// convention that math primitives stay total and let callers
+/// validate inputs.
+#[must_use]
+pub fn dynamic_pressure_pa(density_kg_m3: f64, velocity_m_s: f64) -> f64 {
+    0.5 * density_kg_m3 * velocity_m_s * velocity_m_s
+}
 ///
 /// All fields are raw `f64` in SI units, named with their unit
 /// suffix (matching the project's `_m_s2` / `_kg_m3` convention from

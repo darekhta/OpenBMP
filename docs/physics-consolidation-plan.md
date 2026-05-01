@@ -12,6 +12,53 @@
 > in the audit and only moved the smallest constants the FC was
 > directly duplicating.
 
+## Type / math layering rule (post-2026-05-01)
+
+A follow-up scan surfaced finer-grained inline-physics in the FC:
+
+- **Math primitives that the FC was reinventing inline** —
+  dynamic-pressure formula (`q = ½ ρ v²`), rigid-body kinematics
+  (quaternion construction from axis-angle / body rate, quaternion
+  renormalisation, skew-symmetric cross-product matrix), and the
+  chi-square inverse CDF used to derive innovation gates from a
+  stated false-alarm rate. These all moved into `openbmp-physics`
+  (`atmosphere::dynamic_pressure_pa`, `kinematics`, `statistics`)
+  so any future consumer (sim-side property tests, FDIR threshold
+  tuning, scenario validation gates) shares the same operand
+  ordering and rational-approximation coefficients.
+
+## Outstanding follow-up — frames + WGS84 constants
+
+`openbmp-core::frames` currently owns `FrameContext`,
+`LocalGeodeticOrigin`, the WGS84 constants (`WGS84_A_M`,
+`WGS84_INV_FLATTENING`, `WGS84_FLATTENING`,
+`WGS84_ECCENTRICITY_SQUARED`, `WGS84_MU_M3_S2`,
+`WGS84_OMEGA_RAD_S`), and all the time-aware ECI ↔ ECEF and
+ECEF ↔ NED transformations. Two of those constants (`WGS84_A_M`,
+`WGS84_MU_M3_S2`) are also defined inline in
+`openbmp-physics::gravity`; the values match bit-for-bit but are
+maintained in two places.
+
+These are physics primitives. The principled fix is to move
+`FrameContext`, `LocalGeodeticOrigin`, and the WGS84 constants
+into `openbmp-physics::frames`, and trim `openbmp-core::frames` to
+the foundation types only (`Frame` trait, frame markers, value
+types `Position3<F>` / `Velocity3<F>` / `Acceleration3<F>` with
+their non-physics math methods, `Quaternion<From, To>` rotation
+methods, `FrameProfile` enum, `FrameError`).
+
+The consumer surface is small:
+`openbmp-physics::magnetic::wmm2025`, `openbmp-physics::wind::*`,
+`openbmp-cli::runner::wind`,
+`openbmp-cli::runner::phase2_*`, plus `core` itself. No state,
+sensors, mission, scenario, vehicle, fc, or telemetry consumer
+uses `FrameContext` directly. This keeps the migration tractable
+in a single workspace-wide commit, similar in shape to the
+`openbmp-env` retirement but smaller. The work is tracked as a
+follow-up in this document and is **not** yet executed; running it
+is gated on user authorisation since the move is workspace-shape
+in nature.
+
 ## Why retire `openbmp-env`
 
 | Today | What's wrong |
@@ -216,19 +263,20 @@ as a Rust `const`) moves with the WMM 2025 source from
 Same for `data/atmosphere/us_standard_1976.toml` — stays put;
 provenance entries get re-targeted at `openbmp-physics`.
 
-### D-PC-9. WGS84 / Earth constants stay in `openbmp-core`
+### D-PC-9. WGS84 / Earth constants are in interim dual residence
 
-`WGS84_A_M`, `WGS84_ECCENTRICITY_SQUARED`, `WGS84_MU_M3_S2`,
-`WGS84_J2` etc. are foundation values used by frames, sensors,
-state, and now physics. They stay in `openbmp-core`. `openbmp-physics`
-re-exports them through its `earth` module for ergonomic access:
+The old "WGS84 stays in `openbmp-core` and physics re-exports it"
+plan is superseded by the follow-up at the top of this document.
+`openbmp-core::frames` still owns the frame-conversion constants
+for now, while `openbmp-physics::gravity` owns the gravity-model
+copies of `WGS84_A_M` and `WGS84_MU_M3_S2`. Normal `openbmp-physics`
+builds const-check the duplicate values against `openbmp-core` so
+drift is caught before the full `FrameContext` + WGS84 move lands.
 
-```rust
-pub mod earth {
-    pub use openbmp_core::{WGS84_A_M, WGS84_ECCENTRICITY_SQUARED, WGS84_MU_M3_S2};
-    pub const MEAN_RADIUS_M: f64 = 6_371_000.0; // already there
-}
-```
+The final target remains `openbmp-physics::frames`: move
+`FrameContext`, `LocalGeodeticOrigin`, the time-aware transforms,
+and all WGS84 constants there, then leave only frame marker/value
+types and non-physics arithmetic in `openbmp-core`.
 
 ### D-PC-10. Single workspace test pass per model class
 

@@ -465,11 +465,18 @@ fn flatness_pd_accel(
     reference_velocity: Vector3<f64>,
     position: PositionEstimate,
 ) -> Vector3<f64> {
+    // Desired specific force = desired_inertial_accel − gravity_eci.
+    // PD on position / velocity error gives the inertial-accel
+    // correction; subtracting `standard_down_z_eci_m_s2()` (which is
+    // `(0, 0, −g)`) correctly adds `(0, 0, +g)` for hover-trim
+    // feedforward. Using the helper instead of an inline ±g vector
+    // also guards against the sign mistake `0.5 ± Vector3(0, 0, +g)`
+    // is prone to.
     let kp = 1.0;
     let kd = 0.5;
     kp * (reference_position - position.position_eci_m)
         + kd * (reference_velocity - position.velocity_eci_m_s)
-        - Vector3::new(0.0, 0.0, openbmp_physics::gravity::STANDARD_GRAVITY_M_S2)
+        - openbmp_physics::gravity::standard_down_z_eci_m_s2()
 }
 
 /// Flatness-inspired attitude reference for a thrust-along-body-z
@@ -543,5 +550,33 @@ pub fn default_gains() -> ThreeLoopGains {
         aileron_limit_rad: 0.35,
         rudder_limit_rad: 0.35,
         throttle_baseline: 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nalgebra::Vector3;
+    use openbmp_core::SimTime;
+
+    use super::flatness_pd_accel;
+    use crate::topics::PositionEstimate;
+
+    #[test]
+    fn flatness_pd_accel_adds_upward_gravity_compensation_at_trim() {
+        let position = PositionEstimate {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::new(10.0, -2.0, 5.0),
+            velocity_eci_m_s: Vector3::new(1.0, 0.5, -0.25),
+            accel_bias_body_m_s2: Vector3::zeros(),
+        };
+
+        let desired_accel =
+            flatness_pd_accel(position.position_eci_m, position.velocity_eci_m_s, position);
+
+        assert_eq!(
+            desired_accel,
+            -openbmp_physics::gravity::standard_down_z_eci_m_s2()
+        );
+        assert!(desired_accel.z > 0.0);
     }
 }

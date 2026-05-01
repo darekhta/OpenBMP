@@ -44,7 +44,9 @@
 pub mod atmosphere;
 pub mod error;
 pub mod gravity;
+pub mod kinematics;
 pub mod magnetic;
+pub mod statistics;
 pub mod validity;
 pub mod wind;
 
@@ -56,9 +58,13 @@ pub use gravity::{
     ConstantGravity, GravityModel, J2Gravity, PointMassGravity, STANDARD_GRAVITY_M_S2, WGS84_A_M,
     WGS84_J2, WGS84_MU_M3_S2, standard_down_z_eci_m_s2,
 };
+pub use kinematics::{
+    quaternion_from_axis_angle, quaternion_from_omega, renormalize_quaternion, skew_symmetric,
+};
 pub use magnetic::{
     EARTH_DIPOLE_EQUATORIAL_FIELD_NT, EarthDipoleField, MagneticFieldEci, MagneticModel, Wmm2025,
 };
+pub use statistics::{chi_square_inverse_cdf_wilson_hilferty, inverse_standard_normal_cdf};
 pub use validity::HalfOpenRange;
 pub use wind::{ConstantWind, LayerEntry, LayeredWind, NoWind, WindModel};
 #[cfg(feature = "synthetic")]

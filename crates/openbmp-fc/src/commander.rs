@@ -143,8 +143,18 @@ impl Commander {
 
         let altitude_m = pos.map_or(0.0, |p| p.position_eci_m.z);
         let vertical_velocity_m_s = pos.map_or(0.0, |p| p.velocity_eci_m_s.z);
+        // Academic approximation: q = ½ · ρ_SL · v_z². The proper
+        // computation uses total airspeed magnitude and the local
+        // atmospheric density; tracking horizontal velocity in the
+        // EventScalars block is Phase-5 work. For now we delegate the
+        // closed form and the sea-level density constant to
+        // openbmp-physics so the formula isn't reinvented per
+        // consumer.
         let dynamic_pressure_pa = baro.map_or(0.0, |_| {
-            0.5 * 1.225 * vertical_velocity_m_s * vertical_velocity_m_s
+            openbmp_physics::atmosphere::dynamic_pressure_pa(
+                openbmp_physics::atmosphere::USSA76_SEA_LEVEL_DENSITY_KG_M3,
+                vertical_velocity_m_s,
+            )
         });
         let mass_fraction = 1.0; // not currently estimated by the controller.
 

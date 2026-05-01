@@ -19,19 +19,45 @@ This crate replaced and absorbed the former `openbmp-env` crate
 openbmp-physics/
 ├── earth        # Earth-radius constants for low-order toy models
 ├── error        # PhysicsError (out-of-envelope, non-finite, invalid parameter, frame)
-├── gravity      # GravityModel trait + ConstantGravity, PointMassGravity, J2Gravity
-│                # plus WGS84_A_M, WGS84_MU_M3_S2, WGS84_J2, STANDARD_GRAVITY_M_S2
+├── gravity      # GravityModel trait + ConstantGravity, PointMassGravity, J2Gravity;
+│                # WGS84_A_M / WGS84_MU_M3_S2 live here during the
+│                # dual-residence migration and are const-checked against
+│                # openbmp-core, plus WGS84_J2 + STANDARD_GRAVITY_M_S2
 ├── atmosphere   # AtmosphereModel trait + AtmosphereSample + ExoatmosphericPolicy
 │   ├── isothermal           # IsothermalAtmosphere (toy)
 │   └── us_standard_1976    # Full 7-layer USSA76 (geopotential 0–86 km)
 │                #
 │                # plus closed-form helpers (geopotential ↔ geometric,
-│                # pressure_altitude_troposphere_m) and USSA76_* constants
+│                # pressure_altitude_troposphere_m, dynamic_pressure_pa)
+│                # and USSA76_* constants including USSA76_SEA_LEVEL_DENSITY_KG_M3
+├── kinematics   # quaternion_from_axis_angle / _omega, renormalize_quaternion,
+│                # skew_symmetric — rigid-body math primitives shared between
+│                # FC estimators and sim-side propagators
 ├── magnetic     # MagneticModel (NED) + MagneticFieldEci (ECI) traits
 │   ├── dipole              # EarthDipoleField — degree-1 academic placeholder
 │   └── wmm2025             # Wmm2025 — NOAA / NCEI 2025 12-degree spherical harmonic
+├── statistics   # chi_square_inverse_cdf_wilson_hilferty,
+│                # inverse_standard_normal_cdf — innovation-gate primitives
+│                # shared between FC estimators and FDIR detectors
+├── validity     # HalfOpenRange — model-envelope validity helpers
 └── wind         # WindModel + NoWind, ConstantWind, LayeredWind, GustWind (synthetic)
 ```
+
+## Outstanding follow-up
+
+`openbmp-core::frames` currently owns `FrameContext`, `LocalGeodeticOrigin`,
+and the WGS84 constants — all of which are physics primitives that should
+live in this crate. Two of the constants (`WGS84_A_M`, `WGS84_MU_M3_S2`)
+are duplicated inline in `openbmp-physics::gravity`; the values match
+bit-for-bit but are maintained in two places. Moving them, plus
+`FrameContext` and the time-aware frame transformations (which depend on
+those constants), into `openbmp-physics::frames` is tracked in
+`docs/physics-consolidation-plan.md § Outstanding follow-up — frames +
+WGS84 constants`. Frame *types* and *value types* (`Frame` trait, markers,
+`Position3<F>`, `Velocity3<F>`, `Quaternion<From, To>`) will stay in
+`openbmp-core` since they are foundation types and their non-physics math
+methods (`norm`, `is_finite`, basic arithmetic, frame-tag-only
+operations) don't depend on Earth-specific constants.
 
 ## Inputs and outputs
 

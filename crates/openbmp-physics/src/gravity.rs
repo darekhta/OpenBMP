@@ -29,12 +29,26 @@ use crate::error::PhysicsError;
 /// WGS84 semi-major axis (equatorial radius), `a`, in metres.
 ///
 /// Source: NIMA TR8350.2, WGS84 Implementation Manual, §3.
+///
+/// `openbmp-core::frames` carries the same constant for the
+/// frame-conversion path; the
+/// const assertions below verify the two definitions agree
+/// bit-for-bit until the workspace-wide consolidation that moves
+/// `FrameContext` + WGS84 entirely into this crate lands.
 pub const WGS84_A_M: f64 = 6_378_137.0;
 
 /// WGS84 gravitational parameter `µ = G · M`, in m³/s².
 ///
 /// Source: NIMA TR8350.2, WGS84 Implementation Manual, §3.
 pub const WGS84_MU_M3_S2: f64 = 3.986_004_418e14;
+
+// Until `FrameContext` + WGS84 fully consolidate into
+// `openbmp-physics::frames`, both `openbmp-core::frames` and this
+// module declare `WGS84_A_M` / `WGS84_MU_M3_S2` inline. Keep the
+// guard in normal builds, not just test targets, so downstream
+// production builds catch drift too.
+static_assertions::const_assert!(WGS84_A_M == openbmp_core::WGS84_A_M);
+static_assertions::const_assert!(WGS84_MU_M3_S2 == openbmp_core::WGS84_MU_M3_S2);
 
 /// WGS84 unnormalised J2 zonal-harmonic coefficient.
 ///

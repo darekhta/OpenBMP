@@ -229,7 +229,7 @@ mod tests {
             bus.publish(ImuSample {
                 time: clock.now(),
                 gyro_rad_s: Vector3::zeros(),
-                accel_m_s2: Vector3::new(0.0, 0.0, 9.81),
+                accel_m_s2: Vector3::new(0.0, 0.0, openbmp_physics::gravity::STANDARD_GRAVITY_M_S2),
                 healthy: true,
             })
             .unwrap();
