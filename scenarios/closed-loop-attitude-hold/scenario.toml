@@ -5,7 +5,7 @@
 #
 #   1. EKF (15-state error-state) consumes IMU/GNSS/mag samples,
 #      with the academic-tier `ConstantGravityZ` gravity model and
-#      the `EarthDipoleField` magnetic-field model.
+#      the selectable WMM 2025 magnetic-field model.
 #   2. Attitude-hold guidance against a constant identity-quaternion
 #      reference.
 #   3. Three-loop autopilot (rate / attitude / trajectory) with
@@ -60,6 +60,7 @@ gravity       = "constant"
 gravity_m_s2  = 9.80665
 atmosphere    = "none"
 wind          = "none"
+magnetic      = "wmm_2025"
 
 [forces]
 models = ["gravity"]
@@ -115,6 +116,8 @@ base_rate_hz     = 1000
 frame_budget_us  = 2000
 
 [fc.ekf]
+mag_field             = "wmm_2025"
+mag_epoch_decimal_year = 2025.0
 sigma_w_gyro          = 0.01
 sigma_w_accel_bias    = 1.0e-4
 sigma_w_gyro_bias     = 1.0e-5

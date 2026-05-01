@@ -1,4 +1,4 @@
-//! Long-duration estimator stability checks.
+//! Direct EKF long-duration synthetic stability checks.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -10,7 +10,7 @@ use openbmp_physics::atmosphere::USSA76_SEA_LEVEL_PRESSURE_PA;
 use openbmp_physics::gravity::STANDARD_GRAVITY_M_S2;
 
 #[test]
-fn ekf_sixty_second_synthetic_truth_run_stays_bounded() {
+fn ekf_sixty_second_direct_synthetic_truth_run_stays_bounded() {
     let mut ekf = Ekf::new(EkfParams::default());
     ekf.seed(
         Vector3::zeros(),

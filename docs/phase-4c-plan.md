@@ -13,13 +13,13 @@ This plan has an initial implementation pass in tree:
   iterated magnetometer updates, WGS84-J2 gravity through
   `openbmp-physics`, a feature-gated UD covariance-factor helper, and
   a real 6-state attitude + gyro-bias UKF.
-- P3 landed gyro notch filters, differential-flatness attitude
-  reference generation, feature-gated L1 adaptive rate-loop
+- P3 landed gyro notch filters, flatness-inspired attitude reference
+  generation, feature-gated L1-inspired rate-loop
   augmentation, and the anti-windup decision note keeping
   back-calculation as baseline.
 - P4 landed per-kind sensor lane status, covariance-weighted scalar
-  voting, and burst-counter / GLRT / CUSUM FDIR families.
-- P5 landed WGS84-J2 only. Full WMM 2025, NRLMSISE-00, EGM2008,
+  voting, and burst-counter / single-sample GLRT / CUSUM FDIR families.
+- P5 landed WGS84-J2 and WMM 2025. NRLMSISE-00, EGM2008,
   multi-instance estimator routing, square-root UKF, and full
   external trajectory cross-validation are tracked in
   `docs/phase-5-plan.md`.
@@ -104,8 +104,8 @@ Translation details:
 ## P3 - Autopilot SOTA Upgrades
 
 - Configurable rate-loop biquad/notch filter coefficients in `[fc.autopilot_params]`.
-- Differential-flatness trajectory loop for guided academic rocketry cases.
-- L1 adaptive augmentation behind an explicit scenario flag.
+- Flatness-inspired trajectory loop for guided academic rocketry cases.
+- L1-inspired augmentation behind a feature flag.
 - Observer-form anti-windup investigation; keep back-calculation as baseline
   unless tests prove the observer implementation improves boundedness.
 - Move health defaults and fallback gain sets into scenario-driven parameters
@@ -124,9 +124,9 @@ Translation details:
 - **Full WMM 2025 spherical-harmonic geomagnetic model** — already in
   the workspace at `openbmp_physics::magnetic::Wmm2025` after the
   consolidation. The FC's degree-1 `EarthDipoleField` placeholder is
-  superseded; `[fc.estimator.mag_field = "wmm_2025"]` is wired
-  through the bridge (Phase 4.C kernel↔FC integration uses the
-  full model).
+  superseded for scenarios that set `mag_field = "wmm_2025"` in
+  `[fc.ekf]` or `[fc.mekf]`; the runner bridge uses the same
+  selection for synthetic magnetometer truth.
 - **NRLMSISE-00 upper atmosphere** — Phase 5 deferral. USSA76 7-layer
   (geopotential 0–86 km) covers every scenario shipped today.
 - **EGM2008 / spherical-harmonic gravity** — Phase 5 deferral.

@@ -171,11 +171,11 @@ Same shape, different trait — caller change is mechanical.
 
 ### D-PC-5. The FC gets WMM 2025 today
 
-Drop the "Phase 5 deferral for full WMM 2025" line from
+Drop the old full-WMM deferral line from
 `openbmp-fc/README.md`, `magnetic.rs` docs, and
 `docs/phase-4c-plan.md`. The model exists; the FC consumes it.
 The dipole stays as a simpler academic-tier alternative; both are
-selectable via the scenario `[fc.estimator.mag_field]`.
+selectable via `mag_field` in `[fc.ekf]` or `[fc.mekf]`.
 
 ### D-PC-6. `EnvError` → `PhysicsError`, lives in `openbmp-physics`
 
@@ -354,8 +354,8 @@ Per D-PC-4 / D-PC-5:
    `openbmp_physics::magnetic::EarthDipoleField` (academic baseline)
    or `Wmm2025` (default for new scenarios).
 6. Update `crates/openbmp-fc/src/lib.rs` module list.
-7. Update `crates/openbmp-fc/README.md` module map; remove the
-   "Phase 5 deferral for full WMM" line.
+7. Update `crates/openbmp-fc/README.md` module map; remove the old
+   full-WMM deferral line.
 8. Update FC tests that constructed the FC's now-deleted types.
 
 ### S6 — Migrate other consumers
@@ -403,7 +403,7 @@ Specific crates to migrate (from the inventory):
    - Crate selection table: remove env row, expand physics row.
    - Workspace layout diagram.
 3. Update `docs/phase-4-plan.md`:
-   - Phase 4.C section: remove "Phase 5 deferral for full WMM" — it's
+   - Phase 4.C section: remove the old full-WMM deferral text — it's
      now a Phase 4.C deliverable via consolidation.
    - Phase 2/3 closure references that mention env: rewrite to
      reference physics.
@@ -420,7 +420,7 @@ Specific crates to migrate (from the inventory):
    - Test data provenance.
 7. Update `crates/openbmp-fc/README.md`:
    - Module map: drop `magnetic` module.
-   - Drop "Phase 5 deferral for full WMM" line.
+   - Drop the old full-WMM deferral line.
    - Add: "Estimator now consumes `openbmp_physics::gravity` and
      `::magnetic` directly."
 8. Update data provenance:
@@ -505,13 +505,13 @@ The consolidation is complete when **all** of S10's gates pass
     (replaced by `openbmp_physics::magnetic::EarthDipoleField`).
 18. `openbmp-physics` exports `gravity`, `atmosphere`, `magnetic`,
     `wind`, `error`, `validity`, and `earth` modules.
-19. The phrase "Phase 5 deferral for full WMM" appears in zero
-    files (`grep -r "Phase 5.*WMM" crates/ docs/` returns nothing).
+19. The old full-WMM deferral wording appears in zero current-status
+    docs.
 20. `docs/phase-4c-plan.md`'s P5 section is rewritten to reflect
     that WMM 2025 has landed.
 21. The closed-loop scenario fixture at
     `scenarios/closed-loop-attitude-hold/scenario.toml` runs with
-    `[fc.estimator.mag_field = "wmm_2025"]` and passes its
+    `mag_field = "wmm_2025"` in `[fc.ekf]` / `[fc.mekf]` and passes its
     tolerance table. (This is the proof point that the migration
     actually delivered the promised capability.)
 

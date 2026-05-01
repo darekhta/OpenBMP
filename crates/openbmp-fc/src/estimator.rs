@@ -48,9 +48,9 @@ use crate::topics::{
 /// trait (frame-tagged `Position3<Eci>`, `SimTime`, `Result`) into the
 /// simple `Vec3 → Vec3` shape the FC's predict / update path uses.
 ///
-/// Out-of-envelope or non-finite gravity returns is clamped to the
-/// zero vector — the FC's hot path stays total. Sim-side callers
-/// that want fail-noisy semantics use the rich trait directly.
+/// Gravity model failures are converted into estimator configuration
+/// errors so invalid envelopes cannot silently turn into zero
+/// acceleration.
 struct GravityAdapter {
     inner: Box<dyn GravityModel + Send + Sync>,
 }
@@ -68,11 +68,17 @@ impl GravityAdapter {
         }
     }
 
-    fn at(&self, position_eci_m: Vector3<f64>, time: SimTime) -> Vector3<f64> {
+    fn at(
+        &self,
+        position_eci_m: Vector3<f64>,
+        time: SimTime,
+    ) -> Result<Vector3<f64>, EstimatorError> {
         let p = Position3::<Eci>::new(position_eci_m.x, position_eci_m.y, position_eci_m.z);
         self.inner
             .gravity_eci_m_s2(p, time)
-            .unwrap_or_else(|_| Vector3::zeros())
+            .map_err(|err| EstimatorError::InvalidConfig {
+                reason: format!("gravity model rejected query: {err}"),
+            })
     }
 }
 
@@ -379,7 +385,7 @@ impl Estimator for Ekf {
         // gravity vector returned by the configured model.
         let r_body_to_eci = self.q_body_to_eci.to_rotation_matrix();
         let f_eci = r_body_to_eci * accel_meas;
-        let g_eci = self.gravity.at(self.pos_eci, SimTime::ZERO);
+        let g_eci = self.gravity.at(self.pos_eci, SimTime::ZERO)?;
         let a_eci = f_eci + g_eci;
         self.vel_eci += a_eci * dt;
         self.pos_eci += self.vel_eci * dt;
@@ -522,7 +528,7 @@ impl Estimator for Ekf {
         let mut final_k = SMatrix::<f64, 15, 3>::zeros();
         let mut final_h = SMatrix::<f64, 3, 15>::zeros();
         for iteration in 0..3 {
-            let (innovation, h) = self.mag_innovation_and_jacobian(measured);
+            let (innovation, h) = self.mag_innovation_and_jacobian(measured, sample.time);
             let s = h * self.p * h.transpose() + r_var;
             let Some(s_inv) = s.try_inverse() else {
                 return Err(EstimatorError::InvalidConfig {
@@ -616,9 +622,10 @@ impl Ekf {
     fn mag_innovation_and_jacobian(
         &self,
         measured_body_nt: Vector3<f64>,
+        time: SimTime,
     ) -> (Vector3<f64>, SMatrix<f64, 3, 15>) {
         let r_eci_to_body = self.q_body_to_eci.to_rotation_matrix().transpose();
-        let predicted = r_eci_to_body * self.mag_field.field_eci_nt(self.pos_eci, SimTime::ZERO);
+        let predicted = r_eci_to_body * self.mag_field.field_eci_nt(self.pos_eci, time);
         let innovation = measured_body_nt - predicted;
         let mut h: SMatrix<f64, 3, 15> = SMatrix::zeros();
         let skew = skew_symmetric(predicted);
@@ -689,7 +696,7 @@ fn gauss_markov_decay(dt_s: f64, tau_s: f64) -> f64 {
 
 fn gauss_markov_process_variance(sigma: f64, dt_s: f64, tau_s: f64) -> f64 {
     if tau_s.is_finite() && tau_s > 0.0 {
-        sigma * sigma * (1.0 - (-2.0 * dt_s / tau_s).exp())
+        0.5 * sigma * sigma * tau_s * (1.0 - (-2.0 * dt_s / tau_s).exp())
     } else {
         sigma * sigma * dt_s
     }
@@ -1062,7 +1069,7 @@ impl Estimator for Ukf {
                 r_eci_to_body
                     * self
                         .mag_field
-                        .field_eci_nt(self.reference_position_eci_m, SimTime::ZERO),
+                        .field_eci_nt(self.reference_position_eci_m, sample.time),
             );
         }
         let mut z_mean = w0_mean * z_sigma[0];
@@ -1423,6 +1430,28 @@ mod tests {
     }
 
     #[test]
+    fn gauss_markov_noise_density_converges_to_stationary_variance() {
+        let sigma = 0.2;
+        let tau_s = 10.0;
+        let dt_s = 0.1;
+        let phi = gauss_markov_decay(dt_s, tau_s);
+        let q = gauss_markov_process_variance(sigma, dt_s, tau_s);
+        let mut p = 0.0;
+        for _ in 0..10_000 {
+            p = phi * phi * p + q;
+        }
+        let expected = 0.5 * sigma * sigma * tau_s;
+        assert!((p - expected).abs() < 1.0e-10);
+    }
+
+    #[test]
+    fn gravity_model_errors_are_not_silently_zeroed() {
+        let adapter = GravityAdapter::new(openbmp_physics::gravity::PointMassGravity::wgs84());
+        let err = adapter.at(Vector3::zeros(), SimTime::ZERO).unwrap_err();
+        assert!(matches!(err, EstimatorError::InvalidConfig { .. }));
+    }
+
+    #[test]
     fn ekf_predict_advances_position_under_velocity() {
         // Disable gravity for this kinematics-only test.
         let mut ekf = Ekf::new(EkfParams::default())
@@ -1688,7 +1717,7 @@ impl Estimator for Mekf {
         let mut final_h = SMatrix::<f64, 3, 6>::zeros();
         let mut final_attitude_error = Vector3::zeros();
         for iteration in 0..3 {
-            let (innovation, h) = self.mag_innovation_and_jacobian(measured);
+            let (innovation, h) = self.mag_innovation_and_jacobian(measured, sample.time);
             let s = h * self.p * h.transpose() + r_var;
             let Some(s_inv) = s.try_inverse() else {
                 return Err(EstimatorError::InvalidConfig {
@@ -1780,12 +1809,13 @@ impl Mekf {
     fn mag_innovation_and_jacobian(
         &self,
         measured_body_nt: Vector3<f64>,
+        time: SimTime,
     ) -> (Vector3<f64>, SMatrix<f64, 3, 6>) {
         let r_eci_to_body = self.q_body_to_eci.to_rotation_matrix().transpose();
         let predicted = r_eci_to_body
             * self
                 .mag_field
-                .field_eci_nt(self.reference_position_eci_m, SimTime::ZERO);
+                .field_eci_nt(self.reference_position_eci_m, time);
         let innovation = measured_body_nt - predicted;
         let mut h: SMatrix<f64, 3, 6> = SMatrix::zeros();
         let skew = skew_symmetric(predicted);

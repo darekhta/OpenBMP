@@ -32,13 +32,18 @@ use openbmp_fc::topics::{
     MagnetometerSample, PositionEstimate, ReferenceState, SensorStatus, StarTrackerSample,
     VehicleStatus,
 };
-use openbmp_fc::{DispatchSummary, FlightController, FlightControllerBuilder};
+use openbmp_fc::{
+    ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
+};
 use openbmp_mission::{EventBinding, MissionPhaseGraph, PhaseId};
+use openbmp_physics::magnetic::Wmm2025;
 use openbmp_scenario::{
     FcActuatorChannelsConfig, FcAutopilotKind, FcAutopilotParams, FcConfig, FcEkfConfig,
     FcEstimatorKind, FcFdirConfig, FcFdirDetectorKind, FcGainsConfig, FcGuidanceKind,
-    FcHealthConfig, FcMekfConfig, FcPhaseAuthorityConfig, FcTrajectoryKind,
+    FcHealthConfig, FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig, FcTrajectoryKind,
 };
+
+const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
 
 /// Bridges an [`FcConfig`] to a fully wired [`FlightController`].
 ///
@@ -83,7 +88,7 @@ impl FcRunner {
                 if let Some(ekf_cfg) = &config.ekf {
                     apply_ekf_overrides(&mut params, ekf_cfg);
                 }
-                let mut ekf = Ekf::new(params);
+                let mut ekf = apply_ekf_mag_model(Ekf::new(params), config.ekf.as_ref())?;
                 ekf.seed(
                     Vector3::zeros(),
                     Vector3::zeros(),
@@ -101,7 +106,7 @@ impl FcRunner {
                 if let Some(mekf_cfg) = &config.mekf {
                     apply_mekf_overrides(&mut params, mekf_cfg);
                 }
-                let mut mekf = Mekf::new(params);
+                let mut mekf = apply_mekf_mag_model(Mekf::new(params), config.mekf.as_ref())?;
                 mekf.seed(UnitQuaternion::identity());
                 fc.scheduler_mut().register_periodic(
                     1,
@@ -343,6 +348,41 @@ fn period_ticks_for_hz(base_rate_hz: u32, task_rate_hz: u32) -> u64 {
     let base = u64::from(base_rate_hz);
     let task = u64::from(task_rate_hz.max(1));
     base.div_ceil(task).max(1)
+}
+
+fn apply_ekf_mag_model(ekf: Ekf, cfg: Option<&FcEkfConfig>) -> Result<Ekf, ControllerError> {
+    let kind = cfg.and_then(|c| c.mag_field).unwrap_or_default();
+    match kind {
+        FcMagFieldKind::EarthDipole => Ok(ekf),
+        FcMagFieldKind::Wmm2025 => {
+            let epoch = cfg
+                .and_then(|c| c.mag_epoch_decimal_year)
+                .unwrap_or(DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR);
+            Ok(ekf.with_mag_field_model(build_wmm_2025(epoch)?))
+        }
+    }
+}
+
+fn apply_mekf_mag_model(mekf: Mekf, cfg: Option<&FcMekfConfig>) -> Result<Mekf, ControllerError> {
+    let kind = cfg.and_then(|c| c.mag_field).unwrap_or_default();
+    match kind {
+        FcMagFieldKind::EarthDipole => Ok(mekf),
+        FcMagFieldKind::Wmm2025 => {
+            let epoch = cfg
+                .and_then(|c| c.mag_epoch_decimal_year)
+                .unwrap_or(DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR);
+            Ok(mekf.with_mag_field_model(build_wmm_2025(epoch)?))
+        }
+    }
+}
+
+fn build_wmm_2025(epoch: f64) -> Result<Wmm2025, ControllerError> {
+    Wmm2025::new_for_decimal_year(epoch).map_err(|err| {
+        EstimatorError::InvalidConfig {
+            reason: format!("WMM 2025 magnetic model rejected epoch {epoch}: {err}"),
+        }
+        .into()
+    })
 }
 
 fn apply_ekf_overrides(params: &mut EkfParams, cfg: &FcEkfConfig) {
@@ -650,7 +690,11 @@ mod tests {
             reference_q_xyzw: Some([0.0, 0.0, 0.0, 1.0]),
             base_rate_hz: 1_000,
             frame_budget_us: 2_000,
-            ekf: Some(FcEkfConfig::default()),
+            ekf: Some(FcEkfConfig {
+                mag_field: Some(FcMagFieldKind::Wmm2025),
+                mag_epoch_decimal_year: Some(2025.0),
+                ..FcEkfConfig::default()
+            }),
             mekf: None,
             autopilot_params: None,
             health: FcHealthConfig {

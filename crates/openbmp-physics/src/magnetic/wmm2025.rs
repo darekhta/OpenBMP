@@ -50,7 +50,7 @@
 use nalgebra::Vector3;
 use openbmp_core::{Eci, FrameContext, Position3, SimTime, WGS84_A_M, WGS84_ECCENTRICITY_SQUARED};
 
-use super::MagneticModel;
+use super::{EarthDipoleField, MagneticFieldEci, MagneticModel};
 use crate::error::PhysicsError;
 
 mod coefficients;
@@ -379,6 +379,22 @@ impl MagneticModel for Wmm2025 {
     }
 }
 
+impl MagneticFieldEci for Wmm2025 {
+    fn field_eci_nt(&self, position_eci_m: Vector3<f64>, time: SimTime) -> Vector3<f64> {
+        let fallback = || EarthDipoleField::default().field_eci_nt(position_eci_m, time);
+        let (lat, lon, h) = ecef_to_geodetic(position_eci_m);
+        let Ok(ned) = self.field_geodetic_ned_nt(lat, lon, h, time) else {
+            return fallback();
+        };
+        let eci = ned_to_fixed_earth(lat, lon, ned);
+        if eci.x.is_finite() && eci.y.is_finite() && eci.z.is_finite() {
+            eci
+        } else {
+            fallback()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------
 // ECEF → geodetic
 // ---------------------------------------------------------------------
@@ -407,6 +423,15 @@ pub(crate) fn ecef_to_geodetic(ecef: Vector3<f64>) -> (f64, f64, f64) {
         z.abs() - b
     };
     (lat, lon, h)
+}
+
+fn ned_to_fixed_earth(latitude_rad: f64, longitude_rad: f64, ned_nt: Vector3<f64>) -> Vector3<f64> {
+    let (sin_lat, cos_lat) = latitude_rad.sin_cos();
+    let (sin_lon, cos_lon) = longitude_rad.sin_cos();
+    let north = Vector3::new(-sin_lat * cos_lon, -sin_lat * sin_lon, cos_lat);
+    let east = Vector3::new(-sin_lon, cos_lon, 0.0);
+    let down = Vector3::new(-cos_lat * cos_lon, -cos_lat * sin_lon, -sin_lat);
+    ned_nt.x * north + ned_nt.y * east + ned_nt.z * down
 }
 
 #[cfg(test)]
@@ -590,5 +615,18 @@ mod tests {
         assert!(approx_eq(lat, 0.0, 1.0e-12));
         assert!(approx_eq(lon, 0.0, 1.0e-12));
         assert!(approx_eq(h, 0.0, 1.0e-6));
+    }
+
+    #[test]
+    fn magnetic_field_eci_rotates_ned_on_fixed_earth_profile() {
+        let model = Wmm2025::new_for_decimal_year(EPOCH_DECIMAL_YEAR).unwrap();
+        let position = Vector3::new(WGS84_A_M, 0.0, 0.0);
+        let ned = model
+            .field_geodetic_ned_nt(0.0, 0.0, 0.0, SimTime::ZERO)
+            .unwrap();
+        let eci = model.field_eci_nt(position, SimTime::ZERO);
+        assert!(approx_eq(eci.x, -ned.z, 1.0e-9));
+        assert!(approx_eq(eci.y, ned.y, 1.0e-9));
+        assert!(approx_eq(eci.z, ned.x, 1.0e-9));
     }
 }

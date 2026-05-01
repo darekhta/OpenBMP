@@ -614,10 +614,10 @@ and any operational mission profile.
   EKF / MEKF paths use Joseph covariance updates, Gauss-Markov bias
   dynamics, iterated magnetometer updates, and Markley-style MEKF
   covariance reset. Gravity is abstracted through `GravityModel`,
-  including WGS84-J2 via `openbmp-physics`; magnetic-field support is
-  the `MagneticFieldModel` trait plus the academic-tier
-  `EarthDipoleField` baseline. Full WMM 2025 and full 15-state /
-  square-root UKF are Phase 5.
+  including WGS84-J2 via `openbmp-physics`; magnetic-field support
+  includes the academic-tier `EarthDipoleField` baseline and WMM 2025
+  for scenarios that opt in. Full 15-state / square-root UKF is
+  Phase 5.
 - Commander as the single state-machine owner: builds on the Phase-3.2
   `MissionPhaseGraph`, evaluates `EventBinding`s each tick, owns
   arming and liftoff transitions, publishes `vehicle_status`. An FDIR
@@ -635,8 +635,8 @@ and any operational mission profile.
   gain-scheduled by phase via the `GainSchedule` table consulted on
   every tick, anti-windup via back-calculation, saturation reporting
   on the actuator topic, optional gyro notch filtering,
-  differential-flatness attitude-reference generation, and
-  feature-gated L1 adaptive rate-loop augmentation. Clarabel-backed
+  flatness-inspired attitude-reference generation, and
+  feature-gated L1-inspired rate-loop augmentation. Clarabel-backed
   QP / SOCP primitives are feature-gated; full receding-horizon MPC
   is Phase 5.
 - Health & arming module: aggregates sensor-staleness (bus-sequence-
@@ -645,11 +645,11 @@ and any operational mission profile.
   commander treats as a hard arming-block.
 - FDIR module: residual-based detection on innovation chi-square
   statistics, failsafe flags, and actuator saturation with
-  burst-counter, GLRT, and CUSUM detector families. The published
-  `tripped_mask` uses explicit sensor / scheduler / estimator /
+  burst-counter, single-sample GLRT, and CUSUM detector families.
+  The published `tripped_mask` uses explicit sensor / scheduler / estimator /
   autopilot bits; commander reads `fdir.status` in the arming chain.
 - Academic guidance laws: attitude-hold and scripted-waypoint
-  navigation in inertial space, plus differential-flatness
+  navigation in inertial space, plus flatness-inspired
   attitude-reference generation for smooth academic trajectories
   (no targeting, no terminal-homing, no real-world-location guidance).
   Real LCvxLD / SCvx powered-descent trajectory reproduction is

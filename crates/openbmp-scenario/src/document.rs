@@ -712,7 +712,11 @@ impl EnvironmentConfig {
         registry.resolve(ModelRole::Atmosphere, &self.atmosphere)?;
         registry.resolve(ModelRole::Wind, &self.wind)?;
         if let Some(magnetic) = &self.magnetic {
-            require_supported("environment.magnetic", magnetic, &["none"])?;
+            require_supported(
+                "environment.magnetic",
+                magnetic,
+                &["none", "earth_dipole", "wmm_2025"],
+            )?;
         }
         Ok(())
     }
@@ -3204,11 +3208,19 @@ impl FcConfig {
             if let Some(v) = ekf.tau_accel_bias_s {
                 require_positive("fc.ekf.tau_accel_bias_s", v)?;
             }
+            if let Some(v) = ekf.mag_epoch_decimal_year {
+                require_finite("fc.ekf.mag_epoch_decimal_year", v)?;
+            }
         }
         if let Some(mekf) = &self.mekf
             && let Some(v) = mekf.tau_gyro_bias_s
         {
             require_positive("fc.mekf.tau_gyro_bias_s", v)?;
+        }
+        if let Some(mekf) = &self.mekf
+            && let Some(v) = mekf.mag_epoch_decimal_year
+        {
+            require_finite("fc.mekf.mag_epoch_decimal_year", v)?;
         }
         if let Some(fdir) = &self.fdir {
             fdir.validate()?;
@@ -3245,10 +3257,27 @@ pub enum FcGuidanceKind {
     Waypoint,
 }
 
+/// Supported FC magnetic-field models.
+#[derive(Copy, Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcMagFieldKind {
+    /// Degree-1 academic dipole baseline.
+    #[default]
+    EarthDipole,
+    /// NOAA / NCEI WMM 2025 spherical-harmonic field.
+    #[serde(rename = "wmm_2025")]
+    Wmm2025,
+}
+
 /// EKF parameter overrides.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcEkfConfig {
+    /// Magnetic-field model used by magnetometer prediction.
+    pub mag_field: Option<FcMagFieldKind>,
+    /// Scenario-start decimal year for WMM secular variation.
+    /// Defaults to 2025.0 when `mag_field = "wmm_2025"`.
+    pub mag_epoch_decimal_year: Option<f64>,
     /// Process-noise stddev on attitude rate (rad/s).
     pub sigma_w_gyro: Option<f64>,
     /// Process-noise stddev on accel-bias random walk (m/s²/√s).
@@ -3281,6 +3310,11 @@ pub struct FcEkfConfig {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcMekfConfig {
+    /// Magnetic-field model used by magnetometer prediction.
+    pub mag_field: Option<FcMagFieldKind>,
+    /// Scenario-start decimal year for WMM secular variation.
+    /// Defaults to 2025.0 when `mag_field = "wmm_2025"`.
+    pub mag_epoch_decimal_year: Option<f64>,
     /// Process-noise stddev on attitude rate (rad/s).
     pub sigma_w_gyro: Option<f64>,
     /// Process-noise stddev on gyro-bias random walk (rad/s/√s).
@@ -3316,7 +3350,8 @@ pub struct FcAutopilotParams {
 pub enum FcTrajectoryKind {
     /// Existing PID trajectory loop.
     Pid,
-    /// Analytic differential-flatness attitude-reference generator.
+    /// Flatness-inspired attitude-reference generator from desired
+    /// acceleration.
     DifferentialFlatness,
 }
 

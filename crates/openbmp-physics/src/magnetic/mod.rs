@@ -55,11 +55,9 @@ pub const EARTH_DIPOLE_EQUATORIAL_FIELD_NT: f64 = 30_000.0;
 /// kernel-side adapter rotates NED → body via the active
 /// [`openbmp_core::FrameContext`].
 ///
-/// Models that produce ECI directly (e.g. [`EarthDipoleField`])
-/// implement [`MagneticFieldEci`] instead. Both traits coexist so
-/// FC-side estimators (which work in ECI without geodetic
-/// machinery) and sim-side magnetometer adapters (which work in NED
-/// + frame context) each consume the trait that fits.
+/// FC-side estimators consume [`MagneticFieldEci`], which is also
+/// implemented by [`Wmm2025`] through a deterministic NED → fixed
+/// ECI rotation for the toy fixed-earth profile.
 pub trait MagneticModel {
     /// Sample the geodetic-NED magnetic flux density at a given
     /// inertial position and time.

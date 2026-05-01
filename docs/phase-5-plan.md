@@ -5,7 +5,6 @@ higher-fidelity environment models, estimator lanes, and external
 trajectory validation.
 
 P0:
-- WMM 2025 spherical-harmonic geomagnetic model with COF dataset provenance.
 - NRLMSISE-00 upper-atmosphere density model.
 - Multi-instance estimator routing with active-lane selection over the existing voter surface.
 

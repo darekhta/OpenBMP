@@ -66,6 +66,8 @@ base_rate_hz     = 1000
 frame_budget_us  = 2000
 
 [fc.ekf]
+mag_field                  = "wmm_2025" # "earth_dipole" | "wmm_2025"
+mag_epoch_decimal_year     = 2025.0
 sigma_w_gyro               = 0.01
 sigma_w_accel_bias         = 1.0e-4
 sigma_w_gyro_bias          = 1.0e-5
@@ -82,7 +84,7 @@ dead_reckon_timeout_s      = 1.5
 anti_windup_gain        = 1.0
 rate_deadband_rad_s     = 0.001
 trajectory_loop_enabled = false
-trajectory_kind         = "pid" # "pid" | "differential_flatness"
+trajectory_kind         = "pid" # "pid" | "differential_flatness" (flatness-inspired)
 
 [fc.health]
 imu_stale_after_s   = 0.05

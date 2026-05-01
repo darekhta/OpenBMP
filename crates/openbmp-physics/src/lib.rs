@@ -16,6 +16,7 @@
 //!   `LayeredWind`, `GustWind` (Dryden, gated by the `synthetic`
 //!   feature).
 //! * [`earth`] — Earth-radius constants used by low-order toy models.
+//! * [`validity`] — small finite-range helpers for model envelopes.
 //! * [`error::PhysicsError`] — uniform error type for runtime
 //!   evaluation failures (out-of-envelope, non-finite, invalid
 //!   parameter).
@@ -44,6 +45,7 @@ pub mod atmosphere;
 pub mod error;
 pub mod gravity;
 pub mod magnetic;
+pub mod validity;
 pub mod wind;
 
 pub use atmosphere::{
@@ -57,6 +59,7 @@ pub use gravity::{
 pub use magnetic::{
     EARTH_DIPOLE_EQUATORIAL_FIELD_NT, EarthDipoleField, MagneticFieldEci, MagneticModel, Wmm2025,
 };
+pub use validity::HalfOpenRange;
 pub use wind::{ConstantWind, LayerEntry, LayeredWind, NoWind, WindModel};
 #[cfg(feature = "synthetic")]
 pub use wind::{GustWind, GustWindParams};

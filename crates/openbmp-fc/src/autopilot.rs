@@ -105,7 +105,7 @@ pub struct AutopilotParams {
     pub trajectory_kind: TrajectoryKind,
     /// Optional per-axis gyro notch filters.
     pub gyro_notch: Option<[crate::filters::NotchConfig; 3]>,
-    /// Optional L1 adaptive augmentation on the rate loop.
+    /// Optional L1-inspired augmentation on the rate loop.
     #[cfg(feature = "l1-adaptive")]
     pub l1_adaptive: Option<crate::l1_adaptive::L1AdaptiveParams>,
 }
@@ -140,9 +140,9 @@ pub enum TrajectoryKind {
     /// Existing PID position-to-attitude correction.
     #[default]
     Pid,
-    /// Differential-flatness analytic attitude reference. Assumes
-    /// thrust-direction authority; fixed-thrust / low-authority
-    /// vehicles should keep [`TrajectoryKind::Pid`].
+    /// Flatness-inspired attitude reference from a PD desired
+    /// acceleration. This is not a full flat-output trajectory
+    /// tracker with higher-derivative feed-forward terms.
     DifferentialFlatness,
 }
 
@@ -472,8 +472,8 @@ fn flatness_pd_accel(
         - Vector3::new(0.0, 0.0, openbmp_physics::gravity::STANDARD_GRAVITY_M_S2)
 }
 
-/// Differential-flatness attitude reference for a thrust-along-body-z
-/// vehicle with flat outputs `(x, y, z, yaw)`.
+/// Flatness-inspired attitude reference for a thrust-along-body-z
+/// vehicle from desired acceleration and yaw.
 #[must_use]
 pub fn differential_flatness_attitude_reference(
     desired_accel_eci_m_s2: Vector3<f64>,

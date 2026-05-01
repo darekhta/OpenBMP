@@ -15,8 +15,11 @@ use openbmp_fc::topics::{
     BarometerSample, GnssSample, ImuSample, MagnetometerSample, StarTrackerSample,
 };
 use openbmp_physics::atmosphere::{AtmosphereModel, UsStandard1976};
-use openbmp_physics::magnetic::{EarthDipoleField, MagneticFieldEci};
-use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument, SensorConfig};
+use openbmp_physics::magnetic::{EarthDipoleField, MagneticFieldEci, Wmm2025};
+use openbmp_scenario::{
+    FcConfig, FcEstimatorKind, FcMagFieldKind, ResolvedFile, Scenario, ScenarioDocument,
+    SensorConfig,
+};
 use openbmp_sensors::{
     GnssNoiseBudget, IdealStateSensor, ImuNoiseBudget, MagnetometerNoiseBudget,
     Sensor as SensorTrait, SensorMeasurement, SensorTruth, StarTrackerNoiseBudget,
@@ -28,13 +31,15 @@ use openbmp_state::{PointMassState, RigidBodyState};
 use crate::error::CliError;
 use crate::runner::fc::FcRunner;
 
+const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
+
 /// Optional FC bridge. Absent when the scenario has no `[fc]` block.
 #[derive(Debug)]
 pub struct FcBridge {
     runner: FcRunner,
     sensors: Vec<BridgeSensor>,
     atmosphere: UsStandard1976,
-    magnetic: EarthDipoleField,
+    magnetic: Box<dyn MagneticFieldEci>,
     scenario_seed: u64,
     previous_velocity_eci_m_s: Option<Vector3<f64>>,
     previous_time_s: Option<f64>,
@@ -65,6 +70,7 @@ impl FcBridge {
         };
         let (bindings, graph) = crate::runner::mission::build_mission_runtime(mission)?;
         let start_phase = graph.initial;
+        let magnetic = build_magnetic_field(fc_config)?;
         let runner = FcRunner::new(fc_config, graph, bindings, start_phase).map_err(|err| {
             CliError::UnsupportedScenario {
                 what: format!("flight-controller construction failed: {err}"),
@@ -75,7 +81,7 @@ impl FcBridge {
             runner,
             sensors,
             atmosphere: UsStandard1976::new(),
-            magnetic: EarthDipoleField::default(),
+            magnetic,
             scenario_seed: scenario.document.time.seed,
             previous_velocity_eci_m_s: None,
             previous_time_s: None,
@@ -343,6 +349,42 @@ fn require_bridge_frame(document: &ScenarioDocument) -> Result<(), CliError> {
             document.environment.frame_profile
         ),
     })
+}
+
+fn build_magnetic_field(config: &FcConfig) -> Result<Box<dyn MagneticFieldEci>, CliError> {
+    let (kind, epoch) = magnetic_field_settings(config);
+    match kind {
+        FcMagFieldKind::EarthDipole => Ok(Box::new(EarthDipoleField::default())),
+        FcMagFieldKind::Wmm2025 => {
+            let model = Wmm2025::new_for_decimal_year(epoch).map_err(|err| {
+                CliError::UnsupportedScenario {
+                    what: format!("WMM 2025 magnetic model rejected epoch {epoch}: {err}"),
+                }
+            })?;
+            Ok(Box::new(model))
+        }
+    }
+}
+
+fn magnetic_field_settings(config: &FcConfig) -> (FcMagFieldKind, f64) {
+    match config.estimator {
+        FcEstimatorKind::Ekf => {
+            let cfg = config.ekf.as_ref();
+            (
+                cfg.and_then(|c| c.mag_field).unwrap_or_default(),
+                cfg.and_then(|c| c.mag_epoch_decimal_year)
+                    .unwrap_or(DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR),
+            )
+        }
+        FcEstimatorKind::Mekf => {
+            let cfg = config.mekf.as_ref();
+            (
+                cfg.and_then(|c| c.mag_field).unwrap_or_default(),
+                cfg.and_then(|c| c.mag_epoch_decimal_year)
+                    .unwrap_or(DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR),
+            )
+        }
+    }
 }
 
 fn build_sensors(

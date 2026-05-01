@@ -1,11 +1,12 @@
-//! L1 adaptive matched-uncertainty augmentation.
+//! L1-inspired matched-uncertainty augmentation.
 //!
-//! This feature-gated module wraps the rate loop with the textbook
-//! predictor / projection / low-pass correction structure described
-//! by Cao & Hovakimyan (2010). The controller remains deterministic:
-//! all state advances from the scheduler `dt` supplied by the caller.
+//! This feature-gated module wraps the rate loop with a deterministic
+//! scalar projection and low-pass correction channel. It borrows the
+//! projection/filter shape used by L1 adaptive control literature, but
+//! it is not a full Cao-Hovakimyan state-predictor/reference-model
+//! implementation.
 
-/// Tuning for the scalar L1 adaptive augmentation.
+/// Tuning for the scalar L1-inspired augmentation.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct L1AdaptiveParams {
     /// Adaptation gain for the matched-uncertainty estimate.

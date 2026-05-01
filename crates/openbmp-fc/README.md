@@ -66,9 +66,10 @@ Implemented in this crate today:
   magnetometer update, WGS84-J2 gravity via `openbmp-physics`, and a
   real 6-state sigma-point UKF for attitude + gyro bias.
 - **Autopilot upgrades** — optional gyro notch filters,
-  differential-flatness attitude-reference generation, and
-  feature-gated L1 adaptive rate-loop augmentation.
-- **FDIR / voter upgrades** — burst-counter / GLRT / CUSUM detector
+  flatness-inspired attitude-reference generation, and
+  feature-gated L1-inspired rate-loop augmentation.
+- **FDIR / voter upgrades** — burst-counter / single-sample GLRT /
+  CUSUM detector
   families with explicit fault bits, per-kind sensor lane status, and
   covariance-weighted scalar voting.
 - **Solver-backed primitives** — Clarabel v0.9 QP / SOCP smoke-tested
@@ -87,7 +88,7 @@ Note: full WMM 2025 (`openbmp_physics::magnetic::Wmm2025`) is now
 available in the workspace via the `openbmp-physics` consolidation
 (`docs/physics-consolidation-plan.md`); the FC's degree-1
 `EarthDipoleField` placeholder is superseded for FC scenarios that
-opt into the full model.
+set `mag_field = "wmm_2025"` in `[fc.ekf]` or `[fc.mekf]`.
 
 ## Inputs and Outputs
 

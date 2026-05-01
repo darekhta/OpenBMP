@@ -70,20 +70,20 @@ first SOTA-adjacent algorithm pass:
   WGS84-J2 gravity through the HAL-portable `openbmp-physics` crate.
 - A real 6-state sigma-point UKF exists for attitude + gyro-bias
   validation; full 15-state and square-root UKF variants are Phase 5.
-- Autopilot SOTA hooks include gyro notch filters,
-  differential-flatness attitude-reference generation, and a
-  feature-gated L1 adaptive rate-loop augmentation.
-- FDIR supports burst-counter, GLRT, and CUSUM detector families with
-  explicit tripped-mask bits; sensor lane status now covers IMU,
+- Autopilot hooks include gyro notch filters, flatness-inspired
+  attitude-reference generation, and a feature-gated L1-inspired
+  rate-loop augmentation.
+- FDIR supports burst-counter, single-sample GLRT, and CUSUM detector
+  families with explicit tripped-mask bits; sensor lane status now covers IMU,
   barometer, GNSS, and magnetometer ingest.
 - Clarabel v0.9 is vetted in `docs/clarabel-vetting.md` and is gated
   behind the `mpc` feature for QP / SOCP primitives.
 
 The audit still does **not** claim full algorithm closure for every
-research item. Remaining Phase 5 work includes full WMM 2025,
-NRLMSISE-00, multi-instance estimator routing, full 15-state /
-square-root UKF, and full MPC / LCvxLD trajectory reproduction
-against published references.
+research item. Remaining Phase 5 work includes NRLMSISE-00,
+multi-instance estimator routing, full 15-state / square-root UKF,
+and full MPC / LCvxLD trajectory reproduction against published
+references.
 
 ## Goal
 
