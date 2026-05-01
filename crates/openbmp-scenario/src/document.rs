@@ -19,12 +19,27 @@ use crate::error::ScenarioError;
 use crate::registry::{ModelRegistry, ModelRole};
 use crate::solver::SolverConfig;
 
-/// Scenario schema version supported by this crate.
+/// Scenario schema versions supported by this crate.
 ///
-/// Phase-3.13 retired the v1 flat scenario shape. Every v2
-/// scenario carries a mandatory `[vehicle.assembly]` block;
-/// per-body mass and inertia live on `[[vehicle.assembly.bodies]]`.
-pub const SUPPORTED_SCENARIO_VERSION: u16 = 2;
+/// Phase-3.13 retired the v1 flat scenario shape. v2 is the
+/// Phase-3 shape (mandatory `[vehicle.assembly]` block, per-body
+/// mass and inertia on `[[vehicle.assembly.bodies]]`). v3 is the
+/// Phase-5 superset that adds opt-in blocks for multi-instance
+/// estimator lanes, autopilot control allocation, FDIR detector
+/// tuning, NRLMSISE-00 atmosphere, EGM2008 truncated
+/// spherical-harmonic gravity, multi-rate scheduling, and
+/// multi-body simultaneous propagation. The v3-only blocks are
+/// rejected at validate time when the header declares v2.
+pub const SUPPORTED_SCENARIO_VERSIONS: &[u16] = &[2, 3];
+
+/// Latest supported scenario schema version.
+pub const LATEST_SCENARIO_VERSION: u16 = 3;
+
+/// Phase-5 schema version. v3-only fields require this header value.
+pub const SCENARIO_VERSION_V3: u16 = 3;
+
+/// Phase-3 schema version. v2 scenarios continue to parse byte-identically.
+pub const SCENARIO_VERSION_V2: u16 = 2;
 
 /// Default unnormalised WGS84 J2 zonal coefficient used when a scenario
 /// selects `gravity = "j2"` and omits `environment.j2`.
@@ -94,6 +109,18 @@ pub struct ScenarioDocument {
     /// config. When absent, the kernel runs in missionless mode with
     /// no event evaluation.
     pub mission: Option<MissionConfig>,
+    /// Optional first-class multi-rate scheduling block (v3 only).
+    ///
+    /// Phase 5.0 parses this block under v3 only; the runtime
+    /// consumer lands in Phase 5.D.1. Scenarios that declare a
+    /// `[schedule]` block must have `openbmp.scenario = 3`.
+    pub schedule: Option<ScheduleConfig>,
+    /// Optional first-class multi-body propagation block (v3 only).
+    ///
+    /// Phase 5.0 parses this block under v3 only; the runtime
+    /// consumer lands in Phase 5.D.2. Scenarios that declare a
+    /// `[multi_body]` block must have `openbmp.scenario = 3`.
+    pub multi_body: Option<MultiBodyConfig>,
 }
 
 impl ScenarioDocument {
@@ -233,6 +260,100 @@ impl ScenarioDocument {
         self.validate_engine_references()?;
         self.validate_recovery_references()?;
         self.validate_propulsion_unambiguous()?;
+        self.validate_phase5_blocks()?;
+        Ok(())
+    }
+
+    fn validate_phase5_blocks(&self) -> Result<(), ScenarioError> {
+        let header = self.openbmp.scenario;
+        self.validate_phase5_top_level_blocks(header)?;
+        self.validate_phase5_fc_blocks(header)?;
+        self.validate_phase5_kind_values(header)?;
+        Ok(())
+    }
+
+    fn validate_phase5_top_level_blocks(&self, header: u16) -> Result<(), ScenarioError> {
+        gate_phase5_block(header, "schedule", "Phase 5.D.1", self.schedule.as_ref(), || {
+            self.schedule.as_ref().map_or(Ok(()), ScheduleConfig::validate)
+        })?;
+        gate_phase5_block(
+            header,
+            "multi_body",
+            "Phase 5.D.2",
+            self.multi_body.as_ref(),
+            || {
+                self.multi_body
+                    .as_ref()
+                    .map_or(Ok(()), MultiBodyConfig::validate)
+            },
+        )
+    }
+
+    fn validate_phase5_fc_blocks(&self, header: u16) -> Result<(), ScenarioError> {
+        let Some(fc) = &self.fc else {
+            return Ok(());
+        };
+        gate_phase5_block(
+            header,
+            "fc.estimator_lanes",
+            "Phase 5.B.2",
+            fc.estimator_lanes.as_ref(),
+            || {
+                fc.estimator_lanes
+                    .as_ref()
+                    .map_or(Ok(()), FcEstimatorLanesConfig::validate)
+            },
+        )?;
+        gate_phase5_block(
+            header,
+            "fc.autopilot_allocation",
+            "Phase 5.A.5",
+            fc.autopilot_allocation.as_ref(),
+            || {
+                fc.autopilot_allocation
+                    .as_ref()
+                    .map_or(Ok(()), FcAutopilotAllocationConfig::validate)
+            },
+        )?;
+        if let Some(fdir) = &fc.fdir {
+            gate_phase5_block(
+                header,
+                "fc.fdir.detector",
+                "Phase 5.B.4",
+                fdir.detector.as_ref(),
+                || {
+                    fdir.detector
+                        .as_ref()
+                        .map_or(Ok(()), FcFdirDetectorConfig::validate)
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_phase5_kind_values(&self, header: u16) -> Result<(), ScenarioError> {
+        // The registry resolves the names; the gating below rejects them
+        // under v2 and emits a deferred-phase diagnostic under v3 until
+        // the consumer sub-phase lands.
+        if self.environment.gravity == "egm2008" {
+            return Err(phase5_kind_error(
+                header,
+                "environment.gravity = \"egm2008\"",
+                "Phase 5.C.2",
+            ));
+        }
+        if self.environment.atmosphere == "nrlmsise00"
+            || self
+                .atmosphere
+                .as_ref()
+                .is_some_and(|a| a.kind == "nrlmsise00")
+        {
+            return Err(phase5_kind_error(
+                header,
+                "atmosphere.kind = \"nrlmsise00\"",
+                "Phase 5.C.1",
+            ));
+        }
         Ok(())
     }
 
@@ -400,10 +521,10 @@ impl ScenarioDocument {
     }
 
     fn validate_header(&self) -> Result<(), ScenarioError> {
-        if self.openbmp.scenario != SUPPORTED_SCENARIO_VERSION {
+        if !SUPPORTED_SCENARIO_VERSIONS.contains(&self.openbmp.scenario) {
             return Err(ScenarioError::UnsupportedSchemaVersion {
                 found: self.openbmp.scenario,
-                expected: SUPPORTED_SCENARIO_VERSION,
+                supported: SUPPORTED_SCENARIO_VERSIONS,
             });
         }
         Ok(())
@@ -3156,6 +3277,18 @@ pub struct FcConfig {
     pub gain_schedule: BTreeMap<String, FcGainsConfig>,
     /// Optional phase-authority mask keyed by mission-phase path.
     pub phase_authority: Option<BTreeMap<String, FcPhaseAuthorityConfig>>,
+    /// Optional multi-instance estimator-routing block (v3 only).
+    ///
+    /// Phase 5.0 parses this block under v3 only; the runtime
+    /// consumer lands in Phase 5.B.2. Scenarios that declare
+    /// `[fc.estimator_lanes]` must have `openbmp.scenario = 3`.
+    pub estimator_lanes: Option<FcEstimatorLanesConfig>,
+    /// Optional control-allocation policy block (v3 only).
+    ///
+    /// Phase 5.0 parses this block under v3 only; the runtime
+    /// consumer lands in Phase 5.A.5. Scenarios that declare
+    /// `[fc.autopilot_allocation]` must have `openbmp.scenario = 3`.
+    pub autopilot_allocation: Option<FcAutopilotAllocationConfig>,
 }
 
 impl FcConfig {
@@ -3407,6 +3540,13 @@ pub struct FcFdirConfig {
     pub cusum_drift: Option<f64>,
     /// CUSUM trip threshold.
     pub cusum_threshold: Option<f64>,
+    /// Optional Phase-5 detector tuning block (`[fc.fdir.detector]`).
+    ///
+    /// v3 only. Phase 5.0 parses this; the windowed-mean-shift GLRT
+    /// and parity-space residual generator that consume it land in
+    /// Phase 5.B.4. Scenarios that declare `[fc.fdir.detector]` must
+    /// have `openbmp.scenario = 3`.
+    pub detector: Option<FcFdirDetectorConfig>,
 }
 
 impl FcFdirConfig {
@@ -3508,6 +3648,388 @@ pub struct FcPhaseAuthorityConfig {
     pub autopilot_allowed: bool,
     /// `true` if the phase permits autopilot engine commands.
     pub engines_allowed: bool,
+}
+
+/// Phase-5 block-presence gate: emits `SchemaVersionFieldReserved` on
+/// v2 or runs `per_block` and returns `ElementDeferredToFuturePhase`
+/// on v3.
+fn gate_phase5_block<T, F>(
+    header: u16,
+    field: &str,
+    deferred_to: &'static str,
+    block: Option<&T>,
+    per_block: F,
+) -> Result<(), ScenarioError>
+where
+    F: FnOnce() -> Result<(), ScenarioError>,
+{
+    if block.is_none() {
+        return Ok(());
+    }
+    if header < SCENARIO_VERSION_V3 {
+        return Err(ScenarioError::SchemaVersionFieldReserved {
+            field: field.to_owned(),
+            required: SCENARIO_VERSION_V3,
+            found: header,
+        });
+    }
+    per_block()?;
+    Err(ScenarioError::ElementDeferredToFuturePhase {
+        field: field.to_owned(),
+        deferred_to,
+    })
+}
+
+/// Phase-5 kind-value gate: emits `SchemaVersionFieldReserved` on v2
+/// or `ElementDeferredToFuturePhase` on v3 for v3-only enum values.
+fn phase5_kind_error(header: u16, field: &str, deferred_to: &'static str) -> ScenarioError {
+    if header < SCENARIO_VERSION_V3 {
+        ScenarioError::SchemaVersionFieldReserved {
+            field: field.to_owned(),
+            required: SCENARIO_VERSION_V3,
+            found: header,
+        }
+    } else {
+        ScenarioError::ElementDeferredToFuturePhase {
+            field: field.to_owned(),
+            deferred_to,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Phase-5 v3-only scenario blocks (parser-only in Phase 5.0).
+//
+// The runtime consumers for each block land in dedicated Phase-5
+// sub-phases, named in the per-block `validate_runtime` method. Phase
+// 5.0 ships the parser surface only; ScenarioDocument::validate
+// rejects any v3 scenario that declares one of these blocks with a
+// `ScenarioError::ElementDeferredToFuturePhase` diagnostic naming the
+// consumer sub-phase. v2 scenarios that declare any of these blocks
+// are rejected earlier with `SchemaVersionFieldReserved`.
+//
+// When a Phase-5 sub-phase lands its consumer, it removes the
+// matching deferred-phase rejection from
+// `ScenarioDocument::validate_phase5_blocks`. New fields added under
+// the consumer's authority must keep `serde(deny_unknown_fields)` and
+// must remain v3-only.
+// ---------------------------------------------------------------------
+
+/// First-class multi-rate scheduling block (`[schedule]`, v3 only).
+///
+/// Phase 5.0 parses this block; the kernel-side rate-plan resolver
+/// lands in Phase 5.D.1.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleConfig {
+    /// Master tick rate (Hz). Every group's `hz` must divide this exactly.
+    pub base_hz: u32,
+    /// Rate groups. The serde key is `[[schedule.group]]` per the
+    /// architecture sketch; the field is exposed as `groups` in Rust.
+    #[serde(default, rename = "group")]
+    pub groups: Vec<ScheduleGroupConfig>,
+}
+
+impl ScheduleConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_positive_u32("schedule.base_hz", self.base_hz)?;
+        for (index, group) in self.groups.iter().enumerate() {
+            group.validate(index)?;
+            if !self.base_hz.is_multiple_of(group.hz) {
+                return Err(ScenarioError::InvalidNumber {
+                    field: format!("schedule.group[{index}].hz"),
+                    value: f64::from(group.hz),
+                    rule: "must divide schedule.base_hz exactly",
+                });
+            }
+        }
+        let mut seen_labels = BTreeSet::new();
+        for (index, group) in self.groups.iter().enumerate() {
+            if !seen_labels.insert(group.label.clone()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("schedule.group[{index}].label"),
+                    value: group.label.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One entry under `[[schedule.group]]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleGroupConfig {
+    /// Group label (e.g. `"env"`, `"fc"`, `"telemetry"`). Must be unique.
+    pub label: String,
+    /// Group rate in Hz; must divide `ScheduleConfig::base_hz` exactly.
+    pub hz: u32,
+    /// Subsystem ids belonging to this group. Must not be empty.
+    pub members: Vec<String>,
+}
+
+impl ScheduleGroupConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("schedule.group[{index}].label"), &self.label)?;
+        require_positive_u32(&format!("schedule.group[{index}].hz"), self.hz)?;
+        require_non_empty_list(
+            &format!("schedule.group[{index}].members"),
+            &self.members,
+        )?;
+        require_unique(
+            &format!("schedule.group[{index}].members"),
+            &self.members,
+        )?;
+        Ok(())
+    }
+}
+
+/// First-class multi-body propagation block (`[multi_body]`, v3 only).
+///
+/// Phase 5.0 parses this block; the multi-body kernel propagation
+/// path lands in Phase 5.D.2.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MultiBodyConfig {
+    /// Separation events that promote a single-body scenario into a
+    /// multi-body simulation post-event. Serde key is
+    /// `[[multi_body.separation]]`; the field is exposed as
+    /// `separations` in Rust.
+    #[serde(default, rename = "separation")]
+    pub separations: Vec<MultiBodySeparationConfig>,
+}
+
+impl MultiBodyConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if self.separations.is_empty() {
+            return Err(ScenarioError::EmptyList {
+                field: "multi_body.separation".to_owned(),
+            });
+        }
+        let mut seen_events = BTreeSet::new();
+        for (index, sep) in self.separations.iter().enumerate() {
+            sep.validate(index)?;
+            if !seen_events.insert(sep.event_id.clone()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("multi_body.separation[{index}].event_id"),
+                    value: sep.event_id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One entry under `[[multi_body.separation]]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MultiBodySeparationConfig {
+    /// Stable scenario-text id for the mission event triggering this
+    /// separation. Must match an event declared in `[[mission.events]]`.
+    pub event_id: String,
+    /// Body id retained on the controller side (continues with FC).
+    pub upper_body_id: String,
+    /// Body id detached as ballistic / spent-stage (no FC).
+    pub lower_body_id: String,
+    /// Optional impulsive delta-V applied to the upper body in body
+    /// frame at separation (m/s).
+    pub upper_delta_v_body_m_s: Option<[f64; 3]>,
+    /// Optional impulsive delta-V applied to the lower body in body
+    /// frame at separation (m/s).
+    pub lower_delta_v_body_m_s: Option<[f64; 3]>,
+    /// Whether the loader must verify momentum conservation
+    /// (`m_u·Δv_u + m_l·Δv_l ≈ 0`). Default `true`.
+    #[serde(default = "default_true")]
+    pub conserve_momentum: bool,
+}
+
+impl MultiBodySeparationConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(
+            &format!("multi_body.separation[{index}].event_id"),
+            &self.event_id,
+        )?;
+        require_non_empty(
+            &format!("multi_body.separation[{index}].upper_body_id"),
+            &self.upper_body_id,
+        )?;
+        require_non_empty(
+            &format!("multi_body.separation[{index}].lower_body_id"),
+            &self.lower_body_id,
+        )?;
+        if self.upper_body_id == self.lower_body_id {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: format!("multi_body.separation[{index}].upper_body_id"),
+                value_a: self.upper_body_id.clone(),
+                field_b: format!("multi_body.separation[{index}].lower_body_id"),
+                value_b: self.lower_body_id.clone(),
+            });
+        }
+        if let Some(dv) = self.upper_delta_v_body_m_s {
+            require_finite_array(
+                &format!("multi_body.separation[{index}].upper_delta_v_body_m_s"),
+                &dv,
+            )?;
+        }
+        if let Some(dv) = self.lower_delta_v_body_m_s {
+            require_finite_array(
+                &format!("multi_body.separation[{index}].lower_delta_v_body_m_s"),
+                &dv,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Multi-instance estimator-routing block (`[fc.estimator_lanes]`, v3 only).
+///
+/// Phase 5.0 parses this block; the lane voter and active-lane
+/// selection path land in Phase 5.B.2.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcEstimatorLanesConfig {
+    /// Lane voter selection policy.
+    pub voter: FcEstimatorVoterKind,
+    /// Registered lane definitions. Serde key `[[fc.estimator_lanes.lane]]`;
+    /// the field is exposed as `lanes` in Rust.
+    #[serde(default, rename = "lane")]
+    pub lanes: Vec<FcEstimatorLaneConfig>,
+}
+
+impl FcEstimatorLanesConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if self.lanes.is_empty() {
+            return Err(ScenarioError::EmptyList {
+                field: "fc.estimator_lanes.lane".to_owned(),
+            });
+        }
+        let mut seen = BTreeSet::new();
+        for (index, lane) in self.lanes.iter().enumerate() {
+            lane.validate(index)?;
+            if !seen.insert(lane.id.clone()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("fc.estimator_lanes.lane[{index}].id"),
+                    value: lane.id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One entry under `[[fc.estimator_lanes.lane]]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcEstimatorLaneConfig {
+    /// Stable lane id used in telemetry / FDIR addressing.
+    pub id: String,
+    /// Estimator kind to instantiate for this lane.
+    pub estimator: FcEstimatorKind,
+}
+
+impl FcEstimatorLaneConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(
+            &format!("fc.estimator_lanes.lane[{index}].id"),
+            &self.id,
+        )
+    }
+}
+
+/// Lane voter selection policy.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcEstimatorVoterKind {
+    /// First lane wins; no cross-lane vote. Useful for warm-spare.
+    SimplexPassThrough,
+    /// Median-of-three selection by per-lane innovation chi-square.
+    MidValueSelectByInnovation,
+    /// Pick the lane with the smallest covariance trace each tick.
+    BestByCovarianceTrace,
+}
+
+/// Control-allocation policy block (`[fc.autopilot_allocation]`, v3 only).
+///
+/// Phase 5.0 parses this block; the pseudo-inverse and Härkegård
+/// 2002 prioritised redistributed allocators land in Phase 5.A.5.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcAutopilotAllocationConfig {
+    /// Allocation strategy.
+    pub kind: FcAutopilotAllocationKind,
+    /// Optional per-axis priority order (highest first). Field names
+    /// are body-frame axis labels (`"roll"`, `"pitch"`, `"yaw"`).
+    /// Default for `prioritised_redistributed`: `["roll", "yaw", "pitch"]`.
+    pub axis_priority: Option<Vec<String>>,
+}
+
+impl FcAutopilotAllocationConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if let Some(priority) = &self.axis_priority {
+            require_non_empty_list("fc.autopilot_allocation.axis_priority", priority)?;
+            require_unique("fc.autopilot_allocation.axis_priority", priority)?;
+            for (index, axis) in priority.iter().enumerate() {
+                require_supported(
+                    &format!("fc.autopilot_allocation.axis_priority[{index}]"),
+                    axis,
+                    &["roll", "pitch", "yaw"],
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Control-allocation strategy.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcAutopilotAllocationKind {
+    /// Stevens & Lewis 2015 §3.5 pseudo-inverse allocator.
+    PseudoInverse,
+    /// Härkegård 2002 prioritised-redistributed allocator.
+    PrioritisedRedistributed,
+}
+
+/// FDIR detector tuning block (`[fc.fdir.detector]`, v3 only).
+///
+/// Phase 5.0 parses this block; the windowed-mean-shift GLRT
+/// (Willsky 1976) and Patton-Frank parity-space residual generator
+/// that consume it land in Phase 5.B.4. The existing
+/// `detector_kind` field on `FcFdirConfig` continues to drive the
+/// Phase-4 burst / single-sample-GLRT / CUSUM detectors; the
+/// `detector` block here adds Phase-5 detector tuning data.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcFdirDetectorConfig {
+    /// Phase-5 detector kind. Phase 5.0 parses but does not yet
+    /// validate against an enum — the Phase-5.B.4 commit replaces
+    /// this with a typed enum once the consumers exist.
+    pub kind: String,
+    /// Window length (samples) for the windowed-mean-shift GLRT.
+    pub window_samples: Option<u32>,
+    /// Per-residual chi-square threshold for parity-space isolation.
+    pub parity_threshold: Option<f64>,
+}
+
+impl FcFdirDetectorConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_non_empty("fc.fdir.detector.kind", &self.kind)?;
+        if let Some(v) = self.window_samples
+            && v == 0
+        {
+            return Err(ScenarioError::InvalidFc {
+                reason: "fc.fdir.detector.window_samples must be > 0".to_string(),
+            });
+        }
+        if let Some(v) = self.parity_threshold {
+            require_positive("fc.fdir.detector.parity_threshold", v)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

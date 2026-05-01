@@ -192,6 +192,16 @@ fn check_dimensional_field(
     if path.starts_with("$.fc") {
         return Ok(());
     }
+    // Phase-5.0 v3-only `[schedule]` and `[multi_body]` blocks — typed
+    // validation in `ScheduleConfig::validate` /
+    // `MultiBodyConfig::validate` covers field-internal invariants
+    // (rate-group divisor, momentum-conservation flag, etc.). The
+    // workspace-level unit/frame lint is bypassed for the same reason
+    // it is bypassed for `$.fc`: the typed validate methods are the
+    // authority for these blocks.
+    if path.starts_with("$.schedule") || path.starts_with("$.multi_body") {
+        return Ok(());
+    }
     if is_numeric_value(value)
         && !is_dimensionless_key(path, key)
         && !key_has_unit_suffix(key)

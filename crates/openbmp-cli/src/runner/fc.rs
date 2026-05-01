@@ -708,6 +708,8 @@ mod tests {
             actuator_channels: None,
             gain_schedule,
             phase_authority: None,
+            estimator_lanes: None,
+            autopilot_allocation: None,
         };
         let (graph, bindings, pad) = minimal_graph();
         let mut runner = FcRunner::new(&config, graph, bindings, pad).unwrap();

@@ -246,12 +246,253 @@ mod tests {
             "message should report found schema version: {message}"
         );
         assert!(
-            message.contains("expected 2"),
-            "message should report supported schema version: {message}"
+            message.contains("expected one of [2, 3]"),
+            "message should report supported schema version list: {message}"
         );
         assert!(
             message.contains("docs/scenario-format.md#migrating-v1-scenarios-to-v2"),
             "message should point at the migration section: {message}"
+        );
+    }
+
+    #[test]
+    fn parses_minimal_scenario_under_v3_header() {
+        // Phase 5.0 — v3 scenarios that include only Phase-3 / Phase-4
+        // fields parse and validate identically to v2; only the header
+        // value changes.
+        let toml = MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&toml).expect("v3 minimal should validate");
+        assert_eq!(scenario.document.openbmp.scenario, 3);
+    }
+
+    fn assert_phase5_reserved_under_v2(toml: &str, expected_field: &str) {
+        let err = Scenario::from_toml_str(toml).unwrap_err();
+        match err {
+            ScenarioError::SchemaVersionFieldReserved {
+                field,
+                required,
+                found,
+            } => {
+                assert_eq!(field, expected_field);
+                assert_eq!(required, 3);
+                assert_eq!(found, 2);
+            }
+            other => panic!(
+                "expected SchemaVersionFieldReserved for {expected_field}, got: {other:?}"
+            ),
+        }
+    }
+
+    fn assert_phase5_deferred_under_v3(toml: &str, expected_field: &str, expected_phase: &str) {
+        let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+        match err {
+            ScenarioError::ElementDeferredToFuturePhase {
+                field,
+                deferred_to,
+            } => {
+                assert_eq!(field, expected_field);
+                assert_eq!(deferred_to, expected_phase);
+            }
+            other => panic!(
+                "expected ElementDeferredToFuturePhase for {expected_field}, got: {other:?}"
+            ),
+        }
+    }
+
+    const SCHEDULE_BLOCK: &str = r#"
+[schedule]
+base_hz = 1000
+
+[[schedule.group]]
+label = "env"
+hz = 100
+members = ["atmosphere", "gravity", "wind"]
+
+[[schedule.group]]
+label = "fc"
+hz = 50
+members = ["estimator", "autopilot"]
+"#;
+
+    const MULTI_BODY_BLOCK: &str = r#"
+[multi_body]
+
+[[multi_body.separation]]
+event_id = "fairing_separation"
+upper_body_id = "main"
+lower_body_id = "lower_stage"
+upper_delta_v_body_m_s = [0.0, 0.0, 0.5]
+lower_delta_v_body_m_s = [0.0, 0.0, -0.5]
+"#;
+
+    #[test]
+    fn schedule_block_is_v3_only() {
+        let toml_v2 = format!("{MINIMAL}{SCHEDULE_BLOCK}");
+        assert_phase5_reserved_under_v2(&toml_v2, "schedule");
+        assert_phase5_deferred_under_v3(&toml_v2, "schedule", "Phase 5.D.1");
+    }
+
+    #[test]
+    fn multi_body_block_is_v3_only() {
+        let toml_v2 = format!("{MINIMAL}{MULTI_BODY_BLOCK}");
+        assert_phase5_reserved_under_v2(&toml_v2, "multi_body");
+        assert_phase5_deferred_under_v3(&toml_v2, "multi_body", "Phase 5.D.2");
+    }
+
+    const SCHEDULE_NON_DIVIDING_BLOCK: &str = r#"
+[schedule]
+base_hz = 1000
+
+[[schedule.group]]
+label = "broken"
+hz = 333
+members = ["x"]
+"#;
+
+    #[test]
+    fn schedule_block_rejects_non_dividing_group_rate() {
+        let toml = append(MINIMAL, SCHEDULE_NON_DIVIDING_BLOCK)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        // The non-dividing-group-rate error fires from
+        // ScheduleConfig::validate before the deferred-phase check
+        // returns, because the gate runs the per-block validate first.
+        match err {
+            ScenarioError::InvalidNumber { field, rule, .. } => {
+                assert_eq!(field, "schedule.group[0].hz");
+                assert!(rule.contains("must divide"));
+            }
+            other => panic!("expected InvalidNumber, got {other:?}"),
+        }
+    }
+
+    const SCHEDULE_UNKNOWN_FIELD_BLOCK: &str = r"
+[schedule]
+base_hz = 1000
+bogus_field = 1
+";
+
+    #[test]
+    fn schedule_block_rejects_unknown_field() {
+        // serde(deny_unknown_fields) on ScheduleConfig — an unknown
+        // top-level key under `[schedule]` produces a TOML parse error,
+        // not a deferred-phase diagnostic.
+        let toml = append(MINIMAL, SCHEDULE_UNKNOWN_FIELD_BLOCK)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(err, ScenarioError::ParseToml(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn egm2008_gravity_is_v3_only() {
+        // The Phase-5.0 v3 gate fires before the cross-field check that
+        // would otherwise reject `gravity_m_s2` against a non-constant
+        // gravity model, so the test only needs to flip the gravity
+        // selector. The aligned-equals layout in the canonical scenario
+        // (`gravity       = "constant"`) is matched verbatim.
+        let toml = MINIMAL.replace(
+            "gravity       = \"constant\"",
+            "gravity       = \"egm2008\"",
+        );
+        assert_phase5_reserved_under_v2(&toml, "environment.gravity = \"egm2008\"");
+        assert_phase5_deferred_under_v3(
+            &toml,
+            "environment.gravity = \"egm2008\"",
+            "Phase 5.C.2",
+        );
+    }
+
+    /// Canonical Phase-4 FC scenario used as the base for the v3-only
+    /// FC sub-block tests. Loaded via `include_str!` so the test
+    /// remains in sync with the shipped scenario contract.
+    const FC_FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scenarios/closed-loop-attitude-hold/scenario.toml"
+    ));
+
+    fn fc_v2_scenario() -> &'static str {
+        FC_FIXTURE
+    }
+
+    fn append(base: &str, block: &str) -> String {
+        format!("{base}\n{block}")
+    }
+
+    #[test]
+    fn fc_estimator_lanes_block_is_v3_only() {
+        let block = r#"
+[fc.estimator_lanes]
+voter = "best_by_covariance_trace"
+
+[[fc.estimator_lanes.lane]]
+id        = "primary"
+estimator = "ekf"
+
+[[fc.estimator_lanes.lane]]
+id        = "spare"
+estimator = "mekf"
+"#;
+        let toml = append(fc_v2_scenario(), block);
+        assert_phase5_reserved_under_v2(&toml, "fc.estimator_lanes");
+        assert_phase5_deferred_under_v3(&toml, "fc.estimator_lanes", "Phase 5.B.2");
+    }
+
+    #[test]
+    fn fc_autopilot_allocation_block_is_v3_only() {
+        let block = r#"
+[fc.autopilot_allocation]
+kind          = "prioritised_redistributed"
+axis_priority = ["roll", "yaw", "pitch"]
+"#;
+        let toml = append(fc_v2_scenario(), block);
+        assert_phase5_reserved_under_v2(&toml, "fc.autopilot_allocation");
+        assert_phase5_deferred_under_v3(&toml, "fc.autopilot_allocation", "Phase 5.A.5");
+    }
+
+    #[test]
+    fn fc_fdir_detector_block_is_v3_only() {
+        let block = r#"
+[fc.fdir.detector]
+kind            = "windowed_glrt"
+window_samples  = 32
+parity_threshold = 25.0
+"#;
+        let toml = append(fc_v2_scenario(), block);
+        assert_phase5_reserved_under_v2(&toml, "fc.fdir.detector");
+        assert_phase5_deferred_under_v3(&toml, "fc.fdir.detector", "Phase 5.B.4");
+    }
+
+    #[test]
+    fn fc_v3_block_round_trips_unknown_field_rejection() {
+        // serde(deny_unknown_fields) on the new sub-blocks must reject
+        // typos. Lint is bypassed for $.fc, so the rejection comes from
+        // serde, not the unit-suffix lint.
+        let block = r#"
+[fc.estimator_lanes]
+voter   = "simplex_pass_through"
+typo_id = "unknown"
+"#;
+        let toml =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(err, ScenarioError::ParseToml(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn nrlmsise00_atmosphere_is_v3_only() {
+        // The constant-acceleration-drop scenario uses
+        // `atmosphere    = "none"`; flipping to nrlmsise00 exercises
+        // the v3 gate. Aligned-equals layout matched verbatim.
+        let toml = MINIMAL.replace(
+            "atmosphere    = \"none\"",
+            "atmosphere    = \"nrlmsise00\"",
+        );
+        assert_phase5_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsise00\"");
+        assert_phase5_deferred_under_v3(
+            &toml,
+            "atmosphere.kind = \"nrlmsise00\"",
+            "Phase 5.C.1",
         );
     }
 

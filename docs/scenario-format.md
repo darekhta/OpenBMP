@@ -1435,3 +1435,172 @@ scenarios with no recovery devices.
 
 The canonical Phase-3.9 example ships at
 [`scenarios/parachute-recovery/parachute-descent.toml`](../scenarios/parachute-recovery/parachute-descent.toml).
+
+## Phase 5 Extensions
+
+Phase 5.0 introduces schema version **v3**. The parser accepts v2 and v3
+headers; v2 scenarios continue to parse byte-identically and require no
+change. v3 adds opt-in scenario blocks consumed by later Phase-5
+sub-phases. Each new block parses with `serde(deny_unknown_fields)`.
+
+A v3 scenario header looks like this:
+
+```toml
+openbmp.scenario = 3
+```
+
+A v2 scenario that declares any v3-only block fails closed at validate
+time with a `SchemaVersionFieldReserved` diagnostic naming the field
+and the required version. A v3 scenario that declares a v3-only block
+parses syntactically but, until the consumer sub-phase lands, fails
+closed with an `ElementDeferredToFuturePhase` diagnostic naming the
+sub-phase that will land the runtime consumer. This avoids silent
+no-ops and makes the schema readable today without claiming runtime
+behaviour it cannot deliver yet.
+
+### v2 → v3 migration
+
+- Bump `openbmp.scenario = 2` to `openbmp.scenario = 3`.
+- Existing fields parse identically. Phase-3 / Phase-4 scenarios are
+  byte-stable across the bump.
+- New v3 blocks below are opt-in and have no effect under v2 even if
+  the file's structure is otherwise identical.
+
+### v3-only top-level blocks
+
+#### `[schedule]` — multi-rate scheduling (Phase 5.D.1)
+
+```toml
+[schedule]
+base_hz = 1000
+
+[[schedule.group]]
+label   = "env"
+hz      = 100
+members = ["atmosphere", "gravity", "wind"]
+
+[[schedule.group]]
+label   = "fc"
+hz      = 50
+members = ["estimator", "autopilot", "fdir", "mission_fsm"]
+```
+
+Field-name discipline: every group's `hz` must divide `base_hz`
+exactly (`base_hz % hz == 0`). The loader rejects non-integer divisors
+at scenario load time, not at runtime. Groups must have unique labels
+and non-empty member lists. The `[schedule]` block bypasses the
+workspace-level unit-suffix lint because `ScheduleConfig::validate`
+covers the field-internal invariants. The runtime consumer in
+Phase 5.D.1 resolves the rate plan once at scenario start and the
+kernel walks the same fixed list every tick.
+
+#### `[multi_body]` — multi-body simultaneous propagation (Phase 5.D.2)
+
+```toml
+[multi_body]
+
+[[multi_body.separation]]
+event_id              = "fairing_separation"
+upper_body_id         = "main"
+lower_body_id         = "lower_stage"
+upper_delta_v_body_m_s = [0.0, 0.0, 0.5]
+lower_delta_v_body_m_s = [0.0, 0.0, -0.5]
+conserve_momentum     = true
+```
+
+Each `[[multi_body.separation]]` entry binds to a mission event by id
+and declares the two `vehicle.assembly.bodies[*].id` values that
+continue propagating after the event. Optional impulsive delta-V
+fields apply at the separation moment. `conserve_momentum` defaults
+to `true`; the loader will verify
+`m_u·Δv_u + m_l·Δv_l ≈ 0` to a documented tolerance once the
+Phase 5.D.2 consumer lands.
+
+### v3-only `[fc]` sub-blocks
+
+#### `[fc.estimator_lanes]` — multi-instance estimator routing (Phase 5.B.2)
+
+```toml
+[fc.estimator_lanes]
+voter = "best_by_covariance_trace"
+
+[[fc.estimator_lanes.lane]]
+id        = "primary"
+estimator = "ekf"
+
+[[fc.estimator_lanes.lane]]
+id        = "spare"
+estimator = "mekf"
+```
+
+`voter` is one of `simplex_pass_through`, `mid_value_select_by_innovation`,
+or `best_by_covariance_trace`. Lane ids must be unique. The Phase 5.B.2
+consumer wires parallel filter instances to the controller's pub/sub
+bus and selects the active lane each tick.
+
+#### `[fc.autopilot_allocation]` — control allocation (Phase 5.A.5)
+
+```toml
+[fc.autopilot_allocation]
+kind          = "prioritised_redistributed"
+axis_priority = ["roll", "yaw", "pitch"]
+```
+
+`kind` is one of `pseudo_inverse` (Stevens & Lewis 2015 §3.5) or
+`prioritised_redistributed` (Härkegård 2002). `axis_priority` lists
+body-frame axes in highest-first order, restricted to
+`"roll" | "pitch" | "yaw"` with no duplicates.
+
+#### `[fc.fdir.detector]` — Phase-5 FDIR detector tuning (Phase 5.B.4)
+
+```toml
+[fc.fdir.detector]
+kind             = "windowed_glrt"
+window_samples   = 32
+parity_threshold = 25.0
+```
+
+The existing `detector_kind` field on `[fc.fdir]` continues to drive
+the Phase-4 burst / single-sample-GLRT / CUSUM detectors; the
+Phase-5 sub-block adds tuning data for the windowed-mean-shift GLRT
+(Willsky 1976) and Patton-Frank parity-space residual generator that
+land in Phase 5.B.4.
+
+### v3-only kind values
+
+#### `gravity = "egm2008"` (Phase 5.C.2)
+
+```toml
+[environment]
+gravity = "egm2008"
+```
+
+Selects the EGM2008 truncated spherical-harmonic gravity model. The
+Phase 5.C.2 consumer adds `degree`, `order`, `coefficients_path`, and
+`coefficients_sha256` fields. Until then, this kind value parses but
+fails closed at validate time with the deferred-phase diagnostic.
+
+#### `atmosphere = "nrlmsise00"` (Phase 5.C.1)
+
+```toml
+[environment]
+atmosphere = "nrlmsise00"
+
+[atmosphere]
+kind = "nrlmsise00"
+```
+
+Selects the NRLMSISE-00 empirical atmosphere model. The Phase 5.C.1
+consumer adds `f10_7`, `f10_7_avg`, `ap_index`, `epoch_tai_s`,
+`coefficients_path`, and `coefficients_sha256` fields. Until then,
+this kind value parses but fails closed at validate time with the
+deferred-phase diagnostic.
+
+### Hard guardrails
+
+- v3 introduces no field that advances proportional navigation,
+  terminal homing, real-world targeting, real device drivers, or
+  real bus protocols. Every Phase-5 sub-phase consumer honours
+  [docs/safety-boundaries.md](safety-boundaries.md).
+- The determinism CI gate continues to assert byte-identical Parquet
+  for the existing v2 scenario set across this schema bump.

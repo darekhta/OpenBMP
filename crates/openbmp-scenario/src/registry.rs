@@ -120,9 +120,16 @@ impl ModelRegistry {
             // Phase 2.2 gravity.
             ModelDescriptor::new("point_mass", ModelRole::Gravity),
             ModelDescriptor::new("j2", ModelRole::Gravity),
+            // Phase 5.0 — names accepted under v3 only. The runtime
+            // consumers land in Phase 5.C.2 (egm2008) and Phase 5.C.1
+            // (nrlmsise00); ScenarioDocument::validate gates them
+            // against the schema version and emits a deferred-phase
+            // diagnostic until the consumer commits land.
+            ModelDescriptor::new("egm2008", ModelRole::Gravity),
             // Phase 2.3 atmosphere.
             ModelDescriptor::new("isothermal", ModelRole::Atmosphere),
             ModelDescriptor::new("us_standard_1976", ModelRole::Atmosphere),
+            ModelDescriptor::new("nrlmsise00", ModelRole::Atmosphere),
             // Phase 2.4 wind.
             ModelDescriptor::new("constant", ModelRole::Wind),
             // Phase 3.8 wind extensions.

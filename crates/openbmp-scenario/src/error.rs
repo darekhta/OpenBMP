@@ -22,13 +22,39 @@ pub enum ScenarioError {
     },
     /// Scenario schema version is unsupported.
     #[error(
-        "unsupported scenario schema version: found openbmp.scenario = {found}, expected {expected}; v1 flat-vehicle scenarios were retired in Phase 3.13, see docs/scenario-format.md#migrating-v1-scenarios-to-v2"
+        "unsupported scenario schema version: found openbmp.scenario = {found}, expected one of {supported:?}; v1 flat-vehicle scenarios were retired in Phase 3.13, see docs/scenario-format.md#migrating-v1-scenarios-to-v2"
     )]
     UnsupportedSchemaVersion {
         /// Version found in the scenario.
         found: u16,
-        /// Version expected by this crate.
-        expected: u16,
+        /// Versions accepted by this crate.
+        supported: &'static [u16],
+    },
+    /// A scenario field is reserved for a later schema version than the
+    /// header declares.
+    #[error(
+        "scenario field {field} requires openbmp.scenario >= {required}, but header declares {found}"
+    )]
+    SchemaVersionFieldReserved {
+        /// Field path that triggered the rejection.
+        field: String,
+        /// Minimum schema version required.
+        required: u16,
+        /// Schema version found in the header.
+        found: u16,
+    },
+    /// A v3 scenario element parses syntactically but the runtime
+    /// consumer is deferred to a later Phase-5 sub-phase. Phase 5.0
+    /// lands the parser-side schema; the consumer sub-phase named
+    /// here lands the runtime wiring.
+    #[error(
+        "scenario v3 element {field} is parsed but the runtime consumer is deferred to {deferred_to}"
+    )]
+    ElementDeferredToFuturePhase {
+        /// Field path that triggered the rejection.
+        field: String,
+        /// Phase-5 sub-phase identifier that will land the consumer.
+        deferred_to: &'static str,
     },
     /// A required string field is empty.
     #[error("{field} must not be empty")]

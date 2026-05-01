@@ -59,7 +59,7 @@ pub use events::{
     EventTrigger, FiredEvent, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
     PhaseTransition,
 };
-pub use integrator::{Integrator, IntegratorDeterminism, Rk4FixedStep, SimState};
+pub use integrator::{Integrator, IntegratorDeterminism, Rk4FixedStep};
 pub use kernel::{Phase1Kernel, RigidBodyKernel, RigidModels, SimulationConfig, SimulationKernel};
 pub use models::{
     ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshotView,

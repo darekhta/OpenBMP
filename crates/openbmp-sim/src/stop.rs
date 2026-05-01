@@ -12,8 +12,9 @@
 
 use openbmp_core::{SimTime, StepIndex};
 
+use openbmp_models::SimState;
+
 use crate::error::StopReason;
-use crate::integrator::SimState;
 
 /// Trait implemented by stop conditions.
 ///

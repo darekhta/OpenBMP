@@ -28,11 +28,11 @@ use openbmp_core::{Duration, SimTime, StepIndex};
 use openbmp_state::PointMassState;
 use uom::si::mass::kilogram;
 
-use openbmp_models::VehicleState;
+use openbmp_models::{SimState, VehicleState};
 
 use crate::derivative::PointMassDerivative;
 use crate::error::{IntegratorError, SimulationError, StopReason};
-use crate::integrator::{Integrator, SimState};
+use crate::integrator::Integrator;
 use crate::models::{
     EffectorActualsView, EngineSnapshotView, EnvironmentModel, EnvironmentQuery, EnvironmentSample,
     ForceContext, ForceModel, MassContext, MassModel, RecoverySnapshot, RecoverySnapshotView,
