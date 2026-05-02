@@ -1,0 +1,16 @@
+case = "diff-flatness-figure-eight-500-steps"
+source = "Synthetic; minimum-snap waypoints in scenario.toml. See scenarios/diff-flatness-figure-eight/provenance.md."
+validation = "experimental"
+
+# Phase 5.A.1.C tolerance bench: this slice asserts that the scenario
+# runs end-to-end deterministically and that the polynomial-coefficient
+# byte-stability is preserved across reruns. Closed-loop attitude
+# tracking tolerance lands with L1 adaptive (Phase 5.A.2) and
+# observer-form anti-windup (Phase 5.A.3); the metric below is a
+# placeholder integration check, not a tracking-tolerance claim.
+
+[[metric]]
+name = "kernel_steps"
+expected = 500
+absolute_tolerance = 0.0
+relative_tolerance = 0.0

@@ -165,6 +165,11 @@ impl FcRunner {
         if let Some(params) = &config.autopilot_params {
             autopilot = autopilot.with_params(build_autopilot_params(params));
         }
+        if let Some(trajectory_cfg) = config.trajectory.as_ref() {
+            let trajectory = build_minimum_snap_trajectory(trajectory_cfg)
+                .map_err(openbmp_fc::ControllerError::from)?;
+            autopilot = autopilot.with_minimum_snap_trajectory(trajectory);
+        }
         fc.scheduler_mut()
             .register_periodic(1, 300, next_priority, Box::new(autopilot))?;
         next_priority = next_priority.saturating_add(5);
@@ -461,10 +466,29 @@ fn build_autopilot_params(cfg: &FcAutopilotParams) -> AutopilotParams {
     if let Some(kind) = cfg.trajectory_kind {
         params.trajectory_kind = match kind {
             FcTrajectoryKind::Pid => TrajectoryKind::Pid,
-            FcTrajectoryKind::FlatnessInspired => TrajectoryKind::FlatnessInspired,
+            FcTrajectoryKind::MinimumSnap => TrajectoryKind::DifferentialFlatness,
         };
     }
     params
+}
+
+fn build_minimum_snap_trajectory(
+    cfg: &openbmp_scenario::FcTrajectoryConfig,
+) -> Result<openbmp_fc::trajectory::MinimumSnapTrajectory, openbmp_fc::trajectory::TrajectoryError> {
+    use openbmp_fc::trajectory::{MinimumSnapTrajectory, MinimumSnapWaypoint};
+    let waypoints = cfg
+        .waypoints
+        .iter()
+        .map(|w| MinimumSnapWaypoint {
+            position_eci_m: nalgebra::Vector3::new(
+                w.position_eci_m[0],
+                w.position_eci_m[1],
+                w.position_eci_m[2],
+            ),
+            time_s: w.time_s,
+        })
+        .collect();
+    MinimumSnapTrajectory::new(waypoints)
 }
 
 fn build_health_params(cfg: &FcHealthConfig) -> HealthParams {
@@ -710,6 +734,7 @@ mod tests {
             phase_authority: None,
             estimator_lanes: None,
             autopilot_allocation: None,
+            trajectory: None,
         };
         let (graph, bindings, pad) = minimal_graph();
         let mut runner = FcRunner::new(&config, graph, bindings, pad).unwrap();

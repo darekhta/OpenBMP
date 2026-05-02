@@ -159,22 +159,15 @@ pub enum TrajectoryKind {
     /// Existing PID position-to-attitude correction.
     #[default]
     Pid,
-    /// Flatness-inspired attitude reference from a PD desired
-    /// acceleration. This is not a full flat-output trajectory
-    /// tracker with higher-derivative feed-forward terms; the
-    /// Mellinger & Kumar 2011 minimum-snap formulation is the
-    /// `DifferentialFlatness` variant.
-    FlatnessInspired,
     /// Mellinger & Kumar 2011 differential-flatness trajectory
-    /// tracker. Phase 5.A.1.A ships the math: piecewise polynomial
-    /// minimum-snap trajectory plus analytical attitude / body-rate /
-    /// angular-acceleration references. The autopilot's trajectory
-    /// loop sets the attitude reference from the flat outputs;
-    /// scenario-side plumbing and rate / angular-acceleration
-    /// feedforward consumption land in 5.A.1.B onwards. Selecting
-    /// this variant requires installing a `MinimumSnapTrajectory`
-    /// via [`ThreeLoopAutopilot::with_minimum_snap_trajectory`];
-    /// otherwise the autopilot fails closed at first tick.
+    /// tracker. The autopilot's trajectory loop builds the attitude
+    /// reference (and exposes body-rate / angular-acceleration
+    /// references) analytically from the flat outputs of a piecewise
+    /// minimum-snap polynomial. Selecting this variant requires
+    /// installing a `MinimumSnapTrajectory` via
+    /// [`ThreeLoopAutopilot::with_minimum_snap_trajectory`] (or by
+    /// declaring `[fc.trajectory]` in the scenario); otherwise the
+    /// autopilot fails closed at first tick.
     DifferentialFlatness,
 }
 
@@ -361,12 +354,12 @@ impl Job for ThreeLoopAutopilot {
         let mut attitude_error =
             quaternion_error_small_angle(attitude.q_body_to_eci_xyzw, reference.q_body_to_eci_xyzw);
 
-        // Phase 5.A.1.A — DifferentialFlatness trajectory loop.
+        // Phase 5.A.1 — DifferentialFlatness trajectory loop.
         // Generates the attitude reference from the installed
         // minimum-snap trajectory's flat outputs, independent of the
-        // bus `ReferenceState.position_eci_m`. Other variants
-        // (`Pid` / `FlatnessInspired`) continue to read the bus
-        // reference and an estimator position, gated below.
+        // bus `ReferenceState.position_eci_m`. The `Pid` variant
+        // continues to read the bus reference and an estimator
+        // position, gated below.
         if self.params.trajectory_loop_enabled
             && self.params.trajectory_kind == TrajectoryKind::DifferentialFlatness
         {
@@ -433,21 +426,6 @@ impl Job for ThreeLoopAutopilot {
                         attitude_error[i] += cmd;
                         saturated |= sat;
                     }
-                }
-                TrajectoryKind::FlatnessInspired => {
-                    let desired_accel = flatness_pd_accel(
-                        reference.position_eci_m,
-                        reference.velocity_eci_m_s,
-                        pos,
-                        &gains.trajectory,
-                    );
-                    let yaw_rad = reference_yaw_rad(reference.q_body_to_eci_xyzw);
-                    let q_flat = flatness_inspired_attitude_reference(desired_accel, yaw_rad);
-                    let q = q_flat.into_inner();
-                    attitude_error = quaternion_error_small_angle(
-                        attitude.q_body_to_eci_xyzw,
-                        [q.i, q.j, q.k, q.w],
-                    );
                 }
                 // The outer `if` excludes DifferentialFlatness; the
                 // dedicated branch above handles it.
@@ -533,33 +511,9 @@ impl Job for ThreeLoopAutopilot {
     }
 }
 
-fn flatness_pd_accel(
-    reference_position: Vector3<f64>,
-    reference_velocity: Vector3<f64>,
-    position: PositionEstimate,
-    trajectory_gains: &[PidGains; 3],
-) -> Vector3<f64> {
-    // Desired specific force = desired_inertial_accel − gravity_eci.
-    // Per-axis Kp / Kd come from the active phase's trajectory-loop
-    // gain entry so the FlatnessInspired path tracks the same gain
-    // schedule as the PID path. Subtracting `standard_down_z_eci_m_s2()`
-    // (which is `(0, 0, −g)`) correctly adds `(0, 0, +g)` for
-    // hover-trim feedforward; using the helper instead of an inline
-    // ±g vector also guards against the sign mistake
-    // `0.5 ± Vector3(0, 0, +g)` is prone to.
-    let pos_err = reference_position - position.position_eci_m;
-    let vel_err = reference_velocity - position.velocity_eci_m_s;
-    let pd = Vector3::new(
-        trajectory_gains[0].kp * pos_err.x + trajectory_gains[0].kd * vel_err.x,
-        trajectory_gains[1].kp * pos_err.y + trajectory_gains[1].kd * vel_err.y,
-        trajectory_gains[2].kp * pos_err.z + trajectory_gains[2].kd * vel_err.z,
-    );
-    pd - openbmp_physics::gravity::standard_down_z_eci_m_s2()
-}
-
 /// Extract the yaw (rotation about the inertial z-axis) of a body→ECI
 /// quaternion in scalar-last `[x, y, z, w]` ordering. Used by the
-/// flatness-inspired trajectory loop so the attitude reference
+/// differential-flatness trajectory loop so the attitude reference
 /// inherits the scenario's commanded heading instead of pinning yaw
 /// to zero.
 fn reference_yaw_rad(q_body_to_eci_xyzw: [f64; 4]) -> f64 {
@@ -571,38 +525,6 @@ fn reference_yaw_rad(q_body_to_eci_xyzw: [f64; 4]) -> f64 {
     ));
     let (_roll, _pitch, yaw) = q.euler_angles();
     yaw
-}
-
-/// Flatness-inspired attitude reference for a thrust-along-body-z
-/// vehicle from desired acceleration and yaw. The reference is
-/// computed from the desired acceleration vector only — no
-/// higher-order trajectory derivatives feed forward — so this is
-/// not a full Mellinger & Kumar 2011 differential-flatness tracker.
-#[must_use]
-pub fn flatness_inspired_attitude_reference(
-    desired_accel_eci_m_s2: Vector3<f64>,
-    yaw_rad: f64,
-) -> nalgebra::UnitQuaternion<f64> {
-    let thrust_axis = if desired_accel_eci_m_s2.norm() > f64::EPSILON {
-        desired_accel_eci_m_s2.normalize()
-    } else {
-        Vector3::z_axis().into_inner()
-    };
-    let yaw_axis = Vector3::new(yaw_rad.cos(), yaw_rad.sin(), 0.0);
-    let body_y = thrust_axis
-        .cross(&yaw_axis)
-        .try_normalize(f64::EPSILON)
-        .unwrap_or_else(|| Vector3::y_axis().into_inner());
-    let body_x = body_y
-        .cross(&thrust_axis)
-        .try_normalize(f64::EPSILON)
-        .unwrap_or_else(|| Vector3::x_axis().into_inner());
-    let rot = nalgebra::Rotation3::from_matrix_unchecked(nalgebra::Matrix3::from_columns(&[
-        body_x,
-        body_y,
-        thrust_axis,
-    ]));
-    nalgebra::UnitQuaternion::from_rotation_matrix(&rot)
 }
 
 /// Default academic gain schedule — every phase falls through to the
@@ -661,76 +583,7 @@ mod tests {
     use nalgebra::Vector3;
     use openbmp_core::SimTime;
 
-    use super::{PidGains, flatness_pd_accel, reference_yaw_rad};
-    use crate::topics::PositionEstimate;
-
-    fn unit_pd_gains() -> [PidGains; 3] {
-        [PidGains {
-            kp: 1.0,
-            ki: 0.0,
-            kd: 0.5,
-        }; 3]
-    }
-
-    #[test]
-    fn flatness_pd_accel_adds_upward_gravity_compensation_at_trim() {
-        let position = PositionEstimate {
-            time: SimTime::ZERO,
-            position_eci_m: Vector3::new(10.0, -2.0, 5.0),
-            velocity_eci_m_s: Vector3::new(1.0, 0.5, -0.25),
-            accel_bias_body_m_s2: Vector3::zeros(),
-        };
-
-        let gains = unit_pd_gains();
-        let desired_accel = flatness_pd_accel(
-            position.position_eci_m,
-            position.velocity_eci_m_s,
-            position,
-            &gains,
-        );
-
-        assert_eq!(
-            desired_accel,
-            -openbmp_physics::gravity::standard_down_z_eci_m_s2()
-        );
-        assert!(desired_accel.z > 0.0);
-    }
-
-    #[test]
-    fn flatness_pd_accel_uses_per_axis_trajectory_gains() {
-        // Distinct kp on each axis should produce a per-axis-scaled
-        // PD output, locking in the gain-schedule plumbing.
-        let position = PositionEstimate {
-            time: SimTime::ZERO,
-            position_eci_m: Vector3::zeros(),
-            velocity_eci_m_s: Vector3::zeros(),
-            accel_bias_body_m_s2: Vector3::zeros(),
-        };
-        let reference_position = Vector3::new(1.0, 1.0, 1.0);
-        let gains = [
-            PidGains {
-                kp: 2.0,
-                ki: 0.0,
-                kd: 0.0,
-            },
-            PidGains {
-                kp: 3.0,
-                ki: 0.0,
-                kd: 0.0,
-            },
-            PidGains {
-                kp: 4.0,
-                ki: 0.0,
-                kd: 0.0,
-            },
-        ];
-        let desired_accel =
-            flatness_pd_accel(reference_position, Vector3::zeros(), position, &gains);
-        // PD term = (kp_x, kp_y, kp_z), gravity feed-forward = +g·z
-        let expected =
-            Vector3::new(2.0, 3.0, 4.0) - openbmp_physics::gravity::standard_down_z_eci_m_s2();
-        assert_eq!(desired_accel, expected);
-    }
+    use super::reference_yaw_rad;
 
     #[test]
     fn reference_yaw_rad_recovers_z_rotation() {

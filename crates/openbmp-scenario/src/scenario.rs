@@ -502,6 +502,128 @@ typo_id = "unknown"
     }
 
     #[test]
+    fn fc_trajectory_block_is_v3_only() {
+        let block = r#"
+[fc.trajectory]
+kind    = "minimum_snap"
+yaw_rad = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 0.0]
+time_s         = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, 0.0, 0.0]
+time_s         = 4.0
+"#;
+        let toml_v2 = append(fc_v2_scenario(), block);
+        let err = Scenario::from_toml_str(&toml_v2).unwrap_err();
+        match err {
+            ScenarioError::SchemaVersionFieldReserved { field, .. } => {
+                assert_eq!(field, "fc.trajectory");
+            }
+            other => panic!("expected SchemaVersionFieldReserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_trajectory_block_under_v3_requires_matching_trajectory_kind() {
+        // The block parses but autopilot_params.trajectory_kind is left
+        // at the default `pid`; the cross-check fires.
+        let block = r#"
+[fc.trajectory]
+kind = "minimum_snap"
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 0.0]
+time_s         = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, 0.0, 0.0]
+time_s         = 4.0
+"#;
+        let toml = append(fc_v2_scenario(), block)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::InconsistentSection { field_a, field_b, .. } => {
+                assert_eq!(field_a, "fc.autopilot_params.trajectory_kind");
+                assert_eq!(field_b, "fc.trajectory.kind");
+            }
+            other => panic!("expected InconsistentSection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_trajectory_block_under_v3_validates_with_kind_minimum_snap() {
+        let block = r#"
+[fc.trajectory]
+kind    = "minimum_snap"
+yaw_rad = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 0.0]
+time_s         = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, 0.0, 0.0]
+time_s         = 4.0
+"#;
+        let toml = append(fc_v2_scenario(), block)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "trajectory_kind          = \"pid\"",
+                "trajectory_kind          = \"minimum_snap\"",
+            );
+        let scenario =
+            Scenario::from_toml_str(&toml).expect("v3 fc.trajectory should validate");
+        let trajectory = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.trajectory.as_ref())
+            .expect("fc.trajectory present");
+        assert_eq!(trajectory.waypoints.len(), 2);
+    }
+
+    #[test]
+    fn fc_trajectory_minimum_snap_kind_requires_block() {
+        let toml = fc_v2_scenario()
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "trajectory_kind          = \"pid\"",
+                "trajectory_kind          = \"minimum_snap\"",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::MissingRequiredField { field, .. } => {
+                assert_eq!(field, "fc.trajectory");
+            }
+            other => panic!("expected MissingRequiredField, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_trajectory_block_rejects_too_few_waypoints() {
+        let block = r#"
+[fc.trajectory]
+kind = "minimum_snap"
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 0.0]
+time_s         = 0.0
+"#;
+        let toml = append(fc_v2_scenario(), block)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "trajectory_kind          = \"pid\"",
+                "trajectory_kind          = \"minimum_snap\"",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(err, ScenarioError::InvalidFc { .. }), "got {err:?}");
+    }
+
+    #[test]
     fn nrlmsise00_environment_atmosphere_is_v3_only() {
         // The constant-acceleration-drop scenario uses
         // `atmosphere    = "none"`; flipping to nrlmsise00 exercises

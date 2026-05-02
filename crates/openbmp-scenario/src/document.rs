@@ -336,6 +336,53 @@ impl ScenarioDocument {
                 },
             )?;
         }
+        // fc.trajectory — Phase 5.A.1.B consumed block. v3-only; the
+        // runner builds a `MinimumSnapTrajectory` from this block and
+        // installs it on the autopilot.
+        if let Some(trajectory) = &fc.trajectory {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.trajectory".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            trajectory.validate()?;
+            // Cross-check with autopilot_params.trajectory_kind.
+            let autopilot_kind = fc
+                .autopilot_params
+                .as_ref()
+                .and_then(|p| p.trajectory_kind);
+            match (autopilot_kind, trajectory.kind) {
+                (Some(FcTrajectoryKind::MinimumSnap), FcTrajectoryConfigKind::MinimumSnap) => {}
+                (Some(other), FcTrajectoryConfigKind::MinimumSnap) => {
+                    return Err(ScenarioError::InconsistentSection {
+                        field_a: "fc.autopilot_params.trajectory_kind".to_owned(),
+                        value_a: format!("{other:?}"),
+                        field_b: "fc.trajectory.kind".to_owned(),
+                        value_b: "minimum_snap".to_owned(),
+                    });
+                }
+                (None, FcTrajectoryConfigKind::MinimumSnap) => {
+                    return Err(ScenarioError::MissingRequiredField {
+                        field: "fc.autopilot_params.trajectory_kind".to_owned(),
+                        role: ModelRole::Controller,
+                        name: "minimum_snap".to_owned(),
+                    });
+                }
+            }
+        } else if matches!(
+            fc.autopilot_params
+                .as_ref()
+                .and_then(|p| p.trajectory_kind),
+            Some(FcTrajectoryKind::MinimumSnap)
+        ) {
+            return Err(ScenarioError::MissingRequiredField {
+                field: "fc.trajectory".to_owned(),
+                role: ModelRole::Controller,
+                name: "minimum_snap".to_owned(),
+            });
+        }
         Ok(())
     }
 
@@ -3297,6 +3344,12 @@ pub struct FcConfig {
     /// consumer lands in Phase 5.A.5. Scenarios that declare
     /// `[fc.autopilot_allocation]` must have `openbmp.scenario = 3`.
     pub autopilot_allocation: Option<FcAutopilotAllocationConfig>,
+    /// Optional minimum-snap differential-flatness trajectory block
+    /// (v3 only, Phase 5.A.1.B). Required when
+    /// `autopilot_params.trajectory_kind == FcTrajectoryKind::MinimumSnap`;
+    /// scenarios that declare `[fc.trajectory]` must have
+    /// `openbmp.scenario = 3`.
+    pub trajectory: Option<FcTrajectoryConfig>,
 }
 
 impl FcConfig {
@@ -3491,10 +3544,11 @@ pub struct FcAutopilotParams {
 pub enum FcTrajectoryKind {
     /// Existing PID trajectory loop.
     Pid,
-    /// Flatness-inspired attitude-reference generator from desired
-    /// acceleration. Not the full Mellinger & Kumar 2011 minimum-snap
-    /// flat-output tracker; that is Phase-5 work.
-    FlatnessInspired,
+    /// Mellinger & Kumar 2011 minimum-snap differential-flatness
+    /// trajectory tracker. Requires a `[fc.trajectory]` block (v3 only)
+    /// declaring the waypoint sequence and yaw profile that the
+    /// trajectory generator solves at scenario load.
+    MinimumSnap,
 }
 
 /// FC health-monitor thresholds.
@@ -4037,6 +4091,84 @@ impl FcFdirDetectorConfig {
     }
 }
 
+/// Minimum-snap differential-flatness trajectory block (`[fc.trajectory]`,
+/// v3 only, Phase 5.A.1.B). When `autopilot_params.trajectory_kind`
+/// is [`FcTrajectoryKind::MinimumSnap`] this block declares the
+/// waypoint sequence and yaw profile that the trajectory generator
+/// solves at scenario load.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcTrajectoryConfig {
+    /// Trajectory generator kind. `minimum_snap` is the only supported
+    /// value in Phase 5.A.1.B.
+    pub kind: FcTrajectoryConfigKind,
+    /// Constant body-frame yaw applied at every sample (rad). Defaults
+    /// to `0.0`. Yaw splines are tracked for follow-up sub-phase.
+    pub yaw_rad: Option<f64>,
+    /// Ordered list of waypoints. Serde key `[[fc.trajectory.waypoint]]`;
+    /// the field is exposed as `waypoints` in Rust.
+    #[serde(default, rename = "waypoint")]
+    pub waypoints: Vec<FcTrajectoryWaypointConfig>,
+}
+
+/// Trajectory generator kind.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcTrajectoryConfigKind {
+    /// Mellinger & Kumar 2011 minimum-snap polynomial trajectory.
+    MinimumSnap,
+}
+
+/// One entry under `[[fc.trajectory.waypoint]]`.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcTrajectoryWaypointConfig {
+    /// ECI position (m).
+    pub position_eci_m: [f64; 3],
+    /// Scenario-time of this waypoint (s).
+    pub time_s: f64,
+}
+
+impl FcTrajectoryConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if self.waypoints.len() < 2 {
+            return Err(ScenarioError::InvalidFc {
+                reason: format!(
+                    "fc.trajectory.waypoint must declare >= 2 entries (got {})",
+                    self.waypoints.len()
+                ),
+            });
+        }
+        if let Some(v) = self.yaw_rad {
+            require_finite("fc.trajectory.yaw_rad", v)?;
+        }
+        for (index, w) in self.waypoints.iter().enumerate() {
+            require_finite_array(
+                &format!("fc.trajectory.waypoint[{index}].position_eci_m"),
+                &w.position_eci_m,
+            )?;
+            require_finite(
+                &format!("fc.trajectory.waypoint[{index}].time_s"),
+                w.time_s,
+            )?;
+        }
+        for i in 0..self.waypoints.len() - 1 {
+            if self.waypoints[i + 1].time_s <= self.waypoints[i].time_s {
+                return Err(ScenarioError::InvalidFc {
+                    reason: format!(
+                        "fc.trajectory.waypoint[{i}].time_s={} must be strictly less than \
+                         waypoint[{}].time_s={}",
+                        self.waypoints[i].time_s,
+                        i + 1,
+                        self.waypoints[i + 1].time_s
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod fc_string_tests {
@@ -4057,15 +4189,18 @@ mod fc_string_tests {
     #[test]
     fn fc_variant_strings_round_trip_and_old_spellings_reject() {
         let traj: TrajectoryWrapper =
-            toml::from_str("trajectory_kind = \"flatness_inspired\"").unwrap();
-        assert_eq!(traj.trajectory_kind, FcTrajectoryKind::FlatnessInspired);
+            toml::from_str("trajectory_kind = \"minimum_snap\"").unwrap();
+        assert_eq!(traj.trajectory_kind, FcTrajectoryKind::MinimumSnap);
         assert_eq!(
             toml::to_string(&traj).unwrap(),
-            "trajectory_kind = \"flatness_inspired\"\n"
+            "trajectory_kind = \"minimum_snap\"\n"
         );
-        let old_flatness_spelling = ["differential", "flatness"].join("_");
-        let old_flatness_toml = format!("trajectory_kind = {old_flatness_spelling:?}");
-        assert!(toml::from_str::<TrajectoryWrapper>(&old_flatness_toml).is_err());
+        // Phase 5.A.1.D retired `flatness_inspired`; the old spelling
+        // must reject so v2 scenarios that still carry it surface a
+        // serde error rather than silently selecting `Pid`.
+        assert!(
+            toml::from_str::<TrajectoryWrapper>("trajectory_kind = \"flatness_inspired\"").is_err()
+        );
         assert!(
             toml::from_str::<TrajectoryWrapper>("trajectory_kind = \"flatness-inspired\"").is_err()
         );

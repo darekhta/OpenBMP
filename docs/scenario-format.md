@@ -85,7 +85,7 @@ dead_reckon_timeout_s      = 1.5
 anti_windup_gain        = 1.0
 rate_deadband_rad_s     = 0.001
 trajectory_loop_enabled = false
-trajectory_kind         = "pid" # "pid" | "flatness_inspired" (flatness-inspired attitude reference; not a full Mellinger-Kumar flat-output tracker)
+trajectory_kind         = "pid" # "pid" | "minimum_snap" (Mellinger-Kumar 2011 differential-flatness tracker; requires `[fc.trajectory]` under v3)
 
 [fc.health]
 imu_stale_after_s   = 0.05

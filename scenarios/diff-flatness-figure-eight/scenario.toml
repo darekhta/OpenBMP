@@ -1,0 +1,195 @@
+# Phase-5.A.1.C closed-loop figure-eight differential-flatness scenario.
+#
+# Synthetic point-mass vehicle with a Mellinger & Kumar 2011
+# minimum-snap differential-flatness trajectory tracker active. The
+# trajectory is a horizontal figure-eight in the ECI XY plane at a
+# constant altitude. The autopilot's `DifferentialFlatness` trajectory
+# loop generates the attitude reference from the polynomial flat
+# outputs each tick.
+#
+# Phase 5.A.1.C scope: validate that the scenario parses, the runner
+# constructs a `MinimumSnapTrajectory` from `[fc.trajectory]`, and the
+# end-to-end pipeline runs deterministically. Closed-loop attitude
+# tracking tolerance is loose in this slice — the actuator-to-body
+# torque path remains the Phase-4 academic gain set; tighter tracking
+# tolerance lands with the L1 adaptive (5.A.2) and observer-form
+# anti-windup (5.A.3) sub-phases.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "diff-flatness-figure-eight"
+description = "Phase-5.A.1.C minimum-snap differential-flatness figure-eight tracker. Synthetic; horizontal figure-eight in ECI XY at constant altitude."
+validation  = "experimental"
+provenance  = "synthetic; minimum-snap waypoints chosen for academic figure-eight demo. See provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 0.5
+dt_s    = 0.001
+seed    = 0x466c_6967_6831_4146   # "FligH1AF"
+
+[vehicle]
+kind                     = "point_mass"
+initial_position_eci_m   = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "diff-flatness-figure-eight"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg   = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+magnetic      = "wmm_2025"
+
+[forces]
+models = ["gravity"]
+
+[sensors.imu]
+kind = "imu"
+file = "../../data/sensors/imu-consumer-mems.toml"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../../data/sensors/gnss-textbook.toml"
+
+[sensors.mag]
+kind = "magnetometer"
+file = "../../data/sensors/magnetometer-textbook.toml"
+
+[telemetry]
+output.parquet = "out/diff-flatness-figure-eight.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+# Mission graph: pad → ascent at t = 0.05 s, well before the trajectory
+# tracker activates.
+[mission]
+initial_phase = "mission.phases.pad"
+
+[[mission.phases]]
+id    = "mission.phases.pad"
+label = "pad"
+
+[[mission.phases]]
+id    = "mission.phases.ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "mission.events.liftoff"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "enter_phase", phase = "mission.phases.ascent" }
+
+[[mission.transitions]]
+from  = "mission.phases.pad"
+to    = "mission.phases.ascent"
+event = "mission.events.liftoff"
+
+# Flight-controller block.
+[fc]
+estimator        = "ekf"
+autopilot        = "three_loop"
+guidance         = "attitude_hold"
+reference_q_xyzw = [0.0, 0.0, 0.0, 1.0]
+base_rate_hz     = 1000
+frame_budget_us  = 2000
+
+[fc.ekf]
+mag_field             = "wmm_2025"
+mag_epoch_decimal_year = 2025.0
+sigma_w_gyro          = 0.01
+sigma_w_accel_bias    = 1.0e-4
+sigma_w_gyro_bias     = 1.0e-5
+tau_gyro_bias_s       = 100.0
+tau_accel_bias_s      = 100.0
+sigma_gnss_pos_m      = 5.0
+sigma_gnss_vel_m_s    = 0.5
+sigma_baro_alt_m      = 2.0
+sigma_mag_nt          = 100.0
+innovation_false_alarm_rate = 0.01
+dead_reckon_timeout_s = 1.5
+
+[fc.autopilot_params]
+anti_windup_gain         = 1.0
+rate_deadband_rad_s      = 0.001
+trajectory_loop_enabled  = true
+trajectory_kind          = "minimum_snap"
+
+# Minimum-snap trajectory: horizontal figure-eight in ECI XY at
+# constant altitude (z = 100 m). Five waypoints over 8 seconds form
+# a closed lemniscate-shaped loop (a → b → c → b' → a). Coordinates
+# chosen so the polynomial generator's KKT solve remains
+# well-conditioned with academic tolerances.
+[fc.trajectory]
+kind    = "minimum_snap"
+yaw_rad = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 100.0]
+time_s         = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, 5.0, 100.0]
+time_s         = 2.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [20.0, 0.0, 100.0]
+time_s         = 4.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, -5.0, 100.0]
+time_s         = 6.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 100.0]
+time_s         = 8.0
+
+[fc.health]
+imu_stale_after_s       = 0.05
+gnss_stale_after_s      = 0.5
+baro_stale_after_s      = 10.0
+mag_stale_after_s       = 0.2
+overrun_burst_count     = 5
+
+[fc.fdir]
+detector_kind           = "burst_counter"
+innovation_threshold    = 25.0
+innovation_burst_count  = 5
+failsafe_burst_count    = 5
+
+[fc.gain_schedule."mission.phases.pad"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.gain_schedule."mission.phases.ascent"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.phase_authority."mission.phases.pad"]
+autopilot_allowed = false
+engines_allowed   = false
+
+[fc.phase_authority."mission.phases.ascent"]
+autopilot_allowed = true
+engines_allowed   = true

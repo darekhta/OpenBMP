@@ -68,11 +68,14 @@ labelled P0 / P1 / P2 are folded into the sub-phase ordering below.
 **Naming-honesty discipline (carried over from Phase 4.C):**
 
 Until a sub-phase ships the full SOTA algorithm, the in-tree types keep
-their `*Inspired` suffix (`L1InspiredParams`, `TrajectoryKind::FlatnessInspired`).
-The corresponding sub-phases land the full algorithms behind new types
-(e.g. `L1AdaptiveParams`, `TrajectoryKind::DifferentialFlatness`) and
-retire the `*Inspired` types only after the SOTA path is wired through
-the scenario, golden-tested, and documented. No commit may rename a
+their `*Inspired` suffix (`L1InspiredParams`). The corresponding
+sub-phases land the full algorithms behind new types
+(e.g. `L1AdaptiveParams`) and retire the `*Inspired` types only after
+the SOTA path is wired through the scenario, golden-tested, and
+documented. Phase 5.A.1.D applied this discipline to retire
+`TrajectoryKind::FlatnessInspired` once `TrajectoryKind::DifferentialFlatness`
+landed scenario-tested via `[fc.trajectory]` and the
+`diff-flatness-figure-eight` end-to-end run. No commit may rename a
 type to drop "Inspired" without first shipping the algorithm change.
 
 ## Success criteria
@@ -147,10 +150,10 @@ trajectory tracker for thrust-along-body-z vehicles:
   alignment with the desired specific force; the reference yaw is the
   scenario yaw spline; the reference body rates and angular
   accelerations follow the Mellinger-Kumar derivation.
-- New `TrajectoryKind::DifferentialFlatness` variant. Existing
-  `TrajectoryKind::FlatnessInspired` is retained until 5.A.1 lands
-  golden-tested, then retired in the same sub-phase commit (the
-  full path is what the type was always meant to be).
+- New `TrajectoryKind::DifferentialFlatness` variant. The Phase 4.C
+  `TrajectoryKind::FlatnessInspired` is retired in 5.A.1.D once the
+  closed-loop `diff-flatness-figure-eight` scenario lands; that is
+  the full path the type was always meant to be.
 
 **Exit criterion.** A new academic scenario flies a 3-D figure-eight
 or slalom trajectory with the differential-flatness tracker active,
