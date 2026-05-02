@@ -9,6 +9,7 @@ validation = "experimental"
 #  - the autopilot keeps the body stable (max angular velocity
 #    bounded — generous 5.0 rad/s ceiling sized for the
 #    pre-L1 baseline);
+#  - the rigid-body quaternion stays normalized after projection;
 #  - the polynomial-coefficient byte-stability proven by the
 #    trajectory unit tests propagates through the closed-loop
 #    pipeline (asserted by the rerun-byte-stable e2e test).
@@ -26,4 +27,10 @@ relative_tolerance = 0.0
 name = "max_angular_velocity_magnitude_rad_s"
 expected = 0.0
 absolute_tolerance = 5.0
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_quaternion_norm_error"
+expected = 0.0
+absolute_tolerance = 1.0e-12
 relative_tolerance = 0.0

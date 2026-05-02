@@ -636,7 +636,7 @@ and any operational mission profile.
   every tick, anti-windup via back-calculation, saturation reporting
   on the actuator topic, optional gyro notch filtering,
   minimum-snap differential-flatness attitude-reference generation, and
-  feature-gated L1-inspired rate-loop augmentation. Clarabel-backed
+  feature-gated Cao-Hovakimyan L1 adaptive rate-loop augmentation. Clarabel-backed
   QP / SOCP primitives are feature-gated; full receding-horizon MPC
   is Phase 5.
 - Health & arming module: aggregates sensor-staleness (bus-sequence-

@@ -272,7 +272,7 @@ impl ScenarioDocument {
     fn validate_phase5_blocks(&self) -> Result<(), ScenarioError> {
         let header = self.openbmp.scenario;
         self.validate_phase5_top_level_blocks(header)?;
-        self.validate_phase5_fc_blocks(header)?;
+        self.validate_phase5_fc_blocks(header, self.time.dt_s)?;
         self.validate_phase5_kind_values(header)?;
         self.validate_phase5_effector_kinds(header)?;
         Ok(())
@@ -285,9 +285,7 @@ impl ScenarioDocument {
         for (index, effector) in self.vehicle.assembly.effectors.iter().enumerate() {
             if matches!(effector.kind, EffectorKindConfig::DirectTorque { .. }) {
                 return Err(ScenarioError::SchemaVersionFieldReserved {
-                    field: format!(
-                        "vehicle.assembly.effectors[{index}].kind = \"direct_torque\""
-                    ),
+                    field: format!("vehicle.assembly.effectors[{index}].kind = \"direct_torque\""),
                     required: SCENARIO_VERSION_V3,
                     found: header,
                 });
@@ -321,7 +319,7 @@ impl ScenarioDocument {
         )
     }
 
-    fn validate_phase5_fc_blocks(&self, header: u16) -> Result<(), ScenarioError> {
+    fn validate_phase5_fc_blocks(&self, header: u16, dt_s: f64) -> Result<(), ScenarioError> {
         let Some(fc) = &self.fc else {
             return Ok(());
         };
@@ -373,7 +371,7 @@ impl ScenarioDocument {
                     found: header,
                 });
             }
-            l1.validate()?;
+            l1.validate(dt_s)?;
         }
 
         // fc.trajectory — Phase 5.A.1.B consumed block. v3-only; the
@@ -3662,11 +3660,17 @@ pub struct FcL1AdaptiveConfig {
 }
 
 impl FcL1AdaptiveConfig {
-    fn validate(&self) -> Result<(), ScenarioError> {
+    fn validate(&self, dt_s: f64) -> Result<(), ScenarioError> {
         let path = "fc.autopilot_params.l1_adaptive";
-        require_finite(&format!("{path}.reference_model_a_m"), self.reference_model_a_m)?;
+        require_finite(
+            &format!("{path}.reference_model_a_m"),
+            self.reference_model_a_m,
+        )?;
         require_finite(&format!("{path}.reference_model_b"), self.reference_model_b)?;
-        require_finite(&format!("{path}.reference_model_k_g"), self.reference_model_k_g)?;
+        require_finite(
+            &format!("{path}.reference_model_k_g"),
+            self.reference_model_k_g,
+        )?;
         require_finite(
             &format!("{path}.adaptation_sample_time_s"),
             self.adaptation_sample_time_s,
@@ -3707,6 +3711,14 @@ impl FcL1AdaptiveConfig {
                 field: format!("{path}.low_pass_cutoff_rad_s · lipschitz_bound"),
                 value: product,
                 rule: "Cao-Hovakimyan bandwidth-projection inequality requires ω_c · L < 1",
+            });
+        }
+        let max_dt_s = -2.0 / self.reference_model_a_m;
+        if dt_s >= max_dt_s {
+            return Err(ScenarioError::InvalidNumber {
+                field: "time.dt_s".to_owned(),
+                value: dt_s,
+                rule: "must satisfy time.dt_s < -2 / fc.autopilot_params.l1_adaptive.reference_model_a_m for forward-Euler L1 stability",
             });
         }
         Ok(())

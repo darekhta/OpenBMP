@@ -68,15 +68,17 @@ labelled P0 / P1 / P2 are folded into the sub-phase ordering below.
 **Naming-honesty discipline (carried over from Phase 4.C):**
 
 Until a sub-phase ships the full SOTA algorithm, the in-tree types keep
-their `*Inspired` suffix (`L1InspiredParams`). The corresponding
-sub-phases land the full algorithms behind new types
-(e.g. `L1AdaptiveParams`) and retire the `*Inspired` types only after
-the SOTA path is wired through the scenario, golden-tested, and
+their `*Inspired` suffix. The corresponding sub-phases land the full
+algorithms behind new types and retire the `*Inspired` types only
+after the SOTA path is wired through the scenario, golden-tested, and
 documented. Phase 5.A.1.D applied this discipline to retire
 `TrajectoryKind::FlatnessInspired` once `TrajectoryKind::DifferentialFlatness`
 landed scenario-tested via `[fc.trajectory]` and the
-`diff-flatness-figure-eight` end-to-end run. No commit may rename a
-type to drop "Inspired" without first shipping the algorithm change.
+`diff-flatness-figure-eight` end-to-end run. Phase 5.A.2.C applied the
+same rule to retire the interim L1-inspired rate-loop types after the
+full `L1AdaptiveParams` / `L1AdaptiveChannel` path landed. No commit
+may rename a type to drop "Inspired" without first shipping the
+algorithm change.
 
 ## Success criteria
 
@@ -108,9 +110,9 @@ in lockstep with each sub-phase landing.
 | 5.A.1.B — `[fc.trajectory]` v3 scenario block + parser + runner integration | shipped | `27e079a` |
 | 5.A.1.C — `diff-flatness-figure-eight` scenario + e2e test + tolerance table | shipped | `27e079a` |
 | 5.A.1.D — retire `TrajectoryKind::FlatnessInspired` | shipped | `27e079a` |
-| 5.A.2.A — `direct_torque` effector + rigid-body figure-eight integration | pending | — |
-| 5.A.2.B — L1 adaptive math module | pending | — |
-| 5.A.2.C — L1 autopilot wiring + retire `L1Inspired` | pending | — |
+| 5.A.2.A — `direct_torque` effector + rigid-body figure-eight integration | shipped | `16414b3` |
+| 5.A.2.B — L1 adaptive math module | shipped | `041438c` |
+| 5.A.2.C — L1 autopilot wiring + retire L1-inspired interim types | shipped | `bb17ea4` |
 | 5.A.2.D — closed-loop L1 validation under thrust-uncertainty disturbance | pending | — |
 | 5.A.3 onwards | pending | — |
 
@@ -257,14 +259,14 @@ the 5.A.1.A–D pattern):
   for each component (projection bound, LPF response, PCA
   estimator stability). Bandwidth-projection inequality
   `ω_c · L < 1` asserted at construction; violations fail closed.
-- **5.A.2.C — autopilot wiring + retire `L1Inspired`.** New
+- **5.A.2.C — autopilot wiring + retire L1-inspired interim types.** New
   `L1AdaptiveParams` / `L1AdaptiveChannel` types behind the
   existing `l1-adaptive` feature flag; wire into the rate loop
-  replacing the Phase-4 `L1InspiredChannel`. Retire
-  `L1InspiredParams` and `L1InspiredChannel` in the same commit
-  (naming-honesty discipline, mirrors 5.A.1.D). Scenario field for
-  L1 enable + bandwidth in `[fc.autopilot_params]` (v3-only
-  extension).
+  replacing the Phase-4 L1-inspired interim channel. Retire the
+  interim params/channel types in the same commit
+  (naming-honesty discipline, mirrors 5.A.1.D). Scenario parameters
+  live under `[fc.autopilot_params.l1_adaptive]` as a v3-only
+  extension.
 - **5.A.2.D — closed-loop validation under thrust-uncertainty
   disturbance.** Inject ±30 % thrust effectiveness uncertainty on
   the rigid-body figure-eight scenario. Assert L1-augmented
@@ -273,24 +275,25 @@ the 5.A.1.A–D pattern):
   table; provenance update; document the achievable robustness
   envelope.
 
-**Scope.** Replace the Phase 4.C `L1InspiredChannel` (scalar
+**Scope.** Replace the Phase 4.C L1-inspired interim channel (scalar
 projection + first-order LPF) with the full L1 adaptive controller
 architecture:
 
 - `L1ReferenceModel` — linear reference model with documented
   bandwidth.
 - `L1StatePredictor` — predictor for the matched-uncertainty channel,
-  driven by tracking-error feedback.
+  propagated independently from the plant; the prediction error drives
+  the piecewise-constant adaptation law.
 - `L1PiecewiseConstantAdaptation` — piecewise-constant matched-
   uncertainty estimator, sampled at the scheduler's adaptation rate.
-- `L1LowPassFilter` — second-order strictly-proper low-pass filter
+- `L1LowPassFilter` — first-order strictly-proper low-pass filter
   with bandwidth ω_c selected per Cao-Hovakimyan robustness margin
   bound (per-channel ω_c declared in the scenario, validated against
   the reference-model bandwidth).
 - New `L1AdaptiveParams` / `L1AdaptiveChannel` types behind the
-  existing `l1-adaptive` feature flag. The Phase 4.C
-  `L1InspiredParams` is retired in the same sub-phase once the full
-  path lands.
+  existing `l1-adaptive` feature flag. The Phase 4.C L1-inspired
+  interim params/channel types are retired in the same sub-phase once
+  the full path lands.
 
 **Exit criterion.** The 5.A.1.C `diff-flatness-figure-eight`
 scenario is upgraded to a rigid-body kernel with 3-axis effectors

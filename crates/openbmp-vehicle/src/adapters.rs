@@ -1125,10 +1125,7 @@ impl DirectTorqueMomentAdapter {
     /// Construct from a parallel binding vector and a stable model id.
     #[must_use]
     pub fn new(bindings: Vec<DirectTorqueBinding>, model_id: ModelId) -> Self {
-        Self {
-            bindings,
-            model_id,
-        }
+        Self { bindings, model_id }
     }
 }
 

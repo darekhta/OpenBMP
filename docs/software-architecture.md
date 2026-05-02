@@ -1661,9 +1661,9 @@ pub struct ThreeLoopAutopilot {
 The three-loop architecture (inner rate, outer attitude, outer command) is
 the canonical academic formulation in Stevens, B. L. and Lewis, F. L.,
 *Aircraft Control and Simulation* (Wiley, 3rd ed., 2015). Phase 4.C adds
-optional gyro notch filtering and feature-gated L1-inspired rate-loop
-augmentation; Phase 5.A.1 adds minimum-snap differential-flatness
-attitude-reference generation. Gains are
+optional gyro notch filtering; Phase 5.A.1 adds minimum-snap
+differential-flatness attitude-reference generation, and Phase 5.A.2
+adds feature-gated Cao-Hovakimyan L1 adaptive rate-loop augmentation. Gains are
 scenario-supplied. The OpenBMP repository ships only **academic** gain
 sets for canonical toy vehicles; no real fielded tuning data is included.
 The trait surface, however, accepts any scenario-supplied gain table —

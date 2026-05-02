@@ -217,12 +217,24 @@ impl Commander {
         if self.in_flight || !self.armed {
             return;
         }
+        if self.current_phase_allows_effectors() {
+            self.in_flight = true;
+            return;
+        }
         if let Ok(Some((pos, _))) = bus.latest::<PositionEstimate>()
             && pos.position_eci_m.z >= self.params.liftoff_altitude_m
             && pos.velocity_eci_m_s.z >= self.params.liftoff_velocity_m_s
         {
             self.in_flight = true;
         }
+    }
+
+    fn current_phase_allows_effectors(&self) -> bool {
+        self.graph
+            .phases
+            .iter()
+            .find(|phase| phase.id == self.current_phase)
+            .is_some_and(|phase| !phase.allowed_effectors.is_empty())
     }
 }
 
@@ -339,16 +351,7 @@ mod tests {
         bus
     }
 
-    #[test]
-    fn fdir_trip_blocks_arming_and_sets_safe_state_request() {
-        let (graph, bindings, pad) = build_graph();
-        let mut commander =
-            Commander::new(graph, bindings, pad, CommanderParams::default()).unwrap();
-
-        let bus = fresh_bus();
-        let clock = SimulatedClock::new();
-
-        // Estimator is initialised so arming is otherwise allowed.
+    fn publish_initialized_estimator(bus: &Bus) {
         bus.publish(EstimatorStatus {
             time: SimTime::ZERO,
             initialized: true,
@@ -361,6 +364,19 @@ mod tests {
             innovation_rejected: false,
         })
         .unwrap();
+    }
+
+    #[test]
+    fn fdir_trip_blocks_arming_and_sets_safe_state_request() {
+        let (graph, bindings, pad) = build_graph();
+        let mut commander =
+            Commander::new(graph, bindings, pad, CommanderParams::default()).unwrap();
+
+        let bus = fresh_bus();
+        let clock = SimulatedClock::new();
+
+        // Estimator is initialised so arming is otherwise allowed.
+        publish_initialized_estimator(&bus);
         // FDIR has tripped.
         bus.publish(FdirStatus {
             triggered: true,
@@ -382,5 +398,46 @@ mod tests {
             status.safe_state_requested,
             "FDIR trip should latch safe-state request"
         );
+    }
+
+    #[test]
+    fn effector_authorized_start_phase_enters_in_flight_without_vertical_motion() {
+        let ascent = PhaseId::from_path("mission.phases.ascent");
+        let graph = MissionPhaseGraph::new(
+            vec![Phase {
+                id: ascent,
+                label: "ascent".to_string(),
+                allowed_effectors: vec!["roll-torque".to_string()],
+                allowed_engines: Vec::new(),
+            }],
+            Vec::new(),
+            ascent,
+            &[],
+        )
+        .unwrap();
+        let mut commander =
+            Commander::new(graph, Vec::new(), ascent, CommanderParams::default()).unwrap();
+
+        let bus = fresh_bus();
+        let clock = SimulatedClock::new();
+        publish_initialized_estimator(&bus);
+        bus.publish(PositionEstimate {
+            time: SimTime::ZERO,
+            position_eci_m: nalgebra::Vector3::zeros(),
+            velocity_eci_m_s: nalgebra::Vector3::zeros(),
+            accel_bias_body_m_s2: nalgebra::Vector3::zeros(),
+        })
+        .unwrap();
+
+        clock.set(SimTime::ZERO, StepIndex::new(0));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (status, _) = bus.latest::<VehicleStatus>().unwrap().unwrap();
+        assert!(status.armed);
+        assert!(status.in_flight);
     }
 }

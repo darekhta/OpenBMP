@@ -515,13 +515,8 @@ impl Job for ThreeLoopAutopilot {
             // is re-clamped to the per-axis actuator limit.
             #[cfg(feature = "l1-adaptive")]
             if let Some(l1_params) = self.params.l1_adaptive {
-                let augmentation = self.l1_state[i].step(
-                    &l1_params,
-                    omega_body_rad_s[i],
-                    rate_cmd[i],
-                    cmd,
-                    dt,
-                );
+                let augmentation =
+                    self.l1_state[i].step(&l1_params, omega_body_rad_s[i], rate_cmd[i], cmd, dt);
                 axis_cmd += augmentation;
                 let l1_limited = axis_cmd.clamp(-limit, limit);
                 saturated |= (axis_cmd - l1_limited).abs() > 0.0;
@@ -674,7 +669,11 @@ mod tests {
             safe_state_requested: false,
         })
         .unwrap();
-        bus.publish(ReferenceState::default()).unwrap();
+        bus.publish(ReferenceState {
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            ..ReferenceState::default()
+        })
+        .unwrap();
 
         let mut autopilot = ThreeLoopAutopilot::new().with_params(AutopilotParams {
             trajectory_loop_enabled: true,
@@ -714,5 +713,106 @@ mod tests {
             }
             other => panic!("expected AutopilotError::Trajectory, got {other:?}"),
         }
+    }
+
+    #[cfg(feature = "l1-adaptive")]
+    #[test]
+    fn l1_adaptive_rate_loop_augmentation_reaches_actuator_command() {
+        use std::collections::BTreeMap;
+
+        use openbmp_core::StepIndex;
+
+        use crate::autopilot::{
+            AutopilotParams, GainSchedule, PidGains, ThreeLoopAutopilot, ThreeLoopGains,
+        };
+        use crate::bus::Bus;
+        use crate::clock::SimulatedClock;
+        use crate::l1_adaptive_full::L1AdaptiveParams;
+        use crate::scheduler::{Job as _, JobContext};
+        use crate::topics::{
+            ActuatorCommand, AttitudeEstimate, EngineDemand, PositionEstimate, ReferenceState,
+            VehicleStatus,
+        };
+
+        let bus = Bus::new();
+        bus.register::<AttitudeEstimate>().unwrap();
+        bus.register::<PositionEstimate>().unwrap();
+        bus.register::<ReferenceState>().unwrap();
+        bus.register::<VehicleStatus>().unwrap();
+        bus.register::<ActuatorCommand>().unwrap();
+        bus.register::<EngineDemand>().unwrap();
+        bus.publish(AttitudeEstimate {
+            time: SimTime::from_seconds(0.001),
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            omega_body_rad_s: Vector3::new(0.2, 0.0, 0.0),
+            gyro_bias_body_rad_s: Vector3::zeros(),
+        })
+        .unwrap();
+        bus.publish(VehicleStatus {
+            armed: true,
+            in_flight: true,
+            phase_id: 0,
+            safe_state_requested: false,
+        })
+        .unwrap();
+        bus.publish(ReferenceState {
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            ..ReferenceState::default()
+        })
+        .unwrap();
+
+        let gains = ThreeLoopGains {
+            rate: [PidGains::default(); 3],
+            attitude: [PidGains::default(); 3],
+            trajectory: [PidGains::default(); 3],
+            elevator_limit_rad: 1.0,
+            aileron_limit_rad: 1.0,
+            rudder_limit_rad: 1.0,
+            throttle_baseline: 0.0,
+        };
+        let schedule = GainSchedule {
+            by_phase: BTreeMap::new(),
+            default: gains,
+        };
+        let params = AutopilotParams {
+            l1_adaptive: Some(L1AdaptiveParams {
+                reference_model_a_m: -10.0,
+                reference_model_b: 1.0,
+                reference_model_k_g: 10.0,
+                adaptation_sample_time_s: 0.001,
+                low_pass_cutoff_rad_s: 5.0,
+                lipschitz_bound: 0.1,
+                projection_bound: 1.0,
+            }),
+            ..AutopilotParams::default()
+        };
+        let mut autopilot = ThreeLoopAutopilot::with_schedule(schedule).with_params(params);
+        let clock = SimulatedClock::new();
+
+        clock.set(SimTime::from_seconds(0.001), StepIndex::new(1));
+        autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .expect("warm-up tick");
+        clock.set(SimTime::from_seconds(0.002), StepIndex::new(2));
+        autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .expect("L1 tick");
+
+        let (cmd, _) = bus
+            .latest::<ActuatorCommand>()
+            .unwrap()
+            .expect("actuator command");
+        assert!(
+            cmd.aileron_rad.abs() > 1.0e-6,
+            "L1 augmentation should produce a nonzero roll command, got {cmd:?}"
+        );
+        assert_eq!(cmd.elevator_rad.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(cmd.rudder_rad.to_bits(), 0.0_f64.to_bits());
     }
 }

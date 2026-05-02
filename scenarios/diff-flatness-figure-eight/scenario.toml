@@ -137,27 +137,21 @@ event = "mission.events.liftoff"
 
 # Flight-controller block.
 [fc]
-estimator        = "ekf"
+estimator        = "mekf"
 autopilot        = "three_loop"
 guidance         = "attitude_hold"
 reference_q_xyzw = [0.0, 0.0, 0.0, 1.0]
 base_rate_hz     = 1000
 frame_budget_us  = 2000
 
-[fc.ekf]
+[fc.mekf]
 mag_field             = "wmm_2025"
 mag_epoch_decimal_year = 2025.0
 sigma_w_gyro          = 0.01
-sigma_w_accel_bias    = 1.0e-4
 sigma_w_gyro_bias     = 1.0e-5
 tau_gyro_bias_s       = 100.0
-tau_accel_bias_s      = 100.0
-sigma_gnss_pos_m      = 5.0
-sigma_gnss_vel_m_s    = 0.5
-sigma_baro_alt_m      = 2.0
 sigma_mag_nt          = 100.0
 innovation_false_alarm_rate = 0.01
-dead_reckon_timeout_s = 1.5
 
 [fc.actuator_channels]
 aileron  = "roll-torque"

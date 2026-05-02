@@ -474,11 +474,10 @@ fn parse_toml_budget(text: &str) -> Result<toml::Value, CliError> {
     // surface as "unexpected content, expected nothing". Parse as a
     // `Table` (the canonical document shape) and wrap it back into a
     // `Value` so the existing `as_table` consumers keep working.
-    let table = toml::from_str::<toml::Table>(text).map_err(|err| {
-        CliError::UnsupportedScenario {
+    let table =
+        toml::from_str::<toml::Table>(text).map_err(|err| CliError::UnsupportedScenario {
             what: format!("sensor budget TOML parse failed: {err}"),
-        }
-    })?;
+        })?;
     Ok(toml::Value::Table(table))
 }
 

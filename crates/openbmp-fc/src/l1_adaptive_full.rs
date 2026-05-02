@@ -26,8 +26,8 @@
 //! constructor asserts the bandwidth-projection inequality
 //! `ω_c · L < 1` and fails closed on violation.
 //!
-//! Phase 5.A.2.B ships the math; the autopilot wiring (replacing the
-//! Phase-4 `L1InspiredChannel` in the rate loop) lands in 5.A.2.C.
+//! Phase 5.A.2.B shipped the math; Phase 5.A.2.C wires it into the
+//! rate loop and retires the Phase-4 L1-inspired interim channel.
 
 use thiserror::Error;
 
@@ -90,6 +90,25 @@ pub enum L1AdaptiveError {
     NonFiniteParameter {
         /// Field path.
         field: &'static str,
+    },
+    /// `dt` must be strictly positive for the discrete L1 updates.
+    #[error("L1 discrete step dt must be > 0; got dt = {dt_s}")]
+    NonPositiveStepSize {
+        /// Provided `dt` (s).
+        dt_s: f64,
+    },
+    /// The forward-Euler reference model / predictor step must be
+    /// contractive for the configured `a_m`.
+    #[error(
+        "L1 forward-Euler step is not contractive: dt = {dt_s} must be < {max_dt_s} for a_m = {a_m}"
+    )]
+    DiscreteStepNotContractive {
+        /// Provided `dt` (s).
+        dt_s: f64,
+        /// Configured `a_m`.
+        a_m: f64,
+        /// Maximum contractive `dt` (s).
+        max_dt_s: f64,
     },
 }
 
@@ -170,6 +189,32 @@ impl L1AdaptiveParams {
                 omega_c: self.low_pass_cutoff_rad_s,
                 lipschitz_bound: self.lipschitz_bound,
                 product,
+            });
+        }
+        Ok(())
+    }
+
+    /// Validate the parameter set against a discrete controller tick.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`L1AdaptiveError`] when the parameter set is invalid
+    /// or when the forward-Euler reference-model / predictor update is
+    /// not contractive for `dt_s`.
+    pub fn validate_discrete_time(&self, dt_s: f64) -> Result<(), L1AdaptiveError> {
+        self.validate()?;
+        if !dt_s.is_finite() {
+            return Err(L1AdaptiveError::NonFiniteParameter { field: "dt_s" });
+        }
+        if dt_s <= 0.0 {
+            return Err(L1AdaptiveError::NonPositiveStepSize { dt_s });
+        }
+        let max_dt_s = -2.0 / self.reference_model_a_m;
+        if dt_s >= max_dt_s {
+            return Err(L1AdaptiveError::DiscreteStepNotContractive {
+                dt_s,
+                a_m: self.reference_model_a_m,
+                max_dt_s,
             });
         }
         Ok(())
@@ -298,7 +343,9 @@ impl L1PiecewiseConstantAdaptation {
     pub fn step(&mut self, params: &L1AdaptiveParams, x_tilde: f64, dt_s: f64) {
         self.sample_phase_s += dt_s;
         if self.sample_phase_s >= params.adaptation_sample_time_s {
-            self.sample_phase_s = 0.0;
+            while self.sample_phase_s >= params.adaptation_sample_time_s {
+                self.sample_phase_s -= params.adaptation_sample_time_s;
+            }
             let raw = pca_scalar(
                 params.reference_model_a_m,
                 params.reference_model_b,
@@ -322,8 +369,9 @@ fn pca_scalar(a_m: f64, b: f64, t_s: f64, x_tilde: f64) -> f64 {
     if exponent.abs() < 1.0e-6 {
         return -x_tilde / (b * t_s);
     }
-    let phi = exponent.exp();
-    let denom = b * (phi - 1.0);
+    let phi_minus_one = exponent.exp_m1();
+    let phi = 1.0 + phi_minus_one;
+    let denom = b * phi_minus_one;
     -phi * a_m * x_tilde / denom
 }
 
@@ -350,7 +398,7 @@ impl L1LowPassFilter {
     /// Advance by `dt_s` with the input `u`.
     pub fn step(&mut self, params: &L1AdaptiveParams, u: f64, dt_s: f64) -> f64 {
         let omega = params.low_pass_cutoff_rad_s;
-        let alpha = 1.0 - (-omega * dt_s).exp();
+        let alpha = -(-omega * dt_s).exp_m1();
         self.state += alpha * (u - self.state);
         self.state
     }
@@ -364,8 +412,8 @@ impl L1LowPassFilter {
 /// [`L1PiecewiseConstantAdaptation`], and [`L1LowPassFilter`] into one
 /// scalar axis of the L1 adaptive controller.
 ///
-/// The autopilot wiring (replacing the Phase-4 `L1InspiredChannel` in
-/// the rate loop) lands in 5.A.2.C; this struct ships the math.
+/// This struct owns the math wired into the rate loop in Phase 5.A.2.C,
+/// replacing the retired Phase-4 L1-inspired interim channel.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct L1AdaptiveChannel {
     reference_model: L1ReferenceModel,
@@ -429,8 +477,9 @@ impl L1AdaptiveChannel {
         let prediction_error = self.state_predictor.state() - x_p;
         self.pca.step(params, prediction_error, dt_s);
         let sigma_hat = self.pca.estimate();
-        let u_total = u_baseline + sigma_hat;
-        let _ = self.state_predictor.step(params, u_total, sigma_hat, dt_s);
+        let _ = self
+            .state_predictor
+            .step(params, u_baseline, sigma_hat, dt_s);
         let lpf_out = self.lpf.step(params, sigma_hat, dt_s);
         -lpf_out
     }
@@ -462,7 +511,9 @@ mod tests {
 
     #[test]
     fn validate_accepts_nominal_params() {
-        nominal_params().validate().expect("nominal params validate");
+        nominal_params()
+            .validate()
+            .expect("nominal params validate");
     }
 
     #[test]
@@ -481,10 +532,7 @@ mod tests {
         let mut params = nominal_params();
         params.reference_model_b = 0.0;
         let err = params.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            L1AdaptiveError::NonZeroEffectivenessRequired
-        ));
+        assert!(matches!(err, L1AdaptiveError::NonZeroEffectivenessRequired));
     }
 
     #[test]
@@ -508,8 +556,23 @@ mod tests {
         let err = params.validate().unwrap_err();
         assert!(matches!(
             err,
-            L1AdaptiveError::NonFiniteParameter { field: "reference_model_b" }
+            L1AdaptiveError::NonFiniteParameter {
+                field: "reference_model_b"
+            }
         ));
+    }
+
+    #[test]
+    fn validate_discrete_time_rejects_euler_unstable_step() {
+        let mut params = nominal_params();
+        params.reference_model_a_m = -10_000.0;
+        let err = params.validate_discrete_time(0.001).unwrap_err();
+        match err {
+            L1AdaptiveError::DiscreteStepNotContractive { max_dt_s, .. } => {
+                assert_abs_diff_eq!(max_dt_s, 0.0002, epsilon = 1.0e-12);
+            }
+            other => panic!("expected DiscreteStepNotContractive, got {other:?}"),
+        }
     }
 
     #[test]
@@ -610,6 +673,23 @@ mod tests {
     }
 
     #[test]
+    fn pca_preserves_sample_phase_remainder_after_fire() {
+        let params = nominal_params();
+        let mut pca = L1PiecewiseConstantAdaptation::default();
+        pca.step(&params, 0.05, 0.0012);
+        let first = pca.estimate();
+        assert!(first.abs() > 0.0);
+        assert_abs_diff_eq!(pca.sample_phase_s, 0.0002, epsilon = 1.0e-15);
+
+        for _ in 0..7 {
+            pca.step(&params, 0.0, 0.0001);
+        }
+        assert_abs_diff_eq!(pca.estimate(), first, epsilon = 1.0e-12);
+        pca.step(&params, 0.0, 0.0001);
+        assert_abs_diff_eq!(pca.estimate(), 0.0, epsilon = 1.0e-12);
+    }
+
+    #[test]
     fn pca_clamps_to_projection_bound() {
         let mut params = nominal_params();
         params.projection_bound = 1.0;
@@ -645,6 +725,17 @@ mod tests {
     }
 
     #[test]
+    fn lpf_small_step_alpha_keeps_first_order_precision() {
+        let mut params = nominal_params();
+        params.low_pass_cutoff_rad_s = 1.0e-9;
+        params.lipschitz_bound = 0.1;
+        let mut lpf = L1LowPassFilter::default();
+        lpf.step(&params, 1.0, 1.0e-9);
+        assert!(lpf.output() > 0.0);
+        assert_abs_diff_eq!(lpf.output(), 1.0e-18, epsilon = 1.0e-30);
+    }
+
+    #[test]
     fn channel_step_is_deterministic_across_reruns() {
         let params = nominal_params();
         let mut a = L1AdaptiveChannel::new();
@@ -662,6 +753,20 @@ mod tests {
         );
         assert_eq!(a.reference_state().to_bits(), b.reference_state().to_bits());
         assert_eq!(a.predictor_state().to_bits(), b.predictor_state().to_bits());
+    }
+
+    #[test]
+    fn channel_predictor_uses_single_sigma_hat_term() {
+        let params = nominal_params();
+        let mut channel = L1AdaptiveChannel::new();
+        let u_baseline = 0.25;
+        let _ = channel.step(&params, -0.001, 0.0, u_baseline, 0.001);
+        let sigma_hat = channel.sigma_hat();
+        assert_abs_diff_eq!(
+            channel.predictor_state(),
+            0.001 * (u_baseline + sigma_hat),
+            epsilon = 1.0e-15
+        );
     }
 
     #[test]
@@ -685,8 +790,8 @@ mod tests {
         for _ in 0..20_000 {
             let u_ad = channel.step(&params, x_p, 0.0, 0.0, dt);
             // Plant: ẋ_p = a_m x_p + b (u + σ_true) where u = u_ad.
-            let derivative = params.reference_model_a_m * x_p
-                + params.reference_model_b * (u_ad + sigma_true);
+            let derivative =
+                params.reference_model_a_m * x_p + params.reference_model_b * (u_ad + sigma_true);
             x_p += dt * derivative;
         }
         // After 20 s the L1 channel should have driven the plant

@@ -67,7 +67,7 @@ Implemented in this crate today:
   real 6-state sigma-point UKF for attitude + gyro bias.
 - **Autopilot upgrades** — optional gyro notch filters,
   minimum-snap differential-flatness attitude-reference generation, and
-  feature-gated L1-inspired rate-loop augmentation.
+  feature-gated Cao-Hovakimyan L1 adaptive rate-loop augmentation.
 - **FDIR / voter upgrades** — burst-counter / single-sample GLRT /
   CUSUM detector
   families with explicit fault bits, per-kind sensor lane status, and

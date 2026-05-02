@@ -137,6 +137,34 @@ fn max_angular_velocity_magnitude_rad_s(parquet: &Path) -> f64 {
     max
 }
 
+fn max_quaternion_norm_error(parquet: &Path) -> f64 {
+    let qx = read_f64_column(parquet, "attitude.q_x");
+    let qy = read_f64_column(parquet, "attitude.q_y");
+    let qz = read_f64_column(parquet, "attitude.q_z");
+    let qw = read_f64_column(parquet, "attitude.q_w");
+    let mut max = 0.0_f64;
+    for (((x, y), z), w) in qx.iter().zip(qy.iter()).zip(qz.iter()).zip(qw.iter()) {
+        let err = (x * x + y * y + z * z + w * w).sqrt() - 1.0;
+        max = max.max(err.abs());
+    }
+    max
+}
+
+fn max_direct_torque_effector_actual_abs(parquet: &Path) -> f64 {
+    let columns = [
+        "effector.roll-torque.actual",
+        "effector.pitch-torque.actual",
+        "effector.yaw-torque.actual",
+    ];
+    let mut max = 0.0_f64;
+    for column in columns {
+        for value in read_f64_column(parquet, column) {
+            max = max.max(value.abs());
+        }
+    }
+    max
+}
+
 #[test]
 fn diff_flatness_figure_eight_runs_to_completion() {
     let run = run_to_parquet("diff-flatness-figure-eight-runs");
@@ -150,6 +178,21 @@ fn diff_flatness_figure_eight_runs_to_completion() {
         .unwrap_or_else(|err| {
             panic!("max_angular_velocity_magnitude_rad_s = {max_omega} outside tolerance: {err}")
         });
+    assert!(
+        max_omega > 1.0e-6,
+        "direct-torque scenario must rotate the rigid body; max angular velocity was {max_omega}"
+    );
+    let max_q_norm_error = max_quaternion_norm_error(&run.parquet);
+    table
+        .check_metric("max_quaternion_norm_error", max_q_norm_error)
+        .unwrap_or_else(|err| {
+            panic!("max_quaternion_norm_error = {max_q_norm_error} outside tolerance: {err}")
+        });
+    let max_effector_actual = max_direct_torque_effector_actual_abs(&run.parquet);
+    assert!(
+        max_effector_actual > 1.0e-6,
+        "FC mixer must command at least one direct-torque effector; max actual was {max_effector_actual}"
+    );
     let bytes = fs::read(&run.parquet).expect("read parquet");
     assert!(!bytes.is_empty(), "parquet must be non-empty");
     let _ = fs::remove_file(&run.parquet);

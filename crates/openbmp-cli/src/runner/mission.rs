@@ -5,9 +5,11 @@
 //! list and [`openbmp_sim::MissionPhaseGraph`] the kernel's
 //! `with_mission` builder consumes.
 //!
-//! Identifier convention: each phase / event id is path-derived via
-//! `PhaseId::from_path("mission.phases.<id>")` and
-//! `EventId::from_path("mission.events.<id>")`. Reordering the
+//! Identifier convention: each phase / event id is path-derived from
+//! the canonical path (`mission.phases.<id>` /
+//! `mission.events.<id>`). Scenario files may provide either the bare
+//! id (`ascent`) or the canonical path (`mission.phases.ascent`);
+//! both forms resolve to the same stable id. Reordering the
 //! `[[mission.phases]]` / `[[mission.events]]` blocks does not shift
 //! any id; this is the load-bearing invariant for declaration-order-
 //! independent determinism.
@@ -89,11 +91,19 @@ pub fn build_mission_runtime(
 }
 
 fn phase_id(id: &str) -> PhaseId {
-    PhaseId::from_path(&format!("mission.phases.{id}"))
+    if id.starts_with("mission.phases.") {
+        PhaseId::from_path(id)
+    } else {
+        PhaseId::from_path(&format!("mission.phases.{id}"))
+    }
 }
 
 fn event_id(id: &str) -> EventId {
-    EventId::from_path(&format!("mission.events.{id}"))
+    if id.starts_with("mission.events.") {
+        EventId::from_path(id)
+    } else {
+        EventId::from_path(&format!("mission.events.{id}"))
+    }
 }
 
 fn build_phase(config: &PhaseConfig) -> Phase {
@@ -268,4 +278,15 @@ pub fn marker_tags(mission: &MissionConfig) -> Vec<String> {
         }
     }
     tags.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_and_bare_phase_ids_match() {
+        assert_eq!(phase_id("ascent"), phase_id("mission.phases.ascent"));
+        assert_eq!(event_id("liftoff"), event_id("mission.events.liftoff"));
+    }
 }

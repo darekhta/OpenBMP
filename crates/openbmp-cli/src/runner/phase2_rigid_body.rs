@@ -160,12 +160,12 @@ pub fn run(
     )?;
 
     let initial_snapshot = effector_rack.snapshot();
-    let direct_torque_present = document
-        .vehicle
-        .assembly
-        .effectors
-        .iter()
-        .any(|e| matches!(e.kind, openbmp_scenario::EffectorKindConfig::DirectTorque { .. }));
+    let direct_torque_present = document.vehicle.assembly.effectors.iter().any(|e| {
+        matches!(
+            e.kind,
+            openbmp_scenario::EffectorKindConfig::DirectTorque { .. }
+        )
+    });
     if !deck_bindings.is_empty() || direct_torque_present {
         let mut snapshot_map = crate::runner::aero_effector_match::build_snapshot_map(
             &deck_bindings,
@@ -176,7 +176,7 @@ pub fn run(
                 document,
                 &initial_snapshot,
             );
-            snapshot_map.extend(dt_map);
+            merge_direct_torque_snapshot_map(&mut snapshot_map, dt_map)?;
         }
         kernel.set_effector_actuals(snapshot_map);
     }
@@ -262,7 +262,7 @@ pub fn run(
                     document,
                     &rack_snapshot,
                 );
-                snapshot_map.extend(dt_map);
+                merge_direct_torque_snapshot_map(&mut snapshot_map, dt_map)?;
             }
             kernel.set_effector_actuals(snapshot_map);
         }
@@ -343,6 +343,23 @@ pub fn run(
         stop_reason,
         table,
     })
+}
+
+fn merge_direct_torque_snapshot_map(
+    snapshot_map: &mut BTreeMap<String, f64>,
+    direct_torque_map: BTreeMap<String, f64>,
+) -> Result<(), CliError> {
+    for (key, value) in direct_torque_map {
+        if snapshot_map.insert(key.clone(), value).is_some() {
+            return Err(CliError::UnsupportedScenario {
+                what: format!(
+                    "effector snapshot key `{key}` is used by both an aero-deck axis and a \
+                     direct_torque effector; rename the direct_torque effector or deck axis"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default)]
@@ -830,9 +847,7 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
     // or tank-rack moment models are not supported in this slice.
     // Closed-loop FC validation scenarios use direct-torque alone; if
     // a downstream scenario combines them, fail closed.
-    if direct_torque_adapter.is_some()
-        && (cluster_adapter.is_some() || tank_adapter.is_some())
-    {
+    if direct_torque_adapter.is_some() && (cluster_adapter.is_some() || tank_adapter.is_some()) {
         return Err(CliError::UnsupportedScenario {
             what: "direct_torque effectors combined with engine-cluster or tank moment models \
                    is not supported in Phase 5.A.2.A; use a dedicated closed-loop validation \
@@ -841,15 +856,17 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
         });
     }
 
-    Ok(match (cluster_adapter, tank_adapter, direct_torque_adapter) {
-        (Some(c), Some(t), None) => RigidMomentEitherKind::EngineClusterAndTankRack(c, t),
-        (Some(c), None, None) => RigidMomentEitherKind::EngineCluster(c),
-        (None, Some(t), None) => RigidMomentEitherKind::TankRack(t),
-        (None, None, Some(d)) => RigidMomentEitherKind::DirectTorque(d),
-        (None, None, None) => RigidMomentEitherKind::Zero(ZeroMoment),
-        // Combinations with DirectTorque rejected above.
-        _ => unreachable!(),
-    })
+    Ok(
+        match (cluster_adapter, tank_adapter, direct_torque_adapter) {
+            (Some(c), Some(t), None) => RigidMomentEitherKind::EngineClusterAndTankRack(c, t),
+            (Some(c), None, None) => RigidMomentEitherKind::EngineCluster(c),
+            (None, Some(t), None) => RigidMomentEitherKind::TankRack(t),
+            (None, None, Some(d)) => RigidMomentEitherKind::DirectTorque(d),
+            (None, None, None) => RigidMomentEitherKind::Zero(ZeroMoment),
+            // Combinations with DirectTorque rejected above.
+            _ => unreachable!(),
+        },
+    )
 }
 
 fn build_direct_torque_adapter(
@@ -1435,3 +1452,25 @@ fn insert_recovery_state_channels(
 // shape of the kernel mass model.
 #[allow(dead_code)]
 type _RigidMassEitherAlias = RigidMassEither;
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_torque_snapshot_key_collision_fails_closed() {
+        let mut aero_map = BTreeMap::from([("roll-torque".to_string(), 0.1)]);
+        let direct_torque_map = BTreeMap::from([("roll-torque".to_string(), 0.2)]);
+
+        let err = merge_direct_torque_snapshot_map(&mut aero_map, direct_torque_map).unwrap_err();
+        match err {
+            CliError::UnsupportedScenario { what } => {
+                assert!(what.contains("roll-torque"));
+                assert!(what.contains("aero-deck axis"));
+                assert!(what.contains("direct_torque effector"));
+            }
+            other => panic!("expected UnsupportedScenario, got {other:?}"),
+        }
+    }
+}
