@@ -34,6 +34,7 @@ pub use document::{
     EnvironmentConfig, EpochConfig, EventActionConfig, EventConfig, EventTriggerConfig,
     FcActuatorChannelsConfig, FcAutopilotAllocationConfig, FcAutopilotAllocationKind,
     FcAutopilotKind, FcAutopilotParams, FcConfig, FcEkfConfig, FcEstimatorKind,
+    FcL1AdaptiveConfig,
     FcEstimatorLaneConfig, FcEstimatorLanesConfig, FcEstimatorVoterKind, FcFdirConfig,
     FcFdirDetectorConfig, FcFdirDetectorKind, FcGainsConfig, FcGuidanceKind, FcHealthConfig,
     FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig, FcTrajectoryConfig,

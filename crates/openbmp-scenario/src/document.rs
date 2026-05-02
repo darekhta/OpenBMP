@@ -360,6 +360,22 @@ impl ScenarioDocument {
                 },
             )?;
         }
+        // fc.autopilot_params.l1_adaptive — Phase 5.A.2.C consumed
+        // block. v3-only; the runner translates to AutopilotParams.l1_adaptive
+        // which the rate loop consumes.
+        if let Some(autopilot_params) = fc.autopilot_params.as_ref()
+            && let Some(l1) = autopilot_params.l1_adaptive.as_ref()
+        {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.autopilot_params.l1_adaptive".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            l1.validate()?;
+        }
+
         // fc.trajectory — Phase 5.A.1.B consumed block. v3-only; the
         // runner builds a `MinimumSnapTrajectory` from this block and
         // installs it on the autopilot.
@@ -3610,6 +3626,91 @@ pub struct FcAutopilotParams {
     pub trajectory_loop_enabled: Option<bool>,
     /// Trajectory-loop strategy.
     pub trajectory_kind: Option<FcTrajectoryKind>,
+    /// Optional Cao-Hovakimyan L1 adaptive rate-loop augmentation
+    /// (Phase 5.A.2.C, v3-only). When `Some`, the runner installs a
+    /// per-axis `L1AdaptiveChannel` augmentation on the rate loop;
+    /// the FC's `l1-adaptive` feature flag must be on for the
+    /// augmentation to compile.
+    pub l1_adaptive: Option<FcL1AdaptiveConfig>,
+}
+
+/// Per-axis L1 adaptive parameters declared in
+/// `[fc.autopilot_params.l1_adaptive]` (Phase 5.A.2.C, v3-only).
+///
+/// The fields mirror `openbmp_fc::l1_adaptive_full::L1AdaptiveParams`
+/// one-for-one and are validated against the bandwidth-projection
+/// inequality `ω_c · L < 1` at scenario load.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcL1AdaptiveConfig {
+    /// Reference-model bandwidth `a_m` (rad/s). Must be `< 0`.
+    pub reference_model_a_m: f64,
+    /// Reference-model / state-predictor input gain `b`. Must be
+    /// non-zero.
+    pub reference_model_b: f64,
+    /// Reference-model feedforward gain `k_g`.
+    pub reference_model_k_g: f64,
+    /// PCA sample time `T_s` (s). Must be `> 0`.
+    pub adaptation_sample_time_s: f64,
+    /// Strictly-proper LPF cutoff `ω_c` (rad/s). Must be `> 0`.
+    pub low_pass_cutoff_rad_s: f64,
+    /// Lipschitz bound `L` on the matched uncertainty. Must be `> 0`
+    /// and satisfy `ω_c · L < 1`.
+    pub lipschitz_bound: f64,
+    /// Symmetric projection bound on `σ̂`. Must be `> 0`.
+    pub projection_bound: f64,
+}
+
+impl FcL1AdaptiveConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        let path = "fc.autopilot_params.l1_adaptive";
+        require_finite(&format!("{path}.reference_model_a_m"), self.reference_model_a_m)?;
+        require_finite(&format!("{path}.reference_model_b"), self.reference_model_b)?;
+        require_finite(&format!("{path}.reference_model_k_g"), self.reference_model_k_g)?;
+        require_finite(
+            &format!("{path}.adaptation_sample_time_s"),
+            self.adaptation_sample_time_s,
+        )?;
+        require_finite(
+            &format!("{path}.low_pass_cutoff_rad_s"),
+            self.low_pass_cutoff_rad_s,
+        )?;
+        require_finite(&format!("{path}.lipschitz_bound"), self.lipschitz_bound)?;
+        require_finite(&format!("{path}.projection_bound"), self.projection_bound)?;
+        if self.reference_model_a_m >= 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.reference_model_a_m"),
+                value: self.reference_model_a_m,
+                rule: "must be strictly negative for the reference model to be stable",
+            });
+        }
+        if self.reference_model_b == 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.reference_model_b"),
+                value: self.reference_model_b,
+                rule: "must be non-zero",
+            });
+        }
+        require_positive(
+            &format!("{path}.adaptation_sample_time_s"),
+            self.adaptation_sample_time_s,
+        )?;
+        require_positive(
+            &format!("{path}.low_pass_cutoff_rad_s"),
+            self.low_pass_cutoff_rad_s,
+        )?;
+        require_positive(&format!("{path}.lipschitz_bound"), self.lipschitz_bound)?;
+        require_positive(&format!("{path}.projection_bound"), self.projection_bound)?;
+        let product = self.low_pass_cutoff_rad_s * self.lipschitz_bound;
+        if product >= 1.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.low_pass_cutoff_rad_s · lipschitz_bound"),
+                value: product,
+                rule: "Cao-Hovakimyan bandwidth-projection inequality requires ω_c · L < 1",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Supported trajectory-loop kinds.

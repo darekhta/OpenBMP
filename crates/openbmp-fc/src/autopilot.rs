@@ -122,9 +122,16 @@ pub struct AutopilotParams {
     pub trajectory_kind: TrajectoryKind,
     /// Optional per-axis gyro notch filters.
     pub gyro_notch: Option<[crate::filters::NotchConfig; 3]>,
-    /// Optional L1-inspired augmentation on the rate loop.
+    /// Optional Cao-Hovakimyan L1 adaptive augmentation on the rate
+    /// loop (Phase 5.A.2.C). When `Some(_)` the autopilot installs a
+    /// per-axis [`crate::l1_adaptive_full::L1AdaptiveChannel`] and
+    /// adds its augmentation to the PID rate-loop output every tick.
+    /// The configured `L1AdaptiveParams` must already satisfy the
+    /// bandwidth-projection inequality `ω_c · L < 1` — the runner's
+    /// `[fc.autopilot_params.l1_adaptive]` parser asserts this at
+    /// scenario load.
     #[cfg(feature = "l1-adaptive")]
-    pub l1_inspired: Option<crate::l1_adaptive::L1InspiredParams>,
+    pub l1_adaptive: Option<crate::l1_adaptive_full::L1AdaptiveParams>,
 }
 
 impl Default for AutopilotParams {
@@ -136,7 +143,7 @@ impl Default for AutopilotParams {
             trajectory_kind: TrajectoryKind::Pid,
             gyro_notch: None,
             #[cfg(feature = "l1-adaptive")]
-            l1_inspired: None,
+            l1_adaptive: None,
         }
     }
 }
@@ -188,8 +195,11 @@ pub struct ThreeLoopAutopilot {
     /// Scenario `[fc.trajectory].yaw_rad` sets this; programmatic users
     /// that omit it inherit yaw from the bus reference.
     minimum_snap_yaw_rad: Option<f64>,
+    /// Per-axis L1 adaptive state (Phase 5.A.2.C). Used only when
+    /// [`AutopilotParams::l1_adaptive`] is `Some(_)` and the
+    /// `l1-adaptive` feature is on.
     #[cfg(feature = "l1-adaptive")]
-    l1_state: [crate::l1_adaptive::L1InspiredChannel; 3],
+    l1_state: [crate::l1_adaptive_full::L1AdaptiveChannel; 3],
 }
 
 impl ThreeLoopAutopilot {
@@ -216,7 +226,7 @@ impl ThreeLoopAutopilot {
             minimum_snap_trajectory: None,
             minimum_snap_yaw_rad: None,
             #[cfg(feature = "l1-adaptive")]
-            l1_state: [crate::l1_adaptive::L1InspiredChannel::new(); 3],
+            l1_state: [crate::l1_adaptive_full::L1AdaptiveChannel::new(); 3],
         }
     }
 
@@ -497,9 +507,22 @@ impl Job for ThreeLoopAutopilot {
             let mut axis_cmd = cmd;
             #[cfg(not(feature = "l1-adaptive"))]
             let axis_cmd = cmd;
+            // Phase 5.A.2.C — full Cao-Hovakimyan L1 adaptive
+            // augmentation: the predictor sees the measured body
+            // angular rate as plant state, the rate loop's command as
+            // reference, and the PID output as baseline command.
+            // The augmentation is added to the baseline; the result
+            // is re-clamped to the per-axis actuator limit.
             #[cfg(feature = "l1-adaptive")]
-            if let Some(l1_params) = self.params.l1_inspired {
-                axis_cmd += self.l1_state[i].step(l1_params, rate_error[i], 0.0, dt);
+            if let Some(l1_params) = self.params.l1_adaptive {
+                let augmentation = self.l1_state[i].step(
+                    &l1_params,
+                    omega_body_rad_s[i],
+                    rate_cmd[i],
+                    cmd,
+                    dt,
+                );
+                axis_cmd += augmentation;
                 let l1_limited = axis_cmd.clamp(-limit, limit);
                 saturated |= (axis_cmd - l1_limited).abs() > 0.0;
                 axis_cmd = l1_limited;

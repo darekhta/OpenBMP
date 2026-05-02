@@ -605,6 +605,99 @@ time_s         = 4.0
     }
 
     #[test]
+    fn fc_l1_adaptive_block_is_v3_only() {
+        let block = r#"
+[fc.autopilot_params.l1_adaptive]
+reference_model_a_m       = -10.0
+reference_model_b         =  1.0
+reference_model_k_g       = 10.0
+adaptation_sample_time_s  =  0.001
+low_pass_cutoff_rad_s     =  5.0
+lipschitz_bound           =  0.1
+projection_bound          =  100.0
+"#;
+        let toml_v2 = append(fc_v2_scenario(), block);
+        let err = Scenario::from_toml_str(&toml_v2).unwrap_err();
+        match err {
+            ScenarioError::SchemaVersionFieldReserved { field, .. } => {
+                assert_eq!(field, "fc.autopilot_params.l1_adaptive");
+            }
+            other => panic!("expected SchemaVersionFieldReserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_l1_adaptive_block_under_v3_validates_with_nominal_params() {
+        let block = r#"
+[fc.autopilot_params.l1_adaptive]
+reference_model_a_m       = -10.0
+reference_model_b         =  1.0
+reference_model_k_g       = 10.0
+adaptation_sample_time_s  =  0.001
+low_pass_cutoff_rad_s     =  5.0
+lipschitz_bound           =  0.1
+projection_bound          =  100.0
+"#;
+        let toml = append(fc_v2_scenario(), block)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&toml).expect("v3 l1_adaptive validates");
+        let l1 = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.autopilot_params.as_ref())
+            .and_then(|p| p.l1_adaptive.as_ref())
+            .expect("l1_adaptive present");
+        assert!((l1.reference_model_a_m + 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn fc_l1_adaptive_block_rejects_bandwidth_projection_violation() {
+        // ω_c · L = 5 · 0.5 = 2.5 ≥ 1 — must fail Cao-Hovakimyan.
+        let block = r#"
+[fc.autopilot_params.l1_adaptive]
+reference_model_a_m       = -10.0
+reference_model_b         =  1.0
+reference_model_k_g       = 10.0
+adaptation_sample_time_s  =  0.001
+low_pass_cutoff_rad_s     =  5.0
+lipschitz_bound           =  0.5
+projection_bound          =  100.0
+"#;
+        let toml = append(fc_v2_scenario(), block)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, ref rule, .. }
+                if field.contains("low_pass_cutoff_rad_s") && rule.contains("ω_c · L < 1")),
+            "expected bandwidth-projection violation, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn fc_l1_adaptive_block_rejects_unstable_reference_model() {
+        // a_m = +1.0 ≥ 0 — reference model not stable.
+        let block = r#"
+[fc.autopilot_params.l1_adaptive]
+reference_model_a_m       =  1.0
+reference_model_b         =  1.0
+reference_model_k_g       = 10.0
+adaptation_sample_time_s  =  0.001
+low_pass_cutoff_rad_s     =  5.0
+lipschitz_bound           =  0.1
+projection_bound          =  100.0
+"#;
+        let toml = append(fc_v2_scenario(), block)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field.contains("reference_model_a_m")),
+            "expected reference_model_a_m InvalidNumber, got {err:?}"
+        );
+    }
+
+    #[test]
     fn fc_trajectory_block_rejects_too_few_waypoints() {
         let block = r#"
 [fc.trajectory]

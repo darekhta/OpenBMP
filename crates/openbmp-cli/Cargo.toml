@@ -17,8 +17,9 @@ name = "openbmp"
 path = "src/main.rs"
 
 [features]
-default = []
-bridge  = []
+default     = []
+bridge      = []
+l1-adaptive = ["openbmp-fc/l1-adaptive"]
 
 [dependencies]
 arrow              = { workspace = true }

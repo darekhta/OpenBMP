@@ -42,8 +42,6 @@ pub mod filters;
 pub mod guidance;
 pub mod health;
 #[cfg(feature = "l1-adaptive")]
-pub mod l1_adaptive;
-#[cfg(feature = "l1-adaptive")]
 pub mod l1_adaptive_full;
 #[cfg(feature = "mpc")]
 pub mod landing;

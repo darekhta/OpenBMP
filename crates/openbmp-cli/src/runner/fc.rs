@@ -472,6 +472,18 @@ fn build_autopilot_params(cfg: &FcAutopilotParams) -> AutopilotParams {
             FcTrajectoryKind::MinimumSnap => TrajectoryKind::DifferentialFlatness,
         };
     }
+    #[cfg(feature = "l1-adaptive")]
+    if let Some(l1) = cfg.l1_adaptive.as_ref() {
+        params.l1_adaptive = Some(openbmp_fc::l1_adaptive_full::L1AdaptiveParams {
+            reference_model_a_m: l1.reference_model_a_m,
+            reference_model_b: l1.reference_model_b,
+            reference_model_k_g: l1.reference_model_k_g,
+            adaptation_sample_time_s: l1.adaptation_sample_time_s,
+            low_pass_cutoff_rad_s: l1.low_pass_cutoff_rad_s,
+            lipschitz_bound: l1.lipschitz_bound,
+            projection_bound: l1.projection_bound,
+        });
+    }
     params
 }
 
