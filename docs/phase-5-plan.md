@@ -96,6 +96,50 @@ Phase 5 closes when:
    no real device drivers, no real bus protocols.
 5. The non-suitability disclaimer remains on every release artifact.
 
+## Delivery status
+
+Sub-phase status as of the latest commit on `main`. Update this table
+in lockstep with each sub-phase landing.
+
+| Sub-phase | Status | Commit |
+|---|---|---|
+| 5.0 — pre-work | shipped | `f24aadc` (+ audit follow-ups in `c241ee8`) |
+| 5.A.1.A — minimum-snap math + flat-output references + autopilot wiring | shipped | `8b5d0ab` |
+| 5.A.1.B — `[fc.trajectory]` v3 scenario block + parser + runner integration | shipped | `27e079a` |
+| 5.A.1.C — `diff-flatness-figure-eight` scenario + e2e test + tolerance table | shipped | `27e079a` |
+| 5.A.1.D — retire `TrajectoryKind::FlatnessInspired` | shipped | `27e079a` |
+| 5.A.2 onwards | pending | — |
+
+## Vehicle-class scope
+
+The Phase 5 autopilot algorithms ship for **thrust-along-body-z
+vehicles**, which is the canonical assumption shared by:
+
+- single-engine rockets pointing along their long axis,
+- propulsive landers (e.g. SpaceX Falcon-9 stage 1, Blue Origin
+  New Shepard),
+- multirotors (the Mellinger & Kumar 2011 paper that motivated
+  5.A.1 was a quadrotor paper; the math is identical).
+
+The OpenBMP repository's *scenario corpus and validation evidence
+ship for rocket-class vehicles only* — sounding rockets, multi-stage
+launch vehicles, propulsive landers, and (Phase-6) lifting re-entry.
+Multirotor sim is **downstream-extension territory**: the trajectory
+math drops into the framework cleanly, but the project does not
+ship a multirotor mixer (4-prop mixing matrix → body torque), a
+multirotor force/moment model, or a multirotor scenario fixture.
+The `docs/design-concept.md § Vehicle Classes` list is the
+authoritative scope; UAVs / multicopters are absent by design, and
+adding them requires the algorithm work above plus framework-side
+mixer / model / scenario authoring that is out of Phase-5 scope.
+
+Categorical out-of-scope (per `docs/safety-boundaries.md`):
+fixed-wing aero-stability augmentation systems, missile autopilot
+modes (proportional navigation, augmented PN, sliding-mode homing,
+bank-to-turn / skid-to-turn terminal-mode variants), terrain-matching
+navigation (TERCOM / DSMAC), real flight-deployable controllers
+(no DO-178C compliance claims, no real bus protocols).
+
 ## Sub-phase roadmap
 
 Sub-phases are grouped A (autopilot SOTA), B (estimator/FDIR), C
@@ -156,10 +200,14 @@ trajectory tracker for thrust-along-body-z vehicles:
   the full path the type was always meant to be.
 
 **Exit criterion.** A new academic scenario flies a 3-D figure-eight
-or slalom trajectory with the differential-flatness tracker active,
-attitude-error stays within a documented tolerance envelope, and the
-trajectory generator's polynomial coefficients are byte-stable across
-reruns.
+or slalom trajectory with the differential-flatness tracker active
+across the full waypoint sequence, the trajectory generator's
+polynomial coefficients are byte-stable across reruns, and the
+closed-loop pipeline produces byte-identical telemetry across two
+consecutive runs. A tight attitude-error tolerance envelope is
+documented with the L1 adaptive and observer-form anti-windup
+sub-phases (5.A.2 / 5.A.3), where the actuator-to-body torque path is
+strengthened enough to make that envelope meaningful.
 
 **Validation evidence.** Unit tests for polynomial moment minimisation;
 property test that snap is finite at every interior knot; analytic-toy
@@ -197,21 +245,35 @@ architecture:
   `L1InspiredParams` is retired in the same sub-phase once the full
   path lands.
 
-**Exit criterion.** A scenario with a deliberately mismatched
-plant gain (e.g. ±30 % thrust uncertainty) tracks reference attitude
-with documented L1 robustness bound; the bandwidth-projection
-inequality `ω_c · L < 1` is asserted at scenario load and violations
-fail closed.
+**Exit criterion.** The 5.A.1.C `diff-flatness-figure-eight`
+scenario is upgraded to a rigid-body kernel with 3-axis effectors
+(Phase-4-shape closed-loop pipeline), `±30 %` thrust uncertainty is
+injected on the rate loop, and the L1-augmented autopilot tracks the
+figure-eight's reference attitude within a documented tolerance
+envelope recorded in
+`tests/expected/diff-flatness-figure-eight.toml` (the placeholder
+`kernel_steps` metric is replaced with an attitude-error-bound
+metric in this sub-phase). The bandwidth-projection inequality
+`ω_c · L < 1` is asserted at scenario load and violations fail
+closed.
 
 **Validation evidence.** Unit + property tests for the projection
 operator (estimate stays inside bound); state-predictor / reference-
-model agreement under nominal conditions; closed-loop scenario
-demonstrating reference-model tracking under disturbance.
+model agreement under nominal conditions; closed-loop figure-eight
+attitude tracking under thrust-uncertainty disturbance.
 
 **References.** Cao, C. and Hovakimyan, N., *L1 Adaptive Control
-Theory: Guaranteed Robustness with Fast Adaptation*, SIAM 2010.
-Hovakimyan, N. and Cao, C. — the same monograph but cited as the
-authoritative architecture description.
+Theory: Guaranteed Robustness with Fast Adaptation*, SIAM 2010 — the
+authoritative architecture monograph. Modern piecewise-constant
+adaptation refinements: Wang, Y. et al., *Robust flight control
+based on a nonlinear-L1 adaptive control with modified
+piecewise-constant and HIL experiments*, Nonlinear Dynamics 2024
+(NDI-L1, modified PCA reduces computational burden without losing
+estimation accuracy); MDPI Actuators 2024 *Design and Implementation
+of an L1 Adaptive Proportional Output Feedback Controller*. The
+Lund University thesis *Augmenting L1 Adaptive Control of
+Piecewise Constant Type to Aerial Vehicles* documents the PCA path
+applied to fighter-aircraft + mini-UAV envelopes.
 
 **Scope guardrail.** The L1 controller is the rate-loop augmentation,
 not a guidance law. No envelope-protection hooks tied to operational
@@ -259,7 +321,16 @@ windup and how to avoid it*, ACC 1989 (observer-form / conditioning
 technique). Stevens & Lewis 2015 (LQR formulation, discrete-time
 DARE). Smeur, E., Chu, Q., and de Croon, G., *Adaptive Incremental
 Nonlinear Dynamic Inversion for Attitude Control of Micro Air
-Vehicles*, JGCD 2016.
+Vehicles*, JGCD 2016 (foundational INDI). Modern INDI references:
+Smeur et al., *From fundamentals to applications of incremental
+nonlinear dynamic inversion: A survey on INDI – Part I*, Chinese
+Journal of Aeronautics 2024 and *Part II*, ChinaXiv / CJA 2025
+(comprehensive INDI surveys; INDI publication count grew from 186
+in 2016 to ≈1530 by 2024). Robustness-augmented INDI for stretch
+tracking: arXiv 2501.07223 *Improving Incremental Nonlinear Dynamic
+Inversion Robustness Using Robust Control in Aerial Robotics*
+(2025) — hybrid INDI + linear-structured H∞ achieves > 50 %
+disturbance-rejection improvement in published gust simulations.
 
 **Scope guardrail.** Baselines are educational comparisons; no
 baseline ships as the default autopilot.
@@ -298,13 +369,25 @@ Cambridge 2004 (QP / SOCP formulation). Açıkmeşe, B. and Ploen, S.,
 *Convex Programming Approach to Powered Descent Guidance for Mars
 Landing*, JGCD 2007 (SOCP for cone-constrained powered descent —
 academic reference; the Phase-5 implementation does not include
-any operational landing target).
+any operational landing target). Modern successive-convexification
+references (informational; not implemented in 5.A.4):
+Szmuk, M., Reynolds, T. P., and Açıkmeşe, B., *Successive
+Convexification for 6-DoF Mars Rocket Powered Landing with
+Free-Final-Time*, AIAA SciTech 2017 / JGCD; Reynolds, T. P. et al.,
+*Successive Convexification for Powered Descent Guidance with
+Time-Varying Mass Properties*, AIAA SciTech 2024 (NASA Human
+Landing System support); Sequential Convex Programming for 6-DoF
+Powered Descent (arXiv 2510.09610, 2024). University of Washington
+ACL ships a continuous-time SCvx with state-triggered constraints
+(CT-cSTC) at <https://github.com/UW-ACL/CT-cSTC>; OpenBMP cites
+this as the academic SOTA for powered-descent guidance and treats
+it as a stretch goal for Phase 5 / Phase 6 follow-on work, not as a
+5.A.4 deliverable.
 
 **Scope guardrail.** No real-world landing-target reference data;
 the SOCP is exercised against synthetic scenarios only. The full
-LCvxLD / SCvx powered-descent reproduction tracked in the Phase-4
-plan is left as a downstream-user worked example, not an OpenBMP
-shipped scenario.
+LCvxLD / SCvx / CT-cSTC powered-descent reproduction is left as a
+downstream-user worked example, not an OpenBMP shipped scenario.
 
 #### 5.A.5 — Control allocation with axis priority + saturation reporting
 
@@ -339,9 +422,15 @@ degradation under one-effector failure.
 
 **References.** Härkegård, O., *Efficient active set algorithms for
 solving constrained least squares problems in aircraft control
-allocation*, CDC 2002. Bodson, M., *Evaluation of optimization
-methods for control allocation*, JGCD 2002. Stevens & Lewis 2015
-§3.5 (pseudo-inverse baseline).
+allocation*, CDC 2002 (foundational SLS-AS). Bodson, M.,
+*Evaluation of optimization methods for control allocation*, JGCD
+2002. Stevens & Lewis 2015 §3.5 (pseudo-inverse baseline). Modern
+SLS-AS optimisations (informational): community work in 2023–2024
+reports ≈50 % computational reduction in SLS-AS while retaining
+solution quality, plus practical fault-tolerant control allocation
+for over-actuated platforms (e.g. coaxial dodecacopters); these
+extend Härkegård but do not change the algorithmic shape OpenBMP
+ships.
 
 **Scope guardrail.** Allocators are a redistribution layer; they
 are not a guidance law and never perform target-driven actuator
@@ -384,8 +473,16 @@ case; determinism CI gate exercises an SR-UKF scenario.
 
 **References.** Van der Merwe, R. and Wan, E. A., *The Square-Root
 Unscented Kalman Filter for State and Parameter-Estimation*, IEEE
-ICASSP 2001. Wan, E. A. and Van der Merwe, R., *The Unscented
-Kalman Filter for Nonlinear Estimation*, AS-SPCC 2000.
+ICASSP 2001 (foundational SR-UKF). Wan, E. A. and Van der Merwe, R.,
+*The Unscented Kalman Filter for Nonlinear Estimation*, AS-SPCC
+2000. Numerically-stable variants for sequential measurement
+updates: arXiv 2203.06105 *A summary on the UD Kalman Filter* (UDU
+factorization, free of square-root operations); recent comparative
+work (2024) on UD-UKF reports stronger numerical stability and
+covariance-stability than SR-UKF on highly nonlinear tracking.
+OpenBMP ships SR-UKF as the Phase-5 deliverable; UD-UKF is tracked
+as an optional alternative under the same trait surface and may
+land later if the SR-UKF proves numerically fragile in CI.
 
 **Scope guardrail.** Same measurement set as the EKF; no plant-
 specific tuning that hides operational vehicle data.
@@ -453,7 +550,18 @@ in 5.E.4).
 *Estimation with Applications to Tracking and Navigation*,
 Wiley 2001 §11 (IMM derivation and example sets). Blom, H. A. P.
 and Bar-Shalom, Y., *The interacting multiple model algorithm for
-systems with Markovian switching coefficients*, IEEE TAC 1988.
+systems with Markovian switching coefficients*, IEEE TAC 1988
+(foundational). Modern variable-structure IMM literature
+(informational; not implemented in 5.B.3): MDPI Aerospace 2023
+*Adaptive IMM-UKF for Airborne Tracking* (adaptive transition
+probabilities driven by a distance function); IET Radar, Sonar &
+Navigation 2023 *A variable structure multi-model maneuvering
+target tracking algorithm based on Monte Carlo learning*; IJAE
+2024 *Improved Variable Structure Interacting Multimodels for
+Target Trajectory Tracking and Extrapolation*. OpenBMP ships the
+classical fixed-bank IMM as the Phase-5 deliverable; VSIMM and
+adaptive-transition variants are tracked as follow-on work, not
+5.B.3 scope.
 
 **Scope guardrail.** IMM is a maneuvering-target-tracking technique
 in the original literature; OpenBMP uses it strictly for
@@ -721,7 +829,10 @@ posture.
   from the PX4 community log archive, sourced from the public
   archive index, with provenance recorded in the case's
   `provenance.md` (URL, retrieval date, sha256, validity-range
-  notes).
+  notes). The PX4 Flight Review archive at <https://review.px4.io/>
+  hosted ≈ 123 000 publicly-uploaded logs in 2024 (a 17× growth
+  from 2023, per the Roboto.ai analysis); pinning a specific log
+  by file id + sha256 fixes the cross-validation reference.
 
 **Exit criterion.** The PX4 ekf2 cross-validation case runs in CI;
 attitude residual stays within the tolerance envelope declared in
@@ -730,8 +841,10 @@ attitude residual stays within the tolerance envelope declared in
 **Validation evidence.** ULog parser fuzz target (panic on
 malformed payloads is forbidden); cross-validation tolerance table.
 
-**References.** PX4 ULog file format documentation. PX4 ekf2 module
-documentation.
+**References.** PX4 ULog file format documentation
+(<https://docs.px4.io/main/en/dev_log/ulog_file_format.html>); PX4
+ekf2 module documentation; PX4 Flight Review web app
+(<https://github.com/PX4/flight_review>).
 
 **Scope guardrail.** Only public hobby / academic / community logs.
 No operational logs, no logs from restricted vehicles, no logs from
