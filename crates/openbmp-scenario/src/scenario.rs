@@ -277,9 +277,9 @@ mod tests {
                 assert_eq!(required, 3);
                 assert_eq!(found, 2);
             }
-            other => panic!(
-                "expected SchemaVersionFieldReserved for {expected_field}, got: {other:?}"
-            ),
+            other => {
+                panic!("expected SchemaVersionFieldReserved for {expected_field}, got: {other:?}")
+            }
         }
     }
 
@@ -287,16 +287,13 @@ mod tests {
         let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let err = Scenario::from_toml_str(&v3).unwrap_err();
         match err {
-            ScenarioError::ElementDeferredToFuturePhase {
-                field,
-                deferred_to,
-            } => {
+            ScenarioError::ElementDeferredToFuturePhase { field, deferred_to } => {
                 assert_eq!(field, expected_field);
                 assert_eq!(deferred_to, expected_phase);
             }
-            other => panic!(
-                "expected ElementDeferredToFuturePhase for {expected_field}, got: {other:?}"
-            ),
+            other => {
+                panic!("expected ElementDeferredToFuturePhase for {expected_field}, got: {other:?}")
+            }
         }
     }
 
@@ -340,6 +337,12 @@ lower_delta_v_body_m_s = [0.0, 0.0, -0.5]
         assert_phase5_deferred_under_v3(&toml_v2, "multi_body", "Phase 5.D.2");
     }
 
+    #[test]
+    fn v2_with_multiple_phase5_blocks_reports_first_reserved_field() {
+        let toml_v2 = format!("{MINIMAL}{SCHEDULE_BLOCK}{MULTI_BODY_BLOCK}");
+        assert_phase5_reserved_under_v2(&toml_v2, "schedule");
+    }
+
     const SCHEDULE_NON_DIVIDING_BLOCK: &str = r#"
 [schedule]
 base_hz = 1000
@@ -364,6 +367,29 @@ members = ["x"]
                 assert!(rule.contains("must divide"));
             }
             other => panic!("expected InvalidNumber, got {other:?}"),
+        }
+    }
+
+    const SCHEDULE_EMPTY_MEMBER_BLOCK: &str = r#"
+[schedule]
+base_hz = 1000
+
+[[schedule.group]]
+label = "broken"
+hz = 100
+members = [""]
+"#;
+
+    #[test]
+    fn schedule_block_rejects_empty_member_id() {
+        let toml = append(MINIMAL, SCHEDULE_EMPTY_MEMBER_BLOCK)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::EmptyField { field } => {
+                assert_eq!(field, "schedule.group[0].members[0]");
+            }
+            other => panic!("expected EmptyField, got {other:?}"),
         }
     }
 
@@ -396,11 +422,7 @@ bogus_field = 1
             "gravity       = \"egm2008\"",
         );
         assert_phase5_reserved_under_v2(&toml, "environment.gravity = \"egm2008\"");
-        assert_phase5_deferred_under_v3(
-            &toml,
-            "environment.gravity = \"egm2008\"",
-            "Phase 5.C.2",
-        );
+        assert_phase5_deferred_under_v3(&toml, "environment.gravity = \"egm2008\"", "Phase 5.C.2");
     }
 
     /// Canonical Phase-4 FC scenario used as the base for the v3-only
@@ -480,20 +502,25 @@ typo_id = "unknown"
     }
 
     #[test]
-    fn nrlmsise00_atmosphere_is_v3_only() {
+    fn nrlmsise00_environment_atmosphere_is_v3_only() {
         // The constant-acceleration-drop scenario uses
         // `atmosphere    = "none"`; flipping to nrlmsise00 exercises
         // the v3 gate. Aligned-equals layout matched verbatim.
-        let toml = MINIMAL.replace(
-            "atmosphere    = \"none\"",
-            "atmosphere    = \"nrlmsise00\"",
-        );
+        let toml = MINIMAL.replace("atmosphere    = \"none\"", "atmosphere    = \"nrlmsise00\"");
         assert_phase5_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsise00\"");
-        assert_phase5_deferred_under_v3(
-            &toml,
-            "atmosphere.kind = \"nrlmsise00\"",
-            "Phase 5.C.1",
-        );
+        assert_phase5_deferred_under_v3(&toml, "atmosphere.kind = \"nrlmsise00\"", "Phase 5.C.1");
+    }
+
+    const NRLMSISE00_STRUCTURED_ATMOSPHERE_BLOCK: &str = r#"
+[atmosphere]
+kind = "nrlmsise00"
+"#;
+
+    #[test]
+    fn nrlmsise00_structured_atmosphere_kind_is_v3_only() {
+        let toml = append(MINIMAL, NRLMSISE00_STRUCTURED_ATMOSPHERE_BLOCK);
+        assert_phase5_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsise00\"");
+        assert_phase5_deferred_under_v3(&toml, "atmosphere.kind = \"nrlmsise00\"", "Phase 5.C.1");
     }
 
     #[test]

@@ -675,10 +675,10 @@ and any operational mission profile.
   textbook Kalman examples.
 
 **Phase 5 — Test harness expansion**
-- API cleanup: deprecate simulator-crate re-export shims such as
-  `openbmp_sim::SimState` after Phase 4 has given downstream users one
-  full phase to migrate imports to the hardware-portable crates
-  (`openbmp-models`, `openbmp-mission`, `openbmp-sensors`).
+- API cleanup: simulator-crate re-export shims such as
+  `openbmp_sim::SimState` are retired after Phase 4 gave downstream
+  users one full phase to migrate imports to the hardware-portable
+  crates (`openbmp-models`, `openbmp-mission`, `openbmp-sensors`).
 - DOPRI5/8 adaptive integrators (behind explicit profile flags, not
   default).
 - Public-benchmark validation cases (RocketPy/OpenRocket-equivalent

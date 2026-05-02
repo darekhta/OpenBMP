@@ -107,10 +107,12 @@ on at least the matching A/B sub-phase that they validate.
 left behind (e.g. `openbmp_sim::SimState`) now that downstream users
 have had one phase to migrate to `openbmp-models` /
 `openbmp-mission` / `openbmp-sensors`. Extend the scenario format
-with the `[fc.estimator.lanes]`, `[fc.autopilot.allocation]`,
-`[fc.fdir.detector]`, `[atmosphere.kind = "nrlmsise00"]`,
-`[gravity.kind = "egm2008"]`, `[schedule.group]`, and
-`[multi_body.separation]` blocks consumed by the rest of Phase 5.
+with the `[fc.estimator_lanes]`, `[fc.autopilot_allocation]`,
+`[fc.fdir.detector]`, `environment.atmosphere = "nrlmsise00"` /
+`[atmosphere].kind = "nrlmsise00"`,
+`environment.gravity = "egm2008"`, `[schedule]` /
+`[[schedule.group]]`, and `[multi_body]` /
+`[[multi_body.separation]]` blocks consumed by the rest of Phase 5.
 Each block parses with `serde(deny_unknown_fields)` and is gated on a
 schema-version bump in `openbmp.scenario`.
 
@@ -514,7 +516,7 @@ atmosphere model (Picone et al. 2002). The port:
   Ar, H, N) over the documented validity envelope (0–1000 km).
 - Fails closed outside the validity envelope (no extrapolation by
   default; clamp / linear opt-in is rejected for NRLMSISE-00).
-- Switches in via `scenario [atmosphere] kind = "nrlmsise00"` plus
+- Switches in via `[atmosphere].kind = "nrlmsise00"` plus
   `f10_7`, `f10_7_avg`, `ap_index` (scalar Ap), and an absolute
   epoch in TAI seconds.
 
@@ -551,7 +553,7 @@ baseline.
 - Implements the standard Cunningham 1970 recursion for the
   associated Legendre functions, evaluated in ECEF and rotated into
   ECI on demand.
-- Switches in via `[gravity] kind = "egm2008"` plus `degree`,
+- Switches in via `environment.gravity = "egm2008"` plus `degree`,
   `order`, and `coefficients_path`.
 
 **Exit criterion.** EGM2008-degree-20 gravity reproduces a published

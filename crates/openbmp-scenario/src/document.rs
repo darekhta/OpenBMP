@@ -273,9 +273,17 @@ impl ScenarioDocument {
     }
 
     fn validate_phase5_top_level_blocks(&self, header: u16) -> Result<(), ScenarioError> {
-        gate_phase5_block(header, "schedule", "Phase 5.D.1", self.schedule.as_ref(), || {
-            self.schedule.as_ref().map_or(Ok(()), ScheduleConfig::validate)
-        })?;
+        gate_phase5_block(
+            header,
+            "schedule",
+            "Phase 5.D.1",
+            self.schedule.as_ref(),
+            || {
+                self.schedule
+                    .as_ref()
+                    .map_or(Ok(()), ScheduleConfig::validate)
+            },
+        )?;
         gate_phase5_block(
             header,
             "multi_body",
@@ -3772,14 +3780,14 @@ impl ScheduleGroupConfig {
     fn validate(&self, index: usize) -> Result<(), ScenarioError> {
         require_non_empty(&format!("schedule.group[{index}].label"), &self.label)?;
         require_positive_u32(&format!("schedule.group[{index}].hz"), self.hz)?;
-        require_non_empty_list(
-            &format!("schedule.group[{index}].members"),
-            &self.members,
-        )?;
-        require_unique(
-            &format!("schedule.group[{index}].members"),
-            &self.members,
-        )?;
+        require_non_empty_list(&format!("schedule.group[{index}].members"), &self.members)?;
+        for (member_index, member) in self.members.iter().enumerate() {
+            require_non_empty(
+                &format!("schedule.group[{index}].members[{member_index}]"),
+                member,
+            )?;
+        }
+        require_unique(&format!("schedule.group[{index}].members"), &self.members)?;
         Ok(())
     }
 }
@@ -3933,10 +3941,7 @@ pub struct FcEstimatorLaneConfig {
 
 impl FcEstimatorLaneConfig {
     fn validate(&self, index: usize) -> Result<(), ScenarioError> {
-        require_non_empty(
-            &format!("fc.estimator_lanes.lane[{index}].id"),
-            &self.id,
-        )
+        require_non_empty(&format!("fc.estimator_lanes.lane[{index}].id"), &self.id)
     }
 }
 

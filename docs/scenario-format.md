@@ -4,12 +4,13 @@ OpenBMP scenarios are TOML-shaped, versioned configuration files. They define
 models, initial state, deterministic schedule, telemetry outputs, and
 validation rules for one simulation run.
 
-The schema header is `openbmp.scenario = 2`. Phase-3.13 retired the v1
-flat-vehicle shape; every scenario now carries a mandatory
-`[vehicle.assembly]` block and per-body dry mass / inertia live on
-`[[vehicle.assembly.bodies]]`. v1 scenarios fail closed at the header
-check. See [Migrating v1 scenarios to v2](#migrating-v1-scenarios-to-v2)
-for the mechanical rewrite. Phase-2 specifics live in the
+The schema header is `openbmp.scenario = 2` or `openbmp.scenario = 3`.
+Phase-3.13 retired the v1 flat-vehicle shape; every supported scenario
+now carries a mandatory `[vehicle.assembly]` block and per-body dry
+mass / inertia live on `[[vehicle.assembly.bodies]]`. v1 scenarios fail
+closed at the header check. See
+[Migrating v1 scenarios to v2](#migrating-v1-scenarios-to-v2) for the
+mechanical rewrite. Phase-2 specifics live in the
 [Phase-2 Extensions](#phase-2-extensions) section at the bottom.
 
 This document is the format contract. It intentionally favors strict, verbose
@@ -17,7 +18,7 @@ fields over compact syntax.
 
 ## Format Rules
 
-- The root key `openbmp.scenario = 2` is mandatory.
+- The root key `openbmp.scenario` is mandatory and must be `2` or `3`.
 - Unknown top-level tables and unknown fields are parse errors.
 - All dimensional fields include units in the field name.
 - All vector fields include frame names in the field name or table schema.
@@ -1463,8 +1464,8 @@ behaviour it cannot deliver yet.
 - Bump `openbmp.scenario = 2` to `openbmp.scenario = 3`.
 - Existing fields parse identically. Phase-3 / Phase-4 scenarios are
   byte-stable across the bump.
-- New v3 blocks below are opt-in and have no effect under v2 even if
-  the file's structure is otherwise identical.
+- New v3 blocks below are opt-in. Under v2, declaring them fails closed
+  with `SchemaVersionFieldReserved` instead of being ignored.
 
 ### v3-only top-level blocks
 
