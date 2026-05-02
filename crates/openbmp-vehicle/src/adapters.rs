@@ -1080,6 +1080,98 @@ impl MomentModel<RigidBodyState> for TankRackMomentAdapter {
 }
 
 // ---------------------------------------------------------------------
+// DirectTorqueMomentAdapter (Phase 5.A.2.A)
+// ---------------------------------------------------------------------
+
+/// Phase-5.A.2.A kernel-side moment adapter for direct-torque
+/// effectors.
+///
+/// Reads each declared effector's current deflection (rad) from the
+/// kernel's `EffectorActualsView`, multiplies by per-effector
+/// effectiveness (N·m / rad), and sums per body axis. Used in
+/// closed-loop autopilot-validation scenarios where the kernel must
+/// respond to autopilot torque commands without going through an aero
+/// deck (e.g. `diff-flatness-figure-eight`).
+///
+/// The snapshot keys are the bare effector ids the runner uses to
+/// register the effectors with the kernel via `set_effector_actuals`.
+/// The runner is responsible for ensuring those keys reach the
+/// snapshot map every tick; missing keys contribute zero torque on
+/// that axis (no error — the autopilot might have configured fewer
+/// than three direct-torque effectors).
+#[derive(Clone, Debug)]
+pub struct DirectTorqueMomentAdapter {
+    /// Per-effector binding: snapshot key, body-axis index (0/1/2),
+    /// effectiveness (N·m / rad). Iteration order is stable across
+    /// reruns by `Vec` order, which the runner produces in
+    /// scenario-declared `[[vehicle.assembly.effectors]]` order.
+    bindings: Vec<DirectTorqueBinding>,
+    model_id: ModelId,
+}
+
+/// One binding row inside [`DirectTorqueMomentAdapter`].
+#[derive(Clone, Debug)]
+pub struct DirectTorqueBinding {
+    /// Snapshot map key the runner pushes the effector deflection
+    /// under (typically the effector's bare scenario-text id).
+    pub snapshot_key: String,
+    /// Body-axis index in `[roll, pitch, yaw]` order.
+    pub body_axis_index: usize,
+    /// Per-rad torque effectiveness (N·m / rad).
+    pub effectiveness_n_m_per_rad: f64,
+}
+
+impl DirectTorqueMomentAdapter {
+    /// Construct from a parallel binding vector and a stable model id.
+    #[must_use]
+    pub fn new(bindings: Vec<DirectTorqueBinding>, model_id: ModelId) -> Self {
+        Self {
+            bindings,
+            model_id,
+        }
+    }
+}
+
+impl MomentModel<RigidBodyState> for DirectTorqueMomentAdapter {
+    fn moment_n_m_body(
+        &self,
+        ctx: MomentContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let mut total: Vector3<f64> = Vector3::zeros();
+        for binding in &self.bindings {
+            let deflection = ctx
+                .effector_actuals
+                .get(&binding.snapshot_key)
+                .unwrap_or(0.0);
+            let axis = binding.body_axis_index;
+            // Defensive: axis is constructed from `TorqueAxis` which is
+            // bounded to {0, 1, 2}; the bound is reasserted here so a
+            // future binding source that does not honour it cannot
+            // out-of-bounds.
+            if axis >= 3 {
+                return Err(ModelEvalError::InvalidState {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "direct torque moment adapter: body_axis_index must be 0, 1, or 2",
+                    ),
+                });
+            }
+            total[axis] += deflection * binding.effectiveness_n_m_per_rad;
+        }
+        if !total.x.is_finite() || !total.y.is_finite() || !total.z.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(total)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+// ---------------------------------------------------------------------
 // TankRackMassAdapter (Phase 3.7.D)
 // ---------------------------------------------------------------------
 

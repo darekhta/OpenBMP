@@ -274,6 +274,25 @@ impl ScenarioDocument {
         self.validate_phase5_top_level_blocks(header)?;
         self.validate_phase5_fc_blocks(header)?;
         self.validate_phase5_kind_values(header)?;
+        self.validate_phase5_effector_kinds(header)?;
+        Ok(())
+    }
+
+    fn validate_phase5_effector_kinds(&self, header: u16) -> Result<(), ScenarioError> {
+        if header >= SCENARIO_VERSION_V3 {
+            return Ok(());
+        }
+        for (index, effector) in self.vehicle.assembly.effectors.iter().enumerate() {
+            if matches!(effector.kind, EffectorKindConfig::DirectTorque { .. }) {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: format!(
+                        "vehicle.assembly.effectors[{index}].kind = \"direct_torque\""
+                    ),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -2391,7 +2410,10 @@ impl EffectorConfig {
     }
 }
 
-/// Effector kind tagged enum. Phase 3.4 ships `linear_actuator` only.
+/// Effector kind tagged enum. Phase 3.4 ships `linear_actuator`;
+/// Phase 5.A.2.A adds `direct_torque` (v3-only) for closed-loop
+/// autopilot-validation scenarios that need the kernel to respond
+/// to autopilot torque commands without an aero deck in the loop.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EffectorKindConfig {
@@ -2402,6 +2424,45 @@ pub enum EffectorKindConfig {
         #[serde(default)]
         tau_s: Option<f64>,
     },
+    /// Direct body-torque source (Phase 5.A.2.A, v3-only). The
+    /// effector's deflection is interpreted as a body-frame torque
+    /// command on the named `axis`, scaled by
+    /// `effectiveness_n_m_per_rad`. The actuator dynamics still go
+    /// through the same first-order `LinearActuator` shape; the kind
+    /// tag tells the runner to feed the effector's deflection into a
+    /// `DirectTorqueMomentAdapter` instead of (or in addition to) any
+    /// aero-deck axis. Used in closed-loop FC validation scenarios
+    /// (e.g. `diff-flatness-figure-eight`).
+    DirectTorque {
+        /// Body axis the deflection drives (`roll` / `pitch` / `yaw`).
+        axis: TorqueAxis,
+        /// Per-rad torque effectiveness (N·m / rad).
+        effectiveness_n_m_per_rad: f64,
+    },
+}
+
+/// Body-frame axis a `DirectTorque` effector drives.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TorqueAxis {
+    /// Roll body-frame moment about +x.
+    Roll,
+    /// Pitch body-frame moment about +y.
+    Pitch,
+    /// Yaw body-frame moment about +z.
+    Yaw,
+}
+
+impl TorqueAxis {
+    /// Index into a body-frame `[roll, pitch, yaw]` vector.
+    #[must_use]
+    pub const fn body_axis_index(self) -> usize {
+        match self {
+            Self::Roll => 0,
+            Self::Pitch => 1,
+            Self::Yaw => 2,
+        }
+    }
 }
 
 impl EffectorKindConfig {
@@ -2419,6 +2480,19 @@ impl EffectorKindConfig {
                         });
                     }
                 }
+            }
+            Self::DirectTorque {
+                effectiveness_n_m_per_rad,
+                ..
+            } => {
+                require_finite(
+                    &path("effectiveness_n_m_per_rad"),
+                    *effectiveness_n_m_per_rad,
+                )?;
+                require_positive(
+                    &path("effectiveness_n_m_per_rad"),
+                    *effectiveness_n_m_per_rad,
+                )?;
             }
         }
         Ok(())

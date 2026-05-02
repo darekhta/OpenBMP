@@ -1,16 +1,29 @@
-case = "diff-flatness-figure-eight-8000-steps"
+case = "diff-flatness-figure-eight-rigid-body-8000-steps"
 source = "Synthetic; minimum-snap waypoints in scenario.toml. See scenarios/diff-flatness-figure-eight/provenance.md."
 validation = "experimental"
 
-# Phase 5.A.1.C tolerance bench: this slice asserts that the scenario
-# runs end-to-end deterministically and that the polynomial-coefficient
-# byte-stability is preserved across reruns. Closed-loop attitude
-# tracking tolerance lands with L1 adaptive (Phase 5.A.2) and
-# observer-form anti-windup (Phase 5.A.3); the metric below is a
-# placeholder integration check, not a tracking-tolerance claim.
+# Phase 5.A.2.A tolerance bench: rigid-body kernel with three
+# direct-torque effectors, the existing PID + DifferentialFlatness
+# autopilot driving the figure-eight reference. Asserts:
+#  - the scenario runs end-to-end (8000 steps at 1 ms);
+#  - the autopilot keeps the body stable (max angular velocity
+#    bounded — generous 5.0 rad/s ceiling sized for the
+#    pre-L1 baseline);
+#  - the polynomial-coefficient byte-stability proven by the
+#    trajectory unit tests propagates through the closed-loop
+#    pipeline (asserted by the rerun-byte-stable e2e test).
+#
+# Tighter attitude-error tolerances land with the L1 adaptive
+# (5.A.2.B–D) and observer-form anti-windup (5.A.3) sub-phases.
 
 [[metric]]
 name = "kernel_steps"
 expected = 8000
 absolute_tolerance = 0.0
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_angular_velocity_magnitude_rad_s"
+expected = 0.0
+absolute_tolerance = 5.0
 relative_tolerance = 0.0

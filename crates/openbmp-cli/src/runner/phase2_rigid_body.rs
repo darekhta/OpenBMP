@@ -77,6 +77,9 @@ const PHASE3_ENGINE_CLUSTER_MOMENT_MODEL_ID: ModelId = ModelId::new(322);
 const PHASE3_TANK_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(340);
 const PHASE3_TANK_RACK_MOMENT_MODEL_ID: ModelId = ModelId::new(341);
 const PHASE3_RECOVERY_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(380);
+// Phase-5.A.2.A: distinct model id for the direct-torque moment
+// adapter on the rigid-body kernel.
+const PHASE5_DIRECT_TORQUE_MOMENT_MODEL_ID: ModelId = ModelId::new(500);
 
 /// Run a Phase-2 rigid-body scenario through a freshly-built kernel
 /// and return the populated telemetry table.
@@ -157,11 +160,24 @@ pub fn run(
     )?;
 
     let initial_snapshot = effector_rack.snapshot();
-    if !deck_bindings.is_empty() {
-        let snapshot_map = crate::runner::aero_effector_match::build_snapshot_map(
+    let direct_torque_present = document
+        .vehicle
+        .assembly
+        .effectors
+        .iter()
+        .any(|e| matches!(e.kind, openbmp_scenario::EffectorKindConfig::DirectTorque { .. }));
+    if !deck_bindings.is_empty() || direct_torque_present {
+        let mut snapshot_map = crate::runner::aero_effector_match::build_snapshot_map(
             &deck_bindings,
             &initial_snapshot,
         );
+        if direct_torque_present {
+            let dt_map = crate::runner::aero_effector_match::build_direct_torque_snapshot_map(
+                document,
+                &initial_snapshot,
+            );
+            snapshot_map.extend(dt_map);
+        }
         kernel.set_effector_actuals(snapshot_map);
     }
     if !engine_rack.is_empty() {
@@ -235,12 +251,19 @@ pub fn run(
             recovery_rack.apply_deploys(&pending_recovery_events)?;
             recovery_rack.step(document.time.dt_s)?;
         }
-        if !deck_bindings.is_empty() {
+        if !deck_bindings.is_empty() || direct_torque_present {
             let rack_snapshot = effector_rack.snapshot();
-            let snapshot_map = crate::runner::aero_effector_match::build_snapshot_map(
+            let mut snapshot_map = crate::runner::aero_effector_match::build_snapshot_map(
                 &deck_bindings,
                 &rack_snapshot,
             );
+            if direct_torque_present {
+                let dt_map = crate::runner::aero_effector_match::build_direct_torque_snapshot_map(
+                    document,
+                    &rack_snapshot,
+                );
+                snapshot_map.extend(dt_map);
+            }
             kernel.set_effector_actuals(snapshot_map);
         }
         if !engine_rack.is_empty() {
@@ -685,6 +708,10 @@ enum RigidMomentEitherKind {
         EngineClusterMomentAdapter,
         openbmp_vehicle::TankRackMomentAdapter,
     ),
+    /// Phase-5.A.2.A: direct-torque effectors only (no engine cluster,
+    /// no tanks). The closed-loop FC validation scenario for the
+    /// differential-flatness tracker uses this path.
+    DirectTorque(openbmp_vehicle::DirectTorqueMomentAdapter),
 }
 
 impl openbmp_sim::MomentModel<RigidBodyState> for RigidMomentEitherKind {
@@ -713,6 +740,11 @@ impl openbmp_sim::MomentModel<RigidBodyState> for RigidMomentEitherKind {
                 >>::moment_n_m_body(t, ctx)?;
                 Ok(cluster + tank)
             }
+            Self::DirectTorque(d) => {
+                <openbmp_vehicle::DirectTorqueMomentAdapter as openbmp_sim::MomentModel<
+                    RigidBodyState,
+                >>::moment_n_m_body(d, ctx)
+            }
         }
     }
 
@@ -728,6 +760,11 @@ impl openbmp_sim::MomentModel<RigidBodyState> for RigidMomentEitherKind {
                 <openbmp_vehicle::TankRackMomentAdapter as openbmp_sim::MomentModel<
                     RigidBodyState,
                 >>::validation(t)
+            }
+            Self::DirectTorque(d) => {
+                <openbmp_vehicle::DirectTorqueMomentAdapter as openbmp_sim::MomentModel<
+                    RigidBodyState,
+                >>::validation(d)
             }
         }
     }
@@ -787,12 +824,59 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
         None
     };
 
-    Ok(match (cluster_adapter, tank_adapter) {
-        (Some(c), Some(t)) => RigidMomentEitherKind::EngineClusterAndTankRack(c, t),
-        (Some(c), None) => RigidMomentEitherKind::EngineCluster(c),
-        (None, Some(t)) => RigidMomentEitherKind::TankRack(t),
-        (None, None) => RigidMomentEitherKind::Zero(ZeroMoment),
+    let direct_torque_adapter = build_direct_torque_adapter(document);
+
+    // Phase 5.A.2.A: combinations of direct-torque with engine-cluster
+    // or tank-rack moment models are not supported in this slice.
+    // Closed-loop FC validation scenarios use direct-torque alone; if
+    // a downstream scenario combines them, fail closed.
+    if direct_torque_adapter.is_some()
+        && (cluster_adapter.is_some() || tank_adapter.is_some())
+    {
+        return Err(CliError::UnsupportedScenario {
+            what: "direct_torque effectors combined with engine-cluster or tank moment models \
+                   is not supported in Phase 5.A.2.A; use a dedicated closed-loop validation \
+                   scenario without engines/tanks"
+                .to_string(),
+        });
+    }
+
+    Ok(match (cluster_adapter, tank_adapter, direct_torque_adapter) {
+        (Some(c), Some(t), None) => RigidMomentEitherKind::EngineClusterAndTankRack(c, t),
+        (Some(c), None, None) => RigidMomentEitherKind::EngineCluster(c),
+        (None, Some(t), None) => RigidMomentEitherKind::TankRack(t),
+        (None, None, Some(d)) => RigidMomentEitherKind::DirectTorque(d),
+        (None, None, None) => RigidMomentEitherKind::Zero(ZeroMoment),
+        // Combinations with DirectTorque rejected above.
+        _ => unreachable!(),
     })
+}
+
+fn build_direct_torque_adapter(
+    document: &ScenarioDocument,
+) -> Option<openbmp_vehicle::DirectTorqueMomentAdapter> {
+    let mut bindings = Vec::new();
+    for effector in &document.vehicle.assembly.effectors {
+        if let openbmp_scenario::EffectorKindConfig::DirectTorque {
+            axis,
+            effectiveness_n_m_per_rad,
+        } = effector.kind
+        {
+            bindings.push(openbmp_vehicle::DirectTorqueBinding {
+                snapshot_key: effector.id.clone(),
+                body_axis_index: axis.body_axis_index(),
+                effectiveness_n_m_per_rad,
+            });
+        }
+    }
+    if bindings.is_empty() {
+        None
+    } else {
+        Some(openbmp_vehicle::DirectTorqueMomentAdapter::new(
+            bindings,
+            PHASE5_DIRECT_TORQUE_MOMENT_MODEL_ID,
+        ))
+    }
 }
 
 /// Build the kernel's rigid mass model. When a motor is declared

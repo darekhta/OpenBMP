@@ -1,25 +1,25 @@
-# Phase-5.A.1.C closed-loop figure-eight differential-flatness scenario.
+# Phase-5.A.2.A closed-loop figure-eight differential-flatness scenario.
 #
-# Synthetic point-mass vehicle with a Mellinger & Kumar 2011
+# Synthetic rigid-body vehicle with a Mellinger & Kumar 2011
 # minimum-snap differential-flatness trajectory tracker active. The
 # trajectory is a horizontal figure-eight in the ECI XY plane at a
 # constant altitude. The autopilot's `DifferentialFlatness` trajectory
 # loop generates the attitude reference from the polynomial flat
-# outputs each tick.
+# outputs each tick; the rate loop drives three `direct_torque`
+# effectors (roll / pitch / yaw) that produce body torque directly,
+# making this the first OpenBMP scenario where the FC pipeline
+# actually rotates a rigid body without going through an aero deck.
 #
-# Phase 5.A.1.C scope: validate that the scenario parses, the runner
-# constructs a `MinimumSnapTrajectory` from `[fc.trajectory]`, and the
-# end-to-end pipeline runs deterministically. Closed-loop attitude
-# tracking tolerance is loose in this slice — the actuator-to-body
-# torque path remains the Phase-4 academic gain set; tighter tracking
-# tolerance lands with the L1 adaptive (5.A.2) and observer-form
+# Phase 5.A.2.A scope: rigid-body integration + a baseline
+# attitude-error tolerance with the existing PID rate loop. Tighter
+# tolerance lands with the L1 adaptive (5.A.2.B–D) and observer-form
 # anti-windup (5.A.3) sub-phases.
 
 openbmp.scenario = 3
 
 [meta]
 name        = "diff-flatness-figure-eight"
-description = "Phase-5.A.1.C minimum-snap differential-flatness figure-eight tracker. Synthetic; horizontal figure-eight in ECI XY at constant altitude."
+description = "Phase-5.A.2.A closed-loop differential-flatness figure-eight tracker on a rigid-body kernel with direct-torque effectors. Synthetic; horizontal figure-eight in ECI XY at constant altitude."
 validation  = "experimental"
 provenance  = "synthetic; minimum-snap waypoints chosen for academic figure-eight demo. See provenance.md."
 
@@ -30,18 +30,56 @@ dt_s    = 0.001
 seed    = 0x466c_6967_6831_4146   # "FligH1AF"
 
 [vehicle]
-kind                     = "point_mass"
-initial_position_eci_m   = [0.0, 0.0, 0.0]
-initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+kind                                = "rigid_body"
+initial_position_eci_m              = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
 
 [vehicle.assembly]
 id = "diff-flatness-figure-eight"
 
+# Unit-mass cube-equivalent inertia. Per-axis inertia is 1.0 kg·m² so
+# the autopilot's commanded body torque (limited at 0.35 N·m by the
+# gain schedule) yields up to 0.35 rad/s² of angular acceleration on
+# each axis — modest but sufficient for the gentle figure-eight
+# trajectory.
 [[vehicle.assembly.bodies]]
-id            = "main"
-geometry      = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
-dry_mass_kg   = 1.0
-dry_cg_body_m = [0.0, 0.0, 0.0]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_inertia_body_kg_m2 = [
+  [1.0, 0.0, 0.0],
+  [0.0, 1.0, 0.0],
+  [0.0, 0.0, 1.0],
+]
+
+# Phase-5.A.2.A: three direct-torque effectors, one per body axis. The
+# autopilot publishes its rate-loop torque commands as
+# aileron_rad / elevator_rad / rudder_rad; the channel map below
+# routes them to the matching effector. The kernel-side
+# `DirectTorqueMomentAdapter` turns the effector deflections into
+# body torque (effectiveness = 1.0 N·m / rad means torque ≡ command).
+[[vehicle.assembly.effectors]]
+id               = "roll-torque"
+kind             = { kind = "direct_torque", axis = "roll", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.35, max = 0.35, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[[vehicle.assembly.effectors]]
+id               = "pitch-torque"
+kind             = { kind = "direct_torque", axis = "pitch", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.35, max = 0.35, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[[vehicle.assembly.effectors]]
+id               = "yaw-torque"
+kind             = { kind = "direct_torque", axis = "yaw", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.35, max = 0.35, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
 
 [environment]
 frame_profile = "toy-fixed-earth"
@@ -83,8 +121,9 @@ id    = "mission.phases.pad"
 label = "pad"
 
 [[mission.phases]]
-id    = "mission.phases.ascent"
-label = "ascent"
+id                = "mission.phases.ascent"
+label             = "ascent"
+allowed_effectors = ["roll-torque", "pitch-torque", "yaw-torque"]
 
 [[mission.events]]
 id      = "mission.events.liftoff"
@@ -119,6 +158,11 @@ sigma_baro_alt_m      = 2.0
 sigma_mag_nt          = 100.0
 innovation_false_alarm_rate = 0.01
 dead_reckon_timeout_s = 1.5
+
+[fc.actuator_channels]
+aileron  = "roll-torque"
+elevator = "pitch-torque"
+rudder   = "yaw-torque"
 
 [fc.autopilot_params]
 anti_windup_gain         = 1.0

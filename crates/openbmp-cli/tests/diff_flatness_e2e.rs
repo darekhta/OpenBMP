@@ -19,9 +19,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use arrow::array::Float64Array;
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
 use openbmp_testkit::tolerance::ToleranceTable;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::{Builder, TempDir};
 
 struct RunOutput {
@@ -94,6 +96,47 @@ fn run_to_parquet(label: &str) -> RunOutput {
     }
 }
 
+/// Read a single `f64` Parquet column into a `Vec<f64>`.
+fn read_f64_column(parquet: &Path, column_name: &str) -> Vec<f64> {
+    let file = fs::File::open(parquet).expect("open parquet");
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).expect("parquet builder");
+    let schema = builder.schema().clone();
+    let col = schema
+        .index_of(column_name)
+        .unwrap_or_else(|_| panic!("{column_name} column present in parquet schema"));
+    let reader = builder.build().expect("parquet reader");
+    let mut out: Vec<f64> = Vec::new();
+    for batch in reader {
+        let batch = batch.expect("read batch");
+        let arr = batch
+            .column(col)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap_or_else(|| panic!("{column_name} is float64"));
+        for i in 0..arr.len() {
+            out.push(arr.value(i));
+        }
+    }
+    out
+}
+
+/// Body-frame angular-velocity magnitude `|ω|` per row, derived from
+/// the rigid-body kernel's truth-state telemetry. Phase-5.A.2.A asserts
+/// the autopilot keeps this bounded.
+fn max_angular_velocity_magnitude_rad_s(parquet: &Path) -> f64 {
+    let wx = read_f64_column(parquet, "angular_velocity.x_rad_s");
+    let wy = read_f64_column(parquet, "angular_velocity.y_rad_s");
+    let wz = read_f64_column(parquet, "angular_velocity.z_rad_s");
+    let mut max = 0.0_f64;
+    for ((x, y), z) in wx.iter().zip(wy.iter()).zip(wz.iter()) {
+        let magnitude = (x * x + y * y + z * z).sqrt();
+        if magnitude > max {
+            max = magnitude;
+        }
+    }
+    max
+}
+
 #[test]
 fn diff_flatness_figure_eight_runs_to_completion() {
     let run = run_to_parquet("diff-flatness-figure-eight-runs");
@@ -101,6 +144,12 @@ fn diff_flatness_figure_eight_runs_to_completion() {
     table
         .check_metric("kernel_steps", f64::from(run.kernel_steps))
         .expect("kernel_steps within tolerance");
+    let max_omega = max_angular_velocity_magnitude_rad_s(&run.parquet);
+    table
+        .check_metric("max_angular_velocity_magnitude_rad_s", max_omega)
+        .unwrap_or_else(|err| {
+            panic!("max_angular_velocity_magnitude_rad_s = {max_omega} outside tolerance: {err}")
+        });
     let bytes = fs::read(&run.parquet).expect("read parquet");
     assert!(!bytes.is_empty(), "parquet must be non-empty");
     let _ = fs::remove_file(&run.parquet);

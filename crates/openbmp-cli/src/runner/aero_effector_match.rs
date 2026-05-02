@@ -139,6 +139,38 @@ pub fn build_snapshot_map(
     out
 }
 
+/// Phase-5.A.2.A: build the snapshot map for a rigid-body kernel
+/// driven by direct-torque effectors.
+///
+/// Walks the scenario's `[[vehicle.assembly.effectors]]` list, picks
+/// the entries with `kind = "direct_torque"`, and produces a
+/// `BTreeMap<String, f64>` keyed by the bare effector id valued by
+/// the effector's current `EffectorState.actual`. Iteration order is
+/// scenario-declared, so the snapshot map is bit-stable across
+/// reruns. Effectors of other kinds are ignored — they may be present
+/// for aero-deck bindings handled separately.
+///
+/// Returns an empty map when no direct-torque effectors are declared,
+/// matching the legacy short-circuit pattern in the rigid-body
+/// runner's per-tick loop.
+#[must_use]
+pub fn build_direct_torque_snapshot_map(
+    document: &openbmp_scenario::ScenarioDocument,
+    rack_snapshot: &[openbmp_vehicle::EffectorState],
+) -> std::collections::BTreeMap<String, f64> {
+    let mut out = std::collections::BTreeMap::new();
+    for (index, effector) in document.vehicle.assembly.effectors.iter().enumerate() {
+        if matches!(
+            effector.kind,
+            openbmp_scenario::EffectorKindConfig::DirectTorque { .. }
+        ) && let Some(state) = rack_snapshot.get(index)
+        {
+            out.insert(effector.id.clone(), state.actual);
+        }
+    }
+    out
+}
+
 /// Strip the `_deg` or `_rad` suffix from a deck axis name. Returns
 /// `(bare_name, suffix)` on match, `None` otherwise.
 fn split_unit_suffix(name: &str) -> Option<(&str, &str)> {

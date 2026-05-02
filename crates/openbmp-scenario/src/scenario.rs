@@ -2169,9 +2169,87 @@ action  = { kind = "stop", label = "max-q" }
             crate::EffectorKindConfig::LinearActuator { tau_s } => {
                 assert!((tau_s.unwrap_or(0.0) - 0.05).abs() < 1e-12);
             }
+            crate::EffectorKindConfig::DirectTorque { .. } => {
+                panic!("expected LinearActuator effector kind in fixture")
+            }
         }
         assert!((effector.limits.max_rate_per_s - 5.236).abs() < 1e-12);
         assert_eq!(effector.unit.as_deref(), Some("rad"));
+    }
+
+    #[test]
+    fn parses_direct_torque_effector_under_v3() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+                "kind             = { kind = \"direct_torque\", axis = \"roll\", \
+                 effectiveness_n_m_per_rad = 0.5 }",
+            )
+            .replace(
+                "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                "",
+            );
+        let scenario = Scenario::from_toml_str(&toml).expect("v3 direct_torque should validate");
+        let effector = &scenario.document.vehicle.assembly.effectors[0];
+        match &effector.kind {
+            crate::EffectorKindConfig::DirectTorque {
+                axis,
+                effectiveness_n_m_per_rad,
+            } => {
+                assert_eq!(*axis, crate::TorqueAxis::Roll);
+                assert!((effectiveness_n_m_per_rad - 0.5).abs() < 1e-12);
+            }
+            crate::EffectorKindConfig::LinearActuator { .. } => {
+                panic!("expected DirectTorque effector kind")
+            }
+        }
+    }
+
+    #[test]
+    fn direct_torque_effector_is_v3_only() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace(
+                "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+                "kind             = { kind = \"direct_torque\", axis = \"pitch\", \
+                 effectiveness_n_m_per_rad = 1.0 }",
+            )
+            .replace(
+                "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                "",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::SchemaVersionFieldReserved { field, required, .. } => {
+                assert!(
+                    field.contains("direct_torque"),
+                    "expected direct_torque in field, got {field}"
+                );
+                assert_eq!(required, 3);
+            }
+            other => panic!("expected SchemaVersionFieldReserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn direct_torque_effector_rejects_non_positive_effectiveness() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+                "kind             = { kind = \"direct_torque\", axis = \"yaw\", \
+                 effectiveness_n_m_per_rad = 0.0 }",
+            )
+            .replace(
+                "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                "",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field.contains("effectiveness_n_m_per_rad")),
+            "expected InvalidNumber on effectiveness_n_m_per_rad, got {err:?}",
+        );
     }
 
     #[test]

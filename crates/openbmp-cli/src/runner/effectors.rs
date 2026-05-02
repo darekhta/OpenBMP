@@ -329,6 +329,13 @@ fn build_effector(
     let initial_position = config.initial_position.unwrap_or(0.0);
     let tau_s = match config.kind {
         EffectorKindConfig::LinearActuator { tau_s } => tau_s.unwrap_or(0.0),
+        // Phase-5.A.2.A: direct-torque effectors share the
+        // first-order linear-actuator dynamics; the kind tag tells the
+        // moment-model layer to interpret the deflection as a body
+        // torque command rather than feed it to an aero deck. Default
+        // tau = 0 (pure rate-clamped tracker) so the autopilot's
+        // commanded torque reaches the kernel within one base tick.
+        EffectorKindConfig::DirectTorque { .. } => 0.0,
     };
     let mut actuator =
         LinearActuator::new(id, limits, dt, initial_position, tau_s).map_err(|err| {

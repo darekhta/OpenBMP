@@ -44,7 +44,8 @@ pub use document::{
     RecoveryConfig, RecoveryKindConfig, SCENARIO_VERSION_V2, SCENARIO_VERSION_V3,
     SUPPORTED_SCENARIO_VERSIONS, ScenarioDocument, ScheduleConfig, ScheduleGroupConfig,
     SensorConfig, TankConfig, TankGeometryConfig, TelemetryConfig, TelemetryOutputConfig,
-    TimeConfig, ValidationConfig, VehicleConfig, WGS84_J2_DEFAULT, WindConfig, WindLayerConfig,
+    TimeConfig, TorqueAxis, ValidationConfig, VehicleConfig, WGS84_J2_DEFAULT, WindConfig,
+    WindLayerConfig,
 };
 pub use error::ScenarioError;
 pub use files::ResolvedFile;

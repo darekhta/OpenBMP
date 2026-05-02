@@ -468,10 +468,18 @@ fn sensor_text<'a>(
 }
 
 fn parse_toml_budget(text: &str) -> Result<toml::Value, CliError> {
-    text.parse::<toml::Value>()
-        .map_err(|err| CliError::UnsupportedScenario {
+    // Phase-5.A.2.A: in `toml` 1.x `text.parse::<toml::Value>()`
+    // expects a single TOML scalar / inline-table / array, not a
+    // top-level document — leading comments + a `key = value` line
+    // surface as "unexpected content, expected nothing". Parse as a
+    // `Table` (the canonical document shape) and wrap it back into a
+    // `Value` so the existing `as_table` consumers keep working.
+    let table = toml::from_str::<toml::Table>(text).map_err(|err| {
+        CliError::UnsupportedScenario {
             what: format!("sensor budget TOML parse failed: {err}"),
-        })
+        }
+    })?;
+    Ok(toml::Value::Table(table))
 }
 
 fn toml_number_as_f64(value: &toml::Value) -> Option<f64> {
