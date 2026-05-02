@@ -542,11 +542,13 @@ time_s         = 0.0
 position_eci_m = [10.0, 0.0, 0.0]
 time_s         = 4.0
 "#;
-        let toml = append(fc_v2_scenario(), block)
-            .replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let toml =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         match err {
-            ScenarioError::InconsistentSection { field_a, field_b, .. } => {
+            ScenarioError::InconsistentSection {
+                field_a, field_b, ..
+            } => {
                 assert_eq!(field_a, "fc.autopilot_params.trajectory_kind");
                 assert_eq!(field_b, "fc.trajectory.kind");
             }
@@ -575,8 +577,7 @@ time_s         = 4.0
                 "trajectory_kind          = \"pid\"",
                 "trajectory_kind          = \"minimum_snap\"",
             );
-        let scenario =
-            Scenario::from_toml_str(&toml).expect("v3 fc.trajectory should validate");
+        let scenario = Scenario::from_toml_str(&toml).expect("v3 fc.trajectory should validate");
         let trajectory = scenario
             .document
             .fc
@@ -620,7 +621,39 @@ time_s         = 0.0
                 "trajectory_kind          = \"minimum_snap\"",
             );
         let err = Scenario::from_toml_str(&toml).unwrap_err();
-        assert!(matches!(err, ScenarioError::InvalidFc { .. }), "got {err:?}");
+        assert!(
+            matches!(err, ScenarioError::InvalidFc { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn fc_trajectory_block_rejects_too_short_segment_duration() {
+        let block = r#"
+[fc.trajectory]
+kind = "minimum_snap"
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 0.0]
+time_s         = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, 0.0, 0.0]
+time_s         = 0.0005
+"#;
+        let toml = append(fc_v2_scenario(), block)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "trajectory_kind          = \"pid\"",
+                "trajectory_kind          = \"minimum_snap\"",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::InvalidFc { reason } => {
+                assert!(reason.contains("segment 0 duration"), "got {reason}");
+            }
+            other => panic!("expected InvalidFc, got {other:?}"),
+        }
     }
 
     #[test]

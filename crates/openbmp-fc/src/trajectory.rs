@@ -128,6 +128,18 @@ pub enum TrajectoryError {
     /// The KKT solver could not produce a finite solution.
     #[error("minimum-snap KKT system is singular or produced non-finite coefficients")]
     SingularKkt,
+    /// Segment duration is outside the deterministic conditioning envelope.
+    #[error("segment {index} duration {duration_s} s is outside [{min_s}, {max_s}] s")]
+    SegmentDurationOutOfRange {
+        /// Segment index.
+        index: usize,
+        /// Segment duration in seconds.
+        duration_s: f64,
+        /// Minimum supported duration.
+        min_s: f64,
+        /// Maximum supported duration.
+        max_s: f64,
+    },
 }
 
 impl From<TrajectoryError> for AutopilotError {
@@ -159,6 +171,18 @@ pub struct MinimumSnapTrajectory {
 
 const SEGMENT_DEGREE: usize = 7;
 const SEGMENT_COEFFS: usize = SEGMENT_DEGREE + 1;
+/// Shortest segment duration accepted by the deterministic KKT solve.
+///
+/// The minimum-snap cost scales as `1 / T^7`; below this envelope the
+/// Hessian terms become large enough that the saddle-point solve is
+/// poorly conditioned for scenario-authored waypoints.
+pub const MINIMUM_SNAP_MIN_SEGMENT_DURATION_S: f64 = 1.0e-3;
+/// Longest segment duration accepted by the deterministic KKT solve.
+///
+/// This is intentionally broad for academic scenarios while avoiding
+/// near-zero snap-cost blocks that make the KKT system numerically
+/// fragile.
+pub const MINIMUM_SNAP_MAX_SEGMENT_DURATION_S: f64 = 600.0;
 
 impl MinimumSnapTrajectory {
     /// Build a trajectory from the given waypoint sequence.
@@ -191,12 +215,23 @@ impl MinimumSnapTrajectory {
             }
         }
         for i in 0..waypoints.len() - 1 {
-            if waypoints[i + 1].time_s <= waypoints[i].time_s {
+            let duration_s = waypoints[i + 1].time_s - waypoints[i].time_s;
+            if duration_s <= 0.0 {
                 return Err(TrajectoryError::NonMonotonicTime {
                     index: i,
                     t_prev: waypoints[i].time_s,
                     next: i + 1,
                     t_next: waypoints[i + 1].time_s,
+                });
+            }
+            if !(MINIMUM_SNAP_MIN_SEGMENT_DURATION_S..=MINIMUM_SNAP_MAX_SEGMENT_DURATION_S)
+                .contains(&duration_s)
+            {
+                return Err(TrajectoryError::SegmentDurationOutOfRange {
+                    index: i,
+                    duration_s,
+                    min_s: MINIMUM_SNAP_MIN_SEGMENT_DURATION_S,
+                    max_s: MINIMUM_SNAP_MAX_SEGMENT_DURATION_S,
                 });
             }
         }
@@ -615,15 +650,23 @@ pub fn flat_output_attitude_reference(
         // Body-z aligned with x_c — singular yaw-frame. Fall back to a
         // yaw-axis direction perpendicular to z_b, derived from the
         // global +y to keep a deterministic right-handed frame.
-        let fallback = Vector3::new(0.0, 1.0, 0.0);
+        let fallback = if z_b.y.abs() > 0.9 {
+            Vector3::new(1.0, 0.0, 0.0)
+        } else {
+            Vector3::new(0.0, 1.0, 0.0)
+        };
         let y_b = z_b.cross(&fallback).normalize();
         let x_b = y_b.cross(&z_b).normalize();
-        return Some(build_reference_from_axes(x_b, y_b, z_b, flat, yaw, f, f_norm));
+        return Some(build_reference_from_axes(
+            x_b, y_b, z_b, flat, yaw, f, f_norm,
+        ));
     }
     let y_b = y_b_unnormalized / y_b_norm;
     let x_b = y_b.cross(&z_b);
 
-    Some(build_reference_from_axes(x_b, y_b, z_b, flat, yaw, f, f_norm))
+    Some(build_reference_from_axes(
+        x_b, y_b, z_b, flat, yaw, f, f_norm,
+    ))
 }
 
 fn build_reference_from_axes(
@@ -638,38 +681,36 @@ fn build_reference_from_axes(
     let rot = Rotation3::from_matrix_unchecked(Matrix3::from_columns(&[x_b, y_b, z_b]));
     let q_body_to_eci = UnitQuaternion::from_rotation_matrix(&rot);
 
-    // h_w = j_d/||f|| − z_b (z_b · j_d) / ||f|| is the lateral
-    // component of the desired specific-force rate in the plane
+    // h_w = dz_b/dt = j_d/||f|| − z_b (z_b · j_d) / ||f|| is the
+    // lateral component of the desired specific-force rate in the plane
     // perpendicular to z_b. With ω = ω_x x_b + ω_y y_b + ω_z z_b and
     // dz_b/dt = ω_y x_b − ω_x y_b, projecting h_w onto x_b and −y_b
     // recovers ω_y and ω_x respectively.
-    let j_over_norm = flat.jerk_eci_m_s3 / f_norm;
-    let z_dot_j_over_norm = z_b.dot(&flat.jerk_eci_m_s3) / f_norm;
-    let h_w = j_over_norm - z_b * z_dot_j_over_norm;
+    let force_rate_along_body_z = z_b.dot(&flat.jerk_eci_m_s3);
+    let h_w = (flat.jerk_eci_m_s3 - z_b * force_rate_along_body_z) / f_norm;
     let omega_y = h_w.dot(&x_b);
     let omega_x = -h_w.dot(&y_b);
 
     // The yaw-rate component projected onto the body axes. The world
-    // yaw axis is +z_w; ω_z is the projection of ψ̇·z_w onto z_b after
-    // subtracting the cross-coupling needed to keep body-x in the yaw
-    // plane. For the simplified case where yaw drives only the heading
-    // sub-rotation about z_b, ω_z ≈ ψ̇ · (z_w · z_b).
+    // yaw axis is +z_w; Mellinger-Kumar §III gives
+    // ω_z = ψ̇ · (z_w · z_b).
     let z_w = Vector3::new(0.0, 0.0, 1.0);
     let omega_z = yaw.yaw_rate_rad_s * z_w.dot(&z_b);
     let omega_body = Vector3::new(omega_x, omega_y, omega_z);
 
-    // Angular acceleration α from snap and yaw acceleration. Following
-    // the same projection structure: differentiate h_w once more in
-    // time. The full Mellinger-Kumar α derivation includes
-    // cross-coupling terms (ω × ω_b body); here we ship the dominant
-    // snap-driven contribution and the yaw-axis projection so the
-    // reference is non-trivial. The cross-coupling refinement is
-    // tracked for follow-up sub-phase 5.A.1.B/C.
-    let snap_over_norm = flat.snap_eci_m_s4 / f_norm;
-    let z_dot_snap_over_norm = z_b.dot(&flat.snap_eci_m_s4) / f_norm;
-    let h_w_dot = snap_over_norm - z_b * z_dot_snap_over_norm;
-    let alpha_y = h_w_dot.dot(&x_b);
-    let alpha_x = -h_w_dot.dot(&y_b);
+    // Angular acceleration α follows from the second derivative of the
+    // body-z relation. Differentiate z_b = f / ||f|| twice, then use
+    // z̈_b = (ω̇_y + ω_x ω_z) x_b + (ω_y ω_z - ω̇_x) y_b
+    //          - (ω_x² + ω_y²) z_b
+    // to recover the body-frame x/y components. This keeps the
+    // Mellinger-Kumar snap contribution and the body-rate cross terms.
+    let force_accel_along_body_z = h_w.dot(&flat.jerk_eci_m_s3) + z_b.dot(&flat.snap_eci_m_s4);
+    let z_b_ddot = (flat.snap_eci_m_s4
+        - z_b * force_accel_along_body_z
+        - h_w * (2.0 * force_rate_along_body_z))
+        / f_norm;
+    let alpha_x = omega_y * omega_z - z_b_ddot.dot(&y_b);
+    let alpha_y = z_b_ddot.dot(&x_b) - omega_x * omega_z;
     let alpha_z = yaw.yaw_accel_rad_s2 * z_w.dot(&z_b);
     let alpha_body = Vector3::new(alpha_x, alpha_y, alpha_z);
 
@@ -743,6 +784,25 @@ mod tests {
         ];
         let err = MinimumSnapTrajectory::new(waypoints).unwrap_err();
         assert!(matches!(err, TrajectoryError::NonMonotonicTime { .. }));
+    }
+
+    #[test]
+    fn rejects_out_of_range_segment_duration() {
+        let waypoints = vec![
+            MinimumSnapWaypoint {
+                position_eci_m: Vector3::zeros(),
+                time_s: 0.0,
+            },
+            MinimumSnapWaypoint {
+                position_eci_m: Vector3::new(1.0, 0.0, 0.0),
+                time_s: MINIMUM_SNAP_MIN_SEGMENT_DURATION_S / 2.0,
+            },
+        ];
+        let err = MinimumSnapTrajectory::new(waypoints).unwrap_err();
+        assert!(matches!(
+            err,
+            TrajectoryError::SegmentDurationOutOfRange { .. }
+        ));
     }
 
     #[test]
@@ -820,10 +880,7 @@ mod tests {
         let b = MinimumSnapTrajectory::new(waypoints_three_point_zigzag()).unwrap();
         for axis in 0..3 {
             assert_eq!(a.coefficients[axis].len(), b.coefficients[axis].len());
-            for (lhs, rhs) in a.coefficients[axis]
-                .iter()
-                .zip(b.coefficients[axis].iter())
-            {
+            for (lhs, rhs) in a.coefficients[axis].iter().zip(b.coefficients[axis].iter()) {
                 assert_eq!(lhs.to_bits(), rhs.to_bits(), "coefficient bit mismatch");
             }
         }
@@ -889,6 +946,38 @@ mod tests {
     }
 
     #[test]
+    fn flat_output_reference_angular_acceleration_includes_cross_coupling() {
+        let g = -openbmp_physics::gravity::standard_down_z_eci_m_s2().z;
+        let jerk_y = 2.0;
+        let yaw_rate = 0.4;
+        let flat = FlatOutputs {
+            acceleration_eci_m_s2: Vector3::new(1.0, 0.0, 0.0),
+            jerk_eci_m_s3: Vector3::new(0.0, jerk_y, 0.0),
+            snap_eci_m_s4: Vector3::zeros(),
+            ..FlatOutputs::default()
+        };
+        let yaw = YawProfile {
+            yaw_rad: 0.0,
+            yaw_rate_rad_s: yaw_rate,
+            yaw_accel_rad_s2: 0.0,
+        };
+
+        let reference = flat_output_attitude_reference(&flat, yaw).expect("reference");
+        let f_norm = (1.0_f64 + g * g).sqrt();
+        let z_b_z = g / f_norm;
+        let omega_x = -jerk_y / f_norm;
+        let omega_z = yaw_rate * z_b_z;
+        let expected_alpha_y = -omega_x * omega_z;
+
+        assert_abs_diff_eq!(
+            reference.alpha_body_rad_s2.y,
+            expected_alpha_y,
+            epsilon = 1.0e-12
+        );
+        assert!(reference.alpha_body_rad_s2.y.abs() > 1.0e-3);
+    }
+
+    #[test]
     fn factorial_ratio_matches_known_values() {
         assert_eq!(factorial_ratio(4, 0), 24);
         assert_eq!(factorial_ratio(7, 3), 7 * 6 * 5 * 4);
@@ -902,6 +991,7 @@ mod tests {
         assert_abs_diff_eq!(block[4][4], 576.0, epsilon = 1.0e-12);
         assert_abs_diff_eq!(block[7][7], 100_800.0, epsilon = 1.0e-12);
         assert_abs_diff_eq!(block[5][6], 120.0 * 360.0 / 4.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(block[5][7], 20_160.0, epsilon = 1.0e-12);
         // Above-diagonal symmetry.
         assert_abs_diff_eq!(block[4][7], block[7][4], epsilon = 1.0e-12);
     }

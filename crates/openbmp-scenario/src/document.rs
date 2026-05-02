@@ -41,6 +41,11 @@ pub const SCENARIO_VERSION_V3: u16 = 3;
 /// Phase-3 schema version. v2 scenarios continue to parse byte-identically.
 pub const SCENARIO_VERSION_V2: u16 = 2;
 
+/// Minimum accepted `[fc.trajectory]` segment duration (s).
+pub const FC_TRAJECTORY_MIN_SEGMENT_DURATION_S: f64 = 1.0e-3;
+/// Maximum accepted `[fc.trajectory]` segment duration (s).
+pub const FC_TRAJECTORY_MAX_SEGMENT_DURATION_S: f64 = 600.0;
+
 /// Default unnormalised WGS84 J2 zonal coefficient used when a scenario
 /// selects `gravity = "j2"` and omits `environment.j2`.
 ///
@@ -349,10 +354,7 @@ impl ScenarioDocument {
             }
             trajectory.validate()?;
             // Cross-check with autopilot_params.trajectory_kind.
-            let autopilot_kind = fc
-                .autopilot_params
-                .as_ref()
-                .and_then(|p| p.trajectory_kind);
+            let autopilot_kind = fc.autopilot_params.as_ref().and_then(|p| p.trajectory_kind);
             match (autopilot_kind, trajectory.kind) {
                 (Some(FcTrajectoryKind::MinimumSnap), FcTrajectoryConfigKind::MinimumSnap) => {}
                 (Some(other), FcTrajectoryConfigKind::MinimumSnap) => {
@@ -366,20 +368,18 @@ impl ScenarioDocument {
                 (None, FcTrajectoryConfigKind::MinimumSnap) => {
                     return Err(ScenarioError::MissingRequiredField {
                         field: "fc.autopilot_params.trajectory_kind".to_owned(),
-                        role: ModelRole::Controller,
+                        role: ModelRole::Trajectory,
                         name: "minimum_snap".to_owned(),
                     });
                 }
             }
         } else if matches!(
-            fc.autopilot_params
-                .as_ref()
-                .and_then(|p| p.trajectory_kind),
+            fc.autopilot_params.as_ref().and_then(|p| p.trajectory_kind),
             Some(FcTrajectoryKind::MinimumSnap)
         ) {
             return Err(ScenarioError::MissingRequiredField {
                 field: "fc.trajectory".to_owned(),
-                role: ModelRole::Controller,
+                role: ModelRole::Trajectory,
                 name: "minimum_snap".to_owned(),
             });
         }
@@ -4147,13 +4147,11 @@ impl FcTrajectoryConfig {
                 &format!("fc.trajectory.waypoint[{index}].position_eci_m"),
                 &w.position_eci_m,
             )?;
-            require_finite(
-                &format!("fc.trajectory.waypoint[{index}].time_s"),
-                w.time_s,
-            )?;
+            require_finite(&format!("fc.trajectory.waypoint[{index}].time_s"), w.time_s)?;
         }
         for i in 0..self.waypoints.len() - 1 {
-            if self.waypoints[i + 1].time_s <= self.waypoints[i].time_s {
+            let duration_s = self.waypoints[i + 1].time_s - self.waypoints[i].time_s;
+            if duration_s <= 0.0 {
                 return Err(ScenarioError::InvalidFc {
                     reason: format!(
                         "fc.trajectory.waypoint[{i}].time_s={} must be strictly less than \
@@ -4161,6 +4159,17 @@ impl FcTrajectoryConfig {
                         self.waypoints[i].time_s,
                         i + 1,
                         self.waypoints[i + 1].time_s
+                    ),
+                });
+            }
+            if !(FC_TRAJECTORY_MIN_SEGMENT_DURATION_S..=FC_TRAJECTORY_MAX_SEGMENT_DURATION_S)
+                .contains(&duration_s)
+            {
+                return Err(ScenarioError::InvalidFc {
+                    reason: format!(
+                        "fc.trajectory segment {i} duration {duration_s} s must be within \
+                         [{FC_TRAJECTORY_MIN_SEGMENT_DURATION_S}, \
+                         {FC_TRAJECTORY_MAX_SEGMENT_DURATION_S}] s"
                     ),
                 });
             }
@@ -4188,8 +4197,7 @@ mod fc_string_tests {
 
     #[test]
     fn fc_variant_strings_round_trip_and_old_spellings_reject() {
-        let traj: TrajectoryWrapper =
-            toml::from_str("trajectory_kind = \"minimum_snap\"").unwrap();
+        let traj: TrajectoryWrapper = toml::from_str("trajectory_kind = \"minimum_snap\"").unwrap();
         assert_eq!(traj.trajectory_kind, FcTrajectoryKind::MinimumSnap);
         assert_eq!(
             toml::to_string(&traj).unwrap(),

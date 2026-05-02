@@ -9,7 +9,7 @@
 use crate::error::ControllerError;
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
-use crate::topics::{ActuatorCommand, EstimatorStatus, FailsafeFlags, FdirStatus};
+use crate::topics::{ActuatorCommand, AutopilotStatus, EstimatorStatus, FailsafeFlags, FdirStatus};
 
 /// Fault-tree bit: IMU lane or innovation fault.
 pub const FDIR_BIT_IMU: u64 = 1 << 0;
@@ -25,6 +25,8 @@ pub const FDIR_BIT_SCHEDULER_OVERRUN: u64 = 1 << 4;
 pub const FDIR_BIT_ESTIMATOR_DEAD_RECKONING: u64 = 1 << 5;
 /// Fault-tree bit: autopilot saturation.
 pub const FDIR_BIT_AUTOPILOT_SATURATION: u64 = 1 << 6;
+/// Fault-tree bit: differential-flatness reference suppression.
+pub const FDIR_BIT_AUTOPILOT_REFERENCE_SUPPRESSED: u64 = 1 << 7;
 
 /// Detector family.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -187,6 +189,11 @@ impl Job for FdirJob {
         {
             current_mask |= FDIR_BIT_AUTOPILOT_SATURATION;
         }
+        if let Ok(Some((autopilot, _))) = ctx.bus.latest::<AutopilotStatus>()
+            && autopilot.differential_flatness_reference_suppressed
+        {
+            current_mask |= FDIR_BIT_AUTOPILOT_REFERENCE_SUPPRESSED;
+        }
 
         match self.params.detector_kind {
             DetectorKind::BurstCounter => {
@@ -277,6 +284,7 @@ mod tests {
         bus.register::<EstimatorStatus>().unwrap();
         bus.register::<FailsafeFlags>().unwrap();
         bus.register::<ActuatorCommand>().unwrap();
+        bus.register::<AutopilotStatus>().unwrap();
         bus.register::<FdirStatus>().unwrap();
         bus
     }
@@ -313,6 +321,28 @@ mod tests {
         assert_ne!(status.tripped_mask & FDIR_BIT_GNSS, 0);
         assert_ne!(status.tripped_mask & FDIR_BIT_ESTIMATOR_DEAD_RECKONING, 0);
         assert_ne!(status.tripped_mask & FDIR_BIT_AUTOPILOT_SATURATION, 0);
+    }
+
+    #[test]
+    fn single_sample_glrt_latches_autopilot_reference_suppression() {
+        let bus = bus_with_fdir_topics();
+        bus.publish(AutopilotStatus {
+            differential_flatness_active: true,
+            differential_flatness_reference_suppressed: true,
+        })
+        .unwrap();
+        let mut job = FdirJob::new(FdirParams {
+            detector_kind: DetectorKind::SingleSampleGlrt,
+            ..FdirParams::default()
+        });
+
+        let status = run_once(&mut job, &bus);
+
+        assert!(status.triggered);
+        assert_ne!(
+            status.tripped_mask & FDIR_BIT_AUTOPILOT_REFERENCE_SUPPRESSED,
+            0
+        );
     }
 
     #[test]

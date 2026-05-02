@@ -21,7 +21,13 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
+use openbmp_testkit::tolerance::ToleranceTable;
 use tempfile::{Builder, TempDir};
+
+struct RunOutput {
+    parquet: PathBuf,
+    kernel_steps: u32,
+}
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -35,6 +41,10 @@ fn openbmp() -> std::process::Command {
     std::process::Command::cargo_bin("openbmp").expect("binary built")
 }
 
+fn tolerance_table_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/expected/diff-flatness-figure-eight.toml")
+}
+
 fn tempdir(label: &str) -> TempDir {
     Builder::new()
         .prefix(&format!("openbmp-{label}-"))
@@ -42,7 +52,21 @@ fn tempdir(label: &str) -> TempDir {
         .expect("tempdir")
 }
 
-fn run_to_parquet(label: &str) -> PathBuf {
+fn parse_kernel_steps(stdout: &str) -> u32 {
+    let mut previous: Option<&str> = None;
+    for token in stdout.split_whitespace() {
+        if token.starts_with("steps") {
+            return previous
+                .expect("step count before steps token")
+                .parse()
+                .expect("kernel step count");
+        }
+        previous = Some(token);
+    }
+    panic!("stdout did not contain kernel step count: {stdout}");
+}
+
+fn run_to_parquet(label: &str) -> RunOutput {
     let scenario = workspace_root().join("scenarios/diff-flatness-figure-eight/scenario.toml");
     let temp = tempdir(label);
     let parquet = temp.path().join("diff-flatness-figure-eight.parquet");
@@ -57,34 +81,42 @@ fn run_to_parquet(label: &str) -> PathBuf {
         stdout.starts_with("openbmp run: ok"),
         "stdout was: {stdout}"
     );
+    let kernel_steps = parse_kernel_steps(&stdout);
     assert!(parquet.exists(), "parquet must be written");
     // Copy out of the tempdir so the caller can compare across runs;
     // tempdir drops on return.
     let copy = std::env::temp_dir().join(format!("openbmp-{label}.parquet"));
     let _ = fs::remove_file(&copy);
     fs::copy(&parquet, &copy).expect("copy parquet");
-    copy
+    RunOutput {
+        parquet: copy,
+        kernel_steps,
+    }
 }
 
 #[test]
 fn diff_flatness_figure_eight_runs_to_completion() {
-    let parquet = run_to_parquet("diff-flatness-figure-eight-runs");
-    let bytes = fs::read(&parquet).expect("read parquet");
+    let run = run_to_parquet("diff-flatness-figure-eight-runs");
+    let table = ToleranceTable::from_path(tolerance_table_path()).expect("tolerance table");
+    table
+        .check_metric("kernel_steps", f64::from(run.kernel_steps))
+        .expect("kernel_steps within tolerance");
+    let bytes = fs::read(&run.parquet).expect("read parquet");
     assert!(!bytes.is_empty(), "parquet must be non-empty");
-    let _ = fs::remove_file(&parquet);
+    let _ = fs::remove_file(&run.parquet);
 }
 
 #[test]
 fn diff_flatness_figure_eight_is_byte_stable_across_reruns() {
     let a = run_to_parquet("diff-flatness-figure-eight-rerun-a");
     let b = run_to_parquet("diff-flatness-figure-eight-rerun-b");
-    let bytes_a = fs::read(&a).expect("read a");
-    let bytes_b = fs::read(&b).expect("read b");
+    let bytes_a = fs::read(&a.parquet).expect("read a");
+    let bytes_b = fs::read(&b.parquet).expect("read b");
     assert_eq!(
         bytes_a, bytes_b,
         "two reruns of diff-flatness-figure-eight must produce byte-identical Parquet \
          (polynomial coefficients are bit-stable; closed-loop pipeline preserves that)"
     );
-    let _ = fs::remove_file(&a);
-    let _ = fs::remove_file(&b);
+    let _ = fs::remove_file(&a.parquet);
+    let _ = fs::remove_file(&b.parquet);
 }

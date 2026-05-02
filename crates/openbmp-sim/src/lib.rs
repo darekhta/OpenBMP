@@ -68,5 +68,7 @@ pub use models::{
     MomentModel, NullEnvironment, RecoverySnapshot, RecoverySnapshotView, RigidMassModel,
     TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
 };
-pub use openbmp_models::{Integratable, RigidBodyKinematicState, TranslationalState, VehicleState};
+pub use openbmp_models::{
+    Integratable, RigidBodyKinematicState, SimState, TranslationalState, VehicleState,
+};
 pub use stop::{AlwaysContinue, EndTime, MaxSteps, StopCondition};

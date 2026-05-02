@@ -1,4 +1,4 @@
-case = "diff-flatness-figure-eight-500-steps"
+case = "diff-flatness-figure-eight-8000-steps"
 source = "Synthetic; minimum-snap waypoints in scenario.toml. See scenarios/diff-flatness-figure-eight/provenance.md."
 validation = "experimental"
 
@@ -11,6 +11,6 @@ validation = "experimental"
 
 [[metric]]
 name = "kernel_steps"
-expected = 500
+expected = 8000
 absolute_tolerance = 0.0
 relative_tolerance = 0.0

@@ -23,6 +23,8 @@ pub enum ModelRole {
     Wind,
     /// Virtual controller model.
     Controller,
+    /// Trajectory generator or trajectory-reference block.
+    Trajectory,
     /// Force-model entry in deterministic force ordering.
     Force,
     /// Synthetic sensor model.
@@ -41,6 +43,7 @@ impl ModelRole {
             Self::Atmosphere => "atmosphere",
             Self::Wind => "wind",
             Self::Controller => "controller",
+            Self::Trajectory => "trajectory",
             Self::Force => "force",
             Self::Sensor => "sensor",
             Self::Motor => "motor",

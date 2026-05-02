@@ -1567,6 +1567,42 @@ Phase-5 sub-block adds tuning data for the windowed-mean-shift GLRT
 (Willsky 1976) and Patton-Frank parity-space residual generator that
 land in Phase 5.B.4.
 
+#### `[fc.trajectory]` — minimum-snap trajectory waypoints (Phase 5.A.1)
+
+```toml
+[fc.autopilot_params]
+trajectory_loop_enabled = true
+trajectory_kind         = "minimum_snap"
+
+[fc.trajectory]
+kind    = "minimum_snap"
+yaw_rad = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 100.0]
+time_s         = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, 5.0, 100.0]
+time_s         = 2.0
+```
+
+`[fc.trajectory]` is v3-only and consumed by the Phase 5.A.1
+Mellinger-Kumar minimum-snap differential-flatness tracker. It parses
+with `serde(deny_unknown_fields)`. `kind = "minimum_snap"` is the only
+supported value in Phase 5.A.1. `yaw_rad` is optional and defaults to
+`0.0`; time-varying yaw splines are deferred. The waypoint list is
+declared as `[[fc.trajectory.waypoint]]` entries, each with finite
+`position_eci_m = [x, y, z]` and finite, strictly increasing `time_s`.
+At least two waypoints are required. Adjacent waypoint times must be
+between `0.001 s` and `600 s`, inclusive, to keep the deterministic KKT
+solve inside its documented conditioning envelope.
+
+The block is cross-validated with
+`fc.autopilot_params.trajectory_kind`: selecting `"minimum_snap"`
+requires `[fc.trajectory]`, and declaring `[fc.trajectory]` requires
+`trajectory_kind = "minimum_snap"`.
+
 ### v3-only kind values
 
 #### `gravity = "egm2008"` (Phase 5.C.2)

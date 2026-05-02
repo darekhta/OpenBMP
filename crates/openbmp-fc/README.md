@@ -66,7 +66,7 @@ Implemented in this crate today:
   magnetometer update, WGS84-J2 gravity via `openbmp-physics`, and a
   real 6-state sigma-point UKF for attitude + gyro bias.
 - **Autopilot upgrades** — optional gyro notch filters,
-  flatness-inspired attitude-reference generation, and
+  minimum-snap differential-flatness attitude-reference generation, and
   feature-gated L1-inspired rate-loop augmentation.
 - **FDIR / voter upgrades** — burst-counter / single-sample GLRT /
   CUSUM detector

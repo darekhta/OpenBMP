@@ -27,10 +27,10 @@ use openbmp_fc::guidance::{
 use openbmp_fc::health::{HealthMonitor, HealthParams};
 use openbmp_fc::mixer::{ActuatorChannelMap, Mixer, PhaseAuthority, PhaseAuthorityTable};
 use openbmp_fc::topics::{
-    ActuatorCommand, AttitudeEstimate, BarometerSample, EffectorCommandSet, EngineCommandSet,
-    EngineDemand, EstimatorStatus, FailsafeFlags, FdirStatus, GnssSample, ImuSample,
-    MagnetometerSample, PositionEstimate, ReferenceState, SensorStatus, StarTrackerSample,
-    VehicleStatus,
+    ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, EffectorCommandSet,
+    EngineCommandSet, EngineDemand, EstimatorStatus, FailsafeFlags, FdirStatus, GnssSample,
+    ImuSample, MagnetometerSample, PositionEstimate, ReferenceState, SensorStatus,
+    StarTrackerSample, VehicleStatus,
 };
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
@@ -168,7 +168,9 @@ impl FcRunner {
         if let Some(trajectory_cfg) = config.trajectory.as_ref() {
             let trajectory = build_minimum_snap_trajectory(trajectory_cfg)
                 .map_err(openbmp_fc::ControllerError::from)?;
-            autopilot = autopilot.with_minimum_snap_trajectory(trajectory);
+            autopilot = autopilot
+                .with_minimum_snap_trajectory(trajectory)
+                .with_minimum_snap_yaw_rad(trajectory_cfg.yaw_rad.unwrap_or(0.0));
         }
         fc.scheduler_mut()
             .register_periodic(1, 300, next_priority, Box::new(autopilot))?;
@@ -341,6 +343,7 @@ impl FcRunner {
         bus.register::<FailsafeFlags>()?;
         bus.register::<ReferenceState>()?;
         bus.register::<ActuatorCommand>()?;
+        bus.register::<AutopilotStatus>()?;
         bus.register::<EffectorCommandSet>()?;
         bus.register::<EngineDemand>()?;
         bus.register::<EngineCommandSet>()?;
@@ -474,7 +477,8 @@ fn build_autopilot_params(cfg: &FcAutopilotParams) -> AutopilotParams {
 
 fn build_minimum_snap_trajectory(
     cfg: &openbmp_scenario::FcTrajectoryConfig,
-) -> Result<openbmp_fc::trajectory::MinimumSnapTrajectory, openbmp_fc::trajectory::TrajectoryError> {
+) -> Result<openbmp_fc::trajectory::MinimumSnapTrajectory, openbmp_fc::trajectory::TrajectoryError>
+{
     use openbmp_fc::trajectory::{MinimumSnapTrajectory, MinimumSnapWaypoint};
     let waypoints = cfg
         .waypoints

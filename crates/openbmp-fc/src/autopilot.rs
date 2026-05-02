@@ -26,12 +26,10 @@ use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::tables::Table;
 use crate::topics::{
-    ActuatorCommand, AttitudeEstimate, EngineDemand, PositionEstimate, ReferenceState,
-    VehicleStatus,
+    ActuatorCommand, AttitudeEstimate, AutopilotStatus, EngineDemand, PositionEstimate,
+    ReferenceState, VehicleStatus,
 };
-use crate::trajectory::{
-    flat_output_attitude_reference, MinimumSnapTrajectory, YawProfile,
-};
+use crate::trajectory::{MinimumSnapTrajectory, YawProfile, flat_output_attitude_reference};
 
 /// PID gain triple (Kp, Ki, Kd).
 #[derive(Copy, Clone, Debug, Default)]
@@ -184,10 +182,12 @@ pub struct ThreeLoopAutopilot {
     gyro_notch_state: Option<[Biquad; 3]>,
     /// Optional minimum-snap trajectory consumed when
     /// `params.trajectory_kind == TrajectoryKind::DifferentialFlatness`.
-    /// The autopilot owns the trajectory in Phase 5.A.1.A; a
-    /// guidance-side topic-driven path is tracked for follow-up
-    /// sub-phase 5.A.1.B.
+    /// The autopilot owns the trajectory in Phase 5.A.1.
     minimum_snap_trajectory: Option<MinimumSnapTrajectory>,
+    /// Optional constant yaw override for the installed trajectory.
+    /// Scenario `[fc.trajectory].yaw_rad` sets this; programmatic users
+    /// that omit it inherit yaw from the bus reference.
+    minimum_snap_yaw_rad: Option<f64>,
     #[cfg(feature = "l1-adaptive")]
     l1_state: [crate::l1_adaptive::L1InspiredChannel; 3],
 }
@@ -214,6 +214,7 @@ impl ThreeLoopAutopilot {
             params: AutopilotParams::default(),
             gyro_notch_state: None,
             minimum_snap_trajectory: None,
+            minimum_snap_yaw_rad: None,
             #[cfg(feature = "l1-adaptive")]
             l1_state: [crate::l1_adaptive::L1InspiredChannel::new(); 3],
         }
@@ -226,6 +227,15 @@ impl ThreeLoopAutopilot {
     #[must_use]
     pub fn with_minimum_snap_trajectory(mut self, trajectory: MinimumSnapTrajectory) -> Self {
         self.minimum_snap_trajectory = Some(trajectory);
+        self
+    }
+
+    /// Installs a constant yaw angle for the minimum-snap
+    /// differential-flatness trajectory. Programmatic callers may omit
+    /// this and keep the legacy bus-reference yaw inheritance.
+    #[must_use]
+    pub fn with_minimum_snap_yaw_rad(mut self, yaw_rad: f64) -> Self {
+        self.minimum_snap_yaw_rad = Some(yaw_rad);
         self
     }
 
@@ -353,6 +363,8 @@ impl Job for ThreeLoopAutopilot {
         // Attitude loop input: small-angle error in body frame.
         let mut attitude_error =
             quaternion_error_small_angle(attitude.q_body_to_eci_xyzw, reference.q_body_to_eci_xyzw);
+        let mut differential_flatness_active = false;
+        let mut differential_flatness_reference_suppressed = false;
 
         // Phase 5.A.1 — DifferentialFlatness trajectory loop.
         // Generates the attitude reference from the installed
@@ -363,6 +375,7 @@ impl Job for ThreeLoopAutopilot {
         if self.params.trajectory_loop_enabled
             && self.params.trajectory_kind == TrajectoryKind::DifferentialFlatness
         {
+            differential_flatness_active = true;
             let trajectory = self.minimum_snap_trajectory.as_ref().ok_or_else(|| {
                 ControllerError::from(AutopilotError::Trajectory {
                     reason: "DifferentialFlatness trajectory_kind selected without an \
@@ -373,7 +386,9 @@ impl Job for ThreeLoopAutopilot {
             })?;
             let now_s = ctx.clock.now().as_seconds();
             let flat = trajectory.evaluate(now_s);
-            let yaw_rad = reference_yaw_rad(reference.q_body_to_eci_xyzw);
+            let yaw_rad = self
+                .minimum_snap_yaw_rad
+                .unwrap_or_else(|| reference_yaw_rad(reference.q_body_to_eci_xyzw));
             let yaw = YawProfile {
                 yaw_rad,
                 yaw_rate_rad_s: 0.0,
@@ -381,15 +396,20 @@ impl Job for ThreeLoopAutopilot {
             };
             if let Some(reference_kin) = flat_output_attitude_reference(&flat, yaw) {
                 let q = reference_kin.q_body_to_eci.into_inner();
-                attitude_error = quaternion_error_small_angle(
-                    attitude.q_body_to_eci_xyzw,
-                    [q.i, q.j, q.k, q.w],
-                );
+                attitude_error =
+                    quaternion_error_small_angle(attitude.q_body_to_eci_xyzw, [q.i, q.j, q.k, q.w]);
+            } else {
+                differential_flatness_reference_suppressed = true;
             }
             // Free-fall (returned None): leave the attitude_error
             // initialised from the bus reference. The flat-output
-            // path has no thrust direction in that regime.
+            // path has no thrust direction in that regime and publishes
+            // an autopilot status bit for FDIR.
         }
+        let _ = ctx.bus.publish(AutopilotStatus {
+            differential_flatness_active,
+            differential_flatness_reference_suppressed,
+        });
 
         // Trajectory loop: feeds an attitude-error correction. Active
         // only when enabled by params and a position reference is
@@ -598,9 +618,7 @@ mod tests {
     fn differential_flatness_without_trajectory_fails_closed() {
         use openbmp_core::StepIndex;
 
-        use crate::autopilot::{
-            AutopilotParams, ThreeLoopAutopilot, TrajectoryKind,
-        };
+        use crate::autopilot::{AutopilotParams, ThreeLoopAutopilot, TrajectoryKind};
         use crate::bus::Bus;
         use crate::clock::SimulatedClock;
         use crate::error::{AutopilotError, ControllerError};

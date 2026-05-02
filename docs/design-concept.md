@@ -635,7 +635,7 @@ and any operational mission profile.
   gain-scheduled by phase via the `GainSchedule` table consulted on
   every tick, anti-windup via back-calculation, saturation reporting
   on the actuator topic, optional gyro notch filtering,
-  flatness-inspired attitude-reference generation, and
+  minimum-snap differential-flatness attitude-reference generation, and
   feature-gated L1-inspired rate-loop augmentation. Clarabel-backed
   QP / SOCP primitives are feature-gated; full receding-horizon MPC
   is Phase 5.
@@ -649,7 +649,7 @@ and any operational mission profile.
   The published `tripped_mask` uses explicit sensor / scheduler / estimator /
   autopilot bits; commander reads `fdir.status` in the arming chain.
 - Academic guidance laws: attitude-hold and scripted-waypoint
-  navigation in inertial space, plus flatness-inspired
+  navigation in inertial space, plus minimum-snap differential-flatness
   attitude-reference generation for smooth academic trajectories
   (no targeting, no terminal-homing, no real-world-location guidance).
   Real LCvxLD / SCvx powered-descent trajectory reproduction is

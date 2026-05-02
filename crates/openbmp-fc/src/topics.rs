@@ -335,6 +335,20 @@ impl Topic for ActuatorCommand {
     const NAME: &'static str = "autopilot.actuator_cmd";
 }
 
+/// Diagnostic status emitted by the autopilot.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct AutopilotStatus {
+    /// `true` when the differential-flatness trajectory loop is active.
+    pub differential_flatness_active: bool,
+    /// `true` when the flat-output attitude reference was suppressed
+    /// because the desired specific force had no well-defined direction.
+    pub differential_flatness_reference_suppressed: bool,
+}
+
+impl Topic for AutopilotStatus {
+    const NAME: &'static str = "autopilot.status";
+}
+
 /// Maximum number of effector-specific commands published by the FC
 /// mixer in one tick.
 pub const MAX_EFFECTOR_COMMANDS: usize = 4;
