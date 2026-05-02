@@ -1,0 +1,32 @@
+case = "diff-flatness-figure-eight-indi-rigid-body-8000-steps"
+source = "Synthetic; same lemniscate waypoints as scenarios/diff-flatness-figure-eight, with rate_loop_kind = \"indi\". See scenarios/diff-flatness-figure-eight-indi/provenance.md."
+validation = "experimental"
+
+# Phase 5.A.3.C tolerance bench: rigid-body figure-eight tracker
+# with the per-axis INDI rate loop (Smeur, Chu, de Croon 2016).
+# Asserts:
+#   - 8000 kernel steps;
+#   - rigid-body quaternion stays normalised after projection;
+#   - max body-frame angular velocity magnitude bounded — generous
+#     5.0 rad/s ceiling around the observed ~0.75 rad/s peak. INDI
+#     filter delay raises max |ω| modestly above the PID baseline
+#     (~0.59 rad/s) without disturbance; comparison against PID,
+#     PID + L1, and LQR is Phase-5.A.3.D scope.
+
+[[metric]]
+name = "kernel_steps"
+expected = 8000
+absolute_tolerance = 0.0
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_angular_velocity_magnitude_rad_s"
+expected = 0.0
+absolute_tolerance = 5.0
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_quaternion_norm_error"
+expected = 0.0
+absolute_tolerance = 1.0e-12
+relative_tolerance = 0.0

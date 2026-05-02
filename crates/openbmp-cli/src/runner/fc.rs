@@ -478,7 +478,7 @@ fn build_autopilot_params(
     lqr_ctx: Option<&FcAutopilotLqrContext>,
 ) -> Result<AutopilotParams, openbmp_fc::ControllerError> {
     use openbmp_fc::anti_windup::AntiWindupKind;
-    #[cfg(feature = "lqr")]
+    #[cfg(any(feature = "lqr", feature = "indi"))]
     use openbmp_fc::error::AutopilotError;
     // Phase 5.A.3.A: explicit `[fc.autopilot_params.anti_windup]`
     // wins over the legacy `anti_windup_gain` scalar; otherwise the
@@ -576,6 +576,45 @@ fn build_autopilot_params(
                         openbmp_fc::error::AutopilotError::Trajectory {
                             reason: "rate_loop_kind = \"lqr\" requires the openbmp-cli \
                                      `lqr` Cargo feature; rebuild with --features lqr."
+                                .to_string(),
+                        },
+                    ));
+                }
+            }
+            openbmp_scenario::FcRateLoopKind::Indi => {
+                #[cfg(feature = "indi")]
+                {
+                    let indi_cfg = cfg.indi.as_ref().ok_or_else(|| {
+                        openbmp_fc::ControllerError::from(AutopilotError::Trajectory {
+                            reason: "rate_loop_kind = \"indi\" but [fc.autopilot_params.indi] \
+                                     is absent (parser should have caught this)"
+                                .to_string(),
+                        })
+                    })?;
+                    let indi_params = openbmp_fc::indi::IndiParams {
+                        inertia_per_axis_kg_m2: indi_cfg.inertia_per_axis_kg_m2,
+                        control_effectiveness_per_axis: indi_cfg.control_effectiveness_per_axis,
+                        filter_cutoff_rad_s: indi_cfg.filter_cutoff_rad_s,
+                        filter_kind: match indi_cfg.filter_kind {
+                            openbmp_scenario::FcIndiFilterKind::FirstOrderLowPass => {
+                                openbmp_fc::indi::IndiFilterKind::FirstOrderLowPass
+                            }
+                            openbmp_scenario::FcIndiFilterKind::SecondOrderButterworth => {
+                                openbmp_fc::indi::IndiFilterKind::SecondOrderButterworth
+                            }
+                        },
+                        attitude_to_omega_dot_gain: indi_cfg.attitude_to_omega_dot_gain,
+                    };
+                    params.rate_loop_kind = openbmp_fc::autopilot::RateLoopKind::Indi;
+                    params.indi_params = Some(indi_params);
+                }
+                #[cfg(not(feature = "indi"))]
+                {
+                    let _ = cfg.indi.as_ref();
+                    return Err(openbmp_fc::ControllerError::from(
+                        openbmp_fc::error::AutopilotError::Trajectory {
+                            reason: "rate_loop_kind = \"indi\" requires the openbmp-cli \
+                                     `indi` Cargo feature; rebuild with --features indi."
                                 .to_string(),
                         },
                     ));

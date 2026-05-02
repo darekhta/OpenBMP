@@ -353,16 +353,78 @@ fn require_bridge_frame(document: &ScenarioDocument) -> Result<(), CliError> {
     })
 }
 
+/// Phase 5.A.3.B + 5.A.3.C precondition: per-axis rate loops (LQR
+/// and INDI) require a single-body assembly with diagonal inertia
+/// in body axes. Multi-body assemblies fail closed until a later
+/// slice solves gains / parameters against the full assembled mass
+/// properties; non-diagonal inertia breaks the per-axis decoupling
+/// assumption both rate loops are built on.
+///
+/// Returns `Ok([Jxx, Jyy, Jzz])` after passing the precondition, or
+/// `Ok(None)` when no per-axis rate loop is selected (point-mass
+/// scenarios, PID rate loops, etc.). Fails closed when the
+/// precondition is violated; the calling site formats the error
+/// with the offending rate-loop kind label.
+fn verify_per_axis_rate_loop_preconditions(
+    scenario: &Scenario,
+    kind_label: &str,
+) -> Result<[f64; 3], CliError> {
+    let bodies = &scenario.document.vehicle.assembly.bodies;
+    if bodies.len() != 1 {
+        return Err(CliError::UnsupportedScenario {
+            what: format!(
+                "rate_loop_kind = \"{kind_label}\" requires exactly one \
+                 [[vehicle.assembly.bodies]] entry with diagonal inertia in Phase 5.A.3.B/C; \
+                 got {} bodies",
+                bodies.len()
+            ),
+        });
+    }
+    let body = bodies
+        .first()
+        .ok_or_else(|| CliError::UnsupportedScenario {
+            what: format!(
+                "rate_loop_kind = \"{kind_label}\" requires at least one \
+                 [[vehicle.assembly.bodies]] entry"
+            ),
+        })?;
+    let inertia_matrix =
+        body.dry_inertia_body_kg_m2
+            .ok_or_else(|| CliError::UnsupportedScenario {
+                what: format!(
+                    "rate_loop_kind = \"{kind_label}\" requires \
+                     vehicle.assembly.bodies[0].dry_inertia_body_kg_m2 to be declared"
+                ),
+            })?;
+    // Reject non-diagonal inertia: per-axis decoupling only holds
+    // for diagonal J in body axes.
+    for (i, row) in inertia_matrix.iter().enumerate() {
+        for (j, value) in row.iter().enumerate() {
+            if i != j && *value != 0.0 {
+                return Err(CliError::UnsupportedScenario {
+                    what: format!(
+                        "rate_loop_kind = \"{kind_label}\" requires diagonal inertia; body[0] \
+                         dry_inertia_body_kg_m2[{i}][{j}] = {value} ≠ 0"
+                    ),
+                });
+            }
+        }
+    }
+    Ok([
+        inertia_matrix[0][0],
+        inertia_matrix[1][1],
+        inertia_matrix[2][2],
+    ])
+}
+
 /// Phase 5.A.3.B helper: extract the diagonal moments of inertia
 /// from a single-body assembly so the runner can solve the per-axis
-/// LQR DARE at scenario load. Multi-body assemblies fail closed until
-/// a later slice solves gains against the full assembled mass
-/// properties.
-/// Returns `Ok(None)` when the FC scenario does not request the
-/// LQR rate loop, or when the vehicle has no inertia matrix
-/// declared (e.g. a point-mass kernel). Fails closed if LQR is
-/// requested but the assembly is multi-body or the inertia matrix is
-/// non-diagonal.
+/// LQR DARE at scenario load. Returns `Ok(None)` when the FC
+/// scenario does not request a rate loop that needs the precondition
+/// check. Fails closed when LQR is requested but the precondition
+/// (single body, diagonal inertia) is violated; the matching INDI
+/// precondition runs from the same helper via
+/// [`verify_indi_rate_loop_preconditions`].
 fn build_autopilot_lqr_context(
     scenario: &Scenario,
 ) -> Result<Option<FcAutopilotLqrContext>, CliError> {
@@ -372,56 +434,23 @@ fn build_autopilot_lqr_context(
     let Some(autopilot_params) = fc_config.autopilot_params.as_ref() else {
         return Ok(None);
     };
-    if autopilot_params.rate_loop_kind != Some(openbmp_scenario::FcRateLoopKind::Lqr) {
+    let kind = autopilot_params.rate_loop_kind;
+    if kind == Some(openbmp_scenario::FcRateLoopKind::Lqr) {
+        let diagonal_inertia_kg_m2 = verify_per_axis_rate_loop_preconditions(scenario, "lqr")?;
+        return Ok(Some(FcAutopilotLqrContext {
+            dt_s: scenario.document.time.dt_s,
+            diagonal_inertia_kg_m2,
+        }));
+    }
+    if kind == Some(openbmp_scenario::FcRateLoopKind::Indi) {
+        // INDI shares the precondition (single body, diagonal
+        // inertia) but uses scenario-config inertia for its
+        // inversion, not the truth-side body inertia. Run the
+        // check for its side-effect; LQR-context is None.
+        let _ = verify_per_axis_rate_loop_preconditions(scenario, "indi")?;
         return Ok(None);
     }
-    let bodies = &scenario.document.vehicle.assembly.bodies;
-    if bodies.len() != 1 {
-        return Err(CliError::UnsupportedScenario {
-            what: format!(
-                "rate_loop_kind = \"lqr\" requires exactly one [[vehicle.assembly.bodies]] entry \
-                 with diagonal inertia in Phase 5.A.3.B; got {} bodies",
-                bodies.len()
-            ),
-        });
-    }
-    let body = bodies
-        .first()
-        .ok_or_else(|| CliError::UnsupportedScenario {
-            what:
-                "rate_loop_kind = \"lqr\" requires at least one [[vehicle.assembly.bodies]] entry"
-                    .to_owned(),
-        })?;
-    let inertia_matrix =
-        body.dry_inertia_body_kg_m2
-            .ok_or_else(|| CliError::UnsupportedScenario {
-                what: "rate_loop_kind = \"lqr\" requires \
-                   vehicle.assembly.bodies[0].dry_inertia_body_kg_m2 to be declared"
-                    .to_owned(),
-            })?;
-    // Reject non-diagonal inertia: per-axis LQR depends on
-    // axis-decoupled rotational dynamics, which only holds for
-    // diagonal J in body axes.
-    for (i, row) in inertia_matrix.iter().enumerate() {
-        for (j, value) in row.iter().enumerate() {
-            if i != j && *value != 0.0 {
-                return Err(CliError::UnsupportedScenario {
-                    what: format!(
-                        "rate_loop_kind = \"lqr\" requires diagonal inertia; body[0] \
-                         dry_inertia_body_kg_m2[{i}][{j}] = {value} ≠ 0"
-                    ),
-                });
-            }
-        }
-    }
-    Ok(Some(FcAutopilotLqrContext {
-        dt_s: scenario.document.time.dt_s,
-        diagonal_inertia_kg_m2: [
-            inertia_matrix[0][0],
-            inertia_matrix[1][1],
-            inertia_matrix[2][2],
-        ],
-    }))
+    Ok(None)
 }
 
 fn build_magnetic_field(config: &FcConfig) -> Result<Box<dyn MagneticFieldEci>, CliError> {

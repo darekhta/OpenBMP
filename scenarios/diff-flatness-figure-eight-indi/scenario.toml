@@ -1,0 +1,237 @@
+# Phase-5.A.3.C INDI variant of the diff-flatness figure-eight.
+#
+# Identical to `scenarios/diff-flatness-figure-eight` except for one
+# pair of fields under `[fc.autopilot_params]`:
+#
+#   - `rate_loop_kind = "indi"` swaps the rate loop from PID to the
+#     per-axis Incremental Nonlinear Dynamic Inversion shipped in
+#     Phase 5.A.3.C (Smeur, Chu, de Croon 2016).
+#   - `[fc.autopilot_params.indi]` declares INDI's working estimate
+#     of body-axis inertia, per-axis control effectiveness, the
+#     synchronised filter cutoff applied identically to ω and the
+#     prior actuator command, and the outer-loop attitude-to-
+#     angular-acceleration P-gain.
+#
+# All other autopilot machinery (DifferentialFlatness trajectory loop,
+# attitude loop, anti-windup) is unchanged. INDI's rate-loop saturation
+# handling is implicit through the clamp on `u[k+1] = u[k] + Δu`, so
+# the configured `anti_windup_gain` is parsed but unused under
+# `rate_loop_kind = "indi"`.
+#
+# Composition with `[fc.autopilot_params.l1_adaptive]` is rejected at
+# scenario load — INDI's filtered ω̇_meas already absorbs matched
+# disturbance, and the filter-interaction concerns of stacking L1
+# on top have not been characterised in this slice.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "diff-flatness-figure-eight-indi"
+description = "Phase-5.A.3.C INDI rate-loop figure-eight tracker. Sibling of diff-flatness-figure-eight; identical except rate_loop_kind = \"indi\" and the [fc.autopilot_params.indi] block."
+validation  = "experimental"
+provenance  = "synthetic; identical to diff-flatness-figure-eight modulo the INDI rate-loop swap. See provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 8.0
+dt_s    = 0.001
+seed    = 0x494e_4449_3168_466c   # "INDI1hFl"
+
+[vehicle]
+kind                                = "rigid_body"
+initial_position_eci_m              = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "diff-flatness-figure-eight-indi"
+
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_inertia_body_kg_m2 = [
+  [1.0, 0.0, 0.0],
+  [0.0, 1.0, 0.0],
+  [0.0, 0.0, 1.0],
+]
+
+[[vehicle.assembly.effectors]]
+id               = "roll-torque"
+kind             = { kind = "direct_torque", axis = "roll", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.35, max = 0.35, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[[vehicle.assembly.effectors]]
+id               = "pitch-torque"
+kind             = { kind = "direct_torque", axis = "pitch", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.35, max = 0.35, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[[vehicle.assembly.effectors]]
+id               = "yaw-torque"
+kind             = { kind = "direct_torque", axis = "yaw", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.35, max = 0.35, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+magnetic      = "wmm_2025"
+
+[forces]
+models = ["gravity"]
+
+[sensors.imu]
+kind = "imu"
+file = "../../data/sensors/imu-consumer-mems.toml"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../../data/sensors/gnss-textbook.toml"
+
+[sensors.mag]
+kind = "magnetometer"
+file = "../../data/sensors/magnetometer-textbook.toml"
+
+[telemetry]
+output.parquet = "out/diff-flatness-figure-eight-indi.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "mission.phases.pad"
+
+[[mission.phases]]
+id    = "mission.phases.pad"
+label = "pad"
+
+[[mission.phases]]
+id                = "mission.phases.ascent"
+label             = "ascent"
+allowed_effectors = ["roll-torque", "pitch-torque", "yaw-torque"]
+
+[[mission.events]]
+id      = "mission.events.liftoff"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "enter_phase", phase = "mission.phases.ascent" }
+
+[[mission.transitions]]
+from  = "mission.phases.pad"
+to    = "mission.phases.ascent"
+event = "mission.events.liftoff"
+
+[fc]
+estimator        = "mekf"
+autopilot        = "three_loop"
+guidance         = "attitude_hold"
+reference_q_xyzw = [0.0, 0.0, 0.0, 1.0]
+base_rate_hz     = 1000
+frame_budget_us  = 2000
+
+[fc.mekf]
+mag_field             = "wmm_2025"
+mag_epoch_decimal_year = 2025.0
+sigma_w_gyro          = 0.01
+sigma_w_gyro_bias     = 1.0e-5
+tau_gyro_bias_s       = 100.0
+sigma_mag_nt          = 100.0
+innovation_false_alarm_rate = 0.01
+
+[fc.actuator_channels]
+aileron  = "roll-torque"
+elevator = "pitch-torque"
+rudder   = "yaw-torque"
+
+[fc.autopilot_params]
+anti_windup_gain         = 1.0
+rate_deadband_rad_s      = 0.001
+trajectory_loop_enabled  = true
+trajectory_kind          = "minimum_snap"
+rate_loop_kind           = "indi"
+
+# Per-axis INDI parameters. Filter cutoff at 50 rad/s (≈ 8 Hz) is
+# well below Nyquist (π·1000 ≈ 3141.6 rad/s) and below the rate loop's
+# operating bandwidth, so the filtered ω̇ measurement is noise-rejected
+# without introducing destabilising delay. Inertia and control
+# effectiveness are configured to match truth here; an inertia-mismatch
+# variant scenario (Phase 5.A.3.D) demonstrates INDI's robustness when
+# they don't.
+[fc.autopilot_params.indi]
+inertia_per_axis_kg_m2          = [1.0, 1.0, 1.0]
+control_effectiveness_per_axis  = [1.0, 1.0, 1.0]
+filter_cutoff_rad_s             = 50.0
+filter_kind                     = "second_order_butterworth"
+attitude_to_omega_dot_gain      = [10.0, 10.0, 5.0]
+
+[fc.trajectory]
+kind    = "minimum_snap"
+yaw_rad = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 100.0]
+time_s         = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, 5.0, 100.0]
+time_s         = 2.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [20.0, 0.0, 100.0]
+time_s         = 4.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, -5.0, 100.0]
+time_s         = 6.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 100.0]
+time_s         = 8.0
+
+[fc.health]
+imu_stale_after_s       = 0.05
+gnss_stale_after_s      = 0.5
+baro_stale_after_s      = 10.0
+mag_stale_after_s       = 0.2
+overrun_burst_count     = 5
+
+[fc.fdir]
+detector_kind           = "burst_counter"
+innovation_threshold    = 25.0
+innovation_burst_count  = 5
+failsafe_burst_count    = 5
+
+[fc.gain_schedule."mission.phases.pad"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.gain_schedule."mission.phases.ascent"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.phase_authority."mission.phases.pad"]
+autopilot_allowed = false
+engines_allowed   = false
+
+[fc.phase_authority."mission.phases.ascent"]
+autopilot_allowed = true
+engines_allowed   = true

@@ -21,6 +21,7 @@ default     = []
 bridge      = []
 l1-adaptive = ["openbmp-fc/l1-adaptive"]
 lqr         = ["openbmp-fc/lqr"]
+indi        = ["openbmp-fc/indi"]
 
 [dependencies]
 arrow              = { workspace = true }

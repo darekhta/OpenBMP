@@ -116,7 +116,8 @@ in lockstep with each sub-phase landing.
 | 5.A.2.D — closed-loop L1 validation under roll-axis ReducedRate fault | shipped | `af943d1` |
 | 5.A.3.A — observer-form anti-windup + back-calculation parameterisation | shipped | `327f2dc` |
 | 5.A.3.B — per-axis LQR rate loop + structure-preserving DARE solver | shipped | `327f2dc` |
-| 5.A.3.C onwards | pending | — |
+| 5.A.3.C — per-axis INDI rate loop (Smeur-Chu-de Croon 2016) | shipped | _pending PR_ |
+| 5.A.3.D — controller comparison harness | pending | — |
 
 ## Vehicle-class scope
 
@@ -373,13 +374,22 @@ review pattern as 5.A.1.A–D / 5.A.2.A–D.
    PID and LQR rate loops; L1 augmentation works on top transparently.
    Demonstration scenario:
    `scenarios/diff-flatness-figure-eight-lqr/scenario.toml`.
-3. **INDI baseline (Phase 5.A.3.C — pending).** Incremental
-   Nonlinear Dynamic Inversion for the rate loop, per Smeur, Chu,
-   de Croon 2016 academic formulation. Inverts only the diagonal of
-   the control-effectiveness matrix (no full plant inversion);
-   per-axis filtered-derivative term for the gyro-rate signal.
-   Useful as a reference baseline for the academic envelope where
-   INDI is the standard comparison.
+3. **INDI baseline (Phase 5.A.3.C — shipped).** Per-axis INDI rate
+   loop gated behind a new `indi` Cargo feature. Inverts the local
+   incremental relationship `J · Δω̇ ≈ G_eff · Δu` per axis under
+   the same single-body / diagonal-inertia precondition LQR ships
+   with. The synchronised `ω` and `u` filters share a single cutoff
+   exposed in the scenario API (first-order or second-order
+   Butterworth biquad via the bilinear transform; Smeur 2016
+   default is the second-order shape). Implicit anti-windup via the
+   clamp `u[k+1] = clamp(u[k] + Δu)` — no separate integrator state.
+   New scenario fields: `[fc.autopilot_params.rate_loop_kind] =
+   "indi"` selects the loop; `[fc.autopilot_params.indi]` declares
+   the working inertia / control-effectiveness / filter cutoff /
+   outer-loop attitude P-gain. Composition with
+   `[fc.autopilot_params.l1_adaptive]` is rejected at scenario load
+   (filter-interaction concerns). Demonstration scenario
+   `scenarios/diff-flatness-figure-eight-indi/scenario.toml`.
 4. **Controller comparison harness (Phase 5.A.3.D — pending).**
    Runs the figure-eight scenario family across PID baseline + L1 +
    observer-form anti-windup + LQR + INDI under matched

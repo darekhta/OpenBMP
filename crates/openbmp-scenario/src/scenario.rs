@@ -205,7 +205,10 @@ impl Scenario {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::document::{FcAntiWindupConfig, FcLqrConfig, FcRateLoopKind, WGS84_J2_DEFAULT};
+    use crate::document::{
+        FcAntiWindupConfig, FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind,
+        WGS84_J2_DEFAULT,
+    };
     use openbmp_core::ValidationStatus;
 
     // Parser-test fixture loaded from the canonical Phase-1
@@ -1029,6 +1032,203 @@ r       = [0.1, 0.1, 0.1]
                 "{label}: expected InvalidNumber, got {err:?}"
             );
         }
+    }
+
+    /// Inject `rate_loop_kind = "<kind>"` into the existing
+    /// `[fc.autopilot_params]` table of the v2 fixture and append the
+    /// matching `[fc.autopilot_params.indi]` sub-table.
+    fn fc_v3_with_indi(rate_loop_kind: Option<&str>, indi_block: Option<&str>) -> String {
+        let mut text = fc_v2_scenario().replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        if let Some(kind) = rate_loop_kind {
+            text = text.replace(
+                "trajectory_kind          = \"pid\"\n",
+                &format!(
+                    "trajectory_kind          = \"pid\"\nrate_loop_kind           = \"{kind}\"\n"
+                ),
+            );
+        }
+        if let Some(block) = indi_block {
+            text.push('\n');
+            text.push_str(block);
+        }
+        text
+    }
+
+    #[test]
+    fn fc_indi_block_is_v3_only() {
+        let block = r"
+[fc.autopilot_params.indi]
+inertia_per_axis_kg_m2          = [1.0, 1.0, 1.0]
+control_effectiveness_per_axis  = [1.0, 1.0, 1.0]
+filter_cutoff_rad_s             = 50.0
+attitude_to_omega_dot_gain      = [10.0, 10.0, 5.0]
+";
+        let toml_v2 = append(fc_v2_scenario(), block);
+        let err = Scenario::from_toml_str(&toml_v2).unwrap_err();
+        match err {
+            ScenarioError::SchemaVersionFieldReserved { field, .. } => {
+                assert!(
+                    field == "fc.autopilot_params.rate_loop_kind"
+                        || field == "fc.autopilot_params.indi",
+                    "unexpected SchemaVersionFieldReserved field: {field}"
+                );
+            }
+            other => panic!("expected SchemaVersionFieldReserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_indi_block_under_v3_validates_with_default_filter_kind() {
+        let indi_block = r"
+[fc.autopilot_params.indi]
+inertia_per_axis_kg_m2          = [1.0, 1.0, 1.0]
+control_effectiveness_per_axis  = [1.0, 1.0, 1.0]
+filter_cutoff_rad_s             = 50.0
+attitude_to_omega_dot_gain      = [10.0, 10.0, 5.0]
+";
+        let toml = fc_v3_with_indi(Some("indi"), Some(indi_block));
+        let scenario = Scenario::from_toml_str(&toml).expect("v3 INDI validates");
+        let params = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.autopilot_params.as_ref())
+            .expect("autopilot_params present");
+        assert_eq!(params.rate_loop_kind, Some(FcRateLoopKind::Indi));
+        let indi = params.indi.as_ref().expect("indi block present");
+        assert_eq!(indi.filter_kind, FcIndiFilterKind::SecondOrderButterworth);
+        assert_eq!(
+            *indi,
+            FcIndiConfig {
+                inertia_per_axis_kg_m2: [1.0, 1.0, 1.0],
+                control_effectiveness_per_axis: [1.0, 1.0, 1.0],
+                filter_cutoff_rad_s: 50.0,
+                filter_kind: FcIndiFilterKind::SecondOrderButterworth,
+                attitude_to_omega_dot_gain: [10.0, 10.0, 5.0],
+            }
+        );
+    }
+
+    #[test]
+    fn fc_indi_block_under_v3_accepts_first_order_filter_kind() {
+        let indi_block = "
+[fc.autopilot_params.indi]
+inertia_per_axis_kg_m2          = [1.0, 1.0, 1.0]
+control_effectiveness_per_axis  = [1.0, 1.0, 1.0]
+filter_cutoff_rad_s             = 80.0
+filter_kind                     = \"first_order_low_pass\"
+attitude_to_omega_dot_gain      = [10.0, 10.0, 5.0]
+";
+        let toml = fc_v3_with_indi(Some("indi"), Some(indi_block));
+        let scenario = Scenario::from_toml_str(&toml).expect("v3 INDI validates");
+        let params = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.autopilot_params.as_ref())
+            .expect("autopilot_params present");
+        let indi = params.indi.as_ref().expect("indi block present");
+        assert_eq!(indi.filter_kind, FcIndiFilterKind::FirstOrderLowPass);
+    }
+
+    #[test]
+    fn fc_rate_loop_indi_without_indi_block_fails_closed() {
+        let toml = fc_v3_with_indi(Some("indi"), None);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. }
+                if field == "fc.autopilot_params.indi"),
+            "expected MissingRequiredField for fc.autopilot_params.indi, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn fc_indi_block_without_rate_loop_indi_kind_fails_closed() {
+        let indi_block = r"
+[fc.autopilot_params.indi]
+inertia_per_axis_kg_m2          = [1.0, 1.0, 1.0]
+control_effectiveness_per_axis  = [1.0, 1.0, 1.0]
+filter_cutoff_rad_s             = 50.0
+attitude_to_omega_dot_gain      = [10.0, 10.0, 5.0]
+";
+        let toml = fc_v3_with_indi(None, Some(indi_block));
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, .. }
+                if field_a == "fc.autopilot_params.indi"),
+            "expected InconsistentSection on fc.autopilot_params.indi, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn fc_indi_block_rejects_non_positive_inertia_or_filter_cutoff() {
+        let cases = [
+            (
+                "inertia zero on pitch",
+                "inertia_per_axis_kg_m2          = [1.0, 1.0, 1.0]",
+                "inertia_per_axis_kg_m2          = [1.0, 0.0, 1.0]",
+            ),
+            (
+                "control effectiveness negative on yaw",
+                "control_effectiveness_per_axis  = [1.0, 1.0, 1.0]",
+                "control_effectiveness_per_axis  = [1.0, 1.0, -1.0]",
+            ),
+            (
+                "filter cutoff at Nyquist",
+                "filter_cutoff_rad_s             = 50.0",
+                "filter_cutoff_rad_s             = 6000.0",
+            ),
+            (
+                "attitude gain zero on roll",
+                "attitude_to_omega_dot_gain      = [10.0, 10.0, 5.0]",
+                "attitude_to_omega_dot_gain      = [0.0, 10.0, 5.0]",
+            ),
+        ];
+        let nominal = r"
+[fc.autopilot_params.indi]
+inertia_per_axis_kg_m2          = [1.0, 1.0, 1.0]
+control_effectiveness_per_axis  = [1.0, 1.0, 1.0]
+filter_cutoff_rad_s             = 50.0
+attitude_to_omega_dot_gain      = [10.0, 10.0, 5.0]
+";
+        for (label, from, to) in cases {
+            let block = nominal.replace(from, to);
+            let toml = fc_v3_with_indi(Some("indi"), Some(&block));
+            let err = Scenario::from_toml_str(&toml).unwrap_err();
+            assert!(
+                matches!(err, ScenarioError::InvalidNumber { .. }),
+                "{label}: expected InvalidNumber, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fc_indi_with_l1_adaptive_block_fails_closed() {
+        // INDI + L1 composition is rejected at scenario load.
+        let combined = r"
+[fc.autopilot_params.indi]
+inertia_per_axis_kg_m2          = [1.0, 1.0, 1.0]
+control_effectiveness_per_axis  = [1.0, 1.0, 1.0]
+filter_cutoff_rad_s             = 50.0
+attitude_to_omega_dot_gain      = [10.0, 10.0, 5.0]
+
+[fc.autopilot_params.l1_adaptive]
+reference_model_a_m       = -10.0
+reference_model_b         =  1.0
+reference_model_k_g       = 10.0
+adaptation_sample_time_s  =  0.001
+low_pass_cutoff_rad_s     =  5.0
+lipschitz_bound           =  0.1
+projection_bound          =  100.0
+";
+        let toml = fc_v3_with_indi(Some("indi"), Some(combined));
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "fc.autopilot_params.rate_loop_kind"
+                && field_b == "fc.autopilot_params.l1_adaptive"),
+            "expected InconsistentSection rate_loop_kind ↔ l1_adaptive, got {err:?}"
+        );
     }
 
     #[test]

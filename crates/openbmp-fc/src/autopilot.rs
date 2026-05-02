@@ -149,6 +149,15 @@ pub struct AutopilotParams {
     /// selected without gains.
     #[cfg(feature = "lqr")]
     pub lqr_gains: Option<[crate::lqr::LqrGains; 3]>,
+    /// Per-axis INDI parameters (Phase 5.A.3.C). Only consulted when
+    /// `rate_loop_kind == RateLoopKind::Indi`. The runner forwards
+    /// the validated `[fc.autopilot_params.indi]` block here;
+    /// composition with the L1 adaptive augmentation is rejected at
+    /// scenario load to avoid filter-interaction concerns. The
+    /// autopilot fails closed at first tick if `Indi` is selected
+    /// without params.
+    #[cfg(feature = "indi")]
+    pub indi_params: Option<crate::indi::IndiParams>,
 }
 
 impl Default for AutopilotParams {
@@ -164,6 +173,8 @@ impl Default for AutopilotParams {
             rate_loop_kind: RateLoopKind::Pid,
             #[cfg(feature = "lqr")]
             lqr_gains: None,
+            #[cfg(feature = "indi")]
+            indi_params: None,
         }
     }
 }
@@ -180,6 +191,12 @@ pub enum RateLoopKind {
     /// [`AutopilotParams::lqr_gains`] field. The autopilot fails
     /// closed at first tick if either is missing.
     Lqr,
+    /// Phase-5.A.3.C per-axis INDI rate loop (Smeur-Chu-de Croon
+    /// 2016). Requires the `indi` Cargo feature and a populated
+    /// [`AutopilotParams::indi_params`] field. The autopilot fails
+    /// closed at first tick if either is missing. Composition with
+    /// the L1 adaptive augmentation is rejected at scenario load.
+    Indi,
 }
 
 impl ParamSection for AutopilotParams {
@@ -239,6 +256,13 @@ pub struct ThreeLoopAutopilot {
     /// `params.rate_loop_kind == RateLoopKind::Lqr`.
     #[cfg(feature = "lqr")]
     lqr_integrators: [f64; 3],
+    /// Per-axis INDI channel state (Phase 5.A.3.C). Filter and
+    /// previous-command state; consulted only when
+    /// `params.rate_loop_kind == RateLoopKind::Indi`. Constructed
+    /// lazily on the first INDI step so the channels can be sized
+    /// against the loop step `dt` discovered from the bus clock.
+    #[cfg(feature = "indi")]
+    indi_state: Option<[crate::indi::IndiChannel; 3]>,
 }
 
 impl ThreeLoopAutopilot {
@@ -268,6 +292,8 @@ impl ThreeLoopAutopilot {
             l1_state: [crate::l1_adaptive_full::L1AdaptiveChannel::new(); 3],
             #[cfg(feature = "lqr")]
             lqr_integrators: [0.0; 3],
+            #[cfg(feature = "indi")]
+            indi_state: None,
         }
     }
 
@@ -302,6 +328,12 @@ impl ThreeLoopAutopilot {
     pub fn with_params(mut self, params: AutopilotParams) -> Self {
         self.params = params;
         self.gyro_notch_state = None;
+        #[cfg(feature = "indi")]
+        {
+            // Filter coefficients depend on cutoff/kind; force a
+            // fresh build on the first INDI step.
+            self.indi_state = None;
+        }
         self
     }
 
@@ -340,6 +372,42 @@ impl ThreeLoopAutopilot {
                 .apply(&mut self.lqr_integrators[axis], -excess, dt);
         }
         (clamped, saturated)
+    }
+
+    /// Phase 5.A.3.C per-axis INDI rate-loop step. Lazily
+    /// constructs the channel state on first use (the filter
+    /// coefficients depend on `dt` which the autopilot only sees at
+    /// runtime). Anti-windup is implicit through the clamp; the
+    /// `AutopilotParams::anti_windup` field is intentionally
+    /// ignored here — saturation is bounded by construction.
+    #[cfg(feature = "indi")]
+    #[allow(clippy::too_many_arguments)]
+    fn indi_step(
+        &mut self,
+        params: &crate::indi::IndiParams,
+        axis: usize,
+        rate_cmd: f64,
+        omega_meas: f64,
+        dt: f64,
+        torque_min: f64,
+        torque_max: f64,
+    ) -> Result<(f64, bool), ControllerError> {
+        if self.indi_state.is_none() {
+            let ch = crate::indi::IndiChannel::new(params, dt).map_err(|err| {
+                ControllerError::from(AutopilotError::Trajectory {
+                    reason: format!("INDI channel construction failed (axis {axis}): {err}"),
+                })
+            })?;
+            self.indi_state = Some([ch; 3]);
+        }
+        let Some(channels) = self.indi_state.as_mut() else {
+            return Err(ControllerError::from(AutopilotError::Trajectory {
+                reason: "INDI state lost between primer and step (impossible)".to_string(),
+            }));
+        };
+        Ok(channels[axis].step(
+            params, axis, omega_meas, rate_cmd, torque_min, torque_max, dt,
+        ))
     }
 
     fn gains_for_phase(&self, phase: u64) -> &ThreeLoopGains {
@@ -612,6 +680,33 @@ impl Job for ThreeLoopAutopilot {
                             .to_string(),
                     }));
                 }
+                #[cfg(feature = "indi")]
+                RateLoopKind::Indi => {
+                    let indi_params = self.params.indi_params.ok_or_else(|| {
+                        ControllerError::from(AutopilotError::Trajectory {
+                            reason: "RateLoopKind::Indi selected without indi_params; runner must \
+                                 install validated INDI params via AutopilotParams.indi_params."
+                                .to_string(),
+                        })
+                    })?;
+                    self.indi_step(
+                        &indi_params,
+                        i,
+                        rate_cmd[i],
+                        omega_body_rad_s[i],
+                        dt,
+                        -limit,
+                        limit,
+                    )?
+                }
+                #[cfg(not(feature = "indi"))]
+                RateLoopKind::Indi => {
+                    return Err(ControllerError::from(AutopilotError::Trajectory {
+                        reason: "RateLoopKind::Indi selected but the `indi` feature is not \
+                                 enabled; rebuild with --features indi."
+                            .to_string(),
+                    }));
+                }
             };
             #[cfg(feature = "l1-adaptive")]
             let mut axis_cmd = cmd;
@@ -623,8 +718,17 @@ impl Job for ThreeLoopAutopilot {
             // reference, and the PID output as baseline command.
             // The augmentation is added to the baseline; the result
             // is re-clamped to the per-axis actuator limit.
+            //
+            // Phase 5.A.3.C — L1 augmentation is intentionally
+            // suppressed when the rate loop is INDI: INDI's filtered
+            // ω̇_meas term already absorbs matched disturbance, so
+            // L1 on top creates filter-interaction concerns. The
+            // scenario parser rejects this combination; the runtime
+            // guard is defence-in-depth.
             #[cfg(feature = "l1-adaptive")]
-            if let Some(l1_params) = self.params.l1_adaptive {
+            if self.params.rate_loop_kind != RateLoopKind::Indi
+                && let Some(l1_params) = self.params.l1_adaptive
+            {
                 let augmentation =
                     self.l1_state[i].step(&l1_params, omega_body_rad_s[i], rate_cmd[i], cmd, dt);
                 axis_cmd += augmentation;

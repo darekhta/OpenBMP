@@ -393,12 +393,17 @@ impl ScenarioDocument {
             anti_windup.validate()?;
         }
 
-        // fc.autopilot_params.rate_loop_kind / .lqr — Phase 5.A.3.B
-        // consumed pair. Both are v3-only. When rate_loop_kind = "lqr"
-        // the [fc.autopilot_params.lqr] block is required so the
-        // runner can solve the per-axis DARE; conversely, the lqr
-        // block is meaningless without rate_loop_kind = "lqr" and
-        // the parser fails closed on the inconsistency.
+        // fc.autopilot_params.rate_loop_kind / .lqr / .indi —
+        // Phase 5.A.3.B consumed pair (LQR), Phase 5.A.3.C consumed
+        // pair (INDI). Both kinds are v3-only and require their
+        // matching parameter block. The parser fails closed on:
+        //   - rate_loop_kind = "lqr" without [fc.autopilot_params.lqr]
+        //   - rate_loop_kind = "indi" without [fc.autopilot_params.indi]
+        //   - either parameter block declared without the matching
+        //     rate_loop_kind value
+        //   - rate_loop_kind = "indi" combined with l1_adaptive (the
+        //     filter-interaction concerns documented in
+        //     openbmp_fc::indi)
         if let Some(autopilot_params) = fc.autopilot_params.as_ref() {
             if let Some(kind) = autopilot_params.rate_loop_kind {
                 if header < SCENARIO_VERSION_V3 {
@@ -413,6 +418,21 @@ impl ScenarioDocument {
                         field: "fc.autopilot_params.lqr".to_owned(),
                         role: ModelRole::Controller,
                         name: "lqr".to_owned(),
+                    });
+                }
+                if kind == FcRateLoopKind::Indi && autopilot_params.indi.is_none() {
+                    return Err(ScenarioError::MissingRequiredField {
+                        field: "fc.autopilot_params.indi".to_owned(),
+                        role: ModelRole::Controller,
+                        name: "indi".to_owned(),
+                    });
+                }
+                if kind == FcRateLoopKind::Indi && autopilot_params.l1_adaptive.is_some() {
+                    return Err(ScenarioError::InconsistentSection {
+                        field_a: "fc.autopilot_params.rate_loop_kind".to_owned(),
+                        value_a: "indi".to_owned(),
+                        field_b: "fc.autopilot_params.l1_adaptive".to_owned(),
+                        value_b: "present".to_owned(),
                     });
                 }
             }
@@ -433,6 +453,24 @@ impl ScenarioDocument {
                     });
                 }
                 lqr.validate()?;
+            }
+            if let Some(indi) = autopilot_params.indi.as_ref() {
+                if header < SCENARIO_VERSION_V3 {
+                    return Err(ScenarioError::SchemaVersionFieldReserved {
+                        field: "fc.autopilot_params.indi".to_owned(),
+                        required: SCENARIO_VERSION_V3,
+                        found: header,
+                    });
+                }
+                if autopilot_params.rate_loop_kind != Some(FcRateLoopKind::Indi) {
+                    return Err(ScenarioError::InconsistentSection {
+                        field_a: "fc.autopilot_params.indi".to_owned(),
+                        value_a: "present".to_owned(),
+                        field_b: "fc.autopilot_params.rate_loop_kind".to_owned(),
+                        value_b: format!("{:?}", autopilot_params.rate_loop_kind),
+                    });
+                }
+                indi.validate(dt_s)?;
             }
         }
 
@@ -3715,6 +3753,11 @@ pub struct FcAutopilotParams {
     /// Per-axis LQR cost weights (Phase 5.A.3.B, v3-only). Required
     /// when `rate_loop_kind = "lqr"`; ignored otherwise.
     pub lqr: Option<FcLqrConfig>,
+    /// Per-axis INDI parameters (Phase 5.A.3.C, v3-only). Required
+    /// when `rate_loop_kind = "indi"`; ignored otherwise. Composition
+    /// with `[fc.autopilot_params.l1_adaptive]` is rejected at
+    /// scenario load.
+    pub indi: Option<FcIndiConfig>,
 }
 
 /// Per-axis L1 adaptive parameters declared in
@@ -3857,7 +3900,8 @@ impl FcAntiWindupConfig {
 }
 
 /// Rate-loop dispatch declared in
-/// `[fc.autopilot_params.rate_loop_kind]` (Phase 5.A.3.B, v3-only).
+/// `[fc.autopilot_params.rate_loop_kind]` (Phase 5.A.3.B, v3-only;
+/// 5.A.3.C added the INDI variant).
 ///
 /// Mirrors `openbmp_fc::autopilot::RateLoopKind`.
 #[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -3871,6 +3915,107 @@ pub enum FcRateLoopKind {
     /// per-axis DARE at scenario load using the diagonal inertia of
     /// a single-body assembly.
     Lqr,
+    /// Phase-5.A.3.C per-axis INDI rate loop (Smeur-Chu-de Croon
+    /// 2016). Requires a populated `[fc.autopilot_params.indi]`
+    /// block. Single-body assembly with diagonal inertia only;
+    /// composition with `[fc.autopilot_params.l1_adaptive]` is
+    /// rejected at scenario load.
+    Indi,
+}
+
+/// Synchronised filter shape for INDI's ω and u filters
+/// (Phase 5.A.3.C, v3-only). Mirrors
+/// `openbmp_fc::indi::IndiFilterKind`.
+#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcIndiFilterKind {
+    /// Bilinear-transform first-order low-pass.
+    FirstOrderLowPass,
+    /// Bilinear-transform second-order Butterworth low-pass
+    /// (Smeur 2016 default).
+    #[default]
+    SecondOrderButterworth,
+}
+
+/// Per-axis INDI configuration declared in
+/// `[fc.autopilot_params.indi]` (Phase 5.A.3.C, v3-only).
+///
+/// Each `[f64; 3]` is `[roll, pitch, yaw]`. The runner validates
+/// the filter cutoff against the loop step `time.dt_s` (must be
+/// strictly below `π / dt_s`).
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcIndiConfig {
+    /// INDI's working estimate of body-axis diagonal inertia (kg·m²).
+    /// May intentionally differ from the truth-side vehicle inertia
+    /// — INDI's robustness rests on tolerating that mismatch.
+    pub inertia_per_axis_kg_m2: [f64; 3],
+    /// Per-axis control effectiveness `g` such that
+    /// `Δτ_axis = g_axis · Δu_axis`. For `direct_torque` effectors
+    /// with effectiveness 1 N·m / rad and 1:1 channel mapping this
+    /// is `[1.0, 1.0, 1.0]`.
+    pub control_effectiveness_per_axis: [f64; 3],
+    /// Cutoff (rad/s) applied identically to the ω and u filters.
+    /// Must be `> 0` and strictly below the discrete Nyquist
+    /// boundary `π / time.dt_s`.
+    pub filter_cutoff_rad_s: f64,
+    /// Filter shape; see [`FcIndiFilterKind`]. Defaults to
+    /// `second_order_butterworth`.
+    #[serde(default)]
+    pub filter_kind: FcIndiFilterKind,
+    /// Outer-loop attitude-to-angular-acceleration P-gain per axis
+    /// (`ω̇_des = K_p · (ω_ref − ω_meas)`). Each entry must be `> 0`.
+    pub attitude_to_omega_dot_gain: [f64; 3],
+}
+
+impl FcIndiConfig {
+    fn validate(&self, dt_s: f64) -> Result<(), ScenarioError> {
+        let path = "fc.autopilot_params.indi";
+        for (axis_label, axis) in ["roll", "pitch", "yaw"].iter().zip(0..3) {
+            require_finite(
+                &format!("{path}.inertia_per_axis_kg_m2[{axis_label}]"),
+                self.inertia_per_axis_kg_m2[axis],
+            )?;
+            require_positive(
+                &format!("{path}.inertia_per_axis_kg_m2[{axis_label}]"),
+                self.inertia_per_axis_kg_m2[axis],
+            )?;
+            require_finite(
+                &format!("{path}.control_effectiveness_per_axis[{axis_label}]"),
+                self.control_effectiveness_per_axis[axis],
+            )?;
+            require_positive(
+                &format!("{path}.control_effectiveness_per_axis[{axis_label}]"),
+                self.control_effectiveness_per_axis[axis],
+            )?;
+            require_finite(
+                &format!("{path}.attitude_to_omega_dot_gain[{axis_label}]"),
+                self.attitude_to_omega_dot_gain[axis],
+            )?;
+            require_positive(
+                &format!("{path}.attitude_to_omega_dot_gain[{axis_label}]"),
+                self.attitude_to_omega_dot_gain[axis],
+            )?;
+        }
+        require_finite(
+            &format!("{path}.filter_cutoff_rad_s"),
+            self.filter_cutoff_rad_s,
+        )?;
+        require_positive(
+            &format!("{path}.filter_cutoff_rad_s"),
+            self.filter_cutoff_rad_s,
+        )?;
+        let nyquist_rad_s = std::f64::consts::PI / dt_s;
+        if self.filter_cutoff_rad_s >= nyquist_rad_s {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.filter_cutoff_rad_s"),
+                value: self.filter_cutoff_rad_s,
+                rule: "must be strictly below π / time.dt_s (discrete Nyquist) so the bilinear-\
+                       transform LPF is well-posed",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Per-axis LQR cost weights declared in

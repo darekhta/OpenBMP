@@ -21,6 +21,7 @@ mpc         = ["dep:clarabel"]
 square-root-ekf = []
 l1-adaptive = []
 lqr         = []
+indi        = []
 
 [dependencies]
 openbmp-core       = { workspace = true }
