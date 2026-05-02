@@ -527,7 +527,7 @@ fn build_autopilot_params(
     // Phase 5.A.3.B — rate-loop kind dispatch. Default keeps the
     // PID loop (Phase-4 behaviour); selecting LQR triggers a
     // per-axis DARE solve at scenario load using the diagonal
-    // inertia of the primary body.
+    // inertia of the single-body assembly.
     if let Some(kind) = cfg.rate_loop_kind {
         match kind {
             openbmp_scenario::FcRateLoopKind::Pid => {
@@ -872,5 +872,23 @@ mod tests {
         for v in attitude.q_body_to_eci_xyzw {
             assert!(v.is_finite(), "attitude q has NaN");
         }
+    }
+
+    #[test]
+    fn explicit_anti_windup_block_wins_over_legacy_gain() {
+        let cfg = FcAutopilotParams {
+            anti_windup_gain: Some(9.0),
+            anti_windup: Some(FcAntiWindupConfig::ObserverForm {
+                tracking_time_s: 0.25,
+            }),
+            ..FcAutopilotParams::default()
+        };
+        let params = build_autopilot_params(&cfg, None).expect("autopilot params build");
+        assert_eq!(
+            params.anti_windup,
+            openbmp_fc::anti_windup::AntiWindupKind::ObserverForm {
+                tracking_time_s: 0.25
+            }
+        );
     }
 }

@@ -354,12 +354,15 @@ fn require_bridge_frame(document: &ScenarioDocument) -> Result<(), CliError> {
 }
 
 /// Phase 5.A.3.B helper: extract the diagonal moments of inertia
-/// of the primary body (the first `[[vehicle.assembly.bodies]]`) so
-/// the runner can solve the per-axis LQR DARE at scenario load.
+/// from a single-body assembly so the runner can solve the per-axis
+/// LQR DARE at scenario load. Multi-body assemblies fail closed until
+/// a later slice solves gains against the full assembled mass
+/// properties.
 /// Returns `Ok(None)` when the FC scenario does not request the
 /// LQR rate loop, or when the vehicle has no inertia matrix
 /// declared (e.g. a point-mass kernel). Fails closed if LQR is
-/// requested but the inertia matrix is non-diagonal.
+/// requested but the assembly is multi-body or the inertia matrix is
+/// non-diagonal.
 fn build_autopilot_lqr_context(
     scenario: &Scenario,
 ) -> Result<Option<FcAutopilotLqrContext>, CliError> {
@@ -373,6 +376,15 @@ fn build_autopilot_lqr_context(
         return Ok(None);
     }
     let bodies = &scenario.document.vehicle.assembly.bodies;
+    if bodies.len() != 1 {
+        return Err(CliError::UnsupportedScenario {
+            what: format!(
+                "rate_loop_kind = \"lqr\" requires exactly one [[vehicle.assembly.bodies]] entry \
+                 with diagonal inertia in Phase 5.A.3.B; got {} bodies",
+                bodies.len()
+            ),
+        });
+    }
     let body = bodies
         .first()
         .ok_or_else(|| CliError::UnsupportedScenario {

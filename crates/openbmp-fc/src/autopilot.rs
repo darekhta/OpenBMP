@@ -332,9 +332,12 @@ impl ThreeLoopAutopilot {
         let saturated = (raw - clamped).abs() > 0.0;
         if saturated && integrate {
             let excess = raw - clamped;
+            // PID uses `+ki * integral`; LQR uses `-k_int * integral`.
+            // Feed the opposite excess sign so a high clamp moves the
+            // LQR integral upward, reducing the next raw command.
             self.params
                 .anti_windup
-                .apply(&mut self.lqr_integrators[axis], excess, dt);
+                .apply(&mut self.lqr_integrators[axis], -excess, dt);
         }
         (clamped, saturated)
     }
@@ -921,5 +924,39 @@ mod tests {
         );
         assert_eq!(cmd.elevator_rad.to_bits(), 0.0_f64.to_bits());
         assert_eq!(cmd.rudder_rad.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[cfg(feature = "lqr")]
+    #[test]
+    fn lqr_anti_windup_reduces_saturated_command_on_next_step() {
+        use crate::autopilot::{AutopilotParams, ThreeLoopAutopilot};
+        use crate::lqr::LqrGains;
+
+        let mut autopilot = ThreeLoopAutopilot::new().with_params(AutopilotParams {
+            anti_windup: crate::anti_windup::AntiWindupKind::BackCalculation { gain: 1.0 },
+            ..AutopilotParams::default()
+        });
+        let gains = LqrGains {
+            k_omega: 0.0,
+            k_int: 1.0,
+        };
+        autopilot.lqr_integrators[0] = -2.0;
+
+        let raw_before = -gains.k_int * autopilot.lqr_integrators[0];
+        assert!(raw_before > 1.0);
+        let (cmd, saturated) = autopilot.lqr_step(0, 0.0, 0.0, &gains, 0.1, -1.0, 1.0, true);
+        assert!(saturated);
+        assert_eq!(cmd, 1.0);
+
+        let raw_after = -gains.k_int * autopilot.lqr_integrators[0];
+        assert!(
+            raw_after < raw_before,
+            "LQR anti-windup should move raw command toward the high clamp; \
+             before={raw_before}, after={raw_after}"
+        );
+        assert!(
+            raw_after >= 1.0,
+            "single bleed step should not cross the high clamp in this fixture"
+        );
     }
 }

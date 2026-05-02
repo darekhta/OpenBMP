@@ -7,8 +7,8 @@
 #     per-axis LQR shipped in Phase 5.A.3.B.
 #   - `[fc.autopilot_params.lqr]` declares per-axis cost weights
 #     (`q_omega`, `q_int`, `r`). The runner solves the per-axis
-#     DARE at scenario load using the diagonal inertia of the primary
-#     body and the loop step `time.dt_s`.
+#     DARE at scenario load using this single-body assembly's
+#     diagonal inertia and the loop step `time.dt_s`.
 #
 # All other autopilot machinery (DifferentialFlatness trajectory loop,
 # attitude loop, anti-windup, mixer) is unchanged. The trajectory

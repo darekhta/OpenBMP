@@ -16,7 +16,9 @@ Synthetic. Identical to `scenarios/diff-flatness-figure-eight` modulo:
    on the rate loop.
 
 The waypoint sequence, vehicle, mission graph, and gain schedule are
-unchanged from the parent scenario.
+unchanged from the parent scenario. The L1 and PID-baseline sibling
+share `time.seed = 0x4c31_4146_3168_466c` so deterministic synthetic
+sensor noise does not become a comparison variable.
 
 ## License / restrictions
 

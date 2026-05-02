@@ -11,6 +11,8 @@ validation = "experimental"
 #  - Both scenarios complete 8000 kernel steps.
 #  - Both keep the rigid-body quaternion well-normalized after
 #    projection.
+#  - The L1 run does not trade lower body-rate magnitude for worse
+#    attitude tracking against the same minimum-snap reference.
 #  - The PID-baseline run is visibly perturbed by the fault
 #    (max|omega| ≥ 1e-2 rad/s — sanity that the disturbance bites).
 #  - The L1 run's max|omega| is at most half the baseline's (asserted
@@ -52,4 +54,16 @@ relative_tolerance = 0.0
 name = "max_quaternion_norm_error_l1"
 expected = 0.0
 absolute_tolerance = 1.0e-12
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_attitude_tracking_error_baseline_rad"
+expected = 0.0
+absolute_tolerance = 4.0
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_attitude_tracking_error_l1_rad"
+expected = 0.0
+absolute_tolerance = 4.0
 relative_tolerance = 0.0

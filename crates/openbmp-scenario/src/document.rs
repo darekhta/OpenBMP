@@ -3709,6 +3709,8 @@ pub struct FcAutopilotParams {
     /// `Some(FcRateLoopKind::Lqr)`, the runner solves the per-axis
     /// DARE using `[fc.autopilot_params.lqr]` and installs the LQR
     /// gains on the autopilot. Defaults to `Pid` (Phase-4 behaviour).
+    /// Phase 5.A.3.B runner support is limited to single-body
+    /// diagonal inertia.
     pub rate_loop_kind: Option<FcRateLoopKind>,
     /// Per-axis LQR cost weights (Phase 5.A.3.B, v3-only). Required
     /// when `rate_loop_kind = "lqr"`; ignored otherwise.
@@ -3867,7 +3869,7 @@ pub enum FcRateLoopKind {
     /// Phase-5.A.3.B per-axis LQR rate loop. Requires a populated
     /// `[fc.autopilot_params.lqr]` block; the runner solves the
     /// per-axis DARE at scenario load using the diagonal inertia of
-    /// the vehicle's primary body.
+    /// a single-body assembly.
     Lqr,
 }
 
@@ -3877,7 +3879,8 @@ pub enum FcRateLoopKind {
 /// Each `[f64; 3]` is `[roll, pitch, yaw]` and must contain
 /// strictly positive values. The runner translates these weights to
 /// `openbmp_fc::lqr::solve_lqr_rate_loop` per axis using the
-/// diagonal inertia of the primary body and the loop step `time.dt_s`.
+/// diagonal inertia of a single-body assembly and the loop step
+/// `time.dt_s`.
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcLqrConfig {

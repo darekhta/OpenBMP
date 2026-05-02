@@ -28,8 +28,9 @@
 //! P = A' P A − A' P B (R + B' P B)^{-1} B' P A + Q
 //! ```
 //!
-//! is solved by fixed-point iteration. With `Q = diag(q_omega, q_int)`
-//! and scalar `R = r`, the solver returns the LQR feedback gains
+//! is solved by a structure-preserving doubling algorithm. With
+//! `Q = diag(q_omega, q_int)` and scalar `R = r`, the solver returns
+//! the LQR feedback gains
 //!
 //! ```text
 //! K = (R + B' P B)^{-1} B' P A = [k_omega, k_int]
@@ -42,8 +43,13 @@
 //!
 //! # References
 //!
+//! - Anderson B.D.O. (1978). Second-order convergent algorithms for
+//!   the steady-state Riccati equation.
 //! - Anderson B.D.O., Moore J.B. (1990). *Optimal Control: Linear
 //!   Quadratic Methods*. Prentice-Hall.
+//! - Chu E.K.W., Fan H.Y., Lin W.W., Wang C.S. (2004).
+//!   Structure-preserving algorithms for periodic discrete-time
+//!   algebraic Riccati equations.
 //! - Lewis F.L., Vrabie D., Syrmos V.L. (2012). *Optimal Control*,
 //!   3rd ed. Wiley.
 
@@ -373,11 +379,59 @@ mod tests {
         solve_lqr_rate_loop(0.001, 1.0, 1.0, 0.1, 0.1).expect("nominal LQR converges")
     }
 
+    fn dare_residual_norm(p: Sym2, dt_s: f64, b: f64, q_omega: f64, q_int: f64, r: f64) -> f64 {
+        let a11 = 1.0_f64;
+        let a12 = 0.0_f64;
+        let a21 = dt_s;
+        let a22 = 1.0_f64;
+
+        let denom = r + b * b * p.p11;
+        let k1 = b * (p.p11 + dt_s * p.p12) / denom;
+        let k2 = b * p.p12 / denom;
+
+        // A' P A.
+        let pa11 = p.p11 * a11 + p.p12 * a21;
+        let pa12 = p.p11 * a12 + p.p12 * a22;
+        let pa21 = p.p12 * a11 + p.p22 * a21;
+        let pa22 = p.p12 * a12 + p.p22 * a22;
+        let apa11 = a11 * pa11 + a21 * pa21;
+        let apa12 = a11 * pa12 + a21 * pa22;
+        let apa22 = a12 * pa12 + a22 * pa22;
+
+        // A' P B K, where B = [b, 0]'.
+        let apb1 = b * (a11 * p.p11 + a21 * p.p12);
+        let apb2 = b * (a12 * p.p11 + a22 * p.p12);
+        let rhs = Sym2 {
+            p11: apa11 - apb1 * k1 + q_omega,
+            p12: apa12 - apb1 * k2,
+            p22: apa22 - apb2 * k2 + q_int,
+        };
+
+        let d11 = p.p11 - rhs.p11;
+        let d12 = p.p12 - rhs.p12;
+        let d22 = p.p22 - rhs.p22;
+        (d11 * d11 + 2.0 * d12 * d12 + d22 * d22).sqrt()
+    }
+
     #[test]
     fn dare_converges_for_nominal_params() {
         let gains = nominal();
         assert!(gains.k_omega > 0.0);
         assert!(gains.k_int > 0.0);
+    }
+
+    #[test]
+    fn dare_solution_has_small_algebraic_residual() {
+        let dt = 0.001;
+        let inertia = 1.0;
+        let b = dt / inertia;
+        let p = solve_dare_2x2_doubling(dt, b, 1.0, 0.05, 1.0)
+            .expect("scenario-like LQR DARE converges");
+        let residual = dare_residual_norm(p, dt, b, 1.0, 0.05, 1.0);
+        assert!(
+            residual < 1.0e-10,
+            "DARE residual {residual:e} exceeds tolerance"
+        );
     }
 
     #[test]

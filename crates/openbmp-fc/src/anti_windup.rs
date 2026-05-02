@@ -12,20 +12,19 @@
 //!   limit. The proportionality constant is a unitless **gain** picked
 //!   by the integrator's designer.
 //!
-//! - [`AntiWindupKind::ObserverForm`] — the Åström & Rundqwist (1989)
-//!   reformulation. The PID controller is treated as an observer of
-//!   the saturated control signal; the integrator is driven by a
-//!   first-order observer error with **tracking time constant**
-//!   `T_t` (seconds). For a SISO PID this collapses to the same
+//! - [`AntiWindupKind::ObserverForm`] — the SISO tracking-time
+//!   reduction of the Åström & Rundqwist (1989) observer
+//!   interpretation. The integrator is driven by a first-order
+//!   tracking error with **tracking time constant** `T_t` (seconds).
+//!   For this scalar PID implementation it collapses to the same
 //!   bleed equation as back-calculation with `gain = 1/T_t`, but the
 //!   parameter is units-aware and chosen by observer pole placement
 //!   rather than trial-and-error.
 //!
 //! The two parameterisations are mathematically equivalent on a SISO
 //! PID; the user-facing distinction is a design intent the scenario
-//! declares. Future Phase-5.A.3 controllers (LQR, INDI) may use
-//! observer-form anti-windup natively while the legacy PID continues
-//! to use back-calculation.
+//! declares. Full state-space observer injection for MIMO controllers
+//! is a richer construction and remains outside this scalar helper.
 //!
 //! # References
 //!
@@ -51,11 +50,12 @@ pub enum AntiWindupKind {
         /// Back-calculation gain `k_aw`. Must be `> 0`.
         gain: f64,
     },
-    /// Åström-Rundqwist 1989 observer-form anti-windup. The
-    /// integrator is bled by `excess * dt / tracking_time_s`,
-    /// where `tracking_time_s` is the observer time constant
-    /// (seconds) chosen by pole placement. Mathematically equivalent
-    /// to back-calculation with `gain = 1/tracking_time_s`.
+    /// SISO tracking-time reduction of Åström-Rundqwist 1989
+    /// observer-form anti-windup. The integrator is bled by
+    /// `excess * dt / tracking_time_s`, where `tracking_time_s` is
+    /// the observer time constant (seconds) chosen by pole placement.
+    /// Mathematically equivalent to back-calculation with
+    /// `gain = 1/tracking_time_s` for this scalar PID helper.
     ObserverForm {
         /// Observer tracking time constant `T_t` (seconds). Must be
         /// `> 0`.

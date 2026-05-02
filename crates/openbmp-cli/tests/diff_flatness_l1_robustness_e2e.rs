@@ -31,6 +31,10 @@ use std::path::{Path, PathBuf};
 use arrow::array::Float64Array;
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
+use nalgebra::{Quaternion, UnitQuaternion, Vector3};
+use openbmp_fc::trajectory::{
+    MinimumSnapTrajectory, MinimumSnapWaypoint, YawProfile, flat_output_attitude_reference,
+};
 use openbmp_testkit::tolerance::ToleranceTable;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::{Builder, TempDir};
@@ -154,6 +158,66 @@ fn max_quaternion_norm_error(parquet: &Path) -> f64 {
     max
 }
 
+fn trajectory_reference_for(scenario_dir: &str) -> (MinimumSnapTrajectory, f64) {
+    let scenario_path = workspace_root().join(format!("scenarios/{scenario_dir}/scenario.toml"));
+    let scenario = openbmp_scenario::Scenario::from_file(&scenario_path)
+        .expect("scenario parses for trajectory reference");
+    let trajectory = scenario
+        .document
+        .fc
+        .as_ref()
+        .and_then(|fc| fc.trajectory.as_ref())
+        .expect("scenario has fc.trajectory");
+    let waypoints = trajectory
+        .waypoints
+        .iter()
+        .map(|w| MinimumSnapWaypoint {
+            position_eci_m: Vector3::new(
+                w.position_eci_m[0],
+                w.position_eci_m[1],
+                w.position_eci_m[2],
+            ),
+            time_s: w.time_s,
+        })
+        .collect();
+    (
+        MinimumSnapTrajectory::new(waypoints).expect("minimum-snap reference builds"),
+        trajectory.yaw_rad.unwrap_or(0.0),
+    )
+}
+
+fn max_attitude_tracking_error_rad(parquet: &Path, scenario_dir: &str) -> f64 {
+    let (trajectory, yaw_rad) = trajectory_reference_for(scenario_dir);
+    let time = read_f64_column(parquet, "time_s");
+    let qx = read_f64_column(parquet, "attitude.q_x");
+    let qy = read_f64_column(parquet, "attitude.q_y");
+    let qz = read_f64_column(parquet, "attitude.q_z");
+    let qw = read_f64_column(parquet, "attitude.q_w");
+    let mut max = 0.0_f64;
+    for ((((t, x), y), z), w) in time
+        .iter()
+        .zip(qx.iter())
+        .zip(qy.iter())
+        .zip(qz.iter())
+        .zip(qw.iter())
+    {
+        let flat = trajectory.evaluate(*t);
+        let Some(reference) = flat_output_attitude_reference(
+            &flat,
+            YawProfile {
+                yaw_rad,
+                ..YawProfile::default()
+            },
+        ) else {
+            continue;
+        };
+        let measured = UnitQuaternion::new_normalize(Quaternion::new(*w, *x, *y, *z));
+        let error = reference.q_body_to_eci.inverse() * measured;
+        max = max.max(error.angle().abs());
+    }
+    max
+}
+
 #[test]
 fn diff_flatness_l1_outperforms_pid_under_roll_axis_fault() {
     let table = ToleranceTable::from_path(tolerance_table_path()).expect("tolerance table");
@@ -195,10 +259,28 @@ fn diff_flatness_l1_outperforms_pid_under_roll_axis_fault() {
         .check_metric("max_quaternion_norm_error_l1", q_err_l1)
         .unwrap_or_else(|err| panic!("l1 qerr = {q_err_l1} outside tolerance: {err}"));
 
+    let attitude_err_baseline =
+        max_attitude_tracking_error_rad(&baseline.parquet, "diff-flatness-figure-eight-baseline");
+    let attitude_err_l1 =
+        max_attitude_tracking_error_rad(&l1.parquet, "diff-flatness-figure-eight-l1");
+    table
+        .check_metric(
+            "max_attitude_tracking_error_baseline_rad",
+            attitude_err_baseline,
+        )
+        .unwrap_or_else(|err| {
+            panic!("baseline attitude error = {attitude_err_baseline} outside tolerance: {err}")
+        });
+    table
+        .check_metric("max_attitude_tracking_error_l1_rad", attitude_err_l1)
+        .unwrap_or_else(|err| {
+            panic!("l1 attitude error = {attitude_err_l1} outside tolerance: {err}")
+        });
+
     // The disturbance is a matched roll-axis ReducedRate fault. The
     // baseline must actually be perturbed (otherwise the comparison
     // is meaningless), and the L1 augmentation must materially tighten
-    // the closed-loop response.
+    // the closed-loop response without degrading attitude tracking.
     assert!(
         omega_baseline > 1.0e-2,
         "baseline must be visibly perturbed by the fault; max|omega| was {omega_baseline}"
@@ -208,6 +290,11 @@ fn diff_flatness_l1_outperforms_pid_under_roll_axis_fault() {
         ratio <= 0.5,
         "L1 max|omega| ({omega_l1:.6}) must be ≤ 0.5 × baseline max|omega| ({omega_baseline:.6}); \
          ratio was {ratio:.3}"
+    );
+    assert!(
+        attitude_err_l1 <= attitude_err_baseline,
+        "L1 attitude tracking error ({attitude_err_l1:.6} rad) must not exceed baseline \
+         ({attitude_err_baseline:.6} rad)"
     );
 
     let _ = fs::remove_file(&baseline.parquet);

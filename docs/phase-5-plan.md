@@ -114,8 +114,8 @@ in lockstep with each sub-phase landing.
 | 5.A.2.B — L1 adaptive math module | shipped | `041438c` |
 | 5.A.2.C — L1 autopilot wiring + retire L1-inspired interim types | shipped | `bb17ea4` |
 | 5.A.2.D — closed-loop L1 validation under roll-axis ReducedRate fault | shipped | `af943d1` |
-| 5.A.3.A — observer-form anti-windup + back-calculation parameterisation | shipped | _pending PR_ |
-| 5.A.3.B — per-axis LQR rate loop + structure-preserving DARE solver | shipped | _pending PR_ |
+| 5.A.3.A — observer-form anti-windup + back-calculation parameterisation | shipped | `327f2dc` |
+| 5.A.3.B — per-axis LQR rate loop + structure-preserving DARE solver | shipped | `327f2dc` |
 | 5.A.3.C onwards | pending | — |
 
 ## Vehicle-class scope
@@ -307,22 +307,22 @@ architecture:
   interim params/channel types are retired in the same sub-phase once
   the full path lands.
 
-**Exit criterion.** The 5.A.1.C `diff-flatness-figure-eight`
-scenario is upgraded to a rigid-body kernel with 3-axis effectors
-(Phase-4-shape closed-loop pipeline), `±30 %` thrust uncertainty is
-injected on the rate loop, and the L1-augmented autopilot tracks the
-figure-eight's reference attitude within a documented tolerance
-envelope recorded in
-`tests/expected/diff-flatness-figure-eight.toml` (the placeholder
-`kernel_steps` metric is replaced with an attitude-error-bound
-metric in this sub-phase). The bandwidth-projection inequality
-`ω_c · L < 1` is asserted at scenario load and violations fail
-closed.
+**Exit criterion.** The 5.A.2.D sibling scenarios run the rigid-body
+figure-eight with 3-axis direct-torque effectors, inject an
+`EffectorFault::ReducedRate { factor = 0.7 }` on the roll-torque
+effector, and compare PID-only against L1-augmented control under the
+same deterministic seed. The e2e tolerance envelope lives in
+`crates/openbmp-cli/tests/expected/diff-flatness-figure-eight-l1.toml`
+and gates kernel steps, quaternion normalisation, attitude tracking
+against the minimum-snap reference, visible baseline perturbation,
+and the L1-vs-baseline max-body-rate ratio. The bandwidth-projection
+inequality `ω_c · L < 1` is asserted at scenario load and violations
+fail closed.
 
 **Validation evidence.** Unit + property tests for the projection
 operator (estimate stays inside bound); state-predictor / reference-
 model agreement under nominal conditions; closed-loop figure-eight
-attitude tracking under thrust-uncertainty disturbance.
+attitude tracking under the roll-axis ReducedRate disturbance.
 
 **References.** Cao, C. and Hovakimyan, N., *L1 Adaptive Control
 Theory: Guaranteed Robustness with Fast Adaptation*, SIAM 2010 — the
@@ -362,11 +362,11 @@ review pattern as 5.A.1.A–D / 5.A.2.A–D.
 2. **LQR baseline (Phase 5.A.3.B — shipped).** Per-axis 2-state
    augmented LQR (state `[ω − ω_ref, ∫(ω − ω_ref) dt]`) gated behind
    the `lqr` Cargo feature. The runner solves the per-axis Discrete
-   Algebraic Riccati Equation at scenario load using the diagonal
-   inertia of the primary body and the Anderson 1978 / Chu-Fan-Lin-
-   Wang 2004 structure-preserving doubling algorithm (quadratic
-   convergence even for stiff systems whose closed-loop poles
-   approach the unit circle). New scenario fields:
+   Algebraic Riccati Equation at scenario load for single-body
+   assemblies with diagonal inertia, using the Anderson 1978 /
+   Chu-Fan-Lin-Wang 2004 structure-preserving doubling algorithm
+   (quadratic convergence even for stiff systems whose closed-loop
+   poles approach the unit circle). New scenario fields:
    `[fc.autopilot_params.rate_loop_kind]` selects `pid` (default) or
    `lqr`; `[fc.autopilot_params.lqr]` declares per-axis cost weights
    `q_omega`, `q_int`, `r`. Anti-windup applies uniformly to both
@@ -393,10 +393,11 @@ report with side-by-side metrics across PID + LQR + L1 + INDI for
 the same disturbance.
 
 **Validation evidence.** Unit tests for the DARE solver
-(positive-definite covariance, semi-definite Q); the observer-form
-scheme satisfies the conditioning-technique reduction proof on a
-toy first-order saturating plant; INDI rate-loop closure on a unit-
-inertia rigid body matches the analytic angular-velocity step.
+(small algebraic residual, positive costs, closed-loop poles inside
+the unit circle); scalar observer-form anti-windup tests cover the
+SISO tracking-time/back-calculation reduction; INDI rate-loop
+closure on a unit-inertia rigid body matches the analytic
+angular-velocity step.
 
 **References.** Åström, K. J. and Rundqwist, L., *Integrator
 windup and how to avoid it*, ACC 1989 (observer-form / conditioning

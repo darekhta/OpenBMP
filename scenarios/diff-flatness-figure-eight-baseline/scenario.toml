@@ -21,7 +21,7 @@ provenance  = "synthetic; identical to diff-flatness-figure-eight-l1 modulo the 
 start_s = 0.0
 stop_s  = 8.0
 dt_s    = 0.001
-seed    = 0x4243_3146_3168_466c   # "BC1F1hFl"
+seed    = 0x4c31_4146_3168_466c   # "L1AF1hFl"; same seed as L1 sibling
 
 [vehicle]
 kind                                = "rigid_body"

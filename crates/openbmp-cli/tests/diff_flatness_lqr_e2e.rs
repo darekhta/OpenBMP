@@ -7,7 +7,7 @@
 //! difference is `rate_loop_kind = "lqr"` plus the
 //! `[fc.autopilot_params.lqr]` cost-weight block. The runner solves
 //! the per-axis DARE at scenario load using the diagonal inertia of
-//! the primary body (1.0 kg·m² on each axis here) and the loop step
+//! this single-body assembly (1.0 kg·m² on each axis here) and the loop step
 //! `time.dt_s = 0.001 s`.
 //!
 //! Asserts: scenario completes 8000 kernel steps with end-time stop
@@ -22,6 +22,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use arrow::array::Float64Array;
@@ -29,7 +30,7 @@ use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
 use openbmp_testkit::tolerance::ToleranceTable;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use tempfile::{Builder, TempDir};
+use tempfile::{Builder, NamedTempFile, TempDir};
 
 struct RunOutput {
     parquet: PathBuf,
@@ -98,6 +99,31 @@ fn run_to_parquet(label: &str) -> RunOutput {
         parquet: copy,
         kernel_steps,
     }
+}
+
+fn scenario_with_second_body() -> NamedTempFile {
+    let scenario = workspace_root().join("scenarios/diff-flatness-figure-eight-lqr/scenario.toml");
+    let text = fs::read_to_string(&scenario).expect("read LQR scenario");
+    let inserted = text.replace(
+        "[[vehicle.assembly.effectors]]\nid               = \"roll-torque\"",
+        "[[vehicle.assembly.bodies]]\n\
+id          = \"secondary\"\n\
+geometry    = { kind = \"reference\", length_m = 1.0, area_m2 = 1.0 }\n\
+dry_mass_kg = 1.0\n\
+dry_inertia_body_kg_m2 = [\n\
+  [1.0, 0.0, 0.0],\n\
+  [0.0, 1.0, 0.0],\n\
+  [0.0, 0.0, 1.0],\n\
+]\n\n\
+[[vehicle.assembly.effectors]]\n\
+id               = \"roll-torque\"",
+    );
+    assert_ne!(text, inserted, "fixture insertion needle must match");
+    let mut file = NamedTempFile::new_in(scenario.parent().expect("scenario parent"))
+        .expect("temp scenario in LQR directory");
+    file.write_all(inserted.as_bytes())
+        .expect("write temp LQR scenario");
+    file
 }
 
 fn read_f64_column(parquet: &Path, column_name: &str) -> Vec<f64> {
@@ -189,4 +215,19 @@ fn diff_flatness_lqr_is_byte_stable_across_reruns() {
     );
     let _ = fs::remove_file(&a.parquet);
     let _ = fs::remove_file(&b.parquet);
+}
+
+#[test]
+fn diff_flatness_lqr_rejects_multi_body_inertia_precondition() {
+    let scenario = scenario_with_second_body();
+    let temp = tempdir("lqr-multi-body");
+    let parquet = temp.path().join("lqr-multi-body.parquet");
+    let mut cmd = openbmp();
+    cmd.arg("run")
+        .arg(scenario.path())
+        .arg("--output-parquet")
+        .arg(&parquet);
+    cmd.assert().failure().stderr(predicates::str::contains(
+        "rate_loop_kind = \"lqr\" requires exactly one [[vehicle.assembly.bodies]] entry",
+    ));
 }
