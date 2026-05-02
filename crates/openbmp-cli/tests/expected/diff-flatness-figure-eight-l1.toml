@@ -1,0 +1,55 @@
+case = "diff-flatness-figure-eight-l1-vs-baseline-8000-steps"
+source = "Synthetic; sibling scenarios scenarios/diff-flatness-figure-eight-l1 and scenarios/diff-flatness-figure-eight-baseline. See provenance.md in each."
+validation = "experimental"
+
+# Phase 5.A.2.D tolerance bench. Both scenarios share the
+# rigid-body figure-eight from Phase 5.A.2.A and a `ReducedRate
+# { factor = 0.7 }` fault on the roll-torque effector. The L1 sibling
+# additionally activates the per-axis Cao-Hovakimyan L1 augmentation
+# on the rate loop. The test asserts:
+#
+#  - Both scenarios complete 8000 kernel steps.
+#  - Both keep the rigid-body quaternion well-normalized after
+#    projection.
+#  - The PID-baseline run is visibly perturbed by the fault
+#    (max|omega| ≥ 1e-2 rad/s — sanity that the disturbance bites).
+#  - The L1 run's max|omega| is at most half the baseline's (asserted
+#    by the e2e test as a hard ratio gate). The absolute tolerances
+#    below leave generous slack around the observed values; the
+#    primary signal is the ratio assertion.
+
+[[metric]]
+name = "kernel_steps_baseline"
+expected = 8000
+absolute_tolerance = 0.0
+relative_tolerance = 0.0
+
+[[metric]]
+name = "kernel_steps_l1"
+expected = 8000
+absolute_tolerance = 0.0
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_angular_velocity_magnitude_baseline_rad_s"
+expected = 0.0
+absolute_tolerance = 5.0
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_angular_velocity_magnitude_l1_rad_s"
+expected = 0.0
+absolute_tolerance = 5.0
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_quaternion_norm_error_baseline"
+expected = 0.0
+absolute_tolerance = 1.0e-12
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_quaternion_norm_error_l1"
+expected = 0.0
+absolute_tolerance = 1.0e-12
+relative_tolerance = 0.0

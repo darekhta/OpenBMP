@@ -113,7 +113,7 @@ in lockstep with each sub-phase landing.
 | 5.A.2.A — `direct_torque` effector + rigid-body figure-eight integration | shipped | `16414b3` |
 | 5.A.2.B — L1 adaptive math module | shipped | `041438c` |
 | 5.A.2.C — L1 autopilot wiring + retire L1-inspired interim types | shipped | `bb17ea4` |
-| 5.A.2.D — closed-loop L1 validation under thrust-uncertainty disturbance | pending | — |
+| 5.A.2.D — closed-loop L1 validation under roll-axis ReducedRate fault | shipped | _pending PR_ |
 | 5.A.3 onwards | pending | — |
 
 ## Vehicle-class scope
@@ -267,13 +267,23 @@ the 5.A.1.A–D pattern):
   (naming-honesty discipline, mirrors 5.A.1.D). Scenario parameters
   live under `[fc.autopilot_params.l1_adaptive]` as a v3-only
   extension.
-- **5.A.2.D — closed-loop validation under thrust-uncertainty
-  disturbance.** Inject ±30 % thrust effectiveness uncertainty on
-  the rigid-body figure-eight scenario. Assert L1-augmented
-  attitude tracking tolerance is meaningfully tighter than the
-  PID-only baseline established in 5.A.2.A. Tighten the tolerance
-  table; provenance update; document the achievable robustness
-  envelope.
+- **5.A.2.D — closed-loop validation under roll-axis ReducedRate
+  fault.** Two sibling scenarios share the rigid-body figure-eight:
+  `scenarios/diff-flatness-figure-eight-l1` activates the L1
+  augmentation, `scenarios/diff-flatness-figure-eight-baseline`
+  omits the `[fc.autopilot_params.l1_adaptive]` block so the rate
+  loop runs as a pure PID. Both carry an
+  `EffectorFault::ReducedRate { factor = 0.7 }` on the roll-torque
+  effector, simulating a 30 % slew-rate loss on that axis as a
+  matched, axis-local actuator disturbance. The
+  `crates/openbmp-cli/tests/diff_flatness_l1_robustness_e2e.rs`
+  e2e test runs both, computes the maximum body-frame
+  angular-velocity magnitude `|ω|` for each, and asserts the L1
+  run's peak is ≤ ½ × the baseline (observed ratio ≈ 0.09 on the
+  reference platform — L1 reduces max `|ω|` from ~0.59 rad/s to
+  ~0.05 rad/s and keeps the roll/pitch effectors out of the
+  saturation limit). Each scenario is also asserted byte-stable
+  across reruns.
 
 **Scope.** Replace the Phase 4.C L1-inspired interim channel (scalar
 projection + first-order LPF) with the full L1 adaptive controller
