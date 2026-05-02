@@ -108,7 +108,11 @@ in lockstep with each sub-phase landing.
 | 5.A.1.B — `[fc.trajectory]` v3 scenario block + parser + runner integration | shipped | `27e079a` |
 | 5.A.1.C — `diff-flatness-figure-eight` scenario + e2e test + tolerance table | shipped | `27e079a` |
 | 5.A.1.D — retire `TrajectoryKind::FlatnessInspired` | shipped | `27e079a` |
-| 5.A.2 onwards | pending | — |
+| 5.A.2.A — `direct_torque` effector + rigid-body figure-eight integration | pending | — |
+| 5.A.2.B — L1 adaptive math module | pending | — |
+| 5.A.2.C — L1 autopilot wiring + retire `L1Inspired` | pending | — |
+| 5.A.2.D — closed-loop L1 validation under thrust-uncertainty disturbance | pending | — |
+| 5.A.3 onwards | pending | — |
 
 ## Vehicle-class scope
 
@@ -225,6 +229,49 @@ fallback if the trajectory tracker saturates — the autopilot reverts
 to the existing PID + back-calculation path, not to a homing law.
 
 #### 5.A.2 — Cao-Hovakimyan L1 adaptive (full architecture)
+
+5.A.2 ships in four sub-slices, each a separate commit (mirroring
+the 5.A.1.A–D pattern):
+
+- **5.A.2.A — rigid-body figure-eight integration.** Add a
+  `direct_torque` effector kind to `openbmp-scenario`
+  (`EffectorKindConfig::DirectTorque { axis: TorqueAxis,
+  effectiveness_n_m_per_rad: f64 }` with `TorqueAxis ∈ {Roll, Pitch,
+  Yaw}`). Add a `DirectTorqueMomentAdapter` in `openbmp-vehicle`
+  that mirrors the `EngineClusterMomentAdapter` shape: reads
+  declared effector deflections via `EffectorActualsView`, multiplies
+  by per-effector effectiveness, sums per body axis. Convert
+  `scenarios/diff-flatness-figure-eight/scenario.toml` from
+  `point_mass` to `rigid_body` with three `direct_torque` effectors
+  mapped through `[fc.actuator_channels]`. Replace the
+  `kernel_steps` placeholder metric with an attitude-error-bound
+  metric (loose tolerance documented as the Phase-5.A.2.A baseline,
+  with the existing PID + DifferentialFlatness autopilot driving
+  the rigid body). This slice closes the closed-loop tracking
+  validation gap the user flagged across the 5.A.1 audit and
+  unblocks 5.A.2.B–D.
+- **5.A.2.B — L1 adaptive math module.** New
+  `crates/openbmp-fc/src/l1_adaptive_full.rs` with
+  `L1ReferenceModel`, `L1StatePredictor`,
+  `L1PiecewiseConstantAdaptation`, `L1LowPassFilter`. Unit tests
+  for each component (projection bound, LPF response, PCA
+  estimator stability). Bandwidth-projection inequality
+  `ω_c · L < 1` asserted at construction; violations fail closed.
+- **5.A.2.C — autopilot wiring + retire `L1Inspired`.** New
+  `L1AdaptiveParams` / `L1AdaptiveChannel` types behind the
+  existing `l1-adaptive` feature flag; wire into the rate loop
+  replacing the Phase-4 `L1InspiredChannel`. Retire
+  `L1InspiredParams` and `L1InspiredChannel` in the same commit
+  (naming-honesty discipline, mirrors 5.A.1.D). Scenario field for
+  L1 enable + bandwidth in `[fc.autopilot_params]` (v3-only
+  extension).
+- **5.A.2.D — closed-loop validation under thrust-uncertainty
+  disturbance.** Inject ±30 % thrust effectiveness uncertainty on
+  the rigid-body figure-eight scenario. Assert L1-augmented
+  attitude tracking tolerance is meaningfully tighter than the
+  PID-only baseline established in 5.A.2.A. Tighten the tolerance
+  table; provenance update; document the achievable robustness
+  envelope.
 
 **Scope.** Replace the Phase 4.C `L1InspiredChannel` (scalar
 projection + first-order LPF) with the full L1 adaptive controller
