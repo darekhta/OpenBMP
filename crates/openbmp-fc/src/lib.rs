@@ -54,6 +54,7 @@ pub mod scheduler;
 pub mod sensor_ingest;
 pub mod tables;
 pub mod topics;
+pub mod trajectory;
 #[cfg(feature = "square-root-ekf")]
 pub mod ud;
 pub mod voter;

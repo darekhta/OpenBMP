@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use nalgebra::Vector3;
 use openbmp_physics::kinematics::quaternion_error_small_angle;
 
-use crate::error::ControllerError;
+use crate::error::{AutopilotError, ControllerError};
 use crate::filters::Biquad;
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
@@ -28,6 +28,9 @@ use crate::tables::Table;
 use crate::topics::{
     ActuatorCommand, AttitudeEstimate, EngineDemand, PositionEstimate, ReferenceState,
     VehicleStatus,
+};
+use crate::trajectory::{
+    flat_output_attitude_reference, MinimumSnapTrajectory, YawProfile,
 };
 
 /// PID gain triple (Kp, Ki, Kd).
@@ -159,9 +162,20 @@ pub enum TrajectoryKind {
     /// Flatness-inspired attitude reference from a PD desired
     /// acceleration. This is not a full flat-output trajectory
     /// tracker with higher-derivative feed-forward terms; the
-    /// Mellinger & Kumar 2011 minimum-snap formulation is tracked as
-    /// Phase-5 work in `docs/phase-5-plan.md`.
+    /// Mellinger & Kumar 2011 minimum-snap formulation is the
+    /// `DifferentialFlatness` variant.
     FlatnessInspired,
+    /// Mellinger & Kumar 2011 differential-flatness trajectory
+    /// tracker. Phase 5.A.1.A ships the math: piecewise polynomial
+    /// minimum-snap trajectory plus analytical attitude / body-rate /
+    /// angular-acceleration references. The autopilot's trajectory
+    /// loop sets the attitude reference from the flat outputs;
+    /// scenario-side plumbing and rate / angular-acceleration
+    /// feedforward consumption land in 5.A.1.B onwards. Selecting
+    /// this variant requires installing a `MinimumSnapTrajectory`
+    /// via [`ThreeLoopAutopilot::with_minimum_snap_trajectory`];
+    /// otherwise the autopilot fails closed at first tick.
+    DifferentialFlatness,
 }
 
 /// Three-loop autopilot job.
@@ -175,6 +189,12 @@ pub struct ThreeLoopAutopilot {
     schedule: GainSchedule,
     params: AutopilotParams,
     gyro_notch_state: Option<[Biquad; 3]>,
+    /// Optional minimum-snap trajectory consumed when
+    /// `params.trajectory_kind == TrajectoryKind::DifferentialFlatness`.
+    /// The autopilot owns the trajectory in Phase 5.A.1.A; a
+    /// guidance-side topic-driven path is tracked for follow-up
+    /// sub-phase 5.A.1.B.
+    minimum_snap_trajectory: Option<MinimumSnapTrajectory>,
     #[cfg(feature = "l1-adaptive")]
     l1_state: [crate::l1_adaptive::L1InspiredChannel; 3],
 }
@@ -200,9 +220,20 @@ impl ThreeLoopAutopilot {
             schedule,
             params: AutopilotParams::default(),
             gyro_notch_state: None,
+            minimum_snap_trajectory: None,
             #[cfg(feature = "l1-adaptive")]
             l1_state: [crate::l1_adaptive::L1InspiredChannel::new(); 3],
         }
+    }
+
+    /// Installs a minimum-snap differential-flatness trajectory.
+    /// Required when [`AutopilotParams::trajectory_kind`] is
+    /// [`TrajectoryKind::DifferentialFlatness`]; without it the
+    /// trajectory loop fails closed at first tick.
+    #[must_use]
+    pub fn with_minimum_snap_trajectory(mut self, trajectory: MinimumSnapTrajectory) -> Self {
+        self.minimum_snap_trajectory = Some(trajectory);
+        self
     }
 
     /// Replaces the gain schedule, returning the updated autopilot.
@@ -330,10 +361,49 @@ impl Job for ThreeLoopAutopilot {
         let mut attitude_error =
             quaternion_error_small_angle(attitude.q_body_to_eci_xyzw, reference.q_body_to_eci_xyzw);
 
+        // Phase 5.A.1.A — DifferentialFlatness trajectory loop.
+        // Generates the attitude reference from the installed
+        // minimum-snap trajectory's flat outputs, independent of the
+        // bus `ReferenceState.position_eci_m`. Other variants
+        // (`Pid` / `FlatnessInspired`) continue to read the bus
+        // reference and an estimator position, gated below.
+        if self.params.trajectory_loop_enabled
+            && self.params.trajectory_kind == TrajectoryKind::DifferentialFlatness
+        {
+            let trajectory = self.minimum_snap_trajectory.as_ref().ok_or_else(|| {
+                ControllerError::from(AutopilotError::Trajectory {
+                    reason: "DifferentialFlatness trajectory_kind selected without an \
+                             installed MinimumSnapTrajectory; install one via \
+                             ThreeLoopAutopilot::with_minimum_snap_trajectory."
+                        .to_string(),
+                })
+            })?;
+            let now_s = ctx.clock.now().as_seconds();
+            let flat = trajectory.evaluate(now_s);
+            let yaw_rad = reference_yaw_rad(reference.q_body_to_eci_xyzw);
+            let yaw = YawProfile {
+                yaw_rad,
+                yaw_rate_rad_s: 0.0,
+                yaw_accel_rad_s2: 0.0,
+            };
+            if let Some(reference_kin) = flat_output_attitude_reference(&flat, yaw) {
+                let q = reference_kin.q_body_to_eci.into_inner();
+                attitude_error = quaternion_error_small_angle(
+                    attitude.q_body_to_eci_xyzw,
+                    [q.i, q.j, q.k, q.w],
+                );
+            }
+            // Free-fall (returned None): leave the attitude_error
+            // initialised from the bus reference. The flat-output
+            // path has no thrust direction in that regime.
+        }
+
         // Trajectory loop: feeds an attitude-error correction. Active
         // only when enabled by params and a position reference is
-        // present.
+        // present. The DifferentialFlatness branch is handled above;
+        // this block covers the bus-reference-driven variants only.
         if self.params.trajectory_loop_enabled
+            && self.params.trajectory_kind != TrajectoryKind::DifferentialFlatness
             && reference.position_eci_m.norm() > 0.0
             && let Some(pos) = position
         {
@@ -379,6 +449,9 @@ impl Job for ThreeLoopAutopilot {
                         [q.i, q.j, q.k, q.w],
                     );
                 }
+                // The outer `if` excludes DifferentialFlatness; the
+                // dedicated branch above handles it.
+                TrajectoryKind::DifferentialFlatness => {}
             }
         }
 
@@ -578,6 +651,12 @@ pub fn default_gains() -> ThreeLoopGains {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::panic
+)]
 mod tests {
     use nalgebra::Vector3;
     use openbmp_core::SimTime;
@@ -660,5 +739,86 @@ mod tests {
         let q_xyzw = [0.0, 0.0, half.sin(), half.cos()];
         let yaw = reference_yaw_rad(q_xyzw);
         assert!((yaw - theta).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn differential_flatness_without_trajectory_fails_closed() {
+        use openbmp_core::StepIndex;
+
+        use crate::autopilot::{
+            AutopilotParams, ThreeLoopAutopilot, TrajectoryKind,
+        };
+        use crate::bus::Bus;
+        use crate::clock::SimulatedClock;
+        use crate::error::{AutopilotError, ControllerError};
+        use crate::scheduler::{Job as _, JobContext};
+        use crate::topics::{
+            ActuatorCommand, AttitudeEstimate, EngineDemand, PositionEstimate, ReferenceState,
+            VehicleStatus,
+        };
+
+        let bus = Bus::new();
+        bus.register::<AttitudeEstimate>().unwrap();
+        bus.register::<PositionEstimate>().unwrap();
+        bus.register::<ReferenceState>().unwrap();
+        bus.register::<VehicleStatus>().unwrap();
+        bus.register::<ActuatorCommand>().unwrap();
+        bus.register::<EngineDemand>().unwrap();
+        // Publish a recent attitude + armed status so the autopilot
+        // reaches the trajectory-loop branch.
+        bus.publish(AttitudeEstimate {
+            time: SimTime::from_seconds(0.001),
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            omega_body_rad_s: Vector3::zeros(),
+            gyro_bias_body_rad_s: Vector3::zeros(),
+        })
+        .unwrap();
+        bus.publish(VehicleStatus {
+            armed: true,
+            in_flight: true,
+            phase_id: 0,
+            safe_state_requested: false,
+        })
+        .unwrap();
+        bus.publish(ReferenceState::default()).unwrap();
+
+        let mut autopilot = ThreeLoopAutopilot::new().with_params(AutopilotParams {
+            trajectory_loop_enabled: true,
+            trajectory_kind: TrajectoryKind::DifferentialFlatness,
+            ..AutopilotParams::default()
+        });
+
+        let clock = SimulatedClock::new();
+        // Warm-up tick — the autopilot records `last_predict_time_s`
+        // and short-circuits on dt = 0 the first time it runs. The
+        // second tick has dt > 0 and reaches the trajectory branch.
+        clock.set(SimTime::from_seconds(0.001), StepIndex::new(1));
+        autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .expect("warm-up tick");
+        clock.set(SimTime::from_seconds(0.002), StepIndex::new(2));
+        let err = autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap_err();
+
+        match err {
+            ControllerError::Autopilot(AutopilotError::Trajectory { reason }) => {
+                assert!(
+                    reason.contains("DifferentialFlatness"),
+                    "unexpected trajectory-error reason: {reason}"
+                );
+                assert!(
+                    reason.contains("MinimumSnapTrajectory"),
+                    "expected hint at the installer: {reason}"
+                );
+            }
+            other => panic!("expected AutopilotError::Trajectory, got {other:?}"),
+        }
     }
 }

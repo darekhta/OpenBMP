@@ -166,6 +166,14 @@ pub enum AutopilotError {
         /// Stage where the non-finite was detected.
         stage: &'static str,
     },
+    /// The trajectory loop selected a `DifferentialFlatness`
+    /// trajectory kind without an installed minimum-snap trajectory,
+    /// or the configured trajectory failed to evaluate.
+    #[error("autopilot: trajectory loop error: {reason}")]
+    Trajectory {
+        /// Human-readable reason from the trajectory layer.
+        reason: String,
+    },
 }
 
 /// Errors raised by the [`Commander`](crate::commander::Commander).
