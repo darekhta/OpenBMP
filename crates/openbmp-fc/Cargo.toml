@@ -20,6 +20,7 @@ serde       = ["dep:serde_json"]
 mpc         = ["dep:clarabel"]
 square-root-ekf = []
 l1-adaptive = []
+lqr         = []
 
 [dependencies]
 openbmp-core       = { workspace = true }

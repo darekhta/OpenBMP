@@ -319,6 +319,7 @@ impl ScenarioDocument {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn validate_phase5_fc_blocks(&self, header: u16, dt_s: f64) -> Result<(), ScenarioError> {
         let Some(fc) = &self.fc else {
             return Ok(());
@@ -372,6 +373,67 @@ impl ScenarioDocument {
                 });
             }
             l1.validate(dt_s)?;
+        }
+
+        // fc.autopilot_params.anti_windup — Phase 5.A.3.A consumed
+        // block. v3-only; the runner translates to
+        // AutopilotParams.anti_windup which all three PID loops
+        // consume. Absent → runner falls back to BackCalculation
+        // with the legacy `anti_windup_gain` value.
+        if let Some(autopilot_params) = fc.autopilot_params.as_ref()
+            && let Some(anti_windup) = autopilot_params.anti_windup.as_ref()
+        {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.autopilot_params.anti_windup".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            anti_windup.validate()?;
+        }
+
+        // fc.autopilot_params.rate_loop_kind / .lqr — Phase 5.A.3.B
+        // consumed pair. Both are v3-only. When rate_loop_kind = "lqr"
+        // the [fc.autopilot_params.lqr] block is required so the
+        // runner can solve the per-axis DARE; conversely, the lqr
+        // block is meaningless without rate_loop_kind = "lqr" and
+        // the parser fails closed on the inconsistency.
+        if let Some(autopilot_params) = fc.autopilot_params.as_ref() {
+            if let Some(kind) = autopilot_params.rate_loop_kind {
+                if header < SCENARIO_VERSION_V3 {
+                    return Err(ScenarioError::SchemaVersionFieldReserved {
+                        field: "fc.autopilot_params.rate_loop_kind".to_owned(),
+                        required: SCENARIO_VERSION_V3,
+                        found: header,
+                    });
+                }
+                if kind == FcRateLoopKind::Lqr && autopilot_params.lqr.is_none() {
+                    return Err(ScenarioError::MissingRequiredField {
+                        field: "fc.autopilot_params.lqr".to_owned(),
+                        role: ModelRole::Controller,
+                        name: "lqr".to_owned(),
+                    });
+                }
+            }
+            if let Some(lqr) = autopilot_params.lqr.as_ref() {
+                if header < SCENARIO_VERSION_V3 {
+                    return Err(ScenarioError::SchemaVersionFieldReserved {
+                        field: "fc.autopilot_params.lqr".to_owned(),
+                        required: SCENARIO_VERSION_V3,
+                        found: header,
+                    });
+                }
+                if autopilot_params.rate_loop_kind != Some(FcRateLoopKind::Lqr) {
+                    return Err(ScenarioError::InconsistentSection {
+                        field_a: "fc.autopilot_params.lqr".to_owned(),
+                        value_a: "present".to_owned(),
+                        field_b: "fc.autopilot_params.rate_loop_kind".to_owned(),
+                        value_b: format!("{:?}", autopilot_params.rate_loop_kind),
+                    });
+                }
+                lqr.validate()?;
+            }
         }
 
         // fc.trajectory — Phase 5.A.1.B consumed block. v3-only; the
@@ -3616,7 +3678,13 @@ pub struct FcMekfConfig {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcAutopilotParams {
-    /// Anti-windup back-calculation gain.
+    /// Legacy back-calculation anti-windup gain. When set and
+    /// `anti_windup` is absent, the runner translates this to
+    /// `AntiWindupKind::BackCalculation { gain: anti_windup_gain }`.
+    /// Prefer the explicit `[fc.autopilot_params.anti_windup]` block
+    /// for new scenarios; the field is preserved for back-compat with
+    /// Phase-1 through Phase-4 scenarios that have no anti-windup
+    /// block.
     pub anti_windup_gain: Option<f64>,
     /// Rate-loop integrator deadband (rad/s).
     pub rate_deadband_rad_s: Option<f64>,
@@ -3630,6 +3698,21 @@ pub struct FcAutopilotParams {
     /// the FC's `l1-adaptive` feature flag must be on for the
     /// augmentation to compile.
     pub l1_adaptive: Option<FcL1AdaptiveConfig>,
+    /// Optional anti-windup strategy declaration (Phase 5.A.3.A,
+    /// v3-only). When present, supersedes `anti_windup_gain` and
+    /// selects between back-calculation and observer-form integrator
+    /// bleeding. When absent, the runner falls back to
+    /// `BackCalculation { gain: anti_windup_gain.unwrap_or(1.0) }` so
+    /// existing scenarios remain bit-stable.
+    pub anti_windup: Option<FcAntiWindupConfig>,
+    /// Rate-loop dispatch strategy (Phase 5.A.3.B, v3-only). When
+    /// `Some(FcRateLoopKind::Lqr)`, the runner solves the per-axis
+    /// DARE using `[fc.autopilot_params.lqr]` and installs the LQR
+    /// gains on the autopilot. Defaults to `Pid` (Phase-4 behaviour).
+    pub rate_loop_kind: Option<FcRateLoopKind>,
+    /// Per-axis LQR cost weights (Phase 5.A.3.B, v3-only). Required
+    /// when `rate_loop_kind = "lqr"`; ignored otherwise.
+    pub lqr: Option<FcLqrConfig>,
 }
 
 /// Per-axis L1 adaptive parameters declared in
@@ -3720,6 +3803,106 @@ impl FcL1AdaptiveConfig {
                 value: dt_s,
                 rule: "must satisfy time.dt_s < -2 / fc.autopilot_params.l1_adaptive.reference_model_a_m for forward-Euler L1 stability",
             });
+        }
+        Ok(())
+    }
+}
+
+/// Anti-windup strategy declared in
+/// `[fc.autopilot_params.anti_windup]` (Phase 5.A.3.A, v3-only).
+///
+/// Mirrors `openbmp_fc::anti_windup::AntiWindupKind`. The two
+/// variants are mathematically equivalent on a SISO PID (with
+/// `back_calculation.gain = 1 / observer_form.tracking_time_s`) but
+/// expose distinct design intents — empirical gain tuning vs
+/// observer pole placement.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FcAntiWindupConfig {
+    /// Åström-Wittenmark 1984 back-calculation. The integrator is
+    /// bled by `gain * excess * dt` whenever the unsaturated PID
+    /// command exceeds the actuator limit. `gain` must be `> 0`.
+    BackCalculation {
+        /// Back-calculation gain `k_aw` (unitless). Must be `> 0`.
+        gain: f64,
+    },
+    /// Åström-Rundqwist 1989 observer-form anti-windup. The
+    /// integrator is bled by `excess * dt / tracking_time_s` where
+    /// `tracking_time_s` is the observer time constant (seconds).
+    /// Must be `> 0`.
+    ObserverForm {
+        /// Observer tracking time constant `T_t` (seconds). Must be
+        /// `> 0`.
+        tracking_time_s: f64,
+    },
+}
+
+impl FcAntiWindupConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        let path = "fc.autopilot_params.anti_windup";
+        match *self {
+            Self::BackCalculation { gain } => {
+                require_finite(&format!("{path}.gain"), gain)?;
+                require_positive(&format!("{path}.gain"), gain)?;
+            }
+            Self::ObserverForm { tracking_time_s } => {
+                require_finite(&format!("{path}.tracking_time_s"), tracking_time_s)?;
+                require_positive(&format!("{path}.tracking_time_s"), tracking_time_s)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Rate-loop dispatch declared in
+/// `[fc.autopilot_params.rate_loop_kind]` (Phase 5.A.3.B, v3-only).
+///
+/// Mirrors `openbmp_fc::autopilot::RateLoopKind`.
+#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcRateLoopKind {
+    /// Phase-4 PID rate loop. Default.
+    #[default]
+    Pid,
+    /// Phase-5.A.3.B per-axis LQR rate loop. Requires a populated
+    /// `[fc.autopilot_params.lqr]` block; the runner solves the
+    /// per-axis DARE at scenario load using the diagonal inertia of
+    /// the vehicle's primary body.
+    Lqr,
+}
+
+/// Per-axis LQR cost weights declared in
+/// `[fc.autopilot_params.lqr]` (Phase 5.A.3.B, v3-only).
+///
+/// Each `[f64; 3]` is `[roll, pitch, yaw]` and must contain
+/// strictly positive values. The runner translates these weights to
+/// `openbmp_fc::lqr::solve_lqr_rate_loop` per axis using the
+/// diagonal inertia of the primary body and the loop step `time.dt_s`.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcLqrConfig {
+    /// Per-axis state cost on the rate error `(ω − ω_ref)`. Larger
+    /// → tighter rate tracking but bigger control effort.
+    pub q_omega: [f64; 3],
+    /// Per-axis state cost on the integrated rate error
+    /// `∫(ω − ω_ref) dt`. Larger → faster zero-steady-state-error
+    /// recovery from disturbances.
+    pub q_int: [f64; 3],
+    /// Per-axis control cost. Larger → less aggressive torque
+    /// commands.
+    pub r: [f64; 3],
+}
+
+impl FcLqrConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        let path = "fc.autopilot_params.lqr";
+        for (axis_label, axis) in ["roll", "pitch", "yaw"].iter().zip(0..3) {
+            require_finite(&format!("{path}.q_omega[{axis_label}]"), self.q_omega[axis])?;
+            require_positive(&format!("{path}.q_omega[{axis_label}]"), self.q_omega[axis])?;
+            require_finite(&format!("{path}.q_int[{axis_label}]"), self.q_int[axis])?;
+            require_positive(&format!("{path}.q_int[{axis_label}]"), self.q_int[axis])?;
+            require_finite(&format!("{path}.r[{axis_label}]"), self.r[axis])?;
+            require_positive(&format!("{path}.r[{axis_label}]"), self.r[axis])?;
         }
         Ok(())
     }

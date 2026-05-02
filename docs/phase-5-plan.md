@@ -113,8 +113,10 @@ in lockstep with each sub-phase landing.
 | 5.A.2.A — `direct_torque` effector + rigid-body figure-eight integration | shipped | `16414b3` |
 | 5.A.2.B — L1 adaptive math module | shipped | `041438c` |
 | 5.A.2.C — L1 autopilot wiring + retire L1-inspired interim types | shipped | `bb17ea4` |
-| 5.A.2.D — closed-loop L1 validation under roll-axis ReducedRate fault | shipped | _pending PR_ |
-| 5.A.3 onwards | pending | — |
+| 5.A.2.D — closed-loop L1 validation under roll-axis ReducedRate fault | shipped | `af943d1` |
+| 5.A.3.A — observer-form anti-windup + back-calculation parameterisation | shipped | _pending PR_ |
+| 5.A.3.B — per-axis LQR rate loop + structure-preserving DARE solver | shipped | _pending PR_ |
+| 5.A.3.C onwards | pending | — |
 
 ## Vehicle-class scope
 
@@ -342,28 +344,48 @@ limits; the bandwidth bound is academic.
 #### 5.A.3 — Observer-form anti-windup; LQR baseline; INDI baseline
 
 **Scope.** Three independent autopilot baselines that Phase 4.C
-deliberately deferred:
+deliberately deferred. Phase 5.A.3.A and 5.A.3.B have shipped; the
+remaining sub-phases (INDI baseline + comparison harness) are
+slated as 5.A.3.C and 5.A.3.D and follow the same per-slice
+review pattern as 5.A.1.A–D / 5.A.2.A–D.
 
-1. **Observer-form anti-windup.** Replace per-loop back-calculation
-   with the observer-form (also called *conditioning technique*)
-   anti-windup architecture. The observer-form scheme is the SOTA
-   academic reference for cascaded loops where back-calculation alone
-   accumulates wind-up across nested integrators. Phase 4.C kept the
-   simpler back-calculation path; Phase 5 adds the observer-form path
-   behind a per-axis `AntiWindupKind` enum and ships a comparison
-   harness that exercises both on a saturating-actuator scenario.
-2. **LQR baseline.** A linear-quadratic-regulator gain set computed
-   offline from a documented linearised plant. Implementation: ship
-   the LQR gains as a `Table`, plus a Python-free Rust generator
-   that solves the discrete-time algebraic Riccati equation in CI for
-   the canonical scenarios. Used as a reference baseline for the PID
-   / L1 / MPC paths in `compare_filters`-style harnesses.
-3. **INDI baseline.** Incremental Nonlinear Dynamic Inversion for
-   the rate loop, per Smeur, Chu, de Croon 2016 academic
-   formulation. Inverts only the diagonal of the control-effectiveness
-   matrix (no full plant inversion); per-axis filtered-derivative term
-   for the gyro-rate signal. Useful as a reference baseline for the
-   academic envelope where INDI is the standard comparison.
+1. **Observer-form anti-windup (Phase 5.A.3.A — shipped).** Adds an
+   `AntiWindupKind` enum (`BackCalculation { gain }` / `ObserverForm
+   { tracking_time_s }`) consumed by all three PID loops via
+   `pid_step`. The two variants are mathematically equivalent on a
+   SISO PID (with `gain = 1 / tracking_time_s`) but expose distinct
+   design intents — empirical gain tuning vs Åström-Rundqwist 1989
+   observer pole placement. Scenario block
+   `[fc.autopilot_params.anti_windup]` is v3-only; legacy
+   `anti_windup_gain` is preserved as a back-compat shim that maps
+   to `BackCalculation` so Phase-1–4 scenarios stay byte-identical.
+2. **LQR baseline (Phase 5.A.3.B — shipped).** Per-axis 2-state
+   augmented LQR (state `[ω − ω_ref, ∫(ω − ω_ref) dt]`) gated behind
+   the `lqr` Cargo feature. The runner solves the per-axis Discrete
+   Algebraic Riccati Equation at scenario load using the diagonal
+   inertia of the primary body and the Anderson 1978 / Chu-Fan-Lin-
+   Wang 2004 structure-preserving doubling algorithm (quadratic
+   convergence even for stiff systems whose closed-loop poles
+   approach the unit circle). New scenario fields:
+   `[fc.autopilot_params.rate_loop_kind]` selects `pid` (default) or
+   `lqr`; `[fc.autopilot_params.lqr]` declares per-axis cost weights
+   `q_omega`, `q_int`, `r`. Anti-windup applies uniformly to both
+   PID and LQR rate loops; L1 augmentation works on top transparently.
+   Demonstration scenario:
+   `scenarios/diff-flatness-figure-eight-lqr/scenario.toml`.
+3. **INDI baseline (Phase 5.A.3.C — pending).** Incremental
+   Nonlinear Dynamic Inversion for the rate loop, per Smeur, Chu,
+   de Croon 2016 academic formulation. Inverts only the diagonal of
+   the control-effectiveness matrix (no full plant inversion);
+   per-axis filtered-derivative term for the gyro-rate signal.
+   Useful as a reference baseline for the academic envelope where
+   INDI is the standard comparison.
+4. **Controller comparison harness (Phase 5.A.3.D — pending).**
+   Runs the figure-eight scenario family across PID baseline + L1 +
+   observer-form anti-windup + LQR + INDI under matched
+   disturbances; emits a markdown table with per-axis tracking RMS
+   and peak commanded torque. Same format as the Phase-3
+   `compare_filters` harness.
 
 **Exit criterion.** Each baseline runs in a dedicated scenario and
 produces deterministic actuator output; the compare harness emits a

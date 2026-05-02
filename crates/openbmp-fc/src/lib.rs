@@ -29,6 +29,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod anti_windup;
 pub mod autopilot;
 pub mod bus;
 pub mod clock;
@@ -45,6 +46,8 @@ pub mod health;
 pub mod l1_adaptive_full;
 #[cfg(feature = "mpc")]
 pub mod landing;
+#[cfg(feature = "lqr")]
+pub mod lqr;
 pub mod mixer;
 #[cfg(feature = "mpc")]
 pub mod mpc;

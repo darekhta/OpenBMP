@@ -29,7 +29,7 @@ use openbmp_sensors::{
 use openbmp_state::{PointMassState, RigidBodyState};
 
 use crate::error::CliError;
-use crate::runner::fc::FcRunner;
+use crate::runner::fc::{FcAutopilotLqrContext, FcRunner};
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
 
@@ -71,11 +71,13 @@ impl FcBridge {
         let (bindings, graph) = crate::runner::mission::build_mission_runtime(mission)?;
         let start_phase = graph.initial;
         let magnetic = build_magnetic_field(fc_config)?;
-        let runner = FcRunner::new(fc_config, graph, bindings, start_phase).map_err(|err| {
-            CliError::UnsupportedScenario {
-                what: format!("flight-controller construction failed: {err}"),
-            }
-        })?;
+        let lqr_ctx = build_autopilot_lqr_context(scenario)?;
+        let runner =
+            FcRunner::new(fc_config, graph, bindings, start_phase, lqr_ctx).map_err(|err| {
+                CliError::UnsupportedScenario {
+                    what: format!("flight-controller construction failed: {err}"),
+                }
+            })?;
         let sensors = build_sensors(&scenario.document, resolved_files)?;
         Ok(Some(Self {
             runner,
@@ -349,6 +351,65 @@ fn require_bridge_frame(document: &ScenarioDocument) -> Result<(), CliError> {
             document.environment.frame_profile
         ),
     })
+}
+
+/// Phase 5.A.3.B helper: extract the diagonal moments of inertia
+/// of the primary body (the first `[[vehicle.assembly.bodies]]`) so
+/// the runner can solve the per-axis LQR DARE at scenario load.
+/// Returns `Ok(None)` when the FC scenario does not request the
+/// LQR rate loop, or when the vehicle has no inertia matrix
+/// declared (e.g. a point-mass kernel). Fails closed if LQR is
+/// requested but the inertia matrix is non-diagonal.
+fn build_autopilot_lqr_context(
+    scenario: &Scenario,
+) -> Result<Option<FcAutopilotLqrContext>, CliError> {
+    let Some(fc_config) = &scenario.document.fc else {
+        return Ok(None);
+    };
+    let Some(autopilot_params) = fc_config.autopilot_params.as_ref() else {
+        return Ok(None);
+    };
+    if autopilot_params.rate_loop_kind != Some(openbmp_scenario::FcRateLoopKind::Lqr) {
+        return Ok(None);
+    }
+    let bodies = &scenario.document.vehicle.assembly.bodies;
+    let body = bodies
+        .first()
+        .ok_or_else(|| CliError::UnsupportedScenario {
+            what:
+                "rate_loop_kind = \"lqr\" requires at least one [[vehicle.assembly.bodies]] entry"
+                    .to_owned(),
+        })?;
+    let inertia_matrix =
+        body.dry_inertia_body_kg_m2
+            .ok_or_else(|| CliError::UnsupportedScenario {
+                what: "rate_loop_kind = \"lqr\" requires \
+                   vehicle.assembly.bodies[0].dry_inertia_body_kg_m2 to be declared"
+                    .to_owned(),
+            })?;
+    // Reject non-diagonal inertia: per-axis LQR depends on
+    // axis-decoupled rotational dynamics, which only holds for
+    // diagonal J in body axes.
+    for (i, row) in inertia_matrix.iter().enumerate() {
+        for (j, value) in row.iter().enumerate() {
+            if i != j && *value != 0.0 {
+                return Err(CliError::UnsupportedScenario {
+                    what: format!(
+                        "rate_loop_kind = \"lqr\" requires diagonal inertia; body[0] \
+                         dry_inertia_body_kg_m2[{i}][{j}] = {value} ≠ 0"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(Some(FcAutopilotLqrContext {
+        dt_s: scenario.document.time.dt_s,
+        diagonal_inertia_kg_m2: [
+            inertia_matrix[0][0],
+            inertia_matrix[1][1],
+            inertia_matrix[2][2],
+        ],
+    }))
 }
 
 fn build_magnetic_field(config: &FcConfig) -> Result<Box<dyn MagneticFieldEci>, CliError> {

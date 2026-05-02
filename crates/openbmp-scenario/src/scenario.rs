@@ -205,7 +205,7 @@ impl Scenario {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::document::WGS84_J2_DEFAULT;
+    use crate::document::{FcAntiWindupConfig, FcLqrConfig, FcRateLoopKind, WGS84_J2_DEFAULT};
     use openbmp_core::ValidationStatus;
 
     // Parser-test fixture loaded from the canonical Phase-1
@@ -786,6 +786,248 @@ projection_bound = 1.0
                 }
                 other => panic!("expected ParseToml unknown-field error, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn fc_anti_windup_block_is_v3_only() {
+        let block = r#"
+[fc.autopilot_params.anti_windup]
+kind = "back_calculation"
+gain = 2.0
+"#;
+        let toml_v2 = append(fc_v2_scenario(), block);
+        let err = Scenario::from_toml_str(&toml_v2).unwrap_err();
+        match err {
+            ScenarioError::SchemaVersionFieldReserved { field, .. } => {
+                assert_eq!(field, "fc.autopilot_params.anti_windup");
+            }
+            other => panic!("expected SchemaVersionFieldReserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_anti_windup_back_calculation_validates_under_v3() {
+        let block = r#"
+[fc.autopilot_params.anti_windup]
+kind = "back_calculation"
+gain = 1.5
+"#;
+        let toml =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&toml).expect("v3 anti_windup back_calculation");
+        let aw = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.autopilot_params.as_ref())
+            .and_then(|p| p.anti_windup.as_ref())
+            .expect("anti_windup present");
+        assert_eq!(*aw, FcAntiWindupConfig::BackCalculation { gain: 1.5 });
+    }
+
+    #[test]
+    fn fc_anti_windup_observer_form_validates_under_v3() {
+        let block = r#"
+[fc.autopilot_params.anti_windup]
+kind = "observer_form"
+tracking_time_s = 0.05
+"#;
+        let toml =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&toml).expect("v3 anti_windup observer_form");
+        let aw = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.autopilot_params.as_ref())
+            .and_then(|p| p.anti_windup.as_ref())
+            .expect("anti_windup present");
+        assert_eq!(
+            *aw,
+            FcAntiWindupConfig::ObserverForm {
+                tracking_time_s: 0.05
+            }
+        );
+    }
+
+    #[test]
+    fn fc_anti_windup_rejects_non_positive_parameters() {
+        let cases = [
+            (
+                "back_calculation gain",
+                r#"
+[fc.autopilot_params.anti_windup]
+kind = "back_calculation"
+gain = 0.0
+"#,
+                "gain",
+            ),
+            (
+                "back_calculation negative gain",
+                r#"
+[fc.autopilot_params.anti_windup]
+kind = "back_calculation"
+gain = -1.0
+"#,
+                "gain",
+            ),
+            (
+                "observer_form tracking_time_s",
+                r#"
+[fc.autopilot_params.anti_windup]
+kind = "observer_form"
+tracking_time_s = 0.0
+"#,
+                "tracking_time_s",
+            ),
+        ];
+        for (label, block, field_needle) in cases {
+            let toml = append(fc_v2_scenario(), block)
+                .replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+            let err = Scenario::from_toml_str(&toml).unwrap_err();
+            assert!(
+                matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                    if field.contains(field_needle)),
+                "{label}: expected InvalidNumber on field containing {field_needle}, got {err:?}"
+            );
+        }
+    }
+
+    /// Inject `rate_loop_kind = "lqr"` into the existing
+    /// `[fc.autopilot_params]` table of the v2 scenario fixture by
+    /// appending the field to the end of the block (TOML allows
+    /// duplicate keys to be added by inline-extension as long as they
+    /// don't collide with each other). The optional `lqr_block`
+    /// argument is appended as a separate sub-table.
+    fn fc_v3_with_lqr(rate_loop_kind: Option<&str>, lqr_block: Option<&str>) -> String {
+        let mut text = fc_v2_scenario().replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        if let Some(kind) = rate_loop_kind {
+            text = text.replace(
+                "trajectory_kind          = \"pid\"\n",
+                &format!(
+                    "trajectory_kind          = \"pid\"\nrate_loop_kind           = \"{kind}\"\n"
+                ),
+            );
+        }
+        if let Some(block) = lqr_block {
+            text.push('\n');
+            text.push_str(block);
+        }
+        text
+    }
+
+    #[test]
+    fn fc_rate_loop_lqr_block_is_v3_only() {
+        let block = r"
+[fc.autopilot_params.lqr]
+q_omega = [1.0, 1.0, 1.0]
+q_int   = [0.1, 0.1, 0.1]
+r       = [0.1, 0.1, 0.1]
+";
+        let toml_v2 = append(fc_v2_scenario(), block);
+        let err = Scenario::from_toml_str(&toml_v2).unwrap_err();
+        match err {
+            ScenarioError::SchemaVersionFieldReserved { field, .. } => {
+                assert!(
+                    field == "fc.autopilot_params.rate_loop_kind"
+                        || field == "fc.autopilot_params.lqr",
+                    "unexpected SchemaVersionFieldReserved field: {field}"
+                );
+            }
+            other => panic!("expected SchemaVersionFieldReserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_rate_loop_lqr_block_under_v3_validates() {
+        let lqr_block = r"
+[fc.autopilot_params.lqr]
+q_omega = [10.0, 10.0, 10.0]
+q_int   = [0.5, 0.5, 0.5]
+r       = [0.1, 0.1, 0.1]
+";
+        let toml = fc_v3_with_lqr(Some("lqr"), Some(lqr_block));
+        let scenario = Scenario::from_toml_str(&toml).expect("v3 LQR validates");
+        let params = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.autopilot_params.as_ref())
+            .expect("autopilot_params present");
+        assert_eq!(params.rate_loop_kind, Some(FcRateLoopKind::Lqr));
+        let lqr = params.lqr.as_ref().expect("lqr block present");
+        assert_eq!(
+            *lqr,
+            FcLqrConfig {
+                q_omega: [10.0, 10.0, 10.0],
+                q_int: [0.5, 0.5, 0.5],
+                r: [0.1, 0.1, 0.1],
+            }
+        );
+    }
+
+    #[test]
+    fn fc_rate_loop_lqr_without_lqr_block_fails_closed() {
+        let toml = fc_v3_with_lqr(Some("lqr"), None);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. }
+                if field == "fc.autopilot_params.lqr"),
+            "expected MissingRequiredField for fc.autopilot_params.lqr, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn fc_lqr_block_without_rate_loop_lqr_kind_fails_closed() {
+        let lqr_block = r"
+[fc.autopilot_params.lqr]
+q_omega = [1.0, 1.0, 1.0]
+q_int   = [0.1, 0.1, 0.1]
+r       = [0.1, 0.1, 0.1]
+";
+        let toml = fc_v3_with_lqr(None, Some(lqr_block));
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, .. }
+                if field_a == "fc.autopilot_params.lqr"),
+            "expected InconsistentSection on fc.autopilot_params.lqr, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn fc_lqr_block_rejects_non_positive_weights() {
+        let cases = [
+            (
+                "q_omega zero on roll",
+                "q_omega = [10.0, 10.0, 10.0]",
+                "q_omega = [0.0, 10.0, 10.0]",
+            ),
+            (
+                "q_int negative on pitch",
+                "q_int   = [0.5, 0.5, 0.5]",
+                "q_int   = [0.5, -0.1, 0.5]",
+            ),
+            (
+                "r zero on yaw",
+                "r       = [0.1, 0.1, 0.1]",
+                "r       = [0.1, 0.1, 0.0]",
+            ),
+        ];
+        let nominal = r"
+[fc.autopilot_params.lqr]
+q_omega = [10.0, 10.0, 10.0]
+q_int   = [0.5, 0.5, 0.5]
+r       = [0.1, 0.1, 0.1]
+";
+        for (label, from, to) in cases {
+            let block = nominal.replace(from, to);
+            let toml = fc_v3_with_lqr(Some("lqr"), Some(&block));
+            let err = Scenario::from_toml_str(&toml).unwrap_err();
+            assert!(
+                matches!(err, ScenarioError::InvalidNumber { .. }),
+                "{label}: expected InvalidNumber, got {err:?}"
+            );
         }
     }
 

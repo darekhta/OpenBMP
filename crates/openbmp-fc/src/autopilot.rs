@@ -110,8 +110,12 @@ impl ThreeLoopGains {
 /// Autopilot configuration parameters.
 #[derive(Clone, Debug)]
 pub struct AutopilotParams {
-    /// Anti-windup back-calculation gain.
-    pub anti_windup_gain: f64,
+    /// Anti-windup strategy applied to all three PID loops
+    /// (trajectory / attitude / rate). See
+    /// [`crate::anti_windup::AntiWindupKind`] for the supported
+    /// kinds. Defaults to back-calculation with unit gain (Phase-4
+    /// behaviour).
+    pub anti_windup: crate::anti_windup::AntiWindupKind,
     /// Deadband in body angular velocity below which the rate loop
     /// integrator is frozen.
     pub rate_deadband_rad_s: f64,
@@ -132,20 +136,50 @@ pub struct AutopilotParams {
     /// scenario load.
     #[cfg(feature = "l1-adaptive")]
     pub l1_adaptive: Option<crate::l1_adaptive_full::L1AdaptiveParams>,
+    /// Rate-loop dispatch strategy (Phase 5.A.3.B). Defaults to
+    /// [`RateLoopKind::Pid`] for byte-stable Phase-4/5.A.2 behaviour;
+    /// scenarios that select [`RateLoopKind::Lqr`] must also install
+    /// `lqr_gains` (the runner solves DARE at scenario load).
+    pub rate_loop_kind: RateLoopKind,
+    /// Per-axis LQR feedback gains (Phase 5.A.3.B). Only consulted
+    /// when `rate_loop_kind == RateLoopKind::Lqr`. The runner solves
+    /// the per-axis DARE at scenario load using
+    /// [`crate::lqr::solve_lqr_rate_loop`] and installs the result
+    /// here; the autopilot fails closed at first tick if `Lqr` is
+    /// selected without gains.
+    #[cfg(feature = "lqr")]
+    pub lqr_gains: Option<[crate::lqr::LqrGains; 3]>,
 }
 
 impl Default for AutopilotParams {
     fn default() -> Self {
         Self {
-            anti_windup_gain: 1.0,
+            anti_windup: crate::anti_windup::AntiWindupKind::default(),
             rate_deadband_rad_s: 1e-3,
             trajectory_loop_enabled: false,
             trajectory_kind: TrajectoryKind::Pid,
             gyro_notch: None,
             #[cfg(feature = "l1-adaptive")]
             l1_adaptive: None,
+            rate_loop_kind: RateLoopKind::Pid,
+            #[cfg(feature = "lqr")]
+            lqr_gains: None,
         }
     }
+}
+
+/// Rate-loop dispatch strategy.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum RateLoopKind {
+    /// Phase-4 PID rate loop (default). Reads gain schedule per
+    /// phase; integrator handled by the shared `pid_step` helper.
+    #[default]
+    Pid,
+    /// Phase-5.A.3.B per-axis LQR rate loop with augmented integral
+    /// state. Requires the `lqr` Cargo feature and a populated
+    /// [`AutopilotParams::lqr_gains`] field. The autopilot fails
+    /// closed at first tick if either is missing.
+    Lqr,
 }
 
 impl ParamSection for AutopilotParams {
@@ -200,6 +234,11 @@ pub struct ThreeLoopAutopilot {
     /// `l1-adaptive` feature is on.
     #[cfg(feature = "l1-adaptive")]
     l1_state: [crate::l1_adaptive_full::L1AdaptiveChannel; 3],
+    /// Per-axis LQR integrator state (Phase 5.A.3.B). Updated by
+    /// the rate loop only when
+    /// `params.rate_loop_kind == RateLoopKind::Lqr`.
+    #[cfg(feature = "lqr")]
+    lqr_integrators: [f64; 3],
 }
 
 impl ThreeLoopAutopilot {
@@ -227,6 +266,8 @@ impl ThreeLoopAutopilot {
             minimum_snap_yaw_rad: None,
             #[cfg(feature = "l1-adaptive")]
             l1_state: [crate::l1_adaptive_full::L1AdaptiveChannel::new(); 3],
+            #[cfg(feature = "lqr")]
+            lqr_integrators: [0.0; 3],
         }
     }
 
@@ -262,6 +303,40 @@ impl ThreeLoopAutopilot {
         self.params = params;
         self.gyro_notch_state = None;
         self
+    }
+
+    /// Phase 5.A.3.B per-axis LQR rate-loop step. Mirrors the
+    /// PID-loop interface so the rate-loop dispatch site treats both
+    /// kinds uniformly. Updates the per-axis integrator (subject to
+    /// the rate-deadband freeze) and applies the configured anti-
+    /// windup strategy on saturation.
+    #[cfg(feature = "lqr")]
+    #[allow(clippy::too_many_arguments)]
+    fn lqr_step(
+        &mut self,
+        axis: usize,
+        rate_cmd: f64,
+        omega_meas: f64,
+        gains: &crate::lqr::LqrGains,
+        dt: f64,
+        torque_min: f64,
+        torque_max: f64,
+        integrate: bool,
+    ) -> (f64, bool) {
+        let omega_err = omega_meas - rate_cmd;
+        if integrate {
+            self.lqr_integrators[axis] += dt * omega_err;
+        }
+        let raw = -gains.k_omega * omega_err - gains.k_int * self.lqr_integrators[axis];
+        let clamped = raw.clamp(torque_min, torque_max);
+        let saturated = (raw - clamped).abs() > 0.0;
+        if saturated && integrate {
+            let excess = raw - clamped;
+            self.params
+                .anti_windup
+                .apply(&mut self.lqr_integrators[axis], excess, dt);
+        }
+        (clamped, saturated)
     }
 
     fn gains_for_phase(&self, phase: u64) -> &ThreeLoopGains {
@@ -311,7 +386,7 @@ fn pid_step(
     dt: f64,
     saturate_against_min: f64,
     saturate_against_max: f64,
-    anti_windup: f64,
+    anti_windup: &crate::anti_windup::AntiWindupKind,
     integrate: bool,
 ) -> (f64, bool) {
     if integrate {
@@ -327,9 +402,8 @@ fn pid_step(
     let clamped = raw.clamp(saturate_against_min, saturate_against_max);
     let saturated = (raw - clamped).abs() > 0.0;
     if saturated && integrate {
-        // Back-calculate anti-windup.
         let excess = raw - clamped;
-        state.integral -= anti_windup * excess * dt;
+        anti_windup.apply(&mut state.integral, excess, dt);
     }
     (clamped, saturated)
 }
@@ -450,7 +524,7 @@ impl Job for ThreeLoopAutopilot {
                             dt,
                             -1.0,
                             1.0,
-                            self.params.anti_windup_gain,
+                            &self.params.anti_windup,
                             true,
                         );
                         attitude_error[i] += cmd;
@@ -472,7 +546,7 @@ impl Job for ThreeLoopAutopilot {
                 dt,
                 -1e3,
                 1e3,
-                self.params.anti_windup_gain,
+                &self.params.anti_windup,
                 true,
             );
             rate_cmd[i] = cmd;
@@ -493,16 +567,49 @@ impl Job for ThreeLoopAutopilot {
                 _ => gains.rudder_limit_rad,
             };
             let integrate = omega_body_rad_s[i].abs() >= self.params.rate_deadband_rad_s;
-            let (cmd, sat) = pid_step(
-                &mut self.rate_state[i],
-                &gains.rate[i],
-                rate_error[i],
-                dt,
-                -limit,
-                limit,
-                self.params.anti_windup_gain,
-                integrate,
-            );
+            // Phase 5.A.3.B — rate-loop dispatch. PID is the
+            // Phase-4/5.A.2 default; LQR uses the per-axis gains the
+            // runner pre-solved at scenario load.
+            let (cmd, sat) = match self.params.rate_loop_kind {
+                RateLoopKind::Pid => pid_step(
+                    &mut self.rate_state[i],
+                    &gains.rate[i],
+                    rate_error[i],
+                    dt,
+                    -limit,
+                    limit,
+                    &self.params.anti_windup,
+                    integrate,
+                ),
+                #[cfg(feature = "lqr")]
+                RateLoopKind::Lqr => {
+                    let gains_axis = self.params.lqr_gains.as_ref().ok_or_else(|| {
+                        ControllerError::from(AutopilotError::Trajectory {
+                            reason: "RateLoopKind::Lqr selected without lqr_gains; runner must \
+                                     install solved gains via AutopilotParams.lqr_gains."
+                                .to_string(),
+                        })
+                    })?[i];
+                    self.lqr_step(
+                        i,
+                        rate_cmd[i],
+                        omega_body_rad_s[i],
+                        &gains_axis,
+                        dt,
+                        -limit,
+                        limit,
+                        integrate,
+                    )
+                }
+                #[cfg(not(feature = "lqr"))]
+                RateLoopKind::Lqr => {
+                    return Err(ControllerError::from(AutopilotError::Trajectory {
+                        reason: "RateLoopKind::Lqr selected but the `lqr` feature is not \
+                                 enabled; rebuild with --features lqr."
+                            .to_string(),
+                    }));
+                }
+            };
             #[cfg(feature = "l1-adaptive")]
             let mut axis_cmd = cmd;
             #[cfg(not(feature = "l1-adaptive"))]

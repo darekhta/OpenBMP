@@ -38,8 +38,8 @@ use openbmp_fc::{
 use openbmp_mission::{EventBinding, MissionPhaseGraph, PhaseId};
 use openbmp_physics::magnetic::Wmm2025;
 use openbmp_scenario::{
-    FcActuatorChannelsConfig, FcAutopilotKind, FcAutopilotParams, FcConfig, FcEkfConfig,
-    FcEstimatorKind, FcFdirConfig, FcFdirDetectorKind, FcGainsConfig, FcGuidanceKind,
+    FcActuatorChannelsConfig, FcAntiWindupConfig, FcAutopilotKind, FcAutopilotParams, FcConfig,
+    FcEkfConfig, FcEstimatorKind, FcFdirConfig, FcFdirDetectorKind, FcGainsConfig, FcGuidanceKind,
     FcHealthConfig, FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig, FcTrajectoryKind,
 };
 
@@ -73,6 +73,7 @@ impl FcRunner {
         mission_graph: MissionPhaseGraph,
         event_bindings: Vec<EventBinding>,
         start_phase: PhaseId,
+        autopilot_lqr_context: Option<FcAutopilotLqrContext>,
     ) -> Result<Self, openbmp_fc::ControllerError> {
         let mut fc = FlightControllerBuilder::new()
             .frame_budget_us(config.frame_budget_us)
@@ -163,7 +164,10 @@ impl FcRunner {
             FcAutopilotKind::ThreeLoop => ThreeLoopAutopilot::with_schedule(schedule),
         };
         if let Some(params) = &config.autopilot_params {
-            autopilot = autopilot.with_params(build_autopilot_params(params));
+            autopilot = autopilot.with_params(build_autopilot_params(
+                params,
+                autopilot_lqr_context.as_ref(),
+            )?);
         }
         if let Some(trajectory_cfg) = config.trajectory.as_ref() {
             let trajectory = build_minimum_snap_trajectory(trajectory_cfg)
@@ -455,11 +459,47 @@ fn apply_mekf_overrides(params: &mut MekfParams, cfg: &FcMekfConfig) {
     }
 }
 
-fn build_autopilot_params(cfg: &FcAutopilotParams) -> AutopilotParams {
-    let mut params = AutopilotParams::default();
-    if let Some(v) = cfg.anti_windup_gain {
-        params.anti_windup_gain = v;
-    }
+/// Phase 5.A.3.B context required to translate
+/// `[fc.autopilot_params.lqr]` into solved per-axis gains. The
+/// runner pre-extracts these from the vehicle config since the
+/// autopilot needs them to solve the per-axis DARE before the FC
+/// starts ticking.
+#[derive(Copy, Clone, Debug)]
+pub struct FcAutopilotLqrContext {
+    /// Loop step `time.dt_s`.
+    pub dt_s: f64,
+    /// Diagonal moments of inertia `[J_xx, J_yy, J_zz]` (kg·m²).
+    pub diagonal_inertia_kg_m2: [f64; 3],
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_autopilot_params(
+    cfg: &FcAutopilotParams,
+    lqr_ctx: Option<&FcAutopilotLqrContext>,
+) -> Result<AutopilotParams, openbmp_fc::ControllerError> {
+    use openbmp_fc::anti_windup::AntiWindupKind;
+    #[cfg(feature = "lqr")]
+    use openbmp_fc::error::AutopilotError;
+    // Phase 5.A.3.A: explicit `[fc.autopilot_params.anti_windup]`
+    // wins over the legacy `anti_windup_gain` scalar; otherwise the
+    // legacy scalar maps to back-calculation, preserving Phase-4
+    // bit-stable behaviour for scenarios that have neither block.
+    let anti_windup = match cfg.anti_windup {
+        Some(FcAntiWindupConfig::BackCalculation { gain }) => {
+            AntiWindupKind::BackCalculation { gain }
+        }
+        Some(FcAntiWindupConfig::ObserverForm { tracking_time_s }) => {
+            AntiWindupKind::ObserverForm { tracking_time_s }
+        }
+        None => match cfg.anti_windup_gain {
+            Some(gain) => AntiWindupKind::BackCalculation { gain },
+            None => AntiWindupKind::default(),
+        },
+    };
+    let mut params = AutopilotParams {
+        anti_windup,
+        ..AutopilotParams::default()
+    };
     if let Some(v) = cfg.rate_deadband_rad_s {
         params.rate_deadband_rad_s = v;
     }
@@ -484,7 +524,67 @@ fn build_autopilot_params(cfg: &FcAutopilotParams) -> AutopilotParams {
             projection_bound: l1.projection_bound,
         });
     }
-    params
+    // Phase 5.A.3.B — rate-loop kind dispatch. Default keeps the
+    // PID loop (Phase-4 behaviour); selecting LQR triggers a
+    // per-axis DARE solve at scenario load using the diagonal
+    // inertia of the primary body.
+    if let Some(kind) = cfg.rate_loop_kind {
+        match kind {
+            openbmp_scenario::FcRateLoopKind::Pid => {
+                params.rate_loop_kind = openbmp_fc::autopilot::RateLoopKind::Pid;
+            }
+            openbmp_scenario::FcRateLoopKind::Lqr => {
+                #[cfg(feature = "lqr")]
+                {
+                    let ctx = lqr_ctx.ok_or_else(|| {
+                        openbmp_fc::ControllerError::from(AutopilotError::Trajectory {
+                            reason: "rate_loop_kind = \"lqr\" requires the runner to supply \
+                                 FcAutopilotLqrContext (dt + diagonal inertia)"
+                                .to_string(),
+                        })
+                    })?;
+                    let lqr_cfg = cfg.lqr.as_ref().ok_or_else(|| {
+                        openbmp_fc::ControllerError::from(AutopilotError::Trajectory {
+                            reason: "rate_loop_kind = \"lqr\" but [fc.autopilot_params.lqr] is \
+                                 absent (parser should have caught this)"
+                                .to_string(),
+                        })
+                    })?;
+                    let mut gains = [openbmp_fc::lqr::LqrGains::default(); 3];
+                    for (axis, gain_slot) in gains.iter_mut().enumerate() {
+                        *gain_slot = openbmp_fc::lqr::solve_lqr_rate_loop(
+                            ctx.dt_s,
+                            ctx.diagonal_inertia_kg_m2[axis],
+                            lqr_cfg.q_omega[axis],
+                            lqr_cfg.q_int[axis],
+                            lqr_cfg.r[axis],
+                        )
+                        .map_err(|err| {
+                            openbmp_fc::ControllerError::from(AutopilotError::Trajectory {
+                                reason: format!("LQR DARE solve failed on axis {axis}: {err}"),
+                            })
+                        })?;
+                    }
+                    params.rate_loop_kind = openbmp_fc::autopilot::RateLoopKind::Lqr;
+                    params.lqr_gains = Some(gains);
+                    let _ = lqr_ctx;
+                }
+                #[cfg(not(feature = "lqr"))]
+                {
+                    let _ = (lqr_ctx, cfg.lqr.as_ref());
+                    return Err(openbmp_fc::ControllerError::from(
+                        openbmp_fc::error::AutopilotError::Trajectory {
+                            reason: "rate_loop_kind = \"lqr\" requires the openbmp-cli \
+                                     `lqr` Cargo feature; rebuild with --features lqr."
+                                .to_string(),
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    let _ = lqr_ctx;
+    Ok(params)
 }
 
 fn build_minimum_snap_trajectory(
@@ -753,7 +853,7 @@ mod tests {
             trajectory: None,
         };
         let (graph, bindings, pad) = minimal_graph();
-        let mut runner = FcRunner::new(&config, graph, bindings, pad).unwrap();
+        let mut runner = FcRunner::new(&config, graph, bindings, pad, None).unwrap();
         // Drive 100 ticks at 1 ms each.
         let dt_s = 0.001;
         for k in 0..100u64 {
