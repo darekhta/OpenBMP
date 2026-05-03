@@ -24,7 +24,7 @@ provenance  = "synthetic; identical to diff-flatness-figure-eight-lqr modulo the
 start_s = 0.0
 stop_s  = 8.0
 dt_s    = 0.001
-seed    = 0x4c51_5246_4661_756c   # "LQRFFaul"
+seed    = 0x4c31_4146_3168_466c   # "L1AF1hFl"; same seed as PID/L1/INDI fault siblings
 
 [vehicle]
 kind                                = "rigid_body"

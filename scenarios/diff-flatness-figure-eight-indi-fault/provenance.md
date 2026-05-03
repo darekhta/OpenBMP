@@ -29,7 +29,10 @@ filter cutoff, attitude gain) are unchanged from the parent
 inertia matches the truth-side body inertia (1.0 kg·m² per axis),
 so this scenario does not stress INDI's hallmark
 parameter-mismatch robustness; that demonstration is deferred to
-a future scenario.
+a future scenario. The deterministic seed is intentionally aligned
+with the PID-baseline, PID + L1, and LQR fault-bearing siblings so
+the comparison harness sees the same synthetic-sensor stream across
+all four rows.
 
 ## License / restrictions
 

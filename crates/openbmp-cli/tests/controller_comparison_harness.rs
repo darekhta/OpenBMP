@@ -1,9 +1,9 @@
 //! Phase-5.A.3.D controller comparison harness.
 //!
-//! Runs four sibling scenarios that share the same vehicle, the same
-//! Mellinger-Kumar minimum-snap figure-eight reference, and the same
-//! `EffectorFault::ReducedRate { factor = 0.7 }` matched
-//! roll-axis disturbance. The only difference between them is the
+//! Runs four sibling scenarios that share the same deterministic seed,
+//! vehicle, Mellinger-Kumar minimum-snap figure-eight reference, and
+//! `EffectorFault::ReducedRate { factor = 0.7 }` matched roll-axis
+//! disturbance. The only behavioural difference between them is the
 //! rate-loop kind:
 //!
 //! - `diff-flatness-figure-eight-baseline` — PID rate loop (Phase-4
@@ -34,11 +34,12 @@
 //! `UPDATE_EXPECT=1 cargo test -p openbmp-cli --features
 //! l1-adaptive,lqr,indi --test controller_comparison_harness`.
 //!
-//! All four scenarios are individually byte-stable across reruns
-//! (asserted by their per-scenario e2e tests); the harness does not
-//! re-run that gate. The metric computation here is pure scalar
-//! arithmetic, so the markdown rendering is bit-stable too — any
-//! drift is a real underlying behaviour change to flag.
+//! The pre-existing PID baseline and PID + L1 siblings carry their
+//! own byte-stability e2e tests; this harness adds the same rerun
+//! gate for the new LQR-fault and INDI-fault siblings. The metric
+//! computation here is pure scalar arithmetic, so the markdown
+//! rendering is bit-stable too — any drift is a real underlying
+//! behaviour change to flag.
 
 #![cfg(all(feature = "l1-adaptive", feature = "lqr", feature = "indi"))]
 #![allow(
@@ -61,9 +62,11 @@ use assert_cmd::cargo::CommandCargoExt;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::{Builder, TempDir};
 
-const SCENARIO_STOP_S: f64 = 8.0;
 const LIFTOFF_TIME_S: f64 = 0.05;
-const SATURATION_THRESHOLD_NM: f64 = 0.349_999;
+const ACTUATOR_RAIL_N_M: f64 = 0.35;
+const SATURATION_EPS_N_M: f64 = 1.0e-6;
+const SATURATION_THRESHOLD_N_M: f64 = ACTUATOR_RAIL_N_M - SATURATION_EPS_N_M;
+const MAX_BOUNDED_OMEGA_RAD_S: f64 = 2.0;
 
 /// One row in the comparison table.
 #[derive(Clone, Debug)]
@@ -139,12 +142,19 @@ fn read_f64_column(parquet: &Path, column_name: &str) -> Vec<f64> {
 }
 
 fn compute_metrics(label: &'static str, parquet: &Path) -> ScenarioMetrics {
+    let time_s = read_f64_column(parquet, "time_s");
     let wx = read_f64_column(parquet, "angular_velocity.x_rad_s");
     let wy = read_f64_column(parquet, "angular_velocity.y_rad_s");
     let wz = read_f64_column(parquet, "angular_velocity.z_rad_s");
     let total_samples = wx.len();
     assert!(total_samples > 0, "{label}: parquet was empty");
-    let liftoff_idx = post_liftoff_start(total_samples);
+    assert_eq!(
+        time_s.len(),
+        total_samples,
+        "{label}: time_s sample count {} did not match angular-velocity count {total_samples}",
+        time_s.len()
+    );
+    let liftoff_idx = post_liftoff_start(&time_s);
 
     let mut max_omega = 0.0_f64;
     let mut sum_sq = 0.0_f64;
@@ -168,12 +178,18 @@ fn compute_metrics(label: &'static str, parquet: &Path) -> ScenarioMetrics {
     ];
     for (column, axis) in axis_columns {
         let vals = read_f64_column(parquet, column);
+        assert_eq!(
+            vals.len(),
+            total_samples,
+            "{label}: {column} sample count {} did not match angular-velocity count {total_samples}",
+            vals.len()
+        );
         for i in liftoff_idx..vals.len() {
             let v = vals[i].abs();
             if v > peak_torque_per_axis_n_m[axis] {
                 peak_torque_per_axis_n_m[axis] = v;
             }
-            if v >= SATURATION_THRESHOLD_NM {
+            if v >= SATURATION_THRESHOLD_N_M {
                 saturation_count += 1;
             }
         }
@@ -190,10 +206,11 @@ fn compute_metrics(label: &'static str, parquet: &Path) -> ScenarioMetrics {
     }
 }
 
-fn post_liftoff_start(total_samples: usize) -> usize {
-    let liftoff_fraction = LIFTOFF_TIME_S / SCENARIO_STOP_S;
-    let raw = liftoff_fraction * total_samples as f64;
-    raw as usize
+fn post_liftoff_start(time_s: &[f64]) -> usize {
+    time_s
+        .iter()
+        .position(|t| *t >= LIFTOFF_TIME_S)
+        .unwrap_or_else(|| panic!("no sample at or after liftoff time {LIFTOFF_TIME_S} s"))
 }
 
 fn render_markdown(rows: &[ScenarioMetrics]) -> String {
@@ -213,15 +230,23 @@ fn render_markdown(rows: &[ScenarioMetrics]) -> String {
     );
     let _ = writeln!(
         &mut out,
-        "Metrics computed over the post-liftoff window (`t > {LIFTOFF_TIME_S} s`) of the"
+        "All rows use the same deterministic seed so the synthetic-sensor stream is aligned."
     );
     let _ = writeln!(
         &mut out,
-        "8 s scenario. Saturation fraction is the fraction of per-axis samples at which"
+        "Metrics computed over the post-liftoff window (`t >= {LIFTOFF_TIME_S} s`) of the"
     );
     let _ = writeln!(
         &mut out,
-        "any direct-torque effector hit the ±0.35 N·m rail."
+        "8 s scenario. Saturation fraction is the fraction of post-liftoff per-axis samples"
+    );
+    let _ = writeln!(
+        &mut out,
+        "whose corresponding direct-torque effector hit the ±0.35 N·m rail."
+    );
+    let _ = writeln!(
+        &mut out,
+        "This is one documented operating point, not a best-vs-best controller ranking."
     );
     let _ = writeln!(&mut out);
     let _ = writeln!(
@@ -249,6 +274,51 @@ fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/expected/controller-comparison.md")
 }
 
+fn assert_scenario_byte_stable(scenario_dir: &str, label: &str) {
+    let a = run_scenario(scenario_dir, &format!("{label}-rerun-a"));
+    let b = run_scenario(scenario_dir, &format!("{label}-rerun-b"));
+    let bytes_a = fs::read(&a).expect("read rerun a");
+    let bytes_b = fs::read(&b).expect("read rerun b");
+    assert_eq!(
+        bytes_a, bytes_b,
+        "{scenario_dir} must produce byte-identical Parquet across reruns"
+    );
+    let _ = fs::remove_file(&a);
+    let _ = fs::remove_file(&b);
+}
+
+fn assert_fixture_independent_sanity(rows: &[ScenarioMetrics]) {
+    let pid_max_omega = rows
+        .iter()
+        .find(|r| r.label == "PID baseline")
+        .expect("PID baseline row")
+        .max_omega_rad_s;
+    let l1_max_omega = rows
+        .iter()
+        .find(|r| r.label == "PID + L1")
+        .expect("PID + L1 row")
+        .max_omega_rad_s;
+    assert!(
+        l1_max_omega < 0.5 * pid_max_omega,
+        "L1 must beat PID baseline by ≥ 2× under the same fault; \
+         L1 max|ω| = {l1_max_omega:.4}, PID = {pid_max_omega:.4}"
+    );
+    for row in rows {
+        assert!(
+            row.max_omega_rad_s.is_finite() && row.max_omega_rad_s < MAX_BOUNDED_OMEGA_RAD_S,
+            "{}: max|ω| = {} not bounded under {MAX_BOUNDED_OMEGA_RAD_S} rad/s",
+            row.label,
+            row.max_omega_rad_s
+        );
+        assert!(
+            (0.0..=1.0).contains(&row.saturation_fraction),
+            "{}: saturation_fraction = {} outside [0, 1]",
+            row.label,
+            row.saturation_fraction
+        );
+    }
+}
+
 #[test]
 fn controller_comparison_matches_fixture() {
     let scenarios = [
@@ -268,6 +338,7 @@ fn controller_comparison_matches_fixture() {
         let _ = fs::remove_file(&parquet);
     }
     let rendered = render_markdown(&rows);
+    assert_fixture_independent_sanity(&rows);
 
     if std::env::var("UPDATE_EXPECT").is_ok() {
         fs::write(fixture_path(), &rendered).expect("update fixture");
@@ -284,36 +355,12 @@ fn controller_comparison_matches_fixture() {
         "controller-comparison fixture drift detected. Re-run with UPDATE_EXPECT=1 to update."
     );
 
-    // Sanity assertions independent of the fixture, so the harness
-    // catches a pathological regression even if the fixture has
-    // drifted into a wrong-but-frozen state.
-    let pid_max_omega = rows
-        .iter()
-        .find(|r| r.label == "PID baseline")
-        .expect("PID baseline row")
-        .max_omega_rad_s;
-    let l1_max_omega = rows
-        .iter()
-        .find(|r| r.label == "PID + L1")
-        .expect("PID + L1 row")
-        .max_omega_rad_s;
-    assert!(
-        l1_max_omega < 0.5 * pid_max_omega,
-        "L1 must beat PID baseline by ≥ 2× under the same fault; \
-         L1 max|ω| = {l1_max_omega:.4}, PID = {pid_max_omega:.4}"
-    );
-    for row in &rows {
-        assert!(
-            row.max_omega_rad_s.is_finite() && row.max_omega_rad_s < 5.0,
-            "{}: max|ω| = {} not bounded under 5 rad/s",
-            row.label,
-            row.max_omega_rad_s
-        );
-        assert!(
-            (0.0..=1.0).contains(&row.saturation_fraction),
-            "{}: saturation_fraction = {} outside [0, 1]",
-            row.label,
-            row.saturation_fraction
-        );
-    }
+    // Sanity assertions run before the optional fixture update, so
+    // UPDATE_EXPECT cannot freeze a pathological regression.
+}
+
+#[test]
+fn fault_sibling_scenarios_are_byte_stable() {
+    assert_scenario_byte_stable("diff-flatness-figure-eight-lqr-fault", "lqr-fault");
+    assert_scenario_byte_stable("diff-flatness-figure-eight-indi-fault", "indi-fault");
 }

@@ -24,7 +24,10 @@ make an apples-to-apples comparison.
 
 The waypoint sequence, vehicle, mission graph, MEKF, per-phase
 gain schedule, and LQR cost weights are unchanged from the parent
-`diff-flatness-figure-eight-lqr` scenario.
+`diff-flatness-figure-eight-lqr` scenario. The deterministic seed is
+intentionally aligned with the PID-baseline, PID + L1, and INDI
+fault-bearing siblings so the comparison harness sees the same
+synthetic-sensor stream across all four rows.
 
 ## License / restrictions
 

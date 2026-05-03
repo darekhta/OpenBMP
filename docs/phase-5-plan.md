@@ -117,7 +117,7 @@ in lockstep with each sub-phase landing.
 | 5.A.3.A — observer-form anti-windup + back-calculation parameterisation | shipped | `327f2dc` |
 | 5.A.3.B — per-axis LQR rate loop + structure-preserving DARE solver | shipped | `327f2dc` |
 | 5.A.3.C — per-axis INDI rate loop (Smeur-Chu-de Croon 2016) | shipped | `c06d881` |
-| 5.A.3.D — controller comparison harness | shipped | _pending PR_ |
+| 5.A.3.D — controller comparison harness | shipped | `81d2407` |
 | 5.A.4 onwards | pending | — |
 
 ## Vehicle-class scope
@@ -346,10 +346,9 @@ limits; the bandwidth bound is academic.
 #### 5.A.3 — Observer-form anti-windup; LQR baseline; INDI baseline
 
 **Scope.** Three independent autopilot baselines that Phase 4.C
-deliberately deferred. Phase 5.A.3.A, 5.A.3.B, and 5.A.3.C have
-shipped; the remaining comparison-harness slice is slated as
-5.A.3.D and follows the same per-slice review pattern as
-5.A.1.A–D / 5.A.2.A–D.
+deliberately deferred plus the comparison harness that closes
+Phase 5.A.3. Phase 5.A.3.A through 5.A.3.D have shipped and follow
+the same per-slice review pattern as 5.A.1.A–D / 5.A.2.A–D.
 
 1. **Observer-form anti-windup (Phase 5.A.3.A — shipped).** Adds an
    `AntiWindupKind` enum (`BackCalculation { gain }` / `ObserverForm
@@ -394,7 +393,8 @@ shipped; the remaining comparison-harness slice is slated as
 4. **Controller comparison harness (Phase 5.A.3.D — shipped).**
    Runs the figure-eight scenario family across PID baseline +
    PID + L1 + LQR + INDI under one common matched roll-axis
-   `EffectorFault::ReducedRate { factor = 0.7 }` disturbance.
+   `EffectorFault::ReducedRate { factor = 0.7 }` disturbance and
+   one shared deterministic synthetic-sensor seed.
    `crates/openbmp-cli/tests/controller_comparison_harness.rs`
    computes per-scenario max `|ω|`, RMS `|ω|`, per-axis peak
    torque, and saturation fraction over the post-liftoff window;
@@ -403,7 +403,8 @@ shipped; the remaining comparison-harness slice is slated as
    (regenerable via `UPDATE_EXPECT=1 cargo test ...`) plus a
    fixture-independent sanity gate that L1 beats PID baseline by
    ≥ 2× under the same fault and every rate loop keeps `|ω|`
-   bounded. Two new sibling scenarios:
+   bounded. The table is a documented operating point, not a
+   best-vs-best controller ranking. Two new sibling scenarios:
    `scenarios/diff-flatness-figure-eight-lqr-fault` and
    `scenarios/diff-flatness-figure-eight-indi-fault`.
 

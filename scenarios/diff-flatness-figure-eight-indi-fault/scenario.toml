@@ -29,7 +29,7 @@ provenance  = "synthetic; identical to diff-flatness-figure-eight-indi modulo th
 start_s = 0.0
 stop_s  = 8.0
 dt_s    = 0.001
-seed    = 0x494e_4449_4661_756c   # "INDIFaul"
+seed    = 0x4c31_4146_3168_466c   # "L1AF1hFl"; same seed as PID/L1/LQR fault siblings
 
 [vehicle]
 kind                                = "rigid_body"
