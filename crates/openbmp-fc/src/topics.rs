@@ -244,14 +244,18 @@ pub struct EstimatorStatus {
     /// residual is `N(0, I_6)` and `‖ν̃‖² = chi2`. Populated only when
     /// `gnss_updated_this_tick` is `true`; zero otherwise.
     pub gnss_innovation_whitened: [f64; 6],
-    /// `true` if a corrective GNSS update occurred on this tick.
+    /// `true` if a GNSS innovation was evaluated and whitened on this
+    /// tick. The measurement may still have been gate-rejected before
+    /// state correction.
     pub gnss_updated_this_tick: bool,
     /// Phase-5.B.4 — Cholesky-whitened baro innovation. The baro
     /// measurement is scalar (altitude-only), so the whitened residual
     /// is `ν / √S` and `(ν̃)² = chi2`. Populated only when
     /// `baro_updated_this_tick` is `true`; zero otherwise.
     pub baro_innovation_whitened: f64,
-    /// `true` if a corrective baro update occurred on this tick.
+    /// `true` if a baro innovation was evaluated and whitened on this
+    /// tick. The measurement may still have been gate-rejected before
+    /// state correction.
     pub baro_updated_this_tick: bool,
     /// Phase-5.B.4 — Cholesky-whitened magnetometer innovation
     /// `ν̃ = L⁻¹ ν` for the 3-axis body-frame magnetic-vector
@@ -259,8 +263,9 @@ pub struct EstimatorStatus {
     /// `‖ν̃‖² = chi2`. Populated only when `mag_updated_this_tick` is
     /// `true`; zero otherwise.
     pub mag_innovation_whitened: [f64; 3],
-    /// `true` if a corrective magnetometer update occurred on this
-    /// tick.
+    /// `true` if a magnetometer innovation was evaluated and whitened
+    /// on this tick. The measurement may still have been gate-rejected
+    /// before state correction.
     pub mag_updated_this_tick: bool,
 }
 

@@ -54,13 +54,13 @@ deterministically. The Phase-5.B.4 e2e test
 (`crates/openbmp-cli/tests/closed_loop_fdir_glrt_e2e.rs`) asserts:
 
 - the scenario completes 1000 RK4 steps with end-time stop;
-- the FDIR detector does not trip under nominal innovations
-  (no false alarms in the 1 s run at α = 0.001);
-- the `FdirGlrtDiagnostic` topic compiles and registers cleanly
-  even when no trip occurs;
 - two reruns produce byte-identical Parquet (the new detector and
   the EKF whitened-innovation export both honour the project's
   determinism contract).
+
+Trip and no-false-trip semantics are covered at the math layer by
+deterministic unit tests in `crates/openbmp-fc/src/glrt.rs`; this
+scenario is the runtime wiring and byte-stability check.
 
 Math-side coverage (`crates/openbmp-fc/src/glrt.rs`):
 

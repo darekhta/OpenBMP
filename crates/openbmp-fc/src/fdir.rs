@@ -243,6 +243,7 @@ impl Job for FdirJob {
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
         self.glrt_step = self.glrt_step.saturating_add(1);
         let mut current_mask = 0_u64;
+        let mut non_innovation_mask = 0_u64;
         let mut max_chi2 = 0.0_f64;
         let mut max_chi2_mask = 0_u64;
         let mut latest_estimator: Option<EstimatorStatus> = None;
@@ -250,21 +251,26 @@ impl Job for FdirJob {
             latest_estimator = Some(est);
             let (mask, statistic, statistic_mask) = self.estimator_mask(est);
             current_mask |= mask;
+            non_innovation_mask |= mask & FDIR_BIT_ESTIMATOR_DEAD_RECKONING;
             max_chi2 = statistic;
             max_chi2_mask = statistic_mask;
         }
         if let Ok(Some((flags, _))) = ctx.bus.latest::<FailsafeFlags>() {
-            current_mask |= Self::failsafe_mask(flags);
+            let mask = Self::failsafe_mask(flags);
+            current_mask |= mask;
+            non_innovation_mask |= mask;
         }
         if let Ok(Some((actuator, _))) = ctx.bus.latest::<ActuatorCommand>()
             && actuator.saturated
         {
             current_mask |= FDIR_BIT_AUTOPILOT_SATURATION;
+            non_innovation_mask |= FDIR_BIT_AUTOPILOT_SATURATION;
         }
         if let Ok(Some((autopilot, _))) = ctx.bus.latest::<AutopilotStatus>()
             && autopilot.differential_flatness_reference_suppressed
         {
             current_mask |= FDIR_BIT_AUTOPILOT_REFERENCE_SUPPRESSED;
+            non_innovation_mask |= FDIR_BIT_AUTOPILOT_REFERENCE_SUPPRESSED;
         }
 
         match self.params.detector_kind {
@@ -303,6 +309,9 @@ impl Job for FdirJob {
                 }
             }
             DetectorKind::WindowedMeanShiftGlrt => {
+                if non_innovation_mask != 0 {
+                    self.triggered_mask |= non_innovation_mask;
+                }
                 if let Some(est) = latest_estimator {
                     let glrt_step = self.glrt_step;
                     let mut glrt_mask = 0_u64;
@@ -357,7 +366,7 @@ impl Job for FdirJob {
                         });
                     }
                     if glrt_mask != 0 {
-                        self.triggered_mask |= current_mask | glrt_mask;
+                        self.triggered_mask |= non_innovation_mask | glrt_mask;
                     }
                     if let Some(diag) = diagnostic {
                         let _ = ctx.bus.publish(diag);
@@ -507,5 +516,44 @@ mod tests {
         assert!(!first.triggered);
         assert!(second.triggered);
         assert_ne!(second.tripped_mask & FDIR_BIT_MAG, 0);
+    }
+
+    #[test]
+    fn windowed_glrt_latches_non_innovation_fault_without_sensor_trip() {
+        let bus = bus_with_fdir_topics();
+        bus.publish(FailsafeFlags {
+            scheduler_overrun: true,
+            ..FailsafeFlags::default()
+        })
+        .unwrap();
+        let mut job = FdirJob::new(FdirParams {
+            detector_kind: DetectorKind::WindowedMeanShiftGlrt,
+            ..FdirParams::default()
+        });
+
+        let status = run_once(&mut job, &bus);
+
+        assert!(status.triggered);
+        assert_ne!(status.tripped_mask & FDIR_BIT_SCHEDULER_OVERRUN, 0);
+    }
+
+    #[test]
+    fn windowed_glrt_does_not_use_legacy_innovation_threshold_as_trip() {
+        let bus = bus_with_fdir_topics();
+        bus.publish(EstimatorStatus {
+            gnss_chi2: 30.0,
+            ..EstimatorStatus::default()
+        })
+        .unwrap();
+        let mut job = FdirJob::new(FdirParams {
+            detector_kind: DetectorKind::WindowedMeanShiftGlrt,
+            innovation_threshold: 25.0,
+            ..FdirParams::default()
+        });
+
+        let status = run_once(&mut job, &bus);
+
+        assert!(!status.triggered);
+        assert_eq!(status.tripped_mask & FDIR_BIT_GNSS, 0);
     }
 }

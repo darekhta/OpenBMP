@@ -301,7 +301,7 @@ mod tests {
     fn pure_h0_does_not_trip_over_long_run() {
         // 200 samples of N(0, I_3) with α = 0.01 and W = 32. Bonferroni
         // per-τ rate is 3.1e-4; the chi-square(3) 1−3.1e-4 quantile
-        // is well above what i.i.d. unit-Gaussian noise produces.
+        // is not crossed by this deterministic seeded H₀ sequence.
         let mut det = WindowedMeanShiftGlrt::<3>::new(32, 0.01).unwrap();
         let mut rng = TestRng::new(0xdead_beef_2026_0503);
         let mut tripped = false;

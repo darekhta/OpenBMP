@@ -835,14 +835,14 @@ signature decomposition), not a refinement of the windowed GLRT.
 
 **Exit criterion.** A closed-loop attitude-hold scenario with the
 new detector wired in completes 1000 RK4 steps deterministically;
-two reruns produce byte-identical Parquet; nominal innovations do
-not false-trip at α = 0.001 over the 1 s run.
+two reruns produce byte-identical Parquet.
 
 A 4σ synthetic step-injection unit test in `glrt.rs` proves the
 detector trips within ±2 samples of the true jump time τ — the
 scenario layer cannot easily inject a sensor bias step (no
 scenario-syntax fault-injection block; deferred), so the trip-time
-accuracy claim lives at the math layer.
+accuracy and no-false-trip claims live at the math layer rather
+than the e2e layer.
 
 **Validation evidence.**
 
