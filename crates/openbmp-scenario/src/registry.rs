@@ -123,15 +123,15 @@ impl ModelRegistry {
             // Phase 2.2 gravity.
             ModelDescriptor::new("point_mass", ModelRole::Gravity),
             ModelDescriptor::new("j2", ModelRole::Gravity),
-            // Phase 5.0 — names accepted under v3 only. The runtime
-            // consumers land in Phase 5.C.2 (egm2008) and Phase 5.C.1
-            // (nrlmsise00); ScenarioDocument::validate gates them
-            // against the schema version and emits a deferred-phase
-            // diagnostic until the consumer commits land.
+            // Phase 5.C.2 — consumed under v3 by the runner's
+            // zonal-only EGM2008 gravity path. v2 scenarios are still
+            // rejected by ScenarioDocument::validate.
             ModelDescriptor::new("egm2008", ModelRole::Gravity),
             // Phase 2.3 atmosphere.
             ModelDescriptor::new("isothermal", ModelRole::Atmosphere),
             ModelDescriptor::new("us_standard_1976", ModelRole::Atmosphere),
+            // Original Phase 5.C.1 target, still deferred: the shipped
+            // 5.C.1 surface is the honest downscope below.
             ModelDescriptor::new("nrlmsise00", ModelRole::Atmosphere),
             // Phase 5.C.1 — engineering layered exponential atmosphere
             // (Vallado 4th ed. Table 8-4 fit, 0-1000 km). Honest

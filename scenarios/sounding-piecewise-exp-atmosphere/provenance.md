@@ -28,6 +28,12 @@ across the 0-204 km altitude span — that span deliberately exceeds
 the 86 km USSA76 ceiling to demonstrate the Phase-5.C.1 model fills
 the documented USSA76 gap above its native envelope.
 
+The Vallado-style table used by the model pins density and scale
+height. Reported pressure, temperature, and speed of sound are
+scale-height-effective values derived for ideal-gas self-consistency;
+they are telemetry sanity channels for this engineering fit, not
+source-tabulated thermospheric temperature measurements.
+
 ## License / restrictions
 
 Synthetic OpenBMP data. No real fielded-vehicle parameters, no

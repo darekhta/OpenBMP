@@ -1517,7 +1517,11 @@ time_s         = 0.0005
         // the v3 gate. Aligned-equals layout matched verbatim.
         let toml = MINIMAL.replace("atmosphere    = \"none\"", "atmosphere    = \"nrlmsise00\"");
         assert_phase5_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsise00\"");
-        assert_phase5_deferred_under_v3(&toml, "atmosphere.kind = \"nrlmsise00\"", "Phase 5.C.1");
+        assert_phase5_deferred_under_v3(
+            &toml,
+            "atmosphere.kind = \"nrlmsise00\"",
+            "a future NRLMSISE-00 follow-on slice",
+        );
     }
 
     const NRLMSISE00_STRUCTURED_ATMOSPHERE_BLOCK: &str = r#"
@@ -1529,7 +1533,51 @@ kind = "nrlmsise00"
     fn nrlmsise00_structured_atmosphere_kind_is_v3_only() {
         let toml = append(MINIMAL, NRLMSISE00_STRUCTURED_ATMOSPHERE_BLOCK);
         assert_phase5_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsise00\"");
-        assert_phase5_deferred_under_v3(&toml, "atmosphere.kind = \"nrlmsise00\"", "Phase 5.C.1");
+        assert_phase5_deferred_under_v3(
+            &toml,
+            "atmosphere.kind = \"nrlmsise00\"",
+            "a future NRLMSISE-00 follow-on slice",
+        );
+    }
+
+    #[test]
+    fn piecewise_exponential_environment_atmosphere_is_v3_only_and_validates_under_v3() {
+        let toml_v2 = MINIMAL.replace(
+            "atmosphere    = \"none\"",
+            "atmosphere    = \"piecewise_exponential\"",
+        );
+        assert_phase5_reserved_under_v2(&toml_v2, "atmosphere.kind = \"piecewise_exponential\"");
+
+        let toml_v3 = toml_v2.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario =
+            Scenario::from_toml_str(&toml_v3).expect("piecewise_exponential validates under v3");
+        assert_eq!(
+            scenario.document.environment.atmosphere,
+            "piecewise_exponential"
+        );
+    }
+
+    const PIECEWISE_EXP_STRUCTURED_ATMOSPHERE_BLOCK: &str = r#"
+[atmosphere]
+kind = "piecewise_exponential"
+"#;
+
+    #[test]
+    fn piecewise_exponential_structured_atmosphere_kind_is_v3_only_and_validates_under_v3() {
+        let toml_v2 = append(MINIMAL, PIECEWISE_EXP_STRUCTURED_ATMOSPHERE_BLOCK);
+        assert_phase5_reserved_under_v2(&toml_v2, "atmosphere.kind = \"piecewise_exponential\"");
+
+        let toml_v3 = toml_v2.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario =
+            Scenario::from_toml_str(&toml_v3).expect("piecewise_exponential validates under v3");
+        assert_eq!(
+            scenario
+                .document
+                .atmosphere
+                .expect("structured atmosphere")
+                .kind,
+            "piecewise_exponential"
+        );
     }
 
     #[test]

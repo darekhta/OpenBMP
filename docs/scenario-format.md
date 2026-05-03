@@ -1683,12 +1683,40 @@ as the `indi` + `l1_adaptive` rejection above.
 gravity = "egm2008"
 ```
 
-Selects the EGM2008 truncated spherical-harmonic gravity model. The
-Phase 5.C.2 consumer adds `degree`, `order`, `coefficients_path`, and
-`coefficients_sha256` fields. Until then, this kind value parses but
-fails closed at validate time with the deferred-phase diagnostic.
+Selects the shipped Phase-5.C.2 EGM2008 **zonal-only** gravity model,
+`openbmp_physics::Egm2008ZonalGravity`, truncated to degrees 2 through
+6. The model pins WGS84 `µ`, WGS84 `R_e`, and the public `J_2..J_6`
+zonal coefficients in source; there are no per-scenario `degree`,
+`order`, or `coefficients_path` overrides in the shipped surface. v2
+scenarios that name `egm2008` fail closed with a schema-version
+diagnostic.
 
-#### `atmosphere = "nrlmsise00"` (Phase 5.C.1)
+Tesseral / sectoral terms, Cunningham recursion, full coefficient-file
+loading, and scenario-selectable degree/order are deferred to a future
+gravity slice.
+
+#### `atmosphere = "piecewise_exponential"` (Phase 5.C.1)
+
+```toml
+[environment]
+atmosphere = "piecewise_exponential"
+
+[atmosphere]
+kind = "piecewise_exponential"
+```
+
+Selects the shipped Phase-5.C.1 layered exponential atmosphere,
+`openbmp_physics::PiecewiseExponentialAtmosphere`, with the fixed
+14-layer Vallado Table 8-4 density / scale-height fit covering
+0-1000 km. The structured `[atmosphere]` block is optional when the
+legacy `environment.atmosphere` selector names the same model; if both
+are present they must agree. v2 scenarios that name
+`piecewise_exponential` fail closed with a schema-version diagnostic.
+The model reports a scale-height-effective `temperature_k` for
+ideal-gas self-consistency; it is not a source-tabulated thermospheric
+temperature product.
+
+#### `atmosphere = "nrlmsise00"` (future follow-on)
 
 ```toml
 [environment]
@@ -1698,11 +1726,13 @@ atmosphere = "nrlmsise00"
 kind = "nrlmsise00"
 ```
 
-Selects the NRLMSISE-00 empirical atmosphere model. The Phase 5.C.1
-consumer adds `f10_7`, `f10_7_avg`, `ap_index`, `epoch_tai_s`,
-`coefficients_path`, and `coefficients_sha256` fields. Until then,
-this kind value parses but fails closed at validate time with the
-deferred-phase diagnostic.
+Selects the future NRLMSISE-00 empirical atmosphere model. This kind
+value is registered so scenarios get a structured deferred-feature
+diagnostic, but it is **not** consumed by Phase 5.C.1. The shipped
+5.C.1 model is `piecewise_exponential`; solar-flux inputs (`f10_7`,
+`f10_7_avg`, `ap_index`), epoch handling, per-species number densities,
+and coefficient-file loading are deferred to a dedicated NRLMSISE-00
+follow-on slice.
 
 ### Hard guardrails
 

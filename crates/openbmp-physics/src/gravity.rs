@@ -309,15 +309,7 @@ impl GravityModel for J2Gravity {
         let g_central_coeff = -self.mu_m3_s2 / r3;
         let g_central = g_central_coeff * r;
 
-        // J2 term:
-        let k = 1.5 * self.j2 * self.mu_m3_s2 * self.r_e_m * self.r_e_m / r5;
-        let z2_over_r2 = (r.z * r.z) / r2;
-        let z_factor = 5.0 * z2_over_r2;
-        let g_j2 = Vector3::new(
-            k * r.x * (z_factor - 1.0),
-            k * r.y * (z_factor - 1.0),
-            k * r.z * (z_factor - 3.0),
-        );
+        let g_j2 = j2_perturbation_eci(r, r2, r5, self.mu_m3_s2, self.r_e_m, self.j2);
 
         // Locked order: central + J2.
         let g = g_central + g_j2;
@@ -330,8 +322,26 @@ impl GravityModel for J2Gravity {
     }
 }
 
+fn j2_perturbation_eci(
+    r: Vector3<f64>,
+    r2: f64,
+    r5: f64,
+    mu_m3_s2: f64,
+    r_e_m: f64,
+    j2: f64,
+) -> Vector3<f64> {
+    let k = 1.5 * j2 * mu_m3_s2 * r_e_m * r_e_m / r5;
+    let z2_over_r2 = (r.z * r.z) / r2;
+    let z_factor = 5.0 * z2_over_r2;
+    Vector3::new(
+        k * r.x * (z_factor - 1.0),
+        k * r.y * (z_factor - 1.0),
+        k * r.z * (z_factor - 3.0),
+    )
+}
+
 // ---------------------------------------------------------------------
-// Egm2008ZonalGravity — Phase 5.A.5 → 5.C.2
+// Egm2008ZonalGravity — Phase 5.C.2
 // ---------------------------------------------------------------------
 
 /// EGM2008 zonal-harmonic coefficient `J_3` (unnormalised). Source:
@@ -366,7 +376,7 @@ pub const EGM2008_MAX_DEGREE: usize = 6;
 /// the closed-form gradient of the geopotential
 ///
 /// ```text
-///   V_n = +(μ/r) (R_e/r)^n J_n P_n(ξ),    ξ = z/r
+///   V_n = −(μ/r) (R_e/r)^n J_n P_n(ξ),    ξ = z/r
 /// ```
 ///
 /// using the recursive formulae
@@ -380,7 +390,8 @@ pub const EGM2008_MAX_DEGREE: usize = 6;
 /// Locked operand order matches the existing `J_2` path so the model
 /// degenerates to byte-identical [`J2Gravity`] output when
 /// configured with `degree = 2`. Higher degrees add a deterministic
-/// summation of per-axis contributions.
+/// summation of per-axis contributions using the same sign convention:
+/// positive `J_2` strengthens Newtonian gravity at the equator.
 ///
 /// **Honest scope.** This is the **zonal-only** truncation of EGM2008
 /// — tesseral and sectoral terms are deferred to a later slice that
@@ -501,6 +512,7 @@ impl GravityModel for Egm2008ZonalGravity {
         }
         let r = r2.sqrt();
         let r3 = r * r2;
+        let r5 = r3 * r2;
         let inv_r = 1.0 / r;
         let xi = r_vec.z * inv_r;
 
@@ -524,7 +536,13 @@ impl GravityModel for Egm2008ZonalGravity {
         let mu_over_r3 = self.mu_m3_s2 / r3;
         let one_minus_xi2 = 1.0 - xi * xi;
 
-        let mut g_zonal = Vector3::zeros();
+        // Degree 2 is evaluated through the exact helper used by
+        // `J2Gravity`, so a degree-2 EGM2008 configuration degenerates
+        // to byte-identical J2 output. The recurrence still advances
+        // through n = 2 below so the higher-degree Legendre state is
+        // available when `degree > 2`.
+        let mut g_zonal =
+            j2_perturbation_eci(r_vec, r2, r5, self.mu_m3_s2, self.r_e_m, self.j_n[0]);
         for n in 2..=self.degree {
             // Advance Legendre to degree n.
             let n_f = n as f64;
@@ -539,6 +557,9 @@ impl GravityModel for Egm2008ZonalGravity {
             p_n_prime = p_next_prime;
             // (R_e / r)^n
             radial_pow *= self.r_e_m * inv_r;
+            if n == 2 {
+                continue;
+            }
 
             let j = self.j_n[n - 2];
             // Common scale: (µ R_e^n J_n) / r^{n+3} = µ/r³ · (R_e/r)^n · J_n
@@ -822,7 +843,7 @@ mod tests {
             let g_zonal = zonal.gravity_eci_m_s2(pos, SimTime::ZERO).unwrap();
             let g_j2 = j2.gravity_eci_m_s2(pos, SimTime::ZERO).unwrap();
             for axis in 0..3 {
-                assert_abs_diff_eq!(g_zonal[axis], g_j2[axis], epsilon = 1.0e-9);
+                assert_eq!(g_zonal[axis].to_bits(), g_j2[axis].to_bits());
             }
         }
     }

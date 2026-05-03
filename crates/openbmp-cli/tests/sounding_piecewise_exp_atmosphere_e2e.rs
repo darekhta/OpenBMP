@@ -27,6 +27,17 @@ use std::path::{Path, PathBuf};
 use openbmp_cli::commands::run;
 use tempfile::{Builder, TempDir};
 
+const LAYER_MEAN_MOLECULAR_WEIGHT_KG_KMOL: f64 = 28.9644;
+const LAYER_UNIVERSAL_GAS_CONSTANT: f64 = 8314.32;
+const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
+const LAYER_CROSSING_CHECKS: &[(f64, f64, f64)] = &[
+    (25_000.0, 3.899e-2, 6_349.0),
+    (50_000.0, 1.057e-3, 8_382.0),
+    (80_000.0, 1.905e-5, 5_799.0),
+    (150_000.0, 2.070e-9, 22_523.0),
+    (200_000.0, 2.541e-10, 37_105.0),
+];
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -97,6 +108,46 @@ fn read_f64_column(parquet: &Path, column_name: &str) -> Vec<f64> {
     out
 }
 
+fn layer_temperature_k(scale_height_m: f64) -> f64 {
+    LAYER_MEAN_MOLECULAR_WEIGHT_KG_KMOL * STANDARD_GRAVITY_M_S2 * scale_height_m
+        / LAYER_UNIVERSAL_GAS_CONSTANT
+}
+
+fn assert_layer_crossing_samples(heights_m: &[f64], densities: &[f64], temperatures: &[f64]) {
+    for &(base_altitude_m, base_density_kg_m3, scale_height_m) in LAYER_CROSSING_CHECKS {
+        let index = heights_m
+            .iter()
+            .position(|&altitude| altitude >= base_altitude_m)
+            .unwrap_or_else(|| panic!("trajectory must cross {base_altitude_m} m layer base"));
+        let altitude_m = heights_m[index];
+        let overshoot_m = altitude_m - base_altitude_m;
+        assert!(
+            (0.0..250.0).contains(&overshoot_m),
+            "first sample above {base_altitude_m} m overshot by {overshoot_m} m",
+        );
+        let expected_density =
+            base_density_kg_m3 * (-(altitude_m - base_altitude_m) / scale_height_m).exp();
+        let relative_density_error =
+            ((densities[index] - expected_density) / expected_density).abs();
+        assert!(
+            relative_density_error < 1.0e-10,
+            "density at h={altitude_m:.3} m should use layer base {base_altitude_m:.0} m: \
+             got {:.12e}, expected {:.12e}, rel err {:.3e}",
+            densities[index],
+            expected_density,
+            relative_density_error,
+        );
+        let expected_temperature = layer_temperature_k(scale_height_m);
+        assert!(
+            (temperatures[index] - expected_temperature).abs() < 1.0e-9,
+            "temperature at h={altitude_m:.3} m should use layer base {base_altitude_m:.0} m: \
+             got {:.12e}, expected {:.12e}",
+            temperatures[index],
+            expected_temperature,
+        );
+    }
+}
+
 #[test]
 fn sounding_piecewise_exp_atmosphere_runs_with_populated_atmosphere_channels() {
     let temp = tempdir_for("openbmp_piecewise_exp_run");
@@ -112,6 +163,7 @@ fn sounding_piecewise_exp_atmosphere_runs_with_populated_atmosphere_channels() {
         .find(|p| p.extension().and_then(|e| e.to_str()) == Some("parquet"))
         .expect("parquet output path must be in report");
 
+    let altitudes_m = read_f64_column(parquet_path, "position_z_m");
     let densities = read_f64_column(parquet_path, "atmosphere.density_kg_m3");
     let pressures = read_f64_column(parquet_path, "atmosphere.pressure_pa");
     let temperatures = read_f64_column(parquet_path, "atmosphere.temperature_k");
@@ -171,6 +223,14 @@ fn sounding_piecewise_exp_atmosphere_runs_with_populated_atmosphere_channels() {
          did not reach the upper-atmosphere regime (expected < 1e-9 \
          at the ≈204 km apogee)",
     );
+
+    // The flight must exercise multiple layer transitions, not just
+    // sea level and apogee. Check representative first samples after
+    // the 25, 50, 80, 150, and 200 km layer bases against an
+    // independent copy of the tabulated Vallado density/scale-height
+    // constants. The temperature assertion catches off-by-one layer
+    // selection even where adjacent density fits are nearly continuous.
+    assert_layer_crossing_samples(&altitudes_m, &densities, &temperatures);
 }
 
 #[test]

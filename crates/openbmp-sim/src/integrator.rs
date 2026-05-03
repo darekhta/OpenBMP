@@ -253,10 +253,10 @@ mod dopri54_tableau {
     pub const A64: f64 = 49.0 / 176.0;
     pub const A65: f64 = -5_103.0 / 18_656.0;
 
-    // 5th-order solution weights (b-vector), `B7 = 0` for the
-    // DOPRI5 5th-order solution — `k7` is computed only because the
-    // FSAL property reuses it as `k1` for the next step (not exploited
-    // here).
+    // 5th-order solution weights (b-vector). `B2 = 0` and `B7 = 0`
+    // for the DOPRI5 5th-order solution. The fixed-step shipped path
+    // does not evaluate `k7`; that FSAL derivative is only needed by
+    // the deferred embedded-error / adaptive path.
     pub const B1: f64 = 35.0 / 384.0;
     // B2 = 0 — Dormand-Prince has a zero second-stage weight.
     pub const B3: f64 = 500.0 / 1_113.0;
@@ -275,7 +275,7 @@ mod dopri54_tableau {
 /// [`Rk4FixedStep`] for scenarios where 4th-order RK4 truncation
 /// error is the limiting factor.
 ///
-/// 5th-order accurate, single-stage, six derivative evaluations per
+/// 5th-order accurate, fixed-step, six derivative evaluations per
 /// step. Bit-stable across reruns on the same platform profile.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Dopri54FixedStep;
@@ -732,11 +732,7 @@ mod tests {
     /// directly.
     #[test]
     fn dopri54_is_more_accurate_than_rk4_on_exponential_decay() {
-        fn run_with<I: Integrator<PointMassState>>(
-            integrator: &I,
-            dt_s: f64,
-            steps: usize,
-        ) -> f64 {
+        fn run_with<I: Integrator<PointMassState>>(integrator: &I, dt_s: f64, steps: usize) -> f64 {
             let mut state = PointMassState::new(
                 SimTime::ZERO,
                 Position3::origin(),

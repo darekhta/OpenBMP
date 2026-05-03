@@ -7,11 +7,18 @@
 //! ```
 //!
 //! with a constant scale height `H_layer` per layer. Each layer is
-//! treated as locally isothermal at the temperature
+//! reported with a layer-effective scale-height temperature
 //! `T_layer = M_air · g_0 · H_layer / R`, which keeps the
 //! density / pressure / temperature triple consistent through the
 //! ideal-gas law `p = ρ R T / M`. The speed of sound uses the
 //! per-layer constant `γ = 1.4` for dry air.
+//!
+//! The Vallado / Curtis / Wertz table pins density and scale height,
+//! not local thermodynamic temperature. The reported `temperature_k`
+//! is therefore a self-consistency value for the fixed-`M_air`,
+//! fixed-`g_0` exponential fit; above the lower atmosphere, the scale
+//! height also folds in composition and gravity variation that this
+//! deliberately simple model does not resolve.
 //!
 //! **Honest scope.** This is a layered exponential approximation,
 //! widely reproduced in orbital-mechanics textbooks (Vallado 4th ed.

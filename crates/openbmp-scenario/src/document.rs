@@ -606,6 +606,18 @@ impl ScenarioDocument {
                 found: header,
             });
         }
+        if self.environment.atmosphere == "piecewise_exponential"
+            || self
+                .atmosphere
+                .as_ref()
+                .is_some_and(|a| a.kind == "piecewise_exponential")
+        {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "atmosphere.kind = \"piecewise_exponential\"".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
         Ok(())
     }
 
@@ -625,7 +637,7 @@ impl ScenarioDocument {
             return Err(phase5_kind_error(
                 header,
                 "atmosphere.kind = \"nrlmsise00\"",
-                "Phase 5.C.1",
+                "a future NRLMSISE-00 follow-on slice",
             ));
         }
         Ok(())
