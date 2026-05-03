@@ -28,8 +28,8 @@ use openbmp_fc::health::{HealthMonitor, HealthParams};
 use openbmp_fc::mixer::{ActuatorChannelMap, Mixer, PhaseAuthority, PhaseAuthorityTable};
 use openbmp_fc::topics::{
     ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, EffectorCommandSet,
-    EngineCommandSet, EngineDemand, EstimatorStatus, FailsafeFlags, FdirStatus, GnssSample,
-    ImuSample, MagnetometerSample, PositionEstimate, ReferenceState, SensorStatus,
+    EngineCommandSet, EngineDemand, EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic, FdirStatus,
+    GnssSample, ImuSample, MagnetometerSample, PositionEstimate, ReferenceState, SensorStatus,
     StarTrackerSample, VehicleStatus,
 };
 use openbmp_fc::{
@@ -39,8 +39,9 @@ use openbmp_mission::{EventBinding, MissionPhaseGraph, PhaseId};
 use openbmp_physics::magnetic::Wmm2025;
 use openbmp_scenario::{
     FcActuatorChannelsConfig, FcAntiWindupConfig, FcAutopilotKind, FcAutopilotParams, FcConfig,
-    FcEkfConfig, FcEstimatorKind, FcFdirConfig, FcFdirDetectorKind, FcGainsConfig, FcGuidanceKind,
-    FcHealthConfig, FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig, FcTrajectoryKind,
+    FcEkfConfig, FcEstimatorKind, FcFdirConfig, FcFdirDetectorKind, FcFdirDetectorKindV5,
+    FcGainsConfig, FcGuidanceKind, FcHealthConfig, FcMagFieldKind, FcMekfConfig,
+    FcPhaseAuthorityConfig, FcTrajectoryKind,
 };
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
@@ -358,6 +359,12 @@ impl FcRunner {
         bus.register::<EngineDemand>()?;
         bus.register::<EngineCommandSet>()?;
         bus.register::<FdirStatus>()?;
+        // Phase-5.B.4: GLRT diagnostic topic. Always registered so
+        // scenarios that opt into the windowed-mean-shift GLRT can
+        // publish without a separate setup step. Idle when the
+        // detector kind is the legacy burst-counter / single-sample /
+        // CUSUM family.
+        bus.register::<FdirGlrtDiagnostic>()?;
         Ok(())
     }
 }
@@ -714,6 +721,7 @@ fn build_health_params(cfg: &FcHealthConfig) -> HealthParams {
     }
 }
 
+#[allow(clippy::expect_used)] // scenario validator (`FcFdirDetectorConfig::validate`) guarantees the GLRT-required fields
 fn build_fdir_params(cfg: Option<&FcFdirConfig>) -> FdirParams {
     let mut params = FdirParams::default();
     let Some(cfg) = cfg else { return params };
@@ -736,6 +744,23 @@ fn build_fdir_params(cfg: Option<&FcFdirConfig>) -> FdirParams {
     }
     if let Some(v) = cfg.cusum_threshold {
         params.cusum_threshold = v;
+    }
+    // Phase-5.B.4: when `[fc.fdir.detector]` is present its `kind`
+    // overrides the legacy `detector_kind`. The scenario validator
+    // already guarantees `window_samples` is set for
+    // `windowed_mean_shift_glrt`, so the unwrap below is safe.
+    if let Some(detector) = cfg.detector.as_ref() {
+        match detector.kind {
+            FcFdirDetectorKindV5::WindowedMeanShiftGlrt => {
+                params.detector_kind = DetectorKind::WindowedMeanShiftGlrt;
+                params.glrt_window_samples = detector
+                    .window_samples
+                    .expect("scenario validator ensures window_samples is set for windowed GLRT");
+                if let Some(alpha) = detector.false_alarm_rate {
+                    params.glrt_false_alarm_rate = alpha;
+                }
+            }
+        }
     }
     params
 }

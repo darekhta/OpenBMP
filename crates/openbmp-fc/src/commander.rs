@@ -355,13 +355,7 @@ mod tests {
         bus.publish(EstimatorStatus {
             time: SimTime::ZERO,
             initialized: true,
-            dead_reckoning: false,
-            imu_chi2: 0.0,
-            gnss_chi2: 0.0,
-            baro_chi2: 0.0,
-            mag_chi2: 0.0,
-            star_tracker_chi2: 0.0,
-            innovation_rejected: false,
+            ..EstimatorStatus::default()
         })
         .unwrap();
     }

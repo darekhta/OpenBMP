@@ -206,8 +206,8 @@ impl Scenario {
 mod tests {
     use super::*;
     use crate::document::{
-        FcAntiWindupConfig, FcAttitudeLoopKind, FcAttitudeMpcConfig, FcIndiConfig,
-        FcIndiFilterKind, FcLqrConfig, FcRateLoopKind, WGS84_J2_DEFAULT,
+        FcAntiWindupConfig, FcAttitudeLoopKind, FcAttitudeMpcConfig, FcFdirDetectorKindV5,
+        FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind, WGS84_J2_DEFAULT,
     };
     use openbmp_core::ValidationStatus;
 
@@ -543,16 +543,99 @@ axis_priority = ["roll", "yaw"]
     }
 
     #[test]
-    fn fc_fdir_detector_block_is_v3_only() {
+    fn fc_fdir_detector_block_is_v3_only_and_validates_under_v3() {
+        // Phase-5.B.4: the block now ships with a typed enum
+        // (`windowed_mean_shift_glrt`) and consumed
+        // `window_samples` / `false_alarm_rate` fields. v2 still
+        // rejects the entire block via the schema-version gate.
         let block = r#"
 [fc.fdir.detector]
-kind            = "windowed_glrt"
-window_samples  = 32
+kind             = "windowed_mean_shift_glrt"
+window_samples   = 32
+false_alarm_rate = 0.001
+"#;
+        let toml_v2 = append(fc_v2_scenario(), block);
+        assert_phase5_reserved_under_v2(&toml_v2, "fc.fdir.detector");
+        let toml_v3 = toml_v2.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&toml_v3)
+            .expect("windowed_mean_shift_glrt block must validate under v3");
+        let detector = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.fdir.as_ref())
+            .and_then(|fdir| fdir.detector.as_ref())
+            .expect("detector block parsed");
+        assert_eq!(detector.kind, FcFdirDetectorKindV5::WindowedMeanShiftGlrt);
+        assert_eq!(detector.window_samples, Some(32));
+        assert_eq!(detector.false_alarm_rate, Some(0.001));
+    }
+
+    #[test]
+    fn fc_fdir_detector_rejects_parity_threshold_for_glrt_under_v3() {
+        // The Patton-Frank parity-space residual generator that would
+        // consume `parity_threshold` is deferred to § 5.B.5; mixing
+        // it with `windowed_mean_shift_glrt` is rejected with a
+        // pointed diagnostic.
+        let block = r#"
+[fc.fdir.detector]
+kind             = "windowed_mean_shift_glrt"
+window_samples   = 32
 parity_threshold = 25.0
 "#;
-        let toml = append(fc_v2_scenario(), block);
-        assert_phase5_reserved_under_v2(&toml, "fc.fdir.detector");
-        assert_phase5_deferred_under_v3(&toml, "fc.fdir.detector", "Phase 5.B.4");
+        let toml =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::InvalidFc { reason } => {
+                assert!(
+                    reason.contains("parity_threshold"),
+                    "diagnostic should mention parity_threshold; got {reason}"
+                );
+            }
+            other => panic!("expected InvalidFc, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_fdir_detector_rejects_missing_window_samples_for_glrt_under_v3() {
+        let block = r#"
+[fc.fdir.detector]
+kind = "windowed_mean_shift_glrt"
+"#;
+        let toml =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::InvalidFc { reason } => {
+                assert!(
+                    reason.contains("window_samples"),
+                    "diagnostic should mention window_samples; got {reason}"
+                );
+            }
+            other => panic!("expected InvalidFc, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_fdir_detector_rejects_invalid_false_alarm_rate_for_glrt_under_v3() {
+        for bad in [0.0, 1.0, -0.5, 1.5] {
+            let block = format!(
+                r#"
+[fc.fdir.detector]
+kind             = "windowed_mean_shift_glrt"
+window_samples   = 32
+false_alarm_rate = {bad}
+"#
+            );
+            let toml = append(fc_v2_scenario(), &block)
+                .replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+            let err = Scenario::from_toml_str(&toml).unwrap_err();
+            assert!(
+                matches!(err, ScenarioError::InvalidFc { .. }),
+                "false_alarm_rate = {bad} should be rejected; got {err:?}"
+            );
+        }
     }
 
     #[test]

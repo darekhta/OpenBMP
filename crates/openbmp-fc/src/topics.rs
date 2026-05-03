@@ -214,6 +214,7 @@ impl Topic for PositionEstimate {
 }
 
 /// Diagnostic snapshot of estimator health.
+#[allow(clippy::struct_excessive_bools)] // Phase-5.B.4 added per-sensor `*_updated_this_tick` flags
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct EstimatorStatus {
     /// Estimate timestamp.
@@ -237,6 +238,30 @@ pub struct EstimatorStatus {
     /// `true` if any innovation in the most recent update exceeded
     /// its configured chi-square gate.
     pub innovation_rejected: bool,
+    /// Phase-5.B.4 — Cholesky-whitened GNSS innovation `ν̃ = L⁻¹ ν`
+    /// where `L` is the Cholesky lower-triangular factor of the GNSS
+    /// innovation covariance `S = L Lᵀ`. Under H₀ the whitened
+    /// residual is `N(0, I_6)` and `‖ν̃‖² = chi2`. Populated only when
+    /// `gnss_updated_this_tick` is `true`; zero otherwise.
+    pub gnss_innovation_whitened: [f64; 6],
+    /// `true` if a corrective GNSS update occurred on this tick.
+    pub gnss_updated_this_tick: bool,
+    /// Phase-5.B.4 — Cholesky-whitened baro innovation. The baro
+    /// measurement is scalar (altitude-only), so the whitened residual
+    /// is `ν / √S` and `(ν̃)² = chi2`. Populated only when
+    /// `baro_updated_this_tick` is `true`; zero otherwise.
+    pub baro_innovation_whitened: f64,
+    /// `true` if a corrective baro update occurred on this tick.
+    pub baro_updated_this_tick: bool,
+    /// Phase-5.B.4 — Cholesky-whitened magnetometer innovation
+    /// `ν̃ = L⁻¹ ν` for the 3-axis body-frame magnetic-vector
+    /// innovation. Under H₀ the whitened residual is `N(0, I_3)` and
+    /// `‖ν̃‖² = chi2`. Populated only when `mag_updated_this_tick` is
+    /// `true`; zero otherwise.
+    pub mag_innovation_whitened: [f64; 3],
+    /// `true` if a corrective magnetometer update occurred on this
+    /// tick.
+    pub mag_updated_this_tick: bool,
 }
 
 impl Topic for EstimatorStatus {
@@ -481,6 +506,32 @@ pub struct FdirStatus {
 
 impl Topic for FdirStatus {
     const NAME: &'static str = "fdir.status";
+}
+
+/// Phase-5.B.4 — diagnostic slot published when the windowed
+/// mean-shift GLRT detector trips. Carries the maximised test
+/// statistic, the Bonferroni-corrected trip threshold, and the
+/// FDIR-step index that maximised `Λ(τ)`. Multiple sensors trip in
+/// the same tick produce one diagnostic per tick — the latest sensor
+/// in the dispatch order (gnss, baro, mag) wins the diagnostic slot;
+/// the full per-sensor mask still latches on `FdirStatus`.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct FdirGlrtDiagnostic {
+    /// Sensor that tripped (one of the `FDIR_BIT_*` masks). Combined
+    /// masks are not used — exactly one sensor bit is set per
+    /// diagnostic.
+    pub sensor_mask: u64,
+    /// FDIR-step index that maximised `Λ(τ)` (`1`-based, monotonic).
+    /// Translates to absolute step time via the runner's tick clock.
+    pub estimated_jump_step: u64,
+    /// Maximised statistic `Λ(τ̂) = ‖Σ ν̃_i‖² / N_τ`.
+    pub statistic: f64,
+    /// Configured Bonferroni-corrected trip threshold.
+    pub threshold: f64,
+}
+
+impl Topic for FdirGlrtDiagnostic {
+    const NAME: &'static str = "fdir.glrt.diagnostic";
 }
 
 // ---------------------------------------------------------------------

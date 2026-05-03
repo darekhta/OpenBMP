@@ -7,9 +7,13 @@
 //! arming-block.
 
 use crate::error::ControllerError;
+use crate::glrt::{StepOutcome, WindowedMeanShiftGlrt};
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
-use crate::topics::{ActuatorCommand, AutopilotStatus, EstimatorStatus, FailsafeFlags, FdirStatus};
+use crate::topics::{
+    ActuatorCommand, AutopilotStatus, EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic,
+    FdirStatus,
+};
 
 /// Fault-tree bit: IMU lane or innovation fault.
 pub const FDIR_BIT_IMU: u64 = 1 << 0;
@@ -37,11 +41,16 @@ pub enum DetectorKind {
     /// Single-sample Gaussian-innovation GLRT detector. The
     /// chi-square innovation statistic published by the estimator is
     /// the unconstrained mean-shift GLRT statistic, so this variant
-    /// thresholds it directly. The windowed-mean-shift GLRT
-    /// (Willsky 1976) is Phase-5 work.
+    /// thresholds it directly.
     SingleSampleGlrt,
     /// Cumulative-sum detector.
     Cusum,
+    /// Phase-5.B.4 — Willsky 1976 windowed-mean-shift GLRT, vector-form,
+    /// running on the per-sensor whitened-innovation streams that the
+    /// estimator now publishes on
+    /// [`crate::topics::EstimatorStatus`]. See [`crate::glrt`] for the
+    /// algorithm, threshold derivation, and determinism contract.
+    WindowedMeanShiftGlrt,
 }
 
 /// FDIR parameters.
@@ -61,6 +70,15 @@ pub struct FdirParams {
     pub cusum_drift: f64,
     /// CUSUM trip threshold.
     pub cusum_threshold: f64,
+    /// Phase-5.B.4 — number of past samples retained by the
+    /// windowed-mean-shift GLRT. Only read when
+    /// `detector_kind = WindowedMeanShiftGlrt`.
+    pub glrt_window_samples: u32,
+    /// Phase-5.B.4 — desired family-wise false-alarm rate (`α`) over
+    /// the GLRT window. Bonferroni-corrected internally per candidate
+    /// jump time. Only read when
+    /// `detector_kind = WindowedMeanShiftGlrt`.
+    pub glrt_false_alarm_rate: f64,
 }
 
 impl Default for FdirParams {
@@ -72,6 +90,8 @@ impl Default for FdirParams {
             failsafe_burst_count: 5,
             cusum_drift: 1.0,
             cusum_threshold: 25.0,
+            glrt_window_samples: 32,
+            glrt_false_alarm_rate: 0.001,
         }
     }
 }
@@ -90,13 +110,37 @@ pub struct FdirJob {
     triggered_mask: u64,
     ticks_since_trip: u64,
     cusum_score: f64,
+    /// Phase-5.B.4 — per-sensor windowed GLRT detectors. Lazily
+    /// constructed when `detector_kind = WindowedMeanShiftGlrt`; left
+    /// `None` for the legacy detector kinds so existing scenarios stay
+    /// byte-stable.
+    glrt_gnss: Option<WindowedMeanShiftGlrt<6>>,
+    glrt_baro: Option<WindowedMeanShiftGlrt<1>>,
+    glrt_mag: Option<WindowedMeanShiftGlrt<3>>,
+    /// Step counter incremented each time the FDIR job runs. Feeds
+    /// the GLRT detectors' jump-time estimates.
+    glrt_step: u64,
 }
 
 impl FdirJob {
     /// Constructs the FDIR job with the given parameters.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `detector_kind = WindowedMeanShiftGlrt` is selected
+    /// with `glrt_window_samples = 0` or
+    /// `glrt_false_alarm_rate ∉ (0, 1)`. Callers are expected to
+    /// validate these at scenario-load time
+    /// ([`crate::params::FdirParams`] is populated from
+    /// `[fc.fdir.detector]` whose own validator rejects invalid
+    /// values).
+    // The three `expect()` calls below are documented as the panic
+    // contract; the `[fc.fdir.detector]` validator at scenario-load
+    // time guarantees the GLRT params are valid before reaching here.
+    #[allow(clippy::expect_used)]
     #[must_use]
     pub fn new(params: FdirParams) -> Self {
-        Self {
+        let mut job = Self {
             name: "fdir.tick",
             params,
             innovation_burst: 0,
@@ -104,7 +148,31 @@ impl FdirJob {
             triggered_mask: 0,
             ticks_since_trip: 0,
             cusum_score: 0.0,
+            glrt_gnss: None,
+            glrt_baro: None,
+            glrt_mag: None,
+            glrt_step: 0,
+        };
+        if matches!(
+            job.params.detector_kind,
+            DetectorKind::WindowedMeanShiftGlrt
+        ) {
+            let w = job.params.glrt_window_samples as usize;
+            let alpha = job.params.glrt_false_alarm_rate;
+            job.glrt_gnss = Some(
+                WindowedMeanShiftGlrt::<6>::new(w, alpha)
+                    .expect("scenario validator must guarantee valid GLRT params"),
+            );
+            job.glrt_baro = Some(
+                WindowedMeanShiftGlrt::<1>::new(w, alpha)
+                    .expect("scenario validator must guarantee valid GLRT params"),
+            );
+            job.glrt_mag = Some(
+                WindowedMeanShiftGlrt::<3>::new(w, alpha)
+                    .expect("scenario validator must guarantee valid GLRT params"),
+            );
         }
+        job
     }
 
     fn estimator_mask(&self, est: EstimatorStatus) -> (u64, f64, u64) {
@@ -171,11 +239,15 @@ impl Job for FdirJob {
         self.name
     }
 
+    #[allow(clippy::too_many_lines)] // Phase-5.B.4: GLRT dispatch arm grew the function
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
+        self.glrt_step = self.glrt_step.saturating_add(1);
         let mut current_mask = 0_u64;
         let mut max_chi2 = 0.0_f64;
         let mut max_chi2_mask = 0_u64;
+        let mut latest_estimator: Option<EstimatorStatus> = None;
         if let Ok(Some((est, _))) = ctx.bus.latest::<EstimatorStatus>() {
+            latest_estimator = Some(est);
             let (mask, statistic, statistic_mask) = self.estimator_mask(est);
             current_mask |= mask;
             max_chi2 = statistic;
@@ -228,6 +300,68 @@ impl Job for FdirJob {
                 self.cusum_score = (self.cusum_score + max_chi2 - self.params.cusum_drift).max(0.0);
                 if current_mask != 0 || self.cusum_score > self.params.cusum_threshold {
                     self.triggered_mask |= current_mask | max_chi2_mask;
+                }
+            }
+            DetectorKind::WindowedMeanShiftGlrt => {
+                if let Some(est) = latest_estimator {
+                    let glrt_step = self.glrt_step;
+                    let mut glrt_mask = 0_u64;
+                    let mut diagnostic: Option<FdirGlrtDiagnostic> = None;
+                    if let Some(det) = self.glrt_gnss.as_mut()
+                        && est.gnss_updated_this_tick
+                        && let StepOutcome::Tripped {
+                            estimated_jump_step,
+                            statistic,
+                            threshold,
+                        } = det.step(est.gnss_innovation_whitened, glrt_step)
+                    {
+                        glrt_mask |= FDIR_BIT_GNSS;
+                        diagnostic = Some(FdirGlrtDiagnostic {
+                            sensor_mask: FDIR_BIT_GNSS,
+                            estimated_jump_step,
+                            statistic,
+                            threshold,
+                        });
+                    }
+                    if let Some(det) = self.glrt_baro.as_mut()
+                        && est.baro_updated_this_tick
+                        && let StepOutcome::Tripped {
+                            estimated_jump_step,
+                            statistic,
+                            threshold,
+                        } = det.step([est.baro_innovation_whitened], glrt_step)
+                    {
+                        glrt_mask |= FDIR_BIT_BARO;
+                        // Latest sensor wins on the diagnostic slot.
+                        diagnostic = Some(FdirGlrtDiagnostic {
+                            sensor_mask: FDIR_BIT_BARO,
+                            estimated_jump_step,
+                            statistic,
+                            threshold,
+                        });
+                    }
+                    if let Some(det) = self.glrt_mag.as_mut()
+                        && est.mag_updated_this_tick
+                        && let StepOutcome::Tripped {
+                            estimated_jump_step,
+                            statistic,
+                            threshold,
+                        } = det.step(est.mag_innovation_whitened, glrt_step)
+                    {
+                        glrt_mask |= FDIR_BIT_MAG;
+                        diagnostic = Some(FdirGlrtDiagnostic {
+                            sensor_mask: FDIR_BIT_MAG,
+                            estimated_jump_step,
+                            statistic,
+                            threshold,
+                        });
+                    }
+                    if glrt_mask != 0 {
+                        self.triggered_mask |= current_mask | glrt_mask;
+                    }
+                    if let Some(diag) = diagnostic {
+                        let _ = ctx.bus.publish(diag);
+                    }
                 }
             }
         }

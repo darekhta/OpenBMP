@@ -358,18 +358,20 @@ impl ScenarioDocument {
             }
             allocation.validate()?;
         }
-        if let Some(fdir) = &fc.fdir {
-            gate_phase5_block(
-                header,
-                "fc.fdir.detector",
-                "Phase 5.B.4",
-                fdir.detector.as_ref(),
-                || {
-                    fdir.detector
-                        .as_ref()
-                        .map_or(Ok(()), FcFdirDetectorConfig::validate)
-                },
-            )?;
+        if let Some(fdir) = &fc.fdir
+            && let Some(detector) = fdir.detector.as_ref()
+        {
+            // Phase-5.B.4 — `[fc.fdir.detector]` consumed block. v3-only;
+            // the runner promotes the typed `kind` enum into a
+            // `DetectorKind::WindowedMeanShiftGlrt` on the FDIR job.
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.fdir.detector".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            detector.validate()?;
         }
         // fc.autopilot_params.l1_adaptive — Phase 5.A.2.C consumed
         // block. v3-only; the runner translates to AutopilotParams.l1_adaptive
@@ -4796,37 +4798,82 @@ pub enum FcAutopilotAllocationKind {
 
 /// FDIR detector tuning block (`[fc.fdir.detector]`, v3 only).
 ///
-/// Phase 5.0 parses this block; the windowed-mean-shift GLRT
-/// (Willsky 1976) and Patton-Frank parity-space residual generator
-/// that consume it land in Phase 5.B.4. The existing
-/// `detector_kind` field on `FcFdirConfig` continues to drive the
-/// Phase-4 burst / single-sample-GLRT / CUSUM detectors; the
-/// `detector` block here adds Phase-5 detector tuning data.
+/// Phase 5.0 reserved this block; Phase 5.B.4 promotes `kind` to a
+/// typed enum and starts consuming `window_samples` /
+/// `false_alarm_rate` for the Willsky 1976 windowed-mean-shift GLRT
+/// detector. The existing `detector_kind` field on `FcFdirConfig`
+/// continues to drive the Phase-4 burst / single-sample-GLRT / CUSUM
+/// detectors; when this block is present its `kind` field is the
+/// authoritative selector and overrides the legacy `detector_kind`.
+///
+/// `parity_threshold` remains parser-only — the Patton-Frank
+/// parity-space residual generator that consumes it is deferred to
+/// the § 5.B.5 follow-on slice.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcFdirDetectorConfig {
-    /// Phase-5 detector kind. Phase 5.0 parses but does not yet
-    /// validate against an enum — the Phase-5.B.4 commit replaces
-    /// this with a typed enum once the consumers exist.
-    pub kind: String,
+    /// Phase-5 detector kind.
+    pub kind: FcFdirDetectorKindV5,
     /// Window length (samples) for the windowed-mean-shift GLRT.
+    /// Required when `kind = "windowed_mean_shift_glrt"`; rejected
+    /// for other kinds.
     pub window_samples: Option<u32>,
+    /// Family-wise false-alarm rate over the GLRT window. Optional;
+    /// defaults to `0.001` when omitted. Bonferroni-corrected
+    /// internally per candidate jump time.
+    pub false_alarm_rate: Option<f64>,
     /// Per-residual chi-square threshold for parity-space isolation.
+    /// Reserved for the § 5.B.5 follow-on; rejected for
+    /// `windowed_mean_shift_glrt` until then.
     pub parity_threshold: Option<f64>,
+}
+
+/// Phase-5 detector kinds selectable from the `[fc.fdir.detector]`
+/// block.
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcFdirDetectorKindV5 {
+    /// Phase-5.B.4 — Willsky 1976 windowed-mean-shift GLRT,
+    /// vector-form, running on whitened innovation streams.
+    WindowedMeanShiftGlrt,
 }
 
 impl FcFdirDetectorConfig {
     fn validate(&self) -> Result<(), ScenarioError> {
-        require_non_empty("fc.fdir.detector.kind", &self.kind)?;
-        if let Some(v) = self.window_samples
-            && v == 0
-        {
-            return Err(ScenarioError::InvalidFc {
-                reason: "fc.fdir.detector.window_samples must be > 0".to_string(),
-            });
-        }
-        if let Some(v) = self.parity_threshold {
-            require_positive("fc.fdir.detector.parity_threshold", v)?;
+        match self.kind {
+            FcFdirDetectorKindV5::WindowedMeanShiftGlrt => {
+                let window = self
+                    .window_samples
+                    .ok_or_else(|| ScenarioError::InvalidFc {
+                        reason: "fc.fdir.detector.window_samples is required for \
+                                     kind = \"windowed_mean_shift_glrt\""
+                            .to_string(),
+                    })?;
+                if window == 0 {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: "fc.fdir.detector.window_samples must be > 0".to_string(),
+                    });
+                }
+                if let Some(alpha) = self.false_alarm_rate {
+                    require_finite("fc.fdir.detector.false_alarm_rate", alpha)?;
+                    if alpha <= 0.0 || alpha >= 1.0 {
+                        return Err(ScenarioError::InvalidFc {
+                            reason: format!(
+                                "fc.fdir.detector.false_alarm_rate must be in (0, 1); \
+                                 got {alpha}"
+                            ),
+                        });
+                    }
+                }
+                if self.parity_threshold.is_some() {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: "fc.fdir.detector.parity_threshold is reserved for the \
+                                 § 5.B.5 parity-space follow-on; not consumed by \
+                                 windowed_mean_shift_glrt"
+                            .to_string(),
+                    });
+                }
+            }
         }
         Ok(())
     }

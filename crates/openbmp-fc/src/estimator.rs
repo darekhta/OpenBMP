@@ -223,6 +223,7 @@ impl EkfParams {
 }
 
 /// 15-state error-state Extended Kalman Filter.
+#[allow(clippy::struct_excessive_bools)] // Phase-5.B.4 added per-sensor `last_*_updated_this_tick` flags
 pub struct Ekf {
     params: EkfParams,
     /// Nominal ECI position (m).
@@ -249,6 +250,16 @@ pub struct Ekf {
     last_chi2_baro: f64,
     last_chi2_mag: f64,
     last_innovation_rejected: bool,
+    /// Phase-5.B.4 — last whitened innovation per corrective sensor.
+    /// Reset every tick by `begin_tick`; set by the corresponding
+    /// `update_*` method; reported by `status()` alongside the
+    /// `*_updated_this_tick` flag.
+    last_gnss_innovation_whitened: [f64; 6],
+    last_gnss_updated_this_tick: bool,
+    last_baro_innovation_whitened: f64,
+    last_baro_updated_this_tick: bool,
+    last_mag_innovation_whitened: [f64; 3],
+    last_mag_updated_this_tick: bool,
     /// `true` once at least one corrective measurement has been
     /// applied.
     initialized: bool,
@@ -307,6 +318,12 @@ impl Ekf {
             last_chi2_baro: 0.0,
             last_chi2_mag: 0.0,
             last_innovation_rejected: false,
+            last_gnss_innovation_whitened: [0.0; 6],
+            last_gnss_updated_this_tick: false,
+            last_baro_innovation_whitened: 0.0,
+            last_baro_updated_this_tick: false,
+            last_mag_innovation_whitened: [0.0; 3],
+            last_mag_updated_this_tick: false,
             initialized: false,
             gravity: GravityAdapter::new(default_constant_gravity_down_z()),
             mag_field: Box::new(EarthDipoleField::default()),
@@ -429,6 +446,7 @@ impl Estimator for Ekf {
         Ok(())
     }
 
+    #[allow(clippy::many_single_char_names)] // standard EKF naming: z, h, s, k, l, etc.
     fn update_gnss(&mut self, sample: &GnssSample) -> Result<(), EstimatorError> {
         // 6-D GNSS update on position + velocity. H projects the
         // first 6 state elements.
@@ -450,13 +468,29 @@ impl Estimator for Ekf {
         let innovation = z - predicted;
 
         let s = h * self.p * h.transpose() + r_var;
-        let Some(s_inv) = s.try_inverse() else {
+        // Phase-5.B.4: Cholesky-whiten the innovation so the FDIR
+        // windowed-mean-shift GLRT operates on `ν̃ ~ N(0, I_d)`. The
+        // squared-norm invariant `‖ν̃‖² = chi2` is asserted by the
+        // unit tests in `whitened_innovation_norm_squared_equals_chi2`.
+        let Some(chol) = s.cholesky() else {
             return Err(EstimatorError::InvalidConfig {
-                reason: "GNSS innovation covariance singular".to_string(),
+                reason: "GNSS innovation covariance non-positive-definite".to_string(),
             });
         };
+        let l = chol.l();
+        let Some(whitened) = l.solve_lower_triangular(&innovation) else {
+            return Err(EstimatorError::InvalidConfig {
+                reason: "Cholesky lower-triangular solve failed (should be unreachable)"
+                    .to_string(),
+            });
+        };
+        let s_inv = chol.inverse();
         let chi2 = innovation.dot(&(s_inv * innovation));
         self.last_chi2_gnss = chi2;
+        for i in 0..6 {
+            self.last_gnss_innovation_whitened[i] = whitened[i];
+        }
+        self.last_gnss_updated_this_tick = true;
         let gate = self.params.gate_for_dof(6.0);
         if chi2 > gate {
             self.last_innovation_rejected = true;
@@ -500,6 +534,9 @@ impl Estimator for Ekf {
         }
         let chi2 = innovation * innovation / s_scalar;
         self.last_chi2_baro = chi2;
+        // Phase-5.B.4: scalar whitening — ν̃ = ν / √S, so (ν̃)² = chi2.
+        self.last_baro_innovation_whitened = innovation / s_scalar.sqrt();
+        self.last_baro_updated_this_tick = true;
         let gate = self.params.gate_for_dof(1.0);
         if chi2 > gate {
             self.last_innovation_rejected = true;
@@ -530,14 +567,31 @@ impl Estimator for Ekf {
         for iteration in 0..3 {
             let (innovation, h) = self.mag_innovation_and_jacobian(measured, sample.time);
             let s = h * self.p * h.transpose() + r_var;
-            let Some(s_inv) = s.try_inverse() else {
+            let Some(chol) = s.cholesky() else {
                 return Err(EstimatorError::InvalidConfig {
-                    reason: "mag innovation covariance singular".to_string(),
+                    reason: "mag innovation covariance non-positive-definite".to_string(),
                 });
             };
+            let s_inv = chol.inverse();
             let chi2 = innovation.dot(&(s_inv * innovation));
             if iteration == 0 {
                 self.last_chi2_mag = chi2;
+                // Phase-5.B.4: whiten the iteration-0 innovation. The
+                // Gauss-Newton iterations refine the state estimate but
+                // not the innovation distribution; the GLRT consumes
+                // the first-iteration whitened residual.
+                let l = chol.l();
+                let Some(whitened) = l.solve_lower_triangular(&innovation) else {
+                    return Err(EstimatorError::InvalidConfig {
+                        reason:
+                            "mag Cholesky lower-triangular solve failed (should be unreachable)"
+                                .to_string(),
+                    });
+                };
+                for i in 0..3 {
+                    self.last_mag_innovation_whitened[i] = whitened[i];
+                }
+                self.last_mag_updated_this_tick = true;
                 let gate = self.params.gate_for_dof(3.0);
                 if chi2 > gate {
                     self.last_innovation_rejected = true;
@@ -593,6 +647,12 @@ impl Estimator for Ekf {
             mag_chi2: self.last_chi2_mag,
             star_tracker_chi2: 0.0,
             innovation_rejected: self.last_innovation_rejected,
+            gnss_innovation_whitened: self.last_gnss_innovation_whitened,
+            gnss_updated_this_tick: self.last_gnss_updated_this_tick,
+            baro_innovation_whitened: self.last_baro_innovation_whitened,
+            baro_updated_this_tick: self.last_baro_updated_this_tick,
+            mag_innovation_whitened: self.last_mag_innovation_whitened,
+            mag_updated_this_tick: self.last_mag_updated_this_tick,
         }
     }
 
@@ -602,6 +662,12 @@ impl Estimator for Ekf {
         self.last_chi2_baro = 0.0;
         self.last_chi2_mag = 0.0;
         self.last_innovation_rejected = false;
+        self.last_gnss_innovation_whitened = [0.0; 6];
+        self.last_gnss_updated_this_tick = false;
+        self.last_baro_innovation_whitened = 0.0;
+        self.last_baro_updated_this_tick = false;
+        self.last_mag_innovation_whitened = [0.0; 3];
+        self.last_mag_updated_this_tick = false;
     }
 }
 
@@ -783,6 +849,9 @@ pub struct Ukf {
     last_imu: Option<ImuSample>,
     last_chi2_mag: f64,
     last_innovation_rejected: bool,
+    /// Phase-5.B.4 — last whitened mag innovation; reset by `begin_tick`.
+    last_mag_innovation_whitened: [f64; 3],
+    last_mag_updated_this_tick: bool,
     initialized: bool,
     reference_position_eci_m: Vector3<f64>,
     mag_field: Box<dyn MagneticFieldEci>,
@@ -824,6 +893,8 @@ impl Ukf {
             last_imu: None,
             last_chi2_mag: 0.0,
             last_innovation_rejected: false,
+            last_mag_innovation_whitened: [0.0; 3],
+            last_mag_updated_this_tick: false,
             initialized: false,
             reference_position_eci_m: Vector3::new(earth::MEAN_RADIUS_M, 0.0, 0.0),
             mag_field: Box::new(EarthDipoleField::default()),
@@ -1017,14 +1088,27 @@ impl Estimator for Ukf {
                 z_mean,
             );
         }
-        let Some(s_inv) = s.try_inverse() else {
+        let Some(chol) = s.cholesky() else {
             return Err(EstimatorError::InvalidConfig {
-                reason: "UKF mag innovation covariance singular".to_string(),
+                reason: "UKF mag innovation covariance non-positive-definite".to_string(),
             });
         };
+        let s_inv = chol.inverse();
         let innovation = measured - z_mean;
         let chi2 = innovation.dot(&(s_inv * innovation));
         self.last_chi2_mag = chi2;
+        // Phase-5.B.4: whitened residual ν̃ = L⁻¹ ν, ‖ν̃‖² = chi2.
+        let l = chol.l();
+        let Some(whitened) = l.solve_lower_triangular(&innovation) else {
+            return Err(EstimatorError::InvalidConfig {
+                reason: "Cholesky lower-triangular solve failed (should be unreachable)"
+                    .to_string(),
+            });
+        };
+        for i in 0..3 {
+            self.last_mag_innovation_whitened[i] = whitened[i];
+        }
+        self.last_mag_updated_this_tick = true;
         let gate = self.params.gate_for_dof(3.0);
         if chi2 > gate {
             self.last_innovation_rejected = true;
@@ -1076,12 +1160,20 @@ impl Estimator for Ukf {
             mag_chi2: self.last_chi2_mag,
             star_tracker_chi2: 0.0,
             innovation_rejected: self.last_innovation_rejected,
+            gnss_innovation_whitened: [0.0; 6],
+            gnss_updated_this_tick: false,
+            baro_innovation_whitened: 0.0,
+            baro_updated_this_tick: false,
+            mag_innovation_whitened: self.last_mag_innovation_whitened,
+            mag_updated_this_tick: self.last_mag_updated_this_tick,
         }
     }
 
     fn begin_tick(&mut self) {
         self.last_chi2_mag = 0.0;
         self.last_innovation_rejected = false;
+        self.last_mag_innovation_whitened = [0.0; 3];
+        self.last_mag_updated_this_tick = false;
     }
 }
 
@@ -1436,6 +1528,152 @@ mod tests {
             pos.velocity_eci_m_s.z
         );
     }
+
+    // -----------------------------------------------------------------
+    // Phase-5.B.4 — whitened-innovation export invariants.
+    //
+    // These tests pin the contract that the windowed-mean-shift GLRT
+    // detector relies on: every per-sensor `update_*` method emits a
+    // whitened innovation vector `ν̃ = L⁻¹ ν` whose squared L₂ norm
+    // equals the chi-square statistic the estimator already publishes.
+    // Bit-stable construction is asserted through `to_bits` so the
+    // determinism contract carries from the EKF into the FDIR
+    // detector's sliding window unchanged.
+    // -----------------------------------------------------------------
+
+    fn ekf_for_innovation_test() -> Ekf {
+        let mut ekf = Ekf::new(EkfParams {
+            sigma_gnss_pos_m: 5.0,
+            sigma_gnss_vel_m_s: 0.5,
+            sigma_baro_alt_m: 2.0,
+            sigma_mag_nt: 200.0,
+            // Use an explicit gate well above any realistic chi-square
+            // so update_* never short-circuits before it sets the
+            // whitened-innovation slot.
+            innovation_gate: 1.0e6,
+            ..EkfParams::default()
+        });
+        ekf.seed(
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            UnitQuaternion::identity(),
+        );
+        ekf
+    }
+
+    #[test]
+    fn ekf_gnss_whitened_innovation_norm_squared_equals_chi2() {
+        let mut ekf = ekf_for_innovation_test();
+        ekf.begin_tick();
+        ekf.update_gnss(&GnssSample {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::new(20.0, 10.0, 5.0),
+            velocity_eci_m_s: Vector3::new(0.5, -0.5, 0.0),
+            position_bias_eci_m: Vector3::zeros(),
+            healthy: true,
+        })
+        .unwrap();
+        let status = ekf.status();
+        assert!(status.gnss_updated_this_tick);
+        let norm_sq: f64 = status.gnss_innovation_whitened.iter().map(|v| v * v).sum();
+        assert!(
+            (norm_sq - status.gnss_chi2).abs() < 1.0e-9,
+            "‖ν̃‖² = {norm_sq} should equal chi2 = {} for GNSS",
+            status.gnss_chi2
+        );
+    }
+
+    #[test]
+    fn ekf_baro_whitened_innovation_squared_equals_chi2() {
+        let mut ekf = ekf_for_innovation_test();
+        ekf.begin_tick();
+        ekf.update_baro(&BarometerSample {
+            time: SimTime::ZERO,
+            pressure_pa: 90_000.0, // ~1 km altitude vs. seeded z = 1 m
+            bias_pa: 0.0,
+            healthy: true,
+        })
+        .unwrap();
+        let status = ekf.status();
+        assert!(status.baro_updated_this_tick);
+        let nu_sq = status.baro_innovation_whitened * status.baro_innovation_whitened;
+        assert!(
+            (nu_sq - status.baro_chi2).abs() < 1.0e-9,
+            "(ν̃)² = {nu_sq} should equal chi2 = {} for baro",
+            status.baro_chi2
+        );
+    }
+
+    #[test]
+    fn ekf_mag_whitened_innovation_norm_squared_equals_chi2() {
+        let mut ekf = ekf_for_innovation_test();
+        ekf.begin_tick();
+        // The dipole field at the seeded position is non-zero; using a
+        // mismatched measured field guarantees a non-trivial innovation.
+        ekf.update_mag(&MagnetometerSample {
+            time: SimTime::ZERO,
+            field_body_nt: Vector3::new(20_000.0, 5_000.0, -30_000.0),
+            hard_iron_body_nt: Vector3::zeros(),
+            healthy: true,
+        })
+        .unwrap();
+        let status = ekf.status();
+        assert!(status.mag_updated_this_tick);
+        let norm_sq: f64 = status.mag_innovation_whitened.iter().map(|v| v * v).sum();
+        assert!(
+            (norm_sq - status.mag_chi2).abs() < 1.0e-9,
+            "‖ν̃‖² = {norm_sq} should equal chi2 = {} for mag",
+            status.mag_chi2
+        );
+    }
+
+    #[test]
+    fn ekf_begin_tick_clears_whitened_innovation_slots() {
+        let mut ekf = ekf_for_innovation_test();
+        ekf.begin_tick();
+        ekf.update_gnss(&GnssSample {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::new(20.0, 10.0, 5.0),
+            velocity_eci_m_s: Vector3::new(0.5, -0.5, 0.0),
+            position_bias_eci_m: Vector3::zeros(),
+            healthy: true,
+        })
+        .unwrap();
+        assert!(ekf.status().gnss_updated_this_tick);
+        ekf.begin_tick();
+        let status = ekf.status();
+        assert!(!status.gnss_updated_this_tick);
+        assert_eq!(status.gnss_innovation_whitened, [0.0; 6]);
+        assert!(!status.baro_updated_this_tick);
+        assert!(!status.mag_updated_this_tick);
+    }
+
+    #[test]
+    fn ekf_whitened_innovation_is_bit_stable_across_two_runs() {
+        let sample = GnssSample {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::new(2.5, -1.25, 0.75),
+            velocity_eci_m_s: Vector3::new(0.1, -0.2, 0.05),
+            position_bias_eci_m: Vector3::zeros(),
+            healthy: true,
+        };
+        let mut a = ekf_for_innovation_test();
+        a.begin_tick();
+        a.update_gnss(&sample).unwrap();
+        let mut b = ekf_for_innovation_test();
+        b.begin_tick();
+        b.update_gnss(&sample).unwrap();
+        let s_a = a.status();
+        let s_b = b.status();
+        for i in 0..6 {
+            assert_eq!(
+                s_a.gnss_innovation_whitened[i].to_bits(),
+                s_b.gnss_innovation_whitened[i].to_bits(),
+                "GNSS whitened innovation component {i} not bit-stable",
+            );
+        }
+        assert_eq!(s_a.gnss_chi2.to_bits(), s_b.gnss_chi2.to_bits());
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1503,6 +1741,9 @@ pub struct Mekf {
     last_imu: Option<ImuSample>,
     last_chi2_mag: f64,
     last_innovation_rejected: bool,
+    /// Phase-5.B.4 — last whitened mag innovation; reset by `begin_tick`.
+    last_mag_innovation_whitened: [f64; 3],
+    last_mag_updated_this_tick: bool,
     initialized: bool,
     /// Reference position (ECI) used to evaluate the magnetic-field
     /// model. The MEKF is attitude-only, so it doesn't track its own
@@ -1543,6 +1784,8 @@ impl Mekf {
             last_imu: None,
             last_chi2_mag: 0.0,
             last_innovation_rejected: false,
+            last_mag_innovation_whitened: [0.0; 3],
+            last_mag_updated_this_tick: false,
             initialized: false,
             reference_position_eci_m: Vector3::new(earth::MEAN_RADIUS_M, 0.0, 0.0),
             mag_field: Box::new(EarthDipoleField::default()),
@@ -1636,14 +1879,28 @@ impl Estimator for Mekf {
         for iteration in 0..3 {
             let (innovation, h) = self.mag_innovation_and_jacobian(measured, sample.time);
             let s = h * self.p * h.transpose() + r_var;
-            let Some(s_inv) = s.try_inverse() else {
+            let Some(chol) = s.cholesky() else {
                 return Err(EstimatorError::InvalidConfig {
-                    reason: "MEKF mag innovation covariance singular".to_string(),
+                    reason: "MEKF mag innovation covariance non-positive-definite".to_string(),
                 });
             };
+            let s_inv = chol.inverse();
             let chi2 = innovation.dot(&(s_inv * innovation));
             if iteration == 0 {
                 self.last_chi2_mag = chi2;
+                // Phase-5.B.4: whitened residual ν̃ = L⁻¹ ν, ‖ν̃‖² = chi2.
+                let l = chol.l();
+                let Some(whitened) = l.solve_lower_triangular(&innovation) else {
+                    return Err(EstimatorError::InvalidConfig {
+                        reason:
+                            "mag Cholesky lower-triangular solve failed (should be unreachable)"
+                                .to_string(),
+                    });
+                };
+                for i in 0..3 {
+                    self.last_mag_innovation_whitened[i] = whitened[i];
+                }
+                self.last_mag_updated_this_tick = true;
                 let gate = self.params.gate_for_dof(3.0);
                 if chi2 > gate {
                     self.last_innovation_rejected = true;
@@ -1703,12 +1960,20 @@ impl Estimator for Mekf {
             mag_chi2: self.last_chi2_mag,
             star_tracker_chi2: 0.0,
             innovation_rejected: self.last_innovation_rejected,
+            gnss_innovation_whitened: [0.0; 6],
+            gnss_updated_this_tick: false,
+            baro_innovation_whitened: 0.0,
+            baro_updated_this_tick: false,
+            mag_innovation_whitened: self.last_mag_innovation_whitened,
+            mag_updated_this_tick: self.last_mag_updated_this_tick,
         }
     }
 
     fn begin_tick(&mut self) {
         self.last_chi2_mag = 0.0;
         self.last_innovation_rejected = false;
+        self.last_mag_innovation_whitened = [0.0; 3];
+        self.last_mag_updated_this_tick = false;
     }
 }
 

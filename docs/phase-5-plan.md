@@ -124,10 +124,11 @@ in lockstep with each sub-phase landing.
 | 5.C.2 — EGM2008 zonal-harmonic gravity (degrees 2-6) | shipped | _pending PR_ |
 | 5.C.1 — piecewise-exponential atmosphere (0-1000 km) | shipped | _pending PR_ |
 | 5.D.3 — DOPRI5 fixed-step integrator (5th-order solution) | shipped | _pending PR_ |
+| 5.B.4 — Willsky windowed-mean-shift GLRT (vector-form) | shipped | _pending PR_ |
 | 5.B.1 — square-root UKF (full 15-state) | pending | — |
 | 5.B.2 — multi-instance estimator routing + active-lane selection | pending | — |
 | 5.B.3 — IMM (Bar-Shalom) maneuver-aware estimator | pending | — |
-| 5.B.4 — Willsky windowed-mean-shift GLRT + parity-space residual | pending | — |
+| 5.B.5 — Patton-Frank parity-space residual generator | pending — follow-on from 5.B.4 | — |
 | 5.C.3 — EGM2008 tesseral / sectoral expansion (Cunningham recursion) | pending — follow-on from 5.C.2 | — |
 | 5.C.4 — NRLMSISE-00 full Rust port (solar-flux, per-species) | pending — follow-on from 5.C.1 | — |
 | 5.D.1 — multi-rate scheduling first-class | pending | — |
@@ -776,44 +777,151 @@ self-state estimation under regime change (boost vs coast vs
 descent), not for tracking other vehicles. No multi-target
 extension lands in Phase 5.
 
-#### 5.B.4 — Willsky windowed-mean-shift GLRT + parity-space residual
+#### 5.B.4 — Willsky windowed-mean-shift GLRT (vector-form) **— shipped**
 
-**Scope.** Two FDIR detector additions:
+**Honest scope.** The shipped surface is the **vector-form** Willsky
+1976 windowed-mean-shift GLRT, running on the per-sensor whitened
+innovations `ν̃ = L⁻¹ ν` that the EKF / UKF / MEKF now export on
+[`EstimatorStatus`][estimator-status]. The Patton-Frank parity-space
+residual generator originally bundled with this slice is deferred
+to a separate **§ 5.B.5** sub-phase — parity-space is a
+mathematically distinct algorithm (linear combinations of
+measurements that are zero under H₀, with per-fault residual
+signature decomposition), not a refinement of the windowed GLRT.
 
-1. **Windowed mean-shift GLRT.** Replace the Phase 4.C
-   `DetectorKind::SingleSampleGlrt` chi-square threshold with a
-   true windowed Generalized Likelihood Ratio test:
-   - Maintain a sliding window of innovations per measurement.
-   - For each candidate jump time within the window, compute the
-     maximum-likelihood mean-shift estimate and the GLRT statistic.
-   - Trip the detector when `max_τ GLRT(τ) > threshold`.
-   - Emit the estimated jump time and magnitude on
-     `fdir.glrt.diagnostic` for offline analysis.
-2. **Parity-space residual generator.** Layered Patton-Frank
-   parity-space residual generator over the IMU + GNSS + baro
-   measurement set. Per-fault residual decomposition isolates the
-   faulty sensor without retraining the estimator on the fault
-   hypothesis.
+[estimator-status]: ../crates/openbmp-fc/src/topics.rs
 
-**Exit criterion.** A scenario injecting a step-bias fault on the
-GNSS lane is detected by the windowed GLRT with the correct jump
-time within window resolution; the parity-space residual isolates
-the GNSS lane vs an injected baro-bias fault.
+**What shipped.**
 
-**Validation evidence.** Unit + property tests for the GLRT
-recursion; tolerance-table case for the textbook fault-detection
-example from Willsky 1976.
+- `openbmp_fc::glrt::WindowedMeanShiftGlrt<const D: usize>` — math
+  module implementing the test for a single sensor lane with
+  innovation dimension `D`. Maintains a circular buffer of the most
+  recent `window_size` whitened innovation vectors; on each
+  `step()`, computes `Λ(τ) = ‖Σ ν̃_i‖² / N_τ` for every candidate
+  `τ` in the window via a running-sum trick, then trips when
+  `max_τ Λ(τ) > χ²⁻¹(1 − α/W, D)` (Bonferroni-corrected over the
+  `W` candidate jump times).
+- New `DetectorKind::WindowedMeanShiftGlrt` variant in
+  `openbmp_fc::fdir`. The `FdirJob` constructs three per-sensor
+  detectors (`GnssDim = 6`, `BaroDim = 1`, `MagDim = 3`) when this
+  kind is selected. On a trip, sets the matching `FDIR_BIT_*` and
+  publishes a new `FdirGlrtDiagnostic` topic with the estimated
+  jump step, statistic, and threshold.
+- EKF / UKF / MEKF extended with whitened-innovation export.
+  `update_gnss` / `update_baro` / `update_mag` Cholesky-factor the
+  innovation covariance `S = LLᵀ` and store `ν̃ = L⁻¹ ν`. Five
+  invariant unit tests pin `‖ν̃‖² = chi2` per sensor and
+  bit-stability across two EKF instances fed the same measurement.
+- Scenario plumbing: `[fc.fdir.detector].kind` promoted from a
+  free-form `String` (parser-only since Phase 5.0) to a typed enum
+  `FcFdirDetectorKindV5::WindowedMeanShiftGlrt`. New
+  `false_alarm_rate` field with default `0.001`. The validator
+  rejects missing `window_samples`, out-of-range `false_alarm_rate`,
+  and any leftover `parity_threshold` (which belongs to § 5.B.5).
+- FC bridge (`build_fdir_params` in
+  `crates/openbmp-cli/src/runner/fc.rs`) consumes the new typed
+  block and overrides the legacy `detector_kind` when
+  `[fc.fdir.detector]` is present.
 
-**References.** Willsky, A. S. and Jones, H. L., *A generalized
-likelihood ratio approach to the detection and estimation of jumps
-in linear systems*, IEEE TAC 1976. Patton, R. J. and Frank, P. M.,
+**What was deferred to § 5.B.5.**
+
+- Patton-Frank parity-space residual generator (separate algorithm).
+- Estimated bias signature `b̂(τ̂)` exposed on `FdirGlrtDiagnostic`
+  (the running sum required is computed but not surfaced; the
+  shipped diagnostic carries only `(estimated_jump_step, statistic,
+  threshold)`).
+- Multi-sensor cross-lane fault isolation (the shipped detector
+  reports per-sensor trips independently).
+
+**Exit criterion.** A closed-loop attitude-hold scenario with the
+new detector wired in completes 1000 RK4 steps deterministically;
+two reruns produce byte-identical Parquet; nominal innovations do
+not false-trip at α = 0.001 over the 1 s run.
+
+A 4σ synthetic step-injection unit test in `glrt.rs` proves the
+detector trips within ±2 samples of the true jump time τ — the
+scenario layer cannot easily inject a sensor bias step (no
+scenario-syntax fault-injection block; deferred), so the trip-time
+accuracy claim lives at the math layer.
+
+**Validation evidence.**
+
+- Math: `crates/openbmp-fc/src/glrt.rs` ships 9 unit tests:
+  constructor validation (window_size = 0, false_alarm_rate
+  ∉ (0, 1)); empty-step / NotTripped after construction; pure-H₀
+  no-trip over 200 i.i.d. unit-Gaussian samples; 4σ step-injection
+  trips within ±2 samples; byte-stable determinism across two
+  detector instances fed the same stream; reset clears state;
+  scalar-D = 1 specialisation; single-sample window collapses to
+  the single-sample chi-square test.
+- EKF invariants: 5 unit tests in
+  `crates/openbmp-fc/src/estimator.rs` covering `‖ν̃‖² = chi2`
+  for GNSS / baro / mag, `begin_tick` clearing the slots, and
+  bit-stable whitening across two instances.
+- End-to-end:
+  `crates/openbmp-cli/tests/closed_loop_fdir_glrt_e2e.rs` — 1000
+  RK4 steps with end-time stop; byte-identical Parquet across two
+  reruns.
+- Scenario validator: 4 new tests in
+  `crates/openbmp-scenario/src/scenario.rs` covering v3-only
+  acceptance, v3 validation under valid params, rejection of
+  `parity_threshold` mixed with `windowed_mean_shift_glrt`, missing
+  `window_samples`, and out-of-range `false_alarm_rate`.
+
+**References.** Willsky, A. S. and Jones, H. L. (1976). *A
+generalized likelihood ratio approach to the detection and
+estimation of jumps in linear systems*, IEEE Transactions on
+Automatic Control 21(1), 108-112 — primary mathematical source.
+Hamilton, J. D. (1994). *Time Series Analysis*, §9.4 — textbook
+reformulation for Gaussian innovation sequences.
+
+**Scope guardrail.** FDIR responds to faults via the standard
+chi-square / GLRT family. No tuning is calibrated to a specific
+fielded sensor's failure modes; the shipped 32-sample window and
+α = 0.001 are textbook engineering defaults.
+
+#### 5.B.5 — Patton-Frank parity-space residual generator (follow-on from 5.B.4)
+
+**Scope.** Pick up the parity-space surface that § 5.B.4 deferred:
+
+- Layered Patton-Frank parity-space residual generator over the
+  IMU + GNSS + baro + mag measurement set. Each sensor's
+  measurement matrix `H_s` projects the (joint) state into its
+  measurement; parity vectors are the orthogonal-complement
+  combinations that are zero under H₀.
+- Per-fault residual signature decomposition: each fault hypothesis
+  (sensor bias, sensor stuck, sensor dropout) produces a different
+  parity-vector signature; signature matching isolates the faulty
+  sensor without retraining the estimator on each hypothesis.
+- New `DetectorKind::ParitySpace` variant; consumes the
+  `parity_threshold` field already reserved on
+  `[fc.fdir.detector]`.
+- Optional: signed bias-magnitude `b̂(τ̂)` on
+  `FdirGlrtDiagnostic` (the running sum required already exists
+  inside `WindowedMeanShiftGlrt::step` but is not currently
+  surfaced — § 5.B.5 can expose it for cross-validation against the
+  parity-space estimate).
+
+**Exit criterion.** A scenario injecting a synthetic step-bias on
+one sensor lane (GNSS or baro) is correctly isolated by the
+parity-space generator vs the alternative-sensor hypothesis. The
+windowed GLRT detector continues to trip in the same scenario; the
+parity-space generator adds **isolation**, not detection.
+
+**Validation evidence.** Unit tests for the parity-vector
+construction (orthogonality `H_s' P = 0`); analytic-toy two-sensor
+isolation case where one of two redundant lanes carries the fault.
+
+**References.** Patton, R. J. and Frank, P. M. (2000).
 *Parity-space approach to model-based fault detection and
 isolation*, in *Issues of Fault Diagnosis for Dynamic Systems*,
-Springer 2000.
+Springer.
 
-**Scope guardrail.** FDIR responds to faults the scenario injects;
-no tuning is calibrated to a specific fielded sensor's failure
-modes.
+**Scope guardrail.** Parity-space requires a sensor-fault
+injection block in the scenario format (deferred from § 5.B.4 for
+the same reason: needs scenario-syntax design work). § 5.B.5 should
+ship that block as part of its own scope or coordinate with a
+separate scenario-format slice.
 
 ---
 
@@ -1440,7 +1548,12 @@ parameter set is introduced.
   │                                                           ▼
   │                                                       5.A.4 (MPC) ──► 5.A.5 (allocation)
   │
-  ├── 5.B.1 (SR-UKF) ──► 5.B.2 (multi-lane) ──► 5.B.3 (IMM) ──► 5.B.4 (GLRT + parity)
+  ├── 5.B.1 (SR-UKF) ──► 5.B.2 (multi-lane) ──► 5.B.3 (IMM)
+  │
+  ├── 5.B.4 (windowed-mean-shift GLRT) ──► 5.B.5 (parity-space residual generator)
+  │     (5.B.4 was the original "GLRT + parity" line item; shipped as
+  │      the honest GLRT-only downscope. 5.B.5 picks up the deferred
+  │      Patton-Frank parity-space surface.)
   │
   ├── 5.C.1 (piecewise-exp atmosphere) ──► 5.C.4 (NRLMSISE-00 full port)
   │     (5.C.1 was the original NRLMSISE-00 line item; shipped as the

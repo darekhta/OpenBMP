@@ -41,6 +41,7 @@ pub mod error;
 pub mod estimator;
 pub mod fdir;
 pub mod filters;
+pub mod glrt;
 pub mod guidance;
 pub mod health;
 #[cfg(feature = "indi")]

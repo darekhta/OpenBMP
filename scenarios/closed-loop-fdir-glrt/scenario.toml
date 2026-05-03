@@ -1,0 +1,180 @@
+# Phase-5.B.4 closed-loop FDIR demo: Willsky 1976 windowed-mean-shift
+# GLRT detector wired into the closed-loop attitude-hold pipeline.
+#
+# Identical to `scenarios/closed-loop-attitude-hold` modulo the FDIR
+# block, which selects the Phase-5.B.4 windowed-mean-shift GLRT
+# detector via the v3-only `[fc.fdir.detector]` sub-block:
+#
+#   [fc.fdir.detector]
+#   kind             = "windowed_mean_shift_glrt"
+#   window_samples   = 32
+#   false_alarm_rate = 0.001
+#
+# When this block is present its `kind` field is the authoritative
+# detector selector and overrides the legacy `[fc.fdir].detector_kind`
+# value (which is retained as the fall-back family for scenarios that
+# do not declare the v3 sub-block). The runner builds three per-sensor
+# detectors (one each for the GNSS / baro / mag whitened-innovation
+# streams now exported by the EKF on `EstimatorStatus`).
+#
+# The trajectory is the same nominal closed-loop attitude-hold; under
+# clean innovations the windowed test should not trip in the 1 s run.
+# A trip would publish `FdirGlrtDiagnostic` with the maximised
+# `Λ(τ̂) = ‖Σ ν̃_i‖² / N_τ` and the estimated jump step.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "closed-loop-fdir-glrt"
+description = "Phase-5.B.4 demo: Willsky windowed-mean-shift GLRT detector wired into the closed-loop attitude-hold pipeline. Synthetic; nominal innovations should not trip."
+validation  = "experimental"
+provenance  = "synthetic; identical to closed-loop-attitude-hold except for the [fc.fdir.detector] sub-block. See provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 1.0
+dt_s    = 0.001
+seed    = 0x466c_4744_6952_4754   # "FlGDiRGT"
+
+[vehicle]
+kind                     = "point_mass"
+initial_position_eci_m   = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "fdir-glrt-attitude-hold"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg   = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+magnetic      = "wmm_2025"
+
+[forces]
+models = ["gravity"]
+
+[sensors.imu]
+kind = "imu"
+file = "../../data/sensors/imu-consumer-mems.toml"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../../data/sensors/gnss-textbook.toml"
+
+[sensors.mag]
+kind = "magnetometer"
+file = "../../data/sensors/magnetometer-textbook.toml"
+
+[telemetry]
+output.parquet = "out/closed-loop-fdir-glrt.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "mission.phases.pad"
+
+[[mission.phases]]
+id    = "mission.phases.pad"
+label = "pad"
+
+[[mission.phases]]
+id    = "mission.phases.ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "mission.events.liftoff"
+trigger = { kind = "at_time", time_s = 0.1 }
+action  = { kind = "enter_phase", phase = "mission.phases.ascent" }
+
+[[mission.transitions]]
+from  = "mission.phases.pad"
+to    = "mission.phases.ascent"
+event = "mission.events.liftoff"
+
+[fc]
+estimator        = "ekf"
+autopilot        = "three_loop"
+guidance         = "attitude_hold"
+reference_q_xyzw = [0.0, 0.0, 0.0, 1.0]
+base_rate_hz     = 1000
+frame_budget_us  = 2000
+
+[fc.ekf]
+mag_field             = "wmm_2025"
+mag_epoch_decimal_year = 2025.0
+sigma_w_gyro          = 0.01
+sigma_w_accel_bias    = 1.0e-4
+sigma_w_gyro_bias     = 1.0e-5
+tau_gyro_bias_s       = 100.0
+tau_accel_bias_s      = 100.0
+sigma_gnss_pos_m      = 5.0
+sigma_gnss_vel_m_s    = 0.5
+sigma_baro_alt_m      = 2.0
+sigma_mag_nt          = 100.0
+innovation_false_alarm_rate = 0.01
+dead_reckon_timeout_s = 1.5
+
+[fc.autopilot_params]
+anti_windup_gain         = 1.0
+rate_deadband_rad_s      = 0.001
+trajectory_loop_enabled  = false
+trajectory_kind          = "pid"
+
+[fc.health]
+imu_stale_after_s       = 0.05
+gnss_stale_after_s      = 0.5
+baro_stale_after_s      = 10.0
+mag_stale_after_s       = 0.2
+overrun_burst_count     = 5
+
+[fc.fdir]
+detector_kind           = "burst_counter"
+innovation_threshold    = 25.0
+innovation_burst_count  = 5
+failsafe_burst_count    = 5
+
+# Phase-5.B.4 — windowed-mean-shift GLRT detector. When this block is
+# present its `kind` overrides the legacy `[fc.fdir].detector_kind`
+# value above. Window length 32 samples × FDIR base rate gives a
+# 32 ms detection window over the GNSS / baro / mag innovation
+# streams; α = 0.001 family-wise false-alarm rate.
+[fc.fdir.detector]
+kind             = "windowed_mean_shift_glrt"
+window_samples   = 32
+false_alarm_rate = 0.001
+
+[fc.gain_schedule."mission.phases.pad"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.gain_schedule."mission.phases.ascent"]
+rate_kp           = [0.5, 0.5, 0.5]
+rate_kd           = [0.05, 0.05, 0.05]
+attitude_kp       = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.phase_authority."mission.phases.pad"]
+autopilot_allowed = false
+engines_allowed   = false
+
+[fc.phase_authority."mission.phases.ascent"]
+autopilot_allowed = true
+engines_allowed   = true
