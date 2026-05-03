@@ -8,12 +8,13 @@ validation = "experimental"
 #   - 8000 kernel steps;
 #   - rigid-body quaternion stays normalised after projection;
 #   - max body-frame angular velocity magnitude bounded — generous
-#     5.0 rad/s ceiling around the observed ~0.97 rad/s peak. The
-#     MPC's rate-command box bound is 3 rad/s; the observed peak is
-#     well under that, with the trajectory loop driving most of the
-#     motion through reference-attitude tracking. Comparison against
-#     PID, LQR, and INDI under the same disturbance is left for a
-#     future controller-comparison-harness extension.
+#     5.0 rad/s ceiling. The MPC's configured rate-command box bound
+#     is 3 rad/s, but the downstream PID rate loop and actuator limits
+#     are outside the command-level QP, so this tolerance is a
+#     run-to-completion / bounded-motion check rather than a production
+#     tracking benchmark. Comparison against PID, LQR, and INDI under
+#     the same disturbance is left for a future controller-comparison
+#     harness extension.
 
 [[metric]]
 name = "kernel_steps"

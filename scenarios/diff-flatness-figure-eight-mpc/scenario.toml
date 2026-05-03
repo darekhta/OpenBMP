@@ -1,4 +1,4 @@
-# Phase-5.A.3.D MPC sibling of the diff-flatness figure-eight.
+# Phase-5.A.4 MPC sibling of the diff-flatness figure-eight.
 #
 # Identical to `scenarios/diff-flatness-figure-eight` except for one
 # pair of fields under `[fc.autopilot_params]`:
@@ -167,18 +167,17 @@ trajectory_kind          = "minimum_snap"
 attitude_loop_kind       = "mpc"
 
 # Phase-5.A.4 attitude-MPC parameters. Horizon 20 ticks (= 20 ms)
-# at the 1 kHz autopilot rate gives the controller enough lookahead
-# to plan against the trajectory's commanded attitude reference;
-# weights tuned so input cost is small relative to terminal-state
-# cost (the controller drives the attitude error to zero
-# aggressively, saturating at the rate bound when needed). The rate
-# bound (3 rad/s per axis) is well above the trajectory's
-# commanded body rates so the MPC operates inside the box for
-# nominal tracking.
+# at the 1 kHz autopilot rate is a short command-level lookahead. The
+# MPC models attitude-error integration into commanded body rate; the
+# downstream rate-loop dynamics and actuator limits remain outside the
+# QP. These demo weights keep state error dominant but give input cost
+# enough authority that small errors do not immediately collapse into a
+# pure rate-box clamp. This is an experimental demonstration tuning, not
+# a production attitude-loop prescription.
 [fc.autopilot_params.attitude_mpc]
 horizon_n         = 20
 q_x               = [100.0, 100.0, 50.0]
-r_u               = [0.001, 0.001, 0.001]
+r_u               = [0.1, 0.1, 0.1]
 terminal_p        = [1000.0, 1000.0, 500.0]
 rate_limit_rad_s  = [3.0, 3.0, 3.0]
 

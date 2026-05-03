@@ -20,6 +20,17 @@ The waypoint sequence, vehicle, mission graph, MEKF, per-phase gain
 schedule, and PID rate-loop gains are unchanged from the parent
 scenario. The MPC replaces ONLY the attitude loop and outputs the
 optimal first-step rate command consumed by the unchanged rate loop.
+The `[fc.autopilot_params.attitude_mpc]` weights are scenario-demo
+weights, not fielded-vehicle defaults: the 20 ms horizon is intentionally
+short for the offline figure-eight regression, and the QP models the
+commanded-rate integrator rather than the downstream rate-loop / actuator
+dynamics.
+
+The scenario keeps a unique deterministic seed
+`0x4d50_4331_3168_466c` (`"MPC11hFl"`) because it is not part of the
+Phase-5.A.3.D reduced-rate fault comparison family. The comparison
+siblings share `0x4c31_4146_3168_466c`; this MPC case is a standalone
+solver-path demonstration.
 
 ## License / restrictions
 
@@ -45,7 +56,8 @@ deterministically. Closed-loop tracking is asserted by
 plus byte-stable Parquet across reruns — Clarabel is configured with
 the deterministic settings shared by Phase 4.C
 `solve_attitude_box_qp`, so the QP solution is bit-identical between
-runs on the reference platform).
+runs on the reference platform). The validation does not claim real-time
+solver budget compliance or a production cascaded-loop plant model.
 
 ## Safety boundary
 

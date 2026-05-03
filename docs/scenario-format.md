@@ -1638,6 +1638,35 @@ filters, and the outer-loop attitude-to-angular-acceleration P gain.
 that composition is deferred until the filter-interaction behaviour
 is characterised.
 
+#### `[fc.autopilot_params.attitude_loop_kind]` and MPC (Phase 5.A.4)
+
+```toml
+[fc.autopilot_params]
+attitude_loop_kind = "mpc" # "pid" | "mpc"; field is v3-only
+
+[fc.autopilot_params.attitude_mpc]
+horizon_n        = 20
+q_x              = [100.0, 100.0, 50.0]
+r_u              = [0.1, 0.1, 0.1]
+terminal_p       = [1000.0, 1000.0, 500.0]
+rate_limit_rad_s = [3.0, 3.0, 3.0]
+```
+
+`attitude_loop_kind` is a Phase-5 v3-only field. Omitted
+`attitude_loop_kind` keeps the Phase-4 PID attitude loop. Declaring
+`attitude_loop_kind = "mpc"` requires
+`[fc.autopilot_params.attitude_mpc]`, and declaring the MPC parameter
+block without the `"mpc"` selector is rejected. The MPC path is gated by
+the `openbmp-cli/mpc` Cargo feature.
+
+The Phase-5.A.4 MPC is a command-level attitude-error controller. Its QP
+uses the small-angle dynamics `x[k+1] = x[k] - dt*u[k]`, where `u` is the
+commanded body rate. It does not model downstream PID/LQR/INDI rate-loop
+lag, actuator saturation, or future reference-attitude motion across the
+horizon. `attitude_loop_kind = "mpc"` is otherwise independent of
+`rate_loop_kind`; existing rate-loop composition rules still apply, such
+as the `indi` + `l1_adaptive` rejection above.
+
 ### v3-only kind values
 
 #### `gravity = "egm2008"` (Phase 5.C.2)

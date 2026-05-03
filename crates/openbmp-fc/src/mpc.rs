@@ -132,6 +132,15 @@ pub enum AttitudeMpcError {
         /// Offending horizon length.
         horizon_n: usize,
     },
+    /// Horizon length exceeds the fixed-size per-solve template
+    /// supported by this implementation.
+    #[error("attitude MPC horizon must be <= {max_horizon}; got {horizon_n}")]
+    HorizonTooLong {
+        /// Offending horizon length.
+        horizon_n: usize,
+        /// Maximum supported horizon.
+        max_horizon: usize,
+    },
     /// Loop step must be `> 0`.
     #[error("attitude MPC dt_s must be > 0; got {dt_s}")]
     NonPositiveDt {
@@ -182,9 +191,9 @@ pub enum AttitudeMpcError {
 /// The MPC's plant model is the small-angle attitude-error
 /// integrator `x[k+1] = x[k] − dt · u[k]` per body axis, where `x`
 /// is the attitude error (rad) and `u` is the commanded body rate
-/// (rad/s). The rate loop downstream of the MPC is assumed to
-/// achieve the commanded rate within one tick — a standard cascaded-
-/// loop idealisation. Stage cost on axis `i` at horizon step `k`:
+/// (rad/s). This is a command-level MPC: it does not model downstream
+/// rate-loop lag, actuator saturation, or reference-attitude motion
+/// across the horizon. Stage cost on axis `i` at horizon step `k`:
 /// `q_x[i] · x[k]² + r_u[i] · u[k]²`. Terminal cost:
 /// `terminal_p[i] · x[N]²`.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -280,8 +289,8 @@ fn require_finite_axis(label: &'static str, value: f64) -> Result<(), AttitudeMp
 /// downstream rate loop (PID / LQR / INDI / etc).
 ///
 /// Decision variables (3·N): `[u_x[0], u_y[0], u_z[0], u_x[1], …,
-/// u_y[N − 1], u_z[N − 1]]` — axis-major within each step. The QP
-/// is built once at construction time using the deterministic
+/// u_y[N − 1], u_z[N − 1]]` — step-major and axis-interleaved. The
+/// QP is built once at construction time using the deterministic
 /// Clarabel settings shared with the rest of the MPC surface; only
 /// the linear cost vector `q` (which depends on the current
 /// attitude-error measurement `x[0]`) is rebuilt each `solve`.
@@ -327,9 +336,10 @@ impl std::fmt::Debug for RecedingHorizonAttitudeMpc {
     }
 }
 
-/// Maximum supported MPC horizon. Bounded so the linear-coefficient
-/// template can live in fixed-size arrays without heap traffic per
-/// solve. Plenty of headroom over typical horizons (5–10).
+/// Maximum supported MPC horizon for this first fixed-template
+/// implementation. At the 1 kHz demo loop this is 64 ms of
+/// command-level lookahead; longer real-time horizons should move the
+/// template to heap storage and revisit solver reuse / sparsity.
 pub const ATTITUDE_MPC_MAX_HORIZON: usize = 64;
 
 impl RecedingHorizonAttitudeMpc {
@@ -343,8 +353,9 @@ impl RecedingHorizonAttitudeMpc {
     pub fn new(params: AttitudeMpcParams, dt_s: f64) -> Result<Self, AttitudeMpcError> {
         params.validate(dt_s)?;
         if params.horizon_n > ATTITUDE_MPC_MAX_HORIZON {
-            return Err(AttitudeMpcError::NonPositiveHorizon {
+            return Err(AttitudeMpcError::HorizonTooLong {
                 horizon_n: params.horizon_n,
+                max_horizon: ATTITUDE_MPC_MAX_HORIZON,
             });
         }
         let n = params.horizon_n;
@@ -364,7 +375,8 @@ impl RecedingHorizonAttitudeMpc {
         //                   + r_u · [i == j] )
         //
         // Stack the three blocks into a 3N × 3N matrix using the
-        // axis-major layout `z = [u_x[0], u_y[0], u_z[0], u_x[1], …]`.
+        // step-major, axis-interleaved layout
+        // `z = [u_x[0], u_y[0], u_z[0], u_x[1], …]`.
         let mut p_dense = vec![vec![0.0_f64; dim]; dim];
         for axis in 0..3 {
             let q_x = params.q_x[axis];
@@ -388,8 +400,8 @@ impl RecedingHorizonAttitudeMpc {
         // Build the box-constraint matrix A and bounds b.
         // Each decision variable has two rows: `u ≤ limit` and
         // `−u ≤ limit`. Constraint rows are packed as
-        //   row 2k:     u_z[k_axis] ≤ limit_axis        (positive bound)
-        //   row 2k + 1: −u_z[k_axis] ≤ limit_axis       (negative bound)
+        //   row 2k:     z[k] ≤ limit_axis        (positive bound)
+        //   row 2k + 1: −z[k] ≤ limit_axis       (negative bound)
         // for each variable index k = 3·step + axis.
         let mut a_rows = Vec::with_capacity(2 * dim);
         let mut a_cols = Vec::with_capacity(2 * dim);
@@ -557,8 +569,8 @@ mod tests {
 
     /// Nominal-but-tuned-for-tests params. Cost balance picked so
     /// MPC saturates when the attitude error is large, drives `u_0`
-    /// in the opposite-sign direction of the error, and converges
-    /// the small-angle plant in closed loop within ≈ 100 ms.
+    /// with the sign that reduces error under `x[k+1] = x[k] − dt*u[k]`,
+    /// and converges the small-angle plant in closed loop within ≈ 100 ms.
     /// Production scenarios should re-tune; these weights are
     /// chosen for self-consistent unit-test assertions, not for
     /// typical real-world tracking.
@@ -678,10 +690,10 @@ mod tests {
     }
 
     #[test]
-    fn rh_attitude_mpc_drives_rate_command_opposite_to_attitude_error_sign() {
-        // Positive attitude error → MPC should command negative rate
-        // (to drive x toward zero through the dynamics
-        // x[k+1] = x[k] − dt · u[k]).
+    fn rh_attitude_mpc_drives_rate_command_to_reduce_attitude_error() {
+        // Positive attitude error → MPC should command positive rate
+        // to drive x toward zero through the dynamics
+        // x[k+1] = x[k] − dt · u[k].
         let mpc = RecedingHorizonAttitudeMpc::new(nominal_attitude_mpc_params(), 0.001)
             .expect("nominal MPC builds");
         let u0 = mpc.solve([0.1, -0.05, 0.0]).expect("solve");
@@ -736,7 +748,10 @@ mod tests {
         p.horizon_n = ATTITUDE_MPC_MAX_HORIZON + 1;
         assert!(matches!(
             RecedingHorizonAttitudeMpc::new(p, 0.001),
-            Err(AttitudeMpcError::NonPositiveHorizon { .. })
+            Err(AttitudeMpcError::HorizonTooLong {
+                max_horizon: ATTITUDE_MPC_MAX_HORIZON,
+                ..
+            })
         ));
     }
 }

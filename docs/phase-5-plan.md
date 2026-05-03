@@ -468,12 +468,27 @@ future slice.
   pinned tolerances, no time-limit) — shared with Phase 4.C
   `solve_attitude_box_qp`. Two solves with the same inputs produce
   bit-identical outputs on the reference platform.
+- The shipped attitude MPC is a command-level controller. Its prediction
+  model is the small-angle attitude-error integrator into commanded body
+  rate; it does not model the downstream PID/LQR/INDI rate-loop dynamics,
+  actuator saturation, or reference-attitude motion across the horizon.
+  The Phase-5.A.4 demo therefore proves deterministic solver wiring and
+  bounded closed-loop simulation, not production cascaded-loop optimality.
+  A later slice should augment the prediction model with the rate-loop /
+  actuator dynamics or add explicit flatness body-rate feed-forward before
+  using MPC tuning claims as control-performance evidence.
 - New `AttitudeLoopKind { Pid, Mpc }` enum on `AutopilotParams`,
   selected by the v3 scenario block
   `[fc.autopilot_params.attitude_loop_kind]`. The MPC parameter
   block lives at `[fc.autopilot_params.attitude_mpc]` with v3-only
   gating, cross-validation, and rejection of non-positive
   parameters at scenario load.
+- `attitude_loop_kind = "mpc"` is intentionally independent of
+  `rate_loop_kind`: MPC selects the attitude-loop producer, while
+  PID/LQR/INDI select the downstream rate-loop consumer. Existing
+  parser restrictions still apply, including the Phase-5.A.3
+  rejection of `rate_loop_kind = "indi"` combined with L1 adaptive
+  augmentation.
 
 **Exit criterion (5.A.4 attitude MPC).** A scenario with the attitude
 MPC active runs the figure-eight reference end-to-end with bounded
@@ -483,6 +498,17 @@ Demonstration scenario:
 `crates/openbmp-cli/tests/diff_flatness_mpc_e2e.rs`. Solver
 `Solved` status is required on every tick; failure surfaces as an
 `AutopilotError::Trajectory` and the controller refuses to step.
+This strict refusal is deliberate for the deterministic simulator. A
+real-time deployment profile should add an explicit fallback path, likely
+with an FDIR bit, rather than silently continuing with stale MPC output.
+
+**Runtime note.** The current implementation constructs a fresh Clarabel
+solver for every attitude-MPC solve and updates only the linear vector
+before construction. That is acceptable for the offline simulator and
+determinism tests, but it should not be read as a 1 kHz real-time budget
+claim. Future optimisation should investigate solver reuse / in-place
+`q` updates or a slower scheduled MPC period if Clarabel's public API
+allows it.
 
 **Translational MPC exit criterion (deferred).** A scenario with
 the translational MPC active demonstrates a thrust-cone-constrained
@@ -490,10 +516,12 @@ hover-trim against a perturbed reference. Solver `Solved` status
 required on every tick or the controller falls back to PID with an
 FDIR bit.
 
-**Validation evidence.** Unit test that the N-step solution reduces
-to the single-step QP when N=1; property test for positive-definite
-Hessian; determinism test that two runs of the MPC produce
-bit-identical actuator commands.
+**Validation evidence.** Unit tests cover parameter validation, box-bound
+enforcement, command sign under the documented error dynamics, zero-error
+behaviour, closed-loop convergence of the ideal small-angle plant, and
+bit-identical repeated solves. The e2e test covers bounded figure-eight
+simulation and byte-identical Parquet across reruns. N=1 reduction and
+positive-definite-Hessian property tests remain useful follow-up coverage.
 
 **References.** Boyd, S. and Vandenberghe, L., *Convex Optimization*,
 Cambridge 2004 (QP / SOCP formulation). Açıkmeşe, B. and Ploen, S.,
