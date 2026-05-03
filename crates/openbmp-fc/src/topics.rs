@@ -539,6 +539,31 @@ impl Topic for FdirGlrtDiagnostic {
     const NAME: &'static str = "fdir.glrt.diagnostic";
 }
 
+/// Phase-5.B.3 — IMM mode-probability snapshot published every tick
+/// by [`crate::imm::ImmEstimator`]. Carries the active mode (the
+/// `argmax_j μ_j` index), the full posterior probability vector
+/// (zero-padded to [`crate::imm::MAX_IMM_MODES`]), and the count of
+/// valid entries.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct EstimatorMode {
+    /// Estimate timestamp.
+    pub time: SimTime,
+    /// `argmax_j μ_j` — currently most-probable mode index
+    /// (`< mode_count`).
+    pub active_mode: u8,
+    /// Posterior mode probabilities. Indices `[0, mode_count)` carry
+    /// the live values; indices `[mode_count, MAX_IMM_MODES)` are
+    /// zero-padded.
+    pub mode_probabilities: [f64; 4],
+    /// Number of valid entries in `mode_probabilities`. `2 ≤
+    /// mode_count ≤ 4`.
+    pub mode_count: u8,
+}
+
+impl Topic for EstimatorMode {
+    const NAME: &'static str = "estimator.mode";
+}
+
 // ---------------------------------------------------------------------
 // Reference / guidance topics (Phase 4.7)
 // ---------------------------------------------------------------------

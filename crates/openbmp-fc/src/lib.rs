@@ -44,6 +44,7 @@ pub mod filters;
 pub mod glrt;
 pub mod guidance;
 pub mod health;
+pub mod imm;
 #[cfg(feature = "indi")]
 pub mod indi;
 #[cfg(feature = "l1-adaptive")]

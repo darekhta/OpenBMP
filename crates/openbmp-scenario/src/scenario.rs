@@ -638,6 +638,100 @@ false_alarm_rate = {bad}
         }
     }
 
+    // -----------------------------------------------------------------
+    // Phase-5.B.3 — `[fc.imm]` validator tests.
+    // -----------------------------------------------------------------
+
+    /// Returns the canonical FC v3 fixture with `estimator = "imm"`
+    /// and a well-formed 2-mode `[fc.imm]` block appended. Tests
+    /// derive negative-test variants by replacement.
+    fn fc_imm_v3_scenario() -> String {
+        let block = r"
+[fc.imm]
+transition_matrix          = [[0.95, 0.05], [0.10, 0.90]]
+initial_mode_probabilities = [0.9, 0.1]
+
+[[fc.imm.mode]]
+sigma_w_gyro = 0.01
+
+[[fc.imm.mode]]
+sigma_w_gyro = 0.1
+";
+        append(fc_v2_scenario(), block)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace("estimator        = \"ekf\"", "estimator        = \"imm\"")
+    }
+
+    #[test]
+    fn fc_imm_block_validates_under_v3_with_well_formed_2_mode_bank() {
+        let scenario = Scenario::from_toml_str(&fc_imm_v3_scenario())
+            .expect("well-formed 2-mode IMM block must validate under v3");
+        let imm = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.imm.as_ref())
+            .expect("imm block parsed");
+        assert_eq!(imm.transition_matrix.len(), 2);
+        assert_eq!(imm.initial_mode_probabilities.len(), 2);
+        assert_eq!(imm.modes.len(), 2);
+    }
+
+    #[test]
+    fn fc_imm_rejects_transition_matrix_row_sum_other_than_one() {
+        let toml = fc_imm_v3_scenario().replace(
+            "transition_matrix          = [[0.95, 0.05], [0.10, 0.90]]",
+            "transition_matrix          = [[0.95, 0.04], [0.10, 0.90]]",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::InvalidFc { reason } => {
+                assert!(
+                    reason.contains("row 0 sums to"),
+                    "diagnostic should mention row 0; got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidFc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_imm_rejects_initial_probabilities_that_do_not_sum_to_one() {
+        let toml = fc_imm_v3_scenario().replace(
+            "initial_mode_probabilities = [0.9, 0.1]",
+            "initial_mode_probabilities = [0.9, 0.05]",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::InvalidFc { reason } => {
+                assert!(
+                    reason.contains("initial_mode_probabilities sum"),
+                    "diagnostic should mention probability-sum; got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidFc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_imm_rejects_mode_count_mismatch_with_transition_matrix() {
+        // 2×2 transition matrix but only 1 [[fc.imm.mode]] entry.
+        let toml = fc_imm_v3_scenario().replace(
+            "[[fc.imm.mode]]\nsigma_w_gyro = 0.01\n\n[[fc.imm.mode]]\nsigma_w_gyro = 0.1\n",
+            "[[fc.imm.mode]]\nsigma_w_gyro = 0.01\n",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::InvalidFc { reason } => {
+                assert!(
+                    reason.contains("fc.imm.mode count"),
+                    "diagnostic should mention mode-count mismatch; got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidFc, got {other:?}"),
+        }
+    }
+
     #[test]
     fn fc_v3_block_round_trips_unknown_field_rejection() {
         // serde(deny_unknown_fields) on the new sub-blocks must reject

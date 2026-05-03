@@ -125,10 +125,11 @@ in lockstep with each sub-phase landing.
 | 5.C.1 — piecewise-exponential atmosphere (0-1000 km) | shipped | _pending PR_ |
 | 5.D.3 — DOPRI5 fixed-step integrator (5th-order solution) | shipped | _pending PR_ |
 | 5.B.4 — Willsky windowed-mean-shift GLRT (vector-form) | shipped | _pending PR_ |
+| 5.B.3 — IMM (Bar-Shalom) maneuver-aware estimator (2-mode bank) | shipped | _pending PR_ |
 | 5.B.1 — square-root UKF (full 15-state) | pending | — |
 | 5.B.2 — multi-instance estimator routing + active-lane selection | pending | — |
-| 5.B.3 — IMM (Bar-Shalom) maneuver-aware estimator | pending | — |
 | 5.B.5 — Patton-Frank parity-space residual generator | pending — follow-on from 5.B.4 | — |
+| 5.B.6 — IMM extensions (3-mode bank + lane integration + UKF/MEKF) | pending — follow-on from 5.B.3 | — |
 | 5.C.3 — EGM2008 tesseral / sectoral expansion (Cunningham recursion) | pending — follow-on from 5.C.2 | — |
 | 5.C.4 — NRLMSISE-00 full Rust port (solar-flux, per-species) | pending — follow-on from 5.C.1 | — |
 | 5.D.1 — multi-rate scheduling first-class | pending | — |
@@ -729,53 +730,161 @@ approaches).
 **Scope guardrail.** Lane selection is sensor-fusion focused; no
 lane represents a "target tracker" or "homing filter".
 
-#### 5.B.3 — IMM (Bar-Shalom) maneuver-aware estimator
+#### 5.B.3 — IMM (Bar-Shalom) maneuver-aware estimator **— shipped**
 
-**Scope.** Add an Interacting Multiple Model estimator as one of the
-lanes in 5.B.2:
+**Honest scope.** The shipped surface is a 2-mode-default
+Bar-Shalom IMM hardcoded over a `Vec<Ekf>` bank with a compile-time
+cap of `MAX_IMM_MODES = 4`. The original plan called for a 3-mode
+boost / coast / descent canonical bank with regime-tuning evidence
+and integration as a lane under 5.B.2's multi-instance routing;
+both are deferred to a new **§ 5.B.6** follow-on entry. The
+shipped 2-mode bank is the textbook minimum demonstration and
+ships at full algorithmic quality (mixing, per-mode predict /
+update, log-sum-exp mode-probability normalisation, fused output
+state).
 
-- `ImmEstimator` — N parallel sub-filters (e.g. constant-velocity,
-  constant-acceleration, coordinated-turn) with a Markov mode
-  transition matrix; each tick runs all sub-filters and combines
-  their outputs by mode probabilities.
-- Mode probabilities published on a debug topic; the active mode
-  feeds an `EstimatorMode` topic that the autopilot may read for
-  gain-schedule selection (academic study only — not a target-
-  tracking enabler).
-- Default IMM bank ships three kinematic models suitable for
-  rocket-class trajectories (boost, coast, descent).
+**What shipped.**
 
-**Exit criterion.** The IMM scenario tracks a maneuvering trajectory
-with a documented mode-probability profile; mode probabilities are
-deterministic across reruns.
+- `openbmp_fc::imm::ImmEstimator` — `Vec<Ekf>` bank of `2 ≤ N ≤ 4`
+  mode-conditioned sub-filters. Implements the
+  `openbmp_fc::estimator::Estimator` trait so it slots into
+  `EstimatorJob` unchanged.
+  - `mix()`: computes `μ_ij = Π_ij μ_i / c̄_j`, blends per-mode
+    priors via the spread-term covariance formula, and
+    re-initialises each sub-filter with the mixed prior.
+  - `update_*`: each sub-filter independently runs the call;
+    captures per-mode `chi2_j` and `log det S_j` to form a
+    Gaussian log-likelihood `log Λ_j = −0.5 (chi2_j + d log 2π +
+    log det S_j)`.
+  - `update_mode_probabilities()`: log-sum-exp normaliser over
+    `log c̄_j + log Λ_j`. Numerical hygiene re-normalises to
+    exactly `Σ μ_j = 1`.
+  - `fused_position()` / `fused_attitude()`: probability-weighted
+    mean of per-mode outputs, with quaternion renormalisation.
+- EKF surface extension supporting the IMM:
+  - `Ekf::last_log_det_s_gnss / _baro / _mag` getters return
+    `log det S = 2 · Σ log L_diag` from the same Cholesky
+    factorisation already done for the chi-square statistic. Reset
+    to `f64::NAN` in `begin_tick`.
+  - `Ekf::internal_state()` / `Ekf::set_internal_state(...)`
+    round-trip pair: snapshot all 5 sub-vectors (pos, vel, q,
+    gyro_bias, accel_bias) plus the full 15×15 covariance, then
+    write them back. Quaternion is renormalised on writeback.
+- New `EstimatorMode` topic
+  (`crates/openbmp-fc/src/topics.rs`): published every tick by the
+  IMM, carrying `(active_mode: u8, mode_probabilities: [f64; 4],
+  mode_count: u8)`. Idle when the selected estimator is
+  `Ekf` / `Mekf`.
+- Scenario plumbing:
+  `FcEstimatorKind::{Ekf, Mekf, Imm}`. New v3-only `[fc.imm]`
+  block carrying `transition_matrix`,
+  `initial_mode_probabilities`, and `[[fc.imm.mode]]` per-mode
+  EKF tuning overrides on top of the base `[fc.ekf]`. Validator
+  rejects malformed transition matrices (rows that don't sum to
+  1 within `1e-9`, square-shape violations, out-of-range entries),
+  malformed initial probabilities, and mode-count mismatches.
 
-**Validation evidence.** Unit tests for the mode-mixing equations;
-property test for probability simplex (`Σpᵢ = 1`); reproducibility
-of the §11 textbook IMM example from Bar-Shalom et al. 2001 (added
-in 5.E.4).
+**What was deferred to § 5.B.6.**
 
-**References.** Bar-Shalom, Y., Li, X. R., and Kirubarajan, T.,
-*Estimation with Applications to Tracking and Navigation*,
-Wiley 2001 §11 (IMM derivation and example sets). Blom, H. A. P.
-and Bar-Shalom, Y., *The interacting multiple model algorithm for
-systems with Markovian switching coefficients*, IEEE TAC 1988
-(foundational). Modern variable-structure IMM literature
-(informational; not implemented in 5.B.3): MDPI Aerospace 2023
-*Adaptive IMM-UKF for Airborne Tracking* (adaptive transition
-probabilities driven by a distance function); IET Radar, Sonar &
-Navigation 2023 *A variable structure multi-model maneuvering
-target tracking algorithm based on Monte Carlo learning*; IJAE
-2024 *Improved Variable Structure Interacting Multimodels for
-Target Trajectory Tracking and Extrapolation*. OpenBMP ships the
-classical fixed-bank IMM as the Phase-5 deliverable; VSIMM and
-adaptive-transition variants are tracked as follow-on work, not
-5.B.3 scope.
+- 3-mode boost / coast / descent canonical bank with regime-tuning
+  evidence and a flight-phase-aware scenario.
+- `EstimatorMode`-driven autopilot gain-schedule selection.
+- IMM as a lane under 5.B.2's multi-instance routing.
+- IMM over UKF / MEKF (would require generic-over-`Estimator`
+  refactor with `set_state_from_mixed` trait method).
+- Variable-Structure IMM (VSIMM) and adaptive-transition variants.
+- `b̂(τ̂)`-style signed bias-magnitude estimate on `EstimatorMode`.
 
-**Scope guardrail.** IMM is a maneuvering-target-tracking technique
-in the original literature; OpenBMP uses it strictly for
-self-state estimation under regime change (boost vs coast vs
-descent), not for tracking other vehicles. No multi-target
-extension lands in Phase 5.
+**Exit criterion.** A closed-loop attitude-hold scenario with the
+new estimator wired in completes 1000 RK4 steps deterministically;
+two reruns produce byte-identical Parquet. Mode-mixing,
+probability-simplex, and likelihood-driven probability evolution
+are exercised at the math layer.
+
+**Validation evidence.**
+
+- Math: `crates/openbmp-fc/src/imm.rs` ships 9 unit tests:
+  constructor validation (mode count, transition-matrix row sum,
+  initial-probability sum); probability-simplex invariant after
+  measurement updates; fused position is the weighted mean of
+  per-mode positions; byte-stable determinism across two IMM
+  instances fed identical streams; `EstimatorMode` topic
+  zero-padding; log-sum-exp numerical-stability under
+  `NEG_INFINITY` entries; mode-probability evolution under
+  synthetic high-residual injections.
+- EKF invariants: 3 unit tests in
+  `crates/openbmp-fc/src/estimator.rs` covering
+  `log det S = 2 · Σ log L_diag` reconstruction, per-sensor
+  reset in `begin_tick`, and bit-exact `internal_state` round-trip.
+- Scenario validator: 4 unit tests in
+  `crates/openbmp-scenario/src/scenario.rs` covering v3 happy-path
+  acceptance, transition-matrix-row-sum rejection,
+  initial-probability-sum rejection, and mode-count mismatch.
+- End-to-end:
+  `crates/openbmp-cli/tests/closed_loop_imm_e2e.rs` — 1000 RK4
+  steps with end-time stop; byte-identical Parquet across two
+  reruns.
+
+**References.** Bar-Shalom, Y., Kirubarajan, T., and Li, X. R.
+(2001). *Estimation with Applications to Tracking and
+Navigation*, Wiley §11.6 — primary mathematical source. Blom,
+H. A. P. and Bar-Shalom, Y. (1988). *The interacting multiple
+model algorithm for systems with Markovian switching
+coefficients*, IEEE Transactions on Automatic Control 33(8),
+780-783 — foundational paper.
+
+**Scope guardrail.** IMM is a maneuvering-target-tracking
+technique in the original literature; OpenBMP uses it strictly for
+self-state estimation under regime change. No multi-target
+extension lands in Phase 5. The shipped 2-mode default and the
+deferred 3-mode boost / coast / descent canonical bank both target
+self-state-estimation use cases only.
+
+#### 5.B.6 — IMM extensions: 3-mode boost/coast/descent bank + lane integration (follow-on from 5.B.3)
+
+**Scope.** Pick up the IMM surfaces that § 5.B.3 deferred:
+
+- 3-mode canonical bank with regime-tuning evidence: per-mode
+  `EkfParams` calibrated for boost (high accel-bias process noise
+  from engine vibration), coast (low Q, ballistic), and descent
+  (intermediate Q with reentry-style aero unmodelled-dynamics
+  margin). Includes a flight-phase-aware demo scenario where the
+  mode-probability profile tracks the actual mission-graph phase.
+- IMM-as-lane integration with 5.B.2's `[fc.estimator_lanes]`
+  voter — the IMM bank becomes a single lane that competes with
+  EKF and MEKF lanes via the existing voter policies.
+- IMM over UKF / MEKF: refactor to generic-over-`Estimator` so
+  the bank can mix attitude-only filters or non-EKF state
+  representations. Requires a `set_state_from_mixed` trait
+  method.
+- `EstimatorMode`-driven autopilot gain-schedule selection: the
+  `gain_schedule` block is currently keyed on
+  `mission.phases.<name>` paths. § 5.B.6 adds an alternative key
+  on the IMM active-mode index for academic-study scenarios where
+  the autopilot retunes by estimated regime rather than mission
+  phase.
+- Optional: signed bias-magnitude `b̂(τ̂)` on `EstimatorMode` (the
+  running sum is already computed inside the mixing step but is
+  not currently surfaced).
+
+**Exit criterion.** A 3-mode boost / coast / descent demo
+scenario shows the mode probability tracking the actual mission
+phase within a documented lag bound, and the IMM lane integrates
+cleanly with 5.B.2's voter when both ship.
+
+**Validation evidence.** Per-regime tuning evidence (residual
+distributions per mode under matched / mismatched conditions);
+analytic case where mode probabilities track a known regime
+schedule.
+
+**References.** Bar-Shalom, Y., Kirubarajan, T., and Li, X. R.
+(2001). *Estimation with Applications to Tracking and Navigation*,
+Wiley §11. The textbook §11.6 worked example is also picked up by
+§ 5.E.4 (Bar-Shalom textbook reproducibility).
+
+**Scope guardrail.** Self-state-estimation under regime change
+only. No multi-target tracking, no maneuvering-target-tracking
+literature use cases.
 
 #### 5.B.4 — Willsky windowed-mean-shift GLRT (vector-form) **— shipped**
 
@@ -1548,7 +1657,14 @@ parameter set is introduced.
   │                                                           ▼
   │                                                       5.A.4 (MPC) ──► 5.A.5 (allocation)
   │
-  ├── 5.B.1 (SR-UKF) ──► 5.B.2 (multi-lane) ──► 5.B.3 (IMM)
+  ├── 5.B.1 (SR-UKF) ──► 5.B.2 (multi-lane)
+  │
+  ├── 5.B.3 (IMM 2-mode bank) ──► 5.B.6 (IMM 3-mode + lanes + UKF/MEKF)
+  │     (5.B.3 was the original "3-mode IMM as lane in 5.B.2" line
+  │      item; shipped as the honest 2-mode-default standalone
+  │      downscope. 5.B.6 picks up the deferred 3-mode boost/coast/
+  │      descent canonical bank, the IMM-as-lane integration, and
+  │      the IMM-over-UKF/MEKF generic refactor.)
   │
   ├── 5.B.4 (windowed-mean-shift GLRT) ──► 5.B.5 (parity-space residual generator)
   │     (5.B.4 was the original "GLRT + parity" line item; shipped as

@@ -609,6 +609,17 @@ fn magnetic_field_settings(config: &FcConfig) -> (FcMagFieldKind, f64) {
                     .unwrap_or(DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR),
             )
         }
+        FcEstimatorKind::Imm => {
+            // Phase-5.B.3 IMM uses the [fc.ekf] base for the
+            // magnetic-field model; per-mode overrides do not alter
+            // the field-evaluation reference.
+            let cfg = config.ekf.as_ref();
+            (
+                cfg.and_then(|c| c.mag_field).unwrap_or_default(),
+                cfg.and_then(|c| c.mag_epoch_decimal_year)
+                    .unwrap_or(DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR),
+            )
+        }
     }
 }
 

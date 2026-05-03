@@ -25,12 +25,13 @@ use openbmp_fc::guidance::{
     AttitudeHoldGuidance, GuidanceParams, WaypointGuidance, WaypointSequence,
 };
 use openbmp_fc::health::{HealthMonitor, HealthParams};
+use openbmp_fc::imm::ImmEstimator;
 use openbmp_fc::mixer::{ActuatorChannelMap, Mixer, PhaseAuthority, PhaseAuthorityTable};
 use openbmp_fc::topics::{
     ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, EffectorCommandSet,
-    EngineCommandSet, EngineDemand, EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic, FdirStatus,
-    GnssSample, ImuSample, MagnetometerSample, PositionEstimate, ReferenceState, SensorStatus,
-    StarTrackerSample, VehicleStatus,
+    EngineCommandSet, EngineDemand, EstimatorMode, EstimatorStatus, FailsafeFlags,
+    FdirGlrtDiagnostic, FdirStatus, GnssSample, ImuSample, MagnetometerSample, PositionEstimate,
+    ReferenceState, SensorStatus, StarTrackerSample, VehicleStatus,
 };
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
@@ -68,7 +69,15 @@ impl FcRunner {
     ///
     /// Returns the underlying controller error if topic registration
     /// or job registration fails.
-    #[allow(clippy::too_many_lines)]
+    ///
+    /// # Panics
+    ///
+    /// Panics when `config.estimator = Imm` is selected without a
+    /// matching `[fc.imm]` or `[fc.ekf]` block. The scenario validator
+    /// (`FcConfig::validate` and `FcImmConfig::validate`) is expected
+    /// to gate these at parse time so the panic-on-construction is
+    /// unreachable from properly-validated scenarios.
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     pub fn new(
         config: &FcConfig,
         mission_graph: MissionPhaseGraph,
@@ -117,6 +126,57 @@ impl FcRunner {
                     200,
                     next_priority,
                     Box::new(EstimatorJob::new(mekf)),
+                )?;
+            }
+            FcEstimatorKind::Imm => {
+                // Phase-5.B.3 Bar-Shalom IMM. The scenario validator
+                // already guarantees [fc.imm] is present and well-formed
+                // when estimator = "imm"; the unwraps below are safe.
+                let imm_cfg = config
+                    .imm
+                    .as_ref()
+                    .expect("scenario validator ensures [fc.imm] is present for kind = imm");
+                let base_ekf_cfg = config
+                    .ekf
+                    .as_ref()
+                    .expect("scenario validator ensures [fc.ekf] is present for kind = imm");
+                let mut base_params = EkfParams::default();
+                apply_ekf_overrides(&mut base_params, base_ekf_cfg);
+                let mut per_mode_params: Vec<EkfParams> = Vec::with_capacity(imm_cfg.modes.len());
+                for mode in &imm_cfg.modes {
+                    let mut p = base_params.clone();
+                    if let Some(v) = mode.sigma_w_gyro {
+                        p.sigma_w_gyro = v;
+                    }
+                    if let Some(v) = mode.sigma_w_gyro_bias {
+                        p.sigma_w_gyro_bias = v;
+                    }
+                    if let Some(v) = mode.sigma_w_accel_bias {
+                        p.sigma_w_accel_bias = v;
+                    }
+                    if let Some(v) = mode.tau_gyro_bias_s {
+                        p.tau_gyro_bias_s = v;
+                    }
+                    if let Some(v) = mode.tau_accel_bias_s {
+                        p.tau_accel_bias_s = v;
+                    }
+                    per_mode_params.push(p);
+                }
+                // Scenario validator (FcImmConfig::validate) already
+                // guarantees the transition matrix and initial
+                // probabilities are well-formed, so the construction
+                // is infallible at runtime.
+                let imm = ImmEstimator::new(
+                    per_mode_params,
+                    imm_cfg.transition_matrix.clone(),
+                    imm_cfg.initial_mode_probabilities.clone(),
+                )
+                .expect("scenario validator must guarantee valid IMM params");
+                fc.scheduler_mut().register_periodic(
+                    1,
+                    200,
+                    next_priority,
+                    Box::new(EstimatorJob::new(imm)),
                 )?;
             }
         }
@@ -365,6 +425,11 @@ impl FcRunner {
         // detector kind is the legacy burst-counter / single-sample /
         // CUSUM family.
         bus.register::<FdirGlrtDiagnostic>()?;
+        // Phase-5.B.3: IMM mode-probability snapshot. Always
+        // registered so scenarios that opt into `kind = "imm"` can
+        // publish without a separate setup step. Idle when the
+        // selected estimator is one of the legacy EKF / MEKF / UKF.
+        bus.register::<EstimatorMode>()?;
         Ok(())
     }
 }
@@ -958,6 +1023,7 @@ mod tests {
                 ..FcEkfConfig::default()
             }),
             mekf: None,
+            imm: None,
             autopilot_params: None,
             health: FcHealthConfig {
                 imu_stale_after_s: 0.05,

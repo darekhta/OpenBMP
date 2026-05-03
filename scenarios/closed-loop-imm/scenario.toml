@@ -1,0 +1,190 @@
+# Phase-5.B.3 Bar-Shalom IMM closed-loop demo: 2-mode IMM
+# (nominal vs maneuver) wired into the closed-loop attitude-hold
+# pipeline.
+#
+# Identical to `scenarios/closed-loop-attitude-hold` modulo the
+# estimator selection. Where the parent scenario uses a single EKF,
+# this scenario builds an IMM bank of two EKFs with different
+# process-noise tunings, runs them in parallel each tick, mixes their
+# priors via the Markov transition matrix, fuses their outputs by
+# posterior mode probabilities, and publishes the active-mode index
+# and full probability vector on the new `estimator.mode` topic.
+#
+# Per-mode tuning:
+#   - mode 0 ("nominal"):  σ_w_gyro = 0.01,  σ_w_accel_bias = 1e-4.
+#   - mode 1 ("maneuver"): σ_w_gyro = 0.10,  σ_w_accel_bias = 1e-3.
+#
+# Markov transition matrix (rows = current mode, columns = next):
+#   Π = [[0.95, 0.05]
+#        [0.10, 0.90]]
+# That is: with probability 0.05 the nominal mode hands off to the
+# maneuver mode each tick, and with probability 0.10 the maneuver
+# mode hands back. Initial mode probabilities are (0.9, 0.1) so the
+# IMM starts strongly weighted toward the nominal hypothesis.
+#
+# Trip and convergence semantics are covered at the math layer by
+# the unit tests in `crates/openbmp-fc/src/imm.rs`. This scenario is
+# the runtime wiring + byte-stability check.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "closed-loop-imm"
+description = "Phase-5.B.3 demo: Bar-Shalom IMM (2-mode EKF bank) wired into the closed-loop attitude-hold pipeline. Synthetic; nominal innovations should keep the active mode at 0 (nominal)."
+validation  = "experimental"
+provenance  = "synthetic; identical to closed-loop-attitude-hold except for the [fc.imm] block. See provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 1.0
+dt_s    = 0.001
+seed    = 0x494d_4d44_656d_6f00   # "IMMDemo\0"
+
+[vehicle]
+kind                     = "point_mass"
+initial_position_eci_m   = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "imm-attitude-hold"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg   = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+magnetic      = "wmm_2025"
+
+[forces]
+models = ["gravity"]
+
+[sensors.imu]
+kind = "imu"
+file = "../../data/sensors/imu-consumer-mems.toml"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../../data/sensors/gnss-textbook.toml"
+
+[sensors.mag]
+kind = "magnetometer"
+file = "../../data/sensors/magnetometer-textbook.toml"
+
+[telemetry]
+output.parquet = "out/closed-loop-imm.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "mission.phases.pad"
+
+[[mission.phases]]
+id    = "mission.phases.pad"
+label = "pad"
+
+[[mission.phases]]
+id    = "mission.phases.ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "mission.events.liftoff"
+trigger = { kind = "at_time", time_s = 0.1 }
+action  = { kind = "enter_phase", phase = "mission.phases.ascent" }
+
+[[mission.transitions]]
+from  = "mission.phases.pad"
+to    = "mission.phases.ascent"
+event = "mission.events.liftoff"
+
+[fc]
+estimator        = "imm"
+autopilot        = "three_loop"
+guidance         = "attitude_hold"
+reference_q_xyzw = [0.0, 0.0, 0.0, 1.0]
+base_rate_hz     = 1000
+frame_budget_us  = 2000
+
+# Base EKF parameters used by every mode in the IMM bank;
+# per-mode overrides under [[fc.imm.mode]] refine these.
+[fc.ekf]
+mag_field             = "wmm_2025"
+mag_epoch_decimal_year = 2025.0
+sigma_w_gyro          = 0.01
+sigma_w_accel_bias    = 1.0e-4
+sigma_w_gyro_bias     = 1.0e-5
+tau_gyro_bias_s       = 100.0
+tau_accel_bias_s      = 100.0
+sigma_gnss_pos_m      = 5.0
+sigma_gnss_vel_m_s    = 0.5
+sigma_baro_alt_m      = 2.0
+sigma_mag_nt          = 100.0
+innovation_false_alarm_rate = 0.01
+dead_reckon_timeout_s = 1.5
+
+[fc.imm]
+transition_matrix          = [[0.95, 0.05], [0.10, 0.90]]
+initial_mode_probabilities = [0.9, 0.1]
+
+[[fc.imm.mode]]
+# Mode 0 — nominal flight: low process noise.
+sigma_w_gyro       = 0.01
+sigma_w_accel_bias = 1.0e-4
+
+[[fc.imm.mode]]
+# Mode 1 — maneuver: 10× higher process noise on gyro and accel bias.
+sigma_w_gyro       = 0.10
+sigma_w_accel_bias = 1.0e-3
+
+[fc.autopilot_params]
+anti_windup_gain         = 1.0
+rate_deadband_rad_s      = 0.001
+trajectory_loop_enabled  = false
+trajectory_kind          = "pid"
+
+[fc.health]
+imu_stale_after_s       = 0.05
+gnss_stale_after_s      = 0.5
+baro_stale_after_s      = 10.0
+mag_stale_after_s       = 0.2
+overrun_burst_count     = 5
+
+[fc.fdir]
+detector_kind           = "burst_counter"
+innovation_threshold    = 25.0
+innovation_burst_count  = 5
+failsafe_burst_count    = 5
+
+[fc.gain_schedule."mission.phases.pad"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.gain_schedule."mission.phases.ascent"]
+rate_kp           = [0.5, 0.5, 0.5]
+rate_kd           = [0.05, 0.05, 0.05]
+attitude_kp       = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.phase_authority."mission.phases.pad"]
+autopilot_allowed = false
+engines_allowed   = false
+
+[fc.phase_authority."mission.phases.ascent"]
+autopilot_allowed = true
+engines_allowed   = true

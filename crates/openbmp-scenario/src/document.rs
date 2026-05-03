@@ -3636,6 +3636,12 @@ pub struct FcConfig {
     /// Optional MEKF parameter overrides. Required when
     /// `estimator = "mekf"`.
     pub mekf: Option<FcMekfConfig>,
+    /// Optional Bar-Shalom IMM bank (v3 only, Phase 5.B.3). Required
+    /// when `estimator = "imm"`. Carries the Markov mode-transition
+    /// matrix, initial mode probabilities, and per-mode EKF tuning
+    /// overrides for each of the `2 ≤ N ≤ 4` mode-conditioned
+    /// sub-filters.
+    pub imm: Option<FcImmConfig>,
     /// Optional autopilot anti-windup / trajectory-loop config.
     pub autopilot_params: Option<FcAutopilotParams>,
     /// Required health-monitor thresholds.
@@ -3688,6 +3694,23 @@ impl FcConfig {
             return Err(ScenarioError::InvalidFc {
                 reason: "estimator = \"mekf\" requires [fc.mekf]".to_string(),
             });
+        }
+        if matches!(self.estimator, FcEstimatorKind::Imm) {
+            if self.imm.is_none() {
+                return Err(ScenarioError::InvalidFc {
+                    reason: "estimator = \"imm\" requires [fc.imm]".to_string(),
+                });
+            }
+            if self.ekf.is_none() {
+                return Err(ScenarioError::InvalidFc {
+                    reason: "estimator = \"imm\" requires [fc.ekf] for the per-mode base \
+                             EKF parameters; per-mode overrides go under [[fc.imm.mode]]"
+                        .to_string(),
+                });
+            }
+        }
+        if let Some(imm) = self.imm.as_ref() {
+            imm.validate()?;
         }
         if matches!(self.guidance, FcGuidanceKind::AttitudeHold) && self.reference_q_xyzw.is_none()
         {
@@ -3748,6 +3771,12 @@ pub enum FcEstimatorKind {
     Ekf,
     /// 6-state Multiplicative EKF (attitude + gyro bias).
     Mekf,
+    /// Phase-5.B.3 Bar-Shalom IMM (Interacting Multiple Model)
+    /// estimator over a bank of 2 to 4 mode-conditioned EKFs.
+    /// Requires `[fc.imm]` block; `[fc.ekf]` is used as the per-mode
+    /// base parameters (further refined by per-mode overrides under
+    /// `[[fc.imm.mode]]`).
+    Imm,
 }
 
 /// Supported autopilot kinds.
@@ -3839,6 +3868,146 @@ pub struct FcMekfConfig {
     pub innovation_gate: Option<f64>,
     /// False-alarm probability used for chi-square innovation gates.
     pub innovation_false_alarm_rate: Option<f64>,
+}
+
+/// Phase-5.B.3 — Bar-Shalom IMM bank. Required when
+/// `[fc].estimator = "imm"`.
+///
+/// Each `[[fc.imm.mode]]` entry overrides the per-mode process-noise
+/// tuning on top of the base `[fc.ekf]` block. The transition matrix
+/// must be square (rows = N = number of modes), each row sums to 1
+/// within `1e-9`, and `2 ≤ N ≤ 4`. The `initial_mode_probabilities`
+/// vector must also sum to 1 within `1e-9`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcImmConfig {
+    /// Markov mode-transition matrix `Π_ij = P(mode j next | mode i
+    /// now)`. Square (N × N) with `2 ≤ N ≤ 4`; each row sums to 1
+    /// within `1e-9`.
+    pub transition_matrix: Vec<Vec<f64>>,
+    /// Initial mode probabilities `μ_i^0`. Length N; sums to 1 within
+    /// `1e-9`.
+    pub initial_mode_probabilities: Vec<f64>,
+    /// Per-mode tuning. Length must equal `transition_matrix.len()`.
+    /// Each entry overrides selected fields of the base `[fc.ekf]`
+    /// parameters; unset fields fall back to the base.
+    #[serde(default, rename = "mode")]
+    pub modes: Vec<FcImmModeConfig>,
+}
+
+impl FcImmConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        let n = self.transition_matrix.len();
+        if !(2..=4).contains(&n) {
+            return Err(ScenarioError::InvalidFc {
+                reason: format!("fc.imm.transition_matrix must have between 2 and 4 rows; got {n}"),
+            });
+        }
+        for (i, row) in self.transition_matrix.iter().enumerate() {
+            if row.len() != n {
+                return Err(ScenarioError::InvalidFc {
+                    reason: format!(
+                        "fc.imm.transition_matrix row {i} has {} entries, expected {n} \
+                         (matrix must be square)",
+                        row.len()
+                    ),
+                });
+            }
+            let row_sum: f64 = row.iter().sum();
+            if (row_sum - 1.0).abs() > 1.0e-9 {
+                return Err(ScenarioError::InvalidFc {
+                    reason: format!(
+                        "fc.imm.transition_matrix row {i} sums to {row_sum}, must equal 1.0 \
+                         within 1e-9"
+                    ),
+                });
+            }
+            for (j, &p) in row.iter().enumerate() {
+                if !(0.0..=1.0).contains(&p) || !p.is_finite() {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: format!(
+                            "fc.imm.transition_matrix[{i}][{j}] = {p} must lie in [0, 1]"
+                        ),
+                    });
+                }
+            }
+        }
+        if self.initial_mode_probabilities.len() != n {
+            return Err(ScenarioError::InvalidFc {
+                reason: format!(
+                    "fc.imm.initial_mode_probabilities has {} entries, must equal \
+                     transition_matrix size N = {n}",
+                    self.initial_mode_probabilities.len()
+                ),
+            });
+        }
+        let prob_sum: f64 = self.initial_mode_probabilities.iter().sum();
+        if (prob_sum - 1.0).abs() > 1.0e-9 {
+            return Err(ScenarioError::InvalidFc {
+                reason: format!(
+                    "fc.imm.initial_mode_probabilities sum to {prob_sum}, must equal 1.0 \
+                     within 1e-9"
+                ),
+            });
+        }
+        for (i, &p) in self.initial_mode_probabilities.iter().enumerate() {
+            if !(0.0..=1.0).contains(&p) || !p.is_finite() {
+                return Err(ScenarioError::InvalidFc {
+                    reason: format!(
+                        "fc.imm.initial_mode_probabilities[{i}] = {p} must lie in [0, 1]"
+                    ),
+                });
+            }
+        }
+        if self.modes.len() != n {
+            return Err(ScenarioError::InvalidFc {
+                reason: format!(
+                    "fc.imm.mode count is {}, must equal transition_matrix size N = {n}",
+                    self.modes.len()
+                ),
+            });
+        }
+        for (i, mode) in self.modes.iter().enumerate() {
+            mode.validate(i)?;
+        }
+        Ok(())
+    }
+}
+
+/// Per-mode tuning override under `[[fc.imm.mode]]`.
+///
+/// Fields left unset fall back to the base `[fc.ekf]` block; setting
+/// a field overrides that field for this mode only.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcImmModeConfig {
+    /// Override on `EkfParams::sigma_w_gyro` for this mode.
+    pub sigma_w_gyro: Option<f64>,
+    /// Override on `EkfParams::sigma_w_gyro_bias`.
+    pub sigma_w_gyro_bias: Option<f64>,
+    /// Override on `EkfParams::sigma_w_accel_bias`.
+    pub sigma_w_accel_bias: Option<f64>,
+    /// Override on `EkfParams::tau_gyro_bias_s`.
+    pub tau_gyro_bias_s: Option<f64>,
+    /// Override on `EkfParams::tau_accel_bias_s`.
+    pub tau_accel_bias_s: Option<f64>,
+}
+
+impl FcImmModeConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        for (label, value) in [
+            ("sigma_w_gyro", self.sigma_w_gyro),
+            ("sigma_w_gyro_bias", self.sigma_w_gyro_bias),
+            ("sigma_w_accel_bias", self.sigma_w_accel_bias),
+            ("tau_gyro_bias_s", self.tau_gyro_bias_s),
+            ("tau_accel_bias_s", self.tau_accel_bias_s),
+        ] {
+            if let Some(v) = value {
+                require_positive(&format!("fc.imm.mode[{index}].{label}"), v)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Autopilot params overrides.

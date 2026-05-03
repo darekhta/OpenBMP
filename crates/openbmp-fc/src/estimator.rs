@@ -260,6 +260,17 @@ pub struct Ekf {
     last_baro_updated_this_tick: bool,
     last_mag_innovation_whitened: [f64; 3],
     last_mag_updated_this_tick: bool,
+    /// Phase-5.B.3 — log-determinant of the innovation covariance
+    /// `S` from the most recent measurement update of the matching
+    /// sensor. Computed as `2 · Σ log L_diag` from the Cholesky
+    /// factorisation already done for the chi-square statistic. The
+    /// IMM consumes these as the `log det S_j` term in the per-mode
+    /// Gaussian-likelihood `log Λ_j = −0.5 (chi2_j + d log 2π + log
+    /// det S_j)`. Reset to `f64::NAN` by `begin_tick` and reported
+    /// only when the matching `*_updated_this_tick` flag is `true`.
+    last_log_det_s_gnss: f64,
+    last_log_det_s_baro: f64,
+    last_log_det_s_mag: f64,
     /// `true` once at least one corrective measurement has been
     /// applied.
     initialized: bool,
@@ -324,6 +335,9 @@ impl Ekf {
             last_baro_updated_this_tick: false,
             last_mag_innovation_whitened: [0.0; 3],
             last_mag_updated_this_tick: false,
+            last_log_det_s_gnss: f64::NAN,
+            last_log_det_s_baro: f64::NAN,
+            last_log_det_s_mag: f64::NAN,
             initialized: false,
             gravity: GravityAdapter::new(default_constant_gravity_down_z()),
             mag_field: Box::new(EarthDipoleField::default()),
@@ -484,6 +498,14 @@ impl Estimator for Ekf {
                     .to_string(),
             });
         };
+        // Phase-5.B.3: log det S = 2 · Σ log L_ii from the same
+        // Cholesky factor. Locked-order summation; no FMA.
+        let mut log_det_s = 0.0_f64;
+        for i in 0..6 {
+            log_det_s += l[(i, i)].ln();
+        }
+        log_det_s *= 2.0;
+        self.last_log_det_s_gnss = log_det_s;
         let s_inv = chol.inverse();
         let chi2 = innovation.dot(&(s_inv * innovation));
         self.last_chi2_gnss = chi2;
@@ -537,6 +559,8 @@ impl Estimator for Ekf {
         // Phase-5.B.4: scalar whitening — ν̃ = ν / √S, so (ν̃)² = chi2.
         self.last_baro_innovation_whitened = innovation / s_scalar.sqrt();
         self.last_baro_updated_this_tick = true;
+        // Phase-5.B.3: scalar log det S = log s_scalar.
+        self.last_log_det_s_baro = s_scalar.ln();
         let gate = self.params.gate_for_dof(1.0);
         if chi2 > gate {
             self.last_innovation_rejected = true;
@@ -592,6 +616,13 @@ impl Estimator for Ekf {
                     self.last_mag_innovation_whitened[i] = whitened[i];
                 }
                 self.last_mag_updated_this_tick = true;
+                // Phase-5.B.3: log det S = 2 · Σ log L_ii.
+                let mut log_det_s = 0.0_f64;
+                for i in 0..3 {
+                    log_det_s += l[(i, i)].ln();
+                }
+                log_det_s *= 2.0;
+                self.last_log_det_s_mag = log_det_s;
                 let gate = self.params.gate_for_dof(3.0);
                 if chi2 > gate {
                     self.last_innovation_rejected = true;
@@ -668,6 +699,9 @@ impl Estimator for Ekf {
         self.last_baro_updated_this_tick = false;
         self.last_mag_innovation_whitened = [0.0; 3];
         self.last_mag_updated_this_tick = false;
+        self.last_log_det_s_gnss = f64::NAN;
+        self.last_log_det_s_baro = f64::NAN;
+        self.last_log_det_s_mag = f64::NAN;
     }
 }
 
@@ -708,6 +742,81 @@ impl Ekf {
             + self.gyro_bias.norm()
             + self.accel_bias.norm()
             + 1.0
+    }
+
+    /// Phase-5.B.3 — log-determinant of the innovation covariance `S`
+    /// from the most recent measurement update of the matching
+    /// sensor. `f64::NAN` when no update of that sensor occurred on
+    /// the current tick.
+    ///
+    /// Used by [`crate::imm::ImmEstimator`] as the `log det S_j` term
+    /// in the per-mode Gaussian-likelihood formula
+    /// `log Λ_j = −0.5 (chi2_j + d log 2π + log det S_j)`.
+    #[must_use]
+    pub fn last_log_det_s_gnss(&self) -> f64 {
+        self.last_log_det_s_gnss
+    }
+
+    /// See [`Ekf::last_log_det_s_gnss`].
+    #[must_use]
+    pub fn last_log_det_s_baro(&self) -> f64 {
+        self.last_log_det_s_baro
+    }
+
+    /// See [`Ekf::last_log_det_s_gnss`].
+    #[must_use]
+    pub fn last_log_det_s_mag(&self) -> f64 {
+        self.last_log_det_s_mag
+    }
+
+    /// Phase-5.B.3 — full internal-state snapshot suitable for IMM
+    /// mixing. Returned in the same order as the 15-element error
+    /// state: `(pos, vel, q, gyro_bias, accel_bias, P)`. The
+    /// counterpart [`Ekf::set_internal_state`] writes them back; the
+    /// pair round-trips bit-exactly on every component.
+    #[allow(clippy::type_complexity)] // tuple shape mirrors the 15-state error-state ordering
+    #[must_use]
+    pub fn internal_state(
+        &self,
+    ) -> (
+        Vector3<f64>,
+        Vector3<f64>,
+        UnitQuaternion<f64>,
+        Vector3<f64>,
+        Vector3<f64>,
+        SMatrix<f64, 15, 15>,
+    ) {
+        (
+            self.pos_eci,
+            self.vel_eci,
+            self.q_body_to_eci,
+            self.gyro_bias,
+            self.accel_bias,
+            self.p,
+        )
+    }
+
+    /// Phase-5.B.3 — write a full internal-state snapshot back into
+    /// the EKF. The IMM mixing step calls this after computing the
+    /// per-mode mixed prior. The quaternion is renormalised after
+    /// writeback so naive linear blending of mode quaternions stays
+    /// on the unit sphere.
+    pub fn set_internal_state(
+        &mut self,
+        pos_eci: Vector3<f64>,
+        vel_eci: Vector3<f64>,
+        q_body_to_eci: UnitQuaternion<f64>,
+        gyro_bias: Vector3<f64>,
+        accel_bias: Vector3<f64>,
+        p: SMatrix<f64, 15, 15>,
+    ) {
+        self.pos_eci = pos_eci;
+        self.vel_eci = vel_eci;
+        self.q_body_to_eci = q_body_to_eci;
+        renormalize_quaternion(&mut self.q_body_to_eci);
+        self.gyro_bias = gyro_bias;
+        self.accel_bias = accel_bias;
+        self.p = p;
     }
 }
 
@@ -1673,6 +1782,112 @@ mod tests {
             );
         }
         assert_eq!(s_a.gnss_chi2.to_bits(), s_b.gnss_chi2.to_bits());
+    }
+
+    // -----------------------------------------------------------------
+    // Phase-5.B.3 — IMM-supporting EKF surface (log_det_s, internal_state).
+    //
+    // The IMM (`crate::imm::ImmEstimator`) reads each mode's
+    // `log_det_s_*` to form per-mode Gaussian likelihoods, and
+    // round-trips state via `internal_state` / `set_internal_state`
+    // for the mixing step. These tests pin those contracts.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn ekf_log_det_s_gnss_matches_two_sum_log_l_diag_after_update() {
+        let mut ekf = ekf_for_innovation_test();
+        ekf.begin_tick();
+        // Pre-update: log det should be NaN (no update this tick).
+        assert!(ekf.last_log_det_s_gnss().is_nan());
+        ekf.update_gnss(&GnssSample {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::new(20.0, 10.0, 5.0),
+            velocity_eci_m_s: Vector3::new(0.5, -0.5, 0.0),
+            position_bias_eci_m: Vector3::zeros(),
+            healthy: true,
+        })
+        .unwrap();
+        let log_det = ekf.last_log_det_s_gnss();
+        assert!(
+            log_det.is_finite(),
+            "log det should be finite after a successful update; got {log_det}",
+        );
+        // Reconstruct expected via independent Cholesky on the H P H' + R
+        // form. Innovation covariance is diagonal at this initial
+        // covariance because P is initialised diagonal and H is the
+        // identity on the first 6 elements; pin it analytically.
+        // P_pos = 100, P_vel = 10 (per Ekf::new). R diag is
+        // sigma_pos² then sigma_vel². Det = product of all 6 diagonal
+        // entries; log det = sum of logs.
+        let p_diag: [f64; 6] = [100.0, 100.0, 100.0, 10.0, 10.0, 10.0];
+        let r_diag: [f64; 6] = [25.0, 25.0, 25.0, 0.25, 0.25, 0.25];
+        let expected: f64 = p_diag
+            .iter()
+            .zip(r_diag.iter())
+            .map(|(p, r)| (p + r).ln())
+            .sum();
+        assert!(
+            (log_det - expected).abs() < 1.0e-9,
+            "log det = {log_det} should equal Σ log(P_diag + R_diag) = {expected}",
+        );
+    }
+
+    #[test]
+    fn ekf_log_det_s_per_sensor_resets_in_begin_tick() {
+        let mut ekf = ekf_for_innovation_test();
+        ekf.begin_tick();
+        ekf.update_gnss(&GnssSample {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::new(20.0, 10.0, 5.0),
+            velocity_eci_m_s: Vector3::new(0.5, -0.5, 0.0),
+            position_bias_eci_m: Vector3::zeros(),
+            healthy: true,
+        })
+        .unwrap();
+        assert!(ekf.last_log_det_s_gnss().is_finite());
+        ekf.begin_tick();
+        assert!(ekf.last_log_det_s_gnss().is_nan());
+        assert!(ekf.last_log_det_s_baro().is_nan());
+        assert!(ekf.last_log_det_s_mag().is_nan());
+    }
+
+    #[test]
+    fn ekf_internal_state_set_then_get_round_trips_bit_exactly() {
+        let mut ekf = Ekf::new(EkfParams::default());
+        // Seed with a non-trivial state covering all 5 sub-vectors.
+        let pos = Vector3::new(1.5, -2.25, 3.75);
+        let vel = Vector3::new(-0.1, 0.2, 0.3);
+        let q = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.4);
+        let gyro_bias = Vector3::new(1.0e-3, -2.0e-3, 3.0e-4);
+        let accel_bias = Vector3::new(0.05, -0.02, 0.01);
+        let mut p = SMatrix::<f64, 15, 15>::identity() * 0.123;
+        // Make P non-diagonal to test full-matrix round-trip.
+        p[(0, 1)] = 0.04;
+        p[(1, 0)] = 0.04;
+        ekf.set_internal_state(pos, vel, q, gyro_bias, accel_bias, p);
+        let (got_pos, got_vel, got_q, got_gyro, got_accel, got_p) = ekf.internal_state();
+        for i in 0..3 {
+            assert_eq!(got_pos[i].to_bits(), pos[i].to_bits(), "pos[{i}]");
+            assert_eq!(got_vel[i].to_bits(), vel[i].to_bits(), "vel[{i}]");
+            assert_eq!(got_gyro[i].to_bits(), gyro_bias[i].to_bits(), "gyro[{i}]");
+            assert_eq!(
+                got_accel[i].to_bits(),
+                accel_bias[i].to_bits(),
+                "accel[{i}]"
+            );
+        }
+        // Quaternion: set_internal_state renormalises, so we can only
+        // bit-check the input-was-already-unit case.
+        let qc = q.into_inner().coords;
+        let got_qc = got_q.into_inner().coords;
+        for i in 0..4 {
+            assert_eq!(qc[i].to_bits(), got_qc[i].to_bits(), "q[{i}]");
+        }
+        for i in 0..15 {
+            for j in 0..15 {
+                assert_eq!(got_p[(i, j)].to_bits(), p[(i, j)].to_bits(), "P[{i},{j}]");
+            }
+        }
     }
 }
 
