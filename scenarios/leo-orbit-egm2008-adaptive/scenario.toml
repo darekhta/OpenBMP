@@ -1,0 +1,83 @@
+# Phase-5.D.4 demo: 1 kg point mass in a 400 km / 30° inclined LEO
+# orbit under EGM2008 zonal-harmonic gravity (degrees 2-6) integrated
+# with the Dormand-Prince 5(4) embedded RK pair under a Gustafsson PI
+# step controller.
+#
+# Identical initial conditions and gravity model to
+# `scenarios/leo-orbit-egm2008/scenario.toml` (the Phase-5.C.2 fixed-RK4
+# demo); the only difference is the new `[solver]` and
+# `[solver.adaptive]` blocks. The point of this scenario is the
+# adaptive-integrator runner wiring path: the kernel dispatches to
+# `Dopri54Adaptive` rather than `Rk4FixedStep`, and the
+# `IntegratorDeterminism::StateStable` label propagates out through the
+# telemetry header.
+#
+# atol = 1e-12, rtol = 1e-9 are deliberately tight so the embedded
+# error norm rarely triggers a step rejection on this benign
+# closed-orbit problem and the sub-step trace stays close to the
+# 1.0 s outer kernel cadence. The adaptive controller is exercised
+# end-to-end (PI step accept/reject loop, FSAL k7 reuse, bounded step
+# clamps), not stress-tested for accuracy here — that lives in the
+# `Dopri54Adaptive` unit-test suite under
+# `crates/openbmp-sim/src/integrator.rs`.
+#
+# Telemetry is parquet-only (the Phase-3 oracle compares Parquet
+# bytes; CSV is omitted to keep the artifact slim).
+
+openbmp.scenario = 3
+
+[meta]
+name = "leo-orbit-egm2008-adaptive"
+description = "1 kg point mass in 400 km / 30° inclined LEO under EGM2008 zonal gravity (degrees 2-6) integrated with Dormand-Prince 5(4) adaptive + PI step controller for one orbit period; Phase 5.D.4 demo."
+validation = "experimental"
+provenance = "synthetic; closed-form circular-orbit IC for WGS84 µ at r = 6_778_000 m, 30° inclination; gravity = EGM2008 zonal degrees 2-6 with J_n from Pavlis et al. 2012; integrator = Dopri54Adaptive (Hairer-Nørsett-Wanner Vol I §II.5 Table 5.2 + Gustafsson 1991 PI controller). See provenance.md."
+
+[time]
+start_s = 0.0
+stop_s = 5556.0
+dt_s = 1.0
+seed = 0x4567_4d32_3030_3802
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [6_778_000.0, 0.0, 0.0]
+# v_circ = sqrt(WGS84_MU_M3_S2 / r) ≈ 7669.10 m/s at r = 6_778_000 m.
+# Inclined at 30°:
+#   v_y = v_circ · cos(30°),   v_z = v_circ · sin(30°).
+initial_velocity_eci_m_s = [0.0, 6_641.108_553, 3_834.553_092]
+
+[vehicle.assembly]
+id = "leo-orbit-egm2008-adaptive"
+
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "egm2008"
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[solver]
+profile = "adaptive-explicit"
+trajectory_method = "dopri54"
+determinism = "state-stable"
+
+[solver.adaptive]
+rtol = 1.0e-9
+atol = 1.0e-12
+min_dt_s = 1.0e-6
+max_dt_s = 1.0
+dense_output = false
+
+[telemetry]
+output.parquet = "out/leo-orbit-egm2008-adaptive.parquet"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true

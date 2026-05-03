@@ -134,6 +134,17 @@ pub trait Integratable: VehicleState {
     /// unconstrained states. Rigid-body implementations override to
     /// renormalise the orientation quaternion.
     fn project(&mut self) {}
+
+    /// Phase-5.D.4 — scalar L2 norm of the state's vector components,
+    /// used by the adaptive-step integrator's tolerance scaling
+    /// `err = h · ||e|| / (atol + rtol · scalar_state_size)`.
+    ///
+    /// The shipped implementations sum every numeric component in a
+    /// locked order (no FMA); see the per-state impls in
+    /// `crate::point_mass_impl` / `crate::rigid_body_impl` for the
+    /// component lists.
+    #[must_use]
+    fn scalar_state_size(&self) -> f64;
 }
 
 // ---------------------------------------------------------------------
@@ -216,6 +227,21 @@ mod point_mass_impl {
 
         // `project()` defaults to no-op for PointMassState; an
         // unconstrained 3-DOF state has no manifold to project onto.
+
+        fn scalar_state_size(&self) -> f64 {
+            // Locked-order squared sum: position₀..₂, velocity₀..₂, mass.
+            // No FMA.
+            let mut s = 0.0_f64;
+            s += self.position.vector.x * self.position.vector.x;
+            s += self.position.vector.y * self.position.vector.y;
+            s += self.position.vector.z * self.position.vector.z;
+            s += self.velocity.vector.x * self.velocity.vector.x;
+            s += self.velocity.vector.y * self.velocity.vector.y;
+            s += self.velocity.vector.z * self.velocity.vector.z;
+            let mass_kg = self.mass.get::<kilogram>();
+            s += mass_kg * mass_kg;
+            s.sqrt()
+        }
     }
 }
 
@@ -352,6 +378,37 @@ mod rigid_body_impl {
                         UnitQuaternion::new_unchecked(normalised),
                     );
             }
+        }
+
+        fn scalar_state_size(&self) -> f64 {
+            // Locked-order squared sum: position, velocity, quaternion
+            // (4 components — magnitude ≈ 1 by manifold constraint),
+            // angular velocity, mass, center-of-mass offset, inertia
+            // diagonal (3 entries — off-diagonal entries are skipped to
+            // avoid double-counting the symmetric structure). No FMA.
+            let mut s = 0.0_f64;
+            for v in self.position.vector.iter() {
+                s += v * v;
+            }
+            for v in self.velocity.vector.iter() {
+                s += v * v;
+            }
+            for v in self.orientation.q.coords.iter() {
+                s += v * v;
+            }
+            for v in self.angular_velocity.vector.iter() {
+                s += v * v;
+            }
+            let mass_kg = self.mass_props.mass.get::<kilogram>();
+            s += mass_kg * mass_kg;
+            for v in self.mass_props.center_of_mass_body.vector.iter() {
+                s += v * v;
+            }
+            for i in 0..3 {
+                let d = self.mass_props.inertia_body[(i, i)];
+                s += d * d;
+            }
+            s.sqrt()
         }
     }
 }

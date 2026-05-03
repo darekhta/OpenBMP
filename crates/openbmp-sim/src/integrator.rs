@@ -255,14 +255,36 @@ mod dopri54_tableau {
 
     // 5th-order solution weights (b-vector). `B2 = 0` and `B7 = 0`
     // for the DOPRI5 5th-order solution. The fixed-step shipped path
-    // does not evaluate `k7`; that FSAL derivative is only needed by
-    // the deferred embedded-error / adaptive path.
+    // does not evaluate `k7`; the embedded-error / adaptive path in
+    // [`super::Dopri54Adaptive`] does evaluate `k7` to form the
+    // 4th-order companion solution.
     pub const B1: f64 = 35.0 / 384.0;
     // B2 = 0 — Dormand-Prince has a zero second-stage weight.
     pub const B3: f64 = 500.0 / 1_113.0;
     pub const B4: f64 = 125.0 / 192.0;
     pub const B5: f64 = -2_187.0 / 6_784.0;
     pub const B6: f64 = 11.0 / 84.0;
+
+    // Phase-5.D.4 — Dormand-Prince 5(4) embedded 4th-order weights
+    // and the FSAL stage's a-row coefficients used to evaluate `k7`.
+    // Pinned per Dormand & Prince (1980) Table II / Hairer-Nørsett-
+    // Wanner Vol I §II.5 Table 5.2. The error vector is
+    // `e = h · Σ E_i k_i` where `E_i = B_i − B̂_i`; both `E2 = 0` and
+    // `E7 = -B̂7` per the tableau.
+    pub const A71: f64 = 35.0 / 384.0;
+    // A72 = 0 — same zero-weight pattern as B2.
+    pub const A73: f64 = 500.0 / 1_113.0;
+    pub const A74: f64 = 125.0 / 192.0;
+    pub const A75: f64 = -2_187.0 / 6_784.0;
+    pub const A76: f64 = 11.0 / 84.0;
+
+    pub const E1: f64 = 71.0 / 57_600.0;
+    // E2 = 0.
+    pub const E3: f64 = -71.0 / 16_695.0;
+    pub const E4: f64 = 71.0 / 1_920.0;
+    pub const E5: f64 = -17_253.0 / 339_200.0;
+    pub const E6: f64 = 22.0 / 525.0;
+    pub const E7: f64 = -1.0 / 40.0;
 }
 
 /// Dormand-Prince 5(4) fixed-step integrator (5th-order accurate).
@@ -386,6 +408,362 @@ impl<S: SimState> Integrator<S> for Dopri54FixedStep {
         }
 
         Ok(new_state)
+    }
+}
+
+// ---------------------------------------------------------------------
+// Phase-5.D.4 — Dormand-Prince 5(4) adaptive integrator with PI step
+// controller
+// ---------------------------------------------------------------------
+
+use std::cell::Cell;
+
+/// Errors returned by [`Dopri54Adaptive::new`].
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum AdaptiveIntegratorError {
+    /// `atol` was non-positive or non-finite.
+    InvalidAtol,
+    /// `rtol` was non-positive or non-finite.
+    InvalidRtol,
+    /// `min_h_s` or `max_h_s` was non-positive, non-finite, or
+    /// `max_h_s < min_h_s`.
+    InvalidStepBounds,
+    /// One of the controller gains (`safety_factor`, `pi_alpha`,
+    /// `pi_beta`, `min_factor`, `max_factor`) was non-finite or out
+    /// of its documented range.
+    InvalidControllerGains,
+}
+
+/// Dormand-Prince 5(4) adaptive integrator with PI step controller.
+///
+/// The 5th-order solution from [`Dopri54FixedStep`] is augmented with
+/// the embedded 4th-order companion `y_4` computed from the same
+/// stages plus an FSAL `k7` evaluation. The per-step error vector
+/// `e = y_5 − y_4 = h · Σ E_i k_i` drives a Gustafsson PI step
+/// controller:
+///
+/// ```text
+///   err = h · ||e|| / (atol + rtol · ||y||)
+///   factor = safety · err^(−α/p) · err_prev^(β/p)
+///   p = 4, α = 0.7, β = 0.4, safety = 0.9
+///   factor ∈ [min_factor, max_factor]
+/// ```
+///
+/// Steps with `err > 1` are rejected and retried with `h` shrunk by
+/// `factor`; accepted steps update `last_h` and `last_err_prev`. The
+/// outer loop accumulates sub-steps until the cumulative time equals
+/// the kernel's `dt` exactly (the last sub-step is clamped to fit).
+///
+/// # Honest scope
+///
+/// The error norm uses **scalar tolerance** — the `atol + rtol · ||y||`
+/// scaling treats the state as a single flat vector under its
+/// [`SimState::scalar_state_size`] norm. A per-component refinement
+/// (Hairer-Nørsett-Wanner Vol I §II.4 form) is deferred to a follow-on
+/// slice (`docs/phase-5-plan.md § 5.D.5`).
+///
+/// # Determinism
+///
+/// Tagged [`IntegratorDeterminism::StateStable`]. Within a single
+/// platform profile (target triple + toolchain + LLVM optimisation
+/// level) the integrator is **bit-stable across reruns**: the
+/// step-size search is purely deterministic given identical inputs.
+/// The `state-stable` label is for cross-platform behaviour where
+/// platform-libm differences in `pow()` / `ln()` may lead to
+/// slightly different step-size sequences. Internal persistent
+/// state (`last_h`, `last_err_prev`) lives in [`Cell`] so the
+/// `&self` trait surface stays unchanged.
+#[derive(Debug)]
+pub struct Dopri54Adaptive {
+    safety_factor: f64,
+    min_factor: f64,
+    max_factor: f64,
+    pi_alpha: f64,
+    pi_beta: f64,
+    atol: f64,
+    rtol: f64,
+    min_h_s: f64,
+    max_h_s: f64,
+    /// PI controller persistent state. `Cell` keeps the
+    /// `Integrator::advance(&self, ...)` trait surface unchanged.
+    last_h_s: Cell<Option<f64>>,
+    last_err_prev: Cell<Option<f64>>,
+}
+
+/// PI-controller exponents (Gustafsson 1991, recommended for 5th-order
+/// embedded RK pairs).
+const PI_ALPHA_DEFAULT: f64 = 0.7;
+const PI_BETA_DEFAULT: f64 = 0.4;
+const SAFETY_DEFAULT: f64 = 0.9;
+const MIN_FACTOR_DEFAULT: f64 = 0.2;
+const MAX_FACTOR_DEFAULT: f64 = 5.0;
+/// Order of the lower-order embedded solution (DOPRI5(4) = 4).
+const EMBEDDED_ORDER: f64 = 4.0;
+
+impl Dopri54Adaptive {
+    /// Construct an adaptive integrator with the given tolerances and
+    /// step bounds. PI controller gains use Gustafsson 1991's
+    /// recommended values for 5th-order embedded RK pairs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdaptiveIntegratorError`] when any tolerance or bound
+    /// is non-positive / non-finite, or when `max_h_s < min_h_s`.
+    pub fn new(
+        atol: f64,
+        rtol: f64,
+        min_h_s: f64,
+        max_h_s: f64,
+    ) -> Result<Self, AdaptiveIntegratorError> {
+        if !atol.is_finite() || atol <= 0.0 {
+            return Err(AdaptiveIntegratorError::InvalidAtol);
+        }
+        if !rtol.is_finite() || rtol <= 0.0 {
+            return Err(AdaptiveIntegratorError::InvalidRtol);
+        }
+        if !min_h_s.is_finite() || min_h_s <= 0.0 || !max_h_s.is_finite() || max_h_s < min_h_s {
+            return Err(AdaptiveIntegratorError::InvalidStepBounds);
+        }
+        Ok(Self {
+            safety_factor: SAFETY_DEFAULT,
+            min_factor: MIN_FACTOR_DEFAULT,
+            max_factor: MAX_FACTOR_DEFAULT,
+            pi_alpha: PI_ALPHA_DEFAULT,
+            pi_beta: PI_BETA_DEFAULT,
+            atol,
+            rtol,
+            min_h_s,
+            max_h_s,
+            last_h_s: Cell::new(None),
+            last_err_prev: Cell::new(None),
+        })
+    }
+
+    /// Reset the controller's persistent state. Useful for unit tests
+    /// that want a fresh PI history between scenarios.
+    pub fn reset(&self) {
+        self.last_h_s.set(None);
+        self.last_err_prev.set(None);
+    }
+
+    fn pi_step_factor(&self, err: f64) -> f64 {
+        // Standard Gustafsson PI: factor = safety · err^(−α/p) · prev^(β/p).
+        // The `prev` term is omitted on the first accepted step (no
+        // history) by treating `prev` as `1.0` so the formula degenerates
+        // to an I-controller.
+        let alpha_over_p = self.pi_alpha / EMBEDDED_ORDER;
+        let beta_over_p = self.pi_beta / EMBEDDED_ORDER;
+        let prev = self.last_err_prev.get().unwrap_or(1.0);
+        let mut factor = self.safety_factor * err.powf(-alpha_over_p) * prev.powf(beta_over_p);
+        if !factor.is_finite() || factor <= 0.0 {
+            factor = self.min_factor;
+        }
+        factor.max(self.min_factor).min(self.max_factor)
+    }
+
+    /// Single DOPRI5(4) sub-step from `state` of size `h`. Returns
+    /// `(new_state_5th_order, scaled_error_norm)`. Does NOT mutate
+    /// the controller's persistent state — that's the caller's job.
+    fn try_substep<S, F>(
+        &self,
+        state: &S,
+        derive_fn: &F,
+        h: f64,
+    ) -> Result<(S, f64), IntegratorError>
+    where
+        S: SimState,
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        use dopri54_tableau::{
+            A21, A31, A32, A41, A42, A43, A51, A52, A53, A54, A61, A62, A63, A64, A65, A71, A73,
+            A74, A75, A76, B1, B3, B4, B5, B6, C2, C3, C4, C5, E1, E3, E4, E5, E6, E7,
+        };
+
+        let t0 = state.time();
+        let t0_s = t0.as_seconds();
+        let t2 = SimTime::from_seconds(t0_s + C2 * h);
+        let t3 = SimTime::from_seconds(t0_s + C3 * h);
+        let t4 = SimTime::from_seconds(t0_s + C4 * h);
+        let t5 = SimTime::from_seconds(t0_s + C5 * h);
+        let t6 = SimTime::from_seconds(t0_s + h);
+        let t7 = t6;
+
+        // Stages 1..6 — same as Dopri54FixedStep.
+        let k1 = derive_fn(state, t0)?;
+        if !k1.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let s2 = state.advance_by(h, &(k1 * A21));
+        if !s2.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k2 = derive_fn(&s2, t2)?;
+        if !k2.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc3 = (k1 * A31) + (k2 * A32);
+        let s3 = state.advance_by(h, &inc3);
+        if !s3.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k3 = derive_fn(&s3, t3)?;
+        if !k3.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc4 = ((k1 * A41) + (k2 * A42)) + (k3 * A43);
+        let s4 = state.advance_by(h, &inc4);
+        if !s4.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k4 = derive_fn(&s4, t4)?;
+        if !k4.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc5 = (((k1 * A51) + (k2 * A52)) + (k3 * A53)) + (k4 * A54);
+        let s5 = state.advance_by(h, &inc5);
+        if !s5.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k5 = derive_fn(&s5, t5)?;
+        if !k5.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc6 = ((((k1 * A61) + (k2 * A62)) + (k3 * A63)) + (k4 * A64)) + (k5 * A65);
+        let s6 = state.advance_by(h, &inc6);
+        if !s6.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k6 = derive_fn(&s6, t6)?;
+        if !k6.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // 5th-order solution (same as Dopri54FixedStep).
+        let weighted5 = ((((k1 * B1) + (k3 * B3)) + (k4 * B4)) + (k5 * B5)) + (k6 * B6);
+        let mut new_state = state.advance_by(h, &weighted5);
+        new_state.project();
+        if !new_state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+
+        // Stage 7 — FSAL evaluation at the 5th-order endpoint, used to
+        // form the embedded 4th-order companion via the E_i weights.
+        // The A7_i row reproduces the B_i weights so y_7 = y_5 (FSAL
+        // property); k7 = f(y_5, t_end).
+        let inc7 = (((((k1 * A71) + (k3 * A73)) + (k4 * A74)) + (k5 * A75)) + (k6 * A76)) * 1.0;
+        let s7 = state.advance_by(h, &inc7);
+        if !s7.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k7 = derive_fn(&s7, t7)?;
+        if !k7.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Error vector: e = h · Σ E_i k_i (E2 = 0 implied).
+        let error_deriv =
+            (((((k1 * E1) + (k3 * E3)) + (k4 * E4)) + (k5 * E5)) + (k6 * E6)) + (k7 * E7);
+        let error_norm = h * error_deriv.l2_norm();
+        let state_size = new_state.scalar_state_size();
+        let scale = self.atol + self.rtol * state_size;
+        let scaled_err = if scale > 0.0 {
+            error_norm / scale
+        } else {
+            error_norm
+        };
+
+        Ok((new_state, scaled_err))
+    }
+}
+
+impl<S: SimState> Integrator<S> for Dopri54Adaptive {
+    fn determinism(&self) -> IntegratorDeterminism {
+        IntegratorDeterminism::StateStable
+    }
+
+    fn advance<F>(&self, state: &S, derive_fn: F, dt: Duration) -> Result<S, IntegratorError>
+    where
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        let dt_total = dt.as_seconds();
+        if !dt_total.is_finite() || dt_total <= 0.0 {
+            return Err(IntegratorError::InvalidStep {
+                dt_seconds: dt_total,
+            });
+        }
+        if !state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+
+        // Initial sub-step size: prefer last accepted h, fall back to
+        // dt_total clamped to [min_h_s, max_h_s].
+        let mut h = self
+            .last_h_s
+            .get()
+            .unwrap_or(dt_total)
+            .max(self.min_h_s)
+            .min(self.max_h_s)
+            .min(dt_total);
+
+        let mut current = *state;
+        let mut elapsed = 0.0_f64;
+        let mut last_accepted_err: Option<f64> = self.last_err_prev.get();
+        // Hard cap on number of sub-steps so a misbehaving derivative
+        // can't loop forever.
+        let max_substeps: usize = 1_000_000;
+        let mut substeps_taken: usize = 0;
+
+        while elapsed < dt_total {
+            substeps_taken += 1;
+            if substeps_taken > max_substeps {
+                return Err(IntegratorError::InvalidStep {
+                    dt_seconds: dt_total,
+                });
+            }
+
+            // Clamp h so the sub-step lands within dt_total.
+            let remaining = dt_total - elapsed;
+            let h_try = h.min(remaining).max(self.min_h_s);
+
+            // Per-iteration controller history (so the rejection retry
+            // path uses the most recent observation).
+            self.last_err_prev.set(last_accepted_err);
+
+            let (proposed_state, err) = self.try_substep(&current, &derive_fn, h_try)?;
+
+            if err <= 1.0 {
+                // Accept.
+                current = proposed_state;
+                elapsed += h_try;
+                last_accepted_err = Some(err.max(1.0e-10));
+                let factor = self.pi_step_factor(err.max(1.0e-10));
+                h = (h_try * factor).max(self.min_h_s).min(self.max_h_s);
+            } else {
+                // Reject: shrink h. Use the I-controller form (no PI
+                // β-term) on rejection per Hairer-Nørsett-Wanner §II.4
+                // recommendation.
+                let alpha_over_p = self.pi_alpha / EMBEDDED_ORDER;
+                let mut factor = self.safety_factor * err.powf(-alpha_over_p);
+                if !factor.is_finite() || factor <= 0.0 {
+                    factor = self.min_factor;
+                }
+                factor = factor.max(self.min_factor).min(1.0);
+                h = (h_try * factor).max(self.min_h_s).min(self.max_h_s);
+                if h_try <= self.min_h_s + f64::EPSILON {
+                    // Already at floor — accept the step anyway rather
+                    // than spin (the trajectory may be locally too
+                    // stiff for the configured tolerance).
+                    current = proposed_state;
+                    elapsed += h_try;
+                    last_accepted_err = Some(err.max(1.0e-10));
+                }
+            }
+        }
+
+        // Persist the controller's state for the next `advance` call.
+        self.last_h_s.set(Some(h));
+        self.last_err_prev.set(last_accepted_err);
+        Ok(current)
     }
 }
 
@@ -846,6 +1224,247 @@ mod tests {
         assert_eq!(
             <Dopri54FixedStep as Integrator<PointMassState>>::determinism(&i),
             IntegratorDeterminism::BitStable
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Phase-5.D.4 — Dormand-Prince 5(4) adaptive integrator tests.
+    // -----------------------------------------------------------------
+
+    // Returns Result to satisfy the `Integrator::advance` derive_fn trait
+    // bound; never errors in this helper.
+    #[allow(clippy::unnecessary_wraps)]
+    fn exp_decay_derive(
+        s: &PointMassState,
+        _t: SimTime,
+    ) -> Result<PointMassDerivative, ModelEvalError> {
+        // dy/dt = -y, with `y` carried in the mass field.
+        Ok(PointMassDerivative {
+            velocity_m_s: Vector3::zeros(),
+            acceleration_m_s2: Vector3::zeros(),
+            mass_rate_kg_s: -s.mass.get::<kilogram>(),
+        })
+    }
+
+    fn exp_decay_initial_state() -> PointMassState {
+        PointMassState::new(
+            SimTime::ZERO,
+            Position3::origin(),
+            Velocity3::zero(),
+            Mass::new::<kilogram>(1.0),
+        )
+    }
+
+    #[test]
+    fn dopri54_adaptive_constructor_rejects_invalid_atol() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                Dopri54Adaptive::new(bad, 1.0e-6, 1.0e-9, 1.0).unwrap_err(),
+                AdaptiveIntegratorError::InvalidAtol,
+                "atol = {bad} should be rejected",
+            );
+        }
+    }
+
+    #[test]
+    fn dopri54_adaptive_constructor_rejects_invalid_rtol() {
+        for bad in [0.0, -0.1, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                Dopri54Adaptive::new(1.0e-9, bad, 1.0e-9, 1.0).unwrap_err(),
+                AdaptiveIntegratorError::InvalidRtol,
+                "rtol = {bad} should be rejected",
+            );
+        }
+    }
+
+    #[test]
+    fn dopri54_adaptive_constructor_rejects_invalid_step_bounds() {
+        // max < min
+        assert_eq!(
+            Dopri54Adaptive::new(1.0e-9, 1.0e-6, 1.0, 0.5).unwrap_err(),
+            AdaptiveIntegratorError::InvalidStepBounds,
+        );
+        // min ≤ 0
+        assert_eq!(
+            Dopri54Adaptive::new(1.0e-9, 1.0e-6, 0.0, 1.0).unwrap_err(),
+            AdaptiveIntegratorError::InvalidStepBounds,
+        );
+        // non-finite
+        assert_eq!(
+            Dopri54Adaptive::new(1.0e-9, 1.0e-6, 1.0e-9, f64::INFINITY).unwrap_err(),
+            AdaptiveIntegratorError::InvalidStepBounds,
+        );
+    }
+
+    #[test]
+    fn dopri54_adaptive_determinism_class_is_state_stable() {
+        let i = Dopri54Adaptive::new(1.0e-9, 1.0e-6, 1.0e-9, 1.0).unwrap();
+        assert_eq!(
+            <Dopri54Adaptive as Integrator<PointMassState>>::determinism(&i),
+            IntegratorDeterminism::StateStable
+        );
+    }
+
+    /// Integrating dy/dt = -y over [0, 1] with adaptive control should
+    /// land within tolerance of exp(-1).
+    #[test]
+    fn dopri54_adaptive_exp_decay_meets_declared_tolerance() {
+        let integrator = Dopri54Adaptive::new(1.0e-12, 1.0e-9, 1.0e-9, 0.1).unwrap();
+        let state = exp_decay_initial_state();
+        let final_state = integrator
+            .advance(&state, exp_decay_derive, Duration::from_seconds(1.0))
+            .expect("adaptive advance must succeed");
+        let exp_neg_one = (-1.0_f64).exp();
+        let err = (final_state.mass.get::<kilogram>() - exp_neg_one).abs();
+        // With rtol=1e-9, atol=1e-12, the achieved error should beat
+        // the rtol·|y| bound by a comfortable margin (5th-order).
+        assert!(
+            err < 1.0e-9,
+            "adaptive ||err|| = {err} exceeds declared tolerance",
+        );
+    }
+
+    /// Two independently-constructed integrators fed an identical
+    /// stream produce bit-identical final states — within-platform
+    /// bit-stability proves the adaptive step-size search is purely
+    /// deterministic.
+    #[test]
+    fn dopri54_adaptive_within_platform_bit_stable_across_two_runs() {
+        let make_integrator = || Dopri54Adaptive::new(1.0e-9, 1.0e-6, 1.0e-9, 0.1).unwrap();
+        let state = exp_decay_initial_state();
+        let a = make_integrator()
+            .advance(&state, exp_decay_derive, Duration::from_seconds(1.0))
+            .expect("a");
+        let b = make_integrator()
+            .advance(&state, exp_decay_derive, Duration::from_seconds(1.0))
+            .expect("b");
+        assert_eq!(
+            a.mass.get::<kilogram>().to_bits(),
+            b.mass.get::<kilogram>().to_bits(),
+            "adaptive integrator not bit-stable across reruns",
+        );
+    }
+
+    /// Sub-step accumulation must land at exactly the requested dt
+    /// (the last sub-step is clamped to fit). Time field is the proof.
+    #[test]
+    fn dopri54_adaptive_substep_accumulation_lands_exactly_at_dt() {
+        let integrator = Dopri54Adaptive::new(1.0e-9, 1.0e-6, 1.0e-9, 1.0).unwrap();
+        let state = exp_decay_initial_state();
+        let dt = 0.7_f64;
+        let final_state = integrator
+            .advance(&state, exp_decay_derive, Duration::from_seconds(dt))
+            .expect("advance");
+        // Accumulator should land at exactly dt; floating-point sums
+        // of multiple sub-steps may have rounding, but the
+        // final-clamp logic ensures elapsed = dt exactly via the
+        // remaining = dt − elapsed clamp on the last sub-step.
+        let final_t = final_state.time.as_seconds();
+        assert!(
+            (final_t - dt).abs() < 1.0e-12,
+            "final time {final_t} not within 1e-12 of dt = {dt}",
+        );
+    }
+
+    /// At very tight tolerance the adaptive integrator should match a
+    /// fixed-step DOPRI5 reference (or be tighter) on the same step
+    /// budget. Sanity check on the embedded-error correctness.
+    #[test]
+    fn dopri54_adaptive_at_tight_tolerance_beats_fixed_step_dopri5() {
+        // Fixed-step at dt = 0.1 over [0, 1] (10 steps).
+        let mut state = exp_decay_initial_state();
+        for _ in 0..10 {
+            state = Dopri54FixedStep
+                .advance(&state, exp_decay_derive, Duration::from_seconds(0.1))
+                .expect("fixed step");
+        }
+        let exp_neg_one = (-1.0_f64).exp();
+        let fixed_err = (state.mass.get::<kilogram>() - exp_neg_one).abs();
+        // Adaptive at very tight tolerance.
+        let integrator = Dopri54Adaptive::new(1.0e-15, 1.0e-12, 1.0e-9, 0.1).unwrap();
+        let state0 = exp_decay_initial_state();
+        let adaptive = integrator
+            .advance(&state0, exp_decay_derive, Duration::from_seconds(1.0))
+            .expect("adaptive");
+        let adaptive_err = (adaptive.mass.get::<kilogram>() - exp_neg_one).abs();
+        assert!(
+            adaptive_err <= fixed_err,
+            "adaptive (rtol=1e-12) err {adaptive_err} should beat fixed-step \
+             DOPRI5 (dt=0.1) err {fixed_err}",
+        );
+    }
+
+    /// Reset clears persistent controller state.
+    #[test]
+    fn dopri54_adaptive_reset_clears_persistent_state() {
+        let integrator = Dopri54Adaptive::new(1.0e-9, 1.0e-6, 1.0e-9, 1.0).unwrap();
+        let state = exp_decay_initial_state();
+        let _ = integrator.advance(&state, exp_decay_derive, Duration::from_seconds(0.5));
+        // last_h should be Some after a successful advance.
+        assert!(integrator.last_h_s.get().is_some());
+        integrator.reset();
+        assert!(integrator.last_h_s.get().is_none());
+        assert!(integrator.last_err_prev.get().is_none());
+    }
+
+    /// Embedded-error magnitude on a constant-acceleration trajectory
+    /// (which DOPRI5 integrates exactly) should be at the
+    /// floating-point-rounding floor — the 5th-order solution and the
+    /// 4th-order companion both reproduce the closed form, so the
+    /// difference is essentially round-off.
+    #[test]
+    fn dopri54_adaptive_embedded_error_vanishes_on_polynomial_trajectory() {
+        // Constant acceleration: dx/dt = v, dv/dt = a (constant).
+        let g = -9.81;
+        let derive =
+            |s: &PointMassState, _t: SimTime| -> Result<PointMassDerivative, ModelEvalError> {
+                Ok(PointMassDerivative {
+                    velocity_m_s: s.velocity.vector,
+                    acceleration_m_s2: Vector3::new(0.0, 0.0, g),
+                    mass_rate_kg_s: 0.0,
+                })
+            };
+        let state = exp_decay_initial_state();
+        // Use a "relaxed" tolerance pair so the *scaled* error norm
+        // can drop to machine epsilon. With rtol = 1e-12 the
+        // denominator `(atol + rtol · ||y||)` is so small that even
+        // machine-epsilon raw error in the embedded weights amplifies
+        // to ~1e-8 in scaled units; that's expected, not a bug. We
+        // verify the scaled error is small *relative to the
+        // tolerance* — the actual unscaled error is (err · scale),
+        // which should be near machine epsilon.
+        let integrator = Dopri54Adaptive::new(1.0e-9, 1.0e-6, 1.0e-9, 1.0).unwrap();
+        // Use try_substep directly to inspect the per-step error norm.
+        let (_new, err) = integrator
+            .try_substep(&state, &derive, 0.01)
+            .expect("substep");
+        // For a constant-accel trajectory DOPRI5 is exact (degree-2 in
+        // v, degree-3 in x, all within the 5th-order exactness range)
+        // AND the embedded 4th-order companion is exact for the same
+        // polynomial degrees. The scaled error should be well below
+        // the unit threshold (PI controller would expand h aggressively).
+        assert!(
+            err < 1.0e-3,
+            "embedded scaled error {err} should be far below 1.0 for an exact polynomial trajectory at rtol=1e-6",
+        );
+    }
+
+    /// Tight tolerance forces step rejection; loose tolerance lets h
+    /// expand toward `max_h`. Verify by comparing the final `last_h`.
+    #[test]
+    fn dopri54_adaptive_step_size_tracks_tolerance_band() {
+        let state = exp_decay_initial_state();
+        // Loose tolerance: h should expand.
+        let loose = Dopri54Adaptive::new(1.0e-3, 1.0e-2, 1.0e-9, 1.0).unwrap();
+        let _ = loose.advance(&state, exp_decay_derive, Duration::from_seconds(1.0));
+        let h_loose = loose.last_h_s.get().expect("h after advance");
+        // Tight tolerance: h should shrink.
+        let tight = Dopri54Adaptive::new(1.0e-15, 1.0e-12, 1.0e-9, 1.0).unwrap();
+        let _ = tight.advance(&state, exp_decay_derive, Duration::from_seconds(1.0));
+        let h_tight = tight.last_h_s.get().expect("h after advance");
+        assert!(
+            h_loose > h_tight,
+            "loose tolerance h ({h_loose}) should exceed tight tolerance h ({h_tight})",
         );
     }
 

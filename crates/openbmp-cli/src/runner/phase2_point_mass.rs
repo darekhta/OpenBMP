@@ -51,7 +51,7 @@ use openbmp_propulsion::{Motor, MotorError, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
     ConstantGravityForce, ConstantMass, EndTime, ForceContext, ForceModel, MassModel,
-    NullEnvironment, Rk4FixedStep, SimulationConfig, SimulationKernel, StopReason,
+    NullEnvironment, SimulationConfig, SimulationKernel, StopReason,
 };
 use openbmp_state::PointMassState;
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -70,6 +70,7 @@ use crate::runner::atmosphere::{
     RuntimeAtmosphere, build_runtime_atmosphere, is_runtime_atmosphere_kind,
     scenario_atmosphere_kind,
 };
+use crate::runner::integrator::build_runtime_integrator;
 use openbmp_vehicle::Assembly;
 
 // Stable model-ids assigned to each force / mass model the runner
@@ -167,9 +168,14 @@ pub fn run(
     let breakdown_vehicle = build_vehicle(document, &loaded_models, &assembly)?;
     let mass_model = BoxedMassModel(build_mass_model(document, &loaded_models, &assembly)?);
 
+    // Phase-5.D.4 — runtime integrator dispatch from the scenario
+    // [solver] block. Defaults to Rk4FixedStep when [solver] is
+    // absent, preserving the byte-stable Phase-1 contract for every
+    // existing scenario.
+    let runtime_integrator = build_runtime_integrator(document)?;
     let config = SimulationConfig {
         initial_state,
-        integrator: Rk4FixedStep,
+        integrator: runtime_integrator,
         force_model: kernel_vehicle,
         mass_model,
         environment: NullEnvironment,

@@ -59,7 +59,10 @@ pub use events::{
     EventTrigger, FiredEvent, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
     PhaseTransition,
 };
-pub use integrator::{Dopri54FixedStep, Integrator, IntegratorDeterminism, Rk4FixedStep};
+pub use integrator::{
+    AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Integrator, IntegratorDeterminism,
+    Rk4FixedStep,
+};
 pub use kernel::{Phase1Kernel, RigidBodyKernel, RigidModels, SimulationConfig, SimulationKernel};
 pub use models::{
     ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshotView,

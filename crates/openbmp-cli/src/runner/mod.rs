@@ -38,6 +38,7 @@ pub mod effectors;
 pub mod engines;
 pub mod fc;
 pub mod fc_bridge;
+pub mod integrator;
 pub mod mission;
 pub mod phase1;
 pub mod phase2_point_mass;

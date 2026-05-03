@@ -38,12 +38,33 @@ use nalgebra::{Matrix3, Quaternion as NalgebraQuaternion, Vector3};
 /// Only the operations the explicit Runge-Kutta family needs are
 /// required: finiteness, addition, and scalar multiplication. The
 /// integrator combines stages itself.
+///
+/// Phase-5.D.4 added [`SimStateDerivative::l2_norm`] and
+/// [`SimStateDerivative::dimension`] so the embedded-error /
+/// adaptive-step DOPRI5(4) integrator can compute a scaled error
+/// norm without componentwise access to the state. The shipped
+/// integrator uses the **scalar approximation** `err = h · ||e||
+/// / (atol + rtol · ||y||)` — a per-component tolerance refinement
+/// is deferred (see `docs/phase-5-plan.md § 5.D.5`).
 pub trait SimStateDerivative:
     Copy + std::fmt::Debug + Add<Output = Self> + Mul<f64, Output = Self>
 {
     /// Returns `true` if every numeric component is finite.
     #[must_use]
     fn is_finite(&self) -> bool;
+
+    /// Phase-5.D.4 — Euclidean (L2) norm over every numeric
+    /// component of the derivative, treating it as a flat vector in
+    /// `R^dim`. Used by the adaptive integrator's scaled error norm.
+    /// Locked operand order, no FMA.
+    #[must_use]
+    fn l2_norm(&self) -> f64;
+
+    /// Phase-5.D.4 — total number of scalar components participating
+    /// in [`SimStateDerivative::l2_norm`]. Used by the adaptive
+    /// integrator's RMS denominator.
+    #[must_use]
+    fn dimension(&self) -> usize;
 }
 
 /// Time-derivative of a [`openbmp_state::PointMassState`].
@@ -125,6 +146,25 @@ impl SimStateDerivative for PointMassDerivative {
         self.velocity_m_s.iter().all(|v| v.is_finite())
             && self.acceleration_m_s2.iter().all(|v| v.is_finite())
             && self.mass_rate_kg_s.is_finite()
+    }
+
+    fn l2_norm(&self) -> f64 {
+        // Locked-order squared sum: velocity₀..₂, acceleration₀..₂,
+        // mass_rate. No FMA.
+        let mut s = 0.0_f64;
+        s += self.velocity_m_s.x * self.velocity_m_s.x;
+        s += self.velocity_m_s.y * self.velocity_m_s.y;
+        s += self.velocity_m_s.z * self.velocity_m_s.z;
+        s += self.acceleration_m_s2.x * self.acceleration_m_s2.x;
+        s += self.acceleration_m_s2.y * self.acceleration_m_s2.y;
+        s += self.acceleration_m_s2.z * self.acceleration_m_s2.z;
+        s += self.mass_rate_kg_s * self.mass_rate_kg_s;
+        s.sqrt()
+    }
+
+    fn dimension(&self) -> usize {
+        // 3 (velocity) + 3 (acceleration) + 1 (mass rate) = 7.
+        7
     }
 }
 
@@ -272,6 +312,41 @@ impl SimStateDerivative for RigidBodyDerivative {
                 .all(|v| v.is_finite())
             && self.inertia_rate_body.iter().all(|v| v.is_finite())
     }
+
+    fn l2_norm(&self) -> f64 {
+        // Locked-order squared sum across every numeric component.
+        // Vector and matrix components are summed in fixed
+        // (row, col) traversal order; quaternion uses the underlying
+        // (x, y, z, w) coords order. No FMA.
+        let mut s = 0.0_f64;
+        for v in self.velocity_m_s_eci.iter() {
+            s += v * v;
+        }
+        for v in self.acceleration_m_s2_eci.iter() {
+            s += v * v;
+        }
+        for v in self.quaternion_rate.coords.iter() {
+            s += v * v;
+        }
+        for v in self.angular_acceleration_rad_s2_body.iter() {
+            s += v * v;
+        }
+        s += self.mass_rate_kg_s * self.mass_rate_kg_s;
+        for v in self.center_of_mass_rate_body_m_s.iter() {
+            s += v * v;
+        }
+        for v in self.inertia_rate_body.iter() {
+            s += v * v;
+        }
+        s.sqrt()
+    }
+
+    fn dimension(&self) -> usize {
+        // 3 (velocity) + 3 (acceleration) + 4 (quaternion rate) +
+        // 3 (angular accel) + 1 (mass rate) + 3 (cg rate) +
+        // 9 (3x3 inertia rate) = 26.
+        26
+    }
 }
 
 #[cfg(test)]
@@ -411,5 +486,67 @@ mod tests {
         assert_abs_diff_eq!(s.quaternion_rate.coords[3], 1.5, epsilon = 1.0e-15);
         assert_abs_diff_eq!(s.mass_rate_kg_s, 1.5, epsilon = 1.0e-15);
         assert_abs_diff_eq!(s.inertia_rate_body[(2, 2)], 1.5, epsilon = 1.0e-15);
+    }
+
+    // -----------------------------------------------------------------
+    // Phase-5.D.4 — `l2_norm()` / `dimension()` invariants used by the
+    // adaptive-step DOPRI5(4) integrator's scaled error norm.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn point_mass_derivative_l2_norm_matches_hand_computed_sum() {
+        // (3, 4, 0) velocity, (0, 0, 0) accel, mass_rate = 0
+        // → ||v|| = 5, others zero, total = 5.
+        let d = PointMassDerivative::new(Vector3::new(3.0, 4.0, 0.0), Vector3::zeros(), 0.0);
+        assert_abs_diff_eq!(d.l2_norm(), 5.0, epsilon = 1.0e-15);
+        // Add (0, 0, 0) velocity, (3, 4, 0) accel, mass_rate = 12
+        // → 0 + 25 + 144 = 169 → norm = 13.
+        let d = PointMassDerivative::new(Vector3::zeros(), Vector3::new(3.0, 4.0, 0.0), 12.0);
+        assert_abs_diff_eq!(d.l2_norm(), 13.0, epsilon = 1.0e-15);
+        assert_eq!(d.dimension(), 7);
+    }
+
+    #[test]
+    fn rigid_body_derivative_l2_norm_matches_full_componentwise_sum() {
+        let mut d = RigidBodyDerivative::zero();
+        d.velocity_m_s_eci = Vector3::new(3.0, 4.0, 0.0); // ||·||² = 25
+        d.acceleration_m_s2_eci = Vector3::new(0.0, 0.0, 12.0); // ||·||² = 144
+        // sqrt(25 + 144) = 13
+        assert_abs_diff_eq!(d.l2_norm(), 13.0, epsilon = 1.0e-15);
+        // 3+3+4+3+1+3+9 = 26
+        assert_eq!(d.dimension(), 26);
+    }
+
+    #[test]
+    fn point_mass_derivative_l2_norm_is_bit_stable_across_two_calls() {
+        // Locked-order summation: same inputs → bit-identical norms.
+        let d = PointMassDerivative::new(
+            Vector3::new(1.5, -2.25, 3.75),
+            Vector3::new(-0.1, 0.2, -0.3),
+            0.05,
+        );
+        let a = d.l2_norm();
+        let b = d.l2_norm();
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "L2 norm not bit-stable across two calls",
+        );
+    }
+
+    #[test]
+    fn rigid_body_derivative_l2_norm_is_bit_stable_across_two_calls() {
+        let mut d = RigidBodyDerivative::zero();
+        d.velocity_m_s_eci = Vector3::new(1.5, -2.25, 3.75);
+        d.acceleration_m_s2_eci = Vector3::new(-0.1, 0.2, -0.3);
+        d.angular_acceleration_rad_s2_body = Vector3::new(0.05, -0.05, 0.0);
+        d.mass_rate_kg_s = 0.001;
+        let a = d.l2_norm();
+        let b = d.l2_norm();
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "L2 norm not bit-stable across two calls",
+        );
     }
 }
