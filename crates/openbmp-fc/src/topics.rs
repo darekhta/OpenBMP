@@ -350,8 +350,10 @@ impl Topic for AutopilotStatus {
 }
 
 /// Maximum number of effector-specific commands published by the FC
-/// mixer in one tick.
-pub const MAX_EFFECTOR_COMMANDS: usize = 4;
+/// mixer in one tick. Kept above the legacy four-channel surface so
+/// over-actuated direct-torque demos do not silently truncate as soon
+/// as future scenarios add modest redundancy.
+pub const MAX_EFFECTOR_COMMANDS: usize = 16;
 
 /// One effector-specific command after mixer phase gating.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]

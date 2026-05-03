@@ -4684,6 +4684,14 @@ impl FcAutopilotAllocationConfig {
     fn validate(&self) -> Result<(), ScenarioError> {
         if let Some(priority) = &self.axis_priority {
             require_non_empty_list("fc.autopilot_allocation.axis_priority", priority)?;
+            if priority.len() != 3 {
+                let value = f64::from(u32::try_from(priority.len()).unwrap_or(u32::MAX));
+                return Err(ScenarioError::InvalidNumber {
+                    field: "fc.autopilot_allocation.axis_priority".to_owned(),
+                    value,
+                    rule: "must list exactly [roll, pitch, yaw] once each",
+                });
+            }
             require_unique("fc.autopilot_allocation.axis_priority", priority)?;
             for (index, axis) in priority.iter().enumerate() {
                 require_supported(

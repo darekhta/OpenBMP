@@ -559,10 +559,12 @@ ships the **single-axis-effector case**:
   `crates/openbmp-fc/src/allocation.rs`. Each `direct_torque`
   effector contributes to exactly one body axis; the allocator
   groups effectors by axis and distributes the autopilot's per-axis
-  torque demand proportional to per-effector capacity. When
-  `|τ_a| ≤ Σ Lᵢ` the split is exact and proportional; when the
-  demand exceeds the axis's total capacity, every effector pulls
-  at its limit and the axis is reported as saturated.
+  torque demand proportional to per-effector capacity. Phase
+  authority is applied before the capacity calculation: disallowed
+  effectors receive explicit zero commands and do not contribute to
+  `Σ Lᵢ`. When `|τ_a| ≤ Σ Lᵢ` the split is exact and proportional;
+  when demand exceeds the allowed axis capacity, every allowed
+  effector pulls at its limit and the axis is reported as saturated.
 - Pseudo-inverse allocator (parsed but **not** yet consumed) —
   `FcAutopilotAllocationKind::PseudoInverse` is rejected by the
   runner with an `UnsupportedScenario` error until a future slice
@@ -573,9 +575,10 @@ ships the **single-axis-effector case**:
   pure surface area.
 - Mixer wiring — `Mixer::with_allocator(allocator)` supersedes the
   legacy channel-map dispatch when set. The `EffectorCommandSet`
-  publish path uses the allocator's per-effector commands (gated
-  per-effector against `authority.effectors`). The legacy
-  `ActuatorCommand` topic is unchanged for downstream consumers.
+  publish path uses the allocator's per-effector commands. The legacy
+  channel map continues to gate the semantic `ActuatorCommand` topic
+  for downstream consumers, but it does not gate the allocator's
+  raw per-axis demand.
 - Per-axis saturation flags propagate through `EffectorCommandSet.
   saturated`. Per-effector saturation flags are deferred to a
   future slice that adds the general G_eff matrix surface.
@@ -599,10 +602,13 @@ pseudo-inverse path; per-effector saturation flags; engine-cluster
 TVC allocation (gimbal vectors per engine producing mixed body
 moments).
 
-**Validation evidence.** Unit + property tests for the pseudo-inverse
-formula; property test that the prioritised allocator never violates
-per-effector limits; closed-loop scenario test for graceful
-degradation under one-effector failure.
+**Validation evidence.** Unit tests cover constructor validation,
+proportional split, unequal-capacity split, sign handling, saturation,
+determinism, priority-order invariance for single-axis effectors, and
+phase-authority capacity exclusion. The e2e allocator scenario asserts
+run-to-completion, exact equal-capacity roll split, and byte-stable
+Parquet across reruns. Pseudo-inverse and coupled-effector property tests
+remain future-slice work.
 
 **References.** Härkegård, O., *Efficient active set algorithms for
 solving constrained least squares problems in aircraft control

@@ -38,11 +38,15 @@
 //! per-effector symmetric bound `Lᵢ = max_abs(eᵢ)`, and demand
 //! `τ_a` from the autopilot:
 //!
-//! 1. `Σ L = Σᵢ Lᵢ`. If `Σ L = 0` the axis has no authority and
-//!    every effector receives zero (saturation reported).
-//! 2. Else if `|τ_a| ≤ Σ L`: distribute proportionally —
+//! 1. Apply any phase-authority mask from the mixer. Disallowed
+//!    effectors receive an explicit zero command and do not contribute
+//!    to capacity.
+//! 2. `Σ L = Σᵢ Lᵢ` over the allowed effectors. If `Σ L = 0` the axis
+//!    has no authority and every effector receives zero (saturation
+//!    reported when demand is non-zero).
+//! 3. Else if `|τ_a| ≤ Σ L`: distribute proportionally —
 //!    `uᵢ = τ_a · Lᵢ / Σ L`. No saturation.
-//! 3. Else: clamp at total capacity, every effector gets
+//! 4. Else: clamp at total capacity, every allowed effector gets
 //!    `sign(τ_a) · Lᵢ`. Saturation reported on this axis.
 //!
 //! The output is sign-consistent across the group (every effector
@@ -255,6 +259,27 @@ impl PrioritisedRedistributedAllocator {
     /// yaw`).
     #[must_use]
     pub fn allocate(&self, demand: [f64; 3]) -> AllocationOutput {
+        self.allocate_inner(demand, None)
+    }
+
+    /// Distribute demand while treating only `allowed_effectors` as
+    /// available capacity. Effectors omitted from `allowed_effectors`
+    /// are still emitted with zero commands so downstream racks receive
+    /// an explicit authority withdrawal for that tick.
+    #[must_use]
+    pub fn allocate_with_allowed_effectors(
+        &self,
+        demand: [f64; 3],
+        allowed_effectors: &[EffectorId],
+    ) -> AllocationOutput {
+        self.allocate_inner(demand, Some(allowed_effectors))
+    }
+
+    fn allocate_inner(
+        &self,
+        demand: [f64; 3],
+        allowed_effectors: Option<&[EffectorId]>,
+    ) -> AllocationOutput {
         let mut commands: Vec<(EffectorId, f64)> = Vec::new();
         let mut saturated_axes = [false; 3];
         // Visit axes in priority order. With single-axis effectors
@@ -265,9 +290,13 @@ impl PrioritisedRedistributedAllocator {
         for axis in self.axis_priority {
             let group = &self.per_axis[axis.index()];
             let axis_demand = demand[axis.index()];
-            let total_capacity: f64 = group.iter().map(|(_, l)| *l).sum();
+            let total_capacity: f64 = group
+                .iter()
+                .filter(|(id, _)| effector_allowed(*id, allowed_effectors))
+                .map(|(_, l)| *l)
+                .sum();
             if total_capacity <= 0.0 {
-                // Defensive — `new` rejects this case.
+                // No allowed authority on this axis.
                 for (id, _) in group {
                     commands.push((*id, 0.0));
                 }
@@ -279,7 +308,11 @@ impl PrioritisedRedistributedAllocator {
                 // share of the demand. Sign of `u_i` matches sign
                 // of `axis_demand`.
                 for (id, capacity) in group {
-                    let u = axis_demand * capacity / total_capacity;
+                    let u = if effector_allowed(*id, allowed_effectors) {
+                        axis_demand * capacity / total_capacity
+                    } else {
+                        0.0
+                    };
                     commands.push((*id, u));
                 }
             } else {
@@ -287,7 +320,12 @@ impl PrioritisedRedistributedAllocator {
                 // the direction of the demand.
                 let sign = axis_demand.signum();
                 for (id, capacity) in group {
-                    commands.push((*id, sign * capacity));
+                    let u = if effector_allowed(*id, allowed_effectors) {
+                        sign * capacity
+                    } else {
+                        0.0
+                    };
+                    commands.push((*id, u));
                 }
                 saturated_axes[axis.index()] = true;
             }
@@ -303,6 +341,10 @@ impl PrioritisedRedistributedAllocator {
     pub fn axis_priority(&self) -> [BodyAxis; 3] {
         self.axis_priority
     }
+}
+
+fn effector_allowed(effector_id: EffectorId, allowed_effectors: Option<&[EffectorId]>) -> bool {
+    allowed_effectors.is_none_or(|allowed| allowed.contains(&effector_id))
 }
 
 #[cfg(test)]
@@ -580,6 +622,30 @@ mod tests {
             assert_eq!(lhs.0, rhs.0);
             assert_eq!(lhs.1.to_bits(), rhs.1.to_bits());
         }
+    }
+
+    #[test]
+    fn allocate_with_allowed_effectors_excludes_disallowed_capacity() {
+        let alloc =
+            PrioritisedRedistributedAllocator::new(nominal_priority(), nominal_assignments())
+                .expect("ok");
+        let allowed = [
+            eid("vehicle.assembly.effectors.roll-b"),
+            eid("vehicle.assembly.effectors.pitch"),
+            eid("vehicle.assembly.effectors.yaw"),
+        ];
+        let out = alloc.allocate_with_allowed_effectors([0.3, 0.0, 0.0], &allowed);
+        let by_id: BTreeMap<_, _> = out.commands.iter().map(|(id, u)| (*id, *u)).collect();
+        assert_eq!(
+            by_id[&eid("vehicle.assembly.effectors.roll-a")].to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_abs_diff_eq!(
+            by_id[&eid("vehicle.assembly.effectors.roll-b")],
+            0.2,
+            epsilon = 1.0e-12
+        );
+        assert!(out.saturated_axes[BodyAxis::Roll.index()]);
     }
 
     #[test]

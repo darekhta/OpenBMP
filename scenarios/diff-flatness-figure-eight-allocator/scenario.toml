@@ -18,7 +18,8 @@
 #      on the mixer. The legacy `[fc.actuator_channels]` mapping is
 #      kept (the autopilot publishes its semantic `ActuatorCommand`
 #      topic exactly as before) but the per-effector
-#      `EffectorCommandSet` now flows through the allocator.
+#      `EffectorCommandSet` now flows through the allocator. Phase
+#      authority is applied before the allocator computes capacity.
 #
 # All other autopilot machinery (DifferentialFlatness trajectory
 # loop, attitude PID, rate PID, anti-windup, MEKF) is unchanged

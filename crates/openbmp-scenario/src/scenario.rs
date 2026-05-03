@@ -489,6 +489,26 @@ axis_priority = ["roll", "yaw", "pitch"]
     }
 
     #[test]
+    fn fc_autopilot_allocation_axis_priority_must_list_all_axes() {
+        let block = r#"
+[fc.autopilot_allocation]
+kind          = "prioritised_redistributed"
+axis_priority = ["roll", "yaw"]
+"#;
+        let base = fc_v2_scenario().replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let toml = append(&base, block);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InvalidNumber { ref field, .. }
+                    if field == "fc.autopilot_allocation.axis_priority"
+            ),
+            "expected axis_priority InvalidNumber, got {err:?}"
+        );
+    }
+
+    #[test]
     fn fc_fdir_detector_block_is_v3_only() {
         let block = r#"
 [fc.fdir.detector]

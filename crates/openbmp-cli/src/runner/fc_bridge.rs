@@ -503,8 +503,10 @@ fn build_autopilot_allocator(
             openbmp_scenario::TorqueAxis::Pitch => BodyAxis::Pitch,
             openbmp_scenario::TorqueAxis::Yaw => BodyAxis::Yaw,
         };
-        // Symmetric box check: max_abs = max(|min|, max).
-        if (effector.limits.max + effector.limits.min).abs() > 1.0e-12 {
+        // Symmetric box check: the allocator consumes one positive
+        // capacity per effector, so asymmetric authority must fail
+        // closed instead of being hidden by a tolerance.
+        if !limits_are_exactly_symmetric(effector.limits.min, effector.limits.max) {
             return Err(CliError::UnsupportedScenario {
                 what: format!(
                     "fc.autopilot_allocation = \"prioritised_redistributed\" requires symmetric \
@@ -519,7 +521,7 @@ fn build_autopilot_allocator(
                 effector.id
             )),
             axis: body_axis,
-            max_abs: effector.limits.max.max(-effector.limits.min),
+            max_abs: effector.limits.max,
         });
     }
     if assignments.is_empty() {
@@ -568,6 +570,10 @@ fn build_autopilot_allocator(
                 what: format!("control allocator construction failed: {err}"),
             })?;
     Ok(Some(allocator))
+}
+
+fn limits_are_exactly_symmetric(min: f64, max: f64) -> bool {
+    max.to_bits() == (-min).to_bits()
 }
 
 fn build_magnetic_field(config: &FcConfig) -> Result<Box<dyn MagneticFieldEci>, CliError> {
@@ -840,5 +846,31 @@ impl From<openbmp_sensors::SensorError> for CliError {
         Self::UnsupportedScenario {
             what: format!("sensor bridge error: {value}"),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    const ALLOCATOR_SCENARIO: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scenarios/diff-flatness-figure-eight-allocator/scenario.toml"
+    ));
+
+    #[test]
+    fn allocator_builder_rejects_even_tiny_asymmetric_limits() {
+        let toml = ALLOCATOR_SCENARIO.replacen(
+            "limits           = { min = -0.2, max = 0.2",
+            "limits           = { min = -0.2000000000001, max = 0.2",
+            1,
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let err = build_autopilot_allocator(&scenario).expect_err("asymmetric limits rejected");
+        assert!(
+            matches!(err, CliError::UnsupportedScenario { ref what } if what.contains("requires symmetric effector limits")),
+            "expected symmetric-limit UnsupportedScenario, got {err:?}"
+        );
     }
 }

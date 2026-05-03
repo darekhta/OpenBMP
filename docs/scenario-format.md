@@ -1548,9 +1548,16 @@ axis_priority = ["roll", "yaw", "pitch"]
 ```
 
 `kind` is one of `pseudo_inverse` (Stevens & Lewis 2015 §3.5) or
-`prioritised_redistributed` (Härkegård 2002). `axis_priority` lists
-body-frame axes in highest-first order, restricted to
-`"roll" | "pitch" | "yaw"` with no duplicates.
+`prioritised_redistributed` (Härkegård 2002). Phase 5.A.5 consumes only
+`prioritised_redistributed`; `pseudo_inverse` remains parseable but the
+runner fails closed until the general `G_eff` path lands. `axis_priority`
+lists body-frame axes in highest-first order and must contain exactly
+`"roll"`, `"pitch"`, and `"yaw"` once each.
+
+The Phase-5.A.5 allocator derives capacity only from `direct_torque`
+effectors with exact symmetric limits (`max == -min`). Phase authority is
+applied before the proportional split, so disallowed effectors receive
+zero commands and do not contribute capacity.
 
 #### `[fc.fdir.detector]` — Phase-5 FDIR detector tuning (Phase 5.B.4)
 

@@ -178,8 +178,9 @@ impl Mixer {
     /// allocator supersedes the channel map for the
     /// [`EffectorCommandSet`] publish path; per-effector commands
     /// are gated against the active phase's `allowed_effectors`
-    /// list (effectors not in the allowance are zeroed) but the
-    /// per-axis torque distribution stays inside the allocator.
+    /// list before the proportional split so disallowed effectors do
+    /// not contribute capacity. Disallowed effectors are still emitted
+    /// with zero commands to withdraw authority explicitly.
     #[must_use]
     pub fn with_allocator(mut self, allocator: PrioritisedRedistributedAllocator) -> Self {
         self.allocator = Some(allocator);
@@ -254,12 +255,14 @@ impl Mixer {
             // Body-flap is not part of the rotational allocator
             // surface in 5.A.5 (it's a translational / aero
             // surface). The allocator distributes the three
-            // rotational demands across all effectors assigned to
-            // each axis; per-effector outputs are gated against
-            // `authority.effectors` so a phase that withdraws
-            // authority on a single effector zeroes only that one.
-            let allocation =
-                allocator.allocate([cmd.aileron_rad, cmd.elevator_rad, cmd.rudder_rad]);
+            // rotational demands across the effectors assigned to
+            // each axis. Phase authority is applied before the
+            // capacity calculation so disallowed effectors do not
+            // dilute or inflate the split.
+            let allocation = allocator.allocate_with_allowed_effectors(
+                [cmd.aileron_rad, cmd.elevator_rad, cmd.rudder_rad],
+                &authority.effectors,
+            );
             let mut any_saturated = cmd.saturated;
             for sat in allocation.saturated_axes {
                 any_saturated |= sat;
@@ -269,11 +272,9 @@ impl Mixer {
                 if index >= MAX_EFFECTOR_COMMANDS {
                     break;
                 }
-                let allowed = authority.effectors.contains(&effector_id);
-                let gated_command = if allowed { command } else { 0.0 };
                 set.commands[index] = EffectorCommand {
                     effector_id: effector_id.value(),
-                    command: gated_command,
+                    command,
                     saturated: any_saturated,
                 };
                 set.count = set.count.saturating_add(1);
@@ -359,7 +360,14 @@ impl Job for Mixer {
                 self.last_seen_actuator = new_seq.value();
             }
             if self.channel_map.has_any_mapping() || self.allocator.is_some() {
-                let _ = ctx.bus.publish(self.effector_command_set(gated, authority));
+                let effector_source = if self.allocator.is_some() && actuator_allowed {
+                    cmd
+                } else {
+                    gated
+                };
+                let _ = ctx
+                    .bus
+                    .publish(self.effector_command_set(effector_source, authority));
             }
         }
 
@@ -560,5 +568,103 @@ mod tests {
         assert_eq!(mapped.commands[0].command, 0.0);
         assert_eq!(mapped.commands[1].effector_id, elevator.value());
         assert_eq!(mapped.commands[1].command, 0.4);
+    }
+
+    #[test]
+    fn allocator_uses_raw_axis_demand_and_pre_gates_capacity() {
+        let bus = build_bus();
+        let clock = SimulatedClock::new();
+        let roll_a = EffectorId::from_path("vehicle.assembly.effectors.roll-a");
+        let roll_b = EffectorId::from_path("vehicle.assembly.effectors.roll-b");
+        let pitch = EffectorId::from_path("vehicle.assembly.effectors.pitch");
+        let yaw = EffectorId::from_path("vehicle.assembly.effectors.yaw");
+        let allocator = crate::allocation::PrioritisedRedistributedAllocator::new(
+            [
+                crate::allocation::BodyAxis::Roll,
+                crate::allocation::BodyAxis::Pitch,
+                crate::allocation::BodyAxis::Yaw,
+            ],
+            vec![
+                crate::allocation::EffectorAxisAssignment {
+                    effector_id: roll_a,
+                    axis: crate::allocation::BodyAxis::Roll,
+                    max_abs: 0.2,
+                },
+                crate::allocation::EffectorAxisAssignment {
+                    effector_id: roll_b,
+                    axis: crate::allocation::BodyAxis::Roll,
+                    max_abs: 0.2,
+                },
+                crate::allocation::EffectorAxisAssignment {
+                    effector_id: pitch,
+                    axis: crate::allocation::BodyAxis::Pitch,
+                    max_abs: 0.35,
+                },
+                crate::allocation::EffectorAxisAssignment {
+                    effector_id: yaw,
+                    axis: crate::allocation::BodyAxis::Yaw,
+                    max_abs: 0.35,
+                },
+            ],
+        )
+        .expect("allocator builds");
+        let mut allowed = BTreeMap::new();
+        allowed.insert(
+            11,
+            PhaseAuthority {
+                effectors: vec![roll_b, pitch, yaw],
+                engines: Vec::new(),
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+        let mut mixer = Mixer::new()
+            .with_authority(PhaseAuthorityTable {
+                allowed,
+                default: PhaseAuthority::default(),
+            })
+            .with_actuator_channel_map(ActuatorChannelMap {
+                aileron: Some(roll_a),
+                elevator: Some(pitch),
+                rudder: Some(yaw),
+                body_flap: None,
+            })
+            .with_allocator(allocator);
+
+        publish_status(&bus, true, true, 11);
+        bus.publish(ActuatorCommand {
+            time: SimTime::ZERO,
+            elevator_rad: 0.0,
+            aileron_rad: 0.3,
+            rudder_rad: 0.0,
+            body_flap_rad: 0.0,
+            saturated: false,
+        })
+        .unwrap();
+
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (semantic, _) = bus.latest::<ActuatorCommand>().unwrap().unwrap();
+        assert_eq!(
+            semantic.aileron_rad, 0.0,
+            "legacy semantic publish remains channel-map gated"
+        );
+
+        let (mapped, _) = bus.latest::<EffectorCommandSet>().unwrap().unwrap();
+        let mut by_id = BTreeMap::new();
+        for command in mapped.commands.iter().take(usize::from(mapped.count)) {
+            by_id.insert(command.effector_id, command.command);
+        }
+        assert_eq!(by_id[&roll_a.value()].to_bits(), 0.0_f64.to_bits());
+        assert_eq!(by_id[&roll_b.value()].to_bits(), 0.2_f64.to_bits());
+        assert!(
+            mapped.saturated,
+            "allowed roll capacity is 0.2, so a 0.3 demand must saturate"
+        );
     }
 }

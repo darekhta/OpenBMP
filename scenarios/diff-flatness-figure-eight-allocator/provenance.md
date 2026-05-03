@@ -28,8 +28,11 @@ modulo two changes:
 The waypoint sequence, vehicle inertia, mission graph, MEKF, and
 per-phase gain schedule are unchanged from the parent scenario.
 The legacy `[fc.actuator_channels]` mapping is retained for the
-`ActuatorCommand` semantic-topic publish path; the per-effector
-`EffectorCommandSet` flows through the allocator.
+`ActuatorCommand` semantic-topic publish path. The allocator consumes
+the raw roll / pitch / yaw demand for the per-effector
+`EffectorCommandSet`; phase authority is applied before the capacity
+split, so disallowed effectors receive explicit zero commands and do not
+contribute authority.
 
 ## License / restrictions
 
