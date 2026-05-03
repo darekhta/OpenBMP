@@ -206,6 +206,189 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
     }
 }
 
+// ---------------------------------------------------------------------
+// Phase-5.D.3 — Dormand-Prince 5(4) fixed-step integrator
+// ---------------------------------------------------------------------
+
+/// Dormand-Prince 5(4) Butcher-tableau coefficients used by
+/// [`Dopri54FixedStep`].
+///
+/// Pinned exactly per Dormand, J. R., and Prince, P. J. (1980),
+/// *A family of embedded Runge-Kutta formulae*, J. Comp. Appl.
+/// Math. 6(1):19-26 — the "DOPRI5" entry, also tabulated in Hairer,
+/// Nørsett, and Wanner, *Solving Ordinary Differential Equations I*,
+/// 2nd rev. ed., §II.5 Table 5.2 (Springer, 1993). The constants
+/// below reproduce that table verbatim.
+///
+/// The shipped variant is the **5th-order solution only** — the
+/// embedded 4th-order solution and the adaptive PI step controller
+/// are explicitly deferred (see `docs/phase-5-plan.md § 5.D.3`).
+mod dopri54_tableau {
+    // c-vector (sub-step times relative to h):
+    pub const C2: f64 = 1.0 / 5.0;
+    pub const C3: f64 = 3.0 / 10.0;
+    pub const C4: f64 = 4.0 / 5.0;
+    pub const C5: f64 = 8.0 / 9.0;
+    // c6 = 1, c7 = 1 (FSAL-eligible; not exploited by the fixed-step
+    // implementation).
+
+    // a-matrix rows.
+    pub const A21: f64 = 1.0 / 5.0;
+
+    pub const A31: f64 = 3.0 / 40.0;
+    pub const A32: f64 = 9.0 / 40.0;
+
+    pub const A41: f64 = 44.0 / 45.0;
+    pub const A42: f64 = -56.0 / 15.0;
+    pub const A43: f64 = 32.0 / 9.0;
+
+    pub const A51: f64 = 19_372.0 / 6_561.0;
+    pub const A52: f64 = -25_360.0 / 2_187.0;
+    pub const A53: f64 = 64_448.0 / 6_561.0;
+    pub const A54: f64 = -212.0 / 729.0;
+
+    pub const A61: f64 = 9_017.0 / 3_168.0;
+    pub const A62: f64 = -355.0 / 33.0;
+    pub const A63: f64 = 46_732.0 / 5_247.0;
+    pub const A64: f64 = 49.0 / 176.0;
+    pub const A65: f64 = -5_103.0 / 18_656.0;
+
+    // 5th-order solution weights (b-vector), `B7 = 0` for the
+    // DOPRI5 5th-order solution — `k7` is computed only because the
+    // FSAL property reuses it as `k1` for the next step (not exploited
+    // here).
+    pub const B1: f64 = 35.0 / 384.0;
+    // B2 = 0 — Dormand-Prince has a zero second-stage weight.
+    pub const B3: f64 = 500.0 / 1_113.0;
+    pub const B4: f64 = 125.0 / 192.0;
+    pub const B5: f64 = -2_187.0 / 6_784.0;
+    pub const B6: f64 = 11.0 / 84.0;
+}
+
+/// Dormand-Prince 5(4) fixed-step integrator (5th-order accurate).
+///
+/// **Honest scope.** The shipped variant uses the DOPRI5 5th-order
+/// solution at a **fixed step size** — the embedded 4th-order solution
+/// and the adaptive PI step controller are explicitly deferred to a
+/// follow-on slice (see `docs/phase-5-plan.md § 5.D.3`). The
+/// fixed-step shape is a drop-in higher-order alternative to
+/// [`Rk4FixedStep`] for scenarios where 4th-order RK4 truncation
+/// error is the limiting factor.
+///
+/// 5th-order accurate, single-stage, six derivative evaluations per
+/// step. Bit-stable across reruns on the same platform profile.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Dopri54FixedStep;
+
+impl<S: SimState> Integrator<S> for Dopri54FixedStep {
+    fn determinism(&self) -> IntegratorDeterminism {
+        IntegratorDeterminism::BitStable
+    }
+
+    fn advance<F>(&self, state: &S, derive_fn: F, dt: Duration) -> Result<S, IntegratorError>
+    where
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        use dopri54_tableau::{
+            A21, A31, A32, A41, A42, A43, A51, A52, A53, A54, A61, A62, A63, A64, A65, B1, B3, B4,
+            B5, B6, C2, C3, C4, C5,
+        };
+
+        let h = dt.as_seconds();
+        if !h.is_finite() || h <= 0.0 {
+            return Err(IntegratorError::InvalidStep { dt_seconds: h });
+        }
+        if !state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+
+        let t0 = state.time();
+        let t0_s = t0.as_seconds();
+        let t2 = SimTime::from_seconds(t0_s + C2 * h);
+        let t3 = SimTime::from_seconds(t0_s + C3 * h);
+        let t4 = SimTime::from_seconds(t0_s + C4 * h);
+        let t5 = SimTime::from_seconds(t0_s + C5 * h);
+        let t6 = SimTime::from_seconds(t0_s + h);
+
+        // Stage 1.
+        let k1 = derive_fn(state, t0)?;
+        if !k1.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 2: y2 = y0 + h * (a21 * k1)
+        let s2 = state.advance_by(h, &(k1 * A21));
+        if !s2.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k2 = derive_fn(&s2, t2)?;
+        if !k2.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 3: y3 = y0 + h * (a31 * k1 + a32 * k2)
+        // DETERMINISM CONTRACT: locked order (k1 first, then k2).
+        let inc3 = (k1 * A31) + (k2 * A32);
+        let s3 = state.advance_by(h, &inc3);
+        if !s3.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k3 = derive_fn(&s3, t3)?;
+        if !k3.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 4: y4 = y0 + h * (a41 * k1 + a42 * k2 + a43 * k3)
+        let inc4 = ((k1 * A41) + (k2 * A42)) + (k3 * A43);
+        let s4 = state.advance_by(h, &inc4);
+        if !s4.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k4 = derive_fn(&s4, t4)?;
+        if !k4.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 5: y5 = y0 + h * (a51 * k1 + a52 * k2 + a53 * k3 + a54 * k4)
+        let inc5 = (((k1 * A51) + (k2 * A52)) + (k3 * A53)) + (k4 * A54);
+        let s5 = state.advance_by(h, &inc5);
+        if !s5.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k5 = derive_fn(&s5, t5)?;
+        if !k5.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 6: y6 = y0 + h * (a61 k1 + a62 k2 + a63 k3 + a64 k4 + a65 k5)
+        let inc6 = ((((k1 * A61) + (k2 * A62)) + (k3 * A63)) + (k4 * A64)) + (k5 * A65);
+        let s6 = state.advance_by(h, &inc6);
+        if !s6.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k6 = derive_fn(&s6, t6)?;
+        if !k6.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // 5th-order solution: y = y0 + h * (b1 k1 + b3 k3 + b4 k4 + b5 k5 + b6 k6)
+        // (b2 is identically zero in the DOPRI5 tableau, so k2 is not
+        // weighted into the solution.)
+        // DETERMINISM CONTRACT: explicit parentheses prevent compiler
+        // re-association; locked addend order; no FMA.
+        let weighted = ((((k1 * B1) + (k3 * B3)) + (k4 * B4)) + (k5 * B5)) + (k6 * B6);
+        let mut new_state = state.advance_by(h, &weighted);
+
+        new_state.project();
+
+        if !new_state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+
+        Ok(new_state)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
@@ -431,6 +614,241 @@ mod tests {
         let i = Rk4FixedStep;
         assert_eq!(
             <Rk4FixedStep as Integrator<PointMassState>>::determinism(&i),
+            IntegratorDeterminism::BitStable
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Phase-5.D.3 — Dormand-Prince 5(4) fixed-step tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn dopri54_rejects_zero_dt() {
+        let state = one_kg_at_origin();
+        let result = Dopri54FixedStep.advance(
+            &state,
+            |_s, _t| Ok(PointMassDerivative::zero()),
+            Duration::from_seconds(0.0),
+        );
+        assert!(matches!(result, Err(IntegratorError::InvalidStep { .. })));
+    }
+
+    #[test]
+    fn dopri54_rejects_negative_dt() {
+        let state = one_kg_at_origin();
+        let result = Dopri54FixedStep.advance(
+            &state,
+            |_s, _t| Ok(PointMassDerivative::zero()),
+            Duration::from_seconds(-0.5),
+        );
+        assert!(matches!(result, Err(IntegratorError::InvalidStep { .. })));
+    }
+
+    #[test]
+    fn dopri54_zero_derivative_returns_state_with_advanced_time() {
+        let state = PointMassState::new(
+            SimTime::from_seconds(2.0),
+            Position3::new(7.0, 0.0, 0.0),
+            Velocity3::new(0.0, 8.0, 0.0),
+            unit_kg(),
+        );
+        let dt = Duration::from_seconds(0.5);
+        let next = Dopri54FixedStep
+            .advance(&state, |_s, _t| Ok(PointMassDerivative::zero()), dt)
+            .expect("zero derivative must succeed");
+        assert_abs_diff_eq!(next.time.as_seconds(), 2.5);
+        assert_abs_diff_eq!(next.position.vector.x, 7.0);
+        assert_abs_diff_eq!(next.velocity.vector.y, 8.0);
+    }
+
+    /// Dormand-Prince 5(4) is exact for polynomials of degree ≤ 5;
+    /// constant acceleration produces a quadratic position and linear
+    /// velocity, well within DOPRI5's exactness range. The integrated
+    /// state must match the analytic closed form to floating-point
+    /// rounding only.
+    #[test]
+    fn dopri54_constant_acceleration_matches_analytic_for_one_step() {
+        let state = one_kg_at_origin();
+        let g_eci = Vector3::new(0.0, 0.0, -9.81);
+
+        let derive =
+            |s: &PointMassState, _t: SimTime| -> Result<PointMassDerivative, ModelEvalError> {
+                Ok(PointMassDerivative {
+                    velocity_m_s: s.velocity.vector,
+                    acceleration_m_s2: g_eci,
+                    mass_rate_kg_s: 0.0,
+                })
+            };
+
+        let dt = Duration::from_seconds(0.01);
+        let next = Dopri54FixedStep
+            .advance(&state, derive, dt)
+            .expect("step must succeed");
+
+        let expected_z = 0.5 * -9.81 * 0.01_f64 * 0.01;
+        assert_abs_diff_eq!(next.position.vector.z, expected_z, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(next.velocity.vector.z, -0.0981, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(next.time.as_seconds(), 0.01);
+    }
+
+    /// DOPRI5 on `dy/dt = -y` over 10 steps of `dt = 0.1` matches
+    /// `exp(-1) ≈ 0.36787944...` to 5th-order accuracy.
+    ///
+    /// Per-step truncation error scales as `~ h^6 / 720 · y^(6)`; for
+    /// `y = exp(-t)` this is `~1.4e-9` per step. Accumulated error
+    /// after 10 steps is bounded by roughly `1e-8`, an order of
+    /// magnitude tighter than the same `dt = 0.1` RK4 test
+    /// (`~ 3.4e-7`).
+    #[test]
+    fn dopri54_exponential_decay_step_within_5th_order_error() {
+        let mut state = PointMassState::new(
+            SimTime::ZERO,
+            Position3::origin(),
+            Velocity3::zero(),
+            Mass::new::<kilogram>(1.0),
+        );
+        let derive =
+            |s: &PointMassState, _t: SimTime| -> Result<PointMassDerivative, ModelEvalError> {
+                Ok(PointMassDerivative {
+                    velocity_m_s: Vector3::zeros(),
+                    acceleration_m_s2: Vector3::zeros(),
+                    mass_rate_kg_s: -s.mass.get::<kilogram>(),
+                })
+            };
+
+        let dt = Duration::from_seconds(0.1);
+        for _ in 0..10 {
+            state = Dopri54FixedStep.advance(&state, derive, dt).expect("step");
+        }
+        let exp_neg_one = (-1.0_f64).exp();
+        // 5th-order tolerance is much tighter than RK4's 1e-6.
+        assert_abs_diff_eq!(state.mass.get::<kilogram>(), exp_neg_one, epsilon = 1.0e-7);
+    }
+
+    /// Direct accuracy comparison: DOPRI5 must do strictly better than
+    /// RK4 on the same exponential-decay trajectory at the same step
+    /// size — that's the entire reason to ship a higher-order
+    /// integrator. The error ratio captures the order improvement
+    /// directly.
+    #[test]
+    fn dopri54_is_more_accurate_than_rk4_on_exponential_decay() {
+        fn run_with<I: Integrator<PointMassState>>(
+            integrator: &I,
+            dt_s: f64,
+            steps: usize,
+        ) -> f64 {
+            let mut state = PointMassState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Mass::new::<kilogram>(1.0),
+            );
+            let derive =
+                |s: &PointMassState, _t: SimTime| -> Result<PointMassDerivative, ModelEvalError> {
+                    Ok(PointMassDerivative {
+                        velocity_m_s: Vector3::zeros(),
+                        acceleration_m_s2: Vector3::zeros(),
+                        mass_rate_kg_s: -s.mass.get::<kilogram>(),
+                    })
+                };
+            let dt = Duration::from_seconds(dt_s);
+            for _ in 0..steps {
+                state = integrator.advance(&state, derive, dt).expect("step");
+            }
+            state.mass.get::<kilogram>()
+        }
+        let exp_neg_one = (-1.0_f64).exp();
+        let rk4_final = run_with(&Rk4FixedStep, 0.1, 10);
+        let dopri_final = run_with(&Dopri54FixedStep, 0.1, 10);
+        let rk4_err = (rk4_final - exp_neg_one).abs();
+        let dopri_err = (dopri_final - exp_neg_one).abs();
+        assert!(
+            dopri_err < rk4_err,
+            "DOPRI5 must beat RK4 on exp-decay test: RK4 err {rk4_err:.3e}, \
+             DOPRI5 err {dopri_err:.3e}",
+        );
+        // Lower bound on the order improvement: DOPRI5 should be at
+        // least 10x more accurate at this step size.
+        assert!(
+            dopri_err * 10.0 < rk4_err,
+            "DOPRI5 should be ≥10× more accurate than RK4 here: \
+             RK4 err {rk4_err:.3e}, DOPRI5 err {dopri_err:.3e}",
+        );
+    }
+
+    #[test]
+    fn dopri54_propagates_non_finite_derivative_as_error() {
+        let state = one_kg_at_origin();
+        let derive =
+            |_s: &PointMassState, _t: SimTime| -> Result<PointMassDerivative, ModelEvalError> {
+                Ok(PointMassDerivative {
+                    velocity_m_s: Vector3::new(f64::NAN, 0.0, 0.0),
+                    acceleration_m_s2: Vector3::zeros(),
+                    mass_rate_kg_s: 0.0,
+                })
+            };
+        let dt = Duration::from_seconds(0.01);
+        let result = Dopri54FixedStep.advance(&state, derive, dt);
+        assert!(matches!(result, Err(IntegratorError::NonFiniteDerivative)));
+    }
+
+    #[test]
+    fn dopri54_rejects_invalid_initial_state() {
+        let state = PointMassState::new(
+            SimTime::ZERO,
+            Position3::origin(),
+            Velocity3::zero(),
+            Mass::new::<kilogram>(0.0),
+        );
+        let result = Dopri54FixedStep.advance(
+            &state,
+            |_s, _t| Ok(PointMassDerivative::zero()),
+            Duration::from_seconds(0.01),
+        );
+        assert!(matches!(result, Err(IntegratorError::NonFiniteState)));
+    }
+
+    #[test]
+    fn dopri54_is_bit_stable_across_two_runs() {
+        let state = PointMassState::new(
+            SimTime::ZERO,
+            Position3::new(1.0, 2.0, 3.0),
+            Velocity3::new(0.4, 0.5, 0.6),
+            Mass::new::<kilogram>(1.5),
+        );
+        let g = Vector3::new(0.1, -0.2, -9.81);
+        let derive =
+            |s: &PointMassState, _t: SimTime| -> Result<PointMassDerivative, ModelEvalError> {
+                Ok(PointMassDerivative {
+                    velocity_m_s: s.velocity.vector,
+                    acceleration_m_s2: g,
+                    mass_rate_kg_s: 0.0,
+                })
+            };
+
+        let dt = Duration::from_seconds(0.01);
+        let a = Dopri54FixedStep
+            .advance(&state, derive, dt)
+            .expect("step a");
+        let b = Dopri54FixedStep
+            .advance(&state, derive, dt)
+            .expect("step b");
+
+        assert_eq!(a.position.vector.x.to_bits(), b.position.vector.x.to_bits());
+        assert_eq!(a.position.vector.y.to_bits(), b.position.vector.y.to_bits());
+        assert_eq!(a.position.vector.z.to_bits(), b.position.vector.z.to_bits());
+        assert_eq!(a.velocity.vector.z.to_bits(), b.velocity.vector.z.to_bits());
+        assert_eq!(
+            a.mass.get::<kilogram>().to_bits(),
+            b.mass.get::<kilogram>().to_bits()
+        );
+    }
+
+    #[test]
+    fn dopri54_determinism_class_is_bit_stable() {
+        let i = Dopri54FixedStep;
+        assert_eq!(
+            <Dopri54FixedStep as Integrator<PointMassState>>::determinism(&i),
             IntegratorDeterminism::BitStable
         );
     }

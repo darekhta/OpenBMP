@@ -123,6 +123,7 @@ in lockstep with each sub-phase landing.
 | 5.A.5 — prioritised redistributed control allocator | shipped | _pending PR_ |
 | 5.C.2 — EGM2008 zonal-harmonic gravity (degrees 2-6) | shipped | _pending PR_ |
 | 5.C.1 — piecewise-exponential atmosphere (0-1000 km) | shipped | _pending PR_ |
+| 5.D.3 — DOPRI5 fixed-step integrator (5th-order solution) | shipped | _pending PR_ |
 | 5.B onwards | pending | — |
 
 ## Vehicle-class scope
@@ -1034,34 +1035,74 @@ in vacuum; determinism CI gate exercises the multi-body scenario.
 multi-stage / drop-test studies. No multi-target tracking, no
 intercept geometry, no engagement scenarios.
 
-#### 5.D.3 — DOPRI5/8 adaptive integrator (profile-flagged)
+#### 5.D.3 — Dormand-Prince 5(4) fixed-step integrator **— shipped**
 
-**Scope.** Add an adaptive Dormand-Prince 5(4) and 8(7) integrator
-behind an explicit profile flag. The default simulation profile
-remains RK4 fixed-step; bit-stable output is preserved on the
-default profile.
+**Honest scope.** The shipped surface is the **5th-order solution
+of the DOPRI5(4) tableau at a fixed step size**. The embedded
+4th-order solution, the PI step controller, and the adaptive-stepping
+scenario profile flag originally proposed for this slice are
+explicitly deferred to a follow-on slice. The fixed-step shape is a
+drop-in higher-order alternative to `Rk4FixedStep` for scenarios
+where 4th-order RK4 truncation error is the limiting factor.
 
-- `Dopri54Adaptive`, `Dopri87Adaptive` integrators in `openbmp-sim`
-  with PI step controller; documented step-size policy.
-- Activated via `--profile=adaptive` on the CLI or
-  `[simulation] profile = "adaptive"` in the scenario; mutually
-  exclusive with the default profile.
-- The adaptive profile is `state-stable, not bit-stable` across
-  reruns by design — the determinism CI gate runs the adaptive
-  profile under a separate state-stable rule.
+**What shipped.**
 
-**Exit criterion.** Adaptive integrators reproduce the analytic-toy
-constant-acceleration drop within their declared tolerance; the
-fixed-step default profile remains byte-identical across this
-sub-phase.
+- `openbmp_sim::Dopri54FixedStep` integrator implementing
+  `Integrator<S>` for both `PointMassState` and `RigidBodyState`.
+- Standard Dormand-Prince 5(4) Butcher tableau pinned exactly per
+  Dormand & Prince (1980); coefficients live in a `dopri54_tableau`
+  module with explicit per-coefficient names.
+- Six derivative evaluations per step. Only the 5th-order weights
+  (`B1, B3, B4, B5, B6`; `B2 = 0`, `B7 = 0`) participate in the
+  combined update — the 7th stage is computed but not weighted (it
+  is the FSAL slot, reserved for the embedded-error / adaptive
+  path).
+- Locked operand order matching the existing `Rk4FixedStep`
+  determinism contract: explicit parentheses prevent compiler
+  re-association on every weighted sum, no FMA on the hot path.
+  Tagged `IntegratorDeterminism::BitStable`.
+- 10 unit tests covering: zero / negative dt rejection, zero-derivative
+  preservation of state, exactness for constant acceleration (a
+  polynomial well within the 5th-order exactness range), 5th-order
+  error behaviour on `dy/dt = -y` over `[0, 1]`, direct accuracy
+  comparison vs `Rk4FixedStep` (DOPRI5 must be ≥ 10× more accurate
+  on the same exponential-decay test), non-finite-derivative
+  propagation, invalid-state rejection, byte-stability across
+  reruns, determinism class assertion.
 
-**Validation evidence.** Unit tests for embedded error estimator;
-analytic-toy state-stable check; tolerance-table case for the
-torque-free Euler precession with adaptive vs fixed-step.
+**What was deferred.**
 
-**Scope guardrail.** Adaptive profile is opt-in and labelled
-`state-stable, not bit-stable`. The bit-stable default profile is
-the one any release artifact is benchmarked against.
+- The embedded 4th-order solution (`E1, E3, E4, E5, E6, E7` weights)
+  and the per-step error norm.
+- PI / I step-size controller and the adaptive step-size loop.
+- An `IntegratorDeterminism::StateStable` profile registration and
+  the `--profile=adaptive` / `[simulation] profile = "adaptive"`
+  scenario plumbing.
+- The DOPRI8(7) tableau and its adaptive variant.
+- A separate determinism CI gate for the adaptive profile.
+
+**Validation evidence.**
+
+- Math: the 10 unit tests in `crates/openbmp-sim/src/integrator.rs`
+  enumerated above.
+- The `dopri54_is_more_accurate_than_rk4_on_exponential_decay`
+  test gives a quantitative anchor: at `dt = 0.1 s` over 10 steps,
+  DOPRI5 lands within `1e-7` of `exp(-1)`, RK4 within `~3.4e-7`
+  — DOPRI5 is at least 10× more accurate on the same step size,
+  consistent with the order-5 vs order-4 expectation.
+
+**References.** Dormand, J. R., and Prince, P. J. (1980). *A family
+of embedded Runge-Kutta formulae*, J. Comp. Appl. Math. 6(1):19-26
+— Butcher tableau pinned in `dopri54_tableau` constants. Hairer,
+Nørsett, and Wanner (1993). *Solving Ordinary Differential
+Equations I*, 2nd rev. ed., §II.5 Table 5.2 (Springer) — same
+table reproduced for cross-check.
+
+**Scope guardrail.** Fixed-step only on shipping; the existing
+RK4 default profile stays the byte-stable reference for every
+shipped scenario. No release artifact is benchmarked against the
+new integrator until an adaptive-stepping follow-on slice
+(`Dopri54Adaptive`) lands with its own state-stable CI gate.
 
 ---
 
