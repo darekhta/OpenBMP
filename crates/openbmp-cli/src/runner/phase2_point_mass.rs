@@ -44,7 +44,9 @@ use std::collections::BTreeMap;
 use nalgebra::Vector3;
 use openbmp_aero::{AeroDeck, AeroError};
 use openbmp_core::{ChannelId, Duration, ModelId, Position3, RecoveryId, SimTime, Velocity3};
-use openbmp_physics::{AtmosphereModel, UsStandard1976};
+use openbmp_physics::{
+    AtmosphereModel, Egm2008ZonalGravity, J2Gravity, PointMassGravity, UsStandard1976, WGS84_J2,
+};
 use openbmp_propulsion::{Motor, MotorError, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
@@ -55,7 +57,7 @@ use openbmp_state::PointMassState;
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
     BoxedMassModel, DeckDragForceAdapter, EngineClusterForceAdapter, EngineClusterMassAdapter,
-    KernelVehicle, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel,
+    GravityForceAdapter, KernelVehicle, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel,
     RecoveryRackForceAdapter, TankRackForceAdapter, TankRackMassAdapter, Vehicle,
 };
 use uom::si::f64::Mass;
@@ -76,6 +78,12 @@ use openbmp_vehicle::Assembly;
 const PHASE2_AERO_MODEL_ID: ModelId = ModelId::new(102);
 const PHASE2_THRUST_MODEL_ID: ModelId = ModelId::new(103);
 const PHASE2_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(104);
+// Phase-5.C.2 — non-constant gravity (point_mass / j2 / egm2008) routes
+// through `GravityForceAdapter`, which keys its per-model telemetry
+// stream on this id. The legacy `constant` arm continues to use
+// `ConstantGravityForce` (a Phase-1-shaped model with no model id) so
+// every existing constant-gravity scenario stays byte-stable.
+const PHASE2_GRAVITY_MODEL_ID: ModelId = ModelId::new(105);
 // Phase-3.6: distinct model ids for the engine-cluster path so the
 // determinism oracle can tell legacy single-motor scenarios apart
 // from cluster scenarios in the per-model force breakdown.
@@ -374,10 +382,13 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
             what: format!("vehicle.kind = {}", document.vehicle.kind),
         });
     }
-    if document.environment.gravity != "constant" {
+    if !matches!(
+        document.environment.gravity.as_str(),
+        "constant" | "point_mass" | "j2" | "egm2008"
+    ) {
         return Err(CliError::UnsupportedScenario {
             what: format!(
-                "environment.gravity = {} (only `constant` wired in 2.11.A)",
+                "environment.gravity = {} (wired: constant, point_mass, j2, egm2008)",
                 document.environment.gravity
             ),
         });
@@ -511,6 +522,93 @@ fn build_initial_state(
     ))
 }
 
+/// Construct the gravity-force adapter for the runtime gravity model
+/// declared by the scenario.
+///
+/// The `constant` arm intentionally retains the legacy
+/// `ConstantGravityForce` (Phase-1-shaped) to keep byte-for-byte
+/// reproducibility on every existing point-mass scenario. The new arms
+/// (`point_mass`, `j2`, `egm2008` from Phase 5.C.2) route through
+/// `GravityForceAdapter`, which wraps the corresponding
+/// `openbmp_physics::GravityModel`.
+fn build_gravity_force_adapter_point_mass(
+    document: &ScenarioDocument,
+) -> Result<Box<dyn ForceModel<PointMassState> + Send + Sync>, CliError> {
+    match document.environment.gravity.as_str() {
+        "constant" => {
+            let g =
+                document
+                    .environment
+                    .gravity_m_s2
+                    .ok_or_else(|| CliError::UnsupportedScenario {
+                        what: "environment.gravity_m_s2 missing for constant gravity".to_owned(),
+                    })?;
+            if g < 0.0 {
+                return Err(CliError::UnsupportedScenario {
+                    what: "environment.gravity_m_s2 must be a non-negative magnitude; \
+                         constant gravity is -z in ECI"
+                        .to_owned(),
+                });
+            }
+            // Legacy Phase-1 force model — retained verbatim to keep
+            // byte-stable Parquet on every existing constant-gravity
+            // point-mass scenario.
+            Ok(Box::new(ConstantGravityForce::new(Vector3::new(
+                0.0, 0.0, -g,
+            ))))
+        }
+        "point_mass" => {
+            let mu =
+                document
+                    .environment
+                    .mu_m3_s2
+                    .ok_or_else(|| CliError::UnsupportedScenario {
+                        what: "environment.mu_m3_s2 missing for point_mass gravity".to_owned(),
+                    })?;
+            let model = PointMassGravity::new(mu)?;
+            Ok(Box::new(GravityForceAdapter::new(
+                model,
+                PHASE2_GRAVITY_MODEL_ID,
+            )))
+        }
+        "j2" => {
+            let mu =
+                document
+                    .environment
+                    .mu_m3_s2
+                    .ok_or_else(|| CliError::UnsupportedScenario {
+                        what: "environment.mu_m3_s2 missing for j2 gravity".to_owned(),
+                    })?;
+            let r_e = document
+                .environment
+                .r_e_m
+                .ok_or_else(|| CliError::UnsupportedScenario {
+                    what: "environment.r_e_m missing for j2 gravity".to_owned(),
+                })?;
+            let j2 = document.environment.j2.unwrap_or(WGS84_J2);
+            let model = J2Gravity::new(mu, r_e, j2)?;
+            Ok(Box::new(GravityForceAdapter::new(
+                model,
+                PHASE2_GRAVITY_MODEL_ID,
+            )))
+        }
+        "egm2008" => {
+            // Phase 5.C.2: zonal-only EGM2008 (degrees 2-6), pinned to
+            // WGS84 µ / R_e and the Pavlis et al. 2012 J_n table. No
+            // per-scenario overrides are accepted, matching the parser
+            // contract in `EnvironmentConfig::validate`.
+            let model = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+            Ok(Box::new(GravityForceAdapter::new(
+                model,
+                PHASE2_GRAVITY_MODEL_ID,
+            )))
+        }
+        other => Err(CliError::UnsupportedScenario {
+            what: format!("environment.gravity = {other} is not wired"),
+        }),
+    }
+}
+
 #[allow(clippy::too_many_lines)] // Phase-3.9 added the recovery-rack force-adapter wiring branch
 fn build_vehicle(
     document: &ScenarioDocument,
@@ -522,20 +620,8 @@ fn build_vehicle(
     for name in document.force_models() {
         match name.as_str() {
             "gravity" => {
-                let g = document.environment.gravity_m_s2.ok_or_else(|| {
-                    CliError::UnsupportedScenario {
-                        what: "environment.gravity_m_s2 missing for constant gravity".to_owned(),
-                    }
-                })?;
-                if g < 0.0 {
-                    return Err(CliError::UnsupportedScenario {
-                        what: "environment.gravity_m_s2 must be a non-negative magnitude; \
-                             Phase-2 constant gravity is -z in ECI"
-                            .to_owned(),
-                    });
-                }
-                let force = ConstantGravityForce::new(Vector3::new(0.0, 0.0, -g));
-                named.push(NamedForceModel::new("gravity", Box::new(force)));
+                let force = build_gravity_force_adapter_point_mass(document)?;
+                named.push(NamedForceModel::new("gravity", force));
             }
             "aero" => {
                 let deck = loaded_models.aero_deck.clone().ok_or_else(|| {

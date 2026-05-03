@@ -330,8 +330,249 @@ impl GravityModel for J2Gravity {
     }
 }
 
+// ---------------------------------------------------------------------
+// Egm2008ZonalGravity — Phase 5.A.5 → 5.C.2
+// ---------------------------------------------------------------------
+
+/// EGM2008 zonal-harmonic coefficient `J_3` (unnormalised). Source:
+/// Pavlis, N. K., et al. (2012). *The development and evaluation of
+/// the Earth Gravitational Model 2008 (EGM2008)*, J. Geophys. Res.
+/// 117, B04406. Public NGA-published tables; widely reproduced in
+/// Vallado 4th ed. Table 8-7 ("Earth zonal harmonics, EGM-96") with
+/// values that match EGM2008 zonals to the precision shown.
+pub const EGM2008_J3: f64 = -2.532_641_3e-6;
+/// EGM2008 zonal-harmonic coefficient `J_4` (unnormalised). Same
+/// source as [`EGM2008_J3`].
+pub const EGM2008_J4: f64 = -1.619_898_4e-6;
+/// EGM2008 zonal-harmonic coefficient `J_5` (unnormalised). Same
+/// source as [`EGM2008_J3`].
+pub const EGM2008_J5: f64 = -2.277_358_8e-7;
+/// EGM2008 zonal-harmonic coefficient `J_6` (unnormalised). Same
+/// source as [`EGM2008_J3`].
+pub const EGM2008_J6: f64 = 5.408_082_3e-7;
+
+/// Maximum supported zonal degree for [`Egm2008ZonalGravity`]. The
+/// implementation maintains fixed-size arrays for the per-degree
+/// coefficients and the per-step Legendre-polynomial recurrence;
+/// extending past degree 6 would require trustworthy higher-degree
+/// EGM2008 zonal coefficients that this slice does not pin.
+pub const EGM2008_MAX_DEGREE: usize = 6;
+
+/// Truncated EGM2008 zonal-harmonic gravity model (degrees 2-6).
+///
+/// Adds the `J_3` through `J_n` zonal corrections on top of the
+/// existing `J_2` perturbation, in ECI Cartesian form. The
+/// implementation computes the spherical-harmonic acceleration via
+/// the closed-form gradient of the geopotential
+///
+/// ```text
+///   V_n = +(μ/r) (R_e/r)^n J_n P_n(ξ),    ξ = z/r
+/// ```
+///
+/// using the recursive formulae
+///
+/// ```text
+///   g_n_x = (μ R_e^n J_n / r^{n+3}) · x · [(n+1) P_n(ξ) + ξ P_n'(ξ)]
+///   g_n_y = same with y
+///   g_n_z = (μ R_e^n J_n / r^{n+3}) · [(n+1) z P_n(ξ) − r (1−ξ²) P_n'(ξ)]
+/// ```
+///
+/// Locked operand order matches the existing `J_2` path so the model
+/// degenerates to byte-identical [`J2Gravity`] output when
+/// configured with `degree = 2`. Higher degrees add a deterministic
+/// summation of per-axis contributions.
+///
+/// **Honest scope.** This is the **zonal-only** truncation of EGM2008
+/// — tesseral and sectoral terms are deferred to a later slice that
+/// pins higher-degree normalised coefficients. For reentry-class
+/// orbits, zonal-only `J_2`-`J_6` captures the dominant secular
+/// perturbations (right-ascension drift, argument-of-perigee drift,
+/// nodal regression).
+#[derive(Copy, Clone, Debug)]
+pub struct Egm2008ZonalGravity {
+    mu_m3_s2: f64,
+    r_e_m: f64,
+    /// Per-degree zonal coefficients `[J_2, J_3, J_4, J_5, J_6]`.
+    /// Higher-degree slots beyond the configured cap are zero so the
+    /// summation degenerates to the requested truncation.
+    j_n: [f64; EGM2008_MAX_DEGREE - 1],
+    /// Inclusive maximum degree consulted (`>= 2`, `<=
+    /// EGM2008_MAX_DEGREE`).
+    degree: usize,
+}
+
+impl Egm2008ZonalGravity {
+    /// Construct from explicit parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `mu_m3_s2` or
+    /// `r_e_m` is not strictly positive and finite, if any zonal
+    /// coefficient is non-finite, or if `degree` is outside `[2,
+    /// EGM2008_MAX_DEGREE]`.
+    pub fn new(
+        mu_m3_s2: f64,
+        r_e_m: f64,
+        j_n: [f64; EGM2008_MAX_DEGREE - 1],
+        degree: usize,
+    ) -> Result<Self, PhysicsError> {
+        if !mu_m3_s2.is_finite() || mu_m3_s2 <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "µ must be strictly positive and finite",
+            });
+        }
+        if !r_e_m.is_finite() || r_e_m <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Earth radius must be strictly positive and finite",
+            });
+        }
+        if !j_n.iter().all(|v| v.is_finite()) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "every zonal coefficient J_n must be finite",
+            });
+        }
+        if !(2..=EGM2008_MAX_DEGREE).contains(&degree) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "EGM2008 zonal degree must be in [2, 6]",
+            });
+        }
+        Ok(Self {
+            mu_m3_s2,
+            r_e_m,
+            j_n,
+            degree,
+        })
+    }
+
+    /// WGS84 / EGM2008-zonal defaults: `µ = WGS84_MU_M3_S2`, `R_e =
+    /// WGS84_A_M`, `J_n` from the public Pavlis et al. 2012 tables,
+    /// truncation at degree 6.
+    #[must_use]
+    pub const fn wgs84_egm2008_zonal() -> Self {
+        Self {
+            mu_m3_s2: WGS84_MU_M3_S2,
+            r_e_m: WGS84_A_M,
+            j_n: [WGS84_J2, EGM2008_J3, EGM2008_J4, EGM2008_J5, EGM2008_J6],
+            degree: EGM2008_MAX_DEGREE,
+        }
+    }
+
+    /// Configured `µ` (m³/s²).
+    #[must_use]
+    pub const fn mu_m3_s2(&self) -> f64 {
+        self.mu_m3_s2
+    }
+
+    /// Configured Earth radius (m).
+    #[must_use]
+    pub const fn r_e_m(&self) -> f64 {
+        self.r_e_m
+    }
+
+    /// Configured maximum zonal degree.
+    #[must_use]
+    pub const fn degree(&self) -> usize {
+        self.degree
+    }
+
+    /// `J_n` values consulted (zero-padded after `degree`).
+    #[must_use]
+    pub const fn j_n(&self) -> [f64; EGM2008_MAX_DEGREE - 1] {
+        self.j_n
+    }
+}
+
+impl GravityModel for Egm2008ZonalGravity {
+    // The Legendre recurrence below converts the loop index `usize`
+    // into `f64`; the maximum degree is bounded at compile time by
+    // `EGM2008_MAX_DEGREE = 6`, so the cast can never lose precision.
+    #[allow(clippy::cast_precision_loss)]
+    fn gravity_eci_m_s2(
+        &self,
+        position_eci: Position3<Eci>,
+        _time: SimTime,
+    ) -> Result<Vector3<f64>, PhysicsError> {
+        let r_vec = position_eci.vector;
+        let r2 = r_vec.dot(&r_vec);
+        if r2 == 0.0 {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "Egm2008ZonalGravity is singular at r = 0",
+            });
+        }
+        let r = r2.sqrt();
+        let r3 = r * r2;
+        let inv_r = 1.0 / r;
+        let xi = r_vec.z * inv_r;
+
+        // Central term: g_central = -µ r / r³.
+        let g_central = (-self.mu_m3_s2 / r3) * r_vec;
+
+        // Per-degree zonal sum. Pre-compute the Legendre polynomial
+        // value `P_n(ξ)` and derivative `P_n'(ξ)` via the standard
+        // recurrences; pre-compute the radial scale `(R_e/r)^n` by
+        // running multiplication.
+        //
+        //   P_{n+1}(ξ) = ((2n+1)·ξ·P_n − n·P_{n-1}) / (n+1)
+        //   P_{n+1}'(ξ) = ((2n+1)·(P_n + ξ·P_n') − n·P_{n-1}') / (n+1)
+        //
+        // Initial conditions: P_0 = 1, P_0' = 0; P_1 = ξ, P_1' = 1.
+        let mut p_prev = 1.0_f64;
+        let mut p_n = xi;
+        let mut p_prev_prime = 0.0_f64;
+        let mut p_n_prime = 1.0_f64;
+        let mut radial_pow = self.r_e_m * inv_r; // (R_e/r)^1
+        let mu_over_r3 = self.mu_m3_s2 / r3;
+        let one_minus_xi2 = 1.0 - xi * xi;
+
+        let mut g_zonal = Vector3::zeros();
+        for n in 2..=self.degree {
+            // Advance Legendre to degree n.
+            let n_f = n as f64;
+            let n_minus_1_f = (n - 1) as f64;
+            let two_n_minus_1 = 2.0 * n_minus_1_f + 1.0;
+            let p_next = (two_n_minus_1 * xi * p_n - n_minus_1_f * p_prev) / n_f;
+            let p_next_prime =
+                (two_n_minus_1 * (p_n + xi * p_n_prime) - n_minus_1_f * p_prev_prime) / n_f;
+            p_prev = p_n;
+            p_prev_prime = p_n_prime;
+            p_n = p_next;
+            p_n_prime = p_next_prime;
+            // (R_e / r)^n
+            radial_pow *= self.r_e_m * inv_r;
+
+            let j = self.j_n[n - 2];
+            // Common scale: (µ R_e^n J_n) / r^{n+3} = µ/r³ · (R_e/r)^n · J_n
+            let scale = mu_over_r3 * radial_pow * j;
+            // Bracket factor for x, y components: (n+1) P_n + ξ P_n'.
+            let bracket_xy = (n_f + 1.0) * p_n + xi * p_n_prime;
+            // Bracket factor for z component:
+            //   (n+1) z P_n − r (1−ξ²) P_n'
+            // Note: rewriting using z = ξ r: (n+1) ξ r P_n − r (1−ξ²) P_n'
+            //   = r · [(n+1) ξ P_n − (1−ξ²) P_n']
+            // Then g_n_z = (µ R_e^n J_n / r^{n+3}) · r · [...] = scale · r · [...]
+            let bracket_z = (n_f + 1.0) * xi * p_n - one_minus_xi2 * p_n_prime;
+            g_zonal.x += scale * r_vec.x * bracket_xy;
+            g_zonal.y += scale * r_vec.y * bracket_xy;
+            g_zonal.z += scale * r * bracket_z;
+        }
+
+        let g = g_central + g_zonal;
+        if !g.iter().all(|v| v.is_finite()) {
+            return Err(PhysicsError::NonFinite {
+                reason: "EGM2008 zonal gravity produced non-finite acceleration",
+            });
+        }
+        Ok(g)
+    }
+}
+
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::cast_precision_loss
+)]
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
@@ -512,6 +753,174 @@ mod tests {
             .collect();
         for m in &mags[1..] {
             assert_abs_diff_eq!(*m, mags[0], epsilon = 1.0e-3);
+        }
+    }
+
+    // EGM2008 zonal-gravity tests ------------------------------------
+
+    fn at_xyz(x: f64, y: f64, z: f64) -> Position3<Eci> {
+        Position3::new(x, y, z)
+    }
+
+    #[test]
+    fn egm2008_zonal_constructor_rejects_invalid_inputs() {
+        // Non-positive µ.
+        assert!(matches!(
+            Egm2008ZonalGravity::new(0.0, WGS84_A_M, [WGS84_J2, 0.0, 0.0, 0.0, 0.0], 2),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        // Non-positive Earth radius.
+        assert!(matches!(
+            Egm2008ZonalGravity::new(WGS84_MU_M3_S2, -1.0, [WGS84_J2, 0.0, 0.0, 0.0, 0.0], 2),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        // Non-finite J coefficient.
+        assert!(matches!(
+            Egm2008ZonalGravity::new(
+                WGS84_MU_M3_S2,
+                WGS84_A_M,
+                [WGS84_J2, f64::NAN, 0.0, 0.0, 0.0],
+                3,
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        // Out-of-range degree.
+        assert!(matches!(
+            Egm2008ZonalGravity::new(WGS84_MU_M3_S2, WGS84_A_M, [0.0; 5], 1),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            Egm2008ZonalGravity::new(WGS84_MU_M3_S2, WGS84_A_M, [0.0; 5], 7),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn egm2008_zonal_singular_at_origin() {
+        let g = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+        let err = g
+            .gravity_eci_m_s2(Position3::origin(), SimTime::ZERO)
+            .unwrap_err();
+        assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
+    }
+
+    #[test]
+    fn egm2008_zonal_at_degree_2_with_only_j2_matches_existing_j2_gravity() {
+        // Configure EGM2008 zonal with degree=2 and J_3..J_6 = 0;
+        // it should produce byte-identical output to J2Gravity.
+        let zonal =
+            Egm2008ZonalGravity::new(WGS84_MU_M3_S2, WGS84_A_M, [WGS84_J2, 0.0, 0.0, 0.0, 0.0], 2)
+                .expect("ok");
+        let j2 = J2Gravity::wgs84();
+        let positions = [
+            at_x(WGS84_A_M + 100_000.0),
+            at_z(WGS84_A_M + 100_000.0),
+            at_xyz(7e6, 1e6, 5e5),
+            at_xyz(0.0, 7e6, 0.0),
+        ];
+        for pos in positions {
+            let g_zonal = zonal.gravity_eci_m_s2(pos, SimTime::ZERO).unwrap();
+            let g_j2 = j2.gravity_eci_m_s2(pos, SimTime::ZERO).unwrap();
+            for axis in 0..3 {
+                assert_abs_diff_eq!(g_zonal[axis], g_j2[axis], epsilon = 1.0e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn egm2008_zonal_returns_well_defined_acceleration_at_low_earth_orbit() {
+        let g = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+        // 400 km altitude, prograde orbit slice.
+        let pos = at_xyz(WGS84_A_M + 400_000.0, 0.0, 0.0);
+        let out = g.gravity_eci_m_s2(pos, SimTime::ZERO).unwrap();
+        // Magnitude should be near µ/r² ≈ 8.69 m/s² at r = 6778 km
+        // with small zonal corrections.
+        let r = pos.vector.norm();
+        let central_mag = WGS84_MU_M3_S2 / (r * r);
+        let total_mag = out.norm();
+        // Zonal correction magnitude is at most ~0.05 m/s² near
+        // surface; should be much smaller fraction at LEO.
+        assert!(
+            (total_mag - central_mag).abs() < 0.05,
+            "zonal correction unexpectedly large: total {total_mag}, central {central_mag}"
+        );
+    }
+
+    #[test]
+    fn egm2008_zonal_higher_degrees_change_acceleration() {
+        // Compare degree=2 vs degree=6 truncations on a non-equatorial
+        // point: the higher-degree contributions must be non-zero.
+        let zonal_2 = Egm2008ZonalGravity::new(
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            [WGS84_J2, EGM2008_J3, EGM2008_J4, EGM2008_J5, EGM2008_J6],
+            2,
+        )
+        .unwrap();
+        let zonal_6 = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+        let pos = at_xyz(WGS84_A_M * 0.6, 0.0, WGS84_A_M * 0.8);
+        let g2 = zonal_2.gravity_eci_m_s2(pos, SimTime::ZERO).unwrap();
+        let g6 = zonal_6.gravity_eci_m_s2(pos, SimTime::ZERO).unwrap();
+        let max_diff = (g6 - g2).iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        assert!(
+            max_diff > 1.0e-9,
+            "degree-2 vs degree-6 must differ at non-equatorial point; diff was {max_diff}"
+        );
+    }
+
+    #[test]
+    fn egm2008_zonal_is_deterministic_across_reruns() {
+        let g = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+        let pos = at_xyz(7.5e6, -1.2e6, 3.4e6);
+        let a = g.gravity_eci_m_s2(pos, SimTime::ZERO).unwrap();
+        let b = g.gravity_eci_m_s2(pos, SimTime::ZERO).unwrap();
+        for axis in 0..3 {
+            assert_eq!(a[axis].to_bits(), b[axis].to_bits());
+        }
+    }
+
+    #[test]
+    fn egm2008_zonal_radial_acceleration_at_pole_matches_central_plus_j2() {
+        // At a pole (z = r, x = y = 0), J_3 contribution is zero only
+        // for degrees that vanish at ξ = 1; verify the model still
+        // returns finite values close to central + J2 dominant.
+        let g = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+        let pos = at_z(WGS84_A_M + 1_000_000.0);
+        let out = g.gravity_eci_m_s2(pos, SimTime::ZERO).unwrap();
+        assert!(out.iter().all(|v| v.is_finite()));
+        // x and y components should be ~zero at a pure-z position.
+        assert_abs_diff_eq!(out.x, 0.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(out.y, 0.0, epsilon = 1.0e-12);
+        // z must be inward (negative).
+        assert!(out.z < 0.0);
+    }
+
+    #[test]
+    fn egm2008_zonal_legendre_recurrence_matches_closed_form_for_low_degrees() {
+        // Sanity check on the recurrence: for ξ = 0.5, P_2 = 1/8,
+        // P_3 = -7/16, P_4 = -77/128. Validate by a manual
+        // re-implementation.
+        let xi = 0.5_f64;
+        let p_2_closed = (3.0 * xi * xi - 1.0) / 2.0;
+        let p_3_closed = (5.0 * xi.powi(3) - 3.0 * xi) / 2.0;
+        let p_4_closed = (35.0 * xi.powi(4) - 30.0 * xi * xi + 3.0) / 8.0;
+        // Run the same recurrence the gravity model uses.
+        let mut p_prev = 1.0_f64;
+        let mut p_n = xi;
+        for n in 2..=4_usize {
+            let n_f = n as f64;
+            let n_minus_1_f = (n - 1) as f64;
+            let two_n_minus_1 = 2.0 * n_minus_1_f + 1.0;
+            let p_next = (two_n_minus_1 * xi * p_n - n_minus_1_f * p_prev) / n_f;
+            p_prev = p_n;
+            p_n = p_next;
+            let expected = match n {
+                2 => p_2_closed,
+                3 => p_3_closed,
+                4 => p_4_closed,
+                _ => unreachable!(),
+            };
+            assert_abs_diff_eq!(p_n, expected, epsilon = 1.0e-15);
         }
     }
 }

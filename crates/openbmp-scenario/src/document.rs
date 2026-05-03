@@ -182,6 +182,13 @@ impl ScenarioDocument {
     /// scenario contract.
     pub fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
         self.validate_header()?;
+        // Reject v2 scenarios that name a v3-only kind selector before
+        // running the per-kind field validation, so users see "egm2008
+        // is reserved for v3" rather than a downstream
+        // `UnexpectedField` for a config field that is only valid
+        // alongside that selector under v3. Phase-5.C.2 graduated
+        // `egm2008`; the reservation gate now fires only under v2.
+        self.validate_phase5_kind_availability()?;
         self.meta.validate()?;
         self.time.validate()?;
         self.vehicle.validate(registry, self.time.dt_s)?;
@@ -567,17 +574,48 @@ impl ScenarioDocument {
         Ok(())
     }
 
-    fn validate_phase5_kind_values(&self, header: u16) -> Result<(), ScenarioError> {
-        // The registry resolves the names; the gating below rejects them
-        // under v2 and emits a deferred-phase diagnostic under v3 until
-        // the consumer sub-phase lands.
-        if self.environment.gravity == "egm2008" {
-            return Err(phase5_kind_error(
-                header,
-                "environment.gravity = \"egm2008\"",
-                "Phase 5.C.2",
-            ));
+    /// Pre-pass v2 availability gate for v3-only kind selectors.
+    ///
+    /// Runs before per-kind field validation so users see a clean
+    /// "feature is reserved for v3" diagnostic instead of a downstream
+    /// `UnexpectedField` for fields that are only valid alongside that
+    /// selector. Always emits `SchemaVersionFieldReserved` (never the
+    /// v3-deferred variant) — graduated names that are now consumed
+    /// under v3 stay handled by `validate_phase5_kind_values`.
+    fn validate_phase5_kind_availability(&self) -> Result<(), ScenarioError> {
+        let header = self.openbmp.scenario;
+        if header >= SCENARIO_VERSION_V3 {
+            return Ok(());
         }
+        if self.environment.gravity == "egm2008" {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "environment.gravity = \"egm2008\"".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
+        if self.environment.atmosphere == "nrlmsise00"
+            || self
+                .atmosphere
+                .as_ref()
+                .is_some_and(|a| a.kind == "nrlmsise00")
+        {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "atmosphere.kind = \"nrlmsise00\"".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_phase5_kind_values(&self, header: u16) -> Result<(), ScenarioError> {
+        // Names that are still deferred to a future Phase-5 sub-phase
+        // emit `ElementDeferredToFuturePhase` here under v3. v2 cases
+        // are handled earlier by `validate_phase5_kind_availability`.
+        // `egm2008` graduated in Phase 5.C.2 and is consumed by
+        // `EnvironmentConfig::validate` + the runner gravity dispatch,
+        // so it is no longer named here.
         if self.environment.atmosphere == "nrlmsise00"
             || self
                 .atmosphere
@@ -984,6 +1022,7 @@ pub struct EnvironmentConfig {
 }
 
 impl EnvironmentConfig {
+    #[allow(clippy::too_many_lines)] // Phase-5.C.2 added the egm2008 arm
     fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
         validate_frame_profile("environment.frame_profile", &self.frame_profile)?;
         let gravity_descriptor = registry.resolve(ModelRole::Gravity, &self.gravity)?;
@@ -1061,6 +1100,34 @@ impl EnvironmentConfig {
                         field: "environment.gravity_m_s2".to_owned(),
                         role: ModelRole::Gravity,
                         name: "j2".to_owned(),
+                    });
+                }
+            }
+            "egm2008" => {
+                // Phase-5.C.2 zonal-only EGM2008 (degrees 2-6). Pinned
+                // to WGS84 µ, R_e and the Pavlis et al. 2012 J_n
+                // tables; the scenario block carries no per-field
+                // overrides on purpose to keep the determinism contract
+                // tight. Reject any leftover gravity-config keys.
+                if self.gravity_m_s2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "environment.gravity_m_s2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "egm2008".to_owned(),
+                    });
+                }
+                if self.mu_m3_s2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "environment.mu_m3_s2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "egm2008".to_owned(),
+                    });
+                }
+                if self.r_e_m.is_some() || self.j2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "environment.r_e_m / environment.j2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "egm2008".to_owned(),
                     });
                 }
             }

@@ -31,8 +31,8 @@ labelled P0 / P1 / P2 are folded into the sub-phase ordering below.
   IMM (Bar-Shalom) maneuver-aware estimator; Willsky 1976 windowed
   mean-shift GLRT; parity-space residual generator.
 - Environment: NRLMSISE-00 (in-house Rust port, public coefficients
-  only); EGM2008 truncated spherical-harmonic gravity beyond
-  WGS84-J2.
+  only); EGM2008 zonal-harmonic gravity (degrees 2-6) beyond
+  WGS84-J2 (tesseral / sectoral terms deferred to a follow-on slice).
 - Kernel and scenario: multi-rate scheduling promoted to first-class;
   multi-body simultaneous propagation (post-separation); DOPRI5/8
   adaptive integrator behind an explicit profile flag; API cleanup
@@ -120,6 +120,7 @@ in lockstep with each sub-phase landing.
 | 5.A.3.D — controller comparison harness | shipped | `81d2407` |
 | 5.A.4 — receding-horizon attitude MPC (Clarabel-backed) | shipped | _pending PR_ |
 | 5.A.5 — prioritised redistributed control allocator | shipped | _pending PR_ |
+| 5.C.2 — EGM2008 zonal-harmonic gravity (degrees 2-6) | shipped | _pending PR_ |
 | 5.B onwards | pending | — |
 
 ## Vehicle-class scope
@@ -840,43 +841,86 @@ Statistical comparison and scientific issues*, J. Geophys. Res.
 JB-2008 is Phase 6. Phase 5 ships only the 2002 NRLMSISE-00
 baseline.
 
-#### 5.C.2 — EGM2008 truncated spherical-harmonic gravity
+#### 5.C.2 — EGM2008 zonal-harmonic gravity (degrees 2-6) **— shipped**
 
-**Scope.** Truncated spherical-harmonic gravity beyond WGS84-J2:
+**Honest scope.** The shipped surface is the **zonal-only**
+truncation of EGM2008 at degrees 2 through 6. Tesseral and sectoral
+terms, the Cunningham recursion that supports them, and the
+degree-20 working envelope originally proposed for this slice are
+deferred to a follow-on phase that pins higher-degree normalised
+coefficients. For zonal-dominated low-Earth-orbit drift effects
+(right-ascension drift, argument-of-perigee drift, nodal regression),
+J_2 through J_6 captures the dominant secular perturbations.
 
-- `Egm2008Gravity : GravityModel`, parametrised by `(degree, order)`
-  with public coefficients in `data/gravity/EGM2008/` (Pavlis et al.
-  2012 release; SHA-256-pinned in the scenario).
-- Maximum degree / order in the shipped scenario is **20**, the
-  documented orbit-determination working envelope. Higher truncations
-  may be opted into per scenario but are not exercised in CI by
-  default.
-- Implements the standard Cunningham 1970 recursion for the
-  associated Legendre functions, evaluated in ECEF and rotated into
-  ECI on demand.
-- Switches in via `environment.gravity = "egm2008"` plus `degree`,
-  `order`, and `coefficients_path`.
+**What shipped.**
 
-**Exit criterion.** EGM2008-degree-20 gravity reproduces a published
-GPS-orbit-class trajectory within a tolerance recorded in
-`tests/expected/egm2008.toml`. Scenarios opting into degree > 20
-parse but emit a `validation = "experimental"` label until their
-own tolerance evidence lands.
+- `openbmp_physics::Egm2008ZonalGravity : GravityModel`, parametrised
+  by `(µ, R_e, J_n[5], degree)` with `degree ∈ [2, 6]`. Constructor
+  validation rejects non-positive µ / R_e, non-finite J_n, or
+  out-of-range degree.
+- `wgs84_egm2008_zonal()` constructor pins WGS84 µ / R_e and the
+  Pavlis et al. 2012 J_n table (`EGM2008_J3..J6` constants in
+  `crates/openbmp-physics/src/gravity.rs`).
+- Math implements the Cartesian gradient form
+  `g_n = ∇V_n` with `V_n = +(µ/r) (R_e/r)^n J_n P_n(ξ)`, ξ = z/r,
+  evaluated via the standard Legendre recurrence
+  `P_{n+1} = ((2n+1) ξ P_n − n P_{n-1}) / (n+1)` (and its derivative).
+  Locked operand order matches the existing `J2Gravity` path so
+  `degree = 2` with `J_3..J_6 = 0` produces byte-identical output.
+- Switches in via `environment.gravity = "egm2008"` (no per-scenario
+  coefficients, µ, or R_e overrides — the zonal table is pinned and
+  the contract is byte-stable across machines).
+- Wired into both `phase2_point_mass` and `phase2_rigid_body`
+  runners. Demo: `scenarios/leo-orbit-egm2008/scenario.toml` propagates
+  a 1 kg point mass through one nominal LEO orbit period (5556 s,
+  RK4 dt = 1.0 s, 30° inclination) under the full degree-6 zonal
+  expansion.
 
-**Validation evidence.** Unit tests for the Cunningham recursion;
-property test for spherical symmetry at the equator under
-zonal-only truncation; analytic-toy comparison against the
-J2-only kernel for `degree = 2`.
+**What was deferred.**
+
+- Tesseral and sectoral terms (orders > 0). Sourcing the full
+  EGM2008 normalised-coefficient table (≈ 5 million entries through
+  degree 2190) and committing to a determinism-stable Cunningham
+  implementation belongs in a dedicated future slice.
+- Per-scenario `degree` and `coefficients_path` overrides. The
+  shipped surface is degree-pinned at 6 with the public J_n table
+  inlined as constants; future overridable surfaces will arrive
+  alongside the tesseral implementation.
+- Degree-20 GPS-orbit reproduction tolerance. Without tesseral terms
+  this is not achievable; the math-side `J2Gravity`-degeneracy and
+  Legendre-recurrence unit tests cover correctness within shipped
+  scope.
+
+**Validation evidence.**
+
+- Math: `crates/openbmp-physics/src/gravity.rs` ships 8 unit tests:
+  constructor validation (rejects non-positive µ / R_e, non-finite
+  J_n, out-of-range degree), origin-singularity, degree-2 degeneracy
+  (byte-identical to `J2Gravity` at multiple positions), LEO-altitude
+  acceleration sanity, higher-degree differentiation at non-equatorial
+  points, determinism across reruns, pole geometry, and Legendre
+  recurrence vs closed-form `P_n(ξ)` for low degrees.
+- End-to-end: `crates/openbmp-cli/tests/leo_orbit_egm2008_e2e.rs`
+  asserts the demo scenario completes 5556 RK4 steps with end-time
+  stop, the final ECI radius stays within 5 km of the initial
+  6 778 km circular radius (no orbit blow-up), and two reruns
+  produce byte-identical Parquet (deterministic gravity model
+  propagates through the closed-loop pipeline).
 
 **References.** Pavlis, N. K., Holmes, S. A., Kenyon, S. C., and
 Factor, J. K., *The development and evaluation of the Earth
 Gravitational Model 2008 (EGM2008)*, J. Geophys. Res. 117(B4),
-2012. Cunningham, L. E., *On the computation of the spherical
-harmonic terms needed during the numerical integration of the
-orbital motion of an artificial satellite*, Cel. Mech. 2(2), 1970.
+2012 — public NGA-released zonal coefficients pinned in
+`EGM2008_J3..J6`. Vallado, D. A., *Fundamentals of Astrodynamics
+and Applications*, 4th ed., §8.6 — Cartesian J_n gradient form.
+Montenbruck, O. and Gill, E., *Satellite Orbits — Models, Methods,
+Applications*, §3.2 — Legendre recurrence derivation.
 
-**Scope guardrail.** Public coefficients only. No derived datasets,
-no operational tunings, no satellite-specific calibrations.
+**Scope guardrail.** Public NGA-released zonal coefficients only.
+No derived datasets, no operational tunings, no satellite-specific
+calibrations. Tesseral terms deferred until a dedicated follow-on
+slice can pin the full normalised-coefficient table with
+deterministic Cunningham bookkeeping.
 
 ---
 

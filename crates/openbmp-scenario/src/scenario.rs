@@ -414,18 +414,52 @@ bogus_field = 1
     }
 
     #[test]
-    fn egm2008_gravity_is_v3_only() {
+    fn egm2008_gravity_is_v3_only_and_validates_under_v3() {
         // The Phase-5.0 v3 gate fires before the cross-field check that
         // would otherwise reject `gravity_m_s2` against a non-constant
-        // gravity model, so the test only needs to flip the gravity
-        // selector. The aligned-equals layout in the canonical scenario
-        // (`gravity       = "constant"`) is matched verbatim.
-        let toml = MINIMAL.replace(
+        // gravity model, so the v2-rejection test only needs to flip
+        // the gravity selector — the leftover `gravity_m_s2` line is
+        // covered by the schema-version-reserved diagnostic.
+        let toml_v2 = MINIMAL.replace(
             "gravity       = \"constant\"",
             "gravity       = \"egm2008\"",
         );
-        assert_phase5_reserved_under_v2(&toml, "environment.gravity = \"egm2008\"");
-        assert_phase5_deferred_under_v3(&toml, "environment.gravity = \"egm2008\"", "Phase 5.C.2");
+        assert_phase5_reserved_under_v2(&toml_v2, "environment.gravity = \"egm2008\"");
+
+        // Under v3, `egm2008` is consumed (Phase 5.C.2): drop the
+        // constant-gravity-only `gravity_m_s2` line and verify that
+        // the document validates clean.
+        let toml_v3 = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665\n",
+                "gravity       = \"egm2008\"\n",
+            );
+        let scenario = Scenario::from_toml_str(&toml_v3).expect("egm2008 must validate under v3");
+        assert_eq!(scenario.document.environment.gravity, "egm2008");
+        assert!(scenario.document.environment.gravity_m_s2.is_none());
+    }
+
+    #[test]
+    fn egm2008_gravity_rejects_constant_only_fields_under_v3() {
+        // Leftover `gravity_m_s2` under `gravity = "egm2008"` must be
+        // rejected with `UnexpectedField` — the EGM2008 zonal model
+        // pins WGS84 µ / R_e and the published J_n table, so it
+        // exposes no per-scenario overrides.
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"",
+                "gravity       = \"egm2008\"",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::UnexpectedField { field, name, .. } => {
+                assert_eq!(field, "environment.gravity_m_s2");
+                assert_eq!(name, "egm2008");
+            }
+            other => panic!("expected UnexpectedField for gravity_m_s2, got: {other:?}"),
+        }
     }
 
     /// Canonical Phase-4 FC scenario used as the base for the v3-only
