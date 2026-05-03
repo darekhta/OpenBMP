@@ -74,6 +74,7 @@ impl FcRunner {
         event_bindings: Vec<EventBinding>,
         start_phase: PhaseId,
         autopilot_lqr_context: Option<FcAutopilotLqrContext>,
+        loop_step_dt_s: f64,
     ) -> Result<Self, openbmp_fc::ControllerError> {
         let mut fc = FlightControllerBuilder::new()
             .frame_budget_us(config.frame_budget_us)
@@ -166,6 +167,7 @@ impl FcRunner {
         if let Some(params) = &config.autopilot_params {
             autopilot = autopilot.with_params(build_autopilot_params(
                 params,
+                loop_step_dt_s,
                 autopilot_lqr_context.as_ref(),
             )?);
         }
@@ -475,10 +477,11 @@ pub struct FcAutopilotLqrContext {
 #[allow(clippy::too_many_lines)]
 fn build_autopilot_params(
     cfg: &FcAutopilotParams,
+    dt_s: f64,
     lqr_ctx: Option<&FcAutopilotLqrContext>,
 ) -> Result<AutopilotParams, openbmp_fc::ControllerError> {
     use openbmp_fc::anti_windup::AntiWindupKind;
-    #[cfg(any(feature = "lqr", feature = "indi"))]
+    #[cfg(any(feature = "lqr", feature = "indi", feature = "mpc"))]
     use openbmp_fc::error::AutopilotError;
     // Phase 5.A.3.A: explicit `[fc.autopilot_params.anti_windup]`
     // wins over the legacy `anti_windup_gain` scalar; otherwise the
@@ -623,6 +626,57 @@ fn build_autopilot_params(
         }
     }
     let _ = lqr_ctx;
+    let _ = dt_s; // referenced under `mpc` feature only
+    // Phase 5.A.4 — attitude-loop kind dispatch. PID is the
+    // Phase-4/5.A.2/5.A.3 default; selecting MPC triggers a
+    // RecedingHorizonAttitudeMpc construction at scenario load using
+    // the configured params and the loop step `time.dt_s`.
+    if let Some(kind) = cfg.attitude_loop_kind {
+        match kind {
+            openbmp_scenario::FcAttitudeLoopKind::Pid => {
+                params.attitude_loop_kind = openbmp_fc::autopilot::AttitudeLoopKind::Pid;
+            }
+            openbmp_scenario::FcAttitudeLoopKind::Mpc => {
+                #[cfg(feature = "mpc")]
+                {
+                    let attitude_mpc_cfg = cfg.attitude_mpc.as_ref().ok_or_else(|| {
+                        openbmp_fc::ControllerError::from(AutopilotError::Trajectory {
+                            reason: "attitude_loop_kind = \"mpc\" but \
+                                     [fc.autopilot_params.attitude_mpc] is absent (parser \
+                                     should have caught this)"
+                                .to_string(),
+                        })
+                    })?;
+                    let mpc_params = openbmp_fc::mpc::AttitudeMpcParams {
+                        horizon_n: attitude_mpc_cfg.horizon_n,
+                        q_x: attitude_mpc_cfg.q_x,
+                        r_u: attitude_mpc_cfg.r_u,
+                        terminal_p: attitude_mpc_cfg.terminal_p,
+                        rate_limit_rad_s: attitude_mpc_cfg.rate_limit_rad_s,
+                    };
+                    let mpc = openbmp_fc::mpc::RecedingHorizonAttitudeMpc::new(mpc_params, dt_s)
+                        .map_err(|err| {
+                            openbmp_fc::ControllerError::from(AutopilotError::Trajectory {
+                                reason: format!("attitude MPC construction failed: {err}"),
+                            })
+                        })?;
+                    params.attitude_loop_kind = openbmp_fc::autopilot::AttitudeLoopKind::Mpc;
+                    params.attitude_mpc = Some(std::sync::Arc::new(mpc));
+                }
+                #[cfg(not(feature = "mpc"))]
+                {
+                    let _ = cfg.attitude_mpc.as_ref();
+                    return Err(openbmp_fc::ControllerError::from(
+                        openbmp_fc::error::AutopilotError::Trajectory {
+                            reason: "attitude_loop_kind = \"mpc\" requires the openbmp-cli \
+                                     `mpc` Cargo feature; rebuild with --features mpc."
+                                .to_string(),
+                        },
+                    ));
+                }
+            }
+        }
+    }
     Ok(params)
 }
 
@@ -892,7 +946,7 @@ mod tests {
             trajectory: None,
         };
         let (graph, bindings, pad) = minimal_graph();
-        let mut runner = FcRunner::new(&config, graph, bindings, pad, None).unwrap();
+        let mut runner = FcRunner::new(&config, graph, bindings, pad, None, 0.001).unwrap();
         // Drive 100 ticks at 1 ms each.
         let dt_s = 0.001;
         for k in 0..100u64 {
@@ -922,7 +976,7 @@ mod tests {
             }),
             ..FcAutopilotParams::default()
         };
-        let params = build_autopilot_params(&cfg, None).expect("autopilot params build");
+        let params = build_autopilot_params(&cfg, 0.001, None).expect("autopilot params build");
         assert_eq!(
             params.anti_windup,
             openbmp_fc::anti_windup::AntiWindupKind::ObserverForm {

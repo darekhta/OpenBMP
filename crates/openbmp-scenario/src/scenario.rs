@@ -206,8 +206,8 @@ impl Scenario {
 mod tests {
     use super::*;
     use crate::document::{
-        FcAntiWindupConfig, FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind,
-        WGS84_J2_DEFAULT,
+        FcAntiWindupConfig, FcAttitudeLoopKind, FcAttitudeMpcConfig, FcIndiConfig,
+        FcIndiFilterKind, FcLqrConfig, FcRateLoopKind, WGS84_J2_DEFAULT,
     };
     use openbmp_core::ValidationStatus;
 
@@ -1229,6 +1229,166 @@ projection_bound          =  100.0
                 && field_b == "fc.autopilot_params.l1_adaptive"),
             "expected InconsistentSection rate_loop_kind ↔ l1_adaptive, got {err:?}"
         );
+    }
+
+    /// Inject `attitude_loop_kind = "<kind>"` into the existing
+    /// `[fc.autopilot_params]` table of the v2 fixture and append the
+    /// matching `[fc.autopilot_params.attitude_mpc]` sub-table.
+    fn fc_v3_with_attitude_mpc(
+        attitude_loop_kind: Option<&str>,
+        attitude_mpc_block: Option<&str>,
+    ) -> String {
+        let mut text = fc_v2_scenario().replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        if let Some(kind) = attitude_loop_kind {
+            text = text.replace(
+                "trajectory_kind          = \"pid\"\n",
+                &format!(
+                    "trajectory_kind          = \"pid\"\nattitude_loop_kind       = \"{kind}\"\n"
+                ),
+            );
+        }
+        if let Some(block) = attitude_mpc_block {
+            text.push('\n');
+            text.push_str(block);
+        }
+        text
+    }
+
+    #[test]
+    fn fc_attitude_mpc_block_is_v3_only() {
+        let block = r"
+[fc.autopilot_params.attitude_mpc]
+horizon_n         = 20
+q_x               = [100.0, 100.0, 50.0]
+r_u               = [0.001, 0.001, 0.001]
+terminal_p        = [1000.0, 1000.0, 500.0]
+rate_limit_rad_s  = [3.0, 3.0, 3.0]
+";
+        let toml_v2 = append(fc_v2_scenario(), block);
+        let err = Scenario::from_toml_str(&toml_v2).unwrap_err();
+        match err {
+            ScenarioError::SchemaVersionFieldReserved { field, .. } => {
+                assert!(
+                    field == "fc.autopilot_params.attitude_loop_kind"
+                        || field == "fc.autopilot_params.attitude_mpc",
+                    "unexpected SchemaVersionFieldReserved field: {field}"
+                );
+            }
+            other => panic!("expected SchemaVersionFieldReserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_attitude_mpc_block_under_v3_validates() {
+        let mpc_block = r"
+[fc.autopilot_params.attitude_mpc]
+horizon_n         = 20
+q_x               = [100.0, 100.0, 50.0]
+r_u               = [0.001, 0.001, 0.001]
+terminal_p        = [1000.0, 1000.0, 500.0]
+rate_limit_rad_s  = [3.0, 3.0, 3.0]
+";
+        let toml = fc_v3_with_attitude_mpc(Some("mpc"), Some(mpc_block));
+        let scenario = Scenario::from_toml_str(&toml).expect("v3 attitude MPC validates");
+        let params = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.autopilot_params.as_ref())
+            .expect("autopilot_params present");
+        assert_eq!(params.attitude_loop_kind, Some(FcAttitudeLoopKind::Mpc));
+        let mpc = params
+            .attitude_mpc
+            .as_ref()
+            .expect("attitude_mpc block present");
+        assert_eq!(
+            *mpc,
+            FcAttitudeMpcConfig {
+                horizon_n: 20,
+                q_x: [100.0, 100.0, 50.0],
+                r_u: [0.001, 0.001, 0.001],
+                terminal_p: [1000.0, 1000.0, 500.0],
+                rate_limit_rad_s: [3.0, 3.0, 3.0],
+            }
+        );
+    }
+
+    #[test]
+    fn fc_attitude_loop_kind_mpc_without_block_fails_closed() {
+        let toml = fc_v3_with_attitude_mpc(Some("mpc"), None);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. }
+                if field == "fc.autopilot_params.attitude_mpc"),
+            "expected MissingRequiredField for fc.autopilot_params.attitude_mpc, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn fc_attitude_mpc_block_without_kind_mpc_fails_closed() {
+        let mpc_block = r"
+[fc.autopilot_params.attitude_mpc]
+horizon_n         = 20
+q_x               = [100.0, 100.0, 50.0]
+r_u               = [0.001, 0.001, 0.001]
+terminal_p        = [1000.0, 1000.0, 500.0]
+rate_limit_rad_s  = [3.0, 3.0, 3.0]
+";
+        let toml = fc_v3_with_attitude_mpc(None, Some(mpc_block));
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, .. }
+                if field_a == "fc.autopilot_params.attitude_mpc"),
+            "expected InconsistentSection on fc.autopilot_params.attitude_mpc, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn fc_attitude_mpc_block_rejects_invalid_parameters() {
+        let cases = [
+            (
+                "horizon zero",
+                "horizon_n         = 20",
+                "horizon_n         = 0",
+            ),
+            (
+                "q_x zero on roll",
+                "q_x               = [100.0, 100.0, 50.0]",
+                "q_x               = [0.0, 100.0, 50.0]",
+            ),
+            (
+                "r_u negative on yaw",
+                "r_u               = [0.001, 0.001, 0.001]",
+                "r_u               = [0.001, 0.001, -0.001]",
+            ),
+            (
+                "terminal_p zero on pitch",
+                "terminal_p        = [1000.0, 1000.0, 500.0]",
+                "terminal_p        = [1000.0, 0.0, 500.0]",
+            ),
+            (
+                "rate_limit zero on roll",
+                "rate_limit_rad_s  = [3.0, 3.0, 3.0]",
+                "rate_limit_rad_s  = [0.0, 3.0, 3.0]",
+            ),
+        ];
+        let nominal = r"
+[fc.autopilot_params.attitude_mpc]
+horizon_n         = 20
+q_x               = [100.0, 100.0, 50.0]
+r_u               = [0.001, 0.001, 0.001]
+terminal_p        = [1000.0, 1000.0, 500.0]
+rate_limit_rad_s  = [3.0, 3.0, 3.0]
+";
+        for (label, from, to) in cases {
+            let block = nominal.replace(from, to);
+            let toml = fc_v3_with_attitude_mpc(Some("mpc"), Some(&block));
+            let err = Scenario::from_toml_str(&toml).unwrap_err();
+            assert!(
+                matches!(err, ScenarioError::InvalidNumber { .. }),
+                "{label}: expected InvalidNumber, got {err:?}"
+            );
+        }
     }
 
     #[test]

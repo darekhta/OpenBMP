@@ -472,6 +472,49 @@ impl ScenarioDocument {
                 }
                 indi.validate(dt_s)?;
             }
+
+            // fc.autopilot_params.attitude_loop_kind / .attitude_mpc
+            // — Phase 5.A.4 consumed pair. Both v3-only. When
+            // attitude_loop_kind = "mpc" the [fc.autopilot_params.attitude_mpc]
+            // block is required so the runner can build the
+            // RecedingHorizonAttitudeMpc; conversely the block is
+            // meaningless without the kind selector.
+            if let Some(attitude_kind) = autopilot_params.attitude_loop_kind {
+                if header < SCENARIO_VERSION_V3 {
+                    return Err(ScenarioError::SchemaVersionFieldReserved {
+                        field: "fc.autopilot_params.attitude_loop_kind".to_owned(),
+                        required: SCENARIO_VERSION_V3,
+                        found: header,
+                    });
+                }
+                if attitude_kind == FcAttitudeLoopKind::Mpc
+                    && autopilot_params.attitude_mpc.is_none()
+                {
+                    return Err(ScenarioError::MissingRequiredField {
+                        field: "fc.autopilot_params.attitude_mpc".to_owned(),
+                        role: ModelRole::Controller,
+                        name: "attitude_mpc".to_owned(),
+                    });
+                }
+            }
+            if let Some(attitude_mpc) = autopilot_params.attitude_mpc.as_ref() {
+                if header < SCENARIO_VERSION_V3 {
+                    return Err(ScenarioError::SchemaVersionFieldReserved {
+                        field: "fc.autopilot_params.attitude_mpc".to_owned(),
+                        required: SCENARIO_VERSION_V3,
+                        found: header,
+                    });
+                }
+                if autopilot_params.attitude_loop_kind != Some(FcAttitudeLoopKind::Mpc) {
+                    return Err(ScenarioError::InconsistentSection {
+                        field_a: "fc.autopilot_params.attitude_mpc".to_owned(),
+                        value_a: "present".to_owned(),
+                        field_b: "fc.autopilot_params.attitude_loop_kind".to_owned(),
+                        value_b: format!("{:?}", autopilot_params.attitude_loop_kind),
+                    });
+                }
+                attitude_mpc.validate()?;
+            }
         }
 
         // fc.trajectory — Phase 5.A.1.B consumed block. v3-only; the
@@ -3758,6 +3801,16 @@ pub struct FcAutopilotParams {
     /// with `[fc.autopilot_params.l1_adaptive]` is rejected at
     /// scenario load.
     pub indi: Option<FcIndiConfig>,
+    /// Attitude-loop dispatch (Phase 5.A.4, v3-only). When
+    /// `Some(FcAttitudeLoopKind::Mpc)`, the runner builds a
+    /// `RecedingHorizonAttitudeMpc` from `[fc.autopilot_params.attitude_mpc]`
+    /// and installs it on the autopilot. Defaults to `Pid` (Phase-4
+    /// behaviour).
+    pub attitude_loop_kind: Option<FcAttitudeLoopKind>,
+    /// Receding-horizon attitude-MPC parameters (Phase 5.A.4,
+    /// v3-only). Required when `attitude_loop_kind = "mpc"`; ignored
+    /// otherwise.
+    pub attitude_mpc: Option<FcAttitudeMpcConfig>,
 }
 
 /// Per-axis L1 adaptive parameters declared in
@@ -4051,6 +4104,84 @@ impl FcLqrConfig {
             require_positive(&format!("{path}.q_int[{axis_label}]"), self.q_int[axis])?;
             require_finite(&format!("{path}.r[{axis_label}]"), self.r[axis])?;
             require_positive(&format!("{path}.r[{axis_label}]"), self.r[axis])?;
+        }
+        Ok(())
+    }
+}
+
+/// Attitude-loop dispatch declared in
+/// `[fc.autopilot_params.attitude_loop_kind]` (Phase 5.A.4, v3-only).
+///
+/// Mirrors `openbmp_fc::autopilot::AttitudeLoopKind`.
+#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcAttitudeLoopKind {
+    /// Phase-4 per-axis PID attitude loop. Default.
+    #[default]
+    Pid,
+    /// Phase-5.A.4 receding-horizon attitude MPC. Requires a
+    /// populated `[fc.autopilot_params.attitude_mpc]` block; the
+    /// runner builds a `RecedingHorizonAttitudeMpc` at scenario load
+    /// using the loop step `time.dt_s`.
+    Mpc,
+}
+
+/// Receding-horizon attitude-MPC configuration declared in
+/// `[fc.autopilot_params.attitude_mpc]` (Phase 5.A.4, v3-only).
+///
+/// Mirrors `openbmp_fc::mpc::AttitudeMpcParams`. Each `[f64; 3]` is
+/// `[roll, pitch, yaw]` and must contain strictly positive values.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcAttitudeMpcConfig {
+    /// Number of horizon steps `N`. Must be `>= 1`. Bounded above
+    /// by `openbmp_fc::mpc::ATTITUDE_MPC_MAX_HORIZON` at runtime.
+    pub horizon_n: usize,
+    /// Per-axis stage cost on the small-angle attitude error
+    /// (rad²-weight). Must be `> 0`.
+    pub q_x: [f64; 3],
+    /// Per-axis stage cost on the commanded body rate
+    /// ((rad/s)²-weight). Must be `> 0` for strong convexity.
+    pub r_u: [f64; 3],
+    /// Per-axis terminal cost on the final attitude error. Must be
+    /// `> 0`.
+    pub terminal_p: [f64; 3],
+    /// Per-axis symmetric rate-command bound (rad/s) the MPC
+    /// enforces on every horizon step. Must be `> 0`.
+    pub rate_limit_rad_s: [f64; 3],
+}
+
+impl FcAttitudeMpcConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        let path = "fc.autopilot_params.attitude_mpc";
+        if self.horizon_n == 0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.horizon_n"),
+                value: 0.0,
+                rule: "must be >= 1",
+            });
+        }
+        for (axis_label, axis) in ["roll", "pitch", "yaw"].iter().zip(0..3) {
+            require_finite(&format!("{path}.q_x[{axis_label}]"), self.q_x[axis])?;
+            require_positive(&format!("{path}.q_x[{axis_label}]"), self.q_x[axis])?;
+            require_finite(&format!("{path}.r_u[{axis_label}]"), self.r_u[axis])?;
+            require_positive(&format!("{path}.r_u[{axis_label}]"), self.r_u[axis])?;
+            require_finite(
+                &format!("{path}.terminal_p[{axis_label}]"),
+                self.terminal_p[axis],
+            )?;
+            require_positive(
+                &format!("{path}.terminal_p[{axis_label}]"),
+                self.terminal_p[axis],
+            )?;
+            require_finite(
+                &format!("{path}.rate_limit_rad_s[{axis_label}]"),
+                self.rate_limit_rad_s[axis],
+            )?;
+            require_positive(
+                &format!("{path}.rate_limit_rad_s[{axis_label}]"),
+                self.rate_limit_rad_s[axis],
+            )?;
         }
         Ok(())
     }

@@ -118,7 +118,8 @@ in lockstep with each sub-phase landing.
 | 5.A.3.B — per-axis LQR rate loop + structure-preserving DARE solver | shipped | `327f2dc` |
 | 5.A.3.C — per-axis INDI rate loop (Smeur-Chu-de Croon 2016) | shipped | `c06d881` |
 | 5.A.3.D — controller comparison harness | shipped | `81d2407` |
-| 5.A.4 onwards | pending | — |
+| 5.A.4 — receding-horizon attitude MPC (Clarabel-backed) | shipped | _pending PR_ |
+| 5.A.5 onwards | pending | — |
 
 ## Vehicle-class scope
 
@@ -443,23 +444,49 @@ baseline ships as the default autopilot.
 
 **Scope.** Promote the Phase 4.C single-step attitude box-QP
 (`solve_attitude_box_qp`) to a finite-horizon receding-horizon
-MPC:
+MPC. **Phase 5.A.4 ships the attitude path** under the existing
+`mpc` Cargo feature; the translational path stays scoped for a
+future slice.
 
-- `RecedingHorizonAttitudeMpc` — N-step QP over an attitude error
-  state with attitude-rate input, body-torque limits, body-rate
-  limits, and a quadratic terminal cost.
-- `RecedingHorizonTranslationalMpc` — N-step SOCP over a position
-  / velocity state with thrust-direction (cone) constraint and
-  thrust-magnitude bound.
+- `RecedingHorizonAttitudeMpc` (shipped) — condensed N-step QP per
+  body axis (block-diagonal joint formulation across the three
+  axes), small-angle Forward-Euler dynamics
+  `x[k+1] = x[k] − dt · u[k]`, quadratic stage + terminal cost
+  with per-axis weights, and a symmetric box constraint on the
+  commanded body rate (`|u[k]| ≤ rate_limit_rad_s[axis]`).
+  Decision variable layout `[u_x[0], u_y[0], u_z[0], u_x[1], …]`
+  (3 · N elements). The Hessian and constraint matrices are
+  pre-built at construction time; only the linear cost vector
+  depends on the current attitude error and is rebuilt each
+  `solve`.
+- `RecedingHorizonTranslationalMpc` (deferred) — N-step SOCP over a
+  position / velocity state with thrust-direction (cone) constraint
+  and thrust-magnitude bound. Deferred to a follow-up slice; the
+  Phase-4.C `solve_accel_norm_epigraph` cone backend is already in
+  `landing.rs` and will be promoted there.
 - Clarabel solver settings stay deterministic (`verbose = false`,
-  pinned tolerances, no time-limit).
-- Horizon length, weights, and limits live in `MpcParams` and a
-  dedicated `Table` consulted on every tick.
+  pinned tolerances, no time-limit) — shared with Phase 4.C
+  `solve_attitude_box_qp`. Two solves with the same inputs produce
+  bit-identical outputs on the reference platform.
+- New `AttitudeLoopKind { Pid, Mpc }` enum on `AutopilotParams`,
+  selected by the v3 scenario block
+  `[fc.autopilot_params.attitude_loop_kind]`. The MPC parameter
+  block lives at `[fc.autopilot_params.attitude_mpc]` with v3-only
+  gating, cross-validation, and rejection of non-positive
+  parameters at scenario load.
 
-**Exit criterion.** A scenario with the attitude MPC active tracks a
-slew reference and respects torque + rate limits; a scenario with the
-translational MPC active demonstrates a thrust-cone-constrained
-hover-trim against a perturbed reference. Solver `Solved` status is
+**Exit criterion (5.A.4 attitude MPC).** A scenario with the attitude
+MPC active runs the figure-eight reference end-to-end with bounded
+`|ω|`, normalised quaternion, and byte-stable Parquet across reruns.
+Demonstration scenario:
+`scenarios/diff-flatness-figure-eight-mpc/scenario.toml`. E2E test:
+`crates/openbmp-cli/tests/diff_flatness_mpc_e2e.rs`. Solver
+`Solved` status is required on every tick; failure surfaces as an
+`AutopilotError::Trajectory` and the controller refuses to step.
+
+**Translational MPC exit criterion (deferred).** A scenario with
+the translational MPC active demonstrates a thrust-cone-constrained
+hover-trim against a perturbed reference. Solver `Solved` status
 required on every tick or the controller falls back to PID with an
 FDIR bit.
 

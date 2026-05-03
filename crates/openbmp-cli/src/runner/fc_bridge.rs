@@ -72,12 +72,17 @@ impl FcBridge {
         let start_phase = graph.initial;
         let magnetic = build_magnetic_field(fc_config)?;
         let lqr_ctx = build_autopilot_lqr_context(scenario)?;
-        let runner =
-            FcRunner::new(fc_config, graph, bindings, start_phase, lqr_ctx).map_err(|err| {
-                CliError::UnsupportedScenario {
-                    what: format!("flight-controller construction failed: {err}"),
-                }
-            })?;
+        let runner = FcRunner::new(
+            fc_config,
+            graph,
+            bindings,
+            start_phase,
+            lqr_ctx,
+            scenario.document.time.dt_s,
+        )
+        .map_err(|err| CliError::UnsupportedScenario {
+            what: format!("flight-controller construction failed: {err}"),
+        })?;
         let sensors = build_sensors(&scenario.document, resolved_files)?;
         Ok(Some(Self {
             runner,

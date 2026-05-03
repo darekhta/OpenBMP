@@ -1,0 +1,251 @@
+# Phase-5.A.3.D MPC sibling of the diff-flatness figure-eight.
+#
+# Identical to `scenarios/diff-flatness-figure-eight` except for one
+# pair of fields under `[fc.autopilot_params]`:
+#
+#   - `attitude_loop_kind = "mpc"` swaps the per-axis PID attitude
+#     loop for the receding-horizon attitude MPC shipped in
+#     Phase 5.A.4 (Clarabel-backed, deterministic settings).
+#   - `[fc.autopilot_params.attitude_mpc]` declares the horizon
+#     length, per-axis stage / terminal cost weights, and the
+#     box rate-command bound the MPC enforces over every horizon
+#     step.
+#
+# All other autopilot machinery (DifferentialFlatness trajectory
+# loop, PID rate loop, anti-windup, mixer) is unchanged. The MPC
+# replaces ONLY the attitude loop, producing the optimal first-step
+# rate command that the rate loop tracks.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "diff-flatness-figure-eight-mpc"
+description = "Phase-5.A.4 receding-horizon attitude-MPC sibling of diff-flatness-figure-eight; identical except attitude_loop_kind = \"mpc\" and the [fc.autopilot_params.attitude_mpc] block."
+validation  = "experimental"
+provenance  = "synthetic; identical to diff-flatness-figure-eight modulo the attitude-MPC swap. See provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 8.0
+dt_s    = 0.001
+seed    = 0x4d50_4331_3168_466c   # "MPC11hFl"
+
+[vehicle]
+kind                                = "rigid_body"
+initial_position_eci_m              = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "diff-flatness-figure-eight-mpc"
+
+# Unit-mass cube-equivalent inertia. Per-axis inertia is 1.0 kg·m² so
+# the autopilot's commanded body torque (limited at 0.35 N·m by the
+# gain schedule) yields up to 0.35 rad/s² of angular acceleration on
+# each axis — modest but sufficient for the gentle figure-eight
+# trajectory.
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_inertia_body_kg_m2 = [
+  [1.0, 0.0, 0.0],
+  [0.0, 1.0, 0.0],
+  [0.0, 0.0, 1.0],
+]
+
+# Phase-5.A.2.A: three direct-torque effectors, one per body axis. The
+# autopilot publishes its rate-loop torque commands as
+# aileron_rad / elevator_rad / rudder_rad; the channel map below
+# routes them to the matching effector. The kernel-side
+# `DirectTorqueMomentAdapter` turns the effector deflections into
+# body torque (effectiveness = 1.0 N·m / rad means torque ≡ command).
+[[vehicle.assembly.effectors]]
+id               = "roll-torque"
+kind             = { kind = "direct_torque", axis = "roll", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.35, max = 0.35, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[[vehicle.assembly.effectors]]
+id               = "pitch-torque"
+kind             = { kind = "direct_torque", axis = "pitch", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.35, max = 0.35, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[[vehicle.assembly.effectors]]
+id               = "yaw-torque"
+kind             = { kind = "direct_torque", axis = "yaw", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.35, max = 0.35, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+magnetic      = "wmm_2025"
+
+[forces]
+models = ["gravity"]
+
+[sensors.imu]
+kind = "imu"
+file = "../../data/sensors/imu-consumer-mems.toml"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../../data/sensors/gnss-textbook.toml"
+
+[sensors.mag]
+kind = "magnetometer"
+file = "../../data/sensors/magnetometer-textbook.toml"
+
+[telemetry]
+output.parquet = "out/diff-flatness-figure-eight-mpc.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+# Mission graph: pad → ascent at t = 0.05 s, well before the trajectory
+# tracker activates.
+[mission]
+initial_phase = "mission.phases.pad"
+
+[[mission.phases]]
+id    = "mission.phases.pad"
+label = "pad"
+
+[[mission.phases]]
+id                = "mission.phases.ascent"
+label             = "ascent"
+allowed_effectors = ["roll-torque", "pitch-torque", "yaw-torque"]
+
+[[mission.events]]
+id      = "mission.events.liftoff"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "enter_phase", phase = "mission.phases.ascent" }
+
+[[mission.transitions]]
+from  = "mission.phases.pad"
+to    = "mission.phases.ascent"
+event = "mission.events.liftoff"
+
+# Flight-controller block.
+[fc]
+estimator        = "mekf"
+autopilot        = "three_loop"
+guidance         = "attitude_hold"
+reference_q_xyzw = [0.0, 0.0, 0.0, 1.0]
+base_rate_hz     = 1000
+frame_budget_us  = 2000
+
+[fc.mekf]
+mag_field             = "wmm_2025"
+mag_epoch_decimal_year = 2025.0
+sigma_w_gyro          = 0.01
+sigma_w_gyro_bias     = 1.0e-5
+tau_gyro_bias_s       = 100.0
+sigma_mag_nt          = 100.0
+innovation_false_alarm_rate = 0.01
+
+[fc.actuator_channels]
+aileron  = "roll-torque"
+elevator = "pitch-torque"
+rudder   = "yaw-torque"
+
+[fc.autopilot_params]
+anti_windup_gain         = 1.0
+rate_deadband_rad_s      = 0.001
+trajectory_loop_enabled  = true
+trajectory_kind          = "minimum_snap"
+attitude_loop_kind       = "mpc"
+
+# Phase-5.A.4 attitude-MPC parameters. Horizon 20 ticks (= 20 ms)
+# at the 1 kHz autopilot rate gives the controller enough lookahead
+# to plan against the trajectory's commanded attitude reference;
+# weights tuned so input cost is small relative to terminal-state
+# cost (the controller drives the attitude error to zero
+# aggressively, saturating at the rate bound when needed). The rate
+# bound (3 rad/s per axis) is well above the trajectory's
+# commanded body rates so the MPC operates inside the box for
+# nominal tracking.
+[fc.autopilot_params.attitude_mpc]
+horizon_n         = 20
+q_x               = [100.0, 100.0, 50.0]
+r_u               = [0.001, 0.001, 0.001]
+terminal_p        = [1000.0, 1000.0, 500.0]
+rate_limit_rad_s  = [3.0, 3.0, 3.0]
+
+# Minimum-snap trajectory: horizontal figure-eight in ECI XY at
+# constant altitude (z = 100 m). Five waypoints over 8 seconds form
+# a closed lemniscate-shaped loop (a → b → c → b' → a). Coordinates
+# chosen so the polynomial generator's KKT solve remains
+# well-conditioned with academic tolerances.
+[fc.trajectory]
+kind    = "minimum_snap"
+yaw_rad = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 100.0]
+time_s         = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, 5.0, 100.0]
+time_s         = 2.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [20.0, 0.0, 100.0]
+time_s         = 4.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, -5.0, 100.0]
+time_s         = 6.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 100.0]
+time_s         = 8.0
+
+[fc.health]
+imu_stale_after_s       = 0.05
+gnss_stale_after_s      = 0.5
+baro_stale_after_s      = 10.0
+mag_stale_after_s       = 0.2
+overrun_burst_count     = 5
+
+[fc.fdir]
+detector_kind           = "burst_counter"
+innovation_threshold    = 25.0
+innovation_burst_count  = 5
+failsafe_burst_count    = 5
+
+[fc.gain_schedule."mission.phases.pad"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.gain_schedule."mission.phases.ascent"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.phase_authority."mission.phases.pad"]
+autopilot_allowed = false
+engines_allowed   = false
+
+[fc.phase_authority."mission.phases.ascent"]
+autopilot_allowed = true
+engines_allowed   = true

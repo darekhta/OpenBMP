@@ -158,6 +158,20 @@ pub struct AutopilotParams {
     /// without params.
     #[cfg(feature = "indi")]
     pub indi_params: Option<crate::indi::IndiParams>,
+    /// Attitude-loop dispatch strategy (Phase 5.A.4). Defaults to
+    /// [`AttitudeLoopKind::Pid`] for byte-stable Phase-4 behaviour;
+    /// scenarios that select [`AttitudeLoopKind::Mpc`] must also
+    /// install a built `RecedingHorizonAttitudeMpc` via
+    /// [`AutopilotParams::attitude_mpc`] (the runner constructs it
+    /// at scenario load using the configured params and the loop
+    /// step `time.dt_s`).
+    pub attitude_loop_kind: AttitudeLoopKind,
+    /// Optional pre-built attitude MPC (Phase 5.A.4). Only consulted
+    /// when `attitude_loop_kind == AttitudeLoopKind::Mpc`. The
+    /// autopilot fails closed at first tick if `Mpc` is selected
+    /// without an installed controller.
+    #[cfg(feature = "mpc")]
+    pub attitude_mpc: Option<std::sync::Arc<crate::mpc::RecedingHorizonAttitudeMpc>>,
 }
 
 impl Default for AutopilotParams {
@@ -175,8 +189,26 @@ impl Default for AutopilotParams {
             lqr_gains: None,
             #[cfg(feature = "indi")]
             indi_params: None,
+            attitude_loop_kind: AttitudeLoopKind::Pid,
+            #[cfg(feature = "mpc")]
+            attitude_mpc: None,
         }
     }
+}
+
+/// Attitude-loop dispatch strategy.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum AttitudeLoopKind {
+    /// Phase-4 per-axis PID attitude loop (default). Reads gain
+    /// schedule per phase; integrator handled by the shared
+    /// `pid_step` helper.
+    #[default]
+    Pid,
+    /// Phase-5.A.4 receding-horizon attitude MPC. Requires the
+    /// `mpc` Cargo feature and a populated
+    /// [`AutopilotParams::attitude_mpc`] field. The autopilot fails
+    /// closed at first tick if either is missing.
+    Mpc,
 }
 
 /// Rate-loop dispatch strategy.
@@ -608,20 +640,60 @@ impl Job for ThreeLoopAutopilot {
             }
         }
 
+        // Phase 5.A.4 attitude-loop dispatch. PID is the
+        // Phase-4/5.A.2/5.A.3 default; MPC consumes the same
+        // attitude-error vector and returns the optimal first-step
+        // commanded body rate via the pre-built receding-horizon
+        // controller. The MPC's saturation is internal to its box
+        // constraint (rate_limit_rad_s) so the legacy `saturated`
+        // flag is not affected on MPC tick paths.
         let mut rate_cmd = Vector3::zeros();
-        for i in 0..3 {
-            let (cmd, sat) = pid_step(
-                &mut self.attitude_state[i],
-                &gains.attitude[i],
-                attitude_error[i],
-                dt,
-                -1e3,
-                1e3,
-                &self.params.anti_windup,
-                true,
-            );
-            rate_cmd[i] = cmd;
-            saturated |= sat;
+        match self.params.attitude_loop_kind {
+            AttitudeLoopKind::Pid => {
+                for i in 0..3 {
+                    let (cmd, sat) = pid_step(
+                        &mut self.attitude_state[i],
+                        &gains.attitude[i],
+                        attitude_error[i],
+                        dt,
+                        -1e3,
+                        1e3,
+                        &self.params.anti_windup,
+                        true,
+                    );
+                    rate_cmd[i] = cmd;
+                    saturated |= sat;
+                }
+            }
+            #[cfg(feature = "mpc")]
+            AttitudeLoopKind::Mpc => {
+                let mpc = self.params.attitude_mpc.as_ref().ok_or_else(|| {
+                    ControllerError::from(AutopilotError::Trajectory {
+                        reason: "AttitudeLoopKind::Mpc selected without an installed \
+                                 RecedingHorizonAttitudeMpc; the runner must build one via \
+                                 AutopilotParams.attitude_mpc."
+                            .to_string(),
+                    })
+                })?;
+                let u0 = mpc
+                    .solve([attitude_error[0], attitude_error[1], attitude_error[2]])
+                    .map_err(|err| {
+                        ControllerError::from(AutopilotError::Trajectory {
+                            reason: format!("attitude MPC solve failed: {err}"),
+                        })
+                    })?;
+                for (i, value) in u0.iter().enumerate() {
+                    rate_cmd[i] = *value;
+                }
+            }
+            #[cfg(not(feature = "mpc"))]
+            AttitudeLoopKind::Mpc => {
+                return Err(ControllerError::from(AutopilotError::Trajectory {
+                    reason: "AttitudeLoopKind::Mpc selected but the `mpc` feature is not \
+                             enabled; rebuild with --features mpc."
+                        .to_string(),
+                }));
+            }
         }
 
         // Rate loop: rate_cmd vs measured -> actuator deflection.
