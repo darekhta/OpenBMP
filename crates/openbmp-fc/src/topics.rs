@@ -539,10 +539,13 @@ impl Topic for FdirGlrtDiagnostic {
     const NAME: &'static str = "fdir.glrt.diagnostic";
 }
 
+/// Maximum number of estimator modes represented in [`EstimatorMode`].
+pub const ESTIMATOR_MODE_MAX_MODES: usize = 4;
+
 /// Phase-5.B.3 — IMM mode-probability snapshot published every tick
 /// by [`crate::imm::ImmEstimator`]. Carries the active mode (the
 /// `argmax_j μ_j` index), the full posterior probability vector
-/// (zero-padded to [`crate::imm::MAX_IMM_MODES`]), and the count of
+/// (zero-padded to [`ESTIMATOR_MODE_MAX_MODES`]), and the count of
 /// valid entries.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct EstimatorMode {
@@ -552,11 +555,11 @@ pub struct EstimatorMode {
     /// (`< mode_count`).
     pub active_mode: u8,
     /// Posterior mode probabilities. Indices `[0, mode_count)` carry
-    /// the live values; indices `[mode_count, MAX_IMM_MODES)` are
+    /// the live values; indices `[mode_count, ESTIMATOR_MODE_MAX_MODES)` are
     /// zero-padded.
-    pub mode_probabilities: [f64; 4],
+    pub mode_probabilities: [f64; ESTIMATOR_MODE_MAX_MODES],
     /// Number of valid entries in `mode_probabilities`. `2 ≤
-    /// mode_count ≤ 4`.
+    /// mode_count ≤ ESTIMATOR_MODE_MAX_MODES`.
     pub mode_count: u8,
 }
 

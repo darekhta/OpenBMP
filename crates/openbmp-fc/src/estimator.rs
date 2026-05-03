@@ -40,8 +40,8 @@ use crate::error::{ControllerError, EstimatorError};
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{
-    AttitudeEstimate, BarometerSample, EstimatorStatus, GnssSample, ImuSample, MagnetometerSample,
-    PositionEstimate,
+    AttitudeEstimate, BarometerSample, EstimatorMode, EstimatorStatus, GnssSample, ImuSample,
+    MagnetometerSample, PositionEstimate,
 };
 
 /// Adapter that wraps the rich [`openbmp_physics::gravity::GravityModel`]
@@ -93,7 +93,8 @@ fn default_constant_gravity_down_z() -> ConstantGravity {
 
 /// Estimator trait. Implementations consume sensor topics from the
 /// bus and publish `AttitudeEstimate` / `PositionEstimate` /
-/// `EstimatorStatus` topics.
+/// `EstimatorStatus` topics, plus optional estimator-specific
+/// diagnostics such as `EstimatorMode`.
 pub trait Estimator {
     /// Static name; appears in dictionaries and event payloads.
     fn name(&self) -> &'static str;
@@ -144,6 +145,12 @@ pub trait Estimator {
 
     /// Returns the current estimator-status snapshot.
     fn status(&self) -> EstimatorStatus;
+
+    /// Returns an optional mode-diagnostic snapshot for estimators
+    /// that track multiple model hypotheses.
+    fn estimator_mode(&self) -> Option<EstimatorMode> {
+        None
+    }
 
     /// Clears one-cycle diagnostic state before draining this tick's
     /// measurements. Persistent health, covariance, and dead-reckoning
@@ -1524,6 +1531,11 @@ impl<E: Estimator + std::fmt::Debug + 'static> Job for EstimatorJob<E> {
         let mut status = self.estimator.status();
         status.time = ctx.clock.now();
         let _ = ctx.bus.publish(status);
+
+        if let Some(mut mode) = self.estimator.estimator_mode() {
+            mode.time = ctx.clock.now();
+            let _ = ctx.bus.publish(mode);
+        }
 
         Ok(())
     }

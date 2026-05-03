@@ -749,15 +749,19 @@ state).
   mode-conditioned sub-filters. Implements the
   `openbmp_fc::estimator::Estimator` trait so it slots into
   `EstimatorJob` unchanged.
-  - `mix()`: computes `μ_ij = Π_ij μ_i / c̄_j`, blends per-mode
-    priors via the spread-term covariance formula, and
-    re-initialises each sub-filter with the mixed prior.
+  - `mix()`: computes predicted mode probabilities
+    `c̄_j = Σ_i Π_ij μ_i` and mixing weights
+    `μ_ij = Π_ij μ_i / c̄_j`, blends per-mode priors via the
+    spread-term covariance formula, and re-initialises each
+    sub-filter with the mixed prior.
   - `update_*`: each sub-filter independently runs the call;
     captures per-mode `chi2_j` and `log det S_j` to form a
     Gaussian log-likelihood `log Λ_j = −0.5 (chi2_j + d log 2π +
     log det S_j)`.
   - `update_mode_probabilities()`: log-sum-exp normaliser over
-    `log c̄_j + log Λ_j`. Numerical hygiene re-normalises to
+    the current prediction prior (`c̄_j` after `mix()`, or the
+    initial prior before the first predict) and `log Λ_j`.
+    Numerical hygiene re-normalises to
     exactly `Σ μ_j = 1`.
   - `fused_position()` / `fused_attitude()`: probability-weighted
     mean of per-mode outputs, with quaternion renormalisation.
@@ -803,23 +807,26 @@ are exercised at the math layer.
 
 **Validation evidence.**
 
-- Math: `crates/openbmp-fc/src/imm.rs` ships 9 unit tests:
+- Math: `crates/openbmp-fc/src/imm.rs` ships 13 unit tests:
   constructor validation (mode count, transition-matrix row sum,
   initial-probability sum); probability-simplex invariant after
   measurement updates; fused position is the weighted mean of
   per-mode positions; byte-stable determinism across two IMM
   instances fed identical streams; `EstimatorMode` topic
-  zero-padding; log-sum-exp numerical-stability under
-  `NEG_INFINITY` entries; mode-probability evolution under
-  synthetic high-residual injections.
+  zero-padding and estimator-job publication; prediction-only
+  Markov-transition evolution; gate-rejected measurements recording
+  current likelihoods; antipodal-quaternion fallback; log-sum-exp
+  numerical-stability under `NEG_INFINITY` entries; and
+  mode-probability evolution under synthetic likelihood separation.
 - EKF invariants: 3 unit tests in
   `crates/openbmp-fc/src/estimator.rs` covering
   `log det S = 2 · Σ log L_diag` reconstruction, per-sensor
   reset in `begin_tick`, and bit-exact `internal_state` round-trip.
-- Scenario validator: 4 unit tests in
+- Scenario validator: 5 unit tests in
   `crates/openbmp-scenario/src/scenario.rs` covering v3 happy-path
-  acceptance, transition-matrix-row-sum rejection,
-  initial-probability-sum rejection, and mode-count mismatch.
+  acceptance, v2 schema rejection, transition-matrix-row-sum
+  rejection, initial-probability-sum rejection, and mode-count
+  mismatch.
 - End-to-end:
   `crates/openbmp-cli/tests/closed_loop_imm_e2e.rs` — 1000 RK4
   steps with end-time stop; byte-identical Parquet across two

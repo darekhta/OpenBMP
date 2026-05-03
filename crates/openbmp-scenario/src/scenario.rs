@@ -678,6 +678,18 @@ sigma_w_gyro = 0.1
     }
 
     #[test]
+    fn fc_imm_is_v3_only() {
+        let toml = fc_imm_v3_scenario().replace("openbmp.scenario = 3", "openbmp.scenario = 2");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::SchemaVersionFieldReserved { field, .. } => {
+                assert_eq!(field, "fc.estimator = \"imm\"");
+            }
+            other => panic!("expected SchemaVersionFieldReserved, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn fc_imm_rejects_transition_matrix_row_sum_other_than_one() {
         let toml = fc_imm_v3_scenario().replace(
             "transition_matrix          = [[0.95, 0.05], [0.10, 0.90]]",

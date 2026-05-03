@@ -76,12 +76,12 @@ use openbmp_core::SimTime;
 use crate::error::EstimatorError;
 use crate::estimator::{Ekf, EkfParams, Estimator};
 use crate::topics::{
-    AttitudeEstimate, BarometerSample, EstimatorMode, EstimatorStatus, GnssSample, ImuSample,
-    MagnetometerSample, PositionEstimate,
+    AttitudeEstimate, BarometerSample, ESTIMATOR_MODE_MAX_MODES, EstimatorMode, EstimatorStatus,
+    GnssSample, ImuSample, MagnetometerSample, PositionEstimate,
 };
 
 /// Compile-time cap on the number of IMM mode-conditioned filters.
-pub const MAX_IMM_MODES: usize = 4;
+pub const MAX_IMM_MODES: usize = ESTIMATOR_MODE_MAX_MODES;
 
 /// Errors returned by [`ImmEstimator::new`].
 #[derive(Clone, Debug, PartialEq)]
@@ -240,7 +240,7 @@ impl ImmEstimator {
     /// [`EstimatorMode`] payload (zero-padded to [`MAX_IMM_MODES`]).
     #[must_use]
     pub fn estimator_mode_topic(&self) -> EstimatorMode {
-        let mut probs = [0.0_f64; MAX_IMM_MODES];
+        let mut probs = [0.0_f64; ESTIMATOR_MODE_MAX_MODES];
         for (i, &p) in self.mode_probabilities.iter().enumerate() {
             probs[i] = p;
         }
@@ -252,21 +252,39 @@ impl ImmEstimator {
         }
     }
 
+    fn predicted_mode_probabilities_from(&self, probabilities: &[f64]) -> Vec<f64> {
+        let n = self.modes.len();
+        let mut c_bar = vec![0.0_f64; n];
+        for j in 0..n {
+            let mut acc = 0.0_f64;
+            for i in 0..n {
+                acc += self.transition_matrix[i][j] * probabilities[i];
+            }
+            c_bar[j] = acc;
+        }
+        c_bar
+    }
+
+    fn set_mode_probabilities(&mut self, mut probabilities: Vec<f64>) {
+        let total: f64 = probabilities.iter().sum();
+        if total > 0.0 {
+            for p in probabilities.iter_mut() {
+                *p /= total;
+            }
+        }
+        self.mode_probabilities = probabilities;
+        self.active_mode = argmax_index(&self.mode_probabilities) as u8;
+    }
+
     /// Mixing step. Mixes per-mode prior states via
     /// `μ_ij = Π_ij μ_i / c̄_j` so each sub-filter's prior is the
     /// probability-weighted blend of the previous tick's posteriors
     /// from all modes.
     fn mix(&mut self) {
         let n = self.modes.len();
+        let prior_probabilities = self.mode_probabilities.clone();
         // Predicted mode probabilities c̄_j = Σ_i Π_ij μ_i.
-        let mut c_bar = vec![0.0_f64; n];
-        for j in 0..n {
-            let mut acc = 0.0_f64;
-            for i in 0..n {
-                acc += self.transition_matrix[i][j] * self.mode_probabilities[i];
-            }
-            c_bar[j] = acc;
-        }
+        let c_bar = self.predicted_mode_probabilities_from(&prior_probabilities);
         // Snapshot current per-mode internal states before any
         // overwrites; the mixing step needs all priors simultaneously.
         let snapshots: Vec<_> = self.modes.iter().map(Ekf::internal_state).collect();
@@ -279,7 +297,7 @@ impl ImmEstimator {
             let mut mu_ij = vec![0.0_f64; n];
             if c_bar[j] > 0.0 {
                 for i in 0..n {
-                    mu_ij[i] = self.transition_matrix[i][j] * self.mode_probabilities[i] / c_bar[j];
+                    mu_ij[i] = self.transition_matrix[i][j] * prior_probabilities[i] / c_bar[j];
                 }
             } else {
                 mu_ij[j] = 1.0;
@@ -350,44 +368,35 @@ impl ImmEstimator {
                 mixed.p,
             );
         }
+        self.set_mode_probabilities(c_bar);
     }
 
     /// Update mode probabilities from per-mode log-likelihoods using
     /// log-sum-exp. Caller must populate `log_likelihoods` first.
     fn update_mode_probabilities(&mut self) {
         let n = self.modes.len();
-        // c̄_j = Σ_i Π_ij μ_i (predicted mode probability).
-        let mut c_bar = vec![0.0_f64; n];
-        for j in 0..n {
-            let mut acc = 0.0_f64;
-            for i in 0..n {
-                acc += self.transition_matrix[i][j] * self.mode_probabilities[i];
-            }
-            c_bar[j] = acc;
-        }
+        // `mode_probabilities` already holds the prediction prior:
+        // either the c̄_j from the latest `mix()` call or the initial
+        // probabilities before the first predict.
+        let predicted = self.mode_probabilities.clone();
         // Unnormalised log-posterior: log(c̄_j) + log Λ_j.
         let mut log_unnorm = vec![f64::NEG_INFINITY; n];
         for j in 0..n {
-            if c_bar[j] > 0.0 && self.log_likelihoods[j].is_finite() {
-                log_unnorm[j] = c_bar[j].ln() + self.log_likelihoods[j];
+            if predicted[j] > 0.0 && self.log_likelihoods[j].is_finite() {
+                log_unnorm[j] = predicted[j].ln() + self.log_likelihoods[j];
             }
         }
         let log_norm = log_sum_exp(&log_unnorm);
         if log_norm.is_finite() {
+            let mut posterior = vec![0.0_f64; n];
             for j in 0..n {
-                self.mode_probabilities[j] = (log_unnorm[j] - log_norm).exp();
+                posterior[j] = (log_unnorm[j] - log_norm).exp();
             }
             // Numerical hygiene: re-normalise to exactly 1.0.
-            let total: f64 = self.mode_probabilities.iter().sum();
-            if total > 0.0 {
-                for p in self.mode_probabilities.iter_mut() {
-                    *p /= total;
-                }
-            }
-            self.active_mode = argmax_index(&self.mode_probabilities) as u8;
+            self.set_mode_probabilities(posterior);
         }
         // If log_norm is non-finite (no mode had finite likelihood),
-        // mode probabilities stay at the c̄_j prediction.
+        // mode probabilities stay at the prediction prior.
     }
 
     /// Fused position estimate. Combined position is the
@@ -429,8 +438,7 @@ impl ImmEstimator {
         let q_unit = if q_acc.norm() > 0.0 {
             UnitQuaternion::from_quaternion(q_acc)
         } else {
-            self.modes[0].attitude();
-            UnitQuaternion::identity()
+            attitude_to_unit(self.modes[self.active_mode as usize].attitude())
         };
         let q = q_unit.into_inner();
         AttitudeEstimate {
@@ -489,6 +497,23 @@ fn gaussian_log_likelihood(chi2: f64, dim: f64, log_det_s: f64) -> f64 {
     -0.5 * (chi2 + dim * (2.0 * std::f64::consts::PI).ln() + log_det_s)
 }
 
+fn record_gaussian_log_likelihood(slot: &mut f64, chi2: f64, dim: f64, log_det_s: f64) {
+    if chi2.is_finite() && log_det_s.is_finite() {
+        *slot = gaussian_log_likelihood(chi2, dim, log_det_s);
+    } else {
+        *slot = f64::NEG_INFINITY;
+    }
+}
+
+fn attitude_to_unit(attitude: AttitudeEstimate) -> UnitQuaternion<f64> {
+    UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        attitude.q_body_to_eci_xyzw[3],
+        attitude.q_body_to_eci_xyzw[0],
+        attitude.q_body_to_eci_xyzw[1],
+        attitude.q_body_to_eci_xyzw[2],
+    ))
+}
+
 impl Estimator for ImmEstimator {
     fn name(&self) -> &'static str {
         "imm"
@@ -514,19 +539,20 @@ impl Estimator for ImmEstimator {
     fn update_gnss(&mut self, sample: &GnssSample) -> Result<(), EstimatorError> {
         for (i, mode) in self.modes.iter_mut().enumerate() {
             // Per-mode gate-rejection is recoverable: if one mode
-            // rejects, others may still update. Treat rejection as
-            // "log-likelihood unchanged" — the last finite value on
-            // record drives the mode-probability update.
+            // rejects, others may still update. The EKF computes the
+            // current chi-square and log det S before returning the
+            // gate error, so rejected measurements still contribute a
+            // current likelihood without applying a state correction.
             match mode.update_gnss(sample) {
-                Ok(()) => {
+                Ok(()) | Err(EstimatorError::InnovationGateRejected { .. }) => {
                     let chi2 = mode.status().gnss_chi2;
                     let log_det = mode.last_log_det_s_gnss();
-                    if log_det.is_finite() {
-                        self.log_likelihoods[i] = gaussian_log_likelihood(chi2, 6.0, log_det);
-                    }
-                }
-                Err(EstimatorError::InnovationGateRejected { .. }) => {
-                    // Keep the previous log-likelihood for this mode.
+                    record_gaussian_log_likelihood(
+                        &mut self.log_likelihoods[i],
+                        chi2,
+                        6.0,
+                        log_det,
+                    );
                 }
                 Err(other) => return Err(other),
             }
@@ -538,14 +564,16 @@ impl Estimator for ImmEstimator {
     fn update_baro(&mut self, sample: &BarometerSample) -> Result<(), EstimatorError> {
         for (i, mode) in self.modes.iter_mut().enumerate() {
             match mode.update_baro(sample) {
-                Ok(()) => {
+                Ok(()) | Err(EstimatorError::InnovationGateRejected { .. }) => {
                     let chi2 = mode.status().baro_chi2;
                     let log_det = mode.last_log_det_s_baro();
-                    if log_det.is_finite() {
-                        self.log_likelihoods[i] = gaussian_log_likelihood(chi2, 1.0, log_det);
-                    }
+                    record_gaussian_log_likelihood(
+                        &mut self.log_likelihoods[i],
+                        chi2,
+                        1.0,
+                        log_det,
+                    );
                 }
-                Err(EstimatorError::InnovationGateRejected { .. }) => {}
                 Err(other) => return Err(other),
             }
         }
@@ -556,14 +584,16 @@ impl Estimator for ImmEstimator {
     fn update_mag(&mut self, sample: &MagnetometerSample) -> Result<(), EstimatorError> {
         for (i, mode) in self.modes.iter_mut().enumerate() {
             match mode.update_mag(sample) {
-                Ok(()) => {
+                Ok(()) | Err(EstimatorError::InnovationGateRejected { .. }) => {
                     let chi2 = mode.status().mag_chi2;
                     let log_det = mode.last_log_det_s_mag();
-                    if log_det.is_finite() {
-                        self.log_likelihoods[i] = gaussian_log_likelihood(chi2, 3.0, log_det);
-                    }
+                    record_gaussian_log_likelihood(
+                        &mut self.log_likelihoods[i],
+                        chi2,
+                        3.0,
+                        log_det,
+                    );
                 }
-                Err(EstimatorError::InnovationGateRejected { .. }) => {}
                 Err(other) => return Err(other),
             }
         }
@@ -585,6 +615,10 @@ impl Estimator for ImmEstimator {
         self.modes[self.active_mode as usize].status()
     }
 
+    fn estimator_mode(&self) -> Option<EstimatorMode> {
+        Some(self.estimator_mode_topic())
+    }
+
     fn begin_tick(&mut self) {
         for mode in self.modes.iter_mut() {
             mode.begin_tick();
@@ -601,7 +635,12 @@ impl Estimator for ImmEstimator {
 )]
 mod tests {
     use super::*;
-    use crate::estimator::EkfParams;
+    use openbmp_core::StepIndex;
+
+    use crate::bus::Bus;
+    use crate::clock::FixedClock;
+    use crate::estimator::{EkfParams, EstimatorJob};
+    use crate::scheduler::{Job, JobContext};
 
     fn two_mode_imm(initial_probs: Vec<f64>) -> ImmEstimator {
         let p1 = EkfParams {
@@ -754,13 +793,54 @@ mod tests {
     }
 
     #[test]
-    fn maneuver_mode_probability_rises_under_high_innovation_residual() {
-        // A residual that is unusually large for the nominal mode but
-        // plausible for the high-process-noise mode should drive μ_2
-        // upward. Construction: seed both modes with the same initial
-        // covariance, then feed a sequence of GNSS samples whose
-        // positions diverge linearly from the seeded prediction.
+    fn prediction_without_measurement_applies_markov_transition() {
+        let params = vec![EkfParams::default(), EkfParams::default()];
+        let mut imm =
+            ImmEstimator::new(params, vec![vec![0.5, 0.5], vec![0.0, 1.0]], vec![1.0, 0.0])
+                .unwrap();
+
+        imm.predict(0.1).unwrap();
+        assert!((imm.mode_probabilities()[0] - 0.5).abs() < 1.0e-12);
+        assert!((imm.mode_probabilities()[1] - 0.5).abs() < 1.0e-12);
+
+        imm.predict(0.1).unwrap();
+        assert!((imm.mode_probabilities()[0] - 0.25).abs() < 1.0e-12);
+        assert!((imm.mode_probabilities()[1] - 0.75).abs() < 1.0e-12);
+        assert_eq!(imm.active_mode(), 1);
+    }
+
+    #[test]
+    fn maneuver_mode_probability_rises_under_likelihood_separation() {
         let mut imm = two_mode_imm(vec![0.95, 0.05]);
+        let before = imm.mode_probabilities()[1];
+        imm.log_likelihoods[0] = -40.0;
+        imm.log_likelihoods[1] = 0.0;
+
+        imm.update_mode_probabilities();
+
+        assert!(
+            imm.mode_probabilities()[1] > before,
+            "mode 1 probability should rise from {before} under a stronger likelihood"
+        );
+        assert_eq!(imm.active_mode(), 1);
+    }
+
+    #[test]
+    fn gate_rejected_measurement_records_current_likelihood() {
+        let rejecting = EkfParams {
+            innovation_gate: 1.0e-12,
+            ..EkfParams::default()
+        };
+        let accepting = EkfParams {
+            innovation_gate: 1.0e12,
+            ..EkfParams::default()
+        };
+        let mut imm = ImmEstimator::new(
+            vec![rejecting, accepting],
+            vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+            vec![0.5, 0.5],
+        )
+        .unwrap();
         for mode in imm.modes.iter_mut() {
             mode.seed(
                 Vector3::new(0.0, 0.0, 1.0),
@@ -768,32 +848,25 @@ mod tests {
                 UnitQuaternion::identity(),
             );
         }
-        for k in 1..=20_i32 {
-            // Mild diverging position so chi-square stays in a
-            // regime where the maneuver mode prefers it.
-            let drift = f64::from(k);
-            let sample = GnssSample {
-                time: SimTime::ZERO,
-                position_eci_m: Vector3::new(drift * 0.5, -drift * 0.5, 0.0),
-                velocity_eci_m_s: Vector3::zeros(),
-                position_bias_eci_m: Vector3::zeros(),
-                healthy: true,
-            };
-            imm.begin_tick();
-            // predict adds process-noise inflation per mode (different)
-            imm.predict(0.1).ok();
-            imm.update_gnss(&sample).unwrap();
-        }
-        // The probabilities are dominated by the predict-covariance
-        // build-up: the high-process-noise mode has larger
-        // log det S (broader innovation covariance) which under the
-        // same chi2 produces a *lower* log-likelihood. With matched
-        // innovations, the nominal mode wins — that's expected.
-        // Just confirm the simplex stayed sane and the active mode
-        // picked one of the two modes deterministically.
-        let total: f64 = imm.mode_probabilities().iter().sum();
-        assert!((total - 1.0).abs() < 1.0e-12);
-        assert!(imm.active_mode() < 2);
+        imm.log_likelihoods[0] = 100.0;
+        imm.log_likelihoods[1] = -100.0;
+
+        imm.update_gnss(&GnssSample {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::new(100.0, 0.0, 1.0),
+            velocity_eci_m_s: Vector3::zeros(),
+            position_bias_eci_m: Vector3::zeros(),
+            healthy: true,
+        })
+        .unwrap();
+
+        assert!(imm.modes[0].status().innovation_rejected);
+        assert_ne!(
+            imm.log_likelihoods[0].to_bits(),
+            100.0_f64.to_bits(),
+            "gate-rejected mode must not keep a stale likelihood"
+        );
+        assert!(imm.log_likelihoods[0].is_finite());
     }
 
     #[test]
@@ -806,6 +879,54 @@ mod tests {
         assert_eq!(topic.mode_probabilities[2], 0.0);
         assert_eq!(topic.mode_probabilities[3], 0.0);
         assert_eq!(topic.active_mode, 0);
+    }
+
+    #[test]
+    fn fused_attitude_antipodal_blend_falls_back_to_active_mode() {
+        let mut imm = two_mode_imm(vec![0.5, 0.5]);
+        let q0 = UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_2);
+        let q_inner = q0.into_inner();
+        let q0_state = UnitQuaternion::from_quaternion(q_inner);
+        let q1_state = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            -q_inner.w, -q_inner.i, -q_inner.j, -q_inner.k,
+        ));
+
+        let s0 = imm.modes[0].internal_state();
+        let s1 = imm.modes[1].internal_state();
+        imm.modes[0].set_internal_state(s0.0, s0.1, q0_state, s0.3, s0.4, s0.5);
+        imm.modes[1].set_internal_state(s1.0, s1.1, q1_state, s1.3, s1.4, s1.5);
+
+        let fused = imm.attitude();
+        assert!((fused.q_body_to_eci_xyzw[0] - q_inner.i).abs() < 1.0e-12);
+        assert!((fused.q_body_to_eci_xyzw[1] - q_inner.j).abs() < 1.0e-12);
+        assert!((fused.q_body_to_eci_xyzw[2] - q_inner.k).abs() < 1.0e-12);
+        assert!((fused.q_body_to_eci_xyzw[3] - q_inner.w).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn estimator_job_publishes_estimator_mode_topic() {
+        let bus = Bus::new();
+        bus.register::<AttitudeEstimate>().unwrap();
+        bus.register::<PositionEstimate>().unwrap();
+        bus.register::<EstimatorStatus>().unwrap();
+        bus.register::<EstimatorMode>().unwrap();
+        let clock = FixedClock::new(SimTime::from_seconds(0.01), StepIndex::new(10));
+        let mut job = EstimatorJob::new(two_mode_imm(vec![0.6, 0.4]));
+
+        job.run(&JobContext {
+            bus: &bus,
+            clock: &clock,
+        })
+        .unwrap();
+
+        let (mode, _) = bus
+            .latest::<EstimatorMode>()
+            .unwrap()
+            .expect("EstimatorJob should publish EstimatorMode for IMM");
+        assert_eq!(mode.time, SimTime::from_seconds(0.01));
+        assert_eq!(mode.mode_count, 2);
+        assert!((mode.mode_probabilities[0] - 0.6).abs() < 1.0e-12);
+        assert!((mode.mode_probabilities[1] - 0.4).abs() < 1.0e-12);
     }
 
     #[test]

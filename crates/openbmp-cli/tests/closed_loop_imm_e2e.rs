@@ -13,8 +13,9 @@
 //!
 //! Mode-probability evolution under synthetic regime changes is
 //! covered at the math layer by `crates/openbmp-fc/src/imm.rs`
-//! (9 unit tests, including textbook mixing reproduction,
-//! probability-simplex invariant, byte-stable determinism). EKF
+//! (13 unit tests, including prediction-only Markov transitions,
+//! probability-simplex invariant, gate-rejection likelihood handling,
+//! and byte-stable determinism). EKF
 //! whitened-innovation export and log-det export — the IMM's
 //! likelihood inputs — are covered by 3 + 5 invariant tests in
 //! `crates/openbmp-fc/src/estimator.rs`.

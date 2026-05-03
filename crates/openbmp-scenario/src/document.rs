@@ -331,6 +331,27 @@ impl ScenarioDocument {
         let Some(fc) = &self.fc else {
             return Ok(());
         };
+        // fc.estimator = "imm" / fc.imm — Phase 5.B.3 consumed
+        // IMM estimator surface. v3-only; the runner builds a
+        // Bar-Shalom 2-mode default IMM bank from [fc.ekf] plus
+        // the per-mode overrides in [fc.imm].
+        if matches!(fc.estimator, FcEstimatorKind::Imm) && header < SCENARIO_VERSION_V3 {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "fc.estimator = \"imm\"".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
+        if let Some(imm) = fc.imm.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.imm".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            imm.validate()?;
+        }
         gate_phase5_block(
             header,
             "fc.estimator_lanes",
@@ -619,6 +640,22 @@ impl ScenarioDocument {
                 required: SCENARIO_VERSION_V3,
                 found: header,
             });
+        }
+        if let Some(fc) = self.fc.as_ref() {
+            if matches!(fc.estimator, FcEstimatorKind::Imm) {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.estimator = \"imm\"".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            if fc.imm.is_some() {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.imm".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
         }
         Ok(())
     }

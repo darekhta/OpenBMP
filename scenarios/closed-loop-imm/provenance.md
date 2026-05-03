@@ -28,9 +28,10 @@ Under the nominal closed-loop trajectory the active mode should
 remain at index 0 (the nominal-tuning mode); the maneuver mode
 (index 1, 10× process noise on gyro and accel-bias channels) should
 remain at low probability throughout the 1 s run. The math-side
-unit tests in `crates/openbmp-fc/src/imm.rs` cover trip-time
-semantics under synthetic divergence; this scenario covers the
-runtime wiring + byte-stability of the runtime path.
+unit tests in `crates/openbmp-fc/src/imm.rs` cover Markov-transition
+prediction and likelihood-driven probability evolution; this
+scenario covers the runtime wiring + byte-stability of the runtime
+path.
 
 ## License / restrictions
 
@@ -61,15 +62,18 @@ deterministically. The Phase-5.B.3 e2e test
 
 Math-side coverage (`crates/openbmp-fc/src/imm.rs`):
 
-- 9 unit tests covering constructor validation (mode count,
+- 13 unit tests covering constructor validation (mode count,
   transition-matrix row sums, initial-probability sums),
   probability-simplex invariant after measurement updates, fused
   position is the weighted mean of mode positions, byte-stable
   determinism across two IMM instances fed the same measurement
   sequence, log-sum-exp numerical-stability with NEG_INFINITY
   entries, EstimatorMode topic zero-pads unused slots, mode
-  probabilities respect the Markov transition under high-residual
-  injections.
+  probabilities respect prediction-only Markov transitions,
+  gate-rejected measurements record current likelihoods,
+  antipodal-quaternion fusion falls back to the active mode, the
+  estimator job publishes EstimatorMode, and mode probability
+  evolves under synthetic likelihood separation.
 
 EKF-side IMM-supporting surface
 (`crates/openbmp-fc/src/estimator.rs`):
@@ -81,10 +85,10 @@ EKF-side IMM-supporting surface
 
 Scenario-validator coverage:
 
-- 4 tests in `crates/openbmp-scenario/src/scenario.rs` covering
-  v3 happy-path acceptance, transition-matrix-row-sum rejection,
-  initial-probability sum rejection, and mode-count vs
-  matrix-size mismatch rejection.
+- 5 tests in `crates/openbmp-scenario/src/scenario.rs` covering
+  v3 happy-path acceptance, v2 schema rejection,
+  transition-matrix-row-sum rejection, initial-probability sum
+  rejection, and mode-count vs matrix-size mismatch rejection.
 
 ## Safety boundary
 
