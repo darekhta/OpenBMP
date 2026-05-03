@@ -58,7 +58,9 @@ pub mod validity;
 pub mod wind;
 
 pub use atmosphere::{
-    AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, IsothermalAtmosphere, UsStandard1976,
+    AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, ExponentialLayer,
+    IsothermalAtmosphere, PIECEWISE_EXP_MAX_GEOMETRIC_M, PiecewiseExpExoatmosphericPolicy,
+    PiecewiseExponentialAtmosphere, UsStandard1976,
 };
 pub use error::PhysicsError;
 pub use frames::{

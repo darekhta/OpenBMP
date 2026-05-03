@@ -8,7 +8,17 @@
 //!   atmosphere without a layered model.
 //! * [`UsStandard1976`] (sub-phase 2.3.B) — in-house Rust port of
 //!   NOAA-S/T 76-1562 / NASA-TM-X-74335. Geopotential layers 0–86 km
-//!   only; 86 km+ is a Phase-6 extension.
+//!   only.
+//!
+//! Phase 5.C.1 adds:
+//!
+//! * [`PiecewiseExponentialAtmosphere`] — 14-layer engineering
+//!   exponential atmosphere covering 0-1000 km, sourced from Vallado
+//!   *Fundamentals of Astrodynamics and Applications* 4th ed. Table
+//!   8-4. Honest scope: this is **not** NRLMSISE-00 — no solar-flux
+//!   dependence, no per-species number densities. Captures the
+//!   altitude-dominant variation that determines orbital drag for
+//!   engineering analyses.
 //!
 //! Determinism: pure arithmetic on `f64`; locked operand order on
 //! barometric formulas; no FMA. No wall-clock time, no system RNG,
@@ -20,9 +30,14 @@
 //! and simulator consumers share one HAL-portable atmosphere surface.
 
 pub mod isothermal;
+pub mod piecewise_exponential;
 pub mod us_standard_1976;
 
 pub use isothermal::IsothermalAtmosphere;
+pub use piecewise_exponential::{
+    ExponentialLayer, PIECEWISE_EXP_MAX_GEOMETRIC_M, PiecewiseExpExoatmosphericPolicy,
+    PiecewiseExponentialAtmosphere,
+};
 pub use us_standard_1976::{ExoatmosphericPolicy, UsStandard1976};
 
 use openbmp_core::SimTime;

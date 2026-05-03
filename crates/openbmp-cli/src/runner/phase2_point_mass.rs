@@ -45,7 +45,7 @@ use nalgebra::Vector3;
 use openbmp_aero::{AeroDeck, AeroError};
 use openbmp_core::{ChannelId, Duration, ModelId, Position3, RecoveryId, SimTime, Velocity3};
 use openbmp_physics::{
-    AtmosphereModel, Egm2008ZonalGravity, J2Gravity, PointMassGravity, UsStandard1976, WGS84_J2,
+    AtmosphereModel, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
 };
 use openbmp_propulsion::{Motor, MotorError, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
@@ -66,6 +66,10 @@ use uom::si::mass::kilogram;
 use crate::error::CliError;
 use crate::runner::RunOutcome;
 use crate::runner::assembly::dry_mass_kg_at;
+use crate::runner::atmosphere::{
+    RuntimeAtmosphere, build_runtime_atmosphere, is_runtime_atmosphere_kind,
+    scenario_atmosphere_kind,
+};
 use openbmp_vehicle::Assembly;
 
 // Stable model-ids assigned to each force / mass model the runner
@@ -183,7 +187,9 @@ pub fn run(
     };
     let channel_set = Phase2ChannelSet::new(document)?;
     let breakdown_atmosphere = if channel_set.has_atmosphere {
-        Some(UsStandard1976::new())
+        Some(build_runtime_atmosphere(scenario_atmosphere_kind(
+            document,
+        ))?)
     } else {
         None
     };
@@ -408,26 +414,26 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
     // validation guarantees that non-`none` flat selections carry a
     // structured `[wind]` block and that the kind names agree.
 
-    // Atmosphere: when `aero` is in the force list, require USSA76.
-    let atmosphere_kind = document.atmosphere.as_ref().map_or_else(
-        || document.environment.atmosphere.as_str(),
-        |a| a.kind.as_str(),
-    );
+    // Atmosphere: when `aero` is in the force list, require one of the
+    // wired layered atmospheres (USSA76 for the historical sounding-
+    // rocket envelope, piecewise-exponential for the Phase-5.C.1
+    // engineering 0-1000 km envelope).
+    let atmosphere_kind = scenario_atmosphere_kind(document);
     let has_aero = document.force_models().iter().any(|m| m == "aero");
-    if has_aero && atmosphere_kind != "us_standard_1976" {
+    if has_aero && !is_runtime_atmosphere_kind(atmosphere_kind) {
         return Err(CliError::UnsupportedScenario {
             what: format!(
-                "atmosphere `{atmosphere_kind}` is not wired with the aero force in 2.11.A; \
-                 use `us_standard_1976`"
+                "atmosphere `{atmosphere_kind}` is not wired with the aero force; \
+                 use `us_standard_1976` or `piecewise_exponential`"
             ),
         });
     }
     let has_recovery = !document.vehicle.assembly.recovery.is_empty();
-    if has_recovery && atmosphere_kind != "us_standard_1976" {
+    if has_recovery && !is_runtime_atmosphere_kind(atmosphere_kind) {
         return Err(CliError::UnsupportedScenario {
             what: format!(
-                "atmosphere `{atmosphere_kind}` is not wired with recovery drag in 3.9; \
-                 use `us_standard_1976`"
+                "atmosphere `{atmosphere_kind}` is not wired with recovery drag; \
+                 use `us_standard_1976` or `piecewise_exponential`"
             ),
         });
     }
@@ -629,7 +635,7 @@ fn build_vehicle(
                         what: "forces includes `aero` but [aero] block is missing".to_owned(),
                     }
                 })?;
-                let atmosphere = UsStandard1976::new();
+                let atmosphere = build_runtime_atmosphere(scenario_atmosphere_kind(document))?;
                 let drag = DeckDragForceAdapter::new(deck, atmosphere, PHASE2_AERO_MODEL_ID);
                 named.push(NamedForceModel::new("aero", Box::new(drag)));
             }
@@ -713,7 +719,7 @@ fn build_vehicle(
                 ))
             })
             .collect();
-        let atmosphere = UsStandard1976::new();
+        let atmosphere = build_runtime_atmosphere(scenario_atmosphere_kind(document))?;
         let recovery_force = RecoveryRackForceAdapter::new(
             recovery_ids,
             atmosphere,
@@ -901,15 +907,11 @@ impl Phase2ChannelSet {
             TelemetryChannel::<f64>::new(alloc(), "velocity_z_m_s", "m/s", Some("ECI"))?;
         let mass = TelemetryChannel::<f64>::new(alloc(), "mass_kg", "kg", None::<&str>)?;
 
-        // Atmosphere channels: only when the scenario declares
-        // [atmosphere].kind = "us_standard_1976".
-        let atmosphere_kind = document
-            .atmosphere
-            .as_ref()
-            .map_or(document.environment.atmosphere.as_str(), |a| {
-                a.kind.as_str()
-            });
-        let has_atmosphere = atmosphere_kind == "us_standard_1976";
+        // Atmosphere channels: emitted whenever the scenario declares
+        // a layered atmosphere the runner can sample (USSA76 since
+        // Phase 2.3, plus piecewise-exponential since Phase 5.C.1).
+        let atmosphere_kind = scenario_atmosphere_kind(document);
+        let has_atmosphere = is_runtime_atmosphere_kind(atmosphere_kind);
         let (
             atmosphere_density,
             atmosphere_pressure,
@@ -1108,7 +1110,7 @@ fn record_step<I, F, MM, E, SC>(
     kernel: &SimulationKernel<PointMassState, I, F, MM, E, SC>,
     channels: &Phase2ChannelSet,
     breakdown_vehicle: &KernelVehicle<PointMassState>,
-    breakdown_atmosphere: Option<&UsStandard1976>,
+    breakdown_atmosphere: Option<&RuntimeAtmosphere>,
     fired_events: &[openbmp_sim::FiredEvent],
     effector_snapshot: &[openbmp_vehicle::EffectorState],
 ) -> Result<(), CliError>

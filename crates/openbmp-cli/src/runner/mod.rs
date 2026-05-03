@@ -33,6 +33,7 @@
 
 pub mod aero_effector_match;
 pub mod assembly;
+pub mod atmosphere;
 pub mod effectors;
 pub mod engines;
 pub mod fc;

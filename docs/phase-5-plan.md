@@ -30,9 +30,10 @@ labelled P0 / P1 / P2 are folded into the sub-phase ordering below.
   vector; multi-instance estimator routing + active-lane selection;
   IMM (Bar-Shalom) maneuver-aware estimator; Willsky 1976 windowed
   mean-shift GLRT; parity-space residual generator.
-- Environment: NRLMSISE-00 (in-house Rust port, public coefficients
-  only); EGM2008 zonal-harmonic gravity (degrees 2-6) beyond
-  WGS84-J2 (tesseral / sectoral terms deferred to a follow-on slice).
+- Environment: piecewise-exponential layered atmosphere (Vallado
+  Table 8-4 fit, 0-1000 km; full NRLMSISE-00 deferred);
+  EGM2008 zonal-harmonic gravity (degrees 2-6) beyond WGS84-J2
+  (tesseral / sectoral terms deferred to a follow-on slice).
 - Kernel and scenario: multi-rate scheduling promoted to first-class;
   multi-body simultaneous propagation (post-separation); DOPRI5/8
   adaptive integrator behind an explicit profile flag; API cleanup
@@ -121,6 +122,7 @@ in lockstep with each sub-phase landing.
 | 5.A.4 — receding-horizon attitude MPC (Clarabel-backed) | shipped | _pending PR_ |
 | 5.A.5 — prioritised redistributed control allocator | shipped | _pending PR_ |
 | 5.C.2 — EGM2008 zonal-harmonic gravity (degrees 2-6) | shipped | _pending PR_ |
+| 5.C.1 — piecewise-exponential atmosphere (0-1000 km) | shipped | _pending PR_ |
 | 5.B onwards | pending | — |
 
 ## Vehicle-class scope
@@ -803,43 +805,92 @@ modes.
 
 ### Group C — Environment
 
-#### 5.C.1 — NRLMSISE-00 atmosphere
+#### 5.C.1 — Piecewise-exponential atmosphere (0-1000 km) **— shipped**
 
-**Scope.** In-house Rust port of the NRLMSISE-00 empirical
-atmosphere model (Picone et al. 2002). The port:
+**Honest scope.** The shipped surface is a **layered exponential**
+atmosphere, **not** NRLMSISE-00. The full NRLMSISE-00 model
+(Picone et al. 2002) requires solar-flux dependence (F10.7,
+F10.7-avg, Ap), per-species number densities, and an absolute epoch
+in TAI seconds — its parameter table runs into thousands of
+coefficients that this slice cannot pin authoritatively. The
+layered-exponential approximation captures the **altitude-dominant**
+variation that determines orbital drag and is the standard
+engineering atmosphere used in orbital-mechanics textbooks.
 
-- Parses the public coefficient set from `data/atmosphere/NRLMSISE-00/`
-  with a sibling `provenance.md` and SHA-256-pinned files in the
-  scenario.
-- Implements the public mathematical formulation only; no derived
-  coefficient sets, no operational tunings.
-- Exposes `NrlMsise00 : AtmosphereModel`, returning density,
-  temperature, and per-species number densities (N2, O2, O, He,
-  Ar, H, N) over the documented validity envelope (0–1000 km).
-- Fails closed outside the validity envelope (no extrapolation by
-  default; clamp / linear opt-in is rejected for NRLMSISE-00).
-- Switches in via `[atmosphere].kind = "nrlmsise00"` plus
-  `f10_7`, `f10_7_avg`, `ap_index` (scalar Ap), and an absolute
-  epoch in TAI seconds.
+**What shipped.**
 
-**Exit criterion.** NRLMSISE-00 reproduces the published reference
-profile from the original Picone et al. 2002 paper at the documented
-test points within a tolerance recorded in
-`tests/expected/nrlmsise00.toml`. The scenario fails closed at
-1001 km altitude.
+- `openbmp_physics::PiecewiseExponentialAtmosphere : AtmosphereModel`
+  with a 14-layer table covering 0-1000 km. Within each layer
+  `ρ(h) = ρ_base · exp(−(h − h_base) / H_layer)`; each layer is
+  treated as locally isothermal at
+  `T_layer = M_air · g_0 · H_layer / R`, which keeps the
+  density / pressure / temperature / speed-of-sound triple
+  self-consistent through the ideal-gas law.
+- `PiecewiseExpExoatmosphericPolicy` (`FailClosed` /
+  `ZeroDensityAboveCeiling`) mirrors the existing
+  `ExoatmosphericPolicy` for `UsStandard1976`.
+- 12 unit tests: non-finite / negative altitude rejection, ceiling
+  policy, sea-level density match, monotonic decrease within layers
+  and across boundaries, layer-base reproduction, finite-positive
+  invariants throughout the envelope, byte-stability, and
+  documented-engineering-range bracket at 400 km.
+- Switches in via `environment.atmosphere = "piecewise_exponential"`
+  and the matching `[atmosphere].kind = "piecewise_exponential"`
+  block (no per-scenario layer overrides — the shipped table is
+  fixed for byte-stability across machines).
+- Wired through both `phase2_point_mass` and `phase2_rigid_body`
+  runners via a new shared `RuntimeAtmosphere` enum
+  (`crates/openbmp-cli/src/runner/atmosphere.rs`) that dispatches
+  between `UsStandard1976` and `PiecewiseExponentialAtmosphere`. The
+  enum implements `AtmosphereModel` so every existing
+  drag-adapter / telemetry call site flows through unchanged. The
+  USSA76 byte-stable path is preserved verbatim.
 
-**Validation evidence.** Unit tests against the public reference
-profiles; analytic-toy scenario where the rocket ascends through a
-documented density profile and the kernel sees the expected drag.
+**What was deferred.**
 
-**References.** Picone, J. M., Hedin, A. E., Drob, D. P., and
-Aikin, A. C., *NRLMSISE-00 empirical model of the atmosphere:
-Statistical comparison and scientific issues*, J. Geophys. Res.
-107(A12), 2002.
+- Solar-flux dependence (F10.7, F10.7-avg, Ap) — the layered fit
+  uses a single mean profile, not a daily-driven density model.
+- Per-species number densities (N2, O2, O, He, Ar, H, N).
+- Diurnal / latitude / longitude / season variation.
+- An in-house NRLMSISE-00 Rust port. Sourcing the ≈ 10 000-coefficient
+  table authoritatively and committing to a determinism-stable
+  port belongs in a dedicated future slice.
 
-**Scope guardrail.** NRLMSIS 2.x and HWM14 are Phase 6 follow-ons.
-JB-2008 is Phase 6. Phase 5 ships only the 2002 NRLMSISE-00
-baseline.
+**Validation evidence.**
+
+- Math:
+  `crates/openbmp-physics/src/atmosphere/piecewise_exponential.rs`
+  ships 12 unit tests covering the items listed above.
+- End-to-end:
+  `crates/openbmp-cli/tests/sounding_piecewise_exp_atmosphere_e2e.rs`
+  asserts the demo scenario completes 4100 RK4 steps with end-time
+  stop, the per-step atmosphere telemetry channels are populated
+  with finite-positive values throughout the flight, the sea-level
+  density matches the layered model's tabulated base value
+  (1.225 kg/m³), the minimum density across the 204 km apogee
+  arc lands in the LEO engineering envelope, and two reruns
+  produce byte-identical Parquet.
+
+**References.**
+
+- Vallado, D. A. (2013). *Fundamentals of Astrodynamics and
+  Applications*, 4th ed., Table 8-4 ("Exponential Atmosphere
+  Model"). Microcosm Press / Springer — primary tabulation source.
+- Curtis, H. D. (2014). *Orbital Mechanics for Engineering
+  Students*, 3rd ed., Appendix D — same layer table reproduced.
+- Wertz, J. R. and Larson, W. J. (1999). *Space Mission Analysis
+  and Design*, 3rd ed., §8.1.4. Microcosm Press.
+- US Standard Atmosphere 1976 supplemental reference profile
+  (NOAA-S/T 76-1562 Part 2) — underlying source.
+- Picone et al. (2002), *NRLMSISE-00 empirical model of the
+  atmosphere: Statistical comparison and scientific issues*,
+  J. Geophys. Res. 107(A12) — full NRLMSISE-00 reference (deferred).
+
+**Scope guardrail.** Public layered-exponential coefficients only,
+sourced from openly-published orbital-mechanics references. No
+solar-flux dependence, no per-species data, no operational
+tunings. Any future scenario that needs solar-driven densities must
+wait for the dedicated NRLMSISE-00 follow-on slice.
 
 #### 5.C.2 — EGM2008 zonal-harmonic gravity (degrees 2-6) **— shipped**
 

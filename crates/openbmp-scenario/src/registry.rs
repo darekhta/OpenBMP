@@ -133,6 +133,11 @@ impl ModelRegistry {
             ModelDescriptor::new("isothermal", ModelRole::Atmosphere),
             ModelDescriptor::new("us_standard_1976", ModelRole::Atmosphere),
             ModelDescriptor::new("nrlmsise00", ModelRole::Atmosphere),
+            // Phase 5.C.1 — engineering layered exponential atmosphere
+            // (Vallado 4th ed. Table 8-4 fit, 0-1000 km). Honest
+            // downscope of the original "NRLMSISE-00" line item: no
+            // solar-flux dependence, no per-species number densities.
+            ModelDescriptor::new("piecewise_exponential", ModelRole::Atmosphere),
             // Phase 2.4 wind.
             ModelDescriptor::new("constant", ModelRole::Wind),
             // Phase 3.8 wind extensions.

@@ -1,0 +1,66 @@
+# Phase-5.C.1 demo: 1 kg point mass on a vertical (+z ECI) ballistic
+# profile reaching ≈ 204 km apogee under constant gravity, while the
+# runner samples the new piecewise-exponential atmosphere at every
+# step. The key scope point: USSA76 only covers 0-86 km, so a vertical
+# profile that exceeds 86 km would either fault USSA76 or require its
+# `ZeroDensityAboveCeiling` opt-in. The piecewise-exponential model
+# (Phase 5.C.1) covers the full 0-1000 km envelope and produces
+# meaningful per-step density / pressure / temperature values
+# throughout the trajectory — which is exactly the use case the
+# layered model exists for.
+#
+# Initial v_z = 2000 m/s. Constant gravity g = 9.80665 m/s²:
+#   apogee ≈ v² / (2 g) = 2000² / 19.6133 ≈ 204 km
+#   time to apogee ≈ v / g ≈ 204 s
+#   total flight time ≈ 410 s (returns to z = 0 at t ≈ 408 s)
+#
+# Stop time = 410 s captures the full ballistic arc. No drag is
+# applied (forces = ["gravity"]) so the closed-form ballistic answer
+# is unaffected by the layered-atmosphere sampling.
+
+openbmp.scenario = 3
+
+[meta]
+name = "sounding-piecewise-exp-atmosphere"
+description = "Vertical 204 km apogee ballistic profile with per-step piecewise-exponential atmosphere telemetry; Phase 5.C.1 demo of the layered 0-1000 km model."
+validation = "experimental"
+provenance = "synthetic; closed-form vertical-ascent ballistic trajectory with no aerodynamic drag; layered atmosphere sampling exercises the 0-204 km altitude span of the Phase-5.C.1 model. See provenance.md."
+
+[time]
+start_s = 0.0
+stop_s = 410.0
+dt_s = 0.1
+seed = 0x4f70_656e_4f30_3531
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 2000.0]
+
+[vehicle.assembly]
+id = "sounding-piecewise-exp-atmosphere"
+
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "piecewise_exponential"
+wind          = "none"
+
+[atmosphere]
+kind = "piecewise_exponential"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.parquet = "out/sounding-piecewise-exp-atmosphere.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
