@@ -29,6 +29,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod allocation;
 pub mod anti_windup;
 pub mod autopilot;
 pub mod bus;

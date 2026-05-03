@@ -119,7 +119,8 @@ in lockstep with each sub-phase landing.
 | 5.A.3.C — per-axis INDI rate loop (Smeur-Chu-de Croon 2016) | shipped | `c06d881` |
 | 5.A.3.D — controller comparison harness | shipped | `81d2407` |
 | 5.A.4 — receding-horizon attitude MPC (Clarabel-backed) | shipped | _pending PR_ |
-| 5.A.5 onwards | pending | — |
+| 5.A.5 — prioritised redistributed control allocator | shipped | _pending PR_ |
+| 5.B onwards | pending | — |
 
 ## Vehicle-class scope
 
@@ -550,29 +551,53 @@ downstream-user worked example, not an OpenBMP shipped scenario.
 
 #### 5.A.5 — Control allocation with axis priority + saturation reporting
 
-**Scope.** Replace the Phase 4.C semantic-channel / effector-id
-mapping with a proper control allocation framework:
+**Scope.** Replace the Phase-4 1:1 semantic-channel / effector-id
+mapping with a proper control-allocation framework. Phase 5.A.5
+ships the **single-axis-effector case**:
 
-- `ControlAllocator` trait — accepts a desired body torque (and
-  optionally body force) and the current effector-state vector,
-  returns a per-effector deflection vector that respects per-effector
-  rate / position limits.
-- Two reference implementations:
-  1. **Pseudo-inverse** allocator (Stevens & Lewis 2015 §3.5
-     formulation; redistributes saturation evenly across effectors).
-  2. **Prioritised redistributed allocator** with axis priority
-     (roll over yaw over pitch by default; scenario-overridable);
-     allocates highest-priority axis first, redistributes residual
-     to lower-priority axes within remaining headroom (per Härkegård
-     2002 academic formulation).
-- The mixer publishes per-axis saturation flags + per-effector
-  saturation flags so FDIR can isolate "axis X cannot be commanded
-  because effector Y is saturated".
+- `PrioritisedRedistributedAllocator` (consumed) —
+  `crates/openbmp-fc/src/allocation.rs`. Each `direct_torque`
+  effector contributes to exactly one body axis; the allocator
+  groups effectors by axis and distributes the autopilot's per-axis
+  torque demand proportional to per-effector capacity. When
+  `|τ_a| ≤ Σ Lᵢ` the split is exact and proportional; when the
+  demand exceeds the axis's total capacity, every effector pulls
+  at its limit and the axis is reported as saturated.
+- Pseudo-inverse allocator (parsed but **not** yet consumed) —
+  `FcAutopilotAllocationKind::PseudoInverse` is rejected by the
+  runner with an `UnsupportedScenario` error until a future slice
+  ships the general `G_eff` path. The current scope stays
+  rocket-class-honest: `direct_torque` effectors do not couple
+  across axes, so the pseudo-inverse degenerates to the
+  prioritised-redistributed result and shipping it now would be
+  pure surface area.
+- Mixer wiring — `Mixer::with_allocator(allocator)` supersedes the
+  legacy channel-map dispatch when set. The `EffectorCommandSet`
+  publish path uses the allocator's per-effector commands (gated
+  per-effector against `authority.effectors`). The legacy
+  `ActuatorCommand` topic is unchanged for downstream consumers.
+- Per-axis saturation flags propagate through `EffectorCommandSet.
+  saturated`. Per-effector saturation flags are deferred to a
+  future slice that adds the general G_eff matrix surface.
+- Scenario surface — `[fc.autopilot_allocation]` (already declared
+  in Phase 5.0, parser-only) is now consumed: `kind +
+  axis_priority` plus the per-effector axis declarations from
+  `vehicle.assembly.effectors` build the allocator at scenario
+  load.
 
-**Exit criterion.** A scenario with a degraded effector (e.g. a
-jammed elevon) demonstrates the prioritised allocator preserving
-high-priority axis authority; per-axis + per-effector saturation
-flags appear on the actuator topic and on the FDIR `tripped_mask`.
+**Exit criterion (5.A.5 attitude-allocation slice).** An
+over-actuated scenario (`scenarios/diff-flatness-figure-eight-allocator/`,
+two ±0.2 N·m roll-torque effectors plus single pitch / yaw)
+runs the figure-eight reference end-to-end with both roll
+effectors receiving bit-identical commands every tick (exact
+proportional split for equal capacities); byte-stable Parquet
+across reruns. E2E test:
+`crates/openbmp-cli/tests/diff_flatness_allocator_e2e.rs`.
+
+**Deferred (future slice).** Coupled-effector G_eff matrix +
+pseudo-inverse path; per-effector saturation flags; engine-cluster
+TVC allocation (gimbal vectors per engine producing mixed body
+moments).
 
 **Validation evidence.** Unit + property tests for the pseudo-inverse
 formula; property test that the prioritised allocator never violates

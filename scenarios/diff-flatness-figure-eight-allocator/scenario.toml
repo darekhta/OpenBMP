@@ -1,0 +1,245 @@
+# Phase-5.A.5 control-allocation sibling of the diff-flatness figure-eight.
+#
+# Identical to `scenarios/diff-flatness-figure-eight` except:
+#
+#   1. The roll axis is OVER-ACTUATED: two `direct_torque`
+#      effectors `roll-torque-a` and `roll-torque-b` each carry a
+#      ±0.2 N·m symmetric box bound. Combined roll capacity is
+#      ±0.4 N·m, slightly above the 0.35 N·m the autopilot ever
+#      requests, so neither effector saturates under nominal
+#      tracking. The pitch and yaw axes keep their single-effector
+#      ±0.35 N·m surfaces.
+#
+#   2. `[fc.autopilot_allocation]` selects the
+#      `prioritised_redistributed` allocator with explicit
+#      `axis_priority = ["roll", "pitch", "yaw"]`. The Phase-5.A.5
+#      runner derives the per-axis effector groups from the
+#      `direct_torque` effectors above and installs the allocator
+#      on the mixer. The legacy `[fc.actuator_channels]` mapping is
+#      kept (the autopilot publishes its semantic `ActuatorCommand`
+#      topic exactly as before) but the per-effector
+#      `EffectorCommandSet` now flows through the allocator.
+#
+# All other autopilot machinery (DifferentialFlatness trajectory
+# loop, attitude PID, rate PID, anti-windup, MEKF) is unchanged
+# from the parent scenario. Closed-loop tracking is checked by
+# `crates/openbmp-cli/tests/diff_flatness_allocator_e2e.rs`, which
+# additionally asserts the two roll-torque effectors share the
+# autopilot's roll demand proportionally.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "diff-flatness-figure-eight-allocator"
+description = "Phase-5.A.5 control-allocation figure-eight sibling: two redundant roll-torque effectors, single pitch and yaw effectors, prioritised_redistributed allocator wired through the mixer."
+validation  = "experimental"
+provenance  = "synthetic; identical to diff-flatness-figure-eight modulo the roll-axis effector split and the [fc.autopilot_allocation] block. See provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 8.0
+dt_s    = 0.001
+seed    = 0x436c_6f63_4631_3866   # "ClocF18f"
+
+[vehicle]
+kind                                = "rigid_body"
+initial_position_eci_m              = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "diff-flatness-figure-eight-allocator"
+
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_inertia_body_kg_m2 = [
+  [1.0, 0.0, 0.0],
+  [0.0, 1.0, 0.0],
+  [0.0, 0.0, 1.0],
+]
+
+# Two roll-torque effectors with ±0.2 N·m each (combined capacity
+# 0.4 N·m, just above the autopilot's 0.35 N·m demand limit).
+[[vehicle.assembly.effectors]]
+id               = "roll-torque-a"
+kind             = { kind = "direct_torque", axis = "roll", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.2, max = 0.2, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[[vehicle.assembly.effectors]]
+id               = "roll-torque-b"
+kind             = { kind = "direct_torque", axis = "roll", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.2, max = 0.2, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[[vehicle.assembly.effectors]]
+id               = "pitch-torque"
+kind             = { kind = "direct_torque", axis = "pitch", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.35, max = 0.35, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[[vehicle.assembly.effectors]]
+id               = "yaw-torque"
+kind             = { kind = "direct_torque", axis = "yaw", effectiveness_n_m_per_rad = 1.0 }
+limits           = { min = -0.35, max = 0.35, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit             = "rad"
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+magnetic      = "wmm_2025"
+
+[forces]
+models = ["gravity"]
+
+[sensors.imu]
+kind = "imu"
+file = "../../data/sensors/imu-consumer-mems.toml"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../../data/sensors/gnss-textbook.toml"
+
+[sensors.mag]
+kind = "magnetometer"
+file = "../../data/sensors/magnetometer-textbook.toml"
+
+[telemetry]
+output.parquet = "out/diff-flatness-figure-eight-allocator.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "mission.phases.pad"
+
+[[mission.phases]]
+id    = "mission.phases.pad"
+label = "pad"
+
+[[mission.phases]]
+id                = "mission.phases.ascent"
+label             = "ascent"
+allowed_effectors = ["roll-torque-a", "roll-torque-b", "pitch-torque", "yaw-torque"]
+
+[[mission.events]]
+id      = "mission.events.liftoff"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "enter_phase", phase = "mission.phases.ascent" }
+
+[[mission.transitions]]
+from  = "mission.phases.pad"
+to    = "mission.phases.ascent"
+event = "mission.events.liftoff"
+
+[fc]
+estimator        = "mekf"
+autopilot        = "three_loop"
+guidance         = "attitude_hold"
+reference_q_xyzw = [0.0, 0.0, 0.0, 1.0]
+base_rate_hz     = 1000
+frame_budget_us  = 2000
+
+[fc.mekf]
+mag_field             = "wmm_2025"
+mag_epoch_decimal_year = 2025.0
+sigma_w_gyro          = 0.01
+sigma_w_gyro_bias     = 1.0e-5
+tau_gyro_bias_s       = 100.0
+sigma_mag_nt          = 100.0
+innovation_false_alarm_rate = 0.01
+
+# The legacy semantic-channel mapping is retained for backward-compat
+# of the `ActuatorCommand` topic shape. The allocator below
+# supersedes it for the per-effector `EffectorCommandSet` publish
+# path: the autopilot's `aileron_rad` is interpreted as roll-axis
+# torque demand and routed across both `roll-torque-a` and
+# `roll-torque-b`.
+[fc.actuator_channels]
+aileron  = "roll-torque-a"
+elevator = "pitch-torque"
+rudder   = "yaw-torque"
+
+[fc.autopilot_allocation]
+kind          = "prioritised_redistributed"
+axis_priority = ["roll", "pitch", "yaw"]
+
+[fc.autopilot_params]
+anti_windup_gain         = 1.0
+rate_deadband_rad_s      = 0.001
+trajectory_loop_enabled  = true
+trajectory_kind          = "minimum_snap"
+
+[fc.trajectory]
+kind    = "minimum_snap"
+yaw_rad = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 100.0]
+time_s         = 0.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, 5.0, 100.0]
+time_s         = 2.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [20.0, 0.0, 100.0]
+time_s         = 4.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [10.0, -5.0, 100.0]
+time_s         = 6.0
+
+[[fc.trajectory.waypoint]]
+position_eci_m = [0.0, 0.0, 100.0]
+time_s         = 8.0
+
+[fc.health]
+imu_stale_after_s       = 0.05
+gnss_stale_after_s      = 0.5
+baro_stale_after_s      = 10.0
+mag_stale_after_s       = 0.2
+overrun_burst_count     = 5
+
+[fc.fdir]
+detector_kind           = "burst_counter"
+innovation_threshold    = 25.0
+innovation_burst_count  = 5
+failsafe_burst_count    = 5
+
+[fc.gain_schedule."mission.phases.pad"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.gain_schedule."mission.phases.ascent"]
+rate_kp            = [0.5, 0.5, 0.5]
+rate_kd            = [0.05, 0.05, 0.05]
+attitude_kp        = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad  = 0.35
+rudder_limit_rad   = 0.35
+throttle_baseline  = 0.0
+
+[fc.phase_authority."mission.phases.pad"]
+autopilot_allowed = false
+engines_allowed   = false
+
+[fc.phase_authority."mission.phases.ascent"]
+autopilot_allowed = true
+engines_allowed   = true

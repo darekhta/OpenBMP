@@ -335,17 +335,22 @@ impl ScenarioDocument {
                     .map_or(Ok(()), FcEstimatorLanesConfig::validate)
             },
         )?;
-        gate_phase5_block(
-            header,
-            "fc.autopilot_allocation",
-            "Phase 5.A.5",
-            fc.autopilot_allocation.as_ref(),
-            || {
-                fc.autopilot_allocation
-                    .as_ref()
-                    .map_or(Ok(()), FcAutopilotAllocationConfig::validate)
-            },
-        )?;
+        // fc.autopilot_allocation — Phase 5.A.5 consumed block.
+        // v3-only; the runner builds a
+        // `PrioritisedRedistributedAllocator` from this block plus
+        // the per-effector axis declarations and installs it on the
+        // mixer. The PseudoInverse kind is parsed but the runner
+        // emits `UnsupportedScenario` for it (not yet consumed).
+        if let Some(allocation) = fc.autopilot_allocation.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.autopilot_allocation".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            allocation.validate()?;
+        }
         if let Some(fdir) = &fc.fdir {
             gate_phase5_block(
                 header,

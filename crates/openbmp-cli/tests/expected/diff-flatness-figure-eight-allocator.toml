@@ -1,0 +1,37 @@
+case = "diff-flatness-figure-eight-allocator-rigid-body-8000-steps"
+source = "Synthetic; same lemniscate waypoints as scenarios/diff-flatness-figure-eight, with two redundant roll-torque effectors and the prioritised_redistributed allocator. See scenarios/diff-flatness-figure-eight-allocator/provenance.md."
+validation = "experimental"
+
+# Phase 5.A.5 tolerance bench. The figure-eight reference is the
+# same as the parent scenario, but the roll axis is split across
+# two `direct_torque` effectors and the
+# `prioritised_redistributed` allocator distributes the autopilot's
+# roll demand 50/50 between them. The headline assertion (bit-
+# identical commands across the two roll effectors) lives in the
+# e2e test rather than this tolerance table because it is an exact
+# equality, not a numeric tolerance.
+#
+# Asserts:
+#   - 8000 kernel steps;
+#   - rigid-body quaternion stays normalised after projection;
+#   - max body-frame angular velocity magnitude bounded — generous
+#     5.0 rad/s ceiling, well above the ~0.6 rad/s peak observed
+#     on the reference platform.
+
+[[metric]]
+name = "kernel_steps"
+expected = 8000
+absolute_tolerance = 0.0
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_angular_velocity_magnitude_rad_s"
+expected = 0.0
+absolute_tolerance = 5.0
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_quaternion_norm_error"
+expected = 0.0
+absolute_tolerance = 1.0e-12
+relative_tolerance = 0.0

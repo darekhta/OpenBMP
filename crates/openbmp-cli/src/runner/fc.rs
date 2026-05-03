@@ -75,6 +75,7 @@ impl FcRunner {
         start_phase: PhaseId,
         autopilot_lqr_context: Option<FcAutopilotLqrContext>,
         loop_step_dt_s: f64,
+        allocator: Option<openbmp_fc::allocation::PrioritisedRedistributedAllocator>,
     ) -> Result<Self, openbmp_fc::ControllerError> {
         let mut fc = FlightControllerBuilder::new()
             .frame_budget_us(config.frame_budget_us)
@@ -183,11 +184,14 @@ impl FcRunner {
         next_priority = next_priority.saturating_add(5);
 
         // Mixer.
-        let mixer = Mixer::new()
+        let mut mixer = Mixer::new()
             .with_authority(authority)
             .with_actuator_channel_map(build_actuator_channel_map(
                 config.actuator_channels.as_ref(),
             ));
+        if let Some(alloc) = allocator {
+            mixer = mixer.with_allocator(alloc);
+        }
         fc.scheduler_mut()
             .register_periodic(1, 100, next_priority, Box::new(mixer))?;
         next_priority = next_priority.saturating_add(5);
@@ -946,7 +950,7 @@ mod tests {
             trajectory: None,
         };
         let (graph, bindings, pad) = minimal_graph();
-        let mut runner = FcRunner::new(&config, graph, bindings, pad, None, 0.001).unwrap();
+        let mut runner = FcRunner::new(&config, graph, bindings, pad, None, 0.001, None).unwrap();
         // Drive 100 ticks at 1 ms each.
         let dt_s = 0.001;
         for k in 0..100u64 {

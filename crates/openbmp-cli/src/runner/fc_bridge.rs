@@ -72,6 +72,7 @@ impl FcBridge {
         let start_phase = graph.initial;
         let magnetic = build_magnetic_field(fc_config)?;
         let lqr_ctx = build_autopilot_lqr_context(scenario)?;
+        let allocator = build_autopilot_allocator(scenario)?;
         let runner = FcRunner::new(
             fc_config,
             graph,
@@ -79,6 +80,7 @@ impl FcBridge {
             start_phase,
             lqr_ctx,
             scenario.document.time.dt_s,
+            allocator,
         )
         .map_err(|err| CliError::UnsupportedScenario {
             what: format!("flight-controller construction failed: {err}"),
@@ -455,6 +457,117 @@ fn build_autopilot_lqr_context(
         return Ok(None);
     }
     Ok(None)
+}
+
+/// Phase-5.A.5 helper: derive a [`PrioritisedRedistributedAllocator`]
+/// from `[fc.autopilot_allocation]` plus the
+/// `[[vehicle.assembly.effectors]]` declarations.
+///
+/// Returns `Ok(None)` when the FC config has no allocation block, or
+/// when the configured kind is not yet wired in this slice
+/// (`pseudo_inverse` is parsed but consumed by a future slice; for
+/// now its presence triggers fail-closed). For the consumed
+/// `prioritised_redistributed` kind, walks every `direct_torque`
+/// effector in the assembly and groups them by axis. The optional
+/// scenario `axis_priority` is honoured in priority order; absent →
+/// the documented default `[roll, yaw, pitch]`.
+fn build_autopilot_allocator(
+    scenario: &Scenario,
+) -> Result<Option<openbmp_fc::allocation::PrioritisedRedistributedAllocator>, CliError> {
+    use openbmp_fc::allocation::{BodyAxis, EffectorAxisAssignment};
+    let Some(fc_config) = &scenario.document.fc else {
+        return Ok(None);
+    };
+    let Some(alloc_cfg) = fc_config.autopilot_allocation.as_ref() else {
+        return Ok(None);
+    };
+    match alloc_cfg.kind {
+        openbmp_scenario::FcAutopilotAllocationKind::PrioritisedRedistributed => {}
+        openbmp_scenario::FcAutopilotAllocationKind::PseudoInverse => {
+            return Err(CliError::UnsupportedScenario {
+                what: "fc.autopilot_allocation.kind = \"pseudo_inverse\" is parsed but not yet \
+                       consumed in Phase 5.A.5; use \"prioritised_redistributed\" or remove the \
+                       block until the pseudo-inverse path lands"
+                    .to_owned(),
+            });
+        }
+    }
+    // Walk effectors and pull out direct_torque assignments.
+    let mut assignments: Vec<EffectorAxisAssignment> = Vec::new();
+    for effector in &scenario.document.vehicle.assembly.effectors {
+        let openbmp_scenario::EffectorKindConfig::DirectTorque { axis, .. } = effector.kind else {
+            continue;
+        };
+        let body_axis = match axis {
+            openbmp_scenario::TorqueAxis::Roll => BodyAxis::Roll,
+            openbmp_scenario::TorqueAxis::Pitch => BodyAxis::Pitch,
+            openbmp_scenario::TorqueAxis::Yaw => BodyAxis::Yaw,
+        };
+        // Symmetric box check: max_abs = max(|min|, max).
+        if (effector.limits.max + effector.limits.min).abs() > 1.0e-12 {
+            return Err(CliError::UnsupportedScenario {
+                what: format!(
+                    "fc.autopilot_allocation = \"prioritised_redistributed\" requires symmetric \
+                     effector limits in Phase 5.A.5; effector \"{}\" has min = {}, max = {}",
+                    effector.id, effector.limits.min, effector.limits.max
+                ),
+            });
+        }
+        assignments.push(EffectorAxisAssignment {
+            effector_id: openbmp_core::EffectorId::from_path(&format!(
+                "vehicle.assembly.effectors.{}",
+                effector.id
+            )),
+            axis: body_axis,
+            max_abs: effector.limits.max.max(-effector.limits.min),
+        });
+    }
+    if assignments.is_empty() {
+        return Err(CliError::UnsupportedScenario {
+            what: "fc.autopilot_allocation = \"prioritised_redistributed\" requires at least one \
+                   direct_torque effector in vehicle.assembly.effectors"
+                .to_owned(),
+        });
+    }
+    // Resolve axis priority. Default per the scenario block:
+    // [roll, yaw, pitch]. Any axis named in `axis_priority` must
+    // appear; absent → fall back to the default permutation.
+    let priority = if let Some(priority_strs) = alloc_cfg.axis_priority.as_ref() {
+        let mut axes = [BodyAxis::Roll, BodyAxis::Yaw, BodyAxis::Pitch];
+        // The scenario validator already requires unique entries
+        // drawn from {roll, pitch, yaw}; we still defend in depth.
+        if priority_strs.len() != 3 {
+            return Err(CliError::UnsupportedScenario {
+                what: "fc.autopilot_allocation.axis_priority must list each of \
+                       [roll, pitch, yaw] exactly once"
+                    .to_owned(),
+            });
+        }
+        for (slot, label) in axes.iter_mut().zip(priority_strs.iter()) {
+            *slot = match label.as_str() {
+                "roll" => BodyAxis::Roll,
+                "pitch" => BodyAxis::Pitch,
+                "yaw" => BodyAxis::Yaw,
+                other => {
+                    return Err(CliError::UnsupportedScenario {
+                        what: format!(
+                            "fc.autopilot_allocation.axis_priority entry \"{other}\" is not a \
+                             body axis"
+                        ),
+                    });
+                }
+            };
+        }
+        axes
+    } else {
+        [BodyAxis::Roll, BodyAxis::Yaw, BodyAxis::Pitch]
+    };
+    let allocator =
+        openbmp_fc::allocation::PrioritisedRedistributedAllocator::new(priority, assignments)
+            .map_err(|err| CliError::UnsupportedScenario {
+                what: format!("control allocator construction failed: {err}"),
+            })?;
+    Ok(Some(allocator))
 }
 
 fn build_magnetic_field(config: &FcConfig) -> Result<Box<dyn MagneticFieldEci>, CliError> {

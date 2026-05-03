@@ -472,7 +472,20 @@ axis_priority = ["roll", "yaw", "pitch"]
 "#;
         let toml = append(fc_v2_scenario(), block);
         assert_phase5_reserved_under_v2(&toml, "fc.autopilot_allocation");
-        assert_phase5_deferred_under_v3(&toml, "fc.autopilot_allocation", "Phase 5.A.5");
+        // Phase 5.A.5 consumed this block — under v3 it now parses
+        // and validates rather than emitting `ElementDeferredToFuturePhase`.
+        let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&v3).expect("v3 allocation block validates");
+        let alloc = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.autopilot_allocation.as_ref())
+            .expect("allocation block present");
+        assert_eq!(
+            alloc.kind,
+            crate::document::FcAutopilotAllocationKind::PrioritisedRedistributed
+        );
     }
 
     #[test]

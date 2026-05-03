@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 
 use openbmp_core::EffectorId;
 
+use crate::allocation::PrioritisedRedistributedAllocator;
 use crate::error::ControllerError;
 use crate::scheduler::{Job, JobContext};
 use crate::tables::Table;
@@ -118,6 +119,21 @@ impl Table for PhaseAuthorityTable {
 /// declares `autopilot_allowed = false` zero-mixes the actuator
 /// command even when the vehicle is armed and in flight, and an
 /// equivalent rule applies to engine demand.
+///
+/// Two effector dispatch paths coexist:
+/// - **Phase-4 channel map** — `with_actuator_channel_map(...)` —
+///   1:1 routing from the autopilot's `aileron / elevator / rudder /
+///   body_flap` semantic channels to a single effector each.
+/// - **Phase-5.A.5 allocator** — `with_allocator(...)` — distributes
+///   the per-axis torque demand (`aileron_rad → roll`, `elevator_rad
+///   → pitch`, `rudder_rad → yaw`) across all effectors assigned to
+///   that axis via
+///   [`crate::allocation::PrioritisedRedistributedAllocator`].
+///
+/// When an allocator is installed, it supersedes the channel map for
+/// the [`EffectorCommandSet`] publish path. The legacy
+/// [`ActuatorCommand`] semantic-topic publish is always honoured for
+/// downstream consumers that read it directly.
 #[derive(Debug)]
 pub struct Mixer {
     name: &'static str,
@@ -125,6 +141,7 @@ pub struct Mixer {
     last_seen_engine: u64,
     authority: PhaseAuthorityTable,
     channel_map: ActuatorChannelMap,
+    allocator: Option<PrioritisedRedistributedAllocator>,
 }
 
 impl Mixer {
@@ -139,6 +156,7 @@ impl Mixer {
             last_seen_engine: 0,
             authority: PhaseAuthorityTable::default(),
             channel_map: ActuatorChannelMap::default(),
+            allocator: None,
         }
     }
 
@@ -153,6 +171,18 @@ impl Mixer {
     #[must_use]
     pub fn with_actuator_channel_map(mut self, channel_map: ActuatorChannelMap) -> Self {
         self.channel_map = channel_map;
+        self
+    }
+
+    /// Installs a Phase-5.A.5 control allocator. When set, the
+    /// allocator supersedes the channel map for the
+    /// [`EffectorCommandSet`] publish path; per-effector commands
+    /// are gated against the active phase's `allowed_effectors`
+    /// list (effectors not in the allowance are zeroed) but the
+    /// per-axis torque distribution stays inside the allocator.
+    #[must_use]
+    pub fn with_allocator(mut self, allocator: PrioritisedRedistributedAllocator) -> Self {
+        self.allocator = Some(allocator);
         self
     }
 
@@ -205,12 +235,52 @@ impl Mixer {
         }
     }
 
-    fn effector_command_set(&self, cmd: ActuatorCommand) -> EffectorCommandSet {
+    fn effector_command_set(
+        &self,
+        cmd: ActuatorCommand,
+        authority: &PhaseAuthority,
+    ) -> EffectorCommandSet {
         let mut set = EffectorCommandSet {
             time: cmd.time,
             saturated: cmd.saturated,
             ..EffectorCommandSet::default()
         };
+        if let Some(allocator) = self.allocator.as_ref() {
+            // Phase 5.A.5 — allocator-driven dispatch. The autopilot's
+            // semantic channels carry per-axis torque demand:
+            //   aileron_rad  → roll
+            //   elevator_rad → pitch
+            //   rudder_rad   → yaw
+            // Body-flap is not part of the rotational allocator
+            // surface in 5.A.5 (it's a translational / aero
+            // surface). The allocator distributes the three
+            // rotational demands across all effectors assigned to
+            // each axis; per-effector outputs are gated against
+            // `authority.effectors` so a phase that withdraws
+            // authority on a single effector zeroes only that one.
+            let allocation =
+                allocator.allocate([cmd.aileron_rad, cmd.elevator_rad, cmd.rudder_rad]);
+            let mut any_saturated = cmd.saturated;
+            for sat in allocation.saturated_axes {
+                any_saturated |= sat;
+            }
+            for (effector_id, command) in allocation.commands {
+                let index = usize::from(set.count);
+                if index >= MAX_EFFECTOR_COMMANDS {
+                    break;
+                }
+                let allowed = authority.effectors.contains(&effector_id);
+                let gated_command = if allowed { command } else { 0.0 };
+                set.commands[index] = EffectorCommand {
+                    effector_id: effector_id.value(),
+                    command: gated_command,
+                    saturated: any_saturated,
+                };
+                set.count = set.count.saturating_add(1);
+            }
+            set.saturated = any_saturated;
+            return set;
+        }
         let channels = [
             (self.channel_map.aileron, cmd.aileron_rad),
             (self.channel_map.elevator, cmd.elevator_rad),
@@ -288,8 +358,8 @@ impl Job for Mixer {
             if let Ok(new_seq) = ctx.bus.publish(gated) {
                 self.last_seen_actuator = new_seq.value();
             }
-            if self.channel_map.has_any_mapping() {
-                let _ = ctx.bus.publish(self.effector_command_set(gated));
+            if self.channel_map.has_any_mapping() || self.allocator.is_some() {
+                let _ = ctx.bus.publish(self.effector_command_set(gated, authority));
             }
         }
 
