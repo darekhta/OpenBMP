@@ -116,7 +116,7 @@ in lockstep with each sub-phase landing.
 | 5.A.2.D — closed-loop L1 validation under roll-axis ReducedRate fault | shipped | `af943d1` |
 | 5.A.3.A — observer-form anti-windup + back-calculation parameterisation | shipped | `327f2dc` |
 | 5.A.3.B — per-axis LQR rate loop + structure-preserving DARE solver | shipped | `327f2dc` |
-| 5.A.3.C — per-axis INDI rate loop (Smeur-Chu-de Croon 2016) | shipped | _pending PR_ |
+| 5.A.3.C — per-axis INDI rate loop (Smeur-Chu-de Croon 2016) | shipped | `c06d881` |
 | 5.A.3.D — controller comparison harness | pending | — |
 
 ## Vehicle-class scope
@@ -345,10 +345,10 @@ limits; the bandwidth bound is academic.
 #### 5.A.3 — Observer-form anti-windup; LQR baseline; INDI baseline
 
 **Scope.** Three independent autopilot baselines that Phase 4.C
-deliberately deferred. Phase 5.A.3.A and 5.A.3.B have shipped; the
-remaining sub-phases (INDI baseline + comparison harness) are
-slated as 5.A.3.C and 5.A.3.D and follow the same per-slice
-review pattern as 5.A.1.A–D / 5.A.2.A–D.
+deliberately deferred. Phase 5.A.3.A, 5.A.3.B, and 5.A.3.C have
+shipped; the remaining comparison-harness slice is slated as
+5.A.3.D and follows the same per-slice review pattern as
+5.A.1.A–D / 5.A.2.A–D.
 
 1. **Observer-form anti-windup (Phase 5.A.3.A — shipped).** Adds an
    `AntiWindupKind` enum (`BackCalculation { gain }` / `ObserverForm

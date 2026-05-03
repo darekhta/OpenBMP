@@ -1603,6 +1603,41 @@ The block is cross-validated with
 requires `[fc.trajectory]`, and declaring `[fc.trajectory]` requires
 `trajectory_kind = "minimum_snap"`.
 
+#### `[fc.autopilot_params.rate_loop_kind]` and INDI (Phase 5.A.3)
+
+```toml
+[fc.autopilot_params]
+rate_loop_kind = "indi" # "pid" | "lqr" | "indi"; field is v3-only
+
+[fc.autopilot_params.indi]
+inertia_per_axis_kg_m2         = [1.0, 1.0, 1.0]
+control_effectiveness_per_axis = [1.0, 1.0, 1.0]
+filter_cutoff_rad_s            = 50.0
+filter_kind                    = "second_order_butterworth" # default; or "first_order_low_pass"
+attitude_to_omega_dot_gain     = [10.0, 10.0, 5.0]
+```
+
+`rate_loop_kind` is a Phase-5 v3-only field. Omitted
+`rate_loop_kind` keeps the Phase-4 PID rate loop; declaring
+`rate_loop_kind = "lqr"` requires `[fc.autopilot_params.lqr]`, and
+declaring `rate_loop_kind = "indi"` requires
+`[fc.autopilot_params.indi]`. The parser also rejects either
+parameter block when the matching `rate_loop_kind` value is absent.
+
+INDI is gated by the `openbmp-cli/indi` Cargo feature. The runner
+fails closed unless the scenario assembly contains exactly one body
+with diagonal `dry_inertia_body_kg_m2`; the per-axis increment model
+does not claim coupled multi-body or non-diagonal-inertia support.
+The INDI block declares the controller's working inertia estimate,
+per-axis control effectiveness, one synchronized low-pass cutoff and
+filter kind shared by both the measured-rate and prior-command
+filters, and the outer-loop attitude-to-angular-acceleration P gain.
+`filter_cutoff_rad_s` must be positive and strictly below
+`π / time.dt_s`. Combining `rate_loop_kind = "indi"` with
+`[fc.autopilot_params.l1_adaptive]` is rejected at scenario load;
+that composition is deferred until the filter-interaction behaviour
+is characterised.
+
 ### v3-only kind values
 
 #### `gravity = "egm2008"` (Phase 5.C.2)

@@ -154,6 +154,12 @@ pub enum IndiError {
         /// Nyquist boundary in rad/s.
         nyquist_rad_s: f64,
     },
+    /// `dt_s` is non-positive.
+    #[error("INDI sample time dt_s must be > 0; got {value}")]
+    NonPositiveSampleTime {
+        /// Offending sample time.
+        value: f64,
+    },
     /// A parameter is NaN or infinite.
     #[error("INDI parameter must be finite; got {value} for {label}")]
     NonFiniteParameter {
@@ -172,9 +178,13 @@ impl IndiParams {
     /// Returns the matching [`IndiError`] variant when any per-axis
     /// inertia, control-effectiveness, or attitude gain is
     /// non-positive; when the filter cutoff is non-positive or at /
-    /// above Nyquist; or when any parameter is non-finite.
+    /// above Nyquist; when `dt_s` is non-positive; or when any
+    /// parameter is non-finite.
     pub fn validate(&self, dt_s: f64) -> Result<(), IndiError> {
         require_finite("dt_s", dt_s)?;
+        if dt_s <= 0.0 {
+            return Err(IndiError::NonPositiveSampleTime { value: dt_s });
+        }
         for axis in 0..3 {
             require_finite_axis(
                 "inertia_per_axis_kg_m2",
@@ -216,7 +226,9 @@ impl IndiParams {
                 value: self.filter_cutoff_rad_s,
             });
         }
-        let nyquist_rad_s = std::f64::consts::PI / dt_s;
+        let sample_rate_hz = 1.0 / dt_s;
+        require_finite("sample_rate_hz", sample_rate_hz)?;
+        let nyquist_rad_s = std::f64::consts::PI * sample_rate_hz;
         if self.filter_cutoff_rad_s >= nyquist_rad_s {
             return Err(IndiError::FilterCutoffAtOrAboveNyquist {
                 cutoff_rad_s: self.filter_cutoff_rad_s,
@@ -424,6 +436,19 @@ mod tests {
         assert!(matches!(
             p.validate(0.001),
             Err(IndiError::NonPositiveFilterCutoff { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_non_positive_dt() {
+        let p = nominal_params();
+        assert!(matches!(
+            p.validate(0.0),
+            Err(IndiError::NonPositiveSampleTime { .. })
+        ));
+        assert!(matches!(
+            p.validate(-0.001),
+            Err(IndiError::NonPositiveSampleTime { .. })
         ));
     }
 

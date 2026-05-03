@@ -360,11 +360,10 @@ fn require_bridge_frame(document: &ScenarioDocument) -> Result<(), CliError> {
 /// properties; non-diagonal inertia breaks the per-axis decoupling
 /// assumption both rate loops are built on.
 ///
-/// Returns `Ok([Jxx, Jyy, Jzz])` after passing the precondition, or
-/// `Ok(None)` when no per-axis rate loop is selected (point-mass
-/// scenarios, PID rate loops, etc.). Fails closed when the
-/// precondition is violated; the calling site formats the error
-/// with the offending rate-loop kind label.
+/// Returns `Ok([Jxx, Jyy, Jzz])` after passing the precondition.
+/// Callers only invoke this helper after a per-axis rate loop has
+/// been selected. Fails closed when the precondition is violated;
+/// the error includes the offending rate-loop kind label.
 fn verify_per_axis_rate_loop_preconditions(
     scenario: &Scenario,
     kind_label: &str,
@@ -423,8 +422,8 @@ fn verify_per_axis_rate_loop_preconditions(
 /// scenario does not request a rate loop that needs the precondition
 /// check. Fails closed when LQR is requested but the precondition
 /// (single body, diagonal inertia) is violated; the matching INDI
-/// precondition runs from the same helper via
-/// [`verify_indi_rate_loop_preconditions`].
+/// precondition runs through [`verify_per_axis_rate_loop_preconditions`]
+/// for its fail-closed side effect.
 fn build_autopilot_lqr_context(
     scenario: &Scenario,
 ) -> Result<Option<FcAutopilotLqrContext>, CliError> {
