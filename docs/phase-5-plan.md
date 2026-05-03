@@ -117,7 +117,8 @@ in lockstep with each sub-phase landing.
 | 5.A.3.A — observer-form anti-windup + back-calculation parameterisation | shipped | `327f2dc` |
 | 5.A.3.B — per-axis LQR rate loop + structure-preserving DARE solver | shipped | `327f2dc` |
 | 5.A.3.C — per-axis INDI rate loop (Smeur-Chu-de Croon 2016) | shipped | `c06d881` |
-| 5.A.3.D — controller comparison harness | pending | — |
+| 5.A.3.D — controller comparison harness | shipped | _pending PR_ |
+| 5.A.4 onwards | pending | — |
 
 ## Vehicle-class scope
 
@@ -390,12 +391,21 @@ shipped; the remaining comparison-harness slice is slated as
    `[fc.autopilot_params.l1_adaptive]` is rejected at scenario load
    (filter-interaction concerns). Demonstration scenario
    `scenarios/diff-flatness-figure-eight-indi/scenario.toml`.
-4. **Controller comparison harness (Phase 5.A.3.D — pending).**
-   Runs the figure-eight scenario family across PID baseline + L1 +
-   observer-form anti-windup + LQR + INDI under matched
-   disturbances; emits a markdown table with per-axis tracking RMS
-   and peak commanded torque. Same format as the Phase-3
-   `compare_filters` harness.
+4. **Controller comparison harness (Phase 5.A.3.D — shipped).**
+   Runs the figure-eight scenario family across PID baseline +
+   PID + L1 + LQR + INDI under one common matched roll-axis
+   `EffectorFault::ReducedRate { factor = 0.7 }` disturbance.
+   `crates/openbmp-cli/tests/controller_comparison_harness.rs`
+   computes per-scenario max `|ω|`, RMS `|ω|`, per-axis peak
+   torque, and saturation fraction over the post-liftoff window;
+   emits a markdown table to `tests/expected/controller-
+   comparison.md`. Asserts byte-equality with that snapshot
+   (regenerable via `UPDATE_EXPECT=1 cargo test ...`) plus a
+   fixture-independent sanity gate that L1 beats PID baseline by
+   ≥ 2× under the same fault and every rate loop keeps `|ω|`
+   bounded. Two new sibling scenarios:
+   `scenarios/diff-flatness-figure-eight-lqr-fault` and
+   `scenarios/diff-flatness-figure-eight-indi-fault`.
 
 **Exit criterion.** Each baseline runs in a dedicated scenario and
 produces deterministic actuator output; the compare harness emits a
