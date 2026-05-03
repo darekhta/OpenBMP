@@ -124,7 +124,20 @@ in lockstep with each sub-phase landing.
 | 5.C.2 — EGM2008 zonal-harmonic gravity (degrees 2-6) | shipped | _pending PR_ |
 | 5.C.1 — piecewise-exponential atmosphere (0-1000 km) | shipped | _pending PR_ |
 | 5.D.3 — DOPRI5 fixed-step integrator (5th-order solution) | shipped | _pending PR_ |
-| 5.B onwards | pending | — |
+| 5.B.1 — square-root UKF (full 15-state) | pending | — |
+| 5.B.2 — multi-instance estimator routing + active-lane selection | pending | — |
+| 5.B.3 — IMM (Bar-Shalom) maneuver-aware estimator | pending | — |
+| 5.B.4 — Willsky windowed-mean-shift GLRT + parity-space residual | pending | — |
+| 5.C.3 — EGM2008 tesseral / sectoral expansion (Cunningham recursion) | pending — follow-on from 5.C.2 | — |
+| 5.C.4 — NRLMSISE-00 full Rust port (solar-flux, per-species) | pending — follow-on from 5.C.1 | — |
+| 5.D.1 — multi-rate scheduling first-class | pending | — |
+| 5.D.2 — multi-body simultaneous propagation | pending | — |
+| 5.D.4 — DOPRI5(4) adaptive integrator with PI step controller | pending — follow-on from 5.D.3 | — |
+| 5.E.1 — optional socket-bridge HIL pattern | pending | — |
+| 5.E.2 — real ULog parser + PX4 ekf2 cross-validation | pending | — |
+| 5.E.3 — ArduPilot dataflash parser + NavEKF3 cross-validation | pending | — |
+| 5.E.4 — Bar-Shalom textbook §5.4 / §5.5 reproducibility cases | pending | — |
+| 5.E.5 — full closed-loop long-duration soak | pending | — |
 
 ## Vehicle-class scope
 
@@ -823,10 +836,13 @@ engineering atmosphere used in orbital-mechanics textbooks.
 - `openbmp_physics::PiecewiseExponentialAtmosphere : AtmosphereModel`
   with a 14-layer table covering 0-1000 km. Within each layer
   `ρ(h) = ρ_base · exp(−(h − h_base) / H_layer)`; each layer is
-  treated as locally isothermal at
+  reported with a scale-height-effective temperature
   `T_layer = M_air · g_0 · H_layer / R`, which keeps the
   density / pressure / temperature / speed-of-sound triple
-  self-consistent through the ideal-gas law.
+  self-consistent through the ideal-gas law. The source table pins
+  density and scale height, not local thermodynamic temperature; above
+  the lower atmosphere this `temperature_k` is an effective fit value,
+  not a substitute for NRLMSISE-00 thermospheric temperature output.
 - `PiecewiseExpExoatmosphericPolicy` (`FailClosed` /
   `ZeroDensityAboveCeiling`) mirrors the existing
   `ExoatmosphericPolicy` for `UsStandard1976`.
@@ -851,11 +867,12 @@ engineering atmosphere used in orbital-mechanics textbooks.
 
 - Solar-flux dependence (F10.7, F10.7-avg, Ap) — the layered fit
   uses a single mean profile, not a daily-driven density model.
-- Per-species number densities (N2, O2, O, He, Ar, H, N).
-- Diurnal / latitude / longitude / season variation.
+  Picked up by **§ 5.C.4**.
+- Per-species number densities (N2, O2, O, He, Ar, H, N) — § 5.C.4.
+- Diurnal / latitude / longitude / season variation — § 5.C.4.
 - An in-house NRLMSISE-00 Rust port. Sourcing the ≈ 10 000-coefficient
   table authoritatively and committing to a determinism-stable
-  port belongs in a dedicated future slice.
+  port belongs in **§ 5.C.4**.
 
 **Validation evidence.**
 
@@ -914,7 +931,7 @@ J_2 through J_6 captures the dominant secular perturbations.
   Pavlis et al. 2012 J_n table (`EGM2008_J3..J6` constants in
   `crates/openbmp-physics/src/gravity.rs`).
 - Math implements the Cartesian gradient form
-  `g_n = ∇V_n` with `V_n = +(µ/r) (R_e/r)^n J_n P_n(ξ)`, ξ = z/r,
+  `g_n = ∇V_n` with `V_n = −(µ/r) (R_e/r)^n J_n P_n(ξ)`, ξ = z/r,
   evaluated via the standard Legendre recurrence
   `P_{n+1} = ((2n+1) ξ P_n − n P_{n-1}) / (n+1)` (and its derivative).
   Locked operand order matches the existing `J2Gravity` path so
@@ -933,15 +950,15 @@ J_2 through J_6 captures the dominant secular perturbations.
 - Tesseral and sectoral terms (orders > 0). Sourcing the full
   EGM2008 normalised-coefficient table (≈ 5 million entries through
   degree 2190) and committing to a determinism-stable Cunningham
-  implementation belongs in a dedicated future slice.
+  implementation belongs in **§ 5.C.3** below.
 - Per-scenario `degree` and `coefficients_path` overrides. The
   shipped surface is degree-pinned at 6 with the public J_n table
-  inlined as constants; future overridable surfaces will arrive
-  alongside the tesseral implementation.
+  inlined as constants; future overridable surfaces arrive
+  alongside the tesseral implementation in § 5.C.3.
 - Degree-20 GPS-orbit reproduction tolerance. Without tesseral terms
   this is not achievable; the math-side `J2Gravity`-degeneracy and
   Legendre-recurrence unit tests cover correctness within shipped
-  scope.
+  scope. The full GPS-class tolerance lands in § 5.C.3.
 
 **Validation evidence.**
 
@@ -970,9 +987,103 @@ Applications*, §3.2 — Legendre recurrence derivation.
 
 **Scope guardrail.** Public NGA-released zonal coefficients only.
 No derived datasets, no operational tunings, no satellite-specific
-calibrations. Tesseral terms deferred until a dedicated follow-on
-slice can pin the full normalised-coefficient table with
-deterministic Cunningham bookkeeping.
+calibrations. Tesseral terms deferred to § 5.C.3.
+
+#### 5.C.3 — EGM2008 tesseral / sectoral expansion (Cunningham recursion)
+
+**Scope.** Pick up the tesseral and sectoral terms of EGM2008 that
+the shipped § 5.C.2 zonal truncation deferred. Specifically:
+
+- Extend `Egm2008ZonalGravity` (or introduce a sibling type
+  `Egm2008Gravity` if the zonal-only fast path is preserved) to
+  evaluate the full `(C_nm, S_nm)` series via the standard
+  Cunningham (1970) recursion for the associated Legendre functions
+  in ECEF, rotated into ECI on demand.
+- Add a `data/gravity/EGM2008/` directory carrying public
+  `(C_nm, S_nm)` coefficients up to a documented degree / order
+  cap, with sibling `provenance.md` and SHA-256 pins in the
+  scenario.
+- Add per-scenario `degree`, `order`, and `coefficients_path`
+  overrides on the `gravity = "egm2008"` selector. The shipped
+  zonal-pinned surface remains the default to preserve byte
+  stability for existing scenarios.
+- Documented degree-20 working envelope; scenarios that opt into
+  degrees > 20 carry `validation = "experimental"` until their
+  own tolerance evidence lands.
+
+**Exit criterion.** EGM2008-degree-20 gravity reproduces a
+published GPS-orbit-class trajectory within a tolerance recorded
+in `tests/expected/egm2008-tesseral.toml`. The shipped § 5.C.2
+zonal scenario (`scenarios/leo-orbit-egm2008/`) stays
+byte-identical when the runtime selects the default zonal-pinned
+configuration (regression gate on the existing e2e).
+
+**Validation evidence.** Cunningham-recursion unit tests against
+closed-form `P_n^m(ξ)` for low degrees / orders; analytic-toy
+property check that `C_n0` reduces to `−J_n` (zonal degeneracy);
+LEO-orbit tolerance test that adds tesseral perturbations on top
+of the shipped zonal scenario and matches a published reference
+trajectory.
+
+**References.** Pavlis, N. K., Holmes, S. A., Kenyon, S. C., and
+Factor, J. K. (2012). *The development and evaluation of the Earth
+Gravitational Model 2008 (EGM2008)*, J. Geophys. Res. 117, B04406.
+Cunningham, L. E. (1970). *On the computation of the spherical
+harmonic terms needed during the numerical integration of the
+orbital motion of an artificial satellite*, Cel. Mech. 2(2). 
+Montenbruck, O. and Gill, E. (2000). *Satellite Orbits — Models,
+Methods, Applications*, §3.2.
+
+**Scope guardrail.** Public NGA-released coefficients only. No
+derived coefficient sets, no operational tunings, no
+satellite-specific calibrations. NRLMSIS-side time-varying
+gravity (Earth tides, ocean loading) stays Phase 6.
+
+#### 5.C.4 — NRLMSISE-00 full Rust port
+
+**Scope.** Pick up the solar-flux-driven, per-species atmosphere
+that § 5.C.1 deferred. Specifically:
+
+- In-house Rust port of NRLMSISE-00 (Picone et al. 2002) with the
+  full public coefficient set under `data/atmosphere/NRLMSISE-00/`
+  and a sibling `provenance.md` plus SHA-256 pins in the scenario.
+- Public mathematical formulation only; no derived coefficient
+  sets, no operational tunings.
+- New type `NrlMsise00 : AtmosphereModel`. Returns density,
+  temperature, and per-species number densities (N2, O2, O, He,
+  Ar, H, N) over the documented validity envelope (0-1000 km).
+- Switches in via the existing `[atmosphere].kind = "nrlmsise00"`
+  scenario selector (already registered, currently rejected at
+  parse time). Adds the required scenario fields `f10_7`,
+  `f10_7_avg`, `ap_index` (scalar Ap), and an absolute epoch in
+  TAI seconds.
+- Adds `NrlMsise00` to the runner's `RuntimeAtmosphere` enum so
+  every existing drag adapter / telemetry call site picks it up
+  unchanged.
+- Fails closed outside the validity envelope (no extrapolation;
+  no clamp / linear opt-in for NRLMSISE-00).
+
+**Exit criterion.** NRLMSISE-00 reproduces the published
+reference profile from the original Picone et al. 2002 paper at
+the documented test points within the tolerance recorded in
+`tests/expected/nrlmsise00.toml`. The scenario fails closed at
+1001 km altitude. The shipped § 5.C.1 piecewise-exponential
+scenario stays byte-identical when the runtime selects
+`piecewise_exponential` (regression gate on the existing e2e).
+
+**Validation evidence.** Unit tests against the public reference
+profiles; analytic-toy scenario where a sounding rocket ascends
+through a documented density profile and the kernel sees the
+expected drag column.
+
+**References.** Picone, J. M., Hedin, A. E., Drob, D. P., and
+Aikin, A. C. (2002). *NRLMSISE-00 empirical model of the
+atmosphere: Statistical comparison and scientific issues*,
+J. Geophys. Res. 107(A12).
+
+**Scope guardrail.** NRLMSIS 2.x and HWM14 stay Phase 6
+follow-ons. JB-2008 stays Phase 6. § 5.C.4 ships only the 2002
+NRLMSISE-00 baseline.
 
 ---
 
@@ -1054,9 +1165,9 @@ where 4th-order RK4 truncation error is the limiting factor.
   module with explicit per-coefficient names.
 - Six derivative evaluations per step. Only the 5th-order weights
   (`B1, B3, B4, B5, B6`; `B2 = 0`, `B7 = 0`) participate in the
-  combined update — the 7th stage is computed but not weighted (it
-  is the FSAL slot, reserved for the embedded-error / adaptive
-  path).
+  combined update. The FSAL 7th derivative is not evaluated in this
+  fixed-step surface; it is reserved for the embedded-error /
+  adaptive path.
 - Locked operand order matching the existing `Rk4FixedStep`
   determinism contract: explicit parentheses prevent compiler
   re-association on every weighted sum, no FMA on the hot path.
@@ -1073,13 +1184,17 @@ where 4th-order RK4 truncation error is the limiting factor.
 **What was deferred.**
 
 - The embedded 4th-order solution (`E1, E3, E4, E5, E6, E7` weights)
-  and the per-step error norm.
-- PI / I step-size controller and the adaptive step-size loop.
+  and the per-step error norm. Picked up by **§ 5.D.4**.
+- PI / I step-size controller and the adaptive step-size loop —
+  § 5.D.4.
 - An `IntegratorDeterminism::StateStable` profile registration and
   the `--profile=adaptive` / `[simulation] profile = "adaptive"`
-  scenario plumbing.
-- The DOPRI8(7) tableau and its adaptive variant.
-- A separate determinism CI gate for the adaptive profile.
+  scenario plumbing — § 5.D.4.
+- The DOPRI8(7) tableau and its adaptive variant — folded into
+  § 5.D.4 as a stretch (separate ID reserved if it grows out of
+  scope).
+- A separate determinism CI gate for the adaptive profile —
+  § 5.D.4.
 
 **Validation evidence.**
 
@@ -1101,8 +1216,68 @@ table reproduced for cross-check.
 **Scope guardrail.** Fixed-step only on shipping; the existing
 RK4 default profile stays the byte-stable reference for every
 shipped scenario. No release artifact is benchmarked against the
-new integrator until an adaptive-stepping follow-on slice
-(`Dopri54Adaptive`) lands with its own state-stable CI gate.
+new integrator until § 5.D.4 lands with its own state-stable CI
+gate.
+
+#### 5.D.4 — DOPRI5(4) adaptive integrator with PI step controller
+
+**Scope.** Pick up the embedded-error / adaptive-stepping surface
+that § 5.D.3 deferred. Specifically:
+
+- Add the embedded 4th-order solution weights
+  (`E1, E3, E4, E5, E6, E7`) on top of the shipped
+  `dopri54_tableau`. The 7th-stage derivative `k7` (the FSAL slot
+  reserved by the shipped fixed-step) is evaluated here for the
+  first time and feeds the embedded-solution input — § 5.D.3
+  intentionally does NOT compute it.
+- New type `Dopri54Adaptive : Integrator<S>`. Computes a per-step
+  scaled error norm (`atol + rtol · max(|y_n|, |y_{n+1}|)`-weighted)
+  and a PI step controller that adjusts `h` to hold the error
+  norm near 1.0.
+- Add `IntegratorDeterminism::StateStable` returns. Same-input,
+  same-platform-profile reruns produce **physically equivalent**
+  trajectories but **not** byte-identical Parquet — the step-size
+  search introduces small intermediate-value differences.
+- Scenario plumbing: `[simulation] profile = "adaptive"` selector
+  on top of the shipped fixed-step default. Mutually exclusive
+  with the default profile per scenario.
+- A separate determinism CI gate for the adaptive profile that
+  asserts a state-stable rule (final state matches a tolerance
+  envelope, not a bit hash).
+- DOPRI8(7) tableau folded in as a stretch: `Dopri87Adaptive` with
+  the same PI step controller; useful when the 5(4) tolerance is
+  the limiting factor. If 8(7) grows out of scope, it spins out
+  to its own ID (5.D.5 reserved).
+
+**Exit criterion.** The adaptive integrator reproduces the
+analytic-toy constant-acceleration drop within the declared
+tolerance. The fixed-step default profile remains byte-identical
+across this sub-phase (regression gate on every shipped
+fixed-step e2e). A new tolerance-table case asserts adaptive vs
+fixed-step physical equivalence on the torque-free Euler
+precession case.
+
+**Validation evidence.** Unit tests for the embedded-error norm
+formula; analytic-toy state-stable check; tolerance-table case
+for the torque-free Euler precession with adaptive vs fixed-step;
+property test that the PI controller drives the error norm into
+its declared band over a multi-step trajectory.
+
+**References.** Dormand, J. R., and Prince, P. J. (1980).
+*A family of embedded Runge-Kutta formulae*, J. Comp. Appl.
+Math. 6(1):19-26 — same source as § 5.D.3, plus the embedded
+weights. Hairer, Nørsett, and Wanner (1993). *Solving Ordinary
+Differential Equations I*, 2nd rev. ed., §II.4 ("Practical
+Step-Size Control"); Gustafsson, K. (1991). *Control theoretic
+techniques for stepsize selection in explicit Runge-Kutta
+methods*. ACM TOMS 17(4):533-554 — PI controller.
+
+**Scope guardrail.** Adaptive profile is opt-in and labelled
+`state-stable, not bit-stable`. The bit-stable default profile is
+the one any release artifact is benchmarked against. The
+adaptive profile cannot replace the fixed-step default in any
+existing scenario without an explicit profile flag in the
+scenario header.
 
 ---
 
@@ -1267,9 +1442,22 @@ parameter set is introduced.
   │
   ├── 5.B.1 (SR-UKF) ──► 5.B.2 (multi-lane) ──► 5.B.3 (IMM) ──► 5.B.4 (GLRT + parity)
   │
-  ├── 5.C.1 (NRLMSISE-00) ──► 5.C.2 (EGM2008)
+  ├── 5.C.1 (piecewise-exp atmosphere) ──► 5.C.4 (NRLMSISE-00 full port)
+  │     (5.C.1 was the original NRLMSISE-00 line item; shipped as the
+  │      honest engineering downscope. 5.C.4 picks up the deferred
+  │      solar-flux-driven full port.)
   │
-  ├── 5.D.1 (multi-rate) ──► 5.D.2 (multi-body) ──► 5.D.3 (DOPRI)
+  ├── 5.C.2 (EGM2008 zonal) ──► 5.C.3 (EGM2008 tesseral / Cunningham)
+  │     (5.C.2 was the original full-EGM2008 line item; shipped as the
+  │      honest zonal-only downscope. 5.C.3 picks up the deferred
+  │      tesseral / sectoral expansion.)
+  │
+  ├── 5.D.1 (multi-rate) ──► 5.D.2 (multi-body)
+  │
+  ├── 5.D.3 (DOPRI5 fixed-step) ──► 5.D.4 (DOPRI5(4) adaptive + PI controller)
+  │     (5.D.3 was the original DOPRI5/8 adaptive line item; shipped
+  │      as the honest fixed-step downscope. 5.D.4 picks up the
+  │      deferred adaptive surface; DOPRI8(7) folded in as a stretch.)
   │
   └── 5.E.1 (HIL bridge) ──► 5.E.2 (ULog/PX4) ──► 5.E.3 (dataflash/ArduPilot)
                                                        │
@@ -1279,23 +1467,42 @@ parameter set is introduced.
 
 A → B → C → D run in parallel; E sub-phases are gated by their
 prerequisite sub-phases (5.E.5 is gated by 5.A.1 + 5.A.5 + 5.B.1).
+The three follow-on sub-phases (5.C.3, 5.C.4, 5.D.4) are gated by
+their parent shipped slices (5.C.2, 5.C.1, 5.D.3 respectively) and
+exist to track the deferred surfaces from those slices' honest
+downscopes.
 
 ## Risks and contingencies
 
-- **Determinism regressions.** SR-UKF, EGM2008 Cunningham recursion,
-  and Clarabel SOCP are floating-point-heavy; the determinism CI
-  gate is the canary. If any sub-phase produces non-bit-stable
-  output, gate the work behind a `state-stable` profile flag and
-  document the diff before merge.
+- **Determinism regressions.** SR-UKF (§ 5.B.1), EGM2008 Cunningham
+  recursion (§ 5.C.3), Clarabel SOCP (§ 5.A.4 — shipped), and the
+  DOPRI5(4) adaptive PI step controller (§ 5.D.4) are
+  floating-point-heavy; the determinism CI gate is the canary. The
+  shipped fixed-step / zonal-only / engineering-atmosphere slices
+  honour the bit-stable default profile; their adaptive / tesseral
+  / full-port follow-ons (§ 5.C.3, § 5.C.4, § 5.D.4) are the ones
+  most likely to need a `state-stable` profile flag, and each names
+  the gate in its own section. If any sub-phase produces
+  non-bit-stable output without an explicit profile flag, gate the
+  work behind one and document the diff before merge.
 - **External-log availability.** If a chosen public log is removed
   from the upstream archive during Phase 5, the case is paused, the
   provenance entry retired, and a substitute public log is sourced.
   No backup-private-log path lands in the repo.
-- **NRLMSISE-00 numerical envelope.** The 2002 Fortran reference
-  has known numerical quirks at boundaries. The Rust port matches
-  the public reference profile within tolerance; quirks outside the
-  documented validity envelope fail closed rather than degrade
-  silently.
+- **NRLMSISE-00 numerical envelope (§ 5.C.4).** The 2002 Fortran
+  reference has known numerical quirks at boundaries. The Rust
+  port matches the public reference profile within tolerance;
+  quirks outside the documented validity envelope fail closed
+  rather than degrade silently. The shipped § 5.C.1 layered
+  exponential carries no solar-flux dependence, so this risk is
+  scoped to § 5.C.4 specifically.
+- **EGM2008 coefficient table sourcing (§ 5.C.3).** The full
+  normalised `(C_nm, S_nm)` table runs to ≈ 5 million entries; the
+  shipped § 5.C.2 sidesteps this by pinning only the public zonal
+  J_n constants in source. § 5.C.3 must source the higher-degree
+  table from a citable public NGA release with SHA-256 pin and
+  sibling provenance.md, or document a degree cap that keeps the
+  table inlined.
 - **Scope creep.** Hypersonic-flavored asks (NRLMSIS 2.x, real-gas,
   aerothermal) are Phase 6. If a sub-phase reviewer thinks Phase 5
   needs them, the discussion happens in the Phase-6 plan, not in a
