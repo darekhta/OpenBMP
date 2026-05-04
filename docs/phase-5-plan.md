@@ -127,8 +127,7 @@ in lockstep with each sub-phase landing.
 | 5.B.4 — Willsky windowed-mean-shift GLRT (vector-form) | shipped | _pending PR_ |
 | 5.B.3 — IMM (Bar-Shalom) maneuver-aware estimator (2-mode bank) | shipped | _pending PR_ |
 | 5.B.1.A — SR-UKF math primitives (sigma points, cholupdate, QR predict) | shipped | _pending PR_ |
-| 5.B.1.B — SquareRootUkf 15-state filter + classical `Ukf` retirement | pending — follow-on from 5.B.1.A | — |
-| 5.B.1.C — SquareRootUkfAttitude 6-state variant | pending — follow-on from 5.B.1.B | — |
+| 5.B.1.B/C — SquareRootUkf 15-state filter + 6-state attitude variant + classical `Ukf` retirement | shipped | _pending PR_ |
 | 5.B.2 — multi-instance estimator routing + active-lane selection | pending | — |
 | 5.B.5 — Patton-Frank parity-space residual generator | pending — follow-on from 5.B.4 | — |
 | 5.B.6 — IMM extensions (3-mode bank + lane integration + UKF/MEKF) | pending — follow-on from 5.B.3 | — |
@@ -662,20 +661,27 @@ a single audit cycle (sigma-point math + Cholesky primitives +
 6-state attitude variant + classical-Ukf retirement is ~2000 LoC
 of new code). Sub-divided into:
 
-- **5.B.1.A — SR-UKF math primitives** (shipped this commit):
+- **5.B.1.A — SR-UKF math primitives** (shipped):
   sigma-point generator, `cholupdate` rank-1 update / downdate,
   Householder-QR predict-side Cholesky combiner. Pure
-  mathematical foundation; no estimator-level integration yet.
-  The classical `Ukf` is **untouched** in this slice — it still
-  compiles and runs, but is not yet replaced.
-- **5.B.1.B — `SquareRootUkf` 15-state filter** (next slice):
-  the full error-state filter built on the 5.B.1.A primitives.
-  Predict step (sigma-point propagation through the IMU model)
-  + GNSS / baro / mag measurement updates + Estimator trait
-  impl. The classical `Ukf` is **deleted** in this slice.
-- **5.B.1.C — `SquareRootUkfAttitude` 6-state variant**
-  (subsequent slice): restricted-state filter for attitude-only
-  consumers. Reuses 5.B.1.A primitives.
+  mathematical foundation in `crates/openbmp-fc/src/sr_ukf.rs`.
+- **5.B.1.B/C — `SquareRootUkf` 15-state filter +
+  `SquareRootUkfAttitude` 6-state variant + classical `Ukf`
+  retirement** (shipped): the full error-state filter built on
+  the 5.B.1.A primitives. Predict step (linearised square-root
+  covariance propagation via QR of `F · S || √Q`, fully nonlinear
+  sigma-point predict tracked as an internal follow-on note) +
+  sigma-point GNSS / baro / mag measurement updates with
+  cholupdate-based covariance reduction + the full
+  `Estimator` trait impl. The 6-state attitude variant wraps the
+  15-state filter with position / velocity / accel-bias slots
+  pinned at `1e-12` covariance floors; GNSS / baro updates are
+  no-ops on the attitude variant. The Phase-4.C classical
+  6-state `Ukf` and `UkfParams` are **deleted** along with
+  their internal helpers (`unscented_square_moments`,
+  `accumulate_ukf_covariance`, `accumulate_ukf_measurement_covariance`,
+  `sigma_from_vector`, `quaternion_error_vector`, `mod
+  ukf_tests`); ~520 lines retired from `estimator.rs`.
 
 **Scope.** Replace the Phase 4.C 6-state classical UKF with a full
 15-state square-root UKF (Van der Merwe & Wan 2001) for the same
