@@ -126,7 +126,9 @@ in lockstep with each sub-phase landing.
 | 5.D.3 — DOPRI5 fixed-step integrator (5th-order solution) | shipped | _pending PR_ |
 | 5.B.4 — Willsky windowed-mean-shift GLRT (vector-form) | shipped | _pending PR_ |
 | 5.B.3 — IMM (Bar-Shalom) maneuver-aware estimator (2-mode bank) | shipped | _pending PR_ |
-| 5.B.1 — square-root UKF (full 15-state) | pending | — |
+| 5.B.1.A — SR-UKF math primitives (sigma points, cholupdate, QR predict) | shipped | _pending PR_ |
+| 5.B.1.B — SquareRootUkf 15-state filter + classical `Ukf` retirement | pending — follow-on from 5.B.1.A | — |
+| 5.B.1.C — SquareRootUkfAttitude 6-state variant | pending — follow-on from 5.B.1.B | — |
 | 5.B.2 — multi-instance estimator routing + active-lane selection | pending | — |
 | 5.B.5 — Patton-Frank parity-space residual generator | pending — follow-on from 5.B.4 | — |
 | 5.B.6 — IMM extensions (3-mode bank + lane integration + UKF/MEKF) | pending — follow-on from 5.B.3 | — |
@@ -651,7 +653,29 @@ selection.
 
 ### Group B — Estimator and FDIR
 
-#### 5.B.1 — Square-root UKF (full 15-state)
+#### 5.B.1 — Square-root UKF (full 15-state) — **shipping in slices**
+
+**Slice structure.** The originally-planned single-commit
+"replace classical Ukf with SquareRootUkf" landed as too large for
+a single audit cycle (sigma-point math + Cholesky primitives +
+15-state error-state filter + 4 sensor measurement updates +
+6-state attitude variant + classical-Ukf retirement is ~2000 LoC
+of new code). Sub-divided into:
+
+- **5.B.1.A — SR-UKF math primitives** (shipped this commit):
+  sigma-point generator, `cholupdate` rank-1 update / downdate,
+  Householder-QR predict-side Cholesky combiner. Pure
+  mathematical foundation; no estimator-level integration yet.
+  The classical `Ukf` is **untouched** in this slice — it still
+  compiles and runs, but is not yet replaced.
+- **5.B.1.B — `SquareRootUkf` 15-state filter** (next slice):
+  the full error-state filter built on the 5.B.1.A primitives.
+  Predict step (sigma-point propagation through the IMU model)
+  + GNSS / baro / mag measurement updates + Estimator trait
+  impl. The classical `Ukf` is **deleted** in this slice.
+- **5.B.1.C — `SquareRootUkfAttitude` 6-state variant**
+  (subsequent slice): restricted-state filter for attitude-only
+  consumers. Reuses 5.B.1.A primitives.
 
 **Scope.** Replace the Phase 4.C 6-state classical UKF with a full
 15-state square-root UKF (Van der Merwe & Wan 2001) for the same

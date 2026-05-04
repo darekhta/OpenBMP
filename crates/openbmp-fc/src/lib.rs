@@ -60,6 +60,7 @@ pub mod params;
 pub mod replay;
 pub mod scheduler;
 pub mod sensor_ingest;
+pub mod sr_ukf;
 pub mod tables;
 pub mod topics;
 pub mod trajectory;
