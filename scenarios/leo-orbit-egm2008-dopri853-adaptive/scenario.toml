@@ -14,12 +14,13 @@
 # the `IntegratorDeterminism::StateStable` label out through the
 # telemetry header.
 #
-# Tolerances `rtol = 1e-12`, `atol = 1e-15` are deliberately tight —
-# DOP853's 8th-order accuracy is wasted at loose tolerances. With
-# this band the controller's optimal h is on the order of seconds,
-# so `max_dt_s = 1.0` (matching the outer kernel cadence) is the
-# active clamp. Telemetry is parquet-only (the Phase-3 oracle
-# compares Parquet bytes; CSV is omitted to keep the artifact slim).
+# Tolerances `rtol = 1e-16`, `atol = 1e-19` are deliberately tight —
+# DOP853's 8th-order accuracy is wasted at loose tolerances. This
+# band forces the initial 1 s trial step outside the error envelope,
+# so the adaptive path performs error-driven internal sub-steps
+# rather than collapsing to the fixed-step DOP853 trajectory.
+# Telemetry is parquet-only (the Phase-3 oracle compares Parquet
+# bytes; CSV is omitted to keep the artifact slim).
 
 openbmp.scenario = 3
 
@@ -66,8 +67,8 @@ trajectory_method = "dopri853"
 determinism = "state-stable"
 
 [solver.adaptive]
-rtol = 1.0e-12
-atol = 1.0e-15
+rtol = 1.0e-16
+atol = 1.0e-19
 min_dt_s = 1.0e-6
 max_dt_s = 1.0
 dense_output = false

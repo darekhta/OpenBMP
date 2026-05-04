@@ -23,19 +23,21 @@ the tighter tolerances tuned to the 8th-order method.
 ## Adaptive solver settings
 
 ```
-rtol      = 1.0e-12
-atol      = 1.0e-15
+rtol      = 1.0e-16
+atol      = 1.0e-19
 min_dt_s  = 1.0e-6
 max_dt_s  = 1.0
 ```
 
 Tolerances are tighter than the §5.D.4 DOPRI5(4) demo
 (`rtol = 1e-9`, `atol = 1e-12`). The 8th-order accuracy of DOP853
-is wasted at loose tolerances — at `rtol = 1e-9` the controller's
-optimal `h` already pins to `max_dt_s = 1.0` and the integrator
-behaves like a fixed-step variant. With `rtol = 1e-12` the
-asymptotic relation `h ∝ rtol^(1/9)` puts the optimal `h` close to
-the upper clamp, so the controller exercises but rarely rejects.
+is wasted at loose tolerances — at `rtol = 1e-12` the controller's
+accepted step sequence still collapses to the outer `dt_s = 1.0`
+grid and produces byte-identical Parquet to the fixed-step DOP853
+variant. With `rtol = 1e-16`, `atol = 1e-19` the first 1 s trial
+step is outside tolerance, so the adaptive path takes deterministic
+internal sub-steps and the e2e test asserts the resulting Parquet is
+not byte-identical to a staged fixed-step DOP853 run.
 
 ## Determinism
 

@@ -1238,7 +1238,7 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
 /// constants:
 ///
 /// ```text
-///   error_exponent  = -1 / (5 + 1)        # = -1/6, the 5th-order embedded estimator's order+1
+///   error_exponent  = -1 / (7 + 1)        # = -1/8, SciPy's DOP853 error_estimator_order + 1
 ///   factor          = safety · err^error_exponent
 ///   factor ∈ [min_factor, max_factor]
 ///   safety          = 0.9
@@ -1278,11 +1278,9 @@ pub struct Dopri853Adaptive {
     safety_factor: f64,
     min_factor: f64,
     max_factor: f64,
-    /// I-controller exponent: `-1 / (embedded_order + 1) = -1/6`.
-    /// SciPy uses `-1/8` because they treat 8 as the high-order
-    /// integrator order; we use the embedded estimator's order+1
-    /// because the err norm is dominated by the 5th-order estimator
-    /// and that's what governs the asymptotic step-size relation.
+    /// I-controller exponent: `-1 / (error_estimator_order + 1)`.
+    /// SciPy's DOP853 sets `error_estimator_order = 7`, so this is
+    /// `-1/8`.
     error_exponent: f64,
     atol: f64,
     rtol: f64,
@@ -1296,11 +1294,9 @@ pub struct Dopri853Adaptive {
 const DOPRI853_SAFETY_DEFAULT: f64 = 0.9;
 const DOPRI853_MIN_FACTOR_DEFAULT: f64 = 0.2;
 const DOPRI853_MAX_FACTOR_DEFAULT: f64 = 10.0;
-/// I-controller exponent: `-1/(embedded_order + 1) = -1/6`. The
-/// 5th-order embedded estimator drives the err norm (the 3rd-order
-/// companion only stabilises the denominator), so the asymptotic
-/// `h ∝ err^(1/6)` relation governs the controller.
-const DOPRI853_ERROR_EXPONENT: f64 = -1.0 / 6.0;
+/// I-controller exponent pinned to `SciPy`'s DOP853 convention:
+/// `error_estimator_order = 7`, so `-1/(7 + 1) = -1/8`.
+const DOPRI853_ERROR_EXPONENT: f64 = -1.0 / 8.0;
 /// Weighting factor on the 3rd-order error norm in the `SciPy` /
 /// Hairer combined denominator: `denom = err5² + W · err3²`. Tiny
 /// (1 %) — the 3rd-order companion only kicks in when err5 is
@@ -2594,9 +2590,9 @@ mod tests {
     //     and Σ_j E3_j = 0 (embedded estimators are differences, sum
     //     to zero).
     //   - 8th-order convergence on a polynomial trajectory: an
-    //     8th-degree-or-lower polynomial integrand is reproduced
-    //     within machine precision. (We use a quintic — well within
-    //     the 8th-order accuracy envelope.)
+    //     degree-8 polynomial trajectory is reproduced within machine
+    //     precision, exercising DOP853's high-order surface rather
+    //     than a lower-order corner that DOPRI5(4) could also cover.
     //   - Determinism marker is BitStable.
     //   - Within-platform bit-stability across two reruns.
     // -----------------------------------------------------------------
@@ -2671,21 +2667,22 @@ mod tests {
     }
 
     /// 8th-order convergence test: the integrator should reproduce a
-    /// polynomial trajectory of degree ≤ 8 to within machine
-    /// precision. We use a quintic (degree 5) so we have headroom
-    /// well below the 8th-order accuracy ceiling. The trajectory is
-    /// `dx/dt = 5·t⁴` carried in the position-x slot (position has
-    /// no positivity constraint, unlike mass), with `x(0) = 0` and
-    /// the exact closed-form `x(t) = t⁵`.
+    /// degree-8 polynomial trajectory to within machine precision.
+    /// The trajectory is `dx/dt = 8·t⁷` carried in the position-x
+    /// slot (position has no positivity constraint, unlike mass),
+    /// with `x(0) = 0` and the exact closed-form `x(t) = t⁸`.
     #[test]
-    fn dopri853_fixed_step_reproduces_polynomial_trajectory() {
+    fn dopri853_fixed_step_reproduces_degree_eight_polynomial_trajectory() {
         #[allow(clippy::unnecessary_wraps)]
         fn poly_derive(
             _s: &PointMassState,
             t: SimTime,
         ) -> Result<PointMassDerivative, ModelEvalError> {
             let t_s = t.as_seconds();
-            let dx_dt = 5.0 * t_s * t_s * t_s * t_s; // 5 · t⁴
+            let t2 = t_s * t_s;
+            let t4 = t2 * t2;
+            let t7 = (t4 * t2) * t_s;
+            let dx_dt = 8.0 * t7; // 8 · t⁷
             Ok(PointMassDerivative {
                 velocity_m_s: Vector3::new(dx_dt, 0.0, 0.0),
                 acceleration_m_s2: Vector3::zeros(),
@@ -2706,16 +2703,16 @@ mod tests {
         for step in 0..n_steps {
             state = integrator
                 .advance(&state, poly_derive, dt)
-                .expect("8th-order method must integrate quintic exactly");
+                .expect("8th-order method must integrate degree-8 polynomial exactly");
             // Canonical-time fix-up so the next derive_fn sees the
             // exact `start + step·dt` time grid.
             let t = SimTime::from_seconds(f64::from(step + 1) * 0.1);
             state = state.with_time(t);
         }
         let final_t = state.time.as_seconds();
-        let exact = final_t.powi(5);
+        let exact = final_t.powi(8);
         let observed = state.position.vector.x;
-        assert_abs_diff_eq!(observed, exact, epsilon = 1.0e-13);
+        assert_abs_diff_eq!(observed, exact, epsilon = 1.0e-12);
     }
 
     #[test]
@@ -2794,19 +2791,23 @@ mod tests {
         );
     }
 
-    /// 8th-order convergence: a quintic-trajectory integration
-    /// produces nearly-zero embedded error (well below the unit
-    /// setpoint). Verifies that the err5/err3 norm formula plumbs
-    /// through correctly.
+    /// 8th-order convergence: a single adaptive sub-step uses the
+    /// same 8th-order primary solution as the fixed-step variant, so
+    /// it should reproduce a degree-8 polynomial trajectory to within
+    /// machine precision even though the embedded companions report a
+    /// non-zero lower-order error estimate.
     #[test]
-    fn dopri853_adaptive_embedded_error_vanishes_on_polynomial_trajectory() {
+    fn dopri853_adaptive_primary_solution_reproduces_degree_eight_polynomial_trajectory() {
         #[allow(clippy::unnecessary_wraps)]
         fn poly_derive(
             _s: &PointMassState,
             t: SimTime,
         ) -> Result<PointMassDerivative, ModelEvalError> {
             let t_s = t.as_seconds();
-            let dx_dt = 5.0 * t_s * t_s * t_s * t_s;
+            let t2 = t_s * t_s;
+            let t4 = t2 * t2;
+            let t7 = (t4 * t2) * t_s;
+            let dx_dt = 8.0 * t7;
             Ok(PointMassDerivative {
                 velocity_m_s: Vector3::new(dx_dt, 0.0, 0.0),
                 acceleration_m_s2: Vector3::zeros(),
@@ -2822,17 +2823,17 @@ mod tests {
         let integrator = Dopri853Adaptive::new(1.0e-9, 1.0e-6, 1.0e-9, 1.0).unwrap();
         // Drive try_substep directly to observe the err norm
         // on a single step at h = 0.1.
-        let (_, err) = integrator
+        let (proposed, err) = integrator
             .try_substep(&initial, &poly_derive, 0.1)
             .expect("polynomial step must succeed");
-        // The 8th-order method has no truncation error on a
-        // quintic — the embedded estimators will report the
-        // floating-point round-off level only, well below 1.0.
-        // Looser bound than the DOPRI5(4) test because the err5/err3
-        // ratio amplifies round-off slightly.
         assert!(
-            err < 1.0e-3,
-            "embedded error norm {err} should be far below unit setpoint on a quintic trajectory",
+            err.is_finite(),
+            "embedded error norm must be finite on a degree-8 polynomial trajectory",
+        );
+        assert_abs_diff_eq!(
+            proposed.position.vector.x,
+            0.1_f64.powi(8),
+            epsilon = 1.0e-20
         );
     }
 
@@ -2870,6 +2871,170 @@ mod tests {
         // accumulation the difference is bit-stable.
         let elapsed = new_state.time.as_seconds() - initial.time.as_seconds();
         assert_abs_diff_eq!(elapsed, 0.1, epsilon = 1.0e-12);
+    }
+
+    /// The final sub-step may be below `min_h_s` when that is the
+    /// only way to land exactly on the caller's outer `dt`.
+    #[test]
+    fn dopri853_adaptive_final_substep_can_be_below_min_h_to_fit_dt() {
+        let integrator = Dopri853Adaptive::new(1.0e-9, 1.0e-6, 1.0e-3, 1.0).unwrap();
+        let state = exp_decay_initial_state();
+        let dt = 1.0e-4_f64;
+
+        let final_state = integrator
+            .advance(&state, exp_decay_derive, Duration::from_seconds(dt))
+            .expect("advance");
+
+        assert_eq!(
+            final_state.time.as_seconds().to_bits(),
+            dt.to_bits(),
+            "DOP853 adaptive integrator must not overshoot an outer dt below min_h_s"
+        );
+    }
+
+    /// A floor is a hard integration limit, not permission to accept a
+    /// step that still violates the configured tolerance.
+    #[test]
+    fn dopri853_adaptive_rejects_when_tolerance_cannot_be_met_at_min_h() {
+        let integrator = Dopri853Adaptive::new(1.0e-300, 1.0e-300, 1.0e-3, 1.0e-3).unwrap();
+        let state = exp_decay_initial_state();
+        let err = integrator
+            .advance(&state, exp_decay_derive, Duration::from_seconds(1.0e-3))
+            .expect_err("unachievable tolerance at h_min must fail closed");
+
+        assert!(
+            matches!(err, IntegratorError::InvalidStep { dt_seconds } if dt_seconds.to_bits() == 1.0e-3_f64.to_bits()),
+            "expected InvalidStep at h_min, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn dopri853_adaptive_reset_clears_persistent_state() {
+        let integrator = Dopri853Adaptive::new(1.0e-9, 1.0e-7, 1.0e-9, 0.05).unwrap();
+        let initial = exp_decay_initial_state();
+
+        let _ = integrator
+            .advance(&initial, exp_decay_derive, Duration::from_seconds(0.1))
+            .expect("advance");
+        assert!(
+            integrator.last_h_s.get().is_some(),
+            "advance should persist the next trial h"
+        );
+
+        integrator.reset();
+        assert!(
+            integrator.last_h_s.get().is_none(),
+            "reset must clear DOP853 adaptive controller history"
+        );
+    }
+
+    /// DOP853 uses `SciPy`'s I-controller rather than the DOPRI5(4) PI
+    /// controller. Drive `try_substep` directly so the test can
+    /// observe accepted sub-step sizes without the public `advance`
+    /// loop's final-fragment clamp.
+    #[test]
+    fn dopri853_adaptive_i_controller_stays_in_band_over_long_run() {
+        #[allow(clippy::unnecessary_wraps)]
+        fn oscillatory_derive(
+            _s: &PointMassState,
+            t: SimTime,
+        ) -> Result<PointMassDerivative, ModelEvalError> {
+            let phase = 5.0 * t.as_seconds();
+            Ok(PointMassDerivative {
+                velocity_m_s: Vector3::new(phase.cos(), 0.0, 0.0),
+                acceleration_m_s2: Vector3::zeros(),
+                mass_rate_kg_s: 0.0,
+            })
+        }
+
+        let atol = 1.0e-12;
+        let rtol = 1.0e-12;
+        let min_h = 1.0e-9;
+        let max_h = 1.0;
+        let integrator = Dopri853Adaptive::new(atol, rtol, min_h, max_h).unwrap();
+
+        let n_steps = 200;
+        let mut state = PointMassState::new(
+            SimTime::ZERO,
+            Position3::origin(),
+            Velocity3::zero(),
+            Mass::new::<kilogram>(1.0),
+        );
+        let mut h = max_h;
+        let mut accepted_h_history: Vec<f64> = Vec::with_capacity(n_steps);
+        let mut total_accepts: usize = 0;
+        let mut total_rejects: usize = 0;
+        let mut step_just_rejected = false;
+
+        while total_accepts < n_steps {
+            let h_try = h.max(min_h).min(max_h);
+            let (proposed, err) = integrator
+                .try_substep(&state, &oscillatory_derive, h_try)
+                .expect("try_substep must succeed for a benign integrand");
+
+            if err <= 1.0 {
+                let mut factor = integrator.i_controller_factor(err.max(1.0e-10));
+                if step_just_rejected {
+                    factor = factor.min(1.0);
+                }
+                state = proposed.with_time(SimTime::from_seconds(state.time.as_seconds() + h_try));
+                accepted_h_history.push(h_try);
+                h = (h_try * factor).max(min_h).min(max_h);
+                total_accepts += 1;
+                step_just_rejected = false;
+            } else {
+                let factor = (integrator.safety_factor * err.powf(integrator.error_exponent))
+                    .max(integrator.min_factor)
+                    .min(1.0);
+                assert!(
+                    h_try > integrator.min_h_s + f64::EPSILON,
+                    "DOP853 I-controller hit min_h_s and still rejected on benign exp-decay"
+                );
+                h = (h_try * factor).max(integrator.min_h_s);
+                total_rejects += 1;
+                step_just_rejected = true;
+            }
+        }
+
+        for (i, &h_acc) in accepted_h_history.iter().enumerate().skip(5) {
+            assert!(
+                h_acc > min_h * 10.0,
+                "accepted h at step {i} = {h_acc} pinned near min_h_s = {min_h}",
+            );
+            assert!(
+                h_acc < max_h * 0.999,
+                "accepted h at step {i} = {h_acc} pinned at max_h_s = {max_h}",
+            );
+        }
+
+        for (i, window) in accepted_h_history.windows(2).enumerate().skip(5) {
+            let ratio = window[1] / window[0];
+            assert!(
+                (0.5..=2.0).contains(&ratio),
+                "DOP853 consecutive accepted-h ratio at step {i} = {ratio} \
+                 outside the steady-state band [0.5, 2.0] ({} → {})",
+                window[0],
+                window[1],
+            );
+        }
+
+        let total_attempts = total_accepts + total_rejects;
+        #[allow(clippy::cast_precision_loss)]
+        let reject_frac = (total_rejects as f64) / (total_attempts as f64);
+        assert!(
+            reject_frac < 0.10,
+            "DOP853 rejection rate {reject_frac:.3} too high \
+             ({total_rejects} rejected / {total_attempts} attempts)",
+        );
+
+        let mut steady: Vec<f64> = accepted_h_history[20..].to_vec();
+        steady.sort_by(f64::total_cmp);
+        let median_h = steady[steady.len() / 2];
+        assert!(
+            (1.0e-3..=1.0).contains(&median_h),
+            "DOP853 steady-state median accepted h = {median_h} outside \
+             the 1e-3..1.0 sanity band for oscillatory derive at rtol={rtol}, atol={atol}"
+        );
     }
 
     #[test]

@@ -1518,9 +1518,10 @@ see scope deferrals below.
   implements the HNW Vol I §II.4 RMS form with
   `sc_i = atol + rtol · max(|y^n_i|, |y^{n+1}_i|)` per component;
   `Dopri54Adaptive::try_substep` consumes it directly.
-- DOPRI8(7) tableau and `Dopri87Adaptive` → **deferred further to
-  § 5.D.6**. The `dopri853` trajectory method still parses but is
-  rejected by `build_runtime_integrator_from_solver`.
+- DOP853 8(5,3) tableau and fixed/adaptive variants →
+  **shipped in § 5.D.6**. The `dopri853` trajectory method is now
+  wired for both `(fixed-step-explicit, dopri853, bit-stable)` and
+  `(adaptive-explicit, dopri853, state-stable)`.
 - Property test that the PI controller drives the error norm into
   its declared band over a long trajectory → **shipped in § 5.D.5**
   (`dopri54_adaptive_pi_controller_stays_in_band_over_long_run`
@@ -1646,8 +1647,9 @@ to § 5.D.6.
 - DOP853 / `Dopri87Adaptive`: 8th-order Dormand-Prince embedded
   pair with 5(3) error estimators (the SciPy `DOP853` /
   Hairer Vol I §II.5 Table 5.4 form, 12 primary stages + 4
-  interpolation abscissas). The `dopri853` trajectory method
-  parses but is rejected by `build_runtime_integrator_from_solver`.
+  interpolation abscissas) → **shipped in § 5.D.6** for the
+  12-primary-stage fixed/adaptive integrators. Dense-output
+  interpolation remains deferred.
 - Higher-order property tests on multi-step trajectories
   (Lorenz, Van der Pol) — useful for stress-testing DOP853 once
   it lands; not required for the current shipped surface.
@@ -1722,8 +1724,8 @@ controller continues to make a sensible step-size decision.
   factored through the existing `Integratable::weighted_error_norm`
   trait surface (no new trait extension required). Controller
   constants: `safety = 0.9`, `min_factor = 0.2`, `max_factor = 10.0`,
-  `error_exponent = -1/6` (the 5th-order embedded estimator
-  governs the asymptotic step-size relation). Tagged
+  `error_exponent = -1/8` (SciPy DOP853's
+  `error_estimator_order = 7`, so `-1 / (7 + 1)`). Tagged
   `IntegratorDeterminism::StateStable`. Same fail-closed contract
   as `Dopri54Adaptive` — at `min_h_s` with err > 1, the integrator
   returns `IntegratorError::InvalidStep` rather than silently
@@ -1736,9 +1738,10 @@ controller continues to make a sensible step-size decision.
   (positive selection × 2 + negative `rkf78` reject + missing
   adaptive block defensive error).
 - Demo scenario `scenarios/leo-orbit-egm2008-dopri853-adaptive/`
-  with `rtol = 1e-12`, `atol = 1e-15`. E2E test asserts the orbit
-  completes within ±5 km of the initial radius and produces
-  byte-identical Parquet across two reruns on the same platform.
+  with `rtol = 1e-16`, `atol = 1e-19`. E2E tests assert the orbit
+  completes within ±5 km of the initial radius, produces
+  byte-identical Parquet across two reruns on the same platform,
+  and does not collapse to the staged fixed-step DOP853 trajectory.
 
 **Scope (deferred).**
 
@@ -1753,26 +1756,31 @@ controller continues to make a sensible step-size decision.
   the I-controller is observed to oscillate on a stiff problem;
   not motivated by the current shipped surface.
 
-**Exit criterion (achieved).** `Dopri853Adaptive` reproduces a
-quintic polynomial trajectory to within machine precision (8th-order
-convergence test). The DOP853 LEO-orbit demo completes within the
-same ±5 km radius envelope as the §5.D.4 DOPRI5(4) baseline, with
-within-platform byte-stability across two reruns. All existing
-e2e tests (point-mass adaptive + fixed-step, rigid-body adaptive +
-fixed-step, analytic-toy determinism gate) remain byte-stable on
-the default (no-`[solver]`) codepath.
+**Exit criterion (achieved).** `Dopri853FixedStep` and
+`Dopri853Adaptive` reproduce a degree-8 polynomial trajectory to
+within machine precision on the 8th-order primary solution. The
+DOP853 LEO-orbit demo completes within the same ±5 km radius
+envelope as the §5.D.4 DOPRI5(4) baseline, with within-platform
+byte-stability across two reruns and a regression assertion that the
+adaptive run is not byte-identical to a staged fixed-step DOP853 run.
+All existing e2e tests (point-mass adaptive + fixed-step, rigid-body
+adaptive + fixed-step, analytic-toy determinism gate) remain
+byte-stable on the default (no-`[solver]`) codepath.
 
 **Validation evidence.** 6 fixed-step unit tests (tableau row sums
 match abscissas, B sums to 1, E5 / E3 sum to 0, polynomial
-quintic-trajectory exact integration, determinism marker is
-BitStable, two-rerun bit-stability). 7 adaptive unit tests
+degree-8 trajectory exact integration, determinism marker is
+BitStable, two-rerun bit-stability). 12 adaptive unit tests
 (constructor validation × 3, determinism marker is StateStable,
-embedded error vanishes on quintic trajectory, sub-step accumulation
-lands exactly at `dt`, two-rerun bit-stability). 4 runner-validator
+degree-8 primary-solution exact integration, sub-step accumulation
+lands exactly at `dt`, final fragment below `min_h_s`, min-floor
+fail-closed behaviour, reset history clearing, I-controller
+band-stability, two-rerun bit-stability, and DOP853-vs-DOPRI54
+sanity at loose tolerance). 4 runner-validator
 unit tests (dopri853 fixed-step + adaptive positive selection,
 rkf78 + missing-adaptive-block negative rejections, plus the
 existing cross-product test extended to recognise dopri853 as
-wired). 2 e2e tests on `leo-orbit-egm2008-dopri853-adaptive`.
+wired). 3 e2e tests on `leo-orbit-egm2008-dopri853-adaptive`.
 
 **References.** Prince, P. J., and Dormand, J. R. (1981). *High
 order embedded Runge-Kutta formulae*. J. Comp. Appl. Math.
@@ -1993,7 +2001,7 @@ parameter set is introduced.
   │      point-mass runner; 5.D.5 wires the rigid-body runner and ships
   │      the per-component error norm + PI band-stability test; 5.D.6
   │      adds the DOP853 8(5,3) integrator at the top of the order
-  │      hierarchy. All five sub-phases shipped.)
+  │      hierarchy. All four sub-phases shipped.)
   │
   └── 5.E.1 (HIL bridge) ──► 5.E.2 (ULog/PX4) ──► 5.E.3 (dataflash/ArduPilot)
                                                        │

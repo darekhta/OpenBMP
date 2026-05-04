@@ -10,7 +10,7 @@
 //!    with `stop_label = "end-time"` after 5556 outer kernel steps —
 //!    the outer kernel cadence is `dt_s = 1.0` seconds, the same as
 //!    the §5.D.4 DOPRI5(4) demo. The DOP853 integrator sub-steps
-//!    internally as needed to satisfy `(rtol = 1e-12, atol = 1e-15)`
+//!    internally as needed to satisfy `(rtol = 1e-16, atol = 1e-19)`
 //!    but the kernel's outer step count is fixed by the time grid.
 //! 2. The final ECI radius stays within ±5 km of the initial
 //!    `r = 6_778_000 m` — same envelope as the DOPRI5(4) demo,
@@ -19,6 +19,9 @@
 //! 3. Two reruns on the same platform produce byte-identical Parquet
 //!    — `Dopri853Adaptive` is `StateStable`, which is
 //!    within-platform bit-stable.
+//! 4. A staged fixed-step DOP853 variant of the same scenario produces
+//!    different Parquet bytes, proving the adaptive demo is not
+//!    collapsing to a fixed-step 1 s trajectory.
 //!
 //! The math-side correctness of `Dopri853Adaptive` (tableau row-sums,
 //! 8th-order convergence on a polynomial, err5/err3 norm formula)
@@ -68,15 +71,53 @@ fn toml_literal_path(path: &Path) -> String {
     format!("'{path}'")
 }
 
+fn rewrite_output_path(source: &str, parquet: &Path) -> String {
+    source.replace(
+        "output.parquet = \"out/leo-orbit-egm2008-dopri853-adaptive.parquet\"",
+        &format!("output.parquet = {}", toml_literal_path(parquet)),
+    )
+}
+
 fn stage_scenario(temp_dir: &Path, label: &str) -> PathBuf {
     let original = fs::read_to_string(scenario_path()).expect("read canonical scenario");
     let parquet = temp_dir.join(format!("{label}.parquet"));
-    let rewritten = original.replace(
-        "output.parquet = \"out/leo-orbit-egm2008-dopri853-adaptive.parquet\"",
-        &format!("output.parquet = {}", toml_literal_path(&parquet)),
-    );
+    let rewritten = rewrite_output_path(&original, &parquet);
     let staged = temp_dir.join(format!("{label}-scenario.toml"));
     fs::write(&staged, rewritten).expect("write staged scenario");
+    staged
+}
+
+fn stage_fixed_step_scenario(temp_dir: &Path, label: &str) -> PathBuf {
+    let original = fs::read_to_string(scenario_path()).expect("read canonical scenario");
+    let parquet = temp_dir.join(format!("{label}.parquet"));
+    let rewritten = rewrite_output_path(&original, &parquet)
+        .replace(
+            "profile = \"adaptive-explicit\"",
+            "profile = \"fixed-step-explicit\"",
+        )
+        .replace(
+            "determinism = \"state-stable\"",
+            "determinism = \"bit-stable\"",
+        );
+
+    let mut without_adaptive_block = String::new();
+    let mut skipping_adaptive = false;
+    for line in rewritten.lines() {
+        if line.trim() == "[solver.adaptive]" {
+            skipping_adaptive = true;
+            continue;
+        }
+        if skipping_adaptive && line.starts_with('[') {
+            skipping_adaptive = false;
+        }
+        if !skipping_adaptive {
+            without_adaptive_block.push_str(line);
+            without_adaptive_block.push('\n');
+        }
+    }
+
+    let staged = temp_dir.join(format!("{label}-scenario.toml"));
+    fs::write(&staged, without_adaptive_block).expect("write staged fixed-step scenario");
     staged
 }
 
@@ -174,7 +215,7 @@ fn leo_orbit_egm2008_dopri853_adaptive_runs_to_completion_within_radius_envelope
         radial_error < 5_000.0,
         "final radius {r_final:.1} m drifted {radial_error:.1} m from initial \
          {INITIAL_RADIUS_M:.1} m (expected <5 km radial bound under EGM2008 zonal \
-         + Dopri853Adaptive at rtol = 1e-12, atol = 1e-15)",
+         + Dopri853Adaptive at rtol = 1e-16, atol = 1e-19)",
     );
 }
 
@@ -212,5 +253,43 @@ fn leo_orbit_egm2008_dopri853_adaptive_is_byte_stable_across_two_runs_within_pla
         "two reruns of leo-orbit-egm2008-dopri853-adaptive on the same platform must \
          produce byte-identical Parquet — Dopri853Adaptive is StateStable, which is \
          within-platform bit-stable",
+    );
+}
+
+#[test]
+fn leo_orbit_egm2008_dopri853_adaptive_differs_from_fixed_step_dopri853() {
+    let temp = tempdir_for("openbmp_dopri853_adaptive_vs_fixed");
+
+    let adaptive = stage_scenario(temp.path(), "dopri853_adaptive");
+    let fixed = stage_fixed_step_scenario(temp.path(), "dopri853_fixed");
+
+    let adaptive_report = run::run(&adaptive).expect("adaptive run");
+    let fixed_report = run::run(&fixed).expect("fixed-step run");
+
+    assert_eq!(adaptive_report.final_step, fixed_report.final_step);
+    assert_eq!(
+        adaptive_report.final_time_s.to_bits(),
+        fixed_report.final_time_s.to_bits()
+    );
+
+    let adaptive_parquet = adaptive_report
+        .written
+        .iter()
+        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("parquet"))
+        .expect("adaptive parquet output");
+    let fixed_parquet = fixed_report
+        .written
+        .iter()
+        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("parquet"))
+        .expect("fixed-step parquet output");
+
+    let adaptive_bytes = fs::read(adaptive_parquet).expect("read adaptive parquet");
+    let fixed_bytes = fs::read(fixed_parquet).expect("read fixed-step parquet");
+
+    assert_ne!(
+        adaptive_bytes, fixed_bytes,
+        "DOP853 adaptive demo collapsed to fixed-step DOP853 bytes; \
+         tighten tolerances or otherwise make the scenario exercise \
+         error-driven internal sub-stepping"
     );
 }

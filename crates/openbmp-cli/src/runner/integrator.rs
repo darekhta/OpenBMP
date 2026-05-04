@@ -110,8 +110,8 @@ impl<S: SimState> Integrator<S> for RuntimeIntegrator {
 /// Returns [`CliError::UnsupportedScenario`] when the
 /// `(profile, trajectory_method, determinism)` combination names a
 /// solver that has not been wired in the runner yet (e.g.,
-/// `dopri853`, `rkf78`, `implicit-source-term`,
-/// `partitioned-hypersonic`). The scenario validator already enforces
+/// `rkf78`, `implicit-source-term`, `partitioned-hypersonic`). The
+/// scenario validator already enforces
 /// `bit-stable + adaptive-explicit` is rejected at parse time, so the
 /// runner only handles the cross-product of valid wired combos.
 pub fn build_runtime_integrator(
