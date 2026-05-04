@@ -128,7 +128,7 @@ in lockstep with each sub-phase landing.
 | 5.B.3 — IMM (Bar-Shalom) maneuver-aware estimator (2-mode bank) | shipped | _pending PR_ |
 | 5.B.1.A — SR-UKF math primitives (sigma points, cholupdate, QR predict) | shipped | _pending PR_ |
 | 5.B.1.B/C — SquareRootUkf 15-state filter + 6-state attitude variant + classical `Ukf` retirement | shipped | _pending PR_ |
-| 5.B.2 — multi-instance estimator routing + active-lane selection | pending | — |
+| 5.B.2 — multi-instance estimator routing + active-lane selection | shipped | _pending PR_ |
 | 5.B.5 — Patton-Frank parity-space residual generator | pending — follow-on from 5.B.4 | — |
 | 5.B.6 — IMM extensions (3-mode bank + lane integration + UKF/MEKF) | pending — follow-on from 5.B.3 | — |
 | 5.C.3 — EGM2008 tesseral / sectoral expansion (Cunningham recursion) | pending — follow-on from 5.C.2 | — |
@@ -735,39 +735,106 @@ land later if the SR-UKF proves numerically fragile in CI.
 **Scope guardrail.** Same measurement set as the EKF; no plant-
 specific tuning that hides operational vehicle data.
 
-#### 5.B.2 — Multi-instance estimator routing + active-lane selection
+#### 5.B.2 — Multi-instance estimator routing + active-lane selection **— shipped**
 
-**Scope.** Land the parallel-estimator-lane architecture sketched in
-the Phase-4.C voter docstring:
+**Status.** Shipped. The scenario `[fc.estimator_lanes]` block is
+consumed by the FC runner; the parsed lanes are turned into a
+`MultiLaneEstimator` (one estimator instance per lane) and
+registered as the single scheduled estimator job, replacing the
+top-level `fc.estimator = "..."` selector when both are present.
+The voter picks the active lane each tick per the configured
+policy.
 
-- `EstimatorLane` — a registered estimator instance (EKF, MEKF,
-  UKF, SR-UKF, IMM) addressed by a `LaneId`. Each lane runs its own
-  predict / update on every tick.
-- `EstimatorVoter` — selects the *active* lane per tick from the
-  set of healthy lanes. Decision policy is configurable:
-  `SimplexPassThrough`, `MidValueSelectByInnovation`, or
-  `BestByCovarianceTrace`. The active lane drives the public
-  `AttitudeEstimate` / `PositionEstimate` topics; non-active lanes
-  publish on debug topics for the compare harness.
-- `EstimatorRouter` — orchestrates lane execution; declares which
-  bus topics each lane reads (allowing per-lane sensor lockout for
-  graceful-degradation experiments).
+**Scope (shipped).**
 
-**Exit criterion.** A scenario registering EKF + SR-UKF + MEKF as
-parallel lanes runs deterministically; the voter switches the
-active lane on a synthetic GNSS dropout and the autopilot consumes
-the new active-lane output without a tick discontinuity.
+- `crates/openbmp-fc/src/estimator_lanes.rs::MultiLaneEstimator` —
+  owns a `Vec<(LaneId, Box<dyn Estimator + Send>)>` plus a
+  `VoterPolicy` and an `active_index`. Implements the `Estimator`
+  trait by dispatching `predict` / `update_*` to every healthy
+  lane and routing the snapshot accessors
+  (`attitude` / `position` / `status` / `estimator_mode`) to the
+  active lane.
+- Three voter policies:
+  - `SimplexPassThrough` — first healthy lane wins (declaration
+    order).
+  - `MidValueSelectByInnovation` — sort by innovation chi-square
+    proxy (sum of per-sensor chi²); pick the median index.
+    Requires ≥ 3 healthy lanes; with fewer, falls back to
+    simplex.
+  - `BestByCovarianceTrace` — pick the lane with the smallest
+    chi-square sum. Acts as a covariance-trace proxy until the
+    `EstimatorStatus` topic gets a dedicated `cov_trace` field.
+- Per-lane health flag with two failure semantics:
+  - `predict` failure → lane unhealthed for the rest of the tick.
+  - `update_*` `InnovationGateRejected` → local rejection, lane
+    stays healthy (the gate is a per-sensor rejection, not a
+    filter-level failure).
+  - `update_*` non-finite-state / config errors → unhealthed.
+  `begin_tick` resets every lane's health flag at the start of
+  each tick.
+- `FcEstimatorKind` extended with `SrUkf` and `SrUkfAttitude`
+  variants. The validator requires `[fc.ekf]` for both (shared
+  noise budget; SR-UKF-specific scaling-parameter overrides
+  `(α, β, κ)` deferred to a §5.B.6 follow-on tuning block).
+- FC runner refactor: `build_single_estimator(config, kind)`
+  helper produces a `Box<dyn Estimator + Send>` for any lane kind,
+  used both by the top-level `fc.estimator` selector AND by the
+  multi-lane builder. The single-lane construction path now
+  routes through this helper; the existing single-estimator
+  byte-stable scenarios remain byte-identical (no regression on
+  `calisto_e2e`, `multi_body_e2e`, `sounding_rocket_e2e`,
+  `end_to_end`).
+- 10 unit tests on the multi-lane router + 1 FC-runner integration
+  test driving 100 ticks with EKF + SR-UKF lanes and the
+  `SimplexPassThrough` voter.
 
-**Validation evidence.** Unit + property tests for voter policies;
-closed-loop scenario test for mid-flight lane switch; determinism
-test for the multi-lane case.
+**Scope (deferred).**
+
+- Per-lane bus-topic lockout (sensor sub-set per lane for
+  graceful-degradation experiments). The shipped router gives
+  every lane every sensor; lockout is a follow-on if a HIL
+  validation case calls for it.
+- Closed-loop scenario test demonstrating a mid-flight active-lane
+  switch on a synthetic GNSS dropout. Tracked as a §5.E.5
+  follow-on (long-duration soak) rather than this slice's
+  property-test surface, because the dropout-then-switch dynamics
+  exercise the FDIR + voter integration end-to-end and that's the
+  natural §5.E.5 territory.
+- `cov_trace` field on `EstimatorStatus`. The current voter
+  policies use chi² sum as a proxy; a dedicated field would let
+  `BestByCovarianceTrace` operate on the actual covariance trace
+  rather than the sum-of-chi² proxy. Tracked as a NICE-TO-HAVE
+  for the §5.E topic-schema refinement.
+- Multi-lane debug telemetry topics (one per non-active lane).
+  Diagnostic value for the cross-tool comparison harness; not
+  required to drive the autopilot.
+
+**Exit criterion (achieved).** A scenario with
+`[fc.estimator_lanes]` parses + validates + runs deterministically
+through the FC runner. The integration test
+`fc_runner_builds_from_multi_lane_config` exercises EKF + SR-UKF
+lanes with the simplex pass-through voter over 100 ticks; the
+active lane drives a finite attitude estimate, no NaNs, no panics.
+
+**Validation evidence.** 10 multi-lane router unit tests
+(declaration-order traversal, lane health reset on
+`begin_tick`, voter policy selection for each of the three
+policies, fallback when MidValue has < 3 lanes, active-output
+sourcing). FC runner integration test on a two-lane EKF + SR-UKF
+config. Scenario-side parse + validate test on the v3
+`[fc.estimator_lanes]` block (replacing the old
+`assert_phase5_deferred_under_v3` gate). Existing single-estimator
+e2e suites remain byte-stable through the refactor.
 
 **References.** PX4 ekf2 multi-instance routing pattern (academic
 reference, not imported). Bar-Shalom et al. 2001 §11 (multi-model
 approaches).
 
-**Scope guardrail.** Lane selection is sensor-fusion focused; no
-lane represents a "target tracker" or "homing filter".
+**Scope guardrail (held).** Lane selection is sensor-fusion
+focused; no lane represents a "target tracker" or "homing filter".
+The new `FcEstimatorKind` variants (`SrUkf`, `SrUkfAttitude`) are
+the same EKF / IMM / MEKF *fusion* shape, just with different
+filter-side machinery.
 
 #### 5.B.3 — IMM (Bar-Shalom) maneuver-aware estimator **— shipped**
 

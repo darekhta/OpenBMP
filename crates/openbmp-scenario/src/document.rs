@@ -352,17 +352,21 @@ impl ScenarioDocument {
             }
             imm.validate()?;
         }
-        gate_phase5_block(
-            header,
-            "fc.estimator_lanes",
-            "Phase 5.B.2",
-            fc.estimator_lanes.as_ref(),
-            || {
-                fc.estimator_lanes
-                    .as_ref()
-                    .map_or(Ok(()), FcEstimatorLanesConfig::validate)
-            },
-        )?;
+        // Phase-5.B.2 consumed `[fc.estimator_lanes]`. v3-only; the
+        // runner builds a `MultiLaneEstimator` containing one
+        // estimator per lane config and registers it as the single
+        // scheduled estimator job, with the configured voter policy
+        // selecting the active lane each tick.
+        if let Some(lanes_cfg) = fc.estimator_lanes.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.estimator_lanes".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            lanes_cfg.validate()?;
+        }
         // fc.autopilot_allocation — Phase 5.A.5 consumed block.
         // v3-only; the runner builds a
         // `PrioritisedRedistributedAllocator` from this block plus
@@ -3746,6 +3750,22 @@ impl FcConfig {
                 });
             }
         }
+        // Phase-5.B.1 SR-UKF and SR-UKF (attitude only) reuse the
+        // [fc.ekf] parameter block since they share the EKF's noise
+        // budget. SR-UKF-specific scaling (α, β, κ) defaults are
+        // baked in until a tuning study motivates a `[fc.sr_ukf]`
+        // override block; that lives in §5.B.6 follow-on scope.
+        if matches!(
+            self.estimator,
+            FcEstimatorKind::SrUkf | FcEstimatorKind::SrUkfAttitude
+        ) && self.ekf.is_none()
+        {
+            return Err(ScenarioError::InvalidFc {
+                reason: "estimator = \"sr_ukf\" / \"sr_ukf_attitude\" requires [fc.ekf] \
+                         for the noise budget"
+                    .to_string(),
+            });
+        }
         if let Some(imm) = self.imm.as_ref() {
             imm.validate()?;
         }
@@ -3814,6 +3834,15 @@ pub enum FcEstimatorKind {
     /// base parameters (further refined by per-mode overrides under
     /// `[[fc.imm.mode]]`).
     Imm,
+    /// Phase-5.B.1 Square-Root Unscented Kalman Filter (15-state),
+    /// per Van der Merwe & Wan 2001. Uses the same parameter set as
+    /// the EKF (`[fc.ekf]` block).
+    SrUkf,
+    /// Phase-5.B.1 Square-Root UKF restricted to the 6-state
+    /// attitude + gyro-bias subspace; mirrors the retired Phase-4.C
+    /// classical 6-state `Ukf` shape but on the new square-root
+    /// machinery.
+    SrUkfAttitude,
 }
 
 /// Supported autopilot kinds.

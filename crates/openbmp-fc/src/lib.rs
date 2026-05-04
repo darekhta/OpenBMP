@@ -39,6 +39,7 @@ pub mod controller;
 pub mod dictionary;
 pub mod error;
 pub mod estimator;
+pub mod estimator_lanes;
 pub mod fdir;
 pub mod filters;
 pub mod glrt;

@@ -19,7 +19,8 @@ use openbmp_fc::autopilot::{
     default_gains,
 };
 use openbmp_fc::commander::{Commander, CommanderParams};
-use openbmp_fc::estimator::{Ekf, EkfParams, EstimatorJob, Mekf, MekfParams};
+use openbmp_fc::estimator::{Ekf, EkfParams, Estimator, EstimatorJob, Mekf, MekfParams};
+use openbmp_fc::estimator_lanes::{LaneId, MultiLaneEstimator, VoterPolicy};
 use openbmp_fc::fdir::{DetectorKind, FdirJob, FdirParams};
 use openbmp_fc::guidance::{
     AttitudeHoldGuidance, GuidanceParams, WaypointGuidance, WaypointSequence,
@@ -27,6 +28,7 @@ use openbmp_fc::guidance::{
 use openbmp_fc::health::{HealthMonitor, HealthParams};
 use openbmp_fc::imm::ImmEstimator;
 use openbmp_fc::mixer::{ActuatorChannelMap, Mixer, PhaseAuthority, PhaseAuthorityTable};
+use openbmp_fc::sr_ukf::{SquareRootUkf, SquareRootUkfAttitude, SquareRootUkfParams};
 use openbmp_fc::topics::{
     ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, EffectorCommandSet,
     EngineCommandSet, EngineDemand, EstimatorMode, EstimatorStatus, FailsafeFlags,
@@ -40,9 +42,9 @@ use openbmp_mission::{EventBinding, MissionPhaseGraph, PhaseId};
 use openbmp_physics::magnetic::Wmm2025;
 use openbmp_scenario::{
     FcActuatorChannelsConfig, FcAntiWindupConfig, FcAutopilotKind, FcAutopilotParams, FcConfig,
-    FcEkfConfig, FcEstimatorKind, FcFdirConfig, FcFdirDetectorKind, FcFdirDetectorKindV5,
-    FcGainsConfig, FcGuidanceKind, FcHealthConfig, FcMagFieldKind, FcMekfConfig,
-    FcPhaseAuthorityConfig, FcTrajectoryKind,
+    FcEkfConfig, FcEstimatorKind, FcEstimatorLanesConfig, FcEstimatorVoterKind, FcFdirConfig,
+    FcFdirDetectorKind, FcFdirDetectorKindV5, FcGainsConfig, FcGuidanceKind, FcHealthConfig,
+    FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig, FcTrajectoryKind,
 };
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
@@ -95,90 +97,33 @@ impl FcRunner {
 
         let slow_period_ticks = period_ticks_for_hz(config.base_rate_hz, 100);
         let mut next_priority = 5_u8;
-        match config.estimator {
-            FcEstimatorKind::Ekf => {
-                let mut params = EkfParams::default();
-                if let Some(ekf_cfg) = &config.ekf {
-                    apply_ekf_overrides(&mut params, ekf_cfg);
-                }
-                let mut ekf = apply_ekf_mag_model(Ekf::new(params), config.ekf.as_ref())?;
-                ekf.seed(
-                    Vector3::zeros(),
-                    Vector3::zeros(),
-                    UnitQuaternion::identity(),
-                );
-                fc.scheduler_mut().register_periodic(
-                    1,
-                    200,
-                    next_priority,
-                    Box::new(EstimatorJob::new(ekf)),
-                )?;
-            }
-            FcEstimatorKind::Mekf => {
-                let mut params = MekfParams::default();
-                if let Some(mekf_cfg) = &config.mekf {
-                    apply_mekf_overrides(&mut params, mekf_cfg);
-                }
-                let mut mekf = apply_mekf_mag_model(Mekf::new(params), config.mekf.as_ref())?;
-                mekf.seed(UnitQuaternion::identity());
-                fc.scheduler_mut().register_periodic(
-                    1,
-                    200,
-                    next_priority,
-                    Box::new(EstimatorJob::new(mekf)),
-                )?;
-            }
-            FcEstimatorKind::Imm => {
-                // Phase-5.B.3 Bar-Shalom IMM. The scenario validator
-                // already guarantees [fc.imm] is present and well-formed
-                // when estimator = "imm"; the unwraps below are safe.
-                let imm_cfg = config
-                    .imm
-                    .as_ref()
-                    .expect("scenario validator ensures [fc.imm] is present for kind = imm");
-                let base_ekf_cfg = config
-                    .ekf
-                    .as_ref()
-                    .expect("scenario validator ensures [fc.ekf] is present for kind = imm");
-                let mut base_params = EkfParams::default();
-                apply_ekf_overrides(&mut base_params, base_ekf_cfg);
-                let mut per_mode_params: Vec<EkfParams> = Vec::with_capacity(imm_cfg.modes.len());
-                for mode in &imm_cfg.modes {
-                    let mut p = base_params.clone();
-                    if let Some(v) = mode.sigma_w_gyro {
-                        p.sigma_w_gyro = v;
-                    }
-                    if let Some(v) = mode.sigma_w_gyro_bias {
-                        p.sigma_w_gyro_bias = v;
-                    }
-                    if let Some(v) = mode.sigma_w_accel_bias {
-                        p.sigma_w_accel_bias = v;
-                    }
-                    if let Some(v) = mode.tau_gyro_bias_s {
-                        p.tau_gyro_bias_s = v;
-                    }
-                    if let Some(v) = mode.tau_accel_bias_s {
-                        p.tau_accel_bias_s = v;
-                    }
-                    per_mode_params.push(p);
-                }
-                // Scenario validator (FcImmConfig::validate) already
-                // guarantees the transition matrix and initial
-                // probabilities are well-formed, so the construction
-                // is infallible at runtime.
-                let imm = ImmEstimator::new(
-                    per_mode_params,
-                    imm_cfg.transition_matrix.clone(),
-                    imm_cfg.initial_mode_probabilities.clone(),
-                )
-                .expect("scenario validator must guarantee valid IMM params");
-                fc.scheduler_mut().register_periodic(
-                    1,
-                    200,
-                    next_priority,
-                    Box::new(EstimatorJob::new(imm)),
-                )?;
-            }
+        // Phase-5.B.2 — when the scenario declares `[fc.estimator_lanes]`,
+        // build a `MultiLaneEstimator` containing one estimator per
+        // lane and register it as the single scheduled estimator
+        // job. The voter policy from the scenario block selects the
+        // active lane per tick. When the block is absent, fall back
+        // to the single-estimator construction path keyed off
+        // `config.estimator`.
+        if let Some(lanes_cfg) = &config.estimator_lanes {
+            let multi = build_multi_lane_estimator(config, lanes_cfg)?;
+            fc.scheduler_mut().register_periodic(
+                1,
+                200,
+                next_priority,
+                Box::new(EstimatorJob::new(multi)),
+            )?;
+        } else {
+            let estimator = build_single_estimator(config, config.estimator)?;
+            // The trait object is wrapped in EstimatorJob the same way
+            // any concrete Estimator would be; the boxed-dyn shape is
+            // because the per-lane construction in the multi-lane path
+            // also returns `Box<dyn Estimator + Send>`.
+            fc.scheduler_mut().register_periodic(
+                1,
+                200,
+                next_priority,
+                Box::new(EstimatorJob::new(BoxedEstimator(estimator))),
+            )?;
         }
         next_priority = next_priority.saturating_add(5);
 
@@ -535,6 +480,248 @@ fn apply_mekf_overrides(params: &mut MekfParams, cfg: &FcMekfConfig) {
         params.innovation_false_alarm_rate = v;
         params.innovation_gate = f64::NAN;
     }
+}
+
+// ---------------------------------------------------------------------
+// Phase-5.B.2 — multi-instance estimator routing helpers.
+// ---------------------------------------------------------------------
+
+/// Wrapper that exposes a `Box<dyn Estimator + Send>` as a concrete
+/// type implementing the [`Estimator`] trait, so the existing
+/// `EstimatorJob<E>` (which is generic over a sized type) can wrap
+/// it without further plumbing.
+struct BoxedEstimator(Box<dyn Estimator + Send>);
+
+impl std::fmt::Debug for BoxedEstimator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoxedEstimator").finish_non_exhaustive()
+    }
+}
+
+impl Estimator for BoxedEstimator {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+
+    fn predict(&mut self, dt: f64) -> Result<(), EstimatorError> {
+        self.0.predict(dt)
+    }
+
+    fn update_imu(&mut self, sample: &openbmp_fc::topics::ImuSample) -> Result<(), EstimatorError> {
+        self.0.update_imu(sample)
+    }
+
+    fn update_gnss(
+        &mut self,
+        sample: &openbmp_fc::topics::GnssSample,
+    ) -> Result<(), EstimatorError> {
+        self.0.update_gnss(sample)
+    }
+
+    fn update_baro(
+        &mut self,
+        sample: &openbmp_fc::topics::BarometerSample,
+    ) -> Result<(), EstimatorError> {
+        self.0.update_baro(sample)
+    }
+
+    fn update_mag(
+        &mut self,
+        sample: &openbmp_fc::topics::MagnetometerSample,
+    ) -> Result<(), EstimatorError> {
+        self.0.update_mag(sample)
+    }
+
+    fn attitude(&self) -> AttitudeEstimate {
+        self.0.attitude()
+    }
+
+    fn position(&self) -> PositionEstimate {
+        self.0.position()
+    }
+
+    fn status(&self) -> EstimatorStatus {
+        self.0.status()
+    }
+
+    fn estimator_mode(&self) -> Option<EstimatorMode> {
+        self.0.estimator_mode()
+    }
+
+    fn begin_tick(&mut self) {
+        self.0.begin_tick();
+    }
+}
+
+/// Build a single estimator instance for the given kind. The
+/// scenario validator already guarantees the required `[fc.*]`
+/// blocks are present for each kind, so the inner unwraps are
+/// unreachable from properly-validated scenarios.
+#[allow(clippy::expect_used)]
+fn build_single_estimator(
+    config: &FcConfig,
+    kind: FcEstimatorKind,
+) -> Result<Box<dyn Estimator + Send>, ControllerError> {
+    match kind {
+        FcEstimatorKind::Ekf => {
+            let mut params = EkfParams::default();
+            if let Some(ekf_cfg) = &config.ekf {
+                apply_ekf_overrides(&mut params, ekf_cfg);
+            }
+            let mut ekf = apply_ekf_mag_model(Ekf::new(params), config.ekf.as_ref())?;
+            ekf.seed(
+                Vector3::zeros(),
+                Vector3::zeros(),
+                UnitQuaternion::identity(),
+            );
+            Ok(Box::new(ekf))
+        }
+        FcEstimatorKind::Mekf => {
+            let mut params = MekfParams::default();
+            if let Some(mekf_cfg) = &config.mekf {
+                apply_mekf_overrides(&mut params, mekf_cfg);
+            }
+            let mut mekf = apply_mekf_mag_model(Mekf::new(params), config.mekf.as_ref())?;
+            mekf.seed(UnitQuaternion::identity());
+            Ok(Box::new(mekf))
+        }
+        FcEstimatorKind::Imm => {
+            let imm_cfg = config
+                .imm
+                .as_ref()
+                .expect("scenario validator ensures [fc.imm] is present for kind = imm");
+            let base_ekf_cfg = config
+                .ekf
+                .as_ref()
+                .expect("scenario validator ensures [fc.ekf] is present for kind = imm");
+            let mut base_params = EkfParams::default();
+            apply_ekf_overrides(&mut base_params, base_ekf_cfg);
+            let mut per_mode_params: Vec<EkfParams> = Vec::with_capacity(imm_cfg.modes.len());
+            for mode in &imm_cfg.modes {
+                let mut p = base_params.clone();
+                if let Some(v) = mode.sigma_w_gyro {
+                    p.sigma_w_gyro = v;
+                }
+                if let Some(v) = mode.sigma_w_gyro_bias {
+                    p.sigma_w_gyro_bias = v;
+                }
+                if let Some(v) = mode.sigma_w_accel_bias {
+                    p.sigma_w_accel_bias = v;
+                }
+                if let Some(v) = mode.tau_gyro_bias_s {
+                    p.tau_gyro_bias_s = v;
+                }
+                if let Some(v) = mode.tau_accel_bias_s {
+                    p.tau_accel_bias_s = v;
+                }
+                per_mode_params.push(p);
+            }
+            let imm = ImmEstimator::new(
+                per_mode_params,
+                imm_cfg.transition_matrix.clone(),
+                imm_cfg.initial_mode_probabilities.clone(),
+            )
+            .expect("scenario validator must guarantee valid IMM params");
+            Ok(Box::new(imm))
+        }
+        FcEstimatorKind::SrUkf => {
+            let mut sr_params = SquareRootUkfParams::default();
+            if let Some(ekf_cfg) = &config.ekf {
+                let mut ekf_params = EkfParams::default();
+                apply_ekf_overrides(&mut ekf_params, ekf_cfg);
+                copy_ekf_to_sr_ukf_params(&ekf_params, &mut sr_params);
+            }
+            let mut sr_ukf = SquareRootUkf::new(sr_params);
+            // Apply the [fc.ekf] mag-field model selection — same
+            // resolution path as the EKF / IMM lanes.
+            sr_ukf = apply_sr_ukf_mag_model(sr_ukf, config.ekf.as_ref())?;
+            sr_ukf.seed(
+                Vector3::zeros(),
+                Vector3::zeros(),
+                UnitQuaternion::identity(),
+            );
+            Ok(Box::new(sr_ukf))
+        }
+        FcEstimatorKind::SrUkfAttitude => {
+            let mut sr_params = SquareRootUkfParams::default();
+            if let Some(ekf_cfg) = &config.ekf {
+                let mut ekf_params = EkfParams::default();
+                apply_ekf_overrides(&mut ekf_params, ekf_cfg);
+                copy_ekf_to_sr_ukf_params(&ekf_params, &mut sr_params);
+            }
+            let mut sr_ukf = SquareRootUkfAttitude::new(sr_params);
+            sr_ukf = apply_sr_ukf_attitude_mag_model(sr_ukf, config.ekf.as_ref())?;
+            sr_ukf.seed(UnitQuaternion::identity());
+            Ok(Box::new(sr_ukf))
+        }
+    }
+}
+
+fn copy_ekf_to_sr_ukf_params(ekf: &EkfParams, sr: &mut SquareRootUkfParams) {
+    sr.sigma_w_gyro = ekf.sigma_w_gyro;
+    sr.sigma_w_accel_bias = ekf.sigma_w_accel_bias;
+    sr.sigma_w_gyro_bias = ekf.sigma_w_gyro_bias;
+    sr.tau_gyro_bias_s = ekf.tau_gyro_bias_s;
+    sr.tau_accel_bias_s = ekf.tau_accel_bias_s;
+    sr.sigma_gnss_pos_m = ekf.sigma_gnss_pos_m;
+    sr.sigma_gnss_vel_m_s = ekf.sigma_gnss_vel_m_s;
+    sr.sigma_baro_alt_m = ekf.sigma_baro_alt_m;
+    sr.sigma_mag_nt = ekf.sigma_mag_nt;
+    sr.innovation_gate = ekf.innovation_gate;
+    sr.innovation_false_alarm_rate = ekf.innovation_false_alarm_rate;
+    sr.dead_reckon_timeout_s = ekf.dead_reckon_timeout_s;
+}
+
+fn apply_sr_ukf_mag_model(
+    sr_ukf: SquareRootUkf,
+    cfg: Option<&FcEkfConfig>,
+) -> Result<SquareRootUkf, ControllerError> {
+    let kind = cfg.and_then(|c| c.mag_field).unwrap_or_default();
+    match kind {
+        FcMagFieldKind::EarthDipole => Ok(sr_ukf),
+        FcMagFieldKind::Wmm2025 => {
+            let epoch = cfg
+                .and_then(|c| c.mag_epoch_decimal_year)
+                .unwrap_or(DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR);
+            Ok(sr_ukf.with_mag_field_model(build_wmm_2025(epoch)?))
+        }
+    }
+}
+
+fn apply_sr_ukf_attitude_mag_model(
+    sr_ukf: SquareRootUkfAttitude,
+    cfg: Option<&FcEkfConfig>,
+) -> Result<SquareRootUkfAttitude, ControllerError> {
+    let kind = cfg.and_then(|c| c.mag_field).unwrap_or_default();
+    match kind {
+        FcMagFieldKind::EarthDipole => Ok(sr_ukf),
+        FcMagFieldKind::Wmm2025 => {
+            let epoch = cfg
+                .and_then(|c| c.mag_epoch_decimal_year)
+                .unwrap_or(DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR);
+            Ok(sr_ukf.with_mag_field_model(build_wmm_2025(epoch)?))
+        }
+    }
+}
+
+/// Build a [`MultiLaneEstimator`] from the scenario's
+/// `[fc.estimator_lanes]` block.
+fn build_multi_lane_estimator(
+    config: &FcConfig,
+    lanes_cfg: &FcEstimatorLanesConfig,
+) -> Result<MultiLaneEstimator, ControllerError> {
+    let mut lanes: Vec<(LaneId, Box<dyn Estimator + Send>)> =
+        Vec::with_capacity(lanes_cfg.lanes.len());
+    for lane in &lanes_cfg.lanes {
+        let estimator = build_single_estimator(config, lane.estimator)?;
+        lanes.push((LaneId::from(lane.id.clone()), estimator));
+    }
+    let policy = match lanes_cfg.voter {
+        FcEstimatorVoterKind::SimplexPassThrough => VoterPolicy::SimplexPassThrough,
+        FcEstimatorVoterKind::MidValueSelectByInnovation => VoterPolicy::MidValueSelectByInnovation,
+        FcEstimatorVoterKind::BestByCovarianceTrace => VoterPolicy::BestByCovarianceTrace,
+    };
+    Ok(MultiLaneEstimator::new(lanes, policy))
 }
 
 /// Phase 5.A.3.B context required to translate
@@ -987,6 +1174,102 @@ mod tests {
             once: true,
         }];
         (graph, bindings, pad)
+    }
+
+    /// Phase-5.B.2 — multi-lane configuration runs end-to-end through
+    /// the `FcRunner`, with the voter selecting the active lane each
+    /// tick. This is the integration-side smoke test; the per-policy
+    /// voter unit tests live in
+    /// `crates/openbmp-fc/src/estimator_lanes.rs`.
+    #[test]
+    fn fc_runner_builds_from_multi_lane_config() {
+        use openbmp_scenario::{
+            FcEstimatorLaneConfig, FcEstimatorLanesConfig, FcEstimatorVoterKind,
+        };
+
+        let mut gain_schedule = BTreeMap::new();
+        gain_schedule.insert(
+            "mission.phases.ascent".to_string(),
+            FcGainsConfig {
+                rate_kp: Some([0.5, 0.5, 0.5]),
+                rate_ki: None,
+                rate_kd: Some([0.05, 0.05, 0.05]),
+                attitude_kp: Some([2.0, 2.0, 1.0]),
+                attitude_ki: None,
+                attitude_kd: None,
+                trajectory_kp: None,
+                trajectory_ki: None,
+                trajectory_kd: None,
+                aileron_limit_rad: Some(0.35),
+                elevator_limit_rad: Some(0.35),
+                rudder_limit_rad: Some(0.35),
+                throttle_baseline: Some(0.0),
+            },
+        );
+        let lanes = FcEstimatorLanesConfig {
+            voter: FcEstimatorVoterKind::SimplexPassThrough,
+            lanes: vec![
+                FcEstimatorLaneConfig {
+                    id: "primary_ekf".to_string(),
+                    estimator: FcEstimatorKind::Ekf,
+                },
+                FcEstimatorLaneConfig {
+                    id: "spare_sr_ukf".to_string(),
+                    estimator: FcEstimatorKind::SrUkf,
+                },
+            ],
+        };
+        let config = FcConfig {
+            // The top-level estimator field is irrelevant when
+            // estimator_lanes is set — but we still set it to a
+            // valid kind for the validator.
+            estimator: FcEstimatorKind::Ekf,
+            autopilot: FcAutopilotKind::ThreeLoop,
+            guidance: FcGuidanceKind::AttitudeHold,
+            reference_q_xyzw: Some([0.0, 0.0, 0.0, 1.0]),
+            base_rate_hz: 1_000,
+            frame_budget_us: 2_000,
+            ekf: Some(FcEkfConfig::default()),
+            mekf: None,
+            imm: None,
+            autopilot_params: None,
+            health: FcHealthConfig {
+                imu_stale_after_s: 0.05,
+                gnss_stale_after_s: 0.5,
+                baro_stale_after_s: 10.0,
+                mag_stale_after_s: 0.2,
+                overrun_burst_count: 5,
+            },
+            fdir: None,
+            actuator_channels: None,
+            gain_schedule,
+            phase_authority: None,
+            estimator_lanes: Some(lanes),
+            autopilot_allocation: None,
+            trajectory: None,
+        };
+        let (graph, bindings, pad) = minimal_graph();
+        let mut runner = FcRunner::new(&config, graph, bindings, pad, None, 0.001, None).unwrap();
+        // Drive 100 ticks at 1 ms each — same workload as the
+        // single-lane attitude-hold smoke test.
+        let dt_s = 0.001;
+        for k in 0..100u64 {
+            let now = SimTime::from_seconds(f64::from(u32::try_from(k).unwrap()) * dt_s);
+            runner.publish_imu(ImuSample {
+                time: now,
+                gyro_rad_s: Vector3::zeros(),
+                accel_m_s2: Vector3::new(0.0, 0.0, 9.81),
+                healthy: true,
+            });
+            let _ = runner.step(now, StepIndex::new(k)).unwrap();
+        }
+        // The active lane should drive a finite attitude estimate.
+        let attitude = runner
+            .latest_attitude_estimate()
+            .expect("multi-lane estimator should publish");
+        for v in attitude.q_body_to_eci_xyzw {
+            assert!(v.is_finite(), "active-lane attitude q has NaN");
+        }
     }
 
     #[test]

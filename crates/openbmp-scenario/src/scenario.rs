@@ -494,7 +494,23 @@ estimator = "mekf"
 "#;
         let toml = append(fc_v2_scenario(), block);
         assert_phase5_reserved_under_v2(&toml, "fc.estimator_lanes");
-        assert_phase5_deferred_under_v3(&toml, "fc.estimator_lanes", "Phase 5.B.2");
+        // Phase-5.B.2 consumed this block — under v3 it now parses
+        // and validates rather than emitting `ElementDeferredToFuturePhase`.
+        let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&v3).expect("v3 estimator-lanes block validates");
+        let lanes = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.estimator_lanes.as_ref())
+            .expect("estimator_lanes block present");
+        assert_eq!(
+            lanes.voter,
+            crate::document::FcEstimatorVoterKind::BestByCovarianceTrace
+        );
+        assert_eq!(lanes.lanes.len(), 2);
+        assert_eq!(lanes.lanes[0].id, "primary");
+        assert_eq!(lanes.lanes[1].id, "spare");
     }
 
     #[test]
