@@ -1,0 +1,80 @@
+# Phase-5.D.6 demo: 1 kg point mass in a 400 km / 30° inclined LEO
+# orbit under EGM2008 zonal-harmonic gravity (degrees 2-6) integrated
+# with the **Dormand-Prince 8(5,3) (DOP853)** adaptive embedded RK
+# pair under an I-controller and the SciPy / Hairer combined
+# err5/err3 stabilised error norm.
+#
+# Identical initial conditions and gravity model to
+# `scenarios/leo-orbit-egm2008-adaptive/scenario.toml` (the
+# Phase-5.D.4 DOPRI5(4) demo); the only difference is
+# `[solver].trajectory_method = "dopri853"`. The point of this
+# scenario is the §5.D.6 wiring path: `(adaptive-explicit, dopri853,
+# state-stable)` selects `Dopri853Adaptive` with its 12-stage
+# 8th-order solution, and the runner-side dispatch propagates
+# the `IntegratorDeterminism::StateStable` label out through the
+# telemetry header.
+#
+# Tolerances `rtol = 1e-12`, `atol = 1e-15` are deliberately tight —
+# DOP853's 8th-order accuracy is wasted at loose tolerances. With
+# this band the controller's optimal h is on the order of seconds,
+# so `max_dt_s = 1.0` (matching the outer kernel cadence) is the
+# active clamp. Telemetry is parquet-only (the Phase-3 oracle
+# compares Parquet bytes; CSV is omitted to keep the artifact slim).
+
+openbmp.scenario = 3
+
+[meta]
+name = "leo-orbit-egm2008-dopri853-adaptive"
+description = "1 kg point mass in 400 km / 30° inclined LEO under EGM2008 zonal gravity (degrees 2-6) integrated with DOP853 adaptive (8th-order Dormand-Prince) for one orbit period; Phase 5.D.6 demo."
+validation = "experimental"
+provenance = "synthetic; closed-form circular-orbit IC for WGS84 µ at r = 6_778_000 m, 30° inclination; gravity = EGM2008 zonal degrees 2-6 with J_n from Pavlis et al. 2012; integrator = Dopri853Adaptive (Hairer-Nørsett-Wanner Vol I §II.5 Table 5.4 + SciPy err5/err3 combined error norm + I-controller). See provenance.md."
+
+[time]
+start_s = 0.0
+stop_s = 5556.0
+dt_s = 1.0
+seed = 0x4567_4d32_3030_3803
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [6_778_000.0, 0.0, 0.0]
+# v_circ = sqrt(WGS84_MU_M3_S2 / r) ≈ 7669.10 m/s at r = 6_778_000 m.
+# Inclined at 30°:
+#   v_y = v_circ · cos(30°),   v_z = v_circ · sin(30°).
+initial_velocity_eci_m_s = [0.0, 6_641.108_553, 3_834.553_092]
+
+[vehicle.assembly]
+id = "leo-orbit-egm2008-dopri853-adaptive"
+
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "egm2008"
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[solver]
+profile = "adaptive-explicit"
+trajectory_method = "dopri853"
+determinism = "state-stable"
+
+[solver.adaptive]
+rtol = 1.0e-12
+atol = 1.0e-15
+min_dt_s = 1.0e-6
+max_dt_s = 1.0
+dense_output = false
+
+[telemetry]
+output.parquet = "out/leo-orbit-egm2008-dopri853-adaptive.parquet"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true

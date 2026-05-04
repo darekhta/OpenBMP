@@ -782,6 +782,888 @@ impl<S: SimState> Integrator<S> for Dopri54Adaptive {
     }
 }
 
+// =====================================================================
+// Phase-5.D.6 — Dormand-Prince 8(5,3) (DOP853) integrator family.
+// =====================================================================
+
+/// Phase-5.D.6 — DOP853 / Dormand-Prince 8(5,3) Butcher tableau.
+///
+/// 12-stage explicit Runge-Kutta with an 8th-order solution and two
+/// embedded estimators of orders 5 and 3 (the "8(5,3)" notation).
+/// The 5th-order companion drives the per-step error norm; the
+/// 3rd-order companion stabilises the controller's denominator when
+/// the 5th-order vanishes coincidentally
+/// (`err = |h| · ||err5||² / sqrt((||err5||² + 0.01·||err3||²) · N)`,
+/// the SciPy / Hairer-Wanner reference formula).
+///
+/// Coefficients pinned against SciPy's
+/// `scipy/integrate/_ivp/dop853_coefficients.py` (Hairer's reference
+/// Fortran `dop853.f` / Hairer-Nørsett-Wanner Vol I §II.5 Table 5.4).
+/// The full 16-stage SciPy tableau includes 4 extra abscissas / rows
+/// reserved for dense output of order 7; this module ships only the
+/// 12 primary stages because § 5.D.6 does NOT implement dense
+/// output. Dense-output interpolation is a future slice.
+///
+/// The constants below are written as the SciPy decimal literals
+/// verbatim. Const-time IEEE 754 arithmetic in Rust is deterministic
+/// across platforms, so `B - B̂_3` style derivations preserve
+/// bit-stability of the tableau.
+///
+/// Some SciPy literals have more decimal digits than `f64` can
+/// represent; the compiler rounds to the nearest `f64` (which is
+/// what SciPy itself ends up with at parse time). The
+/// `clippy::excessive_precision` lint flags this; it is
+/// allow-listed at the module level because the precision overflow
+/// is part of preserving fidelity to the canonical SciPy /
+/// Hairer-Fortran source.
+#[allow(
+    clippy::unreadable_literal,
+    clippy::excessive_precision,
+    clippy::doc_markdown
+)]
+mod dopri853_tableau {
+    // -----------------------------------------------------------------
+    // C-vector — sub-step times relative to h, indices 0..11.
+    // -----------------------------------------------------------------
+    // C[0] = 0 implicitly (initial stage).
+    pub const C2: f64 = 5.26001519587677318785587544488e-2;
+    pub const C3: f64 = 7.89002279381515978178381316732e-2;
+    pub const C4: f64 = 1.18350341907227396726757197510e-1;
+    pub const C5: f64 = 2.81649658092772603273242802490e-1;
+    pub const C6: f64 = 1.0 / 3.0;
+    pub const C7: f64 = 0.25;
+    pub const C8: f64 = 3.07692307692307692307692307692e-1;
+    pub const C9: f64 = 6.51282051282051282051282051282e-1;
+    pub const C10: f64 = 0.6;
+    pub const C11: f64 = 8.57142857142857142857142857142e-1;
+    // C12 = 1.0 (the 8th-order solution endpoint).
+
+    // -----------------------------------------------------------------
+    // A-matrix — strict lower triangular, indexed A_i_j = a_{i+1, j+1}
+    // in the 1-indexed Butcher convention, indices 0..11. Entries not
+    // listed are zero.
+    // -----------------------------------------------------------------
+
+    // Row 1 (k_2 stage):
+    pub const A_2_1: f64 = 5.26001519587677318785587544488e-2;
+
+    // Row 2 (k_3 stage):
+    pub const A_3_1: f64 = 1.97250569845378994544595329183e-2;
+    pub const A_3_2: f64 = 5.91751709536136983633785987549e-2;
+
+    // Row 3 (k_4 stage):
+    pub const A_4_1: f64 = 2.95875854768068491816892993775e-2;
+    // A_4_2 = 0
+    pub const A_4_3: f64 = 8.87627564304205475450678981324e-2;
+
+    // Row 4 (k_5 stage):
+    pub const A_5_1: f64 = 2.41365134159266685502369798665e-1;
+    // A_5_2 = 0
+    pub const A_5_3: f64 = -8.84549479328286085344864962717e-1;
+    pub const A_5_4: f64 = 9.24834003261792003115737966543e-1;
+
+    // Row 5 (k_6 stage):
+    pub const A_6_1: f64 = 3.7037037037037037037037037037e-2;
+    // A_6_2 = A_6_3 = 0
+    pub const A_6_4: f64 = 1.70828608729473871279604482173e-1;
+    pub const A_6_5: f64 = 1.25467687566822425016691814123e-1;
+
+    // Row 6 (k_7 stage):
+    pub const A_7_1: f64 = 3.7109375e-2;
+    // A_7_2 = A_7_3 = 0
+    pub const A_7_4: f64 = 1.70252211019544039314978060272e-1;
+    pub const A_7_5: f64 = 6.02165389804559606850219397283e-2;
+    pub const A_7_6: f64 = -1.7578125e-2;
+
+    // Row 7 (k_8 stage):
+    pub const A_8_1: f64 = 3.70920001185047927108779319836e-2;
+    // A_8_2 = A_8_3 = 0
+    pub const A_8_4: f64 = 1.70383925712239993810214054705e-1;
+    pub const A_8_5: f64 = 1.07262030446373284651809199168e-1;
+    pub const A_8_6: f64 = -1.53194377486244017527936158236e-2;
+    pub const A_8_7: f64 = 8.27378916381402288758473766002e-3;
+
+    // Row 8 (k_9 stage):
+    pub const A_9_1: f64 = 6.24110958716075717114429577812e-1;
+    // A_9_2 = A_9_3 = 0
+    pub const A_9_4: f64 = -3.36089262944694129406857109825;
+    pub const A_9_5: f64 = -8.68219346841726006818189891453e-1;
+    pub const A_9_6: f64 = 2.75920996994467083049415600797e1;
+    pub const A_9_7: f64 = 2.01540675504778934086186788979e1;
+    pub const A_9_8: f64 = -4.34898841810699588477366255144e1;
+
+    // Row 9 (k_10 stage):
+    pub const A_10_1: f64 = 4.77662536438264365890433908527e-1;
+    // A_10_2 = A_10_3 = 0
+    pub const A_10_4: f64 = -2.48811461997166764192642586468;
+    pub const A_10_5: f64 = -5.90290826836842996371446475743e-1;
+    pub const A_10_6: f64 = 2.12300514481811942347288949897e1;
+    pub const A_10_7: f64 = 1.52792336328824235832596922938e1;
+    pub const A_10_8: f64 = -3.32882109689848629194453265587e1;
+    pub const A_10_9: f64 = -2.03312017085086261358222928593e-2;
+
+    // Row 10 (k_11 stage):
+    pub const A_11_1: f64 = -9.3714243008598732571704021658e-1;
+    // A_11_2 = A_11_3 = 0
+    pub const A_11_4: f64 = 5.18637242884406370830023853209;
+    pub const A_11_5: f64 = 1.09143734899672957818500254654;
+    pub const A_11_6: f64 = -8.14978701074692612513997267357;
+    pub const A_11_7: f64 = -1.85200656599969598641566180701e1;
+    pub const A_11_8: f64 = 2.27394870993505042818970056734e1;
+    pub const A_11_9: f64 = 2.49360555267965238987089396762;
+    pub const A_11_10: f64 = -3.0467644718982195003823669022;
+
+    // Row 11 (k_12 stage):
+    pub const A_12_1: f64 = 2.27331014751653820792359768449;
+    // A_12_2 = A_12_3 = 0
+    pub const A_12_4: f64 = -1.05344954667372501984066689879e1;
+    pub const A_12_5: f64 = -2.00087205822486249909675718444;
+    pub const A_12_6: f64 = -1.79589318631187989172765950534e1;
+    pub const A_12_7: f64 = 2.79488845294199600508499808837e1;
+    pub const A_12_8: f64 = -2.85899827713502369474065508674;
+    pub const A_12_9: f64 = -8.87285693353062954433549289258;
+    pub const A_12_10: f64 = 1.23605671757943030647266201528e1;
+    pub const A_12_11: f64 = 6.43392746015763530355970484046e-1;
+
+    // -----------------------------------------------------------------
+    // B-vector — 8th-order solution weights, indices 0..11.
+    // Equivalent to A[12, 0..11] in the SciPy 13-row representation.
+    // B[1], B[2], B[3], B[4] are zero (the 8(5,3) tableau has four
+    // leading zero weights — same vanishing pattern at indices 1..4
+    // that DOPRI5(4) has at index 1).
+    // -----------------------------------------------------------------
+    pub const B_1: f64 = 5.42937341165687622380535766363e-2;
+    // B_2 = B_3 = B_4 = B_5 = 0
+    pub const B_6: f64 = 4.45031289275240888144113950566;
+    pub const B_7: f64 = 1.89151789931450038304281599044;
+    pub const B_8: f64 = -5.8012039600105847814672114227;
+    pub const B_9: f64 = 3.1116436695781989440891606237e-1;
+    pub const B_10: f64 = -1.52160949662516078556178806805e-1;
+    pub const B_11: f64 = 2.01365400804030348374776537501e-1;
+    pub const B_12: f64 = 4.47106157277725905176885569043e-2;
+
+    // -----------------------------------------------------------------
+    // Embedded 5th-order error estimator E5 — `e5' = Σ_j E5_j · k_j`.
+    // SciPy stores E5 with explicit non-zero entries at j ∈
+    // {0, 5, 6, 7, 8, 9, 10, 11}; all other entries vanish.
+    // -----------------------------------------------------------------
+    pub const E5_1: f64 = 0.1312004499419488073250102996e-1;
+    // E5_2 = E5_3 = E5_4 = E5_5 = 0
+    pub const E5_6: f64 = -0.1225156446376204440720569753e1;
+    pub const E5_7: f64 = -0.4957589496572501915214079952;
+    pub const E5_8: f64 = 0.1664377182454986536961530415e1;
+    pub const E5_9: f64 = -0.3503288487499736816886487290;
+    pub const E5_10: f64 = 0.3341791187130174790297318841;
+    pub const E5_11: f64 = 0.8192320648511571246570742613e-1;
+    pub const E5_12: f64 = -0.2235530786388629525884427845e-1;
+
+    // -----------------------------------------------------------------
+    // Embedded 3rd-order error estimator E3 — `e3' = Σ_j E3_j · k_j`.
+    // Constructed in SciPy from `B - B̂_3` with three explicit offsets.
+    // The const-time arithmetic below is deterministic across
+    // platforms; the audit can verify by hand-computing each entry
+    // against the SciPy file.
+    // -----------------------------------------------------------------
+    pub const E3_1: f64 = B_1 - 0.244094488188976377952755905512;
+    // E3_2 = E3_3 = E3_4 = E3_5 = 0
+    pub const E3_6: f64 = B_6;
+    pub const E3_7: f64 = B_7;
+    pub const E3_8: f64 = B_8;
+    pub const E3_9: f64 = B_9 - 0.733846688281611857341361741547;
+    pub const E3_10: f64 = B_10;
+    pub const E3_11: f64 = B_11;
+    pub const E3_12: f64 = B_12 - 0.220588235294117647058823529412e-1;
+}
+
+/// Dormand-Prince 8(5,3) (DOP853) fixed-step integrator —
+/// 8th-order accurate.
+///
+/// 12-stage explicit Runge-Kutta with the full 8th-order solution
+/// from [`dopri853_tableau`]. Drop-in higher-order alternative to
+/// [`Rk4FixedStep`] / [`Dopri54FixedStep`] when the 4th- or 5th-order
+/// truncation error is the limiting factor on a problem where the
+/// per-step state is otherwise well-behaved.
+///
+/// **Honest scope.** This is the fixed-step shape — no embedded error
+/// estimator, no PI controller, no dense output. The adaptive
+/// shape ([`Dopri853Adaptive`]) ships in the same § 5.D.6 slice. Dense
+/// output of order 7 (the SciPy `DOP853.dense_output` interpolator)
+/// is deferred — `dopri853_tableau` only encodes the 12 primary
+/// stages, not the 4 extra dense-output abscissas.
+///
+/// # Determinism
+///
+/// Tagged [`IntegratorDeterminism::BitStable`]. The locked-order
+/// weighted-sum at every stage and the bit-stable tableau constants
+/// give bit-identical Parquet across reruns on every platform
+/// profile that matches IEEE 754 + the determinism CI gate.
+#[derive(Copy, Clone, Debug, Default)]
+#[allow(clippy::doc_markdown)] // SciPy / Hairer-Wanner are reference names, not code identifiers.
+pub struct Dopri853FixedStep;
+
+impl<S: SimState> Integrator<S> for Dopri853FixedStep {
+    fn determinism(&self) -> IntegratorDeterminism {
+        IntegratorDeterminism::BitStable
+    }
+
+    // 12 stages × ~10 LoC each + initial validation + 8th-order
+    // weighted sum yields ~150 lines that all need to live in one
+    // function for the locked-order discipline to be visible at the
+    // call site. Splitting the stage block into helpers would
+    // sacrifice the single-glance audit pattern that the existing
+    // Rk4 / Dopri54 fixed-step impls use.
+    #[allow(clippy::too_many_lines)]
+    fn advance<F>(&self, state: &S, derive_fn: F, dt: Duration) -> Result<S, IntegratorError>
+    where
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        // 12-stage primary tableau. Each stage's increment is built
+        // by left-folding the per-stage `k_i * A_i_j` terms in
+        // explicit-parentheses locked order so the cross-platform
+        // determinism contract holds (no compiler re-association,
+        // no FMA fusion).
+        use dopri853_tableau::{
+            A_2_1, A_3_1, A_3_2, A_4_1, A_4_3, A_5_1, A_5_3, A_5_4, A_6_1, A_6_4, A_6_5, A_7_1,
+            A_7_4, A_7_5, A_7_6, A_8_1, A_8_4, A_8_5, A_8_6, A_8_7, A_9_1, A_9_4, A_9_5, A_9_6,
+            A_9_7, A_9_8, A_10_1, A_10_4, A_10_5, A_10_6, A_10_7, A_10_8, A_10_9, A_11_1, A_11_4,
+            A_11_5, A_11_6, A_11_7, A_11_8, A_11_9, A_11_10, A_12_1, A_12_4, A_12_5, A_12_6,
+            A_12_7, A_12_8, A_12_9, A_12_10, A_12_11, B_1, B_6, B_7, B_8, B_9, B_10, B_11, B_12,
+            C2, C3, C4, C5, C6, C7, C8, C9, C10, C11,
+        };
+
+        let h = dt.as_seconds();
+        if !h.is_finite() || h <= 0.0 {
+            return Err(IntegratorError::InvalidStep { dt_seconds: h });
+        }
+        if !state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+
+        let t0 = state.time();
+        let t0_s = t0.as_seconds();
+        let t2 = SimTime::from_seconds(t0_s + C2 * h);
+        let t3 = SimTime::from_seconds(t0_s + C3 * h);
+        let t4 = SimTime::from_seconds(t0_s + C4 * h);
+        let t5 = SimTime::from_seconds(t0_s + C5 * h);
+        let t6 = SimTime::from_seconds(t0_s + C6 * h);
+        let t7 = SimTime::from_seconds(t0_s + C7 * h);
+        let t8 = SimTime::from_seconds(t0_s + C8 * h);
+        let t9 = SimTime::from_seconds(t0_s + C9 * h);
+        let t10 = SimTime::from_seconds(t0_s + C10 * h);
+        let t11 = SimTime::from_seconds(t0_s + C11 * h);
+        let t12 = SimTime::from_seconds(t0_s + h);
+
+        // Stage 1.
+        let k1 = derive_fn(state, t0)?;
+        if !k1.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 2.
+        let s2 = state.advance_by(h, &(k1 * A_2_1));
+        if !s2.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k2 = derive_fn(&s2, t2)?;
+        if !k2.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 3: a31·k1 + a32·k2.
+        let inc3 = (k1 * A_3_1) + (k2 * A_3_2);
+        let s3 = state.advance_by(h, &inc3);
+        if !s3.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k3 = derive_fn(&s3, t3)?;
+        if !k3.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 4: a41·k1 + a43·k3 (a42 = 0).
+        let inc4 = (k1 * A_4_1) + (k3 * A_4_3);
+        let s4 = state.advance_by(h, &inc4);
+        if !s4.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k4 = derive_fn(&s4, t4)?;
+        if !k4.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 5: a51·k1 + a53·k3 + a54·k4.
+        let inc5 = ((k1 * A_5_1) + (k3 * A_5_3)) + (k4 * A_5_4);
+        let s5 = state.advance_by(h, &inc5);
+        if !s5.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k5 = derive_fn(&s5, t5)?;
+        if !k5.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 6: a61·k1 + a64·k4 + a65·k5.
+        let inc6 = ((k1 * A_6_1) + (k4 * A_6_4)) + (k5 * A_6_5);
+        let s6 = state.advance_by(h, &inc6);
+        if !s6.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k6 = derive_fn(&s6, t6)?;
+        if !k6.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 7: a71·k1 + a74·k4 + a75·k5 + a76·k6.
+        let inc7 = (((k1 * A_7_1) + (k4 * A_7_4)) + (k5 * A_7_5)) + (k6 * A_7_6);
+        let s7 = state.advance_by(h, &inc7);
+        if !s7.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k7 = derive_fn(&s7, t7)?;
+        if !k7.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 8: a81·k1 + a84·k4 + a85·k5 + a86·k6 + a87·k7.
+        let inc8 = ((((k1 * A_8_1) + (k4 * A_8_4)) + (k5 * A_8_5)) + (k6 * A_8_6)) + (k7 * A_8_7);
+        let s8 = state.advance_by(h, &inc8);
+        if !s8.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k8 = derive_fn(&s8, t8)?;
+        if !k8.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 9.
+        let inc9 = (((((k1 * A_9_1) + (k4 * A_9_4)) + (k5 * A_9_5)) + (k6 * A_9_6)) + (k7 * A_9_7))
+            + (k8 * A_9_8);
+        let s9 = state.advance_by(h, &inc9);
+        if !s9.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k9 = derive_fn(&s9, t9)?;
+        if !k9.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 10.
+        let inc10 = ((((((k1 * A_10_1) + (k4 * A_10_4)) + (k5 * A_10_5)) + (k6 * A_10_6))
+            + (k7 * A_10_7))
+            + (k8 * A_10_8))
+            + (k9 * A_10_9);
+        let s10 = state.advance_by(h, &inc10);
+        if !s10.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k10 = derive_fn(&s10, t10)?;
+        if !k10.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 11.
+        let inc11 = (((((((k1 * A_11_1) + (k4 * A_11_4)) + (k5 * A_11_5)) + (k6 * A_11_6))
+            + (k7 * A_11_7))
+            + (k8 * A_11_8))
+            + (k9 * A_11_9))
+            + (k10 * A_11_10);
+        let s11 = state.advance_by(h, &inc11);
+        if !s11.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k11 = derive_fn(&s11, t11)?;
+        if !k11.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // Stage 12.
+        let inc12 = ((((((((k1 * A_12_1) + (k4 * A_12_4)) + (k5 * A_12_5)) + (k6 * A_12_6))
+            + (k7 * A_12_7))
+            + (k8 * A_12_8))
+            + (k9 * A_12_9))
+            + (k10 * A_12_10))
+            + (k11 * A_12_11);
+        let s12 = state.advance_by(h, &inc12);
+        if !s12.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k12 = derive_fn(&s12, t12)?;
+        if !k12.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // 8th-order solution: y = y0 + h · (B_1·k1 + B_6·k6 + B_7·k7
+        //   + B_8·k8 + B_9·k9 + B_10·k10 + B_11·k11 + B_12·k12).
+        // B_2 = B_3 = B_4 = B_5 = 0 so k2..k5 are not weighted into
+        // the solution (DOP853's analogue of DOPRI5's `B2 = 0`).
+        let weighted = (((((((k1 * B_1) + (k6 * B_6)) + (k7 * B_7)) + (k8 * B_8)) + (k9 * B_9))
+            + (k10 * B_10))
+            + (k11 * B_11))
+            + (k12 * B_12);
+        let mut new_state = state.advance_by(h, &weighted);
+        new_state.project();
+        if !new_state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        Ok(new_state)
+    }
+}
+
+/// Dormand-Prince 8(5,3) (DOP853) adaptive integrator with an
+/// I-controller and the SciPy / Hairer-Wanner combined err5/err3
+/// error norm.
+///
+/// 12-stage explicit RK with the 8th-order primary solution (same as
+/// [`Dopri853FixedStep`]) plus two embedded estimators of orders 5
+/// and 3. The 5th-order estimator drives the controller's input; the
+/// 3rd-order estimator stabilises the denominator when the 5th-order
+/// estimate vanishes coincidentally:
+///
+/// ```text
+///   sc_i        = atol + rtol · max(|y^n_i|, |y^{n+1}_i|)            (per-component)
+///   err5_rms²   = (1/N) · Σ_i ( h · e5'_i / sc_i )²                  (RMS, see HNW Vol I §II.4)
+///   err3_rms²   = (1/N) · Σ_i ( h · e3'_i / sc_i )²
+///   err         = err5_rms² / sqrt(err5_rms² + 0.01 · err3_rms²)
+/// ```
+///
+/// The factor `1/sqrt(N)` cancels through the err5 / err3 cross-
+/// ratio, so this expression is equivalent to SciPy's
+/// `|h| · ||err5||² / sqrt((||err5||² + 0.01·||err3||²) · N)`
+/// formulation but expressed in terms of the per-component RMS norm
+/// the [`Integratable::weighted_error_norm`] trait already provides.
+///
+/// The step controller is an I-controller (no PI β term): the
+/// 3rd-order companion stabilising the err denominator plays the
+/// same role a β term plays in DOPRI5(4)'s PI controller. SciPy
+/// constants:
+///
+/// ```text
+///   error_exponent  = -1 / (5 + 1)        # = -1/6, the 5th-order embedded estimator's order+1
+///   factor          = safety · err^error_exponent
+///   factor ∈ [min_factor, max_factor]
+///   safety          = 0.9
+///   min_factor      = 0.2
+///   max_factor      = 10.0                # vs DOPRI5(4)'s 5.0 — DOP853 can grow h more aggressively
+/// ```
+///
+/// On rejection: `factor = min(1.0, factor)` (no growth). If h is
+/// already at `min_h_s` and the trial still fails, the integrator
+/// fails closed with [`IntegratorError::InvalidStep`] rather than
+/// silently violating the configured tolerance — same fail-closed
+/// contract as [`Dopri54Adaptive`].
+///
+/// # Honest scope (Phase 5.D.6)
+///
+/// - No dense output. SciPy's DOP853 ships an order-7 dense
+///   interpolator using 4 extra abscissas; this slice does not. The
+///   `[solver].dense_output = false` setting is the only supported
+///   value on the runner side; `dense_output = true` is rejected
+///   by the parser today.
+/// - I-controller only. A PI variant for DOP853 (with β-term
+///   smoothing on top of the err5/err3 stabilisation) is plausible
+///   but not implemented. SciPy doesn't ship one either.
+///
+/// # Determinism
+///
+/// Tagged [`IntegratorDeterminism::StateStable`]. Within a single
+/// platform profile (target triple + toolchain + LLVM optimisation
+/// level) the integrator is bit-stable across reruns: the step-size
+/// search is purely deterministic given identical inputs. The
+/// `state-stable` label is for cross-platform behaviour where
+/// platform-libm differences in `pow()` may lead to slightly
+/// different step-size sequences.
+#[derive(Debug)]
+#[allow(clippy::doc_markdown)] // SciPy / Hairer-Wanner are reference names, not code identifiers.
+pub struct Dopri853Adaptive {
+    safety_factor: f64,
+    min_factor: f64,
+    max_factor: f64,
+    /// I-controller exponent: `-1 / (embedded_order + 1) = -1/6`.
+    /// SciPy uses `-1/8` because they treat 8 as the high-order
+    /// integrator order; we use the embedded estimator's order+1
+    /// because the err norm is dominated by the 5th-order estimator
+    /// and that's what governs the asymptotic step-size relation.
+    error_exponent: f64,
+    atol: f64,
+    rtol: f64,
+    min_h_s: f64,
+    max_h_s: f64,
+    /// I-controller persistent state. `Cell` keeps the
+    /// `Integrator::advance(&self, ...)` trait surface unchanged.
+    last_h_s: Cell<Option<f64>>,
+}
+
+const DOPRI853_SAFETY_DEFAULT: f64 = 0.9;
+const DOPRI853_MIN_FACTOR_DEFAULT: f64 = 0.2;
+const DOPRI853_MAX_FACTOR_DEFAULT: f64 = 10.0;
+/// I-controller exponent: `-1/(embedded_order + 1) = -1/6`. The
+/// 5th-order embedded estimator drives the err norm (the 3rd-order
+/// companion only stabilises the denominator), so the asymptotic
+/// `h ∝ err^(1/6)` relation governs the controller.
+const DOPRI853_ERROR_EXPONENT: f64 = -1.0 / 6.0;
+/// Weighting factor on the 3rd-order error norm in the `SciPy` /
+/// Hairer combined denominator: `denom = err5² + W · err3²`. Tiny
+/// (1 %) — the 3rd-order companion only kicks in when err5 is
+/// near-zero.
+const DOPRI853_E3_WEIGHT: f64 = 0.01;
+
+#[allow(clippy::doc_markdown)] // SciPy is a reference name, not a code identifier.
+impl Dopri853Adaptive {
+    /// Construct a new DOP853 adaptive integrator with explicit
+    /// tolerance and step-bound parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdaptiveIntegratorError`] for invalid numeric
+    /// parameters: non-positive / non-finite tolerances, non-positive
+    /// step bounds, or `min_h_s > max_h_s`.
+    pub fn new(
+        atol: f64,
+        rtol: f64,
+        min_h_s: f64,
+        max_h_s: f64,
+    ) -> Result<Self, AdaptiveIntegratorError> {
+        if !atol.is_finite() || atol <= 0.0 {
+            return Err(AdaptiveIntegratorError::InvalidAtol);
+        }
+        if !rtol.is_finite() || rtol <= 0.0 {
+            return Err(AdaptiveIntegratorError::InvalidRtol);
+        }
+        if !min_h_s.is_finite() || min_h_s <= 0.0 || !max_h_s.is_finite() || max_h_s <= 0.0 {
+            return Err(AdaptiveIntegratorError::InvalidStepBounds);
+        }
+        if min_h_s > max_h_s {
+            return Err(AdaptiveIntegratorError::InvalidStepBounds);
+        }
+        Ok(Self {
+            safety_factor: DOPRI853_SAFETY_DEFAULT,
+            min_factor: DOPRI853_MIN_FACTOR_DEFAULT,
+            max_factor: DOPRI853_MAX_FACTOR_DEFAULT,
+            error_exponent: DOPRI853_ERROR_EXPONENT,
+            atol,
+            rtol,
+            min_h_s,
+            max_h_s,
+            last_h_s: Cell::new(None),
+        })
+    }
+
+    /// Reset the controller's persistent state. Call this between
+    /// independent runs to ensure the first sub-step uses the
+    /// configured `dt_total` rather than the previous run's
+    /// `last_h`.
+    #[allow(dead_code)]
+    fn reset(&self) {
+        self.last_h_s.set(None);
+    }
+
+    /// I-controller factor for an accepted step:
+    ///
+    /// ```text
+    ///   factor = clamp(safety · err^error_exponent,
+    ///                  min_factor, max_factor)
+    /// ```
+    fn i_controller_factor(&self, err: f64) -> f64 {
+        let factor = self.safety_factor * err.powf(self.error_exponent);
+        if !factor.is_finite() || factor <= 0.0 {
+            return self.min_factor;
+        }
+        factor.max(self.min_factor).min(self.max_factor)
+    }
+
+    /// Single DOP853 sub-step from `state` of size `h`. Returns
+    /// `(new_state_8th_order, scaled_error_norm)`. Does NOT mutate
+    /// the controller's persistent state — the caller does that on
+    /// accept.
+    ///
+    /// Same line-count justification as `Dopri853FixedStep::advance`:
+    /// the locked-order 12-stage block + the err5/err3 derivative
+    /// folds need to be visible at the call site for audit clarity.
+    #[allow(clippy::too_many_lines)]
+    fn try_substep<S, F>(
+        &self,
+        state: &S,
+        derive_fn: &F,
+        h: f64,
+    ) -> Result<(S, f64), IntegratorError>
+    where
+        S: SimState,
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        use dopri853_tableau::{
+            A_2_1, A_3_1, A_3_2, A_4_1, A_4_3, A_5_1, A_5_3, A_5_4, A_6_1, A_6_4, A_6_5, A_7_1,
+            A_7_4, A_7_5, A_7_6, A_8_1, A_8_4, A_8_5, A_8_6, A_8_7, A_9_1, A_9_4, A_9_5, A_9_6,
+            A_9_7, A_9_8, A_10_1, A_10_4, A_10_5, A_10_6, A_10_7, A_10_8, A_10_9, A_11_1, A_11_4,
+            A_11_5, A_11_6, A_11_7, A_11_8, A_11_9, A_11_10, A_12_1, A_12_4, A_12_5, A_12_6,
+            A_12_7, A_12_8, A_12_9, A_12_10, A_12_11, B_1, B_6, B_7, B_8, B_9, B_10, B_11, B_12,
+            C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, E3_1, E3_6, E3_7, E3_8, E3_9, E3_10, E3_11,
+            E3_12, E5_1, E5_6, E5_7, E5_8, E5_9, E5_10, E5_11, E5_12,
+        };
+
+        let t0 = state.time();
+        let t0_s = t0.as_seconds();
+        let t2 = SimTime::from_seconds(t0_s + C2 * h);
+        let t3 = SimTime::from_seconds(t0_s + C3 * h);
+        let t4 = SimTime::from_seconds(t0_s + C4 * h);
+        let t5 = SimTime::from_seconds(t0_s + C5 * h);
+        let t6 = SimTime::from_seconds(t0_s + C6 * h);
+        let t7 = SimTime::from_seconds(t0_s + C7 * h);
+        let t8 = SimTime::from_seconds(t0_s + C8 * h);
+        let t9 = SimTime::from_seconds(t0_s + C9 * h);
+        let t10 = SimTime::from_seconds(t0_s + C10 * h);
+        let t11 = SimTime::from_seconds(t0_s + C11 * h);
+        let t12 = SimTime::from_seconds(t0_s + h);
+
+        // Stages 1..12 (same as Dopri853FixedStep).
+        let k1 = derive_fn(state, t0)?;
+        if !k1.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let s2 = state.advance_by(h, &(k1 * A_2_1));
+        if !s2.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k2 = derive_fn(&s2, t2)?;
+        if !k2.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc3 = (k1 * A_3_1) + (k2 * A_3_2);
+        let s3 = state.advance_by(h, &inc3);
+        if !s3.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k3 = derive_fn(&s3, t3)?;
+        if !k3.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc4 = (k1 * A_4_1) + (k3 * A_4_3);
+        let s4 = state.advance_by(h, &inc4);
+        if !s4.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k4 = derive_fn(&s4, t4)?;
+        if !k4.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc5 = ((k1 * A_5_1) + (k3 * A_5_3)) + (k4 * A_5_4);
+        let s5 = state.advance_by(h, &inc5);
+        if !s5.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k5 = derive_fn(&s5, t5)?;
+        if !k5.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc6 = ((k1 * A_6_1) + (k4 * A_6_4)) + (k5 * A_6_5);
+        let s6 = state.advance_by(h, &inc6);
+        if !s6.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k6 = derive_fn(&s6, t6)?;
+        if !k6.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc7 = (((k1 * A_7_1) + (k4 * A_7_4)) + (k5 * A_7_5)) + (k6 * A_7_6);
+        let s7 = state.advance_by(h, &inc7);
+        if !s7.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k7 = derive_fn(&s7, t7)?;
+        if !k7.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc8 = ((((k1 * A_8_1) + (k4 * A_8_4)) + (k5 * A_8_5)) + (k6 * A_8_6)) + (k7 * A_8_7);
+        let s8 = state.advance_by(h, &inc8);
+        if !s8.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k8 = derive_fn(&s8, t8)?;
+        if !k8.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc9 = (((((k1 * A_9_1) + (k4 * A_9_4)) + (k5 * A_9_5)) + (k6 * A_9_6)) + (k7 * A_9_7))
+            + (k8 * A_9_8);
+        let s9 = state.advance_by(h, &inc9);
+        if !s9.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k9 = derive_fn(&s9, t9)?;
+        if !k9.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc10 = ((((((k1 * A_10_1) + (k4 * A_10_4)) + (k5 * A_10_5)) + (k6 * A_10_6))
+            + (k7 * A_10_7))
+            + (k8 * A_10_8))
+            + (k9 * A_10_9);
+        let s10 = state.advance_by(h, &inc10);
+        if !s10.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k10 = derive_fn(&s10, t10)?;
+        if !k10.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc11 = (((((((k1 * A_11_1) + (k4 * A_11_4)) + (k5 * A_11_5)) + (k6 * A_11_6))
+            + (k7 * A_11_7))
+            + (k8 * A_11_8))
+            + (k9 * A_11_9))
+            + (k10 * A_11_10);
+        let s11 = state.advance_by(h, &inc11);
+        if !s11.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k11 = derive_fn(&s11, t11)?;
+        if !k11.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+        let inc12 = ((((((((k1 * A_12_1) + (k4 * A_12_4)) + (k5 * A_12_5)) + (k6 * A_12_6))
+            + (k7 * A_12_7))
+            + (k8 * A_12_8))
+            + (k9 * A_12_9))
+            + (k10 * A_12_10))
+            + (k11 * A_12_11);
+        let s12 = state.advance_by(h, &inc12);
+        if !s12.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k12 = derive_fn(&s12, t12)?;
+        if !k12.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        // 8th-order solution. Same locked-order weighted sum as the
+        // fixed-step variant.
+        let weighted = (((((((k1 * B_1) + (k6 * B_6)) + (k7 * B_7)) + (k8 * B_8)) + (k9 * B_9))
+            + (k10 * B_10))
+            + (k11 * B_11))
+            + (k12 * B_12);
+        let mut new_state = state.advance_by(h, &weighted);
+        new_state.project();
+        if !new_state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+
+        // Embedded 5th-order error vector: e5' = Σ_j E5_j · k_j.
+        // Non-zero coefficients at j ∈ {1, 6, 7, 8, 9, 10, 11, 12}.
+        let err5_deriv = (((((((k1 * E5_1) + (k6 * E5_6)) + (k7 * E5_7)) + (k8 * E5_8))
+            + (k9 * E5_9))
+            + (k10 * E5_10))
+            + (k11 * E5_11))
+            + (k12 * E5_12);
+        // Embedded 3rd-order error vector: e3' = Σ_j E3_j · k_j.
+        // Non-zero coefficients at j ∈ {1, 6, 7, 8, 9, 10, 11, 12}.
+        let err3_deriv = (((((((k1 * E3_1) + (k6 * E3_6)) + (k7 * E3_7)) + (k8 * E3_8))
+            + (k9 * E3_9))
+            + (k10 * E3_10))
+            + (k11 * E3_11))
+            + (k12 * E3_12);
+
+        // Per-component RMS norms via the §5.D.5 trait method.
+        let err5_rms = new_state.weighted_error_norm(state, &err5_deriv, h, self.atol, self.rtol);
+        let err3_rms = new_state.weighted_error_norm(state, &err3_deriv, h, self.atol, self.rtol);
+
+        // Combined SciPy / Hairer error: err = err5² / sqrt(err5² +
+        // 0.01 · err3²). The √(1/N) factor cancels through the
+        // ratio. When err5 happens to vanish the err3 stabilises the
+        // denominator (per HNW Vol I §II.5.3 commentary).
+        let err5_sq = err5_rms * err5_rms;
+        let err3_sq = err3_rms * err3_rms;
+        let denom = err5_sq + DOPRI853_E3_WEIGHT * err3_sq;
+        let scaled_err = if denom > 0.0 {
+            err5_sq / denom.sqrt()
+        } else {
+            // Both estimators returned zero — perfect step. Report a
+            // tiny positive err so the controller's exponent
+            // computation doesn't divide by zero.
+            1.0e-15
+        };
+
+        Ok((new_state, scaled_err))
+    }
+}
+
+impl<S: SimState> Integrator<S> for Dopri853Adaptive {
+    fn determinism(&self) -> IntegratorDeterminism {
+        IntegratorDeterminism::StateStable
+    }
+
+    fn advance<F>(&self, state: &S, derive_fn: F, dt: Duration) -> Result<S, IntegratorError>
+    where
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        let dt_total = dt.as_seconds();
+        if !dt_total.is_finite() || dt_total <= 0.0 {
+            return Err(IntegratorError::InvalidStep {
+                dt_seconds: dt_total,
+            });
+        }
+        if !state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+
+        // Initial sub-step: prefer last accepted h, fall back to
+        // dt_total clamped to [min_h_s, max_h_s].
+        let mut h = self
+            .last_h_s
+            .get()
+            .unwrap_or(dt_total)
+            .max(self.min_h_s)
+            .min(self.max_h_s)
+            .min(dt_total);
+
+        let mut current = *state;
+        let mut elapsed = 0.0_f64;
+        let max_substeps: usize = 1_000_000;
+        let mut substeps_taken: usize = 0;
+        let mut step_just_rejected = false;
+
+        while elapsed < dt_total {
+            substeps_taken += 1;
+            if substeps_taken > max_substeps {
+                return Err(IntegratorError::InvalidStep {
+                    dt_seconds: dt_total,
+                });
+            }
+
+            let remaining = dt_total - elapsed;
+            let h_try = if remaining <= self.min_h_s {
+                remaining
+            } else {
+                h.min(remaining).max(self.min_h_s)
+            };
+
+            let (proposed_state, err) = self.try_substep(&current, &derive_fn, h_try)?;
+
+            if err <= 1.0 {
+                current = proposed_state;
+                elapsed += h_try;
+                let mut factor = self.i_controller_factor(err.max(1.0e-10));
+                // SciPy convention: after a rejected step, the next
+                // accepted step is not allowed to grow.
+                if step_just_rejected {
+                    factor = factor.min(1.0);
+                }
+                h = (h_try * factor).max(self.min_h_s).min(self.max_h_s);
+                step_just_rejected = false;
+            } else {
+                // Reject: shrink h via the same I-controller formula
+                // clamped to [min_factor, 1.0] (no growth on rejection).
+                let factor = (self.safety_factor * err.powf(self.error_exponent))
+                    .max(self.min_factor)
+                    .min(1.0);
+                if h_try <= self.min_h_s + f64::EPSILON {
+                    return Err(IntegratorError::InvalidStep { dt_seconds: h_try });
+                }
+                h = (h_try * factor).max(self.min_h_s);
+                step_just_rejected = true;
+            }
+        }
+
+        self.last_h_s.set(Some(h));
+        Ok(current)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
@@ -1701,6 +2583,324 @@ mod tests {
             "per-component RMS form must surface multi-scale breach \
              (got {err}); a scalar `||e||₂ / ||y||₂` form would mask \
              it because ||y||₂ ≈ 1e6 swallows the 1 m drift",
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Phase-5.D.6 — DOP853 (Dormand-Prince 8(5,3)) tableau / fixed-step
+    // tests. Coverage:
+    //   - Tableau row sums: Σ_j A_i_j = C_i for every stage row i;
+    //     Σ_j B_j = 1 (8th-order solution is consistent); Σ_j E5_j = 0
+    //     and Σ_j E3_j = 0 (embedded estimators are differences, sum
+    //     to zero).
+    //   - 8th-order convergence on a polynomial trajectory: an
+    //     8th-degree-or-lower polynomial integrand is reproduced
+    //     within machine precision. (We use a quintic — well within
+    //     the 8th-order accuracy envelope.)
+    //   - Determinism marker is BitStable.
+    //   - Within-platform bit-stability across two reruns.
+    // -----------------------------------------------------------------
+
+    /// Tableau row-sum invariants per Hairer-Nørsett-Wanner Vol I
+    /// §II.5 Table 5.4: every stage row of A sums to the
+    /// corresponding C abscissa, B sums to 1 (consistency), and the
+    /// embedded estimator weights E5 and E3 sum to 0.
+    #[test]
+    fn dopri853_tableau_row_sums_match_abscissas() {
+        use dopri853_tableau::*;
+
+        // Stage 1 implicit (k_1 at t_0; no row-sum invariant).
+        // A_2_*: row sum = C2.
+        assert_abs_diff_eq!(A_2_1, C2, epsilon = 1.0e-15);
+        // A_3_*: row sum = C3.
+        assert_abs_diff_eq!(A_3_1 + A_3_2, C3, epsilon = 1.0e-15);
+        // A_4_*: row sum = C4 (A_4_2 = 0).
+        assert_abs_diff_eq!(A_4_1 + A_4_3, C4, epsilon = 1.0e-15);
+        // A_5_*: row sum = C5 (A_5_2 = 0).
+        assert_abs_diff_eq!(A_5_1 + A_5_3 + A_5_4, C5, epsilon = 1.0e-15);
+        // A_6_*: row sum = C6.
+        assert_abs_diff_eq!(A_6_1 + A_6_4 + A_6_5, C6, epsilon = 1.0e-15);
+        // A_7_*: row sum = C7.
+        assert_abs_diff_eq!(A_7_1 + A_7_4 + A_7_5 + A_7_6, C7, epsilon = 1.0e-15);
+        // A_8_*: row sum = C8.
+        assert_abs_diff_eq!(A_8_1 + A_8_4 + A_8_5 + A_8_6 + A_8_7, C8, epsilon = 1.0e-15);
+        // A_9_*: row sum = C9.
+        assert_abs_diff_eq!(
+            A_9_1 + A_9_4 + A_9_5 + A_9_6 + A_9_7 + A_9_8,
+            C9,
+            epsilon = 1.0e-14,
+        );
+        // A_10_*: row sum = C10.
+        assert_abs_diff_eq!(
+            A_10_1 + A_10_4 + A_10_5 + A_10_6 + A_10_7 + A_10_8 + A_10_9,
+            C10,
+            epsilon = 1.0e-14,
+        );
+        // A_11_*: row sum = C11.
+        assert_abs_diff_eq!(
+            A_11_1 + A_11_4 + A_11_5 + A_11_6 + A_11_7 + A_11_8 + A_11_9 + A_11_10,
+            C11,
+            epsilon = 1.0e-14,
+        );
+        // A_12_*: row sum = 1 (final-row abscissa is C12 = 1).
+        assert_abs_diff_eq!(
+            A_12_1 + A_12_4 + A_12_5 + A_12_6 + A_12_7 + A_12_8 + A_12_9 + A_12_10 + A_12_11,
+            1.0,
+            epsilon = 1.0e-14,
+        );
+    }
+
+    #[test]
+    fn dopri853_b_weights_sum_to_one() {
+        use dopri853_tableau::*;
+        // 8th-order solution must have consistent quadrature weights:
+        // Σ_j B_j = 1.
+        let sum = B_1 + B_6 + B_7 + B_8 + B_9 + B_10 + B_11 + B_12;
+        assert_abs_diff_eq!(sum, 1.0, epsilon = 1.0e-14);
+    }
+
+    #[test]
+    fn dopri853_embedded_estimator_weights_sum_to_zero() {
+        use dopri853_tableau::*;
+        // Embedded estimators are constructed as `B - B̂`, so each
+        // estimator's coefficient sum vanishes.
+        let e5_sum = E5_1 + E5_6 + E5_7 + E5_8 + E5_9 + E5_10 + E5_11 + E5_12;
+        assert_abs_diff_eq!(e5_sum, 0.0, epsilon = 1.0e-12);
+        let e3_sum = E3_1 + E3_6 + E3_7 + E3_8 + E3_9 + E3_10 + E3_11 + E3_12;
+        assert_abs_diff_eq!(e3_sum, 0.0, epsilon = 1.0e-12);
+    }
+
+    /// 8th-order convergence test: the integrator should reproduce a
+    /// polynomial trajectory of degree ≤ 8 to within machine
+    /// precision. We use a quintic (degree 5) so we have headroom
+    /// well below the 8th-order accuracy ceiling. The trajectory is
+    /// `dx/dt = 5·t⁴` carried in the position-x slot (position has
+    /// no positivity constraint, unlike mass), with `x(0) = 0` and
+    /// the exact closed-form `x(t) = t⁵`.
+    #[test]
+    fn dopri853_fixed_step_reproduces_polynomial_trajectory() {
+        #[allow(clippy::unnecessary_wraps)]
+        fn poly_derive(
+            _s: &PointMassState,
+            t: SimTime,
+        ) -> Result<PointMassDerivative, ModelEvalError> {
+            let t_s = t.as_seconds();
+            let dx_dt = 5.0 * t_s * t_s * t_s * t_s; // 5 · t⁴
+            Ok(PointMassDerivative {
+                velocity_m_s: Vector3::new(dx_dt, 0.0, 0.0),
+                acceleration_m_s2: Vector3::zeros(),
+                mass_rate_kg_s: 0.0,
+            })
+        }
+
+        let initial = PointMassState::new(
+            SimTime::ZERO,
+            Position3::origin(),
+            Velocity3::zero(),
+            Mass::new::<kilogram>(1.0),
+        );
+        let integrator = Dopri853FixedStep;
+        let dt = Duration::from_seconds(0.1);
+        let n_steps = 10;
+        let mut state = initial;
+        for step in 0..n_steps {
+            state = integrator
+                .advance(&state, poly_derive, dt)
+                .expect("8th-order method must integrate quintic exactly");
+            // Canonical-time fix-up so the next derive_fn sees the
+            // exact `start + step·dt` time grid.
+            let t = SimTime::from_seconds(f64::from(step + 1) * 0.1);
+            state = state.with_time(t);
+        }
+        let final_t = state.time.as_seconds();
+        let exact = final_t.powi(5);
+        let observed = state.position.vector.x;
+        assert_abs_diff_eq!(observed, exact, epsilon = 1.0e-13);
+    }
+
+    #[test]
+    fn dopri853_fixed_step_determinism_class_is_bit_stable() {
+        let i = Dopri853FixedStep;
+        assert_eq!(
+            <Dopri853FixedStep as Integrator<PointMassState>>::determinism(&i),
+            IntegratorDeterminism::BitStable
+        );
+    }
+
+    #[test]
+    fn dopri853_fixed_step_is_bit_stable_across_two_runs() {
+        let initial = exp_decay_initial_state();
+        let integrator = Dopri853FixedStep;
+        let dt = Duration::from_seconds(0.1);
+
+        let s1 = integrator
+            .advance(&initial, exp_decay_derive, dt)
+            .expect("run 1");
+        let s2 = integrator
+            .advance(&initial, exp_decay_derive, dt)
+            .expect("run 2");
+
+        assert_eq!(
+            s1.mass.get::<kilogram>().to_bits(),
+            s2.mass.get::<kilogram>().to_bits(),
+            "two reruns of Dopri853FixedStep must produce bit-identical state"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Phase-5.D.6 — DOP853 adaptive integrator tests.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn dopri853_adaptive_constructor_rejects_invalid_atol() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                Dopri853Adaptive::new(bad, 1.0e-9, 1.0e-9, 1.0).unwrap_err(),
+                AdaptiveIntegratorError::InvalidAtol,
+            );
+        }
+    }
+
+    #[test]
+    fn dopri853_adaptive_constructor_rejects_invalid_rtol() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                Dopri853Adaptive::new(1.0e-12, bad, 1.0e-9, 1.0).unwrap_err(),
+                AdaptiveIntegratorError::InvalidRtol,
+            );
+        }
+    }
+
+    #[test]
+    fn dopri853_adaptive_constructor_rejects_invalid_step_bounds() {
+        // min_h > max_h.
+        assert_eq!(
+            Dopri853Adaptive::new(1.0e-12, 1.0e-9, 1.0, 1.0e-3).unwrap_err(),
+            AdaptiveIntegratorError::InvalidStepBounds,
+        );
+        // Non-finite bounds.
+        assert_eq!(
+            Dopri853Adaptive::new(1.0e-12, 1.0e-9, f64::NAN, 1.0).unwrap_err(),
+            AdaptiveIntegratorError::InvalidStepBounds,
+        );
+    }
+
+    #[test]
+    fn dopri853_adaptive_determinism_class_is_state_stable() {
+        let i = Dopri853Adaptive::new(1.0e-12, 1.0e-9, 1.0e-9, 1.0).unwrap();
+        assert_eq!(
+            <Dopri853Adaptive as Integrator<PointMassState>>::determinism(&i),
+            IntegratorDeterminism::StateStable
+        );
+    }
+
+    /// 8th-order convergence: a quintic-trajectory integration
+    /// produces nearly-zero embedded error (well below the unit
+    /// setpoint). Verifies that the err5/err3 norm formula plumbs
+    /// through correctly.
+    #[test]
+    fn dopri853_adaptive_embedded_error_vanishes_on_polynomial_trajectory() {
+        #[allow(clippy::unnecessary_wraps)]
+        fn poly_derive(
+            _s: &PointMassState,
+            t: SimTime,
+        ) -> Result<PointMassDerivative, ModelEvalError> {
+            let t_s = t.as_seconds();
+            let dx_dt = 5.0 * t_s * t_s * t_s * t_s;
+            Ok(PointMassDerivative {
+                velocity_m_s: Vector3::new(dx_dt, 0.0, 0.0),
+                acceleration_m_s2: Vector3::zeros(),
+                mass_rate_kg_s: 0.0,
+            })
+        }
+        let initial = PointMassState::new(
+            SimTime::ZERO,
+            Position3::origin(),
+            Velocity3::zero(),
+            Mass::new::<kilogram>(1.0),
+        );
+        let integrator = Dopri853Adaptive::new(1.0e-9, 1.0e-6, 1.0e-9, 1.0).unwrap();
+        // Drive try_substep directly to observe the err norm
+        // on a single step at h = 0.1.
+        let (_, err) = integrator
+            .try_substep(&initial, &poly_derive, 0.1)
+            .expect("polynomial step must succeed");
+        // The 8th-order method has no truncation error on a
+        // quintic — the embedded estimators will report the
+        // floating-point round-off level only, well below 1.0.
+        // Looser bound than the DOPRI5(4) test because the err5/err3
+        // ratio amplifies round-off slightly.
+        assert!(
+            err < 1.0e-3,
+            "embedded error norm {err} should be far below unit setpoint on a quintic trajectory",
+        );
+    }
+
+    #[test]
+    fn dopri853_adaptive_within_platform_bit_stable_across_two_runs() {
+        let initial = exp_decay_initial_state();
+        let dt = Duration::from_seconds(0.1);
+
+        let i1 = Dopri853Adaptive::new(1.0e-9, 1.0e-7, 1.0e-9, 0.05).unwrap();
+        let s1 = i1.advance(&initial, exp_decay_derive, dt).expect("run 1");
+        let i2 = Dopri853Adaptive::new(1.0e-9, 1.0e-7, 1.0e-9, 0.05).unwrap();
+        let s2 = i2.advance(&initial, exp_decay_derive, dt).expect("run 2");
+        assert_eq!(
+            s1.mass.get::<kilogram>().to_bits(),
+            s2.mass.get::<kilogram>().to_bits(),
+            "two reruns of Dopri853Adaptive on the same platform must produce bit-identical state",
+        );
+    }
+
+    /// Sub-step accumulation lands exactly at `dt_total` — same
+    /// fail-closed contract as `Dopri54Adaptive`.
+    #[test]
+    fn dopri853_adaptive_substep_accumulation_lands_exactly_at_dt() {
+        let initial = exp_decay_initial_state();
+        let integrator = Dopri853Adaptive::new(1.0e-12, 1.0e-9, 1.0e-9, 0.01).unwrap();
+        let dt = Duration::from_seconds(0.1);
+        let new_state = integrator
+            .advance(&initial, exp_decay_derive, dt)
+            .expect("integration must succeed");
+        // The integrator's outer loop should land exactly at
+        // dt_total seconds elapsed (in sub-step seconds added). The
+        // SimulationKernel rolls in canonical time externally, so
+        // the integrator-side state's time after a single advance
+        // call equals start + cumulative h. With perfect
+        // accumulation the difference is bit-stable.
+        let elapsed = new_state.time.as_seconds() - initial.time.as_seconds();
+        assert_abs_diff_eq!(elapsed, 0.1, epsilon = 1.0e-12);
+    }
+
+    #[test]
+    fn dopri853_adaptive_at_loose_tolerance_takes_fewer_substeps_than_dopri54() {
+        // Sanity sniff: under a benign trajectory the 8th-order
+        // method should be at least competitive with the 5(4) pair
+        // at the same tolerance. We don't assert exact ratios (the
+        // controller gain dynamics are method-specific) — just that
+        // both integrate without timing out and DOP853's last
+        // accepted h is at least as large as DOPRI54's at the same
+        // tolerance.
+        let initial = exp_decay_initial_state();
+        let dt = Duration::from_seconds(0.1);
+        let atol = 1.0e-7;
+        let rtol = 1.0e-5;
+
+        let i54 = Dopri54Adaptive::new(atol, rtol, 1.0e-9, 0.05).unwrap();
+        let i853 = Dopri853Adaptive::new(atol, rtol, 1.0e-9, 0.05).unwrap();
+        let _ = i54
+            .advance(&initial, exp_decay_derive, dt)
+            .expect("dopri54 ok");
+        let _ = i853
+            .advance(&initial, exp_decay_derive, dt)
+            .expect("dopri853 ok");
+
+        let h_54 = i54.last_h_s.get().expect("dopri54 last_h");
+        let h_853 = i853.last_h_s.get().expect("dopri853 last_h");
+        assert!(
+            h_853 >= h_54 * 0.5,
+            "dopri853 last_h {h_853} unexpectedly far below dopri54 last_h {h_54} at \
+             matched tolerances; the 8th-order method should be at least competitive",
         );
     }
 

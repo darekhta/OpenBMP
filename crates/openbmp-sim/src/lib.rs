@@ -60,8 +60,8 @@ pub use events::{
     PhaseTransition,
 };
 pub use integrator::{
-    AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Integrator, IntegratorDeterminism,
-    Rk4FixedStep,
+    AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Dopri853Adaptive,
+    Dopri853FixedStep, Integrator, IntegratorDeterminism, Rk4FixedStep,
 };
 pub use kernel::{Phase1Kernel, RigidBodyKernel, RigidModels, SimulationConfig, SimulationKernel};
 pub use models::{

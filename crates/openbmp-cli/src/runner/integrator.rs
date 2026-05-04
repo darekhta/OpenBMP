@@ -1,31 +1,43 @@
-//! Phase-5.D.4 runner-side integrator dispatch.
+//! Phase-5.D.4 / 5.D.5 / 5.D.6 runner-side integrator dispatch.
 //!
 //! The kernel ([`openbmp_sim::SimulationKernel`]) is generic over the
 //! `Integrator<S>` type, which means the integrator selection
 //! propagates into the kernel's concrete type. To let the runner pick
-//! between [`Rk4FixedStep`], [`Dopri54FixedStep`], and
-//! [`Dopri54Adaptive`] based on the scenario's `[solver]` block
+//! between [`Rk4FixedStep`], [`Dopri54FixedStep`],
+//! [`Dopri54Adaptive`], [`Dopri853FixedStep`], and
+//! [`Dopri853Adaptive`] based on the scenario's `[solver]` block
 //! without duplicating the entire run-loop body per integrator
-//! variant, we wrap the three concretes in a single enum that itself
+//! variant, we wrap the five concretes in a single enum that itself
 //! implements `Integrator<S>` and delegates to the active variant.
 //!
 //! The dispatch overhead is one match arm per [`Integrator::advance`]
 //! call. The compiler inlines the per-variant body, so the IEEE 754
 //! arithmetic in each branch is identical to the standalone integrator.
 //!
-//! Honest scope (Phase 5.D.4):
+//! Wired triples (positive selection):
 //!
-//! - The `Adaptive` variant is wired only on the
-//!   [`crate::runner::phase2_point_mass`] runner. The rigid-body
-//!   runner continues to hardcode [`Rk4FixedStep`] until § 5.D.5
-//!   ships and fails closed when a non-RK4 solver is requested there.
-//! - The DOPRI8(7) trajectory method named in the `[solver]` block
-//!   parses but the runner rejects it with `UnsupportedScenario`.
+//! - `(fixed-step-explicit, rk4, bit-stable)` → [`Rk4FixedStep`]
+//!   (the no-`[solver]` default — preserves the byte-stable Phase-1
+//!   contract).
+//! - `(fixed-step-explicit, dopri54, bit-stable)` →
+//!   [`Dopri54FixedStep`] (§ 5.D.3).
+//! - `(adaptive-explicit, dopri54, state-stable)` →
+//!   [`Dopri54Adaptive`] (§ 5.D.4 — point-mass runner; § 5.D.5
+//!   wires the rigid-body runner through the same enum dispatch).
+//! - `(fixed-step-explicit, dopri853, bit-stable)` →
+//!   [`Dopri853FixedStep`] (§ 5.D.6).
+//! - `(adaptive-explicit, dopri853, state-stable)` →
+//!   [`Dopri853Adaptive`] (§ 5.D.6).
+//!
+//! Still rejected as unwired: `rkf78`, `implicit-source-term`,
+//! `partitioned-hypersonic`. Both runners (point-mass and rigid-body)
+//! dispatch through this module today.
 
 use openbmp_scenario::{ScenarioDocument, SolverConfig};
 use openbmp_sim::{
-    AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Integrator, IntegratorDeterminism,
-    IntegratorError, ModelEvalError, Rk4FixedStep, SimState,
+    AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Dopri853Adaptive,
+    Dopri853FixedStep, Integrator, IntegratorDeterminism, IntegratorError, ModelEvalError,
+    Rk4FixedStep, SimState,
 };
 
 use crate::error::CliError;
@@ -39,6 +51,11 @@ pub enum RuntimeIntegrator {
     Dopri54Fixed(Dopri54FixedStep),
     /// Dormand-Prince 5(4) adaptive with PI step controller.
     Dopri54Adaptive(Box<Dopri54Adaptive>),
+    /// Dormand-Prince 8(5,3) (DOP853) fixed-step (8th-order solution).
+    Dopri853Fixed(Dopri853FixedStep),
+    /// DOP853 adaptive with err5/err3 stabilised error norm and
+    /// I-controller.
+    Dopri853Adaptive(Box<Dopri853Adaptive>),
 }
 
 impl std::fmt::Debug for RuntimeIntegrator {
@@ -47,6 +64,8 @@ impl std::fmt::Debug for RuntimeIntegrator {
             Self::Rk4(_) => f.write_str("RuntimeIntegrator::Rk4"),
             Self::Dopri54Fixed(_) => f.write_str("RuntimeIntegrator::Dopri54Fixed"),
             Self::Dopri54Adaptive(_) => f.write_str("RuntimeIntegrator::Dopri54Adaptive"),
+            Self::Dopri853Fixed(_) => f.write_str("RuntimeIntegrator::Dopri853Fixed"),
+            Self::Dopri853Adaptive(_) => f.write_str("RuntimeIntegrator::Dopri853Adaptive"),
         }
     }
 }
@@ -57,6 +76,8 @@ impl<S: SimState> Integrator<S> for RuntimeIntegrator {
             Self::Rk4(i) => <Rk4FixedStep as Integrator<S>>::determinism(i),
             Self::Dopri54Fixed(i) => <Dopri54FixedStep as Integrator<S>>::determinism(i),
             Self::Dopri54Adaptive(i) => <Dopri54Adaptive as Integrator<S>>::determinism(i),
+            Self::Dopri853Fixed(i) => <Dopri853FixedStep as Integrator<S>>::determinism(i),
+            Self::Dopri853Adaptive(i) => <Dopri853Adaptive as Integrator<S>>::determinism(i),
         }
     }
 
@@ -73,6 +94,8 @@ impl<S: SimState> Integrator<S> for RuntimeIntegrator {
             Self::Rk4(i) => i.advance(state, derive_fn, dt),
             Self::Dopri54Fixed(i) => i.advance(state, derive_fn, dt),
             Self::Dopri54Adaptive(i) => i.advance(state, derive_fn, dt),
+            Self::Dopri853Fixed(i) => i.advance(state, derive_fn, dt),
+            Self::Dopri853Adaptive(i) => i.advance(state, derive_fn, dt),
         }
     }
 }
@@ -117,6 +140,9 @@ fn build_runtime_integrator_from_solver(
         ("fixed-step-explicit", "dopri54", "bit-stable") => {
             Ok(RuntimeIntegrator::Dopri54Fixed(Dopri54FixedStep))
         }
+        ("fixed-step-explicit", "dopri853", "bit-stable") => {
+            Ok(RuntimeIntegrator::Dopri853Fixed(Dopri853FixedStep))
+        }
         ("adaptive-explicit", "dopri54", "state-stable") => {
             let adaptive = solver.adaptive.as_ref().ok_or_else(|| {
                 // Defensive: scenario validator already enforces
@@ -137,20 +163,36 @@ fn build_runtime_integrator_from_solver(
             })?;
             Ok(RuntimeIntegrator::Dopri54Adaptive(Box::new(integrator)))
         }
-        ("fixed-step-explicit", method, _) if method == "dopri853" || method == "rkf78" => {
-            Err(CliError::UnsupportedScenario {
-                what: format!(
-                    "solver.trajectory_method = {method:?} parses but is not wired \
-                     in the runner; deferred to a future slice"
-                ),
-            })
+        ("adaptive-explicit", "dopri853", "state-stable") => {
+            let adaptive = solver.adaptive.as_ref().ok_or_else(|| {
+                // Defensive: scenario validator already enforces
+                // [solver.adaptive] is present for adaptive-explicit.
+                CliError::UnsupportedScenario {
+                    what: "[solver.adaptive] block missing for adaptive-explicit profile"
+                        .to_owned(),
+                }
+            })?;
+            let integrator = Dopri853Adaptive::new(
+                adaptive.atol,
+                adaptive.rtol,
+                adaptive.min_dt_s,
+                adaptive.max_dt_s,
+            )
+            .map_err(|e: AdaptiveIntegratorError| CliError::UnsupportedScenario {
+                what: format!("[solver.adaptive] params rejected by Dopri853Adaptive: {e:?}"),
+            })?;
+            Ok(RuntimeIntegrator::Dopri853Adaptive(Box::new(integrator)))
         }
-        ("adaptive-explicit", method, _) if method != "dopri54" => {
+        ("fixed-step-explicit", "rkf78", _) => Err(CliError::UnsupportedScenario {
+            what: "solver.trajectory_method = \"rkf78\" parses but is not wired in the runner; \
+                 deferred to a future slice"
+                .to_owned(),
+        }),
+        ("adaptive-explicit", method, _) if method != "dopri54" && method != "dopri853" => {
             Err(CliError::UnsupportedScenario {
                 what: format!(
                     "adaptive-explicit + {method:?} parses but is not wired in the \
-                     runner; only dopri54 is wired (Phase 5.D.4). DOPRI8(7) is \
-                     deferred to § 5.D.5"
+                     runner; wired methods are dopri54 (§ 5.D.4) and dopri853 (§ 5.D.6)"
                 ),
             })
         }
@@ -239,15 +281,33 @@ mod tests {
     }
 
     #[test]
-    fn fixed_step_dopri853_is_rejected_as_unwired() {
+    fn fixed_step_dopri853_bit_stable_selects_dopri853_fixed() {
         let s = solver("fixed-step-explicit", "dopri853", "bit-stable", None);
-        let err = build_runtime_integrator_from_solver(Some(&s)).unwrap_err();
-        let CliError::UnsupportedScenario { what } = err else {
-            panic!("expected UnsupportedScenario, got {err:?}");
+        let result = build_runtime_integrator_from_solver(Some(&s)).unwrap();
+        let RuntimeIntegrator::Dopri853Fixed(_) = &result else {
+            panic!("expected Dopri853Fixed, got {result:?}");
         };
-        assert!(
-            what.contains("dopri853"),
-            "error message should name dopri853: {what}"
+        assert_eq!(
+            <RuntimeIntegrator as Integrator<openbmp_state::PointMassState>>::determinism(&result),
+            IntegratorDeterminism::BitStable
+        );
+    }
+
+    #[test]
+    fn adaptive_explicit_dopri853_selects_dopri853_adaptive() {
+        let s = solver(
+            "adaptive-explicit",
+            "dopri853",
+            "state-stable",
+            Some(well_formed_adaptive()),
+        );
+        let result = build_runtime_integrator_from_solver(Some(&s)).unwrap();
+        let RuntimeIntegrator::Dopri853Adaptive(_) = &result else {
+            panic!("expected Dopri853Adaptive, got {result:?}");
+        };
+        assert_eq!(
+            <RuntimeIntegrator as Integrator<openbmp_state::PointMassState>>::determinism(&result),
+            IntegratorDeterminism::StateStable
         );
     }
 
@@ -265,10 +325,10 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_explicit_dopri853_is_rejected_with_dopri54_only_message() {
+    fn adaptive_explicit_rkf78_is_rejected_as_unwired() {
         let s = solver(
             "adaptive-explicit",
-            "dopri853",
+            "rkf78",
             "state-stable",
             Some(well_formed_adaptive()),
         );
@@ -277,8 +337,21 @@ mod tests {
             panic!("expected UnsupportedScenario, got {err:?}");
         };
         assert!(
-            what.contains("dopri54 is wired"),
-            "error message should explain only dopri54 is wired: {what}"
+            what.contains("rkf78") && what.contains("dopri853"),
+            "error message should name rkf78 and reference wired dopri54/dopri853: {what}"
+        );
+    }
+
+    #[test]
+    fn adaptive_explicit_dopri853_with_missing_adaptive_block_returns_defensive_error() {
+        let s = solver("adaptive-explicit", "dopri853", "state-stable", None);
+        let err = build_runtime_integrator_from_solver(Some(&s)).unwrap_err();
+        let CliError::UnsupportedScenario { what } = err else {
+            panic!("expected UnsupportedScenario, got {err:?}");
+        };
+        assert!(
+            what.contains("[solver.adaptive] block missing"),
+            "error should call out missing adaptive block: {what}"
         );
     }
 
@@ -344,8 +417,11 @@ mod tests {
                     let result = build_runtime_integrator_from_solver(Some(&s));
                     let should_accept = matches!(
                         (profile, method, determinism),
-                        ("fixed-step-explicit", "rk4" | "dopri54", "bit-stable")
-                            | ("adaptive-explicit", "dopri54", "state-stable")
+                        (
+                            "fixed-step-explicit",
+                            "rk4" | "dopri54" | "dopri853",
+                            "bit-stable"
+                        ) | ("adaptive-explicit", "dopri54" | "dopri853", "state-stable")
                     );
 
                     assert_eq!(
