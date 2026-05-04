@@ -1470,8 +1470,10 @@ see scope deferrals below.
   inner loop is `try_substep` + accept/reject + PI factor.
   Persistent state (`last_h_s`, `last_err_prev`) lives in
   `Cell<Option<f64>>` so the `Integrator::advance(&self, ...)`
-  trait surface stays unchanged.
-- Scaled error norm: `err = h · ||e|| / (atol + rtol · ||y||)`,
+  trait surface stays unchanged. If a rejected sub-step is already
+  at `min_dt_s`, the integrator fails closed instead of accepting a
+  step outside the requested tolerance.
+- Scaled error norm: `err = h · ||e'|| / (atol + rtol · ||y||)`,
   where `||·||` is the new `SimStateDerivative::l2_norm()` /
   `Integratable::scalar_state_size()` trait extension. Scalar
   tolerance form (Hairer-Nørsett-Wanner Vol I §II.4 simplified
@@ -1509,9 +1511,9 @@ see scope deferrals below.
   hardcode `Rk4FixedStep` until § 5.D.5 ships. The rigid-body
   scenario validator already accepts `[solver]` blocks, so a
   rigid-body scenario with `profile = "adaptive-explicit"` parses
-  but is silently treated as RK4 today — the runner-side guard is
-  the lack of a wired path, not a parse-time reject. § 5.D.5
-  closes that gap.
+  but now fails closed in the runner instead of being silently
+  treated as RK4. Explicit RK4 solver selections still preserve the
+  existing rigid-body path. § 5.D.5 closes that wiring gap.
 - DOPRI8(7) tableau and `Dopri87Adaptive`. The `dopri853`
   trajectory method parses but is rejected by
   `build_runtime_integrator_from_solver`.
@@ -1535,13 +1537,15 @@ byte-identical on every existing scenario (verified via
 `end_to_end`, `sounding_rocket_e2e`, `calisto_e2e`,
 `multi_body_e2e`, `parachute_recovery_e2e`).
 
-**Validation evidence.** 11 unit tests on `Dopri54Adaptive` covering
+**Validation evidence.** 13 unit tests on `Dopri54Adaptive` covering
 embedded-error norm, accept/reject monotonicity, FSAL k7 reuse,
-step-clamp boundaries, and 5th-order convergence on a polynomial
-trajectory. 10 runner-validator unit tests on
+step-clamp boundaries, floor-failure handling, and 5th-order
+convergence on a polynomial trajectory. 11 runner-validator unit tests on
 `build_runtime_integrator_from_solver` covering the wired-combo
-positives and every deferred-combo rejection path. 2 e2e tests on
-the new LEO-orbit-adaptive scenario.
+positives, every deferred-combo rejection path, and the full
+supported cross-product. One CLI snapshot test asserts the
+rigid-body runner fails closed on non-RK4 solver selections. 2 e2e
+tests on the new LEO-orbit-adaptive scenario.
 
 **References.** Dormand, J. R., and Prince, P. J. (1980).
 *A family of embedded Runge-Kutta formulae*, J. Comp. Appl.
@@ -1565,10 +1569,11 @@ codepath when `[solver]` is absent is preserved bit-for-bit.
 
 - Wire `RuntimeIntegrator` into the rigid-body runner
   (`crates/openbmp-cli/src/runner/phase2_rigid_body.rs`). Today
-  that runner hardcodes `Rk4FixedStep`; once § 5.D.5 ships, a
-  rigid-body scenario with `profile = "adaptive-explicit"` will
-  drive `Dopri54Adaptive` through the same enum dispatch the
-  point-mass runner uses. The `RigidBodyState` `scalar_state_size`
+  that runner hardcodes `Rk4FixedStep` and fails closed for
+  non-RK4 solver selections; once § 5.D.5 ships, a rigid-body
+  scenario with `profile = "adaptive-explicit"` will drive
+  `Dopri54Adaptive` through the same enum dispatch the point-mass
+  runner uses. The `RigidBodyState` `scalar_state_size`
   norm already accounts for quaternion + angular velocity + mass
   + cg + inertia diagonal; the off-diagonal inertia terms are
   intentionally skipped on the diagonal-norm shape and revisited

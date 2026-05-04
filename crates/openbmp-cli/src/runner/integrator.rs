@@ -18,7 +18,7 @@
 //! - The `Adaptive` variant is wired only on the
 //!   [`crate::runner::phase2_point_mass`] runner. The rigid-body
 //!   runner continues to hardcode [`Rk4FixedStep`] until § 5.D.5
-//!   ships.
+//!   ships and fails closed when a non-RK4 solver is requested there.
 //! - The DOPRI8(7) trajectory method named in the `[solver]` block
 //!   parses but the runner rejects it with `UnsupportedScenario`.
 
@@ -323,5 +323,38 @@ mod tests {
             what.contains("[solver.adaptive] block missing"),
             "error should call out missing adaptive block: {what}"
         );
+    }
+
+    #[test]
+    fn solver_cross_product_accepts_only_wired_triples() {
+        let profiles = [
+            "fixed-step-explicit",
+            "adaptive-explicit",
+            "implicit-source-term",
+            "partitioned-hypersonic",
+        ];
+        let methods = ["rk4", "dopri54", "dopri853", "rkf78"];
+        let determinisms = ["bit-stable", "state-stable"];
+
+        for profile in profiles {
+            for method in methods {
+                for determinism in determinisms {
+                    let adaptive = (profile == "adaptive-explicit").then(well_formed_adaptive);
+                    let s = solver(profile, method, determinism, adaptive);
+                    let result = build_runtime_integrator_from_solver(Some(&s));
+                    let should_accept = matches!(
+                        (profile, method, determinism),
+                        ("fixed-step-explicit", "rk4" | "dopri54", "bit-stable")
+                            | ("adaptive-explicit", "dopri54", "state-stable")
+                    );
+
+                    assert_eq!(
+                        result.is_ok(),
+                        should_accept,
+                        "unexpected dispatch result for ({profile:?}, {method:?}, {determinism:?}): {result:?}"
+                    );
+                }
+            }
+        }
     }
 }

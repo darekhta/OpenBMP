@@ -137,7 +137,7 @@ pub trait Integratable: VehicleState {
 
     /// Phase-5.D.4 — scalar L2 norm of the state's vector components,
     /// used by the adaptive-step integrator's tolerance scaling
-    /// `err = h · ||e|| / (atol + rtol · scalar_state_size)`.
+    /// `err = h · ||e'|| / (atol + rtol · scalar_state_size)`.
     ///
     /// The shipped implementations sum every numeric component in a
     /// locked order (no FMA); see the per-state impls in

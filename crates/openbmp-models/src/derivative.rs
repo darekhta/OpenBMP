@@ -43,7 +43,7 @@ use nalgebra::{Matrix3, Quaternion as NalgebraQuaternion, Vector3};
 /// [`SimStateDerivative::dimension`] so the embedded-error /
 /// adaptive-step DOPRI5(4) integrator can compute a scaled error
 /// norm without componentwise access to the state. The shipped
-/// integrator uses the **scalar approximation** `err = h · ||e||
+/// integrator uses the **scalar approximation** `err = h · ||e'||
 /// / (atol + rtol · ||y||)` — a per-component tolerance refinement
 /// is deferred (see `docs/phase-5-plan.md § 5.D.5`).
 pub trait SimStateDerivative:
@@ -61,8 +61,9 @@ pub trait SimStateDerivative:
     fn l2_norm(&self) -> f64;
 
     /// Phase-5.D.4 — total number of scalar components participating
-    /// in [`SimStateDerivative::l2_norm`]. Used by the adaptive
-    /// integrator's RMS denominator.
+    /// in [`SimStateDerivative::l2_norm`]. The shipped scalar
+    /// tolerance path records this for diagnostics and future
+    /// per-component / RMS norm follow-ons.
     #[must_use]
     fn dimension(&self) -> usize;
 }
@@ -489,8 +490,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase-5.D.4 — `l2_norm()` / `dimension()` invariants used by the
-    // adaptive-step DOPRI5(4) integrator's scaled error norm.
+    // Phase-5.D.4 — `l2_norm()` and `dimension()` invariants supporting
+    // the adaptive-step DOPRI5(4) scalar error-norm surface.
     // -----------------------------------------------------------------
 
     #[test]

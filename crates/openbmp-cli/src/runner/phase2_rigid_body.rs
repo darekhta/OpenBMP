@@ -66,6 +66,7 @@ use crate::runner::atmosphere::{
     RuntimeAtmosphere, build_runtime_atmosphere, is_runtime_atmosphere_kind,
     scenario_atmosphere_kind,
 };
+use crate::runner::integrator::{RuntimeIntegrator, build_runtime_integrator};
 
 // Stable model-ids assigned to each force / mass model the rigid
 // runner wires. Reserves a separate range from the Phase-2 point-mass
@@ -384,6 +385,20 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
                 document.vehicle.kind
             ),
         });
+    }
+    // Phase-5.D.4 wires solver dispatch on the point-mass runner only.
+    // Preserve the rigid-body runner's RK4 behaviour, but fail closed
+    // if a scenario declares any non-RK4 solver selection instead of
+    // silently ignoring it. §5.D.5 wires the full rigid-body path.
+    if document.solver.is_some() {
+        let integrator = build_runtime_integrator(document)?;
+        if !matches!(integrator, RuntimeIntegrator::Rk4(_)) {
+            return Err(CliError::UnsupportedScenario {
+                what: "rigid-body runner only supports Rk4FixedStep solver dispatch today; \
+                       non-RK4 rigid-body solver selections are deferred to §5.D.5"
+                    .to_owned(),
+            });
+        }
     }
     if !matches!(
         document.environment.gravity.as_str(),

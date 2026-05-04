@@ -77,10 +77,11 @@ pub enum IntegratorDeterminism {
     /// Same input → bit-identical output across reruns on the same
     /// platform profile.
     BitStable,
-    /// Same input → physically equivalent output, but byte-equality
-    /// is not guaranteed (e.g. adaptive-step integrators where the
-    /// step-size search may produce slightly different intermediate
-    /// values across runs).
+    /// Same input → bit-identical output across reruns on one
+    /// platform profile, but cross-platform byte equality is not
+    /// guaranteed. Adaptive-step integrators use this class because
+    /// deterministic `pow()` / `ln()` call order still depends on the
+    /// platform libm implementation.
     StateStable,
 }
 
@@ -438,12 +439,12 @@ pub enum AdaptiveIntegratorError {
 ///
 /// The 5th-order solution from [`Dopri54FixedStep`] is augmented with
 /// the embedded 4th-order companion `y_4` computed from the same
-/// stages plus an FSAL `k7` evaluation. The per-step error vector
-/// `e = y_5 − y_4 = h · Σ E_i k_i` drives a Gustafsson PI step
+/// stages plus an FSAL `k7` evaluation. The per-step error derivative
+/// `e' = Σ E_i k_i` drives a Gustafsson PI step
 /// controller:
 ///
 /// ```text
-///   err = h · ||e|| / (atol + rtol · ||y||)
+///   err = h · ||e'|| / (atol + rtol · ||y||)
 ///   factor = safety · err^(−α/p) · err_prev^(β/p)
 ///   p = 4, α = 0.7, β = 0.4, safety = 0.9
 ///   factor ∈ [min_factor, max_factor]
@@ -452,7 +453,10 @@ pub enum AdaptiveIntegratorError {
 /// Steps with `err > 1` are rejected and retried with `h` shrunk by
 /// `factor`; accepted steps update `last_h` and `last_err_prev`. The
 /// outer loop accumulates sub-steps until the cumulative time equals
-/// the kernel's `dt` exactly (the last sub-step is clamped to fit).
+/// the kernel's `dt` exactly (the last sub-step is clamped to fit). If
+/// a rejected step is already at the configured floor, the integrator
+/// returns [`IntegratorError::InvalidStep`] instead of silently
+/// accepting a step outside tolerance.
 ///
 /// # Honest scope
 ///
@@ -472,7 +476,10 @@ pub enum AdaptiveIntegratorError {
 /// platform-libm differences in `pow()` / `ln()` may lead to
 /// slightly different step-size sequences. Internal persistent
 /// state (`last_h`, `last_err_prev`) lives in [`Cell`] so the
-/// `&self` trait surface stays unchanged.
+/// `&self` trait surface stays unchanged. Each
+/// [`crate::SimulationKernel`] owns one integrator instance; callers
+/// must not share one adaptive integrator across interleaved kernels,
+/// because doing so would intentionally share PI-controller history.
 #[derive(Debug)]
 pub struct Dopri54Adaptive {
     safety_factor: f64,
@@ -660,7 +667,9 @@ impl Dopri54Adaptive {
             return Err(IntegratorError::NonFiniteDerivative);
         }
 
-        // Error vector: e = h · Σ E_i k_i (E2 = 0 implied).
+        // Error derivative: e' = Σ E_i k_i (E2 = 0 implied).
+        // The scaled norm below multiplies by h once to obtain
+        // ||y_5 − y_4||.
         let error_deriv =
             (((((k1 * E1) + (k3 * E3)) + (k4 * E4)) + (k5 * E5)) + (k6 * E6)) + (k7 * E7);
         let error_norm = h * error_deriv.l2_norm();
@@ -723,7 +732,11 @@ impl<S: SimState> Integrator<S> for Dopri54Adaptive {
 
             // Clamp h so the sub-step lands within dt_total.
             let remaining = dt_total - elapsed;
-            let h_try = h.min(remaining).max(self.min_h_s);
+            let h_try = if remaining <= self.min_h_s {
+                remaining
+            } else {
+                h.min(remaining).max(self.min_h_s)
+            };
 
             // Per-iteration controller history (so the rejection retry
             // path uses the most recent observation).
@@ -748,15 +761,13 @@ impl<S: SimState> Integrator<S> for Dopri54Adaptive {
                     factor = self.min_factor;
                 }
                 factor = factor.max(self.min_factor).min(1.0);
-                h = (h_try * factor).max(self.min_h_s).min(self.max_h_s);
                 if h_try <= self.min_h_s + f64::EPSILON {
-                    // Already at floor — accept the step anyway rather
-                    // than spin (the trajectory may be locally too
-                    // stiff for the configured tolerance).
-                    current = proposed_state;
-                    elapsed += h_try;
-                    last_accepted_err = Some(err.max(1.0e-10));
+                    // Already at floor and still outside tolerance:
+                    // fail closed instead of silently violating the
+                    // configured error bound.
+                    return Err(IntegratorError::InvalidStep { dt_seconds: h_try });
                 }
+                h = (h_try * factor).max(self.min_h_s).min(self.max_h_s);
             }
         }
 
@@ -1363,6 +1374,42 @@ mod tests {
         assert!(
             (final_t - dt).abs() < 1.0e-12,
             "final time {final_t} not within 1e-12 of dt = {dt}",
+        );
+    }
+
+    /// The final sub-step is allowed to be below `min_h_s`; otherwise
+    /// `advance()` would overshoot `dt` whenever the outer kernel step
+    /// or final remainder is smaller than the adaptive floor.
+    #[test]
+    fn dopri54_adaptive_final_substep_can_be_below_min_h_to_fit_dt() {
+        let integrator = Dopri54Adaptive::new(1.0e-9, 1.0e-6, 1.0e-3, 1.0).unwrap();
+        let state = exp_decay_initial_state();
+        let dt = 1.0e-4_f64;
+
+        let final_state = integrator
+            .advance(&state, exp_decay_derive, Duration::from_seconds(dt))
+            .expect("advance");
+
+        assert_eq!(
+            final_state.time.as_seconds().to_bits(),
+            dt.to_bits(),
+            "adaptive integrator must not overshoot an outer dt below min_h_s"
+        );
+    }
+
+    /// A floor is a hard integration limit, not permission to accept a
+    /// step that still violates the configured tolerance.
+    #[test]
+    fn dopri54_adaptive_rejects_when_tolerance_cannot_be_met_at_min_h() {
+        let integrator = Dopri54Adaptive::new(1.0e-300, 1.0e-300, 1.0e-3, 1.0e-3).unwrap();
+        let state = exp_decay_initial_state();
+        let err = integrator
+            .advance(&state, exp_decay_derive, Duration::from_seconds(1.0e-3))
+            .expect_err("unachievable tolerance at h_min must fail closed");
+
+        assert!(
+            matches!(err, IntegratorError::InvalidStep { dt_seconds } if dt_seconds.to_bits() == 1.0e-3_f64.to_bits()),
+            "expected InvalidStep at h_min, got {err:?}"
         );
     }
 
