@@ -1,0 +1,32 @@
+case = "sr-ukf-vs-ekf-synthetic-sensor-trajectory"
+source = "Synthetic direct-filter comparison; deterministic IMU plus GNSS/barometer samples generated in crates/openbmp-fc/tests/sr_ukf_properties.rs."
+validation = "experimental"
+
+# Phase 5.B.1 exit criterion: the new square-root UKF family must stay
+# close to the EKF reference on the same deterministic sensor stream.
+# These tolerances are intentionally wider than round-off because the
+# SR-UKF uses a richer square-root covariance predict than the current
+# EKF reference, so nonzero measurement residuals do not produce
+# byte-identical Kalman gains.
+
+[[metric]]
+name = "max_position_delta_m"
+expected = 0.0
+absolute_tolerance = 0.25
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_velocity_delta_m_s"
+expected = 0.0
+absolute_tolerance = 0.05
+relative_tolerance = 0.0
+
+[[metric]]
+name = "max_attitude_delta_rad"
+expected = 0.0
+# The SR-UKF linearized square-root predict carries attitude/velocity
+# cross-covariance into GNSS updates. The current EKF reference only
+# adds diagonal process noise during predict, so nonzero GNSS residuals
+# can produce small attitude deltas in SR-UKF that EKF does not mirror.
+absolute_tolerance = 2.0e-2
+relative_tolerance = 0.0

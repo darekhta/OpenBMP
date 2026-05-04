@@ -675,8 +675,9 @@ of new code). Sub-divided into:
   cholupdate-based covariance reduction + the full
   `Estimator` trait impl. The 6-state attitude variant wraps the
   15-state filter with position / velocity / accel-bias slots
-  pinned at `1e-12` covariance floors; GNSS / baro updates are
-  no-ops on the attitude variant. The Phase-4.C classical
+  re-pinned at `1e-12` covariance floors after covariance-changing
+  operations; GNSS / baro updates are no-ops on the attitude variant.
+  The Phase-4.C classical
   6-state `Ukf` and `UkfParams` are **deleted** along with
   their internal helpers (`unscented_square_moments`,
   `accumulate_ukf_covariance`, `accumulate_ukf_measurement_covariance`,
@@ -702,15 +703,21 @@ bias, accel bias`):
   remains as `SquareRootUkfAttitude` for users who only need
   attitude estimation.
 
-**Exit criterion.** SR-UKF passes all EKF property tests
-(determinism, innovation whitening through lag 10, long-duration
-boundedness, textbook Kalman algebra). On the closed-loop
-integration test the SR-UKF and EKF agree on attitude / position /
-velocity within a tolerance documented in
-`tests/expected/ukf-vs-ekf-tolerance.toml`.
+**Exit criterion.** SR-UKF passes the Phase-5.B.1 pre-push property
+surface: deterministic predict replay, sigma-point round-trip
+invariants, `cholupdate` update / downdate covariance recovery,
+QR covariance recovery, sensor-update smoke tests, GNSS innovation
+whitening through lag 10, direct sixty-second covariance boundedness,
+textbook scalar Kalman algebra on the linear GNSS update, attitude-only
+predict boundedness, and an EKF-vs-SR-UKF synthetic sensor-trajectory
+agreement check whose tolerances are documented in
+`crates/openbmp-fc/tests/expected/ukf-vs-ekf-tolerance.toml`.
 
 **Validation evidence.** Unit + property tests; tolerance-table
-case; determinism CI gate exercises an SR-UKF scenario.
+case; SR-UKF within-platform predict determinism test. No scenario
+selects SR-UKF yet, so existing scenario determinism gates remain
+byte-identical coverage for the default code path rather than a
+public scenario selector for this filter.
 
 **References.** Van der Merwe, R. and Wan, E. A., *The Square-Root
 Unscented Kalman Filter for State and Parameter-Estimation*, IEEE

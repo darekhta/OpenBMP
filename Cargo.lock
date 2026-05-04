@@ -1404,6 +1404,7 @@ dependencies = [
  "openbmp-mission",
  "openbmp-physics",
  "openbmp-sensors",
+ "openbmp-testkit",
  "proptest",
  "rand 0.10.1",
  "serde_json",

@@ -1,8 +1,8 @@
 //! Phase-5.B.1 — Square-Root Unscented Kalman Filter (SR-UKF).
 //!
-//! Replaces the Phase-4.C 6-state classical [`crate::estimator::Ukf`]
-//! with a **square-root** UKF (Van der Merwe & Wan 2001) over the same
-//! 15-state error-state vector as [`crate::estimator::Ekf`]:
+//! Replaces the retired Phase-4.C 6-state classical `Ukf` with a
+//! **square-root** UKF-family estimator over the same 15-state error-state
+//! vector as [`crate::estimator::Ekf`]:
 //!
 //! ```text
 //! x = [ position_eci(3),     // [m]      0..3
@@ -29,7 +29,10 @@
 //! `cholupdate` rank-1 update / downdate. There is **no Cholesky
 //! refactorisation on the hot path** — `S` stays lower-triangular by
 //! construction, and positive-definiteness is preserved up to
-//! machine precision.
+//! machine precision. The restricted `SquareRootUkfAttitude` wrapper is
+//! the one exception: after covariance-changing operations it projects
+//! the unused 9-state subspace back to fixed floors and rebuilds the
+//! Cholesky factor so the exposed 6-state covariance cannot drift.
 //!
 //! # Sigma-point set
 //!
@@ -70,8 +73,10 @@
 //! - Van der Merwe, R. and Wan, E. A. (2001). *The Square-Root
 //!   Unscented Kalman Filter for State and Parameter-Estimation*.
 //!   Proceedings of IEEE ICASSP 2001, vol. 6, pp. 3461-3464.
-//!   doi:10.1109/ICASSP.2001.940586. The shipped algorithm follows
-//!   their Equations (15)-(23).
+//!   doi:10.1109/ICASSP.2001.940586. The shipped measurement update
+//!   follows their Equations (19)-(23); the predict step intentionally
+//!   uses the linearized inertial error-state propagation documented
+//!   below rather than their full nonlinear sigma-point predict.
 //! - Wan, E. A. and Van der Merwe, R. (2000). *The Unscented Kalman
 //!   Filter for Nonlinear Estimation*. Adaptive Systems for Signal
 //!   Processing, Communications, and Control Symposium 2000,
@@ -259,11 +264,14 @@ pub enum CholupdateError {
 /// u'_i     = (s_kk · u_i  − u_k · L_ik_used) / r        (i > k)
 /// ```
 ///
-/// where `L_ik_used = L_ik` (OLD value) for the **update** path
-/// (orthogonal Givens rotation) and `L_ik_used = L'_ik` (NEW value)
-/// for the **downdate** path (hyperbolic rotation). The two cases
-/// differ because the orthogonal rotation preserves
-/// `L² + u² = const` while the hyperbolic rotation preserves
+/// where `L_ik_used = L_ik` (the OLD value captured before writing
+/// `L'_ik`) for both the **update** path (orthogonal Givens rotation)
+/// and the **downdate** path (Stewart-style hyperbolic rotation). With
+/// `cos(θ) = s_kk / r` and `sin(θ) = u_k / r`, the update is the
+/// ordinary rotation
+/// `L'_ik = cos θ · L_ik + sin θ · u_i`,
+/// `u'_i = cos θ · u_i − sin θ · L_ik`. The downdate uses the same
+/// locked OLD-value capture with `σ = -1`, preserving
 /// `L² − u² = const`.
 ///
 /// # Determinism
@@ -376,9 +384,9 @@ pub fn predict_cholesky_qr(
         }
     }
     // Householder QR may leave negative diagonal entries in R; flip
-    // signs per row so the resulting lower-triangular factor has
-    // positive diagonal. This is a deterministic per-row sign flip
-    // and preserves S · Sᵀ = R · Rᵀ.
+    // signs per column of S so the resulting lower-triangular factor
+    // has a positive diagonal. This deterministic column sign flip
+    // preserves S · Sᵀ.
     for k in 0..n {
         if s[(k, k)] < 0.0 {
             for row in k..n {
@@ -436,6 +444,7 @@ use crate::topics::{
 
 /// 15-state error-state vector dimension.
 const SRUKF_STATE_DIM: usize = 15;
+const ATTITUDE_ONLY_UNUSED_VARIANCE: f64 = 1.0e-12;
 
 /// Configuration parameters for the SR-UKF — same physical interpretation
 /// as [`crate::estimator::EkfParams`] (process / measurement noise,
@@ -954,24 +963,33 @@ impl SquareRootUkf {
                 }
             }
         }
-        // 6. Kalman gain K = P_xz · (S_z · S_zᵀ)⁻¹  via two triangular
-        //    solves: solve (S_z · Y) = P_xzᵀ for Y, then
-        //    (S_zᵀ · Kᵀ) = Y for Kᵀ. Equivalently:
-        //    K = (P_xz / S_zᵀ) / S_z.
-        let s_z_full = covariance_from_cholesky(&s_z);
-        let s_z_full_inv =
-            s_z_full
-                .clone()
-                .try_inverse()
-                .ok_or_else(|| EstimatorError::InvalidConfig {
-                    reason: format!(
-                        "{sensor_label}: innovation covariance non-invertible (numerical breakdown)"
-                    ),
+        // 6. Kalman gain K = P_xz · (S_z · S_zᵀ)⁻¹ via two triangular
+        //    right-solves. Equivalently: K = (P_xz / S_zᵀ) / S_z.
+        let mut y = DMatrix::<f64>::zeros(n, m);
+        for row in 0..n {
+            let rhs = row_as_dvector(&p_xz, row);
+            let solved =
+                solve_lower_triangular(&s_z, &rhs).map_err(|e| EstimatorError::InvalidConfig {
+                    reason: format!("{sensor_label}: lower gain solve failed: {e:?}"),
                 })?;
-        let k = &p_xz * &s_z_full_inv;
+            for c in 0..m {
+                y[(row, c)] = solved[c];
+            }
+        }
+        let mut k = DMatrix::<f64>::zeros(n, m);
+        for row in 0..n {
+            let rhs = row_as_dvector(&y, row);
+            let solved = solve_lower_transpose_triangular(&s_z, &rhs).map_err(|e| {
+                EstimatorError::InvalidConfig {
+                    reason: format!("{sensor_label}: upper gain solve failed: {e:?}"),
+                }
+            })?;
+            for c in 0..m {
+                k[(row, c)] = solved[c];
+            }
+        }
         // 7. Innovation, chi² gate, whitened innovation, log det S.
         let innovation = z - &z_hat;
-        let chi2 = innovation.dot(&(&s_z_full_inv * &innovation));
         let mut log_det_s = 0.0_f64;
         for i in 0..m {
             log_det_s += s_z[(i, i)].ln();
@@ -983,6 +1001,7 @@ impl SquareRootUkf {
                 reason: format!("{sensor_label}: lower-triangular solve failed: {e:?}"),
             }
         })?;
+        let chi2 = whitened.dot(&whitened);
         let gate = self.params.gate_for_dof(gate_dof);
         if chi2 > gate {
             self.last_innovation_rejected = true;
@@ -1062,6 +1081,38 @@ fn solve_lower_triangular(
         x[i] = (b[i] - sum) / diag;
     }
     Ok(x)
+}
+
+fn solve_lower_transpose_triangular(
+    lower: &DMatrix<f64>,
+    rhs: &DVector<f64>,
+) -> Result<DVector<f64>, &'static str> {
+    let dimension = lower.nrows();
+    if dimension != rhs.len() || lower.ncols() != dimension {
+        return Err("dimension mismatch");
+    }
+    let mut solution = DVector::<f64>::zeros(dimension);
+    for reverse_index in 0..dimension {
+        let row = dimension - 1 - reverse_index;
+        let mut sum = 0.0_f64;
+        for col in (row + 1)..dimension {
+            sum += lower[(col, row)] * solution[col];
+        }
+        let diag = lower[(row, row)];
+        if !diag.is_finite() || diag == 0.0 {
+            return Err("singular triangular factor");
+        }
+        solution[row] = (rhs[row] - sum) / diag;
+    }
+    Ok(solution)
+}
+
+fn row_as_dvector(m: &DMatrix<f64>, row: usize) -> DVector<f64> {
+    let mut out = DVector::<f64>::zeros(m.ncols());
+    for c in 0..m.ncols() {
+        out[c] = m[(row, c)];
+    }
+    out
 }
 
 impl crate::estimator::Estimator for SquareRootUkf {
@@ -1216,6 +1267,10 @@ impl crate::estimator::Estimator for SquareRootUkf {
         }
         let mag_field_eci = self.mag_field.field_eci_nt(self.pos_eci, sample_time);
         let predict_z = |filter: &SquareRootUkf, perturbation: &DVector<f64>| -> DVector<f64> {
+            // The field model is intentionally evaluated once at the
+            // nominal position. Over the sigma spread used for attitude
+            // updates, field variation with position is negligible next
+            // to the attitude projection being estimated here.
             let attitude_error = Vector3::new(perturbation[6], perturbation[7], perturbation[8]);
             let dq = if attitude_error.norm() > 0.0 {
                 quaternion_from_axis_angle(attitude_error)
@@ -1305,7 +1360,7 @@ impl crate::estimator::Estimator for SquareRootUkf {
 
 /// 6-state attitude-only square-root UKF for consumers that only need
 /// attitude + gyro-bias estimation. Replaces the retired Phase-4.C
-/// classical `crate::estimator::Ukf` (also 6-state).
+/// classical 6-state `Ukf`.
 ///
 /// State layout:
 ///
@@ -1317,8 +1372,10 @@ impl crate::estimator::Estimator for SquareRootUkf {
 /// Internally implemented as a wrapper around [`SquareRootUkf`] that
 /// projects the 15-state error-state down to the 6-state attitude
 /// subspace for the magnetometer-only measurement update path. The
-/// position / velocity / accel-bias state slots are held at zero and
-/// not reported; only the attitude + gyro-bias slots are exposed.
+/// position / velocity / accel-bias state slots are held at zero,
+/// re-pinned to tiny covariance floors after covariance-changing
+/// operations by rebuilding the projected Cholesky factor, and not
+/// reported; only the attitude + gyro-bias slots are exposed.
 ///
 /// This implementation prioritises code reuse over maximum efficiency
 /// — the 15-state internals carry trivial overhead for the unused
@@ -1350,21 +1407,8 @@ impl SquareRootUkfAttitude {
     #[allow(clippy::expect_used)]
     pub fn new(params: SquareRootUkfParams) -> Self {
         let mut inner = SquareRootUkf::new(params);
-        // Pin position / velocity / accel-bias slots at near-zero
-        // covariance so the unused subspace doesn't interact with
-        // attitude / gyro-bias estimation. We rebuild S from a
-        // diagonal P with attitude / gyro-bias entries from the
-        // params, and tiny floors elsewhere.
-        let mut p = DMatrix::<f64>::zeros(SRUKF_STATE_DIM, SRUKF_STATE_DIM);
-        for i in 0..3 {
-            p[(i, i)] = 1.0e-12; // position floor
-            p[(i + 3, i + 3)] = 1.0e-12; // velocity floor
-            p[(i + 6, i + 6)] = 0.1; // attitude error
-            p[(i + 9, i + 9)] = 0.001; // gyro bias
-            p[(i + 12, i + 12)] = 1.0e-12; // accel bias floor
-        }
-        inner.s = cholesky_from_covariance(&p)
-            .expect("attitude-only diagonal covariance must factor cleanly");
+        pin_attitude_only_subspace(&mut inner)
+            .expect("attitude-only covariance projection must factor cleanly");
         Self { inner }
     }
 
@@ -1380,6 +1424,12 @@ impl SquareRootUkfAttitude {
         self.inner
             .seed(self.inner.pos_eci, self.inner.vel_eci, q_body_to_eci);
     }
+
+    fn pin_unused_subspace(&mut self) -> Result<(), EstimatorError> {
+        pin_attitude_only_subspace(&mut self.inner).map_err(|e| EstimatorError::InvalidConfig {
+            reason: format!("attitude-only covariance projection failed: {e:?}"),
+        })
+    }
 }
 
 impl crate::estimator::Estimator for SquareRootUkfAttitude {
@@ -1388,7 +1438,8 @@ impl crate::estimator::Estimator for SquareRootUkfAttitude {
     }
 
     fn predict(&mut self, dt: f64) -> Result<(), EstimatorError> {
-        self.inner.predict(dt)
+        self.inner.predict(dt)?;
+        self.pin_unused_subspace()
     }
 
     fn update_imu(&mut self, sample: &ImuSample) -> Result<(), EstimatorError> {
@@ -1401,11 +1452,13 @@ impl crate::estimator::Estimator for SquareRootUkfAttitude {
     }
 
     fn update_baro(&mut self, _sample: &BarometerSample) -> Result<(), EstimatorError> {
+        // Attitude-only filter: barometer is not consumed.
         Ok(())
     }
 
     fn update_mag(&mut self, sample: &MagnetometerSample) -> Result<(), EstimatorError> {
-        self.inner.update_mag(sample)
+        self.inner.update_mag(sample)?;
+        self.pin_unused_subspace()
     }
 
     fn attitude(&self) -> AttitudeEstimate {
@@ -1434,12 +1487,34 @@ impl crate::estimator::Estimator for SquareRootUkfAttitude {
     }
 }
 
+fn pin_attitude_only_subspace(inner: &mut SquareRootUkf) -> Result<(), CholupdateError> {
+    let current = covariance_from_cholesky(&inner.s);
+    let mut p = DMatrix::<f64>::zeros(SRUKF_STATE_DIM, SRUKF_STATE_DIM);
+    for i in 0..3 {
+        p[(i, i)] = ATTITUDE_ONLY_UNUSED_VARIANCE;
+        p[(i + 3, i + 3)] = ATTITUDE_ONLY_UNUSED_VARIANCE;
+        p[(i + 12, i + 12)] = ATTITUDE_ONLY_UNUSED_VARIANCE;
+    }
+    for r in 6..12 {
+        for c in 6..12 {
+            p[(r, c)] = current[(r, c)];
+        }
+    }
+    inner.s = cholesky_from_covariance(&p)?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::cast_precision_loss
+)]
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
@@ -1455,6 +1530,41 @@ mod tests {
 
     fn dvector(entries: &[f64]) -> DVector<f64> {
         DVector::<f64>::from_row_slice(entries)
+    }
+
+    fn deterministic_lower_factor(n: usize) -> DMatrix<f64> {
+        let mut s = DMatrix::<f64>::zeros(n, n);
+        for row in 0..n {
+            for col in 0..=row {
+                if row == col {
+                    s[(row, col)] = 1.5 + 0.125 * (row as f64 + 1.0);
+                } else {
+                    let phase = (row as f64 + 1.0) * 1.7 + (col as f64 + 1.0) * 0.9;
+                    s[(row, col)] = 0.04 * phase.sin();
+                }
+            }
+        }
+        s
+    }
+
+    fn deterministic_update_vector(n: usize, scale: f64) -> DVector<f64> {
+        DVector::<f64>::from_iterator(
+            n,
+            (0..n).map(|i| {
+                let phase = (i as f64 + 1.0) * 2.3;
+                scale * phase.cos()
+            }),
+        )
+    }
+
+    fn assert_matrix_abs_diff(a: &DMatrix<f64>, b: &DMatrix<f64>, epsilon: f64) {
+        assert_eq!(a.nrows(), b.nrows());
+        assert_eq!(a.ncols(), b.ncols());
+        for r in 0..a.nrows() {
+            for c in 0..a.ncols() {
+                assert_abs_diff_eq!(a[(r, c)], b[(r, c)], epsilon = epsilon);
+            }
+        }
     }
 
     // -----------------------------------------------------------------
@@ -1639,6 +1749,46 @@ mod tests {
     }
 
     #[test]
+    fn cholupdate_minus_matches_explicit_outer_product_non_diagonal_2x2() {
+        let s_orig = DMatrix::<f64>::from_row_slice(2, 2, &[2.0, 0.0, 0.4, 1.5]);
+        let p = covariance_from_cholesky(&s_orig);
+        let u_orig = dvector(&[0.25, -0.15]);
+        let mut s = s_orig;
+        let mut u = u_orig.clone();
+        cholupdate_in_place(&mut s, &mut u, CholupdateSign::Minus).unwrap();
+        let p_recovered = covariance_from_cholesky(&s);
+        let p_expected = &p - &u_orig * u_orig.transpose();
+        assert_matrix_abs_diff(&p_recovered, &p_expected, 1.0e-12);
+    }
+
+    #[test]
+    fn cholupdate_matches_explicit_outer_product_across_dimensions() {
+        for n in [4_usize, 6, 15] {
+            let s_orig = deterministic_lower_factor(n);
+            let p = covariance_from_cholesky(&s_orig);
+            for sign in [CholupdateSign::Plus, CholupdateSign::Minus] {
+                let scale = if sign == CholupdateSign::Plus {
+                    0.08
+                } else {
+                    0.02
+                };
+                let u_orig = deterministic_update_vector(n, scale);
+                let mut s = s_orig.clone();
+                let mut u = u_orig.clone();
+                cholupdate_in_place(&mut s, &mut u, sign).unwrap();
+                let p_recovered = covariance_from_cholesky(&s);
+                let outer = &u_orig * u_orig.transpose();
+                let p_expected = if sign == CholupdateSign::Plus {
+                    &p + outer
+                } else {
+                    &p - outer
+                };
+                assert_matrix_abs_diff(&p_recovered, &p_expected, 1.0e-10);
+            }
+        }
+    }
+
+    #[test]
     fn cholupdate_minus_fails_closed_when_radicand_non_positive() {
         let p = diag_dmatrix(&[1.0, 1.0, 1.0]);
         let mut s = cholesky_from_covariance(&p).unwrap();
@@ -1719,6 +1869,49 @@ mod tests {
     }
 
     #[test]
+    fn predict_cholesky_qr_recovers_covariance_with_offdiagonal_q() {
+        let residuals = [
+            dvector(&[0.8, -0.1, 0.3]),
+            dvector(&[-0.2, 0.7, 0.5]),
+            dvector(&[0.4, 0.2, -0.6]),
+            dvector(&[0.1, -0.3, 0.9]),
+        ];
+        let q_sqrt = DMatrix::<f64>::from_row_slice(
+            3,
+            3,
+            &[
+                0.20, 0.0, 0.0, //
+                0.05, 0.30, 0.0, //
+                -0.02, 0.04, 0.25,
+            ],
+        );
+        let mut m = DMatrix::<f64>::zeros(3, residuals.len() + 3);
+        for (col, residual) in residuals.iter().enumerate() {
+            for row in 0..3 {
+                m[(row, col)] = residual[row];
+            }
+        }
+        for col in 0..3 {
+            for row in 0..3 {
+                m[(row, residuals.len() + col)] = q_sqrt[(row, col)];
+            }
+        }
+        let mut p_expected = &q_sqrt * q_sqrt.transpose();
+        for residual in residuals {
+            p_expected += &residual * residual.transpose();
+        }
+
+        let s = predict_cholesky_qr(&m).unwrap();
+        let p_recovered = covariance_from_cholesky(&s);
+        assert_matrix_abs_diff(&p_recovered, &p_expected, 1.0e-10);
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                assert_eq!(s[(i, j)].to_bits(), 0.0_f64.to_bits());
+            }
+        }
+    }
+
+    #[test]
     fn cholesky_from_covariance_round_trip() {
         let p = diag_dmatrix(&[1.0, 2.0, 3.0, 4.0, 5.0]);
         let s = cholesky_from_covariance(&p).unwrap();
@@ -1734,7 +1927,7 @@ mod tests {
     // Phase-5.B.1.B/C — SquareRootUkf integration tests
     // -----------------------------------------------------------------
 
-    use crate::estimator::Estimator;
+    use crate::estimator::{Ekf, EkfParams, Estimator};
     use crate::topics::{
         BarometerSample as BSample, GnssSample as GSample, ImuSample as ISample,
         MagnetometerSample as MSample,
@@ -1798,6 +1991,62 @@ mod tests {
     }
 
     #[test]
+    fn sr_ukf_nominal_predict_matches_ekf_byte_for_byte() {
+        let mut ekf = Ekf::new(EkfParams::default());
+        let mut sr = SquareRootUkf::new(SquareRootUkfParams::default());
+        let pos0 = Vector3::new(1.0, -2.0, 100.0);
+        let vel0 = Vector3::new(0.5, -0.25, 0.1);
+        let q0 = UnitQuaternion::identity();
+        ekf.seed(pos0, vel0, q0);
+        sr.seed(pos0, vel0, q0);
+        let imu = imu_sample(
+            Vector3::new(0.01, -0.02, 0.03),
+            Vector3::new(0.1, -0.2, 9.80665),
+        );
+        ekf.update_imu(&imu).unwrap();
+        sr.update_imu(&imu).unwrap();
+        for _ in 0..2 {
+            ekf.predict(0.01).unwrap();
+            sr.predict(0.01).unwrap();
+        }
+
+        let ekf_pos = ekf.position();
+        let sr_pos = sr.position();
+        for i in 0..3 {
+            assert_eq!(
+                ekf_pos.position_eci_m[i].to_bits(),
+                sr_pos.position_eci_m[i].to_bits()
+            );
+            assert_eq!(
+                ekf_pos.velocity_eci_m_s[i].to_bits(),
+                sr_pos.velocity_eci_m_s[i].to_bits()
+            );
+            assert_eq!(
+                ekf_pos.accel_bias_body_m_s2[i].to_bits(),
+                sr_pos.accel_bias_body_m_s2[i].to_bits()
+            );
+        }
+        let ekf_att = ekf.attitude();
+        let sr_att = sr.attitude();
+        for i in 0..4 {
+            assert_eq!(
+                ekf_att.q_body_to_eci_xyzw[i].to_bits(),
+                sr_att.q_body_to_eci_xyzw[i].to_bits()
+            );
+        }
+        for i in 0..3 {
+            assert_eq!(
+                ekf_att.omega_body_rad_s[i].to_bits(),
+                sr_att.omega_body_rad_s[i].to_bits()
+            );
+            assert_eq!(
+                ekf_att.gyro_bias_body_rad_s[i].to_bits(),
+                sr_att.gyro_bias_body_rad_s[i].to_bits()
+            );
+        }
+    }
+
+    #[test]
     fn sr_ukf_gnss_update_reduces_position_covariance() {
         let mut f = fresh_filter();
         let p_before = f.covariance_max_diag();
@@ -1814,6 +2063,58 @@ mod tests {
             p_after < p_before,
             "covariance should shrink after GNSS update: before {p_before}, after {p_after}"
         );
+    }
+
+    #[test]
+    fn sr_ukf_linear_gnss_update_matches_scalar_kalman_algebra() {
+        let params = SquareRootUkfParams {
+            innovation_gate: 1.0e12,
+            ..SquareRootUkfParams::default()
+        };
+        let mut f = SquareRootUkf::new(params);
+        let prior_pos = Vector3::new(10.0, -20.0, 30.0);
+        let prior_vel = Vector3::new(1.0, -2.0, 3.0);
+        f.seed(prior_pos, prior_vel, UnitQuaternion::identity());
+        let measurement_pos = Vector3::new(12.0, -23.0, 35.0);
+        let measurement_vel = Vector3::new(0.8, -1.5, 2.5);
+        let gnss = GSample {
+            time: SimTime::ZERO,
+            position_eci_m: measurement_pos,
+            velocity_eci_m_s: measurement_vel,
+            position_bias_eci_m: Vector3::zeros(),
+            healthy: true,
+        };
+
+        f.update_gnss(&gnss).unwrap();
+
+        let updated_pos = f.position();
+        let p = covariance_from_cholesky(&f.s);
+        for i in 0..3 {
+            let p_prior = 100.0;
+            let r = f.params.sigma_gnss_pos_m * f.params.sigma_gnss_pos_m;
+            let k = p_prior / (p_prior + r);
+            let expected_state = prior_pos[i] + k * (measurement_pos[i] - prior_pos[i]);
+            let expected_cov = (1.0 - k) * p_prior;
+            assert_abs_diff_eq!(
+                updated_pos.position_eci_m[i],
+                expected_state,
+                epsilon = 1.0e-8
+            );
+            assert_abs_diff_eq!(p[(i, i)], expected_cov, epsilon = 1.0e-8);
+        }
+        for i in 0..3 {
+            let p_prior = 10.0;
+            let r = f.params.sigma_gnss_vel_m_s * f.params.sigma_gnss_vel_m_s;
+            let k = p_prior / (p_prior + r);
+            let expected_state = prior_vel[i] + k * (measurement_vel[i] - prior_vel[i]);
+            let expected_cov = (1.0 - k) * p_prior;
+            assert_abs_diff_eq!(
+                updated_pos.velocity_eci_m_s[i],
+                expected_state,
+                epsilon = 1.0e-8
+            );
+            assert_abs_diff_eq!(p[(i + 3, i + 3)], expected_cov, epsilon = 1.0e-8);
+        }
     }
 
     #[test]
@@ -1853,6 +2154,39 @@ mod tests {
         };
         f.update_mag(&mag).expect("mag update ok");
         assert!(f.s.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn sr_ukf_central_negative_covariance_weight_path_runs() {
+        let params = SquareRootUkfParams {
+            sigma_gnss_pos_m: 50.0,
+            sigma_gnss_vel_m_s: 50.0,
+            ..SquareRootUkfParams::default()
+        };
+        let scaling = UkfScalingParams {
+            alpha: 1.0,
+            beta: 0.0,
+            kappa: 3.0 - SRUKF_STATE_DIM as f64,
+        };
+        let mut f = SquareRootUkf::new_with_scaling(params, scaling);
+        f.seed(
+            Vector3::zeros(),
+            Vector3::zeros(),
+            UnitQuaternion::identity(),
+        );
+        assert!(f.weights.w0_cov < 0.0);
+
+        let z = DVector::<f64>::from_row_slice(&[100.0]);
+        let r_sqrt = DMatrix::<f64>::from_element(1, 1, 50.0);
+        let predict_z = |_filter: &SquareRootUkf, perturbation: &DVector<f64>| -> DVector<f64> {
+            DVector::<f64>::from_row_slice(&[perturbation[0] * perturbation[0]])
+        };
+
+        let (chi2, whitened, _log_det_s) = f
+            .sigma_point_update(&z, &r_sqrt, predict_z, "negative-w0-test", 1.0)
+            .unwrap();
+        assert_abs_diff_eq!(chi2, 0.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(whitened[0], 0.0, epsilon = 1.0e-12);
     }
 
     #[test]
@@ -1896,7 +2230,7 @@ mod tests {
         f.predict(0.01).unwrap();
         // Use the model-predicted field so the innovation passes the
         // gate; this is the smoke-test analogue of the retired
-        // classical Ukf::test_predict_and_mag_update.
+        // classical attitude UKF predict-and-mag-update test.
         let predicted_eci = f
             .inner
             .mag_field
@@ -1924,5 +2258,31 @@ mod tests {
         // Attitude is still finite.
         let att = f.attitude();
         assert!(att.q_body_to_eci_xyzw.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn sr_ukf_attitude_predict_only_keeps_unused_covariance_pinned() {
+        let mut f = SquareRootUkfAttitude::new(SquareRootUkfParams::default());
+        f.seed(UnitQuaternion::identity());
+        let imu = imu_sample(Vector3::zeros(), Vector3::new(0.0, 0.0, 9.80665));
+        f.update_imu(&imu).unwrap();
+        for _ in 0..2_000 {
+            f.predict(0.01).unwrap();
+        }
+        let p = covariance_from_cholesky(&f.inner.s);
+        for i in 0..3 {
+            assert_abs_diff_eq!(p[(i, i)], ATTITUDE_ONLY_UNUSED_VARIANCE, epsilon = 1.0e-24);
+            assert_abs_diff_eq!(
+                p[(i + 3, i + 3)],
+                ATTITUDE_ONLY_UNUSED_VARIANCE,
+                epsilon = 1.0e-24
+            );
+            assert_abs_diff_eq!(
+                p[(i + 12, i + 12)],
+                ATTITUDE_ONLY_UNUSED_VARIANCE,
+                epsilon = 1.0e-24
+            );
+        }
+        assert!(p.iter().all(|v| v.is_finite()));
     }
 }

@@ -1617,7 +1617,11 @@ Sensor fusion / state estimation. Available implementations:
 - `IdealEstimator` (pass-through truth, test only).
 - `Ekf` — standard Extended Kalman Filter for position/velocity.
 - `Mekf` — Multiplicative EKF for quaternion attitude.
-- `Ukf` — 6-state sigma-point UKF for attitude + gyro-bias validation.
+- `SquareRootUkf` — 15-state square-root UKF-family estimator with
+  linearized inertial covariance predict and sigma-point measurement
+  updates.
+- `SquareRootUkfAttitude` — 6-state attitude + gyro-bias wrapper over
+  the square-root UKF family.
 
 ```rust
 pub trait Estimator {
