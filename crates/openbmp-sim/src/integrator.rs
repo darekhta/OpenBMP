@@ -1569,15 +1569,6 @@ mod tests {
         let mut total_accepts: usize = 0;
         let mut total_rejects: usize = 0;
 
-        // 5th-order embedded estimator → exponent on the asymptotic
-        // factor formula. Mirrors `EMBEDDED_ORDER` constant.
-        let embedded_order: f64 = 4.0;
-        let alpha = 0.7_f64;
-        let beta = 0.4_f64;
-        let safety = 0.9_f64;
-        let min_factor = 0.2_f64;
-        let max_factor = 5.0_f64;
-
         // Drive single sub-steps with an outer accept/reject pattern
         // parallel to the integrator's internal one; this lets us
         // observe the per-sub-step h directly.
@@ -1589,29 +1580,25 @@ mod tests {
                 .expect("try_substep must succeed for a benign integrand");
 
             if err <= 1.0 {
+                // Accept: use the integrator's PI hot path directly
+                // while `last_err_prev` still holds the previous
+                // accepted error.
+                let err_clamped = err.max(1.0e-10);
+                let factor = integrator.pi_step_factor(err_clamped);
                 state = proposed.with_time(SimTime::from_seconds(state.time.as_seconds() + h_try));
                 accepted_h_history.push(h_try);
-                last_err_prev = Some(err.max(1.0e-10));
-                // PI factor on accept (matches integrator's
-                // `pi_step_factor` hot-path formula).
-                let err_clamped = err.max(1.0e-10);
-                let prev_err_clamped = last_err_prev.unwrap_or(1.0).max(1.0e-10);
-                let factor = if total_accepts == 0 {
-                    safety * err_clamped.powf(-alpha / embedded_order)
-                } else {
-                    safety
-                        * err_clamped.powf(-alpha / embedded_order)
-                        * prev_err_clamped.powf(beta / embedded_order)
-                };
-                let factor_bounded = factor.max(min_factor).min(max_factor);
-                h = (h_try * factor_bounded).max(min_h).min(max_h);
+                last_err_prev = Some(err_clamped);
+                h = (h_try * factor).max(min_h).min(max_h);
                 total_accepts += 1;
             } else {
                 // Reject: I-controller shrink (no β term).
-                let factor = (safety * err.powf(-alpha / embedded_order))
-                    .max(min_factor)
-                    .min(1.0);
-                h = (h_try * factor).max(min_h);
+                let alpha_over_p = integrator.pi_alpha / EMBEDDED_ORDER;
+                let mut factor = integrator.safety_factor * err.powf(-alpha_over_p);
+                if !factor.is_finite() || factor <= 0.0 {
+                    factor = integrator.min_factor;
+                }
+                factor = factor.max(integrator.min_factor).min(1.0);
+                h = (h_try * factor).max(integrator.min_h_s);
                 total_rejects += 1;
             }
         }

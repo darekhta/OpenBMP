@@ -1535,15 +1535,19 @@ byte-identical on every existing scenario (verified via
 `end_to_end`, `sounding_rocket_e2e`, `calisto_e2e`,
 `multi_body_e2e`, `parachute_recovery_e2e`).
 
-**Validation evidence.** 13 unit tests on `Dopri54Adaptive` covering
-embedded-error norm, accept/reject monotonicity, FSAL k7 reuse,
-step-clamp boundaries, floor-failure handling, and 5th-order
-convergence on a polynomial trajectory. 11 runner-validator unit tests on
-`build_runtime_integrator_from_solver` covering the wired-combo
+**Validation evidence (current tree).** 15 unit tests on
+`Dopri54Adaptive` covering embedded-error norm, accept/reject
+monotonicity, FSAL k7 reuse, step-clamp boundaries,
+floor-failure handling, the §5.D.5 per-component breach case, the
+PI band-stability test, and 5th-order convergence on a polynomial
+trajectory. 11 runner-validator unit tests on
+`build_runtime_integrator_from_solver` cover the wired-combo
 positives, every deferred-combo rejection path, and the full
-supported cross-product. One CLI snapshot test asserts the
-rigid-body runner fails closed on non-RK4 solver selections. 2 e2e
-tests on the new LEO-orbit-adaptive scenario.
+supported cross-product. The §5.D.4 rigid-body non-RK4 negative CLI
+snapshot was retired when §5.D.5 wired the positive rigid-body
+adaptive path; unwired methods still fail closed at the shared
+runner-dispatch layer. 2 e2e tests cover the LEO-orbit-adaptive
+scenario.
 
 **References.** Dormand, J. R., and Prince, P. J. (1980).
 *A family of embedded Runge-Kutta formulae*, J. Comp. Appl.
@@ -1586,10 +1590,12 @@ to § 5.D.6.
   ) -> f64;
   ```
   HNW Vol I §II.4 RMS form `err = sqrt((1/N) · Σ_i ((h·e'_i / sc_i))²)`
-  with `sc_i = atol + rtol · max(|y^n_i|, |y^{n+1}_i|)`. Locked
-  per-component walk order matches the existing `l2_norm` and
-  `scalar_state_size` so the audit can grep for one canonical
-  component sequence.
+  with `sc_i = atol + rtol · max(|y^n_i|, |y^{n+1}_i|)`. The
+  per-component walk is locked and follows the same state/derivative
+  prefix order as the existing `l2_norm`; on `RigidBodyState` it
+  intentionally extends the inertia traversal to all 9 matrix
+  entries while `scalar_state_size` remains a 20-component
+  diagnostic.
 - `PointMassState` impl: 7 components (pos×3, vel×3, mass×1) with
   derivative pairing pos↔vel, vel↔accel, mass↔mass_rate.
 - `RigidBodyState` impl: 26 components (pos×3, vel×3, quat×4,
@@ -1659,7 +1665,7 @@ byte-stable on the default (no-`[solver]`) codepath.
 **Validation evidence.** 10 `weighted_error_norm` unit tests
 covering both PointMassState and RigidBodyState (uniform RMS
 formula, dimension-26 invariant, multi-scale state, bit-stability).
-14 `Dopri54Adaptive` unit tests including the new band-stability
+15 `Dopri54Adaptive` unit tests including the new band-stability
 test. Calisto-adaptive e2e + LEO-orbit-egm2008-adaptive e2e. Full
 existing rigid-body and point-mass e2e suites pass.
 
