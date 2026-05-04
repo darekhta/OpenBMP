@@ -397,47 +397,15 @@ initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]",
     );
 }
 
-#[test]
-fn run_on_rigid_body_non_rk4_solver_selection_fails_closed() {
-    let temp = tempdir("rigid_body_non_rk4_solver");
-    let staged = temp.path().join("scenario.toml");
-    let canonical = workspace_root().join("scenarios/diff-flatness-figure-eight/scenario.toml");
-    let data_root = workspace_root().join("data");
-    let original = fs::read_to_string(&canonical).expect("read canonical");
-    let solver_block = r#"
-[solver]
-profile = "adaptive-explicit"
-trajectory_method = "dopri54"
-determinism = "state-stable"
-
-[solver.adaptive]
-rtol = 1.0e-9
-atol = 1.0e-12
-min_dt_s = 1.0e-6
-max_dt_s = 1.0e-3
-dense_output = false
-
-"#;
-    let rewritten = original
-        .replace("../../data", &data_root.to_string_lossy())
-        .replace("[telemetry]", &format!("{solver_block}[telemetry]"));
-    fs::write(&staged, rewritten).expect("write staged");
-
-    let mut cmd = openbmp();
-    cmd.arg("run").arg(&staged);
-    let assert = cmd.assert();
-    let output = assert.get_output();
-    assert!(
-        !output.status.success(),
-        "exit status should be non-zero, was {:?}",
-        output.status
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(
-        stderr.contains("rigid-body runner only supports Rk4FixedStep"),
-        "stderr should explain rigid-body solver dispatch is deferred, got: {stderr}"
-    );
-}
+// Phase-5.D.4 audit follow-ups added a `_fails_closed` gate on the
+// rigid-body runner that rejected non-RK4 `[solver]` selections.
+// Phase-5.D.5 wires the full rigid-body adaptive path, so that gate
+// no longer fires. The positive coverage now lives in
+// `crates/openbmp-cli/tests/calisto_adaptive_e2e.rs` (rigid-body
+// adaptive end-to-end) plus the runner-validator unit tests in
+// `crates/openbmp-cli/src/runner/integrator.rs` (still-deferred
+// dopri853 / rkf78 / implicit-source-term combinations are
+// rejected at the dispatch layer regardless of runner).
 
 #[test]
 fn diff_reports_identical_for_self_compare() {

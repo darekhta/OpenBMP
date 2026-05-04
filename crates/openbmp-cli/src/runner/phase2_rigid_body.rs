@@ -47,7 +47,7 @@ use openbmp_propulsion::{Motor, MotorError, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
     ConstantMassRigid, EndTime, ForceContext, ForceModel, NullEnvironment, RigidModels,
-    Rk4FixedStep, SimulationConfig, SimulationKernel, StopReason, ZeroMoment,
+    SimulationConfig, SimulationKernel, StopReason, ZeroMoment,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -66,7 +66,7 @@ use crate::runner::atmosphere::{
     RuntimeAtmosphere, build_runtime_atmosphere, is_runtime_atmosphere_kind,
     scenario_atmosphere_kind,
 };
-use crate::runner::integrator::{RuntimeIntegrator, build_runtime_integrator};
+use crate::runner::integrator::build_runtime_integrator;
 
 // Stable model-ids assigned to each force / mass model the rigid
 // runner wires. Reserves a separate range from the Phase-2 point-mass
@@ -133,9 +133,18 @@ pub fn run(
     let moment_model = build_moment_model(document)?;
     let rigid_models = RigidModels::new(moment_model, mass_model);
 
+    // Phase-5.D.5 — runner-side `[solver]` block dispatch on the
+    // rigid-body path. Default (no `[solver]`) selects `Rk4FixedStep`,
+    // preserving byte-stability for every existing rigid-body
+    // scenario. Adaptive / fixed-DOPRI selections now drive
+    // `Dopri54Adaptive` / `Dopri54FixedStep` end-to-end through the
+    // rigid-body kernel — the §5.D.4 audit-follow-up reject gate that
+    // refused non-RK4 selections has been removed.
+    let runtime_integrator = build_runtime_integrator(document)?;
+
     let config = SimulationConfig {
         initial_state,
-        integrator: Rk4FixedStep,
+        integrator: runtime_integrator,
         force_model: kernel_vehicle,
         mass_model: rigid_models,
         environment: NullEnvironment,
@@ -386,20 +395,13 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), CliError> 
             ),
         });
     }
-    // Phase-5.D.4 wires solver dispatch on the point-mass runner only.
-    // Preserve the rigid-body runner's RK4 behaviour, but fail closed
-    // if a scenario declares any non-RK4 solver selection instead of
-    // silently ignoring it. §5.D.5 wires the full rigid-body path.
-    if document.solver.is_some() {
-        let integrator = build_runtime_integrator(document)?;
-        if !matches!(integrator, RuntimeIntegrator::Rk4(_)) {
-            return Err(CliError::UnsupportedScenario {
-                what: "rigid-body runner only supports Rk4FixedStep solver dispatch today; \
-                       non-RK4 rigid-body solver selections are deferred to §5.D.5"
-                    .to_owned(),
-            });
-        }
-    }
+    // Phase-5.D.5 — `[solver]` block dispatch is wired end-to-end on
+    // the rigid-body runner. The actual `RuntimeIntegrator`
+    // construction lives in the kernel-config block in `run()` so the
+    // adaptive integrator's persistent state (last_h, last_err_prev)
+    // is owned by the kernel for the entire run. The §5.D.4
+    // audit-follow-up reject gate that refused non-RK4 selections
+    // has been removed.
     if !matches!(
         document.environment.gravity.as_str(),
         "constant" | "point_mass" | "j2" | "egm2008"

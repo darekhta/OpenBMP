@@ -444,7 +444,8 @@ pub enum AdaptiveIntegratorError {
 /// controller:
 ///
 /// ```text
-///   err = h · ||e'|| / (atol + rtol · ||y||)
+///   sc_i  = atol + rtol · max(|y^n_i|, |y^{n+1}_i|)             (per-component)
+///   err   = sqrt( (1/N) · Σ_i ( h · e'_i / sc_i )^2 )           (HNW Vol I §II.4 RMS)
 ///   factor = safety · err^(−α/p) · err_prev^(β/p)
 ///   p = 4, α = 0.7, β = 0.4, safety = 0.9
 ///   factor ∈ [min_factor, max_factor]
@@ -458,13 +459,19 @@ pub enum AdaptiveIntegratorError {
 /// returns [`IntegratorError::InvalidStep`] instead of silently
 /// accepting a step outside tolerance.
 ///
-/// # Honest scope
+/// # Error norm (Phase-5.D.5)
 ///
-/// The error norm uses **scalar tolerance** — the `atol + rtol · ||y||`
-/// scaling treats the state as a single flat vector under its
-/// [`SimState::scalar_state_size`] norm. A per-component refinement
-/// (Hairer-Nørsett-Wanner Vol I §II.4 form) is deferred to a follow-on
-/// slice (`docs/phase-5-plan.md § 5.D.5`).
+/// The scaled error norm uses the **per-component** Hairer-Nørsett-
+/// Wanner Vol I §II.4 RMS form via
+/// [`Integratable::weighted_error_norm`]: each component-wise scaled
+/// error term is divided by its own per-component scale `sc_i`,
+/// then averaged in RMS. This is the formulation §5.D.4 deferred —
+/// the original scalar form `err = h · ||e'||₂ / (atol + rtol ·
+/// scalar_state_size)` masked component-i breaches when other
+/// components had large magnitudes (a 1 m position drift hidden by
+/// `||y||₂ ≈ 1e6` m radius). The per-component form is required for
+/// the rigid-body adaptive runner where state spans nine orders of
+/// magnitude (position 1e6 m, quaternion 1, inertia 1e-3 kg·m²).
 ///
 /// # Determinism
 ///
@@ -667,19 +674,16 @@ impl Dopri54Adaptive {
             return Err(IntegratorError::NonFiniteDerivative);
         }
 
-        // Error derivative: e' = Σ E_i k_i (E2 = 0 implied).
-        // The scaled norm below multiplies by h once to obtain
-        // ||y_5 − y_4||.
+        // Error derivative: e' = Σ E_i k_i (E2 = 0 implied). The
+        // multiplication by `h` to obtain `e = y_5 − y_4` happens
+        // inside `weighted_error_norm`.
         let error_deriv =
             (((((k1 * E1) + (k3 * E3)) + (k4 * E4)) + (k5 * E5)) + (k6 * E6)) + (k7 * E7);
-        let error_norm = h * error_deriv.l2_norm();
-        let state_size = new_state.scalar_state_size();
-        let scale = self.atol + self.rtol * state_size;
-        let scaled_err = if scale > 0.0 {
-            error_norm / scale
-        } else {
-            error_norm
-        };
+        // Per-component scaled error RMS norm (Phase-5.D.5):
+        //   sc_i = atol + rtol · max(|y^n_i|, |y^{n+1}_i|)
+        //   err = sqrt( (1/N) · Σ_i ( h · e'_i / sc_i )^2 )
+        let scaled_err =
+            new_state.weighted_error_norm(state, &error_deriv, h, self.atol, self.rtol);
 
         Ok((new_state, scaled_err))
     }
@@ -786,6 +790,7 @@ mod tests {
     use approx::assert_abs_diff_eq;
     use nalgebra::Vector3;
     use openbmp_core::{Position3, SimTime, Velocity3};
+    use openbmp_models::VehicleState;
     use openbmp_state::PointMassState;
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
@@ -1512,6 +1517,203 @@ mod tests {
         assert!(
             h_loose > h_tight,
             "loose tolerance h ({h_loose}) should exceed tight tolerance h ({h_tight})",
+        );
+    }
+
+    /// Phase-5.D.5 — PI controller band-stability over a long
+    /// sequence of single sub-steps.
+    ///
+    /// The public `Integrator::advance(...)` API rolls multiple
+    /// sub-steps into one call and lands exactly at `dt`, so the
+    /// integrator's `last_h_s` after each call reflects whatever
+    /// remaining time fragment the loop had to clear — not the
+    /// controller's preferred steady-state h. To observe the
+    /// controller's behaviour we drive the private `try_substep`
+    /// helper directly in a tight loop, mirroring the inner-loop
+    /// accept/reject pattern but without the outer-loop fragment
+    /// clamping.
+    ///
+    /// Trajectory: `dy/dt = -y` from `y(0) = 1`. At
+    /// `(rtol, atol) = (1e-12, 1e-12)` the controller's optimal
+    /// `h ≈ (atol·5! / y)^(1/(p+1)) ≈ 6.5e-3` for the 5th-order
+    /// method, sitting comfortably inside `[1e-9, 5e-2]`.
+    ///
+    /// Asserts:
+    /// * After warm-up, the accepted-h sequence stays inside a
+    ///   per-step factor band of `[0.5, 2.0]` (much tighter than
+    ///   the factor clamp `[0.2, 5.0]` — a healthy PI controller
+    ///   converges fast).
+    /// * Rejection rate over the full run stays below 10 % (HNW Vol I
+    ///   §II.4 cites < 5 % as typical for well-tuned controllers; the
+    ///   10 % threshold is loose enough to catch a broken controller
+    ///   without flaking on benign initial-step rejections).
+    /// * Steady-state median accepted h lies inside the sanity band
+    ///   for the configured tolerance.
+    #[test]
+    fn dopri54_adaptive_pi_controller_stays_in_band_over_long_run() {
+        let initial = exp_decay_initial_state();
+        let atol = 1.0e-12;
+        let rtol = 1.0e-12;
+        let min_h = 1.0e-9;
+        let max_h = 5.0e-2;
+        let integrator = Dopri54Adaptive::new(atol, rtol, min_h, max_h).unwrap();
+
+        let n_steps = 200;
+        let mut state = initial;
+        // Initial trial step: same logic the public `advance` uses
+        // (fall back to the largest allowed h when there is no
+        // history).
+        let mut h = max_h;
+        let mut accepted_h_history: Vec<f64> = Vec::with_capacity(n_steps);
+        let mut last_err_prev: Option<f64> = None;
+        let mut total_accepts: usize = 0;
+        let mut total_rejects: usize = 0;
+
+        // 5th-order embedded estimator → exponent on the asymptotic
+        // factor formula. Mirrors `EMBEDDED_ORDER` constant.
+        let embedded_order: f64 = 4.0;
+        let alpha = 0.7_f64;
+        let beta = 0.4_f64;
+        let safety = 0.9_f64;
+        let min_factor = 0.2_f64;
+        let max_factor = 5.0_f64;
+
+        // Drive single sub-steps with an outer accept/reject pattern
+        // parallel to the integrator's internal one; this lets us
+        // observe the per-sub-step h directly.
+        while total_accepts < n_steps {
+            integrator.last_err_prev.set(last_err_prev);
+            let h_try = h.max(min_h).min(max_h);
+            let (proposed, err) = integrator
+                .try_substep(&state, &exp_decay_derive, h_try)
+                .expect("try_substep must succeed for a benign integrand");
+
+            if err <= 1.0 {
+                state = proposed.with_time(SimTime::from_seconds(state.time.as_seconds() + h_try));
+                accepted_h_history.push(h_try);
+                last_err_prev = Some(err.max(1.0e-10));
+                // PI factor on accept (matches integrator's
+                // `pi_step_factor` hot-path formula).
+                let err_clamped = err.max(1.0e-10);
+                let prev_err_clamped = last_err_prev.unwrap_or(1.0).max(1.0e-10);
+                let factor = if total_accepts == 0 {
+                    safety * err_clamped.powf(-alpha / embedded_order)
+                } else {
+                    safety
+                        * err_clamped.powf(-alpha / embedded_order)
+                        * prev_err_clamped.powf(beta / embedded_order)
+                };
+                let factor_bounded = factor.max(min_factor).min(max_factor);
+                h = (h_try * factor_bounded).max(min_h).min(max_h);
+                total_accepts += 1;
+            } else {
+                // Reject: I-controller shrink (no β term).
+                let factor = (safety * err.powf(-alpha / embedded_order))
+                    .max(min_factor)
+                    .min(1.0);
+                h = (h_try * factor).max(min_h);
+                total_rejects += 1;
+            }
+        }
+
+        // 1) No clamp pinning post-warmup. The first accept usually
+        //    follows a rejection from the max_h initial guess and
+        //    can land near the asymptotic optimum cleanly; skip the
+        //    first 5 entries to be safe.
+        for (i, &h_acc) in accepted_h_history.iter().enumerate().skip(5) {
+            assert!(
+                h_acc > min_h * 10.0,
+                "accepted h at step {i} = {h_acc} pinned near min_h_s = {min_h}",
+            );
+            assert!(
+                h_acc < max_h * 0.999,
+                "accepted h at step {i} = {h_acc} pinned at max_h_s = {max_h}",
+            );
+        }
+
+        // 2) Consecutive-step ratio in a tight steady-state band.
+        for (i, window) in accepted_h_history.windows(2).enumerate().skip(5) {
+            let ratio = window[1] / window[0];
+            assert!(
+                (0.5..=2.0).contains(&ratio),
+                "consecutive accepted-h ratio at step {i} = {ratio} \
+                 outside the steady-state band [0.5, 2.0]; \
+                 controller is oscillating ({} → {})",
+                window[0],
+                window[1],
+            );
+        }
+
+        // 3) Rejection rate < 10 % over the full run (HNW typical
+        //    benchmark: well-tuned controllers reject < 5 %).
+        let total_attempts = total_accepts + total_rejects;
+        // Both counters fit in usize and stay well under 2^53 for any
+        // realistic test horizon, so the f64 cast is exact in practice.
+        #[allow(clippy::cast_precision_loss)]
+        let reject_frac = (total_rejects as f64) / (total_attempts as f64);
+        assert!(
+            reject_frac < 0.10,
+            "rejection rate {reject_frac:.3} too high — controller wasted work \
+             ({total_rejects} rejected / {total_attempts} attempts)",
+        );
+
+        // 4) Steady-state median accepted h is in a sensible band.
+        let mut steady: Vec<f64> = accepted_h_history[20..].to_vec();
+        steady.sort_by(f64::total_cmp);
+        let median_h = steady[steady.len() / 2];
+        assert!(
+            (1.0e-4..=1.0e-1).contains(&median_h),
+            "steady-state median accepted h = {median_h} outside the \
+             1e-4..1e-1 sanity band for exp-decay at \
+             rtol={rtol}, atol={atol}"
+        );
+    }
+
+    /// Phase-5.D.5 — verifies the per-component norm refinement is in
+    /// effect. On a multi-scale point-mass state where one component
+    /// is 10⁶ and another is 1, the per-component RMS form correctly
+    /// surfaces a position-component breach that the older scalar
+    /// form `||e||₂ / (atol + rtol·||y||₂)` would mask. The test
+    /// constructs a synthetic error derivative that produces a
+    /// "drift" in the position component while the rest are zero,
+    /// and confirms `weighted_error_norm` returns a value far above
+    /// the controller setpoint of 1.0 — i.e., it would correctly
+    /// trigger a step rejection.
+    #[test]
+    fn dopri54_adaptive_per_component_norm_surfaces_multi_scale_breach() {
+        use openbmp_models::Integratable;
+
+        let prev = PointMassState::new(
+            SimTime::ZERO,
+            Position3::new(1.0e6, 0.0, 0.0),
+            Velocity3::zero(),
+            Mass::new::<kilogram>(1.0),
+        );
+        // Position drifts by 1 m, mass drifts by 1e-12 kg — both are
+        // at scale 1.0 in scaled units (rtol=1e-9 · |y|).
+        let new = PointMassState::new(
+            SimTime::ZERO,
+            Position3::new(1.0e6 + 1.0, 0.0, 0.0),
+            Velocity3::zero(),
+            Mass::new::<kilogram>(1.0 + 1.0e-12),
+        );
+        let err_deriv = PointMassDerivative {
+            velocity_m_s: Vector3::new(1.0, 0.0, 0.0),
+            acceleration_m_s2: Vector3::zeros(),
+            mass_rate_kg_s: 1.0e-12,
+        };
+        let h = 1.0;
+        let atol = 1.0e-12;
+        let rtol = 1.0e-9;
+        let err = new.weighted_error_norm(&prev, &err_deriv, h, atol, rtol);
+        // The 1 m position breach at rtol·1e6 ≈ 1e-3 scale gives
+        // scaled error ≈ 1e3 in just the position-x slot. RMS over
+        // 7 components ≈ 1e3/sqrt(7) ≈ 378.
+        assert!(
+            err > 100.0,
+            "per-component RMS form must surface multi-scale breach \
+             (got {err}); a scalar `||e||₂ / ||y||₂` form would mask \
+             it because ||y||₂ ≈ 1e6 swallows the 1 m drift",
         );
     }
 

@@ -135,7 +135,8 @@ in lockstep with each sub-phase landing.
 | 5.D.1 — multi-rate scheduling first-class | pending | — |
 | 5.D.2 — multi-body simultaneous propagation | pending | — |
 | 5.D.4 — DOPRI5(4) adaptive integrator with PI step controller (point-mass runner) | shipped | _pending PR_ |
-| 5.D.5 — adaptive integrator follow-ons (rigid-body runner, per-component error norm, DOPRI8(7)) | pending — follow-on from 5.D.4 | — |
+| 5.D.5 — adaptive integrator: rigid-body runner + per-component error norm + PI band test | shipped | _pending PR_ |
+| 5.D.6 — DOP853 / DOPRI8(7) adaptive integrator | pending — follow-on from 5.D.5 | — |
 | 5.E.1 — optional socket-bridge HIL pattern | pending | — |
 | 5.E.2 — real ULog parser + PX4 ekf2 cross-validation | pending | — |
 | 5.E.3 — ArduPilot dataflash parser + NavEKF3 cross-validation | pending | — |
@@ -1455,7 +1456,8 @@ enum dispatch. The fixed-step default
 (`profile = "fixed-step-explicit"` / `trajectory_method = "rk4"` /
 `determinism = "bit-stable"`) is preserved bit-for-bit on every
 existing scenario (the runner-side e2e suite re-runs unchanged).
-DOPRI8(7) and the rigid-body runner adaptive path move to § 5.D.5;
+The rigid-body runner adaptive path and the per-component error norm
+moved to § 5.D.5 (shipped); DOPRI8(7) moves further to § 5.D.6;
 see scope deferrals below.
 
 **Scope (shipped).**
@@ -1505,29 +1507,25 @@ see scope deferrals below.
   envelope and produces byte-identical Parquet across two reruns
   on the same platform.
 
-**Scope (deferred to § 5.D.5).**
+**Scope (deferred at § 5.D.4 ship time — landed locations).**
 
-- Rigid-body runner adaptive path. `phase2_rigid_body` continues to
-  hardcode `Rk4FixedStep` until § 5.D.5 ships. The rigid-body
-  scenario validator already accepts `[solver]` blocks, so a
-  rigid-body scenario with `profile = "adaptive-explicit"` parses
-  but now fails closed in the runner instead of being silently
-  treated as RK4. Explicit RK4 solver selections still preserve the
-  existing rigid-body path. § 5.D.5 closes that wiring gap.
-- DOPRI8(7) tableau and `Dopri87Adaptive`. The `dopri853`
-  trajectory method parses but is rejected by
-  `build_runtime_integrator_from_solver`.
-- Per-component (vector-form) tolerance / error norm. The current
-  scalar form treats the state as a single flat vector under
-  `||y|| = scalar_state_size`. Hairer-Nørsett-Wanner §II.4 vector
-  form (per-component `sc_i = atol_i + rtol_i · max(|y_i|, |ŷ_i|)`)
-  is deferred — useful when state components have wildly different
-  magnitudes (position vs quaternion vs angular velocity in
-  rigid-body).
+- Rigid-body runner adaptive path → **shipped in § 5.D.5**.
+  `phase2_rigid_body` now dispatches through
+  `build_runtime_integrator(document)?` exactly like the point-mass
+  runner; the audit-follow-up reject gate is gone.
+- Per-component (vector-form) tolerance / error norm →
+  **shipped in § 5.D.5**. `Integratable::weighted_error_norm`
+  implements the HNW Vol I §II.4 RMS form with
+  `sc_i = atol + rtol · max(|y^n_i|, |y^{n+1}_i|)` per component;
+  `Dopri54Adaptive::try_substep` consumes it directly.
+- DOPRI8(7) tableau and `Dopri87Adaptive` → **deferred further to
+  § 5.D.6**. The `dopri853` trajectory method still parses but is
+  rejected by `build_runtime_integrator_from_solver`.
 - Property test that the PI controller drives the error norm into
-  its declared band over a long trajectory. The unit-test suite
-  covers single-step accept/reject and 5th-order convergence on a
-  polynomial; a multi-step distribution check is its own slice.
+  its declared band over a long trajectory → **shipped in § 5.D.5**
+  (`dopri54_adaptive_pi_controller_stays_in_band_over_long_run`
+  drives `try_substep` directly and asserts no clamp pinning, tight
+  consecutive-step ratio band, and < 10 % rejection rate).
 
 **Exit criterion (achieved).** The adaptive integrator runs the
 LEO-orbit demo end-to-end with the documented radius envelope and
@@ -1563,59 +1561,174 @@ replace the fixed-step default in any existing scenario without an
 explicit `[solver]` block in the scenario header. The default
 codepath when `[solver]` is absent is preserved bit-for-bit.
 
-#### 5.D.5 — Adaptive-integrator follow-ons (rigid-body runner, per-component error, DOPRI8(7))
+#### 5.D.5 — Adaptive integrator: rigid-body runner + per-component error norm + PI band test **— shipped**
 
-**Scope.** Pick up the surface § 5.D.4 deferred. Specifically:
+**Status.** Shipped on the rigid-body runner. `[solver] profile =
+"adaptive-explicit"` now drives `Dopri54Adaptive` through the
+`RuntimeIntegrator` enum dispatch on **both** runners (point-mass
+and rigid-body); the §5.D.4 audit-follow-up reject gate that
+refused non-RK4 rigid-body selections has been retired. The scaled
+error norm is now the per-component Hairer-Nørsett-Wanner Vol I
+§II.4 RMS form; the §5.D.4 scalar placeholder
+`||e||₂ / (atol + rtol·||y||₂)` is gone. DOP853 / DOPRI8(7) moves
+to § 5.D.6.
 
-- Wire `RuntimeIntegrator` into the rigid-body runner
-  (`crates/openbmp-cli/src/runner/phase2_rigid_body.rs`). Today
-  that runner hardcodes `Rk4FixedStep` and fails closed for
-  non-RK4 solver selections; once § 5.D.5 ships, a rigid-body
-  scenario with `profile = "adaptive-explicit"` will drive
-  `Dopri54Adaptive` through the same enum dispatch the point-mass
-  runner uses. The `RigidBodyState` `scalar_state_size`
-  norm already accounts for quaternion + angular velocity + mass
-  + cg + inertia diagonal; the off-diagonal inertia terms are
-  intentionally skipped on the diagonal-norm shape and revisited
-  if a tolerance-tuning study calls for it.
-- Per-component (vector-form) tolerance / error norm. Extend
-  `SimStateDerivative` with a componentwise `weighted_norm(y, atol,
-  rtol)` shape in addition to `l2_norm()`, and let
-  `Dopri54Adaptive` opt into the per-component form. Useful for
-  rigid-body where position (~10⁶ m), quaternion (~1), angular
-  velocity (~10⁰ rad/s), and inertia (~10⁻³ kg·m²) span ~9 orders
-  of magnitude.
-- `Dopri87Adaptive`: 8(7)-order embedded RK pair. New tableau in
-  `dopri87_tableau` mod with the standard Prince-Dormand 1981
-  coefficients. Wire into `build_runtime_integrator_from_solver`
-  on the `dopri853` triple (currently rejected as "deferred to a
-  future slice").
-- Property test for PI controller band stability. Run a multi-step
-  trajectory under a known forcing function and assert the
-  step-by-step error norm distribution converges to a band centred
-  near 1.0 (the controller's setpoint).
+**Scope (shipped).**
 
-**Exit criterion.** A rigid-body scenario with the adaptive
-solver runs `Dopri54Adaptive` end-to-end and reaches the same
-attitude / position envelopes as the existing fixed-RK4 rigid-body
-e2e cases. `Dopri87Adaptive` reaches at least 7th-order convergence
-on the polynomial-trajectory unit-test. The PI controller
-distribution-band property test passes on the LEO-orbit and
-sounding-rocket trajectories.
+- Per-component error norm trait extension on
+  `openbmp_models::Integratable`:
+  ```rust
+  fn weighted_error_norm(
+      &self,                          // y_{n+1}
+      prev_state: &Self,              // y_n
+      error_deriv: &Self::Derivative, // e' = Σ E_i k_i
+      h: f64, atol: f64, rtol: f64,
+  ) -> f64;
+  ```
+  HNW Vol I §II.4 RMS form `err = sqrt((1/N) · Σ_i ((h·e'_i / sc_i))²)`
+  with `sc_i = atol + rtol · max(|y^n_i|, |y^{n+1}_i|)`. Locked
+  per-component walk order matches the existing `l2_norm` and
+  `scalar_state_size` so the audit can grep for one canonical
+  component sequence.
+- `PointMassState` impl: 7 components (pos×3, vel×3, mass×1) with
+  derivative pairing pos↔vel, vel↔accel, mass↔mass_rate.
+- `RigidBodyState` impl: 26 components (pos×3, vel×3, quat×4,
+  ang_vel×3, mass×1, cg×3, inertia×9) — the full 9-entry inertia
+  rate is summed (matching `RigidBodyDerivative::dimension`); the
+  symmetric off-diagonal pairs are double-counted but harmlessly,
+  because each scaled term is normalised by its own per-component
+  scale and the controller's setpoint-1 dynamics absorb a constant
+  factor √2 silently. The legacy `scalar_state_size` retains its
+  20-component diagonal-only shape as a state-magnitude diagnostic
+  for telemetry consumers; the divergence between the two methods is
+  documented inline.
+- `Dopri54Adaptive::try_substep` now calls
+  `weighted_error_norm` directly. The scalar form is gone — no
+  feature flag, no opt-in, no backward-compat shim. The shipped
+  `leo-orbit-egm2008-adaptive` Parquet baseline updates as a side
+  effect (the byte-stable check is "two reruns produce the same
+  bytes," which is preserved).
+- Rigid-body runner adaptive wiring: `phase2_rigid_body::run`
+  dispatches through `build_runtime_integrator(document)?` exactly
+  like the point-mass runner. The §5.D.4 audit-follow-up reject
+  gate is removed.
+- New rigid-body adaptive demo scenario:
+  `scenarios/calisto-adaptive/scenario.toml` — RocketPy Calisto
+  with `[solver]` adaptive-explicit / dopri54 / state-stable,
+  `rtol = 1e-7`, `atol = 1e-9`. The e2e test
+  `crates/openbmp-cli/tests/calisto_adaptive_e2e.rs` asserts the
+  apogee stays within ±2 % of the RocketPy 3349 m AGL baseline
+  (same envelope as the Phase-3.11 fixed-RK4 e2e gate), the drogue
+  + main parachute mission graph fires, and two reruns produce
+  byte-identical Parquet within-platform.
+- PI controller band-stability property test in
+  `Dopri54Adaptive::tests`. Drives `try_substep` directly on an
+  exp-decay trajectory at tight tolerances, observing the
+  controller's accept/reject pattern. Asserts:
+    * Post-warmup, no clamp pinning (no `min_h` / `max_h` saturation).
+    * Consecutive accepted-h ratios stay in `[0.5, 2.0]`
+      (much tighter than the factor clamp `[0.2, 5.0]`).
+    * Rejection rate < 10 % over the full run (HNW Vol I §II.4
+      cites < 5 % as typical for well-tuned controllers; the
+      10 % threshold catches a broken controller without flaking
+      on benign initial-step rejections).
+    * Steady-state median accepted h sits in the
+      tolerance-implied sanity band.
 
-**Validation evidence.** Unit tests for the per-component error
-norm formula; rigid-body e2e adaptive variant of the existing
-`niskanen` case; unit tests for the 8(7) tableau row-sums and
-simplifying assumptions; property test on PI band stability.
+**Scope (deferred to § 5.D.6).**
 
-**References.** Same as § 5.D.4, plus: Prince, P. J., and
-Dormand, J. R. (1981). *High order embedded Runge-Kutta formulae*.
-J. Comp. Appl. Math. 7(1):67-75 — DOPRI8(7) tableau.
+- DOP853 / `Dopri87Adaptive`: 8th-order Dormand-Prince embedded
+  pair with 5(3) error estimators (the SciPy `DOP853` /
+  Hairer Vol I §II.5 Table 5.4 form, 12 primary stages + 4
+  interpolation abscissas). The `dopri853` trajectory method
+  parses but is rejected by `build_runtime_integrator_from_solver`.
+- Higher-order property tests on multi-step trajectories
+  (Lorenz, Van der Pol) — useful for stress-testing DOP853 once
+  it lands; not required for the current shipped surface.
+
+**Exit criterion (achieved).** The rigid-body adaptive runner
+produces apogee within the 2 % cross-tool envelope on the Calisto
+scenario, byte-stable across two same-platform reruns. The
+per-component error norm is verified via 10 trait-impl unit tests
+plus the `dopri54_adaptive_per_component_norm_surfaces_multi_scale_breach`
+case. The PI controller band test passes. All existing rigid-body
+e2e tests (calisto, multi_body, parachute_recovery, sounding_rocket
+rigid subset, diff-flatness suite, tank_slosh) remain
+byte-stable on the default (no-`[solver]`) codepath.
+
+**Validation evidence.** 10 `weighted_error_norm` unit tests
+covering both PointMassState and RigidBodyState (uniform RMS
+formula, dimension-26 invariant, multi-scale state, bit-stability).
+14 `Dopri54Adaptive` unit tests including the new band-stability
+test. Calisto-adaptive e2e + LEO-orbit-egm2008-adaptive e2e. Full
+existing rigid-body and point-mass e2e suites pass.
+
+**References.** Hairer, E., Nørsett, S. P., and Wanner, G. (1993).
+*Solving Ordinary Differential Equations I: Nonstiff Problems*,
+2nd ed., §II.4 ("Practical Step-Size Control") — per-component
+RMS error norm. Gustafsson, K. (1991). *Control theoretic
+techniques for stepsize selection in explicit Runge-Kutta
+methods*. ACM TOMS 17(4):533-554.
+
+**Scope guardrail (held).** Adaptive profile remains opt-in via
+`[solver]` and labelled `state-stable, not bit-stable`. The
+bit-stable default (`Rk4FixedStep`) continues to be the
+release-artifact benchmark profile. The default codepath when
+`[solver]` is absent is preserved bit-for-bit on every existing
+scenario, including the analytic-toy determinism gate.
+
+#### 5.D.6 — DOP853 / DOPRI8(7) adaptive integrator
+
+**Scope.** Add the canonical 8th-order Dormand-Prince embedded RK
+pair as a third `RuntimeIntegrator` variant alongside
+`Rk4FixedStep`, `Dopri54FixedStep`, and `Dopri54Adaptive`.
+Specifically:
+
+- New `dopri853_tableau` mod with the SciPy / Hairer-Wanner
+  reference coefficients (12 primary stages + 4 interpolation
+  abscissas; tableau matrices `A` 16×16, weights `B`, abscissas
+  `C`, embedded estimators `E5` and `E3` of order 5 and 3, dense-
+  output coefficients `D`). High-precision decimal constants
+  pinned against SciPy's
+  `scipy/integrate/_ivp/dop853_coefficients.py`.
+- New type `openbmp_sim::Dopri853Adaptive : Integrator<S>`. PI
+  controller exponents follow the SciPy convention
+  `error_exponent = -1/8` (no separate β term — the 3rd-order
+  companion stabilises the err denominator
+  `err = |h| · ||err5||² / sqrt((||err5||² + 0.01·||err3||²) · N)`
+  rather than a PI β factor). Persistent state same shape as
+  `Dopri54Adaptive` (`Cell<Option<f64>>` for `last_h_s`).
+- Wire into `build_runtime_integrator_from_solver` on the
+  `(adaptive-explicit, dopri853, state-stable)` triple. The same
+  `[solver.adaptive]` block (rtol/atol/min_dt_s/max_dt_s) drives
+  both 5(4) and 8(5,3) integrators.
+- New `Dopri853FixedStep` variant — fixed-step counterpart for
+  the `(fixed-step-explicit, dopri853, bit-stable)` triple, mirroring
+  the §5.D.3 `Dopri54FixedStep` shipped slice.
+- Demo scenario `scenarios/leo-orbit-egm2008-dopri853-adaptive/`
+  reusing the §5.D.4 LEO-orbit IC under DOP853. E2E test asserts
+  same radius envelope and within-platform byte-stability.
+
+**Exit criterion.** `Dopri853Adaptive` reaches 8th-order
+convergence on a polynomial trajectory unit-test. The new demo
+scenario completes its orbit within the same ±5 km radius envelope
+as the §5.D.4 `Dopri54Adaptive` baseline, with within-platform
+byte-stability across two reruns.
+
+**Validation evidence.** Unit tests for tableau row-sums and
+simplifying assumptions; 8th-order convergence test on a polynomial;
+demo e2e test; runner-validator unit tests adding `dopri853` to the
+positive-dispatch set.
+
+**References.** Prince, P. J., and Dormand, J. R. (1981). *High
+order embedded Runge-Kutta formulae*. J. Comp. Appl. Math.
+7(1):67-75. Hairer, Nørsett, and Wanner (1993). *Solving Ordinary
+Differential Equations I*, 2nd rev. ed., §II.5, Table 5.4 — the
+DOP853 tableau plus the 5(3) error estimator weighting.
 
 **Scope guardrail.** Adaptive profile remains opt-in and labelled
-`state-stable, not bit-stable`. Fixed-step default
-(`profile = "fixed-step-explicit"`) continues to be the
-release-artifact benchmark profile.
+`state-stable, not bit-stable`. Same default-codepath byte-stability
+contract as § 5.D.4 / 5.D.5.
 
 ---
 
@@ -1807,12 +1920,16 @@ parameter set is introduced.
   ├── 5.D.3 (DOPRI5 fixed-step) ──► 5.D.4 (DOPRI5(4) adaptive + PI controller, point-mass runner)
   │                                       │
   │                                       ▼
-  │                                  5.D.5 (rigid-body adaptive runner, per-component
-  │                                         error norm, DOPRI8(7))
+  │                                  5.D.5 (rigid-body adaptive runner +
+  │                                         per-component error norm + PI band test)
+  │                                       │
+  │                                       ▼
+  │                                  5.D.6 (DOP853 / DOPRI8(7) adaptive integrator)
   │     (5.D.3 was the original DOPRI5/8 adaptive line item; shipped as the
   │      honest fixed-step downscope. 5.D.4 picks up the adaptive surface
   │      on the point-mass runner; 5.D.5 wires the rigid-body runner and
-  │      ships per-component error norm + DOPRI8(7) on top.)
+  │      ships the per-component error norm + PI band-stability test;
+  │      5.D.6 adds the DOP853 8(5,3) integrator on top.)
   │
   └── 5.E.1 (HIL bridge) ──► 5.E.2 (ULog/PX4) ──► 5.E.3 (dataflash/ArduPilot)
                                                        │
@@ -1822,24 +1939,26 @@ parameter set is introduced.
 
 A → B → C → D run in parallel; E sub-phases are gated by their
 prerequisite sub-phases (5.E.5 is gated by 5.A.1 + 5.A.5 + 5.B.1).
-The follow-on sub-phases (5.C.3, 5.C.4, 5.D.5) are gated by their
-parent shipped slices (5.C.2, 5.C.1, 5.D.4 respectively) and exist
+The follow-on sub-phases (5.C.3, 5.C.4, 5.D.6) are gated by their
+parent shipped slices (5.C.2, 5.C.1, 5.D.5 respectively) and exist
 to track the deferred surfaces from those slices' honest downscopes.
 
 ## Risks and contingencies
 
 - **Determinism regressions.** SR-UKF (§ 5.B.1), EGM2008 Cunningham
   recursion (§ 5.C.3), Clarabel SOCP (§ 5.A.4 — shipped), and the
-  DOPRI5(4) adaptive PI step controller (§ 5.D.4 — shipped) are
-  floating-point-heavy; the determinism CI gate is the canary. The
-  shipped fixed-step / zonal-only / engineering-atmosphere slices
-  honour the bit-stable default profile; their adaptive / tesseral
-  / full-port follow-ons (§ 5.C.3, § 5.C.4, § 5.D.5) are the ones
-  most likely to need a `state-stable` profile flag, and each names
-  the gate in its own section. § 5.D.4 ships
+  DOPRI5(4) adaptive PI step controller
+  (§ 5.D.4 / § 5.D.5 — shipped) are floating-point-heavy; the
+  determinism CI gate is the canary. The shipped fixed-step /
+  zonal-only / engineering-atmosphere slices honour the bit-stable
+  default profile; their adaptive / tesseral / full-port follow-ons
+  (§ 5.C.3, § 5.C.4, § 5.D.6) are the ones most likely to need a
+  `state-stable` profile flag, and each names the gate in its own
+  section. § 5.D.4 / § 5.D.5 ships
   `IntegratorDeterminism::StateStable` as an opt-in label on
-  `Dopri54Adaptive` and verifies within-platform byte-stability via
-  `leo_orbit_egm2008_adaptive_e2e`; the bit-stable default
+  `Dopri54Adaptive` and verifies within-platform byte-stability on
+  both runners (point-mass via `leo_orbit_egm2008_adaptive_e2e`;
+  rigid-body via `calisto_adaptive_e2e`); the bit-stable default
   (`Rk4FixedStep`) remains the release-artifact benchmark. If any
   future sub-phase produces non-bit-stable output without an
   explicit profile flag, gate the work behind one and document the

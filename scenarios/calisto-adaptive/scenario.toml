@@ -1,0 +1,138 @@
+# Phase-5.D.5 demo: RocketPy Calisto cross-tool sounding-rocket
+# scenario integrated with the Dormand-Prince 5(4) adaptive embedded
+# RK pair on the **rigid-body runner**.
+#
+# Identical vehicle, motor, aero, atmosphere, recovery, and mission
+# graph to `scenarios/sounding-rocket/calisto/rocketpy-calisto.toml`
+# (the Phase-3.11 fixed-RK4 cross-tool validation scenario); the only
+# differences are the new `[solver]` and `[solver.adaptive]` blocks.
+# The point of this scenario is the end-to-end rigid-body adaptive
+# wiring path: `phase2_rigid_body::run` dispatches through
+# `RuntimeIntegrator::Dopri54Adaptive` rather than the previously
+# hardcoded `Rk4FixedStep`, exercising the per-component
+# Hairer-Nørsett-Wanner Vol I §II.4 RMS error norm on a 26-component
+# rigid-body state (position, velocity, quaternion, angular velocity,
+# mass, cg offset, full inertia matrix).
+#
+# Outer kernel cadence stays at `dt_s = 0.001` to match the Phase-3.11
+# baseline; `max_dt_s = 0.001` caps internal sub-steps at the same
+# resolution. Tolerances `rtol = 1e-7`, `atol = 1e-9` are looser than
+# the Phase-5.D.4 LEO-orbit demo because the Calisto trajectory mixes
+# tame 1-ms ascent dynamics with sharp drogue / main parachute
+# transients that drive the controller into rejection territory at
+# tighter bands. The scenario stops at 180 s, the same horizon as the
+# RocketPy cross-tool baseline, so the adaptive trajectory can be
+# compared directly against the fixed-RK4 apogee envelope.
+
+openbmp.scenario = 2
+
+[meta]
+name        = "calisto-adaptive"
+description = "RocketPy Calisto sounding-rocket validation scenario integrated with the Dormand-Prince 5(4) adaptive + PI step controller (rigid-body runner). Phase 5.D.5 demo."
+validation  = "experimental"
+provenance  = "RocketPy Calisto example (Souza et al. 2022, https://github.com/RocketPy-Team/RocketPy); same vehicle / motor / aero / recovery as scenarios/sounding-rocket/calisto/rocketpy-calisto.toml. Integrator: Dopri54Adaptive (Hairer-Nørsett-Wanner Vol I §II.5 Table 5.2 + Gustafsson 1991 PI controller, per-component HNW §II.4 RMS error norm). See provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 180.0
+dt_s    = 0.001
+seed    = 0x4361_6c69_7374_6f01
+
+[vehicle]
+kind                                = "rigid_body"
+initial_position_eci_m              = [0.0, 0.0, 1400.0]
+initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.043619387365336, 0.0, 0.9990482215818578]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "calisto-adaptive"
+
+[[vehicle.assembly.bodies]]
+id            = "main"
+geometry      = { kind = "reference", length_m = 1.0, area_m2 = 0.012667686977437444 }
+dry_mass_kg   = 14.426
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [
+  [6.321, 0.0,   0.0  ],
+  [0.0,   6.321, 0.0  ],
+  [0.0,   0.0,   0.034],
+]
+
+[[vehicle.assembly.recovery]]
+id   = "calisto_chute"
+kind = { kind = "drogue_main", drogue_c_d = 1.0, drogue_area_m2 = 1.0, main_c_d = 1.0, main_area_m2 = 10.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "us_standard_1976"
+wind          = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[aero]
+deck         = "../../data/aero/calisto-drag.toml"
+deck_sha256  = "93f51bd5a33fcf2e0a226bc7f328a71286e2db98c65a3dc166f70b2b4a0282d2"
+
+[propulsion.motor]
+file         = "../../data/motors/rocketpy-calisto-m1670.toml"
+ignite_at_s  = 0.0
+variant      = "solid"
+file_sha256  = "0aa6cbaa495e6a50fa337c99a2a92229c8166ce3ee183b2c49159e7d96e026c3"
+
+[solver]
+profile = "adaptive-explicit"
+trajectory_method = "dopri54"
+determinism = "state-stable"
+
+[solver.adaptive]
+rtol = 1.0e-7
+atol = 1.0e-9
+min_dt_s = 1.0e-7
+max_dt_s = 1.0e-3
+dense_output = false
+
+[telemetry]
+output.parquet = "out/calisto-adaptive.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.phases]]
+id    = "drogue_descent"
+label = "drogue_descent"
+
+[[mission.phases]]
+id    = "main_descent"
+label = "main_descent"
+
+[[mission.events]]
+id      = "evt_apogee_deploy_drogue"
+trigger = { kind = "at_apogee" }
+action  = { kind = "deploy_recovery", id = "calisto_chute", command = "deploy_drogue" }
+
+[[mission.events]]
+id      = "evt_altitude_deploy_main"
+trigger = { kind = "at_altitude_descending", altitude_m = 1867.0 }
+action  = { kind = "deploy_recovery", id = "calisto_chute", command = "deploy_main" }
+
+[[mission.transitions]]
+from  = "ascent"
+to    = "drogue_descent"
+event = "evt_apogee_deploy_drogue"
+
+[[mission.transitions]]
+from  = "drogue_descent"
+to    = "main_descent"
+event = "evt_altitude_deploy_main"
