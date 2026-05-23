@@ -26,6 +26,7 @@ use openbmp_sim::{
     BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase, PhaseId,
     PhaseTransition, ScenarioScriptAction,
 };
+use openbmp_mission::{MissionState, MissionStateMachine, HsmError};
 
 use crate::error::CliError;
 
@@ -71,6 +72,75 @@ pub fn build_mission_runtime_typed(
     let mission_bindings = project_mission_bindings(&unified);
     let script_bindings = project_script_bindings(&unified);
     Ok((mission_bindings, script_bindings, graph))
+}
+
+/// Phase 5.X.F: v3 → v4 lifting pass. Builds a [`MissionStateMachine`]
+/// from either the v3 `[[mission.phases]]` block (treated as a flat
+/// depth-0 hierarchy where every state has no parent and empty
+/// action lists) or, when populated, the v4
+/// `[[mission.states]]` block with hierarchical `parent` fields.
+///
+/// Returns a `MissionStateMachine` that downstream subscribers
+/// (Phase 5.X.B simulator subscriber, FC commander hierarchical
+/// upgrade) consume. The flat-DAG [`MissionPhaseGraph`] returned by
+/// [`build_mission_runtime`] continues to flow through the
+/// simulator kernel during the migration window for byte-identical
+/// determinism.
+///
+/// # Errors
+///
+/// Returns [`CliError::Scenario`] when the v3 phases / v4 states
+/// fail HSM validation (duplicate ids, unknown parents, parent
+/// cycles, unreachable states, missing initial).
+pub fn lift_mission_state_machine(
+    mission: &MissionConfig,
+) -> Result<MissionStateMachine, CliError> {
+    // v4 path: when `[[mission.states]]` is populated, prefer it.
+    if !mission.states.is_empty() {
+        let states: Vec<MissionState> = mission
+            .states
+            .iter()
+            .map(|s| MissionState {
+                id: phase_id(&s.id),
+                label: s.label.clone(),
+                parent: s.parent.as_deref().map(phase_id),
+                on_entry: Vec::new(), // Phase 5.X.F.2 wires action lists
+                on_exit: Vec::new(),
+                on_active: Vec::new(),
+                allowed_effectors: s.allowed_effectors.clone(),
+                allowed_engines: s.allowed_engines.clone(),
+            })
+            .collect();
+        let initial = phase_id(&mission.initial_phase);
+        return MissionStateMachine::new(states, initial).map_err(hsm_to_cli_error);
+    }
+
+    // v3 lifting: every phase becomes a top-level (depth-0) state
+    // with no parent and empty action lists. FNV-1a-64 ids are
+    // identical to the v3 path because the canonical-path string is
+    // the same.
+    let states: Vec<MissionState> = mission
+        .phases
+        .iter()
+        .map(|p| MissionState {
+            id: phase_id(&p.id),
+            label: p.label.clone(),
+            parent: None,
+            on_entry: Vec::new(),
+            on_exit: Vec::new(),
+            on_active: Vec::new(),
+            allowed_effectors: p.allowed_effectors.clone(),
+            allowed_engines: p.allowed_engines.clone(),
+        })
+        .collect();
+    let initial = phase_id(&mission.initial_phase);
+    MissionStateMachine::new(states, initial).map_err(hsm_to_cli_error)
+}
+
+fn hsm_to_cli_error(err: HsmError) -> CliError {
+    CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
+        reason: err.to_string(),
+    })
 }
 
 /// Phase-3.2 legacy unified builder.
