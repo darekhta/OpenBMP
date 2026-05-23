@@ -977,6 +977,7 @@ where
     /// Caller must early-exit when `self.events.is_empty()` to
     /// preserve legacy byte-stability.
     #[allow(clippy::match_same_arms)] // Phase-3.2 deferred actions vs. runner-side markers
+    #[allow(deprecated)]
     fn evaluate_events(
         &mut self,
         scalars: crate::events::EventScalars,
@@ -1630,6 +1631,7 @@ fn assert_clean_mxcsr() -> Result<(), SimulationError> {
     Ok(())
 }
 
+#[allow(deprecated)]
 #[cfg(test)]
 #[allow(
     clippy::expect_used,

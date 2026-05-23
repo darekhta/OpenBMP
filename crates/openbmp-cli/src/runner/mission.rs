@@ -383,6 +383,7 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Cli
     })
 }
 
+#[allow(deprecated)]
 fn build_action(
     config: &EventActionConfig,
     phase_id_lookup: &BTreeMap<&str, PhaseId>,
