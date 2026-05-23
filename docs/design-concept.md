@@ -699,32 +699,48 @@ and any operational mission profile.
   start. The kernel resolves rate groups into a static sub-step plan
   before the first `step()`.
 
-**Phase 5.X — Mission graph architecture refactor** (closing)
-- Completed sub-phases: 5.X.0 documentation alignment, 5.X.A action
-  taxonomy split, 5.X.B single source of truth, 5.X.C hierarchical
-  state machine primitives, 5.X.D orthogonal regions, 5.X.F scenario
-  format v4, 5.X.G validation re-baseline.
-- Sub-phases in flight: 5.X.E academic vocabulary migration (lint
-  pre-work + CI tripwire landed; full internal call-site rename
-  remaining), 5.X.H documentation harmonisation (this entry will
-  flip to ✅ when phase-5x-plan.md is retired).
-- The mission FSM moves from a flat `MissionPhaseGraph` to a
-  hierarchical Harel-style state machine with orthogonal concurrent
-  regions (`mission × health × comms × estimator_regime`). The FC
-  commander becomes the sole owner of mission state; the simulator
-  subscribes via `commander.mission_state` and defers to the FC's
-  value when populated. Operational / engagement-derived state names
-  (`Terminal`, `Endgame`, `Midcourse`, `Engagement`, etc.) are
-  rejected by both the scenario-load lint and the workspace CI
-  tripwire; the academic vocabulary canon is in
-  [`mission-states-vocabulary.md`](mission-states-vocabulary.md).
-- See [`phase-5x-plan.md`](phase-5x-plan.md) for the migration
-  sequence + exit criteria and
-  [`phase-5x-status.md`](phase-5x-status.md) for per-sub-phase
-  status / commit pointers.
-- Phase 5.X is a *refactor* phase: no new GNC algorithm lands; every
-  shipped Phase-5 scenario produces byte-identical telemetry against
-  its Phase-5 baseline on the reference platform profile.
+**Phase 5.X — Mission graph architecture refactor** (closed)
+- Hierarchical Harel-style mission FSM landed in `openbmp-mission`
+  with `MissionStateMachine`, LCA / exit-chain / enter-chain
+  traversal, and history pseudo-states.
+- Orthogonal concurrent regions (`mission × health × comms ×
+  estimator_regime`) landed with `RegionSet`, `CanonicalRegions`,
+  and `CrossRegionGuard`.
+- Single source of truth: the FC commander publishes
+  `commander.mission_state` each tick; the simulator subscribes and
+  the kernel defers to the external value when wired. HAL
+  build-time gate compiles out the test-only override topic.
+- Action taxonomy split into `MissionAction` (HAL-portable, in
+  `openbmp-mission`) and `ScenarioScriptAction` (sim-only, in
+  `openbmp-scenario-script`); the FC commander has zero dependency
+  on the script crate.
+- Scenario format v4 lands with hierarchical `[[mission.states]]`,
+  `[[mission.regions]]`, optional cross-region guards on
+  transitions, and the `[mission.scope]` classifier. The v3 → v4
+  lifting pass preserves every FNV-1a-64 id and produces
+  byte-identical telemetry against the Phase-5 baseline.
+- Operational / engagement-derived state names (`Terminal`,
+  `Endgame`, `Midcourse`, `Engagement`, `Decoy`, `PenAid`, etc.)
+  are rejected by both the scenario-load lint and the
+  workspace-wide CI tripwire (`mission-vocabulary` job in
+  `.github/workflows/ci.yml`); the academic vocabulary canon is
+  in [`mission-states-vocabulary.md`](mission-states-vocabulary.md).
+- Property-test corpus covers LCA correctness, exit / enter chain
+  composition, history-state persistence, region-tick determinism,
+  and cross-region guard semantics.
+- Workspace cargo build produces zero deprecation warnings; every
+  production call site uses the typed `MissionAction` /
+  `ScenarioScriptAction` enums. The legacy `EventAction` survives
+  as a deprecated bridge shim that the kernel uses internally to
+  classify v3-style bindings.
+- Phase 5.X was a *refactor* phase: no new GNC algorithm landed;
+  every shipped Phase-5 scenario produces byte-identical telemetry
+  against its Phase-5 baseline on the reference platform profile.
+- Authoritative references survive in
+  [`mission-graph-architecture.md`](mission-graph-architecture.md)
+  and [`mission-states-vocabulary.md`](mission-states-vocabulary.md);
+  the planning + status docs (`phase-5x-plan.md`,
+  `phase-5x-status.md`) are retired.
 
 **Phase 6 — Hypersonic extensions** (research-grade)
 - 6.0 Hypersonic solver stack (fixed high-order explicit RK, adaptive
