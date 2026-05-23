@@ -242,6 +242,12 @@ pub fn run(
                     .gravity_m_s2
                     .unwrap_or(openbmp_physics::gravity::STANDARD_GRAVITY_M_S2),
             );
+            // Phase 5.X.B: forward FC mission state into kernel.
+            if let Some(state_id) = bridge.latest_mission_state_id() {
+                kernel.set_external_mission_state(Some(
+                    openbmp_sim::PhaseId::new(state_id),
+                ));
+            }
             bridge.tick_rigid_body(
                 kernel.current_state(),
                 kernel.current_step(),

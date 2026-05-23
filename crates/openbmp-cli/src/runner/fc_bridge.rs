@@ -97,6 +97,19 @@ impl FcBridge {
         }))
     }
 
+    /// Phase 5.X.B: returns the FC commander's most recent
+    /// mission-state publication, or `None` when no FC is wired or
+    /// the commander has not yet ticked. The scenario runner reads
+    /// this between FC and kernel ticks and forwards into
+    /// `kernel.set_external_mission_state` so the kernel observes
+    /// (rather than duplicates) the FC's mission-state ownership.
+    #[must_use]
+    pub fn latest_mission_state_id(&self) -> Option<u64> {
+        self.runner
+            .latest_mission_state()
+            .map(|s| s.mission_state_id)
+    }
+
     /// Run one point-mass bridge tick and push FC commands into the
     /// runner-side racks.
     ///

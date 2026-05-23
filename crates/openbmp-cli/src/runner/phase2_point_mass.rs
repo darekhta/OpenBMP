@@ -290,6 +290,17 @@ pub fn run(
                 &mut effector_rack,
                 &mut engine_rack,
             )?;
+            // Phase 5.X.B: forward the FC commander's published
+            // mission state into the kernel's external view. The
+            // kernel uses the externally-supplied state in
+            // preference to its internal current_phase once the
+            // single-source-of-truth switchover lands; until then,
+            // this is informational and kept in sync each tick.
+            if let Some(state_id) = bridge.latest_mission_state_id() {
+                kernel.set_external_mission_state(Some(
+                    openbmp_sim::PhaseId::new(state_id),
+                ));
+            }
         }
         if !effector_rack.is_empty() {
             effector_rack.step(kernel.current_time())?;
