@@ -226,8 +226,7 @@ pub fn run(
     )?;
     let mut pending_effector_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
         Vec::new();
-    let mut pending_engine_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
-        Vec::new();
+    let mut pending_engine_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> = Vec::new();
     let mut pending_recovery_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
         Vec::new();
     while kernel.stop_reason().is_none() {
@@ -244,12 +243,6 @@ pub fn run(
                     .gravity_m_s2
                     .unwrap_or(openbmp_physics::gravity::STANDARD_GRAVITY_M_S2),
             );
-            // Phase 5.X.B: forward FC mission state into kernel.
-            if let Some(state_id) = bridge.latest_mission_state_id() {
-                kernel.set_external_mission_state(Some(
-                    openbmp_sim::PhaseId::new(state_id),
-                ));
-            }
             bridge.tick_rigid_body(
                 kernel.current_state(),
                 kernel.current_step(),
@@ -257,6 +250,12 @@ pub fn run(
                 &mut effector_rack,
                 &mut engine_rack,
             )?;
+            // Phase 5.X.B: forward the mission state published by
+            // this FC tick into the kernel before the kernel evaluates
+            // mission events for the next integrated state.
+            if let Some(state_id) = bridge.latest_mission_state_id() {
+                kernel.set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
+            }
         }
         if !effector_rack.is_empty() {
             effector_rack.step(kernel.current_time())?;
