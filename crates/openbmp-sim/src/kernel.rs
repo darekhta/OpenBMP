@@ -851,11 +851,23 @@ where
         time: SimTime,
     ) {
         use crate::events::{EventAction, EventEvalState, EventTrigger};
+        // Phase 5.X.B: when an external mission-state authority (the
+        // FC commander) supplies a value via
+        // `set_external_mission_state`, the kernel defers to it
+        // rather than computing its own. The internal
+        // `current_phase` field is overwritten so it stays in sync
+        // for runner-side getters and stop-condition emission. The
+        // pure-sim path (no FC) leaves `external_mission_state` at
+        // `None` and the legacy internal computation continues.
+        if let Some(external) = self.external_mission_state {
+            self.current_phase = Some(external);
+        }
         let eval_state = EventEvalState {
             current: scalars,
             previous: self.previous_event_scalars,
             current_phase: self.current_phase,
         };
+        let fc_owned = self.external_mission_state.is_some();
         for binding in &self.events {
             if binding.once && self.fired_once_events.contains(&binding.id) {
                 continue;
@@ -872,23 +884,40 @@ where
                 time,
                 action: binding.action.clone(),
             });
-            let graph_transition_to = self.mission_graph.as_ref().and_then(|graph| {
-                self.current_phase.and_then(|current_phase| {
-                    graph
-                        .transitions
-                        .iter()
-                        .find(|transition| {
-                            transition.from == current_phase && transition.event == binding.id
-                        })
-                        .map(|transition| transition.to)
+            // Phase 5.X.B: only compute / apply mission-state
+            // transitions when no external authority is set. When
+            // the FC commander is the source of truth, the kernel
+            // ignores in-binding mission transitions — the
+            // commander has already applied them via its own graph
+            // walk and will republish on the next tick.
+            let graph_transition_to = if fc_owned {
+                None
+            } else {
+                self.mission_graph.as_ref().and_then(|graph| {
+                    self.current_phase.and_then(|current_phase| {
+                        graph
+                            .transitions
+                            .iter()
+                            .find(|transition| {
+                                transition.from == current_phase
+                                    && transition.event == binding.id
+                            })
+                            .map(|transition| transition.to)
+                    })
                 })
-            });
+            };
             if let Some(phase) = graph_transition_to {
                 self.current_phase = Some(phase);
             }
             match &binding.action {
                 EventAction::EnterPhase(phase) => {
-                    self.current_phase = Some(*phase);
+                    // Phase 5.X.B: when FC owns mission state,
+                    // ignore in-binding phase entries — the commander
+                    // already applied them. When pure-sim, fall
+                    // through to legacy behavior.
+                    if !fc_owned {
+                        self.current_phase = Some(*phase);
+                    }
                 }
                 EventAction::EmitTelemetryMarker { .. } => {
                     // Runner-side fan-out; kernel records the fire.
