@@ -14,15 +14,15 @@ Retired by Phase 5.X.H alongside the plan document.
 
 | Sub-phase | Status | Commits |
 |---|---|---|
-| 5.X.0 — Documentation alignment | ✅ Done | `Phase 5.X.0: mission graph architecture plan + supersession notes` |
-| 5.X.A — Action taxonomy split | ✅ Done (foundation + parser routing) | `Phase 5.X.A (1-5/N)` |
-| 5.X.B — Single source of truth | ⏸ Not started | — |
-| 5.X.C — Hierarchical primitives | ⏸ Not started | — |
-| 5.X.D — Orthogonal regions | ⏸ Not started | — |
-| 5.X.E — Vocabulary migration | 🟡 Lint pre-work only | `Phase 5.X.E pre-work: lint mission-vocabulary rejections` |
-| 5.X.F — Scenario format v4 | ⏸ Not started | — |
-| 5.X.G — Validation re-baseline | ⏸ Not started | — |
-| 5.X.H — Doc harmonisation | ⏸ Not started | — |
+| 5.X.0 — Documentation alignment | ✅ Done | `Phase 5.X.0` |
+| 5.X.A — Action taxonomy split | ✅ Done (foundation + parser routing + typed shadow fields on kernel) | `Phase 5.X.A (1-6/N)` |
+| 5.X.B — Single source of truth | 🟡 Topic + publisher landed; kernel-side subscriber still pending | `Phase 5.X.B (1-2/N)` |
+| 5.X.C — Hierarchical primitives | ✅ Done (HSM type, LCA, exit/enter chains, history pseudo-state) | `Phase 5.X.C` |
+| 5.X.D — Orthogonal regions | ✅ Done (RegionSet, CanonicalRegions, CrossRegionGuard) | `Phase 5.X.D` |
+| 5.X.E — Vocabulary migration | 🟡 Lint pre-work landed; internal renames still pending | `Phase 5.X.E pre-work` |
+| 5.X.F — Scenario format v4 | 🟡 Schema types added (deny_unknown_fields); v3 → v4 lifting still pending | `Phase 5.X.F (1/N)` |
+| 5.X.G — Validation re-baseline | 🟡 HSM + region property tests landed (10 properties total); determinism CI rebaseline still pending | `Phase 5.X.G (1-2/N)` |
+| 5.X.H — Doc harmonisation | 🟡 v4 doc landed in scenario-format.md; design-concept retirement still pending | `Phase 5.X.H (1/N)` |
 
 ## 5.X.A — Action taxonomy split — completion details
 
