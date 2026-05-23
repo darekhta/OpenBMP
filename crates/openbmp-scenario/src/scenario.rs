@@ -478,6 +478,16 @@ bogus_field = 1
         format!("{base}\n{block}")
     }
 
+    fn without_fc_ekf_block(toml: &str) -> String {
+        let start = toml.find("\n[fc.ekf]\n").expect("fixture has [fc.ekf]");
+        let rest_start = toml[start + 1..]
+            .find("\n[fc.autopilot_params]")
+            .expect("fixture has [fc.autopilot_params]")
+            + start
+            + 1;
+        format!("{}{}", &toml[..start], &toml[rest_start..])
+    }
+
     #[test]
     fn fc_estimator_lanes_block_is_v3_only() {
         let block = r#"
@@ -490,7 +500,7 @@ estimator = "ekf"
 
 [[fc.estimator_lanes.lane]]
 id        = "spare"
-estimator = "mekf"
+estimator = "sr_ukf"
 "#;
         let toml = append(fc_v2_scenario(), block);
         assert_phase5_reserved_under_v2(&toml, "fc.estimator_lanes");
@@ -511,6 +521,64 @@ estimator = "mekf"
         assert_eq!(lanes.lanes.len(), 2);
         assert_eq!(lanes.lanes[0].id, "primary");
         assert_eq!(lanes.lanes[1].id, "spare");
+    }
+
+    #[test]
+    fn fc_estimator_lanes_validate_lane_dependencies_not_top_level_selector() {
+        let block = r#"
+[fc.estimator_lanes]
+voter = "simplex_pass_through"
+
+[[fc.estimator_lanes.lane]]
+id        = "primary"
+estimator = "ekf"
+"#;
+        let v3 = append(fc_v2_scenario(), block)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace("estimator        = \"ekf\"", "estimator        = \"mekf\"");
+        Scenario::from_toml_str(&v3)
+            .expect("lane EKF should validate from [fc.ekf] without requiring top-level [fc.mekf]");
+    }
+
+    #[test]
+    fn fc_estimator_lanes_require_each_lane_parameter_block() {
+        let block = r#"
+[fc.estimator_lanes]
+voter = "simplex_pass_through"
+
+[[fc.estimator_lanes.lane]]
+id        = "sr"
+estimator = "sr_ukf"
+"#;
+        let v3 = append(fc_v2_scenario(), block)
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace("estimator        = \"ekf\"", "estimator        = \"mekf\"");
+        let err = Scenario::from_toml_str(&without_fc_ekf_block(&v3)).unwrap_err();
+        match err {
+            ScenarioError::InvalidFc { reason } => {
+                assert!(
+                    reason.contains(
+                        "fc.estimator_lanes.lane[0].estimator = \"sr_ukf\" requires [fc.ekf]"
+                    ),
+                    "lane dependency diagnostic should mention the lane selector; got: {reason}"
+                );
+            }
+            other => panic!("expected InvalidFc for missing lane [fc.ekf], got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fc_sr_ukf_estimators_are_v3_only() {
+        for (name, expected_field) in [
+            ("sr_ukf", "fc.estimator = \"sr_ukf\""),
+            ("sr_ukf_attitude", "fc.estimator = \"sr_ukf_attitude\""),
+        ] {
+            let toml = fc_v2_scenario().replace(
+                "estimator        = \"ekf\"",
+                &format!("estimator        = \"{name}\""),
+            );
+            assert_phase5_reserved_under_v2(&toml, expected_field);
+        }
     }
 
     #[test]

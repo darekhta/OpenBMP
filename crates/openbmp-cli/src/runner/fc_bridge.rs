@@ -592,7 +592,24 @@ fn build_magnetic_field(config: &FcConfig) -> Result<Box<dyn MagneticFieldEci>, 
 }
 
 fn magnetic_field_settings(config: &FcConfig) -> (FcMagFieldKind, f64) {
-    match config.estimator {
+    if let Some(lanes) = config.estimator_lanes.as_ref()
+        && let Some(first_lane) = lanes.lanes.first()
+    {
+        // `[fc.estimator_lanes]` replaces the top-level estimator
+        // selector. The synthetic magnetometer bridge follows the
+        // same declaration-order contract as the lane runner and uses
+        // the first lane's estimator family to choose the shared truth
+        // field model.
+        return magnetic_field_settings_for_estimator(config, first_lane.estimator);
+    }
+    magnetic_field_settings_for_estimator(config, config.estimator)
+}
+
+fn magnetic_field_settings_for_estimator(
+    config: &FcConfig,
+    estimator: FcEstimatorKind,
+) -> (FcMagFieldKind, f64) {
+    match estimator {
         FcEstimatorKind::Ekf => {
             let cfg = config.ekf.as_ref();
             (
@@ -870,6 +887,10 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../../scenarios/diff-flatness-figure-eight-allocator/scenario.toml"
     ));
+    const FC_SCENARIO: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scenarios/closed-loop-attitude-hold/scenario.toml"
+    ));
 
     #[test]
     fn allocator_builder_rejects_even_tiny_asymmetric_limits() {
@@ -884,5 +905,28 @@ mod tests {
             matches!(err, CliError::UnsupportedScenario { ref what } if what.contains("requires symmetric effector limits")),
             "expected symmetric-limit UnsupportedScenario, got {err:?}"
         );
+    }
+
+    #[test]
+    fn magnetic_field_settings_follow_first_estimator_lane() {
+        let lanes = r#"
+[fc.estimator_lanes]
+voter = "simplex_pass_through"
+
+[[fc.estimator_lanes.lane]]
+id        = "ekf_lane"
+estimator = "ekf"
+"#;
+        let toml = format!(
+            "{}\n{lanes}",
+            FC_SCENARIO
+                .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+                .replace("estimator        = \"ekf\"", "estimator        = \"mekf\"")
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("lane scenario validates");
+        let fc = scenario.document.fc.as_ref().expect("fc block present");
+        let (kind, epoch) = magnetic_field_settings(fc);
+        assert_eq!(kind, FcMagFieldKind::Wmm2025);
+        assert_eq!(epoch.to_bits(), 2025.0f64.to_bits());
     }
 }

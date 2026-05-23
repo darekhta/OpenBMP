@@ -39,10 +39,12 @@
 //!   innovation should be the most central / least extreme of the
 //!   healthy set, which is a robust choice when any single lane
 //!   might be drifting. Requires ≥ 3 lanes.
-//! - [`VoterPolicy::BestByCovarianceTrace`] — minimum covariance
-//!   trace wins. Selects the lane reporting the tightest belief.
-//!   Cheap fallback for ≤ 2 lanes (where the median rule
-//!   degenerates).
+//! - [`VoterPolicy::BestByCovarianceTrace`] — minimum covariance-trace
+//!   proxy wins. `EstimatorStatus` does not yet expose a covariance
+//!   trace, so this slice uses the sum of the per-sensor innovation
+//!   chi-square values as a deterministic stand-in until the follow-on
+//!   status field lands. Cheap fallback for ≤ 2 lanes (where the
+//!   median rule degenerates).
 //!
 //! # Determinism
 //!
@@ -109,7 +111,9 @@ pub enum VoterPolicy {
     /// tick). Requires ≥ 3 healthy lanes; with fewer healthy lanes,
     /// degrades to [`VoterPolicy::SimplexPassThrough`].
     MidValueSelectByInnovation,
-    /// Minimum covariance trace wins.
+    /// Minimum covariance-trace proxy wins. Until `EstimatorStatus`
+    /// exposes a real covariance trace, this uses the sum of
+    /// per-sensor innovation chi-square values.
     BestByCovarianceTrace,
 }
 
@@ -241,9 +245,10 @@ impl MultiLaneEstimator {
                     .min_by(|&a, &b| {
                         let ta = covariance_trace_proxy(&self.lanes[a].estimator.status());
                         let tb = covariance_trace_proxy(&self.lanes[b].estimator.status());
-                        // Stable: tiebreak by lane index (lower wins),
-                        // which `min_by` already gives us when scores match.
-                        ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
+                        // Stable: tiebreak by lane index (lower wins).
+                        ta.partial_cmp(&tb)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| a.cmp(&b))
                     })
                     .unwrap_or(healthy[0])
             }
@@ -271,16 +276,22 @@ impl MultiLaneEstimator {
         };
         self.active_index = chosen;
     }
+
+    fn finish_dispatch(&self, last_err: Option<EstimatorError>) -> Result<(), EstimatorError> {
+        if self.lanes.iter().any(|l| l.healthy) {
+            return Ok(());
+        }
+        Err(last_err.unwrap_or_else(|| EstimatorError::InvalidConfig {
+            reason: "multi-lane estimator has no healthy lanes".to_owned(),
+        }))
+    }
 }
 
-#[allow(clippy::expect_used)]
 fn covariance_trace_proxy(status: &EstimatorStatus) -> f64 {
-    // The shipped EstimatorStatus does not expose covariance trace
-    // directly, but the per-sensor chi-square readings are a coarse
-    // proxy for filter belief — smaller chi² generally correlates
-    // with tighter covariance. The sum is a valid stand-in until
-    // §5.B.2 follow-on adds an explicit `cov_trace` field to the
-    // status topic.
+    // The shipped EstimatorStatus does not expose covariance trace.
+    // Until the follow-on adds that field, the sum of per-sensor
+    // chi-square readings is only a deterministic proxy for "tighter"
+    // belief; it is not true covariance algebra.
     status.imu_chi2 + status.gnss_chi2 + status.baro_chi2 + status.mag_chi2
 }
 
@@ -316,32 +327,29 @@ impl Estimator for MultiLaneEstimator {
         // failed in lockstep (which would mean a hardware-class
         // failure upstream).
         self.vote();
-        if self.lanes.iter().any(|l| l.healthy) {
-            Ok(())
-        } else if let Some(err) = last_err {
-            Err(err)
-        } else {
-            Ok(())
-        }
+        self.finish_dispatch(last_err)
     }
 
     fn update_imu(&mut self, sample: &ImuSample) -> Result<(), EstimatorError> {
+        let mut last_err: Option<EstimatorError> = None;
         for entry in &mut self.lanes {
             if !entry.healthy {
                 continue;
             }
-            if let Err(_e) = entry.estimator.update_imu(sample) {
+            if let Err(e) = entry.estimator.update_imu(sample) {
                 // IMU is a propagation source — failure is
                 // typically a non-finite IMU rather than a gate
                 // breach. Mark the lane unhealthy.
                 entry.healthy = false;
+                last_err = Some(e);
             }
         }
         self.vote();
-        Ok(())
+        self.finish_dispatch(last_err)
     }
 
     fn update_gnss(&mut self, sample: &GnssSample) -> Result<(), EstimatorError> {
+        let mut last_err: Option<EstimatorError> = None;
         for entry in &mut self.lanes {
             if !entry.healthy {
                 continue;
@@ -355,13 +363,15 @@ impl Estimator for MultiLaneEstimator {
                 && !matches!(e, EstimatorError::InnovationGateRejected { .. })
             {
                 entry.healthy = false;
+                last_err = Some(e);
             }
         }
         self.vote();
-        Ok(())
+        self.finish_dispatch(last_err)
     }
 
     fn update_baro(&mut self, sample: &BarometerSample) -> Result<(), EstimatorError> {
+        let mut last_err: Option<EstimatorError> = None;
         for entry in &mut self.lanes {
             if !entry.healthy {
                 continue;
@@ -370,13 +380,15 @@ impl Estimator for MultiLaneEstimator {
                 && !matches!(e, EstimatorError::InnovationGateRejected { .. })
             {
                 entry.healthy = false;
+                last_err = Some(e);
             }
         }
         self.vote();
-        Ok(())
+        self.finish_dispatch(last_err)
     }
 
     fn update_mag(&mut self, sample: &MagnetometerSample) -> Result<(), EstimatorError> {
+        let mut last_err: Option<EstimatorError> = None;
         for entry in &mut self.lanes {
             if !entry.healthy {
                 continue;
@@ -385,10 +397,11 @@ impl Estimator for MultiLaneEstimator {
                 && !matches!(e, EstimatorError::InnovationGateRejected { .. })
             {
                 entry.healthy = false;
+                last_err = Some(e);
             }
         }
         self.vote();
-        Ok(())
+        self.finish_dispatch(last_err)
     }
 
     fn attitude(&self) -> AttitudeEstimate {
@@ -428,7 +441,10 @@ impl Estimator for MultiLaneEstimator {
 mod tests {
     use super::*;
     use crate::estimator::{Ekf, EkfParams, Mekf, MekfParams};
-    use crate::topics::ImuSample;
+    use crate::topics::{
+        AttitudeEstimate, BarometerSample, GnssSample, ImuSample, MagnetometerSample,
+        PositionEstimate,
+    };
     use nalgebra::{UnitQuaternion, Vector3};
     use openbmp_core::SimTime;
 
@@ -455,6 +471,149 @@ mod tests {
         let mut mekf = Mekf::new(MekfParams::default());
         mekf.seed(UnitQuaternion::identity());
         Box::new(mekf)
+    }
+
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    enum FakeFailure {
+        None,
+        Gate,
+        InvalidConfig,
+    }
+
+    impl FakeFailure {
+        fn error(self, measurement: &'static str) -> Option<EstimatorError> {
+            match self {
+                Self::None => None,
+                Self::Gate => Some(EstimatorError::InnovationGateRejected {
+                    measurement,
+                    chi2: 2.0,
+                    gate: 1.0,
+                }),
+                Self::InvalidConfig => Some(EstimatorError::InvalidConfig {
+                    reason: format!("fake {measurement} failure"),
+                }),
+            }
+        }
+    }
+
+    struct FakeEstimator {
+        status: EstimatorStatus,
+        predict_failure: FakeFailure,
+        update_failure: FakeFailure,
+    }
+
+    impl FakeEstimator {
+        fn with_score(score: f64) -> Self {
+            Self {
+                status: EstimatorStatus {
+                    time: SimTime::ZERO,
+                    initialized: true,
+                    gnss_chi2: score,
+                    ..EstimatorStatus::default()
+                },
+                predict_failure: FakeFailure::None,
+                update_failure: FakeFailure::None,
+            }
+        }
+
+        fn with_update_failure(failure: FakeFailure) -> Self {
+            Self {
+                update_failure: failure,
+                ..Self::with_score(0.0)
+            }
+        }
+
+        fn with_predict_failure(failure: FakeFailure) -> Self {
+            Self {
+                predict_failure: failure,
+                ..Self::with_score(0.0)
+            }
+        }
+    }
+
+    impl Estimator for FakeEstimator {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        fn predict(&mut self, _dt: f64) -> Result<(), EstimatorError> {
+            if let Some(err) = self.predict_failure.error("predict") {
+                return Err(err);
+            }
+            Ok(())
+        }
+
+        fn update_imu(&mut self, _sample: &ImuSample) -> Result<(), EstimatorError> {
+            if let Some(err) = self.update_failure.error("imu") {
+                return Err(err);
+            }
+            Ok(())
+        }
+
+        fn update_gnss(&mut self, _sample: &GnssSample) -> Result<(), EstimatorError> {
+            if let Some(err) = self.update_failure.error("gnss") {
+                return Err(err);
+            }
+            Ok(())
+        }
+
+        fn update_baro(&mut self, _sample: &BarometerSample) -> Result<(), EstimatorError> {
+            if let Some(err) = self.update_failure.error("baro") {
+                return Err(err);
+            }
+            Ok(())
+        }
+
+        fn update_mag(&mut self, _sample: &MagnetometerSample) -> Result<(), EstimatorError> {
+            if let Some(err) = self.update_failure.error("mag") {
+                return Err(err);
+            }
+            Ok(())
+        }
+
+        fn attitude(&self) -> AttitudeEstimate {
+            AttitudeEstimate {
+                time: SimTime::ZERO,
+                q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+                omega_body_rad_s: Vector3::zeros(),
+                gyro_bias_body_rad_s: Vector3::zeros(),
+            }
+        }
+
+        fn position(&self) -> PositionEstimate {
+            PositionEstimate {
+                time: SimTime::ZERO,
+                position_eci_m: Vector3::zeros(),
+                velocity_eci_m_s: Vector3::zeros(),
+                accel_bias_body_m_s2: Vector3::zeros(),
+            }
+        }
+
+        fn status(&self) -> EstimatorStatus {
+            self.status
+        }
+    }
+
+    fn fake_lane(score: f64) -> Box<dyn Estimator + Send> {
+        Box::new(FakeEstimator::with_score(score))
+    }
+
+    fn fake_update_failure_lane(failure: FakeFailure) -> Box<dyn Estimator + Send> {
+        Box::new(FakeEstimator::with_update_failure(failure))
+    }
+
+    fn fake_predict_failure_lane(failure: FakeFailure) -> Box<dyn Estimator + Send> {
+        Box::new(FakeEstimator::with_predict_failure(failure))
+    }
+
+    fn gnss_sample() -> GnssSample {
+        GnssSample {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::zeros(),
+            velocity_eci_m_s: Vector3::zeros(),
+            position_bias_eci_m: Vector3::zeros(),
+            healthy: true,
+        }
     }
 
     #[test]
@@ -528,18 +687,25 @@ mod tests {
 
     #[test]
     fn best_by_covariance_trace_picks_minimum_proxy() {
-        // Set up two lanes with manually-distinct statuses by
-        // running one of them through a measurement update so its
-        // chi² changes from 0.
         let lanes = vec![
-            (LaneId::from("a"), build_ekf_lane()),
-            (LaneId::from("b"), build_ekf_lane()),
+            (LaneId::from("high"), fake_lane(8.0)),
+            (LaneId::from("low"), fake_lane(1.0)),
+            (LaneId::from("mid"), fake_lane(3.0)),
         ];
         let mut m = MultiLaneEstimator::new(lanes, VoterPolicy::BestByCovarianceTrace);
-        // Both lanes have all chi² = 0 initially → tie → lane index
-        // 0 wins via tiebreaker.
         m.vote();
-        assert_eq!(m.active_lane_id().as_str(), "a");
+        assert_eq!(m.active_lane_id().as_str(), "low");
+    }
+
+    #[test]
+    fn best_by_covariance_trace_ties_choose_lowest_index() {
+        let lanes = vec![
+            (LaneId::from("first"), fake_lane(1.0)),
+            (LaneId::from("second"), fake_lane(1.0)),
+        ];
+        let mut m = MultiLaneEstimator::new(lanes, VoterPolicy::BestByCovarianceTrace);
+        m.vote();
+        assert_eq!(m.active_lane_id().as_str(), "first");
     }
 
     #[test]
@@ -557,23 +723,65 @@ mod tests {
 
     #[test]
     fn mid_value_select_by_innovation_picks_median_chi_square() {
-        // 3 lanes with synthetic chi² ordering. Set them up via
-        // direct mutation since wiring real differing-chi² is
-        // out-of-scope for a unit test.
         let lanes = vec![
-            (LaneId::from("low"), build_ekf_lane()),
-            (LaneId::from("mid"), build_ekf_lane()),
-            (LaneId::from("high"), build_ekf_lane()),
+            (LaneId::from("high"), fake_lane(9.0)),
+            (LaneId::from("low"), fake_lane(1.0)),
+            (LaneId::from("mid"), fake_lane(4.0)),
         ];
         let mut m = MultiLaneEstimator::new(lanes, VoterPolicy::MidValueSelectByInnovation);
-        // Run a measurement update so each lane's status reflects
-        // a tick. With identical inputs all three lanes have
-        // chi² = 0 → median is the middle index by tiebreaker.
-        m.update_imu(&imu_sample()).unwrap();
-        // With all chi² equal the median index (1) wins
-        // independent of value: scored vector is [(0, 0), (0, 1),
-        // (0, 2)], scored[1].1 = 1.
+        m.vote();
         assert_eq!(m.active_lane_id().as_str(), "mid");
+    }
+
+    #[test]
+    fn predict_returns_last_error_when_every_lane_fails_closed() {
+        let lanes = vec![
+            (
+                LaneId::from("a"),
+                fake_predict_failure_lane(FakeFailure::InvalidConfig),
+            ),
+            (
+                LaneId::from("b"),
+                fake_predict_failure_lane(FakeFailure::InvalidConfig),
+            ),
+        ];
+        let mut m = MultiLaneEstimator::new(lanes, VoterPolicy::SimplexPassThrough);
+        let err = m.predict(0.01).unwrap_err();
+        assert!(matches!(err, EstimatorError::InvalidConfig { .. }));
+        assert!(m.lane_status().iter().all(|s| !s.healthy));
+    }
+
+    #[test]
+    fn update_imu_returns_last_error_when_every_lane_fails_closed() {
+        let lanes = vec![
+            (
+                LaneId::from("a"),
+                fake_update_failure_lane(FakeFailure::InvalidConfig),
+            ),
+            (
+                LaneId::from("b"),
+                fake_update_failure_lane(FakeFailure::InvalidConfig),
+            ),
+        ];
+        let mut m = MultiLaneEstimator::new(lanes, VoterPolicy::SimplexPassThrough);
+        let err = m.update_imu(&imu_sample()).unwrap_err();
+        assert!(matches!(err, EstimatorError::InvalidConfig { .. }));
+        assert!(m.lane_status().iter().all(|s| !s.healthy));
+    }
+
+    #[test]
+    fn gated_measurement_rejection_does_not_unhealth_lane() {
+        let lanes = vec![
+            (
+                LaneId::from("a"),
+                fake_update_failure_lane(FakeFailure::Gate),
+            ),
+            (LaneId::from("b"), fake_lane(0.0)),
+        ];
+        let mut m = MultiLaneEstimator::new(lanes, VoterPolicy::SimplexPassThrough);
+        m.update_gnss(&gnss_sample()).unwrap();
+        assert!(m.lane_status().iter().all(|s| s.healthy));
+        assert_eq!(m.active_lane_id().as_str(), "a");
     }
 
     #[test]

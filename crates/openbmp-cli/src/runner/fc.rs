@@ -69,16 +69,8 @@ impl FcRunner {
     ///
     /// # Errors
     ///
-    /// Returns the underlying controller error if topic registration
-    /// or job registration fails.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `config.estimator = Imm` is selected without a
-    /// matching `[fc.imm]` or `[fc.ekf]` block. The scenario validator
-    /// (`FcConfig::validate` and `FcImmConfig::validate`) is expected
-    /// to gate these at parse time so the panic-on-construction is
-    /// unreachable from properly-validated scenarios.
+    /// Returns the underlying controller error if topic registration,
+    /// job registration, or estimator construction fails.
     #[allow(clippy::too_many_lines, clippy::expect_used)]
     pub fn new(
         config: &FcConfig,
@@ -373,7 +365,7 @@ impl FcRunner {
         // Phase-5.B.3: IMM mode-probability snapshot. Always
         // registered so scenarios that opt into `kind = "imm"` can
         // publish without a separate setup step. Idle when the
-        // selected estimator is one of the legacy EKF / MEKF / UKF.
+        // selected estimator is not IMM.
         bus.register::<EstimatorMode>()?;
         Ok(())
     }
@@ -555,20 +547,18 @@ impl Estimator for BoxedEstimator {
 
 /// Build a single estimator instance for the given kind. The
 /// scenario validator already guarantees the required `[fc.*]`
-/// blocks are present for each kind, so the inner unwraps are
-/// unreachable from properly-validated scenarios.
-#[allow(clippy::expect_used)]
+/// blocks are present for each kind; this builder still fails closed
+/// if called with an unvalidated config.
 fn build_single_estimator(
     config: &FcConfig,
     kind: FcEstimatorKind,
 ) -> Result<Box<dyn Estimator + Send>, ControllerError> {
     match kind {
         FcEstimatorKind::Ekf => {
+            let ekf_cfg = required_ekf_config(config, "ekf")?;
             let mut params = EkfParams::default();
-            if let Some(ekf_cfg) = &config.ekf {
-                apply_ekf_overrides(&mut params, ekf_cfg);
-            }
-            let mut ekf = apply_ekf_mag_model(Ekf::new(params), config.ekf.as_ref())?;
+            apply_ekf_overrides(&mut params, ekf_cfg);
+            let mut ekf = apply_ekf_mag_model(Ekf::new(params), Some(ekf_cfg))?;
             ekf.seed(
                 Vector3::zeros(),
                 Vector3::zeros(),
@@ -577,11 +567,15 @@ fn build_single_estimator(
             Ok(Box::new(ekf))
         }
         FcEstimatorKind::Mekf => {
+            let mekf_cfg = config
+                .mekf
+                .as_ref()
+                .ok_or_else(|| EstimatorError::InvalidConfig {
+                    reason: "estimator kind mekf requires [fc.mekf]".to_owned(),
+                })?;
             let mut params = MekfParams::default();
-            if let Some(mekf_cfg) = &config.mekf {
-                apply_mekf_overrides(&mut params, mekf_cfg);
-            }
-            let mut mekf = apply_mekf_mag_model(Mekf::new(params), config.mekf.as_ref())?;
+            apply_mekf_overrides(&mut params, mekf_cfg);
+            let mut mekf = apply_mekf_mag_model(Mekf::new(params), Some(mekf_cfg))?;
             mekf.seed(UnitQuaternion::identity());
             Ok(Box::new(mekf))
         }
@@ -589,11 +583,10 @@ fn build_single_estimator(
             let imm_cfg = config
                 .imm
                 .as_ref()
-                .expect("scenario validator ensures [fc.imm] is present for kind = imm");
-            let base_ekf_cfg = config
-                .ekf
-                .as_ref()
-                .expect("scenario validator ensures [fc.ekf] is present for kind = imm");
+                .ok_or_else(|| EstimatorError::InvalidConfig {
+                    reason: "estimator kind imm requires [fc.imm]".to_owned(),
+                })?;
+            let base_ekf_cfg = required_ekf_config(config, "imm")?;
             let mut base_params = EkfParams::default();
             apply_ekf_overrides(&mut base_params, base_ekf_cfg);
             let mut per_mode_params: Vec<EkfParams> = Vec::with_capacity(imm_cfg.modes.len());
@@ -621,20 +614,21 @@ fn build_single_estimator(
                 imm_cfg.transition_matrix.clone(),
                 imm_cfg.initial_mode_probabilities.clone(),
             )
-            .expect("scenario validator must guarantee valid IMM params");
+            .map_err(|err| EstimatorError::InvalidConfig {
+                reason: format!("IMM estimator rejected scenario parameters: {err:?}"),
+            })?;
             Ok(Box::new(imm))
         }
         FcEstimatorKind::SrUkf => {
+            let ekf_cfg = required_ekf_config(config, "sr_ukf")?;
             let mut sr_params = SquareRootUkfParams::default();
-            if let Some(ekf_cfg) = &config.ekf {
-                let mut ekf_params = EkfParams::default();
-                apply_ekf_overrides(&mut ekf_params, ekf_cfg);
-                copy_ekf_to_sr_ukf_params(&ekf_params, &mut sr_params);
-            }
+            let mut ekf_params = EkfParams::default();
+            apply_ekf_overrides(&mut ekf_params, ekf_cfg);
+            copy_ekf_to_sr_ukf_params(&ekf_params, &mut sr_params);
             let mut sr_ukf = SquareRootUkf::new(sr_params);
             // Apply the [fc.ekf] mag-field model selection — same
             // resolution path as the EKF / IMM lanes.
-            sr_ukf = apply_sr_ukf_mag_model(sr_ukf, config.ekf.as_ref())?;
+            sr_ukf = apply_sr_ukf_mag_model(sr_ukf, Some(ekf_cfg))?;
             sr_ukf.seed(
                 Vector3::zeros(),
                 Vector3::zeros(),
@@ -643,18 +637,29 @@ fn build_single_estimator(
             Ok(Box::new(sr_ukf))
         }
         FcEstimatorKind::SrUkfAttitude => {
+            let ekf_cfg = required_ekf_config(config, "sr_ukf_attitude")?;
             let mut sr_params = SquareRootUkfParams::default();
-            if let Some(ekf_cfg) = &config.ekf {
-                let mut ekf_params = EkfParams::default();
-                apply_ekf_overrides(&mut ekf_params, ekf_cfg);
-                copy_ekf_to_sr_ukf_params(&ekf_params, &mut sr_params);
-            }
+            let mut ekf_params = EkfParams::default();
+            apply_ekf_overrides(&mut ekf_params, ekf_cfg);
+            copy_ekf_to_sr_ukf_params(&ekf_params, &mut sr_params);
             let mut sr_ukf = SquareRootUkfAttitude::new(sr_params);
-            sr_ukf = apply_sr_ukf_attitude_mag_model(sr_ukf, config.ekf.as_ref())?;
+            sr_ukf = apply_sr_ukf_attitude_mag_model(sr_ukf, Some(ekf_cfg))?;
             sr_ukf.seed(UnitQuaternion::identity());
             Ok(Box::new(sr_ukf))
         }
     }
+}
+
+fn required_ekf_config<'a>(
+    config: &'a FcConfig,
+    estimator_kind: &str,
+) -> Result<&'a FcEkfConfig, EstimatorError> {
+    config
+        .ekf
+        .as_ref()
+        .ok_or_else(|| EstimatorError::InvalidConfig {
+            reason: format!("estimator kind {estimator_kind} requires [fc.ekf]"),
+        })
 }
 
 fn copy_ekf_to_sr_ukf_params(ekf: &EkfParams, sr: &mut SquareRootUkfParams) {

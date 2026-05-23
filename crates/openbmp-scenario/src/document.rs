@@ -331,13 +331,14 @@ impl ScenarioDocument {
         let Some(fc) = &self.fc else {
             return Ok(());
         };
-        // fc.estimator = "imm" / fc.imm — Phase 5.B.3 consumed
-        // IMM estimator surface. v3-only; the runner builds a
-        // Bar-Shalom 2-mode default IMM bank from [fc.ekf] plus
-        // the per-mode overrides in [fc.imm].
-        if matches!(fc.estimator, FcEstimatorKind::Imm) && header < SCENARIO_VERSION_V3 {
+        // fc.estimator v3-only additions — Phase 5.B consumed IMM
+        // and SR-UKF estimator surfaces. The runner builds IMM from
+        // [fc.ekf] plus [fc.imm], and SR-UKF variants from [fc.ekf].
+        if let Some(field) = v3_only_fc_estimator_field(fc.estimator)
+            && header < SCENARIO_VERSION_V3
+        {
             return Err(ScenarioError::SchemaVersionFieldReserved {
-                field: "fc.estimator = \"imm\"".to_owned(),
+                field: field.to_owned(),
                 required: SCENARIO_VERSION_V3,
                 found: header,
             });
@@ -646,9 +647,9 @@ impl ScenarioDocument {
             });
         }
         if let Some(fc) = self.fc.as_ref() {
-            if matches!(fc.estimator, FcEstimatorKind::Imm) {
+            if let Some(field) = v3_only_fc_estimator_field(fc.estimator) {
                 return Err(ScenarioError::SchemaVersionFieldReserved {
-                    field: "fc.estimator = \"imm\"".to_owned(),
+                    field: field.to_owned(),
                     required: SCENARIO_VERSION_V3,
                     found: header,
                 });
@@ -656,6 +657,13 @@ impl ScenarioDocument {
             if fc.imm.is_some() {
                 return Err(ScenarioError::SchemaVersionFieldReserved {
                     field: "fc.imm".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            if fc.estimator_lanes.is_some() {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.estimator_lanes".to_owned(),
                     required: SCENARIO_VERSION_V3,
                     found: header,
                 });
@@ -3657,7 +3665,8 @@ impl InitialSloshConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcConfig {
-    /// Estimator kind. Must be one of `ekf`, `mekf`.
+    /// Estimator kind. Ignored when `[fc.estimator_lanes]` is
+    /// present; otherwise selects the single estimator instance.
     pub estimator: FcEstimatorKind,
     /// Autopilot kind. Must be `three_loop`.
     pub autopilot: FcAutopilotKind,
@@ -3698,8 +3707,7 @@ pub struct FcConfig {
     pub phase_authority: Option<BTreeMap<String, FcPhaseAuthorityConfig>>,
     /// Optional multi-instance estimator-routing block (v3 only).
     ///
-    /// Phase 5.0 parses this block under v3 only; the runtime
-    /// consumer lands in Phase 5.B.2. Scenarios that declare
+    /// Phase 5.B.2 consumes this block under v3 only. Scenarios that declare
     /// `[fc.estimator_lanes]` must have `openbmp.scenario = 3`.
     pub estimator_lanes: Option<FcEstimatorLanesConfig>,
     /// Optional control-allocation policy block (v3 only).
@@ -3722,49 +3730,21 @@ impl FcConfig {
     /// # Errors
     ///
     /// Returns [`ScenarioError::InvalidFc`] when:
-    /// - `estimator = ekf` and `[fc.ekf]` is missing
-    /// - `estimator = mekf` and `[fc.mekf]` is missing
+    /// - the selected single estimator, or any estimator lane when
+    ///   `[fc.estimator_lanes]` is present, is missing its required
+    ///   `[fc.*]` parameter block
     /// - `guidance = attitude_hold` and `reference_q_xyzw` is missing
     pub fn validate(&self) -> Result<(), ScenarioError> {
-        if matches!(self.estimator, FcEstimatorKind::Ekf) && self.ekf.is_none() {
-            return Err(ScenarioError::InvalidFc {
-                reason: "estimator = \"ekf\" requires [fc.ekf]".to_string(),
-            });
-        }
-        if matches!(self.estimator, FcEstimatorKind::Mekf) && self.mekf.is_none() {
-            return Err(ScenarioError::InvalidFc {
-                reason: "estimator = \"mekf\" requires [fc.mekf]".to_string(),
-            });
-        }
-        if matches!(self.estimator, FcEstimatorKind::Imm) {
-            if self.imm.is_none() {
-                return Err(ScenarioError::InvalidFc {
-                    reason: "estimator = \"imm\" requires [fc.imm]".to_string(),
-                });
+        if let Some(lanes) = self.estimator_lanes.as_ref() {
+            lanes.validate()?;
+            for (index, lane) in lanes.lanes.iter().enumerate() {
+                self.validate_estimator_dependencies(
+                    lane.estimator,
+                    &format!("fc.estimator_lanes.lane[{index}].estimator"),
+                )?;
             }
-            if self.ekf.is_none() {
-                return Err(ScenarioError::InvalidFc {
-                    reason: "estimator = \"imm\" requires [fc.ekf] for the per-mode base \
-                             EKF parameters; per-mode overrides go under [[fc.imm.mode]]"
-                        .to_string(),
-                });
-            }
-        }
-        // Phase-5.B.1 SR-UKF and SR-UKF (attitude only) reuse the
-        // [fc.ekf] parameter block since they share the EKF's noise
-        // budget. SR-UKF-specific scaling (α, β, κ) defaults are
-        // baked in until a tuning study motivates a `[fc.sr_ukf]`
-        // override block; that lives in §5.B.6 follow-on scope.
-        if matches!(
-            self.estimator,
-            FcEstimatorKind::SrUkf | FcEstimatorKind::SrUkfAttitude
-        ) && self.ekf.is_none()
-        {
-            return Err(ScenarioError::InvalidFc {
-                reason: "estimator = \"sr_ukf\" / \"sr_ukf_attitude\" requires [fc.ekf] \
-                         for the noise budget"
-                    .to_string(),
-            });
+        } else {
+            self.validate_estimator_dependencies(self.estimator, "estimator")?;
         }
         if let Some(imm) = self.imm.as_ref() {
             imm.validate()?;
@@ -3818,6 +3798,55 @@ impl FcConfig {
         }
         Ok(())
     }
+
+    fn validate_estimator_dependencies(
+        &self,
+        estimator: FcEstimatorKind,
+        selector: &str,
+    ) -> Result<(), ScenarioError> {
+        match estimator {
+            FcEstimatorKind::Ekf => {
+                if self.ekf.is_none() {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: format!("{selector} = \"ekf\" requires [fc.ekf]"),
+                    });
+                }
+            }
+            FcEstimatorKind::Mekf => {
+                if self.mekf.is_none() {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: format!("{selector} = \"mekf\" requires [fc.mekf]"),
+                    });
+                }
+            }
+            FcEstimatorKind::Imm => {
+                if self.imm.is_none() {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: format!("{selector} = \"imm\" requires [fc.imm]"),
+                    });
+                }
+                if self.ekf.is_none() {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: format!(
+                            "{selector} = \"imm\" requires [fc.ekf] for the per-mode base \
+                             EKF parameters; per-mode overrides go under [[fc.imm.mode]]"
+                        ),
+                    });
+                }
+            }
+            FcEstimatorKind::SrUkf | FcEstimatorKind::SrUkfAttitude => {
+                if self.ekf.is_none() {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: format!(
+                            "{selector} = \"{}\" requires [fc.ekf] for the noise budget",
+                            fc_estimator_kind_name(estimator)
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Supported estimator kinds for the FC scenario block.
@@ -3843,6 +3872,25 @@ pub enum FcEstimatorKind {
     /// classical 6-state `Ukf` shape but on the new square-root
     /// machinery.
     SrUkfAttitude,
+}
+
+fn fc_estimator_kind_name(kind: FcEstimatorKind) -> &'static str {
+    match kind {
+        FcEstimatorKind::Ekf => "ekf",
+        FcEstimatorKind::Mekf => "mekf",
+        FcEstimatorKind::Imm => "imm",
+        FcEstimatorKind::SrUkf => "sr_ukf",
+        FcEstimatorKind::SrUkfAttitude => "sr_ukf_attitude",
+    }
+}
+
+fn v3_only_fc_estimator_field(kind: FcEstimatorKind) -> Option<&'static str> {
+    match kind {
+        FcEstimatorKind::Imm => Some("fc.estimator = \"imm\""),
+        FcEstimatorKind::SrUkf => Some("fc.estimator = \"sr_ukf\""),
+        FcEstimatorKind::SrUkfAttitude => Some("fc.estimator = \"sr_ukf_attitude\""),
+        FcEstimatorKind::Ekf | FcEstimatorKind::Mekf => None,
+    }
 }
 
 /// Supported autopilot kinds.
@@ -4977,7 +5025,7 @@ pub enum FcEstimatorVoterKind {
     SimplexPassThrough,
     /// Median-of-three selection by per-lane innovation chi-square.
     MidValueSelectByInnovation,
-    /// Pick the lane with the smallest covariance trace each tick.
+    /// Pick the lane with the smallest covariance-trace proxy each tick.
     BestByCovarianceTrace,
 }
 
