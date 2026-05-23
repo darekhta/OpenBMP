@@ -284,18 +284,98 @@ impl EventTrigger for BuiltInEventTrigger {
 }
 
 // ---------------------------------------------------------------------
+// Region / alarm identifiers (Phase 5.X.A placeholder; wired in 5.X.D)
+// ---------------------------------------------------------------------
+
+/// Stable identifier for an orthogonal region.
+///
+/// Phase 5.X.A reserves the type; Phase 5.X.D wires the canonical
+/// regions (`mission`, `health`, `comms`, `estimator_regime`) and
+/// publishes them on per-region bus topics. Until 5.X.D lands, this
+/// type is used only by the placeholder [`MissionAction::RaiseHealthAlarm`]
+/// variant.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct RegionId(u64);
+
+impl RegionId {
+    /// Construct from a raw integer value.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Construct from a stable canonical region path
+    /// (e.g. `"mission.regions.health"`) via FNV-1a-64.
+    #[must_use]
+    pub const fn from_path(path: &str) -> Self {
+        Self(fnv1a_64(path.as_bytes()))
+    }
+
+    /// Returns the underlying integer value.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Alarm code raised on the `health` orthogonal region.
+///
+/// Phase 5.X.A reserves the type; the canonical alarm codes land with
+/// the 5.X.D health-region wiring. The integer value is the canonical
+/// alarm code; future sub-phases pin the integer-to-name table in
+/// [`docs/mission-states-vocabulary.md`](../../docs/mission-states-vocabulary.md).
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct AlarmCode(u32);
+
+impl AlarmCode {
+    /// Construct from a raw integer value.
+    #[must_use]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Returns the underlying integer value.
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
+// ---------------------------------------------------------------------
+// State / phase identifier alias
+// ---------------------------------------------------------------------
+
+/// Hierarchical-state-machine identifier.
+///
+/// Phase 5.X.C will introduce parent / child state hierarchy; the
+/// identifier remains FNV-1a-64 of the canonical scenario state path
+/// (e.g. `"mission.states.in_flight.boost.first_stage_burn"`). The
+/// type is an alias for [`PhaseId`] during the Phase 5.X.A → 5.X.C
+/// transition; the rename `PhaseId` → `StateId` is the canonical name
+/// from 5.X.C onward.
+pub type StateId = PhaseId;
+
+// ---------------------------------------------------------------------
 // Bindings + actions
 // ---------------------------------------------------------------------
 
-/// Action taken when an event fires.
+/// Mission-control action taken when an event fires.
 ///
-/// `Separation` is reserved-but-unwired in Phase 3.2: scenarios that
-/// declare it are rejected at parse time with a typed deferral
-/// error pointing at the future phase that will land it.
+/// Phase 5.X.A split: this enum carries only the **HAL-portable**
+/// actions — actions a real-hardware FC adopter must be able to honour
+/// without a simulator present. Simulator-only physics overrides
+/// (engine commands, effector overrides, scripted separation, recovery
+/// deploy) live in [`openbmp_scenario_script::ScenarioScriptAction`]
+/// in a separate crate, which the HAL deployment does not link.
+///
+/// See [`docs/mission-graph-architecture.md § Action taxonomy`](../../docs/mission-graph-architecture.md)
+/// for the architectural rationale.
 #[derive(Clone, Debug, PartialEq)]
-pub enum EventAction {
-    /// Transition the active mission phase.
-    EnterPhase(PhaseId),
+pub enum MissionAction {
+    /// Transition to the named state. Phase 5.X.C extends this to
+    /// hierarchical traversal (LCA + entry / exit chains); Phase 5.X.A
+    /// preserves flat-graph semantics.
+    EnterState(StateId),
     /// Emit a `bool` telemetry marker. The consumer allocates a channel
     /// named `tag` and writes `true` on every tick the associated
     /// event fires.
@@ -303,51 +383,85 @@ pub enum EventAction {
         /// Channel tag (`snake_case`, e.g. `"at_apogee_marker"`).
         tag: String,
     },
+    /// Raise a health alarm on the named orthogonal region. Placeholder
+    /// in Phase 5.X.A; wired by Phase 5.X.D when the orthogonal
+    /// `health` region lands.
+    RaiseHealthAlarm {
+        /// Target region (canonically the `health` region).
+        region: RegionId,
+        /// Canonical alarm code.
+        alarm: AlarmCode,
+    },
+    /// Request a safe-state transition with a human-readable reason.
+    /// Placeholder in Phase 5.X.A; wired by Phase 5.X.D as the
+    /// declarative replacement for the commander's hand-rolled
+    /// `safe_state_requested` boolean.
+    RequestSafeState {
+        /// Human-readable reason published alongside the request.
+        reason: String,
+    },
     /// Request mission termination with a human-readable reason.
     Stop {
         /// Human-readable label for the stop reason.
         label: String,
     },
-    // -------------------------------------------------------------
-    // Phase-3.4 / 3.6 / 3.7 / 3.9 actions. Variants exist in the
-    // enum so future sub-phases don't need to expand it (which would
-    // touch every match site).
-    // -------------------------------------------------------------
-    /// Phase-3.6: per-engine command targeting a declared engine by
-    /// [`openbmp_core::EngineId`]. The event consumer records the firing;
-    /// the runner-side `EngineRack::apply_commands` drains it and
-    /// applies the command to the engine on the next rack tick.
-    ///
-    /// Phase-3.15.C: the field shape is engine-domain-shaped but
-    /// the mission graph crate does *not* depend on
-    /// `openbmp-propulsion`. The runner translates these scalar
-    /// fields into a typed `openbmp_propulsion::EngineCommand` at
-    /// apply time — same pattern as [`Self::DeployRecovery`] which
-    /// carries a `String` command name and the runner maps it to
-    /// `openbmp_vehicle::RecoveryCommand`. Keeping the mission graph
-    /// free of actuator-domain dependencies is the load-bearing
-    /// HAL-portability rule for `openbmp-mission`.
+}
+
+impl MissionAction {
+    /// Backward-compatibility constructor — Phase 5.X.A renamed
+    /// `EnterPhase` to `EnterState` along with the `PhaseId` →
+    /// `StateId` alias. New code should use the variant directly.
+    #[must_use]
+    pub fn enter_phase(target: PhaseId) -> Self {
+        Self::EnterState(target)
+    }
+}
+
+/// **Phase 5.X.A migration shim — being superseded by `MissionAction`
+/// and `openbmp_scenario_script::ScenarioScriptAction`.**
+///
+/// This enum carries the legacy unified action vocabulary from Phase
+/// 3.2 through Phase 5.B. Phase 5.X.A introduced the split, but the
+/// shim is retained for one migration phase so existing consumers
+/// continue to build while the kernel / commander / parser migrate
+/// to the typed binding lists. Phase 5.X.E removes this shim.
+///
+/// `Separation` is reserved-but-unwired: scenarios that declare it are
+/// rejected at parse time with a typed deferral error.
+#[deprecated(
+    since = "0.0.1",
+    note = "Phase 5.X.A split this into MissionAction (openbmp-mission) and ScenarioScriptAction (openbmp-scenario-script); migrate before Phase 5.X.E"
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventAction {
+    /// Transition the active mission phase.
+    EnterPhase(PhaseId),
+    /// Emit a `bool` telemetry marker.
+    EmitTelemetryMarker {
+        /// Channel tag.
+        tag: String,
+    },
+    /// Request mission termination.
+    Stop {
+        /// Human-readable label.
+        label: String,
+    },
+    /// Phase-3.6: per-engine command.
     EngineCommand {
         /// Target engine id.
         id: openbmp_core::EngineId,
-        /// Throttle setting in `[0, 1]`. Clamped at apply time.
+        /// Throttle setting in `[0, 1]`.
         throttle_unit: f64,
-        /// Gimbal pitch angle in radians. Clamped at apply time.
+        /// Gimbal pitch angle in radians.
         gimbal_pitch_rad: f64,
-        /// Gimbal yaw angle in radians. Clamped at apply time.
+        /// Gimbal yaw angle in radians.
         gimbal_yaw_rad: f64,
-        /// Ignition request. Honoured only from `Idle`.
+        /// Ignition request.
         ignite: bool,
-        /// Shutdown request. Honoured only from `Igniting` or
-        /// `Burning`. When both `ignite` and `shutdown` are `true`,
-        /// shutdown wins.
+        /// Shutdown request.
         shutdown: bool,
     },
-    /// Phase-3.4: scenario-driven effector command override. Targets
-    /// a declared effector by [`openbmp_core::EffectorId`]; the
-    /// runner-side `EffectorRack::apply_overrides` consumes the
-    /// fired event and stores the override into the rack's
-    /// per-effector override map for the next rack tick.
+    /// Phase-3.4: scenario-driven effector command override.
     EffectorOverride {
         /// Target effector id.
         id: openbmp_core::EffectorId,
@@ -356,36 +470,32 @@ pub enum EventAction {
     },
     /// Phase-3.6 / 3.7 deferred: stage-separation event.
     Separation,
-    /// Phase-3.9: deploy / stow a recovery device. Targets a
-    /// declared recovery device by [`openbmp_core::RecoveryId`]; the
-    /// runner-side `RecoveryRack::apply_deploys` consumes the fired
-    /// event and applies the command to the device's state machine.
+    /// Phase-3.9: deploy / stow a recovery device.
     DeployRecovery {
         /// Target recovery-device id.
         id: openbmp_core::RecoveryId,
-        /// Command name (one of `"deploy"`, `"deploy_drogue"`,
-        /// `"deploy_main"`, `"stow"`). The string is the rack-side
-        /// canonical name; the rack maps it to the typed
-        /// `openbmp_vehicle::RecoveryCommand` enum at apply time.
-        ///
-        /// We carry the canonical-name `String` (rather than the
-        /// typed enum) because `openbmp-sim` is L1 — it cannot
-        /// depend on `openbmp-vehicle::recovery`. The rack lives in
-        /// the runner (`openbmp-cli`) which depends on both crates
-        /// and performs the typed-mapping there.
+        /// Command name.
         command: String,
     },
 }
 
 /// One event's full declaration: trigger + action + once-flag.
+///
+/// Phase 5.X.A made `A` generic so the simulator can hold
+/// `EventBinding<MissionAction>` alongside
+/// `EventBinding<ScenarioScriptAction>` while the FC commander holds
+/// only `EventBinding<MissionAction>`. The default `A = EventAction`
+/// preserves backward compatibility during the Phase 5.X.A → 5.X.E
+/// migration window.
+#[allow(deprecated)]
 #[derive(Clone, Debug, PartialEq)]
-pub struct EventBinding {
+pub struct EventBinding<A = EventAction> {
     /// Path-derived stable id.
     pub id: EventId,
     /// Trigger predicate.
     pub trigger: BuiltInEventTrigger,
     /// Action taken when the trigger fires.
-    pub action: EventAction,
+    pub action: A,
     /// `true`: the binding fires at most once per run.
     /// `false`: the binding may re-fire on every crossing.
     pub once: bool,
@@ -801,8 +911,15 @@ fn compute_longest_path_depth(
 }
 
 /// Queue entry recorded per fired event.
+///
+/// Phase 5.X.A made `A` generic so the simulator can hold a
+/// `Vec<FiredEvent<MissionAction>>` mission queue alongside a
+/// `Vec<FiredEvent<ScenarioScriptAction>>` script queue. The default
+/// `A = EventAction` preserves backward compatibility during the
+/// Phase 5.X.A → 5.X.E migration window.
+#[allow(deprecated)]
 #[derive(Clone, Debug, PartialEq)]
-pub struct FiredEvent {
+pub struct FiredEvent<A = EventAction> {
     /// Binding that fired.
     pub binding_id: EventId,
     /// Tick at which the event fired.
@@ -811,7 +928,7 @@ pub struct FiredEvent {
     pub time: SimTime,
     /// Action to apply (cloned at fire time so the runner can drain
     /// without holding a borrow on the event consumer).
-    pub action: EventAction,
+    pub action: A,
 }
 
 // ---------------------------------------------------------------------

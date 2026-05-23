@@ -54,10 +54,12 @@ pub mod stop;
 
 pub use derivative::{PointMassDerivative, RigidBodyDerivative, SimStateDerivative};
 pub use error::{IntegratorError, ModelEvalError, SimulationError, StopReason};
+#[allow(deprecated)]
+pub use events::EventAction;
 pub use events::{
-    BuiltInEventTrigger, EventAction, EventBinding, EventEvalState, EventId, EventScalars,
-    EventTrigger, FiredEvent, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
-    PhaseTransition,
+    AlarmCode, BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars,
+    EventTrigger, FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
+    PhaseTransition, RegionId, ScenarioScriptAction, StateId,
 };
 pub use integrator::{
     AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Dopri853Adaptive,
