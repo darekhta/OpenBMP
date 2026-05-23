@@ -18,6 +18,7 @@
 //! need.
 
 mod events;
+mod hsm;
 
 #[allow(deprecated)]
 pub use events::EventAction;
@@ -26,3 +27,4 @@ pub use events::{
     EventTrigger, FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
     PhaseTransition, RegionId, StateId,
 };
+pub use hsm::{HistoryState, HsmError, MissionState, MissionStateMachine};
