@@ -699,22 +699,29 @@ and any operational mission profile.
   start. The kernel resolves rate groups into a static sub-step plan
   before the first `step()`.
 
-**Phase 5.X — Mission graph architecture refactor** (in progress)
-- Sub-phases: 5.X.0 documentation alignment, 5.X.A action taxonomy
-  split, 5.X.B single source of truth, 5.X.C hierarchical state
-  machine primitives, 5.X.D orthogonal regions, 5.X.E academic
-  vocabulary migration, 5.X.F scenario format v4, 5.X.G validation
-  re-baseline, 5.X.H documentation harmonisation.
-- See [`phase-5x-plan.md`](phase-5x-plan.md) for the migration
-  sequence and exit criteria.
+**Phase 5.X — Mission graph architecture refactor** (closing)
+- Completed sub-phases: 5.X.0 documentation alignment, 5.X.A action
+  taxonomy split, 5.X.B single source of truth, 5.X.C hierarchical
+  state machine primitives, 5.X.D orthogonal regions, 5.X.F scenario
+  format v4, 5.X.G validation re-baseline.
+- Sub-phases in flight: 5.X.E academic vocabulary migration (lint
+  pre-work + CI tripwire landed; full internal call-site rename
+  remaining), 5.X.H documentation harmonisation (this entry will
+  flip to ✅ when phase-5x-plan.md is retired).
 - The mission FSM moves from a flat `MissionPhaseGraph` to a
   hierarchical Harel-style state machine with orthogonal concurrent
   regions (`mission × health × comms × estimator_regime`). The FC
   commander becomes the sole owner of mission state; the simulator
-  subscribes. Operational / engagement-derived state names
-  (`Terminal`, `Endgame`, `Midcourse`, `Engagement`, etc.) are removed
-  in favour of the academic vocabulary defined in
+  subscribes via `commander.mission_state` and defers to the FC's
+  value when populated. Operational / engagement-derived state names
+  (`Terminal`, `Endgame`, `Midcourse`, `Engagement`, etc.) are
+  rejected by both the scenario-load lint and the workspace CI
+  tripwire; the academic vocabulary canon is in
   [`mission-states-vocabulary.md`](mission-states-vocabulary.md).
+- See [`phase-5x-plan.md`](phase-5x-plan.md) for the migration
+  sequence + exit criteria and
+  [`phase-5x-status.md`](phase-5x-status.md) for per-sub-phase
+  status / commit pointers.
 - Phase 5.X is a *refactor* phase: no new GNC algorithm lands; every
   shipped Phase-5 scenario produces byte-identical telemetry against
   its Phase-5 baseline on the reference platform profile.
