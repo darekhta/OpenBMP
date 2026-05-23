@@ -45,5 +45,25 @@ rocket-class and launch-vehicle-class flight simulation.
   credibility contract, the cross-validation playbook, and the generic
   lab-HIL adapter pattern. Public-data integration (e.g., a peer-reviewed
   Starship-class study) is treated as a downstream-user example only.
+
+## Phase 5.X — Mission Graph Architecture Refactor
+
+Phase 5.X is the architecture-refactor phase between Phase 5 and Phase
+6. It hardens the mission-FSM contract before Phase 6 hypersonic work
+expands the regime axis count.
+
+- [Phase 5.X Plan](phase-5x-plan.md) — sub-phase decomposition,
+  scope / anti-scope, success criteria, and the determinism-preservation
+  rules that gate every sub-phase merge.
+- [Mission Graph Architecture](mission-graph-architecture.md) —
+  authoritative architectural reference for the post-refactor mission
+  state machine: hierarchical states, orthogonal regions, single
+  source of truth, the `openbmp-mission` / `openbmp-scenario-script`
+  crate split, HAL adopter contract.
+- [Mission States Vocabulary](mission-states-vocabulary.md) —
+  canonical state-name vocabulary with academic citations, the
+  rejected operational-vocabulary table (Terminal, Endgame,
+  Engagement, etc.), and the deprecated-name shim policy.
+
 The doc set above is the authoritative source for the project's scope,
 architecture, safety posture, and data policy.

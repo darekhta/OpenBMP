@@ -198,6 +198,13 @@ is outside the project boundary.
 
 ## Naming Rules
 
+> **Phase 5.X cross-reference.** The mission-state vocabulary canon —
+> the authoritative list of academic state names and the operational /
+> engagement-derived terms that are rejected — is in
+> [`mission-states-vocabulary.md`](mission-states-vocabulary.md). The
+> rules below state the general workspace-wide naming posture; the
+> mission-FSM vocabulary table is the load-bearing per-state canon.
+
 Use names that reinforce simulation-only scope:
 
 - Prefer: `RigidBody`, `Vehicle`, `Atmosphere`, `Gravity`, `Wind`, `Motor`,

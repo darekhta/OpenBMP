@@ -699,6 +699,26 @@ and any operational mission profile.
   start. The kernel resolves rate groups into a static sub-step plan
   before the first `step()`.
 
+**Phase 5.X — Mission graph architecture refactor** (in progress)
+- Sub-phases: 5.X.0 documentation alignment, 5.X.A action taxonomy
+  split, 5.X.B single source of truth, 5.X.C hierarchical state
+  machine primitives, 5.X.D orthogonal regions, 5.X.E academic
+  vocabulary migration, 5.X.F scenario format v4, 5.X.G validation
+  re-baseline, 5.X.H documentation harmonisation.
+- See [`phase-5x-plan.md`](phase-5x-plan.md) for the migration
+  sequence and exit criteria.
+- The mission FSM moves from a flat `MissionPhaseGraph` to a
+  hierarchical Harel-style state machine with orthogonal concurrent
+  regions (`mission × health × comms × estimator_regime`). The FC
+  commander becomes the sole owner of mission state; the simulator
+  subscribes. Operational / engagement-derived state names
+  (`Terminal`, `Endgame`, `Midcourse`, `Engagement`, etc.) are removed
+  in favour of the academic vocabulary defined in
+  [`mission-states-vocabulary.md`](mission-states-vocabulary.md).
+- Phase 5.X is a *refactor* phase: no new GNC algorithm lands; every
+  shipped Phase-5 scenario produces byte-identical telemetry against
+  its Phase-5 baseline on the reference platform profile.
+
 **Phase 6 — Hypersonic extensions** (research-grade)
 - 6.0 Hypersonic solver stack (fixed high-order explicit RK, adaptive
   DOPRI853/RKF78 with dense output, implicit source-term sub-steppers,

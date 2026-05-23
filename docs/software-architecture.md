@@ -474,6 +474,19 @@ Rules:
 
 ### Event / Phase Timeline
 
+> **Superseded by Phase 5.X.** The flat phase graph + single
+> `EventAction` enum shown here is the Phase 3 / 4 / 5 contract.
+> Phase 5.X replaces it with a hierarchical state machine, orthogonal
+> regions, and a split `MissionAction` / `ScenarioScriptAction`
+> taxonomy across two crates (`openbmp-mission` HAL-portable and
+> `openbmp-scenario-script` sim-only). The authoritative reference is
+> [`mission-graph-architecture.md`](mission-graph-architecture.md);
+> the canonical state vocabulary is
+> [`mission-states-vocabulary.md`](mission-states-vocabulary.md);
+> the migration sequence and exit criteria are in
+> [`phase-5x-plan.md`](phase-5x-plan.md). The material below is
+> retained for historical context until Phase 5.X.H retires it.
+
 Events and phases are first-class scheduler inputs alongside rate
 groups. They drive things like staging, engine start / shutdown,
 parachute deploy, mission-phase transitions, and effector deflection
@@ -1678,6 +1691,18 @@ Gain scheduling tables are part of the scenario file with explicit
 provenance.
 
 ### Mission State Machine
+
+> **Superseded by Phase 5.X.** The flat `MissionPhase` enum sketched
+> below is the Phase 2 placeholder vocabulary. Phase 5.X migrates the
+> mission state machine to a hierarchical Harel-style state machine
+> with orthogonal concurrent regions (mission × health × comms ×
+> estimator-regime) and the academic state vocabulary canonised in
+> [`mission-states-vocabulary.md`](mission-states-vocabulary.md). The
+> authoritative architectural reference is
+> [`mission-graph-architecture.md`](mission-graph-architecture.md);
+> the migration sequence is in
+> [`phase-5x-plan.md`](phase-5x-plan.md). The sketch below is retained
+> for historical context until Phase 5.X.H retires it.
 
 Phase-based academic mission FSM:
 
