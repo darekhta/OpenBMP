@@ -736,6 +736,128 @@ The parser enforces:
 - The graph is acyclic and every phase is reachable from
   `initial_phase`.
 
+### Mission block v4 (Phase 5.X.F)
+
+Phase 5.X.F extends the mission block with hierarchical state
+declarations, orthogonal-region declarations, and the scenario-scope
+classifier. v3 scenarios continue to parse byte-identically because
+every v4 field is optional and the v3 → v4 lifting pass promotes
+`[[mission.phases]]` to flat (depth-1) `[[mission.states]]` while
+preserving every FNV-1a-64 id.
+
+#### Hierarchical states (`[[mission.states]]`)
+
+```toml
+[[mission.states]]
+id     = "in_flight"
+label  = "in-flight composite"
+# `parent` omitted = top-level state.
+
+[[mission.states]]
+id     = "in_flight.boost.first_stage_burn"
+parent = "in_flight"
+label  = "first stage burning"
+allowed_effectors = ["pitch", "yaw"]
+allowed_engines   = ["s1.merlin1"]
+
+# Action arrays are HAL-portable: `enter_state`,
+# `emit_telemetry_marker`, `raise_health_alarm`, `request_safe_state`,
+# `stop`. Scenario-script actions (engine / effector / separation /
+# recovery) belong in `[[mission.events]]` bindings, not in state
+# action lists.
+[[mission.states.on_entry]]
+kind = "emit_telemetry_marker"
+tag  = "first_stage_ignite"
+
+[[mission.states.on_exit]]
+kind = "emit_telemetry_marker"
+tag  = "first_stage_meco"
+```
+
+Validation invariants (in addition to v3 rules):
+
+- Every `parent` references a declared state.
+- Parent relation is acyclic (no state is its own ancestor).
+- Every declared state is a descendant of the initial state.
+- Canonical-form sort: states by `(depth-from-root,
+  parent-StateId.value(), StateId.value())`; transitions extend the
+  five-tuple with the ancestor-LCA depth.
+
+#### Orthogonal regions (`[[mission.regions]]`)
+
+```toml
+[[mission.regions]]
+id            = "health"
+initial_state = "nominal"
+
+[[mission.regions.states]]
+id    = "nominal"
+label = "all systems nominal"
+
+[[mission.regions.states]]
+id    = "degraded"
+label = "non-fatal degradation"
+```
+
+When `[[mission.regions]]` is omitted, the parser auto-declares the
+four canonical regions (`mission`, `health`, `comms`,
+`estimator_regime`) with single-state (initial-only) machines.
+
+Transitions can declare cross-region guards:
+
+```toml
+[[mission.transitions]]
+from  = "boost.first_stage_burn"
+to    = "boost.staging"
+event = "meco_detected"
+guard = { region = "health", state = "nominal" }
+priority = 0   # default; higher wins on ambiguous co-fire
+```
+
+A guard composes with the trigger via AND semantics: the transition
+fires only when the trigger fires AND the named region is in the
+named state.
+
+#### Scenario scope tag
+
+```toml
+[mission.scope]
+kind = "sounding_rocket"   # one of: sounding_rocket,
+                           # propulsive_landing, orbital_insertion,
+                           # re_entry, closed_loop_test
+```
+
+Used only for human-readable telemetry breadcrumbs; does not gate
+behaviour.
+
+#### Test-only override channel
+
+```toml
+[mission]
+test_only_state_override = true   # default false
+```
+
+When `true`, the simulator may write the
+`commander.scenario_state_override` topic to force the commander into
+a specific state for validation. HAL builds of `openbmp-fc`
+(`--features hal --no-default-features`) compile out this topic
+entirely; setting the flag in a HAL deployment is a load-time error.
+
+#### Migrating v3 → v4
+
+v3 scenarios load against the v4 parser byte-identically. The
+implicit lifting pass:
+
+1. Reads `[[mission.phases]]` into a flat `[[mission.states]]` view
+   (every state has `parent = None`, depth = 0).
+2. Auto-declares the four canonical regions if `[[mission.regions]]`
+   is omitted.
+3. Leaves `scope` unset and `test_only_state_override` `false`.
+
+Phase 5.X.F finalises the scenario format v4 contract; no further
+schema extension lands in Phase 5.X. Phase 6 may add scope variants
+for hypersonic profiles.
+
 ### Vehicle assembly (Phase 3.3)
 
 When `[vehicle.assembly]` is declared, the scenario describes the
