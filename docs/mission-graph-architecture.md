@@ -179,8 +179,6 @@ Actions that any FC commander — sim or real-hardware — must support:
 pub enum MissionAction {
     EnterState(StateId),
     EmitTelemetryMarker { tag: String },
-    RaiseHealthAlarm { region: RegionId, alarm: AlarmCode },
-    RequestSafeState { reason: String },
     Stop { label: String },
 }
 ```
@@ -281,9 +279,11 @@ consumer reads it from the bus.
 
 This means:
 
-- The simulator kernel has *no* `mission_graph` field and *no*
-  `current_phase` field. Its only role w.r.t. mission state is to
-  receive `commander.mission_state` and use it for telemetry tagging.
+- When an FC is wired, the simulator kernel receives
+  `commander.mission_state` and defers mission-state evaluation to
+  that external authority. Pure-sim runs without an FC still keep an
+  internal `mission_graph` / `current_phase` pair so Phase-5
+  scenarios remain runnable without a controller.
 - The simulator kernel still owns the
   `Vec<EventBinding<ScenarioScriptAction>>` because those bindings
   are physics-level overrides that fire from scenario triggers —
@@ -383,11 +383,9 @@ At scenario load:
    region must exist; every referenced state must exist within that
    region; guards cannot self-reference (a guard in region R may not
    reference R's current state).
-5. **Inter-region action validity** — `RaiseHealthAlarm { region, …
-   }` is only valid when `region` is actually declared. The
-   `EnterState(StateId)` action's target state must exist in *some*
-   region; the FSM applies the action to whichever region owns that
-   state.
+5. **Action target validity** — `EnterState(StateId)` targets must
+   exist in the mission graph. Region-scoped action routing is
+   reserved until orthogonal regions are wired into production code.
 6. **Action count bounds** — each state's `on_entry` /
    `on_exit` / `on_active` action lists are capped at a documented
    maximum (32 per list at Phase 5.X; the cap may grow in v4.x as
@@ -445,8 +443,8 @@ At scenario load:
 │ ─────────                           │
 │ • Holds Vec<EventBinding<Script…>>  │
 │ • Subscribes to mission_state       │
-│ • NO mission_graph field            │
-│ • NO current_phase field            │
+│ • Defers to FC state when present   │
+│ • Keeps pure-sim graph fallback     │
 │                                     │
 │ deps: openbmp-mission,              │
 │       openbmp-scenario-script       │

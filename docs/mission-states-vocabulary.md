@@ -303,9 +303,9 @@ pass:
 
 1. v3 `[[mission.phases]]` blocks map to v4 `[[mission.states]]`
    blocks with `parent` omitted (flat hierarchy).
-2. v3 `EventAction::EnterPhase(PhaseId)` actions map to v4
-   `MissionAction::EnterState(StateId)` with the same id (PhaseId
-   and StateId are FNV-1a-64 of the same path).
+2. v3 `enter_phase` scenario actions map to
+   `MissionAction::EnterState(StateId)` with the same id (`PhaseId`
+   and `StateId` are FNV-1a-64 of the same path).
 3. v3 sim-only actions (`EngineCommand`, `EffectorOverride`,
    `Separation`, `DeployRecovery`) route to the new
    `openbmp-scenario-script` crate's binding list rather than the

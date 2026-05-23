@@ -583,10 +583,9 @@ and any operational mission profile.
   exposes only generic `Add` + `Mul<f64>` primitives, so future
   integrators (DOPRI5/8, RKF78) can build their own combiners
   without the trait advertising a stage scheme.
-- `openbmp-mission` decoupled from `openbmp-propulsion`.
-  `EventAction::EngineCommand` carries scalar fields instead of
-  a typed `EngineCommand` value; the runner constructs the typed
-  command at apply time.
+- `openbmp-mission` decoupled from `openbmp-propulsion`; simulator
+  engine-command events live in `openbmp-scenario-script`, and the
+  runner constructs the typed propulsion command at apply time.
 - Mission-graph cadence vocabulary clarified: `EventTrigger::fired`
   takes "monotonic time at the tick" + "monotonic tick counter"
   (sim-side: scenario elapsed time + integration tick; HAL-side:
@@ -730,9 +729,8 @@ and any operational mission profile.
   and cross-region guard semantics.
 - Workspace cargo build produces zero deprecation warnings; every
   production call site uses the typed `MissionAction` /
-  `ScenarioScriptAction` enums. The legacy `EventAction` survives
-  as a deprecated bridge shim that the kernel uses internally to
-  classify v3-style bindings.
+  `ScenarioScriptAction` enums. The legacy unified `EventAction`
+  bridge has been removed.
 - Phase 5.X was a *refactor* phase: no new GNC algorithm landed;
   every shipped Phase-5 scenario produces byte-identical telemetry
   against its Phase-5 baseline on the reference platform profile.
