@@ -186,8 +186,14 @@ pub fn run(
 
     let kernel_base = SimulationKernel::new(config)?;
     let mut kernel = if let Some(mission) = &document.mission {
-        let (events, graph) = crate::runner::mission::build_mission_runtime(mission)?;
-        kernel_base.with_mission(events, Some(graph))?
+        // Phase 5.X.A: typed split-binding entry point. The kernel's
+        // internal eval is byte-identical to the unified-list path
+        // (`with_mission_split` combines internally); future 5.X.B
+        // work replaces the unified internal list with two typed
+        // lists evaluated in lockstep.
+        let (mission_events, script_events, graph) =
+            crate::runner::mission::build_mission_runtime_typed(mission)?;
+        kernel_base.with_mission_split(mission_events, script_events, Some(graph))?
     } else {
         kernel_base
     };

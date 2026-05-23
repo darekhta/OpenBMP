@@ -155,8 +155,10 @@ pub fn run(
 
     let kernel_base = SimulationKernel::new_rigid(config)?;
     let mut kernel = if let Some(mission) = &document.mission {
-        let (events, graph) = crate::runner::mission::build_mission_runtime(mission)?;
-        kernel_base.with_mission(events, Some(graph))?
+        // Phase 5.X.A: typed split-binding entry point.
+        let (mission_events, script_events, graph) =
+            crate::runner::mission::build_mission_runtime_typed(mission)?;
+        kernel_base.with_mission_split(mission_events, script_events, Some(graph))?
     } else {
         kernel_base
     };
