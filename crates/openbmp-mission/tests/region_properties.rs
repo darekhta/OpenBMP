@@ -106,10 +106,12 @@ proptest! {
             a.insert(Region::new(id, graph));
         }
         // Shuffle order deterministically.
-        let mut shuffled: Vec<_> = region_ids.iter().copied().collect();
+        let mut shuffled: Vec<_> = region_ids.to_vec();
         let mut rng_state = seed | 1;
         for i in (1..shuffled.len()).rev() {
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng_state = rng_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             let j = ((rng_state >> 33) as usize) % (i + 1);
             shuffled.swap(i, j);
         }

@@ -173,7 +173,9 @@ proptest! {
         let mut rng_state = seed | 1; // ensure odd for Fisher-Yates
         for i in (2..shuffled.len()).rev() {
             // Linear-congruential mixer; deterministic for proptest replay.
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng_state = rng_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             let j = ((rng_state >> 33) as usize) % (i + 1);
             shuffled.swap(i, j);
         }
@@ -184,9 +186,9 @@ proptest! {
     }
 }
 
-/// MissionAction is held live to confirm the symbol re-exports
+/// `MissionAction` is held live to confirm the symbol re-exports
 /// remain usable from this test crate — Phase 5.X.F will start
-/// constructing on_entry / on_exit action vecs with these.
+/// constructing `on_entry` / `on_exit` action vecs with these.
 #[allow(dead_code)]
 fn _action_compile_check() -> MissionAction {
     MissionAction::EmitTelemetryMarker { tag: "test".into() }
