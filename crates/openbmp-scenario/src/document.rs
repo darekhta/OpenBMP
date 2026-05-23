@@ -1815,12 +1815,19 @@ impl BatchConfig {
 // ---------------------------------------------------------------------
 
 /// Top-level `[mission]` block.
+///
+/// Phase 5.X.F: v4 fields (`states`, `regions`, `scope`) are accepted
+/// optionally and default to empty / unset. v3 scenarios continue to
+/// parse byte-identically because the v4 fields are `#[serde(default)]`
+/// and ignored when empty. The v3 → v4 lifting pass that promotes
+/// `phases` to `states` (preserving every path-derived id) lands with
+/// the kernel-side hierarchical-machine integration.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MissionConfig {
-    /// Id of the initial phase.
+    /// Id of the initial phase / state.
     pub initial_phase: String,
-    /// Declared phases.
+    /// Declared phases (v3 flat-DAG vocabulary).
     #[serde(default)]
     pub phases: Vec<PhaseConfig>,
     /// Declared events.
@@ -1829,6 +1836,112 @@ pub struct MissionConfig {
     /// Declared transitions between phases.
     #[serde(default)]
     pub transitions: Vec<PhaseTransitionConfig>,
+    /// Phase 5.X.F: declared hierarchical states. When non-empty, the
+    /// parser uses these in preference to `phases` and applies
+    /// hierarchical-state-machine validation. v3 scenarios omit this
+    /// field; parse is byte-identical.
+    #[serde(default)]
+    pub states: Vec<StateConfig>,
+    /// Phase 5.X.F: declared orthogonal regions. Defaults to the four
+    /// canonical regions (`mission`, `health`, `comms`,
+    /// `estimator_regime`) when omitted.
+    #[serde(default)]
+    pub regions: Vec<RegionConfig>,
+    /// Phase 5.X.F: scenario-scope human-readable tag (e.g.
+    /// `"sounding_rocket"`, `"propulsive_landing"`,
+    /// `"orbital_insertion"`). Used only for telemetry-tag breadcrumbs;
+    /// does not gate any behaviour.
+    #[serde(default)]
+    pub scope: Option<MissionScope>,
+    /// Phase 5.X.B: test-only override channel activation flag. When
+    /// `true`, the simulator may write the
+    /// `commander.scenario_state_override` topic to force the
+    /// commander into a specific state for validation. Refused by HAL
+    /// builds via the `openbmp-fc` `hal` feature gate.
+    #[serde(default)]
+    pub test_only_state_override: bool,
+}
+
+/// Scenario-scope classifier — Phase 5.X.F.
+///
+/// Used only for human-readable telemetry tags. Does not gate
+/// behaviour. Phase 5.X.F finalises the variant set; Phase 6 adds
+/// hypersonic variants.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionScope {
+    /// Sounding rocket profile (Niskanen-2009 chapter-6 reference).
+    SoundingRocket,
+    /// Propulsive-landing profile (Calisto-class reference).
+    PropulsiveLanding,
+    /// Orbital insertion profile (LEO targets, Phase-5 reference).
+    OrbitalInsertion,
+    /// Re-entry profile (Phase 6 hypersonic reference).
+    ReEntry,
+    /// Closed-loop FC test profile (no specific mission shape).
+    ClosedLoopTest,
+}
+
+/// One hierarchical state declaration — Phase 5.X.F.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StateConfig {
+    /// State id (canonical path or bare).
+    pub id: String,
+    /// Human-readable label.
+    #[serde(default)]
+    pub label: String,
+    /// Parent state id, omitted for top-level states.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// Effectors allowed while this state is active.
+    #[serde(default)]
+    pub allowed_effectors: Vec<String>,
+    /// Engines allowed while this state is active.
+    #[serde(default)]
+    pub allowed_engines: Vec<String>,
+    /// Actions fired in declaration order when the state is entered.
+    /// Phase 5.X.F restricts these to mission-vocabulary actions
+    /// (`enter_state`, `emit_telemetry_marker`, `raise_health_alarm`,
+    /// `request_safe_state`, `stop`).
+    #[serde(default)]
+    pub on_entry: Vec<EventActionConfig>,
+    /// Actions fired in declaration order when the state is exited.
+    #[serde(default)]
+    pub on_exit: Vec<EventActionConfig>,
+    /// Actions fired in declaration order on every tick the state is
+    /// active.
+    #[serde(default)]
+    pub on_active: Vec<EventActionConfig>,
+}
+
+/// One orthogonal region declaration — Phase 5.X.F.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RegionConfig {
+    /// Region id (canonical path or bare — e.g. `"health"` resolves
+    /// to `"mission.regions.health"`).
+    pub id: String,
+    /// Region's initial state id.
+    pub initial_state: String,
+    /// States in this region's state machine.
+    #[serde(default)]
+    pub states: Vec<RegionStateConfig>,
+    /// Transitions in this region's state machine.
+    #[serde(default)]
+    pub transitions: Vec<PhaseTransitionConfig>,
+}
+
+/// One region state — Phase 5.X.F. Region states are flat (the
+/// `mission` region is the only one with hierarchy in 5.X.F).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RegionStateConfig {
+    /// State id within this region.
+    pub id: String,
+    /// Human-readable label.
+    #[serde(default)]
+    pub label: String,
 }
 
 impl MissionConfig {
