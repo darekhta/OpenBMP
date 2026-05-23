@@ -110,10 +110,22 @@ where
     dt_s: f64,
     scenario_seed: u64,
     stopped: Option<StopReason>,
-    /// Phase-3.2 event bindings. Empty when no `[mission]` block is
-    /// declared; the kernel hot path early-exits in that case so
-    /// legacy scenarios stay byte-stable.
+    /// Phase-3.2 event bindings (legacy unified list). Empty when no
+    /// `[mission]` block is declared; the kernel hot path early-exits
+    /// in that case so legacy scenarios stay byte-stable. Phase
+    /// 5.X.A introduced typed shadow fields below; Phase 5.X.B / E
+    /// removes this unified field once the kernel internal eval
+    /// switches to walking the typed lists in lockstep.
     events: Vec<crate::events::EventBinding>,
+    /// Phase 5.X.A shadow: mission-action bindings only. Populated
+    /// by [`Self::with_mission_split`]; empty otherwise. Read by
+    /// [`Self::mission_events`] for downstream consumers that want
+    /// the HAL-portable view.
+    #[allow(dead_code)]
+    mission_events_typed: Vec<crate::events::EventBinding<crate::events::MissionAction>>,
+    /// Phase 5.X.A shadow: scenario-script action bindings only.
+    #[allow(dead_code)]
+    script_events_typed: Vec<crate::events::EventBinding<crate::events::ScenarioScriptAction>>,
     /// Phase-3.2 mission graph. `None` when no `[mission]` block is
     /// declared.
     mission_graph: Option<crate::events::MissionPhaseGraph>,
@@ -223,6 +235,8 @@ where
             scenario_seed: config.scenario_seed,
             stopped: None,
             events: Vec::new(),
+            mission_events_typed: Vec::new(),
+            script_events_typed: Vec::new(),
             mission_graph: None,
             current_phase: None,
             pending_events: Vec::new(),
@@ -560,6 +574,25 @@ where
         std::mem::take(&mut self.pending_events)
     }
 
+    /// Phase 5.X.A: HAL-portable mission-action bindings view.
+    /// Returns the canonical id-sorted mission bindings populated by
+    /// [`Self::with_mission_split`]. Empty when no `[mission]` block
+    /// is declared, or when `with_mission` (legacy) was used instead.
+    #[must_use]
+    pub fn mission_bindings(
+        &self,
+    ) -> &[crate::events::EventBinding<crate::events::MissionAction>] {
+        &self.mission_events_typed
+    }
+
+    /// Phase 5.X.A: simulator-only scenario-script bindings view.
+    #[must_use]
+    pub fn script_bindings(
+        &self,
+    ) -> &[crate::events::EventBinding<crate::events::ScenarioScriptAction>] {
+        &self.script_events_typed
+    }
+
     /// Phase 5.X.A: typed split-binding wiring. Accepts the
     /// FC-owned mission bindings and the simulator-owned
     /// scenario-script bindings separately, then combines them into
@@ -575,12 +608,19 @@ where
     /// references an event not present in either binding list.
     #[allow(deprecated)]
     pub fn with_mission_split(
-        self,
-        mission_events: Vec<crate::events::EventBinding<crate::events::MissionAction>>,
-        script_events: Vec<crate::events::EventBinding<crate::events::ScenarioScriptAction>>,
+        mut self,
+        mut mission_events: Vec<crate::events::EventBinding<crate::events::MissionAction>>,
+        mut script_events: Vec<crate::events::EventBinding<crate::events::ScenarioScriptAction>>,
         mission_graph: Option<crate::events::MissionPhaseGraph>,
     ) -> Result<Self, SimulationError> {
         use crate::events::EventAction;
+        mission_events.sort_by_key(|e| e.id.value());
+        script_events.sort_by_key(|e| e.id.value());
+        // Populate the typed shadow fields so downstream readers
+        // (Phase 5.X.B subscribers, FC commander projection) see
+        // the canonical split-binding view.
+        self.mission_events_typed = mission_events.clone();
+        self.script_events_typed = script_events.clone();
         let mut unified: Vec<crate::events::EventBinding> = Vec::with_capacity(
             mission_events.len() + script_events.len(),
         );
@@ -1008,6 +1048,8 @@ where
             scenario_seed: config.scenario_seed,
             stopped: None,
             events: Vec::new(),
+            mission_events_typed: Vec::new(),
+            script_events_typed: Vec::new(),
             mission_graph: None,
             current_phase: None,
             pending_events: Vec::new(),
