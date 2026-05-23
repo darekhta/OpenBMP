@@ -64,6 +64,10 @@ expands the regime axis count.
   canonical state-name vocabulary with academic citations, the
   rejected operational-vocabulary table (Terminal, Endgame,
   Engagement, etc.), and the deprecated-name shim policy.
+- [Phase 5.X Status Tracker](phase-5x-status.md) — companion to the
+  plan; tracks which sub-phases have landed, which are in progress,
+  what's deferred, and the aggregate remaining effort. Retires
+  alongside the plan in 5.X.H.
 
 The doc set above is the authoritative source for the project's scope,
 architecture, safety posture, and data policy.
