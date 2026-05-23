@@ -714,11 +714,11 @@ and any operational mission profile.
   `openbmp-scenario-script`); the FC commander has zero dependency
   on the script crate.
 - Scenario format v4 lands with hierarchical `[[mission.states]]`,
-  `[[mission.regions]]`, optional cross-region guards on
-  transitions, and the `[mission.scope]` classifier. The v3 → v4
-  lifting pass preserves every FNV-1a-64 id. The v4 surface is
-  accepted by the schema, but shipped scenarios still exercise the
-  flat v3-compatible path.
+  `[[mission.regions]]`, and the `[mission.scope]` classifier. The
+  v3 -> v4 lifting pass preserves every FNV-1a-64 id for flat
+  migrations. The shipped
+  `niskanen-2009-chapter6-with-mission.toml` scenario exercises the
+  v4 states / regions / scope path.
 - Operational / engagement-derived state names (`Terminal`,
   `Endgame`, `Midcourse`, `Engagement`, `Decoy`, `PenAid`, etc.)
   are rejected by both the scenario-load lint and the

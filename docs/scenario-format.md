@@ -621,32 +621,48 @@ identically to pre-3.2.
 > **Superseded by Phase 5.X.** The flat-DAG `[mission]` block
 > documented here is the v3 contract. Phase 5.X bumps the scenario
 > format to v4 with hierarchical `[[mission.states]]` blocks,
-> `[[mission.regions]]` orthogonal-region declarations, optional
-> cross-region `guard` fields on transitions, and a `[mission.scope]`
-> human-readable scenario classifier. The authoritative format
+> `[[mission.regions]]` orthogonal-region declarations, and a
+> `[mission.scope]` human-readable scenario classifier. The
+> authoritative format
 > reference is [`mission-graph-architecture.md`](mission-graph-architecture.md);
 > the canonical state vocabulary is in
 > [`mission-states-vocabulary.md`](mission-states-vocabulary.md).
-> The v3 syntax below remains accepted; the v4 syntax is reserved and
-> accepted by the schema, while shipped scenarios still exercise the
-> flat v3-compatible path.
+> The v3 syntax below remains accepted; the shipped
+> `niskanen-2009-chapter6-with-mission.toml` scenario exercises the
+> v4 `states` / `regions` / `scope` path.
 
-The `[mission]` block declares phases, events, and transitions. The
-canonical example mirrors the
+The v3 `[mission]` block declares phases, events, and transitions. The
+v4 canonical example mirrors the
 [`niskanen-2009-chapter6-with-mission.toml`](../scenarios/sounding-rocket/niskanen-2009-chapter6-with-mission.toml)
 scenario:
 
 ```toml
 [mission]
 initial_phase = "ascent"
+test_only_state_override = false
 
-[[mission.phases]]
+[mission.scope]
+kind = "sounding_rocket"
+
+[[mission.states]]
 id    = "ascent"
 label = "powered + coast ascent"
 
-[[mission.phases]]
+[[mission.states]]
 id    = "descent"
 label = "post-apogee descent"
+
+[[mission.regions]]
+id            = "health"
+initial_state = "nominal"
+
+[[mission.regions.states]]
+id    = "nominal"
+label = "all systems nominal"
+
+[[mission.regions.states]]
+id    = "abort_requested"
+label = "safe-state request latched"
 
 [[mission.events]]
 id      = "at_apogee_marker"
@@ -759,10 +775,9 @@ allowed_effectors = ["pitch", "yaw"]
 allowed_engines   = ["s1.merlin1"]
 
 # Action arrays are HAL-portable: `enter_state`,
-# `emit_telemetry_marker`, `raise_health_alarm`, `request_safe_state`,
-# `stop`. Scenario-script actions (engine / effector / separation /
-# recovery) belong in `[[mission.events]]` bindings, not in state
-# action lists.
+# `emit_telemetry_marker`, `stop`. Scenario-script actions (engine /
+# effector / separation / recovery) belong in `[[mission.events]]`
+# bindings, not in state action lists.
 [[mission.states.on_entry]]
 kind = "emit_telemetry_marker"
 tag  = "first_stage_ignite"
@@ -776,7 +791,8 @@ Validation invariants (in addition to v3 rules):
 
 - Every `parent` references a declared state.
 - Parent relation is acyclic (no state is its own ancestor).
-- Every declared state is a descendant of the initial state.
+- Flat sibling top-level states are valid; graph reachability is
+  checked by `[[mission.transitions]]`, not by the parent relation.
 - Canonical-form sort: states by `(depth-from-root,
   parent-StateId.value(), StateId.value())`; transitions extend the
   five-tuple with the ancestor-LCA depth.
@@ -797,24 +813,13 @@ id    = "degraded"
 label = "non-fatal degradation"
 ```
 
-When `[[mission.regions]]` is omitted, the parser auto-declares the
-four canonical regions (`mission`, `health`, `comms`,
-`estimator_regime`) with single-state (initial-only) machines.
-
-Transitions can declare cross-region guards:
-
-```toml
-[[mission.transitions]]
-from  = "boost.first_stage_burn"
-to    = "boost.staging"
-event = "meco_detected"
-guard = { region = "health", state = "nominal" }
-priority = 0   # default; higher wins on ambiguous co-fire
-```
-
-A guard composes with the trigger via AND semantics: the transition
-fires only when the trigger fires AND the named region is in the
-named state.
+When `[[mission.regions]]` is omitted, the runner supplies the four
+canonical regions (`mission`, `health`, `comms`,
+`estimator_regime`). The commander keeps `mission` synced to the
+active state and derives `safe_state_requested` from `health`.
+`CrossRegionGuard` exists in `openbmp-mission` as a portable
+primitive, but scenario-level `guard` / `priority` fields are not part
+of the Phase 5.X parser surface.
 
 #### Scenario scope tag
 

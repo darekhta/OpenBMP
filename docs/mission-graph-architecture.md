@@ -170,8 +170,10 @@ Custom regions can be declared in v4 scenarios via
 `[[mission.regions]]` for downstream HAL adopters who need additional
 axes (e.g. `payload_state`, `tank_state`, `crew_state` for crewed
 vehicles). The four canonical region ids are available in the
-HAL-portable crate, but production OpenBMP does not yet build or tick a
-`RegionSet`.
+HAL-portable crate. Production OpenBMP builds a `RegionSet` for the
+FC commander, keeps the `mission` region synced to the active mission
+state, and derives the compatibility `safe_state_requested` boolean
+from the `health` region.
 
 ### Action
 
@@ -593,9 +595,8 @@ three axes that Phase 5.X intentionally does not pre-empt:
    ship them as states.
 2. **Health region hierarchy.** Re-entry abort logic needs nested
    health states (`Degraded.Sensor`, `Degraded.Effector`,
-   `AbortRequested.Aerothermal`, etc.). Phase 5.X ships the region
-   primitives and vocabulary only; Phase 6 can wire and deepen the
-   production health region.
+   `AbortRequested.Aerothermal`, etc.). Phase 5.X ships a flat
+   production health region; Phase 6 can deepen it.
 3. **Aerodynamic regime region.** A possible fifth canonical region
    tracking `Subsonic / Transonic / Supersonic / Hypersonic` for
    aero-method selection and validity-range gating. Phase 5.X does

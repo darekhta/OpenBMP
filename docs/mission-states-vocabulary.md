@@ -157,7 +157,7 @@ health                                                       (region root, compo
 |---|---|
 | `health.nominal` | All FDIR detectors clear; commander default. |
 | `health.degraded` | One or more FDIR detectors tripped, no abort yet. The mission FSM continues; downstream consumers (autopilot, mixer) can guard their behavior on this. |
-| `health.abort_requested` | Reserved health-region state for a commander-side abort request. Production Phase 5.X still publishes the `safe_state_requested` boolean; this state is vocabulary for the future region wiring. |
+| `health.abort_requested` | Commander-side abort request latched by the production health region. The published `safe_state_requested` boolean is derived from this region state for compatibility with existing consumers. |
 | `health.safed_on_fault` | Terminal state; vehicle is in a known-safe configuration with all effectors disabled. |
 
 Phase 6 may extend `degraded` into a composite with sensor / effector
