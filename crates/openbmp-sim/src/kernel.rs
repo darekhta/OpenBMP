@@ -135,6 +135,11 @@ where
     /// Per-step queue of fired events drained by the runner via
     /// [`Self::drain_events`]. Cleared every step.
     pending_events: Vec<crate::events::FiredEvent>,
+    /// Phase 5.X.B: externally-supplied mission state from the FC
+    /// commander's `commander.mission_state` topic. Set by the
+    /// runner each tick before `kernel.step()`. `None` when no FC
+    /// is wired (pure-sim scenarios).
+    external_mission_state: Option<crate::events::PhaseId>,
     /// Set of binding ids that have fired and are flagged `once: true`.
     /// `BTreeSet` (not `HashSet`) defeats macOS `SipHash` randomisation.
     fired_once_events: std::collections::BTreeSet<crate::events::EventId>,
@@ -240,6 +245,7 @@ where
             mission_graph: None,
             current_phase: None,
             pending_events: Vec::new(),
+            external_mission_state: None,
             fired_once_events: std::collections::BTreeSet::new(),
             previous_event_scalars: None,
             effector_actuals: std::collections::BTreeMap::new(),
@@ -591,6 +597,27 @@ where
         &self,
     ) -> &[crate::events::EventBinding<crate::events::ScenarioScriptAction>] {
         &self.script_events_typed
+    }
+
+    /// Phase 5.X.B: inject the externally-owned mission state (the
+    /// FC commander's published value via `commander.mission_state`).
+    /// The runner reads the FC bus topic each tick and calls this
+    /// setter before `kernel.step()`; the kernel uses the externally
+    /// supplied state in place of its internal `current_phase`
+    /// when populated.
+    ///
+    /// During the migration window, this setter is informational —
+    /// the kernel continues to own `current_phase` for byte-identical
+    /// behavior. Phase 5.X.B's kernel-side switchover will consult
+    /// this value before the local one.
+    pub fn set_external_mission_state(&mut self, phase: Option<crate::events::PhaseId>) {
+        self.external_mission_state = phase;
+    }
+
+    /// Phase 5.X.B: read the externally-supplied mission state.
+    #[must_use]
+    pub fn external_mission_state(&self) -> Option<crate::events::PhaseId> {
+        self.external_mission_state
     }
 
     /// Phase 5.X.A: typed split-binding wiring. Accepts the
@@ -1053,6 +1080,7 @@ where
             mission_graph: None,
             current_phase: None,
             pending_events: Vec::new(),
+            external_mission_state: None,
             fired_once_events: std::collections::BTreeSet::new(),
             previous_event_scalars: None,
             effector_actuals: std::collections::BTreeMap::new(),
