@@ -2780,8 +2780,8 @@ pub struct EffectorConfig {
     #[serde(default)]
     pub fault: Option<EffectorFaultConfig>,
     /// Optional deterministic command schedule. Resolves the
-    /// per-step command at runtime; superseded by an
-    /// `EventAction::EffectorOverride` on the next rack tick.
+    /// per-step command at runtime; superseded by a scenario-script
+    /// effector override on the next rack tick.
     #[serde(default)]
     pub command_schedule: Option<EffectorCommandScheduleConfig>,
 }

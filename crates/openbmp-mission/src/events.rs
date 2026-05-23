@@ -27,7 +27,7 @@
 //!   constructor + reachability checks land in 3.2.B.
 //! - [`EventTrigger`] — trait implemented by event predicates.
 //! - [`BuiltInEventTrigger`] — Phase-3.2 declarative trigger set.
-//! - [`EventBinding`], [`EventAction`] — bridges trigger → action.
+//! - [`EventBinding`] — bridges trigger → action.
 //! - [`EventEvalState`], [`EventScalars`] — per-tick snapshot threaded
 //!   into trigger evaluation.
 //! - [`FiredEvent`] — queue entry for consumer fan-out.
@@ -284,16 +284,10 @@ impl EventTrigger for BuiltInEventTrigger {
 }
 
 // ---------------------------------------------------------------------
-// Region / alarm identifiers (Phase 5.X.A placeholder; wired in 5.X.D)
+// Region identifiers (Phase 5.X.D)
 // ---------------------------------------------------------------------
 
 /// Stable identifier for an orthogonal region.
-///
-/// Phase 5.X.A reserves the type; Phase 5.X.D wires the canonical
-/// regions (`mission`, `health`, `comms`, `estimator_regime`) and
-/// publishes them on per-region bus topics. Until 5.X.D lands, this
-/// type is used only by the placeholder [`MissionAction::RaiseHealthAlarm`]
-/// variant.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct RegionId(u64);
 
@@ -314,29 +308,6 @@ impl RegionId {
     /// Returns the underlying integer value.
     #[must_use]
     pub const fn value(self) -> u64 {
-        self.0
-    }
-}
-
-/// Alarm code raised on the `health` orthogonal region.
-///
-/// Phase 5.X.A reserves the type; the canonical alarm codes land with
-/// the 5.X.D health-region wiring. The integer value is the canonical
-/// alarm code; future sub-phases pin the integer-to-name table in
-/// [`docs/mission-states-vocabulary.md`](../../docs/mission-states-vocabulary.md).
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub struct AlarmCode(u32);
-
-impl AlarmCode {
-    /// Construct from a raw integer value.
-    #[must_use]
-    pub const fn new(value: u32) -> Self {
-        Self(value)
-    }
-
-    /// Returns the underlying integer value.
-    #[must_use]
-    pub const fn value(self) -> u32 {
         self.0
     }
 }
@@ -383,23 +354,6 @@ pub enum MissionAction {
         /// Channel tag (`snake_case`, e.g. `"at_apogee_marker"`).
         tag: String,
     },
-    /// Raise a health alarm on the named orthogonal region. Placeholder
-    /// in Phase 5.X.A; wired by Phase 5.X.D when the orthogonal
-    /// `health` region lands.
-    RaiseHealthAlarm {
-        /// Target region (canonically the `health` region).
-        region: RegionId,
-        /// Canonical alarm code.
-        alarm: AlarmCode,
-    },
-    /// Request a safe-state transition with a human-readable reason.
-    /// Placeholder in Phase 5.X.A; wired by Phase 5.X.D as the
-    /// declarative replacement for the commander's hand-rolled
-    /// `safe_state_requested` boolean.
-    RequestSafeState {
-        /// Human-readable reason published alongside the request.
-        reason: String,
-    },
     /// Request mission termination with a human-readable reason.
     Stop {
         /// Human-readable label for the stop reason.
@@ -417,79 +371,14 @@ impl MissionAction {
     }
 }
 
-/// **Phase 5.X.A migration shim — being superseded by `MissionAction`
-/// and `openbmp_scenario_script::ScenarioScriptAction`.**
-///
-/// This enum carries the legacy unified action vocabulary from Phase
-/// 3.2 through Phase 5.B. Phase 5.X.A introduced the split, but the
-/// shim is retained for one migration phase so existing consumers
-/// continue to build while the kernel / commander / parser migrate
-/// to the typed binding lists. Phase 5.X.E removes this shim.
-///
-/// `Separation` is reserved-but-unwired: scenarios that declare it are
-/// rejected at parse time with a typed deferral error.
-#[deprecated(
-    since = "0.0.1",
-    note = "Phase 5.X.A split this into MissionAction (openbmp-mission) and ScenarioScriptAction (openbmp-scenario-script); migrate before Phase 5.X.E"
-)]
-#[derive(Clone, Debug, PartialEq)]
-pub enum EventAction {
-    /// Transition the active mission phase.
-    EnterPhase(PhaseId),
-    /// Emit a `bool` telemetry marker.
-    EmitTelemetryMarker {
-        /// Channel tag.
-        tag: String,
-    },
-    /// Request mission termination.
-    Stop {
-        /// Human-readable label.
-        label: String,
-    },
-    /// Phase-3.6: per-engine command.
-    EngineCommand {
-        /// Target engine id.
-        id: openbmp_core::EngineId,
-        /// Throttle setting in `[0, 1]`.
-        throttle_unit: f64,
-        /// Gimbal pitch angle in radians.
-        gimbal_pitch_rad: f64,
-        /// Gimbal yaw angle in radians.
-        gimbal_yaw_rad: f64,
-        /// Ignition request.
-        ignite: bool,
-        /// Shutdown request.
-        shutdown: bool,
-    },
-    /// Phase-3.4: scenario-driven effector command override.
-    EffectorOverride {
-        /// Target effector id.
-        id: openbmp_core::EffectorId,
-        /// Command value.
-        command: f64,
-    },
-    /// Phase-3.6 / 3.7 deferred: stage-separation event.
-    Separation,
-    /// Phase-3.9: deploy / stow a recovery device.
-    DeployRecovery {
-        /// Target recovery-device id.
-        id: openbmp_core::RecoveryId,
-        /// Command name.
-        command: String,
-    },
-}
-
 /// One event's full declaration: trigger + action + once-flag.
 ///
 /// Phase 5.X.A made `A` generic so the simulator can hold
 /// `EventBinding<MissionAction>` alongside
 /// `EventBinding<ScenarioScriptAction>` while the FC commander holds
-/// only `EventBinding<MissionAction>`. The default `A = EventAction`
-/// preserves backward compatibility during the Phase 5.X.A → 5.X.E
-/// migration window.
-#[allow(deprecated)]
+/// only `EventBinding<MissionAction>`.
 #[derive(Clone, Debug, PartialEq)]
-pub struct EventBinding<A = EventAction> {
+pub struct EventBinding<A> {
     /// Path-derived stable id.
     pub id: EventId,
     /// Trigger predicate.
@@ -914,12 +803,9 @@ fn compute_longest_path_depth(
 ///
 /// Phase 5.X.A made `A` generic so the simulator can hold a
 /// `Vec<FiredEvent<MissionAction>>` mission queue alongside a
-/// `Vec<FiredEvent<ScenarioScriptAction>>` script queue. The default
-/// `A = EventAction` preserves backward compatibility during the
-/// Phase 5.X.A → 5.X.E migration window.
-#[allow(deprecated)]
+/// `Vec<FiredEvent<ScenarioScriptAction>>` script queue.
 #[derive(Clone, Debug, PartialEq)]
-pub struct FiredEvent<A = EventAction> {
+pub struct FiredEvent<A> {
     /// Binding that fired.
     pub binding_id: EventId,
     /// Tick at which the event fired.

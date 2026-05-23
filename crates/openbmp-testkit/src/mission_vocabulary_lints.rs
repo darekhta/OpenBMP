@@ -102,11 +102,7 @@ pub fn scan_workspace(root: &Path) -> std::io::Result<VocabularyFindings> {
     Ok(findings)
 }
 
-fn visit(
-    root: &Path,
-    dir: &Path,
-    findings: &mut VocabularyFindings,
-) -> std::io::Result<()> {
+fn visit(root: &Path, dir: &Path, findings: &mut VocabularyFindings) -> std::io::Result<()> {
     if !dir.is_dir() {
         return Ok(());
     }
@@ -121,10 +117,7 @@ fn visit(
         }
         if path.is_dir() {
             visit(root, &path, findings)?;
-        } else if path
-            .extension()
-            .is_some_and(|e| e == "rs" || e == "md")
-        {
+        } else if path.extension().is_some_and(|e| e == "rs" || e == "md") {
             let rel = path
                 .strip_prefix(root)
                 .unwrap_or(&path)

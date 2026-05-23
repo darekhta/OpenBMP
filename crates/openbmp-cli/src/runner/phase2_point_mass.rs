@@ -186,11 +186,6 @@ pub fn run(
 
     let kernel_base = SimulationKernel::new(config)?;
     let mut kernel = if let Some(mission) = &document.mission {
-        // Phase 5.X.A: typed split-binding entry point. The kernel's
-        // internal eval is byte-identical to the unified-list path
-        // (`with_mission_split` combines internally); future 5.X.B
-        // work replaces the unified internal list with two typed
-        // lists evaluated in lockstep.
         let (mission_events, script_events, graph) =
             crate::runner::mission::build_mission_runtime_typed(mission)?;
         kernel_base.with_mission_split(mission_events, script_events, Some(graph))?
@@ -266,8 +261,7 @@ pub fn run(
     )?;
     let mut pending_effector_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
         Vec::new();
-    let mut pending_engine_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
-        Vec::new();
+    let mut pending_engine_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> = Vec::new();
     let mut pending_recovery_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
         Vec::new();
     while kernel.stop_reason().is_none() {
@@ -296,13 +290,10 @@ pub fn run(
             // Phase 5.X.B: forward the FC commander's published
             // mission state into the kernel's external view. The
             // kernel uses the externally-supplied state in
-            // preference to its internal current_phase once the
-            // single-source-of-truth switchover lands; until then,
-            // this is informational and kept in sync each tick.
+            // preference to its internal current_phase during event
+            // evaluation.
             if let Some(state_id) = bridge.latest_mission_state_id() {
-                kernel.set_external_mission_state(Some(
-                    openbmp_sim::PhaseId::new(state_id),
-                ));
+                kernel.set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
             }
         }
         if !effector_rack.is_empty() {
@@ -367,7 +358,6 @@ pub fn run(
             kernel.set_wind_sample(wind);
         }
         kernel.step()?;
-        let _legacy_fired = kernel.drain_events(); // Phase 5.X.E: drained to clear; legacy queue is dead.
         let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();
         let snapshot = effector_rack.snapshot();

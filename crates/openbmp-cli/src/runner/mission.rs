@@ -1,9 +1,9 @@
 //! Phase-3.2 scenario → kernel mission-block conversion helpers.
 //!
 //! Bridges [`openbmp_scenario::MissionConfig`] (parsed from the
-//! scenario `[mission]` block) to the [`openbmp_sim::EventBinding`]
-//! list and [`openbmp_sim::MissionPhaseGraph`] the kernel's
-//! `with_mission` builder consumes.
+//! scenario `[mission]` block) to typed [`openbmp_sim::EventBinding`]
+//! lists and the [`openbmp_sim::MissionPhaseGraph`] the kernel
+//! consumes.
 //!
 //! Identifier convention: each phase / event id is path-derived from
 //! the canonical path (`mission.phases.<id>` /
@@ -16,62 +16,30 @@
 
 use std::collections::BTreeMap;
 
+use openbmp_mission::{HsmError, MissionState, MissionStateMachine};
 use openbmp_scenario::{
     EventActionConfig, EventConfig, EventTriggerConfig, MissionConfig, PhaseConfig,
     PhaseTransitionConfig,
 };
-#[allow(deprecated)]
-use openbmp_sim::EventAction;
 use openbmp_sim::{
     BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase, PhaseId,
     PhaseTransition, ScenarioScriptAction,
 };
-use openbmp_mission::{MissionState, MissionStateMachine, HsmError};
 
 use crate::error::CliError;
 
-/// Convert a parsed [`MissionConfig`] into the runtime types the
-/// kernel consumes: a list of [`EventBinding`]s plus a validated
-/// [`MissionPhaseGraph`].
-///
-/// # Errors
-///
-/// Returns [`CliError::Scenario`] when:
-/// - A transition references an unknown phase or event id.
-/// - The phase graph contains a cycle, an unreachable phase, or
-///   duplicate phase ids.
-/// - `mission.initial_phase` references an unknown id.
-/// Phase 5.X.A: typed split-binding constructor.
-///
-/// Returns the FC-owned mission bindings, the simulator-owned
-/// scenario-script bindings, and the validated mission graph. Both
-/// binding lists are id-sorted, preserving the canonical Phase 5
-/// iteration order within each list.
-///
-/// Backward-compat: the legacy [`build_mission_runtime`] still
-/// returns the unified `Vec<EventBinding<EventAction>>` consumed by
-/// the kernel. Phase 5.X.B switches the kernel's `with_mission`
-/// signature to consume the typed lists directly and retires the
-/// legacy builder.
-///
-/// # Errors
-///
-/// Same conditions as [`build_mission_runtime`].
-pub fn build_mission_runtime_typed(
-    mission: &MissionConfig,
-) -> Result<
-    (
-        Vec<EventBinding<MissionAction>>,
-        Vec<EventBinding<ScenarioScriptAction>>,
-        MissionPhaseGraph,
-    ),
-    CliError,
-> {
-    #[allow(deprecated)]
-    let (unified, graph) = build_mission_runtime(mission)?;
-    let mission_bindings = project_mission_bindings(&unified);
-    let script_bindings = project_script_bindings(&unified);
-    Ok((mission_bindings, script_bindings, graph))
+/// Split mission runtime produced from a parsed scenario mission
+/// block: FC-owned mission bindings, simulator-owned script bindings,
+/// and the validated flat mission graph.
+pub type MissionRuntime = (
+    Vec<EventBinding<MissionAction>>,
+    Vec<EventBinding<ScenarioScriptAction>>,
+    MissionPhaseGraph,
+);
+
+enum RuntimeEventBinding {
+    Mission(EventBinding<MissionAction>),
+    Script(EventBinding<ScenarioScriptAction>),
 }
 
 /// Phase 5.X.F: v3 → v4 lifting pass. Builds a [`MissionStateMachine`]
@@ -82,10 +50,7 @@ pub fn build_mission_runtime_typed(
 ///
 /// Returns a `MissionStateMachine` that downstream subscribers
 /// (Phase 5.X.B simulator subscriber, FC commander hierarchical
-/// upgrade) consume. The flat-DAG [`MissionPhaseGraph`] returned by
-/// [`build_mission_runtime`] continues to flow through the
-/// simulator kernel during the migration window for byte-identical
-/// determinism.
+/// upgrade) consume.
 ///
 /// # Errors
 ///
@@ -112,7 +77,7 @@ pub fn lift_mission_state_machine(
             })
             .collect();
         let initial = phase_id(&mission.initial_phase);
-        return MissionStateMachine::new(states, initial).map_err(hsm_to_cli_error);
+        return MissionStateMachine::new(states, initial).map_err(|err| hsm_to_cli_error(&err));
     }
 
     // v3 lifting: every phase becomes a top-level (depth-0) state
@@ -134,36 +99,28 @@ pub fn lift_mission_state_machine(
         })
         .collect();
     let initial = phase_id(&mission.initial_phase);
-    MissionStateMachine::new(states, initial).map_err(hsm_to_cli_error)
+    MissionStateMachine::new(states, initial).map_err(|err| hsm_to_cli_error(&err))
 }
 
-fn hsm_to_cli_error(err: HsmError) -> CliError {
+fn hsm_to_cli_error(err: &HsmError) -> CliError {
     CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
         reason: err.to_string(),
     })
 }
 
-/// Phase-3.2 legacy unified builder.
+/// Convert a parsed [`MissionConfig`] into the typed runtime values
+/// consumed by the kernel and FC commander.
 ///
-/// Returns the unified `Vec<EventBinding<EventAction>>` list and the
-/// validated mission graph. Phase 5.X.A introduced
-/// [`build_mission_runtime_typed`] which returns the split typed
-/// lists; this builder remains during the migration window because
-/// the simulator kernel still consumes the unified list. Phase 5.X.B
-/// retires it once the kernel's `with_mission` switches to typed
-/// inputs.
+/// Returns the FC-owned mission bindings, the simulator-owned
+/// scenario-script bindings, and the validated mission graph. Both
+/// binding lists are id-sorted.
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Scenario`] when:
-/// - A transition references an unknown phase or event id.
-/// - The phase graph contains a cycle, an unreachable phase, or
-///   duplicate phase ids.
-/// - `mission.initial_phase` references an unknown id.
-#[allow(deprecated)]
-pub fn build_mission_runtime(
-    mission: &MissionConfig,
-) -> Result<(Vec<EventBinding>, MissionPhaseGraph), CliError> {
+/// Returns [`CliError::Scenario`] when a transition references an
+/// unknown phase or event id, the phase graph is invalid, or
+/// `mission.initial_phase` references an unknown id.
+pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRuntime, CliError> {
     let phase_id_lookup: BTreeMap<&str, PhaseId> = mission
         .phases
         .iter()
@@ -176,12 +133,30 @@ pub fn build_mission_runtime(
         .collect();
 
     let phases: Vec<Phase> = mission.phases.iter().map(build_phase).collect();
-    let mut event_bindings: Vec<EventBinding> = mission
+    let runtime_bindings: Vec<RuntimeEventBinding> = mission
         .events
         .iter()
-        .map(|e| build_event_binding(e, &phase_id_lookup))
+        .map(|event| build_event_binding(event, &phase_id_lookup))
         .collect::<Result<_, _>>()?;
-    event_bindings.sort_by_key(|event| event.id.value());
+    let mut mission_bindings = Vec::new();
+    let mut script_bindings = Vec::new();
+    let mut declared_event_ids = Vec::with_capacity(runtime_bindings.len());
+    for binding in runtime_bindings {
+        match binding {
+            RuntimeEventBinding::Mission(binding) => {
+                declared_event_ids.push(binding.id);
+                mission_bindings.push(binding);
+            }
+            RuntimeEventBinding::Script(binding) => {
+                declared_event_ids.push(binding.id);
+                script_bindings.push(binding);
+            }
+        }
+    }
+    mission_bindings.sort_by_key(|event| event.id.value());
+    script_bindings.sort_by_key(|event| event.id.value());
+    declared_event_ids.sort_by_key(|event| event.value());
+
     let transitions: Vec<PhaseTransition> = mission
         .transitions
         .iter()
@@ -201,7 +176,6 @@ pub fn build_mission_runtime(
             })
         })?;
 
-    let declared_event_ids: Vec<EventId> = event_bindings.iter().map(|b| b.id).collect();
     let graph = MissionPhaseGraph::new(phases, transitions, initial, &declared_event_ids).map_err(
         |err| {
             CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
@@ -210,7 +184,7 @@ pub fn build_mission_runtime(
         },
     )?;
 
-    Ok((event_bindings, graph))
+    Ok((mission_bindings, script_bindings, graph))
 }
 
 fn phase_id(id: &str) -> PhaseId {
@@ -238,113 +212,98 @@ fn build_phase(config: &PhaseConfig) -> Phase {
     }
 }
 
-#[allow(deprecated)]
 fn build_event_binding(
     config: &EventConfig,
     phase_id_lookup: &BTreeMap<&str, PhaseId>,
-) -> Result<EventBinding, CliError> {
-    Ok(EventBinding {
-        id: event_id(&config.id),
-        trigger: build_trigger(&config.trigger)?,
-        action: build_action(&config.action, phase_id_lookup)?,
-        once: config.once,
+) -> Result<RuntimeEventBinding, CliError> {
+    let id = event_id(&config.id);
+    let trigger = build_trigger(&config.trigger)?;
+    Ok(match &config.action {
+        EventActionConfig::EnterPhase { phase } => {
+            let target = phase_id_lookup
+                .get(phase.as_str())
+                .copied()
+                .ok_or_else(|| {
+                    CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
+                        reason: format!("action.enter_phase references unknown phase `{phase}`"),
+                    })
+                })?;
+            RuntimeEventBinding::Mission(EventBinding {
+                id,
+                trigger,
+                action: MissionAction::EnterState(target),
+                once: config.once,
+            })
+        }
+        EventActionConfig::EmitTelemetryMarker { tag } => {
+            RuntimeEventBinding::Mission(EventBinding {
+                id,
+                trigger,
+                action: MissionAction::EmitTelemetryMarker { tag: tag.clone() },
+                once: config.once,
+            })
+        }
+        EventActionConfig::Stop { label } => RuntimeEventBinding::Mission(EventBinding {
+            id,
+            trigger,
+            action: MissionAction::Stop {
+                label: label.clone(),
+            },
+            once: config.once,
+        }),
+        EventActionConfig::EffectorOverride {
+            id: effector,
+            command,
+        } => RuntimeEventBinding::Script(EventBinding {
+            id,
+            trigger,
+            action: ScenarioScriptAction::EffectorOverride {
+                id: openbmp_core::EffectorId::from_path(&format!(
+                    "vehicle.assembly.effectors.{effector}"
+                )),
+                command: *command,
+            },
+            once: config.once,
+        }),
+        EventActionConfig::EngineCommand {
+            id: engine,
+            command,
+        } => RuntimeEventBinding::Script(EventBinding {
+            id,
+            trigger,
+            action: ScenarioScriptAction::EngineCommand {
+                id: openbmp_core::EngineId::from_path(&format!(
+                    "vehicle.assembly.engines.{engine}"
+                )),
+                throttle_unit: command.throttle_unit,
+                gimbal_pitch_rad: command.gimbal_pitch_rad,
+                gimbal_yaw_rad: command.gimbal_yaw_rad,
+                ignite: command.ignite,
+                shutdown: command.shutdown,
+            },
+            once: config.once,
+        }),
+        EventActionConfig::Separation => RuntimeEventBinding::Script(EventBinding {
+            id,
+            trigger,
+            action: ScenarioScriptAction::Separation,
+            once: config.once,
+        }),
+        EventActionConfig::DeployRecovery {
+            id: recovery,
+            command,
+        } => RuntimeEventBinding::Script(EventBinding {
+            id,
+            trigger,
+            action: ScenarioScriptAction::DeployRecovery {
+                id: openbmp_core::RecoveryId::from_path(&format!(
+                    "vehicle.assembly.recovery.{recovery}"
+                )),
+                command: command.clone(),
+            },
+            once: config.once,
+        }),
     })
-}
-
-/// Phase 5.X.A: project a legacy unified [`EventBinding<EventAction>`]
-/// list down to the HAL-portable mission-action bindings only. The
-/// commander owns these; the simulator-only physics-override
-/// variants (engine / effector / separation / recovery) are dropped.
-///
-/// Iteration order is preserved (canonical id-sorted), so each binding's
-/// position in the projected list matches its position in the source
-/// list among mission-action bindings.
-#[allow(deprecated)]
-#[must_use]
-pub fn project_mission_bindings(
-    bindings: &[EventBinding],
-) -> Vec<EventBinding<MissionAction>> {
-    bindings
-        .iter()
-        .filter_map(|b| {
-            let action = match &b.action {
-                EventAction::EnterPhase(p) => MissionAction::EnterState(*p),
-                EventAction::EmitTelemetryMarker { tag } => {
-                    MissionAction::EmitTelemetryMarker { tag: tag.clone() }
-                }
-                EventAction::Stop { label } => MissionAction::Stop {
-                    label: label.clone(),
-                },
-                EventAction::EngineCommand { .. }
-                | EventAction::EffectorOverride { .. }
-                | EventAction::Separation
-                | EventAction::DeployRecovery { .. } => return None,
-            };
-            Some(EventBinding {
-                id: b.id,
-                trigger: b.trigger.clone(),
-                action,
-                once: b.once,
-            })
-        })
-        .collect()
-}
-
-/// Phase 5.X.A: project a legacy unified [`EventBinding<EventAction>`]
-/// list down to the simulator-only [`ScenarioScriptAction`] bindings.
-/// The simulator kernel consumes these; HAL adopters do not link the
-/// `openbmp-scenario-script` crate.
-///
-/// Iteration order is preserved (canonical id-sorted).
-#[allow(deprecated)]
-#[must_use]
-pub fn project_script_bindings(
-    bindings: &[EventBinding],
-) -> Vec<EventBinding<ScenarioScriptAction>> {
-    bindings
-        .iter()
-        .filter_map(|b| {
-            let action = match &b.action {
-                EventAction::EngineCommand {
-                    id,
-                    throttle_unit,
-                    gimbal_pitch_rad,
-                    gimbal_yaw_rad,
-                    ignite,
-                    shutdown,
-                } => ScenarioScriptAction::EngineCommand {
-                    id: *id,
-                    throttle_unit: *throttle_unit,
-                    gimbal_pitch_rad: *gimbal_pitch_rad,
-                    gimbal_yaw_rad: *gimbal_yaw_rad,
-                    ignite: *ignite,
-                    shutdown: *shutdown,
-                },
-                EventAction::EffectorOverride { id, command } => {
-                    ScenarioScriptAction::EffectorOverride {
-                        id: *id,
-                        command: *command,
-                    }
-                }
-                EventAction::Separation => ScenarioScriptAction::Separation,
-                EventAction::DeployRecovery { id, command } => {
-                    ScenarioScriptAction::DeployRecovery {
-                        id: *id,
-                        command: command.clone(),
-                    }
-                }
-                EventAction::EnterPhase(_)
-                | EventAction::EmitTelemetryMarker { .. }
-                | EventAction::Stop { .. } => return None,
-            };
-            Some(EventBinding {
-                id: b.id,
-                trigger: b.trigger.clone(),
-                action,
-                once: b.once,
-            })
-        })
-        .collect()
 }
 
 fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, CliError> {
@@ -380,67 +339,6 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Cli
                 },
             ));
         }
-    })
-}
-
-#[allow(deprecated)]
-fn build_action(
-    config: &EventActionConfig,
-    phase_id_lookup: &BTreeMap<&str, PhaseId>,
-) -> Result<EventAction, CliError> {
-    Ok(match config {
-        EventActionConfig::EnterPhase { phase } => {
-            let id = phase_id_lookup
-                .get(phase.as_str())
-                .copied()
-                .ok_or_else(|| {
-                    CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
-                        reason: format!("action.enter_phase references unknown phase `{phase}`"),
-                    })
-                })?;
-            EventAction::EnterPhase(id)
-        }
-        EventActionConfig::EmitTelemetryMarker { tag } => {
-            EventAction::EmitTelemetryMarker { tag: tag.clone() }
-        }
-        EventActionConfig::Stop { label } => EventAction::Stop {
-            label: label.clone(),
-        },
-        // Phase-3.4: effector override resolves the scenario-text id
-        // to a stable `EffectorId` (FNV of canonical effector path).
-        EventActionConfig::EffectorOverride { id, command } => EventAction::EffectorOverride {
-            id: openbmp_core::EffectorId::from_path(&format!("vehicle.assembly.effectors.{id}")),
-            command: *command,
-        },
-        // Phase-3.6: engine command resolves the scenario-text id to
-        // a stable `EngineId` (FNV of canonical engine path) and
-        // forwards the scenario `EngineCommandConfig` scalar fields.
-        // Phase-3.15.C: the mission graph carries the scalar payload
-        // directly; the runner-side rack constructs the typed
-        // `openbmp_propulsion::EngineCommand` at apply time so the
-        // mission graph crate has zero dependency on actuator-domain
-        // crates.
-        EventActionConfig::EngineCommand { id, command } => EventAction::EngineCommand {
-            id: openbmp_core::EngineId::from_path(&format!("vehicle.assembly.engines.{id}")),
-            throttle_unit: command.throttle_unit,
-            gimbal_pitch_rad: command.gimbal_pitch_rad,
-            gimbal_yaw_rad: command.gimbal_yaw_rad,
-            ignite: command.ignite,
-            shutdown: command.shutdown,
-        },
-        // Parser-rejected variants — defensively map to a stop-like
-        // no-op. The runner does not normally reach these arms; if
-        // they were to appear, the kernel's match for reserved
-        // variants is a no-op.
-        EventActionConfig::Separation => EventAction::Separation,
-        // Phase-3.9: recovery-deploy resolves the scenario-text id to
-        // a stable `RecoveryId` (FNV of canonical recovery path) and
-        // forwards the canonical command-name string to the
-        // runner-side `RecoveryRack::apply_deploys`.
-        EventActionConfig::DeployRecovery { id, command } => EventAction::DeployRecovery {
-            id: openbmp_core::RecoveryId::from_path(&format!("vehicle.assembly.recovery.{id}")),
-            command: command.clone(),
-        },
     })
 }
 

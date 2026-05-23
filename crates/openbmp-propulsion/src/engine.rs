@@ -127,9 +127,8 @@ impl EngineLimits {
 // EngineCommand
 // ---------------------------------------------------------------------
 
-/// Per-engine command payload. Carried by mission events
-/// (`EventAction::EngineCommand { id, command }` in Phase-3.6.B) and
-/// by the runner-side rack's per-step bookkeeping.
+/// Per-engine command payload. Carried by scenario-script engine
+/// command events and by the runner-side rack's per-step bookkeeping.
 ///
 /// When both `ignite` and `shutdown` are `true` in the same command,
 /// **shutdown wins**: from `Igniting` / `Burning`, the engine

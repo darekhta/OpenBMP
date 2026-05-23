@@ -1,8 +1,8 @@
 //! Phase-3.4 control effectors.
 //!
 //! Effectors are the controller-physics interface: a scalar `cmd`
-//! flows in (from a controller, a scenario-declared schedule, or an
-//! `EventAction::EffectorOverride` event), and a [`EffectorState`]
+//! flows in (from a controller, a scenario-declared schedule, or a
+//! scenario-script effector override event), and a [`EffectorState`]
 //! comes out carrying the actual deflection, saturation flag,
 //! rate-limit flag, and active fault. Phase 3.4 ships:
 //!

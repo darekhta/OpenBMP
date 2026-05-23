@@ -115,8 +115,8 @@ pub enum StopReason {
         /// The step that could not advance.
         step: StepIndex,
     },
-    /// A scenario-declared `EventAction::Stop` fired and ended the
-    /// run cleanly. Distinct from [`Self::UserRequested`] so
+    /// A scenario-declared mission stop action fired and ended the run
+    /// cleanly. Distinct from [`Self::UserRequested`] so
     /// determinism telemetry can distinguish CLI-driven stops from
     /// scenario-driven mission ends.
     MissionEnded {

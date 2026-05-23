@@ -2883,7 +2883,7 @@ action  = { kind = "deploy_recovery", id = "main", command = "unfurl" }
 
     #[test]
     fn accepts_effector_override_action_kind() {
-        // Phase 3.4 wires `EventAction::EffectorOverride { id, command }`.
+        // Phase 3.4 wires scenario-script effector override actions.
         let parse_result = Scenario::from_toml_str(&format!(
             "{ASSEMBLY_WITH_EFFECTOR}\n{}",
             r#"

@@ -49,8 +49,8 @@ pub struct RunReport {
     /// Final simulation time in seconds.
     pub final_time_s: f64,
     /// Stop reason label (e.g., `"end-time"`). Owned because
-    /// scenario-declared `EventAction::Stop` actions carry runtime
-    /// labels that are not `'static`.
+    /// scenario-declared mission stop actions carry runtime labels
+    /// that are not `'static`.
     pub stop_label: String,
     /// Output paths that were written, sorted lexicographically.
     pub written: Vec<PathBuf>,

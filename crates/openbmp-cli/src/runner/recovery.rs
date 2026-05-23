@@ -7,7 +7,7 @@
 //!
 //! Each kernel base tick the runner:
 //!
-//! 1. Drains any `EventAction::DeployRecovery` firings via
+//! 1. Drains any scenario-script recovery-deploy firings via
 //!    [`RecoveryRack::apply_deploys`]. Each event is mapped to the
 //!    typed `openbmp_vehicle::RecoveryCommand` and forwarded to the
 //!    target device's `apply_command(...)`. Multiple command firings
@@ -123,7 +123,7 @@ impl RecoveryRack {
         self.scenario_ids.get(&id).map(String::as_str)
     }
 
-    /// Apply any `EventAction::DeployRecovery` actions drained from
+    /// Apply any scenario-script recovery-deploy actions drained from
     /// the kernel's per-step fired-event queue.
     ///
     /// Multiple command firings for the same device in one step are

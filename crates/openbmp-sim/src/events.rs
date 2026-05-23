@@ -9,11 +9,9 @@
 //! This module is now a thin re-export to preserve every existing
 //! `openbmp_sim::events::*` import path.
 
-#[allow(deprecated)]
-pub use openbmp_mission::EventAction;
 pub use openbmp_mission::{
-    AlarmCode, BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars,
-    EventTrigger, FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
+    BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars, EventTrigger,
+    FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
     PhaseTransition, RegionId, StateId,
 };
 pub use openbmp_scenario_script::ScenarioScriptAction;

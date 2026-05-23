@@ -32,16 +32,13 @@ use openbmp_fc::sr_ukf::{SquareRootUkf, SquareRootUkfAttitude, SquareRootUkfPara
 use openbmp_fc::topics::{
     ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, EffectorCommandSet,
     EngineCommandSet, EngineDemand, EstimatorMode, EstimatorStatus, FailsafeFlags,
-    FdirGlrtDiagnostic, FdirStatus, GnssSample, ImuSample, MagnetometerSample,
-    MissionStatePublish, PositionEstimate, ReferenceState, SensorStatus, StarTrackerSample,
-    VehicleStatus,
+    FdirGlrtDiagnostic, FdirStatus, GnssSample, ImuSample, MagnetometerSample, MissionStatePublish,
+    PositionEstimate, ReferenceState, SensorStatus, StarTrackerSample, VehicleStatus,
 };
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
 };
-use openbmp_mission::{EventBinding, MissionPhaseGraph, PhaseId};
-
-use crate::runner::mission::project_mission_bindings;
+use openbmp_mission::{EventBinding, MissionAction, MissionPhaseGraph, PhaseId};
 use openbmp_physics::magnetic::Wmm2025;
 use openbmp_scenario::{
     FcActuatorChannelsConfig, FcAntiWindupConfig, FcAutopilotKind, FcAutopilotParams, FcConfig,
@@ -78,8 +75,7 @@ impl FcRunner {
     pub fn new(
         config: &FcConfig,
         mission_graph: MissionPhaseGraph,
-        event_bindings: Vec<EventBinding>,
-        hsm: Option<openbmp_mission::MissionStateMachine>,
+        mission_bindings: Vec<EventBinding<MissionAction>>,
         start_phase: PhaseId,
         autopilot_lqr_context: Option<FcAutopilotLqrContext>,
         loop_step_dt_s: f64,
@@ -151,31 +147,13 @@ impl FcRunner {
         let authority = build_authority(&mission_graph, config.phase_authority.as_ref());
 
         // Commander.
-        //
-        // Phase 5.X.A: the commander now consumes
-        // `Vec<EventBinding<MissionAction>>` (HAL-portable) rather than
-        // the legacy unified `Vec<EventBinding<EventAction>>`. The
-        // simulator-only physics-override variants (engine / effector /
-        // separation / recovery) are dropped here — they continue to
-        // flow through the simulator kernel via the same
-        // `event_bindings` list during the migration window. Phase
-        // 5.X.B splits the kernel-side list to mirror this projection.
-        let commander_bindings = project_mission_bindings(&event_bindings);
         let commander = Commander::new(
             mission_graph,
-            commander_bindings,
+            mission_bindings,
             start_phase,
             CommanderParams::default(),
         )
         .map_err(openbmp_fc::ControllerError::from)?;
-        // Phase 5.X.F: attach the hierarchical view when available so
-        // downstream consumers can query LCA / exit / enter chains on
-        // the commander's HSM accessor.
-        let commander = if let Some(hsm) = hsm {
-            commander.with_hierarchical(hsm)
-        } else {
-            commander
-        };
         fc.scheduler_mut()
             .register_periodic(1, 200, next_priority, Box::new(commander))?;
         next_priority = next_priority.saturating_add(5);
@@ -1185,12 +1163,12 @@ fn engine_id_from_config(id: &str) -> EngineId {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
-    use openbmp_mission::{BuiltInEventTrigger, EventAction, EventId, Phase, PhaseTransition};
+    use openbmp_mission::{BuiltInEventTrigger, EventId, MissionAction, Phase, PhaseTransition};
     use openbmp_scenario::{FcAutopilotKind, FcEstimatorKind, FcGuidanceKind};
 
     use super::*;
 
-    fn minimal_graph() -> (MissionPhaseGraph, Vec<EventBinding>, PhaseId) {
+    fn minimal_graph() -> (MissionPhaseGraph, Vec<EventBinding<MissionAction>>, PhaseId) {
         let pad = PhaseId::from_path("mission.phases.pad");
         let ascent = PhaseId::from_path("mission.phases.ascent");
         let liftoff = EventId::from_path("mission.events.liftoff");
@@ -1217,7 +1195,7 @@ mod tests {
         let bindings = vec![EventBinding {
             id: liftoff,
             trigger: BuiltInEventTrigger::AtTime { time_s: 0.5 },
-            action: EventAction::EnterPhase(ascent),
+            action: MissionAction::EnterState(ascent),
             once: true,
         }];
         (graph, bindings, pad)
@@ -1296,8 +1274,7 @@ mod tests {
             trajectory: None,
         };
         let (graph, bindings, pad) = minimal_graph();
-        let mut runner =
-            FcRunner::new(&config, graph, bindings, None, pad, None, 0.001, None).unwrap();
+        let mut runner = FcRunner::new(&config, graph, bindings, pad, None, 0.001, None).unwrap();
         // Drive 100 ticks at 1 ms each — same workload as the
         // single-lane attitude-hold smoke test.
         let dt_s = 0.001;
@@ -1372,8 +1349,7 @@ mod tests {
             trajectory: None,
         };
         let (graph, bindings, pad) = minimal_graph();
-        let mut runner =
-            FcRunner::new(&config, graph, bindings, None, pad, None, 0.001, None).unwrap();
+        let mut runner = FcRunner::new(&config, graph, bindings, pad, None, 0.001, None).unwrap();
         // Drive 100 ticks at 1 ms each.
         let dt_s = 0.001;
         for k in 0..100u64 {

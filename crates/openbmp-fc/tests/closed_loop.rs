@@ -140,7 +140,12 @@ impl BusHistoryRecorder {
     }
 }
 
-fn build_simple_graph() -> (MissionPhaseGraph, Vec<EventBinding<MissionAction>>, PhaseId, PhaseId) {
+fn build_simple_graph() -> (
+    MissionPhaseGraph,
+    Vec<EventBinding<MissionAction>>,
+    PhaseId,
+    PhaseId,
+) {
     let pad = PhaseId::from_path("mission.phases.pad");
     let ascent = PhaseId::from_path("mission.phases.ascent");
     let event_id = EventId::from_path("mission.events.liftoff");

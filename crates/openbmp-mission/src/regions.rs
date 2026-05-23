@@ -28,11 +28,8 @@
 //!
 //! Primitives only. Phase 5.X.F lifts the scenario format to v4
 //! with `[[mission.regions]]` blocks and wires the commander to
-//! consume them. The `MissionAction::RaiseHealthAlarm` and
-//! `MissionAction::RequestSafeState` variants (Phase 5.X.A
-//! placeholders) become observable consequences when 5.X.D wiring
-//! lands in 5.X.F. Until then, the four canonical region ids exist
-//! as named constants but no region machine is actively ticked.
+//! consume them. Until then, the four canonical region ids exist as
+//! named constants but no region machine is actively ticked.
 //!
 //! # Determinism contract
 //!
@@ -69,15 +66,15 @@ impl CanonicalRegions {
         RegionId::from_path("mission.regions.mission")
     }
 
-    /// The `health` region's id — Nominal / Degraded /
-    /// AbortRequested / SafedOnFault.
+    /// The `health` region's id — `Nominal` / `Degraded` /
+    /// `AbortRequested` / `SafedOnFault`.
     #[must_use]
     pub const fn health() -> RegionId {
         RegionId::from_path("mission.regions.health")
     }
 
-    /// The `comms` region's id — Linked / Degraded / LossOfSignal /
-    /// SafedOnLossOfSignal.
+    /// The `comms` region's id — `Linked` / `Degraded` /
+    /// `LossOfSignal` / `SafedOnLossOfSignal`.
     #[must_use]
     pub const fn comms() -> RegionId {
         RegionId::from_path("mission.regions.comms")

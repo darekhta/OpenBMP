@@ -22,7 +22,7 @@ use openbmp_core::{EffectorId, EngineId, RecoveryId};
 
 /// Action taken when a scenario-script-side event fires.
 ///
-/// Phase 5.X.A: split out of the legacy `openbmp_mission::EventAction`
+/// Phase 5.X.A: split out of the old unified mission-event action
 /// enum. Every variant here is a *simulator-only physics override* —
 /// the simulator kernel records the firing each tick and the runner-side
 /// rack (`EngineRack` / `EffectorRack` / `RecoveryRack`) drains it on

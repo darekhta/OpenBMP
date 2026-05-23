@@ -51,9 +51,9 @@ pub struct EffectorRack {
     /// the configured initial position, not the most recent commanded
     /// value, so one-shot overrides do not become sticky.
     hold_commands: Vec<f64>,
-    /// One-shot command overrides drained from the kernel's
-    /// `EventAction::EffectorOverride` events. Applied on the next
-    /// rack tick and cleared after each `step()`.
+    /// One-shot command overrides drained from scenario-script
+    /// effector override events. Applied on the next rack tick and
+    /// cleared after each `step()`.
     overrides: BTreeMap<EffectorId, f64>,
     /// Construction-time `dt`; stepped at exactly this rate.
     dt: Duration,
@@ -214,7 +214,7 @@ impl EffectorRack {
         &self.string_ids
     }
 
-    /// Apply any `EventAction::EffectorOverride` actions drained
+    /// Apply any scenario-script effector override actions drained
     /// from the kernel's per-step fired-event queue. Override values
     /// take precedence over the schedule for the next rack tick only.
     ///

@@ -10,7 +10,7 @@
 //! scenario-script actions (engine / effector / separation /
 //! recovery) live in the separate `openbmp-scenario-script` crate.
 //! [`EventBinding`] and [`FiredEvent`] are now generic over the
-//! action type with default `A = MissionAction`.
+//! action type.
 //!
 //! The simulator-side event evaluator stays in `openbmp-sim`; this
 //! crate ships only the data shapes + the trigger trait + the graph
@@ -21,11 +21,9 @@ mod events;
 mod hsm;
 mod regions;
 
-#[allow(deprecated)]
-pub use events::EventAction;
 pub use events::{
-    AlarmCode, BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars,
-    EventTrigger, FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
+    BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars, EventTrigger,
+    FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
     PhaseTransition, RegionId, StateId,
 };
 pub use hsm::{HistoryState, HsmError, MissionState, MissionStateMachine};

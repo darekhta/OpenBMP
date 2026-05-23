@@ -155,7 +155,6 @@ pub fn run(
 
     let kernel_base = SimulationKernel::new_rigid(config)?;
     let mut kernel = if let Some(mission) = &document.mission {
-        // Phase 5.X.A: typed split-binding entry point.
         let (mission_events, script_events, graph) =
             crate::runner::mission::build_mission_runtime_typed(mission)?;
         kernel_base.with_mission_split(mission_events, script_events, Some(graph))?
@@ -337,7 +336,6 @@ pub fn run(
             let omega_body = new_state.angular_velocity.vector;
             tank_rack.update_drivers(accel_body, omega_body);
         }
-        let _legacy_fired = kernel.drain_events(); // Phase 5.X.E: drained to clear; legacy queue is dead.
         let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();
         let snapshot = effector_rack.snapshot();

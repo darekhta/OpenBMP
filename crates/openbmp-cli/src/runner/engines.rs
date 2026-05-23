@@ -14,7 +14,7 @@
 //! every rack-related operation on `is_empty()`.
 //!
 //! Mirrors the Phase-3.4 [`crate::runner::effectors::EffectorRack`]
-//! pattern: kernel records `EventAction::EngineCommand` firings;
+//! pattern: kernel records scenario-script engine-command firings;
 //! runner drains and applies them via `apply_commands(&fired)`.
 //!
 //! # Determinism
@@ -123,7 +123,7 @@ impl EngineRack {
         self.cluster.mount_points_body()
     }
 
-    /// Apply any `EventAction::EngineCommand` actions drained from
+    /// Apply any scenario-script engine-command actions drained from
     /// the kernel's per-step fired-event queue. Multiple commands
     /// targeting the same engine in one step are rejected so the
     /// scenario author must resolve the command bundle explicitly.

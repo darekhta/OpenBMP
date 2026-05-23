@@ -110,21 +110,11 @@ where
     dt_s: f64,
     scenario_seed: u64,
     stopped: Option<StopReason>,
-    /// Phase-3.2 event bindings (legacy unified list). Empty when no
-    /// `[mission]` block is declared; the kernel hot path early-exits
-    /// in that case so legacy scenarios stay byte-stable. Phase
-    /// 5.X.A introduced typed shadow fields below; Phase 5.X.B / E
-    /// removes this unified field once the kernel internal eval
-    /// switches to walking the typed lists in lockstep.
-    events: Vec<crate::events::EventBinding>,
-    /// Phase 5.X.A shadow: mission-action bindings only. Populated
-    /// by [`Self::with_mission_split`]; empty otherwise. Read by
-    /// [`Self::mission_events`] for downstream consumers that want
-    /// the HAL-portable view.
-    #[allow(dead_code)]
+    /// Mission-action bindings. Empty when no `[mission]` block is
+    /// declared; the kernel hot path early-exits in that case so
+    /// legacy scenarios stay byte-stable.
     mission_events_typed: Vec<crate::events::EventBinding<crate::events::MissionAction>>,
-    /// Phase 5.X.A shadow: scenario-script action bindings only.
-    #[allow(dead_code)]
+    /// Simulator-only scenario-script action bindings.
     script_events_typed: Vec<crate::events::EventBinding<crate::events::ScenarioScriptAction>>,
     /// Phase-3.2 mission graph. `None` when no `[mission]` block is
     /// declared.
@@ -132,25 +122,15 @@ where
     /// Active mission phase. Initialised to `mission_graph.initial`
     /// when a graph is wired, else `None`.
     current_phase: Option<crate::events::PhaseId>,
-    /// Per-step queue of fired events drained by the runner via
-    /// [`Self::drain_events`]. Cleared every step.
-    pending_events: Vec<crate::events::FiredEvent>,
     /// Phase 5.X.B: externally-supplied mission state from the FC
     /// commander's `commander.mission_state` topic. Set by the
     /// runner each tick before `kernel.step()`. `None` when no FC
     /// is wired (pure-sim scenarios).
     external_mission_state: Option<crate::events::PhaseId>,
-    /// Phase 5.X.E: typed shadow of [`Self::pending_events`] —
-    /// fired mission-action events only. Populated alongside
-    /// `pending_events` at fire time for runner-side consumers that
-    /// want the HAL-portable view; drained via
-    /// [`Self::drain_mission_fired_events`].
-    pending_mission_fired:
-        Vec<crate::events::FiredEvent<crate::events::MissionAction>>,
-    /// Phase 5.X.E: typed shadow of [`Self::pending_events`] —
-    /// fired scenario-script-action events only.
-    pending_script_fired:
-        Vec<crate::events::FiredEvent<crate::events::ScenarioScriptAction>>,
+    /// Per-step queue of fired mission-action events.
+    pending_mission_fired: Vec<crate::events::FiredEvent<crate::events::MissionAction>>,
+    /// Per-step queue of fired scenario-script-action events.
+    pending_script_fired: Vec<crate::events::FiredEvent<crate::events::ScenarioScriptAction>>,
     /// Set of binding ids that have fired and are flagged `once: true`.
     /// `BTreeSet` (not `HashSet`) defeats macOS `SipHash` randomisation.
     fired_once_events: std::collections::BTreeSet<crate::events::EventId>,
@@ -250,12 +230,10 @@ where
             dt_s,
             scenario_seed: config.scenario_seed,
             stopped: None,
-            events: Vec::new(),
             mission_events_typed: Vec::new(),
             script_events_typed: Vec::new(),
             mission_graph: None,
             current_phase: None,
-            pending_events: Vec::new(),
             external_mission_state: None,
             pending_mission_fired: Vec::new(),
             pending_script_fired: Vec::new(),
@@ -387,7 +365,7 @@ where
 
         // Phase-3.2 event evaluation. Early-exit when no events are
         // declared so legacy scenarios stay bit-stable.
-        if !self.events.is_empty() {
+        if self.has_event_bindings() {
             if self.previous_event_scalars.is_none() {
                 self.previous_event_scalars = Some(crate::events::EventScalars {
                     time_s: self.state.time.as_seconds(),
@@ -548,161 +526,12 @@ where
         }
     }
 
-    /// Wire a Phase-3.2 mission (event bindings + optional phase
-    /// graph) into a freshly-constructed kernel.
-    ///
-    /// `mission_graph.is_some()` initialises `current_phase` to the
-    /// graph's `initial`. Every transition's `event` must reference an
-    /// `EventBinding` in `events`; otherwise this function returns
-    /// `MissionGraphError::UnknownEvent`.
-    ///
-    /// Calling this with `events.is_empty()` and
-    /// `mission_graph.is_none()` is a no-op and the kernel stays in
-    /// legacy (byte-stable) mode.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SimulationError::MissionGraph`] if the supplied
-    /// graph references events not present in `events`.
-    #[allow(deprecated)]
-    pub fn with_mission(
-        mut self,
-        mut events: Vec<crate::events::EventBinding>,
-        mission_graph: Option<crate::events::MissionPhaseGraph>,
-    ) -> Result<Self, SimulationError> {
-        use crate::events::{
-            EventAction, MissionAction as M, ScenarioScriptAction as S,
-        };
-        let mut event_ids = std::collections::BTreeSet::new();
-        for event in &events {
-            if !event_ids.insert(event.id) {
-                return Err(SimulationError::MissionGraph(
-                    crate::events::MissionGraphError::DuplicateEvent { event: event.id },
-                ));
-            }
-        }
-        events.sort_by_key(|event| event.id.value());
-
-        // Phase 5.X.E: populate typed shadow lists by classifying the
-        // unified input. Required so consumers that go through the
-        // legacy `with_mission` (e.g. kernel tests) still get the
-        // typed views populated alongside the unified `events` field.
-        let mut mission_typed: Vec<crate::events::EventBinding<M>> = Vec::new();
-        let mut script_typed: Vec<crate::events::EventBinding<S>> = Vec::new();
-        for b in &events {
-            let id = b.id;
-            let trigger = b.trigger.clone();
-            let once = b.once;
-            match &b.action {
-                EventAction::EnterPhase(p) => mission_typed.push(crate::events::EventBinding {
-                    id,
-                    trigger,
-                    action: M::EnterState(*p),
-                    once,
-                }),
-                EventAction::EmitTelemetryMarker { tag } => {
-                    mission_typed.push(crate::events::EventBinding {
-                        id,
-                        trigger,
-                        action: M::EmitTelemetryMarker { tag: tag.clone() },
-                        once,
-                    });
-                }
-                EventAction::Stop { label } => {
-                    mission_typed.push(crate::events::EventBinding {
-                        id,
-                        trigger,
-                        action: M::Stop { label: label.clone() },
-                        once,
-                    });
-                }
-                EventAction::EngineCommand {
-                    id: e,
-                    throttle_unit,
-                    gimbal_pitch_rad,
-                    gimbal_yaw_rad,
-                    ignite,
-                    shutdown,
-                } => script_typed.push(crate::events::EventBinding {
-                    id,
-                    trigger,
-                    action: S::EngineCommand {
-                        id: *e,
-                        throttle_unit: *throttle_unit,
-                        gimbal_pitch_rad: *gimbal_pitch_rad,
-                        gimbal_yaw_rad: *gimbal_yaw_rad,
-                        ignite: *ignite,
-                        shutdown: *shutdown,
-                    },
-                    once,
-                }),
-                EventAction::EffectorOverride { id: e, command } => {
-                    script_typed.push(crate::events::EventBinding {
-                        id,
-                        trigger,
-                        action: S::EffectorOverride {
-                            id: *e,
-                            command: *command,
-                        },
-                        once,
-                    });
-                }
-                EventAction::Separation => script_typed.push(crate::events::EventBinding {
-                    id,
-                    trigger,
-                    action: S::Separation,
-                    once,
-                }),
-                EventAction::DeployRecovery { id: e, command } => {
-                    script_typed.push(crate::events::EventBinding {
-                        id,
-                        trigger,
-                        action: S::DeployRecovery {
-                            id: *e,
-                            command: command.clone(),
-                        },
-                        once,
-                    });
-                }
-            }
-        }
-        // Already id-sorted because we sorted `events` first.
-        self.mission_events_typed = mission_typed;
-        self.script_events_typed = script_typed;
-
-        if let Some(graph) = &mission_graph {
-            for (i, transition) in graph.transitions.iter().enumerate() {
-                if !event_ids.contains(&transition.event) {
-                    return Err(SimulationError::MissionGraph(
-                        crate::events::MissionGraphError::UnknownEvent {
-                            event: transition.event,
-                            in_transition: i,
-                        },
-                    ));
-                }
-            }
-            self.current_phase = Some(graph.initial);
-        }
-        self.events = events;
-        self.mission_graph = mission_graph;
-        Ok(self)
-    }
-
-    /// Drain the per-step fired-event queue. The runner calls this
-    /// after each `step()` to fan events out to telemetry markers.
-    #[allow(deprecated)]
-    pub fn drain_events(&mut self) -> Vec<crate::events::FiredEvent> {
-        std::mem::take(&mut self.pending_events)
-    }
-
-    /// Phase 5.X.A: HAL-portable mission-action bindings view.
-    /// Returns the canonical id-sorted mission bindings populated by
+    /// HAL-portable mission-action bindings view. Returns the
+    /// canonical id-sorted mission bindings populated by
     /// [`Self::with_mission_split`]. Empty when no `[mission]` block
-    /// is declared, or when `with_mission` (legacy) was used instead.
+    /// is declared.
     #[must_use]
-    pub fn mission_bindings(
-        &self,
-    ) -> &[crate::events::EventBinding<crate::events::MissionAction>] {
+    pub fn mission_bindings(&self) -> &[crate::events::EventBinding<crate::events::MissionAction>] {
         &self.mission_events_typed
     }
 
@@ -714,18 +543,14 @@ where
         &self.script_events_typed
     }
 
-    /// Phase 5.X.E: drain the per-step queue of fired
-    /// mission-action events. Populated alongside the legacy
-    /// `drain_events` queue at fire time. Cleared every step.
+    /// Drain the per-step queue of fired mission-action events.
     pub fn drain_mission_fired_events(
         &mut self,
     ) -> Vec<crate::events::FiredEvent<crate::events::MissionAction>> {
         std::mem::take(&mut self.pending_mission_fired)
     }
 
-    /// Phase 5.X.E: drain the per-step queue of fired
-    /// scenario-script-action events. Populated alongside the
-    /// legacy `drain_events` queue at fire time. Cleared every step.
+    /// Drain the per-step queue of fired scenario-script-action events.
     pub fn drain_script_fired_events(
         &mut self,
     ) -> Vec<crate::events::FiredEvent<crate::events::ScenarioScriptAction>> {
@@ -753,99 +578,56 @@ where
         self.external_mission_state
     }
 
-    /// Phase 5.X.A: typed split-binding wiring. Accepts the
-    /// FC-owned mission bindings and the simulator-owned
-    /// scenario-script bindings separately, then combines them into
-    /// the kernel's unified evaluation list. The split lives at the
-    /// API surface; the kernel-internal eval path is unchanged for
-    /// byte-identical determinism. Phase 5.X.B replaces the unified
-    /// internal list with two typed lists evaluated in lockstep.
+    /// Typed split-binding wiring. Accepts the FC-owned mission
+    /// bindings and the simulator-owned scenario-script bindings
+    /// separately and stores them as the kernel's only evaluation
+    /// lists.
     ///
     /// # Errors
     ///
     /// Returns [`SimulationError::MissionGraph`] if any binding's id
     /// is duplicated across the combined list, or if the graph
     /// references an event not present in either binding list.
-    #[allow(deprecated)]
     pub fn with_mission_split(
         mut self,
         mut mission_events: Vec<crate::events::EventBinding<crate::events::MissionAction>>,
         mut script_events: Vec<crate::events::EventBinding<crate::events::ScenarioScriptAction>>,
         mission_graph: Option<crate::events::MissionPhaseGraph>,
     ) -> Result<Self, SimulationError> {
-        use crate::events::EventAction;
         mission_events.sort_by_key(|e| e.id.value());
         script_events.sort_by_key(|e| e.id.value());
-        // Populate the typed shadow fields so downstream readers
-        // (Phase 5.X.B subscribers, FC commander projection) see
-        // the canonical split-binding view.
-        self.mission_events_typed = mission_events.clone();
-        self.script_events_typed = script_events.clone();
-        let mut unified: Vec<crate::events::EventBinding> = Vec::with_capacity(
-            mission_events.len() + script_events.len(),
-        );
-        for b in mission_events {
-            let action = match b.action {
-                crate::events::MissionAction::EnterState(p) => EventAction::EnterPhase(p),
-                crate::events::MissionAction::EmitTelemetryMarker { tag } => {
-                    EventAction::EmitTelemetryMarker { tag }
-                }
-                crate::events::MissionAction::Stop { label } => {
-                    EventAction::Stop { label }
-                }
-                // Placeholder mission actions wired in 5.X.D; until
-                // then no scenario produces them, but keep the
-                // arms exhaustive to fail-fast if they sneak in.
-                crate::events::MissionAction::RaiseHealthAlarm { .. }
-                | crate::events::MissionAction::RequestSafeState { .. } => {
+
+        let mut event_ids = std::collections::BTreeSet::new();
+        for event in mission_events
+            .iter()
+            .map(|e| e.id)
+            .chain(script_events.iter().map(|e| e.id))
+        {
+            if !event_ids.insert(event) {
+                return Err(SimulationError::MissionGraph(
+                    crate::events::MissionGraphError::DuplicateEvent { event },
+                ));
+            }
+        }
+
+        if let Some(graph) = &mission_graph {
+            for (i, transition) in graph.transitions.iter().enumerate() {
+                if !event_ids.contains(&transition.event) {
                     return Err(SimulationError::MissionGraph(
                         crate::events::MissionGraphError::UnknownEvent {
-                            event: b.id,
-                            in_transition: usize::MAX,
+                            event: transition.event,
+                            in_transition: i,
                         },
                     ));
                 }
-            };
-            unified.push(crate::events::EventBinding {
-                id: b.id,
-                trigger: b.trigger,
-                action,
-                once: b.once,
-            });
+            }
+            self.current_phase = Some(graph.initial);
         }
-        for b in script_events {
-            let action = match b.action {
-                crate::events::ScenarioScriptAction::EngineCommand {
-                    id,
-                    throttle_unit,
-                    gimbal_pitch_rad,
-                    gimbal_yaw_rad,
-                    ignite,
-                    shutdown,
-                } => EventAction::EngineCommand {
-                    id,
-                    throttle_unit,
-                    gimbal_pitch_rad,
-                    gimbal_yaw_rad,
-                    ignite,
-                    shutdown,
-                },
-                crate::events::ScenarioScriptAction::EffectorOverride { id, command } => {
-                    EventAction::EffectorOverride { id, command }
-                }
-                crate::events::ScenarioScriptAction::Separation => EventAction::Separation,
-                crate::events::ScenarioScriptAction::DeployRecovery { id, command } => {
-                    EventAction::DeployRecovery { id, command }
-                }
-            };
-            unified.push(crate::events::EventBinding {
-                id: b.id,
-                trigger: b.trigger,
-                action,
-                once: b.once,
-            });
-        }
-        self.with_mission(unified, mission_graph)
+
+        self.mission_events_typed = mission_events;
+        self.script_events_typed = script_events;
+        self.mission_graph = mission_graph;
+        Ok(self)
     }
 
     /// Replace the effector-actuals snapshot consumed by per-step
@@ -968,23 +750,24 @@ where
         self.wind_sample_override
     }
 
+    fn has_event_bindings(&self) -> bool {
+        !self.mission_events_typed.is_empty() || !self.script_events_typed.is_empty()
+    }
+
     /// Evaluate every declared event binding against a post-step
-    /// `EventScalars` snapshot. Records fired bindings in
-    /// `pending_events` for the runner's drain queue, applies the
-    /// fired action (`EnterPhase` / `Stop` / `EmitTelemetryMarker`),
-    /// and updates the once-fired set.
-    ///
-    /// Caller must early-exit when `self.events.is_empty()` to
-    /// preserve legacy byte-stability.
+    /// `EventScalars` snapshot. Mission bindings are evaluated first,
+    /// followed by simulator-only script bindings. Fired bindings are
+    /// recorded into their typed drain queues, graph transitions are
+    /// applied only on the pure-sim path, and the once-fired set is
+    /// updated after each firing.
     #[allow(clippy::match_same_arms)] // Phase-3.2 deferred actions vs. runner-side markers
-    #[allow(deprecated)]
     fn evaluate_events(
         &mut self,
         scalars: crate::events::EventScalars,
         step: StepIndex,
         time: SimTime,
     ) {
-        use crate::events::{EventAction, EventEvalState, EventTrigger};
+        use crate::events::{EventEvalState, EventTrigger};
         // Phase 5.X.B: when an external mission-state authority (the
         // FC commander) supplies a value via
         // `set_external_mission_state`, the kernel defers to it
@@ -1002,134 +785,23 @@ where
             current_phase: self.current_phase,
         };
         let fc_owned = self.external_mission_state.is_some();
-        for binding in &self.events {
+        let mission_bindings = self.mission_events_typed.clone();
+        for binding in &mission_bindings {
             if binding.once && self.fired_once_events.contains(&binding.id) {
                 continue;
             }
             if !binding.trigger.fired(&eval_state, time, step) {
                 continue;
             }
-            // Record the fired event before applying the action so
-            // the runner sees marker emissions even on stop-action
-            // events.
-            self.pending_events.push(crate::events::FiredEvent {
+            self.pending_mission_fired.push(crate::events::FiredEvent {
                 binding_id: binding.id,
                 step,
                 time,
                 action: binding.action.clone(),
             });
-            // Phase 5.X.E: also populate the typed shadow queues so
-            // runner-side consumers that want HAL-portable / sim-only
-            // views can drain typed FiredEvents.
+            self.apply_graph_transition_for_event(binding.id, fc_owned);
             match &binding.action {
-                EventAction::EnterPhase(p) => {
-                    self.pending_mission_fired.push(crate::events::FiredEvent {
-                        binding_id: binding.id,
-                        step,
-                        time,
-                        action: crate::events::MissionAction::EnterState(*p),
-                    });
-                }
-                EventAction::EmitTelemetryMarker { tag } => {
-                    self.pending_mission_fired.push(crate::events::FiredEvent {
-                        binding_id: binding.id,
-                        step,
-                        time,
-                        action: crate::events::MissionAction::EmitTelemetryMarker {
-                            tag: tag.clone(),
-                        },
-                    });
-                }
-                EventAction::Stop { label } => {
-                    self.pending_mission_fired.push(crate::events::FiredEvent {
-                        binding_id: binding.id,
-                        step,
-                        time,
-                        action: crate::events::MissionAction::Stop {
-                            label: label.clone(),
-                        },
-                    });
-                }
-                EventAction::EngineCommand {
-                    id,
-                    throttle_unit,
-                    gimbal_pitch_rad,
-                    gimbal_yaw_rad,
-                    ignite,
-                    shutdown,
-                } => {
-                    self.pending_script_fired.push(crate::events::FiredEvent {
-                        binding_id: binding.id,
-                        step,
-                        time,
-                        action: crate::events::ScenarioScriptAction::EngineCommand {
-                            id: *id,
-                            throttle_unit: *throttle_unit,
-                            gimbal_pitch_rad: *gimbal_pitch_rad,
-                            gimbal_yaw_rad: *gimbal_yaw_rad,
-                            ignite: *ignite,
-                            shutdown: *shutdown,
-                        },
-                    });
-                }
-                EventAction::EffectorOverride { id, command } => {
-                    self.pending_script_fired.push(crate::events::FiredEvent {
-                        binding_id: binding.id,
-                        step,
-                        time,
-                        action: crate::events::ScenarioScriptAction::EffectorOverride {
-                            id: *id,
-                            command: *command,
-                        },
-                    });
-                }
-                EventAction::DeployRecovery { id, command } => {
-                    self.pending_script_fired.push(crate::events::FiredEvent {
-                        binding_id: binding.id,
-                        step,
-                        time,
-                        action: crate::events::ScenarioScriptAction::DeployRecovery {
-                            id: *id,
-                            command: command.clone(),
-                        },
-                    });
-                }
-                EventAction::Separation => {
-                    self.pending_script_fired.push(crate::events::FiredEvent {
-                        binding_id: binding.id,
-                        step,
-                        time,
-                        action: crate::events::ScenarioScriptAction::Separation,
-                    });
-                }
-            }
-            // Phase 5.X.B: only compute / apply mission-state
-            // transitions when no external authority is set. When
-            // the FC commander is the source of truth, the kernel
-            // ignores in-binding mission transitions — the
-            // commander has already applied them via its own graph
-            // walk and will republish on the next tick.
-            let graph_transition_to = if fc_owned {
-                None
-            } else {
-                self.mission_graph.as_ref().and_then(|graph| {
-                    self.current_phase.and_then(|current_phase| {
-                        graph
-                            .transitions
-                            .iter()
-                            .find(|transition| {
-                                transition.from == current_phase
-                                    && transition.event == binding.id
-                            })
-                            .map(|transition| transition.to)
-                    })
-                })
-            };
-            if let Some(phase) = graph_transition_to {
-                self.current_phase = Some(phase);
-            }
-            match &binding.action {
-                EventAction::EnterPhase(phase) => {
+                crate::events::MissionAction::EnterState(phase) => {
                     // Phase 5.X.B: when FC owns mission state,
                     // ignore in-binding phase entries — the commander
                     // already applied them. When pure-sim, fall
@@ -1138,49 +810,60 @@ where
                         self.current_phase = Some(*phase);
                     }
                 }
-                EventAction::EmitTelemetryMarker { .. } => {
+                crate::events::MissionAction::EmitTelemetryMarker { .. } => {
                     // Runner-side fan-out; kernel records the fire.
                 }
-                EventAction::Stop { label } => {
+                crate::events::MissionAction::Stop { label } => {
                     self.stopped = Some(StopReason::MissionEnded {
                         phase: self.current_phase,
                         label: label.clone(),
                     });
-                }
-                EventAction::EffectorOverride { .. } => {
-                    // Phase-3.4: kernel records the firing in
-                    // `pending_events`; the runner's `EffectorRack`
-                    // drains and applies it on the next rack tick via
-                    // `apply_overrides(&fired)`.
-                }
-                EventAction::EngineCommand { .. } => {
-                    // Phase-3.6: kernel records the firing in
-                    // `pending_events`; the runner's `EngineRack`
-                    // drains and applies it on the next rack tick via
-                    // `apply_commands(&fired)`. Same kernel-records /
-                    // runner-consumes split as `EffectorOverride`.
-                }
-                EventAction::DeployRecovery { .. } => {
-                    // Phase-3.9: kernel records the firing in
-                    // `pending_events`; the runner's `RecoveryRack`
-                    // drains and applies it on the next rack tick via
-                    // `apply_deploys(&fired)`. Same kernel-records /
-                    // runner-consumes split as `EngineCommand` /
-                    // `EffectorOverride`.
-                }
-                EventAction::Separation => {
-                    // Reserved-but-unwired action is parser-rejected
-                    // in 3.2; its presence in a live binding is a
-                    // programmer error. Treat as a no-op rather than
-                    // panic to preserve forward compatibility — the
-                    // future-phase handlers will replace this arm.
                 }
             }
             if binding.once {
                 self.fired_once_events.insert(binding.id);
             }
         }
+        let script_bindings = self.script_events_typed.clone();
+        for binding in &script_bindings {
+            if binding.once && self.fired_once_events.contains(&binding.id) {
+                continue;
+            }
+            if !binding.trigger.fired(&eval_state, time, step) {
+                continue;
+            }
+            self.pending_script_fired.push(crate::events::FiredEvent {
+                binding_id: binding.id,
+                step,
+                time,
+                action: binding.action.clone(),
+            });
+            self.apply_graph_transition_for_event(binding.id, fc_owned);
+            if binding.once {
+                self.fired_once_events.insert(binding.id);
+            }
+        }
         self.previous_event_scalars = Some(scalars);
+    }
+
+    fn apply_graph_transition_for_event(&mut self, event: crate::events::EventId, fc_owned: bool) {
+        if fc_owned {
+            return;
+        }
+        let graph_transition_to = self.mission_graph.as_ref().and_then(|graph| {
+            self.current_phase.and_then(|current_phase| {
+                graph
+                    .transitions
+                    .iter()
+                    .find(|transition| {
+                        transition.from == current_phase && transition.event == event
+                    })
+                    .map(|transition| transition.to)
+            })
+        });
+        if let Some(phase) = graph_transition_to {
+            self.current_phase = Some(phase);
+        }
     }
 }
 
@@ -1322,12 +1005,10 @@ where
             dt_s,
             scenario_seed: config.scenario_seed,
             stopped: None,
-            events: Vec::new(),
             mission_events_typed: Vec::new(),
             script_events_typed: Vec::new(),
             mission_graph: None,
             current_phase: None,
-            pending_events: Vec::new(),
             external_mission_state: None,
             pending_mission_fired: Vec::new(),
             pending_script_fired: Vec::new(),
@@ -1463,7 +1144,7 @@ where
 
         // Phase-3.2 event evaluation. Early-exit when no events are
         // declared so legacy byte-stability is preserved.
-        if !self.events.is_empty() {
+        if self.has_event_bindings() {
             if self.previous_event_scalars.is_none() {
                 self.previous_event_scalars = Some(crate::events::EventScalars {
                     time_s: self.state.time.as_seconds(),
@@ -1631,7 +1312,6 @@ fn assert_clean_mxcsr() -> Result<(), SimulationError> {
     Ok(())
 }
 
-#[allow(deprecated)]
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -1840,13 +1520,13 @@ mod tests {
         let events = vec![crate::events::EventBinding {
             id: event_id,
             trigger: crate::events::BuiltInEventTrigger::AtTime { time_s: 0.5 },
-            action: crate::events::EventAction::Stop {
+            action: crate::events::MissionAction::Stop {
                 label: "half-second".to_owned(),
             },
             once: true,
         }];
         let mut kernel = zero_force_always_continue_kernel(1.0)
-            .with_mission(events, None)
+            .with_mission_split(events, Vec::new(), None)
             .expect("mission wiring");
 
         kernel.step().expect("step");
@@ -1886,20 +1566,20 @@ mod tests {
         let events = vec![crate::events::EventBinding {
             id: event_id,
             trigger: crate::events::BuiltInEventTrigger::AtTime { time_s: 0.5 },
-            action: crate::events::EventAction::EmitTelemetryMarker {
+            action: crate::events::MissionAction::EmitTelemetryMarker {
                 tag: "at_half_second".to_owned(),
             },
             once: true,
         }];
         let mut kernel = zero_force_always_continue_kernel(1.0)
-            .with_mission(events, Some(graph))
+            .with_mission_split(events, Vec::new(), Some(graph))
             .expect("mission wiring");
 
         assert_eq!(kernel.current_phase(), Some(ascent));
         kernel.step().expect("step");
 
         assert_eq!(kernel.current_phase(), Some(descent));
-        assert_eq!(kernel.drain_events().len(), 1);
+        assert_eq!(kernel.drain_mission_fired_events().len(), 1);
     }
 
     #[test]
