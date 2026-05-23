@@ -367,7 +367,8 @@ pub fn run(
             kernel.set_wind_sample(wind);
         }
         kernel.step()?;
-        let fired = kernel.drain_events();
+        let _legacy_fired = kernel.drain_events(); // Phase 5.X.E: drained to clear; legacy queue is dead.
+        let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();
         let snapshot = effector_rack.snapshot();
         record_step(
@@ -376,7 +377,7 @@ pub fn run(
             &channel_set,
             &breakdown_vehicle,
             breakdown_atmosphere.as_ref(),
-            &fired,
+            &mission_fired,
             &snapshot,
         )?;
         // Phase 5.X.E: partition the typed script-action fired
@@ -1137,7 +1138,7 @@ fn record_step<I, F, MM, E, SC>(
     channels: &Phase2ChannelSet,
     breakdown_vehicle: &KernelVehicle<PointMassState>,
     breakdown_atmosphere: Option<&RuntimeAtmosphere>,
-    fired_events: &[openbmp_sim::FiredEvent],
+    fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
     effector_snapshot: &[openbmp_vehicle::EffectorState],
 ) -> Result<(), CliError>
 where
@@ -1253,7 +1254,7 @@ where
     // (the row is `true` if any matched).
     let mut fired_tags: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for fired in fired_events {
-        if let openbmp_sim::EventAction::EmitTelemetryMarker { tag } = &fired.action {
+        if let openbmp_sim::MissionAction::EmitTelemetryMarker { tag } = &fired.action {
             fired_tags.insert(tag.as_str());
         }
     }
