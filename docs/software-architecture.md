@@ -474,18 +474,14 @@ Rules:
 
 ### Event / Phase Timeline
 
-> **Superseded by Phase 5.X.** The flat phase graph + single
-> `EventAction` enum shown here is the Phase 3 / 4 / 5 contract.
-> Phase 5.X replaces it with a hierarchical state machine, orthogonal
-> regions, and a split `MissionAction` / `ScenarioScriptAction`
-> taxonomy across two crates (`openbmp-mission` HAL-portable and
-> `openbmp-scenario-script` sim-only). The authoritative reference is
+> **Phase 5.X status.** Mission events now use a split action
+> taxonomy: `MissionAction` is HAL-portable and lives in
+> `openbmp-mission`, while `ScenarioScriptAction` carries simulator-only
+> physics commands in `openbmp-scenario-script`. The authoritative
+> reference is
 > [`mission-graph-architecture.md`](mission-graph-architecture.md);
 > the canonical state vocabulary is
-> [`mission-states-vocabulary.md`](mission-states-vocabulary.md);
-> the migration sequence and exit criteria are in
-> [`phase-5x-plan.md`](phase-5x-plan.md). The material below is
-> retained for historical context until Phase 5.X.H retires it.
+> [`mission-states-vocabulary.md`](mission-states-vocabulary.md).
 
 Events and phases are first-class scheduler inputs alongside rate
 groups. They drive things like staging, engine start / shutdown,
@@ -509,19 +505,24 @@ pub enum BuiltInEventTrigger {
     Scripted { label: &'static str },         // fires when scenario sets the flag
 }
 
-pub struct EventBinding {
+pub struct EventBinding<A> {
+    pub id: EventId,
     pub trigger: BuiltInEventTrigger,
-    pub action: EventAction,
+    pub action: A,
     pub once: bool,                           // most events fire exactly once
 }
 
-pub enum EventAction {
-    EnterPhase(PhaseId),
-    EngineCommand { engine: EngineId, cmd: EngineCommand },
-    EffectorOverride { id: EffectorId, command: f64 },
-    Separation(SeparationEvent),
-    DeployRecovery(RecoveryDeviceId),
+pub enum MissionAction {
+    EnterState(StateId),
     EmitTelemetryMarker { tag: &'static str },
+    Stop { label: &'static str },
+}
+
+pub enum ScenarioScriptAction {
+    EngineCommand { id: EngineId, command: EngineCommand },
+    EffectorOverride { id: EffectorId, command: f64 },
+    Separation,
+    DeployRecovery { id: RecoveryDeviceId, command: RecoveryCommand },
 }
 
 pub struct MissionPhaseGraph {
@@ -542,15 +543,14 @@ The graph and the event list together replace the Phase-1 ad-hoc
 fixed step shape and just consults the resolved event list each tick.
 
 > **Phase-3.4 status note.** Phase 3.4 wires `ControlEffector` and
-> the `EffectorOverride` action: a mission event whose action is
+> the `EffectorOverride` action: a scenario-script event whose action is
 > `effector_override { id, command }` is recorded by the kernel,
 > drained by the runner, and applied to the runner-side `EffectorRack`
 > on the next rack tick before the kernel step. Override beats schedule
 > for that rack tick only. Unknown effector ids are rejected during
-> scenario validation. The `EventAction::EffectorOverride` enum
-> variant carries `{ id: EffectorId, command: f64 }` (was a unit
-> variant pre-3.4 — the runner consumes it, so the kernel never
-> dispatches it itself).
+> scenario validation. The `ScenarioScriptAction::EffectorOverride`
+> variant carries `{ id: EffectorId, command: f64 }`; the runner
+> consumes it, so the kernel never dispatches it itself.
 >
 > **Phase-3.2 status note (still current).** The Phase-3.2
 > implementation in `openbmp-sim::events` ships every variant of
@@ -558,12 +558,11 @@ fixed step shape and just consults the resolved event list each tick.
 > scenario parse time with a typed deferral error: scripted
 > triggers are deferred to a later sub-phase, and the per-effector
 > `command_schedule` covers the common scripted-command case.
-> The remaining `EventAction` variants `EngineCommand`,
-> `Separation`, and `DeployRecovery` exist in the enum (so 3.6 /
-> 3.6 / 3.9 do not need to expand it) but are still
-> parser-rejected. `AtDynamicPressure` is parser-rejected until a
-> later sub-phase wires atmosphere into event evaluation.
-> `EnterPhase`, `EmitTelemetryMarker`, `Stop`, and (Phase 3.4)
+> The scenario-script variants `EngineCommand`, `Separation`, and
+> `DeployRecovery` are separate from the HAL-portable mission actions.
+> `AtDynamicPressure` is parser-rejected until a later sub-phase wires
+> atmosphere into event evaluation. `EnterPhase`,
+> `EmitTelemetryMarker`, `Stop`, and (Phase 3.4)
 > `EffectorOverride` are wired end-to-end. `EventTrigger::fired`
 > takes an `EventEvalState` snapshot rather than the full
 > `VehicleState` shown above — the snapshot carries only the
@@ -944,8 +943,9 @@ cluster-level rebuild.
 >   Faults are scenario-loaded at construction; run-time injection
 >   is deferred.
 > - `EngineCommand` payload `{ throttle_unit, gimbal_pitch_rad,
->   gimbal_yaw_rad, ignite, shutdown }`. `EventAction::EngineCommand
->   { id, command }` is wired end-to-end: kernel records, runner
+>   gimbal_yaw_rad, ignite, shutdown }`.
+>   `ScenarioScriptAction::EngineCommand { id, command }` is wired
+>   end-to-end: kernel records, runner
 >   drains, `EngineRack::apply_commands` routes by id.
 > - Architecture-spec'd "cluster as ForceModel + MomentModel +
 >   MassModel" is split between propulsion and vehicle crates to

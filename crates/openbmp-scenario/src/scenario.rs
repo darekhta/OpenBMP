@@ -2674,7 +2674,7 @@ action  = { kind = "stop", label = "scripted-stop" }
         let mission = scenario.document.mission.as_ref().expect("mission present");
         assert_eq!(mission.events.len(), 1);
         match &mission.events[0].action {
-            crate::EventActionConfig::EngineCommand { id, command } => {
+            crate::ScenarioActionConfig::EngineCommand { id, command } => {
                 assert_eq!(id, "engine_a");
                 assert!((command.throttle_unit - 0.5).abs() < 1e-12);
                 assert!(command.ignite);
@@ -2908,7 +2908,7 @@ action  = { kind = "effector_override", id = "delta_e", command = 0.087 }
         let action = &mission.events[0].action;
         assert!(matches!(
             action,
-            crate::EventActionConfig::EffectorOverride { id, command }
+            crate::ScenarioActionConfig::EffectorOverride { id, command }
                 if id == "delta_e" && (command - 0.087).abs() < 1e-12
         ));
     }

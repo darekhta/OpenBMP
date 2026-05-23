@@ -210,12 +210,12 @@ HAL deployments do not depend on this crate.
 
 #### Why the split
 
-The previous design merged both action types into a single
-`EventAction` enum in `openbmp-mission`. That made the crate
-*compile* without simulator dependency but did not make it
-*semantically portable*: half the enum variants meant nothing in a
-real-hardware deployment. The split makes the contract honest — the
-enum a HAL adopter sees has only meaningful variants.
+The previous design merged both action types into a single action enum
+in `openbmp-mission`. That made the crate *compile* without simulator
+dependency but did not make it *semantically portable*: half the enum
+variants meant nothing in a real-hardware deployment. The split makes
+the contract honest — the enum a HAL adopter sees has only meaningful
+variants.
 
 ### Binding
 

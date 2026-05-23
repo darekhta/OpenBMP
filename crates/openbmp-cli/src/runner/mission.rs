@@ -18,8 +18,8 @@ use std::collections::BTreeMap;
 
 use openbmp_mission::{HsmError, MissionState, MissionStateMachine};
 use openbmp_scenario::{
-    EventActionConfig, EventConfig, EventTriggerConfig, MissionConfig, PhaseConfig,
-    PhaseTransitionConfig,
+    EventConfig, EventTriggerConfig, MissionConfig, PhaseConfig, PhaseTransitionConfig,
+    ScenarioActionConfig,
 };
 use openbmp_sim::{
     BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase, PhaseId,
@@ -219,7 +219,7 @@ fn build_event_binding(
     let id = event_id(&config.id);
     let trigger = build_trigger(&config.trigger)?;
     Ok(match &config.action {
-        EventActionConfig::EnterPhase { phase } => {
+        ScenarioActionConfig::EnterPhase { phase } => {
             let target = phase_id_lookup
                 .get(phase.as_str())
                 .copied()
@@ -235,7 +235,7 @@ fn build_event_binding(
                 once: config.once,
             })
         }
-        EventActionConfig::EmitTelemetryMarker { tag } => {
+        ScenarioActionConfig::EmitTelemetryMarker { tag } => {
             RuntimeEventBinding::Mission(EventBinding {
                 id,
                 trigger,
@@ -243,7 +243,7 @@ fn build_event_binding(
                 once: config.once,
             })
         }
-        EventActionConfig::Stop { label } => RuntimeEventBinding::Mission(EventBinding {
+        ScenarioActionConfig::Stop { label } => RuntimeEventBinding::Mission(EventBinding {
             id,
             trigger,
             action: MissionAction::Stop {
@@ -251,7 +251,7 @@ fn build_event_binding(
             },
             once: config.once,
         }),
-        EventActionConfig::EffectorOverride {
+        ScenarioActionConfig::EffectorOverride {
             id: effector,
             command,
         } => RuntimeEventBinding::Script(EventBinding {
@@ -265,7 +265,7 @@ fn build_event_binding(
             },
             once: config.once,
         }),
-        EventActionConfig::EngineCommand {
+        ScenarioActionConfig::EngineCommand {
             id: engine,
             command,
         } => RuntimeEventBinding::Script(EventBinding {
@@ -283,13 +283,13 @@ fn build_event_binding(
             },
             once: config.once,
         }),
-        EventActionConfig::Separation => RuntimeEventBinding::Script(EventBinding {
+        ScenarioActionConfig::Separation => RuntimeEventBinding::Script(EventBinding {
             id,
             trigger,
             action: ScenarioScriptAction::Separation,
             once: config.once,
         }),
-        EventActionConfig::DeployRecovery {
+        ScenarioActionConfig::DeployRecovery {
             id: recovery,
             command,
         } => RuntimeEventBinding::Script(EventBinding {
@@ -392,7 +392,7 @@ fn build_transition(
 pub fn marker_tags(mission: &MissionConfig) -> Vec<String> {
     let mut tags: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for event in &mission.events {
-        if let EventActionConfig::EmitTelemetryMarker { tag } = &event.action {
+        if let ScenarioActionConfig::EmitTelemetryMarker { tag } = &event.action {
             tags.insert(tag.clone());
         }
     }

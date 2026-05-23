@@ -728,7 +728,7 @@ impl ScenarioDocument {
             }
         }
         for (event_index, event) in mission.events.iter().enumerate() {
-            if let EventActionConfig::EngineCommand { id, .. } = &event.action
+            if let ScenarioActionConfig::EngineCommand { id, .. } = &event.action
                 && !declared.contains(id.as_str())
             {
                 return Err(ScenarioError::UnknownEngineReference {
@@ -753,7 +753,7 @@ impl ScenarioDocument {
             .collect();
 
         for (event_index, event) in mission.events.iter().enumerate() {
-            if let EventActionConfig::DeployRecovery { id, command } = &event.action {
+            if let ScenarioActionConfig::DeployRecovery { id, command } = &event.action {
                 let Some(kind_name) = recovery_kinds.get(id.as_str()) else {
                     return Err(ScenarioError::UnknownRecoveryReference {
                         field: format!("mission.events[{event_index}].action.id"),
@@ -797,7 +797,7 @@ impl ScenarioDocument {
             }
         }
         for (event_index, event) in mission.events.iter().enumerate() {
-            if let EventActionConfig::EffectorOverride { id, .. } = &event.action
+            if let ScenarioActionConfig::EffectorOverride { id, .. } = &event.action
                 && !declared.contains(id.as_str())
             {
                 return Err(ScenarioError::UnknownEffectorReference {
@@ -1905,14 +1905,14 @@ pub struct StateConfig {
     /// (`enter_state`, `emit_telemetry_marker`, `raise_health_alarm`,
     /// `request_safe_state`, `stop`).
     #[serde(default)]
-    pub on_entry: Vec<EventActionConfig>,
+    pub on_entry: Vec<ScenarioActionConfig>,
     /// Actions fired in declaration order when the state is exited.
     #[serde(default)]
-    pub on_exit: Vec<EventActionConfig>,
+    pub on_exit: Vec<ScenarioActionConfig>,
     /// Actions fired in declaration order on every tick the state is
     /// active.
     #[serde(default)]
-    pub on_active: Vec<EventActionConfig>,
+    pub on_active: Vec<ScenarioActionConfig>,
 }
 
 /// One orthogonal region declaration — Phase 5.X.F.
@@ -2170,7 +2170,7 @@ pub struct EventConfig {
     /// Trigger predicate.
     pub trigger: EventTriggerConfig,
     /// Action taken when the trigger fires.
-    pub action: EventActionConfig,
+    pub action: ScenarioActionConfig,
     /// Whether the event fires at most once per simulation run.
     /// Defaults to `true` — most events have one-shot semantics.
     #[serde(default = "default_once")]
@@ -2271,7 +2271,7 @@ impl EventTriggerConfig {
 /// error pointing at the future phase that will land it.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum EventActionConfig {
+pub enum ScenarioActionConfig {
     /// Transition the active mission phase.
     EnterPhase {
         /// Destination phase id.
@@ -2324,7 +2324,7 @@ pub enum EventActionConfig {
     },
 }
 
-impl EventActionConfig {
+impl ScenarioActionConfig {
     fn validate(&self, index: usize) -> Result<(), ScenarioError> {
         let path = |field: &str| format!("mission.events[{index}].action.{field}");
         match self {

@@ -729,8 +729,8 @@ and any operational mission profile.
   and cross-region guard semantics.
 - Workspace cargo build produces zero deprecation warnings; every
   production call site uses the typed `MissionAction` /
-  `ScenarioScriptAction` enums. The legacy unified `EventAction`
-  bridge has been removed.
+  `ScenarioScriptAction` enums. The legacy unified action bridge has
+  been removed.
 - Phase 5.X was a *refactor* phase: no new GNC algorithm landed;
   every shipped Phase-5 scenario produces byte-identical telemetry
   against its Phase-5 baseline on the reference platform profile.
