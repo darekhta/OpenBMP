@@ -216,23 +216,13 @@ impl MissionStateMachine {
             return Err(HsmError::MissingInitial);
         }
 
-        // 5. Reachability via descendant walk from `initial`. The
-        //    initial state and all its descendants must be in the
-        //    declared set. For HSM, every state at or below `initial`
-        //    is reachable; states in other sub-trees are reachable
-        //    only via transitions (not modelled here — that's the
-        //    `MissionPhaseGraph`'s job to validate).
-        //
-        //    For Phase 5.X.C primitives only, we require every
-        //    declared state to be a descendant of `initial`. Future
-        //    sub-phases relax this when transitions are wired through
-        //    the HSM.
-        let descendants = descendants_of(&states, initial);
-        for state in &states {
-            if !descendants.contains(&state.id) {
-                return Err(HsmError::UnreachableState { state: state.id });
-            }
-        }
+        // 5. Reachability is the transition graph's concern, not the
+        //    parent-relation HSM's. A flat hierarchy (every state
+        //    has parent=None) is valid — the states are sibling top-
+        //    level roots, connected by transitions in
+        //    [`MissionPhaseGraph`]. The HSM only validates parent
+        //    structure; cross-state navigability lives with the
+        //    transition graph.
 
         // 6. Compute depth-from-root.
         let depth = compute_depth(&states);
@@ -349,7 +339,9 @@ impl MissionStateMachine {
 
 /// BFS through the parent relation starting from `root`, returning
 /// every state that has `root` on its parent chain (including `root`
-/// itself).
+/// itself). Reserved for future hierarchical-region reachability
+/// checks; not used by the current `new` validator.
+#[allow(dead_code)]
 fn descendants_of(states: &[MissionState], root: StateId) -> BTreeSet<StateId> {
     let mut children: BTreeMap<StateId, Vec<StateId>> = BTreeMap::new();
     for state in states {
@@ -605,16 +597,22 @@ mod tests {
         assert!(matches!(err, HsmError::ParentCycle { .. }));
     }
 
+    // Phase 5.X.C revision: flat hierarchies (every state has
+    // parent=None) are valid HSMs — siblings are connected via the
+    // transition graph, not the parent relation. The
+    // unreachable_state validation was removed; reachability is the
+    // [`MissionPhaseGraph`] transition graph's responsibility.
     #[test]
-    fn unreachable_state_rejected() {
+    fn flat_hierarchy_with_sibling_top_levels_accepted() {
         let root = s("root");
-        let orphan = s("orphan");
-        let err = MissionStateMachine::new(
-            vec![state("root", None), state("orphan", None)],
+        let sibling = s("sibling");
+        let hsm = MissionStateMachine::new(
+            vec![state("root", None), state("sibling", None)],
             root,
         )
-        .expect_err("unreachable");
-        assert!(matches!(err, HsmError::UnreachableState { state } if state == orphan));
+        .expect("flat hierarchy with sibling top-levels is valid");
+        assert_eq!(hsm.states.len(), 2);
+        assert!(hsm.states.iter().any(|s| s.id == sibling));
     }
 
     #[test]

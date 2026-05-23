@@ -79,6 +79,7 @@ impl FcRunner {
         config: &FcConfig,
         mission_graph: MissionPhaseGraph,
         event_bindings: Vec<EventBinding>,
+        hsm: Option<openbmp_mission::MissionStateMachine>,
         start_phase: PhaseId,
         autopilot_lqr_context: Option<FcAutopilotLqrContext>,
         loop_step_dt_s: f64,
@@ -167,6 +168,14 @@ impl FcRunner {
             CommanderParams::default(),
         )
         .map_err(openbmp_fc::ControllerError::from)?;
+        // Phase 5.X.F: attach the hierarchical view when available so
+        // downstream consumers can query LCA / exit / enter chains on
+        // the commander's HSM accessor.
+        let commander = if let Some(hsm) = hsm {
+            commander.with_hierarchical(hsm)
+        } else {
+            commander
+        };
         fc.scheduler_mut()
             .register_periodic(1, 200, next_priority, Box::new(commander))?;
         next_priority = next_priority.saturating_add(5);
@@ -1287,7 +1296,8 @@ mod tests {
             trajectory: None,
         };
         let (graph, bindings, pad) = minimal_graph();
-        let mut runner = FcRunner::new(&config, graph, bindings, pad, None, 0.001, None).unwrap();
+        let mut runner =
+            FcRunner::new(&config, graph, bindings, None, pad, None, 0.001, None).unwrap();
         // Drive 100 ticks at 1 ms each — same workload as the
         // single-lane attitude-hold smoke test.
         let dt_s = 0.001;
@@ -1362,7 +1372,8 @@ mod tests {
             trajectory: None,
         };
         let (graph, bindings, pad) = minimal_graph();
-        let mut runner = FcRunner::new(&config, graph, bindings, pad, None, 0.001, None).unwrap();
+        let mut runner =
+            FcRunner::new(&config, graph, bindings, None, pad, None, 0.001, None).unwrap();
         // Drive 100 ticks at 1 ms each.
         let dt_s = 0.001;
         for k in 0..100u64 {

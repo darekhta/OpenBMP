@@ -69,6 +69,13 @@ impl FcBridge {
             });
         };
         let (bindings, graph) = crate::runner::mission::build_mission_runtime(mission)?;
+        // Phase 5.X.F: lift the v3 [[mission.phases]] (or v4
+        // [[mission.states]]) into a hierarchical MissionStateMachine
+        // view that the commander carries alongside the flat graph.
+        // The flat graph remains the source of truth for transitions
+        // during the migration window for byte-identical
+        // determinism.
+        let hsm = crate::runner::mission::lift_mission_state_machine(mission)?;
         let start_phase = graph.initial;
         let magnetic = build_magnetic_field(fc_config)?;
         let lqr_ctx = build_autopilot_lqr_context(scenario)?;
@@ -77,6 +84,7 @@ impl FcBridge {
             fc_config,
             graph,
             bindings,
+            Some(hsm),
             start_phase,
             lqr_ctx,
             scenario.document.time.dt_s,
