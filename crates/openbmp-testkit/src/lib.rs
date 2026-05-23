@@ -25,6 +25,7 @@ pub mod determinism;
 pub mod error;
 pub mod fc_lints;
 pub mod filters;
+pub mod mission_vocabulary_lints;
 pub mod strategies;
 pub mod tolerance;
 
