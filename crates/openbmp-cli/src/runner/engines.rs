@@ -40,7 +40,7 @@ use openbmp_propulsion::{
 use openbmp_scenario::{
     ClusterLayoutConfig, EngineConfig, EngineFaultConfig, EngineKindConfig, ScenarioDocument,
 };
-use openbmp_sim::{EventAction, FiredEvent};
+use openbmp_sim::{FiredEvent, ScenarioScriptAction};
 
 use crate::error::CliError;
 
@@ -135,10 +135,13 @@ impl EngineRack {
     /// engine's `apply_command` rejects (non-finite payload), or
     /// when more than one command targets the same engine in this
     /// rack tick.
-    pub fn apply_commands(&mut self, fired: &[FiredEvent]) -> Result<(), CliError> {
+    pub fn apply_commands(
+        &mut self,
+        fired: &[FiredEvent<ScenarioScriptAction>],
+    ) -> Result<(), CliError> {
         let mut seen: BTreeSet<EngineId> = BTreeSet::new();
         for event in fired {
-            if let EventAction::EngineCommand {
+            if let ScenarioScriptAction::EngineCommand {
                 id,
                 throttle_unit,
                 gimbal_pitch_rad,
@@ -323,14 +326,17 @@ mod tests {
         )
     }
 
-    fn engine_event(name: &str, id: EngineId, command: EngineCommand) -> FiredEvent {
+    fn engine_event(
+        name: &str,
+        id: EngineId,
+        command: EngineCommand,
+    ) -> FiredEvent<ScenarioScriptAction> {
         FiredEvent {
             binding_id: EventId::from_path(name),
             step: StepIndex::ZERO,
             time: SimTime::ZERO,
-            // Phase-3.15.C: mission graph carries the scalar
-            // engine-command payload directly.
-            action: EventAction::EngineCommand {
+            // Phase 5.X.E: typed scenario-script action.
+            action: ScenarioScriptAction::EngineCommand {
                 id,
                 throttle_unit: command.throttle_unit,
                 gimbal_pitch_rad: command.gimbal_pitch_rad,

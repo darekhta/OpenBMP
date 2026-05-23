@@ -47,7 +47,7 @@ use openbmp_propulsion::{Motor, MotorError, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
     ConstantMassRigid, EndTime, ForceContext, ForceModel, NullEnvironment, RigidModels,
-    SimulationConfig, SimulationKernel, StopReason, ZeroMoment,
+    ScenarioScriptAction, SimulationConfig, SimulationKernel, StopReason, ZeroMoment,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -225,9 +225,12 @@ pub fn run(
         &[],
         &initial_snapshot,
     )?;
-    let mut pending_effector_events = Vec::new();
-    let mut pending_engine_events: Vec<openbmp_sim::FiredEvent> = Vec::new();
-    let mut pending_recovery_events: Vec<openbmp_sim::FiredEvent> = Vec::new();
+    let mut pending_effector_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
+        Vec::new();
+    let mut pending_engine_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
+        Vec::new();
+    let mut pending_recovery_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
+        Vec::new();
     while kernel.stop_reason().is_none() {
         effector_rack.apply_overrides(&pending_effector_events)?;
         if !engine_rack.is_empty() {
@@ -335,6 +338,7 @@ pub fn run(
             tank_rack.update_drivers(accel_body, omega_body);
         }
         let fired = kernel.drain_events();
+        let script_fired = kernel.drain_script_fired_events();
         let snapshot = effector_rack.snapshot();
         record_step(
             &mut table,
@@ -345,17 +349,18 @@ pub fn run(
             &fired,
             &snapshot,
         )?;
-        pending_engine_events = fired
+        // Phase 5.X.E: partition typed script-action fired queue.
+        pending_engine_events = script_fired
             .iter()
-            .filter(|e| matches!(e.action, openbmp_sim::EventAction::EngineCommand { .. }))
+            .filter(|e| matches!(e.action, ScenarioScriptAction::EngineCommand { .. }))
             .cloned()
             .collect();
-        pending_recovery_events = fired
+        pending_recovery_events = script_fired
             .iter()
-            .filter(|e| matches!(e.action, openbmp_sim::EventAction::DeployRecovery { .. }))
+            .filter(|e| matches!(e.action, ScenarioScriptAction::DeployRecovery { .. }))
             .cloned()
             .collect();
-        pending_effector_events = fired;
+        pending_effector_events = script_fired;
     }
 
     let stop_reason = kernel

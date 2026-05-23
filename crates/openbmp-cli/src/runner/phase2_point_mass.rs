@@ -51,7 +51,7 @@ use openbmp_propulsion::{Motor, MotorError, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
     ConstantGravityForce, ConstantMass, EndTime, ForceContext, ForceModel, MassModel,
-    NullEnvironment, SimulationConfig, SimulationKernel, StopReason,
+    NullEnvironment, ScenarioScriptAction, SimulationConfig, SimulationKernel, StopReason,
 };
 use openbmp_state::PointMassState;
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -264,9 +264,12 @@ pub fn run(
         &[],
         &initial_snapshot,
     )?;
-    let mut pending_effector_events = Vec::new();
-    let mut pending_engine_events: Vec<openbmp_sim::FiredEvent> = Vec::new();
-    let mut pending_recovery_events: Vec<openbmp_sim::FiredEvent> = Vec::new();
+    let mut pending_effector_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
+        Vec::new();
+    let mut pending_engine_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
+        Vec::new();
+    let mut pending_recovery_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
+        Vec::new();
     while kernel.stop_reason().is_none() {
         effector_rack.apply_overrides(&pending_effector_events)?;
         // Phase-3.6: drain pending engine commands from the previous
@@ -365,6 +368,7 @@ pub fn run(
         }
         kernel.step()?;
         let fired = kernel.drain_events();
+        let script_fired = kernel.drain_script_fired_events();
         let snapshot = effector_rack.snapshot();
         record_step(
             &mut table,
@@ -375,21 +379,20 @@ pub fn run(
             &fired,
             &snapshot,
         )?;
-        // Partition fired events: engine commands go to the engine
-        // rack on the next step; recovery deploys go to the recovery
-        // rack; everything else (effector overrides, etc.) stays
-        // with the effector pending queue.
-        pending_engine_events = fired
+        // Phase 5.X.E: partition the typed script-action fired
+        // queue (engine commands -> engine rack, recovery deploys
+        // -> recovery rack, effector overrides -> effector rack).
+        pending_engine_events = script_fired
             .iter()
-            .filter(|e| matches!(e.action, openbmp_sim::EventAction::EngineCommand { .. }))
+            .filter(|e| matches!(e.action, ScenarioScriptAction::EngineCommand { .. }))
             .cloned()
             .collect();
-        pending_recovery_events = fired
+        pending_recovery_events = script_fired
             .iter()
-            .filter(|e| matches!(e.action, openbmp_sim::EventAction::DeployRecovery { .. }))
+            .filter(|e| matches!(e.action, ScenarioScriptAction::DeployRecovery { .. }))
             .cloned()
             .collect();
-        pending_effector_events = fired;
+        pending_effector_events = script_fired;
     }
 
     let stop_reason = kernel

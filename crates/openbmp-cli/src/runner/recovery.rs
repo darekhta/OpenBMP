@@ -41,7 +41,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use openbmp_core::RecoveryId;
 use openbmp_scenario::{RecoveryConfig, RecoveryKindConfig, ScenarioDocument};
-use openbmp_sim::{EventAction, FiredEvent, RecoverySnapshot};
+use openbmp_sim::{FiredEvent, RecoverySnapshot, ScenarioScriptAction};
 use openbmp_vehicle::{
     DragDevice, DrogueMainRecovery, ParachuteDrag, RecoveryCommand, RecoveryModel,
 };
@@ -139,10 +139,13 @@ impl RecoveryRack {
     /// - The device rejects the command (kind-incompatible
     ///   transition; e.g. `deploy_drogue` against a `parachute_drag`).
     /// - Multiple commands target the same device in this rack tick.
-    pub fn apply_deploys(&mut self, fired: &[FiredEvent]) -> Result<(), CliError> {
+    pub fn apply_deploys(
+        &mut self,
+        fired: &[FiredEvent<ScenarioScriptAction>],
+    ) -> Result<(), CliError> {
         let mut seen: BTreeSet<RecoveryId> = BTreeSet::new();
         for event in fired {
-            if let EventAction::DeployRecovery { id, command } = &event.action {
+            if let ScenarioScriptAction::DeployRecovery { id, command } = &event.action {
                 if !seen.insert(*id) {
                     return Err(CliError::Recovery {
                         field: format!(

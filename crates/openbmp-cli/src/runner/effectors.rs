@@ -23,7 +23,7 @@ use openbmp_scenario::{
     EffectorCommandScheduleConfig, EffectorConfig, EffectorFaultConfig, EffectorKindConfig,
     ScenarioDocument,
 };
-use openbmp_sim::{EventAction, FiredEvent};
+use openbmp_sim::{FiredEvent, ScenarioScriptAction};
 use openbmp_vehicle::{
     ControlEffector, EffectorFault, EffectorLimits, EffectorState, LinearActuator,
 };
@@ -222,9 +222,12 @@ impl EffectorRack {
     ///
     /// Returns [`CliError::Effector`] when an override references an
     /// effector id that is not present in this rack.
-    pub fn apply_overrides(&mut self, fired: &[FiredEvent]) -> Result<(), CliError> {
+    pub fn apply_overrides(
+        &mut self,
+        fired: &[FiredEvent<ScenarioScriptAction>],
+    ) -> Result<(), CliError> {
         for event in fired {
-            if let EventAction::EffectorOverride { id, command } = event.action {
+            if let ScenarioScriptAction::EffectorOverride { id, command } = event.action {
                 if !self.id_index.contains_key(&id) {
                     return Err(CliError::Effector {
                         field: "mission.events[*].action.id".to_owned(),
@@ -366,7 +369,7 @@ fn build_effector(
 mod tests {
     use openbmp_core::{EffectorId, SimTime, StepIndex};
     use openbmp_scenario::Scenario;
-    use openbmp_sim::{EventAction, EventId, FiredEvent};
+    use openbmp_sim::{EventId, FiredEvent, ScenarioScriptAction};
 
     use super::*;
 
@@ -383,12 +386,12 @@ mod tests {
         Scenario::from_toml_str(&toml).expect("scenario parses")
     }
 
-    fn override_event(id: EffectorId, command: f64) -> FiredEvent {
+    fn override_event(id: EffectorId, command: f64) -> FiredEvent<ScenarioScriptAction> {
         FiredEvent {
             binding_id: EventId::from_path("mission.events.override"),
             step: StepIndex::new(1),
             time: SimTime::from_seconds(0.0),
-            action: EventAction::EffectorOverride { id, command },
+            action: ScenarioScriptAction::EffectorOverride { id, command },
         }
     }
 
