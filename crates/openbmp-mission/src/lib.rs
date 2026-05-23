@@ -22,8 +22,8 @@ mod hsm;
 mod regions;
 
 pub use events::{
-    BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars, EventTrigger,
-    FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
+    AlarmCode, BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars,
+    EventTrigger, FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
     PhaseTransition, RegionId, StateId,
 };
 pub use hsm::{HistoryState, HsmError, MissionState, MissionStateMachine};

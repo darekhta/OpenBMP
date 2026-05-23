@@ -15,9 +15,9 @@
 use std::collections::BTreeSet;
 
 use openbmp_mission::{
-    BuiltInEventTrigger, CanonicalRegionStates, CanonicalRegions, EventBinding, EventEvalState,
-    EventId, EventScalars, EventTrigger, MissionAction, MissionPhaseGraph, MissionStateMachine,
-    PhaseId, RegionSet,
+    AlarmCode, BuiltInEventTrigger, CanonicalRegionStates, CanonicalRegions, EventBinding,
+    EventEvalState, EventId, EventScalars, EventTrigger, MissionAction, MissionPhaseGraph,
+    MissionStateMachine, PhaseId, RegionId, RegionSet,
 };
 
 use crate::bus::Bus;
@@ -25,8 +25,9 @@ use crate::error::{CommanderError, ControllerError};
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{
-    BarometerSample, EstimatorStatus, FailsafeFlags, FdirStatus, GnssSample, ImuSample,
-    MissionStatePublish, PositionEstimate, VehicleStatus,
+    BarometerSample, CommsRegionStatePublish, EstimatorRegimeRegionStatePublish, EstimatorStatus,
+    FailsafeFlags, FdirStatus, GnssSample, HealthRegionStatePublish, ImuSample,
+    MissionRegionStatePublish, MissionStatePublish, PositionEstimate, VehicleStatus,
 };
 
 /// Commander parameters.
@@ -325,7 +326,33 @@ impl Commander {
                     }
                 }
                 MissionAction::EmitTelemetryMarker { .. } | MissionAction::Stop { .. } => {}
+                MissionAction::RaiseHealthAlarm { region, alarm } => {
+                    self.handle_health_alarm(*region, *alarm);
+                }
+                MissionAction::RequestSafeState { .. } => {
+                    self.request_safe_state();
+                }
             }
+        }
+    }
+
+    /// Demote the named orthogonal region in response to a fired
+    /// [`MissionAction::RaiseHealthAlarm`]. Currently the commander
+    /// only knows the `mission.regions.health` machine; non-health
+    /// targets are silently ignored (a future sub-phase wires
+    /// per-region demotion tables when additional health-like
+    /// regions land). A zero `alarm` code is a no-op so a binding
+    /// can be wired with a placeholder code without driving the
+    /// region.
+    fn handle_health_alarm(&mut self, region: RegionId, alarm: AlarmCode) {
+        if alarm.value() == 0 {
+            return;
+        }
+        if region == CanonicalRegions::health() {
+            let _ = self.regions.set_current_state(
+                CanonicalRegions::health(),
+                CanonicalRegionStates::health_abort_requested(),
+            );
         }
     }
 }
@@ -335,6 +362,7 @@ impl Job for Commander {
         "commander.tick"
     }
 
+    #[allow(clippy::too_many_lines)] // Phase 5.X.E: per-region publish loop expanded the tick body.
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
         let now = ctx.clock.now();
         let tick = ctx.clock.tick();
@@ -351,9 +379,17 @@ impl Job for Commander {
                 if binding.once {
                     self.fired_once.insert(binding.id.value());
                 }
-                let action_target = match binding.action {
-                    MissionAction::EnterState(target) => Some(target),
+                let action_target = match &binding.action {
+                    MissionAction::EnterState(target) => Some(*target),
                     MissionAction::EmitTelemetryMarker { .. } | MissionAction::Stop { .. } => None,
+                    MissionAction::RaiseHealthAlarm { region, alarm } => {
+                        self.handle_health_alarm(*region, *alarm);
+                        None
+                    }
+                    MissionAction::RequestSafeState { .. } => {
+                        self.request_safe_state();
+                        None
+                    }
                 };
                 transitions.push((binding.id, action_target));
             }
@@ -393,17 +429,54 @@ impl Job for Commander {
         };
         let _ = ctx.bus.publish(status);
 
-        // Phase 5.X.B: also publish the single-source-of-truth
-        // mission-state topic. The simulator subscribes to this in
-        // place of holding a parallel `mission_graph` field once
-        // the kernel-side wiring (5.X.B.2) lands. Until then, the
-        // topic is consumer-less but stable for downstream code to
-        // start subscribing against.
+        // Phase 5.X.B / 5.X.E: publish the single-source-of-truth
+        // mission-state topic alongside the per-region topics. The
+        // simulator subscribes to `commander.mission_state` for the
+        // aggregate snapshot; consumers that only care about one
+        // region (e.g. a health watchdog) subscribe to the
+        // per-region topic to avoid parsing the aggregate.
+        let mission_state_id = self
+            .regions
+            .current_state(CanonicalRegions::mission())
+            .unwrap_or(self.current_phase)
+            .value();
+        let health_state_id = self
+            .regions
+            .current_state(CanonicalRegions::health())
+            .unwrap_or_default()
+            .value();
+        let comms_state_id = self
+            .regions
+            .current_state(CanonicalRegions::comms())
+            .unwrap_or_default()
+            .value();
+        let estimator_regime_state_id = self
+            .regions
+            .current_state(CanonicalRegions::estimator_regime())
+            .unwrap_or_default()
+            .value();
+        let safe_state_requested = self.safe_state_requested();
+
         let mission_state = MissionStatePublish {
-            mission_state_id: self.current_phase.value(),
-            safe_state_requested: self.safe_state_requested(),
+            mission_state_id,
+            health_state_id,
+            comms_state_id,
+            estimator_regime_state_id,
+            safe_state_requested,
         };
         let _ = ctx.bus.publish(mission_state);
+        let _ = ctx.bus.publish(MissionRegionStatePublish {
+            state_id: mission_state_id,
+        });
+        let _ = ctx.bus.publish(HealthRegionStatePublish {
+            state_id: health_state_id,
+        });
+        let _ = ctx.bus.publish(CommsRegionStatePublish {
+            state_id: comms_state_id,
+        });
+        let _ = ctx.bus.publish(EstimatorRegimeRegionStatePublish {
+            state_id: estimator_regime_state_id,
+        });
 
         self.previous_scalars = Some(eval_state.current);
         Ok(())
@@ -529,6 +602,11 @@ mod tests {
         bus.register::<FailsafeFlags>().unwrap();
         bus.register::<FdirStatus>().unwrap();
         bus.register::<VehicleStatus>().unwrap();
+        bus.register::<MissionStatePublish>().unwrap();
+        bus.register::<MissionRegionStatePublish>().unwrap();
+        bus.register::<HealthRegionStatePublish>().unwrap();
+        bus.register::<CommsRegionStatePublish>().unwrap();
+        bus.register::<EstimatorRegimeRegionStatePublish>().unwrap();
         bus
     }
 
@@ -678,5 +756,111 @@ mod tests {
             .unwrap();
 
         assert_eq!(commander.current_phase(), ascent);
+    }
+
+    #[test]
+    fn raise_health_alarm_binding_demotes_health_region() {
+        use openbmp_mission::AlarmCode;
+
+        let (graph, _legacy_bindings, pad) = build_graph();
+        let alarm_event = EventId::from_path("mission.events.raise_alarm");
+        let bindings = vec![EventBinding {
+            id: alarm_event,
+            trigger: BuiltInEventTrigger::AtTime { time_s: 0.5 },
+            action: MissionAction::RaiseHealthAlarm {
+                region: CanonicalRegions::health(),
+                alarm: AlarmCode::new(1),
+            },
+            once: true,
+        }];
+        let mut commander = commander_from_graph(graph, bindings, pad);
+
+        let bus = fresh_bus();
+        let clock = SimulatedClock::new();
+        publish_initialized_estimator(&bus);
+
+        // First tick: trigger has not fired; health remains nominal.
+        clock.set(SimTime::ZERO, StepIndex::ZERO);
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (status, _) = bus.latest::<VehicleStatus>().unwrap().unwrap();
+        assert!(
+            !status.safe_state_requested,
+            "health region should be nominal before the alarm trigger fires"
+        );
+
+        // Second tick: trigger crosses 0.5 s; alarm fires and demotes
+        // the health region to `abort_requested`. The aggregate
+        // `MissionStatePublish` and the per-region health topic both
+        // observe the new state.
+        clock.set(SimTime::from_seconds(0.5), StepIndex::new(1));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (status, _) = bus.latest::<VehicleStatus>().unwrap().unwrap();
+        assert!(
+            status.safe_state_requested,
+            "RaiseHealthAlarm binding should demote the health region"
+        );
+        let (aggregate, _) = bus.latest::<MissionStatePublish>().unwrap().unwrap();
+        assert_eq!(
+            aggregate.health_state_id,
+            CanonicalRegionStates::health_abort_requested().value(),
+        );
+        assert!(aggregate.safe_state_requested);
+        let (health, _) = bus.latest::<HealthRegionStatePublish>().unwrap().unwrap();
+        assert_eq!(
+            health.state_id,
+            CanonicalRegionStates::health_abort_requested().value(),
+        );
+    }
+
+    #[test]
+    fn request_safe_state_binding_demotes_health_region() {
+        let (graph, _legacy_bindings, pad) = build_graph();
+        let safe_event = EventId::from_path("mission.events.request_safe");
+        let bindings = vec![EventBinding {
+            id: safe_event,
+            trigger: BuiltInEventTrigger::AtTime { time_s: 0.5 },
+            action: MissionAction::RequestSafeState {
+                reason: "scenario-driven safe state".into(),
+            },
+            once: true,
+        }];
+        let mut commander = commander_from_graph(graph, bindings, pad);
+
+        let bus = fresh_bus();
+        let clock = SimulatedClock::new();
+        publish_initialized_estimator(&bus);
+
+        clock.set(SimTime::ZERO, StepIndex::ZERO);
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        clock.set(SimTime::from_seconds(0.5), StepIndex::new(1));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (status, _) = bus.latest::<VehicleStatus>().unwrap().unwrap();
+        assert!(status.safe_state_requested);
+        let (health, _) = bus.latest::<HealthRegionStatePublish>().unwrap().unwrap();
+        assert_eq!(
+            health.state_id,
+            CanonicalRegionStates::health_abort_requested().value(),
+        );
     }
 }

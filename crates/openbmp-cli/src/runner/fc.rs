@@ -30,10 +30,12 @@ use openbmp_fc::imm::ImmEstimator;
 use openbmp_fc::mixer::{ActuatorChannelMap, Mixer, PhaseAuthority, PhaseAuthorityTable};
 use openbmp_fc::sr_ukf::{SquareRootUkf, SquareRootUkfAttitude, SquareRootUkfParams};
 use openbmp_fc::topics::{
-    ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, EffectorCommandSet,
-    EngineCommandSet, EngineDemand, EstimatorMode, EstimatorStatus, FailsafeFlags,
-    FdirGlrtDiagnostic, FdirStatus, GnssSample, ImuSample, MagnetometerSample, MissionStatePublish,
-    PositionEstimate, ReferenceState, SensorStatus, StarTrackerSample, VehicleStatus,
+    ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, CommsRegionStatePublish,
+    EffectorCommandSet, EngineCommandSet, EngineDemand, EstimatorMode,
+    EstimatorRegimeRegionStatePublish, EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic,
+    FdirStatus, GnssSample, HealthRegionStatePublish, ImuSample, MagnetometerSample,
+    MissionRegionStatePublish, MissionStatePublish, PositionEstimate, ReferenceState,
+    SensorStatus, StarTrackerSample, VehicleStatus,
 };
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
@@ -419,6 +421,13 @@ impl FcRunner {
         // (simulator-side subscriber, telemetry recorder) reads in
         // place of the legacy parallel-state pattern.
         bus.register::<MissionStatePublish>()?;
+        // Phase 5.X.E: per-region state topics (one per canonical
+        // region) so a consumer can watch a single region without
+        // parsing the aggregate `commander.mission_state` payload.
+        bus.register::<MissionRegionStatePublish>()?;
+        bus.register::<HealthRegionStatePublish>()?;
+        bus.register::<CommsRegionStatePublish>()?;
+        bus.register::<EstimatorRegimeRegionStatePublish>()?;
         Ok(())
     }
 }

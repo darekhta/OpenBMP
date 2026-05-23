@@ -9,6 +9,7 @@
 //! This module is now a thin re-export to preserve every existing
 //! `openbmp_sim::events::*` import path.
 
+pub use openbmp_mission::AlarmCode;
 pub use openbmp_mission::{
     BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars, EventTrigger,
     FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,

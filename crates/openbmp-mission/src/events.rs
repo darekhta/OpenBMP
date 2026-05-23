@@ -312,6 +312,32 @@ impl RegionId {
     }
 }
 
+/// Alarm code raised on the `health` orthogonal region by
+/// [`MissionAction::RaiseHealthAlarm`].
+///
+/// The integer payload is the canonical alarm code; the canonical
+/// integer-to-name table is pinned in
+/// [`docs/mission-states-vocabulary.md § Health Region`](../../docs/mission-states-vocabulary.md).
+/// `AlarmCode::value() == 0` is reserved for "no alarm" so a
+/// default-constructed code never accidentally demotes the health
+/// region.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct AlarmCode(u32);
+
+impl AlarmCode {
+    /// Construct from a raw integer value.
+    #[must_use]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Returns the underlying integer value.
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
 // ---------------------------------------------------------------------
 // State / phase identifier alias
 // ---------------------------------------------------------------------
@@ -343,9 +369,8 @@ pub type StateId = PhaseId;
 /// for the architectural rationale.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MissionAction {
-    /// Transition to the named state. Phase 5.X.C extends this to
-    /// hierarchical traversal (LCA + entry / exit chains); Phase 5.X.A
-    /// preserves flat-graph semantics.
+    /// Transition to the named state. The hierarchical state machine
+    /// applies LCA-based exit / enter chains around the transition.
     EnterState(StateId),
     /// Emit a `bool` telemetry marker. The consumer allocates a channel
     /// named `tag` and writes `true` on every tick the associated
@@ -353,6 +378,30 @@ pub enum MissionAction {
     EmitTelemetryMarker {
         /// Channel tag (`snake_case`, e.g. `"at_apogee_marker"`).
         tag: String,
+    },
+    /// Demote the named orthogonal region (canonically the
+    /// `health` region) with an alarm code. The commander applies the
+    /// demotion to the named region's current state.
+    ///
+    /// Symmetric to [`Self::EmitTelemetryMarker`]: the kernel records
+    /// the fire on the typed pending queue; the FC commander reads
+    /// the fired event and updates its region set accordingly.
+    RaiseHealthAlarm {
+        /// Target region (canonically `mission.regions.health`).
+        region: RegionId,
+        /// Canonical alarm code; non-zero values demote the region
+        /// from `nominal` to `abort_requested` (see
+        /// `mission-states-vocabulary.md § Health Region`).
+        alarm: AlarmCode,
+    },
+    /// Request a safe-state transition with a human-readable reason.
+    /// Declarative replacement for the legacy hand-rolled
+    /// `safe_state_requested` boolean. The commander reads the fire,
+    /// demotes the `health` region to `abort_requested`, and
+    /// publishes the reason on telemetry.
+    RequestSafeState {
+        /// Human-readable reason published alongside the request.
+        reason: String,
     },
     /// Request mission termination with a human-readable reason.
     Stop {

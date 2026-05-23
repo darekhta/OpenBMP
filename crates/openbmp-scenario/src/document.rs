@@ -2080,7 +2080,9 @@ fn require_mission_only_action(
     match action {
         ScenarioActionConfig::EnterPhase { .. }
         | ScenarioActionConfig::EmitTelemetryMarker { .. }
-        | ScenarioActionConfig::Stop { .. } => Ok(()),
+        | ScenarioActionConfig::Stop { .. }
+        | ScenarioActionConfig::RaiseHealthAlarm { .. }
+        | ScenarioActionConfig::RequestSafeState { .. } => Ok(()),
         ScenarioActionConfig::EffectorOverride { .. }
         | ScenarioActionConfig::EngineCommand { .. }
         | ScenarioActionConfig::Separation
@@ -2465,6 +2467,28 @@ pub enum ScenarioActionConfig {
         /// Human-readable label for the stop reason.
         label: String,
     },
+    /// Phase 5.X.E: declarative health-region demotion. The commander
+    /// reads the fire and applies it to the named region (canonically
+    /// `mission.regions.health`).
+    RaiseHealthAlarm {
+        /// Target region id (canonical or bare; bare resolves to
+        /// `mission.regions.<id>`). Defaults to
+        /// `mission.regions.health` when omitted.
+        #[serde(default)]
+        region: Option<String>,
+        /// Canonical alarm code; non-zero values demote the
+        /// `health` region to `abort_requested`.
+        alarm: u32,
+    },
+    /// Phase 5.X.E: declarative safe-state request. Symmetric to
+    /// `raise_health_alarm` but does not require the scenario author
+    /// to pick a region or alarm code; the commander applies a
+    /// generic `health → abort_requested` demotion and publishes the
+    /// reason on telemetry.
+    RequestSafeState {
+        /// Human-readable reason published alongside the request.
+        reason: String,
+    },
     /// Phase-3.6: per-engine command targeting a declared
     /// `[[vehicle.assembly.engines]]` by id. The kernel records the
     /// firing; the runner-side `EngineRack` drains and applies the
@@ -2514,6 +2538,14 @@ impl ScenarioActionConfig {
             }
             Self::Stop { label } => {
                 require_non_empty(&path("label"), label)?;
+            }
+            Self::RaiseHealthAlarm { region, alarm: _ } => {
+                if let Some(region) = region {
+                    require_non_empty(&path("region"), region)?;
+                }
+            }
+            Self::RequestSafeState { reason } => {
+                require_non_empty(&path("reason"), reason)?;
             }
             Self::EngineCommand { id, command } => {
                 require_non_empty(&path("id"), id)?;

@@ -824,6 +824,16 @@ where
                         label: label.clone(),
                     });
                 }
+                crate::events::MissionAction::RaiseHealthAlarm { .. }
+                | crate::events::MissionAction::RequestSafeState { .. } => {
+                    // Health-region demotion is the FC commander's
+                    // job — the kernel records the fire in the typed
+                    // pending queue (above) and the commander reads
+                    // it via `drain_mission_fired_events`. Pure-sim
+                    // scenarios without an FC observe the fire but
+                    // do not act on it because the simulator owns no
+                    // region set.
+                }
             }
             if binding.once {
                 self.fired_once_events.insert(binding.id);
@@ -1750,7 +1760,9 @@ mod tests {
             .filter_map(|event| match &event.action {
                 crate::events::MissionAction::EmitTelemetryMarker { tag } => Some(tag.as_str()),
                 crate::events::MissionAction::EnterState(_)
-                | crate::events::MissionAction::Stop { .. } => None,
+                | crate::events::MissionAction::Stop { .. }
+                | crate::events::MissionAction::RaiseHealthAlarm { .. }
+                | crate::events::MissionAction::RequestSafeState { .. } => None,
             })
             .collect();
         assert_eq!(tags, vec!["at_half_second", "exit_ascent", "enter_descent"]);

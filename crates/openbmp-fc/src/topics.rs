@@ -306,10 +306,27 @@ impl Topic for VehicleStatus {
 /// subscribe here and feed the value into the kernel as external
 /// mission state. The kernel still retains a `current_phase` fallback
 /// for pure-sim scenarios without a commander.
+///
+/// Phase 5.X.E enriched the payload to also carry the per-region
+/// state snapshot for the four canonical regions
+/// (`mission` / `health` / `comms` / `estimator_regime`) so a single
+/// subscription is sufficient for downstream consumers that need the
+/// whole picture. Per-region topics
+/// ([`MissionRegionStatePublish`], [`HealthRegionStatePublish`],
+/// [`CommsRegionStatePublish`], [`EstimatorRegimeRegionStatePublish`])
+/// remain available for consumers that want to watch a single region
+/// without parsing the aggregate.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct MissionStatePublish {
     /// Active mission-region state id at the start of this tick.
+    /// Mirror of [`MissionRegionStatePublish::state_id`].
     pub mission_state_id: u64,
+    /// Active `health` region state id.
+    pub health_state_id: u64,
+    /// Active `comms` region state id.
+    pub comms_state_id: u64,
+    /// Active `estimator_regime` region state id.
+    pub estimator_regime_state_id: u64,
     /// `true` once an FDIR trip has demanded a safe-state transition.
     /// Mirror of `VehicleStatus::safe_state_requested`; the commander
     /// derives both from the canonical `health` region.
@@ -318,6 +335,58 @@ pub struct MissionStatePublish {
 
 impl Topic for MissionStatePublish {
     const NAME: &'static str = "commander.mission_state";
+}
+
+/// Per-region state publish for the canonical `mission` region.
+///
+/// Phase 5.X.E split the aggregate [`MissionStatePublish`] into
+/// per-region topics so a consumer can subscribe to a single region
+/// without parsing the aggregate. Published alongside the aggregate
+/// every commander tick.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct MissionRegionStatePublish {
+    /// Active state id in the `mission` region.
+    pub state_id: u64,
+}
+
+impl Topic for MissionRegionStatePublish {
+    const NAME: &'static str = "commander.region.mission";
+}
+
+/// Per-region state publish for the canonical `health` region
+/// (`Nominal` / `Degraded` / `AbortRequested` / `SafedOnFault`).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct HealthRegionStatePublish {
+    /// Active state id in the `health` region.
+    pub state_id: u64,
+}
+
+impl Topic for HealthRegionStatePublish {
+    const NAME: &'static str = "commander.region.health";
+}
+
+/// Per-region state publish for the canonical `comms` region
+/// (`Linked` / `Degraded` / `LossOfSignal` / `SafedOnLossOfSignal`).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommsRegionStatePublish {
+    /// Active state id in the `comms` region.
+    pub state_id: u64,
+}
+
+impl Topic for CommsRegionStatePublish {
+    const NAME: &'static str = "commander.region.comms";
+}
+
+/// Per-region state publish for the canonical `estimator_regime`
+/// region (set by the IMM; observed-but-not-decided by the commander).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct EstimatorRegimeRegionStatePublish {
+    /// Active state id in the `estimator_regime` region.
+    pub state_id: u64,
+}
+
+impl Topic for EstimatorRegimeRegionStatePublish {
+    const NAME: &'static str = "commander.region.estimator_regime";
 }
 
 /// Test-only override topic: scenarios can script the commander

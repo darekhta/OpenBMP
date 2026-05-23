@@ -27,8 +27,8 @@ use openbmp_scenario::{
     RegionConfig, RegionStateConfig, ScenarioActionConfig, StateConfig,
 };
 use openbmp_sim::{
-    BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase, PhaseId,
-    PhaseTransition, ScenarioScriptAction,
+    AlarmCode, BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase,
+    PhaseId, PhaseTransition, RegionId, ScenarioScriptAction,
 };
 
 use crate::error::CliError;
@@ -288,6 +288,17 @@ fn mission_actions(
             ScenarioActionConfig::Stop { label } => Ok(MissionAction::Stop {
                 label: label.clone(),
             }),
+            ScenarioActionConfig::RaiseHealthAlarm { region, alarm } => {
+                Ok(MissionAction::RaiseHealthAlarm {
+                    region: resolve_region_id(region.as_deref()),
+                    alarm: AlarmCode::new(*alarm),
+                })
+            }
+            ScenarioActionConfig::RequestSafeState { reason } => {
+                Ok(MissionAction::RequestSafeState {
+                    reason: reason.clone(),
+                })
+            }
             ScenarioActionConfig::EffectorOverride { .. }
             | ScenarioActionConfig::EngineCommand { .. }
             | ScenarioActionConfig::Separation
@@ -300,6 +311,7 @@ fn mission_actions(
         .collect()
 }
 
+#[allow(clippy::too_many_lines)] // Phase 5.X.E: expanded with RaiseHealthAlarm / RequestSafeState branches.
 fn build_event_binding(
     config: &EventConfig,
     phase_id_lookup: &BTreeMap<&str, PhaseId>,
@@ -391,7 +403,43 @@ fn build_event_binding(
             },
             once: config.once,
         }),
+        ScenarioActionConfig::RaiseHealthAlarm { region, alarm } => {
+            RuntimeEventBinding::Mission(EventBinding {
+                id,
+                trigger,
+                action: MissionAction::RaiseHealthAlarm {
+                    region: resolve_region_id(region.as_deref()),
+                    alarm: AlarmCode::new(*alarm),
+                },
+                once: config.once,
+            })
+        }
+        ScenarioActionConfig::RequestSafeState { reason } => {
+            RuntimeEventBinding::Mission(EventBinding {
+                id,
+                trigger,
+                action: MissionAction::RequestSafeState {
+                    reason: reason.clone(),
+                },
+                once: config.once,
+            })
+        }
     })
+}
+
+/// Resolve a scenario-text region id to a stable `RegionId`. Bare
+/// names (e.g. `"health"`) resolve to the canonical region path
+/// `"mission.regions.<id>"`; absent / empty values default to
+/// `mission.regions.health` (the load-bearing target of
+/// `raise_health_alarm`).
+fn resolve_region_id(id: Option<&str>) -> RegionId {
+    match id {
+        Some(id) if id.starts_with("mission.regions.") => RegionId::from_path(id),
+        Some(id) if !id.is_empty() => {
+            RegionId::from_path(&format!("mission.regions.{id}"))
+        }
+        _ => openbmp_mission::CanonicalRegions::health(),
+    }
 }
 
 fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, CliError> {
