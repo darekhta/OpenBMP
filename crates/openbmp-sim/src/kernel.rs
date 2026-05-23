@@ -140,6 +140,17 @@ where
     /// runner each tick before `kernel.step()`. `None` when no FC
     /// is wired (pure-sim scenarios).
     external_mission_state: Option<crate::events::PhaseId>,
+    /// Phase 5.X.E: typed shadow of [`Self::pending_events`] —
+    /// fired mission-action events only. Populated alongside
+    /// `pending_events` at fire time for runner-side consumers that
+    /// want the HAL-portable view; drained via
+    /// [`Self::drain_mission_fired_events`].
+    pending_mission_fired:
+        Vec<crate::events::FiredEvent<crate::events::MissionAction>>,
+    /// Phase 5.X.E: typed shadow of [`Self::pending_events`] —
+    /// fired scenario-script-action events only.
+    pending_script_fired:
+        Vec<crate::events::FiredEvent<crate::events::ScenarioScriptAction>>,
     /// Set of binding ids that have fired and are flagged `once: true`.
     /// `BTreeSet` (not `HashSet`) defeats macOS `SipHash` randomisation.
     fired_once_events: std::collections::BTreeSet<crate::events::EventId>,
@@ -246,6 +257,8 @@ where
             current_phase: None,
             pending_events: Vec::new(),
             external_mission_state: None,
+            pending_mission_fired: Vec::new(),
+            pending_script_fired: Vec::new(),
             fired_once_events: std::collections::BTreeSet::new(),
             previous_event_scalars: None,
             effector_actuals: std::collections::BTreeMap::new(),
@@ -610,6 +623,24 @@ where
         &self.script_events_typed
     }
 
+    /// Phase 5.X.E: drain the per-step queue of fired
+    /// mission-action events. Populated alongside the legacy
+    /// `drain_events` queue at fire time. Cleared every step.
+    pub fn drain_mission_fired_events(
+        &mut self,
+    ) -> Vec<crate::events::FiredEvent<crate::events::MissionAction>> {
+        std::mem::take(&mut self.pending_mission_fired)
+    }
+
+    /// Phase 5.X.E: drain the per-step queue of fired
+    /// scenario-script-action events. Populated alongside the
+    /// legacy `drain_events` queue at fire time. Cleared every step.
+    pub fn drain_script_fired_events(
+        &mut self,
+    ) -> Vec<crate::events::FiredEvent<crate::events::ScenarioScriptAction>> {
+        std::mem::take(&mut self.pending_script_fired)
+    }
+
     /// Phase 5.X.B: inject the externally-owned mission state (the
     /// FC commander's published value via `commander.mission_state`).
     /// The runner reads the FC bus topic each tick and calls this
@@ -895,6 +926,91 @@ where
                 time,
                 action: binding.action.clone(),
             });
+            // Phase 5.X.E: also populate the typed shadow queues so
+            // runner-side consumers that want HAL-portable / sim-only
+            // views can drain typed FiredEvents.
+            match &binding.action {
+                EventAction::EnterPhase(p) => {
+                    self.pending_mission_fired.push(crate::events::FiredEvent {
+                        binding_id: binding.id,
+                        step,
+                        time,
+                        action: crate::events::MissionAction::EnterState(*p),
+                    });
+                }
+                EventAction::EmitTelemetryMarker { tag } => {
+                    self.pending_mission_fired.push(crate::events::FiredEvent {
+                        binding_id: binding.id,
+                        step,
+                        time,
+                        action: crate::events::MissionAction::EmitTelemetryMarker {
+                            tag: tag.clone(),
+                        },
+                    });
+                }
+                EventAction::Stop { label } => {
+                    self.pending_mission_fired.push(crate::events::FiredEvent {
+                        binding_id: binding.id,
+                        step,
+                        time,
+                        action: crate::events::MissionAction::Stop {
+                            label: label.clone(),
+                        },
+                    });
+                }
+                EventAction::EngineCommand {
+                    id,
+                    throttle_unit,
+                    gimbal_pitch_rad,
+                    gimbal_yaw_rad,
+                    ignite,
+                    shutdown,
+                } => {
+                    self.pending_script_fired.push(crate::events::FiredEvent {
+                        binding_id: binding.id,
+                        step,
+                        time,
+                        action: crate::events::ScenarioScriptAction::EngineCommand {
+                            id: *id,
+                            throttle_unit: *throttle_unit,
+                            gimbal_pitch_rad: *gimbal_pitch_rad,
+                            gimbal_yaw_rad: *gimbal_yaw_rad,
+                            ignite: *ignite,
+                            shutdown: *shutdown,
+                        },
+                    });
+                }
+                EventAction::EffectorOverride { id, command } => {
+                    self.pending_script_fired.push(crate::events::FiredEvent {
+                        binding_id: binding.id,
+                        step,
+                        time,
+                        action: crate::events::ScenarioScriptAction::EffectorOverride {
+                            id: *id,
+                            command: *command,
+                        },
+                    });
+                }
+                EventAction::DeployRecovery { id, command } => {
+                    self.pending_script_fired.push(crate::events::FiredEvent {
+                        binding_id: binding.id,
+                        step,
+                        time,
+                        action: crate::events::ScenarioScriptAction::DeployRecovery {
+                            id: *id,
+                            command: command.clone(),
+                        },
+                    });
+                }
+                EventAction::Separation => {
+                    self.pending_script_fired.push(crate::events::FiredEvent {
+                        binding_id: binding.id,
+                        step,
+                        time,
+                        action: crate::events::ScenarioScriptAction::Separation,
+                    });
+                }
+            }
             // Phase 5.X.B: only compute / apply mission-state
             // transitions when no external authority is set. When
             // the FC commander is the source of truth, the kernel
@@ -1121,6 +1237,8 @@ where
             current_phase: None,
             pending_events: Vec::new(),
             external_mission_state: None,
+            pending_mission_fired: Vec::new(),
+            pending_script_fired: Vec::new(),
             fired_once_events: std::collections::BTreeSet::new(),
             previous_event_scalars: None,
             effector_actuals: std::collections::BTreeMap::new(),
