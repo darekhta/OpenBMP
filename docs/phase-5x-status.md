@@ -19,10 +19,10 @@ Retired by Phase 5.X.H alongside the plan document.
 | 5.X.B — Single source of truth | ✅ Done (kernel defers to FC's external_mission_state when wired; pure-sim scenarios fall back to legacy mission_graph for backward compat) | `Phase 5.X.B (1-7/N)` |
 | 5.X.C — Hierarchical primitives | ✅ Done | `Phase 5.X.C` |
 | 5.X.D — Orthogonal regions | ✅ Done | `Phase 5.X.D` |
-| 5.X.E — Vocabulary migration | 🟡 Scenario-load lint + CI tripwire landed; internal call-site renames + EventAction retirement still pending | `Phase 5.X.E pre-work + 5.X.E (2/N)` |
+| 5.X.E — Vocabulary migration | 🟡 Scenario-load lint + CI tripwire + kernel typed pending queues landed; EventAction is dead-code in evaluate_events match arms only and the runners' downstream rack filters still consume the legacy `Vec<FiredEvent<EventAction>>` drain. Internal rename to MissionAction/ScenarioScriptAction in rack signatures and final EventAction removal is the load-bearing remaining slice | `Phase 5.X.E pre-work + 5.X.E (2-3/N)` |
 | 5.X.F — Scenario format v4 | ✅ Done (schema types, v3 → v4 lifting pass, end-to-end wiring through fc_bridge → FcRunner → Commander::with_hierarchical) | `Phase 5.X.F (1-4/N)` |
 | 5.X.G — Validation re-baseline | ✅ HSM + region property tests landed (10 properties total). Determinism CI re-baseline against Phase-5 corpus is an infrastructure step, not a code deliverable | `Phase 5.X.G (1-2/N)` |
-| 5.X.H — Doc harmonisation | 🟡 v4 doc landed; design-concept.md / plan-retirement still pending | `Phase 5.X.H (1/N)` |
+| 5.X.H — Doc harmonisation | 🟡 v4 scenario-format doc + design-concept.md update landed; phase-5x-plan.md + phase-5x-status.md retirement gated on 5.X.E final EventAction removal | `Phase 5.X.H (1-2/N)` |
 
 ## 5.X.A — Action taxonomy split — completion details
 
