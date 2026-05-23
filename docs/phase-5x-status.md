@@ -20,7 +20,7 @@ Retired by Phase 5.X.H alongside the plan document.
 | 5.X.C — Hierarchical primitives | ✅ Done | `Phase 5.X.C` |
 | 5.X.D — Orthogonal regions | ✅ Done | `Phase 5.X.D` |
 | 5.X.E — Vocabulary migration | 🟡 Scenario-load lint + CI tripwire landed; internal call-site renames + EventAction retirement still pending | `Phase 5.X.E pre-work + 5.X.E (2/N)` |
-| 5.X.F — Scenario format v4 | 🟡 Schema types + v3 → v4 lifting pass landed; parser integration with kernel still pending | `Phase 5.X.F (1-2/N)` |
+| 5.X.F — Scenario format v4 | ✅ Done (schema types, v3 → v4 lifting pass, end-to-end wiring through fc_bridge → FcRunner → Commander::with_hierarchical) | `Phase 5.X.F (1-4/N)` |
 | 5.X.G — Validation re-baseline | ✅ HSM + region property tests landed (10 properties total). Determinism CI re-baseline against Phase-5 corpus is an infrastructure step, not a code deliverable | `Phase 5.X.G (1-2/N)` |
 | 5.X.H — Doc harmonisation | 🟡 v4 doc landed; design-concept.md / plan-retirement still pending | `Phase 5.X.H (1/N)` |
 
