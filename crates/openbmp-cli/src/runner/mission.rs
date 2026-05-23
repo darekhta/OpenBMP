@@ -24,7 +24,7 @@ use openbmp_scenario::{
 use openbmp_sim::EventAction;
 use openbmp_sim::{
     BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase, PhaseId,
-    PhaseTransition,
+    PhaseTransition, ScenarioScriptAction,
 };
 
 use crate::error::CliError;
@@ -32,6 +32,56 @@ use crate::error::CliError;
 /// Convert a parsed [`MissionConfig`] into the runtime types the
 /// kernel consumes: a list of [`EventBinding`]s plus a validated
 /// [`MissionPhaseGraph`].
+///
+/// # Errors
+///
+/// Returns [`CliError::Scenario`] when:
+/// - A transition references an unknown phase or event id.
+/// - The phase graph contains a cycle, an unreachable phase, or
+///   duplicate phase ids.
+/// - `mission.initial_phase` references an unknown id.
+/// Phase 5.X.A: typed split-binding constructor.
+///
+/// Returns the FC-owned mission bindings, the simulator-owned
+/// scenario-script bindings, and the validated mission graph. Both
+/// binding lists are id-sorted, preserving the canonical Phase 5
+/// iteration order within each list.
+///
+/// Backward-compat: the legacy [`build_mission_runtime`] still
+/// returns the unified `Vec<EventBinding<EventAction>>` consumed by
+/// the kernel. Phase 5.X.B switches the kernel's `with_mission`
+/// signature to consume the typed lists directly and retires the
+/// legacy builder.
+///
+/// # Errors
+///
+/// Same conditions as [`build_mission_runtime`].
+pub fn build_mission_runtime_typed(
+    mission: &MissionConfig,
+) -> Result<
+    (
+        Vec<EventBinding<MissionAction>>,
+        Vec<EventBinding<ScenarioScriptAction>>,
+        MissionPhaseGraph,
+    ),
+    CliError,
+> {
+    #[allow(deprecated)]
+    let (unified, graph) = build_mission_runtime(mission)?;
+    let mission_bindings = project_mission_bindings(&unified);
+    let script_bindings = project_script_bindings(&unified);
+    Ok((mission_bindings, script_bindings, graph))
+}
+
+/// Phase-3.2 legacy unified builder.
+///
+/// Returns the unified `Vec<EventBinding<EventAction>>` list and the
+/// validated mission graph. Phase 5.X.A introduced
+/// [`build_mission_runtime_typed`] which returns the split typed
+/// lists; this builder remains during the migration window because
+/// the simulator kernel still consumes the unified list. Phase 5.X.B
+/// retires it once the kernel's `with_mission` switches to typed
+/// inputs.
 ///
 /// # Errors
 ///
@@ -159,6 +209,63 @@ pub fn project_mission_bindings(
                 | EventAction::EffectorOverride { .. }
                 | EventAction::Separation
                 | EventAction::DeployRecovery { .. } => return None,
+            };
+            Some(EventBinding {
+                id: b.id,
+                trigger: b.trigger.clone(),
+                action,
+                once: b.once,
+            })
+        })
+        .collect()
+}
+
+/// Phase 5.X.A: project a legacy unified [`EventBinding<EventAction>`]
+/// list down to the simulator-only [`ScenarioScriptAction`] bindings.
+/// The simulator kernel consumes these; HAL adopters do not link the
+/// `openbmp-scenario-script` crate.
+///
+/// Iteration order is preserved (canonical id-sorted).
+#[allow(deprecated)]
+#[must_use]
+pub fn project_script_bindings(
+    bindings: &[EventBinding],
+) -> Vec<EventBinding<ScenarioScriptAction>> {
+    bindings
+        .iter()
+        .filter_map(|b| {
+            let action = match &b.action {
+                EventAction::EngineCommand {
+                    id,
+                    throttle_unit,
+                    gimbal_pitch_rad,
+                    gimbal_yaw_rad,
+                    ignite,
+                    shutdown,
+                } => ScenarioScriptAction::EngineCommand {
+                    id: *id,
+                    throttle_unit: *throttle_unit,
+                    gimbal_pitch_rad: *gimbal_pitch_rad,
+                    gimbal_yaw_rad: *gimbal_yaw_rad,
+                    ignite: *ignite,
+                    shutdown: *shutdown,
+                },
+                EventAction::EffectorOverride { id, command } => {
+                    ScenarioScriptAction::EffectorOverride {
+                        id: *id,
+                        command: *command,
+                    }
+                }
+                EventAction::Separation => ScenarioScriptAction::Separation,
+                EventAction::DeployRecovery { id, command } => {
+                    ScenarioScriptAction::DeployRecovery {
+                        id: *id,
+                        command: command.clone(),
+                    }
+                }
+                EventAction::EnterPhase(_)
+                | EventAction::EmitTelemetryMarker { .. }
+                | EventAction::Stop { .. } => return None,
             };
             Some(EventBinding {
                 id: b.id,

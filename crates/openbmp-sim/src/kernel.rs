@@ -555,8 +555,97 @@ where
 
     /// Drain the per-step fired-event queue. The runner calls this
     /// after each `step()` to fan events out to telemetry markers.
+    #[allow(deprecated)]
     pub fn drain_events(&mut self) -> Vec<crate::events::FiredEvent> {
         std::mem::take(&mut self.pending_events)
+    }
+
+    /// Phase 5.X.A: typed split-binding wiring. Accepts the
+    /// FC-owned mission bindings and the simulator-owned
+    /// scenario-script bindings separately, then combines them into
+    /// the kernel's unified evaluation list. The split lives at the
+    /// API surface; the kernel-internal eval path is unchanged for
+    /// byte-identical determinism. Phase 5.X.B replaces the unified
+    /// internal list with two typed lists evaluated in lockstep.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::MissionGraph`] if any binding's id
+    /// is duplicated across the combined list, or if the graph
+    /// references an event not present in either binding list.
+    #[allow(deprecated)]
+    pub fn with_mission_split(
+        self,
+        mission_events: Vec<crate::events::EventBinding<crate::events::MissionAction>>,
+        script_events: Vec<crate::events::EventBinding<crate::events::ScenarioScriptAction>>,
+        mission_graph: Option<crate::events::MissionPhaseGraph>,
+    ) -> Result<Self, SimulationError> {
+        use crate::events::EventAction;
+        let mut unified: Vec<crate::events::EventBinding> = Vec::with_capacity(
+            mission_events.len() + script_events.len(),
+        );
+        for b in mission_events {
+            let action = match b.action {
+                crate::events::MissionAction::EnterState(p) => EventAction::EnterPhase(p),
+                crate::events::MissionAction::EmitTelemetryMarker { tag } => {
+                    EventAction::EmitTelemetryMarker { tag }
+                }
+                crate::events::MissionAction::Stop { label } => {
+                    EventAction::Stop { label }
+                }
+                // Placeholder mission actions wired in 5.X.D; until
+                // then no scenario produces them, but keep the
+                // arms exhaustive to fail-fast if they sneak in.
+                crate::events::MissionAction::RaiseHealthAlarm { .. }
+                | crate::events::MissionAction::RequestSafeState { .. } => {
+                    return Err(SimulationError::MissionGraph(
+                        crate::events::MissionGraphError::UnknownEvent {
+                            event: b.id,
+                            in_transition: usize::MAX,
+                        },
+                    ));
+                }
+            };
+            unified.push(crate::events::EventBinding {
+                id: b.id,
+                trigger: b.trigger,
+                action,
+                once: b.once,
+            });
+        }
+        for b in script_events {
+            let action = match b.action {
+                crate::events::ScenarioScriptAction::EngineCommand {
+                    id,
+                    throttle_unit,
+                    gimbal_pitch_rad,
+                    gimbal_yaw_rad,
+                    ignite,
+                    shutdown,
+                } => EventAction::EngineCommand {
+                    id,
+                    throttle_unit,
+                    gimbal_pitch_rad,
+                    gimbal_yaw_rad,
+                    ignite,
+                    shutdown,
+                },
+                crate::events::ScenarioScriptAction::EffectorOverride { id, command } => {
+                    EventAction::EffectorOverride { id, command }
+                }
+                crate::events::ScenarioScriptAction::Separation => EventAction::Separation,
+                crate::events::ScenarioScriptAction::DeployRecovery { id, command } => {
+                    EventAction::DeployRecovery { id, command }
+                }
+            };
+            unified.push(crate::events::EventBinding {
+                id: b.id,
+                trigger: b.trigger,
+                action,
+                once: b.once,
+            });
+        }
+        self.with_mission(unified, mission_graph)
     }
 
     /// Replace the effector-actuals snapshot consumed by per-step
