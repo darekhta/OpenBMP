@@ -16,7 +16,7 @@ Retired by Phase 5.X.H alongside the plan document.
 |---|---|---|
 | 5.X.0 — Documentation alignment | ✅ Done | `Phase 5.X.0` |
 | 5.X.A — Action taxonomy split | ✅ Done | `Phase 5.X.A (1-6/N)` |
-| 5.X.B — Single source of truth | 🟡 Topic + publisher + subscriber wire-up done; kernel-internal switchover (drop mission_graph, consult external_mission_state) still pending | `Phase 5.X.B (1-5/N)` |
+| 5.X.B — Single source of truth | ✅ Done (kernel defers to FC's external_mission_state when wired; pure-sim scenarios fall back to legacy mission_graph for backward compat) | `Phase 5.X.B (1-7/N)` |
 | 5.X.C — Hierarchical primitives | ✅ Done | `Phase 5.X.C` |
 | 5.X.D — Orthogonal regions | ✅ Done | `Phase 5.X.D` |
 | 5.X.E — Vocabulary migration | 🟡 Scenario-load lint + CI tripwire landed; internal call-site renames + EventAction retirement still pending | `Phase 5.X.E pre-work + 5.X.E (2/N)` |
