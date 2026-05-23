@@ -25,7 +25,7 @@ use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{
     BarometerSample, EstimatorStatus, FailsafeFlags, FdirStatus, GnssSample, ImuSample,
-    PositionEstimate, VehicleStatus,
+    MissionStatePublish, PositionEstimate, VehicleStatus,
 };
 
 /// Commander parameters.
@@ -287,6 +287,18 @@ impl Job for Commander {
             safe_state_requested: self.safe_state_requested,
         };
         let _ = ctx.bus.publish(status);
+
+        // Phase 5.X.B: also publish the single-source-of-truth
+        // mission-state topic. The simulator subscribes to this in
+        // place of holding a parallel `mission_graph` field once
+        // the kernel-side wiring (5.X.B.2) lands. Until then, the
+        // topic is consumer-less but stable for downstream code to
+        // start subscribing against.
+        let mission_state = MissionStatePublish {
+            mission_state_id: self.current_phase.value(),
+            safe_state_requested: self.safe_state_requested,
+        };
+        let _ = ctx.bus.publish(mission_state);
 
         self.previous_scalars = Some(eval_state.current);
         Ok(())

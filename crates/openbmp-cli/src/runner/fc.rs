@@ -32,8 +32,9 @@ use openbmp_fc::sr_ukf::{SquareRootUkf, SquareRootUkfAttitude, SquareRootUkfPara
 use openbmp_fc::topics::{
     ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, EffectorCommandSet,
     EngineCommandSet, EngineDemand, EstimatorMode, EstimatorStatus, FailsafeFlags,
-    FdirGlrtDiagnostic, FdirStatus, GnssSample, ImuSample, MagnetometerSample, PositionEstimate,
-    ReferenceState, SensorStatus, StarTrackerSample, VehicleStatus,
+    FdirGlrtDiagnostic, FdirStatus, GnssSample, ImuSample, MagnetometerSample,
+    MissionStatePublish, PositionEstimate, ReferenceState, SensorStatus, StarTrackerSample,
+    VehicleStatus,
 };
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
@@ -379,6 +380,11 @@ impl FcRunner {
         // publish without a separate setup step. Idle when the
         // selected estimator is not IMM.
         bus.register::<EstimatorMode>()?;
+        // Phase 5.X.B: single-source-of-truth mission state topic.
+        // The commander publishes here every tick; downstream code
+        // (simulator-side subscriber, telemetry recorder) reads in
+        // place of the legacy parallel-state pattern.
+        bus.register::<MissionStatePublish>()?;
         Ok(())
     }
 }
