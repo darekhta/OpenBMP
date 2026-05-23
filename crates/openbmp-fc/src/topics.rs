@@ -311,9 +311,8 @@ pub struct MissionStatePublish {
     /// Active mission-region state id at the start of this tick.
     pub mission_state_id: u64,
     /// `true` once an FDIR trip has demanded a safe-state transition.
-    /// Mirror of `VehicleStatus::safe_state_requested`. The planned
-    /// orthogonal `health` region exists as a primitive but is not yet
-    /// the production source of this value.
+    /// Mirror of `VehicleStatus::safe_state_requested`; the commander
+    /// derives both from the canonical `health` region.
     pub safe_state_requested: bool,
 }
 

@@ -5,21 +5,26 @@
 //! lists and the [`openbmp_sim::MissionPhaseGraph`] the kernel
 //! consumes.
 //!
-//! Identifier convention: each phase / event id is path-derived from
-//! the canonical path (`mission.phases.<id>` /
-//! `mission.events.<id>`). Scenario files may provide either the bare
-//! id (`ascent`) or the canonical path (`mission.phases.ascent`);
-//! both forms resolve to the same stable id. Reordering the
+//! Identifier convention: each phase / state / event id is
+//! path-derived from its canonical path (`mission.phases.<id>`,
+//! `mission.states.<id>`, or `mission.events.<id>`). Scenario files
+//! may provide either the bare id (`ascent`) or the canonical path
+//! (`mission.phases.ascent`); bare mission states intentionally keep
+//! the Phase-3 `mission.phases.<id>` namespace so v3 → v4 flat
+//! migrations can remain byte-identical. Reordering the
 //! `[[mission.phases]]` / `[[mission.events]]` blocks does not shift
 //! any id; this is the load-bearing invariant for declaration-order-
 //! independent determinism.
 
 use std::collections::BTreeMap;
 
-use openbmp_mission::{HsmError, MissionState, MissionStateMachine};
+use openbmp_mission::{
+    CanonicalRegionStates, CanonicalRegions, HsmError, MissionState, MissionStateMachine, Region,
+    RegionError, RegionSet,
+};
 use openbmp_scenario::{
     EventConfig, EventTriggerConfig, MissionConfig, PhaseConfig, PhaseTransitionConfig,
-    ScenarioActionConfig,
+    RegionConfig, RegionStateConfig, ScenarioActionConfig, StateConfig,
 };
 use openbmp_sim::{
     BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase, PhaseId,
@@ -28,14 +33,21 @@ use openbmp_sim::{
 
 use crate::error::CliError;
 
-/// Split mission runtime produced from a parsed scenario mission
-/// block: FC-owned mission bindings, simulator-owned script bindings,
-/// and the validated flat mission graph.
-pub type MissionRuntime = (
-    Vec<EventBinding<MissionAction>>,
-    Vec<EventBinding<ScenarioScriptAction>>,
-    MissionPhaseGraph,
-);
+/// Split mission runtime produced from a parsed scenario mission block.
+#[derive(Clone, Debug)]
+pub struct MissionRuntime {
+    /// FC-owned mission bindings.
+    pub mission_bindings: Vec<EventBinding<MissionAction>>,
+    /// Simulator-owned script bindings.
+    pub script_bindings: Vec<EventBinding<ScenarioScriptAction>>,
+    /// Flat transition graph. Production code still uses this for
+    /// transition edges, while the HSM supplies entry / exit chains.
+    pub graph: MissionPhaseGraph,
+    /// Lifted hierarchical state machine.
+    pub hsm: MissionStateMachine,
+    /// Canonical orthogonal regions.
+    pub regions: RegionSet,
+}
 
 enum RuntimeEventBinding {
     Mission(EventBinding<MissionAction>),
@@ -48,9 +60,8 @@ enum RuntimeEventBinding {
 /// action lists) or, when populated, the v4
 /// `[[mission.states]]` block with hierarchical `parent` fields.
 ///
-/// Returns a `MissionStateMachine` for validation and future
-/// hierarchical consumers. The current production FC and simulator
-/// paths still consume the flat [`MissionPhaseGraph`].
+/// Returns a `MissionStateMachine` consumed by the FC commander and
+/// pure-sim kernel for transition entry / exit chains.
 ///
 /// # Errors
 ///
@@ -65,17 +76,19 @@ pub fn lift_mission_state_machine(
         let states: Vec<MissionState> = mission
             .states
             .iter()
-            .map(|s| MissionState {
-                id: phase_id(&s.id),
-                label: s.label.clone(),
-                parent: s.parent.as_deref().map(phase_id),
-                on_entry: Vec::new(), // Phase 5.X.F.2 wires action lists
-                on_exit: Vec::new(),
-                on_active: Vec::new(),
-                allowed_effectors: s.allowed_effectors.clone(),
-                allowed_engines: s.allowed_engines.clone(),
+            .map(|s| {
+                Ok(MissionState {
+                    id: phase_id(&s.id),
+                    label: s.label.clone(),
+                    parent: s.parent.as_deref().map(phase_id),
+                    on_entry: mission_actions(&s.on_entry, "mission.states[].on_entry")?,
+                    on_exit: mission_actions(&s.on_exit, "mission.states[].on_exit")?,
+                    on_active: mission_actions(&s.on_active, "mission.states[].on_active")?,
+                    allowed_effectors: s.allowed_effectors.clone(),
+                    allowed_engines: s.allowed_engines.clone(),
+                })
             })
-            .collect();
+            .collect::<Result<_, CliError>>()?;
         let initial = phase_id(&mission.initial_phase);
         return MissionStateMachine::new(states, initial).map_err(|err| hsm_to_cli_error(&err));
     }
@@ -108,6 +121,12 @@ fn hsm_to_cli_error(err: &HsmError) -> CliError {
     })
 }
 
+fn region_to_cli_error(err: &RegionError) -> CliError {
+    CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
+        reason: err.to_string(),
+    })
+}
+
 /// Convert a parsed [`MissionConfig`] into the typed runtime values
 /// consumed by the kernel and FC commander.
 ///
@@ -121,18 +140,14 @@ fn hsm_to_cli_error(err: &HsmError) -> CliError {
 /// unknown phase or event id, the phase graph is invalid, or
 /// `mission.initial_phase` references an unknown id.
 pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRuntime, CliError> {
-    let phase_id_lookup: BTreeMap<&str, PhaseId> = mission
-        .phases
-        .iter()
-        .map(|p| (p.id.as_str(), phase_id(&p.id)))
-        .collect();
+    let phase_id_lookup = phase_lookup(mission);
     let event_id_lookup: BTreeMap<&str, EventId> = mission
         .events
         .iter()
         .map(|e| (e.id.as_str(), event_id(&e.id)))
         .collect();
 
-    let phases: Vec<Phase> = mission.phases.iter().map(build_phase).collect();
+    let phases = build_phases(mission);
     let runtime_bindings: Vec<RuntimeEventBinding> = mission
         .events
         .iter()
@@ -170,12 +185,13 @@ pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRun
         .ok_or_else(|| {
             CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
                 reason: format!(
-                    "mission.initial_phase = `{}` does not match any declared phase",
+                    "mission.initial_phase = `{}` does not match any declared phase/state",
                     mission.initial_phase,
                 ),
             })
         })?;
 
+    let hsm = lift_mission_state_machine(mission)?;
     let graph = MissionPhaseGraph::new(phases, transitions, initial, &declared_event_ids).map_err(
         |err| {
             CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
@@ -183,12 +199,19 @@ pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRun
             })
         },
     )?;
+    let regions = build_region_set(mission, &graph)?;
 
-    Ok((mission_bindings, script_bindings, graph))
+    Ok(MissionRuntime {
+        mission_bindings,
+        script_bindings,
+        graph,
+        hsm,
+        regions,
+    })
 }
 
 fn phase_id(id: &str) -> PhaseId {
-    if id.starts_with("mission.phases.") {
+    if id.starts_with("mission.phases.") || id.starts_with("mission.states.") {
         PhaseId::from_path(id)
     } else {
         PhaseId::from_path(&format!("mission.phases.{id}"))
@@ -210,6 +233,71 @@ fn build_phase(config: &PhaseConfig) -> Phase {
         allowed_effectors: config.allowed_effectors.clone(),
         allowed_engines: config.allowed_engines.clone(),
     }
+}
+
+fn build_phase_from_state(config: &StateConfig) -> Phase {
+    Phase {
+        id: phase_id(&config.id),
+        label: if config.label.is_empty() {
+            config.id.clone()
+        } else {
+            config.label.clone()
+        },
+        allowed_effectors: config.allowed_effectors.clone(),
+        allowed_engines: config.allowed_engines.clone(),
+    }
+}
+
+fn phase_lookup(mission: &MissionConfig) -> BTreeMap<&str, PhaseId> {
+    if mission.states.is_empty() {
+        mission
+            .phases
+            .iter()
+            .map(|p| (p.id.as_str(), phase_id(&p.id)))
+            .collect()
+    } else {
+        mission
+            .states
+            .iter()
+            .map(|s| (s.id.as_str(), phase_id(&s.id)))
+            .collect()
+    }
+}
+
+fn build_phases(mission: &MissionConfig) -> Vec<Phase> {
+    if mission.states.is_empty() {
+        mission.phases.iter().map(build_phase).collect()
+    } else {
+        mission.states.iter().map(build_phase_from_state).collect()
+    }
+}
+
+fn mission_actions(
+    actions: &[ScenarioActionConfig],
+    field: &'static str,
+) -> Result<Vec<MissionAction>, CliError> {
+    actions
+        .iter()
+        .map(|action| match action {
+            ScenarioActionConfig::EnterPhase { phase } => {
+                Ok(MissionAction::EnterState(phase_id(phase)))
+            }
+            ScenarioActionConfig::EmitTelemetryMarker { tag } => {
+                Ok(MissionAction::EmitTelemetryMarker { tag: tag.clone() })
+            }
+            ScenarioActionConfig::Stop { label } => Ok(MissionAction::Stop {
+                label: label.clone(),
+            }),
+            ScenarioActionConfig::EffectorOverride { .. }
+            | ScenarioActionConfig::EngineCommand { .. }
+            | ScenarioActionConfig::Separation
+            | ScenarioActionConfig::DeployRecovery { .. } => Err(CliError::Scenario(
+                openbmp_scenario::ScenarioError::MissionGraph {
+                    reason: format!("{field} may contain only HAL-portable mission actions"),
+                },
+            )),
+        })
+        .collect()
 }
 
 fn build_event_binding(
@@ -342,6 +430,197 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Cli
     })
 }
 
+fn build_region_set(
+    mission: &MissionConfig,
+    graph: &MissionPhaseGraph,
+) -> Result<RegionSet, CliError> {
+    let mut regions = default_region_set(graph)?;
+    for region in &mission.regions {
+        let id = region_id(&region.id);
+        if id == CanonicalRegions::mission() {
+            // The mission region is the production mission graph.
+            // `[[mission.regions]]` may mention it for documentation,
+            // but it cannot replace the already-validated graph.
+            continue;
+        }
+        regions.insert(build_region(region)?);
+    }
+    validate_required_canonical_region_states(&regions)?;
+    Ok(regions)
+}
+
+fn default_region_set(graph: &MissionPhaseGraph) -> Result<RegionSet, CliError> {
+    let mut regions = RegionSet::new();
+    regions.insert(Region::new(CanonicalRegions::mission(), graph.clone()));
+    regions.insert(
+        Region::from_states(
+            CanonicalRegions::health(),
+            vec![
+                region_phase(CanonicalRegionStates::health_nominal(), "nominal"),
+                region_phase(CanonicalRegionStates::health_degraded(), "degraded"),
+                region_phase(
+                    CanonicalRegionStates::health_abort_requested(),
+                    "abort_requested",
+                ),
+                region_phase(
+                    CanonicalRegionStates::health_safed_on_fault(),
+                    "safed_on_fault",
+                ),
+            ],
+            CanonicalRegionStates::health_nominal(),
+        )
+        .map_err(|err| region_to_cli_error(&err))?,
+    );
+    regions.insert(
+        Region::from_states(
+            CanonicalRegions::comms(),
+            vec![region_phase(
+                CanonicalRegionStates::comms_linked(),
+                "linked",
+            )],
+            CanonicalRegionStates::comms_linked(),
+        )
+        .map_err(|err| region_to_cli_error(&err))?,
+    );
+    regions.insert(
+        Region::from_states(
+            CanonicalRegions::estimator_regime(),
+            vec![region_phase(
+                CanonicalRegionStates::estimator_boost_mode(),
+                "boost_mode",
+            )],
+            CanonicalRegionStates::estimator_boost_mode(),
+        )
+        .map_err(|err| region_to_cli_error(&err))?,
+    );
+    Ok(regions)
+}
+
+fn build_region(config: &RegionConfig) -> Result<Region, CliError> {
+    let id = region_id(&config.id);
+    let states: Vec<Phase> = config
+        .states
+        .iter()
+        .map(|state| build_region_state(&config.id, state))
+        .collect();
+    let initial = region_state_id_by_name(&config.id, &config.initial_state);
+    Region::from_states(id, states, initial).map_err(|err| region_to_cli_error(&err))
+}
+
+fn build_region_state(region_name: &str, config: &RegionStateConfig) -> Phase {
+    Phase {
+        id: region_state_id_by_name(region_name, &config.id),
+        label: if config.label.is_empty() {
+            config.id.clone()
+        } else {
+            config.label.clone()
+        },
+        allowed_effectors: Vec::new(),
+        allowed_engines: Vec::new(),
+    }
+}
+
+fn validate_required_canonical_region_states(regions: &RegionSet) -> Result<(), CliError> {
+    require_region_state(
+        regions,
+        CanonicalRegions::mission(),
+        "mission",
+        None,
+        "mission.regions.mission",
+    )?;
+    require_region_state(
+        regions,
+        CanonicalRegions::health(),
+        "health",
+        Some(CanonicalRegionStates::health_nominal()),
+        "mission.regions.health.nominal",
+    )?;
+    require_region_state(
+        regions,
+        CanonicalRegions::health(),
+        "health",
+        Some(CanonicalRegionStates::health_abort_requested()),
+        "mission.regions.health.abort_requested",
+    )?;
+    require_region_state(
+        regions,
+        CanonicalRegions::health(),
+        "health",
+        Some(CanonicalRegionStates::health_safed_on_fault()),
+        "mission.regions.health.safed_on_fault",
+    )?;
+    require_region_state(
+        regions,
+        CanonicalRegions::comms(),
+        "comms",
+        Some(CanonicalRegionStates::comms_linked()),
+        "mission.regions.comms.linked",
+    )?;
+    require_region_state(
+        regions,
+        CanonicalRegions::estimator_regime(),
+        "estimator_regime",
+        Some(CanonicalRegionStates::estimator_boost_mode()),
+        "mission.regions.estimator_regime.boost_mode",
+    )?;
+    Ok(())
+}
+
+fn require_region_state(
+    regions: &RegionSet,
+    region_id: openbmp_sim::RegionId,
+    region_name: &str,
+    state: Option<PhaseId>,
+    state_name: &str,
+) -> Result<(), CliError> {
+    let Some(region) = regions.regions.get(&region_id) else {
+        return Err(CliError::Scenario(
+            openbmp_scenario::ScenarioError::MissionGraph {
+                reason: format!("canonical region `{region_name}` is missing"),
+            },
+        ));
+    };
+    if let Some(state) = state
+        && !region.contains_state(state)
+    {
+        return Err(CliError::Scenario(
+            openbmp_scenario::ScenarioError::MissionGraph {
+                reason: format!(
+                    "canonical region `{region_name}` is missing required state `{state_name}`"
+                ),
+            },
+        ));
+    }
+    Ok(())
+}
+
+fn region_phase(id: PhaseId, label: &str) -> Phase {
+    Phase {
+        id,
+        label: label.to_owned(),
+        allowed_effectors: Vec::new(),
+        allowed_engines: Vec::new(),
+    }
+}
+
+fn region_id(id: &str) -> openbmp_sim::RegionId {
+    if id.starts_with("mission.regions.") {
+        openbmp_sim::RegionId::from_path(id)
+    } else {
+        openbmp_sim::RegionId::from_path(&format!("mission.regions.{id}"))
+    }
+}
+
+fn region_state_id_by_name(region_name: &str, id: &str) -> PhaseId {
+    if id.starts_with("mission.regions.") {
+        PhaseId::from_path(id)
+    } else if region_name.starts_with("mission.regions.") {
+        PhaseId::from_path(&format!("{region_name}.{id}"))
+    } else {
+        PhaseId::from_path(&format!("mission.regions.{region_name}.{id}"))
+    }
+}
+
 fn build_transition(
     index: usize,
     config: &PhaseTransitionConfig,
@@ -396,7 +675,23 @@ pub fn marker_tags(mission: &MissionConfig) -> Vec<String> {
             tags.insert(tag.clone());
         }
     }
+    for state in &mission.states {
+        collect_marker_tags(&state.on_entry, &mut tags);
+        collect_marker_tags(&state.on_exit, &mut tags);
+        collect_marker_tags(&state.on_active, &mut tags);
+    }
     tags.into_iter().collect()
+}
+
+fn collect_marker_tags(
+    actions: &[ScenarioActionConfig],
+    tags: &mut std::collections::BTreeSet<String>,
+) {
+    for action in actions {
+        if let ScenarioActionConfig::EmitTelemetryMarker { tag } = action {
+            tags.insert(tag.clone());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -407,5 +702,44 @@ mod tests {
     fn canonical_and_bare_phase_ids_match() {
         assert_eq!(phase_id("ascent"), phase_id("mission.phases.ascent"));
         assert_eq!(event_id("liftoff"), event_id("mission.events.liftoff"));
+    }
+
+    #[test]
+    fn marker_tags_include_hsm_state_actions() {
+        let mission = MissionConfig {
+            initial_phase: "ascent".to_owned(),
+            phases: Vec::new(),
+            events: vec![EventConfig {
+                id: "apogee".to_owned(),
+                trigger: EventTriggerConfig::AtApogee,
+                action: ScenarioActionConfig::EmitTelemetryMarker {
+                    tag: "event_marker".to_owned(),
+                },
+                once: true,
+            }],
+            transitions: Vec::new(),
+            states: vec![StateConfig {
+                id: "ascent".to_owned(),
+                label: "ascent".to_owned(),
+                parent: None,
+                allowed_effectors: Vec::new(),
+                allowed_engines: Vec::new(),
+                on_entry: vec![ScenarioActionConfig::EmitTelemetryMarker {
+                    tag: "entry_marker".to_owned(),
+                }],
+                on_exit: vec![ScenarioActionConfig::EmitTelemetryMarker {
+                    tag: "exit_marker".to_owned(),
+                }],
+                on_active: Vec::new(),
+            }],
+            regions: Vec::new(),
+            scope: None,
+            test_only_state_override: false,
+        };
+
+        assert_eq!(
+            marker_tags(&mission),
+            vec!["entry_marker", "event_marker", "exit_marker"]
+        );
     }
 }

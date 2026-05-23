@@ -24,6 +24,8 @@
 //! See `docs/software-architecture.md § Simulation Kernel` for the
 //! full kernel contract.
 
+use std::borrow::Cow;
+
 use openbmp_core::{Duration, SimTime, StepIndex};
 use openbmp_state::PointMassState;
 use uom::si::mass::kilogram;
@@ -119,14 +121,13 @@ where
     /// Phase-3.2 mission graph. `None` when no `[mission]` block is
     /// declared.
     mission_graph: Option<crate::events::MissionPhaseGraph>,
+    /// Lifted HSM used for transition entry / exit / active actions.
+    mission_hsm: Option<crate::MissionStateMachine>,
     /// Active mission phase. Initialised to `mission_graph.initial`
     /// when a graph is wired, else `None`.
     current_phase: Option<crate::events::PhaseId>,
-    /// Phase 5.X.B: externally-supplied mission state from the FC
-    /// commander's `commander.mission_state` topic. Set by the
-    /// runner each tick before `kernel.step()`. `None` when no FC
-    /// is wired (pure-sim scenarios).
-    external_mission_state: Option<crate::events::PhaseId>,
+    /// Current authority for `current_phase`.
+    mission_state_authority: MissionStateAuthority,
     /// Per-step queue of fired mission-action events.
     pending_mission_fired: Vec<crate::events::FiredEvent<crate::events::MissionAction>>,
     /// Per-step queue of fired scenario-script-action events.
@@ -178,6 +179,12 @@ where
     /// recovery-rack adapter short-circuits on the empty view,
     /// preserving pre-3.9 byte output.
     recovery_snapshot: std::collections::BTreeMap<openbmp_core::RecoveryId, RecoverySnapshot>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum MissionStateAuthority {
+    Kernel,
+    FlightController,
 }
 
 /// Phase-1 type alias for the point-mass kernel shape used by the
@@ -233,8 +240,9 @@ where
             mission_events_typed: Vec::new(),
             script_events_typed: Vec::new(),
             mission_graph: None,
+            mission_hsm: None,
             current_phase: None,
-            external_mission_state: None,
+            mission_state_authority: MissionStateAuthority::Kernel,
             pending_mission_fired: Vec::new(),
             pending_script_fired: Vec::new(),
             fired_once_events: std::collections::BTreeSet::new(),
@@ -510,20 +518,9 @@ where
     SC: StopCondition<S>,
 {
     /// Active mission phase id.
-    ///
-    /// Phase 5.X.B: prefers the externally-supplied mission state
-    /// (from the FC commander's `commander.mission_state` topic) when
-    /// available, falling back to the kernel's internal
-    /// `current_phase` for pure-sim scenarios. The FC-wired path's
-    /// `current_phase` is republished by the kernel each step in
-    /// `evaluate_events` so this getter and the internal field stay
-    /// in sync.
     #[must_use]
     pub const fn current_phase(&self) -> Option<crate::events::PhaseId> {
-        match self.external_mission_state {
-            Some(phase) => Some(phase),
-            None => self.current_phase,
-        }
+        self.current_phase
     }
 
     /// HAL-portable mission-action bindings view. Returns the
@@ -557,25 +554,25 @@ where
         std::mem::take(&mut self.pending_script_fired)
     }
 
-    /// Phase 5.X.B: inject the externally-owned mission state (the
-    /// FC commander's published value via `commander.mission_state`).
-    /// The runner reads the FC bus topic each tick and calls this
-    /// setter before `kernel.step()`; the kernel uses the externally
-    /// supplied state in place of its internal `current_phase`
-    /// when populated.
-    ///
-    /// During the migration window, this setter is informational —
-    /// the kernel continues to own `current_phase` for byte-identical
-    /// behavior. Phase 5.X.B's kernel-side switchover will consult
-    /// this value before the local one.
+    /// Inject the externally-owned mission state published by the FC
+    /// commander.
     pub fn set_external_mission_state(&mut self, phase: Option<crate::events::PhaseId>) {
-        self.external_mission_state = phase;
+        if let Some(phase) = phase {
+            self.current_phase = Some(phase);
+            self.mission_state_authority = MissionStateAuthority::FlightController;
+        } else {
+            self.mission_state_authority = MissionStateAuthority::Kernel;
+        }
     }
 
-    /// Phase 5.X.B: read the externally-supplied mission state.
+    /// Read the externally-supplied mission state when the FC owns it.
     #[must_use]
     pub fn external_mission_state(&self) -> Option<crate::events::PhaseId> {
-        self.external_mission_state
+        if self.mission_state_authority == MissionStateAuthority::FlightController {
+            self.current_phase
+        } else {
+            None
+        }
     }
 
     /// Typed split-binding wiring. Accepts the FC-owned mission
@@ -593,6 +590,7 @@ where
         mut mission_events: Vec<crate::events::EventBinding<crate::events::MissionAction>>,
         mut script_events: Vec<crate::events::EventBinding<crate::events::ScenarioScriptAction>>,
         mission_graph: Option<crate::events::MissionPhaseGraph>,
+        mission_hsm: Option<crate::MissionStateMachine>,
     ) -> Result<Self, SimulationError> {
         mission_events.sort_by_key(|e| e.id.value());
         script_events.sort_by_key(|e| e.id.value());
@@ -623,10 +621,23 @@ where
             }
             self.current_phase = Some(graph.initial);
         }
+        if let (Some(graph), Some(hsm)) = (&mission_graph, &mission_hsm) {
+            for phase in &graph.phases {
+                if !hsm.contains_state(phase.id) {
+                    return Err(SimulationError::MissionGraph(
+                        crate::events::MissionGraphError::UnknownPhaseId {
+                            phase: phase.id,
+                            in_field: Cow::Borrowed("mission_hsm.states"),
+                        },
+                    ));
+                }
+            }
+        }
 
         self.mission_events_typed = mission_events;
         self.script_events_typed = script_events;
         self.mission_graph = mission_graph;
+        self.mission_hsm = mission_hsm;
         Ok(self)
     }
 
@@ -768,23 +779,13 @@ where
         time: SimTime,
     ) {
         use crate::events::{EventEvalState, EventTrigger};
-        // Phase 5.X.B: when an external mission-state authority (the
-        // FC commander) supplies a value via
-        // `set_external_mission_state`, the kernel defers to it
-        // rather than computing its own. The internal
-        // `current_phase` field is overwritten so it stays in sync
-        // for runner-side getters and stop-condition emission. The
-        // pure-sim path (no FC) leaves `external_mission_state` at
-        // `None` and the legacy internal computation continues.
-        if let Some(external) = self.external_mission_state {
-            self.current_phase = Some(external);
-        }
         let eval_state = EventEvalState {
             current: scalars,
             previous: self.previous_event_scalars,
             current_phase: self.current_phase,
         };
-        let fc_owned = self.external_mission_state.is_some();
+        let fc_owned = self.mission_state_authority == MissionStateAuthority::FlightController;
+        let mut transitioned = false;
         let mission_bindings = self.mission_events_typed.clone();
         for binding in &mission_bindings {
             if binding.once && self.fired_once_events.contains(&binding.id) {
@@ -799,14 +800,18 @@ where
                 time,
                 action: binding.action.clone(),
             });
-            self.apply_graph_transition_for_event(binding.id, fc_owned);
+            let graph_transitioned =
+                self.apply_graph_transition_for_event(binding.id, fc_owned, step, time);
+            transitioned |= graph_transitioned;
             match &binding.action {
                 crate::events::MissionAction::EnterState(phase) => {
                     // Phase 5.X.B: when FC owns mission state,
                     // ignore in-binding phase entries — the commander
-                    // already applied them. When pure-sim, fall
-                    // through to legacy behavior.
-                    if !fc_owned {
+                    // already applied them. When pure-sim, the graph
+                    // transition table takes precedence; direct
+                    // EnterState is only the legacy fallback for an
+                    // event with no graph edge from the current state.
+                    if !fc_owned && !graph_transitioned {
                         self.current_phase = Some(*phase);
                     }
                 }
@@ -838,17 +843,26 @@ where
                 time,
                 action: binding.action.clone(),
             });
-            self.apply_graph_transition_for_event(binding.id, fc_owned);
+            transitioned |= self.apply_graph_transition_for_event(binding.id, fc_owned, step, time);
             if binding.once {
                 self.fired_once_events.insert(binding.id);
             }
         }
+        if !transitioned {
+            self.fire_active_state_actions(step, time);
+        }
         self.previous_event_scalars = Some(scalars);
     }
 
-    fn apply_graph_transition_for_event(&mut self, event: crate::events::EventId, fc_owned: bool) {
+    fn apply_graph_transition_for_event(
+        &mut self,
+        event: crate::events::EventId,
+        fc_owned: bool,
+        step: StepIndex,
+        time: SimTime,
+    ) -> bool {
         if fc_owned {
-            return;
+            return false;
         }
         let graph_transition_to = self.mission_graph.as_ref().and_then(|graph| {
             self.current_phase.and_then(|current_phase| {
@@ -862,8 +876,66 @@ where
             })
         });
         if let Some(phase) = graph_transition_to {
+            if let Some(current) = self.current_phase {
+                self.fire_transition_chain_actions(current, phase, event, step, time);
+            }
             self.current_phase = Some(phase);
+            return true;
         }
+        false
+    }
+
+    fn fire_transition_chain_actions(
+        &mut self,
+        from: crate::events::PhaseId,
+        to: crate::events::PhaseId,
+        cause: crate::events::EventId,
+        step: StepIndex,
+        time: SimTime,
+    ) {
+        let Some(hsm) = self.mission_hsm.clone() else {
+            return;
+        };
+        for state in hsm.exit_chain(from, to) {
+            for action in hsm.on_exit_actions(state) {
+                self.fire_hsm_action(cause, step, time, action.clone());
+            }
+        }
+        for state in hsm.enter_chain(from, to) {
+            for action in hsm.on_entry_actions(state) {
+                self.fire_hsm_action(cause, step, time, action.clone());
+            }
+        }
+    }
+
+    fn fire_active_state_actions(&mut self, step: StepIndex, time: SimTime) {
+        let (Some(hsm), Some(current)) = (self.mission_hsm.clone(), self.current_phase) else {
+            return;
+        };
+        for action in hsm.on_active_actions(current) {
+            self.fire_hsm_action(crate::events::EventId::new(0), step, time, action.clone());
+        }
+    }
+
+    fn fire_hsm_action(
+        &mut self,
+        cause: crate::events::EventId,
+        step: StepIndex,
+        time: SimTime,
+        action: crate::events::MissionAction,
+    ) {
+        if let crate::events::MissionAction::Stop { label } = &action {
+            self.stopped = Some(StopReason::MissionEnded {
+                phase: self.current_phase,
+                label: label.clone(),
+            });
+        }
+        self.pending_mission_fired.push(crate::events::FiredEvent {
+            binding_id: cause,
+            step,
+            time,
+            action,
+        });
     }
 }
 
@@ -1008,8 +1080,9 @@ where
             mission_events_typed: Vec::new(),
             script_events_typed: Vec::new(),
             mission_graph: None,
+            mission_hsm: None,
             current_phase: None,
-            external_mission_state: None,
+            mission_state_authority: MissionStateAuthority::Kernel,
             pending_mission_fired: Vec::new(),
             pending_script_fired: Vec::new(),
             fired_once_events: std::collections::BTreeSet::new(),
@@ -1329,6 +1402,7 @@ mod tests {
     use crate::stop::{AlwaysContinue, EndTime, MaxSteps};
     use approx::assert_abs_diff_eq;
     use openbmp_core::{Position3, SimTime, Velocity3};
+    use openbmp_mission::MissionState;
     use openbmp_testkit::strategies;
     use proptest::prelude::*;
     use uom::si::f64::Mass;
@@ -1526,7 +1600,7 @@ mod tests {
             once: true,
         }];
         let mut kernel = zero_force_always_continue_kernel(1.0)
-            .with_mission_split(events, Vec::new(), None)
+            .with_mission_split(events, Vec::new(), None, None)
             .expect("mission wiring");
 
         kernel.step().expect("step");
@@ -1535,6 +1609,23 @@ mod tests {
             kernel.stop_reason(),
             Some(StopReason::MissionEnded { label, .. }) if label == "half-second"
         ));
+    }
+
+    #[test]
+    fn external_mission_state_authority_reuses_current_phase_storage() {
+        let mut kernel = zero_force_always_continue_kernel(1.0);
+        let fc_phase = crate::events::PhaseId::from_path("mission.phases.fc_owned");
+
+        assert_eq!(kernel.current_phase(), None);
+        assert_eq!(kernel.external_mission_state(), None);
+
+        kernel.set_external_mission_state(Some(fc_phase));
+        assert_eq!(kernel.current_phase(), Some(fc_phase));
+        assert_eq!(kernel.external_mission_state(), Some(fc_phase));
+
+        kernel.set_external_mission_state(None);
+        assert_eq!(kernel.current_phase(), Some(fc_phase));
+        assert_eq!(kernel.external_mission_state(), None);
     }
 
     #[test]
@@ -1572,7 +1663,7 @@ mod tests {
             once: true,
         }];
         let mut kernel = zero_force_always_continue_kernel(1.0)
-            .with_mission_split(events, Vec::new(), Some(graph))
+            .with_mission_split(events, Vec::new(), Some(graph), None)
             .expect("mission wiring");
 
         assert_eq!(kernel.current_phase(), Some(ascent));
@@ -1580,6 +1671,89 @@ mod tests {
 
         assert_eq!(kernel.current_phase(), Some(descent));
         assert_eq!(kernel.drain_mission_fired_events().len(), 1);
+    }
+
+    #[test]
+    fn hsm_exit_and_entry_actions_fire_on_graph_transition() {
+        let ascent = crate::events::PhaseId::from_path("mission.phases.ascent");
+        let descent = crate::events::PhaseId::from_path("mission.phases.descent");
+        let event_id = crate::events::EventId::from_path("mission.events.at_half_second");
+        let phases = vec![
+            crate::events::Phase {
+                id: ascent,
+                label: "ascent".to_owned(),
+                allowed_effectors: Vec::new(),
+                allowed_engines: Vec::new(),
+            },
+            crate::events::Phase {
+                id: descent,
+                label: "descent".to_owned(),
+                allowed_effectors: Vec::new(),
+                allowed_engines: Vec::new(),
+            },
+        ];
+        let transitions = vec![crate::events::PhaseTransition {
+            from: ascent,
+            to: descent,
+            event: event_id,
+        }];
+        let graph = crate::events::MissionPhaseGraph::new(phases, transitions, ascent, &[event_id])
+            .expect("valid graph");
+        let hsm = crate::MissionStateMachine::new(
+            vec![
+                MissionState {
+                    id: ascent,
+                    label: "ascent".to_owned(),
+                    parent: None,
+                    on_entry: Vec::new(),
+                    on_exit: vec![crate::events::MissionAction::EmitTelemetryMarker {
+                        tag: "exit_ascent".to_owned(),
+                    }],
+                    on_active: Vec::new(),
+                    allowed_effectors: Vec::new(),
+                    allowed_engines: Vec::new(),
+                },
+                MissionState {
+                    id: descent,
+                    label: "descent".to_owned(),
+                    parent: None,
+                    on_entry: vec![crate::events::MissionAction::EmitTelemetryMarker {
+                        tag: "enter_descent".to_owned(),
+                    }],
+                    on_exit: Vec::new(),
+                    on_active: Vec::new(),
+                    allowed_effectors: Vec::new(),
+                    allowed_engines: Vec::new(),
+                },
+            ],
+            ascent,
+        )
+        .expect("valid hsm");
+        let events = vec![crate::events::EventBinding {
+            id: event_id,
+            trigger: crate::events::BuiltInEventTrigger::AtTime { time_s: 0.5 },
+            action: crate::events::MissionAction::EmitTelemetryMarker {
+                tag: "at_half_second".to_owned(),
+            },
+            once: true,
+        }];
+        let mut kernel = zero_force_always_continue_kernel(1.0)
+            .with_mission_split(events, Vec::new(), Some(graph), Some(hsm))
+            .expect("mission wiring");
+
+        kernel.step().expect("step");
+
+        assert_eq!(kernel.current_phase(), Some(descent));
+        let fired = kernel.drain_mission_fired_events();
+        let tags: Vec<&str> = fired
+            .iter()
+            .filter_map(|event| match &event.action {
+                crate::events::MissionAction::EmitTelemetryMarker { tag } => Some(tag.as_str()),
+                crate::events::MissionAction::EnterState(_)
+                | crate::events::MissionAction::Stop { .. } => None,
+            })
+            .collect();
+        assert_eq!(tags, vec!["at_half_second", "exit_ascent", "enter_descent"]);
     }
 
     #[test]

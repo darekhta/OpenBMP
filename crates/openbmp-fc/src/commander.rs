@@ -15,8 +15,9 @@
 use std::collections::BTreeSet;
 
 use openbmp_mission::{
-    BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars, EventTrigger,
-    MissionAction, MissionPhaseGraph, PhaseId,
+    BuiltInEventTrigger, CanonicalRegionStates, CanonicalRegions, EventBinding, EventEvalState,
+    EventId, EventScalars, EventTrigger, MissionAction, MissionPhaseGraph, MissionStateMachine,
+    PhaseId, RegionSet,
 };
 
 use crate::bus::Bus;
@@ -62,16 +63,13 @@ impl ParamSection for CommanderParams {
 #[derive(Debug)]
 pub struct Commander {
     graph: MissionPhaseGraph,
+    hsm: MissionStateMachine,
+    regions: RegionSet,
     bindings: Vec<EventBinding<MissionAction>>,
     current_phase: PhaseId,
     params: CommanderParams,
     armed: bool,
     in_flight: bool,
-    /// `true` once a tripped FDIR detector has demanded a safe-state
-    /// transition. The flag latches; it is re-published as
-    /// [`VehicleStatus::safe_state_requested`] every tick so a
-    /// downstream scenario binding can consume it.
-    safe_state_requested: bool,
     fired_once: BTreeSet<u64>,
     previous_scalars: Option<EventScalars>,
 }
@@ -87,6 +85,8 @@ impl Commander {
     /// not in the graph.
     pub fn new(
         graph: MissionPhaseGraph,
+        hsm: MissionStateMachine,
+        regions: RegionSet,
         bindings: Vec<EventBinding<MissionAction>>,
         start_phase: PhaseId,
         params: CommanderParams,
@@ -96,17 +96,32 @@ impl Commander {
                 phase_id: start_phase.value(),
             });
         }
-        Ok(Self {
+        if !hsm.contains_state(start_phase) {
+            return Err(CommanderError::UnknownPhase {
+                phase_id: start_phase.value(),
+            });
+        }
+        for phase in &graph.phases {
+            if !hsm.contains_state(phase.id) {
+                return Err(CommanderError::UnknownPhase {
+                    phase_id: phase.id.value(),
+                });
+            }
+        }
+        let mut commander = Self {
             graph,
+            hsm,
+            regions,
             bindings,
             current_phase: start_phase,
             params,
             armed: false,
             in_flight: false,
-            safe_state_requested: false,
             fired_once: BTreeSet::new(),
             previous_scalars: None,
-        })
+        };
+        commander.sync_mission_region();
+        Ok(commander)
     }
 
     /// Returns the active phase.
@@ -125,6 +140,12 @@ impl Commander {
     #[must_use]
     pub fn graph(&self) -> &MissionPhaseGraph {
         &self.graph
+    }
+
+    /// Returns the active state of a canonical or custom region.
+    #[must_use]
+    pub fn region_state(&self, region: openbmp_mission::RegionId) -> Option<PhaseId> {
+        self.regions.current_state(region)
     }
 
     fn build_eval_state(&self, bus: &Bus) -> EventEvalState {
@@ -195,7 +216,7 @@ impl Commander {
             // safe-state transition has been requested so a
             // scenario can declare a safe-state phase to fall through
             // into.
-            self.safe_state_requested = true;
+            self.request_safe_state();
             return;
         }
         self.armed = true;
@@ -209,7 +230,7 @@ impl Commander {
             && let Ok(Some((fdir, _))) = bus.latest::<FdirStatus>()
             && fdir.triggered
         {
-            self.safe_state_requested = true;
+            self.request_safe_state();
         }
     }
 
@@ -235,6 +256,77 @@ impl Commander {
             .iter()
             .find(|phase| phase.id == self.current_phase)
             .is_some_and(|phase| !phase.allowed_effectors.is_empty())
+            || self
+                .hsm
+                .state(self.current_phase)
+                .is_some_and(|state| !state.allowed_effectors.is_empty())
+    }
+
+    fn request_safe_state(&mut self) {
+        let _ = self.regions.set_current_state(
+            CanonicalRegions::health(),
+            CanonicalRegionStates::health_abort_requested(),
+        );
+    }
+
+    fn safe_state_requested(&self) -> bool {
+        matches!(
+            self.regions.current_state(CanonicalRegions::health()),
+            Some(state)
+                if state == CanonicalRegionStates::health_abort_requested()
+                    || state == CanonicalRegionStates::health_safed_on_fault()
+        )
+    }
+
+    fn sync_mission_region(&mut self) {
+        let _ = self
+            .regions
+            .set_current_state(CanonicalRegions::mission(), self.current_phase);
+    }
+
+    fn apply_transition(&mut self, target: PhaseId) {
+        let from = self.current_phase;
+        self.fire_hsm_exit_actions(from, target);
+        self.current_phase = target;
+        self.sync_mission_region();
+        self.fire_hsm_entry_actions(from, target);
+    }
+
+    fn fire_hsm_exit_actions(&mut self, from: PhaseId, to: PhaseId) {
+        // The FC commander owns mission state, but physical script
+        // actions are intentionally not part of `MissionAction`. HSM
+        // action lists here can only request mission-state changes or
+        // telemetry markers; telemetry fan-out remains simulator-side.
+        for state in self.hsm.exit_chain(from, to) {
+            let actions: Vec<_> = self.hsm.on_exit_actions(state).to_vec();
+            self.apply_hsm_actions(&actions);
+        }
+    }
+
+    fn fire_hsm_entry_actions(&mut self, from: PhaseId, to: PhaseId) {
+        for state in self.hsm.enter_chain(from, to) {
+            let actions: Vec<_> = self.hsm.on_entry_actions(state).to_vec();
+            self.apply_hsm_actions(&actions);
+        }
+    }
+
+    fn apply_hsm_actions(&mut self, actions: &[MissionAction]) {
+        for action in actions {
+            match action {
+                MissionAction::EnterState(target) => {
+                    if self
+                        .graph
+                        .transitions
+                        .iter()
+                        .any(|t| t.from == self.current_phase && t.to == *target)
+                    {
+                        self.current_phase = *target;
+                        self.sync_mission_region();
+                    }
+                }
+                MissionAction::EmitTelemetryMarker { .. } | MissionAction::Stop { .. } => {}
+            }
+        }
     }
 }
 
@@ -274,7 +366,7 @@ impl Job for Commander {
                 .find(|t| t.from == self.current_phase && t.event == event_id)
                 .map(|t| t.to);
             if let Some(target) = graph_target {
-                self.current_phase = target;
+                self.apply_transition(target);
             } else if let Some(target) = action_target {
                 // Legacy direct-entry fallback for scenarios that use
                 // `EnterState` as the transition declaration itself.
@@ -284,7 +376,7 @@ impl Job for Commander {
                     .iter()
                     .any(|t| t.from == self.current_phase && t.to == target);
                 if allowed {
-                    self.current_phase = target;
+                    self.apply_transition(target);
                 }
             }
         }
@@ -297,7 +389,7 @@ impl Job for Commander {
             phase_id: self.current_phase.value(),
             armed: self.armed,
             in_flight: self.in_flight,
-            safe_state_requested: self.safe_state_requested,
+            safe_state_requested: self.safe_state_requested(),
         };
         let _ = ctx.bus.publish(status);
 
@@ -309,7 +401,7 @@ impl Job for Commander {
         // start subscribing against.
         let mission_state = MissionStatePublish {
             mission_state_id: self.current_phase.value(),
-            safe_state_requested: self.safe_state_requested,
+            safe_state_requested: self.safe_state_requested(),
         };
         let _ = ctx.bus.publish(mission_state);
 
@@ -323,8 +415,9 @@ impl Job for Commander {
 mod tests {
     use openbmp_core::{SimTime, StepIndex};
     use openbmp_mission::{
-        BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase,
-        PhaseId, PhaseTransition,
+        BuiltInEventTrigger, CanonicalRegionStates, CanonicalRegions, EventBinding, EventId,
+        MissionAction, MissionPhaseGraph, MissionState, MissionStateMachine, Phase, PhaseId,
+        PhaseTransition, Region, RegionSet,
     };
 
     use super::*;
@@ -363,6 +456,69 @@ mod tests {
         (graph, bindings, pad)
     }
 
+    fn hsm_from_graph(graph: &MissionPhaseGraph) -> MissionStateMachine {
+        let states = graph
+            .phases
+            .iter()
+            .map(|phase| MissionState {
+                id: phase.id,
+                label: phase.label.clone(),
+                parent: None,
+                on_entry: Vec::new(),
+                on_exit: Vec::new(),
+                on_active: Vec::new(),
+                allowed_effectors: phase.allowed_effectors.clone(),
+                allowed_engines: phase.allowed_engines.clone(),
+            })
+            .collect();
+        MissionStateMachine::new(states, graph.initial).unwrap()
+    }
+
+    fn regions_from_graph(graph: &MissionPhaseGraph) -> RegionSet {
+        let mut regions = RegionSet::new();
+        regions.insert(Region::new(CanonicalRegions::mission(), graph.clone()));
+        regions.insert(
+            Region::from_states(
+                CanonicalRegions::health(),
+                vec![
+                    Phase {
+                        id: CanonicalRegionStates::health_nominal(),
+                        label: "nominal".into(),
+                        allowed_effectors: Vec::new(),
+                        allowed_engines: Vec::new(),
+                    },
+                    Phase {
+                        id: CanonicalRegionStates::health_abort_requested(),
+                        label: "abort_requested".into(),
+                        allowed_effectors: Vec::new(),
+                        allowed_engines: Vec::new(),
+                    },
+                ],
+                CanonicalRegionStates::health_nominal(),
+            )
+            .unwrap(),
+        );
+        regions
+    }
+
+    fn commander_from_graph(
+        graph: MissionPhaseGraph,
+        bindings: Vec<EventBinding<MissionAction>>,
+        start: PhaseId,
+    ) -> Commander {
+        let hsm = hsm_from_graph(&graph);
+        let regions = regions_from_graph(&graph);
+        Commander::new(
+            graph,
+            hsm,
+            regions,
+            bindings,
+            start,
+            CommanderParams::default(),
+        )
+        .unwrap()
+    }
+
     fn fresh_bus() -> Bus {
         let bus = Bus::new();
         bus.register::<ImuSample>().unwrap();
@@ -388,8 +544,7 @@ mod tests {
     #[test]
     fn fdir_trip_blocks_arming_and_sets_safe_state_request() {
         let (graph, bindings, pad) = build_graph();
-        let mut commander =
-            Commander::new(graph, bindings, pad, CommanderParams::default()).unwrap();
+        let mut commander = commander_from_graph(graph, bindings, pad);
 
         let bus = fresh_bus();
         let clock = SimulatedClock::new();
@@ -417,6 +572,11 @@ mod tests {
             status.safe_state_requested,
             "FDIR trip should latch safe-state request"
         );
+        assert_eq!(
+            commander.region_state(CanonicalRegions::health()),
+            Some(CanonicalRegionStates::health_abort_requested()),
+            "safe-state request should be represented by the health region"
+        );
     }
 
     #[test]
@@ -434,8 +594,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        let mut commander =
-            Commander::new(graph, Vec::new(), ascent, CommanderParams::default()).unwrap();
+        let mut commander = commander_from_graph(graph, Vec::new(), ascent);
 
         let bus = fresh_bus();
         let clock = SimulatedClock::new();
@@ -497,8 +656,7 @@ mod tests {
             },
             once: true,
         }];
-        let mut commander =
-            Commander::new(graph, bindings, pad, CommanderParams::default()).unwrap();
+        let mut commander = commander_from_graph(graph, bindings, pad);
         let bus = fresh_bus();
         let clock = SimulatedClock::new();
 

@@ -38,7 +38,9 @@ use openbmp_fc::topics::{
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
 };
-use openbmp_mission::{EventBinding, MissionAction, MissionPhaseGraph, PhaseId};
+use openbmp_mission::{
+    EventBinding, MissionAction, MissionPhaseGraph, MissionStateMachine, PhaseId, RegionSet,
+};
 use openbmp_physics::magnetic::Wmm2025;
 use openbmp_scenario::{
     FcActuatorChannelsConfig, FcAntiWindupConfig, FcAutopilotKind, FcAutopilotParams, FcConfig,
@@ -62,6 +64,36 @@ pub struct FcRunner {
     fc: FlightController,
 }
 
+/// Mission runtime inputs owned by the FC runner.
+#[derive(Debug)]
+pub struct FcRunnerMission {
+    graph: MissionPhaseGraph,
+    hsm: MissionStateMachine,
+    regions: RegionSet,
+    bindings: Vec<EventBinding<MissionAction>>,
+    start_phase: PhaseId,
+}
+
+impl FcRunnerMission {
+    /// Construct the FC mission bundle.
+    #[must_use]
+    pub fn new(
+        graph: MissionPhaseGraph,
+        hsm: MissionStateMachine,
+        regions: RegionSet,
+        bindings: Vec<EventBinding<MissionAction>>,
+        start_phase: PhaseId,
+    ) -> Self {
+        Self {
+            graph,
+            hsm,
+            regions,
+            bindings,
+            start_phase,
+        }
+    }
+}
+
 impl FcRunner {
     /// Builds the runner from the parsed `[fc]` block. The kernel is
     /// responsible for constructing a mission graph and event bindings
@@ -74,9 +106,7 @@ impl FcRunner {
     #[allow(clippy::too_many_lines, clippy::expect_used)]
     pub fn new(
         config: &FcConfig,
-        mission_graph: MissionPhaseGraph,
-        mission_bindings: Vec<EventBinding<MissionAction>>,
-        start_phase: PhaseId,
+        mission: FcRunnerMission,
         autopilot_lqr_context: Option<FcAutopilotLqrContext>,
         loop_step_dt_s: f64,
         allocator: Option<openbmp_fc::allocation::PrioritisedRedistributedAllocator>,
@@ -144,13 +174,15 @@ impl FcRunner {
         }
         next_priority = next_priority.saturating_add(5);
 
-        let authority = build_authority(&mission_graph, config.phase_authority.as_ref());
+        let authority = build_authority(&mission.graph, config.phase_authority.as_ref());
 
         // Commander.
         let commander = Commander::new(
-            mission_graph,
-            mission_bindings,
-            start_phase,
+            mission.graph,
+            mission.hsm,
+            mission.regions,
+            mission.bindings,
+            mission.start_phase,
             CommanderParams::default(),
         )
         .map_err(openbmp_fc::ControllerError::from)?;
@@ -1163,7 +1195,10 @@ fn engine_id_from_config(id: &str) -> EngineId {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
-    use openbmp_mission::{BuiltInEventTrigger, EventId, MissionAction, Phase, PhaseTransition};
+    use openbmp_mission::{
+        BuiltInEventTrigger, CanonicalRegionStates, CanonicalRegions, EventId, MissionAction,
+        MissionState, Phase, PhaseTransition, Region, RegionSet,
+    };
     use openbmp_scenario::{FcAutopilotKind, FcEstimatorKind, FcGuidanceKind};
 
     use super::*;
@@ -1199,6 +1234,63 @@ mod tests {
             once: true,
         }];
         (graph, bindings, pad)
+    }
+
+    fn hsm_from_graph(graph: &MissionPhaseGraph) -> MissionStateMachine {
+        let states = graph
+            .phases
+            .iter()
+            .map(|phase| MissionState {
+                id: phase.id,
+                label: phase.label.clone(),
+                parent: None,
+                on_entry: Vec::new(),
+                on_exit: Vec::new(),
+                on_active: Vec::new(),
+                allowed_effectors: phase.allowed_effectors.clone(),
+                allowed_engines: phase.allowed_engines.clone(),
+            })
+            .collect();
+        MissionStateMachine::new(states, graph.initial).unwrap()
+    }
+
+    fn regions_from_graph(graph: &MissionPhaseGraph) -> RegionSet {
+        let mut regions = RegionSet::new();
+        regions.insert(Region::new(CanonicalRegions::mission(), graph.clone()));
+        regions.insert(
+            Region::from_states(
+                CanonicalRegions::health(),
+                vec![
+                    Phase {
+                        id: CanonicalRegionStates::health_nominal(),
+                        label: "nominal".into(),
+                        allowed_effectors: Vec::new(),
+                        allowed_engines: Vec::new(),
+                    },
+                    Phase {
+                        id: CanonicalRegionStates::health_abort_requested(),
+                        label: "abort_requested".into(),
+                        allowed_effectors: Vec::new(),
+                        allowed_engines: Vec::new(),
+                    },
+                ],
+                CanonicalRegionStates::health_nominal(),
+            )
+            .unwrap(),
+        );
+        regions
+    }
+
+    fn new_runner(
+        config: &FcConfig,
+        graph: MissionPhaseGraph,
+        bindings: Vec<EventBinding<MissionAction>>,
+        pad: PhaseId,
+    ) -> FcRunner {
+        let hsm = hsm_from_graph(&graph);
+        let regions = regions_from_graph(&graph);
+        let mission = FcRunnerMission::new(graph, hsm, regions, bindings, pad);
+        FcRunner::new(config, mission, None, 0.001, None).unwrap()
     }
 
     /// Phase-5.B.2 — multi-lane configuration runs end-to-end through
@@ -1274,7 +1366,7 @@ mod tests {
             trajectory: None,
         };
         let (graph, bindings, pad) = minimal_graph();
-        let mut runner = FcRunner::new(&config, graph, bindings, pad, None, 0.001, None).unwrap();
+        let mut runner = new_runner(&config, graph, bindings, pad);
         // Drive 100 ticks at 1 ms each — same workload as the
         // single-lane attitude-hold smoke test.
         let dt_s = 0.001;
@@ -1349,7 +1441,7 @@ mod tests {
             trajectory: None,
         };
         let (graph, bindings, pad) = minimal_graph();
-        let mut runner = FcRunner::new(&config, graph, bindings, pad, None, 0.001, None).unwrap();
+        let mut runner = new_runner(&config, graph, bindings, pad);
         // Drive 100 ticks at 1 ms each.
         let dt_s = 0.001;
         for k in 0..100u64 {

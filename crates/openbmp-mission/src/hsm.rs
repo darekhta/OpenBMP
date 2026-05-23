@@ -1,11 +1,11 @@
 //! Hierarchical state machine primitives (Phase 5.X.C).
 //!
-//! Replaces the flat [`crate::MissionPhaseGraph`] with a hierarchical
-//! Harel-style state machine: parent / child relationships, entry /
-//! exit / do actions per state, and history pseudo-states. Phase
-//! 5.X.C lands the primitives only — no shipped scenario consumes
-//! them yet; every Phase-5 scenario migrates as a flat (depth-1)
-//! hierarchy in 5.X.F.
+//! Complements the flat [`crate::MissionPhaseGraph`] with a
+//! hierarchical Harel-style state machine: parent / child
+//! relationships, entry / exit / do actions per state, and history
+//! pseudo-states. The flat graph remains the deterministic edge
+//! table; this type supplies hierarchical transition chains for the
+//! FC commander and pure-sim kernel.
 //!
 //! # Architecture
 //!
@@ -44,15 +44,6 @@
 //! - Reordering declarations in the scenario produces an identical
 //!   HSM.
 //!
-//! # Integration status (Phase 5.X.C)
-//!
-//! Primitives only. The simulator kernel and FC commander still
-//! consume [`crate::MissionPhaseGraph`] (the flat-DAG type) for
-//! production transitions. Phase 5.X.F lifts the scenario format to
-//! v4 (`[[mission.states]]` with `parent`) and can build a
-//! `MissionStateMachine`, but the production commander loop has not
-//! yet moved to LCA / entry / exit semantics.
-
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -153,9 +144,7 @@ impl HistoryState {
 /// 2. Every `parent` references a declared state.
 /// 3. The parent relation is acyclic (no state is its own ancestor).
 /// 4. `initial` references a declared state.
-/// 5. Every declared state is reachable from `initial` either as a
-///    descendant or via a declared transition.
-/// 6. States are sorted by `(depth-from-root, parent-StateId.value(),
+/// 5. States are sorted by `(depth-from-root, parent-StateId.value(),
 ///    StateId.value())`. Top-level states have depth 0.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MissionStateMachine {
@@ -255,6 +244,37 @@ impl MissionStateMachine {
             .and_then(|s| s.parent)
     }
 
+    /// Returns the state with `id`, or `None` when `id` is not
+    /// declared in this HSM.
+    #[must_use]
+    pub fn state(&self, id: StateId) -> Option<&MissionState> {
+        self.states.iter().find(|s| s.id == id)
+    }
+
+    /// Returns `true` when `id` is declared in this HSM.
+    #[must_use]
+    pub fn contains_state(&self, id: StateId) -> bool {
+        self.state(id).is_some()
+    }
+
+    /// Actions that fire when `state` is exited.
+    #[must_use]
+    pub fn on_exit_actions(&self, state: StateId) -> &[MissionAction] {
+        self.state(state).map_or(&[], |s| s.on_exit.as_slice())
+    }
+
+    /// Actions that fire when `state` is entered.
+    #[must_use]
+    pub fn on_entry_actions(&self, state: StateId) -> &[MissionAction] {
+        self.state(state).map_or(&[], |s| s.on_entry.as_slice())
+    }
+
+    /// Actions that fire while `state` remains active for a tick.
+    #[must_use]
+    pub fn on_active_actions(&self, state: StateId) -> &[MissionAction] {
+        self.state(state).map_or(&[], |s| s.on_active.as_slice())
+    }
+
     /// Returns the parent chain of `state`: the state itself, then
     /// its parent, then its grandparent, … up to and including the
     /// root (depth-0) ancestor.
@@ -298,37 +318,47 @@ impl MissionStateMachine {
 
     /// Exit chain for a transition from `a` to `b`: the states whose
     /// `on_exit` fires, bottom-to-top, up to but not including the
-    /// LCA. Returns an empty vec if `a == b` or no LCA exists.
+    /// LCA. If both states are declared but live under disjoint
+    /// top-level roots, the implicit machine root is the LCA, so the
+    /// whole source parent chain exits. Returns an empty vec if
+    /// `a == b` or either state is unknown.
     #[must_use]
     pub fn exit_chain(&self, a: StateId, b: StateId) -> Vec<StateId> {
         if a == b {
             return Vec::new();
         }
-        let Some(lca) = self.lca(a, b) else {
+        let chain = self.parent_chain(a);
+        if chain.is_empty() || !self.contains_state(b) {
             return Vec::new();
+        }
+        let Some(lca) = self.lca(a, b) else {
+            return chain;
         };
-        self.parent_chain(a)
-            .into_iter()
-            .take_while(|&s| s != lca)
-            .collect()
+        chain.into_iter().take_while(|&s| s != lca).collect()
     }
 
     /// Enter chain for a transition from `a` to `b`: the states whose
     /// `on_entry` fires, top-to-bottom, from the LCA down to (and
-    /// including) `b` but not including the LCA itself.
+    /// including) `b` but not including the LCA itself. If both states
+    /// are declared but live under disjoint top-level roots, the
+    /// implicit machine root is the LCA, so the whole destination
+    /// parent chain enters. Returns an empty vec if `a == b` or
+    /// either state is unknown.
     #[must_use]
     pub fn enter_chain(&self, a: StateId, b: StateId) -> Vec<StateId> {
         if a == b {
             return Vec::new();
         }
-        let Some(lca) = self.lca(a, b) else {
+        if !self.contains_state(a) {
             return Vec::new();
-        };
-        let mut chain: Vec<StateId> = self
-            .parent_chain(b)
-            .into_iter()
-            .take_while(|&s| s != lca)
-            .collect();
+        }
+        let mut chain = self.parent_chain(b);
+        if chain.is_empty() {
+            return Vec::new();
+        }
+        if let Some(lca) = self.lca(a, b) {
+            chain = chain.into_iter().take_while(|&s| s != lca).collect();
+        }
         chain.reverse();
         chain
     }
@@ -418,7 +448,8 @@ pub enum HsmError {
         /// State whose parent chain cycles.
         state: StateId,
     },
-    /// A state is declared but not a descendant of `initial`.
+    /// Reserved for callers that layer transition-graph reachability
+    /// checks on top of HSM parent validation.
     #[error("state {state:?} is unreachable from the initial state")]
     UnreachableState {
         /// Unreachable state.
@@ -536,6 +567,19 @@ mod tests {
         // Transition from left.inner → right.
         assert_eq!(hsm.exit_chain(left_inner, right), vec![left_inner, left]);
         assert_eq!(hsm.enter_chain(left_inner, right), vec![right]);
+    }
+
+    #[test]
+    fn disjoint_top_level_transition_uses_implicit_root() {
+        let ascent = s("ascent");
+        let descent = s("descent");
+        let hsm =
+            MissionStateMachine::new(vec![state("ascent", None), state("descent", None)], ascent)
+                .expect("flat hsm");
+
+        assert_eq!(hsm.lca(ascent, descent), None);
+        assert_eq!(hsm.exit_chain(ascent, descent), vec![ascent]);
+        assert_eq!(hsm.enter_chain(ascent, descent), vec![descent]);
     }
 
     #[test]

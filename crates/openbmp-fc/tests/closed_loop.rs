@@ -43,8 +43,9 @@ use openbmp_fc::topics::{
     VehicleStatus,
 };
 use openbmp_mission::{
-    BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase, PhaseId,
-    PhaseTransition,
+    BuiltInEventTrigger, CanonicalRegionStates, CanonicalRegions, EventBinding, EventId,
+    MissionAction, MissionPhaseGraph, MissionState, MissionStateMachine, Phase, PhaseId,
+    PhaseTransition, Region, RegionSet,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -182,6 +183,69 @@ fn build_simple_graph() -> (
     (graph, bindings, pad, ascent)
 }
 
+fn hsm_from_graph(graph: &MissionPhaseGraph) -> MissionStateMachine {
+    let states = graph
+        .phases
+        .iter()
+        .map(|phase| MissionState {
+            id: phase.id,
+            label: phase.label.clone(),
+            parent: None,
+            on_entry: Vec::new(),
+            on_exit: Vec::new(),
+            on_active: Vec::new(),
+            allowed_effectors: phase.allowed_effectors.clone(),
+            allowed_engines: phase.allowed_engines.clone(),
+        })
+        .collect();
+    MissionStateMachine::new(states, graph.initial).unwrap()
+}
+
+fn regions_from_graph(graph: &MissionPhaseGraph) -> RegionSet {
+    let mut regions = RegionSet::new();
+    regions.insert(Region::new(CanonicalRegions::mission(), graph.clone()));
+    regions.insert(
+        Region::from_states(
+            CanonicalRegions::health(),
+            vec![
+                Phase {
+                    id: CanonicalRegionStates::health_nominal(),
+                    label: "nominal".into(),
+                    allowed_effectors: Vec::new(),
+                    allowed_engines: Vec::new(),
+                },
+                Phase {
+                    id: CanonicalRegionStates::health_abort_requested(),
+                    label: "abort_requested".into(),
+                    allowed_effectors: Vec::new(),
+                    allowed_engines: Vec::new(),
+                },
+            ],
+            CanonicalRegionStates::health_nominal(),
+        )
+        .unwrap(),
+    );
+    regions
+}
+
+fn commander_from_graph(
+    graph: MissionPhaseGraph,
+    bindings: Vec<EventBinding<MissionAction>>,
+    pad: PhaseId,
+) -> Commander {
+    let hsm = hsm_from_graph(&graph);
+    let regions = regions_from_graph(&graph);
+    Commander::new(
+        graph,
+        hsm,
+        regions,
+        bindings,
+        pad,
+        CommanderParams::default(),
+    )
+    .unwrap()
+}
+
 #[test]
 fn closed_loop_pipeline_runs_deterministically() {
     let mut fc = FlightControllerBuilder::new()
@@ -217,7 +281,7 @@ fn closed_loop_pipeline_runs_deterministically() {
 
     // Mission graph and commander.
     let (graph, bindings, pad, _ascent) = build_simple_graph();
-    let commander = Commander::new(graph, bindings, pad, CommanderParams::default()).unwrap();
+    let commander = commander_from_graph(graph, bindings, pad);
 
     // Register all jobs.
     fc.scheduler_mut()
@@ -360,7 +424,7 @@ fn deterministic_replay_reproduces_actuator_stream() {
             UnitQuaternion::identity(),
         );
         let (graph, bindings, pad, _ascent) = build_simple_graph();
-        let commander = Commander::new(graph, bindings, pad, CommanderParams::default()).unwrap();
+        let commander = commander_from_graph(graph, bindings, pad);
         fc.scheduler_mut()
             .register_periodic(1, 200, 5, Box::new(EstimatorJob::new(ekf)))
             .unwrap();

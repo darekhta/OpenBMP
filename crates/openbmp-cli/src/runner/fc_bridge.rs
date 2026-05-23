@@ -29,7 +29,7 @@ use openbmp_sensors::{
 use openbmp_state::{PointMassState, RigidBodyState};
 
 use crate::error::CliError;
-use crate::runner::fc::{FcAutopilotLqrContext, FcRunner};
+use crate::runner::fc::{FcAutopilotLqrContext, FcRunner, FcRunnerMission};
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
 
@@ -68,17 +68,21 @@ impl FcBridge {
                         .to_owned(),
             });
         };
-        let (mission_bindings, _script_bindings, graph) =
-            crate::runner::mission::build_mission_runtime_typed(mission)?;
-        let start_phase = graph.initial;
+        let mission_runtime = crate::runner::mission::build_mission_runtime_typed(mission)?;
+        let start_phase = mission_runtime.graph.initial;
+        let fc_mission = FcRunnerMission::new(
+            mission_runtime.graph,
+            mission_runtime.hsm,
+            mission_runtime.regions,
+            mission_runtime.mission_bindings,
+            start_phase,
+        );
         let magnetic = build_magnetic_field(fc_config)?;
         let lqr_ctx = build_autopilot_lqr_context(scenario)?;
         let allocator = build_autopilot_allocator(scenario)?;
         let runner = FcRunner::new(
             fc_config,
-            graph,
-            mission_bindings,
-            start_phase,
+            fc_mission,
             lqr_ctx,
             scenario.document.time.dt_s,
             allocator,

@@ -71,6 +71,7 @@ pub use models::{
     MomentModel, NullEnvironment, RecoverySnapshot, RecoverySnapshotView, RigidMassModel,
     TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
 };
+pub use openbmp_mission::MissionStateMachine;
 pub use openbmp_models::{
     Integratable, RigidBodyKinematicState, SimState, TranslationalState, VehicleState,
 };

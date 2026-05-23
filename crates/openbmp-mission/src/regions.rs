@@ -9,12 +9,14 @@
 //!
 //! # Architecture
 //!
-//! - [`Region`] owns its own state machine — a flat-DAG
-//!   [`crate::MissionPhaseGraph`] in Phase 5.X.D (only the `mission`
-//!   region is upgraded to hierarchical in 5.X.F).
+//! - [`Region`] owns its declared flat state set and current state.
+//!   The canonical `mission` region mirrors the mission graph; the
+//!   `health` region is updated by the FC commander's safety logic.
 //! - [`RegionSet`] is the per-scenario registry of regions, indexed
-//!   by [`crate::RegionId`]. Phase 5.X ships this as a primitive;
-//!   production commander code does not yet own or tick a `RegionSet`.
+//!   by [`crate::RegionId`]. Production commander code owns a
+//!   `RegionSet`, keeps the mission region in sync with the active
+//!   mission state, and derives `safe_state_requested` from the
+//!   health region.
 //! - [`CrossRegionGuard`] expresses a precondition on another
 //!   region's current state. Composes with the trigger via AND
 //!   semantics.
@@ -22,13 +24,6 @@
 //!   so consumers reference them by name (`mission`, `health`,
 //!   `comms`, `estimator_regime`) without hard-coding the
 //!   FNV-1a-64 values.
-//!
-//! # Integration status (Phase 5.X.D)
-//!
-//! Primitives only. Phase 5.X.F lifts the scenario format to v4
-//! with `[[mission.regions]]` blocks, but production code still does
-//! not instantiate or tick region machines. The four canonical region
-//! ids exist as named constants for future wiring.
 //!
 //! # Determinism contract
 //!
@@ -42,7 +37,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::{MissionPhaseGraph, PhaseId, RegionId};
+use std::borrow::Cow;
+
+use thiserror::Error;
+
+use crate::{MissionPhaseGraph, Phase, PhaseId, RegionId};
 
 // ---------------------------------------------------------------------
 // Canonical region ids
@@ -52,8 +51,8 @@ use crate::{MissionPhaseGraph, PhaseId, RegionId};
 ///
 /// Their ids are FNV-1a-64 of the canonical scenario region paths;
 /// reordering region declarations in a scenario file cannot shift
-/// any region's id. Phase 5.X.F's scenario format v4 auto-declares
-/// these four regions when `[[mission.regions]]` is omitted.
+/// any region's id. Phase 5.X.F's runner supplies these four regions
+/// when `[[mission.regions]]` is omitted.
 #[derive(Debug)]
 pub struct CanonicalRegions;
 
@@ -93,6 +92,48 @@ impl CanonicalRegions {
     #[must_use]
     pub const fn aerodynamic_regime() -> RegionId {
         RegionId::from_path("mission.regions.aerodynamic_regime")
+    }
+}
+
+/// Canonical region-state ids for the built-in orthogonal regions.
+#[derive(Debug)]
+pub struct CanonicalRegionStates;
+
+impl CanonicalRegionStates {
+    /// `health.nominal`.
+    #[must_use]
+    pub const fn health_nominal() -> PhaseId {
+        PhaseId::from_path("mission.regions.health.nominal")
+    }
+
+    /// `health.degraded`.
+    #[must_use]
+    pub const fn health_degraded() -> PhaseId {
+        PhaseId::from_path("mission.regions.health.degraded")
+    }
+
+    /// `health.abort_requested`.
+    #[must_use]
+    pub const fn health_abort_requested() -> PhaseId {
+        PhaseId::from_path("mission.regions.health.abort_requested")
+    }
+
+    /// `health.safed_on_fault`.
+    #[must_use]
+    pub const fn health_safed_on_fault() -> PhaseId {
+        PhaseId::from_path("mission.regions.health.safed_on_fault")
+    }
+
+    /// `comms.linked`.
+    #[must_use]
+    pub const fn comms_linked() -> PhaseId {
+        PhaseId::from_path("mission.regions.comms.linked")
+    }
+
+    /// `estimator_regime.boost_mode`.
+    #[must_use]
+    pub const fn estimator_boost_mode() -> PhaseId {
+        PhaseId::from_path("mission.regions.estimator_regime.boost_mode")
     }
 }
 
@@ -141,32 +182,90 @@ impl CrossRegionGuard {
 
 /// One orthogonal concurrent region.
 ///
-/// Phase 5.X.D models a region as `(id, graph, current_state)`. The
-/// `mission` region's graph is the existing
-/// [`MissionPhaseGraph`]; the `health` / `comms` /
-/// `estimator_regime` regions ship Phase-5.X.D as single-state
-/// (initial-only) machines until 5.X.F adds the canonical state
-/// definitions.
+/// Phase 5.X models a region as `(id, states, current_state)`. The
+/// `mission` region's state set comes from the mission graph. The
+/// `health`, `comms`, and `estimator_regime` regions use canonical
+/// state ids supplied by the runner unless a scenario declares an
+/// explicit non-mission region.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Region {
     /// Path-derived stable id.
     pub id: RegionId,
-    /// The region's flat-DAG state machine.
-    pub graph: MissionPhaseGraph,
+    /// The region's declared flat state set.
+    pub states: Vec<Phase>,
     /// Active state at the start of the tick.
     pub current_state: PhaseId,
 }
 
 impl Region {
-    /// Construct a region with an initial state.
+    /// Construct a region from an existing flat mission graph.
     #[must_use]
     pub fn new(id: RegionId, graph: MissionPhaseGraph) -> Self {
         let current_state = graph.initial;
         Self {
             id,
-            graph,
+            states: graph.phases,
             current_state,
         }
+    }
+
+    /// Construct a region from explicit states and an initial state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionError`] when ids are duplicated or `initial`
+    /// is not in `states`.
+    pub fn from_states(
+        id: RegionId,
+        mut states: Vec<Phase>,
+        initial: PhaseId,
+    ) -> Result<Self, RegionError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for state in &states {
+            if !seen.insert(state.id) {
+                return Err(RegionError::DuplicateState {
+                    region: id,
+                    state: state.id,
+                });
+            }
+        }
+        if !seen.contains(&initial) {
+            return Err(RegionError::UnknownState {
+                region: id,
+                state: initial,
+                in_field: Cow::Borrowed("region.initial_state"),
+            });
+        }
+        states.sort_by_key(|state| state.id.value());
+        Ok(Self {
+            id,
+            states,
+            current_state: initial,
+        })
+    }
+
+    /// Returns `true` if this region declares `state`.
+    #[must_use]
+    pub fn contains_state(&self, state: PhaseId) -> bool {
+        self.states.iter().any(|s| s.id == state)
+    }
+
+    /// Set the current state for this region.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionError::UnknownState`] when `state` is not
+    /// declared in this region.
+    pub fn set_current_state(&mut self, state: PhaseId) -> Result<(), RegionError> {
+        if !self.contains_state(state) {
+            return Err(RegionError::UnknownState {
+                region: self.id,
+                state,
+                in_field: Cow::Borrowed("region.current_state"),
+            });
+        }
+        self.current_state = state;
+        Ok(())
     }
 }
 
@@ -176,9 +275,8 @@ impl Region {
 
 /// Per-scenario registry of orthogonal regions.
 ///
-/// Production commander code does not yet own or tick this registry.
-/// When a consumer does tick it, region order is locked by
-/// `RegionId.value()` ascending (canonical-form sort).
+/// The FC commander owns this registry in production. Region order is
+/// locked by `RegionId.value()` ascending (canonical-form sort).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RegionSet {
     /// Regions keyed by id; `BTreeMap` iteration order is locked
@@ -199,6 +297,28 @@ impl RegionSet {
         self.regions.insert(region.id, region)
     }
 
+    /// Current state for one region.
+    #[must_use]
+    pub fn current_state(&self, region: RegionId) -> Option<PhaseId> {
+        self.regions.get(&region).map(|r| r.current_state)
+    }
+
+    /// Set a region's current state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionError`] when the region or state is unknown.
+    pub fn set_current_state(
+        &mut self,
+        region: RegionId,
+        state: PhaseId,
+    ) -> Result<(), RegionError> {
+        let Some(region_entry) = self.regions.get_mut(&region) else {
+            return Err(RegionError::UnknownRegion { region });
+        };
+        region_entry.set_current_state(state)
+    }
+
     /// Snapshot the current state of every region. Used by the
     /// commander to publish to per-region bus topics and to
     /// evaluate cross-region guards.
@@ -209,6 +329,35 @@ impl RegionSet {
             .map(|(id, r)| (*id, r.current_state))
             .collect()
     }
+}
+
+/// Errors produced while constructing or ticking orthogonal regions.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum RegionError {
+    /// Two states in the same region share an id.
+    #[error("region {region:?} has duplicate state id {state:?}")]
+    DuplicateState {
+        /// Region that contains the duplicate.
+        region: RegionId,
+        /// Duplicated state id.
+        state: PhaseId,
+    },
+    /// Region id was not declared.
+    #[error("unknown region {region:?}")]
+    UnknownRegion {
+        /// Unknown region id.
+        region: RegionId,
+    },
+    /// State id was not declared in the referenced region.
+    #[error("unknown state {state:?} for region {region:?} in {in_field}")]
+    UnknownState {
+        /// Region containing the reference.
+        region: RegionId,
+        /// Unknown state id.
+        state: PhaseId,
+        /// Field that made the reference.
+        in_field: Cow<'static, str>,
+    },
 }
 
 // ---------------------------------------------------------------------
@@ -231,6 +380,10 @@ mod tests {
         let ids = [mission, health, comms, estimator, aero];
         let unique: std::collections::BTreeSet<_> = ids.iter().copied().collect();
         assert_eq!(unique.len(), ids.len(), "all canonical region ids distinct");
+        assert_ne!(
+            CanonicalRegionStates::health_nominal(),
+            CanonicalRegionStates::health_abort_requested()
+        );
     }
 
     #[test]
@@ -301,6 +454,26 @@ mod tests {
     fn empty_region_set_has_no_states() {
         let set = RegionSet::new();
         assert!(set.current_states().is_empty());
+    }
+
+    #[test]
+    fn region_rejects_unknown_current_state() {
+        let health = CanonicalRegions::health();
+        let nominal = CanonicalRegionStates::health_nominal();
+        let abort = CanonicalRegionStates::health_abort_requested();
+        let mut region = Region::from_states(
+            health,
+            vec![Phase {
+                id: nominal,
+                label: "nominal".into(),
+                allowed_effectors: Vec::new(),
+                allowed_engines: Vec::new(),
+            }],
+            nominal,
+        )
+        .expect("region");
+        let err = region.set_current_state(abort).expect_err("unknown state");
+        assert!(matches!(err, RegionError::UnknownState { state, .. } if state == abort));
     }
 
     // PhaseTransition is held live to confirm the symbol re-exports

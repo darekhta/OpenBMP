@@ -27,4 +27,6 @@ pub use events::{
     PhaseTransition, RegionId, StateId,
 };
 pub use hsm::{HistoryState, HsmError, MissionState, MissionStateMachine};
-pub use regions::{CanonicalRegions, CrossRegionGuard, Region, RegionSet};
+pub use regions::{
+    CanonicalRegionStates, CanonicalRegions, CrossRegionGuard, Region, RegionError, RegionSet,
+};

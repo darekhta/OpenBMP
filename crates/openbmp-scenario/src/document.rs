@@ -727,6 +727,18 @@ impl ScenarioDocument {
                 }
             }
         }
+        for (state_index, state) in mission.states.iter().enumerate() {
+            for (engine_index, id) in state.allowed_engines.iter().enumerate() {
+                if !declared.contains(id.as_str()) {
+                    return Err(ScenarioError::UnknownEngineReference {
+                        field: format!(
+                            "mission.states[{state_index}].allowed_engines[{engine_index}]"
+                        ),
+                        id: id.clone(),
+                    });
+                }
+            }
+        }
         for (event_index, event) in mission.events.iter().enumerate() {
             if let ScenarioActionConfig::EngineCommand { id, .. } = &event.action
                 && !declared.contains(id.as_str())
@@ -790,6 +802,18 @@ impl ScenarioDocument {
                     return Err(ScenarioError::UnknownEffectorReference {
                         field: format!(
                             "mission.phases[{phase_index}].allowed_effectors[{effector_index}]"
+                        ),
+                        id: id.clone(),
+                    });
+                }
+            }
+        }
+        for (state_index, state) in mission.states.iter().enumerate() {
+            for (effector_index, id) in state.allowed_effectors.iter().enumerate() {
+                if !declared.contains(id.as_str()) {
+                    return Err(ScenarioError::UnknownEffectorReference {
+                        field: format!(
+                            "mission.states[{state_index}].allowed_effectors[{effector_index}]"
                         ),
                         id: id.clone(),
                     });
@@ -1864,12 +1888,31 @@ pub struct MissionConfig {
 
 /// Scenario-scope classifier — Phase 5.X.F.
 ///
-/// Used only for human-readable telemetry tags. Does not gate
-/// behaviour. Phase 5.X.F finalises the variant set; Phase 6 adds
-/// hypersonic variants.
+/// Accepts both the documented table form
+/// `[mission.scope] kind = "sounding_rocket"` and the compact form
+/// `scope = "sounding_rocket"`. Used only for human-readable
+/// telemetry tags; does not gate behaviour.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum MissionScope {
+    /// Compact string form.
+    Kind(MissionScopeKind),
+    /// Table form with a `kind` field.
+    Config(MissionScopeConfig),
+}
+
+/// `[mission.scope]` table form.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MissionScopeConfig {
+    /// Scope kind.
+    pub kind: MissionScopeKind,
+}
+
+/// Scenario-scope kind.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum MissionScope {
+pub enum MissionScopeKind {
     /// Sounding rocket profile (Niskanen-2009 chapter-6 reference).
     SoundingRocket,
     /// Propulsive-landing profile (Calisto-class reference).
@@ -1902,8 +1945,7 @@ pub struct StateConfig {
     pub allowed_engines: Vec<String>,
     /// Actions fired in declaration order when the state is entered.
     /// Phase 5.X.F restricts these to mission-vocabulary actions
-    /// (`enter_state`, `emit_telemetry_marker`, `raise_health_alarm`,
-    /// `request_safe_state`, `stop`).
+    /// (`enter_state`, `emit_telemetry_marker`, `stop`).
     #[serde(default)]
     pub on_entry: Vec<ScenarioActionConfig>,
     /// Actions fired in declaration order when the state is exited.
@@ -1913,6 +1955,34 @@ pub struct StateConfig {
     /// active.
     #[serde(default)]
     pub on_active: Vec<ScenarioActionConfig>,
+}
+
+impl StateConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("mission.states[{index}].id"), &self.id)?;
+        for (action_index, action) in self.on_entry.iter().enumerate() {
+            action.validate(index)?;
+            require_mission_only_action(
+                &format!("mission.states[{index}].on_entry[{action_index}]"),
+                action,
+            )?;
+        }
+        for (action_index, action) in self.on_exit.iter().enumerate() {
+            action.validate(index)?;
+            require_mission_only_action(
+                &format!("mission.states[{index}].on_exit[{action_index}]"),
+                action,
+            )?;
+        }
+        for (action_index, action) in self.on_active.iter().enumerate() {
+            action.validate(index)?;
+            require_mission_only_action(
+                &format!("mission.states[{index}].on_active[{action_index}]"),
+                action,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// One orthogonal region declaration — Phase 5.X.F.
@@ -1932,6 +2002,55 @@ pub struct RegionConfig {
     pub transitions: Vec<PhaseTransitionConfig>,
 }
 
+impl RegionConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("mission.regions[{index}].id"), &self.id)?;
+        require_non_empty(
+            &format!("mission.regions[{index}].initial_state"),
+            &self.initial_state,
+        )?;
+        if self.states.is_empty() {
+            return Err(ScenarioError::EmptyList {
+                field: format!("mission.regions[{index}].states"),
+            });
+        }
+        let state_ids: Vec<String> = self.states.iter().map(|state| state.id.clone()).collect();
+        require_unique(&format!("mission.regions[{index}].states.id"), &state_ids)?;
+        let state_set: BTreeSet<&str> = state_ids.iter().map(String::as_str).collect();
+        if !state_set.contains(self.initial_state.as_str()) {
+            return Err(ScenarioError::MissionGraph {
+                reason: format!(
+                    "mission.regions[{index}].initial_state = `{}` is not a declared region state",
+                    self.initial_state
+                ),
+            });
+        }
+        for (state_index, state) in self.states.iter().enumerate() {
+            state.validate(index, state_index)?;
+        }
+        for (transition_index, transition) in self.transitions.iter().enumerate() {
+            transition.validate(transition_index)?;
+            if !state_set.contains(transition.from.as_str()) {
+                return Err(ScenarioError::MissionGraph {
+                    reason: format!(
+                        "mission.regions[{index}].transitions[{transition_index}].from = `{}` is not a declared region state",
+                        transition.from
+                    ),
+                });
+            }
+            if !state_set.contains(transition.to.as_str()) {
+                return Err(ScenarioError::MissionGraph {
+                    reason: format!(
+                        "mission.regions[{index}].transitions[{transition_index}].to = `{}` is not a declared region state",
+                        transition.to
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One region state — Phase 5.X.F. Region states are flat (the
 /// `mission` region is the only one with hierarchy in 5.X.F).
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -1944,6 +2063,33 @@ pub struct RegionStateConfig {
     pub label: String,
 }
 
+impl RegionStateConfig {
+    fn validate(&self, region_index: usize, state_index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(
+            &format!("mission.regions[{region_index}].states[{state_index}].id"),
+            &self.id,
+        )?;
+        Ok(())
+    }
+}
+
+fn require_mission_only_action(
+    field: &str,
+    action: &ScenarioActionConfig,
+) -> Result<(), ScenarioError> {
+    match action {
+        ScenarioActionConfig::EnterPhase { .. }
+        | ScenarioActionConfig::EmitTelemetryMarker { .. }
+        | ScenarioActionConfig::Stop { .. } => Ok(()),
+        ScenarioActionConfig::EffectorOverride { .. }
+        | ScenarioActionConfig::EngineCommand { .. }
+        | ScenarioActionConfig::Separation
+        | ScenarioActionConfig::DeployRecovery { .. } => Err(ScenarioError::MissionGraph {
+            reason: format!("{field} may contain only mission actions"),
+        }),
+    }
+}
+
 impl MissionConfig {
     /// Validate structural shape: id non-emptiness, kind enums, finite
     /// numeric values, deferred-action rejection, plus graph-shape
@@ -1954,13 +2100,24 @@ impl MissionConfig {
     /// Returns [`ScenarioError`] for any structural violation.
     pub fn validate(&self) -> Result<(), ScenarioError> {
         require_non_empty("mission.initial_phase", &self.initial_phase)?;
-        if self.phases.is_empty() {
+        if self.phases.is_empty() && self.states.is_empty() {
             return Err(ScenarioError::EmptyList {
-                field: "mission.phases".to_owned(),
+                field: "mission.phases|mission.states".to_owned(),
             });
         }
-        for (i, phase) in self.phases.iter().enumerate() {
-            phase.validate(i)?;
+        if !self.phases.is_empty() && !self.states.is_empty() {
+            return Err(ScenarioError::MissionGraph {
+                reason: "mission may declare either phases or states, not both".to_owned(),
+            });
+        }
+        if self.states.is_empty() {
+            for (i, phase) in self.phases.iter().enumerate() {
+                phase.validate(i)?;
+            }
+        } else {
+            for (i, state) in self.states.iter().enumerate() {
+                state.validate(i)?;
+            }
         }
         for (i, event) in self.events.iter().enumerate() {
             event.validate(i)?;
@@ -1968,23 +2125,44 @@ impl MissionConfig {
         for (i, transition) in self.transitions.iter().enumerate() {
             transition.validate(i)?;
         }
+        for (i, region) in self.regions.iter().enumerate() {
+            region.validate(i)?;
+        }
         self.validate_graph_shape()?;
         Ok(())
     }
 
     fn validate_graph_shape(&self) -> Result<(), ScenarioError> {
-        let phase_ids: Vec<String> = self.phases.iter().map(|phase| phase.id.clone()).collect();
+        let phase_ids: Vec<String> = if self.states.is_empty() {
+            self.phases.iter().map(|phase| phase.id.clone()).collect()
+        } else {
+            self.states.iter().map(|state| state.id.clone()).collect()
+        };
         let event_ids: Vec<String> = self.events.iter().map(|event| event.id.clone()).collect();
-        require_unique("mission.phases.id", &phase_ids)?;
+        require_unique("mission.phase_or_state.id", &phase_ids)?;
         require_unique("mission.events.id", &event_ids)?;
 
         let phase_set: BTreeSet<&str> = phase_ids.iter().map(String::as_str).collect();
         let event_set: BTreeSet<&str> = event_ids.iter().map(String::as_str).collect();
 
+        if !self.states.is_empty() {
+            for (index, state) in self.states.iter().enumerate() {
+                if let Some(parent) = &state.parent
+                    && !phase_set.contains(parent.as_str())
+                {
+                    return Err(ScenarioError::MissionGraph {
+                        reason: format!(
+                            "mission.states[{index}].parent = `{parent}` is not a declared state"
+                        ),
+                    });
+                }
+            }
+        }
+
         if !phase_set.contains(self.initial_phase.as_str()) {
             return Err(ScenarioError::MissionGraph {
                 reason: format!(
-                    "mission.initial_phase = `{}` does not match any declared phase",
+                    "mission.initial_phase = `{}` does not match any declared phase/state",
                     self.initial_phase
                 ),
             });

@@ -155,9 +155,13 @@ pub fn run(
 
     let kernel_base = SimulationKernel::new_rigid(config)?;
     let mut kernel = if let Some(mission) = &document.mission {
-        let (mission_events, script_events, graph) =
-            crate::runner::mission::build_mission_runtime_typed(mission)?;
-        kernel_base.with_mission_split(mission_events, script_events, Some(graph))?
+        let mission_runtime = crate::runner::mission::build_mission_runtime_typed(mission)?;
+        kernel_base.with_mission_split(
+            mission_runtime.mission_bindings,
+            mission_runtime.script_bindings,
+            Some(mission_runtime.graph),
+            Some(mission_runtime.hsm),
+        )?
     } else {
         kernel_base
     };

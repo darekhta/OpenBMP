@@ -207,7 +207,8 @@ mod tests {
     use super::*;
     use crate::document::{
         FcAntiWindupConfig, FcAttitudeLoopKind, FcAttitudeMpcConfig, FcFdirDetectorKindV5,
-        FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind, WGS84_J2_DEFAULT,
+        FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind, MissionScope,
+        MissionScopeKind, WGS84_J2_DEFAULT,
     };
     use openbmp_core::ValidationStatus;
 
@@ -2612,6 +2613,61 @@ event = "ignition"
         assert_eq!(mission.transitions.len(), 1);
         // `once` defaults to true.
         assert!(mission.events[0].once);
+    }
+
+    #[test]
+    fn parses_mission_v4_states_scope_regions_and_override_flag() {
+        let scenario = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "pad"
+test_only_state_override = true
+
+[mission.scope]
+kind = "closed_loop_test"
+
+[[mission.states]]
+id    = "pad"
+label = "pad"
+
+[[mission.states]]
+id     = "ascent"
+label  = "ascent"
+parent = "pad"
+
+[[mission.events]]
+id      = "liftoff"
+trigger = { kind = "at_time", time_s = 0.0 }
+action  = { kind = "enter_phase", phase = "ascent" }
+
+[[mission.transitions]]
+from  = "pad"
+to    = "ascent"
+event = "liftoff"
+
+[[mission.regions]]
+id            = "health"
+initial_state = "nominal"
+
+[[mission.regions.states]]
+id = "nominal"
+
+[[mission.regions.states]]
+id = "abort_requested"
+"#,
+        ))
+        .expect("parse");
+
+        let mission = scenario.document.mission.as_ref().expect("mission");
+        assert!(mission.phases.is_empty());
+        assert_eq!(mission.states.len(), 2);
+        assert_eq!(mission.regions.len(), 1);
+        assert!(mission.test_only_state_override);
+        assert!(matches!(
+            mission.scope,
+            Some(MissionScope::Config(ref scope))
+                if scope.kind == MissionScopeKind::ClosedLoopTest
+        ));
     }
 
     #[test]
