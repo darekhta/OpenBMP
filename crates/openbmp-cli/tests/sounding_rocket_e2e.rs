@@ -44,18 +44,21 @@ fn tempdir(label: &str) -> TempDir {
         .expect("tempdir")
 }
 
-fn with_reversed_mission_phase_blocks(toml: &str) -> String {
-    let phase_start = toml
-        .find("[[mission.phases]]")
-        .expect("mission phase block start");
+fn with_reversed_mission_state_or_phase_blocks(toml: &str) -> String {
+    let block_header = if toml.contains("[[mission.states]]") {
+        "[[mission.states]]"
+    } else {
+        "[[mission.phases]]"
+    };
+    let phase_start = toml.find(block_header).expect("mission state block start");
     let event_start = toml
         .find("[[mission.events]]")
         .expect("mission event block start");
     let phase_region = &toml[phase_start..event_start];
     let mut phase_blocks: Vec<String> = phase_region
-        .split("[[mission.phases]]")
+        .split(block_header)
         .skip(1)
-        .map(|block| format!("[[mission.phases]]{block}"))
+        .map(|block| format!("{block_header}{block}"))
         .collect();
     phase_blocks.reverse();
     format!(
@@ -589,11 +592,11 @@ fn niskanen_with_mission_emits_apogee_marker() {
 }
 
 #[test]
-fn mission_phase_declaration_order_does_not_change_parquet_bytes() {
+fn mission_state_or_phase_declaration_order_does_not_change_parquet_bytes() {
     let scenario_dir = workspace_root().join("scenarios/sounding-rocket");
     let scenario = scenario_dir.join("niskanen-2009-chapter6-with-mission.toml");
     let original = fs::read_to_string(&scenario).expect("read mission scenario");
-    let reordered = with_reversed_mission_phase_blocks(&original);
+    let reordered = with_reversed_mission_state_or_phase_blocks(&original);
     let variant = NamedTempFile::new_in(&scenario_dir).expect("temp scenario in scenario dir");
     fs::write(variant.path(), reordered).expect("write reordered scenario");
 

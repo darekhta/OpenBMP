@@ -1,14 +1,16 @@
-# Niskanen 2009 Chapter-6 small-rocket benchmark — Phase-3.2 mission variant.
+# Niskanen 2009 Chapter-6 small-rocket benchmark — Phase-5.X mission variant.
 #
 # Same physics as the canonical point-mass Niskanen scenario at
 # `niskanen-2009-chapter6.toml`, but adds a `[mission]` block that
-# declares the Phase-3.2 declarative event-driven scheduling
-# vocabulary. The mission block:
+# declares the declarative event-driven mission vocabulary. The
+# mission block:
 #
-# - Declares two phases: `ascent` (initial) and `descent`.
+# - Declares two v4 mission states: `ascent` (initial) and `descent`.
 # - Declares one event: `at_apogee_marker`, with `AtApogee` trigger
 #   and `emit_telemetry_marker` action (tag = "at_apogee_marker").
 # - Declares one transition: `ascent → descent` on `at_apogee_marker`.
+# - Declares the test-only override flag, scope table, and canonical
+#   health region to keep v4 syntax exercised by the shipped corpus.
 #
 # The runner allocates a `bool` telemetry channel
 # `mission.marker.at_apogee_marker` and writes `true` on the step
@@ -19,13 +21,13 @@
 # Pinned digests are SHA-256 of the referenced files at the commit
 # that ships this scenario; mismatches fail closed.
 
-openbmp.scenario = 2
+openbmp.scenario = 3
 
 [meta]
 name        = "niskanen-2009-chapter6-with-mission"
-description = "Niskanen 2009 Chapter-6 small model rocket; identical physics to the canonical point-mass Niskanen scenario plus a Phase-3.2 [mission] block exercising the at_apogee_marker telemetry channel."
+description = "Niskanen 2009 Chapter-6 small model rocket; identical physics to the canonical point-mass Niskanen scenario plus a Phase-5.X v4 [mission] block exercising the at_apogee_marker telemetry channel."
 validation  = "checked"
-provenance  = "Niskanen 2009 Chapter 6, Helsinki UT MSc thesis; Phase-3.2 mission variant of the canonical Niskanen scenario."
+provenance  = "Niskanen 2009 Chapter 6, Helsinki UT MSc thesis; Phase-5.X mission-v4 variant of the canonical Niskanen scenario."
 
 [time]
 start_s = 0.0
@@ -82,19 +84,43 @@ output.parquet = "out/niskanen-2009-chapter6-with-mission.parquet"
 require_finite_state   = true
 require_monotonic_time = true
 
-# Phase-3.2 mission block: declare phases, the apogee event, and the
-# ascent→descent transition.
+# Phase-5.X mission block: declare states, the apogee event, and the
+# ascent->descent transition.
 
 [mission]
 initial_phase = "ascent"
+test_only_state_override = false
 
-[[mission.phases]]
+[mission.scope]
+kind = "sounding_rocket"
+
+[[mission.states]]
 id    = "ascent"
 label = "powered + coast ascent"
 
-[[mission.phases]]
+[[mission.states]]
 id    = "descent"
 label = "post-apogee descent"
+
+[[mission.regions]]
+id            = "health"
+initial_state = "nominal"
+
+[[mission.regions.states]]
+id    = "nominal"
+label = "all systems nominal"
+
+[[mission.regions.states]]
+id    = "degraded"
+label = "non-fatal degradation"
+
+[[mission.regions.states]]
+id    = "abort_requested"
+label = "safe-state request latched"
+
+[[mission.regions.states]]
+id    = "safed_on_fault"
+label = "safed after fault"
 
 [[mission.events]]
 id      = "at_apogee_marker"
