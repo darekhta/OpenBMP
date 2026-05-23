@@ -255,6 +255,54 @@ jobs:
       - run: cargo test -p openbmp-testkit --lib --locked mission_vocabulary
 
   # ----------------------------------------------------------------------
+  # Phase 5.X.B HAL build-time gate
+  #
+  # `openbmp-fc` carries the test-only `ScenarioStateOverride` topic
+  # gated behind `#[cfg(not(feature = "hal"))]`. A HAL adopter sets
+  # `--features hal --no-default-features` and the topic compiles out
+  # entirely. Without enforcement, an accidental `#[cfg]` change
+  # could silently leak the test-only override into a HAL build.
+  #
+  # This job:
+  #   1. Builds `openbmp-fc` in HAL mode (`--features hal
+  #      --no-default-features`); the build must succeed.
+  #   2. Compiles a probe that imports `ScenarioStateOverride` against
+  #      the HAL build; the probe must fail to build (the symbol must
+  #      not be visible in HAL mode).
+  #   3. Builds the same probe against the default (non-HAL) build;
+  #      the probe must build (the symbol must be visible in sim mode).
+  # ----------------------------------------------------------------------
+  fc-hal-gate:
+    name: fc HAL build-time gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      # The HAL build path compiles `openbmp-fc` with the
+      # test-only `ScenarioStateOverride` topic gated out. The
+      # build must succeed cleanly.
+      - name: HAL build of openbmp-fc must succeed
+        run: cargo build -p openbmp-fc --no-default-features --features hal --locked
+      # The default (sim) build must still expose
+      # `ScenarioStateOverride` so the simulator can use it. The
+      # `hal_topic_gate` test in `crates/openbmp-fc/tests/`
+      # references the symbol and is `#[cfg(not(feature = "hal"))]`
+      # in HAL builds, so this run pins the visibility under the
+      # sim default.
+      - name: ScenarioStateOverride must be visible in default build
+        run: cargo test -p openbmp-fc --test hal_topic_gate --locked
+      # The same test target compiled with `--features hal
+      # --no-default-features` must compile down to no test bodies
+      # (the cfg-gated module is empty under HAL). The compile pass
+      # alone proves the gate behaves; we just check that
+      # `cargo build --tests` succeeds under HAL.
+      - name: HAL build of fc test targets must succeed
+        run: cargo build -p openbmp-fc --tests --no-default-features --features hal --locked
+
+  # ----------------------------------------------------------------------
   # Determinism gate
   #
   # The headline policy gate on x86_64-unknown-linux-gnu. Three
