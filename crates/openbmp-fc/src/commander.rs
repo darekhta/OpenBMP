@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 
 use openbmp_mission::{
     BuiltInEventTrigger, EventBinding, EventEvalState, EventScalars, EventTrigger, MissionAction,
-    MissionPhaseGraph, MissionStateMachine, PhaseId,
+    MissionPhaseGraph, PhaseId,
 };
 
 use crate::bus::Bus;
@@ -64,14 +64,6 @@ pub struct Commander {
     graph: MissionPhaseGraph,
     bindings: Vec<EventBinding<MissionAction>>,
     current_phase: PhaseId,
-    /// Phase 5.X.F: optional hierarchical state machine view of the
-    /// mission graph, populated by [`Commander::with_hierarchical`].
-    /// Present when the scenario carries a v4 `[[mission.states]]`
-    /// block or has been lifted from v3 `[[mission.phases]]` via
-    /// `openbmp_cli::runner::mission::lift_mission_state_machine`.
-    /// When `None`, the commander operates on the legacy flat graph
-    /// only.
-    hsm: Option<MissionStateMachine>,
     params: CommanderParams,
     armed: bool,
     in_flight: bool,
@@ -108,7 +100,6 @@ impl Commander {
             graph,
             bindings,
             current_phase: start_phase,
-            hsm: None,
             params,
             armed: false,
             in_flight: false,
@@ -116,28 +107,6 @@ impl Commander {
             fired_once: BTreeSet::new(),
             previous_scalars: None,
         })
-    }
-
-    /// Phase 5.X.F: attach a hierarchical state machine view alongside
-    /// the flat mission graph. The commander continues to apply
-    /// flat-DAG transitions during the migration window (so
-    /// determinism stays byte-identical against the Phase-5
-    /// baseline); the hierarchical view is read-only and exposes
-    /// LCA / exit-chain / enter-chain queries to downstream
-    /// consumers via [`Self::hsm`].
-    #[must_use]
-    pub fn with_hierarchical(mut self, hsm: MissionStateMachine) -> Self {
-        self.hsm = Some(hsm);
-        self
-    }
-
-    /// Phase 5.X.F: read-only access to the hierarchical state
-    /// machine view, if attached. Returns `None` for legacy v3
-    /// scenarios that haven't been lifted through
-    /// `lift_mission_state_machine`.
-    #[must_use]
-    pub fn hsm(&self) -> Option<&MissionStateMachine> {
-        self.hsm.as_ref()
     }
 
     /// Returns the active phase.
