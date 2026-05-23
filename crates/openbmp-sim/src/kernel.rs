@@ -564,11 +564,15 @@ where
     ///
     /// Returns [`SimulationError::MissionGraph`] if the supplied
     /// graph references events not present in `events`.
+    #[allow(deprecated)]
     pub fn with_mission(
         mut self,
         mut events: Vec<crate::events::EventBinding>,
         mission_graph: Option<crate::events::MissionPhaseGraph>,
     ) -> Result<Self, SimulationError> {
+        use crate::events::{
+            EventAction, MissionAction as M, ScenarioScriptAction as S,
+        };
         let mut event_ids = std::collections::BTreeSet::new();
         for event in &events {
             if !event_ids.insert(event.id) {
@@ -578,6 +582,93 @@ where
             }
         }
         events.sort_by_key(|event| event.id.value());
+
+        // Phase 5.X.E: populate typed shadow lists by classifying the
+        // unified input. Required so consumers that go through the
+        // legacy `with_mission` (e.g. kernel tests) still get the
+        // typed views populated alongside the unified `events` field.
+        let mut mission_typed: Vec<crate::events::EventBinding<M>> = Vec::new();
+        let mut script_typed: Vec<crate::events::EventBinding<S>> = Vec::new();
+        for b in &events {
+            let id = b.id;
+            let trigger = b.trigger.clone();
+            let once = b.once;
+            match &b.action {
+                EventAction::EnterPhase(p) => mission_typed.push(crate::events::EventBinding {
+                    id,
+                    trigger,
+                    action: M::EnterState(*p),
+                    once,
+                }),
+                EventAction::EmitTelemetryMarker { tag } => {
+                    mission_typed.push(crate::events::EventBinding {
+                        id,
+                        trigger,
+                        action: M::EmitTelemetryMarker { tag: tag.clone() },
+                        once,
+                    });
+                }
+                EventAction::Stop { label } => {
+                    mission_typed.push(crate::events::EventBinding {
+                        id,
+                        trigger,
+                        action: M::Stop { label: label.clone() },
+                        once,
+                    });
+                }
+                EventAction::EngineCommand {
+                    id: e,
+                    throttle_unit,
+                    gimbal_pitch_rad,
+                    gimbal_yaw_rad,
+                    ignite,
+                    shutdown,
+                } => script_typed.push(crate::events::EventBinding {
+                    id,
+                    trigger,
+                    action: S::EngineCommand {
+                        id: *e,
+                        throttle_unit: *throttle_unit,
+                        gimbal_pitch_rad: *gimbal_pitch_rad,
+                        gimbal_yaw_rad: *gimbal_yaw_rad,
+                        ignite: *ignite,
+                        shutdown: *shutdown,
+                    },
+                    once,
+                }),
+                EventAction::EffectorOverride { id: e, command } => {
+                    script_typed.push(crate::events::EventBinding {
+                        id,
+                        trigger,
+                        action: S::EffectorOverride {
+                            id: *e,
+                            command: *command,
+                        },
+                        once,
+                    });
+                }
+                EventAction::Separation => script_typed.push(crate::events::EventBinding {
+                    id,
+                    trigger,
+                    action: S::Separation,
+                    once,
+                }),
+                EventAction::DeployRecovery { id: e, command } => {
+                    script_typed.push(crate::events::EventBinding {
+                        id,
+                        trigger,
+                        action: S::DeployRecovery {
+                            id: *e,
+                            command: command.clone(),
+                        },
+                        once,
+                    });
+                }
+            }
+        }
+        // Already id-sorted because we sorted `events` first.
+        self.mission_events_typed = mission_typed;
+        self.script_events_typed = script_typed;
 
         if let Some(graph) = &mission_graph {
             for (i, transition) in graph.transitions.iter().enumerate() {
