@@ -16,6 +16,10 @@ description             = "OpenBMP flight controller: bus, scheduler, commander,
 # the `synthetic` noise machinery from `openbmp-sensors`.
 default     = ["sim-default"]
 sim-default = ["openbmp-sensors/synthetic"]
+# Phase 5.X.B: HAL adopters set `--features hal --no-default-features`
+# to compile out the test-only `commander.scenario_state_override`
+# topic. The simulator's default build path leaves `hal` off.
+hal         = []
 serde       = ["dep:serde_json"]
 mpc         = ["dep:clarabel"]
 square-root-ekf = []

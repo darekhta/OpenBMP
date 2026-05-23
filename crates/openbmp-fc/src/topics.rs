@@ -300,6 +300,50 @@ impl Topic for VehicleStatus {
     const NAME: &'static str = "commander.vehicle_status";
 }
 
+/// Single-source-of-truth mission state publish, per Phase 5.X.B.
+///
+/// The commander publishes this every tick; the simulator subscribes
+/// here instead of holding a parallel `mission_graph` /
+/// `current_phase` field. Phase 5.X.B is the migration that removes
+/// the kernel's parallel state ownership; Phase 5.X.F extends the
+/// payload with hierarchical-state paths and per-region states.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct MissionStatePublish {
+    /// Active mission-region state id at the start of this tick.
+    pub mission_state_id: u64,
+    /// `true` once an FDIR trip has demanded a safe-state transition.
+    /// Mirror of `VehicleStatus::safe_state_requested` during the
+    /// 5.X.A → 5.X.D migration window; replaced by the orthogonal
+    /// `health` region in 5.X.D.
+    pub safe_state_requested: bool,
+}
+
+impl Topic for MissionStatePublish {
+    const NAME: &'static str = "commander.mission_state";
+}
+
+/// Test-only override topic: scenarios can script the commander
+/// into a specific state for validation purposes. Phase 5.X.B
+/// introduces a build-time gate so a HAL deployment cannot link
+/// this topic; the topic compiles out entirely in HAL builds.
+///
+/// During Phase 5.X.A → 5.X.B migration, the topic exists but is
+/// not yet driven by the scenario parser. Phase 5.X.F adds the
+/// `mission.test_only_state_override = true` scenario flag that
+/// activates the override channel; absent the flag, the topic is
+/// never written.
+#[cfg(not(feature = "hal"))]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScenarioStateOverride {
+    /// State id to force the commander into.
+    pub target_state_id: u64,
+}
+
+#[cfg(not(feature = "hal"))]
+impl Topic for ScenarioStateOverride {
+    const NAME: &'static str = "commander.scenario_state_override";
+}
+
 /// Aggregate failsafe-flag bitfield published by the
 /// [`HealthMonitor`](crate::health::HealthMonitor).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]

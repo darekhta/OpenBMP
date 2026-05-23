@@ -58,6 +58,7 @@ use crate::{MissionPhaseGraph, PhaseId, RegionId};
 /// reordering region declarations in a scenario file cannot shift
 /// any region's id. Phase 5.X.F's scenario format v4 auto-declares
 /// these four regions when `[[mission.regions]]` is omitted.
+#[derive(Debug)]
 pub struct CanonicalRegions;
 
 impl CanonicalRegions {
