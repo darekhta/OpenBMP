@@ -53,11 +53,11 @@
 //! migrates the kernel + commander to consume `MissionStateMachine`.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
-use crate::{EventId, MissionAction, StateId};
+use crate::{MissionAction, StateId};
 
 // ---------------------------------------------------------------------
 // State
@@ -232,7 +232,7 @@ impl MissionStateMachine {
         sorted_states.sort_by_key(|s| {
             (
                 depth.get(&s.id).copied().unwrap_or(usize::MAX),
-                s.parent.map_or(0, |p| p.value()),
+                s.parent.map_or(0, StateId::value),
                 s.id.value(),
             )
         });
@@ -337,64 +337,55 @@ impl MissionStateMachine {
 // Helpers
 // ---------------------------------------------------------------------
 
-/// BFS through the parent relation starting from `root`, returning
-/// every state that has `root` on its parent chain (including `root`
-/// itself). Reserved for future hierarchical-region reachability
-/// checks; not used by the current `new` validator.
-#[allow(dead_code)]
-fn descendants_of(states: &[MissionState], root: StateId) -> BTreeSet<StateId> {
+/// Depth-from-root for every state. Top-level (no parent) is depth 0.
+fn compute_depth(states: &[MissionState]) -> BTreeMap<StateId, usize> {
     let mut children: BTreeMap<StateId, Vec<StateId>> = BTreeMap::new();
+    let mut in_degree: BTreeMap<StateId, usize> = BTreeMap::new();
+    let mut depth: BTreeMap<StateId, usize> = BTreeMap::new();
+
     for state in states {
-        children
-            .entry(state.parent.unwrap_or_default())
-            .or_default()
-            .push(state.id);
+        children.entry(state.id).or_default();
+        in_degree.insert(state.id, usize::from(state.parent.is_some()));
+        depth.insert(state.id, 0);
+        if let Some(parent) = state.parent {
+            children.entry(parent).or_default().push(state.id);
+        }
     }
+
     for entry in children.values_mut() {
         entry.sort_by_key(|id| id.value());
     }
 
-    let mut result = BTreeSet::new();
-    let mut queue: VecDeque<StateId> = VecDeque::new();
-    if states.iter().any(|s| s.id == root) {
-        result.insert(root);
-        queue.push_back(root);
-    }
-    while let Some(node) = queue.pop_front() {
-        if let Some(kids) = children.get(&node) {
-            for &kid in kids {
-                if result.insert(kid) {
-                    queue.push_back(kid);
-                }
-            }
+    let mut frontier = BTreeSet::new();
+    for (id, degree) in &in_degree {
+        if *degree == 0 {
+            frontier.insert(*id);
         }
     }
-    result
-}
 
-/// Depth-from-root for every state. Top-level (no parent) is depth 0.
-fn compute_depth(states: &[MissionState]) -> BTreeMap<StateId, usize> {
-    let mut depth: BTreeMap<StateId, usize> = BTreeMap::new();
-    // Iteratively relax depth until stable.
-    for state in states {
-        depth.insert(state.id, 0);
-    }
-    let mut changed = true;
-    let mut iterations = 0;
-    while changed && iterations <= states.len() {
-        changed = false;
-        iterations += 1;
-        for state in states {
-            if let Some(parent) = state.parent {
-                let parent_depth = depth.get(&parent).copied().unwrap_or(0);
-                let candidate = parent_depth + 1;
-                if depth.get(&state.id).copied().unwrap_or(0) < candidate {
-                    depth.insert(state.id, candidate);
-                    changed = true;
+    let mut visited = 0_usize;
+    while let Some(&parent) = frontier.iter().next() {
+        frontier.remove(&parent);
+        visited += 1;
+        let parent_depth = depth[&parent];
+        if let Some(kids) = children.get(&parent) {
+            for &child in kids {
+                depth.insert(child, parent_depth + 1);
+                if let Some(degree) = in_degree.get_mut(&child) {
+                    *degree = degree.saturating_sub(1);
+                    if *degree == 0 {
+                        frontier.insert(child);
+                    }
                 }
             }
         }
     }
+
+    debug_assert_eq!(
+        visited,
+        states.len(),
+        "parent-relation topological order incomplete"
+    );
     depth
 }
 
@@ -606,11 +597,8 @@ mod tests {
     fn flat_hierarchy_with_sibling_top_levels_accepted() {
         let root = s("root");
         let sibling = s("sibling");
-        let hsm = MissionStateMachine::new(
-            vec![state("root", None), state("sibling", None)],
-            root,
-        )
-        .expect("flat hierarchy with sibling top-levels is valid");
+        let hsm = MissionStateMachine::new(vec![state("root", None), state("sibling", None)], root)
+            .expect("flat hierarchy with sibling top-levels is valid");
         assert_eq!(hsm.states.len(), 2);
         assert!(hsm.states.iter().any(|s| s.id == sibling));
     }
@@ -653,10 +641,3 @@ mod tests {
         assert!(ids1.contains(&a) && ids1.contains(&b));
     }
 }
-
-// `EventId` is re-exported here for symmetry with the future
-// hierarchical-transition wiring; flatness keeps the symbol live to
-// avoid unused-import churn when the transition type lands.
-#[doc(hidden)]
-#[allow(dead_code)]
-const _: Option<EventId> = None;

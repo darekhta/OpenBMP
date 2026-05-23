@@ -38,9 +38,7 @@ fn arb_hierarchy(max_states: usize) -> impl Strategy<Value = Vec<MissionState>> 
                         None
                     } else {
                         let parent_idx = raw_choices[i] % i;
-                        Some(StateId::from_path(&format!(
-                            "mission.states.s{parent_idx}"
-                        )))
+                        Some(StateId::from_path(&format!("mission.states.s{parent_idx}")))
                     };
                     MissionState {
                         id,
@@ -191,7 +189,5 @@ proptest! {
 /// constructing on_entry / on_exit action vecs with these.
 #[allow(dead_code)]
 fn _action_compile_check() -> MissionAction {
-    MissionAction::EmitTelemetryMarker {
-        tag: "test".into(),
-    }
+    MissionAction::EmitTelemetryMarker { tag: "test".into() }
 }
