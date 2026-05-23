@@ -1699,10 +1699,8 @@ provenance.
 > estimator-regime) and the academic state vocabulary canonised in
 > [`mission-states-vocabulary.md`](mission-states-vocabulary.md). The
 > authoritative architectural reference is
-> [`mission-graph-architecture.md`](mission-graph-architecture.md);
-> the migration sequence is in
-> [`phase-5x-plan.md`](phase-5x-plan.md). The sketch below is retained
-> for historical context until Phase 5.X.H retires it.
+> [`mission-graph-architecture.md`](mission-graph-architecture.md).
+> The sketch below is retained for historical context.
 
 Phase-based academic mission FSM:
 

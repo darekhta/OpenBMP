@@ -157,11 +157,12 @@ health                                                       (region root, compo
 |---|---|
 | `health.nominal` | All FDIR detectors clear; commander default. |
 | `health.degraded` | One or more FDIR detectors tripped, no abort yet. The mission FSM continues; downstream consumers (autopilot, mixer) can guard their behavior on this. |
-| `health.abort_requested` | Commander-side flag, scenario-binding triggered. Cross-region guards on this state suppress mission transitions that would advance the flight (e.g. ignition transitions). Replaces the Phase-4 `safe_state_requested` boolean. |
+| `health.abort_requested` | Reserved health-region state for a commander-side abort request. Production Phase 5.X still publishes the `safe_state_requested` boolean; this state is vocabulary for the future region wiring. |
 | `health.safed_on_fault` | Terminal state; vehicle is in a known-safe configuration with all effectors disabled. |
 
 Phase 6 may extend `degraded` into a composite with sensor / effector
-/ aerothermal sub-states. Phase 5.X ships flat health.
+/ aerothermal sub-states. Phase 5.X ships the flat health vocabulary,
+not a production-ticked health region.
 
 ## The Comms region
 
@@ -363,6 +364,5 @@ should land easily — they just need the citation in the table.
 
 See also:
 [`mission-graph-architecture.md`](mission-graph-architecture.md),
-[`phase-5x-plan.md`](phase-5x-plan.md),
 [`safety-boundaries.md`](safety-boundaries.md),
 [`design-concept.md`](design-concept.md).

@@ -626,12 +626,10 @@ identically to pre-3.2.
 > human-readable scenario classifier. The authoritative format
 > reference is [`mission-graph-architecture.md`](mission-graph-architecture.md);
 > the canonical state vocabulary is in
-> [`mission-states-vocabulary.md`](mission-states-vocabulary.md); the
-> migration plan including the v3 → v4 lifting pass is in
-> [`phase-5x-plan.md § 5.X.F`](phase-5x-plan.md#5xf--scenario-format-v4).
-> The v3 syntax below remains accepted until Phase 5.X.F lands; the
-> v3-to-v4 lifting pass preserves byte-identical telemetry on the
-> reference platform profile.
+> [`mission-states-vocabulary.md`](mission-states-vocabulary.md).
+> The v3 syntax below remains accepted; the v4 syntax is reserved and
+> accepted by the schema, while shipped scenarios still exercise the
+> flat v3-compatible path.
 
 The `[mission]` block declares phases, events, and transitions. The
 canonical example mirrors the

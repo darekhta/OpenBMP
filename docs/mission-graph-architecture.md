@@ -1,10 +1,9 @@
 # Mission Graph Architecture
 
 This document is the **authoritative architectural reference** for the
-mission state machine in OpenBMP, lock-stepped with
-[`phase-5x-plan.md`](phase-5x-plan.md). It describes what mission state
-*is*, who owns it, how it's evaluated, and what guarantees the
-architecture provides to downstream HAL adopters.
+mission state machine in OpenBMP. It describes what mission state *is*,
+who owns it, how it's evaluated, and what guarantees the architecture
+provides to downstream HAL adopters.
 
 This document supersedes the Phase 3.2 / Phase 4 mission-FSM material in
 [`software-architecture.md § Mission State Machine`](software-architecture.md)
@@ -16,6 +15,12 @@ names) lives in
 [`mission-states-vocabulary.md`](mission-states-vocabulary.md). This
 document defines the *machinery*; the vocabulary doc defines the
 *names that go into it*.
+
+> **Implementation status.** Phase 5.X removed the legacy unified
+> action path and landed the HSM / region primitives, but production
+> transition execution still uses the flat `MissionPhaseGraph` in the
+> FC commander and pure-sim kernel fallback. Orthogonal regions are not
+> instantiated or ticked in production code yet.
 
 ## Goals
 
@@ -40,11 +45,11 @@ controller. Its goals, in order of precedence:
    canonical-form sorts make the in-memory representation
    declaration-order-independent; iteration order is fixed; no
    wall-clock, no system RNG, no allocation on hot paths.
-6. **Validated at scenario load.** Every structural property the FSM
-   relies on (acyclicity within a region, reachability of every
-   declared state, single-target per `(state, event)` pair, cross-
-   region guard well-formedness) is enforced at scenario parse time.
-   Runtime cannot enter an invalid state.
+6. **Validated at scenario load.** The production flat graph enforces
+   acyclicity, reachability, and single-target per `(state, event)`.
+   HSM construction validates duplicate ids, known parents, and
+   parent-chain acyclicity; full hierarchical transition execution and
+   region guard enforcement are reserved for the production HSM wiring.
 7. **Explicit about scope.** The crate that ships the FSM does not
    contain simulator-specific physics overrides. Those live in a
    separate crate that the simulator depends on.
@@ -164,7 +169,9 @@ sensor data; that's the estimator's job.
 Custom regions can be declared in v4 scenarios via
 `[[mission.regions]]` for downstream HAL adopters who need additional
 axes (e.g. `payload_state`, `tank_state`, `crew_state` for crewed
-vehicles). The four canonical regions are always present.
+vehicles). The four canonical region ids are available in the
+HAL-portable crate, but production OpenBMP does not yet build or tick a
+`RegionSet`.
 
 ### Action
 
@@ -244,29 +251,22 @@ binding list is the only one that exists.
 
 ## Single source of truth
 
-The FC commander is the **sole owner** of mission state. Every
-consumer reads it from the bus.
+The FC commander is the production owner of mission state when a flight
+controller is wired. Pure-sim runs without an FC still keep the flat
+kernel-owned fallback so historical scenarios remain runnable.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
 │ FC Commander                                                    │
 │                                                                 │
-│ owns: MissionStateMachine (region per axis, with hierarchy)     │
-│ owns: per-region current_state, history pseudo-states           │
+│ owns: MissionPhaseGraph + current_phase                         │
 │ owns: per-binding fired_once tracking                           │
 │ owns: previous_event_scalars                                    │
 │                                                                 │
 │ publishes: commander.mission_state                              │
-│ publishes: commander.region.mission                             │
-│ publishes: commander.region.health                              │
-│ publishes: commander.region.comms                               │
-│ publishes: commander.region.estimator_regime  (mirror)          │
-│ publishes: commander.transition_log    (every transition fires) │
-│ publishes: commander.guard_blocked     (when guards suppress)   │
+│ publishes: commander.vehicle_status                             │
 │                                                                 │
-│ subscribes: estimator.regime           (IMM publishes)          │
 │ subscribes: fdir.status                (FDIR publishes)         │
-│ subscribes: comms.status               (HAL-side, sim mocks)    │
 └─────────────────────────────────────────────────────────────────┘
 
        ▼ everything else subscribes ▼
@@ -571,8 +571,10 @@ root, no composite states. Under flat-hierarchy migration:
   exactly two states (exit `from`, enter `to`).
 - The `on_entry` / `on_exit` action firing reduces to the existing
   Phase 3.2 semantics.
-- Determinism CI passes byte-identical against the Phase-5 baseline
-  (see [`phase-5x-plan.md § Determinism preservation rules`](phase-5x-plan.md#determinism-preservation-rules)).
+- The determinism gate remains byte-identical across reruns of the
+  shipped scenario corpus. No tracked Phase-5 baseline Parquet
+  snapshots are currently checked into the repository for cross-commit
+  byte comparison.
 
 The hierarchy *primitives* land in Phase 5.X.C; the academic state
 hierarchy that exploits them lands in Phase 5.X.E together with the
@@ -591,8 +593,9 @@ three axes that Phase 5.X intentionally does not pre-empt:
    ship them as states.
 2. **Health region hierarchy.** Re-entry abort logic needs nested
    health states (`Degraded.Sensor`, `Degraded.Effector`,
-   `AbortRequested.Aerothermal`, etc.). Phase 5.X ships flat health
-   states; Phase 6 deepens.
+   `AbortRequested.Aerothermal`, etc.). Phase 5.X ships the region
+   primitives and vocabulary only; Phase 6 can wire and deepen the
+   production health region.
 3. **Aerodynamic regime region.** A possible fifth canonical region
    tracking `Subsonic / Transonic / Supersonic / Hypersonic` for
    aero-method selection and validity-range gating. Phase 5.X does
@@ -633,7 +636,6 @@ sub-phase ships them.
   `design-concept.md` for academic mission-phase names).
 
 See also:
-[`phase-5x-plan.md`](phase-5x-plan.md),
 [`mission-states-vocabulary.md`](mission-states-vocabulary.md),
 [`software-architecture.md`](software-architecture.md),
 [`safety-boundaries.md`](safety-boundaries.md),

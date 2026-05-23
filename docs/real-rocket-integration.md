@@ -136,11 +136,8 @@ pub trait VehicleAssembly {
 > × comms × estimator-regime); see
 > [`mission-graph-architecture.md`](mission-graph-architecture.md) for
 > the post-refactor architecture, including the HAL adopter contract
-> that this section describes. The migration plan is in
-> [`phase-5x-plan.md`](phase-5x-plan.md). The TOML snippet below remains
-> valid syntax (v3 lifting to v4 preserves byte-identical telemetry on
-> the reference platform profile); the hierarchical-state authoring
-> guide lands with Phase 5.X.H.
+> that this section describes. The TOML snippet below remains valid
+> syntax under the v3-compatible lifting path.
 
 Real launch + reusable-recovery scenarios are **event-driven**: ignition
 sequences, throttle profile segments, MECO, hot-stage / cold-stage

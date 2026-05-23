@@ -13,9 +13,8 @@
 //!   [`crate::MissionPhaseGraph`] in Phase 5.X.D (only the `mission`
 //!   region is upgraded to hierarchical in 5.X.F).
 //! - [`RegionSet`] is the per-scenario registry of regions, indexed
-//!   by [`crate::RegionId`]. The commander owns one `RegionSet` and
-//!   publishes each region's current state on a per-region bus
-//!   topic (`commander.region.<name>`).
+//!   by [`crate::RegionId`]. Phase 5.X ships this as a primitive;
+//!   production commander code does not yet own or tick a `RegionSet`.
 //! - [`CrossRegionGuard`] expresses a precondition on another
 //!   region's current state. Composes with the trigger via AND
 //!   semantics.
@@ -27,9 +26,9 @@
 //! # Integration status (Phase 5.X.D)
 //!
 //! Primitives only. Phase 5.X.F lifts the scenario format to v4
-//! with `[[mission.regions]]` blocks and wires the commander to
-//! consume them. Until then, the four canonical region ids exist as
-//! named constants but no region machine is actively ticked.
+//! with `[[mission.regions]]` blocks, but production code still does
+//! not instantiate or tick region machines. The four canonical region
+//! ids exist as named constants for future wiring.
 //!
 //! # Determinism contract
 //!
@@ -177,9 +176,9 @@ impl Region {
 
 /// Per-scenario registry of orthogonal regions.
 ///
-/// The commander owns one [`RegionSet`] and publishes each region's
-/// current state on a per-region bus topic. Region tick order is
-/// locked by `RegionId.value()` ascending (canonical-form sort).
+/// Production commander code does not yet own or tick this registry.
+/// When a consumer does tick it, region order is locked by
+/// `RegionId.value()` ascending (canonical-form sort).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RegionSet {
     /// Regions keyed by id; `BTreeMap` iteration order is locked

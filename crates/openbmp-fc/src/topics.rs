@@ -302,19 +302,18 @@ impl Topic for VehicleStatus {
 
 /// Single-source-of-truth mission state publish, per Phase 5.X.B.
 ///
-/// The commander publishes this every tick; the simulator subscribes
-/// here instead of holding a parallel `mission_graph` /
-/// `current_phase` field. Phase 5.X.B is the migration that removes
-/// the kernel's parallel state ownership; Phase 5.X.F extends the
-/// payload with hierarchical-state paths and per-region states.
+/// The commander publishes this every tick; FC-wired simulator runs
+/// subscribe here and feed the value into the kernel as external
+/// mission state. The kernel still retains a `current_phase` fallback
+/// for pure-sim scenarios without a commander.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct MissionStatePublish {
     /// Active mission-region state id at the start of this tick.
     pub mission_state_id: u64,
     /// `true` once an FDIR trip has demanded a safe-state transition.
-    /// Mirror of `VehicleStatus::safe_state_requested` during the
-    /// 5.X.A → 5.X.D migration window; replaced by the orthogonal
-    /// `health` region in 5.X.D.
+    /// Mirror of `VehicleStatus::safe_state_requested`. The planned
+    /// orthogonal `health` region exists as a primitive but is not yet
+    /// the production source of this value.
     pub safe_state_requested: bool,
 }
 

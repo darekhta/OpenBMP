@@ -716,8 +716,9 @@ and any operational mission profile.
 - Scenario format v4 lands with hierarchical `[[mission.states]]`,
   `[[mission.regions]]`, optional cross-region guards on
   transitions, and the `[mission.scope]` classifier. The v3 → v4
-  lifting pass preserves every FNV-1a-64 id and produces
-  byte-identical telemetry against the Phase-5 baseline.
+  lifting pass preserves every FNV-1a-64 id. The v4 surface is
+  accepted by the schema, but shipped scenarios still exercise the
+  flat v3-compatible path.
 - Operational / engagement-derived state names (`Terminal`,
   `Endgame`, `Midcourse`, `Engagement`, `Decoy`, `PenAid`, etc.)
   are rejected by both the scenario-load lint and the
@@ -731,9 +732,10 @@ and any operational mission profile.
   production call site uses the typed `MissionAction` /
   `ScenarioScriptAction` enums. The legacy unified action bridge has
   been removed.
-- Phase 5.X was a *refactor* phase: no new GNC algorithm landed;
-  every shipped Phase-5 scenario produces byte-identical telemetry
-  against its Phase-5 baseline on the reference platform profile.
+- Phase 5.X was a *refactor* phase: no new GNC algorithm landed. The
+  CI determinism gate checks byte-identical reruns; no tracked
+  Phase-5 baseline Parquet snapshots are currently checked in for
+  cross-commit byte comparison.
 - Authoritative references survive in
   [`mission-graph-architecture.md`](mission-graph-architecture.md)
   and [`mission-states-vocabulary.md`](mission-states-vocabulary.md);

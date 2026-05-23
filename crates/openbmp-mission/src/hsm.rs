@@ -12,8 +12,8 @@
 //! - [`MissionStateMachine`] — the hierarchical state-machine value.
 //!   Owns a flat-storage [`Vec<MissionState>`] indexed by [`StateId`]
 //!   with parent / child relationships expressed via
-//!   `MissionState::parent`. Construction validates acyclicity,
-//!   reachability, and canonical-form sort.
+//!   `MissionState::parent`. Construction validates duplicate ids,
+//!   known parents, parent-chain acyclicity, and canonical-form sort.
 //! - [`MissionState`] — extends the flat [`crate::Phase`] with
 //!   `parent`, `on_entry`, `on_exit`, `on_active` action lists.
 //! - [`HistoryState`] — pseudo-state recording the last-active child
@@ -47,10 +47,11 @@
 //! # Integration status (Phase 5.X.C)
 //!
 //! Primitives only. The simulator kernel and FC commander still
-//! consume [`crate::MissionPhaseGraph`] (the flat-DAG type) during
-//! the 5.X.C → 5.X.F migration window. Phase 5.X.F lifts the
-//! scenario format to v4 (`[[mission.states]]` with `parent`) and
-//! migrates the kernel + commander to consume `MissionStateMachine`.
+//! consume [`crate::MissionPhaseGraph`] (the flat-DAG type) for
+//! production transitions. Phase 5.X.F lifts the scenario format to
+//! v4 (`[[mission.states]]` with `parent`) and can build a
+//! `MissionStateMachine`, but the production commander loop has not
+//! yet moved to LCA / entry / exit semantics.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};

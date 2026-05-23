@@ -48,9 +48,9 @@ enum RuntimeEventBinding {
 /// action lists) or, when populated, the v4
 /// `[[mission.states]]` block with hierarchical `parent` fields.
 ///
-/// Returns a `MissionStateMachine` that downstream subscribers
-/// (Phase 5.X.B simulator subscriber, FC commander hierarchical
-/// upgrade) consume.
+/// Returns a `MissionStateMachine` for validation and future
+/// hierarchical consumers. The current production FC and simulator
+/// paths still consume the flat [`MissionPhaseGraph`].
 ///
 /// # Errors
 ///
