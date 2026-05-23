@@ -15,8 +15,8 @@
 use std::collections::BTreeSet;
 
 use openbmp_mission::{
-    BuiltInEventTrigger, EventBinding, EventEvalState, EventScalars, EventTrigger, MissionAction,
-    MissionPhaseGraph, PhaseId,
+    BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars, EventTrigger,
+    MissionAction, MissionPhaseGraph, PhaseId,
 };
 
 use crate::bus::Bus;
@@ -249,7 +249,7 @@ impl Job for Commander {
         let mut eval_state = self.build_eval_state(ctx.bus);
         eval_state.current.time_s = now.as_seconds();
 
-        let mut transitions: Vec<(u64, PhaseId)> = Vec::new();
+        let mut transitions: Vec<(EventId, Option<PhaseId>)> = Vec::new();
         let bindings_snapshot = self.bindings.clone();
         for binding in &bindings_snapshot {
             if binding.once && self.fired_once.contains(&binding.id.value()) {
@@ -259,20 +259,33 @@ impl Job for Commander {
                 if binding.once {
                     self.fired_once.insert(binding.id.value());
                 }
-                if let MissionAction::EnterState(target) = binding.action {
-                    transitions.push((binding.id.value(), target));
-                }
+                let action_target = match binding.action {
+                    MissionAction::EnterState(target) => Some(target),
+                    MissionAction::EmitTelemetryMarker { .. } | MissionAction::Stop { .. } => None,
+                };
+                transitions.push((binding.id, action_target));
             }
         }
-        for (_event_id, target) in transitions {
-            // Validate transition against the graph.
-            let allowed = self
+        for (event_id, action_target) in transitions {
+            let graph_target = self
                 .graph
                 .transitions
                 .iter()
-                .any(|t| t.from == self.current_phase && t.to == target);
-            if allowed {
+                .find(|t| t.from == self.current_phase && t.event == event_id)
+                .map(|t| t.to);
+            if let Some(target) = graph_target {
                 self.current_phase = target;
+            } else if let Some(target) = action_target {
+                // Legacy direct-entry fallback for scenarios that use
+                // `EnterState` as the transition declaration itself.
+                let allowed = self
+                    .graph
+                    .transitions
+                    .iter()
+                    .any(|t| t.from == self.current_phase && t.to == target);
+                if allowed {
+                    self.current_phase = target;
+                }
             }
         }
 
@@ -445,5 +458,67 @@ mod tests {
         let (status, _) = bus.latest::<VehicleStatus>().unwrap().unwrap();
         assert!(status.armed);
         assert!(status.in_flight);
+    }
+
+    #[test]
+    fn graph_transition_uses_fired_event_even_for_marker_action() {
+        let pad = PhaseId::from_path("mission.phases.pad");
+        let ascent = PhaseId::from_path("mission.phases.ascent");
+        let liftoff = EventId::from_path("mission.events.liftoff");
+        let graph = MissionPhaseGraph::new(
+            vec![
+                Phase {
+                    id: pad,
+                    label: "pad".to_string(),
+                    allowed_effectors: Vec::new(),
+                    allowed_engines: Vec::new(),
+                },
+                Phase {
+                    id: ascent,
+                    label: "ascent".to_string(),
+                    allowed_effectors: Vec::new(),
+                    allowed_engines: Vec::new(),
+                },
+            ],
+            vec![PhaseTransition {
+                from: pad,
+                to: ascent,
+                event: liftoff,
+            }],
+            pad,
+            &[liftoff],
+        )
+        .unwrap();
+        let bindings = vec![EventBinding {
+            id: liftoff,
+            trigger: BuiltInEventTrigger::AtTime { time_s: 0.5 },
+            action: MissionAction::EmitTelemetryMarker {
+                tag: "liftoff".to_string(),
+            },
+            once: true,
+        }];
+        let mut commander =
+            Commander::new(graph, bindings, pad, CommanderParams::default()).unwrap();
+        let bus = fresh_bus();
+        let clock = SimulatedClock::new();
+
+        clock.set(SimTime::ZERO, StepIndex::ZERO);
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        assert_eq!(commander.current_phase(), pad);
+
+        clock.set(SimTime::from_seconds(0.5), StepIndex::new(1));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        assert_eq!(commander.current_phase(), ascent);
     }
 }
