@@ -28,6 +28,13 @@ const FORBIDDEN_SAFETY_TERMS: &[ForbiddenTerm] = &[
     ForbiddenTerm::new("terminalwaypoint", "terminal-waypoint"),
     ForbiddenTerm::new("impactpoint", "impact-point"),
     ForbiddenTerm::new("weapon", "weapon"),
+    // Phase 5.X.E mission-vocabulary rejections (see
+    // `docs/mission-states-vocabulary.md § Rejected Vocabulary`).
+    ForbiddenTerm::new("midcourse", "midcourse"),
+    ForbiddenTerm::new("endgame", "endgame"),
+    ForbiddenTerm::new("decoy", "decoy"),
+    ForbiddenTerm::new("penaid", "pen-aid"),
+    ForbiddenTerm::new("blackoutevasion", "blackout-evasion"),
 ];
 
 struct ForbiddenTerm {
