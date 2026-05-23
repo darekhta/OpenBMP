@@ -518,10 +518,21 @@ where
     E: EnvironmentModel,
     SC: StopCondition<S>,
 {
-    /// Active mission phase id (Phase 3.2).
+    /// Active mission phase id.
+    ///
+    /// Phase 5.X.B: prefers the externally-supplied mission state
+    /// (from the FC commander's `commander.mission_state` topic) when
+    /// available, falling back to the kernel's internal
+    /// `current_phase` for pure-sim scenarios. The FC-wired path's
+    /// `current_phase` is republished by the kernel each step in
+    /// `evaluate_events` so this getter and the internal field stay
+    /// in sync.
     #[must_use]
     pub const fn current_phase(&self) -> Option<crate::events::PhaseId> {
-        self.current_phase
+        match self.external_mission_state {
+            Some(phase) => Some(phase),
+            None => self.current_phase,
+        }
     }
 
     /// Wire a Phase-3.2 mission (event bindings + optional phase
