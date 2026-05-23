@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 
 use openbmp_mission::{
-    BuiltInEventTrigger, EventAction, EventBinding, EventEvalState, EventScalars, EventTrigger,
+    BuiltInEventTrigger, EventBinding, EventEvalState, EventScalars, EventTrigger, MissionAction,
     MissionPhaseGraph, PhaseId,
 };
 
@@ -62,7 +62,7 @@ impl ParamSection for CommanderParams {
 #[derive(Debug)]
 pub struct Commander {
     graph: MissionPhaseGraph,
-    bindings: Vec<EventBinding>,
+    bindings: Vec<EventBinding<MissionAction>>,
     current_phase: PhaseId,
     params: CommanderParams,
     armed: bool,
@@ -87,7 +87,7 @@ impl Commander {
     /// not in the graph.
     pub fn new(
         graph: MissionPhaseGraph,
-        bindings: Vec<EventBinding>,
+        bindings: Vec<EventBinding<MissionAction>>,
         start_phase: PhaseId,
         params: CommanderParams,
     ) -> Result<Self, CommanderError> {
@@ -259,7 +259,7 @@ impl Job for Commander {
                 if binding.once {
                     self.fired_once.insert(binding.id.value());
                 }
-                if let EventAction::EnterPhase(target) = binding.action {
+                if let MissionAction::EnterState(target) = binding.action {
                     transitions.push((binding.id.value(), target));
                 }
             }
@@ -298,14 +298,14 @@ impl Job for Commander {
 mod tests {
     use openbmp_core::{SimTime, StepIndex};
     use openbmp_mission::{
-        BuiltInEventTrigger, EventAction, EventBinding, EventId, MissionPhaseGraph, Phase, PhaseId,
-        PhaseTransition,
+        BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase,
+        PhaseId, PhaseTransition,
     };
 
     use super::*;
     use crate::clock::SimulatedClock;
 
-    fn build_graph() -> (MissionPhaseGraph, Vec<EventBinding>, PhaseId) {
+    fn build_graph() -> (MissionPhaseGraph, Vec<EventBinding<MissionAction>>, PhaseId) {
         let pad = PhaseId::from_path("mission.phases.pad");
         let ascent = PhaseId::from_path("mission.phases.ascent");
         let liftoff = EventId::from_path("mission.events.liftoff");
@@ -332,7 +332,7 @@ mod tests {
         let bindings = vec![EventBinding {
             id: liftoff,
             trigger: BuiltInEventTrigger::AtTime { time_s: 0.5 },
-            action: EventAction::EnterPhase(ascent),
+            action: MissionAction::EnterState(ascent),
             once: true,
         }];
         (graph, bindings, pad)

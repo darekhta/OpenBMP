@@ -20,8 +20,10 @@ use openbmp_scenario::{
     EventActionConfig, EventConfig, EventTriggerConfig, MissionConfig, PhaseConfig,
     PhaseTransitionConfig,
 };
+#[allow(deprecated)]
+use openbmp_sim::EventAction;
 use openbmp_sim::{
-    BuiltInEventTrigger, EventAction, EventBinding, EventId, MissionPhaseGraph, Phase, PhaseId,
+    BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase, PhaseId,
     PhaseTransition,
 };
 
@@ -38,6 +40,7 @@ use crate::error::CliError;
 /// - The phase graph contains a cycle, an unreachable phase, or
 ///   duplicate phase ids.
 /// - `mission.initial_phase` references an unknown id.
+#[allow(deprecated)]
 pub fn build_mission_runtime(
     mission: &MissionConfig,
 ) -> Result<(Vec<EventBinding>, MissionPhaseGraph), CliError> {
@@ -115,6 +118,7 @@ fn build_phase(config: &PhaseConfig) -> Phase {
     }
 }
 
+#[allow(deprecated)]
 fn build_event_binding(
     config: &EventConfig,
     phase_id_lookup: &BTreeMap<&str, PhaseId>,
@@ -125,6 +129,45 @@ fn build_event_binding(
         action: build_action(&config.action, phase_id_lookup)?,
         once: config.once,
     })
+}
+
+/// Phase 5.X.A: project a legacy unified [`EventBinding<EventAction>`]
+/// list down to the HAL-portable mission-action bindings only. The
+/// commander owns these; the simulator-only physics-override
+/// variants (engine / effector / separation / recovery) are dropped.
+///
+/// Iteration order is preserved (canonical id-sorted), so each binding's
+/// position in the projected list matches its position in the source
+/// list among mission-action bindings.
+#[allow(deprecated)]
+#[must_use]
+pub fn project_mission_bindings(
+    bindings: &[EventBinding],
+) -> Vec<EventBinding<MissionAction>> {
+    bindings
+        .iter()
+        .filter_map(|b| {
+            let action = match &b.action {
+                EventAction::EnterPhase(p) => MissionAction::EnterState(*p),
+                EventAction::EmitTelemetryMarker { tag } => {
+                    MissionAction::EmitTelemetryMarker { tag: tag.clone() }
+                }
+                EventAction::Stop { label } => MissionAction::Stop {
+                    label: label.clone(),
+                },
+                EventAction::EngineCommand { .. }
+                | EventAction::EffectorOverride { .. }
+                | EventAction::Separation
+                | EventAction::DeployRecovery { .. } => return None,
+            };
+            Some(EventBinding {
+                id: b.id,
+                trigger: b.trigger.clone(),
+                action,
+                once: b.once,
+            })
+        })
+        .collect()
 }
 
 fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, CliError> {

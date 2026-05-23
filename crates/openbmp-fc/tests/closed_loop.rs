@@ -43,7 +43,7 @@ use openbmp_fc::topics::{
     VehicleStatus,
 };
 use openbmp_mission::{
-    BuiltInEventTrigger, EventAction, EventBinding, EventId, MissionPhaseGraph, Phase, PhaseId,
+    BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase, PhaseId,
     PhaseTransition,
 };
 
@@ -140,7 +140,7 @@ impl BusHistoryRecorder {
     }
 }
 
-fn build_simple_graph() -> (MissionPhaseGraph, Vec<EventBinding>, PhaseId, PhaseId) {
+fn build_simple_graph() -> (MissionPhaseGraph, Vec<EventBinding<MissionAction>>, PhaseId, PhaseId) {
     let pad = PhaseId::from_path("mission.phases.pad");
     let ascent = PhaseId::from_path("mission.phases.ascent");
     let event_id = EventId::from_path("mission.events.liftoff");
@@ -170,7 +170,7 @@ fn build_simple_graph() -> (MissionPhaseGraph, Vec<EventBinding>, PhaseId, Phase
     let bindings = vec![EventBinding {
         id: event_id,
         trigger: BuiltInEventTrigger::AtTime { time_s: 0.5 },
-        action: EventAction::EnterPhase(ascent),
+        action: MissionAction::EnterState(ascent),
         once: true,
     }];
 

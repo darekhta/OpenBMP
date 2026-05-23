@@ -39,6 +39,8 @@ use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
 };
 use openbmp_mission::{EventBinding, MissionPhaseGraph, PhaseId};
+
+use crate::runner::mission::project_mission_bindings;
 use openbmp_physics::magnetic::Wmm2025;
 use openbmp_scenario::{
     FcActuatorChannelsConfig, FcAntiWindupConfig, FcAutopilotKind, FcAutopilotParams, FcConfig,
@@ -147,9 +149,19 @@ impl FcRunner {
         let authority = build_authority(&mission_graph, config.phase_authority.as_ref());
 
         // Commander.
+        //
+        // Phase 5.X.A: the commander now consumes
+        // `Vec<EventBinding<MissionAction>>` (HAL-portable) rather than
+        // the legacy unified `Vec<EventBinding<EventAction>>`. The
+        // simulator-only physics-override variants (engine / effector /
+        // separation / recovery) are dropped here — they continue to
+        // flow through the simulator kernel via the same
+        // `event_bindings` list during the migration window. Phase
+        // 5.X.B splits the kernel-side list to mirror this projection.
+        let commander_bindings = project_mission_bindings(&event_bindings);
         let commander = Commander::new(
             mission_graph,
-            event_bindings,
+            commander_bindings,
             start_phase,
             CommanderParams::default(),
         )
