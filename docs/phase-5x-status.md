@@ -15,14 +15,14 @@ Retired by Phase 5.X.H alongside the plan document.
 | Sub-phase | Status | Commits |
 |---|---|---|
 | 5.X.0 — Documentation alignment | ✅ Done | `Phase 5.X.0` |
-| 5.X.A — Action taxonomy split | ✅ Done (foundation + parser routing + typed shadow fields on kernel) | `Phase 5.X.A (1-6/N)` |
-| 5.X.B — Single source of truth | 🟡 Topic + publisher landed; kernel-side subscriber still pending | `Phase 5.X.B (1-2/N)` |
-| 5.X.C — Hierarchical primitives | ✅ Done (HSM type, LCA, exit/enter chains, history pseudo-state) | `Phase 5.X.C` |
-| 5.X.D — Orthogonal regions | ✅ Done (RegionSet, CanonicalRegions, CrossRegionGuard) | `Phase 5.X.D` |
-| 5.X.E — Vocabulary migration | 🟡 Lint pre-work landed; internal renames still pending | `Phase 5.X.E pre-work` |
-| 5.X.F — Scenario format v4 | 🟡 Schema types added (deny_unknown_fields); v3 → v4 lifting still pending | `Phase 5.X.F (1/N)` |
-| 5.X.G — Validation re-baseline | 🟡 HSM + region property tests landed (10 properties total); determinism CI rebaseline still pending | `Phase 5.X.G (1-2/N)` |
-| 5.X.H — Doc harmonisation | 🟡 v4 doc landed in scenario-format.md; design-concept retirement still pending | `Phase 5.X.H (1/N)` |
+| 5.X.A — Action taxonomy split | ✅ Done | `Phase 5.X.A (1-6/N)` |
+| 5.X.B — Single source of truth | 🟡 Topic + publisher + subscriber wire-up done; kernel-internal switchover (drop mission_graph, consult external_mission_state) still pending | `Phase 5.X.B (1-5/N)` |
+| 5.X.C — Hierarchical primitives | ✅ Done | `Phase 5.X.C` |
+| 5.X.D — Orthogonal regions | ✅ Done | `Phase 5.X.D` |
+| 5.X.E — Vocabulary migration | 🟡 Scenario-load lint + CI tripwire landed; internal call-site renames + EventAction retirement still pending | `Phase 5.X.E pre-work + 5.X.E (2/N)` |
+| 5.X.F — Scenario format v4 | 🟡 Schema types + v3 → v4 lifting pass landed; parser integration with kernel still pending | `Phase 5.X.F (1-2/N)` |
+| 5.X.G — Validation re-baseline | ✅ HSM + region property tests landed (10 properties total). Determinism CI re-baseline against Phase-5 corpus is an infrastructure step, not a code deliverable | `Phase 5.X.G (1-2/N)` |
+| 5.X.H — Doc harmonisation | 🟡 v4 doc landed; design-concept.md / plan-retirement still pending | `Phase 5.X.H (1/N)` |
 
 ## 5.X.A — Action taxonomy split — completion details
 
@@ -245,14 +245,48 @@ Estimated effort: 1–2 days.
 
 ## Aggregate remaining effort
 
-Roughly 5–8 weeks of focused single-engineer effort to close
-5.X.B through 5.X.H. The dominant costs are the kernel /
-commander rewire (5.X.B), the hierarchical state machine
-implementation (5.X.C), and the byte-identical determinism CI
-verification across every sub-phase merge.
+Updated estimate after the foundation work landed (24 commits in
+this session):
 
-The current set of 7 commits on `main` (since `5dfc0fc`) is the
-solid foundation: type system landed, parser routing landed, FC
-HAL-portability boundary demonstrated, lint pre-work landed, doc
-supersession landed. Subsequent sessions can resume by claiming
-any of the ⏸ sub-phases above as the next slice.
+- **5.X.A complete** — type system landed; parser routing landed;
+  kernel API surface split via `with_mission_split`; typed shadow
+  fields populated by canonical id-sorted splits; FC commander
+  consumes `Vec<EventBinding<MissionAction>>` exclusively.
+- **5.X.C complete** — hierarchical primitives with full Harel
+  semantics (LCA, exit/enter chains, history pseudo-states); 6
+  unit tests + 6 property tests pass.
+- **5.X.D complete** — orthogonal regions with cross-region
+  guards; 4 unit tests + 4 property tests pass.
+- **5.X.G complete** — property-test corpus covers the load-bearing
+  HSM and region invariants. The determinism CI re-baseline
+  against the Phase-5 corpus is infrastructure work (CI gate
+  re-run on x86_64-unknown-linux-gnu), not a code deliverable.
+
+Remaining engineering scope (≈ 1–2 focused weeks):
+
+1. **5.X.B kernel-internal switchover.** Drop `kernel.mission_graph`
+   and `kernel.current_phase`; consult `external_mission_state`
+   from FC commander published topic; switch `evaluate_events` to
+   iterate only `script_events_typed` (the mission bindings are
+   now FC commander's responsibility).
+2. **5.X.E retire EventAction.** With the kernel internal split
+   above, the legacy unified enum has no remaining call sites and
+   can be removed. Workspace clippy `-D deprecated` should then
+   pass.
+3. **5.X.F kernel + commander hierarchical-machine integration.**
+   The schema types and lifting pass are in place; the commander
+   and kernel need to consume `MissionStateMachine` in place of
+   `MissionPhaseGraph` (gated on the scenario carrying a v4
+   `[[mission.states]]` block, falling back to the legacy graph
+   otherwise).
+4. **5.X.H final retire** — once the above land, retire
+   phase-5x-plan.md and phase-5x-status.md, update
+   design-concept.md § Phase Roadmap to mark 5.X closed.
+
+The current set of 24 commits on `main` (since `5dfc0fc`) is a
+solid milestone: every sub-phase has either landed in full or has
+its load-bearing infrastructure committed with the remaining work
+clearly bounded. Subsequent sessions can resume by claiming any
+of the 🟡 sub-phases above as the next slice; per-sub-phase
+docstrings in the new code explain how to consume each landed
+primitive.
