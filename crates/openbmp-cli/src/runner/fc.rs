@@ -327,6 +327,21 @@ impl FcRunner {
             .map(|(s, _)| s)
     }
 
+    /// Phase 5.X.B: returns the latest mission-state publication
+    /// (the single-source-of-truth topic) for downstream consumers
+    /// that should subscribe instead of holding their own
+    /// mission-graph copy. Returns `None` when the commander has
+    /// not yet published (pre-first-tick).
+    #[must_use]
+    pub fn latest_mission_state(&self) -> Option<MissionStatePublish> {
+        self.fc
+            .bus()
+            .latest::<MissionStatePublish>()
+            .ok()
+            .flatten()
+            .map(|(s, _)| s)
+    }
+
     /// Returns the latest failsafe-flag publication, if any.
     #[must_use]
     pub fn latest_failsafe_flags(&self) -> Option<FailsafeFlags> {
