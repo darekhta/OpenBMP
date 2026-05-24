@@ -81,7 +81,10 @@ pub struct ChengBridge;
 
 impl BridgeFunction for ChengBridge {
     fn alpha(&self, knudsen: f64) -> f64 {
-        if !knudsen.is_finite() || knudsen <= 0.0 {
+        if !knudsen.is_finite() {
+            return 1.0;
+        }
+        if knudsen <= 0.0 {
             return 0.0;
         }
         (-PI / (2.0 * knudsen)).exp()
@@ -106,7 +109,10 @@ impl Default for ErfcBridge {
 
 impl BridgeFunction for ErfcBridge {
     fn alpha(&self, knudsen: f64) -> f64 {
-        if !knudsen.is_finite() || knudsen <= 0.0 {
+        if !knudsen.is_finite() {
+            return 1.0;
+        }
+        if knudsen <= 0.0 {
             return 0.0;
         }
         let arg = knudsen.log10() / self.sigma.max(1.0e-6);
@@ -369,6 +375,7 @@ mod tests {
         assert!(b.alpha(1.0e-6) < 1.0e-6);
         // At very large Kn → α ≈ 1.
         assert!(b.alpha(1.0e6) > 0.99);
+        assert_relative_eq!(b.alpha(f64::INFINITY), 1.0, epsilon = 0.0);
         // Monotonic.
         let mut prev = -1.0;
         for kn in [0.01_f64, 0.1, 1.0, 10.0, 100.0] {
@@ -383,6 +390,7 @@ mod tests {
         let b = LinearKnudsenBridge::default();
         assert_eq!(b.alpha(1.0e-5), 0.0);
         assert_eq!(b.alpha(1.0e5), 1.0);
+        assert_relative_eq!(b.alpha(f64::INFINITY), 1.0, epsilon = 0.0);
         // Midpoint of the band.
         let mid_kn = 0.5 * (b.kn_lo + b.kn_hi);
         let a_mid = b.alpha(mid_kn);
@@ -394,6 +402,18 @@ mod tests {
         let b = ErfcBridge::default();
         assert!(b.alpha(1.0e-6) < 0.05);
         assert!(b.alpha(1.0e6) > 0.95);
+        assert_relative_eq!(b.alpha(f64::INFINITY), 1.0, epsilon = 0.0);
+    }
+
+    #[test]
+    fn bridge_nan_inputs_fail_closed_to_free_molecular() {
+        assert_relative_eq!(ChengBridge.alpha(f64::NAN), 1.0, epsilon = 0.0);
+        assert_relative_eq!(ErfcBridge::default().alpha(f64::NAN), 1.0, epsilon = 0.0);
+        assert_relative_eq!(
+            LinearKnudsenBridge::default().alpha(f64::NAN),
+            1.0,
+            epsilon = 0.0
+        );
     }
 
     #[test]
@@ -559,6 +579,43 @@ mod tests {
         let f = hybrid.aero_force_moment_body(&ctx).unwrap();
         // FM limit: pure FM contribution, no continuum blending.
         assert!(f.force_n_body.x < 0.0);
+    }
+
+    #[test]
+    fn hybrid_cheng_bridge_uses_free_molecular_limit_at_infinite_kn() {
+        let fm = FreeMolecularAero {
+            accommodation: AccommodationCoeffs::default(),
+            reference_area_m2: 1.0,
+        };
+        let hybrid = HybridAeroMethod {
+            continuum_low_mach: Box::new(ModifiedNewtonian {
+                cp_max: 2.0,
+                reference_area_m2: 1.0,
+                reference_length_m: 1.0,
+            }),
+            continuum_high_mach: Box::new(ModifiedNewtonian {
+                cp_max: 2.0,
+                reference_area_m2: 1.0,
+                reference_length_m: 1.0,
+            }),
+            free_molecular: Box::new(fm),
+            mach_handoff: 4.0,
+            bridge: Box::new(ChengBridge),
+            knudsen: f64::INFINITY,
+        };
+        let ctx = AeroContext {
+            mach: 10.0,
+            alpha_deg: 5.0,
+            beta_deg: 0.0,
+            dynamic_pressure_pa: 1.0e4,
+        };
+        let f = hybrid.aero_force_moment_body(&ctx).unwrap();
+        let fm_only = fm.aero_force_moment_body(&ctx).unwrap();
+        assert_relative_eq!(
+            f.force_n_body.x,
+            fm_only.force_n_body.x,
+            max_relative = 1.0e-12
+        );
     }
 
     #[test]
