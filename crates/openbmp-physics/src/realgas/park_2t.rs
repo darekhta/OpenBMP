@@ -27,8 +27,117 @@
 
 use super::AirComposition;
 use crate::error::PhysicsError;
+use crate::external_reference::{
+    EnvelopeBounds, ExternalReferencePackage, ProvenanceBlock, ReferencePackageKind,
+};
 
 const CM3_PER_M3: f64 = 1.0e6;
+
+/// Canonical payload for the public Park 2T reference data currently
+/// pinned by this module.
+///
+/// This payload intentionally includes only the public forward
+/// Park87 / Park93 neutral-subset rows and the source-derived
+/// Millikan-White molecular constants. It does not imply that the
+/// live source-term model is executable; backward rates,
+/// equilibrium constants, Park90, and the high-temperature relaxation
+/// limiter remain deferred.
+pub const PARK_2T_REFERENCE_PAYLOAD_V1: &str = "\
+openbmp.park-2t-reference-data.v1
+source.forward_rates=https://link.springer.com/article/10.1186/s42774-022-00125-x/tables/2
+source.millikan_white=https://ntrs.nasa.gov/citations/19820011246
+source.vibrational_temperatures=https://www.osti.gov/servlets/purl/1650141
+units.forward_rate_published=cm^3 mol^-1 s^-1
+units.activation_temperature=K
+park87.row1=O2+N<=>O+O+N,A=2.90e23,B=-2.0,Ta=59750.0
+park87.row2=O2+O<=>O+O+O,A=2.90e23,B=-2.0,Ta=59750.0
+park87.row3=O2+O2<=>O+O+O2,A=9.68e22,B=-2.0,Ta=59750.0
+park87.row4=O2+N2<=>O+O+N2,A=9.68e22,B=-2.0,Ta=59750.0
+park87.row5=O2+NO<=>O+O+NO,A=9.68e22,B=-2.0,Ta=59750.0
+park87.row12=N2+N<=>N+N+N,A=1.60e22,B=-1.6,Ta=113200.0
+park87.row13=N2+O<=>N+N+O,A=4.98e22,B=-1.6,Ta=113200.0
+park87.row14=N2+O2<=>N+N+O2,A=3.70e21,B=-1.6,Ta=113200.0
+park87.row15=N2+N2<=>N+N+N2,A=3.70e21,B=-1.6,Ta=113200.0
+park87.row16=N2+NO<=>N+N+NO,A=4.98e21,B=-1.6,Ta=113200.0
+park87.row22=NO+N<=>N+O+N,A=7.95e23,B=-2.0,Ta=75500.0
+park87.row23=NO+O<=>N+O+O,A=7.95e23,B=-2.0,Ta=75500.0
+park87.row24=NO+N2<=>N+O+N2,A=7.95e23,B=-2.0,Ta=75500.0
+park87.row25=NO+O2<=>N+O+O2,A=7.95e23,B=-2.0,Ta=75500.0
+park87.row26=NO+NO<=>N+O+NO,A=7.95e23,B=-2.0,Ta=75500.0
+park87.row33=NO+O<=>N+O2,A=8.37e12,B=0.0,Ta=19450.0
+park87.row34=N2+O<=>NO+N,A=6.44e17,B=-1.0,Ta=38370.0
+park93.row1=O2+N<=>O+O+N,A=1.00e22,B=-1.5,Ta=59500.0
+park93.row2=O2+O<=>O+O+O,A=1.00e22,B=-1.5,Ta=59500.0
+park93.row3=O2+O2<=>O+O+O2,A=2.00e21,B=-1.5,Ta=59500.0
+park93.row4=O2+N2<=>O+O+N2,A=2.00e21,B=-1.5,Ta=59500.0
+park93.row5=O2+NO<=>O+O+NO,A=2.00e21,B=-1.5,Ta=59500.0
+park93.row12=N2+N<=>N+N+N,A=3.00e22,B=-1.6,Ta=113200.0
+park93.row13=N2+O<=>N+N+O,A=3.00e22,B=-1.6,Ta=113200.0
+park93.row14=N2+O2<=>N+N+O2,A=7.00e21,B=-1.6,Ta=113200.0
+park93.row15=N2+N2<=>N+N+N2,A=7.00e21,B=-1.6,Ta=113200.0
+park93.row16=N2+NO<=>N+N+NO,A=7.00e21,B=-1.6,Ta=113200.0
+park93.row22=NO+N<=>N+O+N,A=1.10e17,B=0.0,Ta=75500.0
+park93.row23=NO+O<=>N+O+O,A=1.10e17,B=0.0,Ta=75500.0
+park93.row24=NO+N2<=>N+O+N2,A=5.00e15,B=0.0,Ta=75500.0
+park93.row25=NO+O2<=>N+O+O2,A=5.00e15,B=0.0,Ta=75500.0
+park93.row26=NO+NO<=>N+O+NO,A=1.10e17,B=0.0,Ta=75500.0
+park93.row33=NO+O<=>N+O2,A=8.40e12,B=0.0,Ta=19450.0
+park93.row34=N2+O<=>NO+N,A=6.40e17,B=-1.0,Ta=38400.0
+species.N2.molar_mass_g_mol=28.0134
+species.O2.molar_mass_g_mol=31.9988
+species.NO.molar_mass_g_mol=30.0061
+species.N.molar_mass_g_mol=14.0067
+species.O.molar_mass_g_mol=15.9994
+species.N2.theta_v_k=3395.0
+species.O2.theta_v_k=2239.0
+species.NO.theta_v_k=2817.0
+millikan_white.formula.A=1.16e-3*sqrt(mu)*theta_v^(4/3)
+millikan_white.formula.B=0.015*mu^(1/4)
+millikan_white.formula.p_tau_atm_s=exp(A*(T^(-1/3)-B)-18.42)
+";
+
+/// SHA-256 pin of [`PARK_2T_REFERENCE_PAYLOAD_V1`].
+pub const PARK_2T_REFERENCE_PAYLOAD_SHA256_HEX: &str =
+    "95250b6113d2c3b9f1b2c2d5e7f696f5061a1671a5864a916a1d38af8514c1b1";
+
+/// Build an external-reference package descriptor for the currently
+/// pinned Park 2T public reference data.
+#[must_use]
+pub fn park_2t_reference_package() -> ExternalReferencePackage {
+    ExternalReferencePackage {
+        kind: ReferencePackageKind::ThermochemistryReference,
+        envelope: EnvelopeBounds {
+            mach_lo: 0.0,
+            mach_hi: 30.0,
+            altitude_lo_m: 0.0,
+            altitude_hi_m: 150_000.0,
+            alpha_lo_rad: 0.0,
+            alpha_hi_rad: std::f64::consts::FRAC_PI_2,
+        },
+        provenance: ProvenanceBlock {
+            solver_name: "public Park 2T reference data".to_owned(),
+            solver_version: "openbmp-park-2t-reference-data-v1".to_owned(),
+            license: "public literature reference data".to_owned(),
+            retrieval_path: "Zhang et al. 2022 table 2; NASA report 19820011246; OSTI 1650141"
+                .to_owned(),
+            governing_equations: "Park neutral-air forward rates and Millikan-White relaxation"
+                .to_owned(),
+            content_hash_sha256_hex: PARK_2T_REFERENCE_PAYLOAD_SHA256_HEX.to_owned(),
+        },
+    }
+}
+
+/// Validate the Park 2T reference package and a caller-supplied
+/// digest of [`PARK_2T_REFERENCE_PAYLOAD_V1`].
+///
+/// # Errors
+///
+/// Returns [`PhysicsError::InvalidParameter`] when the provenance
+/// metadata is malformed or the supplied digest does not match the
+/// pinned canonical payload hash.
+pub fn validate_park_2t_reference_package(payload_sha256_hex: &str) -> Result<(), PhysicsError> {
+    park_2t_reference_package().validate_payload_hash_hex(payload_sha256_hex)
+}
 
 /// Arrhenius forward-rate coefficient as published for air chemistry.
 ///
@@ -920,6 +1029,30 @@ mod tests {
         assert!(matches!(
             model.vibrational_relaxation(8000.0, 4000.0, &cold_air(), 1.0e-3),
             Err(PhysicsError::OutOfEnvelope { .. })
+        ));
+    }
+
+    #[test]
+    fn park_reference_payload_has_provenance_hash_pin() {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(PARK_2T_REFERENCE_PAYLOAD_V1.as_bytes());
+        let digest = hasher.finalize();
+        let mut actual = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            use std::fmt::Write as _;
+            write!(&mut actual, "{byte:02x}").unwrap();
+        }
+
+        assert_eq!(actual, PARK_2T_REFERENCE_PAYLOAD_SHA256_HEX);
+        park_2t_reference_package().validate().unwrap();
+        validate_park_2t_reference_package(&actual).unwrap();
+        assert!(matches!(
+            validate_park_2t_reference_package(
+                "0000000000000000000000000000000000000000000000000000000000000000"
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
         ));
     }
 
