@@ -291,7 +291,7 @@ impl ModifiedNewtonian {
     /// is undefined there). Pure `f64::powf` calls — state-stable.
     #[must_use]
     pub fn cp_max_perfect_gas(mach: f64, gamma: f64) -> f64 {
-        if !mach.is_finite() || mach <= 1.0 || gamma <= 1.0 {
+        if !mach.is_finite() || !gamma.is_finite() || mach <= 1.0 || gamma <= 1.0 {
             return Self::CP_MAX_PERFECT_GAS_INFINITE_MACH;
         }
         let m2 = mach * mach;
@@ -331,6 +331,18 @@ impl ModifiedNewtonian {
 impl AeroMethod for ModifiedNewtonian {
     fn aero_force_moment_body(&self, ctx: &AeroContext) -> Result<AeroForceMomentBody, AeroError> {
         validate_context(ctx)?;
+        validate_non_negative_model_parameter(
+            self.cp_max,
+            "modified_newtonian cp_max must be finite and non-negative",
+        )?;
+        validate_non_negative_model_parameter(
+            self.reference_area_m2,
+            "modified_newtonian reference_area_m2 must be finite and non-negative",
+        )?;
+        validate_non_negative_model_parameter(
+            self.reference_length_m,
+            "modified_newtonian reference_length_m must be finite and non-negative",
+        )?;
         // Representative-panel approximation:
         //   - Stagnation panel: θ = α (measured from freestream).
         //   - Net force aligned along the inward normal at stagnation.
@@ -396,7 +408,14 @@ impl TangentCone {
     /// the function returns 0.
     #[must_use]
     pub fn cp_cone(mach: f64, theta_c_rad: f64, gamma: f64) -> f64 {
-        if !mach.is_finite() || mach <= 1.0 || theta_c_rad <= 0.0 {
+        if !mach.is_finite()
+            || mach <= 1.0
+            || !theta_c_rad.is_finite()
+            || theta_c_rad <= 0.0
+            || theta_c_rad >= 0.5 * PI
+            || !gamma.is_finite()
+            || gamma <= 1.0
+        {
             return 0.0;
         }
         let s = theta_c_rad.sin();
@@ -418,6 +437,19 @@ impl AeroMethod for TangentCone {
                 reason: "tangent_cone cone_half_angle_rad must be positive",
             });
         }
+        if self.cone_half_angle_rad >= 0.5 * PI {
+            return Err(AeroError::InvalidParameter {
+                reason: "tangent_cone cone_half_angle_rad must be less than pi/2",
+            });
+        }
+        validate_non_negative_model_parameter(
+            self.reference_area_m2,
+            "tangent_cone reference_area_m2 must be finite and non-negative",
+        )?;
+        validate_non_negative_model_parameter(
+            self.reference_length_m,
+            "tangent_cone reference_length_m must be finite and non-negative",
+        )?;
         let cp = Self::cp_cone(ctx.mach, self.cone_half_angle_rad, self.gamma);
         let q = ctx.dynamic_pressure_pa;
         let s_ref = self.reference_area_m2;
@@ -458,7 +490,12 @@ impl TangentWedge {
     /// the published engineering reference (Anderson 2019 §14.4).
     #[must_use]
     pub fn cp_wedge(mach: f64, theta_w_rad: f64) -> f64 {
-        if !mach.is_finite() || mach <= 1.0 || theta_w_rad <= 0.0 {
+        if !mach.is_finite()
+            || mach <= 1.0
+            || !theta_w_rad.is_finite()
+            || theta_w_rad <= 0.0
+            || theta_w_rad >= 0.5 * PI
+        {
             return 0.0;
         }
         let s = theta_w_rad.sin();
@@ -469,6 +506,25 @@ impl TangentWedge {
 impl AeroMethod for TangentWedge {
     fn aero_force_moment_body(&self, ctx: &AeroContext) -> Result<AeroForceMomentBody, AeroError> {
         validate_context(ctx)?;
+        if !(self.gamma.is_finite() && self.gamma > 1.0) {
+            return Err(AeroError::InvalidParameter {
+                reason: "tangent_wedge gamma must be finite and > 1",
+            });
+        }
+        if !(self.wedge_half_angle_rad.is_finite() && self.wedge_half_angle_rad > 0.0) {
+            return Err(AeroError::InvalidParameter {
+                reason: "tangent_wedge wedge_half_angle_rad must be positive",
+            });
+        }
+        if self.wedge_half_angle_rad >= 0.5 * PI {
+            return Err(AeroError::InvalidParameter {
+                reason: "tangent_wedge wedge_half_angle_rad must be less than pi/2",
+            });
+        }
+        validate_non_negative_model_parameter(
+            self.reference_area_m2,
+            "tangent_wedge reference_area_m2 must be finite and non-negative",
+        )?;
         let cp = Self::cp_wedge(ctx.mach, self.wedge_half_angle_rad);
         let q = ctx.dynamic_pressure_pa;
         let drag = cp * q * self.reference_area_m2;
@@ -503,6 +559,16 @@ fn validate_context(ctx: &AeroContext) -> Result<(), AeroError> {
         return Err(AeroError::InvalidParameter {
             reason: "dynamic_pressure_pa must be non-negative",
         });
+    }
+    Ok(())
+}
+
+fn validate_non_negative_model_parameter(
+    value: f64,
+    reason: &'static str,
+) -> Result<(), AeroError> {
+    if !(value.is_finite() && value >= 0.0) {
+        return Err(AeroError::InvalidParameter { reason });
     }
     Ok(())
 }
@@ -603,6 +669,25 @@ mod tests {
     }
 
     #[test]
+    fn modified_newtonian_rejects_invalid_model_parameters() {
+        let mut m = ModifiedNewtonian {
+            cp_max: -1.0,
+            reference_area_m2: 1.0,
+            reference_length_m: 1.0,
+        };
+        assert!(matches!(
+            m.aero_force_moment_body(&ctx(10.0, 0.0, 1.0e4)),
+            Err(AeroError::InvalidParameter { .. })
+        ));
+        m.cp_max = 1.0;
+        m.reference_area_m2 = f64::NAN;
+        assert!(matches!(
+            m.aero_force_moment_body(&ctx(10.0, 0.0, 1.0e4)),
+            Err(AeroError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
     fn tangent_cone_cp_increases_with_cone_angle() {
         let g = 1.4;
         let small = TangentCone::cp_cone(10.0, 5.0_f64.to_radians(), g);
@@ -610,6 +695,25 @@ mod tests {
         let large = TangentCone::cp_cone(10.0, 30.0_f64.to_radians(), g);
         assert!(small < mid);
         assert!(mid < large);
+    }
+
+    #[test]
+    fn tangent_cone_cp_rejects_nonphysical_public_inputs() {
+        assert_relative_eq!(
+            TangentCone::cp_cone(10.0, f64::NAN, 1.4),
+            0.0,
+            epsilon = 0.0
+        );
+        assert_relative_eq!(
+            TangentCone::cp_cone(10.0, 10.0_f64.to_radians(), f64::NAN),
+            0.0,
+            epsilon = 0.0
+        );
+        assert_relative_eq!(
+            TangentCone::cp_cone(10.0, 90.0_f64.to_radians(), 1.4),
+            0.0,
+            epsilon = 0.0
+        );
     }
 
     #[test]
@@ -625,12 +729,58 @@ mod tests {
     }
 
     #[test]
+    fn tangent_cone_rejects_invalid_model_parameters() {
+        let c = TangentCone {
+            cone_half_angle_rad: 15.0_f64.to_radians(),
+            reference_area_m2: -1.0,
+            reference_length_m: 1.0,
+            gamma: 1.4,
+        };
+        assert!(matches!(
+            c.aero_force_moment_body(&ctx(10.0, 0.0, 1.0e4)),
+            Err(AeroError::InvalidParameter { .. })
+        ));
+        let c = TangentCone {
+            cone_half_angle_rad: 90.0_f64.to_radians(),
+            reference_area_m2: 1.0,
+            reference_length_m: 1.0,
+            gamma: 1.4,
+        };
+        assert!(matches!(
+            c.aero_force_moment_body(&ctx(10.0, 0.0, 1.0e4)),
+            Err(AeroError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
     fn tangent_wedge_cp_matches_newtonian() {
         // 2-D Newtonian: Cp = 2 sin²(θ).
         let theta = 10.0_f64.to_radians();
         let cp = TangentWedge::cp_wedge(8.0, theta);
         let expected = 2.0 * theta.sin() * theta.sin();
         assert_relative_eq!(cp, expected, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn tangent_wedge_rejects_invalid_model_parameters() {
+        let w = TangentWedge {
+            wedge_half_angle_rad: 10.0_f64.to_radians(),
+            reference_area_m2: 1.0,
+            gamma: 1.0,
+        };
+        assert!(matches!(
+            w.aero_force_moment_body(&ctx(10.0, 0.0, 1.0e4)),
+            Err(AeroError::InvalidParameter { .. })
+        ));
+        let w = TangentWedge {
+            wedge_half_angle_rad: 10.0_f64.to_radians(),
+            reference_area_m2: -1.0,
+            gamma: 1.4,
+        };
+        assert!(matches!(
+            w.aero_force_moment_body(&ctx(10.0, 0.0, 1.0e4)),
+            Err(AeroError::InvalidParameter { .. })
+        ));
     }
 
     fn square_plate_mesh() -> PanelMesh {
