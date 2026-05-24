@@ -54,6 +54,63 @@ pub struct PublicEntryHeatingBenchmark {
 }
 
 impl PublicEntryHeatingBenchmark {
+    /// Validate the published benchmark metadata before it is used as
+    /// a calibration anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when a benchmark
+    /// field is non-finite, non-positive where physics requires a
+    /// positive value, or a radiative fraction lies outside `[0, 1]`.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        if self.id.trim().is_empty() || self.vehicle.trim().is_empty() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry benchmark id and vehicle must be non-empty",
+            });
+        }
+        if let Some(beta) = self.ballistic_parameter_kg_m2
+            && (!beta.is_finite() || beta <= 0.0)
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry benchmark ballistic parameter must be positive",
+            });
+        }
+        if !self.entry_velocity_m_s.is_finite() || self.entry_velocity_m_s <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry benchmark velocity must be positive",
+            });
+        }
+        if let Some(angle) = self.flight_path_angle_below_horizon_rad
+            && (!angle.is_finite() || angle <= 0.0 || angle >= std::f64::consts::FRAC_PI_2)
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry benchmark flight path angle must be in (0, π/2)",
+            });
+        }
+        if !self.peak_stagnation_total_heat_flux_w_m2.is_finite()
+            || self.peak_stagnation_total_heat_flux_w_m2 <= 0.0
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry benchmark peak heat flux must be positive",
+            });
+        }
+        if let Some(heat_load) = self.total_heat_load_j_m2
+            && (!heat_load.is_finite() || heat_load <= 0.0)
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry benchmark heat load must be positive",
+            });
+        }
+        if !Self::valid_fraction(self.peak_radiative_fraction)
+            || !Self::valid_fraction(self.heat_load_radiative_fraction)
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry benchmark radiative fractions must be in [0, 1]",
+            });
+        }
+        Ok(())
+    }
+
     /// Convective component of peak heat flux when the source table
     /// provides a radiative fraction.
     #[must_use]
@@ -68,6 +125,10 @@ impl PublicEntryHeatingBenchmark {
     pub fn peak_radiative_heat_flux_w_m2(&self) -> Option<f64> {
         self.peak_radiative_fraction
             .map(|frac| self.peak_stagnation_total_heat_flux_w_m2 * frac)
+    }
+
+    fn valid_fraction(value: Option<f64>) -> bool {
+        value.is_none_or(|fraction| fraction.is_finite() && (0.0..=1.0).contains(&fraction))
     }
 }
 
@@ -444,6 +505,7 @@ mod tests {
     #[test]
     fn public_apollo_benchmark_converts_table13_heat_flux_to_si() {
         let b = APOLLO_CM_TABLE13_HEATING;
+        b.validate().unwrap();
         assert_relative_eq!(
             b.peak_stagnation_total_heat_flux_w_m2,
             5.10e6,
@@ -464,6 +526,7 @@ mod tests {
     #[test]
     fn public_stardust_benchmark_converts_table13_heat_load_to_si() {
         let b = STARDUST_SRC_TABLE13_HEATING;
+        b.validate().unwrap();
         assert_relative_eq!(
             b.peak_stagnation_total_heat_flux_w_m2,
             8.56e6,
@@ -479,6 +542,30 @@ mod tests {
             0.09,
             max_relative = 1.0e-12
         );
+    }
+
+    #[test]
+    fn public_entry_benchmark_rejects_invalid_fraction() {
+        let b = PublicEntryHeatingBenchmark {
+            peak_radiative_fraction: Some(1.01),
+            ..APOLLO_CM_TABLE13_HEATING
+        };
+        assert!(matches!(
+            b.validate(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn public_entry_benchmark_rejects_unphysical_flight_path_angle() {
+        let b = PublicEntryHeatingBenchmark {
+            flight_path_angle_below_horizon_rad: Some(std::f64::consts::FRAC_PI_2),
+            ..STARDUST_SRC_TABLE13_HEATING
+        };
+        assert!(matches!(
+            b.validate(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
