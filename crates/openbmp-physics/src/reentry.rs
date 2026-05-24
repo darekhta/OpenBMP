@@ -255,6 +255,265 @@ pub const STARDUST_SRC_TABLE13_HEATING: PublicEntryHeatingBenchmark = PublicEntr
     heat_load_radiative_fraction: Some(0.09),
 };
 
+/// Public Stardust SRC trajectory-input benchmark from
+/// NASA/TP-2006-213486 table 19.
+///
+/// This is the report's TRAJ input case, not the broader table-13
+/// summary row. It carries only public geometric / trajectory scalar
+/// anchors and no material-response or TPS-design data.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PublicStardustTrajectoryInputBenchmark {
+    /// Stable short identifier.
+    pub id: &'static str,
+    /// Published vehicle label.
+    pub vehicle: &'static str,
+    /// Capsule mass (kg).
+    pub mass_kg: f64,
+    /// Cone half-angle (rad).
+    pub cone_half_angle_rad: f64,
+    /// Nose radius (m).
+    pub nose_radius_m: f64,
+    /// Base radius (m).
+    pub base_radius_m: f64,
+    /// Shoulder / corner radius (m).
+    pub corner_radius_m: f64,
+    /// Reference surface area (m²).
+    pub surface_area_m2: f64,
+    /// Published ballistic parameter (kg/m²).
+    pub ballistic_parameter_kg_m2: f64,
+    /// Entry-interface altitude (m).
+    pub entry_altitude_m: f64,
+    /// Entry angle of attack (rad).
+    pub angle_of_attack_rad: f64,
+    /// Inertial entry velocity (m/s).
+    pub inertial_velocity_m_s: f64,
+    /// Atmosphere-relative entry velocity (m/s).
+    pub relative_velocity_m_s: f64,
+    /// Inertial entry flight-path angle below local horizon (rad).
+    pub inertial_entry_angle_below_horizon_rad: f64,
+    /// Atmosphere-relative entry flight-path angle below local horizon
+    /// (rad).
+    pub relative_entry_angle_below_horizon_rad: f64,
+}
+
+impl PublicStardustTrajectoryInputBenchmark {
+    /// Validate the public table-19 input anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when a field is
+    /// missing, non-finite, non-positive where a positive value is
+    /// required, or an angle lies outside its physical interval.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        if self.id.trim().is_empty() || self.vehicle.trim().is_empty() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public Stardust trajectory input id and vehicle must be non-empty",
+            });
+        }
+        for value in [
+            self.mass_kg,
+            self.nose_radius_m,
+            self.base_radius_m,
+            self.corner_radius_m,
+            self.surface_area_m2,
+            self.ballistic_parameter_kg_m2,
+            self.entry_altitude_m,
+            self.inertial_velocity_m_s,
+            self.relative_velocity_m_s,
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "public Stardust trajectory input scalar must be finite and positive",
+                });
+            }
+        }
+        if !self.cone_half_angle_rad.is_finite()
+            || self.cone_half_angle_rad <= 0.0
+            || self.cone_half_angle_rad >= std::f64::consts::FRAC_PI_2
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public Stardust cone half-angle must be in (0, pi/2)",
+            });
+        }
+        if !self.angle_of_attack_rad.is_finite()
+            || self.angle_of_attack_rad < 0.0
+            || self.angle_of_attack_rad >= std::f64::consts::FRAC_PI_2
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public Stardust angle of attack must be in [0, pi/2)",
+            });
+        }
+        for angle in [
+            self.inertial_entry_angle_below_horizon_rad,
+            self.relative_entry_angle_below_horizon_rad,
+        ] {
+            if !angle.is_finite() || angle <= 0.0 || angle >= std::f64::consts::FRAC_PI_2 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "public Stardust entry angle must be in (0, pi/2)",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One public Stardust trajectory / heating maximum from
+/// NASA/TP-2006-213486 table 20.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PublicStardustPeakBenchmark {
+    /// Peak value in SI units. The owning field documents the unit.
+    pub value_si: f64,
+    /// Time from entry interface (s).
+    pub time_from_entry_s: f64,
+    /// Altitude at the peak (m).
+    pub altitude_m: f64,
+    /// Velocity at the peak (m/s).
+    pub velocity_m_s: f64,
+}
+
+impl PublicStardustPeakBenchmark {
+    fn validate(&self) -> Result<(), PhysicsError> {
+        for value in [
+            self.value_si,
+            self.time_from_entry_s,
+            self.altitude_m,
+            self.velocity_m_s,
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "public Stardust peak benchmark field must be finite and positive",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Public Stardust SRC trajectory-output maxima from
+/// NASA/TP-2006-213486 table 20.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PublicStardustTrajectoryOutputBenchmark {
+    /// Peak stagnation-point convective heat flux (W/m²).
+    pub peak_convective_heat_flux: PublicStardustPeakBenchmark,
+    /// Peak stagnation-point radiative heat flux (W/m²).
+    pub peak_radiative_heat_flux: PublicStardustPeakBenchmark,
+    /// Peak stagnation-point total heat flux (W/m²).
+    pub peak_total_heat_flux: PublicStardustPeakBenchmark,
+    /// Peak stagnation pressure (Pa).
+    pub peak_stagnation_pressure: PublicStardustPeakBenchmark,
+    /// Peak dynamic pressure (Pa).
+    pub peak_dynamic_pressure: PublicStardustPeakBenchmark,
+    /// Peak deceleration (m/s²).
+    pub peak_deceleration: PublicStardustPeakBenchmark,
+    /// Integrated convective heat load (J/m²).
+    pub convective_heat_load_j_m2: f64,
+    /// Integrated radiative heat load (J/m²).
+    pub radiative_heat_load_j_m2: f64,
+    /// Integrated total heat load (J/m²).
+    pub total_heat_load_j_m2: f64,
+}
+
+impl PublicStardustTrajectoryOutputBenchmark {
+    /// Validate the public table-20 output anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] for malformed peak
+    /// points or non-positive heat loads.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        self.peak_convective_heat_flux.validate()?;
+        self.peak_radiative_heat_flux.validate()?;
+        self.peak_total_heat_flux.validate()?;
+        self.peak_stagnation_pressure.validate()?;
+        self.peak_dynamic_pressure.validate()?;
+        self.peak_deceleration.validate()?;
+        for heat_load in [
+            self.convective_heat_load_j_m2,
+            self.radiative_heat_load_j_m2,
+            self.total_heat_load_j_m2,
+        ] {
+            if !heat_load.is_finite() || heat_load <= 0.0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "public Stardust heat load must be finite and positive",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Relative heat-load closure error
+    /// `(convective + radiative - total) / total`.
+    #[must_use]
+    pub fn heat_load_closure_error_fraction(&self) -> f64 {
+        (self.convective_heat_load_j_m2 + self.radiative_heat_load_j_m2 - self.total_heat_load_j_m2)
+            / self.total_heat_load_j_m2
+    }
+}
+
+/// Stardust SRC TRAJ input anchor from NASA/TP-2006-213486 table 19.
+pub const STARDUST_SRC_TABLE19_TRAJ_INPUT: PublicStardustTrajectoryInputBenchmark =
+    PublicStardustTrajectoryInputBenchmark {
+        id: "stardust-src-table19-traj-input",
+        vehicle: "Stardust SRC",
+        mass_kg: 41.5,
+        cone_half_angle_rad: 60.0_f64.to_radians(),
+        nose_radius_m: 0.229,
+        base_radius_m: 0.444,
+        corner_radius_m: 0.020,
+        surface_area_m2: 0.619,
+        ballistic_parameter_kg_m2: 52.6,
+        entry_altitude_m: 135_000.0,
+        angle_of_attack_rad: 0.0,
+        inertial_velocity_m_s: 12_800.0,
+        relative_velocity_m_s: 12_456.0,
+        inertial_entry_angle_below_horizon_rad: 8.0_f64.to_radians(),
+        relative_entry_angle_below_horizon_rad: 8.428_f64.to_radians(),
+    };
+
+/// Stardust SRC TRAJ output maxima from NASA/TP-2006-213486 table 20.
+pub const STARDUST_SRC_TABLE20_TRAJ_OUTPUT: PublicStardustTrajectoryOutputBenchmark =
+    PublicStardustTrajectoryOutputBenchmark {
+        peak_convective_heat_flux: PublicStardustPeakBenchmark {
+            value_si: 605.4 * 10_000.0,
+            time_from_entry_s: 43.4,
+            altitude_m: 57_800.0,
+            velocity_m_s: 9_075.0,
+        },
+        peak_radiative_heat_flux: PublicStardustPeakBenchmark {
+            value_si: 102.9 * 10_000.0,
+            time_from_entry_s: 39.2,
+            altitude_m: 62_100.0,
+            velocity_m_s: 10_728.0,
+        },
+        peak_total_heat_flux: PublicStardustPeakBenchmark {
+            value_si: 705.1 * 10_000.0,
+            time_from_entry_s: 42.9,
+            altitude_m: 58_300.0,
+            velocity_m_s: 9_277.0,
+        },
+        peak_stagnation_pressure: PublicStardustPeakBenchmark {
+            value_si: 33.3 * 1_000.0,
+            time_from_entry_s: 48.6,
+            altitude_m: 52_800.0,
+            velocity_m_s: 6_929.0,
+        },
+        peak_dynamic_pressure: PublicStardustPeakBenchmark {
+            value_si: 16.6 * 1_000.0,
+            time_from_entry_s: 50.2,
+            altitude_m: 51_500.0,
+            velocity_m_s: 6_203.0,
+        },
+        peak_deceleration: PublicStardustPeakBenchmark {
+            value_si: 315.7,
+            time_from_entry_s: 45.6,
+            altitude_m: 55_600.0,
+            velocity_m_s: 8_181.0,
+        },
+        convective_heat_load_j_m2: 18_290.0 * 10_000.0,
+        radiative_heat_load_j_m2: 1_270.0 * 10_000.0,
+        total_heat_load_j_m2: 19_560.0 * 10_000.0,
+    };
+
 /// Entry-interface state convenience builder.
 ///
 /// Returns a `(position, velocity, flight-path-angle, heading)`
@@ -667,6 +926,66 @@ mod tests {
             0.09,
             max_relative = 1.0e-12
         );
+    }
+
+    #[test]
+    fn public_stardust_table19_traj_input_converts_to_si() {
+        let b = STARDUST_SRC_TABLE19_TRAJ_INPUT;
+        b.validate().unwrap();
+        assert_relative_eq!(b.mass_kg, 41.5, max_relative = 1.0e-12);
+        assert_relative_eq!(
+            b.cone_half_angle_rad,
+            60.0_f64.to_radians(),
+            max_relative = 1.0e-12
+        );
+        assert_relative_eq!(b.nose_radius_m, 0.229, max_relative = 1.0e-12);
+        assert_relative_eq!(b.entry_altitude_m, 135_000.0, max_relative = 1.0e-12);
+        assert_relative_eq!(b.relative_velocity_m_s, 12_456.0, max_relative = 1.0e-12);
+        assert_relative_eq!(
+            b.relative_entry_angle_below_horizon_rad,
+            8.428_f64.to_radians(),
+            max_relative = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn public_stardust_table20_traj_output_converts_to_si() {
+        let b = STARDUST_SRC_TABLE20_TRAJ_OUTPUT;
+        b.validate().unwrap();
+        assert_relative_eq!(
+            b.peak_total_heat_flux.value_si,
+            7.051e6,
+            max_relative = 1.0e-12
+        );
+        assert_relative_eq!(
+            b.peak_total_heat_flux.altitude_m,
+            58_300.0,
+            max_relative = 1.0e-12
+        );
+        assert_relative_eq!(b.peak_deceleration.value_si, 315.7, max_relative = 1.0e-12);
+        assert_relative_eq!(b.total_heat_load_j_m2, 1.956e8, max_relative = 1.0e-12);
+        assert_relative_eq!(b.heat_load_closure_error_fraction(), 0.0, epsilon = 1.0e-12);
+    }
+
+    #[test]
+    fn public_stardust_traj_benchmarks_reject_bad_values() {
+        let bad_input = PublicStardustTrajectoryInputBenchmark {
+            mass_kg: f64::NAN,
+            ..STARDUST_SRC_TABLE19_TRAJ_INPUT
+        };
+        assert!(matches!(
+            bad_input.validate(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let bad_output = PublicStardustTrajectoryOutputBenchmark {
+            total_heat_load_j_m2: -1.0,
+            ..STARDUST_SRC_TABLE20_TRAJ_OUTPUT
+        };
+        assert!(matches!(
+            bad_output.validate(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     #[test]

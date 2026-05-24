@@ -96,7 +96,7 @@ Sub-phase status as of the latest commit on `main`.
 | 6.5 — Boundary layer + distributed heating | shipped | `BoundaryLayerState`, `EmpiricalTransition`, `EnTransition`, `ReThetaTransition`, `ReferenceEnthalpyHeating` with checked context fields, Reynolds number, and transitional intermittency before heat-flux assembly. |
 | 6.6 — Knudsen bridging + free-molecular aero | shipped | `mean_free_path_m`, `knudsen_number`, `ChengBridge`, `ErfcBridge`, `LinearKnudsenBridge`, `FreeMolecularAero`, `HybridAeroMethod`. Invalid mean-free-path / Knudsen inputs and non-finite bridge inputs now fail closed to the free-molecular limit instead of silently selecting the continuum branch. |
 | 6.7 — Trajectory infrastructure | shipped | `EntryInterfaceBuilder`, `AllenEggers`, `Vinh`. Entry-interface scalar inputs now reject non-finite flight-path and heading angles before any state construction. |
-| 6.8 — Validation suite | shipped (reduced analytic-toy battery) | `crates/openbmp-physics/tests/hypersonic_validation.rs`. Apollo 4 and Stardust public entry-interface anchors plus NASA/TP-2006-213486 table-13 heating benchmarks are pinned in SI units and self-validate metadata/radiative-fraction bounds; full trajectory and Tauber-Sutton radiative comparisons remain reserved with Tannehill and Park-2T. |
+| 6.8 — Validation suite | shipped (public anchors + reduced analytic-toy battery) | `crates/openbmp-physics/tests/hypersonic_validation.rs`. Apollo 4 and Stardust public entry-interface anchors, NASA/TP-2006-213486 table-13 heating benchmarks, and Stardust table-19/20 TRAJ input/output maxima are pinned in SI units and self-validate metadata, peak quantities, heat loads, and radiative-fraction bounds; full model-to-trajectory-history and Tauber-Sutton radiative comparisons remain reserved with Tannehill and Park-2T. |
 | 6.9 — 1-D thermal-conduction toy | shipped | `openbmp_aerothermal::OneDThermalToy` with checked material emissivity, backwall conditions, and revalidated mutable temperature-state shape before each step. |
 | 6.10 — Park 2T nonequilibrium thermochemistry | deferred (forward + MW reference data pinned) | `openbmp_physics::ParkTwoTemperatureModel` API surface exists, and the reserved `ReactionRates` container no longer hard-codes the rejected five-reaction proxy or accepts unpinned / malformed rate arrays. Park87 and Park93 expose the 17 neutral-subset forward Arrhenius coefficients from Zhang et al. (2022), Table 2, as published-unit reference data with a narrow SI evaluator for the table's stated units. The Millikan-White reference surface now derives species-pair coefficients for `N2`, `O2`, and `NO` oscillators from molecular weights and vibrational characteristic temperatures; the live source model still fails closed pending backward/equilibrium constants, the Park high-temperature relaxation limiter, and Mach-15 benchmark validation. Park90 still fails closed pending a verified public table. |
 | 6.11 — Generic ablation toy | shipped (checked toy) | `openbmp_aerothermal::{SteadyStateAblator, CharringAblator, DepthResolvedCharringAblator, BlowingCorrelation}`. Recession consumes caller-supplied heat flux; toy materials, blowing inputs, and charring progress now fail closed on malformed values. The depth-resolved model is energy-limited, reports per-area pyrolyzed mass plus absorbed/pyrolysis/unused energy, and remains generic rather than a fielded TPS surrogate. |
@@ -124,12 +124,14 @@ Phase 6 closes when:
 ## Deferred to follow-on slices
 
 - **Apollo / Stardust public-benchmark trajectories** — table-13
-  heating / heat-load benchmark values and sparse public
-  entry-interface anchors are pinned in SI units and self-validate
-  positive finite metadata plus radiative-fraction bounds. Full
-  trajectory cross-validation still needs kernel-side rigid-body
-  scenario wiring, radiative-heating coefficients, and re-entry
-  trajectory plumbing into `openbmp-cli`.
+  heating / heat-load benchmark values, sparse public
+  entry-interface anchors, and the Stardust table-19/20 TRAJ
+  input/output maxima are pinned in SI units and self-validate
+  positive finite metadata, peak quantities, heat loads, and
+  radiative-fraction bounds. Full model-to-trajectory-history
+  cross-validation still needs kernel-side rigid-body scenario
+  wiring, radiative-heating coefficients, and re-entry trajectory
+  plumbing into `openbmp-cli`.
 - **Coupled SolverProfile source adapters** — source-term profiles now
   dispatch through `openbmp_sim::ProfiledIntegrator` and record
   telemetry metadata, but no coupled chemistry / material state
@@ -181,10 +183,13 @@ leaving any model reserved:
   entry altitude, flight-path angle, and velocity. NASA/TP-2006-213486
   (`https://ntrs.nasa.gov/citations/20060053240`) publishes the
   Stardust table-13 ballistic parameter, velocity, flight-path angle,
-  peak heat flux, and total heat load; the same report gives Stardust
-  trajectory plots against altitude / time but not a ready-to-ingest
-  numeric trajectory table. OpenBMP pins the sparse anchors only; full
-  trajectory reproduction remains deferred.
+  peak heat flux, and total heat load. The same report's tables 19
+  and 20 publish a TRAJ input deck summary plus peak convective /
+  radiative / total heat flux, stagnation pressure, dynamic pressure,
+  deceleration, and heat-load outputs; those scalar maxima are now
+  pinned in SI units. The report still does not provide a complete
+  machine-readable trajectory history suitable for model-to-history
+  comparison, so full trajectory reproduction remains deferred.
 - **Tannehill / Mugalev equilibrium air.** NASA CR-2470
   (`https://ntrs.nasa.gov/citations/19740026586`) and the later
   simplified curve-fit report (`https://ntrs.nasa.gov/citations/19870019018`)

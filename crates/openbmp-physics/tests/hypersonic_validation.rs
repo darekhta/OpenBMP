@@ -32,7 +32,8 @@
 use approx::assert_relative_eq;
 use openbmp_physics::{
     APOLLO_CM_TABLE13_HEATING, AllenEggers, EquilibriumAir, Nrlmsise00Inputs, Nrlmsise00Static,
-    STARDUST_SRC_TABLE13_HEATING, TannehillEquilibriumAir,
+    STARDUST_SRC_TABLE13_HEATING, STARDUST_SRC_TABLE19_TRAJ_INPUT,
+    STARDUST_SRC_TABLE20_TRAJ_OUTPUT, TannehillEquilibriumAir,
 };
 
 #[test]
@@ -151,6 +152,34 @@ fn apollo_stardust_public_table13_benchmarks_are_pinned() {
         STARDUST_SRC_TABLE13_HEATING.total_heat_load_j_m2.unwrap(),
         2.373e8,
         max_relative = 1.0e-12
+    );
+}
+
+#[test]
+fn stardust_public_traj_table19_20_benchmarks_are_pinned() {
+    STARDUST_SRC_TABLE19_TRAJ_INPUT.validate().unwrap();
+    STARDUST_SRC_TABLE20_TRAJ_OUTPUT.validate().unwrap();
+    assert_relative_eq!(
+        STARDUST_SRC_TABLE19_TRAJ_INPUT.relative_velocity_m_s,
+        12_456.0,
+        max_relative = 1.0e-12
+    );
+    assert_relative_eq!(
+        STARDUST_SRC_TABLE20_TRAJ_OUTPUT
+            .peak_total_heat_flux
+            .value_si,
+        7.051e6,
+        max_relative = 1.0e-12
+    );
+    assert_relative_eq!(
+        STARDUST_SRC_TABLE20_TRAJ_OUTPUT.peak_deceleration.value_si,
+        315.7,
+        max_relative = 1.0e-12
+    );
+    assert_relative_eq!(
+        STARDUST_SRC_TABLE20_TRAJ_OUTPUT.heat_load_closure_error_fraction(),
+        0.0,
+        epsilon = 1.0e-12
     );
 }
 
