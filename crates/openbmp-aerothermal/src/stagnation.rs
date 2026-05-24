@@ -206,6 +206,16 @@ impl Default for SuttonGraves {
 impl HeatTransferModel for SuttonGraves {
     fn stagnation(&self, ctx: &AerothermalContext) -> Result<StagnationHeating, AerothermalError> {
         validate_context_for_stagnation(ctx)?;
+        if !self.k_earth_si.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Sutton-Graves constant is NaN or Inf",
+            });
+        }
+        if self.k_earth_si < 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Sutton-Graves constant must be non-negative",
+            });
+        }
         let rho = ctx.freestream.density_kg_m3;
         let r_n = ctx.nose_radius_m;
         let v = ctx.airspeed_m_s;
@@ -432,8 +442,17 @@ pub fn sutherland_viscosity(temperature_k: f64) -> f64 {
 }
 
 fn validate_context_for_stagnation(ctx: &AerothermalContext) -> Result<(), AerothermalError> {
+    if !ctx.freestream.pressure_pa.is_finite()
+        || !ctx.freestream.temperature_k.is_finite()
+        || !ctx.freestream.speed_of_sound_m_s.is_finite()
+    {
+        return Err(AerothermalError::NonFinite {
+            reason: "freestream atmosphere component is NaN or Inf",
+        });
+    }
     if !ctx.freestream.density_kg_m3.is_finite()
         || !ctx.airspeed_m_s.is_finite()
+        || !ctx.mach.is_finite()
         || !ctx.nose_radius_m.is_finite()
         || !ctx.wall_temperature_k.is_finite()
     {
@@ -444,6 +463,19 @@ fn validate_context_for_stagnation(ctx: &AerothermalContext) -> Result<(), Aerot
     if ctx.freestream.density_kg_m3 < 0.0 {
         return Err(AerothermalError::InvalidParameter {
             reason: "freestream density must be ≥ 0",
+        });
+    }
+    if ctx.freestream.pressure_pa < 0.0
+        || ctx.freestream.temperature_k < 0.0
+        || ctx.freestream.speed_of_sound_m_s < 0.0
+    {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "freestream atmosphere components must be non-negative",
+        });
+    }
+    if ctx.mach < 0.0 {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "Mach number must be non-negative",
         });
     }
     if ctx.nose_radius_m <= 0.0 {
@@ -459,6 +491,11 @@ fn validate_context_for_stagnation(ctx: &AerothermalContext) -> Result<(), Aerot
     if ctx.wall_temperature_k <= 0.0 {
         return Err(AerothermalError::InvalidParameter {
             reason: "wall temperature must be > 0",
+        });
+    }
+    if matches!(ctx.wall_catalysis, WallCatalysis::Partial(eta) if !eta.is_finite()) {
+        return Err(AerothermalError::NonFinite {
+            reason: "wall-catalysis efficiency is NaN or Inf",
         });
     }
     Ok(())
@@ -661,6 +698,17 @@ mod tests {
     }
 
     #[test]
+    fn tauber_sutton_validates_context_before_deferred_error() {
+        let t = TauberSuttonRadiative;
+        let mut context = ctx(1.0e-4, 11_000.0, 1.5, 1500.0);
+        context.mach = f64::NAN;
+        assert!(matches!(
+            t.stagnation(&context),
+            Err(AerothermalError::NonFinite { .. })
+        ));
+    }
+
+    #[test]
     fn sutherland_viscosity_at_273k_matches_reference() {
         let mu = sutherland_viscosity(273.15);
         assert_relative_eq!(mu, 1.716e-5, max_relative = 1e-6);
@@ -688,6 +736,33 @@ mod tests {
         assert!(matches!(
             s.stagnation(&ctx(1.0e-4, 5000.0, 1.0, 0.0)),
             Err(AerothermalError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn invalid_model_parameters_are_rejected() {
+        let s = SuttonGraves { k_earth_si: -1.0 };
+        assert!(matches!(
+            s.stagnation(&ctx(1.0e-4, 5000.0, 1.0, 1500.0)),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+        let s = SuttonGraves {
+            k_earth_si: f64::NAN,
+        };
+        assert!(matches!(
+            s.stagnation(&ctx(1.0e-4, 5000.0, 1.0, 1500.0)),
+            Err(AerothermalError::NonFinite { .. })
+        ));
+    }
+
+    #[test]
+    fn non_finite_wall_catalysis_is_rejected() {
+        let mut context = ctx(1.0e-4, 5000.0, 1.0, 1500.0);
+        context.wall_catalysis = WallCatalysis::Partial(f64::NAN);
+        let s = SuttonGraves::default();
+        assert!(matches!(
+            s.stagnation(&context),
+            Err(AerothermalError::NonFinite { .. })
         ));
     }
 }
