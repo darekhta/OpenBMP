@@ -15,10 +15,11 @@ use crate::error::VehicleError;
 
 /// Flat-tree [`VehicleAssembly`] implementation. Holds the bodies in
 /// scenario-declared order; effectors live on a separate
-/// runner-side rack (`crates/openbmp-cli/src/runner/effectors.rs`)
+/// runner-side rack (`crates/openbmp-runner/src/effectors.rs`)
 /// to avoid coupling the assembly's `Clone` with `Box<dyn
 /// ControlEffector>` trait objects (which are not Cloneable).
-/// Engines / tanks / sensors materialise in 3.6 / 3.7 / 3.10.
+/// Engines, tanks, and sensors use their own runner-side subsystem
+/// wiring rather than the assembly trait surface.
 #[derive(Clone, Debug)]
 pub struct Assembly {
     id: VehicleId,

@@ -28,7 +28,7 @@
 //! is covered by the unit tests in `crates/openbmp-sim/src/integrator.rs`.
 //! The runner-side dispatch (`(adaptive-explicit, dopri853,
 //! state-stable)` triple selection) is covered by the unit tests in
-//! `crates/openbmp-cli/src/runner/integrator.rs`.
+//! `crates/openbmp-runner/src/integrator.rs`.
 
 #![allow(
     clippy::expect_used,

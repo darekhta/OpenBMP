@@ -1,9 +1,9 @@
 //! Aerodynamics method abstraction and the Schema-1 deck-lookup
 //! implementation.
 //!
-//! [`AeroMethod`] is the pluggable seam the kernel will adapt into
-//! its `ForceModel` / `MomentModel` chain at a higher layer. Phase
-//! 2.5 ships one implementation: [`DeckLookup`], which wraps an
+//! [`AeroMethod`] is the pluggable seam the kernel adapts into
+//! its `ForceModel` / `MomentModel` chain at a higher layer. The
+//! base tabulated implementation is [`DeckLookup`], which wraps an
 //! [`crate::AeroDeck`] and produces body-frame force and moment from
 //! `(mach, alpha_deg, beta_deg, dynamic_pressure_pa)`.
 //!
@@ -11,8 +11,8 @@
 //!
 //! The deck's `(CN, CD, CM)` are the axisymmetric **reduced**
 //! coefficients. The body-frame force / moment composition is the
-//! small-angle / axisymmetric mapping locked by
-//! `docs/phase-2-plan.md § Implementation Seams`:
+//! small-angle / axisymmetric mapping documented in
+//! `docs/software-architecture.md#deck-format-in-house-toml`:
 //!
 //! * `CD` opposes the relative wind. In body frame this is
 //!   approximated as `F_body_x = -CD · q · S` (drag along

@@ -37,7 +37,7 @@
 //! `crates/openbmp-sim/src/integrator.rs` and
 //! `crates/openbmp-models/src/state.rs`. The runner-side dispatch
 //! (rejecting `dopri853`, `rkf78`, etc.) is covered by the unit
-//! tests in `crates/openbmp-cli/src/runner/integrator.rs`.
+//! tests in `crates/openbmp-runner/src/integrator.rs`.
 
 #![allow(clippy::expect_used, clippy::panic, clippy::float_cmp)]
 

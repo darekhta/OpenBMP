@@ -14,8 +14,8 @@
 //! `axis_order[3..]` (when present) names the effector axes (e.g.
 //! `delta_e_deg`) declared by the schema-2 deck.
 //!
-//! The semantics are pinned by `docs/phase-2-plan.md § Implementation
-//! Seams Locked Before Coding`:
+//! The semantics are pinned by
+//! `docs/software-architecture.md#deck-format-in-house-toml`:
 //!
 //! * `CN` — normal-force coefficient in the wind / body longitudinal
 //!   plane.

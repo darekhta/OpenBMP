@@ -75,7 +75,7 @@ mag in nT, wind in m/s NED.
 
 The two trait families coexist so:
 - The simulator-side adapter layer (in `openbmp-vehicle::adapters`
-  and `openbmp-cli::runner`) consumes the rich traits with full
+  and `openbmp-runner`) consumes the rich traits with full
   envelope error handling.
 - The FC's estimators (in `openbmp-fc::estimator`) consume the
   simpler ECI trait without dragging in geodetic-conversion

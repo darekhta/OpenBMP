@@ -1182,8 +1182,8 @@ The matcher strips the unit suffix from the deck axis name to find the
 scenario effector by `id`; therefore deck axis order is independent of
 the scenario effector declaration order. Mismatches (duplicate
 stripped deck axis, no matching effector, mismatched unit) fail closed
-at runner build time with `CliError::AeroEffectorMismatch`, before any
-kernel step is taken.
+at runner build time with `RunnerError::AeroEffectorMismatch`, before
+any kernel step is taken.
 Schema-1 decks and decks without effector axes skip this check
 entirely.
 

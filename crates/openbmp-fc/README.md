@@ -59,8 +59,8 @@ Implemented in this crate today:
 
 - **Kernel↔FC runner bridge** — `[fc]` scenarios build `FcRunner`,
   prime synthetic sensors, step the controller lockstep from the
-  `phase2_*.rs` runners, and feed effector / engine command sets back
-  into the simulator racks.
+  point-mass or rigid-body runner, and feed effector / engine command
+  sets back into the simulator racks.
 - **Estimator upgrades** — EKF / MEKF Joseph updates, Markley-style
   MEKF covariance reset, Gauss-Markov bias dynamics, iterated
   magnetometer update, WGS84-J2 gravity via `openbmp-physics`, and a

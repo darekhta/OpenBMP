@@ -76,11 +76,11 @@ pub trait VehicleAssembly {
 }
 
 // Note: effectors live on the runner-side `EffectorRack`
-// (see `crates/openbmp-cli/src/runner/effectors.rs`), not on the
+// (see `crates/openbmp-runner/src/effectors.rs`), not on the
 // assembly. Keeping `Box<dyn ControlEffector>` off the trait surface
 // keeps `Assembly: Clone` and avoids interior-mutability
-// complications. Future phases (3.6 engines, 3.7 tanks) will add
-// their own subsystem accessors as needed.
+// complications. Other vehicle subsystems have their own runner-side
+// racks and adapters.
 
 /// Error type for assembly construction and resolution.
 ///

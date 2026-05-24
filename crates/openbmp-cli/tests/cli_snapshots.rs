@@ -403,7 +403,7 @@ initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]",
 // positive coverage now lives in
 // `crates/openbmp-cli/tests/calisto_adaptive_e2e.rs` (rigid-body
 // adaptive end-to-end) plus the runner-validator unit tests in
-// `crates/openbmp-cli/src/runner/integrator.rs` (still-deferred
+// `crates/openbmp-runner/src/integrator.rs` (still-deferred
 // dopri853 / rkf78 / implicit-source-term combinations are
 // rejected at the dispatch layer regardless of runner).
 

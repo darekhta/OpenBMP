@@ -46,7 +46,7 @@
 //! math/serde primitives and **not** on `openbmp-sim` (L1) — the
 //! kernel adapts the [`deck::AeroDeck`] / `AeroMethod` surfaces into
 //! its `ForceModel` / `MomentModel` chain at a higher layer. See
-//! `docs/phase-2-plan.md § Implementation Seams`.
+//! `docs/software-architecture.md#aerodynamics`.
 
 pub mod deck;
 pub mod error;

@@ -1375,8 +1375,8 @@ body_flap_right / grid_fin_<n>`; the deck declares names and units, the
 >   helper pairs each deck axis with a scenario effector by stripped
 >   name and asserts the effector's declared `unit` matches the
 >   suffix. Duplicate stripped deck-axis names and unit mismatches →
->   `CliError::AeroEffectorMismatch` at runner build time, before any
->   kernel step.
+>   `RunnerError::AeroEffectorMismatch` at runner build time, before
+>   any kernel step.
 > - Schema-2 supports up to 3 effector axes (6 axes total).
 >   The full six-coefficient `(CY, Cl, Cn-yaw)` deck is not yet
 >   shipped; schema-2 ships only `(CN, CD, CM)`. The

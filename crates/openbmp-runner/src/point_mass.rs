@@ -3,7 +3,7 @@
 //! `[propulsion.motor]`, `[atmosphere]`, …).
 //!
 //! Accepted scenario shape (any combination of the following relative
-//! to the [`crate::phase1`] shape):
+//! to the baseline structured scenario shape):
 //!
 //! - `vehicle.kind = "point_mass"`
 //! - `environment.gravity = "constant"` with non-negative
