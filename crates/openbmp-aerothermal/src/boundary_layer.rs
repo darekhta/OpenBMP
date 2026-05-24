@@ -170,9 +170,12 @@ impl ReferenceEnthalpyHeating {
                 reason: "ReferenceEnthalpyHeating x_m must be > 0",
             });
         }
-        if !ctx.freestream.density_kg_m3.is_finite() {
-            return Err(AerothermalError::NonFinite {
-                reason: "freestream density non-finite",
+        validate_heating_context(ctx)?;
+        if let BoundaryLayerState::Transitional { intermittency, .. } = bl_state
+            && (!intermittency.is_finite() || !(0.0..=1.0).contains(&intermittency))
+        {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "boundary-layer intermittency must be finite and in [0, 1]",
             });
         }
         let reynolds_x = match bl_state {
@@ -180,6 +183,11 @@ impl ReferenceEnthalpyHeating {
             | BoundaryLayerState::Turbulent { reynolds_x }
             | BoundaryLayerState::Transitional { reynolds_x, .. } => reynolds_x,
         };
+        if !reynolds_x.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Re_x is NaN or Inf",
+            });
+        }
         if reynolds_x <= 0.0 {
             return Err(AerothermalError::OutOfEnvelope {
                 reason: "Re_x must be > 0",
@@ -223,12 +231,41 @@ impl ReferenceEnthalpyHeating {
         let st = cf / (2.0 * PR_AIR.powf(2.0 / 3.0));
         // Heat flux: q = ρ* · V_e · St · (h_aw - h_w).
         let q = rho_star * ctx.airspeed_m_s * st * (adiabatic_wall_enthalpy - wall_enthalpy);
+        if !(q.is_finite() && st.is_finite() && cf.is_finite()) {
+            return Err(AerothermalError::NonFinite {
+                reason: "reference-enthalpy heating output is NaN or Inf",
+            });
+        }
         Ok(SurfaceHeating {
             q_w_m2: q,
             stanton: st,
             skin_friction: cf,
         })
     }
+}
+
+fn validate_heating_context(ctx: &AerothermalContext) -> Result<(), AerothermalError> {
+    if !ctx.freestream.density_kg_m3.is_finite()
+        || !ctx.freestream.pressure_pa.is_finite()
+        || !ctx.freestream.temperature_k.is_finite()
+        || !ctx.airspeed_m_s.is_finite()
+        || !ctx.wall_temperature_k.is_finite()
+    {
+        return Err(AerothermalError::NonFinite {
+            reason: "reference-enthalpy context input is NaN or Inf",
+        });
+    }
+    if ctx.freestream.density_kg_m3 < 0.0
+        || ctx.freestream.pressure_pa < 0.0
+        || ctx.freestream.temperature_k <= 0.0
+        || ctx.airspeed_m_s < 0.0
+        || ctx.wall_temperature_k <= 0.0
+    {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "reference-enthalpy context inputs outside physical bounds",
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -320,6 +357,49 @@ mod tests {
         assert!(matches!(
             result,
             Err(AerothermalError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn reference_enthalpy_rejects_malformed_context() {
+        let h = ReferenceEnthalpyHeating { x_m: 0.5 };
+        let mut c = ctx(1.0e-4, 5_000.0, 1000.0);
+        c.freestream.pressure_pa = f64::NAN;
+        assert!(matches!(
+            h.distributed(&c, BoundaryLayerState::Laminar { reynolds_x: 1.0e5 }),
+            Err(AerothermalError::NonFinite { .. })
+        ));
+
+        let mut c = ctx(1.0e-4, 5_000.0, 1000.0);
+        c.wall_temperature_k = -1.0;
+        assert!(matches!(
+            h.distributed(&c, BoundaryLayerState::Laminar { reynolds_x: 1.0e5 }),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn reference_enthalpy_rejects_invalid_boundary_layer_state() {
+        let h = ReferenceEnthalpyHeating { x_m: 0.5 };
+        let c = ctx(1.0e-4, 5_000.0, 1000.0);
+        assert!(matches!(
+            h.distributed(
+                &c,
+                BoundaryLayerState::Transitional {
+                    intermittency: f64::NAN,
+                    reynolds_x: 1.0e5
+                }
+            ),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            h.distributed(
+                &c,
+                BoundaryLayerState::Laminar {
+                    reynolds_x: f64::NAN
+                }
+            ),
+            Err(AerothermalError::NonFinite { .. })
         ));
     }
 }
