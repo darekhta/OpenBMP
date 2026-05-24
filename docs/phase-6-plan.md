@@ -153,3 +153,36 @@ Phase 6 closes when:
 
 These follow-on slices are tracked here so a future sub-phase can
 pick them up without re-deriving the scope conversation.
+
+## External-source audit notes
+
+The audit searched for public, citable coefficient sources before
+leaving any model reserved:
+
+- **Tannehill / Mugalev equilibrium air.** NASA CR-2470
+  (`https://ntrs.nasa.gov/citations/19740026586`) and the later
+  simplified curve-fit report (`https://ntrs.nasa.gov/citations/19870019018`)
+  are public and describe equilibrium-air thermodynamic curve fits, but
+  the available scans / text extraction were not clean enough to
+  transcribe coefficients safely, and they do not provide a verified
+  5-species mole-fraction table compatible with OpenBMP's
+  `AirComposition` surface. The model remains fail-closed.
+- **Tauber-Sutton radiative heating.** NASA/TP-2006-213486
+  (`https://ntrs.nasa.gov/citations/20060053240`) cites the
+  Tauber-Sutton relation and states the `q_rad = C r_N^A rho^B f(V)`
+  form, but does not reproduce the Earth-entry coefficient / `f(V)`
+  table. The AIAA source paper is public bibliographically but not
+  available through NTRS, so the implementation remains typed-reserved.
+- **Park 2T reaction rates.** NASA/TP-20230015593
+  (`https://ntrs.nasa.gov/citations/20230015593`) confirms the Park-
+  adapted 5-species, 17-reaction structure and Arrhenius form, but
+  references Park's coefficients rather than reproducing the tables.
+  The Park 1985 NTRS record (`https://ntrs.nasa.gov/citations/19990067211`)
+  has no downloadable public PDF. OpenBMP therefore keeps the reaction
+  sets reserved and only ships the corrected table shape.
+- **NRLMSISE-00 full path.** The `nrlmsise00` Python package documents
+  the wrapper as GPLv2 while its bundled C source is public domain
+  (`COPYING.NRLMSISE-00`). A Rust coefficient path is feasible, but the
+  public-domain C port is several thousand lines of fitted coefficients
+  and recurrence code; importing it requires a dedicated clean-room port
+  and validation slice rather than a quick audit patch.
