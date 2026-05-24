@@ -96,8 +96,10 @@ pub use realgas::{
     VibrationalRelaxationModel,
 };
 pub use reentry::{
-    APOLLO_CM_TABLE13_HEATING, AllenEggers, EntryInterfaceBuilder, PublicEntryHeatingBenchmark,
-    STARDUST_SRC_TABLE13_HEATING, Vinh, VinhState, VinhStateDerivative,
+    APOLLO_CM_TABLE13_HEATING, APOLLO4_ENTRY_INTERFACE, AllenEggers, EntryInterfaceBuilder,
+    PublicEntryHeatingBenchmark, PublicEntryInterfaceBenchmark,
+    STARDUST_SRC_TABLE13_ENTRY_INTERFACE, STARDUST_SRC_TABLE13_HEATING, Vinh, VinhState,
+    VinhStateDerivative,
 };
 pub use statistics::{chi_square_inverse_cdf_wilson_hilferty, inverse_standard_normal_cdf};
 pub use uq::{ErrorBudget, UncertaintyContribution, ValidationStatus};

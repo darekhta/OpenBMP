@@ -23,6 +23,103 @@ const G0_M_S2: f64 = 9.806_65;
 /// Earth radius used by the toy propagators (m).
 const R_EARTH_M: f64 = 6.371_0e6;
 
+/// Public Earth-entry interface anchor.
+///
+/// These are sparse, published initial-condition values for academic
+/// validation cases. They intentionally exclude target coordinates,
+/// guidance law parameters, or terminal constraints.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PublicEntryInterfaceBenchmark {
+    /// Stable short identifier.
+    pub id: &'static str,
+    /// Published vehicle label.
+    pub vehicle: &'static str,
+    /// Entry-interface altitude (m).
+    pub entry_altitude_m: f64,
+    /// Entry velocity (m/s).
+    pub entry_velocity_m_s: f64,
+    /// Flight-path angle below local horizon (rad).
+    pub flight_path_angle_below_horizon_rad: f64,
+    /// Ballistic parameter (kg/m²), when listed by the source.
+    pub ballistic_parameter_kg_m2: Option<f64>,
+}
+
+impl PublicEntryInterfaceBenchmark {
+    /// Validate the public entry-interface anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when a field is
+    /// missing, non-finite, non-positive where a positive value is
+    /// required, or the flight-path angle is outside `(0, π/2)`.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        if self.id.trim().is_empty() || self.vehicle.trim().is_empty() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry-interface id and vehicle must be non-empty",
+            });
+        }
+        if !self.entry_altitude_m.is_finite() || self.entry_altitude_m <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry-interface altitude must be positive",
+            });
+        }
+        if !self.entry_velocity_m_s.is_finite() || self.entry_velocity_m_s <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry-interface velocity must be positive",
+            });
+        }
+        let angle = self.flight_path_angle_below_horizon_rad;
+        if !angle.is_finite() || angle <= 0.0 || angle >= std::f64::consts::FRAC_PI_2 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry-interface flight path angle must be in (0, π/2)",
+            });
+        }
+        if let Some(beta) = self.ballistic_parameter_kg_m2
+            && (!beta.is_finite() || beta <= 0.0)
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry-interface ballistic parameter must be positive",
+            });
+        }
+        Ok(())
+    }
+
+    /// Convert to the generic entry-interface builder.
+    #[must_use]
+    pub fn builder(&self) -> EntryInterfaceBuilder {
+        EntryInterfaceBuilder {
+            entry_altitude_m: self.entry_altitude_m,
+            entry_velocity_m_s: self.entry_velocity_m_s,
+            flight_path_angle_below_horizon_rad: self.flight_path_angle_below_horizon_rad,
+            heading_rad: 0.0,
+        }
+    }
+}
+
+/// Apollo 4 entry-interface anchor from NASA's Apollo 4 mission page:
+/// entry at 122 km, flight-path angle 7.077°, velocity 11,140 m/s.
+pub const APOLLO4_ENTRY_INTERFACE: PublicEntryInterfaceBenchmark = PublicEntryInterfaceBenchmark {
+    id: "apollo-4-entry-interface",
+    vehicle: "Apollo 4 CM",
+    entry_altitude_m: 122_000.0,
+    entry_velocity_m_s: 11_140.0,
+    flight_path_angle_below_horizon_rad: 0.123_516_951_163_638_7,
+    ballistic_parameter_kg_m2: None,
+};
+
+/// Stardust SRC table-13 entry anchor from NASA/TP-2006-213486:
+/// ballistic parameter 68.2 kg/m², velocity 12.9 km/s, entry
+/// flight-path angle 8.2° below the horizon.
+pub const STARDUST_SRC_TABLE13_ENTRY_INTERFACE: PublicEntryInterfaceBenchmark =
+    PublicEntryInterfaceBenchmark {
+        id: "stardust-src-table13-entry-interface",
+        vehicle: "Stardust",
+        entry_altitude_m: 135_000.0,
+        entry_velocity_m_s: 12_900.0,
+        flight_path_angle_below_horizon_rad: 0.143_116_998_663_535,
+        ballistic_parameter_kg_m2: Some(68.2),
+    };
+
 /// Public Earth-entry heating benchmark from NASA/TP-2006-213486
 /// table 13.
 ///
@@ -542,6 +639,50 @@ mod tests {
             0.09,
             max_relative = 1.0e-12
         );
+    }
+
+    #[test]
+    fn public_entry_interface_anchors_validate_and_build() {
+        let apollo = APOLLO4_ENTRY_INTERFACE;
+        apollo.validate().unwrap();
+        assert_relative_eq!(apollo.entry_altitude_m, 122_000.0, max_relative = 1.0e-12);
+        assert_relative_eq!(apollo.entry_velocity_m_s, 11_140.0, max_relative = 1.0e-12);
+        assert_relative_eq!(
+            apollo.flight_path_angle_below_horizon_rad,
+            7.077_f64.to_radians(),
+            max_relative = 1.0e-12
+        );
+        apollo.builder().validate().unwrap();
+
+        let stardust = STARDUST_SRC_TABLE13_ENTRY_INTERFACE;
+        stardust.validate().unwrap();
+        assert_relative_eq!(
+            stardust.entry_velocity_m_s,
+            12_900.0,
+            max_relative = 1.0e-12
+        );
+        assert_relative_eq!(
+            stardust.flight_path_angle_below_horizon_rad,
+            8.2_f64.to_radians(),
+            max_relative = 1.0e-12
+        );
+        assert_relative_eq!(
+            stardust.ballistic_parameter_kg_m2.unwrap(),
+            68.2,
+            max_relative = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn public_entry_interface_rejects_bad_angle() {
+        let b = PublicEntryInterfaceBenchmark {
+            flight_path_angle_below_horizon_rad: 0.0,
+            ..APOLLO4_ENTRY_INTERFACE
+        };
+        assert!(matches!(
+            b.validate(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
