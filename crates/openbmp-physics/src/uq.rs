@@ -110,7 +110,13 @@ impl ErrorBudget {
             .iter()
             .map(|c| c.one_sigma * c.one_sigma)
             .sum();
-        Ok(sum_sq.sqrt() + self.correlated_bias.abs())
+        let aggregate = sum_sq.sqrt() + self.correlated_bias.abs();
+        if !aggregate.is_finite() {
+            return Err(PhysicsError::NonFinite {
+                reason: "aggregate uncertainty overflowed to NaN or Inf",
+            });
+        }
+        Ok(aggregate)
     }
 
     /// Minimum validation status across all contributions. Returns
@@ -246,6 +252,18 @@ mod tests {
         let budget = ErrorBudget::default();
         assert_eq!(budget.aggregate_one_sigma().unwrap(), 0.0);
         assert_eq!(budget.minimum_status(), None);
+    }
+
+    #[test]
+    fn aggregate_rejects_overflow_to_infinity() {
+        let budget = ErrorBudget {
+            contributions: vec![ctrib("huge", f64::MAX, ValidationStatus::Checked)],
+            correlated_bias: 0.0,
+        };
+        assert!(matches!(
+            budget.aggregate_one_sigma(),
+            Err(PhysicsError::NonFinite { .. })
+        ));
     }
 
     #[test]
