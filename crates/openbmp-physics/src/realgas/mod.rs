@@ -32,9 +32,9 @@ pub mod tannehill;
 
 pub use park_2t::{
     ArrheniusForwardCoefficient, CompositionDerivative, FlowContext, NonequilibriumAir,
-    PARK87_FORWARD_REACTIONS_AS_PUBLISHED, ParkForwardReaction, ParkReactionSet,
-    ParkTwoTemperatureModel, ReactionRates, VibrationalEnergyDerivative,
-    VibrationalRelaxationModel,
+    PARK87_FORWARD_REACTIONS_AS_PUBLISHED, PARK93_FORWARD_REACTIONS_AS_PUBLISHED,
+    ParkForwardReaction, ParkReactionSet, ParkTwoTemperatureModel, ReactionRates,
+    VibrationalEnergyDerivative, VibrationalRelaxationModel,
 };
 pub use tannehill::TannehillEquilibriumAir;
 
