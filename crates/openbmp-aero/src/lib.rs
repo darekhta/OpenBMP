@@ -13,9 +13,11 @@
 //!   reduction is bit-identical to the Phase-2.5 trilinear path,
 //!   per a 1024-case property test. Locked-order operand reduction
 //!   per Demmel & Nguyen 2020; FMA disabled.
-//! * [`parser`] — TOML deck-file parser. Auto-detects schema 1 vs.
-//!   schema 2 from the `openbmp.aero_deck` integer marker and
-//!   dispatches to the strict per-schema parser, both using
+//! * [`parser`] — TOML deck-file parser. Coefficient decks
+//!   auto-detect schema 1 vs. schema 2 from the `openbmp.aero_deck`
+//!   integer marker and dispatch to strict per-schema parsers. Phase
+//!   6 adds a separate strict `openbmp.panel_mesh_aero = 1` parser
+//!   for [`hypersonic::LocalInclinationPanels`]. All parsers use
 //!   `serde(deny_unknown_fields)`.
 //! * [`method`] — [`method::AeroMethod`] trait, [`method::AeroContext`]
 //!   input, [`method::AeroForceMomentBody`] output, and the

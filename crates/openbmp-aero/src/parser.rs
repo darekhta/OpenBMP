@@ -1,5 +1,6 @@
-//! Aero deck-file TOML parser. Schema 1 (Phase 2.5) and Schema 2
-//! (Phase 3.5).
+//! Aero deck-file TOML parser. Coefficient decks use Schema 1
+//! (Phase 2.5) and Schema 2 (Phase 3.5). Phase 6 adds a separate
+//! strict panel-mesh deck for [`crate::hypersonic::LocalInclinationPanels`].
 //!
 //! # Schema 1
 //!
@@ -89,17 +90,43 @@
 //!
 //! `serde(deny_unknown_fields)` is enforced everywhere so a deck
 //! file can't smuggle a typo'd field through unnoticed.
+//!
+//! # Panel-mesh hypersonic deck
+//!
+//! Panel meshes intentionally use their own marker so coefficient
+//! decks retain the Phase-2.5 / Phase-3.5 schema semantics:
+//!
+//! ```toml
+//! openbmp.panel_mesh_aero = 1
+//! provenance = "academic mesh fixture"
+//! validation = "checked"
+//! method = "modified-newtonian"
+//! cp_max = 2.0
+//! shadowing = true # optional; default true
+//!
+//! [mesh]
+//! vertices_m = [
+//!   [1.0, -0.5, -0.5],
+//!   [1.0,  0.5, -0.5],
+//!   [1.0,  0.5,  0.5],
+//!   [1.0, -0.5,  0.5],
+//! ]
+//! triangles = [[0, 1, 2], [0, 2, 3]]
+//! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use nalgebra::Vector3;
 use serde::Deserialize;
 
 use crate::deck::{AeroDeck, ExtrapolationPolicy};
 use crate::error::AeroError;
+use crate::hypersonic::{LocalInclinationPanels, PanelMesh};
 
 const SCHEMA_VERSION_1: u32 = 1;
 const SCHEMA_VERSION_2: u32 = 2;
+const PANEL_MESH_AERO_SCHEMA_VERSION_1: u32 = 1;
 
 // ---------------------------------------------------------------------
 // Schema-version peek
@@ -213,6 +240,48 @@ struct InterpolationConfig {
     extrapolation: String,
 }
 
+// ---------------------------------------------------------------------
+// Phase-6 panel-mesh parser shape
+// ---------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PanelMeshDeckFile {
+    openbmp: PanelMeshSchemaMarker,
+    #[allow(dead_code)]
+    provenance: String,
+    #[allow(dead_code)]
+    validation: DeckValidationStatus,
+    method: PanelDeckMethod,
+    cp_max: f64,
+    #[serde(default = "default_panel_shadowing")]
+    shadowing: bool,
+    mesh: PanelMeshToml,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PanelMeshSchemaMarker {
+    panel_mesh_aero: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PanelMeshToml {
+    vertices_m: Vec<[f64; 3]>,
+    triangles: Vec<[u32; 3]>,
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum PanelDeckMethod {
+    ModifiedNewtonian,
+}
+
+const fn default_panel_shadowing() -> bool {
+    true
+}
+
 impl AeroDeck {
     /// Parse a deck from a TOML string. Auto-detects Schema 1 vs
     /// Schema 2 from the `openbmp.aero_deck` integer marker.
@@ -312,6 +381,70 @@ impl AeroDeck {
         // wire setting is validated above; the runtime policy is
         // therefore always FailClosed. Clamp is a Schema-1-only feature.
         Ok(deck.with_extrapolation_policy(ExtrapolationPolicy::FailClosed))
+    }
+}
+
+impl LocalInclinationPanels {
+    /// Parse a strict Phase-6 panel-mesh hypersonic aero deck from
+    /// TOML text.
+    ///
+    /// This parser is intentionally separate from [`AeroDeck`]
+    /// coefficient schemas. It constructs an in-memory
+    /// [`LocalInclinationPanels`] method and routes all geometry
+    /// validation through [`PanelMesh::new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::MalformedDeck`] for TOML syntax /
+    /// structural failures, unknown fields, unsupported schema
+    /// versions, or mesh topology rejected by [`PanelMesh::new`].
+    /// Returns [`AeroError::InvalidParameter`] for invalid method
+    /// parameters and [`AeroError::NonFinite`] for non-finite mesh
+    /// coordinates.
+    pub fn load_from_str(s: &str) -> Result<Self, AeroError> {
+        let parsed: PanelMeshDeckFile =
+            toml::from_str(s).map_err(|_e| AeroError::MalformedDeck {
+                reason: "panel-mesh aero TOML did not parse against schema",
+            })?;
+        if parsed.openbmp.panel_mesh_aero != PANEL_MESH_AERO_SCHEMA_VERSION_1 {
+            return Err(AeroError::MalformedDeck {
+                reason: "openbmp.panel_mesh_aero schema version must be 1",
+            });
+        }
+        if !(parsed.cp_max.is_finite() && parsed.cp_max >= 0.0) {
+            return Err(AeroError::InvalidParameter {
+                reason: "panel-mesh aero cp_max must be finite and non-negative",
+            });
+        }
+        let vertices = parsed
+            .mesh
+            .vertices_m
+            .into_iter()
+            .map(|[x, y, z]| Vector3::new(x, y, z))
+            .collect();
+        let geometry = PanelMesh::new(vertices, parsed.mesh.triangles)?;
+        let mut panels = match parsed.method {
+            PanelDeckMethod::ModifiedNewtonian => Self::modified_newtonian(geometry, parsed.cp_max),
+        };
+        panels.shadowing = parsed.shadowing;
+        Ok(panels)
+    }
+
+    /// Parse a strict Phase-6 panel-mesh hypersonic aero deck from a
+    /// TOML file on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::Io`] if the file cannot be read.
+    /// Otherwise returns the same errors as [`Self::load_from_str`].
+    pub fn load_from_toml(path: &Path) -> Result<Self, AeroError> {
+        let text = std::fs::read_to_string(path).map_err(|e| AeroError::Io {
+            reason: format!(
+                "could not read panel-mesh aero file {}: {e}",
+                path.display()
+            ),
+        })?;
+        Self::load_from_str(&text)
     }
 }
 
@@ -446,7 +579,7 @@ fn canonicalise_axis_order(order: &[String]) -> Vec<String> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use crate::AeroCoefficients;
+    use crate::{AeroCoefficients, AeroMethod};
 
     /// Minimal Schema-1 deck parser fixture (sibling .toml).
     fn minimal_deck_toml() -> String {
@@ -464,6 +597,25 @@ mod tests {
             "/tests/fixtures/minimal-schema2-deck.toml"
         ))
         .to_string()
+    }
+
+    fn minimal_panel_mesh_toml() -> &'static str {
+        r#"
+openbmp.panel_mesh_aero = 1
+provenance = "unit-test academic square plate"
+validation = "checked"
+method = "modified-newtonian"
+cp_max = 2.0
+
+[mesh]
+vertices_m = [
+  [1.0, -0.5, -0.5],
+  [1.0,  0.5, -0.5],
+  [1.0,  0.5,  0.5],
+  [1.0, -0.5,  0.5],
+]
+triangles = [[0, 1, 2], [0, 2, 3]]
+"#
     }
 
     // ---------------------------------------------------------------
@@ -760,6 +912,94 @@ mod tests {
         );
         assert!(matches!(
             AeroDeck::load_from_str(&toml_str),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    // ---------------------------------------------------------------
+    // Phase-6 panel-mesh parser tests
+    // ---------------------------------------------------------------
+
+    fn panel_ctx(q: f64) -> crate::AeroContext {
+        crate::AeroContext {
+            mach: 12.0,
+            alpha_deg: 0.0,
+            beta_deg: 0.0,
+            dynamic_pressure_pa: q,
+        }
+    }
+
+    #[test]
+    fn panel_mesh_parser_builds_local_inclination_method() {
+        let panels = LocalInclinationPanels::load_from_str(minimal_panel_mesh_toml()).unwrap();
+        assert_eq!(panels.method, crate::PanelMethod::ModifiedNewtonian);
+        assert!(panels.shadowing);
+        assert_eq!(panels.geometry.vertices().len(), 4);
+        assert_eq!(panels.geometry.triangles().len(), 2);
+
+        let fmt = panels.aero_force_moment_body(&panel_ctx(100.0)).unwrap();
+        assert_eq!(fmt.force_n_body.x.to_bits(), (-200.0_f64).to_bits());
+        assert_eq!(fmt.force_n_body.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(fmt.force_n_body.z.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(fmt.moment_n_m_body.norm().to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn panel_mesh_parser_accepts_explicit_shadowing_false() {
+        let toml_str =
+            minimal_panel_mesh_toml().replace("cp_max = 2.0", "cp_max = 2.0\nshadowing = false");
+        let panels = LocalInclinationPanels::load_from_str(&toml_str).unwrap();
+        assert!(!panels.shadowing);
+    }
+
+    #[test]
+    fn panel_mesh_parser_rejects_unknown_method() {
+        let toml_str = minimal_panel_mesh_toml().replace(
+            "method = \"modified-newtonian\"",
+            "method = \"taylor-maccoll\"",
+        );
+        assert!(matches!(
+            LocalInclinationPanels::load_from_str(&toml_str),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn panel_mesh_parser_rejects_unknown_field() {
+        let toml_str = format!("{}\nunexpected = true\n", minimal_panel_mesh_toml());
+        assert!(matches!(
+            LocalInclinationPanels::load_from_str(&toml_str),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn panel_mesh_parser_rejects_bad_schema_version() {
+        let toml_str = minimal_panel_mesh_toml()
+            .replace("openbmp.panel_mesh_aero = 1", "openbmp.panel_mesh_aero = 2");
+        assert!(matches!(
+            LocalInclinationPanels::load_from_str(&toml_str),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn panel_mesh_parser_rejects_invalid_cp_max() {
+        let toml_str = minimal_panel_mesh_toml().replace("cp_max = 2.0", "cp_max = -1.0");
+        assert!(matches!(
+            LocalInclinationPanels::load_from_str(&toml_str),
+            Err(AeroError::InvalidParameter { .. }),
+        ));
+    }
+
+    #[test]
+    fn panel_mesh_parser_rejects_degenerate_mesh() {
+        let toml_str = minimal_panel_mesh_toml().replace(
+            "triangles = [[0, 1, 2], [0, 2, 3]]",
+            "triangles = [[0, 1, 1]]",
+        );
+        assert!(matches!(
+            LocalInclinationPanels::load_from_str(&toml_str),
             Err(AeroError::MalformedDeck { .. }),
         ));
     }

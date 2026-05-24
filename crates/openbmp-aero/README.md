@@ -2,15 +2,18 @@
 
 L2 aerodynamics crate.
 
-**Status:** Phase 3.5 — schema-1 and schema-2 decks both shipped
+**Status:** Phase 6 audit — schema-1 and schema-2 coefficient decks
+both shipped
 (`AeroDeck` + `DeckLookup`). Schema-2 adds optional control-effector
 axes (e.g. `delta_e_deg`); the lookup signature gains a name-keyed
 `BTreeMap<&str, f64>` for deflections and the runner-side
 `EffectorRack` snapshot flows through the kernel into the deck. The
 internal representation is N-D (3 ≤ N ≤ 6); at N = 3 the multilinear
 reduction is bit-identical to the original schema-1 trilinear path.
-Six-coefficient decks (`CY`, `Cl`, `Cn-yaw`) and hypersonic
-extensions are deferred to Phase 6.
+Six-coefficient coefficient decks (`CY`, `Cl`, `Cn-yaw`) remain
+deferred. Phase 6 adds hypersonic methods and a separate strict
+`openbmp.panel_mesh_aero = 1` TOML parser for
+`LocalInclinationPanels` mesh studies.
 
 ## Purpose
 
@@ -21,6 +24,8 @@ extensions are deferred to Phase 6.
   - `ModifiedNewtonian`, `TangentCone`, `TangentWedge`,
     `LocalInclinationPanels`, `FreeMolecular` (Phase 6.3).
   - `HybridAeroMethod` dispatching by Mach + Knudsen (Phase 6.6).
+- Strict panel-mesh TOML ingestion for `LocalInclinationPanels`;
+  coefficient decks and mesh-panel decks use separate schema markers.
 
 ## Inputs and Outputs
 
