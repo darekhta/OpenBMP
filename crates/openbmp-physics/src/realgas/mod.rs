@@ -107,6 +107,100 @@ impl AirComposition {
             + self.o_ion
             + self.electrons
     }
+
+    /// Sum of neutral heavy-species mole fractions.
+    ///
+    /// Excludes ions and electrons; useful for checking that a
+    /// nominally frozen / neutral composition has not accidentally
+    /// populated the reserved ionisation channels.
+    #[must_use]
+    pub fn neutral_mole_fraction_sum(&self) -> f64 {
+        self.n2 + self.o2 + self.n_atomic + self.o_atomic + self.no + self.argon
+    }
+
+    /// Sum of singly charged heavy ion mole fractions.
+    #[must_use]
+    pub fn ion_mole_fraction_sum(&self) -> f64 {
+        self.n2_ion + self.o2_ion + self.no_ion + self.n_ion + self.o_ion
+    }
+
+    /// Electron-minus-ion mole-fraction residual.
+    ///
+    /// The Phase-6 ionised-air surface assumes singly charged
+    /// positive ions; charge-neutral equilibrium outputs should have
+    /// this residual near zero within table / solver tolerance.
+    #[must_use]
+    pub fn charge_neutrality_residual(&self) -> f64 {
+        self.electrons - self.ion_mole_fraction_sum()
+    }
+
+    /// Validate finite, non-negative mole fractions and total
+    /// normalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::NonFinite`] for NaN / Inf entries and
+    /// [`PhysicsError::InvalidParameter`] for negative entries, a bad
+    /// tolerance, or a total mole fraction outside `1 +/- tolerance`.
+    pub fn validate_mole_fractions(&self, tolerance: f64) -> Result<(), PhysicsError> {
+        if !tolerance.is_finite() || tolerance < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "air-composition tolerance must be finite and non-negative",
+            });
+        }
+        for value in [
+            self.n2,
+            self.o2,
+            self.n_atomic,
+            self.o_atomic,
+            self.no,
+            self.argon,
+            self.n2_ion,
+            self.o2_ion,
+            self.no_ion,
+            self.n_ion,
+            self.o_ion,
+            self.electrons,
+        ] {
+            if !value.is_finite() {
+                return Err(PhysicsError::NonFinite {
+                    reason: "air-composition mole fraction is NaN or Inf",
+                });
+            }
+            if value < 0.0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "air-composition mole fractions must be non-negative",
+                });
+            }
+        }
+        if (self.sum() - 1.0).abs() > tolerance {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "air-composition mole fractions do not sum to one",
+            });
+        }
+        Ok(())
+    }
+
+    /// Validate charge neutrality for the ionised-air channels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when the tolerance
+    /// is invalid or when the electron-minus-ion residual exceeds the
+    /// supplied tolerance.
+    pub fn validate_charge_neutrality(&self, tolerance: f64) -> Result<(), PhysicsError> {
+        if !tolerance.is_finite() || tolerance < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "charge-neutrality tolerance must be finite and non-negative",
+            });
+        }
+        if self.charge_neutrality_residual().abs() > tolerance {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "air-composition ion/electron fractions are not charge-neutral",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Effective specific heats and transport returned by
@@ -190,5 +284,77 @@ impl EquilibriumAir for MugalevEquilibriumAir {
         Err(PhysicsError::OutOfEnvelope {
             reason: "MugalevEquilibriumAir (11-species) is deferred pending verified public coefficients",
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sea_level_composition_validates_with_trace_gas_tolerance() {
+        let c = AirComposition::sea_level();
+        assert!((c.neutral_mole_fraction_sum() - c.sum()).abs() < 1.0e-15);
+        c.validate_mole_fractions(5.0e-4).unwrap();
+        c.validate_charge_neutrality(0.0).unwrap();
+    }
+
+    #[test]
+    fn ionised_composition_checks_charge_neutrality() {
+        let c = AirComposition {
+            n2: 0.74,
+            o2: 0.20,
+            n_ion: 0.02,
+            o_ion: 0.01,
+            electrons: 0.03,
+            ..AirComposition::default()
+        };
+        c.validate_mole_fractions(0.0).unwrap();
+        c.validate_charge_neutrality(1.0e-15).unwrap();
+        assert_eq!(c.ion_mole_fraction_sum().to_bits(), 0.03_f64.to_bits());
+        assert_eq!(c.charge_neutrality_residual().to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn negative_mole_fraction_is_rejected() {
+        let c = AirComposition {
+            n2: 1.1,
+            o2: -0.1,
+            ..AirComposition::default()
+        };
+        assert!(matches!(
+            c.validate_mole_fractions(0.0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn non_normalized_composition_is_rejected() {
+        let c = AirComposition {
+            n2: 0.5,
+            o2: 0.25,
+            ..AirComposition::default()
+        };
+        assert!(matches!(
+            c.validate_mole_fractions(1.0e-6),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn non_neutral_ionised_composition_is_rejected() {
+        let c = AirComposition {
+            n2: 0.90,
+            n_ion: 0.05,
+            electrons: 0.04,
+            o2: 0.01,
+            ..AirComposition::default()
+        };
+        c.validate_mole_fractions(0.0).unwrap();
+        assert!(matches!(
+            c.validate_charge_neutrality(1.0e-6),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 }
