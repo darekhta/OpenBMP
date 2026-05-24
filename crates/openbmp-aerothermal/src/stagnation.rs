@@ -1,6 +1,7 @@
 //! Phase-6.4 stagnation-point heat-transfer models.
 //!
-//! [`FayRiddell`] is a cold-gas engineering scaffold for the 1958
+//! [`FayRiddell`] exposes both the cold-gas `HeatTransferModel` scaffold
+//! and a caller-supplied edge-state assembly path for the 1958
 //! equilibrium-air catalytic-wall axisymmetric formula. [`SuttonGraves`]
 //! is the engineering simplification that needs only freestream density,
 //! nose radius, and velocity. [`TauberSuttonRadiative`] is typed-reserved
@@ -88,6 +89,63 @@ pub struct StagnationHeating {
     pub h_w_j_kg: f64,
     /// Recovery temperature (K).
     pub recovery_temperature_k: f64,
+}
+
+/// Fay-Riddell boundary-layer edge and wall properties.
+///
+/// This is the real-gas coupling point for the Phase-6.4 Fay-Riddell
+/// assembly: an upstream equilibrium-air solver, CFD deck, or external
+/// reference package can provide the post-shock edge state and wall
+/// thermodynamics directly. OpenBMP does not infer these values here.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct FayRiddellEdgeState {
+    /// Boundary-layer edge density `ρ_e` (kg/m³).
+    pub edge_density_kg_m3: f64,
+    /// Boundary-layer edge dynamic viscosity `μ_e` (Pa·s).
+    pub edge_viscosity_pa_s: f64,
+    /// Wall density `ρ_w` evaluated at wall temperature and edge
+    /// pressure (kg/m³).
+    pub wall_density_kg_m3: f64,
+    /// Wall dynamic viscosity `μ_w` (Pa·s).
+    pub wall_viscosity_pa_s: f64,
+    /// Stagnation velocity gradient `du_e/dx` (1/s).
+    pub velocity_gradient_s_inv: f64,
+    /// Adiabatic-wall enthalpy `h_aw` (J/kg).
+    pub adiabatic_wall_enthalpy_j_kg: f64,
+    /// Wall enthalpy `h_w` (J/kg).
+    pub wall_enthalpy_j_kg: f64,
+    /// Recovery temperature for diagnostics (K).
+    pub recovery_temperature_k: f64,
+}
+
+impl FayRiddellEdgeState {
+    fn validate(&self) -> Result<(), AerothermalError> {
+        if !self.edge_density_kg_m3.is_finite()
+            || !self.edge_viscosity_pa_s.is_finite()
+            || !self.wall_density_kg_m3.is_finite()
+            || !self.wall_viscosity_pa_s.is_finite()
+            || !self.velocity_gradient_s_inv.is_finite()
+            || !self.adiabatic_wall_enthalpy_j_kg.is_finite()
+            || !self.wall_enthalpy_j_kg.is_finite()
+            || !self.recovery_temperature_k.is_finite()
+        {
+            return Err(AerothermalError::NonFinite {
+                reason: "Fay-Riddell edge-state input is NaN or Inf",
+            });
+        }
+        if self.edge_density_kg_m3 <= 0.0
+            || self.edge_viscosity_pa_s <= 0.0
+            || self.wall_density_kg_m3 <= 0.0
+            || self.wall_viscosity_pa_s <= 0.0
+            || self.velocity_gradient_s_inv <= 0.0
+            || self.recovery_temperature_k <= 0.0
+        {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Fay-Riddell edge state requires positive density, viscosity, velocity gradient, and recovery temperature",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Distributed surface-station heat-flux outputs.
@@ -179,12 +237,13 @@ impl HeatTransferModel for SuttonGraves {
 ///
 /// # Honest Scope
 ///
-/// This shipping variant uses cold-gas thermodynamics with a fixed
-/// Sutherland viscosity law. The equilibrium-air real-gas iteration
-/// (consuming [`openbmp_physics::EquilibriumAir`]) is intentionally
-/// deferred to a follow-on slice, so this model is a checked
-/// engineering scaffold rather than a research-grade Fay-Riddell
-/// implementation.
+/// The [`HeatTransferModel`] implementation uses cold-gas thermodynamics
+/// with a fixed Sutherland viscosity law. The
+/// [`Self::stagnation_from_edge_state`] method is the real-gas coupling
+/// point: callers can provide edge and wall properties from an
+/// equilibrium-air solver, CFD deck, or external reference package. The
+/// in-crate real-gas shock-layer solver remains deferred until verified
+/// equilibrium-air data land.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FayRiddell {
     /// Lewis number for the boundary layer (default 1.0 — Phase-6
@@ -204,6 +263,76 @@ impl Default for FayRiddell {
             lewis_number: 1.0,
             h_dissociation_j_kg: 0.0,
         }
+    }
+}
+
+impl FayRiddell {
+    /// Assemble Fay-Riddell heating from caller-supplied edge-state
+    /// and wall properties.
+    ///
+    /// This method does not assume a perfect-gas shock or cold-air
+    /// enthalpy model. All real-gas thermodynamic quantities enter
+    /// through [`FayRiddellEdgeState`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError`] when model parameters or edge-state
+    /// inputs are non-finite, non-positive where required, or produce
+    /// a non-physical Lewis correction.
+    pub fn stagnation_from_edge_state(
+        &self,
+        edge: &FayRiddellEdgeState,
+        wall_catalysis: WallCatalysis,
+    ) -> Result<StagnationHeating, AerothermalError> {
+        edge.validate()?;
+        if !self.lewis_number.is_finite() || self.lewis_number <= 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Fay-Riddell Lewis number must be positive and finite",
+            });
+        }
+        if !self.h_dissociation_j_kg.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Fay-Riddell dissociation enthalpy is NaN or Inf",
+            });
+        }
+        if matches!(wall_catalysis, WallCatalysis::Partial(eta) if !eta.is_finite()) {
+            return Err(AerothermalError::NonFinite {
+                reason: "Fay-Riddell wall-catalysis efficiency is NaN or Inf",
+            });
+        }
+
+        let dh = (edge.adiabatic_wall_enthalpy_j_kg - edge.wall_enthalpy_j_kg).max(0.0);
+        let a = wall_catalysis.lewis_exponent();
+        let le_a = self.lewis_number.powf(a);
+        let bracket = if edge.adiabatic_wall_enthalpy_j_kg > 0.0 {
+            1.0 + (le_a - 1.0) * (self.h_dissociation_j_kg / edge.adiabatic_wall_enthalpy_j_kg)
+        } else {
+            1.0
+        };
+        if !bracket.is_finite() || bracket < 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Fay-Riddell Lewis correction must be finite and non-negative",
+            });
+        }
+
+        let q_conv = 0.94
+            * (edge.wall_density_kg_m3 * edge.wall_viscosity_pa_s).powf(0.1)
+            * (edge.edge_density_kg_m3 * edge.edge_viscosity_pa_s).powf(0.4)
+            * edge.velocity_gradient_s_inv.sqrt()
+            * dh
+            * bracket;
+        if !q_conv.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Fay-Riddell heat flux is non-finite (check inputs)",
+            });
+        }
+        Ok(StagnationHeating {
+            q_conv_w_m2: q_conv,
+            q_rad_w_m2: 0.0,
+            h_aw_j_kg: edge.adiabatic_wall_enthalpy_j_kg,
+            h_w_j_kg: edge.wall_enthalpy_j_kg,
+            recovery_temperature_k: edge.recovery_temperature_k,
+        })
     }
 }
 
@@ -230,7 +359,6 @@ impl HeatTransferModel for FayRiddell {
         let p_e = ctx.freestream.pressure_pa * p_ratio;
         let rho_e = ctx.freestream.density_kg_m3 * rho_ratio;
         let t_e = ctx.freestream.temperature_k * temp_ratio;
-        let mu_e = sutherland_viscosity(t_e);
         // Stagnation velocity gradient for an axisymmetric blunt body:
         //   du_e/dx |_stag = (1 / R_n) · √(2 · (p_e − p_∞) / ρ_e)
         let dp = (p_e - ctx.freestream.pressure_pa).max(0.0);
@@ -243,30 +371,18 @@ impl HeatTransferModel for FayRiddell {
         let v = ctx.airspeed_m_s;
         let adiabatic_wall_enthalpy = 0.5 * v * v + C_P_AIR_J_KG_K * ctx.freestream.temperature_k;
         let wall_enthalpy = C_P_AIR_J_KG_K * ctx.wall_temperature_k;
-        let dh = (adiabatic_wall_enthalpy - wall_enthalpy).max(0.0);
-        // Lewis correction.
-        let a = ctx.wall_catalysis.lewis_exponent();
-        let le_a = self.lewis_number.powf(a);
-        let bracket = if adiabatic_wall_enthalpy > 0.0 {
-            1.0 + (le_a - 1.0) * (self.h_dissociation_j_kg / adiabatic_wall_enthalpy)
-        } else {
-            1.0
-        };
-        let q_conv =
-            0.94 * (rho_w * mu_w).powf(0.1) * (rho_e * mu_e).powf(0.4) * dudx.sqrt() * dh * bracket;
-        if !q_conv.is_finite() {
-            return Err(AerothermalError::NonFinite {
-                reason: "Fay-Riddell heat flux is non-finite (check inputs)",
-            });
-        }
         let recovery = ctx.freestream.temperature_k + 0.5 * v * v / C_P_AIR_J_KG_K;
-        Ok(StagnationHeating {
-            q_conv_w_m2: q_conv,
-            q_rad_w_m2: 0.0,
-            h_aw_j_kg: adiabatic_wall_enthalpy,
-            h_w_j_kg: wall_enthalpy,
+        let edge = FayRiddellEdgeState {
+            edge_density_kg_m3: rho_e,
+            edge_viscosity_pa_s: sutherland_viscosity(t_e),
+            wall_density_kg_m3: rho_w,
+            wall_viscosity_pa_s: mu_w,
+            velocity_gradient_s_inv: dudx,
+            adiabatic_wall_enthalpy_j_kg: adiabatic_wall_enthalpy,
+            wall_enthalpy_j_kg: wall_enthalpy,
             recovery_temperature_k: recovery,
-        })
+        };
+        self.stagnation_from_edge_state(&edge, ctx.wall_catalysis)
     }
 }
 
@@ -432,6 +548,97 @@ mod tests {
         let h = result.unwrap();
         assert!(h.q_conv_w_m2 > 0.0);
         assert!(h.q_conv_w_m2.is_finite());
+    }
+
+    fn cold_gas_edge_for(ctx: &AerothermalContext) -> FayRiddellEdgeState {
+        let gamma = 1.4;
+        let mach = ctx.mach;
+        let m2 = mach * mach;
+        let rho_ratio = ((gamma + 1.0) * m2) / ((gamma - 1.0) * m2 + 2.0);
+        let temp_ratio = (((2.0 * gamma) * m2 - (gamma - 1.0)) * ((gamma - 1.0) * m2 + 2.0))
+            / ((gamma + 1.0) * (gamma + 1.0) * m2);
+        let p_ratio = 1.0 + (2.0 * gamma / (gamma + 1.0)) * (m2 - 1.0);
+        let p_e = ctx.freestream.pressure_pa * p_ratio;
+        let rho_e = ctx.freestream.density_kg_m3 * rho_ratio;
+        let t_e = ctx.freestream.temperature_k * temp_ratio;
+        let dp = (p_e - ctx.freestream.pressure_pa).max(0.0);
+        let dudx = (1.0 / ctx.nose_radius_m) * (2.0 * dp / rho_e.max(1.0e-30)).sqrt();
+        let v = ctx.airspeed_m_s;
+        FayRiddellEdgeState {
+            edge_density_kg_m3: rho_e,
+            edge_viscosity_pa_s: sutherland_viscosity(t_e),
+            wall_density_kg_m3: p_e / (287.05 * ctx.wall_temperature_k.max(50.0)),
+            wall_viscosity_pa_s: sutherland_viscosity(ctx.wall_temperature_k),
+            velocity_gradient_s_inv: dudx,
+            adiabatic_wall_enthalpy_j_kg: 0.5 * v * v
+                + C_P_AIR_J_KG_K * ctx.freestream.temperature_k,
+            wall_enthalpy_j_kg: C_P_AIR_J_KG_K * ctx.wall_temperature_k,
+            recovery_temperature_k: ctx.freestream.temperature_k + 0.5 * v * v / C_P_AIR_J_KG_K,
+        }
+    }
+
+    #[test]
+    fn fay_riddell_edge_state_matches_cold_gas_trait_path() {
+        let m = FayRiddell::default();
+        let context = ctx(1.0e-4, 5000.0, 1.0, 1500.0);
+        let cold = m.stagnation(&context).unwrap();
+        let edge = cold_gas_edge_for(&context);
+        let via_edge = m
+            .stagnation_from_edge_state(&edge, context.wall_catalysis)
+            .unwrap();
+        assert_eq!(cold.q_conv_w_m2.to_bits(), via_edge.q_conv_w_m2.to_bits());
+        assert_eq!(cold.h_aw_j_kg.to_bits(), via_edge.h_aw_j_kg.to_bits());
+    }
+
+    #[test]
+    fn fay_riddell_edge_state_accepts_caller_supplied_real_gas_enthalpy() {
+        let m = FayRiddell {
+            lewis_number: 1.2,
+            h_dissociation_j_kg: 2.0e6,
+        };
+        let edge = FayRiddellEdgeState {
+            edge_density_kg_m3: 2.0e-4,
+            edge_viscosity_pa_s: 8.0e-5,
+            wall_density_kg_m3: 5.0e-4,
+            wall_viscosity_pa_s: 6.0e-5,
+            velocity_gradient_s_inv: 8.0e4,
+            adiabatic_wall_enthalpy_j_kg: 2.8e7,
+            wall_enthalpy_j_kg: 1.2e6,
+            recovery_temperature_k: 3_000.0,
+        };
+        let base = m
+            .stagnation_from_edge_state(&edge, WallCatalysis::FullyCatalytic)
+            .unwrap();
+        let hotter = m
+            .stagnation_from_edge_state(
+                &FayRiddellEdgeState {
+                    adiabatic_wall_enthalpy_j_kg: 3.2e7,
+                    ..edge
+                },
+                WallCatalysis::FullyCatalytic,
+            )
+            .unwrap();
+        assert!(base.q_conv_w_m2.is_finite() && base.q_conv_w_m2 > 0.0);
+        assert!(hotter.q_conv_w_m2 > base.q_conv_w_m2);
+    }
+
+    #[test]
+    fn fay_riddell_edge_state_rejects_non_physical_inputs() {
+        let m = FayRiddell::default();
+        let edge = FayRiddellEdgeState {
+            edge_density_kg_m3: 0.0,
+            edge_viscosity_pa_s: 8.0e-5,
+            wall_density_kg_m3: 5.0e-4,
+            wall_viscosity_pa_s: 6.0e-5,
+            velocity_gradient_s_inv: 8.0e4,
+            adiabatic_wall_enthalpy_j_kg: 2.8e7,
+            wall_enthalpy_j_kg: 1.2e6,
+            recovery_temperature_k: 3_000.0,
+        };
+        assert!(matches!(
+            m.stagnation_from_edge_state(&edge, WallCatalysis::FullyCatalytic),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
     }
 
     #[test]

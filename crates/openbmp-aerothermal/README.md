@@ -2,14 +2,15 @@
 
 L2 aerothermal heat-transfer crate.
 
-**Status:** Phase 6 — stub. Implementation begins after Phase 5
-closes; full design in
+**Status:** Phase 6 — audited research-toy implementation. Full design in
 [`docs/hypersonic-extensions.md`](../../docs/hypersonic-extensions.md).
 
 ## Purpose
 
 - `HeatTransferModel` trait — stagnation + distributed heating.
-- Stagnation: `FayRiddell`, `SuttonGraves`, `TauberSutton`.
+- Stagnation: `FayRiddell` (cold-gas trait path plus caller-supplied
+  edge-state assembly), `SuttonGraves`, `TauberSuttonRadiative`
+  (typed-reserved pending coefficients).
 - Distributed: reference-enthalpy method, Spalding-Chi, Van Driest II.
 - Boundary layer: `Laminar`, `Transitional`, `Turbulent` with
   empirical, Reθ/M_e, e^N transition models.
@@ -45,8 +46,9 @@ and locked into the determinism profile.
 
 ## Validation
 
-`experimental` (stub). Phase 6 validation uses analytic heating checks,
-textbook ablation toys, and public academic benchmark cases only.
+Phase 6 validation uses analytic heating checks, textbook ablation toys,
+and public academic benchmark cases only. Models with missing public
+coefficients fail closed instead of returning guessed values.
 
 ## Data Provenance
 

@@ -4,7 +4,8 @@
 //! Phase 6 sub-phases:
 //!
 //! * **6.4** — [`stagnation`]: stagnation-point heating. Ships
-//!   [`stagnation::FayRiddell`] as a cold-gas engineering scaffold,
+//!   [`stagnation::FayRiddell`] as a cold-gas engineering scaffold
+//!   plus caller-supplied [`stagnation::FayRiddellEdgeState`] assembly,
 //!   [`stagnation::SuttonGraves`] (engineering
 //!   `K · √(ρ/R) · V³` simplification), and
 //!   [`stagnation::TauberSuttonRadiative`] as a typed-reserved model
@@ -40,7 +41,8 @@ pub use boundary_layer::{
 };
 pub use error::AerothermalError;
 pub use stagnation::{
-    AerothermalContext, BodyStation, FayRiddell, HeatTransferModel, SUTTON_GRAVES_K_EARTH_SI,
-    StagnationHeating, SurfaceHeating, SuttonGraves, TauberSuttonRadiative, WallCatalysis,
+    AerothermalContext, BodyStation, FayRiddell, FayRiddellEdgeState, HeatTransferModel,
+    SUTTON_GRAVES_K_EARTH_SI, StagnationHeating, SurfaceHeating, SuttonGraves,
+    TauberSuttonRadiative, WallCatalysis,
 };
 pub use thermal_toy::{BackwallCondition, OneDThermalToy, ToyMaterial};

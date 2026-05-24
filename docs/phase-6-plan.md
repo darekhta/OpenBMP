@@ -38,7 +38,8 @@ sub-phase landing on `main`.
 - Knudsen number, Cheng / erfc / linear bridge functions,
   Schaaf-Chambré free-molecular aero, hybrid dispatch.
 - Stagnation heating: Sutton-Graves verified engineering
-  simplification; Fay-Riddell cold-gas scaffold; Tauber-Sutton
+  simplification; Fay-Riddell cold-gas scaffold plus a
+  caller-supplied real-gas edge-state assembly path; Tauber-Sutton
   radiative model typed-reserved pending published coefficients.
 - Boundary-layer state, three transition models (empirical, e^N
   placeholder, Re_θ / M_e), reference-enthalpy distributed heating.
@@ -89,7 +90,7 @@ Sub-phase status as of the latest commit on `main`.
 | 6.1 — NRLMSISE-00 static-defaults | shipped (static interpolant) | `openbmp_physics::Nrlmsise00Static` table regenerated from public NRLMSISE-00 `gtd7` outputs for F10.7 = 150, Ap = 4, equator, noon, equinox. Full path declared `Nrlmsise00Full` (reserved). |
 | 6.2 — Tannehill 5-species equilibrium air | deferred | `openbmp_physics::TannehillEquilibriumAir` now fails closed pending verified public table values. `AirComposition` can represent the reserved 11-species ion/electron surface, but Mugalev remains reserved. |
 | 6.3 — Hypersonic aero methods | shipped (checked approximations) | `ModifiedNewtonian`, modified-Newtonian `TangentCone`, `TangentWedge`, `LocalInclinationPanels`, `hypersonic_similarity_parameter`. Full Taylor-Maccoll validation and mesh-deck ingestion deferred. |
-| 6.4 — Stagnation heating | partially shipped | `SuttonGraves` shipped; `FayRiddell` is a cold-gas checked scaffold; `TauberSuttonRadiative` fails closed pending published coefficients. |
+| 6.4 — Stagnation heating | partially shipped | `SuttonGraves` shipped; `FayRiddell` has a cold-gas checked scaffold and a caller-supplied `FayRiddellEdgeState` path for real-gas edge/wall properties; automatic real-gas shock-layer edge-state generation remains deferred until verified equilibrium-air data land. `TauberSuttonRadiative` fails closed pending published coefficients. |
 | 6.5 — Boundary layer + distributed heating | shipped | `BoundaryLayerState`, `EmpiricalTransition`, `EnTransition`, `ReThetaTransition`, `ReferenceEnthalpyHeating`. |
 | 6.6 — Knudsen bridging + free-molecular aero | shipped | `mean_free_path_m`, `knudsen_number`, `ChengBridge`, `ErfcBridge`, `LinearKnudsenBridge`, `FreeMolecularAero`, `HybridAeroMethod`. |
 | 6.7 — Trajectory infrastructure | shipped | `EntryInterfaceBuilder`, `AllenEggers`, `Vinh`. |
@@ -132,10 +133,12 @@ Phase 6 closes when:
 - **Tannehill 5-species equilibrium-air table** — deferred until a
   verified public table or clean-room implementation of the published
   correlation lands with provenance.
-- **Real-gas-coupled Fay-Riddell** — the Phase-6.4 shipped form uses
-  cold-gas post-shock conditions. The real-gas path requires a
-  verified equilibrium-air implementation before wiring edge-state
-  computation.
+- **Automatic real-gas Fay-Riddell edge-state generation** — the
+  Phase-6.4 trait implementation uses cold-gas post-shock conditions,
+  and the new `FayRiddellEdgeState` path accepts caller-supplied
+  real-gas edge/wall properties. In-crate edge-state computation still
+  requires a verified equilibrium-air implementation before wiring the
+  shock-layer solve.
 - **Tauber-Sutton radiative heating** — typed-reserved until the
   published Earth-entry piecewise-polynomial coefficients are imported
   with provenance.
