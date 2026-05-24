@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn sensor_id_distinct_for_canonical_phase_2_sensor_paths() {
+    fn sensor_id_distinct_for_canonical_sensor_paths() {
         // Canonical sensor inventory: IMU, barometer, ideal-state.
         // These hashes are pinned in the determinism contract so a
         // drift in either path or the FNV implementation surfaces

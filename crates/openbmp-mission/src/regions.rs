@@ -57,8 +57,8 @@ use crate::{MissionPhaseGraph, Phase, PhaseId, RegionId};
 pub struct CanonicalRegions;
 
 impl CanonicalRegions {
-    /// The `mission` region's id — the existing flat-DAG mission
-    /// FSM, upgraded to hierarchical in 5.X.F. Always present.
+    /// The `mission` region's id — the always-present region that
+    /// carries the primary mission-state graph.
     #[must_use]
     pub const fn mission() -> RegionId {
         RegionId::from_path("mission.regions.mission")
@@ -152,8 +152,8 @@ pub struct CrossRegionGuard {
     /// Region whose current state is the guard's left-hand side.
     pub region: RegionId,
     /// State the region must currently be in for the guard to hold.
-    /// Encoded as a [`PhaseId`] until the v4 scenario format lifts
-    /// region states to hierarchical ids in 5.X.F.
+    /// Encoded as a [`PhaseId`] until the scenario format introduces
+    /// dedicated hierarchical region-state ids.
     pub state: PhaseId,
 }
 

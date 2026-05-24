@@ -466,8 +466,8 @@ pub enum AdaptiveIntegratorError {
 /// Wanner Vol I §II.4 RMS form via
 /// [`Integratable::weighted_error_norm`]: each component-wise scaled
 /// error term is divided by its own per-component scale `sc_i`,
-/// then averaged in RMS. This is the formulation §5.D.4 deferred —
-/// the original scalar form `err = h · ||e'||₂ / (atol + rtol ·
+/// then averaged in RMS. This replaces the original scalar form
+/// `err = h · ||e'||₂ / (atol + rtol ·
 /// scalar_state_size)` masked component-i breaches when other
 /// components had large magnitudes (a 1 m position drift hidden by
 /// `||y||₂ ≈ 1e6` m radius). The per-component form is required for
@@ -802,8 +802,8 @@ impl<S: SimState> Integrator<S> for Dopri54Adaptive {
 /// Fortran `dop853.f` / Hairer-Nørsett-Wanner Vol I §II.5 Table 5.4).
 /// The full 16-stage SciPy tableau includes 4 extra abscissas / rows
 /// reserved for dense output of order 7; this module ships only the
-/// 12 primary stages because § 5.D.6 does NOT implement dense
-/// output. Dense-output interpolation is a future slice.
+/// 12 primary stages because dense-output interpolation is future
+/// work.
 ///
 /// The constants below are written as the SciPy decimal literals
 /// verbatim. Const-time IEEE 754 arithmetic in Rust is deterministic
@@ -986,11 +986,11 @@ mod dopri853_tableau {
 /// per-step state is otherwise well-behaved.
 ///
 /// **Honest scope.** This is the fixed-step shape — no embedded error
-/// estimator, no PI controller, no dense output. The adaptive
-/// shape ([`Dopri853Adaptive`]) ships in the same § 5.D.6 slice. Dense
-/// output of order 7 (the SciPy `DOP853.dense_output` interpolator)
-/// is deferred — `dopri853_tableau` only encodes the 12 primary
-/// stages, not the 4 extra dense-output abscissas.
+/// estimator, no PI controller, no dense output. The adaptive shape is
+/// [`Dopri853Adaptive`]. Dense output of order 7 (the SciPy
+/// `DOP853.dense_output` interpolator) is future work:
+/// `dopri853_tableau` only encodes the 12 primary stages, not the 4
+/// extra dense-output abscissas.
 ///
 /// # Determinism
 ///
@@ -1554,7 +1554,7 @@ impl Dopri853Adaptive {
             + (k11 * E3_11))
             + (k12 * E3_12);
 
-        // Per-component RMS norms via the §5.D.5 trait method.
+        // Per-component RMS norms via the Integratable trait method.
         let err5_rms = new_state.weighted_error_norm(state, &err5_deriv, h, self.atol, self.rtol);
         let err3_rms = new_state.weighted_error_norm(state, &err3_deriv, h, self.atol, self.rtol);
 

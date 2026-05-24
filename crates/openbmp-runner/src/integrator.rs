@@ -129,7 +129,7 @@ fn build_runtime_integrator_from_solver(
             Err(RunnerError::UnsupportedScenario {
                 what: format!(
                     "adaptive-explicit + {method:?} parses but is not wired in the \
-                     runner; wired methods are dopri54 (§ 5.D.4) and dopri853 (§ 5.D.6)"
+                     runner; wired adaptive methods are dopri54 and dopri853"
                 ),
             })
         }

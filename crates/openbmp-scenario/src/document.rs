@@ -5450,7 +5450,7 @@ impl FcFdirDetectorConfig {
                 if self.parity_threshold.is_some() {
                     return Err(ScenarioError::InvalidFc {
                         reason: "fc.fdir.detector.parity_threshold is reserved for the \
-                                 § 5.B.5 parity-space follow-on; not consumed by \
+                                 parity-space residual generator follow-on; not consumed by \
                                  windowed_mean_shift_glrt"
                             .to_string(),
                     });

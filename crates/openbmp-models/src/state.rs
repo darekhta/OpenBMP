@@ -509,8 +509,8 @@ mod rigid_body_impl {
             // avoid double-counting the symmetric structure). No FMA.
             //
             // Note: this is a state-magnitude diagnostic and counts 20
-            // components (skipping inertia off-diagonal). The §5.D.5
-            // [`Integratable::weighted_error_norm`] sums all 26
+            // components (skipping inertia off-diagonal). The
+            // [`Integratable::weighted_error_norm`] path sums all 26
             // components (matching `RigidBodyDerivative::dimension`) so
             // the RMS divisor is consistent with the integrator's
             // representation; the small double-counting of symmetric

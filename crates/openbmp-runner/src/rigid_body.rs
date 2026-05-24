@@ -137,8 +137,8 @@ pub fn run(
     // preserving byte-stability for every existing rigid-body
     // scenario. Adaptive / fixed-DOPRI selections now drive
     // `Dopri54Adaptive` / `Dopri54FixedStep` end-to-end through the
-    // rigid-body kernel — the §5.D.4 audit-follow-up reject gate that
-    // refused non-RK4 selections has been removed.
+    // rigid-body kernel; the old reject gate that refused non-RK4
+    // selections has been removed.
     let runtime_integrator = build_runtime_integrator(document)?;
 
     let config = SimulationConfig {
@@ -413,9 +413,8 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     // the rigid-body runner. The actual `RuntimeIntegrator`
     // construction lives in the kernel-config block in `run()` so the
     // adaptive integrator's persistent state (last_h, last_err_prev)
-    // is owned by the kernel for the entire run. The §5.D.4
-    // audit-follow-up reject gate that refused non-RK4 selections
-    // has been removed.
+    // is owned by the kernel for the entire run. The old reject gate
+    // that refused non-RK4 selections has been removed.
     if !matches!(
         document.environment.gravity.as_str(),
         "constant" | "point_mass" | "j2" | "egm2008"

@@ -1070,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_labels_are_checked_for_phase_1_3_models() {
+    fn validation_labels_are_checked_for_core_models() {
         assert_eq!(
             <ConstantGravityForce as ForceModel<PointMassState>>::validation(
                 &ConstantGravityForce::down_z(9.81)

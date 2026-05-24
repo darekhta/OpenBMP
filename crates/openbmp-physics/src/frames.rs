@@ -192,8 +192,8 @@ impl LocalGeodeticOrigin {
 /// origin anchors NED-frame transforms in the
 /// [`FrameProfile::Wgs84UniformRotation`] profile.
 ///
-/// Higher-fidelity profiles in later phases will additionally carry
-/// pinned Earth-orientation tables.
+/// Higher-fidelity profiles may additionally carry pinned
+/// Earth-orientation tables.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FrameContext {
     profile: FrameProfile,
@@ -448,7 +448,7 @@ impl FrameContext {
 /// Implementations are provided by [`FrameContext`] for frame pairs that
 /// exist in the compiled profile surface. Unsupported static pairs have
 /// no trait implementation and therefore fail at compile time. Runtime
-/// profile-gated transforms in later phases should expose fallible helper
+/// profile-gated transforms should expose fallible helper
 /// constructors that use [`FrameError::TransformNotAvailable`].
 ///
 /// ECI/ECEF transforms take [`SimTime`] because all non-toy Earth-fixed

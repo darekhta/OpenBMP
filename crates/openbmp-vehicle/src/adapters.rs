@@ -1866,7 +1866,7 @@ mod tests {
     }
 
     #[test]
-    fn rigid_motor_mass_adapter_inertia_held_fixed_in_phase_3_1() {
+    fn rigid_motor_mass_adapter_holds_inertia_fixed_across_burn() {
         let motor = d12_textbook_motor();
         let inertia = nalgebra::Matrix3::from_diagonal(&Vector3::new(0.5, 0.5, 0.1));
         let cg_offset = Pos3::origin();

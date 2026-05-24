@@ -1764,8 +1764,8 @@ pub enum RecoveryAction {
 ```
 
 FDIR responds to faults that the **scenario injects** (see Sensor § Fault
-Models). The MVP includes simple residual-based fault detection; later
-phases may include parity-space or Kalman-innovation tests.
+Models). The MVP includes simple residual-based fault detection; future
+work may include parity-space or Kalman-innovation tests.
 
 ## Aerothermal
 

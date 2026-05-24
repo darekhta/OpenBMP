@@ -349,7 +349,7 @@ lower_delta_v_body_m_s = [0.0, 0.0, -0.5]
     }
 
     #[test]
-    fn v2_with_multiple_phase5_blocks_reports_first_reserved_field() {
+    fn v2_with_multiple_v3_only_blocks_reports_first_reserved_field() {
         let toml_v2 = format!("{MINIMAL}{SCHEDULE_BLOCK}{MULTI_BODY_BLOCK}");
         assert_v3_block_reserved_under_v2(&toml_v2, "schedule");
     }
@@ -665,10 +665,10 @@ false_alarm_rate = 0.001
 
     #[test]
     fn fc_fdir_detector_rejects_parity_threshold_for_glrt_under_v3() {
-        // The Patton-Frank parity-space residual generator that would
-        // consume `parity_threshold` is deferred to § 5.B.5; mixing
-        // it with `windowed_mean_shift_glrt` is rejected with a
-        // pointed diagnostic.
+        // The Patton-Frank parity-space residual generator is not yet
+        // wired. Mixing its reserved `parity_threshold` with
+        // `windowed_mean_shift_glrt` is rejected with a pointed
+        // diagnostic.
         let block = r#"
 [fc.fdir.detector]
 kind             = "windowed_mean_shift_glrt"
@@ -3751,7 +3751,7 @@ action  = { kind = "deploy_recovery", id = "main_chute", command = "deploy" }
     // -----------------------------------------------------------------
 
     #[test]
-    fn parses_phase_3_10_sensor_kinds() {
+    fn parses_all_supported_sensor_kinds() {
         let toml = SOUNDING_ROCKET.replace(
             "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"",
             r#"[sensors.imu]
@@ -3782,7 +3782,7 @@ file = "../sensors/star-tracker-textbook.toml""#,
     }
 
     #[test]
-    fn rejects_phase_3_10_sensor_without_file() {
+    fn rejects_file_backed_sensor_without_file() {
         let toml = SOUNDING_ROCKET.replace(
             "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"",
             "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"\n\n[sensors.gnss]\nkind = \"gnss\"",

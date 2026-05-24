@@ -67,7 +67,7 @@ Unknown fields produce parse errors (fail-closed).
 `checked` for the parser surface. Unit tests cover the
 schema-v2 analytic-toy scenario (byte-stability guard), path resolution,
 unknown-field rejection, model-registry resolution under both
-`phase1` and `phase2` registries, safety-name linting, unit/frame
+base and full registries, safety-name linting, unit/frame
 suffix linting, empty force lists, invalid time ranges, missing
 telemetry outputs, and every cross-validation rule
 (rigid-body-without-quaternion, point-mass-with-quaternion,

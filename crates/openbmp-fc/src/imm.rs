@@ -48,10 +48,10 @@
 //! The shipped `ImmEstimator` is hardcoded over `Vec<Ekf>` — IMM only
 //! makes sense for OpenBMP over the full 15-state EKF (UKF / MEKF
 //! are mag-only attitude estimators). A generic-over-`Estimator`
-//! refactor is deferred to § 5.B.6. The default mode count is 2 with
-//! a compile-time cap at [`MAX_IMM_MODES`] = 4; the canonical 3-mode
-//! boost / coast / descent bank with regime-tuning is also deferred
-//! to § 5.B.6.
+//! abstraction is future work. The default mode count is 2 with a
+//! compile-time cap at [`MAX_IMM_MODES`] = 4; the canonical 3-mode
+//! boost / coast / descent bank with regime-tuning is also future
+//! work.
 //!
 //! # Reference
 //!
