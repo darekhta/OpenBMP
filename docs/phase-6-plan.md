@@ -98,7 +98,7 @@ Sub-phase status as of the latest commit on `main`.
 | 6.9 — 1-D thermal-conduction toy | shipped | `openbmp_aerothermal::OneDThermalToy`. |
 | 6.10 — Park 2T nonequilibrium thermochemistry | deferred (forward tables pinned) | `openbmp_physics::ParkTwoTemperatureModel` API surface exists, and the reserved `ReactionRates` container no longer hard-codes the rejected five-reaction proxy. Park87 and Park93 expose the 17 neutral-subset forward Arrhenius coefficients from Zhang et al. (2022), Table 2, as published-unit reference data with a narrow SI evaluator for the table's stated units; the live source model still fails closed pending backward/equilibrium constants, species-specific Millikan-White / Park relaxation constants, and Mach-15 benchmark validation. Park90 still fails closed pending a verified public table. |
 | 6.11 — Generic ablation toy | shipped (checked toy) | `openbmp_aerothermal::{SteadyStateAblator, CharringAblator, DepthResolvedCharringAblator, BlowingCorrelation}`. Recession consumes caller-supplied heat flux; the depth-resolved model is energy-limited and generic, not a fielded TPS surrogate. |
-| 6.12 — External reference packages | shipped | `openbmp_physics::ExternalReferencePackage` with provenance + envelope checks. |
+| 6.12 — External reference packages | shipped | `openbmp_physics::ExternalReferencePackage` with provenance, payload-hash, and envelope checks. Payload I/O remains at the consuming deck/model boundary. |
 | 6.13 — UQ + credibility reporting | shipped | `openbmp_physics::{ErrorBudget, UncertaintyContribution, ValidationStatus}`. |
 
 ## Success criteria

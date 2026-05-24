@@ -10,13 +10,17 @@
 //! version, governing equations, validity envelope, and content hash.
 //! The [`ExternalReferencePackage::validate`] method enforces:
 //!
-//! 1. Hash matches the declared sha256 (when a payload is supplied).
-//! 2. Envelope is well-formed (all bounds finite, lo ≤ hi).
-//! 3. Required provenance fields are non-empty.
+//! 1. Envelope is well-formed (all bounds finite, lo ≤ hi).
+//! 2. Required provenance fields are non-empty.
+//! 3. Declared SHA-256 pins are syntactically valid.
 //!
-//! Queries against the package use [`Self::query_within_envelope`]
-//! which **fails closed** on out-of-envelope requests; the kernel
-//! never silently extrapolates.
+//! Consumers that read an external payload compute its SHA-256 digest
+//! at their I/O boundary and pass the hex digest to
+//! [`ExternalReferencePackage::validate_payload_hash_hex`]. Queries
+//! against the package use
+//! [`ExternalReferencePackage::query_within_envelope`], which **fails
+//! closed** on out-of-envelope requests; the kernel never silently
+//! extrapolates.
 
 use crate::error::PhysicsError;
 
@@ -89,12 +93,7 @@ impl ProvenanceBlock {
                 reason: "provenance block has empty required field",
             });
         }
-        if self.content_hash_sha256_hex.len() != 64
-            || !self
-                .content_hash_sha256_hex
-                .chars()
-                .all(|c| c.is_ascii_hexdigit())
-        {
+        if !is_sha256_hex(&self.content_hash_sha256_hex) {
             return Err(PhysicsError::InvalidParameter {
                 reason: "content_hash_sha256_hex must be 64 hex chars",
             });
@@ -160,6 +159,38 @@ impl ExternalReferencePackage {
         Ok(())
     }
 
+    /// Validate a consumer-supplied payload digest against the
+    /// provenance pin.
+    ///
+    /// This method intentionally accepts a digest string rather than a
+    /// file path or byte buffer. Payload reading and hashing belongs
+    /// at the consuming deck/model boundary so `openbmp-physics`
+    /// stays free of file I/O and extra hashing dependencies.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when the package
+    /// metadata is malformed, the supplied digest is not a SHA-256
+    /// hex string, or the digest does not match the provenance pin.
+    pub fn validate_payload_hash_hex(&self, payload_sha256_hex: &str) -> Result<(), PhysicsError> {
+        self.validate()?;
+        if !is_sha256_hex(payload_sha256_hex) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "payload sha256 must be 64 hex chars",
+            });
+        }
+        if !self
+            .provenance
+            .content_hash_sha256_hex
+            .eq_ignore_ascii_case(payload_sha256_hex)
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "external reference package payload hash mismatch",
+            });
+        }
+        Ok(())
+    }
+
     /// Check whether a query lies within the declared envelope.
     #[must_use]
     pub fn query_in_envelope(&self, q: ReferenceQuery) -> bool {
@@ -201,6 +232,27 @@ impl ExternalReferencePackage {
         }
         Ok(())
     }
+
+    /// Validate package metadata, payload hash, and query envelope in
+    /// one fail-closed check.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::validate`],
+    /// [`Self::validate_payload_hash_hex`], or
+    /// [`Self::query_within_envelope`].
+    pub fn validate_query_and_payload_hash(
+        &self,
+        q: ReferenceQuery,
+        payload_sha256_hex: &str,
+    ) -> Result<(), PhysicsError> {
+        self.validate_payload_hash_hex(payload_sha256_hex)?;
+        self.query_within_envelope(q)
+    }
+}
+
+fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -277,6 +329,42 @@ mod tests {
     }
 
     #[test]
+    fn payload_hash_match_passes_case_insensitively() {
+        let pkg = ExternalReferencePackage {
+            kind: ReferencePackageKind::RadiationReference,
+            envelope: ok_envelope(),
+            provenance: ok_provenance(),
+        };
+        pkg.validate_payload_hash_hex(&"A".repeat(64)).unwrap();
+    }
+
+    #[test]
+    fn payload_hash_mismatch_rejected() {
+        let pkg = ExternalReferencePackage {
+            kind: ReferencePackageKind::RadiationReference,
+            envelope: ok_envelope(),
+            provenance: ok_provenance(),
+        };
+        assert!(matches!(
+            pkg.validate_payload_hash_hex(&"b".repeat(64)),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn payload_hash_malformed_rejected() {
+        let pkg = ExternalReferencePackage {
+            kind: ReferencePackageKind::RadiationReference,
+            envelope: ok_envelope(),
+            provenance: ok_provenance(),
+        };
+        assert!(matches!(
+            pkg.validate_payload_hash_hex("not-a-sha"),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
     fn inverted_envelope_rejected() {
         let mut e = ok_envelope();
         e.mach_lo = 30.0;
@@ -327,5 +415,30 @@ mod tests {
             Err(PhysicsError::OutOfEnvelope { .. })
         ));
         assert!(pkg.envelope_margin(q_too_fast) > 0.0);
+    }
+
+    #[test]
+    fn query_and_payload_hash_validation_combines_checks() {
+        let pkg = ExternalReferencePackage {
+            kind: ReferencePackageKind::ContinuumCfdAero,
+            envelope: ok_envelope(),
+            provenance: ok_provenance(),
+        };
+        let q = ReferenceQuery {
+            mach: 10.0,
+            altitude_m: 60_000.0,
+            alpha_rad: 0.1,
+        };
+        pkg.validate_query_and_payload_hash(q, &"a".repeat(64))
+            .unwrap();
+
+        let q_too_high = ReferenceQuery {
+            altitude_m: 200_000.0,
+            ..q
+        };
+        assert!(matches!(
+            pkg.validate_query_and_payload_hash(q_too_high, &"a".repeat(64)),
+            Err(PhysicsError::OutOfEnvelope { .. })
+        ));
     }
 }
