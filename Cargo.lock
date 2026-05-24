@@ -1359,6 +1359,8 @@ dependencies = [
  "clap",
  "insta",
  "insta-cmd",
+ "nalgebra",
+ "openbmp-fc",
  "openbmp-runner",
  "openbmp-scenario",
  "openbmp-telemetry",
