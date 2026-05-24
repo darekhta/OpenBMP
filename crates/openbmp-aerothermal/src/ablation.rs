@@ -109,6 +109,54 @@ impl ToyAblator {
             surface_emissivity: 0.8,
         }
     }
+
+    /// Validate the generic toy material parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError::InvalidParameter`] when a field
+    /// used by the ablation toy is non-finite, non-positive where a
+    /// positive value is required, or an emissivity lies outside
+    /// `[0, 1]`.
+    pub fn validate(&self) -> Result<(), AerothermalError> {
+        if self.name.trim().is_empty() {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "toy ablator name must be non-empty",
+            });
+        }
+        if !(self.density_kg_m3.is_finite() && self.density_kg_m3 > 0.0) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "toy ablator density must be positive",
+            });
+        }
+        if !(self.specific_heat_j_kg_k.is_finite() && self.specific_heat_j_kg_k > 0.0) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "toy ablator specific heat must be positive",
+            });
+        }
+        if !(self.thermal_conductivity_w_m_k.is_finite() && self.thermal_conductivity_w_m_k > 0.0) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "toy ablator thermal conductivity must be positive",
+            });
+        }
+        if !(self.heat_of_ablation_j_kg.is_finite() && self.heat_of_ablation_j_kg > 0.0) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "toy ablator heat of ablation must be positive",
+            });
+        }
+        if !(self.vaporisation_temperature_k.is_finite() && self.vaporisation_temperature_k > 0.0) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "toy ablator vaporisation temperature must be positive",
+            });
+        }
+        if !(self.surface_emissivity.is_finite() && (0.0..=1.0).contains(&self.surface_emissivity))
+        {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "toy ablator emissivity must be finite and in [0, 1]",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Blowing-correction correlation.
@@ -126,6 +174,23 @@ pub enum BlowingCorrelation {
 }
 
 impl BlowingCorrelation {
+    /// Validate the correlation parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError::InvalidParameter`] for malformed
+    /// fixed-lambda parameters.
+    pub fn validate(self) -> Result<(), AerothermalError> {
+        if let Self::FixedLambda { lambda } = self
+            && !(lambda.is_finite() && (0.0..=1.0).contains(&lambda))
+        {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "fixed blowing lambda must be finite and in [0, 1]",
+            });
+        }
+        Ok(())
+    }
+
     /// Apply correction: `q_blow = q_no_blow · (1 - λ · B)`.
     #[must_use]
     pub fn apply(self, q_no_blowing_w_m2: f64, blowing_parameter: f64) -> f64 {
@@ -197,10 +262,12 @@ impl AblationModel for SteadyStateAblator {
         q_conv_w_m2: f64,
         q_rad_w_m2: f64,
     ) -> Result<RecessionRate, AerothermalError> {
+        const SIGMA_SB: f64 = 5.670_374_419e-8;
+
+        self.material.validate()?;
         // Surface energy balance (steady-state, no conduction):
         //   q_conv + q_rad - σ ε T_w⁴ - m_dot · h_v = 0
         //   ⇒ m_dot = (q_conv + q_rad - σ ε T_w⁴) / h_v
-        const SIGMA_SB: f64 = 5.670_374_419e-8;
         let t_w = ctx.wall_temperature_k;
         if !q_conv_w_m2.is_finite() || !q_rad_w_m2.is_finite() {
             return Err(AerothermalError::NonFinite {
@@ -233,6 +300,22 @@ impl AblationModel for SteadyStateAblator {
         edge_velocity_m_s: f64,
         stanton_no_blowing: f64,
     ) -> Result<f64, AerothermalError> {
+        self.blowing.validate()?;
+        if !(q_no_blowing_w_m2.is_finite()
+            && m_dot_per_area_kg_m2_s.is_finite()
+            && edge_density_kg_m3.is_finite()
+            && edge_velocity_m_s.is_finite()
+            && stanton_no_blowing.is_finite())
+        {
+            return Err(AerothermalError::NonFinite {
+                reason: "blowing-correction input is NaN or Inf",
+            });
+        }
+        if q_no_blowing_w_m2 < 0.0 || m_dot_per_area_kg_m2_s < 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "blowing-correction heat flux and mass flux must be non-negative",
+            });
+        }
         if stanton_no_blowing <= 0.0 || edge_density_kg_m3 <= 0.0 || edge_velocity_m_s <= 0.0 {
             return Err(AerothermalError::InvalidParameter {
                 reason: "blowing-correction edge state requires positive ρ_e, V_e, St",
@@ -335,8 +418,8 @@ impl DepthResolvedCharringAblator {
                 reason: "gas yield fraction must be finite and in [0, 1]",
             });
         }
-        validate_toy_material(virgin)?;
-        validate_toy_material(char_material)?;
+        virgin.validate()?;
+        char_material.validate()?;
 
         let denom = f64::from(n_depth_nodes_u32 - 1);
         let mut node_depths_m = Vec::with_capacity(n_depth_nodes);
@@ -425,6 +508,7 @@ impl AblationModel for CharringAblator {
         q_conv_w_m2: f64,
         q_rad_w_m2: f64,
     ) -> Result<RecessionRate, AerothermalError> {
+        self.validate()?;
         // For the baseline trait impl, behave like a steady-state
         // ablator using the char-material vaporisation enthalpy plus
         // a pyrolysis-enthalpy contribution proportional to current
@@ -449,6 +533,7 @@ impl AblationModel for CharringAblator {
         edge_velocity_m_s: f64,
         stanton_no_blowing: f64,
     ) -> Result<f64, AerothermalError> {
+        self.validate()?;
         // Charring ablators eject pyrolysis gas → scale the effective
         // m_dot by the gas-injection factor.
         let effective_mdot = m_dot_per_area_kg_m2_s * self.gas_injection_factor;
@@ -478,25 +563,40 @@ impl AblationModel for CharringAblator {
     }
 }
 
-fn validate_toy_material(material: ToyAblator) -> Result<(), AerothermalError> {
-    if !(material.density_kg_m3.is_finite() && material.density_kg_m3 > 0.0) {
-        return Err(AerothermalError::InvalidParameter {
-            reason: "toy ablator density must be positive",
-        });
+impl CharringAblator {
+    /// Validate the generic charring-ablation toy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError::InvalidParameter`] for malformed
+    /// material properties, pyrolysis range, enthalpy, gas factor, or
+    /// progress.
+    pub fn validate(&self) -> Result<(), AerothermalError> {
+        self.virgin.validate()?;
+        self.char_material.validate()?;
+        let [t_lo, t_hi] = self.pyrolysis_temp_range_k;
+        if !(t_lo.is_finite() && t_hi.is_finite() && t_lo > 0.0 && t_hi > t_lo) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "charring ablator pyrolysis temperature range must be positive and ordered",
+            });
+        }
+        if !(self.pyrolysis_enthalpy_j_kg.is_finite() && self.pyrolysis_enthalpy_j_kg > 0.0) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "charring ablator pyrolysis enthalpy must be positive",
+            });
+        }
+        if !(self.gas_injection_factor.is_finite() && self.gas_injection_factor >= 0.0) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "charring ablator gas injection factor must be non-negative",
+            });
+        }
+        if !(self.progress.is_finite() && (0.0..=1.0).contains(&self.progress)) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "charring ablator progress must be finite and in [0, 1]",
+            });
+        }
+        Ok(())
     }
-    if !(material.heat_of_ablation_j_kg.is_finite() && material.heat_of_ablation_j_kg > 0.0) {
-        return Err(AerothermalError::InvalidParameter {
-            reason: "toy ablator heat of ablation must be positive",
-        });
-    }
-    if !(material.surface_emissivity.is_finite()
-        && (0.0..=1.0).contains(&material.surface_emissivity))
-    {
-        return Err(AerothermalError::InvalidParameter {
-            reason: "toy ablator emissivity must be finite and in [0, 1]",
-        });
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -576,6 +676,38 @@ mod tests {
     }
 
     #[test]
+    fn toy_material_validate_rejects_unphysical_fields() {
+        let material = ToyAblator {
+            thermal_conductivity_w_m_k: 0.0,
+            ..ToyAblator::graphite_toy()
+        };
+        assert!(matches!(
+            material.validate(),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn steady_state_recession_rejects_invalid_material() {
+        let m = SteadyStateAblator {
+            material: ToyAblator {
+                density_kg_m3: -1.0,
+                ..ToyAblator::graphite_toy()
+            },
+            blowing: BlowingCorrelation::Lees,
+        };
+        assert!(matches!(
+            m.recession_rate(
+                &ctx(1.0e-4, 5000.0, 4500.0),
+                BodyStation::stagnation(),
+                1.0e7,
+                0.0,
+            ),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
     fn blowing_correction_zero_at_b_zero() {
         let m = SteadyStateAblator {
             material: ToyAblator::graphite_toy(),
@@ -603,6 +735,31 @@ mod tests {
     }
 
     #[test]
+    fn blowing_correction_rejects_malformed_inputs() {
+        let bad_lambda = SteadyStateAblator {
+            material: ToyAblator::graphite_toy(),
+            blowing: BlowingCorrelation::FixedLambda { lambda: f64::NAN },
+        };
+        assert!(matches!(
+            bad_lambda.blowing_correction(1.0e6, 0.0, 1.0e-4, 5000.0, 1.0e-3),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+
+        let m = SteadyStateAblator {
+            material: ToyAblator::graphite_toy(),
+            blowing: BlowingCorrelation::Lees,
+        };
+        assert!(matches!(
+            m.blowing_correction(f64::NAN, 0.0, 1.0e-4, 5000.0, 1.0e-3),
+            Err(AerothermalError::NonFinite { .. })
+        ));
+        assert!(matches!(
+            m.blowing_correction(1.0e6, -1.0, 1.0e-4, 5000.0, 1.0e-3),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
     fn charring_progress_state_transitions() {
         let mut a = CharringAblator {
             virgin: ToyAblator::generic_charring_1(),
@@ -626,6 +783,22 @@ mod tests {
             a.surface_state(BodyStation::stagnation()),
             SurfaceState::Char
         );
+    }
+
+    #[test]
+    fn charring_validate_rejects_out_of_range_progress() {
+        let a = CharringAblator {
+            virgin: ToyAblator::generic_charring_1(),
+            char_material: ToyAblator::graphite_toy(),
+            pyrolysis_temp_range_k: [800.0, 1400.0],
+            pyrolysis_enthalpy_j_kg: 3.0e6,
+            gas_injection_factor: 0.8,
+            progress: 1.1,
+        };
+        assert!(matches!(
+            a.validate(),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
