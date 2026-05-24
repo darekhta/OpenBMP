@@ -1359,28 +1359,16 @@ dependencies = [
  "clap",
  "insta",
  "insta-cmd",
- "nalgebra",
- "openbmp-aero",
- "openbmp-core",
- "openbmp-fc",
- "openbmp-mission",
- "openbmp-physics",
- "openbmp-propulsion",
+ "openbmp-runner",
  "openbmp-scenario",
- "openbmp-sensors",
- "openbmp-sim",
- "openbmp-state",
  "openbmp-telemetry",
  "openbmp-testkit",
- "openbmp-vehicle",
  "parquet",
  "predicates",
  "tempfile",
  "thiserror 2.0.18",
- "toml",
  "tracing",
  "tracing-subscriber",
- "uom",
 ]
 
 [[package]]
@@ -1467,6 +1455,30 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "toml",
+]
+
+[[package]]
+name = "openbmp-runner"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "openbmp-aero",
+ "openbmp-core",
+ "openbmp-fc",
+ "openbmp-mission",
+ "openbmp-physics",
+ "openbmp-propulsion",
+ "openbmp-scenario",
+ "openbmp-sensors",
+ "openbmp-sim",
+ "openbmp-state",
+ "openbmp-telemetry",
+ "openbmp-testkit",
+ "openbmp-vehicle",
+ "thiserror 2.0.18",
+ "toml",
+ "uom",
 ]
 
 [[package]]

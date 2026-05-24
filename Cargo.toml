@@ -17,6 +17,7 @@ members = [
     "crates/openbmp-scenario",
     "crates/openbmp-scenario-script",
     "crates/openbmp-testkit",
+    "crates/openbmp-runner",
     "crates/openbmp-cli",
     "crates/openbmp-bridge",
 ]
@@ -130,6 +131,7 @@ openbmp-telemetry  = { version = "0.0.1", path = "crates/openbmp-telemetry" }
 openbmp-scenario   = { version = "0.0.1", path = "crates/openbmp-scenario" }
 openbmp-scenario-script = { version = "0.0.1", path = "crates/openbmp-scenario-script" }
 openbmp-testkit    = { version = "0.0.1", path = "crates/openbmp-testkit" }
+openbmp-runner     = { version = "0.0.1", path = "crates/openbmp-runner" }
 
 [profile.release]
 # trim-paths = "object"   # nightly-only as of Rust 1.95; revisit when stabilised

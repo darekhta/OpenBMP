@@ -18,7 +18,7 @@ use openbmp_physics::{
 };
 use openbmp_scenario::ScenarioDocument;
 
-use crate::error::CliError;
+use crate::error::RunnerError;
 
 /// Atmosphere model selected by the scenario.
 #[derive(Copy, Clone, Debug)]
@@ -47,20 +47,20 @@ impl AtmosphereModel for RuntimeAtmosphere {
 const SUPPORTED_ATMOSPHERE_KINDS: &[&str] = &["us_standard_1976", "piecewise_exponential"];
 
 /// Resolve the atmosphere kind named by the scenario into a runtime
-/// dispatch enum. Returns [`CliError::UnsupportedScenario`] for kinds
+/// dispatch enum. Returns [`RunnerError::UnsupportedScenario`] for kinds
 /// the runner does not yet wire.
 ///
 /// # Errors
 ///
-/// Returns [`CliError::UnsupportedScenario`] when `atmosphere_kind`
+/// Returns [`RunnerError::UnsupportedScenario`] when `atmosphere_kind`
 /// is not in [`SUPPORTED_ATMOSPHERE_KINDS`].
-pub fn build_runtime_atmosphere(atmosphere_kind: &str) -> Result<RuntimeAtmosphere, CliError> {
+pub fn build_runtime_atmosphere(atmosphere_kind: &str) -> Result<RuntimeAtmosphere, RunnerError> {
     match atmosphere_kind {
         "us_standard_1976" => Ok(RuntimeAtmosphere::UsStandard1976(UsStandard1976::new())),
         "piecewise_exponential" => Ok(RuntimeAtmosphere::PiecewiseExponential(
             PiecewiseExponentialAtmosphere::new(),
         )),
-        other => Err(CliError::UnsupportedScenario {
+        other => Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "atmosphere `{other}` is not wired (supported: {})",
                 SUPPORTED_ATMOSPHERE_KINDS.join(", ")

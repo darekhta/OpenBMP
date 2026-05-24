@@ -28,7 +28,7 @@ use openbmp_vehicle::{
     ControlEffector, EffectorFault, EffectorLimits, EffectorState, LinearActuator,
 };
 
-use crate::error::CliError;
+use crate::error::RunnerError;
 
 /// Runner-side effector container. Built once per `openbmp run`
 /// invocation; consumed by the per-step kernel loop.
@@ -157,10 +157,10 @@ impl EffectorRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Assembly`] when a `LinearActuator::new`
+    /// Returns [`RunnerError::Assembly`] when a `LinearActuator::new`
     /// call rejects the scenario-declared limits / initial position
     /// / latency / `tau_s`.
-    pub fn build(document: &ScenarioDocument) -> Result<Self, CliError> {
+    pub fn build(document: &ScenarioDocument) -> Result<Self, RunnerError> {
         let dt = Duration::from_seconds(document.time.dt_s);
         let mut effectors: Vec<Box<dyn ControlEffector>> = Vec::new();
         let mut string_ids: Vec<String> = Vec::new();
@@ -220,16 +220,16 @@ impl EffectorRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Effector`] when an override references an
+    /// Returns [`RunnerError::Effector`] when an override references an
     /// effector id that is not present in this rack.
     pub fn apply_overrides(
         &mut self,
         fired: &[FiredEvent<ScenarioScriptAction>],
-    ) -> Result<(), CliError> {
+    ) -> Result<(), RunnerError> {
         for event in fired {
             if let ScenarioScriptAction::EffectorOverride { id, command } = event.action {
                 if !self.id_index.contains_key(&id) {
-                    return Err(CliError::Effector {
+                    return Err(RunnerError::Effector {
                         field: "mission.events[*].action.id".to_owned(),
                         reason: format!(
                             "effector_override references unknown effector id value {}",
@@ -251,16 +251,16 @@ impl EffectorRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Effector`] when the FC references an
+    /// Returns [`RunnerError::Effector`] when the FC references an
     /// effector id that is not present in this rack.
     pub fn apply_fc_commands(
         &mut self,
         commands: &openbmp_fc::topics::EffectorCommandSet,
-    ) -> Result<(), CliError> {
+    ) -> Result<(), RunnerError> {
         for command in commands.commands.iter().take(usize::from(commands.count)) {
             let id = EffectorId::new(command.effector_id);
             if !self.id_index.contains_key(&id) {
-                return Err(CliError::Effector {
+                return Err(RunnerError::Effector {
                     field: "fc.actuator.effector_cmds".to_owned(),
                     reason: format!(
                         "FC command references unknown effector id value {}",
@@ -282,9 +282,9 @@ impl EffectorRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Effector`] when `LinearActuator::step`
+    /// Returns [`RunnerError::Effector`] when `LinearActuator::step`
     /// fails (dt mismatch, non-finite command, etc.).
-    pub fn step(&mut self, time: SimTime) -> Result<(), CliError> {
+    pub fn step(&mut self, time: SimTime) -> Result<(), RunnerError> {
         for (index, effector) in self.effectors.iter_mut().enumerate() {
             let id = effector.id();
             let cmd = if let Some(&override_cmd) = self.overrides.get(&id) {
@@ -296,7 +296,7 @@ impl EffectorRack {
             };
             effector
                 .step(cmd, self.dt)
-                .map_err(|err| CliError::Effector {
+                .map_err(|err| RunnerError::Effector {
                     field: format!("vehicle.assembly.effectors[{index}]"),
                     reason: err.to_string(),
                 })?;
@@ -320,7 +320,7 @@ fn build_effector(
     index: usize,
     config: &EffectorConfig,
     dt: Duration,
-) -> Result<LinearActuator, CliError> {
+) -> Result<LinearActuator, RunnerError> {
     let id = EffectorId::from_path(&format!("vehicle.assembly.effectors.{id}", id = config.id));
     let limits = EffectorLimits {
         min: config.limits.min,
@@ -342,7 +342,7 @@ fn build_effector(
     };
     let mut actuator =
         LinearActuator::new(id, limits, dt, initial_position, tau_s).map_err(|err| {
-            CliError::Assembly {
+            RunnerError::Assembly {
                 field: format!("vehicle.assembly.effectors[{index}]"),
                 reason: err.to_string(),
             }
@@ -356,7 +356,7 @@ fn build_effector(
         };
         actuator
             .inject_fault(fault)
-            .map_err(|err| CliError::Assembly {
+            .map_err(|err| RunnerError::Assembly {
                 field: format!("vehicle.assembly.effectors[{index}].fault"),
                 reason: err.to_string(),
             })?;
@@ -416,6 +416,6 @@ mod tests {
         let err = rack
             .apply_overrides(&[override_event(EffectorId::from_path("unknown"), 0.087)])
             .unwrap_err();
-        assert!(matches!(err, CliError::Effector { .. }));
+        assert!(matches!(err, RunnerError::Effector { .. }));
     }
 }

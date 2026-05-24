@@ -43,7 +43,7 @@ use openbmp_physics::{
 };
 use openbmp_scenario::{ScenarioDocument, WindConfig};
 
-use crate::error::CliError;
+use crate::error::RunnerError;
 
 /// Runner-side wind rack. Built once per `openbmp run` invocation;
 /// consumed by the per-step kernel loop.
@@ -68,11 +68,11 @@ impl WindRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::UnsupportedScenario`] when the wind
+    /// Returns [`RunnerError::UnsupportedScenario`] when the wind
     /// kind is unknown (the scenario validator should have caught
     /// this earlier — this is a defensive arm) or when a model
     /// constructor rejects the parsed parameters.
-    pub fn build(document: &ScenarioDocument) -> Result<Self, CliError> {
+    pub fn build(document: &ScenarioDocument) -> Result<Self, RunnerError> {
         let Some(wind) = document.wind.as_ref() else {
             return Ok(Self::Inactive);
         };
@@ -81,30 +81,30 @@ impl WindRack {
             "constant" => Self::build_constant(wind),
             "layered" => Self::build_layered(wind),
             "gust" => Self::build_gust(wind, document.time.dt_s, document.time.seed),
-            other => Err(CliError::UnsupportedScenario {
+            other => Err(RunnerError::UnsupportedScenario {
                 what: format!("unsupported [wind].kind = \"{other}\""),
             }),
         }
     }
 
-    fn build_constant(wind: &WindConfig) -> Result<Self, CliError> {
+    fn build_constant(wind: &WindConfig) -> Result<Self, RunnerError> {
         let v = wind
             .wind_ned_m_s
-            .ok_or_else(|| CliError::UnsupportedScenario {
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
                 what: "[wind].kind = \"constant\" requires wind_ned_m_s".to_owned(),
             })?;
         let model =
-            ConstantWind::new(v[0], v[1], v[2]).map_err(|err| CliError::UnsupportedScenario {
+            ConstantWind::new(v[0], v[1], v[2]).map_err(|err| RunnerError::UnsupportedScenario {
                 what: format!("ConstantWind construction failed: {err}"),
             })?;
         Ok(Self::Constant(model))
     }
 
-    fn build_layered(wind: &WindConfig) -> Result<Self, CliError> {
+    fn build_layered(wind: &WindConfig) -> Result<Self, RunnerError> {
         let layers = wind
             .layers
             .as_ref()
-            .ok_or_else(|| CliError::UnsupportedScenario {
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
                 what: "[wind].kind = \"layered\" requires layers".to_owned(),
             })?;
         let mut entries: Vec<LayerEntry> = Vec::with_capacity(layers.len());
@@ -116,26 +116,26 @@ impl WindRack {
                 layer.wind_ned_m_s[2],
             ));
         }
-        let model = LayeredWind::new(entries).map_err(|err| CliError::UnsupportedScenario {
+        let model = LayeredWind::new(entries).map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("LayeredWind construction failed: {err}"),
         })?;
         Ok(Self::Layered(model))
     }
 
-    fn build_gust(wind: &WindConfig, dt_s: f64, scenario_seed: u64) -> Result<Self, CliError> {
+    fn build_gust(wind: &WindConfig, dt_s: f64, scenario_seed: u64) -> Result<Self, RunnerError> {
         let intensity = wind
             .intensity_m_s
-            .ok_or_else(|| CliError::UnsupportedScenario {
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
                 what: "[wind].kind = \"gust\" requires intensity_m_s".to_owned(),
             })?;
         let length_scale = wind
             .length_scale_m
-            .ok_or_else(|| CliError::UnsupportedScenario {
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
                 what: "[wind].kind = \"gust\" requires length_scale_m".to_owned(),
             })?;
         let airspeed_m_s = wind
             .airspeed_m_s
-            .ok_or_else(|| CliError::UnsupportedScenario {
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
                 what: "[wind].kind = \"gust\" requires airspeed_m_s".to_owned(),
             })?;
         let mean_wind_ned_m_s = wind.mean_wind_ned_m_s.unwrap_or([0.0, 0.0, 0.0]);
@@ -147,7 +147,7 @@ impl WindRack {
             dt_s,
             scenario_seed,
         };
-        let model = GustWind::new(params).map_err(|err| CliError::UnsupportedScenario {
+        let model = GustWind::new(params).map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("GustWind construction failed: {err}"),
         })?;
         Ok(Self::Gust(model))
@@ -182,7 +182,7 @@ impl WindRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Env`] when the underlying wind model
+    /// Returns [`RunnerError::Env`] when the underlying wind model
     /// rejects the query (non-finite altitude for `LayeredWind`,
     /// non-finite filter output for `GustWind`).
     pub fn sample(
@@ -190,7 +190,7 @@ impl WindRack {
         position_eci: Position3<Eci>,
         frame: &FrameContext,
         time: SimTime,
-    ) -> Result<Vector3<f64>, CliError> {
+    ) -> Result<Vector3<f64>, RunnerError> {
         match self {
             Self::Inactive => Ok(Vector3::zeros()),
             Self::Constant(c) => Ok(c.wind_ned_m_s(position_eci, frame, time)?.vector),

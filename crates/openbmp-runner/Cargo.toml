@@ -1,0 +1,45 @@
+[package]
+name                    = "openbmp-runner"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP scenario runner: builds and drives the simulation kernel from a parsed scenario."
+
+[lib]
+name = "openbmp_runner"
+path = "src/lib.rs"
+
+[features]
+default     = []
+l1-adaptive = ["openbmp-fc/l1-adaptive"]
+lqr         = ["openbmp-fc/lqr"]
+indi        = ["openbmp-fc/indi"]
+mpc         = ["openbmp-fc/mpc"]
+
+[dependencies]
+nalgebra           = { workspace = true }
+openbmp-aero       = { workspace = true }
+openbmp-core       = { workspace = true }
+openbmp-fc         = { workspace = true }
+openbmp-mission    = { workspace = true }
+openbmp-physics    = { workspace = true }
+openbmp-propulsion = { workspace = true }
+openbmp-scenario   = { workspace = true }
+openbmp-sensors    = { workspace = true, features = ["synthetic"] }
+openbmp-sim        = { workspace = true }
+openbmp-state      = { workspace = true }
+openbmp-telemetry  = { workspace = true }
+openbmp-vehicle    = { workspace = true }
+thiserror          = { workspace = true }
+toml               = { workspace = true }
+uom                = { workspace = true }
+
+[dev-dependencies]
+approx          = { workspace = true }
+openbmp-testkit = { workspace = true }
+
+[lints]
+workspace = true

@@ -12,10 +12,10 @@ use std::fs::{File, create_dir_all};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
+use openbmp_runner as runner;
 use openbmp_scenario::Scenario;
 
 use crate::error::CliError;
-use crate::runner;
 
 /// Output-path overrides, one per archive kind.
 #[derive(Debug, Default, Clone)]

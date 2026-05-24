@@ -5,7 +5,7 @@
 //! pair the axis with a scenario effector by name and assert the
 //! effector's `unit` field matches the suffix on the axis name.
 //! Mismatches fail closed at runner build time with
-//! `CliError::AeroEffectorMismatch`,
+//! `RunnerError::AeroEffectorMismatch`,
 //! before any kernel step is taken.
 //!
 //! Schema-1 decks (no effector axes) and scenarios without aero
@@ -16,7 +16,7 @@
 use openbmp_aero::AeroDeck;
 use openbmp_scenario::ScenarioDocument;
 
-use crate::error::CliError;
+use crate::error::RunnerError;
 
 /// Resolved binding from a schema-2 deck axis to a scenario effector.
 ///
@@ -45,7 +45,7 @@ pub struct DeckAxisBinding {
 ///
 /// # Errors
 ///
-/// Returns [`CliError::AeroEffectorMismatch`] when:
+/// Returns [`RunnerError::AeroEffectorMismatch`] when:
 /// - a deck axis name has no matching scenario effector (after
 ///   stripping the unit suffix);
 /// - the matching effector's declared `unit` does not equal the
@@ -53,7 +53,7 @@ pub struct DeckAxisBinding {
 pub fn assert_axes_match_effectors(
     deck: Option<&AeroDeck>,
     document: &ScenarioDocument,
-) -> Result<Vec<DeckAxisBinding>, CliError> {
+) -> Result<Vec<DeckAxisBinding>, RunnerError> {
     let Some(deck) = deck else {
         return Ok(Vec::new());
     };
@@ -68,7 +68,7 @@ pub fn assert_axes_match_effectors(
         std::collections::BTreeSet::new();
     for axis_name in axis_names {
         let (bare_name, suffix) =
-            split_unit_suffix(axis_name).ok_or(CliError::AeroEffectorMismatch {
+            split_unit_suffix(axis_name).ok_or(RunnerError::AeroEffectorMismatch {
                 field: format!("aero.deck.axis_order[{axis_name}]"),
                 reason: format!(
                     "deck axis name `{axis_name}` lacks a `_deg` or `_rad` unit suffix; \
@@ -76,7 +76,7 @@ pub fn assert_axes_match_effectors(
                 ),
             })?;
         if !seen_bare_axis_names.insert(bare_name) {
-            return Err(CliError::AeroEffectorMismatch {
+            return Err(RunnerError::AeroEffectorMismatch {
                 field: format!("aero.deck.axis_order[{axis_name}]"),
                 reason: format!(
                     "deck declares more than one effector axis for `{bare_name}` after stripping \
@@ -89,7 +89,7 @@ pub fn assert_axes_match_effectors(
             .iter()
             .enumerate()
             .find(|(_, c)| c.id == bare_name)
-            .ok_or_else(|| CliError::AeroEffectorMismatch {
+            .ok_or_else(|| RunnerError::AeroEffectorMismatch {
                 field: format!("vehicle.assembly.effectors.{bare_name}"),
                 reason: format!(
                     "deck declares effector axis `{axis_name}` but no scenario effector with id \
@@ -98,7 +98,7 @@ pub fn assert_axes_match_effectors(
             })?;
         let declared_unit = config.unit.as_deref().unwrap_or("");
         if declared_unit != suffix {
-            return Err(CliError::AeroEffectorMismatch {
+            return Err(RunnerError::AeroEffectorMismatch {
                 field: format!("vehicle.assembly.effectors.{bare_name}.unit"),
                 reason: format!(
                     "deck axis `{axis_name}` requires effector unit `{suffix}`, but scenario \
@@ -281,7 +281,7 @@ mod tests {
         );
         let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
         let err = assert_axes_match_effectors(Some(&deck), &scenario.document).unwrap_err();
-        assert!(matches!(err, CliError::AeroEffectorMismatch { .. }));
+        assert!(matches!(err, RunnerError::AeroEffectorMismatch { .. }));
     }
 
     #[test]
@@ -290,7 +290,7 @@ mod tests {
         // Deck axis is `delta_e_deg` but scenario declares `unit = "rad"`.
         let scenario = elevon_scenario_with_unit(Some("rad"));
         let err = assert_axes_match_effectors(Some(&deck), &scenario.document).unwrap_err();
-        assert!(matches!(err, CliError::AeroEffectorMismatch { .. }));
+        assert!(matches!(err, RunnerError::AeroEffectorMismatch { .. }));
     }
 
     #[test]
@@ -320,7 +320,7 @@ mod tests {
         .unwrap();
         let scenario = elevon_scenario_with_unit(Some("deg"));
         let err = assert_axes_match_effectors(Some(&deck), &scenario.document).unwrap_err();
-        assert!(matches!(err, CliError::AeroEffectorMismatch { .. }));
+        assert!(matches!(err, RunnerError::AeroEffectorMismatch { .. }));
     }
 
     #[test]

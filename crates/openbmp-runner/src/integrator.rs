@@ -38,7 +38,7 @@
 use openbmp_scenario::{ScenarioDocument, SolverConfig, SourceTermSolverConfig};
 use openbmp_sim::{ExplicitMethod, SolverProfileError, SourceTermCouplingProfile};
 
-use crate::error::CliError;
+use crate::error::RunnerError;
 
 pub use openbmp_sim::ProfiledIntegrator as RuntimeIntegrator;
 pub use openbmp_sim::SourceTermProfile as SourceTermRuntimeProfile;
@@ -50,7 +50,7 @@ pub use openbmp_sim::SourceTermProfile as SourceTermRuntimeProfile;
 ///
 /// # Errors
 ///
-/// Returns [`CliError::UnsupportedScenario`] when the
+/// Returns [`RunnerError::UnsupportedScenario`] when the
 /// `(profile, trajectory_method, determinism)` combination names a
 /// solver that has not been wired in the runner yet (e.g.,
 /// `rkf78`, `implicit-source-term`, `partitioned-hypersonic`). The
@@ -59,7 +59,7 @@ pub use openbmp_sim::SourceTermProfile as SourceTermRuntimeProfile;
 /// runner only handles the cross-product of valid wired combos.
 pub fn build_runtime_integrator(
     document: &ScenarioDocument,
-) -> Result<RuntimeIntegrator, CliError> {
+) -> Result<RuntimeIntegrator, RunnerError> {
     build_runtime_integrator_from_solver(document.solver.as_ref())
 }
 
@@ -70,7 +70,7 @@ pub fn build_runtime_integrator(
 /// constructing a full [`ScenarioDocument`].
 fn build_runtime_integrator_from_solver(
     solver: Option<&SolverConfig>,
-) -> Result<RuntimeIntegrator, CliError> {
+) -> Result<RuntimeIntegrator, RunnerError> {
     let Some(solver) = solver else {
         return RuntimeIntegrator::from_fixed_method(ExplicitMethod::Rk4)
             .map_err(|error| solver_profile_error(&error));
@@ -88,7 +88,7 @@ fn build_runtime_integrator_from_solver(
             let adaptive = solver.adaptive.as_ref().ok_or_else(|| {
                 // Defensive: scenario validator already enforces
                 // [solver.adaptive] is present for adaptive-explicit.
-                CliError::UnsupportedScenario {
+                RunnerError::UnsupportedScenario {
                     what: "[solver.adaptive] block missing for adaptive-explicit profile"
                         .to_owned(),
                 }
@@ -106,7 +106,7 @@ fn build_runtime_integrator_from_solver(
             let adaptive = solver.adaptive.as_ref().ok_or_else(|| {
                 // Defensive: scenario validator already enforces
                 // [solver.adaptive] is present for adaptive-explicit.
-                CliError::UnsupportedScenario {
+                RunnerError::UnsupportedScenario {
                     what: "[solver.adaptive] block missing for adaptive-explicit profile"
                         .to_owned(),
                 }
@@ -120,13 +120,13 @@ fn build_runtime_integrator_from_solver(
             )
             .map_err(|error| solver_profile_error(&error))
         }
-        ("fixed-step-explicit", "rkf78", _) => Err(CliError::UnsupportedScenario {
+        ("fixed-step-explicit", "rkf78", _) => Err(RunnerError::UnsupportedScenario {
             what: "solver.trajectory_method = \"rkf78\" parses but is not wired in the runner; \
                  deferred to a future slice"
                 .to_owned(),
         }),
         ("adaptive-explicit", method, _) if method != "dopri54" && method != "dopri853" => {
-            Err(CliError::UnsupportedScenario {
+            Err(RunnerError::UnsupportedScenario {
                 what: format!(
                     "adaptive-explicit + {method:?} parses but is not wired in the \
                      runner; wired methods are dopri54 (§ 5.D.4) and dopri853 (§ 5.D.6)"
@@ -147,12 +147,12 @@ fn build_runtime_integrator_from_solver(
                 source_terms,
             ))
         }
-        ("implicit-source-term" | "partitioned-hypersonic", "rkf78", _) => Err(CliError::UnsupportedScenario {
+        ("implicit-source-term" | "partitioned-hypersonic", "rkf78", _) => Err(RunnerError::UnsupportedScenario {
             what: "source-term solver profiles do not support solver.trajectory_method = \"rkf78\"; \
                  wired methods are rk4, dopri54, and dopri853"
                 .to_owned(),
         }),
-        _ => Err(CliError::UnsupportedScenario {
+        _ => Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "unsupported (profile, method, determinism) combination: \
                  ({profile:?}, {method:?}, {determinism:?})"
@@ -161,37 +161,37 @@ fn build_runtime_integrator_from_solver(
     }
 }
 
-fn build_source_profile_trajectory(method: &str) -> Result<RuntimeIntegrator, CliError> {
+fn build_source_profile_trajectory(method: &str) -> Result<RuntimeIntegrator, RunnerError> {
     RuntimeIntegrator::from_fixed_method(explicit_method(method)?)
         .map_err(|error| solver_profile_error(&error))
 }
 
-fn explicit_method(method: &str) -> Result<ExplicitMethod, CliError> {
+fn explicit_method(method: &str) -> Result<ExplicitMethod, RunnerError> {
     match method {
         "rk4" => Ok(ExplicitMethod::Rk4),
         "dopri54" => Ok(ExplicitMethod::DormandPrince54),
         "dopri853" => Ok(ExplicitMethod::DormandPrince853),
         "rkf78" => Ok(ExplicitMethod::RungeKuttaFehlberg78),
-        _ => Err(CliError::UnsupportedScenario {
+        _ => Err(RunnerError::UnsupportedScenario {
             what: format!("solver.trajectory_method = {method:?} is not supported"),
         }),
     }
 }
 
-fn solver_profile_error(error: &SolverProfileError) -> CliError {
-    CliError::UnsupportedScenario {
+fn solver_profile_error(error: &SolverProfileError) -> RunnerError {
+    RunnerError::UnsupportedScenario {
         what: format!("solver profile rejected by openbmp-sim dispatcher: {error}"),
     }
 }
 
 fn source_term_runtime_profile(
     source_terms: Option<&SourceTermSolverConfig>,
-) -> Result<SourceTermRuntimeProfile, CliError> {
-    let source_terms = source_terms.ok_or_else(|| CliError::UnsupportedScenario {
+) -> Result<SourceTermRuntimeProfile, RunnerError> {
+    let source_terms = source_terms.ok_or_else(|| RunnerError::UnsupportedScenario {
         what: "[solver.source_terms] block missing for source-term solver profile".to_owned(),
     })?;
     if source_terms.chemistry_method != "implicit-euler" {
-        return Err(CliError::UnsupportedScenario {
+        return Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "solver.source_terms.chemistry_method = {:?} parses but is not wired; \
                  wired method is implicit-euler",
@@ -200,7 +200,7 @@ fn source_term_runtime_profile(
         });
     }
     if source_terms.material_method != "implicit-euler" {
-        return Err(CliError::UnsupportedScenario {
+        return Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "solver.source_terms.material_method = {:?} parses but is not wired; \
                  wired method is implicit-euler",
@@ -209,17 +209,17 @@ fn source_term_runtime_profile(
         });
     }
     let chemistry_substeps = usize::try_from(source_terms.chemistry_substeps).map_err(|_| {
-        CliError::UnsupportedScenario {
+        RunnerError::UnsupportedScenario {
             what: "solver.source_terms.chemistry_substeps does not fit usize".to_owned(),
         }
     })?;
     let material_substeps = usize::try_from(source_terms.material_substeps).map_err(|_| {
-        CliError::UnsupportedScenario {
+        RunnerError::UnsupportedScenario {
             what: "solver.source_terms.material_substeps does not fit usize".to_owned(),
         }
     })?;
     let nonlinear_max_iter = usize::try_from(source_terms.nonlinear_max_iter).map_err(|_| {
-        CliError::UnsupportedScenario {
+        RunnerError::UnsupportedScenario {
             what: "solver.source_terms.nonlinear_max_iter does not fit usize".to_owned(),
         }
     })?;
@@ -363,7 +363,7 @@ mod tests {
     fn fixed_step_rkf78_is_rejected_as_unwired() {
         let s = solver("fixed-step-explicit", "rkf78", "bit-stable", None);
         let err = build_runtime_integrator_from_solver(Some(&s)).unwrap_err();
-        let CliError::UnsupportedScenario { what } = err else {
+        let RunnerError::UnsupportedScenario { what } = err else {
             panic!("expected UnsupportedScenario, got {err:?}");
         };
         assert!(
@@ -381,7 +381,7 @@ mod tests {
             Some(well_formed_adaptive()),
         );
         let err = build_runtime_integrator_from_solver(Some(&s)).unwrap_err();
-        let CliError::UnsupportedScenario { what } = err else {
+        let RunnerError::UnsupportedScenario { what } = err else {
             panic!("expected UnsupportedScenario, got {err:?}");
         };
         assert!(
@@ -394,7 +394,7 @@ mod tests {
     fn adaptive_explicit_dopri853_with_missing_adaptive_block_returns_defensive_error() {
         let s = solver("adaptive-explicit", "dopri853", "state-stable", None);
         let err = build_runtime_integrator_from_solver(Some(&s)).unwrap_err();
-        let CliError::UnsupportedScenario { what } = err else {
+        let RunnerError::UnsupportedScenario { what } = err else {
             panic!("expected UnsupportedScenario, got {err:?}");
         };
         assert!(
@@ -446,7 +446,7 @@ mod tests {
         source_terms.chemistry_method = "bdf".to_owned();
         let s = solver_with_source_terms("implicit-source-term", "rk4", source_terms);
         let err = build_runtime_integrator_from_solver(Some(&s)).unwrap_err();
-        let CliError::UnsupportedScenario { what } = err else {
+        let RunnerError::UnsupportedScenario { what } = err else {
             panic!("expected UnsupportedScenario, got {err:?}");
         };
         assert!(what.contains("chemistry_method") && what.contains("implicit-euler"));
@@ -456,7 +456,7 @@ mod tests {
     fn adaptive_explicit_without_adaptive_block_returns_defensive_error() {
         let s = solver("adaptive-explicit", "dopri54", "state-stable", None);
         let err = build_runtime_integrator_from_solver(Some(&s)).unwrap_err();
-        let CliError::UnsupportedScenario { what } = err else {
+        let RunnerError::UnsupportedScenario { what } = err else {
             panic!("expected UnsupportedScenario, got {err:?}");
         };
         assert!(

@@ -13,7 +13,7 @@
 //! produce byte-identical Parquet because the runner short-circuits
 //! every rack-related operation on `is_empty()`.
 //!
-//! Mirrors the Phase-3.4 [`crate::runner::effectors::EffectorRack`]
+//! Mirrors the Phase-3.4 [`crate::effectors::EffectorRack`]
 //! pattern: kernel records scenario-script engine-command firings;
 //! runner drains and applies them via `apply_commands(&fired)`.
 //!
@@ -42,7 +42,7 @@ use openbmp_scenario::{
 };
 use openbmp_sim::{FiredEvent, ScenarioScriptAction};
 
-use crate::error::CliError;
+use crate::error::RunnerError;
 
 /// Runner-side engine rack. Built once per `openbmp run` invocation;
 /// consumed by the per-step kernel loop.
@@ -59,10 +59,10 @@ impl EngineRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Engine`] when an engine config fails
+    /// Returns [`RunnerError::Engine`] when an engine config fails
     /// `LiquidEngine::new` (invalid limits) or when a load-time
     /// fault rejects against the engine's authority envelope.
-    pub fn build(document: &ScenarioDocument) -> Result<Self, CliError> {
+    pub fn build(document: &ScenarioDocument) -> Result<Self, RunnerError> {
         let dt = Duration::from_seconds(document.time.dt_s);
         let mut engines: Vec<Box<dyn EngineModel>> = Vec::new();
         let mut mount_points_body: Vec<Position3<Body>> = Vec::new();
@@ -89,7 +89,7 @@ impl EngineRack {
         };
 
         let cluster = EngineCluster::new(engines, mount_points_body, engine_ids, propulsion_layout)
-            .map_err(|err| CliError::Engine {
+            .map_err(|err| RunnerError::Engine {
                 field: "vehicle.assembly".to_owned(),
                 reason: err.to_string(),
             })?;
@@ -130,7 +130,7 @@ impl EngineRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Engine`] when an event references an
+    /// Returns [`RunnerError::Engine`] when an event references an
     /// engine id that is not present in this rack, or when the
     /// engine's `apply_command` rejects (non-finite payload), or
     /// when more than one command targets the same engine in this
@@ -138,7 +138,7 @@ impl EngineRack {
     pub fn apply_commands(
         &mut self,
         fired: &[FiredEvent<ScenarioScriptAction>],
-    ) -> Result<(), CliError> {
+    ) -> Result<(), RunnerError> {
         let mut seen: BTreeSet<EngineId> = BTreeSet::new();
         for event in fired {
             if let ScenarioScriptAction::EngineCommand {
@@ -151,7 +151,7 @@ impl EngineRack {
             } = event.action
             {
                 if !seen.insert(id) {
-                    return Err(CliError::Engine {
+                    return Err(RunnerError::Engine {
                         field: format!(
                             "mission.events[*].action.engine_command.{id_value}",
                             id_value = id.value()
@@ -172,7 +172,7 @@ impl EngineRack {
                 };
                 self.cluster
                     .apply_command(id, command)
-                    .map_err(|err| CliError::Engine {
+                    .map_err(|err| RunnerError::Engine {
                         field: format!(
                             "mission.events[*].action.engine_command.{id_value}",
                             id_value = id.value()
@@ -188,13 +188,13 @@ impl EngineRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Engine`] when the FC references an engine
+    /// Returns [`RunnerError::Engine`] when the FC references an engine
     /// id outside this rack, or when the propulsion-side command is
     /// rejected.
     pub fn apply_fc_commands(
         &mut self,
         commands: &openbmp_fc::topics::EngineCommandSet,
-    ) -> Result<(), CliError> {
+    ) -> Result<(), RunnerError> {
         for command in commands.commands.iter().take(usize::from(commands.count)) {
             let id = EngineId::new(command.engine_id);
             let payload = openbmp_propulsion::EngineCommand {
@@ -206,7 +206,7 @@ impl EngineRack {
             };
             self.cluster
                 .apply_command(id, payload)
-                .map_err(|err| CliError::Engine {
+                .map_err(|err| RunnerError::Engine {
                     field: "fc.actuator.engine_cmds".to_owned(),
                     reason: err.to_string(),
                 })?;
@@ -218,13 +218,13 @@ impl EngineRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Engine`] when an engine's `step()`
+    /// Returns [`RunnerError::Engine`] when an engine's `step()`
     /// rejects (non-finite output, internal numeric error).
-    pub fn step(&mut self) -> Result<(), CliError> {
+    pub fn step(&mut self) -> Result<(), RunnerError> {
         self.cluster
             .step(self.dt)
             .map(|_| ())
-            .map_err(|err| CliError::Engine {
+            .map_err(|err| RunnerError::Engine {
                 field: "vehicle.assembly.engines".to_owned(),
                 reason: err.to_string(),
             })
@@ -249,7 +249,7 @@ impl EngineRack {
 /// Phase-3.6 engine resolver: scenario `EngineConfig` →
 /// `LiquidEngine` (the only kind shipped in 3.6). Mounts the
 /// optional load-time fault.
-fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, CliError> {
+fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, RunnerError> {
     let id = EngineId::from_path(&format!("vehicle.assembly.engines.{id}", id = config.id));
     let limits = EngineLimits {
         max_thrust_n: config.limits.max_thrust_n,
@@ -263,12 +263,12 @@ fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, Cli
         // Not currently reachable — `EngineKindConfig` only has
         // `LiquidEngine` — but the explicit match guards future
         // variants.
-        return Err(CliError::Engine {
+        return Err(RunnerError::Engine {
             field: format!("vehicle.assembly.engines[{index}].kind"),
             reason: "unsupported engine kind in Phase 3.6".to_owned(),
         });
     }
-    let mut engine = LiquidEngine::new(id, limits).map_err(|err| CliError::Engine {
+    let mut engine = LiquidEngine::new(id, limits).map_err(|err| RunnerError::Engine {
         field: format!("vehicle.assembly.engines[{index}]"),
         reason: err.to_string(),
     })?;
@@ -281,7 +281,7 @@ fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, Cli
                 EngineFault::GimbalLocked { pitch_rad, yaw_rad }
             }
         };
-        engine.inject_fault(fault).map_err(|err| CliError::Engine {
+        engine.inject_fault(fault).map_err(|err| RunnerError::Engine {
             field: format!("vehicle.assembly.engines[{index}].fault"),
             reason: err.to_string(),
         })?;
@@ -377,8 +377,8 @@ mod tests {
 
         let err = rack.apply_commands(&events).unwrap_err();
         assert!(
-            matches!(err, CliError::Engine { .. }),
-            "expected CliError::Engine, got {err:?}",
+            matches!(err, RunnerError::Engine { .. }),
+            "expected RunnerError::Engine, got {err:?}",
         );
     }
 }

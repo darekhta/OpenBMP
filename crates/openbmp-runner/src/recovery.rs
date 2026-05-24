@@ -2,8 +2,8 @@
 //!
 //! The rack owns a `BTreeMap<RecoveryId, Box<dyn RecoveryModel>>`
 //! resolved from the scenario's `[[vehicle.assembly.recovery]]`
-//! block. It mirrors the Phase-3.6 [`crate::runner::engines::EngineRack`]
-//! and Phase-3.7 [`crate::runner::tanks::TankRack`] patterns:
+//! block. It mirrors the Phase-3.6 [`crate::engines::EngineRack`]
+//! and Phase-3.7 [`crate::tanks::TankRack`] patterns:
 //!
 //! Each kernel base tick the runner:
 //!
@@ -12,7 +12,7 @@
 //!    typed `openbmp_vehicle::RecoveryCommand` and forwarded to the
 //!    target device's `apply_command(...)`. Multiple command firings
 //!    for the same device in one step are rejected with
-//!    [`CliError::Recovery`].
+//!    [`RunnerError::Recovery`].
 //! 2. Calls [`RecoveryRack::step`] to advance internal state. Phase
 //!    3.9 instances are instantaneous-deploy and `step` is a no-op,
 //!    but the call is part of the rack contract.
@@ -46,7 +46,7 @@ use openbmp_vehicle::{
     DragDevice, DrogueMainRecovery, ParachuteDrag, RecoveryCommand, RecoveryModel,
 };
 
-use crate::error::CliError;
+use crate::error::RunnerError;
 
 /// Runner-side recovery rack. Built once per `openbmp run`
 /// invocation; consumed by the per-step kernel loop.
@@ -73,10 +73,10 @@ impl RecoveryRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Recovery`] when a recovery config fails
+    /// Returns [`RunnerError::Recovery`] when a recovery config fails
     /// the kind-specific constructor (non-finite or non-positive
     /// `c_d` / area parameters).
-    pub fn build(document: &ScenarioDocument) -> Result<Self, CliError> {
+    pub fn build(document: &ScenarioDocument) -> Result<Self, RunnerError> {
         let mut devices: BTreeMap<RecoveryId, Box<dyn RecoveryModel>> = BTreeMap::new();
         let mut scenario_ids: BTreeMap<RecoveryId, String> = BTreeMap::new();
 
@@ -84,7 +84,7 @@ impl RecoveryRack {
             let id = recovery_id_from_config(config);
             let device = build_device(id, config)?;
             if devices.insert(id, device).is_some() {
-                return Err(CliError::Recovery {
+                return Err(RunnerError::Recovery {
                     field: format!("vehicle.assembly.recovery.{id_text}", id_text = config.id),
                     reason: "duplicate recovery id (collision in fnv1a-64 hash)".to_owned(),
                 });
@@ -132,7 +132,7 @@ impl RecoveryRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Recovery`] when:
+    /// Returns [`RunnerError::Recovery`] when:
     ///
     /// - An event targets a recovery id that is not present in this
     ///   rack (defensive — scenario validation should catch this).
@@ -142,12 +142,12 @@ impl RecoveryRack {
     pub fn apply_deploys(
         &mut self,
         fired: &[FiredEvent<ScenarioScriptAction>],
-    ) -> Result<(), CliError> {
+    ) -> Result<(), RunnerError> {
         let mut seen: BTreeSet<RecoveryId> = BTreeSet::new();
         for event in fired {
             if let ScenarioScriptAction::DeployRecovery { id, command } = &event.action {
                 if !seen.insert(*id) {
-                    return Err(CliError::Recovery {
+                    return Err(RunnerError::Recovery {
                         field: format!(
                             "mission.events[*].action.deploy_recovery.{id_value}",
                             id_value = id.value()
@@ -156,7 +156,7 @@ impl RecoveryRack {
                     });
                 }
                 let typed_command =
-                    parse_recovery_command(command).ok_or_else(|| CliError::Recovery {
+                    parse_recovery_command(command).ok_or_else(|| RunnerError::Recovery {
                         field: format!(
                             "mission.events[*].action.deploy_recovery.{id_value}.command",
                             id_value = id.value()
@@ -166,7 +166,7 @@ impl RecoveryRack {
                              `deploy`, `deploy_drogue`, `deploy_main`, `stow`",
                         ),
                     })?;
-                let device = self.devices.get_mut(id).ok_or_else(|| CliError::Recovery {
+                let device = self.devices.get_mut(id).ok_or_else(|| RunnerError::Recovery {
                     field: format!(
                         "mission.events[*].action.deploy_recovery.{id_value}",
                         id_value = id.value()
@@ -175,7 +175,7 @@ impl RecoveryRack {
                 })?;
                 device
                     .apply_command(typed_command)
-                    .map_err(|err| CliError::Recovery {
+                    .map_err(|err| RunnerError::Recovery {
                         field: format!(
                             "mission.events[*].action.deploy_recovery.{id_value}",
                             id_value = id.value()
@@ -195,11 +195,11 @@ impl RecoveryRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Recovery`] when a device's `step()`
+    /// Returns [`RunnerError::Recovery`] when a device's `step()`
     /// rejects.
-    pub fn step(&mut self, dt_s: f64) -> Result<(), CliError> {
+    pub fn step(&mut self, dt_s: f64) -> Result<(), RunnerError> {
         for (id, device) in &mut self.devices {
-            device.step(dt_s).map_err(|err| CliError::Recovery {
+            device.step(dt_s).map_err(|err| RunnerError::Recovery {
                 field: format!(
                     "vehicle.assembly.recovery.{id_value}",
                     id_value = id.value()
@@ -241,7 +241,7 @@ fn recovery_id_from_config(config: &RecoveryConfig) -> RecoveryId {
 fn build_device(
     id: RecoveryId,
     config: &RecoveryConfig,
-) -> Result<Box<dyn RecoveryModel>, CliError> {
+) -> Result<Box<dyn RecoveryModel>, RunnerError> {
     let field = format!("vehicle.assembly.recovery.{id_text}", id_text = config.id);
     match config.kind {
         RecoveryKindConfig::ParachuteDrag {
@@ -249,7 +249,7 @@ fn build_device(
             area_inflated_m2,
         } => ParachuteDrag::new(id, c_d, area_inflated_m2)
             .map(|m| Box::new(m) as Box<dyn RecoveryModel>)
-            .map_err(|err| CliError::Recovery {
+            .map_err(|err| RunnerError::Recovery {
                 field,
                 reason: err.to_string(),
             }),
@@ -260,7 +260,7 @@ fn build_device(
             main_area_m2,
         } => DrogueMainRecovery::new(id, drogue_c_d, drogue_area_m2, main_c_d, main_area_m2)
             .map(|m| Box::new(m) as Box<dyn RecoveryModel>)
-            .map_err(|err| CliError::Recovery {
+            .map_err(|err| RunnerError::Recovery {
                 field,
                 reason: err.to_string(),
             }),
@@ -269,7 +269,7 @@ fn build_device(
             area_deployed_m2,
         } => DragDevice::new(id, c_d, area_deployed_m2)
             .map(|m| Box::new(m) as Box<dyn RecoveryModel>)
-            .map_err(|err| CliError::Recovery {
+            .map_err(|err| RunnerError::Recovery {
                 field,
                 reason: err.to_string(),
             }),

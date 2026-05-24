@@ -1,35 +1,32 @@
-//! Scenario → kernel → telemetry dispatcher.
+//! `openbmp-runner` — scenario → kernel → telemetry orchestration.
 //!
-//! Three runner paths, selected by scenario shape:
+//! Takes a parsed [`Scenario`] and builds, drives, and records a
+//! simulation. The runner owns the wiring between the declarative
+//! scenario format and the kernel, model, controller, and telemetry
+//! crates; the `openbmp` CLI is a thin argument-parsing shell over
+//! [`run`].
 //!
-//! - [`phase1`] — byte-stable analytic-toy: `vehicle.kind = "point_mass"`
-//!   with `gravity = "constant"`, no Phase-2 structured blocks, and
-//!   `forces = ["gravity"]`. Telemetry layout is the seven-channel
-//!   schema pinned by `crates/openbmp-cli/tests/expected/`.
-//! - [`phase2_point_mass`] — Phase-2 point-mass with Phase-2.10
-//!   structured blocks: `[aero]`, `[propulsion.motor]`, USSA76
-//!   atmosphere. Force-model order is the scenario-declared
+//! Three runner paths are selected by scenario shape:
+//!
+//! - [`phase1`] — byte-stable analytic-toy: `point_mass` vehicle,
+//!   constant gravity, gravity-only forces, no structured blocks.
+//!   Emits the minimal seven-channel telemetry schema.
+//! - [`phase2_point_mass`] — point-mass with structured environment,
+//!   aerodynamics, and propulsion blocks. Force-model evaluation order
+//!   follows the scenario-declared
 //!   [`forces.models`](openbmp_scenario::ForcesConfig) order, which is
-//!   the determinism contract.
-//! - [`phase2_rigid_body`] — Phase-3.1 rigid-body path. Same scenario
-//!   shape as `phase2_point_mass` but with
-//!   `vehicle.kind = "rigid_body"` plus the parser-required
-//!   `initial_quaternion_body_to_eci_xyzw`,
-//!   `initial_angular_velocity_body_rad_s`, and
-//!   `inertia_tensor_body_kg_m2` fields. Wires the rigid-body
-//!   adapter family (`GravityForceAdapter` /
-//!   `MotorThrustForceAdapter` / `DeckDragForceAdapter` over
-//!   `RigidBodyState`, plus `RigidMotorMassAdapter`) into a
-//!   `RigidBodyKernel` with `ZeroMoment`. Wind, body-frame moments,
-//!   and rigid-body aero side-force / pitching moment land in
-//!   Phase 3.4 / 3.5 / 3.8.
+//!   part of the determinism contract.
+//! - [`phase2_rigid_body`] — six-degree-of-freedom rigid-body path with
+//!   the full assembly tree, engine cluster, control effectors, tanks,
+//!   recovery devices, mission graph, and flight controller.
 //!
 //! Pin verification: when the scenario references external files
-//! (`[aero].deck`, `[propulsion.motor].file`,
-//! `[sensors.<name>].file`), the dispatcher calls
-//! [`Scenario::resolved_files`] before any kernel state advances. A
-//! malformed pin, missing file, or mismatch fails closed with a
-//! [`CliError::Scenario`] (exit code 2).
+//! (`[aero].deck`, `[propulsion.motor].file`, `[sensors.<name>].file`),
+//! the dispatcher calls [`Scenario::resolved_files`] before any kernel
+//! state advances. A malformed pin, missing file, or mismatch fails
+//! closed with a [`RunnerError::Scenario`].
+
+pub mod error;
 
 pub mod aero_effector_match;
 pub mod assembly;
@@ -53,8 +50,7 @@ use openbmp_scenario::{Scenario, ScenarioDocument};
 use openbmp_sim::StopReason;
 use openbmp_telemetry::TelemetryTable;
 
-use crate::error::CliError;
-
+pub use crate::error::RunnerError;
 pub use phase1::Phase1Kernel;
 
 /// Outcome of a scenario run.
@@ -76,15 +72,15 @@ pub struct RunOutcome {
 ///
 /// Returns the wrapped error from whichever runner path matches:
 ///
-/// - [`CliError::Scenario`] for parse / SHA-256 pin failures (raised
+/// - [`RunnerError::Scenario`] for parse / SHA-256 pin failures (raised
 ///   before kernel construction).
-/// - [`CliError::UnsupportedScenario`] when the scenario shape does
+/// - [`RunnerError::UnsupportedScenario`] when the scenario shape does
 ///   not match any wired runner path.
-/// - [`CliError::Aero`], [`CliError::Motor`], [`CliError::Env`] for
+/// - [`RunnerError::Aero`], [`RunnerError::Motor`], [`RunnerError::Env`] for
 ///   loader-side failures inside the Phase-2 path.
-/// - [`CliError::Simulation`] / [`CliError::Telemetry`] for kernel- or
+/// - [`RunnerError::Simulation`] / [`RunnerError::Telemetry`] for kernel- or
 ///   telemetry-side failures.
-pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
+pub fn run(scenario: &Scenario) -> Result<RunOutcome, RunnerError> {
     // Pin verification fires before kernel construction so a bad
     // SHA-256 cannot reach the integrator. Resolved digests are then
     // threaded into the Phase-2 telemetry header so a downstream

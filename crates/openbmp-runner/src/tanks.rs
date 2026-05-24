@@ -51,7 +51,7 @@ use openbmp_vehicle::{
     PropellantSpec, RigidLiquid, Tank, TankGeometry,
 };
 
-use crate::error::CliError;
+use crate::error::RunnerError;
 
 /// Runner-side tank rack. Built once per `openbmp run` invocation;
 /// consumed by the per-step kernel loop.
@@ -85,10 +85,10 @@ impl TankRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Tank`] when a tank config fails one of
+    /// Returns [`RunnerError::Tank`] when a tank config fails one of
     /// the moving-mass model constructors (invalid geometry,
     /// damping, fill fraction, etc.).
-    pub fn build(document: &ScenarioDocument) -> Result<Self, CliError> {
+    pub fn build(document: &ScenarioDocument) -> Result<Self, RunnerError> {
         let dt = Duration::from_seconds(document.time.dt_s);
         let mut tanks: BTreeMap<TankId, Tank> = BTreeMap::new();
         let mut drain_rates: BTreeMap<TankId, f64> = BTreeMap::new();
@@ -97,7 +97,7 @@ impl TankRack {
             let (id, tank) = build_tank(config)?;
             drain_rates.insert(id, config.drain_rate_kg_per_s.unwrap_or(0.0));
             if tanks.insert(id, tank).is_some() {
-                return Err(CliError::Tank {
+                return Err(RunnerError::Tank {
                     field: format!("vehicle.assembly.tanks.{id}", id = config.id),
                     reason: "duplicate tank id (collision in fnv1a-64 hash)".to_owned(),
                 });
@@ -151,18 +151,18 @@ impl TankRack {
     ///
     /// # Errors
     ///
-    /// Returns [`CliError::Tank`] when a tank's `drain` or `step`
+    /// Returns [`RunnerError::Tank`] when a tank's `drain` or `step`
     /// rejects (non-finite rate, non-finite drivers).
-    pub fn step(&mut self) -> Result<(), CliError> {
+    pub fn step(&mut self) -> Result<(), RunnerError> {
         let (accel, omega) = self.last_drivers;
         for (id, tank) in &mut self.tanks {
             let rate = self.drain_rates_kg_per_s.get(id).copied().unwrap_or(0.0);
-            tank.drain(rate).map_err(|err| CliError::Tank {
+            tank.drain(rate).map_err(|err| RunnerError::Tank {
                 field: format!("vehicle.assembly.tanks.{id_v}", id_v = id.value()),
                 reason: err.to_string(),
             })?;
             tank.step(accel, omega, self.dt)
-                .map_err(|err| CliError::Tank {
+                .map_err(|err| RunnerError::Tank {
                     field: format!("vehicle.assembly.tanks.{id_v}", id_v = id.value()),
                     reason: err.to_string(),
                 })?;
@@ -196,7 +196,7 @@ impl TankRack {
 
 /// Phase-3.7 tank resolver: scenario `TankConfig` → openbmp-vehicle
 /// `Tank` with the appropriate `Box<dyn MovingMassModel>` inner.
-fn build_tank(config: &TankConfig) -> Result<(TankId, Tank), CliError> {
+fn build_tank(config: &TankConfig) -> Result<(TankId, Tank), RunnerError> {
     let path = format!("vehicle.assembly.tanks.{id}", id = config.id);
     let id = TankId::from_path(&path);
     let geometry = build_geometry(&config.geometry);
@@ -218,7 +218,7 @@ fn build_tank(config: &TankConfig) -> Result<(TankId, Tank), CliError> {
     let moving_mass: Box<dyn MovingMassModel> = match config.moving_mass {
         MovingMassKindConfig::RigidLiquid => Box::new(
             RigidLiquid::new(geometry, propellant, config.initial_fill_fraction, mount).map_err(
-                |err| CliError::Tank {
+                |err| RunnerError::Tank {
                     field: path.clone(),
                     reason: err.to_string(),
                 },
@@ -232,7 +232,7 @@ fn build_tank(config: &TankConfig) -> Result<(TankId, Tank), CliError> {
                 mount,
                 damping_ratio_zeta,
             )
-            .map_err(|err| CliError::Tank {
+            .map_err(|err| RunnerError::Tank {
                 field: path.clone(),
                 reason: err.to_string(),
             })?;
@@ -247,7 +247,7 @@ fn build_tank(config: &TankConfig) -> Result<(TankId, Tank), CliError> {
                 mount,
                 damping_ratio_zeta,
             )
-            .map_err(|err| CliError::Tank {
+            .map_err(|err| RunnerError::Tank {
                 field: path.clone(),
                 reason: err.to_string(),
             })?;
@@ -268,7 +268,7 @@ fn build_tank(config: &TankConfig) -> Result<(TankId, Tank), CliError> {
                 base_damping_ratio_zeta,
                 baffle_model,
             )
-            .map_err(|err| CliError::Tank {
+            .map_err(|err| RunnerError::Tank {
                 field: path.clone(),
                 reason: err.to_string(),
             })?;
@@ -287,7 +287,7 @@ fn build_tank(config: &TankConfig) -> Result<(TankId, Tank), CliError> {
         baffle,
         moving_mass,
     )
-    .map_err(|err| CliError::Tank {
+    .map_err(|err| RunnerError::Tank {
         field: path.clone(),
         reason: err.to_string(),
     })?;
@@ -321,21 +321,21 @@ fn build_propellant(config: &PropellantSpecConfig) -> PropellantSpec {
 fn apply_initial_slosh_pendulum(
     model: &mut EquivalentPendulum,
     initial: Option<&InitialSloshConfig>,
-) -> Result<(), CliError> {
+) -> Result<(), RunnerError> {
     let Some(initial) = initial else {
         return Ok(());
     };
-    let angles = initial.angles_rad.ok_or_else(|| CliError::Tank {
+    let angles = initial.angles_rad.ok_or_else(|| RunnerError::Tank {
         field: "vehicle.assembly.tanks[*].initial_slosh.angles_rad".to_owned(),
         reason: "required for equivalent_pendulum".to_owned(),
     })?;
-    let rates = initial.rates_rad_s.ok_or_else(|| CliError::Tank {
+    let rates = initial.rates_rad_s.ok_or_else(|| RunnerError::Tank {
         field: "vehicle.assembly.tanks[*].initial_slosh.rates_rad_s".to_owned(),
         reason: "required for equivalent_pendulum".to_owned(),
     })?;
     model
         .set_initial_slosh((angles[0], angles[1]), (rates[0], rates[1]))
-        .map_err(|err| CliError::Tank {
+        .map_err(|err| RunnerError::Tank {
             field: "vehicle.assembly.tanks[*].initial_slosh".to_owned(),
             reason: err.to_string(),
         })
@@ -344,15 +344,15 @@ fn apply_initial_slosh_pendulum(
 fn apply_initial_slosh_spring_mass(
     model: &mut EquivalentSpringMass,
     initial: Option<&InitialSloshConfig>,
-) -> Result<(), CliError> {
+) -> Result<(), RunnerError> {
     let Some(initial) = initial else {
         return Ok(());
     };
-    let displacement = initial.displacement_body_m.ok_or_else(|| CliError::Tank {
+    let displacement = initial.displacement_body_m.ok_or_else(|| RunnerError::Tank {
         field: "vehicle.assembly.tanks[*].initial_slosh.displacement_body_m".to_owned(),
         reason: "required for equivalent_spring_mass".to_owned(),
     })?;
-    let velocity = initial.velocity_body_m_s.ok_or_else(|| CliError::Tank {
+    let velocity = initial.velocity_body_m_s.ok_or_else(|| RunnerError::Tank {
         field: "vehicle.assembly.tanks[*].initial_slosh.velocity_body_m_s".to_owned(),
         reason: "required for equivalent_spring_mass".to_owned(),
     })?;
@@ -361,7 +361,7 @@ fn apply_initial_slosh_spring_mass(
             (displacement[0], displacement[1]),
             (velocity[0], velocity[1]),
         )
-        .map_err(|err| CliError::Tank {
+        .map_err(|err| RunnerError::Tank {
             field: "vehicle.assembly.tanks[*].initial_slosh".to_owned(),
             reason: err.to_string(),
         })
@@ -370,21 +370,21 @@ fn apply_initial_slosh_spring_mass(
 fn apply_initial_slosh_baffled_pendulum(
     model: &mut BaffledPendulum,
     initial: Option<&InitialSloshConfig>,
-) -> Result<(), CliError> {
+) -> Result<(), RunnerError> {
     let Some(initial) = initial else {
         return Ok(());
     };
-    let angles = initial.angles_rad.ok_or_else(|| CliError::Tank {
+    let angles = initial.angles_rad.ok_or_else(|| RunnerError::Tank {
         field: "vehicle.assembly.tanks[*].initial_slosh.angles_rad".to_owned(),
         reason: "required for baffled_pendulum".to_owned(),
     })?;
-    let rates = initial.rates_rad_s.ok_or_else(|| CliError::Tank {
+    let rates = initial.rates_rad_s.ok_or_else(|| RunnerError::Tank {
         field: "vehicle.assembly.tanks[*].initial_slosh.rates_rad_s".to_owned(),
         reason: "required for baffled_pendulum".to_owned(),
     })?;
     model
         .set_initial_slosh((angles[0], angles[1]), (rates[0], rates[1]))
-        .map_err(|err| CliError::Tank {
+        .map_err(|err| RunnerError::Tank {
             field: "vehicle.assembly.tanks[*].initial_slosh".to_owned(),
             reason: err.to_string(),
         })

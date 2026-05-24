@@ -31,7 +31,7 @@ use openbmp_sim::{
     PhaseId, PhaseTransition, RegionId, ScenarioScriptAction,
 };
 
-use crate::error::CliError;
+use crate::error::RunnerError;
 
 /// Split mission runtime produced from a parsed scenario mission block.
 #[derive(Clone, Debug)]
@@ -65,12 +65,12 @@ enum RuntimeEventBinding {
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Scenario`] when the v3 phases / v4 states
+/// Returns [`RunnerError::Scenario`] when the v3 phases / v4 states
 /// fail HSM validation (duplicate ids, unknown parents, parent
 /// cycles, unreachable states, missing initial).
 pub fn lift_mission_state_machine(
     mission: &MissionConfig,
-) -> Result<MissionStateMachine, CliError> {
+) -> Result<MissionStateMachine, RunnerError> {
     // v4 path: when `[[mission.states]]` is populated, prefer it.
     if !mission.states.is_empty() {
         let states: Vec<MissionState> = mission
@@ -88,7 +88,7 @@ pub fn lift_mission_state_machine(
                     allowed_engines: s.allowed_engines.clone(),
                 })
             })
-            .collect::<Result<_, CliError>>()?;
+            .collect::<Result<_, RunnerError>>()?;
         let initial = phase_id(&mission.initial_phase);
         return MissionStateMachine::new(states, initial).map_err(|err| hsm_to_cli_error(&err));
     }
@@ -115,14 +115,14 @@ pub fn lift_mission_state_machine(
     MissionStateMachine::new(states, initial).map_err(|err| hsm_to_cli_error(&err))
 }
 
-fn hsm_to_cli_error(err: &HsmError) -> CliError {
-    CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
+fn hsm_to_cli_error(err: &HsmError) -> RunnerError {
+    RunnerError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
         reason: err.to_string(),
     })
 }
 
-fn region_to_cli_error(err: &RegionError) -> CliError {
-    CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
+fn region_to_cli_error(err: &RegionError) -> RunnerError {
+    RunnerError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
         reason: err.to_string(),
     })
 }
@@ -136,10 +136,10 @@ fn region_to_cli_error(err: &RegionError) -> CliError {
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Scenario`] when a transition references an
+/// Returns [`RunnerError::Scenario`] when a transition references an
 /// unknown phase or event id, the phase graph is invalid, or
 /// `mission.initial_phase` references an unknown id.
-pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRuntime, CliError> {
+pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRuntime, RunnerError> {
     let phase_id_lookup = phase_lookup(mission);
     let event_id_lookup: BTreeMap<&str, EventId> = mission
         .events
@@ -183,7 +183,7 @@ pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRun
         .get(mission.initial_phase.as_str())
         .copied()
         .ok_or_else(|| {
-            CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
+            RunnerError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
                 reason: format!(
                     "mission.initial_phase = `{}` does not match any declared phase/state",
                     mission.initial_phase,
@@ -194,7 +194,7 @@ pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRun
     let hsm = lift_mission_state_machine(mission)?;
     let graph = MissionPhaseGraph::new(phases, transitions, initial, &declared_event_ids).map_err(
         |err| {
-            CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
+            RunnerError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
                 reason: err.to_string(),
             })
         },
@@ -275,7 +275,7 @@ fn build_phases(mission: &MissionConfig) -> Vec<Phase> {
 fn mission_actions(
     actions: &[ScenarioActionConfig],
     field: &'static str,
-) -> Result<Vec<MissionAction>, CliError> {
+) -> Result<Vec<MissionAction>, RunnerError> {
     actions
         .iter()
         .map(|action| match action {
@@ -302,7 +302,7 @@ fn mission_actions(
             ScenarioActionConfig::EffectorOverride { .. }
             | ScenarioActionConfig::EngineCommand { .. }
             | ScenarioActionConfig::Separation
-            | ScenarioActionConfig::DeployRecovery { .. } => Err(CliError::Scenario(
+            | ScenarioActionConfig::DeployRecovery { .. } => Err(RunnerError::Scenario(
                 openbmp_scenario::ScenarioError::MissionGraph {
                     reason: format!("{field} may contain only HAL-portable mission actions"),
                 },
@@ -315,7 +315,7 @@ fn mission_actions(
 fn build_event_binding(
     config: &EventConfig,
     phase_id_lookup: &BTreeMap<&str, PhaseId>,
-) -> Result<RuntimeEventBinding, CliError> {
+) -> Result<RuntimeEventBinding, RunnerError> {
     let id = event_id(&config.id);
     let trigger = build_trigger(&config.trigger)?;
     Ok(match &config.action {
@@ -324,7 +324,7 @@ fn build_event_binding(
                 .get(phase.as_str())
                 .copied()
                 .ok_or_else(|| {
-                    CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
+                    RunnerError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
                         reason: format!("action.enter_phase references unknown phase `{phase}`"),
                     })
                 })?;
@@ -442,7 +442,7 @@ fn resolve_region_id(id: Option<&str>) -> RegionId {
     }
 }
 
-fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, CliError> {
+fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, RunnerError> {
     Ok(match config {
         EventTriggerConfig::AtTime { time_s } => BuiltInEventTrigger::AtTime { time_s: *time_s },
         EventTriggerConfig::AtAltitudeAscending { altitude_m } => {
@@ -460,7 +460,7 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Cli
             remaining: *remaining,
         },
         EventTriggerConfig::AtDynamicPressure { .. } => {
-            return Err(CliError::Scenario(
+            return Err(RunnerError::Scenario(
                 openbmp_scenario::ScenarioError::UnsupportedTriggerKind {
                     kind: "at_dynamic_pressure".to_owned(),
                     reason: "dynamic-pressure triggers ship in Phase 3.4 when atmosphere is wired into event evaluation".to_owned(),
@@ -468,7 +468,7 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Cli
             ));
         }
         EventTriggerConfig::Scripted => {
-            return Err(CliError::Scenario(
+            return Err(RunnerError::Scenario(
                 openbmp_scenario::ScenarioError::UnsupportedTriggerKind {
                     kind: "scripted".to_owned(),
                     reason: "scripted triggers are deferred to a later Phase-3 sub-phase; use effector command_schedule for deterministic actuator scripts".to_owned(),
@@ -481,7 +481,7 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Cli
 fn build_region_set(
     mission: &MissionConfig,
     graph: &MissionPhaseGraph,
-) -> Result<RegionSet, CliError> {
+) -> Result<RegionSet, RunnerError> {
     let mut regions = default_region_set(graph)?;
     for region in &mission.regions {
         let id = region_id(&region.id);
@@ -497,7 +497,7 @@ fn build_region_set(
     Ok(regions)
 }
 
-fn default_region_set(graph: &MissionPhaseGraph) -> Result<RegionSet, CliError> {
+fn default_region_set(graph: &MissionPhaseGraph) -> Result<RegionSet, RunnerError> {
     let mut regions = RegionSet::new();
     regions.insert(Region::new(CanonicalRegions::mission(), graph.clone()));
     regions.insert(
@@ -544,7 +544,7 @@ fn default_region_set(graph: &MissionPhaseGraph) -> Result<RegionSet, CliError> 
     Ok(regions)
 }
 
-fn build_region(config: &RegionConfig) -> Result<Region, CliError> {
+fn build_region(config: &RegionConfig) -> Result<Region, RunnerError> {
     let id = region_id(&config.id);
     let states: Vec<Phase> = config
         .states
@@ -568,7 +568,7 @@ fn build_region_state(region_name: &str, config: &RegionStateConfig) -> Phase {
     }
 }
 
-fn validate_required_canonical_region_states(regions: &RegionSet) -> Result<(), CliError> {
+fn validate_required_canonical_region_states(regions: &RegionSet) -> Result<(), RunnerError> {
     require_region_state(
         regions,
         CanonicalRegions::mission(),
@@ -620,9 +620,9 @@ fn require_region_state(
     region_name: &str,
     state: Option<PhaseId>,
     state_name: &str,
-) -> Result<(), CliError> {
+) -> Result<(), RunnerError> {
     let Some(region) = regions.regions.get(&region_id) else {
-        return Err(CliError::Scenario(
+        return Err(RunnerError::Scenario(
             openbmp_scenario::ScenarioError::MissionGraph {
                 reason: format!("canonical region `{region_name}` is missing"),
             },
@@ -631,7 +631,7 @@ fn require_region_state(
     if let Some(state) = state
         && !region.contains_state(state)
     {
-        return Err(CliError::Scenario(
+        return Err(RunnerError::Scenario(
             openbmp_scenario::ScenarioError::MissionGraph {
                 reason: format!(
                     "canonical region `{region_name}` is missing required state `{state_name}`"
@@ -674,12 +674,12 @@ fn build_transition(
     config: &PhaseTransitionConfig,
     phase_id_lookup: &BTreeMap<&str, PhaseId>,
     event_id_lookup: &BTreeMap<&str, EventId>,
-) -> Result<PhaseTransition, CliError> {
+) -> Result<PhaseTransition, RunnerError> {
     let from = phase_id_lookup
         .get(config.from.as_str())
         .copied()
         .ok_or_else(|| {
-            CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
+            RunnerError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
                 reason: format!(
                     "transition #{index}.from = `{}` is not a declared phase",
                     config.from,
@@ -690,7 +690,7 @@ fn build_transition(
         .get(config.to.as_str())
         .copied()
         .ok_or_else(|| {
-            CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
+            RunnerError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
                 reason: format!(
                     "transition #{index}.to = `{}` is not a declared phase",
                     config.to,
@@ -701,7 +701,7 @@ fn build_transition(
         .get(config.event.as_str())
         .copied()
         .ok_or_else(|| {
-            CliError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
+            RunnerError::Scenario(openbmp_scenario::ScenarioError::MissionGraph {
                 reason: format!(
                     "transition #{index}.event = `{}` is not a declared event",
                     config.event,

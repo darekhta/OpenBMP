@@ -5,23 +5,21 @@
 //! and downstream consumers may call them directly without spawning a
 //! subprocess.
 //!
-//! Phase 1.7 surface:
-//!
-//! - [`commands::run::run`] — load a scenario, run it, write declared
-//!   telemetry outputs.
+//! - [`commands::run::run`] — load a scenario, run it through
+//!   [`openbmp_runner`], write declared telemetry outputs.
 //! - [`commands::diff::run`] — compare two Parquet archives row by row.
 //! - [`commands::check::run`] — parse + validate a scenario, no run.
 //! - [`commands::provenance::run`] — list files lacking sibling
 //!   `provenance.md`.
 //!
-//! See `docs/software-architecture.md § Workspace Layout` for the
-//! crate's place in the workspace and `docs/scenario-format.md` for
-//! the scenario TOML schema this CLI parses.
+//! The simulation orchestration itself lives in [`openbmp_runner`];
+//! this crate is the command-line shell over it. See
+//! `docs/software-architecture.md` for the crate's place in the
+//! workspace and `docs/scenario-format.md` for the scenario schema.
 
 pub mod cli;
 pub mod commands;
 pub mod error;
-pub mod runner;
 pub mod tracing;
 
 pub use cli::{Cli, Command};

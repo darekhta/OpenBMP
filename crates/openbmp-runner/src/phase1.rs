@@ -12,7 +12,7 @@
 //!
 //! Phase-2 scenarios that declare any of the structured Phase-2.10
 //! blocks (or use `vehicle.kind = "rigid_body"`) are routed through
-//! [`crate::runner::phase2_point_mass`] (or rejected with
+//! [`crate::phase2_point_mass`] (or rejected with
 //! `UnsupportedScenario` for `rigid_body`). This module is the
 //! byte-stable analytic-toy runner; do not extend it without
 //! updating the Phase-1 byte-stability baseline.
@@ -37,9 +37,9 @@ use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, Telemet
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
 
-use crate::error::CliError;
-use crate::runner::RunOutcome;
-use crate::runner::assembly::dry_mass_kg_at;
+use crate::error::RunnerError;
+use crate::RunOutcome;
+use crate::assembly::dry_mass_kg_at;
 use openbmp_vehicle::Assembly;
 
 /// Concrete kernel type assembled by the Phase-1 runner.
@@ -64,7 +64,7 @@ struct Phase1TelemetryChannels {
 }
 
 impl Phase1TelemetryChannels {
-    fn new() -> Result<Self, CliError> {
+    fn new() -> Result<Self, RunnerError> {
         Ok(Self {
             position_x: TelemetryChannel::<f64>::new(
                 ChannelId::new(1),
@@ -107,7 +107,7 @@ impl Phase1TelemetryChannels {
     }
 
     /// Build the Phase-1 telemetry schema (fixed channel order).
-    fn schema(&self) -> Result<TelemetrySchema, CliError> {
+    fn schema(&self) -> Result<TelemetrySchema, RunnerError> {
         Ok(TelemetrySchema::new(vec![
             self.position_x.metadata().clone(),
             self.position_y.metadata().clone(),
@@ -124,37 +124,37 @@ impl Phase1TelemetryChannels {
 ///
 /// # Errors
 ///
-/// Returns [`CliError::UnsupportedScenario`] when the scenario shape
+/// Returns [`RunnerError::UnsupportedScenario`] when the scenario shape
 /// does not match the byte-stable analytic-toy contract documented in
-/// the module header. Returns [`CliError::Simulation`] when the kernel
+/// the module header. Returns [`RunnerError::Simulation`] when the kernel
 /// rejects the configuration (invalid `dt`, invalid initial state,
 /// dirty FP env).
-pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, CliError> {
-    let assembly = crate::runner::assembly::synthesize_assembly(&scenario.document)?;
+pub fn build_kernel(scenario: &Scenario) -> Result<Phase1Kernel, RunnerError> {
+    let assembly = crate::assembly::synthesize_assembly(&scenario.document)?;
     build_kernel_with_assembly(scenario, &assembly)
 }
 
 fn build_kernel_with_assembly(
     scenario: &Scenario,
     assembly: &Assembly,
-) -> Result<Phase1Kernel, CliError> {
+) -> Result<Phase1Kernel, RunnerError> {
     let document = &scenario.document;
 
     // Vehicle: only `point_mass` is wired by the analytic-toy runner.
     if document.vehicle.kind != "point_mass" {
-        return Err(CliError::UnsupportedScenario {
+        return Err(RunnerError::UnsupportedScenario {
             what: format!("vehicle.kind = {}", document.vehicle.kind),
         });
     }
 
     // Environment: only the analytic-toy combination.
     if document.environment.gravity != "constant" {
-        return Err(CliError::UnsupportedScenario {
+        return Err(RunnerError::UnsupportedScenario {
             what: format!("environment.gravity = {}", document.environment.gravity),
         });
     }
     if document.environment.atmosphere != "none" {
-        return Err(CliError::UnsupportedScenario {
+        return Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "environment.atmosphere = {}",
                 document.environment.atmosphere
@@ -162,14 +162,14 @@ fn build_kernel_with_assembly(
         });
     }
     if document.environment.wind != "none" {
-        return Err(CliError::UnsupportedScenario {
+        return Err(RunnerError::UnsupportedScenario {
             what: format!("environment.wind = {}", document.environment.wind),
         });
     }
 
     // Forces: only `["gravity"]`.
     if document.force_models().len() != 1 || document.force_models()[0] != "gravity" {
-        return Err(CliError::UnsupportedScenario {
+        return Err(RunnerError::UnsupportedScenario {
             what: format!("forces.models = {:?}", document.force_models()),
         });
     }
@@ -177,17 +177,17 @@ fn build_kernel_with_assembly(
     // Phase-2 structured blocks must be absent on the analytic-toy
     // path. Any of them present routes through Phase-2 dispatch.
     if document.aero.is_some() {
-        return Err(CliError::UnsupportedScenario {
+        return Err(RunnerError::UnsupportedScenario {
             what: "[aero] block present (Phase-2 path)".to_owned(),
         });
     }
     if document.propulsion.is_some() {
-        return Err(CliError::UnsupportedScenario {
+        return Err(RunnerError::UnsupportedScenario {
             what: "[propulsion] block present (Phase-2 path)".to_owned(),
         });
     }
     if document.wind.is_some() || document.atmosphere.is_some() {
-        return Err(CliError::UnsupportedScenario {
+        return Err(RunnerError::UnsupportedScenario {
             what: "[wind] / [atmosphere] block present (Phase-2 path)".to_owned(),
         });
     }
@@ -195,11 +195,11 @@ fn build_kernel_with_assembly(
     let g = document
         .environment
         .gravity_m_s2
-        .ok_or_else(|| CliError::UnsupportedScenario {
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
             what: "environment.gravity_m_s2 missing for constant gravity".to_owned(),
         })?;
     if g < 0.0 {
-        return Err(CliError::UnsupportedScenario {
+        return Err(RunnerError::UnsupportedScenario {
             what: "environment.gravity_m_s2 must be a non-negative magnitude; Phase-1 constant gravity is down_z".to_owned(),
         });
     }
@@ -244,14 +244,14 @@ fn build_kernel_with_assembly(
 ///
 /// # Errors
 ///
-/// Returns [`CliError::UnsupportedScenario`] if the scenario uses a
-/// model the Phase-1 runner cannot wire, [`CliError::Simulation`] if a
-/// kernel step fails, and [`CliError::Telemetry`] if a row cannot be
+/// Returns [`RunnerError::UnsupportedScenario`] if the scenario uses a
+/// model the Phase-1 runner cannot wire, [`RunnerError::Simulation`] if a
+/// kernel step fails, and [`RunnerError::Telemetry`] if a row cannot be
 /// added.
-pub fn run(scenario: &Scenario) -> Result<RunOutcome, CliError> {
+pub fn run(scenario: &Scenario) -> Result<RunOutcome, RunnerError> {
     // Phase-3.3: resolve the scenario's vehicle composition into a
     // `Assembly` and use its dry mass for kernel construction.
-    let assembly = crate::runner::assembly::synthesize_assembly(&scenario.document)?;
+    let assembly = crate::assembly::synthesize_assembly(&scenario.document)?;
 
     let mut kernel = build_kernel_with_assembly(scenario, &assembly)?;
     let channels = Phase1TelemetryChannels::new()?;
@@ -280,7 +280,7 @@ fn record_step(
     table: &mut TelemetryTable,
     kernel: &Phase1Kernel,
     channels: &Phase1TelemetryChannels,
-) -> Result<(), CliError> {
+) -> Result<(), RunnerError> {
     let state = kernel.current_state();
     let mut row = TelemetryRow::new(state.time, kernel.current_step())?;
 

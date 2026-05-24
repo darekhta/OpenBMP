@@ -15,7 +15,7 @@ use openbmp_scenario::{BodyGeometryConfig, ScenarioDocument};
 use openbmp_state::MassProperties;
 use openbmp_vehicle::{Assembly, Body, BodyGeometry, VehicleAssembly};
 
-use crate::error::CliError;
+use crate::error::RunnerError;
 
 /// Build the runtime [`Assembly`] from the parsed scenario.
 ///
@@ -24,10 +24,10 @@ use crate::error::CliError;
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Scenario`] when the assembly fails
+/// Returns [`RunnerError::Scenario`] when the assembly fails
 /// `Assembly` construction (invalid geometry, asymmetric
 /// inertia, duplicate body id, etc.).
-pub fn synthesize_assembly(document: &ScenarioDocument) -> Result<Assembly, CliError> {
+pub fn synthesize_assembly(document: &ScenarioDocument) -> Result<Assembly, RunnerError> {
     let vehicle_id = scenario_vehicle_id(document);
     let assembly = &document.vehicle.assembly;
     let mut builder = Assembly::builder(vehicle_id);
@@ -44,17 +44,17 @@ pub fn synthesize_assembly(document: &ScenarioDocument) -> Result<Assembly, CliE
             .map_or_else(default_inertia, matrix_from_rows);
         let body =
             Body::new(body_id, geometry, config.dry_mass_kg, cg_body, inertia).map_err(|err| {
-                CliError::Assembly {
+                RunnerError::Assembly {
                     field: format!("vehicle.assembly.bodies[{index}]"),
                     reason: err.to_string(),
                 }
             })?;
-        builder = builder.add_body(body).map_err(|err| CliError::Assembly {
+        builder = builder.add_body(body).map_err(|err| RunnerError::Assembly {
             field: format!("vehicle.assembly.bodies[{index}]"),
             reason: err.to_string(),
         })?;
     }
-    builder.build().map_err(|err| CliError::Assembly {
+    builder.build().map_err(|err| RunnerError::Assembly {
         field: "vehicle.assembly".to_owned(),
         reason: err.to_string(),
     })
@@ -68,16 +68,16 @@ pub fn synthesize_assembly(document: &ScenarioDocument) -> Result<Assembly, CliE
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Assembly`] if the resolved assembly cannot
+/// Returns [`RunnerError::Assembly`] if the resolved assembly cannot
 /// produce dry mass properties.
 pub fn dry_mass_properties_at(
     assembly: &Assembly,
     time: SimTime,
     field: &str,
-) -> Result<MassProperties, CliError> {
+) -> Result<MassProperties, RunnerError> {
     assembly
         .mass_properties(time)
-        .map_err(|err| CliError::Assembly {
+        .map_err(|err| RunnerError::Assembly {
             field: field.to_owned(),
             reason: err.to_string(),
         })
@@ -87,12 +87,12 @@ pub fn dry_mass_properties_at(
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Assembly`] if the assembly is structurally
+/// Returns [`RunnerError::Assembly`] if the assembly is structurally
 /// empty. Normal scenario resolution rejects that earlier.
-pub fn dry_mass_kg_at(assembly: &Assembly, _time: SimTime, field: &str) -> Result<f64, CliError> {
+pub fn dry_mass_kg_at(assembly: &Assembly, _time: SimTime, field: &str) -> Result<f64, RunnerError> {
     let bodies = assembly.bodies();
     if bodies.is_empty() {
-        return Err(CliError::Assembly {
+        return Err(RunnerError::Assembly {
             field: field.to_owned(),
             reason: "assembly must contain at least one body".to_owned(),
         });
