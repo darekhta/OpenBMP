@@ -15,9 +15,65 @@
 //! provenance-backed Park87/Park90/Park93 tables, species-pair
 //! vibrational relaxation constants, and the Mach-15 shock-layer
 //! public benchmark before this model can return reaction rates.
+//!
+//! The Park87 forward Arrhenius coefficients for the neutral
+//! five-species subset are pinned below from Zhang et al. (2022),
+//! *A review of the mathematical modeling of equilibrium and
+//! nonequilibrium hypersonic flows*, Table 2. That public table does
+//! not by itself provide the backward/equilibrium-constant path or the
+//! species-pair vibrational relaxation constants needed for a complete
+//! two-temperature source model, so [`ParkTwoTemperatureModel`] still
+//! fails closed.
 
 use super::AirComposition;
 use crate::error::PhysicsError;
+
+/// Arrhenius forward-rate coefficient as published for air chemistry.
+///
+/// The public review table reports coefficients in its own CGS mole
+/// units. OpenBMP stores those values verbatim and exposes only an
+/// `as_published` evaluator; no SI conversion is attempted here
+/// because the full source-term model is still reserved.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ArrheniusForwardCoefficient {
+    /// Pre-exponential factor `A_f` as published.
+    pub a_as_published: f64,
+    /// Temperature exponent `B_f`.
+    pub b: f64,
+    /// Activation temperature `T_a` (K).
+    pub activation_temperature_k: f64,
+}
+
+impl ArrheniusForwardCoefficient {
+    /// Evaluate `k_f = A_f T^B_f exp(-T_a / T)` in the source
+    /// table's published unit system.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `temperature_k`
+    /// is not positive and finite.
+    pub fn rate_as_published(self, temperature_k: f64) -> Result<f64, PhysicsError> {
+        if !temperature_k.is_finite() || temperature_k <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Park forward-rate temperature must be positive and finite",
+            });
+        }
+        Ok(self.a_as_published
+            * temperature_k.powf(self.b)
+            * (-self.activation_temperature_k / temperature_k).exp())
+    }
+}
+
+/// One Park forward reaction row.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ParkForwardReaction {
+    /// Row number in Zhang et al. (2022), Table 2.
+    pub source_row: u8,
+    /// ASCII reaction equation in source-table order.
+    pub equation: &'static str,
+    /// Forward Arrhenius coefficient.
+    pub coefficient: ArrheniusForwardCoefficient,
+}
 
 /// Forward and backward reaction rate constants.
 #[derive(Clone, Debug, PartialEq)]
@@ -162,7 +218,188 @@ impl ParkReactionSet {
     /// (`N2`, `O2`, `NO` with five collision partners each) plus
     /// the two Zeldovich exchange reactions.
     pub const PARK87_REACTIONS: usize = 17;
+
+    /// Forward Arrhenius coefficients for the reaction set, when
+    /// publicly pinned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::OutOfEnvelope`] for reserved reaction
+    /// sets whose public coefficient tables have not landed.
+    pub fn forward_coefficients_as_published(
+        self,
+    ) -> Result<&'static [ParkForwardReaction], PhysicsError> {
+        match self {
+            Self::Park87 => Ok(PARK87_FORWARD_REACTIONS_AS_PUBLISHED),
+            Self::Park90 | Self::Park93 => Err(PhysicsError::OutOfEnvelope {
+                reason: "Park90/Park93 forward coefficients are reserved pending verified public tables",
+            }),
+        }
+    }
 }
+
+/// Park87 neutral five-species forward coefficients from Zhang et al.
+/// (2022), Table 2, Park1987 column.
+///
+/// Rows are the 15 neutral dissociation reactions for `O2`, `N2`, and
+/// `NO` with neutral collision partners, followed by the two
+/// Zeldovich exchange reactions. Values are stored as published in the
+/// table, not converted to SI source-term units.
+pub const PARK87_FORWARD_REACTIONS_AS_PUBLISHED: &[ParkForwardReaction] = &[
+    ParkForwardReaction {
+        source_row: 1,
+        equation: "O2 + N <=> O + O + N",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 2.90e23,
+            b: -2.0,
+            activation_temperature_k: 59_750.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 2,
+        equation: "O2 + O <=> O + O + O",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 2.90e23,
+            b: -2.0,
+            activation_temperature_k: 59_750.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 3,
+        equation: "O2 + O2 <=> O + O + O2",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 9.68e22,
+            b: -2.0,
+            activation_temperature_k: 59_750.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 4,
+        equation: "O2 + N2 <=> O + O + N2",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 9.68e22,
+            b: -2.0,
+            activation_temperature_k: 59_750.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 5,
+        equation: "O2 + NO <=> O + O + NO",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 9.68e22,
+            b: -2.0,
+            activation_temperature_k: 59_750.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 12,
+        equation: "N2 + N <=> N + N + N",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 1.60e22,
+            b: -1.6,
+            activation_temperature_k: 113_200.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 13,
+        equation: "N2 + O <=> N + N + O",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 4.98e22,
+            b: -1.6,
+            activation_temperature_k: 113_200.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 14,
+        equation: "N2 + O2 <=> N + N + O2",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 3.70e21,
+            b: -1.6,
+            activation_temperature_k: 113_200.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 15,
+        equation: "N2 + N2 <=> N + N + N2",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 3.70e21,
+            b: -1.6,
+            activation_temperature_k: 113_200.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 16,
+        equation: "N2 + NO <=> N + N + NO",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 4.98e21,
+            b: -1.6,
+            activation_temperature_k: 113_200.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 22,
+        equation: "NO + N <=> N + O + N",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 7.95e23,
+            b: -2.0,
+            activation_temperature_k: 75_500.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 23,
+        equation: "NO + O <=> N + O + O",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 7.95e23,
+            b: -2.0,
+            activation_temperature_k: 75_500.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 24,
+        equation: "NO + N2 <=> N + O + N2",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 7.95e23,
+            b: -2.0,
+            activation_temperature_k: 75_500.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 25,
+        equation: "NO + O2 <=> N + O + O2",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 7.95e23,
+            b: -2.0,
+            activation_temperature_k: 75_500.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 26,
+        equation: "NO + NO <=> N + O + NO",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 7.95e23,
+            b: -2.0,
+            activation_temperature_k: 75_500.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 33,
+        equation: "NO + O <=> N + O2",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 8.37e12,
+            b: 0.0,
+            activation_temperature_k: 19_450.0,
+        },
+    },
+    ParkForwardReaction {
+        source_row: 34,
+        equation: "N2 + O <=> NO + N",
+        coefficient: ArrheniusForwardCoefficient {
+            a_as_published: 6.44e17,
+            b: -1.0,
+            activation_temperature_k: 38_370.0,
+        },
+    },
+];
 
 /// Vibrational-relaxation model.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -323,5 +560,59 @@ mod tests {
         let full =
             ReactionRates::new(ParkReactionSet::Park87, vec![0.0; 17], vec![0.0; 17]).unwrap();
         assert_eq!(full.reaction_count(), 17);
+    }
+
+    #[test]
+    fn park87_forward_table_pins_public_row_order() {
+        let table = ParkReactionSet::Park87
+            .forward_coefficients_as_published()
+            .unwrap();
+        assert_eq!(table.len(), ParkReactionSet::PARK87_REACTIONS);
+        let rows: Vec<u8> = table.iter().map(|reaction| reaction.source_row).collect();
+        assert_eq!(
+            rows,
+            vec![
+                1, 2, 3, 4, 5, 12, 13, 14, 15, 16, 22, 23, 24, 25, 26, 33, 34
+            ]
+        );
+    }
+
+    #[test]
+    fn park87_forward_table_pins_representative_coefficients() {
+        let table = PARK87_FORWARD_REACTIONS_AS_PUBLISHED;
+        assert_eq!(table[0].equation, "O2 + N <=> O + O + N");
+        assert_eq!(table[0].coefficient.a_as_published, 2.90e23);
+        assert_eq!(table[0].coefficient.b, -2.0);
+        assert_eq!(table[0].coefficient.activation_temperature_k, 59_750.0);
+
+        let exchange = table[16];
+        assert_eq!(exchange.source_row, 34);
+        assert_eq!(exchange.equation, "N2 + O <=> NO + N");
+        assert_eq!(exchange.coefficient.a_as_published, 6.44e17);
+        assert_eq!(exchange.coefficient.b, -1.0);
+        assert_eq!(exchange.coefficient.activation_temperature_k, 38_370.0);
+    }
+
+    #[test]
+    fn park_forward_rate_evaluator_uses_published_arrhenius_form() {
+        let coefficient = PARK87_FORWARD_REACTIONS_AS_PUBLISHED[15].coefficient;
+        let t_k = 10_000.0;
+        let rate = coefficient.rate_as_published(t_k).unwrap();
+        let expected = coefficient.a_as_published
+            * t_k.powf(coefficient.b)
+            * (-coefficient.activation_temperature_k / t_k).exp();
+        assert!((rate - expected).abs() / expected < 1.0e-12);
+    }
+
+    #[test]
+    fn reserved_park_sets_still_fail_closed_for_forward_tables() {
+        assert!(matches!(
+            ParkReactionSet::Park90.forward_coefficients_as_published(),
+            Err(PhysicsError::OutOfEnvelope { .. })
+        ));
+        assert!(matches!(
+            ParkReactionSet::Park93.forward_coefficients_as_published(),
+            Err(PhysicsError::OutOfEnvelope { .. })
+        ));
     }
 }
