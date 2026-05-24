@@ -7,7 +7,7 @@
 //! these jobs around `SyntheticSensorAdapter` instances; a downstream
 //! HAL adopter constructs them around real driver impls.
 //!
-//! Phase 4.2: ingest jobs for the IMU, barometer, GNSS,
+//! Ingest jobs for the IMU, barometer, GNSS,
 //! magnetometer, and star tracker. Each job is a [`crate::Job`]
 //! ready to register with the scheduler.
 
@@ -304,7 +304,7 @@ where
 }
 
 // ---------------------------------------------------------------------
-// Voted ingest jobs (Phase 4.B)
+// Voted ingest jobs
 // ---------------------------------------------------------------------
 //
 // Voted ingest jobs own `Vec<S>` of redundant sensor lanes plus a

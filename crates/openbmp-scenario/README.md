@@ -2,32 +2,32 @@
 
 L6 scenario parser and validator.
 
-**Status:** Phase 3 — Phase-2 structured blocks (`[aero]`,
+**Status:** Implemented. Parses the structured blocks (`[aero]`,
 `[propulsion.motor]`, `[wind]`, `[atmosphere]`,
-`[frames.local_origin]`, typed `[sensors.<name>]`) plus the Phase-3
-additions: `[mission]` (phases / events / transitions),
-`[vehicle.assembly]` tree (bodies, effectors, engines, tanks,
+`[frames.local_origin]`, typed `[sensors.<name>]`),
+`[mission]` (phases / events / transitions),
+the `[vehicle.assembly]` tree (bodies, effectors, engines, tanks,
 recovery), aero deck schema-2 (control-effector axes), engine
 clusters with per-engine throttle / gimbal / ignition / shutdown
-commands, layered + gust winds, and the Phase-3.10 sensor variants
-(`gnss`, `magnetometer`, `star_tracker`). Phase-3.13 bumped the
-schema header to `openbmp.scenario = 2` and retired the v1 flat
-vehicle shape; every scenario now declares `[vehicle.assembly]`.
+commands, layered + gust winds, and the sensor variants
+(`gnss`, `magnetometer`, `star_tracker`). The schema header is
+`openbmp.scenario = 2`; the v1 flat vehicle shape is retired and
+every scenario declares `[vehicle.assembly]`.
 
 ## Purpose
 
 - TOML parser with `serde::deny_unknown_fields`.
 - Required / optional table set per `docs/scenario-format.md`,
-  including the Phase-2 structured blocks.
-- Model registry: `ModelRegistry::phase1()` (analytic-toy) and
-  `ModelRegistry::phase2()` (sounding rocket — adds rigid-body
+  including the structured blocks.
+- Model registry: `ModelRegistry::base()` (analytic-toy) and
+  `ModelRegistry::full()` (adds rigid-body
   vehicle, `j2`/`point_mass` gravity, `us_standard_1976` atmosphere,
   `constant`/`layered`/`gust` wind, `aero`/`thrust` forces, six
-  sensor kinds (Phase-2.7 `ideal_state` / `imu` / `barometer` plus
-  Phase-3.10 `gnss` / `magnetometer` / `star_tracker`), and the
+  sensor kinds (`ideal_state` / `imu` / `barometer` plus
+  `gnss` / `magnetometer` / `star_tracker`), and the
   `solid` motor variant).
 - Frame-suffix and unit-suffix linting (`_n_s`, `_m3_s2`, `_deg`,
-  `_xyzw` added in Phase 2.10).
+  `_xyzw`).
 - **Safety-name lint** — reject `target`, `seeker`, `warhead`,
   `strike`, `interceptor`, `kill`, `threat`, `engagement`, terminal-
   homing variants per `docs/safety-boundaries.md` § Naming Rules.
@@ -64,12 +64,12 @@ Unknown fields produce parse errors (fail-closed).
 
 ## Validation
 
-`checked` for the Phase-2.10 parser surface. Unit tests cover the
+`checked` for the parser surface. Unit tests cover the
 schema-v2 analytic-toy scenario (byte-stability guard), path resolution,
 unknown-field rejection, model-registry resolution under both
 `phase1` and `phase2` registries, safety-name linting, unit/frame
 suffix linting, empty force lists, invalid time ranges, missing
-telemetry outputs, and every Phase-2.10 cross-validation rule
+telemetry outputs, and every cross-validation rule
 (rigid-body-without-quaternion, point-mass-with-quaternion,
 non-unit-quaternion, latitude-out-of-range, atmosphere/wind
 kind-mismatch, ideal-state-sensor-with-pin-only, gravity-coefficient

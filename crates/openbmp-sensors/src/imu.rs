@@ -11,8 +11,7 @@
 //! reported  = round(noisy / lsb) · lsb     (quantisation)
 //! ```
 //!
-//! Axes are isotropic in Phase 2 (same noise budget for x, y, z).
-//! Per-axis variation is a Phase-3 schema extension.
+//! Axes are isotropic (same noise budget for x, y, z).
 //!
 //! # Component-id layout
 //!
@@ -60,8 +59,7 @@ const ACCEL_AXIS_BASES: [u32; 3] = [AXIS_BASE_ACCEL_X, AXIS_BASE_ACCEL_Y, AXIS_B
 
 /// Isotropic noise budget for the three axes of a single IMU triad.
 ///
-/// All values are in SI units. Phase-3 schema extension will allow
-/// per-axis variation; Phase 2 applies the same budget to x, y, z.
+/// All values are in SI units. The same budget applies to x, y, z.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TriaxialNoiseBudget {
     /// Angular random walk (gyro) or velocity random walk (accel),
@@ -186,7 +184,7 @@ impl ImuNoiseBudget {
 // SyntheticImu
 // ---------------------------------------------------------------------
 
-/// Phase-2 synthetic IMU using the IEEE 952 five-component model.
+/// Synthetic IMU using the IEEE 952 five-component model.
 #[derive(Clone, Debug)]
 pub struct SyntheticImu {
     sensor_id: SensorId,

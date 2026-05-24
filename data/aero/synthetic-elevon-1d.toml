@@ -1,34 +1,32 @@
-# Synthetic Schema-2 aero deck — single elevon axis (Phase 3.5).
+# Synthetic Schema-2 aero deck — single elevon axis.
 #
 # 4-axis tabulated deck (mach × alpha × beta × delta_e_deg). The
 # delta_e_deg axis encodes a body-flap pitch deflection in degrees;
 # the deck values are constructed so non-zero deflection visibly
 # perturbs the drag coefficient `CD`. At delta_e_deg = 0 this deck
 # is bit-equivalent to a Schema-1 deck with the same (mach, alpha,
-# beta) slice — that property is exercised by the Phase 3.5.B
-# parser tests.
+# beta) slice — that property is exercised by the parser tests.
 #
 # Generators (each evaluated on the cartesian product grid):
 #   CN(M, α, β, δ_e) = α_deg · (0.07 + 0.005 · M) + 0.020 · δ_e_deg
 #   CD(M, α, β, δ_e) = CD0(M) + 0.001 · α_deg² + 0.010 · |δ_e_deg|
 #   CM(M, α, β, δ_e) = -0.15 · CN(M, α, β, 0) + 0.050 · δ_e_deg
-# where CD0 is the Phase 2.5 finned-cylinder transonic curve.
+# where CD0 is the finned-cylinder transonic curve.
 #
-# The CD elevon perturbation is sized for the Phase 3.5.D
-# exit-criterion test: a 20° deflection adds 0.20 to CD on top of
-# CD0 ≈ 0.45 — a ~44% change at the maximum deflection. This is a
-# synthetic illustrative coefficient, not a fielded-vehicle aero
-# response.
+# The CD elevon perturbation is sized so a 20° deflection adds 0.20
+# to CD on top of CD0 ≈ 0.45 — a ~44% change at the maximum
+# deflection. This is a synthetic illustrative coefficient, not a
+# fielded-vehicle aero response.
 #
-# Reference area 0.05 m² and reference length 1.0 m match the Phase
-# 3.4 single-elevon airframe so the Phase 3.5.D scenario can swap
+# Reference area 0.05 m² and reference length 1.0 m match the
+# single-elevon airframe so the deflected-elevon scenario can swap
 # this deck in without changing the scenario's geometry.
 
 openbmp.aero_deck = 2
 
 reference.area_m2  = 0.05
 reference.length_m = 1.0
-provenance         = "synthetic; OpenBMP-authored; Phase 3.5.D exit-criterion deck"
+provenance         = "synthetic; OpenBMP-authored; single-elevon deflected-aero deck"
 validation         = "validated-toy"
 
 [grid]

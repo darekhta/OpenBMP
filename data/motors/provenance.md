@@ -110,7 +110,7 @@ transformation:
   script: none
 verification:
   method: >-
-    Same Phase-2.6 regression test as `synthetic-solid-textbook`
+    Same regression test as `synthetic-solid-textbook`
     but parameterised over both shipped motors. Asserts integrated
     impulse vs declared total to 1e-12 relative, mass at burnout
     equals dry mass exactly, mass-rate ≤ 0, and bit-stable lookups.
@@ -170,13 +170,13 @@ transformation:
     starting point prepended. The trapezoidal integral of the
     transcribed curve evaluates to 16.8391395 N·s in f64; the
     `burn.total_impulse_n_s` field declares this exact value so
-    the Phase-2.6 motor parser's tight-tolerance integral check
+    the motor parser's tight-tolerance integral check
     passes. The `burn.duration_s = 1.65` field matches the curve's
     last time exactly (the published manufacturer spec rounds this
     to 1.7 s for the data sheet). The
     `specific_impulse_s = 81.3798273021187` field is back-solved
     from `I = m_p · g_0 · Isp` with the declared propellant mass and
-    `g_0 = 9.80665` m/s² so the Phase-2.6 Isp consistency check
+    `g_0 = 9.80665` m/s² so the Isp consistency check
     passes within 1e-3 relative.
   script: none
 verification:
@@ -185,7 +185,7 @@ verification:
     deck via `include_str!` + `SolidMotor::load_from_str`, asserts
     `burn.duration_s = 1.65`, `total_impulse_n_s = 16.8391395`,
     `propellant_mass_kg = 0.0211`, and runs the deck through the
-    Phase-2.9 D12 sounding-rocket integration test (vertical-launch,
+    D12 sounding-rocket integration test (vertical-launch,
     USSA76 atmosphere, synthetic D12-class aero deck). The integration
     test asserts a tight physical sanity envelope and pins final-state
     and headline-metric bit patterns for replay drift detection.
@@ -226,7 +226,7 @@ source_title:     >-
   RASP `.eng` thrust-curve shape is used as the temporal envelope
   with the magnitudes scaled to the 7.5 N·s C6-family total
   impulse cited by Niskanen 2009 Chapter 6, which is the reference
-  total impulse the Phase-2.9 Niskanen Chapter-6 benchmark
+  total impulse the Niskanen Chapter-6 benchmark
   integrates against. The (0, 0) starting point is prepended to
   satisfy the OpenBMP requirement that `points[0].time = 0`
   exactly.
@@ -258,18 +258,18 @@ transformation:
     OpenBMP scales every upstream thrust value by
     0.8506065051209915 (= 7.5 / 8.817238). The committed decimal
     values integrate to 7.4999999999999485 N·s in f64, which matches
-    the declared 7.5 N·s within the Phase-2.6 motor parser's
+    the declared 7.5 N·s within the motor parser's
     tight-tolerance integral check. `burn.duration_s = 1.86` matches
     the curve's last time. `specific_impulse_s` back-solved from
     `I = m_p · g_0 · Isp` for `g_0 = 9.80665 m/s²` so the
-    Phase-2.6 Isp consistency check passes within 1e-3 relative.
+    Isp consistency check passes within 1e-3 relative.
   script: none
 verification:
   method: >-
     `crates/openbmp-vehicle/tests/sounding_rocket.rs` loads the
     deck via `include_str!` + `SolidMotor::load_from_str`, asserts
     `total_impulse_n_s = 7.5` and `burn_duration_s = 1.86`, and
-    runs the deck through the Phase-2.9 Niskanen Chapter-6
+    runs the deck through the Niskanen Chapter-6
     benchmark integration test. The benchmark asserts the
     simulated C6 apogee falls within ±5% of Niskanen's published
     experimental C6 value (151.5 m).
@@ -304,12 +304,12 @@ published reference impulse and documents the scale factor, as with the
 Niskanen C6 benchmark entry above.
 
 For delay-bearing hobby motors, the OpenBMP filename may omit the delay
-suffix when the Phase-2 motor model does not simulate ejection charges or
+suffix when the motor model does not simulate ejection charges or
 delays. The upstream RASP designation remains recorded in `source_title`
 and file comments.
 
 The `exit_area_m2` field on imported 18 mm Estes motors is currently an
-inert Phase-2 placeholder. With `ambient_pressure_correction = "constant"`,
+inert placeholder. With `ambient_pressure_correction = "constant"`,
 OpenBMP uses the thrust curve as-given. Unless a future pressure correction
 model consumes the value, it is documented as copied from the existing 18 mm
 C6 convention, not as a per-motor measured nozzle area.
@@ -334,7 +334,7 @@ source_title:     >-
   thrust curve is transcribed verbatim into the OpenBMP motor TOML
   schema with a (0, 0) starting point prepended. The upstream file
   is named "B4-4", but the thrust profile is the B4 burn; delay and
-  ejection-charge behaviour are outside OpenBMP's Phase-2 motor
+  ejection-charge behaviour are outside OpenBMP's motor
   model. The B4 motor is one of the two motors Niskanen 2009
   Chapter 6 Table 6.1 tabulates against experimental, OpenRocket,
   and RockSim apogees for the small-rocket benchmark; importing this
@@ -379,7 +379,7 @@ transformation:
     last time exactly. The `specific_impulse_s = 86.54396931334008`
     field is back-solved from `I = m_p · g_0 · Isp` with the
     declared propellant mass and `g_0 = 9.80665` m/s² so the
-    Phase-2.6 Isp consistency check passes within 1e-3 relative. The
+    Isp consistency check passes within 1e-3 relative. The
     `exit_area_m2 = 0.0000159` field is copied from the existing
     18 mm Estes C6 convention and is inert while
     `ambient_pressure_correction = "constant"` is selected.
@@ -414,8 +414,8 @@ safety_review:
 ## Why fielded-motor curves are rejected unless explicitly transcribed
 
 The OpenBMP motor format keeps the deck format open and the data
-either synthetic (this Phase 2 default) or transcribed from a
-public corpus with explicit provenance (the Phase 2.9 path).
+either synthetic (the default) or transcribed from a
+public corpus with explicit provenance (the converted-public path).
 Fielded-motor thrust curves from non-public corpora are explicitly
 rejected at the project level: those datasets often carry export-
 control or manufacturer-proprietary restrictions that OpenBMP
@@ -424,7 +424,7 @@ cannot ship under its CC0 / open-research positioning.
 The architecture's
 [§ Motor Format (in-house TOML)](../../docs/software-architecture.md#motor-format-in-house-toml)
 documents this policy. The synthetic motor decks carry
-`source_class: synthetic-openbmp`; the Phase 2.9 D12 deck carries
+`source_class: synthetic-openbmp`; the D12 deck carries
 `source_class: converted-public` with the SHA pin.
 
 ## `data/motors/cesaroni-m1670.toml`
@@ -446,7 +446,7 @@ source_title:     >-
   `data/motors/cesaroni/Cesaroni_M1670.eng` (same thrust profile;
   trailing-whitespace differences only). This manufacturer-mass
   rendering is kept as the direct `.eng` header transcription; the
-  Phase-3.11 RocketPy Calisto scenario uses the separate
+  RocketPy Calisto scenario uses the separate
   `rocketpy-calisto-m1670.toml` variant below because RocketPy
   constructs the motor mass from `SolidMotor` dry-mass and grain-
   geometry arguments instead of the `.eng` header mass.
@@ -461,7 +461,7 @@ methodology_reference: >-
   transcription of the RASP (time, thrust) pairs with the
   OpenBMP-required (0, 0) starting point prepended; no fit, no
   scaling. The trapezoidal integral matches the declared total
-  impulse to bit precision (Phase-2.6 motor parser tolerance).
+  impulse to bit precision (motor parser tolerance).
 methodology_urls:
   - https://www.thrustcurve.org/info/raspformat.html
   - https://www.thrustcurve.org/motors/Cesaroni/6026M1670-P/
@@ -478,7 +478,7 @@ transformation:
     `data/motors/Cesaroni_M1670.eng` (SHA-256 pinned above). The
     OpenBMP TOML at `data/motors/cesaroni-m1670.toml`
     transcribes the (time_s, thrust_N) pairs with a (0.0, 0.0)
-    starting point prepended per the Phase-2.6 motor parser
+    starting point prepended per the motor parser
     contract. `burn.duration_s` matches the curve's last time
     (3.9 s). `burn.total_impulse_n_s = 6026.350` is the
     trapezoidal integral of the prepended curve in f64 with
@@ -487,7 +487,7 @@ transformation:
     `g_0 = 9.80665 m/s²`. `geometry.exit_area_m2 = 0.003421194`
     matches RocketPy's Calisto example
     (`nozzle_radius = 33 mm`, `A = π · 0.033²`) so the
-    Phase-3.11 cross-tool apogee comparison applies the same
+    cross-tool apogee comparison applies the same
     vacuum-thrust correction on both sides.
   script: none
 verification:
@@ -536,7 +536,7 @@ source_title:     >-
   `SolidMotor` mass model inputs (`dry_mass = 1.815 kg` and
   grain-geometry propellant mass = 2.9559119613920224 kg). The
   resulting wet motor mass is 4.770911961392022 kg. This is the
-  motor file referenced by the Phase-3.11 RocketPy Calisto
+  motor file referenced by the RocketPy Calisto
   cross-tool scenario.
 source_authors:   >-
   Cesaroni Technology Inc. (motor + RASP file); RocketPy Team for

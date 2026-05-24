@@ -1,7 +1,7 @@
-//! Phase-3.5.D end-to-end test: schema-2 aero deck consumes
+//! End-to-end test: schema-2 aero deck consumes
 //! `EffectorState.actual` from the runner-side rack.
 //!
-//! Asserts the §3.5 exit criterion: the synthetic single-elevon
+//! Asserts: the synthetic single-elevon
 //! schema-2 scenario
 //! `scenarios/effector-elevon-aero/single-elevon-aero-deflected.toml`
 //! runs via `openbmp run`, the kernel completes with

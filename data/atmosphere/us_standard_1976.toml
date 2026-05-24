@@ -8,9 +8,9 @@
 #
 # OpenBMP loads the constants from
 # `openbmp-physics::atmosphere::us_standard_1976` (compiled in). This file
-# is the project-side declarative pin: the Phase-2.3.C regression test
+# is the project-side declarative pin: a regression test
 # verifies that the in-source values match what is declared here, and
-# the future Phase-2.10 `openbmp check-provenance` walk performs the
+# the `openbmp check-provenance` walk performs the
 # same check across every shipped data file.
 #
 # Units: SI on the model side (m, K, Pa, kg/m³, kg/mol). The USSA76

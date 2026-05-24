@@ -4,7 +4,7 @@
 //! Authoritative source pinned at `data/magnetic/WMM.COF` with the
 //! SHA-256 digest recorded in `data/magnetic/provenance.md`. The
 //! values below are a verbatim transcription; see the regression
-//! test in `tests/wmm_data_pin.rs` (Phase 3.10.E) for the round-trip
+//! test in `tests/wmm_data_pin.rs` for the round-trip
 //! check.
 //!
 //! Ordering: lexicographic by `(n, m)`, n in `[1, 12]`, m in `[0, n]`.

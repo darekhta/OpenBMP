@@ -11,7 +11,7 @@ interfaces *in this repository*, by keeping every flight-controller API
 the project itself ships consumable by simulator-local models, and by
 never shipping real fielded-vehicle parameter sets.
 
-Phase-3.14 reframed the architecture so the controller-side trait
+The architecture is framed so the controller-side trait
 surfaces (`Sensor`, `ControlEffector`, mission graph, model traits) are
 re-implementable against real hardware via a downstream HAL. The
 *project* still ships only the simulator and only validates against
@@ -198,7 +198,7 @@ is outside the project boundary.
 
 ## Naming Rules
 
-> **Phase 5.X cross-reference.** The mission-state vocabulary canon —
+> **Cross-reference.** The mission-state vocabulary canon —
 > the authoritative list of academic state names and the operational /
 > engagement-derived terms that are rejected — is in
 > [`mission-states-vocabulary.md`](mission-states-vocabulary.md). The

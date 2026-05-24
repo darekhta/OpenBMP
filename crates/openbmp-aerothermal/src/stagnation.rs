@@ -1,4 +1,4 @@
-//! Phase-6.4 stagnation-point heat-transfer models.
+//! Stagnation-point heat-transfer models.
 //!
 //! [`FayRiddell`] exposes both the cold-gas `HeatTransferModel` scaffold
 //! and a caller-supplied edge-state assembly path for the 1958
@@ -13,7 +13,7 @@ use openbmp_physics::AtmosphereSample;
 use crate::error::AerothermalError;
 
 /// Body station identifier used by distributed-heating consumers.
-/// Phase-6.4 stagnation models only need station == stagnation point;
+/// The stagnation models only need station == stagnation point;
 /// the type is exposed here for trait completeness.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub struct BodyStation {
@@ -93,7 +93,7 @@ pub struct StagnationHeating {
 
 /// Fay-Riddell boundary-layer edge and wall properties.
 ///
-/// This is the real-gas coupling point for the Phase-6.4 Fay-Riddell
+/// This is the real-gas coupling point for the Fay-Riddell
 /// assembly: an upstream equilibrium-air solver, CFD deck, or external
 /// reference package can provide the post-shock edge state and wall
 /// thermodynamics directly. OpenBMP does not infer these values here.
@@ -190,8 +190,8 @@ pub const SUTTON_GRAVES_K_EARTH_SI: f64 = 1.7415e-4;
 pub struct SuttonGraves {
     /// Earth-atmosphere constant. Use [`SUTTON_GRAVES_K_EARTH_SI`]
     /// unless the scenario opts into a different planetary body
-    /// (Phase 6 is Earth-only, so this is the value most callers
-    /// want).
+    /// (heat-transfer models are Earth-only, so this is the value
+    /// most callers want).
     pub k_earth_si: f64,
 }
 
@@ -256,12 +256,12 @@ impl HeatTransferModel for SuttonGraves {
 /// equilibrium-air data land.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FayRiddell {
-    /// Lewis number for the boundary layer (default 1.0 — Phase-6
+    /// Lewis number for the boundary layer (default 1.0 — the
     /// "near-unity-Le" simplification; equilibrium-air variants
     /// land in the follow-on slice).
     pub lewis_number: f64,
-    /// Dissociation-enthalpy contribution `h_D` (J/kg). Phase-6.4
-    /// ships the cold-gas degenerate value `0.0`; the real-gas
+    /// Dissociation-enthalpy contribution `h_D` (J/kg). The cold-gas
+    /// path ships the degenerate value `0.0`; the real-gas
     /// follow-on slice will compute this from the
     /// [`openbmp_physics::EquilibriumAir`] composition.
     pub h_dissociation_j_kg: f64,
@@ -402,7 +402,7 @@ impl HeatTransferModel for FayRiddell {
 ///
 /// Reserved until the published Earth-entry piecewise-polynomial
 /// velocity function and coefficients are imported with provenance.
-/// The initial Phase-6 implementation used a tuned power law; the
+/// An earlier implementation used a tuned power law; the
 /// audit removed that executable approximation rather than shipping
 /// an unverifiable radiative-heating value.
 #[derive(Copy, Clone, Debug, PartialEq)]

@@ -1,8 +1,7 @@
 //! Determinism oracle: byte-stable diff utilities.
 //!
-//! Phase-1 ships the byte-diff primitive. The "run scenario twice and
-//! compare telemetry" wrapper lands in Phase-1.8 alongside the first
-//! end-to-end golden test, when the kernel and CLI are available.
+//! Provides the byte-diff primitive plus a "run scenario twice and
+//! compare telemetry" wrapper used by the end-to-end golden tests.
 
 /// First divergence between two byte streams, including a length
 /// mismatch.
@@ -80,9 +79,8 @@ pub fn require_byte_stable(expected: &[u8], actual: &[u8]) -> Result<(), ByteDif
 
 /// Run a deterministic fixture twice and require byte-identical output.
 ///
-/// The closure shape lets Phase 1.8 pass a scenario runner once the
-/// kernel exists, while Phase 1.6 can still validate the replay
-/// contract with pure byte fixtures.
+/// The closure shape lets callers pass a scenario runner, while the
+/// replay contract can still be validated with pure byte fixtures.
 ///
 /// # Errors
 ///

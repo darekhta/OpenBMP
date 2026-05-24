@@ -2,7 +2,7 @@ case = "diff-flatness-figure-eight-allocator-rigid-body-8000-steps"
 source = "Synthetic; same lemniscate waypoints as scenarios/diff-flatness-figure-eight, with two redundant roll-torque effectors and the prioritised_redistributed allocator. See scenarios/diff-flatness-figure-eight-allocator/provenance.md."
 validation = "experimental"
 
-# Phase 5.A.5 tolerance bench. The figure-eight reference is the
+# Allocator tolerance bench. The figure-eight reference is the
 # same as the parent scenario, but the roll axis is split across
 # two `direct_torque` effectors and the
 # `prioritised_redistributed` allocator distributes the autopilot's

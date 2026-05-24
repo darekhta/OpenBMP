@@ -1,4 +1,4 @@
-//! Phase-3.7 runner-side tank rack.
+//! Runner-side tank rack.
 //!
 //! The rack owns a `BTreeMap<TankId, openbmp_vehicle::Tank>` resolved
 //! from the scenario's `[[vehicle.assembly.tanks]]` block, plus the
@@ -9,8 +9,8 @@
 //! Each kernel base tick the runner:
 //!
 //! 1. Drains every tank by its scenario-declared
-//!    `drain_rate_kg_per_s` (Phase-3.7 ships drain decoupled from
-//!    engine-cluster mdot; that coupling is a Phase-3.X follow-on).
+//!    `drain_rate_kg_per_s` (drain is decoupled from
+//!    engine-cluster mdot).
 //! 2. Steps every tank using the **prior step's** cached
 //!    `(accel_body, omega_body)`. The runner caches the freshly-
 //!    computed drivers from the step that just completed via
@@ -20,8 +20,8 @@
 //!    TankSnapshot>` via [`TankRack::snapshot_map`] and pushes it
 //!    into the kernel via `set_tank_snapshot(...)`.
 //!
-//! Phase-3.7 leaves the kernel's force / moment / mass evaluation
-//! untouched when the rack is empty — legacy scenarios produce
+//! The rack leaves the kernel's force / moment / mass evaluation
+//! untouched when it is empty — legacy scenarios produce
 //! byte-identical Parquet because the runner short-circuits every
 //! rack-related operation on `is_empty()`.
 //!
@@ -58,9 +58,8 @@ use crate::error::RunnerError;
 pub struct TankRack {
     tanks: BTreeMap<TankId, Tank>,
     dt: Duration,
-    /// Per-tank scenario-declared drain rates (kg/s). Phase-3.7
-    /// ships drain decoupled from engines; future phase ties this
-    /// to cluster mdot.
+    /// Per-tank scenario-declared drain rates (kg/s). Drain is
+    /// decoupled from engines.
     drain_rates_kg_per_s: BTreeMap<TankId, f64>,
     /// Cached `(accel_body_m_s2, omega_body_rad_s)` from the prior
     /// kernel step. Initialised to zeros at construction.
@@ -194,7 +193,7 @@ impl TankRack {
     }
 }
 
-/// Phase-3.7 tank resolver: scenario `TankConfig` → openbmp-vehicle
+/// Tank resolver: scenario `TankConfig` → openbmp-vehicle
 /// `Tank` with the appropriate `Box<dyn MovingMassModel>` inner.
 fn build_tank(config: &TankConfig) -> Result<(TankId, Tank), RunnerError> {
     let path = format!("vehicle.assembly.tanks.{id}", id = config.id);

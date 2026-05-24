@@ -1,4 +1,4 @@
-# Tolerance table for the Phase-1.3 headline analytic-toy validation.
+# Tolerance table for the headline analytic-toy validation.
 #
 # Scenario: 1 kg point mass at rest at the origin, falling under
 # constant gravity g = -9.80665 m/s² (along ECI -Z), integrated for

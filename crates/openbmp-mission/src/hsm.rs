@@ -1,4 +1,4 @@
-//! Hierarchical state machine primitives (Phase 5.X.C).
+//! Hierarchical state machine primitives.
 //!
 //! Complements the flat [`crate::MissionPhaseGraph`] with a
 //! hierarchical Harel-style state machine: parent / child
@@ -633,7 +633,7 @@ mod tests {
         assert!(matches!(err, HsmError::ParentCycle { .. }));
     }
 
-    // Phase 5.X.C revision: flat hierarchies (every state has
+    // Flat hierarchies (every state has
     // parent=None) are valid HSMs — siblings are connected via the
     // transition graph, not the parent relation. The
     // unreachable_state validation was removed; reachability is the

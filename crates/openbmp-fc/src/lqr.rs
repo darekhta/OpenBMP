@@ -1,4 +1,4 @@
-//! Per-axis 2-state LQR for the rate loop (Phase 5.A.3.B).
+//! Per-axis 2-state LQR for the rate loop.
 //!
 //! Supplies the optimal full-state feedback gains for a single
 //! body axis under the standing project assumption that the

@@ -126,7 +126,7 @@ impl SolidMotor {
             "constant" => AmbientPressureCorrection::Constant,
             _ => {
                 return Err(MotorError::MalformedMotor {
-                    reason: "geometry.ambient_pressure_correction must be \"constant\" in Phase 2",
+                    reason: "geometry.ambient_pressure_correction must be \"constant\"",
                 });
             }
         };

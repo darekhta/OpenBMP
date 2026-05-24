@@ -1,11 +1,11 @@
-# Phase-5.A.4 MPC sibling of the diff-flatness figure-eight.
+# MPC sibling of the diff-flatness figure-eight.
 #
 # Identical to `scenarios/diff-flatness-figure-eight` except for one
 # pair of fields under `[fc.autopilot_params]`:
 #
 #   - `attitude_loop_kind = "mpc"` swaps the per-axis PID attitude
-#     loop for the receding-horizon attitude MPC shipped in
-#     Phase 5.A.4 (Clarabel-backed, deterministic settings).
+#     loop for the receding-horizon attitude MPC
+#     (Clarabel-backed, deterministic settings).
 #   - `[fc.autopilot_params.attitude_mpc]` declares the horizon
 #     length, per-axis stage / terminal cost weights, and the
 #     box rate-command bound the MPC enforces over every horizon
@@ -20,7 +20,7 @@ openbmp.scenario = 3
 
 [meta]
 name        = "diff-flatness-figure-eight-mpc"
-description = "Phase-5.A.4 receding-horizon attitude-MPC sibling of diff-flatness-figure-eight; identical except attitude_loop_kind = \"mpc\" and the [fc.autopilot_params.attitude_mpc] block."
+description = "Receding-horizon attitude-MPC sibling of diff-flatness-figure-eight; identical except attitude_loop_kind = \"mpc\" and the [fc.autopilot_params.attitude_mpc] block."
 validation  = "experimental"
 provenance  = "synthetic; identical to diff-flatness-figure-eight modulo the attitude-MPC swap. See provenance.md."
 
@@ -55,7 +55,7 @@ dry_inertia_body_kg_m2 = [
   [0.0, 0.0, 1.0],
 ]
 
-# Phase-5.A.2.A: three direct-torque effectors, one per body axis. The
+# Three direct-torque effectors, one per body axis. The
 # autopilot publishes its rate-loop torque commands as
 # aileron_rad / elevator_rad / rudder_rad; the channel map below
 # routes them to the matching effector. The kernel-side
@@ -165,7 +165,7 @@ trajectory_loop_enabled  = true
 trajectory_kind          = "minimum_snap"
 attitude_loop_kind       = "mpc"
 
-# Phase-5.A.4 attitude-MPC parameters. Horizon 20 ticks (= 20 ms)
+# Attitude-MPC parameters. Horizon 20 ticks (= 20 ms)
 # at the 1 kHz autopilot rate is a short command-level lookahead. The
 # MPC models attitude-error integration into commanded body rate; the
 # downstream rate-loop dynamics and actuator limits remain outside the

@@ -46,13 +46,13 @@ use crate::stop::StopCondition;
 /// Configuration for [`SimulationKernel`].
 ///
 /// Generic over the integrated state type `S`, the integrator, force
-/// model, mass model, environment model, and stop condition. Phase
-/// 2.1.A introduces the `S: SimState` parameter; Phase 2.1.C adds the
-/// rigid-body `step()` impl alongside the existing point-mass one.
+/// model, mass model, environment model, and stop condition. The
+/// `S: SimState` parameter selects the state type; both point-mass
+/// and rigid-body `step()` impls are provided.
 ///
 /// `MM` is intentionally unconstrained at the struct level so the same
-/// kernel struct can carry both Phase-1 [`MassModel`] (point-mass
-/// scalar mass) and Phase-2.1.C [`crate::models::RigidMassModel`]
+/// kernel struct can carry both a scalar [`MassModel`] (point-mass
+/// scalar mass) and a [`crate::models::RigidMassModel`]
 /// (full mass / inertia / CG). Each impl block constrains `MM`
 /// per the integrated state type.
 #[derive(Debug)]
@@ -121,8 +121,8 @@ where
 {
     /// Construct a kernel config from a trajectory [`SolverProfile`].
     ///
-    /// This is the sim-owned dispatch path for Phase 6.0: callers
-    /// supply the physics models and stop condition exactly as before,
+    /// This is the sim-owned dispatch path for hypersonic profiles:
+    /// callers supply the physics models and stop condition as usual,
     /// while `openbmp-sim` builds the concrete [`ProfiledIntegrator`]
     /// consumed by [`SimulationKernel`]. Fixed-step profiles must
     /// declare the same `dt` as the kernel macro-step.
@@ -153,8 +153,8 @@ where
 
 /// The lockstep simulation kernel.
 ///
-/// Generic over `S: SimState`. Phase-1 / Phase-2.1.A impls `step()`
-/// for `S = PointMassState` (`MM: MassModel`); Phase 2.1.C adds the
+/// Generic over `S: SimState`. Implements `step()`
+/// for `S = PointMassState` (`MM: MassModel`) and the
 /// `S = RigidBodyState` impl (`MM = RigidModels<MOM, RigidMassModel>`).
 #[derive(Debug)]
 pub struct SimulationKernel<S, I, F, MM, E, SC>
@@ -185,7 +185,7 @@ where
     mission_events_typed: Vec<crate::events::EventBinding<crate::events::MissionAction>>,
     /// Simulator-only scenario-script action bindings.
     script_events_typed: Vec<crate::events::EventBinding<crate::events::ScenarioScriptAction>>,
-    /// Phase-3.2 mission graph. `None` when no `[mission]` block is
+    /// Mission graph. `None` when no `[mission]` block is
     /// declared.
     mission_graph: Option<crate::events::MissionPhaseGraph>,
     /// Lifted HSM used for transition entry / exit / active actions.
@@ -205,15 +205,15 @@ where
     /// Previous-step `EventScalars`, fed into the trigger evaluator
     /// for crossing detection. `None` on step 0.
     previous_event_scalars: Option<crate::events::EventScalars>,
-    /// Phase-3.5: kernel-owned snapshot of effector-actuals values
+    /// Kernel-owned snapshot of effector-actuals values
     /// keyed by deck-axis name. The runner refreshes this map via
     /// [`Self::set_effector_actuals`] before each `step()` call so
     /// every RK4 stage sees the same snapshot. Empty `BTreeMap` for
     /// legacy / Schema-1 scenarios — schema-1 decks ignore the view
     /// the closure passes through, so legacy code paths produce
-    /// byte-identical Parquet to pre-3.5.
+    /// byte-identical Parquet to the map-free path.
     effector_actuals: std::collections::BTreeMap<String, f64>,
-    /// Phase-3.6: kernel-owned snapshot of per-engine state, keyed
+    /// Kernel-owned snapshot of per-engine state, keyed
     /// by `EngineId`. The runner refreshes this map via
     /// [`Self::set_engine_snapshot`] before each `step()` call so
     /// every RK4 stage sees the same snapshot. Empty `BTreeMap` for
@@ -222,23 +222,23 @@ where
     /// produce byte-identical Parquet.
     engine_snapshot:
         std::collections::BTreeMap<openbmp_core::EngineId, openbmp_propulsion::EngineSnapshot>,
-    /// Phase-3.7: kernel-owned snapshot of per-tank state, keyed by
+    /// Kernel-owned snapshot of per-tank state, keyed by
     /// [`openbmp_core::TankId`]. Refreshed via
     /// [`Self::set_tank_snapshot`] before each `step()` call so
     /// every RK4 stage sees the same snapshot. Empty `BTreeMap` for
     /// scenarios without `[[vehicle.assembly.tanks]]` — tank-rack
-    /// adapters short-circuit on the empty view, preserving pre-3.7
-    /// byte output.
+    /// adapters short-circuit on the empty view, preserving the
+    /// tank-free byte output.
     tank_snapshot: std::collections::BTreeMap<openbmp_core::TankId, TankSnapshot>,
-    /// Phase-3.8: optional kernel-owned NED wind sample pushed by the
+    /// Optional kernel-owned NED wind sample pushed by the
     /// runner-side `WindRack`. When `Some`, the kernel splices it
     /// into the `EnvironmentSample.wind_ned_m_s` field at every RK4
     /// stage so all four stages see the same wind. When `None` (no
     /// `[wind]` block, or `kind = "none"`), the environment sample's
-    /// default-zero wind flows through, preserving pre-3.8 byte
+    /// default-zero wind flows through, preserving the wind-free byte
     /// output.
     wind_sample_override: Option<nalgebra::Vector3<f64>>,
-    /// Phase-3.9: kernel-owned snapshot of per-recovery-device state,
+    /// Kernel-owned snapshot of per-recovery-device state,
     /// keyed by [`openbmp_core::RecoveryId`]. Refreshed via
     /// [`Self::set_recovery_snapshot`] before each `step()` call so
     /// every RK4 stage sees the same snapshot. Empty `BTreeMap` for
@@ -351,7 +351,7 @@ where
     /// fails, [`SimulationError::Time`] if the step counter overflows,
     /// or [`SimulationError::InvalidPostStepState`] if the integrated
     /// state fails post-step validation.
-    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)] // step values stay well under 2^52; Phase 3.8 added wind splice
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)] // step values stay well under 2^52; wind splice expands the body
     pub fn step(&mut self) -> Result<(), SimulationError> {
         if self.stopped.is_some() {
             return Ok(());
@@ -443,7 +443,7 @@ where
         let canonical_time_s = self.initial_time_s + (next_step.value() as f64) * self.dt_s;
         let new_state = raw_new.with_time(SimTime::from_seconds(canonical_time_s));
 
-        // Phase-3.2 event evaluation. Early-exit when no events are
+        // Event evaluation. Early-exit when no events are
         // declared so legacy scenarios stay bit-stable.
         if self.has_event_bindings() {
             if self.previous_event_scalars.is_none() {
@@ -460,10 +460,10 @@ where
                 altitude_m: new_state.position.vector.z,
                 vertical_velocity_m_s: new_state.velocity.vector.z,
                 mass_fraction: new_state.mass.get::<kilogram>() / self.initial_mass_kg,
-                // Phase-3.2: kernel does not yet wire atmosphere into
+                // The kernel does not wire atmosphere into
                 // the trigger eval; dynamic pressure is reported as
-                // 0.0 regardless of altitude. Phase 3.4 will route
-                // the atmosphere model here.
+                // 0.0 regardless of altitude. The atmosphere model
+                // would route in here.
                 dynamic_pressure_pa: 0.0,
             };
             self.evaluate_events(scalars, next_step, SimTime::from_seconds(canonical_time_s));
@@ -578,7 +578,7 @@ where
 }
 
 // ---------------------------------------------------------------------
-// Shared event-evaluation helper (Phase 3.2)
+// Shared event-evaluation helper
 // ---------------------------------------------------------------------
 
 impl<S, I, F, MM, E, SC> SimulationKernel<S, I, F, MM, E, SC>
@@ -604,7 +604,7 @@ where
         &self.mission_events_typed
     }
 
-    /// Phase 5.X.A: simulator-only scenario-script bindings view.
+    /// Simulator-only scenario-script bindings view.
     #[must_use]
     pub fn script_bindings(
         &self,
@@ -714,7 +714,7 @@ where
     }
 
     /// Replace the effector-actuals snapshot consumed by per-step
-    /// force / moment evaluation. Phase-3.5 contract: the runner
+    /// force / moment evaluation. Contract: the runner
     /// calls this **before** every `step()` invocation, with a map
     /// keyed by deck-axis name and valued by the rack's
     /// `EffectorState.actual` for the matching effector. The
@@ -737,7 +737,7 @@ where
     }
 
     /// Replace the per-engine snapshot consumed by force / moment /
-    /// mass evaluation. Phase-3.6 contract: the runner's
+    /// mass evaluation. Contract: the runner's
     /// `EngineRack` calls this before every `step()` invocation,
     /// keyed by `EngineId` and valued by the engine's
     /// `EngineSnapshot` at the time the snapshot was taken. Held
@@ -768,7 +768,7 @@ where
     }
 
     /// Replace the per-tank snapshot consumed by force / moment /
-    /// mass evaluation. Phase-3.7 contract: the runner's `TankRack`
+    /// mass evaluation. Contract: the runner's `TankRack`
     /// calls this before every `step()` invocation, keyed by
     /// [`openbmp_core::TankId`] and valued by a [`TankSnapshot`]
     /// with the tank's `mass_contribution()` and `reaction_body()`
@@ -792,7 +792,7 @@ where
     }
 
     /// Replace the per-recovery-device snapshot consumed by force
-    /// evaluation. Phase-3.9 contract: the runner's `RecoveryRack`
+    /// evaluation. Contract: the runner's `RecoveryRack`
     /// calls this before every `step()` invocation, keyed by
     /// [`openbmp_core::RecoveryId`] and valued by a
     /// [`RecoverySnapshot`] with the device's current phase, drag
@@ -817,7 +817,7 @@ where
         &self.recovery_snapshot
     }
 
-    /// Replace the kernel-spliced NED wind sample (Phase 3.8). The
+    /// Replace the kernel-spliced NED wind sample. The
     /// runner's `WindRack` calls this before every `step()` so all
     /// four RK4 stages observe the same wind. Scenarios without a
     /// non-`none` `[wind]` block skip the call; the underlying
@@ -843,7 +843,7 @@ where
     /// recorded into their typed drain queues, graph transitions are
     /// applied only on the pure-sim path, and the once-fired set is
     /// updated after each firing.
-    #[allow(clippy::match_same_arms)] // Phase-3.2 deferred actions vs. runner-side markers
+    #[allow(clippy::match_same_arms)] // deferred actions vs. runner-side markers
     fn evaluate_events(
         &mut self,
         scalars: crate::events::EventScalars,
@@ -877,7 +877,7 @@ where
             transitioned |= graph_transitioned;
             match &binding.action {
                 crate::events::MissionAction::EnterState(phase) => {
-                    // Phase 5.X.B: when FC owns mission state,
+                    // When FC owns mission state,
                     // ignore in-binding phase entries — the commander
                     // already applied them. When pure-sim, the graph
                     // transition table takes precedence; direct
@@ -1022,7 +1022,7 @@ where
 }
 
 // ---------------------------------------------------------------------
-// Rigid-body kernel `step()` (Phase 2.1.C)
+// Rigid-body kernel `step()`
 //
 // Parallel to the point-mass impl above. Differences:
 //
@@ -1034,7 +1034,7 @@ where
 //   - Euler equation: `ω_dot = I⁻¹ (M − ω × Iω − I_dot · ω)`
 // ---------------------------------------------------------------------
 
-/// Phase-2 type alias for the rigid-body kernel shape.
+/// Type alias for the rigid-body kernel shape.
 pub type RigidBodyKernel<I, F, MOM, MM, E, SC> =
     SimulationKernel<openbmp_state::RigidBodyState, I, F, RigidModels<MOM, MM>, E, SC>;
 
@@ -1057,7 +1057,7 @@ const POST_STEP_QUATERNION_TOL: f64 = 1.0e-9;
 const POST_STEP_INERTIA_TOL: f64 = 1.0e-9;
 
 /// Sentinel model id for kernel-internal rigid-body equation checks.
-/// Real Phase-3 vehicle models will supply stable model ids; this
+/// Real vehicle models supply stable model ids; this
 /// avoids overloading `ModelId::default()` for an internal algebraic
 /// failure.
 const RIGID_BODY_EQUATIONS_MODEL_ID: openbmp_core::ModelId = openbmp_core::ModelId::new(u64::MAX);
@@ -1088,9 +1088,9 @@ fn mass_properties_bits_equal(
 
 /// Wrapper bundle so the rigid-body kernel can carry a moment model
 /// and a rigid mass model in the single `MM` slot of
-/// `SimulationKernel`. Phase 3's `VehicleAssembly` work removes this
-/// wrapping; for Phase 2 it keeps the kernel struct's six type
-/// parameters stable.
+/// `SimulationKernel`. This keeps the kernel struct's six type
+/// parameters stable; the `VehicleAssembly` path supersedes the
+/// wrapping at the scenario layer.
 ///
 /// Implementing nothing on its own — the rigid-body impl block uses
 /// the bundled types directly.
@@ -1307,7 +1307,7 @@ where
         let canonical_time_s = self.initial_time_s + (next_step.value() as f64) * self.dt_s;
         let new_state = raw_new.with_time(SimTime::from_seconds(canonical_time_s));
 
-        // Phase-3.2 event evaluation. Early-exit when no events are
+        // Event evaluation. Early-exit when no events are
         // declared so legacy byte-stability is preserved.
         if self.has_event_bindings() {
             if self.previous_event_scalars.is_none() {
@@ -1325,8 +1325,8 @@ where
                 altitude_m: new_state.position.vector.z,
                 vertical_velocity_m_s: new_state.velocity.vector.z,
                 mass_fraction: new_state.mass_props.mass.get::<kilogram>() / self.initial_mass_kg,
-                // Phase-3.2: see point-mass kernel comment — atmosphere
-                // is not yet wired into the trigger eval.
+                // See point-mass kernel comment — atmosphere
+                // is not wired into the trigger eval.
                 dynamic_pressure_pa: 0.0,
             };
             self.evaluate_events(scalars, next_step, SimTime::from_seconds(canonical_time_s));
@@ -1392,7 +1392,7 @@ where
     /// Environment sample at the current state and time.
     ///
     /// Mirrors the sample shape passed to force and moment models during
-    /// a kernel derivative evaluation, including the Phase-3.8 wind
+    /// a kernel derivative evaluation, including the wind
     /// override splice.
     ///
     /// # Errors

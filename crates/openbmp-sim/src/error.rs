@@ -12,9 +12,9 @@ use thiserror::Error;
 
 /// Re-export of [`openbmp_models::ModelEvalError`] for back-compat.
 ///
-/// Phase-3.14.A moved this error to `openbmp-models`. The
+/// This error lives in `openbmp-models`. The
 /// `openbmp_sim::ModelEvalError` path stays valid so existing
-/// imports keep compiling during the transition phase.
+/// imports keep compiling.
 pub use openbmp_models::ModelEvalError;
 
 /// Aggregated error type returned by [`crate::SimulationKernel`] methods.

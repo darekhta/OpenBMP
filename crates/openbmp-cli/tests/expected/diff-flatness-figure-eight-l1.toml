@@ -2,8 +2,8 @@ case = "diff-flatness-figure-eight-l1-vs-baseline-8000-steps"
 source = "Synthetic; sibling scenarios scenarios/diff-flatness-figure-eight-l1 and scenarios/diff-flatness-figure-eight-baseline. See provenance.md in each."
 validation = "experimental"
 
-# Phase 5.A.2.D tolerance bench. Both scenarios share the
-# rigid-body figure-eight from Phase 5.A.2.A and a `ReducedRate
+# L1-vs-baseline tolerance bench. Both scenarios share the
+# rigid-body figure-eight baseline and a `ReducedRate
 # { factor = 0.7 }` fault on the roll-torque effector. The L1 sibling
 # additionally activates the per-axis Cao-Hovakimyan L1 augmentation
 # on the rate loop. The test asserts:

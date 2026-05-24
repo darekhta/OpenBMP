@@ -1,19 +1,19 @@
-//! Phase-5.A.5 control-allocation primitives.
+//! Control-allocation primitives.
 //!
-//! The Phase-4 actuator-channel mapping in `mixer.rs` assumes a 1:1
+//! The actuator-channel mapping in `mixer.rs` assumes a 1:1
 //! correspondence between the autopilot's semantic channel surface
 //! (`aileron / elevator / rudder / body_flap`) and a single
 //! `direct_torque` effector per channel. With more than one
 //! effector contributing to a body axis — a 4-thruster RCS bank
 //! with redundant roll authority, or a multi-engine cluster sharing
-//! pitch/yaw — that 1:1 assumption breaks. Phase 5.A.5 ships a
-//! prioritised redistributed allocator that consumes the
+//! pitch/yaw — that 1:1 assumption breaks. A
+//! prioritised redistributed allocator consumes the
 //! per-axis torque demand from
 //! [`crate::topics::ActuatorCommand`] and emits a per-effector
 //! [`crate::topics::EffectorCommandSet`] honouring each effector's
 //! symmetric box bound.
 //!
-//! # Scope (Phase 5.A.5)
+//! # Scope
 //!
 //! - `direct_torque` effectors only: each effector contributes to
 //!   exactly one body axis. The allocator's job per axis is then
@@ -119,7 +119,7 @@ pub enum AllocatorError {
     },
     /// Asymmetric box bound — `min ≠ −max`.
     #[error(
-        "allocator: effector {effector_id:?} requires symmetric limits in Phase 5.A.5; \
+        "allocator: effector {effector_id:?} requires symmetric limits; \
          got min = {min}, max = {max}"
     )]
     AsymmetricLimits {
@@ -161,7 +161,7 @@ pub struct EffectorAxisAssignment {
     pub max_abs: f64,
 }
 
-/// Phase-5.A.5 prioritised redistributed allocator.
+/// Prioritised redistributed allocator.
 ///
 /// Built from a body-axis priority permutation and a list of
 /// per-effector axis assignments; constructed once at scenario

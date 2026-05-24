@@ -1,4 +1,4 @@
-//! Phase-5.A.3.C end-to-end test: per-axis INDI rate loop tracks the
+//! End-to-end test: per-axis INDI rate loop tracks the
 //! diff-flatness figure-eight without runaway and stays byte-stable
 //! across reruns.
 //!
@@ -20,7 +20,8 @@
 //!
 //! Closed-loop comparison against the PID baseline + L1 + LQR
 //! siblings, including an inertia-mismatch variant that showcases
-//! INDI's hallmark robustness, is Phase 5.A.3.D scope.
+//! INDI's hallmark robustness, lives in the controller comparison
+//! harness.
 
 #![cfg(feature = "indi")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]

@@ -2,12 +2,12 @@
 
 L3 simulator-only scenario-script actions.
 
-**Status:** Phase 5.X.A — extracted from `openbmp-mission` as part of
-the action-taxonomy split. Ships `ScenarioScriptAction` carrying the
+**Status:** Implemented. Ships `ScenarioScriptAction` carrying the
 four simulator-only physics-override variants (engine command,
 effector override, scripted separation, recovery deploy) that the
 runner's `EngineRack` / `EffectorRack` / `RecoveryRack` consume each
-rack tick.
+rack tick. The action taxonomy is separate from the HAL-portable
+mission-action vocabulary in `openbmp-mission`.
 
 ## Purpose
 
@@ -29,7 +29,7 @@ action targets a sim-only physics override.
 ## Units and Frames
 
 Per-variant scalar payloads carry the same unit / frame conventions
-as the Phase-3 actuator-rack interfaces: throttle in `[0, 1]`,
+as the actuator-rack interfaces: throttle in `[0, 1]`,
 gimbal angles in radians, generic effector commands in deck-defined
 units. The crate carries no dimensional types itself.
 
@@ -41,9 +41,8 @@ sees `ScenarioScriptAction`.
 
 ## Validity Range
 
-Variants are wire-compatible across the Phase 5.X.A → 5.X.F
-migration window. Phase 5.X.F locks the action vocabulary as
-part of the scenario format v4 contract.
+The action vocabulary is locked as part of the scenario format v4
+contract.
 
 ## Determinism
 
@@ -56,7 +55,7 @@ lists).
 
 Per-variant docstring tests; cross-crate compile test in
 `openbmp-sim` confirms the action type round-trips through the
-binding generic. The Phase-5 determinism CI gate exercises every
+binding generic. The determinism CI gate exercises every
 shipped scenario that uses these variants.
 
 ## Data Provenance

@@ -1,14 +1,13 @@
-//! Event triggers and mission-phase graph (Phase 3.2).
+//! Event triggers and mission-phase graph.
 //!
-//! Phase-3.2 introduced declarative event-driven scheduling that
-//! replaced the Phase-2 hard-coded apogee detector. Scenarios declare
+//! Declarative event-driven scheduling: scenarios declare
 //! a `[mission]` block of phases, events, and transitions; the
 //! consumer (sim-side: post-integration tick; HAL-side: controller
 //! tick or hardware-timer ISR) evaluates events at its own cadence
 //! and either emits telemetry markers, transitions the active phase,
 //! or halts the run.
 //!
-//! Phase-3.15.D made the cadence vocabulary explicit: this crate
+//! The cadence vocabulary is explicit: this crate
 //! ships only the data shapes + the trigger trait + the graph
 //! validator. The consumer drives the evaluation cadence; the
 //! mission graph itself is cadence-agnostic. `SimTime` and
@@ -23,10 +22,9 @@
 //! - [`PhaseId`], [`EventId`] — stable, path-derived identifiers.
 //! - [`Phase`], [`PhaseTransition`] — graph node / edge data shapes.
 //! - [`MissionPhaseGraph`] — acyclic phase graph with topological-sort
-//!   stability. Phase 3.2.A ships the data shape only; the
-//!   constructor + reachability checks land in 3.2.B.
+//!   stability, with a constructor plus reachability checks.
 //! - [`EventTrigger`] — trait implemented by event predicates.
-//! - [`BuiltInEventTrigger`] — Phase-3.2 declarative trigger set.
+//! - [`BuiltInEventTrigger`] — declarative trigger set.
 //! - [`EventBinding`] — bridges trigger → action.
 //! - [`EventEvalState`], [`EventScalars`] — per-tick snapshot threaded
 //!   into trigger evaluation.
@@ -44,7 +42,7 @@
 //!   crossings (e.g. a rocket bouncing through an altitude bound on
 //!   ascent and again on descent).
 //!
-//! See `docs/scenario-format.md § Mission blocks (Phase 3.2)` and
+//! See `docs/scenario-format.md § Mission blocks` and
 //! `docs/software-architecture.md § MissionPhaseGraph and Event
 //! Scheduling` for the contract.
 
@@ -148,18 +146,18 @@ const fn fnv1a_64(bytes: &[u8]) -> u64 {
 pub struct EventScalars {
     /// Elapsed monotonic time in seconds.
     pub time_s: f64,
-    /// ECI +z component of the position vector. Phase-3.2 treats this
-    /// as the altitude proxy; multi-launch-site coordinates are deferred
-    /// to a later phase.
+    /// ECI +z component of the position vector. Treated as the
+    /// altitude proxy; multi-launch-site coordinates are out of
+    /// scope here.
     pub altitude_m: f64,
-    /// ECI +z component of the velocity vector. Phase-3.2 treats this
-    /// as vertical velocity for apogee / ascent / descent detection.
+    /// ECI +z component of the velocity vector. Treated as vertical
+    /// velocity for apogee / ascent / descent detection.
     pub vertical_velocity_m_s: f64,
     /// Current mass divided by initial mass.
     pub mass_fraction: f64,
-    /// Dynamic pressure (Pa). Phase 3.2 leaves this at `0.0`; scenario
-    /// parsing rejects [`BuiltInEventTrigger::AtDynamicPressure`] until
-    /// Phase 3.4 wires atmosphere into event evaluation.
+    /// Dynamic pressure (Pa). Left at `0.0` until atmosphere is wired
+    /// into event evaluation; scenario parsing rejects
+    /// [`BuiltInEventTrigger::AtDynamicPressure`] in the meantime.
     pub dynamic_pressure_pa: f64,
 }
 
@@ -191,7 +189,7 @@ pub struct EventEvalState {
 /// tick, hardware-timer interrupt). Returning `true` causes the
 /// consumer to record a [`FiredEvent`] for the binding.
 ///
-/// Phase-3.15.D clarification: the `t: SimTime` and `step: StepIndex`
+/// The `t: SimTime` and `step: StepIndex`
 /// arguments are intentionally cadence-neutral — `SimTime` is the
 /// monotonic time at the tick (sim-side: scenario time; HAL-side:
 /// hardware monotonic counter normalised to controller start), and
@@ -203,14 +201,13 @@ pub trait EventTrigger {
     fn fired(&self, state: &EventEvalState, t: SimTime, step: StepIndex) -> bool;
 }
 
-/// Phase-3.2 declarative trigger set. Every variant is a crossing
+/// Declarative trigger set. Every variant is a crossing
 /// detector: it returns `true` only on the tick where the monitored
 /// value transitions across the trigger threshold.
 ///
 /// `Scripted` is intentionally not part of the enum — closure-based
-/// triggers are deferred to Phase 3.4 alongside `ControlEffector`.
-/// Scenarios that declare `kind = "scripted"` are rejected at parse
-/// time.
+/// triggers are out of scope here. Scenarios that declare
+/// `kind = "scripted"` are rejected at parse time.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BuiltInEventTrigger {
     /// Fires the first tick where elapsed monotonic time crosses `time_s`.
@@ -233,8 +230,8 @@ pub enum BuiltInEventTrigger {
     },
     /// Fires the first tick where vertical velocity flips from
     /// strictly positive to non-positive — the apogee tick under
-    /// fixed-step integration. Sub-tick apogee localization is a
-    /// Phase-5 adaptive-integrator concern.
+    /// fixed-step integration. Sub-tick apogee localization is an
+    /// adaptive-integrator concern.
     AtApogee,
     /// Fires the first tick where mass fraction (current / initial)
     /// drops to or below `remaining`.
@@ -255,7 +252,7 @@ pub enum BuiltInEventTrigger {
 
 impl EventTrigger for BuiltInEventTrigger {
     fn fired(&self, state: &EventEvalState, _t: SimTime, _step: StepIndex) -> bool {
-        // All Phase-3.2 triggers are crossing detectors and return
+        // All built-in triggers are crossing detectors and return
         // `false` on the first tick (no previous-tick snapshot).
         let Some(prev) = state.previous.as_ref() else {
             return false;
@@ -284,7 +281,7 @@ impl EventTrigger for BuiltInEventTrigger {
 }
 
 // ---------------------------------------------------------------------
-// Region identifiers (Phase 5.X.D)
+// Region identifiers
 // ---------------------------------------------------------------------
 
 /// Stable identifier for an orthogonal region.
@@ -344,12 +341,10 @@ impl AlarmCode {
 
 /// Hierarchical-state-machine identifier.
 ///
-/// Phase 5.X.C will introduce parent / child state hierarchy; the
-/// identifier remains FNV-1a-64 of the canonical scenario state path
+/// Supports a parent / child state hierarchy; the
+/// identifier is FNV-1a-64 of the canonical scenario state path
 /// (e.g. `"mission.states.in_flight.boost.first_stage_burn"`). The
-/// type is an alias for [`PhaseId`] during the Phase 5.X.A → 5.X.C
-/// transition; the rename `PhaseId` → `StateId` is the canonical name
-/// from 5.X.C onward.
+/// type is an alias for [`PhaseId`]; `StateId` is the canonical name.
 pub type StateId = PhaseId;
 
 // ---------------------------------------------------------------------
@@ -358,7 +353,7 @@ pub type StateId = PhaseId;
 
 /// Mission-control action taken when an event fires.
 ///
-/// Phase 5.X.A split: this enum carries only the **HAL-portable**
+/// This enum carries only the **HAL-portable**
 /// actions — actions a real-hardware FC adopter must be able to honour
 /// without a simulator present. Simulator-only physics overrides
 /// (engine commands, effector overrides, scripted separation, recovery
@@ -411,9 +406,9 @@ pub enum MissionAction {
 }
 
 impl MissionAction {
-    /// Backward-compatibility constructor — Phase 5.X.A renamed
-    /// `EnterPhase` to `EnterState` along with the `PhaseId` →
-    /// `StateId` alias. New code should use the variant directly.
+    /// Backward-compatibility constructor for the `EnterPhase` →
+    /// `EnterState` rename and the `PhaseId` → `StateId` alias.
+    /// New code should use the variant directly.
     #[must_use]
     pub fn enter_phase(target: PhaseId) -> Self {
         Self::EnterState(target)
@@ -422,7 +417,7 @@ impl MissionAction {
 
 /// One event's full declaration: trigger + action + once-flag.
 ///
-/// Phase 5.X.A made `A` generic so the simulator can hold
+/// `A` is generic so the simulator can hold
 /// `EventBinding<MissionAction>` alongside
 /// `EventBinding<ScenarioScriptAction>` while the FC commander holds
 /// only `EventBinding<MissionAction>`.
@@ -445,8 +440,8 @@ pub struct EventBinding<A> {
 
 /// Mission-phase node. `allowed_effectors` and `allowed_engines` are
 /// declared but not actively gated yet. Scenario loading validates
-/// effector references in Phase 3.4; active command gating lands with
-/// the later controller / propulsion phases.
+/// effector references; active command gating is handled by the
+/// controller / propulsion layers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Phase {
     /// Path-derived stable id.
@@ -456,8 +451,8 @@ pub struct Phase {
     /// Effectors permitted while this phase is active. Scenario loading
     /// validates ids; active command gating is deferred.
     pub allowed_effectors: Vec<String>,
-    /// Engines permitted while this phase is active. Phase-3.6 will
-    /// enforce; Phase-3.2 leaves the list informational.
+    /// Engines permitted while this phase is active. The propulsion
+    /// layer enforces this; the mission graph leaves it informational.
     pub allowed_engines: Vec<String>,
 }
 
@@ -634,7 +629,7 @@ impl MissionPhaseGraph {
 /// `None` if the graph is acyclic.
 ///
 /// Implementation uses recursive depth-first search. Mission graphs are
-/// expected to be small in Phase 3; switch to an explicit stack if that
+/// expected to be small; switch to an explicit stack if that
 /// assumption changes.
 fn detect_cycle_tarjan(phases: &[Phase], transitions: &[PhaseTransition]) -> Option<Vec<PhaseId>> {
     // Self-loop is a trivial single-vertex cycle.
@@ -850,7 +845,7 @@ fn compute_longest_path_depth(
 
 /// Queue entry recorded per fired event.
 ///
-/// Phase 5.X.A made `A` generic so the simulator can hold a
+/// `A` is generic so the simulator can hold a
 /// `Vec<FiredEvent<MissionAction>>` mission queue alongside a
 /// `Vec<FiredEvent<ScenarioScriptAction>>` script queue.
 #[derive(Clone, Debug, PartialEq)]
@@ -874,8 +869,8 @@ pub struct FiredEvent<A> {
 /// validating event bindings against it.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum MissionGraphError {
-    /// The transitions form a cycle. Phase 3.2's spec locks the graph
-    /// as acyclic; cycles are deferred to a later mission-phase phase.
+    /// The transitions form a cycle. The graph is locked as acyclic;
+    /// cycles are not supported.
     #[error("mission graph contains a cycle involving phases {involving:?}")]
     Cycle {
         /// Phase ids participating in the cycle.

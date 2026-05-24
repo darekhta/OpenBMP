@@ -1,6 +1,6 @@
 //! `openbmp-sim` — OpenBMP lockstep simulation kernel.
 //!
-//! Phase 2.1: a deterministic, fixed-step Runge-Kutta 4 kernel for
+//! A deterministic, fixed-step Runge-Kutta 4 kernel for
 //! [`openbmp_state::PointMassState`] and [`openbmp_state::RigidBodyState`]
 //! under user-supplied force, moment, mass, environment, and
 //! stop-condition models.
@@ -14,7 +14,7 @@
 //! * [`SimStateDerivative`] — trait implemented by the time-derivative
 //!   of a state. Exposes primitive linear arithmetic; RK4 combines
 //!   stages in the integrator.
-//! * [`Integrator`] — trait for numerical integrators. Phase 1.3 ships
+//! * [`Integrator`] — trait for numerical integrators. Ships
 //!   [`Rk4FixedStep`].
 //! * [`ForceModel`], [`MomentModel`], [`MassModel`], [`RigidMassModel`],
 //!   [`EnvironmentModel`] — model trait surfaces. The crate ships

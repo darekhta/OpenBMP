@@ -1,4 +1,4 @@
-//! Phase-6.9 1-D thermal-conduction toy.
+//! 1-D thermal-conduction toy.
 //!
 //! Explicit forward-time / centred-space (FTCS) integrator for the
 //! 1-D heat-conduction equation through a slab of textbook material

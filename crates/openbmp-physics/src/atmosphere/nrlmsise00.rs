@@ -1,4 +1,4 @@
-//! Phase-6.1 NRLMSISE-00 static-defaults atmosphere.
+//! NRLMSISE-00 static-defaults atmosphere.
 //!
 //! NRLMSISE-00 (Naval Research Laboratory Mass Spectrometer and
 //! Incoherent Scatter Radar — Extended 2000) is a public empirical

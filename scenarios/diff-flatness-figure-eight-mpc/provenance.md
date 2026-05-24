@@ -10,8 +10,7 @@ Synthetic. Identical to `scenarios/diff-flatness-figure-eight`
 modulo two fields under `[fc.autopilot_params]`:
 
 1. `attitude_loop_kind = "mpc"` swaps the per-axis PID attitude
-   loop for the receding-horizon attitude MPC shipped in
-   Phase 5.A.4.
+   loop for the receding-horizon attitude MPC.
 2. `[fc.autopilot_params.attitude_mpc]` declares the horizon length,
    per-axis stage / terminal cost weights, and the box rate-command
    bound the MPC enforces over every horizon step.
@@ -28,7 +27,7 @@ dynamics.
 
 The scenario keeps a unique deterministic seed
 `0x4d50_4331_3168_466c` (`"MPC11hFl"`) because it is not part of the
-Phase-5.A.3.D reduced-rate fault comparison family. The comparison
+reduced-rate fault comparison family. The comparison
 siblings share `0x4c31_4146_3168_466c`; this MPC case is a standalone
 solver-path demonstration.
 
@@ -54,8 +53,8 @@ no real-world locations, no ITAR/EAR/MTCR/Wassenaar content.
 deterministically. Closed-loop tracking is asserted by
 `crates/openbmp-cli/tests/diff_flatness_mpc_e2e.rs` (run-to-completion
 plus byte-stable Parquet across reruns — Clarabel is configured with
-the deterministic settings shared by Phase 4.C
-`solve_attitude_box_qp`, so the QP solution is bit-identical between
+the deterministic settings shared by the
+`solve_attitude_box_qp` path, so the QP solution is bit-identical between
 runs on the reference platform). The validation does not claim real-time
 solver budget compliance or a production cascaded-loop plant model.
 

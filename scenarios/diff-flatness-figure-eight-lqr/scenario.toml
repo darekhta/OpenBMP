@@ -1,10 +1,10 @@
-# Phase-5.A.3.B LQR variant of the diff-flatness figure-eight.
+# LQR variant of the diff-flatness figure-eight.
 #
 # Identical to `scenarios/diff-flatness-figure-eight` except for one
 # pair of fields under `[fc.autopilot_params]`:
 #
 #   - `rate_loop_kind = "lqr"` swaps the rate loop from PID to the
-#     per-axis LQR shipped in Phase 5.A.3.B.
+#     per-axis LQR.
 #   - `[fc.autopilot_params.lqr]` declares per-axis cost weights
 #     (`q_omega`, `q_int`, `r`). The runner solves the per-axis
 #     DARE at scenario load using this single-body assembly's
@@ -18,13 +18,13 @@
 # This scenario is the closed-loop demonstration that the LQR rate
 # loop tracks the figure-eight without runaway, with no L1
 # augmentation and no fault injection. Comparison against the PID
-# baseline + L1 sibling is Phase-5.A.3.D scope.
+# baseline + L1 sibling lives in the fault-bearing sibling scenarios.
 
 openbmp.scenario = 3
 
 [meta]
 name        = "diff-flatness-figure-eight-lqr"
-description = "Phase-5.A.3.B LQR-rate-loop figure-eight tracker. Sibling of diff-flatness-figure-eight; identical except rate_loop_kind = \"lqr\" and the [fc.autopilot_params.lqr] block."
+description = "LQR-rate-loop figure-eight tracker. Sibling of diff-flatness-figure-eight; identical except rate_loop_kind = \"lqr\" and the [fc.autopilot_params.lqr] block."
 validation  = "experimental"
 provenance  = "synthetic; identical to diff-flatness-figure-eight modulo the LQR rate-loop swap. See provenance.md."
 
@@ -156,7 +156,7 @@ trajectory_kind          = "minimum_snap"
 rate_loop_kind           = "lqr"
 
 # Per-axis LQR cost weights. Tuned so the closed-loop rate-loop
-# bandwidth roughly matches the Phase-4 PID rate gains (Kp = 0.5,
+# bandwidth roughly matches the baseline PID rate gains (Kp = 0.5,
 # Kd = 0.05) on this unit-inertia plant; q_int / q_omega ≈ 0.05
 # gives mild integral action (zero steady-state rate error in
 # ~ 1 s).

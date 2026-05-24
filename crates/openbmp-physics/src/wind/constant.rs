@@ -1,4 +1,4 @@
-//! Phase-2.4 toy wind models: [`NoWind`] and [`ConstantWind`].
+//! Toy wind models: [`NoWind`] and [`ConstantWind`].
 
 use openbmp_core::{Eci, Ned, Position3, SimTime, Velocity3};
 

@@ -1,4 +1,4 @@
-//! Phase-5.A.3.B end-to-end test: per-axis LQR rate loop tracks the
+//! End-to-end test: per-axis LQR rate loop tracks the
 //! diff-flatness figure-eight without runaway and stays byte-stable
 //! across reruns.
 //!
@@ -15,8 +15,8 @@
 //! body-frame angular velocity remains bounded; two reruns produce
 //! byte-identical Parquet (DARE solver is deterministic).
 //!
-//! Closed-loop comparison against the PID baseline + L1 sibling is
-//! Phase-5.A.3.D scope.
+//! Closed-loop comparison against the PID baseline + L1 sibling
+//! lives in the controller comparison harness.
 
 #![cfg(feature = "lqr")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]

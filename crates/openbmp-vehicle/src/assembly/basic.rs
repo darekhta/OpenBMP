@@ -1,8 +1,7 @@
 //! Concrete [`Assembly`] — flat-tree [`crate::assembly::VehicleAssembly`] impl.
 //!
-//! Phase-3.3 ships the single-body and multi-body summation cases;
-//! propulsion / effectors / tanks / sensors are reserved slots
-//! materialising in 3.4 / 3.6 / 3.7 / 3.10.
+//! Handles the single-body and multi-body summation cases;
+//! propulsion / effectors / tanks / sensors are reserved slots.
 
 use nalgebra::{Matrix3, Vector3};
 use openbmp_core::{Body as BodyFrame, Position3, SimTime, VehicleId};
@@ -15,7 +14,7 @@ use crate::assembly::{AssemblyError, VehicleAssembly};
 use crate::error::VehicleError;
 
 /// Flat-tree [`VehicleAssembly`] implementation. Holds the bodies in
-/// scenario-declared order; Phase-3.4 effectors live on a separate
+/// scenario-declared order; effectors live on a separate
 /// runner-side rack (`crates/openbmp-cli/src/runner/effectors.rs`)
 /// to avoid coupling the assembly's `Clone` with `Box<dyn
 /// ControlEffector>` trait objects (which are not Cloneable).
@@ -45,7 +44,7 @@ impl VehicleAssembly for Assembly {
     }
 
     fn mass_properties(&self, _t: SimTime) -> Result<MassProperties, VehicleError> {
-        // Phase-3.3: dry mass-properties only (no propellant burn at
+        // Dry mass-properties only (no propellant burn at
         // the body level — that lives on the motor adapter wired
         // separately by the resolver). Single-body fast path matches
         // the legacy direct-mass-model behaviour.

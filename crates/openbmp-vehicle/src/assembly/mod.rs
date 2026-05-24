@@ -1,15 +1,14 @@
-//! Phase-3.3 declarative vehicle composition.
+//! Declarative vehicle composition.
 //!
 //! `VehicleAssembly` is the L1-side trait the scenario layer
-//! resolves into. Phase-3.3 ships [`Assembly`] — a flat-tree
+//! resolves into. [`Assembly`] is a flat-tree
 //! struct holding `Vec<Body>` plus empty placeholders for the
-//! Phase-3.4 / 3.6 / 3.7 / 3.10 sub-trees (effectors, engines, tanks,
-//! sensors).
+//! effector / engine / tank / sensor sub-trees.
 //!
 //! # Resolution
 //!
 //! The runner-side resolver takes a parsed scenario document and
-//! produces a [`Assembly`]. Phase-3.3 runners consume the
+//! produces a [`Assembly`]. Runners consume the
 //! assembly's dry mass properties during kernel mass construction while
 //! force / moment plumbing remains on the existing per-runner paths.
 //! [`KernelModelBundle`] and [`KernelModelBundleRigid`] are forward
@@ -41,17 +40,17 @@ use thiserror::Error;
 
 use crate::error::VehicleError;
 
-/// Phase-3.3 mission-side declarative composition surface.
+/// Mission-side declarative composition surface.
 ///
 /// `Assembly` is the concrete impl OpenBMP ships;
 /// downstream-user vehicle composition shapes (e.g. an
 /// `ArvAssembly` for a particular reference vehicle) may implement
 /// the trait directly and route through the same resolver.
 ///
-/// The trait surface is intentionally small for Phase-3.3:
-/// `id`, `bodies`, `mass_properties`. Future phases extend with
-/// `effectors` (3.4), `engines` (3.6), `tanks` (3.7), and `sensors`
-/// (3.10). Today the resolver gates concrete sub-tree access through
+/// The trait surface is intentionally small:
+/// `id`, `bodies`, `mass_properties`. Extensions can add
+/// `effectors`, `engines`, `tanks`, and `sensors`
+/// surfaces. Today the resolver gates concrete sub-tree access through
 /// the placeholder types in this module so trait implementations
 /// stay forward-compatible.
 pub trait VehicleAssembly {
@@ -63,7 +62,7 @@ pub trait VehicleAssembly {
     fn bodies(&self) -> &[Body];
 
     /// Aggregate mass properties at simulation time `t`. For the
-    /// Phase-3.3 single-body case this is the body's dry mass-
+    /// single-body case this is the body's dry mass-
     /// properties; the multi-body case sums per-body contributions
     /// in scenario-declared order using a parallel-axis transport
     /// for the inertia tensor.
@@ -76,7 +75,7 @@ pub trait VehicleAssembly {
     fn mass_properties(&self, t: SimTime) -> Result<MassProperties, VehicleError>;
 }
 
-// Phase-3.4 note: effectors live on the runner-side `EffectorRack`
+// Note: effectors live on the runner-side `EffectorRack`
 // (see `crates/openbmp-cli/src/runner/effectors.rs`), not on the
 // assembly. Keeping `Box<dyn ControlEffector>` off the trait surface
 // keeps `Assembly: Clone` and avoids interior-mutability

@@ -1,4 +1,4 @@
-//! Phase 2.6.B regression — synthetic solid-motor data pins.
+//! Regression — synthetic solid-motor data pins.
 //!
 //! Shipped solid-motor data files parse against Schema 1, integrate to
 //! their declared `total_impulse_n_s` to bit precision, satisfy the
@@ -6,9 +6,9 @@
 //! (`m(burn_duration) == dry_mass`), and are bit-stable across two
 //! evaluations of the same query.
 //!
-//! These tests are the same shape the Phase-2.10
-//! `openbmp check-provenance` walk will perform; we do them locally
-//! now so a typo in a deck file or in the `Motor` mass-model arithmetic
+//! These tests are the same shape the
+//! `openbmp check-provenance` walk performs; we do them locally
+//! so a typo in a deck file or in the `Motor` mass-model arithmetic
 //! breaks CI before release.
 
 #![allow(

@@ -1,4 +1,4 @@
-//! Phase-6.7 re-entry trajectory infrastructure.
+//! Re-entry trajectory infrastructure.
 //!
 //! Closed-form analytic-toy propagators and entry-interface
 //! convenience builders for hypersonic re-entry studies. All
@@ -766,7 +766,7 @@ pub const STARDUST_SRC_TABLE20_TRAJ_OUTPUT: PublicStardustTrajectoryOutputBenchm
 /// Entry-interface state convenience builder.
 ///
 /// Returns a `(position, velocity, flight-path-angle, heading)`
-/// tuple ready to seed a rigid-body integrator. Phase-6.7 ships the
+/// tuple ready to seed a rigid-body integrator. Returns the
 /// scalar tuple; integration into [`openbmp_state::RigidBodyState`]
 /// happens at the scenario layer.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -858,7 +858,7 @@ impl EntryInterfaceBuilder {
 /// ```
 ///
 /// where `e = exp(1)`. This is the highest-value analytic re-entry
-/// validation case in OpenBMP; the Phase-6.8 e2e test confronts an
+/// validation case in OpenBMP; the e2e test confronts an
 /// integrated trajectory against these closed forms.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct AllenEggers {

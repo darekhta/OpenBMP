@@ -1,4 +1,4 @@
-//! Phase-5.D.6 end-to-end test: 1 kg point mass in a 400 km / 30°
+//! End-to-end test: 1 kg point mass in a 400 km / 30°
 //! inclined LEO orbit under EGM2008 zonal-harmonic gravity (degrees
 //! 2-6), integrated with the **Dormand-Prince 8(5,3) (DOP853)**
 //! adaptive embedded RK pair under an I-controller and the SciPy /
@@ -9,7 +9,7 @@
 //! 1. The scenario runs to completion via `openbmp_cli::commands::run`
 //!    with `stop_label = "end-time"` after 5556 outer kernel steps —
 //!    the outer kernel cadence is `dt_s = 1.0` seconds, the same as
-//!    the §5.D.4 DOPRI5(4) demo. The DOP853 integrator sub-steps
+//!    the DOPRI5(4) demo. The DOP853 integrator sub-steps
 //!    internally as needed to satisfy `(rtol = 1e-16, atol = 1e-19)`
 //!    but the kernel's outer step count is fixed by the time grid.
 //! 2. The final ECI radius stays within ±5 km of the initial

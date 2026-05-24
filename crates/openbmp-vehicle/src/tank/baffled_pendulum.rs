@@ -1,9 +1,9 @@
-//! [`BaffledPendulum`] — Phase-3.7.C [`EquivalentPendulum`] with a
+//! [`BaffledPendulum`] — [`EquivalentPendulum`] with a
 //! [`BaffleModel`]-supplied damping increment.
 //!
 //! Per Abramson SP-106 §7.4 (Eq. 7-46), tank baffles increase the
 //! slosh damping ratio approximately linearly with baffle-area-to-
-//! tank-cross-section ratio. Phase-3.7 ships the minimum surface:
+//! tank-cross-section ratio. The model uses the minimum surface:
 //! the baffle's `damping_increment_zeta` is added to the bare-tank
 //! `damping_ratio_zeta` at construction, producing a single
 //! effective damping that the inner [`EquivalentPendulum`] uses.
@@ -24,7 +24,7 @@ use super::{
     TankGeometry, equivalent_pendulum::EquivalentPendulum,
 };
 
-/// Phase-3.7.C baffled equivalent-pendulum slosh model.
+/// Baffled equivalent-pendulum slosh model.
 #[derive(Debug, Clone)]
 pub struct BaffledPendulum {
     inner: EquivalentPendulum,

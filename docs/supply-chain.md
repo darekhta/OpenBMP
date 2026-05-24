@@ -23,7 +23,7 @@ out of the kernel.
 
 ## Required Tools
 
-Phase 1 CI and release tooling include:
+CI and release tooling include:
 
 | Tool | Purpose |
 |---|---|
@@ -36,14 +36,14 @@ Phase 1 CI and release tooling include:
 Advisories may start as warning-only in early development to avoid surprise CI
 breakage, then become blocking for releases.
 
-`cargo vet` remains the intended third-party dependency audit ledger, but it is
-not wired as a Phase-1 gate until the repository carries a
+`cargo vet` is the third-party dependency audit ledger, but it is
+not wired as a gate until the repository carries a
 `supply-chain/audits.toml` policy. Do not describe dependencies as vetted before
 that configuration lands.
 
 ## Toolchain and Policy Pins
 
-The Phase-1 reference toolchain is pinned in `rust-toolchain.toml`: Rust
+The reference toolchain is pinned in `rust-toolchain.toml`: Rust
 `1.95`, `rustfmt`, `clippy`, and the `x86_64-unknown-linux-gnu` target. The
 workspace MSRV remains `1.93` and is checked by CI with a separate Rust `1.93`
 build. Byte-stable replay is guaranteed only inside the reference platform
@@ -58,7 +58,7 @@ golden-output review.
 
 The `deny.toml` graph uses `all-features = true` so policy checks include
 optional workspace surfaces, not only the default dependency set. Its explicit
-ban list records known yanked or deprecated dependency versions from the Phase-1
+ban list records known yanked or deprecated dependency versions from the
 dependency survey so a routine `cargo update` cannot reintroduce them.
 
 ## Banned Dependency Patterns

@@ -1,4 +1,4 @@
-# Phase-3.6 negative parser fixture: engine cluster declared without
+# Negative parser fixture: engine cluster declared without
 # `forces.models = ["thrust"]`. Used for
 # `rejects_engine_cluster_without_thrust_force_model`.
 
@@ -6,7 +6,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "assembly-engine-cluster-without-thrust-fixture"
-description = "Phase-3.6 negative parser fixture: engines declared but thrust force omitted."
+description = "Negative parser fixture: engines declared but thrust force omitted."
 validation  = "experimental"
 
 [time]

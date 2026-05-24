@@ -1,21 +1,21 @@
-//! Phase-5.D.5 end-to-end test: RocketPy Calisto sounding-rocket
+//! End-to-end test: RocketPy Calisto sounding-rocket
 //! validation scenario integrated with the Dormand-Prince 5(4)
 //! adaptive embedded RK pair under a Gustafsson PI step controller
 //! on the **rigid-body** runner.
 //!
-//! Asserts the §5.D.5 exit criteria for the rigid-body adaptive
+//! Asserts the exit criteria for the rigid-body adaptive
 //! dispatch path:
 //!
 //! 1. The scenario runs to completion via `openbmp run` with
 //!    `stop = end-time` after 180 000 outer kernel steps — the
 //!    outer kernel cadence is `dt_s = 0.001` seconds, the same as
-//!    the Phase-3.11 fixed-RK4 cross-tool baseline. The adaptive
+//!    the fixed-RK4 cross-tool baseline. The adaptive
 //!    integrator sub-steps internally as needed to satisfy
 //!    `(rtol = 1e-7, atol = 1e-9)` but the kernel's outer step
 //!    count is fixed by the time grid.
 //! 2. The vehicle reaches an apogee within ±2 % of the RocketPy
 //!    cross-tool baseline (3 349 m AGL) — the same envelope as the
-//!    Phase-3.11 fixed-RK4 e2e gate. This demonstrates that the
+//!    fixed-RK4 e2e gate. This demonstrates that the
 //!    adaptive integrator on the rigid-body path delivers
 //!    comparable accuracy at the documented tolerances; if the
 //!    per-component HNW error norm or PI controller had a wiring

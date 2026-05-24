@@ -2,7 +2,7 @@
 
 L2 aerothermal heat-transfer crate.
 
-**Status:** Phase 6 — audited research-toy implementation. Full design in
+**Status:** Audited research-toy implementation. Full design in
 [`docs/hypersonic-extensions.md`](../../docs/hypersonic-extensions.md).
 
 ## Purpose
@@ -46,7 +46,7 @@ and locked into the determinism profile.
 
 ## Validation
 
-Phase 6 validation uses analytic heating checks, textbook ablation toys,
+Validation uses analytic heating checks, textbook ablation toys,
 and public academic benchmark cases only. Models with missing public
 coefficients fail closed instead of returning guessed values.
 

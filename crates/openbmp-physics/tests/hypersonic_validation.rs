@@ -5,12 +5,12 @@
     clippy::missing_panics_doc,
     clippy::similar_names
 )]
-//! Phase-6.8 hypersonic validation suite.
+//! Hypersonic validation suite.
 //!
 //! Per the design document, each case is either analytic-toy
 //! (closed-form comparison) or public-benchmark (against published
 //! academic results). This module ships the analytic-toy battery
-//! that exercises the Phase-6 algorithms end to end; public-benchmark
+//! that exercises the hypersonic algorithms end to end; public-benchmark
 //! Apollo / Stardust cross-validation runs against published
 //! trajectory data are deferred to the integration test in
 //! `crates/openbmp-cli/tests` once the kernel-side scenario wiring

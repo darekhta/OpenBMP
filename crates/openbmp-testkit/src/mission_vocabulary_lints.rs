@@ -1,4 +1,4 @@
-//! Phase 5.X.E CI tripwire for rejected operational vocabulary.
+//! CI tripwire for rejected operational vocabulary.
 //!
 //! Scans the workspace's `*.rs` and `*.md` files for the rejected
 //! mission-state vocabulary documented in
@@ -20,16 +20,15 @@
 //!   rejection table).
 //! - Skips `docs/safety-boundaries.md` (the workspace-wide naming
 //!   policy that enumerates the rejected terms).
-//! - Skips `docs/phase-5x-plan.md`, `docs/phase-5x-status.md`,
-//!   `docs/mission-graph-architecture.md` (they discuss the
-//!   migration including the rejected terms).
+//! - Skips `docs/mission-graph-architecture.md` (it discusses the
+//!   mission state machine, including the rejected terms).
 //!
 //! The tripwire fires on case-insensitive substring match against
 //! source identifiers. New CI gates can ratchet it up to a hard fail.
 
 use std::path::{Path, PathBuf};
 
-/// Mission-vocabulary patterns that fail Phase 5.X.E review when found
+/// Mission-vocabulary patterns that fail review when found
 /// outside the documented allowlist.
 ///
 /// Each pattern is matched **case-insensitively** as a substring of
@@ -63,8 +62,6 @@ pub const REJECTED_MISSION_VOCABULARY: &[&str] = &[
 const ALLOWLIST_PATHS: &[&str] = &[
     "docs/mission-states-vocabulary.md",
     "docs/safety-boundaries.md",
-    "docs/phase-5x-plan.md",
-    "docs/phase-5x-status.md",
     "docs/mission-graph-architecture.md",
     "docs/scenario-format.md",
     "docs/design-concept.md",
@@ -183,7 +180,7 @@ mod tests {
                 })
                 .collect();
             panic!(
-                "Phase 5.X.E mission-vocabulary tripwire fired:\n{}",
+                "mission-vocabulary tripwire fired:\n{}",
                 lines.join("\n")
             );
         }

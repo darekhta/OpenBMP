@@ -1,6 +1,6 @@
 //! `openbmp-models` — hardware-portable model trait surfaces.
 //!
-//! Phase-3.14.A: extracted from `openbmp-sim` so any code that
+//! Lives apart from `openbmp-sim` so any code that
 //! implements or consumes the model trait surfaces (`ForceModel`,
 //! `MomentModel`, `MassModel`, `RigidMassModel`, `EnvironmentModel`)
 //! does not transitively depend on the simulator's integrator,
@@ -28,13 +28,12 @@
 //!   actuators / engines / tanks / recovery devices.
 //! - [`ModelEvalError`] — typed evaluation error returned by every
 //!   fallible model.
-//! - Phase-1 simple impls: [`ConstantGravityForce`], [`ZeroForce`],
+//! - Simple impls: [`ConstantGravityForce`], [`ZeroForce`],
 //!   [`ZeroMoment`], [`ConstantMass`], [`LinearBurnMass`],
 //!   [`ConstantMassRigid`], [`LinearBurnMassRigid`],
 //!   [`NullEnvironment`].
 //!
-//! `openbmp-sim` re-exports every item below for back-compatibility
-//! during the Phase-3.14 transition.
+//! `openbmp-sim` re-exports every item below for back-compatibility.
 
 pub mod derivative;
 pub mod error;

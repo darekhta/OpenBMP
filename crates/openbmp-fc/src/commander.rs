@@ -2,7 +2,7 @@
 //!
 //! The commander is the only module that owns flight phase. Inputs are
 //! bus topics (estimator status, failsafe flags, position estimate);
-//! outputs are `commander.vehicle_status`. Builds on the Phase-3.2
+//! outputs are `commander.vehicle_status`. Builds on the
 //! [`MissionPhaseGraph`] from `openbmp-mission`.
 //!
 //! Phase transitions are evaluated against the
@@ -168,7 +168,7 @@ impl Commander {
         // Academic approximation: q = ½ · ρ_SL · v_z². The proper
         // computation uses total airspeed magnitude and the local
         // atmospheric density; tracking horizontal velocity in the
-        // EventScalars block is Phase-5 work. For now we delegate the
+        // EventScalars block is out of scope here. We delegate the
         // closed form and the sea-level density constant to
         // openbmp-physics so the formula isn't reinvented per
         // consumer.
@@ -226,7 +226,7 @@ impl Commander {
     fn evaluate_fdir_safe_state(&mut self, bus: &Bus) {
         // While armed, if FDIR trips, request a safe state. The
         // scenario decides what phase that maps to via an
-        // `EventTrigger::SafeStateRequested` binding (Phase 4.C).
+        // `EventTrigger::SafeStateRequested` binding.
         if self.armed
             && let Ok(Some((fdir, _))) = bus.latest::<FdirStatus>()
             && fdir.triggered
@@ -362,7 +362,7 @@ impl Job for Commander {
         "commander.tick"
     }
 
-    #[allow(clippy::too_many_lines)] // Phase 5.X.E: per-region publish loop expanded the tick body.
+    #[allow(clippy::too_many_lines)] // per-region publish loop expands the tick body.
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
         let now = ctx.clock.now();
         let tick = ctx.clock.tick();
@@ -429,7 +429,7 @@ impl Job for Commander {
         };
         let _ = ctx.bus.publish(status);
 
-        // Phase 5.X.B / 5.X.E: publish the single-source-of-truth
+        // Publish the single-source-of-truth
         // mission-state topic alongside the per-region topics. The
         // simulator subscribes to `commander.mission_state` for the
         // aggregate snapshot; consumers that only care about one

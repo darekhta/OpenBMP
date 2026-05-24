@@ -1,4 +1,4 @@
-//! Phase-3.9 recovery and drag-device models.
+//! Recovery and drag-device models.
 //!
 //! Recovery devices are scenario-deployable drag elements: parachutes,
 //! drogue / main two-stage chutes, and generic airbrakes. They produce
@@ -6,7 +6,7 @@
 //! deployed; before deployment the force is zero. They are driven by
 //! mission-phase graph events through deploy-recovery actions.
 //!
-//! Phase 3.9 ships three implementations:
+//! Three implementations are provided:
 //!
 //! - [`parachute_drag::ParachuteDrag`] — single-stage parachute. One
 //!   deploy event toggles `Stowed → Main`.
@@ -17,7 +17,7 @@
 //!
 //! All three publish a [`openbmp_models::RecoverySnapshot`] each kernel base tick
 //! through the runner-side [`crate::recovery`]-rack adapter. Drag is
-//! evaluated by the Phase-3.9 [`crate::adapters::RecoveryRackForceAdapter`]
+//! evaluated by the [`crate::adapters::RecoveryRackForceAdapter`]
 //! using the kernel's atmosphere sample (density) and the body's ECI
 //! velocity.
 //!
@@ -26,9 +26,9 @@
 //! `F_drag = -½ ρ |v|² C_D · A · v̂` per Knacke 1992 *Parachute
 //! Recovery Systems Design Manual* Chapter 5. Drag opposes the body's
 //! ECI velocity; the academic formulation ignores wind-relative
-//! velocity (matches the Phase-3.5 [`crate::adapters::DeckDragForceAdapter`]
+//! velocity (matches the [`crate::adapters::DeckDragForceAdapter`]
 //! convention). Drag is applied at the body CG; recovery devices
-//! contribute zero moment in Phase 3.9 (long risers are assumed to
+//! contribute zero moment (long risers are assumed to
 //! decouple body rotation from drag direction).
 //!
 //! # Determinism
@@ -41,12 +41,12 @@
 //! # Crate layering
 //!
 //! Recovery models live in `openbmp-vehicle` (L1) alongside tanks /
-//! engines / effectors. The runner-side rack ships with the Phase-3.9
+//! engines / effectors. The runner-side rack is part of the
 //! runner integration; the kernel-side adapter ships in
 //! [`crate::adapters`] and consumes the kernel's
 //! [`openbmp_models::RecoverySnapshotView`] view.
 //!
-//! See `docs/scenario-format.md § Recovery and descent (Phase 3.9)`
+//! See `docs/scenario-format.md § Recovery and descent`
 //! and `docs/software-architecture.md § Recovery and Descent Models`
 //! for the contract.
 
@@ -141,7 +141,7 @@ impl RecoveryCommand {
 // RecoveryModel trait
 // ---------------------------------------------------------------------
 
-/// Phase-3.9 recovery-device trait.
+/// Recovery-device trait.
 ///
 /// Implementors hold their own internal state ([`RecoveryPhase`])
 /// and expose the four primitive operations the runner-side rack
@@ -150,7 +150,7 @@ impl RecoveryCommand {
 /// path that mutates the state machine.
 ///
 /// Implementors must be deterministic: pure `f64` arithmetic, no FMA,
-/// no system RNG, no I/O. The Phase-3.9 implementations have no
+/// no system RNG, no I/O. The implementations have no
 /// internal numerical integration — phase transitions are
 /// instantaneous on the firing event — so [`RecoveryModel::step`] is
 /// a no-op for the shipped models. The trait reserves the method for
@@ -184,13 +184,13 @@ pub trait RecoveryModel: Send + std::fmt::Debug {
 
     /// Advance per-step internal state.
     ///
-    /// Phase 3.9 ships three instantaneous-deploy models — this is a
-    /// no-op. Reserved for future phases that may add canopy
+    /// The three instantaneous-deploy models make this a
+    /// no-op. Reserved for extensions that may add canopy
     /// inflation transients.
     ///
     /// # Errors
     ///
-    /// Returns [`RecoveryError`] for non-finite inputs (Phase-3.9
+    /// Returns [`RecoveryError`] for non-finite inputs (the shipped
     /// implementations never raise).
     fn step(&mut self, dt_s: f64) -> Result<(), RecoveryError>;
 }

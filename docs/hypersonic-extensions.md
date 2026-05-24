@@ -9,8 +9,8 @@ infrastructure, and the validation suite.
 The extensions are designed to plug into the existing trait surfaces defined
 in [software-architecture.md](software-architecture.md) while extending the
 solver, coupling, validation, and data-package infrastructure needed for
-research-grade hypersonic work. They are **research extensions**, scheduled for
-Phase 6, and are subject to the additional accept/reject rules in
+research-grade hypersonic work. They are **research extensions** and are
+subject to the additional accept/reject rules in
 [safety-boundaries.md § Hypersonic Extensions](safety-boundaries.md#hypersonic-extensions).
 
 ## Scope
@@ -38,7 +38,7 @@ OpenBMP hypersonic extensions are **Earth-atmosphere only**. Non-Earth
 atmospheres (Mars, Titan, Venus, Jupiter) and interplanetary aerocapture /
 aerobraking are out of scope for the foreseeable future. The framework
 could in principle host them later via a planet-aware atmosphere registry,
-but that path is not on the Phase 6 roadmap and no planetary atmosphere
+but that path is out of scope and no planetary atmosphere
 data ships in the repository.
 
 - Lifting re-entry research vehicles (academic equivalents to ESA IXV,
@@ -70,7 +70,7 @@ data ships in the repository.
 
 ## Research Baseline
 
-The Phase-6 target is not "RK4 plus hypersonic coefficients". A credible
+The hypersonic target is not "RK4 plus hypersonic coefficients". A credible
 hypersonic rocket / re-entry simulator needs a layered infrastructure similar
 to the public NASA / academic reference frame:
 
@@ -375,7 +375,7 @@ pub struct LinearKnudsenBridge {    // smoothstep over [Kn_lo, Kn_hi]
 
 ### Layered atmosphere model set
 
-No single atmosphere model covers every hypersonic use case well. Phase 6 uses
+No single atmosphere model covers every hypersonic use case well. OpenBMP uses
 a layered registry:
 
 | Model | Role | Repository policy |
@@ -817,7 +817,7 @@ q_w = K · sqrt(ρ_∞ / R_n) · V_∞³
 
 with `K = 1.7415e-4` (SI, Earth atmosphere). This requires only freestream
 density, nose radius, and freestream velocity — no real-gas iteration.
-Useful as a sanity check and as a fast bound for Phase-6 mission studies.
+Useful as a sanity check and as a fast bound for hypersonic mission studies.
 
 ### Tauber-Sutton radiative heating
 
@@ -1373,9 +1373,9 @@ crates/
   ...existing crates...
   openbmp-aero/                  # extended with hypersonic methods
   openbmp-aerothermal/           # NEW: heat transfer + BL + ablation
-    ablation/                    #   Phase 6.11 module
+    ablation/                    #   ablation module
   openbmp-physics/               # extended with NRLMSISE-00 + real-gas
-                                 # + Park 2T nonequilibrium (Phase 6.10)
+                                 # + Park 2T nonequilibrium
 data/
   atmosphere/
     us_standard_1976.toml
@@ -1463,78 +1463,78 @@ Specific determinism rules for the hypersonic crates:
    output hashes, validity envelope, and uncertainty model. The kernel records
    package ids and hashes in telemetry so a run can be reproduced.
 
-## Roadmap (Phase 6)
+## Capabilities
 
-Phase 6 is decomposed into fourteen sub-phases. Each sub-phase has its own
-acceptance gate (analytic-toy or public-benchmark validation case passing
-in CI).
+The hypersonic extensions comprise the following capability areas. Each area
+carries its own acceptance gate (analytic-toy or public-benchmark validation
+case passing in CI).
 
-- **6.0 — Hypersonic solver stack.** Solver profile schema, fixed-step
+- **Hypersonic solver stack.** Solver profile schema, fixed-step
   high-order explicit RK, adaptive explicit DOPRI853/RKF78 with dense output,
   event localization, implicit source-term sub-steppers, and deterministic
   coupling telemetry. Acceptance: adaptive event analytic-toy and implicit
   stiffness toy cases.
-- **6.1 — High-altitude atmosphere.** NRLMSISE-00 in-house Rust port (static
+- **High-altitude atmosphere.** NRLMSISE-00 in-house Rust port (static
   defaults mode first), with NRLMSIS 2.x and HWM14 follow-ons. Acceptance:
   NRLMSISE-00-vs-published-table case; optional 2.x / HWM14 reference-table
   cases.
-- **6.2 — Real-gas thermodynamics.** Tannehill 5-species equilibrium air;
+- **Real-gas thermodynamics.** Tannehill 5-species equilibrium air;
   `gamma_eff`, speed of sound. Acceptance: equilibrium-air `gamma_eff` case.
-- **6.3 — Hypersonic aero methods.** Modified Newtonian, tangent-cone,
+- **Hypersonic aero methods.** Modified Newtonian, tangent-cone,
   hypersonic similarity. Acceptance: Modified-Newtonian-sphere case;
   tangent-cone-vs-Taylor-Maccoll case.
-- **6.4 — Aerothermal stagnation heating.** `openbmp-aerothermal` crate;
+- **Aerothermal stagnation heating.** `openbmp-aerothermal` crate;
   Fay-Riddell + Sutton-Graves implementations. Acceptance: Sutton-Graves
   single-point case.
-- **6.5 — Boundary layer + distributed heating.** Reference enthalpy method,
+- **Boundary layer + distributed heating.** Reference enthalpy method,
   laminar/turbulent correlations, transition models. Acceptance: textbook
   flat-plate heat-transfer case.
-- **6.6 — Continuum-to-rarefied bridging.** Knudsen number computation,
+- **Continuum-to-rarefied bridging.** Knudsen number computation,
   bridge functions, free-molecular aero. Acceptance: Knudsen-bridge-limits
   case.
-- **6.7 — Trajectory infrastructure.** Entry-interface builder, Allen-Eggers
+- **Trajectory infrastructure.** Entry-interface builder, Allen-Eggers
   analytic-toy propagator, Vinh lifting-entry propagator, academic skip-glide
   reference profiles. Mission FSM phase additions. Acceptance: Allen-Eggers
   case; Vinh lifting-entry case.
-- **6.8 — Public-benchmark validation suite.** Apollo-class blunt-cone
+- **Public-benchmark validation suite.** Apollo-class blunt-cone
   re-entry, Stardust SRC re-entry, Tauber-Sutton radiative heating
   comparison. Acceptance: full hypersonic validation suite passing in CI.
-- **6.9 — 1-D thermal-conduction toy.** Surface-temperature evolution under
+- **1-D thermal-conduction toy.** Surface-temperature evolution under
   prescribed heat flux. Acceptance: stability property test passing.
-- **6.10 — Park two-temperature nonequilibrium thermochemistry.**
+- **Park two-temperature nonequilibrium thermochemistry.**
   `NonequilibriumAir` trait, Park'87/'90/'93 reaction sets, Millikan-White
   with Park's high-temperature correction for vibrational relaxation,
   sub-stepped implicit-Euler integration with declared sub-step count and
   tolerance, optional Rosenbrock-Wanner variant for stiff regimes.
   Acceptance: Park-2T shock-layer Mach 15 case, Park-2T frozen /
   equilibrium limit cases, Damköhler diagnostic case.
-- **6.11 — Generic ablation toy.** `AblationModel` trait,
+- **Generic ablation toy.** `AblationModel` trait,
   `SteadyStateAblator` and `CharringAblator` implementations with surface
   energy balance, blowing correction, surface recession integration,
   optional mass-loss coupling to `MassModel`. Generic textbook materials
   only — no real fielded TPS materials. Acceptance: graphite sublimation
   steady-state case, charring pyrolysis-front case, blowing-correction
   limits case, mass-coupling consistency, energy conservation.
-- **6.12 — Offline high-fidelity reference packages.** Data-package schema
+- **Offline high-fidelity reference packages.** Data-package schema
   extensions for CFD, DSMC, radiation, thermal-response, trajectory, and
   thermochemistry references, including V&V evidence, uncertainty, solver
   assumptions, and envelope checks. Acceptance: external-package contract
   property tests and at least one public benign reference deck.
-- **6.13 — Hypersonic UQ and credibility reporting.** Scenario-level error
+- **Hypersonic UQ and credibility reporting.** Scenario-level error
   budgets, parameter uncertainty propagation, sensitivity reports, package
   credibility metadata, and NASA-STD-7009B-style evidence summaries without
   making operational suitability claims. Acceptance: UQ report generated for
   the full hypersonic validation suite.
 
-Phase 6 is research-grade material: every sub-phase declares its validation
-status (`experimental` → `checked` → `validated-toy` → `research`) and never
-claims operational suitability.
+The hypersonic extensions are research-grade material: every capability declares
+its validation status (`experimental` → `checked` → `validated-toy` →
+`research`) and never claims operational suitability.
 
-Sub-phases 6.10 and 6.11 are the most demanding from determinism and
-numerical-stability standpoints (stiff finite-rate chemistry; coupled
-surface-recession + thermal conduction + boundary-layer feedback). They
-are explicitly tagged `research` until validated against multiple
-independent textbook references.
+The nonequilibrium thermochemistry and ablation models are the most demanding
+from determinism and numerical-stability standpoints (stiff finite-rate
+chemistry; coupled surface-recession + thermal conduction + boundary-layer
+feedback). They are explicitly tagged `research` until validated against
+multiple independent textbook references.
 
 ## Out-of-Roadmap (Hypersonic)
 
@@ -1543,10 +1543,9 @@ Permanently out of scope, regardless of demand:
 - Real fielded HGV / MaRV / hypersonic-cruise-weapon parameter sets.
 - **Operational tunings** of Park two-temperature reaction rates calibrated
   to any specific fielded vehicle. (Generic public-textbook Park'87 / '90 /
-  '93 reaction sets are scheduled in sub-phase 6.10.)
+  '93 reaction sets are supported.)
 - Real fielded TPS material parameters (PICA, AVCOAT, RCC, SLA-561V, FRSI,
-  AFRSI, LI-900, MA-25S, etc.). Generic textbook ablators are scheduled in
-  sub-phase 6.11.
+  AFRSI, LI-900, MA-25S, etc.). Generic textbook ablators are supported.
 - DSMC (Direct Simulation Monte Carlo) as an in-repo solver or live-coupled
   co-simulation engine. OpenBMP can consume DSMC-derived aero / heating
   coefficients through offline reference packages if the user generates them
@@ -1562,7 +1561,7 @@ Permanently out of scope, regardless of demand:
 - Non-Earth atmospheres (Mars, Titan, Venus, Jupiter) and interplanetary
   aerocapture / aerobraking. The framework could host them later via a
   planet-aware atmosphere registry, but no planetary atmosphere data
-  ships in the repository and no Phase 6 sub-phase is scheduled for them.
+  ships in the repository.
 - Plasma sheath modeling for radio-blackout exploitation, RCS reduction
   during re-entry, or any defense-penetration purpose.
 - Skip-glide trajectories with terminal evasion logic, defense-penetration

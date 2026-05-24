@@ -1,4 +1,4 @@
-//! Phase-3.3 scenario → [`openbmp_vehicle::Assembly`] resolver.
+//! Scenario → [`openbmp_vehicle::Assembly`] resolver.
 //!
 //! Bridges a parsed [`openbmp_scenario::ScenarioDocument`] to the
 //! `openbmp-vehicle` assembly tree.
@@ -62,7 +62,7 @@ pub fn synthesize_assembly(document: &ScenarioDocument) -> Result<Assembly, Runn
 
 /// Return the assembly's dry mass properties at `time`.
 ///
-/// Phase-3.3 assemblies are dry/static, but threading the time through
+/// Assemblies are dry/static, but threading the time through
 /// this helper keeps the runner shape aligned with later engine/tank
 /// mass-property models.
 ///

@@ -1,4 +1,4 @@
-//! Phase-5.C.1 layered piecewise-exponential atmosphere.
+//! Layered piecewise-exponential atmosphere.
 //!
 //! In each altitude layer the model evaluates
 //!

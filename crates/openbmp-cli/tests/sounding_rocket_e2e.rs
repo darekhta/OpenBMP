@@ -1,4 +1,4 @@
-//! Phase-2.11.A end-to-end test: `openbmp run` on the canonical
+//! End-to-end test: `openbmp run` on the canonical
 //! Niskanen 2009 Chapter-6 sounding-rocket scenario.
 //!
 //! Asserts:
@@ -8,7 +8,7 @@
 //!   Niskanen 151.5 m experimental C6 apogee.
 //!
 //! Force ordering note: the canonical scenario declares
-//! `forces.models = ["gravity", "thrust", "aero"]`. The Phase-2.9
+//! `forces.models = ["gravity", "thrust", "aero"]`. The
 //! sounding-rocket integration test in
 //! `crates/openbmp-vehicle/tests/sounding_rocket.rs` wires
 //! `gravity, drag, thrust` for historical reasons. The two paths
@@ -199,7 +199,7 @@ fn gust_wind_scenarios_run_and_point_mass_is_byte_stable() {
 
 #[test]
 fn rigid_run_byte_stable_across_two_invocations() {
-    // Phase-3.1 determinism gate: the same rigid-body scenario
+    // Determinism gate: the same rigid-body scenario
     // invoked twice produces byte-identical Parquet on the reference
     // platform. This is the CLI-side mirror of the rigid kernel
     // byte-stability gate.
@@ -234,7 +234,7 @@ fn rigid_run_byte_stable_across_two_invocations() {
     );
 }
 
-/// Phase-3.1: the rigid-body Niskanen scenario produces an apogee
+/// The rigid-body Niskanen scenario produces an apogee
 /// physically equivalent to the point-mass case. With identity
 /// initial orientation, zero angular velocity, `ZeroMoment`, and
 /// axisymmetric drag, the rigid-body kernel sees no body-frame
@@ -395,14 +395,14 @@ fn niskanen_parquet_carries_atmosphere_force_breakdown_and_sha256_metadata() {
         .get("openbmp.scenario_files.aero.deck")
         .expect("aero.deck digest metadata present");
     assert_eq!(
-        aero_pin, "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27",
+        aero_pin, "bbedf508c9fe589dea8f5eb77d29ac44f3f00271a09fb6fa661024b9e1809691",
         "aero.deck digest in Parquet header must match the scenario pin",
     );
     let motor_pin = metadata
         .get("openbmp.scenario_files.propulsion.motor.file")
         .expect("propulsion.motor.file digest metadata present");
     assert_eq!(
-        motor_pin, "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e",
+        motor_pin, "fbea346fb952e97c50bd709a9c2a7b3cde3d5df0238a7d48032cd96a5b9bdbde",
         "propulsion.motor.file digest in Parquet header must match the scenario pin",
     );
 }
@@ -493,7 +493,7 @@ fn niskanen_parquet_force_breakdown_components_are_finite_and_nonzero() {
     assert!(saw_nonzero_aero, "aero force must be non-zero at speed");
 }
 
-/// Phase-3.2: the mission-block variant of the Niskanen scenario
+/// The mission-block variant of the Niskanen scenario
 /// declares an `at_apogee` event with `emit_telemetry_marker {
 /// tag = "at_apogee_marker" }`. The runner must:
 /// 1. Allocate a `bool` channel `mission.marker.at_apogee_marker`.

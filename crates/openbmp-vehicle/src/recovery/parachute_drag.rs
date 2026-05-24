@@ -1,4 +1,4 @@
-//! Phase-3.9 single-stage parachute model.
+//! Single-stage parachute model.
 //!
 //! [`ParachuteDrag`] is the simplest recovery device: a stowed
 //! parachute that opens once on a [`RecoveryCommand::Deploy`] event

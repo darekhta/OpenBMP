@@ -1,6 +1,6 @@
 //! `openbmp-propulsion` — OpenBMP propulsion.
 //!
-//! Phase 2.6 / 3.6 ships:
+//! Provides:
 //!
 //! * [`motor`] — [`motor::Motor`] trait, [`motor::MotorVariant`]
 //!   (`Solid` only), and [`motor::SolidMotor`] with piecewise-linear
@@ -9,14 +9,14 @@
 //!   `mass_kg(t)`, `mass_rate_kg_s(t)`); no state machine, no
 //!   gimbal, no throttle. Used for solid-propellant rockets (e.g.
 //!   the Niskanen Chapter-6 benchmark).
-//! * [`engine`] — Phase-3.6 [`engine::EngineModel`] trait with
+//! * [`engine`] — [`engine::EngineModel`] trait with
 //!   per-engine throttle / gimbal / ignition lifecycle.
 //!   [`engine::LiquidEngine`] is the reference impl: linear ignition
 //!   and shutdown transients, constant-throttle burn, gimbal applied
 //!   as a locked-order pitch-then-yaw rotation. Mass flow is
 //!   `thrust / (g0 · isp)`. Used for liquid (and later hybrid /
 //!   cold-gas) propulsion.
-//! * [`cluster`] — Phase-3.6 [`cluster::EngineCluster`] container:
+//! * [`cluster`] — [`cluster::EngineCluster`] container:
 //!   `Vec<Box<dyn EngineModel>>` plus body-frame mount points and a
 //!   layout tag. Not a kernel-side force model — the kernel-side
 //!   adapter trio in `openbmp-vehicle::adapters` consumes the
@@ -28,12 +28,12 @@
 //!   separate error surfaces.
 //!
 //! Multi-stage motor composition (`MultiStageMotor` +
-//! `SeparationEvent`) remains future work. Hybrid and cold-gas engine
-//! variants are deferred past 3.6.
+//! `SeparationEvent`) remains future work, as do hybrid and cold-gas
+//! engine variants.
 //!
 //! # Trait families
 //!
-//! `Motor` (Phase 2) and `EngineModel` (Phase 3.6) are **parallel,
+//! `Motor` and `EngineModel` are **parallel,
 //! non-intersecting** trait families. Solid-propellant rockets use
 //! the `Motor` path through the legacy `[propulsion.motor]`
 //! scenario block; liquid-engine clusters use the `EngineModel` /
@@ -55,8 +55,8 @@
 //! `openbmp-propulsion` is an L2 crate. It depends only on
 //! `openbmp-core`, `nalgebra`, `serde`, `toml`, and `thiserror` —
 //! **not** on `openbmp-sim` (L1). The kernel-side `ForceModel` /
-//! `MassModel` adapters that wrap [`motor::Motor`] (Phase 2.10) and
-//! [`cluster::EngineCluster`] (Phase 3.6.C) live in `openbmp-vehicle`
+//! `MassModel` adapters that wrap [`motor::Motor`] and
+//! [`cluster::EngineCluster`] live in `openbmp-vehicle`
 //! alongside the gravity / atmosphere / wind / aero adapters.
 
 pub mod cluster;

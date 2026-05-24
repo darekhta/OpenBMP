@@ -52,7 +52,7 @@ impl Scenario {
         // tokenisation.
         let mut document: ScenarioDocument = value.try_into()?;
 
-        // Phase-3.13.E: synthesise the default `[forces]` list from the
+        // Synthesise the default `[forces]` list from the
         // assembly when the scenario does not declare one explicitly.
         // After this point the rest of the runner sees a populated
         // `Option<ForcesConfig>` and behaves as if the scenario had
@@ -67,7 +67,7 @@ impl Scenario {
             document,
             source_dir: source_dir.map(Into::into),
         };
-        scenario.validate_with_registry(&ModelRegistry::phase2())?;
+        scenario.validate_with_registry(&ModelRegistry::full())?;
         Ok(scenario)
     }
 
@@ -90,7 +90,7 @@ impl Scenario {
     }
 
     /// Validate against an explicit model registry (overrides the
-    /// default [`ModelRegistry::phase2`] used by the parser entry
+    /// default [`ModelRegistry::full`] used by the parser entry
     /// points).
     ///
     /// # Errors
@@ -212,7 +212,7 @@ mod tests {
     };
     use openbmp_core::ValidationStatus;
 
-    // Parser-test fixture loaded from the canonical Phase-1
+    // Parser-test fixture loaded from the canonical
     // analytic-toy scenario at
     // `scenarios/analytic-toy/constant-acceleration-drop.toml`.
     // This is the single source of truth for the analytic-toy
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn parses_minimal_scenario_under_v3_header() {
-        // Phase 5.0 — v3 scenarios that include only Phase-3 / Phase-4
+        // v3 scenarios that include only v2-era
         // fields parse and validate identically to v2; only the header
         // value changes.
         let toml = MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
@@ -423,7 +423,7 @@ bogus_field = 1
 
     #[test]
     fn egm2008_gravity_is_v3_only_and_validates_under_v3() {
-        // The Phase-5.0 v3 gate fires before the cross-field check that
+        // The v3 gate fires before the cross-field check that
         // would otherwise reject `gravity_m_s2` against a non-constant
         // gravity model, so the v2-rejection test only needs to flip
         // the gravity selector — the leftover `gravity_m_s2` line is
@@ -434,7 +434,7 @@ bogus_field = 1
         );
         assert_v3_block_reserved_under_v2(&toml_v2, "environment.gravity = \"egm2008\"");
 
-        // Under v3, `egm2008` is consumed (Phase 5.C.2): drop the
+        // Under v3, `egm2008` is consumed: drop the
         // constant-gravity-only `gravity_m_s2` line and verify that
         // the document validates clean.
         let toml_v3 = MINIMAL
@@ -470,7 +470,7 @@ bogus_field = 1
         }
     }
 
-    /// Canonical Phase-4 FC scenario used as the base for the v3-only
+    /// Canonical FC scenario used as the base for the v3-only
     /// FC sub-block tests. Loaded via `include_str!` so the test
     /// remains in sync with the shipped scenario contract.
     const FC_FIXTURE: &str = include_str!(concat!(
@@ -512,7 +512,7 @@ estimator = "sr_ukf"
 "#;
         let toml = append(fc_v2_scenario(), block);
         assert_v3_block_reserved_under_v2(&toml, "fc.estimator_lanes");
-        // Phase-5.B.2 consumed this block — under v3 it now parses
+        // This block is consumed — under v3 it parses
         // and validates rather than emitting `ElementNotYetSupported`.
         let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let scenario = Scenario::from_toml_str(&v3).expect("v3 estimator-lanes block validates");
@@ -598,7 +598,7 @@ axis_priority = ["roll", "yaw", "pitch"]
 "#;
         let toml = append(fc_v2_scenario(), block);
         assert_v3_block_reserved_under_v2(&toml, "fc.autopilot_allocation");
-        // Phase 5.A.5 consumed this block — under v3 it now parses
+        // This block is consumed — under v3 it parses
         // and validates rather than emitting `ElementNotYetSupported`.
         let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let scenario = Scenario::from_toml_str(&v3).expect("v3 allocation block validates");
@@ -636,7 +636,7 @@ axis_priority = ["roll", "yaw"]
 
     #[test]
     fn fc_fdir_detector_block_is_v3_only_and_validates_under_v3() {
-        // Phase-5.B.4: the block now ships with a typed enum
+        // The block ships with a typed enum
         // (`windowed_mean_shift_glrt`) and consumed
         // `window_samples` / `false_alarm_rate` fields. v2 still
         // rejects the entire block via the schema-version gate.
@@ -731,7 +731,7 @@ false_alarm_rate = {bad}
     }
 
     // -----------------------------------------------------------------
-    // Phase-5.B.3 — `[fc.imm]` validator tests.
+    // `[fc.imm]` validator tests.
     // -----------------------------------------------------------------
 
     /// Returns the canonical FC v3 fixture with `estimator = "imm"`
@@ -1969,7 +1969,7 @@ kind = "piecewise_exponential"
         assert!(matches!(err, ScenarioError::MissingTelemetryOutput));
     }
 
-    // Phase-2.10 sounding-rocket-shaped fixture. Loaded from a sibling
+    // Sounding-rocket-shaped fixture. Loaded from a sibling
     // file so the four-pillar provenance contract is unambiguous: the
     // file lives under `tests/fixtures/`, marking it as a synthetic
     // parser test artefact, not a benchmark scenario. The constants
@@ -2116,7 +2116,7 @@ kind = "piecewise_exponential"
     }
 
     // -----------------------------------------------------------------
-    // Phase 3.8.B layered wind
+    // Layered wind
     // -----------------------------------------------------------------
 
     #[test]
@@ -2201,7 +2201,7 @@ kind = "piecewise_exponential"
     }
 
     // -----------------------------------------------------------------
-    // Phase 3.8.C gust wind
+    // Gust wind
     // -----------------------------------------------------------------
 
     fn gust_wind_block() -> &'static str {
@@ -2453,10 +2453,10 @@ kind = "isothermal""#,
     }
 
     #[test]
-    fn phase1_scenario_continues_to_parse_under_phase2_registry() {
-        // Byte-stability guard: the Phase-1 analytic-toy scenario must
-        // continue to parse and validate identically under the Phase-2
-        // model registry that 2.10.B installs.
+    fn base_scenario_continues_to_parse_under_full_registry() {
+        // Byte-stability guard: the analytic-toy scenario must
+        // continue to parse and validate identically under the full
+        // model registry.
         let scenario = Scenario::from_toml_str(MINIMAL).unwrap();
         assert_eq!(scenario.document.openbmp.scenario, 2);
         assert_eq!(scenario.document.vehicle.kind, "point_mass");
@@ -2556,7 +2556,7 @@ kind = "isothermal""#,
     }
 
     // -----------------------------------------------------------------
-    // Phase 3.2: `[mission]` block parser tests
+    // `[mission]` block parser tests
     // -----------------------------------------------------------------
 
     /// Append a `[mission]` block to the analytic-toy MINIMAL scenario.
@@ -2897,7 +2897,7 @@ action  = { kind = "separation" }
 
     #[test]
     fn rejects_deploy_recovery_action_missing_fields() {
-        // Phase-3.9: `deploy_recovery` requires `id` and `command`
+        // `deploy_recovery` requires `id` and `command`
         // fields. A bare `{ kind = "deploy_recovery" }` is a serde
         // decode failure (missing fields).
         let err = Scenario::from_toml_str(&with_mission(
@@ -2946,7 +2946,7 @@ action  = { kind = "deploy_recovery", id = "main", command = "unfurl" }
 
     #[test]
     fn accepts_effector_override_action_kind() {
-        // Phase 3.4 wires scenario-script effector override actions.
+        // Scenario-script effector override actions are wired.
         let parse_result = Scenario::from_toml_str(&format!(
             "{ASSEMBLY_WITH_EFFECTOR}\n{}",
             r#"
@@ -3109,14 +3109,14 @@ action  = { kind = "stop", label = "max-q" }
 
     #[test]
     fn legacy_scenario_without_mission_block_parses_unchanged() {
-        // The Phase-3.2 mission block is optional; pre-3.2 scenarios
+        // The mission block is optional; scenarios without one
         // must continue to parse identically.
         let scenario = Scenario::from_toml_str(MINIMAL).expect("parse");
         assert!(scenario.document.mission.is_none());
     }
 
     // -----------------------------------------------------------------
-    // Phase-3.3: `[vehicle.assembly]` block parser tests
+    // `[vehicle.assembly]` block parser tests
     // -----------------------------------------------------------------
 
     const ASSEMBLY_TWO_BODY: &str = include_str!(concat!(
@@ -3212,7 +3212,7 @@ action  = { kind = "stop", label = "max-q" }
 
     #[test]
     fn minimal_scenario_carries_single_body_assembly() {
-        // Phase-3.13 v2 contract: every scenario has a non-empty
+        // v2 contract: every scenario has a non-empty
         // [vehicle.assembly] block; the analytic-toy scenario is no
         // exception.
         let scenario = Scenario::from_toml_str(MINIMAL).expect("parse");
@@ -3255,7 +3255,7 @@ action  = { kind = "stop", label = "max-q" }
     }
 
     #[test]
-    #[ignore = "Phase-3.13 retired flat fields; cross-consistency check is now structurally impossible"]
+    #[ignore = "v1 flat fields were retired; cross-consistency check is now structurally impossible"]
     fn rejects_mass_mismatch_between_flat_and_assembly() {
         let err = Scenario::from_toml_str(ASSEMBLY_MASS_MISMATCH).unwrap_err();
         assert!(
@@ -3265,7 +3265,7 @@ action  = { kind = "stop", label = "max-q" }
     }
 
     #[test]
-    #[ignore = "Phase-3.13 retired flat fields; relative-tolerance cross-consistency is now structurally impossible"]
+    #[ignore = "v1 flat fields were retired; relative-tolerance cross-consistency is now structurally impossible"]
     fn rejects_small_mass_mismatch_with_relative_tolerance() {
         let toml = ASSEMBLY_TWO_BODY
             .replace(
@@ -3297,7 +3297,7 @@ action  = { kind = "stop", label = "max-q" }
     }
 
     #[test]
-    #[ignore = "Phase-3.13 retired flat fields; rigid inertia cross-consistency is now structurally impossible"]
+    #[ignore = "v1 flat fields were retired; rigid inertia cross-consistency is now structurally impossible"]
     fn rejects_rigid_flat_and_assembly_inertia_mismatch() {
         let err = Scenario::from_toml_str(ASSEMBLY_RIGID_INERTIA_MISMATCH).unwrap_err();
         assert!(
@@ -3602,7 +3602,7 @@ action  = { kind = "stop", label = "max-q" }
     }
 
     // -----------------------------------------------------------------
-    // Phase-3.9 recovery
+    // Recovery
     // -----------------------------------------------------------------
 
     #[test]
@@ -3747,7 +3747,7 @@ action  = { kind = "deploy_recovery", id = "main_chute", command = "deploy" }
     }
 
     // -----------------------------------------------------------------
-    // Phase-3.10 sensors
+    // Sensors
     // -----------------------------------------------------------------
 
     #[test]
@@ -3805,7 +3805,7 @@ file = "../sensors/star-tracker-textbook.toml""#,
         );
     }
 
-    // Phase-4.B closed-loop scenario fixture.
+    // Closed-loop scenario fixture.
     const CLOSED_LOOP_ATTITUDE_HOLD: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../scenarios/closed-loop-attitude-hold/scenario.toml"

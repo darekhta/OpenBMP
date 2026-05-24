@@ -12,7 +12,7 @@
 #
 # `specific_impulse_s` is the back-solved value for
 # `total_impulse_n_s = m_p · g_0 · Isp` with `m_p = 1.0 kg` and
-# `g_0 = 9.80665 m/s²`. Phase-2 mass integration still uses
+# `g_0 = 9.80665 m/s²`. Mass integration uses
 # `dm/dt = -F(t) · m_p / I_total` directly; the Isp field is checked
 # at load time as a consistency guard.
 

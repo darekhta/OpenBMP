@@ -1,4 +1,4 @@
-# Phase-5.A.3.D LQR-with-fault sibling of the diff-flatness figure-eight.
+# LQR-with-fault sibling of the diff-flatness figure-eight.
 #
 # Identical to `scenarios/diff-flatness-figure-eight-lqr` except for
 # one extra field on the roll-torque effector:
@@ -6,7 +6,7 @@
 #   `fault = { kind = "reduced_rate", factor = 0.7 }`
 #
 # This is the same matched-uncertainty disturbance used by the
-# Phase-5.A.2.D L1 sibling scenarios. Pairing the LQR rate loop with
+# L1 sibling scenarios. Pairing the LQR rate loop with
 # this fault gives the controller comparison harness in
 # `crates/openbmp-cli/tests/controller_comparison_harness.rs` a
 # direct apples-to-apples comparison against the PID-baseline,
@@ -16,7 +16,7 @@ openbmp.scenario = 3
 
 [meta]
 name        = "diff-flatness-figure-eight-lqr-fault"
-description = "Phase-5.A.3.D LQR-rate-loop figure-eight tracker with the matched roll-axis ReducedRate fault. Sibling of diff-flatness-figure-eight-lqr; identical except for the fault block."
+description = "LQR-rate-loop figure-eight tracker with the matched roll-axis ReducedRate fault. Sibling of diff-flatness-figure-eight-lqr; identical except for the fault block."
 validation  = "experimental"
 provenance  = "synthetic; identical to diff-flatness-figure-eight-lqr modulo the EffectorFault::ReducedRate { factor = 0.7 } on the roll-torque effector. See provenance.md."
 
@@ -149,7 +149,7 @@ trajectory_kind          = "minimum_snap"
 rate_loop_kind           = "lqr"
 
 # Per-axis LQR cost weights. Tuned so the closed-loop rate-loop
-# bandwidth roughly matches the Phase-4 PID rate gains (Kp = 0.5,
+# bandwidth roughly matches the baseline PID rate gains (Kp = 0.5,
 # Kd = 0.05) on this unit-inertia plant; q_int / q_omega ≈ 0.05
 # gives mild integral action (zero steady-state rate error in
 # ~ 1 s).

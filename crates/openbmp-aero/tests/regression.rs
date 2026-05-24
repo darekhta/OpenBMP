@@ -1,4 +1,4 @@
-//! Phase 2.5.C regression — synthetic finned-cylinder deck pin.
+//! Regression — synthetic finned-cylinder deck pin.
 //!
 //! Three classes of check.
 //!
@@ -17,9 +17,9 @@
 //! and lookup at the centroid of every cube is bit-stable across two
 //! evaluations.
 //!
-//! These tests are the same shape the Phase-2.10
-//! `openbmp check-provenance` walk will perform; we do them locally
-//! now so a typo in the deck file or the generator breaks CI before
+//! These tests are the same shape the
+//! `openbmp check-provenance` walk performs; we do them locally
+//! so a typo in the deck file or the generator breaks CI before
 //! release.
 
 #![allow(

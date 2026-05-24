@@ -1,9 +1,9 @@
-# Phase-3.9.E exit-criterion scenario — point-mass vehicle with
+# Exit-criterion scenario — point-mass vehicle with
 # two-stage drogue + main parachute descent.
 #
-# The scenario demonstrates the full Phase-3.9 path:
+# The scenario demonstrates the full recovery path:
 #   - recovery scenario block parses through the structured
-#     `RecoveryConfig` family (Phase 3.9.D);
+#     `RecoveryConfig` family;
 #   - the runner-side `RecoveryRack` is built with three devices
 #     (only `dual_chute` is exercised via deploy events; the others
 #     stay stowed with zero drag);
@@ -28,7 +28,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "parachute-descent"
-description = "Phase-3.9.E exit-criterion: point-mass vehicle with two-stage drogue + main recovery driven by mission events. Demonstrates the full recovery-rack hot path. Synthetic; not a benchmark."
+description = "Exit-criterion: point-mass vehicle with two-stage drogue + main recovery driven by mission events. Demonstrates the full recovery-rack hot path. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

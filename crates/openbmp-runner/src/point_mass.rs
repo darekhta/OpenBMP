@@ -1,5 +1,5 @@
-//! Scenario → kernel → telemetry adapter for Phase-2 point-mass
-//! scenarios that use the structured Phase-2.10 blocks (`[aero]`,
+//! Scenario → kernel → telemetry adapter for point-mass
+//! scenarios that use the structured blocks (`[aero]`,
 //! `[propulsion.motor]`, `[atmosphere]`, …).
 //!
 //! Accepted scenario shape (any combination of the following relative
@@ -21,7 +21,7 @@
 //! [`Scenario::resolved_files`] called in
 //! [`crate::run`]).
 //!
-//! Telemetry layout (Phase-2.11.B): the seven Phase-1 base channels
+//! Telemetry layout: the seven base channels
 //! (position×3, velocity×3, mass) plus, conditionally:
 //!
 //! - **Atmosphere sample** when `[atmosphere].kind = "us_standard_1976"`:
@@ -77,26 +77,26 @@ use openbmp_vehicle::Assembly;
 // wires. Scenario-supplied force-model names ("aero", "thrust") are
 // mapped to these; the constant-gravity force is registered via
 // `ConstantGravityForce::new` which carries its own internal id.
-// Phase-2.7 uses model-ids in the determinism oracle; the runner
+// The determinism oracle uses model-ids; the runner
 // picks fixed values so the per-model telemetry stream is keyed
 // deterministically.
-const PHASE2_AERO_MODEL_ID: ModelId = ModelId::new(102);
-const PHASE2_THRUST_MODEL_ID: ModelId = ModelId::new(103);
-const PHASE2_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(104);
-// Phase-5.C.2 — non-constant gravity (point_mass / j2 / egm2008) routes
+const POINT_MASS_AERO_MODEL_ID: ModelId = ModelId::new(102);
+const POINT_MASS_THRUST_MODEL_ID: ModelId = ModelId::new(103);
+const POINT_MASS_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(104);
+// Non-constant gravity (point_mass / j2 / egm2008) routes
 // through `GravityForceAdapter`, which keys its per-model telemetry
 // stream on this id. The legacy `constant` arm continues to use
-// `ConstantGravityForce` (a Phase-1-shaped model with no model id) so
+// `ConstantGravityForce` (a model with no model id) so
 // every existing constant-gravity scenario stays byte-stable.
-const PHASE2_GRAVITY_MODEL_ID: ModelId = ModelId::new(105);
-// Phase-3.6: distinct model ids for the engine-cluster path so the
+const POINT_MASS_GRAVITY_MODEL_ID: ModelId = ModelId::new(105);
+// Distinct model ids for the engine-cluster path so the
 // determinism oracle can tell legacy single-motor scenarios apart
 // from cluster scenarios in the per-model force breakdown.
-const PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(120);
-const PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(121);
-const PHASE3_TANK_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(330);
-const PHASE3_TANK_RACK_MASS_MODEL_ID: ModelId = ModelId::new(331);
-const PHASE3_RECOVERY_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(370);
+const RIGID_BODY_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(120);
+const RIGID_BODY_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(121);
+const RIGID_BODY_TANK_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(330);
+const RIGID_BODY_TANK_RACK_MASS_MODEL_ID: ModelId = ModelId::new(331);
+const RIGID_BODY_RECOVERY_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(370);
 
 #[derive(Clone, Debug, Default)]
 struct LoadedModels {
@@ -104,7 +104,7 @@ struct LoadedModels {
     motor: Option<SolidMotor>,
 }
 
-/// Run a Phase-2 point-mass scenario through a freshly-built kernel
+/// Run a point-mass scenario through a freshly-built kernel
 /// and return the populated telemetry table.
 ///
 /// `resolved_files` is the digest map produced by
@@ -115,11 +115,11 @@ struct LoadedModels {
 /// # Errors
 ///
 /// Returns [`RunnerError::UnsupportedScenario`] when the scenario shape
-/// does not match the Phase-2 point-mass contract,
+/// does not match the point-mass contract,
 /// [`RunnerError::Aero`] / [`RunnerError::Motor`] / [`RunnerError::Env`] for
 /// loader failures, and [`RunnerError::Simulation`] / [`RunnerError::Telemetry`]
 /// for kernel- or telemetry-side failures.
-#[allow(clippy::too_many_lines)] // Phase-3.6: per-step orchestration grew
+#[allow(clippy::too_many_lines)] // per-step orchestration is large
 pub fn run(
     scenario: &Scenario,
     resolved_files: &BTreeMap<String, ResolvedFile>,
@@ -127,31 +127,31 @@ pub fn run(
     let document = &scenario.document;
     require_supported_shape(document)?;
     let assembly = crate::assembly::synthesize_assembly(document)?;
-    // Phase-3.4: build the runner-side effector rack. Empty when
+    // Build the runner-side effector rack. Empty when
     // no `[[vehicle.assembly.effectors]]` are declared, in which
     // case every per-step rack operation short-circuits and the
     // legacy byte-stable kernel path is preserved.
     let mut effector_rack = crate::effectors::EffectorRack::build(document)?;
-    // Phase-3.6: build the runner-side engine rack. Empty when no
+    // Build the runner-side engine rack. Empty when no
     // `[[vehicle.assembly.engines]]` are declared, in which case
     // every per-step rack operation short-circuits and the legacy
     // single-motor byte-stable path is preserved.
     let mut engine_rack = crate::engines::EngineRack::build(document)?;
-    // Phase-3.7: build the runner-side tank rack. Empty when no
+    // Build the runner-side tank rack. Empty when no
     // `[[vehicle.assembly.tanks]]` are declared, in which case every
     // per-step rack operation short-circuits and the legacy
     // byte-stable path is preserved.
     let mut tank_rack = crate::tanks::TankRack::build(document)?;
-    // Phase-3.9: build the runner-side recovery rack. Empty when no
+    // Build the runner-side recovery rack. Empty when no
     // `[[vehicle.assembly.recovery]]` are declared, in which case
     // every per-step rack operation short-circuits and the kernel's
-    // recovery snapshot stays empty (byte-stable for pre-3.9
-    // scenarios).
+    // recovery snapshot stays empty (byte-stable for scenarios
+    // without recovery devices).
     let mut recovery_rack = crate::recovery::RecoveryRack::build(document)?;
-    // Phase-3.8: build the runner-side wind rack. Inactive when no
+    // Build the runner-side wind rack. Inactive when no
     // `[wind]` block is declared (or `kind = "none"`); the per-step
     // rack op short-circuits and the kernel's wind override stays
-    // `None`, preserving pre-3.8 byte output.
+    // `None`, preserving byte output for scenarios without wind.
     let wind_rack = crate::wind::WindRack::build(document)?;
     wind_rack.reset();
 
@@ -163,14 +163,14 @@ pub fn run(
     // takes `&self`, but `KernelVehicle` is not `Clone` (the inner
     // `Box<dyn ForceModel>` lists are not). Re-building from scratch
     // avoids interior-mutability or Arc gymnastics; both copies are
-    // stateless and evaluate identically per the Phase-2.6/2.5
-    // contracts.
+    // stateless and evaluate identically per the force-model and
+    // mass-model contracts.
     let breakdown_vehicle = build_vehicle(document, &loaded_models, &assembly)?;
     let mass_model = BoxedMassModel(build_mass_model(document, &loaded_models, &assembly)?);
 
-    // Phase-5.D.4 — runtime integrator dispatch from the scenario
+    // Runtime integrator dispatch from the scenario
     // [solver] block. Defaults to Rk4FixedStep when [solver] is
-    // absent, preserving the byte-stable Phase-1 contract for every
+    // absent, preserving the byte-stable contract for every
     // existing scenario.
     let runtime_integrator = build_runtime_integrator(document)?;
     let config = SimulationConfig {
@@ -207,7 +207,7 @@ pub fn run(
     let metadata = build_schema_metadata(document, resolved_files);
     let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
-    // Phase-3.5.C: pair schema-2 deck axes with scenario effectors.
+    // Pair schema-2 deck axes with scenario effectors.
     // Schema-1 decks and decks without effector axes produce empty
     // bindings; the per-step snapshot push then short-circuits and
     // the kernel's effector-actuals map stays empty (byte-stable).
@@ -226,25 +226,25 @@ pub fn run(
         );
         kernel.set_effector_actuals(snapshot_map);
     }
-    // Phase-3.6: at step 0, push the rack's initial (Idle) snapshot
+    // At step 0, push the rack's initial (Idle) snapshot
     // to the kernel so the breakdown's mass adapter sees the same
     // empty-consumption view the kernel will see on its first step.
     if !engine_rack.is_empty() {
         kernel.set_engine_snapshot(engine_rack.snapshot_map());
     }
-    // Phase-3.7: at step 0, push the rack's initial snapshot to the
+    // At step 0, push the rack's initial snapshot to the
     // kernel so the breakdown's mass adapter and force adapter see
     // the same view the kernel will see.
     if !tank_rack.is_empty() {
         kernel.set_tank_snapshot(tank_rack.snapshot_map());
     }
-    // Phase-3.9: at step 0, push the rack's initial (Stowed)
+    // At step 0, push the rack's initial (Stowed)
     // snapshot to the kernel so the breakdown's recovery-drag force
     // adapter sees the same view the kernel will see.
     if !recovery_rack.is_empty() {
         kernel.set_recovery_snapshot(recovery_rack.snapshot_map());
     }
-    // Phase-3.8: at step 0, sample the wind at the initial state
+    // At step 0, sample the wind at the initial state
     // and push to the kernel so the breakdown's force adapter sees
     // the same wind the kernel will see on its first step.
     if !wind_rack.is_inactive() {
@@ -270,7 +270,7 @@ pub fn run(
         Vec::new();
     while kernel.stop_reason().is_none() {
         effector_rack.apply_overrides(&pending_effector_events)?;
-        // Phase-3.6: drain pending engine commands from the previous
+        // Drain pending engine commands from the previous
         // kernel step, apply to the rack, then advance the rack.
         if !engine_rack.is_empty() {
             engine_rack.apply_commands(&pending_engine_events)?;
@@ -291,7 +291,7 @@ pub fn run(
                 &mut effector_rack,
                 &mut engine_rack,
             )?;
-            // Phase 5.X.B: forward the FC commander's published
+            // Forward the FC commander's published
             // mission state into the kernel's external view. The
             // kernel uses the externally-supplied state in
             // preference to its internal current_phase during event
@@ -306,7 +306,7 @@ pub fn run(
         if !engine_rack.is_empty() {
             engine_rack.step()?;
         }
-        // Phase-3.7: advance the tank rack using prior-step cached
+        // Advance the tank rack using prior-step cached
         // drivers (set after the previous kernel step). For point-
         // mass kernels the drivers are zeros — slosh in point-mass
         // is RigidLiquid-only per the scenario validator (D10), so
@@ -314,14 +314,14 @@ pub fn run(
         if !tank_rack.is_empty() {
             tank_rack.step()?;
         }
-        // Phase-3.9: drain pending deploy/stow events from the prior
+        // Drain pending deploy/stow events from the prior
         // kernel step, apply to the rack, then advance internal state
-        // (no-op for the Phase-3.9 instantaneous-deploy models).
+        // (no-op for the instantaneous-deploy models).
         if !recovery_rack.is_empty() {
             recovery_rack.apply_deploys(&pending_recovery_events)?;
             recovery_rack.step(document.time.dt_s)?;
         }
-        // Phase-3.5.C: push the rack's actuals snapshot to the kernel
+        // Push the rack's actuals snapshot to the kernel
         // BEFORE `step()` so all four RK4 stages see the same view.
         // Empty bindings → zero allocation, zero state change.
         if !deck_bindings.is_empty() {
@@ -332,7 +332,7 @@ pub fn run(
             );
             kernel.set_effector_actuals(snapshot_map);
         }
-        // Phase-3.6: push the rack's engine snapshot to the kernel
+        // Push the rack's engine snapshot to the kernel
         // BEFORE `step()` so all four RK4 stages see the same view.
         // Empty rack → zero allocation, zero state change (the
         // kernel's `engine_snapshot` field stays at the empty
@@ -340,17 +340,17 @@ pub fn run(
         if !engine_rack.is_empty() {
             kernel.set_engine_snapshot(engine_rack.snapshot_map());
         }
-        // Phase-3.7: push tank snapshot to the kernel before
+        // Push tank snapshot to the kernel before
         // `step()` so all four RK4 stages see the same view.
         if !tank_rack.is_empty() {
             kernel.set_tank_snapshot(tank_rack.snapshot_map());
         }
-        // Phase-3.9: push recovery snapshot to the kernel before
+        // Push recovery snapshot to the kernel before
         // `step()` so all four RK4 stages see the same view.
         if !recovery_rack.is_empty() {
             kernel.set_recovery_snapshot(recovery_rack.snapshot_map());
         }
-        // Phase-3.8: advance the wind rack and push the new sample
+        // Advance the wind rack and push the new sample
         // to the kernel before `step()`. For `GustWind` this rolls
         // the Dryden filter forward by one tick; the time-only
         // models are no-ops.
@@ -374,7 +374,7 @@ pub fn run(
             &mission_fired,
             &snapshot,
         )?;
-        // Phase 5.X.E: partition the typed script-action fired
+        // Partition the typed script-action fired
         // queue (engine commands -> engine rack, recovery deploys
         // -> recovery rack, effector overrides -> effector rack).
         pending_engine_events = script_fired
@@ -431,13 +431,13 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
         }
     }
 
-    // Phase-3.8 wind models are resolved by WindRack. Scenario
+    // Wind models are resolved by WindRack. Scenario
     // validation guarantees that non-`none` flat selections carry a
     // structured `[wind]` block and that the kind names agree.
 
     // Atmosphere: when `aero` is in the force list, require one of the
     // wired layered atmospheres (USSA76 for the historical sounding-
-    // rocket envelope, piecewise-exponential for the Phase-5.C.1
+    // rocket envelope, piecewise-exponential for the
     // engineering 0-1000 km envelope).
     let atmosphere_kind = scenario_atmosphere_kind(document);
     let has_aero = document.force_models().iter().any(|m| m == "aero");
@@ -553,9 +553,9 @@ fn build_initial_state(
 /// declared by the scenario.
 ///
 /// The `constant` arm intentionally retains the legacy
-/// `ConstantGravityForce` (Phase-1-shaped) to keep byte-for-byte
-/// reproducibility on every existing point-mass scenario. The new arms
-/// (`point_mass`, `j2`, `egm2008` from Phase 5.C.2) route through
+/// `ConstantGravityForce` to keep byte-for-byte
+/// reproducibility on every existing point-mass scenario. The other arms
+/// (`point_mass`, `j2`, `egm2008`) route through
 /// `GravityForceAdapter`, which wraps the corresponding
 /// `openbmp_physics::GravityModel`.
 fn build_gravity_force_adapter_point_mass(
@@ -577,7 +577,7 @@ fn build_gravity_force_adapter_point_mass(
                         .to_owned(),
                 });
             }
-            // Legacy Phase-1 force model — retained verbatim to keep
+            // Legacy force model — retained verbatim to keep
             // byte-stable Parquet on every existing constant-gravity
             // point-mass scenario.
             Ok(Box::new(ConstantGravityForce::new(Vector3::new(
@@ -595,7 +595,7 @@ fn build_gravity_force_adapter_point_mass(
             let model = PointMassGravity::new(mu)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
-                PHASE2_GRAVITY_MODEL_ID,
+                POINT_MASS_GRAVITY_MODEL_ID,
             )))
         }
         "j2" => {
@@ -616,18 +616,18 @@ fn build_gravity_force_adapter_point_mass(
             let model = J2Gravity::new(mu, r_e, j2)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
-                PHASE2_GRAVITY_MODEL_ID,
+                POINT_MASS_GRAVITY_MODEL_ID,
             )))
         }
         "egm2008" => {
-            // Phase 5.C.2: zonal-only EGM2008 (degrees 2-6), pinned to
+            // Zonal-only EGM2008 (degrees 2-6), pinned to
             // WGS84 µ / R_e and the Pavlis et al. 2012 J_n table. No
             // per-scenario overrides are accepted, matching the parser
             // contract in `EnvironmentConfig::validate`.
             let model = Egm2008ZonalGravity::wgs84_egm2008_zonal();
             Ok(Box::new(GravityForceAdapter::new(
                 model,
-                PHASE2_GRAVITY_MODEL_ID,
+                POINT_MASS_GRAVITY_MODEL_ID,
             )))
         }
         other => Err(RunnerError::UnsupportedScenario {
@@ -636,7 +636,7 @@ fn build_gravity_force_adapter_point_mass(
     }
 }
 
-#[allow(clippy::too_many_lines)] // Phase-3.9 added the recovery-rack force-adapter wiring branch
+#[allow(clippy::too_many_lines)] // the recovery-rack force-adapter wiring branch is large
 fn build_vehicle(
     document: &ScenarioDocument,
     loaded_models: &LoadedModels,
@@ -657,11 +657,11 @@ fn build_vehicle(
                     }
                 })?;
                 let atmosphere = build_runtime_atmosphere(scenario_atmosphere_kind(document))?;
-                let drag = DeckDragForceAdapter::new(deck, atmosphere, PHASE2_AERO_MODEL_ID);
+                let drag = DeckDragForceAdapter::new(deck, atmosphere, POINT_MASS_AERO_MODEL_ID);
                 named.push(NamedForceModel::new("aero", Box::new(drag)));
             }
             "thrust" => {
-                // Phase-3.6: dispatch between single-motor (legacy)
+                // Dispatch between single-motor (legacy)
                 // and engine-cluster paths based on whether
                 // `[[vehicle.assembly.engines]]` is declared. The
                 // scenario validator rejects scenarios that declare
@@ -679,7 +679,7 @@ fn build_vehicle(
                     let thrust = MotorThrustForceAdapter::new(
                         motor,
                         ignition_time_s,
-                        PHASE2_THRUST_MODEL_ID,
+                        POINT_MASS_THRUST_MODEL_ID,
                     );
                     named.push(NamedForceModel::new("thrust", Box::new(thrust)));
                 } else {
@@ -697,7 +697,7 @@ fn build_vehicle(
                         .collect();
                     let thrust = EngineClusterForceAdapter::new(
                         engine_ids,
-                        PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID,
+                        RIGID_BODY_ENGINE_CLUSTER_THRUST_MODEL_ID,
                     );
                     named.push(NamedForceModel::new("thrust", Box::new(thrust)));
                 }
@@ -706,7 +706,7 @@ fn build_vehicle(
         }
     }
 
-    // Phase-3.7: tank-rack reaction-force adapter (when tanks
+    // Tank-rack reaction-force adapter (when tanks
     // declared). Last in the named list so the locked left-fold
     // operand order keeps prior force entries unchanged.
     if !document.vehicle.assembly.tanks.is_empty() {
@@ -719,13 +719,14 @@ fn build_vehicle(
                 openbmp_core::TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = t.id))
             })
             .collect();
-        let tank_force = TankRackForceAdapter::new(tank_ids, PHASE3_TANK_RACK_FORCE_MODEL_ID);
+        let tank_force = TankRackForceAdapter::new(tank_ids, RIGID_BODY_TANK_RACK_FORCE_MODEL_ID);
         named.push(NamedForceModel::new("tank_reaction", Box::new(tank_force)));
     }
 
-    // Phase-3.9: recovery-rack drag-force adapter (when recovery
+    // Recovery-rack drag-force adapter (when recovery
     // devices declared). Appended last so legacy force-list
-    // summation order is unchanged for pre-3.9 scenarios; the locked
+    // summation order is unchanged for scenarios without recovery
+    // devices; the locked
     // left-fold places recovery drag at the end of the breakdown.
     if !document.vehicle.assembly.recovery.is_empty() {
         let recovery_ids: Vec<openbmp_core::RecoveryId> = document
@@ -744,7 +745,7 @@ fn build_vehicle(
         let recovery_force = RecoveryRackForceAdapter::new(
             recovery_ids,
             atmosphere,
-            PHASE3_RECOVERY_RACK_FORCE_MODEL_ID,
+            RIGID_BODY_RECOVERY_RACK_FORCE_MODEL_ID,
         );
         named.push(NamedForceModel::new(
             "recovery_drag",
@@ -753,7 +754,7 @@ fn build_vehicle(
     }
 
     // KernelVehicle requires a mass model even for vehicle-internal
-    // queries (Phase-2.8 contract). The kernel's mass model is built
+    // queries. The kernel's mass model is built
     // separately in `build_mass_model` because it owns its own copy.
     let vehicle_mass = build_mass_model(document, loaded_models, assembly)?;
     KernelVehicle::new(named, vec![], vehicle_mass).map_err(|e| RunnerError::UnsupportedScenario {
@@ -768,7 +769,7 @@ fn build_mass_model(
 ) -> Result<Box<dyn MassModel>, RunnerError> {
     let start_time = SimTime::from_seconds(document.time.start_s);
     let dry_mass_kg = dry_mass_kg_at(assembly, start_time, "vehicle.assembly")?;
-    // Phase-3.6: dispatch to the cluster mass adapter when
+    // Dispatch to the cluster mass adapter when
     // `[[vehicle.assembly.engines]]` is declared. Scenarios with
     // both motor and engines are rejected at parse time
     // (`AmbiguousPropulsion`), so the three arms are exclusive.
@@ -788,7 +789,7 @@ fn build_mass_model(
         Box::new(EngineClusterMassAdapter::new(
             dry_mass_kg,
             engine_ids,
-            PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID,
+            RIGID_BODY_ENGINE_CLUSTER_MASS_MODEL_ID,
         ))
     } else if let Some(motor) = &loaded_models.motor {
         let ignition_time_s = motor_ignition_time_s(document)?;
@@ -796,13 +797,13 @@ fn build_mass_model(
             motor.clone(),
             dry_mass_kg,
             ignition_time_s,
-            PHASE2_MOTOR_MASS_MODEL_ID,
+            POINT_MASS_MOTOR_MASS_MODEL_ID,
         ))
     } else {
         Box::new(ConstantMass::new(dry_mass_kg))
     };
 
-    // Phase-3.7: wrap the base mass model with a tank-rack mass
+    // Wrap the base mass model with a tank-rack mass
     // adapter when tanks are declared. The wrapper adds each tank's
     // `mass_kg` from the kernel snapshot to the base mass.
     if document.vehicle.assembly.tanks.is_empty() {
@@ -820,7 +821,7 @@ fn build_mass_model(
         Ok(Box::new(TankRackMassAdapter::new(
             base,
             tank_ids,
-            PHASE3_TANK_RACK_MASS_MODEL_ID,
+            RIGID_BODY_TANK_RACK_MASS_MODEL_ID,
         )))
     }
 }
@@ -856,7 +857,7 @@ fn build_schema_metadata(
 }
 
 // ---------------------------------------------------------------------
-// Phase-2 channel set: base + atmosphere + per-model force breakdown
+// Channel set: base + atmosphere + per-model force breakdown
 // ---------------------------------------------------------------------
 
 /// Per-model force-component channels in declared order.
@@ -893,24 +894,24 @@ struct PointMassChannelSet {
     atmosphere_speed_of_sound: Option<TelemetryChannel<f64>>,
     /// Force-model components in declared order.
     force_components: ForceComponentChannels,
-    /// Phase-3.4 effector deflection channels, in scenario-declared
+    /// Effector deflection channels, in scenario-declared
     /// order. One `effector.<id>.actual` `f64` channel per declared
     /// effector. Allocated AFTER force breakdown channels and BEFORE
     /// mission markers — this ordering is the determinism contract.
     effector_actuals: Vec<TelemetryChannel<f64>>,
-    /// Phase-3.9 recovery-state channels, in scenario-declared order.
+    /// Recovery-state channels, in scenario-declared order.
     /// Allocated after effectors and before mission markers so marker
     /// ordering remains alphabetical and recovery-free scenarios keep
     /// their legacy schema unchanged.
     recovery_states: RecoveryTelemetryChannels,
-    /// Phase-3.2 mission-event telemetry markers, keyed by tag.
+    /// Mission-event telemetry markers, keyed by tag.
     /// `BTreeMap` order is alphabetical for deterministic channel
     /// allocation regardless of scenario-text declaration order.
     mission_markers: BTreeMap<String, TelemetryChannel<bool>>,
 }
 
 impl PointMassChannelSet {
-    #[allow(clippy::too_many_lines)] // Phase-2/3 channel inventory grows with each schema extension
+    #[allow(clippy::too_many_lines)] // channel inventory grows with each schema extension
     fn new(document: &ScenarioDocument) -> Result<Self, RunnerError> {
         let mut next_id: u64 = 1;
         let mut alloc = || {
@@ -931,8 +932,8 @@ impl PointMassChannelSet {
         let mass = TelemetryChannel::<f64>::new(alloc(), "mass_kg", "kg", None::<&str>)?;
 
         // Atmosphere channels: emitted whenever the scenario declares
-        // a layered atmosphere the runner can sample (USSA76 since
-        // Phase 2.3, plus piecewise-exponential since Phase 5.C.1).
+        // a layered atmosphere the runner can sample (USSA76 and
+        // piecewise-exponential).
         let atmosphere_kind = scenario_atmosphere_kind(document);
         let has_atmosphere = is_runtime_atmosphere_kind(atmosphere_kind);
         let (
@@ -1000,7 +1001,7 @@ impl PointMassChannelSet {
             force_components.push((name.clone(), x_channel, y_channel, z_channel));
         }
 
-        // Phase-3.4 effector deflection channels, in scenario-
+        // Effector deflection channels, in scenario-
         // declared order. One `effector.<id>.actual` channel per
         // declared effector. Allocated BEFORE mission markers so
         // adding effectors to a scenario does not shift marker
@@ -1016,7 +1017,7 @@ impl PointMassChannelSet {
             effector_actuals.push(channel);
         }
 
-        // Phase-3.9 recovery telemetry channels, one triple per
+        // Recovery telemetry channels, one triple per
         // declared device. Scenario-declared order matches the
         // recovery force-adapter operand order.
         let mut recovery_states: RecoveryTelemetryChannels = Vec::new();
@@ -1044,7 +1045,7 @@ impl PointMassChannelSet {
             recovery_states.push((id, deployed, phase_index, drag_area));
         }
 
-        // Phase-3.2 mission marker channels. `BTreeMap` ordering on
+        // Mission marker channels. `BTreeMap` ordering on
         // tag keys keeps channel id allocation deterministic even
         // when the scenario reorders `[[mission.events]]` blocks.
         let mut mission_markers: BTreeMap<String, TelemetryChannel<bool>> = BTreeMap::new();
@@ -1106,13 +1107,13 @@ impl PointMassChannelSet {
             channels.push(y.metadata().clone());
             channels.push(z.metadata().clone());
         }
-        // Phase-3.4 effector deflection channels, in scenario-declared
+        // Effector deflection channels, in scenario-declared
         // order. Allocated AFTER force breakdown channels and BEFORE
         // mission markers — this ordering is the determinism contract.
         for actual in &self.effector_actuals {
             channels.push(actual.metadata().clone());
         }
-        // Phase-3.9 recovery channels, in scenario-declared order,
+        // Recovery channels, in scenario-declared order,
         // between effectors and mission markers.
         for (_, deployed, phase_index, drag_area) in &self.recovery_states {
             channels.push(deployed.metadata().clone());
@@ -1182,7 +1183,7 @@ where
     // identically. The breakdown is therefore the per-model
     // contribution to the kernel's total at the step boundary.
     //
-    // Phase-3.5.C: the breakdown's `effector_actuals` view mirrors
+    // The breakdown's `effector_actuals` view mirrors
     // the kernel's snapshot via `kernel.effector_actuals()`. For
     // schema-1 scenarios this is the empty map and the breakdown is
     // byte-identical to pre-3.5; for schema-2 scenarios the
@@ -1223,7 +1224,7 @@ where
         row.insert(z_channel, component.z)?;
     }
 
-    // Phase-3.4 effector deflection channels. The snapshot is in
+    // Effector deflection channels. The snapshot is in
     // scenario-declared order, matching `channels.effector_actuals`.
     // When the rack is empty (legacy scenarios) the snapshot is empty
     // and the loop is a no-op.
@@ -1242,7 +1243,7 @@ where
         &channels.recovery_states,
     )?;
 
-    // Phase-3.2 marker channels: write `true` for any tag whose
+    // Marker channels: write `true` for any tag whose
     // event fired this step, `false` for the rest. The marker
     // channel order is alphabetical (BTreeMap iteration); the
     // `fired_events` slice is in scenario-declared event order, so

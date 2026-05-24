@@ -1,4 +1,4 @@
-# Phase-3.9 assembly + recovery fixture (synthetic).
+# Assembly + recovery fixture (synthetic).
 #
 # Single-body assembly + three recovery devices exercising every
 # kind. Synthetic round numbers; not a benchmark.
@@ -7,7 +7,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "assembly-with-recovery-fixture"
-description = "Phase-3.9 parser fixture exercising the [[vehicle.assembly.recovery]] block. Synthetic; not a benchmark."
+description = "Parser fixture exercising the [[vehicle.assembly.recovery]] block. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

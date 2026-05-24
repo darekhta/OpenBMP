@@ -4,8 +4,8 @@ OpenBMP uses frame-tagged types and explicit simulation time to prevent common
 flight-dynamics mistakes. This document pins the conventions that are only
 summarized in the architecture document.
 
-The Phase-1 implementation may start with simplified transforms, but the names
-and metadata should leave room for IERS-grade Earth orientation later without
+The implementation uses simplified transforms, but the names
+and metadata leave room for IERS-grade Earth orientation without
 renaming public APIs.
 
 ## Frame Policy
@@ -16,8 +16,8 @@ views, not canonical storage.
 
 | OpenBMP name | Meaning | Notes |
 |---|---|---|
-| `ECI` | Earth-centered inertial frame | Phase-1 simplified inertial frame; future profile may map to GCRF/J2000 |
-| `ECEF` | Earth-centered Earth-fixed frame | Phase-1 WGS84-aligned rotating Earth frame |
+| `ECI` | Earth-centered inertial frame | Simplified inertial frame; future profile may map to GCRF/J2000 |
+| `ECEF` | Earth-centered Earth-fixed frame | WGS84-aligned rotating Earth frame |
 | `Body` | Vehicle body frame | Origin and axes defined by each vehicle model |
 | `NED` | Local north-east-down frame | Derived from geodetic origin and ECEF |
 | `ENU` | Local east-north-up frame | Derived from geodetic origin and ECEF |
@@ -35,7 +35,7 @@ The default Earth model is WGS84:
 - Gravity models may use their own documented constants, but the scenario
   records the selected gravity model version.
 
-Phase 1 may use a spherical Earth helper for analytic toys, but such scenarios
+A spherical Earth helper is available for analytic toys, but such scenarios
 must label the model as `spherical_earth_toy` and must not mix spherical and
 WGS84 geodetic fields silently.
 

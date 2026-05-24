@@ -1,8 +1,8 @@
-//! Phase-5.B.4 end-to-end test: closed-loop attitude-hold pipeline
+//! End-to-end test: closed-loop attitude-hold pipeline
 //! with the Willsky 1976 windowed-mean-shift GLRT FDIR detector
 //! wired in.
 //!
-//! Asserts the §5.B.4 exit criterion (wiring scope):
+//! Asserts the wiring behaviour:
 //!
 //! 1. The scenario runs to completion via the `openbmp` CLI binary
 //!    with `stop_label = "end-time"` after 1000 RK4 steps.

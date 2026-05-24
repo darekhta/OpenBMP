@@ -26,9 +26,9 @@ Every name in this document falls into one of four categories:
 | Category | Behavior at scenario load |
 |---|---|
 | **Canonical** | Accepted. Documented academic justification. |
-| **Reserved (Phase 6)** | Reserved for future use; current scenarios cannot declare it but the parser knows the name. |
+| **Reserved (hypersonic extensions)** | Reserved for the hypersonic / re-entry extensions; ordinary scenarios cannot declare it but the parser knows the name. |
 | **Rejected** | Refused with an error pointing at the academic replacement. |
-| **Deprecated (one-phase shim)** | Accepted with a deprecation warning; will become Rejected in the next phase. |
+| **Deprecated (one-release shim)** | Accepted with a deprecation warning; will become Rejected in the next major version. |
 
 Scenario load enforces the canon. The state-name lint runs at parse
 time and produces a typed error citing this document.
@@ -69,10 +69,10 @@ mission                                                      (region root, compo
 │   └── mission.states.in_flight.descent                     (composite)
 │       ├── mission.states.in_flight.descent.ballistic_descent (atomic)
 │       │
-│       ├── mission.states.in_flight.descent.entry_interface     (atomic, RESERVED Phase 6)
-│       ├── mission.states.in_flight.descent.lifting_entry       (atomic, RESERVED Phase 6)
-│       ├── mission.states.in_flight.descent.peak_heating        (atomic, RESERVED Phase 6)
-│       ├── mission.states.in_flight.descent.peak_deceleration   (atomic, RESERVED Phase 6)
+│       ├── mission.states.in_flight.descent.entry_interface     (atomic, RESERVED)
+│       ├── mission.states.in_flight.descent.lifting_entry       (atomic, RESERVED)
+│       ├── mission.states.in_flight.descent.peak_heating        (atomic, RESERVED)
+│       ├── mission.states.in_flight.descent.peak_deceleration   (atomic, RESERVED)
 │       │
 │       ├── mission.states.in_flight.descent.drogue_descent      (atomic)
 │       ├── mission.states.in_flight.descent.main_descent        (atomic)
@@ -126,10 +126,10 @@ mission                                                      (region root, compo
 | State | Meaning | Citations |
 |---|---|---|
 | `descent.ballistic_descent` | Vehicle in atmospheric descent without recovery deployment. | Stevens & Lewis 2015. |
-| `descent.entry_interface` (Phase 6) | Threshold crossing into denser atmosphere; conventionally 80 km altitude. | Vinh, *Hypersonic and Planetary Entry Flight Mechanics*, 1980. |
-| `descent.lifting_entry` (Phase 6) | Re-entry phase with non-zero lift; replaces operational `Maneuvering`. | Vinh 1980; Anderson, *Hypersonic and High-Temperature Gas Dynamics*. |
-| `descent.peak_heating` (Phase 6) | Stagnation heating at maximum; transient. | Anderson; Tauber-Sutton textbook. |
-| `descent.peak_deceleration` (Phase 6) | Maximum dynamic-pressure deceleration; transient. | Vinh 1980. |
+| `descent.entry_interface` (reserved) | Threshold crossing into denser atmosphere; conventionally 80 km altitude. | Vinh, *Hypersonic and Planetary Entry Flight Mechanics*, 1980. |
+| `descent.lifting_entry` (reserved) | Re-entry phase with non-zero lift; replaces operational `Maneuvering`. | Vinh 1980; Anderson, *Hypersonic and High-Temperature Gas Dynamics*. |
+| `descent.peak_heating` (reserved) | Stagnation heating at maximum; transient. | Anderson; Tauber-Sutton textbook. |
+| `descent.peak_deceleration` (reserved) | Maximum dynamic-pressure deceleration; transient. | Vinh 1980. |
 | `descent.drogue_descent` | Drogue parachute deployed. | Sounding-rocket textbook. |
 | `descent.main_descent` | Main parachute deployed. | Idem. |
 | `descent.final_descent` | Final descent before touchdown. **Replaces rejected `terminal_descent`.** | Sounding-rocket textbook (academic naming). |
@@ -160,9 +160,9 @@ health                                                       (region root, compo
 | `health.abort_requested` | Commander-side abort request latched by the production health region. The published `safe_state_requested` boolean is derived from this region state for compatibility with existing consumers. |
 | `health.safed_on_fault` | Terminal state; vehicle is in a known-safe configuration with all effectors disabled. |
 
-Phase 6 may extend `degraded` into a composite with sensor / effector
-/ aerothermal sub-states. Phase 5.X ships the flat health vocabulary,
-not a production-ticked health region.
+The hypersonic extensions may extend `degraded` into a composite with sensor /
+effector / aerothermal sub-states. The base platform ships the flat health
+vocabulary, not a production-ticked health region.
 
 ## The Comms region
 
@@ -196,24 +196,24 @@ estimator_regime                                             (region root, compo
 ```
 
 This region is *observed* by the commander but *decided* by the IMM
-estimator (Phase 5.B.3 / 5.B.6). The IMM publishes its argmax mode
+estimator. The IMM publishes its argmax mode
 probability; the commander reflects it into the region's current
 state. Cross-region guards in mission transitions can reference this
 region (e.g. "transition from `apogee_regime.apogee_approach` to
 `apogee_regime.apogee` only when `estimator_regime` is
 `coast_mode`").
 
-In Phase 5.X the IMM Phase 5.B.3 / 5.B.6 has not necessarily
-landed all three modes — until it does, the region defaults to
+When the IMM has not yet
+landed all three modes, the region defaults to
 `boost_mode` and stays there. The architecture supports the region
 without requiring the underlying estimator-side machinery.
 
-## Reserved regions (Phase 6)
+## Reserved regions
 
-Phase 6 is expected to add one canonical region:
+The hypersonic extensions add one canonical region:
 
 ```text
-aerodynamic_regime                                           (Phase 6 reserved)
+aerodynamic_regime                                           (reserved)
 ├── aerodynamic_regime.subsonic
 ├── aerodynamic_regime.transonic
 ├── aerodynamic_regime.supersonic
@@ -221,9 +221,9 @@ aerodynamic_regime                                           (Phase 6 reserved)
 └── aerodynamic_regime.free_molecular
 ```
 
-Phase 5.X reserves the region name but does not ship it. Phase 6
-declares it through the existing `[[mission.regions]]` extension
-point.
+The base platform reserves the region name but does not ship it; the
+hypersonic extensions declare it through the existing
+`[[mission.regions]]` extension point.
 
 ## Rejected vocabulary
 
@@ -283,23 +283,23 @@ Naming Rules` and that rejection extends to mission states:
 `Threat`, `Launch` (as a verb implying real launch),
 `WeaponSystem`.
 
-## Deprecated names with one-phase shims
+## Deprecated names with one-release shims
 
-These names ship in Phase 5.X with a deprecation warning. Phase 6 will
+These names ship with a deprecation warning. A future major version will
 remove the shim entirely. Scenarios using these names parse but emit
 a load-time warning citing this document.
 
 | Deprecated | Becomes Rejected when | Replacement |
 |---|---|---|
-| `ascent` (as a top-level state, when the scenario should declare hierarchy) | Phase 6 | `mission.states.in_flight.ascent.<sub-state>` |
-| `descent` (as a top-level state, when scenario should declare hierarchy) | Phase 6 | `mission.states.in_flight.descent.<sub-state>` |
-| `coast` (when the scenario uses both boost-end coast and pre-apogee coast) | Phase 6 | `in_flight.ascent.post_boost_coast` and `in_flight.coast` distinguish |
-| `phase` (token in scenario TOML, e.g. `[[mission.phases]]`) | Phase 6 | `state` (e.g. `[[mission.states]]`); the Phase-3.2 `[[mission.phases]]` block is preserved as a v3 backward-compat lift to `[[mission.states]]` |
-| `PhaseId` (Rust type) | Phase 6 | `StateId`; type alias `pub type PhaseId = StateId` ships in `openbmp-mission` for one phase, deprecation-warned. |
+| `ascent` (as a top-level state, when the scenario should declare hierarchy) | next major version | `mission.states.in_flight.ascent.<sub-state>` |
+| `descent` (as a top-level state, when scenario should declare hierarchy) | next major version | `mission.states.in_flight.descent.<sub-state>` |
+| `coast` (when the scenario uses both boost-end coast and pre-apogee coast) | next major version | `in_flight.ascent.post_boost_coast` and `in_flight.coast` distinguish |
+| `phase` (token in scenario TOML, e.g. `[[mission.phases]]`) | next major version | `state` (e.g. `[[mission.states]]`); the `[[mission.phases]]` block is preserved as a v3 backward-compat lift to `[[mission.states]]` |
+| `PhaseId` (Rust type) | next major version | `StateId`; type alias `pub type PhaseId = StateId` ships in `openbmp-mission` for one release, deprecation-warned. |
 
 ## Backward-compatibility migration
 
-Scenarios shipped against Phase 5.X load through a v3 → v4 lifting
+Scenarios written in the v3 syntax load through a v3 → v4 lifting
 pass:
 
 1. v3 `[[mission.phases]]` blocks map to v4 `[[mission.states]]`
@@ -330,7 +330,7 @@ new scenarios) should:
 ## Scope guardrail
 
 This vocabulary is the *full set* of state names OpenBMP supports for
-academic rocket-class and (Phase 6) re-entry / hypersonic flight.
+academic rocket-class and re-entry / hypersonic flight.
 
 Adding a new state name requires:
 

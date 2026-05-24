@@ -1,4 +1,4 @@
-# Phase-3.6 parser fixture: engine cluster + a mission event whose
+# Parser fixture: engine cluster + a mission event whose
 # action is a typed `engine_command` referencing the declared engine
 # by id. Synthetic; not a benchmark.
 
@@ -6,7 +6,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "assembly-engine-cluster-with-engine-command-fixture"
-description = "Phase-3.6 parser fixture exercising the typed engine_command mission action. Synthetic; not a benchmark."
+description = "Parser fixture exercising the typed engine_command mission action. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

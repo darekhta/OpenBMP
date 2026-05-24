@@ -10,11 +10,11 @@ name: Release
 # - build and scenario/golden manifests
 # - the non-suitability disclaimer (a static markdown file in this repo)
 #
-# Future Phase-1.10 follow-ons (not in scope for this workflow):
+# Possible follow-ons (not in scope for this workflow):
 #
 # - SLSA Build Level 2 provenance via slsa-framework/slsa-github-generator
 # - macOS / Windows / aarch64-Linux release artefacts
-# - Trusted Publishing for `cargo publish` (post-Phase-1)
+# - Trusted Publishing for `cargo publish`
 
 on:
   push:

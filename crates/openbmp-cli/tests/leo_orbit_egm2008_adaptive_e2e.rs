@@ -1,4 +1,4 @@
-//! Phase-5.D.4 end-to-end test: 1 kg point mass in a 400 km / 30°
+//! End-to-end test: 1 kg point mass in a 400 km / 30°
 //! inclined LEO orbit under EGM2008 zonal-harmonic gravity (degrees
 //! 2-6), integrated with the Dormand-Prince 5(4) adaptive embedded RK
 //! pair under a Gustafsson PI step controller.
@@ -8,7 +8,7 @@
 //! 1. The scenario runs to completion via `openbmp_cli::commands::run`
 //!    with `stop_label = "end-time"` after 5556 outer kernel steps —
 //!    the outer kernel cadence is `dt_s = 1.0` seconds, the same as
-//!    the Phase-5.C.2 fixed-RK4 demo. The adaptive integrator
+//!    the fixed-RK4 demo. The adaptive integrator
 //!    sub-steps internally as needed to satisfy
 //!    `(rtol = 1e-9, atol = 1e-12)` but the kernel's outer step
 //!    count is fixed by the time grid.

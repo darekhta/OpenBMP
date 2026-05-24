@@ -1,4 +1,4 @@
-//! Phase-5.A.5 end-to-end test: prioritised redistributed
+//! End-to-end test: prioritised redistributed
 //! allocator splits the autopilot's roll demand evenly across two
 //! `direct_torque` effectors, with byte-stable Parquet across
 //! reruns.

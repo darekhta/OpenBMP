@@ -1,9 +1,9 @@
-//! Phase-5.A.1.C end-to-end test: minimum-snap differential-flatness
+//! End-to-end test: minimum-snap differential-flatness
 //! figure-eight scenario loads, propagates, and emits byte-stable
 //! Parquet output across reruns.
 //!
-//! Asserts the §5.A.1 exit criterion (parser + plumbing scope of
-//! 5.A.1.C): `scenarios/diff-flatness-figure-eight/scenario.toml`
+//! Asserts the parser + plumbing behaviour:
+//! `scenarios/diff-flatness-figure-eight/scenario.toml`
 //! runs via `openbmp run`, the kernel completes with end-time stop
 //! reason, the Parquet file is non-empty, and two consecutive runs
 //! produce a byte-identical Parquet payload (the polynomial-
@@ -11,8 +11,8 @@
 //! propagates through the closed-loop pipeline).
 //!
 //! Closed-loop attitude tracking tolerance is **not** asserted here;
-//! that envelope tightens with the L1 adaptive (Phase 5.A.2) and
-//! observer-form anti-windup (Phase 5.A.3) sub-phases.
+//! that envelope tightens with the L1 adaptive and
+//! observer-form anti-windup augmentations.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -121,7 +121,7 @@ fn read_f64_column(parquet: &Path, column_name: &str) -> Vec<f64> {
 }
 
 /// Body-frame angular-velocity magnitude `|ω|` per row, derived from
-/// the rigid-body kernel's truth-state telemetry. Phase-5.A.2.A asserts
+/// the rigid-body kernel's truth-state telemetry. The test asserts
 /// the autopilot keeps this bounded.
 fn max_angular_velocity_magnitude_rad_s(parquet: &Path) -> f64 {
     let wx = read_f64_column(parquet, "angular_velocity.x_rad_s");

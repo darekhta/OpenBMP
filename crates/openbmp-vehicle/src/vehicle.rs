@@ -1,6 +1,6 @@
-//! `Vehicle` trait and the Phase-2 [`KernelVehicle`] composition.
+//! `Vehicle` trait and the [`KernelVehicle`] composition.
 //!
-//! The architecture's long-term `Vehicle` trait is:
+//! The `Vehicle` trait is:
 //!
 //! ```rust,ignore
 //! pub trait Vehicle<S: SimState>: ForceModel<S> + MomentModel<S> {
@@ -10,9 +10,9 @@
 //! }
 //! ```
 //!
-//! Phase 2.8 ships [`KernelVehicle`], which carries ordered force /
+//! [`KernelVehicle`] carries ordered force /
 //! moment lists plus a single mass model. It also implements
-//! `ForceModel<S>` / `MomentModel<S>` so the Phase-1 kernel can consume
+//! `ForceModel<S>` / `MomentModel<S>` so the kernel can consume
 //! the force and moment composition through its existing generic
 //! surface while the mass model is passed to the kernel separately.
 //!
@@ -30,16 +30,16 @@
 //! ```
 //!
 //! Floating-point summation is not associative, so reordering the
-//! force list changes the byte output. The Phase-2 plan documents
-//! this as the contract: *order matters*.
+//! force list changes the byte output. This is the contract:
+//! *order matters*.
 //!
 //! # Per-model breakdown for telemetry
 //!
 //! [`KernelVehicle::evaluate_force_breakdown`] /
 //! [`KernelVehicle::evaluate_moment_breakdown`] evaluate the lists and
 //! return a [`ForceBreakdown`] / [`MomentBreakdown`] carrying both
-//! per-model components and the total. The kernel-side adapter at
-//! Phase 2.10 evaluates the breakdown once per step, uses the total for
+//! per-model components and the total. The kernel-side adapter
+//! evaluates the breakdown once per step, uses the total for
 //! dynamics, and hooks the components into telemetry as
 //! `force.<name>.{x,y,z}` channels.
 //!
@@ -64,7 +64,7 @@ use crate::error::VehicleError;
 /// A named entry in a vehicle's force-model list.
 pub struct NamedForceModel<S: SimState> {
     /// Stable display name (used by the breakdown publisher and the
-    /// Phase-2.10 telemetry channel naming).
+    /// telemetry channel naming).
     pub name: String,
     /// Boxed force-model impl.
     pub model: Box<dyn ForceModel<S>>,
@@ -144,17 +144,17 @@ pub struct MomentBreakdown {
 // Vehicle trait
 // ---------------------------------------------------------------------
 
-/// Trait implemented by Phase-2+ vehicle compositions.
+/// Trait implemented by vehicle compositions.
 ///
 /// Generic over `S: SimState` so the same trait surface serves
 /// point-mass and rigid-body kernels.
 ///
-/// The Phase-2.8 close criteria are the flat force / moment / mass
+/// The trait provides a flat force / moment / mass
 /// composition surface plus deterministic breakdown evaluation. The
 /// `Vehicle` trait exposes the per-model lists via
 /// [`force_model_names`](Self::force_model_names) and
 /// [`moment_model_names`](Self::moment_model_names), and the kernel-side
-/// adapter at Phase 2.10 reads
+/// adapter reads
 /// [`evaluate_force_breakdown`](Self::evaluate_force_breakdown) per
 /// step to publish the breakdown channels.
 pub trait Vehicle<S: SimState>: ForceModel<S> + MomentModel<S> {
@@ -204,7 +204,7 @@ pub trait Vehicle<S: SimState>: ForceModel<S> + MomentModel<S> {
 // KernelVehicle
 // ---------------------------------------------------------------------
 
-/// Phase-2 vehicle composition: ordered force-model and moment-model
+/// Vehicle composition: ordered force-model and moment-model
 /// lists plus one mass model over a single [`SimState`] type.
 pub struct KernelVehicle<S: SimState> {
     force_model_names: Vec<String>,
@@ -430,8 +430,7 @@ fn validate_model_name(
 
 /// Convenience wrapper that turns any `Box<dyn MassModel>` into a
 /// type the kernel can take through its existing generic mass-model
-/// surface. Phase 2.8 ships this for symmetry with `KernelVehicle`;
-/// Phase 3 will introduce a `MultiStageMass` impl directly.
+/// surface. Provided for symmetry with `KernelVehicle`.
 pub struct BoxedMassModel(pub Box<dyn MassModel>);
 
 impl std::fmt::Debug for BoxedMassModel {
@@ -451,7 +450,7 @@ impl MassModel for BoxedMassModel {
         self.0.mass_rate_kg_s(t)
     }
 
-    // Phase-3.6: forward the context-carrying entry points through
+    // Forward the context-carrying entry points through
     // to the boxed inner model. Without these the kernel's calls to
     // `mass_kg_at` / `mass_rate_kg_s_at` would hit the default
     // forward in the trait, dropping the engine snapshot — and

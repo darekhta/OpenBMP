@@ -103,7 +103,7 @@ transformation:
   script: none
 verification:
   method: >-
-    Same Phase-2.7.D regression test as `imu-tactical`. The schema
+    Same regression test as `imu-tactical`. The schema
     parses bit-equally across all numerical fields, and the
     Allan-variance slope check passes for an ARW-only IMU stream.
   test:   crates/openbmp-sensors/tests/regression.rs
@@ -145,7 +145,7 @@ that combine to produce the characteristic Allan-variance log-log
 shape (–1/2 slope at short τ from ARW, plateau at intermediate τ
 from bias instability, +1/2 slope at long τ from RRW).
 
-The Phase-2.7.D regression test exercises this by running a
+The IMU regression test exercises this by running a
 synthetic ARW-only stream and asserting the Allan deviation log-log
 slope is near –1/2 over the expected averaging-time decade.
 
@@ -168,7 +168,7 @@ methodology_reference: >-
   IS-GPS-200 (NAVSTAR Global Positioning System Interface
   Specification) — public US Government work — for the user-
   equivalent range error (UERE) decomposition that the receiver-
-  output Gaussian + OU bias model approximates. The Phase-3.10
+  output Gaussian + OU bias model approximates. The model
   scope is intentionally a *receiver-output* model; satellite
   geometry, pseudorange, ionosphere, and multipath are downstream-
   user concerns.
@@ -188,11 +188,11 @@ transformation:
     nominal UERE budget at the receiver output. The OpenBMP TOML
     schema parameterises the OU bias drift by `θ` (mean-reversion
     rate, 1/s) and `σ` (white-noise drive strength, m/√s), the
-    same parameterisation used by the Phase-2.7 IMU bias-
+    same parameterisation used by the IMU bias-
     instability primitive.
 verification:
   method: >-
-    Phase-3.10.B unit tests
+    The GNSS unit tests
     (`crates/openbmp-sensors/src/gnss.rs::tests`) assert truth-
     bypass exact equality, byte-stable replay across two reruns,
     per-component RNG independence, and an empirical-stddev
@@ -200,14 +200,14 @@ verification:
     10 000-step run.
 ```
 
-### Phase-3.10 known limitations
+### GNSS known limitations
 
 - **Receiver output only.** No pseudorange, no satellite geometry,
   no ionospheric / tropospheric / multipath modelling.
 - **Single constellation.** GPS only; GLONASS / Galileo / BeiDou
-  are out of scope for Phase 3.10.
+  are out of scope for this model.
 - **No fault models.** Dropout windows, stuck-output faults, and
-  noise-spike faults are Phase-4 controller-side concerns.
+  noise-spike faults are controller-side concerns.
 - **No real fielded data.** Per `safety-boundaries.md`, the budget
   is a textbook envelope, not a port of any vendor's data sheet.
 
@@ -254,7 +254,7 @@ transformation:
     independently.
 verification:
   method: >-
-    Phase-3.10.C unit tests
+    The magnetometer unit tests
     (`crates/openbmp-sensors/src/magnetometer.rs::tests`)
     assert truth-bypass exact equality, hard-iron-only constant
     offset, soft-iron 2× scaling, byte-stable replay across two
@@ -263,23 +263,23 @@ verification:
     step run.
 ```
 
-### Phase-3.10 magnetometer known limitations
+### Magnetometer known limitations
 
-- **Body-frame truth supplied by the runner.** The Phase-3.10.C
+- **Body-frame truth supplied by the runner.** The
   magnetometer reads `SensorTruth.magnetic_field_body_nt` — a
-  pre-rotated truth field. The runner-side adapter (Phase
-  3.10.E) computes the WMM 2025 geodetic-NED field at the
+  pre-rotated truth field. The runner-side adapter
+  computes the WMM 2025 geodetic-NED field at the
   vehicle's position and time, rotates it through the truth
   attitude, and packs the result. The magnetometer itself is
   frame-agnostic.
 - **Constant soft / hard iron only.** No temperature drift, no
-  spin-induced bias, no full hysteresis. Phase-3.10 keeps the
+  spin-induced bias, no full hysteresis. The model keeps the
   biases as compile-time constants from the budget.
 - **Isotropic Gaussian noise.** No correlated noise, no 1/f
   spectrum. The architecture lists OU-style bias drift on
-  magnetometers as a future-phase extension.
+  magnetometers as a future extension.
 - **No fault models.** Stuck-axis, dropout, noise-spike faults
-  are Phase-4 controller-side concerns.
+  are controller-side concerns.
 
 ## `data/sensors/star-tracker-textbook.toml`
 
@@ -323,7 +323,7 @@ transformation:
     via `ARCSEC_TO_RAD = π / 648 000` at scenario load.
 verification:
   method: >-
-    Phase-3.10.D unit tests
+    The star-tracker unit tests
     (`crates/openbmp-sensors/src/star_tracker.rs::tests`)
     assert truth-bypass exact equality, unit-norm
     quaternion output for any seed (property test over 1 000
@@ -333,7 +333,7 @@ verification:
     σ > 0.01 rad to keep the small-angle approximation valid.
 ```
 
-### Phase-3.10 star-tracker known limitations
+### Star-tracker known limitations
 
 - **Small-angle approximation only.** The constructor rejects
   σ > 0.01 rad (~34′). For wider noise budgets the audit can
@@ -341,10 +341,10 @@ verification:
   (sin / cos of half-angle).
 - **Isotropic noise.** No per-axis variation, no correlated
   noise, no bias drift. The architecture lists per-axis variance
-  and quaternion-bias drift as future-phase extensions.
+  and quaternion-bias drift as future extensions.
 - **No occlusion / slew-rate / bright-object models.** The
-  star tracker is always "tracking" in Phase 3.10. Fault models
-  for boresight occlusion and slew-rate dropout are Phase-4
+  star tracker is always "tracking". Fault models
+  for boresight occlusion and slew-rate dropout are
   controller-side concerns.
 - **No fault models.** Stuck-attitude, dropout, noise-spike
-  faults are Phase-4 controller-side concerns.
+  faults are controller-side concerns.

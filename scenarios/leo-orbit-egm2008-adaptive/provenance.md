@@ -6,7 +6,7 @@
 
 ## Source class
 
-Synthetic. The scenario is the Phase-5.D.4 end-to-end demo for the
+Synthetic. The scenario is the end-to-end demo for the
 runner-side adaptive-integrator dispatch path: `[solver].profile =
 "adaptive-explicit"` + `trajectory_method = "dopri54"` +
 `determinism = "state-stable"` selects `Dopri54Adaptive` (Dormand-Prince
@@ -70,7 +70,7 @@ real-world locations, no ITAR / EAR / MTCR / Wassenaar content.
 ## Validation status
 
 `experimental`. Validates parser-side and runs end-to-end
-deterministically. The Phase-5.D.4 e2e test
+deterministically. The e2e test
 (`crates/openbmp-cli/tests/leo_orbit_egm2008_adaptive_e2e.rs`)
 asserts:
 

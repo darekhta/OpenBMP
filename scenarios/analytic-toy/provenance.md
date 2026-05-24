@@ -13,14 +13,14 @@ files:
   - scenarios/analytic-toy/constant-acceleration-drop.toml
 source_class:     synthetic-openbmp
 source_title:     >-
-  Phase-1 closed-form analytic-toy validation scenario: a 1 kg
+  Closed-form analytic-toy validation scenario: a 1 kg
   point mass at the ECI origin, zero initial velocity, falling
   under constant gravity magnitude g = 9.80665 m/s² along -z for
   10 s. The closed-form solution z(t) = -0.5 g t² and
   vz(t) = -g t is reproduced exactly by the kernel's RK4
   fixed-step integrator for a constant force on a constant mass.
 source_authors:   OpenBMP project
-source_id:        Phase-1 analytic-toy reference scenario
+source_id:        analytic-toy reference scenario
 source_url:       (in-house)
 publication_date: 2026-01-01
 methodology_reference: >-
@@ -46,7 +46,7 @@ transformation:
   script: none
 verification:
   method: >-
-    The Phase-1 byte-stability gate replays the scenario through the
+    The byte-stability gate replays the scenario through the
     kernel and compares Parquet telemetry byte-for-byte against the
     pinned reference. Closed-form residuals are also asserted through
     the CLI tolerance table for constant acceleration.
@@ -70,11 +70,10 @@ related_files:
   - crates/openbmp-cli/tests/expected/constant-acceleration-drop.toml
   - crates/openbmp-sim/tests/expected/constant-acceleration-drop.toml
 notes: >-
-  This scenario is the source-of-truth for the Phase-1 byte-stability
+  This scenario is the source-of-truth for the byte-stability
   contract and the `Scenario::from_toml_str_with_source_dir` parser
   unit tests in `crates/openbmp-scenario/src/scenario.rs`. Mutating
   the file (whitespace, ordering, or value changes) will invalidate
-  every downstream regression. The Phase-1 closure plan
-  (`docs/phase-1-plan.md`, removed in commit 085fd31) named this
-  the canonical Phase-1 deliverable.
+  every downstream regression. It is the canonical analytic-toy
+  validation deliverable.
 ```

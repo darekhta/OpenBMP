@@ -1,5 +1,4 @@
-//! Cao-Hovakimyan 2010 L1 adaptive controller — full architecture
-//! (Phase 5.A.2.B).
+//! Cao-Hovakimyan 2010 L1 adaptive controller — full architecture.
 //!
 //! This feature-gated module ships the four-piece L1 adaptive control
 //! decomposition as described in Hovakimyan & Cao 2010
@@ -26,8 +25,8 @@
 //! constructor asserts the bandwidth-projection inequality
 //! `ω_c · L < 1` and fails closed on violation.
 //!
-//! Phase 5.A.2.B shipped the math; Phase 5.A.2.C wires it into the
-//! rate loop and retires the Phase-4 L1-inspired interim channel.
+//! This math is wired into the rate loop, replacing an earlier
+//! L1-inspired interim channel.
 
 use thiserror::Error;
 
@@ -412,8 +411,8 @@ impl L1LowPassFilter {
 /// [`L1PiecewiseConstantAdaptation`], and [`L1LowPassFilter`] into one
 /// scalar axis of the L1 adaptive controller.
 ///
-/// This struct owns the math wired into the rate loop in Phase 5.A.2.C,
-/// replacing the retired Phase-4 L1-inspired interim channel.
+/// This struct owns the math wired into the rate loop,
+/// replacing an earlier L1-inspired interim channel.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct L1AdaptiveChannel {
     reference_model: L1ReferenceModel,

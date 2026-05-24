@@ -18,7 +18,7 @@ use openbmp_core::SimTime;
 use crate::bus::Topic;
 
 // ---------------------------------------------------------------------
-// Sensor sample topics (Phase 4.2)
+// Sensor sample topics
 // ---------------------------------------------------------------------
 
 /// Inertial-measurement-unit sample at the sensor's native cadence.
@@ -175,7 +175,7 @@ impl Topic for SensorStatus {
 }
 
 // ---------------------------------------------------------------------
-// Estimator output topics (Phase 4.3 / 4.8)
+// Estimator output topics
 // ---------------------------------------------------------------------
 
 /// Attitude estimate published by an [`Estimator`](crate::estimator::Estimator).
@@ -214,7 +214,7 @@ impl Topic for PositionEstimate {
 }
 
 /// Diagnostic snapshot of estimator health.
-#[allow(clippy::struct_excessive_bools)] // Phase-5.B.4 added per-sensor `*_updated_this_tick` flags
+#[allow(clippy::struct_excessive_bools)] // per-sensor `*_updated_this_tick` flags
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct EstimatorStatus {
     /// Estimate timestamp.
@@ -238,7 +238,7 @@ pub struct EstimatorStatus {
     /// `true` if any innovation in the most recent update exceeded
     /// its configured chi-square gate.
     pub innovation_rejected: bool,
-    /// Phase-5.B.4 — Cholesky-whitened GNSS innovation `ν̃ = L⁻¹ ν`
+    /// Cholesky-whitened GNSS innovation `ν̃ = L⁻¹ ν`
     /// where `L` is the Cholesky lower-triangular factor of the GNSS
     /// innovation covariance `S = L Lᵀ`. Under H₀ the whitened
     /// residual is `N(0, I_6)` and `‖ν̃‖² = chi2`. Populated only when
@@ -248,7 +248,7 @@ pub struct EstimatorStatus {
     /// tick. The measurement may still have been gate-rejected before
     /// state correction.
     pub gnss_updated_this_tick: bool,
-    /// Phase-5.B.4 — Cholesky-whitened baro innovation. The baro
+    /// Cholesky-whitened baro innovation. The baro
     /// measurement is scalar (altitude-only), so the whitened residual
     /// is `ν / √S` and `(ν̃)² = chi2`. Populated only when
     /// `baro_updated_this_tick` is `true`; zero otherwise.
@@ -257,7 +257,7 @@ pub struct EstimatorStatus {
     /// tick. The measurement may still have been gate-rejected before
     /// state correction.
     pub baro_updated_this_tick: bool,
-    /// Phase-5.B.4 — Cholesky-whitened magnetometer innovation
+    /// Cholesky-whitened magnetometer innovation
     /// `ν̃ = L⁻¹ ν` for the 3-axis body-frame magnetic-vector
     /// innovation. Under H₀ the whitened residual is `N(0, I_3)` and
     /// `‖ν̃‖² = chi2`. Populated only when `mag_updated_this_tick` is
@@ -274,7 +274,7 @@ impl Topic for EstimatorStatus {
 }
 
 // ---------------------------------------------------------------------
-// Commander / mission topics (Phase 4.4)
+// Commander / mission topics
 // ---------------------------------------------------------------------
 
 /// Vehicle status published by the
@@ -291,8 +291,7 @@ pub struct VehicleStatus {
     pub in_flight: bool,
     /// `true` once an FDIR trip has demanded a safe-state transition.
     /// Latches; cleared only when the scenario explicitly transitions
-    /// the commander into a safe-state phase via an `EventBinding`
-    /// (Phase 4.C).
+    /// the commander into a safe-state phase via an `EventBinding`.
     pub safe_state_requested: bool,
 }
 
@@ -300,14 +299,14 @@ impl Topic for VehicleStatus {
     const NAME: &'static str = "commander.vehicle_status";
 }
 
-/// Single-source-of-truth mission state publish, per Phase 5.X.B.
+/// Single-source-of-truth mission state publish.
 ///
 /// The commander publishes this every tick; FC-wired simulator runs
 /// subscribe here and feed the value into the kernel as external
 /// mission state. The kernel still retains a `current_phase` fallback
 /// for pure-sim scenarios without a commander.
 ///
-/// Phase 5.X.E enriched the payload to also carry the per-region
+/// The payload also carries the per-region
 /// state snapshot for the four canonical regions
 /// (`mission` / `health` / `comms` / `estimator_regime`) so a single
 /// subscription is sufficient for downstream consumers that need the
@@ -339,9 +338,9 @@ impl Topic for MissionStatePublish {
 
 /// Per-region state publish for the canonical `mission` region.
 ///
-/// Phase 5.X.E split the aggregate [`MissionStatePublish`] into
-/// per-region topics so a consumer can subscribe to a single region
-/// without parsing the aggregate. Published alongside the aggregate
+/// Per-region split of the aggregate [`MissionStatePublish`], so a
+/// consumer can subscribe to a single region without parsing the
+/// aggregate. Published alongside the aggregate
 /// every commander tick.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct MissionRegionStatePublish {
@@ -390,13 +389,11 @@ impl Topic for EstimatorRegimeRegionStatePublish {
 }
 
 /// Test-only override topic: scenarios can script the commander
-/// into a specific state for validation purposes. Phase 5.X.B
-/// introduces a build-time gate so a HAL deployment cannot link
+/// into a specific state for validation purposes. A build-time gate
+/// ensures a HAL deployment cannot link
 /// this topic; the topic compiles out entirely in HAL builds.
 ///
-/// During Phase 5.X.A → 5.X.B migration, the topic exists but is
-/// not yet driven by the scenario parser. Phase 5.X.F adds the
-/// `mission.test_only_state_override = true` scenario flag that
+/// The `mission.test_only_state_override = true` scenario flag
 /// activates the override channel; absent the flag, the topic is
 /// never written.
 #[cfg(not(feature = "hal"))]
@@ -451,7 +448,7 @@ impl Topic for FailsafeFlags {
 }
 
 // ---------------------------------------------------------------------
-// Autopilot output topics (Phase 4.5)
+// Autopilot output topics
 // ---------------------------------------------------------------------
 
 /// Demanded actuator deflection emitted by the autopilot, before the
@@ -606,7 +603,7 @@ impl Topic for EngineCommandSet {
 }
 
 // ---------------------------------------------------------------------
-// FDIR / health topics (Phase 4.6)
+// FDIR / health topics
 // ---------------------------------------------------------------------
 
 /// FDIR module's published status.
@@ -624,7 +621,7 @@ impl Topic for FdirStatus {
     const NAME: &'static str = "fdir.status";
 }
 
-/// Phase-5.B.4 — diagnostic slot published when the windowed
+/// Diagnostic slot published when the windowed
 /// mean-shift GLRT detector trips. Carries the maximised test
 /// statistic, the Bonferroni-corrected trip threshold, and the
 /// FDIR-step index that maximised `Λ(τ)`. Multiple sensors trip in
@@ -653,7 +650,7 @@ impl Topic for FdirGlrtDiagnostic {
 /// Maximum number of estimator modes represented in [`EstimatorMode`].
 pub const ESTIMATOR_MODE_MAX_MODES: usize = 4;
 
-/// Phase-5.B.3 — IMM mode-probability snapshot published every tick
+/// IMM mode-probability snapshot published every tick
 /// by [`crate::imm::ImmEstimator`]. Carries the active mode (the
 /// `argmax_j μ_j` index), the full posterior probability vector
 /// (zero-padded to [`ESTIMATOR_MODE_MAX_MODES`]), and the count of
@@ -679,7 +676,7 @@ impl Topic for EstimatorMode {
 }
 
 // ---------------------------------------------------------------------
-// Reference / guidance topics (Phase 4.7)
+// Reference / guidance topics
 // ---------------------------------------------------------------------
 
 /// Reference state the autopilot tracks. Populated by the guidance

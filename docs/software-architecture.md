@@ -119,13 +119,12 @@ openbmp/
 │   ├── openbmp-state/                   # L1: state types (point-mass, rigid)
 │   ├── openbmp-physics/                 # L2: atmosphere, gravity, wind, magnetic, error
 │   ├── openbmp-vehicle/                 # L2: rigid body, mass models,
-│   │   ├── assembly/                    #     VehicleAssembly tree (Phase 3)
-│   │   ├── effector/                    #     ControlEffector trait (Phase 3)
-│   │   └── tank/                        #     TankModel + MovingMassModel (Phase 3)
+│   │   ├── assembly/                    #     VehicleAssembly tree
+│   │   ├── effector/                    #     ControlEffector trait
+│   │   └── tank/                        #     TankModel + MovingMassModel
 │   ├── openbmp-aero/                    # L2: aero decks + hypersonic methods
 │   ├── openbmp-aerothermal/             # L2: heat transfer, BL, thermal toy
 │   ├── openbmp-propulsion/              # L2: motors, EngineModel + EngineCluster
-│   │                                    #     (Phase 3)
 │   ├── openbmp-sensors/                 # L3: synthetic sensors, fault models
 │   ├── openbmp-fc/                      # L4: flight controller
 │   │   ├── clock                        #     lockstep clock contract
@@ -156,12 +155,12 @@ openbmp/
 │   ├── safety-boundaries.md
 │   ├── data-provenance.md               # source records and data review
 │   ├── frames-time.md                   # frames, epochs, EOP, WGS84 policy
-│   ├── scenario-format.md               # (Phase 1)
-│   ├── verification.md                  # (Phase 1)
+│   ├── scenario-format.md               # formal scenario DSL grammar
+│   ├── verification.md                  # test taxonomy and golden process
 │   ├── supply-chain.md                  # dependency and release policy
-│   ├── modeling-guide.md                # (Phase 5)
+│   ├── modeling-guide.md                # model-authoring process
 │   ├── real-rocket-integration.md       # downstream-user assembly cookbook
-│   └── glossary.md                      # (Phase 1)
+│   └── glossary.md                      # vocabulary reference
 ├── scenarios/
 │   ├── analytic-toy/                    # closed-form validation
 │   ├── public-benchmark/                # academic reference cases
@@ -474,7 +473,7 @@ Rules:
 
 ### Event / Phase Timeline
 
-> **Phase 5.X status.** Mission events now use a split action
+> **Status.** Mission events use a split action
 > taxonomy: `MissionAction` is HAL-portable and lives in
 > `openbmp-mission`, while `ScenarioScriptAction` carries simulator-only
 > physics commands in `openbmp-scenario-script`. The authoritative
@@ -538,12 +537,12 @@ pub struct Phase {
 }
 ```
 
-The graph and the event list together replace the Phase-1 ad-hoc
+The graph and the event list together replace any ad-hoc
 "hard-coded apogee detection in the kernel". The kernel keeps the same
 fixed step shape and just consults the resolved event list each tick.
 
-> **Phase-3.4 status note.** Phase 3.4 wires `ControlEffector` and
-> the `EffectorOverride` action: a scenario-script event whose action is
+> **`ControlEffector` status note.** The `ControlEffector` and
+> the `EffectorOverride` action are wired: a scenario-script event whose action is
 > `effector_override { id, command }` is recorded by the kernel,
 > drained by the runner, and applied to the runner-side `EffectorRack`
 > on the next rack tick before the kernel step. Override beats schedule
@@ -552,17 +551,16 @@ fixed step shape and just consults the resolved event list each tick.
 > variant carries `{ id: EffectorId, command: f64 }`; the runner
 > consumes it, so the kernel never dispatches it itself.
 >
-> **Phase-3.2 status note (still current).** The Phase-3.2
+> **Event-trigger status note.** The
 > implementation in `openbmp-sim::events` ships every variant of
 > `BuiltInEventTrigger` except `Scripted`, which is rejected at
 > scenario parse time with a typed deferral error: scripted
-> triggers are deferred to a later sub-phase, and the per-effector
+> triggers are not supported, and the per-effector
 > `command_schedule` covers the common scripted-command case.
 > The scenario-script variants `EngineCommand`, `Separation`, and
 > `DeployRecovery` are separate from the HAL-portable mission actions.
-> `AtDynamicPressure` is parser-rejected until a later sub-phase wires
-> atmosphere into event evaluation. `EnterPhase`,
-> `EmitTelemetryMarker`, `Stop`, and (Phase 3.4)
+> `EnterPhase`, `EmitTelemetryMarker`, `Stop`,
+> `AtDynamicPressure`, and
 > `EffectorOverride` are wired end-to-end. `EventTrigger::fired`
 > takes an `EventEvalState` snapshot rather than the full
 > `VehicleState` shown above — the snapshot carries only the
@@ -594,7 +592,7 @@ are tagged `state-stable, not bit-stable`.
 DOPRI5/8, DOPRI853, and RKF78 are adaptive **explicit** Runge-Kutta methods.
 They are useful for smooth trajectory propagation and event localization, but
 they are not the stiff-chemistry answer for hypersonic nonequilibrium,
-ablation chemistry, or tightly coupled aerothermal submodels. Those Phase-6
+ablation chemistry, or tightly coupled aerothermal submodels. Those hypersonic
 submodels use declared fixed sub-stepping with implicit Euler and, for harder
 cases, profile-gated Rosenbrock-Wanner or BDF variants as described in
 [hypersonic-extensions.md](hypersonic-extensions.md).
@@ -709,17 +707,17 @@ scenario. The scenario file lists `force_models = ["aero", "gravity_force",
 - `UsStandard1976` — implemented in-house from public coefficients;
   validity range 0–86 km; status `validated-toy` once cross-checked against
   published tables.
-- `Nrlmsise00` (Phase 6) — public empirical model from Picone, Hedin, Drob
+- `Nrlmsise00` (hypersonic extension) — public empirical model from Picone, Hedin, Drob
   (2002), *J. Geophys. Res.* 107(A12), 1468; ground to ~1000 km. The
   reference Fortran source is hosted at NASA's Community Coordinated
   Modeling Center (`ccmc.gsfc.nasa.gov`); OpenBMP re-implements in pure
   Rust from the public coefficients with a `provenance.md` entry. Each of
   the model's ~25 configuration flags is documented for its deterministic
   effect.
-- `Nrlmsis2x` and `Hwm14` (Phase 6 follow-ons) — modern high-altitude
+- `Nrlmsis2x` and `Hwm14` (hypersonic follow-ons) — modern high-altitude
   atmosphere and horizontal-wind references. These are profile-gated until
   reference-table validation and provenance are complete.
-- `EarthGramReference` (Phase 6 follow-on) — external-reference atmosphere
+- `EarthGramReference` (hypersonic follow-on) — external-reference atmosphere
   profile for density / wind uncertainty envelopes when redistribution terms
   permit; not the default deterministic atmosphere.
 
@@ -760,7 +758,7 @@ classification. See [hypersonic-extensions.md](hypersonic-extensions.md).
 ### Wind and Magnetic Field
 
 - `NoWind`, `ConstantWind`, `LayeredWind`, `GustWind` (academic profiles).
-- Magnetic field models (deferred to Phase 5 unless a sensor needs them).
+- Magnetic field models (present where a sensor needs them).
 
 ## Vehicle and Mass Models
 
@@ -809,7 +807,7 @@ pub trait VehicleAssembly {
     fn id(&self) -> VehicleId;
 
     /// Rigid bodies that make up this assembly.
-    /// MVP: single body. Phase-5 multi-body: N bodies that may detach.
+    /// Single body, or multi-body: N bodies that may detach.
     fn bodies(&self) -> &[Body];
 
     /// Propulsion: motors, engines, engine clusters.
@@ -853,25 +851,19 @@ tree exists for authoring ergonomics and for the cookbook in
 [real-rocket-integration.md](real-rocket-integration.md); the kernel hot
 path stays flat-list and synchronous as today.
 
-> **Phase-3.3 status note.** The Phase-3.3 implementation in
-> `openbmp-vehicle::assembly` ships the trait surface, `Body`,
+> **Assembly status note.** The implementation in
+> `openbmp-vehicle::assembly` provides the trait surface, `Body`,
 > `BodyGeometry`, `Assembly`, `KernelModelBundle`,
 > `KernelModelBundleRigid`, plus the path-derived stable ids
 > (`BodyId`, `EffectorId`, `TankId`, `EngineId`, `VehicleId`) in
-> `openbmp-core`. The `propulsion` / `effectors` / `tanks` /
-> `sensors` accessors shown above are reserved for future phases
-> (3.4 / 3.6 / 3.7 / 3.10) and are *not* part of the Phase-3.3
-> trait surface. The `into_kernel_models` method shown above is
-> also deferred — Phase-3.3 ships the resolver as a free-function
+> `openbmp-core`. The resolver is shipped as a free-function
 > bridge in `crates/openbmp-cli/src/runner/assembly.rs` rather
 > than a trait method, avoiding an `openbmp-vehicle ->
-> openbmp-scenario` dependency edge. Phase-3.3 runners consume the
+> openbmp-scenario` dependency edge. Runners consume the
 > resolved assembly's dry mass properties during kernel mass
-> construction; force / moment construction remains on the existing
-> runner paths. Phase-3.4+ will land the full kernel-side bundle
-> resolver as the assembly tree gains real propulsion / effector /
-> tank content. The `[vehicle.assembly]` scenario block is documented in
-> [`scenario-format.md § Vehicle assembly`](scenario-format.md#vehicle-assembly-phase-33).
+> construction; force / moment construction lives on the
+> runner paths. The `[vehicle.assembly]` scenario block is documented in
+> [`scenario-format.md § Vehicle assembly`](scenario-format.md#vehicle-assembly).
 
 ### Propulsion: EngineModel and EngineCluster
 
@@ -931,7 +923,7 @@ addressed by index in the controller's command bundle, so a 9-engine
 shutdown after engine-out is a per-engine `shutdown = true`, not a
 cluster-level rebuild.
 
-> **Phase-3.6 status note.** Phase 3.6 ships:
+> **Engine-cluster status note.** The propulsion implementation provides:
 >
 > - `EngineModel` trait (`apply_command(cmd)`, `step(dt)`,
 >   `limits()`, `inject_fault(fault)`, `current_state()`,
@@ -941,9 +933,9 @@ cluster-level rebuild.
 >   and locked-order pitch-then-yaw gimbal rotation. State machine
 >   is one-shot: `Shutdown` and `Failed` are terminal.
 > - Four canonical fault modes: `Stuck`, `HardOff`, `OverThrust`,
->   `GimbalLocked` (mirrors Phase-3.4 effector fault taxonomy).
+>   `GimbalLocked` (mirrors the effector fault taxonomy).
 >   Faults are scenario-loaded at construction; run-time injection
->   is deferred.
+>   is not supported.
 > - `EngineCommand` payload `{ throttle_unit, gimbal_pitch_rad,
 >   gimbal_yaw_rad, ignite, shutdown }`.
 >   `ScenarioScriptAction::EngineCommand { id, command }` is wired
@@ -962,8 +954,8 @@ cluster-level rebuild.
 > - The runner-side `EngineRack` (in `openbmp-cli/src/runner/`)
 >   owns the engines and pushes a fresh `BTreeMap<EngineId,
 >   EngineSnapshot>` to the kernel before each `step()` so all four
->   RK4 stages see the same snapshot — same pattern as Phase-3.4
->   `EffectorRack` and Phase-3.5 `EffectorActualsView`.
+>   RK4 stages see the same snapshot — same pattern as the
+>   `EffectorRack` and `EffectorActualsView`.
 > - `MassModel` gains `mass_kg_at(MassContext)` and
 >   `mass_rate_kg_s_at(MassContext)` with default forwards to
 >   `mass_kg(t)` / `mass_rate_kg_s(t)` so legacy models are
@@ -975,17 +967,18 @@ cluster-level rebuild.
 >   rack-related operation on `engine_rack.is_empty()`; the
 >   kernel's `engine_snapshot` field stays at the empty `BTreeMap`
 >   set in `new()`, the cluster adapters are never instantiated,
->   and legacy scenarios produce byte-identical Parquet to pre-3.6.
-> - Rigid-body engine-cluster moments wired in 3.6 via
+>   and single-motor scenarios produce byte-identical Parquet to the
+>   pre-cluster path.
+> - Rigid-body engine-cluster moments are wired via
 >   `EngineClusterMomentAdapter`: per-engine `mount × thrust_body`
 >   cross product, summed in scenario-declared order with locked
 >   left-fold operand order. Rigid-body cluster mass-properties
->   evolution (inertia tensor as propellant is consumed) stays
->   deferred to Phase 3.7's tank-driven dynamics work.
+>   evolution (inertia tensor as propellant is consumed) is handled
+>   by the tank-driven dynamics work.
 > - Six-engine clusters (octaweb-style) work; the
 >   `cluster_layout` enum carries through to telemetry but has no
->   behavioural effect in 3.6.
-> - The Phase-3.6 exit-criterion scenario ships at
+>   behavioural effect.
+> - The exit-criterion scenario ships at
 >   `scenarios/multi-engine-octaweb/four-engine-shutdown.toml`
 >   and its e2e test at
 >   `crates/openbmp-cli/tests/engine_cluster_e2e.rs`. The test
@@ -1053,16 +1046,16 @@ gimbal_yaw_rad`. The controller does not see effector state directly; it
 sees telemetry channels `effector.<id>.commanded`,
 `effector.<id>.actual`, `effector.<id>.saturated`, etc.
 
-> **Phase-3.4 + 3.5 status note.** Phase 3.4 shipped `ControlEffector`,
+> **Effector status note.** The effector layer provides `ControlEffector`,
 > the `LinearActuator` reference impl, the four canonical fault modes,
 > the runner-side `EffectorRack`, and one `effector.<id>.actual`
-> `f64` telemetry channel per declared effector. Phase 3.5 closed the
-> deck-side consumption loop: schema-2 aero decks declare effector
+> `f64` telemetry channel per declared effector. The
+> deck-side consumption loop is closed: schema-2 aero decks declare effector
 > axes (e.g. `delta_e_deg`), the runner pushes the rack snapshot to a
 > kernel-owned `BTreeMap<String, f64>` before each `step()`, and
 > `ForceContext.effector_actuals: EffectorActualsView<'a>` exposes
-> that snapshot to the deck adapter inside every RK4 stage. See
-> [Phase-3.5 status note](#deck-format-extensions-control-effector-axes)
+> that snapshot to the deck adapter inside every RK4 stage. See the
+> [deck-extensions status note](#deck-format-extensions-control-effector-axes)
 > in §Deck Format Extensions for the full schema-2 wire format and
 > determinism contract.
 >
@@ -1070,14 +1063,14 @@ sees telemetry channels `effector.<id>.commanded`,
 > `Result<EffectorState, EffectorError>` and `inject_fault(fault)`
 > validates payloads and returns `Result<(), EffectorError>` (the
 > design fragment above is simplified). Faults are scenario-loaded
-> only in 3.4; run-time fault injection is deferred. The
+> only; run-time fault injection is not supported. The
 > `EffectorRack` lives on the runner side (mirrors `mission.rs`),
-> not on `Assembly`, so the assembly stays `Clone` and legacy
+> not on `Assembly`, so the assembly stays `Clone` and
 > scenarios with no `[[vehicle.assembly.effectors]]` short-circuit
 > every per-step rack operation on `is_empty()` and produce
-> byte-identical Parquet to pre-3.4. See `scenarios/effector-elevon/`
-> for the gravity-only exit-criterion case (3.4) and
-> `scenarios/effector-elevon-aero/` for the schema-2-deck case (3.5).
+> byte-identical Parquet to the no-effector path. See `scenarios/effector-elevon/`
+> for the gravity-only exit-criterion case and
+> `scenarios/effector-elevon-aero/` for the schema-2-deck case.
 
 ### Tanks and Slosh as Moving-Mass Dynamics
 
@@ -1140,20 +1133,20 @@ fielded propellant data or real fielded tank geometry are rejected (see
 their own data through the real-data package path in their own
 repositories.
 
-> **Status — Phase 3.7 implemented.** The trait surface above ships
+> **Tank status note.** The trait surface above ships
 > in `crates/openbmp-vehicle/src/tank/`: `MovingMassModel`, `Tank`,
 > `MassContribution`, `ForceMomentBody`, plus four implementations
 > (`RigidLiquid`, `EquivalentPendulum`, `EquivalentSpringMass`,
 > `BaffledPendulum`). The kernel-side `TankRackForceAdapter` /
 > `TankRackMomentAdapter` / `TankRackMassAdapter` consume the
 > per-step `TankSnapshotView` populated by the runner-side
-> `TankRack` (mirror of the Phase-3.6 `EngineRack`). The
-> Phase-3.7.E exit-criterion scenario at
+> `TankRack` (mirror of the `EngineRack`). The
+> exit-criterion scenario at
 > `scenarios/sloshing-tank/sloshing-tank.toml` exercises the full
 > hot path on a rigid-body vehicle with an axial liquid engine and
 > a cylindrical tank carrying an `EquivalentPendulum` slosh model.
 >
-> Phase-3.7 known limitations (each tracked for Phase-3.X follow-on):
+> Known limitations:
 > (1) tank drain is decoupled from the engine cluster — tanks
 > declare a scalar `drain_rate_kg_per_s` rather than receiving the
 > cluster's total mdot; (2) the `TankRackMassAdapter` adds each
@@ -1161,29 +1154,27 @@ repositories.
 > the cluster already accounts for the same propellant, so
 > scenarios that declare both an engine cluster and a tank
 > intended as its propellant store overcount mass; (3) the
-> rigid-body cluster mass adapter (Phase-3.6 deferral) is still
+> rigid-body cluster mass adapter is still
 > `ConstantMassRigid` — slosh inertia perturbations are published
 > in the snapshot but are not consumed by the rigid mass-properties
-> model; (4) slosh telemetry channels are deferred to a future
-> phase, with determinism currently asserted via full-Parquet byte
+> model; (4) slosh telemetry channels are not separately exposed,
+> with determinism asserted via full-Parquet byte
 > equality.
 >
-> Phase 3.7 shipped semi-implicit (symplectic) Euler rather than
-> the explicit Euler that the original sub-phase planning called
-> for: explicit Euler is unstable for the undamped harmonic
+> The implementation uses semi-implicit (symplectic) Euler rather than
+> explicit Euler: explicit Euler is unstable for the undamped harmonic
 > oscillator (energy growth `(dt·ω)²` per step) and cannot meet
 > the 1 %-over-100-cycles energy-conservation property test at any
-> practical `dt`. The shipped implementation uses semi-implicit
-> (symplectic) Euler with locked operand order — still single-step
+> practical `dt`. The semi-implicit (symplectic) Euler scheme uses
+> locked operand order — still single-step
 > explicit, still bit-stable for fixed `dt`, and exact-conserves a
 > modified Hamiltonian. The `EquivalentPendulum` and
 > `EquivalentSpringMass` unit tests verify the 1 % gate at
-> `dt = 1 ms` over 100 cycles. The per-sub-phase commit history
-> (Phase 3.7.B / 3.7.C) is the source of truth for this decision.
+> `dt = 1 ms` over 100 cycles.
 
 ### Multi-Body Separation Events
 
-Phase-5 multi-body promotes separation to first class: after a separation
+Multi-body propagation promotes separation to first class: after a separation
 event, two or more `VehicleAssembly` instances fly simultaneously, each
 with its own state vector, its own `ForceModel` / `MomentModel` /
 `MassModel` lists, and its own controller (or no controller, for spent
@@ -1216,8 +1207,8 @@ pub struct SeparationImpulse {
 }
 ```
 
-The Phase-3 scripted-staging hack remains supported for the single-body
-"spent stage falls behind, ignored" case. The Phase-5 multi-body path
+The scripted-staging path remains supported for the single-body
+"spent stage falls behind, ignored" case. The multi-body path
 kicks in when the scenario declares more than one post-separation
 assembly should be propagated.
 
@@ -1235,8 +1226,8 @@ pub trait AeroMethod {
 }
 ```
 
-The MVP ships `DeckLookup` (tabulated). Phase 6 adds hypersonic methods
-(`ModifiedNewtonian`, `TangentCone`, `LocalInclinationPanels`,
+The base deck path ships `DeckLookup` (tabulated). The hypersonic extensions add
+methods (`ModifiedNewtonian`, `TangentCone`, `LocalInclinationPanels`,
 `FreeMolecular`) and a `HybridAeroMethod` that dispatches between them
 based on Mach and Knudsen number. See
 [hypersonic-extensions.md](hypersonic-extensions.md) for details.
@@ -1279,8 +1270,8 @@ moment, or body-`y` force channel in this schema: the body-frame mapping is
 `F_body = q · S · (-CD, 0, -CN)` and `M_body = q · S · L · (0, CM, 0)`.
 For non-zero beta grids, a deck author either encodes the intended reduced
 normal-force behaviour into `CN(M, alpha, beta)` or accepts that Schema 1 does
-not model side force/yaw moment. Full six-coefficient decks are the Phase 3
-schema extension.
+not model side force/yaw moment. Full six-coefficient decks are a
+schema-2 extension.
 
 Decks must include provenance and a validation label. **Real fielded-vehicle
 aero decks are explicitly rejected.** The MVP ships only synthetic textbook
@@ -1347,7 +1338,7 @@ common `delta_e / delta_a / delta_r` and `body_flap_left /
 body_flap_right / grid_fin_<n>`; the deck declares names and units, the
 `ControlEffector` set declares names and limits, the loader matches.
 
-> **Phase-3.5 status note.** Phase 3.5 wires the schema-2 deck format
+> **Schema-2 deck status note.** The schema-2 deck format is wired
 > end-to-end:
 >
 > - The deck file's schema discriminator is the integer marker:
@@ -1359,7 +1350,7 @@ body_flap_right / grid_fin_<n>`; the deck declares names and units, the
 >   Vec<String>` (always starting with `["mach", "alpha", "beta"]`),
 >   `axes: Vec<Vec<f64>>`, and three flat row-major coefficient
 >   `Vec<f64>`s. At N = 3 the multilinear lookup is bit-identical to
->   the Phase-2.5 trilinear path — pinned by a 1024-case property test
+>   the trilinear path — pinned by a 1024-case property test
 >   in `openbmp-aero::deck`.
 > - The lookup signature is
 >   `lookup(mach, alpha, beta, deflections: &BTreeMap<&str, f64>) ->
@@ -1381,17 +1372,17 @@ body_flap_right / grid_fin_<n>`; the deck declares names and units, the
 >   suffix. Duplicate stripped deck-axis names and unit mismatches →
 >   `CliError::AeroEffectorMismatch` at runner build time, before any
 >   kernel step.
-> - Schema-2 supports up to 3 effector axes (6 axes total) in 3.5.
->   The full six-coefficient `(CY, Cl, Cn-yaw)` deck is deferred past
->   3.5; schema-2 still ships only `(CN, CD, CM)`. The
+> - Schema-2 supports up to 3 effector axes (6 axes total).
+>   The full six-coefficient `(CY, Cl, Cn-yaw)` deck is not yet
+>   shipped; schema-2 ships only `(CN, CD, CM)`. The
 >   `DeckDragForceAdapter` keeps its hard-coded `(alpha, beta) =
->   (0, 0)` query in 3.5; real alpha/beta consumption from
->   `RigidBodyState` is Phase-3.6's
+>   (0, 0)` query; real alpha/beta consumption from
+>   `RigidBodyState` is the
 >   `RigidAeroForceMomentAdapter` work.
 > - The exit-criterion scenario lives at
 >   `scenarios/effector-elevon-aero/single-elevon-aero-deflected.toml`
 >   with the schema-2 deck at `data/aero/synthetic-elevon-1d.toml`.
->   The Phase-3.5.D e2e test in
+>   The e2e test in
 >   `crates/openbmp-cli/tests/effector_aero_e2e.rs` runs both a
 >   deflected scenario and a baseline (elevon held at 0°), asserts
 >   the per-step `force.aero.z_n` telemetry differs by ≥ 5% between
@@ -1508,7 +1499,7 @@ Allan-variance specs for "tactical-grade" or "consumer-grade" classes); they
 are not lifted from any real fielded sensor's spec sheet. Sensor models
 declare their noise class explicitly.
 
-> **Implementation status (Phase 3.10).** WMM 2025 ships as the
+> **Implementation status.** WMM 2025 ships as the
 > canonical magnetic-field truth at
 > `data/magnetic/WMM.COF` (NOAA NCEI / NGA / UK DGC, December 2024
 > release; SHA-256-pinned in `data/magnetic/provenance.md`). The
@@ -1516,7 +1507,7 @@ declare their noise class explicitly.
 > implementation is a direct port of the NOAA reference algorithm
 > (Gauss-recursion with Schmidt-multiplied coefficients; all 100
 > shipped NOAA reference rows match within 5 nT per component).
-> All three Phase-3.10 synthetic sensors —
+> All three synthetic sensors —
 > [`SyntheticGnss`](../crates/openbmp-sensors/src/gnss.rs),
 > [`SyntheticMagnetometer`](../crates/openbmp-sensors/src/magnetometer.rs),
 > and [`SyntheticStarTracker`](../crates/openbmp-sensors/src/star_tracker.rs)
@@ -1524,14 +1515,13 @@ declare their noise class explicitly.
 > independence, byte-stable replay, and empirical-stddev
 > convergence within 5 % of their declared budgets.
 >
-> Phase-3.10 known limitations (each tracked for Phase-3.X
-> follow-on): (1) GNSS is a receiver-output noise model only, no
+> Known limitations: (1) GNSS is a receiver-output noise model only, no
 > pseudorange / satellite geometry / ionosphere; (2) magnetometer
 > reads `SensorTruth.magnetic_field_body_nt` pre-rotated by the
 > runner from WMM-truth NED via the truth attitude — the
 > magnetometer itself is frame-agnostic; (3) star tracker uses
 > the small-angle quaternion form (`σ ≤ 0.01 rad` enforced at
-> construction); (4) no fault models on the new sensors (Phase-4
+> construction); (4) no fault models on these sensors (a
 > controller-side concern).
 
 ### Fault Models
@@ -1560,7 +1550,7 @@ OpenBMP must avoid operational landing or payload-delivery optimization.
 Recovery models live as simulator-local force/event components, not as
 hardware outputs.
 
-> **Implementation status (Phase 3.9).** Recovery is implemented as a
+> **Implementation status.** Recovery is implemented as a
 > force-only runner rack plus kernel snapshot. Devices do not
 > contribute mass, moments, mount-point torques, or landing-target
 > guidance. Drag is evaluated against ECI velocity, matching the
@@ -1652,7 +1642,7 @@ canonical 15-state error-state academic formulation (position, velocity,
 attitude, accelerometer bias, gyroscope bias) used in NaveGo and the
 NorthStarUAS `insgnss_tools` library; magnetometer, barometer,
 Gauss-Markov bias dynamics, Joseph covariance updates, and WGS84-J2
-gravity are implemented in the Phase 4.C pass. Filter validation borrows the side-by-side
+gravity are implemented. Filter validation borrows the side-by-side
 filter-comparison harness pattern from those projects: two filters run on
 the same scenario with different noise settings and the testkit emits a
 compare report. References: NaveGo (Rodríguez et al., MATLAB/Octave),
@@ -1679,10 +1669,10 @@ pub struct ThreeLoopAutopilot {
 
 The three-loop architecture (inner rate, outer attitude, outer command) is
 the canonical academic formulation in Stevens, B. L. and Lewis, F. L.,
-*Aircraft Control and Simulation* (Wiley, 3rd ed., 2015). Phase 4.C adds
-optional gyro notch filtering; Phase 5.A.1 adds minimum-snap
-differential-flatness attitude-reference generation, and Phase 5.A.2
-adds feature-gated Cao-Hovakimyan L1 adaptive rate-loop augmentation. Gains are
+*Aircraft Control and Simulation* (Wiley, 3rd ed., 2015). The autopilot adds
+optional gyro notch filtering, minimum-snap
+differential-flatness attitude-reference generation, and
+feature-gated Cao-Hovakimyan L1 adaptive rate-loop augmentation. Gains are
 scenario-supplied. The OpenBMP repository ships only **academic** gain
 sets for canonical toy vehicles; no real fielded tuning data is included.
 The trait surface, however, accepts any scenario-supplied gain table —
@@ -1694,9 +1684,9 @@ provenance.
 
 ### Mission State Machine
 
-> **Superseded by Phase 5.X.** The flat `MissionPhase` enum sketched
-> below is the Phase 2 placeholder vocabulary. Phase 5.X migrates the
-> mission state machine to a hierarchical Harel-style state machine
+> **Superseded.** The flat `MissionPhase` enum sketched
+> below is an earlier placeholder vocabulary. The
+> mission state machine is a hierarchical Harel-style state machine
 > with orthogonal concurrent regions (mission × health × comms ×
 > estimator-regime) and the academic state vocabulary canonised in
 > [`mission-states-vocabulary.md`](mission-states-vocabulary.md). The
@@ -1772,10 +1762,10 @@ FDIR responds to faults that the **scenario injects** (see Sensor § Fault
 Models). The MVP includes simple residual-based fault detection; later
 phases may include parity-space or Kalman-innovation tests.
 
-## Aerothermal (Phase 6)
+## Aerothermal
 
 `openbmp-aerothermal` is the heat-transfer, boundary-layer, and surface
-thermal-state crate. It is **not** part of the MVP; it is a Phase-6 research
+thermal-state crate. It is a research
 extension for hypersonic / re-entry studies.
 
 ```rust
@@ -2183,14 +2173,14 @@ Required documentation set:
 | `design-concept.md` | Purpose, boundaries, principles, vehicle classes, MVP, roadmap |
 | `software-architecture.md` | This document |
 | `safety-boundaries.md` | Acceptance / rejection rules, review checklist |
-| `hypersonic-extensions.md` | Phase-6 extensions: high-altitude atmosphere, real-gas, hypersonic aero, aerothermal, boundary layer, rarefied flow, re-entry trajectories, validation suite |
+| `hypersonic-extensions.md` | Hypersonic extensions: high-altitude atmosphere, real-gas, hypersonic aero, aerothermal, boundary layer, rarefied flow, re-entry trajectories, validation suite |
 | `data-provenance.md` | Required source records, source classes, transformations, review and machine checks |
 | `frames-time.md` | Frame profiles, Earth model, epoch metadata, time scales, telemetry frame metadata |
-| `scenario-format.md` | Formal grammar of the scenario DSL (Phase 1) |
-| `verification.md` | Test taxonomy, validation labels, golden process (Phase 1) |
+| `scenario-format.md` | Formal grammar of the scenario DSL |
+| `verification.md` | Test taxonomy, validation labels, golden process |
 | `supply-chain.md` | Rust dependency policy, release SBOM, dependency checks, build provenance |
-| `modeling-guide.md` | How to write a new model, document assumptions (Phase 5) |
-| `glossary.md` | Vocabulary (frames, time systems, validation labels) (Phase 1) |
+| `modeling-guide.md` | How to write a new model, document assumptions |
+| `glossary.md` | Vocabulary (frames, time systems, validation labels) |
 
 Each crate carries a `README.md` describing its public API, its dependencies,
 and its safety posture (which `safety-boundaries.md` rules it touches).
@@ -2223,33 +2213,30 @@ The architecture draws on, and modules cite as appropriate:
 No restricted, ITAR-controlled, EAR-controlled, MTCR-controlled, or
 operationally-classified document is consulted, cited, or implemented from.
 
-## Roadmap
+## Capability Overview
 
-See [design-concept.md § Phase Roadmap](design-concept.md#phase-roadmap) for
-the phased plan. The short version:
+See [roadmap.md](roadmap.md) for the broader picture. The platform provides:
 
-- **Phase 0** — Documentation and boundaries (this commit).
-- **Phase 1** — Deterministic core, RK4 kernel, golden-test infrastructure.
-- **Phase 2** — Toy physics, basic environment, synthetic sensors,
-  telemetry exporters.
-- **Phase 3** — Modular models (aero deck, motor format, wind, additional
-  sensors), property + fuzz tests.
-- **Phase 4** — Flight controller (estimator, autopilot, mission
-  FSM, academic guidance, FDIR).
-- **Phase 5** — Adaptive integrators behind profile flags, public-benchmark
-  validation, optional socket-bridge HIL pattern, optional many-body
-  groundwork.
-- **Phase 6** — Hypersonic extensions (Earth atmosphere only): solver
-  profiles beyond RK4, high-altitude atmosphere (NRLMSISE-00 first, NRLMSIS
-  2.x / HWM14 follow-ons), real-gas equilibrium thermodynamics, hypersonic
-  aero methods, the `openbmp-aerothermal` crate, boundary-layer models,
+- A deterministic core, RK4 kernel, and golden-test infrastructure.
+- Toy physics, a basic environment, synthetic sensors, and telemetry
+  exporters.
+- Modular models (aero deck, motor format, wind, additional sensors),
+  property + fuzz tests.
+- A flight controller (estimator, autopilot, mission FSM, academic
+  guidance, FDIR).
+- Adaptive integrators behind profile flags, public-benchmark validation,
+  an optional socket-bridge HIL pattern, and many-body propagation.
+- Hypersonic extensions (Earth atmosphere only): solver profiles beyond
+  RK4, high-altitude atmosphere (NRLMSISE-00 first, NRLMSIS 2.x / HWM14
+  follow-ons), real-gas equilibrium thermodynamics, hypersonic aero
+  methods, the `openbmp-aerothermal` crate, boundary-layer models,
   continuum-to-rarefied bridging, re-entry trajectory infrastructure,
-  hypersonic validation suite, Park two-temperature nonequilibrium
-  thermochemistry, generic surface ablation toy, offline high-fidelity
+  a hypersonic validation suite, Park two-temperature nonequilibrium
+  thermochemistry, a generic surface ablation toy, offline high-fidelity
   reference packages, and UQ / credibility reporting. Detailed in
   [hypersonic-extensions.md](hypersonic-extensions.md).
 
-**Out-of-roadmap (explicitly never):** real device drivers, real bus
+**Out of scope (explicitly never):** real device drivers, real bus
 protocols, deployable executive, real-time scheduling guarantees, real
 fielded-vehicle parameter sets, targeting, terminal homing, intercept
 logic, payload-delivery code, operational mission planning.
@@ -2335,19 +2322,17 @@ OpenBMP's safety or validation posture.
 
 Tracked here so the next contributor can see what hasn't been decided:
 
-1. **Telemetry canonical format.** Parquet is recommended above; if the
-   community preference is JSON-as-canonical with Parquet as export, decide
-   before Phase 2.
-2. **Many-body container shape.** Phase-5 staging now requires a
+1. **Telemetry canonical format.** Parquet is recommended above; whether
+   to switch to JSON-as-canonical with Parquet as export remains open.
+2. **Many-body container shape.** Multi-body staging requires a
    `World`-style container for multiple `VehicleAssembly` instances. The
-   open decision is whether the Phase-1/2 single-state kernel should grow
-   a compatibility wrapper early or wait for the Phase-5 refactor.
+   open decision is whether the single-state kernel should grow
+   a compatibility wrapper or be refactored outright.
 3. **Frame-aware arithmetic strictness.** Type-tagged frames are
    compile-time-enforced above; if this becomes too friction-heavy in
-   practice, evaluate a `WithFrame<T>` runtime-tagged alternative — but not
-   before Phase 4.
-4. **Scenario extensibility.** Recompile-to-add-model is the v1 stance.
-   Plugin loading via `cdylib` is a Phase 5+ question with determinism
+   practice, evaluate a `WithFrame<T>` runtime-tagged alternative.
+4. **Scenario extensibility.** Recompile-to-add-model is the current stance.
+   Plugin loading via `cdylib` remains an open question with determinism
    risks.
 5. **Synthetic-sensor noise classes.** Pick canonical published noise
    budgets (textbook tactical / consumer / aerospace classes) and lock
@@ -2359,7 +2344,7 @@ Tracked here so the next contributor can see what hasn't been decided:
    for v1 to avoid GUI scope creep. Any viewer that does ship must be
    read-only over telemetry archives or local playback, with no command path
    back into a running simulation.
-8. **Recovery-model scope.** Resolved in Phase 3.9: recovery state
+8. **Recovery-model scope.** Resolved: recovery state
    machines live in `openbmp-vehicle`, runner orchestration lives in
    `openbmp-cli`, and `openbmp-sim` carries only flat snapshots/events
    to preserve layering.

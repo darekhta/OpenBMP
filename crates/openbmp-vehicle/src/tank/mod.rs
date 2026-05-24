@@ -1,11 +1,11 @@
-//! Phase-3.7 tanks and slosh as moving-mass dynamics.
+//! Tanks and slosh as moving-mass dynamics.
 //!
 //! Liquid propellant inside a tank is a moving mass: as the body
 //! accelerates and rotates, the liquid sloshes, the CG shifts, and
 //! a coupled-pendulum or equivalent moving-mass term loads the rigid
 //! body. OpenBMP treats this as **generic moving-mass dynamics** so
 //! the same machinery covers slosh, deployable masses, and shifting
-//! payloads. Phase 3.7 ships:
+//! payloads. The module provides:
 //!
 //! - [`MovingMassModel`] trait — `step(accel, omega, dt)`,
 //!   `mass_contribution()`, `reaction_body()`, `drain(kg/s)`,
@@ -21,7 +21,7 @@
 //!   sphere / ellipsoid).
 //! - [`PropellantSpec`] — toy / textbook density only; no fielded
 //!   data per [`safety-boundaries`].
-//! - [`rigid_liquid::RigidLiquid`] — Phase-3.7.A toy: no slosh,
+//! - [`rigid_liquid::RigidLiquid`] — toy: no slosh,
 //!   point-mass at mount, zero reaction. The simplest baseline that
 //!   exercises the full surface (drain, mass contribution, parallel-
 //!   axis inertia delta).
@@ -50,10 +50,10 @@
 //! Tanks live in `openbmp-vehicle` (L1) — they consume kernel-side
 //! `Vector3<f64>` and `Matrix3<f64>` directly, but they don't depend
 //! on `openbmp-sim`. The runner-side [`crate::tank`]-rack adapter
-//! ships in Phase 3.7.D and is the kernel-side bridge mirroring the
-//! Phase-3.6 [`crate::adapters::EngineClusterMassAdapter`] pattern.
+//! is the kernel-side bridge mirroring the
+//! [`crate::adapters::EngineClusterMassAdapter`] pattern.
 //!
-//! See `docs/scenario-format.md § Tanks and slosh (Phase 3.7)` and
+//! See `docs/scenario-format.md § Tanks and slosh` and
 //! `docs/software-architecture.md § Tanks and Slosh as Moving-Mass
 //! Dynamics` for the contract.
 //!
@@ -111,7 +111,7 @@ pub struct ForceMomentBody {
 // Geometry + propellant
 // ---------------------------------------------------------------------
 
-/// Phase-3 tank geometries. Closed-form textbook shapes only.
+/// Tank geometries. Closed-form textbook shapes only.
 ///
 /// Real fielded tank geometry is rejected per
 /// `docs/safety-boundaries.md`; downstream users may bind their own
@@ -193,11 +193,11 @@ impl TankGeometry {
     }
 }
 
-/// Phase-3 propellant spec. Textbook constants only.
+/// Propellant spec. Textbook constants only.
 ///
 /// `density_kg_m3` is the bulk liquid density at nominal storage
-/// conditions; Phase-3 does not model temperature / pressure
-/// variation. `label` is a short human-readable tag used in
+/// conditions; temperature / pressure variation is not modelled.
+/// `label` is a short human-readable tag used in
 /// telemetry and provenance records.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PropellantSpec {
@@ -225,12 +225,12 @@ impl PropellantSpec {
 }
 
 // ---------------------------------------------------------------------
-// Baffle model (Phase-3.7 minimum surface)
+// Baffle model (minimum surface)
 // ---------------------------------------------------------------------
 
-/// Phase-3.7 baffle model.
+/// Baffle model.
 ///
-/// Phase-3.7 ships the minimum surface: a scalar damping-ratio
+/// The model uses the minimum surface: a scalar damping-ratio
 /// increment that is added to the bare-tank pendulum's damping
 /// term. Per Abramson SP-106 §7.4, baffle damping rises
 /// approximately linearly with baffle-area-to-tank-cross-section
@@ -238,8 +238,8 @@ impl PropellantSpec {
 /// Baffle-area integration and full Eq. 7-46 evaluation are
 /// deferred.
 ///
-/// The increment is consumed by [`baffled_pendulum::BaffledPendulum`]
-/// (Phase 3.7.C); other models ignore it.
+/// The increment is consumed by [`baffled_pendulum::BaffledPendulum`];
+/// other models ignore it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BaffleModel {
     /// Additive damping-ratio increment applied to the pendulum's
@@ -268,10 +268,10 @@ impl BaffleModel {
 // Tank container
 // ---------------------------------------------------------------------
 
-/// Phase-3.7 tank: id + metadata + boxed [`MovingMassModel`].
+/// Tank: id + metadata + boxed [`MovingMassModel`].
 ///
 /// The `Tank` owns one moving-mass model. The runner-side rack
-/// (Phase 3.7.D) holds a `BTreeMap<TankId, Tank>` and is the
+/// holds a `BTreeMap<TankId, Tank>` and is the
 /// authoritative store; the kernel reads per-step snapshots through
 /// the [`crate::tank`]-rack adapter.
 #[derive(Debug)]
@@ -437,7 +437,7 @@ impl Tank {
 // MovingMassModel trait
 // ---------------------------------------------------------------------
 
-/// Phase-3.7 moving-mass trait.
+/// Moving-mass trait.
 ///
 /// Implementors hold their own internal state (fluid mass, slosh
 /// angle, slosh rate, etc.) and expose four primitive operations:
@@ -544,7 +544,7 @@ pub enum TankError {
 }
 
 // ---------------------------------------------------------------------
-// Helpers shared by Phase-3.7 implementations
+// Helpers shared by moving-mass implementations
 // ---------------------------------------------------------------------
 
 /// Parallel-axis inertia contribution of a point mass `m` at body-

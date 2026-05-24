@@ -1,21 +1,21 @@
 //! `openbmp-aerothermal` — OpenBMP aerothermal heat transfer and
 //! surface state for hypersonic re-entry studies.
 //!
-//! Phase 6 sub-phases:
+//! Modules:
 //!
-//! * **6.4** — [`stagnation`]: stagnation-point heating. Ships
+//! * [`stagnation`]: stagnation-point heating. Ships
 //!   [`stagnation::FayRiddell`] as a cold-gas engineering scaffold
 //!   plus caller-supplied [`stagnation::FayRiddellEdgeState`] assembly,
 //!   [`stagnation::SuttonGraves`] (engineering
 //!   `K · √(ρ/R) · V³` simplification), and
 //!   [`stagnation::TauberSuttonRadiative`] as a typed-reserved model
 //!   pending published coefficients.
-//! * **6.5** — [`boundary_layer`]: BL state, transition models, and
+//! * [`boundary_layer`]: BL state, transition models, and
 //!   distributed surface heating via reference-enthalpy / Spalding-Chi /
 //!   Van Driest correlations.
-//! * **6.9** — [`thermal_toy`]: 1-D explicit-FD surface-temperature
+//! * [`thermal_toy`]: 1-D explicit-FD surface-temperature
 //!   evolution under prescribed heat flux.
-//! * **6.11** — [`ablation`]: generic textbook ablators with blowing
+//! * [`ablation`]: generic textbook ablators with blowing
 //!   correction, surface recession, and an energy-limited 1-D
 //!   pyrolysis-front toy.
 //!

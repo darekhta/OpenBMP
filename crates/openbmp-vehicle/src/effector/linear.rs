@@ -1,4 +1,4 @@
-//! Phase-3.4 [`LinearActuator`] reference impl.
+//! [`LinearActuator`] reference impl.
 //!
 //! First-order linear actuator with rate clamp, position
 //! saturation, deadband, and fixed-depth circular-buffer pure

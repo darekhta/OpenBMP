@@ -1,4 +1,4 @@
-//! [`LayeredWind`] — Phase-3.8.B per-altitude NED wind table.
+//! [`LayeredWind`] — per-altitude NED wind table.
 //!
 //! Linearly interpolates between scenario-declared `(altitude_m,
 //! wind_ned_m_s)` layers. Below the first layer's altitude, returns
@@ -10,12 +10,12 @@
 //!
 //! # Altitude proxy
 //!
-//! Phase-3.8 reads altitude as `position_eci.vector.z`, matching the
-//! Phase-2.4 axial-drag adapter convention (`adapters.rs:466`). For
+//! Altitude is read as `position_eci.vector.z`, matching the
+//! axial-drag adapter convention (`adapters.rs:466`). For
 //! the toy-fixed-earth and WGS84-uniform-rotation frame profiles
 //! shipped today, this is a vertical-launch simplification: the
 //! +z body axis aligns with the launch-pad up direction. A future
-//! "geodetic altitude resolver" sub-phase will replace this in
+//! "geodetic altitude resolver" would replace this in
 //! lockstep for both atmosphere and wind models. Documented in the
 //! model's docstring; downstream callers should be aware.
 //!
@@ -53,7 +53,7 @@ impl LayerEntry {
     }
 }
 
-/// Phase-3.8.B per-altitude NED wind table with linear interpolation.
+/// Per-altitude NED wind table with linear interpolation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayeredWind {
     layers: Vec<LayerEntry>,
@@ -115,7 +115,7 @@ impl LayeredWind {
         &self.layers
     }
 
-    /// Lookup wind at a given altitude. Phase-3.8.B clamps below the
+    /// Lookup wind at a given altitude. Clamps below the
     /// first layer and above the last layer; inside the envelope,
     /// linearly interpolates between the two bracketing layers.
     #[must_use]
@@ -162,8 +162,8 @@ impl WindModel for LayeredWind {
         _frame: &FrameContext,
         _time: SimTime,
     ) -> Result<Velocity3<Ned>, PhysicsError> {
-        // Phase-3.8 altitude proxy: position_eci.vector.z. See module
-        // docstring — matches the Phase-2.4 axial-drag adapter
+        // Altitude proxy: position_eci.vector.z. See module
+        // docstring — matches the axial-drag adapter
         // convention. A future geodetic-altitude resolver replaces
         // this for atmosphere and wind in lockstep.
         let altitude_m = position_eci.vector.z;

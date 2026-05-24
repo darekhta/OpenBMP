@@ -12,8 +12,8 @@
 //! contract requires:
 //!
 //! 1. The locked weighted-sum order of [`rk4_weighted_sum`] —
-//!    Phase-3.15.E moved the combiner off the derivative trait
-//!    (where it baked in RK4 specifics) into this integrator-side
+//!    the combiner lives off the derivative trait
+//!    (rather than baking in RK4 specifics) in this integrator-side
 //!    helper that uses the derivative's primitive `Add` + `Mul<f64>`
 //!    ops.
 //! 2. No `f64::mul_add` in the integrator hot path.
@@ -49,7 +49,7 @@ use openbmp_models::SimState;
 ///    pre-distributed across stages — that introduces an extra
 ///    rounding before the sum).
 ///
-/// Phase-3.15.E moved this off [`SimStateDerivative`] so the
+/// This lives off [`SimStateDerivative`] so the
 /// derivative trait surface only requires the generic `Add` +
 /// `Mul<f64>` primitives. Future integrators (DOPRI5/8, RKF78)
 /// implement their own weighted-sum helpers using the same
@@ -188,8 +188,8 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
         }
 
         // Combine: state + h * (k1 + 2 k2 + 2 k3 + k4) / 6.
-        // Locked-order weighted sum is now an integrator-local
-        // helper (Phase-3.15.E moved it off the derivative trait so
+        // Locked-order weighted sum is an integrator-local
+        // helper (kept off the derivative trait so
         // future integrators can implement their own combination
         // without the trait surface advertising one stage scheme).
         let weighted = rk4_weighted_sum(k1, k2, k3, k4);
@@ -208,7 +208,7 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
 }
 
 // ---------------------------------------------------------------------
-// Phase-5.D.3 — Dormand-Prince 5(4) fixed-step integrator
+// Dormand-Prince 5(4) fixed-step integrator
 // ---------------------------------------------------------------------
 
 /// Dormand-Prince 5(4) Butcher-tableau coefficients used by
@@ -221,9 +221,10 @@ impl<S: SimState> Integrator<S> for Rk4FixedStep {
 /// 2nd rev. ed., §II.5 Table 5.2 (Springer, 1993). The constants
 /// below reproduce that table verbatim.
 ///
-/// The shipped variant is the **5th-order solution only** — the
-/// embedded 4th-order solution and the adaptive PI step controller
-/// are explicitly deferred (see `docs/phase-5-plan.md § 5.D.3`).
+/// The fixed-step variant ([`Dopri54FixedStep`]) uses the **5th-order
+/// solution only**; the embedded 4th-order error estimate and the PI
+/// step controller are used by the adaptive variant
+/// ([`Dopri54Adaptive`]).
 mod dopri54_tableau {
     // c-vector (sub-step times relative to h):
     pub const C2: f64 = 1.0 / 5.0;
@@ -266,7 +267,7 @@ mod dopri54_tableau {
     pub const B5: f64 = -2_187.0 / 6_784.0;
     pub const B6: f64 = 11.0 / 84.0;
 
-    // Phase-5.D.4 — Dormand-Prince 5(4) embedded 4th-order weights
+    // Dormand-Prince 5(4) embedded 4th-order weights
     // and the FSAL stage's a-row coefficients used to evaluate `k7`.
     // Pinned per Dormand & Prince (1980) Table II / Hairer-Nørsett-
     // Wanner Vol I §II.5 Table 5.2. The error vector is
@@ -290,11 +291,11 @@ mod dopri54_tableau {
 
 /// Dormand-Prince 5(4) fixed-step integrator (5th-order accurate).
 ///
-/// **Honest scope.** The shipped variant uses the DOPRI5 5th-order
-/// solution at a **fixed step size** — the embedded 4th-order solution
-/// and the adaptive PI step controller are explicitly deferred to a
-/// follow-on slice (see `docs/phase-5-plan.md § 5.D.3`). The
-/// fixed-step shape is a drop-in higher-order alternative to
+/// **Scope.** This variant uses the DOPRI5 5th-order solution at a
+/// **fixed step size**; the embedded 4th-order error estimate and the
+/// adaptive PI step controller live in the adaptive variant
+/// ([`Dopri54Adaptive`]). The fixed-step shape is a drop-in
+/// higher-order alternative to
 /// [`Rk4FixedStep`] for scenarios where 4th-order RK4 truncation
 /// error is the limiting factor.
 ///
@@ -413,7 +414,7 @@ impl<S: SimState> Integrator<S> for Dopri54FixedStep {
 }
 
 // ---------------------------------------------------------------------
-// Phase-5.D.4 — Dormand-Prince 5(4) adaptive integrator with PI step
+// Dormand-Prince 5(4) adaptive integrator with PI step
 // controller
 // ---------------------------------------------------------------------
 
@@ -459,7 +460,7 @@ pub enum AdaptiveIntegratorError {
 /// returns [`IntegratorError::InvalidStep`] instead of silently
 /// accepting a step outside tolerance.
 ///
-/// # Error norm (Phase-5.D.5)
+/// # Error norm
 ///
 /// The scaled error norm uses the **per-component** Hairer-Nørsett-
 /// Wanner Vol I §II.4 RMS form via
@@ -679,7 +680,7 @@ impl Dopri54Adaptive {
         // inside `weighted_error_norm`.
         let error_deriv =
             (((((k1 * E1) + (k3 * E3)) + (k4 * E4)) + (k5 * E5)) + (k6 * E6)) + (k7 * E7);
-        // Per-component scaled error RMS norm (Phase-5.D.5):
+        // Per-component scaled error RMS norm:
         //   sc_i = atol + rtol · max(|y^n_i|, |y^{n+1}_i|)
         //   err = sqrt( (1/N) · Σ_i ( h · e'_i / sc_i )^2 )
         let scaled_err =
@@ -783,10 +784,10 @@ impl<S: SimState> Integrator<S> for Dopri54Adaptive {
 }
 
 // =====================================================================
-// Phase-5.D.6 — Dormand-Prince 8(5,3) (DOP853) integrator family.
+// Dormand-Prince 8(5,3) (DOP853) integrator family.
 // =====================================================================
 
-/// Phase-5.D.6 — DOP853 / Dormand-Prince 8(5,3) Butcher tableau.
+/// DOP853 / Dormand-Prince 8(5,3) Butcher tableau.
 ///
 /// 12-stage explicit Runge-Kutta with an 8th-order solution and two
 /// embedded estimators of orders 5 and 3 (the "8(5,3)" notation).
@@ -1252,7 +1253,7 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
 /// silently violating the configured tolerance — same fail-closed
 /// contract as [`Dopri54Adaptive`].
 ///
-/// # Honest scope (Phase 5.D.6)
+/// # Honest scope
 ///
 /// - No dense output. SciPy's DOP853 ships an order-7 dense
 ///   interpolator using 4 extra abscissas; this slice does not. The
@@ -1891,7 +1892,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase-5.D.3 — Dormand-Prince 5(4) fixed-step tests
+    // Dormand-Prince 5(4) fixed-step tests
     // -----------------------------------------------------------------
 
     #[test]
@@ -2122,7 +2123,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase-5.D.4 — Dormand-Prince 5(4) adaptive integrator tests.
+    // Dormand-Prince 5(4) adaptive integrator tests.
     // -----------------------------------------------------------------
 
     // Returns Result to satisfy the `Integrator::advance` derive_fn trait
@@ -2398,7 +2399,7 @@ mod tests {
         );
     }
 
-    /// Phase-5.D.5 — PI controller band-stability over a long
+    /// PI controller band-stability over a long
     /// sequence of single sub-steps.
     ///
     /// The public `Integrator::advance(...)` API rolls multiple
@@ -2534,7 +2535,7 @@ mod tests {
         );
     }
 
-    /// Phase-5.D.5 — verifies the per-component norm refinement is in
+    /// Verifies the per-component norm refinement is in
     /// effect. On a multi-scale point-mass state where one component
     /// is 10⁶ and another is 1, the per-component RMS form correctly
     /// surfaces a position-component breach that the older scalar
@@ -2583,7 +2584,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase-5.D.6 — DOP853 (Dormand-Prince 8(5,3)) tableau / fixed-step
+    // DOP853 (Dormand-Prince 8(5,3)) tableau / fixed-step
     // tests. Coverage:
     //   - Tableau row sums: Σ_j A_i_j = C_i for every stage row i;
     //     Σ_j B_j = 1 (8th-order solution is consistent); Σ_j E5_j = 0
@@ -2745,7 +2746,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase-5.D.6 — DOP853 adaptive integrator tests.
+    // DOP853 adaptive integrator tests.
     // -----------------------------------------------------------------
 
     #[test]
@@ -3070,7 +3071,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // RigidBodyState SimState impl tests (Phase 2.1.B)
+    // RigidBodyState SimState impl tests
     // -----------------------------------------------------------------
 
     mod rigid_body {
@@ -3179,9 +3180,9 @@ mod tests {
         /// `q(dt) = (cos(dt/2), sin(dt/2), 0, 0)`.
         ///
         /// Note that this *does* require the user-supplied derivative
-        /// closure to compute `q_dot` correctly. Phase-2.1.B ships
-        /// only the integration shape; the closure is supplied by the
-        /// kernel in 2.1.D's torque-free scenario. The test here builds
+        /// closure to compute `q_dot` correctly. The integration shape
+        /// is generic; the closure is supplied by the
+        /// kernel in the torque-free scenario. The test here builds
         /// the closure inline, exercising only `advance_by` /
         /// `project()` from this sub-phase.
         #[test]

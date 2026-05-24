@@ -1,4 +1,4 @@
-//! Phase-6.6 continuum-to-rarefied bridging.
+//! Continuum-to-rarefied bridging.
 //!
 //! Knudsen number computation, three bridge-function variants
 //! (Cheng, complementary-error-function, linear smoothstep),
@@ -207,7 +207,7 @@ impl Default for AccommodationCoeffs {
 /// Free-molecular drag on a flat plate at angle `α` to freestream
 /// (Schaaf & Chambré high-speed-ratio limit). `α = 0` is edge-on
 /// and `α = π/2` is broadside. Representative-panel approximation
-/// per the rest of the Phase-6 aero family.
+/// matching the rest of the hypersonic aero family.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FreeMolecularAero {
     /// Accommodation coefficients.

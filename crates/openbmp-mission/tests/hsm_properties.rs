@@ -1,4 +1,4 @@
-//! Phase 5.X.G property tests for the hierarchical state machine.
+//! Property tests for the hierarchical state machine.
 //!
 //! Asserts the load-bearing HSM invariants on randomly-generated
 //! state hierarchies:
@@ -187,8 +187,8 @@ proptest! {
 }
 
 /// `MissionAction` is held live to confirm the symbol re-exports
-/// remain usable from this test crate — Phase 5.X.F will start
-/// constructing `on_entry` / `on_exit` action vecs with these.
+/// remain usable from this test crate — `on_entry` / `on_exit`
+/// action vecs are constructed with these.
 #[allow(dead_code)]
 fn _action_compile_check() -> MissionAction {
     MissionAction::EmitTelemetryMarker { tag: "test".into() }

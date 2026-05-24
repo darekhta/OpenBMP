@@ -3,11 +3,11 @@
 # Sized to a 24 mm-diameter, 0.30 m-long airframe matching the
 # Estes D12 motor envelope. Values are OpenBMP-authored from a
 # documented closed-form generator — NOT transcribed from a
-# fielded vehicle. Used by the Phase-2.9 sounding-rocket
+# fielded vehicle. Used by the sounding-rocket
 # validation case.
 #
 # Closed-form generators (same family as
-# `synthetic-finned-cylinder.toml` from Phase 2.5):
+# `synthetic-finned-cylinder.toml`):
 #   CD(M, α_deg) = CD0(M) + 0.001 · α_deg²
 #   CN(M, α_deg) = α_deg · (0.07 + 0.005 · M)
 #   CM(M, α_deg) = -0.15 · CN(M, α_deg)         (15% static margin)

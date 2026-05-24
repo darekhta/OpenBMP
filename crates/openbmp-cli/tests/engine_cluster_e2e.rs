@@ -1,7 +1,7 @@
-//! Phase-3.6.D end-to-end test: 4-engine octaweb cluster with one
+//! End-to-end test: 4-engine octaweb cluster with one
 //! engine commanded shutdown mid-flight.
 //!
-//! Asserts the §3.6 exit criterion: the synthetic scenario
+//! Asserts: the synthetic scenario
 //! `scenarios/multi-engine-octaweb/four-engine-shutdown.toml` runs
 //! via `openbmp run`, the kernel completes with
 //! `StopReason::EndTime`, and (a) the cluster's mass drops at the

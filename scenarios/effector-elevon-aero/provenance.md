@@ -1,6 +1,6 @@
 # Provenance — `scenarios/effector-elevon-aero/`
 
-Canonical OpenBMP provenance record for the Phase-3.5.D
+Canonical OpenBMP provenance record for the effector-aero
 exit-criterion scenario shipped under
 `scenarios/effector-elevon-aero/`.
 
@@ -12,9 +12,9 @@ files:
   - scenarios/effector-elevon-aero/single-elevon-aero-deflected.toml
 source_class:     synthetic-openbmp
 source_title:     >-
-  Phase-3.5.D exit-criterion scenario. Point-mass vehicle with one
+  Exit-criterion scenario. Point-mass vehicle with one
   elevon-shaped linear actuator declared with `unit = "deg"`. The
-  scenario's `[aero]` block points at the Phase-3.5.B Schema-2 deck
+  scenario's `[aero]` block points at the Schema-2 deck
   `data/aero/synthetic-elevon-1d.toml`, which declares a
   `delta_e_deg` effector axis. The runner's `EffectorRack` snapshot
   flows through the kernel's `EffectorActualsView` into the deck
@@ -22,14 +22,14 @@ source_title:     >-
   the drag coefficient `CD` (Schema-2 effector-axis consumption
   contract).
 source_authors:   OpenBMP (Dmitri Arekhta)
-source_id:        Synthetic OpenBMP Phase-3.5.D fixture
+source_id:        Synthetic OpenBMP effector-aero fixture
 publication_date: 2026-04-28
 methodology_reference: >-
-  `docs/scenario-format.md` § Schema-2 aero decks (Phase 3.5)
+  `docs/scenario-format.md` § Schema-2 aero decks
   documents the schema-2 aero deck format, the kernel-side
   `EffectorActualsView` consumed by `ForceContext`, and the
   runner-side `aero_effector_match` matcher. This scenario is the
-  Phase-3.5.D exit-criterion case: a scenario declaring a Schema-2
+  exit-criterion case: a scenario declaring a Schema-2
   deck and a matching effector
   produces aero-force telemetry that visibly differs between a
   zero-deflection baseline and a deflected-elevon run. The deck's
@@ -42,11 +42,11 @@ license_or_terms: >-
 retrieved_utc:    2026-04-28
 transformation:
   method: >-
-    Authored by hand for the Phase-3.5.D exit criterion. No script.
+    Authored by hand for the effector-aero exit criterion. No script.
   script: none
 verification:
   method: >-
-    `openbmp check` parses the scenario; the Phase-3.5.D e2e test
+    `openbmp check` parses the scenario; the e2e test
     `single_elevon_aero_scenario_runs_to_completion` runs the
     scenario via `openbmp run`, asserts the kernel completes with
     `StopReason::EndTime`, and asserts the per-step aero-force
@@ -73,8 +73,8 @@ safety_review:
 units:            metres, metres-per-second, metres-per-second-squared, seconds, kilograms, degrees
 frame_profile:    wgs84-uniform-rotation
 local_origin:     >-
-  None — Phase-3.5 kernel uses the same vertical-launch ECI `+z`
-  convention as Phase-2.11; the scenario's initial position is
+  None — the kernel uses the standard vertical-launch ECI `+z`
+  convention; the scenario's initial position is
   interpreted as ECI `+z` altitude above the ground.
 related_files:
   - data/aero/synthetic-elevon-1d.toml

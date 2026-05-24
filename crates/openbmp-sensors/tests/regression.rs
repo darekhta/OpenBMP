@@ -1,4 +1,4 @@
-//! Phase 2.7.D regression — IMU noise-budget pins + Allan-variance
+//! Regression — IMU noise-budget pins + Allan-variance
 //! slope check.
 //!
 //! Three classes of check:

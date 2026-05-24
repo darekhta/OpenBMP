@@ -1,12 +1,12 @@
 //! Gravity models.
 //!
-//! Phase 2.2.B ships:
+//! Provides:
 //!
-//! * [`ConstantGravity`] — uniform `g` vector in ECI. Replicates the
-//!   Phase-1 scaffold's behaviour exactly, but lives here so the
-//!   environment-side gravity API doesn't depend on
-//!   `openbmp-sim`. The Phase-1 `openbmp-sim::ConstantGravityForce`
-//!   stays byte-identical; higher layers adapt one to the other.
+//! * [`ConstantGravity`] — uniform `g` vector in ECI. Mirrors the
+//!   `openbmp-sim::ConstantGravityForce` behaviour exactly, but lives
+//!   here so the environment-side gravity API doesn't depend on
+//!   `openbmp-sim`. That force model stays byte-identical; higher
+//!   layers adapt one to the other.
 //! * [`PointMassGravity`] — Newtonian `−µ/r² r̂`. Default constructor
 //!   pins the WGS84 `µ`.
 //! * [`J2Gravity`] — point-mass plus the J2 zonal harmonic, expressed
@@ -46,8 +46,8 @@ pub fn standard_down_z_eci_m_s2() -> Vector3<f64> {
 ///
 /// Returns the gravitational acceleration vector at an inertial
 /// position and simulation time. Time is included for forward
-/// compatibility with future time-varying corrections (none in
-/// Phase 2).
+/// compatibility with future time-varying corrections (none
+/// currently).
 pub trait GravityModel {
     /// Gravitational acceleration in ECI, in m/s².
     ///
@@ -68,7 +68,7 @@ pub trait GravityModel {
 // ---------------------------------------------------------------------
 
 /// Constant gravity. Returns the configured ECI acceleration vector
-/// at every query. Matches the Phase-1 toy scaffold.
+/// at every query. Matches the toy scaffold.
 #[derive(Copy, Clone, Debug)]
 pub struct ConstantGravity {
     g_eci_m_s2: Vector3<f64>,
@@ -341,7 +341,7 @@ fn j2_perturbation_eci(
 }
 
 // ---------------------------------------------------------------------
-// Egm2008ZonalGravity — Phase 5.C.2
+// Egm2008ZonalGravity
 // ---------------------------------------------------------------------
 
 /// EGM2008 zonal-harmonic coefficient `J_3` (unnormalised). Source:

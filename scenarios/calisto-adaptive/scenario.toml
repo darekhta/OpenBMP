@@ -1,10 +1,10 @@
-# Phase-5.D.5 demo: RocketPy Calisto cross-tool sounding-rocket
+# Demo: RocketPy Calisto cross-tool sounding-rocket
 # scenario integrated with the Dormand-Prince 5(4) adaptive embedded
 # RK pair on the **rigid-body runner**.
 #
 # Identical vehicle, motor, aero, atmosphere, recovery, and mission
 # graph to `scenarios/sounding-rocket/calisto/rocketpy-calisto.toml`
-# (the Phase-3.11 fixed-RK4 cross-tool validation scenario); the only
+# (the fixed-RK4 cross-tool validation scenario); the only
 # differences are the new `[solver]` and `[solver.adaptive]` blocks.
 # The point of this scenario is the end-to-end rigid-body adaptive
 # wiring path: `phase2_rigid_body::run` dispatches through
@@ -14,10 +14,10 @@
 # rigid-body state (position, velocity, quaternion, angular velocity,
 # mass, cg offset, full inertia matrix).
 #
-# Outer kernel cadence stays at `dt_s = 0.001` to match the Phase-3.11
+# Outer kernel cadence stays at `dt_s = 0.001` to match the fixed-RK4
 # baseline; `max_dt_s = 0.001` caps internal sub-steps at the same
 # resolution. Tolerances `rtol = 1e-7`, `atol = 1e-9` are looser than
-# the Phase-5.D.4 LEO-orbit demo because the Calisto trajectory mixes
+# the LEO-orbit demo because the Calisto trajectory mixes
 # tame 1-ms ascent dynamics with sharp drogue / main parachute
 # transients that drive the controller into rejection territory at
 # tighter bands. The scenario stops at 180 s, the same horizon as the
@@ -28,7 +28,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "calisto-adaptive"
-description = "RocketPy Calisto sounding-rocket validation scenario integrated with the Dormand-Prince 5(4) adaptive + PI step controller (rigid-body runner). Phase 5.D.5 demo."
+description = "RocketPy Calisto sounding-rocket validation scenario integrated with the Dormand-Prince 5(4) adaptive + PI step controller (rigid-body runner). Adaptive cross-tool demo."
 validation  = "experimental"
 provenance  = "RocketPy Calisto example (Souza et al. 2022, https://github.com/RocketPy-Team/RocketPy); same vehicle / motor / aero / recovery as scenarios/sounding-rocket/calisto/rocketpy-calisto.toml. Integrator: Dopri54Adaptive (Hairer-Nørsett-Wanner Vol I §II.5 Table 5.2 + Gustafsson 1991 PI controller, per-component HNW §II.4 RMS error norm). See provenance.md."
 
@@ -75,13 +75,13 @@ kind = "us_standard_1976"
 
 [aero]
 deck         = "../../data/aero/calisto-drag.toml"
-deck_sha256  = "93f51bd5a33fcf2e0a226bc7f328a71286e2db98c65a3dc166f70b2b4a0282d2"
+deck_sha256  = "e5411bb106529f5c6534627c87c7b7ea1df809355df642b38df9644530fcffb0"
 
 [propulsion.motor]
 file         = "../../data/motors/rocketpy-calisto-m1670.toml"
 ignite_at_s  = 0.0
 variant      = "solid"
-file_sha256  = "0aa6cbaa495e6a50fa337c99a2a92229c8166ce3ee183b2c49159e7d96e026c3"
+file_sha256  = "2d111e4bbca80bdc0c3df2253cee85bcc44fb8bb5483ab60fced9cdb593659f1"
 
 [solver]
 profile = "adaptive-explicit"

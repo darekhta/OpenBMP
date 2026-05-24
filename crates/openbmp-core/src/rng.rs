@@ -77,13 +77,13 @@ impl DeterministicRng {
         bytes[8..16].copy_from_slice(&step.value().to_le_bytes());
         bytes[16..24].copy_from_slice(&channel.value().to_le_bytes());
         // bytes[24..32] reserved for a future stream-id field; kept
-        // zero so Phase-1 outputs are stable.
+        // zero so outputs are stable.
         Self::from_raw_seed(bytes)
     }
 
     /// Construct a per-sensor-component deterministic stream.
     ///
-    /// Phase 2.7 adds this constructor for synthetic sensors. The
+    /// This constructor serves synthetic sensors. The
     /// seed is derived from
     /// `(scenario_seed, step_index, sensor_id, component_id)` plus
     /// the `SENSOR_COMPONENT_DOMAIN_TAG` in the trailing 4 bytes.
@@ -114,7 +114,7 @@ impl DeterministicRng {
 
     /// Construct a per-effector-component deterministic stream.
     ///
-    /// Phase 3.4 adds this constructor for control effectors. The seed
+    /// This constructor serves control effectors. The seed
     /// is derived from
     /// `(scenario_seed, step_index, effector_id, component_id)` plus
     /// the `EFFECTOR_COMPONENT_DOMAIN_TAG` in the trailing 4 bytes.
@@ -123,7 +123,7 @@ impl DeterministicRng {
     /// [`Self::for_channel`] (zero in [24..32]) or
     /// [`Self::for_sensor_component`] (`b"SENS"` in [28..32]).
     ///
-    /// Phase-3.4 `LinearActuator` is fully deterministic and does not
+    /// The `LinearActuator` is fully deterministic and does not
     /// draw from this stream; the constructor exists so future
     /// stochastic-fault models can wire byte-stable per-effector noise.
     #[must_use]
@@ -144,7 +144,7 @@ impl DeterministicRng {
 
     /// Construct a per-wind-axis deterministic stream.
     ///
-    /// Phase 3.8 adds this constructor for the Dryden rational-spectrum
+    /// This constructor serves the Dryden rational-spectrum
     /// shaping filter. The seed is derived from
     /// `(scenario_seed, step_index, axis)` plus the
     /// `WIND_COMPONENT_DOMAIN_TAG` in the trailing 4 bytes.
@@ -159,7 +159,7 @@ impl DeterministicRng {
     /// | 24..28 | `axis.value().to_le_bytes()` (u32)     |
     /// | 28..32 | `b"WIND"`                              |
     ///
-    /// Bytes [16..24] are reserved zero so a future Phase-3.X
+    /// Bytes [16..24] are reserved zero so a future
     /// `WindModelId` can be introduced (multiple wind sources
     /// composing) without re-pinning the stream. The domain tag
     /// guarantees no collision with [`Self::for_channel`] (zero in
@@ -276,7 +276,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // for_sensor_component (Phase 2.7)
+    // for_sensor_component
     // -----------------------------------------------------------------
 
     #[test]
@@ -475,7 +475,7 @@ mod tests {
     }
 
     /// Pinned reference stream for `for_effector_component_reference_stream_is_locked`.
-    /// Values captured at Phase-3.4.A; drift fails the locked test.
+    /// Pinned values; drift fails the locked test.
     const PINNED_REFERENCE_STREAM: [u8; 32] = [
         0x72, 0x33, 0xae, 0x9e, 0x83, 0xfd, 0xb1, 0x2b, 0x86, 0xee, 0xf2, 0x75, 0xd0, 0x51, 0xbf,
         0x54, 0x63, 0xcb, 0x7b, 0xbd, 0x57, 0x4c, 0x51, 0x42, 0xa4, 0x96, 0x3c, 0x25, 0x94, 0xac,
@@ -483,7 +483,7 @@ mod tests {
     ];
 
     // -----------------------------------------------------------------
-    // for_wind_component (Phase 3.8.A)
+    // for_wind_component
     // -----------------------------------------------------------------
 
     #[test]
@@ -583,7 +583,7 @@ mod tests {
     }
 
     /// Pinned reference stream for `for_wind_component_reference_stream_is_locked`.
-    /// Values captured at Phase-3.8.A; drift fails the locked test before
+    /// Pinned values; drift fails the locked test before
     /// it can perturb downstream Dryden gust filter telemetry.
     const PINNED_WIND_REFERENCE_STREAM_U: [u8; 32] = [
         0x7c, 0xcd, 0x0e, 0xe2, 0x1e, 0x12, 0xfe, 0x5d, 0x3b, 0xec, 0x18, 0x5f, 0x05, 0x30, 0xb9,

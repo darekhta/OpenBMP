@@ -10,8 +10,8 @@ Built deliberately as a foundation crate that both
 `openbmp-fc` (controller) and `openbmp-sim` / `openbmp-cli`
 (simulator) consume without crossing the HAL boundary.
 
-This crate replaced and absorbed the former `openbmp-env` crate
-(retired 2026-04-30 per `docs/physics-consolidation-plan.md`).
+This crate is the single home for the workspace's shared physics
+models, consumed by both the controller and simulator sides.
 
 ## Module map
 

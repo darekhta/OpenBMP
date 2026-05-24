@@ -1,6 +1,6 @@
 //! Academic guidance laws.
 //!
-//! Phase 4.7 ships:
+//! Provides:
 //! - Attitude tracking against a scripted reference state.
 //! - Scenario-waypoint navigation in inertial space.
 //! - Simple terminal-state regulation (constant attitude / position).

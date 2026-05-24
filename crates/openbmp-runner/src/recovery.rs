@@ -1,9 +1,9 @@
-//! Phase-3.9 runner-side recovery rack.
+//! Runner-side recovery rack.
 //!
 //! The rack owns a `BTreeMap<RecoveryId, Box<dyn RecoveryModel>>`
 //! resolved from the scenario's `[[vehicle.assembly.recovery]]`
-//! block. It mirrors the Phase-3.6 [`crate::engines::EngineRack`]
-//! and Phase-3.7 [`crate::tanks::TankRack`] patterns:
+//! block. It mirrors the [`crate::engines::EngineRack`]
+//! and [`crate::tanks::TankRack`] patterns:
 //!
 //! Each kernel base tick the runner:
 //!
@@ -13,16 +13,16 @@
 //!    target device's `apply_command(...)`. Multiple command firings
 //!    for the same device in one step are rejected with
 //!    [`RunnerError::Recovery`].
-//! 2. Calls [`RecoveryRack::step`] to advance internal state. Phase
-//!    3.9 instances are instantaneous-deploy and `step` is a no-op,
+//! 2. Calls [`RecoveryRack::step`] to advance internal state. The
+//!    shipped instances are instantaneous-deploy and `step` is a no-op,
 //!    but the call is part of the rack contract.
 //! 3. Packs each device's `(phase, c_d, drag_area)` triple into a
 //!    `BTreeMap<RecoveryId, RecoverySnapshot>` via
 //!    [`RecoveryRack::snapshot_map`] and pushes it into the kernel
 //!    via `set_recovery_snapshot(...)`.
 //!
-//! Phase-3.9 leaves the kernel hot path's force evaluation untouched
-//! when the rack is empty — legacy scenarios produce byte-identical
+//! The rack leaves the kernel hot path's force evaluation untouched
+//! when it is empty — legacy scenarios produce byte-identical
 //! Parquet because the runner short-circuits every rack-related
 //! operation on `is_empty()`, the kernel's recovery snapshot map
 //! stays empty, and the `RecoveryRackForceAdapter` never appears in
@@ -188,7 +188,7 @@ impl RecoveryRack {
     }
 
     /// Advance every recovery device's internal state by one kernel
-    /// base tick. Phase-3.9 instances are instantaneous-deploy and
+    /// base tick. The shipped instances are instantaneous-deploy and
     /// `step` is a no-op, but the call is part of the rack contract
     /// for future extensions (canopy inflation transients, brake
     /// rate-limiting, etc.).

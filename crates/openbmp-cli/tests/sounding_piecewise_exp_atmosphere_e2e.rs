@@ -1,7 +1,7 @@
-//! Phase-5.C.1 end-to-end test: vertical ballistic profile with
+//! End-to-end test: vertical ballistic profile with
 //! per-step piecewise-exponential atmosphere telemetry sampling.
 //!
-//! Asserts the §5.C.1 exit criterion:
+//! Asserts:
 //!
 //! 1. The scenario runs to completion via `openbmp_cli::commands::run`
 //!    with `stop_label = "end-time"` after 4100 RK4 steps.

@@ -1,23 +1,23 @@
 //! `openbmp-aero` — OpenBMP aerodynamics.
 //!
-//! Phase 2.5 / 3.5 ships:
+//! Provides:
 //!
 //! * [`deck`] — Tabulated aerodynamic deck. **Schema 1** is the
-//!   Phase-2.5 axisymmetric reduced sounding-rocket form indexed by
+//!   axisymmetric reduced sounding-rocket form indexed by
 //!   `(mach, alpha_deg, beta_deg)` returning the three reduced
-//!   coefficients `(CN, CD, CM)`. **Schema 2** (Phase 3.5) extends
+//!   coefficients `(CN, CD, CM)`. **Schema 2** extends
 //!   the same struct with optional effector-axis dimensions
 //!   (e.g. `delta_e_deg`); the lookup signature gains a name-keyed
 //!   `BTreeMap<&str, f64>` for deflections. The internal
 //!   representation is N-D (3 ≤ N ≤ 6); at N = 3 the multilinear
-//!   reduction is bit-identical to the Phase-2.5 trilinear path,
+//!   reduction is bit-identical to the Schema-1 trilinear path,
 //!   per a 1024-case property test. Locked-order operand reduction
 //!   per Demmel & Nguyen 2020; FMA disabled.
 //! * [`parser`] — TOML deck-file parser. Coefficient decks
 //!   auto-detect schema 1 vs. schema 2 from the `openbmp.aero_deck`
-//!   integer marker and dispatch to strict per-schema parsers. Phase
-//!   6 adds a separate strict `openbmp.panel_mesh_aero = 1` parser
-//!   for [`hypersonic::LocalInclinationPanels`]. All parsers use
+//!   integer marker and dispatch to strict per-schema parsers. A
+//!   separate strict `openbmp.panel_mesh_aero = 1` parser handles
+//!   [`hypersonic::LocalInclinationPanels`]. All parsers use
 //!   `serde(deny_unknown_fields)`.
 //! * [`method`] — [`method::AeroMethod`] trait, [`method::AeroContext`]
 //!   input, [`method::AeroForceMomentBody`] output, and the
@@ -27,11 +27,11 @@
 //!   surface (out-of-envelope, non-finite, invalid parameter,
 //!   malformed deck, deck I/O).
 //!
-//! The full six-coefficient `CX/CY/CZ/Cl/Cm/Cn` deck is deferred past
-//! Phase 3.5; schema-2 still ships only `(CN, CD, CM)`. Hypersonic
+//! The full six-coefficient `CX/CY/CZ/Cl/Cm/Cn` deck remains future
+//! work; schema-2 ships only `(CN, CD, CM)`. Hypersonic
 //! methods (`ModifiedNewtonian`, `TangentCone`, `LocalInclinationPanels`,
-//! `FreeMolecular`) and the `HybridAeroMethod` dispatch ship in
-//! Phase 6 — see `docs/hypersonic-extensions.md`.
+//! `FreeMolecular`) and the `HybridAeroMethod` dispatch are documented
+//! in `docs/hypersonic-extensions.md`.
 //!
 //! # Determinism
 //!

@@ -1,4 +1,4 @@
-//! Phase-5.B.4 Willsky windowed-mean-shift GLRT detector.
+//! Willsky windowed-mean-shift GLRT detector.
 //!
 //! For an i.i.d. sequence of whitened innovations
 //! `ν̃_i ~ N(0, I_d)` under H₀, the test asks whether at some

@@ -1,11 +1,11 @@
-//! Phase-2.2 + 2.3 regression guards.
+//! Regression guards.
 //!
 //! 1. `openbmp-physics::gravity::ConstantGravity` produces byte-identical
-//!    results to the Phase-1 `openbmp-sim::models::ConstantGravityForce`
+//!    results to the `openbmp-sim::models::ConstantGravityForce`
 //!    scaffold over the analytic-toy drop scenario's coefficient grid.
-//!    This locks in the property the audited Phase-2 plan relies on:
-//!    when the higher-layer adapter swaps `ConstantGravityForce` for
-//!    `openbmp-physics::ConstantGravity`, telemetry stays identical.
+//!    This locks in the property: when the higher-layer adapter swaps
+//!    `ConstantGravityForce` for `openbmp-physics::ConstantGravity`,
+//!    telemetry stays identical.
 //!
 //! 2. `J2Gravity` reduces to `PointMassGravity` when `j2 = 0` to within
 //!    1e-12 — the same property the in-crate unit test asserts, but
@@ -15,13 +15,13 @@
 //!    layer table match their TOML data pins under
 //!    `data/gravity/wgs84-j2.toml` and
 //!    `data/atmosphere/us_standard_1976.toml`. This is the same shape
-//!    the Phase-2.10 `openbmp check-provenance` walk will perform; we
+//!    the `openbmp check-provenance` walk performs; we
 //!    do it locally now so a typo in either source flips a CI gate.
 //!
-//! These tests do not depend on `openbmp-sim` (the Phase-2 plan's L2
+//! These tests do not depend on `openbmp-sim` (the L2
 //! crate-layering rule), so the equivalence claim is asserted by
 //! computing the expected acceleration arithmetic in the test file
-//! directly. A future Phase-2.10 e2e regression that runs both
+//! directly. The e2e regression that runs both
 //! kernels through the CLI and diffs Parquet provides the
 //! end-to-end guarantee.
 
@@ -71,10 +71,10 @@ fn assert_relative(actual: f64, expected: f64, tol: f64, label: &str) {
     );
 }
 
-/// Phase-1 toy used `g = (0, 0, -9.80665)`. Verify
+/// The analytic toy uses `g = (0, 0, -9.80665)`. Verify
 /// `ConstantGravity::down_z` produces exactly that vector.
 #[test]
-fn constant_gravity_down_z_matches_phase_1_toy_vector() {
+fn constant_gravity_down_z_matches_toy_vector() {
     let g = ConstantGravity::down_z(9.806_65).expect("valid magnitude");
     let out = g
         .gravity_eci_m_s2(Position3::origin(), SimTime::ZERO)

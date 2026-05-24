@@ -1,8 +1,8 @@
-//! Phase-5.C.2 end-to-end test: 1 kg point mass in a 400 km / 30°
+//! End-to-end test: 1 kg point mass in a 400 km / 30°
 //! inclined LEO orbit under EGM2008 zonal-harmonic gravity (degrees
 //! 2-6).
 //!
-//! Asserts the §5.C.2 exit criterion:
+//! Asserts:
 //!
 //! 1. The scenario runs to completion via `openbmp_cli::commands::run`
 //!    with `stop_label = "end-time"` after 5556 RK4 steps.

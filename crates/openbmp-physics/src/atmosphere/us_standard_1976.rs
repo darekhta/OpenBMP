@@ -14,7 +14,7 @@
 //! Defining constants and layer structure per NOAA-S/T 76-1562
 //! §1.2-§1.3. The base-pressure column is the locked f64 recurrence
 //! from the sea-level pressure through the standard barometric
-//! formulas. Phase-2.3 regression tests verify the in-source pin
+//! formulas. Regression tests verify the in-source pin
 //! against `data/atmosphere/us_standard_1976.toml` and check
 //! per-kilometre samples against a TOML-derived reference.
 //!
@@ -26,8 +26,8 @@
 //! distinct branches; both produce bit-stable output on the
 //! reference platform profile.
 //!
-//! Full NRLMSISE-00 upper-atmosphere density is explicitly deferred
-//! to Phase 5. USSA76 remains the Phase 4.C academic baseline for
+//! Upper-atmosphere density is covered by the separate NRLMSISE-00
+//! model. USSA76 is the academic baseline for
 //! troposphere / lower-stratosphere sounding-rocket scenarios.
 
 use openbmp_core::SimTime;

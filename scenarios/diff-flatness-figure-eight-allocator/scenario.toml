@@ -1,4 +1,4 @@
-# Phase-5.A.5 control-allocation sibling of the diff-flatness figure-eight.
+# Control-allocation sibling of the diff-flatness figure-eight.
 #
 # Identical to `scenarios/diff-flatness-figure-eight` except:
 #
@@ -12,7 +12,7 @@
 #
 #   2. `[fc.autopilot_allocation]` selects the
 #      `prioritised_redistributed` allocator with explicit
-#      `axis_priority = ["roll", "pitch", "yaw"]`. The Phase-5.A.5
+#      `axis_priority = ["roll", "pitch", "yaw"]`. The
 #      runner derives the per-axis effector groups from the
 #      `direct_torque` effectors above and installs the allocator
 #      on the mixer. The legacy `[fc.actuator_channels]` mapping is
@@ -32,7 +32,7 @@ openbmp.scenario = 3
 
 [meta]
 name        = "diff-flatness-figure-eight-allocator"
-description = "Phase-5.A.5 control-allocation figure-eight sibling: two redundant roll-torque effectors, single pitch and yaw effectors, prioritised_redistributed allocator wired through the mixer."
+description = "Control-allocation figure-eight sibling: two redundant roll-torque effectors, single pitch and yaw effectors, prioritised_redistributed allocator wired through the mixer."
 validation  = "experimental"
 provenance  = "synthetic; identical to diff-flatness-figure-eight modulo the roll-axis effector split and the [fc.autopilot_allocation] block. See provenance.md."
 

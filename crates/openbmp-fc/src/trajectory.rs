@@ -1,4 +1,4 @@
-//! Differential-flatness trajectory tracker (Phase 5.A.1.A).
+//! Differential-flatness trajectory tracker.
 //!
 //! Implements the Mellinger & Kumar 2011 minimum-snap polynomial
 //! trajectory generator and the analytical attitude / body-rate

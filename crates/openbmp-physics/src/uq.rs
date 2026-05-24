@@ -1,4 +1,4 @@
-//! Phase-6.13 hypersonic UQ and credibility reporting.
+//! Hypersonic UQ and credibility reporting.
 //!
 //! Scenario-level error-budget machinery: per-model uncertainty
 //! contributions, root-sum-square propagation to a top-level

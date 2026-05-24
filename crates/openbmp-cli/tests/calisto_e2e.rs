@@ -1,10 +1,10 @@
-//! Phase-3.11.E end-to-end test: `openbmp run` on the RocketPy
+//! End-to-end test: `openbmp run` on the RocketPy
 //! Calisto cross-tool validation scenario.
 //!
 //! Asserts:
 //!  - `openbmp run scenarios/sounding-rocket/calisto/rocketpy-calisto.toml`
 //!    succeeds and writes a Parquet file.
-//!  - The vehicle reaches an apogee within the audited Phase-3.11
+//!  - The vehicle reaches an apogee within the audited
 //!    cross-tool envelope around RocketPy's published 3 349 m AGL.
 //!    The audit found that the earlier 5 % fallback was masking a
 //!    motor-mass mismatch, not RK4 truncation error. With the
@@ -16,7 +16,7 @@
 //!  - The recovery path deploys the drogue at apogee and reaches the
 //!    main-chute phase on descent.
 //!  - Two reruns of the same scenario produce byte-identical Parquet
-//!    output (Phase-3 determinism gate end-to-end across the full
+//!    output (determinism gate end-to-end across the full
 //!    rigid-body hot path: scenario parse → motor + drag deck load →
 //!    aero + thrust force adapters → `DrogueMainRecovery` state machine
 //!    → RK4 integrator → Parquet sink).
@@ -36,7 +36,7 @@ use tempfile::{Builder, TempDir};
 /// Source: RocketPy Calisto example (Souza et al. 2022).
 const ROCKETPY_APOGEE_AGL_M: f64 = 3349.0;
 
-/// Audited Phase-3.11 cross-tool envelope after fixing the RocketPy
+/// Audited cross-tool envelope after fixing the RocketPy
 /// motor-mass profile. The original 1 % stretch remains a follow-up;
 /// 2 % is tight enough to catch the pre-audit manufacturer-mass
 /// regression while leaving room for the documented atmosphere / rail

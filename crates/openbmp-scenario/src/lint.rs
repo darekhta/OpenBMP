@@ -28,7 +28,7 @@ const FORBIDDEN_SAFETY_TERMS: &[ForbiddenTerm] = &[
     ForbiddenTerm::new("terminalwaypoint", "terminal-waypoint"),
     ForbiddenTerm::new("impactpoint", "impact-point"),
     ForbiddenTerm::new("weapon", "weapon"),
-    // Phase 5.X.E mission-vocabulary rejections (see
+    // Mission-vocabulary rejections (see
     // `docs/mission-states-vocabulary.md § Rejected Vocabulary`).
     ForbiddenTerm::new("midcourse", "midcourse"),
     ForbiddenTerm::new("endgame", "endgame"),
@@ -192,14 +192,14 @@ fn check_dimensional_field(
     key: &str,
     value: &toml::Value,
 ) -> Result<(), ScenarioError> {
-    // Phase-4.B `[fc]` block — typed validation in
+    // `[fc]` block — typed validation in
     // `FcConfig::validate` covers the FC tuning scalars and per-axis
     // gain triples. Bypass the workspace-level unit/frame lints for
     // any path under `$.fc`.
     if path.starts_with("$.fc") {
         return Ok(());
     }
-    // Phase-5.0 v3-only `[schedule]` and `[multi_body]` blocks — typed
+    // v3-only `[schedule]` and `[multi_body]` blocks — typed
     // validation in `ScheduleConfig::validate` /
     // `MultiBodyConfig::validate` covers field-internal invariants
     // (rate-group divisor, momentum-conservation flag, etc.). The
@@ -249,8 +249,8 @@ fn is_numeric_3vector(value: &toml::Value) -> bool {
 }
 
 /// Whether the dimensional 3-vector at `(path, key)` is exempt from
-/// the frame-infix check. Phase-3.8 carries `intensity_m_s` and
-/// `length_scale_m` arrays under `[wind]`, both indexed by Dryden
+/// the frame-infix check. The `[wind]` block carries `intensity_m_s` and
+/// `length_scale_m` arrays, both indexed by Dryden
 /// axis (u, v, w) rather than a spatial frame; the frame-infix
 /// requirement does not apply.
 fn is_frame_exempt_3vector(path: &str, key: &str) -> bool {
@@ -278,14 +278,14 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
             | "rtol"
             | "atol"
             | "j2"
-            // Phase-3.2 mission-block trigger fields: a mass fraction
+            // Mission-block trigger fields: a mass fraction
             // ratio in [0, 1].
             | "remaining"
     ) {
         return true;
     }
 
-    // Phase-3.4 effector-block fields are unit-agnostic command
+    // Effector-block fields are unit-agnostic command
     // magnitudes: their concrete unit depends on the effector kind
     // (rad, m, fraction, etc.). Keep this exemption path-scoped so
     // arbitrary extension tables do not accidentally accept unlabeled
@@ -310,7 +310,7 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
-    // Phase-3.6 engine-block fields. `throttle_unit` is dimensionless
+    // Engine-block fields. `throttle_unit` is dimensionless
     // by convention; `at_throttle` is the same scalar; `factor` is a
     // dimensionless multiplier on thrust.
     if path.starts_with("$.vehicle.assembly.engines")
@@ -319,7 +319,7 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
-    // Phase-3.7 tank-block fields. `initial_fill_fraction` is a
+    // Tank-block fields. `initial_fill_fraction` is a
     // ratio in [0, 1]; `damping_ratio_zeta`, `base_damping_ratio_zeta`,
     // and `damping_increment_zeta` are dimensionless damping ratios.
     if path.starts_with("$.vehicle.assembly.tanks")
@@ -334,7 +334,7 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
-    // Phase-3.9 recovery-block fields. `c_d`, `drogue_c_d`, and
+    // Recovery-block fields. `c_d`, `drogue_c_d`, and
     // `main_c_d` are dimensionless drag coefficients per Knacke
     // 1992 Chapter 5.
     if path.starts_with("$.vehicle.assembly.recovery")
@@ -350,7 +350,7 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
-    // Phase-3.6 mission engine commands carry a typed payload
+    // Mission engine commands carry a typed payload
     // including a dimensionless `throttle_unit` and lifecycle bools
     // (the bools never trip this lint, but `throttle_unit` would
     // without an exemption).

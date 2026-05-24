@@ -6,7 +6,7 @@ rust-version.workspace  = true
 license.workspace       = true
 repository.workspace    = true
 authors.workspace       = true
-description             = "OpenBMP aerothermal: heat transfer, boundary layer, thermal toy, ablation toy (Phase 6)."
+description             = "OpenBMP aerothermal: stagnation heating, boundary layer, 1-D thermal toy, generic ablation toy."
 
 [dependencies]
 openbmp-physics = { workspace = true }

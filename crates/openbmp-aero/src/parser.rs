@@ -1,6 +1,6 @@
 //! Aero deck-file TOML parser. Coefficient decks use Schema 1
-//! (Phase 2.5) and Schema 2 (Phase 3.5). Phase 6 adds a separate
-//! strict panel-mesh deck for [`crate::hypersonic::LocalInclinationPanels`].
+//! and Schema 2. A separate strict panel-mesh deck handles
+//! [`crate::hypersonic::LocalInclinationPanels`].
 //!
 //! # Schema 1
 //!
@@ -75,14 +75,14 @@
 //!   (the three base axes are always present and always first).
 //! - `axis_order.order[3..]` are the effector axes; each name must
 //!   end with `_deg` or `_rad` so the runner can match the deck axis
-//!   to a scenario effector's `unit` field at runtime (Phase 3.5.C).
+//!   to a scenario effector's `unit` field at runtime.
 //! - The `[grid]` table must carry exactly the axes declared by
 //!   `axis_order` — extra keys are rejected, missing keys are
 //!   rejected. The three base axes use the existing Schema-1 grid
 //!   keys (`mach`, `alpha_deg`, `beta_deg`); effector axes use their
 //!   `axis_order` name verbatim as the grid key.
 //! - `interpolation.method` must be `"multilinear"`. Other methods
-//!   are reserved for hypersonic Phase-6 work.
+//!   are reserved for hypersonic work.
 //! - `interpolation.extrapolation` must be `"error"`. Schema-2
 //!   decks fail closed on out-of-grid effector deflections by
 //!   contract: control surfaces saturate via the `ControlEffector`
@@ -94,7 +94,7 @@
 //! # Panel-mesh hypersonic deck
 //!
 //! Panel meshes intentionally use their own marker so coefficient
-//! decks retain the Phase-2.5 / Phase-3.5 schema semantics:
+//! decks retain the Schema-1 / Schema-2 semantics:
 //!
 //! ```toml
 //! openbmp.panel_mesh_aero = 1
@@ -218,7 +218,7 @@ struct DeckFileV2 {
     provenance: String,
     #[allow(dead_code)]
     validation: DeckValidationStatus,
-    /// Axis grids keyed by wire-name. Phase-3.5.B does its own
+    /// Axis grids keyed by wire-name. The Schema-2 parser does its own
     /// structural validation against `[axis_order]` so the parser
     /// can reject extra / missing axis keys with a typed error.
     grid: BTreeMap<String, Vec<f64>>,
@@ -241,7 +241,7 @@ struct InterpolationConfig {
 }
 
 // ---------------------------------------------------------------------
-// Phase-6 panel-mesh parser shape
+// Panel-mesh parser shape
 // ---------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -385,7 +385,7 @@ impl AeroDeck {
 }
 
 impl LocalInclinationPanels {
-    /// Parse a strict Phase-6 panel-mesh hypersonic aero deck from
+    /// Parse a strict panel-mesh hypersonic aero deck from
     /// TOML text.
     ///
     /// This parser is intentionally separate from [`AeroDeck`]
@@ -430,7 +430,7 @@ impl LocalInclinationPanels {
         Ok(panels)
     }
 
-    /// Parse a strict Phase-6 panel-mesh hypersonic aero deck from a
+    /// Parse a strict panel-mesh hypersonic aero deck from a
     /// TOML file on disk.
     ///
     /// # Errors
@@ -477,8 +477,8 @@ fn validate_schema2_axis_order(order: &[String]) -> Result<(), AeroError> {
     }
     if order.len() > 6 {
         // 3 base axes + at most 3 effector axes (`delta_e`, `delta_a`,
-        // `delta_r` is the canonical example). Phase 3.5.B caps at 3
-        // effector axes; larger decks are deferred.
+        // `delta_r` is the canonical example). The cap is 3
+        // effector axes; larger decks are not supported.
         return Err(AeroError::MalformedDeck {
             reason: "schema-2 deck supports at most 3 effector axes (6 axes total)",
         });
@@ -569,7 +569,7 @@ fn validate_schema2_grid_keys_match_axis_order(
 /// representation expected by [`AeroDeck::new_n_d`]: the first three
 /// names are always `["mach", "alpha", "beta"]` (already the case for
 /// well-formed schema-2 decks), and effector axis names retain their
-/// unit suffix verbatim so Phase-3.5.C can match them against
+/// unit suffix verbatim so the runner can match them against
 /// scenario effector `unit` fields.
 fn canonicalise_axis_order(order: &[String]) -> Vec<String> {
     order.to_vec()
@@ -619,7 +619,7 @@ triangles = [[0, 1, 2], [0, 2, 3]]
     }
 
     // ---------------------------------------------------------------
-    // Schema-1 (Phase-2.5) parser tests — preserved verbatim
+    // Schema-1 parser tests — preserved verbatim
     // ---------------------------------------------------------------
 
     #[test]
@@ -743,7 +743,7 @@ triangles = [[0, 1, 2], [0, 2, 3]]
     }
 
     // ---------------------------------------------------------------
-    // Schema-2 (Phase-3.5.B) parser tests
+    // Schema-2 parser tests
     // ---------------------------------------------------------------
 
     #[test]
@@ -917,7 +917,7 @@ triangles = [[0, 1, 2], [0, 2, 3]]
     }
 
     // ---------------------------------------------------------------
-    // Phase-6 panel-mesh parser tests
+    // Panel-mesh parser tests
     // ---------------------------------------------------------------
 
     fn panel_ctx(q: f64) -> crate::AeroContext {

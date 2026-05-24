@@ -1,4 +1,4 @@
-//! PID anti-windup strategies (Phase 5.A.3.A).
+//! PID anti-windup strategies.
 //!
 //! Saturating actuators interact badly with classical PID integral
 //! action: when the commanded torque exceeds the effector limit, the
@@ -39,7 +39,7 @@ use thiserror::Error;
 /// saturates.
 ///
 /// The default is [`AntiWindupKind::BackCalculation`] with `gain =
-/// 1.0`, matching Phase-4 behaviour.
+/// 1.0`.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum AntiWindupKind {
     /// Åström-Wittenmark 1984 back-calculation. The integrator is
@@ -64,7 +64,7 @@ pub enum AntiWindupKind {
 }
 
 impl Default for AntiWindupKind {
-    /// Phase-4 default: back-calculation with unit gain.
+    /// Default: back-calculation with unit gain.
     fn default() -> Self {
         Self::BackCalculation { gain: 1.0 }
     }

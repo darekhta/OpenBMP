@@ -21,10 +21,10 @@ use crate::solver::SolverConfig;
 
 /// Scenario schema versions supported by this crate.
 ///
-/// Phase-3.13 retired the v1 flat scenario shape. v2 is the
-/// Phase-3 shape (mandatory `[vehicle.assembly]` block, per-body
+/// The v1 flat scenario shape is retired. v2 is the
+/// structured shape (mandatory `[vehicle.assembly]` block, per-body
 /// mass and inertia on `[[vehicle.assembly.bodies]]`). v3 is the
-/// Phase-5 superset that adds opt-in blocks for multi-instance
+/// superset that adds opt-in blocks for multi-instance
 /// estimator lanes, autopilot control allocation, FDIR detector
 /// tuning, NRLMSISE-00 atmosphere, EGM2008 truncated
 /// spherical-harmonic gravity, multi-rate scheduling, and
@@ -35,10 +35,10 @@ pub const SUPPORTED_SCENARIO_VERSIONS: &[u16] = &[2, 3];
 /// Latest supported scenario schema version.
 pub const LATEST_SCENARIO_VERSION: u16 = 3;
 
-/// Phase-5 schema version. v3-only fields require this header value.
+/// v3 schema version. v3-only fields require this header value.
 pub const SCENARIO_VERSION_V3: u16 = 3;
 
-/// Phase-3 schema version. v2 scenarios continue to parse byte-identically.
+/// v2 schema version. v2 scenarios continue to parse byte-identically.
 pub const SCENARIO_VERSION_V2: u16 = 2;
 
 /// Minimum accepted `[fc.trajectory]` segment duration (s).
@@ -107,7 +107,7 @@ pub struct ScenarioDocument {
     pub faults: Option<BTreeMap<String, toml::Value>>,
     /// Optional batch metadata.
     pub batch: Option<BatchConfig>,
-    /// Optional declarative mission block (Phase 3.2).
+    /// Optional declarative mission block.
     ///
     /// When present, the runner builds an `openbmp_sim::MissionPhaseGraph`
     /// and a list of `openbmp_sim::EventBinding`s from the parsed
@@ -116,14 +116,12 @@ pub struct ScenarioDocument {
     pub mission: Option<MissionConfig>,
     /// Optional first-class multi-rate scheduling block (v3 only).
     ///
-    /// Phase 5.0 parses this block under v3 only; the runtime
-    /// consumer lands in Phase 5.D.1. Scenarios that declare a
+    /// Parsed under v3 only. Scenarios that declare a
     /// `[schedule]` block must have `openbmp.scenario = 3`.
     pub schedule: Option<ScheduleConfig>,
     /// Optional first-class multi-body propagation block (v3 only).
     ///
-    /// Phase 5.0 parses this block under v3 only; the runtime
-    /// consumer lands in Phase 5.D.2. Scenarios that declare a
+    /// Parsed under v3 only. Scenarios that declare a
     /// `[multi_body]` block must have `openbmp.scenario = 3`.
     pub multi_body: Option<MultiBodyConfig>,
 }
@@ -153,7 +151,7 @@ impl ScenarioDocument {
     ///   `[[vehicle.assembly.engines]]` is present,
     /// - `aero` if `[aero]` is present.
     ///
-    /// The derived order matches the conventional Phase-3 ordering
+    /// The derived order matches the conventional ordering
     /// `gravity → thrust → aero` so existing hand-listed scenarios
     /// can drop `[forces]` and continue to produce the same kernel
     /// hot path.
@@ -186,8 +184,8 @@ impl ScenarioDocument {
         // running the per-kind field validation, so users see "egm2008
         // is reserved for v3" rather than a downstream
         // `UnexpectedField` for a config field that is only valid
-        // alongside that selector under v3. Phase-5.C.2 graduated
-        // `egm2008`; the reservation gate now fires only under v2.
+        // alongside that selector under v3. `egm2008` is consumed
+        // under v3, so the reservation gate fires only under v2.
         self.validate_v3_kind_availability()?;
         self.meta.validate()?;
         self.time.validate()?;
@@ -331,7 +329,7 @@ impl ScenarioDocument {
         let Some(fc) = &self.fc else {
             return Ok(());
         };
-        // fc.estimator v3-only additions — Phase 5.B consumed IMM
+        // fc.estimator v3-only additions — IMM
         // and SR-UKF estimator surfaces. The runner builds IMM from
         // [fc.ekf] plus [fc.imm], and SR-UKF variants from [fc.ekf].
         if let Some(field) = v3_only_fc_estimator_field(fc.estimator)
@@ -353,7 +351,7 @@ impl ScenarioDocument {
             }
             imm.validate()?;
         }
-        // Phase-5.B.2 consumed `[fc.estimator_lanes]`. v3-only; the
+        // `[fc.estimator_lanes]` is consumed under v3 only; the
         // runner builds a `MultiLaneEstimator` containing one
         // estimator per lane config and registers it as the single
         // scheduled estimator job, with the configured voter policy
@@ -368,7 +366,7 @@ impl ScenarioDocument {
             }
             lanes_cfg.validate()?;
         }
-        // fc.autopilot_allocation — Phase 5.A.5 consumed block.
+        // fc.autopilot_allocation — consumed block,
         // v3-only; the runner builds a
         // `PrioritisedRedistributedAllocator` from this block plus
         // the per-effector axis declarations and installs it on the
@@ -387,7 +385,7 @@ impl ScenarioDocument {
         if let Some(fdir) = &fc.fdir
             && let Some(detector) = fdir.detector.as_ref()
         {
-            // Phase-5.B.4 — `[fc.fdir.detector]` consumed block. v3-only;
+            // `[fc.fdir.detector]` consumed block, v3-only;
             // the runner promotes the typed `kind` enum into a
             // `DetectorKind::WindowedMeanShiftGlrt` on the FDIR job.
             if header < SCENARIO_VERSION_V3 {
@@ -399,8 +397,8 @@ impl ScenarioDocument {
             }
             detector.validate()?;
         }
-        // fc.autopilot_params.l1_adaptive — Phase 5.A.2.C consumed
-        // block. v3-only; the runner translates to AutopilotParams.l1_adaptive
+        // fc.autopilot_params.l1_adaptive — consumed
+        // block, v3-only; the runner translates to AutopilotParams.l1_adaptive
         // which the rate loop consumes.
         if let Some(autopilot_params) = fc.autopilot_params.as_ref()
             && let Some(l1) = autopilot_params.l1_adaptive.as_ref()
@@ -433,8 +431,8 @@ impl ScenarioDocument {
         }
 
         // fc.autopilot_params.rate_loop_kind / .lqr / .indi —
-        // Phase 5.A.3.B consumed pair (LQR), Phase 5.A.3.C consumed
-        // pair (INDI). Both kinds are v3-only and require their
+        // the LQR rate-loop pair and the INDI rate-loop pair.
+        // Both kinds are v3-only and require their
         // matching parameter block. The parser fails closed on:
         //   - rate_loop_kind = "lqr" without [fc.autopilot_params.lqr]
         //   - rate_loop_kind = "indi" without [fc.autopilot_params.indi]
@@ -513,7 +511,7 @@ impl ScenarioDocument {
             }
 
             // fc.autopilot_params.attitude_loop_kind / .attitude_mpc
-            // — Phase 5.A.4 consumed pair. Both v3-only. When
+            // — consumed pair. Both v3-only. When
             // attitude_loop_kind = "mpc" the [fc.autopilot_params.attitude_mpc]
             // block is required so the runner can build the
             // RecedingHorizonAttitudeMpc; conversely the block is
@@ -556,7 +554,7 @@ impl ScenarioDocument {
             }
         }
 
-        // fc.trajectory — Phase 5.A.1.B consumed block. v3-only; the
+        // fc.trajectory — consumed block, v3-only; the
         // runner builds a `MinimumSnapTrajectory` from this block and
         // installs it on the autopilot.
         if let Some(trajectory) = &fc.trajectory {
@@ -672,12 +670,12 @@ impl ScenarioDocument {
     }
 
     fn validate_v3_kind_values(&self, header: u16) -> Result<(), ScenarioError> {
-        // Names that are still deferred to a future Phase-5 sub-phase
+        // Names that are not yet supported
         // emit `ElementNotYetSupported` here under v3. v2 cases
         // are handled earlier by `validate_v3_kind_availability`.
-        // `egm2008` graduated in Phase 5.C.2 and is consumed by
+        // `egm2008` is consumed by
         // `EnvironmentConfig::validate` + the runner gravity dispatch,
-        // so it is no longer named here.
+        // so it is not named here.
         if self.environment.atmosphere == "nrlmsise00"
             || self
                 .atmosphere
@@ -833,7 +831,7 @@ impl ScenarioDocument {
     }
 
     fn validate_force_dependencies(&self) -> Result<(), ScenarioError> {
-        // Phase-3.13.E: `forces` is auto-synthesised at parse time
+        // `forces` is auto-synthesised at parse time
         // from the assembly when absent, so this hook always sees a
         // populated model list. The `unwrap_or` keeps the helper
         // total-defined for future call paths that bypass parser
@@ -855,7 +853,7 @@ impl ScenarioDocument {
             .as_ref()
             .and_then(|propulsion| propulsion.motor.as_ref())
             .is_some();
-        // Phase 3.6: `forces.models = ["thrust"]` is satisfied by
+        // `forces.models = ["thrust"]` is satisfied by
         // EITHER a `[propulsion.motor]` block OR a non-empty
         // `[[vehicle.assembly.engines]]` block (cluster path).
         // Ambiguous co-declaration is rejected separately by
@@ -1108,7 +1106,7 @@ pub struct EnvironmentConfig {
 }
 
 impl EnvironmentConfig {
-    #[allow(clippy::too_many_lines)] // Phase-5.C.2 added the egm2008 arm
+    #[allow(clippy::too_many_lines)] // the egm2008 arm adds length
     fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
         validate_frame_profile("environment.frame_profile", &self.frame_profile)?;
         let gravity_descriptor = registry.resolve(ModelRole::Gravity, &self.gravity)?;
@@ -1190,7 +1188,7 @@ impl EnvironmentConfig {
                 }
             }
             "egm2008" => {
-                // Phase-5.C.2 zonal-only EGM2008 (degrees 2-6). Pinned
+                // Zonal-only EGM2008 (degrees 2-6). Pinned
                 // to WGS84 µ, R_e and the Pavlis et al. 2012 J_n
                 // tables; the scenario block carries no per-field
                 // overrides on purpose to keep the determinism contract
@@ -1337,10 +1335,10 @@ impl FramesConfig {
 
 /// Geodetic launch-site reference declared by the scenario.
 ///
-/// Phase-2 scenarios that select `frames.profile =
+/// Scenarios that select `frames.profile =
 /// "wgs84-uniform-rotation"` declare a local origin so altitude, NED
 /// wind, and vertical-launch initialisation are anchored to a stable
-/// reference. The Phase-2.11 runner consumes this block; Phase 2.10
+/// reference. The runner consumes this block; the parser
 /// only validates the field shapes.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -1379,7 +1377,7 @@ impl LocalOriginConfig {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AeroConfig {
-    /// Path to a Phase-2.5 aero deck TOML file (resolved relative to
+    /// Path to an aero deck TOML file (resolved relative to
     /// the scenario directory).
     pub deck: PathBuf,
     /// Optional pinned SHA-256 digest (lower-case hex). When present,
@@ -1419,7 +1417,7 @@ impl PropulsionConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MotorConfig {
-    /// Path to a Phase-2.6 motor TOML file (resolved relative to the
+    /// Path to a motor TOML file (resolved relative to the
     /// scenario directory).
     pub file: PathBuf,
     /// Ignition time in seconds since scenario start.
@@ -1450,41 +1448,40 @@ impl MotorConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct WindConfig {
-    /// Wind model name (must match a registered wind model). Phase
-    /// 2.4 ships `"none"` and `"constant"`; Phase 3.8 adds
-    /// `"layered"` and `"gust"`.
+    /// Wind model name (must match a registered wind model). Supported
+    /// kinds are `"none"`, `"constant"`, `"layered"`, and `"gust"`.
     pub kind: String,
     /// Constant wind in NED frame, m/s. Required when
     /// `kind = "constant"`; rejected for every other kind.
     pub wind_ned_m_s: Option<[f64; 3]>,
-    /// Phase-3.8.B: per-altitude NED wind table. Required when
+    /// Per-altitude NED wind table. Required when
     /// `kind = "layered"`; rejected for every other kind. Layers
     /// must be strictly ascending in altitude.
     #[serde(default)]
     pub layers: Option<Vec<WindLayerConfig>>,
-    /// Phase-3.8.C: Dryden gust intensities `[σ_u, σ_v, σ_w]`, m/s.
+    /// Dryden gust intensities `[σ_u, σ_v, σ_w]`, m/s.
     /// Required when `kind = "gust"`; rejected for every other kind.
     /// All non-negative.
     #[serde(default)]
     pub intensity_m_s: Option<[f64; 3]>,
-    /// Phase-3.8.C: Dryden gust length scales `[L_u, L_v, L_w]`, m.
+    /// Dryden gust length scales `[L_u, L_v, L_w]`, m.
     /// Required when `kind = "gust"`; rejected for every other kind.
     /// All strictly positive.
     #[serde(default)]
     pub length_scale_m: Option<[f64; 3]>,
-    /// Phase-3.8.C: reference airspeed used to convert length scale
+    /// Reference airspeed used to convert length scale
     /// to time scale, m/s. Required when `kind = "gust"`; rejected
     /// for every other kind. Strictly positive.
     #[serde(default)]
     pub airspeed_m_s: Option<f64>,
-    /// Phase-3.8.C: optional mean wind in NED, m/s. Defaults to
+    /// Optional mean wind in NED, m/s. Defaults to
     /// `[0, 0, 0]`. Accepted only when `kind = "gust"`.
     #[serde(default)]
     pub mean_wind_ned_m_s: Option<[f64; 3]>,
 }
 
 impl WindConfig {
-    #[allow(clippy::too_many_lines)] // Phase 3.8 added kind = "gust" + cross-field rejection arms.
+    #[allow(clippy::too_many_lines)] // kind = "gust" adds cross-field rejection arms.
     fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
         registry.resolve(ModelRole::Wind, &self.kind)?;
         match self.kind.as_str() {
@@ -1663,10 +1660,10 @@ impl WindConfig {
     }
 }
 
-/// One row of a Phase-3.8.B `[[wind.layers]]` table.
+/// One row of a `[[wind.layers]]` table.
 ///
 /// `altitude_m` is metres above the launch-pad reference (matching
-/// the Phase-2.4 axial-drag adapter convention). `wind_ned_m_s` is
+/// the axial-drag adapter convention). `wind_ned_m_s` is
 /// the NED wind vector at that altitude. The runner builds a
 /// `LayeredWind` from the parsed table; layer ordering is
 /// scenario-declared (the validator rejects non-ascending altitudes
@@ -1756,7 +1753,7 @@ impl AtmosphereConfig {
 pub struct SensorConfig {
     /// Sensor kind (must match a registered sensor model).
     pub kind: String,
-    /// Path to the sensor's noise-budget TOML file (Phase-2.7 schema).
+    /// Path to the sensor's noise-budget TOML file.
     /// Required for `kind = "imu"` and `kind = "barometer"`, rejected
     /// for `kind = "ideal_state"`.
     pub file: Option<PathBuf>,
@@ -1834,17 +1831,16 @@ impl BatchConfig {
 }
 
 // ---------------------------------------------------------------------
-// Mission block (Phase 3.2)
+// Mission block
 // ---------------------------------------------------------------------
 
 /// Top-level `[mission]` block.
 ///
-/// Phase 5.X.F: v4 fields (`states`, `regions`, `scope`) are accepted
+/// The v4 fields (`states`, `regions`, `scope`) are accepted
 /// optionally and default to empty / unset. v3 scenarios continue to
 /// parse byte-identically because the v4 fields are `#[serde(default)]`
-/// and ignored when empty. The v3 → v4 lifting pass that promotes
-/// `phases` to `states` (preserving every path-derived id) lands with
-/// the kernel-side hierarchical-machine integration.
+/// and ignored when empty. A v3 → v4 lifting pass promotes
+/// `phases` to `states`, preserving every path-derived id.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MissionConfig {
@@ -1859,24 +1855,24 @@ pub struct MissionConfig {
     /// Declared transitions between phases.
     #[serde(default)]
     pub transitions: Vec<PhaseTransitionConfig>,
-    /// Phase 5.X.F: declared hierarchical states. When non-empty, the
+    /// Declared hierarchical states. When non-empty, the
     /// parser uses these in preference to `phases` and applies
     /// hierarchical-state-machine validation. v3 scenarios omit this
     /// field; parse is byte-identical.
     #[serde(default)]
     pub states: Vec<StateConfig>,
-    /// Phase 5.X.F: declared orthogonal regions. Defaults to the four
+    /// Declared orthogonal regions. Defaults to the four
     /// canonical regions (`mission`, `health`, `comms`,
     /// `estimator_regime`) when omitted.
     #[serde(default)]
     pub regions: Vec<RegionConfig>,
-    /// Phase 5.X.F: scenario-scope human-readable tag (e.g.
+    /// Scenario-scope human-readable tag (e.g.
     /// `"sounding_rocket"`, `"propulsive_landing"`,
     /// `"orbital_insertion"`). Used only for telemetry-tag breadcrumbs;
     /// does not gate any behaviour.
     #[serde(default)]
     pub scope: Option<MissionScope>,
-    /// Phase 5.X.B: test-only override channel activation flag. When
+    /// Test-only override channel activation flag. When
     /// `true`, the simulator may write the
     /// `commander.scenario_state_override` topic to force the
     /// commander into a specific state for validation. Refused by HAL
@@ -1885,7 +1881,7 @@ pub struct MissionConfig {
     pub test_only_state_override: bool,
 }
 
-/// Scenario-scope classifier — Phase 5.X.F.
+/// Scenario-scope classifier.
 ///
 /// Accepts both the documented table form
 /// `[mission.scope] kind = "sounding_rocket"` and the compact form
@@ -1916,15 +1912,15 @@ pub enum MissionScopeKind {
     SoundingRocket,
     /// Propulsive-landing profile (Calisto-class reference).
     PropulsiveLanding,
-    /// Orbital insertion profile (LEO targets, Phase-5 reference).
+    /// Orbital insertion profile (LEO targets).
     OrbitalInsertion,
-    /// Re-entry profile (Phase 6 hypersonic reference).
+    /// Re-entry profile (hypersonic reference).
     ReEntry,
     /// Closed-loop FC test profile (no specific mission shape).
     ClosedLoopTest,
 }
 
-/// One hierarchical state declaration — Phase 5.X.F.
+/// One hierarchical state declaration.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct StateConfig {
@@ -1943,7 +1939,7 @@ pub struct StateConfig {
     #[serde(default)]
     pub allowed_engines: Vec<String>,
     /// Actions fired in declaration order when the state is entered.
-    /// Phase 5.X.F restricts these to mission-vocabulary actions
+    /// Restricted to mission-vocabulary actions
     /// (`enter_state`, `emit_telemetry_marker`, `stop`).
     #[serde(default)]
     pub on_entry: Vec<ScenarioActionConfig>,
@@ -1984,7 +1980,7 @@ impl StateConfig {
     }
 }
 
-/// One orthogonal region declaration — Phase 5.X.F.
+/// One orthogonal region declaration.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RegionConfig {
@@ -2050,8 +2046,8 @@ impl RegionConfig {
     }
 }
 
-/// One region state — Phase 5.X.F. Region states are flat (the
-/// `mission` region is the only one with hierarchy in 5.X.F).
+/// One region state. Region states are flat (the
+/// `mission` region is the only one with hierarchy).
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RegionStateConfig {
@@ -2321,13 +2317,12 @@ pub struct PhaseConfig {
     /// Human-readable label.
     pub label: String,
     /// Optional list of effector ids permitted while this phase is
-    /// active. Phase 3.4 validates references; active-phase command
-    /// gating is deferred.
+    /// active. References are validated; active-phase command
+    /// gating is not enforced.
     #[serde(default)]
     pub allowed_effectors: Vec<String>,
     /// Optional list of engine ids permitted while this phase is
-    /// active. Phase-3.6 will enforce; Phase-3.2 leaves it
-    /// informational.
+    /// active. Informational only.
     #[serde(default)]
     pub allowed_engines: Vec<String>,
 }
@@ -2372,7 +2367,7 @@ impl EventConfig {
 /// Trigger predicate. Tagged enum dispatched on the `kind` string.
 ///
 /// `kind = "scripted"` is rejected at parse time with a typed
-/// deferral error pointing at Phase 3.4.
+/// deferral error.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EventTriggerConfig {
@@ -2398,7 +2393,7 @@ pub enum EventTriggerConfig {
         /// Threshold mass fraction in `[0, 1]`.
         remaining: f64,
     },
-    /// Phase-3.4 deferred: rejected at parse time until atmosphere is
+    /// Deferred: rejected at parse time until atmosphere is
     /// wired into event evaluation.
     AtDynamicPressure {
         /// Threshold dynamic pressure (Pa).
@@ -2406,7 +2401,7 @@ pub enum EventTriggerConfig {
         /// `false`: rising-edge crossing. `true`: falling-edge.
         falling: bool,
     },
-    /// Phase-3.4 deferred: rejected at parse time.
+    /// Deferred: rejected at parse time.
     Scripted,
 }
 
@@ -2429,13 +2424,13 @@ impl EventTriggerConfig {
             Self::AtDynamicPressure { .. } => {
                 return Err(ScenarioError::UnsupportedTriggerKind {
                     kind: "at_dynamic_pressure".to_owned(),
-                    reason: "dynamic-pressure triggers ship in Phase 3.4 when atmosphere is wired into event evaluation".to_owned(),
+                    reason: "dynamic-pressure triggers are not yet supported; they require atmosphere wired into event evaluation".to_owned(),
                 });
             }
             Self::Scripted => {
                 return Err(ScenarioError::UnsupportedTriggerKind {
                     kind: "scripted".to_owned(),
-                    reason: "scripted triggers are deferred to a later Phase-3 sub-phase; use effector command_schedule for deterministic actuator scripts".to_owned(),
+                    reason: "scripted triggers are not yet supported; use effector command_schedule for deterministic actuator scripts".to_owned(),
                 });
             }
         }
@@ -2466,7 +2461,7 @@ pub enum ScenarioActionConfig {
         /// Human-readable label for the stop reason.
         label: String,
     },
-    /// Phase 5.X.E: declarative health-region demotion. The commander
+    /// Declarative health-region demotion. The commander
     /// reads the fire and applies it to the named region (canonically
     /// `mission.regions.health`).
     RaiseHealthAlarm {
@@ -2479,7 +2474,7 @@ pub enum ScenarioActionConfig {
         /// `health` region to `abort_requested`.
         alarm: u32,
     },
-    /// Phase 5.X.E: declarative safe-state request. Symmetric to
+    /// Declarative safe-state request. Symmetric to
     /// `raise_health_alarm` but does not require the scenario author
     /// to pick a region or alarm code; the commander applies a
     /// generic `health → abort_requested` demotion and publishes the
@@ -2488,7 +2483,7 @@ pub enum ScenarioActionConfig {
         /// Human-readable reason published alongside the request.
         reason: String,
     },
-    /// Phase-3.6: per-engine command targeting a declared
+    /// Per-engine command targeting a declared
     /// `[[vehicle.assembly.engines]]` by id. The kernel records the
     /// firing; the runner-side `EngineRack` drains and applies the
     /// command on the next rack tick.
@@ -2498,7 +2493,7 @@ pub enum ScenarioActionConfig {
         /// Command payload.
         command: EngineCommandConfig,
     },
-    /// Phase-3.4: scenario-driven effector command override. Targets
+    /// Scenario-driven effector command override. Targets
     /// a declared `[[vehicle.assembly.effectors]]` by id and commits
     /// `command` at fire time (single-shot).
     EffectorOverride {
@@ -2507,9 +2502,9 @@ pub enum ScenarioActionConfig {
         /// Command value (post-fault, pre-clamp).
         command: f64,
     },
-    /// Phase-3.6 / 3.7 deferred.
+    /// Deferred.
     Separation,
-    /// Phase-3.9: deploy / stow command targeting a declared
+    /// Deploy / stow command targeting a declared
     /// `[[vehicle.assembly.recovery]]` device by id. The command
     /// string must be one of `"deploy"`, `"deploy_drogue"`,
     /// `"deploy_main"`, or `"stow"`; scenario validation checks the
@@ -2602,7 +2597,7 @@ fn is_recovery_command_compatible(kind_name: &str, command: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------
-// RecoveryConfig (Phase 3.9.D)
+// RecoveryConfig
 // ---------------------------------------------------------------------
 
 /// One declared recovery device within `[vehicle.assembly]`.
@@ -2736,12 +2731,12 @@ impl PhaseTransitionConfig {
 }
 
 // ---------------------------------------------------------------------
-// Vehicle assembly block (Phase 3.3)
+// Vehicle assembly block
 // ---------------------------------------------------------------------
 
 /// Top-level `[vehicle.assembly]` block.
 ///
-/// Declares the vehicle as a tree of bodies plus optional Phase-3
+/// Declares the vehicle as a tree of bodies plus optional
 /// child blocks for effectors, engines, tanks, and recovery devices.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -2753,33 +2748,33 @@ pub struct AssemblyConfig {
     /// Bodies in scenario-declared order.
     #[serde(default)]
     pub bodies: Vec<AssemblyBodyConfig>,
-    /// Phase-3.4: control effectors in scenario-declared order. The
+    /// Control effectors in scenario-declared order. The
     /// runner builds `Box<dyn ControlEffector>` instances from these
     /// configs and adds them to the assembly's effector vec.
     #[serde(default)]
     pub effectors: Vec<EffectorConfig>,
-    /// Phase-3.6: liquid engines in scenario-declared order. The
+    /// Liquid engines in scenario-declared order. The
     /// runner builds `Box<dyn EngineModel>` instances from these
     /// configs and assembles them into a runner-side `EngineRack`.
     /// A scenario that also declares `[propulsion.motor]` is
     /// rejected with `ScenarioError::AmbiguousPropulsion`.
     #[serde(default)]
     pub engines: Vec<EngineConfig>,
-    /// Phase-3.6: optional cluster-layout tag for telemetry / docs.
+    /// Optional cluster-layout tag for telemetry / docs.
     /// Defaults to `Custom` when omitted.
     #[serde(default)]
     pub cluster_layout: Option<ClusterLayoutConfig>,
-    /// Phase-3.7: tanks in scenario-declared order. The runner
+    /// Tanks in scenario-declared order. The runner
     /// builds `Box<dyn MovingMassModel>` instances from these
     /// configs and assembles them into a runner-side `TankRack`.
     /// Tanks contribute their mass, CG offset, inertia delta, and
-    /// reaction force / moment to the vehicle dynamics. Phase-3.7
-    /// ships drain decoupled from engines (`drain_rate_kg_per_s`
-    /// is scenario-declared); engine-cluster drain coupling is a
-    /// Phase-3.X follow-on.
+    /// reaction force / moment to the vehicle dynamics. Drain is
+    /// decoupled from engines (`drain_rate_kg_per_s`
+    /// is scenario-declared); engine-cluster drain coupling is
+    /// future work.
     #[serde(default)]
     pub tanks: Vec<TankConfig>,
-    /// Phase-3.9: recovery devices (parachutes, drogue/main, drag
+    /// Recovery devices (parachutes, drogue/main, drag
     /// devices) in scenario-declared order. The runner builds
     /// `Box<dyn RecoveryModel>` instances from these configs and
     /// assembles them into a runner-side `RecoveryRack`. Deploy /
@@ -2964,7 +2959,7 @@ impl BodyGeometryConfig {
 }
 
 // ---------------------------------------------------------------------
-// Effector block (Phase 3.4)
+// Effector block
 // ---------------------------------------------------------------------
 
 /// One declared control effector within `[vehicle.assembly]`.
@@ -3024,8 +3019,8 @@ impl EffectorConfig {
     }
 }
 
-/// Effector kind tagged enum. Phase 3.4 ships `linear_actuator`;
-/// Phase 5.A.2.A adds `direct_torque` (v3-only) for closed-loop
+/// Effector kind tagged enum. `linear_actuator` is the baseline kind;
+/// `direct_torque` (v3-only) supports closed-loop
 /// autopilot-validation scenarios that need the kernel to respond
 /// to autopilot torque commands without an aero deck in the loop.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -3038,7 +3033,7 @@ pub enum EffectorKindConfig {
         #[serde(default)]
         tau_s: Option<f64>,
     },
-    /// Direct body-torque source (Phase 5.A.2.A, v3-only). The
+    /// Direct body-torque source (v3-only). The
     /// effector's deflection is interpreted as a body-frame torque
     /// command on the named `axis`, scaled by
     /// `effectiveness_n_m_per_rad`. The actuator dynamics still go
@@ -3323,12 +3318,12 @@ impl EffectorCommandScheduleConfig {
 }
 
 // ---------------------------------------------------------------------
-// EngineConfig (Phase 3.6)
+// EngineConfig
 // ---------------------------------------------------------------------
 
-/// Cluster-layout tag for telemetry / docs. Phase-3.6 has no
-/// behavioural use; later sub-phases may key symmetry-aware fault
-/// scenarios off the layout.
+/// Cluster-layout tag for telemetry / docs. It has no
+/// behavioural use; symmetry-aware fault scenarios may key off the
+/// layout in the future.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClusterLayoutConfig {
@@ -3377,11 +3372,11 @@ impl EngineConfig {
     }
 }
 
-/// Engine kind tagged enum. Phase 3.6 ships `liquid_engine` only.
+/// Engine kind tagged enum. `liquid_engine` is the only kind.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EngineKindConfig {
-    /// Phase-3.6 reference impl: linear ignition + constant burn +
+    /// Reference impl: linear ignition + constant burn +
     /// linear shutdown transients.
     LiquidEngine,
 }
@@ -3389,7 +3384,7 @@ pub enum EngineKindConfig {
 impl EngineKindConfig {
     // The `Result` return is forward-compat: future engine kinds
     // (hybrid, cold-gas) will carry payload that needs validation.
-    // Phase 3.6 ships only `LiquidEngine` with no payload, so this
+    // Only `LiquidEngine` exists, with no payload, so this
     // arm always returns `Ok(())`.
     #[allow(clippy::unnecessary_wraps)]
     fn validate(&self, _index: usize) -> Result<(), ScenarioError> {
@@ -3453,7 +3448,7 @@ impl EngineLimitsConfig {
     }
 }
 
-/// Engine fault tagged enum. Phase-3.6 ships four canonical modes;
+/// Engine fault tagged enum. Four canonical modes;
 /// load-time injection only.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -3562,14 +3557,14 @@ impl EngineCommandConfig {
 }
 
 // ---------------------------------------------------------------------
-// Tank block (Phase 3.7)
+// Tank block
 // ---------------------------------------------------------------------
 
 /// One declared tank entry under `[[vehicle.assembly.tanks]]`.
 ///
 /// The runner builds a `Box<dyn MovingMassModel>` from this config
 /// and assembles it into a runner-side `TankRack` mirroring the
-/// Phase-3.6 `EngineRack` pattern.
+/// `EngineRack` pattern.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TankConfig {
@@ -3592,13 +3587,13 @@ pub struct TankConfig {
     /// Optional baffle model (consumed only by `BaffledPendulum`).
     #[serde(default)]
     pub baffle_model: Option<BaffleModelConfig>,
-    /// Phase-3.7 decoupled drain. Constant `kg/s`; defaults to
-    /// `0.0` when omitted. Future phase ties this to the engine
+    /// Decoupled drain. Constant `kg/s`; defaults to
+    /// `0.0` when omitted. A future revision may tie this to the engine
     /// cluster's per-step total mdot.
     #[serde(default)]
     pub drain_rate_kg_per_s: Option<f64>,
     /// Optional initial slosh perturbation (used for free-response
-    /// scenarios and Phase-3.7.E exit-criterion testing).
+    /// scenarios and exit-criterion testing).
     #[serde(default)]
     pub initial_slosh: Option<InitialSloshConfig>,
 }
@@ -3765,25 +3760,25 @@ impl PropellantSpecConfig {
     }
 }
 
-/// Moving-mass kind tagged enum. Phase 3.7 ships four impls.
+/// Moving-mass kind tagged enum. Four implementations.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MovingMassKindConfig {
-    /// Phase-3.7.A no-slosh toy.
+    /// No-slosh toy.
     RigidLiquid,
-    /// Phase-3.7.B Abramson cylindrical-tank equivalent pendulum.
+    /// Abramson cylindrical-tank equivalent pendulum.
     EquivalentPendulum {
         /// Bare-tank damping ratio (typical academic value `0.005`).
         #[serde(default)]
         damping_ratio_zeta: f64,
     },
-    /// Phase-3.7.C linear translational alternative.
+    /// Linear translational alternative.
     EquivalentSpringMass {
         /// Bare-tank damping ratio.
         #[serde(default)]
         damping_ratio_zeta: f64,
     },
-    /// Phase-3.7.C `EquivalentPendulum` with `BaffleModel`-supplied
+    /// `EquivalentPendulum` with `BaffleModel`-supplied
     /// damping increment.
     BaffledPendulum {
         /// Bare-tank base damping ratio.
@@ -3851,8 +3846,8 @@ impl MovingMassKindConfig {
 #[serde(deny_unknown_fields)]
 pub struct BaffleModelConfig {
     /// Damping-ratio increment added to the inner pendulum's
-    /// `damping_ratio_zeta`. Phase-3.7 minimum surface; future
-    /// phases may add baffle-area integration per Abramson Eq 7-46.
+    /// `damping_ratio_zeta`. Minimum surface; future revisions
+    /// may add baffle-area integration per Abramson Eq 7-46.
     pub damping_increment_zeta: f64,
 }
 
@@ -3980,7 +3975,7 @@ impl InitialSloshConfig {
 }
 
 // ---------------------------------------------------------------------
-// Flight-controller config (Phase 4.B)
+// Flight-controller config
 // ---------------------------------------------------------------------
 
 /// Flight-controller config parsed from a scenario `[fc]` block.
@@ -4008,7 +4003,7 @@ pub struct FcConfig {
     /// Optional MEKF parameter overrides. Required when
     /// `estimator = "mekf"`.
     pub mekf: Option<FcMekfConfig>,
-    /// Optional Bar-Shalom IMM bank (v3 only, Phase 5.B.3). Required
+    /// Optional Bar-Shalom IMM bank (v3 only). Required
     /// when `estimator = "imm"`. Carries the Markov mode-transition
     /// matrix, initial mode probabilities, and per-mode EKF tuning
     /// overrides for each of the `2 ≤ N ≤ 4` mode-conditioned
@@ -4029,17 +4024,16 @@ pub struct FcConfig {
     pub phase_authority: Option<BTreeMap<String, FcPhaseAuthorityConfig>>,
     /// Optional multi-instance estimator-routing block (v3 only).
     ///
-    /// Phase 5.B.2 consumes this block under v3 only. Scenarios that declare
+    /// Consumed under v3 only. Scenarios that declare
     /// `[fc.estimator_lanes]` must have `openbmp.scenario = 3`.
     pub estimator_lanes: Option<FcEstimatorLanesConfig>,
     /// Optional control-allocation policy block (v3 only).
     ///
-    /// Phase 5.0 parses this block under v3 only; the runtime
-    /// consumer lands in Phase 5.A.5. Scenarios that declare
+    /// Parsed under v3 only. Scenarios that declare
     /// `[fc.autopilot_allocation]` must have `openbmp.scenario = 3`.
     pub autopilot_allocation: Option<FcAutopilotAllocationConfig>,
     /// Optional minimum-snap differential-flatness trajectory block
-    /// (v3 only, Phase 5.A.1.B). Required when
+    /// (v3 only). Required when
     /// `autopilot_params.trajectory_kind == FcTrajectoryKind::MinimumSnap`;
     /// scenarios that declare `[fc.trajectory]` must have
     /// `openbmp.scenario = 3`.
@@ -4179,18 +4173,18 @@ pub enum FcEstimatorKind {
     Ekf,
     /// 6-state Multiplicative EKF (attitude + gyro bias).
     Mekf,
-    /// Phase-5.B.3 Bar-Shalom IMM (Interacting Multiple Model)
+    /// Bar-Shalom IMM (Interacting Multiple Model)
     /// estimator over a bank of 2 to 4 mode-conditioned EKFs.
     /// Requires `[fc.imm]` block; `[fc.ekf]` is used as the per-mode
     /// base parameters (further refined by per-mode overrides under
     /// `[[fc.imm.mode]]`).
     Imm,
-    /// Phase-5.B.1 Square-Root Unscented Kalman Filter (15-state),
+    /// Square-Root Unscented Kalman Filter (15-state),
     /// per Van der Merwe & Wan 2001. Uses the same parameter set as
     /// the EKF (`[fc.ekf]` block).
     SrUkf,
-    /// Phase-5.B.1 Square-Root UKF restricted to the 6-state
-    /// attitude + gyro-bias subspace; mirrors the retired Phase-4.C
+    /// Square-Root UKF restricted to the 6-state
+    /// attitude + gyro-bias subspace; mirrors the retired
     /// classical 6-state `Ukf` shape but on the new square-root
     /// machinery.
     SrUkfAttitude,
@@ -4306,7 +4300,7 @@ pub struct FcMekfConfig {
     pub innovation_false_alarm_rate: Option<f64>,
 }
 
-/// Phase-5.B.3 — Bar-Shalom IMM bank. Required when
+/// Bar-Shalom IMM bank. Required when
 /// `[fc].estimator = "imm"`.
 ///
 /// Each `[[fc.imm.mode]]` entry overrides the per-mode process-noise
@@ -4457,7 +4451,7 @@ pub struct FcAutopilotParams {
     /// Trajectory-loop strategy.
     pub trajectory_kind: Option<FcTrajectoryKind>,
     /// Optional Cao-Hovakimyan L1 adaptive rate-loop augmentation
-    /// (Phase 5.A.2.C, v3-only). When `Some`, the runner installs a
+    /// (v3-only). When `Some`, the runner installs a
     /// per-axis `L1AdaptiveChannel` augmentation on the rate loop;
     /// the FC's `l1-adaptive` feature flag must be on for the
     /// augmentation to compile.
@@ -4467,35 +4461,34 @@ pub struct FcAutopilotParams {
     /// When absent, the runner uses `AntiWindupKind::default()`
     /// (back-calculation, unit gain).
     pub anti_windup: Option<FcAntiWindupConfig>,
-    /// Rate-loop dispatch strategy (Phase 5.A.3.B, v3-only). When
+    /// Rate-loop dispatch strategy (v3-only). When
     /// `Some(FcRateLoopKind::Lqr)`, the runner solves the per-axis
     /// DARE using `[fc.autopilot_params.lqr]` and installs the LQR
-    /// gains on the autopilot. Defaults to `Pid` (Phase-4 behaviour).
-    /// Phase 5.A.3.B runner support is limited to single-body
+    /// gains on the autopilot. Defaults to `Pid`.
+    /// LQR runner support is limited to single-body
     /// diagonal inertia.
     pub rate_loop_kind: Option<FcRateLoopKind>,
-    /// Per-axis LQR cost weights (Phase 5.A.3.B, v3-only). Required
+    /// Per-axis LQR cost weights (v3-only). Required
     /// when `rate_loop_kind = "lqr"`; ignored otherwise.
     pub lqr: Option<FcLqrConfig>,
-    /// Per-axis INDI parameters (Phase 5.A.3.C, v3-only). Required
+    /// Per-axis INDI parameters (v3-only). Required
     /// when `rate_loop_kind = "indi"`; ignored otherwise. Composition
     /// with `[fc.autopilot_params.l1_adaptive]` is rejected at
     /// scenario load.
     pub indi: Option<FcIndiConfig>,
-    /// Attitude-loop dispatch (Phase 5.A.4, v3-only). When
+    /// Attitude-loop dispatch (v3-only). When
     /// `Some(FcAttitudeLoopKind::Mpc)`, the runner builds a
     /// `RecedingHorizonAttitudeMpc` from `[fc.autopilot_params.attitude_mpc]`
-    /// and installs it on the autopilot. Defaults to `Pid` (Phase-4
-    /// behaviour).
+    /// and installs it on the autopilot. Defaults to `Pid`.
     pub attitude_loop_kind: Option<FcAttitudeLoopKind>,
-    /// Receding-horizon attitude-MPC parameters (Phase 5.A.4,
-    /// v3-only). Required when `attitude_loop_kind = "mpc"`; ignored
+    /// Receding-horizon attitude-MPC parameters
+    /// (v3-only). Required when `attitude_loop_kind = "mpc"`; ignored
     /// otherwise.
     pub attitude_mpc: Option<FcAttitudeMpcConfig>,
 }
 
 /// Per-axis L1 adaptive parameters declared in
-/// `[fc.autopilot_params.l1_adaptive]` (Phase 5.A.2.C, v3-only).
+/// `[fc.autopilot_params.l1_adaptive]` (v3-only).
 ///
 /// The fields mirror `openbmp_fc::l1_adaptive_full::L1AdaptiveParams`
 /// one-for-one and are validated against the bandwidth-projection
@@ -4588,7 +4581,7 @@ impl FcL1AdaptiveConfig {
 }
 
 /// Anti-windup strategy declared in
-/// `[fc.autopilot_params.anti_windup]` (Phase 5.A.3.A, v3-only).
+/// `[fc.autopilot_params.anti_windup]` (v3-only).
 ///
 /// Mirrors `openbmp_fc::anti_windup::AntiWindupKind`. The two
 /// variants are mathematically equivalent on a SISO PID (with
@@ -4634,22 +4627,21 @@ impl FcAntiWindupConfig {
 }
 
 /// Rate-loop dispatch declared in
-/// `[fc.autopilot_params.rate_loop_kind]` (Phase 5.A.3.B, v3-only;
-/// 5.A.3.C added the INDI variant).
+/// `[fc.autopilot_params.rate_loop_kind]` (v3-only).
 ///
 /// Mirrors `openbmp_fc::autopilot::RateLoopKind`.
 #[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FcRateLoopKind {
-    /// Phase-4 PID rate loop. Default.
+    /// PID rate loop. Default.
     #[default]
     Pid,
-    /// Phase-5.A.3.B per-axis LQR rate loop. Requires a populated
+    /// Per-axis LQR rate loop. Requires a populated
     /// `[fc.autopilot_params.lqr]` block; the runner solves the
     /// per-axis DARE at scenario load using the diagonal inertia of
     /// a single-body assembly.
     Lqr,
-    /// Phase-5.A.3.C per-axis INDI rate loop (Smeur-Chu-de Croon
+    /// Per-axis INDI rate loop (Smeur-Chu-de Croon
     /// 2016). Requires a populated `[fc.autopilot_params.indi]`
     /// block. Single-body assembly with diagonal inertia only;
     /// composition with `[fc.autopilot_params.l1_adaptive]` is
@@ -4658,7 +4650,7 @@ pub enum FcRateLoopKind {
 }
 
 /// Synchronised filter shape for INDI's ω and u filters
-/// (Phase 5.A.3.C, v3-only). Mirrors
+/// (v3-only). Mirrors
 /// `openbmp_fc::indi::IndiFilterKind`.
 #[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -4672,7 +4664,7 @@ pub enum FcIndiFilterKind {
 }
 
 /// Per-axis INDI configuration declared in
-/// `[fc.autopilot_params.indi]` (Phase 5.A.3.C, v3-only).
+/// `[fc.autopilot_params.indi]` (v3-only).
 ///
 /// Each `[f64; 3]` is `[roll, pitch, yaw]`. The runner validates
 /// the filter cutoff against the loop step `time.dt_s` (must be
@@ -4753,7 +4745,7 @@ impl FcIndiConfig {
 }
 
 /// Per-axis LQR cost weights declared in
-/// `[fc.autopilot_params.lqr]` (Phase 5.A.3.B, v3-only).
+/// `[fc.autopilot_params.lqr]` (v3-only).
 ///
 /// Each `[f64; 3]` is `[roll, pitch, yaw]` and must contain
 /// strictly positive values. The runner translates these weights to
@@ -4791,16 +4783,16 @@ impl FcLqrConfig {
 }
 
 /// Attitude-loop dispatch declared in
-/// `[fc.autopilot_params.attitude_loop_kind]` (Phase 5.A.4, v3-only).
+/// `[fc.autopilot_params.attitude_loop_kind]` (v3-only).
 ///
 /// Mirrors `openbmp_fc::autopilot::AttitudeLoopKind`.
 #[derive(Copy, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FcAttitudeLoopKind {
-    /// Phase-4 per-axis PID attitude loop. Default.
+    /// Per-axis PID attitude loop. Default.
     #[default]
     Pid,
-    /// Phase-5.A.4 receding-horizon attitude MPC. Requires a
+    /// Receding-horizon attitude MPC. Requires a
     /// populated `[fc.autopilot_params.attitude_mpc]` block; the
     /// runner builds a `RecedingHorizonAttitudeMpc` at scenario load
     /// using the loop step `time.dt_s`.
@@ -4808,7 +4800,7 @@ pub enum FcAttitudeLoopKind {
 }
 
 /// Receding-horizon attitude-MPC configuration declared in
-/// `[fc.autopilot_params.attitude_mpc]` (Phase 5.A.4, v3-only).
+/// `[fc.autopilot_params.attitude_mpc]` (v3-only).
 ///
 /// Mirrors `openbmp_fc::mpc::AttitudeMpcParams`. Each `[f64; 3]` is
 /// `[roll, pitch, yaw]` and must contain strictly positive values.
@@ -4932,11 +4924,11 @@ pub struct FcFdirConfig {
     pub cusum_drift: Option<f64>,
     /// CUSUM trip threshold.
     pub cusum_threshold: Option<f64>,
-    /// Optional Phase-5 detector tuning block (`[fc.fdir.detector]`).
+    /// Optional detector tuning block (`[fc.fdir.detector]`).
     ///
-    /// v3 only. Phase 5.0 parses this; the windowed-mean-shift GLRT
-    /// and parity-space residual generator that consume it land in
-    /// Phase 5.B.4. Scenarios that declare `[fc.fdir.detector]` must
+    /// v3 only. The windowed-mean-shift GLRT
+    /// and parity-space residual generator consume it.
+    /// Scenarios that declare `[fc.fdir.detector]` must
     /// have `openbmp.scenario = 3`.
     pub detector: Option<FcFdirDetectorConfig>,
 }
@@ -4979,8 +4971,8 @@ pub enum FcFdirDetectorKind {
     /// Single-sample GLRT detector. The chi-square innovation
     /// statistic published by the estimator is the unconstrained
     /// mean-shift GLRT statistic, so this variant thresholds it
-    /// directly. The windowed-mean-shift GLRT (Willsky 1976) is
-    /// Phase-5 work.
+    /// directly. The windowed-mean-shift GLRT (Willsky 1976) is a
+    /// separate detector kind.
     SingleSampleGlrt,
     /// Cumulative-sum detector.
     Cusum,
@@ -5091,27 +5083,24 @@ fn v3_kind_error(header: u16, field: &str, missing_capability: &'static str) -> 
 }
 
 // ---------------------------------------------------------------------
-// Phase-5 v3-only scenario blocks (parser-only in Phase 5.0).
+// v3-only scenario blocks.
 //
-// The runtime consumers for each block land in dedicated Phase-5
-// sub-phases, named in the per-block `validate_runtime` method. Phase
-// 5.0 ships the parser surface only; ScenarioDocument::validate
-// rejects any v3 scenario that declares one of these blocks with a
-// `ScenarioError::ElementNotYetSupported` diagnostic naming the
-// consumer sub-phase. v2 scenarios that declare any of these blocks
+// Each block has a runtime consumer reached through its
+// `validate_runtime` method. A block whose consumer is not yet wired
+// causes `ScenarioDocument::validate` to reject any v3 scenario that
+// declares it with a `ScenarioError::ElementNotYetSupported`
+// diagnostic. v2 scenarios that declare any of these blocks
 // are rejected earlier with `SchemaVersionFieldReserved`.
 //
-// When a Phase-5 sub-phase lands its consumer, it removes the
-// matching deferred-phase rejection from
-// `ScenarioDocument::validate_v3_blocks`. New fields added under
-// the consumer's authority must keep `serde(deny_unknown_fields)` and
-// must remain v3-only.
+// When a consumer is wired, its matching deferred-block rejection in
+// `ScenarioDocument::validate_v3_blocks` is removed. New fields added
+// under the consumer's authority must keep `serde(deny_unknown_fields)`
+// and must remain v3-only.
 // ---------------------------------------------------------------------
 
 /// First-class multi-rate scheduling block (`[schedule]`, v3 only).
 ///
-/// Phase 5.0 parses this block; the kernel-side rate-plan resolver
-/// lands in Phase 5.D.1.
+/// The parser surface for the kernel-side rate-plan resolver.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ScheduleConfig {
@@ -5179,8 +5168,7 @@ impl ScheduleGroupConfig {
 
 /// First-class multi-body propagation block (`[multi_body]`, v3 only).
 ///
-/// Phase 5.0 parses this block; the multi-body kernel propagation
-/// path lands in Phase 5.D.2.
+/// The parser surface for the multi-body kernel propagation path.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MultiBodyConfig {
@@ -5280,8 +5268,8 @@ fn default_true() -> bool {
 
 /// Multi-instance estimator-routing block (`[fc.estimator_lanes]`, v3 only).
 ///
-/// Phase 5.0 parses this block; the lane voter and active-lane
-/// selection path land in Phase 5.B.2.
+/// The parser surface for the lane voter and active-lane
+/// selection path.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcEstimatorLanesConfig {
@@ -5344,8 +5332,8 @@ pub enum FcEstimatorVoterKind {
 
 /// Control-allocation policy block (`[fc.autopilot_allocation]`, v3 only).
 ///
-/// Phase 5.0 parses this block; the pseudo-inverse and Härkegård
-/// 2002 prioritised redistributed allocators land in Phase 5.A.5.
+/// The parser surface for the pseudo-inverse and Härkegård
+/// 2002 prioritised redistributed allocators.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcAutopilotAllocationConfig {
@@ -5394,21 +5382,19 @@ pub enum FcAutopilotAllocationKind {
 
 /// FDIR detector tuning block (`[fc.fdir.detector]`, v3 only).
 ///
-/// Phase 5.0 reserved this block; Phase 5.B.4 promotes `kind` to a
-/// typed enum and starts consuming `window_samples` /
-/// `false_alarm_rate` for the Willsky 1976 windowed-mean-shift GLRT
+/// `kind` is a typed enum, and `window_samples` /
+/// `false_alarm_rate` drive the Willsky 1976 windowed-mean-shift GLRT
 /// detector. The existing `detector_kind` field on `FcFdirConfig`
-/// continues to drive the Phase-4 burst / single-sample-GLRT / CUSUM
+/// continues to drive the burst / single-sample-GLRT / CUSUM
 /// detectors; when this block is present its `kind` field is the
 /// authoritative selector and overrides the legacy `detector_kind`.
 ///
 /// `parity_threshold` remains parser-only — the Patton-Frank
-/// parity-space residual generator that consumes it is deferred to
-/// the § 5.B.5 follow-on slice.
+/// parity-space residual generator that consumes it is future work.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcFdirDetectorConfig {
-    /// Phase-5 detector kind.
+    /// Detector kind.
     pub kind: FcFdirDetectorKindV5,
     /// Window length (samples) for the windowed-mean-shift GLRT.
     /// Required when `kind = "windowed_mean_shift_glrt"`; rejected
@@ -5419,17 +5405,17 @@ pub struct FcFdirDetectorConfig {
     /// internally per candidate jump time.
     pub false_alarm_rate: Option<f64>,
     /// Per-residual chi-square threshold for parity-space isolation.
-    /// Reserved for the § 5.B.5 follow-on; rejected for
+    /// Reserved for future work; rejected for
     /// `windowed_mean_shift_glrt` until then.
     pub parity_threshold: Option<f64>,
 }
 
-/// Phase-5 detector kinds selectable from the `[fc.fdir.detector]`
+/// Detector kinds selectable from the `[fc.fdir.detector]`
 /// block.
 #[derive(Copy, Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FcFdirDetectorKindV5 {
-    /// Phase-5.B.4 — Willsky 1976 windowed-mean-shift GLRT,
+    /// Willsky 1976 windowed-mean-shift GLRT,
     /// vector-form, running on whitened innovation streams.
     WindowedMeanShiftGlrt,
 }
@@ -5476,7 +5462,7 @@ impl FcFdirDetectorConfig {
 }
 
 /// Minimum-snap differential-flatness trajectory block (`[fc.trajectory]`,
-/// v3 only, Phase 5.A.1.B). When `autopilot_params.trajectory_kind`
+/// v3 only). When `autopilot_params.trajectory_kind`
 /// is [`FcTrajectoryKind::MinimumSnap`] this block declares the
 /// waypoint sequence and yaw profile that the trajectory generator
 /// solves at scenario load.
@@ -5484,7 +5470,7 @@ impl FcFdirDetectorConfig {
 #[serde(deny_unknown_fields)]
 pub struct FcTrajectoryConfig {
     /// Trajectory generator kind. `minimum_snap` is the only supported
-    /// value in Phase 5.A.1.B.
+    /// value.
     pub kind: FcTrajectoryConfigKind,
     /// Constant body-frame yaw applied at every sample (rad). Defaults
     /// to `0.0`. Yaw splines are tracked for follow-up sub-phase.
@@ -5587,7 +5573,7 @@ mod fc_string_tests {
             toml::to_string(&traj).unwrap(),
             "trajectory_kind = \"minimum_snap\"\n"
         );
-        // Phase 5.A.1.D retired `flatness_inspired`; the old spelling
+        // `flatness_inspired` is retired; the old spelling
         // must reject so v2 scenarios that still carry it surface a
         // serde error rather than silently selecting `Pid`.
         assert!(

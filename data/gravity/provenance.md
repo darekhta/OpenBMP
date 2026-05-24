@@ -34,8 +34,8 @@ verification:
     `WGS84_INV_FLATTENING`, `WGS84_MU_M3_S2`, `WGS84_OMEGA_RAD_S`)
     and `openbmp-physics::gravity::WGS84_J2`. Unit tests in
     `openbmp-physics::gravity::tests` exercise the constants through the
-    three Phase-2 gravity models. A Phase-2.10 `openbmp
-    check-provenance` walk will additionally cross-check the in-source
+    three gravity models. The `openbmp
+    check-provenance` walk additionally cross-checks the in-source
     values against this TOML pin.
   test:   crates/openbmp-physics/src/gravity.rs
 validation_status: validated-toy
@@ -53,7 +53,7 @@ These constants describe the WGS84 reference ellipsoid and its
 gravitational field. They are *frame primitives* (semi-major axis,
 inverse flattening, GM, angular velocity) plus the second-degree
 zonal harmonic (J2). Higher-degree zonal and tesseral harmonics
-(EGM2008 truncated) are deferred — the Phase-2 plan calls only for J2.
+(EGM2008 truncated) are out of scope — the gravity model uses only J2.
 
 ## Why public-standard, not synthetic-openbmp
 
@@ -69,6 +69,6 @@ control.
 OpenBMP's determinism contract requires every shipped data file to
 have its content hash recorded in telemetry metadata. The compiled
 `openbmp-core` and `openbmp-physics` constants are the runtime source of
-truth; this TOML file is the provenance pin. Phase 2.10 adds the
-machine check that compares the two so a typo in either file fails
+truth; this TOML file is the provenance pin. The `openbmp
+check-provenance` walk compares the two so a typo in either file fails
 CI before a release.

@@ -1,6 +1,6 @@
 //! `openbmp-scenario-script` — simulator-only scenario-script actions.
 //!
-//! Phase 5.X.A landed the action-taxonomy split: actions that drive
+//! The action taxonomy is split: actions that drive
 //! the in-house *physics-only* scenario script — engine throttle /
 //! gimbal commands, effector overrides, scripted separation, recovery
 //! deploy — live in this crate, separate from
@@ -13,16 +13,16 @@
 //! crate.
 //!
 //! See [`docs/mission-graph-architecture.md`](../../docs/mission-graph-architecture.md)
-//! for the architectural rationale (the load-bearing HAL portability
-//! rule for `openbmp-mission`) and
-//! [`docs/phase-5x-plan.md`](../../docs/phase-5x-plan.md#5xa--action-taxonomy-split)
-//! for the migration sequence.
+//! for the architectural rationale: the load-bearing HAL-portability
+//! rule for `openbmp-mission` and the action-taxonomy split that keeps
+//! these simulator-only physics overrides out of the HAL-portable
+//! mission crate.
 
 use openbmp_core::{EffectorId, EngineId, RecoveryId};
 
 /// Action taken when a scenario-script-side event fires.
 ///
-/// Phase 5.X.A: split out of the old unified mission-event action
+/// Split out of the unified mission-event action
 /// enum. Every variant here is a *simulator-only physics override* —
 /// the simulator kernel records the firing each tick and the runner-side
 /// rack (`EngineRack` / `EffectorRack` / `RecoveryRack`) drains it on
@@ -32,12 +32,12 @@ use openbmp_core::{EffectorId, EngineId, RecoveryId};
 /// [`docs/mission-graph-architecture.md § Action taxonomy`](../../docs/mission-graph-architecture.md).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScenarioScriptAction {
-    /// Phase-3.6: per-engine command targeting a declared engine by
+    /// Per-engine command targeting a declared engine by
     /// [`EngineId`]. The event consumer records the firing; the
     /// runner-side `EngineRack::apply_commands` drains it and applies
     /// the command to the engine on the next rack tick.
     ///
-    /// Phase-3.15.C / Phase-5.X.A: the field shape is engine-domain-shaped
+    /// The field shape is engine-domain-shaped
     /// but this crate does *not* depend on `openbmp-propulsion`. The
     /// runner translates these scalar fields into a typed
     /// `openbmp_propulsion::EngineCommand` at apply time — same pattern
@@ -58,7 +58,7 @@ pub enum ScenarioScriptAction {
         /// shutdown wins.
         shutdown: bool,
     },
-    /// Phase-3.4: scenario-driven effector command override. Targets
+    /// Scenario-driven effector command override. Targets
     /// a declared effector by [`EffectorId`]; the runner-side
     /// `EffectorRack::apply_overrides` consumes the fired event and
     /// stores the override into the rack's per-effector override map
@@ -69,9 +69,9 @@ pub enum ScenarioScriptAction {
         /// Command value.
         command: f64,
     },
-    /// Phase-3.6 / 3.7 deferred: stage-separation event.
+    /// Stage-separation event.
     Separation,
-    /// Phase-3.9: deploy / stow a recovery device. Targets a declared
+    /// Deploy / stow a recovery device. Targets a declared
     /// recovery device by [`RecoveryId`]; the runner-side
     /// `RecoveryRack::apply_deploys` consumes the fired event and
     /// applies the command to the device's state machine.

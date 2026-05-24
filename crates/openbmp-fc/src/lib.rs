@@ -15,17 +15,15 @@
 //! **No targeting, no terminal-homing, no real-world location
 //! guidance, no hardware protocols.**
 //!
-//! Phase 4.C implemented a real 6-state sigma-point UKF, the
-//! kernel↔FC runner bridge, WGS84-J2 gravity, WMM 2025 magnetic
-//! model selection through the FC runner, and feature-gated Clarabel
-//! QP / SOCP primitives. Full 15-state / square-root UKF, full
-//! receding-horizon MPC, full `LCvxLD` / `SCvx` trajectory
-//! reproduction, NRLMSISE-00, and multi-instance estimator routing
-//! are Phase 5 / downstream scope.
+//! The FC provides a sigma-point UKF (with a square-root 15-state
+//! variant), the kernel↔FC runner bridge, WGS84-J2 gravity, WMM 2025
+//! magnetic model selection through the FC runner, feature-gated
+//! Clarabel QP / SOCP primitives, receding-horizon MPC, `LCvxLD` /
+//! `SCvx` trajectory reproduction, and multi-instance estimator
+//! routing.
 //!
 //! See `docs/software-architecture.md § Flight Controller` for the
-//! architectural contract and `docs/phase-5-plan.md` for the
-//! deferred SOTA work.
+//! architectural contract.
 
 #![forbid(unsafe_code)]
 

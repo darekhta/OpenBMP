@@ -1,7 +1,6 @@
-//! Phase-5.B.1 — Square-Root Unscented Kalman Filter (SR-UKF).
+//! Square-Root Unscented Kalman Filter (SR-UKF).
 //!
-//! Replaces the retired Phase-4.C 6-state classical `Ukf` with a
-//! **square-root** UKF-family estimator over the same 15-state error-state
+//! A **square-root** UKF-family estimator over the same 15-state error-state
 //! vector as [`crate::estimator::Ekf`]:
 //!
 //! ```text
@@ -424,7 +423,7 @@ pub fn covariance_from_cholesky(s: &DMatrix<f64>) -> DMatrix<f64> {
 }
 
 // =====================================================================
-// Phase-5.B.1.B — `SquareRootUkf` (15-state error-state filter)
+// `SquareRootUkf` (15-state error-state filter)
 // =====================================================================
 
 use nalgebra::{Matrix3, SVector, UnitQuaternion, Vector3};
@@ -585,8 +584,7 @@ fn default_constant_gravity_down_z() -> ConstantGravity {
 /// error-state Jacobian) for the predict-side Cholesky combiner; a
 /// fully-nonlinear sigma-point propagation of the FULL state through
 /// the IMU model converges to this in the small-error limit and is
-/// considered for a follow-on slice (`docs/phase-5-plan.md § 5.B.1.B`
-/// notes mark it).
+/// deferred follow-on work (see `docs/roadmap.md`).
 ///
 /// **Measurement update.** Sigma-point form (Van der Merwe & Wan 2001
 /// Eq. 19-23): generate sigma points around the current error mean,
@@ -1355,11 +1353,11 @@ impl crate::estimator::Estimator for SquareRootUkf {
 }
 
 // =====================================================================
-// Phase-5.B.1.C — `SquareRootUkfAttitude` (6-state attitude variant)
+// `SquareRootUkfAttitude` (6-state attitude variant)
 // =====================================================================
 
 /// 6-state attitude-only square-root UKF for consumers that only need
-/// attitude + gyro-bias estimation. Replaces the retired Phase-4.C
+/// attitude + gyro-bias estimation. Supersedes an earlier
 /// classical 6-state `Ukf`.
 ///
 /// State layout:
@@ -1924,7 +1922,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase-5.B.1.B/C — SquareRootUkf integration tests
+    // SquareRootUkf integration tests
     // -----------------------------------------------------------------
 
     use crate::estimator::{Ekf, EkfParams, Estimator};
@@ -2219,7 +2217,7 @@ mod tests {
     #[test]
     fn sr_ukf_attitude_filter_runs_predict_and_mag_update() {
         // 6-state SquareRootUkfAttitude smoke test. Mirrors the
-        // retired classical Phase-4.C Ukf use case.
+        // classical Ukf use case.
         let mut f = SquareRootUkfAttitude::new(SquareRootUkfParams::default());
         f.seed(UnitQuaternion::identity());
         let imu = imu_sample(

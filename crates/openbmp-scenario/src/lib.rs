@@ -1,7 +1,7 @@
 //! `openbmp-scenario` — OpenBMP scenario format and parser.
 //!
-//! Phase 1.5 ships a strict in-house TOML scenario parser. The parser
-//! rejects unknown top-level tables and unknown fields in the Phase-1
+//! A strict in-house TOML scenario parser. The parser
+//! rejects unknown top-level tables and unknown fields in the
 //! schema, validates model names through a compile-time
 //! [`ModelRegistry`], checks dimensional field suffixes and 3-vector
 //! frame suffixes, rejects safety-limited operational vocabulary, and

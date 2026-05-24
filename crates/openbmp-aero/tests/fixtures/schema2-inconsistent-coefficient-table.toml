@@ -1,4 +1,4 @@
-# Malformed Schema-2 deck fixture (Phase 3.5.B negative test).
+# Malformed Schema-2 deck fixture (negative test).
 #
 # Identical to `minimal-schema2-deck.toml` except the CN coefficient
 # table has 6 elements where 12 are expected (2*2*1*3 cartesian

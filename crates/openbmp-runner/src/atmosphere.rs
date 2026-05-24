@@ -2,7 +2,7 @@
 //!
 //! Wraps the concrete atmosphere models that the runners support
 //! ([`UsStandard1976`] for the historical sounding-rocket / drop-test
-//! scenarios, [`PiecewiseExponentialAtmosphere`] from Phase 5.C.1 for
+//! scenarios, [`PiecewiseExponentialAtmosphere`] for
 //! engineering LEO drag estimation) so the rest of the runner code
 //! can hold a single concrete type instead of being generic over
 //! [`AtmosphereModel`].
@@ -23,9 +23,9 @@ use crate::error::RunnerError;
 /// Atmosphere model selected by the scenario.
 #[derive(Copy, Clone, Debug)]
 pub enum RuntimeAtmosphere {
-    /// `us_standard_1976` — Phase 2.3 layered model (0-86 km).
+    /// `us_standard_1976` — layered model (0-86 km).
     UsStandard1976(UsStandard1976),
-    /// `piecewise_exponential` — Phase 5.C.1 engineering layered
+    /// `piecewise_exponential` — engineering layered
     /// exponential model (0-1000 km).
     PiecewiseExponential(PiecewiseExponentialAtmosphere),
 }

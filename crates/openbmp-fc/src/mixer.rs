@@ -7,7 +7,7 @@
 //! zero-mixes the demand and emits a warning event. This prevents a
 //! controller bug in one phase from actuating in the wrong phase.
 //!
-//! Phase 4.4 ships a static channel allowlist per `PhaseId` held
+//! Holds a static channel allowlist per `PhaseId`
 //! in a [`crate::tables`] entry; future revisions can add more
 //! sophisticated allocation matrices.
 
@@ -121,10 +121,10 @@ impl Table for PhaseAuthorityTable {
 /// equivalent rule applies to engine demand.
 ///
 /// Two effector dispatch paths coexist:
-/// - **Phase-4 channel map** — `with_actuator_channel_map(...)` —
+/// - **Direct channel map** — `with_actuator_channel_map(...)` —
 ///   1:1 routing from the autopilot's `aileron / elevator / rudder /
 ///   body_flap` semantic channels to a single effector each.
-/// - **Phase-5.A.5 allocator** — `with_allocator(...)` — distributes
+/// - **Redistributed allocator** — `with_allocator(...)` — distributes
 ///   the per-axis torque demand (`aileron_rad → roll`, `elevator_rad
 ///   → pitch`, `rudder_rad → yaw`) across all effectors assigned to
 ///   that axis via
@@ -174,7 +174,7 @@ impl Mixer {
         self
     }
 
-    /// Installs a Phase-5.A.5 control allocator. When set, the
+    /// Installs a control allocator. When set, the
     /// allocator supersedes the channel map for the
     /// [`EffectorCommandSet`] publish path; per-effector commands
     /// are gated against the active phase's `allowed_effectors`
@@ -247,7 +247,7 @@ impl Mixer {
             ..EffectorCommandSet::default()
         };
         if let Some(allocator) = self.allocator.as_ref() {
-            // Phase 5.A.5 — allocator-driven dispatch. The autopilot's
+            // Allocator-driven dispatch. The autopilot's
             // semantic channels carry per-axis torque demand:
             //   aileron_rad  → roll
             //   elevator_rad → pitch

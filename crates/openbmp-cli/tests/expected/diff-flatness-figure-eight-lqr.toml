@@ -2,7 +2,7 @@ case = "diff-flatness-figure-eight-lqr-rigid-body-8000-steps"
 source = "Synthetic; same lemniscate waypoints as scenarios/diff-flatness-figure-eight, with rate_loop_kind = \"lqr\". See scenarios/diff-flatness-figure-eight-lqr/provenance.md."
 validation = "experimental"
 
-# Phase 5.A.3.B tolerance bench: rigid-body figure-eight tracker
+# LQR tolerance bench: rigid-body figure-eight tracker
 # with the per-axis LQR rate loop (DARE-solved at scenario load).
 # Asserts:
 #   - 8000 kernel steps;
@@ -11,7 +11,7 @@ validation = "experimental"
 #     5.0 rad/s ceiling around the observed ~1.1 rad/s peak,
 #     which already exceeds the PID baseline because the LQR is
 #     tracking the trajectory loop's body-rate reference more
-#     tightly. Comparison against PID + L1 is Phase-5.A.3.D scope.
+#     tightly. Comparison against PID + L1 is covered by the controller-comparison harness.
 
 [[metric]]
 name = "kernel_steps"

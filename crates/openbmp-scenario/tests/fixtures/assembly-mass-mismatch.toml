@@ -1,7 +1,7 @@
-# Phase-3.3 assembly-tree parser fixture retained as an ignored
+# Assembly-tree parser fixture retained as an ignored
 # historical cross-consistency case.
 #
-# Phase-3.13 retired the flat vehicle dry-mass field, so this TOML now
+# The flat vehicle dry-mass field was retired, so this TOML now
 # parses as an ordinary two-body assembly. The ignored test documents
 # the deleted v1 consistency check. Synthetic; not a benchmark.
 
@@ -9,7 +9,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "assembly-mass-mismatch-fixture"
-description = "Phase-3.3 parser fixture retained as an ignored historical mass-consistency case. Synthetic; not a benchmark."
+description = "Parser fixture retained as an ignored historical mass-consistency case. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

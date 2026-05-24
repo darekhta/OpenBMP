@@ -2,25 +2,24 @@
 
 L2 propulsion crate.
 
-**Status:** Phase 3 — Phase-2 solid motors (synthetic + public
-Estes B4/C6/D12 in `data/motors/*.toml`) plus the Phase-3.6 liquid
-engines and engine clusters and the Phase-3.11 Cesaroni Pro75
+**Status:** Implemented. Ships solid motors (synthetic + public
+Estes B4/C6/D12 in `data/motors/*.toml`) plus liquid
+engines and engine clusters and the Cesaroni Pro75
 M1670 import (manufacturer-mass `cesaroni-m1670.toml` and
 RocketPy-mass `rocketpy-calisto-m1670.toml` variants). Hybrid /
-cold-gas / chamber-pressure engine variants remain deferred past
-this phase.
+cold-gas / chamber-pressure engine variants remain deferred.
 
 ## Purpose
 
-- Phase-2 `Motor` trait + `SolidMotor` impl: time-driven thrust /
+- `Motor` trait + `SolidMotor` impl: time-driven thrust /
   mass / mass-rate lookups; impulse-weighted propellant depletion.
   Used for the legacy `[propulsion.motor]` scenario block.
-- Phase-3.6 `EngineModel` trait + `LiquidEngine` reference impl:
+- `EngineModel` trait + `LiquidEngine` reference impl:
   per-engine throttle / gimbal / ignition lifecycle. State machine
   is `Idle → Igniting → Burning → Shutdown`. Mass flow `mdot =
   thrust / (g0 · Isp)`. Gimbal applied as locked-order pitch-then-yaw
   rotation of nominal body-`+z` thrust.
-- Phase-3.6 `EngineCluster` propulsion-side container: holds
+- `EngineCluster` propulsion-side container: holds
   `Vec<Box<dyn EngineModel>>`, body-frame mount points, and a
   layout tag (`Axial | Ring | Octaweb | Custom`). Supports
   `apply_command(id, cmd)` and `step(dt)`.
@@ -39,7 +38,7 @@ Time since ignition → thrust, motor mass, and mass-flow derivative.
 
 ## Units and Frames
 
-Thrust in newtons. Kernel-side frame transformation lands with the Phase 2.10
+Thrust in newtons. Kernel-side frame transformation is handled by the
 adapter. Mass flow is in kg/s.
 
 ## Assumptions
@@ -61,7 +60,7 @@ Thrust curves are tabulated and interpolated linearly with locked operand order.
 
 Solid motors: `validated-toy` for the shipped synthetic motors
 (`textbook`, `d-class`) and scenario-backed Estes C6/D12 cases;
-`checked` for the standalone B4 import. The Phase-2.6 regression
+`checked` for the standalone B4 import. The solid-motor regression
 suite asserts integrated impulse vs. declared total to 1e-12
 relative, mass-at-burnout bit-equality with `dry_mass`, mass-rate
 ≤ 0 everywhere, monotone mass decrease, thrust-at-grid-corner
@@ -69,7 +68,7 @@ exact-equality, thrust-outside-window zero, and bit-stable lookups
 across two evaluations.
 
 Liquid engines: `Checked` per `LiquidEngine::validation()`.
-Phase-3.6 in-crate tests cover the lifecycle state machine,
+In-crate tests cover the lifecycle state machine,
 ignition / shutdown transient linearity, throttle clamping, gimbal
 clamping + locked-order rotation, mass-flow derivation from thrust
 / Isp, all four fault modes, bit-stable replay, and cluster
@@ -80,7 +79,7 @@ canonical 4-engine octaweb scenario.
 ## Data Provenance
 
 Synthetic textbook motors, public Estes hobby motor files (B4,
-C6, D12) derived from ThrustCurve.org RASP data, and the Phase-3.11
+C6, D12) derived from ThrustCurve.org RASP data, and the
 Cesaroni Pro75 M1670 import (manufacturer-mass and RocketPy-mass
 variants), each with a SHA-256-pinned source digest in
 `data/motors/provenance.md`. **Real fielded operational motor data

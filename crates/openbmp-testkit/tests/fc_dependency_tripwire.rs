@@ -1,17 +1,17 @@
 //! Flight-controller dependency tripwire.
 //!
-//! Phase 3.14 established the load-bearing Phase-4 rule:
+//! The load-bearing rule:
 //! `openbmp-fc` must depend only on hardware-portable crates. This
 //! test fails closed if a future edit adds a forbidden repository-local
 //! dependency to the controller crate.
 //!
-//! Phase-3.15.A hardening: the forbidden-name check looks at *both*
+//! The forbidden-name check looks at *both*
 //! the dep-table key and the inline `package = "..."` field, so
 //! `sim = { workspace = true, package = "openbmp-sim" }` is caught
 //! the same as `openbmp-sim = { workspace = true }`. The tripwire
 //! also recurses into target-conditional dep tables.
 //!
-//! Phase-3.15 audit fix: workspace-level renamed dependencies are
+//! Workspace-level renamed dependencies are
 //! resolved through the root `[workspace.dependencies]` table, so
 //! `sim = { workspace = true }` is caught when the workspace aliases
 //! `sim` to `package = "openbmp-sim"`. The tripwire also scans

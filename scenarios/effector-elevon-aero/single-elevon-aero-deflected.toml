@@ -1,4 +1,4 @@
-# Phase-3.5.D exit-criterion scenario — single elevon perturbing aero.
+# Exit-criterion scenario — single elevon perturbing aero.
 #
 # Point-mass vehicle with one elevon-shaped linear actuator. The
 # scenario's `[aero]` block points at a Schema-2 deck declaring a
@@ -12,7 +12,7 @@
 #   t < 1.0 s   →  command = 0°   (baseline drag)
 #   t ≥ 1.0 s   →  command = 20°  (elevon deflected; +44% CD)
 #
-# The Phase-3.5.D e2e test runs this scenario plus a baseline variant
+# The e2e test runs this scenario plus a baseline variant
 # (the same scenario with the step's `after` value swapped to 0°) and
 # asserts the aero-force telemetry differs between the two by more
 # than a 5% tolerance during the deflection window — proof the
@@ -24,7 +24,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "single-elevon-aero-deflected"
-description = "Phase-3.5.D exit-criterion: a single elevon effector perturbs CD via Schema-2 deck axis. Synthetic; not a benchmark."
+description = "Exit-criterion: a single elevon effector perturbs CD via Schema-2 deck axis. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]
@@ -67,7 +67,7 @@ kind = "us_standard_1976"
 
 [aero]
 deck         = "../../data/aero/synthetic-elevon-1d.toml"
-deck_sha256  = "a145e3d234ac141ed97b22bc3d247ffcefaf32da3660bc98a6615c4e802107bd"
+deck_sha256  = "6739a445bce078333acb085828152d65b029c205feadb7802ce1973d77d852a7"
 
 [telemetry]
 output.parquet = "out/single-elevon-aero-deflected.parquet"

@@ -1,10 +1,10 @@
-//! Phase-2.8 kernel integration: a kernel running with a
+//! Kernel integration: a kernel running with a
 //! single-element `KernelVehicle` wrapping `ConstantGravityForce`
 //! produces byte-identical final state to a kernel running the
 //! raw `ConstantGravityForce` directly.
 //!
-//! This is the headline byte-stability gate of Phase 2.8 — the
-//! Phase-1 `analytic_toy` regression must remain replayable when
+//! This is the headline byte-stability gate — the
+//! `analytic_toy` regression must remain replayable when
 //! the kernel is fed a Vehicle composition instead of a raw model.
 
 #![allow(missing_docs)] // integration test
@@ -81,8 +81,8 @@ fn single_element_vehicle_produces_byte_identical_final_state() {
     let via_vehicle = run_with_basic_vehicle();
     // The headline guarantee: a single-force vehicle must produce
     // byte-identical output to the raw-force kernel. This is the
-    // Phase-1 `analytic_toy` byte-stability claim, exercised through
-    // the new KernelVehicle code path.
+    // `analytic_toy` byte-stability claim, exercised through
+    // the KernelVehicle code path.
     assert_eq!(
         raw.time.as_seconds().to_bits(),
         via_vehicle.time.as_seconds().to_bits()

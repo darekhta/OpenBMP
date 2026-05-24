@@ -1,4 +1,4 @@
-//! Phase-1.3 headline validation: analytic-toy comparison.
+//! Headline validation: analytic-toy comparison.
 //!
 //! Runs the kernel against
 //! `openbmp-testkit::analytic::ConstantAccelerationDrop`, asserts each

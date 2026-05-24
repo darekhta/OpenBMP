@@ -5,8 +5,8 @@
 //! [`FailsafeFlags`] topic that the commander treats as a hard
 //! arming-block.
 //!
-//! Phase 4.6: dead-reckoning detection, sensor-divergence flagging,
-//! scheduler overrun aggregation.
+//! Provides dead-reckoning detection, sensor-divergence flagging,
+//! and scheduler overrun aggregation.
 
 use crate::error::ControllerError;
 use crate::params::ParamSection;

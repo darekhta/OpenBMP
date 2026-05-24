@@ -8,9 +8,8 @@
 # in) and from `openbmp-physics::gravity::WGS84_J2`. This file is the
 # project-side declarative pin: any future `cargo run --bin openbmp
 # -- check-provenance` walk verifies that the in-source values match
-# what is declared here. The tooling check is Phase-2.10 work; the
-# file is committed now so the values have one canonical home with a
-# provenance record.
+# what is declared here. The file gives the values one canonical home
+# with a provenance record.
 #
 # Units: SI (m, s, dimensionless).
 

@@ -5,7 +5,7 @@
 //! arbitrary numbers, not specific Bar-Shalom / Li / Kirubarajan
 //! examples. Treat them as algebra smoke tests; reproducing
 //! published textbook trajectories with their original parameters is
-//! Phase-5 work in `docs/phase-5-plan.md`.
+//! deferred work tracked in `docs/roadmap.md`.
 
 #![allow(clippy::float_cmp, clippy::many_single_char_names)]
 

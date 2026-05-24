@@ -22,7 +22,7 @@ pub enum ScenarioError {
     },
     /// Scenario schema version is unsupported.
     #[error(
-        "unsupported scenario schema version: found openbmp.scenario = {found}, expected one of {supported:?}; v1 flat-vehicle scenarios were retired in Phase 3.13, see docs/scenario-format.md#migrating-v1-scenarios-to-v2"
+        "unsupported scenario schema version: found openbmp.scenario = {found}, expected one of {supported:?}; v1 flat-vehicle scenarios are no longer supported, see docs/scenario-format.md#migrating-v1-scenarios-to-v2"
     )]
     UnsupportedSchemaVersion {
         /// Version found in the scenario.
@@ -240,7 +240,7 @@ pub enum ScenarioError {
         id: String,
     },
     /// A scenario simultaneously declares both `[propulsion.motor]`
-    /// and `[[vehicle.assembly.engines]]`. Phase 3.6 contract: a
+    /// and `[[vehicle.assembly.engines]]`. By contract, a
     /// vehicle uses one propulsion path or the other, never both.
     #[error(
         "scenario declares both [propulsion.motor] and [[vehicle.assembly.engines]]; pick one path per vehicle"

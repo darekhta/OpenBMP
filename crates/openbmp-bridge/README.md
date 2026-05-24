@@ -2,7 +2,8 @@
 
 L7 optional generic socket bridge for the academic HIL pattern.
 
-**Status:** Phase 5 — stub.
+**Status:** Stub. The wire-format types and reference client are defined; full
+schema round-trip handling is future work.
 
 ## Purpose
 

@@ -1,6 +1,6 @@
 //! `openbmp-telemetry` — OpenBMP telemetry channels and exporters.
 //!
-//! Phase 1.4 ships:
+//! Provides:
 //!
 //! - [`TelemetryValue`] / [`TelemetryValueKind`] / [`TelemetryDatum`] —
 //!   the four primitive value kinds (`f64`, `i64`, `bool`, `String`)

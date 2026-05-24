@@ -6,7 +6,7 @@
 
 ## Source class
 
-Synthetic. The scenario is the Phase-5.C.2 end-to-end demo for the
+Synthetic. The scenario is the end-to-end demo for the
 truncated EGM2008 zonal-harmonic gravity model
 (`openbmp_physics::Egm2008ZonalGravity`, degrees 2-6).
 
@@ -65,7 +65,7 @@ real-world locations, no ITAR / EAR / MTCR / Wassenaar content.
 ## Validation status
 
 `experimental`. Validates parser-side and runs end-to-end
-deterministically. The Phase-5.C.2 e2e test
+deterministically. The e2e test
 (`crates/openbmp-cli/tests/leo_orbit_egm2008_e2e.rs`) asserts:
 
 - the scenario completes 5556 kernel steps with end-time stop;

@@ -1,4 +1,4 @@
-# Phase-5.A.2.A closed-loop figure-eight differential-flatness scenario.
+# Closed-loop figure-eight differential-flatness scenario.
 #
 # Synthetic rigid-body vehicle with a Mellinger & Kumar 2011
 # minimum-snap differential-flatness trajectory tracker active. The
@@ -10,16 +10,16 @@
 # making this the first OpenBMP scenario where the FC pipeline
 # actually rotates a rigid body without going through an aero deck.
 #
-# Phase 5.A.2.A scope: rigid-body integration + a baseline
-# attitude-error tolerance with the existing PID rate loop. Tighter
-# tolerance lands with the L1 adaptive (5.A.2.B–D) and observer-form
-# anti-windup (5.A.3) sub-phases.
+# Scope: rigid-body integration + a baseline
+# attitude-error tolerance with the PID rate loop. Tighter
+# tolerance comes from the L1-adaptive and observer-form
+# anti-windup sibling scenarios.
 
 openbmp.scenario = 3
 
 [meta]
 name        = "diff-flatness-figure-eight"
-description = "Phase-5.A.2.A closed-loop differential-flatness figure-eight tracker on a rigid-body kernel with direct-torque effectors. Synthetic; horizontal figure-eight in ECI XY at constant altitude."
+description = "Closed-loop differential-flatness figure-eight tracker on a rigid-body kernel with direct-torque effectors. Synthetic; horizontal figure-eight in ECI XY at constant altitude."
 validation  = "experimental"
 provenance  = "synthetic; minimum-snap waypoints chosen for academic figure-eight demo. See provenance.md."
 
@@ -54,7 +54,7 @@ dry_inertia_body_kg_m2 = [
   [0.0, 0.0, 1.0],
 ]
 
-# Phase-5.A.2.A: three direct-torque effectors, one per body axis. The
+# Three direct-torque effectors, one per body axis. The
 # autopilot publishes its rate-loop torque commands as
 # aileron_rad / elevator_rad / rudder_rad; the channel map below
 # routes them to the matching effector. The kernel-side

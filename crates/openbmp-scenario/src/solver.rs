@@ -1,7 +1,7 @@
 //! Optional solver-profile section.
 //!
 //! Fixed-step explicit and adaptive-explicit profiles select the
-//! trajectory integrator directly. Phase-6 source-term profiles also
+//! trajectory integrator directly. Source-term profiles also
 //! require `[solver.source_terms]` so the runner can fail closed when
 //! chemistry / material sub-step controls are missing. Setting
 //! `bit-stable` determinism with anything other than

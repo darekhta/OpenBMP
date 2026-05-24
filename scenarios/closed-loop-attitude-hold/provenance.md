@@ -1,6 +1,6 @@
 # Provenance — `scenarios/closed-loop-attitude-hold/`
 
-Canonical OpenBMP provenance record for the Phase-4.C closed-loop
+Canonical OpenBMP provenance record for the closed-loop
 attitude-hold scenario shipped under
 `scenarios/closed-loop-attitude-hold/`.
 
@@ -13,16 +13,16 @@ files:
   - scenarios/closed-loop-attitude-hold/expected.toml
 source_class:     synthetic-openbmp
 source_title:     >-
-  Phase-4.C closed-loop attitude-hold scenario. Demonstrates the
+  Closed-loop attitude-hold scenario. Demonstrates the
   declarative `[fc]` block driving the full FC pipeline (EKF +
   three-loop autopilot + mixer + health/FDIR) against a constant
   identity-quaternion attitude reference.
-source_authors:   OpenBMP (Dmitri Arekhta) for the Phase-4.C FC audit pass
-source_id:        Synthetic OpenBMP Phase-4.C FC fixture
+source_authors:   OpenBMP (Dmitri Arekhta) for the FC audit pass
+source_id:        Synthetic OpenBMP FC fixture
 source_url:       —
 publication_date: 2026-04-30
 methodology_reference: >-
-  `docs/phase-4c-audit.md` documents the bridge and audit gates;
+  `docs/software-architecture.md` documents the kernel↔FC bridge;
   `crates/openbmp-fc/tests/closed_loop.rs` exercises the same
   pipeline at the integration-test layer.
 ```
@@ -42,7 +42,7 @@ Not validated against any published flight-test record.
 `crates/openbmp-fc/tests/closed_loop.rs` runs on the same pipeline
 this scenario describes.
 
-`experimental` for the scenario-driven kernel run. The Phase 4.C
+`experimental` for the scenario-driven kernel run. The runner
 bridge runs this scenario through the point-mass kernel and controller
 lockstep, but the case is still synthetic and is not a published
 flight-dynamics benchmark.

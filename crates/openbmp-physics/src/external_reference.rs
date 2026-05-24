@@ -1,4 +1,4 @@
-//! Phase-6.12 external reference packages.
+//! External reference packages.
 //!
 //! OpenBMP is a flight-dynamics simulator, not a CFD, DSMC,
 //! radiation-transport, or thermal-response code. Hypersonic studies

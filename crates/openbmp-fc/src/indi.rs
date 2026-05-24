@@ -1,5 +1,5 @@
 //! Incremental Nonlinear Dynamic Inversion rate loop
-//! (Phase 5.A.3.C — Smeur, Chu, de Croon 2016).
+//! (Smeur, Chu, de Croon 2016).
 //!
 //! INDI inverts only the **local incremental** relationship between
 //! actuator command and angular acceleration. From the rotational

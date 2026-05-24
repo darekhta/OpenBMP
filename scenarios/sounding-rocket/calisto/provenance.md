@@ -14,7 +14,7 @@ files:
   - scenarios/sounding-rocket/calisto/rocketpy-calisto.toml
 source_class:     converted-public
 source_title:     >-
-  Phase-3.11 OpenBMP-schema rendering of the RocketPy Calisto
+  OpenBMP-schema rendering of the RocketPy Calisto
   example. The scenario combines the RocketPy-mass Cesaroni
   Pro75 M1670 motor port shipped at
   `data/motors/rocketpy-calisto-m1670.toml`, the
@@ -41,8 +41,8 @@ methodology_reference: >-
   motor selection (Cesaroni Pro75 M1670), drag curves, and recovery
   configuration that this OpenBMP scenario reproduces. RocketPy
   reports a published apogee of approximately 3 349 m AGL for this
-  configuration; the Phase-3.11.E end-to-end test pins the value
-  with an audited 2% envelope. The Phase-3.11 audit rejected the
+  configuration; the end-to-end test pins the value
+  with an audited 2% envelope. The cross-tool audit rejected the
   original RK4-vs-LSODA explanation for the wider 5% envelope:
   OpenBMP's dt = 0.001 s and dt = 0.0001 s apogees are unchanged
   to sub-millimetre precision. The dominant fixed discrepancy was
@@ -71,7 +71,7 @@ transformation:
     America's 1 400 m elevation is encoded as a +z offset on the
     initial position so the USSA76 atmosphere receives the right
     altitude profile under the toy-fixed-earth frame profile.
-    Recovery uses the Phase-3.9 `DrogueMainRecovery` device
+    Recovery uses the `DrogueMainRecovery` device
     (drogue at apogee event, main at altitude_m = 1867.0, i.e.
     467 m AGL on descent). The 180 s simulation horizon captures
     apogee, drogue deployment, and main deployment so the declared
@@ -80,13 +80,13 @@ transformation:
 verification:
   method: >-
     `openbmp check` parses the scenario and resolves the pinned
-    aero deck and motor file digests. The Phase-3.11.E e2e test
+    aero deck and motor file digests. The e2e test
     `calisto_apogee_recovery_and_byte_stability` asserts the
     simulated apogee AGL (max(z) - 1400 m offset) falls within
     2% of RocketPy's published 3 349 m AGL, checks the RocketPy
     motor wet / burnout mass values, confirms drogue and main
     recovery phases are reached in order, and asserts byte-stable
-    Parquet across two reruns (Phase-3 determinism gate end-to-end
+    Parquet across two reruns (determinism gate end-to-end
     over the rigid-body hot path: scenario parse -> motor load ->
     drag deck load -> aero + thrust force adapters ->
     DrogueMainRecovery state machine -> RK4 integrator ->
@@ -120,7 +120,7 @@ local_origin:     >-
   frame with a 1 400 m altitude offset on initial position so the
   USSA76 atmosphere receives Spaceport's elevation; the toy frame
   drops Earth rotation and Coriolis, which is acceptable for the
-  short Calisto validation flight per the Phase-3.11 risk register.
+  short Calisto validation flight.
 related_files:
   - data/motors/rocketpy-calisto-m1670.toml
   - data/motors/cesaroni-m1670.toml

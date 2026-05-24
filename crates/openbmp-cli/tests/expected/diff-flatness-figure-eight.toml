@@ -2,7 +2,7 @@ case = "diff-flatness-figure-eight-rigid-body-8000-steps"
 source = "Synthetic; minimum-snap waypoints in scenario.toml. See scenarios/diff-flatness-figure-eight/provenance.md."
 validation = "experimental"
 
-# Phase 5.A.2.A tolerance bench: rigid-body kernel with three
+# Baseline tolerance bench: rigid-body kernel with three
 # direct-torque effectors, the existing PID + DifferentialFlatness
 # autopilot driving the figure-eight reference. Asserts:
 #  - the scenario runs end-to-end (8000 steps at 1 ms);
@@ -15,7 +15,7 @@ validation = "experimental"
 #    pipeline (asserted by the rerun-byte-stable e2e test).
 #
 # Tighter attitude-error tolerances land with the L1 adaptive
-# (5.A.2.B–D) and observer-form anti-windup (5.A.3) sub-phases.
+# augmentation and the observer-form anti-windup rate loop.
 
 [[metric]]
 name = "kernel_steps"

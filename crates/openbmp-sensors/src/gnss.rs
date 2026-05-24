@@ -1,4 +1,4 @@
-//! Phase-3.10.B synthetic GNSS receiver.
+//! Synthetic GNSS receiver.
 //!
 //! Per ECI axis the measurement transformation is:
 //!
@@ -14,7 +14,7 @@
 //! Ornstein-Uhlenbeck position bias. **No satellite geometry, no
 //! pseudorange, no ionosphere, no tropospheric model.** This is a
 //! receiver-output noise model; the navigation-message processing
-//! is out of scope for Phase 3.10.
+//! is out of scope.
 //!
 //! # Component-id layout
 //!
@@ -84,7 +84,7 @@ pub struct GnssNoiseBudget {
     /// OU white-noise drive strength `σ` for the position-bias
     /// drift, per axis (m/√s). Zero disables bias drift.
     pub position_bias_ou_sigma_m_sqrt_s: [f64; 3],
-    /// Sensor sample period (s). Phase-3.10 GNSS receivers report
+    /// Sensor sample period (s). GNSS receivers report
     /// at the kernel base tick — same convention as the IMU.
     pub dt_s: f64,
 }

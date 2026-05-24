@@ -1,4 +1,4 @@
-# Phase-3.4 single-elevon scenario — exit-criterion case.
+# Single-elevon scenario — exit-criterion case.
 #
 # A point-mass vehicle with a single elevon-shaped linear actuator.
 # The effector's `command_schedule` issues a step command at
@@ -6,10 +6,11 @@
 # carries a 0.020 s pure-delay latency, a 5.236 rad/s max slew rate,
 # and a 0.05 s first-order lag.
 #
-# Phase-3.4 limitations:
+# Limitations:
 # - Aero deck stays schema-1; the effector deflection is observable
 #   in the Parquet but is NOT consumed by force / moment evaluation.
-#   Schema-2 deck consumption arrives in Phase 3.5.
+#   Schema-2 deck consumption is exercised by the
+#   effector-elevon-aero scenario.
 # - Gravity-only — the kernel propagates a 1 kg test mass downward
 #   from 100 m initial altitude over 2 seconds. The effector
 #   telemetry is the smoke test, not a coupled physics signal.
@@ -20,7 +21,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "single-elevon-elevator-step"
-description = "Phase-3.4 exit-criterion: a single elevon effector tracks a step elevator command. Synthetic; not a benchmark."
+description = "Exit-criterion: a single elevon effector tracks a step elevator command. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

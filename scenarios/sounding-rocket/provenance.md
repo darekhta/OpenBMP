@@ -13,10 +13,10 @@ files:
   - scenarios/sounding-rocket/niskanen-2009-chapter6.toml
 source_class:     converted-public
 source_title:     >-
-  Phase-2.10 canonical scenario form of the Niskanen 2009
+  Canonical scenario form of the Niskanen 2009
   Chapter-6 small-rocket benchmark, expressed in the OpenBMP
-  scenario schema. References the Phase-2.6 Estes C6 motor file
-  and the Phase-2.5 reduced-CD aero deck via SHA-256-pinned
+  scenario schema. References the Estes C6 motor file
+  and the reduced-CD aero deck via SHA-256-pinned
   paths.
 source_authors:   Niskanen, S. (2009 thesis); OpenBMP (Dmitri Arekhta) for the OpenBMP-schema rendering
 source_id:        Niskanen 2009 Chapter 6 small-rocket benchmark
@@ -30,7 +30,7 @@ methodology_reference: >-
   Estes B4 and C6 motors. The OpenBMP scenario instantiates the
   C6 case with the published 80 g airframe mass, constant axial
   CD = 0.8 reduction, and the same vertical-launch convention used
-  by the Phase-2.9 integration test in
+  by the integration test in
   `crates/openbmp-vehicle/tests/sounding_rocket.rs`.
 methodology_urls:
   - https://openrocket.sourceforge.net/thesis.pdf
@@ -43,8 +43,8 @@ license_or_terms: >-
 retrieved_utc:    2026-04-27
 transformation:
   method: >-
-    Render the already-provenanced Phase-2.9 Niskanen C6 benchmark
-    inputs into the Phase-2.10 scenario schema. The scenario file
+    Render the already-provenanced Niskanen C6 benchmark
+    inputs into the scenario schema. The scenario file
     references the aero deck and motor data by relative path and
     pins each reference with the SHA-256 digest shipped in the same
     commit. Launch-site coordinates use the documented Helsinki
@@ -53,17 +53,17 @@ transformation:
 verification:
   method: >-
     `openbmp check` parses the scenario and resolves the pinned aero
-    deck and motor file digests. The Phase-2.9 sounding-rocket
+    deck and motor file digests. The sounding-rocket
     integration test independently replays the same Niskanen C6
     reduction and compares simulated apogee against the published
-    151.5 m experimental value with ±5% tolerance. The Phase-2.11
-    runner will consume this scenario file directly.
+    151.5 m experimental value with ±5% tolerance. The
+    runner consumes this scenario file directly.
   test: >-
     crates/openbmp-cli/tests/cli_snapshots.rs;
     crates/openbmp-vehicle/tests/sounding_rocket.rs
   tolerance: >-
     Parser/check path requires exact SHA-256 pin matches. Physics
-    regression tolerance remains the Phase-2.9 ±5% apogee envelope
+    regression tolerance remains the ±5% apogee envelope
     against the published C6 experimental value.
 validation_status: checked
 safety_review:
@@ -102,9 +102,9 @@ files:
   - scenarios/sounding-rocket/niskanen-2009-chapter6-rigid.toml
 source_class:     converted-public
 source_title:     >-
-  Phase-3.1 rigid-body variant of the canonical Niskanen 2009
-  Chapter-6 small-rocket benchmark. Reuses the same Phase-2.5 aero
-  deck and Phase-2.6 Estes C6 motor file as the point-mass scenario
+  Rigid-body variant of the canonical Niskanen 2009
+  Chapter-6 small-rocket benchmark. Reuses the same aero
+  deck and Estes C6 motor file as the point-mass scenario
   but declares `vehicle.kind = "rigid_body"` with rigid-body initial
   state (identity orientation, zero angular velocity) and an
   academic rod-shaped inertia tensor sized to the 56 cm × 80 g body
@@ -118,7 +118,7 @@ methodology_reference: >-
   Simulation Software*. Master's thesis, Helsinki University of
   Technology. Chapter 6 documents a small-rocket benchmark
   comparing simulated apogees against flight experiments for both
-  Estes B4 and C6 motors. The Phase-3.1 OpenBMP variant reuses the
+  Estes B4 and C6 motors. The rigid-body OpenBMP variant reuses the
   identical aero deck, motor data, mass, and launch-site convention
   as the canonical point-mass scenario, but exercises the rigid-body
   kernel adapter family by adding orientation, angular velocity, and
@@ -133,14 +133,14 @@ license_or_terms: >-
   academic re-use with attribution. The OpenBMP rigid-body variant
   introduces no new published benchmark data; the inertia tensor is
   an academic rod-shape estimate sized to the published body
-  geometry and is documented in-line in the scenario file. Phase-3.6
-  motor inertia derivatives and Phase-3.7 tank/slosh refinements
-  will replace the placeholder inertia values with first-principles
-  derivations.
+  geometry and is documented in-line in the scenario file. This
+  scenario does not use motor inertia derivatives or tank/slosh
+  refinements to replace the placeholder inertia values with
+  first-principles derivations.
 retrieved_utc:    2026-04-27
 transformation:
   method: >-
-    Clone the Phase-2.10 Niskanen C6 scenario file and replace
+    Clone the canonical Niskanen C6 scenario file and replace
     `vehicle.kind = "point_mass"` with `vehicle.kind =
     "rigid_body"`. Add the four required rigid-body initial-state
     fields: identity quaternion `[0, 0, 0, 1]` (xyzw), zero angular
@@ -157,7 +157,7 @@ transformation:
 verification:
   method: >-
     `openbmp check` parses the scenario and resolves the pinned aero
-    deck and motor file digests. The Phase-3.1 sounding-rocket
+    deck and motor file digests. The sounding-rocket
     end-to-end test
     (`run_on_niskanen_rigid_apogee_within_tolerance`) asserts the
     rigid-body apogee remains within ±5% of the published 151.5 m
@@ -202,10 +202,10 @@ notes: >-
   The rigid-body initial state uses the scenario quaternion
   convention `[x, y, z, w]`. The runner converts this to
   `nalgebra::Quaternion::new(w, x, y, z)` at kernel construction
-  time. Phase-3.1 deliberately exercises only identity orientation
-  and the `ZeroMoment` moment model — Phase-3.2 onward will
-  introduce non-trivial body-frame moments (aero coefficient deck,
-  thrust offset, slosh) that produce attitude dynamics.
+  time. This scenario deliberately exercises only identity orientation
+  and the `ZeroMoment` moment model; non-trivial body-frame moments
+  (aero coefficient deck, thrust offset, slosh) that produce attitude
+  dynamics are exercised by other scenarios.
 ```
 
 ## `scenarios/sounding-rocket/niskanen-2009-chapter6-with-mission.toml`
@@ -216,16 +216,16 @@ files:
   - scenarios/sounding-rocket/niskanen-2009-chapter6-with-mission.toml
 source_class:     converted-public
 source_title:     >-
-  Phase-3.2 mission-block variant of the canonical Niskanen 2009
+  Mission-block variant of the canonical Niskanen 2009
   Chapter-6 scenario. Same physics as the point-mass scenario at
   `niskanen-2009-chapter6.toml`, plus a `[mission]` block declaring
   two phases (`ascent`, `descent`), one event (`at_apogee_marker`,
   `AtApogee` trigger + `emit_telemetry_marker` action), and a
   single transition from ascent to descent on the apogee event.
-  Exercises the Phase-3.2 declarative event-driven scheduling
+  Exercises the declarative event-driven scheduling
   surface end-to-end through the runner.
-source_authors:   Niskanen, S. (2009 thesis); OpenBMP (Dmitri Arekhta) for the OpenBMP-schema rendering and the Phase-3.2 mission variant
-source_id:        Niskanen 2009 Chapter 6 small-rocket benchmark, Phase-3.2 mission variant
+source_authors:   Niskanen, S. (2009 thesis); OpenBMP (Dmitri Arekhta) for the OpenBMP-schema rendering and the mission variant
+source_id:        Niskanen 2009 Chapter 6 small-rocket benchmark, mission variant
 source_url:       https://openrocket.sourceforge.net/thesis.pdf
 publication_date: 2009-05-20
 methodology_reference: >-
@@ -233,7 +233,7 @@ methodology_reference: >-
   Simulation Software*. Master's thesis, Helsinki University of
   Technology. Chapter 6 documents a small-rocket benchmark
   comparing simulated apogees against flight experiments for both
-  Estes B4 and C6 motors. The Phase-3.2 mission variant adds the
+  Estes B4 and C6 motors. The mission variant adds the
   declarative scheduling block on top of the point-mass scenario;
   the simulated trajectory is identical to the point-mass case
   modulo the new `mission.marker.at_apogee_marker` `bool`
@@ -247,8 +247,8 @@ license_or_terms: >-
 retrieved_utc:    2026-04-27
 transformation:
   method: >-
-    Clone the Phase-2.10 Niskanen C6 scenario file and append a
-    Phase-3.2 `[mission]` block declaring two phases (ascent,
+    Clone the canonical Niskanen C6 scenario file and append a
+    `[mission]` block declaring two phases (ascent,
     descent), one apogee event (`AtApogee` trigger +
     `emit_telemetry_marker` action), and one transition from
     ascent to descent on the apogee event. Bump the seed root by
@@ -259,7 +259,7 @@ transformation:
 verification:
   method: >-
     `openbmp check` parses the scenario and resolves the pinned
-    aero deck and motor file digests. The Phase-3.2 e2e test
+    aero deck and motor file digests. The e2e test
     `niskanen_with_mission_emits_apogee_marker` asserts the
     runner allocates a `mission.marker.at_apogee_marker` `bool`
     channel and writes `true` exactly once on the apogee step,
@@ -291,7 +291,7 @@ related_files:
   - data/motors/estes-c6-eng-derived.toml
   - crates/openbmp-cli/tests/sounding_rocket_e2e.rs
 notes: >-
-  The mission block uses the canonical Phase-3.2 vocabulary: phase
+  The mission block uses the canonical mission vocabulary: phase
   ids and event ids are scenario-text identifiers; the runner
   derives stable `PhaseId` / `EventId` values via FNV-1a-64 of the
   canonical paths `mission.phases.<id>` and `mission.events.<id>`.

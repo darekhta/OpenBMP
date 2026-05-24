@@ -1,6 +1,6 @@
 //! Model-evaluation error type.
 //!
-//! Phase-3.14.A: extracted from `openbmp-sim` so model trait surfaces
+//! Lives apart from `openbmp-sim` so model trait surfaces
 //! (`ForceModel`, `MomentModel`, `MassModel`, `RigidMassModel`,
 //! `EnvironmentModel`) can be implemented without depending on the
 //! simulator. The simulator's broader `SimulationError` family remains
@@ -18,7 +18,7 @@ use thiserror::Error;
 ///
 /// Carries the `ModelId` of the offending model so the kernel can
 /// surface `(step_index, model_id, error)` to the user without a
-/// silent clamp / NaN / panic. Phase-2 models *must* return one of
+/// silent clamp / NaN / panic. Models *must* return one of
 /// these variants instead of a panic or `NaN`.
 ///
 /// See `docs/software-architecture.md § Model Interfaces` for the

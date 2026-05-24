@@ -1,4 +1,4 @@
-//! [`EquivalentPendulum`] — Phase-3.7.B Abramson SP-106 equivalent
+//! [`EquivalentPendulum`] — Abramson SP-106 equivalent
 //! pendulum slosh dynamics.
 //!
 //! # Physics
@@ -24,7 +24,7 @@
 //! `ξ_1 = 1.8411837813406593` is the first root of `J_1'(x) = 0`
 //! (Abramson Table 7.1, cylindrical-tank entry).
 //!
-//! Phase 3.7.B parameterises the pendulum by **two** independent
+//! The pendulum is parameterised by **two** independent
 //! tilt angles `(θ_x, θ_y)` representing swing in the body x-z and
 //! y-z planes respectively, each obeying the small-angle linearised
 //! Abramson Eq 7-25 after small-angle linearisation
@@ -36,14 +36,14 @@
 //!
 //! Lateral acceleration components are read directly from the
 //! body-frame acceleration vector passed into [`MovingMassModel::step`].
-//! The pendulum is decoupled across `(x, y)` — Phase-3.7 does not
-//! model cross-axis slosh coupling (e.g. swirling).
+//! The pendulum is decoupled across `(x, y)` — cross-axis slosh
+//! coupling (e.g. swirling) is not modelled.
 //!
 //! # Integration scheme
 //!
-//! Phase-3.7 uses **semi-implicit (symplectic) Euler** rather than
-//! the pure-explicit form sketched during early Phase-3.7 planning:
-//! explicit Euler is unstable for an undamped harmonic oscillator
+//! The integration uses **semi-implicit (symplectic) Euler** rather than
+//! the pure-explicit form: explicit Euler is unstable for an
+//! undamped harmonic oscillator
 //! (energy grows by `(dt · ω)²` per step), and the property test
 //! for ≤1% energy conservation over 100 oscillations cannot be met
 //! at any practical `dt`. Semi-implicit Euler is bit-stable for
@@ -58,12 +58,12 @@
 //!
 //! # Mass contribution
 //!
-//! Phase-3.7.B treats **all** of the fluid as the slosh mass (i.e.
+//! The model treats **all** of the fluid as the slosh mass (i.e.
 //! `m_slosh = m_total`). Real-physics slosh has a static fraction
 //! that stays at the tank base plus a slosh fraction that swings;
 //! the split depends on tank geometry and fill fraction (Abramson
-//! Table 7.1). Phase-3.7 ships the conservative simplification —
-//! all fluid swings — and downstream extensions can split the mass
+//! Table 7.1). The conservative simplification — all fluid swings —
+//! is used here, and downstream extensions can split the mass
 //! by replacing the moving-mass model with their own implementation.
 //!
 //! `cg_offset_body_m` is the swing displacement of the slosh mass
@@ -80,7 +80,7 @@
 //!
 //! Reaction force on the parent body is `-m · a_slosh_lateral`,
 //! where `a_slosh_lateral ≈ L · θ̈_lateral` for small angles. The
-//! axial reaction force is zero (Phase-3.7 simplification — full
+//! axial reaction force is zero (simplification — full
 //! pendulum centripetal feedback would also produce a small axial
 //! component). Reaction moment about body origin is
 //! `mount_point × reaction_force` (small-angle: ignore the
@@ -90,8 +90,8 @@
 //!
 //! - Pure `f64` arithmetic; no FMA, no system RNG, no I/O.
 //! - Single sub-step (forward symplectic Euler) per main RK4 step.
-//!   Higher sub-step counts are deferred to Phase-3.7.D scenario
-//!   opt-in (and break bit-stability when the count changes —
+//!   Higher sub-step counts are a per-scenario opt-in (and break
+//!   bit-stability when the count changes —
 //!   documented in `provenance.md`).
 //! - Recomputes `ω_n²` and `L_pend` from the post-drain fluid level
 //!   each step; values within one step are self-consistent.
@@ -109,7 +109,7 @@ use super::{
 /// a cylindrical tank (Abramson SP-106 Table 7.1).
 const KSI_1: f64 = 1.841_183_781_340_659_3;
 
-/// Phase-3.7.B equivalent-pendulum slosh model.
+/// Equivalent-pendulum slosh model.
 #[derive(Debug, Clone)]
 pub struct EquivalentPendulum {
     fluid_kg: f64,
@@ -193,7 +193,7 @@ impl EquivalentPendulum {
     }
 
     /// Set the initial slosh state. Use for perturbation studies or
-    /// the Phase-3.7.B free-response unit / property tests.
+    /// the free-response unit / property tests.
     ///
     /// `(angles_rad.0, angles_rad.1)` is `(θ_x, θ_y)` and
     /// `(rates_rad_s.0, rates_rad_s.1)` is `(θ̇_x, θ̇_y)`.

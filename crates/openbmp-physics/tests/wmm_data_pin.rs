@@ -1,4 +1,4 @@
-//! Phase-3.10.A regression test: the in-source `COEFFS` table in
+//! Regression test: the in-source `COEFFS` table in
 //! `openbmp_physics::magnetic::wmm2025::coefficients` agrees byte-for-
 //! byte with `data/magnetic/WMM.COF`, and the file's SHA-256 digest
 //! matches the `provenance.md` pin.
@@ -21,8 +21,8 @@ fn wmm_cof_sha256_matches_provenance_pin() {
     use std::fmt::Write;
     // Hand-rolled SHA-256 to avoid pulling a hash crate just for the
     // test. The standard library doesn't ship SHA-256 but the
-    // workspace's `sha2` is already wired (see Phase-2.10
-    // SHA-256 pin contract). Use it through a minimal local path.
+    // workspace's `sha2` is already wired (see the SHA-256 pin
+    // contract). Use it through a minimal local path.
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(WMM_COF.as_bytes());

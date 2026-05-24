@@ -1,11 +1,11 @@
-# Phase-5.A.3.C INDI variant of the diff-flatness figure-eight.
+# INDI variant of the diff-flatness figure-eight.
 #
 # Identical to `scenarios/diff-flatness-figure-eight` except for one
 # pair of fields under `[fc.autopilot_params]`:
 #
 #   - `rate_loop_kind = "indi"` swaps the rate loop from PID to the
-#     per-axis Incremental Nonlinear Dynamic Inversion shipped in
-#     Phase 5.A.3.C (Smeur, Chu, de Croon 2016).
+#     per-axis Incremental Nonlinear Dynamic Inversion
+#     (Smeur, Chu, de Croon 2016).
 #   - `[fc.autopilot_params.indi]` declares INDI's working estimate
 #     of body-axis inertia, per-axis control effectiveness, the
 #     synchronised filter cutoff applied identically to ω and the
@@ -27,7 +27,7 @@ openbmp.scenario = 3
 
 [meta]
 name        = "diff-flatness-figure-eight-indi"
-description = "Phase-5.A.3.C INDI rate-loop figure-eight tracker. Sibling of diff-flatness-figure-eight; identical except rate_loop_kind = \"indi\" and the [fc.autopilot_params.indi] block."
+description = "INDI rate-loop figure-eight tracker. Sibling of diff-flatness-figure-eight; identical except rate_loop_kind = \"indi\" and the [fc.autopilot_params.indi] block."
 validation  = "experimental"
 provenance  = "synthetic; identical to diff-flatness-figure-eight modulo the INDI rate-loop swap. See provenance.md."
 
@@ -162,9 +162,9 @@ rate_loop_kind           = "indi"
 # well below Nyquist (π·1000 ≈ 3141.6 rad/s) and below the rate loop's
 # operating bandwidth, so the filtered ω̇ measurement is noise-rejected
 # without introducing destabilising delay. Inertia and control
-# effectiveness are configured to match truth here; an inertia-mismatch
-# variant scenario (Phase 5.A.3.D) demonstrates INDI's robustness when
-# they don't.
+# effectiveness are configured to match truth here; the
+# diff-flatness-figure-eight-indi-fault sibling demonstrates INDI's
+# robustness when they don't.
 [fc.autopilot_params.indi]
 inertia_per_axis_kg_m2          = [1.0, 1.0, 1.0]
 control_effectiveness_per_axis  = [1.0, 1.0, 1.0]

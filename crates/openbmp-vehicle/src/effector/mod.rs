@@ -1,10 +1,10 @@
-//! Phase-3.4 control effectors.
+//! Control effectors.
 //!
 //! Effectors are the controller-physics interface: a scalar `cmd`
 //! flows in (from a controller, a scenario-declared schedule, or a
 //! scenario-script effector override event), and a [`EffectorState`]
 //! comes out carrying the actual deflection, saturation flag,
-//! rate-limit flag, and active fault. Phase 3.4 ships:
+//! rate-limit flag, and active fault. The module provides:
 //!
 //! - [`ControlEffector`] trait — `step(cmd, dt)`, `limits()`,
 //!   `inject_fault(fault)`, `current_state()`, `id()`.
@@ -19,8 +19,8 @@
 //!
 //! # Determinism
 //!
-//! - The `LinearActuator` impl is fully deterministic in 3.4 — no
-//!   RNG draws. The future stochastic-fault story will pull from
+//! - The `LinearActuator` impl is fully deterministic — no
+//!   RNG draws. A stochastic-fault extension would pull from
 //!   [`openbmp_core::DeterministicRng::for_effector_component`]
 //!   with the pinned `b"EFFC"` domain tag.
 //! - The trait is scalar-only (not generic over `S: SimState`):
@@ -29,7 +29,7 @@
 //! - The pure-delay buffer is sized at construction from a fixed
 //!   `dt`. Sub-`dt` latency is rejected at construction.
 //!
-//! See `docs/scenario-format.md § Control effectors (Phase 3.4)` and
+//! See `docs/scenario-format.md § Control effectors` and
 //! `docs/software-architecture.md § ControlEffectors` for the
 //! contract.
 
@@ -184,8 +184,8 @@ pub enum EffectorError {
     #[error("effector latency must be either zero or ≥ dt for fixed-step pure delay")]
     SubStepLatency,
     /// `step()` was called with a `dt` that disagrees with the
-    /// effector's construction-time `dt`. Phase 3 uses fixed-step
-    /// integration; mismatched `dt` is a programmer error.
+    /// effector's construction-time `dt`. Integration is fixed-step;
+    /// mismatched `dt` is a programmer error.
     #[error("effector step dt mismatch: configured {configured_s} s, got {got_s} s")]
     DtMismatch {
         /// `dt` configured at construction.
@@ -209,7 +209,7 @@ pub enum EffectorError {
     },
 }
 
-/// Phase-3.4 control-effector trait.
+/// Control-effector trait.
 ///
 /// Effectors are stateful (latency buffer, integrator state for
 /// the first-order lag, current `EffectorState` snapshot, fault

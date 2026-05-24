@@ -10,8 +10,7 @@ Synthetic. Identical to `scenarios/diff-flatness-figure-eight`
 modulo two fields under `[fc.autopilot_params]`:
 
 1. `rate_loop_kind = "indi"` swaps the rate loop from PID to the
-   per-axis Incremental Nonlinear Dynamic Inversion shipped in
-   Phase 5.A.3.C.
+   per-axis Incremental Nonlinear Dynamic Inversion.
 2. `[fc.autopilot_params.indi]` declares INDI's working estimate of
    body-axis inertia, per-axis control effectiveness, the
    synchronised filter cutoff applied identically to `ω` and the
@@ -25,7 +24,7 @@ matrix declared on `vehicle.assembly.bodies[0]` satisfies both
 preconditions.
 
 The configured INDI inertia matches the truth-side body inertia in
-this baseline demonstration scenario. A future Phase 5.A.3.D
+this baseline demonstration scenario. The controller
 comparison harness includes a deliberate-mismatch variant that
 showcases INDI's hallmark robustness when the parameter inertia is
 overestimated by ~30 %.

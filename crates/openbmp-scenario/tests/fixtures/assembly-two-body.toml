@@ -1,4 +1,4 @@
-# Phase-3.3 assembly-tree parser fixture (synthetic).
+# Assembly-tree parser fixture (synthetic).
 #
 # Two-body assembly whose body dry masses sum to 0.085 kg. The
 # scenario shape is otherwise minimal analytic-toy.
@@ -7,7 +7,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "assembly-two-body-fixture"
-description = "Phase-3.3 parser fixture exercising the [vehicle.assembly] block with two bodies. Synthetic; not a benchmark."
+description = "Parser fixture exercising the [vehicle.assembly] block with two bodies. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

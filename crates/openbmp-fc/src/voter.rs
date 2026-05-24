@@ -1,14 +1,15 @@
 //! Sensor voter trait and reference implementations.
 //!
-//! Phase 4.2: simplex pass-through, triplex mid-value-select, and
+//! Provides simplex pass-through, triplex mid-value-select, and
 //! weighted-mean voters. Even when an OpenBMP scenario uses one IMU /
 //! one barometer / one GNSS, the voter seam exists so a downstream
 //! HAL adopter wiring redundant lanes is a configuration change, not
 //! a refactor.
 //!
 //! Multi-instance estimator routing (PX4-style parallel filter lanes
-//! plus active-lane selection) is deferred to Phase 5 / downstream HAL
-//! integration. The voter trait surface is the intended hook.
+//! plus active-lane selection) lives in the estimator-lane layer and
+//! downstream HAL integration. The voter trait surface is the
+//! intended hook.
 
 use std::cmp::Ordering;
 

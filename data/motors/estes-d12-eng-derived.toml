@@ -24,7 +24,7 @@
 # `total_impulse_n_s` matches the trapezoidal integral of the curve
 # to 1e-9 relative, so the declared value below is the
 # bit-exact f64 result of the integration (captured by the
-# Phase-2.9.B regression test on first run; see
+# regression test on first run; see
 # `data/motors/provenance.md` for details).
 #
 # Specific-impulse consistency: declared `specific_impulse_s` is

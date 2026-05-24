@@ -1,6 +1,6 @@
 # Calisto power-off / power-on drag-curve deck (Schema 1).
 #
-# Phase-3.11.B port of the RocketPy Calisto-example CD-vs-Mach
+# Port of the RocketPy Calisto-example CD-vs-Mach
 # table. RocketPy ships two files (`powerOffDragCurve.csv` and
 # `powerOnDragCurve.csv`) that are byte-identical — Calisto is
 # treated with a single CD curve regardless of motor burn state.

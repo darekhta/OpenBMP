@@ -1,6 +1,6 @@
 //! Deferred Tannehill / Mugalev 5-species equilibrium-air surface.
 //!
-//! Phase 6 originally landed this module with a hand-synthesised
+//! This module originally carried a hand-synthesised
 //! `(T, p)` grid that was shaped like the expected Tannehill /
 //! Mugalev equilibrium-air trends but was not verified against a
 //! public coefficient table or a citable reproduced table. That is

@@ -1,4 +1,4 @@
-# Phase-5.A.2.D PID-baseline counterpart of the L1 figure-eight.
+# PID-baseline counterpart of the L1 figure-eight.
 #
 # This scenario is the no-L1 control case for
 # `scenarios/diff-flatness-figure-eight-l1`. It is identical except
@@ -13,7 +13,7 @@ openbmp.scenario = 3
 
 [meta]
 name        = "diff-flatness-figure-eight-baseline"
-description = "Phase-5.A.2.D PID-baseline figure-eight tracker with a ReducedRate fault on the roll-torque effector. Sibling of diff-flatness-figure-eight-l1; identical except the L1 block is absent so the rate loop runs as a pure PID."
+description = "PID-baseline figure-eight tracker with a ReducedRate fault on the roll-torque effector. Sibling of diff-flatness-figure-eight-l1; identical except the L1 block is absent so the rate loop runs as a pure PID."
 validation  = "experimental"
 provenance  = "synthetic; identical to diff-flatness-figure-eight-l1 modulo the absence of the [fc.autopilot_params.l1_adaptive] block. See provenance.md."
 

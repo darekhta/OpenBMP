@@ -1,4 +1,4 @@
-// Phase-5.B.3 — locked indexed iteration is intentional for the
+// Locked indexed iteration is intentional for the
 // IMM mixing / likelihood / fusion loops. The
 // `needless_range_loop` and `explicit_iter_loop` lints would
 // suggest iterator forms that compile to the same IEEE 754
@@ -15,7 +15,7 @@
     clippy::doc_markdown
 )]
 
-//! Phase-5.B.3 Bar-Shalom IMM (Interacting Multiple Model) estimator.
+//! Bar-Shalom IMM (Interacting Multiple Model) estimator.
 //!
 //! For `N` motion-model hypotheses, each tracked by an independent
 //! sub-filter, the IMM each tick:

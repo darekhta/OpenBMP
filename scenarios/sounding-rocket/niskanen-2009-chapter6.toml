@@ -1,22 +1,20 @@
-# Niskanen 2009 Chapter-6 small-rocket benchmark — canonical Phase-2.10 scenario.
+# Niskanen 2009 Chapter-6 small-rocket benchmark — canonical scenario.
 #
 # Vehicle geometry, mass, axial-CD assumption, motor (Estes C6), and
 # reference apogee come from Niskanen 2009 ("Development of an
 # Open-Source Model Rocket Simulation Software", M.Sc. thesis, Helsinki
-# UT) Chapter 6 Table 6.1 + the surrounding text. The Phase-2.9
+# UT) Chapter 6 Table 6.1 + the surrounding text. The
 # integration test in `crates/openbmp-vehicle/tests/sounding_rocket.rs`
-# already exercises this benchmark via include_str! against the same
-# data files; this canonical scenario is the Phase-2.10 form that the
-# Phase-2.11 runner will consume end-to-end via the standard
+# exercises this benchmark via include_str! against the same
+# data files; this canonical scenario is the form that the
+# runner consumes end-to-end via the standard
 # `openbmp run` command.
 #
-# Coordinate system. Phase-2.9 chose vertical ECI-`+z` launch as a
-# point-mass adapter-test convention. We keep the same convention here
-# so the physical benchmark stays comparable. The Phase-2.11 CLI
-# baseline is byte-stable on its own; it is not the Phase-2.9 hash
-# because the CLI uses scenario-declared force ordering. Phase-3 will
-# replace this with a proper local-NED launch initialisation after the
-# rigid body integrator lands.
+# Coordinate system. This scenario uses vertical ECI-`+z` launch as a
+# point-mass convention so the physical benchmark stays comparable.
+# The CLI baseline is byte-stable on its own; it differs from the
+# integration-test hash because the CLI uses scenario-declared force
+# ordering.
 #
 # Pinned digests are SHA-256 of the referenced files at the commit
 # that ships this scenario; mismatches fail closed.
@@ -27,7 +25,7 @@ openbmp.scenario = 2
 name        = "niskanen-2009-chapter6"
 description = "Niskanen 2009 Chapter-6 small model rocket; Estes C6 motor, point-mass reduction with constant axial CD."
 validation  = "checked"
-provenance  = "Niskanen 2009 Chapter 6, Helsinki UT MSc thesis; reference apogee 151.5 m (C6 experimental) and 5% tolerance pinned alongside this scenario in the Phase-2.9 integration test `crates/openbmp-vehicle/tests/sounding_rocket.rs` and the Phase-2.11 e2e test `crates/openbmp-cli/tests/sounding_rocket_e2e.rs`."
+provenance  = "Niskanen 2009 Chapter 6, Helsinki UT MSc thesis; reference apogee 151.5 m (C6 experimental) and 5% tolerance pinned alongside this scenario in the integration test `crates/openbmp-vehicle/tests/sounding_rocket.rs` and the e2e test `crates/openbmp-cli/tests/sounding_rocket_e2e.rs`."
 
 [time]
 start_s = 0.0
@@ -74,13 +72,13 @@ source        = "Helsinki proxy launch site (Niskanen 2009 Chapter 6 does not pu
 
 [aero]
 deck         = "../../data/aero/synthetic-niskanen-ch6-rocket.toml"
-deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27"
+deck_sha256  = "bbedf508c9fe589dea8f5eb77d29ac44f3f00271a09fb6fa661024b9e1809691"
 
 [propulsion.motor]
 file         = "../../data/motors/estes-c6-eng-derived.toml"
 ignite_at_s  = 0.0
 variant      = "solid"
-file_sha256  = "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e"
+file_sha256  = "fbea346fb952e97c50bd709a9c2a7b3cde3d5df0238a7d48032cd96a5b9bdbde"
 
 [telemetry]
 output.parquet = "out/niskanen-2009-chapter6.parquet"

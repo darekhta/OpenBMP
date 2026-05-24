@@ -8,7 +8,7 @@
 #   vz(t) = -g t,
 #
 # which the kernel's RK4 fixed-step integrator reproduces exactly for a
-# constant force on a constant mass. This scenario is the Phase-1
+# constant force on a constant mass. This scenario is the
 # end-to-end validation case described in `docs/verification.md`.
 
 openbmp.scenario = 2
@@ -45,7 +45,7 @@ gravity_m_s2  = 9.80665
 atmosphere    = "none"
 wind          = "none"
 
-# Phase-3.13.E: `[forces]` is optional and the loader auto-derives
+# `[forces]` is optional and the loader auto-derives
 # `["gravity"]` from this minimal scenario when omitted. The
 # explicit declaration is retained because the parser unit tests in
 # `crates/openbmp-scenario/src/scenario.rs` substitute on this line

@@ -1,4 +1,4 @@
-# Niskanen 2009 Chapter-6 small-rocket benchmark — Phase-3.1 rigid-body variant.
+# Niskanen 2009 Chapter-6 small-rocket benchmark — rigid-body variant.
 #
 # Same physics as the canonical point-mass Niskanen scenario at
 # `niskanen-2009-chapter6.toml`, but with `vehicle.kind = "rigid_body"`
@@ -6,7 +6,7 @@
 # inertia tensor is a rod-shaped academic estimate sized to a 56 cm
 # body length (Niskanen 2009 Chapter 6 small-rocket geometry).
 #
-# Phase-3.1 simplification: the body starts with identity orientation
+# Simplification: the body starts with identity orientation
 # (body axes aligned with ECI), zero angular velocity, and a moment
 # model of `ZeroMoment` (gravity through CG, thrust along body +z,
 # axisymmetric drag — none produce a body-frame moment). With identity
@@ -44,8 +44,8 @@ id = "niskanen-c6-rigid"
 # Rod-shaped academic inertia tensor for a 56 cm body length × 80 g
 # airframe. I_xx = I_yy = (1/12)·m·L² for a thin rod transverse to its
 # axis; I_zz uses a small body-radius approximation. These values are
-# academic placeholders — Phase-3.7 tank/slosh and Phase-3.6 motor
-# inertia derivatives will refine the inertia model.
+# academic placeholders — tank/slosh and motor
+# inertia derivatives are not modelled in this scenario.
 [[vehicle.assembly.bodies]]
 id          = "main"
 geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
@@ -77,13 +77,13 @@ source        = "Helsinki proxy launch site (Niskanen 2009 Chapter 6 does not pu
 
 [aero]
 deck         = "../../data/aero/synthetic-niskanen-ch6-rocket.toml"
-deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27"
+deck_sha256  = "bbedf508c9fe589dea8f5eb77d29ac44f3f00271a09fb6fa661024b9e1809691"
 
 [propulsion.motor]
 file         = "../../data/motors/estes-c6-eng-derived.toml"
 ignite_at_s  = 0.0
 variant      = "solid"
-file_sha256  = "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e"
+file_sha256  = "fbea346fb952e97c50bd709a9c2a7b3cde3d5df0238a7d48032cd96a5b9bdbde"
 
 [telemetry]
 output.parquet = "out/niskanen-2009-chapter6-rigid.parquet"

@@ -1,4 +1,4 @@
-//! Phase-3.10.D synthetic star tracker.
+//! Synthetic star tracker.
 //!
 //! The star tracker reports the body-to-ECI attitude. Per axis the
 //! measurement transformation is a small-angle perturbation:

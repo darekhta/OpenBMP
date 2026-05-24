@@ -1,10 +1,10 @@
-# GNSS receiver textbook noise budget — Phase 3.10.B.
+# GNSS receiver textbook noise budget.
 #
 # Synthetic isotropic noise budget for the `SyntheticGnss` model.
 # Values are in the textbook range published in IS-GPS-200 (NAVSTAR
 # GPS Space Segment / Navigation User Interfaces) for the
 # user-equivalent range error (UERE) decomposition at the
-# receiver-output level. Phase-3.10 is a *receiver-output* noise
+# receiver-output level. This is a *receiver-output* noise
 # model — it does not model satellite geometry, pseudorange,
 # ionosphere, troposphere, or multipath. Those are downstream-user
 # concerns.

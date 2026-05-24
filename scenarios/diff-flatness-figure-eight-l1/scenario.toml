@@ -1,4 +1,4 @@
-# Phase-5.A.2.D L1-adaptive variant of the diff-flatness figure-eight.
+# L1-adaptive variant of the diff-flatness figure-eight.
 #
 # This scenario is a sibling of `scenarios/diff-flatness-figure-eight`:
 # same vehicle, same direct-torque effector layout, same minimum-snap
@@ -17,7 +17,7 @@
 #      `u_ad = -LPF(σ̂)` to the rate-loop torque, which (in theory)
 #      compensates for the actuator mismatch.
 #
-# Phase 5.A.2.D scope: provide the closed-loop validation that the L1
+# This scenario provides the closed-loop validation that the L1
 # math actually rejects this disturbance — measured against the
 # baseline-PID sibling `scenarios/diff-flatness-figure-eight-baseline`
 # by `crates/openbmp-cli/tests/diff_flatness_l1_robustness_e2e.rs`.
@@ -26,7 +26,7 @@ openbmp.scenario = 3
 
 [meta]
 name        = "diff-flatness-figure-eight-l1"
-description = "Phase-5.A.2.D L1-adaptive figure-eight tracker with a ReducedRate fault on the roll-torque effector. Sibling of diff-flatness-figure-eight; identical except for the fault injection and the L1 augmentation block."
+description = "L1-adaptive figure-eight tracker with a ReducedRate fault on the roll-torque effector. Sibling of diff-flatness-figure-eight; identical except for the fault injection and the L1 augmentation block."
 validation  = "experimental"
 provenance  = "synthetic; identical to diff-flatness-figure-eight modulo fault and L1 block. See provenance.md."
 

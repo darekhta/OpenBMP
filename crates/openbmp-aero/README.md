@@ -2,8 +2,7 @@
 
 L2 aerodynamics crate.
 
-**Status:** Phase 6 audit — schema-1 and schema-2 coefficient decks
-both shipped
+Schema-1 and schema-2 coefficient decks both ship
 (`AeroDeck` + `DeckLookup`). Schema-2 adds optional control-effector
 axes (e.g. `delta_e_deg`); the lookup signature gains a name-keyed
 `BTreeMap<&str, f64>` for deflections and the runner-side
@@ -11,19 +10,19 @@ axes (e.g. `delta_e_deg`); the lookup signature gains a name-keyed
 internal representation is N-D (3 ≤ N ≤ 6); at N = 3 the multilinear
 reduction is bit-identical to the original schema-1 trilinear path.
 Six-coefficient coefficient decks (`CY`, `Cl`, `Cn-yaw`) remain
-deferred. Phase 6 adds hypersonic methods and a separate strict
+deferred. Hypersonic methods and a separate strict
 `openbmp.panel_mesh_aero = 1` TOML parser for
-`LocalInclinationPanels` mesh studies.
+`LocalInclinationPanels` mesh studies are also provided.
 
 ## Purpose
 
 - Aerodynamic deck format: tabular `(Mach, alpha, beta) → coefficient`
   with provenance.
 - `AeroMethod` trait + implementations:
-  - `DeckLookup` (Phase 2).
+  - `DeckLookup`.
   - `ModifiedNewtonian`, `TangentCone`, `TangentWedge`,
-    `LocalInclinationPanels`, `FreeMolecular` (Phase 6.3).
-  - `HybridAeroMethod` dispatching by Mach + Knudsen (Phase 6.6).
+    `LocalInclinationPanels`, `FreeMolecular`.
+  - `HybridAeroMethod` dispatching by Mach + Knudsen.
 - Strict panel-mesh TOML ingestion for `LocalInclinationPanels`;
   coefficient decks and mesh-panel decks use separate schema markers.
 
@@ -58,17 +57,17 @@ original trilinear formula, asserted by a 1024-case property test.
 
 ## Validation
 
-`validated-toy` for both the Phase-2.5 schema-1 deck surface and the
-Phase-3.5 schema-2 surface. Validated against per-corner
+`validated-toy` for both the schema-1 deck surface and the
+schema-2 surface. Validated against per-corner
 exact-equality regression, eight-corner-centroid average lookup,
-single-axis sub-grid lookup, bit-stable clone-equivalence, and (3.5)
+single-axis sub-grid lookup, bit-stable clone-equivalence, and
 schema-2 lookup at zero deflection matching the schema-1 companion
-bit-for-bit. Phase 6 adds analytic hypersonic method checks.
+bit-for-bit, plus analytic hypersonic method checks.
 
 ## Data Provenance
 
 All shipped decks are synthetic textbook examples (sphere, cone,
-finned cylinder) plus the Phase-3.11 axisymmetric Calisto drag
+finned cylinder) plus the axisymmetric Calisto drag
 deck rendered from RocketPy's MIT-licensed
 `powerOff/powerOnDragCurve.csv` (byte-identical upstream), per
 `docs/data-provenance.md`. **Real fielded-vehicle aero decks are

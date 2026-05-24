@@ -2,7 +2,7 @@
 
 L4 flight controller.
 
-**Status:** Phase 4.C implementation pass — simulator-local validation only.
+**Status:** Implemented — simulator-local validation only.
 
 ## Purpose
 
@@ -53,7 +53,7 @@ openbmp-fc/
 └── controller     # FlightController façade (composes everything)
 ```
 
-### Phase 4.C State
+### Implementation State
 
 Implemented in this crate today:
 
@@ -76,7 +76,7 @@ Implemented in this crate today:
   behind the `mpc` feature. The vetting record is
   `docs/clarabel-vetting.md`.
 
-Explicitly deferred to Phase 5 or downstream work:
+Explicitly deferred to downstream work:
 
 - NRLMSISE-00 upper atmosphere.
 - Multi-instance estimator routing with active-lane selection.
@@ -84,9 +84,8 @@ Explicitly deferred to Phase 5 or downstream work:
 - Full receding-horizon MPC and LCvxLD / SCvx trajectory reproduction
   against published powered-descent references.
 
-Note: full WMM 2025 (`openbmp_physics::magnetic::Wmm2025`) is now
-available in the workspace via the `openbmp-physics` consolidation
-(`docs/physics-consolidation-plan.md`); the FC's degree-1
+Note: full WMM 2025 (`openbmp_physics::magnetic::Wmm2025`) is
+available in the workspace via `openbmp-physics`; the FC's degree-1
 `EarthDipoleField` placeholder is superseded for FC scenarios that
 set `mag_field = "wmm_2025"` in `[fc.ekf]` or `[fc.mekf]`.
 
@@ -142,11 +141,11 @@ system RNG, no allocation on the hot path.
 
 ## Validation
 
-`experimental`. Phase 4 validation uses analytic attitude/rate
+`experimental`. Validation uses analytic attitude/rate
 tracking, synthetic-sensor scenarios, full bus-history determinism,
 long-duration no-NaN / bounded-covariance checks, and textbook
 Kalman-filter examples. External flight-stack trajectory
-cross-validation is Phase 5 scope.
+cross-validation is downstream work.
 
 ## Data Provenance
 

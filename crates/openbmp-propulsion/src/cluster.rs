@@ -1,17 +1,17 @@
-//! Phase-3.6 [`EngineCluster`]: a propulsion-side container of
+//! [`EngineCluster`]: a propulsion-side container of
 //! [`EngineModel`] instances plus their body-frame mount geometry.
 //!
 //! `EngineCluster` is **not** a kernel-side `ForceModel` /
 //! `MomentModel` / `MassModel`; the kernel-side adapters live in
 //! `openbmp-vehicle::adapters` and consume per-step
-//! [`EngineSnapshot`]s via the runner-pushed kernel snapshot
-//! (Phase-3.6.C). Splitting the architecture-spec'd
+//! [`EngineSnapshot`]s via the runner-pushed kernel snapshot.
+//! Splitting the architecture-spec'd
 //! "cluster-as-force-model" into a propulsion-side container plus
 //! vehicle-side adapter trio keeps `openbmp-propulsion` L2 and
 //! avoids the `&mut self` problem that would arise if engines lived
 //! inside the kernel's force-model chain.
 //!
-//! This struct exists so the runner's `EngineRack` (Phase-3.6.C)
+//! This struct exists so the runner's `EngineRack`
 //! has a typed home for the engines plus the parallel
 //! `mount_points_body` / `engine_ids` arrays that the kernel-side
 //! cluster adapter needs at construction time.
@@ -30,8 +30,8 @@ use openbmp_core::{Body, Duration, EngineId, Position3};
 use crate::engine::{EngineCommand, EngineModel, EngineSnapshot};
 use crate::error::EngineError;
 
-/// Cluster-layout tag, carried for telemetry / docs. Phase 3.6 has
-/// no behavioural use for this — it informs neither the cluster's
+/// Cluster-layout tag, carried for telemetry / docs. This has
+/// no behavioural use — it informs neither the cluster's
 /// summed force / moment / mass-flow nor the adapter trio. Future
 /// sub-phases may use the layout to drive symmetry-aware fault
 /// scenarios or controller-side allocation tables.

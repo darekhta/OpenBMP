@@ -102,7 +102,7 @@ impl FcBridge {
         }))
     }
 
-    /// Phase 5.X.B: returns the FC commander's most recent
+    /// Returns the FC commander's most recent
     /// mission-state publication, or `None` when no FC is wired or
     /// the commander has not yet ticked. The scenario runner reads
     /// this between FC and kernel ticks and forwards into
@@ -378,11 +378,11 @@ fn require_bridge_frame(document: &ScenarioDocument) -> Result<(), RunnerError> 
     })
 }
 
-/// Phase 5.A.3.B + 5.A.3.C precondition: per-axis rate loops (LQR
+/// Precondition: per-axis rate loops (LQR
 /// and INDI) require a single-body assembly with diagonal inertia
-/// in body axes. Multi-body assemblies fail closed until a later
-/// slice solves gains / parameters against the full assembled mass
-/// properties; non-diagonal inertia breaks the per-axis decoupling
+/// in body axes. Multi-body assemblies fail closed because solving
+/// gains / parameters against the full assembled mass
+/// properties is not supported; non-diagonal inertia breaks the per-axis decoupling
 /// assumption both rate loops are built on.
 ///
 /// Returns `Ok([Jxx, Jyy, Jzz])` after passing the precondition.
@@ -398,7 +398,7 @@ fn verify_per_axis_rate_loop_preconditions(
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "rate_loop_kind = \"{kind_label}\" requires exactly one \
-                 [[vehicle.assembly.bodies]] entry with diagonal inertia in Phase 5.A.3.B/C; \
+                 [[vehicle.assembly.bodies]] entry with diagonal inertia; \
                  got {} bodies",
                 bodies.len()
             ),
@@ -441,7 +441,7 @@ fn verify_per_axis_rate_loop_preconditions(
     ])
 }
 
-/// Phase 5.A.3.B helper: extract the diagonal moments of inertia
+/// Helper to extract the diagonal moments of inertia
 /// from a single-body assembly so the runner can solve the per-axis
 /// LQR DARE at scenario load. Returns `Ok(None)` when the FC
 /// scenario does not request a rate loop that needs the precondition
@@ -477,7 +477,7 @@ fn build_autopilot_lqr_context(
     Ok(None)
 }
 
-/// Phase-5.A.5 helper: derive a [`PrioritisedRedistributedAllocator`]
+/// Helper to derive a [`PrioritisedRedistributedAllocator`]
 /// from `[fc.autopilot_allocation]` plus the
 /// `[[vehicle.assembly.effectors]]` declarations.
 ///
@@ -504,7 +504,7 @@ fn build_autopilot_allocator(
         openbmp_scenario::FcAutopilotAllocationKind::PseudoInverse => {
             return Err(RunnerError::UnsupportedScenario {
                 what: "fc.autopilot_allocation.kind = \"pseudo_inverse\" is parsed but not yet \
-                       consumed in Phase 5.A.5; use \"prioritised_redistributed\" or remove the \
+                       consumed; use \"prioritised_redistributed\" or remove the \
                        block until the pseudo-inverse path lands"
                     .to_owned(),
             });
@@ -528,7 +528,7 @@ fn build_autopilot_allocator(
             return Err(RunnerError::UnsupportedScenario {
                 what: format!(
                     "fc.autopilot_allocation = \"prioritised_redistributed\" requires symmetric \
-                     effector limits in Phase 5.A.5; effector \"{}\" has min = {}, max = {}",
+                     effector limits; effector \"{}\" has min = {}, max = {}",
                     effector.id, effector.limits.min, effector.limits.max
                 ),
             });
@@ -645,7 +645,7 @@ fn magnetic_field_settings_for_estimator(
             )
         }
         FcEstimatorKind::Imm | FcEstimatorKind::SrUkf | FcEstimatorKind::SrUkfAttitude => {
-            // Phase-5.B.3 IMM and Phase-5.B.1 SR-UKF (full and attitude
+            // IMM and SR-UKF (full and attitude
             // variants) all use the [fc.ekf] base for the magnetic-field
             // model; per-mode / per-lane overrides do not alter the
             // field-evaluation reference.
@@ -740,7 +740,7 @@ fn sensor_text<'a>(
 }
 
 fn parse_toml_budget(text: &str) -> Result<toml::Value, RunnerError> {
-    // Phase-5.A.2.A: in `toml` 1.x `text.parse::<toml::Value>()`
+    // In `toml` 1.x `text.parse::<toml::Value>()`
     // expects a single TOML scalar / inline-table / array, not a
     // top-level document — leading comments + a `key = value` line
     // surface as "unexpected content, expected nothing". Parse as a

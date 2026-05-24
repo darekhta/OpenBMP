@@ -1,11 +1,11 @@
 //! `openbmp-mission` — hardware-portable mission state machine.
 //!
-//! Phase-3.14.B: extracted from `openbmp-sim` so any flight code that
+//! Lives apart from `openbmp-sim` so any flight code that
 //! consumes the `MissionPhaseGraph` / `EventTrigger` /
 //! `EventBinding` vocabulary does not transitively depend on the
 //! simulation kernel.
 //!
-//! Phase 5.X.A: the action taxonomy was split. This crate ships only
+//! The action taxonomy is split: this crate ships only
 //! the HAL-portable [`MissionAction`] enum; the simulator-only
 //! scenario-script actions (engine / effector / separation /
 //! recovery) live in the separate `openbmp-scenario-script` crate.

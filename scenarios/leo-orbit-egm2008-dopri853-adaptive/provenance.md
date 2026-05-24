@@ -6,8 +6,8 @@
 
 ## Source class
 
-Synthetic. The scenario is the Phase-5.D.6 end-to-end demo for the
-runner-side adaptive-integrator dispatch on the new
+Synthetic. The scenario is the end-to-end demo for the
+runner-side adaptive-integrator dispatch on the
 `(adaptive-explicit, dopri853, state-stable)` triple, which selects
 `openbmp_sim::Dopri853Adaptive` (Dormand-Prince 8(5,3) embedded RK
 pair under an I-controller and the SciPy / Hairer combined err5/err3
@@ -15,7 +15,7 @@ stabilised error norm).
 
 The initial conditions, gravity model, and orbit duration are
 identical to `scenarios/leo-orbit-egm2008-adaptive/scenario.toml`
-(the Phase-5.D.4 DOPRI5(4) demo). See that scenario's `provenance.md`
+(the DOPRI5(4) demo). See that scenario's `provenance.md`
 for the closed-form circular-orbit derivation; the only differences
 here are the `[solver].trajectory_method = "dopri853"` selection and
 the tighter tolerances tuned to the 8th-order method.
@@ -29,7 +29,7 @@ min_dt_s  = 1.0e-6
 max_dt_s  = 1.0
 ```
 
-Tolerances are tighter than the §5.D.4 DOPRI5(4) demo
+Tolerances are tighter than the DOPRI5(4) demo
 (`rtol = 1e-9`, `atol = 1e-12`). The 8th-order accuracy of DOP853
 is wasted at loose tolerances — at `rtol = 1e-12` the controller's
 accepted step sequence still collapses to the outer `dt_s = 1.0`
@@ -73,7 +73,7 @@ real-world locations, no ITAR / EAR / MTCR / Wassenaar content.
 ## Validation status
 
 `experimental`. Validates parser-side and runs end-to-end
-deterministically. The Phase-5.D.6 e2e test
+deterministically. The e2e test
 (`crates/openbmp-cli/tests/leo_orbit_egm2008_dopri853_adaptive_e2e.rs`)
 asserts:
 

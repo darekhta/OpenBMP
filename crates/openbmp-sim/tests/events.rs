@@ -1,4 +1,4 @@
-//! Phase-3.2 event-trigger unit tests.
+//! Event-trigger unit tests.
 //!
 //! Covers each [`openbmp_sim::BuiltInEventTrigger`] variant under
 //! prescribed [`openbmp_sim::EventEvalState`] sequences. Crossing

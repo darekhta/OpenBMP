@@ -1,6 +1,6 @@
 //! Microbenchmark for the simulation kernel hot path.
 //!
-//! Realistic targets per the Phase-1.3 research survey: 50–200 ns per
+//! Realistic targets per the research survey: 50–200 ns per
 //! step on modern x86_64 for a point-mass under constant gravity.
 //!
 //! Built with the same `target-feature=-fma` flags as production

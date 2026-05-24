@@ -1,9 +1,7 @@
-//! `openbmp check-provenance <data/>` — Phase-1 stub.
+//! `openbmp check-provenance <data/>`.
 //!
 //! Walks `root` and reports any data file lacking a `provenance.md` in
-//! the same directory. Phase-2 work (`docs/data-provenance.md
-//! § Machine Checks`) replaces this with full sidecar parsing and hash
-//! recomputation.
+//! the same directory.
 
 use std::collections::BTreeSet;
 use std::fs;

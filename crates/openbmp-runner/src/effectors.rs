@@ -1,4 +1,4 @@
-//! Phase-3.4 runner-side effector rack.
+//! Runner-side effector rack.
 //!
 //! The rack owns the `Vec<Box<dyn ControlEffector>>` resolved from
 //! the scenario's `[[vehicle.assembly.effectors]]` block, plus the
@@ -7,13 +7,13 @@
 //! the kernel's `step()` so the effector telemetry observable in
 //! the Parquet matches the kernel's view of the world.
 //!
-//! Phase-3.4 leaves the kernel's force / moment evaluation untouched
-//! when the rack is empty — legacy scenarios produce byte-identical
+//! The rack leaves the kernel's force / moment evaluation untouched
+//! when it is empty — legacy scenarios produce byte-identical
 //! Parquet because the runner short-circuits every rack-related
 //! operation on `is_empty()`.
 //!
-//! Aero-deck schema-2 consumption of effector deflections lands in
-//! Phase 3.5; in 3.4 the rack snapshot is read only by the
+//! Aero-deck schema-2 scenarios consume effector deflections; for
+//! decks without effector axes the rack snapshot is read only by the
 //! telemetry layer.
 
 use std::collections::BTreeMap;
@@ -313,8 +313,8 @@ impl EffectorRack {
     }
 }
 
-/// Phase-3.4 effector resolver: scenario `EffectorConfig` →
-/// `LinearActuator` (the only kind shipped in 3.4). Mounts the
+/// Effector resolver: scenario `EffectorConfig` →
+/// `LinearActuator` (the only currently supported kind). Mounts the
 /// optional load-time fault.
 fn build_effector(
     index: usize,
@@ -332,7 +332,7 @@ fn build_effector(
     let initial_position = config.initial_position.unwrap_or(0.0);
     let tau_s = match config.kind {
         EffectorKindConfig::LinearActuator { tau_s } => tau_s.unwrap_or(0.0),
-        // Phase-5.A.2.A: direct-torque effectors share the
+        // Direct-torque effectors share the
         // first-order linear-actuator dynamics; the kind tag tells the
         // moment-model layer to interpret the deflection as a body
         // torque command rather than feed it to an aero deck. Default

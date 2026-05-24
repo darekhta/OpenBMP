@@ -125,7 +125,7 @@ parameter sets outside the safety boundary.
 
 ## Sounding-Rocket Reference Case
 
-Phase 2.9 carries two sounding-rocket checks in
+OpenBMP carries two sounding-rocket checks in
 `crates/openbmp-vehicle/tests/sounding_rocket.rs`:
 
 - **Niskanen 2009 Chapter 6 C6 case** (`research`): reduced point-mass
@@ -161,7 +161,7 @@ Sources:
 
 Hypersonic models require stronger evidence than ordinary toy rocket models
 because chemistry, radiation, rarefaction, material response, and coupling
-errors can dominate trajectory error. Phase-6 evidence is built in layers:
+errors can dominate trajectory error. Hypersonic evidence is built in layers:
 
 1. **Code verification** — manufactured solutions, exact scalar stiff ODEs,
    exact shock / expansion relations, conservation checks, and convergence-rate
@@ -184,7 +184,7 @@ errors can dominate trajectory error. Phase-6 evidence is built in layers:
    interpolation/extrapolation, atmosphere variability, and external-reference
    uncertainty.
 
-A Phase-6 model cannot be promoted to `research` unless it has at least one
+A hypersonic model cannot be promoted to `research` unless it has at least one
 analytic or manufactured code-verification case, one public reference
 comparison, a declared validity envelope, and a documented uncertainty story.
 Code-to-code agreement alone is not validation; it is evidence that must be

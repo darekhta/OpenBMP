@@ -1,4 +1,4 @@
-# Phase-5.C.2 demo: 1 kg point mass in a 400 km LEO orbit under
+# Demo: 1 kg point mass in a 400 km LEO orbit under
 # EGM2008 zonal-harmonic gravity (degrees 2-6). The initial state is
 # the closed-form circular-orbit velocity for the WGS84 µ at radius
 # r = 6_778_000 m, inclined 30° relative to the equatorial plane so
@@ -13,14 +13,14 @@
 #
 # RK4 fixed-step at dt = 1.0 s integrates one full orbit (≈ 5556 s)
 # with relative energy drift well below 1e-9 for the model used here.
-# Telemetry is parquet-only (the Phase-3 oracle compares Parquet
+# Telemetry is parquet-only (the byte-stability oracle compares Parquet
 # bytes; CSV is omitted to keep the artifact slim).
 
 openbmp.scenario = 3
 
 [meta]
 name = "leo-orbit-egm2008"
-description = "1 kg point mass in 400 km / 30° inclined LEO under EGM2008 zonal gravity (degrees 2-6) for one orbit period; Phase 5.C.2 demo."
+description = "1 kg point mass in 400 km / 30° inclined LEO under EGM2008 zonal gravity (degrees 2-6) for one orbit period; fixed-RK4 demo."
 validation = "experimental"
 provenance = "synthetic; closed-form circular-orbit IC for WGS84 µ at r = 6_778_000 m, 30° inclination; gravity = EGM2008 zonal degrees 2-6 with J_n from Pavlis et al. 2012. See provenance.md."
 

@@ -1,8 +1,8 @@
-//! Orthogonal concurrent regions (Phase 5.X.D).
+//! Orthogonal concurrent regions.
 //!
 //! A [`Region`] is an independent state machine instance that ticks
-//! concurrently with the canonical mission region. Phase 5.X.D
-//! lands the type-level vocabulary for the four canonical regions
+//! concurrently with the canonical mission region. This module
+//! provides the type-level vocabulary for the four canonical regions
 //! (`mission`, `health`, `comms`, `estimator_regime`) and the
 //! cross-region transition guard expression that composes with
 //! triggers via AND semantics.
@@ -47,11 +47,11 @@ use crate::{MissionPhaseGraph, Phase, PhaseId, RegionId};
 // Canonical region ids
 // ---------------------------------------------------------------------
 
-/// The four canonical orthogonal regions Phase 5.X.D reserves.
+/// The four canonical orthogonal regions.
 ///
 /// Their ids are FNV-1a-64 of the canonical scenario region paths;
 /// reordering region declarations in a scenario file cannot shift
-/// any region's id. Phase 5.X.F's runner supplies these four regions
+/// any region's id. The runner supplies these four regions
 /// when `[[mission.regions]]` is omitted.
 #[derive(Debug)]
 pub struct CanonicalRegions;
@@ -79,16 +79,16 @@ impl CanonicalRegions {
     }
 
     /// The `estimator_regime` region's id — populated by the IMM
-    /// Phase 5.B estimator. Observed-but-not-decided by the
+    /// estimator. Observed-but-not-decided by the
     /// commander.
     #[must_use]
     pub const fn estimator_regime() -> RegionId {
         RegionId::from_path("mission.regions.estimator_regime")
     }
 
-    /// Phase-6 reserved: aerodynamic-regime region (`subsonic`,
+    /// Reserved: aerodynamic-regime region (`subsonic`,
     /// `transonic`, `supersonic`, `hypersonic`, `rarefied`). Not
-    /// instantiated until 6.D.
+    /// yet instantiated.
     #[must_use]
     pub const fn aerodynamic_regime() -> RegionId {
         RegionId::from_path("mission.regions.aerodynamic_regime")
@@ -182,7 +182,7 @@ impl CrossRegionGuard {
 
 /// One orthogonal concurrent region.
 ///
-/// Phase 5.X models a region as `(id, states, current_state)`. The
+/// A region is modeled as `(id, states, current_state)`. The
 /// `mission` region's state set comes from the mission graph. The
 /// `health`, `comms`, and `estimator_regime` regions use canonical
 /// state ids supplied by the runner unless a scenario declares an

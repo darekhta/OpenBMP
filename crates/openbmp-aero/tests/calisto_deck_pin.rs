@@ -1,4 +1,4 @@
-//! Phase-3.11.B regression test for the Calisto drag-curve deck.
+//! Regression test for the Calisto drag-curve deck.
 //!
 //! Pins:
 //!  - The OpenBMP TOML at `data/aero/calisto-drag.toml` parses

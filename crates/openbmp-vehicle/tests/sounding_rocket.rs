@@ -1,4 +1,4 @@
-//! Phase 2.9 — sounding-rocket validation case.
+//! Sounding-rocket validation case.
 //!
 //! Vertical-launch model rocket with the real Estes D12 motor
 //! (`data/motors/estes-d12-eng-derived.toml`), the synthetic
@@ -80,9 +80,9 @@ const STOP_S: f64 = 20.0; // covers ascent + true post-apogee descent
 // Simulation Software." Master's thesis, Helsinki University of
 // Technology. Chapter 6 Table 6.1 + the surrounding text.
 //
-// The Phase-2.11 e2e runner test in
+// The e2e runner test in
 // `crates/openbmp-cli/tests/sounding_rocket_e2e.rs` covers the same
-// benchmark via the canonical Phase-2.10 scenario file at
+// benchmark via the canonical scenario file at
 // `scenarios/sounding-rocket/niskanen-2009-chapter6.toml`. This
 // integration test exercises the kernel directly and is self-contained.
 const NISKANEN_DRY_AIRFRAME_MASS_KG: f64 = 0.080;

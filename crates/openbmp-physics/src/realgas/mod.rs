@@ -1,4 +1,4 @@
-//! Phase-6.2 real-gas thermodynamics.
+//! Real-gas thermodynamics.
 //!
 //! Equilibrium-air thermodynamics for hypersonic flow. For
 //! temperatures above ~600 K the ideal-gas `γ = 1.4` assumption
@@ -14,9 +14,9 @@
 //!
 //! # Scope
 //!
-//! The Phase-6 audit removed a synthesized Tannehill table that had
+//! An audit removed a synthesized Tannehill table that had
 //! not been checked against a public source. Both equilibrium-air
-//! implementations now fail closed with [`PhysicsError::OutOfEnvelope`]
+//! implementations fail closed with [`PhysicsError::OutOfEnvelope`]
 //! until verified data are added in a follow-on slice.
 //!
 //! # Determinism
@@ -128,7 +128,7 @@ impl AirComposition {
 
     /// Electron-minus-ion mole-fraction residual.
     ///
-    /// The Phase-6 ionised-air surface assumes singly charged
+    /// The ionised-air surface assumes singly charged
     /// positive ions; charge-neutral equilibrium outputs should have
     /// this residual near zero within table / solver tolerance.
     #[must_use]

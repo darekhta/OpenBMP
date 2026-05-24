@@ -1,4 +1,4 @@
-//! Phase-3.2 `MissionPhaseGraph` validation + ordering tests.
+//! `MissionPhaseGraph` validation + ordering tests.
 //!
 //! Covers:
 //!
@@ -11,7 +11,7 @@
 //!
 //! These cover the validation + canonicalisation contract described
 //! at [`openbmp_sim::MissionPhaseGraph`] and in
-//! `docs/scenario-format.md § Mission blocks (Phase 3.2)`.
+//! `docs/scenario-format.md § Mission blocks`.
 
 #![allow(
     clippy::expect_used,

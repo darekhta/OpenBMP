@@ -1,7 +1,7 @@
 //! Error type for the openbmp-propulsion crate.
 //!
 //! Mirrors the shape of `openbmp-aero::AeroError` and
-//! `openbmp-physics::PhysicsError` so the kernel-side adapter at Phase 2.10
+//! `openbmp-physics::PhysicsError` so the kernel-side adapter
 //! can fold motor failures into the same chain without
 //! `openbmp-propulsion` depending on `openbmp-sim`.
 
@@ -51,7 +51,7 @@ pub enum MotorError {
 /// and the [`crate::cluster::EngineCluster`] container.
 ///
 /// Sibling type to [`MotorError`]: the two trait families don't
-/// intersect, so they keep separate error surfaces. The Phase-3.6
+/// intersect, so they keep separate error surfaces. The
 /// runner-side `EngineRack` lifts these into `CliError::Engine`.
 ///
 /// `Eq` is not derived because [`EngineError::InvalidDt`] carries
@@ -67,7 +67,7 @@ pub enum EngineError {
         reason: &'static str,
     },
     /// `step()` was called with a non-positive or non-finite `dt`.
-    /// Phase 3 uses fixed-step integration.
+    /// The engine uses fixed-step integration.
     #[error("engine step dt invalid: got {got_s} s")]
     InvalidDt {
         /// Offending `dt` in seconds.

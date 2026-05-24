@@ -1,4 +1,4 @@
-//! Phase-2.1.D analytic-toy validation: torque-free rigid-body precession.
+//! Analytic-toy validation: torque-free rigid-body precession.
 //!
 //! Drives the new rigid-body kernel end-to-end against the analytic
 //! torque-free Euler problem.

@@ -1,7 +1,7 @@
-//! Phase-3.3.D end-to-end test: multi-body scenario loads and
+//! End-to-end test: multi-body scenario loads and
 //! propagates through the kernel.
 //!
-//! Asserts the §3.3 exit criterion: a scenario with two bodies
+//! Asserts: a scenario with two bodies
 //! (`scenarios/multi-body/two-body-fairing.toml`) loads via
 //! `openbmp run`, parses the assembly tree, and produces a Parquet
 //! whose initial-row mass equals the sum of body dry masses

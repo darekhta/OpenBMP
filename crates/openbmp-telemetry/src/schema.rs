@@ -5,7 +5,7 @@
 //! The schema also carries optional table-level metadata as an
 //! ordered `BTreeMap<String, String>`. Telemetry consumers (Parquet
 //! writer in particular) merge this map into the archive's
-//! schema-level metadata. The Phase-2.11.B runner uses it to record
+//! schema-level metadata. The runner uses it to record
 //! resolved-file SHA-256 digests in the Parquet header — the
 //! determinism gate can then verify pin matches at replay time
 //! without re-loading the scenario.

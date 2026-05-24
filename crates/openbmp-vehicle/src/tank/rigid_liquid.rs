@@ -1,4 +1,4 @@
-//! [`RigidLiquid`] — Phase-3.7.A toy [`MovingMassModel`] with no
+//! [`RigidLiquid`] — toy [`MovingMassModel`] with no
 //! slosh dynamics.
 //!
 //! Behaviour:
@@ -10,7 +10,7 @@
 //!   for a point mass at the mount.
 //! - Reaction force / moment back on the parent body = zero. The
 //!   fluid is rigid relative to the body, so no slosh-driven
-//!   feedback. This is the documented Phase-3.7 baseline.
+//!   feedback. This is the no-slosh baseline.
 //! - `drain(kg/s)` sets the next [`MovingMassModel::step`] drain
 //!   rate. The step subtracts `rate · dt` from the fluid mass and
 //!   clamps at zero.
@@ -19,7 +19,7 @@
 //! tank where slosh is irrelevant for the scenario being simulated.
 //! Not physical for sounding-rocket sloshing — use
 //! [`crate::tank::equivalent_pendulum::EquivalentPendulum`]
-//! (Phase 3.7.B) for that.
+//! for that.
 
 use nalgebra::Vector3;
 use openbmp_core::Duration;
@@ -29,7 +29,7 @@ use super::{
     point_mass_inertia_about_origin,
 };
 
-/// Phase-3.7 no-slosh toy moving mass.
+/// No-slosh toy moving mass.
 #[derive(Debug, Clone)]
 pub struct RigidLiquid {
     fluid_kg: f64,

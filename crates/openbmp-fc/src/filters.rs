@@ -1,6 +1,6 @@
 //! Deterministic controller-side digital filters.
 //!
-//! Phase 4.C adds a Direct-Form-II Transposed biquad notch primitive
+//! Provides a Direct-Form-II Transposed biquad notch primitive
 //! for gyro conditioning. The module is pure arithmetic, carries no
 //! time source, and is therefore compatible with the lockstep
 //! controller clock.

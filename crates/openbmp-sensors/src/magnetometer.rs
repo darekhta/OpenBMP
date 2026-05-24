@@ -1,4 +1,4 @@
-//! Phase-3.10.C synthetic magnetometer.
+//! Synthetic magnetometer.
 //!
 //! Per body axis the measurement transformation is:
 //!
@@ -9,7 +9,7 @@
 //!
 //! `field_body_truth` is the WMM-truth geodetic-NED field at the
 //! vehicle's position and time, rotated into the body frame by the
-//! truth attitude. The runner-side adapter (Phase 3.10.E) does that
+//! truth attitude. The runner-side adapter does that
 //! pre-rotation and packs the result into
 //! [`SensorTruth::magnetic_field_body_nt`]. The magnetometer then
 //! applies its constant soft-iron / hard-iron biases plus per-axis
@@ -26,8 +26,8 @@
 //! noise_z        2
 //! ```
 //!
-//! No OU bias drift on the body axes — Phase 3.10 keeps the soft-
-//! iron and hard-iron biases as constants. Temperature drift,
+//! No OU bias drift on the body axes — the soft-
+//! iron and hard-iron biases are constants. Temperature drift,
 //! spin-induced bias, and full hysteresis are deferred to a later
 //! phase.
 //!

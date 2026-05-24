@@ -1,4 +1,4 @@
-# Phase-5.D.6 demo: 1 kg point mass in a 400 km / 30° inclined LEO
+# Demo: 1 kg point mass in a 400 km / 30° inclined LEO
 # orbit under EGM2008 zonal-harmonic gravity (degrees 2-6) integrated
 # with the **Dormand-Prince 8(5,3) (DOP853)** adaptive embedded RK
 # pair under an I-controller and the SciPy / Hairer combined
@@ -6,9 +6,9 @@
 #
 # Identical initial conditions and gravity model to
 # `scenarios/leo-orbit-egm2008-adaptive/scenario.toml` (the
-# Phase-5.D.4 DOPRI5(4) demo); the only difference is
+# DOPRI5(4) demo); the only difference is
 # `[solver].trajectory_method = "dopri853"`. The point of this
-# scenario is the §5.D.6 wiring path: `(adaptive-explicit, dopri853,
+# scenario is the DOP853 wiring path: `(adaptive-explicit, dopri853,
 # state-stable)` selects `Dopri853Adaptive` with its 12-stage
 # 8th-order solution, and the runner-side dispatch propagates
 # the `IntegratorDeterminism::StateStable` label out through the
@@ -19,14 +19,14 @@
 # band forces the initial 1 s trial step outside the error envelope,
 # so the adaptive path performs error-driven internal sub-steps
 # rather than collapsing to the fixed-step DOP853 trajectory.
-# Telemetry is parquet-only (the Phase-3 oracle compares Parquet
+# Telemetry is parquet-only (the byte-stability oracle compares Parquet
 # bytes; CSV is omitted to keep the artifact slim).
 
 openbmp.scenario = 3
 
 [meta]
 name = "leo-orbit-egm2008-dopri853-adaptive"
-description = "1 kg point mass in 400 km / 30° inclined LEO under EGM2008 zonal gravity (degrees 2-6) integrated with DOP853 adaptive (8th-order Dormand-Prince) for one orbit period; Phase 5.D.6 demo."
+description = "1 kg point mass in 400 km / 30° inclined LEO under EGM2008 zonal gravity (degrees 2-6) integrated with DOP853 adaptive (8th-order Dormand-Prince) for one orbit period; DOP853 adaptive demo."
 validation = "experimental"
 provenance = "synthetic; closed-form circular-orbit IC for WGS84 µ at r = 6_778_000 m, 30° inclination; gravity = EGM2008 zonal degrees 2-6 with J_n from Pavlis et al. 2012; integrator = Dopri853Adaptive (Hairer-Nørsett-Wanner Vol I §II.5 Table 5.4 + SciPy err5/err3 combined error norm + I-controller). See provenance.md."
 

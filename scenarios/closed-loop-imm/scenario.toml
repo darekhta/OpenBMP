@@ -1,4 +1,4 @@
-# Phase-5.B.3 Bar-Shalom IMM closed-loop demo: 2-mode IMM
+# Bar-Shalom IMM closed-loop demo: 2-mode IMM
 # (nominal vs maneuver) wired into the closed-loop attitude-hold
 # pipeline.
 #
@@ -30,7 +30,7 @@ openbmp.scenario = 3
 
 [meta]
 name        = "closed-loop-imm"
-description = "Phase-5.B.3 demo: Bar-Shalom IMM (2-mode EKF bank) wired into the closed-loop attitude-hold pipeline. Synthetic; nominal innovations should keep the active mode at 0 (nominal)."
+description = "Bar-Shalom IMM (2-mode EKF bank) wired into the closed-loop attitude-hold pipeline. Synthetic; nominal innovations should keep the active mode at 0 (nominal)."
 validation  = "experimental"
 provenance  = "synthetic; identical to closed-loop-attitude-hold except for the [fc.imm] block. See provenance.md."
 

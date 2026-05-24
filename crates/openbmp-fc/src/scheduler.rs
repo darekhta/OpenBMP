@@ -358,7 +358,7 @@ impl Scheduler {
     /// hook exists so a future FDIR upgrade can react to sustained
     /// real-time slips without re-plumbing the scheduler API.
     pub fn report_actual_us(&mut self, _job_name: &str, _actual_us: u64) {
-        // Reserved for Phase-4.6 health monitor integration.
+        // Reserved for health monitor integration.
     }
 }
 

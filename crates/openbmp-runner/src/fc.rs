@@ -1,4 +1,4 @@
-//! Phase 4.B FC runner — bridges a parsed `[fc]` block to a fully
+//! FC runner — bridges a parsed `[fc]` block to a fully
 //! constructed [`FlightController`] with all academic algorithms wired
 //! up.
 //!
@@ -99,7 +99,7 @@ impl FcRunnerMission {
 impl FcRunner {
     /// Builds the runner from the parsed `[fc]` block. The kernel is
     /// responsible for constructing a mission graph and event bindings
-    /// (Phase 4.B reuses the runner-side mission builder).
+    /// (reuses the runner-side mission builder).
     ///
     /// # Errors
     ///
@@ -121,7 +121,7 @@ impl FcRunner {
 
         let slow_period_ticks = period_ticks_for_hz(config.base_rate_hz, 100);
         let mut next_priority = 5_u8;
-        // Phase-5.B.2 — when the scenario declares `[fc.estimator_lanes]`,
+        // When the scenario declares `[fc.estimator_lanes]`,
         // build a `MultiLaneEstimator` containing one estimator per
         // lane and register it as the single scheduled estimator
         // job. The voter policy from the scenario block selects the
@@ -348,7 +348,7 @@ impl FcRunner {
             .map(|(s, _)| s)
     }
 
-    /// Phase 5.X.B: returns the latest mission-state publication
+    /// Returns the latest mission-state publication
     /// (the single-source-of-truth topic) for downstream consumers
     /// that should subscribe instead of holding their own
     /// mission-graph copy. Returns `None` when the commander has
@@ -405,23 +405,23 @@ impl FcRunner {
         bus.register::<EngineDemand>()?;
         bus.register::<EngineCommandSet>()?;
         bus.register::<FdirStatus>()?;
-        // Phase-5.B.4: GLRT diagnostic topic. Always registered so
+        // GLRT diagnostic topic. Always registered so
         // scenarios that opt into the windowed-mean-shift GLRT can
         // publish without a separate setup step. Idle when the
         // detector kind is the legacy burst-counter / single-sample /
         // CUSUM family.
         bus.register::<FdirGlrtDiagnostic>()?;
-        // Phase-5.B.3: IMM mode-probability snapshot. Always
+        // IMM mode-probability snapshot. Always
         // registered so scenarios that opt into `kind = "imm"` can
         // publish without a separate setup step. Idle when the
         // selected estimator is not IMM.
         bus.register::<EstimatorMode>()?;
-        // Phase 5.X.B: single-source-of-truth mission state topic.
+        // Single-source-of-truth mission state topic.
         // The commander publishes here every tick; downstream code
         // (simulator-side subscriber, telemetry recorder) reads in
         // place of the legacy parallel-state pattern.
         bus.register::<MissionStatePublish>()?;
-        // Phase 5.X.E: per-region state topics (one per canonical
+        // Per-region state topics (one per canonical
         // region) so a consumer can watch a single region without
         // parsing the aggregate `commander.mission_state` payload.
         bus.register::<MissionRegionStatePublish>()?;
@@ -536,7 +536,7 @@ fn apply_mekf_overrides(params: &mut MekfParams, cfg: &FcMekfConfig) {
 }
 
 // ---------------------------------------------------------------------
-// Phase-5.B.2 — multi-instance estimator routing helpers.
+// Multi-instance estimator routing helpers.
 // ---------------------------------------------------------------------
 
 /// Wrapper that exposes a `Box<dyn Estimator + Send>` as a concrete
@@ -790,7 +790,7 @@ fn build_multi_lane_estimator(
     Ok(MultiLaneEstimator::new(lanes, policy))
 }
 
-/// Phase 5.A.3.B context required to translate
+/// Context required to translate
 /// `[fc.autopilot_params.lqr]` into solved per-axis gains. The
 /// runner pre-extracts these from the vehicle config since the
 /// autopilot needs them to solve the per-axis DARE before the FC
@@ -852,8 +852,8 @@ fn build_autopilot_params(
             projection_bound: l1.projection_bound,
         });
     }
-    // Phase 5.A.3.B — rate-loop kind dispatch. Default keeps the
-    // PID loop (Phase-4 behaviour); selecting LQR triggers a
+    // Rate-loop kind dispatch. Default keeps the
+    // PID loop; selecting LQR triggers a
     // per-axis DARE solve at scenario load using the diagonal
     // inertia of the single-body assembly.
     if let Some(kind) = cfg.rate_loop_kind {
@@ -952,8 +952,8 @@ fn build_autopilot_params(
     }
     let _ = lqr_ctx;
     let _ = dt_s; // referenced under `mpc` feature only
-    // Phase 5.A.4 — attitude-loop kind dispatch. PID is the
-    // Phase-4/5.A.2/5.A.3 default; selecting MPC triggers a
+    // Attitude-loop kind dispatch. PID is the
+    // default; selecting MPC triggers a
     // RecedingHorizonAttitudeMpc construction at scenario load using
     // the configured params and the loop step `time.dt_s`.
     if let Some(kind) = cfg.attitude_loop_kind {
@@ -1059,7 +1059,7 @@ fn build_fdir_params(cfg: Option<&FcFdirConfig>) -> FdirParams {
     if let Some(v) = cfg.cusum_threshold {
         params.cusum_threshold = v;
     }
-    // Phase-5.B.4: when `[fc.fdir.detector]` is present its `kind`
+    // When `[fc.fdir.detector]` is present its `kind`
     // overrides the legacy `detector_kind`. The scenario validator
     // already guarantees `window_samples` is set for
     // `windowed_mean_shift_glrt`, so the unwrap below is safe.
@@ -1298,7 +1298,7 @@ mod tests {
         FcRunner::new(config, mission, None, 0.001, None).unwrap()
     }
 
-    /// Phase-5.B.2 — multi-lane configuration runs end-to-end through
+    /// Multi-lane configuration runs end-to-end through
     /// the `FcRunner`, with the voter selecting the active lane each
     /// tick. This is the integration-side smoke test; the per-policy
     /// voter unit tests live in

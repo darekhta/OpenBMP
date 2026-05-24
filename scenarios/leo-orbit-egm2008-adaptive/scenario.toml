@@ -1,10 +1,10 @@
-# Phase-5.D.4 demo: 1 kg point mass in a 400 km / 30° inclined LEO
+# Demo: 1 kg point mass in a 400 km / 30° inclined LEO
 # orbit under EGM2008 zonal-harmonic gravity (degrees 2-6) integrated
 # with the Dormand-Prince 5(4) embedded RK pair under a Gustafsson PI
 # step controller.
 #
 # Identical initial conditions and gravity model to
-# `scenarios/leo-orbit-egm2008/scenario.toml` (the Phase-5.C.2 fixed-RK4
+# `scenarios/leo-orbit-egm2008/scenario.toml` (the fixed-RK4
 # demo); the only difference is the new `[solver]` and
 # `[solver.adaptive]` blocks. The point of this scenario is the
 # adaptive-integrator runner wiring path: the kernel dispatches to
@@ -21,14 +21,14 @@
 # `Dopri54Adaptive` unit-test suite under
 # `crates/openbmp-sim/src/integrator.rs`.
 #
-# Telemetry is parquet-only (the Phase-3 oracle compares Parquet
+# Telemetry is parquet-only (the byte-stability oracle compares Parquet
 # bytes; CSV is omitted to keep the artifact slim).
 
 openbmp.scenario = 3
 
 [meta]
 name = "leo-orbit-egm2008-adaptive"
-description = "1 kg point mass in 400 km / 30° inclined LEO under EGM2008 zonal gravity (degrees 2-6) integrated with Dormand-Prince 5(4) adaptive + PI step controller for one orbit period; Phase 5.D.4 demo."
+description = "1 kg point mass in 400 km / 30° inclined LEO under EGM2008 zonal gravity (degrees 2-6) integrated with Dormand-Prince 5(4) adaptive + PI step controller for one orbit period; DOPRI5(4) adaptive demo."
 validation = "experimental"
 provenance = "synthetic; closed-form circular-orbit IC for WGS84 µ at r = 6_778_000 m, 30° inclination; gravity = EGM2008 zonal degrees 2-6 with J_n from Pavlis et al. 2012; integrator = Dopri54Adaptive (Hairer-Nørsett-Wanner Vol I §II.5 Table 5.2 + Gustafsson 1991 PI controller). See provenance.md."
 

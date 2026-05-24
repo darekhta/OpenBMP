@@ -1,9 +1,9 @@
-//! Phase-3.8 runner-side wind rack.
+//! Runner-side wind rack.
 //!
 //! The rack owns the scenario-resolved wind model (one of `NoWind`,
 //! `ConstantWind`, `LayeredWind`, or `GustWind`) and orchestrates
 //! per-step state updates plus kernel snapshot pushes. Mirrors the
-//! Phase-3.6 `EngineRack` and Phase-3.7 `TankRack` patterns.
+//! `EngineRack` and `TankRack` patterns.
 //!
 //! Each kernel base tick the runner:
 //!
@@ -15,7 +15,7 @@
 //!    `kernel.set_wind_sample(...)` so all four RK4 stages observe
 //!    the same wind.
 //!
-//! Phase-3.8 leaves the kernel hot path's force/moment/mass
+//! The rack leaves the kernel hot path's force/moment/mass
 //! evaluation byte-identical for legacy scenarios: when no `[wind]`
 //! block is declared (or `kind = "none"`), the runner builds an
 //! `Inactive` rack, the per-step setter is never called, and the
@@ -54,11 +54,11 @@ pub enum WindRack {
     /// `wind_sample_override` stays `None` and `EnvironmentSample`
     /// reports zero wind.
     Inactive,
-    /// Phase-2.4 constant-everywhere wind.
+    /// Constant-everywhere wind.
     Constant(ConstantWind),
-    /// Phase-3.8.B per-altitude NED wind table.
+    /// Per-altitude NED wind table.
     Layered(LayeredWind),
-    /// Phase-3.8.C Dryden gust filter. Carries internal filter
+    /// Dryden gust filter. Carries internal filter
     /// state advanced per-step.
     Gust(GustWind),
 }

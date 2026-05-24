@@ -41,7 +41,7 @@ contact address or enabling GitHub private vulnerability reporting.
 
 ## Supported Versions
 
-During Phase 1 and Phase 2, only the `main` branch is supported.
+Until the first tagged release, only the `main` branch is supported.
 Tagged release support begins with the first 0.1.x release.
 
 ## Supply Chain

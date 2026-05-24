@@ -15,9 +15,8 @@ rand        = { workspace = true }
 rand_chacha = { workspace = true }
 serde       = { workspace = true }
 thiserror   = { workspace = true }
-# num-traits will return as a dependency in Phase 1.2/1.3 when state
-# types and integrators need generic numeric traits; removed here
-# until then per cargo-machete.
+# num-traits is intentionally absent (removed per cargo-machete); add
+# it back if state types or integrators need generic numeric traits.
 
 [dev-dependencies]
 approx   = { workspace = true }

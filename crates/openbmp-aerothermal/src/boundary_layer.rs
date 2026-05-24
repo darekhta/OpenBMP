@@ -1,4 +1,4 @@
-//! Phase-6.5 boundary-layer state and distributed heating.
+//! Boundary-layer state and distributed heating.
 //!
 //! Ships:
 //!
@@ -195,7 +195,7 @@ impl ReferenceEnthalpyHeating {
         }
 
         // Eckert reference enthalpy (cold-gas approximation for the
-        // Phase-6.5 baseline; real-gas h(T,p) lands with the
+        // baseline; real-gas h(T,p) lands with the
         // realgas-coupled slice).
         let edge_enthalpy = 1005.0 * ctx.freestream.temperature_k;
         let wall_enthalpy = 1005.0 * ctx.wall_temperature_k;

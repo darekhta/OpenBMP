@@ -1,6 +1,6 @@
 //! Scenario-referenced external files: SHA-256 content addressing.
 //!
-//! Phase 2.10 introduces external file references for aero decks, motor
+//! Scenarios reference external files for aero decks, motor
 //! curves, atmosphere tables, and sensor noise budgets. This module
 //! records the scenario-resolved path, stores the exact bytes read,
 //! computes their SHA-256 digest once, and (optionally) verifies that

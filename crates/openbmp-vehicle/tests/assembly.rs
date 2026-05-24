@@ -1,4 +1,4 @@
-//! Phase-3.3.A integration tests for the [`VehicleAssembly`] surface.
+//! Integration tests for the [`VehicleAssembly`] surface.
 //!
 //! Covers:
 //! - Single-body assembly mass-property lift.

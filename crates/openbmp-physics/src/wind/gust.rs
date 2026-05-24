@@ -1,4 +1,4 @@
-//! [`GustWind`] — Phase-3.8.C Dryden rational-spectrum shaping
+//! [`GustWind`] — Dryden rational-spectrum shaping
 //! filter per MIL-STD-1797A.
 //!
 //! # Physics
@@ -13,10 +13,10 @@
 //! ```
 //!
 //! where `σ_a` is the axis intensity (m/s), `L_a` the length scale
-//! (m), and `V` the reference airspeed (m/s). Phase-3.8 ships first-
+//! (m), and `V` the reference airspeed (m/s). Ships first-
 //! order filters on all three axes (`u`, `v`, `w`); the lateral and
-//! vertical second-order corrections per MIL-STD-1797A are deferred
-//! to a downstream extension.
+//! vertical second-order corrections per MIL-STD-1797A are a
+//! downstream extension.
 //!
 //! # Discretization (zero-order hold)
 //!
@@ -30,7 +30,7 @@
 //! ```
 //!
 //! where `w ~ N(0, 1)` is a unit-variance Gaussian sample drawn
-//! from [`DeterministicRng::for_wind_component`] (Phase 3.8.A) via
+//! from [`DeterministicRng::for_wind_component`] via
 //! Box-Muller. `a` and `b` are computed once at construction; the
 //! hot path is one mul + one mul + one add per axis per step. No
 //! FMA. No transcendentals on the hot path.
@@ -53,7 +53,7 @@
 //!
 //! - Filter state lives in `Cell<f64>` per axis; the [`WindModel`]
 //!   trait's `&self` signature requires interior mutability. The
-//!   runner-side `WindRack` (Phase-3.8 plumbing) calls
+//!   runner-side `WindRack` calls
 //!   [`GustWind::advance`] once per kernel base tick; the kernel's
 //!   four RK4 stages then read the cells via
 //!   [`WindModel::wind_ned_m_s`] and all see the same value. Same
@@ -63,7 +63,7 @@
 //!   spec, so this is fine.
 //! - Box-Muller pulls 16 bytes per axis per step from the
 //!   axis-specific RNG stream and produces one Gaussian sample
-//!   (the second `z1` half of the pair is dropped — Phase-3.8 favors
+//!   (the second `z1` half of the pair is dropped — favoring
 //!   the simpler "fresh pair every step" convention over a cache
 //!   that would have to be reset on `reset()`).
 //!
@@ -72,7 +72,7 @@
 //! `GustWind` carries an optional `mean_wind_ned_m_s` that is added
 //! to the filter output. Defaults to zero. The composite story
 //! (mean wind from `LayeredWind` + turbulence from `GustWind`) is a
-//! Phase-3.X follow-on; Phase-3.8 keeps them mutually exclusive at
+//! follow-on; the two are kept mutually exclusive at
 //! the scenario layer.
 
 use std::cell::Cell;
@@ -86,7 +86,7 @@ use crate::frames::FrameContext;
 
 use super::WindModel;
 
-/// Phase-3.8.C Dryden rational-spectrum shaping filter.
+/// Dryden rational-spectrum shaping filter.
 #[derive(Debug)]
 pub struct GustWind {
     sigma_u_m_s: f64,
@@ -114,7 +114,7 @@ pub struct GustWind {
     scenario_seed: u64,
 }
 
-/// Phase-3.8.C scenario-layer parameters for `GustWind`.
+/// Scenario-layer parameters for `GustWind`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GustWindParams {
     /// `(σ_u, σ_v, σ_w)` axis intensities, m/s. All non-negative,
@@ -331,7 +331,7 @@ impl WindModel for GustWind {
         _frame: &FrameContext,
         _time: SimTime,
     ) -> Result<Velocity3<Ned>, PhysicsError> {
-        // Phase-3.8.C maps body-frame Dryden axes (u, v, w) directly
+        // Maps body-frame Dryden axes (u, v, w) directly
         // to NED (north, east, down). The body↔NED rotation is
         // decoupled work for the future wind-aware drag adapter.
         let (u, v, w) = self.current_state();
@@ -375,8 +375,8 @@ fn step_axis(
 
 /// Box-Muller standard-normal sample. Pulls two 64-bit values from
 /// `rng` (one each for `u1` and `u2`) and returns one `z0 = sqrt(-2
-/// ln u1) * cos(2π u2)`. The second `z1` half is dropped — Phase-3.8
-/// favors the simpler "fresh pair every step" convention over a
+/// ln u1) * cos(2π u2)`. The second `z1` half is dropped, favoring
+/// the simpler "fresh pair every step" convention over a
 /// per-axis cache that would need explicit reset semantics.
 #[inline]
 fn sample_standard_normal(rng: &mut DeterministicRng) -> f64 {

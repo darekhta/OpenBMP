@@ -23,7 +23,7 @@
 //!   side-force from non-zero `β` into the deck's CN axis values
 //!   rather than splitting out a separate y-channel. A full
 //!   six-coefficient deck with explicit side force / yaw moment is
-//!   a Phase-3 schema extension.
+//!   a possible schema extension.
 //! * `CM` is the pitching-moment coefficient about body-`ŷ`,
 //!   non-dimensionalised by reference length: `M_body_y = CM · q · S · L`.
 //! * Roll moment is identically zero by axisymmetry. Yaw moment is
@@ -75,10 +75,10 @@ pub struct AeroForceMomentBody {
 
 /// Trait implemented by aerodynamics-method providers.
 ///
-/// Phase 2 ships [`DeckLookup`]. Phase 6 will add hypersonic methods
+/// [`DeckLookup`] is the tabulated provider. Hypersonic methods
 /// (`ModifiedNewtonian`, `TangentCone`, `LocalInclinationPanels`,
 /// `FreeMolecular`) and a `HybridAeroMethod` that dispatches between
-/// them based on Mach and Knudsen number.
+/// them based on Mach and Knudsen number round out the family.
 pub trait AeroMethod {
     /// Body-frame force and moment from the supplied flight-condition
     /// context.
@@ -134,9 +134,9 @@ impl AeroMethod for DeckLookup {
             });
         }
 
-        // Phase-3.5: schema-1 decks ignore the deflections map. Schema-2
+        // Schema-1 decks ignore the deflections map. Schema-2
         // consumers thread the live `EffectorActualsView` from the kernel
-        // through a higher-level adapter (Phase 3.5.C); this method-level
+        // through a higher-level adapter; this method-level
         // entry point keeps a Schema-1-only signature for now.
         let deflections = std::collections::BTreeMap::<&str, f64>::new();
         let AeroCoefficients { cn, cd, cm } =

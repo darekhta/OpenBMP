@@ -1,8 +1,8 @@
-//! Phase-3.4.D end-to-end test: single-elevon effector scenario
+//! End-to-end test: single-elevon effector scenario
 //! loads, propagates, and emits the effector deflection telemetry
 //! channel.
 //!
-//! Asserts the §3.4 exit criterion: the synthetic single-elevon
+//! Asserts: the synthetic single-elevon
 //! scenario `scenarios/effector-elevon/single-elevon-elevator-step.toml`
 //! runs via `openbmp run`, the kernel completes with
 //! `StopReason::EndTime`, the Parquet contains the

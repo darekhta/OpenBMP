@@ -1,4 +1,4 @@
-//! Phase-3.9.E end-to-end test: `openbmp run` on the canonical
+//! End-to-end test: `openbmp run` on the canonical
 //! parachute-descent scenario.
 //!
 //! Asserts:
@@ -8,7 +8,7 @@
 //!   simulation (descended past the main-deploy threshold of 300 m
 //!   and continued descending under main canopy drag).
 //! - Two reruns of the same scenario produce byte-identical Parquet
-//!   output (Phase-3.9 determinism gate for the full recovery hot
+//!   output (determinism gate for the full recovery hot
 //!   path: scenario parse → `RecoveryRack` build → mission-event
 //!   firing → kernel snapshot push → `RecoveryRackForceAdapter`
 //!   evaluation in the kernel's RK4 stages).

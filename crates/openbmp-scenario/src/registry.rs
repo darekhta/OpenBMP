@@ -1,16 +1,15 @@
 //! Compile-time model registry for scenario validation.
 //!
 //! The registry resolves a `(role, name)` pair to a [`ModelDescriptor`].
-//! Phase 1 ships a small fixed set; the registry is the single seam by
-//! which later phases can plug in additional models without changes to
-//! the parser.
+//! It is the single seam through which additional models can be plugged
+//! in without changes to the parser.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::error::ScenarioError;
 
-/// Compile-time model role used by the Phase-1 registry.
+/// Compile-time model role used by the registry.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum ModelRole {
     /// Vehicle model.
@@ -87,9 +86,9 @@ pub struct ModelRegistry {
 }
 
 impl ModelRegistry {
-    /// Phase-1 registry.
+    /// Minimal base registry: the analytic-toy model set.
     #[must_use]
-    pub fn phase1() -> Self {
+    pub fn base() -> Self {
         Self::from_descriptors([
             ModelDescriptor::new("point_mass", ModelRole::Vehicle),
             ModelDescriptor::new("constant", ModelRole::Gravity),
@@ -100,61 +99,61 @@ impl ModelRegistry {
         ])
     }
 
-    /// Phase-2 registry.
+    /// Full default registry.
     ///
-    /// Extends the Phase-1 registry with the L2 physics models shipped
-    /// across Phase 2.2 through 2.7: `j2` and `point_mass` gravity,
+    /// Extends the base registry with the L2 physics models:
+    /// `j2` and `point_mass` gravity,
     /// `us_standard_1976` and `isothermal` atmosphere, `constant` wind,
     /// `aero` and `thrust` force terms, the `rigid_body` vehicle kind,
     /// the three synthetic sensors (`ideal_state`, `imu`, `barometer`),
     /// and the `solid` motor variant.
     #[must_use]
-    pub fn phase2() -> Self {
+    pub fn full() -> Self {
         Self::from_descriptors([
-            // Phase 1 entries.
+            // Base entries.
             ModelDescriptor::new("point_mass", ModelRole::Vehicle),
             ModelDescriptor::new("constant", ModelRole::Gravity),
             ModelDescriptor::new("none", ModelRole::Atmosphere),
             ModelDescriptor::new("none", ModelRole::Wind),
             ModelDescriptor::new("noop", ModelRole::Controller),
             ModelDescriptor::new("gravity", ModelRole::Force),
-            // Phase 2 vehicle.
+            // Rigid-body vehicle.
             ModelDescriptor::new("rigid_body", ModelRole::Vehicle),
-            // Phase 2.2 gravity.
+            // Gravity models.
             ModelDescriptor::new("point_mass", ModelRole::Gravity),
             ModelDescriptor::new("j2", ModelRole::Gravity),
-            // Phase 5.C.2 — consumed under v3 by the runner's
+            // Consumed under v3 by the runner's
             // zonal-only EGM2008 gravity path. v2 scenarios are still
             // rejected by ScenarioDocument::validate.
             ModelDescriptor::new("egm2008", ModelRole::Gravity),
-            // Phase 2.3 atmosphere.
+            // Atmosphere models.
             ModelDescriptor::new("isothermal", ModelRole::Atmosphere),
             ModelDescriptor::new("us_standard_1976", ModelRole::Atmosphere),
-            // Original Phase 5.C.1 target, still deferred: the shipped
-            // 5.C.1 surface is the honest downscope below.
+            // Full NRLMSISE-00 remains deferred: the shipped
+            // surface is the honest downscope below.
             ModelDescriptor::new("nrlmsise00", ModelRole::Atmosphere),
-            // Phase 5.C.1 — engineering layered exponential atmosphere
+            // Engineering layered exponential atmosphere
             // (Vallado 4th ed. Table 8-4 fit, 0-1000 km). Honest
             // downscope of the original "NRLMSISE-00" line item: no
             // solar-flux dependence, no per-species number densities.
             ModelDescriptor::new("piecewise_exponential", ModelRole::Atmosphere),
-            // Phase 2.4 wind.
+            // Wind models.
             ModelDescriptor::new("constant", ModelRole::Wind),
-            // Phase 3.8 wind extensions.
+            // Wind extensions.
             ModelDescriptor::new("layered", ModelRole::Wind),
             ModelDescriptor::new("gust", ModelRole::Wind),
-            // Phase 2.5/2.6 force terms.
+            // Force terms.
             ModelDescriptor::new("aero", ModelRole::Force),
             ModelDescriptor::new("thrust", ModelRole::Force),
-            // Phase 2.7 sensors.
+            // Inertial sensors.
             ModelDescriptor::new("ideal_state", ModelRole::Sensor),
             ModelDescriptor::new("imu", ModelRole::Sensor),
             ModelDescriptor::new("barometer", ModelRole::Sensor),
-            // Phase 3.10 sensors.
+            // Navigation and attitude sensors.
             ModelDescriptor::new("gnss", ModelRole::Sensor),
             ModelDescriptor::new("magnetometer", ModelRole::Sensor),
             ModelDescriptor::new("star_tracker", ModelRole::Sensor),
-            // Phase 2.6 motor variants.
+            // Motor variants.
             ModelDescriptor::new("solid", ModelRole::Motor),
         ])
     }
@@ -208,7 +207,7 @@ impl ModelRegistry {
 
 impl Default for ModelRegistry {
     fn default() -> Self {
-        Self::phase2()
+        Self::full()
     }
 }
 
@@ -219,7 +218,7 @@ mod tests {
 
     #[test]
     fn resolves_known_model() {
-        let registry = ModelRegistry::phase1();
+        let registry = ModelRegistry::base();
         let descriptor = registry
             .resolve(ModelRole::Vehicle, "point_mass")
             .expect("known model resolves");
@@ -228,7 +227,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_model_with_unknown_error() {
-        let err = ModelRegistry::phase1()
+        let err = ModelRegistry::base()
             .resolve(ModelRole::Vehicle, "rigid_stick")
             .unwrap_err();
         assert!(matches!(err, ScenarioError::UnknownModel { .. }));
@@ -236,7 +235,7 @@ mod tests {
 
     #[test]
     fn detects_wrong_role_for_known_name() {
-        let err = ModelRegistry::phase1()
+        let err = ModelRegistry::base()
             .resolve(ModelRole::Wind, "constant")
             .unwrap_err();
         match err {
@@ -251,8 +250,8 @@ mod tests {
     }
 
     #[test]
-    fn phase2_registers_aero_thrust_and_rigid_body() {
-        let registry = ModelRegistry::phase2();
+    fn full_registers_aero_thrust_and_rigid_body() {
+        let registry = ModelRegistry::full();
         registry
             .resolve(ModelRole::Vehicle, "rigid_body")
             .expect("rigid_body");
@@ -271,11 +270,11 @@ mod tests {
     }
 
     #[test]
-    fn phase2_resolves_same_name_under_each_registered_role() {
-        // `constant` is both a gravity and a wind model in Phase 2.
+    fn full_resolves_same_name_under_each_registered_role() {
+        // `constant` is both a gravity and a wind model.
         // The resolver must return the role-specific entry, not bail
         // with WrongModelRole.
-        let registry = ModelRegistry::phase2();
+        let registry = ModelRegistry::full();
         let gravity = registry.resolve(ModelRole::Gravity, "constant").unwrap();
         assert_eq!(gravity.role, ModelRole::Gravity);
         let wind = registry.resolve(ModelRole::Wind, "constant").unwrap();
@@ -283,8 +282,8 @@ mod tests {
     }
 
     #[test]
-    fn phase2_keeps_phase1_entries() {
-        let registry = ModelRegistry::phase2();
+    fn full_keeps_base_entries() {
+        let registry = ModelRegistry::full();
         registry
             .resolve(ModelRole::Vehicle, "point_mass")
             .expect("point_mass");

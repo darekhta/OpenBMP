@@ -1,4 +1,4 @@
-//! Phase-3.5.C runner-side matcher between schema-2 aero deck axes
+//! Runner-side matcher between schema-2 aero deck axes
 //! and scenario-declared effectors.
 //!
 //! For each schema-2 deck axis (e.g. `delta_e_deg`) the runner must
@@ -139,7 +139,7 @@ pub fn build_snapshot_map(
     out
 }
 
-/// Phase-5.A.2.A: build the snapshot map for a rigid-body kernel
+/// Build the snapshot map for a rigid-body kernel
 /// driven by direct-torque effectors.
 ///
 /// Walks the scenario's `[[vehicle.assembly.effectors]]` list, picks

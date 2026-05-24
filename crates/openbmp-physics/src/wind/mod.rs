@@ -1,6 +1,6 @@
 //! Wind models.
 //!
-//! Phase 2.4 ships the two toy models the Phase-2 plan locks in:
+//! Provides two toy models:
 //!
 //! * [`NoWind`] — returns the zero wind vector at every query. The
 //!   default for analytic-toy scenarios where atmospheric quiescence
@@ -10,12 +10,12 @@
 //!   tests and for sounding-rocket validation cases that pin a fixed
 //!   surface wind.
 //!
-//! Phase 3.8 adds:
+//! Plus the altitude- and gust-aware models:
 //!
 //! * [`LayeredWind`] — per-altitude NED wind table with linear
 //!   interpolation between layers and constant clamping outside the
 //!   table envelope.
-//! * `GustWind` (Phase 3.8.C) — Dryden rational-spectrum shaping
+//! * `GustWind` — Dryden rational-spectrum shaping
 //!   filter per MIL-STD-1797A.
 //!
 //! # Frame convention
@@ -33,7 +33,7 @@
 //! # Determinism
 //!
 //! Pure arithmetic on `f64`; no wall-clock, no system RNG, no
-//! network, no file I/O for the time-only models. The Phase-3.8.C
+//! network, no file I/O for the time-only models. The
 //! `GustWind` adds a Dryden filter whose noise comes from
 //! [`openbmp_core::DeterministicRng::for_wind_component`] keyed
 //! `(scenario_seed, step, axis)`, with the per-step state advanced
@@ -45,7 +45,7 @@ pub mod layered;
 pub use constant::{ConstantWind, NoWind};
 pub use layered::{LayerEntry, LayeredWind};
 
-// Phase-3.14.D: `GustWind` is the synthetic-noise wind model
+// `GustWind` is the synthetic-noise wind model
 // (Dryden filter driven by `DeterministicRng`). Gated by the
 // `synthetic` feature; hardware adopters who consume `LayeredWind`
 // from real wind-table data don't pay for the gust machinery.
@@ -68,7 +68,7 @@ use crate::frames::FrameContext;
 /// needs one. Consumers transforming nonzero NED wind into body or ECI
 /// are responsible for requiring a local origin from the frame context.
 /// The position and frame are passed for forward compatibility with
-/// future altitude- or location-dependent models; the Phase-2.4
+/// future altitude- or location-dependent models; the time-only
 /// implementations ([`NoWind`], [`ConstantWind`]) ignore them.
 pub trait WindModel {
     /// Wind velocity in local-NED, in m/s.
@@ -77,7 +77,7 @@ pub trait WindModel {
     ///
     /// Returns an [`PhysicsError`] when the model produces a non-finite
     /// output or the position is outside the model's declared
-    /// validity envelope. The Phase-2.4 toy models never fail.
+    /// validity envelope. The toy models never fail.
     fn wind_ned_m_s(
         &self,
         position_eci: Position3<Eci>,

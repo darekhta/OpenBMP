@@ -15,7 +15,7 @@ fault = { kind = "reduced_rate", factor = 0.7 }
 ```
 
 This is the same matched-uncertainty disturbance shipped on the
-Phase-5.A.2.D `diff-flatness-figure-eight-baseline` and
+`diff-flatness-figure-eight-baseline` and
 `diff-flatness-figure-eight-l1` siblings, so the four fault-bearing
 scenarios (PID baseline, PID + L1, LQR, INDI) face the same plant
 disturbance and the controller comparison harness in
@@ -44,7 +44,7 @@ no real-world locations, no ITAR/EAR/MTCR/Wassenaar content.
 ## Validation status
 
 `experimental`. Validates parser-side and runs end-to-end
-deterministically; consumed by the Phase-5.A.3.D controller
+deterministically; consumed by the controller
 comparison harness alongside the PID baseline, PID + L1, and INDI
 fault-bearing siblings.
 

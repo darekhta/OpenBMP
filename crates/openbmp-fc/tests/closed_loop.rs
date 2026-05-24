@@ -1,4 +1,4 @@
-//! Closed-loop integration test (Phase 4.9).
+//! Closed-loop integration test.
 //!
 //! Wires together the full controller pipeline:
 //! - `FlightController` skeleton

@@ -2,10 +2,10 @@
 //!
 //! # Schema
 //!
-//! Phase 2.5 shipped **Schema 1**: a three-axis tabulated deck indexed
+//! **Schema 1** is a three-axis tabulated deck indexed
 //! by `(mach, alpha_deg, beta_deg)` and producing the three reduced
-//! coefficients `(CN, CD, CM)`. Phase 3.5 generalises the internal
-//! representation to an **N-axis** deck (Schema 2): the same three
+//! coefficients `(CN, CD, CM)`. **Schema 2** generalises the internal
+//! representation to an **N-axis** deck: the same three
 //! base axes plus 1–3 optional control-effector axes. Schema-1 decks
 //! parse to an N=3 instance with no effector axes — the lookup at
 //! N=3 is bit-identical to the original trilinear path.
@@ -140,8 +140,8 @@ impl AeroDeck {
     /// Construct a Schema-1 (3-axis) in-memory deck.
     ///
     /// Equivalent to [`AeroDeck::new_n_d`] with
-    /// `axis_order = ["mach", "alpha", "beta"]`. Phase-2.5 callers and
-    /// the Schema-1 parser use this entry point.
+    /// `axis_order = ["mach", "alpha", "beta"]`. The Schema-1 parser
+    /// uses this entry point.
     ///
     /// # Errors
     ///
@@ -987,7 +987,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // N-D axis_order validation (Phase 3.5.A)
+    // N-D axis_order validation
     // -----------------------------------------------------------------
 
     #[test]

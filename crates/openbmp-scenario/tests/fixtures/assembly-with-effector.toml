@@ -1,4 +1,4 @@
-# Phase-3.4 assembly + effector fixture (synthetic).
+# Assembly + effector fixture (synthetic).
 #
 # Single-body assembly + one elevon-shaped effector with a step
 # command schedule. Synthetic round numbers; not a benchmark.
@@ -7,7 +7,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "assembly-with-effector-fixture"
-description = "Phase-3.4 parser fixture exercising the [[vehicle.assembly.effectors]] block. Synthetic; not a benchmark."
+description = "Parser fixture exercising the [[vehicle.assembly.effectors]] block. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

@@ -1,4 +1,4 @@
-# Phase-3.6 assembly-tree parser fixture exercising the
+# Assembly-tree parser fixture exercising the
 # [[vehicle.assembly.engines]] block (typed `EngineConfig` parser).
 # Synthetic two-engine cluster; not a benchmark.
 
@@ -6,7 +6,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "assembly-with-engine-cluster-fixture"
-description = "Phase-3.6 parser fixture exercising the [[vehicle.assembly.engines]] block. Synthetic; not a benchmark."
+description = "Parser fixture exercising the [[vehicle.assembly.engines]] block. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

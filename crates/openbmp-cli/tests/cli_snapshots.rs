@@ -3,7 +3,7 @@
 //! These spawn the compiled binary and capture stdout / stderr /
 //! exit-code via `assert_cmd` + `insta-cmd`. The goal is to lock in
 //! the command-line surface — flags, help text shape, error messages
-//! — so a future Phase-2 refactor doesn't accidentally break the
+//! — so a future refactor doesn't accidentally break the
 //! contract.
 //!
 //! Snapshots are stored under `tests/snapshots/`. Update with
@@ -106,7 +106,7 @@ fn check_on_canonical_scenario_succeeds() {
 
 #[test]
 fn check_on_niskanen_scenario_resolves_aero_motor_and_pins() {
-    // Phase-2.10 canonical scenario: parses, validates, resolves the
+    // Canonical scenario: parses, validates, resolves the
     // aero deck and Estes C6 motor file, and surfaces the SHA-256
     // digests of both. Pin verification is exercised by the negative
     // tests below.
@@ -125,7 +125,7 @@ fn check_on_niskanen_scenario_resolves_aero_motor_and_pins() {
     assert!(
         stdout.contains("aero.deck -> ")
             && stdout.contains(
-                "(sha256:cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27)"
+                "(sha256:bbedf508c9fe589dea8f5eb77d29ac44f3f00271a09fb6fa661024b9e1809691)"
             ),
         "stdout was: {stdout}"
     );
@@ -133,7 +133,7 @@ fn check_on_niskanen_scenario_resolves_aero_motor_and_pins() {
     assert!(
         stdout.contains("propulsion.motor.file -> ")
             && stdout.contains(
-                "(sha256:da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e)"
+                "(sha256:fbea346fb952e97c50bd709a9c2a7b3cde3d5df0238a7d48032cd96a5b9bdbde)"
             ),
         "stdout was: {stdout}"
     );
@@ -150,7 +150,7 @@ fn check_on_niskanen_with_corrupt_pin_fails_closed() {
     let original = fs::read_to_string(&canonical).expect("read canonical");
     let bad_pin = "0".repeat(64);
     let rewritten = original.replace(
-        "deck_sha256  = \"cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27\"",
+        "deck_sha256  = \"bbedf508c9fe589dea8f5eb77d29ac44f3f00271a09fb6fa661024b9e1809691\"",
         &format!("deck_sha256  = \"{bad_pin}\""),
     );
     // Sanity: the replace actually did something.
@@ -302,7 +302,7 @@ fn run_rejects_negative_gravity_magnitude() {
 
 #[test]
 fn run_on_niskanen_with_corrupt_pin_fails_before_simulation() {
-    // Phase-2.11.A: SHA-256 pin verification fires *before* the kernel
+    // SHA-256 pin verification fires *before* the kernel
     // is constructed. A bad pin must surface as a scenario error with
     // exit-code 2 ("SHA-256 mismatch"), never as a partial-success run
     // that silently dropped the pin check.
@@ -313,7 +313,7 @@ fn run_on_niskanen_with_corrupt_pin_fails_before_simulation() {
     let original = fs::read_to_string(&canonical).expect("read canonical");
     let bad_pin = "0".repeat(64);
     let rewritten = original.replace(
-        "deck_sha256  = \"cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27\"",
+        "deck_sha256  = \"bbedf508c9fe589dea8f5eb77d29ac44f3f00271a09fb6fa661024b9e1809691\"",
         &format!("deck_sha256  = \"{bad_pin}\""),
     );
     assert_ne!(rewritten, original, "pin field not found in canonical");
@@ -362,7 +362,7 @@ fn run_on_niskanen_with_corrupt_pin_fails_before_simulation() {
 
 #[test]
 fn run_on_rigid_body_scenario_without_inertia_tensor_fails_closed() {
-    // Phase-3.1: `vehicle.kind = "rigid_body"` runs through the new
+    // `vehicle.kind = "rigid_body"` runs through the
     // rigid-body runner path, but the parser still requires
     // `inertia_tensor_body_kg_m2`. A scenario that converts to
     // rigid_body without declaring the inertia must fail closed at
@@ -397,10 +397,10 @@ initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]",
     );
 }
 
-// Phase-5.D.4 audit follow-ups added a `_fails_closed` gate on the
-// rigid-body runner that rejected non-RK4 `[solver]` selections.
-// Phase-5.D.5 wires the full rigid-body adaptive path, so that gate
-// no longer fires. The positive coverage now lives in
+// The rigid-body runner once carried a `_fails_closed` gate that
+// rejected non-RK4 `[solver]` selections. The full rigid-body
+// adaptive path is now wired, so that gate no longer fires. The
+// positive coverage now lives in
 // `crates/openbmp-cli/tests/calisto_adaptive_e2e.rs` (rigid-body
 // adaptive end-to-end) plus the runner-validator unit tests in
 // `crates/openbmp-cli/src/runner/integrator.rs` (still-deferred

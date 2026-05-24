@@ -1,4 +1,4 @@
-# Magnetometer textbook noise budget — Phase 3.10.C.
+# Magnetometer textbook noise budget.
 #
 # Synthetic isotropic noise budget for the `SyntheticMagnetometer`
 # model. The numerical envelope (50 nT per-axis stddev, hard-iron
@@ -7,7 +7,7 @@
 # in academic attitude-determination scenarios. Values are NOT
 # transcribed from any real fielded sensor's spec sheet.
 #
-# Phase 3.10 ships:
+# The model ships:
 #  - additive Gaussian per body axis (sigma_body_nt)
 #  - constant soft-iron 3x3 (linear-mix; identity = no soft iron)
 #  - constant hard-iron 3-vector (offset)

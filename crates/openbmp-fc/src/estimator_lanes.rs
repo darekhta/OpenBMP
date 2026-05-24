@@ -1,8 +1,8 @@
-//! Phase-5.B.2 — Multi-instance estimator routing + active-lane
+//! Multi-instance estimator routing + active-lane
 //! selection.
 //!
-//! The classical Phase-4 FC ran a single `Box<dyn Estimator>` on the
-//! scheduler. Phase-5.B.2 lifts that to N parallel estimator
+//! Rather than running a single `Box<dyn Estimator>` on the
+//! scheduler, the FC runs N parallel estimator
 //! "lanes" — each lane a distinct estimator instance (EKF, MEKF,
 //! IMM, SR-UKF, SR-UKF-attitude) — driven from the same sensor
 //! samples. Per tick:

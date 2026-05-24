@@ -10,7 +10,7 @@ Synthetic. Identical to `scenarios/diff-flatness-figure-eight`
 modulo two fields under `[fc.autopilot_params]`:
 
 1. `rate_loop_kind = "lqr"` swaps the rate loop from PID to the
-   per-axis LQR shipped in Phase 5.A.3.B.
+   per-axis LQR.
 2. `[fc.autopilot_params.lqr]` declares per-axis cost weights
    (`q_omega`, `q_int`, `r`).
 

@@ -1,10 +1,10 @@
-# Phase-3.7.E exit-criterion scenario — single-engine rigid-body
+# Exit-criterion scenario — single-engine rigid-body
 # vehicle with one cylindrical tank carrying an EquivalentPendulum
 # slosh model with a non-zero initial slosh angle.
 #
-# The scenario demonstrates the full Phase-3.7 path:
+# The scenario demonstrates the full tank path:
 #   - tank scenario block parses through the structured TankConfig
-#     family (Phase 3.7.D);
+#     family;
 #   - the runner-side TankRack is built, the Tank is constructed
 #     with EquivalentPendulum + initial slosh perturbation;
 #   - per-step the rack drains the tank (drain rate 0 here, the
@@ -15,13 +15,12 @@
 #     read the snapshot and add the tank's reaction force / moment
 #     to the rigid-body force / moment evaluation.
 #
-# Phase-3.7 known limitation: the cluster mass adapter and the
+# Known limitation: the cluster mass adapter and the
 # TankRackMassAdapter both contribute mass in point-mass cluster+tank
 # assemblies; for a tank intended as the cluster's propellant store
 # this overcounts the propellant. This scenario keeps the tank fluid
 # at about 49 kg (4.9% of vehicle dry mass) so the known accounting
-# gap stays small in scalar-mass paths. Phase-3.X future work unifies
-# the accounting.
+# gap stays small in scalar-mass paths.
 #
 # Synthetic round numbers; not a benchmark.
 
@@ -29,7 +28,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "sloshing-tank"
-description = "Phase-3.7.E exit-criterion: rigid-body vehicle with single axial engine and a cylindrical tank carrying an equivalent-pendulum slosh model with 0.05 rad initial perturbation. Demonstrates the full tank-rack hot path. Synthetic; not a benchmark."
+description = "Exit-criterion: rigid-body vehicle with single axial engine and a cylindrical tank carrying an equivalent-pendulum slosh model with 0.05 rad initial perturbation. Demonstrates the full tank-rack hot path. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]
@@ -75,8 +74,8 @@ limits = { max_thrust_n = 50000.0, isp_s = 250.0, ignition_transient_s = 0.1, sh
 # 0.05 rad initial perturbation on the body-x slosh axis. The
 # synthetic liquid density keeps fluid mass near 5% of dry mass while
 # preserving the fill height used by the slosh-frequency comment above.
-# Drain rate is zero in Phase 3.7 (engine-tank coupling deferred
-# to Phase 3.X).
+# Drain rate is zero here (no engine-tank coupling in this
+# scenario).
 [[vehicle.assembly.tanks]]
 id                       = "fuel_tank"
 mounted_to               = "main"

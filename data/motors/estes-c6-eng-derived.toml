@@ -7,8 +7,8 @@
 # `points[0].time = 0` exactly. The shape of the curve is the
 # upstream RASP profile; the magnitudes are scaled to the 7.5 N·s
 # C6-family total impulse cited by Niskanen 2009 Chapter 6, which
-# is the reference impulse the Phase-2.9 Niskanen Chapter-6
-# benchmark integrates against.
+# is the reference impulse the Niskanen Chapter-6 benchmark
+# integrates against.
 #
 # Header from the upstream `.eng` file (decoded):
 #   - name:           C6
@@ -21,7 +21,7 @@
 #
 # Specific-impulse consistency: declared `specific_impulse_s` is
 # back-solved from `total_impulse = m_p · g_0 · Isp` for
-# `g_0 = 9.80665 m/s²` so the Phase-2.6 Isp consistency check
+# `g_0 = 9.80665 m/s²` so the Isp consistency check
 # passes within 1e-3 relative.
 
 openbmp.motor = 1

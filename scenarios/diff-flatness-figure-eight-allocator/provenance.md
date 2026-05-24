@@ -16,7 +16,7 @@ modulo two changes:
    keep their single-effector ±0.35 N·m surfaces.
 2. `[fc.autopilot_allocation]` selects the
    `prioritised_redistributed` allocator with explicit
-   `axis_priority = ["roll", "pitch", "yaw"]`. The Phase-5.A.5
+   `axis_priority = ["roll", "pitch", "yaw"]`. The
    runner walks the `[[vehicle.assembly.effectors]]` list, derives
    the per-axis effector groups for `direct_torque` effectors, and
    installs the allocator on the mixer. The autopilot's
@@ -49,12 +49,12 @@ no real-world locations, no ITAR/EAR/MTCR/Wassenaar content.
 - Bordignon, K. A. and Durham, W. C. (1995). *Closed-Form
   Solutions to Constrained Control Allocation Problem*. JGCD
   18(5):1000–1007 — original "redistributed pseudoinverse"
-  formulation; Phase 5.A.5 ships the simpler single-axis case.
+  formulation; this scenario uses the simpler single-axis case.
 
 ## Validation status
 
 `experimental`. Validates parser-side and runs end-to-end
-deterministically. The Phase-5.A.5 e2e test
+deterministically. The e2e test
 (`crates/openbmp-cli/tests/diff_flatness_allocator_e2e.rs`)
 asserts:
 

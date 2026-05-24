@@ -10,10 +10,10 @@
 //!
 //! # Scope
 //!
-//! Phase 2.9 shipped point-mass force adapters for the
-//! Phase-2.11 sounding-rocket runner: a vertical-launch convention
-//! where thrust is along ECI `+z` (no attitude). Phase 3.1 adds
-//! the rigid-body counterparts:
+//! The point-mass force adapters serve the
+//! sounding-rocket runner: a vertical-launch convention
+//! where thrust is along ECI `+z` (no attitude). The
+//! rigid-body counterparts extend them:
 //!
 //! - The same `GravityForceAdapter`, `MotorThrustForceAdapter`, and
 //!   `DeckDragForceAdapter` structs gain `ForceModel<RigidBodyState>`
@@ -25,11 +25,10 @@
 //!   `+z` for the entire flight.
 //! - A new `RigidMotorMassAdapter` struct implements
 //!   `RigidMassModel`, wrapping a `Motor` plus the vehicle dry mass /
-//!   body-frame CG offset / body-frame inertia tensor. Phase-3.1
-//!   uses fixed CG and inertia (`mass_properties_rate` returns zero
+//!   body-frame CG offset / body-frame inertia tensor. CG and
+//!   inertia are fixed (`mass_properties_rate` returns zero
 //!   for those fields); the motor's mass-rate is the only non-zero
-//!   contribution. Phase 3.6 / 3.7 will add motor and tank inertia
-//!   derivatives.
+//!   contribution.
 
 use nalgebra::Vector3;
 
@@ -143,7 +142,7 @@ impl<G: GravityModel> ForceModel<RigidBodyState> for GravityForceAdapter<G> {
 /// Wraps an [`openbmp_propulsion::Motor`] as a kernel-side
 /// [`ForceModel<PointMassState>`].
 ///
-/// Phase-2 vertical-launch convention: thrust is applied along ECI
+/// Vertical-launch convention: thrust is applied along ECI
 /// `+z`. The rigid-body adapter rotates body-`+z` thrust into
 /// ECI via the attitude quaternion.
 #[derive(Copy, Clone, Debug)]
@@ -336,15 +335,14 @@ impl<M: Motor> MassModel for MotorMassAdapter<M> {
 /// Wraps an [`openbmp_aero::AeroDeck`] + [`openbmp_physics::AtmosphereModel`]
 /// as a `ForceModel<PointMassState>` that produces only axial drag
 /// (`F = -CD · q · S · v_hat`) opposing the vehicle's ECI velocity.
-/// Wind is assumed zero — Phase-3 will introduce a wind-aware
-/// rigid-body adapter that resolves wind into the body frame.
+/// Wind is assumed zero; wind-aware resolution into the body frame
+/// is handled by the runner-side wind rack.
 ///
 /// Altitude for the atmosphere lookup is taken as the ECI `z`
-/// component of position. This is the vertical-launch simplification
-/// the Phase-2.9 plan locks in: launches are from sea level along
+/// component of position. This is the vertical-launch simplification:
+/// launches are from sea level along
 /// `+z` so `position.vector.z` is a good proxy for geometric
-/// altitude. Phase 3 will introduce a `LocalGeodeticOrigin`-aware
-/// altitude resolver.
+/// altitude.
 ///
 /// CD is sampled at `(mach, alpha=0, beta=0)`. Non-axial aero
 /// (CN, CM in body frame) is intentionally not consumed by this
@@ -412,7 +410,7 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for DeckDragForceAdapter<A
         // altitude. RigidBodyState carries the same `velocity` and
         // `position` fields PointMassState does, so the rigid impl
         // delegates to the shared computation. Wind and aero
-        // moment / sideslip are Phase-3 follow-ons (3.5/3.6/3.8).
+        // moment / sideslip are handled elsewhere.
         compute_axial_drag(
             &self.deck,
             &self.atmosphere,
@@ -434,7 +432,7 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for DeckDragForceAdapter<A
 /// locked here so a future refactor can't accidentally diverge the
 /// two paths.
 ///
-/// Phase-3.5: when the loaded deck is schema-2, the helper builds a
+/// When the loaded deck is schema-2, the helper builds a
 /// `BTreeMap<&str, f64>` keyed by deck-axis name from the kernel's
 /// `EffectorActualsView`, then calls `deck.lookup` with the map.
 /// Schema-1 decks have `effector_axis_names() == []`, the loop is
@@ -481,7 +479,7 @@ fn compute_axial_drag<Atm: AtmosphereModel>(
     }
 
     let mach = speed / speed_of_sound;
-    // Phase-3.5: build the deflections map keyed by deck-axis name
+    // Build the deflections map keyed by deck-axis name
     // from the kernel's effector-actuals view. For schema-1 decks
     // `deck.effector_axis_names()` is empty, the loop is
     // zero-iteration, and `deflections` stays empty. For schema-2
@@ -534,10 +532,10 @@ fn map_aero_lookup_error(model_id: ModelId, err: AeroError) -> ModelEvalError {
 }
 
 // ---------------------------------------------------------------------
-// EngineCluster adapters (Phase 3.6.C)
+// EngineCluster adapters
 // ---------------------------------------------------------------------
 
-/// Phase-3.6 kernel-side force adapter for an engine cluster.
+/// Kernel-side force adapter for an engine cluster.
 ///
 /// Reads the kernel's per-engine snapshot via
 /// [`openbmp_models::EngineSnapshotView`] and sums per-engine
@@ -642,7 +640,7 @@ impl ForceModel<RigidBodyState> for EngineClusterForceAdapter {
     }
 }
 
-/// Phase-3.6 kernel-side moment adapter for a rigid-body engine cluster.
+/// Kernel-side moment adapter for a rigid-body engine cluster.
 ///
 /// Reads each engine's body-frame thrust from the kernel snapshot and
 /// combines it with the matching body-frame mount point. The returned
@@ -719,7 +717,7 @@ impl MomentModel<RigidBodyState> for EngineClusterMomentAdapter {
     }
 }
 
-/// Phase-3.6 kernel-side mass adapter for an engine cluster.
+/// Kernel-side mass adapter for an engine cluster.
 ///
 /// Reports `mass_kg = dry_vehicle_mass_kg - Σ consumed_kg` where
 /// `consumed_kg` is the cumulative propellant deficit per engine
@@ -728,9 +726,8 @@ impl MomentModel<RigidBodyState> for EngineClusterMomentAdapter {
 /// `mass_flow`, which would drift relative to the rack and break
 /// determinism.
 ///
-/// Phase-3.6 supports point-mass only; rigid-body cluster mass is
-/// deferred to Phase 3.7 alongside tank-driven mass-property
-/// dynamics.
+/// Supports point-mass only; rigid-body cluster mass relies on
+/// tank-driven mass-property dynamics.
 #[derive(Clone, Debug)]
 pub struct EngineClusterMassAdapter {
     dry_vehicle_mass_kg: f64,
@@ -831,11 +828,9 @@ impl MassModel for EngineClusterMassAdapter {
 /// body-frame inertia tensor as a kernel-side
 /// [`RigidMassModel`].
 ///
-/// Phase 3.1 simplification: CG and inertia are held fixed
+/// Simplification: CG and inertia are held fixed
 /// (constructor values). The motor's mass-rate is the only
-/// non-zero `MassPropertiesRate` component. Phase 3.6 / 3.7 will
-/// extend this with motor-internal inertia derivatives and
-/// tank-driven CG / inertia changes.
+/// non-zero `MassPropertiesRate` component.
 #[derive(Copy, Clone, Debug)]
 pub struct RigidMotorMassAdapter<M> {
     motor: M,
@@ -851,7 +846,7 @@ impl<M> RigidMotorMassAdapter<M> {
     /// dry_center_of_mass_body, dry_inertia_body, ignition_time_s,
     /// model_id)`. The `dry_*` fields are the vehicle's body-frame
     /// CG and inertia; the motor contributes only mass (no inertia
-    /// derivative in Phase 3.1).
+    /// derivative).
     #[must_use]
     pub const fn new(
         motor: M,
@@ -917,9 +912,8 @@ impl<M: Motor> RigidMassModel for RigidMotorMassAdapter<M> {
         }
         Ok(MassPropertiesRate {
             mass_rate_kg_s,
-            // Phase 3.1: CG and inertia are constant. The motor
-            // contributes only mass-flow; CG-shift and inertia
-            // derivatives land in Phase 3.6 / 3.7.
+            // CG and inertia are constant. The motor
+            // contributes only mass-flow.
             center_of_mass_rate_body_m_s: Vector3::zeros(),
             inertia_rate_body: nalgebra::Matrix3::zeros(),
         })
@@ -931,10 +925,10 @@ impl<M: Motor> RigidMassModel for RigidMotorMassAdapter<M> {
 }
 
 // ---------------------------------------------------------------------
-// TankRackForceAdapter (Phase 3.7.D)
+// TankRackForceAdapter
 // ---------------------------------------------------------------------
 
-/// Phase-3.7 kernel-side force adapter for a tank rack.
+/// Kernel-side force adapter for a tank rack.
 ///
 /// Sums the body-frame reaction forces of every declared tank from
 /// the kernel's `TankSnapshotView` and returns the total in `Eci`.
@@ -1025,10 +1019,10 @@ impl ForceModel<RigidBodyState> for TankRackForceAdapter {
 }
 
 // ---------------------------------------------------------------------
-// TankRackMomentAdapter (Phase 3.7.D)
+// TankRackMomentAdapter
 // ---------------------------------------------------------------------
 
-/// Phase-3.7 kernel-side moment adapter for a tank rack (rigid-body).
+/// Kernel-side moment adapter for a tank rack (rigid-body).
 ///
 /// Sums the body-frame reaction moments of every declared tank from
 /// the kernel's `TankSnapshotView` in scenario-declared order with
@@ -1080,10 +1074,10 @@ impl MomentModel<RigidBodyState> for TankRackMomentAdapter {
 }
 
 // ---------------------------------------------------------------------
-// DirectTorqueMomentAdapter (Phase 5.A.2.A)
+// DirectTorqueMomentAdapter
 // ---------------------------------------------------------------------
 
-/// Phase-5.A.2.A kernel-side moment adapter for direct-torque
+/// Kernel-side moment adapter for direct-torque
 /// effectors.
 ///
 /// Reads each declared effector's current deflection (rad) from the
@@ -1169,23 +1163,23 @@ impl MomentModel<RigidBodyState> for DirectTorqueMomentAdapter {
 }
 
 // ---------------------------------------------------------------------
-// TankRackMassAdapter (Phase 3.7.D)
+// TankRackMassAdapter
 // ---------------------------------------------------------------------
 
-/// Phase-3.7 kernel-side mass adapter for a tank rack (point-mass).
+/// Kernel-side mass adapter for a tank rack (point-mass).
 ///
 /// Wraps an inner [`MassModel`] and adds each declared tank's
 /// `mass_kg` from the kernel snapshot on top.
 ///
-/// **Phase-3.7 limitation.** Tank fluid is not yet linked to the
+/// **Limitation.** Tank fluid is not linked to the
 /// engine cluster's propellant accounting — scenarios that declare
 /// both `[[vehicle.assembly.engines]]` and a tank intended to be
 /// the cluster's propellant store will double-count that propellant
 /// (the cluster mass adapter already debits consumed propellant from
 /// `dry_vehicle_mass_kg`, and this adapter then adds the tank's
-/// `fluid_kg` on top). The Phase-3.7.E exit-criterion scenarios use
-/// non-engine sloshing setups to avoid the double-count; the
-/// engine-tank coupling is a Phase-3.X follow-on.
+/// `fluid_kg` on top). Sloshing scenarios use
+/// non-engine setups to avoid the double-count; engine-tank coupling
+/// is not modelled.
 pub struct TankRackMassAdapter {
     inner: Box<dyn MassModel>,
     tank_ids: Vec<openbmp_core::TankId>,
@@ -1270,10 +1264,10 @@ impl MassModel for TankRackMassAdapter {
 }
 
 // ---------------------------------------------------------------------
-// RecoveryRackForceAdapter (Phase 3.9.D)
+// RecoveryRackForceAdapter
 // ---------------------------------------------------------------------
 
-/// Phase-3.9 kernel-side force adapter for a recovery rack
+/// Kernel-side force adapter for a recovery rack
 /// (parachutes / drag devices).
 ///
 /// Sums the drag-area · drag-coefficient product across every
@@ -1287,8 +1281,7 @@ impl MassModel for TankRackMassAdapter {
 /// opposes the body's ECI velocity, magnitude depends only on
 /// altitude and speed, and the direction does not depend on body
 /// attitude. (Long parachute risers are assumed to decouple body
-/// rotation from drag direction — the academic Phase-3.9
-/// formulation.)
+/// rotation from drag direction.)
 ///
 /// Operand order: scenario-declared `recovery_ids` order with locked
 /// left-fold summation of `(c_d, drag_area)` products. Empty snapshot
@@ -1670,7 +1663,7 @@ mod tests {
     }
 
     // =================================================================
-    // Phase 3.1: rigid-body adapter impls
+    // Rigid-body adapter impls
     // =================================================================
 
     use openbmp_core::{AngularVelocity3, Position3 as Pos3, Quaternion};
@@ -1955,7 +1948,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // RecoveryRackForceAdapter (Phase 3.9.D)
+    // RecoveryRackForceAdapter
     // -----------------------------------------------------------------
 
     use openbmp_core::RecoveryId;

@@ -66,10 +66,9 @@ impl ScenarioId {
 /// Derived from the canonical scenario sensor path (e.g.
 /// `"sensors.imu"`) via FNV-1a-64 so that **reordering** the
 /// `[sensors]` block in a scenario file cannot shift any sensor's
-/// RNG stream. The Phase-2 plan locks this:
-///
-/// > Phase 2 adds a stable `SensorId` newtype derived from the
-/// > canonical scenario sensor path, not from list order.
+/// RNG stream. This contract is locked: `SensorId` is a stable
+/// newtype derived from the canonical scenario sensor path, not
+/// from list order.
 ///
 /// `for_sensor_component` uses an explicit domain tag in the seed
 /// material so it cannot collide with [`crate::DeterministicRng::for_channel`].
@@ -133,7 +132,7 @@ const fn fnv1a_64(bytes: &[u8]) -> u64 {
 }
 
 /// Stable identifier for a [`crate::Body`]-frame member of a
-/// `VehicleAssembly` (Phase 3.3).
+/// `VehicleAssembly`.
 ///
 /// Derived from the canonical scenario body path (e.g.
 /// `"vehicle.assembly.bodies.main"`) via FNV-1a-64 so that
@@ -164,7 +163,7 @@ impl BodyId {
     }
 }
 
-/// Stable identifier for a control-effector instance (Phase 3.4).
+/// Stable identifier for a control-effector instance.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct EffectorId(u64);
 
@@ -188,7 +187,7 @@ impl EffectorId {
     }
 }
 
-/// Stable identifier for a tank instance (Phase 3.7).
+/// Stable identifier for a tank instance.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct TankId(u64);
 
@@ -212,8 +211,7 @@ impl TankId {
     }
 }
 
-/// Stable identifier for an engine instance within an `EngineCluster`
-/// (Phase 3.6).
+/// Stable identifier for an engine instance within an `EngineCluster`.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct EngineId(u64);
 
@@ -237,7 +235,7 @@ impl EngineId {
     }
 }
 
-/// Stable identifier for a `VehicleAssembly` instance (Phase 3.3).
+/// Stable identifier for a `VehicleAssembly` instance.
 ///
 /// Carries the scenario's overall vehicle name. Defaults to the FNV
 /// hash of the scenario `meta.name` field when no explicit
@@ -265,7 +263,7 @@ impl VehicleId {
     }
 }
 
-/// Stable identifier for a recovery-device instance (Phase 3.9).
+/// Stable identifier for a recovery-device instance.
 ///
 /// Derived from the canonical scenario recovery-device path
 /// (e.g. `"vehicle.assembly.recovery.main_chute"`) via FNV-1a-64 so
@@ -295,7 +293,7 @@ impl RecoveryId {
     }
 }
 
-/// Phase-3.8 wind-axis tag for the Dryden gust filter.
+/// Wind-axis tag for the Dryden gust filter.
 ///
 /// The Dryden rational-spectrum shaping filter uses three independent
 /// per-axis state variables — longitudinal `u`, lateral `v`, and
@@ -423,7 +421,7 @@ mod tests {
 
     #[test]
     fn sensor_id_distinct_for_canonical_phase_2_sensor_paths() {
-        // Phase-2 sensor inventory: IMU, barometer, ideal-state.
+        // Canonical sensor inventory: IMU, barometer, ideal-state.
         // These hashes are pinned in the determinism contract so a
         // drift in either path or the FNV implementation surfaces
         // here before it can affect any seeded RNG stream.

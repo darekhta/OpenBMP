@@ -1,6 +1,6 @@
 //! `VehicleState` (data shape) + `Integratable` (integration extension).
 //!
-//! Phase-3.15.E split the integrator-shaped `SimState` trait into two:
+//! The integrator-shaped `SimState` trait is split into two:
 //!
 //! * [`VehicleState`] — the pure base state contract: a time stamp,
 //!   finiteness, and a way to overwrite the time field.
@@ -12,8 +12,8 @@
 //!   derivative type, the `advance_by` step combinator, the
 //!   `is_valid_for_integration` validity check, and the
 //!   post-step `project()` manifold hook. The integrator
-//!   (`openbmp_sim::Rk4FixedStep` today, future adaptive variants
-//!   in Phase 5+) consumes this.
+//!   (`openbmp_sim::Rk4FixedStep` and the adaptive variants)
+//!   consumes this.
 //!
 //! The legacy [`SimState`] name persists as a marker that requires
 //! both — every existing `<S: SimState>` bound keeps compiling.
@@ -31,7 +31,7 @@ use crate::derivative::SimStateDerivative;
 
 /// Hardware-portable base contract for vehicle state values.
 ///
-/// Phase-3.15.E extracted this from the integrator-shaped
+/// This is separate from the integrator-shaped
 /// [`SimState`] so a controller that *receives* state snapshots from
 /// the runner / HAL doesn't have to satisfy the integrator's
 /// `advance_by` / `project` / derivative-type contract. A real
@@ -62,7 +62,7 @@ pub trait VehicleState: Copy + std::fmt::Debug {
 
 /// Read-only translational state snapshot.
 ///
-/// A Phase-4 estimator, controller, telemetry sink, or HAL adapter can
+/// An estimator, controller, telemetry sink, or HAL adapter can
 /// bound on this trait when it needs position / velocity / mass from a
 /// vehicle-state snapshot but must not require integrator operations.
 pub trait TranslationalState: VehicleState {
@@ -135,14 +135,13 @@ pub trait Integratable: VehicleState {
     /// renormalise the orientation quaternion.
     fn project(&mut self) {}
 
-    /// Phase-5.D.4 — scalar L2 norm of the state's vector components.
+    /// Scalar L2 norm of the state's vector components.
     ///
-    /// Originally consumed by the §5.D.4 adaptive-step integrator's
-    /// scalar tolerance scaling `err = h · ||e'|| / (atol + rtol ·
-    /// scalar_state_size)`. §5.D.5 replaced that scalar form with the
-    /// per-component [`Integratable::weighted_error_norm`]; this
-    /// method is retained as a generic state-size diagnostic for
-    /// telemetry / external consumers.
+    /// An earlier scalar tolerance scaling `err = h · ||e'|| /
+    /// (atol + rtol · scalar_state_size)` consumed this. The
+    /// per-component [`Integratable::weighted_error_norm`] superseded
+    /// that scalar form; this method is retained as a generic
+    /// state-size diagnostic for telemetry / external consumers.
     ///
     /// The shipped implementations sum every numeric component in a
     /// locked order (no FMA); see the per-state impls in
@@ -151,7 +150,7 @@ pub trait Integratable: VehicleState {
     #[must_use]
     fn scalar_state_size(&self) -> f64;
 
-    /// Phase-5.D.5 — per-component scaled error RMS norm, the
+    /// Per-component scaled error RMS norm, the
     /// Hairer-Nørsett-Wanner Vol I §II.4 form:
     ///
     /// ```text
@@ -205,7 +204,7 @@ pub trait Integratable: VehicleState {
 // ---------------------------------------------------------------------
 
 /// Convenience marker: `<S: SimState>` means "base state shape +
-/// integratable" exactly as it did before Phase-3.15.E.
+/// integratable".
 ///
 /// New code should bound on the narrower trait it actually needs
 /// (`VehicleState`, [`TranslationalState`],
@@ -643,7 +642,7 @@ mod rigid_body_impl {
 }
 
 // ---------------------------------------------------------------------
-// Phase-5.D.5 — weighted_error_norm tests
+// weighted_error_norm tests
 // ---------------------------------------------------------------------
 
 #[cfg(test)]

@@ -1,8 +1,8 @@
-# Phase-2.10 sounding-rocket-shaped parser fixture.
+# Sounding-rocket-shaped parser fixture.
 #
 # This file is intentionally synthetic. Every numeric value here is a
 # clean round number chosen to exercise parser shape, NOT a real
-# benchmark physical constant. The Phase-2.10 parser tests in
+# benchmark physical constant. The parser tests in
 # `crates/openbmp-scenario/src/scenario.rs` mutate this fixture with
 # `replace(...)` to construct negative-test variants.
 #
@@ -21,7 +21,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "sounding-rocket-fixture"
-description = "Phase-2.10 parser fixture exercising rigid body, aero deck, motor, structured wind/atmosphere, frames local origin, sensors. Synthetic; not a benchmark."
+description = "Parser fixture exercising rigid body, aero deck, motor, structured wind/atmosphere, frames local origin, sensors. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

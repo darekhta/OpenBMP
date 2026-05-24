@@ -1,6 +1,6 @@
 //! Fault detection / isolation / recovery (FDIR).
 //!
-//! Phase 4.6: residual-based detectors layered on the
+//! Residual-based detectors layered on the
 //! `EstimatorStatus` innovation gates and the scheduler's
 //! overrun events. When a detector trips, the FDIR module publishes
 //! `FdirStatus` and the commander treats the trip as a hard
@@ -45,7 +45,7 @@ pub enum DetectorKind {
     SingleSampleGlrt,
     /// Cumulative-sum detector.
     Cusum,
-    /// Phase-5.B.4 — Willsky 1976 windowed-mean-shift GLRT, vector-form,
+    /// Willsky 1976 windowed-mean-shift GLRT, vector-form,
     /// running on the per-sensor whitened-innovation streams that the
     /// estimator now publishes on
     /// [`crate::topics::EstimatorStatus`]. See [`crate::glrt`] for the
@@ -70,11 +70,11 @@ pub struct FdirParams {
     pub cusum_drift: f64,
     /// CUSUM trip threshold.
     pub cusum_threshold: f64,
-    /// Phase-5.B.4 — number of past samples retained by the
+    /// Number of past samples retained by the
     /// windowed-mean-shift GLRT. Only read when
     /// `detector_kind = WindowedMeanShiftGlrt`.
     pub glrt_window_samples: u32,
-    /// Phase-5.B.4 — desired family-wise false-alarm rate (`α`) over
+    /// Desired family-wise false-alarm rate (`α`) over
     /// the GLRT window. Bonferroni-corrected internally per candidate
     /// jump time. Only read when
     /// `detector_kind = WindowedMeanShiftGlrt`.
@@ -110,7 +110,7 @@ pub struct FdirJob {
     triggered_mask: u64,
     ticks_since_trip: u64,
     cusum_score: f64,
-    /// Phase-5.B.4 — per-sensor windowed GLRT detectors. Lazily
+    /// Per-sensor windowed GLRT detectors. Lazily
     /// constructed when `detector_kind = WindowedMeanShiftGlrt`; left
     /// `None` for the legacy detector kinds so existing scenarios stay
     /// byte-stable.
@@ -239,7 +239,7 @@ impl Job for FdirJob {
         self.name
     }
 
-    #[allow(clippy::too_many_lines)] // Phase-5.B.4: GLRT dispatch arm grew the function
+    #[allow(clippy::too_many_lines)] // GLRT dispatch arm grew the function
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
         self.glrt_step = self.glrt_step.saturating_add(1);
         let mut current_mask = 0_u64;
@@ -402,7 +402,8 @@ fn single_sample_glrt_fault_mask(
     // unconstrained mean-shift GLRT has 2 log Lambda = r' S^-1 r,
     // i.e. the same chi-square statistic published by the estimator.
     // We threshold a single sample of that statistic; the windowed
-    // mean-shift estimator from Willsky 1976 is Phase-5 work.
+    // mean-shift estimator from Willsky 1976 is the
+    // `WindowedMeanShiftGlrt` detector.
     let statistic = innovation_chi2.max(0.0);
     let innovation_fault = if statistic > innovation_threshold {
         innovation_mask

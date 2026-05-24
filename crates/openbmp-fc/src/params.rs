@@ -7,11 +7,11 @@
 //! the resulting struct or hot-tunes individual sections via
 //! [`Parameters::update`].
 //!
-//! For Phase 4.1 the registry stores typed sections only; round-trip
+//! The registry stores typed sections; round-trip
 //! TOML / JSON serialisation is implemented behind the `serde`
-//! feature of `openbmp-fc`. The `parameter_update` bus topic that
-//! signals consumers of a fresh value is reserved for Phase 4.6 — for
-//! 4.1, modules read their section once at startup.
+//! feature of `openbmp-fc`. A `parameter_update` bus topic that
+//! signals consumers of a fresh value is reserved; modules
+//! read their section once at startup.
 //!
 //! # Determinism
 //!

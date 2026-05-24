@@ -1,10 +1,10 @@
-//! Phase-3.6 engine models.
+//! Engine models.
 //!
 //! Engines are the controller-physics interface for liquid (and
-//! later hybrid / cold-gas) propulsion. The Phase-3.6 trait surface
+//! later hybrid / cold-gas) propulsion. The trait surface
 //! exposes per-engine throttle, gimbal, and ignition / shutdown
 //! lifecycle commands; per-step thrust + mass-flow snapshots come
-//! out. Phase 3.6 ships:
+//! out. Provides:
 //!
 //! - [`EngineModel`] trait — `apply_command(cmd)`, `step(dt)`,
 //!   `limits()`, `inject_fault(fault)`, `current_state()`,
@@ -43,11 +43,11 @@
 //! dependency. The kernel-side adapter trio (`EngineClusterForceAdapter`
 //! et al.) lives in `openbmp-vehicle` and consumes a per-step
 //! `EngineSnapshot` map via the kernel's `EngineSnapshotView` (the
-//! Phase-3.6.C runner-snapshot path).
+//! runner-snapshot path).
 //!
 //! See `docs/software-architecture.md § Propulsion: EngineModel and
-//! EngineCluster` and `docs/scenario-format.md § Engine clusters
-//! (Phase 3.6)` for the contract.
+//! EngineCluster` and `docs/scenario-format.md § Engine clusters`
+//! for the contract.
 
 use nalgebra::Vector3;
 use openbmp_core::{Duration, EngineId, ValidationStatus};
@@ -55,7 +55,7 @@ use openbmp_core::{Duration, EngineId, ValidationStatus};
 use crate::error::EngineError;
 
 /// Standard gravity used for `Isp` → mass-flow conversion.
-/// Matches the Phase-2 [`crate::motor`] convention.
+/// Matches the [`crate::motor`] convention.
 const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
 
 // ---------------------------------------------------------------------
@@ -64,7 +64,7 @@ const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
 
 /// Authority envelope for an [`EngineModel`].
 ///
-/// The Phase-3.6 trait clamps `EngineCommand.throttle_unit` to
+/// The trait clamps `EngineCommand.throttle_unit` to
 /// `[0, 1]` and `gimbal_*_rad` to `[-max_gimbal_rad, max_gimbal_rad]`.
 /// These limits are validated at construction.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -133,7 +133,7 @@ impl EngineLimits {
 /// When both `ignite` and `shutdown` are `true` in the same command,
 /// **shutdown wins**: from `Igniting` / `Burning`, the engine
 /// transitions to `Shutdown`; from `Idle`, the command is a no-op
-/// (no transition). Phase-3.6 does not reject ambiguous commands at
+/// (no transition). The trait does not reject ambiguous commands at
 /// the trait level — the scenario's parse-time validation is the
 /// right place if the operator wants strictness.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -238,12 +238,12 @@ impl EngineSnapshot {
 // EngineFault
 // ---------------------------------------------------------------------
 
-/// Canonical fault modes for an engine. Mirrors the Phase-3.4
+/// Canonical fault modes for an engine. Mirrors the
 /// effector-fault taxonomy (Patton, Frank & Clark 1989 *Fault
 /// Diagnosis in Dynamic Systems*).
 ///
-/// Phase 3.6 supports load-time fault injection only; run-time
-/// injection is deferred. A `Failed` engine never recovers.
+/// Load-time fault injection only; run-time
+/// injection is not supported. A `Failed` engine never recovers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EngineFault {
     /// Throttle stuck at `at_throttle`; engine ignores command
@@ -274,7 +274,7 @@ pub enum EngineFault {
 // EngineModel trait
 // ---------------------------------------------------------------------
 
-/// Phase-3.6 engine trait.
+/// Engine trait.
 ///
 /// Engines are stateful (lifecycle state machine, latched command,
 /// integrated propellant deficit, fault mode) and therefore take
@@ -335,7 +335,7 @@ pub trait EngineModel: std::fmt::Debug + Send + Sync {
 // LiquidEngine reference impl
 // ---------------------------------------------------------------------
 
-/// Phase-3.6 reference [`EngineModel`] implementation: linear
+/// Reference [`EngineModel`] implementation: linear
 /// ignition transient, constant-throttle burn, linear shutdown
 /// transient. Mass flow `mdot = thrust / (g0 · isp)`. Gimbal applied
 /// as locked-order pitch-around-body-y then yaw-around-body-x

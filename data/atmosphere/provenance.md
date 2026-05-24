@@ -45,7 +45,7 @@ verification:
     `USSA76_MOLAR_MASS_AIR_KG_KMOL`, `USSA76_GAMMA_AIR`,
     `USSA76_REFERENCE_RADIUS_M`, `USSA76_MAX_GEOPOTENTIAL_M`,
     `USSA76_MAX_GEOMETRIC_M`; layer table: private const
-    `LAYERS: [Layer; 7]`). The Phase-2.3.C regression test
+    `LAYERS: [Layer; 7]`). The regression test
     `crates/openbmp-physics/tests/regression.rs` loads this TOML at
     test time via `include_str!` and asserts the in-source
     constants and per-layer base values match the pin to bit
@@ -78,8 +78,8 @@ safety_review:
 USSA76 is an idealised steady-state model of the lower atmosphere
 between the sea surface and 1000 km. OpenBMP ships only the
 0 – 86 km geopotential layers (the lower seven of the model's
-piecewise structure) in Phase 2; the 86 km+ extension is deferred
-to Phase 6 along with the rest of the atmospheric-physics work
+piecewise structure); the 86 km+ extension is out of scope,
+along with the rest of the atmospheric-physics work
 needed for hypersonic and exoatmospheric flight regimes.
 
 Inside the seven shipped layers the model is fully analytic:
@@ -103,9 +103,9 @@ export control.
 OpenBMP's determinism contract requires every shipped data file
 to have its content hash recorded in telemetry metadata. The
 compiled `openbmp-physics` constants and layer table are the runtime
-source of truth; this TOML file is the provenance pin. Phase 2.10
-adds the machine check that compares the two so a typo in either
-file fails CI before a release. The Phase-2.3.C regression test
+source of truth; this TOML file is the provenance pin. The `openbmp
+check-provenance` walk compares the two so a typo in either
+file fails CI before a release. The regression test
 performs the same comparison locally for the constants this crate
 defines.
 
@@ -131,7 +131,7 @@ a zero-density vacuum sample) for queries above the ceiling.
 
 # Provenance — `openbmp.atmosphere.nrlmsise00.static.v1`
 
-Canonical OpenBMP provenance record for the Phase-6.1 NRLMSISE-00
+Canonical OpenBMP provenance record for the NRLMSISE-00
 static-defaults table pinned in
 `crates/openbmp-physics/src/atmosphere/nrlmsise00.rs`.
 

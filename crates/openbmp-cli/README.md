@@ -2,18 +2,18 @@
 
 L7 command-line entry point. Produces the binary `openbmp`.
 
-**Status:** Phase 3 — runner dispatcher with the byte-stable
-analytic-toy path (Phase-1), the Phase-2 point-mass-with-adapters
-path (Niskanen-class sounding rocket), and the Phase-3 rigid-body
+A runner dispatcher with three paths: the byte-stable
+analytic-toy path, the point-mass-with-adapters
+path (Niskanen-class sounding rocket), and the rigid-body
 runner consuming the assembly tree, engine clusters, control
 effectors, tanks / moving-mass models, recovery devices, mission
-events, and layered + gust winds. Phase-3.10 sensor declarations
+events, and layered + gust winds. Sensor declarations
 parse and pin their external files; runner-side measurement
 telemetry remains future work. SHA-256 pin verification fires before
 kernel construction. Telemetry extends to atmosphere sample,
 per-model force breakdown, SHA-256 schema metadata, mission event
 marker channels, recovery state channels, and the mass column used
-to validate the Phase-3.11 Calisto motor-mass profile.
+to validate the Calisto motor-mass profile.
 
 ## Purpose
 
@@ -25,7 +25,7 @@ batch sweeps.
 
 | Subcommand | Purpose |
 |---|---|
-| `openbmp run <scenario.toml>` | Run the scenario through the kernel and write declared telemetry outputs. Dispatcher selects between Phase-1 byte-stable analytic-toy, Phase-2 point-mass-with-adapters, and Phase-3 rigid-body paths by scenario shape. |
+| `openbmp run <scenario.toml>` | Run the scenario through the kernel and write declared telemetry outputs. Dispatcher selects between the byte-stable analytic-toy, point-mass-with-adapters, and rigid-body paths by scenario shape. |
 | `openbmp diff <golden.parquet> <actual.parquet>` | Report the first divergent row and column with strict value strings. |
 | `openbmp check <scenario.toml>` | Lint: schema, provenance, units / frames, safety names, deterministic schedule. Surfaces the SHA-256 digests for every external-file reference. |
 | `openbmp check-provenance <data/>` | Walk a data tree and verify provenance records. |
@@ -63,15 +63,15 @@ optional socket-bridge tooling.
 
 ## Validation
 
-`checked` for the Phase-3 surface. Snapshot tests cover help-text
+`checked` for the rigid-body surface. Snapshot tests cover help-text
 shape, scenario-run success on the analytic-toy path, structured-
 error behaviour for malformed scenarios, `diff`'s self-compare-
 identical golden path, the Niskanen-scenario `check` digest
 report, corrupt-pin fail-closed, and missing-motor-file fail-
 closed. The end-to-end suite covers the analytic-toy drop, the
-Niskanen sounding-rocket case, the Phase-3 multi-body / engine-
+Niskanen sounding-rocket case, the multi-body / engine-
 cluster / effector / parachute-recovery / tank-slosh scenarios,
-and the Phase-3.11 RocketPy Calisto cross-tool case (apogee
+and the RocketPy Calisto cross-tool case (apogee
 within an audited 2 % envelope of RocketPy's published 3349 m
 AGL plus byte-stable Parquet across two reruns). The CI
 determinism gate runs the analytic-toy, Niskanen, and Calisto

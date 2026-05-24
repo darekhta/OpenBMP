@@ -1,8 +1,7 @@
 # OpenBMP Modeling Guide
 
-This Phase-5 guide is a placeholder for the detailed model-authoring process.
-It exists now so crate READMEs and review checklists can link to one stable
-location.
+This guide describes the model-authoring process. It gives crate READMEs and
+review checklists one stable location to link to.
 
 ## Model Contract
 

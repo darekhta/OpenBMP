@@ -1,4 +1,4 @@
-//! Phase-5.A.2.D end-to-end test: L1 adaptive augmentation rejects a
+//! End-to-end test: L1 adaptive augmentation rejects a
 //! matched roll-axis actuator disturbance better than PID alone.
 //!
 //! Two sibling scenarios:

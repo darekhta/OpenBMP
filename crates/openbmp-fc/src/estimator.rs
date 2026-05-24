@@ -1,6 +1,6 @@
 //! Estimator framework + EKF reference impl.
 //!
-//! Phase 4.3 ships:
+//! Provides:
 //! - `Estimator` trait — `predict(dt)`, `update(measurement)`,
 //!   `state()`, `status()`.
 //! - `Ekf` — 15-state error-state EKF. Process model: rigid-body
@@ -9,12 +9,12 @@
 //!   `sensor.barometer`, `sensor.star_tracker`). Innovation gates
 //!   per measurement.
 //!
-//! Phase 4.A also ships `Mekf`, a 6-state multiplicative quaternion
-//! filter for attitude-only estimation. Phase 5.B.1 retired the
-//! Phase-4.C classical 6-state `Ukf` and replaced it with the
-//! 15-state square-root [`crate::sr_ukf::SquareRootUkf`] (full
+//! Also provides `Mekf`, a 6-state multiplicative quaternion
+//! filter for attitude-only estimation. The square-root UKF family —
+//! the 15-state [`crate::sr_ukf::SquareRootUkf`] (full
 //! state) and 6-state [`crate::sr_ukf::SquareRootUkfAttitude`]
-//! (attitude-only) variants.
+//! (attitude-only) variants — supersedes an earlier classical
+//! 6-state `Ukf`.
 //!
 //! # State vector layout (`Ekf`)
 //!
@@ -232,7 +232,7 @@ impl EkfParams {
 }
 
 /// 15-state error-state Extended Kalman Filter.
-#[allow(clippy::struct_excessive_bools)] // Phase-5.B.4 added per-sensor `last_*_updated_this_tick` flags
+#[allow(clippy::struct_excessive_bools)] // per-sensor `last_*_updated_this_tick` flags
 pub struct Ekf {
     params: EkfParams,
     /// Nominal ECI position (m).
@@ -259,7 +259,7 @@ pub struct Ekf {
     last_chi2_baro: f64,
     last_chi2_mag: f64,
     last_innovation_rejected: bool,
-    /// Phase-5.B.4 — last whitened innovation per corrective sensor.
+    /// Last whitened innovation per corrective sensor.
     /// Reset every tick by `begin_tick`; set by the corresponding
     /// `update_*` method; reported by `status()` alongside the
     /// `*_updated_this_tick` flag.
@@ -269,7 +269,7 @@ pub struct Ekf {
     last_baro_updated_this_tick: bool,
     last_mag_innovation_whitened: [f64; 3],
     last_mag_updated_this_tick: bool,
-    /// Phase-5.B.3 — log-determinant of the innovation covariance
+    /// Log-determinant of the innovation covariance
     /// `S` from the most recent measurement update of the matching
     /// sensor. Computed as `2 · Σ log L_diag` from the Cholesky
     /// factorisation already done for the chi-square statistic. The
@@ -491,7 +491,7 @@ impl Estimator for Ekf {
         let innovation = z - predicted;
 
         let s = h * self.p * h.transpose() + r_var;
-        // Phase-5.B.4: Cholesky-whiten the innovation so the FDIR
+        // Cholesky-whiten the innovation so the FDIR
         // windowed-mean-shift GLRT operates on `ν̃ ~ N(0, I_d)`. The
         // squared-norm invariant `‖ν̃‖² = chi2` is asserted by the
         // unit tests in `whitened_innovation_norm_squared_equals_chi2`.
@@ -507,7 +507,7 @@ impl Estimator for Ekf {
                     .to_string(),
             });
         };
-        // Phase-5.B.3: log det S = 2 · Σ log L_ii from the same
+        // log det S = 2 · Σ log L_ii from the same
         // Cholesky factor. Locked-order summation; no FMA.
         let mut log_det_s = 0.0_f64;
         for i in 0..6 {
@@ -565,10 +565,10 @@ impl Estimator for Ekf {
         }
         let chi2 = innovation * innovation / s_scalar;
         self.last_chi2_baro = chi2;
-        // Phase-5.B.4: scalar whitening — ν̃ = ν / √S, so (ν̃)² = chi2.
+        // Scalar whitening — ν̃ = ν / √S, so (ν̃)² = chi2.
         self.last_baro_innovation_whitened = innovation / s_scalar.sqrt();
         self.last_baro_updated_this_tick = true;
-        // Phase-5.B.3: scalar log det S = log s_scalar.
+        // Scalar log det S = log s_scalar.
         self.last_log_det_s_baro = s_scalar.ln();
         let gate = self.params.gate_for_dof(1.0);
         if chi2 > gate {
@@ -609,7 +609,7 @@ impl Estimator for Ekf {
             let chi2 = innovation.dot(&(s_inv * innovation));
             if iteration == 0 {
                 self.last_chi2_mag = chi2;
-                // Phase-5.B.4: whiten the iteration-0 innovation. The
+                // Whiten the iteration-0 innovation. The
                 // Gauss-Newton iterations refine the state estimate but
                 // not the innovation distribution; the GLRT consumes
                 // the first-iteration whitened residual.
@@ -625,7 +625,7 @@ impl Estimator for Ekf {
                     self.last_mag_innovation_whitened[i] = whitened[i];
                 }
                 self.last_mag_updated_this_tick = true;
-                // Phase-5.B.3: log det S = 2 · Σ log L_ii.
+                // log det S = 2 · Σ log L_ii.
                 let mut log_det_s = 0.0_f64;
                 for i in 0..3 {
                     log_det_s += l[(i, i)].ln();
@@ -753,7 +753,7 @@ impl Ekf {
             + 1.0
     }
 
-    /// Phase-5.B.3 — log-determinant of the innovation covariance `S`
+    /// Log-determinant of the innovation covariance `S`
     /// from the most recent measurement update of the matching
     /// sensor. `f64::NAN` when no update of that sensor occurred on
     /// the current tick.
@@ -778,7 +778,7 @@ impl Ekf {
         self.last_log_det_s_mag
     }
 
-    /// Phase-5.B.3 — full internal-state snapshot suitable for IMM
+    /// Full internal-state snapshot suitable for IMM
     /// mixing. Returned in the same order as the 15-element error
     /// state: `(pos, vel, q, gyro_bias, accel_bias, P)`. The
     /// counterpart [`Ekf::set_internal_state`] writes them back; the
@@ -805,7 +805,7 @@ impl Ekf {
         )
     }
 
-    /// Phase-5.B.3 — write a full internal-state snapshot back into
+    /// Write a full internal-state snapshot back into
     /// the EKF. The IMM mixing step calls this after computing the
     /// per-mode mixed prior. The quaternion is renormalised after
     /// writeback so naive linear blending of mode quaternions stays
@@ -1130,7 +1130,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase-5.B.4 — whitened-innovation export invariants.
+    // Whitened-innovation export invariants.
     //
     // These tests pin the contract that the windowed-mean-shift GLRT
     // detector relies on: every per-sensor `update_*` method emits a
@@ -1276,7 +1276,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase-5.B.3 — IMM-supporting EKF surface (log_det_s, internal_state).
+    // IMM-supporting EKF surface (log_det_s, internal_state).
     //
     // The IMM (`crate::imm::ImmEstimator`) reads each mode's
     // `log_det_s_*` to form per-mode Gaussian likelihoods, and
@@ -1383,7 +1383,7 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------
-// MEKF — multiplicative EKF for quaternion attitude (Phase 4.8)
+// MEKF — multiplicative EKF for quaternion attitude
 // ---------------------------------------------------------------------
 
 /// Configuration parameters for the MEKF.
@@ -1447,7 +1447,7 @@ pub struct Mekf {
     last_imu: Option<ImuSample>,
     last_chi2_mag: f64,
     last_innovation_rejected: bool,
-    /// Phase-5.B.4 — last whitened mag innovation; reset by `begin_tick`.
+    /// Last whitened mag innovation; reset by `begin_tick`.
     last_mag_innovation_whitened: [f64; 3],
     last_mag_updated_this_tick: bool,
     initialized: bool,
@@ -1594,7 +1594,7 @@ impl Estimator for Mekf {
             let chi2 = innovation.dot(&(s_inv * innovation));
             if iteration == 0 {
                 self.last_chi2_mag = chi2;
-                // Phase-5.B.4: whitened residual ν̃ = L⁻¹ ν, ‖ν̃‖² = chi2.
+                // Whitened residual ν̃ = L⁻¹ ν, ‖ν̃‖² = chi2.
                 let l = chol.l();
                 let Some(whitened) = l.solve_lower_triangular(&innovation) else {
                     return Err(EstimatorError::InvalidConfig {

@@ -6,8 +6,8 @@
 
 ## Source class
 
-Synthetic. The scenario is the Phase-5.B.3 end-to-end demo for the
-new Bar-Shalom IMM (Interacting Multiple Model) estimator
+Synthetic. The scenario is the end-to-end demo for the
+Bar-Shalom IMM (Interacting Multiple Model) estimator
 (`openbmp_fc::imm::ImmEstimator`).
 
 The vehicle, sensor noise budgets, mission graph, autopilot pipeline,
@@ -17,8 +17,7 @@ selection is the only change: `[fc].estimator = "imm"` plus a new
 v3-only `[fc.imm]` block declaring a 2-mode bank with a Markov
 transition matrix and per-mode EKF tuning overrides.
 
-The Phase-5.B.3 commit promoted `FcEstimatorKind` from
-`{Ekf, Mekf}` to `{Ekf, Mekf, Imm}`. The runner builds the IMM bank
+`FcEstimatorKind` covers `{Ekf, Mekf, Imm}`. The runner builds the IMM bank
 from the per-mode `[[fc.imm.mode]]` overrides on top of the base
 `[fc.ekf]` parameters, runs the bank's two EKFs in parallel, mixes
 their priors via the transition matrix at the start of each tick,
@@ -52,7 +51,7 @@ real-world locations, no ITAR / EAR / MTCR / Wassenaar content.
 ## Validation status
 
 `experimental`. Validates parser-side and runs end-to-end
-deterministically. The Phase-5.B.3 e2e test
+deterministically. The e2e test
 (`crates/openbmp-cli/tests/closed_loop_imm_e2e.rs`) asserts:
 
 - the scenario completes 1000 RK4 steps with end-time stop;
@@ -95,8 +94,8 @@ Scenario-validator coverage:
 `docs/safety-boundaries.md` accept list — academic estimator
 verification scenario. The IMM is used strictly for
 self-state-estimation under regime change (the textbook IMM use
-case); the project-side scope guardrail in `docs/phase-5-plan.md
-§ 5.B.3` explicitly forbids any multi-target tracking extension.
+case); the project-side scope guardrail in `docs/safety-boundaries.md`
+explicitly forbids any multi-target tracking extension.
 No guidance / navigation / control logic beyond the existing
 closed-loop attitude-hold pipeline; no target geometry; no
 real-world locations.

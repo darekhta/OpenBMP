@@ -1,19 +1,17 @@
-//! Model trait declarations and Phase-1 simple implementations.
+//! Model trait declarations and simple implementations.
 //!
-//! Phase-2 generalisations applied here:
+//! Conventions:
 //!
 //! * Every fallible-evaluation method returns `Result<_,
 //!   crate::ModelEvalError>` per the architecture's locked seam.
 //! * [`ForceModel`] is generic over the [`crate::SimState`] it consumes
-//!   — the Phase-1 [`ConstantGravityForce`] / [`ZeroForce`] models impl
-//!   `ForceModel<PointMassState>`. Rigid-body impls land with sub-phase
-//!   2.1.C.
-//! * [`MomentModel`] is the parallel rigid-body trait; it is declared
-//!   here for `S` symmetry but only impls land in 2.1.C.
+//!   — the [`ConstantGravityForce`] / [`ZeroForce`] models impl
+//!   `ForceModel<PointMassState>`, with parallel rigid-body impls.
+//! * [`MomentModel`] is the parallel rigid-body trait.
 //!
-//! The Phase-1 byte-stable contract is preserved: each existing model's
-//! arithmetic is unchanged, the new fallibility never short-circuits
-//! when used through the Phase-1 CLI runner, and the
+//! The byte-stable contract holds: each model's
+//! arithmetic is unchanged, fallibility never short-circuits
+//! when used through the CLI runner, and the
 //! `mass_kg`/`mass_rate_kg_s` accessors keep their behaviour.
 //!
 //! No model in this module accesses wall-clock time, system RNG,
@@ -32,12 +30,12 @@ use crate::error::ModelEvalError;
 use crate::state::SimState;
 
 // ---------------------------------------------------------------------
-// EffectorActualsView (Phase 3.5.C)
+// EffectorActualsView
 // ---------------------------------------------------------------------
 
 /// Read-only view of the kernel's per-step effector-actuals snapshot.
 ///
-/// Phase 3.5 wires the runner-side `EffectorRack` into the deck
+/// The runner-side `EffectorRack` wires into the deck
 /// lookup: before each `kernel.step()`, the runner pushes the rack's
 /// `EffectorState.actual` values into a kernel-owned
 /// `BTreeMap<String, f64>` keyed by deck-axis name. The kernel's
@@ -48,7 +46,7 @@ use crate::state::SimState;
 /// Legacy / Schema-1 scenarios use [`EffectorActualsView::empty`],
 /// which holds no map at all — every `get` returns `None`. Schema-1
 /// decks ignore the view entirely, so legacy code paths are
-/// byte-identical to pre-3.5.
+/// byte-identical to the map-free path.
 ///
 /// `BTreeMap` (not `HashMap`) defeats macOS `SipHash` randomisation
 /// and matches the rest of the codebase's deterministic-collection
@@ -102,12 +100,12 @@ impl<'a> EffectorActualsView<'a> {
 }
 
 // ---------------------------------------------------------------------
-// EngineSnapshotView (Phase 3.6.C)
+// EngineSnapshotView
 // ---------------------------------------------------------------------
 
 /// Read-only view of the kernel's per-step engine snapshot.
 ///
-/// Phase 3.6 wires the runner-side `EngineRack` into the cluster
+/// The runner-side `EngineRack` wires into the cluster
 /// adapters: before each `kernel.step()`, the runner pushes a
 /// `BTreeMap<EngineId, EngineSnapshot>` into the kernel via
 /// `set_engine_snapshot(...)`. The kernel's derive closure then
@@ -172,7 +170,7 @@ impl<'a> EngineSnapshotView<'a> {
 }
 
 // ---------------------------------------------------------------------
-// TankSnapshotView (Phase 3.7.D)
+// TankSnapshotView
 // ---------------------------------------------------------------------
 
 /// Per-step snapshot of one tank's moving-mass dynamics.
@@ -200,13 +198,13 @@ pub struct TankSnapshot {
     pub reaction_moment_body_n_m: Vector3<f64>,
     /// Remaining fluid mass, kg. Reported for telemetry; the mass
     /// contributions in the kernel use `mass_kg`, which equals
-    /// `fluid_remaining_kg` for the Phase-3.7 implementations.
+    /// `fluid_remaining_kg` for the tank implementations.
     pub fluid_remaining_kg: f64,
 }
 
 /// Read-only view of the kernel's per-step tank snapshot.
 ///
-/// Phase 3.7 wires the runner-side `TankRack` into the kernel: every
+/// The runner-side `TankRack` wires into the kernel: every
 /// kernel base tick the runner advances each tank's slosh state
 /// using last step's `(accel_body, omega_body)`, packs the resulting
 /// `MovingMassModel` observations into a `BTreeMap<TankId,
@@ -265,7 +263,7 @@ impl<'a> TankSnapshotView<'a> {
 }
 
 // ---------------------------------------------------------------------
-// RecoverySnapshotView (Phase 3.9.D)
+// RecoverySnapshotView
 // ---------------------------------------------------------------------
 
 /// Per-step snapshot of one recovery device's deployment state.
@@ -297,7 +295,7 @@ pub struct RecoverySnapshot {
 
 /// Read-only view of the kernel's per-step recovery snapshot.
 ///
-/// Phase 3.9 wires the runner-side `RecoveryRack` into the kernel:
+/// The runner-side `RecoveryRack` wires into the kernel:
 /// every kernel base tick the runner walks each recovery device's
 /// state machine (advancing it on any fired deploy-recovery event),
 /// packs the resulting
@@ -371,19 +369,19 @@ pub struct EnvironmentQuery {
 
 /// One environment sample returned by an [`EnvironmentModel`].
 ///
-/// Phase 1 carried only a gravity field; Phase 3.8 adds a NED wind
+/// Carries a gravity field plus a NED wind
 /// vector populated by the runner-side `WindRack` before each
-/// `kernel.step()`. The default-zero wind keeps pre-3.8 scenarios
+/// `kernel.step()`. The default-zero wind keeps wind-free scenarios
 /// byte-stable: a runner that does not declare `[wind] kind != "none"`
 /// never calls `kernel.set_wind_sample`, so the kernel keeps the
 /// `EnvironmentSample::default()` zero vector and downstream
-/// consumers (Phase-2 axial drag, which still ignores wind in 3.8)
+/// consumers (such as axial drag, which still ignores wind)
 /// see no change.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct EnvironmentSample {
     /// Local gravitational acceleration in `Eci`, m/s².
     pub gravity_eci_m_s2: Vector3<f64>,
-    /// Phase-3.8: NED wind vector at the kernel's current step,
+    /// NED wind vector at the kernel's current step,
     /// `(north, east, down)`, m/s. Defaults to zero — the runner
     /// pushes a non-zero value via `kernel.set_wind_sample` only for
     /// scenarios that declare a non-`none` `[wind]` kind.
@@ -443,26 +441,26 @@ pub struct ForceContext<'a, S: SimState> {
     /// Sub-step time. May be the kernel's published time
     /// (start-of-step) or one of the RK4 intermediate times.
     pub time: SimTime,
-    /// Phase-3.5: read-only view of the kernel's effector-actuals
+    /// Read-only view of the kernel's effector-actuals
     /// snapshot, keyed by deck-axis name. Empty for legacy /
     /// Schema-1 scenarios; populated by the runner before each
     /// `kernel.step()` for Schema-2 scenarios. All four RK4 stages
     /// see the same snapshot — matches the architecture's "effectors
     /// step at the kernel base tick" cadence.
     pub effector_actuals: EffectorActualsView<'a>,
-    /// Phase-3.6: read-only view of the kernel's per-engine
+    /// Read-only view of the kernel's per-engine
     /// snapshot, keyed by `EngineId`. Empty for legacy single-motor
     /// scenarios; populated by the runner's `EngineRack` before
     /// each `kernel.step()` for cluster scenarios. All four RK4
     /// stages see the same snapshot.
     pub engine_snapshot: EngineSnapshotView<'a>,
-    /// Phase-3.7: read-only view of the kernel's per-tank snapshot,
+    /// Read-only view of the kernel's per-tank snapshot,
     /// keyed by [`TankId`]. Empty for legacy scenarios with no
     /// `[[vehicle.assembly.tanks]]` block; populated by the runner's
     /// `TankRack` before each `kernel.step()`. All four RK4 stages
     /// see the same snapshot.
     pub tank_snapshot: TankSnapshotView<'a>,
-    /// Phase-3.9: read-only view of the kernel's per-recovery snapshot,
+    /// Read-only view of the kernel's per-recovery snapshot,
     /// keyed by [`RecoveryId`]. Empty for legacy scenarios with no
     /// `[[vehicle.assembly.recovery]]` block; populated by the
     /// runner's `RecoveryRack` before each `kernel.step()`. All four
@@ -476,8 +474,8 @@ pub struct ForceContext<'a, S: SimState> {
 /// Trait implemented by force-providing models.
 ///
 /// Generic over `S: SimState` so the same model trait can serve point-
-/// mass and rigid-body kernels. The Phase-1 models impl
-/// `ForceModel<PointMassState>`; rigid-body impls land with 2.1.C.
+/// mass and rigid-body kernels. The simple models impl
+/// `ForceModel<PointMassState>`, with parallel rigid-body impls.
 ///
 /// The model returns total force in `Eci`, in Newtons. The integrator
 /// divides by mass to get acceleration.
@@ -556,7 +554,7 @@ impl<S: SimState> ForceModel<S> for ZeroForce {
 }
 
 // ---------------------------------------------------------------------
-// Moment (Phase-2.1.C trait surface; no built-in impls yet)
+// Moment trait surface
 // ---------------------------------------------------------------------
 
 /// Inputs passed to a [`MomentModel::moment_n_m_body`] call.
@@ -572,17 +570,17 @@ pub struct MomentContext<'a, S: SimState> {
     pub environment: &'a EnvironmentSample,
     /// Sub-step time.
     pub time: SimTime,
-    /// Phase-3.5: read-only effector-actuals view (same shape as
+    /// Read-only effector-actuals view (same shape as
     /// `ForceContext.effector_actuals`). Schema-2 moment models
-    /// (Phase 3.6+) consume the deflection axes that perturb `CM`
+    /// consume the deflection axes that perturb `CM`
     /// in the same way schema-2 force models do.
     pub effector_actuals: EffectorActualsView<'a>,
-    /// Phase-3.6: read-only engine snapshot view. The rigid-body
+    /// Read-only engine snapshot view. The rigid-body
     /// `EngineClusterMomentAdapter` reads per-engine thrust + mount
     /// point from this view to compute the cluster moment about
     /// the body origin.
     pub engine_snapshot: EngineSnapshotView<'a>,
-    /// Phase-3.7: read-only tank snapshot view. The rigid-body
+    /// Read-only tank snapshot view. The rigid-body
     /// `TankRackMomentAdapter` reads per-tank reaction moments from
     /// this view.
     pub tank_snapshot: TankSnapshotView<'a>,
@@ -590,8 +588,8 @@ pub struct MomentContext<'a, S: SimState> {
 
 /// Trait implemented by moment-providing models.
 ///
-/// Returns total body-frame moment in `N·m`. Phase-2.1.C lands the
-/// first impls (aero moment, gravity-gradient toy).
+/// Returns total body-frame moment in `N·m`. Impls include the
+/// aero moment and gravity-gradient toy.
 pub trait MomentModel<S: SimState> {
     /// Total moment in `Body`, in `N·m`.
     ///
@@ -608,7 +606,7 @@ pub trait MomentModel<S: SimState> {
     }
 }
 
-/// Zero-moment model. The torque-free Phase-2.1.D analytic-toy uses
+/// Zero-moment model. The torque-free analytic toy uses
 /// this for the headline rigid-body validation case.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ZeroMoment;
@@ -630,22 +628,22 @@ impl<S: SimState> MomentModel<S> for ZeroMoment {
 /// Inputs passed to a [`MassModel::mass_kg_at`] /
 /// [`MassModel::mass_rate_kg_s_at`] call.
 ///
-/// Phase 3.6 introduces this context-carrying entry point so the
-/// `EngineClusterMassAdapter` can read the kernel's per-engine
+/// This context-carrying entry point lets the
+/// `EngineClusterMassAdapter` read the kernel's per-engine
 /// snapshot. Existing time-only models keep the no-op default
 /// forwarding from the legacy `mass_kg(t)` / `mass_rate_kg_s(t)`
-/// methods — every Phase-2 / 3.5 mass model is byte-identical
+/// methods — every time-only mass model is byte-identical
 /// because the default forward calls the original method.
 #[derive(Copy, Clone, Debug)]
 pub struct MassContext<'a> {
     /// Sub-step time. May be the kernel's published time
     /// (start-of-step) or one of the RK4 intermediate times.
     pub time: SimTime,
-    /// Phase-3.6: read-only engine snapshot view. Empty for legacy
+    /// Read-only engine snapshot view. Empty for legacy
     /// scenarios; populated by the runner before each `step()` for
     /// cluster scenarios.
     pub engine_snapshot: EngineSnapshotView<'a>,
-    /// Phase-3.7: read-only tank snapshot view. Empty for legacy
+    /// Read-only tank snapshot view. Empty for legacy
     /// scenarios; populated by the runner before each `step()` for
     /// scenarios that declare `[[vehicle.assembly.tanks]]`.
     pub tank_snapshot: TankSnapshotView<'a>,
@@ -653,10 +651,10 @@ pub struct MassContext<'a> {
 
 /// Trait implemented by mass-property-providing models.
 ///
-/// Phase 1 surfaces only mass and mass-rate (point-mass). Full
+/// Surfaces mass and mass-rate (point-mass). Full
 /// rigid-body mass-property models (`MassProperties` derivatives —
-/// inertia tensor, CG offset, their time derivatives) land in
-/// sub-phase 2.1.C alongside [`MomentModel`] impls.
+/// inertia tensor, CG offset, their time derivatives) accompany
+/// the [`MomentModel`] impls.
 pub trait MassModel {
     /// Total mass at simulation time `t` (kg).
     ///
@@ -675,7 +673,7 @@ pub trait MassModel {
     /// its validity envelope or produces non-finite output.
     fn mass_rate_kg_s(&self, t: SimTime) -> Result<f64, ModelEvalError>;
 
-    /// Phase-3.6 context-carrying entry point. The default
+    /// Context-carrying entry point. The default
     /// implementation forwards to [`Self::mass_kg`], preserving
     /// byte-identical legacy behaviour. The
     /// `EngineClusterMassAdapter` overrides this method to read
@@ -689,7 +687,7 @@ pub trait MassModel {
         self.mass_kg(ctx.time)
     }
 
-    /// Phase-3.6 context-carrying entry point. The default forwards
+    /// Context-carrying entry point. The default forwards
     /// to [`Self::mass_rate_kg_s`].
     ///
     /// # Errors
@@ -787,15 +785,15 @@ impl MassModel for LinearBurnMass {
 }
 
 // ---------------------------------------------------------------------
-// Rigid-body mass models (Phase 2.1.C)
+// Rigid-body mass models
 // ---------------------------------------------------------------------
 
 /// Time derivative of [`MassProperties`].
 ///
-/// Returned by [`RigidMassModel::mass_properties_rate`]. Phase-2
+/// Returned by [`RigidMassModel::mass_properties_rate`]. The
 /// built-in models return zero centre-of-mass rate, but the field is
-/// present so the Phase-2.1 rigid-body derivative already covers the
-/// full mass / CG / inertia rate shape expected by later motor and
+/// present so the rigid-body derivative already covers the
+/// full mass / CG / inertia rate shape expected by motor and
 /// tank models.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct MassPropertiesRate {
@@ -818,9 +816,9 @@ impl MassPropertiesRate {
 /// Trait implemented by rigid-body mass-property-providing models.
 ///
 /// Returns full [`MassProperties`] (mass, body-frame CG, body-frame
-/// inertia tensor) plus their time derivatives. Phase-2 ships
+/// inertia tensor) plus their time derivatives. Ships
 /// [`ConstantMassRigid`] and [`LinearBurnMassRigid`]; the latter
-/// declares fixed inertia per the audited plan's simplification
+/// declares fixed inertia per the audited simplification
 /// (motor inertia rate is zero unless the scenario explicitly says
 /// otherwise).
 pub trait RigidMassModel {
@@ -882,9 +880,9 @@ impl RigidMassModel for ConstantMassRigid {
 
 /// Linearly-burning rigid-body mass with fixed body-frame inertia.
 ///
-/// Phase-2 simplification per the audited plan: the inertia tensor
+/// Audited simplification: the inertia tensor
 /// stays at the constructor value while mass varies linearly. A motor
-/// with a real inertia derivative is Phase-3 work alongside
+/// with a real inertia derivative is handled by
 /// `EngineCluster`.
 #[derive(Copy, Clone, Debug)]
 pub struct LinearBurnMassRigid {
@@ -894,9 +892,9 @@ pub struct LinearBurnMassRigid {
     pub m0_kg: f64,
     /// Burn rate (kg/s); typically negative for mass loss.
     pub rate_kg_s: f64,
-    /// Body-frame centre of mass (held fixed during Phase 2).
+    /// Body-frame centre of mass (held fixed).
     pub center_of_mass_body: Position3<openbmp_core::Body>,
-    /// Body-frame inertia tensor (held fixed during Phase 2).
+    /// Body-frame inertia tensor (held fixed).
     pub inertia_body: Matrix3<f64>,
 }
 

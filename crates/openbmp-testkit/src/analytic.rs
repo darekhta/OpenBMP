@@ -109,7 +109,7 @@ impl HarmonicOscillator {
 /// Two-body Keplerian orbit (unperturbed point-mass gravity).
 ///
 /// Stores the orbital elements at epoch and provides a position
-/// evaluation via the standard Kepler solution. Phase 1.6 ships only
+/// evaluation via the standard Kepler solution. Supports only
 /// circular and elliptical orbits in the orbital plane (true anomaly
 /// is computed via Newton's method on Kepler's equation).
 ///
@@ -236,10 +236,10 @@ impl TwoBodyKeplerian {
 
     /// Checked position in the orbital plane at time `t`.
     ///
-    /// The returned vector is `(x, y)` in the perifocal plane. Phase
-    /// 1.6 intentionally does not rotate this into ECI because the
+    /// The returned vector is `(x, y)` in the perifocal plane. It is
+    /// intentionally not rotated into ECI because the
     /// inclination/RAAN/argument-of-periapsis surface is not part of
-    /// the Phase-1.6 fixture contract.
+    /// the fixture contract.
     ///
     /// # Errors
     ///

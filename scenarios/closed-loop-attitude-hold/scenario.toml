@@ -1,4 +1,4 @@
-# Phase-4.C closed-loop attitude-hold validation scenario.
+# Closed-loop attitude-hold validation scenario.
 #
 # A point-mass vehicle with synthetic IMU + GNSS + magnetometer feeds
 # into a full flight-controller pipeline:
@@ -22,15 +22,15 @@
 # scenario `[fc]` block round-trips through `openbmp-scenario` and
 # validates clean.
 #
-# Kernel↔FC bridging is exercised by the Phase 4.C runner bridge. The
+# Kernel↔FC bridging is exercised by the runner bridge. The
 # point-mass kernel still has only gravity in its force list, so the
-# FC closes the loop without perturbing the Phase-1/2 force contract.
+# FC closes the loop without perturbing the kernel force contract.
 
 openbmp.scenario = 2
 
 [meta]
 name        = "closed-loop-attitude-hold"
-description = "Phase-4.C closed-loop attitude-hold validation. Synthetic; full FC pipeline (EKF + three-loop + mixer + health/FDIR)."
+description = "Closed-loop attitude-hold validation. Synthetic; full FC pipeline (EKF + three-loop + mixer + health/FDIR)."
 validation  = "experimental"
 provenance  = "synthetic; full FC pipeline academic gains and noise levels"
 
@@ -106,7 +106,7 @@ from  = "mission.phases.pad"
 to    = "mission.phases.ascent"
 event = "mission.events.liftoff"
 
-# Flight-controller block (Phase 4.C).
+# Flight-controller block.
 [fc]
 estimator        = "ekf"
 autopilot        = "three_loop"

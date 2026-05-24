@@ -10,8 +10,8 @@
 //!   [`std::ops::Mul`].
 //! * Componentwise addition (`d + d`) via [`std::ops::Add`].
 //!
-//! Phase-3.15.E removed the old `rk4_weighted_sum` method that baked
-//! the RK4 stage scheme into the trait. The locked-operand-order
+//! The trait deliberately omits an `rk4_weighted_sum` method that
+//! would bake the RK4 stage scheme into the trait. The locked-operand-order
 //! weighted-sum logic now lives on the integrator side
 //! (`openbmp_sim::rk4_weighted_sum`); this trait exposes only the
 //! generic primitives, so future integrators (DOPRI5/8, RKF78,
@@ -39,13 +39,13 @@ use nalgebra::{Matrix3, Quaternion as NalgebraQuaternion, Vector3};
 /// required: finiteness, addition, and scalar multiplication. The
 /// integrator combines stages itself.
 ///
-/// Phase-5.D.4 added [`SimStateDerivative::l2_norm`] and
-/// [`SimStateDerivative::dimension`] so the embedded-error /
-/// adaptive-step DOPRI5(4) integrator can compute a scaled error
-/// norm without componentwise access to the state. The shipped
-/// integrator uses the **scalar approximation** `err = h · ||e'||
-/// / (atol + rtol · ||y||)` — a per-component tolerance refinement
-/// is deferred (see `docs/phase-5-plan.md § 5.D.5`).
+/// [`SimStateDerivative::l2_norm`] and
+/// [`SimStateDerivative::dimension`] let the embedded-error /
+/// adaptive-step DOPRI5(4) integrator compute a scaled error
+/// norm without componentwise access to the state. This path
+/// uses the **scalar approximation** `err = h · ||e'||
+/// / (atol + rtol · ||y||)`; the per-component tolerance refinement
+/// lives in [`crate::Integratable::weighted_error_norm`].
 pub trait SimStateDerivative:
     Copy + std::fmt::Debug + Add<Output = Self> + Mul<f64, Output = Self>
 {
@@ -53,15 +53,15 @@ pub trait SimStateDerivative:
     #[must_use]
     fn is_finite(&self) -> bool;
 
-    /// Phase-5.D.4 — Euclidean (L2) norm over every numeric
+    /// Euclidean (L2) norm over every numeric
     /// component of the derivative, treating it as a flat vector in
     /// `R^dim`. Used by the adaptive integrator's scaled error norm.
     /// Locked operand order, no FMA.
     #[must_use]
     fn l2_norm(&self) -> f64;
 
-    /// Phase-5.D.4 — total number of scalar components participating
-    /// in [`SimStateDerivative::l2_norm`]. The shipped scalar
+    /// Total number of scalar components participating
+    /// in [`SimStateDerivative::l2_norm`]. The scalar
     /// tolerance path records this for diagnostics and future
     /// per-component / RMS norm follow-ons.
     #[must_use]
@@ -193,7 +193,7 @@ impl SimStateDerivative for PointMassDerivative {
 ///   `inertia_rate_body`.
 /// * `mass_rate_kg_s` — scalar mass rate (kg/s). Negative for burn.
 /// * `center_of_mass_rate_body_m_s` — body-frame CG offset rate.
-/// * `inertia_rate_body` — `dI_body/dt`. Zero for the Phase-2
+/// * `inertia_rate_body` — `dI_body/dt`. Zero for the
 ///   `ConstantMassRigid` model; non-zero for `LinearBurnMassRigid` if
 ///   the scenario declares an inertia derivative explicitly.
 #[derive(Copy, Clone, Debug)]
@@ -490,7 +490,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase-5.D.4 — `l2_norm()` and `dimension()` invariants supporting
+    // `l2_norm()` and `dimension()` invariants supporting
     // the adaptive-step DOPRI5(4) scalar error-norm surface.
     // -----------------------------------------------------------------
 

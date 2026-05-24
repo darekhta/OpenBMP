@@ -1,4 +1,4 @@
-# Phase-3.6 parser fixture: engine cluster + an engine_command whose
+# Parser fixture: engine cluster + an engine_command whose
 # `id` does not match any declared engine. Used for the negative test
 # `rejects_engine_command_action_referencing_unknown_engine_id`.
 
@@ -6,7 +6,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "assembly-engine-cluster-unknown-id-fixture"
-description = "Phase-3.6 negative parser fixture: engine_command references an undeclared engine id."
+description = "Negative parser fixture: engine_command references an undeclared engine id."
 validation  = "experimental"
 
 [time]

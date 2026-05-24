@@ -1,38 +1,37 @@
 //! `openbmp-vehicle` — OpenBMP vehicle composition.
 //!
-//! Phase 2.8 ships:
+//! Contents:
 //!
-//! * [`vehicle::Vehicle`] trait — the architecture's long-term
+//! * [`vehicle::Vehicle`] trait — the architecture's
 //!   force / moment / mass composition surface, parameterised over
 //!   `S: SimState` so it serves both point-mass and rigid-body
 //!   kernels.
-//! * [`vehicle::KernelVehicle`] — Phase-2 implementation that
+//! * [`vehicle::KernelVehicle`] — the implementation that
 //!   composes ordered force-model and moment-model lists and carries a
 //!   single mass model.
 //!   `KernelVehicle::force_n_eci` evaluates the list in declared
 //!   order with locked operand sum and short-circuits on the first
-//!   model error. The Phase-2 plan documents the contract
-//!   *order matters* — floating-point summation is not associative,
+//!   model error. The contract is *order matters* — floating-point
+//!   summation is not associative,
 //!   so reordering the list changes the byte output.
 //! * [`vehicle::ForceBreakdown`] / [`vehicle::MomentBreakdown`] —
-//!   per-model components plus total. The kernel-side adapter at
-//!   Phase 2.10 evaluates the breakdown once per step, uses its total
+//!   per-model components plus total. The kernel-side adapter
+//!   evaluates the breakdown once per step, uses its total
 //!   for dynamics, and publishes `force.<name>.{x,y,z}` telemetry
 //!   channels.
 //! * [`vehicle::BoxedMassModel`] — convenience wrapper around
-//!   `Box<dyn MassModel>` for the vehicle-owned mass model. Phase 3 will
-//!   add `MultiStageMass` as a richer composition.
+//!   `Box<dyn MassModel>` for the vehicle-owned mass model.
 //! * [`error::VehicleError`].
 //!
-//! # Phase-1 byte-stability preservation
+//! # Byte-stability preservation
 //!
-//! The Phase-1 analytic toy gravity path remains byte-identical when
+//! The analytic toy gravity path remains byte-identical when
 //! the single gravity force is wrapped in a one-element `KernelVehicle`;
 //! the `single_force_model_vehicle_byte_matches_raw_model` test asserts
 //! the direct model result, and the kernel integration test asserts the
-//! final state. The Phase-1 `analytic_toy` regression continues to use
+//! final state. The `analytic_toy` regression continues to use
 //! the kernel's existing generic `F: ForceModel<PointMassState>`
-//! surface, so swapping in `KernelVehicle` is a future-Phase opt-in.
+//! surface, so swapping in `KernelVehicle` is an opt-in.
 //!
 //! # Determinism
 //!
@@ -46,8 +45,8 @@
 //! own kernel-facing trait surfaces (`ForceModel`, `MomentModel`,
 //! `MassModel`, `Vehicle`); L2 crates (`openbmp-physics`,
 //! `openbmp-aero`, `openbmp-propulsion`, `openbmp-sensors`) define
-//! their own physics-side traits and the kernel-side adapter at
-//! Phase 2.10 wires the two together.
+//! their own physics-side traits and the kernel-side adapter
+//! wires the two together.
 
 pub mod adapters;
 pub mod assembly;

@@ -1,17 +1,14 @@
 //! Atmosphere models.
 //!
-//! Phase 2.3 ships:
+//! Provides:
 //!
-//! * [`IsothermalAtmosphere`] (sub-phase 2.3.A) — toy: returns
+//! * [`IsothermalAtmosphere`] — toy: returns
 //!   constant `(ρ, p, T, a)` at every query. Useful for unit-test
 //!   fixtures and for analytic-toy scenarios that need a non-vacuum
 //!   atmosphere without a layered model.
-//! * [`UsStandard1976`] (sub-phase 2.3.B) — in-house Rust port of
+//! * [`UsStandard1976`] — in-house Rust port of
 //!   NOAA-S/T 76-1562 / NASA-TM-X-74335. Geopotential layers 0–86 km
 //!   only.
-//!
-//! Phase 5.C.1 adds:
-//!
 //! * [`PiecewiseExponentialAtmosphere`] — 14-layer engineering
 //!   exponential atmosphere covering 0-1000 km, sourced from Vallado
 //!   *Fundamentals of Astrodynamics and Applications* 4th ed. Table
@@ -232,7 +229,7 @@ impl AtmosphereSample {
 /// surface; for `UsStandard1976` this is the WGS84 / USSA76 reference
 /// radius). Geopotential conversion happens inside the model. Time
 /// is included for forward compatibility with future time-varying
-/// models (none in Phase 2).
+/// models (none currently).
 pub trait AtmosphereModel {
     /// Sample the atmosphere at a geometric altitude (m).
     ///

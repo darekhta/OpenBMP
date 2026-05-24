@@ -1,4 +1,4 @@
-//! Phase-6.11 generic ablation toy.
+//! Generic ablation toy.
 //!
 //! Trait-level surface for ablation models with two implementations:
 //!
@@ -344,7 +344,7 @@ impl AblationModel for SteadyStateAblator {
     }
 }
 
-/// Charring ablator with pyrolysis zone. Phase-6.11 baseline ships
+/// Charring ablator with pyrolysis zone. The baseline ships
 /// only the trait wiring and a "constant-progress" pyrolysis tracker
 /// — full virgin / char depth-resolved evolution lands in the
 /// follow-on slice.

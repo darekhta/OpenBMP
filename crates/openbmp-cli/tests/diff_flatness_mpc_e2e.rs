@@ -1,4 +1,4 @@
-//! Phase-5.A.4 end-to-end test: receding-horizon attitude MPC tracks
+//! End-to-end test: receding-horizon attitude MPC tracks
 //! the diff-flatness figure-eight without runaway and stays
 //! byte-stable across reruns.
 //!

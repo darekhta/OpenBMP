@@ -1,4 +1,4 @@
-# Phase-3.6.D exit-criterion scenario — 4-engine cluster with one
+# Exit-criterion scenario — 4-engine cluster with one
 # engine commanded to shutdown mid-flight.
 #
 # Octaweb-style cluster (1 axial + 3 ring-mounted) on a 100 kg
@@ -15,7 +15,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "four-engine-shutdown"
-description = "Phase-3.6.D exit-criterion: 4-engine cluster, engine_d shutdown at altitude=200m demonstrates mass-flow drop and lateral asymmetry. Synthetic; not a benchmark."
+description = "Exit-criterion: 4-engine cluster, engine_d shutdown at altitude=200m demonstrates mass-flow drop and lateral asymmetry. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

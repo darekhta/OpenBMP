@@ -1,11 +1,11 @@
-# Two-body fairing-on-rocket scenario — Phase-3.3 exit-criterion case.
+# Two-body fairing-on-rocket scenario — exit-criterion case.
 #
 # Demonstrates the new declarative `[vehicle.assembly]` block with
 # two bodies: an 80 g main rocket body (cylinder) and a 5 g
 # top-mounted fairing (cone). The assembly dry mass is 0.085 kg,
 # the sum of body dry masses.
 #
-# Phase-3.13 v2 shape:
+# v2 schema shape:
 # - Point-mass kernel only; the kernel mass model is initialized from
 #   the assembly dry mass.
 # - No motor, no aero — gravity-only descent demonstrates the
@@ -19,7 +19,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "two-body-fairing"
-description = "Phase-3.3 multi-body scenario; main rocket cylinder + top-mounted fairing cone. Synthetic; not a benchmark."
+description = "Multi-body scenario; main rocket cylinder + top-mounted fairing cone. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

@@ -30,8 +30,8 @@ use openbmp_core::{Ecef, Eci, Frame as CoreFrame, FrameError, Ned, Position3, Si
 /// Active frame profile.
 ///
 /// The profile determines which [`FrameTransform`] implementations and
-/// time-aware methods are available. Phase-1 ships
-/// [`FrameProfile::ToyFixedEarth`]; Phase-2.2 adds
+/// time-aware methods are available. Provides
+/// [`FrameProfile::ToyFixedEarth`] and
 /// [`FrameProfile::Wgs84UniformRotation`].
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub enum FrameProfile {
@@ -43,8 +43,8 @@ pub enum FrameProfile {
     /// WGS84 with uniform Earth rotation: ECI/ECEF differ only by a
     /// rotation about the inertial `+z` axis at the constant WGS84
     /// rate `ω_e = 7.2921151467 × 10⁻⁵ rad/s`. No EOP, no polar
-    /// motion, no leap seconds. Phase-2.2 ships this profile;
-    /// IERS-tabulated and SPICE-reference profiles are deferred.
+    /// motion, no leap seconds. IERS-tabulated and SPICE-reference
+    /// profiles are out of scope.
     Wgs84UniformRotation,
 }
 
@@ -60,7 +60,7 @@ impl FrameProfile {
 }
 
 // ---------------------------------------------------------------------
-// WGS84 geodetic constants (Phase 2.2)
+// WGS84 geodetic constants
 //
 // Defining-parameter values from NIMA TR 8350.2, *Department of
 // Defense World Geodetic System 1984*, 3rd ed. (2000), tables 3.1
@@ -96,7 +96,7 @@ pub const WGS84_OMEGA_RAD_S: f64 = 7.292_115_146_7e-5;
 // LocalGeodeticOrigin
 // ---------------------------------------------------------------------
 
-/// Scenario-declared local geodetic origin used by Phase-2 NED helpers.
+/// Scenario-declared local geodetic origin used by the NED helpers.
 ///
 /// All angles are stored in radians. Convenience constructors accept
 /// degrees. Values are validated at construction:
@@ -236,7 +236,7 @@ impl FrameContext {
     }
 
     // ---------------------------------------------------------------
-    // Time-aware ECI ↔ ECEF transforms (Phase 2.2)
+    // Time-aware ECI ↔ ECEF transforms
     //
     // For the WGS84 uniform-rotation profile, ECI and ECEF coincide at
     // `t = 0` and ECEF rotates eastward (about the inertial +z axis)
@@ -546,7 +546,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase 2.2.A — WGS84 frame profile tests
+    // WGS84 frame profile tests
     // -----------------------------------------------------------------
 
     mod wgs84 {

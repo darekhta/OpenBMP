@@ -1,4 +1,4 @@
-//! Phase 6.0 — Hypersonic solver profile.
+//! Hypersonic solver profile.
 //!
 //! Wraps the existing integrator family ([`Rk4FixedStep`],
 //! [`Dopri54FixedStep`], [`Dopri54Adaptive`], [`Dopri853FixedStep`],
@@ -34,7 +34,7 @@ use crate::integrator::{
 };
 use openbmp_models::SimState;
 
-/// Phase 6.0 solver profile declared by a hypersonic scenario.
+/// Solver profile declared by a hypersonic scenario.
 ///
 /// Selects the trajectory integrator and (optionally) the implicit
 /// sub-stepper used by chemistry / material-response source terms.
@@ -737,8 +737,8 @@ impl<S: SimState> Integrator<S> for ProfiledIntegrator {
 /// For a scalar linear stiff RHS `f(t,y) = -k·y` (with
 /// `df/dy = -k`), Newton converges in **one** iteration to the
 /// analytic implicit-Euler answer `y_1 = y_n / (1 + k·h)` — that is
-/// the stiff-stable property the profile needs for Phase-6.10
-/// Park-2T vibrational relaxation and Phase-6.11 surface energy
+/// the stiff-stable property the profile needs for
+/// Park-2T vibrational relaxation and surface energy
 /// balance.
 ///
 /// The residual reported on `DidNotConverge` is the max-norm of the

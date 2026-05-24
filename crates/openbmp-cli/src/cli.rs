@@ -53,9 +53,8 @@ pub enum Command {
     },
     /// Walk a data tree and verify provenance records.
     ///
-    /// Phase-1 surface is a stub: it lists files without a sibling
-    /// `provenance.md` so the project can audit a fresh data tree.
-    /// Full machine-readable parsing is Phase 2 work.
+    /// Lists files without a sibling `provenance.md` so the project can
+    /// audit a fresh data tree.
     CheckProvenance {
         /// Root directory to walk.
         root: PathBuf,

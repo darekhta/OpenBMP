@@ -2,7 +2,7 @@ case = "sr-ukf-vs-ekf-synthetic-sensor-trajectory"
 source = "Synthetic direct-filter comparison; deterministic IMU plus GNSS/barometer samples generated in crates/openbmp-fc/tests/sr_ukf_properties.rs."
 validation = "experimental"
 
-# Phase 5.B.1 exit criterion: the new square-root UKF family must stay
+# Exit criterion: the square-root UKF family must stay
 # close to the EKF reference on the same deterministic sensor stream.
 # These tolerances are intentionally wider than round-off because the
 # SR-UKF uses a richer square-root covariance predict than the current

@@ -124,8 +124,8 @@ safety_review:
   notes: "Civilian/public atmosphere model; no operational vehicle data."
 ```
 
-The YAML block is descriptive, not a required parser format for Phase 0. The
-same field names should be used when provenance becomes machine-checkable.
+The YAML block is descriptive rather than a required parser format. The
+same field names are used wherever provenance is machine-checkable.
 
 ## Review Rules
 
@@ -351,7 +351,7 @@ solver_reference:
 - **interpolation policy** — the method and axis order are part of the
   determinism contract: trilinear with locked axis order produces the
   same number on every platform; nearest-neighbour or unspecified order
-  do not. Phase-1 default is `trilinear` with `axis_order` explicit.
+  do not. The default is `trilinear` with `axis_order` explicit.
 - **extrapolation policy** — `error` is the fail-closed default. `clamp`
   and `linear` require an explicit `documented_reason` and emit a
   per-step warning channel when used.
@@ -429,7 +429,7 @@ laundering channel for restricted data.
 
 ## Machine Checks
 
-Phase 1 should add `openbmp check-provenance` or an equivalent CI task that:
+The `openbmp check-provenance` CI task (or an equivalent) performs the following:
 
 - Finds every data file without a nearby provenance record.
 - Verifies required fields are present.
@@ -444,8 +444,7 @@ Phase 1 should add `openbmp check-provenance` or an equivalent CI task that:
   and rejects mismatches.
 - Emits a machine-readable report for release artifacts.
 
-The check is advisory during Phase 0 documentation work and blocking once the
-first public data file is committed.
+The check is blocking once a public data file is committed.
 
 ## Inline Data Tripwires
 

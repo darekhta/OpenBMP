@@ -1,6 +1,6 @@
 # Clarabel Solver Vetting
 
-Phase 4.C uses `clarabel` only behind the `openbmp-fc/mpc` feature.
+OpenBMP uses `clarabel` only behind the `openbmp-fc/mpc` feature.
 
 - Version: `0.9.0`
 - Cargo checksum: `83e62eacd93b899251364a22bd4dca0f293f8175d05311e42bbf6dbb5edcc762`

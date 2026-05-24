@@ -1,8 +1,8 @@
-# Phase-5.B.4 closed-loop FDIR demo: Willsky 1976 windowed-mean-shift
+# Closed-loop FDIR demo: Willsky 1976 windowed-mean-shift
 # GLRT detector wired into the closed-loop attitude-hold pipeline.
 #
 # Identical to `scenarios/closed-loop-attitude-hold` modulo the FDIR
-# block, which selects the Phase-5.B.4 windowed-mean-shift GLRT
+# block, which selects the windowed-mean-shift GLRT
 # detector via the v3-only `[fc.fdir.detector]` sub-block:
 #
 #   [fc.fdir.detector]
@@ -26,7 +26,7 @@ openbmp.scenario = 3
 
 [meta]
 name        = "closed-loop-fdir-glrt"
-description = "Phase-5.B.4 demo: Willsky windowed-mean-shift GLRT detector wired into the closed-loop attitude-hold pipeline. Synthetic; nominal innovations should not trip."
+description = "Willsky windowed-mean-shift GLRT detector wired into the closed-loop attitude-hold pipeline. Synthetic; nominal innovations should not trip."
 validation  = "experimental"
 provenance  = "synthetic; identical to closed-loop-attitude-hold except for the [fc.fdir.detector] sub-block. See provenance.md."
 
@@ -142,7 +142,7 @@ innovation_threshold    = 25.0
 innovation_burst_count  = 5
 failsafe_burst_count    = 5
 
-# Phase-5.B.4 — windowed-mean-shift GLRT detector. When this block is
+# Windowed-mean-shift GLRT detector. When this block is
 # present its `kind` overrides the legacy `[fc.fdir].detector_kind`
 # value above. Window length 32 samples × FDIR base rate gives a
 # 32 ms detection window over the GNSS / baro / mag innovation

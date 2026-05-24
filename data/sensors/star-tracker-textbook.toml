@@ -1,4 +1,4 @@
-# Star tracker textbook noise budget — Phase 3.10.D.
+# Star tracker textbook noise budget.
 #
 # Synthetic isotropic noise budget for the `SyntheticStarTracker`
 # model. The numerical envelope is illustrative of academic-class
@@ -7,7 +7,7 @@
 # attitude-estimation case studies). NOT transcribed from any real
 # fielded sensor's spec sheet.
 #
-# Phase 3.10 ships the small-angle Gaussian rotation-vector
+# The model uses the small-angle Gaussian rotation-vector
 # perturbation form (q ≈ (1, θ/2)). The constructor rejects σ
 # > 0.01 rad to keep the small-angle approximation valid.
 # Boresight occlusion, slew-rate dropout, and bright-object

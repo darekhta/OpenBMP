@@ -6,11 +6,11 @@
 # (CTI, manufacturer-supplied). The upstream trapezoidal-integral
 # total impulse is 6 026.350 N·s when integrated with the
 # OpenBMP-required (0, 0) starting point prepended. The (0, 0)
-# starting point is added per the Phase-2.6 motor format
+# starting point is added per the motor format
 # requirement that `points[0].time = 0` exactly; CTI's published
 # RASP file omits it.
 #
-# This is the canonical motor for the Phase-3.11 RocketPy Calisto
+# This is the canonical motor for the RocketPy Calisto
 # cross-tool validation case. RocketPy ships a byte-identical
 # thrust profile in `data/motors/cesaroni/Cesaroni_M1670.eng`
 # (same Cesaroni `.eng` data; trailing-whitespace differences only).
@@ -26,7 +26,7 @@
 #
 # Specific-impulse consistency: declared `specific_impulse_s` is
 # back-solved from `total_impulse = m_p · g_0 · Isp` for
-# `g_0 = 9.80665 m/s²` so the Phase-2.6 Isp consistency check
+# `g_0 = 9.80665 m/s²` so the Isp consistency check
 # passes within 1e-3 relative.
 
 openbmp.motor = 1
@@ -45,9 +45,9 @@ dry_mass_kg        = 2.130       # 5.231 total − 3.101 propellant
 
 [geometry]
 # Nozzle exit area used by the "constant" ambient-pressure
-# correction (Phase 2.6). RocketPy's Calisto example declares
+# correction. RocketPy's Calisto example declares
 # `nozzle_radius = 33 mm`; the same value is used here so the
-# Phase-3.11 cross-tool apogee comparison applies the same
+# cross-tool apogee comparison applies the same
 # vacuum-thrust correction OpenBMP-side and RocketPy-side.
 # A = π · 0.033² ≈ 3.421e-3 m².
 exit_area_m2                 = 0.003421194

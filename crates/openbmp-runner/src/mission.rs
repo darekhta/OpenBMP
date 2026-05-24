@@ -1,4 +1,4 @@
-//! Phase-3.2 scenario → kernel mission-block conversion helpers.
+//! Scenario → kernel mission-block conversion helpers.
 //!
 //! Bridges [`openbmp_scenario::MissionConfig`] (parsed from the
 //! scenario `[mission]` block) to typed [`openbmp_sim::EventBinding`]
@@ -10,7 +10,7 @@
 //! `mission.states.<id>`, or `mission.events.<id>`). Scenario files
 //! may provide either the bare id (`ascent`) or the canonical path
 //! (`mission.phases.ascent`); bare mission states intentionally keep
-//! the Phase-3 `mission.phases.<id>` namespace so v3 → v4 flat
+//! the `mission.phases.<id>` namespace so v3 → v4 flat
 //! migrations can remain byte-identical. Reordering the
 //! `[[mission.phases]]` / `[[mission.events]]` blocks does not shift
 //! any id; this is the load-bearing invariant for declaration-order-
@@ -54,7 +54,7 @@ enum RuntimeEventBinding {
     Script(EventBinding<ScenarioScriptAction>),
 }
 
-/// Phase 5.X.F: v3 → v4 lifting pass. Builds a [`MissionStateMachine`]
+/// v3 → v4 lifting pass. Builds a [`MissionStateMachine`]
 /// from either the v3 `[[mission.phases]]` block (treated as a flat
 /// depth-0 hierarchy where every state has no parent and empty
 /// action lists) or, when populated, the v4
@@ -311,7 +311,7 @@ fn mission_actions(
         .collect()
 }
 
-#[allow(clippy::too_many_lines)] // Phase 5.X.E: expanded with RaiseHealthAlarm / RequestSafeState branches.
+#[allow(clippy::too_many_lines)] // expanded with RaiseHealthAlarm / RequestSafeState branches.
 fn build_event_binding(
     config: &EventConfig,
     phase_id_lookup: &BTreeMap<&str, PhaseId>,
@@ -463,7 +463,7 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Run
             return Err(RunnerError::Scenario(
                 openbmp_scenario::ScenarioError::UnsupportedTriggerKind {
                     kind: "at_dynamic_pressure".to_owned(),
-                    reason: "dynamic-pressure triggers ship in Phase 3.4 when atmosphere is wired into event evaluation".to_owned(),
+                    reason: "dynamic-pressure triggers are not yet supported; they require atmosphere wired into event evaluation".to_owned(),
                 },
             ));
         }
@@ -471,7 +471,7 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Run
             return Err(RunnerError::Scenario(
                 openbmp_scenario::ScenarioError::UnsupportedTriggerKind {
                     kind: "scripted".to_owned(),
-                    reason: "scripted triggers are deferred to a later Phase-3 sub-phase; use effector command_schedule for deterministic actuator scripts".to_owned(),
+                    reason: "scripted triggers are not yet supported; use effector command_schedule for deterministic actuator scripts".to_owned(),
                 },
             ));
         }

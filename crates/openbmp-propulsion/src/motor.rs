@@ -1,4 +1,4 @@
-//! Motor trait and the Phase-2 [`SolidMotor`] implementation.
+//! Motor trait and the [`SolidMotor`] implementation.
 //!
 //! # Trait surface
 //!
@@ -6,8 +6,8 @@
 //! The architecture's long-term intent is `Motor: ForceModel +
 //! MassModel`, but the kernel's `ForceModel` / `MassModel` traits
 //! live in `openbmp-sim` (L1) and `openbmp-propulsion` is L2, so
-//! the kernel-side wrapper is deferred to Phase 2.10 alongside the
-//! gravity / atmosphere / wind / aero adapters. The Phase-2 trait
+//! the kernel-side wrapper lives in `openbmp-vehicle` alongside the
+//! gravity / atmosphere / wind / aero adapters. This trait
 //! exposes the underlying capabilities directly:
 //!
 //! * [`Motor::thrust_n_at`] — instantaneous thrust at
@@ -48,9 +48,9 @@ const SPECIFIC_IMPULSE_REL_TOL: f64 = 1.0e-6;
 // MotorVariant
 // ---------------------------------------------------------------------
 
-/// Motor variants the propulsion crate distinguishes. Phase 2 ships
-/// only [`MotorVariant::Solid`]; liquid / hybrid / cold-gas are
-/// Phase 3 work.
+/// Motor variants the propulsion crate distinguishes. Only
+/// [`MotorVariant::Solid`] is implemented; liquid / hybrid / cold-gas
+/// remain future work.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MotorVariant {
     /// Solid-propellant motor with a pre-tabulated thrust curve.
@@ -63,8 +63,8 @@ pub enum MotorVariant {
 
 /// Trait implemented by motor models in this crate.
 ///
-/// The kernel-side `ForceModel` / `MassModel` adapters land in
-/// Phase 2.10; until then this trait surfaces the underlying
+/// The kernel-side `ForceModel` / `MassModel` adapters live in
+/// `openbmp-vehicle`; this trait surfaces the underlying
 /// capabilities directly so consumers can integrate motor effects
 /// without the kernel wiring.
 pub trait Motor {
@@ -186,8 +186,8 @@ impl ThrustCurve {
     /// monotone-increasing, or the first point is not `t = 0`.
     /// Returns [`MotorError::NonFinite`] for any non-finite value.
     /// Returns [`MotorError::InvalidParameter`] for a negative thrust
-    /// value (negative thrust is a Phase-3 concern; Phase 2 rejects).
-    /// Phase 2 also requires the first and final thrust values to be
+    /// value (negative thrust is rejected). The first and final thrust
+    /// values are also required to be
     /// zero, matching the in-house RASP-shaped schema contract.
     pub fn new(points: Vec<[f64; 2]>) -> Result<Self, MotorError> {
         if points.len() < 2 {
@@ -312,8 +312,8 @@ impl ThrustCurve {
 /// `[geometry]` block of the motor file.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum AmbientPressureCorrection {
-    /// Phase-2 toy: assume sea-level ambient pressure correction is
-    /// already baked into the thrust curve. No altitude correction.
+    /// Simplified model: assume sea-level ambient pressure correction
+    /// is already baked into the thrust curve. No altitude correction.
     Constant,
 }
 
@@ -330,7 +330,7 @@ pub struct MotorGeometry {
 // SolidMotor
 // ---------------------------------------------------------------------
 
-/// Phase-2 solid motor. Thrust and mass are derived from a
+/// Solid motor. Thrust and mass are derived from a
 /// pre-tabulated curve plus the declared burn parameters.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SolidMotor {

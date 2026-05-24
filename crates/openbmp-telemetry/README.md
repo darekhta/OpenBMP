@@ -2,13 +2,13 @@
 
 L5 telemetry crate.
 
-**Status:** Phase 3 — Phase-2.11 typed telemetry, ring buffer, and
-deterministic CSV / JSON / Parquet exporters plus the Phase-3
-runner additions that write per-effector channels, mission event
+**Status:** Implemented. Provides typed telemetry, a ring buffer, and
+deterministic CSV / JSON / Parquet exporters plus the
+runner-side channels that write per-effector channels, mission event
 marker channels, recovery state channels
 (`recovery.<id>.deployed/phase_index/drag_area_m2`), and the
-existing `mass_kg` column used by the Phase-3.6 engine-cluster and
-Phase-3.11 Calisto motor-mass validations. Per-engine and per-tank
+`mass_kg` column used by the engine-cluster and
+Calisto motor-mass validations. Per-engine and per-tank
 diagnostic channels remain future work.
 
 ## Purpose
@@ -48,7 +48,7 @@ written explicitly; Parquet column order is locked by schema version.
 
 ## Validation
 
-`checked` for the Phase-2.11 telemetry surface. Unit tests cover
+`checked` for the telemetry surface. Unit tests cover
 typed channels, bounded retention, CSV / JSON stability, Parquet byte
 stability, schema duplicate rejection, non-finite float rejection,
 and BTreeMap-ordered schema metadata serialisation. The

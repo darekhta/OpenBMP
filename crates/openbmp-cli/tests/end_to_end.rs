@@ -1,4 +1,4 @@
-//! Phase-1.8 end-to-end golden test for the constant-acceleration drop.
+//! End-to-end golden test for the constant-acceleration drop.
 //!
 //! Runs the canonical scenario through `openbmp_cli::commands::run::run`
 //! twice and asserts:
@@ -6,8 +6,8 @@
 //! 1. **Tolerance compliance** of the final time, position, and velocity
 //!    against the committed `expected/constant-acceleration-drop.toml`.
 //! 2. **Same-machine byte stability** of the Parquet archive across two
-//!    independent runs (Phase-1.8 byte-stable claim; Phase-1.9 promotes
-//!    this to a committed cross-machine reference golden).
+//!    independent runs (byte-stable claim, also promoted to a committed
+//!    cross-machine reference golden).
 //!
 //! The CSV and Parquet outputs are written under a per-test temp dir
 //! and never committed.

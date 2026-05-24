@@ -59,9 +59,9 @@ verification:
     every grid point, checks the CM = -0.15 · CN physical identity
     within tight f64 tolerance, and re-runs the lookup at the
     centroid of every cube to verify bit-stability. The
-    `synthetic_finned_cylinder` deck is the only aero data file
-    shipped in Phase 2; Phase-3 will add additional shapes (sphere,
-    cone) under the same provenance contract.
+    `synthetic_finned_cylinder` deck is the canonical axisymmetric
+    aero data file; additional shapes (sphere,
+    cone) can be added under the same provenance contract.
   test:   crates/openbmp-aero/tests/regression.rs
   tolerance: >-
     Integer-scaled generator versus parsed CN/CD/CM at every grid
@@ -87,7 +87,7 @@ safety_review:
 
 ## Context
 
-OpenBMP's Phase-2 aero surface ships **Schema 1**: a tabulated
+OpenBMP's aero surface ships **Schema 1**: a tabulated
 axisymmetric reduced sounding-rocket deck indexed by
 `(mach, alpha_deg, beta_deg)` returning the three reduced
 coefficients `(CN, CD, CM)`. The schema rejects fielded-vehicle
@@ -110,7 +110,7 @@ supersonic flight regimes:
 | 1.2  | 0.850   | 0.0760             | Transonic CD peak              |
 | 1.5  | 0.700   | 0.0775             | Supersonic                     |
 | 2.0  | 0.550   | 0.0800             | Supersonic, falling drag       |
-| 3.0  | 0.400   | 0.0850             | Hypersonic boundary (Phase-6+) |
+| 3.0  | 0.400   | 0.0850             | Hypersonic boundary (out of scope) |
 
 The `CD0(M = 1.2)` peak around 0.85 matches the textbook transonic
 drag-rise behaviour for a slender finned cylinder; the linear
@@ -126,7 +126,7 @@ There is no canonical public sounding-rocket aerodynamic deck.
 OpenRocket / Niskanen 2009 ships a Barrowman-style **methodology**
 (component build-up) that any user can run on a vehicle of their
 choice; OpenBMP itself does not ship a Barrowman pre-processor —
-the deck is the boundary. The Phase-2 plan calls for a **synthetic
+the deck is the boundary. OpenBMP ships a **synthetic
 textbook example** so the lookup pipeline can be exercised without
 shipping or transcribing a fielded-vehicle deck.
 
@@ -152,11 +152,11 @@ synthetic so the platform stays a research / academic tool.
 
 ## Why the values are mirrored against a closed-form generator
 
-The Phase-2.5.C regression test re-evaluates the same closed-form
+The finned-cylinder regression test re-evaluates the same closed-form
 generators in code and asserts bit equality with the values parsed
 from the TOML file. This is the same pattern used for the
-USSA76 layer-pressure pin and the WGS84 J2 constant — a future
-Phase-2.10 `openbmp check-provenance` walk will perform the same
+USSA76 layer-pressure pin and the WGS84 J2 constant — the
+`openbmp check-provenance` walk performs the same
 check repository-wide so a typo in either the deck file or the
 generator breaks CI before release.
 
@@ -170,14 +170,14 @@ source_class:     synthetic-openbmp
 source_title:     >-
   Synthetic OpenBMP-authored aerodynamic deck for a 24 mm-diameter,
   0.30 m-long model-rocket airframe sized to the Estes D12 motor
-  envelope. Used by the Phase-2.9 sounding-rocket validation case
+  envelope. Used by the sounding-rocket validation case
   alongside the real Estes D12 motor data.
 source_authors:   OpenBMP (Dmitri Arekhta)
 source_id:        synthetic; not derived from any fielded vehicle
 publication_date: 2026-04-27
 methodology_reference: >-
   Same Barrowman-style component build-up convention as the
-  Phase-2.5 `synthetic-finned-cylinder.toml` deck — Niskanen 2009
+  `synthetic-finned-cylinder.toml` deck — Niskanen 2009
   thesis §5 component build-up. CN slope and CD0(M) values chosen
   to match the D-class model-rocket envelope (CD0 ≈ 0.6 subsonic,
   rising through transonic).
@@ -190,7 +190,7 @@ retrieved_utc:    2026-04-27
 transformation:
   method: >-
     Hand-derived integer-scaled rational generators (same family as
-    the Phase-2.5 finned-cylinder deck):
+    the finned-cylinder deck):
       M_tenths = 10 · M
       CN = α_deg · (140 + M_tenths) / 2000
       CD = (CD0_milli(M) + α_deg²) / 1000
@@ -207,7 +207,7 @@ verification:
     `crates/openbmp-vehicle/tests/sounding_rocket.rs` loads the
     deck via `include_str!` + `AeroDeck::load_from_str`, asserts
     grid sizes (5 × 5 × 1) and the (M=0, α=0) corner CD = 0.6
-    bit-exactly, and runs the deck through the Phase-2.9 D12
+    bit-exactly, and runs the deck through the D12
     sounding-rocket integration test.
   test:   crates/openbmp-vehicle/tests/sounding_rocket.rs
   tolerance: >-
@@ -293,19 +293,19 @@ files:
 source_class:     synthetic-openbmp
 source_title:     >-
   Synthetic OpenBMP-authored Schema-2 aerodynamic deck for the
-  Phase 3.5 exit-criterion. Single elevon axis (`delta_e_deg`)
-  added to a Phase-2.5-style finned-cylinder deck so a non-zero
+  single-elevon-aero exit-criterion. Single elevon axis (`delta_e_deg`)
+  added to a finned-cylinder-style deck so a non-zero
   control-surface deflection perturbs the normal-force, drag, and
   pitching-moment coefficients.
-  Used by the Phase 3.5.D single-elevon-aero scenario to demonstrate
+  Used by the single-elevon-aero scenario to demonstrate
   that an effector deflection actually changes the body-frame aero
-  force at runtime (vs. Phase 3.4's gravity-only telemetry-only
+  force at runtime (vs. the gravity-only telemetry-only
   case).
 source_authors:   OpenBMP (Dmitri Arekhta)
 source_id:        synthetic; not derived from any fielded vehicle
 publication_date: 2026-04-28
 methodology_reference: >-
-  Same Barrowman-style component build-up as the Phase-2.5
+  Same Barrowman-style component build-up as the
   `synthetic-finned-cylinder.toml` deck (Niskanen 2009 §5),
   extended with linear / absolute elevon-deflection perturbations in
   CN, CD, and CM. The elevon coefficients are illustrative — chosen
@@ -325,18 +325,18 @@ transformation:
                        + 0.020 · δ_e_deg
       CD(M, α, β, δ_e) = CD0(M) + 0.001 · α_deg² + 0.010 · |δ_e_deg|
       CM(M, α, β, δ_e) = -0.15 · CN(M, α, β, 0) + 0.050 · δ_e_deg
-    with CD0 the Phase-2.5 finned-cylinder transonic curve at the
-    Mach grid points. The CD perturbation was strengthened during
-    Phase 3.5.D so the e2e baseline-vs-deflected force signal is well
+    with CD0 the finned-cylinder transonic curve at the
+    Mach grid points. The CD perturbation was strengthened for
+    the single-elevon-aero case so the e2e baseline-vs-deflected force signal is well
     above telemetry noise. Pasted into the deck file by hand; no
     script.
   script: none
 verification:
   method: >-
-    Schema-2 parser load via `AeroDeck::load_from_str`. The Phase
-    3.5.B parser-test suite validates round-trip metadata, lookup at
+    Schema-2 parser load via `AeroDeck::load_from_str`. The Schema-2
+    parser-test suite validates round-trip metadata, lookup at
     `delta_e_deg = 0` matching a Schema-1 companion bit-for-bit, and
-    grid-corner exact-equality. The Phase 3.5.D e2e test loads this
+    grid-corner exact-equality. The single-elevon-aero e2e test loads this
     deck, runs the single-elevon-aero scenario, and asserts the
     aero force telemetry differs between a 0° baseline run and a
     deflected-elevon run (the schema-2 effector-axis consumption
@@ -367,7 +367,7 @@ files:
   - data/aero/calisto-drag.csv
 source_class:     converted-public
 source_title:     >-
-  Calisto drag-curve aero deck for the Phase-3.11 RocketPy cross-
+  Calisto drag-curve aero deck for the RocketPy cross-
   tool validation case. Schema-1 deck with single-point alpha and
   beta axes (axisymmetric reduced point-mass drag-only model);
   CD-vs-Mach curve from RocketPy's published Calisto example
@@ -425,7 +425,7 @@ verification:
   test:   crates/openbmp-aero/tests/calisto_deck_pin.rs
   tolerance: >-
     Every (mach, CD) pair: bit equality between deck lookup and
-    upstream CSV row. The Phase-3.11 audit also verified the
+    upstream CSV row. The cross-tool audit also verified the
     commit-pinned `powerOnDragCurve.csv` at RocketPy commit
     `cb15a393ee2d9430cc21c57c98768dc1890a198a` has the same
     SHA-256, so the single-deck simplification covers both burn

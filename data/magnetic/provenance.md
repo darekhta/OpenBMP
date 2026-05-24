@@ -41,7 +41,7 @@ verification:
   method: >-
     Compile-time pinned in
     `openbmp-physics::magnetic::wmm2025::coefficients::COEFFS`. The
-    Phase-3.10.A regression test
+    regression test
     `crates/openbmp-physics/tests/wmm_data_pin.rs` reads this file via
     `include_bytes!`, hashes it, and asserts that the digest matches
     the pin recorded above and that the parsed coefficients agree
@@ -83,7 +83,7 @@ transformation:
     cross-validation suite.
 verification:
   method: >-
-    The Phase-3.10.A test suite parses all 100 rows of this file
+    The test suite parses all 100 rows of this file
     and asserts agreement within 5 nT per X / Y / Z component
     (well inside the 4-sig-fig agreement the WMM publication
     declares).
@@ -105,8 +105,8 @@ with each WMM release). Outside this range the
 [`Wmm2025`](../../crates/openbmp-physics/src/magnetic/wmm2025.rs)
 constructor and per-step evaluator fail closed with
 `EnvError::OutOfEnvelope`. The next release (WMM 2030) is
-expected at NOAA NCEI in late 2029; the OpenBMP port lands in
-whichever phase is current at that time.
+expected at NOAA NCEI in late 2029; the OpenBMP port will land
+when that release is published.
 
 ## References
 

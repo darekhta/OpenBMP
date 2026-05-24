@@ -5,8 +5,8 @@
 //!
 //! * [`BoxMullerGaussian`] — counter-based Gaussian sampler. Pulls
 //!   two uniform `f64` from a [`DeterministicRng`] and returns one
-//!   sample via the Box-Muller transform. Chosen over Ziggurat per
-//!   the Phase-2 plan because Ziggurat's rejection step makes the
+//!   sample via the Box-Muller transform. Chosen over Ziggurat
+//!   because Ziggurat's rejection step makes the
 //!   per-step RNG draw count data-dependent and breaks bit-stable
 //!   replay across small initial perturbations.
 //!

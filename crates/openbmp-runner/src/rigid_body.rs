@@ -1,6 +1,6 @@
-//! Scenario → kernel → telemetry adapter for Phase-2 rigid-body
+//! Scenario → kernel → telemetry adapter for rigid-body
 //! scenarios. Mirrors [`crate::point_mass`] but
-//! consumes the Phase-3.1 rigid-body adapter family in
+//! consumes the rigid-body adapter family in
 //! [`openbmp_vehicle::adapters`].
 //!
 //! Accepted scenario shape:
@@ -19,9 +19,8 @@
 //!   `vehicle.assembly.bodies[*].dry_inertia_body_kg_m2` declared
 //!   (parser already enforces these for `kind = "rigid_body"`).
 //!
-//! Wind models and aero side-force / pitching moment are deferred to
-//! later Phase-3 sub-phases. Phase 3.6 wires rigid-body engine-cluster
-//! moments through `EngineClusterMomentAdapter`; scenarios without
+//! Rigid-body engine-cluster
+//! moments are wired through `EngineClusterMomentAdapter`; scenarios without
 //! engine clusters still default to `ZeroMoment` so identity-orientation
 //! single-motor scenarios produce trajectories indistinguishable
 //! (within IEEE 754 reduction order) from the point-mass path.
@@ -69,26 +68,26 @@ use crate::atmosphere::{
 use crate::integrator::build_runtime_integrator;
 
 // Stable model-ids assigned to each force / mass model the rigid
-// runner wires. Reserves a separate range from the Phase-2 point-mass
-// runner so Phase-2.7 determinism tooling can distinguish the two
+// runner wires. Reserves a separate range from the point-mass
+// runner so determinism tooling can distinguish the two
 // paths.
-const PHASE3_GRAVITY_MODEL_ID: ModelId = ModelId::new(301);
-const PHASE3_AERO_MODEL_ID: ModelId = ModelId::new(302);
-const PHASE3_THRUST_MODEL_ID: ModelId = ModelId::new(303);
-const PHASE3_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(304);
-// Phase-3.6: distinct model ids for the engine-cluster path on the
+const RIGID_BODY_GRAVITY_MODEL_ID: ModelId = ModelId::new(301);
+const RIGID_BODY_AERO_MODEL_ID: ModelId = ModelId::new(302);
+const RIGID_BODY_THRUST_MODEL_ID: ModelId = ModelId::new(303);
+const RIGID_BODY_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(304);
+// Distinct model ids for the engine-cluster path on the
 // rigid-body kernel.
-const PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(320);
-const PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(321);
-const PHASE3_ENGINE_CLUSTER_MOMENT_MODEL_ID: ModelId = ModelId::new(322);
-const PHASE3_TANK_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(340);
-const PHASE3_TANK_RACK_MOMENT_MODEL_ID: ModelId = ModelId::new(341);
-const PHASE3_RECOVERY_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(380);
-// Phase-5.A.2.A: distinct model id for the direct-torque moment
+const RIGID_BODY_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(320);
+const RIGID_BODY_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(321);
+const RIGID_BODY_ENGINE_CLUSTER_MOMENT_MODEL_ID: ModelId = ModelId::new(322);
+const RIGID_BODY_TANK_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(340);
+const RIGID_BODY_TANK_RACK_MOMENT_MODEL_ID: ModelId = ModelId::new(341);
+const RIGID_BODY_RECOVERY_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(380);
+// Distinct model id for the direct-torque moment
 // adapter on the rigid-body kernel.
-const PHASE5_DIRECT_TORQUE_MOMENT_MODEL_ID: ModelId = ModelId::new(500);
+const RIGID_BODY_DIRECT_TORQUE_MOMENT_MODEL_ID: ModelId = ModelId::new(500);
 
-/// Run a Phase-2 rigid-body scenario through a freshly-built kernel
+/// Run a rigid-body scenario through a freshly-built kernel
 /// and return the populated telemetry table.
 ///
 /// `resolved_files` is the digest map produced by
@@ -99,11 +98,11 @@ const PHASE5_DIRECT_TORQUE_MOMENT_MODEL_ID: ModelId = ModelId::new(500);
 /// # Errors
 ///
 /// Returns [`RunnerError::UnsupportedScenario`] when the scenario shape
-/// does not match the rigid-body Phase-3.1 contract,
+/// does not match the rigid-body contract,
 /// [`RunnerError::Aero`] / [`RunnerError::Motor`] / [`RunnerError::Env`] for
 /// loader failures, and [`RunnerError::Simulation`] / [`RunnerError::Telemetry`]
 /// for kernel- or telemetry-side failures.
-#[allow(clippy::too_many_lines)] // Phase-3.6: per-step orchestration grew
+#[allow(clippy::too_many_lines)] // per-step orchestration is large
 pub fn run(
     scenario: &Scenario,
     resolved_files: &BTreeMap<String, ResolvedFile>,
@@ -111,16 +110,16 @@ pub fn run(
     let document = &scenario.document;
     require_supported_shape(document)?;
     let assembly = crate::assembly::synthesize_assembly(document)?;
-    // Phase-3.4: same effector-rack pattern as the point-mass
+    // Same effector-rack pattern as the point-mass
     // runner. Empty rack means no per-step effector operations.
     let mut effector_rack = crate::effectors::EffectorRack::build(document)?;
-    // Phase-3.6: see point_mass.rs for the rationale.
+    // See point_mass.rs for the rationale.
     let mut engine_rack = crate::engines::EngineRack::build(document)?;
-    // Phase-3.7: tank rack mirroring the point-mass runner.
+    // Tank rack mirroring the point-mass runner.
     let mut tank_rack = crate::tanks::TankRack::build(document)?;
-    // Phase-3.9: recovery rack mirroring the point-mass runner.
+    // Recovery rack mirroring the point-mass runner.
     let mut recovery_rack = crate::recovery::RecoveryRack::build(document)?;
-    // Phase-3.8: build the runner-side wind rack. Inactive when no
+    // Build the runner-side wind rack. Inactive when no
     // `[wind]` block is declared (or `kind = "none"`).
     let wind_rack = crate::wind::WindRack::build(document)?;
     wind_rack.reset();
@@ -133,7 +132,7 @@ pub fn run(
     let moment_model = build_moment_model(document)?;
     let rigid_models = RigidModels::new(moment_model, mass_model);
 
-    // Phase-5.D.5 — runner-side `[solver]` block dispatch on the
+    // Runner-side `[solver]` block dispatch on the
     // rigid-body path. Default (no `[solver]`) selects `Rk4FixedStep`,
     // preserving byte-stability for every existing rigid-body
     // scenario. Adaptive / fixed-DOPRI selections now drive
@@ -176,7 +175,7 @@ pub fn run(
     let metadata = build_schema_metadata(document, resolved_files);
     let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
-    // Phase-3.5.C: see point_mass.rs sibling for the rationale.
+    // See point_mass.rs sibling for the rationale.
     let deck_bindings = crate::aero_effector_match::assert_axes_match_effectors(
         loaded.aero_deck.as_ref(),
         document,
@@ -254,7 +253,7 @@ pub fn run(
                 &mut effector_rack,
                 &mut engine_rack,
             )?;
-            // Phase 5.X.B: forward the mission state published by
+            // Forward the mission state published by
             // this FC tick into the kernel before the kernel evaluates
             // mission events for the next integrated state.
             if let Some(state_id) = bridge.latest_mission_state_id() {
@@ -267,7 +266,7 @@ pub fn run(
         if !engine_rack.is_empty() {
             engine_rack.step()?;
         }
-        // Phase-3.7: advance tanks using prior-step cached drivers.
+        // Advance tanks using prior-step cached drivers.
         // The drivers are updated post-step from the new rigid-body
         // state's angular_velocity (omega_body) and a finite-
         // difference body-frame acceleration; the first step uses
@@ -275,8 +274,8 @@ pub fn run(
         if !tank_rack.is_empty() {
             tank_rack.step()?;
         }
-        // Phase-3.9: drain pending deploy/stow events and step the
-        // recovery rack (no-op step for the Phase-3.9 instantaneous-
+        // Drain pending deploy/stow events and step the
+        // recovery rack (no-op step for the instantaneous-
         // deploy models).
         if !recovery_rack.is_empty() {
             recovery_rack.apply_deploys(&pending_recovery_events)?;
@@ -316,7 +315,7 @@ pub fn run(
         let prev_velocity_eci = kernel.current_state().velocity.vector;
         let prev_orientation = kernel.current_state().orientation.q;
         kernel.step()?;
-        // Phase-3.7: refresh tank-rack drivers from the post-step
+        // Refresh tank-rack drivers from the post-step
         // rigid-body state. `accel_body_m_s2` is finite-differenced
         // from the velocity change rotated into the prior-step body
         // frame; `omega_body_rad_s` is read directly from the new
@@ -351,7 +350,7 @@ pub fn run(
             &mission_fired,
             &snapshot,
         )?;
-        // Phase 5.X.E: partition typed script-action fired queue.
+        // Partition typed script-action fired queue.
         pending_engine_events = script_fired
             .iter()
             .filter(|e| matches!(e.action, ScenarioScriptAction::EngineCommand { .. }))
@@ -410,7 +409,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
             ),
         });
     }
-    // Phase-5.D.5 — `[solver]` block dispatch is wired end-to-end on
+    // `[solver]` block dispatch is wired end-to-end on
     // the rigid-body runner. The actual `RuntimeIntegrator`
     // construction lives in the kernel-config block in `run()` so the
     // adaptive integrator's persistent state (last_h, last_err_prev)
@@ -435,7 +434,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
             });
         }
     }
-    // Phase-3.8 wind models are resolved by WindRack. Scenario
+    // Wind models are resolved by WindRack. Scenario
     // validation guarantees that non-`none` flat selections carry a
     // structured `[wind]` block and that the kind names agree.
     let atmosphere_kind = scenario_atmosphere_kind(document);
@@ -575,8 +574,8 @@ fn build_initial_state(
 /// Construct the gravity-force adapter for the runtime gravity model
 /// declared by the scenario.
 ///
-/// Phase-5.C.2 added the `egm2008` arm; the existing `constant`,
-/// `point_mass`, and `j2` arms keep the per-scenario parameter contracts
+/// The `egm2008` arm joins the `constant`,
+/// `point_mass`, and `j2` arms, all of which keep the per-scenario parameter contracts
 /// validated by `EnvironmentConfig::validate`. The returned trait object
 /// is `Send` + `Sync` so the kernel can store it in its force list.
 fn build_gravity_force_adapter_rigid_body(
@@ -601,7 +600,7 @@ fn build_gravity_force_adapter_rigid_body(
             let model = ConstantGravity::down_z(g)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
-                PHASE3_GRAVITY_MODEL_ID,
+                RIGID_BODY_GRAVITY_MODEL_ID,
             )))
         }
         "point_mass" => {
@@ -615,7 +614,7 @@ fn build_gravity_force_adapter_rigid_body(
             let model = PointMassGravity::new(mu)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
-                PHASE3_GRAVITY_MODEL_ID,
+                RIGID_BODY_GRAVITY_MODEL_ID,
             )))
         }
         "j2" => {
@@ -636,18 +635,18 @@ fn build_gravity_force_adapter_rigid_body(
             let model = J2Gravity::new(mu, r_e, j2)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
-                PHASE3_GRAVITY_MODEL_ID,
+                RIGID_BODY_GRAVITY_MODEL_ID,
             )))
         }
         "egm2008" => {
-            // Phase 5.C.2: zonal-only EGM2008 (degrees 2-6), pinned to
+            // Zonal-only EGM2008 (degrees 2-6), pinned to
             // WGS84 µ / R_e and the Pavlis et al. 2012 J_n table. No
             // per-scenario overrides are accepted, matching the parser
             // contract in `EnvironmentConfig::validate`.
             let model = Egm2008ZonalGravity::wgs84_egm2008_zonal();
             Ok(Box::new(GravityForceAdapter::new(
                 model,
-                PHASE3_GRAVITY_MODEL_ID,
+                RIGID_BODY_GRAVITY_MODEL_ID,
             )))
         }
         other => Err(RunnerError::UnsupportedScenario {
@@ -656,7 +655,7 @@ fn build_gravity_force_adapter_rigid_body(
     }
 }
 
-#[allow(clippy::too_many_lines)] // Phase-3.9 added the recovery-rack force-adapter wiring branch
+#[allow(clippy::too_many_lines)] // the recovery-rack force-adapter wiring branch is large
 fn build_vehicle(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
@@ -678,11 +677,11 @@ fn build_vehicle(
                             what: "forces includes `aero` but [aero] block is missing".to_owned(),
                         })?;
                 let atmosphere = build_runtime_atmosphere(scenario_atmosphere_kind(document))?;
-                let drag = DeckDragForceAdapter::new(deck, atmosphere, PHASE3_AERO_MODEL_ID);
+                let drag = DeckDragForceAdapter::new(deck, atmosphere, RIGID_BODY_AERO_MODEL_ID);
                 named.push(NamedForceModel::new("aero", Box::new(drag)));
             }
             "thrust" => {
-                // Phase-3.6: dispatch between single-motor and
+                // Dispatch between single-motor and
                 // engine-cluster paths. AmbiguousPropulsion is
                 // rejected at parse time.
                 if document.vehicle.assembly.engines.is_empty() {
@@ -700,7 +699,7 @@ fn build_vehicle(
                     let thrust = MotorThrustForceAdapter::new(
                         motor,
                         ignition_time_s,
-                        PHASE3_THRUST_MODEL_ID,
+                        RIGID_BODY_THRUST_MODEL_ID,
                     );
                     named.push(NamedForceModel::new("thrust", Box::new(thrust)));
                 } else {
@@ -718,7 +717,7 @@ fn build_vehicle(
                         .collect();
                     let thrust = EngineClusterForceAdapter::new(
                         engine_ids,
-                        PHASE3_ENGINE_CLUSTER_THRUST_MODEL_ID,
+                        RIGID_BODY_ENGINE_CLUSTER_THRUST_MODEL_ID,
                     );
                     named.push(NamedForceModel::new("thrust", Box::new(thrust)));
                 }
@@ -727,7 +726,7 @@ fn build_vehicle(
         }
     }
 
-    // Phase-3.7: tank-rack reaction-force adapter (rigid).
+    // Tank-rack reaction-force adapter (rigid).
     if !document.vehicle.assembly.tanks.is_empty() {
         let tank_ids: Vec<openbmp_core::TankId> = document
             .vehicle
@@ -739,11 +738,11 @@ fn build_vehicle(
             })
             .collect();
         let tank_force =
-            openbmp_vehicle::TankRackForceAdapter::new(tank_ids, PHASE3_TANK_RACK_FORCE_MODEL_ID);
+            openbmp_vehicle::TankRackForceAdapter::new(tank_ids, RIGID_BODY_TANK_RACK_FORCE_MODEL_ID);
         named.push(NamedForceModel::new("tank_reaction", Box::new(tank_force)));
     }
 
-    // Phase-3.9: recovery-rack drag-force adapter (rigid).
+    // Recovery-rack drag-force adapter (rigid).
     if !document.vehicle.assembly.recovery.is_empty() {
         let recovery_ids: Vec<openbmp_core::RecoveryId> = document
             .vehicle
@@ -761,7 +760,7 @@ fn build_vehicle(
         let recovery_force = openbmp_vehicle::RecoveryRackForceAdapter::new(
             recovery_ids,
             atmosphere,
-            PHASE3_RECOVERY_RACK_FORCE_MODEL_ID,
+            RIGID_BODY_RECOVERY_RACK_FORCE_MODEL_ID,
         );
         named.push(NamedForceModel::new(
             "recovery_drag",
@@ -793,7 +792,7 @@ fn build_vehicle_scalar_mass_model(
     let start_time = SimTime::from_seconds(document.time.start_s);
     let dry_mass_kg = dry_mass_kg_at(assembly, start_time, "vehicle.assembly")?;
     let inner: Box<dyn MassModel> = if !document.vehicle.assembly.engines.is_empty() {
-        // Phase-3.6 cluster path: engine-cluster mass adapter
+        // Cluster path: engine-cluster mass adapter
         // tracks per-engine `consumed_kg` from the kernel snapshot.
         let engine_ids: Vec<openbmp_core::EngineId> = document
             .vehicle
@@ -810,14 +809,14 @@ fn build_vehicle_scalar_mass_model(
         Box::new(EngineClusterMassAdapter::new(
             dry_mass_kg,
             engine_ids,
-            PHASE3_ENGINE_CLUSTER_MASS_MODEL_ID,
+            RIGID_BODY_ENGINE_CLUSTER_MASS_MODEL_ID,
         ))
     } else if let Some(motor) = &loaded.motor {
         Box::new(MotorMassAdapter::new(
             motor.clone(),
             dry_mass_kg,
             motor_ignition_time_s(document)?,
-            PHASE3_MOTOR_MASS_MODEL_ID,
+            RIGID_BODY_MOTOR_MASS_MODEL_ID,
         ))
     } else {
         Box::new(ConstantMass::new(dry_mass_kg))
@@ -836,7 +835,7 @@ enum RigidMomentEitherKind {
         EngineClusterMomentAdapter,
         openbmp_vehicle::TankRackMomentAdapter,
     ),
-    /// Phase-5.A.2.A: direct-torque effectors only (no engine cluster,
+    /// Direct-torque effectors only (no engine cluster,
     /// no tanks). The closed-loop FC validation scenario for the
     /// differential-flatness tracker uses this path.
     DirectTorque(openbmp_vehicle::DirectTorqueMomentAdapter),
@@ -926,7 +925,7 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
         let adapter = EngineClusterMomentAdapter::new(
             engine_ids,
             mount_points_body,
-            PHASE3_ENGINE_CLUSTER_MOMENT_MODEL_ID,
+            RIGID_BODY_ENGINE_CLUSTER_MOMENT_MODEL_ID,
         )
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("EngineClusterMomentAdapter construction failed: {err}"),
@@ -946,7 +945,7 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
             .collect();
         Some(openbmp_vehicle::TankRackMomentAdapter::new(
             tank_ids,
-            PHASE3_TANK_RACK_MOMENT_MODEL_ID,
+            RIGID_BODY_TANK_RACK_MOMENT_MODEL_ID,
         ))
     } else {
         None
@@ -954,14 +953,14 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
 
     let direct_torque_adapter = build_direct_torque_adapter(document);
 
-    // Phase 5.A.2.A: combinations of direct-torque with engine-cluster
-    // or tank-rack moment models are not supported in this slice.
+    // Combinations of direct-torque with engine-cluster
+    // or tank-rack moment models are not supported.
     // Closed-loop FC validation scenarios use direct-torque alone; if
     // a downstream scenario combines them, fail closed.
     if direct_torque_adapter.is_some() && (cluster_adapter.is_some() || tank_adapter.is_some()) {
         return Err(RunnerError::UnsupportedScenario {
             what: "direct_torque effectors combined with engine-cluster or tank moment models \
-                   is not supported in Phase 5.A.2.A; use a dedicated closed-loop validation \
+                   is not supported; use a dedicated closed-loop validation \
                    scenario without engines/tanks"
                 .to_string(),
         });
@@ -1002,7 +1001,7 @@ fn build_direct_torque_adapter(
     } else {
         Some(openbmp_vehicle::DirectTorqueMomentAdapter::new(
             bindings,
-            PHASE5_DIRECT_TORQUE_MOMENT_MODEL_ID,
+            RIGID_BODY_DIRECT_TORQUE_MOMENT_MODEL_ID,
         ))
     }
 }
@@ -1045,9 +1044,9 @@ fn build_mass_model(
     let start_time = SimTime::from_seconds(document.time.start_s);
     let dry_props = dry_mass_properties_at(assembly, start_time, "vehicle.assembly")?;
 
-    // Phase-3.6 rigid + engine cluster: propellant deficit isn't
-    // tracked in rigid mass-properties yet (that's Phase 3.7's
-    // tank-driven mass-property dynamics work). Fall through to
+    // Rigid + engine cluster: propellant deficit isn't
+    // tracked in rigid mass-properties (that requires
+    // tank-driven mass-property dynamics). Fall through to
     // `ConstantMassRigid` — the cluster's `EngineClusterForceAdapter`
     // still applies thrust normally; only mass-properties is
     // simplified.
@@ -1062,7 +1061,7 @@ fn build_mass_model(
             dry_props.center_of_mass_body,
             dry_props.inertia_body,
             motor_ignition_time_s(document)?,
-            PHASE3_MOTOR_MASS_MODEL_ID,
+            RIGID_BODY_MOTOR_MASS_MODEL_ID,
         )))
     } else {
         Ok(RigidMassEitherKind::Constant(ConstantMassRigid::new(
@@ -1143,16 +1142,16 @@ struct RigidChannelSet {
     atmosphere_temperature: Option<TelemetryChannel<f64>>,
     atmosphere_speed_of_sound: Option<TelemetryChannel<f64>>,
     force_components: ForceComponentChannels,
-    /// Phase-3.4 effector deflection channels, in scenario-declared
+    /// Effector deflection channels, in scenario-declared
     /// order. One `effector.<id>.actual` `f64` channel per declared
     /// effector. Allocated AFTER force breakdown channels and BEFORE
     /// mission markers — same ordering contract as the point-mass
     /// runner.
     effector_actuals: Vec<TelemetryChannel<f64>>,
-    /// Phase-3.9 recovery-state channels, in scenario-declared order.
+    /// Recovery-state channels, in scenario-declared order.
     /// Allocated after effectors and before mission markers.
     recovery_states: RecoveryTelemetryChannels,
-    /// Phase-3.2 mission-event telemetry markers, keyed by tag.
+    /// Mission-event telemetry markers, keyed by tag.
     mission_markers: BTreeMap<String, TelemetryChannel<bool>>,
 }
 
@@ -1269,7 +1268,7 @@ impl RigidChannelSet {
             force_components.push((name.clone(), x_channel, y_channel, z_channel));
         }
 
-        // Phase-3.4 effector deflection channels, in scenario-declared
+        // Effector deflection channels, in scenario-declared
         // order. Allocated BEFORE mission markers so adding effectors
         // does not shift marker channel ids.
         let mut effector_actuals: Vec<TelemetryChannel<f64>> = Vec::new();
@@ -1283,7 +1282,7 @@ impl RigidChannelSet {
             effector_actuals.push(channel);
         }
 
-        // Phase-3.9 recovery telemetry channels, one triple per
+        // Recovery telemetry channels, one triple per
         // declared device. Scenario-declared order matches the
         // recovery force-adapter operand order.
         let mut recovery_states: RecoveryTelemetryChannels = Vec::new();
@@ -1311,7 +1310,7 @@ impl RigidChannelSet {
             recovery_states.push((id, deployed, phase_index, drag_area));
         }
 
-        // Phase-3.2 mission marker channels.
+        // Mission marker channels.
         let mut mission_markers: BTreeMap<String, TelemetryChannel<bool>> = BTreeMap::new();
         if let Some(mission) = &document.mission {
             for tag in crate::mission::marker_tags(mission) {
@@ -1385,12 +1384,12 @@ impl RigidChannelSet {
             channels.push(y.metadata().clone());
             channels.push(z.metadata().clone());
         }
-        // Phase-3.4 effector deflection channels, in scenario-declared
+        // Effector deflection channels, in scenario-declared
         // order, between force breakdown and mission markers.
         for actual in &self.effector_actuals {
             channels.push(actual.metadata().clone());
         }
-        // Phase-3.9 recovery channels, in scenario-declared order,
+        // Recovery channels, in scenario-declared order,
         // between effectors and mission markers.
         for (_, deployed, phase_index, drag_area) in &self.recovery_states {
             channels.push(deployed.metadata().clone());
@@ -1468,7 +1467,7 @@ where
         }
     }
 
-    // Phase-3.5.C: see point_mass.rs sibling for the
+    // See point_mass.rs sibling for the
     // breakdown / kernel snapshot symmetry rationale.
     let env_sample = kernel.current_environment_sample()?;
     let kernel_actuals = kernel.effector_actuals();
@@ -1501,7 +1500,7 @@ where
         row.insert(z_channel, component.z)?;
     }
 
-    // Phase-3.4 effector deflection channels, in scenario-declared
+    // Effector deflection channels, in scenario-declared
     // order, matching `channels.effector_actuals`.
     debug_assert_eq!(effector_snapshot.len(), channels.effector_actuals.len());
     for (channel, state) in channels
@@ -1518,7 +1517,7 @@ where
         &channels.recovery_states,
     )?;
 
-    // Phase-3.2 marker channels.
+    // Marker channels.
     let mut fired_tags: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for fired in fired_events {
         if let openbmp_sim::MissionAction::EmitTelemetryMarker { tag } = &fired.action {

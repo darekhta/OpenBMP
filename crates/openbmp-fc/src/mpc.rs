@@ -6,10 +6,10 @@
 
 //! Solver-backed model-predictive-control primitives.
 //!
-//! Phase 4.C reintroduced the MPC surface behind the `mpc` feature
-//! with the single-step box QP `solve_attitude_box_qp`. Phase 5.A.4
-//! promotes that surface to a proper finite-horizon receding-horizon
-//! attitude controller, [`RecedingHorizonAttitudeMpc`], which
+//! The MPC surface lives behind the `mpc` feature
+//! with the single-step box QP `solve_attitude_box_qp`. On top of
+//! that, a finite-horizon receding-horizon
+//! attitude controller, [`RecedingHorizonAttitudeMpc`],
 //! replaces the cascaded autopilot's attitude-loop P-controller with
 //! an N-step quadratic program over the small-angle attitude-error
 //! state. The implementation uses Clarabel with deterministic
@@ -279,7 +279,7 @@ fn require_finite_axis(label: &'static str, value: f64) -> Result<(), AttitudeMp
     require_finite(label, value)
 }
 
-/// Phase 5.A.4 receding-horizon attitude MPC.
+/// Receding-horizon attitude MPC.
 ///
 /// Replaces the cascaded autopilot's attitude-loop P-controller
 /// with an N-step quadratic program. The controller minimises a
@@ -305,7 +305,7 @@ fn require_finite_axis(label: &'static str, value: f64) -> Result<(), AttitudeMp
 /// # Determinism
 ///
 /// Clarabel is configured with the pinned `deterministic_settings`
-/// shared with `solve_attitude_box_qp` (Phase 4.C); two `solve`
+/// shared with `solve_attitude_box_qp`; two `solve`
 /// calls with identical inputs produce bit-identical outputs on the
 /// reference platform.
 pub struct RecedingHorizonAttitudeMpc {

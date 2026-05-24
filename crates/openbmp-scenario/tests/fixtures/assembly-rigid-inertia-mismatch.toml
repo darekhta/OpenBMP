@@ -1,4 +1,4 @@
-# Phase-3.3 assembly-tree parser fixture retained as an ignored
+# Assembly-tree parser fixture retained as an ignored
 # historical flat/assembly rigid-inertia consistency case. Synthetic;
 # not a benchmark.
 
@@ -6,7 +6,7 @@ openbmp.scenario = 2
 
 [meta]
 name        = "assembly-rigid-inertia-mismatch-fixture"
-description = "Phase-3.3 parser fixture retained as an ignored historical rigid-inertia consistency case. Synthetic; not a benchmark."
+description = "Parser fixture retained as an ignored historical rigid-inertia consistency case. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

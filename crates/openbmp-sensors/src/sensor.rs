@@ -6,7 +6,7 @@
 //! into telemetry. HAL-backed code implements [`Sensor`] directly and
 //! does not need the synthetic truth port.
 //!
-//! Phase 2.7 ships three synthetic sensors: `IdealStateSensor`,
+//! Provides three synthetic sensors: `IdealStateSensor`,
 //! `SyntheticBarometer`, and `SyntheticImu`.
 
 use nalgebra::{UnitQuaternion, Vector3};
@@ -46,7 +46,7 @@ pub struct SensorTruth {
     pub static_pressure_pa: f64,
     /// Geometric altitude above the model reference surface (m).
     pub altitude_geometric_m: f64,
-    /// Phase-3.10.C body-frame magnetic flux density (nT). The
+    /// Body-frame magnetic flux density (nT). The
     /// runner-side adapter rotates the geodetic-NED WMM truth field
     /// at the vehicle's position and time through the attitude into
     /// the body frame and packs the result here. Defaults to zero
@@ -83,7 +83,7 @@ pub enum SensorMeasurement {
         /// Reported specific force in body frame (m/s²).
         accel_m_s2: Vector3<f64>,
     },
-    /// Phase-3.10.B GNSS receiver measurement: per-axis position
+    /// GNSS receiver measurement: per-axis position
     /// and velocity in ECI with additive Gaussian noise plus an OU
     /// bias drift on the position channels. IS-GPS-200 nominal
     /// noise budget; no satellite geometry, no pseudorange.
@@ -97,7 +97,7 @@ pub enum SensorMeasurement {
         /// observability into the slowly-drifting bias.
         position_bias_eci_m: Vector3<f64>,
     },
-    /// Phase-3.10.C body-frame magnetometer measurement: WMM truth
+    /// Body-frame magnetometer measurement: WMM truth
     /// field rotated into the body frame, with constant soft-iron
     /// (3×3) and hard-iron (3-vector) biases plus per-axis
     /// Gaussian noise.
@@ -108,7 +108,7 @@ pub enum SensorMeasurement {
         /// the budget; reported for telemetry audit.
         hard_iron_body_nt: Vector3<f64>,
     },
-    /// Phase-3.10.D star-tracker attitude measurement: the truth
+    /// Star-tracker attitude measurement: the truth
     /// `attitude_eci_to_body` quaternion with a small-angle
     /// Gaussian rotation-vector perturbation applied via right-
     /// multiplication. Unit-norm by construction.
@@ -124,8 +124,8 @@ pub enum SensorMeasurement {
 
 /// A measurement value paired with the time it was captured.
 ///
-/// Phase-3.15.B introduced this so the controller-side
-/// [`Sensor::read`] surface carries a measurement timestamp without
+/// This lets the controller-side
+/// [`Sensor::read`] surface carry a measurement timestamp without
 /// committing the controller to a particular time source. Sim-side
 /// the `time` is elapsed scenario time; HAL adopters typically fill
 /// it from a hardware monotonic counter normalised to controller
@@ -152,12 +152,12 @@ impl<T> Timestamped<T> {
 
 /// Hardware-portable sensor abstraction.
 ///
-/// Phase-3.14.C extracted this from the simulator-side sensor trait so
+/// This is separate from the simulator-side sensor trait so
 /// a real flight controller — and a downstream HAL adopter — can
 /// reason about a sensor by its stable id and output type without
 /// depending on the simulator's truth-port + per-tick RNG mechanism.
 ///
-/// Phase-3.15.B added the [`read`](Self::read) acquisition method:
+/// The [`read`](Self::read) acquisition method drives acquisition:
 /// the controller polls each sensor every controller tick, gets a
 /// [`Timestamped<Self::Output>`] back, and updates its estimator.
 /// Sim-side, [`SyntheticSensorAdapter`] wraps a [`SyntheticSensor`]
@@ -243,7 +243,7 @@ pub trait SyntheticSensor {
 /// Runner-side bridge that exposes a [`SyntheticSensor`] through the
 /// hardware-portable [`Sensor`] surface.
 ///
-/// Phase-3.15.B added this so a controller written against
+/// This exists so a controller written against
 /// `dyn Sensor<Output = SensorMeasurement>` can be instantiated
 /// against either real-hardware impls (which implement [`Sensor`]
 /// directly) or simulator-side synthetic impls (wrapped here).

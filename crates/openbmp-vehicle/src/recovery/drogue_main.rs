@@ -1,4 +1,4 @@
-//! Phase-3.9 two-stage drogue + main recovery.
+//! Two-stage drogue + main recovery.
 //!
 //! [`DrogueMainRecovery`] is an academic two-stage descent model.
 //! The first deploy fires the drogue chute; the second deploy
@@ -6,8 +6,8 @@
 //! `Stowed → Drogue → Main`. No re-entry: once `Main`, subsequent
 //! deploys are rejected.
 //!
-//! Drag area swap is instantaneous on the firing event — Phase-3.9
-//! does not model canopy-inflation transients. Both stages publish
+//! Drag area swap is instantaneous on the firing event; canopy-
+//! inflation transients are not modelled. Both stages publish
 //! their own `(C_D, A)` pair through [`RecoveryModel::current_c_d`] /
 //! [`RecoveryModel::current_drag_area_m2`].
 

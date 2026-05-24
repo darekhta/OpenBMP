@@ -1,4 +1,4 @@
-# Niskanen 2009 Chapter-6 small-rocket benchmark — Phase-5.X mission variant.
+# Niskanen 2009 Chapter-6 small-rocket benchmark — mission variant.
 #
 # Same physics as the canonical point-mass Niskanen scenario at
 # `niskanen-2009-chapter6.toml`, but adds a `[mission]` block that
@@ -25,9 +25,9 @@ openbmp.scenario = 3
 
 [meta]
 name        = "niskanen-2009-chapter6-with-mission"
-description = "Niskanen 2009 Chapter-6 small model rocket; identical physics to the canonical point-mass Niskanen scenario plus a Phase-5.X v4 [mission] block exercising the at_apogee_marker telemetry channel."
+description = "Niskanen 2009 Chapter-6 small model rocket; identical physics to the canonical point-mass Niskanen scenario plus a v4 [mission] block exercising the at_apogee_marker telemetry channel."
 validation  = "checked"
-provenance  = "Niskanen 2009 Chapter 6, Helsinki UT MSc thesis; Phase-5.X mission-v4 variant of the canonical Niskanen scenario."
+provenance  = "Niskanen 2009 Chapter 6, Helsinki UT MSc thesis; mission-v4 variant of the canonical Niskanen scenario."
 
 [time]
 start_s = 0.0
@@ -69,13 +69,13 @@ source        = "Helsinki proxy launch site (Niskanen 2009 Chapter 6 does not pu
 
 [aero]
 deck         = "../../data/aero/synthetic-niskanen-ch6-rocket.toml"
-deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27"
+deck_sha256  = "bbedf508c9fe589dea8f5eb77d29ac44f3f00271a09fb6fa661024b9e1809691"
 
 [propulsion.motor]
 file         = "../../data/motors/estes-c6-eng-derived.toml"
 ignite_at_s  = 0.0
 variant      = "solid"
-file_sha256  = "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e"
+file_sha256  = "fbea346fb952e97c50bd709a9c2a7b3cde3d5df0238a7d48032cd96a5b9bdbde"
 
 [telemetry]
 output.parquet = "out/niskanen-2009-chapter6-with-mission.parquet"
@@ -84,7 +84,7 @@ output.parquet = "out/niskanen-2009-chapter6-with-mission.parquet"
 require_finite_state   = true
 require_monotonic_time = true
 
-# Phase-5.X mission block: declare states, the apogee event, and the
+# Mission block: declare states, the apogee event, and the
 # ascent->descent transition.
 
 [mission]

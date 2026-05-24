@@ -1,6 +1,6 @@
 # Provenance — `scenarios/effector-elevon/`
 
-Canonical OpenBMP provenance record for the Phase-3.4 effector
+Canonical OpenBMP provenance record for the effector
 exit-criterion scenario shipped under `scenarios/effector-elevon/`.
 
 ## `scenarios/effector-elevon/single-elevon-elevator-step.toml`
@@ -11,20 +11,20 @@ files:
   - scenarios/effector-elevon/single-elevon-elevator-step.toml
 source_class:     synthetic-openbmp
 source_title:     >-
-  Phase-3.4 exit-criterion single-elevon scenario. Demonstrates the
+  Exit-criterion single-elevon scenario. Demonstrates the
   declarative `[[vehicle.assembly.effectors]]` block with one
   linear-actuator effector tracking a step elevator command.
   Gravity-only kinematics; the effector deflection is observable in
   the Parquet via the `effector.delta_e.actual` channel but does
   not perturb the dynamics. All numeric values are synthetic round
-  numbers chosen to exercise the Phase-3.4 effector / rack /
+  numbers chosen to exercise the effector / rack /
   telemetry plumbing.
-source_authors:   OpenBMP (Dmitri Arekhta) for the Phase-3.4 single-elevon exit-criterion case
-source_id:        Synthetic OpenBMP Phase-3.4 single-elevon fixture
+source_authors:   OpenBMP (Dmitri Arekhta) for the single-elevon exit-criterion case
+source_id:        Synthetic OpenBMP single-elevon fixture
 source_url:       —
 publication_date: 2026-04-28
 methodology_reference: >-
-  `docs/scenario-format.md` § Control effectors (Phase 3.4)
+  `docs/scenario-format.md` § Control effectors
   documents the `ControlEffector` trait, `LinearActuator` reference
   impl, and runner-side `EffectorRack`. This scenario is the
   exit-criterion case: a
@@ -41,11 +41,11 @@ license_or_terms: >-
 retrieved_utc:    2026-04-28
 transformation:
   method: >-
-    Authored by hand for the Phase-3.4 exit criterion. No script.
+    Authored by hand for the effector exit criterion. No script.
   script: none
 verification:
   method: >-
-    `openbmp check` parses the scenario; the Phase-3.4 e2e test
+    `openbmp check` parses the scenario; the e2e test
     `single_elevon_scenario_runs_to_completion` runs the scenario
     via `openbmp run`, asserts the kernel completes with
     `StopReason::EndTime`, and asserts the
@@ -75,9 +75,10 @@ local_origin:     >-
 related_files:
   - crates/openbmp-cli/tests/effector_e2e.rs
 notes: >-
-  Phase-3.4 ships the effector state machine. The aero deck stays
-  schema-1 in 3.4 — Phase 3.5 will land schema-2 effector axes,
-  enabling the deck to consume `EffectorState.actual` via
-  `ForceContext`. Until then this scenario's deflection telemetry
-  is observable but not coupled to dynamics.
+  This scenario exercises the effector state machine with a
+  schema-1 aero deck, so the deck does not consume
+  `EffectorState.actual` via `ForceContext`. The deflection
+  telemetry is therefore observable but not coupled to dynamics;
+  the schema-2 coupling path is exercised by the
+  effector-elevon-aero scenario.
 ```

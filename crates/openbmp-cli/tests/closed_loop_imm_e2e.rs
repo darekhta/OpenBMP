@@ -1,7 +1,7 @@
-//! Phase-5.B.3 end-to-end test: closed-loop attitude-hold pipeline
+//! End-to-end test: closed-loop attitude-hold pipeline
 //! with a 2-mode Bar-Shalom IMM estimator.
 //!
-//! Asserts the §5.B.3 exit criterion (wiring scope):
+//! Asserts the wiring behaviour:
 //!
 //! 1. The scenario runs to completion via the `openbmp` CLI binary
 //!    with `stop_label = "end-time"` after 1000 RK4 steps.

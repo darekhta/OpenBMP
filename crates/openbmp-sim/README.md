@@ -2,19 +2,18 @@
 
 L1 lockstep simulation kernel.
 
-**Status:** Phase 3 — Phase-2 point-mass + 6-DOF rigid-body
-lockstep kernels plus the Phase-3.2 `EventTrigger` /
+**Status:** Implemented. Provides point-mass + 6-DOF rigid-body
+lockstep kernels plus the `EventTrigger` /
 `MissionPhaseGraph` event-driven scheduling surface and the
-Phase-3.7 slosh sub-step plumbing
+slosh sub-step plumbing
 (`SimulationKernel::sub_step_count`).
 
 ## Purpose
 
 - `Integrator` trait + `IntegratorDeterminism` enum.
 - `Rk4FixedStep` integrator with locked weighted-sum order; reused
-  across both `PointMassState` and `RigidBodyState` (Phase 2.1
-  generalisation; Phase-1 byte-stable analytic-toy path is preserved
-  by the `Phase1Kernel` alias).
+  across both `PointMassState` and `RigidBodyState`. The point-mass
+  kernel shape is exposed by the `PointMassKernel` alias.
 - `SimulationKernel` struct with the canonical step loop:
   stop check → overflow-checked step candidate → environment sample →
   force / moment model → mass-rate model → integrate →
@@ -22,12 +21,12 @@ Phase-3.7 slosh sub-step plumbing
 - `RigidBodyKernel` alias plus `RigidModels` bundle for the 6-DOF
   path: `MomentModel`, `RigidMassModel`, post-step quaternion
   renormalisation in `project()`.
-- `ConstantGravityForce` retained as the Phase-1 byte-stable
+- `ConstantGravityForce` is the byte-stable
   analytic-toy gravity scaffold; the higher-layer `GravityForceAdapter`
-  in `openbmp-vehicle` is the Phase-2 path.
+  in `openbmp-vehicle` is the sounding-rocket path.
 - `StopCondition` trait and simple stop conditions
   (`AlwaysContinue`, `EndTime`, `MaxSteps`).
-- Phase-3.2 mission scheduling: `EventTrigger` trait,
+- Mission scheduling: `EventTrigger` trait,
   `BuiltInEventTrigger` (AtTime / AtAltitudeAscending /
   AtAltitudeDescending / AtApogee / AtMassFraction /
   AtDynamicPressure), typed `EventBinding` lists, and
@@ -70,13 +69,13 @@ FMA-disabled on the reference platform per `.cargo/config.toml`. See
 
 ## Validation
 
-`checked` for the Phase-1 point-mass kernel surface and
-`validated-toy` for the Phase-2.1 rigid-body extension and the
-Phase-3.2 mission graph. Validated against the analytic-toy
+`checked` for the point-mass kernel surface and
+`validated-toy` for the rigid-body extension and the
+mission graph. Validated against the analytic-toy
 constant-acceleration drop (`tests/analytic_toy.rs`), torque-free
 precession (`tests/torque_free_precession.rs`), the
-Phase-2.9/2.11 Niskanen sounding-rocket reduction, and the
-Phase-3.11 RocketPy Calisto cross-tool case (via the
+Niskanen sounding-rocket reduction, and the
+RocketPy Calisto cross-tool case (via the
 `openbmp-vehicle` and `openbmp-cli` integration tests).
 
 ## Data Provenance

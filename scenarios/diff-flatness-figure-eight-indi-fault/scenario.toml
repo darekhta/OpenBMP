@@ -1,4 +1,4 @@
-# Phase-5.A.3.D INDI-with-fault sibling of the diff-flatness figure-eight.
+# INDI-with-fault sibling of the diff-flatness figure-eight.
 #
 # Identical to `scenarios/diff-flatness-figure-eight-indi` except for
 # one extra field on the roll-torque effector:
@@ -6,7 +6,7 @@
 #   `fault = { kind = "reduced_rate", factor = 0.7 }`
 #
 # This is the same matched-uncertainty disturbance used by the
-# Phase-5.A.2.D L1 sibling scenarios. Pairing the INDI rate loop
+# L1 sibling scenarios. Pairing the INDI rate loop
 # with this fault gives the controller comparison harness in
 # `crates/openbmp-cli/tests/controller_comparison_harness.rs` a
 # direct apples-to-apples comparison against the PID-baseline,
@@ -21,7 +21,7 @@ openbmp.scenario = 3
 
 [meta]
 name        = "diff-flatness-figure-eight-indi-fault"
-description = "Phase-5.A.3.D INDI rate-loop figure-eight tracker with the matched roll-axis ReducedRate fault. Sibling of diff-flatness-figure-eight-indi; identical except for the fault block."
+description = "INDI rate-loop figure-eight tracker with the matched roll-axis ReducedRate fault. Sibling of diff-flatness-figure-eight-indi; identical except for the fault block."
 validation  = "experimental"
 provenance  = "synthetic; identical to diff-flatness-figure-eight-indi modulo the EffectorFault::ReducedRate { factor = 0.7 } on the roll-torque effector. See provenance.md."
 
@@ -158,7 +158,7 @@ rate_loop_kind           = "indi"
 # operating bandwidth, so the filtered ω̇ measurement is noise-rejected
 # without introducing destabilising delay. Inertia and control
 # effectiveness are configured to match truth here; an inertia-mismatch
-# variant scenario (Phase 5.A.3.D) demonstrates INDI's robustness when
+# variant scenario demonstrates INDI's robustness when
 # they don't.
 [fc.autopilot_params.indi]
 inertia_per_axis_kg_m2          = [1.0, 1.0, 1.0]

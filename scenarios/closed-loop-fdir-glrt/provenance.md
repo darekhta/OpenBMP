@@ -6,8 +6,8 @@
 
 ## Source class
 
-Synthetic. The scenario is the Phase-5.B.4 end-to-end demo for the
-new Willsky 1976 windowed-mean-shift GLRT detector
+Synthetic. The scenario is the end-to-end demo for the
+Willsky 1976 windowed-mean-shift GLRT detector
 (`openbmp_fc::glrt::WindowedMeanShiftGlrt`,
 `openbmp_fc::fdir::DetectorKind::WindowedMeanShiftGlrt`).
 
@@ -18,8 +18,7 @@ is the addition of the v3-only `[fc.fdir.detector]` sub-block that
 selects the windowed-mean-shift GLRT detector with a 32-sample
 window and α = 0.001 family-wise false-alarm rate.
 
-The Phase-5.B.4 commit promoted `[fc.fdir.detector].kind` from a
-free-form string (parser-only in Phase 5.0) to a typed enum
+`[fc.fdir.detector].kind` is a typed enum
 `FcFdirDetectorKindV5::WindowedMeanShiftGlrt`. The runner builds
 three per-sensor detectors (GNSS dim 6, baro dim 1, mag dim 3) from
 the whitened-innovation streams the EKF now exports on
@@ -50,7 +49,7 @@ real-world locations, no ITAR / EAR / MTCR / Wassenaar content.
 ## Validation status
 
 `experimental`. Validates parser-side and runs end-to-end
-deterministically. The Phase-5.B.4 e2e test
+deterministically. The e2e test
 (`crates/openbmp-cli/tests/closed_loop_fdir_glrt_e2e.rs`) asserts:
 
 - the scenario completes 1000 RK4 steps with end-time stop;

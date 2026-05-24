@@ -1,6 +1,6 @@
 //! Three-loop autopilot.
 //!
-//! Phase 4.5 ships a Stevens & Lewis 2015 academic three-loop
+//! A Stevens & Lewis 2015 academic three-loop
 //! formulation: an inner rate loop, an outer attitude loop, and an
 //! optional trajectory loop. Gains are scheduled by mission phase via
 //! the parameter registry.
@@ -10,8 +10,8 @@
 //! - Trajectory loop: `position_estimate -> attitude_command`.
 //!
 //! Each loop is a PID with anti-windup. When the actuator demand
-//! saturates, the integrator freezes (back-calculation). Phase 4.C
-//! keeps this baseline after the observer-form anti-windup review:
+//! saturates, the integrator freezes (back-calculation). This
+//! baseline holds after the observer-form anti-windup review:
 //! no boundedness or determinism test in the current academic
 //! envelope justifies replacing the simpler back-calculation path.
 
@@ -113,8 +113,7 @@ pub struct AutopilotParams {
     /// Anti-windup strategy applied to all three PID loops
     /// (trajectory / attitude / rate). See
     /// [`crate::anti_windup::AntiWindupKind`] for the supported
-    /// kinds. Defaults to back-calculation with unit gain (Phase-4
-    /// behaviour).
+    /// kinds. Defaults to back-calculation with unit gain.
     pub anti_windup: crate::anti_windup::AntiWindupKind,
     /// Deadband in body angular velocity below which the rate loop
     /// integrator is frozen.
@@ -127,7 +126,7 @@ pub struct AutopilotParams {
     /// Optional per-axis gyro notch filters.
     pub gyro_notch: Option<[crate::filters::NotchConfig; 3]>,
     /// Optional Cao-Hovakimyan L1 adaptive augmentation on the rate
-    /// loop (Phase 5.A.2.C). When `Some(_)` the autopilot installs a
+    /// loop. When `Some(_)` the autopilot installs a
     /// per-axis [`crate::l1_adaptive_full::L1AdaptiveChannel`] and
     /// adds its augmentation to the PID rate-loop output every tick.
     /// The configured `L1AdaptiveParams` must already satisfy the
@@ -136,12 +135,12 @@ pub struct AutopilotParams {
     /// scenario load.
     #[cfg(feature = "l1-adaptive")]
     pub l1_adaptive: Option<crate::l1_adaptive_full::L1AdaptiveParams>,
-    /// Rate-loop dispatch strategy (Phase 5.A.3.B). Defaults to
-    /// [`RateLoopKind::Pid`] for byte-stable Phase-4/5.A.2 behaviour;
+    /// Rate-loop dispatch strategy. Defaults to
+    /// [`RateLoopKind::Pid`] for byte-stable PID behaviour;
     /// scenarios that select [`RateLoopKind::Lqr`] must also install
     /// `lqr_gains` (the runner solves DARE at scenario load).
     pub rate_loop_kind: RateLoopKind,
-    /// Per-axis LQR feedback gains (Phase 5.A.3.B). Only consulted
+    /// Per-axis LQR feedback gains. Only consulted
     /// when `rate_loop_kind == RateLoopKind::Lqr`. The runner solves
     /// the per-axis DARE at scenario load using
     /// [`crate::lqr::solve_lqr_rate_loop`] and installs the result
@@ -149,7 +148,7 @@ pub struct AutopilotParams {
     /// selected without gains.
     #[cfg(feature = "lqr")]
     pub lqr_gains: Option<[crate::lqr::LqrGains; 3]>,
-    /// Per-axis INDI parameters (Phase 5.A.3.C). Only consulted when
+    /// Per-axis INDI parameters. Only consulted when
     /// `rate_loop_kind == RateLoopKind::Indi`. The runner forwards
     /// the validated `[fc.autopilot_params.indi]` block here;
     /// composition with the L1 adaptive augmentation is rejected at
@@ -158,15 +157,15 @@ pub struct AutopilotParams {
     /// without params.
     #[cfg(feature = "indi")]
     pub indi_params: Option<crate::indi::IndiParams>,
-    /// Attitude-loop dispatch strategy (Phase 5.A.4). Defaults to
-    /// [`AttitudeLoopKind::Pid`] for byte-stable Phase-4 behaviour;
+    /// Attitude-loop dispatch strategy. Defaults to
+    /// [`AttitudeLoopKind::Pid`] for byte-stable PID behaviour;
     /// scenarios that select [`AttitudeLoopKind::Mpc`] must also
     /// install a built `RecedingHorizonAttitudeMpc` via
     /// [`AutopilotParams::attitude_mpc`] (the runner constructs it
     /// at scenario load using the configured params and the loop
     /// step `time.dt_s`).
     pub attitude_loop_kind: AttitudeLoopKind,
-    /// Optional pre-built attitude MPC (Phase 5.A.4). Only consulted
+    /// Optional pre-built attitude MPC. Only consulted
     /// when `attitude_loop_kind == AttitudeLoopKind::Mpc`. The
     /// autopilot fails closed at first tick if `Mpc` is selected
     /// without an installed controller.
@@ -199,12 +198,12 @@ impl Default for AutopilotParams {
 /// Attitude-loop dispatch strategy.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum AttitudeLoopKind {
-    /// Phase-4 per-axis PID attitude loop (default). Reads gain
+    /// Per-axis PID attitude loop (default). Reads gain
     /// schedule per phase; integrator handled by the shared
     /// `pid_step` helper.
     #[default]
     Pid,
-    /// Phase-5.A.4 receding-horizon attitude MPC. Requires the
+    /// Receding-horizon attitude MPC. Requires the
     /// `mpc` Cargo feature and a populated
     /// [`AutopilotParams::attitude_mpc`] field. The autopilot fails
     /// closed at first tick if either is missing.
@@ -214,16 +213,16 @@ pub enum AttitudeLoopKind {
 /// Rate-loop dispatch strategy.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum RateLoopKind {
-    /// Phase-4 PID rate loop (default). Reads gain schedule per
+    /// PID rate loop (default). Reads gain schedule per
     /// phase; integrator handled by the shared `pid_step` helper.
     #[default]
     Pid,
-    /// Phase-5.A.3.B per-axis LQR rate loop with augmented integral
+    /// Per-axis LQR rate loop with augmented integral
     /// state. Requires the `lqr` Cargo feature and a populated
     /// [`AutopilotParams::lqr_gains`] field. The autopilot fails
     /// closed at first tick if either is missing.
     Lqr,
-    /// Phase-5.A.3.C per-axis INDI rate loop (Smeur-Chu-de Croon
+    /// Per-axis INDI rate loop (Smeur-Chu-de Croon
     /// 2016). Requires the `indi` Cargo feature and a populated
     /// [`AutopilotParams::indi_params`] field. The autopilot fails
     /// closed at first tick if either is missing. Composition with
@@ -272,23 +271,23 @@ pub struct ThreeLoopAutopilot {
     gyro_notch_state: Option<[Biquad; 3]>,
     /// Optional minimum-snap trajectory consumed when
     /// `params.trajectory_kind == TrajectoryKind::DifferentialFlatness`.
-    /// The autopilot owns the trajectory in Phase 5.A.1.
+    /// The autopilot owns the trajectory.
     minimum_snap_trajectory: Option<MinimumSnapTrajectory>,
     /// Optional constant yaw override for the installed trajectory.
     /// Scenario `[fc.trajectory].yaw_rad` sets this; programmatic users
     /// that omit it inherit yaw from the bus reference.
     minimum_snap_yaw_rad: Option<f64>,
-    /// Per-axis L1 adaptive state (Phase 5.A.2.C). Used only when
+    /// Per-axis L1 adaptive state. Used only when
     /// [`AutopilotParams::l1_adaptive`] is `Some(_)` and the
     /// `l1-adaptive` feature is on.
     #[cfg(feature = "l1-adaptive")]
     l1_state: [crate::l1_adaptive_full::L1AdaptiveChannel; 3],
-    /// Per-axis LQR integrator state (Phase 5.A.3.B). Updated by
+    /// Per-axis LQR integrator state. Updated by
     /// the rate loop only when
     /// `params.rate_loop_kind == RateLoopKind::Lqr`.
     #[cfg(feature = "lqr")]
     lqr_integrators: [f64; 3],
-    /// Per-axis INDI channel state (Phase 5.A.3.C). Filter and
+    /// Per-axis INDI channel state. Filter and
     /// previous-command state; consulted only when
     /// `params.rate_loop_kind == RateLoopKind::Indi`. Constructed
     /// lazily on the first INDI step so the channels can be sized
@@ -369,7 +368,7 @@ impl ThreeLoopAutopilot {
         self
     }
 
-    /// Phase 5.A.3.B per-axis LQR rate-loop step. Mirrors the
+    /// Per-axis LQR rate-loop step. Mirrors the
     /// PID-loop interface so the rate-loop dispatch site treats both
     /// kinds uniformly. Updates the per-axis integrator (subject to
     /// the rate-deadband freeze) and applies the configured anti-
@@ -406,7 +405,7 @@ impl ThreeLoopAutopilot {
         (clamped, saturated)
     }
 
-    /// Phase 5.A.3.C per-axis INDI rate-loop step. Lazily
+    /// Per-axis INDI rate-loop step. Lazily
     /// constructs the channel state on first use (the filter
     /// coefficients depend on `dt` which the autopilot only sees at
     /// runtime). Anti-windup is implicit through the clamp; the
@@ -553,7 +552,7 @@ impl Job for ThreeLoopAutopilot {
         let mut differential_flatness_active = false;
         let mut differential_flatness_reference_suppressed = false;
 
-        // Phase 5.A.1 — DifferentialFlatness trajectory loop.
+        // DifferentialFlatness trajectory loop.
         // Generates the attitude reference from the installed
         // minimum-snap trajectory's flat outputs, independent of the
         // bus `ReferenceState.position_eci_m`. The `Pid` variant
@@ -640,8 +639,8 @@ impl Job for ThreeLoopAutopilot {
             }
         }
 
-        // Phase 5.A.4 attitude-loop dispatch. PID is the
-        // Phase-4/5.A.2/5.A.3 default; MPC consumes the same
+        // Attitude-loop dispatch. PID is the
+        // default; MPC consumes the same
         // attitude-error vector and returns the optimal first-step
         // commanded body rate via the pre-built receding-horizon
         // controller. The MPC's saturation is internal to its box
@@ -710,8 +709,8 @@ impl Job for ThreeLoopAutopilot {
                 _ => gains.rudder_limit_rad,
             };
             let integrate = omega_body_rad_s[i].abs() >= self.params.rate_deadband_rad_s;
-            // Phase 5.A.3.B — rate-loop dispatch. PID is the
-            // Phase-4/5.A.2 default; LQR uses the per-axis gains the
+            // Rate-loop dispatch. PID is the
+            // default; LQR uses the per-axis gains the
             // runner pre-solved at scenario load.
             let (cmd, sat) = match self.params.rate_loop_kind {
                 RateLoopKind::Pid => pid_step(
@@ -784,14 +783,14 @@ impl Job for ThreeLoopAutopilot {
             let mut axis_cmd = cmd;
             #[cfg(not(feature = "l1-adaptive"))]
             let axis_cmd = cmd;
-            // Phase 5.A.2.C — full Cao-Hovakimyan L1 adaptive
+            // Full Cao-Hovakimyan L1 adaptive
             // augmentation: the predictor sees the measured body
             // angular rate as plant state, the rate loop's command as
             // reference, and the PID output as baseline command.
             // The augmentation is added to the baseline; the result
             // is re-clamped to the per-axis actuator limit.
             //
-            // Phase 5.A.3.C — L1 augmentation is intentionally
+            // L1 augmentation is intentionally
             // suppressed when the rate loop is INDI: INDI's filtered
             // ω̇_meas term already absorbs matched disturbance, so
             // L1 on top creates filter-interaction concerns. The

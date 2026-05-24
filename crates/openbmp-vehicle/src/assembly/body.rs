@@ -1,4 +1,4 @@
-//! Phase-3.3 vehicle-assembly body data shape.
+//! Vehicle-assembly body data shape.
 //!
 //! A [`Body`] is one rigid member of a [`crate::assembly::Assembly`].
 //! It carries dry mass, body-frame center of mass, body-frame inertia
@@ -16,8 +16,8 @@ use openbmp_core::{Body as BodyFrame, BodyId, Position3};
 
 use crate::assembly::AssemblyError;
 
-/// Geometry descriptor for a single body. Phase-3.3 ships three
-/// variants spanning the textbook single-body / two-body cases.
+/// Geometry descriptor for a single body. Three
+/// variants span the textbook single-body / two-body cases.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BodyGeometry {
     /// Right circular cylinder along the body +z axis.

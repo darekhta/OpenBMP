@@ -3,7 +3,7 @@
 L6 test helpers crate. Used as a `dev-dependency` by every other
 crate.
 
-**Status:** Phase 1.6 — implemented shared test helpers.
+**Status:** Implemented shared test helpers.
 
 ## Purpose
 
@@ -11,8 +11,8 @@ crate.
   `StepIndex`, IDs, frame-tagged vectors, `Quaternion`,
   `MassProperties`, `PointMassState`, and `RigidBodyState`.
 - Analytic-toy references: constant-acceleration drop, harmonic
-  oscillator, and checked two-body Keplerian helpers. Torque-free Euler
-  remains deferred until the Phase 1.3 integrator interface exists.
+  oscillator, and checked two-body Keplerian helpers. A torque-free
+  Euler reference helper remains deferred.
 - Tolerance-table parser for `expected.toml` files per
   `docs/verification.md` § Tolerance Tables.
 - `compare_filters` helper (NorthStarUAS pattern).
@@ -47,7 +47,7 @@ seeded RNG.
 
 ## Validation
 
-`checked` for the Phase 1.6 helper surface. Each helper ships
+`checked` for the helper surface. Each helper ships
 self-tests.
 
 ## Data Provenance

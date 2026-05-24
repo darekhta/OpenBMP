@@ -1,8 +1,8 @@
-//! Phase-3.7.E end-to-end test: rigid-body vehicle with one
+//! End-to-end test: rigid-body vehicle with one
 //! axial liquid engine and a cylindrical tank carrying an
 //! `EquivalentPendulum` slosh model.
 //!
-//! Asserts the §3.7 exit criterion: the synthetic scenario
+//! Asserts: the synthetic scenario
 //! `scenarios/sloshing-tank/sloshing-tank.toml` runs via
 //! `openbmp run`, the kernel completes with `StopReason::EndTime`,
 //! the vehicle altitude at end of run is positive and finite (so

@@ -1,4 +1,4 @@
-//! Phase 5.X.G property tests for orthogonal regions + cross-region
+//! Property tests for orthogonal regions + cross-region
 //! guards.
 //!
 //! Asserts:

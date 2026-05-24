@@ -1,6 +1,6 @@
 //! Solver-backed soft-landing convexification primitives.
 //!
-//! The Phase 4.C landing surface is feature-gated behind `mpc` and
+//! The landing surface is feature-gated behind `mpc` and
 //! uses Clarabel's second-order-cone backend. Full `LCvxLD` / `SCvx`
 //! trajectory generation is built from this primitive by constraining
 //! thrust vectors and glideslope cones over a finite horizon.

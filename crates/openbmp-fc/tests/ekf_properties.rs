@@ -1,4 +1,4 @@
-//! Property tests for the EKF (Phase 4.B).
+//! Property tests for the EKF.
 //!
 //! Required filter-consistency properties:
 //! - **Determinism:** for the same seeded scenario, the EKF

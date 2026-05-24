@@ -1,4 +1,4 @@
-//! Phase 5.X.B HAL build-time gate test.
+//! HAL build-time gate test.
 //!
 //! Asserts that the test-only `ScenarioStateOverride` topic is
 //! visible in the default (sim) build and that it carries the

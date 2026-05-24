@@ -17,7 +17,7 @@ use crate::sensor::{SensorMeasurement, SensorTruth, SyntheticSensor, require_tru
 const COMPONENT_ID_MEASUREMENT_NOISE: u32 = 0;
 const COMPONENT_ID_BIAS_DRIFT: u32 = 1;
 
-/// Phase-2 synthetic barometer.
+/// Synthetic barometer.
 #[derive(Clone, Debug)]
 pub struct SyntheticBarometer {
     sensor_id: SensorId,

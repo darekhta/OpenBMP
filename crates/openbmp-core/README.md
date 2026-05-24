@@ -3,15 +3,15 @@
 L0 foundation crate. Math, units, coordinate frames, simulation time,
 deterministic RNG, project-wide error and validation primitives.
 
-**Status:** Phase 1.1 — implemented foundation crate. Phase-3
-extensions are append-only typed ids (`EffectorId`, `TankId`,
+**Status:** Implemented foundation crate. The type surface includes
+append-only typed ids (`EffectorId`, `TankId`,
 `EngineId`, `RecoveryId`, `WindAxis`) plus the
 `DeterministicRng::for_effector_component` and
 `DeterministicRng::for_wind_component` domain-separated streams.
-The earlier Phase-2.7 `SensorId` /
-`DeterministicRng::for_sensor_component` stream remains the sensor
-RNG surface. The foundation surface (frames, units, time,
-validation labels) is unchanged from Phase 1.1.
+The `SensorId` /
+`DeterministicRng::for_sensor_component` stream provides the sensor
+RNG surface. The foundation surface covers frames, units, time, and
+validation labels.
 
 ## Purpose
 
@@ -59,7 +59,7 @@ OpenBMP. See `docs/software-architecture.md` § Determinism Profile.
 
 ## Validation
 
-`checked` for the Phase-1.1 foundation surface: unit and property tests cover
+`checked` for the foundation surface: unit and property tests cover
 time monotonicity, frame identity transforms, typed frame arithmetic, quaternion
 round trips and composition, deterministic RNG replay, and validation labels.
 

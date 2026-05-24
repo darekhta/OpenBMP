@@ -1,12 +1,12 @@
-//! Stop-condition trait and Phase-1.3 implementations.
+//! Stop-condition trait and implementations.
 //!
 //! Stop conditions are checked **before** each kernel step. When a
 //! condition fires, the kernel records the [`crate::StopReason`] and
 //! `step()` becomes a no-op until the kernel is recreated.
 //!
-//! Phase-2 generalisation: `StopCondition` is now generic over
+//! `StopCondition` is generic over
 //! `S: SimState` so the same trait serves point-mass and rigid-body
-//! kernels. The Phase-1 stops (`AlwaysContinue`, `EndTime`,
+//! kernels. The simple stops (`AlwaysContinue`, `EndTime`,
 //! `MaxSteps`) only need `state.time()` from the trait, so they
 //! impl `StopCondition<S>` for **any** `S`.
 

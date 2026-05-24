@@ -5,13 +5,13 @@ models, initial state, deterministic schedule, telemetry outputs, and
 validation rules for one simulation run.
 
 The schema header is `openbmp.scenario = 2` or `openbmp.scenario = 3`.
-Phase-3.13 retired the v1 flat-vehicle shape; every supported scenario
+The v1 flat-vehicle shape is retired; every supported scenario
 now carries a mandatory `[vehicle.assembly]` block and per-body dry
 mass / inertia live on `[[vehicle.assembly.bodies]]`. v1 scenarios fail
 closed at the header check. See
 [Migrating v1 scenarios to v2](#migrating-v1-scenarios-to-v2) for the
-mechanical rewrite. Phase-2 specifics live in the
-[Phase-2 Extensions](#phase-2-extensions) section at the bottom.
+mechanical rewrite. Sounding-rocket specifics live in the
+[Sounding-Rocket Extensions](#sounding-rocket-extensions) section at the bottom.
 
 This document is the format contract. It intentionally favors strict, verbose
 fields over compact syntax.
@@ -41,11 +41,11 @@ fields over compact syntax.
 | `[validation]` | yes | Runtime validation rules |
 | `[epoch]` | no | Absolute time metadata |
 | `[frames]` | no | Frame profile and local origins |
-| `[aero]` | no | External aerodynamic deck reference (Phase 2.10) |
-| `[propulsion]` | no | Motor reference; ignition time (Phase 2.10) |
-| `[wind]` | no | Structured wind block; overrides `environment.wind` (Phase 2.10) |
-| `[atmosphere]` | no | Structured atmosphere block; overrides `environment.atmosphere` (Phase 2.10) |
-| `[solver]` | no | Integrator / solver profile; required for Phase-6 hypersonic scenarios |
+| `[aero]` | no | External aerodynamic deck reference |
+| `[propulsion]` | no | Motor reference; ignition time |
+| `[wind]` | no | Structured wind block; overrides `environment.wind` |
+| `[atmosphere]` | no | Structured atmosphere block; overrides `environment.atmosphere` |
+| `[solver]` | no | Integrator / solver profile; required for hypersonic scenarios |
 | `[data_packages]` | no | External real-data or high-fidelity reference package sidecars |
 | `[sensors]` | no | Synthetic sensor models |
 | `[fc]` | no | Simulator-local flight controller |
@@ -82,7 +82,7 @@ innovation_false_alarm_rate = 0.01
 dead_reckon_timeout_s      = 1.5
 
 [fc.autopilot_params]
-anti_windup_gain        = 1.0
+anti_windup             = { kind = "back_calculation", gain = 1.0 }
 rate_deadband_rad_s     = 0.001
 trajectory_loop_enabled = false
 trajectory_kind         = "pid" # "pid" | "minimum_snap" (Mellinger-Kumar 2011 differential-flatness tracker; requires `[fc.trajectory]` under v3)
@@ -183,9 +183,9 @@ require_finite_state = true
 require_monotonic_time = true
 ```
 
-In Phase 1, `environment.gravity_m_s2` is a non-negative magnitude. The
+`environment.gravity_m_s2` is a non-negative magnitude. The
 analytic-toy runner applies it along the toy `-z` direction; explicit gravity
-vectors are a later scenario-format extension.
+vectors are a separate scenario-format extension.
 
 In schema version 2, the assembly is the single dry-mass source of truth.
 Point-mass scenarios sum `[[vehicle.assembly.bodies]].dry_mass_kg` for the
@@ -238,14 +238,14 @@ Allowed `validation` values are `experimental`, `checked`,
 `dt_s` is the base kernel step. Multi-rate schedules are integer divisors of
 the base step and must be declared under subsystem-specific `rate_hz` fields.
 
-Phase-1 TOML seed literals should stay in `0..=i64::MAX`. The scenario model
+TOML seed literals should stay in `0..=i64::MAX`. The scenario model
 stores seeds as `u64`, but TOML integer syntax itself cannot represent values
 above signed 64-bit range portably.
 
 ## Solver Profile
 
-`[solver]` is optional for Phase 1 and defaults to fixed-step RK4. Phase-6
-hypersonic scenarios must declare it explicitly because solver choice,
+`[solver]` is optional and defaults to fixed-step RK4. Hypersonic
+scenarios must declare it explicitly because solver choice,
 tolerances, dense-output event policy, and source-term sub-stepping are part of
 the validation claim.
 
@@ -363,7 +363,7 @@ Batch runs must not mutate the base scenario in place.
 
 ## Scenario Lint
 
-Phase 1 should provide `openbmp check scenario.toml`. The check should:
+The `openbmp check scenario.toml` command performs the following checks:
 
 - Parse with unknown-field rejection.
 - Resolve all file references.
@@ -377,9 +377,9 @@ Phase 1 should provide `openbmp check scenario.toml`. The check should:
 
 The same check runs in CI for every committed scenario.
 
-## Phase 2 Extensions
+## Sounding-Rocket Extensions
 
-Phase 2.10 added scenario-format extensions for sounding-rocket scenarios.
+These scenario-format extensions support sounding-rocket scenarios.
 Those blocks remain optional in schema v2 unless selected models require
 their matching structured table.
 The canonical worked example is
@@ -466,11 +466,11 @@ deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27
 `deck_sha256` field pins the file's SHA-256 digest; mismatches fail
 closed.
 
-Two deck formats are supported. **Schema 1** is the Phase-2.5 three-axis
+Two deck formats are supported. **Schema 1** is the three-axis
 `(mach, alpha, beta) → (CN, CD, CM)` deck documented in
 [`software-architecture.md § Deck Format`](software-architecture.md#deck-format-in-house-toml).
-**Schema 2** (Phase 3.5) extends Schema 1 with optional control-effector
-axes; see [Schema-2 aero decks](#schema-2-aero-decks-phase-35) below.
+**Schema 2** extends Schema 1 with optional control-effector
+axes; see [Schema-2 aero decks](#schema-2-aero-decks) below.
 The `[aero]` block stays the same in both cases — it's just a reference
 plus an optional digest pin. The schema discriminator lives inside the
 deck file itself (`openbmp.aero_deck = 1` or `= 2`).
@@ -486,7 +486,7 @@ file_sha256  = "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e
 ```
 
 `variant` is optional; when present, it must resolve to a registered
-motor variant. Phase 2.11 wires only the `solid` motor variant.
+motor variant. Only the `solid` motor variant is wired.
 `ignite_at_s` is the time since scenario start when the motor begins
 burning; finite-required, no positivity rule (negative values are an
 explicit pre-roll convention).
@@ -507,7 +507,7 @@ wind_ned_m_s = [3.0, 0.0, 0.0]
 ```
 
 `wind_ned_m_s` is required when `kind = "constant"`, rejected
-otherwise. Phase 3.8 also accepts `kind = "layered"` with a `layers`
+otherwise. The parser also accepts `kind = "layered"` with a `layers`
 table and `kind = "gust"` with Dryden `intensity_m_s`,
 `length_scale_m`, and `airspeed_m_s` parameters. Selecting any
 non-`none` `environment.wind` therefore requires the structured
@@ -536,7 +536,7 @@ required (the model is parameterless).
 
 `[sensors.<name>]` declares one synthetic sensor per entry. The
 `<name>` becomes the sensor's stable identifier; reordering entries
-does not shift RNG streams (per Phase 2.7).
+does not shift RNG streams.
 
 ```toml
 [sensors.imu]
@@ -565,17 +565,17 @@ file = "../../data/sensors/star-tracker-textbook.toml"
 ```
 
 `kind = "ideal_state"` carries no noise budget and rejects `file`;
-all other kinds require `file`. The Phase-2.7 set is `imu` /
-`barometer`; the Phase-3.10 additions are `gnss` (IS-GPS-200
+all other kinds require `file`. The base set is `imu` /
+`barometer`; the further kinds are `gnss` (IS-GPS-200
 receiver-output noise: per-axis Gaussian on position + velocity
 plus an OU position-bias drift), `magnetometer` (per-axis
 Gaussian on the body-frame WMM 2025 truth field plus constant
 3×3 soft-iron and 3-vector hard-iron biases), and `star_tracker`
 (small-angle Gaussian rotation-vector perturbation per axis).
 
-### Force model registry (Phase 2)
+### Force model registry
 
-Phase-2 force-model names accepted in `[forces].models`:
+Force-model names accepted in `[forces].models`:
 
 | Name | Source | Notes |
 |---|---|---|
@@ -594,7 +594,7 @@ Every external file referenced by the scenario can carry an optional
 present, the parser computes the file's SHA-256 digest at load time
 and fails closed on mismatch. When absent, the digest is still computed
 and surfaced by `openbmp check`; recording those digests in telemetry
-headers is runner-side Phase-2.11 work.
+headers is handled runner-side.
 
 `openbmp check` surfaces resolved digests in its output:
 
@@ -609,18 +609,18 @@ The digest is the SHA-256 of the file bytes encoded as 64 lower-case
 hex characters; pin strings are normalised before comparison so
 upper-case input still verifies.
 
-## Phase 3 Extensions
+## Mission and Assembly Extensions
 
-Phase 3.2 adds the optional declarative `[mission]` block. When
-declared, the runner builds an event-driven mission graph from the
-scenario; legacy scenarios without `[mission]` parse and run
-identically to pre-3.2.
+The optional declarative `[mission]` block, when
+declared, drives the runner to build an event-driven mission graph from the
+scenario; scenarios without `[mission]` parse and run
+identically without one.
 
 ### Mission block
 
-> **Superseded by Phase 5.X.** The flat-DAG `[mission]` block
-> documented here is the v3 contract. Phase 5.X bumps the scenario
-> format to v4 with hierarchical `[[mission.states]]` blocks,
+> **Superseded.** The flat-DAG `[mission]` block
+> documented here is the v3 contract. The scenario
+> format v4 adds hierarchical `[[mission.states]]` blocks,
 > `[[mission.regions]]` orthogonal-region declarations, and a
 > `[mission.scope]` human-readable scenario classifier. The
 > authoritative format
@@ -690,13 +690,12 @@ return `false` on step 0 because no previous-step snapshot exists.
 | `at_altitude_descending` | `altitude_m: f64` | Fires when altitude crosses down through `altitude_m`. |
 | `at_apogee` | — | Fires when vertical velocity flips from `> 0` to `<= 0`. |
 | `at_mass_fraction` | `remaining: f64` (in `[0, 1]`) | Fires when mass fraction (current / initial) drops to or below `remaining`. |
-| `at_dynamic_pressure` | `pressure_pa: f64`, `falling: bool` | Deferred to Phase 3.5, when atmosphere is wired into event evaluation. Phase 3.4 rejects this trigger at parse time with `UnsupportedTriggerKind`. |
+| `at_dynamic_pressure` | `pressure_pa: f64`, `falling: bool` | Fires when dynamic pressure crosses `pressure_pa` in the direction set by `falling`. Requires atmosphere wired into event evaluation. |
 
 The `kind = "scripted"` trigger is rejected at parse time with a
-typed deferral error: scripted triggers are deferred to a later
-Phase-3 sub-phase. Phase 3.4 ships `ControlEffector` itself; the
+typed deferral error: scripted triggers are not supported. The
 deterministic per-effector `command_schedule` (see
-[Control effectors](#control-effectors-phase-34) below) covers the
+[Control effectors](#control-effectors) below) covers the
 common scripted-command case without a separate trigger surface.
 
 #### Action vocabulary
@@ -710,10 +709,9 @@ common scripted-command case without a separate trigger surface.
 | `engine_command` | `id: string` (declared engine id), `command: { throttle_unit: f64 ∈ [0,1], gimbal_pitch_rad: f64, gimbal_yaw_rad: f64, ignite: bool, shutdown: bool }` | Per-engine command targeting a declared `[[vehicle.assembly.engines]]` by id. Resolves the declared id via FNV-1a-64 of `vehicle.assembly.engines.<id>`. Unknown ids are rejected by `openbmp check`. Kernel records; runner-side `EngineRack` drains and applies on the next rack tick before the kernel step. `ignite=true` is honoured only from `Idle`; `shutdown=true` only from `Igniting` / `Burning`. Throttle / gimbal values are clamped to engine limits at apply time. |
 | `deploy_recovery` | `id: string` (declared recovery id), `command: "deploy" \| "deploy_drogue" \| "deploy_main" \| "stow"` | Recovery-device command targeting a declared `[[vehicle.assembly.recovery]]` by id. Resolves via FNV-1a-64 of `vehicle.assembly.recovery.<id>`. Unknown ids and kind-incompatible commands are rejected by `openbmp check`; runner-side `RecoveryRack` drains accepted firings on the next rack tick before the kernel step. |
 
-The remaining reserved action `separation` is still rejected at parse
-time with a typed deferral error pointing at Phase 3.6 / 3.7.
-Phase 3.4 wires `effector_override`, Phase 3.6 wires
-`engine_command`, and Phase 3.9 wires `deploy_recovery`.
+The reserved action `separation` is rejected at parse
+time with a typed deferral error. The `effector_override`,
+`engine_command`, and `deploy_recovery` actions are wired end-to-end.
 
 #### `once` semantics
 
@@ -750,9 +748,9 @@ The parser enforces:
 - The graph is acyclic and every phase is reachable from
   `initial_phase`.
 
-### Mission block v4 (Phase 5.X.F)
+### Mission block v4
 
-Phase 5.X.F extends the mission block with hierarchical state
+The v4 mission block adds hierarchical state
 declarations, orthogonal-region declarations, and the scenario-scope
 classifier. v3 scenarios continue to parse byte-identically because
 every v4 field is optional and the v3 → v4 lifting pass promotes
@@ -819,7 +817,7 @@ canonical regions (`mission`, `health`, `comms`,
 active state and derives `safe_state_requested` from `health`.
 `CrossRegionGuard` exists in `openbmp-mission` as a portable
 primitive, but scenario-level `guard` / `priority` fields are not part
-of the Phase 5.X parser surface.
+of the parser surface.
 
 #### Scenario scope tag
 
@@ -857,18 +855,17 @@ implicit lifting pass:
    is omitted.
 3. Leaves `scope` unset and `test_only_state_override` `false`.
 
-Phase 5.X.F finalises the scenario format v4 contract; no further
-schema extension lands in Phase 5.X. Phase 6 may add scope variants
-for hypersonic profiles.
+The scenario format v4 contract is finalised; the hypersonic extensions
+may add scope variants for hypersonic profiles.
 
-### Vehicle assembly (Phase 3.3)
+### Vehicle assembly
 
 When `[vehicle.assembly]` is declared, the scenario describes the
 vehicle as a tree of bodies. Schema v2 requires this block for every
-scenario. Phase-3.3 introduced single-body and multi-body assemblies;
-later Phase-3 sub-phases added effectors, engine clusters, tanks, and
+scenario. The assembly supports single-body and multi-body shapes, with
+effectors, engine clusters, tanks, and
 recovery devices as child blocks of the assembly. Sensors remain
-outside the assembly for now. The assembly bodies are the dry mass and
+outside the assembly. The assembly bodies are the dry mass and
 dry inertia source of truth.
 
 The canonical multi-body example mirrors
@@ -911,14 +908,14 @@ pre-computed geometry, mirroring the aero-deck reference.
 
 #### Assembly children
 
-`[[vehicle.assembly.effectors]]` shipped in Phase 3.4 — see
-[Control effectors](#control-effectors-phase-34) below.
-`[[vehicle.assembly.engines]]` shipped in Phase 3.6 — see
-[Engine clusters](#engine-clusters-phase-36) below.
-`[[vehicle.assembly.tanks]]` shipped in Phase 3.7 — see
-[Tanks and slosh](#tanks-and-slosh-phase-37) below.
-`[[vehicle.assembly.recovery]]` shipped in Phase 3.9 — see
-[Recovery and descent](#recovery-and-descent-phase-39) below.
+`[[vehicle.assembly.effectors]]` — see
+[Control effectors](#control-effectors) below.
+`[[vehicle.assembly.engines]]` — see
+[Engine clusters](#engine-clusters) below.
+`[[vehicle.assembly.tanks]]` — see
+[Tanks and slosh](#tanks-and-slosh) below.
+`[[vehicle.assembly.recovery]]` — see
+[Recovery and descent](#recovery-and-descent) below.
 
 #### Determinism
 
@@ -943,12 +940,11 @@ Enforced at scenario-parse time:
   positive diagonal.
 - Rigid-body scenarios: every body declares
   `dry_inertia_body_kg_m2`.
-- Assembly child blocks are validated by their phase sections:
-  `effectors` (Phase 3.4), `engines` (Phase 3.6), `tanks`
-  (Phase 3.7), and `recovery` (Phase 3.9). Unknown child blocks
+- Assembly child blocks are validated by their respective sections:
+  `effectors`, `engines`, `tanks`, and `recovery`. Unknown child blocks
   remain parse errors.
 
-#### Phase-3.3 limitations
+#### Assembly limitations
 
 - The runner consumes the assembly's dry mass properties for kernel
   mass construction. Force / moment construction still uses
@@ -957,16 +953,16 @@ Enforced at scenario-parse time:
 - Point-mass propagation only uses the assembled dry mass; body CG and
   inertia affect rigid-body mass properties, not point-mass dynamics.
 
-### Control effectors (Phase 3.4)
+### Control effectors
 
 `[[vehicle.assembly.effectors]]` declares one or more
-`ControlEffector` instances mounted on the assembly. Phase 3.4 ships
+`ControlEffector` instances mounted on the assembly. This provides
 the effector state machine, a deterministic `command_schedule`, the
 runner-side `EffectorRack`, and per-effector deflection telemetry.
 The effector deflection is observable in the Parquet via
-`effector.<id>.actual` but is **not yet consumed by force / moment
-evaluation** — the aero deck stays schema-1 in 3.4. Schema-2 deck
-consumption arrives in Phase 3.5.
+`effector.<id>.actual`. With a schema-1 aero deck the deflection is
+**not consumed by force / moment evaluation**; schema-2 deck
+consumption couples it in.
 
 The canonical example mirrors
 [`scenarios/effector-elevon/single-elevon-elevator-step.toml`](../scenarios/effector-elevon/single-elevon-elevator-step.toml):
@@ -983,9 +979,9 @@ command_schedule = { kind = "step_at", time_s = 0.5, before = 0.0, after = 0.087
 
 #### Effector kinds
 
-`kind.kind` is tagged on the inner `kind` field. Phase 3.4 ships
-one variant; future phases will add nonlinear / multi-axis / smart
-actuators.
+`kind.kind` is tagged on the inner `kind` field. One variant is
+currently wired; nonlinear / multi-axis / smart actuators are possible
+extensions.
 
 | `kind.kind` | Required fields | Semantics |
 |---|---|---|
@@ -1030,10 +1026,10 @@ the next step only.
 
 #### Faults
 
-`fault` is optional and load-time only in Phase 3.4: a fault
+`fault` is optional and load-time only: a fault
 declared in the scenario is injected at construction and persists
 for the run. Run-time fault injection (mid-mission failures) is
-deferred to a later sub-phase.
+not supported.
 
 | `fault.kind` | Required fields | Semantics |
 |---|---|---|
@@ -1085,28 +1081,27 @@ Enforced at scenario-parse time:
 the scenario `time.dt_s` (the fixed-step pure-delay buffer cannot
 represent sub-`dt` latency).
 
-#### Phase-3.4 limitations (now lifted by Phase 3.5)
+#### Limitations
 
-- ~~The aero deck stays schema-1; the effector deflection is
-  observable in the Parquet but is **not** consumed by force /
-  moment evaluation. Schema-2 deck consumption arrives in Phase 3.5.~~
-  Phase 3.5 ships [Schema-2 aero decks](#schema-2-aero-decks-phase-35);
-  effector `actual` deflections now flow through the kernel into
+- With a schema-1 aero deck the effector deflection is observable in
+  the Parquet but is **not** consumed by force / moment evaluation.
+  [Schema-2 aero decks](#schema-2-aero-decks) couple it in:
+  effector `actual` deflections flow through the kernel into
   the deck lookup.
-- Faults are load-time only; run-time fault injection is deferred.
+- Faults are load-time only; run-time fault injection is not supported.
 - Only the `linear_actuator` kind ships. Nonlinear / multi-axis /
-  smart-actuator variants follow in later sub-phases.
+  smart-actuator variants are possible extensions.
 
-### Schema-2 aero decks (Phase 3.5)
+### Schema-2 aero decks
 
-Phase 3.5 extends the aero deck format with optional **control-effector
+Schema-2 extends the aero deck format with optional **control-effector
 axes**. A schema-2 deck is identified by `openbmp.aero_deck = 2` in the
 deck file and adds an `[axis_order]` block declaring the locked axis
 ordering, plus per-effector grid axes (e.g. `delta_e_deg = [-20, 0,
 20]`). At runtime, the runner-side `EffectorRack` snapshot flows
 through the kernel's `EffectorActualsView` into the deck's multilinear
-lookup, so the rate-limited / saturated `EffectorState.actual` from
-Phase 3.4 actually modulates `(CN, CD, CM)`.
+lookup, so the rate-limited / saturated `EffectorState.actual`
+actually modulates `(CN, CD, CM)`.
 
 Schema-1 decks continue to load and produce bit-identical lookups; the
 schema discriminator is purely additive.
@@ -1125,7 +1120,7 @@ validation         = "experimental"
 mach        = [0.0, 0.5, 1.0]
 alpha_deg   = [-5.0, 0.0, 5.0]
 beta_deg    = [0.0]
-delta_e_deg = [-20.0, 0.0, 20.0]   # effector axis (Phase 3.5)
+delta_e_deg = [-20.0, 0.0, 20.0]   # effector axis
 
 [axis_order]
 order = ["mach", "alpha", "beta", "delta_e_deg"]
@@ -1140,7 +1135,7 @@ data = [/* ... */]
 data = [/* ... */]
 
 [interpolation]
-method        = "multilinear"   # required; only method wired in 3.5
+method        = "multilinear"   # required; only method wired
 extrapolation = "error"         # required; control surfaces saturate
                                 # via the ControlEffector layer
 ```
@@ -1156,14 +1151,14 @@ extrapolation = "error"         # required; control surfaces saturate
   contract below).
 - Effector axis names must be unique after stripping `_deg` / `_rad`;
   a deck cannot declare both `delta_e_deg` and `delta_e_rad`.
-- Up to 3 effector axes (6 axes total) are supported in Phase 3.5.
-  Larger decks are deferred to a later sub-phase.
+- Up to 3 effector axes (6 axes total) are supported.
+  Larger decks are not yet supported.
 - The `[grid]` table must declare exactly the axes in `axis_order` —
   extra keys are rejected, missing keys are rejected. The three base
   axes use the existing schema-1 grid keys (`mach`, `alpha_deg`,
   `beta_deg`); effector axes use their `axis_order` name verbatim.
 - `interpolation.method` must be `"multilinear"`. Other methods are
-  reserved for hypersonic Phase-6 work.
+  reserved for hypersonic work.
 - `interpolation.extrapolation` must be `"error"` (fail-closed).
   Schema-2 decks do not expose `clamp` — control surfaces saturate
   via the `ControlEffector` rate-limit / position-limit layer, not
@@ -1197,7 +1192,7 @@ entirely.
 Multilinear over N axes (3 ≤ N ≤ 6). The reduction collapses the
 **innermost axis first** (the last axis in `axis_order`) and walks
 outward; this preserves bit-identical f64 outputs at N = 3 against the
-Phase-2.5 trilinear path. The locked operand order is part of the
+trilinear path. The locked operand order is part of the
 byte-stability contract and is asserted by a 1024-case property test
 in `crates/openbmp-aero/src/deck.rs`.
 
@@ -1205,7 +1200,7 @@ in `crates/openbmp-aero/src/deck.rs`.
 
 Schema-1 aero-deck fixtures are bit-identical under the schema-2 deck
 loader. The migrated schema-v2 scenarios continue to produce
-byte-identical Parquet under Phase 3.5. The kernel-owned
+byte-identical Parquet. The kernel-owned
 `effector_actuals: BTreeMap<String, f64>` snapshot is empty by
 default; the runner only populates it when at least one schema-2 deck
 axis matches a scenario effector. Empty snapshot → empty
@@ -1217,15 +1212,15 @@ The canonical schema-2 example ships at
 and the deck at
 [`data/aero/synthetic-elevon-1d.toml`](../data/aero/synthetic-elevon-1d.toml).
 
-### Engine clusters (Phase 3.6)
+### Engine clusters
 
 `[[vehicle.assembly.engines]]` declares one or more `EngineModel`
-instances mounted on the assembly. Phase 3.6 ships the
+instances mounted on the assembly. This provides the
 `LiquidEngine` reference impl plus the runner-side `EngineRack`
 and the kernel-side cluster adapters (force, mass). Engines
 respond to per-engine `engine_command` mission events; per-engine
 `command_schedule` (effector-style scripted commands) is **not**
-in scope for 3.6 — scripted command sequences flow through the
+in scope — scripted command sequences flow through the
 `mission.events[*]` timeline.
 
 A scenario uses **either** the legacy `[propulsion.motor]` block
@@ -1253,9 +1248,9 @@ limits              = { max_thrust_n = 5000.0, isp_s = 250.0,
 
 #### Engine kinds
 
-`kind.kind` is tagged on the inner `kind` field. Phase 3.6 ships
-one variant; later phases add hybrid / cold-gas / chamber-pressure
-models.
+`kind.kind` is tagged on the inner `kind` field. One variant is
+currently wired; hybrid / cold-gas / chamber-pressure models are
+possible extensions.
 
 | `kind.kind` | Required fields | Semantics |
 |---|---|---|
@@ -1284,16 +1279,16 @@ Point-mass scenarios store the mount points but don't use them.
 
 Optional `cluster_layout` on `[vehicle.assembly]`: one of
 `axial | ring | octaweb | custom` (default: `custom`). The tag
-informs telemetry and docs; Phase 3.6 has no behavioural use for
-it. Future sub-phases may use the layout to drive symmetry-aware
+informs telemetry and docs; it has no behavioural use
+today. The layout may later drive symmetry-aware
 fault scenarios or controller-side allocation tables.
 
 #### Faults
 
-`fault` is optional and load-time only in Phase 3.6: a fault
+`fault` is optional and load-time only: a fault
 declared in the scenario is injected at construction and persists
-for the run. Run-time fault injection is deferred to a later
-sub-phase (mirrors Phase-3.4 effector faults).
+for the run. Run-time fault injection is not supported
+(mirrors the effector faults).
 
 | `fault.kind` | Required fields | Semantics |
 |---|---|---|
@@ -1359,28 +1354,28 @@ Enforced at scenario-parse time:
   gimbal angles finite (runtime engine clamps to its
   `max_gimbal_rad`).
 
-#### Phase-3.6 limitations
+#### Limitations
 
 - Rigid-body cluster mass-properties (with inertia tensor
-  evolution as propellant is consumed) are deferred to Phase 3.7
-  alongside tank-driven dynamics. Rigid scenarios with engine
+  evolution as propellant is consumed) are handled by the
+  tank-driven dynamics. Rigid scenarios with engine
   clusters use `ConstantMassRigid` for kernel mass-properties;
   the cluster's force and moment adapters still consume the
   per-engine snapshot normally.
 - Faults are load-time only.
 - Only the `liquid_engine` kind ships.
 - Per-engine `command_schedule` (effector-style declarative
-  scripts) is out of scope for 3.6; engines drive only via
+  scripts) is out of scope; engines drive only via
   `mission.events[*].action.engine_command`.
 
-The canonical Phase-3.6 example ships at
+The canonical example ships at
 [`scenarios/multi-engine-octaweb/four-engine-shutdown.toml`](../scenarios/multi-engine-octaweb/four-engine-shutdown.toml).
 
-### Tanks and slosh (Phase 3.7)
+### Tanks and slosh
 
-Phase 3.7 lands the `[[vehicle.assembly.tanks]]` block and the
-runner-side tank rack that drives moving-mass dynamics through the
-kernel snapshot path (mirroring the Phase-3.6 engine-cluster
+The `[[vehicle.assembly.tanks]]` block and the
+runner-side tank rack drive moving-mass dynamics through the
+kernel snapshot path (mirroring the engine-cluster
 pattern). Each declared tank produces a body-frame reaction force +
 moment on the parent body, contributes its `mass_kg` to the vehicle
 total mass, and tracks fluid-mass evolution under a scenario-
@@ -1410,15 +1405,15 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
 - `geometry` — `kind`-tagged enum: `cylinder` (`radius_m`,
   `height_m`), `sphere` (`radius_m`), or `ellipsoid_textbook`
   (`a_m`, `b_m`, `c_m`).
-- `propellant` — `{ density_kg_m3, label }`. Phase-3 ships textbook
+- `propellant` — `{ density_kg_m3, label }`. Textbook
   density only; fielded propellant data is rejected per
   `safety-boundaries.md`.
 - `initial_fill_fraction` — `[0, 1]`. Initial fluid mass is
   `geometry.volume × density × fill`.
 - `moving_mass` — `kind`-tagged enum:
-  - `rigid_liquid` — no slosh (Phase 3.7.A toy);
+  - `rigid_liquid` — no slosh (rigid-liquid toy);
   - `equivalent_pendulum { damping_ratio_zeta }` — Abramson
-    cylindrical-tank antisymmetric fundamental mode (Phase 3.7.B);
+    cylindrical-tank antisymmetric fundamental mode;
   - `equivalent_spring_mass { damping_ratio_zeta }` — translational
     alternative;
   - `baffled_pendulum { base_damping_ratio_zeta }` — pendulum +
@@ -1427,10 +1422,10 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
 #### Optional fields
 
 - `baffle_model = { damping_increment_zeta }` — additive damping
-  increment consumed only by `baffled_pendulum`. Phase-3.7
-  minimum: a scalar increment per Abramson Eq 7-46 simplified.
-- `drain_rate_kg_per_s` — Phase-3.7 ships drain decoupled from
-  engine clusters. Defaults to `0.0` (no drain). Future phase ties
+  increment consumed only by `baffled_pendulum`: a scalar increment
+  per Abramson Eq 7-46 simplified.
+- `drain_rate_kg_per_s` — drain is decoupled from
+  engine clusters. Defaults to `0.0` (no drain). A future revision could tie
   this to the engine-cluster total mdot.
 - `initial_slosh = { angles_rad: [θ_x, θ_y], rates_rad_s: [θ̇_x,
   θ̇_y] }` — initial slosh perturbation for `equivalent_pendulum`
@@ -1452,7 +1447,7 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
 - `initial_slosh` is rejected for `rigid_liquid`; `baffle_model` is
   rejected unless `moving_mass.kind = "baffled_pendulum"`.
 - `drain_rate_kg_per_s × time.dt_s` must not exceed the initial tank
-  fluid mass; Phase 3.7 rejects single-step emptying rather than
+  fluid mass; single-step emptying is rejected rather than
   silently clamping away the moving-mass dynamics.
 
 #### Determinism
@@ -1462,50 +1457,48 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
   deterministic iteration on macOS `SipHash` builds.
 - Slosh integration is semi-implicit (symplectic) Euler with
   locked operand order — single sub-step per kernel base tick.
-  Phase 3.7 deviated from the original "forward Euler" wording:
+  Semi-implicit Euler is used rather than forward Euler:
   pure explicit Euler is unstable for an undamped harmonic
   oscillator and cannot meet the 1 % energy-conservation gate
   over 100 oscillations at any practical `dt`. The semi-implicit
   variant has the same operation count, the same locked operand
-  order, and the same bit-stable replay properties; the per-sub-
-  phase commit history records the rationale.
+  order, and the same bit-stable replay properties.
 - The slosh state advances using **prior step's** `(accel_body,
   omega_body)` — the documented one-step lag that breaks the
   circular dependency between the tank's reaction force and the
   kernel's per-step force evaluation. The first step uses zeros.
 
-#### Phase-3.7 limitations
+#### Limitations
 
 - Engine-cluster ↔ tank drain coupling is **not** wired. Tanks
   declare a constant `drain_rate_kg_per_s` (default 0); engines
-  continue to track their own propellant accounting from Phase 3.6.
-  Future phase unifies the two.
+  track their own propellant accounting. A future revision could
+  unify the two.
 - The `TankRackMassAdapter` adds each tank's `mass_kg` to the
   vehicle total. For a tank intended as the cluster's propellant
   store this overcounts the propellant (the cluster's
   `EngineClusterMassAdapter` already debits consumed propellant
-  from the dry mass). The Phase-3.7.E exit-criterion scenario
+  from the dry mass). The exit-criterion scenario
   sizes the tank at about 5 % of vehicle dry mass to keep the
-  overcount small; future phase unifies the accounting.
+  overcount small.
 - Rigid-body cluster mass-properties (with inertia tensor
-  evolution from per-engine `consumed_kg`) are still deferred —
+  evolution from per-engine `consumed_kg`) are not consumed —
   rigid scenarios with engine clusters use `ConstantMassRigid` for
-  kernel mass-properties (Phase-3.6 deferral). The
+  kernel mass-properties. The
   `TankSnapshot.inertia_delta_body_kg_m2` is published in the
-  snapshot but is not consumed by the rigid mass-properties model in
-  Phase 3.7.
+  snapshot but is not consumed by the rigid mass-properties model.
 - Slosh telemetry channels (`tank.<id>.slosh_angle_rad`,
-  `tank.<id>.fluid_kg`, etc.) are deferred to a Phase-3.X
-  follow-on; the Phase-3.7.E e2e test verifies determinism via
+  `tank.<id>.fluid_kg`, etc.) are not separately exposed;
+  the e2e test verifies determinism via
   full-Parquet byte equality rather than per-tank channels.
 
-The canonical Phase-3.7 example ships at
+The canonical example ships at
 [`scenarios/sloshing-tank/sloshing-tank.toml`](../scenarios/sloshing-tank/sloshing-tank.toml).
 
-### Recovery and descent (Phase 3.9)
+### Recovery and descent
 
-Phase 3.9 lands `[[vehicle.assembly.recovery]]` devices and the
-runner-side recovery rack. Recovery is force-only in this phase: the
+`[[vehicle.assembly.recovery]]` declares recovery devices driven by the
+runner-side recovery rack. Recovery is force-only: the
 kernel applies drag at the body center of gravity, with no recovery
 mass contribution and no recovery moment.
 
@@ -1566,23 +1559,23 @@ scenario-declared recovery order and short-circuits before atmosphere
 sampling when the sum is zero, preserving legacy byte-stability for
 scenarios with no recovery devices.
 
-#### Phase-3.9 limitations
+#### Limitations
 
 - Drag opposes ECI velocity, matching the existing axial-drag adapter.
-  Wind-relative parachute drag is deferred.
-- Canopy inflation transients are deferred; all Phase-3.9 recovery
+  Wind-relative parachute drag is not modelled.
+- Canopy inflation transients are not modelled; recovery
   state changes are instantaneous at the rack tick.
 - Recovery devices do not contribute mass or moments.
 
-The canonical Phase-3.9 example ships at
+The canonical example ships at
 [`scenarios/parachute-recovery/parachute-descent.toml`](../scenarios/parachute-recovery/parachute-descent.toml).
 
-## Phase 5 Extensions
+## Advanced-Profile Extensions
 
-Phase 5.0 introduces schema version **v3**. The parser accepts v2 and v3
+Schema version **v3** adds opt-in scenario blocks for advanced
+controller and propagation profiles. The parser accepts v2 and v3
 headers; v2 scenarios continue to parse byte-identically and require no
-change. v3 adds opt-in scenario blocks consumed by later Phase-5
-sub-phases. Each new block parses with `serde(deny_unknown_fields)`.
+change. Each new block parses with `serde(deny_unknown_fields)`.
 
 A v3 scenario header looks like this:
 
@@ -1592,24 +1585,23 @@ openbmp.scenario = 3
 
 A v2 scenario that declares any v3-only block fails closed at validate
 time with a `SchemaVersionFieldReserved` diagnostic naming the field
-and the required version. A v3 scenario that declares a v3-only block
-parses syntactically but, until the consumer sub-phase lands, fails
-closed with an `ElementDeferredToFuturePhase` diagnostic naming the
-sub-phase that will land the runtime consumer. This avoids silent
-no-ops and makes the schema readable today without claiming runtime
-behaviour it cannot deliver yet.
+and the required version. A v3 scenario that declares a block whose
+runtime consumer is not present fails
+closed with an `ElementNotYetSupported` diagnostic. This avoids silent
+no-ops and keeps the schema honest about what runtime
+behaviour it can deliver.
 
 ### v2 → v3 migration
 
 - Bump `openbmp.scenario = 2` to `openbmp.scenario = 3`.
-- Existing fields parse identically. Phase-3 / Phase-4 scenarios are
+- Existing fields parse identically. Existing scenarios are
   byte-stable across the bump.
 - New v3 blocks below are opt-in. Under v2, declaring them fails closed
   with `SchemaVersionFieldReserved` instead of being ignored.
 
 ### v3-only top-level blocks
 
-#### `[schedule]` — multi-rate scheduling (Phase 5.D.1)
+#### `[schedule]` — multi-rate scheduling
 
 ```toml
 [schedule]
@@ -1631,11 +1623,11 @@ exactly (`base_hz % hz == 0`). The loader rejects non-integer divisors
 at scenario load time, not at runtime. Groups must have unique labels
 and non-empty member lists. The `[schedule]` block bypasses the
 workspace-level unit-suffix lint because `ScheduleConfig::validate`
-covers the field-internal invariants. The runtime consumer in
-Phase 5.D.1 resolves the rate plan once at scenario start and the
+covers the field-internal invariants. The runtime consumer
+resolves the rate plan once at scenario start and the
 kernel walks the same fixed list every tick.
 
-#### `[multi_body]` — multi-body simultaneous propagation (Phase 5.D.2)
+#### `[multi_body]` — multi-body simultaneous propagation
 
 ```toml
 [multi_body]
@@ -1653,13 +1645,12 @@ Each `[[multi_body.separation]]` entry binds to a mission event by id
 and declares the two `vehicle.assembly.bodies[*].id` values that
 continue propagating after the event. Optional impulsive delta-V
 fields apply at the separation moment. `conserve_momentum` defaults
-to `true`; the loader will verify
-`m_u·Δv_u + m_l·Δv_l ≈ 0` to a documented tolerance once the
-Phase 5.D.2 consumer lands.
+to `true`; the loader verifies
+`m_u·Δv_u + m_l·Δv_l ≈ 0` to a documented tolerance.
 
 ### v3-only `[fc]` sub-blocks
 
-#### `[fc.estimator_lanes]` — multi-instance estimator routing (Phase 5.B.2)
+#### `[fc.estimator_lanes]` — multi-instance estimator routing
 
 ```toml
 [fc.estimator_lanes]
@@ -1675,11 +1666,11 @@ estimator = "mekf"
 ```
 
 `voter` is one of `simplex_pass_through`, `mid_value_select_by_innovation`,
-or `best_by_covariance_trace`. Lane ids must be unique. The Phase 5.B.2
+or `best_by_covariance_trace`. Lane ids must be unique. The
 consumer wires parallel filter instances to the controller's pub/sub
 bus and selects the active lane each tick.
 
-#### `[fc.autopilot_allocation]` — control allocation (Phase 5.A.5)
+#### `[fc.autopilot_allocation]` — control allocation
 
 ```toml
 [fc.autopilot_allocation]
@@ -1688,18 +1679,18 @@ axis_priority = ["roll", "yaw", "pitch"]
 ```
 
 `kind` is one of `pseudo_inverse` (Stevens & Lewis 2015 §3.5) or
-`prioritised_redistributed` (Härkegård 2002). Phase 5.A.5 consumes only
-`prioritised_redistributed`; `pseudo_inverse` remains parseable but the
-runner fails closed until the general `G_eff` path lands. `axis_priority`
+`prioritised_redistributed` (Härkegård 2002). Only
+`prioritised_redistributed` is consumed; `pseudo_inverse` remains parseable but the
+runner fails closed because the general `G_eff` path is not wired. `axis_priority`
 lists body-frame axes in highest-first order and must contain exactly
 `"roll"`, `"pitch"`, and `"yaw"` once each.
 
-The Phase-5.A.5 allocator derives capacity only from `direct_torque`
+The allocator derives capacity only from `direct_torque`
 effectors with exact symmetric limits (`max == -min`). Phase authority is
 applied before the proportional split, so disallowed effectors receive
 zero commands and do not contribute capacity.
 
-#### `[fc.fdir.detector]` — Phase-5 FDIR detector tuning (Phase 5.B.4)
+#### `[fc.fdir.detector]` — FDIR detector tuning
 
 ```toml
 [fc.fdir.detector]
@@ -1708,13 +1699,12 @@ window_samples   = 32
 parity_threshold = 25.0
 ```
 
-The existing `detector_kind` field on `[fc.fdir]` continues to drive
-the Phase-4 burst / single-sample-GLRT / CUSUM detectors; the
-Phase-5 sub-block adds tuning data for the windowed-mean-shift GLRT
-(Willsky 1976) and Patton-Frank parity-space residual generator that
-land in Phase 5.B.4.
+The `detector_kind` field on `[fc.fdir]` drives
+the burst / single-sample-GLRT / CUSUM detectors; this
+sub-block adds tuning data for the windowed-mean-shift GLRT
+(Willsky 1976) and Patton-Frank parity-space residual generator.
 
-#### `[fc.trajectory]` — minimum-snap trajectory waypoints (Phase 5.A.1)
+#### `[fc.trajectory]` — minimum-snap trajectory waypoints
 
 ```toml
 [fc.autopilot_params]
@@ -1734,11 +1724,11 @@ position_eci_m = [10.0, 5.0, 100.0]
 time_s         = 2.0
 ```
 
-`[fc.trajectory]` is v3-only and consumed by the Phase 5.A.1
+`[fc.trajectory]` is v3-only and consumed by the
 Mellinger-Kumar minimum-snap differential-flatness tracker. It parses
 with `serde(deny_unknown_fields)`. `kind = "minimum_snap"` is the only
-supported value in Phase 5.A.1. `yaw_rad` is optional and defaults to
-`0.0`; time-varying yaw splines are deferred. The waypoint list is
+supported value. `yaw_rad` is optional and defaults to
+`0.0`; time-varying yaw splines are not supported. The waypoint list is
 declared as `[[fc.trajectory.waypoint]]` entries, each with finite
 `position_eci_m = [x, y, z]` and finite, strictly increasing `time_s`.
 At least two waypoints are required. Adjacent waypoint times must be
@@ -1750,7 +1740,7 @@ The block is cross-validated with
 requires `[fc.trajectory]`, and declaring `[fc.trajectory]` requires
 `trajectory_kind = "minimum_snap"`.
 
-#### `[fc.autopilot_params.rate_loop_kind]` and INDI (Phase 5.A.3)
+#### `[fc.autopilot_params.rate_loop_kind]` and INDI
 
 ```toml
 [fc.autopilot_params]
@@ -1764,8 +1754,8 @@ filter_kind                    = "second_order_butterworth" # default; or "first
 attitude_to_omega_dot_gain     = [10.0, 10.0, 5.0]
 ```
 
-`rate_loop_kind` is a Phase-5 v3-only field. Omitted
-`rate_loop_kind` keeps the Phase-4 PID rate loop; declaring
+`rate_loop_kind` is a v3-only field. Omitted
+`rate_loop_kind` keeps the PID rate loop; declaring
 `rate_loop_kind = "lqr"` requires `[fc.autopilot_params.lqr]`, and
 declaring `rate_loop_kind = "indi"` requires
 `[fc.autopilot_params.indi]`. The parser also rejects either
@@ -1785,7 +1775,7 @@ filters, and the outer-loop attitude-to-angular-acceleration P gain.
 that composition is deferred until the filter-interaction behaviour
 is characterised.
 
-#### `[fc.autopilot_params.attitude_loop_kind]` and MPC (Phase 5.A.4)
+#### `[fc.autopilot_params.attitude_loop_kind]` and MPC
 
 ```toml
 [fc.autopilot_params]
@@ -1799,14 +1789,14 @@ terminal_p       = [1000.0, 1000.0, 500.0]
 rate_limit_rad_s = [3.0, 3.0, 3.0]
 ```
 
-`attitude_loop_kind` is a Phase-5 v3-only field. Omitted
-`attitude_loop_kind` keeps the Phase-4 PID attitude loop. Declaring
+`attitude_loop_kind` is a v3-only field. Omitted
+`attitude_loop_kind` keeps the PID attitude loop. Declaring
 `attitude_loop_kind = "mpc"` requires
 `[fc.autopilot_params.attitude_mpc]`, and declaring the MPC parameter
 block without the `"mpc"` selector is rejected. The MPC path is gated by
 the `openbmp-cli/mpc` Cargo feature.
 
-The Phase-5.A.4 MPC is a command-level attitude-error controller. Its QP
+The MPC is a command-level attitude-error controller. Its QP
 uses the small-angle dynamics `x[k+1] = x[k] - dt*u[k]`, where `u` is the
 commanded body rate. It does not model downstream PID/LQR/INDI rate-loop
 lag, actuator saturation, or future reference-attitude motion across the
@@ -1816,14 +1806,14 @@ as the `indi` + `l1_adaptive` rejection above.
 
 ### v3-only kind values
 
-#### `gravity = "egm2008"` (Phase 5.C.2)
+#### `gravity = "egm2008"`
 
 ```toml
 [environment]
 gravity = "egm2008"
 ```
 
-Selects the shipped Phase-5.C.2 EGM2008 **zonal-only** gravity model,
+Selects the EGM2008 **zonal-only** gravity model,
 `openbmp_physics::Egm2008ZonalGravity`, truncated to degrees 2 through
 6. The model pins WGS84 `µ`, WGS84 `R_e`, and the public `J_2..J_6`
 zonal coefficients in source; there are no per-scenario `degree`,
@@ -1835,7 +1825,7 @@ Tesseral / sectoral terms, Cunningham recursion, full coefficient-file
 loading, and scenario-selectable degree/order are deferred to a future
 gravity slice.
 
-#### `atmosphere = "piecewise_exponential"` (Phase 5.C.1)
+#### `atmosphere = "piecewise_exponential"`
 
 ```toml
 [environment]
@@ -1845,7 +1835,7 @@ atmosphere = "piecewise_exponential"
 kind = "piecewise_exponential"
 ```
 
-Selects the shipped Phase-5.C.1 layered exponential atmosphere,
+Selects the layered exponential atmosphere,
 `openbmp_physics::PiecewiseExponentialAtmosphere`, with the fixed
 14-layer Vallado Table 8-4 density / scale-height fit covering
 0-1000 km. The structured `[atmosphere]` block is optional when the
@@ -1866,19 +1856,19 @@ atmosphere = "nrlmsise00"
 kind = "nrlmsise00"
 ```
 
-Selects the future NRLMSISE-00 empirical atmosphere model. This kind
+Selects the NRLMSISE-00 empirical atmosphere model, supplied by the
+hypersonic extensions. In the base platform this kind
 value is registered so scenarios get a structured deferred-feature
-diagnostic, but it is **not** consumed by Phase 5.C.1. The shipped
-5.C.1 model is `piecewise_exponential`; solar-flux inputs (`f10_7`,
-`f10_7_avg`, `ap_index`), epoch handling, per-species number densities,
-and coefficient-file loading are deferred to a dedicated NRLMSISE-00
-follow-on slice.
+diagnostic; the base layered model is `piecewise_exponential`.
+Solar-flux inputs (`f10_7`, `f10_7_avg`, `ap_index`), epoch handling,
+per-species number densities, and coefficient-file loading belong to
+the NRLMSISE-00 model.
 
 ### Hard guardrails
 
 - v3 introduces no field that advances proportional navigation,
   terminal homing, real-world targeting, real device drivers, or
-  real bus protocols. Every Phase-5 sub-phase consumer honours
+  real bus protocols. Every consumer honours
   [docs/safety-boundaries.md](safety-boundaries.md).
 - The determinism CI gate continues to assert byte-identical Parquet
   for the existing v2 scenario set across this schema bump.

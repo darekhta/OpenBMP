@@ -1,6 +1,6 @@
 //! `openbmp-sensors` — OpenBMP synthetic sensors.
 //!
-//! Phase 2.7 ships:
+//! Provides:
 //!
 //! * [`error`] — [`error::SensorError`].
 //! * `noise` — three deterministic noise primitives:
@@ -8,7 +8,7 @@
 //!   `IntegratedWhiteNoise`. Building blocks of the IEEE 952
 //!   five-component IMU noise model.
 //!
-//! Phase 3.10 adds `SyntheticGnss`, `SyntheticMagnetometer`, and
+//! Also provides `SyntheticGnss`, `SyntheticMagnetometer`, and
 //! `SyntheticStarTracker`.
 //!
 //! # Determinism

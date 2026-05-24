@@ -1,11 +1,11 @@
-# Phase-3.3 assembly-tree parser fixture exercising rigid-body
+# Assembly-tree parser fixture exercising rigid-body
 # per-body inertia requirements. Synthetic; not a benchmark.
 
 openbmp.scenario = 2
 
 [meta]
 name        = "assembly-rigid-missing-body-inertia-fixture"
-description = "Phase-3.3 parser fixture; rigid assembly body omits dry_inertia_body_kg_m2. Synthetic; not a benchmark."
+description = "Parser fixture; rigid assembly body omits dry_inertia_body_kg_m2. Synthetic; not a benchmark."
 validation  = "experimental"
 
 [time]

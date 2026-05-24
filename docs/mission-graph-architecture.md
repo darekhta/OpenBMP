@@ -5,7 +5,7 @@ mission state machine in OpenBMP. It describes what mission state *is*,
 who owns it, how it's evaluated, and what guarantees the architecture
 provides to downstream HAL adopters.
 
-This document supersedes the Phase 3.2 / Phase 4 mission-FSM material in
+This document supersedes the earlier mission-FSM material in
 [`software-architecture.md § Mission State Machine`](software-architecture.md)
 and [`software-architecture.md § Event / Phase Timeline`](software-architecture.md).
 Those sections are kept for historical context but reference back here.
@@ -16,11 +16,11 @@ names) lives in
 document defines the *machinery*; the vocabulary doc defines the
 *names that go into it*.
 
-> **Implementation status.** Phase 5.X removed the legacy unified
-> action path and landed the HSM / region primitives, but production
-> transition execution still uses the flat `MissionPhaseGraph` in the
-> FC commander and pure-sim kernel fallback. Orthogonal regions are not
-> instantiated or ticked in production code yet.
+> **Implementation status.** The HSM / region primitives are in place,
+> but production transition execution still uses the flat
+> `MissionPhaseGraph` in the FC commander and pure-sim kernel fallback.
+> Orthogonal regions are not instantiated or ticked in production code
+> yet.
 
 ## Goals
 
@@ -134,8 +134,8 @@ wins. If priorities tie, scenario load rejects the FSM with
 
 ### Event
 
-A predicate evaluated each tick. Events are crossing detectors
-(see Phase 3.2 design): they fire on the tick the monitored value
+A predicate evaluated each tick. Events are crossing detectors:
+they fire on the tick the monitored value
 transitions across the threshold, never re-fire while on the same
 side. Events are declared per scenario; the trait surface is:
 
@@ -145,7 +145,7 @@ pub trait EventTrigger {
 }
 ```
 
-Built-in triggers (see [Phase-5 closed set](#phase-5-closed-trigger-set)).
+Built-in triggers (see [closed trigger set](#closed-trigger-set)).
 
 ### Region
 
@@ -177,7 +177,7 @@ from the `health` region.
 
 ### Action
 
-The actions an FSM transition can produce. Phase 5.X splits these into
+The actions an FSM transition can produce. These are split into
 two enums in two crates:
 
 #### `MissionAction` (HAL-portable, in `openbmp-mission`)
@@ -284,7 +284,7 @@ This means:
 - When an FC is wired, the simulator kernel receives
   `commander.mission_state` and defers mission-state evaluation to
   that external authority. Pure-sim runs without an FC still keep an
-  internal `mission_graph` / `current_phase` pair so Phase-5
+  internal `mission_graph` / `current_phase` pair so v3-syntax
   scenarios remain runnable without a controller.
 - The simulator kernel still owns the
   `Vec<EventBinding<ScenarioScriptAction>>` because those bindings
@@ -347,21 +347,20 @@ StateId.value() is the tie-break.
 The FSM preserves OpenBMP's determinism rules, extended for hierarchy
 and orthogonal regions:
 
-| Property | Mechanism | Status |
-|---|---|---|
-| Declaration-order-independent ids | FNV-1a-64 of canonical path | Inherited from Phase 3.2 |
-| Canonical-form sort | `(depth-from-region-root, parent-StateId.value(), StateId.value())` | New for 5.X |
-| Cross-region tick order | Region declaration order, with `RegionId.value()` tie-break | New for 5.X |
-| Transition evaluation order within a region | `(from-depth, from-id, to-depth, to-id, EventId.value())` | Extended from Phase 3.2 |
-| Guard evaluation order within a transition | Guard tree depth-first, `AND` short-circuit, `OR` short-circuit | New for 5.X |
-| Action firing order | Hierarchy traversal: exit bottom-up, enter top-down; within a level, by `StateId.value()` | New for 5.X |
-| Telemetry publish order | One topic per region + global mission_state, all published before next tick | New for 5.X |
+| Property | Mechanism |
+|---|---|
+| Declaration-order-independent ids | FNV-1a-64 of canonical path |
+| Canonical-form sort | `(depth-from-region-root, parent-StateId.value(), StateId.value())` |
+| Cross-region tick order | Region declaration order, with `RegionId.value()` tie-break |
+| Transition evaluation order within a region | `(from-depth, from-id, to-depth, to-id, EventId.value())` |
+| Guard evaluation order within a transition | Guard tree depth-first, `AND` short-circuit, `OR` short-circuit |
+| Action firing order | Hierarchy traversal: exit bottom-up, enter top-down; within a level, by `StateId.value()` |
+| Telemetry publish order | One topic per region + global mission_state, all published before next tick |
 
 No allocation on hot path. The FSM uses pre-allocated `Vec`s sized at
 scenario load.
 
-No wall-clock. The `Clock` trait injection is the same as in Phase 4;
-events read `SimTime` from the trait.
+No wall-clock. Events read `SimTime` from the injected `Clock` trait.
 
 No system RNG. Mission graphs do not consume RNG.
 
@@ -390,7 +389,7 @@ At scenario load:
    reserved until orthogonal regions are wired into production code.
 6. **Action count bounds** — each state's `on_entry` /
    `on_exit` / `on_active` action lists are capped at a documented
-   maximum (32 per list at Phase 5.X; the cap may grow in v4.x as
+   maximum (32 per list; the cap may grow in a future minor version as
    needs surface).
 7. **History policy consistency** — a state with
    `history: Some(_)` must be a composite state.
@@ -415,7 +414,7 @@ At scenario load:
 │ • Determinism primitives            │
 │                                     │
 │ deps: openbmp-core, thiserror       │
-│ no_std-friendly (Phase 5.X.C goal)  │
+│ no_std-friendly                     │
 └─────────────────────────────────────┘
 
 ┌─────────────────────────────────────┐
@@ -455,7 +454,7 @@ At scenario load:
 ┌─────────────────────────────────────┐
 │ openbmp-scenario                    │   ← parses both binding lists
 │ ────────────────                    │
-│ • Phase-5.X.F v4 schema             │
+│ • v4 schema                         │
 │ • Routes mission/script bindings    │
 │ • Validates vocabulary canon        │
 │                                     │
@@ -493,26 +492,26 @@ The mission graph contract — hierarchy, regions, transitions,
 determinism — is identical in sim and HAL deployments. The only
 runtime difference is the absence of scripted-physics overrides in HAL.
 
-## Phase-5 closed trigger set
+## Closed trigger set
 
-Phase 5.X locks the trigger vocabulary to what Phase 5 ships. New
-trigger types are Phase 6 if hypersonic flight requires them
+The trigger vocabulary is a closed set. New
+trigger types are added only when hypersonic flight requires them
 (e.g. `AtMachThreshold`, `AtBoundaryLayerTransition`); otherwise
 rejected.
 
-| Trigger | Description | Phase shipped |
-|---|---|---|
-| `AtTime { time_s }` | Crossing of elapsed monotonic time. | 3.2 |
-| `AtAltitudeAscending { meters }` | Altitude crossing up through threshold. | 3.2 |
-| `AtAltitudeDescending { meters }` | Altitude crossing down through threshold. | 3.2 |
-| `AtApogee` | Vertical velocity flip from positive to non-positive. | 3.2 |
-| `AtMassFraction { remaining }` | Mass fraction crossing down through threshold. | 3.2 |
-| `AtDynamicPressure { pa, falling }` | Dynamic pressure crossing in either direction. | 3.4 (atmosphere wired) |
+| Trigger | Description |
+|---|---|
+| `AtTime { time_s }` | Crossing of elapsed monotonic time. |
+| `AtAltitudeAscending { meters }` | Altitude crossing up through threshold. |
+| `AtAltitudeDescending { meters }` | Altitude crossing down through threshold. |
+| `AtApogee` | Vertical velocity flip from positive to non-positive. |
+| `AtMassFraction { remaining }` | Mass fraction crossing down through threshold. |
+| `AtDynamicPressure { pa, falling }` | Dynamic pressure crossing in either direction. |
 
 Composite guards from these triggers are expressible via the
 `GuardClause` trees from § Transition. Closure-based / scripted
 triggers (the deferred `Scripted` variant) remain rejected at scenario
-parse time per Phase 3.2's design.
+parse time by design.
 
 ## Why not SCXML
 
@@ -563,49 +562,49 @@ because:
 Both paradigms are valid for different problems. OpenBMP's mission
 state is FSM-shaped, so we ship an FSM.
 
-## Migration from Phase-5 flat DAG
+## Migration from the flat DAG
 
-Every shipped Phase-5 scenario migrates to the hierarchical model as a
+Every v3-syntax scenario migrates to the hierarchical model as a
 **flat hierarchy** — every state is a direct child of the region
 root, no composite states. Under flat-hierarchy migration:
 
 - LCA of any two states is the region root, so transitions traverse
   exactly two states (exit `from`, enter `to`).
-- The `on_entry` / `on_exit` action firing reduces to the existing
-  Phase 3.2 semantics.
+- The `on_entry` / `on_exit` action firing reduces to the original
+  flat-DAG semantics.
 - The determinism gate remains byte-identical across reruns of the
-  shipped scenario corpus. No tracked Phase-5 baseline Parquet
+  shipped scenario corpus. No tracked flat-DAG baseline Parquet
   snapshots are currently checked into the repository for cross-commit
   byte comparison.
 
-The hierarchy *primitives* land in Phase 5.X.C; the academic state
-hierarchy that exploits them lands in Phase 5.X.E together with the
-vocabulary migration. Phase 6 hypersonic work then declares re-entry
-sub-state hierarchies on top.
+The hierarchy *primitives* and the academic state hierarchy that
+exploits them are in place together with the vocabulary migration. The
+hypersonic extensions then declare re-entry sub-state hierarchies on
+top.
 
-## Forward compatibility (Phase 6)
+## Forward compatibility
 
-Phase 6 hypersonic work is expected to extend the architecture along
-three axes that Phase 5.X intentionally does not pre-empt:
+The hypersonic extensions are expected to extend the architecture along
+three axes that the base platform intentionally does not pre-empt:
 
 1. **Re-entry mission sub-hierarchy.** The `Descent` composite state
    gains `EntryInterface`, `LiftingEntry`, `PeakHeating`,
-   `PeakDeceleration`, `MainDescent`, `FinalDescent` children. Phase
-   5.X reserves these names in the vocabulary canon but does not
+   `PeakDeceleration`, `MainDescent`, `FinalDescent` children. The base
+   platform reserves these names in the vocabulary canon but does not
    ship them as states.
 2. **Health region hierarchy.** Re-entry abort logic needs nested
    health states (`Degraded.Sensor`, `Degraded.Effector`,
-   `AbortRequested.Aerothermal`, etc.). Phase 5.X ships a flat
-   production health region; Phase 6 can deepen it.
+   `AbortRequested.Aerothermal`, etc.). The base platform ships a flat
+   production health region; the hypersonic extensions can deepen it.
 3. **Aerodynamic regime region.** A possible fifth canonical region
    tracking `Subsonic / Transonic / Supersonic / Hypersonic` for
-   aero-method selection and validity-range gating. Phase 5.X does
-   *not* ship this region; Phase 6 may add it through the existing
-   `[[mission.regions]]` extension point. The architecture supports
-   adding regions without modifying the FSM core.
+   aero-method selection and validity-range gating. The base platform
+   does *not* ship this region; the hypersonic extensions may add it
+   through the existing `[[mission.regions]]` extension point. The
+   architecture supports adding regions without modifying the FSM core.
 
-These extensions land in Phase 6 against this contract; no Phase 5.X
-sub-phase ships them.
+These extensions build on this contract; the base platform does not
+ship them.
 
 ## References
 

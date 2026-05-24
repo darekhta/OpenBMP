@@ -1,6 +1,6 @@
 # Provenance — `scenarios/multi-engine-octaweb/`
 
-Canonical OpenBMP provenance record for the Phase-3.6.D
+Canonical OpenBMP provenance record for the engine-cluster
 exit-criterion scenario shipped under
 `scenarios/multi-engine-octaweb/`.
 
@@ -12,7 +12,7 @@ files:
   - scenarios/multi-engine-octaweb/four-engine-shutdown.toml
 source_class:     synthetic-openbmp
 source_title:     >-
-  Phase-3.6.D exit-criterion scenario. Octaweb-style 4-engine
+  Exit-criterion scenario. Octaweb-style 4-engine
   cluster (1 axial + 3 ring-mounted) on a 100 kg point-mass
   vehicle. Each `liquid_engine` produces 5000 N at full throttle
   with Isp = 250 s. Mission ignites all four engines at altitude
@@ -22,16 +22,16 @@ source_title:     >-
   (~25 %) and the lateral thrust asymmetry that emerges when
   `engine_b`'s gimbal-induced +x component stops being cancelled
   by `engine_d`'s -x component.
-source_authors:   OpenBMP (Dmitri Arekhta) for the Phase-3.6
+source_authors:   OpenBMP (Dmitri Arekhta) for the engine-cluster
                   exit-criterion case
-source_id:        Synthetic OpenBMP Phase-3.6 fixture
+source_id:        Synthetic OpenBMP engine-cluster fixture
 publication_date: 2026-04-28
 methodology_reference: >-
-  `docs/scenario-format.md` § Engine clusters (Phase 3.6)
+  `docs/scenario-format.md` § Engine clusters
   documents the `EngineModel` trait, `LiquidEngine` reference impl,
   propulsion-side
   `EngineCluster`, runner-side `EngineRack`, and the kernel-side
-  `EngineSnapshotView`. This scenario is the §3.6.D
+  `EngineSnapshotView`. This scenario is the
   exit-criterion case: a 4-engine cluster with one engine
   commanded to shutdown at T+5s produces the expected mass-flow
   drop and asymmetric thrust vector (Sutton & Biblarz 2017
@@ -46,11 +46,11 @@ license_or_terms: >-
 retrieved_utc:    2026-04-28
 transformation:
   method: >-
-    Authored by hand for the Phase-3.6.D exit criterion. No script.
+    Authored by hand for the engine-cluster exit criterion. No script.
   script: none
 verification:
   method: >-
-    `openbmp check` parses the scenario; the Phase-3.6.D e2e test
+    `openbmp check` parses the scenario; the e2e test
     `four_engine_shutdown_scenario_runs_to_completion` runs the
     scenario via `openbmp run`, asserts the kernel completes with
     `StopReason::EndTime`, and asserts (a) summed mass-flow before
@@ -84,17 +84,16 @@ local_origin:     >-
 related_files:
   - crates/openbmp-cli/tests/engine_cluster_e2e.rs
 notes: >-
-  Phase-3.6 ships per-engine `consumed_kg` integration on the
+  The cluster path integrates per-engine `consumed_kg` on the
   runner-side rack and reads it through the kernel's
-  `EngineClusterMassAdapter`. Rigid-body cluster mass-properties
-  (with inertia-tensor evolution) are deferred to Phase 3.7. The
-  per-engine gimbal pitch / yaw values exercise the
+  `EngineClusterMassAdapter`. This point-mass scenario does not
+  exercise rigid-body cluster mass-properties (with inertia-tensor
+  evolution). The per-engine gimbal pitch / yaw values exercise the
   asymmetric-thrust signal that lets the e2e test prove the
   cluster path actually consumes per-engine state — without
   gimbals the lateral thrust would stay zero regardless of which
-  engine is firing. Phase 3.2 does not ship an `at_time` trigger,
-  so the shutdown event uses altitude as a deterministic proxy for
-  T+5s. With full-thrust net acceleration around 190 m/s² and
+  engine is firing. The shutdown event uses an altitude crossing as
+  a deterministic proxy for T+5s. With full-thrust net acceleration around 190 m/s² and
   initial vertical speed 100 m/s, `altitude = v0*t + 0.5*a*t²`
   reaches roughly 3000 m at t ≈ 5 s; the 0.1 s ignition transient
   only shifts the crossing slightly.

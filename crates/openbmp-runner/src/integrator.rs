@@ -1,4 +1,4 @@
-//! Phase-5.D.4 / 5.D.5 / 5.D.6 runner-side integrator dispatch.
+//! Runner-side integrator dispatch.
 //!
 //! The kernel ([`openbmp_sim::SimulationKernel`]) is generic over the
 //! `Integrator<S>` type, which means integrator selection propagates
@@ -17,20 +17,20 @@
 //!
 //! - `(fixed-step-explicit, rk4, bit-stable)` →
 //!   [`openbmp_sim::Rk4FixedStep`]
-//!   (the no-`[solver]` default — preserves the byte-stable Phase-1
+//!   (the no-`[solver]` default — preserves the byte-stable
 //!   contract).
 //! - `(fixed-step-explicit, dopri54, bit-stable)` →
-//!   [`openbmp_sim::Dopri54FixedStep`] (§ 5.D.3).
+//!   [`openbmp_sim::Dopri54FixedStep`].
 //! - `(adaptive-explicit, dopri54, state-stable)` →
-//!   [`openbmp_sim::Dopri54Adaptive`] (§ 5.D.4 — point-mass runner; § 5.D.5
-//!   wires the rigid-body runner through the same enum dispatch).
+//!   [`openbmp_sim::Dopri54Adaptive`] (point-mass and rigid-body runners
+//!   share the same enum dispatch).
 //! - `(fixed-step-explicit, dopri853, bit-stable)` →
-//!   [`openbmp_sim::Dopri853FixedStep`] (§ 5.D.6).
+//!   [`openbmp_sim::Dopri853FixedStep`].
 //! - `(adaptive-explicit, dopri853, state-stable)` →
-//!   [`openbmp_sim::Dopri853Adaptive`] (§ 5.D.6).
+//!   [`openbmp_sim::Dopri853Adaptive`].
 //!
 //! Still rejected as unwired: `rkf78`, Rosenbrock-Wanner, and BDF.
-//! Phase 6.0 source-term profiles now dispatch the declared
+//! Source-term profiles dispatch the declared
 //! trajectory method and pin the source-term profile; source-term
 //! consumers can call the implicit-Euler primitive through their own
 //! state adapters.
@@ -45,7 +45,7 @@ pub use openbmp_sim::SourceTermProfile as SourceTermRuntimeProfile;
 
 /// Build a [`RuntimeIntegrator`] from the scenario's `[solver]`
 /// block. When the block is absent, defaults to
-/// [`RuntimeIntegrator::Rk4`] — preserving the byte-stable Phase-1
+/// [`RuntimeIntegrator::Rk4`] — preserving the byte-stable
 /// contract for every existing scenario.
 ///
 /// # Errors

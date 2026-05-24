@@ -6,8 +6,8 @@
 
 ## Source class
 
-Synthetic. The scenario is the Phase-5.C.1 end-to-end demo for the
-new layered piecewise-exponential atmosphere model
+Synthetic. The scenario is the end-to-end demo for the
+layered piecewise-exponential atmosphere model
 (`openbmp_physics::PiecewiseExponentialAtmosphere`).
 
 A 1 kg point mass launched vertically (+z ECI) with `v_z = 2000 m/s`
@@ -25,8 +25,8 @@ ballistic answer is therefore independent of the layered-atmosphere
 sampling. The scenario exists purely to exercise the runner's
 per-step atmosphere telemetry channels with the new layered model
 across the 0-204 km altitude span — that span deliberately exceeds
-the 86 km USSA76 ceiling to demonstrate the Phase-5.C.1 model fills
-the documented USSA76 gap above its native envelope.
+the 86 km USSA76 ceiling to demonstrate the piecewise-exponential
+model fills the documented USSA76 gap above its native envelope.
 
 The Vallado-style table used by the model pins density and scale
 height. Reported pressure, temperature, and speed of sound are
@@ -54,7 +54,7 @@ real-world locations, no ITAR / EAR / MTCR / Wassenaar content.
 ## Validation status
 
 `experimental`. Validates parser-side and runs end-to-end
-deterministically. The Phase-5.C.1 e2e test
+deterministically. The e2e test
 (`crates/openbmp-cli/tests/sounding_piecewise_exp_atmosphere_e2e.rs`)
 asserts:
 

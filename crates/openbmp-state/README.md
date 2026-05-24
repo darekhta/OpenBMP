@@ -3,7 +3,7 @@
 L1 state types crate. Sits between `openbmp-core` (foundation) and
 `openbmp-sim` (kernel).
 
-**Status:** Phase 1.2 — implemented state-type layer.
+**Status:** Implemented state-type layer.
 
 ## Purpose
 
@@ -20,8 +20,8 @@ L1 state types crate. Sits between `openbmp-core` (foundation) and
 
 ## Inputs and Outputs
 
-Pure data containers; no IO. Explicit constructors are used in Phase
-1.2; builders remain a future ergonomic addition.
+Pure data containers; no IO. Explicit constructors are used today;
+builders remain a future ergonomic addition.
 
 ## Units and Frames
 
@@ -42,12 +42,12 @@ orientation.
 
 ## Determinism
 
-No allocation on hot paths once Phase 1.3 begins consuming these
+No allocation on hot paths when the kernel consumes these
 types. Pure data, no system access.
 
 ## Validation
 
-`checked` for Phase 1.2 structural validation helpers.
+`checked` for the structural validation helpers.
 
 ## Data Provenance
 

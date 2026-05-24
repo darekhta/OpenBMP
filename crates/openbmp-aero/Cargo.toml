@@ -6,7 +6,7 @@ rust-version.workspace  = true
 license.workspace       = true
 repository.workspace    = true
 authors.workspace       = true
-description             = "OpenBMP aerodynamics: deck format, aero methods (incl. hypersonic Phase 6)."
+description             = "OpenBMP aerodynamics: deck format, tabulated and hypersonic aero methods, continuum-to-rarefied bridging."
 
 [dependencies]
 nalgebra  = { workspace = true }

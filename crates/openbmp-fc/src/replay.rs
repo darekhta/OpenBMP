@@ -1,6 +1,6 @@
 //! Log-replay tooling.
 //!
-//! Phase 4.9: minimal scaffold for state-stable replay. The
+//! Minimal scaffold for state-stable replay. The
 //! [`BusRecorder`] subscribes to a configured set of topics and
 //! collects time-stamped samples; the [`BusReplayer`] re-injects a
 //! recorded log into a fresh bus for regression replay.

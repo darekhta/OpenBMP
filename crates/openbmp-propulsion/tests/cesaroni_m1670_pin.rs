@@ -1,4 +1,4 @@
-//! Phase-3.11.A regression test for the Cesaroni Pro75 M1670
+//! Regression test for the Cesaroni Pro75 M1670
 //! motor port. Pins:
 //!
 //!  - The OpenBMP TOML at `data/motors/cesaroni-m1670.toml`

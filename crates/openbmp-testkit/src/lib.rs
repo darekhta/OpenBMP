@@ -12,9 +12,8 @@
 //!   `docs/verification.md § Tolerance Tables`.
 //! - [`determinism`] — byte-stable diff and replay utilities for the
 //!   determinism oracle.
-//! - [`filters`] — placeholder for the Phase-4 `compare_filters`
-//!   harness.
-//! - [`fc_lints`] — Phase 4.B tripwire that fails CI if
+//! - [`filters`] — placeholder for the `compare_filters` harness.
+//! - [`fc_lints`] — tripwire that fails CI if
 //!   `openbmp-fc` ever imports `std::time` wall-clock APIs.
 //!
 //! All helpers respect the OpenBMP determinism contract: no

@@ -43,7 +43,7 @@
     clippy::neg_cmp_op_on_partial_ord,
     clippy::inconsistent_digit_grouping,
     clippy::unreadable_literal
-)] // Phase-3.10: WMM-reference algorithm with locked-name `a`, `b`,
+)] // WMM-reference algorithm with locked-name `a`, `b`,
 // `c`, `q`, `r`, `d`, `bt`, `bp`, `br` variables matches the
 // NOAA C / pyGeoMag source for traceability.
 
@@ -371,7 +371,7 @@ impl MagneticModel for Wmm2025 {
         position_eci: Position3<Eci>,
         time: SimTime,
     ) -> Result<Vector3<f64>, PhysicsError> {
-        // Phase-3.10: ECI → ECEF for the toy fixed-earth profile is
+        // ECI → ECEF for the toy fixed-earth profile is
         // the identity. WGS-84 rotation profiles are the runner's
         // job to disambiguate at scenario load.
         let (lat, lon, h) = ecef_to_geodetic(position_eci.vector);

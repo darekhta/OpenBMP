@@ -1,4 +1,4 @@
-//! Phase-5.A.3.D controller comparison harness.
+//! Controller comparison harness.
 //!
 //! Runs four sibling scenarios that share the same deterministic seed,
 //! vehicle, Mellinger-Kumar minimum-snap figure-eight reference, and
@@ -6,14 +6,13 @@
 //! disturbance. The only behavioural difference between them is the
 //! rate-loop kind:
 //!
-//! - `diff-flatness-figure-eight-baseline` — PID rate loop (Phase-4
-//!   default, no augmentation)
+//! - `diff-flatness-figure-eight-baseline` — PID rate loop (default,
+//!   no augmentation)
 //! - `diff-flatness-figure-eight-l1` — PID rate loop + Cao-Hovakimyan
-//!   L1 adaptive augmentation (Phase 5.A.2.C)
+//!   L1 adaptive augmentation
 //! - `diff-flatness-figure-eight-lqr-fault` — per-axis LQR rate loop
-//!   (Phase 5.A.3.B)
 //! - `diff-flatness-figure-eight-indi-fault` — per-axis INDI rate
-//!   loop (Phase 5.A.3.C)
+//!   loop
 //!
 //! For each scenario the harness reads the post-liftoff window of the
 //! emitted Parquet and computes:

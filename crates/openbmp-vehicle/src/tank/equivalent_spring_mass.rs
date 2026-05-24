@@ -1,4 +1,4 @@
-//! [`EquivalentSpringMass`] — Phase-3.7.C alternative slosh model.
+//! [`EquivalentSpringMass`] — alternative slosh model.
 //!
 //! For high-fill-fraction studies the linearised
 //! [`crate::tank::equivalent_pendulum::EquivalentPendulum`] can be
@@ -12,9 +12,9 @@
 //! (`displacement_m`, `velocity_m_s`) rather than angular
 //! coordinates, which downstream control / estimator code may find
 //! more convenient when interfacing with linear models or when
-//! coupling to multi-DOF structural FEM in future phases.
+//! coupling to multi-DOF structural FEM.
 //!
-//! Phase-3.7.C uses the same Abramson cylindrical-tank closed-form
+//! This model uses the same Abramson cylindrical-tank closed-form
 //! `ω_n²(g_eff, h, a)` as
 //! [`crate::tank::equivalent_pendulum::EquivalentPendulum`], the
 //! same semi-implicit Euler integration scheme, and the same
@@ -35,7 +35,7 @@ use super::{
 /// share the cylindrical-tank Bessel-root form.
 const KSI_1: f64 = 1.841_183_781_340_659_3;
 
-/// Phase-3.7.C equivalent-spring-mass slosh model.
+/// Equivalent-spring-mass slosh model.
 #[derive(Debug, Clone)]
 pub struct EquivalentSpringMass {
     fluid_kg: f64,

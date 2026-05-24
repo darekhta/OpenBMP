@@ -36,9 +36,9 @@ control for quadrotors*. IEEE ICRA 2011, pp. 2520–2525.
 ## Validation status
 
 `experimental`. The scenario validates parser-side and runs end-to-end
-deterministically; closed-loop attitude tracking tolerance lands with
-the L1 adaptive (Phase 5.A.2) and observer-form anti-windup
-(Phase 5.A.3) sub-phases. The trajectory generator's polynomial
+deterministically; tighter closed-loop attitude tracking tolerance
+comes from the L1-adaptive and observer-form anti-windup
+sibling scenarios. The trajectory generator's polynomial
 coefficients are bit-stable across reruns on the reference platform
 profile, validated by `crates/openbmp-fc/src/trajectory.rs` unit tests
 and the `diff_flatness_e2e.rs` end-to-end test.

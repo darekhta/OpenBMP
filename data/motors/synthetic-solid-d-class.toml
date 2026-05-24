@@ -7,8 +7,8 @@
 # OpenBMP-authored synthetic — not transcribed from any published
 # thrust curve.
 # A real ThrustCurve.org-derived deck (with `validation = "checked"`
-# and a SHA-256-pinned source `.eng` file) is
-# deferred to Phase 2.9 (sounding-rocket validation case) where
+# and a SHA-256-pinned source `.eng` file) belongs to the
+# sounding-rocket validation case, where
 # the user can fetch the actual file and pin its hash; see
 # `data/motors/provenance.md` for the gap.
 #

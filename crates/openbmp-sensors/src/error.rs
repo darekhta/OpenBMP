@@ -1,8 +1,8 @@
 //! Error type for the openbmp-sensors crate.
 //!
 //! Mirrors the shape of `openbmp-aero::AeroError` and
-//! `openbmp-propulsion::MotorError` so the kernel-side adapter at
-//! Phase 2.10 can fold sensor failures into the same chain without
+//! `openbmp-propulsion::MotorError` so the kernel-side adapter can
+//! fold sensor failures into the same chain without
 //! `openbmp-sensors` depending on `openbmp-sim`.
 
 use thiserror::Error;

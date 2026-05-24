@@ -1,19 +1,19 @@
-//! Phase-3.3 [`KernelModelBundle`] — flat lists the kernel consumes.
+//! [`KernelModelBundle`] — flat lists the kernel consumes.
 //!
-//! The full assembly-to-kernel resolver will return bundles of this
+//! The full assembly-to-kernel resolver returns bundles of this
 //! shape once propulsion, effectors, tanks, and sensors are represented
-//! in the assembly tree. Phase-3.3 runners consume assembly dry mass
+//! in the assembly tree. Runners consume assembly dry mass
 //! properties directly and keep force / moment plumbing on the existing
 //! runner paths. Two parallel bundle forms cover the point-mass /
-//! rigid-body kernel split established in Phase-3.1:
+//! rigid-body kernel split:
 //!
 //! - [`KernelModelBundle<S>`] for kernels parameterised over a
 //!   point-mass-shaped state (`MM: MassModel`).
 //! - [`KernelModelBundleRigid`] for the rigid-body kernel
 //!   (`MM: RigidMassModel`).
 //!
-//! Phase-3.3 leaves the `sensors: Vec<Box<dyn SyntheticSensor>>` slot
-//! empty — Phase-3.10 will populate it.
+//! The `sensors: Vec<Box<dyn SyntheticSensor>>` slot is left
+//! empty here; the sensor resolver populates it.
 
 use openbmp_models::{MassModel, RigidMassModel, SimState};
 use openbmp_state::RigidBodyState;

@@ -1,7 +1,7 @@
-//! Phase-6.10 Park two-temperature nonequilibrium thermochemistry.
+//! Park two-temperature nonequilibrium thermochemistry.
 //!
 //! The Park two-temperature formulation is the intended nonequilibrium
-//! air model for OpenBMP, but the first Phase-6 implementation carried
+//! air model for OpenBMP, but an earlier implementation carried
 //! a hand-entered five-reaction proxy while the design document called
 //! for a published Park87 reaction set with roughly seventeen
 //! reactions and species-specific Millikan-White constants. The audit

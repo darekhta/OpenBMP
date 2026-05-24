@@ -1,4 +1,4 @@
-//! Phase-6.3 hypersonic aerodynamic methods.
+//! Hypersonic aerodynamic methods.
 //!
 //! Engineering hypersonic methods that do not require a tabulated
 //! deck:
@@ -257,7 +257,7 @@ impl AeroMethod for LocalInclinationPanels {
 /// `Cp_max ≈ 1.838` (perfect-gas, γ = 1.4) rather than the classical
 /// Newtonian value of 2.0.
 ///
-/// Phase-6.3 scope: produces aero force as if the vehicle were a
+/// Scope: produces aero force as if the vehicle were a
 /// **single representative panel** — an axisymmetric blunt body
 /// with nose radius `nose_radius_m` and reference area `area_m2`,
 /// inclined at angle of attack `alpha_deg`. Mesh-based panel

@@ -2,7 +2,7 @@ case = "diff-flatness-figure-eight-mpc-rigid-body-8000-steps"
 source = "Synthetic; same lemniscate waypoints as scenarios/diff-flatness-figure-eight, with attitude_loop_kind = \"mpc\". See scenarios/diff-flatness-figure-eight-mpc/provenance.md."
 validation = "experimental"
 
-# Phase 5.A.4 tolerance bench: rigid-body figure-eight tracker with
+# MPC tolerance bench: rigid-body figure-eight tracker with
 # the receding-horizon attitude MPC (Clarabel, deterministic
 # settings). Asserts:
 #   - 8000 kernel steps;

@@ -1,4 +1,4 @@
-//! Phase-3.6 runner-side engine rack.
+//! Runner-side engine rack.
 //!
 //! The rack owns the cluster of `Box<dyn EngineModel>` resolved
 //! from the scenario's `[[vehicle.assembly.engines]]` block, plus
@@ -8,12 +8,12 @@
 //! observable in the Parquet matches the kernel's view of the
 //! world.
 //!
-//! Phase-3.6 leaves the kernel's force / moment / mass evaluation
-//! untouched when the rack is empty — legacy single-motor scenarios
+//! The rack leaves the kernel's force / moment / mass evaluation
+//! untouched when it is empty — legacy single-motor scenarios
 //! produce byte-identical Parquet because the runner short-circuits
 //! every rack-related operation on `is_empty()`.
 //!
-//! Mirrors the Phase-3.4 [`crate::effectors::EffectorRack`]
+//! Mirrors the [`crate::effectors::EffectorRack`]
 //! pattern: kernel records scenario-script engine-command firings;
 //! runner drains and applies them via `apply_commands(&fired)`.
 //!
@@ -159,7 +159,7 @@ impl EngineRack {
                         reason: "multiple `engine_command` events fired for the same engine in one step; resolve to a single command per engine per step".to_owned(),
                     });
                 }
-                // Phase-3.15.C: construct the typed propulsion-side
+                // Construct the typed propulsion-side
                 // `EngineCommand` here (the mission graph carries
                 // only the scalar fields, decoupling
                 // `openbmp-mission` from `openbmp-propulsion`).
@@ -246,8 +246,8 @@ impl EngineRack {
     }
 }
 
-/// Phase-3.6 engine resolver: scenario `EngineConfig` →
-/// `LiquidEngine` (the only kind shipped in 3.6). Mounts the
+/// Engine resolver: scenario `EngineConfig` →
+/// `LiquidEngine` (the only kind currently supported). Mounts the
 /// optional load-time fault.
 fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, RunnerError> {
     let id = EngineId::from_path(&format!("vehicle.assembly.engines.{id}", id = config.id));
@@ -265,7 +265,7 @@ fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, Run
         // variants.
         return Err(RunnerError::Engine {
             field: format!("vehicle.assembly.engines[{index}].kind"),
-            reason: "unsupported engine kind in Phase 3.6".to_owned(),
+            reason: "unsupported engine kind".to_owned(),
         });
     }
     let mut engine = LiquidEngine::new(id, limits).map_err(|err| RunnerError::Engine {
@@ -335,7 +335,7 @@ mod tests {
             binding_id: EventId::from_path(name),
             step: StepIndex::ZERO,
             time: SimTime::ZERO,
-            // Phase 5.X.E: typed scenario-script action.
+            // Typed scenario-script action.
             action: ScenarioScriptAction::EngineCommand {
                 id,
                 throttle_unit: command.throttle_unit,

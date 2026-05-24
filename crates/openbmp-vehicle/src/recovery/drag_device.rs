@@ -1,4 +1,4 @@
-//! Phase-3.9 generic drag device (airbrake).
+//! Generic drag device (airbrake).
 //!
 //! [`DragDevice`] is a cycle-able airbrake or speed-brake. Unlike
 //! [`crate::recovery::ParachuteDrag`] (one-shot deploy) or
@@ -7,8 +7,8 @@
 //! [`RecoveryCommand::Stow`] cycles. State machine:
 //! `Stowed ↔ Main`.
 //!
-//! Drag area swap is instantaneous on the firing event — Phase-3.9
-//! does not model deployment transients (rate-limited brake travel,
+//! Drag area swap is instantaneous on the firing event; deployment
+//! transients are not modelled (rate-limited brake travel,
 //! hinge dynamics, etc.). The brake is "on" or "off"; no intermediate
 //! position.
 

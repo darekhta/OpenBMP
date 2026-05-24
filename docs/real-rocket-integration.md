@@ -110,7 +110,7 @@ step to learn:
 4. *What sensor measurements are available?*
 
 Trait sketch (illustrative; full definitions live in
-[`software-architecture.md`](software-architecture.md) once Phase 3 begins):
+[`software-architecture.md`](software-architecture.md)):
 
 ```rust
 pub trait VehicleAssembly {
@@ -130,12 +130,12 @@ pub trait VehicleAssembly {
 
 ## The event / phase model
 
-> **Superseded by Phase 5.X.** This section describes the Phase 3 / 4 / 5
-> flat-DAG mission model. Phase 5.X moves the mission state machine to a
+> **Superseded.** This section describes the earlier
+> flat-DAG mission model. The mission state machine is a
 > hierarchical Harel-style FSM with orthogonal regions (mission × health
 > × comms × estimator-regime); see
 > [`mission-graph-architecture.md`](mission-graph-architecture.md) for
-> the post-refactor architecture, including the HAL adopter contract
+> the current architecture, including the HAL adopter contract
 > that this section describes. The TOML snippet below remains valid
 > syntax under the v3-compatible lifting path.
 
@@ -476,14 +476,14 @@ license = "MIT OR Apache-2.0"
 openbmp-core       = "0.x"
 openbmp-state      = "0.x"
 openbmp-sim        = "0.x"
-openbmp-aero       = "0.x"           # Phase 2+
-openbmp-propulsion = "0.x"           # Phase 2+
-openbmp-vehicle    = "0.x"           # Phase 3 (VehicleAssembly)
-openbmp-sensors    = "0.x"           # Phase 2+
-openbmp-fc         = "0.x"           # Phase 4
-openbmp-scenario   = "0.x"           # Phase 1.5
-openbmp-telemetry  = "0.x"           # Phase 1.4
-openbmp-cli        = "0.x"           # Phase 1.7
+openbmp-aero       = "0.x"
+openbmp-propulsion = "0.x"
+openbmp-vehicle    = "0.x"           # VehicleAssembly
+openbmp-sensors    = "0.x"
+openbmp-fc         = "0.x"
+openbmp-scenario   = "0.x"
+openbmp-telemetry  = "0.x"
+openbmp-cli        = "0.x"
 
 # YOUR DATA STAYS IN YOUR REPO. OpenBMP never pulls it in.
 ```

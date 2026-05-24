@@ -1,11 +1,11 @@
 //! Event triggers and mission-state machine — re-exported.
 //!
-//! Phase-3.14.B moved the event / mission graph data shapes to
-//! `openbmp-mission` so flight-controller code (Phase 4) and HAL
+//! The event / mission graph data shapes live in
+//! `openbmp-mission` so flight-controller code and HAL
 //! adopters can consume them without depending on the simulator.
-//! Phase 5.X.A added [`openbmp_scenario_script::ScenarioScriptAction`]
-//! (the simulator-only physics-override action type) which the
-//! simulator re-exports here for ergonomic access.
+//! [`openbmp_scenario_script::ScenarioScriptAction`]
+//! (the simulator-only physics-override action type) is
+//! re-exported here for ergonomic access.
 //! This module is now a thin re-export to preserve every existing
 //! `openbmp_sim::events::*` import path.
 
