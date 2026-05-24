@@ -55,8 +55,19 @@ pub struct PyrolysisFrontUpdate {
     pub front_depth_m: f64,
     /// Front velocity over the update (m/s).
     pub front_velocity_m_s: f64,
+    /// Pyrolyzed solid mass per unit area over the update
+    /// (kg/m²).
+    pub pyrolyzed_mass_kg_m2: f64,
     /// Pyrolysis-gas mass flux (kg/(m²·s)).
     pub gas_mdot_kg_m2_s: f64,
+    /// Net heat input integrated over the update (J/m²).
+    pub absorbed_energy_j_m2: f64,
+    /// Energy consumed by front advance through pyrolysis enthalpy
+    /// (J/m²).
+    pub pyrolysis_energy_j_m2: f64,
+    /// Supplied energy left unused because the front reached the
+    /// modeled back face (J/m²).
+    pub unused_energy_j_m2: f64,
     /// Per-depth-node char progress: 0 = virgin, 1 = fully charred.
     pub progress_by_node: Vec<f64>,
 }
@@ -476,6 +487,12 @@ impl DepthResolvedCharringAblator {
                 reason: "pyrolysis-front heat flux and dt must be non-negative",
             });
         }
+        let absorbed_energy_j_m2 = q_net_w_m2 * dt_s;
+        if !absorbed_energy_j_m2.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "pyrolysis-front absorbed energy is NaN or Inf",
+            });
+        }
         let front_velocity_m_s = if q_net_w_m2 == 0.0 {
             0.0
         } else {
@@ -489,12 +506,23 @@ impl DepthResolvedCharringAblator {
         } else {
             0.0
         };
-        let gas_mdot_kg_m2_s =
-            realised_velocity * self.virgin.density_kg_m3 * self.gas_yield_fraction;
+        let delta_front_m = new_front - old_front;
+        let pyrolyzed_mass_kg_m2 = delta_front_m * self.virgin.density_kg_m3;
+        let gas_mdot_kg_m2_s = if dt_s > 0.0 {
+            pyrolyzed_mass_kg_m2 * self.gas_yield_fraction / dt_s
+        } else {
+            0.0
+        };
+        let pyrolysis_energy_j_m2 = pyrolyzed_mass_kg_m2 * self.pyrolysis_enthalpy_j_kg;
+        let unused_energy_j_m2 = (absorbed_energy_j_m2 - pyrolysis_energy_j_m2).max(0.0);
         Ok(PyrolysisFrontUpdate {
             front_depth_m: new_front,
             front_velocity_m_s: realised_velocity,
+            pyrolyzed_mass_kg_m2,
             gas_mdot_kg_m2_s,
+            absorbed_energy_j_m2,
+            pyrolysis_energy_j_m2,
+            unused_energy_j_m2,
             progress_by_node: self.progress_by_node(),
         })
     }
@@ -818,7 +846,11 @@ mod tests {
         assert!((update.front_depth_m - expected_v * 10.0).abs() < 1.0e-15);
         assert!(update.progress_by_node[0] == 1.0);
         assert!(update.progress_by_node[1] == 0.0);
+        assert!((update.pyrolyzed_mass_kg_m2 - expected_v * 10.0 * 1450.0).abs() < 1.0e-12);
         assert!((update.gas_mdot_kg_m2_s - expected_v * 1450.0 * 0.25).abs() < 1.0e-12);
+        assert!((update.absorbed_energy_j_m2 - 2.9e7).abs() < 1.0e-8);
+        assert!((update.pyrolysis_energy_j_m2 - update.absorbed_energy_j_m2).abs() < 1.0e-8);
+        assert_eq!(update.unused_energy_j_m2, 0.0);
     }
 
     #[test]
@@ -834,12 +866,32 @@ mod tests {
         .unwrap();
         let update = a.advance_front(1.45e9, 10.0).unwrap();
         assert!((update.front_depth_m - 0.01).abs() < 1.0e-15);
+        assert!((update.pyrolyzed_mass_kg_m2 - 14.5).abs() < 1.0e-12);
+        assert!((update.pyrolysis_energy_j_m2 - 1.45e7).abs() < 1.0e-8);
+        assert!((update.unused_energy_j_m2 - (1.45e10 - 1.45e7)).abs() < 1.0e-3);
         assert!(
             update
                 .progress_by_node
                 .iter()
                 .all(|&progress| progress == 1.0)
         );
+    }
+
+    #[test]
+    fn depth_resolved_pyrolysis_front_rejects_energy_overflow() {
+        let mut a = DepthResolvedCharringAblator::new_uniform(
+            ToyAblator::generic_charring_1(),
+            ToyAblator::graphite_toy(),
+            0.10,
+            6,
+            2.0e6,
+            0.25,
+        )
+        .unwrap();
+        assert!(matches!(
+            a.advance_front(f64::MAX, 2.0),
+            Err(AerothermalError::NonFinite { .. })
+        ));
     }
 
     #[test]
