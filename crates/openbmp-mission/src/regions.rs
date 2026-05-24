@@ -476,9 +476,9 @@ mod tests {
         assert!(matches!(err, RegionError::UnknownState { state, .. } if state == abort));
     }
 
-    // PhaseTransition is held live to confirm the symbol re-exports
-    // remain usable from this module for future 5.X.F wiring; this
-    // is a compile-time check, not a runtime test.
-    #[allow(dead_code)]
-    const _: Option<PhaseTransition> = None;
+    #[test]
+    fn phase_transition_symbol_is_usable_from_regions_module() {
+        let transition: Option<PhaseTransition> = None;
+        assert!(transition.is_none());
+    }
 }

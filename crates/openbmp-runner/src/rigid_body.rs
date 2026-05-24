@@ -1554,12 +1554,6 @@ fn insert_recovery_state_channels(
     Ok(())
 }
 
-// Silence the unused alias warning when no consumer references it
-// directly; the alias keeps `RigidMassEither` available as the public
-// shape of the kernel mass model.
-#[allow(dead_code)]
-type _RigidMassEitherAlias = RigidMassEither;
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {

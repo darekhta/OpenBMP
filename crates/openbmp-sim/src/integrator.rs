@@ -1349,8 +1349,7 @@ impl Dopri853Adaptive {
     /// independent runs to ensure the first sub-step uses the
     /// configured `dt_total` rather than the previous run's
     /// `last_h`.
-    #[allow(dead_code)]
-    fn reset(&self) {
+    pub fn reset(&self) {
         self.last_h_s.set(None);
     }
 

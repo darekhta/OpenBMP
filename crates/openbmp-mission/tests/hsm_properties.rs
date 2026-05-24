@@ -186,10 +186,8 @@ proptest! {
     }
 }
 
-/// `MissionAction` is held live to confirm the symbol re-exports
-/// remain usable from this test crate — `on_entry` / `on_exit`
-/// action vecs are constructed with these.
-#[allow(dead_code)]
-fn _action_compile_check() -> MissionAction {
-    MissionAction::EmitTelemetryMarker { tag: "test".into() }
+#[test]
+fn mission_action_emit_marker_symbol_is_usable_from_property_tests() {
+    let action = MissionAction::EmitTelemetryMarker { tag: "test".into() };
+    assert!(matches!(action, MissionAction::EmitTelemetryMarker { .. }));
 }
