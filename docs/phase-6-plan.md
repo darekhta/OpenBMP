@@ -87,7 +87,7 @@ Sub-phase status as of the latest commit on `main`.
 | Sub-phase | Status | Notes |
 |---|---|---|
 | 6.0 — Hypersonic solver profile + implicit Euler sub-stepper | shipped (sim-owned dispatch scaffold) | `openbmp_sim::{SolverProfile, ProfiledIntegrator}`, `implicit_euler_step`. `openbmp-cli` now translates scenario solver blocks into the sim-owned profile-aware integrator, accepts source-term profiles with explicit sub-step controls, and records solver metadata in telemetry. Coupled source-term state adapters remain follow-on work. |
-| 6.1 — NRLMSISE-00 static-defaults | shipped (static interpolant) | `openbmp_physics::Nrlmsise00Static` table regenerated from public NRLMSISE-00 `gtd7` outputs for F10.7 = 150, Ap = 4, equator, noon, equinox. Full path declared `Nrlmsise00Full` (reserved). |
+| 6.1 — NRLMSISE-00 static-defaults | shipped (static interpolant) | `openbmp_physics::Nrlmsise00Static` table regenerated from public NRLMSISE-00 `gtd7` outputs for F10.7 = 150, Ap = 4, equator, noon, equinox. Full path declared `Nrlmsise00Full` (reserved) with full-input validation but no coefficient evaluator. |
 | 6.2 — Tannehill 5-species equilibrium air | deferred | `openbmp_physics::TannehillEquilibriumAir` now fails closed pending verified public table values. `AirComposition` can represent the reserved 11-species ion/electron surface, but Mugalev remains reserved. |
 | 6.3 — Hypersonic aero methods | shipped (checked approximations) | `ModifiedNewtonian`, modified-Newtonian `TangentCone`, `TangentWedge`, `LocalInclinationPanels`, strict panel-mesh TOML ingestion, `hypersonic_similarity_parameter`. Full Taylor-Maccoll validation and non-axisymmetric public benchmark validation remain deferred. |
 | 6.4 — Stagnation heating | partially shipped | `SuttonGraves` shipped; `FayRiddell` has a cold-gas checked scaffold and a caller-supplied `FayRiddellEdgeState` path for real-gas edge/wall properties; automatic real-gas shock-layer edge-state generation remains deferred until verified equilibrium-air data land. `TauberSuttonRadiative` fails closed pending published coefficients. |
@@ -149,9 +149,9 @@ Phase 6 closes when:
   species-specific Millikan-White / Park relaxation constants, and the
   Mach-15 shock-layer benchmark land.
   Park90 remains fully reserved pending a verified public table.
-- **`Nrlmsise00Full` coefficient-based path** — typed-reserved; the
-  static-defaults profile covers the immediate hypersonic-scenario
-  use cases.
+- **`Nrlmsise00Full` coefficient-based path** — typed-reserved with
+  full-input validation; the static-defaults profile covers the
+  immediate hypersonic-scenario use cases.
 - **Mugalev 11-species equilibrium air** — reserved.
 - **Depth-resolved charring validation benchmark** — the energy-
   limited sharp-front toy ships; conduction-coupled char growth and

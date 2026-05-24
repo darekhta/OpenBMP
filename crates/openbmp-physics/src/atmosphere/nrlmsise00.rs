@@ -25,8 +25,9 @@
 //! ```
 //!
 //! The full coefficient-based empirical machinery is deferred to
-//! [`Nrlmsise00Full`] — declared here as a deferred type so callers
-//! can write code against the trait surface today.
+//! [`Nrlmsise00Full`] — declared here as a deferred type with
+//! full-input validation so callers can write code against the
+//! intended coefficient-path surface today.
 //!
 //! # Determinism
 //!
@@ -117,6 +118,75 @@ impl Nrlmsise00Inputs {
             f107_yesterday: 150.0,
             ap_average: 4.0,
         }
+    }
+
+    /// Validate the full NRLMSISE-00 input envelope used by the
+    /// reserved coefficient path.
+    ///
+    /// The static-defaults profile intentionally ignores these fields;
+    /// this method exists so scenario plumbing can validate a full
+    /// MSIS query before the coefficient port lands.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::NonFinite`] for non-finite numeric
+    /// fields, [`PhysicsError::InvalidParameter`] for malformed date /
+    /// solar / geomagnetic inputs, and [`PhysicsError::OutOfEnvelope`]
+    /// for altitude outside the documented 0-1000 km range.
+    pub fn validate_full_path(&self) -> Result<(), PhysicsError> {
+        if !self.altitude_m.is_finite()
+            || !self.utc_seconds.is_finite()
+            || !self.latitude_rad.is_finite()
+            || !self.longitude_rad.is_finite()
+            || !self.local_apparent_solar_time_hours.is_finite()
+            || !self.f107_average_81day.is_finite()
+            || !self.f107_yesterday.is_finite()
+            || !self.ap_average.is_finite()
+        {
+            return Err(PhysicsError::NonFinite {
+                reason: "nrlmsise00 full input field is NaN or Inf",
+            });
+        }
+        if !(1..=366).contains(&self.day_of_year) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "nrlmsise00 day_of_year must be in 1..=366",
+            });
+        }
+        if !(0.0..86_400.0).contains(&self.utc_seconds) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "nrlmsise00 utc_seconds must be in [0, 86400)",
+            });
+        }
+        if !(0.0..24.0).contains(&self.local_apparent_solar_time_hours) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "nrlmsise00 local solar time must be in [0, 24)",
+            });
+        }
+        if !(-std::f64::consts::FRAC_PI_2..=std::f64::consts::FRAC_PI_2)
+            .contains(&self.latitude_rad)
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "nrlmsise00 latitude must be in [-pi/2, pi/2]",
+            });
+        }
+        if !(-std::f64::consts::PI..=std::f64::consts::PI).contains(&self.longitude_rad) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "nrlmsise00 longitude must be in [-pi, pi]",
+            });
+        }
+        if self.f107_average_81day <= 0.0 || self.f107_yesterday <= 0.0 || self.ap_average < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "nrlmsise00 F10.7 values must be positive and Ap must be non-negative",
+            });
+        }
+        if !(Nrlmsise00Static::MIN_ALTITUDE_M..=Nrlmsise00Static::MAX_ALTITUDE_M)
+            .contains(&self.altitude_m)
+        {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "nrlmsise00 altitude outside 0..=1_000_000 m",
+            });
+        }
+        Ok(())
     }
 }
 
@@ -484,15 +554,40 @@ impl AtmosphereModel for Nrlmsise00Static {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Nrlmsise00Full;
 
+impl Nrlmsise00Full {
+    fn deferred() -> PhysicsError {
+        PhysicsError::OutOfEnvelope {
+            reason: "Nrlmsise00Full coefficient-based path is deferred; use Nrlmsise00Static",
+        }
+    }
+
+    /// Evaluate the reserved full-input NRLMSISE-00 path.
+    ///
+    /// The method validates the complete MSIS query and then fails
+    /// closed until the public-domain coefficient port lands. This
+    /// keeps scenario-side full-input plumbing honest without
+    /// pretending the static altitude table is a full empirical model.
+    ///
+    /// # Errors
+    ///
+    /// Returns input-validation errors from
+    /// [`Nrlmsise00Inputs::validate_full_path`] or a deferred
+    /// [`PhysicsError::OutOfEnvelope`] for valid inputs.
+    pub fn evaluate(self, inputs: Nrlmsise00Inputs) -> Result<Nrlmsise00Outputs, PhysicsError> {
+        inputs.validate_full_path()?;
+        Err(Self::deferred())
+    }
+}
+
 impl AtmosphereModel for Nrlmsise00Full {
     fn sample(
         &self,
-        _altitude_geometric_m: f64,
+        altitude_geometric_m: f64,
         _time: SimTime,
     ) -> Result<AtmosphereSample, PhysicsError> {
-        Err(PhysicsError::OutOfEnvelope {
-            reason: "Nrlmsise00Full coefficient-based path is deferred; use Nrlmsise00Static",
-        })
+        let inputs = Nrlmsise00Inputs::mid_conditions(altitude_geometric_m);
+        inputs.validate_full_path()?;
+        Err(Self::deferred())
     }
 }
 
@@ -579,6 +674,43 @@ mod tests {
         let m = Nrlmsise00Full;
         assert!(matches!(
             m.sample(200_000.0, SimTime::ZERO),
+            Err(PhysicsError::OutOfEnvelope { .. })
+        ));
+    }
+
+    #[test]
+    fn full_inputs_validate_mid_conditions() {
+        Nrlmsise00Inputs::mid_conditions(200_000.0)
+            .validate_full_path()
+            .unwrap();
+    }
+
+    #[test]
+    fn full_inputs_reject_out_of_range_latitude() {
+        let mut inputs = Nrlmsise00Inputs::mid_conditions(200_000.0);
+        inputs.latitude_rad = 100.0_f64.to_radians();
+        assert!(matches!(
+            inputs.validate_full_path(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn full_evaluate_rejects_bad_inputs_before_deferred_error() {
+        let m = Nrlmsise00Full;
+        let mut inputs = Nrlmsise00Inputs::mid_conditions(200_000.0);
+        inputs.ap_average = -1.0;
+        assert!(matches!(
+            m.evaluate(inputs),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn full_evaluate_valid_inputs_remains_deferred() {
+        let m = Nrlmsise00Full;
+        assert!(matches!(
+            m.evaluate(Nrlmsise00Inputs::mid_conditions(200_000.0)),
             Err(PhysicsError::OutOfEnvelope { .. })
         ));
     }
