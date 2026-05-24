@@ -257,6 +257,11 @@ mod tests {
             o_atomic: 0.0,
             no: 0.01,
             argon: 0.0,
+            n2_ion: 0.0,
+            o2_ion: 0.0,
+            no_ion: 0.0,
+            n_ion: 0.0,
+            o_ion: 0.0,
             electrons: 0.0,
         }
     }

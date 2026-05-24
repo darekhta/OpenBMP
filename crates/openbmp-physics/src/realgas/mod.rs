@@ -54,6 +54,16 @@ pub struct AirComposition {
     pub no: f64,
     /// Argon mole fraction.
     pub argon: f64,
+    /// Diatomic nitrogen ion mole fraction.
+    pub n2_ion: f64,
+    /// Diatomic oxygen ion mole fraction.
+    pub o2_ion: f64,
+    /// Nitric-oxide ion mole fraction.
+    pub no_ion: f64,
+    /// Atomic nitrogen ion mole fraction.
+    pub n_ion: f64,
+    /// Atomic oxygen ion mole fraction.
+    pub o_ion: f64,
     /// Electron mole fraction (ionisation, T > ~6000 K).
     pub electrons: f64,
 }
@@ -69,6 +79,11 @@ impl AirComposition {
             o_atomic: 0.0,
             no: 0.0,
             argon: 0.00934,
+            n2_ion: 0.0,
+            o2_ion: 0.0,
+            no_ion: 0.0,
+            n_ion: 0.0,
+            o_ion: 0.0,
             electrons: 0.0,
         }
     }
@@ -78,7 +93,18 @@ impl AirComposition {
     /// consuming downstream.
     #[must_use]
     pub fn sum(&self) -> f64 {
-        self.n2 + self.o2 + self.n_atomic + self.o_atomic + self.no + self.argon + self.electrons
+        self.n2
+            + self.o2
+            + self.n_atomic
+            + self.o_atomic
+            + self.no
+            + self.argon
+            + self.n2_ion
+            + self.o2_ion
+            + self.no_ion
+            + self.n_ion
+            + self.o_ion
+            + self.electrons
     }
 }
 

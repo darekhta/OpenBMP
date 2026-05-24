@@ -30,8 +30,9 @@ sub-phase landing on `main`.
   empirical coefficient-based path declared as
   `Nrlmsise00Full` and reserved.
 - `EquilibriumAir` trait surface with `TannehillEquilibriumAir` and
-  Mugalev 11-species typed-reserved. The audit removed the
-  unverified synthesized Tannehill table.
+  Mugalev 11-species typed-reserved. The shared composition type now
+  carries neutral, ion, and electron mole fractions, but the audit
+  removed the unverified synthesized Tannehill table.
 - Modified Newtonian, tangent-cone, tangent-wedge, and basic
   mesh-panel local-inclination hypersonic aero methods.
 - Knudsen number, Cheng / erfc / linear bridge functions,
@@ -84,7 +85,7 @@ Sub-phase status as of the latest commit on `main`.
 |---|---|---|
 | 6.0 — Hypersonic solver profile + implicit Euler sub-stepper | shipped (runner-dispatched scaffold) | `openbmp_sim::SolverProfile`, `implicit_euler_step`. `openbmp-cli` now accepts source-term profiles with explicit sub-step controls, wraps the selected trajectory integrator, and records solver metadata in telemetry. Coupled source-term state adapters remain follow-on work. |
 | 6.1 — NRLMSISE-00 static-defaults | shipped (static interpolant) | `openbmp_physics::Nrlmsise00Static` table regenerated from public NRLMSISE-00 `gtd7` outputs for F10.7 = 150, Ap = 4, equator, noon, equinox. Full path declared `Nrlmsise00Full` (reserved). |
-| 6.2 — Tannehill 5-species equilibrium air | deferred | `openbmp_physics::TannehillEquilibriumAir` now fails closed pending verified public table values. Mugalev 11-species reserved. |
+| 6.2 — Tannehill 5-species equilibrium air | deferred | `openbmp_physics::TannehillEquilibriumAir` now fails closed pending verified public table values. `AirComposition` can represent the reserved 11-species ion/electron surface, but Mugalev remains reserved. |
 | 6.3 — Hypersonic aero methods | shipped (checked approximations) | `ModifiedNewtonian`, modified-Newtonian `TangentCone`, `TangentWedge`, `LocalInclinationPanels`, `hypersonic_similarity_parameter`. Full Taylor-Maccoll validation and mesh-deck ingestion deferred. |
 | 6.4 — Stagnation heating | partially shipped | `SuttonGraves` shipped; `FayRiddell` is a cold-gas checked scaffold; `TauberSuttonRadiative` fails closed pending published coefficients. |
 | 6.5 — Boundary layer + distributed heating | shipped | `BoundaryLayerState`, `EmpiricalTransition`, `EnTransition`, `ReThetaTransition`, `ReferenceEnthalpyHeating`. |
