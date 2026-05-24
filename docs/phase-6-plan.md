@@ -91,7 +91,7 @@ Sub-phase status as of the latest commit on `main`.
 | 6.5 — Boundary layer + distributed heating | shipped | `BoundaryLayerState`, `EmpiricalTransition`, `EnTransition`, `ReThetaTransition`, `ReferenceEnthalpyHeating`. |
 | 6.6 — Knudsen bridging + free-molecular aero | shipped | `mean_free_path_m`, `knudsen_number`, `ChengBridge`, `ErfcBridge`, `LinearKnudsenBridge`, `FreeMolecularAero`, `HybridAeroMethod`. |
 | 6.7 — Trajectory infrastructure | shipped | `EntryInterfaceBuilder`, `AllenEggers`, `Vinh`. |
-| 6.8 — Validation suite | shipped (reduced analytic-toy battery) | `crates/openbmp-physics/tests/hypersonic_validation.rs`. Tannehill, Park-2T, Tauber-Sutton, Apollo, and Stardust public-benchmark cases reserved for follow-on slices. |
+| 6.8 — Validation suite | shipped (reduced analytic-toy battery) | `crates/openbmp-physics/tests/hypersonic_validation.rs`. Apollo / Stardust NASA/TP-2006-213486 table-13 heating benchmarks are pinned in SI units; full trajectory and Tauber-Sutton radiative comparisons remain reserved with Tannehill and Park-2T. |
 | 6.9 — 1-D thermal-conduction toy | shipped | `openbmp_aerothermal::OneDThermalToy`. |
 | 6.10 — Park 2T nonequilibrium thermochemistry | deferred | `openbmp_physics::ParkTwoTemperatureModel` API surface exists, and the reserved `ReactionRates` container no longer hard-codes the rejected five-reaction proxy. Park87 requires a 17-reaction table when coefficients land; Park90 / Park93 still fail closed pending verified reaction tables and species-specific relaxation constants. |
 | 6.11 — Generic ablation toy | shipped (checked toy) | `openbmp_aerothermal::{SteadyStateAblator, CharringAblator, DepthResolvedCharringAblator, BlowingCorrelation}`. Recession consumes caller-supplied heat flux; the depth-resolved model is energy-limited and generic, not a fielded TPS surrogate. |
@@ -118,10 +118,11 @@ Phase 6 closes when:
 
 ## Deferred to follow-on slices
 
-- **Apollo / Stardust public-benchmark trajectories** — the analytic-
-  toy battery is in place; the public-benchmark cross-validation
-  needs the kernel-side rigid-body scenario wiring and the
-  re-entry trajectory plumbing into `openbmp-cli`.
+- **Apollo / Stardust public-benchmark trajectories** — table-13
+  heating / heat-load benchmark values are pinned in SI units. Full
+  trajectory cross-validation still needs kernel-side rigid-body
+  scenario wiring, radiative-heating coefficients, and re-entry
+  trajectory plumbing into `openbmp-cli`.
 - **Coupled SolverProfile source adapters** — source-term profiles now
   dispatch through the runner and record telemetry metadata, but no
   coupled chemistry / material state adapter is wired until verified

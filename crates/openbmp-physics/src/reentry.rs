@@ -23,6 +23,80 @@ const G0_M_S2: f64 = 9.806_65;
 /// Earth radius used by the toy propagators (m).
 const R_EARTH_M: f64 = 6.371_0e6;
 
+/// Public Earth-entry heating benchmark from NASA/TP-2006-213486
+/// table 13.
+///
+/// These values are not operational vehicle data. They are published
+/// Apollo / Stardust-class stagnation-point heating and heat-load
+/// summaries intended as validation anchors for academic entry
+/// analysis. Units are converted to SI at the API boundary.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PublicEntryHeatingBenchmark {
+    /// Stable short identifier.
+    pub id: &'static str,
+    /// Published vehicle label.
+    pub vehicle: &'static str,
+    /// Ballistic parameter from the source table (kg/m²), when
+    /// listed.
+    pub ballistic_parameter_kg_m2: Option<f64>,
+    /// Entry velocity (m/s).
+    pub entry_velocity_m_s: f64,
+    /// Entry flight-path angle below horizon (rad), when listed.
+    pub flight_path_angle_below_horizon_rad: Option<f64>,
+    /// Peak stagnation-point total heat flux (W/m²).
+    pub peak_stagnation_total_heat_flux_w_m2: f64,
+    /// Total stagnation-point heat load (J/m²), when listed.
+    pub total_heat_load_j_m2: Option<f64>,
+    /// Radiative fraction of peak heat flux, when listed.
+    pub peak_radiative_fraction: Option<f64>,
+    /// Radiative fraction of total heat load, when listed.
+    pub heat_load_radiative_fraction: Option<f64>,
+}
+
+impl PublicEntryHeatingBenchmark {
+    /// Convective component of peak heat flux when the source table
+    /// provides a radiative fraction.
+    #[must_use]
+    pub fn peak_convective_heat_flux_w_m2(&self) -> Option<f64> {
+        self.peak_radiative_fraction
+            .map(|frac| self.peak_stagnation_total_heat_flux_w_m2 * (1.0 - frac))
+    }
+
+    /// Radiative component of peak heat flux when the source table
+    /// provides a radiative fraction.
+    #[must_use]
+    pub fn peak_radiative_heat_flux_w_m2(&self) -> Option<f64> {
+        self.peak_radiative_fraction
+            .map(|frac| self.peak_stagnation_total_heat_flux_w_m2 * frac)
+    }
+}
+
+/// Apollo Command Module table-13 benchmark.
+pub const APOLLO_CM_TABLE13_HEATING: PublicEntryHeatingBenchmark = PublicEntryHeatingBenchmark {
+    id: "apollo-cm-table13",
+    vehicle: "Apollo CM, L/D ~= 0.3",
+    ballistic_parameter_kg_m2: Some(500.0),
+    entry_velocity_m_s: 11_000.0,
+    flight_path_angle_below_horizon_rad: None,
+    peak_stagnation_total_heat_flux_w_m2: 510.0 * 10_000.0,
+    total_heat_load_j_m2: None,
+    peak_radiative_fraction: Some(0.34),
+    heat_load_radiative_fraction: None,
+};
+
+/// Stardust SRC table-13 benchmark.
+pub const STARDUST_SRC_TABLE13_HEATING: PublicEntryHeatingBenchmark = PublicEntryHeatingBenchmark {
+    id: "stardust-src-table13",
+    vehicle: "Stardust",
+    ballistic_parameter_kg_m2: Some(68.2),
+    entry_velocity_m_s: 12_900.0,
+    flight_path_angle_below_horizon_rad: Some(8.2_f64.to_radians()),
+    peak_stagnation_total_heat_flux_w_m2: 856.0 * 10_000.0,
+    total_heat_load_j_m2: Some(23_730.0 * 10_000.0),
+    peak_radiative_fraction: None,
+    heat_load_radiative_fraction: Some(0.09),
+};
+
 /// Entry-interface state convenience builder.
 ///
 /// Returns a `(position, velocity, flight-path-angle, heading)`
@@ -365,6 +439,46 @@ mod tests {
         let n = ae.peak_deceleration_g();
         // Tolerance ± 5 % on the classical analytic value.
         assert!((n - 14.2).abs() / 14.2 < 0.05, "n_max = {n} g");
+    }
+
+    #[test]
+    fn public_apollo_benchmark_converts_table13_heat_flux_to_si() {
+        let b = APOLLO_CM_TABLE13_HEATING;
+        assert_relative_eq!(
+            b.peak_stagnation_total_heat_flux_w_m2,
+            5.10e6,
+            max_relative = 1.0e-12
+        );
+        assert_relative_eq!(
+            b.peak_convective_heat_flux_w_m2().unwrap(),
+            3.366e6,
+            max_relative = 1.0e-12
+        );
+        assert_relative_eq!(
+            b.peak_radiative_heat_flux_w_m2().unwrap(),
+            1.734e6,
+            max_relative = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn public_stardust_benchmark_converts_table13_heat_load_to_si() {
+        let b = STARDUST_SRC_TABLE13_HEATING;
+        assert_relative_eq!(
+            b.peak_stagnation_total_heat_flux_w_m2,
+            8.56e6,
+            max_relative = 1.0e-12
+        );
+        assert_relative_eq!(
+            b.total_heat_load_j_m2.unwrap(),
+            2.373e8,
+            max_relative = 1.0e-12
+        );
+        assert_relative_eq!(
+            b.heat_load_radiative_fraction.unwrap(),
+            0.09,
+            max_relative = 1.0e-12
+        );
     }
 
     #[test]

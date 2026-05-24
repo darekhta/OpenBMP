@@ -68,6 +68,9 @@ pub use atmosphere::{
     PiecewiseExponentialAtmosphere, UsStandard1976,
 };
 pub use error::PhysicsError;
+pub use external_reference::{
+    EnvelopeBounds, ExternalReferencePackage, ProvenanceBlock, ReferencePackageKind, ReferenceQuery,
+};
 pub use frames::{
     FrameContext, FrameProfile, FrameTransform, LocalGeodeticOrigin, WGS84_A_M,
     WGS84_ECCENTRICITY_SQUARED, WGS84_FLATTENING, WGS84_INV_FLATTENING, WGS84_MU_M3_S2,
@@ -89,13 +92,12 @@ pub use realgas::{
     AirComposition, EquilibriumAir, EquilibriumAirState, MugalevEquilibriumAir,
     TannehillEquilibriumAir,
 };
-pub use external_reference::{
-    EnvelopeBounds, ExternalReferencePackage, ProvenanceBlock, ReferencePackageKind,
-    ReferenceQuery,
+pub use reentry::{
+    APOLLO_CM_TABLE13_HEATING, AllenEggers, EntryInterfaceBuilder, PublicEntryHeatingBenchmark,
+    STARDUST_SRC_TABLE13_HEATING, Vinh, VinhState, VinhStateDerivative,
 };
-pub use reentry::{AllenEggers, EntryInterfaceBuilder, Vinh, VinhState, VinhStateDerivative};
-pub use uq::{ErrorBudget, UncertaintyContribution, ValidationStatus};
 pub use statistics::{chi_square_inverse_cdf_wilson_hilferty, inverse_standard_normal_cdf};
+pub use uq::{ErrorBudget, UncertaintyContribution, ValidationStatus};
 pub use validity::HalfOpenRange;
 pub use wind::{ConstantWind, LayerEntry, LayeredWind, NoWind, WindModel};
 #[cfg(feature = "synthetic")]

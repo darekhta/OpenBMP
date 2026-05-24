@@ -31,7 +31,8 @@
 
 use approx::assert_relative_eq;
 use openbmp_physics::{
-    AllenEggers, EquilibriumAir, Nrlmsise00Inputs, Nrlmsise00Static, TannehillEquilibriumAir,
+    APOLLO_CM_TABLE13_HEATING, AllenEggers, EquilibriumAir, Nrlmsise00Inputs, Nrlmsise00Static,
+    STARDUST_SRC_TABLE13_HEATING, TannehillEquilibriumAir,
 };
 
 #[test]
@@ -134,6 +135,22 @@ fn sutton_graves_apollo_sanity_point() {
         (h.q_conv_w_m2 - 1.89e6).abs() / 1.89e6 < 0.10,
         "Sutton-Graves Apollo q_conv = {} W/m²",
         h.q_conv_w_m2
+    );
+}
+
+#[test]
+fn apollo_stardust_public_table13_benchmarks_are_pinned() {
+    assert_relative_eq!(
+        APOLLO_CM_TABLE13_HEATING
+            .peak_convective_heat_flux_w_m2()
+            .unwrap(),
+        3.366e6,
+        max_relative = 1.0e-12
+    );
+    assert_relative_eq!(
+        STARDUST_SRC_TABLE13_HEATING.total_heat_load_j_m2.unwrap(),
+        2.373e8,
+        max_relative = 1.0e-12
     );
 }
 
