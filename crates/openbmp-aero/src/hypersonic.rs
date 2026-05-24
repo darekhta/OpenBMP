@@ -155,14 +155,20 @@ pub enum PanelMethod {
 /// Each triangle contributes `F_i = -Cp_i q A_i n_i`, where `n_i`
 /// is the outward unit normal from the mesh winding. Moments use
 /// the triangle centroid about the body origin. When `shadowing` is
-/// true, panels with `n_i · u_upstream <= 0` are skipped.
+/// true, panels with `n_i · u_upstream <= 0` are skipped. When
+/// `shadowing` is false, triangles are treated as two-sided academic
+/// panels: away-facing normals are flipped for the pressure
+/// direction, so open-mesh fixtures can still produce load without
+/// changing vertex winding.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LocalInclinationPanels {
     /// Triangulated body surface.
     pub geometry: PanelMesh,
     /// Per-panel pressure model.
     pub method: PanelMethod,
-    /// Whether to zero back-facing panels.
+    /// Whether to zero back-facing panels. If false, panels are
+    /// evaluated as two-sided by flipping away-facing normals for the
+    /// pressure direction.
     pub shadowing: bool,
     /// Stagnation pressure coefficient used by Modified Newtonian.
     pub cp_max: f64,
@@ -214,16 +220,12 @@ impl AeroMethod for LocalInclinationPanels {
             if self.shadowing && cos_theta <= 0.0 {
                 continue;
             }
+            let facing_normal = if cos_theta >= 0.0 { normal } else { -normal };
+            let cos_incidence = cos_theta.abs();
             let cp = match self.method {
-                PanelMethod::ModifiedNewtonian => {
-                    if cos_theta <= 0.0 {
-                        0.0
-                    } else {
-                        self.cp_max * cos_theta * cos_theta
-                    }
-                }
+                PanelMethod::ModifiedNewtonian => self.cp_max * cos_incidence * cos_incidence,
             };
-            let panel_force = -normal * (cp * pressure_scale * area);
+            let panel_force = -facing_normal * (cp * pressure_scale * area);
             let centroid = (a + b + c) / 3.0;
             force += panel_force;
             moment += centroid.cross(&panel_force);
@@ -826,6 +828,29 @@ mod tests {
             .aero_force_moment_body(&ctx(12.0, 0.0, 100.0))
             .unwrap();
         assert_relative_eq!(fmt.force_n_body.norm(), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(fmt.moment_n_m_body.norm(), 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn local_inclination_shadowing_false_makes_open_panels_two_sided() {
+        let mesh = PanelMesh::new(
+            vec![
+                Vector3::new(-1.0, -0.5, -0.5),
+                Vector3::new(-1.0, -0.5, 0.5),
+                Vector3::new(-1.0, 0.5, 0.5),
+                Vector3::new(-1.0, 0.5, -0.5),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        )
+        .unwrap();
+        let mut panels = LocalInclinationPanels::modified_newtonian(mesh, 2.0);
+        panels.shadowing = false;
+        let fmt = panels
+            .aero_force_moment_body(&ctx(12.0, 0.0, 100.0))
+            .unwrap();
+        assert_relative_eq!(fmt.force_n_body.x, -200.0, epsilon = 1e-12);
+        assert_relative_eq!(fmt.force_n_body.y, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(fmt.force_n_body.z, 0.0, epsilon = 1e-12);
         assert_relative_eq!(fmt.moment_n_m_body.norm(), 0.0, epsilon = 1e-12);
     }
 
