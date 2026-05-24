@@ -85,14 +85,8 @@ impl OneDThermalToy {
                 reason: "n_nodes must be ≥ 1",
             });
         }
-        if !(material.density_kg_m3 > 0.0
-            && material.specific_heat_j_kg_k > 0.0
-            && material.thermal_conductivity_w_m_k > 0.0)
-        {
-            return Err(AerothermalError::InvalidParameter {
-                reason: "material density / cp / k must be > 0",
-            });
-        }
+        validate_material(material)?;
+        validate_backwall(backwall)?;
         if !initial_temperature_k.is_finite() || initial_temperature_k <= 0.0 {
             return Err(AerothermalError::InvalidParameter {
                 reason: "initial temperature must be finite and > 0",
@@ -137,6 +131,7 @@ impl OneDThermalToy {
     /// Returns [`AerothermalError::OutOfEnvelope`] when the supplied
     /// step exceeds the Fourier-number stability bound.
     pub fn step(&mut self, dt_s: f64, q_surface_w_m2: f64) -> Result<(), AerothermalError> {
+        self.validate_state_for_step()?;
         if !dt_s.is_finite() || dt_s <= 0.0 {
             return Err(AerothermalError::InvalidParameter {
                 reason: "dt must be > 0",
@@ -200,6 +195,83 @@ impl OneDThermalToy {
     pub fn backwall_temperature_k(&self) -> f64 {
         self.temperature_k.last().copied().unwrap_or(0.0)
     }
+
+    fn validate_state_for_step(&self) -> Result<(), AerothermalError> {
+        if !self.thickness_m.is_finite() || self.thickness_m <= 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "thickness must be > 0",
+            });
+        }
+        if self.n_nodes == 0 || self.temperature_k.len() != self.n_nodes + 2 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "temperature vector length must equal n_nodes + 2",
+            });
+        }
+        validate_material(self.material)?;
+        validate_backwall(self.backwall)?;
+        if self
+            .temperature_k
+            .iter()
+            .any(|temperature| !temperature.is_finite() || *temperature <= 0.0)
+        {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "temperature state must be finite and > 0",
+            });
+        }
+        Ok(())
+    }
+}
+
+fn validate_material(material: ToyMaterial) -> Result<(), AerothermalError> {
+    if material.name.trim().is_empty() {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "material name must be non-empty",
+        });
+    }
+    if !(material.density_kg_m3.is_finite()
+        && material.density_kg_m3 > 0.0
+        && material.specific_heat_j_kg_k.is_finite()
+        && material.specific_heat_j_kg_k > 0.0
+        && material.thermal_conductivity_w_m_k.is_finite()
+        && material.thermal_conductivity_w_m_k > 0.0)
+    {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "material density / cp / k must be finite and > 0",
+        });
+    }
+    if !(material.emissivity.is_finite() && (0.0..=1.0).contains(&material.emissivity)) {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "material emissivity must be finite and in [0, 1]",
+        });
+    }
+    Ok(())
+}
+
+fn validate_backwall(backwall: BackwallCondition) -> Result<(), AerothermalError> {
+    match backwall {
+        BackwallCondition::Adiabatic => Ok(()),
+        BackwallCondition::PrescribedTemperature { t_k } => {
+            if !t_k.is_finite() || t_k <= 0.0 {
+                return Err(AerothermalError::InvalidParameter {
+                    reason: "prescribed backwall temperature must be finite and > 0",
+                });
+            }
+            Ok(())
+        }
+        BackwallCondition::Convective { h_w_m2_k, t_inf_k } => {
+            if !h_w_m2_k.is_finite() || h_w_m2_k < 0.0 {
+                return Err(AerothermalError::InvalidParameter {
+                    reason: "backwall convection coefficient must be finite and non-negative",
+                });
+            }
+            if !t_inf_k.is_finite() || t_inf_k <= 0.0 {
+                return Err(AerothermalError::InvalidParameter {
+                    reason: "backwall sink temperature must be finite and > 0",
+                });
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -248,6 +320,47 @@ mod tests {
     }
 
     #[test]
+    fn constructor_validates_material_and_backwall() {
+        let mut material = mat();
+        material.emissivity = 1.2;
+        assert!(matches!(
+            OneDThermalToy::with_uniform_temperature(
+                material,
+                0.01,
+                10,
+                BackwallCondition::Adiabatic,
+                300.0
+            ),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+
+        assert!(matches!(
+            OneDThermalToy::with_uniform_temperature(
+                mat(),
+                0.01,
+                10,
+                BackwallCondition::PrescribedTemperature { t_k: f64::NAN },
+                300.0
+            ),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+
+        assert!(matches!(
+            OneDThermalToy::with_uniform_temperature(
+                mat(),
+                0.01,
+                10,
+                BackwallCondition::Convective {
+                    h_w_m2_k: -1.0,
+                    t_inf_k: 300.0
+                },
+                300.0
+            ),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
     fn diffusivity_is_finite_positive() {
         let toy = OneDThermalToy::with_uniform_temperature(
             mat(),
@@ -275,6 +388,38 @@ mod tests {
         assert!(matches!(
             toy.step(too_big, 1.0e5),
             Err(AerothermalError::OutOfEnvelope { .. })
+        ));
+    }
+
+    #[test]
+    fn step_revalidates_public_mutable_state() {
+        let mut toy = OneDThermalToy::with_uniform_temperature(
+            mat(),
+            0.01,
+            10,
+            BackwallCondition::Adiabatic,
+            300.0,
+        )
+        .unwrap();
+        let dt = 0.4 * toy.max_stable_dt_s();
+        toy.temperature_k.pop();
+        assert!(matches!(
+            toy.step(dt, 1.0e5),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+
+        let mut toy = OneDThermalToy::with_uniform_temperature(
+            mat(),
+            0.01,
+            10,
+            BackwallCondition::Adiabatic,
+            300.0,
+        )
+        .unwrap();
+        toy.temperature_k[0] = f64::NAN;
+        assert!(matches!(
+            toy.step(dt, 1.0e5),
+            Err(AerothermalError::InvalidParameter { .. })
         ));
     }
 
