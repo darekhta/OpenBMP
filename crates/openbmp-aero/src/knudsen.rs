@@ -22,7 +22,11 @@ const D_AIR_M: f64 = 3.65e-10;
 /// Compute mean free path `λ = k_B · T / (√2 · π · d² · p)` (m).
 #[must_use]
 pub fn mean_free_path_m(temperature_k: f64, pressure_pa: f64) -> f64 {
-    if !temperature_k.is_finite() || !pressure_pa.is_finite() || pressure_pa <= 0.0 {
+    if !temperature_k.is_finite()
+        || !pressure_pa.is_finite()
+        || temperature_k <= 0.0
+        || pressure_pa <= 0.0
+    {
         return f64::INFINITY;
     }
     BOLTZMANN_J_K * temperature_k / ((2.0_f64).sqrt() * PI * D_AIR_M * D_AIR_M * pressure_pa)
@@ -31,7 +35,11 @@ pub fn mean_free_path_m(temperature_k: f64, pressure_pa: f64) -> f64 {
 /// Compute Knudsen number `Kn = λ / L_ref` (dimensionless).
 #[must_use]
 pub fn knudsen_number(mean_free_path_m_val: f64, characteristic_length_m: f64) -> f64 {
-    if !characteristic_length_m.is_finite() || characteristic_length_m <= 0.0 {
+    if !mean_free_path_m_val.is_finite()
+        || mean_free_path_m_val < 0.0
+        || !characteristic_length_m.is_finite()
+        || characteristic_length_m <= 0.0
+    {
         return f64::INFINITY;
     }
     mean_free_path_m_val / characteristic_length_m
@@ -358,6 +366,14 @@ mod tests {
         // At T = 1000 K, p = 1e-5 Pa (~400 km): λ ≈ 100s of meters.
         let lam = mean_free_path_m(1000.0, 1.0e-5);
         assert!(lam > 1.0, "λ = {lam}");
+    }
+
+    #[test]
+    fn invalid_mean_free_path_inputs_fail_closed_to_infinity() {
+        assert!(mean_free_path_m(-1.0, 101_325.0).is_infinite());
+        assert!(mean_free_path_m(288.15, -1.0).is_infinite());
+        assert!(knudsen_number(-1.0, 1.0).is_infinite());
+        assert!(knudsen_number(f64::NAN, 1.0).is_infinite());
     }
 
     #[test]
