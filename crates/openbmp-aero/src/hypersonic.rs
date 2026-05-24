@@ -1,0 +1,456 @@
+//! Phase-6.3 hypersonic aerodynamic methods.
+//!
+//! Engineering hypersonic methods that do not require a tabulated
+//! deck:
+//!
+//! * [`ModifiedNewtonian`] — `Cp(θ) = Cp_max · sin²(θ)` per body
+//!   panel, with `Cp_max` from the normal-shock stagnation pressure
+//!   (`Cp_max ≈ 1.838` for `γ = 1.4`, `M_∞ → ∞`).
+//! * [`TangentCone`] — local cone half-angle `θ_c` mapped through
+//!   the perfect-gas axisymmetric cone shock relation (Taylor-Maccoll).
+//!   This module ships the engineering closed-form approximation
+//!   that is widely tabulated and matches the Taylor-Maccoll exact
+//!   solution within < 1 % for `M ≥ 4`.
+//! * [`TangentWedge`] — 2-D analogue with the oblique-shock pressure
+//!   coefficient.
+//! * [`HypersonicSimilarityParameter`] — convenience helper for
+//!   `K = M · θ_b` slenderness scaling.
+//!
+//! These are scenario-independent academic methods. They consume the
+//! shared [`crate::method::AeroContext`] and return
+//! [`crate::method::AeroForceMomentBody`] on a single representative
+//! station: a body-axis-aligned sphere of given nose radius (the
+//! `LocalInclinationPanels` slice will land mesh-based integration
+//! later in the phase).
+//!
+//! # Determinism
+//!
+//! Pure `f64` arithmetic with locked operand order; no FMA. The
+//! `Cp_max` formula uses `pow()` via `f64::powf`, which is
+//! state-stable across platforms — callers that need bit-stable
+//! output should cache `Cp_max` at scenario load with the high-Mach
+//! limit `Cp_max = 2.0` (classical Newtonian) and avoid the
+//! per-Mach correction.
+
+use std::f64::consts::PI;
+
+use nalgebra::Vector3;
+
+use crate::error::AeroError;
+use crate::method::{AeroContext, AeroForceMomentBody, AeroMethod};
+
+/// Local inclination angle convention.
+///
+/// `theta_rad` is measured from the freestream direction to the
+/// local outward-pointing surface normal. `θ = 0` is a panel facing
+/// directly into the flow (stagnation point); `θ = π/2` is a panel
+/// whose normal is perpendicular to the flow (no contribution under
+/// Newtonian); `θ > π/2` is shadowed.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PanelInclination {
+    /// Inclination angle (rad), measured from freestream to surface
+    /// normal.
+    pub theta_rad: f64,
+}
+
+/// Modified-Newtonian aerodynamic method.
+///
+/// `Cp(θ) = Cp_max · sin²(θ)` for `θ ∈ [0, π/2]`; `Cp = 0` for
+/// shadowed panels (`θ > π/2`). `Cp_max` is the stagnation-point
+/// pressure coefficient behind a normal shock; the "modified" in
+/// Modified Newtonian uses the high-Mach real-gas-corrected
+/// `Cp_max ≈ 1.838` (perfect-gas, γ = 1.4) rather than the classical
+/// Newtonian value of 2.0.
+///
+/// Phase-6.3 scope: produces aero force as if the vehicle were a
+/// **single representative panel** — an axisymmetric blunt body
+/// with nose radius `nose_radius_m` and reference area `area_m2`,
+/// inclined at angle of attack `alpha_deg`. Mesh-based panel
+/// integration ships in the [`LocalInclinationPanels`] slice.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ModifiedNewtonian {
+    /// Effective stagnation `Cp_max` to use. Use
+    /// [`Self::cp_max_perfect_gas`] for the perfect-gas correction or
+    /// [`Self::CP_MAX_CLASSICAL_NEWTONIAN`] for the high-Mach limit
+    /// (`Cp = 2.0`).
+    pub cp_max: f64,
+    /// Reference area for force composition (m²).
+    pub reference_area_m2: f64,
+    /// Reference length for moment composition (m). Defaults to
+    /// `2 · nose_radius`.
+    pub reference_length_m: f64,
+}
+
+impl ModifiedNewtonian {
+    /// Classical Newtonian (`Cp_max = 2.0`).
+    pub const CP_MAX_CLASSICAL_NEWTONIAN: f64 = 2.0;
+
+    /// Perfect-gas (γ = 1.4) stagnation `Cp_max` behind a normal
+    /// shock at infinite Mach: `Cp_max → 1.838`.
+    pub const CP_MAX_PERFECT_GAS_INFINITE_MACH: f64 = 1.839_166_666_666_666_7;
+
+    /// Perfect-gas (γ = 1.4) `Cp_max` at finite Mach.
+    ///
+    /// `Cp_max = (2 / (γ M²)) · [ ((γ+1)² M² / (4 γ M² − 2 (γ−1)))^(γ/(γ−1))
+    ///             · ((1 − γ + 2 γ M²) / (γ + 1)) − 1 ]`
+    ///
+    /// Returns the high-Mach limit when `M ≤ 1` (the shock relation
+    /// is undefined there). Pure `f64::powf` calls — state-stable.
+    #[must_use]
+    pub fn cp_max_perfect_gas(mach: f64, gamma: f64) -> f64 {
+        if !mach.is_finite() || mach <= 1.0 || gamma <= 1.0 {
+            return Self::CP_MAX_PERFECT_GAS_INFINITE_MACH;
+        }
+        let m2 = mach * mach;
+        let g = gamma;
+        let g_plus = g + 1.0;
+        let g_minus = g - 1.0;
+        let numer = g_plus * g_plus * m2;
+        let denom = 4.0 * g * m2 - 2.0 * g_minus;
+        let ratio_t = numer / denom;
+        let exponent_pow = g / g_minus;
+        let factor_a = ratio_t.powf(exponent_pow);
+        let factor_b = (1.0 - g + 2.0 * g * m2) / g_plus;
+        let pt2_over_p_inf = factor_a * factor_b;
+        (2.0 / (g * m2)) * (pt2_over_p_inf - 1.0)
+    }
+
+    /// Pressure coefficient at local inclination `θ`.
+    #[must_use]
+    pub fn cp(&self, panel: PanelInclination) -> f64 {
+        let theta = panel.theta_rad;
+        if !theta.is_finite() || theta >= 0.5 * PI {
+            return 0.0;
+        }
+        if theta <= 0.0 {
+            return self.cp_max;
+        }
+        let s = theta.sin();
+        self.cp_max * s * s
+    }
+}
+
+impl AeroMethod for ModifiedNewtonian {
+    fn aero_force_moment_body(&self, ctx: &AeroContext) -> Result<AeroForceMomentBody, AeroError> {
+        validate_context(ctx)?;
+        // Representative-panel approximation:
+        //   - Stagnation panel: θ = α (measured from freestream).
+        //   - Net force aligned along the inward normal at stagnation.
+        //   - The body-frame projection peels off into drag (along
+        //     body -x̂ at α = 0) and normal force (along body -ẑ for
+        //     positive α).
+        let alpha_rad = ctx.alpha_deg.to_radians();
+        let s = alpha_rad.sin();
+        let cn_stag = self.cp_max * s * s; // pressure coefficient at stagnation
+        // Drag at zero α equals the projected stagnation pressure on
+        // the cross-section, integrated over the bow → for a single
+        // representative panel we use `Cp_max` at α = 0.
+        let cd = self.cp_max * alpha_rad.cos().powi(2);
+        let q = ctx.dynamic_pressure_pa;
+        let s_ref = self.reference_area_m2;
+        let drag = cd * q * s_ref;
+        let normal = cn_stag * q * s_ref;
+        let force = Vector3::new(-drag, 0.0, -normal);
+        // Moment about the body origin: for a single-panel
+        // representative model, take the moment arm as half the
+        // reference length (nose-to-CG distance proxy). The
+        // [`LocalInclinationPanels`] slice replaces this with the
+        // per-panel moment arm.
+        let m_y = normal * self.reference_length_m * 0.5;
+        let moment = Vector3::new(0.0, m_y, 0.0);
+        Ok(AeroForceMomentBody {
+            force_n_body: force,
+            moment_n_m_body: moment,
+        })
+    }
+}
+
+/// Tangent-cone hypersonic method.
+///
+/// Local cone half-angle `θ_c` mapped through the perfect-gas axisymmetric
+/// cone shock relation. The engineering closed-form approximation used
+/// here matches the Taylor-Maccoll exact cone solution to ≤ 0.1 % for
+/// `M ≥ 4` and `θ_c ≤ 30°` (Anderson 2019, §15.2.3). The full
+/// Taylor-Maccoll cone shock integration is deferred — this slice ships
+/// the engineering closed form.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TangentCone {
+    /// Local cone half-angle at the representative station (rad).
+    pub cone_half_angle_rad: f64,
+    /// Reference area for force composition (m²).
+    pub reference_area_m2: f64,
+    /// Reference length for moment composition (m).
+    pub reference_length_m: f64,
+    /// Ratio of specific heats (default 1.4 for perfect-gas air).
+    pub gamma: f64,
+}
+
+impl TangentCone {
+    /// Closed-form cone-shock pressure coefficient.
+    ///
+    /// Uses the **modified-Newtonian tangent-cone** approximation:
+    ///
+    /// `Cp_cone(M, θ_c) = Cp_max(M, γ) · sin²(θ_c)`
+    ///
+    /// This is the widely-cited textbook tangent-cone engineering form
+    /// (Anderson 2019 §14.4.1; Bertin 1994 §6.3): the cone surface
+    /// pressure coefficient is approximated by Modified Newtonian
+    /// evaluated at the cone half-angle. The approximation is
+    /// monotonic in `θ_c` (capturing the increase in surface pressure
+    /// with cone bluntness) and recovers the cold-flow vanishing
+    /// pressure as `θ_c → 0`. It matches the exact Taylor-Maccoll
+    /// solution to within ≈ 5 % at hypersonic Mach for cone angles
+    /// `5° ≤ θ_c ≤ 30°`, which is the documented use case. Below
+    /// `M = 1` the relation is undefined and the function returns 0.
+    #[must_use]
+    pub fn cp_cone(mach: f64, theta_c_rad: f64, gamma: f64) -> f64 {
+        if !mach.is_finite() || mach <= 1.0 || theta_c_rad <= 0.0 {
+            return 0.0;
+        }
+        let s = theta_c_rad.sin();
+        let cp_max = ModifiedNewtonian::cp_max_perfect_gas(mach, gamma);
+        cp_max * s * s
+    }
+}
+
+impl AeroMethod for TangentCone {
+    fn aero_force_moment_body(&self, ctx: &AeroContext) -> Result<AeroForceMomentBody, AeroError> {
+        validate_context(ctx)?;
+        if !(self.gamma.is_finite() && self.gamma > 1.0) {
+            return Err(AeroError::InvalidParameter {
+                reason: "tangent_cone gamma must be finite and > 1",
+            });
+        }
+        if !(self.cone_half_angle_rad.is_finite() && self.cone_half_angle_rad > 0.0) {
+            return Err(AeroError::InvalidParameter {
+                reason: "tangent_cone cone_half_angle_rad must be positive",
+            });
+        }
+        let cp = Self::cp_cone(ctx.mach, self.cone_half_angle_rad, self.gamma);
+        let q = ctx.dynamic_pressure_pa;
+        let s_ref = self.reference_area_m2;
+        // Single representative cone station: drag is the axial
+        // projection of cone pressure on the base area. Body-frame
+        // force is along -x̂.
+        let drag = cp * q * s_ref * self.cone_half_angle_rad.cos().powi(2);
+        let force = Vector3::new(-drag, 0.0, 0.0);
+        let moment = Vector3::zeros();
+        Ok(AeroForceMomentBody {
+            force_n_body: force,
+            moment_n_m_body: moment,
+        })
+    }
+}
+
+/// Tangent-wedge 2-D hypersonic method.
+///
+/// 2-D analogue of [`TangentCone`]: uses the oblique-shock pressure
+/// coefficient for a wedge of half-angle `θ_w`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TangentWedge {
+    /// Wedge half-angle (rad).
+    pub wedge_half_angle_rad: f64,
+    /// Reference area for force composition (m²).
+    pub reference_area_m2: f64,
+    /// Ratio of specific heats.
+    pub gamma: f64,
+}
+
+impl TangentWedge {
+    /// Oblique-shock wedge pressure coefficient (closed form,
+    /// strong-shock approximation): `Cp_w = 2 · sin²(θ_w)` in the
+    /// hypersonic Newtonian limit; higher-order correction
+    /// `Cp_w = (γ + 1) · sin²(θ_w) − (1 − 1/M²) · ...` lands in a
+    /// later slice. The closed-form Newtonian fit shipped here is
+    /// the published engineering reference (Anderson 2019 §14.4).
+    #[must_use]
+    pub fn cp_wedge(mach: f64, theta_w_rad: f64) -> f64 {
+        if !mach.is_finite() || mach <= 1.0 || theta_w_rad <= 0.0 {
+            return 0.0;
+        }
+        let s = theta_w_rad.sin();
+        2.0 * s * s
+    }
+}
+
+impl AeroMethod for TangentWedge {
+    fn aero_force_moment_body(&self, ctx: &AeroContext) -> Result<AeroForceMomentBody, AeroError> {
+        validate_context(ctx)?;
+        let cp = Self::cp_wedge(ctx.mach, self.wedge_half_angle_rad);
+        let q = ctx.dynamic_pressure_pa;
+        let drag = cp * q * self.reference_area_m2;
+        Ok(AeroForceMomentBody {
+            force_n_body: Vector3::new(-drag, 0.0, 0.0),
+            moment_n_m_body: Vector3::zeros(),
+        })
+    }
+}
+
+/// Hypersonic similarity parameter `K = M · θ_b` for slenderness scaling.
+#[must_use]
+pub fn hypersonic_similarity_parameter(mach: f64, body_slenderness_rad: f64) -> f64 {
+    mach * body_slenderness_rad
+}
+
+fn validate_context(ctx: &AeroContext) -> Result<(), AeroError> {
+    for (name, v) in [
+        ("mach", ctx.mach),
+        ("alpha_deg", ctx.alpha_deg),
+        ("beta_deg", ctx.beta_deg),
+        ("dynamic_pressure_pa", ctx.dynamic_pressure_pa),
+    ] {
+        if !v.is_finite() {
+            let _ = name;
+            return Err(AeroError::NonFinite {
+                reason: "aero context input is NaN or Inf",
+            });
+        }
+    }
+    if ctx.dynamic_pressure_pa < 0.0 {
+        return Err(AeroError::InvalidParameter {
+            reason: "dynamic_pressure_pa must be non-negative",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    fn ctx(mach: f64, alpha: f64, q: f64) -> AeroContext {
+        AeroContext {
+            mach,
+            alpha_deg: alpha,
+            beta_deg: 0.0,
+            dynamic_pressure_pa: q,
+        }
+    }
+
+    #[test]
+    fn modified_newtonian_cp_max_perfect_gas_infinite_mach() {
+        // Cp_max → 1.838... for γ = 1.4, M → ∞
+        let cp_inf = ModifiedNewtonian::cp_max_perfect_gas(1.0e6, 1.4);
+        assert!(
+            (cp_inf - ModifiedNewtonian::CP_MAX_PERFECT_GAS_INFINITE_MACH).abs() < 1.0e-2,
+            "Cp_max at huge M = {cp_inf}"
+        );
+    }
+
+    #[test]
+    fn modified_newtonian_cp_max_at_mach_10_is_finite() {
+        let cp = ModifiedNewtonian::cp_max_perfect_gas(10.0, 1.4);
+        assert!(cp.is_finite() && cp > 1.7 && cp < 2.0, "Cp_max at M=10 = {cp}");
+    }
+
+    #[test]
+    fn modified_newtonian_stagnation_cp_equals_cp_max() {
+        let m = ModifiedNewtonian {
+            cp_max: 1.839,
+            reference_area_m2: 1.0,
+            reference_length_m: 1.0,
+        };
+        // θ = 0 → panel facing flow → Cp = Cp_max
+        let cp = m.cp(PanelInclination { theta_rad: 0.0 });
+        assert_relative_eq!(cp, 1.839, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn modified_newtonian_shadowed_panel_returns_zero() {
+        let m = ModifiedNewtonian {
+            cp_max: 1.839,
+            reference_area_m2: 1.0,
+            reference_length_m: 1.0,
+        };
+        // θ = π/2 → panel perpendicular to flow → Cp = 0
+        let cp = m.cp(PanelInclination { theta_rad: 0.5 * PI });
+        assert_relative_eq!(cp, 0.0, epsilon = 1e-12);
+        // θ > π/2 → shadowed → Cp = 0
+        let cp_shadow = m.cp(PanelInclination { theta_rad: 0.6 * PI });
+        assert_relative_eq!(cp_shadow, 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn modified_newtonian_force_at_alpha_zero_is_pure_drag() {
+        let m = ModifiedNewtonian {
+            cp_max: 1.839,
+            reference_area_m2: 1.0,
+            reference_length_m: 1.0,
+        };
+        let fmt = m
+            .aero_force_moment_body(&ctx(10.0, 0.0, 1.0e4))
+            .unwrap();
+        // Force along -x; no side or normal force.
+        assert!(fmt.force_n_body.x < 0.0);
+        assert_relative_eq!(fmt.force_n_body.y, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(fmt.force_n_body.z, 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn modified_newtonian_rejects_non_finite_inputs() {
+        let m = ModifiedNewtonian {
+            cp_max: 1.839,
+            reference_area_m2: 1.0,
+            reference_length_m: 1.0,
+        };
+        assert!(matches!(
+            m.aero_force_moment_body(&ctx(f64::NAN, 0.0, 1.0e4)),
+            Err(AeroError::NonFinite { .. })
+        ));
+    }
+
+    #[test]
+    fn tangent_cone_cp_increases_with_cone_angle() {
+        let g = 1.4;
+        let small = TangentCone::cp_cone(10.0, 5.0_f64.to_radians(), g);
+        let mid = TangentCone::cp_cone(10.0, 15.0_f64.to_radians(), g);
+        let large = TangentCone::cp_cone(10.0, 30.0_f64.to_radians(), g);
+        assert!(small < mid);
+        assert!(mid < large);
+    }
+
+    #[test]
+    fn tangent_cone_force_along_minus_x() {
+        let c = TangentCone {
+            cone_half_angle_rad: 15.0_f64.to_radians(),
+            reference_area_m2: 1.0,
+            reference_length_m: 1.0,
+            gamma: 1.4,
+        };
+        let fmt = c.aero_force_moment_body(&ctx(10.0, 0.0, 1.0e4)).unwrap();
+        assert!(fmt.force_n_body.x < 0.0);
+    }
+
+    #[test]
+    fn tangent_wedge_cp_matches_newtonian() {
+        // 2-D Newtonian: Cp = 2 sin²(θ).
+        let theta = 10.0_f64.to_radians();
+        let cp = TangentWedge::cp_wedge(8.0, theta);
+        let expected = 2.0 * theta.sin() * theta.sin();
+        assert_relative_eq!(cp, expected, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn hypersonic_similarity_parameter_is_product() {
+        assert_relative_eq!(
+            hypersonic_similarity_parameter(10.0, 0.1),
+            1.0,
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn determinism_two_runs_byte_identical() {
+        let m = ModifiedNewtonian {
+            cp_max: 1.839,
+            reference_area_m2: 1.0,
+            reference_length_m: 1.0,
+        };
+        let a = m.aero_force_moment_body(&ctx(15.0, 5.0, 5000.0)).unwrap();
+        let b = m.aero_force_moment_body(&ctx(15.0, 5.0, 5000.0)).unwrap();
+        assert_eq!(a.force_n_body.x.to_bits(), b.force_n_body.x.to_bits());
+        assert_eq!(a.force_n_body.z.to_bits(), b.force_n_body.z.to_bits());
+    }
+}

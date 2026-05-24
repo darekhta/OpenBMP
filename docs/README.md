@@ -46,6 +46,14 @@ rocket-class and launch-vehicle-class flight simulation.
   lab-HIL adapter pattern. Public-data integration (e.g., a peer-reviewed
   Starship-class study) is treated as a downstream-user example only.
 
+## Phase 6 — Hypersonic / re-entry extensions
+
+Phase 6 is the hypersonic / re-entry research extension layer. The
+[`phase-6-plan.md`](phase-6-plan.md) tracks delivery status per
+sub-phase; the [`hypersonic-extensions.md`](hypersonic-extensions.md)
+document remains the authoritative source for the math, envelopes,
+and safety posture.
+
 ## Mission graph architecture (Phase 5.X, closed)
 
 Phase 5.X — the architecture-refactor phase between Phase 5 and

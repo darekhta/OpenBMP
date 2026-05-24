@@ -15,12 +15,18 @@ ships no HAL and does not validate or support hardware deployment.
 
 ## Status
 
-**Phase 1 — Deterministic Core** is complete.
+**Phase 6 — Hypersonic / re-entry extensions** is in delivery. See
+[`docs/phase-6-plan.md`](docs/phase-6-plan.md) for sub-phase status.
 
-The repository's documentation set is complete (Phase 0). Phase 1 landed
-the deterministic kernel, telemetry, scenario format, CLI, analytic-toy
-validation case, and CI gates. No crate ships physics fidelity yet; that
-arrives in Phase 2.
+The deterministic kernel (Phase 1), physics fidelity (Phases 2-3),
+flight-controller and estimator stack (Phases 4-5), and mission-graph
+architecture refactor (Phase 5.X) all closed before Phase 6 opened.
+Phase 6 ships the hypersonic atmosphere, real-gas thermodynamics,
+hypersonic aero methods, aerothermal heat transfer, Park 2T
+nonequilibrium thermochemistry, generic ablation toy, re-entry
+trajectory infrastructure, external reference packages, and UQ /
+credibility reporting described in
+[`docs/hypersonic-extensions.md`](docs/hypersonic-extensions.md).
 
 ## Documentation
 
@@ -37,6 +43,8 @@ All authoritative project documentation is in [`docs/`](docs/):
 - [Supply Chain](docs/supply-chain.md)
 - [Modeling Guide](docs/modeling-guide.md)
 - [Glossary](docs/glossary.md)
+- [Phase 6 Plan](docs/phase-6-plan.md)
+- [Hypersonic Extensions](docs/hypersonic-extensions.md)
 
 ## Workspace Layout
 

@@ -30,10 +30,12 @@
 //! and simulator consumers share one HAL-portable atmosphere surface.
 
 pub mod isothermal;
+pub mod nrlmsise00;
 pub mod piecewise_exponential;
 pub mod us_standard_1976;
 
 pub use isothermal::IsothermalAtmosphere;
+pub use nrlmsise00::{Nrlmsise00Full, Nrlmsise00Inputs, Nrlmsise00Outputs, Nrlmsise00Static};
 pub use piecewise_exponential::{
     ExponentialLayer, PIECEWISE_EXP_MAX_GEOMETRIC_M, PiecewiseExpExoatmosphericPolicy,
     PiecewiseExponentialAtmosphere,

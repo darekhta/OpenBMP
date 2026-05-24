@@ -49,17 +49,22 @@
 
 pub mod atmosphere;
 pub mod error;
+pub mod external_reference;
 pub mod frames;
 pub mod gravity;
 pub mod kinematics;
 pub mod magnetic;
+pub mod realgas;
+pub mod reentry;
 pub mod statistics;
+pub mod uq;
 pub mod validity;
 pub mod wind;
 
 pub use atmosphere::{
     AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, ExponentialLayer,
-    IsothermalAtmosphere, PIECEWISE_EXP_MAX_GEOMETRIC_M, PiecewiseExpExoatmosphericPolicy,
+    IsothermalAtmosphere, Nrlmsise00Full, Nrlmsise00Inputs, Nrlmsise00Outputs, Nrlmsise00Static,
+    PIECEWISE_EXP_MAX_GEOMETRIC_M, PiecewiseExpExoatmosphericPolicy,
     PiecewiseExponentialAtmosphere, UsStandard1976,
 };
 pub use error::PhysicsError;
@@ -80,6 +85,16 @@ pub use kinematics::{
 pub use magnetic::{
     EARTH_DIPOLE_EQUATORIAL_FIELD_NT, EarthDipoleField, MagneticFieldEci, MagneticModel, Wmm2025,
 };
+pub use realgas::{
+    AirComposition, EquilibriumAir, EquilibriumAirState, MugalevEquilibriumAir,
+    TannehillEquilibriumAir,
+};
+pub use external_reference::{
+    EnvelopeBounds, ExternalReferencePackage, ProvenanceBlock, ReferencePackageKind,
+    ReferenceQuery,
+};
+pub use reentry::{AllenEggers, EntryInterfaceBuilder, Vinh, VinhState, VinhStateDerivative};
+pub use uq::{ErrorBudget, UncertaintyContribution, ValidationStatus};
 pub use statistics::{chi_square_inverse_cdf_wilson_hilferty, inverse_standard_normal_cdf};
 pub use validity::HalfOpenRange;
 pub use wind::{ConstantWind, LayerEntry, LayeredWind, NoWind, WindModel};

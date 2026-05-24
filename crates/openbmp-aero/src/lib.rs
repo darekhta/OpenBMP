@@ -48,9 +48,19 @@
 
 pub mod deck;
 pub mod error;
+pub mod hypersonic;
+pub mod knudsen;
 pub mod method;
 pub mod parser;
 
 pub use deck::{AeroCoefficients, AeroDeck, ExtrapolationPolicy};
 pub use error::AeroError;
+pub use hypersonic::{
+    ModifiedNewtonian, PanelInclination, TangentCone, TangentWedge,
+    hypersonic_similarity_parameter,
+};
+pub use knudsen::{
+    AccommodationCoeffs, BridgeFunction, ChengBridge, ErfcBridge, FreeMolecularAero, GasRegime,
+    HybridAeroMethod, LinearKnudsenBridge, erfc_approx, knudsen_number, mean_free_path_m,
+};
 pub use method::{AeroContext, AeroForceMomentBody, AeroMethod, DeckLookup};

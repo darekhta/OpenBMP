@@ -1340,6 +1340,11 @@ dependencies = [
 [[package]]
 name = "openbmp-aerothermal"
 version = "0.0.1"
+dependencies = [
+ "approx",
+ "openbmp-physics",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "openbmp-bridge"
@@ -1440,6 +1445,8 @@ version = "0.0.1"
 dependencies = [
  "approx",
  "nalgebra",
+ "openbmp-aero",
+ "openbmp-aerothermal",
  "openbmp-core",
  "proptest",
  "sha2",

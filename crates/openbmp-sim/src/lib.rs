@@ -50,6 +50,7 @@ pub mod events;
 pub mod integrator;
 pub mod kernel;
 pub mod models;
+pub mod solver_profile;
 pub mod stop;
 
 pub use derivative::{PointMassDerivative, RigidBodyDerivative, SimStateDerivative};
@@ -62,6 +63,10 @@ pub use events::{
 pub use integrator::{
     AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Dopri853Adaptive,
     Dopri853FixedStep, Integrator, IntegratorDeterminism, Rk4FixedStep,
+};
+pub use solver_profile::{
+    CouplingEdge, ExplicitMethod, ImplicitMethod, ImplicitSolveError, SolverProfile,
+    SolverProfileError, implicit_euler_step,
 };
 pub use kernel::{Phase1Kernel, RigidBodyKernel, RigidModels, SimulationConfig, SimulationKernel};
 pub use models::{
