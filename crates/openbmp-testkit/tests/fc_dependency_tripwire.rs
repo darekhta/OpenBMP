@@ -28,6 +28,7 @@ use toml::Value;
 const FORBIDDEN_OPENBMP_FC_DEPS: &[&str] = &[
     "openbmp-sim",
     "openbmp-cli",
+    "openbmp-runner",
     "openbmp-scenario",
     "openbmp-telemetry",
     "openbmp-bridge",

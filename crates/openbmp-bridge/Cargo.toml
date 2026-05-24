@@ -6,7 +6,15 @@ rust-version.workspace  = true
 license.workspace       = true
 repository.workspace    = true
 authors.workspace       = true
-description             = "OpenBMP optional generic socket-bridge for the academic HIL pattern. No real device drivers, no real bus protocols."
+description             = "OpenBMP optional generic socket-bridge schema for the academic HIL pattern. No real device drivers, no real bus protocols."
+
+[dependencies]
+postcard  = { workspace = true }
+serde     = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true
