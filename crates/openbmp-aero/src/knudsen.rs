@@ -225,9 +225,18 @@ impl FreeMolecularAero {
 
 impl AeroMethod for FreeMolecularAero {
     fn aero_force_moment_body(&self, ctx: &AeroContext) -> Result<AeroForceMomentBody, AeroError> {
-        if !ctx.mach.is_finite() || !ctx.dynamic_pressure_pa.is_finite() {
+        if !ctx.mach.is_finite()
+            || !ctx.alpha_deg.is_finite()
+            || !ctx.beta_deg.is_finite()
+            || !ctx.dynamic_pressure_pa.is_finite()
+        {
             return Err(AeroError::NonFinite {
                 reason: "FreeMolecularAero context input is NaN or Inf",
+            });
+        }
+        if ctx.dynamic_pressure_pa < 0.0 {
+            return Err(AeroError::InvalidParameter {
+                reason: "FreeMolecularAero dynamic_pressure_pa must be non-negative",
             });
         }
         if !(0.0..=1.0).contains(&self.accommodation.normal)
@@ -418,6 +427,42 @@ mod tests {
         };
         let force = fm.aero_force_moment_body(&ctx).unwrap();
         assert_relative_eq!(force.force_n_body.x, 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn free_molecular_rejects_non_finite_angle() {
+        let fm = FreeMolecularAero {
+            accommodation: AccommodationCoeffs::default(),
+            reference_area_m2: 1.0,
+        };
+        let ctx = AeroContext {
+            mach: 20.0,
+            alpha_deg: f64::NAN,
+            beta_deg: 0.0,
+            dynamic_pressure_pa: 1.0e-3,
+        };
+        assert!(matches!(
+            fm.aero_force_moment_body(&ctx),
+            Err(AeroError::NonFinite { .. })
+        ));
+    }
+
+    #[test]
+    fn free_molecular_rejects_negative_dynamic_pressure() {
+        let fm = FreeMolecularAero {
+            accommodation: AccommodationCoeffs::default(),
+            reference_area_m2: 1.0,
+        };
+        let ctx = AeroContext {
+            mach: 20.0,
+            alpha_deg: 45.0,
+            beta_deg: 0.0,
+            dynamic_pressure_pa: -1.0e-3,
+        };
+        assert!(matches!(
+            fm.aero_force_moment_body(&ctx),
+            Err(AeroError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
