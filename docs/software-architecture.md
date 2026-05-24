@@ -115,8 +115,10 @@ openbmp/
 ├── rust-toolchain.toml                  # pinned working toolchain
 ├── crates/
 │   ├── openbmp-core/                    # L0: math, units, frames, time, RNG
-│   ├── openbmp-sim/                     # L1: kernel, scheduler, integrators
 │   ├── openbmp-state/                   # L1: state types (point-mass, rigid)
+│   ├── openbmp-models/                  # L1: model trait surface + contexts
+│   ├── openbmp-mission/                 # L1: mission graph, events, HSM
+│   ├── openbmp-sim/                     # L1: kernel, scheduler, integrators
 │   ├── openbmp-physics/                 # L2: atmosphere, gravity, wind, magnetic, error
 │   ├── openbmp-vehicle/                 # L2: rigid body, mass models,
 │   │   ├── assembly/                    #     VehicleAssembly tree
@@ -144,10 +146,12 @@ openbmp/
 │   │   └── replay                       #     log-replay tooling
 │   ├── openbmp-telemetry/               # L5: channels, ring, exporters
 │   ├── openbmp-scenario/                # L6: parser, validator, registry
+│   ├── openbmp-scenario-script/         # L6: simulator-only scripted overrides
 │   ├── openbmp-testkit/                 # L6: helpers (proptest strategies,
 │   │                                    #     analytic-toy fixtures, fuzzers)
-│   ├── openbmp-cli/                     # L7: scenario runner, diff tool
-│   └── openbmp-bridge/                  # L7 (optional): socket HIL bridge
+│   ├── openbmp-runner/                  # L7: scenario → kernel → telemetry orchestration
+│   ├── openbmp-cli/                     # L7: `openbmp` binary, checks, diff tool
+│   └── openbmp-bridge/                  # L7 (optional): abstract HIL messages
 ├── docs/
 │   ├── README.md
 │   ├── design-concept.md
@@ -857,7 +861,7 @@ path stays flat-list and synchronous as today.
 > `KernelModelBundleRigid`, plus the path-derived stable ids
 > (`BodyId`, `EffectorId`, `TankId`, `EngineId`, `VehicleId`) in
 > `openbmp-core`. The resolver is shipped as a free-function
-> bridge in `crates/openbmp-cli/src/runner/assembly.rs` rather
+> bridge in `crates/openbmp-runner/src/assembly.rs` rather
 > than a trait method, avoiding an `openbmp-vehicle ->
 > openbmp-scenario` dependency edge. Runners consume the
 > resolved assembly's dry mass properties during kernel mass
@@ -951,11 +955,12 @@ cluster-level rebuild.
 >   in `openbmp-vehicle::adapters` and consumes a
 >   per-step snapshot via `EngineSnapshotView` on
 >   `ForceContext` / `MomentContext` / `MassContext`.
-> - The runner-side `EngineRack` (in `openbmp-cli/src/runner/`)
->   owns the engines and pushes a fresh `BTreeMap<EngineId,
->   EngineSnapshot>` to the kernel before each `step()` so all four
->   RK4 stages see the same snapshot — same pattern as the
->   `EffectorRack` and `EffectorActualsView`.
+> - The runner-side `EngineRack` (in
+>   `crates/openbmp-runner/src/engines.rs`) owns the engines and pushes
+>   a fresh `BTreeMap<EngineId, openbmp_models::EngineSnapshot>` to the
+>   kernel before each `step()` so all four RK4 stages see the same
+>   snapshot — same pattern as the `EffectorRack` and
+>   `EffectorActualsView`.
 > - `MassModel` gains `mass_kg_at(MassContext)` and
 >   `mass_rate_kg_s_at(MassContext)` with default forwards to
 >   `mass_kg(t)` / `mass_rate_kg_s(t)` so legacy models are
@@ -1582,9 +1587,9 @@ conditions.
 
 ## Flight Controller
 
-`openbmp-fc` is the controller crate. It is **simulator-local** in this
-repository: every output is consumed by a simulator-internal model or by the
-optional generic socket bridge. There are no real bus protocols, no real
+`openbmp-fc` is the hardware-portable controller crate. In this repository
+every output is consumed by simulator-internal models or by the optional
+abstract bridge message schema. There are no real bus protocols, no real
 device drivers, and no targeting / terminal-homing logic.
 
 Top-level structure:
@@ -1847,7 +1852,7 @@ understand the version refuse to load.
 ### Golden Tests
 
 Golden tests assert byte-stable Parquet (or CSV) output for canonical
-scenarios. The diff command (`openbmp-cli diff <golden> <actual>`)
+scenarios. The diff command (`openbmp diff <golden> <actual>`)
 reports the first divergent row with field-level context. This is the
 primary regression line.
 
@@ -2259,7 +2264,7 @@ repositories, with their own data and compliance posture.
   `AblationModel`, `NonequilibriumAir`, `BridgeFunction`, `Integrator`,
   `FaultModel`.
 - Lab-specific hardware adapters that translate between a downstream
-  test rig and the optional generic socket bridge (`openbmp-bridge`), in
+  test rig and the abstract bridge message schema (`openbmp-bridge`), in
   their own repositories, with their own export-control and qualification
   posture. OpenBMP does not ship those adapters.
 - Production gain sets, validated aerodynamic decks, real motor data,
@@ -2339,12 +2344,12 @@ Tracked here so the next contributor can see what hasn't been decided:
    them as named presets so scenarios don't drift across academic uses.
 6. **Determinism budget.** Define the per-PR CI wall-clock target (current
    target: 5 minutes) and the nightly budget before tests proliferate.
-7. **External viewer.** Whether `openbmp-cli` ships a viewer or only export
+7. **External viewer.** Whether the `openbmp` CLI ships a viewer or only export
    files for users to plot in their tool of choice. Recommend the latter
    for v1 to avoid GUI scope creep. Any viewer that does ship must be
    read-only over telemetry archives or local playback, with no command path
    back into a running simulation.
 8. **Recovery-model scope.** Resolved: recovery state
    machines live in `openbmp-vehicle`, runner orchestration lives in
-   `openbmp-cli`, and `openbmp-sim` carries only flat snapshots/events
+   `openbmp-runner`, and `openbmp-sim` carries only flat snapshots/events
    to preserve layering.
