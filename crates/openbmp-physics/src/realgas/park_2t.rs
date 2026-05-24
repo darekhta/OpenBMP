@@ -20,12 +20,53 @@ use super::AirComposition;
 use crate::error::PhysicsError;
 
 /// Forward and backward reaction rate constants.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ReactionRates {
-    /// Forward rate constants for each reaction.
-    pub k_forward: [f64; 5],
-    /// Backward rate constants for each reaction.
-    pub k_backward: [f64; 5],
+    /// Reaction-set selector that defines reaction ordering.
+    pub reaction_set: ParkReactionSet,
+    /// Forward rate constants for each reaction in the selected table.
+    pub k_forward: Vec<f64>,
+    /// Backward rate constants for each reaction in the selected table.
+    pub k_backward: Vec<f64>,
+}
+
+impl ReactionRates {
+    /// Construct rate constants for a selected reaction table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when forward and
+    /// backward arrays have different lengths, or when a Park87 table
+    /// does not carry its expected 17 reactions.
+    pub fn new(
+        reaction_set: ParkReactionSet,
+        k_forward: Vec<f64>,
+        k_backward: Vec<f64>,
+    ) -> Result<Self, PhysicsError> {
+        if k_forward.len() != k_backward.len() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Park reaction-rate arrays must have equal length",
+            });
+        }
+        if reaction_set == ParkReactionSet::Park87
+            && k_forward.len() != ParkReactionSet::PARK87_REACTIONS
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Park87 reaction-rate table must contain 17 reactions",
+            });
+        }
+        Ok(Self {
+            reaction_set,
+            k_forward,
+            k_backward,
+        })
+    }
+
+    /// Number of reactions in the stored table.
+    #[must_use]
+    pub fn reaction_count(&self) -> usize {
+        self.k_forward.len()
+    }
 }
 
 /// Composition rate of change (mole fractions / second).
@@ -114,6 +155,13 @@ pub enum ParkReactionSet {
     Park90,
     /// Park 1993 — updated rate coefficients. Reserved.
     Park93,
+}
+
+impl ParkReactionSet {
+    /// Park87 5-species reaction count: 15 dissociation reactions
+    /// (`N2`, `O2`, `NO` with five collision partners each) plus
+    /// the two Zeldovich exchange reactions.
+    pub const PARK87_REACTIONS: usize = 17;
 }
 
 /// Vibrational-relaxation model.
@@ -241,10 +289,8 @@ mod tests {
             model.reaction_rates(8000.0, 4000.0),
             Err(PhysicsError::OutOfEnvelope { .. })
         ));
-        let rates = ReactionRates {
-            k_forward: [0.0; 5],
-            k_backward: [0.0; 5],
-        };
+        let rates =
+            ReactionRates::new(ParkReactionSet::Park87, vec![0.0; 17], vec![0.0; 17]).unwrap();
         assert!(matches!(
             model.species_derivative(&cold_air(), &rates, 1.0e-3),
             Err(PhysicsError::OutOfEnvelope { .. })
@@ -263,5 +309,14 @@ mod tests {
             tau_chemistry_s: 1.0e-4,
         });
         assert!((da - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn park87_rate_container_requires_seventeen_reactions() {
+        let short = ReactionRates::new(ParkReactionSet::Park87, vec![0.0; 5], vec![0.0; 5]);
+        assert!(matches!(short, Err(PhysicsError::InvalidParameter { .. })));
+        let full =
+            ReactionRates::new(ParkReactionSet::Park87, vec![0.0; 17], vec![0.0; 17]).unwrap();
+        assert_eq!(full.reaction_count(), 17);
     }
 }

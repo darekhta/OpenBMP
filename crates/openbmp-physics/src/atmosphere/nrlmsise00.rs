@@ -513,7 +513,7 @@ mod tests {
         // Spot-check selected published-reference altitudes that the
         // table pins exactly (interpolation must reproduce them to
         // machine epsilon).
-        let m = Nrlmsise00Static::default();
+        let m = Nrlmsise00Static;
         for row in REFERENCE_TABLE {
             let outputs = m
                 .evaluate(Nrlmsise00Inputs::mid_conditions(row.alt_m))
@@ -536,7 +536,7 @@ mod tests {
             .mass_density_kg_m3;
         for alt in (110_000..=1_000_000).step_by(50_000) {
             let next = m
-                .evaluate(Nrlmsise00Inputs::mid_conditions(alt as f64))
+                .evaluate(Nrlmsise00Inputs::mid_conditions(f64::from(alt)))
                 .unwrap()
                 .mass_density_kg_m3;
             assert!(

@@ -337,8 +337,10 @@ mod tests {
 
     #[test]
     fn entry_interface_rejects_zero_altitude() {
-        let mut b = EntryInterfaceBuilder::default();
-        b.entry_altitude_m = 0.0;
+        let b = EntryInterfaceBuilder {
+            entry_altitude_m: 0.0,
+            ..EntryInterfaceBuilder::default()
+        };
         assert!(matches!(
             b.validate(),
             Err(PhysicsError::InvalidParameter { .. })
