@@ -265,26 +265,88 @@ pub trait EquilibriumAir {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct MugalevEquilibriumAir;
 
+impl MugalevEquilibriumAir {
+    /// Smallest temperature `T` (K) intended for the reserved model.
+    pub const T_MIN_K: f64 = 100.0;
+    /// Largest temperature `T` (K) intended for the reserved model.
+    pub const T_MAX_K: f64 = 15_000.0;
+    /// Reference pressure `p_0` (Pa) used by the reserved pressure
+    /// ratio coordinate.
+    pub const P0_PA: f64 = 101_325.0;
+    /// Smallest pressure ratio `p/p_0` intended for the reserved model.
+    pub const P_RATIO_MIN: f64 = 1.0e-3;
+    /// Largest pressure ratio `p/p_0` intended for the reserved model.
+    pub const P_RATIO_MAX: f64 = 10.0;
+
+    /// Validate the query envelope without evaluating the reserved
+    /// 11-species correlation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::NonFinite`] for NaN / Inf inputs,
+    /// [`PhysicsError::InvalidParameter`] for non-positive pressure,
+    /// and [`PhysicsError::OutOfEnvelope`] for values outside the
+    /// reserved equilibrium-air table coordinates.
+    pub fn validate_query(temperature_k: f64, pressure_pa: f64) -> Result<(), PhysicsError> {
+        if !temperature_k.is_finite() || !pressure_pa.is_finite() {
+            return Err(PhysicsError::NonFinite {
+                reason: "Mugalev equilibrium-air query contains NaN or Inf",
+            });
+        }
+        if pressure_pa <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Mugalev equilibrium-air pressure must be positive",
+            });
+        }
+        if !(Self::T_MIN_K..=Self::T_MAX_K).contains(&temperature_k) {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "Mugalev equilibrium-air temperature outside reserved envelope",
+            });
+        }
+        let pressure_ratio = pressure_pa / Self::P0_PA;
+        if !(Self::P_RATIO_MIN..=Self::P_RATIO_MAX).contains(&pressure_ratio) {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "Mugalev equilibrium-air pressure ratio outside reserved envelope",
+            });
+        }
+        Ok(())
+    }
+
+    fn deferred() -> PhysicsError {
+        PhysicsError::OutOfEnvelope {
+            reason: "MugalevEquilibriumAir (11-species) is deferred pending verified public coefficients",
+        }
+    }
+}
+
 impl EquilibriumAir for MugalevEquilibriumAir {
-    fn composition(&self, _t: f64, _p: f64) -> Result<AirComposition, PhysicsError> {
-        Err(PhysicsError::OutOfEnvelope {
-            reason: "MugalevEquilibriumAir (11-species) is deferred pending verified public coefficients",
-        })
+    fn composition(
+        &self,
+        temperature_k: f64,
+        pressure_pa: f64,
+    ) -> Result<AirComposition, PhysicsError> {
+        Self::validate_query(temperature_k, pressure_pa)?;
+        Err(Self::deferred())
     }
-    fn gamma_eff(&self, _t: f64, _p: f64) -> Result<f64, PhysicsError> {
-        Err(PhysicsError::OutOfEnvelope {
-            reason: "MugalevEquilibriumAir (11-species) is deferred pending verified public coefficients",
-        })
+    fn gamma_eff(&self, temperature_k: f64, pressure_pa: f64) -> Result<f64, PhysicsError> {
+        Self::validate_query(temperature_k, pressure_pa)?;
+        Err(Self::deferred())
     }
-    fn speed_of_sound_m_s(&self, _t: f64, _p: f64) -> Result<f64, PhysicsError> {
-        Err(PhysicsError::OutOfEnvelope {
-            reason: "MugalevEquilibriumAir (11-species) is deferred pending verified public coefficients",
-        })
+    fn speed_of_sound_m_s(
+        &self,
+        temperature_k: f64,
+        pressure_pa: f64,
+    ) -> Result<f64, PhysicsError> {
+        Self::validate_query(temperature_k, pressure_pa)?;
+        Err(Self::deferred())
     }
-    fn state(&self, _t: f64, _p: f64) -> Result<EquilibriumAirState, PhysicsError> {
-        Err(PhysicsError::OutOfEnvelope {
-            reason: "MugalevEquilibriumAir (11-species) is deferred pending verified public coefficients",
-        })
+    fn state(
+        &self,
+        temperature_k: f64,
+        pressure_pa: f64,
+    ) -> Result<EquilibriumAirState, PhysicsError> {
+        Self::validate_query(temperature_k, pressure_pa)?;
+        Err(Self::deferred())
     }
 }
 
@@ -340,6 +402,27 @@ mod tests {
         assert!(matches!(
             c.validate_mole_fractions(1.0e-6),
             Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn mugalev_validates_query_before_deferred_error() {
+        let model = MugalevEquilibriumAir;
+        assert!(matches!(
+            model.state(3000.0, 101_325.0),
+            Err(PhysicsError::OutOfEnvelope { .. })
+        ));
+        assert!(matches!(
+            model.gamma_eff(f64::INFINITY, 101_325.0),
+            Err(PhysicsError::NonFinite { .. })
+        ));
+        assert!(matches!(
+            model.composition(3000.0, 0.0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            model.speed_of_sound_m_s(16_000.0, 101_325.0),
+            Err(PhysicsError::OutOfEnvelope { .. })
         ));
     }
 
