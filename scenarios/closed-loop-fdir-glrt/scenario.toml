@@ -125,7 +125,6 @@ innovation_false_alarm_rate = 0.01
 dead_reckon_timeout_s = 1.5
 
 [fc.autopilot_params]
-anti_windup_gain         = 1.0
 rate_deadband_rad_s      = 0.001
 trajectory_loop_enabled  = false
 trajectory_kind          = "pid"

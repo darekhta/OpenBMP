@@ -415,11 +415,10 @@ impl ScenarioDocument {
             l1.validate(dt_s)?;
         }
 
-        // fc.autopilot_params.anti_windup — Phase 5.A.3.A consumed
-        // block. v3-only; the runner translates to
-        // AutopilotParams.anti_windup which all three PID loops
-        // consume. Absent → runner falls back to BackCalculation
-        // with the legacy `anti_windup_gain` value.
+        // fc.autopilot_params.anti_windup — v3-only block. The runner
+        // translates it to AutopilotParams.anti_windup, which all three
+        // PID loops consume. Absent → AntiWindupKind::default()
+        // (back-calculation, unit gain).
         if let Some(autopilot_params) = fc.autopilot_params.as_ref()
             && let Some(anti_windup) = autopilot_params.anti_windup.as_ref()
         {
@@ -4451,14 +4450,6 @@ impl FcImmModeConfig {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcAutopilotParams {
-    /// Legacy back-calculation anti-windup gain. When set and
-    /// `anti_windup` is absent, the runner translates this to
-    /// `AntiWindupKind::BackCalculation { gain: anti_windup_gain }`.
-    /// Prefer the explicit `[fc.autopilot_params.anti_windup]` block
-    /// for new scenarios; the field is preserved for back-compat with
-    /// Phase-1 through Phase-4 scenarios that have no anti-windup
-    /// block.
-    pub anti_windup_gain: Option<f64>,
     /// Rate-loop integrator deadband (rad/s).
     pub rate_deadband_rad_s: Option<f64>,
     /// Whether to enable the trajectory loop.
@@ -4471,12 +4462,10 @@ pub struct FcAutopilotParams {
     /// the FC's `l1-adaptive` feature flag must be on for the
     /// augmentation to compile.
     pub l1_adaptive: Option<FcL1AdaptiveConfig>,
-    /// Optional anti-windup strategy declaration (Phase 5.A.3.A,
-    /// v3-only). When present, supersedes `anti_windup_gain` and
-    /// selects between back-calculation and observer-form integrator
-    /// bleeding. When absent, the runner falls back to
-    /// `BackCalculation { gain: anti_windup_gain.unwrap_or(1.0) }` so
-    /// existing scenarios remain bit-stable.
+    /// Optional anti-windup strategy declaration (v3-only). Selects
+    /// between back-calculation and observer-form integrator bleeding.
+    /// When absent, the runner uses `AntiWindupKind::default()`
+    /// (back-calculation, unit gain).
     pub anti_windup: Option<FcAntiWindupConfig>,
     /// Rate-loop dispatch strategy (Phase 5.A.3.B, v3-only). When
     /// `Some(FcRateLoopKind::Lqr)`, the runner solves the per-axis

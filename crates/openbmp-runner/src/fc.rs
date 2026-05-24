@@ -812,10 +812,9 @@ fn build_autopilot_params(
     use openbmp_fc::anti_windup::AntiWindupKind;
     #[cfg(any(feature = "lqr", feature = "indi", feature = "mpc"))]
     use openbmp_fc::error::AutopilotError;
-    // Phase 5.A.3.A: explicit `[fc.autopilot_params.anti_windup]`
-    // wins over the legacy `anti_windup_gain` scalar; otherwise the
-    // legacy scalar maps to back-calculation, preserving Phase-4
-    // bit-stable behaviour for scenarios that have neither block.
+    // The `[fc.autopilot_params.anti_windup]` block selects the
+    // anti-windup strategy; absent it, the default (back-calculation,
+    // unit gain) applies.
     let anti_windup = match cfg.anti_windup {
         Some(FcAntiWindupConfig::BackCalculation { gain }) => {
             AntiWindupKind::BackCalculation { gain }
@@ -823,10 +822,7 @@ fn build_autopilot_params(
         Some(FcAntiWindupConfig::ObserverForm { tracking_time_s }) => {
             AntiWindupKind::ObserverForm { tracking_time_s }
         }
-        None => match cfg.anti_windup_gain {
-            Some(gain) => AntiWindupKind::BackCalculation { gain },
-            None => AntiWindupKind::default(),
-        },
+        None => AntiWindupKind::default(),
     };
     let mut params = AutopilotParams {
         anti_windup,
@@ -1472,9 +1468,8 @@ mod tests {
     }
 
     #[test]
-    fn explicit_anti_windup_block_wins_over_legacy_gain() {
+    fn explicit_anti_windup_block_selects_strategy() {
         let cfg = FcAutopilotParams {
-            anti_windup_gain: Some(9.0),
             anti_windup: Some(FcAntiWindupConfig::ObserverForm {
                 tracking_time_s: 0.25,
             }),
@@ -1486,6 +1481,16 @@ mod tests {
             openbmp_fc::anti_windup::AntiWindupKind::ObserverForm {
                 tracking_time_s: 0.25
             }
+        );
+    }
+
+    #[test]
+    fn absent_anti_windup_block_uses_default() {
+        let cfg = FcAutopilotParams::default();
+        let params = build_autopilot_params(&cfg, 0.001, None).expect("autopilot params build");
+        assert_eq!(
+            params.anti_windup,
+            openbmp_fc::anti_windup::AntiWindupKind::default()
         );
     }
 }

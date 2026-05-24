@@ -145,7 +145,6 @@ sigma_w_gyro       = 0.10
 sigma_w_accel_bias = 1.0e-3
 
 [fc.autopilot_params]
-anti_windup_gain         = 1.0
 rate_deadband_rad_s      = 0.001
 trajectory_loop_enabled  = false
 trajectory_kind          = "pid"

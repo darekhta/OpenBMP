@@ -15,7 +15,7 @@
 # All other autopilot machinery (DifferentialFlatness trajectory loop,
 # attitude loop, anti-windup) is unchanged. INDI's rate-loop saturation
 # handling is implicit through the clamp on `u[k+1] = u[k] + Δu`, so
-# the configured `anti_windup_gain` is parsed but unused under
+# any anti-windup configuration is unused under
 # `rate_loop_kind = "indi"`.
 #
 # Composition with `[fc.autopilot_params.l1_adaptive]` is rejected at
@@ -153,7 +153,6 @@ elevator = "pitch-torque"
 rudder   = "yaw-torque"
 
 [fc.autopilot_params]
-anti_windup_gain         = 1.0
 rate_deadband_rad_s      = 0.001
 trajectory_loop_enabled  = true
 trajectory_kind          = "minimum_snap"

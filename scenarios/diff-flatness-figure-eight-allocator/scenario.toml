@@ -177,7 +177,6 @@ kind          = "prioritised_redistributed"
 axis_priority = ["roll", "pitch", "yaw"]
 
 [fc.autopilot_params]
-anti_windup_gain         = 1.0
 rate_deadband_rad_s      = 0.001
 trajectory_loop_enabled  = true
 trajectory_kind          = "minimum_snap"
