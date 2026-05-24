@@ -90,6 +90,186 @@ pub struct ParkForwardReaction {
     pub coefficient: ArrheniusForwardCoefficient,
 }
 
+/// Neutral five-species air species used by the Park87 / Park93
+/// reference tables.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ParkAirSpecies {
+    /// Diatomic nitrogen.
+    N2,
+    /// Diatomic oxygen.
+    O2,
+    /// Nitric oxide.
+    NO,
+    /// Atomic nitrogen.
+    N,
+    /// Atomic oxygen.
+    O,
+}
+
+impl ParkAirSpecies {
+    /// Molar mass in g/mol for the neutral five-species air set.
+    ///
+    /// Molecular values are from the NIST Chemistry `WebBook`. Atomic
+    /// values use the NIST atomic weights for N and O.
+    #[must_use]
+    pub const fn molar_mass_g_per_mol(self) -> f64 {
+        match self {
+            Self::N2 => 28.0134,
+            Self::O2 => 31.9988,
+            Self::NO => 30.0061,
+            Self::N => 14.0067,
+            Self::O => 15.9994,
+        }
+    }
+
+    /// Vibrational characteristic temperature in Kelvin.
+    ///
+    /// Values are the five-species air-model entries
+    /// `θ_v,N2 = 3395 K`, `θ_v,O2 = 2239 K`, and
+    /// `θ_v,NO = 2817 K` reproduced in public nonequilibrium-air
+    /// references. Atomic species do not carry a molecular
+    /// vibrational mode and return `None`.
+    #[must_use]
+    pub const fn vibrational_characteristic_temperature_k(self) -> Option<f64> {
+        match self {
+            Self::N2 => Some(3_395.0),
+            Self::O2 => Some(2_239.0),
+            Self::NO => Some(2_817.0),
+            Self::N | Self::O => None,
+        }
+    }
+}
+
+/// Millikan-White vibrational-relaxation coefficient for one
+/// oscillator / collider pair.
+///
+/// The public Millikan-White form used in Park-style two-temperature
+/// models is
+///
+/// ```text
+/// p tau_v = exp[A (T^(-1/3) - B) - 18.42]
+/// A = 1.16e-3 sqrt(mu) theta_v^(4/3)
+/// B = 0.015 mu^(1/4)
+/// ```
+///
+/// where `p tau_v` is in atm s, `T` is in K, `mu` is the reduced
+/// molecular weight in g/mol, and `theta_v` is the oscillator's
+/// vibrational characteristic temperature. This type stores the
+/// source-derived pair coefficients; it is not enough to activate the
+/// live Park source model because backward rates and the Park high-
+/// temperature relaxation limiter remain unpinned.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct MillikanWhitePairCoefficient {
+    /// Vibrating molecule.
+    pub oscillator: ParkAirSpecies,
+    /// Collision partner.
+    pub collider: ParkAirSpecies,
+    /// Reduced molecular weight `mu = M_i M_j / (M_i + M_j)` in g/mol.
+    pub reduced_mass_g_per_mol: f64,
+    /// Oscillator vibrational characteristic temperature (K).
+    pub characteristic_temperature_k: f64,
+    /// Millikan-White `A` coefficient.
+    pub a: f64,
+    /// Millikan-White `B` coefficient.
+    pub b: f64,
+}
+
+impl MillikanWhitePairCoefficient {
+    /// Derive a species-pair coefficient from molecular masses and
+    /// the oscillator's characteristic vibrational temperature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when `oscillator`
+    /// is atomic and therefore has no vibrational mode.
+    pub fn new(oscillator: ParkAirSpecies, collider: ParkAirSpecies) -> Result<Self, PhysicsError> {
+        let theta_v = oscillator
+            .vibrational_characteristic_temperature_k()
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "Millikan-White oscillator must be a molecular species",
+            })?;
+        let m_osc = oscillator.molar_mass_g_per_mol();
+        let m_col = collider.molar_mass_g_per_mol();
+        let mu = m_osc * m_col / (m_osc + m_col);
+        let a = 1.16e-3 * mu.sqrt() * theta_v.powf(4.0 / 3.0);
+        let b = 0.015 * mu.powf(0.25);
+        Ok(Self {
+            oscillator,
+            collider,
+            reduced_mass_g_per_mol: mu,
+            characteristic_temperature_k: theta_v,
+            a,
+            b,
+        })
+    }
+
+    /// Compute `p tau_v` in atm s at translational temperature `T`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when temperature is
+    /// not positive and finite.
+    pub fn p_tau_atm_s(&self, temperature_k: f64) -> Result<f64, PhysicsError> {
+        if !temperature_k.is_finite() || temperature_k <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Millikan-White temperature must be positive and finite",
+            });
+        }
+        Ok((self.a * (temperature_k.powf(-1.0 / 3.0) - self.b) - 18.42).exp())
+    }
+
+    /// Compute relaxation time in seconds for pressure in atmospheres.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when temperature or
+    /// pressure is not positive and finite.
+    pub fn relaxation_time_s(
+        &self,
+        temperature_k: f64,
+        pressure_atm: f64,
+    ) -> Result<f64, PhysicsError> {
+        if !pressure_atm.is_finite() || pressure_atm <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Millikan-White pressure must be positive and finite",
+            });
+        }
+        Ok(self.p_tau_atm_s(temperature_k)? / pressure_atm)
+    }
+}
+
+/// Derive the 15 neutral five-species Millikan-White pair coefficients.
+///
+/// The ordering follows the Park neutral-air dissociation groups:
+/// `N2`, `O2`, and `NO` oscillators, each against `N2`, `O2`, `NO`,
+/// `N`, and `O` colliders.
+///
+/// # Errors
+///
+/// Returns [`PhysicsError::InvalidParameter`] only if this module's
+/// internal species list is edited to use an atomic oscillator.
+pub fn park87_millikan_white_pair_coefficients()
+-> Result<[MillikanWhitePairCoefficient; 15], PhysicsError> {
+    use ParkAirSpecies::{N, N2, NO, O, O2};
+    Ok([
+        MillikanWhitePairCoefficient::new(N2, N2)?,
+        MillikanWhitePairCoefficient::new(N2, O2)?,
+        MillikanWhitePairCoefficient::new(N2, NO)?,
+        MillikanWhitePairCoefficient::new(N2, N)?,
+        MillikanWhitePairCoefficient::new(N2, O)?,
+        MillikanWhitePairCoefficient::new(O2, N2)?,
+        MillikanWhitePairCoefficient::new(O2, O2)?,
+        MillikanWhitePairCoefficient::new(O2, NO)?,
+        MillikanWhitePairCoefficient::new(O2, N)?,
+        MillikanWhitePairCoefficient::new(O2, O)?,
+        MillikanWhitePairCoefficient::new(NO, N2)?,
+        MillikanWhitePairCoefficient::new(NO, O2)?,
+        MillikanWhitePairCoefficient::new(NO, NO)?,
+        MillikanWhitePairCoefficient::new(NO, N)?,
+        MillikanWhitePairCoefficient::new(NO, O)?,
+    ])
+}
+
 /// Forward and backward reaction rate constants.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReactionRates {
@@ -787,6 +967,53 @@ mod tests {
         ));
         assert!(matches!(
             ReactionRates::new(ParkReactionSet::Park87, vec![0.0; 17], vec![-1.0; 17]),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn millikan_white_rejects_atomic_oscillator() {
+        assert!(matches!(
+            MillikanWhitePairCoefficient::new(ParkAirSpecies::N, ParkAirSpecies::N2),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn millikan_white_coefficients_are_species_specific() {
+        let n2_n2 =
+            MillikanWhitePairCoefficient::new(ParkAirSpecies::N2, ParkAirSpecies::N2).unwrap();
+        assert!((n2_n2.a - 221.519_658_980_489_48).abs() < 1.0e-12);
+        assert!((n2_n2.b - 0.029_018_517_124_228_8).abs() < 1.0e-15);
+
+        let o2_o2 =
+            MillikanWhitePairCoefficient::new(ParkAirSpecies::O2, ParkAirSpecies::O2).unwrap();
+        assert!((o2_o2.a - 135.909_128_874_355_53).abs() < 1.0e-12);
+        assert!((o2_o2.b - 0.029_999_718_746_044_83).abs() < 1.0e-15);
+        assert!(n2_n2.a > o2_o2.a);
+        assert_ne!(n2_n2.b.to_bits(), o2_o2.b.to_bits());
+    }
+
+    #[test]
+    fn millikan_white_pair_list_covers_neutral_park_species() {
+        let pairs = park87_millikan_white_pair_coefficients().unwrap();
+        assert_eq!(pairs.len(), 15);
+        assert_eq!(pairs[0].oscillator, ParkAirSpecies::N2);
+        assert_eq!(pairs[0].collider, ParkAirSpecies::N2);
+        assert_eq!(pairs[14].oscillator, ParkAirSpecies::NO);
+        assert_eq!(pairs[14].collider, ParkAirSpecies::O);
+    }
+
+    #[test]
+    fn millikan_white_relaxation_time_uses_pressure_scaling() {
+        let n2_n2 =
+            MillikanWhitePairCoefficient::new(ParkAirSpecies::N2, ParkAirSpecies::N2).unwrap();
+        let p_tau = n2_n2.p_tau_atm_s(3000.0).unwrap();
+        assert!((p_tau - 7.569_058_990_045_509e-5).abs() / p_tau < 1.0e-12);
+        let tau_half_atm = n2_n2.relaxation_time_s(3000.0, 0.5).unwrap();
+        assert!((tau_half_atm - 2.0 * p_tau).abs() / p_tau < 1.0e-12);
+        assert!(matches!(
+            n2_n2.relaxation_time_s(3000.0, 0.0),
             Err(PhysicsError::InvalidParameter { .. })
         ));
     }

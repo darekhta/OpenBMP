@@ -46,9 +46,11 @@ sub-phase landing on `main`.
 - 1-D thermal-conduction toy with Fourier-stability fail-closed.
 - Park 2T nonequilibrium thermochemistry API surface with Park87 / Park93
   forward Arrhenius coefficients pinned as-published for the neutral
-  five-species subset; the live Park87 / Park90 / Park93 source-term
-  models remain typed-reserved. The audit removed the unverified
-  five-reaction proxy and species-independent Millikan-White constants.
+  five-species subset plus source-derived species-pair Millikan-White
+  coefficients for `N2`, `O2`, and `NO` oscillators. The live Park87 /
+  Park90 / Park93 source-term models remain typed-reserved. The audit
+  removed the unverified five-reaction proxy and scalar relaxation
+  constants.
 - Generic ablation toy: steady-state, charring archetypes, blowing
   correction, surface recession integration, and a deterministic
   energy-limited 1-D pyrolysis-front toy.
@@ -96,7 +98,7 @@ Sub-phase status as of the latest commit on `main`.
 | 6.7 — Trajectory infrastructure | shipped | `EntryInterfaceBuilder`, `AllenEggers`, `Vinh`. |
 | 6.8 — Validation suite | shipped (reduced analytic-toy battery) | `crates/openbmp-physics/tests/hypersonic_validation.rs`. Apollo 4 and Stardust public entry-interface anchors plus NASA/TP-2006-213486 table-13 heating benchmarks are pinned in SI units and self-validate metadata/radiative-fraction bounds; full trajectory and Tauber-Sutton radiative comparisons remain reserved with Tannehill and Park-2T. |
 | 6.9 — 1-D thermal-conduction toy | shipped | `openbmp_aerothermal::OneDThermalToy`. |
-| 6.10 — Park 2T nonequilibrium thermochemistry | deferred (forward tables pinned) | `openbmp_physics::ParkTwoTemperatureModel` API surface exists, and the reserved `ReactionRates` container no longer hard-codes the rejected five-reaction proxy or accepts unpinned / malformed rate arrays. Park87 and Park93 expose the 17 neutral-subset forward Arrhenius coefficients from Zhang et al. (2022), Table 2, as published-unit reference data with a narrow SI evaluator for the table's stated units; the live source model still fails closed pending backward/equilibrium constants, species-specific Millikan-White / Park relaxation constants, and Mach-15 benchmark validation. Park90 still fails closed pending a verified public table. |
+| 6.10 — Park 2T nonequilibrium thermochemistry | deferred (forward + MW reference data pinned) | `openbmp_physics::ParkTwoTemperatureModel` API surface exists, and the reserved `ReactionRates` container no longer hard-codes the rejected five-reaction proxy or accepts unpinned / malformed rate arrays. Park87 and Park93 expose the 17 neutral-subset forward Arrhenius coefficients from Zhang et al. (2022), Table 2, as published-unit reference data with a narrow SI evaluator for the table's stated units. The Millikan-White reference surface now derives species-pair coefficients for `N2`, `O2`, and `NO` oscillators from molecular weights and vibrational characteristic temperatures; the live source model still fails closed pending backward/equilibrium constants, the Park high-temperature relaxation limiter, and Mach-15 benchmark validation. Park90 still fails closed pending a verified public table. |
 | 6.11 — Generic ablation toy | shipped (checked toy) | `openbmp_aerothermal::{SteadyStateAblator, CharringAblator, DepthResolvedCharringAblator, BlowingCorrelation}`. Recession consumes caller-supplied heat flux; toy materials, blowing inputs, and charring progress now fail closed on malformed values. The depth-resolved model is energy-limited, reports per-area pyrolyzed mass plus absorbed/pyrolysis/unused energy, and remains generic rather than a fielded TPS surrogate. |
 | 6.12 — External reference packages | shipped | `openbmp_physics::ExternalReferencePackage` with provenance, payload-hash, and envelope checks. Payload I/O remains at the consuming deck/model boundary. |
 | 6.13 — UQ + credibility reporting | shipped | `openbmp_physics::{ErrorBudget, UncertaintyContribution, ValidationStatus}`. |
@@ -146,10 +148,12 @@ Phase 6 closes when:
   with provenance.
 - **Park 1987 / 1990 / 1993 reaction sets** — Park87 / Park93 forward
   Arrhenius coefficients are pinned as published-unit reference data
-  for the neutral five-species subset. The live source-term model
-  remains typed-reserved until backward / equilibrium constants,
-  species-specific Millikan-White / Park relaxation constants, and the
-  Mach-15 shock-layer benchmark land.
+  for the neutral five-species subset, and the neutral species-pair
+  Millikan-White coefficients are derived from public molecular
+  weights plus `N2` / `O2` / `NO` vibrational temperatures. The live
+  source-term model remains typed-reserved until backward /
+  equilibrium constants, the Park high-temperature relaxation limiter,
+  and the Mach-15 shock-layer benchmark land.
   Park90 remains fully reserved pending a verified public table.
 - **`Nrlmsise00Full` coefficient-based path** — typed-reserved with
   full-input validation; the static-defaults profile covers the
@@ -208,7 +212,13 @@ leaving any model reserved:
   `m^3 mol^-1 s^-1` evaluator for the table's stated units. That table
   does not provide the backward-rate / equilibrium-constant path or
   species-pair vibrational relaxation constants, so the live Park
-  source model remains fail-closed.
+  source model remains fail-closed. The audit also uses the public
+  Millikan-White correlation as reproduced in NASA report
+  `https://ntrs.nasa.gov/citations/19820011246` and the five-species
+  vibrational temperatures published in OSTI report
+  `https://www.osti.gov/servlets/purl/1650141` to derive species-pair
+  `N2` / `O2` / `NO` relaxation coefficients without restoring the
+  rejected scalar constant.
 - **NRLMSISE-00 full path.** The `nrlmsise00` Python package documents
   the wrapper as GPLv2 while its bundled C source is public domain
   (`COPYING.NRLMSISE-00`). A Rust coefficient path is feasible, but the

@@ -90,10 +90,11 @@ pub use magnetic::{
 };
 pub use realgas::{
     AirComposition, ArrheniusForwardCoefficient, EquilibriumAir, EquilibriumAirState, FlowContext,
-    MugalevEquilibriumAir, NonequilibriumAir, PARK87_FORWARD_REACTIONS_AS_PUBLISHED,
-    PARK93_FORWARD_REACTIONS_AS_PUBLISHED, ParkForwardReaction, ParkReactionSet,
-    ParkTwoTemperatureModel, ReactionRates, TannehillEquilibriumAir, VibrationalEnergyDerivative,
-    VibrationalRelaxationModel,
+    MillikanWhitePairCoefficient, MugalevEquilibriumAir, NonequilibriumAir,
+    PARK87_FORWARD_REACTIONS_AS_PUBLISHED, PARK93_FORWARD_REACTIONS_AS_PUBLISHED, ParkAirSpecies,
+    ParkForwardReaction, ParkReactionSet, ParkTwoTemperatureModel, ReactionRates,
+    TannehillEquilibriumAir, VibrationalEnergyDerivative, VibrationalRelaxationModel,
+    park87_millikan_white_pair_coefficients,
 };
 pub use reentry::{
     APOLLO_CM_TABLE13_HEATING, APOLLO4_ENTRY_INTERFACE, AllenEggers, EntryInterfaceBuilder,
