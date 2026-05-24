@@ -151,9 +151,7 @@ struct SchemaPeekMarker {
 struct DeckFileV1 {
     openbmp: SchemaMarker,
     reference: Reference,
-    #[allow(dead_code)] // surfaced through provenance.md, not the runtime deck.
     provenance: String,
-    #[allow(dead_code)] // ditto — used by the audit walk, not the lookup path.
     validation: DeckValidationStatus,
     grid: GridV1,
     coefficients: Coefficients,
@@ -205,6 +203,18 @@ enum DeckValidationStatus {
     Research,
 }
 
+fn validate_deck_metadata(
+    provenance: &str,
+    _validation: DeckValidationStatus,
+) -> Result<(), AeroError> {
+    if provenance.trim().is_empty() {
+        return Err(AeroError::MalformedDeck {
+            reason: "deck `provenance` must not be blank",
+        });
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------
 // Schema-2 parser shape
 // ---------------------------------------------------------------------
@@ -214,9 +224,7 @@ enum DeckValidationStatus {
 struct DeckFileV2 {
     openbmp: SchemaMarker,
     reference: Reference,
-    #[allow(dead_code)]
     provenance: String,
-    #[allow(dead_code)]
     validation: DeckValidationStatus,
     /// Axis grids keyed by wire-name. The Schema-2 parser does its own
     /// structural validation against `[axis_order]` so the parser
@@ -248,9 +256,7 @@ struct InterpolationConfig {
 #[serde(deny_unknown_fields)]
 struct PanelMeshDeckFile {
     openbmp: PanelMeshSchemaMarker,
-    #[allow(dead_code)]
     provenance: String,
-    #[allow(dead_code)]
     validation: DeckValidationStatus,
     method: PanelDeckMethod,
     cp_max: f64,
@@ -331,6 +337,7 @@ impl AeroDeck {
                 reason: "openbmp.aero_deck schema version is not 1",
             });
         }
+        validate_deck_metadata(&parsed.provenance, parsed.validation)?;
         let extrapolation = match parsed.extrapolation.as_deref() {
             None | Some("fail-closed") => ExtrapolationPolicy::FailClosed,
             Some("clamp") => ExtrapolationPolicy::Clamp,
@@ -362,6 +369,7 @@ impl AeroDeck {
                 reason: "openbmp.aero_deck schema version is not 2",
             });
         }
+        validate_deck_metadata(&parsed.provenance, parsed.validation)?;
         validate_schema2_axis_order(&parsed.axis_order.order)?;
         validate_schema2_interpolation(&parsed.interpolation)?;
         let internal_axis_order = canonicalise_axis_order(&parsed.axis_order.order);
@@ -411,6 +419,7 @@ impl LocalInclinationPanels {
                 reason: "openbmp.panel_mesh_aero schema version must be 1",
             });
         }
+        validate_deck_metadata(&parsed.provenance, parsed.validation)?;
         if !(parsed.cp_max.is_finite() && parsed.cp_max >= 0.0) {
             return Err(AeroError::InvalidParameter {
                 reason: "panel-mesh aero cp_max must be finite and non-negative",
@@ -678,6 +687,18 @@ triangles = [[0, 1, 2], [0, 2, 3]]
         let toml_str = minimal_deck_toml().replace(
             "validation         = \"validated-toy\"",
             "validation         = \"validatd-toy\"",
+        );
+        assert!(matches!(
+            AeroDeck::load_from_str(&toml_str),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_blank_provenance() {
+        let toml_str = minimal_deck_toml().replace(
+            "provenance         = \"test fixture; no real source\"",
+            "provenance         = \"   \"",
         );
         assert!(matches!(
             AeroDeck::load_from_str(&toml_str),

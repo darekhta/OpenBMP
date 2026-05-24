@@ -44,7 +44,6 @@ const SCHEMA_VERSION: u32 = 1;
 #[serde(deny_unknown_fields)]
 struct ImuBudgetFile {
     openbmp: SchemaMarker,
-    #[allow(dead_code)] // surfaced through provenance.md, not the runtime budget.
     meta: MetaSection,
     sample: SampleSection,
     gyro: TriaxialSection,
@@ -60,12 +59,27 @@ struct SchemaMarker {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MetaSection {
-    #[allow(dead_code)]
     name: String,
-    #[allow(dead_code)]
     provenance: String,
-    #[allow(dead_code)]
     validation: ValidationStatus,
+}
+
+fn validate_metadata(
+    name: &str,
+    provenance: &str,
+    _validation: ValidationStatus,
+) -> Result<(), SensorError> {
+    if name.trim().is_empty() {
+        return Err(SensorError::MalformedBudget {
+            reason: "IMU noise-budget `meta.name` must not be blank",
+        });
+    }
+    if provenance.trim().is_empty() {
+        return Err(SensorError::MalformedBudget {
+            reason: "IMU noise-budget `meta.provenance` must not be blank",
+        });
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -105,6 +119,11 @@ impl ImuNoiseBudget {
                 reason: "openbmp.imu_noise_budget schema version is not 1",
             });
         }
+        validate_metadata(
+            &parsed.meta.name,
+            &parsed.meta.provenance,
+            parsed.meta.validation,
+        )?;
         let gyro = TriaxialNoiseBudget::new(
             parsed.gyro.arw_per_sqrt_s,
             parsed.gyro.bias_ou_theta,
@@ -212,6 +231,23 @@ mod tests {
         );
         assert!(matches!(
             ImuNoiseBudget::load_from_str(&s),
+            Err(SensorError::MalformedBudget { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_blank_metadata_strings() {
+        let blank_name =
+            minimal_budget_toml().replace("name       = \"test-budget\"", "name       = \"   \"");
+        assert!(matches!(
+            ImuNoiseBudget::load_from_str(&blank_name),
+            Err(SensorError::MalformedBudget { .. }),
+        ));
+
+        let blank_provenance =
+            minimal_budget_toml().replace("provenance = \"test fixture\"", "provenance = \"   \"");
+        assert!(matches!(
+            ImuNoiseBudget::load_from_str(&blank_provenance),
             Err(SensorError::MalformedBudget { .. }),
         ));
     }
