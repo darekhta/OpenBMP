@@ -43,18 +43,18 @@ pub enum ScenarioError {
         /// Schema version found in the header.
         found: u16,
     },
-    /// A v3 scenario element parses syntactically but the runtime
-    /// consumer is deferred to a later Phase-5 sub-phase. Phase 5.0
-    /// lands the parser-side schema; the consumer sub-phase named
-    /// here lands the runtime wiring.
+    /// A v3 scenario element parses syntactically but its runtime
+    /// consumer is not yet implemented. The schema accepts the block so
+    /// authors can write it ahead of the capability landing; validation
+    /// rejects it until the named capability ships.
     #[error(
-        "scenario v3 element {field} is parsed but the runtime consumer is deferred to {deferred_to}"
+        "scenario v3 element {field} parses but is not yet supported: {missing_capability}"
     )]
-    ElementDeferredToFuturePhase {
+    ElementNotYetSupported {
         /// Field path that triggered the rejection.
         field: String,
-        /// Phase-5 sub-phase identifier that will land the consumer.
-        deferred_to: &'static str,
+        /// Short description of the capability that would consume it.
+        missing_capability: &'static str,
     },
     /// A required string field is empty.
     #[error("{field} must not be empty")]
@@ -205,14 +205,14 @@ pub enum ScenarioError {
         /// Why this kind is rejected (typically a future-phase deferral).
         reason: String,
     },
-    /// A scenario-declared event action kind is reserved for a future
-    /// phase and rejected at parse time in Phase 3.2.
-    #[error("action kind {kind} is reserved for {deferred_to}")]
+    /// A scenario-declared event action kind parses but is not yet
+    /// supported by the runtime.
+    #[error("action kind {kind} is not yet supported: {missing_capability}")]
     UnsupportedActionKind {
         /// Action kind string (e.g. `"engine_command"`).
         kind: String,
-        /// Future phase that will land this action.
-        deferred_to: String,
+        /// Short description of the capability that would consume it.
+        missing_capability: String,
     },
     /// A mission-graph shape error (cycle, unreachable phase, unknown
     /// id reference, etc.). The full diagnostic is in `reason`.
@@ -229,16 +229,6 @@ pub enum ScenarioError {
         field: String,
         /// Referenced scenario-text effector id.
         id: String,
-    },
-    /// A `[vehicle.assembly]` child block (effectors, engines, tanks)
-    /// is reserved for a future phase and rejected at parse time in
-    /// Phase 3.3.
-    #[error("vehicle.assembly child {kind} is reserved for {deferred_to}")]
-    UnsupportedAssemblyChild {
-        /// Child kind string (`"effectors"`, `"engines"`, `"tanks"`).
-        kind: String,
-        /// Future phase that will land this child.
-        deferred_to: String,
     },
     /// A mission or phase entry references an engine id that is not
     /// declared in `[[vehicle.assembly.engines]]`.

@@ -188,7 +188,7 @@ impl ScenarioDocument {
         // `UnexpectedField` for a config field that is only valid
         // alongside that selector under v3. Phase-5.C.2 graduated
         // `egm2008`; the reservation gate now fires only under v2.
-        self.validate_phase5_kind_availability()?;
+        self.validate_v3_kind_availability()?;
         self.meta.validate()?;
         self.time.validate()?;
         self.vehicle.validate(registry, self.time.dt_s)?;
@@ -272,20 +272,20 @@ impl ScenarioDocument {
         self.validate_engine_references()?;
         self.validate_recovery_references()?;
         self.validate_propulsion_unambiguous()?;
-        self.validate_phase5_blocks()?;
+        self.validate_v3_blocks()?;
         Ok(())
     }
 
-    fn validate_phase5_blocks(&self) -> Result<(), ScenarioError> {
+    fn validate_v3_blocks(&self) -> Result<(), ScenarioError> {
         let header = self.openbmp.scenario;
-        self.validate_phase5_top_level_blocks(header)?;
-        self.validate_phase5_fc_blocks(header, self.time.dt_s)?;
-        self.validate_phase5_kind_values(header)?;
-        self.validate_phase5_effector_kinds(header)?;
+        self.validate_v3_top_level_blocks(header)?;
+        self.validate_v3_fc_blocks(header, self.time.dt_s)?;
+        self.validate_v3_kind_values(header)?;
+        self.validate_v3_effector_kinds(header)?;
         Ok(())
     }
 
-    fn validate_phase5_effector_kinds(&self, header: u16) -> Result<(), ScenarioError> {
+    fn validate_v3_effector_kinds(&self, header: u16) -> Result<(), ScenarioError> {
         if header >= SCENARIO_VERSION_V3 {
             return Ok(());
         }
@@ -301,11 +301,11 @@ impl ScenarioDocument {
         Ok(())
     }
 
-    fn validate_phase5_top_level_blocks(&self, header: u16) -> Result<(), ScenarioError> {
-        gate_phase5_block(
+    fn validate_v3_top_level_blocks(&self, header: u16) -> Result<(), ScenarioError> {
+        gate_v3_block(
             header,
             "schedule",
-            "Phase 5.D.1",
+            "multi-rate scheduling",
             self.schedule.as_ref(),
             || {
                 self.schedule
@@ -313,10 +313,10 @@ impl ScenarioDocument {
                     .map_or(Ok(()), ScheduleConfig::validate)
             },
         )?;
-        gate_phase5_block(
+        gate_v3_block(
             header,
             "multi_body",
-            "Phase 5.D.2",
+            "multi-body separation",
             self.multi_body.as_ref(),
             || {
                 self.multi_body
@@ -327,7 +327,7 @@ impl ScenarioDocument {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn validate_phase5_fc_blocks(&self, header: u16, dt_s: f64) -> Result<(), ScenarioError> {
+    fn validate_v3_fc_blocks(&self, header: u16, dt_s: f64) -> Result<(), ScenarioError> {
         let Some(fc) = &self.fc else {
             return Ok(());
         };
@@ -609,8 +609,8 @@ impl ScenarioDocument {
     /// `UnexpectedField` for fields that are only valid alongside that
     /// selector. Always emits `SchemaVersionFieldReserved` (never the
     /// v3-deferred variant) — graduated names that are now consumed
-    /// under v3 stay handled by `validate_phase5_kind_values`.
-    fn validate_phase5_kind_availability(&self) -> Result<(), ScenarioError> {
+    /// under v3 stay handled by `validate_v3_kind_values`.
+    fn validate_v3_kind_availability(&self) -> Result<(), ScenarioError> {
         let header = self.openbmp.scenario;
         if header >= SCENARIO_VERSION_V3 {
             return Ok(());
@@ -672,10 +672,10 @@ impl ScenarioDocument {
         Ok(())
     }
 
-    fn validate_phase5_kind_values(&self, header: u16) -> Result<(), ScenarioError> {
+    fn validate_v3_kind_values(&self, header: u16) -> Result<(), ScenarioError> {
         // Names that are still deferred to a future Phase-5 sub-phase
-        // emit `ElementDeferredToFuturePhase` here under v3. v2 cases
-        // are handled earlier by `validate_phase5_kind_availability`.
+        // emit `ElementNotYetSupported` here under v3. v2 cases
+        // are handled earlier by `validate_v3_kind_availability`.
         // `egm2008` graduated in Phase 5.C.2 and is consumed by
         // `EnvironmentConfig::validate` + the runner gravity dispatch,
         // so it is no longer named here.
@@ -685,7 +685,7 @@ impl ScenarioDocument {
                 .as_ref()
                 .is_some_and(|a| a.kind == "nrlmsise00")
         {
-            return Err(phase5_kind_error(
+            return Err(v3_kind_error(
                 header,
                 "atmosphere.kind = \"nrlmsise00\"",
                 "a future NRLMSISE-00 follow-on slice",
@@ -2558,7 +2558,7 @@ impl ScenarioActionConfig {
             Self::Separation => {
                 return Err(ScenarioError::UnsupportedActionKind {
                     kind: "separation".to_owned(),
-                    deferred_to: "Phase 3.6 / 3.7".to_owned(),
+                    missing_capability: "scripted stage separation".to_owned(),
                 });
             }
             Self::DeployRecovery { id, command } => {
@@ -5053,13 +5053,13 @@ pub struct FcPhaseAuthorityConfig {
     pub engines_allowed: bool,
 }
 
-/// Phase-5 block-presence gate: emits `SchemaVersionFieldReserved` on
-/// v2 or runs `per_block` and returns `ElementDeferredToFuturePhase`
-/// on v3.
-fn gate_phase5_block<T, F>(
+/// v3 block-presence gate: emits `SchemaVersionFieldReserved` on a v2
+/// scenario, or runs `per_block` and returns `ElementNotYetSupported`
+/// on v3 (the block parses but its runtime consumer is not yet wired).
+fn gate_v3_block<T, F>(
     header: u16,
     field: &str,
-    deferred_to: &'static str,
+    missing_capability: &'static str,
     block: Option<&T>,
     per_block: F,
 ) -> Result<(), ScenarioError>
@@ -5077,15 +5077,16 @@ where
         });
     }
     per_block()?;
-    Err(ScenarioError::ElementDeferredToFuturePhase {
+    Err(ScenarioError::ElementNotYetSupported {
         field: field.to_owned(),
-        deferred_to,
+        missing_capability,
     })
 }
 
-/// Phase-5 kind-value gate: emits `SchemaVersionFieldReserved` on v2
-/// or `ElementDeferredToFuturePhase` on v3 for v3-only enum values.
-fn phase5_kind_error(header: u16, field: &str, deferred_to: &'static str) -> ScenarioError {
+/// v3 kind-value gate: emits `SchemaVersionFieldReserved` on a v2
+/// scenario, or `ElementNotYetSupported` on v3 for v3-only enum values
+/// whose runtime consumer is not yet wired.
+fn v3_kind_error(header: u16, field: &str, missing_capability: &'static str) -> ScenarioError {
     if header < SCENARIO_VERSION_V3 {
         ScenarioError::SchemaVersionFieldReserved {
             field: field.to_owned(),
@@ -5093,9 +5094,9 @@ fn phase5_kind_error(header: u16, field: &str, deferred_to: &'static str) -> Sce
             found: header,
         }
     } else {
-        ScenarioError::ElementDeferredToFuturePhase {
+        ScenarioError::ElementNotYetSupported {
             field: field.to_owned(),
-            deferred_to,
+            missing_capability,
         }
     }
 }
@@ -5107,13 +5108,13 @@ fn phase5_kind_error(header: u16, field: &str, deferred_to: &'static str) -> Sce
 // sub-phases, named in the per-block `validate_runtime` method. Phase
 // 5.0 ships the parser surface only; ScenarioDocument::validate
 // rejects any v3 scenario that declares one of these blocks with a
-// `ScenarioError::ElementDeferredToFuturePhase` diagnostic naming the
+// `ScenarioError::ElementNotYetSupported` diagnostic naming the
 // consumer sub-phase. v2 scenarios that declare any of these blocks
 // are rejected earlier with `SchemaVersionFieldReserved`.
 //
 // When a Phase-5 sub-phase lands its consumer, it removes the
 // matching deferred-phase rejection from
-// `ScenarioDocument::validate_phase5_blocks`. New fields added under
+// `ScenarioDocument::validate_v3_blocks`. New fields added under
 // the consumer's authority must keep `serde(deny_unknown_fields)` and
 // must remain v3-only.
 // ---------------------------------------------------------------------

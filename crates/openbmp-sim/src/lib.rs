@@ -65,7 +65,7 @@ pub use integrator::{
     Dopri853FixedStep, Integrator, IntegratorDeterminism, Rk4FixedStep,
 };
 pub use kernel::{
-    Phase1Kernel, ProfiledPointMassKernel, ProfiledRigidBodyKernel, RigidBodyKernel, RigidModels,
+    PointMassKernel, ProfiledPointMassKernel, ProfiledRigidBodyKernel, RigidBodyKernel, RigidModels,
     SimulationConfig, SimulationKernel, TrajectoryProfileConfig,
 };
 pub use models::{

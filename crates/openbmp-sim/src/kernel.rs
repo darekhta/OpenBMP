@@ -254,9 +254,10 @@ enum MissionStateAuthority {
     FlightController,
 }
 
-/// Phase-1 type alias for the point-mass kernel shape used by the
-/// existing CLI runner and analytic-toy tests.
-pub type Phase1Kernel<I, F, MM, E, SC> = SimulationKernel<PointMassState, I, F, MM, E, SC>;
+/// Type alias for the point-mass kernel shape: a [`SimulationKernel`]
+/// over [`PointMassState`], generic in integrator, force, mass,
+/// environment, and stop-condition models.
+pub type PointMassKernel<I, F, MM, E, SC> = SimulationKernel<PointMassState, I, F, MM, E, SC>;
 
 /// Point-mass kernel with sim-owned [`SolverProfile`] dispatch.
 pub type ProfiledPointMassKernel<F, MM, E, SC> =

@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(scenario.document.openbmp.scenario, 3);
     }
 
-    fn assert_phase5_reserved_under_v2(toml: &str, expected_field: &str) {
+    fn assert_v3_block_reserved_under_v2(toml: &str, expected_field: &str) {
         let err = Scenario::from_toml_str(toml).unwrap_err();
         match err {
             ScenarioError::SchemaVersionFieldReserved {
@@ -287,16 +287,23 @@ mod tests {
         }
     }
 
-    fn assert_phase5_deferred_under_v3(toml: &str, expected_field: &str, expected_phase: &str) {
+    fn assert_v3_block_not_yet_supported(
+        toml: &str,
+        expected_field: &str,
+        expected_capability: &str,
+    ) {
         let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let err = Scenario::from_toml_str(&v3).unwrap_err();
         match err {
-            ScenarioError::ElementDeferredToFuturePhase { field, deferred_to } => {
+            ScenarioError::ElementNotYetSupported {
+                field,
+                missing_capability,
+            } => {
                 assert_eq!(field, expected_field);
-                assert_eq!(deferred_to, expected_phase);
+                assert_eq!(missing_capability, expected_capability);
             }
             other => {
-                panic!("expected ElementDeferredToFuturePhase for {expected_field}, got: {other:?}")
+                panic!("expected ElementNotYetSupported for {expected_field}, got: {other:?}")
             }
         }
     }
@@ -330,21 +337,21 @@ lower_delta_v_body_m_s = [0.0, 0.0, -0.5]
     #[test]
     fn schedule_block_is_v3_only() {
         let toml_v2 = format!("{MINIMAL}{SCHEDULE_BLOCK}");
-        assert_phase5_reserved_under_v2(&toml_v2, "schedule");
-        assert_phase5_deferred_under_v3(&toml_v2, "schedule", "Phase 5.D.1");
+        assert_v3_block_reserved_under_v2(&toml_v2, "schedule");
+        assert_v3_block_not_yet_supported(&toml_v2, "schedule", "multi-rate scheduling");
     }
 
     #[test]
     fn multi_body_block_is_v3_only() {
         let toml_v2 = format!("{MINIMAL}{MULTI_BODY_BLOCK}");
-        assert_phase5_reserved_under_v2(&toml_v2, "multi_body");
-        assert_phase5_deferred_under_v3(&toml_v2, "multi_body", "Phase 5.D.2");
+        assert_v3_block_reserved_under_v2(&toml_v2, "multi_body");
+        assert_v3_block_not_yet_supported(&toml_v2, "multi_body", "multi-body separation");
     }
 
     #[test]
     fn v2_with_multiple_phase5_blocks_reports_first_reserved_field() {
         let toml_v2 = format!("{MINIMAL}{SCHEDULE_BLOCK}{MULTI_BODY_BLOCK}");
-        assert_phase5_reserved_under_v2(&toml_v2, "schedule");
+        assert_v3_block_reserved_under_v2(&toml_v2, "schedule");
     }
 
     const SCHEDULE_NON_DIVIDING_BLOCK: &str = r#"
@@ -425,7 +432,7 @@ bogus_field = 1
             "gravity       = \"constant\"",
             "gravity       = \"egm2008\"",
         );
-        assert_phase5_reserved_under_v2(&toml_v2, "environment.gravity = \"egm2008\"");
+        assert_v3_block_reserved_under_v2(&toml_v2, "environment.gravity = \"egm2008\"");
 
         // Under v3, `egm2008` is consumed (Phase 5.C.2): drop the
         // constant-gravity-only `gravity_m_s2` line and verify that
@@ -504,9 +511,9 @@ id        = "spare"
 estimator = "sr_ukf"
 "#;
         let toml = append(fc_v2_scenario(), block);
-        assert_phase5_reserved_under_v2(&toml, "fc.estimator_lanes");
+        assert_v3_block_reserved_under_v2(&toml, "fc.estimator_lanes");
         // Phase-5.B.2 consumed this block — under v3 it now parses
-        // and validates rather than emitting `ElementDeferredToFuturePhase`.
+        // and validates rather than emitting `ElementNotYetSupported`.
         let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let scenario = Scenario::from_toml_str(&v3).expect("v3 estimator-lanes block validates");
         let lanes = scenario
@@ -578,7 +585,7 @@ estimator = "sr_ukf"
                 "estimator        = \"ekf\"",
                 &format!("estimator        = \"{name}\""),
             );
-            assert_phase5_reserved_under_v2(&toml, expected_field);
+            assert_v3_block_reserved_under_v2(&toml, expected_field);
         }
     }
 
@@ -590,9 +597,9 @@ kind          = "prioritised_redistributed"
 axis_priority = ["roll", "yaw", "pitch"]
 "#;
         let toml = append(fc_v2_scenario(), block);
-        assert_phase5_reserved_under_v2(&toml, "fc.autopilot_allocation");
+        assert_v3_block_reserved_under_v2(&toml, "fc.autopilot_allocation");
         // Phase 5.A.5 consumed this block — under v3 it now parses
-        // and validates rather than emitting `ElementDeferredToFuturePhase`.
+        // and validates rather than emitting `ElementNotYetSupported`.
         let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let scenario = Scenario::from_toml_str(&v3).expect("v3 allocation block validates");
         let alloc = scenario
@@ -640,7 +647,7 @@ window_samples   = 32
 false_alarm_rate = 0.001
 "#;
         let toml_v2 = append(fc_v2_scenario(), block);
-        assert_phase5_reserved_under_v2(&toml_v2, "fc.fdir.detector");
+        assert_v3_block_reserved_under_v2(&toml_v2, "fc.fdir.detector");
         let toml_v3 = toml_v2.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let scenario = Scenario::from_toml_str(&toml_v3)
             .expect("windowed_mean_shift_glrt block must validate under v3");
@@ -1790,8 +1797,8 @@ time_s         = 0.0005
         // `atmosphere    = "none"`; flipping to nrlmsise00 exercises
         // the v3 gate. Aligned-equals layout matched verbatim.
         let toml = MINIMAL.replace("atmosphere    = \"none\"", "atmosphere    = \"nrlmsise00\"");
-        assert_phase5_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsise00\"");
-        assert_phase5_deferred_under_v3(
+        assert_v3_block_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsise00\"");
+        assert_v3_block_not_yet_supported(
             &toml,
             "atmosphere.kind = \"nrlmsise00\"",
             "a future NRLMSISE-00 follow-on slice",
@@ -1806,8 +1813,8 @@ kind = "nrlmsise00"
     #[test]
     fn nrlmsise00_structured_atmosphere_kind_is_v3_only() {
         let toml = append(MINIMAL, NRLMSISE00_STRUCTURED_ATMOSPHERE_BLOCK);
-        assert_phase5_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsise00\"");
-        assert_phase5_deferred_under_v3(
+        assert_v3_block_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsise00\"");
+        assert_v3_block_not_yet_supported(
             &toml,
             "atmosphere.kind = \"nrlmsise00\"",
             "a future NRLMSISE-00 follow-on slice",
@@ -1820,7 +1827,7 @@ kind = "nrlmsise00"
             "atmosphere    = \"none\"",
             "atmosphere    = \"piecewise_exponential\"",
         );
-        assert_phase5_reserved_under_v2(&toml_v2, "atmosphere.kind = \"piecewise_exponential\"");
+        assert_v3_block_reserved_under_v2(&toml_v2, "atmosphere.kind = \"piecewise_exponential\"");
 
         let toml_v3 = toml_v2.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let scenario =
@@ -1839,7 +1846,7 @@ kind = "piecewise_exponential"
     #[test]
     fn piecewise_exponential_structured_atmosphere_kind_is_v3_only_and_validates_under_v3() {
         let toml_v2 = append(MINIMAL, PIECEWISE_EXP_STRUCTURED_ATMOSPHERE_BLOCK);
-        assert_phase5_reserved_under_v2(&toml_v2, "atmosphere.kind = \"piecewise_exponential\"");
+        assert_v3_block_reserved_under_v2(&toml_v2, "atmosphere.kind = \"piecewise_exponential\"");
 
         let toml_v3 = toml_v2.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let scenario =
