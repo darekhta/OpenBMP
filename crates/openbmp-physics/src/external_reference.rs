@@ -83,11 +83,11 @@ pub struct ProvenanceBlock {
 impl ProvenanceBlock {
     /// Check that required fields are non-empty.
     pub(crate) fn validate(&self) -> Result<(), PhysicsError> {
-        if self.solver_name.is_empty()
-            || self.solver_version.is_empty()
-            || self.license.is_empty()
-            || self.retrieval_path.is_empty()
-            || self.governing_equations.is_empty()
+        if self.solver_name.trim().is_empty()
+            || self.solver_version.trim().is_empty()
+            || self.license.trim().is_empty()
+            || self.retrieval_path.trim().is_empty()
+            || self.governing_equations.trim().is_empty()
         {
             return Err(PhysicsError::InvalidParameter {
                 reason: "provenance block has empty required field",
@@ -135,17 +135,22 @@ impl ExternalReferencePackage {
     pub fn validate(&self) -> Result<(), PhysicsError> {
         self.provenance.validate()?;
         let e = &self.envelope;
-        if !(e.mach_lo.is_finite() && e.mach_hi.is_finite() && e.mach_lo <= e.mach_hi) {
+        if !(e.mach_lo.is_finite()
+            && e.mach_hi.is_finite()
+            && e.mach_lo >= 0.0
+            && e.mach_lo <= e.mach_hi)
+        {
             return Err(PhysicsError::InvalidParameter {
-                reason: "envelope mach bounds invalid",
+                reason: "envelope mach bounds invalid or negative",
             });
         }
         if !(e.altitude_lo_m.is_finite()
             && e.altitude_hi_m.is_finite()
+            && e.altitude_lo_m >= 0.0
             && e.altitude_lo_m <= e.altitude_hi_m)
         {
             return Err(PhysicsError::InvalidParameter {
-                reason: "envelope altitude bounds invalid",
+                reason: "envelope altitude bounds invalid or negative",
             });
         }
         if !(e.alpha_lo_rad.is_finite()
@@ -314,6 +319,21 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_only_provenance_field_rejected() {
+        let mut p = ok_provenance();
+        p.retrieval_path = "   ".into();
+        let pkg = ExternalReferencePackage {
+            kind: ReferencePackageKind::ContinuumCfdAero,
+            envelope: ok_envelope(),
+            provenance: p,
+        };
+        assert!(matches!(
+            pkg.validate(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
     fn bad_hash_rejected() {
         let mut p = ok_provenance();
         p.content_hash_sha256_hex = "deadbeef".into();
@@ -321,6 +341,33 @@ mod tests {
             kind: ReferencePackageKind::RadiationReference,
             envelope: ok_envelope(),
             provenance: p,
+        };
+        assert!(matches!(
+            pkg.validate(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn negative_physical_envelope_bounds_rejected() {
+        let mut envelope = ok_envelope();
+        envelope.mach_lo = -1.0;
+        let pkg = ExternalReferencePackage {
+            kind: ReferencePackageKind::ContinuumCfdAero,
+            envelope,
+            provenance: ok_provenance(),
+        };
+        assert!(matches!(
+            pkg.validate(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let mut envelope = ok_envelope();
+        envelope.altitude_lo_m = -1.0;
+        let pkg = ExternalReferencePackage {
+            kind: ReferencePackageKind::ContinuumCfdAero,
+            envelope,
+            provenance: ok_provenance(),
         };
         assert!(matches!(
             pkg.validate(),
