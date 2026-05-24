@@ -285,21 +285,21 @@ impl Vinh {
         let drag_per_mass = q_dyn * self.ballistic_coefficient_m2_kg;
         let lift_per_mass = drag_per_mass * self.lift_to_drag_ratio;
         // Vinh equations (Anderson 2019, §13.2).
-        let dr_dt = v * gamma.sin();
-        let dtheta_dt = v * gamma.cos() * psi.sin() / (r * phi.cos().max(1.0e-9));
-        let dphi_dt = v * gamma.cos() * psi.cos() / r;
-        let dv_dt = -drag_per_mass - g * gamma.sin();
-        let dgamma_dt = (lift_per_mass * sigma.cos()) / v
-            + (v / r - g / v) * gamma.cos();
-        let dpsi_dt = lift_per_mass * sigma.sin() / (v * gamma.cos().max(1.0e-9))
+        let radius_rate = v * gamma.sin();
+        let longitude_rate = v * gamma.cos() * psi.sin() / (r * phi.cos().max(1.0e-9));
+        let latitude_rate = v * gamma.cos() * psi.cos() / r;
+        let speed_rate = -drag_per_mass - g * gamma.sin();
+        let flight_path_angle_rate =
+            (lift_per_mass * sigma.cos()) / v + (v / r - g / v) * gamma.cos();
+        let heading_rate = lift_per_mass * sigma.sin() / (v * gamma.cos().max(1.0e-9))
             - v * gamma.cos() * psi.sin() * phi.tan() / r;
         VinhStateDerivative {
-            dr_dt,
-            dtheta_dt,
-            dphi_dt,
-            dv_dt,
-            dgamma_dt,
-            dpsi_dt,
+            dr_dt: radius_rate,
+            dtheta_dt: longitude_rate,
+            dphi_dt: latitude_rate,
+            dv_dt: speed_rate,
+            dgamma_dt: flight_path_angle_rate,
+            dpsi_dt: heading_rate,
         }
     }
 
@@ -319,7 +319,13 @@ impl Vinh {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
@@ -451,6 +457,9 @@ mod tests {
         let b = v.step_explicit_euler(state, 1.0);
         assert_eq!(a.r_m.to_bits(), b.r_m.to_bits());
         assert_eq!(a.velocity_m_s.to_bits(), b.velocity_m_s.to_bits());
-        assert_eq!(a.flight_path_angle_rad.to_bits(), b.flight_path_angle_rad.to_bits());
+        assert_eq!(
+            a.flight_path_angle_rad.to_bits(),
+            b.flight_path_angle_rad.to_bits()
+        );
     }
 }

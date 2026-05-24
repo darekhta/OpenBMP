@@ -126,3 +126,60 @@ The top temperature value `186.946 K` is the linear-extrapolation
 result `T_6 + L_6 · (84852 - 71000)` and is shown here for
 information only; the model returns `OutOfEnvelope` (or, opt-in,
 a zero-density vacuum sample) for queries above the ceiling.
+
+---
+
+# Provenance — `openbmp.atmosphere.nrlmsise00.static.v1`
+
+Canonical OpenBMP provenance record for the Phase-6.1 NRLMSISE-00
+static-defaults table pinned in
+`crates/openbmp-physics/src/atmosphere/nrlmsise00.rs`.
+
+```yaml
+dataset_id:       openbmp.atmosphere.nrlmsise00.static.v1
+files:
+  - crates/openbmp-physics/src/atmosphere/nrlmsise00.rs
+source_class:     public-academic-reference
+source_title:     NRLMSISE-00 empirical model of the atmosphere
+source_authors:   Picone, J. M.; Hedin, A. E.; Drob, D. P.; Aikin, A. C.
+source_id:        Journal of Geophysical Research 107(A12), 1468, 2002
+publication_date: 2002-12-01
+source_urls:
+  - https://doi.org/10.1029/2002JA009430
+  - https://ccmc.gsfc.nasa.gov/models/NRLMSIS~00/
+  - https://pypi.org/project/nrlmsise00/
+license_or_terms: Public empirical model and public C/Python interface.
+retrieved_utc:    2026-05-24
+transformation:
+  method: >-
+    Generated a fixed static-defaults altitude table by evaluating the
+    public NRLMSISE-00 C model interface exposed by Python package
+    `nrlmsise00==0.1.2`. Inputs were year=2024, doy=80,
+    sec=43200, geodetic latitude=0 deg, longitude=0 deg,
+    local solar time=12 h, F10.7A=150, F10.7=150, Ap=4, and
+    altitudes 0, 100, 150, 200, ..., 1000 km. Number-density outputs
+    were converted from cm^-3 to m^-3; mass density from g/cm^3 to
+    kg/m^3. No fit was applied to table points; runtime interpolation
+    is log-linear for non-negative densities and linear for
+    temperatures.
+  script: none committed; one-off audit regeneration.
+verification:
+  method: >-
+    In-crate tests assert exact reproduction at the pinned table
+    points, deterministic two-run output, finite pressure/speed of
+    sound at orbital altitudes, and spot-check 200 km / 400 km mass
+    densities against the regenerated public-model values in
+    `crates/openbmp-physics/tests/hypersonic_validation.rs`.
+  test: crates/openbmp-physics/tests/hypersonic_validation.rs
+  tolerance: >-
+    Table points: 1e-12 relative for density and temperature.
+    Validation spot checks: 1 percent relative.
+validation_status: checked
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Public Earth atmosphere model for academic drag / re-entry
+    research. Static-defaults interpolation only; no operational
+    mission profile or fielded-vehicle data.
+```

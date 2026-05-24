@@ -1,4 +1,10 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::similar_names
+)]
 //! Phase-6.8 hypersonic validation suite.
 //!
 //! Per the design document, each case is either analytic-toy
@@ -18,9 +24,10 @@
 //! * Modified-Newtonian sphere `Cp(0) = Cp_max`, `Cp(π/2) = 0`.
 //! * Knudsen-bridge `α → 0` at Kn = 0; `α → 1` at Kn → ∞; smooth
 //!   transition.
-//! * Tannehill γ_eff at sea-level reference and high-T regime.
-//! * NRLMSISE-00 static density at 200 km and 400 km matches
-//!   published reference values within documented uncertainty.
+//! * Tannehill equilibrium-air queries fail closed until verified
+//!   public table values land.
+//! * NRLMSISE-00 static density at 200 km and 400 km matches public
+//!   model outputs for the declared static condition.
 
 use approx::assert_relative_eq;
 use openbmp_physics::{
@@ -51,6 +58,58 @@ fn allen_eggers_analytic_toy_case() {
     // Closed-form altitude h_max = (1/β) · ln[ρ_s · B / (β · sin γ)]
     //   = 7000 · ln(1.225e-3 / 1.246e-5) ≈ 32 km
     assert!((h - 32_000.0).abs() < 5_000.0, "peak h = {h} m");
+}
+
+#[test]
+fn allen_eggers_integrated_trajectory_matches_closed_form_peak_decel() {
+    const G0: f64 = 9.806_65;
+    let ae = AllenEggers {
+        rho_s_kg_m3: 1.225,
+        beta_inv_m: 1.0 / 7_000.0,
+        entry_velocity_m_s: 7_800.0,
+        flight_path_angle_rad: 5.0_f64.to_radians(),
+        ballistic_coefficient_m2_kg: 0.001,
+    };
+    let sin_gamma = ae.flight_path_angle_rad.sin().abs();
+    let dv_dh = |altitude_m: f64, velocity_m_s: f64| -> f64 {
+        let rho = ae.rho_s_kg_m3 * (-ae.beta_inv_m * altitude_m).exp();
+        0.5 * rho * ae.ballistic_coefficient_m2_kg * velocity_m_s / sin_gamma
+    };
+    let decel_g = |altitude_m: f64, velocity_m_s: f64| -> f64 {
+        let rho = ae.rho_s_kg_m3 * (-ae.beta_inv_m * altitude_m).exp();
+        0.5 * rho * ae.ballistic_coefficient_m2_kg * velocity_m_s * velocity_m_s / G0
+    };
+
+    let mut altitude_m = 120_000.0;
+    let mut velocity_m_s = ae.velocity_at_altitude_m_s(altitude_m);
+    let step_m = -10.0;
+    let mut peak_g = 0.0;
+    let mut peak_altitude_m = altitude_m;
+    while altitude_m > 0.0 {
+        let n_g = decel_g(altitude_m, velocity_m_s);
+        if n_g > peak_g {
+            peak_g = n_g;
+            peak_altitude_m = altitude_m;
+        }
+
+        let k1 = dv_dh(altitude_m, velocity_m_s);
+        let k2 = dv_dh(altitude_m + 0.5 * step_m, velocity_m_s + 0.5 * step_m * k1);
+        let k3 = dv_dh(altitude_m + 0.5 * step_m, velocity_m_s + 0.5 * step_m * k2);
+        let k4 = dv_dh(altitude_m + step_m, velocity_m_s + step_m * k3);
+        velocity_m_s += step_m * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0;
+        altitude_m += step_m;
+    }
+
+    let expected_g = ae.peak_deceleration_g();
+    let expected_altitude_m = ae.peak_decel_altitude_m();
+    assert!(
+        (peak_g - expected_g).abs() / expected_g < 0.01,
+        "integrated peak n={peak_g} g, expected {expected_g} g"
+    );
+    assert!(
+        (peak_altitude_m - expected_altitude_m).abs() < 100.0,
+        "integrated peak h={peak_altitude_m} m, expected {expected_altitude_m} m"
+    );
 }
 
 #[test]
@@ -115,20 +174,9 @@ fn knudsen_bridge_limits_case() {
 }
 
 #[test]
-fn tannehill_gamma_eff_cold_air_reference() {
+fn tannehill_equilibrium_air_is_deferred_until_verified_table_lands() {
     let m = TannehillEquilibriumAir;
-    let g = m.gamma_eff(300.0, 101_325.0).unwrap();
-    assert!((g - 1.4).abs() < 0.01);
-}
-
-#[test]
-fn tannehill_gamma_eff_falls_with_dissociation() {
-    let m = TannehillEquilibriumAir;
-    let cold = m.gamma_eff(300.0, 101_325.0).unwrap();
-    let warm = m.gamma_eff(2_500.0, 101_325.0).unwrap();
-    let hot = m.gamma_eff(5_000.0, 101_325.0).unwrap();
-    assert!(warm < cold);
-    assert!(hot < warm);
+    assert!(m.gamma_eff(300.0, 101_325.0).is_err());
 }
 
 #[test]
@@ -137,8 +185,8 @@ fn nrlmsise00_static_at_200km_in_reference_band() {
     let o = m
         .evaluate(Nrlmsise00Inputs::mid_conditions(200_000.0))
         .unwrap();
-    // Published NRLMSISE-00 mid-condition ρ at 200 km ≈ 2.5e-10 kg/m³.
-    assert!((o.mass_density_kg_m3 - 2.541e-10).abs() / 2.541e-10 < 0.05);
+    // Public NRLMSISE-00 gtd7 static condition: ρ ≈ 3.155e-10 kg/m³.
+    assert!((o.mass_density_kg_m3 - 3.155_122_198_534e-10).abs() / 3.155_122_198_534e-10 < 0.01);
 }
 
 #[test]
@@ -147,6 +195,6 @@ fn nrlmsise00_static_at_400km_in_reference_band() {
     let o = m
         .evaluate(Nrlmsise00Inputs::mid_conditions(400_000.0))
         .unwrap();
-    // Published NRLMSISE-00 mid-condition ρ at 400 km ≈ 2.8e-12 kg/m³.
-    assert!((o.mass_density_kg_m3 - 2.803e-12).abs() / 2.803e-12 < 0.05);
+    // Public NRLMSISE-00 gtd7 static condition: ρ ≈ 6.060e-12 kg/m³.
+    assert!((o.mass_density_kg_m3 - 6.059_650_178_061e-12).abs() / 6.059_650_178_061e-12 < 0.01);
 }

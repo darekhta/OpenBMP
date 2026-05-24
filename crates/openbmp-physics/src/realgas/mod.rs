@@ -7,19 +7,17 @@
 //! heat ratio away from the cold-gas value.
 //!
 //! [`EquilibriumAir`] is the trait the rest of the simulator
-//! consumes. [`TannehillEquilibriumAir`] is the in-house 5-species
-//! Tannehill / Mugalev curve-fit implementation (Tannehill and
-//! Mugalev, *Equilibrium Air Computations*; reproduced in Anderson,
-//! *Hypersonic and High-Temperature Gas Dynamics*, 3rd ed., §16).
+//! consumes. [`TannehillEquilibriumAir`] and
+//! [`MugalevEquilibriumAir`] are typed-reserved placeholders until
+//! verified public coefficient tables or clean-room implementations
+//! land with provenance.
 //!
 //! # Scope
 //!
-//! Ships the 5-species (`N₂`, `O₂`, `N`, `O`, `Ar`) equilibrium-air
-//! correlation valid roughly for `100 ≤ T ≤ 15_000 K` and
-//! `0.001 ≤ p / p_0 ≤ 10` (with `p_0 = 101 325 Pa`). The 11-species
-//! Mugalev correlation (which adds `NO`, `N⁺`, `O⁺`, `NO⁺`, `e⁻`,
-//! `N⁺⁺`) is a follow-on slice — exposed here as the
-//! [`MugalevEquilibriumAir`] placeholder.
+//! The Phase-6 audit removed a synthesized Tannehill table that had
+//! not been checked against a public source. Both equilibrium-air
+//! implementations now fail closed with [`PhysicsError::OutOfEnvelope`]
+//! until verified data are added in a follow-on slice.
 //!
 //! # Determinism
 //!
@@ -124,11 +122,8 @@ pub trait EquilibriumAir {
     /// # Errors
     ///
     /// Out-of-envelope on bad queries.
-    fn speed_of_sound_m_s(
-        &self,
-        temperature_k: f64,
-        pressure_pa: f64,
-    ) -> Result<f64, PhysicsError>;
+    fn speed_of_sound_m_s(&self, temperature_k: f64, pressure_pa: f64)
+    -> Result<f64, PhysicsError>;
 
     /// Compute everything at once for callers that need all three.
     ///
@@ -143,30 +138,30 @@ pub trait EquilibriumAir {
 }
 
 /// 11-species Mugalev equilibrium-air placeholder. Deferred to a
-/// follow-on slice; constructing and querying returns
-/// `OutOfEnvelope` with a "deferred" reason.
+/// follow-on slice; querying returns `OutOfEnvelope` with a
+/// "deferred" reason.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct MugalevEquilibriumAir;
 
 impl EquilibriumAir for MugalevEquilibriumAir {
     fn composition(&self, _t: f64, _p: f64) -> Result<AirComposition, PhysicsError> {
         Err(PhysicsError::OutOfEnvelope {
-            reason: "MugalevEquilibriumAir (11-species) is deferred; use TannehillEquilibriumAir",
+            reason: "MugalevEquilibriumAir (11-species) is deferred pending verified public coefficients",
         })
     }
     fn gamma_eff(&self, _t: f64, _p: f64) -> Result<f64, PhysicsError> {
         Err(PhysicsError::OutOfEnvelope {
-            reason: "MugalevEquilibriumAir (11-species) is deferred; use TannehillEquilibriumAir",
+            reason: "MugalevEquilibriumAir (11-species) is deferred pending verified public coefficients",
         })
     }
     fn speed_of_sound_m_s(&self, _t: f64, _p: f64) -> Result<f64, PhysicsError> {
         Err(PhysicsError::OutOfEnvelope {
-            reason: "MugalevEquilibriumAir (11-species) is deferred; use TannehillEquilibriumAir",
+            reason: "MugalevEquilibriumAir (11-species) is deferred pending verified public coefficients",
         })
     }
     fn state(&self, _t: f64, _p: f64) -> Result<EquilibriumAirState, PhysicsError> {
         Err(PhysicsError::OutOfEnvelope {
-            reason: "MugalevEquilibriumAir (11-species) is deferred; use TannehillEquilibriumAir",
+            reason: "MugalevEquilibriumAir (11-species) is deferred pending verified public coefficients",
         })
     }
 }

@@ -153,7 +153,7 @@ pub enum ImplicitMethod {
 /// is disabled, lagged one kernel step, sub-iterated to a fixed
 /// count, or solved with a profile-gated implicit coupling method.
 /// The research-safe default is one-step lagged feedback.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum CouplingEdge {
     /// No feedback from the downstream model to the upstream model
     /// at this edge. Used when the upstream model is independent of
@@ -163,6 +163,7 @@ pub enum CouplingEdge {
     /// Downstream state is read using its value from the previous
     /// kernel step. Default research-safe path; telemetry reports
     /// the one-step lag.
+    #[default]
     LaggedOneStep,
     /// Downstream state is sub-iterated to a fixed count per
     /// trajectory step. Used when the coupled response is significant
@@ -179,12 +180,6 @@ pub enum CouplingEdge {
     /// scenario load when the profile does not carry an implicit
     /// sub-stepper.
     ImplicitProfile,
-}
-
-impl Default for CouplingEdge {
-    fn default() -> Self {
-        Self::LaggedOneStep
-    }
 }
 
 /// Profile-construction error returned by [`SolverProfile::validate`].
@@ -401,7 +396,11 @@ where
         }
         let denom = 1.0 - h_seconds * dfdy_val;
         let denom = if denom.abs() < EPS_J {
-            denom.signum() * EPS_J + EPS_J
+            if denom.is_sign_negative() {
+                -EPS_J
+            } else {
+                EPS_J
+            }
         } else {
             denom
         };
@@ -423,7 +422,13 @@ where
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
 
@@ -456,7 +461,10 @@ mod tests {
     #[test]
     fn fixed_step_rejects_reserved_method() {
         let p = fixed(1e-3, ExplicitMethod::RungeKuttaFehlberg78);
-        assert!(matches!(p.validate(), Err(SolverProfileError::ReservedMethod)));
+        assert!(matches!(
+            p.validate(),
+            Err(SolverProfileError::ReservedMethod)
+        ));
     }
 
     #[test]
@@ -539,16 +547,8 @@ mod tests {
     /// and Newton converges in one iteration for the linear case.
     #[test]
     fn implicit_euler_scalar_stiff_decay() {
-        let y = implicit_euler_step(
-            1.0,
-            0.01,
-            0.01,
-            1e-12,
-            64,
-            |_, y| -100.0 * y,
-            |_, _| -100.0,
-        )
-        .unwrap();
+        let y = implicit_euler_step(1.0, 0.01, 0.01, 1e-12, 64, |_, y| -100.0 * y, |_, _| -100.0)
+            .unwrap();
         assert!((y - 0.5).abs() < 1e-12, "got {y}");
     }
 
@@ -558,16 +558,8 @@ mod tests {
     #[test]
     fn implicit_euler_handles_high_stiffness() {
         for k in [10.0_f64, 100.0, 1.0e4, 1.0e6] {
-            let y = implicit_euler_step(
-                1.0,
-                1.0e-3,
-                1.0e-3,
-                1e-12,
-                64,
-                |_, y| -k * y,
-                |_, _| -k,
-            )
-            .unwrap();
+            let y = implicit_euler_step(1.0, 1.0e-3, 1.0e-3, 1e-12, 64, |_, y| -k * y, |_, _| -k)
+                .unwrap();
             let analytic = 1.0 / (1.0 + k * 1.0e-3);
             let scale = analytic.max(1.0e-12);
             assert!(
@@ -582,15 +574,8 @@ mod tests {
     /// `ImplicitSolveError::DidNotConverge`.
     #[test]
     fn implicit_euler_reports_non_convergence() {
-        let result = implicit_euler_step(
-            1.0,
-            0.01,
-            0.01,
-            1e-12,
-            0,
-            |_, y| -100.0 * y,
-            |_, _| -100.0,
-        );
+        let result =
+            implicit_euler_step(1.0, 0.01, 0.01, 1e-12, 0, |_, y| -100.0 * y, |_, _| -100.0);
         assert!(
             matches!(result, Err(ImplicitSolveError::DidNotConverge { .. })),
             "got {result:?}"
@@ -601,8 +586,7 @@ mod tests {
     /// profile doesn't quietly accept a NaN-poisoned source term.
     #[test]
     fn implicit_euler_rejects_nan_rhs() {
-        let result =
-            implicit_euler_step(1.0, 0.01, 0.01, 1e-12, 8, |_, _| f64::NAN, |_, _| 0.0);
+        let result = implicit_euler_step(1.0, 0.01, 0.01, 1e-12, 8, |_, _| f64::NAN, |_, _| 0.0);
         assert!(matches!(result, Err(ImplicitSolveError::NonFiniteRhs)));
     }
 
@@ -610,26 +594,10 @@ mod tests {
     /// bit-stable when the rhs is pure arithmetic.
     #[test]
     fn implicit_euler_is_bit_stable_across_runs() {
-        let a = implicit_euler_step(
-            1.0,
-            0.01,
-            0.01,
-            1e-12,
-            64,
-            |_, y| -100.0 * y,
-            |_, _| -100.0,
-        )
-        .unwrap();
-        let b = implicit_euler_step(
-            1.0,
-            0.01,
-            0.01,
-            1e-12,
-            64,
-            |_, y| -100.0 * y,
-            |_, _| -100.0,
-        )
-        .unwrap();
+        let a = implicit_euler_step(1.0, 0.01, 0.01, 1e-12, 64, |_, y| -100.0 * y, |_, _| -100.0)
+            .unwrap();
+        let b = implicit_euler_step(1.0, 0.01, 0.01, 1e-12, 64, |_, y| -100.0 * y, |_, _| -100.0)
+            .unwrap();
         assert_eq!(a.to_bits(), b.to_bits());
     }
 
@@ -650,5 +618,15 @@ mod tests {
         .unwrap();
         let residual = y - 1.0 + 0.5 * y.powi(3);
         assert!(residual.abs() < 1e-10, "y={y}, residual={residual}");
+    }
+
+    /// Non-stiff constant source term: Newton denominator is one, so
+    /// the implicit step must match the explicit affine update exactly
+    /// at normal tolerances. This guards against Jacobian
+    /// regularisation leaking into ordinary smooth source terms.
+    #[test]
+    fn implicit_euler_constant_source_has_no_regularisation_bias() {
+        let y = implicit_euler_step(2.0, 0.25, 0.25, 1e-12, 8, |_, _| 3.0, |_, _| 0.0).unwrap();
+        assert!((y - 2.75).abs() < 1e-12, "got {y}");
     }
 }

@@ -21,12 +21,14 @@ ships no HAL and does not validate or support hardware deployment.
 The deterministic kernel (Phase 1), physics fidelity (Phases 2-3),
 flight-controller and estimator stack (Phases 4-5), and mission-graph
 architecture refactor (Phase 5.X) all closed before Phase 6 opened.
-Phase 6 ships the hypersonic atmosphere, real-gas thermodynamics,
-hypersonic aero methods, aerothermal heat transfer, Park 2T
-nonequilibrium thermochemistry, generic ablation toy, re-entry
-trajectory infrastructure, external reference packages, and UQ /
-credibility reporting described in
+Phase 6 is landing the hypersonic atmosphere, hypersonic aero methods,
+aerothermal heat transfer, generic ablation toy, re-entry trajectory
+infrastructure, external reference packages, and UQ / credibility
+reporting described in
 [`docs/hypersonic-extensions.md`](docs/hypersonic-extensions.md).
+Real-gas equilibrium-air and Park 2T thermochemistry are currently
+typed-reserved pending verified public coefficient tables; see
+[`docs/phase-6-plan.md`](docs/phase-6-plan.md) for audited status.
 
 ## Documentation
 

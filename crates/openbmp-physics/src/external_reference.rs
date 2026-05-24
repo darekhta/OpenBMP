@@ -204,7 +204,13 @@ impl ExternalReferencePackage {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
 

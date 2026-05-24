@@ -128,7 +128,13 @@ impl BlowingCorrelation {
 
 /// Trait for ablation models.
 pub trait AblationModel {
-    /// Recession rate at this station.
+    /// Recession rate at this station for caller-supplied heat fluxes.
+    ///
+    /// `q_conv_w_m2` should come from the selected aerothermal model
+    /// (Sutton-Graves, Fay-Riddell, CFD deck, etc.). The ablator does
+    /// not choose a heating correlation internally; that keeps material
+    /// response composable with external references and higher-fidelity
+    /// stagnation models.
     ///
     /// # Errors
     ///
@@ -137,6 +143,8 @@ pub trait AblationModel {
         &self,
         ctx: &AerothermalContext,
         station: BodyStation,
+        q_conv_w_m2: f64,
+        q_rad_w_m2: f64,
     ) -> Result<RecessionRate, AerothermalError>;
 
     /// Convective heat flux corrected for blowing.
@@ -171,33 +179,30 @@ impl AblationModel for SteadyStateAblator {
         &self,
         ctx: &AerothermalContext,
         _station: BodyStation,
+        q_conv_w_m2: f64,
+        q_rad_w_m2: f64,
     ) -> Result<RecessionRate, AerothermalError> {
         // Surface energy balance (steady-state, no conduction):
         //   q_conv + q_rad - σ ε T_w⁴ - m_dot · h_v = 0
         //   ⇒ m_dot = (q_conv + q_rad - σ ε T_w⁴) / h_v
-        // For Phase-6.11 baseline, q_rad is taken as 0; the caller
-        // supplies the full q_conv via the [`AerothermalContext`].
         const SIGMA_SB: f64 = 5.670_374_419e-8;
         let t_w = ctx.wall_temperature_k;
+        if !q_conv_w_m2.is_finite() || !q_rad_w_m2.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "ablation heat flux input is NaN or Inf",
+            });
+        }
+        if q_conv_w_m2 < 0.0 || q_rad_w_m2 < 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "ablation heat flux inputs must be non-negative",
+            });
+        }
         if t_w < self.material.vaporisation_temperature_k {
             // No ablation below vaporisation temperature.
             return Ok(RecessionRate { m_per_s: 0.0 });
         }
-        // Use Sutton-Graves estimate for q_conv as the steady-state
-        // driver when the caller hasn't supplied a richer field; the
-        // module is library code so we use the context inputs verbatim.
-        // The ablator's recession depends on the *net* surface flux
-        // after re-radiation, which the caller computes from the
-        // upstream heat-transfer model. Here we approximate
-        // q_conv ≈ Sutton-Graves(ctx) for the standalone trait surface.
-        let rho = ctx.freestream.density_kg_m3;
-        let v = ctx.airspeed_m_s;
-        let r_n = ctx.nose_radius_m;
-        let q_conv = crate::stagnation::SUTTON_GRAVES_K_EARTH_SI
-            * (rho / r_n).sqrt()
-            * v.powi(3);
         let q_rerad = SIGMA_SB * self.material.surface_emissivity * t_w.powi(4);
-        let net = (q_conv - q_rerad).max(0.0);
+        let net = (q_conv_w_m2 + q_rad_w_m2 - q_rerad).max(0.0);
         let m_dot_kg_m2_s = net / self.material.heat_of_ablation_j_kg;
         let recession_m_s = m_dot_kg_m2_s / self.material.density_kg_m3;
         Ok(RecessionRate {
@@ -213,10 +218,7 @@ impl AblationModel for SteadyStateAblator {
         edge_velocity_m_s: f64,
         stanton_no_blowing: f64,
     ) -> Result<f64, AerothermalError> {
-        if stanton_no_blowing <= 0.0
-            || edge_density_kg_m3 <= 0.0
-            || edge_velocity_m_s <= 0.0
-        {
+        if stanton_no_blowing <= 0.0 || edge_density_kg_m3 <= 0.0 || edge_velocity_m_s <= 0.0 {
             return Err(AerothermalError::InvalidParameter {
                 reason: "blowing-correction edge state requires positive ρ_e, V_e, St",
             });
@@ -227,7 +229,9 @@ impl AblationModel for SteadyStateAblator {
     }
 
     fn surface_state(&self, _station: BodyStation) -> SurfaceState {
-        SurfaceState::SteadyAblating { recession_rate_m_s: 0.0 }
+        SurfaceState::SteadyAblating {
+            recession_rate_m_s: 0.0,
+        }
     }
 }
 
@@ -256,6 +260,8 @@ impl AblationModel for CharringAblator {
         &self,
         ctx: &AerothermalContext,
         _station: BodyStation,
+        q_conv_w_m2: f64,
+        q_rad_w_m2: f64,
     ) -> Result<RecessionRate, AerothermalError> {
         // For the baseline trait impl, behave like a steady-state
         // ablator using the char-material vaporisation enthalpy plus
@@ -270,7 +276,7 @@ impl AblationModel for CharringAblator {
             },
             blowing: BlowingCorrelation::Lees,
         };
-        proxy.recession_rate(ctx, BodyStation::stagnation())
+        proxy.recession_rate(ctx, BodyStation::stagnation(), q_conv_w_m2, q_rad_w_m2)
     }
 
     fn blowing_correction(
@@ -311,7 +317,13 @@ impl AblationModel for CharringAblator {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
     use crate::stagnation::WallCatalysis;
@@ -337,7 +349,12 @@ mod tests {
             blowing: BlowingCorrelation::Lees,
         };
         let r = m
-            .recession_rate(&ctx(1.0e-4, 5000.0, 1500.0), BodyStation::stagnation())
+            .recession_rate(
+                &ctx(1.0e-4, 5000.0, 1500.0),
+                BodyStation::stagnation(),
+                1.0e7,
+                0.0,
+            )
             .unwrap();
         assert_eq!(r.m_per_s, 0.0);
     }
@@ -366,7 +383,7 @@ mod tests {
             wall_catalysis: WallCatalysis::FullyCatalytic,
         };
         let r = m
-            .recession_rate(&high_q_ctx, BodyStation::stagnation())
+            .recession_rate(&high_q_ctx, BodyStation::stagnation(), 3.0e7, 0.0)
             .unwrap();
         assert!(
             r.m_per_s > 0.0,
@@ -393,7 +410,9 @@ mod tests {
             material: ToyAblator::graphite_toy(),
             blowing: BlowingCorrelation::FixedLambda { lambda: 0.4 },
         };
-        let q_zero = m.blowing_correction(1.0e6, 0.0, 1.0e-4, 5000.0, 1.0e-3).unwrap();
+        let q_zero = m
+            .blowing_correction(1.0e6, 0.0, 1.0e-4, 5000.0, 1.0e-3)
+            .unwrap();
         let q_mid = m
             .blowing_correction(1.0e6, 1.0e-3, 1.0e-4, 5000.0, 1.0e-3)
             .unwrap();
@@ -410,14 +429,20 @@ mod tests {
             gas_injection_factor: 0.8,
             progress: 0.0,
         };
-        assert_eq!(a.surface_state(BodyStation::stagnation()), SurfaceState::Virgin);
+        assert_eq!(
+            a.surface_state(BodyStation::stagnation()),
+            SurfaceState::Virgin
+        );
         a.progress = 0.5;
         assert!(matches!(
             a.surface_state(BodyStation::stagnation()),
             SurfaceState::Pyrolyzing { progress } if (progress - 0.5).abs() < 1e-9
         ));
         a.progress = 1.0;
-        assert_eq!(a.surface_state(BodyStation::stagnation()), SurfaceState::Char);
+        assert_eq!(
+            a.surface_state(BodyStation::stagnation()),
+            SurfaceState::Char
+        );
     }
 
     #[test]
@@ -427,10 +452,20 @@ mod tests {
             blowing: BlowingCorrelation::Lees,
         };
         let a = m
-            .recession_rate(&ctx(1.0e-4, 11_000.0, 4500.0), BodyStation::stagnation())
+            .recession_rate(
+                &ctx(1.0e-4, 11_000.0, 4500.0),
+                BodyStation::stagnation(),
+                5.0e7,
+                0.0,
+            )
             .unwrap();
         let b = m
-            .recession_rate(&ctx(1.0e-4, 11_000.0, 4500.0), BodyStation::stagnation())
+            .recession_rate(
+                &ctx(1.0e-4, 11_000.0, 4500.0),
+                BodyStation::stagnation(),
+                5.0e7,
+                0.0,
+            )
             .unwrap();
         assert_eq!(a.m_per_s.to_bits(), b.m_per_s.to_bits());
     }

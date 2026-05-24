@@ -191,9 +191,9 @@ impl Default for AccommodationCoeffs {
 }
 
 /// Free-molecular drag on a flat plate at angle `α` to freestream
-/// (Schaaf & Chambré). Uses the convention `C_D = 2 · σ · sin²(α)` for
-/// fully diffuse walls at high speed ratio. Representative-panel
-/// approximation per the rest of the Phase-6.3 aero family.
+/// (Schaaf & Chambré high-speed-ratio limit). `α = 0` is edge-on
+/// and `α = π/2` is broadside. Representative-panel approximation
+/// per the rest of the Phase-6 aero family.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FreeMolecularAero {
     /// Accommodation coefficients.
@@ -203,14 +203,23 @@ pub struct FreeMolecularAero {
 }
 
 impl FreeMolecularAero {
-    /// Schaaf-Chambré FM drag coefficient (Phase-6.6 representative
-    /// form). Reduces to Newtonian-like `C_D = 2 σ sin²(α)` at high
-    /// speed ratios.
+    /// Schaaf-Chambré high-speed-ratio representative drag coefficient.
+    ///
+    /// The normal accommodation term gives the broadside pressure
+    /// contribution `2 * σ_n * sin²(α)`. The tangential accommodation
+    /// term is retained as a shear proxy `2 * σ_t * sin(α) * cos(α)`.
+    /// This keeps the correct limits: zero drag edge-on and
+    /// `2 * σ_n` for a fully broadside diffuse plate.
     #[must_use]
     pub fn cd(&self, alpha_rad: f64) -> f64 {
-        let s = alpha_rad.sin();
-        let sigma_eff = self.accommodation.normal;
-        2.0 * sigma_eff * s * s
+        if !alpha_rad.is_finite() {
+            return 0.0;
+        }
+        let s = alpha_rad.sin().abs();
+        let c = alpha_rad.cos().abs();
+        let normal = 2.0 * self.accommodation.normal * s * s;
+        let shear = 2.0 * self.accommodation.tangential * s * c;
+        normal + shear
     }
 }
 
@@ -221,11 +230,19 @@ impl AeroMethod for FreeMolecularAero {
                 reason: "FreeMolecularAero context input is NaN or Inf",
             });
         }
+        if !(0.0..=1.0).contains(&self.accommodation.normal)
+            || !(0.0..=1.0).contains(&self.accommodation.tangential)
+            || !self.reference_area_m2.is_finite()
+            || self.reference_area_m2 < 0.0
+        {
+            return Err(AeroError::InvalidParameter {
+                reason: "FreeMolecularAero requires accommodation in [0, 1] and non-negative area",
+            });
+        }
         let alpha_rad = ctx.alpha_deg.to_radians();
-        let cd = self.cd(alpha_rad).max(2.0 * self.accommodation.normal * 0.0);
+        let cd = self.cd(alpha_rad);
         // FM drag scales with q and reference area; sign in body -x.
-        let drag = (cd + 2.0 * self.accommodation.normal) * ctx.dynamic_pressure_pa
-            * self.reference_area_m2;
+        let drag = cd * ctx.dynamic_pressure_pa * self.reference_area_m2;
         Ok(AeroForceMomentBody {
             force_n_body: Vector3::new(-drag, 0.0, 0.0),
             moment_n_m_body: Vector3::zeros(),
@@ -269,6 +286,7 @@ impl std::fmt::Debug for HybridAeroMethod {
 
 impl HybridAeroMethod {
     /// Stamp the Knudsen number for the next evaluation.
+    #[must_use]
     pub fn with_knudsen(mut self, kn: f64) -> Self {
         self.knudsen = kn;
         self
@@ -301,7 +319,13 @@ impl AeroMethod for HybridAeroMethod {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
     use crate::hypersonic::ModifiedNewtonian;
@@ -378,6 +402,38 @@ mod tests {
             reference_area_m2: 1.0,
         };
         assert_relative_eq!(fm.cd(0.0), 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn free_molecular_force_at_zero_alpha_is_zero() {
+        let fm = FreeMolecularAero {
+            accommodation: AccommodationCoeffs::default(),
+            reference_area_m2: 1.0,
+        };
+        let ctx = AeroContext {
+            mach: 20.0,
+            alpha_deg: 0.0,
+            beta_deg: 0.0,
+            dynamic_pressure_pa: 1.0e-3,
+        };
+        let force = fm.aero_force_moment_body(&ctx).unwrap();
+        assert_relative_eq!(force.force_n_body.x, 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn free_molecular_cd_broadside_is_pressure_limit() {
+        let fm = FreeMolecularAero {
+            accommodation: AccommodationCoeffs {
+                tangential: 1.0,
+                normal: 1.0,
+            },
+            reference_area_m2: 1.0,
+        };
+        assert_relative_eq!(
+            fm.cd(std::f64::consts::FRAC_PI_2),
+            2.0,
+            max_relative = 1e-12
+        );
     }
 
     #[test]

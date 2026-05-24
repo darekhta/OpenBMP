@@ -116,6 +116,7 @@ impl OneDThermalToy {
 
     /// Node spacing `dx = L / (N+1)` (m).
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn dx_m(&self) -> f64 {
         self.thickness_m / ((self.n_nodes + 1) as f64)
     }
@@ -178,8 +179,8 @@ impl OneDThermalToy {
             BackwallCondition::PrescribedTemperature { t_k } => t_k,
             BackwallCondition::Convective { h_w_m2_k, t_inf_k } => {
                 // −k · ∂T/∂x = h · (T_back − T_∞)
-                let ghost = prev[n_total - 2] - 2.0 * dx * h_w_m2_k * (prev[n_total - 1] - t_inf_k)
-                    / k;
+                let ghost =
+                    prev[n_total - 2] - 2.0 * dx * h_w_m2_k * (prev[n_total - 1] - t_inf_k) / k;
                 let lap_back = ghost - 2.0 * prev[n_total - 1] + prev[n_total - 2];
                 prev[n_total - 1] + fo * lap_back
             }
@@ -197,12 +198,18 @@ impl OneDThermalToy {
     /// Backwall temperature (K).
     #[must_use]
     pub fn backwall_temperature_k(&self) -> f64 {
-        *self.temperature_k.last().expect("temperature array non-empty by construction")
+        self.temperature_k.last().copied().unwrap_or(0.0)
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
 
@@ -242,18 +249,28 @@ mod tests {
 
     #[test]
     fn diffusivity_is_finite_positive() {
-        let toy =
-            OneDThermalToy::with_uniform_temperature(mat(), 0.01, 10, BackwallCondition::Adiabatic, 300.0)
-                .unwrap();
+        let toy = OneDThermalToy::with_uniform_temperature(
+            mat(),
+            0.01,
+            10,
+            BackwallCondition::Adiabatic,
+            300.0,
+        )
+        .unwrap();
         let alpha = toy.diffusivity_m2_s();
         assert!(alpha > 0.0 && alpha.is_finite());
     }
 
     #[test]
     fn rejects_fourier_violating_step() {
-        let mut toy =
-            OneDThermalToy::with_uniform_temperature(mat(), 0.01, 10, BackwallCondition::Adiabatic, 300.0)
-                .unwrap();
+        let mut toy = OneDThermalToy::with_uniform_temperature(
+            mat(),
+            0.01,
+            10,
+            BackwallCondition::Adiabatic,
+            300.0,
+        )
+        .unwrap();
         let too_big = toy.max_stable_dt_s() * 2.0;
         assert!(matches!(
             toy.step(too_big, 1.0e5),

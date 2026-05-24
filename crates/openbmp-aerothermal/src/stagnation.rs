@@ -1,11 +1,11 @@
 //! Phase-6.4 stagnation-point heat-transfer models.
 //!
-//! [`FayRiddell`] is the 1958 classic equilibrium-air catalytic-wall
-//! axisymmetric formula. [`SuttonGraves`] is the engineering
-//! simplification that needs only freestream density, nose radius,
-//! and velocity. [`TauberSuttonRadiative`] is the engineering
-//! estimate for shock-layer radiative heat flux relevant above
-//! ~ Mach 12.
+//! [`FayRiddell`] is a cold-gas engineering scaffold for the 1958
+//! equilibrium-air catalytic-wall axisymmetric formula. [`SuttonGraves`]
+//! is the engineering simplification that needs only freestream density,
+//! nose radius, and velocity. [`TauberSuttonRadiative`] is typed-reserved
+//! until the published piecewise-polynomial Tauber-Sutton coefficients
+//! are imported with provenance.
 
 use openbmp_physics::AtmosphereSample;
 
@@ -24,7 +24,9 @@ impl BodyStation {
     /// Stagnation-point station (arc length 0).
     #[must_use]
     pub const fn stagnation() -> Self {
-        Self { arc_length_m_x10: 0 }
+        Self {
+            arc_length_m_x10: 0,
+        }
     }
 }
 
@@ -150,8 +152,8 @@ impl HeatTransferModel for SuttonGraves {
         let r_n = ctx.nose_radius_m;
         let v = ctx.airspeed_m_s;
         let q = self.k_earth_si * (rho / r_n).sqrt() * v.powi(3);
-        let h_aw = 0.5 * v * v + C_P_AIR_J_KG_K * ctx.freestream.temperature_k;
-        let h_w = C_P_AIR_J_KG_K * ctx.wall_temperature_k;
+        let adiabatic_wall_enthalpy = 0.5 * v * v + C_P_AIR_J_KG_K * ctx.freestream.temperature_k;
+        let wall_enthalpy = C_P_AIR_J_KG_K * ctx.wall_temperature_k;
         let recovery = ctx.freestream.temperature_k + 0.5 * v * v / C_P_AIR_J_KG_K;
         if !q.is_finite() {
             return Err(AerothermalError::NonFinite {
@@ -161,8 +163,8 @@ impl HeatTransferModel for SuttonGraves {
         Ok(StagnationHeating {
             q_conv_w_m2: q,
             q_rad_w_m2: 0.0,
-            h_aw_j_kg: h_aw,
-            h_w_j_kg: h_w,
+            h_aw_j_kg: adiabatic_wall_enthalpy,
+            h_w_j_kg: wall_enthalpy,
             recovery_temperature_k: recovery,
         })
     }
@@ -175,12 +177,14 @@ impl HeatTransferModel for SuttonGraves {
 ///           · (h_aw - h_w) · [ 1 + (Le^a - 1) · (h_D / h_aw) ]
 /// ```
 ///
+/// # Honest Scope
+///
 /// This shipping variant uses cold-gas thermodynamics with a fixed
-/// Sutherland viscosity law — the equilibrium-air real-gas iteration
+/// Sutherland viscosity law. The equilibrium-air real-gas iteration
 /// (consuming [`openbmp_physics::EquilibriumAir`]) is intentionally
-/// deferred to a follow-on slice. Within the cold-gas limit the
-/// formula reproduces the canonical Apollo / Stardust stagnation
-/// heat-flux profile to engineering accuracy.
+/// deferred to a follow-on slice, so this model is a checked
+/// engineering scaffold rather than a research-grade Fay-Riddell
+/// implementation.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FayRiddell {
     /// Lewis number for the boundary layer (default 1.0 — Phase-6
@@ -237,23 +241,19 @@ impl HeatTransferModel for FayRiddell {
         let mu_w = sutherland_viscosity(ctx.wall_temperature_k);
         // Enthalpies.
         let v = ctx.airspeed_m_s;
-        let h_aw = 0.5 * v * v + C_P_AIR_J_KG_K * ctx.freestream.temperature_k;
-        let h_w = C_P_AIR_J_KG_K * ctx.wall_temperature_k;
-        let dh = (h_aw - h_w).max(0.0);
+        let adiabatic_wall_enthalpy = 0.5 * v * v + C_P_AIR_J_KG_K * ctx.freestream.temperature_k;
+        let wall_enthalpy = C_P_AIR_J_KG_K * ctx.wall_temperature_k;
+        let dh = (adiabatic_wall_enthalpy - wall_enthalpy).max(0.0);
         // Lewis correction.
         let a = ctx.wall_catalysis.lewis_exponent();
         let le_a = self.lewis_number.powf(a);
-        let bracket = if h_aw > 0.0 {
-            1.0 + (le_a - 1.0) * (self.h_dissociation_j_kg / h_aw)
+        let bracket = if adiabatic_wall_enthalpy > 0.0 {
+            1.0 + (le_a - 1.0) * (self.h_dissociation_j_kg / adiabatic_wall_enthalpy)
         } else {
             1.0
         };
-        let q_conv = 0.94
-            * (rho_w * mu_w).powf(0.1)
-            * (rho_e * mu_e).powf(0.4)
-            * dudx.sqrt()
-            * dh
-            * bracket;
+        let q_conv =
+            0.94 * (rho_w * mu_w).powf(0.1) * (rho_e * mu_e).powf(0.4) * dudx.sqrt() * dh * bracket;
         if !q_conv.is_finite() {
             return Err(AerothermalError::NonFinite {
                 reason: "Fay-Riddell heat flux is non-finite (check inputs)",
@@ -263,64 +263,36 @@ impl HeatTransferModel for FayRiddell {
         Ok(StagnationHeating {
             q_conv_w_m2: q_conv,
             q_rad_w_m2: 0.0,
-            h_aw_j_kg: h_aw,
-            h_w_j_kg: h_w,
+            h_aw_j_kg: adiabatic_wall_enthalpy,
+            h_w_j_kg: wall_enthalpy,
             recovery_temperature_k: recovery,
         })
     }
 }
 
-/// Tauber-Sutton radiative heating engineering estimate.
+/// Tauber-Sutton radiative heating typed-reserved surface.
 ///
-/// Engineering closed form documented in Tauber & Sutton (NASA
-/// TM-86767, 1986): `q_rad = C · R_n^a · ρ_∞^b · f(V_∞)` with
-/// tabulated `f(V_∞)` for Earth re-entry. The shipped form uses the
-/// simplified high-energy fit; full piecewise-polynomial `f(V)` is
-/// a follow-on slice.
+/// # Honest Scope
+///
+/// Reserved until the published Earth-entry piecewise-polynomial
+/// velocity function and coefficients are imported with provenance.
+/// The initial Phase-6 implementation used a tuned power law; the
+/// audit removed that executable approximation rather than shipping
+/// an unverifiable radiative-heating value.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct TauberSuttonRadiative {
-    /// Velocity exponent multiplier (engineering tune knob; the
-    /// published reference uses ~8.5 for Earth entry above 12 km/s).
-    pub velocity_exponent: f64,
-    /// Reference velocity (m/s) — `f(V) = 0` below this velocity to
-    /// keep the engineering estimate honest about the radiation
-    /// onset.
-    pub onset_velocity_m_s: f64,
-}
+pub struct TauberSuttonRadiative;
 
 impl Default for TauberSuttonRadiative {
     fn default() -> Self {
-        Self {
-            velocity_exponent: 8.5,
-            onset_velocity_m_s: 9000.0,
-        }
+        Self
     }
 }
 
 impl HeatTransferModel for TauberSuttonRadiative {
     fn stagnation(&self, ctx: &AerothermalContext) -> Result<StagnationHeating, AerothermalError> {
         validate_context_for_stagnation(ctx)?;
-        let v = ctx.airspeed_m_s;
-        let q_rad = if v < self.onset_velocity_m_s {
-            0.0
-        } else {
-            // Engineering high-energy fit: q_rad ∝ R_n · ρ^1.6 · V^a
-            // Scaled to recover ~10 MW/m² at Apollo-class re-entry
-            // (V = 11 km/s, ρ ≈ 1e-4 kg/m³, R_n = 1.5 m).
-            let c = 4.0e-15; // engineering scaling
-            let alpha = c * ctx.nose_radius_m
-                * ctx.freestream.density_kg_m3.powf(1.6)
-                * v.powf(self.velocity_exponent);
-            alpha
-        };
-        let recovery = ctx.freestream.temperature_k + 0.5 * v * v / C_P_AIR_J_KG_K;
-        let h_aw = 0.5 * v * v + C_P_AIR_J_KG_K * ctx.freestream.temperature_k;
-        Ok(StagnationHeating {
-            q_conv_w_m2: 0.0,
-            q_rad_w_m2: q_rad,
-            h_aw_j_kg: h_aw,
-            h_w_j_kg: C_P_AIR_J_KG_K * ctx.wall_temperature_k,
-            recovery_temperature_k: recovery,
+        Err(AerothermalError::OutOfEnvelope {
+            reason: "Tauber-Sutton radiative heating is deferred pending published coefficients",
         })
     }
 }
@@ -377,7 +349,13 @@ fn validate_context_for_stagnation(ctx: &AerothermalContext) -> Result<(), Aerot
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
@@ -420,8 +398,14 @@ mod tests {
     #[test]
     fn sutton_graves_scales_with_velocity_cubed() {
         let s = SuttonGraves::default();
-        let q1 = s.stagnation(&ctx(1.0e-4, 5_000.0, 1.0, 1500.0)).unwrap().q_conv_w_m2;
-        let q2 = s.stagnation(&ctx(1.0e-4, 10_000.0, 1.0, 1500.0)).unwrap().q_conv_w_m2;
+        let q1 = s
+            .stagnation(&ctx(1.0e-4, 5_000.0, 1.0, 1500.0))
+            .unwrap()
+            .q_conv_w_m2;
+        let q2 = s
+            .stagnation(&ctx(1.0e-4, 10_000.0, 1.0, 1500.0))
+            .unwrap()
+            .q_conv_w_m2;
         // q ∝ V³ → doubling V → 8× q
         assert_relative_eq!(q2 / q1, 8.0, max_relative = 1e-9);
     }
@@ -461,17 +445,12 @@ mod tests {
     }
 
     #[test]
-    fn tauber_sutton_below_onset_returns_zero() {
+    fn tauber_sutton_is_deferred_until_coefficients_land() {
         let t = TauberSuttonRadiative::default();
-        let h = t.stagnation(&ctx(1.0e-4, 7_000.0, 1.5, 1500.0)).unwrap();
-        assert_eq!(h.q_rad_w_m2, 0.0);
-    }
-
-    #[test]
-    fn tauber_sutton_above_onset_is_positive() {
-        let t = TauberSuttonRadiative::default();
-        let h = t.stagnation(&ctx(1.0e-4, 11_000.0, 1.5, 1500.0)).unwrap();
-        assert!(h.q_rad_w_m2 > 0.0);
+        assert!(matches!(
+            t.stagnation(&ctx(1.0e-4, 11_000.0, 1.5, 1500.0)),
+            Err(AerothermalError::OutOfEnvelope { .. })
+        ));
     }
 
     #[test]

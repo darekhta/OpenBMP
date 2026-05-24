@@ -90,7 +90,7 @@ pub struct ErrorBudget {
 }
 
 impl ErrorBudget {
-    /// Aggregate uncertainty = sqrt(Σ σ_i²) + correlated_bias.
+    /// Aggregate uncertainty = `sqrt(sum(sigma_i^2)) + correlated_bias`.
     ///
     /// # Errors
     ///
@@ -165,7 +165,13 @@ impl ErrorBudget {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
 
@@ -229,7 +235,10 @@ mod tests {
             ],
             correlated_bias: 0.0,
         };
-        assert_eq!(budget.minimum_status(), Some(ValidationStatus::Experimental));
+        assert_eq!(
+            budget.minimum_status(),
+            Some(ValidationStatus::Experimental)
+        );
     }
 
     #[test]

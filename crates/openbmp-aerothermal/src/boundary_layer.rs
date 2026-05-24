@@ -14,6 +14,8 @@
 use crate::error::AerothermalError;
 use crate::stagnation::{AerothermalContext, BodyStation, SurfaceHeating, sutherland_viscosity};
 
+const PR_AIR: f64 = 0.71;
+
 /// Boundary-layer state at a body station.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BoundaryLayerState {
@@ -187,11 +189,13 @@ impl ReferenceEnthalpyHeating {
         // Eckert reference enthalpy (cold-gas approximation for the
         // Phase-6.5 baseline; real-gas h(T,p) lands with the
         // realgas-coupled slice).
-        let h_e = 1005.0 * ctx.freestream.temperature_k;
-        let h_w = 1005.0 * ctx.wall_temperature_k;
-        let h_aw =
+        let edge_enthalpy = 1005.0 * ctx.freestream.temperature_k;
+        let wall_enthalpy = 1005.0 * ctx.wall_temperature_k;
+        let adiabatic_wall_enthalpy =
             1005.0 * ctx.freestream.temperature_k + 0.5 * ctx.airspeed_m_s * ctx.airspeed_m_s;
-        let h_star = h_e + 0.5 * (h_w - h_e) + 0.22 * (h_aw - h_e);
+        let h_star = edge_enthalpy
+            + 0.5 * (wall_enthalpy - edge_enthalpy)
+            + 0.22 * (adiabatic_wall_enthalpy - edge_enthalpy);
         let t_star = h_star / 1005.0;
         let mu_star = sutherland_viscosity(t_star);
         // Reference state density via ideal gas at edge pressure.
@@ -216,10 +220,9 @@ impl ReferenceEnthalpyHeating {
         // compressibility-correction extension; quiet the lint.
         let _ = mu_star;
         // Reynolds analogy: St = Cf / (2 · Pr^(2/3)). Use Pr = 0.71.
-        const PR: f64 = 0.71;
-        let st = cf / (2.0 * PR.powf(2.0 / 3.0));
+        let st = cf / (2.0 * PR_AIR.powf(2.0 / 3.0));
         // Heat flux: q = ρ* · V_e · St · (h_aw - h_w).
-        let q = rho_star * ctx.airspeed_m_s * st * (h_aw - h_w);
+        let q = rho_star * ctx.airspeed_m_s * st * (adiabatic_wall_enthalpy - wall_enthalpy);
         Ok(SurfaceHeating {
             q_w_m2: q,
             stanton: st,
@@ -229,7 +232,13 @@ impl ReferenceEnthalpyHeating {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
     use crate::stagnation::WallCatalysis;

@@ -14,12 +14,19 @@
 //! [`Nrlmsise00Static`] — the *static-defaults* path described in
 //! `docs/hypersonic-extensions.md § NRLMSISE-00`: returns the
 //! NRLMSISE-00 mid-condition profile (F10.7 = 150, Ap = 4, equator,
-//! noon, equinox) using piecewise analytic interpolation against the
-//! published reference-table values at standard altitudes (Picone et
-//! al. 2002, Table 1; reproduced in CCMC's NRLMSIS reference
-//! distribution). The full coefficient-based empirical machinery is
-//! deferred to [`Nrlmsise00Full`] — declared here as a deferred
-//! type so callers can write code against the trait surface today.
+//! noon, equinox) using interpolation against public NRLMSISE-00
+//! model outputs at standard altitudes. The audit regenerated these
+//! rows from the public C model interface exposed by the
+//! `nrlmsise00` Python package:
+//!
+//! ```text
+//! gtd7(year=2024, doy=80, sec=43200, alt_km, lat=0, lon=0,
+//!      lst=12, f107a=150, f107=150, ap=4)
+//! ```
+//!
+//! The full coefficient-based empirical machinery is deferred to
+//! [`Nrlmsise00Full`] — declared here as a deferred type so callers
+//! can write code against the trait surface today.
 //!
 //! # Determinism
 //!
@@ -49,12 +56,6 @@ use crate::error::PhysicsError;
 /// Boltzmann constant `k_B` (J/K) — used for the speed-of-sound and
 /// mean-molecular-weight conversions.
 const BOLTZMANN_J_K: f64 = 1.380_649e-23;
-
-/// Avogadro's number (1/mol).
-const AVOGADRO: f64 = 6.022_140_76e23;
-
-/// Universal gas constant `R = k_B · N_A` (J / (mol · K)).
-const R_UNIVERSAL_J_MOL_K: f64 = BOLTZMANN_J_K * AVOGADRO;
 
 /// Effective specific-heat ratio used by the static-defaults
 /// speed-of-sound output. The mid-thermosphere has γ near 1.4 for
@@ -106,7 +107,7 @@ impl Nrlmsise00Inputs {
     pub const fn mid_conditions(altitude_m: f64) -> Self {
         Self {
             year: 2024,
-            day_of_year: 80, // equinox-adjacent
+            day_of_year: 80,       // equinox-adjacent
             utc_seconds: 43_200.0, // noon
             altitude_m,
             latitude_rad: 0.0,
@@ -149,31 +150,179 @@ pub struct Nrlmsise00Outputs {
 
 /// NRLMSISE-00 reference table at standard altitudes.
 ///
-/// Rows are `(altitude_m, mass_density_kg_m3, temperature_k,
-/// helium_frac, atomic_O_frac, N2_frac, O2_frac, argon_frac,
-/// atomic_H_frac, atomic_N_frac)` where the fractions are mole
-/// fractions of total number density. Values are mid-condition
-/// published reference outputs (F10.7=150, Ap=4) reproduced in the
-/// CCMC NRLMSIS distribution; widely tabulated in textbook sources
-/// for orbital-drag and re-entry analysis.
-///
-/// The set of altitudes is chosen so log-linear interpolation in
-/// altitude produces densities and temperatures within ~5 % of the
-/// published reference values across 0-1000 km — the documented
-/// envelope for static-defaults use.
+/// Rows are public-model outputs for the static-defaults condition
+/// declared above. Number densities are stored in `1/m^3`; mass
+/// density is stored in `kg/m^3`; temperatures are Kelvin.
+#[allow(clippy::unreadable_literal)]
 const REFERENCE_TABLE: &[ReferenceRow] = &[
-    ReferenceRow { alt_m: 0.0,        rho: 1.225e+00,  temp: 288.15, he: 5.24e-6, o: 0.0,     n2: 0.78084, o2: 0.20946, ar: 0.00934, h: 0.0,     n: 0.0     },
-    ReferenceRow { alt_m: 100_000.0,  rho: 5.604e-07,  temp: 195.08, he: 1.32e-5, o: 9.40e-4, n2: 0.78068, o2: 0.20947, ar: 0.00934, h: 0.0,     n: 1.00e-6 },
-    ReferenceRow { alt_m: 150_000.0,  rho: 2.076e-09,  temp: 634.39, he: 6.66e-5, o: 1.81e-1, n2: 0.69100, o2: 0.12700, ar: 0.00040, h: 0.0,     n: 2.00e-5 },
-    ReferenceRow { alt_m: 200_000.0,  rho: 2.541e-10,  temp: 854.56, he: 2.50e-4, o: 4.84e-1, n2: 0.45000, o2: 0.06400, ar: 4.00e-5, h: 2.00e-7, n: 1.00e-4 },
-    ReferenceRow { alt_m: 300_000.0,  rho: 1.916e-11,  temp: 976.01, he: 8.50e-4, o: 8.40e-1, n2: 0.14400, o2: 0.01000, ar: 1.00e-6, h: 5.00e-7, n: 5.00e-4 },
-    ReferenceRow { alt_m: 400_000.0,  rho: 2.803e-12,  temp: 995.83, he: 2.00e-3, o: 9.50e-1, n2: 0.04300, o2: 0.00150, ar: 0.0,     h: 1.50e-6, n: 1.30e-3 },
-    ReferenceRow { alt_m: 500_000.0,  rho: 5.215e-13,  temp: 999.24, he: 4.20e-3, o: 9.84e-1, n2: 0.01000, o2: 1.40e-4, ar: 0.0,     h: 4.30e-6, n: 1.80e-3 },
-    ReferenceRow { alt_m: 600_000.0,  rho: 1.137e-13,  temp: 999.85, he: 8.70e-3, o: 9.85e-1, n2: 0.00220, o2: 1.50e-5, ar: 0.0,     h: 1.30e-5, n: 1.40e-3 },
-    ReferenceRow { alt_m: 700_000.0,  rho: 3.070e-14,  temp: 999.97, he: 1.80e-2, o: 9.79e-1, n2: 4.40e-4,  o2: 1.50e-6, ar: 0.0,     h: 4.00e-5, n: 9.00e-4 },
-    ReferenceRow { alt_m: 800_000.0,  rho: 1.136e-14,  temp: 999.99, he: 3.70e-2, o: 9.61e-1, n2: 8.00e-5,  o2: 0.0,     ar: 0.0,     h: 1.20e-4, n: 4.60e-4 },
-    ReferenceRow { alt_m: 900_000.0,  rho: 5.759e-15,  temp: 1000.0, he: 7.40e-2, o: 9.25e-1, n2: 1.40e-5,  o2: 0.0,     ar: 0.0,     h: 3.30e-4, n: 2.10e-4 },
-    ReferenceRow { alt_m: 1_000_000.0, rho: 3.561e-15, temp: 1000.0, he: 1.45e-1, o: 8.54e-1, n2: 2.20e-6,  o2: 0.0,     ar: 0.0,     h: 8.80e-4, n: 8.50e-5 },
+    ReferenceRow {
+        alt_m: 0.000000000000e+00,
+        rho: 1.183070023108e+00,
+        temp: 3.004810309657e+02,
+        texo: 1.027318464900e+03,
+        n_he: 1.290415065750e+20,
+        n_o: 0.000000000000e+00,
+        n_n2: 1.922915969896e+25,
+        n_o2: 5.158606672441e+24,
+        n_ar: 2.300095937391e+23,
+        n_h: 0.000000000000e+00,
+        n_n: 0.000000000000e+00,
+        n_o_anomalous: 0.000000000000e+00,
+    },
+    ReferenceRow {
+        alt_m: 1.000000000000e+05,
+        rho: 7.283486293373e-07,
+        temp: 1.829433801178e+02,
+        texo: 1.027318464900e+03,
+        n_he: 1.509804049847e+14,
+        n_o: 6.882496845920e+17,
+        n_n2: 1.222722698995e+19,
+        n_o2: 2.513528291891e+18,
+        n_ar: 1.239085933383e+17,
+        n_h: 2.204268500612e+13,
+        n_n: 6.307149380445e+11,
+        n_o_anomalous: 3.371056080156e-37,
+    },
+    ReferenceRow {
+        alt_m: 1.500000000000e+05,
+        rho: 2.052959861123e-09,
+        temp: 7.051340462723e+02,
+        texo: 1.130778214192e+03,
+        n_he: 1.959738601244e+13,
+        n_o: 2.089144809148e+16,
+        n_n2: 3.019837735253e+16,
+        n_o2: 1.697682429498e+15,
+        n_ar: 5.141770572692e+13,
+        n_h: 4.852705777643e+11,
+        n_n: 3.168941308442e+13,
+        n_o_anomalous: 1.344916740252e-15,
+    },
+    ReferenceRow {
+        alt_m: 2.000000000000e+05,
+        rho: 3.155122198534e-10,
+        temp: 9.751425526154e+02,
+        texo: 1.130778214192e+03,
+        n_he: 1.229624110371e+13,
+        n_o: 5.370039640700e+15,
+        n_n2: 3.524168532585e+15,
+        n_o2: 1.278960754498e+14,
+        n_ar: 2.607685026575e+12,
+        n_h: 1.248803862117e+11,
+        n_n: 8.742553553470e+13,
+        n_o_anomalous: 1.866070668449e-03,
+    },
+    ReferenceRow {
+        alt_m: 3.000000000000e+05,
+        rho: 3.329444506045e-11,
+        temp: 1.109001608620e+03,
+        texo: 1.130778214192e+03,
+        n_he: 7.532296046657e+12,
+        n_o: 9.136907009405e+14,
+        n_n2: 1.752781300896e+14,
+        n_o2: 4.051596593885e+12,
+        n_ar: 3.707792940655e+10,
+        n_h: 8.753204317884e+10,
+        n_n: 2.633605948289e+13,
+        n_o_anomalous: 5.059608582348e+06,
+    },
+    ReferenceRow {
+        alt_m: 4.000000000000e+05,
+        rho: 6.059650178061e-12,
+        temp: 1.127547972102e+03,
+        texo: 1.130778214192e+03,
+        n_he: 5.113865028955e+12,
+        n_o: 1.989290623180e+14,
+        n_n2: 1.231794953020e+13,
+        n_o2: 1.948629555681e+11,
+        n_ar: 8.386188567106e+08,
+        n_h: 7.868900275524e+10,
+        n_n: 6.844341510438e+12,
+        n_o_anomalous: 1.264445941761e+09,
+    },
+    ReferenceRow {
+        alt_m: 5.000000000000e+05,
+        rho: 1.346227709059e-12,
+        temp: 1.130271537992e+03,
+        texo: 1.130778214192e+03,
+        n_he: 3.550928079408e+12,
+        n_o: 4.641083522171e+13,
+        n_n2: 9.664652715650e+11,
+        n_o2: 1.063076413813e+10,
+        n_ar: 2.211877242442e+07,
+        n_h: 7.175050881209e+10,
+        n_n: 1.909258888942e+12,
+        n_o_anomalous: 4.132491481638e+09,
+    },
+    ReferenceRow {
+        alt_m: 6.000000000000e+05,
+        rho: 3.344156452382e-13,
+        temp: 1.130694378795e+03,
+        texo: 1.130778214192e+03,
+        n_he: 2.495746686536e+12,
+        n_o: 1.133168010354e+13,
+        n_n2: 8.198590536651e+10,
+        n_o2: 6.339773638561e+08,
+        n_ar: 6.518750687443e+05,
+        n_h: 6.568468274129e+10,
+        n_n: 5.559811563104e+11,
+        n_o_anomalous: 4.255555467085e+09,
+    },
+    ReferenceRow {
+        alt_m: 7.000000000000e+05,
+        rho: 9.264716286363e-14,
+        temp: 1.130763614744e+03,
+        texo: 1.130778214192e+03,
+        n_he: 1.772229371917e+12,
+        n_o: 2.881451870332e+12,
+        n_n2: 7.465587730199e+09,
+        n_o2: 4.099532242727e+07,
+        n_ar: 2.125653144915e+04,
+        n_h: 6.029504142101e+10,
+        n_n: 1.677680201662e+11,
+        n_o_anomalous: 3.241077152271e+09,
+    },
+    ReferenceRow {
+        alt_m: 8.000000000000e+05,
+        rho: 3.000378620897e-14,
+        temp: 1.130775544116e+03,
+        texo: 1.130778214192e+03,
+        n_he: 1.270645437779e+12,
+        n_o: 7.614404718195e+11,
+        n_n2: 7.271273265396e+08,
+        n_o2: 2.862780514460e+06,
+        n_ar: 7.630622347499e+02,
+        n_h: 5.548244358205e+10,
+        n_n: 5.235764692515e+10,
+        n_o_anomalous: 2.294402410868e+09,
+    },
+    ReferenceRow {
+        alt_m: 9.000000000000e+05,
+        rho: 1.213038523151e-14,
+        temp: 1.130777702385e+03,
+        texo: 1.130778214192e+03,
+        n_he: 9.194458835245e+11,
+        n_o: 2.087585869145e+11,
+        n_n2: 7.553109378973e+07,
+        n_o2: 2.151818637473e+05,
+        n_ar: 3.003184697139e+01,
+        n_h: 5.117179396253e+10,
+        n_n: 1.687475046394e+10,
+        n_o_anomalous: 1.604664647083e+09,
+    },
+    ReferenceRow {
+        alt_m: 1.000000000000e+06,
+        rho: 6.240839133382e-15,
+        temp: 1.130778111567e+03,
+        texo: 1.130778214192e+03,
+        n_he: 6.712115540845e+11,
+        n_o: 5.928947230117e+10,
+        n_n2: 8.345628638197e+06,
+        n_o2: 1.735690533821e+04,
+        n_ar: 1.290967599736e+00,
+        n_h: 4.730029858523e+10,
+        n_n: 5.609238699978e+09,
+        n_o_anomalous: 1.126695867996e+09,
+    },
 ];
 
 #[derive(Copy, Clone, Debug)]
@@ -181,13 +330,15 @@ struct ReferenceRow {
     alt_m: f64,
     rho: f64,
     temp: f64,
-    he: f64,
-    o: f64,
-    n2: f64,
-    o2: f64,
-    ar: f64,
-    h: f64,
-    n: f64,
+    texo: f64,
+    n_he: f64,
+    n_o: f64,
+    n_n2: f64,
+    n_o2: f64,
+    n_ar: f64,
+    n_h: f64,
+    n_n: f64,
+    n_o_anomalous: f64,
 }
 
 /// NRLMSISE-00 in static-defaults mode.
@@ -238,6 +389,7 @@ impl Nrlmsise00Static {
 ///
 /// Density is interpolated in `log(ρ)` since the dominant variation
 /// is exponential decay; temperature and mole fractions are linear.
+#[allow(clippy::similar_names)]
 fn interpolate(alt_m: f64) -> Nrlmsise00Outputs {
     let table = REFERENCE_TABLE;
     let n = table.len();
@@ -250,76 +402,56 @@ fn interpolate(alt_m: f64) -> Nrlmsise00Outputs {
     let lo = table[lower_idx];
     let hi = table[upper_idx];
 
-    let (rho, temp, he, o, n2, o2, ar, h_frac, n_frac);
+    let (rho, temp, texo, n_he, n_o, n_n2, n_o2, n_ar, n_h, n_n, n_o_anomalous);
     if lower_idx == upper_idx {
         rho = lo.rho;
         temp = lo.temp;
-        he = lo.he;
-        o = lo.o;
-        n2 = lo.n2;
-        o2 = lo.o2;
-        ar = lo.ar;
-        h_frac = lo.h;
-        n_frac = lo.n;
+        texo = lo.texo;
+        n_he = lo.n_he;
+        n_o = lo.n_o;
+        n_n2 = lo.n_n2;
+        n_o2 = lo.n_o2;
+        n_ar = lo.n_ar;
+        n_h = lo.n_h;
+        n_n = lo.n_n;
+        n_o_anomalous = lo.n_o_anomalous;
     } else {
         let span = hi.alt_m - lo.alt_m;
         let frac = (alt_m - lo.alt_m) / span;
-        let log_rho_lo = lo.rho.ln();
-        let log_rho_hi = hi.rho.ln();
-        rho = (log_rho_lo + (log_rho_hi - log_rho_lo) * frac).exp();
+        rho = log_interp_nonnegative(lo.rho, hi.rho, frac);
         temp = lo.temp + (hi.temp - lo.temp) * frac;
-        he = lo.he + (hi.he - lo.he) * frac;
-        o = lo.o + (hi.o - lo.o) * frac;
-        n2 = lo.n2 + (hi.n2 - lo.n2) * frac;
-        o2 = lo.o2 + (hi.o2 - lo.o2) * frac;
-        ar = lo.ar + (hi.ar - lo.ar) * frac;
-        h_frac = lo.h + (hi.h - lo.h) * frac;
-        n_frac = lo.n + (hi.n - lo.n) * frac;
+        texo = lo.texo + (hi.texo - lo.texo) * frac;
+        n_he = log_interp_nonnegative(lo.n_he, hi.n_he, frac);
+        n_o = log_interp_nonnegative(lo.n_o, hi.n_o, frac);
+        n_n2 = log_interp_nonnegative(lo.n_n2, hi.n_n2, frac);
+        n_o2 = log_interp_nonnegative(lo.n_o2, hi.n_o2, frac);
+        n_ar = log_interp_nonnegative(lo.n_ar, hi.n_ar, frac);
+        n_h = log_interp_nonnegative(lo.n_h, hi.n_h, frac);
+        n_n = log_interp_nonnegative(lo.n_n, hi.n_n, frac);
+        n_o_anomalous = log_interp_nonnegative(lo.n_o_anomalous, hi.n_o_anomalous, frac);
     }
 
-    let mean_molecular_weight = mean_molecular_weight_kg_per_mol(he, o, n2, o2, ar, h_frac, n_frac);
-    let number_density_total = rho * AVOGADRO / mean_molecular_weight;
-
     Nrlmsise00Outputs {
-        n_he: number_density_total * he,
-        n_o: number_density_total * o,
-        n_n2: number_density_total * n2,
-        n_o2: number_density_total * o2,
-        n_ar: number_density_total * ar,
-        n_h: number_density_total * h_frac,
-        n_n: number_density_total * n_frac,
-        n_o_anomalous: 0.0,
+        n_he,
+        n_o,
+        n_n2,
+        n_o2,
+        n_ar,
+        n_h,
+        n_n,
+        n_o_anomalous,
         mass_density_kg_m3: rho,
         neutral_temperature_k: temp,
-        exospheric_temperature_k: 1000.0,
+        exospheric_temperature_k: texo,
     }
 }
 
-fn mean_molecular_weight_kg_per_mol(
-    he: f64,
-    o: f64,
-    n2: f64,
-    o2: f64,
-    ar: f64,
-    h: f64,
-    n: f64,
-) -> f64 {
-    // Molar masses (kg/mol).
-    const M_HE: f64 = 4.002_602e-3;
-    const M_O: f64 = 15.999e-3;
-    const M_N2: f64 = 28.014e-3;
-    const M_O2: f64 = 31.998e-3;
-    const M_AR: f64 = 39.948e-3;
-    const M_H: f64 = 1.008e-3;
-    const M_N: f64 = 14.007e-3;
-    let total = he + o + n2 + o2 + ar + h + n;
-    if total <= 0.0 {
-        // Fall back to dry-air sea-level mean if the table row is
-        // pathologically zero; in practice the table guarantees a
-        // positive sum across the entire 0-1000 km envelope.
-        return 28.9644e-3;
+fn log_interp_nonnegative(lo: f64, hi: f64, frac: f64) -> f64 {
+    if lo > 0.0 && hi > 0.0 {
+        (lo.ln() + (hi.ln() - lo.ln()) * frac).exp()
+    } else {
+        lo + (hi - lo) * frac
     }
-    (he * M_HE + o * M_O + n2 * M_N2 + o2 * M_O2 + ar * M_AR + h * M_H + n * M_N) / total
 }
 
 impl AtmosphereModel for Nrlmsise00Static {
@@ -330,23 +462,17 @@ impl AtmosphereModel for Nrlmsise00Static {
     ) -> Result<AtmosphereSample, PhysicsError> {
         let outputs = self.evaluate(Nrlmsise00Inputs::mid_conditions(altitude_geometric_m))?;
         let temp = outputs.neutral_temperature_k.max(1.0);
-        let m_mean = mean_molecular_weight_kg_per_mol(
-            outputs.n_he / outputs.mass_density_kg_m3.max(f64::MIN_POSITIVE),
-            outputs.n_o / outputs.mass_density_kg_m3.max(f64::MIN_POSITIVE),
-            outputs.n_n2 / outputs.mass_density_kg_m3.max(f64::MIN_POSITIVE),
-            outputs.n_o2 / outputs.mass_density_kg_m3.max(f64::MIN_POSITIVE),
-            outputs.n_ar / outputs.mass_density_kg_m3.max(f64::MIN_POSITIVE),
-            outputs.n_h / outputs.mass_density_kg_m3.max(f64::MIN_POSITIVE),
-            outputs.n_n / outputs.mass_density_kg_m3.max(f64::MIN_POSITIVE),
-        );
-        let pressure = outputs.mass_density_kg_m3 * R_UNIVERSAL_J_MOL_K * temp / m_mean.max(1.0e-6);
-        let speed_of_sound = (NRLMSISE_GAMMA * R_UNIVERSAL_J_MOL_K * temp / m_mean.max(1.0e-6)).sqrt();
-        AtmosphereSample::new(
-            outputs.mass_density_kg_m3,
-            pressure,
-            temp,
-            speed_of_sound,
-        )
+        let neutral_number_density = outputs.n_he
+            + outputs.n_o
+            + outputs.n_n2
+            + outputs.n_o2
+            + outputs.n_ar
+            + outputs.n_h
+            + outputs.n_n;
+        let pressure = neutral_number_density * BOLTZMANN_J_K * temp;
+        let speed_of_sound =
+            (NRLMSISE_GAMMA * pressure / outputs.mass_density_kg_m3.max(f64::MIN_POSITIVE)).sqrt();
+        AtmosphereSample::new(outputs.mass_density_kg_m3, pressure, temp, speed_of_sound)
     }
 }
 
@@ -371,7 +497,13 @@ impl AtmosphereModel for Nrlmsise00Full {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp, clippy::missing_panics_doc, clippy::similar_names)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::missing_panics_doc,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
@@ -386,11 +518,7 @@ mod tests {
             let outputs = m
                 .evaluate(Nrlmsise00Inputs::mid_conditions(row.alt_m))
                 .unwrap();
-            assert_relative_eq!(
-                outputs.mass_density_kg_m3,
-                row.rho,
-                max_relative = 1e-12
-            );
+            assert_relative_eq!(outputs.mass_density_kg_m3, row.rho, max_relative = 1e-12);
             assert_relative_eq!(
                 outputs.neutral_temperature_k,
                 row.temp,
@@ -411,7 +539,10 @@ mod tests {
                 .evaluate(Nrlmsise00Inputs::mid_conditions(alt as f64))
                 .unwrap()
                 .mass_density_kg_m3;
-            assert!(next < prev, "density not monotone at {alt}: prev={prev} next={next}");
+            assert!(
+                next < prev,
+                "density not monotone at {alt}: prev={prev} next={next}"
+            );
             prev = next;
         }
     }
@@ -465,16 +596,17 @@ mod tests {
     }
 
     #[test]
-    fn mole_fractions_sum_to_unity_at_table_rows() {
+    fn species_number_densities_are_non_negative_at_table_rows() {
         for row in REFERENCE_TABLE {
-            let sum = row.he + row.o + row.n2 + row.o2 + row.ar + row.h + row.n;
-            // Trace species and rounding allow a wider tolerance
-            // at the top altitudes; the test enforces that the
-            // table is internally well-balanced.
-            assert!(
-                (sum - 1.0).abs() < 0.05,
-                "row {row:?} fractions sum {sum}"
-            );
+            assert!(row.n_he >= 0.0);
+            assert!(row.n_o >= 0.0);
+            assert!(row.n_n2 >= 0.0);
+            assert!(row.n_o2 >= 0.0);
+            assert!(row.n_ar >= 0.0);
+            assert!(row.n_h >= 0.0);
+            assert!(row.n_n >= 0.0);
+            assert!(row.n_o_anomalous >= 0.0);
+            assert!(row.rho > 0.0);
         }
     }
 
@@ -484,8 +616,14 @@ mod tests {
         for alt in [50_000.0_f64, 200_000.0, 500_000.0] {
             let a = m.evaluate(Nrlmsise00Inputs::mid_conditions(alt)).unwrap();
             let b = m.evaluate(Nrlmsise00Inputs::mid_conditions(alt)).unwrap();
-            assert_eq!(a.mass_density_kg_m3.to_bits(), b.mass_density_kg_m3.to_bits());
-            assert_eq!(a.neutral_temperature_k.to_bits(), b.neutral_temperature_k.to_bits());
+            assert_eq!(
+                a.mass_density_kg_m3.to_bits(),
+                b.mass_density_kg_m3.to_bits()
+            );
+            assert_eq!(
+                a.neutral_temperature_k.to_bits(),
+                b.neutral_temperature_k.to_bits()
+            );
             assert_eq!(a.n_o.to_bits(), b.n_o.to_bits());
         }
     }
