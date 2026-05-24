@@ -106,25 +106,33 @@ impl ReactionRates {
     ///
     /// # Errors
     ///
-    /// Returns [`PhysicsError::InvalidParameter`] when forward and
-    /// backward arrays have different lengths, or when a Park87 table
-    /// does not carry its expected 17 reactions.
+    /// Returns [`PhysicsError::OutOfEnvelope`] when the selected
+    /// reaction set is reserved, or [`PhysicsError::InvalidParameter`]
+    /// when forward and backward arrays have different lengths, a
+    /// pinned table does not carry its expected 17 reactions, or any
+    /// rate constant is negative / non-finite.
     pub fn new(
         reaction_set: ParkReactionSet,
         k_forward: Vec<f64>,
         k_backward: Vec<f64>,
     ) -> Result<Self, PhysicsError> {
+        let expected_reactions = reaction_set.expected_forward_reaction_count()?;
         if k_forward.len() != k_backward.len() {
             return Err(PhysicsError::InvalidParameter {
                 reason: "Park reaction-rate arrays must have equal length",
             });
         }
-        if reaction_set == ParkReactionSet::Park87
-            && k_forward.len() != ParkReactionSet::PARK87_REACTIONS
-        {
+        if k_forward.len() != expected_reactions {
             return Err(PhysicsError::InvalidParameter {
-                reason: "Park87 reaction-rate table must contain 17 reactions",
+                reason: "Park reaction-rate table must contain the expected pinned reaction count",
             });
+        }
+        for &rate in k_forward.iter().chain(k_backward.iter()) {
+            if !rate.is_finite() || rate < 0.0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "Park reaction-rate constants must be finite and non-negative",
+                });
+            }
         }
         Ok(Self {
             reaction_set,
@@ -255,6 +263,16 @@ impl ParkReactionSet {
                 reason: "Park90 forward coefficients are reserved pending verified public tables",
             }),
         }
+    }
+
+    /// Expected forward-reaction count for public pinned tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::OutOfEnvelope`] for reserved reaction
+    /// sets whose reaction count has not been source-pinned.
+    pub fn expected_forward_reaction_count(self) -> Result<usize, PhysicsError> {
+        Ok(self.forward_coefficients_as_published()?.len())
     }
 }
 
@@ -742,6 +760,35 @@ mod tests {
         let full =
             ReactionRates::new(ParkReactionSet::Park87, vec![0.0; 17], vec![0.0; 17]).unwrap();
         assert_eq!(full.reaction_count(), 17);
+    }
+
+    #[test]
+    fn park93_rate_container_requires_pinned_reaction_count() {
+        let short = ReactionRates::new(ParkReactionSet::Park93, vec![0.0; 16], vec![0.0; 16]);
+        assert!(matches!(short, Err(PhysicsError::InvalidParameter { .. })));
+        let full =
+            ReactionRates::new(ParkReactionSet::Park93, vec![0.0; 17], vec![0.0; 17]).unwrap();
+        assert_eq!(full.reaction_count(), 17);
+    }
+
+    #[test]
+    fn park90_rate_container_fails_closed_until_table_lands() {
+        assert!(matches!(
+            ReactionRates::new(ParkReactionSet::Park90, Vec::new(), Vec::new()),
+            Err(PhysicsError::OutOfEnvelope { .. })
+        ));
+    }
+
+    #[test]
+    fn reaction_rate_container_rejects_bad_constants() {
+        assert!(matches!(
+            ReactionRates::new(ParkReactionSet::Park87, vec![f64::NAN; 17], vec![0.0; 17]),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            ReactionRates::new(ParkReactionSet::Park87, vec![0.0; 17], vec![-1.0; 17]),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
