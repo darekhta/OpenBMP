@@ -52,6 +52,16 @@ These are distinct, non-overlapping trees with provenance:
   tolerance) are pinned as **Rust constants in the integration / e2e test
   file** with a citation comment. They do not get their own TOML file.
   This applies even when the scenario itself ships under `scenarios/<…>/`.
+- **Small public scalar anchors or canonical reference-payload strings** may
+  also be pinned as Rust constants when creating a standalone data file would
+  add ceremony without improving reviewability. This exception is intentionally
+  narrow: the constants must name the public source in nearby rustdoc or test
+  comments, carry exact units, be covered by exact-value or SHA-256 pin tests,
+  and be listed in the owning phase plan as a documented provenance-policy
+  deviation. Large coefficient sets, runtime lookup tables, or imported
+  third-party model code do **not** qualify for this exception; they move under
+  `data/` or into a dedicated vendoring / clean-room port with full provenance
+  review.
 
 Both `data/<thing>/` and `scenarios/<category>/` require a sibling
 `provenance.md` listing every shipped TOML by repository-relative path. The
