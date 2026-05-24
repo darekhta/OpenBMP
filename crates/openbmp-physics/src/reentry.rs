@@ -310,9 +310,16 @@ impl EntryInterfaceBuilder {
                 reason: "entry velocity must be > 0",
             });
         }
-        if self.flight_path_angle_below_horizon_rad.abs() >= FRAC_PI_2 {
+        if !self.flight_path_angle_below_horizon_rad.is_finite()
+            || self.flight_path_angle_below_horizon_rad.abs() >= FRAC_PI_2
+        {
             return Err(PhysicsError::InvalidParameter {
                 reason: "flight path angle must be in (-π/2, π/2)",
+            });
+        }
+        if !self.heading_rad.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "heading angle must be finite",
             });
         }
         Ok(())
@@ -571,6 +578,27 @@ mod tests {
     fn entry_interface_rejects_zero_altitude() {
         let b = EntryInterfaceBuilder {
             entry_altitude_m: 0.0,
+            ..EntryInterfaceBuilder::default()
+        };
+        assert!(matches!(
+            b.validate(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn entry_interface_rejects_non_finite_angles() {
+        let b = EntryInterfaceBuilder {
+            flight_path_angle_below_horizon_rad: f64::NAN,
+            ..EntryInterfaceBuilder::default()
+        };
+        assert!(matches!(
+            b.validate(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let b = EntryInterfaceBuilder {
+            heading_rad: f64::INFINITY,
             ..EntryInterfaceBuilder::default()
         };
         assert!(matches!(
