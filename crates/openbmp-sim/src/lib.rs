@@ -65,23 +65,23 @@ pub use integrator::{
     Dopri853FixedStep, Integrator, IntegratorDeterminism, Rk4FixedStep,
 };
 pub use kernel::{
-    PointMassKernel, ProfiledPointMassKernel, ProfiledRigidBodyKernel, RigidBodyKernel, RigidModels,
-    SimulationConfig, SimulationKernel, TrajectoryProfileConfig,
+    PointMassKernel, ProfiledPointMassKernel, ProfiledRigidBodyKernel, RigidBodyKernel,
+    RigidModels, SimulationConfig, SimulationKernel, TrajectoryProfileConfig,
 };
 pub use models::{
-    ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshotView,
-    EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext, ForceModel,
-    LinearBurnMass, LinearBurnMassRigid, MassContext, MassModel, MassPropertiesRate, MomentContext,
-    MomentModel, NullEnvironment, RecoverySnapshot, RecoverySnapshotView, RigidMassModel,
-    TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
+    ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshot,
+    EngineSnapshotView, EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext,
+    ForceModel, LinearBurnMass, LinearBurnMassRigid, MassContext, MassModel, MassPropertiesRate,
+    MomentContext, MomentModel, NullEnvironment, RecoverySnapshot, RecoverySnapshotView,
+    RigidMassModel, TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
 };
 pub use openbmp_mission::MissionStateMachine;
 pub use openbmp_models::{
     Integratable, RigidBodyKinematicState, SimState, TranslationalState, VehicleState,
 };
 pub use solver_profile::{
-    CouplingEdge, ExplicitMethod, ImplicitMethod, ImplicitSolveError, ProfiledIntegrator,
-    SolverProfile, SolverProfileError, SourceTermCouplingProfile, SourceTermProfile,
-    implicit_euler_step,
+    implicit_euler_step, CouplingEdge, ExplicitMethod, ImplicitMethod, ImplicitSolveError,
+    ProfiledIntegrator, SolverProfile, SolverProfileError, SourceTermCouplingProfile,
+    SourceTermProfile,
 };
 pub use stop::{AlwaysContinue, EndTime, MaxSteps, StopCondition};

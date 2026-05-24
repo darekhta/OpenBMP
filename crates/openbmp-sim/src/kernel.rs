@@ -36,9 +36,9 @@ use crate::derivative::PointMassDerivative;
 use crate::error::{IntegratorError, SimulationError, StopReason};
 use crate::integrator::Integrator;
 use crate::models::{
-    EffectorActualsView, EngineSnapshotView, EnvironmentModel, EnvironmentQuery, EnvironmentSample,
-    ForceContext, ForceModel, MassContext, MassModel, RecoverySnapshot, RecoverySnapshotView,
-    TankSnapshot, TankSnapshotView,
+    EffectorActualsView, EngineSnapshot, EngineSnapshotView, EnvironmentModel, EnvironmentQuery,
+    EnvironmentSample, ForceContext, ForceModel, MassContext, MassModel, RecoverySnapshot,
+    RecoverySnapshotView, TankSnapshot, TankSnapshotView,
 };
 use crate::solver_profile::{ProfiledIntegrator, SolverProfile, SolverProfileError};
 use crate::stop::StopCondition;
@@ -220,8 +220,7 @@ where
     /// legacy single-motor scenarios — the cluster adapters
     /// short-circuit on the empty view, so legacy code paths
     /// produce byte-identical Parquet.
-    engine_snapshot:
-        std::collections::BTreeMap<openbmp_core::EngineId, openbmp_propulsion::EngineSnapshot>,
+    engine_snapshot: std::collections::BTreeMap<openbmp_core::EngineId, EngineSnapshot>,
     /// Kernel-owned snapshot of per-tank state, keyed by
     /// [`openbmp_core::TankId`]. Refreshed via
     /// [`Self::set_tank_snapshot`] before each `step()` call so
@@ -748,10 +747,7 @@ where
     /// map stays empty.
     pub fn set_engine_snapshot(
         &mut self,
-        snapshot: std::collections::BTreeMap<
-            openbmp_core::EngineId,
-            openbmp_propulsion::EngineSnapshot,
-        >,
+        snapshot: std::collections::BTreeMap<openbmp_core::EngineId, EngineSnapshot>,
     ) {
         self.engine_snapshot = snapshot;
     }
@@ -762,8 +758,7 @@ where
     #[must_use]
     pub fn engine_snapshot(
         &self,
-    ) -> &std::collections::BTreeMap<openbmp_core::EngineId, openbmp_propulsion::EngineSnapshot>
-    {
+    ) -> &std::collections::BTreeMap<openbmp_core::EngineId, EngineSnapshot> {
         &self.engine_snapshot
     }
 

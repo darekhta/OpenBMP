@@ -20,7 +20,8 @@
 //! - [`ForceContext`], [`MomentContext`], [`MassContext`],
 //!   [`EnvironmentQuery`], [`EnvironmentSample`] — per-step context
 //!   threaded into model evaluation.
-//! - [`EffectorActualsView`], [`EngineSnapshotView`],
+//! - [`EffectorActualsView`], [`EngineSnapshot`],
+//!   [`EngineSnapshotView`],
 //!   [`TankSnapshotView`], [`RecoverySnapshotView`] — read-only
 //!   borrow-views the kernel publishes to its rack adapters; the
 //!   shapes are general-purpose enough that a HAL adopter could
@@ -43,11 +44,11 @@ pub mod state;
 pub use derivative::{PointMassDerivative, RigidBodyDerivative, SimStateDerivative};
 pub use error::ModelEvalError;
 pub use models::{
-    ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshotView,
-    EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext, ForceModel,
-    LinearBurnMass, LinearBurnMassRigid, MassContext, MassModel, MassPropertiesRate, MomentContext,
-    MomentModel, NullEnvironment, RecoverySnapshot, RecoverySnapshotView, RigidMassModel,
-    TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
+    ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshot,
+    EngineSnapshotView, EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext,
+    ForceModel, LinearBurnMass, LinearBurnMassRigid, MassContext, MassModel, MassPropertiesRate,
+    MomentContext, MomentModel, NullEnvironment, RecoverySnapshot, RecoverySnapshotView,
+    RigidMassModel, TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
 };
 pub use state::{
     Integratable, RigidBodyKinematicState, SimState, TranslationalState, VehicleState,

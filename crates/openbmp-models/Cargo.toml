@@ -10,7 +10,6 @@ description             = "OpenBMP model trait surface (force, moment, mass, env
 
 [dependencies]
 openbmp-core       = { workspace = true }
-openbmp-propulsion = { workspace = true }
 openbmp-state      = { workspace = true }
 nalgebra           = { workspace = true }
 thiserror          = { workspace = true }

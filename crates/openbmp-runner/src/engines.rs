@@ -35,12 +35,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use openbmp_core::{Body, Duration, EngineId, Position3};
 use openbmp_propulsion::{
     ClusterLayout as PropulsionClusterLayout, EngineCluster, EngineFault, EngineLimits,
-    EngineModel, EngineSnapshot, LiquidEngine,
+    EngineModel, EngineState, LiquidEngine,
 };
 use openbmp_scenario::{
     ClusterLayoutConfig, EngineConfig, EngineFaultConfig, EngineKindConfig, ScenarioDocument,
 };
-use openbmp_sim::{FiredEvent, ScenarioScriptAction};
+use openbmp_sim::{EngineSnapshot, FiredEvent, ScenarioScriptAction};
 
 use crate::error::RunnerError;
 
@@ -240,9 +240,27 @@ impl EngineRack {
         let mut out = BTreeMap::new();
         let snapshots = self.cluster.current_snapshot();
         for (id, snap) in self.cluster.engine_ids().iter().zip(snapshots.iter()) {
-            out.insert(*id, *snap);
+            out.insert(
+                *id,
+                EngineSnapshot {
+                    thrust_body: snap.thrust_body,
+                    mass_flow_kg_per_s: snap.mass_flow_kg_per_s,
+                    consumed_kg: snap.consumed_kg,
+                    lifecycle_state_index: engine_state_index(snap.state),
+                },
+            );
         }
         out
+    }
+}
+
+fn engine_state_index(state: EngineState) -> u8 {
+    match state {
+        EngineState::Idle => 0,
+        EngineState::Igniting => 1,
+        EngineState::Burning => 2,
+        EngineState::Shutdown => 3,
+        EngineState::Failed => 4,
     }
 }
 
@@ -281,10 +299,12 @@ fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, Run
                 EngineFault::GimbalLocked { pitch_rad, yaw_rad }
             }
         };
-        engine.inject_fault(fault).map_err(|err| RunnerError::Engine {
-            field: format!("vehicle.assembly.engines[{index}].fault"),
-            reason: err.to_string(),
-        })?;
+        engine
+            .inject_fault(fault)
+            .map_err(|err| RunnerError::Engine {
+                field: format!("vehicle.assembly.engines[{index}].fault"),
+                reason: err.to_string(),
+            })?;
     }
     Ok(engine)
 }
@@ -380,5 +400,34 @@ mod tests {
             matches!(err, RunnerError::Engine { .. }),
             "expected RunnerError::Engine, got {err:?}",
         );
+    }
+
+    #[test]
+    fn snapshot_map_exposes_kernel_snapshot_without_propulsion_enum() {
+        let (mut rack, id) = one_engine_rack();
+        let initial = rack.snapshot_map();
+        let initial_snapshot = initial.get(&id).unwrap();
+        assert_eq!(initial_snapshot.lifecycle_state_index, 0);
+        assert_eq!(initial_snapshot.thrust_body, nalgebra::Vector3::zeros());
+
+        rack.apply_commands(&[engine_event(
+            "mission.events.ignite_a",
+            id,
+            EngineCommand {
+                throttle_unit: 0.5,
+                gimbal_pitch_rad: 0.0,
+                gimbal_yaw_rad: 0.0,
+                ignite: true,
+                shutdown: false,
+            },
+        )])
+        .unwrap();
+        rack.step().unwrap();
+
+        let after_step = rack.snapshot_map();
+        let snapshot = after_step.get(&id).unwrap();
+        assert_eq!(snapshot.lifecycle_state_index, 1);
+        assert!(snapshot.thrust_body.z > 0.0);
+        assert!(snapshot.mass_flow_kg_per_s > 0.0);
     }
 }

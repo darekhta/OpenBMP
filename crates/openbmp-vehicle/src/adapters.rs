@@ -1445,9 +1445,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use openbmp_core::{EngineId, Position3, SimTime, Velocity3};
+    use openbmp_models::EngineSnapshot;
     use openbmp_models::EnvironmentSample;
     use openbmp_physics::{AtmosphereSample, ConstantGravity, IsothermalAtmosphere, PhysicsError};
-    use openbmp_propulsion::{EngineSnapshot, EngineState, SolidMotor};
+    use openbmp_propulsion::SolidMotor;
     use proptest::prelude::*;
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
@@ -1916,7 +1917,7 @@ mod tests {
                         thrust_body: Vector3::new(tx, ty, tz),
                         mass_flow_kg_per_s: 0.0,
                         consumed_kg: 0.0,
-                        state: EngineState::Burning,
+                        lifecycle_state_index: 2,
                     },
                 );
             }

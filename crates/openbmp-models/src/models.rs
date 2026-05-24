@@ -21,7 +21,6 @@ use std::collections::BTreeMap;
 
 use nalgebra::{Matrix3, Vector3};
 use openbmp_core::{Eci, EngineId, Position3, RecoveryId, SimTime, TankId, ValidationStatus};
-use openbmp_propulsion::EngineSnapshot;
 use openbmp_state::{MassProperties, PointMassState};
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -100,8 +99,50 @@ impl<'a> EffectorActualsView<'a> {
 }
 
 // ---------------------------------------------------------------------
-// EngineSnapshotView
+// EngineSnapshot / EngineSnapshotView
 // ---------------------------------------------------------------------
+
+/// Kernel-facing per-step output snapshot for one engine.
+///
+/// This is deliberately a flat data carrier in `openbmp-models`.
+/// The propulsion crate owns concrete engine lifecycle enums and
+/// state machines; the kernel and model trait layer only need the
+/// deterministic numeric outputs consumed by force, moment, and mass
+/// adapters. Keeping this type here prevents the portable model
+/// surface and the simulation kernel from depending upward on
+/// `openbmp-propulsion`.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct EngineSnapshot {
+    /// Body-frame thrust vector in Newtons. Gimbal already applied by
+    /// the runner-side engine rack.
+    pub thrust_body: Vector3<f64>,
+    /// Mass-flow rate at this step, in kg/s. Non-negative for engine
+    /// implementations that obey the propulsion contract.
+    pub mass_flow_kg_per_s: f64,
+    /// Cumulative propellant consumed since rack construction, in kg.
+    pub consumed_kg: f64,
+    /// Stable lifecycle-state index for diagnostics / telemetry
+    /// surfaces that need it without importing a propulsion enum.
+    ///
+    /// The runner maps propulsion states as: `Idle = 0`,
+    /// `Igniting = 1`, `Burning = 2`, `Shutdown = 3`,
+    /// `Failed = 4`.
+    pub lifecycle_state_index: u8,
+}
+
+impl EngineSnapshot {
+    /// Construct the at-rest snapshot used by empty or unstepped
+    /// engine racks.
+    #[must_use]
+    pub fn idle() -> Self {
+        Self {
+            thrust_body: Vector3::zeros(),
+            mass_flow_kg_per_s: 0.0,
+            consumed_kg: 0.0,
+            lifecycle_state_index: 0,
+        }
+    }
+}
 
 /// Read-only view of the kernel's per-step engine snapshot.
 ///
