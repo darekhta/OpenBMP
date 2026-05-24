@@ -47,7 +47,9 @@ pub mod recovery;
 pub mod tanks;
 pub mod wind;
 
-use openbmp_scenario::Scenario;
+use std::collections::BTreeMap;
+
+use openbmp_scenario::{Scenario, ScenarioDocument};
 use openbmp_sim::StopReason;
 use openbmp_telemetry::TelemetryTable;
 
@@ -123,6 +125,7 @@ fn is_phase1_byte_stable_shape(scenario: &Scenario) -> bool {
     let has_effectors = !document.vehicle.assembly.effectors.is_empty();
     let has_engines = !document.vehicle.assembly.engines.is_empty();
     document.vehicle.kind == "point_mass"
+        && document.solver.is_none()
         && document.environment.gravity == "constant"
         && document.environment.atmosphere == "none"
         && document.environment.wind == "none"
@@ -134,4 +137,57 @@ fn is_phase1_byte_stable_shape(scenario: &Scenario) -> bool {
         && document.atmosphere.is_none()
         && !has_effectors
         && !has_engines
+}
+
+fn append_solver_metadata(document: &ScenarioDocument, metadata: &mut BTreeMap<String, String>) {
+    let Some(solver) = &document.solver else {
+        return;
+    };
+    metadata.insert(
+        "openbmp.solver.profile".to_owned(),
+        solver
+            .profile
+            .clone()
+            .unwrap_or_else(|| "fixed-step-explicit".to_owned()),
+    );
+    metadata.insert(
+        "openbmp.solver.trajectory_method".to_owned(),
+        solver
+            .trajectory_method
+            .clone()
+            .unwrap_or_else(|| "rk4".to_owned()),
+    );
+    metadata.insert(
+        "openbmp.solver.determinism".to_owned(),
+        solver
+            .determinism
+            .clone()
+            .unwrap_or_else(|| "bit-stable".to_owned()),
+    );
+    if let Some(source_terms) = &solver.source_terms {
+        metadata.insert(
+            "openbmp.solver.source_terms.chemistry_method".to_owned(),
+            source_terms.chemistry_method.clone(),
+        );
+        metadata.insert(
+            "openbmp.solver.source_terms.chemistry_substeps".to_owned(),
+            source_terms.chemistry_substeps.to_string(),
+        );
+        metadata.insert(
+            "openbmp.solver.source_terms.material_method".to_owned(),
+            source_terms.material_method.clone(),
+        );
+        metadata.insert(
+            "openbmp.solver.source_terms.material_substeps".to_owned(),
+            source_terms.material_substeps.to_string(),
+        );
+        metadata.insert(
+            "openbmp.solver.source_terms.nonlinear_tolerance".to_owned(),
+            format!("{:.17e}", source_terms.nonlinear_tolerance),
+        );
+        metadata.insert(
+            "openbmp.solver.source_terms.nonlinear_max_iter".to_owned(),
+            source_terms.nonlinear_max_iter.to_string(),
+        );
+    }
 }

@@ -204,7 +204,7 @@ pub fn run(
     } else {
         None
     };
-    let metadata = build_schema_metadata(resolved_files);
+    let metadata = build_schema_metadata(document, resolved_files);
     let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
     // Phase-3.5.C: pair schema-2 deck axes with scenario effectors.
@@ -841,6 +841,7 @@ fn motor_elapsed_at_start_s(document: &ScenarioDocument) -> Result<f64, CliError
 }
 
 fn build_schema_metadata(
+    document: &ScenarioDocument,
     resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> BTreeMap<String, String> {
     let mut metadata = BTreeMap::new();
@@ -850,6 +851,7 @@ fn build_schema_metadata(
             file.sha256_hex.clone(),
         );
     }
+    super::append_solver_metadata(document, &mut metadata);
     metadata
 }
 

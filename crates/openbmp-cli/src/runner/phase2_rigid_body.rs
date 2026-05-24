@@ -173,7 +173,7 @@ pub fn run(
     } else {
         None
     };
-    let metadata = build_schema_metadata(resolved_files);
+    let metadata = build_schema_metadata(document, resolved_files);
     let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
     // Phase-3.5.C: see phase2_point_mass.rs sibling for the rationale.
@@ -1087,6 +1087,7 @@ fn motor_elapsed_at_start_s(document: &ScenarioDocument) -> Result<f64, CliError
 }
 
 fn build_schema_metadata(
+    document: &ScenarioDocument,
     resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> BTreeMap<String, String> {
     let mut metadata = BTreeMap::new();
@@ -1096,6 +1097,7 @@ fn build_schema_metadata(
             file.sha256_hex.clone(),
         );
     }
+    super::append_solver_metadata(document, &mut metadata);
     metadata
 }
 

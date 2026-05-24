@@ -1,10 +1,11 @@
 //! Optional solver-profile section.
 //!
-//! The Phase-1 kernel ships only fixed-step explicit (RK4); the rest of
-//! these fields are validated structurally so a Phase-6 solver can
-//! advertise its profile in scenarios without parser churn. Setting
-//! `bit-stable` determinism with anything other than `fixed-step-explicit`
-//! is rejected at scenario load.
+//! Fixed-step explicit and adaptive-explicit profiles select the
+//! trajectory integrator directly. Phase-6 source-term profiles also
+//! require `[solver.source_terms]` so the runner can fail closed when
+//! chemistry / material sub-step controls are missing. Setting
+//! `bit-stable` determinism with anything other than
+//! `fixed-step-explicit` is rejected at scenario load.
 
 use serde::Deserialize;
 
@@ -62,6 +63,14 @@ impl SolverConfig {
         if profile == "adaptive-explicit" && self.adaptive.is_none() {
             return Err(ScenarioError::UnsupportedValue {
                 field: "solver.adaptive".to_owned(),
+                value: "missing".to_owned(),
+            });
+        }
+        if matches!(profile, "implicit-source-term" | "partitioned-hypersonic")
+            && self.source_terms.is_none()
+        {
+            return Err(ScenarioError::UnsupportedValue {
+                field: "solver.source_terms".to_owned(),
                 value: "missing".to_owned(),
             });
         }
@@ -173,5 +182,52 @@ impl SourceTermSolverConfig {
             self.nonlinear_max_iter,
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SolverConfig, SourceTermSolverConfig};
+    use crate::ScenarioError;
+
+    fn implicit_euler_source_terms() -> SourceTermSolverConfig {
+        SourceTermSolverConfig {
+            chemistry_method: "implicit-euler".to_owned(),
+            chemistry_substeps: 2,
+            material_method: "implicit-euler".to_owned(),
+            material_substeps: 2,
+            nonlinear_tolerance: 1.0e-9,
+            nonlinear_max_iter: 8,
+        }
+    }
+
+    #[test]
+    fn source_term_profile_requires_source_terms_block() {
+        let solver = SolverConfig {
+            profile: Some("implicit-source-term".to_owned()),
+            trajectory_method: Some("rk4".to_owned()),
+            determinism: Some("state-stable".to_owned()),
+            adaptive: None,
+            source_terms: None,
+        };
+
+        assert!(matches!(
+            solver.validate(),
+            Err(ScenarioError::UnsupportedValue { field, value })
+                if field == "solver.source_terms" && value == "missing"
+        ));
+    }
+
+    #[test]
+    fn source_term_profile_accepts_explicit_substep_controls() {
+        let solver = SolverConfig {
+            profile: Some("partitioned-hypersonic".to_owned()),
+            trajectory_method: Some("dopri853".to_owned()),
+            determinism: Some("state-stable".to_owned()),
+            adaptive: None,
+            source_terms: Some(implicit_euler_source_terms()),
+        };
+
+        assert!(solver.validate().is_ok());
     }
 }

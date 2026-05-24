@@ -7,6 +7,8 @@
 //!   trajectory analysis.
 //! * [`CharringAblator`] — charring ablator with pyrolysis zone.
 //!   Tracks virgin / char composition.
+//! * [`DepthResolvedCharringAblator`] — deterministic 1-D
+//!   energy-limited pyrolysis-front toy for generic charring studies.
 //!
 //! No real fielded TPS material parameters ship — only generic
 //! textbook archetypes.
@@ -44,6 +46,19 @@ pub struct RecessionRate {
     /// Recession rate (m/s) — surface moves into the body at this
     /// rate when positive.
     pub m_per_s: f64,
+}
+
+/// Depth-resolved pyrolysis-front update.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PyrolysisFrontUpdate {
+    /// New front depth from the original surface (m).
+    pub front_depth_m: f64,
+    /// Front velocity over the update (m/s).
+    pub front_velocity_m_s: f64,
+    /// Pyrolysis-gas mass flux (kg/(m²·s)).
+    pub gas_mdot_kg_m2_s: f64,
+    /// Per-depth-node char progress: 0 = virgin, 1 = fully charred.
+    pub progress_by_node: Vec<f64>,
 }
 
 /// Generic toy ablator material — textbook scope only.
@@ -255,6 +270,153 @@ pub struct CharringAblator {
     pub progress: f64,
 }
 
+/// Depth-resolved generic charring ablator.
+///
+/// This is an energy-limited 1-D academic toy: after re-radiation,
+/// the remaining heat flux advances a sharp pyrolysis front at
+/// `v_f = q_net / (ρ_virgin h_pyrolysis)`. The state is projected
+/// onto fixed depth nodes so telemetry can expose
+/// `pyrolysis_progress[i]` and `pyrolysis_gas_mdot[i]` without
+/// shipping any fielded TPS material parameters.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DepthResolvedCharringAblator {
+    /// Virgin (unreacted) material.
+    pub virgin: ToyAblator,
+    /// Char (post-pyrolysis) material.
+    pub char_material: ToyAblator,
+    /// Total modeled slab thickness (m).
+    pub thickness_m: f64,
+    /// Fixed node depths measured from the original surface (m).
+    pub node_depths_m: Vec<f64>,
+    /// Current sharp-front depth from the original surface (m).
+    pub front_depth_m: f64,
+    /// Pyrolysis enthalpy (J/kg).
+    pub pyrolysis_enthalpy_j_kg: f64,
+    /// Fraction of pyrolyzed mass emitted as gas.
+    pub gas_yield_fraction: f64,
+}
+
+impl DepthResolvedCharringAblator {
+    /// Construct a uniformly-spaced depth-resolved charring toy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError::InvalidParameter`] for invalid
+    /// material, thickness, node count, enthalpy, or gas yield.
+    pub fn new_uniform(
+        virgin: ToyAblator,
+        char_material: ToyAblator,
+        thickness_m: f64,
+        n_depth_nodes: usize,
+        pyrolysis_enthalpy_j_kg: f64,
+        gas_yield_fraction: f64,
+    ) -> Result<Self, AerothermalError> {
+        if !(thickness_m.is_finite() && thickness_m > 0.0) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "depth-resolved charring thickness must be positive",
+            });
+        }
+        if n_depth_nodes < 2 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "depth-resolved charring needs at least two nodes",
+            });
+        }
+        let n_depth_nodes_u32 =
+            u32::try_from(n_depth_nodes).map_err(|_| AerothermalError::InvalidParameter {
+                reason: "depth-resolved charring node count exceeds u32::MAX",
+            })?;
+        if !(pyrolysis_enthalpy_j_kg.is_finite() && pyrolysis_enthalpy_j_kg > 0.0) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "pyrolysis enthalpy must be positive",
+            });
+        }
+        if !(gas_yield_fraction.is_finite() && (0.0..=1.0).contains(&gas_yield_fraction)) {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "gas yield fraction must be finite and in [0, 1]",
+            });
+        }
+        validate_toy_material(virgin)?;
+        validate_toy_material(char_material)?;
+
+        let denom = f64::from(n_depth_nodes_u32 - 1);
+        let mut node_depths_m = Vec::with_capacity(n_depth_nodes);
+        for i in 0..n_depth_nodes_u32 {
+            node_depths_m.push(thickness_m * f64::from(i) / denom);
+        }
+        Ok(Self {
+            virgin,
+            char_material,
+            thickness_m,
+            node_depths_m,
+            front_depth_m: 0.0,
+            pyrolysis_enthalpy_j_kg,
+            gas_yield_fraction,
+        })
+    }
+
+    /// Current per-node char progress.
+    #[must_use]
+    pub fn progress_by_node(&self) -> Vec<f64> {
+        self.node_depths_m
+            .iter()
+            .map(|&depth| {
+                if depth <= self.front_depth_m {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    }
+
+    /// Advance the pyrolysis front for a supplied net heat flux.
+    ///
+    /// `q_net_w_m2` is the heat flux available after surface
+    /// re-radiation and recession losses. Negative values fail
+    /// closed; zero leaves the state unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError`] on malformed flux or time step.
+    pub fn advance_front(
+        &mut self,
+        q_net_w_m2: f64,
+        dt_s: f64,
+    ) -> Result<PyrolysisFrontUpdate, AerothermalError> {
+        if !(q_net_w_m2.is_finite() && dt_s.is_finite()) {
+            return Err(AerothermalError::NonFinite {
+                reason: "pyrolysis-front heat flux or dt is NaN or Inf",
+            });
+        }
+        if q_net_w_m2 < 0.0 || dt_s < 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "pyrolysis-front heat flux and dt must be non-negative",
+            });
+        }
+        let front_velocity_m_s = if q_net_w_m2 == 0.0 {
+            0.0
+        } else {
+            q_net_w_m2 / (self.virgin.density_kg_m3 * self.pyrolysis_enthalpy_j_kg)
+        };
+        let old_front = self.front_depth_m;
+        let new_front = (old_front + front_velocity_m_s * dt_s).min(self.thickness_m);
+        self.front_depth_m = new_front;
+        let realised_velocity = if dt_s > 0.0 {
+            (new_front - old_front) / dt_s
+        } else {
+            0.0
+        };
+        let gas_mdot_kg_m2_s =
+            realised_velocity * self.virgin.density_kg_m3 * self.gas_yield_fraction;
+        Ok(PyrolysisFrontUpdate {
+            front_depth_m: new_front,
+            front_velocity_m_s: realised_velocity,
+            gas_mdot_kg_m2_s,
+            progress_by_node: self.progress_by_node(),
+        })
+    }
+}
+
 impl AblationModel for CharringAblator {
     fn recession_rate(
         &self,
@@ -314,6 +476,27 @@ impl AblationModel for CharringAblator {
             }
         }
     }
+}
+
+fn validate_toy_material(material: ToyAblator) -> Result<(), AerothermalError> {
+    if !(material.density_kg_m3.is_finite() && material.density_kg_m3 > 0.0) {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "toy ablator density must be positive",
+        });
+    }
+    if !(material.heat_of_ablation_j_kg.is_finite() && material.heat_of_ablation_j_kg > 0.0) {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "toy ablator heat of ablation must be positive",
+        });
+    }
+    if !(material.surface_emissivity.is_finite()
+        && (0.0..=1.0).contains(&material.surface_emissivity))
+    {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "toy ablator emissivity must be finite and in [0, 1]",
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -442,6 +625,47 @@ mod tests {
         assert_eq!(
             a.surface_state(BodyStation::stagnation()),
             SurfaceState::Char
+        );
+    }
+
+    #[test]
+    fn depth_resolved_pyrolysis_front_advances_by_energy_balance() {
+        let mut a = DepthResolvedCharringAblator::new_uniform(
+            ToyAblator::generic_charring_1(),
+            ToyAblator::graphite_toy(),
+            0.10,
+            6,
+            2.0e6,
+            0.25,
+        )
+        .unwrap();
+        let update = a.advance_front(2.9e6, 10.0).unwrap();
+        let expected_v = 2.9e6 / (1450.0 * 2.0e6);
+        assert!((update.front_velocity_m_s - expected_v).abs() < 1.0e-15);
+        assert!((update.front_depth_m - expected_v * 10.0).abs() < 1.0e-15);
+        assert!(update.progress_by_node[0] == 1.0);
+        assert!(update.progress_by_node[1] == 0.0);
+        assert!((update.gas_mdot_kg_m2_s - expected_v * 1450.0 * 0.25).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn depth_resolved_pyrolysis_front_saturates_at_back_face() {
+        let mut a = DepthResolvedCharringAblator::new_uniform(
+            ToyAblator::generic_charring_1(),
+            ToyAblator::graphite_toy(),
+            0.01,
+            3,
+            1.0e6,
+            1.0,
+        )
+        .unwrap();
+        let update = a.advance_front(1.45e9, 10.0).unwrap();
+        assert!((update.front_depth_m - 0.01).abs() < 1.0e-15);
+        assert!(
+            update
+                .progress_by_node
+                .iter()
+                .all(|&progress| progress == 1.0)
         );
     }
 

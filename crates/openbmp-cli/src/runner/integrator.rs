@@ -29,11 +29,13 @@
 //! - `(adaptive-explicit, dopri853, state-stable)` →
 //!   [`Dopri853Adaptive`] (§ 5.D.6).
 //!
-//! Still rejected as unwired: `rkf78`, `implicit-source-term`,
-//! `partitioned-hypersonic`. Both runners (point-mass and rigid-body)
-//! dispatch through this module today.
+//! Still rejected as unwired: `rkf78`, Rosenbrock-Wanner, and BDF.
+//! Phase 6.0 source-term profiles now dispatch the declared
+//! trajectory method and pin the source-term profile; source-term
+//! consumers can call the implicit-Euler primitive through their own
+//! state adapters.
 
-use openbmp_scenario::{ScenarioDocument, SolverConfig};
+use openbmp_scenario::{ScenarioDocument, SolverConfig, SourceTermSolverConfig};
 use openbmp_sim::{
     AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Dopri853Adaptive,
     Dopri853FixedStep, Integrator, IntegratorDeterminism, IntegratorError, ModelEvalError,
@@ -56,6 +58,32 @@ pub enum RuntimeIntegrator {
     /// DOP853 adaptive with err5/err3 stabilised error norm and
     /// I-controller.
     Dopri853Adaptive(Box<Dopri853Adaptive>),
+    /// Phase-6 source-term profile: delegates trajectory integration
+    /// to the wrapped explicit/adaptive integrator, while recording
+    /// the source-term sub-step controls as part of the runtime
+    /// solver profile.
+    ProfiledSourceTerm {
+        /// Profile name (`implicit-source-term` or
+        /// `partitioned-hypersonic`).
+        profile: &'static str,
+        /// Source-term controls.
+        source_terms: SourceTermRuntimeProfile,
+        /// Trajectory integrator.
+        trajectory: Box<RuntimeIntegrator>,
+    },
+}
+
+/// Runtime source-term profile accepted by the Phase-6 dispatcher.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceTermRuntimeProfile {
+    /// Chemistry substeps per trajectory step.
+    pub chemistry_substeps: u32,
+    /// Material substeps per trajectory step.
+    pub material_substeps: u32,
+    /// Nonlinear solve tolerance.
+    pub nonlinear_tolerance: f64,
+    /// Nonlinear iteration cap.
+    pub nonlinear_max_iter: u32,
 }
 
 impl std::fmt::Debug for RuntimeIntegrator {
@@ -66,6 +94,15 @@ impl std::fmt::Debug for RuntimeIntegrator {
             Self::Dopri54Adaptive(_) => f.write_str("RuntimeIntegrator::Dopri54Adaptive"),
             Self::Dopri853Fixed(_) => f.write_str("RuntimeIntegrator::Dopri853Fixed"),
             Self::Dopri853Adaptive(_) => f.write_str("RuntimeIntegrator::Dopri853Adaptive"),
+            Self::ProfiledSourceTerm {
+                profile,
+                source_terms: _,
+                trajectory,
+            } => f
+                .debug_struct("RuntimeIntegrator::ProfiledSourceTerm")
+                .field("profile", profile)
+                .field("trajectory", trajectory)
+                .finish(),
         }
     }
 }
@@ -78,6 +115,7 @@ impl<S: SimState> Integrator<S> for RuntimeIntegrator {
             Self::Dopri54Adaptive(i) => <Dopri54Adaptive as Integrator<S>>::determinism(i),
             Self::Dopri853Fixed(i) => <Dopri853FixedStep as Integrator<S>>::determinism(i),
             Self::Dopri853Adaptive(i) => <Dopri853Adaptive as Integrator<S>>::determinism(i),
+            Self::ProfiledSourceTerm { .. } => IntegratorDeterminism::StateStable,
         }
     }
 
@@ -96,6 +134,7 @@ impl<S: SimState> Integrator<S> for RuntimeIntegrator {
             Self::Dopri54Adaptive(i) => i.advance(state, derive_fn, dt),
             Self::Dopri853Fixed(i) => i.advance(state, derive_fn, dt),
             Self::Dopri853Adaptive(i) => i.advance(state, derive_fn, dt),
+            Self::ProfiledSourceTerm { trajectory, .. } => trajectory.advance(state, derive_fn, dt),
         }
     }
 }
@@ -196,11 +235,25 @@ fn build_runtime_integrator_from_solver(
                 ),
             })
         }
-        ("implicit-source-term" | "partitioned-hypersonic", _, _) => {
-            Err(CliError::UnsupportedScenario {
-                what: format!("solver.profile = {profile:?} is parser-only; not wired"),
+        ("implicit-source-term" | "partitioned-hypersonic", "rk4" | "dopri54" | "dopri853", "state-stable") => {
+            let source_terms = source_term_runtime_profile(solver.source_terms.as_ref())?;
+            let trajectory = build_source_profile_trajectory(method)?;
+            let profile = if profile == "implicit-source-term" {
+                "implicit-source-term"
+            } else {
+                "partitioned-hypersonic"
+            };
+            Ok(RuntimeIntegrator::ProfiledSourceTerm {
+                profile,
+                source_terms,
+                trajectory: Box::new(trajectory),
             })
         }
+        ("implicit-source-term" | "partitioned-hypersonic", "rkf78", _) => Err(CliError::UnsupportedScenario {
+            what: "source-term solver profiles do not support solver.trajectory_method = \"rkf78\"; \
+                 wired methods are rk4, dopri54, and dopri853"
+                .to_owned(),
+        }),
         _ => Err(CliError::UnsupportedScenario {
             what: format!(
                 "unsupported (profile, method, determinism) combination: \
@@ -208,6 +261,49 @@ fn build_runtime_integrator_from_solver(
             ),
         }),
     }
+}
+
+fn build_source_profile_trajectory(method: &str) -> Result<RuntimeIntegrator, CliError> {
+    match method {
+        "rk4" => Ok(RuntimeIntegrator::Rk4(Rk4FixedStep)),
+        "dopri54" => Ok(RuntimeIntegrator::Dopri54Fixed(Dopri54FixedStep)),
+        "dopri853" => Ok(RuntimeIntegrator::Dopri853Fixed(Dopri853FixedStep)),
+        _ => Err(CliError::UnsupportedScenario {
+            what: format!("source-term profile trajectory method {method:?} is not wired"),
+        }),
+    }
+}
+
+fn source_term_runtime_profile(
+    source_terms: Option<&SourceTermSolverConfig>,
+) -> Result<SourceTermRuntimeProfile, CliError> {
+    let source_terms = source_terms.ok_or_else(|| CliError::UnsupportedScenario {
+        what: "[solver.source_terms] block missing for source-term solver profile".to_owned(),
+    })?;
+    if source_terms.chemistry_method != "implicit-euler" {
+        return Err(CliError::UnsupportedScenario {
+            what: format!(
+                "solver.source_terms.chemistry_method = {:?} parses but is not wired; \
+                 wired method is implicit-euler",
+                source_terms.chemistry_method
+            ),
+        });
+    }
+    if source_terms.material_method != "implicit-euler" {
+        return Err(CliError::UnsupportedScenario {
+            what: format!(
+                "solver.source_terms.material_method = {:?} parses but is not wired; \
+                 wired method is implicit-euler",
+                source_terms.material_method
+            ),
+        });
+    }
+    Ok(SourceTermRuntimeProfile {
+        chemistry_substeps: source_terms.chemistry_substeps,
+        material_substeps: source_terms.material_substeps,
+        nonlinear_tolerance: source_terms.nonlinear_tolerance,
+        nonlinear_max_iter: source_terms.nonlinear_max_iter,
+    })
 }
 
 #[cfg(test)]
@@ -232,6 +328,20 @@ mod tests {
         }
     }
 
+    fn solver_with_source_terms(
+        profile: &str,
+        method: &str,
+        source_terms: SourceTermSolverConfig,
+    ) -> SolverConfig {
+        SolverConfig {
+            profile: Some(profile.to_owned()),
+            trajectory_method: Some(method.to_owned()),
+            determinism: Some("state-stable".to_owned()),
+            adaptive: None,
+            source_terms: Some(source_terms),
+        }
+    }
+
     fn well_formed_adaptive() -> AdaptiveSolverConfig {
         AdaptiveSolverConfig {
             rtol: 1.0e-9,
@@ -239,6 +349,17 @@ mod tests {
             min_dt_s: 1.0e-6,
             max_dt_s: 1.0,
             dense_output: false,
+        }
+    }
+
+    fn well_formed_source_terms() -> SourceTermSolverConfig {
+        SourceTermSolverConfig {
+            chemistry_method: "implicit-euler".to_owned(),
+            chemistry_substeps: 4,
+            material_method: "implicit-euler".to_owned(),
+            material_substeps: 2,
+            nonlinear_tolerance: 1.0e-10,
+            nonlinear_max_iter: 12,
         }
     }
 
@@ -356,33 +477,52 @@ mod tests {
     }
 
     #[test]
-    fn implicit_source_term_profile_is_rejected_as_parser_only() {
-        let s = solver("implicit-source-term", "rk4", "state-stable", None);
-        let err = build_runtime_integrator_from_solver(Some(&s)).unwrap_err();
-        let CliError::UnsupportedScenario { what } = err else {
-            panic!("expected UnsupportedScenario, got {err:?}");
+    fn implicit_source_term_profile_wraps_trajectory_integrator() {
+        let s = solver_with_source_terms("implicit-source-term", "rk4", well_formed_source_terms());
+        let result = build_runtime_integrator_from_solver(Some(&s)).unwrap();
+        let RuntimeIntegrator::ProfiledSourceTerm {
+            profile,
+            source_terms,
+            trajectory,
+        } = result
+        else {
+            panic!("expected ProfiledSourceTerm");
         };
-        assert!(
-            what.contains("implicit-source-term"),
-            "error message should name implicit-source-term: {what}"
-        );
-        assert!(
-            what.contains("parser-only"),
-            "error message should explain parser-only: {what}"
-        );
+        assert_eq!(profile, "implicit-source-term");
+        assert_eq!(source_terms.chemistry_substeps, 4);
+        assert!(matches!(*trajectory, RuntimeIntegrator::Rk4(_)));
     }
 
     #[test]
-    fn partitioned_hypersonic_profile_is_rejected_as_parser_only() {
-        let s = solver("partitioned-hypersonic", "rk4", "state-stable", None);
+    fn partitioned_hypersonic_profile_wraps_dopri853() {
+        let s = solver_with_source_terms(
+            "partitioned-hypersonic",
+            "dopri853",
+            well_formed_source_terms(),
+        );
+        let result = build_runtime_integrator_from_solver(Some(&s)).unwrap();
+        let RuntimeIntegrator::ProfiledSourceTerm {
+            profile,
+            trajectory,
+            ..
+        } = result
+        else {
+            panic!("expected ProfiledSourceTerm");
+        };
+        assert_eq!(profile, "partitioned-hypersonic");
+        assert!(matches!(*trajectory, RuntimeIntegrator::Dopri853Fixed(_)));
+    }
+
+    #[test]
+    fn source_profile_rejects_unwired_chemistry_method() {
+        let mut source_terms = well_formed_source_terms();
+        source_terms.chemistry_method = "bdf".to_owned();
+        let s = solver_with_source_terms("implicit-source-term", "rk4", source_terms);
         let err = build_runtime_integrator_from_solver(Some(&s)).unwrap_err();
         let CliError::UnsupportedScenario { what } = err else {
             panic!("expected UnsupportedScenario, got {err:?}");
         };
-        assert!(
-            what.contains("partitioned-hypersonic"),
-            "error message should name partitioned-hypersonic: {what}"
-        );
+        assert!(what.contains("chemistry_method") && what.contains("implicit-euler"));
     }
 
     #[test]
@@ -413,7 +553,10 @@ mod tests {
             for method in methods {
                 for determinism in determinisms {
                     let adaptive = (profile == "adaptive-explicit").then(well_formed_adaptive);
-                    let s = solver(profile, method, determinism, adaptive);
+                    let mut s = solver(profile, method, determinism, adaptive);
+                    if matches!(profile, "implicit-source-term" | "partitioned-hypersonic") {
+                        s.source_terms = Some(well_formed_source_terms());
+                    }
                     let result = build_runtime_integrator_from_solver(Some(&s));
                     let should_accept = matches!(
                         (profile, method, determinism),
@@ -422,6 +565,11 @@ mod tests {
                             "rk4" | "dopri54" | "dopri853",
                             "bit-stable"
                         ) | ("adaptive-explicit", "dopri54" | "dopri853", "state-stable")
+                            | (
+                                "implicit-source-term" | "partitioned-hypersonic",
+                                "rk4" | "dopri54" | "dopri853",
+                                "state-stable"
+                            )
                     );
 
                     assert_eq!(

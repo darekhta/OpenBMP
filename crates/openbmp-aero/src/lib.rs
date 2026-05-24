@@ -56,8 +56,8 @@ pub mod parser;
 pub use deck::{AeroCoefficients, AeroDeck, ExtrapolationPolicy};
 pub use error::AeroError;
 pub use hypersonic::{
-    ModifiedNewtonian, PanelInclination, TangentCone, TangentWedge,
-    hypersonic_similarity_parameter,
+    LocalInclinationPanels, ModifiedNewtonian, PanelInclination, PanelMesh, PanelMethod,
+    TangentCone, TangentWedge, hypersonic_similarity_parameter,
 };
 pub use knudsen::{
     AccommodationCoeffs, BridgeFunction, ChengBridge, ErfcBridge, FreeMolecularAero, GasRegime,

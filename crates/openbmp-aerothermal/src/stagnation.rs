@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn tauber_sutton_is_deferred_until_coefficients_land() {
-        let t = TauberSuttonRadiative::default();
+        let t = TauberSuttonRadiative;
         assert!(matches!(
             t.stagnation(&ctx(1.0e-4, 11_000.0, 1.5, 1500.0)),
             Err(AerothermalError::OutOfEnvelope { .. })

@@ -275,12 +275,11 @@ mod tests {
     fn empirical_transition_intermittent_in_band() {
         let m = EmpiricalTransition::default();
         let state = m.intermittency(7.5e5);
-        match state {
-            BoundaryLayerState::Transitional { intermittency, .. } => {
-                assert!((intermittency - 0.5).abs() < 0.1);
-            }
-            _ => panic!("expected transitional, got {state:?}"),
-        }
+        let intermittency = match state {
+            BoundaryLayerState::Transitional { intermittency, .. } => intermittency,
+            BoundaryLayerState::Laminar { .. } | BoundaryLayerState::Turbulent { .. } => f64::NAN,
+        };
+        assert!((intermittency - 0.5).abs() < 0.1);
     }
 
     #[test]

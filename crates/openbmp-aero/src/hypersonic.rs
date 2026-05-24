@@ -12,15 +12,16 @@
 //!   integration is deferred.
 //! * [`TangentWedge`] — 2-D analogue with the oblique-shock pressure
 //!   coefficient.
+//! * [`LocalInclinationPanels`] — mesh-panel Modified Newtonian
+//!   integration with optional back-face shadowing.
 //! * [`HypersonicSimilarityParameter`] — convenience helper for
 //!   `K = M · θ_b` slenderness scaling.
 //!
 //! These are scenario-independent academic methods. They consume the
 //! shared [`crate::method::AeroContext`] and return
 //! [`crate::method::AeroForceMomentBody`] on a single representative
-//! station: a body-axis-aligned sphere of given nose radius (the
-//! `LocalInclinationPanels` slice will land mesh-based integration
-//! later in the phase).
+//! station: a body-axis-aligned sphere of given nose radius. Mesh
+//! studies can use [`LocalInclinationPanels`] directly.
 //!
 //! # Determinism
 //!
@@ -50,6 +51,199 @@ pub struct PanelInclination {
     /// Inclination angle (rad), measured from freestream to surface
     /// normal.
     pub theta_rad: f64,
+}
+
+/// Triangulated body-surface mesh for local-inclination panel methods.
+///
+/// Vertex coordinates are body-frame metres. Triangle winding must
+/// produce outward-pointing normals by the right-hand rule. The
+/// constructor validates finite vertices, in-range indices, and
+/// non-degenerate triangle area; it does not attempt to repair
+/// winding or close open meshes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PanelMesh {
+    vertices: Vec<Vector3<f64>>,
+    triangles: Vec<[u32; 3]>,
+}
+
+impl PanelMesh {
+    /// Construct a validated panel mesh.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::MalformedDeck`] for empty / degenerate
+    /// geometry, non-finite coordinates, or out-of-range indices.
+    pub fn new(vertices: Vec<Vector3<f64>>, triangles: Vec<[u32; 3]>) -> Result<Self, AeroError> {
+        if vertices.is_empty() {
+            return Err(AeroError::MalformedDeck {
+                reason: "panel mesh must contain at least one vertex",
+            });
+        }
+        if triangles.is_empty() {
+            return Err(AeroError::MalformedDeck {
+                reason: "panel mesh must contain at least one triangle",
+            });
+        }
+        for vertex in &vertices {
+            if !(vertex.x.is_finite() && vertex.y.is_finite() && vertex.z.is_finite()) {
+                return Err(AeroError::NonFinite {
+                    reason: "panel mesh vertex coordinate is NaN or Inf",
+                });
+            }
+        }
+        let n_vertices = vertices.len();
+        for triangle in &triangles {
+            let [ia, ib, ic] = *triangle;
+            let a = usize::try_from(ia).map_err(|_| AeroError::MalformedDeck {
+                reason: "panel mesh triangle index overflows usize",
+            })?;
+            let b = usize::try_from(ib).map_err(|_| AeroError::MalformedDeck {
+                reason: "panel mesh triangle index overflows usize",
+            })?;
+            let c = usize::try_from(ic).map_err(|_| AeroError::MalformedDeck {
+                reason: "panel mesh triangle index overflows usize",
+            })?;
+            if a >= n_vertices || b >= n_vertices || c >= n_vertices {
+                return Err(AeroError::MalformedDeck {
+                    reason: "panel mesh triangle index is out of range",
+                });
+            }
+            if a == b || b == c || a == c {
+                return Err(AeroError::MalformedDeck {
+                    reason: "panel mesh triangle has repeated vertices",
+                });
+            }
+            let area2 = (vertices[b] - vertices[a]).cross(&(vertices[c] - vertices[a]));
+            if !(area2.x.is_finite()
+                && area2.y.is_finite()
+                && area2.z.is_finite()
+                && area2.norm() > 0.0)
+            {
+                return Err(AeroError::MalformedDeck {
+                    reason: "panel mesh triangle has zero or non-finite area",
+                });
+            }
+        }
+        Ok(Self {
+            vertices,
+            triangles,
+        })
+    }
+
+    /// Vertices in body-frame metres.
+    #[must_use]
+    pub fn vertices(&self) -> &[Vector3<f64>] {
+        &self.vertices
+    }
+
+    /// Triangle index triplets.
+    #[must_use]
+    pub fn triangles(&self) -> &[[u32; 3]] {
+        &self.triangles
+    }
+}
+
+/// Per-panel pressure-coefficient model.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PanelMethod {
+    /// Modified Newtonian: `Cp = Cp_max cos²(theta)`.
+    ModifiedNewtonian,
+}
+
+/// Local-inclination panel integration.
+///
+/// Each triangle contributes `F_i = -Cp_i q A_i n_i`, where `n_i`
+/// is the outward unit normal from the mesh winding. Moments use
+/// the triangle centroid about the body origin. When `shadowing` is
+/// true, panels with `n_i · u_upstream <= 0` are skipped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalInclinationPanels {
+    /// Triangulated body surface.
+    pub geometry: PanelMesh,
+    /// Per-panel pressure model.
+    pub method: PanelMethod,
+    /// Whether to zero back-facing panels.
+    pub shadowing: bool,
+    /// Stagnation pressure coefficient used by Modified Newtonian.
+    pub cp_max: f64,
+}
+
+impl LocalInclinationPanels {
+    /// Build a Modified-Newtonian panel method with shadowing enabled.
+    #[must_use]
+    pub const fn modified_newtonian(geometry: PanelMesh, cp_max: f64) -> Self {
+        Self {
+            geometry,
+            method: PanelMethod::ModifiedNewtonian,
+            shadowing: true,
+            cp_max,
+        }
+    }
+
+    fn upstream_unit(ctx: &AeroContext) -> Vector3<f64> {
+        let alpha = ctx.alpha_deg.to_radians();
+        let beta = ctx.beta_deg.to_radians();
+        let ca = alpha.cos();
+        let sa = alpha.sin();
+        let cb = beta.cos();
+        let sb = beta.sin();
+        Vector3::new(ca * cb, sb, sa * cb).normalize()
+    }
+}
+
+impl AeroMethod for LocalInclinationPanels {
+    fn aero_force_moment_body(&self, ctx: &AeroContext) -> Result<AeroForceMomentBody, AeroError> {
+        validate_context(ctx)?;
+        if !(self.cp_max.is_finite() && self.cp_max >= 0.0) {
+            return Err(AeroError::InvalidParameter {
+                reason: "local_inclination_panels cp_max must be finite and non-negative",
+            });
+        }
+        let upstream = Self::upstream_unit(ctx);
+        let mut force = Vector3::zeros();
+        let mut moment = Vector3::zeros();
+        let pressure_scale = ctx.dynamic_pressure_pa;
+        for &[ia, ib, ic] in self.geometry.triangles() {
+            let a = self.geometry.vertices[ia as usize];
+            let b = self.geometry.vertices[ib as usize];
+            let c = self.geometry.vertices[ic as usize];
+            let area_vec = (b - a).cross(&(c - a));
+            let area = 0.5 * area_vec.norm();
+            let normal = area_vec.normalize();
+            let cos_theta = normal.dot(&upstream);
+            if self.shadowing && cos_theta <= 0.0 {
+                continue;
+            }
+            let cp = match self.method {
+                PanelMethod::ModifiedNewtonian => {
+                    if cos_theta <= 0.0 {
+                        0.0
+                    } else {
+                        self.cp_max * cos_theta * cos_theta
+                    }
+                }
+            };
+            let panel_force = -normal * (cp * pressure_scale * area);
+            let centroid = (a + b + c) / 3.0;
+            force += panel_force;
+            moment += centroid.cross(&panel_force);
+        }
+        if !(force.x.is_finite()
+            && force.y.is_finite()
+            && force.z.is_finite()
+            && moment.x.is_finite()
+            && moment.y.is_finite()
+            && moment.z.is_finite())
+        {
+            return Err(AeroError::NonFinite {
+                reason: "local-inclination force or moment is non-finite",
+            });
+        }
+        Ok(AeroForceMomentBody {
+            force_n_body: force,
+            moment_n_m_body: moment,
+        })
+    }
 }
 
 /// Modified-Newtonian aerodynamic method.
@@ -437,6 +631,62 @@ mod tests {
         let cp = TangentWedge::cp_wedge(8.0, theta);
         let expected = 2.0 * theta.sin() * theta.sin();
         assert_relative_eq!(cp, expected, max_relative = 1e-12);
+    }
+
+    fn square_plate_mesh() -> PanelMesh {
+        PanelMesh::new(
+            vec![
+                Vector3::new(1.0, -0.5, -0.5),
+                Vector3::new(1.0, 0.5, -0.5),
+                Vector3::new(1.0, 0.5, 0.5),
+                Vector3::new(1.0, -0.5, 0.5),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn local_inclination_square_plate_matches_newtonian_drag() {
+        let mesh = square_plate_mesh();
+        let panels = LocalInclinationPanels::modified_newtonian(mesh, 2.0);
+        let fmt = panels
+            .aero_force_moment_body(&ctx(12.0, 0.0, 100.0))
+            .unwrap();
+        assert_relative_eq!(fmt.force_n_body.x, -200.0, epsilon = 1e-12);
+        assert_relative_eq!(fmt.force_n_body.y, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(fmt.force_n_body.z, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(fmt.moment_n_m_body.norm(), 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn local_inclination_shadowing_skips_back_face() {
+        let mesh = PanelMesh::new(
+            vec![
+                Vector3::new(-1.0, -0.5, -0.5),
+                Vector3::new(-1.0, -0.5, 0.5),
+                Vector3::new(-1.0, 0.5, 0.5),
+                Vector3::new(-1.0, 0.5, -0.5),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        )
+        .unwrap();
+        let panels = LocalInclinationPanels::modified_newtonian(mesh, 2.0);
+        let fmt = panels
+            .aero_force_moment_body(&ctx(12.0, 0.0, 100.0))
+            .unwrap();
+        assert_relative_eq!(fmt.force_n_body.norm(), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(fmt.moment_n_m_body.norm(), 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn panel_mesh_rejects_degenerate_triangle() {
+        let err = PanelMesh::new(
+            vec![Vector3::zeros(), Vector3::x(), Vector3::new(2.0, 0.0, 0.0)],
+            vec![[0, 1, 2]],
+        )
+        .unwrap_err();
+        assert!(matches!(err, AeroError::MalformedDeck { .. }));
     }
 
     #[test]
