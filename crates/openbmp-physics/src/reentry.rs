@@ -107,6 +107,133 @@ pub const APOLLO4_ENTRY_INTERFACE: PublicEntryInterfaceBenchmark = PublicEntryIn
     ballistic_parameter_kg_m2: None,
 };
 
+/// Public entry-event time anchor from a mission report.
+///
+/// Times are ground-elapsed time seconds from launch. The event list
+/// is a sparse public benchmark timeline, not a complete trajectory
+/// history.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PublicEntryTimelineEvent {
+    /// Stable short identifier.
+    pub id: &'static str,
+    /// Published event label.
+    pub label: &'static str,
+    /// Ground-elapsed time from launch (s).
+    pub ground_elapsed_time_s: f64,
+    /// True when the report marks the row as Apollo Guidance Computer
+    /// time or approximate narrative timing rather than a direct
+    /// reconstructed-trajectory tabular sample.
+    pub guidance_or_approximate_time: bool,
+}
+
+impl PublicEntryTimelineEvent {
+    /// Validate a public entry-timeline event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when identifiers are
+    /// empty or time is not finite and positive.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        if self.id.trim().is_empty() || self.label.trim().is_empty() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry timeline id and label must be non-empty",
+            });
+        }
+        if !self.ground_elapsed_time_s.is_finite() || self.ground_elapsed_time_s <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry timeline time must be finite and positive",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Validate that a public entry-event timeline is well-formed and
+/// strictly time ordered.
+///
+/// # Errors
+///
+/// Returns [`PhysicsError::InvalidParameter`] when the timeline is
+/// empty, any event is malformed, or event times are not strictly
+/// increasing.
+pub fn validate_public_entry_timeline(
+    events: &[PublicEntryTimelineEvent],
+) -> Result<(), PhysicsError> {
+    if events.is_empty() {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "public entry timeline must not be empty",
+        });
+    }
+    let mut previous_time_s = f64::NEG_INFINITY;
+    for event in events {
+        event.validate()?;
+        if event.ground_elapsed_time_s <= previous_time_s {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "public entry timeline times must be strictly increasing",
+            });
+        }
+        previous_time_s = event.ground_elapsed_time_s;
+    }
+    Ok(())
+}
+
+/// Sparse Apollo 4 entry timeline from NASA TN D-5399 table I and
+/// entry-control narrative.
+///
+/// The report gives entry interface at `08:19:28.5` GET, first peak
+/// `g` at `t = 30045 s`, FINAL ENTRY near maximum skip altitude at
+/// `t = 30263 s`, and the parachute / landing times in table I.
+pub const APOLLO4_ENTRY_TIMELINE_EVENTS: &[PublicEntryTimelineEvent] = &[
+    PublicEntryTimelineEvent {
+        id: "entry-interface",
+        label: "Entry interface (400000 ft)",
+        ground_elapsed_time_s: 29_968.54,
+        guidance_or_approximate_time: false,
+    },
+    PublicEntryTimelineEvent {
+        id: "zero-point-zero-five-g-interface",
+        label: "0.05 g interface",
+        ground_elapsed_time_s: 29_999.0,
+        guidance_or_approximate_time: true,
+    },
+    PublicEntryTimelineEvent {
+        id: "first-peak-g",
+        label: "First peak g",
+        ground_elapsed_time_s: 30_045.0,
+        guidance_or_approximate_time: false,
+    },
+    PublicEntryTimelineEvent {
+        id: "final-entry",
+        label: "FINAL ENTRY near maximum skip altitude",
+        ground_elapsed_time_s: 30_263.0,
+        guidance_or_approximate_time: true,
+    },
+    PublicEntryTimelineEvent {
+        id: "second-peak-g",
+        label: "Second peak g",
+        ground_elapsed_time_s: 30_431.0,
+        guidance_or_approximate_time: false,
+    },
+    PublicEntryTimelineEvent {
+        id: "drogue-deployment",
+        label: "Drogue parachute deployment",
+        ground_elapsed_time_s: 30_678.6,
+        guidance_or_approximate_time: false,
+    },
+    PublicEntryTimelineEvent {
+        id: "main-deployment",
+        label: "Main parachute deployment",
+        ground_elapsed_time_s: 30_725.8,
+        guidance_or_approximate_time: false,
+    },
+    PublicEntryTimelineEvent {
+        id: "landing",
+        label: "Landing",
+        ground_elapsed_time_s: 31_029.2,
+        guidance_or_approximate_time: false,
+    },
+];
+
 /// Stardust SRC table-13 entry anchor from NASA/TP-2006-213486:
 /// ballistic parameter 68.2 kg/m², velocity 12.9 km/s, entry
 /// flight-path angle 8.2° below the horizon.
@@ -1018,6 +1145,51 @@ mod tests {
             68.2,
             max_relative = 1.0e-12
         );
+    }
+
+    #[test]
+    fn public_apollo_entry_timeline_validates_and_is_ordered() {
+        validate_public_entry_timeline(APOLLO4_ENTRY_TIMELINE_EVENTS).unwrap();
+        let entry = APOLLO4_ENTRY_TIMELINE_EVENTS[0];
+        let landing = APOLLO4_ENTRY_TIMELINE_EVENTS[APOLLO4_ENTRY_TIMELINE_EVENTS.len() - 1];
+        assert_eq!(entry.id, "entry-interface");
+        assert_eq!(landing.id, "landing");
+        assert_relative_eq!(
+            entry.ground_elapsed_time_s,
+            29_968.54,
+            max_relative = 1.0e-12
+        );
+        assert_relative_eq!(
+            landing.ground_elapsed_time_s,
+            31_029.2,
+            max_relative = 1.0e-12
+        );
+        assert_relative_eq!(
+            landing.ground_elapsed_time_s - entry.ground_elapsed_time_s,
+            1_060.66,
+            max_relative = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn public_apollo_entry_timeline_rejects_malformed_events() {
+        let bad_event = PublicEntryTimelineEvent {
+            id: "",
+            ..APOLLO4_ENTRY_TIMELINE_EVENTS[0]
+        };
+        assert!(matches!(
+            bad_event.validate(),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let unsorted = [
+            APOLLO4_ENTRY_TIMELINE_EVENTS[1],
+            APOLLO4_ENTRY_TIMELINE_EVENTS[0],
+        ];
+        assert!(matches!(
+            validate_public_entry_timeline(&unsorted),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     #[test]

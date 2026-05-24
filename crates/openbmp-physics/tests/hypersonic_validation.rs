@@ -31,9 +31,10 @@
 
 use approx::assert_relative_eq;
 use openbmp_physics::{
-    APOLLO_CM_TABLE13_HEATING, AllenEggers, EquilibriumAir, Nrlmsise00Inputs, Nrlmsise00Static,
-    STARDUST_SRC_TABLE13_HEATING, STARDUST_SRC_TABLE19_TRAJ_INPUT,
-    STARDUST_SRC_TABLE20_TRAJ_OUTPUT, TannehillEquilibriumAir,
+    APOLLO_CM_TABLE13_HEATING, APOLLO4_ENTRY_TIMELINE_EVENTS, AllenEggers, EquilibriumAir,
+    Nrlmsise00Inputs, Nrlmsise00Static, STARDUST_SRC_TABLE13_HEATING,
+    STARDUST_SRC_TABLE19_TRAJ_INPUT, STARDUST_SRC_TABLE20_TRAJ_OUTPUT, TannehillEquilibriumAir,
+    validate_public_entry_timeline,
 };
 
 #[test]
@@ -151,6 +152,25 @@ fn apollo_stardust_public_table13_benchmarks_are_pinned() {
     assert_relative_eq!(
         STARDUST_SRC_TABLE13_HEATING.total_heat_load_j_m2.unwrap(),
         2.373e8,
+        max_relative = 1.0e-12
+    );
+}
+
+#[test]
+fn apollo_public_entry_timeline_is_pinned() {
+    validate_public_entry_timeline(APOLLO4_ENTRY_TIMELINE_EVENTS).unwrap();
+    let entry = APOLLO4_ENTRY_TIMELINE_EVENTS[0];
+    let landing = APOLLO4_ENTRY_TIMELINE_EVENTS[APOLLO4_ENTRY_TIMELINE_EVENTS.len() - 1];
+    assert_eq!(entry.id, "entry-interface");
+    assert_eq!(landing.id, "landing");
+    assert_relative_eq!(
+        entry.ground_elapsed_time_s,
+        29_968.54,
+        max_relative = 1.0e-12
+    );
+    assert_relative_eq!(
+        landing.ground_elapsed_time_s - entry.ground_elapsed_time_s,
+        1_060.66,
         max_relative = 1.0e-12
     );
 }
