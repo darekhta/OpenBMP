@@ -64,7 +64,10 @@ pub use integrator::{
     AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Dopri853Adaptive,
     Dopri853FixedStep, Integrator, IntegratorDeterminism, Rk4FixedStep,
 };
-pub use kernel::{Phase1Kernel, RigidBodyKernel, RigidModels, SimulationConfig, SimulationKernel};
+pub use kernel::{
+    Phase1Kernel, ProfiledPointMassKernel, ProfiledRigidBodyKernel, RigidBodyKernel, RigidModels,
+    SimulationConfig, SimulationKernel, TrajectoryProfileConfig,
+};
 pub use models::{
     ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshotView,
     EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext, ForceModel,

@@ -9,9 +9,12 @@
 //!
 //! The profile is intentionally separate from the [`Integrator`]
 //! trait — the kernel still drives [`Integrator`] instances directly
-//! for the rigid-body trajectory, but a hypersonic scenario carries
-//! the profile through the telemetry header so a reproduced run
-//! pins the same `(method, dt | tolerance)` selection.
+//! for the rigid-body trajectory — but [`ProfiledIntegrator`] and
+//! [`crate::kernel::SimulationConfig::from_trajectory_profile`] wire
+//! the selected profile into the concrete kernel type. A hypersonic
+//! scenario also carries the profile through the telemetry header so
+//! a reproduced run pins the same `(method, dt | tolerance)`
+//! selection.
 //!
 //! Implicit source-term integration is intended for nonequilibrium
 //! thermochemistry (Park-2T sub-stepping inside a single rigid-body
@@ -289,6 +292,16 @@ pub enum SolverProfileError {
         /// The offending step size in seconds.
         dt_seconds: f64,
     },
+    /// The fixed-step solver profile and kernel macro-step disagree.
+    #[error(
+        "solver profile fixed-step dt {profile_dt_seconds} s does not match kernel dt {kernel_dt_seconds} s"
+    )]
+    FixedStepDtMismatch {
+        /// Fixed-step duration declared by the solver profile.
+        profile_dt_seconds: f64,
+        /// Macro-step duration supplied to the kernel.
+        kernel_dt_seconds: f64,
+    },
     /// Adaptive bounds were not consistent: `min_dt <= max_dt`, both
     /// strictly positive and finite, and tolerances strictly positive.
     #[error("solver profile adaptive bounds invalid: {reason}")]
@@ -469,6 +482,44 @@ impl SolverProfile {
                 got: self.role(),
             }),
         }
+    }
+
+    /// Build the profile-aware trajectory integrator for a kernel
+    /// config and verify fixed-step `dt` agreement.
+    ///
+    /// This is the sim-owned dispatch path used by
+    /// [`crate::kernel::SimulationConfig::from_trajectory_profile`].
+    /// Fixed-step profiles must match the kernel macro-step exactly
+    /// so a scenario cannot declare one deterministic step size in
+    /// the profile while the kernel advances another. Adaptive
+    /// profiles use `kernel_dt` as the macro-step interval and keep
+    /// their own min/max internal sub-step bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverProfileError`] if the profile is malformed,
+    /// names a reserved method, has the wrong role, or declares a
+    /// fixed-step duration that differs from `kernel_dt`.
+    pub fn build_kernel_trajectory_integrator(
+        self,
+        kernel_dt: Duration,
+    ) -> Result<ProfiledIntegrator, SolverProfileError> {
+        let kernel_dt_seconds = kernel_dt.as_seconds();
+        if !kernel_dt_seconds.is_finite() || kernel_dt_seconds <= 0.0 {
+            return Err(SolverProfileError::InvalidFixedStep {
+                dt_seconds: kernel_dt_seconds,
+            });
+        }
+        if let Self::FixedStepExplicit { dt, .. } = &self {
+            let profile_dt_seconds = dt.as_seconds();
+            if profile_dt_seconds.to_bits() != kernel_dt_seconds.to_bits() {
+                return Err(SolverProfileError::FixedStepDtMismatch {
+                    profile_dt_seconds,
+                    kernel_dt_seconds,
+                });
+            }
+        }
+        self.build_trajectory_integrator()
     }
 
     /// Extract source-term controls from an implicit profile.
@@ -887,6 +938,22 @@ mod tests {
             .build_trajectory_integrator()
             .unwrap();
         assert!(matches!(integrator, ProfiledIntegrator::Rk4(_)));
+    }
+
+    #[test]
+    fn kernel_trajectory_builder_requires_fixed_dt_match() {
+        let integrator = fixed(1e-3, ExplicitMethod::DormandPrince54)
+            .build_kernel_trajectory_integrator(Duration::from_seconds(1e-3))
+            .unwrap();
+        assert!(matches!(integrator, ProfiledIntegrator::Dopri54Fixed(_)));
+
+        let err = fixed(1e-3, ExplicitMethod::Rk4)
+            .build_kernel_trajectory_integrator(Duration::from_seconds(2e-3))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SolverProfileError::FixedStepDtMismatch { .. }
+        ));
     }
 
     #[test]

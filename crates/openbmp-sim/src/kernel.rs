@@ -40,6 +40,7 @@ use crate::models::{
     ForceContext, ForceModel, MassContext, MassModel, RecoverySnapshot, RecoverySnapshotView,
     TankSnapshot, TankSnapshotView,
 };
+use crate::solver_profile::{ProfiledIntegrator, SolverProfile, SolverProfileError};
 use crate::stop::StopCondition;
 
 /// Configuration for [`SimulationKernel`].
@@ -82,6 +83,72 @@ where
     /// RNG-driven models (sensors, fault models) to derive
     /// deterministic streams.
     pub scenario_seed: u64,
+}
+
+/// Named-field input for [`SimulationConfig::from_trajectory_profile`].
+#[derive(Debug)]
+pub struct TrajectoryProfileConfig<S, F, MM, E, SC>
+where
+    S: SimState,
+    F: ForceModel<S>,
+    E: EnvironmentModel,
+    SC: StopCondition<S>,
+{
+    /// Initial state.
+    pub initial_state: S,
+    /// Trajectory solver profile to dispatch.
+    pub solver_profile: SolverProfile,
+    /// Force model.
+    pub force_model: F,
+    /// Mass model.
+    pub mass_model: MM,
+    /// Environment model.
+    pub environment: E,
+    /// Stop condition.
+    pub stop_condition: SC,
+    /// Kernel macro-step.
+    pub dt: Duration,
+    /// Scenario seed.
+    pub scenario_seed: u64,
+}
+
+impl<S, F, MM, E, SC> SimulationConfig<S, ProfiledIntegrator, F, MM, E, SC>
+where
+    S: SimState,
+    F: ForceModel<S>,
+    E: EnvironmentModel,
+    SC: StopCondition<S>,
+{
+    /// Construct a kernel config from a trajectory [`SolverProfile`].
+    ///
+    /// This is the sim-owned dispatch path for Phase 6.0: callers
+    /// supply the physics models and stop condition exactly as before,
+    /// while `openbmp-sim` builds the concrete [`ProfiledIntegrator`]
+    /// consumed by [`SimulationKernel`]. Fixed-step profiles must
+    /// declare the same `dt` as the kernel macro-step.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverProfileError`] when the profile is malformed,
+    /// source-term-only, reserved, or declares a fixed-step `dt` that
+    /// disagrees with `dt`.
+    pub fn from_trajectory_profile(
+        config: TrajectoryProfileConfig<S, F, MM, E, SC>,
+    ) -> Result<Self, SolverProfileError> {
+        let integrator = config
+            .solver_profile
+            .build_kernel_trajectory_integrator(config.dt)?;
+        Ok(Self {
+            initial_state: config.initial_state,
+            integrator,
+            force_model: config.force_model,
+            mass_model: config.mass_model,
+            environment: config.environment,
+            stop_condition: config.stop_condition,
+            dt: config.dt,
+            scenario_seed: config.scenario_seed,
+        })
+    }
 }
 
 /// The lockstep simulation kernel.
@@ -190,6 +257,10 @@ enum MissionStateAuthority {
 /// Phase-1 type alias for the point-mass kernel shape used by the
 /// existing CLI runner and analytic-toy tests.
 pub type Phase1Kernel<I, F, MM, E, SC> = SimulationKernel<PointMassState, I, F, MM, E, SC>;
+
+/// Point-mass kernel with sim-owned [`SolverProfile`] dispatch.
+pub type ProfiledPointMassKernel<F, MM, E, SC> =
+    SimulationKernel<PointMassState, ProfiledIntegrator, F, MM, E, SC>;
 
 impl<I, F, MM, E, SC> SimulationKernel<PointMassState, I, F, MM, E, SC>
 where
@@ -966,6 +1037,16 @@ where
 pub type RigidBodyKernel<I, F, MOM, MM, E, SC> =
     SimulationKernel<openbmp_state::RigidBodyState, I, F, RigidModels<MOM, MM>, E, SC>;
 
+/// Rigid-body kernel with sim-owned [`SolverProfile`] dispatch.
+pub type ProfiledRigidBodyKernel<F, MOM, MM, E, SC> = SimulationKernel<
+    openbmp_state::RigidBodyState,
+    ProfiledIntegrator,
+    F,
+    RigidModels<MOM, MM>,
+    E,
+    SC,
+>;
+
 /// Quaternion-magnitude tolerance for post-step validation in the
 /// rigid-body kernel. Loose enough to accept the post-`project()`
 /// renormalisation residue, tight enough to flag a divergent state.
@@ -1487,6 +1568,74 @@ mod tests {
         };
         let result = SimulationKernel::new(config);
         assert!(matches!(result, Err(SimulationError::State(_))));
+    }
+
+    #[test]
+    fn profiled_config_wires_solver_profile_into_kernel() {
+        let dt = Duration::from_seconds(0.01);
+        let config = SimulationConfig::from_trajectory_profile(TrajectoryProfileConfig {
+            initial_state: PointMassState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Mass::new::<kilogram>(1.0),
+            ),
+            solver_profile: SolverProfile::FixedStepExplicit {
+                method: crate::solver_profile::ExplicitMethod::DormandPrince54,
+                dt,
+            },
+            force_model: ZeroForce,
+            mass_model: ConstantMass::new(1.0),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt,
+            scenario_seed: 0x6_000,
+        })
+        .expect("profiled config");
+        assert!(matches!(
+            config.integrator,
+            ProfiledIntegrator::Dopri54Fixed(_)
+        ));
+
+        let mut kernel = SimulationKernel::new(config).expect("profiled kernel");
+        kernel.step().expect("profiled step");
+        assert_eq!(kernel.current_step().value(), 1);
+    }
+
+    #[test]
+    fn profiled_config_rejects_source_term_only_profile() {
+        let err = SimulationConfig::<
+            PointMassState,
+            ProfiledIntegrator,
+            ZeroForce,
+            ConstantMass,
+            NullEnvironment,
+            AlwaysContinue,
+        >::from_trajectory_profile(TrajectoryProfileConfig {
+            initial_state: PointMassState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Mass::new::<kilogram>(1.0),
+            ),
+            solver_profile: SolverProfile::ImplicitSourceTerm {
+                method: crate::solver_profile::ImplicitMethod::ImplicitEuler,
+                substeps: 2,
+                nonlinear_tolerance: 1.0e-9,
+                nonlinear_max_iter: 8,
+            },
+            force_model: ZeroForce,
+            mass_model: ConstantMass::new(1.0),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(0.01),
+            scenario_seed: 0x6_001,
+        })
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            SolverProfileError::ProfileRoleMismatch { .. }
+        ));
     }
 
     #[test]
