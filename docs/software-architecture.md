@@ -602,8 +602,10 @@ cases, profile-gated Rosenbrock-Wanner or BDF variants as described in
 For hypersonic scenarios, the scenario selects a `SolverProfile` rather than
 only an integrator. The profile declares the trajectory integrator, dense-output
 event policy, stiff source-term solver, coupling policy, tolerances, fixed
-sub-step counts, and determinism class. RK4 remains the canonical deterministic
-baseline; it is not the upper bound of planned hypersonic fidelity.
+sub-step counts, and determinism class. The kernel consumes the sim-owned
+`ProfiledIntegrator` dispatcher so profile selection is not a CLI-only string
+switch. RK4 remains the canonical deterministic baseline; it is not the upper
+bound of planned hypersonic fidelity.
 
 ```rust
 pub trait Integrator {

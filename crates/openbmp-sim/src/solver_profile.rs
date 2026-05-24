@@ -24,7 +24,12 @@
 
 use openbmp_core::Duration;
 
-use crate::integrator::IntegratorDeterminism;
+use crate::error::{IntegratorError, ModelEvalError};
+use crate::integrator::{
+    AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Dopri853Adaptive,
+    Dopri853FixedStep, Integrator, IntegratorDeterminism, Rk4FixedStep,
+};
+use openbmp_models::SimState;
 
 /// Phase 6.0 solver profile declared by a hypersonic scenario.
 ///
@@ -80,6 +85,99 @@ pub enum SolverProfile {
         /// fails closed via [`ImplicitSolveError::DidNotConverge`].
         nonlinear_max_iter: usize,
     },
+}
+
+/// Source-term controls carried by a profile-aware integrator.
+///
+/// The kernel still advances trajectory state through the
+/// [`Integrator`] trait. Source-term consumers use this profile to
+/// drive their own chemistry / material sub-steppers during a
+/// trajectory step without rebuilding solver metadata at the runner
+/// layer.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct SourceTermProfile {
+    /// Chemistry substeps per trajectory step.
+    pub chemistry_substeps: usize,
+    /// Material-response substeps per trajectory step.
+    pub material_substeps: usize,
+    /// Nonlinear residual tolerance.
+    pub nonlinear_tolerance: f64,
+    /// Maximum nonlinear iterations.
+    pub nonlinear_max_iter: usize,
+}
+
+/// Source-term profile label carried through telemetry and debug
+/// output.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SourceTermCouplingProfile {
+    /// Source-term-only implicit sub-stepper.
+    ImplicitSourceTerm,
+    /// Partitioned hypersonic stack with lagged / sub-iterated
+    /// coupling edges.
+    PartitionedHypersonic,
+}
+
+impl SourceTermCouplingProfile {
+    /// Stable scenario / telemetry label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ImplicitSourceTerm => "implicit-source-term",
+            Self::PartitionedHypersonic => "partitioned-hypersonic",
+        }
+    }
+}
+
+/// Profile-aware integrator selector owned by `openbmp-sim`.
+///
+/// This enum is the concrete type that can be placed in
+/// [`crate::kernel::SimulationConfig::integrator`] when a scenario
+/// selects a [`SolverProfile`]. It delegates trajectory integration
+/// to the existing fixed/adaptive integrators and carries the
+/// source-term profile for stiff chemistry / material response.
+pub enum ProfiledIntegrator {
+    /// Default: classical RK4 fixed-step.
+    Rk4(Rk4FixedStep),
+    /// Dormand-Prince 5(4) fixed-step.
+    Dopri54Fixed(Dopri54FixedStep),
+    /// Dormand-Prince 5(4) adaptive.
+    Dopri54Adaptive(Box<Dopri54Adaptive>),
+    /// Dormand-Prince 8(5,3) fixed-step.
+    Dopri853Fixed(Dopri853FixedStep),
+    /// Dormand-Prince 8(5,3) adaptive.
+    Dopri853Adaptive(Box<Dopri853Adaptive>),
+    /// Source-term profile wrapped around a trajectory integrator.
+    ProfiledSourceTerm {
+        /// Profile label.
+        profile: SourceTermCouplingProfile,
+        /// Source-term controls.
+        source_terms: SourceTermProfile,
+        /// Trajectory integrator selected by the explicit/adaptive
+        /// profile.
+        trajectory: Box<ProfiledIntegrator>,
+    },
+}
+
+impl std::fmt::Debug for ProfiledIntegrator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rk4(_) => f.write_str("ProfiledIntegrator::Rk4"),
+            Self::Dopri54Fixed(_) => f.write_str("ProfiledIntegrator::Dopri54Fixed"),
+            Self::Dopri54Adaptive(_) => f.write_str("ProfiledIntegrator::Dopri54Adaptive"),
+            Self::Dopri853Fixed(_) => f.write_str("ProfiledIntegrator::Dopri853Fixed"),
+            Self::Dopri853Adaptive(_) => f.write_str("ProfiledIntegrator::Dopri853Adaptive"),
+            Self::ProfiledSourceTerm {
+                profile,
+                source_terms,
+                trajectory,
+            } => f
+                .debug_struct("ProfiledIntegrator::ProfiledSourceTerm")
+                .field("profile", &profile.label())
+                .field("source_terms", source_terms)
+                .field("trajectory", trajectory)
+                .finish(),
+        }
+    }
 }
 
 /// Explicit Runge-Kutta methods exposed by the profile.
@@ -209,6 +307,21 @@ pub enum SolverProfileError {
     /// was selected before its solver landed.
     #[error("solver profile method is reserved and not yet implemented")]
     ReservedMethod,
+    /// A profile was used in the wrong dispatch role.
+    #[error("solver profile role mismatch: expected {expected}, got {got}")]
+    ProfileRoleMismatch {
+        /// Expected profile role.
+        expected: &'static str,
+        /// Actual profile role.
+        got: &'static str,
+    },
+    /// An adaptive integrator rejected otherwise valid profile
+    /// controls.
+    #[error("adaptive integrator rejected solver profile: {reason}")]
+    AdaptiveIntegrator {
+        /// Short diagnostic from the underlying constructor.
+        reason: String,
+    },
 }
 
 /// Solver error returned by the implicit-Euler sub-stepper.
@@ -315,6 +428,79 @@ impl SolverProfile {
         }
     }
 
+    /// Return the profile role used by the dispatcher.
+    #[must_use]
+    pub const fn role(&self) -> &'static str {
+        match self {
+            Self::FixedStepExplicit { .. } | Self::AdaptiveExplicit { .. } => "trajectory",
+            Self::ImplicitSourceTerm { .. } => "source-term",
+        }
+    }
+
+    /// Build a trajectory integrator from an explicit/adaptive
+    /// profile.
+    ///
+    /// The returned enum implements [`Integrator`] and can be stored
+    /// directly in [`crate::kernel::SimulationConfig`]. The
+    /// profile's `dt` remains part of the declaration and telemetry
+    /// contract, while the kernel continues to own the actual
+    /// fixed-step duration through `SimulationConfig::dt`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverProfileError`] if the profile is invalid, names
+    /// a reserved method, or is an implicit source-term profile rather
+    /// than a trajectory profile.
+    pub fn build_trajectory_integrator(self) -> Result<ProfiledIntegrator, SolverProfileError> {
+        self.validate()?;
+        match self {
+            Self::FixedStepExplicit { method, dt: _ } => {
+                ProfiledIntegrator::from_fixed_method(method)
+            }
+            Self::AdaptiveExplicit {
+                method,
+                rtol,
+                atol,
+                min_dt,
+                max_dt,
+            } => ProfiledIntegrator::from_adaptive_method(method, rtol, atol, min_dt, max_dt),
+            Self::ImplicitSourceTerm { .. } => Err(SolverProfileError::ProfileRoleMismatch {
+                expected: "trajectory",
+                got: self.role(),
+            }),
+        }
+    }
+
+    /// Extract source-term controls from an implicit profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverProfileError`] if the profile is invalid or is
+    /// an explicit/adaptive trajectory profile.
+    pub fn source_term_profile(self) -> Result<SourceTermProfile, SolverProfileError> {
+        self.validate()?;
+        match self {
+            Self::ImplicitSourceTerm {
+                method: ImplicitMethod::ImplicitEuler,
+                substeps,
+                nonlinear_tolerance,
+                nonlinear_max_iter,
+            } => Ok(SourceTermProfile {
+                chemistry_substeps: substeps,
+                material_substeps: substeps,
+                nonlinear_tolerance,
+                nonlinear_max_iter,
+            }),
+            Self::ImplicitSourceTerm { method: _, .. } => Err(SolverProfileError::ReservedMethod),
+            Self::FixedStepExplicit { .. } | Self::AdaptiveExplicit { .. } => {
+                Err(SolverProfileError::ProfileRoleMismatch {
+                    expected: "source-term",
+                    got: self.role(),
+                })
+            }
+        }
+    }
+
     /// Determinism class implied by the profile's selected method.
     ///
     /// Fixed-step profiles inherit the integrator's bit-stable class.
@@ -329,6 +515,160 @@ impl SolverProfile {
                 IntegratorDeterminism::BitStable
             }
             Self::AdaptiveExplicit { .. } => IntegratorDeterminism::StateStable,
+        }
+    }
+}
+
+impl SourceTermProfile {
+    /// Construct an explicit source-term profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverProfileError::InvalidImplicitParameters`] if
+    /// any count is zero or tolerance is non-positive / non-finite.
+    pub fn new(
+        chemistry_substeps: usize,
+        material_substeps: usize,
+        nonlinear_tolerance: f64,
+        nonlinear_max_iter: usize,
+    ) -> Result<Self, SolverProfileError> {
+        if chemistry_substeps == 0 {
+            return Err(SolverProfileError::InvalidImplicitParameters {
+                reason: "chemistry substeps must be ≥ 1",
+            });
+        }
+        if material_substeps == 0 {
+            return Err(SolverProfileError::InvalidImplicitParameters {
+                reason: "material substeps must be ≥ 1",
+            });
+        }
+        if !nonlinear_tolerance.is_finite() || nonlinear_tolerance <= 0.0 {
+            return Err(SolverProfileError::InvalidImplicitParameters {
+                reason: "nonlinear tolerance must be strictly positive and finite",
+            });
+        }
+        if nonlinear_max_iter == 0 {
+            return Err(SolverProfileError::InvalidImplicitParameters {
+                reason: "nonlinear max_iter must be ≥ 1",
+            });
+        }
+        Ok(Self {
+            chemistry_substeps,
+            material_substeps,
+            nonlinear_tolerance,
+            nonlinear_max_iter,
+        })
+    }
+}
+
+impl ProfiledIntegrator {
+    /// Build a fixed-step trajectory integrator for a declared
+    /// explicit method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverProfileError::ReservedMethod`] for RKF78.
+    pub fn from_fixed_method(method: ExplicitMethod) -> Result<Self, SolverProfileError> {
+        match method {
+            ExplicitMethod::Rk4 => Ok(Self::Rk4(Rk4FixedStep)),
+            ExplicitMethod::DormandPrince54 => Ok(Self::Dopri54Fixed(Dopri54FixedStep)),
+            ExplicitMethod::DormandPrince853 => Ok(Self::Dopri853Fixed(Dopri853FixedStep)),
+            ExplicitMethod::RungeKuttaFehlberg78 => Err(SolverProfileError::ReservedMethod),
+        }
+    }
+
+    /// Build an adaptive trajectory integrator for a declared
+    /// embedded method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolverProfileError`] if the method is not an
+    /// implemented adaptive pair or if the underlying adaptive
+    /// integrator rejects the tolerances / bounds.
+    pub fn from_adaptive_method(
+        method: ExplicitMethod,
+        rtol: f64,
+        atol: f64,
+        min_dt: Duration,
+        max_dt: Duration,
+    ) -> Result<Self, SolverProfileError> {
+        match method {
+            ExplicitMethod::DormandPrince54 => {
+                let integrator =
+                    Dopri54Adaptive::new(atol, rtol, min_dt.as_seconds(), max_dt.as_seconds())
+                        .map_err(adaptive_error)?;
+                Ok(Self::Dopri54Adaptive(Box::new(integrator)))
+            }
+            ExplicitMethod::DormandPrince853 => {
+                let integrator =
+                    Dopri853Adaptive::new(atol, rtol, min_dt.as_seconds(), max_dt.as_seconds())
+                        .map_err(adaptive_error)?;
+                Ok(Self::Dopri853Adaptive(Box::new(integrator)))
+            }
+            ExplicitMethod::Rk4 => Err(SolverProfileError::InvalidAdaptiveBounds {
+                reason: "RK4 has no embedded error estimate; use a Dormand-Prince pair",
+            }),
+            ExplicitMethod::RungeKuttaFehlberg78 => Err(SolverProfileError::ReservedMethod),
+        }
+    }
+
+    /// Wrap a trajectory integrator with source-term controls.
+    ///
+    /// The wrapper still delegates trajectory integration to
+    /// `trajectory`; it only carries source-term controls for coupled
+    /// chemistry / material models that execute inside a kernel step.
+    #[must_use]
+    pub fn with_source_terms(
+        profile: SourceTermCouplingProfile,
+        trajectory: ProfiledIntegrator,
+        source_terms: SourceTermProfile,
+    ) -> Self {
+        Self::ProfiledSourceTerm {
+            profile,
+            source_terms,
+            trajectory: Box::new(trajectory),
+        }
+    }
+
+    /// Source-term controls when this is a source-profile wrapper.
+    #[must_use]
+    pub const fn source_terms(&self) -> Option<&SourceTermProfile> {
+        match self {
+            Self::ProfiledSourceTerm { source_terms, .. } => Some(source_terms),
+            _ => None,
+        }
+    }
+}
+
+fn adaptive_error(err: AdaptiveIntegratorError) -> SolverProfileError {
+    SolverProfileError::AdaptiveIntegrator {
+        reason: format!("{err:?}"),
+    }
+}
+
+impl<S: SimState> Integrator<S> for ProfiledIntegrator {
+    fn determinism(&self) -> IntegratorDeterminism {
+        match self {
+            Self::Rk4(i) => <Rk4FixedStep as Integrator<S>>::determinism(i),
+            Self::Dopri54Fixed(i) => <Dopri54FixedStep as Integrator<S>>::determinism(i),
+            Self::Dopri54Adaptive(i) => <Dopri54Adaptive as Integrator<S>>::determinism(i),
+            Self::Dopri853Fixed(i) => <Dopri853FixedStep as Integrator<S>>::determinism(i),
+            Self::Dopri853Adaptive(i) => <Dopri853Adaptive as Integrator<S>>::determinism(i),
+            Self::ProfiledSourceTerm { .. } => IntegratorDeterminism::StateStable,
+        }
+    }
+
+    fn advance<F>(&self, state: &S, derive_fn: F, dt: Duration) -> Result<S, IntegratorError>
+    where
+        F: Fn(&S, openbmp_core::SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        match self {
+            Self::Rk4(i) => i.advance(state, derive_fn, dt),
+            Self::Dopri54Fixed(i) => i.advance(state, derive_fn, dt),
+            Self::Dopri54Adaptive(i) => i.advance(state, derive_fn, dt),
+            Self::Dopri853Fixed(i) => i.advance(state, derive_fn, dt),
+            Self::Dopri853Adaptive(i) => i.advance(state, derive_fn, dt),
+            Self::ProfiledSourceTerm { trajectory, .. } => trajectory.advance(state, derive_fn, dt),
         }
     }
 }
@@ -539,6 +879,69 @@ mod tests {
     #[test]
     fn coupling_edge_default_is_lagged_one_step() {
         assert_eq!(CouplingEdge::default(), CouplingEdge::LaggedOneStep);
+    }
+
+    #[test]
+    fn fixed_solver_profile_builds_sim_owned_integrator() {
+        let integrator = fixed(1e-3, ExplicitMethod::Rk4)
+            .build_trajectory_integrator()
+            .unwrap();
+        assert!(matches!(integrator, ProfiledIntegrator::Rk4(_)));
+    }
+
+    #[test]
+    fn adaptive_solver_profile_builds_sim_owned_integrator() {
+        let profile = SolverProfile::AdaptiveExplicit {
+            method: ExplicitMethod::DormandPrince853,
+            rtol: 1e-8,
+            atol: 1e-10,
+            min_dt: Duration::from_seconds(1e-6),
+            max_dt: Duration::from_seconds(1e-2),
+        };
+        let integrator = profile.build_trajectory_integrator().unwrap();
+        assert!(matches!(
+            integrator,
+            ProfiledIntegrator::Dopri853Adaptive(_)
+        ));
+        assert_eq!(
+            <ProfiledIntegrator as Integrator<openbmp_state::PointMassState>>::determinism(
+                &integrator
+            ),
+            IntegratorDeterminism::StateStable
+        );
+    }
+
+    #[test]
+    fn source_term_profile_wrapper_carries_controls() {
+        let trajectory =
+            ProfiledIntegrator::from_fixed_method(ExplicitMethod::DormandPrince54).unwrap();
+        let source_terms = SourceTermProfile::new(4, 2, 1.0e-10, 12).unwrap();
+        let integrator = ProfiledIntegrator::with_source_terms(
+            SourceTermCouplingProfile::PartitionedHypersonic,
+            trajectory,
+            source_terms,
+        );
+        assert_eq!(integrator.source_terms(), Some(&source_terms));
+        assert_eq!(
+            <ProfiledIntegrator as Integrator<openbmp_state::PointMassState>>::determinism(
+                &integrator
+            ),
+            IntegratorDeterminism::StateStable
+        );
+    }
+
+    #[test]
+    fn trajectory_builder_rejects_source_term_profile_role() {
+        let profile = SolverProfile::ImplicitSourceTerm {
+            method: ImplicitMethod::ImplicitEuler,
+            substeps: 2,
+            nonlinear_tolerance: 1.0e-9,
+            nonlinear_max_iter: 8,
+        };
+        assert!(matches!(
+            profile.build_trajectory_integrator(),
+            Err(SolverProfileError::ProfileRoleMismatch { .. })
+        ));
     }
 
     /// Scalar test: integrate `dy/dt = -100 y` (stiff scalar decay)

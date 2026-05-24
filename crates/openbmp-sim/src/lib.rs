@@ -64,10 +64,6 @@ pub use integrator::{
     AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Dopri853Adaptive,
     Dopri853FixedStep, Integrator, IntegratorDeterminism, Rk4FixedStep,
 };
-pub use solver_profile::{
-    CouplingEdge, ExplicitMethod, ImplicitMethod, ImplicitSolveError, SolverProfile,
-    SolverProfileError, implicit_euler_step,
-};
 pub use kernel::{Phase1Kernel, RigidBodyKernel, RigidModels, SimulationConfig, SimulationKernel};
 pub use models::{
     ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshotView,
@@ -79,5 +75,10 @@ pub use models::{
 pub use openbmp_mission::MissionStateMachine;
 pub use openbmp_models::{
     Integratable, RigidBodyKinematicState, SimState, TranslationalState, VehicleState,
+};
+pub use solver_profile::{
+    CouplingEdge, ExplicitMethod, ImplicitMethod, ImplicitSolveError, ProfiledIntegrator,
+    SolverProfile, SolverProfileError, SourceTermCouplingProfile, SourceTermProfile,
+    implicit_euler_step,
 };
 pub use stop::{AlwaysContinue, EndTime, MaxSteps, StopCondition};

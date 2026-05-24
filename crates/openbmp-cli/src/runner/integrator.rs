@@ -1,14 +1,13 @@
 //! Phase-5.D.4 / 5.D.5 / 5.D.6 runner-side integrator dispatch.
 //!
 //! The kernel ([`openbmp_sim::SimulationKernel`]) is generic over the
-//! `Integrator<S>` type, which means the integrator selection
-//! propagates into the kernel's concrete type. To let the runner pick
-//! between [`Rk4FixedStep`], [`Dopri54FixedStep`],
-//! [`Dopri54Adaptive`], [`Dopri853FixedStep`], and
-//! [`Dopri853Adaptive`] based on the scenario's `[solver]` block
-//! without duplicating the entire run-loop body per integrator
-//! variant, we wrap the five concretes in a single enum that itself
-//! implements `Integrator<S>` and delegates to the active variant.
+//! `Integrator<S>` type, which means integrator selection propagates
+//! into the kernel's concrete type. The runner translates the
+//! scenario's `[solver]` block into [`openbmp_sim::ProfiledIntegrator`],
+//! the sim-owned enum that wraps [`openbmp_sim::Rk4FixedStep`],
+//! [`openbmp_sim::Dopri54FixedStep`], [`openbmp_sim::Dopri54Adaptive`],
+//! [`openbmp_sim::Dopri853FixedStep`], and
+//! [`openbmp_sim::Dopri853Adaptive`] without duplicating the run loop.
 //!
 //! The dispatch overhead is one match arm per [`Integrator::advance`]
 //! call. The compiler inlines the per-variant body, so the IEEE 754
@@ -16,18 +15,19 @@
 //!
 //! Wired triples (positive selection):
 //!
-//! - `(fixed-step-explicit, rk4, bit-stable)` → [`Rk4FixedStep`]
+//! - `(fixed-step-explicit, rk4, bit-stable)` →
+//!   [`openbmp_sim::Rk4FixedStep`]
 //!   (the no-`[solver]` default — preserves the byte-stable Phase-1
 //!   contract).
 //! - `(fixed-step-explicit, dopri54, bit-stable)` →
-//!   [`Dopri54FixedStep`] (§ 5.D.3).
+//!   [`openbmp_sim::Dopri54FixedStep`] (§ 5.D.3).
 //! - `(adaptive-explicit, dopri54, state-stable)` →
-//!   [`Dopri54Adaptive`] (§ 5.D.4 — point-mass runner; § 5.D.5
+//!   [`openbmp_sim::Dopri54Adaptive`] (§ 5.D.4 — point-mass runner; § 5.D.5
 //!   wires the rigid-body runner through the same enum dispatch).
 //! - `(fixed-step-explicit, dopri853, bit-stable)` →
-//!   [`Dopri853FixedStep`] (§ 5.D.6).
+//!   [`openbmp_sim::Dopri853FixedStep`] (§ 5.D.6).
 //! - `(adaptive-explicit, dopri853, state-stable)` →
-//!   [`Dopri853Adaptive`] (§ 5.D.6).
+//!   [`openbmp_sim::Dopri853Adaptive`] (§ 5.D.6).
 //!
 //! Still rejected as unwired: `rkf78`, Rosenbrock-Wanner, and BDF.
 //! Phase 6.0 source-term profiles now dispatch the declared
@@ -36,108 +36,12 @@
 //! state adapters.
 
 use openbmp_scenario::{ScenarioDocument, SolverConfig, SourceTermSolverConfig};
-use openbmp_sim::{
-    AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Dopri853Adaptive,
-    Dopri853FixedStep, Integrator, IntegratorDeterminism, IntegratorError, ModelEvalError,
-    Rk4FixedStep, SimState,
-};
+use openbmp_sim::{ExplicitMethod, SolverProfileError, SourceTermCouplingProfile};
 
 use crate::error::CliError;
 
-/// Runner-side integrator selector. Implements [`Integrator<S>`] by
-/// dispatching to the wrapped variant on every step.
-pub enum RuntimeIntegrator {
-    /// Default: classical RK4 fixed-step.
-    Rk4(Rk4FixedStep),
-    /// Dormand-Prince 5(4) fixed-step (5th-order solution).
-    Dopri54Fixed(Dopri54FixedStep),
-    /// Dormand-Prince 5(4) adaptive with PI step controller.
-    Dopri54Adaptive(Box<Dopri54Adaptive>),
-    /// Dormand-Prince 8(5,3) (DOP853) fixed-step (8th-order solution).
-    Dopri853Fixed(Dopri853FixedStep),
-    /// DOP853 adaptive with err5/err3 stabilised error norm and
-    /// I-controller.
-    Dopri853Adaptive(Box<Dopri853Adaptive>),
-    /// Phase-6 source-term profile: delegates trajectory integration
-    /// to the wrapped explicit/adaptive integrator, while recording
-    /// the source-term sub-step controls as part of the runtime
-    /// solver profile.
-    ProfiledSourceTerm {
-        /// Profile name (`implicit-source-term` or
-        /// `partitioned-hypersonic`).
-        profile: &'static str,
-        /// Source-term controls.
-        source_terms: SourceTermRuntimeProfile,
-        /// Trajectory integrator.
-        trajectory: Box<RuntimeIntegrator>,
-    },
-}
-
-/// Runtime source-term profile accepted by the Phase-6 dispatcher.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SourceTermRuntimeProfile {
-    /// Chemistry substeps per trajectory step.
-    pub chemistry_substeps: u32,
-    /// Material substeps per trajectory step.
-    pub material_substeps: u32,
-    /// Nonlinear solve tolerance.
-    pub nonlinear_tolerance: f64,
-    /// Nonlinear iteration cap.
-    pub nonlinear_max_iter: u32,
-}
-
-impl std::fmt::Debug for RuntimeIntegrator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Rk4(_) => f.write_str("RuntimeIntegrator::Rk4"),
-            Self::Dopri54Fixed(_) => f.write_str("RuntimeIntegrator::Dopri54Fixed"),
-            Self::Dopri54Adaptive(_) => f.write_str("RuntimeIntegrator::Dopri54Adaptive"),
-            Self::Dopri853Fixed(_) => f.write_str("RuntimeIntegrator::Dopri853Fixed"),
-            Self::Dopri853Adaptive(_) => f.write_str("RuntimeIntegrator::Dopri853Adaptive"),
-            Self::ProfiledSourceTerm {
-                profile,
-                source_terms: _,
-                trajectory,
-            } => f
-                .debug_struct("RuntimeIntegrator::ProfiledSourceTerm")
-                .field("profile", profile)
-                .field("trajectory", trajectory)
-                .finish(),
-        }
-    }
-}
-
-impl<S: SimState> Integrator<S> for RuntimeIntegrator {
-    fn determinism(&self) -> IntegratorDeterminism {
-        match self {
-            Self::Rk4(i) => <Rk4FixedStep as Integrator<S>>::determinism(i),
-            Self::Dopri54Fixed(i) => <Dopri54FixedStep as Integrator<S>>::determinism(i),
-            Self::Dopri54Adaptive(i) => <Dopri54Adaptive as Integrator<S>>::determinism(i),
-            Self::Dopri853Fixed(i) => <Dopri853FixedStep as Integrator<S>>::determinism(i),
-            Self::Dopri853Adaptive(i) => <Dopri853Adaptive as Integrator<S>>::determinism(i),
-            Self::ProfiledSourceTerm { .. } => IntegratorDeterminism::StateStable,
-        }
-    }
-
-    fn advance<F>(
-        &self,
-        state: &S,
-        derive_fn: F,
-        dt: openbmp_core::Duration,
-    ) -> Result<S, IntegratorError>
-    where
-        F: Fn(&S, openbmp_core::SimTime) -> Result<S::Derivative, ModelEvalError>,
-    {
-        match self {
-            Self::Rk4(i) => i.advance(state, derive_fn, dt),
-            Self::Dopri54Fixed(i) => i.advance(state, derive_fn, dt),
-            Self::Dopri54Adaptive(i) => i.advance(state, derive_fn, dt),
-            Self::Dopri853Fixed(i) => i.advance(state, derive_fn, dt),
-            Self::Dopri853Adaptive(i) => i.advance(state, derive_fn, dt),
-            Self::ProfiledSourceTerm { trajectory, .. } => trajectory.advance(state, derive_fn, dt),
-        }
-    }
-}
+pub use openbmp_sim::ProfiledIntegrator as RuntimeIntegrator;
+pub use openbmp_sim::SourceTermProfile as SourceTermRuntimeProfile;
 
 /// Build a [`RuntimeIntegrator`] from the scenario's `[solver]`
 /// block. When the block is absent, defaults to
@@ -168,19 +72,17 @@ fn build_runtime_integrator_from_solver(
     solver: Option<&SolverConfig>,
 ) -> Result<RuntimeIntegrator, CliError> {
     let Some(solver) = solver else {
-        return Ok(RuntimeIntegrator::Rk4(Rk4FixedStep));
+        return RuntimeIntegrator::from_fixed_method(ExplicitMethod::Rk4)
+            .map_err(|error| solver_profile_error(&error));
     };
     let profile = solver.profile.as_deref().unwrap_or("fixed-step-explicit");
     let method = solver.trajectory_method.as_deref().unwrap_or("rk4");
     let determinism = solver.determinism.as_deref().unwrap_or("bit-stable");
 
     match (profile, method, determinism) {
-        ("fixed-step-explicit", "rk4", "bit-stable") => Ok(RuntimeIntegrator::Rk4(Rk4FixedStep)),
-        ("fixed-step-explicit", "dopri54", "bit-stable") => {
-            Ok(RuntimeIntegrator::Dopri54Fixed(Dopri54FixedStep))
-        }
-        ("fixed-step-explicit", "dopri853", "bit-stable") => {
-            Ok(RuntimeIntegrator::Dopri853Fixed(Dopri853FixedStep))
+        ("fixed-step-explicit", "rk4" | "dopri54" | "dopri853", "bit-stable") => {
+            RuntimeIntegrator::from_fixed_method(explicit_method(method)?)
+                .map_err(|error| solver_profile_error(&error))
         }
         ("adaptive-explicit", "dopri54", "state-stable") => {
             let adaptive = solver.adaptive.as_ref().ok_or_else(|| {
@@ -191,16 +93,14 @@ fn build_runtime_integrator_from_solver(
                         .to_owned(),
                 }
             })?;
-            let integrator = Dopri54Adaptive::new(
-                adaptive.atol,
+            RuntimeIntegrator::from_adaptive_method(
+                ExplicitMethod::DormandPrince54,
                 adaptive.rtol,
-                adaptive.min_dt_s,
-                adaptive.max_dt_s,
+                adaptive.atol,
+                openbmp_core::Duration::from_seconds(adaptive.min_dt_s),
+                openbmp_core::Duration::from_seconds(adaptive.max_dt_s),
             )
-            .map_err(|e: AdaptiveIntegratorError| CliError::UnsupportedScenario {
-                what: format!("[solver.adaptive] params rejected by Dopri54Adaptive: {e:?}"),
-            })?;
-            Ok(RuntimeIntegrator::Dopri54Adaptive(Box::new(integrator)))
+            .map_err(|error| solver_profile_error(&error))
         }
         ("adaptive-explicit", "dopri853", "state-stable") => {
             let adaptive = solver.adaptive.as_ref().ok_or_else(|| {
@@ -211,16 +111,14 @@ fn build_runtime_integrator_from_solver(
                         .to_owned(),
                 }
             })?;
-            let integrator = Dopri853Adaptive::new(
-                adaptive.atol,
+            RuntimeIntegrator::from_adaptive_method(
+                ExplicitMethod::DormandPrince853,
                 adaptive.rtol,
-                adaptive.min_dt_s,
-                adaptive.max_dt_s,
+                adaptive.atol,
+                openbmp_core::Duration::from_seconds(adaptive.min_dt_s),
+                openbmp_core::Duration::from_seconds(adaptive.max_dt_s),
             )
-            .map_err(|e: AdaptiveIntegratorError| CliError::UnsupportedScenario {
-                what: format!("[solver.adaptive] params rejected by Dopri853Adaptive: {e:?}"),
-            })?;
-            Ok(RuntimeIntegrator::Dopri853Adaptive(Box::new(integrator)))
+            .map_err(|error| solver_profile_error(&error))
         }
         ("fixed-step-explicit", "rkf78", _) => Err(CliError::UnsupportedScenario {
             what: "solver.trajectory_method = \"rkf78\" parses but is not wired in the runner; \
@@ -238,16 +136,16 @@ fn build_runtime_integrator_from_solver(
         ("implicit-source-term" | "partitioned-hypersonic", "rk4" | "dopri54" | "dopri853", "state-stable") => {
             let source_terms = source_term_runtime_profile(solver.source_terms.as_ref())?;
             let trajectory = build_source_profile_trajectory(method)?;
-            let profile = if profile == "implicit-source-term" {
-                "implicit-source-term"
+            let coupling = if profile == "implicit-source-term" {
+                SourceTermCouplingProfile::ImplicitSourceTerm
             } else {
-                "partitioned-hypersonic"
+                SourceTermCouplingProfile::PartitionedHypersonic
             };
-            Ok(RuntimeIntegrator::ProfiledSourceTerm {
-                profile,
+            Ok(RuntimeIntegrator::with_source_terms(
+                coupling,
+                trajectory,
                 source_terms,
-                trajectory: Box::new(trajectory),
-            })
+            ))
         }
         ("implicit-source-term" | "partitioned-hypersonic", "rkf78", _) => Err(CliError::UnsupportedScenario {
             what: "source-term solver profiles do not support solver.trajectory_method = \"rkf78\"; \
@@ -264,13 +162,25 @@ fn build_runtime_integrator_from_solver(
 }
 
 fn build_source_profile_trajectory(method: &str) -> Result<RuntimeIntegrator, CliError> {
+    RuntimeIntegrator::from_fixed_method(explicit_method(method)?)
+        .map_err(|error| solver_profile_error(&error))
+}
+
+fn explicit_method(method: &str) -> Result<ExplicitMethod, CliError> {
     match method {
-        "rk4" => Ok(RuntimeIntegrator::Rk4(Rk4FixedStep)),
-        "dopri54" => Ok(RuntimeIntegrator::Dopri54Fixed(Dopri54FixedStep)),
-        "dopri853" => Ok(RuntimeIntegrator::Dopri853Fixed(Dopri853FixedStep)),
+        "rk4" => Ok(ExplicitMethod::Rk4),
+        "dopri54" => Ok(ExplicitMethod::DormandPrince54),
+        "dopri853" => Ok(ExplicitMethod::DormandPrince853),
+        "rkf78" => Ok(ExplicitMethod::RungeKuttaFehlberg78),
         _ => Err(CliError::UnsupportedScenario {
-            what: format!("source-term profile trajectory method {method:?} is not wired"),
+            what: format!("solver.trajectory_method = {method:?} is not supported"),
         }),
+    }
+}
+
+fn solver_profile_error(error: &SolverProfileError) -> CliError {
+    CliError::UnsupportedScenario {
+        what: format!("solver profile rejected by openbmp-sim dispatcher: {error}"),
     }
 }
 
@@ -298,18 +208,35 @@ fn source_term_runtime_profile(
             ),
         });
     }
-    Ok(SourceTermRuntimeProfile {
-        chemistry_substeps: source_terms.chemistry_substeps,
-        material_substeps: source_terms.material_substeps,
-        nonlinear_tolerance: source_terms.nonlinear_tolerance,
-        nonlinear_max_iter: source_terms.nonlinear_max_iter,
-    })
+    let chemistry_substeps = usize::try_from(source_terms.chemistry_substeps).map_err(|_| {
+        CliError::UnsupportedScenario {
+            what: "solver.source_terms.chemistry_substeps does not fit usize".to_owned(),
+        }
+    })?;
+    let material_substeps = usize::try_from(source_terms.material_substeps).map_err(|_| {
+        CliError::UnsupportedScenario {
+            what: "solver.source_terms.material_substeps does not fit usize".to_owned(),
+        }
+    })?;
+    let nonlinear_max_iter = usize::try_from(source_terms.nonlinear_max_iter).map_err(|_| {
+        CliError::UnsupportedScenario {
+            what: "solver.source_terms.nonlinear_max_iter does not fit usize".to_owned(),
+        }
+    })?;
+    SourceTermRuntimeProfile::new(
+        chemistry_substeps,
+        material_substeps,
+        source_terms.nonlinear_tolerance,
+        nonlinear_max_iter,
+    )
+    .map_err(|error| solver_profile_error(&error))
 }
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use openbmp_scenario::{AdaptiveSolverConfig, SolverConfig};
+    use openbmp_sim::{Integrator, IntegratorDeterminism};
 
     use super::*;
 
@@ -488,7 +415,7 @@ mod tests {
         else {
             panic!("expected ProfiledSourceTerm");
         };
-        assert_eq!(profile, "implicit-source-term");
+        assert_eq!(profile, SourceTermCouplingProfile::ImplicitSourceTerm);
         assert_eq!(source_terms.chemistry_substeps, 4);
         assert!(matches!(*trajectory, RuntimeIntegrator::Rk4(_)));
     }
@@ -509,7 +436,7 @@ mod tests {
         else {
             panic!("expected ProfiledSourceTerm");
         };
-        assert_eq!(profile, "partitioned-hypersonic");
+        assert_eq!(profile, SourceTermCouplingProfile::PartitionedHypersonic);
         assert!(matches!(*trajectory, RuntimeIntegrator::Dopri853Fixed(_)));
     }
 
