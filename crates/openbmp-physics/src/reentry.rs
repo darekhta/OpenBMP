@@ -15,6 +15,9 @@
 //!   Earth lifting-entry case.
 
 use crate::error::PhysicsError;
+use crate::external_reference::{
+    EnvelopeBounds, ExternalReferencePackage, ProvenanceBlock, ReferencePackageKind,
+};
 use crate::frames::WGS84_MU_M3_S2;
 
 /// Standard gravitational acceleration at Earth surface (m/s²).
@@ -22,6 +25,125 @@ const G0_M_S2: f64 = 9.806_65;
 
 /// Earth radius used by the toy propagators (m).
 const R_EARTH_M: f64 = 6.371_0e6;
+
+/// Canonical payload for the public Apollo / Stardust scalar
+/// benchmark anchors in this module.
+///
+/// This is not a file-format promise. It is a deterministic, line-
+/// ordered digest surface so the public constants carry the same
+/// provenance discipline as external reference packages.
+pub const PUBLIC_ENTRY_BENCHMARK_PAYLOAD_V1: &str = "\
+openbmp.public-entry-benchmarks.v1
+source.apollo4_entry_interface=https://www.nasa.gov/mission/apollo-4/
+source.apollo4_entry_timeline=https://ntrs.nasa.gov/citations/19690029435
+source.stardust_table13_19_20=https://ntrs.nasa.gov/citations/20060053240
+apollo4.entry_interface.altitude_m=122000.0
+apollo4.entry_interface.velocity_m_s=11140.0
+apollo4.entry_interface.flight_path_angle_rad=0.1235169511636387
+apollo4.timeline.entry_interface.get_s=29968.54
+apollo4.timeline.zero_point_zero_five_g.get_s=29999.0
+apollo4.timeline.first_peak_g.get_s=30045.0
+apollo4.timeline.final_entry.get_s=30263.0
+apollo4.timeline.second_peak_g.get_s=30431.0
+apollo4.timeline.drogue_deployment.get_s=30678.6
+apollo4.timeline.main_deployment.get_s=30725.8
+apollo4.timeline.landing.get_s=31029.2
+apollo_cm.table13.ballistic_parameter_kg_m2=500.0
+apollo_cm.table13.entry_velocity_m_s=11000.0
+apollo_cm.table13.peak_total_heat_flux_w_m2=5100000.0
+apollo_cm.table13.peak_radiative_fraction=0.34
+stardust.table13.ballistic_parameter_kg_m2=68.2
+stardust.table13.entry_altitude_m=135000.0
+stardust.table13.entry_velocity_m_s=12900.0
+stardust.table13.flight_path_angle_rad=0.143116998663535
+stardust.table13.peak_total_heat_flux_w_m2=8560000.0
+stardust.table13.total_heat_load_j_m2=237300000.0
+stardust.table13.heat_load_radiative_fraction=0.09
+stardust.table19.mass_kg=41.5
+stardust.table19.cone_half_angle_rad=1.0471975511965979
+stardust.table19.nose_radius_m=0.229
+stardust.table19.base_radius_m=0.444
+stardust.table19.corner_radius_m=0.020
+stardust.table19.surface_area_m2=0.619
+stardust.table19.ballistic_parameter_kg_m2=52.6
+stardust.table19.entry_altitude_m=135000.0
+stardust.table19.angle_of_attack_rad=0.0
+stardust.table19.inertial_velocity_m_s=12800.0
+stardust.table19.relative_velocity_m_s=12456.0
+stardust.table19.inertial_entry_angle_rad=0.13962634015954636
+stardust.table19.relative_entry_angle_rad=0.14709684178426105
+stardust.table20.peak_convective_heat_flux.value_w_m2=6054000.0
+stardust.table20.peak_convective_heat_flux.time_s=43.4
+stardust.table20.peak_convective_heat_flux.altitude_m=57800.0
+stardust.table20.peak_convective_heat_flux.velocity_m_s=9075.0
+stardust.table20.peak_radiative_heat_flux.value_w_m2=1029000.0
+stardust.table20.peak_radiative_heat_flux.time_s=39.2
+stardust.table20.peak_radiative_heat_flux.altitude_m=62100.0
+stardust.table20.peak_radiative_heat_flux.velocity_m_s=10728.0
+stardust.table20.peak_total_heat_flux.value_w_m2=7051000.0
+stardust.table20.peak_total_heat_flux.time_s=42.9
+stardust.table20.peak_total_heat_flux.altitude_m=58300.0
+stardust.table20.peak_total_heat_flux.velocity_m_s=9277.0
+stardust.table20.peak_stagnation_pressure.value_pa=33300.0
+stardust.table20.peak_stagnation_pressure.time_s=48.6
+stardust.table20.peak_stagnation_pressure.altitude_m=52800.0
+stardust.table20.peak_stagnation_pressure.velocity_m_s=6929.0
+stardust.table20.peak_dynamic_pressure.value_pa=16600.0
+stardust.table20.peak_dynamic_pressure.time_s=50.2
+stardust.table20.peak_dynamic_pressure.altitude_m=51500.0
+stardust.table20.peak_dynamic_pressure.velocity_m_s=6203.0
+stardust.table20.peak_deceleration.value_m_s2=315.7
+stardust.table20.peak_deceleration.time_s=45.6
+stardust.table20.peak_deceleration.altitude_m=55600.0
+stardust.table20.peak_deceleration.velocity_m_s=8181.0
+stardust.table20.convective_heat_load_j_m2=182900000.0
+stardust.table20.radiative_heat_load_j_m2=12700000.0
+stardust.table20.total_heat_load_j_m2=195600000.0
+";
+
+/// SHA-256 pin of [`PUBLIC_ENTRY_BENCHMARK_PAYLOAD_V1`].
+pub const PUBLIC_ENTRY_BENCHMARK_PAYLOAD_SHA256_HEX: &str =
+    "49059026ec6718d7f50ea6b1ca10c5562fafb802196f021f83b01cfba75ef0c3";
+
+/// Build an external-reference package descriptor for the public
+/// Apollo / Stardust scalar benchmark payload.
+#[must_use]
+pub fn public_entry_benchmark_reference_package() -> ExternalReferencePackage {
+    ExternalReferencePackage {
+        kind: ReferencePackageKind::TrajectoryReference,
+        envelope: EnvelopeBounds {
+            mach_lo: 0.0,
+            mach_hi: 45.0,
+            altitude_lo_m: 0.0,
+            altitude_hi_m: 135_000.0,
+            alpha_lo_rad: 0.0,
+            alpha_hi_rad: 156.84_f64.to_radians(),
+        },
+        provenance: ProvenanceBlock {
+            solver_name: "public NASA entry benchmark scalars".to_owned(),
+            solver_version: "openbmp-public-entry-benchmarks-v1".to_owned(),
+            license: "public NASA technical reports / public NASA mission page".to_owned(),
+            retrieval_path: "NASA Apollo 4 mission page; NASA TN D-5399; NASA/TP-2006-213486"
+                .to_owned(),
+            governing_equations: "published mission/report scalar anchors".to_owned(),
+            content_hash_sha256_hex: PUBLIC_ENTRY_BENCHMARK_PAYLOAD_SHA256_HEX.to_owned(),
+        },
+    }
+}
+
+/// Validate the public benchmark reference package and a caller-
+/// supplied digest of [`PUBLIC_ENTRY_BENCHMARK_PAYLOAD_V1`].
+///
+/// # Errors
+///
+/// Returns [`PhysicsError::InvalidParameter`] when the provenance
+/// metadata is malformed or the supplied digest does not match the
+/// pinned canonical payload hash.
+pub fn validate_public_entry_benchmark_reference_package(
+    payload_sha256_hex: &str,
+) -> Result<(), PhysicsError> {
+    public_entry_benchmark_reference_package().validate_payload_hash_hex(payload_sha256_hex)
+}
 
 /// Public Earth-entry interface anchor.
 ///
@@ -1188,6 +1310,27 @@ mod tests {
         ];
         assert!(matches!(
             validate_public_entry_timeline(&unsorted),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn public_entry_benchmark_reference_package_validates_hash_pin() {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(PUBLIC_ENTRY_BENCHMARK_PAYLOAD_V1.as_bytes());
+        let digest = hasher.finalize();
+        let mut actual = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            use std::fmt::Write as _;
+            write!(&mut actual, "{byte:02x}").unwrap();
+        }
+        assert_eq!(actual, PUBLIC_ENTRY_BENCHMARK_PAYLOAD_SHA256_HEX);
+
+        validate_public_entry_benchmark_reference_package(&actual).unwrap();
+        assert!(matches!(
+            validate_public_entry_benchmark_reference_package(&"0".repeat(64)),
             Err(PhysicsError::InvalidParameter { .. })
         ));
     }

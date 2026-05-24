@@ -98,11 +98,13 @@ pub use realgas::{
 };
 pub use reentry::{
     APOLLO_CM_TABLE13_HEATING, APOLLO4_ENTRY_INTERFACE, APOLLO4_ENTRY_TIMELINE_EVENTS, AllenEggers,
-    EntryInterfaceBuilder, PublicEntryHeatingBenchmark, PublicEntryInterfaceBenchmark,
+    EntryInterfaceBuilder, PUBLIC_ENTRY_BENCHMARK_PAYLOAD_SHA256_HEX,
+    PUBLIC_ENTRY_BENCHMARK_PAYLOAD_V1, PublicEntryHeatingBenchmark, PublicEntryInterfaceBenchmark,
     PublicEntryTimelineEvent, PublicStardustPeakBenchmark, PublicStardustTrajectoryInputBenchmark,
     PublicStardustTrajectoryOutputBenchmark, STARDUST_SRC_TABLE13_ENTRY_INTERFACE,
     STARDUST_SRC_TABLE13_HEATING, STARDUST_SRC_TABLE19_TRAJ_INPUT,
     STARDUST_SRC_TABLE20_TRAJ_OUTPUT, Vinh, VinhState, VinhStateDerivative,
+    public_entry_benchmark_reference_package, validate_public_entry_benchmark_reference_package,
     validate_public_entry_timeline,
 };
 pub use statistics::{chi_square_inverse_cdf_wilson_hilferty, inverse_standard_normal_cdf};

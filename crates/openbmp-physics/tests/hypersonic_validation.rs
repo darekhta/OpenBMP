@@ -32,8 +32,10 @@
 use approx::assert_relative_eq;
 use openbmp_physics::{
     APOLLO_CM_TABLE13_HEATING, APOLLO4_ENTRY_TIMELINE_EVENTS, AllenEggers, EquilibriumAir,
-    Nrlmsise00Inputs, Nrlmsise00Static, STARDUST_SRC_TABLE13_HEATING,
+    Nrlmsise00Inputs, Nrlmsise00Static, PUBLIC_ENTRY_BENCHMARK_PAYLOAD_SHA256_HEX,
+    PUBLIC_ENTRY_BENCHMARK_PAYLOAD_V1, STARDUST_SRC_TABLE13_HEATING,
     STARDUST_SRC_TABLE19_TRAJ_INPUT, STARDUST_SRC_TABLE20_TRAJ_OUTPUT, TannehillEquilibriumAir,
+    public_entry_benchmark_reference_package, validate_public_entry_benchmark_reference_package,
     validate_public_entry_timeline,
 };
 
@@ -201,6 +203,25 @@ fn stardust_public_traj_table19_20_benchmarks_are_pinned() {
         0.0,
         epsilon = 1.0e-12
     );
+}
+
+#[test]
+fn public_entry_benchmark_payload_has_provenance_hash_pin() {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(PUBLIC_ENTRY_BENCHMARK_PAYLOAD_V1.as_bytes());
+    let digest = hasher.finalize();
+    let mut actual = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut actual, "{byte:02x}").unwrap();
+    }
+    assert_eq!(actual, PUBLIC_ENTRY_BENCHMARK_PAYLOAD_SHA256_HEX);
+    public_entry_benchmark_reference_package()
+        .validate()
+        .unwrap();
+    validate_public_entry_benchmark_reference_package(&actual).unwrap();
 }
 
 #[test]
