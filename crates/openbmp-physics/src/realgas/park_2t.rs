@@ -28,12 +28,16 @@
 use super::AirComposition;
 use crate::error::PhysicsError;
 
+const CM3_PER_M3: f64 = 1.0e6;
+
 /// Arrhenius forward-rate coefficient as published for air chemistry.
 ///
 /// The public review table reports coefficients in its own CGS mole
-/// units. OpenBMP stores those values verbatim and exposes only an
-/// `as_published` evaluator; no SI conversion is attempted here
-/// because the full source-term model is still reserved.
+/// units. OpenBMP stores those values verbatim, exposes an
+/// `as_published` evaluator, and provides a narrow SI conversion for
+/// the table's stated `cm^3 mole^-1 s^-1` forward-rate units. The full
+/// source-term model is still reserved because backward rates and
+/// relaxation constants are not pinned.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ArrheniusForwardCoefficient {
     /// Pre-exponential factor `A_f` as published.
@@ -61,6 +65,17 @@ impl ArrheniusForwardCoefficient {
         Ok(self.a_as_published
             * temperature_k.powf(self.b)
             * (-self.activation_temperature_k / temperature_k).exp())
+    }
+
+    /// Evaluate the forward rate in SI units (`m^3 mol^-1 s^-1`) for
+    /// the published neutral-air table rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `temperature_k`
+    /// is not positive and finite.
+    pub fn rate_m3_per_mol_s(self, temperature_k: f64) -> Result<f64, PhysicsError> {
+        Ok(self.rate_as_published(temperature_k)? / CM3_PER_M3)
     }
 }
 
@@ -800,6 +815,15 @@ mod tests {
             * t_k.powf(coefficient.b)
             * (-coefficient.activation_temperature_k / t_k).exp();
         assert!((rate - expected).abs() / expected < 1.0e-12);
+    }
+
+    #[test]
+    fn park_forward_rate_si_conversion_uses_table_units() {
+        let coefficient = PARK93_FORWARD_REACTIONS_AS_PUBLISHED[16].coefficient;
+        let t_k = 12_000.0;
+        let published = coefficient.rate_as_published(t_k).unwrap();
+        let si = coefficient.rate_m3_per_mol_s(t_k).unwrap();
+        assert_eq!(si.to_bits(), (published / CM3_PER_M3).to_bits());
     }
 
     #[test]
