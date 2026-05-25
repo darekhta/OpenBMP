@@ -302,6 +302,8 @@ fn mission_actions(
             ScenarioActionConfig::EffectorOverride { .. }
             | ScenarioActionConfig::EngineCommand { .. }
             | ScenarioActionConfig::Separation
+            | ScenarioActionConfig::JettisonStage { .. }
+            | ScenarioActionConfig::SelectGuidanceProfile { .. }
             | ScenarioActionConfig::DeployRecovery { .. } => Err(RunnerError::Scenario(
                 openbmp_scenario::ScenarioError::MissionGraph {
                     reason: format!("{field} may contain only HAL-portable mission actions"),
@@ -403,6 +405,14 @@ fn build_event_binding(
             },
             once: config.once,
         }),
+        ScenarioActionConfig::JettisonStage { body } => RuntimeEventBinding::Script(EventBinding {
+            id,
+            trigger,
+            action: ScenarioScriptAction::JettisonStage {
+                body: openbmp_core::BodyId::from_path(&format!("vehicle.assembly.bodies.{body}")),
+            },
+            once: config.once,
+        }),
         ScenarioActionConfig::RaiseHealthAlarm { region, alarm } => {
             RuntimeEventBinding::Mission(EventBinding {
                 id,
@@ -424,6 +434,18 @@ fn build_event_binding(
                 once: config.once,
             })
         }
+        // Deferred flight-profile action. Rejected at scenario
+        // `validate()`; the runner never sees it, but the match is
+        // kept exhaustive and fails closed defensively. See
+        // docs/ascent-guidance.md.
+        ScenarioActionConfig::SelectGuidanceProfile { .. } => {
+            return Err(RunnerError::Scenario(
+                openbmp_scenario::ScenarioError::UnsupportedActionKind {
+                    kind: "select_guidance_profile".to_owned(),
+                    missing_capability: "runtime guidance-profile switching".to_owned(),
+                },
+            ));
+        }
     })
 }
 
@@ -435,9 +457,7 @@ fn build_event_binding(
 fn resolve_region_id(id: Option<&str>) -> RegionId {
     match id {
         Some(id) if id.starts_with("mission.regions.") => RegionId::from_path(id),
-        Some(id) if !id.is_empty() => {
-            RegionId::from_path(&format!("mission.regions.{id}"))
-        }
+        Some(id) if !id.is_empty() => RegionId::from_path(&format!("mission.regions.{id}")),
         _ => openbmp_mission::CanonicalRegions::health(),
     }
 }
@@ -789,5 +809,37 @@ mod tests {
             marker_tags(&mission),
             vec!["entry_marker", "event_marker", "exit_marker"]
         );
+    }
+
+    #[test]
+    fn jettison_stage_event_builds_script_action() -> Result<(), RunnerError> {
+        let event = EventConfig {
+            id: "stage_separation".to_owned(),
+            trigger: EventTriggerConfig::AtTime { time_s: 1.0 },
+            action: ScenarioActionConfig::JettisonStage {
+                body: "lower".to_owned(),
+            },
+            once: true,
+        };
+        let phase_lookup = BTreeMap::new();
+
+        let binding = build_event_binding(&event, &phase_lookup)?;
+        let binding = match binding {
+            RuntimeEventBinding::Script(binding) => binding,
+            RuntimeEventBinding::Mission(_) => {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: "jettison_stage must build a script binding".to_owned(),
+                });
+            }
+        };
+
+        assert_eq!(binding.id, event_id("stage_separation"));
+        assert_eq!(
+            binding.action,
+            ScenarioScriptAction::JettisonStage {
+                body: openbmp_core::BodyId::from_path("vehicle.assembly.bodies.lower")
+            }
+        );
+        Ok(())
     }
 }

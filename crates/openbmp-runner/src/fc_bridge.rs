@@ -861,8 +861,10 @@ fn parse_star_tracker_budget(text: &str) -> Result<StarTrackerNoiseBudget, Runne
         .ok_or_else(|| RunnerError::UnsupportedScenario {
             what: "star-tracker budget missing `sigma_per_axis_arcsec`".to_owned(),
         })?;
-    StarTrackerNoiseBudget::from_arcsec(sigma_arcsec).map_err(|err| RunnerError::UnsupportedScenario {
-        what: format!("star-tracker budget rejected: {err}"),
+    StarTrackerNoiseBudget::from_arcsec(sigma_arcsec).map_err(|err| {
+        RunnerError::UnsupportedScenario {
+            what: format!("star-tracker budget rejected: {err}"),
+        }
     })
 }
 
@@ -870,12 +872,11 @@ fn parse_baro_budget(text: &str, dt_s: f64) -> Result<(f64, f64, f64), RunnerErr
     let value = parse_toml_budget(text)?;
     let table = budget_table(&value)?;
     let get = |key: &str| -> Result<f64, RunnerError> {
-        table
-            .get(key)
-            .and_then(toml_number_as_f64)
-            .ok_or_else(|| RunnerError::UnsupportedScenario {
+        table.get(key).and_then(toml_number_as_f64).ok_or_else(|| {
+            RunnerError::UnsupportedScenario {
                 what: format!("barometer budget missing `{key}`"),
-            })
+            }
+        })
     };
     let measurement_stddev_pa = get("measurement_stddev_pa")?;
     let bias_theta = get("bias_ou_theta_per_s")?;

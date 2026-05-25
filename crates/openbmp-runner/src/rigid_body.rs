@@ -36,8 +36,8 @@ use std::collections::BTreeMap;
 use nalgebra::Vector3;
 use openbmp_aero::{AeroDeck, AeroError};
 use openbmp_core::{
-    AngularVelocity3, Body, ChannelId, Duration, ModelId, Position3, Quaternion, RecoveryId,
-    SimTime, ValidationStatus, Velocity3,
+    AngularVelocity3, Body, BodyId, ChannelId, Duration, ModelId, Position3, Quaternion,
+    RecoveryId, SimTime, ValidationStatus, Velocity3,
 };
 use openbmp_physics::{
     AtmosphereModel, ConstantGravity, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
@@ -45,26 +45,26 @@ use openbmp_physics::{
 use openbmp_propulsion::{Motor, MotorError, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
-    ConstantMassRigid, EndTime, ForceContext, ForceModel, NullEnvironment, RigidModels,
-    ScenarioScriptAction, SimulationConfig, SimulationKernel, StopReason, ZeroMoment,
+    ConstantMassRigid, EndTime, ForceContext, ForceModel, NullEnvironment, RigidBodySeparation,
+    RigidModels, ScenarioScriptAction, SimulationConfig, SimulationKernel, StopReason, ZeroMoment,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
     Assembly, BoxedMassModel, DeckDragForceAdapter, EngineClusterForceAdapter,
     EngineClusterMassAdapter, EngineClusterMomentAdapter, GravityForceAdapter, KernelVehicle,
-    MotorThrustForceAdapter, NamedForceModel, RigidMotorMassAdapter, Vehicle,
+    MotorThrustForceAdapter, NamedForceModel, RigidMotorMassAdapter, Vehicle, VehicleAssembly,
 };
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
 
-use crate::error::RunnerError;
 use crate::RunOutcome;
 use crate::assembly::{dry_mass_kg_at, dry_mass_properties_at};
 use crate::atmosphere::{
     RuntimeAtmosphere, build_runtime_atmosphere, is_runtime_atmosphere_kind,
     scenario_atmosphere_kind,
 };
+use crate::error::RunnerError;
 use crate::integrator::build_runtime_integrator;
 
 // Stable model-ids assigned to each force / mass model the rigid
@@ -131,6 +131,7 @@ pub fn run(
     let mass_model = build_mass_model(document, &loaded, &assembly)?;
     let moment_model = build_moment_model(document)?;
     let rigid_models = RigidModels::new(moment_model, mass_model);
+    let separation_specs = build_rigid_body_separations(document, &assembly)?;
 
     // Runner-side `[solver]` block dispatch on the
     // rigid-body path. Default (no `[solver]`) selects `Rk4FixedStep`,
@@ -189,10 +190,8 @@ pub fn run(
         )
     });
     if !deck_bindings.is_empty() || direct_torque_present {
-        let mut snapshot_map = crate::aero_effector_match::build_snapshot_map(
-            &deck_bindings,
-            &initial_snapshot,
-        );
+        let mut snapshot_map =
+            crate::aero_effector_match::build_snapshot_map(&deck_bindings, &initial_snapshot);
         if direct_torque_present {
             let dt_map = crate::aero_effector_match::build_direct_torque_snapshot_map(
                 document,
@@ -283,10 +282,8 @@ pub fn run(
         }
         if !deck_bindings.is_empty() || direct_torque_present {
             let rack_snapshot = effector_rack.snapshot();
-            let mut snapshot_map = crate::aero_effector_match::build_snapshot_map(
-                &deck_bindings,
-                &rack_snapshot,
-            );
+            let mut snapshot_map =
+                crate::aero_effector_match::build_snapshot_map(&deck_bindings, &rack_snapshot);
             if direct_torque_present {
                 let dt_map = crate::aero_effector_match::build_direct_torque_snapshot_map(
                     document,
@@ -340,6 +337,7 @@ pub fn run(
         }
         let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();
+        apply_jettison_events(&mut kernel, &script_fired, &separation_specs)?;
         let snapshot = effector_rack.snapshot();
         record_step(
             &mut table,
@@ -361,7 +359,11 @@ pub fn run(
             .filter(|e| matches!(e.action, ScenarioScriptAction::DeployRecovery { .. }))
             .cloned()
             .collect();
-        pending_effector_events = script_fired;
+        pending_effector_events = script_fired
+            .iter()
+            .filter(|e| matches!(e.action, ScenarioScriptAction::EffectorOverride { .. }))
+            .cloned()
+            .collect();
     }
 
     let stop_reason = kernel
@@ -433,6 +435,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
             });
         }
     }
+    require_supported_multi_body_shape(document)?;
     // Wind models are resolved by WindRack. Scenario
     // validation guarantees that non-`none` flat selections carry a
     // structured `[wind]` block and that the kind names agree.
@@ -454,6 +457,168 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
                  use `us_standard_1976` or `piecewise_exponential`"
             ),
         });
+    }
+    Ok(())
+}
+
+fn require_supported_multi_body_shape(document: &ScenarioDocument) -> Result<(), RunnerError> {
+    if document.multi_body.is_none() {
+        return Ok(());
+    }
+    if let Some(solver) = &document.solver {
+        let profile = solver.profile.as_deref().unwrap_or("fixed-step-explicit");
+        let method = solver.trajectory_method.as_deref().unwrap_or("rk4");
+        if profile != "fixed-step-explicit" || method != "rk4" {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "[multi_body] stage separation currently requires the fixed-step RK4 \
+                     trajectory solver; got profile={profile:?}, method={method:?}"
+                ),
+            });
+        }
+    }
+    let unsupported_models: Vec<String> = document
+        .force_models()
+        .iter()
+        .filter(|name| name.as_str() != "gravity")
+        .cloned()
+        .collect();
+    if !unsupported_models.is_empty() {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "[multi_body] stage separation is wired for rigid-body gravity-only profiles; \
+                 unsupported force models: {unsupported_models:?}"
+            ),
+        });
+    }
+    if !document.vehicle.assembly.effectors.is_empty()
+        || !document.vehicle.assembly.engines.is_empty()
+        || !document.vehicle.assembly.tanks.is_empty()
+        || !document.vehicle.assembly.recovery.is_empty()
+        || document
+            .propulsion
+            .as_ref()
+            .and_then(|p| p.motor.as_ref())
+            .is_some()
+    {
+        return Err(RunnerError::UnsupportedScenario {
+            what: "[multi_body] stage separation currently requires a gravity-only assembly \
+                 without effectors, engines, tanks, recovery devices, or motor mass"
+                .to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn build_rigid_body_separations(
+    document: &ScenarioDocument,
+    assembly: &Assembly,
+) -> Result<BTreeMap<BodyId, RigidBodySeparation>, RunnerError> {
+    let Some(multi_body) = document.multi_body.as_ref() else {
+        return Ok(BTreeMap::new());
+    };
+
+    let body_props: BTreeMap<BodyId, MassProperties> = assembly
+        .bodies()
+        .iter()
+        .map(|body| {
+            (
+                body.id(),
+                MassProperties::new(
+                    Mass::new::<kilogram>(body.dry_mass_kg()),
+                    *body.dry_cg_body(),
+                    *body.dry_inertia_body(),
+                ),
+            )
+        })
+        .collect();
+
+    let mut specs = BTreeMap::new();
+    for separation in &multi_body.separations {
+        let upper_body = BodyId::from_path(&format!(
+            "vehicle.assembly.bodies.{id}",
+            id = separation.upper_body_id
+        ));
+        let lower_body = BodyId::from_path(&format!(
+            "vehicle.assembly.bodies.{id}",
+            id = separation.lower_body_id
+        ));
+        let stack_mass_properties =
+            body_props
+                .get(&upper_body)
+                .copied()
+                .ok_or_else(|| RunnerError::Assembly {
+                    field: format!(
+                        "multi_body.separation[event_id={}].upper_body_id",
+                        separation.event_id
+                    ),
+                    reason: format!("body `{}` was not resolved", separation.upper_body_id),
+                })?;
+        let stage_mass_properties =
+            body_props
+                .get(&lower_body)
+                .copied()
+                .ok_or_else(|| RunnerError::Assembly {
+                    field: format!(
+                        "multi_body.separation[event_id={}].lower_body_id",
+                        separation.event_id
+                    ),
+                    reason: format!("body `{}` was not resolved", separation.lower_body_id),
+                })?;
+        let previous = specs.insert(
+            lower_body,
+            RigidBodySeparation {
+                body: lower_body,
+                stack_mass_properties,
+                stage_mass_properties,
+                stack_delta_v_body_m_s: separation
+                    .upper_delta_v_body_m_s
+                    .unwrap_or([0.0, 0.0, 0.0]),
+                stage_delta_v_body_m_s: separation
+                    .lower_delta_v_body_m_s
+                    .unwrap_or([0.0, 0.0, 0.0]),
+            },
+        );
+        if previous.is_some() {
+            return Err(RunnerError::Assembly {
+                field: "multi_body.separation.lower_body_id".to_owned(),
+                reason: format!(
+                    "body `{}` has multiple separation specs",
+                    separation.lower_body_id
+                ),
+            });
+        }
+    }
+    Ok(specs)
+}
+
+fn apply_jettison_events<I, F, MOM, MM, E, SC>(
+    kernel: &mut openbmp_sim::RigidBodyKernel<I, F, MOM, MM, E, SC>,
+    fired: &[openbmp_sim::FiredEvent<ScenarioScriptAction>],
+    separation_specs: &BTreeMap<BodyId, RigidBodySeparation>,
+) -> Result<(), RunnerError>
+where
+    I: openbmp_sim::Integrator<RigidBodyState>,
+    F: ForceModel<RigidBodyState>,
+    MOM: openbmp_sim::MomentModel<RigidBodyState>,
+    MM: openbmp_sim::RigidMassModel,
+    E: openbmp_sim::EnvironmentModel,
+    SC: openbmp_sim::StopCondition<RigidBodyState>,
+{
+    for event in fired {
+        if let ScenarioScriptAction::JettisonStage { body } = event.action {
+            let separation = separation_specs.get(&body).copied().ok_or_else(|| {
+                RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "jettison_stage event {} fired for body id {} with no \
+                             matching [multi_body] separation",
+                        event.binding_id.value(),
+                        body.value()
+                    ),
+                }
+            })?;
+            kernel.jettison_rigid_body(separation)?;
+        }
     }
     Ok(())
 }
@@ -582,13 +747,11 @@ fn build_gravity_force_adapter_rigid_body(
 ) -> Result<Box<dyn ForceModel<RigidBodyState> + Send + Sync>, RunnerError> {
     match document.environment.gravity.as_str() {
         "constant" => {
-            let g =
-                document
-                    .environment
-                    .gravity_m_s2
-                    .ok_or_else(|| RunnerError::UnsupportedScenario {
-                        what: "environment.gravity_m_s2 missing for constant gravity".to_owned(),
-                    })?;
+            let g = document.environment.gravity_m_s2.ok_or_else(|| {
+                RunnerError::UnsupportedScenario {
+                    what: "environment.gravity_m_s2 missing for constant gravity".to_owned(),
+                }
+            })?;
             if g < 0.0 {
                 return Err(RunnerError::UnsupportedScenario {
                     what: "environment.gravity_m_s2 must be a non-negative magnitude; \
@@ -624,12 +787,13 @@ fn build_gravity_force_adapter_rigid_body(
                     .ok_or_else(|| RunnerError::UnsupportedScenario {
                         what: "environment.mu_m3_s2 missing for j2 gravity".to_owned(),
                     })?;
-            let r_e = document
-                .environment
-                .r_e_m
-                .ok_or_else(|| RunnerError::UnsupportedScenario {
-                    what: "environment.r_e_m missing for j2 gravity".to_owned(),
-                })?;
+            let r_e =
+                document
+                    .environment
+                    .r_e_m
+                    .ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "environment.r_e_m missing for j2 gravity".to_owned(),
+                    })?;
             let j2 = document.environment.j2.unwrap_or(WGS84_J2);
             let model = J2Gravity::new(mu, r_e, j2)?;
             Ok(Box::new(GravityForceAdapter::new(
@@ -736,8 +900,10 @@ fn build_vehicle(
                 openbmp_core::TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = t.id))
             })
             .collect();
-        let tank_force =
-            openbmp_vehicle::TankRackForceAdapter::new(tank_ids, RIGID_BODY_TANK_RACK_FORCE_MODEL_ID);
+        let tank_force = openbmp_vehicle::TankRackForceAdapter::new(
+            tank_ids,
+            RIGID_BODY_TANK_RACK_FORCE_MODEL_ID,
+        );
         named.push(NamedForceModel::new("tank_reaction", Box::new(tank_force)));
     }
 

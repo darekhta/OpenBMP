@@ -18,7 +18,7 @@
 //! these simulator-only physics overrides out of the HAL-portable
 //! mission crate.
 
-use openbmp_core::{EffectorId, EngineId, RecoveryId};
+use openbmp_core::{BodyId, EffectorId, EngineId, RecoveryId};
 
 /// Action taken when a scenario-script-side event fires.
 ///
@@ -69,8 +69,19 @@ pub enum ScenarioScriptAction {
         /// Command value.
         command: f64,
     },
-    /// Stage-separation event.
+    /// Legacy stage-separation event without a body id. Kept for
+    /// defensive compatibility; scenario validation rejects the bare
+    /// action because executed separation needs an explicit body.
     Separation,
+    /// Commanded stage-separation event for a declared assembly body.
+    ///
+    /// This is simulator-only: the kernel / runner use it to split a
+    /// rigid-body scenario into independent propagated bodies. It is
+    /// not part of the HAL-portable mission-action vocabulary.
+    JettisonStage {
+        /// Body to detach from the continuing stack.
+        body: BodyId,
+    },
     /// Deploy / stow a recovery device. Targets a declared
     /// recovery device by [`RecoveryId`]; the runner-side
     /// `RecoveryRack::apply_deploys` consumes the fired event and

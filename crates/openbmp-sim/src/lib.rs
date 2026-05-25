@@ -66,7 +66,8 @@ pub use integrator::{
 };
 pub use kernel::{
     PointMassKernel, ProfiledPointMassKernel, ProfiledRigidBodyKernel, RigidBodyKernel,
-    RigidModels, SimulationConfig, SimulationKernel, TrajectoryProfileConfig,
+    RigidBodySeparation, RigidModels, SeparatedRigidBody, SimulationConfig, SimulationKernel,
+    TrajectoryProfileConfig,
 };
 pub use models::{
     ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshot,
@@ -80,8 +81,8 @@ pub use openbmp_models::{
     Integratable, RigidBodyKinematicState, SimState, TranslationalState, VehicleState,
 };
 pub use solver_profile::{
-    implicit_euler_step, CouplingEdge, ExplicitMethod, ImplicitMethod, ImplicitSolveError,
-    ProfiledIntegrator, SolverProfile, SolverProfileError, SourceTermCouplingProfile,
-    SourceTermProfile,
+    CouplingEdge, ExplicitMethod, ImplicitMethod, ImplicitSolveError, ProfiledIntegrator,
+    SolverProfile, SolverProfileError, SourceTermCouplingProfile, SourceTermProfile,
+    implicit_euler_step,
 };
 pub use stop::{AlwaysContinue, EndTime, MaxSteps, StopCondition};

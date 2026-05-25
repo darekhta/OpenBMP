@@ -34,8 +34,8 @@ use openbmp_fc::topics::{
     EffectorCommandSet, EngineCommandSet, EngineDemand, EstimatorMode,
     EstimatorRegimeRegionStatePublish, EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic,
     FdirStatus, GnssSample, HealthRegionStatePublish, ImuSample, MagnetometerSample,
-    MissionRegionStatePublish, MissionStatePublish, PositionEstimate, ReferenceState,
-    SensorStatus, StarTrackerSample, VehicleStatus,
+    MissionRegionStatePublish, MissionStatePublish, PositionEstimate, ReferenceState, SensorStatus,
+    StarTrackerSample, VehicleStatus,
 };
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
@@ -1369,6 +1369,7 @@ mod tests {
             estimator_lanes: Some(lanes),
             autopilot_allocation: None,
             trajectory: None,
+            ascent_reference: None,
         };
         let (graph, bindings, pad) = minimal_graph();
         let mut runner = new_runner(&config, graph, bindings, pad);
@@ -1444,6 +1445,7 @@ mod tests {
             estimator_lanes: None,
             autopilot_allocation: None,
             trajectory: None,
+            ascent_reference: None,
         };
         let (graph, bindings, pad) = minimal_graph();
         let mut runner = new_runner(&config, graph, bindings, pad);

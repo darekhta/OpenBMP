@@ -49,10 +49,12 @@ pub fn synthesize_assembly(document: &ScenarioDocument) -> Result<Assembly, Runn
                     reason: err.to_string(),
                 }
             })?;
-        builder = builder.add_body(body).map_err(|err| RunnerError::Assembly {
-            field: format!("vehicle.assembly.bodies[{index}]"),
-            reason: err.to_string(),
-        })?;
+        builder = builder
+            .add_body(body)
+            .map_err(|err| RunnerError::Assembly {
+                field: format!("vehicle.assembly.bodies[{index}]"),
+                reason: err.to_string(),
+            })?;
     }
     builder.build().map_err(|err| RunnerError::Assembly {
         field: "vehicle.assembly".to_owned(),
@@ -89,7 +91,11 @@ pub fn dry_mass_properties_at(
 ///
 /// Returns [`RunnerError::Assembly`] if the assembly is structurally
 /// empty. Normal scenario resolution rejects that earlier.
-pub fn dry_mass_kg_at(assembly: &Assembly, _time: SimTime, field: &str) -> Result<f64, RunnerError> {
+pub fn dry_mass_kg_at(
+    assembly: &Assembly,
+    _time: SimTime,
+    field: &str,
+) -> Result<f64, RunnerError> {
     let bodies = assembly.bodies();
     if bodies.is_empty() {
         return Err(RunnerError::Assembly {

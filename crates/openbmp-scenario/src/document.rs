@@ -46,6 +46,10 @@ pub const FC_TRAJECTORY_MIN_SEGMENT_DURATION_S: f64 = 1.0e-3;
 /// Maximum accepted `[fc.trajectory]` segment duration (s).
 pub const FC_TRAJECTORY_MAX_SEGMENT_DURATION_S: f64 = 600.0;
 
+/// Absolute load-time tolerance for stage-separation linear-momentum
+/// residuals, in kg*m/s.
+pub const STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S: f64 = 1.0e-9;
+
 /// Default unnormalised WGS84 J2 zonal coefficient used when a scenario
 /// selects `gravity = "j2"` and omits `environment.j2`.
 ///
@@ -271,6 +275,7 @@ impl ScenarioDocument {
         self.validate_recovery_references()?;
         self.validate_propulsion_unambiguous()?;
         self.validate_v3_blocks()?;
+        self.validate_stage_separation_agreement()?;
         Ok(())
     }
 
@@ -311,17 +316,17 @@ impl ScenarioDocument {
                     .map_or(Ok(()), ScheduleConfig::validate)
             },
         )?;
-        gate_v3_block(
-            header,
-            "multi_body",
-            "multi-body separation",
-            self.multi_body.as_ref(),
-            || {
-                self.multi_body
-                    .as_ref()
-                    .map_or(Ok(()), MultiBodyConfig::validate)
-            },
-        )
+        if let Some(multi_body) = self.multi_body.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "multi_body".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            multi_body.validate()?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -700,6 +705,59 @@ impl ScenarioDocument {
         Ok(())
     }
 
+    fn validate_stage_separation_agreement(&self) -> Result<(), ScenarioError> {
+        let Some(mission) = &self.mission else {
+            if let Some(multi_body) = &self.multi_body
+                && !multi_body.separations.is_empty()
+            {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "multi_body.separation".to_owned(),
+                    value_a: "declared".to_owned(),
+                    field_b: "mission.events".to_owned(),
+                    value_b: "missing".to_owned(),
+                });
+            }
+            return Ok(());
+        };
+
+        let jettisons = collect_jettison_stage_actions(mission);
+        let multi_body_separations = self
+            .multi_body
+            .as_ref()
+            .map_or(&[][..], |multi_body| multi_body.separations.as_slice());
+        if jettisons.is_empty() && multi_body_separations.is_empty() {
+            return Ok(());
+        }
+        if self.vehicle.kind != "rigid_body" {
+            return Err(ScenarioError::IncompatibleAssemblyEntry {
+                field: "mission.events.action.kind = \"jettison_stage\"".to_owned(),
+                reason: "stage separation requires vehicle.kind = \"rigid_body\"".to_owned(),
+            });
+        }
+        if self.multi_body.is_none() {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "mission.events.action.kind".to_owned(),
+                value_a: "jettison_stage".to_owned(),
+                field_b: "multi_body".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
+
+        let body_masses = assembly_body_mass_lookup(&self.vehicle.assembly);
+        validate_stage_separation_body_references(
+            &jettisons,
+            multi_body_separations,
+            &body_masses,
+        )?;
+        validate_stage_separation_uniqueness(&jettisons, multi_body_separations)?;
+        validate_stage_separation_symmetry_and_momentum(
+            &jettisons,
+            multi_body_separations,
+            &body_masses,
+        )?;
+        Ok(())
+    }
+
     fn validate_engine_references(&self) -> Result<(), ScenarioError> {
         let Some(mission) = &self.mission else {
             return Ok(());
@@ -887,6 +945,156 @@ impl ScenarioDocument {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug)]
+struct JettisonStageAction<'a> {
+    event_index: usize,
+    event_id: &'a str,
+    body: &'a str,
+}
+
+fn collect_jettison_stage_actions(mission: &MissionConfig) -> Vec<JettisonStageAction<'_>> {
+    let mut actions = Vec::new();
+    for (event_index, event) in mission.events.iter().enumerate() {
+        if let ScenarioActionConfig::JettisonStage { body } = &event.action {
+            actions.push(JettisonStageAction {
+                event_index,
+                event_id: event.id.as_str(),
+                body: body.as_str(),
+            });
+        }
+    }
+    actions
+}
+
+fn assembly_body_mass_lookup(assembly: &AssemblyConfig) -> BTreeMap<&str, f64> {
+    assembly
+        .bodies
+        .iter()
+        .map(|body| (body.id.as_str(), body.dry_mass_kg))
+        .collect()
+}
+
+fn validate_stage_separation_body_references(
+    jettisons: &[JettisonStageAction<'_>],
+    separations: &[MultiBodySeparationConfig],
+    body_masses: &BTreeMap<&str, f64>,
+) -> Result<(), ScenarioError> {
+    for action in jettisons {
+        if !body_masses.contains_key(action.body) {
+            return Err(ScenarioError::UnknownBodyReference {
+                field: format!("mission.events[{}].action.body", action.event_index),
+                value: action.body.to_owned(),
+            });
+        }
+    }
+    for (index, separation) in separations.iter().enumerate() {
+        if !body_masses.contains_key(separation.upper_body_id.as_str()) {
+            return Err(ScenarioError::UnknownBodyReference {
+                field: format!("multi_body.separation[{index}].upper_body_id"),
+                value: separation.upper_body_id.clone(),
+            });
+        }
+        if !body_masses.contains_key(separation.lower_body_id.as_str()) {
+            return Err(ScenarioError::UnknownBodyReference {
+                field: format!("multi_body.separation[{index}].lower_body_id"),
+                value: separation.lower_body_id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_stage_separation_uniqueness(
+    jettisons: &[JettisonStageAction<'_>],
+    separations: &[MultiBodySeparationConfig],
+) -> Result<(), ScenarioError> {
+    let mut seen_jettisoned_bodies = BTreeSet::new();
+    for action in jettisons {
+        if !seen_jettisoned_bodies.insert(action.body) {
+            return Err(ScenarioError::DuplicateValue {
+                field: format!("mission.events[{}].action.body", action.event_index),
+                value: action.body.to_owned(),
+            });
+        }
+    }
+    let mut seen_separation_bodies = BTreeSet::new();
+    for (index, separation) in separations.iter().enumerate() {
+        if !seen_separation_bodies.insert(separation.lower_body_id.as_str()) {
+            return Err(ScenarioError::DuplicateValue {
+                field: format!("multi_body.separation[{index}].lower_body_id"),
+                value: separation.lower_body_id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_stage_separation_symmetry_and_momentum(
+    jettisons: &[JettisonStageAction<'_>],
+    separations: &[MultiBodySeparationConfig],
+    body_masses: &BTreeMap<&str, f64>,
+) -> Result<(), ScenarioError> {
+    for action in jettisons {
+        let matching = separations.iter().any(|separation| {
+            separation.event_id == action.event_id && separation.lower_body_id == action.body
+        });
+        if !matching {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: format!("mission.events[{}].action.body", action.event_index),
+                value_a: format!("{} at {}", action.body, action.event_id),
+                field_b: "multi_body.separation".to_owned(),
+                value_b: "no matching event_id/lower_body_id".to_owned(),
+            });
+        }
+    }
+    for (index, separation) in separations.iter().enumerate() {
+        let matching = jettisons.iter().any(|action| {
+            action.event_id == separation.event_id && action.body == separation.lower_body_id
+        });
+        if !matching {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: format!("multi_body.separation[{index}]"),
+                value_a: format!("{} at {}", separation.lower_body_id, separation.event_id),
+                field_b: "mission.events.action.kind".to_owned(),
+                value_b: "no matching jettison_stage".to_owned(),
+            });
+        }
+        if separation.conserve_momentum {
+            validate_separation_momentum(index, separation, body_masses)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_separation_momentum(
+    index: usize,
+    separation: &MultiBodySeparationConfig,
+    body_masses: &BTreeMap<&str, f64>,
+) -> Result<(), ScenarioError> {
+    let upper_mass = body_masses[separation.upper_body_id.as_str()];
+    let lower_mass = body_masses[separation.lower_body_id.as_str()];
+    let upper_dv = separation.upper_delta_v_body_m_s.unwrap_or([0.0, 0.0, 0.0]);
+    let lower_dv = separation.lower_delta_v_body_m_s.unwrap_or([0.0, 0.0, 0.0]);
+    let residual = [
+        upper_mass * upper_dv[0] + lower_mass * lower_dv[0],
+        upper_mass * upper_dv[1] + lower_mass * lower_dv[1],
+        upper_mass * upper_dv[2] + lower_mass * lower_dv[2],
+    ];
+    let mut squared = 0.0_f64;
+    squared += residual[0] * residual[0];
+    squared += residual[1] * residual[1];
+    squared += residual[2] * residual[2];
+    let norm = squared.sqrt();
+    if !norm.is_finite() || norm > STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S {
+        return Err(ScenarioError::SeparationMomentumMismatch {
+            field: format!("multi_body.separation[{index}]"),
+            residual_kg_m_s: norm,
+            tolerance_kg_m_s: STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S,
+        });
+    }
+    Ok(())
 }
 
 /// OpenBMP schema header.
@@ -2081,6 +2289,8 @@ fn require_mission_only_action(
         ScenarioActionConfig::EffectorOverride { .. }
         | ScenarioActionConfig::EngineCommand { .. }
         | ScenarioActionConfig::Separation
+        | ScenarioActionConfig::JettisonStage { .. }
+        | ScenarioActionConfig::SelectGuidanceProfile { .. }
         | ScenarioActionConfig::DeployRecovery { .. } => Err(ScenarioError::MissionGraph {
             reason: format!("{field} may contain only mission actions"),
         }),
@@ -2504,6 +2714,23 @@ pub enum ScenarioActionConfig {
     },
     /// Deferred.
     Separation,
+    /// Commanded multi-body stage separation: jettison the named
+    /// assembly body. Distinct from the legacy bare `separation` in
+    /// that it records *which* body departs, so the spent stage can be
+    /// propagated and its range-safety footprint reported. See
+    /// `docs/staging-and-separation.md`.
+    JettisonStage {
+        /// Assembly body id to jettison (must reference a declared
+        /// `[[vehicle.assembly.bodies]]`).
+        body: String,
+    },
+    /// Deferred. Switch the active guidance profile at a phase boundary
+    /// (e.g. hand off from `ascent_reference` to passive `coast`). See
+    /// `docs/ascent-guidance.md`.
+    SelectGuidanceProfile {
+        /// Guidance profile id to activate.
+        profile: String,
+    },
     /// Deploy / stow command targeting a declared
     /// `[[vehicle.assembly.recovery]]` device by id. The command
     /// string must be one of `"deploy"`, `"deploy_drogue"`,
@@ -2553,6 +2780,16 @@ impl ScenarioActionConfig {
                 return Err(ScenarioError::UnsupportedActionKind {
                     kind: "separation".to_owned(),
                     missing_capability: "scripted stage separation".to_owned(),
+                });
+            }
+            Self::JettisonStage { body } => {
+                require_non_empty(&path("body"), body)?;
+            }
+            Self::SelectGuidanceProfile { profile } => {
+                require_non_empty(&path("profile"), profile)?;
+                return Err(ScenarioError::UnsupportedActionKind {
+                    kind: "select_guidance_profile".to_owned(),
+                    missing_capability: "runtime guidance-profile switching".to_owned(),
                 });
             }
             Self::DeployRecovery { id, command } => {
@@ -4038,6 +4275,35 @@ pub struct FcConfig {
     /// scenarios that declare `[fc.trajectory]` must have
     /// `openbmp.scenario = 3`.
     pub trajectory: Option<FcTrajectoryConfig>,
+    /// Optional powered-ascent reference-trajectory generator block.
+    /// Deferred: validated to fail closed until the ascent-reference
+    /// generator lands. See `docs/ascent-guidance.md`.
+    #[serde(default)]
+    pub ascent_reference: Option<FcAscentReferenceConfig>,
+}
+
+/// Powered-ascent reference-trajectory generator configuration.
+///
+/// Deferred schema stub: this block parses so authors can write it
+/// ahead of the capability, and `FcConfig::validate` rejects it with
+/// [`ScenarioError::ElementNotYetSupported`] until the generator lands.
+/// The reference it will produce is a *reference trajectory the
+/// three-loop autopilot tracks* — never a guidance solution to a
+/// real-world location. See `docs/ascent-guidance.md` and
+/// `docs/profile-vocabulary-and-guardrails.md`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcAscentReferenceConfig {
+    /// Reference method: `pitch_program`, `gravity_turn`, or the
+    /// reserved `explicit_reference`.
+    pub method: String,
+    /// Pitch-program schedule timestamps (s), monotonic ascending.
+    #[serde(default)]
+    pub schedule_s: Option<Vec<f64>>,
+    /// Pitch-program reference pitch from vertical (rad), one per
+    /// `schedule_s` entry.
+    #[serde(default)]
+    pub pitch_rad: Option<Vec<f64>>,
 }
 
 impl FcConfig {
@@ -4051,6 +4317,12 @@ impl FcConfig {
     ///   `[fc.*]` parameter block
     /// - `guidance = attitude_hold` and `reference_q_xyzw` is missing
     pub fn validate(&self) -> Result<(), ScenarioError> {
+        if self.ascent_reference.is_some() {
+            return Err(ScenarioError::ElementNotYetSupported {
+                field: "fc.ascent_reference".to_owned(),
+                missing_capability: "ascent reference-trajectory generation",
+            });
+        }
         if let Some(lanes) = self.estimator_lanes.as_ref() {
             lanes.validate()?;
             for (index, lane) in lanes.lanes.iter().enumerate() {

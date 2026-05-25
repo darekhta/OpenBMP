@@ -35,6 +35,19 @@ const FORBIDDEN_SAFETY_TERMS: &[ForbiddenTerm] = &[
     ForbiddenTerm::new("decoy", "decoy"),
     ForbiddenTerm::new("penaid", "pen-aid"),
     ForbiddenTerm::new("blackoutevasion", "blackout-evasion"),
+    // Flight-profile guardrails (see
+    // `docs/profile-vocabulary-and-guardrails.md § Rejected operational
+    // vocabulary`). Trajectory-mechanics terms (ballistic, boost, coast,
+    // ascent, apogee, entry, descent, footprint, dispersion, downrange)
+    // stay accepted; only targeting / engagement vocabulary is rejected.
+    ForbiddenTerm::new("aimpoint", "aimpoint"),
+    ForbiddenTerm::new("missdistance", "miss-distance"),
+    ForbiddenTerm::new("terminalguidance", "terminal-guidance"),
+    ForbiddenTerm::new("banktoturn", "bank-to-turn"),
+    ForbiddenTerm::new("skidtoturn", "skid-to-turn"),
+    ForbiddenTerm::new("intercept", "intercept"),
+    ForbiddenTerm::new("reentryvehicle", "reentry-vehicle"),
+    ForbiddenTerm::new("circularerror", "circular-error"),
 ];
 
 struct ForbiddenTerm {

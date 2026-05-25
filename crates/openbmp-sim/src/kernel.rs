@@ -26,8 +26,8 @@
 
 use std::borrow::Cow;
 
-use openbmp_core::{Duration, SimTime, StepIndex};
-use openbmp_state::PointMassState;
+use openbmp_core::{BodyId, Duration, SimTime, StepIndex};
+use openbmp_state::{MassProperties, PointMassState};
 use uom::si::mass::kilogram;
 
 use openbmp_models::{SimState, VehicleState};
@@ -37,8 +37,8 @@ use crate::error::{IntegratorError, SimulationError, StopReason};
 use crate::integrator::Integrator;
 use crate::models::{
     EffectorActualsView, EngineSnapshot, EngineSnapshotView, EnvironmentModel, EnvironmentQuery,
-    EnvironmentSample, ForceContext, ForceModel, MassContext, MassModel, RecoverySnapshot,
-    RecoverySnapshotView, TankSnapshot, TankSnapshotView,
+    EnvironmentSample, ForceContext, ForceModel, MassContext, MassModel, MassPropertiesRate,
+    RecoverySnapshot, RecoverySnapshotView, TankSnapshot, TankSnapshotView,
 };
 use crate::solver_profile::{ProfiledIntegrator, SolverProfile, SolverProfileError};
 use crate::stop::StopCondition;
@@ -83,6 +83,34 @@ where
     /// RNG-driven models (sensors, fault models) to derive
     /// deterministic streams.
     pub scenario_seed: u64,
+}
+
+/// Runtime specification for a rigid-body stage separation.
+#[derive(Clone, Copy, Debug)]
+pub struct RigidBodySeparation {
+    /// Departing body id.
+    pub body: BodyId,
+    /// Mass properties of the continuing stack after separation.
+    pub stack_mass_properties: MassProperties,
+    /// Mass properties of the departing body after separation.
+    pub stage_mass_properties: MassProperties,
+    /// Body-frame delta-V applied to the continuing stack (m/s).
+    pub stack_delta_v_body_m_s: [f64; 3],
+    /// Body-frame delta-V applied to the departing body (m/s).
+    pub stage_delta_v_body_m_s: [f64; 3],
+}
+
+/// One rigid body detached from the primary stack.
+#[derive(Clone, Copy, Debug)]
+pub struct SeparatedRigidBody {
+    /// Departed body id.
+    pub body: BodyId,
+    /// Current propagated body state.
+    pub state: openbmp_state::RigidBodyState,
+    /// Kernel step at which the split was applied.
+    pub separated_at_step: StepIndex,
+    /// Simulation time at which the split was applied.
+    pub separated_at_time: SimTime,
 }
 
 /// Named-field input for [`SimulationConfig::from_trajectory_profile`].
@@ -245,6 +273,11 @@ where
     /// recovery-rack adapter short-circuits on the empty view,
     /// preserving pre-3.9 byte output.
     recovery_snapshot: std::collections::BTreeMap<openbmp_core::RecoveryId, RecoverySnapshot>,
+    /// Rigid-body lanes detached from the primary stack. Point-mass
+    /// kernels leave this empty. Rigid kernels append in event order
+    /// and step in vector order, giving a fixed body order after
+    /// split.
+    separated_rigid_bodies: Vec<SeparatedRigidBody>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -323,6 +356,7 @@ where
             tank_snapshot: std::collections::BTreeMap::new(),
             wind_sample_override: None,
             recovery_snapshot: std::collections::BTreeMap::new(),
+            separated_rigid_bodies: Vec::new(),
         })
     }
 
@@ -1179,6 +1213,7 @@ where
             tank_snapshot: std::collections::BTreeMap::new(),
             wind_sample_override: None,
             recovery_snapshot: std::collections::BTreeMap::new(),
+            separated_rigid_bodies: Vec::new(),
         })
     }
 
@@ -1290,6 +1325,73 @@ where
             })
         };
 
+        let derive_separated = |s: &openbmp_state::RigidBodyState,
+                                t: SimTime|
+         -> Result<
+            crate::derivative::RigidBodyDerivative,
+            crate::error::ModelEvalError,
+        > {
+            let mut env = environment.sample(EnvironmentQuery {
+                time: t,
+                position_eci: s.position,
+            })?;
+            if let Some(wind) = wind_override {
+                env.wind_ned_m_s = wind;
+            }
+            let mass_kg = s.mass_props.mass.get::<kilogram>();
+            let force_n_eci = force_model.force_n_eci(ForceContext {
+                state: s,
+                environment: &env,
+                mass_kg,
+                time: t,
+                effector_actuals: EffectorActualsView::new(effector_actuals),
+                engine_snapshot: EngineSnapshotView::new(engine_snapshot),
+                tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                recovery_snapshot: RecoverySnapshotView::new(recovery_snapshot),
+            })?;
+            let moment_n_m_body = moment_model.moment_n_m_body(crate::models::MomentContext {
+                state: s,
+                environment: &env,
+                time: t,
+                effector_actuals: EffectorActualsView::new(effector_actuals),
+                engine_snapshot: EngineSnapshotView::new(engine_snapshot),
+                tank_snapshot: TankSnapshotView::new(tank_snapshot),
+            })?;
+            let rate = MassPropertiesRate::zero();
+
+            let q = s.orientation.q.into_inner();
+            let omega_quat = nalgebra::Quaternion::new(
+                0.0,
+                s.angular_velocity.vector.x,
+                s.angular_velocity.vector.y,
+                s.angular_velocity.vector.z,
+            );
+            let q_dot = q * omega_quat * 0.5;
+
+            let inertia = s.mass_props.inertia_body;
+            let i_omega = inertia * s.angular_velocity.vector;
+            let omega_cross_iomega = s.angular_velocity.vector.cross(&i_omega);
+            let i_dot_omega = rate.inertia_rate_body * s.angular_velocity.vector;
+            let net = moment_n_m_body - omega_cross_iomega - i_dot_omega;
+            let inv_inertia = inertia.try_inverse().ok_or_else(|| {
+                crate::error::ModelEvalError::InvalidState {
+                    model: RIGID_BODY_EQUATIONS_MODEL_ID,
+                    reason: "inertia tensor is not invertible".into(),
+                }
+            })?;
+            let omega_dot = inv_inertia * net;
+
+            Ok(crate::derivative::RigidBodyDerivative {
+                velocity_m_s_eci: s.velocity.vector,
+                acceleration_m_s2_eci: force_n_eci / mass_kg,
+                quaternion_rate: q_dot,
+                angular_acceleration_rad_s2_body: omega_dot,
+                mass_rate_kg_s: rate.mass_rate_kg_s,
+                center_of_mass_rate_body_m_s: rate.center_of_mass_rate_body_m_s,
+                inertia_rate_body: rate.inertia_rate_body,
+            })
+        };
+
         let raw_new = match self.integrator.advance(&self.state, derive, self.dt) {
             Ok(state) => state,
             Err(err @ (IntegratorError::NonFiniteDerivative | IntegratorError::NonFiniteState)) => {
@@ -1301,6 +1403,39 @@ where
 
         let canonical_time_s = self.initial_time_s + (next_step.value() as f64) * self.dt_s;
         let new_state = raw_new.with_time(SimTime::from_seconds(canonical_time_s));
+        let mut separated_updates = Vec::with_capacity(self.separated_rigid_bodies.len());
+        for separated in &self.separated_rigid_bodies {
+            let raw_separated =
+                match self
+                    .integrator
+                    .advance(&separated.state, derive_separated, self.dt)
+                {
+                    Ok(state) => state,
+                    Err(
+                        err @ (IntegratorError::NonFiniteDerivative
+                        | IntegratorError::NonFiniteState),
+                    ) => {
+                        self.stopped = Some(StopReason::NonFiniteState { step: next_step });
+                        return Err(SimulationError::Integrator(err));
+                    }
+                    Err(err) => return Err(SimulationError::Integrator(err)),
+                };
+            let separated_state = raw_separated.with_time(SimTime::from_seconds(canonical_time_s));
+            if let Err(source) =
+                separated_state.require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
+            {
+                self.stopped = Some(StopReason::NonFiniteState { step: next_step });
+                return Err(SimulationError::InvalidPostStepState {
+                    step: next_step,
+                    source,
+                });
+            }
+            separated_updates.push(SeparatedRigidBody {
+                state: separated_state,
+                ..*separated
+            });
+        }
+        self.separated_rigid_bodies = separated_updates;
 
         // Event evaluation. Early-exit when no events are
         // declared so legacy byte-stability is preserved.
@@ -1372,6 +1507,85 @@ where
         &self.state
     }
 
+    /// Detached rigid-body lanes, in deterministic propagation order.
+    #[must_use]
+    pub fn separated_rigid_bodies(&self) -> &[SeparatedRigidBody] {
+        &self.separated_rigid_bodies
+    }
+
+    /// Apply a rigid-body stage separation at the current state.
+    ///
+    /// The primary state becomes the continuing stack, while the
+    /// departing body is appended to [`Self::separated_rigid_bodies`].
+    /// Linear and angular state are partitioned from the pre-split
+    /// composite state, and the provided delta-V values are applied in
+    /// the body frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::InvalidRigidBodySeparation`] when
+    /// the body was already detached or the partition produces invalid
+    /// rigid-body states.
+    pub fn jettison_rigid_body(
+        &mut self,
+        separation: RigidBodySeparation,
+    ) -> Result<(), SimulationError> {
+        if self
+            .separated_rigid_bodies
+            .iter()
+            .any(|body| body.body == separation.body)
+        {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: format!(
+                    "body id {} has already been jettisoned",
+                    separation.body.value()
+                ),
+            });
+        }
+        separation
+            .stack_mass_properties
+            .require_valid(POST_STEP_INERTIA_TOL)
+            .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                reason: format!("continuing-stack mass properties are invalid: {source}"),
+            })?;
+        separation
+            .stage_mass_properties
+            .require_valid(POST_STEP_INERTIA_TOL)
+            .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                reason: format!("departing-stage mass properties are invalid: {source}"),
+            })?;
+        let stack_state = partition_rigid_body_state(
+            &self.state,
+            separation.stack_mass_properties,
+            separation.stack_delta_v_body_m_s,
+        );
+        let stage_state = partition_rigid_body_state(
+            &self.state,
+            separation.stage_mass_properties,
+            separation.stage_delta_v_body_m_s,
+        );
+        stack_state
+            .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
+            .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                reason: format!("continuing-stack state is invalid: {source}"),
+            })?;
+        stage_state
+            .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
+            .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                reason: format!("departing-stage state is invalid: {source}"),
+            })?;
+        let separated_at_step = self.step_index;
+        let separated_at_time = self.state.time;
+        self.state = stack_state;
+        self.separated_rigid_bodies.push(SeparatedRigidBody {
+            body: separation.body,
+            state: stage_state,
+            separated_at_step,
+            separated_at_time,
+        });
+        Ok(())
+    }
+
     /// Current step counter.
     #[must_use]
     pub const fn current_step(&self) -> StepIndex {
@@ -1429,6 +1643,34 @@ where
     pub const fn initial_state(&self) -> &openbmp_state::RigidBodyState {
         &self.initial_state
     }
+}
+
+fn partition_rigid_body_state(
+    composite: &openbmp_state::RigidBodyState,
+    mass_properties: MassProperties,
+    delta_v_body_m_s: [f64; 3],
+) -> openbmp_state::RigidBodyState {
+    let relative_body_m = mass_properties.center_of_mass_body.vector
+        - composite.mass_props.center_of_mass_body.vector;
+    let position_offset_eci_m = composite.orientation.q * relative_body_m;
+    let rotational_velocity_body_m_s = composite.angular_velocity.vector.cross(&relative_body_m);
+    let rotational_velocity_eci_m_s = composite.orientation.q * rotational_velocity_body_m_s;
+    let delta_v_body = nalgebra::Vector3::new(
+        delta_v_body_m_s[0],
+        delta_v_body_m_s[1],
+        delta_v_body_m_s[2],
+    );
+    let delta_v_eci_m_s = composite.orientation.q * delta_v_body;
+    openbmp_state::RigidBodyState::new(
+        composite.time,
+        openbmp_core::Position3::from_vector(composite.position.vector + position_offset_eci_m),
+        openbmp_core::Velocity3::from_vector(
+            composite.velocity.vector + rotational_velocity_eci_m_s + delta_v_eci_m_s,
+        ),
+        composite.orientation,
+        composite.angular_velocity,
+        mass_properties,
+    )
 }
 
 // ---------------------------------------------------------------------

@@ -179,10 +179,7 @@ mod tests {
                     format!("  {}:{} ({})", rel.display(), line, pat)
                 })
                 .collect();
-            panic!(
-                "mission-vocabulary tripwire fired:\n{}",
-                lines.join("\n")
-            );
+            panic!("mission-vocabulary tripwire fired:\n{}", lines.join("\n"));
         }
     }
 }

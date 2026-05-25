@@ -3,11 +3,11 @@
 L3 simulator-only scenario-script actions.
 
 **Status:** Implemented. Ships `ScenarioScriptAction` carrying the
-four simulator-only physics-override variants (engine command,
-effector override, scripted separation, recovery deploy) that the
-runner's `EngineRack` / `EffectorRack` / `RecoveryRack` consume each
-rack tick. The action taxonomy is separate from the HAL-portable
-mission-action vocabulary in `openbmp-mission`.
+simulator-only physics-override variants (engine command, effector
+override, legacy scripted separation placeholder, `jettison_stage`,
+recovery deploy) that the runner's racks and stage-separation path consume.
+The action taxonomy is separate from the HAL-portable mission-action
+vocabulary in `openbmp-mission`.
 
 ## Purpose
 

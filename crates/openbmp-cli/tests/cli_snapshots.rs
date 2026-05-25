@@ -437,5 +437,8 @@ fn diff_reports_identical_for_self_compare() {
         stdout.contains("openbmp diff: identical"),
         "stdout was: {stdout}"
     );
-    assert!(stdout.contains("12 columns matched"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("12 columns matched"),
+        "stdout was: {stdout}"
+    );
 }

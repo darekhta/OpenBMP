@@ -93,10 +93,11 @@ impl WindRack {
             .ok_or_else(|| RunnerError::UnsupportedScenario {
                 what: "[wind].kind = \"constant\" requires wind_ned_m_s".to_owned(),
             })?;
-        let model =
-            ConstantWind::new(v[0], v[1], v[2]).map_err(|err| RunnerError::UnsupportedScenario {
+        let model = ConstantWind::new(v[0], v[1], v[2]).map_err(|err| {
+            RunnerError::UnsupportedScenario {
                 what: format!("ConstantWind construction failed: {err}"),
-            })?;
+            }
+        })?;
         Ok(Self::Constant(model))
     }
 
