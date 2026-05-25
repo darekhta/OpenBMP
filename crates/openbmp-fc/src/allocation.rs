@@ -28,7 +28,7 @@
 //!   limits are rejected at allocator construction. (The shipped
 //!   scenarios all use symmetric bounds.)
 //! - The pseudo-inverse allocator named in
-//!   [`openbmp_scenario::FcAutopilotAllocationKind::PseudoInverse`]
+//!   `openbmp_scenario::FcAutopilotAllocationKind::PseudoInverse`
 //!   is parsed but not yet consumed: a later slice will add the
 //!   general `G_eff` path.
 //!

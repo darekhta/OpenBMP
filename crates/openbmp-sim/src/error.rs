@@ -53,6 +53,12 @@ pub enum SimulationError {
         #[source]
         source: StateError,
     },
+    /// A requested rigid-body stage separation could not be applied.
+    #[error("invalid rigid-body separation: {reason}")]
+    InvalidRigidBodySeparation {
+        /// Human-readable reason.
+        reason: String,
+    },
     /// The floating-point environment was not in the strictly defined
     /// state required by the determinism contract (FTZ / DAZ off,
     /// round-to-nearest-ties-to-even rounding mode).

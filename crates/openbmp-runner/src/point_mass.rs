@@ -63,13 +63,13 @@ use openbmp_vehicle::{
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
 
-use crate::error::RunnerError;
 use crate::RunOutcome;
 use crate::assembly::dry_mass_kg_at;
 use crate::atmosphere::{
     RuntimeAtmosphere, build_runtime_atmosphere, is_runtime_atmosphere_kind,
     scenario_atmosphere_kind,
 };
+use crate::error::RunnerError;
 use crate::integrator::build_runtime_integrator;
 use openbmp_vehicle::Assembly;
 
@@ -220,10 +220,8 @@ pub fn run(
     // each effector's load-time at-rest state (initial position).
     let initial_snapshot = effector_rack.snapshot();
     if !deck_bindings.is_empty() {
-        let snapshot_map = crate::aero_effector_match::build_snapshot_map(
-            &deck_bindings,
-            &initial_snapshot,
-        );
+        let snapshot_map =
+            crate::aero_effector_match::build_snapshot_map(&deck_bindings, &initial_snapshot);
         kernel.set_effector_actuals(snapshot_map);
     }
     // At step 0, push the rack's initial (Idle) snapshot
@@ -326,10 +324,8 @@ pub fn run(
         // Empty bindings → zero allocation, zero state change.
         if !deck_bindings.is_empty() {
             let rack_snapshot = effector_rack.snapshot();
-            let snapshot_map = crate::aero_effector_match::build_snapshot_map(
-                &deck_bindings,
-                &rack_snapshot,
-            );
+            let snapshot_map =
+                crate::aero_effector_match::build_snapshot_map(&deck_bindings, &rack_snapshot);
             kernel.set_effector_actuals(snapshot_map);
         }
         // Push the rack's engine snapshot to the kernel
@@ -387,7 +383,11 @@ pub fn run(
             .filter(|e| matches!(e.action, ScenarioScriptAction::DeployRecovery { .. }))
             .cloned()
             .collect();
-        pending_effector_events = script_fired;
+        pending_effector_events = script_fired
+            .iter()
+            .filter(|e| matches!(e.action, ScenarioScriptAction::EffectorOverride { .. }))
+            .cloned()
+            .collect();
     }
 
     let stop_reason = kernel
@@ -563,13 +563,11 @@ fn build_gravity_force_adapter_point_mass(
 ) -> Result<Box<dyn ForceModel<PointMassState> + Send + Sync>, RunnerError> {
     match document.environment.gravity.as_str() {
         "constant" => {
-            let g =
-                document
-                    .environment
-                    .gravity_m_s2
-                    .ok_or_else(|| RunnerError::UnsupportedScenario {
-                        what: "environment.gravity_m_s2 missing for constant gravity".to_owned(),
-                    })?;
+            let g = document.environment.gravity_m_s2.ok_or_else(|| {
+                RunnerError::UnsupportedScenario {
+                    what: "environment.gravity_m_s2 missing for constant gravity".to_owned(),
+                }
+            })?;
             if g < 0.0 {
                 return Err(RunnerError::UnsupportedScenario {
                     what: "environment.gravity_m_s2 must be a non-negative magnitude; \
@@ -606,12 +604,13 @@ fn build_gravity_force_adapter_point_mass(
                     .ok_or_else(|| RunnerError::UnsupportedScenario {
                         what: "environment.mu_m3_s2 missing for j2 gravity".to_owned(),
                     })?;
-            let r_e = document
-                .environment
-                .r_e_m
-                .ok_or_else(|| RunnerError::UnsupportedScenario {
-                    what: "environment.r_e_m missing for j2 gravity".to_owned(),
-                })?;
+            let r_e =
+                document
+                    .environment
+                    .r_e_m
+                    .ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "environment.r_e_m missing for j2 gravity".to_owned(),
+                    })?;
             let j2 = document.environment.j2.unwrap_or(WGS84_J2);
             let model = J2Gravity::new(mu, r_e, j2)?;
             Ok(Box::new(GravityForceAdapter::new(
@@ -1386,8 +1385,7 @@ mod tests {
 
         let resolved_files = scenario.resolved_files().expect("resolve files");
         let loaded_models = load_models(&scenario.document, &resolved_files).expect("load models");
-        let assembly =
-            crate::assembly::synthesize_assembly(&scenario.document).expect("assembly");
+        let assembly = crate::assembly::synthesize_assembly(&scenario.document).expect("assembly");
         let motor = loaded_models.motor.as_ref().expect("motor loaded");
         let dry_mass_kg = crate::assembly::dry_mass_kg_at(
             &assembly,
@@ -1451,8 +1449,7 @@ mod tests {
 
         let resolved_files = scenario.resolved_files().expect("resolve files");
         let loaded_models = load_models(&scenario.document, &resolved_files).expect("load models");
-        let assembly =
-            crate::assembly::synthesize_assembly(&scenario.document).expect("assembly");
+        let assembly = crate::assembly::synthesize_assembly(&scenario.document).expect("assembly");
 
         let initial_state = build_initial_state(&scenario.document, &loaded_models, &assembly)
             .expect("initial state");

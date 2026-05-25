@@ -767,7 +767,7 @@ pub const STARDUST_SRC_TABLE20_TRAJ_OUTPUT: PublicStardustTrajectoryOutputBenchm
 ///
 /// Returns a `(position, velocity, flight-path-angle, heading)`
 /// tuple ready to seed a rigid-body integrator. Returns the
-/// scalar tuple; integration into [`openbmp_state::RigidBodyState`]
+/// scalar tuple; integration into `openbmp_state::RigidBodyState`
 /// happens at the scenario layer.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct EntryInterfaceBuilder {

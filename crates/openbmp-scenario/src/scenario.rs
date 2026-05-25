@@ -345,7 +345,13 @@ lower_delta_v_body_m_s = [0.0, 0.0, -0.5]
     fn multi_body_block_is_v3_only() {
         let toml_v2 = format!("{MINIMAL}{MULTI_BODY_BLOCK}");
         assert_v3_block_reserved_under_v2(&toml_v2, "multi_body");
-        assert_v3_block_not_yet_supported(&toml_v2, "multi_body", "multi-body separation");
+        let v3 = toml_v2.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "multi_body.separation" && field_b == "mission.events"),
+            "expected multi_body to require matching mission events under v3, got {err:?}",
+        );
     }
 
     #[test]
@@ -2893,6 +2899,135 @@ action  = { kind = "separation" }
             err,
             ScenarioError::UnsupportedActionKind { ref kind, .. } if kind == "separation"
         ));
+    }
+
+    const VALID_STAGE_SEPARATION_SCENARIO: &str =
+        include_str!("../tests/fixtures/stage-separation-valid.toml");
+
+    #[test]
+    fn validates_jettison_stage_with_matching_multi_body_block() {
+        let scenario =
+            Scenario::from_toml_str(VALID_STAGE_SEPARATION_SCENARIO).expect("scenario validates");
+        let mission = scenario.document.mission.as_ref().expect("mission present");
+        assert!(matches!(
+            mission.events[0].action,
+            crate::ScenarioActionConfig::JettisonStage { ref body } if body == "lower"
+        ));
+        let multi_body = scenario
+            .document
+            .multi_body
+            .as_ref()
+            .expect("multi_body present");
+        assert_eq!(multi_body.separations.len(), 1);
+        assert_eq!(multi_body.separations[0].lower_body_id, "lower");
+    }
+
+    #[test]
+    fn rejects_jettison_stage_without_multi_body_block() {
+        let toml = VALID_STAGE_SEPARATION_SCENARIO
+            .split_once("\n[multi_body]\n")
+            .expect("fixture has multi_body block")
+            .0
+            .to_owned();
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_b, .. }
+                if field_b == "multi_body"),
+            "expected InconsistentSection requiring multi_body, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_jettison_stage_unknown_body() {
+        let toml = VALID_STAGE_SEPARATION_SCENARIO.replace(r#"body = "lower""#, r#"body = "typo""#);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnknownBodyReference { ref field, ref value }
+                if field == "mission.events[0].action.body" && value == "typo"),
+            "expected UnknownBodyReference, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_jettison_stage_on_point_mass_vehicle() {
+        let toml = VALID_STAGE_SEPARATION_SCENARIO
+            .replace(r#"kind                                  = "rigid_body""#, r#"kind                                  = "point_mass""#)
+            .replace(
+                "initial_quaternion_body_to_eci_xyzw   = [0.0, 0.0, 0.0, 1.0]\ninitial_angular_velocity_body_rad_s   = [0.0, 0.0, 0.0]\n",
+                "",
+            )
+            .replace(
+                "dry_inertia_body_kg_m2      = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]\n",
+                "",
+            )
+            .replace(
+                "dry_inertia_body_kg_m2      = [[0.25, 0.0, 0.0], [0.0, 0.25, 0.0], [0.0, 0.0, 0.25]]\n",
+                "",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, .. }
+                if field == "mission.events.action.kind = \"jettison_stage\""),
+            "expected IncompatibleAssemblyEntry, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_jettison_stage_without_matching_multi_body_body() {
+        let toml = VALID_STAGE_SEPARATION_SCENARIO.replace(
+            r#"lower_body_id             = "lower""#,
+            r#"lower_body_id             = "upper""#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, .. }
+                if field_a == "multi_body.separation[0].upper_body_id"),
+            "expected InconsistentSection from invalid multi_body body pair, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_multi_body_without_matching_jettison_stage() {
+        let toml =
+            VALID_STAGE_SEPARATION_SCENARIO.replace(r#"body = "lower""#, r#"body = "upper""#);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "mission.events[0].action.body" && field_b == "multi_body.separation"),
+            "expected InconsistentSection for unmatched body, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_jettisoned_body() {
+        let duplicate_event = r#"
+[[mission.events]]
+id      = "stage_separation_again"
+trigger = { kind = "at_time", time_s = 0.3 }
+action  = { kind = "jettison_stage", body = "lower" }
+once    = true
+"#;
+        let toml = VALID_STAGE_SEPARATION_SCENARIO.replace(
+            "\n[multi_body]\n",
+            &format!("{duplicate_event}\n[multi_body]\n"),
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::DuplicateValue { ref field, ref value }
+                if field == "mission.events[1].action.body" && value == "lower"),
+            "expected DuplicateValue for duplicate jettison, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_separation_momentum_mismatch() {
+        let toml = VALID_STAGE_SEPARATION_SCENARIO.replace("[0.0, 0.0, -1.0]", "[0.0, 0.0, -0.5]");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::SeparationMomentumMismatch { ref field, .. }
+                if field == "multi_body.separation[0]"),
+            "expected SeparationMomentumMismatch, got {err:?}",
+        );
     }
 
     #[test]

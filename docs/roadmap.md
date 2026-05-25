@@ -35,6 +35,11 @@ and are gated in CI.
   adaptive forms behind an explicit solver profile.
 - **Re-entry trajectory tools** — Allen-Eggers ballistic closed form and the
   Vinh lifting-entry equations, cross-checked against their analytic forms.
+- **PR1 stage-separation core** — `jettison_stage` validates against
+  `[multi_body]`, conserves linear momentum to tolerance, and executes a
+  fixed-step RK4, gravity-only rigid-body split with deterministic propagation
+  of the departing body. Broader force ownership and footprint reporting remain
+  deferred.
 
 ## Shipped at research grade
 
@@ -55,15 +60,35 @@ not as validated fidelity.
 
 ## Deferred
 
-These are not implemented. Each is gated so that selecting it fails closed
-with a clear diagnostic rather than running on placeholder behaviour. They are
-listed so the scope conversation does not need to be re-derived.
+These are not implemented, or remain outside a narrower validated envelope
+called out above. Each is gated so that selecting it fails closed with a clear
+diagnostic rather than running on placeholder behaviour. They are listed so the
+scope conversation does not need to be re-derived.
 
 **Kernel and scenario**
 
 - Multi-rate scheduling as a first-class kernel feature.
-- Multi-body simultaneous propagation after stage separation, and scripted
-  in-flight separation events.
+- Per-body force-stack ownership after stage separation (aero, thrust, tanks,
+  recovery), coupled-body effects, and post-run spent-body footprint reporting.
+  The PR1 gravity-only split is implemented; see
+  [`staging-and-separation.md`](staging-and-separation.md).
+
+**Flight profiles**
+
+The multi-phase ascent → coast → apogee → descent → entry profile is designed
+across [`flight-profiles-architecture.md`](flight-profiles-architecture.md) and
+its companions, and ships as fail-closed schema and trait stubs
+(`openbmp-physics::profile`, `select_guidance_profile`, the
+`[fc.ascent_reference]` block). PR1 `jettison_stage` is implemented only inside
+the validated gravity-only separation envelope; each remaining capability fails
+closed until it lands with validation evidence:
+
+- Powered-ascent reference-trajectory generation (gravity-turn / pitch-program
+  / explicit reference) — [`ascent-guidance.md`](ascent-guidance.md).
+- Coast / apogee phase wiring and the range-safety landing footprint —
+  [`ballistic-coast-and-apogee.md`](ballistic-coast-and-apogee.md).
+- Live `entry_interface` → `lifting_entry` → `final_descent` handoff —
+  [`descent-and-entry-profiles.md`](descent-and-entry-profiles.md).
 
 **Estimator and control**
 

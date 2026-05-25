@@ -130,6 +130,20 @@ Reject contributions that add or request:
   "terminal-mode" autopilot variant whose stated purpose is end-game
   maneuvering.
 
+> **Flight profiles — accepted boundary.** The multi-phase flight-profile work
+> (see [`flight-profiles-architecture.md`](flight-profiles-architecture.md)) is
+> deliberately on the accepted side of this line and reinforces it. Ascent and
+> entry references are *reference-trajectory generation* (an inertial cutoff
+> state or an entry-corridor limit band), never guidance to a location. The
+> range-safety landing footprint is a *forward, offline* prediction of where an
+> unpowered body comes down, in range-relative coordinates, for recovery and
+> range-safety planning — it accepts no desired landing location, no aimpoint,
+> and emits no steering command. The bank-angle modulation in a lifting entry
+> is corridor-driven (heat-rate / load-factor limits), not a terminal-mode
+> end-game variant. New aimpoint / miss-distance / terminal-guidance /
+> bank-to-turn / skid-to-turn / intercept terms are added to the parse-time
+> lint. See [`profile-vocabulary-and-guardrails.md`](profile-vocabulary-and-guardrails.md).
+
 ### Real fielded-vehicle data
 - Aerodynamic decks for any operational missile or operational launch vehicle
   that are not openly published.

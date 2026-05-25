@@ -707,11 +707,14 @@ common scripted-command case without a separate trigger surface.
 | `stop` | `label: string` | Halts the run with `StopReason::MissionEnded { label }`. Distinct from `EndTime` so determinism telemetry can distinguish CLI-driven stops from scenario-driven mission ends. |
 | `effector_override` | `id: string` (declared effector id), `command: f64` (finite) | One-shot command override for the named effector on the next runner step. Resolves the declared id against the runner's effector rack via FNV-1a-64 of `vehicle.assembly.effectors.<id>`. Unknown ids are rejected by `openbmp check`. The kernel records the action; the runner drains it from the per-step fired-event queue and applies it on the next rack tick before the kernel step. Override wins over any declared `command_schedule` for that rack tick only. |
 | `engine_command` | `id: string` (declared engine id), `command: { throttle_unit: f64 ∈ [0,1], gimbal_pitch_rad: f64, gimbal_yaw_rad: f64, ignite: bool, shutdown: bool }` | Per-engine command targeting a declared `[[vehicle.assembly.engines]]` by id. Resolves the declared id via FNV-1a-64 of `vehicle.assembly.engines.<id>`. Unknown ids are rejected by `openbmp check`. Kernel records; runner-side `EngineRack` drains and applies on the next rack tick before the kernel step. `ignite=true` is honoured only from `Idle`; `shutdown=true` only from `Igniting` / `Burning`. Throttle / gimbal values are clamped to engine limits at apply time. |
+| `jettison_stage` | `body: string` (declared body id) | Stage-separation command targeting a declared `[[vehicle.assembly.bodies]]` by id. Requires `vehicle.kind = "rigid_body"`, exactly one matching `[[multi_body.separation]]`, no duplicate jettison of the same body, and momentum conservation when `conserve_momentum = true`. The PR1 runner executes this only for fixed-step RK4, gravity-only rigid-body profiles; other force-rack shapes fail closed. |
 | `deploy_recovery` | `id: string` (declared recovery id), `command: "deploy" \| "deploy_drogue" \| "deploy_main" \| "stow"` | Recovery-device command targeting a declared `[[vehicle.assembly.recovery]]` by id. Resolves via FNV-1a-64 of `vehicle.assembly.recovery.<id>`. Unknown ids and kind-incompatible commands are rejected by `openbmp check`; runner-side `RecoveryRack` drains accepted firings on the next rack tick before the kernel step. |
 
-The reserved action `separation` is rejected at parse
-time with a typed deferral error. The `effector_override`,
-`engine_command`, and `deploy_recovery` actions are wired end-to-end.
+The reserved action `separation` is rejected at parse time with a typed
+deferral error because it does not identify the departing body. The
+`effector_override`, `engine_command`, `jettison_stage`, and
+`deploy_recovery` actions are wired end-to-end inside their documented
+validation envelopes.
 
 #### `once` semantics
 
@@ -1646,7 +1649,10 @@ and declares the two `vehicle.assembly.bodies[*].id` values that
 continue propagating after the event. Optional impulsive delta-V
 fields apply at the separation moment. `conserve_momentum` defaults
 to `true`; the loader verifies
-`m_u·Δv_u + m_l·Δv_l ≈ 0` to a documented tolerance.
+`m_u·Δv_u + m_l·Δv_l ≈ 0` to a documented tolerance. The PR1 runtime
+consumer supports fixed-step RK4, rigid-body, gravity-only profiles; aero,
+thrust, tank, recovery, and coupled-body ownership after separation remain
+fail-closed.
 
 ### v3-only `[fc]` sub-blocks
 

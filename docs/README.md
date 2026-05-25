@@ -62,3 +62,26 @@ and the architecture; reach for the others as needed.
   adapter pattern.
 - [Glossary](glossary.md) — shared vocabulary for frames, time, determinism,
   validation labels, and safety terms.
+
+## Flight profiles
+
+Design specs for the multi-phase ascent → coast → apogee → descent → entry
+flight profile. These are forward-physics trajectory mechanics under the
+platform's existing non-weapon guardrails; the capabilities ship as
+fail-closed schema and trait stubs until each lands with validation evidence.
+
+- [Flight Profiles Architecture](flight-profiles-architecture.md) — umbrella:
+  the phase canon, the academic vocabulary, the safety posture, and how the
+  companions fit together.
+- [Staging and Separation](staging-and-separation.md) — executing multi-body
+  stage separation: jettison, separation impulse, simultaneous spent-stage
+  propagation.
+- [Ascent Guidance](ascent-guidance.md) — gravity-turn / pitch-program /
+  explicit reference-trajectory generation for powered ascent.
+- [Ballistic Coast and Apogee](ballistic-coast-and-apogee.md) — exo-atmospheric
+  coast, apogee detection, and the range-safety landing footprint.
+- [Descent and Entry Profiles](descent-and-entry-profiles.md) — wiring
+  Allen-Eggers / Vinh into live entry phases and recovery.
+- [Profile Vocabulary and Guardrails](profile-vocabulary-and-guardrails.md) —
+  accepted / rejected vocabulary and the fail-closed validation that keeps
+  profiles non-weaponizable.

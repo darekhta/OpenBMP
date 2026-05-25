@@ -166,13 +166,16 @@ impl RecoveryRack {
                              `deploy`, `deploy_drogue`, `deploy_main`, `stow`",
                         ),
                     })?;
-                let device = self.devices.get_mut(id).ok_or_else(|| RunnerError::Recovery {
-                    field: format!(
-                        "mission.events[*].action.deploy_recovery.{id_value}",
-                        id_value = id.value()
-                    ),
-                    reason: "deploy_recovery event targets an unknown recovery id".to_owned(),
-                })?;
+                let device = self
+                    .devices
+                    .get_mut(id)
+                    .ok_or_else(|| RunnerError::Recovery {
+                        field: format!(
+                            "mission.events[*].action.deploy_recovery.{id_value}",
+                            id_value = id.value()
+                        ),
+                        reason: "deploy_recovery event targets an unknown recovery id".to_owned(),
+                    })?;
                 device
                     .apply_command(typed_command)
                     .map_err(|err| RunnerError::Recovery {

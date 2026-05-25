@@ -131,7 +131,7 @@ impl FdirJob {
     /// with `glrt_window_samples = 0` or
     /// `glrt_false_alarm_rate ∉ (0, 1)`. Callers are expected to
     /// validate these at scenario-load time
-    /// ([`crate::params::FdirParams`] is populated from
+    /// (`FdirParams` is populated from
     /// `[fc.fdir.detector]` whose own validator rejects invalid
     /// values).
     // The three `expect()` calls below are documented as the panic

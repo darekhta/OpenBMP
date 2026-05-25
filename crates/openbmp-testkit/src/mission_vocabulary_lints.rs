@@ -88,7 +88,7 @@ impl VocabularyFindings {
 }
 
 /// Scan `root` recursively for the rejected mission vocabulary in
-/// `*.rs` and `*.md` files. Skips paths matching [`ALLOWLIST_PATHS`].
+/// `*.rs` and `*.md` files. Skips paths matching `ALLOWLIST_PATHS`.
 ///
 /// # Errors
 ///
@@ -179,10 +179,7 @@ mod tests {
                     format!("  {}:{} ({})", rel.display(), line, pat)
                 })
                 .collect();
-            panic!(
-                "mission-vocabulary tripwire fired:\n{}",
-                lines.join("\n")
-            );
+            panic!("mission-vocabulary tripwire fired:\n{}", lines.join("\n"));
         }
     }
 }

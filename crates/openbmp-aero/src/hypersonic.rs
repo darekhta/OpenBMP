@@ -14,7 +14,7 @@
 //!   coefficient.
 //! * [`LocalInclinationPanels`] — mesh-panel Modified Newtonian
 //!   integration with optional back-face shadowing.
-//! * [`HypersonicSimilarityParameter`] — convenience helper for
+//! * `HypersonicSimilarityParameter` — convenience helper for
 //!   `K = M · θ_b` slenderness scaling.
 //!
 //! These are scenario-independent academic methods. They consume the
@@ -300,9 +300,9 @@ impl ModifiedNewtonian {
         let g = gamma;
         let g_plus = g + 1.0;
         let g_minus = g - 1.0;
-        let numer = g_plus * g_plus * m2;
+        let numerator = g_plus * g_plus * m2;
         let denom = 4.0 * g * m2 - 2.0 * g_minus;
-        let ratio_t = numer / denom;
+        let ratio_t = numerator / denom;
         let exponent_pow = g / g_minus;
         let factor_a = ratio_t.powf(exponent_pow);
         let factor_b = (1.0 - g + 2.0 * g * m2) / g_plus;

@@ -347,10 +347,12 @@ fn apply_initial_slosh_spring_mass(
     let Some(initial) = initial else {
         return Ok(());
     };
-    let displacement = initial.displacement_body_m.ok_or_else(|| RunnerError::Tank {
-        field: "vehicle.assembly.tanks[*].initial_slosh.displacement_body_m".to_owned(),
-        reason: "required for equivalent_spring_mass".to_owned(),
-    })?;
+    let displacement = initial
+        .displacement_body_m
+        .ok_or_else(|| RunnerError::Tank {
+            field: "vehicle.assembly.tanks[*].initial_slosh.displacement_body_m".to_owned(),
+            reason: "required for equivalent_spring_mass".to_owned(),
+        })?;
     let velocity = initial.velocity_body_m_s.ok_or_else(|| RunnerError::Tank {
         field: "vehicle.assembly.tanks[*].initial_slosh.velocity_body_m_s".to_owned(),
         reason: "required for equivalent_spring_mass".to_owned(),

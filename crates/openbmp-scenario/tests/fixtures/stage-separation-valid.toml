@@ -1,0 +1,76 @@
+openbmp.scenario = 3
+
+[meta]
+name        = "validated-toy-stage-separation"
+description = "Synthetic validated-toy two-body separation fixture."
+validation  = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s  = 1.0
+dt_s    = 0.1
+seed    = 0x5151
+
+[vehicle]
+kind                                  = "rigid_body"
+initial_position_eci_m                = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s              = [0.0, 0.0, 10.0]
+initial_quaternion_body_to_eci_xyzw   = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s   = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "validated-toy-stage-separation"
+
+[[vehicle.assembly.bodies]]
+id                          = "upper"
+geometry                    = { kind = "cylinder", length_m = 1.0, diameter_m = 0.1 }
+dry_mass_kg                 = 4.0
+dry_cg_body_m               = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2      = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[[vehicle.assembly.bodies]]
+id                          = "lower"
+geometry                    = { kind = "cylinder", length_m = 1.0, diameter_m = 0.1 }
+dry_mass_kg                 = 1.0
+dry_cg_body_m               = [0.0, 0.0, -1.0]
+dry_inertia_body_kg_m2      = [[0.25, 0.0, 0.0], [0.0, 0.25, 0.0], [0.0, 0.0, 0.25]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 0.0
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/stage-separation.csv"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "powered_ascent"
+
+[[mission.states]]
+id    = "powered_ascent"
+label = "powered ascent"
+
+[[mission.events]]
+id      = "stage_separation"
+trigger = { kind = "at_time", time_s = 0.2 }
+action  = { kind = "jettison_stage", body = "lower" }
+once    = true
+
+[multi_body]
+
+[[multi_body.separation]]
+event_id                  = "stage_separation"
+upper_body_id             = "upper"
+lower_body_id             = "lower"
+upper_delta_v_body_m_s    = [0.0, 0.0, 0.25]
+lower_delta_v_body_m_s    = [0.0, 0.0, -1.0]
+conserve_momentum         = true

@@ -47,9 +47,7 @@ pub enum ScenarioError {
     /// consumer is not yet implemented. The schema accepts the block so
     /// authors can write it ahead of the capability landing; validation
     /// rejects it until the named capability ships.
-    #[error(
-        "scenario v3 element {field} parses but is not yet supported: {missing_capability}"
-    )]
+    #[error("scenario v3 element {field} parses but is not yet supported: {missing_capability}")]
     ElementNotYetSupported {
         /// Field path that triggered the rejection.
         field: String,
@@ -254,6 +252,19 @@ pub enum ScenarioError {
         field: String,
         /// Referenced scenario-text body id.
         value: String,
+    },
+    /// A declared stage-separation impulse failed the load-time
+    /// linear-momentum conservation check.
+    #[error(
+        "{field} violates stage-separation momentum conservation: residual {residual_kg_m_s} kg*m/s exceeds tolerance {tolerance_kg_m_s} kg*m/s"
+    )]
+    SeparationMomentumMismatch {
+        /// Field path.
+        field: String,
+        /// Norm of `m_upper*dv_upper + m_lower*dv_lower`.
+        residual_kg_m_s: f64,
+        /// Absolute accepted residual.
+        tolerance_kg_m_s: f64,
     },
     /// A `[vehicle.assembly]` entry is incompatible with another
     /// declared field (e.g. non-`RigidLiquid` slosh in a point-mass

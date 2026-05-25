@@ -357,7 +357,7 @@ pub type StateId = PhaseId;
 /// actions — actions a real-hardware FC adopter must be able to honour
 /// without a simulator present. Simulator-only physics overrides
 /// (engine commands, effector overrides, scripted separation, recovery
-/// deploy) live in [`openbmp_scenario_script::ScenarioScriptAction`]
+/// deploy) live in `openbmp_scenario_script::ScenarioScriptAction`
 /// in a separate crate, which the HAL deployment does not link.
 ///
 /// See [`docs/mission-graph-architecture.md § Action taxonomy`](../../docs/mission-graph-architecture.md)

@@ -54,6 +54,7 @@ pub mod frames;
 pub mod gravity;
 pub mod kinematics;
 pub mod magnetic;
+pub mod profile;
 pub mod realgas;
 pub mod reentry;
 pub mod statistics;

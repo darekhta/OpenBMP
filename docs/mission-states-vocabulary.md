@@ -362,7 +362,20 @@ should land easily — they just need the citation in the table.
 - BPS.space Signal flight-computer phase vocabulary (referenced via
   `design-concept.md § Architectural Inspirations`).
 
+## Flight-profile extensions
+
+The multi-phase flight-profile work adds accepted phase names
+(`powered_ascent`, `apogee_approach`, `ballistic_descent`, `entry_interface`),
+reaffirms the existing academic replacements (`coast`, `lifting_entry`,
+`final_descent`), and adds rejected operational terms (`aimpoint`,
+`miss-distance`, `terminal-guidance`, `bank-to-turn`, `skid-to-turn`,
+`intercept`, `reentry-vehicle`, `circular-error`) to the parse-time lint. The
+authoritative list, with rationale and the fail-closed validation rules, is in
+[`profile-vocabulary-and-guardrails.md`](profile-vocabulary-and-guardrails.md).
+
 See also:
 [`mission-graph-architecture.md`](mission-graph-architecture.md),
 [`safety-boundaries.md`](safety-boundaries.md),
+[`flight-profiles-architecture.md`](flight-profiles-architecture.md),
+[`profile-vocabulary-and-guardrails.md`](profile-vocabulary-and-guardrails.md),
 [`design-concept.md`](design-concept.md).

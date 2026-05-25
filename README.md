@@ -157,6 +157,12 @@ contract is in [`docs/safety-boundaries.md`](docs/safety-boundaries.md).
 | [Real-Rocket Integration](docs/real-rocket-integration.md) | How a downstream adopter assembles a vehicle on top of OpenBMP. |
 | [Roadmap](docs/roadmap.md) | Capabilities that are shipped, research-grade, or deferred. |
 | [Glossary](docs/glossary.md) | Shared vocabulary for frames, time, determinism, validation, safety. |
+| [Flight Profiles Architecture](docs/flight-profiles-architecture.md) | Umbrella for the multi-phase ascent → coast → entry profile design series. |
+| [Staging and Separation](docs/staging-and-separation.md) | Executing multi-body stage separation: jettison, impulse, simultaneous propagation. |
+| [Ascent Guidance](docs/ascent-guidance.md) | Gravity-turn / pitch-program reference-trajectory generation for powered ascent. |
+| [Ballistic Coast and Apogee](docs/ballistic-coast-and-apogee.md) | Exo-atmospheric coast, apogee detection, and the range-safety landing footprint. |
+| [Descent and Entry Profiles](docs/descent-and-entry-profiles.md) | Wiring Allen-Eggers / Vinh into live entry phases and recovery. |
+| [Profile Vocabulary and Guardrails](docs/profile-vocabulary-and-guardrails.md) | Accepted / rejected profile vocabulary and the fail-closed non-weapon validation. |
 
 ## Toolchain
 
