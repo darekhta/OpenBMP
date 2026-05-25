@@ -1526,7 +1526,6 @@ name = "openbmp-scenario-script"
 version = "0.0.1"
 dependencies = [
  "openbmp-core",
- "openbmp-mission",
 ]
 
 [[package]]

@@ -4,11 +4,11 @@
 //! the in-house *physics-only* scenario script — engine throttle /
 //! gimbal commands, effector overrides, scripted separation, recovery
 //! deploy — live in this crate, separate from
-//! [`openbmp_mission::MissionAction`] (which is HAL-portable).
+//! `openbmp_mission::MissionAction` (which is HAL-portable).
 //!
 //! This crate is **simulator-only**: it depends on
-//! `openbmp-mission` and `openbmp-core` for trigger / id types but
-//! its [`ScenarioScriptAction`] enum is consumed only by the
+//! `openbmp-core` for id types while staying separate from
+//! `openbmp-mission`. Its [`ScenarioScriptAction`] enum is consumed only by the
 //! simulator kernel. A real-hardware HAL adopter does not link this
 //! crate.
 //!

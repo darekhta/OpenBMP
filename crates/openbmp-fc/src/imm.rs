@@ -218,7 +218,7 @@ impl ImmEstimator {
     }
 
     /// Posterior mode probabilities (sum to 1 within
-    /// [`PROBABILITY_SIMPLEX_TOLERANCE`]).
+    /// `PROBABILITY_SIMPLEX_TOLERANCE`).
     #[must_use]
     pub fn mode_probabilities(&self) -> &[f64] {
         &self.mode_probabilities

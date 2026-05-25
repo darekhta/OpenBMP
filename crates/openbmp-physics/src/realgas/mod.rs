@@ -24,8 +24,8 @@
 //! Pure `f64` arithmetic; piecewise polynomial fits with locked
 //! operand order; no FMA. The trait surface is total: callers that
 //! query outside the declared validity envelope receive
-//! [`PhysicsError::OutOfEnvelope`] from the wrapping
-//! [`EquilibriumAir::validate`] guard.
+//! [`PhysicsError::OutOfEnvelope`] from the wrapping model-specific
+//! validation guard.
 
 pub mod park_2t;
 pub mod tannehill;

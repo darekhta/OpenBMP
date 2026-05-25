@@ -88,7 +88,7 @@ impl VocabularyFindings {
 }
 
 /// Scan `root` recursively for the rejected mission vocabulary in
-/// `*.rs` and `*.md` files. Skips paths matching [`ALLOWLIST_PATHS`].
+/// `*.rs` and `*.md` files. Skips paths matching `ALLOWLIST_PATHS`.
 ///
 /// # Errors
 ///

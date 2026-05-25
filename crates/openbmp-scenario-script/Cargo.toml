@@ -9,8 +9,7 @@ authors.workspace       = true
 description             = "OpenBMP scenario-script actions — simulator-only physics overrides; not HAL-portable."
 
 [dependencies]
-openbmp-core    = { workspace = true }
-openbmp-mission = { workspace = true }
+openbmp-core = { workspace = true }
 
 [lints]
 workspace = true

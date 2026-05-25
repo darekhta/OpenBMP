@@ -464,7 +464,7 @@ pub enum AdaptiveIntegratorError {
 ///
 /// The scaled error norm uses the **per-component** Hairer-Nørsett-
 /// Wanner Vol I §II.4 RMS form via
-/// [`Integratable::weighted_error_norm`]: each component-wise scaled
+/// `Integratable::weighted_error_norm`: each component-wise scaled
 /// error term is divided by its own per-component scale `sc_i`,
 /// then averaged in RMS. This replaces the original scalar form
 /// `err = h · ||e'||₂ / (atol + rtol ·
@@ -980,7 +980,7 @@ mod dopri853_tableau {
 /// 8th-order accurate.
 ///
 /// 12-stage explicit Runge-Kutta with the full 8th-order solution
-/// from [`dopri853_tableau`]. Drop-in higher-order alternative to
+/// from `dopri853_tableau`. Drop-in higher-order alternative to
 /// [`Rk4FixedStep`] / [`Dopri54FixedStep`] when the 4th- or 5th-order
 /// truncation error is the limiting factor on a problem where the
 /// per-step state is otherwise well-behaved.
@@ -1231,7 +1231,7 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
 /// ratio, so this expression is equivalent to SciPy's
 /// `|h| · ||err5||² / sqrt((||err5||² + 0.01·||err3||²) · N)`
 /// formulation but expressed in terms of the per-component RMS norm
-/// the [`Integratable::weighted_error_norm`] trait already provides.
+/// the `Integratable::weighted_error_norm` trait already provides.
 ///
 /// The step controller is an I-controller (no PI β term): the
 /// 3rd-order companion stabilising the err denominator plays the

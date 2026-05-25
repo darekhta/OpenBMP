@@ -9,7 +9,7 @@
 //! [`openbmp_sim::Dopri853FixedStep`], and
 //! [`openbmp_sim::Dopri853Adaptive`] without duplicating the run loop.
 //!
-//! The dispatch overhead is one match arm per [`Integrator::advance`]
+//! The dispatch overhead is one match arm per `Integrator::advance`
 //! call. The compiler inlines the per-variant body, so the IEEE 754
 //! arithmetic in each branch is identical to the standalone integrator.
 //!

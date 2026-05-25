@@ -440,15 +440,15 @@ impl ReactionRates {
 /// Composition rate of change (mole fractions / second).
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub struct CompositionDerivative {
-    /// d[N2] / dt (mole fraction / s).
+    /// d\[N2\] / dt (mole fraction / s).
     pub dn2_dt: f64,
-    /// d[O2] / dt.
+    /// d\[O2\] / dt.
     pub do2_dt: f64,
-    /// d[NO] / dt.
+    /// d\[NO\] / dt.
     pub dno_dt: f64,
-    /// d[N] / dt.
+    /// d\[N\] / dt.
     pub dn_dt: f64,
-    /// d[O] / dt.
+    /// d\[O\] / dt.
     pub do_dt: f64,
 }
 

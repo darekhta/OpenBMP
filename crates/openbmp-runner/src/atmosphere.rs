@@ -53,7 +53,7 @@ const SUPPORTED_ATMOSPHERE_KINDS: &[&str] = &["us_standard_1976", "piecewise_exp
 /// # Errors
 ///
 /// Returns [`RunnerError::UnsupportedScenario`] when `atmosphere_kind`
-/// is not in [`SUPPORTED_ATMOSPHERE_KINDS`].
+/// is not in `SUPPORTED_ATMOSPHERE_KINDS`.
 pub fn build_runtime_atmosphere(atmosphere_kind: &str) -> Result<RuntimeAtmosphere, RunnerError> {
     match atmosphere_kind {
         "us_standard_1976" => Ok(RuntimeAtmosphere::UsStandard1976(UsStandard1976::new())),
