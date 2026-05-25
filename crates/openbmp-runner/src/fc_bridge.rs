@@ -477,7 +477,7 @@ fn build_autopilot_lqr_context(
     Ok(None)
 }
 
-/// Helper to derive a [`PrioritisedRedistributedAllocator`]
+/// Helper to derive a `PrioritisedRedistributedAllocator`
 /// from `[fc.autopilot_allocation]` plus the
 /// `[[vehicle.assembly.effectors]]` declarations.
 ///
