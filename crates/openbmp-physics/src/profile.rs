@@ -35,6 +35,8 @@ const MIN_DIRECTION_NORM: f64 = 1.0e-12;
 const QUATERNION_NORM_TOLERANCE: f64 = 1.0e-9;
 const MIN_FOOTPRINT_GRAVITY_M_S2: f64 = 1.0e-12;
 const MIN_LONGITUDE_COSINE: f64 = 1.0e-12;
+const MIN_ENTRY_CORRIDOR_BAND_RAD: f64 = 1.0e-12;
+const MIN_ENTRY_BANK_LIMIT_RAD: f64 = 1.0e-12;
 
 /// Default minimum inertial speed for gravity-turn alignment (m/s).
 pub const GRAVITY_TURN_MINIMUM_SPEED_M_S: f64 = 1.0e-6;
@@ -768,22 +770,232 @@ pub struct EntryCorridor {
     pub flight_path_angle_band_rad: f64,
 }
 
+impl EntryCorridor {
+    /// Validate entry-corridor limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when any limit is non-finite or not
+    /// strictly positive, or when the flight-path-angle band is
+    /// outside `(0, π/2)`.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        require_positive_length(
+            self.max_heat_rate_w_m2,
+            "entry-corridor heat-rate limit must be finite and positive",
+        )?;
+        require_positive_length(
+            self.max_load_factor_g,
+            "entry-corridor load-factor limit must be finite and positive",
+        )?;
+        if !self.flight_path_angle_band_rad.is_finite()
+            || self.flight_path_angle_band_rad <= MIN_ENTRY_CORRIDOR_BAND_RAD
+            || self.flight_path_angle_band_rad >= core::f64::consts::FRAC_PI_2
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "entry-corridor flight-path-angle band must be in (0, π/2)",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Instantaneous state sampled during entry-corridor reference
+/// generation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EntryState {
+    /// Geometric altitude (m).
+    pub altitude_m: f64,
+    /// Inertial speed magnitude (m/s).
+    pub velocity_m_s: f64,
+    /// Flight-path angle (rad), positive upward.
+    pub flight_path_angle_rad: f64,
+    /// Current stagnation-point heat rate estimate (W/m²).
+    pub heat_rate_w_m2: f64,
+    /// Current deceleration load factor (g).
+    pub load_factor_g: f64,
+}
+
+impl EntryState {
+    /// Validate the sampled entry state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when any field is non-finite, altitude
+    /// or diagnostic scalars are negative, velocity is non-positive,
+    /// or flight-path angle is outside `(-π/2, π/2)`.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        if !self.altitude_m.is_finite() || self.altitude_m < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "entry altitude must be finite and non-negative",
+            });
+        }
+        if !self.velocity_m_s.is_finite() || self.velocity_m_s <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "entry velocity must be finite and positive",
+            });
+        }
+        if !self.flight_path_angle_rad.is_finite()
+            || self.flight_path_angle_rad.abs() >= core::f64::consts::FRAC_PI_2
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "entry flight-path angle must be finite and in (-π/2, π/2)",
+            });
+        }
+        if !self.heat_rate_w_m2.is_finite() || self.heat_rate_w_m2 < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "entry heat rate must be finite and non-negative",
+            });
+        }
+        if !self.load_factor_g.is_finite() || self.load_factor_g < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "entry load factor must be finite and non-negative",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Corridor-reference output for a lifting entry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EntryCorridorReferenceOutput {
+    /// Reference bank angle (rad).
+    pub bank_angle_rad: f64,
+    /// Positive heat-rate margin to the configured corridor limit (W/m²).
+    pub heat_rate_margin_w_m2: f64,
+    /// Positive load-factor margin to the configured corridor limit (g).
+    pub load_factor_margin_g: f64,
+    /// Positive flight-path-angle margin to the configured band (rad).
+    pub flight_path_angle_margin_rad: f64,
+}
+
 /// Produces a bank-angle reference for a lifting entry from corridor
 /// limits and the current entry state. Corridor-driven, never
 /// target-driven.
 pub trait EntryCorridorReference {
-    /// Reference bank angle (rad) for the current entry state.
+    /// Reference bank angle and corridor margins for the current
+    /// entry state.
     ///
     /// # Errors
     ///
     /// Returns [`PhysicsError`] when the state lies outside the
     /// corridor's feasible band.
-    fn bank_reference_rad(
+    fn bank_reference(
         &self,
         corridor: &EntryCorridor,
-        flight_path_angle_rad: f64,
+        state: &EntryState,
         time: SimTime,
-    ) -> Result<f64, PhysicsError>;
+    ) -> Result<EntryCorridorReferenceOutput, PhysicsError>;
+}
+
+/// Simple bounded bank-angle entry-corridor reference.
+///
+/// The command is proportional only to flight-path angle within the
+/// declared corridor and is saturated by `max_bank_rad`. Heat-rate and
+/// load-factor limits are fail-closed envelope checks, not targets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BandLimitedEntryCorridorReference {
+    nominal_bank_rad: f64,
+    max_bank_rad: f64,
+}
+
+impl BandLimitedEntryCorridorReference {
+    /// Construct a bounded entry-corridor reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when bank angles are non-finite,
+    /// `max_bank_rad` is not positive, or the nominal bank exceeds
+    /// the absolute bank limit.
+    pub fn new(nominal_bank_rad: f64, max_bank_rad: f64) -> Result<Self, PhysicsError> {
+        if !nominal_bank_rad.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "entry nominal bank angle must be finite",
+            });
+        }
+        if !max_bank_rad.is_finite()
+            || max_bank_rad <= MIN_ENTRY_BANK_LIMIT_RAD
+            || max_bank_rad > core::f64::consts::PI
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "entry maximum bank angle must be in (0, π]",
+            });
+        }
+        if nominal_bank_rad.abs() > max_bank_rad {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "entry nominal bank angle must not exceed max_bank_rad",
+            });
+        }
+        Ok(Self {
+            nominal_bank_rad,
+            max_bank_rad,
+        })
+    }
+
+    /// Nominal bank angle (rad).
+    #[must_use]
+    pub const fn nominal_bank_rad(&self) -> f64 {
+        self.nominal_bank_rad
+    }
+
+    /// Maximum absolute bank angle (rad).
+    #[must_use]
+    pub const fn max_bank_rad(&self) -> f64 {
+        self.max_bank_rad
+    }
+}
+
+impl Default for BandLimitedEntryCorridorReference {
+    fn default() -> Self {
+        Self {
+            nominal_bank_rad: 0.0,
+            max_bank_rad: core::f64::consts::FRAC_PI_2,
+        }
+    }
+}
+
+impl EntryCorridorReference for BandLimitedEntryCorridorReference {
+    fn bank_reference(
+        &self,
+        corridor: &EntryCorridor,
+        state: &EntryState,
+        time: SimTime,
+    ) -> Result<EntryCorridorReferenceOutput, PhysicsError> {
+        corridor.validate()?;
+        state.validate()?;
+        if !time.as_seconds().is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "entry reference time must be finite",
+            });
+        }
+        let heat_rate_margin_w_m2 = corridor.max_heat_rate_w_m2 - state.heat_rate_w_m2;
+        let load_factor_margin_g = corridor.max_load_factor_g - state.load_factor_g;
+        let flight_path_angle_margin_rad =
+            corridor.flight_path_angle_band_rad - state.flight_path_angle_rad.abs();
+        if heat_rate_margin_w_m2 < 0.0 {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "entry state exceeds heat-rate corridor",
+            });
+        }
+        if load_factor_margin_g < 0.0 {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "entry state exceeds load-factor corridor",
+            });
+        }
+        if flight_path_angle_margin_rad < 0.0 {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "entry state exceeds flight-path-angle corridor",
+            });
+        }
+        let normalized_gamma = state.flight_path_angle_rad / corridor.flight_path_angle_band_rad;
+        let bank_angle_rad = (self.nominal_bank_rad - normalized_gamma * self.max_bank_rad)
+            .clamp(-self.max_bank_rad, self.max_bank_rad);
+        Ok(EntryCorridorReferenceOutput {
+            bank_angle_rad,
+            heat_rate_margin_w_m2,
+            load_factor_margin_g,
+            flight_path_angle_margin_rad,
+        })
+    }
 }
 
 fn require_positive_mass(value: f64, reason: &'static str) -> Result<(), PhysicsError> {
@@ -986,7 +1198,8 @@ fn validate_reference_quaternion(q_xyzw: [f64; 4]) -> Result<(), PhysicsError> {
 #[allow(clippy::float_cmp, clippy::unwrap_used)]
 mod tests {
     use super::{
-        AscentReferenceGenerator, AscentState, BallisticState, ConstantGravityRangeSafetyFootprint,
+        AscentReferenceGenerator, AscentState, BallisticState, BandLimitedEntryCorridorReference,
+        ConstantGravityRangeSafetyFootprint, EntryCorridor, EntryCorridorReference, EntryState,
         FootprintDispersionInput, FootprintEnvironment, FootprintGeodeticOrigin,
         GravityTurnAscentReference, MomentumConservingStageSeparation, PitchProgramAscentReference,
         RangeSafetyFootprint, STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageSeparationModel,
@@ -1158,6 +1371,72 @@ mod tests {
         let err = ConstantGravityRangeSafetyFootprint
             .landing_footprint(&state, &env)
             .unwrap_err();
+        assert!(matches!(err, PhysicsError::InvalidParameter { .. }));
+    }
+
+    fn nominal_entry_corridor() -> EntryCorridor {
+        EntryCorridor {
+            max_heat_rate_w_m2: 1.0e6,
+            max_load_factor_g: 8.0,
+            flight_path_angle_band_rad: 0.2,
+        }
+    }
+
+    fn nominal_entry_state() -> EntryState {
+        EntryState {
+            altitude_m: 80_000.0,
+            velocity_m_s: 7_800.0,
+            flight_path_angle_rad: -0.05,
+            heat_rate_w_m2: 2.5e5,
+            load_factor_g: 2.0,
+        }
+    }
+
+    #[test]
+    fn entry_corridor_reference_reports_bank_and_margins() {
+        let reference = BandLimitedEntryCorridorReference::new(0.0, 1.0).unwrap();
+        let output = reference
+            .bank_reference(
+                &nominal_entry_corridor(),
+                &nominal_entry_state(),
+                SimTime::from_seconds(10.0),
+            )
+            .unwrap();
+        assert!(output.bank_angle_rad > 0.0);
+        assert_eq!(output.heat_rate_margin_w_m2, 750_000.0);
+        assert_eq!(output.load_factor_margin_g, 6.0);
+        assert!((output.flight_path_angle_margin_rad - 0.15).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn entry_corridor_rejects_excess_heat_load_or_angle() {
+        let reference = BandLimitedEntryCorridorReference::default();
+        let mut state = nominal_entry_state();
+        state.heat_rate_w_m2 = 2.0e6;
+        let err = reference
+            .bank_reference(
+                &nominal_entry_corridor(),
+                &state,
+                SimTime::from_seconds(10.0),
+            )
+            .unwrap_err();
+        assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
+
+        state = nominal_entry_state();
+        state.flight_path_angle_rad = -0.5;
+        let err = reference
+            .bank_reference(
+                &nominal_entry_corridor(),
+                &state,
+                SimTime::from_seconds(10.0),
+            )
+            .unwrap_err();
+        assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
+    }
+
+    #[test]
+    fn entry_corridor_constructor_rejects_invalid_bank_limits() {
+        let err = BandLimitedEntryCorridorReference::new(2.0, 1.0).unwrap_err();
         assert!(matches!(err, PhysicsError::InvalidParameter { .. }));
     }
 

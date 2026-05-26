@@ -52,6 +52,7 @@ fields over compact syntax.
 | `[faults]` | no | Scenario-injected fault models |
 | `[batch]` | no | Batch or Monte Carlo sweep metadata |
 | `[landing_footprint]` | no | Schema-v3 offline range-safety footprint post-processing |
+| `[entry_profile]` | no | Schema-v3 descent / entry handoff and entry diagnostics |
 
 ## Flight Controller Block
 
@@ -1520,6 +1521,49 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
 
 The canonical example ships at
 [`scenarios/sloshing-tank/sloshing-tank.toml`](../scenarios/sloshing-tank/sloshing-tank.toml).
+
+### Entry profile
+
+`[entry_profile]` is a schema-v3 block for descent / entry profile
+handoff validation and entry diagnostics. It consumes the existing
+mission graph, Allen-Eggers ballistic-entry closed forms, and Vinh
+lifting-entry equations. It accepts no target, aimpoint, or desired
+landing coordinate.
+
+```toml
+[entry_profile]
+mode = "ballistic"                # "ballistic" | "lifting"
+entry_interface_altitude_m = 122000.0
+final_descent_altitude_m = 5000.0
+
+# Optional; defaults shown.
+surface_density_kg_m3 = 1.225
+scale_height_m = 7000.0
+```
+
+`mode = "ballistic"` enables the runner-side
+`entry_profile_for_sample` report using Allen-Eggers peak-deceleration
+diagnostics. `mode = "lifting"` additionally requires
+`vehicle.kind = "rigid_body"`, a `lifting_entry` mission phase,
+`lift_to_drag_ratio`, and `[entry_profile.corridor]`:
+
+```toml
+[entry_profile.corridor]
+max_heat_rate_w_m2 = 1000000.0
+max_load_factor_g = 8.0
+flight_path_angle_band_rad = 0.2
+nominal_bank_rad = 0.0
+max_bank_rad = 1.2
+```
+
+Validation requires an atmospheric aero force path (`[aero]` and
+`"aero"` in `forces.models`), mission phases named `entry_interface`,
+`final_descent`, and `recovery`, and an
+`at_altitude_descending` event that enters `entry_interface` at
+`entry_interface_altitude_m`. If `final_descent_altitude_m` is set, a
+matching descent-altitude handoff to `final_descent` is required.
+Entry interfaces above the USSA76 86 km ceiling require
+`environment.atmosphere = "piecewise_exponential"`.
 
 ### Landing footprint
 

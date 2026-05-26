@@ -96,7 +96,8 @@ must also declare, disagreement fails closed.
    rigid-body gravity-only envelope; PR2 `ascent_reference` is limited to the
    documented schema-v3 pitch-program / gravity-turn envelope; PR3
    `landing_footprint` is limited to the schema-v3 constant-gravity offline
-   footprint envelope.
+   footprint envelope; PR4 `entry_profile` is limited to handoff validation,
+   Allen-Eggers diagnostics, and corridor-limited Vinh bank-reference reports.
 
 ## Amendments to existing documents
 
@@ -113,12 +114,14 @@ This work requires the following edits to land alongside the implementation
   offline range-safety output — both explicitly distinguished from targeting.
 - [`roadmap.md`](roadmap.md): mark the PR1 gravity-only separation slice,
   PR2 pitch-program / gravity-turn ascent-reference slice, and PR3
-  constant-gravity landing-footprint slice as shipped, while keeping explicit
-  ascent reference, higher-order footprint propagation, entry/descent, and
-  per-body force ownership as Deferred entries.
+  constant-gravity landing-footprint slice as shipped, plus the PR4
+  `[entry_profile]` diagnostics slice, while keeping explicit ascent
+  reference, higher-order footprint propagation, richer live entry coupling,
+  and per-body force ownership as Deferred entries.
 - [`scenario-format.md`](scenario-format.md): document the `jettison_stage` and
-  `select_guidance_profile` actions, the `[fc.ascent_reference]` block, and the
-  reserved profile phase names.
+  `select_guidance_profile` actions, the `[fc.ascent_reference]`,
+  `[landing_footprint]`, and `[entry_profile]` blocks, and the reserved profile
+  phase names.
 
 ## The standing rule
 
