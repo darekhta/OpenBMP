@@ -50,6 +50,9 @@ pub const FC_TRAJECTORY_MAX_SEGMENT_DURATION_S: f64 = 600.0;
 /// residuals, in kg*m/s.
 pub const STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S: f64 = 1.0e-9;
 
+const ENTRY_ALTITUDE_MATCH_TOLERANCE_M: f64 = 1.0e-9;
+const USSA76_ENTRY_INTERFACE_CEILING_M: f64 = 86_000.0;
+
 /// Default unnormalised WGS84 J2 zonal coefficient used when a scenario
 /// selects `gravity = "j2"` and omits `environment.j2`.
 ///
@@ -114,6 +117,8 @@ pub struct ScenarioDocument {
     /// Optional offline range-safety landing-footprint
     /// post-processing configuration (v3 only).
     pub landing_footprint: Option<LandingFootprintConfig>,
+    /// Optional descent / entry profile configuration (v3 only).
+    pub entry_profile: Option<EntryProfileConfig>,
     /// Optional declarative mission block.
     ///
     /// When present, the runner builds an `openbmp_sim::MissionPhaseGraph`
@@ -274,6 +279,7 @@ impl ScenarioDocument {
             fc.validate()?;
         }
         self.validate_landing_footprint_agreement()?;
+        self.validate_entry_profile_agreement()?;
         self.validate_ascent_reference_agreement()?;
         self.validate_effector_references()?;
         self.validate_engine_references()?;
@@ -340,6 +346,16 @@ impl ScenarioDocument {
                 });
             }
             landing_footprint.validate()?;
+        }
+        if let Some(entry_profile) = self.entry_profile.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "entry_profile".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            entry_profile.validate()?;
         }
         Ok(())
     }
@@ -686,6 +702,13 @@ impl ScenarioDocument {
                 found: header,
             });
         }
+        if self.entry_profile.is_some() {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "entry_profile".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
         if let Some(fc) = self.fc.as_ref() {
             if let Some(field) = v3_only_fc_estimator_field(fc.estimator) {
                 return Err(ScenarioError::SchemaVersionFieldReserved {
@@ -835,6 +858,85 @@ impl ScenarioDocument {
                 field_b: "frames.local_origin".to_owned(),
                 value_b: "missing".to_owned(),
             });
+        }
+        Ok(())
+    }
+
+    fn validate_entry_profile_agreement(&self) -> Result<(), ScenarioError> {
+        let Some(entry_profile) = &self.entry_profile else {
+            return Ok(());
+        };
+        let Some(mission) = &self.mission else {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "entry_profile".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "mission".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        };
+        for phase in ["entry_interface", "final_descent", "recovery"] {
+            if !mission_declares_phase_or_state(mission, phase) {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "entry_profile".to_owned(),
+                    value_a: "declared".to_owned(),
+                    field_b: "mission.phase_or_state.id".to_owned(),
+                    value_b: format!("missing {phase} phase"),
+                });
+            }
+        }
+        if !mission_has_descending_entry_handoff(
+            mission,
+            "entry_interface",
+            entry_profile.entry_interface_altitude_m,
+        ) {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "entry_profile.entry_interface_altitude_m".to_owned(),
+                value_a: entry_profile.entry_interface_altitude_m.to_string(),
+                field_b: "mission.events".to_owned(),
+                value_b: "no at_altitude_descending enter_phase entry_interface event".to_owned(),
+            });
+        }
+        if let Some(final_descent_altitude_m) = entry_profile.final_descent_altitude_m
+            && !mission_has_descending_entry_handoff(
+                mission,
+                "final_descent",
+                final_descent_altitude_m,
+            )
+        {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "entry_profile.final_descent_altitude_m".to_owned(),
+                value_a: final_descent_altitude_m.to_string(),
+                field_b: "mission.events".to_owned(),
+                value_b: "no at_altitude_descending enter_phase final_descent event".to_owned(),
+            });
+        }
+        if self.aero.is_none() || !self.force_models().iter().any(|name| name == "aero") {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "entry_profile".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "aero/forces.models".to_owned(),
+                value_b: "missing aero force model".to_owned(),
+            });
+        }
+        validate_entry_atmosphere_envelope(
+            &self.environment.atmosphere,
+            entry_profile.entry_interface_altitude_m,
+        )?;
+        if entry_profile.mode == EntryProfileMode::Lifting {
+            if self.vehicle.kind != "rigid_body" {
+                return Err(ScenarioError::IncompatibleAssemblyEntry {
+                    field: "entry_profile.mode = \"lifting\"".to_owned(),
+                    reason: "lifting entry requires vehicle.kind = \"rigid_body\"".to_owned(),
+                });
+            }
+            if !mission_declares_phase_or_state(mission, "lifting_entry") {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "entry_profile.mode".to_owned(),
+                    value_a: "lifting".to_owned(),
+                    field_b: "mission.phase_or_state.id".to_owned(),
+                    value_b: "missing lifting_entry phase".to_owned(),
+                });
+            }
         }
         Ok(())
     }
@@ -1101,6 +1203,59 @@ fn mission_declares_coast_or_ballistic_descent(mission: &MissionConfig) -> bool 
             .states
             .iter()
             .any(|state| is_coast_or_ballistic_descent_id(&state.id))
+}
+
+fn mission_declares_phase_or_state(mission: &MissionConfig, terminal_id: &str) -> bool {
+    mission
+        .phases
+        .iter()
+        .any(|phase| terminal_mission_id(&phase.id) == terminal_id)
+        || mission
+            .states
+            .iter()
+            .any(|state| terminal_mission_id(&state.id) == terminal_id)
+}
+
+fn mission_has_descending_entry_handoff(
+    mission: &MissionConfig,
+    phase_id: &str,
+    altitude_m: f64,
+) -> bool {
+    mission.events.iter().any(|event| {
+        matches!(
+            event.trigger,
+            EventTriggerConfig::AtAltitudeDescending { altitude_m: event_altitude_m }
+                if (event_altitude_m - altitude_m).abs() <= ENTRY_ALTITUDE_MATCH_TOLERANCE_M
+        ) && matches!(
+            &event.action,
+            ScenarioActionConfig::EnterPhase { phase }
+                if terminal_mission_id(phase) == phase_id
+        )
+    })
+}
+
+fn validate_entry_atmosphere_envelope(
+    atmosphere: &str,
+    entry_interface_altitude_m: f64,
+) -> Result<(), ScenarioError> {
+    match atmosphere {
+        "piecewise_exponential" => Ok(()),
+        "us_standard_1976" if entry_interface_altitude_m <= USSA76_ENTRY_INTERFACE_CEILING_M => {
+            Ok(())
+        }
+        "us_standard_1976" => Err(ScenarioError::InconsistentSection {
+            field_a: "entry_profile.entry_interface_altitude_m".to_owned(),
+            value_a: entry_interface_altitude_m.to_string(),
+            field_b: "environment.atmosphere".to_owned(),
+            value_b: "us_standard_1976 envelope ceiling is 86000 m".to_owned(),
+        }),
+        other => Err(ScenarioError::InconsistentSection {
+            field_a: "entry_profile".to_owned(),
+            value_a: "declared".to_owned(),
+            field_b: "environment.atmosphere".to_owned(),
+            value_b: format!("{other} is not wired for entry profiles"),
+        }),
+    }
 }
 
 fn fc_gain_schedule_declares_powered_ascent(
@@ -1832,6 +1987,180 @@ impl LandingFootprintDispersionConfig {
             "landing_footprint.dispersion.orientation_rad",
             self.orientation_rad,
         )?;
+        Ok(())
+    }
+}
+
+const fn default_entry_surface_density_kg_m3() -> f64 {
+    1.225
+}
+
+const fn default_entry_scale_height_m() -> f64 {
+    7_000.0
+}
+
+/// Descent / entry profile configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EntryProfileConfig {
+    /// Entry mode: ballistic analytic diagnostic or lifting-entry
+    /// corridor reference.
+    pub mode: EntryProfileMode,
+    /// Entry-interface altitude (m), usually around 122 km when the
+    /// atmosphere model supports that envelope.
+    pub entry_interface_altitude_m: f64,
+    /// Optional final-descent handoff altitude (m).
+    #[serde(default)]
+    pub final_descent_altitude_m: Option<f64>,
+    /// Reference surface density for the analytic entry models
+    /// (kg/m³).
+    #[serde(default = "default_entry_surface_density_kg_m3")]
+    pub surface_density_kg_m3: f64,
+    /// Reference exponential atmosphere scale height (m).
+    #[serde(default = "default_entry_scale_height_m")]
+    pub scale_height_m: f64,
+    /// Lift-to-drag ratio, required for `mode = "lifting"`.
+    #[serde(default)]
+    pub lift_to_drag_ratio: Option<f64>,
+    /// Corridor limits and bank command bounds for lifting entry.
+    #[serde(default)]
+    pub corridor: Option<EntryCorridorConfig>,
+}
+
+impl EntryProfileConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_positive(
+            "entry_profile.entry_interface_altitude_m",
+            self.entry_interface_altitude_m,
+        )?;
+        if let Some(final_descent_altitude_m) = self.final_descent_altitude_m {
+            require_positive(
+                "entry_profile.final_descent_altitude_m",
+                final_descent_altitude_m,
+            )?;
+            if final_descent_altitude_m >= self.entry_interface_altitude_m {
+                return Err(ScenarioError::InvalidNumber {
+                    field: "entry_profile.final_descent_altitude_m".to_owned(),
+                    value: final_descent_altitude_m,
+                    rule: "must be below entry_interface_altitude_m",
+                });
+            }
+        }
+        require_positive(
+            "entry_profile.surface_density_kg_m3",
+            self.surface_density_kg_m3,
+        )?;
+        require_positive("entry_profile.scale_height_m", self.scale_height_m)?;
+        if let Some(lift_to_drag_ratio) = self.lift_to_drag_ratio {
+            require_positive("entry_profile.lift_to_drag_ratio", lift_to_drag_ratio)?;
+        }
+        match self.mode {
+            EntryProfileMode::Ballistic => {
+                if self.lift_to_drag_ratio.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "entry_profile.lift_to_drag_ratio".to_owned(),
+                        role: ModelRole::Trajectory,
+                        name: "ballistic".to_owned(),
+                    });
+                }
+                if self.corridor.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "entry_profile.corridor".to_owned(),
+                        role: ModelRole::Trajectory,
+                        name: "ballistic".to_owned(),
+                    });
+                }
+            }
+            EntryProfileMode::Lifting => {
+                if self.lift_to_drag_ratio.is_none() {
+                    return Err(ScenarioError::MissingRequiredField {
+                        field: "entry_profile.lift_to_drag_ratio".to_owned(),
+                        role: ModelRole::Trajectory,
+                        name: "lifting".to_owned(),
+                    });
+                }
+                let corridor =
+                    self.corridor
+                        .as_ref()
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: "entry_profile.corridor".to_owned(),
+                            role: ModelRole::Trajectory,
+                            name: "lifting".to_owned(),
+                        })?;
+                corridor.validate()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Entry-profile mode.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryProfileMode {
+    /// Ballistic entry diagnostics using Allen-Eggers closed forms.
+    Ballistic,
+    /// Lifting entry reference using a corridor-limited bank command.
+    Lifting,
+}
+
+/// Lifting-entry corridor and bank-reference configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EntryCorridorConfig {
+    /// Maximum stagnation-point heat rate (W/m²).
+    pub max_heat_rate_w_m2: f64,
+    /// Maximum deceleration load factor (g).
+    pub max_load_factor_g: f64,
+    /// Flight-path-angle corridor half-width (rad).
+    pub flight_path_angle_band_rad: f64,
+    /// Nominal bank angle (rad).
+    #[serde(default)]
+    pub nominal_bank_rad: f64,
+    /// Maximum absolute bank angle (rad).
+    pub max_bank_rad: f64,
+}
+
+impl EntryCorridorConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_positive(
+            "entry_profile.corridor.max_heat_rate_w_m2",
+            self.max_heat_rate_w_m2,
+        )?;
+        require_positive(
+            "entry_profile.corridor.max_load_factor_g",
+            self.max_load_factor_g,
+        )?;
+        require_positive(
+            "entry_profile.corridor.flight_path_angle_band_rad",
+            self.flight_path_angle_band_rad,
+        )?;
+        if self.flight_path_angle_band_rad >= std::f64::consts::FRAC_PI_2 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "entry_profile.corridor.flight_path_angle_band_rad".to_owned(),
+                value: self.flight_path_angle_band_rad,
+                rule: "must be below pi/2",
+            });
+        }
+        require_finite(
+            "entry_profile.corridor.nominal_bank_rad",
+            self.nominal_bank_rad,
+        )?;
+        require_positive("entry_profile.corridor.max_bank_rad", self.max_bank_rad)?;
+        if self.max_bank_rad > std::f64::consts::PI {
+            return Err(ScenarioError::InvalidNumber {
+                field: "entry_profile.corridor.max_bank_rad".to_owned(),
+                value: self.max_bank_rad,
+                rule: "must be <= pi",
+            });
+        }
+        if self.nominal_bank_rad.abs() > self.max_bank_rad {
+            return Err(ScenarioError::InvalidNumber {
+                field: "entry_profile.corridor.nominal_bank_rad".to_owned(),
+                value: self.nominal_bank_rad,
+                rule: "absolute value must be <= max_bank_rad",
+            });
+        }
         Ok(())
     }
 }

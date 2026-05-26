@@ -31,6 +31,7 @@ pub mod assembly;
 pub mod atmosphere;
 pub mod effectors;
 pub mod engines;
+pub mod entry;
 pub mod fc;
 pub mod fc_bridge;
 pub mod footprint;

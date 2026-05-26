@@ -83,14 +83,18 @@ gravity-only separation envelope. PR2 implements the schema-v3
 the explicit reference family remains reserved. PR3 implements the first
 coast/footprint slice: schema-v3 `[landing_footprint]`, constant-gravity
 offline footprint prediction, and range-relative / optional geodetic reporting.
-J2 / EGM2008 footprint propagation and the entry/descent capabilities still
-fail closed until they land with validation evidence:
+PR4 implements the first descent/entry slice: schema-v3 `[entry_profile]`,
+entry-interface / final-descent handoff validation, Allen-Eggers entry
+diagnostics, and a corridor-limited Vinh bank-reference report. J2 / EGM2008
+footprint propagation and richer live entry force-stack / aerothermal coupling
+remain deferred until they land with validation evidence:
 
 - Powered-ascent reference-trajectory generation (gravity-turn / pitch-program;
   explicit reference reserved) — [`ascent-guidance.md`](ascent-guidance.md).
 - Coast / apogee phase wiring and the constant-gravity range-safety landing
   footprint — [`ballistic-coast-and-apogee.md`](ballistic-coast-and-apogee.md).
-- Live `entry_interface` → `lifting_entry` → `final_descent` handoff —
+- Entry `entry_interface` → `lifting_entry` → `final_descent` handoff and
+  diagnostics —
   [`descent-and-entry-profiles.md`](descent-and-entry-profiles.md).
 
 **Estimator and control**

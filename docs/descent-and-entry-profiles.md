@@ -20,9 +20,9 @@ configuration.
   `Vinh` reproduce textbook entry solutions. The module states plainly: *"no
   operational re-entry profiles or targeting logic are shipped."*
 - These are *analysis tools*, run standalone against benchmarks (Apollo 4,
-  Stardust). They are not connected to the mission state machine, so a scenario
-  cannot fly an ascent, coast, and then enter the atmosphere as one continuous
-  run.
+  Stardust). Schema v3 now adds `[entry_profile]` so a scenario can declare
+  and validate the `ballistic_descent → entry_interface → final_descent`
+  handoff and the runner can produce entry diagnostics from a supplied sample.
 - `maneuvering` entry is a rejected operational term; `lifting_entry` is its
   accepted academic replacement (already in the vocabulary canon).
 
@@ -48,9 +48,9 @@ This is a phase-gated force-stack selection, which the assembly / force-model
 seam already supports — the new requirement is that the gate be keyed on the
 reserved entry phases.
 
-> **Status.** `entry_interface` is a *reserved* phase name. The handoff is a
-> configuration over the existing `at_altitude_descending` trigger and the
-> phase-gated force stack; no new trigger variant is required.
+> **Status.** `entry_interface` is now consumed by schema-v3
+> `[entry_profile]` validation. The handoff uses the existing
+> `at_altitude_descending` trigger; no new trigger variant is required.
 
 ### Ballistic vs lifting entry
 
@@ -133,10 +133,10 @@ the entry phases activate them. No new heating physics is introduced here.
 
 | Item | Location | State |
 |---|---|---|
-| `entry_interface`, `lifting_entry`, `final_descent` phases | vocabulary canon | Reserved (`lifting_entry`, `final_descent` already in canon). |
-| `EntryCorridorReference` trait | `openbmp-physics/src/profile.rs` | Trait signature only. |
-| Phase-gated entry force-stack activation | `openbmp-runner` | Deferred; reuses existing gate. |
-| Allen-Eggers / Vinh live-phase handoff | `openbmp-physics` (existing) + runner | Deferred wiring. |
+| `entry_interface`, `lifting_entry`, `final_descent` phases | vocabulary canon + scenario validation | Consumed by schema-v3 `[entry_profile]` agreement checks. |
+| `EntryCorridorReference` trait | `openbmp-physics/src/profile.rs` | Implemented as a bounded corridor-reference helper. |
+| Entry diagnostics | `openbmp-runner/src/entry.rs` | `entry_profile_for_sample` consumes Allen-Eggers / Vinh without producing commands. |
+| Phase-gated entry force-stack activation | `openbmp-runner` | Deferred richer coupling; current slice validates the handoff and requires aero/atmosphere support. |
 
 ## References
 

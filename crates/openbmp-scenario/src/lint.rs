@@ -76,6 +76,7 @@ const UNIT_SUFFIXES: &[&str] = &[
     "_kg_m2",
     "_kg_per_s",
     "_kg",
+    "_w_m2",
     "_m3",
     "_m2",
     "_m",
@@ -86,6 +87,7 @@ const UNIT_SUFFIXES: &[&str] = &[
     "_s",
     "_k",
     "_deg",
+    "_g",
 ];
 
 const FRAME_INFIXES: &[&str] = &["_eci_", "_ecef_", "_ned_", "_enu_", "_body_"];
@@ -353,6 +355,12 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     if path.starts_with("$.vehicle.assembly.recovery")
         && matches!(key, "c_d" | "drogue_c_d" | "main_c_d")
     {
+        return true;
+    }
+
+    // Entry-profile fields. `lift_to_drag_ratio` is dimensionless
+    // aerodynamic L/D by convention.
+    if path.starts_with("$.entry_profile") && key == "lift_to_drag_ratio" {
         return true;
     }
 

@@ -1,0 +1,102 @@
+openbmp.scenario = 3
+
+[meta]
+name = "entry-profile-parser-fixture"
+description = "Synthetic descent and entry parser fixture."
+validation = "experimental"
+
+[time]
+start_s = 0.0
+stop_s = 20.0
+dt_s = 0.1
+seed = 11
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 130000.0]
+initial_velocity_eci_m_s = [1500.0, 0.0, -250.0]
+
+[vehicle.assembly]
+id = "entry-profile-fixture"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 100.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "piecewise_exponential"
+wind = "none"
+
+[atmosphere]
+kind = "piecewise_exponential"
+
+[aero]
+deck = "fixtures/minimal-deck.toml"
+
+[forces]
+models = ["gravity", "aero"]
+
+[telemetry]
+output.csv = "out/entry-profile-parser-fixture.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "ballistic_descent"
+
+[[mission.phases]]
+id = "ballistic_descent"
+label = "ballistic descent"
+
+[[mission.phases]]
+id = "entry_interface"
+label = "entry interface"
+
+[[mission.phases]]
+id = "final_descent"
+label = "final descent"
+
+[[mission.phases]]
+id = "recovery"
+label = "recovery"
+
+[[mission.events]]
+id = "evt_entry_interface"
+trigger = { kind = "at_altitude_descending", altitude_m = 122000.0 }
+action = { kind = "enter_phase", phase = "entry_interface" }
+
+[[mission.events]]
+id = "evt_final_descent"
+trigger = { kind = "at_altitude_descending", altitude_m = 5000.0 }
+action = { kind = "enter_phase", phase = "final_descent" }
+
+[[mission.events]]
+id = "evt_recovery"
+trigger = { kind = "at_altitude_descending", altitude_m = 0.0 }
+action = { kind = "enter_phase", phase = "recovery" }
+
+[[mission.transitions]]
+from = "ballistic_descent"
+to = "entry_interface"
+event = "evt_entry_interface"
+
+[[mission.transitions]]
+from = "entry_interface"
+to = "final_descent"
+event = "evt_final_descent"
+
+[[mission.transitions]]
+from = "final_descent"
+to = "recovery"
+event = "evt_recovery"
+
+[entry_profile]
+mode = "ballistic"
+entry_interface_altitude_m = 122000.0
+final_descent_altitude_m = 5000.0

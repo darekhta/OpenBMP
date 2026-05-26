@@ -3956,6 +3956,11 @@ file = "../sensors/star-tracker-textbook.toml""#,
         "/tests/fixtures/coast-footprint-valid.toml"
     ));
 
+    const ENTRY_PROFILE_SCENARIO: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/entry-profile-valid.toml"
+    ));
+
     #[test]
     fn parses_ascent_reference_pitch_program() {
         let scenario = Scenario::from_toml_str(ASCENT_REFERENCE_SCENARIO).unwrap();
@@ -4083,6 +4088,72 @@ file = "../sensors/star-tracker-textbook.toml""#,
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. } if field_a == "landing_footprint.method" && field_b == "environment.gravity"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn parses_entry_profile_config() {
+        let scenario = Scenario::from_toml_str(ENTRY_PROFILE_SCENARIO).unwrap();
+        let entry = scenario.document.entry_profile.as_ref().unwrap();
+        assert_eq!(entry.mode, crate::EntryProfileMode::Ballistic);
+        assert!((entry.entry_interface_altitude_m - 122_000.0).abs() < f64::EPSILON);
+        assert!((entry.final_descent_altitude_m.unwrap() - 5_000.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rejects_entry_profile_under_v2_schema() {
+        let toml = ENTRY_PROFILE_SCENARIO
+            .replace("openbmp.scenario = 3", "openbmp.scenario = 2")
+            .replace(
+                r#"atmosphere = "piecewise_exponential""#,
+                r#"atmosphere = "us_standard_1976""#,
+            )
+            .replace("[atmosphere]\nkind = \"piecewise_exponential\"\n\n", "");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::SchemaVersionFieldReserved { ref field, .. } if field == "entry_profile"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_entry_profile_without_entry_interface_handoff() {
+        let toml = ENTRY_PROFILE_SCENARIO.replace(
+            r#"action = { kind = "enter_phase", phase = "entry_interface" }"#,
+            r#"action = { kind = "enter_phase", phase = "final_descent" }"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. } if field_a == "entry_profile.entry_interface_altitude_m" && field_b == "mission.events"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_high_entry_profile_with_ussa76_atmosphere() {
+        let toml = ENTRY_PROFILE_SCENARIO
+            .replace(
+                r#"atmosphere = "piecewise_exponential""#,
+                r#"atmosphere = "us_standard_1976""#,
+            )
+            .replace("[atmosphere]\nkind = \"piecewise_exponential\"\n\n", "");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. } if field_a == "entry_profile.entry_interface_altitude_m" && field_b == "environment.atmosphere"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_lifting_entry_profile_on_point_mass_vehicle() {
+        let toml = ENTRY_PROFILE_SCENARIO.replace(
+            "[entry_profile]\nmode = \"ballistic\"\nentry_interface_altitude_m = 122000.0\nfinal_descent_altitude_m = 5000.0",
+            "[entry_profile]\nmode = \"lifting\"\nentry_interface_altitude_m = 122000.0\nfinal_descent_altitude_m = 5000.0\nlift_to_drag_ratio = 0.3\n\n[entry_profile.corridor]\nmax_heat_rate_w_m2 = 1000000.0\nmax_load_factor_g = 8.0\nflight_path_angle_band_rad = 0.2\nmax_bank_rad = 1.2",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, .. } if field == "entry_profile.mode = \"lifting\""),
             "got {err:?}",
         );
     }
