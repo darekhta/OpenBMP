@@ -94,9 +94,10 @@ is the subject of [`staging-and-separation.md`](staging-and-separation.md).
 > **Status.** `prelaunch`, `powered_ascent`, `coast`, `recovery`, and
 > `post_flight` map onto phase names already accepted by the mission FSM.
 > The schema-v3 `ascent_reference` guidance path is wired for pitch-program
-> and gravity-turn references. `apogee_approach`, `ballistic_descent`,
-> `entry_interface`, `lifting_entry`, and `final_descent` are *reserved* in the
-> vocabulary canon and gated until wired. See
+> and gravity-turn references. The schema-v3 `landing_footprint` path is wired
+> for offline constant-gravity footprints over `coast` / `ballistic_descent`
+> profiles. J2 / EGM2008 footprint propagation plus `entry_interface`,
+> `lifting_entry`, and `final_descent` remain gated until wired. See
 > [`profile-vocabulary-and-guardrails.md`](profile-vocabulary-and-guardrails.md).
 
 ## How a profile maps onto the existing platform
@@ -108,7 +109,7 @@ subsystems plus a small number of new, additive seams.
 |---|---|---|
 | Phase sequencing | `MissionStateMachine`, `EventConfig` triggers / actions (`openbmp-scenario`, `openbmp-runner/src/mission.rs`) | A PR1 `jettison_stage` action, a deferred `select_guidance_profile` action, and reserved phase names. |
 | Powered-ascent shaping | Three-loop autopilot trajectory loop (`openbmp-fc/src/autopilot.rs`) | `AscentReferenceGenerator` plus pitch-program / gravity-turn producers feeding the reference (`ascent-guidance.md`). |
-| Coast / descent propagation | Kernel + `GravityModel` (J2 / EGM2008), `AtmosphereModel` | Phase wiring + a `RangeSafetyFootprint` post-processing trait (`ballistic-coast-and-apogee.md`). |
+| Coast / descent propagation | Kernel + `GravityModel` (J2 / EGM2008), `AtmosphereModel` | Phase wiring + a constant-gravity `RangeSafetyFootprint` post-processing path (`ballistic-coast-and-apogee.md`). |
 | Entry | `AllenEggers`, `Vinh` in `openbmp-physics/src/reentry.rs` | Live-phase handoff at `entry_interface`, gain-scheduled descent control (`descent-and-entry-profiles.md`). |
 | Mass change at staging | `VehicleAssembly` tree, multi-body config (declared) | Executed jettison + simultaneous spent-stage propagation (`staging-and-separation.md`). |
 
@@ -125,13 +126,14 @@ The design reuses, rather than bypasses, the documented seams:
   `jettison_stage` validates against `[multi_body]` and executes in the
   gravity-only separation envelope; PR2 `guidance = "ascent_reference"`
   consumes `[fc.ascent_reference]` for pitch-program / gravity-turn reference
-  generation. `select_guidance_profile` and the remaining profile surfaces
-  still follow the existing `Deferred` idiom. See
+  generation; PR3 consumes `[landing_footprint]` for the constant-gravity
+  offline footprint method. `select_guidance_profile` and the remaining
+  profile surfaces still follow the existing `Deferred` idiom. See
   [`scenario-format.md`](scenario-format.md).
 - **Model traits.** `AscentReferenceGenerator`, `RangeSafetyFootprint`, and
   `StageSeparationModel` live in `openbmp-physics::profile`; the ascent and
-  stage-separation paths have first implementations, while footprint remains a
-  trait surface.
+  stage-separation paths have first implementations, and footprint has a
+  constant-gravity toy implementation.
 - **Fail-closed validation.** Cross-block agreement is enforced the way the
   wind / atmosphere consistency checks already are (see
   [`scenario-format.md`](scenario-format.md) and the project convention that a

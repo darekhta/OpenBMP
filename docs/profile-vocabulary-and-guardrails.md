@@ -94,7 +94,9 @@ must also declare, disagreement fails closed.
    `Unsupported*` / deferral error until their implementation lands with
    validation evidence. PR1 `jettison_stage` is limited to the documented
    rigid-body gravity-only envelope; PR2 `ascent_reference` is limited to the
-   documented schema-v3 pitch-program / gravity-turn envelope.
+   documented schema-v3 pitch-program / gravity-turn envelope; PR3
+   `landing_footprint` is limited to the schema-v3 constant-gravity offline
+   footprint envelope.
 
 ## Amendments to existing documents
 
@@ -109,9 +111,10 @@ This work requires the following edits to land alongside the implementation
   Operational Behaviour," note that ascent / entry references are
   reference-generation only and that the landing footprint is a forward,
   offline range-safety output — both explicitly distinguished from targeting.
-- [`roadmap.md`](roadmap.md): mark the PR1 gravity-only separation slice and
-  PR2 pitch-program / gravity-turn ascent-reference slice as shipped, while
-  keeping explicit ascent reference, coast/footprint, entry/descent, and
+- [`roadmap.md`](roadmap.md): mark the PR1 gravity-only separation slice,
+  PR2 pitch-program / gravity-turn ascent-reference slice, and PR3
+  constant-gravity landing-footprint slice as shipped, while keeping explicit
+  ascent reference, higher-order footprint propagation, entry/descent, and
   per-body force ownership as Deferred entries.
 - [`scenario-format.md`](scenario-format.md): document the `jettison_stage` and
   `select_guidance_profile` actions, the `[fc.ascent_reference]` block, and the

@@ -51,6 +51,7 @@ fields over compact syntax.
 | `[fc]` | no | Simulator-local flight controller |
 | `[faults]` | no | Scenario-injected fault models |
 | `[batch]` | no | Batch or Monte Carlo sweep metadata |
+| `[landing_footprint]` | no | Schema-v3 offline range-safety footprint post-processing |
 
 ## Flight Controller Block
 
@@ -1519,6 +1520,36 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
 
 The canonical example ships at
 [`scenarios/sloshing-tank/sloshing-tank.toml`](../scenarios/sloshing-tank/sloshing-tank.toml).
+
+### Landing footprint
+
+`[landing_footprint]` is a schema-v3 offline post-processing block for
+range-safety / recovery analysis. It is not connected to the flight
+controller and accepts no desired landing coordinate.
+
+```toml
+[landing_footprint]
+method = "constant_gravity"
+cull_altitude_m = 0.0
+include_geodetic = false
+
+[landing_footprint.dispersion]
+one_sigma_semi_major_m = 25.0
+one_sigma_semi_minor_m = 10.0
+orientation_rad = 0.0
+```
+
+The first consumed method is `constant_gravity`. It requires
+`environment.gravity = "constant"` and a mission phase named `coast` or
+`ballistic_descent`. `include_geodetic = true` additionally requires
+`[frames.local_origin]`; otherwise the offline report contains only
+range-relative `downrange_m` / `crossrange_m` output. The optional
+dispersion block is a declared ellipse source. If absent, no dispersion
+ellipse is reported.
+
+As everywhere else in the profile work, fields naming a desired landing
+location, aimpoint, miss distance, or equivalent targeting concept are
+rejected by the lint before deserialization.
 
 ### Recovery and descent
 

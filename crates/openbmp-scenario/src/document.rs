@@ -111,6 +111,9 @@ pub struct ScenarioDocument {
     pub faults: Option<BTreeMap<String, toml::Value>>,
     /// Optional batch metadata.
     pub batch: Option<BatchConfig>,
+    /// Optional offline range-safety landing-footprint
+    /// post-processing configuration (v3 only).
+    pub landing_footprint: Option<LandingFootprintConfig>,
     /// Optional declarative mission block.
     ///
     /// When present, the runner builds an `openbmp_sim::MissionPhaseGraph`
@@ -270,6 +273,7 @@ impl ScenarioDocument {
         if let Some(fc) = &self.fc {
             fc.validate()?;
         }
+        self.validate_landing_footprint_agreement()?;
         self.validate_ascent_reference_agreement()?;
         self.validate_effector_references()?;
         self.validate_engine_references()?;
@@ -326,6 +330,16 @@ impl ScenarioDocument {
                 });
             }
             multi_body.validate()?;
+        }
+        if let Some(landing_footprint) = self.landing_footprint.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "landing_footprint".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            landing_footprint.validate()?;
         }
         Ok(())
     }
@@ -665,6 +679,13 @@ impl ScenarioDocument {
                 found: header,
             });
         }
+        if self.landing_footprint.is_some() {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "landing_footprint".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
         if let Some(fc) = self.fc.as_ref() {
             if let Some(field) = v3_only_fc_estimator_field(fc.estimator) {
                 return Err(ScenarioError::SchemaVersionFieldReserved {
@@ -767,6 +788,52 @@ impl ScenarioDocument {
             return Err(ScenarioError::InvalidFc {
                 reason: "guidance = \"ascent_reference\" requires [fc.gain_schedule.\"mission.phases.powered_ascent\"] or [fc.gain_schedule.\"mission.states.powered_ascent\"]"
                     .to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_landing_footprint_agreement(&self) -> Result<(), ScenarioError> {
+        let Some(landing_footprint) = &self.landing_footprint else {
+            return Ok(());
+        };
+        let Some(mission) = &self.mission else {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "landing_footprint".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "mission".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        };
+        if !mission_declares_coast_or_ballistic_descent(mission) {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "landing_footprint".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "mission.phase_or_state.id".to_owned(),
+                value_b: "no coast or ballistic_descent phase".to_owned(),
+            });
+        }
+        if landing_footprint.method == LandingFootprintMethod::ConstantGravity
+            && self.environment.gravity != "constant"
+        {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "landing_footprint.method".to_owned(),
+                value_a: "constant_gravity".to_owned(),
+                field_b: "environment.gravity".to_owned(),
+                value_b: self.environment.gravity.clone(),
+            });
+        }
+        if landing_footprint.include_geodetic
+            && self
+                .frames
+                .as_ref()
+                .is_none_or(|frames| frames.local_origin.is_none())
+        {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "landing_footprint.include_geodetic".to_owned(),
+                value_a: "true".to_owned(),
+                field_b: "frames.local_origin".to_owned(),
+                value_b: "missing".to_owned(),
             });
         }
         Ok(())
@@ -1025,6 +1092,17 @@ fn mission_declares_powered_ascent(mission: &MissionConfig) -> bool {
             .any(|state| is_powered_ascent_id(&state.id))
 }
 
+fn mission_declares_coast_or_ballistic_descent(mission: &MissionConfig) -> bool {
+    mission
+        .phases
+        .iter()
+        .any(|phase| is_coast_or_ballistic_descent_id(&phase.id))
+        || mission
+            .states
+            .iter()
+            .any(|state| is_coast_or_ballistic_descent_id(&state.id))
+}
+
 fn fc_gain_schedule_declares_powered_ascent(
     gain_schedule: &BTreeMap<String, FcGainsConfig>,
 ) -> bool {
@@ -1036,6 +1114,14 @@ fn is_powered_ascent_id(id: &str) -> bool {
         id,
         "powered_ascent" | "mission.phases.powered_ascent" | "mission.states.powered_ascent"
     )
+}
+
+fn is_coast_or_ballistic_descent_id(id: &str) -> bool {
+    matches!(terminal_mission_id(id), "coast" | "ballistic_descent")
+}
+
+fn terminal_mission_id(id: &str) -> &str {
+    id.rsplit('.').next().unwrap_or(id)
 }
 
 #[derive(Clone, Debug)]
@@ -1668,6 +1754,84 @@ impl LocalOriginConfig {
         )?;
         require_finite("frames.local_origin.height_m", self.height_m)?;
         require_non_empty("frames.local_origin.source", &self.source)?;
+        Ok(())
+    }
+}
+
+/// Offline range-safety landing-footprint configuration.
+///
+/// This block configures post-processing only. It accepts no desired
+/// landing location and is never consumed by the flight-controller
+/// loop.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingFootprintConfig {
+    /// Footprint prediction method.
+    pub method: LandingFootprintMethod,
+    /// Cull altitude where propagation stops (m).
+    pub cull_altitude_m: f64,
+    /// Whether the offline report should include geodetic
+    /// latitude/longitude. Requires `[frames.local_origin]`; when
+    /// `false`, only range-relative downrange/crossrange output is
+    /// produced.
+    #[serde(default)]
+    pub include_geodetic: bool,
+    /// Optional declared dispersion ellipse input.
+    #[serde(default)]
+    pub dispersion: Option<LandingFootprintDispersionConfig>,
+}
+
+impl LandingFootprintConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_finite("landing_footprint.cull_altitude_m", self.cull_altitude_m)?;
+        if let Some(dispersion) = &self.dispersion {
+            dispersion.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// Landing-footprint prediction method.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LandingFootprintMethod {
+    /// Constant-gravity closed-form toy method.
+    ConstantGravity,
+}
+
+/// Declared dispersion ellipse for a landing-footprint report.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingFootprintDispersionConfig {
+    /// One-sigma semi-major axis (m).
+    pub one_sigma_semi_major_m: f64,
+    /// One-sigma semi-minor axis (m).
+    pub one_sigma_semi_minor_m: f64,
+    /// Ellipse orientation in the downrange/crossrange plane (rad).
+    pub orientation_rad: f64,
+}
+
+impl LandingFootprintDispersionConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_positive(
+            "landing_footprint.dispersion.one_sigma_semi_major_m",
+            self.one_sigma_semi_major_m,
+        )?;
+        require_positive(
+            "landing_footprint.dispersion.one_sigma_semi_minor_m",
+            self.one_sigma_semi_minor_m,
+        )?;
+        if self.one_sigma_semi_major_m < self.one_sigma_semi_minor_m {
+            return Err(ScenarioError::InvalidNumber {
+                field: "landing_footprint.dispersion.one_sigma_semi_major_m".to_owned(),
+                value: self.one_sigma_semi_major_m,
+                rule: "must be greater than or equal to one_sigma_semi_minor_m",
+            });
+        }
+        require_finite(
+            "landing_footprint.dispersion.orientation_rad",
+            self.orientation_rad,
+        )?;
         Ok(())
     }
 }
