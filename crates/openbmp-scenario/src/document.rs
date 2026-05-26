@@ -270,6 +270,7 @@ impl ScenarioDocument {
         if let Some(fc) = &self.fc {
             fc.validate()?;
         }
+        self.validate_ascent_reference_agreement()?;
         self.validate_effector_references()?;
         self.validate_engine_references()?;
         self.validate_recovery_references()?;
@@ -342,6 +343,22 @@ impl ScenarioDocument {
         {
             return Err(ScenarioError::SchemaVersionFieldReserved {
                 field: field.to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
+        if let Some(field) = v3_only_fc_guidance_field(fc.guidance)
+            && header < SCENARIO_VERSION_V3
+        {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: field.to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
+        if fc.ascent_reference.is_some() && header < SCENARIO_VERSION_V3 {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "fc.ascent_reference".to_owned(),
                 required: SCENARIO_VERSION_V3,
                 found: header,
             });
@@ -656,6 +673,20 @@ impl ScenarioDocument {
                     found: header,
                 });
             }
+            if let Some(field) = v3_only_fc_guidance_field(fc.guidance) {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: field.to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            if fc.ascent_reference.is_some() {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.ascent_reference".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
             if fc.imm.is_some() {
                 return Err(ScenarioError::SchemaVersionFieldReserved {
                     field: "fc.imm".to_owned(),
@@ -701,6 +732,42 @@ impl ScenarioDocument {
         let has_engines = !self.vehicle.assembly.engines.is_empty();
         if has_motor && has_engines {
             return Err(ScenarioError::AmbiguousPropulsion);
+        }
+        Ok(())
+    }
+
+    fn validate_ascent_reference_agreement(&self) -> Result<(), ScenarioError> {
+        let Some(fc) = &self.fc else {
+            return Ok(());
+        };
+        let uses_ascent_reference =
+            matches!(fc.guidance, FcGuidanceKind::AscentReference) || fc.ascent_reference.is_some();
+        if !uses_ascent_reference {
+            return Ok(());
+        }
+        if self.vehicle.kind != "rigid_body" {
+            return Err(ScenarioError::IncompatibleAssemblyEntry {
+                field: "fc.ascent_reference".to_owned(),
+                reason: "ascent reference requires vehicle.kind = \"rigid_body\"".to_owned(),
+            });
+        }
+        let Some(mission) = &self.mission else {
+            return Err(ScenarioError::InvalidFc {
+                reason: "guidance = \"ascent_reference\" requires a powered_ascent mission phase"
+                    .to_owned(),
+            });
+        };
+        if !mission_declares_powered_ascent(mission) {
+            return Err(ScenarioError::InvalidFc {
+                reason: "guidance = \"ascent_reference\" requires a declared powered_ascent mission phase"
+                    .to_owned(),
+            });
+        }
+        if !fc_gain_schedule_declares_powered_ascent(&fc.gain_schedule) {
+            return Err(ScenarioError::InvalidFc {
+                reason: "guidance = \"ascent_reference\" requires [fc.gain_schedule.\"mission.phases.powered_ascent\"] or [fc.gain_schedule.\"mission.states.powered_ascent\"]"
+                    .to_owned(),
+            });
         }
         Ok(())
     }
@@ -945,6 +1012,30 @@ impl ScenarioDocument {
         }
         Ok(())
     }
+}
+
+fn mission_declares_powered_ascent(mission: &MissionConfig) -> bool {
+    mission
+        .phases
+        .iter()
+        .any(|phase| is_powered_ascent_id(&phase.id))
+        || mission
+            .states
+            .iter()
+            .any(|state| is_powered_ascent_id(&state.id))
+}
+
+fn fc_gain_schedule_declares_powered_ascent(
+    gain_schedule: &BTreeMap<String, FcGainsConfig>,
+) -> bool {
+    gain_schedule.keys().any(|key| is_powered_ascent_id(key))
+}
+
+fn is_powered_ascent_id(id: &str) -> bool {
+    matches!(
+        id,
+        "powered_ascent" | "mission.phases.powered_ascent" | "mission.states.powered_ascent"
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -4224,7 +4315,8 @@ pub struct FcConfig {
     pub estimator: FcEstimatorKind,
     /// Autopilot kind. Must be `three_loop`.
     pub autopilot: FcAutopilotKind,
-    /// Guidance kind. Must be one of `attitude_hold`, `waypoint`.
+    /// Guidance kind. Must be one of `attitude_hold`, `waypoint`,
+    /// `ascent_reference`.
     pub guidance: FcGuidanceKind,
     /// Reference attitude quaternion `[x, y, z, w]` (optional; required
     /// when `guidance = "attitude_hold"`).
@@ -4275,19 +4367,16 @@ pub struct FcConfig {
     /// scenarios that declare `[fc.trajectory]` must have
     /// `openbmp.scenario = 3`.
     pub trajectory: Option<FcTrajectoryConfig>,
-    /// Optional powered-ascent reference-trajectory generator block.
-    /// Deferred: validated to fail closed until the ascent-reference
-    /// generator lands. See `docs/ascent-guidance.md`.
+    /// Optional powered-ascent reference generator block. Required
+    /// when `guidance = "ascent_reference"`. See
+    /// `docs/ascent-guidance.md`.
     #[serde(default)]
     pub ascent_reference: Option<FcAscentReferenceConfig>,
 }
 
-/// Powered-ascent reference-trajectory generator configuration.
+/// Powered-ascent reference generator configuration.
 ///
-/// Deferred schema stub: this block parses so authors can write it
-/// ahead of the capability, and `FcConfig::validate` rejects it with
-/// [`ScenarioError::ElementNotYetSupported`] until the generator lands.
-/// The reference it will produce is a *reference trajectory the
+/// The reference it produces is a *reference trajectory the
 /// three-loop autopilot tracks* — never a guidance solution to a
 /// real-world location. See `docs/ascent-guidance.md` and
 /// `docs/profile-vocabulary-and-guardrails.md`.
@@ -4296,7 +4385,7 @@ pub struct FcConfig {
 pub struct FcAscentReferenceConfig {
     /// Reference method: `pitch_program`, `gravity_turn`, or the
     /// reserved `explicit_reference`.
-    pub method: String,
+    pub method: FcAscentReferenceMethod,
     /// Pitch-program schedule timestamps (s), monotonic ascending.
     #[serde(default)]
     pub schedule_s: Option<Vec<f64>>,
@@ -4304,6 +4393,97 @@ pub struct FcAscentReferenceConfig {
     /// `schedule_s` entry.
     #[serde(default)]
     pub pitch_rad: Option<Vec<f64>>,
+}
+
+/// Supported powered-ascent reference methods.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcAscentReferenceMethod {
+    /// Tabulated pitch angle versus time.
+    PitchProgram,
+    /// Body `+x` aligned with inertial velocity after motion starts.
+    GravityTurn,
+    /// Reserved future ingestion of explicit inertial references.
+    ExplicitReference,
+}
+
+impl FcAscentReferenceConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        match self.method {
+            FcAscentReferenceMethod::PitchProgram => self.validate_pitch_program(),
+            FcAscentReferenceMethod::GravityTurn => self.validate_gravity_turn(),
+            FcAscentReferenceMethod::ExplicitReference => {
+                Err(ScenarioError::ElementNotYetSupported {
+                    field: "fc.ascent_reference.method = \"explicit_reference\"".to_owned(),
+                    missing_capability: "explicit inertial ascent-reference ingestion",
+                })
+            }
+        }
+    }
+
+    fn validate_pitch_program(&self) -> Result<(), ScenarioError> {
+        let schedule = self
+            .schedule_s
+            .as_ref()
+            .ok_or_else(|| ScenarioError::InvalidFc {
+                reason: "fc.ascent_reference.method = \"pitch_program\" requires schedule_s"
+                    .to_owned(),
+            })?;
+        let pitch = self
+            .pitch_rad
+            .as_ref()
+            .ok_or_else(|| ScenarioError::InvalidFc {
+                reason: "fc.ascent_reference.method = \"pitch_program\" requires pitch_rad"
+                    .to_owned(),
+            })?;
+        if schedule.len() != pitch.len() {
+            return Err(ScenarioError::InvalidFc {
+                reason: format!(
+                    "fc.ascent_reference schedule_s and pitch_rad must have equal length (got {} and {})",
+                    schedule.len(),
+                    pitch.len()
+                ),
+            });
+        }
+        if schedule.len() < 2 {
+            return Err(ScenarioError::InvalidFc {
+                reason: "fc.ascent_reference pitch_program requires at least two schedule entries"
+                    .to_owned(),
+            });
+        }
+        for (index, value) in schedule.iter().enumerate() {
+            require_finite(&format!("fc.ascent_reference.schedule_s[{index}]"), *value)?;
+            if index > 0 && *value <= schedule[index - 1] {
+                return Err(ScenarioError::InvalidNumber {
+                    field: format!("fc.ascent_reference.schedule_s[{index}]"),
+                    value: *value,
+                    rule: "must be strictly increasing",
+                });
+            }
+        }
+        for (index, value) in pitch.iter().enumerate() {
+            require_finite(&format!("fc.ascent_reference.pitch_rad[{index}]"), *value)?;
+        }
+        Ok(())
+    }
+
+    fn validate_gravity_turn(&self) -> Result<(), ScenarioError> {
+        if self.schedule_s.is_some() {
+            return Err(ScenarioError::UnexpectedField {
+                field: "fc.ascent_reference.schedule_s".to_owned(),
+                role: ModelRole::Controller,
+                name: "gravity_turn".to_owned(),
+            });
+        }
+        if self.pitch_rad.is_some() {
+            return Err(ScenarioError::UnexpectedField {
+                field: "fc.ascent_reference.pitch_rad".to_owned(),
+                role: ModelRole::Controller,
+                name: "gravity_turn".to_owned(),
+            });
+        }
+        Ok(())
+    }
 }
 
 impl FcConfig {
@@ -4317,12 +4497,6 @@ impl FcConfig {
     ///   `[fc.*]` parameter block
     /// - `guidance = attitude_hold` and `reference_q_xyzw` is missing
     pub fn validate(&self) -> Result<(), ScenarioError> {
-        if self.ascent_reference.is_some() {
-            return Err(ScenarioError::ElementNotYetSupported {
-                field: "fc.ascent_reference".to_owned(),
-                missing_capability: "ascent reference-trajectory generation",
-            });
-        }
         if let Some(lanes) = self.estimator_lanes.as_ref() {
             lanes.validate()?;
             for (index, lane) in lanes.lanes.iter().enumerate() {
@@ -4341,6 +4515,19 @@ impl FcConfig {
         {
             return Err(ScenarioError::InvalidFc {
                 reason: "guidance = \"attitude_hold\" requires reference_q_xyzw".to_string(),
+            });
+        }
+        if matches!(self.guidance, FcGuidanceKind::AscentReference) {
+            let Some(ascent_reference) = &self.ascent_reference else {
+                return Err(ScenarioError::InvalidFc {
+                    reason: "guidance = \"ascent_reference\" requires [fc.ascent_reference]"
+                        .to_owned(),
+                });
+            };
+            ascent_reference.validate()?;
+        } else if self.ascent_reference.is_some() {
+            return Err(ScenarioError::InvalidFc {
+                reason: "[fc.ascent_reference] requires guidance = \"ascent_reference\"".to_owned(),
             });
         }
         if self.base_rate_hz == 0 {
@@ -4481,6 +4668,13 @@ fn v3_only_fc_estimator_field(kind: FcEstimatorKind) -> Option<&'static str> {
     }
 }
 
+fn v3_only_fc_guidance_field(kind: FcGuidanceKind) -> Option<&'static str> {
+    match kind {
+        FcGuidanceKind::AscentReference => Some("fc.guidance = \"ascent_reference\""),
+        FcGuidanceKind::AttitudeHold | FcGuidanceKind::Waypoint => None,
+    }
+}
+
 /// Supported autopilot kinds.
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -4497,6 +4691,8 @@ pub enum FcGuidanceKind {
     AttitudeHold,
     /// Scenario-defined inertial-waypoint navigation.
     Waypoint,
+    /// Powered-ascent reference attitude generated from vehicle state.
+    AscentReference,
 }
 
 /// Supported FC magnetic-field models.

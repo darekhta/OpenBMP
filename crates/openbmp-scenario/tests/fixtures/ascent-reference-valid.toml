@@ -1,0 +1,96 @@
+openbmp.scenario = 3
+
+[meta]
+name = "ascent-reference-parser-fixture"
+description = "Synthetic powered-ascent reference parser fixture."
+validation = "experimental"
+
+[time]
+start_s = 0.0
+stop_s = 1.0
+dt_s = 0.01
+seed = 42
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "ascent-reference-fixture"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/ascent-reference-parser-fixture.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "pad"
+
+[[mission.phases]]
+id = "pad"
+label = "pad"
+
+[[mission.phases]]
+id = "powered_ascent"
+label = "powered ascent"
+
+[[mission.events]]
+id = "liftoff"
+trigger = { kind = "at_time", time_s = 0.0 }
+action = { kind = "enter_phase", phase = "powered_ascent" }
+
+[[mission.transitions]]
+from = "pad"
+to = "powered_ascent"
+event = "liftoff"
+
+[fc]
+estimator = "ekf"
+autopilot = "three_loop"
+guidance = "ascent_reference"
+base_rate_hz = 1000
+frame_budget_us = 2000
+
+[fc.ascent_reference]
+method = "pitch_program"
+schedule_s = [0.0, 10.0, 30.0]
+pitch_rad = [0.0, 0.2, 0.6]
+
+[fc.ekf]
+
+[fc.health]
+imu_stale_after_s = 0.05
+gnss_stale_after_s = 0.5
+baro_stale_after_s = 10.0
+mag_stale_after_s = 0.2
+overrun_burst_count = 5
+
+[fc.gain_schedule."mission.phases.powered_ascent"]
+rate_kp = [0.5, 0.5, 0.5]
+rate_kd = [0.05, 0.05, 0.05]
+attitude_kp = [2.0, 2.0, 1.0]
+elevator_limit_rad = 0.35
+aileron_limit_rad = 0.35
+rudder_limit_rad = 0.35
+throttle_baseline = 0.0

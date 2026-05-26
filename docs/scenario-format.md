@@ -135,6 +135,28 @@ is optional and defaults to the controller's burst-counter parameters
 when omitted. `tau_gyro_bias_s` / `tau_accel_bias_s` are optional;
 omitting them preserves random-walk bias dynamics (`tau = infinity`).
 
+Schema v3 also supports powered-ascent reference generation:
+
+```toml
+[fc]
+guidance = "ascent_reference"
+
+[fc.ascent_reference]
+method     = "pitch_program" # or "gravity_turn"
+schedule_s = [0.0, 10.0, 30.0]
+pitch_rad  = [0.0, 0.05, 0.20]
+
+[fc.gain_schedule."mission.phases.powered_ascent"]
+# normal three-loop gains for this phase
+```
+
+`guidance = "ascent_reference"` requires `vehicle.kind = "rigid_body"`, a
+declared `powered_ascent` mission phase/state, and a matching gain-schedule
+entry. `pitch_program` requires equal-length `schedule_s` / `pitch_rad` arrays
+with strictly increasing times. `gravity_turn` accepts no schedule fields and
+aligns body `+x` with inertial velocity once motion is established.
+`explicit_reference` is still reserved and fails closed.
+
 ## Minimal Example
 
 ```toml

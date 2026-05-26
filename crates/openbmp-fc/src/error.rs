@@ -176,6 +176,24 @@ pub enum AutopilotError {
     },
 }
 
+/// Errors raised by a guidance implementation.
+#[derive(Debug, Error)]
+pub enum GuidanceError {
+    /// Guidance configuration was inconsistent after scenario
+    /// validation or direct construction.
+    #[error("guidance: invalid configuration: {reason}")]
+    InvalidConfig {
+        /// Human-readable reason.
+        reason: String,
+    },
+    /// A guidance law rejected the current state.
+    #[error("guidance: reference generation failed: {reason}")]
+    ReferenceGeneration {
+        /// Human-readable reason.
+        reason: String,
+    },
+}
+
 /// Errors raised by the [`Commander`](crate::commander::Commander).
 #[derive(Debug, Error)]
 pub enum CommanderError {
@@ -220,6 +238,9 @@ pub enum ControllerError {
     /// An autopilot failed.
     #[error(transparent)]
     Autopilot(#[from] AutopilotError),
+    /// A guidance job failed.
+    #[error(transparent)]
+    Guidance(#[from] GuidanceError),
     /// A commander failed.
     #[error(transparent)]
     Commander(#[from] CommanderError),

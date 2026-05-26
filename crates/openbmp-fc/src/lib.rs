@@ -72,8 +72,8 @@ pub use clock::{Clock, FixedClock, SimulatedClock};
 pub use controller::{FlightController, FlightControllerBuilder};
 pub use dictionary::{Dictionary, DictionaryError};
 pub use error::{
-    AutopilotError, BusError, CommanderError, ControllerError, EstimatorError, ParamError,
-    SchedulerError, TableError,
+    AutopilotError, BusError, CommanderError, ControllerError, EstimatorError, GuidanceError,
+    ParamError, SchedulerError, TableError,
 };
 pub use scheduler::{
     DispatchSummary, Job, JobContext, JobInfo, OverrunEvent, Priority, Scheduler, Trigger,

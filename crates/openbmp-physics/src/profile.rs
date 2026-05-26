@@ -1,9 +1,8 @@
 //! Flight-profile trait surfaces (deferred schema stubs).
 //!
-//! Trait definitions for the multi-phase flight-profile work described
-//! in `docs/flight-profiles-architecture.md` and its companions. These
-//! are **signatures only** — no implementations ship yet; each lands
-//! with validation evidence per `docs/roadmap.md`. They sit beside
+//! Trait definitions and the first consumed profile helpers for the
+//! multi-phase flight-profile work described in
+//! `docs/flight-profiles-architecture.md` and its companions. They sit beside
 //! [`crate::gravity`], [`crate::atmosphere`], and [`crate::reentry`] as
 //! peers and follow the same `Result<_, PhysicsError>` discipline.
 //!
@@ -26,9 +25,16 @@
 //! See `docs/profile-vocabulary-and-guardrails.md` for the binding
 //! guardrails this module is built under.
 
+use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
 use openbmp_core::SimTime;
 
 use crate::error::PhysicsError;
+
+const MIN_DIRECTION_NORM: f64 = 1.0e-12;
+const QUATERNION_NORM_TOLERANCE: f64 = 1.0e-9;
+
+/// Default minimum inertial speed for gravity-turn alignment (m/s).
+pub const GRAVITY_TURN_MINIMUM_SPEED_M_S: f64 = 1.0e-6;
 
 /// Default absolute tolerance for checking linear momentum residuals
 /// across stage separation, in kg*m/s.
@@ -38,6 +44,10 @@ pub const STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S: f64 = 1.0e-9;
 /// quantities are already carried on the simulation bus.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AscentState {
+    /// ECI position `[x, y, z]` (m).
+    pub position_eci_m: [f64; 3],
+    /// ECI velocity `[x, y, z]` (m/s).
+    pub velocity_eci_m_s: [f64; 3],
     /// Geometric altitude above the WGS84 ellipsoid (m).
     pub altitude_m: f64,
     /// Inertial speed magnitude (m/s).
@@ -48,6 +58,52 @@ pub struct AscentState {
     pub dynamic_pressure_pa: f64,
     /// Remaining mass fraction in `[0, 1]`.
     pub mass_fraction: f64,
+}
+
+impl AscentState {
+    /// Validate the state carried into an ascent reference generator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when any field is non-finite, speed or
+    /// dynamic pressure is negative, or mass fraction lies outside
+    /// `[0, 1]`.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        require_finite_vec3(
+            self.position_eci_m,
+            "ascent position components must be finite",
+        )?;
+        require_finite_vec3(
+            self.velocity_eci_m_s,
+            "ascent velocity components must be finite",
+        )?;
+        if !self.altitude_m.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ascent altitude must be finite",
+            });
+        }
+        if !self.inertial_speed_m_s.is_finite() || self.inertial_speed_m_s < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ascent inertial speed must be finite and non-negative",
+            });
+        }
+        if !self.flight_path_angle_rad.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ascent flight-path angle must be finite",
+            });
+        }
+        if !self.dynamic_pressure_pa.is_finite() || self.dynamic_pressure_pa < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ascent dynamic pressure must be finite and non-negative",
+            });
+        }
+        if !self.mass_fraction.is_finite() || !(0.0..=1.0).contains(&self.mass_fraction) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ascent mass fraction must be finite and in [0, 1]",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Generated powered-ascent reference: the attitude (and optional rate)
@@ -77,6 +133,162 @@ pub trait AscentReferenceGenerator {
         state: &AscentState,
         time: SimTime,
     ) -> Result<AscentReference, PhysicsError>;
+}
+
+/// Pitch-program ascent reference.
+///
+/// The program linearly interpolates pitch angle from the vertical in
+/// a fixed inertial x-z plane, with body `+x` aligned to the resulting
+/// reference direction. Times before the first schedule entry clamp to
+/// the first pitch; times after the final entry clamp to the final
+/// pitch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PitchProgramAscentReference {
+    schedule_s: Vec<f64>,
+    pitch_rad: Vec<f64>,
+}
+
+impl PitchProgramAscentReference {
+    /// Construct a validated pitch-program reference generator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when the schedule and pitch arrays
+    /// differ in length, contain fewer than two entries, contain
+    /// non-finite values, or the schedule is not strictly increasing.
+    pub fn new(schedule_s: Vec<f64>, pitch_rad: Vec<f64>) -> Result<Self, PhysicsError> {
+        validate_pitch_program(&schedule_s, &pitch_rad)?;
+        Ok(Self {
+            schedule_s,
+            pitch_rad,
+        })
+    }
+
+    /// Schedule timestamps (s).
+    #[must_use]
+    pub fn schedule_s(&self) -> &[f64] {
+        &self.schedule_s
+    }
+
+    /// Pitch values (rad), one per schedule timestamp.
+    #[must_use]
+    pub fn pitch_rad(&self) -> &[f64] {
+        &self.pitch_rad
+    }
+
+    /// Interpolated pitch angle at `time`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] if `time` is non-finite. Constructor
+    /// validation guarantees the interpolation intervals themselves are
+    /// usable.
+    pub fn pitch_at(&self, time: SimTime) -> Result<f64, PhysicsError> {
+        let t = time.as_seconds();
+        if !t.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ascent reference time must be finite",
+            });
+        }
+        if t <= self.schedule_s[0] {
+            return Ok(self.pitch_rad[0]);
+        }
+        let last = self.schedule_s.len() - 1;
+        if t >= self.schedule_s[last] {
+            return Ok(self.pitch_rad[last]);
+        }
+        for index in 0..last {
+            let t0 = self.schedule_s[index];
+            let t1 = self.schedule_s[index + 1];
+            if t >= t0 && t <= t1 {
+                let alpha = (t - t0) / (t1 - t0);
+                return Ok(self.pitch_rad[index]
+                    + alpha * (self.pitch_rad[index + 1] - self.pitch_rad[index]));
+            }
+        }
+        Err(PhysicsError::OutOfEnvelope {
+            reason: "ascent reference time did not fall in a pitch-program interval",
+        })
+    }
+}
+
+impl AscentReferenceGenerator for PitchProgramAscentReference {
+    fn ascent_reference(
+        &self,
+        state: &AscentState,
+        time: SimTime,
+    ) -> Result<AscentReference, PhysicsError> {
+        state.validate()?;
+        let pitch = self.pitch_at(time)?;
+        let forward_eci = [pitch.sin(), 0.0, pitch.cos()];
+        let q_body_to_eci_xyzw = reference_quaternion_from_body_x(forward_eci)?;
+        Ok(AscentReference {
+            q_body_to_eci_xyzw,
+            body_rate_rad_s: None,
+        })
+    }
+}
+
+/// Gravity-turn ascent reference.
+///
+/// Once the inertial speed exceeds the configured minimum, body `+x`
+/// is aligned with the inertial velocity vector. The generator derives
+/// an attitude reference only from the vehicle state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GravityTurnAscentReference {
+    minimum_speed_m_s: f64,
+}
+
+impl GravityTurnAscentReference {
+    /// Construct a gravity-turn reference generator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when `minimum_speed_m_s` is non-finite
+    /// or negative.
+    pub fn new(minimum_speed_m_s: f64) -> Result<Self, PhysicsError> {
+        if !minimum_speed_m_s.is_finite() || minimum_speed_m_s < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "gravity-turn minimum speed must be finite and non-negative",
+            });
+        }
+        Ok(Self { minimum_speed_m_s })
+    }
+
+    /// Minimum speed before body `+x` can align with velocity (m/s).
+    #[must_use]
+    pub const fn minimum_speed_m_s(&self) -> f64 {
+        self.minimum_speed_m_s
+    }
+}
+
+impl Default for GravityTurnAscentReference {
+    fn default() -> Self {
+        Self {
+            minimum_speed_m_s: GRAVITY_TURN_MINIMUM_SPEED_M_S,
+        }
+    }
+}
+
+impl AscentReferenceGenerator for GravityTurnAscentReference {
+    fn ascent_reference(
+        &self,
+        state: &AscentState,
+        _time: SimTime,
+    ) -> Result<AscentReference, PhysicsError> {
+        state.validate()?;
+        let speed = vector_norm(state.velocity_eci_m_s);
+        if speed < self.minimum_speed_m_s {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "gravity-turn reference requires non-zero inertial speed",
+            });
+        }
+        let q_body_to_eci_xyzw = reference_quaternion_from_body_x(state.velocity_eci_m_s)?;
+        Ok(AscentReference {
+            q_body_to_eci_xyzw,
+            body_rate_rad_s: None,
+        })
+    }
 }
 
 /// Ballistic state of an unpowered body at a point on its arc, used to
@@ -351,14 +563,182 @@ fn require_finite_vec3(value: [f64; 3], reason: &'static str) -> Result<(), Phys
     Err(PhysicsError::InvalidParameter { reason })
 }
 
+fn validate_pitch_program(schedule_s: &[f64], pitch_rad: &[f64]) -> Result<(), PhysicsError> {
+    if schedule_s.len() != pitch_rad.len() {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "pitch-program schedule and pitch arrays must have equal length",
+        });
+    }
+    if schedule_s.len() < 2 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "pitch-program schedule requires at least two entries",
+        });
+    }
+    for index in 0..schedule_s.len() {
+        if !schedule_s[index].is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "pitch-program schedule values must be finite",
+            });
+        }
+        if !pitch_rad[index].is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "pitch-program pitch values must be finite",
+            });
+        }
+        if index > 0 && schedule_s[index] <= schedule_s[index - 1] {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "pitch-program schedule must be strictly increasing",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn reference_quaternion_from_body_x(forward_eci: [f64; 3]) -> Result<[f64; 4], PhysicsError> {
+    require_finite_vec3(
+        forward_eci,
+        "ascent reference direction components must be finite",
+    )?;
+    let norm = vector_norm(forward_eci);
+    if norm <= MIN_DIRECTION_NORM {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "ascent reference direction norm is too small",
+        });
+    }
+    let body_x = Vector3::new(
+        forward_eci[0] / norm,
+        forward_eci[1] / norm,
+        forward_eci[2] / norm,
+    );
+    let mut reference_y = Vector3::new(0.0, 1.0, 0.0);
+    let projected_y = reference_y - body_x * body_x.dot(&reference_y);
+    let projected_y_norm = projected_y.norm();
+    let body_y = if projected_y_norm > MIN_DIRECTION_NORM {
+        projected_y / projected_y_norm
+    } else {
+        reference_y = Vector3::new(0.0, 0.0, 1.0);
+        let fallback_y = reference_y - body_x * body_x.dot(&reference_y);
+        let fallback_y_norm = fallback_y.norm();
+        if fallback_y_norm <= MIN_DIRECTION_NORM {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "ascent reference could not construct an orthonormal frame",
+            });
+        }
+        fallback_y / fallback_y_norm
+    };
+    let body_z = body_x.cross(&body_y);
+    let matrix = Matrix3::from_columns(&[body_x, body_y, body_z]);
+    let rotation = Rotation3::from_matrix_unchecked(matrix);
+    let q = UnitQuaternion::from_rotation_matrix(&rotation);
+    let q_body_to_eci_xyzw = [q.i, q.j, q.k, q.w];
+    validate_reference_quaternion(q_body_to_eci_xyzw)?;
+    Ok(q_body_to_eci_xyzw)
+}
+
+fn vector_norm(value: [f64; 3]) -> f64 {
+    let mut sum = 0.0_f64;
+    sum += value[0] * value[0];
+    sum += value[1] * value[1];
+    sum += value[2] * value[2];
+    sum.sqrt()
+}
+
+fn validate_reference_quaternion(q_xyzw: [f64; 4]) -> Result<(), PhysicsError> {
+    if !q_xyzw.iter().all(|component| component.is_finite()) {
+        return Err(PhysicsError::NonFinite {
+            reason: "ascent reference quaternion components must be finite",
+        });
+    }
+    let mut norm_sq = 0.0_f64;
+    norm_sq += q_xyzw[0] * q_xyzw[0];
+    norm_sq += q_xyzw[1] * q_xyzw[1];
+    norm_sq += q_xyzw[2] * q_xyzw[2];
+    norm_sq += q_xyzw[3] * q_xyzw[3];
+    if (norm_sq - 1.0).abs() > QUATERNION_NORM_TOLERANCE {
+        return Err(PhysicsError::NonFinite {
+            reason: "ascent reference quaternion must be unit length",
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, clippy::unwrap_used)]
 mod tests {
     use super::{
-        MomentumConservingStageSeparation, STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S,
-        StageSeparationModel,
+        AscentReferenceGenerator, AscentState, GravityTurnAscentReference,
+        MomentumConservingStageSeparation, PitchProgramAscentReference,
+        STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageSeparationModel,
     };
     use crate::PhysicsError;
+    use nalgebra::{Quaternion, UnitQuaternion, Vector3};
+    use openbmp_core::SimTime;
+
+    fn nominal_ascent_state() -> AscentState {
+        AscentState {
+            position_eci_m: [0.0, 0.0, 100.0],
+            velocity_eci_m_s: [10.0, 0.0, 100.0],
+            altitude_m: 100.0,
+            inertial_speed_m_s: 100.498_756_211_208_9,
+            flight_path_angle_rad: 1.471_127_674_303_734_7,
+            dynamic_pressure_pa: 0.0,
+            mass_fraction: 1.0,
+        }
+    }
+
+    fn body_x_axis(q_xyzw: [f64; 4]) -> Vector3<f64> {
+        let q = Quaternion::new(q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]);
+        UnitQuaternion::new_normalize(q).transform_vector(&Vector3::new(1.0, 0.0, 0.0))
+    }
+
+    #[test]
+    fn pitch_program_interpolates_and_clamps() {
+        let program =
+            PitchProgramAscentReference::new(vec![0.0, 10.0, 30.0], vec![0.0, 0.2, 0.6]).unwrap();
+        assert_eq!(program.pitch_at(SimTime::from_seconds(-1.0)).unwrap(), 0.0);
+        assert_eq!(program.pitch_at(SimTime::from_seconds(40.0)).unwrap(), 0.6);
+        assert_eq!(program.pitch_at(SimTime::from_seconds(20.0)).unwrap(), 0.4);
+    }
+
+    #[test]
+    fn pitch_program_reference_aligns_body_x_with_pitch_direction() {
+        let program = PitchProgramAscentReference::new(vec![0.0, 10.0], vec![0.0, 0.4]).unwrap();
+        let reference = program
+            .ascent_reference(&nominal_ascent_state(), SimTime::from_seconds(5.0))
+            .unwrap();
+        let body_x = body_x_axis(reference.q_body_to_eci_xyzw);
+        let expected_pitch = 0.2_f64;
+        let expected = Vector3::new(expected_pitch.sin(), 0.0, expected_pitch.cos());
+        assert!((body_x - expected).norm() < 1.0e-12);
+    }
+
+    #[test]
+    fn pitch_program_rejects_non_monotonic_schedule() {
+        let err = PitchProgramAscentReference::new(vec![0.0, 10.0, 10.0], vec![0.0, 0.1, 0.2])
+            .unwrap_err();
+        assert!(matches!(err, PhysicsError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn gravity_turn_aligns_body_x_with_inertial_velocity() {
+        let reference = GravityTurnAscentReference::default()
+            .ascent_reference(&nominal_ascent_state(), SimTime::from_seconds(1.0))
+            .unwrap();
+        let body_x = body_x_axis(reference.q_body_to_eci_xyzw);
+        let expected = Vector3::new(10.0, 0.0, 100.0).normalize();
+        assert!((body_x - expected).norm() < 1.0e-12);
+    }
+
+    #[test]
+    fn gravity_turn_rejects_zero_velocity() {
+        let mut state = nominal_ascent_state();
+        state.velocity_eci_m_s = [0.0, 0.0, 0.0];
+        state.inertial_speed_m_s = 0.0;
+        let err = GravityTurnAscentReference::default()
+            .ascent_reference(&state, SimTime::from_seconds(1.0))
+            .unwrap_err();
+        assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
+    }
 
     #[test]
     fn no_impulse_conserves_momentum_for_any_positive_masses() {
