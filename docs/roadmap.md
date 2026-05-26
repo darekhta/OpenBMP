@@ -77,14 +77,15 @@ scope conversation does not need to be re-derived.
 
 The multi-phase ascent → coast → apogee → descent → entry profile is designed
 across [`flight-profiles-architecture.md`](flight-profiles-architecture.md) and
-its companions, and ships as fail-closed schema and trait stubs
-(`openbmp-physics::profile`, `select_guidance_profile`, the
-`[fc.ascent_reference]` block). PR1 `jettison_stage` is implemented only inside
-the validated gravity-only separation envelope; each remaining capability fails
-closed until it lands with validation evidence:
+its companions. PR1 `jettison_stage` is implemented only inside the validated
+gravity-only separation envelope. PR2 implements the schema-v3
+`[fc.ascent_reference]` path for pitch-program and gravity-turn references;
+the explicit reference family remains reserved. The coast/footprint and
+entry/descent capabilities still fail closed until they land with validation
+evidence:
 
-- Powered-ascent reference-trajectory generation (gravity-turn / pitch-program
-  / explicit reference) — [`ascent-guidance.md`](ascent-guidance.md).
+- Powered-ascent reference-trajectory generation (gravity-turn / pitch-program;
+  explicit reference reserved) — [`ascent-guidance.md`](ascent-guidance.md).
 - Coast / apogee phase wiring and the range-safety landing footprint —
   [`ballistic-coast-and-apogee.md`](ballistic-coast-and-apogee.md).
 - Live `entry_interface` → `lifting_entry` → `final_descent` handoff —

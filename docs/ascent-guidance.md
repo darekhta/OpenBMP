@@ -17,12 +17,15 @@ targeting, no real-world-location guidance."* Ascent guidance extends the
 
 ## Current state
 
-The three-loop autopilot (`openbmp-fc/src/autopilot.rs`, Stevens & Lewis 2015)
-has a trajectory loop that tracks a *pre-defined* reference — either a constant
-attitude or a Mellinger-Kumar minimum-snap polynomial. There is no method that
-*produces* an ascent reference: no gravity-turn, no pitch-program, no
-explicit-guidance reference. The autopilot can hold or track an ascent
-attitude, but the scenario author must supply it by hand as waypoints.
+OpenBMP ships the first consumed ascent-reference path:
+
+- `pitch_program` — tabulated pitch angle versus time, linearly interpolated.
+- `gravity_turn` — body `+x` aligned with the inertial velocity vector once
+  speed is non-zero.
+
+The explicit reference family remains reserved. The three-loop autopilot
+(`openbmp-fc/src/autopilot.rs`, Stevens & Lewis 2015) is unchanged; the ascent
+reference job publishes the reference quaternion it already tracks.
 
 ## Design
 
@@ -100,17 +103,13 @@ vehicle reaches orbit insertion.
 > forbid aimpoint-shaped fields here. This keeps the method on the
 > reach-an-orbit-state side of the line and off the strike-a-place side.
 
-> **Status (stub).** `AscentReferenceGenerator` is a trait signature in
-> `openbmp-physics::profile`. The `pitch_program` and `gravity_turn` methods
-> are the first intended implementations; the explicit reference is reserved.
-> The `[fc.ascent_reference]` block (`FcAscentReferenceConfig`) parses and is
-> rejected at `FcConfig::validate()` with
-> `ScenarioError::ElementNotYetSupported` until implemented. The stub gates on
-> the *presence of the block* rather than a `FcGuidanceKind` variant: adding a
-> guidance-enum variant today would force an unimplementable arm in
-> `FcRunner::new` (whose error type has no "unsupported guidance" case), so the
-> `FcGuidanceKind::AscentReference` selector is **reserved** until the
-> generator lands.
+> **Status.** `AscentReferenceGenerator`, `PitchProgramAscentReference`, and
+> `GravityTurnAscentReference` are implemented in
+> `openbmp-physics::profile`. `FcGuidanceKind::AscentReference`,
+> `FcAscentReferenceConfig`, the FC `AscentReferenceGuidance` job, and runner
+> wiring are consumed under schema v3. `explicit_reference` still parses only
+> as a reserved method and fails closed with
+> `ScenarioError::ElementNotYetSupported`.
 
 ### Wiring into the autopilot
 
@@ -128,17 +127,20 @@ AscentReferenceGenerator ──► reference quaternion
 
 The autopilot itself is unchanged: it already accepts a reference quaternion.
 Ascent guidance only supplies where, previously, a waypoint or hand-authored
-reference did. In the eventual wiring a guidance selector activates it; in the
-current stub the `[fc.ascent_reference]` block declares it (and fails closed):
+reference did. The scenario selector activates it:
 
 ```toml
+[fc]
+guidance = "ascent_reference"
+
 [fc.ascent_reference]
-method = "gravity_turn"   # parsed; rejected at validate until implemented
+method = "gravity_turn"
 ```
 
 Phase-gating uses the existing gain schedule: the `powered_ascent` phase
-selects the ascent reference; at burnout, a `select_guidance_profile` action
-(or a phase transition) hands off to coast (no active reference) — see
+selects the ascent reference; at burnout, a phase transition hands off to
+coast. The reserved `select_guidance_profile` action can add an explicit
+selector later — see
 [`flight-profiles-architecture.md`](flight-profiles-architecture.md) and
 [`ballistic-coast-and-apogee.md`](ballistic-coast-and-apogee.md).
 
@@ -148,20 +150,27 @@ selects the ascent reference; at burnout, a `select_guidance_profile` action
   mirroring how `attitude_hold` requires `reference_q_xyzw` — else
   `ScenarioError::InvalidFc`.
 - `pitch_program` requires `schedule_s` and `pitch_rad` of equal length ≥ 2,
-  monotonic `schedule_s`; reuses `require_*` helpers.
+  strictly increasing `schedule_s`; reuses `require_*` helpers.
+- `gravity_turn` rejects pitch-program fields and fails at runtime if inertial
+  speed is still effectively zero.
 - The explicit-reference cutoff block accepts only inertial-state fields; any
   field whose name normalizes to an aimpoint / geographic term is rejected by
   the lint before deserialization.
 - `ascent_reference` guidance requires a vehicle that can be attitude-
   controlled (`rigid_body`); a `point_mass` vehicle is rejected.
+- `ascent_reference` guidance requires a declared `powered_ascent` mission
+  phase/state and a matching gain-schedule entry.
 
-## Schema stub summary
+## Implementation summary
 
 | Item | Location | State |
 |---|---|---|
-| `AscentReferenceGenerator` trait + `AscentState` / `AscentReference` | `openbmp-physics/src/profile.rs` | Trait + struct signatures. |
-| `FcAscentReferenceConfig` + `FcConfig::ascent_reference` field | `openbmp-scenario/src/document.rs` | Added; `validate()` rejects when present (`ElementNotYetSupported`). |
-| `FcGuidanceKind::AscentReference` | `openbmp-scenario/src/document.rs` | Reserved (not added in stub; see Status note). |
+| `AscentReferenceGenerator` trait + `AscentState` / `AscentReference` | `openbmp-physics/src/profile.rs` | Consumed API. |
+| `PitchProgramAscentReference` / `GravityTurnAscentReference` | `openbmp-physics/src/profile.rs` | Implemented with unit tests. |
+| `FcAscentReferenceConfig` + `FcConfig::ascent_reference` field | `openbmp-scenario/src/document.rs` | Consumed under schema v3; validates fail-closed. |
+| `FcGuidanceKind::AscentReference` | `openbmp-scenario/src/document.rs` | Consumed under schema v3. |
+| `AscentReferenceGuidance` | `openbmp-fc/src/guidance.rs` | Publishes reference states during `powered_ascent`. |
+| Runner wiring | `openbmp-runner/src/fc.rs` | Builds physics generators from scenario config. |
 
 ## References
 

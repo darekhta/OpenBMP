@@ -3946,6 +3946,81 @@ file = "../sensors/star-tracker-textbook.toml""#,
         "/../../scenarios/closed-loop-attitude-hold/scenario.toml"
     ));
 
+    const ASCENT_REFERENCE_SCENARIO: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/ascent-reference-valid.toml"
+    ));
+
+    #[test]
+    fn parses_ascent_reference_pitch_program() {
+        let scenario = Scenario::from_toml_str(ASCENT_REFERENCE_SCENARIO).unwrap();
+        let fc = scenario.document.fc.as_ref().unwrap();
+        assert_eq!(fc.guidance, crate::FcGuidanceKind::AscentReference);
+        let ascent = fc.ascent_reference.as_ref().unwrap();
+        assert_eq!(ascent.method, crate::FcAscentReferenceMethod::PitchProgram);
+        assert_eq!(ascent.schedule_s.as_ref().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn rejects_ascent_reference_without_monotonic_pitch_schedule() {
+        let toml = ASCENT_REFERENCE_SCENARIO.replace(
+            "schedule_s = [0.0, 10.0, 30.0]",
+            "schedule_s = [0.0, 10.0, 10.0]",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "fc.ascent_reference.schedule_s[2]"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_ascent_reference_on_point_mass_vehicle() {
+        let toml = ASCENT_REFERENCE_SCENARIO
+            .replace(r#"kind = "rigid_body""#, r#"kind = "point_mass""#)
+            .replace(
+                "initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]\n",
+                "",
+            )
+            .replace(
+                "initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]\n",
+                "",
+            )
+            .replace(
+                "dry_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]\n",
+                "",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, .. } if field == "fc.ascent_reference"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_ascent_reference_under_v2_schema() {
+        let toml =
+            ASCENT_REFERENCE_SCENARIO.replace("openbmp.scenario = 3", "openbmp.scenario = 2");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::SchemaVersionFieldReserved { ref field, .. } if field == "fc.guidance = \"ascent_reference\""),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn explicit_ascent_reference_remains_reserved() {
+        let toml = ASCENT_REFERENCE_SCENARIO.replace(
+            r#"method = "pitch_program""#,
+            r#"method = "explicit_reference""#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::ElementNotYetSupported { ref field, .. } if field == "fc.ascent_reference.method = \"explicit_reference\""),
+            "got {err:?}",
+        );
+    }
+
     #[test]
     fn parses_closed_loop_attitude_hold_scenario() {
         let scenario = Scenario::from_toml_str(CLOSED_LOOP_ATTITUDE_HOLD).unwrap();

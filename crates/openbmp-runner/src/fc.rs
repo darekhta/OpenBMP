@@ -23,7 +23,8 @@ use openbmp_fc::estimator::{Ekf, EkfParams, Estimator, EstimatorJob, Mekf, MekfP
 use openbmp_fc::estimator_lanes::{LaneId, MultiLaneEstimator, VoterPolicy};
 use openbmp_fc::fdir::{DetectorKind, FdirJob, FdirParams};
 use openbmp_fc::guidance::{
-    AttitudeHoldGuidance, GuidanceParams, WaypointGuidance, WaypointSequence,
+    AscentReferenceGuidance, AttitudeHoldGuidance, GuidanceParams, WaypointGuidance,
+    WaypointSequence,
 };
 use openbmp_fc::health::{HealthMonitor, HealthParams};
 use openbmp_fc::imm::ImmEstimator;
@@ -39,16 +40,21 @@ use openbmp_fc::topics::{
 };
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
+    GuidanceError,
 };
 use openbmp_mission::{
     EventBinding, MissionAction, MissionPhaseGraph, MissionStateMachine, PhaseId, RegionSet,
 };
 use openbmp_physics::magnetic::Wmm2025;
+use openbmp_physics::profile::{
+    AscentReferenceGenerator, GravityTurnAscentReference, PitchProgramAscentReference,
+};
 use openbmp_scenario::{
-    FcActuatorChannelsConfig, FcAntiWindupConfig, FcAutopilotKind, FcAutopilotParams, FcConfig,
-    FcEkfConfig, FcEstimatorKind, FcEstimatorLanesConfig, FcEstimatorVoterKind, FcFdirConfig,
-    FcFdirDetectorKind, FcFdirDetectorKindV5, FcGainsConfig, FcGuidanceKind, FcHealthConfig,
-    FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig, FcTrajectoryKind,
+    FcActuatorChannelsConfig, FcAntiWindupConfig, FcAscentReferenceMethod, FcAutopilotKind,
+    FcAutopilotParams, FcConfig, FcEkfConfig, FcEstimatorKind, FcEstimatorLanesConfig,
+    FcEstimatorVoterKind, FcFdirConfig, FcFdirDetectorKind, FcFdirDetectorKindV5, FcGainsConfig,
+    FcGuidanceKind, FcHealthConfig, FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig,
+    FcTrajectoryKind,
 };
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
@@ -171,6 +177,18 @@ impl FcRunner {
                     100,
                     next_priority,
                     Box::new(WaypointGuidance::new(sequence, GuidanceParams::default())),
+                )?;
+            }
+            FcGuidanceKind::AscentReference => {
+                let generator = build_ascent_reference_generator(config)?;
+                fc.scheduler_mut().register_periodic(
+                    slow_period_ticks,
+                    100,
+                    next_priority,
+                    Box::new(
+                        AscentReferenceGuidance::new(generator)
+                            .with_active_phase_ids(powered_ascent_phase_ids()),
+                    ),
                 )?;
             }
         }
@@ -436,6 +454,50 @@ fn period_ticks_for_hz(base_rate_hz: u32, task_rate_hz: u32) -> u64 {
     let base = u64::from(base_rate_hz);
     let task = u64::from(task_rate_hz.max(1));
     base.div_ceil(task).max(1)
+}
+
+fn powered_ascent_phase_ids() -> Vec<u64> {
+    vec![
+        PhaseId::from_path("mission.phases.powered_ascent").value(),
+        PhaseId::from_path("mission.states.powered_ascent").value(),
+    ]
+}
+
+fn build_ascent_reference_generator(
+    config: &FcConfig,
+) -> Result<Box<dyn AscentReferenceGenerator + Send>, ControllerError> {
+    let cfg = config
+        .ascent_reference
+        .as_ref()
+        .ok_or_else(|| GuidanceError::InvalidConfig {
+            reason: "guidance = \"ascent_reference\" requires [fc.ascent_reference]".to_owned(),
+        })?;
+    match cfg.method {
+        FcAscentReferenceMethod::PitchProgram => {
+            let schedule = cfg
+                .schedule_s
+                .as_ref()
+                .ok_or_else(|| GuidanceError::InvalidConfig {
+                    reason: "pitch_program requires schedule_s".to_owned(),
+                })?;
+            let pitch = cfg
+                .pitch_rad
+                .as_ref()
+                .ok_or_else(|| GuidanceError::InvalidConfig {
+                    reason: "pitch_program requires pitch_rad".to_owned(),
+                })?;
+            let generator = PitchProgramAscentReference::new(schedule.clone(), pitch.clone())
+                .map_err(|err| GuidanceError::InvalidConfig {
+                    reason: err.to_string(),
+                })?;
+            Ok(Box::new(generator))
+        }
+        FcAscentReferenceMethod::GravityTurn => Ok(Box::new(GravityTurnAscentReference::default())),
+        FcAscentReferenceMethod::ExplicitReference => Err(GuidanceError::InvalidConfig {
+            reason: "explicit_reference ascent method is reserved".to_owned(),
+        }
+        .into()),
+    }
 }
 
 fn apply_ekf_mag_model(ekf: Ekf, cfg: Option<&FcEkfConfig>) -> Result<Ekf, ControllerError> {
@@ -1204,7 +1266,9 @@ mod tests {
         BuiltInEventTrigger, CanonicalRegionStates, CanonicalRegions, EventId, MissionAction,
         MissionState, Phase, PhaseTransition, Region, RegionSet,
     };
-    use openbmp_scenario::{FcAutopilotKind, FcEstimatorKind, FcGuidanceKind};
+    use openbmp_scenario::{
+        FcAscentReferenceConfig, FcAutopilotKind, FcEstimatorKind, FcGuidanceKind,
+    };
 
     use super::*;
 
@@ -1236,6 +1300,39 @@ mod tests {
             id: liftoff,
             trigger: BuiltInEventTrigger::AtTime { time_s: 0.5 },
             action: MissionAction::EnterState(ascent),
+            once: true,
+        }];
+        (graph, bindings, pad)
+    }
+
+    fn powered_ascent_graph() -> (MissionPhaseGraph, Vec<EventBinding<MissionAction>>, PhaseId) {
+        let pad = PhaseId::from_path("mission.phases.pad");
+        let powered_ascent = PhaseId::from_path("mission.phases.powered_ascent");
+        let liftoff = EventId::from_path("mission.events.liftoff");
+        let phases = vec![
+            Phase {
+                id: pad,
+                label: "pad".to_string(),
+                allowed_effectors: Vec::new(),
+                allowed_engines: Vec::new(),
+            },
+            Phase {
+                id: powered_ascent,
+                label: "powered_ascent".to_string(),
+                allowed_effectors: Vec::new(),
+                allowed_engines: Vec::new(),
+            },
+        ];
+        let transitions = vec![PhaseTransition {
+            from: pad,
+            to: powered_ascent,
+            event: liftoff,
+        }];
+        let graph = MissionPhaseGraph::new(phases, transitions, pad, &[liftoff]).unwrap();
+        let bindings = vec![EventBinding {
+            id: liftoff,
+            trigger: BuiltInEventTrigger::AtTime { time_s: 0.5 },
+            action: MissionAction::EnterState(powered_ascent),
             once: true,
         }];
         (graph, bindings, pad)
@@ -1467,6 +1564,62 @@ mod tests {
         for v in attitude.q_body_to_eci_xyzw {
             assert!(v.is_finite(), "attitude q has NaN");
         }
+    }
+
+    #[test]
+    fn fc_runner_builds_from_ascent_reference_config() {
+        let mut gain_schedule = BTreeMap::new();
+        gain_schedule.insert(
+            "mission.phases.powered_ascent".to_string(),
+            FcGainsConfig {
+                rate_kp: Some([0.5, 0.5, 0.5]),
+                rate_ki: None,
+                rate_kd: Some([0.05, 0.05, 0.05]),
+                attitude_kp: Some([2.0, 2.0, 1.0]),
+                attitude_ki: None,
+                attitude_kd: None,
+                trajectory_kp: None,
+                trajectory_ki: None,
+                trajectory_kd: None,
+                aileron_limit_rad: Some(0.35),
+                elevator_limit_rad: Some(0.35),
+                rudder_limit_rad: Some(0.35),
+                throttle_baseline: Some(0.0),
+            },
+        );
+        let config = FcConfig {
+            estimator: FcEstimatorKind::Ekf,
+            autopilot: FcAutopilotKind::ThreeLoop,
+            guidance: FcGuidanceKind::AscentReference,
+            reference_q_xyzw: None,
+            base_rate_hz: 1_000,
+            frame_budget_us: 2_000,
+            ekf: Some(FcEkfConfig::default()),
+            mekf: None,
+            imm: None,
+            autopilot_params: None,
+            health: FcHealthConfig {
+                imu_stale_after_s: 0.05,
+                gnss_stale_after_s: 0.5,
+                baro_stale_after_s: 10.0,
+                mag_stale_after_s: 0.2,
+                overrun_burst_count: 5,
+            },
+            fdir: None,
+            actuator_channels: None,
+            gain_schedule,
+            phase_authority: None,
+            estimator_lanes: None,
+            autopilot_allocation: None,
+            trajectory: None,
+            ascent_reference: Some(FcAscentReferenceConfig {
+                method: FcAscentReferenceMethod::PitchProgram,
+                schedule_s: Some(vec![0.0, 10.0, 30.0]),
+                pitch_rad: Some(vec![0.0, 0.2, 0.6]),
+            }),
+        };
+        let (graph, bindings, pad) = powered_ascent_graph();
+        let _runner = new_runner(&config, graph, bindings, pad);
     }
 
     #[test]
