@@ -16,11 +16,13 @@ for academic trajectory study and range-safety / recovery planning.
 
 - Gravity to EGM2008 zonal degree 6 and an `AtmosphereModel` to 1000 km exist
   and are validated.
-- The kernel propagates a coasting body correctly today; what is missing is
-  the *mission-phase* structure (`coast`, `apogee_approach`,
-  `ballistic_descent`) and the apogee/entry-interface handoffs.
-- There is no tool that summarizes *where the trajectory lands* — the lint
-  forbids `impact-point`, and no range-relative equivalent exists.
+- The kernel propagates a coasting body correctly today, and scenarios can
+  name the `coast` and `ballistic_descent` phases with the existing
+  `at_apogee` / `at_altitude_descending` event machinery.
+- Schema v3 now includes an offline `[landing_footprint]` block. The first
+  consumed method is `constant_gravity`, a deterministic closed-form toy
+  footprint for short constant-gravity profiles. J2 / EGM2008 footprint
+  propagation remains deferred and fails closed by method selection.
 
 ## Design
 
@@ -67,11 +69,10 @@ existing `at_altitude_descending` trigger, which hands off to the entry phases
 documented in
 [`descent-and-entry-profiles.md`](descent-and-entry-profiles.md).
 
-> **Status.** `apogee_approach` and `ballistic_descent` are *reserved* phase
-> names (see [`profile-vocabulary-and-guardrails.md`](profile-vocabulary-and-guardrails.md)).
-> The triggers (`at_apogee`, `at_altitude_descending`) already ship. Wiring is
-> a configuration over existing seams; no kernel change is required for the
-> coast arc itself.
+> **Status.** `coast` and `ballistic_descent` are consumed phase names for the
+> PR3 footprint slice. The triggers (`at_apogee`,
+> `at_altitude_descending`) already ship. `entry_interface` and later entry
+> phases remain reserved for the descent/entry slice.
 
 ### Range-safety footprint
 
@@ -108,10 +109,10 @@ pub trait RangeSafetyFootprint {
 - **Nominal landing point** — downrange distance, crossrange distance, and
   bearing from the launch origin (range-relative; geodetic lat/lon only if an
   origin is declared, for recovery mapping).
-- **Dispersion ellipse** — the 1-σ / 3-σ landing scatter from a Monte-Carlo
-  sweep over declared input uncertainties (winds, ballistic coefficient,
-  burnout state). This is the recovery / range-safety footprint, reported as a
-  statistical ellipse, not an accuracy claim against any aimpoint.
+- **Dispersion ellipse** — optional 1-σ / 3-σ landing scatter from a declared
+  input ellipse. Monte-Carlo dispersion over winds / ballistic coefficient /
+  burnout uncertainty remains deferred; requesting dispersion without a
+  declared source fails closed.
 
 ```
         crossrange
@@ -155,14 +156,17 @@ inverse problem and any geographic aimpoint are rejected at load.
 - Monte-Carlo dispersion requires declared input-uncertainty blocks; a
   dispersion request with no uncertainty source fails closed rather than
   reporting a degenerate zero-width ellipse.
+- `landing_footprint.method = "constant_gravity"` requires
+  `environment.gravity = "constant"` and a mission phase named `coast` or
+  `ballistic_descent`.
 
 ## Schema stub summary
 
 | Item | Location | State |
 |---|---|---|
-| `RangeSafetyFootprint` trait + `LandingFootprint` / `BallisticState` | `openbmp-physics/src/profile.rs` | Trait + struct signatures. |
-| `apogee_approach`, `ballistic_descent` phases | vocabulary canon | Reserved. |
-| Footprint post-processing path | offline analysis (`openbmp-runner`) | Deferred; trait stub only. |
+| `RangeSafetyFootprint` trait + `LandingFootprint` / `BallisticState` | `openbmp-physics/src/profile.rs` | Consumed by `ConstantGravityRangeSafetyFootprint`. |
+| `coast`, `ballistic_descent` phases | mission vocabulary | Accepted with existing event machinery. |
+| Footprint post-processing path | offline analysis (`openbmp-runner`) | `landing_footprint_for_state` consumes schema-v3 `[landing_footprint]`. |
 
 ## References
 

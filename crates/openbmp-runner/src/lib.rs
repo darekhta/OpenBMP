@@ -33,6 +33,7 @@ pub mod effectors;
 pub mod engines;
 pub mod fc;
 pub mod fc_bridge;
+pub mod footprint;
 pub mod integrator;
 pub mod mission;
 pub mod point_mass;

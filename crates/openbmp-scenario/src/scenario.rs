@@ -3951,6 +3951,11 @@ file = "../sensors/star-tracker-textbook.toml""#,
         "/tests/fixtures/ascent-reference-valid.toml"
     ));
 
+    const COAST_FOOTPRINT_SCENARIO: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/coast-footprint-valid.toml"
+    ));
+
     #[test]
     fn parses_ascent_reference_pitch_program() {
         let scenario = Scenario::from_toml_str(ASCENT_REFERENCE_SCENARIO).unwrap();
@@ -4017,6 +4022,67 @@ file = "../sensors/star-tracker-textbook.toml""#,
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::ElementNotYetSupported { ref field, .. } if field == "fc.ascent_reference.method = \"explicit_reference\""),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn parses_coast_landing_footprint_config() {
+        let scenario = Scenario::from_toml_str(COAST_FOOTPRINT_SCENARIO).unwrap();
+        let footprint = scenario.document.landing_footprint.as_ref().unwrap();
+        assert_eq!(
+            footprint.method,
+            crate::LandingFootprintMethod::ConstantGravity
+        );
+        assert!(footprint.cull_altitude_m.abs() < f64::EPSILON);
+        assert!(footprint.dispersion.is_some());
+    }
+
+    #[test]
+    fn rejects_landing_footprint_under_v2_schema() {
+        let toml = COAST_FOOTPRINT_SCENARIO.replace("openbmp.scenario = 3", "openbmp.scenario = 2");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::SchemaVersionFieldReserved { ref field, .. } if field == "landing_footprint"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_landing_footprint_without_coast_phase() {
+        let toml = COAST_FOOTPRINT_SCENARIO
+            .replace(r#"id = "coast""#, r#"id = "ascent""#)
+            .replace(r#"id = "ballistic_descent""#, r#"id = "descent""#)
+            .replace(r#"initial_phase = "coast""#, r#"initial_phase = "ascent""#)
+            .replace(r#"from = "coast""#, r#"from = "ascent""#)
+            .replace(r#"from = "ballistic_descent""#, r#"from = "descent""#)
+            .replace(r#"to = "ballistic_descent""#, r#"to = "descent""#);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. } if field_a == "landing_footprint" && field_b == "mission.phase_or_state.id"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_landing_footprint_geodetic_output_without_origin() {
+        let toml =
+            COAST_FOOTPRINT_SCENARIO.replace("include_geodetic = false", "include_geodetic = true");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. } if field_a == "landing_footprint.include_geodetic" && field_b == "frames.local_origin"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_constant_gravity_footprint_with_nonconstant_gravity() {
+        let toml = COAST_FOOTPRINT_SCENARIO
+            .replace(r#"gravity = "constant""#, r#"gravity = "point_mass""#)
+            .replace("gravity_m_s2 = 9.80665", "mu_m3_s2 = 398600441800000.0");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. } if field_a == "landing_footprint.method" && field_b == "environment.gravity"),
             "got {err:?}",
         );
     }

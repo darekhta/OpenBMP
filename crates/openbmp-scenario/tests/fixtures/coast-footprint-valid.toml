@@ -1,0 +1,87 @@
+openbmp.scenario = 3
+
+[meta]
+name = "coast-footprint-parser-fixture"
+description = "Synthetic coast and landing-footprint parser fixture."
+validation = "experimental"
+
+[time]
+start_s = 0.0
+stop_s = 5.0
+dt_s = 0.01
+seed = 7
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "coast-footprint-fixture"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/coast-footprint-parser-fixture.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "unpowered coast"
+
+[[mission.phases]]
+id = "ballistic_descent"
+label = "ballistic descent"
+
+[[mission.phases]]
+id = "recovery"
+label = "recovery"
+
+[[mission.events]]
+id = "evt_apogee"
+trigger = { kind = "at_apogee" }
+action = { kind = "emit_telemetry_marker", tag = "apogee_marker" }
+
+[[mission.events]]
+id = "evt_cull"
+trigger = { kind = "at_altitude_descending", altitude_m = 0.0 }
+action = { kind = "emit_telemetry_marker", tag = "cull_marker" }
+
+[[mission.transitions]]
+from = "coast"
+to = "ballistic_descent"
+event = "evt_apogee"
+
+[[mission.transitions]]
+from = "ballistic_descent"
+to = "recovery"
+event = "evt_cull"
+
+[landing_footprint]
+method = "constant_gravity"
+cull_altitude_m = 0.0
+include_geodetic = false
+
+[landing_footprint.dispersion]
+one_sigma_semi_major_m = 25.0
+one_sigma_semi_minor_m = 10.0
+orientation_rad = 0.0

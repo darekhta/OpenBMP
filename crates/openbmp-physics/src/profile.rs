@@ -29,9 +29,12 @@ use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
 use openbmp_core::SimTime;
 
 use crate::error::PhysicsError;
+use crate::frames::WGS84_A_M;
 
 const MIN_DIRECTION_NORM: f64 = 1.0e-12;
 const QUATERNION_NORM_TOLERANCE: f64 = 1.0e-9;
+const MIN_FOOTPRINT_GRAVITY_M_S2: f64 = 1.0e-12;
+const MIN_LONGITUDE_COSINE: f64 = 1.0e-12;
 
 /// Default minimum inertial speed for gravity-turn alignment (m/s).
 pub const GRAVITY_TURN_MINIMUM_SPEED_M_S: f64 = 1.0e-6;
@@ -305,6 +308,123 @@ pub struct BallisticState {
     pub time: SimTime,
 }
 
+impl BallisticState {
+    /// Validate the state carried into a landing-footprint
+    /// prediction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when any vector component is
+    /// non-finite, the ballistic coefficient is negative /
+    /// non-finite, or the timestamp is non-finite.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        require_finite_vec3(
+            self.position_eci_m,
+            "ballistic position components must be finite",
+        )?;
+        require_finite_vec3(
+            self.velocity_eci_m_s,
+            "ballistic velocity components must be finite",
+        )?;
+        if !self.ballistic_coefficient_m2_kg.is_finite() || self.ballistic_coefficient_m2_kg < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ballistic coefficient must be finite and non-negative",
+            });
+        }
+        if !self.time.as_seconds().is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ballistic state time must be finite",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Optional geodetic launch origin used only to project a
+/// range-relative footprint onto recovery-map coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FootprintGeodeticOrigin {
+    /// Launch-site latitude in degrees.
+    pub latitude_deg: f64,
+    /// Launch-site longitude in degrees.
+    pub longitude_deg: f64,
+    /// Launch-site height above the WGS84 ellipsoid (m).
+    pub height_m: f64,
+}
+
+impl FootprintGeodeticOrigin {
+    /// Validate the launch-origin geodetic fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when latitude / longitude are outside
+    /// their conventional ranges or any field is non-finite.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        if !self.latitude_deg.is_finite() || !(-90.0..=90.0).contains(&self.latitude_deg) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint origin latitude must be finite and in [-90, 90] degrees",
+            });
+        }
+        if !self.longitude_deg.is_finite() || !(-180.0..=180.0).contains(&self.longitude_deg) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint origin longitude must be finite and in [-180, 180] degrees",
+            });
+        }
+        if !self.height_m.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint origin height must be finite",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Declared one-sigma landing dispersion input for an offline
+/// footprint report.
+///
+/// This is a declared analysis input, not an accuracy promise and not
+/// a comparison to any desired landing location.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FootprintDispersionInput {
+    /// One-sigma semi-major axis (m).
+    pub one_sigma_semi_major_m: f64,
+    /// One-sigma semi-minor axis (m).
+    pub one_sigma_semi_minor_m: f64,
+    /// Ellipse orientation in the downrange/crossrange plane (rad).
+    pub orientation_rad: f64,
+}
+
+impl FootprintDispersionInput {
+    /// Validate the declared dispersion ellipse.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when axes are non-positive /
+    /// non-finite, the semi-major axis is smaller than the
+    /// semi-minor axis, or orientation is non-finite.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        require_positive_length(
+            self.one_sigma_semi_major_m,
+            "footprint one-sigma semi-major axis must be finite and positive",
+        )?;
+        require_positive_length(
+            self.one_sigma_semi_minor_m,
+            "footprint one-sigma semi-minor axis must be finite and positive",
+        )?;
+        if self.one_sigma_semi_major_m < self.one_sigma_semi_minor_m {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint semi-major axis must be >= semi-minor axis",
+            });
+        }
+        if !self.orientation_rad.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint dispersion orientation must be finite",
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Environment selection for a footprint propagation (which gravity and
 /// atmosphere envelopes apply, and the optional launch-site origin used
 /// only to map a range-relative prediction onto recovery coordinates).
@@ -313,10 +433,70 @@ pub struct FootprintEnvironment {
     /// Cull altitude (m): propagation stops at or below this altitude
     /// (typically ground level, 0.0).
     pub cull_altitude_m: f64,
-    /// Whether a launch-site geodetic origin is declared, enabling the
-    /// optional geodetic output. When `false`, only range-relative
-    /// output is produced — never a fabricated geographic coordinate.
-    pub has_launch_origin: bool,
+    /// Constant downward acceleration magnitude used by the
+    /// constant-gravity footprint method (m/s²).
+    pub gravity_m_s2: f64,
+    /// Launch-origin inertial position `[x, y, z]` (m). Nominal
+    /// downrange/crossrange values are reported relative to this
+    /// origin in the local x/y plane.
+    pub launch_origin_eci_m: [f64; 3],
+    /// Optional geodetic launch origin. When absent, geodetic
+    /// latitude/longitude output remains `None`; the model never
+    /// fabricates geographic coordinates.
+    pub geodetic_origin: Option<FootprintGeodeticOrigin>,
+    /// Optional declared dispersion input. When absent, the
+    /// resulting footprint has no dispersion ellipse rather than a
+    /// misleading zero-width ellipse.
+    pub dispersion: Option<FootprintDispersionInput>,
+}
+
+impl FootprintEnvironment {
+    /// Validate the environment carried into a landing-footprint
+    /// prediction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when the cull altitude, gravity,
+    /// launch origin, geodetic origin, or dispersion declaration is
+    /// invalid.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        if !self.cull_altitude_m.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint cull altitude must be finite",
+            });
+        }
+        if !self.gravity_m_s2.is_finite() || self.gravity_m_s2 <= MIN_FOOTPRINT_GRAVITY_M_S2 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint gravity must be finite and strictly positive",
+            });
+        }
+        require_finite_vec3(
+            self.launch_origin_eci_m,
+            "footprint launch-origin components must be finite",
+        )?;
+        if let Some(origin) = self.geodetic_origin {
+            origin.validate()?;
+        }
+        if let Some(dispersion) = self.dispersion {
+            dispersion.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// Dispersion ellipse attached to a landing-footprint report.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FootprintDispersionEllipse {
+    /// One-sigma semi-major axis (m).
+    pub one_sigma_semi_major_m: f64,
+    /// One-sigma semi-minor axis (m).
+    pub one_sigma_semi_minor_m: f64,
+    /// Three-sigma semi-major axis (m).
+    pub three_sigma_semi_major_m: f64,
+    /// Three-sigma semi-minor axis (m).
+    pub three_sigma_semi_minor_m: f64,
+    /// Ellipse orientation in the downrange/crossrange plane (rad).
+    pub orientation_rad: f64,
 }
 
 /// Predicted landing footprint of an unpowered body, in range-relative
@@ -328,10 +508,19 @@ pub struct LandingFootprint {
     pub downrange_m: f64,
     /// Nominal crossrange distance from the launch origin (m).
     pub crossrange_m: f64,
-    /// 1-σ semi-major axis of the dispersion ellipse (m).
-    pub dispersion_semi_major_m: f64,
-    /// 1-σ semi-minor axis of the dispersion ellipse (m).
-    pub dispersion_semi_minor_m: f64,
+    /// Bearing in the downrange/crossrange plane, computed as
+    /// `atan2(crossrange, downrange)` (rad).
+    pub bearing_rad: f64,
+    /// Time from the seed state to the cull-altitude crossing (s).
+    pub time_to_cull_s: f64,
+    /// Optional predicted geodetic latitude in degrees, present only
+    /// when the environment provides a geodetic launch origin.
+    pub latitude_deg: Option<f64>,
+    /// Optional predicted geodetic longitude in degrees, present only
+    /// when the environment provides a geodetic launch origin.
+    pub longitude_deg: Option<f64>,
+    /// Optional declared dispersion ellipse.
+    pub dispersion_ellipse: Option<FootprintDispersionEllipse>,
 }
 
 /// Reports where an unpowered body is predicted to come down, for
@@ -351,6 +540,54 @@ pub trait RangeSafetyFootprint {
         state: &BallisticState,
         env: &FootprintEnvironment,
     ) -> Result<LandingFootprint, PhysicsError>;
+}
+
+/// Constant-gravity closed-form footprint model.
+///
+/// This is the first consumed offline footprint implementation: a
+/// deterministic, forward-only toy model for short-range scenarios
+/// whose environment explicitly selects constant gravity. It solves
+/// the vertical constant-acceleration crossing to the environment's
+/// cull altitude, advances horizontal motion linearly, and reports
+/// range-relative output. It does not accept a desired landing
+/// location and it produces no control command.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConstantGravityRangeSafetyFootprint;
+
+impl RangeSafetyFootprint for ConstantGravityRangeSafetyFootprint {
+    fn landing_footprint(
+        &self,
+        state: &BallisticState,
+        env: &FootprintEnvironment,
+    ) -> Result<LandingFootprint, PhysicsError> {
+        state.validate()?;
+        env.validate()?;
+        let time_to_cull_s = constant_gravity_time_to_cull_s(state, env)?;
+        let landing_xy_m = [
+            state.position_eci_m[0] + state.velocity_eci_m_s[0] * time_to_cull_s,
+            state.position_eci_m[1] + state.velocity_eci_m_s[1] * time_to_cull_s,
+        ];
+        let downrange_m = landing_xy_m[0] - env.launch_origin_eci_m[0];
+        let crossrange_m = landing_xy_m[1] - env.launch_origin_eci_m[1];
+        let bearing_rad = if downrange_m == 0.0 && crossrange_m == 0.0 {
+            0.0
+        } else {
+            crossrange_m.atan2(downrange_m)
+        };
+        let (latitude_deg, longitude_deg) = match env.geodetic_origin {
+            Some(origin) => geodetic_from_range_relative(origin, downrange_m, crossrange_m)?,
+            None => (None, None),
+        };
+        Ok(LandingFootprint {
+            downrange_m,
+            crossrange_m,
+            bearing_rad,
+            time_to_cull_s,
+            latitude_deg,
+            longitude_deg,
+            dispersion_ellipse: env.dispersion.map(dispersion_ellipse),
+        })
+    }
 }
 
 /// Partitioned rigid-body states produced by a stage separation:
@@ -556,11 +793,94 @@ fn require_positive_mass(value: f64, reason: &'static str) -> Result<(), Physics
     Err(PhysicsError::InvalidParameter { reason })
 }
 
+fn require_positive_length(value: f64, reason: &'static str) -> Result<(), PhysicsError> {
+    if value.is_finite() && value > 0.0 {
+        return Ok(());
+    }
+    Err(PhysicsError::InvalidParameter { reason })
+}
+
 fn require_finite_vec3(value: [f64; 3], reason: &'static str) -> Result<(), PhysicsError> {
     if value.iter().all(|component| component.is_finite()) {
         return Ok(());
     }
     Err(PhysicsError::InvalidParameter { reason })
+}
+
+fn constant_gravity_time_to_cull_s(
+    state: &BallisticState,
+    env: &FootprintEnvironment,
+) -> Result<f64, PhysicsError> {
+    let height_above_cull_m = state.position_eci_m[2] - env.cull_altitude_m;
+    if !height_above_cull_m.is_finite() || height_above_cull_m <= 0.0 {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "ballistic state must start above the footprint cull altitude",
+        });
+    }
+    let vertical_velocity_m_s = state.velocity_eci_m_s[2];
+    let discriminant = vertical_velocity_m_s * vertical_velocity_m_s
+        + 2.0 * env.gravity_m_s2 * height_above_cull_m;
+    if !discriminant.is_finite() || discriminant < 0.0 {
+        return Err(PhysicsError::NonFinite {
+            reason: "constant-gravity footprint time discriminant is invalid",
+        });
+    }
+    let time_to_cull_s = (vertical_velocity_m_s + discriminant.sqrt()) / env.gravity_m_s2;
+    if !time_to_cull_s.is_finite() || time_to_cull_s < 0.0 {
+        return Err(PhysicsError::NonFinite {
+            reason: "constant-gravity footprint crossing time is invalid",
+        });
+    }
+    Ok(time_to_cull_s)
+}
+
+fn geodetic_from_range_relative(
+    origin: FootprintGeodeticOrigin,
+    downrange_m: f64,
+    crossrange_m: f64,
+) -> Result<(Option<f64>, Option<f64>), PhysicsError> {
+    origin.validate()?;
+    let latitude_rad = origin.latitude_deg.to_radians();
+    let cos_latitude = latitude_rad.cos();
+    if cos_latitude.abs() <= MIN_LONGITUDE_COSINE {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "footprint geodetic longitude projection is singular at this latitude",
+        });
+    }
+    let latitude_deg =
+        origin.latitude_deg + crossrange_m / WGS84_A_M * 180.0 / core::f64::consts::PI;
+    let longitude_deg = origin.longitude_deg
+        + downrange_m / (WGS84_A_M * cos_latitude) * 180.0 / core::f64::consts::PI;
+    if !latitude_deg.is_finite() || !longitude_deg.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "footprint geodetic projection produced non-finite coordinates",
+        });
+    }
+    Ok((
+        Some(latitude_deg),
+        Some(normalize_longitude_deg(longitude_deg)),
+    ))
+}
+
+fn normalize_longitude_deg(longitude_deg: f64) -> f64 {
+    let mut wrapped = longitude_deg;
+    while wrapped > 180.0 {
+        wrapped -= 360.0;
+    }
+    while wrapped < -180.0 {
+        wrapped += 360.0;
+    }
+    wrapped
+}
+
+fn dispersion_ellipse(input: FootprintDispersionInput) -> FootprintDispersionEllipse {
+    FootprintDispersionEllipse {
+        one_sigma_semi_major_m: input.one_sigma_semi_major_m,
+        one_sigma_semi_minor_m: input.one_sigma_semi_minor_m,
+        three_sigma_semi_major_m: 3.0 * input.one_sigma_semi_major_m,
+        three_sigma_semi_minor_m: 3.0 * input.one_sigma_semi_minor_m,
+        orientation_rad: input.orientation_rad,
+    }
 }
 
 fn validate_pitch_program(schedule_s: &[f64], pitch_rad: &[f64]) -> Result<(), PhysicsError> {
@@ -666,9 +986,10 @@ fn validate_reference_quaternion(q_xyzw: [f64; 4]) -> Result<(), PhysicsError> {
 #[allow(clippy::float_cmp, clippy::unwrap_used)]
 mod tests {
     use super::{
-        AscentReferenceGenerator, AscentState, GravityTurnAscentReference,
-        MomentumConservingStageSeparation, PitchProgramAscentReference,
-        STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageSeparationModel,
+        AscentReferenceGenerator, AscentState, BallisticState, ConstantGravityRangeSafetyFootprint,
+        FootprintDispersionInput, FootprintEnvironment, FootprintGeodeticOrigin,
+        GravityTurnAscentReference, MomentumConservingStageSeparation, PitchProgramAscentReference,
+        RangeSafetyFootprint, STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageSeparationModel,
     };
     use crate::PhysicsError;
     use nalgebra::{Quaternion, UnitQuaternion, Vector3};
@@ -683,6 +1004,16 @@ mod tests {
             flight_path_angle_rad: 1.471_127_674_303_734_7,
             dynamic_pressure_pa: 0.0,
             mass_fraction: 1.0,
+        }
+    }
+
+    fn nominal_footprint_env() -> FootprintEnvironment {
+        FootprintEnvironment {
+            cull_altitude_m: 0.0,
+            gravity_m_s2: 10.0,
+            launch_origin_eci_m: [0.0, 0.0, 0.0],
+            geodetic_origin: None,
+            dispersion: None,
         }
     }
 
@@ -738,6 +1069,96 @@ mod tests {
             .ascent_reference(&state, SimTime::from_seconds(1.0))
             .unwrap_err();
         assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
+    }
+
+    #[test]
+    fn constant_gravity_footprint_predicts_range_relative_landing() {
+        let state = BallisticState {
+            position_eci_m: [0.0, 0.0, 100.0],
+            velocity_eci_m_s: [20.0, -5.0, 0.0],
+            ballistic_coefficient_m2_kg: 0.0,
+            time: SimTime::from_seconds(12.0),
+        };
+        let footprint = ConstantGravityRangeSafetyFootprint
+            .landing_footprint(&state, &nominal_footprint_env())
+            .unwrap();
+        let expected_time = (2.0_f64 * 100.0 / 10.0).sqrt();
+        assert!((footprint.time_to_cull_s - expected_time).abs() < 1.0e-12);
+        assert!((footprint.downrange_m - 20.0 * expected_time).abs() < 1.0e-12);
+        assert!((footprint.crossrange_m + 5.0 * expected_time).abs() < 1.0e-12);
+        assert!(footprint.latitude_deg.is_none());
+        assert!(footprint.longitude_deg.is_none());
+        assert!(footprint.dispersion_ellipse.is_none());
+    }
+
+    #[test]
+    fn constant_gravity_footprint_emits_optional_geodetic_and_dispersion() {
+        let state = BallisticState {
+            position_eci_m: [0.0, 0.0, 100.0],
+            velocity_eci_m_s: [10.0, 0.0, 0.0],
+            ballistic_coefficient_m2_kg: 0.0,
+            time: SimTime::from_seconds(0.0),
+        };
+        let env = FootprintEnvironment {
+            geodetic_origin: Some(FootprintGeodeticOrigin {
+                latitude_deg: 50.0,
+                longitude_deg: 30.0,
+                height_m: 100.0,
+            }),
+            dispersion: Some(FootprintDispersionInput {
+                one_sigma_semi_major_m: 30.0,
+                one_sigma_semi_minor_m: 10.0,
+                orientation_rad: 0.25,
+            }),
+            ..nominal_footprint_env()
+        };
+        let footprint = ConstantGravityRangeSafetyFootprint
+            .landing_footprint(&state, &env)
+            .unwrap();
+        assert_eq!(footprint.latitude_deg.unwrap(), 50.0);
+        assert!(footprint.longitude_deg.unwrap() > 30.0);
+        let dispersion = footprint.dispersion_ellipse.unwrap();
+        assert_eq!(dispersion.one_sigma_semi_major_m, 30.0);
+        assert_eq!(dispersion.one_sigma_semi_minor_m, 10.0);
+        assert_eq!(dispersion.three_sigma_semi_major_m, 90.0);
+        assert_eq!(dispersion.three_sigma_semi_minor_m, 30.0);
+        assert_eq!(dispersion.orientation_rad, 0.25);
+    }
+
+    #[test]
+    fn footprint_rejects_state_below_cull_altitude() {
+        let state = BallisticState {
+            position_eci_m: [0.0, 0.0, 0.0],
+            velocity_eci_m_s: [0.0, 0.0, -1.0],
+            ballistic_coefficient_m2_kg: 0.0,
+            time: SimTime::from_seconds(0.0),
+        };
+        let err = ConstantGravityRangeSafetyFootprint
+            .landing_footprint(&state, &nominal_footprint_env())
+            .unwrap_err();
+        assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
+    }
+
+    #[test]
+    fn footprint_rejects_degenerate_dispersion() {
+        let env = FootprintEnvironment {
+            dispersion: Some(FootprintDispersionInput {
+                one_sigma_semi_major_m: 1.0,
+                one_sigma_semi_minor_m: 2.0,
+                orientation_rad: 0.0,
+            }),
+            ..nominal_footprint_env()
+        };
+        let state = BallisticState {
+            position_eci_m: [0.0, 0.0, 100.0],
+            velocity_eci_m_s: [0.0, 0.0, 0.0],
+            ballistic_coefficient_m2_kg: 0.0,
+            time: SimTime::from_seconds(0.0),
+        };
+        let err = ConstantGravityRangeSafetyFootprint
+            .landing_footprint(&state, &env)
+            .unwrap_err();
+        assert!(matches!(err, PhysicsError::InvalidParameter { .. }));
     }
 
     #[test]

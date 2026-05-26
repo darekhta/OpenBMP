@@ -80,14 +80,16 @@ across [`flight-profiles-architecture.md`](flight-profiles-architecture.md) and
 its companions. PR1 `jettison_stage` is implemented only inside the validated
 gravity-only separation envelope. PR2 implements the schema-v3
 `[fc.ascent_reference]` path for pitch-program and gravity-turn references;
-the explicit reference family remains reserved. The coast/footprint and
-entry/descent capabilities still fail closed until they land with validation
-evidence:
+the explicit reference family remains reserved. PR3 implements the first
+coast/footprint slice: schema-v3 `[landing_footprint]`, constant-gravity
+offline footprint prediction, and range-relative / optional geodetic reporting.
+J2 / EGM2008 footprint propagation and the entry/descent capabilities still
+fail closed until they land with validation evidence:
 
 - Powered-ascent reference-trajectory generation (gravity-turn / pitch-program;
   explicit reference reserved) — [`ascent-guidance.md`](ascent-guidance.md).
-- Coast / apogee phase wiring and the range-safety landing footprint —
-  [`ballistic-coast-and-apogee.md`](ballistic-coast-and-apogee.md).
+- Coast / apogee phase wiring and the constant-gravity range-safety landing
+  footprint — [`ballistic-coast-and-apogee.md`](ballistic-coast-and-apogee.md).
 - Live `entry_interface` → `lifting_entry` → `final_descent` handoff —
   [`descent-and-entry-profiles.md`](descent-and-entry-profiles.md).
 
