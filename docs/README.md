@@ -27,6 +27,9 @@ and the architecture; reach for the others as needed.
 
 - [Safety Boundaries](safety-boundaries.md) — accept / reject rules, review
   checklist, naming rules, dependency rules, provenance requirements.
+- [Dual-Use Assessment](dual-use-assessment.md) — the dual-use threat model:
+  the forward-not-inverse rule, the enforcement tiers, the residual surface,
+  and per-capability rationale.
 - [Verification](verification.md) — validation labels, golden telemetry,
   tolerance tables, fuzzing, and public-benchmark rules.
 - [Data Provenance](data-provenance.md) — required source records, source
@@ -36,6 +39,9 @@ and the architecture; reach for the others as needed.
   dependency checks, and build-provenance expectations.
 - [Modeling Guide](modeling-guide.md) — the model-author contract:
   documentation template, validation evidence, and safety posture.
+- [Acceptable-Use Policy](../ACCEPTABLE-USE.md) and
+  [Export-Control & Dual-Use Notice](../EXPORT-CONTROL.md) — intended use,
+  out-of-scope use, export posture, and user responsibility (repository root).
 
 ## Reference
 

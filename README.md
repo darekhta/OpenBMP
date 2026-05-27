@@ -136,7 +136,11 @@ targeting and terminal-guidance logic, real fielded-vehicle parameter sets,
 real device drivers and bus protocols, operational thermal-protection
 material data, and any weapon-employment capability — in every part of the
 codebase, enforced by review and by CI tripwires. The full accept/reject
-contract is in [`docs/safety-boundaries.md`](docs/safety-boundaries.md).
+contract is in [`docs/safety-boundaries.md`](docs/safety-boundaries.md); the
+dual-use threat model and enforcement tiers are in
+[`docs/dual-use-assessment.md`](docs/dual-use-assessment.md), and the export
+posture and acceptable use are in [`EXPORT-CONTROL.md`](EXPORT-CONTROL.md) and
+[`ACCEPTABLE-USE.md`](ACCEPTABLE-USE.md).
 
 ## Documentation
 
@@ -147,6 +151,7 @@ contract is in [`docs/safety-boundaries.md`](docs/safety-boundaries.md).
 | [Scenario Format](docs/scenario-format.md) | The TOML scenario contract: tables, parsing rules, safety-name lint. |
 | [Verification](docs/verification.md) | Validation labels, golden telemetry, tolerance tables, fuzzing. |
 | [Safety Boundaries](docs/safety-boundaries.md) | Accept / reject rules, review checklist, naming and provenance rules. |
+| [Dual-Use Assessment](docs/dual-use-assessment.md) | Dual-use threat model: forward-not-inverse, enforcement tiers, residual surface, per-capability rationale. |
 | [Frames and Time](docs/frames-time.md) | Frame profiles, ECI/ECEF/NED conventions, epoch and leap-second handling. |
 | [Data Provenance](docs/data-provenance.md) | Source records, transformation rules, machine checks, inline-data tripwires. |
 | [Supply Chain](docs/supply-chain.md) | Rust dependency policy, SBOM, build-provenance expectations. |

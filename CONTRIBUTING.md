@@ -12,7 +12,9 @@ outside those boundaries is rejected on safety grounds, regardless of
 technical merit.
 
 All contributors are also expected to follow
-[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), the
+[`ACCEPTABLE-USE.md`](ACCEPTABLE-USE.md) policy, and the export-control
+posture in [`EXPORT-CONTROL.md`](EXPORT-CONTROL.md).
 
 ## Workflow
 
@@ -103,6 +105,26 @@ Questions):
 If the answer to any of 1–6 is "no," the contribution is outside the
 project boundary. PR authors must reframe the contribution or accept
 that it will be declined on safety grounds, not on quality grounds.
+
+## Dual-Use Review Gate
+
+Changes that touch guidance, the landing / footprint / dispersion surface,
+entry, the estimator lanes, MPC, or scenario **input types** are
+"near-the-line" and carry an extra gate on top of the Safety Review above
+(see [`docs/dual-use-assessment.md`](docs/dual-use-assessment.md)):
+
+- The change must be **forward-only**: it answers *given vehicle and
+  trajectory, what happens?* — never *given a place to reach, what to do?*
+- It must add **no input** that names or accepts a desired location, target,
+  aimpoint, real-world waypoint, or miss-distance, and **no** accuracy / CEP
+  metric scored against a target.
+- The PR must declare the **enforcement tier** that binds it. A near-the-line
+  capability lands only when a **Tier-1 (architectural)** constraint binds it —
+  an input type in which the operational objective is *unconstructible*.
+  Documentation and policy are layered on top, never in place of it.
+
+The forward-not-inverse checklist is built into the
+[pull request template](.github/pull_request_template.md).
 
 ## Naming Discipline
 
