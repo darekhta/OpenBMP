@@ -71,6 +71,29 @@ pub struct AirComposition {
     pub electrons: f64,
 }
 
+/// Nitrogen molecule molar mass (kg/mol).
+pub const N2_MOLAR_MASS_KG_MOL: f64 = 28.0134e-3;
+/// Oxygen molecule molar mass (kg/mol).
+pub const O2_MOLAR_MASS_KG_MOL: f64 = 31.9988e-3;
+/// Atomic nitrogen molar mass (kg/mol).
+pub const N_ATOMIC_MOLAR_MASS_KG_MOL: f64 = 14.0067e-3;
+/// Atomic oxygen molar mass (kg/mol).
+pub const O_ATOMIC_MOLAR_MASS_KG_MOL: f64 = 15.9994e-3;
+/// Nitric oxide molar mass (kg/mol).
+pub const NO_MOLAR_MASS_KG_MOL: f64 = 30.0061e-3;
+/// Argon molar mass (kg/mol).
+pub const ARGON_MOLAR_MASS_KG_MOL: f64 = 39.948e-3;
+
+/// Standard formation enthalpy of atomic nitrogen gas at 298.15 K (J/mol);
+/// `NIST Chemistry WebBook` SRD 69.
+pub const N_ATOMIC_FORMATION_ENTHALPY_J_MOL: f64 = 472.68e3;
+/// Standard formation enthalpy of atomic oxygen gas at 298.15 K (J/mol);
+/// `NIST Chemistry WebBook` SRD 69.
+pub const O_ATOMIC_FORMATION_ENTHALPY_J_MOL: f64 = 249.18e3;
+/// Standard formation enthalpy of nitric oxide gas at 298.15 K (J/mol);
+/// `NIST Chemistry WebBook` SRD 69.
+pub const NO_FORMATION_ENTHALPY_J_MOL: f64 = 90.29e3;
+
 impl AirComposition {
     /// Standard cold-air sea-level composition (frozen).
     #[must_use]
@@ -199,6 +222,85 @@ impl AirComposition {
         if self.charge_neutrality_residual().abs() > tolerance {
             return Err(PhysicsError::InvalidParameter {
                 reason: "air-composition ion/electron fractions are not charge-neutral",
+            });
+        }
+        Ok(())
+    }
+
+    /// Mean molar mass of the neutral heavy-species mixture (kg/mol).
+    ///
+    /// Ion and electron channels are intentionally excluded; use this
+    /// for dissociated but non-ionised air states.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::NonFinite`] for NaN / Inf entries and
+    /// [`PhysicsError::InvalidParameter`] when any neutral mole
+    /// fraction is negative or when no neutral heavy species are
+    /// present.
+    pub fn neutral_mean_molar_mass_kg_mol(&self) -> Result<f64, PhysicsError> {
+        self.validate_neutral_heavy_species()?;
+        let neutral_sum = self.neutral_mole_fraction_sum();
+        let mixture_mass = self.n2 * N2_MOLAR_MASS_KG_MOL
+            + self.o2 * O2_MOLAR_MASS_KG_MOL
+            + self.n_atomic * N_ATOMIC_MOLAR_MASS_KG_MOL
+            + self.o_atomic * O_ATOMIC_MOLAR_MASS_KG_MOL
+            + self.no * NO_MOLAR_MASS_KG_MOL
+            + self.argon * ARGON_MOLAR_MASS_KG_MOL;
+        Ok(mixture_mass / neutral_sum)
+    }
+
+    /// Neutral-air formation enthalpy per unit mixture mass (J/kg).
+    ///
+    /// This is the composition-side term used by the Fay-Riddell
+    /// dissociation-enthalpy correction when a caller supplies an
+    /// external equilibrium / CFD edge state. The reference elements
+    /// `N2`, `O2`, and `Ar` have zero standard formation enthalpy;
+    /// atomic `N`, atomic `O`, and `NO` carry the positive JANAF/NIST
+    /// values pinned by the constants in this module.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::NonFinite`] for NaN / Inf entries and
+    /// [`PhysicsError::InvalidParameter`] when neutral mole fractions
+    /// are negative or no neutral heavy species are present.
+    pub fn neutral_formation_enthalpy_j_kg(&self) -> Result<f64, PhysicsError> {
+        self.validate_neutral_heavy_species()?;
+        let mixture_mass = self.n2 * N2_MOLAR_MASS_KG_MOL
+            + self.o2 * O2_MOLAR_MASS_KG_MOL
+            + self.n_atomic * N_ATOMIC_MOLAR_MASS_KG_MOL
+            + self.o_atomic * O_ATOMIC_MOLAR_MASS_KG_MOL
+            + self.no * NO_MOLAR_MASS_KG_MOL
+            + self.argon * ARGON_MOLAR_MASS_KG_MOL;
+        let formation_enthalpy_j_mol_mixture = self.n_atomic * N_ATOMIC_FORMATION_ENTHALPY_J_MOL
+            + self.o_atomic * O_ATOMIC_FORMATION_ENTHALPY_J_MOL
+            + self.no * NO_FORMATION_ENTHALPY_J_MOL;
+        Ok(formation_enthalpy_j_mol_mixture / mixture_mass)
+    }
+
+    fn validate_neutral_heavy_species(&self) -> Result<(), PhysicsError> {
+        for value in [
+            self.n2,
+            self.o2,
+            self.n_atomic,
+            self.o_atomic,
+            self.no,
+            self.argon,
+        ] {
+            if !value.is_finite() {
+                return Err(PhysicsError::NonFinite {
+                    reason: "neutral air-composition mole fraction is NaN or Inf",
+                });
+            }
+            if value < 0.0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "neutral air-composition mole fractions must be non-negative",
+                });
+            }
+        }
+        if self.neutral_mole_fraction_sum() <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "neutral air composition must contain at least one heavy species",
             });
         }
         Ok(())
@@ -402,6 +504,45 @@ mod tests {
         };
         assert!(matches!(
             c.validate_mole_fractions(1.0e-6),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn neutral_mean_molar_mass_matches_cold_air() {
+        let c = AirComposition::sea_level();
+        let mean = c.neutral_mean_molar_mass_kg_mol().unwrap();
+        assert!((mean - 28.959_991_821_055_6e-3).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn neutral_formation_enthalpy_is_zero_for_reference_air() {
+        let c = AirComposition::sea_level();
+        let h = c.neutral_formation_enthalpy_j_kg().unwrap();
+        assert_eq!(h.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn neutral_formation_enthalpy_counts_atomic_species() {
+        let c = AirComposition {
+            o_atomic: 1.0,
+            ..AirComposition::default()
+        };
+        let h = c.neutral_formation_enthalpy_j_kg().unwrap();
+        assert!(
+            (h - 15.576e6).abs() / 15.576e6 < 1.0e-3,
+            "atomic oxygen formation enthalpy per kg = {h}"
+        );
+    }
+
+    #[test]
+    fn neutral_formation_enthalpy_rejects_empty_neutral_mixture() {
+        let c = AirComposition {
+            electrons: 1.0,
+            ..AirComposition::default()
+        };
+        assert!(matches!(
+            c.neutral_formation_enthalpy_j_kg(),
             Err(PhysicsError::InvalidParameter { .. })
         ));
     }

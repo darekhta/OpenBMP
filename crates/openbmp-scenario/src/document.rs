@@ -2029,6 +2029,9 @@ pub struct EntryProfileConfig {
     /// Reference exponential atmosphere scale height (m).
     #[serde(default = "default_entry_scale_height_m")]
     pub scale_height_m: f64,
+    /// Optional nose radius for stagnation-point heating diagnostics (m).
+    #[serde(default)]
+    pub nose_radius_m: Option<f64>,
     /// Lift-to-drag ratio, required for `mode = "lifting"`.
     #[serde(default)]
     pub lift_to_drag_ratio: Option<f64>,
@@ -2061,6 +2064,9 @@ impl EntryProfileConfig {
             self.surface_density_kg_m3,
         )?;
         require_positive("entry_profile.scale_height_m", self.scale_height_m)?;
+        if let Some(nose_radius_m) = self.nose_radius_m {
+            require_positive("entry_profile.nose_radius_m", nose_radius_m)?;
+        }
         if let Some(lift_to_drag_ratio) = self.lift_to_drag_ratio {
             require_positive("entry_profile.lift_to_drag_ratio", lift_to_drag_ratio)?;
         }

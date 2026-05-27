@@ -1492,6 +1492,7 @@ dependencies = [
  "approx",
  "nalgebra",
  "openbmp-aero",
+ "openbmp-aerothermal",
  "openbmp-core",
  "openbmp-fc",
  "openbmp-mission",

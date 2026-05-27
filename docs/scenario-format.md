@@ -1556,11 +1556,14 @@ final_descent_altitude_m = 5000.0
 # Optional; defaults shown.
 surface_density_kg_m3 = 1.225
 scale_height_m = 7000.0
+nose_radius_m = 1.0       # optional; enables stagnation heating diagnostics
 ```
 
 `mode = "ballistic"` enables the runner-side
 `entry_profile_for_sample` report using Allen-Eggers peak-deceleration
-diagnostics. `mode = "lifting"` additionally requires
+diagnostics. When `nose_radius_m` is present, the same report also includes
+Sutton-Graves / Allen-Eggers peak convective heat flux, peak-heating altitude,
+and convective heat load. `mode = "lifting"` additionally requires
 `vehicle.kind = "rigid_body"`, a `lifting_entry` mission phase,
 `lift_to_drag_ratio`, and `[entry_profile.corridor]`:
 

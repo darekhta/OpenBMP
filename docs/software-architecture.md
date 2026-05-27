@@ -1792,10 +1792,13 @@ pub trait BoundaryLayer {
 }
 ```
 
-Implementations include Fay-Riddell stagnation heating, Sutton-Graves
-engineering simplification, Tauber-Sutton radiative heating, reference-
-enthalpy distributed-heating, and a 1-D explicit-FTCS thermal-conduction
-toy. Sub-phases 6.10 and 6.11 add Park two-temperature nonequilibrium
+Implementations include Fay-Riddell stagnation heating with caller-supplied
+real-gas edge-state assembly and a neutral-composition dissociation-enthalpy
+helper, Sutton-Graves engineering simplification with finite-wall and
+Allen-Eggers trajectory heat-load diagnostics, Tauber-Sutton radiative
+heating, reference-enthalpy distributed-heating, and a 1-D
+explicit-FTCS thermal-conduction toy. Sub-phases 6.10 and 6.11 add Park
+two-temperature nonequilibrium
 thermochemistry (via the `NonequilibriumAir` trait, plugged in through the
 `AtmosphereModel::thermo_state` extension hook) and a generic surface
 ablation toy (`AblationModel` trait with steady-state and charring

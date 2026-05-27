@@ -4303,6 +4303,7 @@ file = "../sensors/star-tracker-textbook.toml""#,
         assert_eq!(entry.mode, crate::EntryProfileMode::Ballistic);
         assert!((entry.entry_interface_altitude_m - 122_000.0).abs() < f64::EPSILON);
         assert!((entry.final_descent_altitude_m.unwrap() - 5_000.0).abs() < f64::EPSILON);
+        assert_eq!(entry.nose_radius_m, Some(1.0));
     }
 
     #[test]
@@ -4352,7 +4353,7 @@ file = "../sensors/star-tracker-textbook.toml""#,
     #[test]
     fn rejects_lifting_entry_profile_on_point_mass_vehicle() {
         let toml = ENTRY_PROFILE_SCENARIO.replace(
-            "[entry_profile]\nmode = \"ballistic\"\nentry_interface_altitude_m = 122000.0\nfinal_descent_altitude_m = 5000.0",
+            "[entry_profile]\nmode = \"ballistic\"\nentry_interface_altitude_m = 122000.0\nfinal_descent_altitude_m = 5000.0\nnose_radius_m = 1.0",
             "[entry_profile]\nmode = \"lifting\"\nentry_interface_altitude_m = 122000.0\nfinal_descent_altitude_m = 5000.0\nlift_to_drag_ratio = 0.3\n\n[entry_profile.corridor]\nmax_heat_rate_w_m2 = 1000000.0\nmax_load_factor_g = 8.0\nflight_path_angle_band_rad = 0.2\nmax_bank_rad = 1.2",
         );
         let err = Scenario::from_toml_str(&toml).unwrap_err();

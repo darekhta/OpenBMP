@@ -8,8 +8,10 @@ L2 aerothermal heat-transfer crate.
 ## Purpose
 
 - `HeatTransferModel` trait — stagnation + distributed heating.
-- Stagnation: `FayRiddell` (cold-gas trait path plus caller-supplied
-  edge-state assembly), `SuttonGraves`, `TauberSuttonRadiative`
+- Stagnation: `FayRiddell` (cold-gas trait path, caller-supplied
+  edge-state assembly, and neutral-composition `h_D` helper),
+  `SuttonGraves` (point and Allen-Eggers
+  trajectory heat-load diagnostics), `TauberSuttonRadiative`
   (typed-reserved pending coefficients).
 - Distributed: reference-enthalpy method, Spalding-Chi, Van Driest II.
 - Boundary layer: `Laminar`, `Transitional`, `Turbulent` with
@@ -64,8 +66,11 @@ HGV / MaRV / cruise-weapon data.** See `docs/safety-boundaries.md`
 
 ## References
 
-- Fay & Riddell 1958.
+- Fay & Riddell 1958, DOI `10.2514/8.7517`.
+- NIST Chemistry WebBook SRD 69, gas-phase formation enthalpies for
+  atomic nitrogen, atomic oxygen, and nitric oxide.
 - Sutton & Graves, NASA TR R-376, 1971.
+- NASA/TP-2006-213486, Stardust SRC entry trajectory / heating tables.
 - Tauber & Sutton, NASA TM-86767, 1986.
 - Anderson, *Hypersonic and High-Temperature Gas Dynamics* (3rd ed.).
 - Hirschel, *Basics of Aerothermodynamics* (2nd ed., 2015).

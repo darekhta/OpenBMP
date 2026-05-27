@@ -6,8 +6,10 @@
 //! * [`stagnation`]: stagnation-point heating. Ships
 //!   [`stagnation::FayRiddell`] as a cold-gas engineering scaffold
 //!   plus caller-supplied [`stagnation::FayRiddellEdgeState`] assembly,
+//!   with a neutral-composition helper for the dissociation enthalpy term,
 //!   [`stagnation::SuttonGraves`] (engineering
-//!   `K · √(ρ/R) · V³` simplification), and
+//!   `K · √(ρ/R) · V³` simplification plus Allen-Eggers trajectory
+//!   heat-load diagnostics), and
 //!   [`stagnation::TauberSuttonRadiative`] as a typed-reserved model
 //!   pending published coefficients.
 //! * [`boundary_layer`]: BL state, transition models, and
@@ -41,8 +43,8 @@ pub use boundary_layer::{
 };
 pub use error::AerothermalError;
 pub use stagnation::{
-    AerothermalContext, BodyStation, FayRiddell, FayRiddellEdgeState, HeatTransferModel,
-    SUTTON_GRAVES_K_EARTH_SI, StagnationHeating, SurfaceHeating, SuttonGraves,
+    AerothermalContext, BallisticEntryHeating, BodyStation, FayRiddell, FayRiddellEdgeState,
+    HeatTransferModel, SUTTON_GRAVES_K_EARTH_SI, StagnationHeating, SurfaceHeating, SuttonGraves,
     TauberSuttonRadiative, WallCatalysis,
 };
 pub use thermal_toy::{BackwallCondition, OneDThermalToy, ToyMaterial};

@@ -5,6 +5,7 @@
 //! and corridor-driven bank references only; it never accepts a target
 //! location and never emits actuator commands.
 
+use openbmp_aerothermal::SuttonGraves;
 use openbmp_physics::profile::{
     BandLimitedEntryCorridorReference, EntryCorridor, EntryCorridorReference, EntryState,
 };
@@ -55,6 +56,15 @@ pub struct BallisticEntryReport {
     pub peak_deceleration_m_s2: f64,
     /// Peak deceleration load factor (g).
     pub peak_deceleration_g: f64,
+    /// Peak stagnation-point convective heat flux (W/m²), when
+    /// `entry_profile.nose_radius_m` is configured.
+    pub peak_convective_heat_flux_w_m2: Option<f64>,
+    /// Altitude of peak stagnation-point convective heating (m), when
+    /// `entry_profile.nose_radius_m` is configured.
+    pub peak_heat_flux_altitude_m: Option<f64>,
+    /// Integrated stagnation-point convective heat load (J/m²), when
+    /// `entry_profile.nose_radius_m` is configured.
+    pub convective_heat_load_j_m2: Option<f64>,
 }
 
 /// Lifting-entry report from the corridor reference and Vinh RHS.
@@ -128,12 +138,22 @@ fn ballistic_entry_report(
         ballistic_coefficient_m2_kg: sample.ballistic_coefficient_m2_kg,
     };
     model.validate()?;
+    let heating = config
+        .nose_radius_m
+        .map(|nose_radius_m| SuttonGraves::default().allen_eggers_heating(&model, nose_radius_m))
+        .transpose()
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("ballistic entry heating diagnostic failed: {err}"),
+        })?;
     Ok(BallisticEntryReport {
         radius_m: builder.radius_m(),
         flight_path_angle_below_horizon_rad,
         peak_deceleration_altitude_m: model.peak_decel_altitude_m(),
         peak_deceleration_m_s2: model.peak_deceleration_m_s2(),
         peak_deceleration_g: model.peak_deceleration_g(),
+        peak_convective_heat_flux_w_m2: heating.map(|h| h.peak_convective_heat_flux_w_m2),
+        peak_heat_flux_altitude_m: heating.map(|h| h.peak_heat_flux_altitude_m),
+        convective_heat_load_j_m2: heating.map(|h| h.convective_heat_load_j_m2),
     })
 }
 
@@ -276,6 +296,9 @@ mod tests {
         assert!(report.radius_m > 6.0e6);
         assert!(report.peak_deceleration_m_s2 > 0.0);
         assert!(report.peak_deceleration_altitude_m.is_finite());
+        assert!(report.peak_convective_heat_flux_w_m2.unwrap() > 0.0);
+        assert!(report.peak_heat_flux_altitude_m.unwrap() > report.peak_deceleration_altitude_m);
+        assert!(report.convective_heat_load_j_m2.unwrap() > 0.0);
     }
 
     #[test]

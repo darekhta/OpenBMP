@@ -100,3 +100,4 @@ event = "evt_recovery"
 mode = "ballistic"
 entry_interface_altitude_m = 122000.0
 final_descent_altitude_m = 5000.0
+nose_radius_m = 1.0

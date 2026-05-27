@@ -52,10 +52,12 @@ not as validated fidelity.
   tangent-wedge methods; Knudsen-number bridging and free-molecular aero. The
   tangent-cone uses the engineering modified-Newtonian approximation rather
   than a full Taylor-Maccoll cone-shock integration.
-- **Aerothermal** — Sutton-Graves stagnation heating, reference-enthalpy
-  distributed heating, boundary-layer state, the 1-D thermal-conduction toy,
-  and the generic ablation toy (textbook materials only). Fay-Riddell ships a
-  cold-gas scaffold.
+- **Aerothermal** — Sutton-Graves stagnation heating with wall-enthalpy and
+  Allen-Eggers heat-load diagnostics, reference-enthalpy distributed heating,
+  boundary-layer state, the 1-D thermal-conduction toy, and the generic
+  ablation toy (textbook materials only). Fay-Riddell ships a cold-gas scaffold
+  plus a caller-supplied edge-state path for real-gas / CFD data and a
+  neutral-composition helper for the dissociation-enthalpy term.
 - **Uncertainty reporting** — per-model uncertainty contributions,
   root-sum-square aggregation, and credibility-report rendering.
 
@@ -114,7 +116,10 @@ lands with validation evidence:
   tables. The trait surfaces exist but fail closed until clean-provenance
   public coefficient tables are imported; the Tauber-Sutton radiative model is
   reserved on the same basis.
-- Real-gas-coupled Fay-Riddell edge-state heating.
+- Verified equilibrium-air tables feeding the Fay-Riddell edge-state path.
+  The current path accepts caller-supplied edge states and can derive the
+  neutral dissociation-enthalpy term from `AirComposition`; executable
+  equilibrium-air table lookup remains deferred.
 
 **Aerodynamics**
 

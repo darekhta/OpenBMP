@@ -815,8 +815,16 @@ where:
   non-catalytic).
 - `h_D` — average dissociation enthalpy.
 
-Implementation uses the `EquilibriumAir` trait for the post-shock
-properties.
+OpenBMP exposes two paths. The trait implementation assembles a cold-gas
+engineering edge state from perfect-gas normal-shock relations. The
+research-grade path is `FayRiddell::stagnation_from_edge_state`, where a
+verified equilibrium-air solver, CFD deck, or external reference package
+supplies `ρ_e`, `μ_e`, `ρ_w`, `μ_w`, `du_e/dx`, and the enthalpies directly.
+For neutral dissociated-air edge compositions,
+`FayRiddell::with_neutral_composition_enthalpy` maps `AirComposition` species fractions
+into the `h_D` term using NIST Chemistry WebBook formation enthalpies for
+atomic nitrogen, atomic oxygen, and nitric oxide. Ionised-air edge states
+still need an explicitly evaluated enthalpy from the upstream real-gas solver.
 
 ### Sutton-Graves engineering simplification
 
@@ -829,6 +837,16 @@ q_w = K · sqrt(ρ_∞ / R_n) · V_∞³
 with `K = 1.7415e-4` (SI, Earth atmosphere). This requires only freestream
 density, nose radius, and freestream velocity — no real-gas iteration.
 Useful as a sanity check and as a fast bound for hypersonic mission studies.
+`SuttonGraves::stagnation_with_wall_enthalpy_correction` applies the finite-wall
+factor `max(0, 1 - h_w / h_aw)` for thermal budgets where wall temperature is
+not negligible.
+
+OpenBMP also ships `SuttonGraves::allen_eggers_heating`, a closed-form
+trajectory-level diagnostic that integrates the Sutton-Graves correlation over
+the Allen-Eggers ballistic-entry profile. It returns peak convective heat flux,
+peak-heating altitude, and convective heat load. The validation suite checks the
+closed form against direct profile quadrature and brackets the public Stardust
+SRC table-20 convective peak / heat-load data from NASA/TP-2006-213486.
 
 ### Tauber-Sutton radiative heating
 
@@ -1300,6 +1318,7 @@ public-benchmark (against published academic results).
 |---|---|---|
 | **Allen-Eggers ballistic entry** | analytic-toy | <1 % error on peak deceleration; <100 m on peak-decel altitude |
 | **Sutton-Graves single point** | analytic-toy | exact match to stated example to 1e-6 relative |
+| **Sutton-Graves / Allen-Eggers heating** | analytic-toy + public-benchmark | closed-form heat load matches profile quadrature; Stardust table-20 convective peak/load fall inside documented engineering bands |
 | **Modified Newtonian sphere Cp(0)** | analytic-toy | Cp = Cp_max to 1e-6; Cp(π/2) = 0 |
 | **Knudsen bridge limits** | analytic-toy | At Kn=0: continuum result; at Kn=1e6: FM result; smooth transition |
 | **Vinh lifting-entry textbook** | public-benchmark | Reproduce reference state-history within 0.5 % over 60 s window |
@@ -1502,7 +1521,8 @@ case passing in CI).
   tangent-cone-vs-Taylor-Maccoll case.
 - **Aerothermal stagnation heating.** `openbmp-aerothermal` crate;
   Fay-Riddell + Sutton-Graves implementations. Acceptance: Sutton-Graves
-  single-point case.
+  single-point case plus Allen-Eggers heat-load quadrature and Stardust
+  public-table sanity bands.
 - **Boundary layer + distributed heating.** Reference enthalpy method,
   laminar/turbulent correlations, transition models. Acceptance: textbook
   flat-plate heat-transfer case.

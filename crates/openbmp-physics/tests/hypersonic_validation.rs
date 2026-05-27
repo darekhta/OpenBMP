@@ -145,6 +145,39 @@ fn sutton_graves_apollo_sanity_point() {
 }
 
 #[test]
+fn sutton_graves_allen_eggers_stardust_heating_band() {
+    let input = STARDUST_SRC_TABLE19_TRAJ_INPUT;
+    let output = STARDUST_SRC_TABLE20_TRAJ_OUTPUT;
+    let entry = AllenEggers {
+        rho_s_kg_m3: 1.225,
+        beta_inv_m: 1.0 / 7_000.0,
+        entry_velocity_m_s: input.relative_velocity_m_s,
+        flight_path_angle_rad: input.relative_entry_angle_below_horizon_rad,
+        ballistic_coefficient_m2_kg: 1.0 / input.ballistic_parameter_kg_m2,
+    };
+    let estimate = openbmp_aerothermal::SuttonGraves::default()
+        .allen_eggers_heating(&entry, input.nose_radius_m)
+        .unwrap();
+
+    assert!(
+        (estimate.peak_convective_heat_flux_w_m2 - output.peak_convective_heat_flux.value_si).abs()
+            / output.peak_convective_heat_flux.value_si
+            < 0.40,
+        "Sutton-Graves / Allen-Eggers q_peak={} W/m², Stardust table20={} W/m²",
+        estimate.peak_convective_heat_flux_w_m2,
+        output.peak_convective_heat_flux.value_si
+    );
+    assert!(
+        (estimate.convective_heat_load_j_m2 - output.convective_heat_load_j_m2).abs()
+            / output.convective_heat_load_j_m2
+            < 0.20,
+        "Sutton-Graves / Allen-Eggers Q={} J/m², Stardust table20={} J/m²",
+        estimate.convective_heat_load_j_m2,
+        output.convective_heat_load_j_m2
+    );
+}
+
+#[test]
 fn apollo_stardust_public_table13_benchmarks_are_pinned() {
     assert_relative_eq!(
         APOLLO_CM_TABLE13_HEATING

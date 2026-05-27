@@ -8,7 +8,7 @@
 //! until the published piecewise-polynomial Tauber-Sutton coefficients
 //! are imported with provenance.
 
-use openbmp_physics::AtmosphereSample;
+use openbmp_physics::{AirComposition, AllenEggers, AtmosphereSample, PhysicsError};
 
 use crate::error::AerothermalError;
 
@@ -89,6 +89,24 @@ pub struct StagnationHeating {
     pub h_w_j_kg: f64,
     /// Recovery temperature (K).
     pub recovery_temperature_k: f64,
+}
+
+/// Closed-form convective heating estimate for an Allen-Eggers
+/// ballistic entry profile.
+///
+/// The estimate integrates the Sutton-Graves stagnation correlation
+/// over the Allen-Eggers exponential-atmosphere velocity profile. It is
+/// useful as a trajectory-level thermal diagnostic: peak deceleration
+/// comes from [`AllenEggers`], while this struct reports the
+/// corresponding stagnation heating scale.
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub struct BallisticEntryHeating {
+    /// Peak stagnation-point convective heat flux (W/m²).
+    pub peak_convective_heat_flux_w_m2: f64,
+    /// Altitude where the peak convective heat flux occurs (m).
+    pub peak_heat_flux_altitude_m: f64,
+    /// Integrated stagnation-point convective heat load (J/m²).
+    pub convective_heat_load_j_m2: f64,
 }
 
 /// Fay-Riddell boundary-layer edge and wall properties.
@@ -203,6 +221,95 @@ impl Default for SuttonGraves {
     }
 }
 
+impl SuttonGraves {
+    /// Evaluate the Sutton-Graves correlation and apply a finite wall
+    /// enthalpy correction, `max(0, 1 - h_w / h_aw)`.
+    ///
+    /// The default [`HeatTransferModel`] implementation returns the
+    /// cold-wall engineering value. This method is the higher-fidelity
+    /// finite-wall-temperature variant for trajectory thermal budgets.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`Self::stagnation`], plus
+    /// an invalid-parameter error if the adiabatic-wall enthalpy is not
+    /// positive.
+    pub fn stagnation_with_wall_enthalpy_correction(
+        &self,
+        ctx: &AerothermalContext,
+    ) -> Result<StagnationHeating, AerothermalError> {
+        let mut heating = self.stagnation(ctx)?;
+        heating.q_conv_w_m2 *= wall_enthalpy_correction(heating.h_aw_j_kg, heating.h_w_j_kg)?;
+        Ok(heating)
+    }
+
+    /// Closed-form Sutton-Graves heating over an Allen-Eggers
+    /// ballistic entry profile.
+    ///
+    /// Assumptions: non-lifting entry, constant flight-path angle,
+    /// exponential atmosphere, constant inverse ballistic parameter
+    /// `B = C_D A / m`, and Sutton-Graves cold-wall convective
+    /// heating. Radiation and real-gas edge-state effects are not
+    /// included; use [`FayRiddell::stagnation_from_edge_state`] when a
+    /// research-grade edge state is available.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError`] when the entry profile, nose radius,
+    /// or Sutton-Graves constant is invalid.
+    pub fn allen_eggers_heating(
+        &self,
+        entry: &AllenEggers,
+        nose_radius_m: f64,
+    ) -> Result<BallisticEntryHeating, AerothermalError> {
+        entry
+            .validate()
+            .map_err(|_| AerothermalError::InvalidParameter {
+                reason: "Allen-Eggers heating requires a valid ballistic-entry profile",
+            })?;
+        if !nose_radius_m.is_finite() || nose_radius_m <= 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Allen-Eggers heating requires positive finite nose radius",
+            });
+        }
+        if !self.k_earth_si.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Sutton-Graves constant is NaN or Inf",
+            });
+        }
+        if self.k_earth_si < 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Sutton-Graves constant must be non-negative",
+            });
+        }
+
+        let beta = entry.beta_inv_m;
+        let sin_gamma = entry.flight_path_angle_rad.sin().abs();
+        let inverse_ballistic_parameter = entry.ballistic_coefficient_m2_kg;
+        let v_e = entry.entry_velocity_m_s;
+        let peak_altitude_inner =
+            3.0 * entry.rho_s_kg_m3 * inverse_ballistic_parameter / (beta * sin_gamma);
+        let peak_heat_flux_altitude_m = peak_altitude_inner.ln() / beta;
+        let peak_convective_heat_flux_w_m2 = self.k_earth_si
+            * v_e.powi(3)
+            * (beta * sin_gamma / (3.0 * inverse_ballistic_parameter * nose_radius_m)).sqrt()
+            * (-0.5_f64).exp();
+        let convective_heat_load_j_m2 = self.k_earth_si
+            * v_e.powi(2)
+            * (std::f64::consts::PI
+                / (beta * sin_gamma * inverse_ballistic_parameter * nose_radius_m))
+                .sqrt();
+
+        let estimate = BallisticEntryHeating {
+            peak_convective_heat_flux_w_m2,
+            peak_heat_flux_altitude_m,
+            convective_heat_load_j_m2,
+        };
+        validate_ballistic_heating(estimate)?;
+        Ok(estimate)
+    }
+}
+
 impl HeatTransferModel for SuttonGraves {
     fn stagnation(&self, ctx: &AerothermalContext) -> Result<StagnationHeating, AerothermalError> {
         validate_context_for_stagnation(ctx)?;
@@ -236,6 +343,40 @@ impl HeatTransferModel for SuttonGraves {
             recovery_temperature_k: recovery,
         })
     }
+}
+
+fn wall_enthalpy_correction(
+    adiabatic_enthalpy_j_kg: f64,
+    wall_enthalpy_j_kg: f64,
+) -> Result<f64, AerothermalError> {
+    if !adiabatic_enthalpy_j_kg.is_finite() || !wall_enthalpy_j_kg.is_finite() {
+        return Err(AerothermalError::NonFinite {
+            reason: "wall enthalpy correction input is NaN or Inf",
+        });
+    }
+    if adiabatic_enthalpy_j_kg <= 0.0 {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "wall enthalpy correction requires positive adiabatic-wall enthalpy",
+        });
+    }
+    Ok((1.0 - wall_enthalpy_j_kg / adiabatic_enthalpy_j_kg).clamp(0.0, 1.0))
+}
+
+fn validate_ballistic_heating(estimate: BallisticEntryHeating) -> Result<(), AerothermalError> {
+    if !estimate.peak_convective_heat_flux_w_m2.is_finite()
+        || !estimate.peak_heat_flux_altitude_m.is_finite()
+        || !estimate.convective_heat_load_j_m2.is_finite()
+    {
+        return Err(AerothermalError::NonFinite {
+            reason: "Allen-Eggers heating estimate is NaN or Inf",
+        });
+    }
+    if estimate.peak_convective_heat_flux_w_m2 < 0.0 || estimate.convective_heat_load_j_m2 < 0.0 {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "Allen-Eggers heating estimate must be non-negative",
+        });
+    }
+    Ok(())
 }
 
 /// Fay-Riddell 1958 stagnation-point convective heating.
@@ -277,6 +418,44 @@ impl Default for FayRiddell {
 }
 
 impl FayRiddell {
+    /// Return a copy with `h_D` filled from a neutral dissociated-air
+    /// composition.
+    ///
+    /// This is a narrow real-gas coupling helper for callers that
+    /// already have an equilibrium or CFD composition at the boundary-
+    /// layer edge but do not want to hand-compute the species formation
+    /// enthalpy term. Ionised-air states should pass an explicitly
+    /// evaluated `h_dissociation_j_kg` instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError`] when the composition contains
+    /// non-finite charged fractions, has any ion/electron content, or
+    /// cannot produce a finite neutral formation enthalpy.
+    pub fn with_neutral_composition_enthalpy(
+        self,
+        composition: &AirComposition,
+    ) -> Result<Self, AerothermalError> {
+        validate_neutral_composition_for_fay_riddell(composition)?;
+        let h_dissociation_j_kg = composition
+            .neutral_formation_enthalpy_j_kg()
+            .map_err(|error| map_air_composition_error(&error))?;
+        if !h_dissociation_j_kg.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "neutral composition formation enthalpy is NaN or Inf",
+            });
+        }
+        if h_dissociation_j_kg < 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "neutral composition formation enthalpy must be non-negative",
+            });
+        }
+        Ok(Self {
+            h_dissociation_j_kg,
+            ..self
+        })
+    }
+
     /// Assemble Fay-Riddell heating from caller-supplied edge-state
     /// and wall properties.
     ///
@@ -343,6 +522,37 @@ impl FayRiddell {
             h_w_j_kg: edge.wall_enthalpy_j_kg,
             recovery_temperature_k: edge.recovery_temperature_k,
         })
+    }
+}
+
+fn validate_neutral_composition_for_fay_riddell(
+    composition: &AirComposition,
+) -> Result<(), AerothermalError> {
+    let ion_sum = composition.ion_mole_fraction_sum();
+    let electrons = composition.electrons;
+    if !ion_sum.is_finite() || !electrons.is_finite() {
+        return Err(AerothermalError::NonFinite {
+            reason: "Fay-Riddell neutral composition charged fraction is NaN or Inf",
+        });
+    }
+    if ion_sum != 0.0 || electrons != 0.0 {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "Fay-Riddell neutral composition helper does not accept ionised air",
+        });
+    }
+    Ok(())
+}
+
+fn map_air_composition_error(error: &PhysicsError) -> AerothermalError {
+    match error {
+        PhysicsError::NonFinite { .. } => AerothermalError::NonFinite {
+            reason: "neutral air-composition enthalpy input is NaN or Inf",
+        },
+        PhysicsError::InvalidParameter { .. }
+        | PhysicsError::OutOfEnvelope { .. }
+        | PhysicsError::Frame(_) => AerothermalError::InvalidParameter {
+            reason: "neutral air-composition enthalpy input is invalid",
+        },
     }
 }
 
@@ -579,6 +789,144 @@ mod tests {
     }
 
     #[test]
+    fn sutton_graves_wall_enthalpy_correction_reduces_hot_wall_flux() {
+        let s = SuttonGraves::default();
+        let context = ctx(1.0e-4, 5_000.0, 1.0, 3_500.0);
+        let cold_wall = s.stagnation(&context).unwrap();
+        let corrected = s
+            .stagnation_with_wall_enthalpy_correction(&context)
+            .unwrap();
+
+        assert!(corrected.q_conv_w_m2 < cold_wall.q_conv_w_m2);
+        assert_eq!(corrected.h_aw_j_kg.to_bits(), cold_wall.h_aw_j_kg.to_bits());
+        assert_eq!(corrected.h_w_j_kg.to_bits(), cold_wall.h_w_j_kg.to_bits());
+    }
+
+    #[test]
+    fn allen_eggers_heating_peak_is_above_peak_deceleration() {
+        let entry = AllenEggers {
+            rho_s_kg_m3: 1.225,
+            beta_inv_m: 1.0 / 7_000.0,
+            entry_velocity_m_s: 7_800.0,
+            flight_path_angle_rad: 5.0_f64.to_radians(),
+            ballistic_coefficient_m2_kg: 0.001,
+        };
+        let estimate = SuttonGraves::default()
+            .allen_eggers_heating(&entry, 1.0)
+            .unwrap();
+
+        assert!(estimate.peak_convective_heat_flux_w_m2 > 0.0);
+        assert!(estimate.convective_heat_load_j_m2 > 0.0);
+        assert!(estimate.peak_heat_flux_altitude_m > entry.peak_decel_altitude_m());
+        assert_relative_eq!(
+            estimate.peak_heat_flux_altitude_m - entry.peak_decel_altitude_m(),
+            3.0_f64.ln() / entry.beta_inv_m,
+            max_relative = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn allen_eggers_heating_closed_form_matches_profile_quadrature() {
+        let entry = AllenEggers {
+            rho_s_kg_m3: 1.225,
+            beta_inv_m: 1.0 / 7_000.0,
+            entry_velocity_m_s: 7_800.0,
+            flight_path_angle_rad: 5.0_f64.to_radians(),
+            ballistic_coefficient_m2_kg: 0.001,
+        };
+        let nose_radius_m = 1.0;
+        let model = SuttonGraves::default();
+        let estimate = model.allen_eggers_heating(&entry, nose_radius_m).unwrap();
+        let sin_gamma = entry.flight_path_angle_rad.sin().abs();
+        let mut heat_load = 0.0;
+        let mut peak_flux = 0.0;
+        let mut peak_altitude_m = 0.0;
+        let step_m = 10.0;
+        let mut previous_q = 0.0;
+        let mut previous_dt_dh = 0.0;
+        let mut first = true;
+
+        for i in 0..=20_000 {
+            let altitude_m = 200_000.0 - f64::from(i) * step_m;
+            let rho = entry.rho_s_kg_m3 * (-entry.beta_inv_m * altitude_m).exp();
+            let velocity = entry.velocity_at_altitude_m_s(altitude_m);
+            let q = model.k_earth_si * (rho / nose_radius_m).sqrt() * velocity.powi(3);
+            let dt_dh = 1.0 / (velocity * sin_gamma);
+            if q > peak_flux {
+                peak_flux = q;
+                peak_altitude_m = altitude_m;
+            }
+            if first {
+                first = false;
+            } else {
+                heat_load += 0.5 * (previous_q * previous_dt_dh + q * dt_dh) * step_m;
+            }
+            previous_q = q;
+            previous_dt_dh = dt_dh;
+        }
+
+        assert_relative_eq!(
+            peak_flux,
+            estimate.peak_convective_heat_flux_w_m2,
+            max_relative = 1.0e-5
+        );
+        assert!(
+            (peak_altitude_m - estimate.peak_heat_flux_altitude_m).abs() <= step_m,
+            "quadrature peak h={peak_altitude_m}, closed form h={}",
+            estimate.peak_heat_flux_altitude_m
+        );
+        assert_relative_eq!(
+            heat_load,
+            estimate.convective_heat_load_j_m2,
+            max_relative = 1.0e-4
+        );
+    }
+
+    #[test]
+    fn allen_eggers_heating_brackets_public_stardust_traj_case() {
+        use openbmp_physics::{STARDUST_SRC_TABLE19_TRAJ_INPUT, STARDUST_SRC_TABLE20_TRAJ_OUTPUT};
+
+        let input = STARDUST_SRC_TABLE19_TRAJ_INPUT;
+        let output = STARDUST_SRC_TABLE20_TRAJ_OUTPUT;
+        let entry = AllenEggers {
+            rho_s_kg_m3: 1.225,
+            beta_inv_m: 1.0 / 7_000.0,
+            entry_velocity_m_s: input.relative_velocity_m_s,
+            flight_path_angle_rad: input.relative_entry_angle_below_horizon_rad,
+            ballistic_coefficient_m2_kg: 1.0 / input.ballistic_parameter_kg_m2,
+        };
+        let estimate = SuttonGraves::default()
+            .allen_eggers_heating(&entry, input.nose_radius_m)
+            .unwrap();
+
+        assert!(
+            (estimate.peak_convective_heat_flux_w_m2 - output.peak_convective_heat_flux.value_si)
+                .abs()
+                / output.peak_convective_heat_flux.value_si
+                < 0.40,
+            "Sutton-Graves / Allen-Eggers q_peak={} W/m², Stardust table20={} W/m²",
+            estimate.peak_convective_heat_flux_w_m2,
+            output.peak_convective_heat_flux.value_si
+        );
+        assert!(
+            (estimate.peak_heat_flux_altitude_m - output.peak_convective_heat_flux.altitude_m)
+                .abs()
+                < 2_000.0,
+            "Sutton-Graves / Allen-Eggers h_peak={} m, Stardust table20={} m",
+            estimate.peak_heat_flux_altitude_m,
+            output.peak_convective_heat_flux.altitude_m
+        );
+        assert!(
+            (estimate.convective_heat_load_j_m2 - output.convective_heat_load_j_m2).abs()
+                / output.convective_heat_load_j_m2
+                < 0.20,
+            "Sutton-Graves / Allen-Eggers Q={} J/m², Stardust table20={} J/m²",
+            estimate.convective_heat_load_j_m2,
+            output.convective_heat_load_j_m2
+        );
+    }
+
+    #[test]
     fn fay_riddell_positive_and_finite_at_textbook_point() {
         let m = FayRiddell::default();
         let result = m.stagnation(&ctx(1.0e-4, 5000.0, 1.0, 1500.0));
@@ -657,6 +1005,57 @@ mod tests {
             .unwrap();
         assert!(base.q_conv_w_m2.is_finite() && base.q_conv_w_m2 > 0.0);
         assert!(hotter.q_conv_w_m2 > base.q_conv_w_m2);
+    }
+
+    #[test]
+    fn fay_riddell_uses_neutral_composition_enthalpy() {
+        let composition = AirComposition {
+            n2: 0.70,
+            o2: 0.18,
+            o_atomic: 0.08,
+            no: 0.04,
+            ..AirComposition::default()
+        };
+        let base = FayRiddell {
+            lewis_number: 1.2,
+            h_dissociation_j_kg: 0.0,
+        };
+        let enriched = base
+            .with_neutral_composition_enthalpy(&composition)
+            .unwrap();
+        let edge = FayRiddellEdgeState {
+            edge_density_kg_m3: 2.0e-4,
+            edge_viscosity_pa_s: 8.0e-5,
+            wall_density_kg_m3: 5.0e-4,
+            wall_viscosity_pa_s: 6.0e-5,
+            velocity_gradient_s_inv: 8.0e4,
+            adiabatic_wall_enthalpy_j_kg: 2.8e7,
+            wall_enthalpy_j_kg: 1.2e6,
+            recovery_temperature_k: 3_000.0,
+        };
+
+        assert!(enriched.h_dissociation_j_kg > 0.0);
+        let cold = base
+            .stagnation_from_edge_state(&edge, WallCatalysis::FullyCatalytic)
+            .unwrap();
+        let real_gas = enriched
+            .stagnation_from_edge_state(&edge, WallCatalysis::FullyCatalytic)
+            .unwrap();
+        assert!(real_gas.q_conv_w_m2 > cold.q_conv_w_m2);
+    }
+
+    #[test]
+    fn fay_riddell_neutral_composition_helper_rejects_ionised_air() {
+        let composition = AirComposition {
+            n2: 0.90,
+            n_ion: 0.05,
+            electrons: 0.05,
+            ..AirComposition::default()
+        };
+        assert!(matches!(
+            FayRiddell::default().with_neutral_composition_enthalpy(&composition),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
