@@ -836,12 +836,11 @@ impl ScenarioDocument {
                 value_b: "no coast or ballistic_descent phase".to_owned(),
             });
         }
-        if landing_footprint.method == LandingFootprintMethod::ConstantGravity
-            && self.environment.gravity != "constant"
-        {
+        let expected_gravity = landing_footprint.method.required_gravity_name();
+        if self.environment.gravity != expected_gravity {
             return Err(ScenarioError::InconsistentSection {
                 field_a: "landing_footprint.method".to_owned(),
-                value_a: "constant_gravity".to_owned(),
+                value_a: landing_footprint.method.as_str().to_owned(),
                 field_b: "environment.gravity".to_owned(),
                 value_b: self.environment.gravity.clone(),
             });
@@ -1952,6 +1951,32 @@ impl LandingFootprintConfig {
 pub enum LandingFootprintMethod {
     /// Constant-gravity closed-form toy method.
     ConstantGravity,
+    /// Fixed-step numerical propagation under the scenario's J2
+    /// gravity model.
+    J2,
+    /// Fixed-step numerical propagation under the scenario's
+    /// zonal-only EGM2008 gravity model.
+    Egm2008,
+}
+
+impl LandingFootprintMethod {
+    /// Canonical method label used in scenario TOML.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConstantGravity => "constant_gravity",
+            Self::J2 => "j2",
+            Self::Egm2008 => "egm2008",
+        }
+    }
+
+    const fn required_gravity_name(self) -> &'static str {
+        match self {
+            Self::ConstantGravity => "constant",
+            Self::J2 => "j2",
+            Self::Egm2008 => "egm2008",
+        }
+    }
 }
 
 /// Declared dispersion ellipse for a landing-footprint report.

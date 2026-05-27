@@ -1,7 +1,7 @@
-//! Flight-profile trait surfaces (deferred schema stubs).
+//! Flight-profile trait surfaces and consumed profile helpers.
 //!
-//! Trait definitions and the first consumed profile helpers for the
-//! multi-phase flight-profile work described in
+//! Trait definitions and consumed profile helpers for the multi-phase
+//! flight-profile work described in
 //! `docs/flight-profiles-architecture.md` and its companions. They sit beside
 //! [`crate::gravity`], [`crate::atmosphere`], and [`crate::reentry`] as
 //! peers and follow the same `Result<_, PhysicsError>` discipline.
@@ -26,14 +26,20 @@
 //! guardrails this module is built under.
 
 use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
-use openbmp_core::SimTime;
+use openbmp_core::{Eci, Position3, SimTime};
 
 use crate::error::PhysicsError;
-use crate::frames::WGS84_A_M;
+use crate::frames::{
+    FrameContext, LocalGeodeticOrigin, WGS84_A_M, WGS84_ECCENTRICITY_SQUARED, WGS84_FLATTENING,
+};
+use crate::gravity::GravityModel;
 
 const MIN_DIRECTION_NORM: f64 = 1.0e-12;
 const QUATERNION_NORM_TOLERANCE: f64 = 1.0e-9;
 const MIN_FOOTPRINT_GRAVITY_M_S2: f64 = 1.0e-12;
+const MIN_NUMERICAL_FOOTPRINT_STEP_S: f64 = 1.0e-6;
+const DEFAULT_NUMERICAL_FOOTPRINT_STEP_S: f64 = 1.0;
+const DEFAULT_NUMERICAL_FOOTPRINT_MAX_TIME_S: f64 = 86_400.0;
 const MIN_LONGITUDE_COSINE: f64 = 1.0e-12;
 const MIN_ENTRY_CORRIDOR_BAND_RAD: f64 = 1.0e-12;
 const MIN_ENTRY_BANK_LIMIT_RAD: f64 = 1.0e-12;
@@ -438,9 +444,11 @@ pub struct FootprintEnvironment {
     /// Constant downward acceleration magnitude used by the
     /// constant-gravity footprint method (m/s²).
     pub gravity_m_s2: f64,
-    /// Launch-origin inertial position `[x, y, z]` (m). Nominal
-    /// downrange/crossrange values are reported relative to this
-    /// origin in the local x/y plane.
+    /// Launch-origin inertial position `[x, y, z]` (m). The
+    /// constant-gravity method reports the flat local x/y offset from
+    /// this point; numerical Earth-gravity methods derive an
+    /// east/north tangent plane from it when no geodetic origin is
+    /// declared.
     pub launch_origin_eci_m: [f64; 3],
     /// Optional geodetic launch origin. When absent, geodetic
     /// latitude/longitude output remains `None`; the model never
@@ -462,14 +470,19 @@ impl FootprintEnvironment {
     /// launch origin, geodetic origin, or dispersion declaration is
     /// invalid.
     pub fn validate(&self) -> Result<(), PhysicsError> {
-        if !self.cull_altitude_m.is_finite() {
-            return Err(PhysicsError::InvalidParameter {
-                reason: "footprint cull altitude must be finite",
-            });
-        }
+        self.validate_common()?;
         if !self.gravity_m_s2.is_finite() || self.gravity_m_s2 <= MIN_FOOTPRINT_GRAVITY_M_S2 {
             return Err(PhysicsError::InvalidParameter {
                 reason: "footprint gravity must be finite and strictly positive",
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_common(&self) -> Result<(), PhysicsError> {
+        if !self.cull_altitude_m.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint cull altitude must be finite",
             });
         }
         require_finite_vec3(
@@ -588,6 +601,138 @@ impl RangeSafetyFootprint for ConstantGravityRangeSafetyFootprint {
             latitude_deg,
             longitude_deg,
             dispersion_ellipse: env.dispersion.map(dispersion_ellipse),
+        })
+    }
+}
+
+/// Fixed-step numerical footprint propagation under a configured
+/// gravity model.
+///
+/// This forward-only model integrates an unpowered ballistic state
+/// with deterministic RK4 until the trajectory crosses the WGS84
+/// radial ellipsoid surface plus `cull_altitude_m`. It is intended for
+/// long coast / descent profiles where constant gravity is not a
+/// credible approximation, including J2 and zonal-only EGM2008
+/// gravity. It does not accept a desired landing location and produces
+/// no control command.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NumericalGravityRangeSafetyFootprint<G> {
+    gravity: G,
+    step_s: f64,
+    max_time_s: f64,
+}
+
+impl<G> NumericalGravityRangeSafetyFootprint<G> {
+    /// Construct with the default numerical footprint limits.
+    ///
+    /// The default step is 1 s and the default horizon is 24 h.
+    #[must_use]
+    pub const fn new(gravity: G) -> Self {
+        Self {
+            gravity,
+            step_s: DEFAULT_NUMERICAL_FOOTPRINT_STEP_S,
+            max_time_s: DEFAULT_NUMERICAL_FOOTPRINT_MAX_TIME_S,
+        }
+    }
+
+    /// Construct with explicit fixed step and maximum propagation
+    /// horizon.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when `step_s` is not
+    /// finite and at least `1e-6`, or when `max_time_s` is not finite
+    /// and positive.
+    pub fn with_limits(gravity: G, step_s: f64, max_time_s: f64) -> Result<Self, PhysicsError> {
+        validate_numerical_footprint_limits(step_s, max_time_s)?;
+        Ok(Self {
+            gravity,
+            step_s,
+            max_time_s,
+        })
+    }
+
+    /// Fixed integration step in seconds.
+    #[must_use]
+    pub const fn step_s(&self) -> f64 {
+        self.step_s
+    }
+
+    /// Maximum propagation horizon in seconds.
+    #[must_use]
+    pub const fn max_time_s(&self) -> f64 {
+        self.max_time_s
+    }
+}
+
+impl<G: GravityModel> RangeSafetyFootprint for NumericalGravityRangeSafetyFootprint<G> {
+    fn landing_footprint(
+        &self,
+        state: &BallisticState,
+        env: &FootprintEnvironment,
+    ) -> Result<LandingFootprint, PhysicsError> {
+        state.validate()?;
+        env.validate_common()?;
+        validate_numerical_footprint_limits(self.step_s, self.max_time_s)?;
+
+        let mut current = NumericalFootprintState {
+            position_eci_m: Vector3::new(
+                state.position_eci_m[0],
+                state.position_eci_m[1],
+                state.position_eci_m[2],
+            ),
+            velocity_eci_m_s: Vector3::new(
+                state.velocity_eci_m_s[0],
+                state.velocity_eci_m_s[1],
+                state.velocity_eci_m_s[2],
+            ),
+            time_s: state.time.as_seconds(),
+        };
+        let mut current_altitude_above_cull_m =
+            altitude_above_numerical_cull_m(current.position_eci_m, env.cull_altitude_m)?;
+        if current_altitude_above_cull_m <= 0.0 {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "ballistic state must start above the footprint cull altitude",
+            });
+        }
+
+        let mut elapsed_s = 0.0_f64;
+        while elapsed_s < self.max_time_s {
+            let remaining_s = self.max_time_s - elapsed_s;
+            let dt_s = self.step_s.min(remaining_s);
+            let next = rk4_gravity_step(&self.gravity, current, dt_s)?;
+            let next_altitude_above_cull_m =
+                altitude_above_numerical_cull_m(next.position_eci_m, env.cull_altitude_m)?;
+            if next_altitude_above_cull_m <= 0.0 {
+                let denominator = current_altitude_above_cull_m - next_altitude_above_cull_m;
+                if !denominator.is_finite() || denominator <= 0.0 {
+                    return Err(PhysicsError::NonFinite {
+                        reason: "numerical footprint cull interpolation is invalid",
+                    });
+                }
+                let alpha = current_altitude_above_cull_m / denominator;
+                let landing_position_eci_m =
+                    current.position_eci_m + (next.position_eci_m - current.position_eci_m) * alpha;
+                let time_to_cull_s = elapsed_s + dt_s * alpha;
+                if !time_to_cull_s.is_finite() || time_to_cull_s < 0.0 {
+                    return Err(PhysicsError::NonFinite {
+                        reason: "numerical footprint crossing time is invalid",
+                    });
+                }
+                return numerical_landing_footprint_from_position(
+                    state,
+                    env,
+                    landing_position_eci_m,
+                    time_to_cull_s,
+                );
+            }
+            current = next;
+            current_altitude_above_cull_m = next_altitude_above_cull_m;
+            elapsed_s += dt_s;
+        }
+
+        Err(PhysicsError::OutOfEnvelope {
+            reason: "numerical footprint did not reach cull altitude before max_time_s",
         })
     }
 }
@@ -998,6 +1143,259 @@ impl EntryCorridorReference for BandLimitedEntryCorridorReference {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NumericalFootprintState {
+    position_eci_m: Vector3<f64>,
+    velocity_eci_m_s: Vector3<f64>,
+    time_s: f64,
+}
+
+fn validate_numerical_footprint_limits(step_s: f64, max_time_s: f64) -> Result<(), PhysicsError> {
+    if !step_s.is_finite() || step_s < MIN_NUMERICAL_FOOTPRINT_STEP_S {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "numerical footprint step must be finite and at least 1e-6 s",
+        });
+    }
+    if !max_time_s.is_finite() || max_time_s <= 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "numerical footprint max_time_s must be finite and positive",
+        });
+    }
+    Ok(())
+}
+
+fn rk4_gravity_step<G: GravityModel>(
+    gravity: &G,
+    state: NumericalFootprintState,
+    dt_s: f64,
+) -> Result<NumericalFootprintState, PhysicsError> {
+    let (k1_r, k1_v) = numerical_footprint_derivative(gravity, state)?;
+    let s2 = NumericalFootprintState {
+        position_eci_m: state.position_eci_m + k1_r * (0.5 * dt_s),
+        velocity_eci_m_s: state.velocity_eci_m_s + k1_v * (0.5 * dt_s),
+        time_s: state.time_s + 0.5 * dt_s,
+    };
+    let (k2_r, k2_v) = numerical_footprint_derivative(gravity, s2)?;
+    let s3 = NumericalFootprintState {
+        position_eci_m: state.position_eci_m + k2_r * (0.5 * dt_s),
+        velocity_eci_m_s: state.velocity_eci_m_s + k2_v * (0.5 * dt_s),
+        time_s: state.time_s + 0.5 * dt_s,
+    };
+    let (k3_r, k3_v) = numerical_footprint_derivative(gravity, s3)?;
+    let s4 = NumericalFootprintState {
+        position_eci_m: state.position_eci_m + k3_r * dt_s,
+        velocity_eci_m_s: state.velocity_eci_m_s + k3_v * dt_s,
+        time_s: state.time_s + dt_s,
+    };
+    let (k4_r, k4_v) = numerical_footprint_derivative(gravity, s4)?;
+    let one_sixth_dt = dt_s / 6.0;
+    let position_eci_m =
+        state.position_eci_m + (k1_r + 2.0 * k2_r + 2.0 * k3_r + k4_r) * one_sixth_dt;
+    let velocity_eci_m_s =
+        state.velocity_eci_m_s + (k1_v + 2.0 * k2_v + 2.0 * k3_v + k4_v) * one_sixth_dt;
+    if !position_eci_m.iter().all(|v| v.is_finite())
+        || !velocity_eci_m_s.iter().all(|v| v.is_finite())
+    {
+        return Err(PhysicsError::NonFinite {
+            reason: "numerical footprint RK4 step produced non-finite state",
+        });
+    }
+    Ok(NumericalFootprintState {
+        position_eci_m,
+        velocity_eci_m_s,
+        time_s: state.time_s + dt_s,
+    })
+}
+
+fn numerical_footprint_derivative<G: GravityModel>(
+    gravity: &G,
+    state: NumericalFootprintState,
+) -> Result<(Vector3<f64>, Vector3<f64>), PhysicsError> {
+    if !state.time_s.is_finite() {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "numerical footprint state time must be finite",
+        });
+    }
+    let acceleration_eci_m_s2 = gravity.gravity_eci_m_s2(
+        Position3::<Eci>::from_vector(state.position_eci_m),
+        SimTime::from_seconds(state.time_s),
+    )?;
+    Ok((state.velocity_eci_m_s, acceleration_eci_m_s2))
+}
+
+fn numerical_landing_footprint_from_position(
+    state: &BallisticState,
+    env: &FootprintEnvironment,
+    landing_position_eci_m: Vector3<f64>,
+    time_to_cull_s: f64,
+) -> Result<LandingFootprint, PhysicsError> {
+    let landing_time_s = state.time.as_seconds() + time_to_cull_s;
+    let (downrange_m, crossrange_m, latitude_deg, longitude_deg) =
+        if let Some(origin) = env.geodetic_origin {
+            numerical_landing_from_geodetic_origin(origin, landing_position_eci_m, landing_time_s)?
+        } else {
+            let (downrange_m, crossrange_m) =
+                numerical_range_relative_from_inertial_origin(env, landing_position_eci_m)?;
+            (downrange_m, crossrange_m, None, None)
+        };
+    let bearing_rad = if downrange_m == 0.0 && crossrange_m == 0.0 {
+        0.0
+    } else {
+        crossrange_m.atan2(downrange_m)
+    };
+    Ok(LandingFootprint {
+        downrange_m,
+        crossrange_m,
+        bearing_rad,
+        time_to_cull_s,
+        latitude_deg,
+        longitude_deg,
+        dispersion_ellipse: env.dispersion.map(dispersion_ellipse),
+    })
+}
+
+fn numerical_landing_from_geodetic_origin(
+    origin: FootprintGeodeticOrigin,
+    landing_position_eci_m: Vector3<f64>,
+    landing_time_s: f64,
+) -> Result<(f64, f64, Option<f64>, Option<f64>), PhysicsError> {
+    if !landing_time_s.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "numerical footprint landing time is non-finite",
+        });
+    }
+    let local_origin = LocalGeodeticOrigin::new_degrees(
+        origin.latitude_deg,
+        origin.longitude_deg,
+        origin.height_m,
+    )?;
+    let frame = FrameContext::wgs84_uniform_rotation(Some(local_origin));
+    let landing_ecef = frame.eci_to_ecef_position(
+        SimTime::from_seconds(landing_time_s),
+        Position3::<Eci>::from_vector(landing_position_eci_m),
+    );
+    let landing_ned = frame.ecef_to_ned_position(landing_ecef)?;
+    let crossrange_m = landing_ned.vector.x;
+    let downrange_m = landing_ned.vector.y;
+    let (latitude_deg, longitude_deg) = geodetic_degrees_from_wgs84_ecef(landing_ecef.vector)?;
+    if !downrange_m.is_finite() || !crossrange_m.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "numerical footprint range-relative projection is non-finite",
+        });
+    }
+    Ok((downrange_m, crossrange_m, latitude_deg, longitude_deg))
+}
+
+fn numerical_range_relative_from_inertial_origin(
+    env: &FootprintEnvironment,
+    landing_position_eci_m: Vector3<f64>,
+) -> Result<(f64, f64), PhysicsError> {
+    let origin = Vector3::new(
+        env.launch_origin_eci_m[0],
+        env.launch_origin_eci_m[1],
+        env.launch_origin_eci_m[2],
+    );
+    let origin_norm = origin.norm();
+    let delta = landing_position_eci_m - origin;
+    if origin_norm <= MIN_DIRECTION_NORM {
+        return Ok((delta.x, delta.y));
+    }
+    let up = origin / origin_norm;
+    let spin_axis = Vector3::new(0.0, 0.0, 1.0);
+    let mut east = spin_axis.cross(&up);
+    let east_norm = east.norm();
+    if east_norm <= MIN_DIRECTION_NORM {
+        east = Vector3::new(1.0, 0.0, 0.0).cross(&up);
+    }
+    let east_norm = east.norm();
+    if east_norm <= MIN_DIRECTION_NORM {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "numerical footprint could not construct local tangent basis",
+        });
+    }
+    let east = east / east_norm;
+    let north = up.cross(&east);
+    let downrange_m = delta.dot(&east);
+    let crossrange_m = delta.dot(&north);
+    if !downrange_m.is_finite() || !crossrange_m.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "numerical footprint range-relative projection is non-finite",
+        });
+    }
+    Ok((downrange_m, crossrange_m))
+}
+
+fn altitude_above_numerical_cull_m(
+    position_eci_m: Vector3<f64>,
+    cull_altitude_m: f64,
+) -> Result<f64, PhysicsError> {
+    let radius_m = position_eci_m.norm();
+    if !radius_m.is_finite() || radius_m <= MIN_DIRECTION_NORM {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "numerical footprint position is too close to the Earth center",
+        });
+    }
+    let surface_radius_m = wgs84_radial_surface_radius_m(position_eci_m / radius_m)?;
+    let altitude_m = radius_m - surface_radius_m;
+    let altitude_above_cull_m = altitude_m - cull_altitude_m;
+    if !altitude_above_cull_m.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "numerical footprint cull altitude calculation is non-finite",
+        });
+    }
+    Ok(altitude_above_cull_m)
+}
+
+fn wgs84_radial_surface_radius_m(unit_direction: Vector3<f64>) -> Result<f64, PhysicsError> {
+    let b_m = WGS84_A_M * (1.0 - WGS84_FLATTENING);
+    let x2_y2 = unit_direction.x * unit_direction.x + unit_direction.y * unit_direction.y;
+    let z2 = unit_direction.z * unit_direction.z;
+    let denominator = (x2_y2 / (WGS84_A_M * WGS84_A_M) + z2 / (b_m * b_m)).sqrt();
+    if !denominator.is_finite() || denominator <= 0.0 {
+        return Err(PhysicsError::NonFinite {
+            reason: "WGS84 radial surface radius calculation is invalid",
+        });
+    }
+    Ok(1.0 / denominator)
+}
+
+fn geodetic_degrees_from_wgs84_ecef(
+    ecef_m: Vector3<f64>,
+) -> Result<(Option<f64>, Option<f64>), PhysicsError> {
+    if !ecef_m.iter().all(|v| v.is_finite()) {
+        return Err(PhysicsError::NonFinite {
+            reason: "numerical footprint ECEF landing position is non-finite",
+        });
+    }
+    let x = ecef_m.x;
+    let y = ecef_m.y;
+    let z = ecef_m.z;
+    if x == 0.0 && y == 0.0 && z == 0.0 {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "WGS84 geodetic conversion is undefined at the Earth center",
+        });
+    }
+    let p = (x * x + y * y).sqrt();
+    let longitude_rad = y.atan2(x);
+    let a_m = WGS84_A_M;
+    let e2 = WGS84_ECCENTRICITY_SQUARED;
+    let b_m = a_m * (1.0 - e2).sqrt();
+    let ep2 = e2 / (1.0 - e2);
+    let theta = (z * a_m).atan2(p * b_m);
+    let sin_theta = theta.sin();
+    let cos_theta = theta.cos();
+    let latitude_rad = (z + ep2 * b_m * sin_theta * sin_theta * sin_theta)
+        .atan2(p - e2 * a_m * cos_theta * cos_theta * cos_theta);
+    let latitude_deg = latitude_rad.to_degrees();
+    let longitude_deg = normalize_longitude_deg(longitude_rad.to_degrees());
+    if !latitude_deg.is_finite() || !longitude_deg.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "WGS84 geodetic conversion produced non-finite coordinates",
+        });
+    }
+    Ok((Some(latitude_deg), Some(longitude_deg)))
+}
+
 fn require_positive_mass(value: f64, reason: &'static str) -> Result<(), PhysicsError> {
     if value.is_finite() && value > 0.0 {
         return Ok(());
@@ -1201,10 +1599,14 @@ mod tests {
         AscentReferenceGenerator, AscentState, BallisticState, BandLimitedEntryCorridorReference,
         ConstantGravityRangeSafetyFootprint, EntryCorridor, EntryCorridorReference, EntryState,
         FootprintDispersionInput, FootprintEnvironment, FootprintGeodeticOrigin,
-        GravityTurnAscentReference, MomentumConservingStageSeparation, PitchProgramAscentReference,
-        RangeSafetyFootprint, STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageSeparationModel,
+        GravityTurnAscentReference, MomentumConservingStageSeparation,
+        NumericalGravityRangeSafetyFootprint, PitchProgramAscentReference, RangeSafetyFootprint,
+        STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageSeparationModel,
     };
-    use crate::PhysicsError;
+    use crate::{
+        Egm2008ZonalGravity, J2Gravity, PhysicsError, WGS84_A_M, WGS84_J2, WGS84_MU_M3_S2,
+        WGS84_OMEGA_RAD_S,
+    };
     use nalgebra::{Quaternion, UnitQuaternion, Vector3};
     use openbmp_core::SimTime;
 
@@ -1372,6 +1774,101 @@ mod tests {
             .landing_footprint(&state, &env)
             .unwrap_err();
         assert!(matches!(err, PhysicsError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn j2_numerical_footprint_propagates_to_wgs84_cull() {
+        let state = BallisticState {
+            position_eci_m: [WGS84_A_M + 1_000.0, 0.0, 0.0],
+            velocity_eci_m_s: [0.0, 100.0, 0.0],
+            ballistic_coefficient_m2_kg: 0.0,
+            time: SimTime::from_seconds(0.0),
+        };
+        let env = FootprintEnvironment {
+            cull_altitude_m: 0.0,
+            gravity_m_s2: 0.0,
+            launch_origin_eci_m: [WGS84_A_M, 0.0, 0.0],
+            geodetic_origin: None,
+            dispersion: None,
+        };
+        let model = NumericalGravityRangeSafetyFootprint::with_limits(
+            J2Gravity::new(WGS84_MU_M3_S2, WGS84_A_M, WGS84_J2).unwrap(),
+            0.25,
+            120.0,
+        )
+        .unwrap();
+        let footprint = model.landing_footprint(&state, &env).unwrap();
+        assert!(footprint.time_to_cull_s > 0.0);
+        assert!(footprint.downrange_m > 0.0);
+        assert!(footprint.crossrange_m.abs() < 1.0e-6);
+        assert!(footprint.latitude_deg.is_none());
+        assert!(footprint.longitude_deg.is_none());
+    }
+
+    #[test]
+    fn j2_numerical_footprint_emits_direct_geodetic_output() {
+        let initial_radius_m = WGS84_A_M + 1_000.0;
+        let state = BallisticState {
+            position_eci_m: [initial_radius_m, 0.0, 0.0],
+            velocity_eci_m_s: [0.0, WGS84_OMEGA_RAD_S * initial_radius_m + 100.0, 0.0],
+            ballistic_coefficient_m2_kg: 0.0,
+            time: SimTime::from_seconds(0.0),
+        };
+        let env = FootprintEnvironment {
+            cull_altitude_m: 0.0,
+            gravity_m_s2: 0.0,
+            launch_origin_eci_m: [WGS84_A_M, 0.0, 0.0],
+            geodetic_origin: Some(FootprintGeodeticOrigin {
+                latitude_deg: 0.0,
+                longitude_deg: 0.0,
+                height_m: 0.0,
+            }),
+            dispersion: None,
+        };
+        let model = NumericalGravityRangeSafetyFootprint::with_limits(
+            J2Gravity::new(WGS84_MU_M3_S2, WGS84_A_M, WGS84_J2).unwrap(),
+            0.25,
+            120.0,
+        )
+        .unwrap();
+        let footprint = model.landing_footprint(&state, &env).unwrap();
+        assert!(footprint.downrange_m > 0.0);
+        assert!(footprint.crossrange_m.abs() < 1.0e-6);
+        assert!(footprint.latitude_deg.unwrap().abs() < 1.0e-9);
+        assert!(footprint.longitude_deg.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn egm2008_numerical_footprint_propagates_with_dispersion() {
+        let state = BallisticState {
+            position_eci_m: [WGS84_A_M + 2_000.0, 0.0, 200.0],
+            velocity_eci_m_s: [0.0, 80.0, -10.0],
+            ballistic_coefficient_m2_kg: 0.0,
+            time: SimTime::from_seconds(5.0),
+        };
+        let env = FootprintEnvironment {
+            cull_altitude_m: 0.0,
+            gravity_m_s2: 0.0,
+            launch_origin_eci_m: [WGS84_A_M, 0.0, 0.0],
+            geodetic_origin: None,
+            dispersion: Some(FootprintDispersionInput {
+                one_sigma_semi_major_m: 40.0,
+                one_sigma_semi_minor_m: 15.0,
+                orientation_rad: 0.1,
+            }),
+        };
+        let model = NumericalGravityRangeSafetyFootprint::with_limits(
+            Egm2008ZonalGravity::wgs84_egm2008_zonal(),
+            0.25,
+            120.0,
+        )
+        .unwrap();
+        let footprint = model.landing_footprint(&state, &env).unwrap();
+        assert!(footprint.time_to_cull_s > 0.0);
+        assert!(footprint.downrange_m > 0.0);
+        let dispersion = footprint.dispersion_ellipse.unwrap();
+        assert_eq!(dispersion.three_sigma_semi_major_m, 120.0);
+        assert_eq!(dispersion.three_sigma_semi_minor_m, 45.0);
     }
 
     fn nominal_entry_corridor() -> EntryCorridor {

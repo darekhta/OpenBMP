@@ -1573,7 +1573,7 @@ controller and accepts no desired landing coordinate.
 
 ```toml
 [landing_footprint]
-method = "constant_gravity"
+method = "egm2008"
 cull_altitude_m = 0.0
 include_geodetic = false
 
@@ -1583,13 +1583,21 @@ one_sigma_semi_minor_m = 10.0
 orientation_rad = 0.0
 ```
 
-The first consumed method is `constant_gravity`. It requires
-`environment.gravity = "constant"` and a mission phase named `coast` or
+Consumed methods are:
+
+| Method | Required `environment.gravity` | Propagation |
+|---|---|---|
+| `constant_gravity` | `constant` | Closed-form flat constant-gravity crossing. |
+| `j2` | `j2` | Fixed-step RK4 propagation under the scenario J2 gravity parameters. |
+| `egm2008` | `egm2008` | Fixed-step RK4 propagation under the pinned zonal-only EGM2008 degree-2 through degree-6 model. |
+
+Every method requires a mission phase named `coast` or
 `ballistic_descent`. `include_geodetic = true` additionally requires
 `[frames.local_origin]`; otherwise the offline report contains only
 range-relative `downrange_m` / `crossrange_m` output. The optional
 dispersion block is a declared ellipse source. If absent, no dispersion
-ellipse is reported.
+ellipse is reported. Numerical Earth-gravity methods stop at the WGS84
+radial ellipsoid surface plus `cull_altitude_m`.
 
 As everywhere else in the profile work, fields naming a desired landing
 location, aimpoint, miss distance, or equivalent targeting concept are

@@ -85,9 +85,10 @@ coast/footprint slice: schema-v3 `[landing_footprint]`, constant-gravity
 offline footprint prediction, and range-relative / optional geodetic reporting.
 PR4 implements the first descent/entry slice: schema-v3 `[entry_profile]`,
 entry-interface / final-descent handoff validation, Allen-Eggers entry
-diagnostics, and a corridor-limited Vinh bank-reference report. J2 / EGM2008
-footprint propagation and richer live entry force-stack / aerothermal coupling
-remain deferred until they land with validation evidence:
+diagnostics, and a corridor-limited Vinh bank-reference report. The footprint
+path now includes fixed-step numerical J2 and zonal-only EGM2008 propagation;
+richer live entry force-stack / aerothermal coupling remains deferred until it
+lands with validation evidence:
 
 - Powered-ascent reference-trajectory generation (gravity-turn / pitch-program;
   explicit reference reserved) — [`ascent-guidance.md`](ascent-guidance.md).

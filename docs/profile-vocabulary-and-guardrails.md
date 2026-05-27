@@ -95,9 +95,10 @@ must also declare, disagreement fails closed.
    validation evidence. PR1 `jettison_stage` is limited to the documented
    rigid-body gravity-only envelope; PR2 `ascent_reference` is limited to the
    documented schema-v3 pitch-program / gravity-turn envelope; PR3
-   `landing_footprint` is limited to the schema-v3 constant-gravity offline
-   footprint envelope; PR4 `entry_profile` is limited to handoff validation,
-   Allen-Eggers diagnostics, and corridor-limited Vinh bank-reference reports.
+   `landing_footprint` is limited to the schema-v3 constant-gravity, J2, and
+   zonal-only EGM2008 offline footprint envelope; PR4 `entry_profile` is
+   limited to handoff validation, Allen-Eggers diagnostics, and
+   corridor-limited Vinh bank-reference reports.
 
 ## Amendments to existing documents
 

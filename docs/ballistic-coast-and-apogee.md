@@ -19,10 +19,10 @@ for academic trajectory study and range-safety / recovery planning.
 - The kernel propagates a coasting body correctly today, and scenarios can
   name the `coast` and `ballistic_descent` phases with the existing
   `at_apogee` / `at_altitude_descending` event machinery.
-- Schema v3 now includes an offline `[landing_footprint]` block. The first
-  consumed method is `constant_gravity`, a deterministic closed-form toy
-  footprint for short constant-gravity profiles. J2 / EGM2008 footprint
-  propagation remains deferred and fails closed by method selection.
+- Schema v3 now includes an offline `[landing_footprint]` block. It supports
+  a deterministic closed-form `constant_gravity` method for short constant-
+  gravity profiles plus fixed-step numerical J2 and zonal-only EGM2008
+  footprint propagation for longer coast / descent profiles.
 
 ## Design
 
@@ -156,17 +156,20 @@ inverse problem and any geographic aimpoint are rejected at load.
 - Monte-Carlo dispersion requires declared input-uncertainty blocks; a
   dispersion request with no uncertainty source fails closed rather than
   reporting a degenerate zero-width ellipse.
-- `landing_footprint.method = "constant_gravity"` requires
-  `environment.gravity = "constant"` and a mission phase named `coast` or
+- `landing_footprint.method` must agree with the scenario gravity selector:
+  `constant_gravity` requires `environment.gravity = "constant"`, `j2`
+  requires `environment.gravity = "j2"`, and `egm2008` requires
+  `environment.gravity = "egm2008"`.
+- Every footprint method requires a mission phase named `coast` or
   `ballistic_descent`.
 
 ## Schema stub summary
 
 | Item | Location | State |
 |---|---|---|
-| `RangeSafetyFootprint` trait + `LandingFootprint` / `BallisticState` | `openbmp-physics/src/profile.rs` | Consumed by `ConstantGravityRangeSafetyFootprint`. |
+| `RangeSafetyFootprint` trait + `LandingFootprint` / `BallisticState` | `openbmp-physics/src/profile.rs` | Consumed by `ConstantGravityRangeSafetyFootprint` and `NumericalGravityRangeSafetyFootprint`. |
 | `coast`, `ballistic_descent` phases | mission vocabulary | Accepted with existing event machinery. |
-| Footprint post-processing path | offline analysis (`openbmp-runner`) | `landing_footprint_for_state` consumes schema-v3 `[landing_footprint]`. |
+| Footprint post-processing path | offline analysis (`openbmp-runner`) | `landing_footprint_for_state` consumes schema-v3 `[landing_footprint]` for constant-gravity, J2, and EGM2008 methods. |
 
 ## References
 

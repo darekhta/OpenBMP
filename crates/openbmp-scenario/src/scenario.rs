@@ -4044,6 +4044,28 @@ file = "../sensors/star-tracker-textbook.toml""#,
     }
 
     #[test]
+    fn parses_j2_and_egm2008_landing_footprint_methods() {
+        let j2_toml = COAST_FOOTPRINT_SCENARIO
+            .replace(r#"gravity = "constant""#, r#"gravity = "j2""#)
+            .replace(
+                "gravity_m_s2 = 9.80665",
+                "mu_m3_s2 = 398600441800000.0\nr_e_m = 7000000.0",
+            )
+            .replace(r#"method = "constant_gravity""#, r#"method = "j2""#);
+        let scenario = Scenario::from_toml_str(&j2_toml).unwrap();
+        let footprint = scenario.document.landing_footprint.as_ref().unwrap();
+        assert_eq!(footprint.method, crate::LandingFootprintMethod::J2);
+
+        let egm_toml = COAST_FOOTPRINT_SCENARIO
+            .replace(r#"gravity = "constant""#, r#"gravity = "egm2008""#)
+            .replace("gravity_m_s2 = 9.80665\n", "")
+            .replace(r#"method = "constant_gravity""#, r#"method = "egm2008""#);
+        let scenario = Scenario::from_toml_str(&egm_toml).unwrap();
+        let footprint = scenario.document.landing_footprint.as_ref().unwrap();
+        assert_eq!(footprint.method, crate::LandingFootprintMethod::Egm2008);
+    }
+
+    #[test]
     fn rejects_landing_footprint_under_v2_schema() {
         let toml = COAST_FOOTPRINT_SCENARIO.replace("openbmp.scenario = 3", "openbmp.scenario = 2");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
@@ -4085,6 +4107,17 @@ file = "../sensors/star-tracker-textbook.toml""#,
         let toml = COAST_FOOTPRINT_SCENARIO
             .replace(r#"gravity = "constant""#, r#"gravity = "point_mass""#)
             .replace("gravity_m_s2 = 9.80665", "mu_m3_s2 = 398600441800000.0");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. } if field_a == "landing_footprint.method" && field_b == "environment.gravity"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_j2_footprint_with_non_j2_gravity() {
+        let toml =
+            COAST_FOOTPRINT_SCENARIO.replace(r#"method = "constant_gravity""#, r#"method = "j2""#);
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. } if field_a == "landing_footprint.method" && field_b == "environment.gravity"),
