@@ -9,7 +9,7 @@
 //! sizeable Fourier expansion in latitude, longitude, local solar
 //! time, day-of-year, F10.7, and Ap.
 //!
-//! # What this slice ships
+//! # What this module ships
 //!
 //! [`Nrlmsise00Static`] — the *static-defaults* path described in
 //! `docs/hypersonic-extensions.md § NRLMSISE-00`: returns the
@@ -24,10 +24,10 @@
 //!      lst=12, f107a=150, f107=150, ap=4)
 //! ```
 //!
-//! The full coefficient-based empirical machinery is deferred to
-//! [`Nrlmsise00Full`] — declared here as a deferred type with
-//! full-input validation so callers can write code against the
-//! intended coefficient-path surface today.
+//! [`Nrlmsise00Full`] — the coefficient path. OpenBMP ships the
+//! coefficient tables directly from the NASA/CCMC `ModelWeb` archive
+//! copy of `nrlmsise-00_data.c` and evaluates them with an in-repo
+//! pure-Rust implementation.
 //!
 //! # Determinism
 //!
@@ -37,26 +37,30 @@
 //! static-defaults mode ignores time, latitude, longitude, solar
 //! flux, and geomagnetic activity by construction — the scenario
 //! must select [`Nrlmsise00Full`] to bring those into the
-//! determinism hash, and that variant is currently a deferred-error
-//! placeholder).
+//! determinism hash.
 //!
 //! # Honest scope
 //!
 //! The static-defaults output is **smoothed against published
-//! reference values**; it is not a clean-room re-derivation of the
-//! NRLMSISE-00 coefficient set. The trait surface and species
-//! partition match the design document so a future slice can replace
-//! the interpolant with the full coefficient-based port without any
-//! caller-side change.
+//! reference values**. Use [`Nrlmsise00Full`] when the query must
+//! respond to date/time, geodetic position, F10.7, and Ap.
 
 use openbmp_core::SimTime;
 
 use super::{AtmosphereModel, AtmosphereSample};
 use crate::error::PhysicsError;
 
+#[path = "nrlmsise00_coefficients.rs"]
+mod nrlmsise00_coefficients;
+#[path = "nrlmsise00_model.rs"]
+mod nrlmsise00_model;
+
 /// Boltzmann constant `k_B` (J/K) — used for the speed-of-sound and
 /// mean-molecular-weight conversions.
 const BOLTZMANN_J_K: f64 = 1.380_649e-23;
+
+/// Convert number density from `cm^-3` to `m^-3`.
+const CM3_TO_M3: f64 = 1.0e6;
 
 /// Effective specific-heat ratio used by the static-defaults
 /// speed-of-sound output. The mid-thermosphere has γ near 1.4 for
@@ -74,7 +78,7 @@ const NRLMSISE_GAMMA: f64 = 1.4;
 /// construct an [`Nrlmsise00Inputs`] with explicit values for
 /// forward compatibility with [`Nrlmsise00Full`]; the static path
 /// ignores all but `altitude`.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Nrlmsise00Inputs {
     /// Calendar year (e.g. 2024). Ignored by the static path.
     pub year: u16,
@@ -101,6 +105,20 @@ pub struct Nrlmsise00Inputs {
     pub ap_average: f64,
 }
 
+#[derive(Copy, Clone, Debug)]
+struct Nrlmsise00LowLevelInput {
+    day_of_year: u32,
+    ut_seconds: f64,
+    altitude_km: f64,
+    latitude_deg: f64,
+    longitude_deg: f64,
+    local_solar_time_hours: f64,
+    f107_daily: f64,
+    f107_avg: f64,
+    ap_daily: f64,
+    ap_array: [f64; 7],
+}
+
 impl Nrlmsise00Inputs {
     /// Mid-conditions defaults for the static-defaults profile.
     /// Altitude must be set by the caller.
@@ -118,6 +136,13 @@ impl Nrlmsise00Inputs {
             f107_yesterday: 150.0,
             ap_average: 4.0,
         }
+    }
+
+    /// Return a copy with `altitude_m` replaced.
+    #[must_use]
+    pub const fn with_altitude_m(mut self, altitude_m: f64) -> Self {
+        self.altitude_m = altitude_m;
+        self
     }
 
     /// Validate the full NRLMSISE-00 input envelope used by the
@@ -531,51 +556,155 @@ impl AtmosphereModel for Nrlmsise00Static {
         _time: SimTime,
     ) -> Result<AtmosphereSample, PhysicsError> {
         let outputs = self.evaluate(Nrlmsise00Inputs::mid_conditions(altitude_geometric_m))?;
-        let temp = outputs.neutral_temperature_k.max(1.0);
-        let neutral_number_density = outputs.n_he
-            + outputs.n_o
-            + outputs.n_n2
-            + outputs.n_o2
-            + outputs.n_ar
-            + outputs.n_h
-            + outputs.n_n;
-        let pressure = neutral_number_density * BOLTZMANN_J_K * temp;
-        let speed_of_sound =
-            (NRLMSISE_GAMMA * pressure / outputs.mass_density_kg_m3.max(f64::MIN_POSITIVE)).sqrt();
-        AtmosphereSample::new(outputs.mass_density_kg_m3, pressure, temp, speed_of_sound)
+        outputs_to_sample(outputs)
     }
 }
 
-/// NRLMSISE-00 full coefficient-based path — deferred to a follow-on
-/// slice. Constructing this type and evaluating it returns
-/// `PhysicsError::OutOfEnvelope` with a clear "deferred" reason so
-/// scenarios that select it fail-closed loudly rather than silently
-/// falling back to the static path.
-#[derive(Copy, Clone, Debug, Default)]
-pub struct Nrlmsise00Full;
+fn outputs_to_sample(outputs: Nrlmsise00Outputs) -> Result<AtmosphereSample, PhysicsError> {
+    validate_outputs(outputs)?;
+    let temp = outputs.neutral_temperature_k.max(1.0);
+    let neutral_number_density = outputs.n_he
+        + outputs.n_o
+        + outputs.n_n2
+        + outputs.n_o2
+        + outputs.n_ar
+        + outputs.n_h
+        + outputs.n_n;
+    let pressure = neutral_number_density * BOLTZMANN_J_K * temp;
+    let speed_of_sound =
+        (NRLMSISE_GAMMA * pressure / outputs.mass_density_kg_m3.max(f64::MIN_POSITIVE)).sqrt();
+    AtmosphereSample::new(outputs.mass_density_kg_m3, pressure, temp, speed_of_sound)
+}
+
+fn validate_outputs(outputs: Nrlmsise00Outputs) -> Result<(), PhysicsError> {
+    let values = [
+        outputs.n_he,
+        outputs.n_o,
+        outputs.n_n2,
+        outputs.n_o2,
+        outputs.n_ar,
+        outputs.n_h,
+        outputs.n_n,
+        outputs.n_o_anomalous,
+        outputs.mass_density_kg_m3,
+        outputs.neutral_temperature_k,
+        outputs.exospheric_temperature_k,
+    ];
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(PhysicsError::NonFinite {
+            reason: "nrlmsise00 output field is NaN or Inf",
+        });
+    }
+    if outputs.mass_density_kg_m3 <= 0.0
+        || outputs.neutral_temperature_k <= 0.0
+        || outputs.exospheric_temperature_k <= 0.0
+    {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "nrlmsise00 output density and temperatures must be positive",
+        });
+    }
+    if values[..8].iter().any(|value| *value < 0.0) {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "nrlmsise00 species number densities must be non-negative",
+        });
+    }
+    Ok(())
+}
+
+/// NRLMSISE-00 full coefficient-based path.
+///
+/// `evaluate` consumes a complete [`Nrlmsise00Inputs`] query. The
+/// [`AtmosphereModel`] implementation uses `base_inputs` as a
+/// scenario-declared deterministic column and replaces only altitude
+/// for each sample; this preserves the existing altitude/time trait
+/// while allowing scenario authors to pin date, location, F10.7, and
+/// Ap for boost/re-entry drag studies.
+#[derive(Copy, Clone, Debug)]
+pub struct Nrlmsise00Full {
+    base_inputs: Nrlmsise00Inputs,
+}
+
+impl Default for Nrlmsise00Full {
+    fn default() -> Self {
+        Self::mid_conditions()
+    }
+}
 
 impl Nrlmsise00Full {
-    fn deferred() -> PhysicsError {
-        PhysicsError::OutOfEnvelope {
-            reason: "Nrlmsise00Full coefficient-based path is deferred; use Nrlmsise00Static",
+    /// Construct a full coefficient-path model with mid-condition
+    /// defaults for all non-altitude inputs.
+    #[must_use]
+    pub const fn mid_conditions() -> Self {
+        Self {
+            base_inputs: Nrlmsise00Inputs::mid_conditions(0.0),
         }
     }
 
-    /// Evaluate the reserved full-input NRLMSISE-00 path.
+    /// Construct a full coefficient-path model from a scenario
+    /// default query. The altitude in `base_inputs` is ignored by
+    /// [`AtmosphereModel::sample`] and replaced by the sampled
+    /// altitude.
     ///
-    /// The method validates the complete MSIS query and then fails
-    /// closed until the public-domain coefficient port lands. This
-    /// keeps scenario-side full-input plumbing honest without
-    /// pretending the static altitude table is a full empirical model.
+    /// # Errors
+    ///
+    /// Returns the same validation errors as
+    /// [`Nrlmsise00Inputs::validate_full_path`].
+    pub fn new(base_inputs: Nrlmsise00Inputs) -> Result<Self, PhysicsError> {
+        base_inputs.validate_full_path()?;
+        Ok(Self { base_inputs })
+    }
+
+    /// Scenario/default inputs used by the trait-based sampler.
+    #[must_use]
+    pub const fn base_inputs(self) -> Nrlmsise00Inputs {
+        self.base_inputs
+    }
+
+    /// Evaluate the full-input NRLMSISE-00 path.
+    ///
+    /// The low-level coefficient calculation uses OpenBMP-local
+    /// static coefficient tables generated from the public
+    /// NASA/CCMC archived `nrlmsise-00_data.c`. Output number
+    /// densities are converted from `cm^-3` to `m^-3` to match
+    /// OpenBMP's atmosphere API.
     ///
     /// # Errors
     ///
     /// Returns input-validation errors from
-    /// [`Nrlmsise00Inputs::validate_full_path`] or a deferred
-    /// [`PhysicsError::OutOfEnvelope`] for valid inputs.
+    /// [`Nrlmsise00Inputs::validate_full_path`] or output validation
+    /// errors if the coefficient evaluator returns non-finite or
+    /// physically invalid values.
     pub fn evaluate(self, inputs: Nrlmsise00Inputs) -> Result<Nrlmsise00Outputs, PhysicsError> {
         inputs.validate_full_path()?;
-        Err(Self::deferred())
+        let query = Nrlmsise00LowLevelInput {
+            day_of_year: u32::from(inputs.day_of_year),
+            ut_seconds: inputs.utc_seconds,
+            altitude_km: inputs.altitude_m / 1000.0,
+            latitude_deg: inputs.latitude_rad.to_degrees(),
+            longitude_deg: inputs.longitude_rad.to_degrees(),
+            local_solar_time_hours: inputs.local_apparent_solar_time_hours,
+            f107_daily: inputs.f107_yesterday,
+            f107_avg: inputs.f107_average_81day,
+            ap_daily: inputs.ap_average,
+            ap_array: [inputs.ap_average; 7],
+        };
+        let (density_cm3, exospheric_temperature_k, neutral_temperature_k) =
+            nrlmsise00_model::compute(&query);
+        let outputs = Nrlmsise00Outputs {
+            n_he: density_cm3[0] * CM3_TO_M3,
+            n_o: density_cm3[1] * CM3_TO_M3,
+            n_n2: density_cm3[2] * CM3_TO_M3,
+            n_o2: density_cm3[3] * CM3_TO_M3,
+            n_ar: density_cm3[4] * CM3_TO_M3,
+            n_h: density_cm3[6] * CM3_TO_M3,
+            n_n: density_cm3[7] * CM3_TO_M3,
+            n_o_anomalous: density_cm3[8] * CM3_TO_M3,
+            mass_density_kg_m3: density_cm3[5] * 1000.0,
+            neutral_temperature_k,
+            exospheric_temperature_k,
+        };
+        validate_outputs(outputs)?;
+        Ok(outputs)
     }
 }
 
@@ -585,9 +714,9 @@ impl AtmosphereModel for Nrlmsise00Full {
         altitude_geometric_m: f64,
         _time: SimTime,
     ) -> Result<AtmosphereSample, PhysicsError> {
-        let inputs = Nrlmsise00Inputs::mid_conditions(altitude_geometric_m);
-        inputs.validate_full_path()?;
-        Err(Self::deferred())
+        let inputs = self.base_inputs.with_altitude_m(altitude_geometric_m);
+        let outputs = self.evaluate(inputs)?;
+        outputs_to_sample(outputs)
     }
 }
 
@@ -670,12 +799,13 @@ mod tests {
     }
 
     #[test]
-    fn full_path_is_deferred_loudly() {
-        let m = Nrlmsise00Full;
-        assert!(matches!(
-            m.sample(200_000.0, SimTime::ZERO),
-            Err(PhysicsError::OutOfEnvelope { .. })
-        ));
+    fn full_path_returns_finite_sample() {
+        let m = Nrlmsise00Full::default();
+        let sample = m.sample(200_000.0, SimTime::ZERO).unwrap();
+        assert!(sample.density_kg_m3 > 0.0);
+        assert!(sample.pressure_pa > 0.0);
+        assert!(sample.temperature_k > 0.0);
+        assert!(sample.speed_of_sound_m_s > 0.0);
     }
 
     #[test]
@@ -696,8 +826,8 @@ mod tests {
     }
 
     #[test]
-    fn full_evaluate_rejects_bad_inputs_before_deferred_error() {
-        let m = Nrlmsise00Full;
+    fn full_evaluate_rejects_bad_inputs_before_model_call() {
+        let m = Nrlmsise00Full::default();
         let mut inputs = Nrlmsise00Inputs::mid_conditions(200_000.0);
         inputs.ap_average = -1.0;
         assert!(matches!(
@@ -707,12 +837,75 @@ mod tests {
     }
 
     #[test]
-    fn full_evaluate_valid_inputs_remains_deferred() {
-        let m = Nrlmsise00Full;
-        assert!(matches!(
-            m.evaluate(Nrlmsise00Inputs::mid_conditions(200_000.0)),
-            Err(PhysicsError::OutOfEnvelope { .. })
-        ));
+    fn full_evaluate_valid_inputs_returns_composition() {
+        let m = Nrlmsise00Full::default();
+        let outputs = m
+            .evaluate(Nrlmsise00Inputs::mid_conditions(200_000.0))
+            .unwrap();
+        assert!(outputs.mass_density_kg_m3 > 0.0);
+        assert!(outputs.neutral_temperature_k > 0.0);
+        assert!(outputs.exospheric_temperature_k > 0.0);
+        assert!(outputs.n_o > 0.0);
+        assert!(outputs.n_n2 > 0.0);
+    }
+
+    #[test]
+    fn full_path_matches_c_release_reference_case() {
+        let m = Nrlmsise00Full::default();
+        let mut inputs = Nrlmsise00Inputs::mid_conditions(400_000.0);
+        inputs.day_of_year = 172;
+        inputs.utc_seconds = 29_000.0;
+        inputs.latitude_rad = 60.0_f64.to_radians();
+        inputs.longitude_rad = (-70.0_f64).to_radians();
+        inputs.local_apparent_solar_time_hours = 16.0;
+        inputs.f107_average_81day = 150.0;
+        inputs.f107_yesterday = 150.0;
+        inputs.ap_average = 4.0;
+
+        let outputs = m.evaluate(inputs).unwrap();
+        assert_relative_eq!(outputs.n_he, 6.665_177e11, max_relative = 1e-3);
+        assert_relative_eq!(outputs.n_o, 1.138_806e14, max_relative = 1e-3);
+        assert_relative_eq!(outputs.n_n2, 1.998_211e13, max_relative = 1e-3);
+        assert_relative_eq!(outputs.n_o2, 4.022_764e11, max_relative = 1e-3);
+        assert_relative_eq!(outputs.n_ar, 3.557_465e9, max_relative = 1e-3);
+        assert_relative_eq!(outputs.n_h, 3.475_312e10, max_relative = 1e-3);
+        assert_relative_eq!(outputs.n_n, 4.095_913e12, max_relative = 1e-3);
+        assert_relative_eq!(outputs.n_o_anomalous, 2.667_273e10, max_relative = 1e-3);
+        assert_relative_eq!(
+            outputs.mass_density_kg_m3,
+            4.074_714e-12,
+            max_relative = 1e-3
+        );
+        assert_relative_eq!(
+            outputs.exospheric_temperature_k,
+            1.250_540e3,
+            max_relative = 1e-3
+        );
+        assert_relative_eq!(
+            outputs.neutral_temperature_k,
+            1.241_416e3,
+            max_relative = 1e-3
+        );
+    }
+
+    #[test]
+    fn full_path_responds_to_solar_activity() {
+        let m = Nrlmsise00Full::default();
+        let mut quiet = Nrlmsise00Inputs::mid_conditions(400_000.0);
+        quiet.f107_average_81day = 70.0;
+        quiet.f107_yesterday = 70.0;
+        quiet.ap_average = 4.0;
+        let mut active = quiet;
+        active.f107_average_81day = 250.0;
+        active.f107_yesterday = 250.0;
+        active.ap_average = 50.0;
+
+        let quiet_rho = m.evaluate(quiet).unwrap().mass_density_kg_m3;
+        let active_rho = m.evaluate(active).unwrap().mass_density_kg_m3;
+        assert!(
+            active_rho > quiet_rho,
+            "active solar/geomagnetic conditions should increase density: quiet={quiet_rho} active={active_rho}"
+        );
     }
 
     #[test]

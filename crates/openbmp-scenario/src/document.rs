@@ -294,7 +294,6 @@ impl ScenarioDocument {
         let header = self.openbmp.scenario;
         self.validate_v3_top_level_blocks(header)?;
         self.validate_v3_fc_blocks(header, self.time.dt_s)?;
-        self.validate_v3_kind_values(header)?;
         self.validate_v3_effector_kinds(header)?;
         Ok(())
     }
@@ -656,9 +655,8 @@ impl ScenarioDocument {
     /// Runs before per-kind field validation so users see a clean
     /// "feature is reserved for v3" diagnostic instead of a downstream
     /// `UnexpectedField` for fields that are only valid alongside that
-    /// selector. Always emits `SchemaVersionFieldReserved` (never the
-    /// v3-deferred variant) — graduated names that are now consumed
-    /// under v3 stay handled by `validate_v3_kind_values`.
+    /// selector. Always emits `SchemaVersionFieldReserved` because the
+    /// currently listed selectors are consumed under v3.
     fn validate_v3_kind_availability(&self) -> Result<(), ScenarioError> {
         let header = self.openbmp.scenario;
         if header >= SCENARIO_VERSION_V3 {
@@ -745,28 +743,6 @@ impl ScenarioDocument {
                     found: header,
                 });
             }
-        }
-        Ok(())
-    }
-
-    fn validate_v3_kind_values(&self, header: u16) -> Result<(), ScenarioError> {
-        // Names that are not yet supported
-        // emit `ElementNotYetSupported` here under v3. v2 cases
-        // are handled earlier by `validate_v3_kind_availability`.
-        // `egm2008` is consumed by
-        // `EnvironmentConfig::validate` + the runner gravity dispatch,
-        // so it is not named here.
-        if self.environment.atmosphere == "nrlmsise00"
-            || self
-                .atmosphere
-                .as_ref()
-                .is_some_and(|a| a.kind == "nrlmsise00")
-        {
-            return Err(v3_kind_error(
-                header,
-                "atmosphere.kind = \"nrlmsise00\"",
-                "a future NRLMSISE-00 follow-on slice",
-            ));
         }
         Ok(())
     }
@@ -917,8 +893,12 @@ impl ScenarioDocument {
                 value_b: "missing aero force model".to_owned(),
             });
         }
+        let atmosphere_kind = self
+            .atmosphere
+            .as_ref()
+            .map_or(self.environment.atmosphere.as_str(), |a| a.kind.as_str());
         validate_entry_atmosphere_envelope(
-            &self.environment.atmosphere,
+            atmosphere_kind,
             entry_profile.entry_interface_altitude_m,
         )?;
         if entry_profile.mode == EntryProfileMode::Lifting {
@@ -1238,7 +1218,7 @@ fn validate_entry_atmosphere_envelope(
     entry_interface_altitude_m: f64,
 ) -> Result<(), ScenarioError> {
     match atmosphere {
-        "piecewise_exponential" => Ok(()),
+        "piecewise_exponential" | "nrlmsise00" => Ok(()),
         "us_standard_1976" if entry_interface_altitude_m <= USSA76_ENTRY_INTERFACE_CEILING_M => {
             Ok(())
         }
@@ -2515,6 +2495,24 @@ pub struct AtmosphereConfig {
     pub pressure_pa: Option<f64>,
     /// Temperature in kelvin. Required when `kind = "isothermal"`.
     pub temperature_k: Option<f64>,
+    /// Calendar year for `kind = "nrlmsise00"`; defaults to 2024.
+    pub year: Option<u16>,
+    /// Day of year for `kind = "nrlmsise00"`; defaults to 80.
+    pub day_of_year: Option<u16>,
+    /// UTC seconds within the day for `kind = "nrlmsise00"`; defaults to noon.
+    pub utc_s: Option<f64>,
+    /// Geodetic latitude in degrees for `kind = "nrlmsise00"`; defaults to 0.
+    pub latitude_deg: Option<f64>,
+    /// Geodetic longitude in degrees for `kind = "nrlmsise00"`; defaults to 0.
+    pub longitude_deg: Option<f64>,
+    /// Local apparent solar time in hours for `kind = "nrlmsise00"`; defaults to 12.
+    pub local_apparent_solar_time_h: Option<f64>,
+    /// 81-day average F10.7 solar flux for `kind = "nrlmsise00"`; defaults to 150.
+    pub f107_average_81day_sfu: Option<f64>,
+    /// Previous-day F10.7 solar flux for `kind = "nrlmsise00"`; defaults to 150.
+    pub f107_yesterday_sfu: Option<f64>,
+    /// Daily Ap geomagnetic index for `kind = "nrlmsise00"`; defaults to 4.
+    pub ap_average: Option<f64>,
 }
 
 impl AtmosphereConfig {
@@ -2546,19 +2544,119 @@ impl AtmosphereConfig {
                             name: "isothermal".to_owned(),
                         })?;
                 require_positive("atmosphere.temperature_k", temperature)?;
+                self.reject_nrlmsise00_fields("isothermal")?;
+            }
+            "nrlmsise00" => {
+                self.reject_isothermal_fields("nrlmsise00")?;
+                self.validate_nrlmsise00_fields()?;
             }
             other => {
-                if self.density_kg_m3.is_some()
-                    || self.pressure_pa.is_some()
-                    || self.temperature_k.is_some()
-                {
-                    return Err(ScenarioError::UnexpectedField {
-                        field: "atmosphere.density_kg_m3 / pressure_pa / temperature_k".to_owned(),
-                        role: ModelRole::Atmosphere,
-                        name: other.to_owned(),
-                    });
-                }
+                self.reject_isothermal_fields(other)?;
+                self.reject_nrlmsise00_fields(other)?;
             }
+        }
+        Ok(())
+    }
+
+    fn validate_nrlmsise00_fields(&self) -> Result<(), ScenarioError> {
+        if let Some(day_of_year) = self.day_of_year
+            && !(1..=366).contains(&day_of_year)
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: "atmosphere.day_of_year".to_owned(),
+                value: f64::from(day_of_year),
+                rule: "must be in 1..=366",
+            });
+        }
+        if let Some(utc_s) = self.utc_s {
+            require_finite("atmosphere.utc_s", utc_s)?;
+            if !(0.0..86_400.0).contains(&utc_s) {
+                return Err(ScenarioError::InvalidNumber {
+                    field: "atmosphere.utc_s".to_owned(),
+                    value: utc_s,
+                    rule: "must be in [0, 86400)",
+                });
+            }
+        }
+        if let Some(latitude_deg) = self.latitude_deg {
+            require_finite("atmosphere.latitude_deg", latitude_deg)?;
+            if !(-90.0..=90.0).contains(&latitude_deg) {
+                return Err(ScenarioError::InvalidNumber {
+                    field: "atmosphere.latitude_deg".to_owned(),
+                    value: latitude_deg,
+                    rule: "must be in [-90, 90]",
+                });
+            }
+        }
+        if let Some(longitude_deg) = self.longitude_deg {
+            require_finite("atmosphere.longitude_deg", longitude_deg)?;
+            if !(-180.0..=180.0).contains(&longitude_deg) {
+                return Err(ScenarioError::InvalidNumber {
+                    field: "atmosphere.longitude_deg".to_owned(),
+                    value: longitude_deg,
+                    rule: "must be in [-180, 180]",
+                });
+            }
+        }
+        if let Some(local_solar_time) = self.local_apparent_solar_time_h {
+            require_finite("atmosphere.local_apparent_solar_time_h", local_solar_time)?;
+            if !(0.0..24.0).contains(&local_solar_time) {
+                return Err(ScenarioError::InvalidNumber {
+                    field: "atmosphere.local_apparent_solar_time_h".to_owned(),
+                    value: local_solar_time,
+                    rule: "must be in [0, 24)",
+                });
+            }
+        }
+        if let Some(f107_average) = self.f107_average_81day_sfu {
+            require_positive("atmosphere.f107_average_81day_sfu", f107_average)?;
+        }
+        if let Some(f107_yesterday_sfu) = self.f107_yesterday_sfu {
+            require_positive("atmosphere.f107_yesterday_sfu", f107_yesterday_sfu)?;
+        }
+        if let Some(ap_average) = self.ap_average {
+            require_finite("atmosphere.ap_average", ap_average)?;
+            if ap_average < 0.0 {
+                return Err(ScenarioError::InvalidNumber {
+                    field: "atmosphere.ap_average".to_owned(),
+                    value: ap_average,
+                    rule: "must be non-negative",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn reject_isothermal_fields(&self, kind: &str) -> Result<(), ScenarioError> {
+        if self.density_kg_m3.is_some()
+            || self.pressure_pa.is_some()
+            || self.temperature_k.is_some()
+        {
+            return Err(ScenarioError::UnexpectedField {
+                field: "atmosphere.density_kg_m3 / pressure_pa / temperature_k".to_owned(),
+                role: ModelRole::Atmosphere,
+                name: kind.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn reject_nrlmsise00_fields(&self, kind: &str) -> Result<(), ScenarioError> {
+        if self.year.is_some()
+            || self.day_of_year.is_some()
+            || self.utc_s.is_some()
+            || self.latitude_deg.is_some()
+            || self.longitude_deg.is_some()
+            || self.local_apparent_solar_time_h.is_some()
+            || self.f107_average_81day_sfu.is_some()
+            || self.f107_yesterday_sfu.is_some()
+            || self.ap_average.is_some()
+        {
+            return Err(ScenarioError::UnexpectedField {
+                field: "atmosphere.year / day_of_year / utc_s / latitude_deg / longitude_deg / local_apparent_solar_time_h / f107_average_81day_sfu / f107_yesterday_sfu / ap_average".to_owned(),
+                role: ModelRole::Atmosphere,
+                name: kind.to_owned(),
+            });
         }
         Ok(())
     }
@@ -6048,24 +6146,6 @@ where
         field: field.to_owned(),
         missing_capability,
     })
-}
-
-/// v3 kind-value gate: emits `SchemaVersionFieldReserved` on a v2
-/// scenario, or `ElementNotYetSupported` on v3 for v3-only enum values
-/// whose runtime consumer is not yet wired.
-fn v3_kind_error(header: u16, field: &str, missing_capability: &'static str) -> ScenarioError {
-    if header < SCENARIO_VERSION_V3 {
-        ScenarioError::SchemaVersionFieldReserved {
-            field: field.to_owned(),
-            required: SCENARIO_VERSION_V3,
-            found: header,
-        }
-    } else {
-        ScenarioError::ElementNotYetSupported {
-            field: field.to_owned(),
-            missing_capability,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------

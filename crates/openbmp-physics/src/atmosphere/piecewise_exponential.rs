@@ -30,7 +30,7 @@
 //! variation. Within its declared envelope (0-1000 km) the layered
 //! model captures the dominant altitude variation that dominates
 //! orbital drag; for missions that require solar-flux-aware densities
-//! a future slice can ship the full NRLMSISE-00 port.
+//! select the full-input NRLMSISE-00 model instead.
 //!
 //! # Determinism
 //!

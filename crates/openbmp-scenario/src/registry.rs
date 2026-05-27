@@ -129,8 +129,8 @@ impl ModelRegistry {
             // Atmosphere models.
             ModelDescriptor::new("isothermal", ModelRole::Atmosphere),
             ModelDescriptor::new("us_standard_1976", ModelRole::Atmosphere),
-            // Full NRLMSISE-00 remains deferred: the shipped
-            // surface is the honest downscope below.
+            // Full NRLMSISE-00 coefficient path is consumed under
+            // v3 by the runner atmosphere dispatch.
             ModelDescriptor::new("nrlmsise00", ModelRole::Atmosphere),
             // Engineering layered exponential atmosphere
             // (Vallado 4th ed. Table 8-4 fit, 0-1000 km). Honest

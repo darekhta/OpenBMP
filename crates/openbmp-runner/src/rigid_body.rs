@@ -61,7 +61,7 @@ use uom::si::mass::kilogram;
 use crate::RunOutcome;
 use crate::assembly::{dry_mass_kg_at, dry_mass_properties_at};
 use crate::atmosphere::{
-    RuntimeAtmosphere, build_runtime_atmosphere, is_runtime_atmosphere_kind,
+    RuntimeAtmosphere, build_document_runtime_atmosphere, is_runtime_atmosphere_kind,
     scenario_atmosphere_kind,
 };
 use crate::error::RunnerError;
@@ -167,9 +167,7 @@ pub fn run(
     };
     let channel_set = RigidChannelSet::new(document)?;
     let breakdown_atmosphere = if channel_set.has_atmosphere {
-        Some(build_runtime_atmosphere(scenario_atmosphere_kind(
-            document,
-        ))?)
+        Some(build_document_runtime_atmosphere(document)?)
     } else {
         None
     };
@@ -839,7 +837,7 @@ fn build_vehicle(
                         .ok_or_else(|| RunnerError::UnsupportedScenario {
                             what: "forces includes `aero` but [aero] block is missing".to_owned(),
                         })?;
-                let atmosphere = build_runtime_atmosphere(scenario_atmosphere_kind(document))?;
+                let atmosphere = build_document_runtime_atmosphere(document)?;
                 let drag = DeckDragForceAdapter::new(deck, atmosphere, RIGID_BODY_AERO_MODEL_ID);
                 named.push(NamedForceModel::new("aero", Box::new(drag)));
             }
@@ -921,7 +919,7 @@ fn build_vehicle(
                 ))
             })
             .collect();
-        let atmosphere = build_runtime_atmosphere(scenario_atmosphere_kind(document))?;
+        let atmosphere = build_document_runtime_atmosphere(document)?;
         let recovery_force = openbmp_vehicle::RecoveryRackForceAdapter::new(
             recovery_ids,
             atmosphere,

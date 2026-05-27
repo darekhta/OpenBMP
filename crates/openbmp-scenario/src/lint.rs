@@ -83,7 +83,9 @@ const UNIT_SUFFIXES: &[&str] = &[
     "_n",
     "_pa_s",
     "_pa",
+    "_sfu",
     "_rad",
+    "_h",
     "_s",
     "_k",
     "_deg",
@@ -293,6 +295,9 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
             | "rtol"
             | "atol"
             | "j2"
+            | "year"
+            | "day_of_year"
+            | "ap_average"
             // Mission-block trigger fields: a mass fraction
             // ratio in [0, 1].
             | "remaining"

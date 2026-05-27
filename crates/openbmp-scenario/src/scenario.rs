@@ -1804,11 +1804,10 @@ time_s         = 0.0005
         // the v3 gate. Aligned-equals layout matched verbatim.
         let toml = MINIMAL.replace("atmosphere    = \"none\"", "atmosphere    = \"nrlmsise00\"");
         assert_v3_block_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsise00\"");
-        assert_v3_block_not_yet_supported(
-            &toml,
-            "atmosphere.kind = \"nrlmsise00\"",
-            "a future NRLMSISE-00 follow-on slice",
-        );
+
+        let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&v3).expect("nrlmsise00 validates under v3");
+        assert_eq!(scenario.document.environment.atmosphere, "nrlmsise00");
     }
 
     const NRLMSISE00_STRUCTURED_ATMOSPHERE_BLOCK: &str = r#"
@@ -1820,11 +1819,54 @@ kind = "nrlmsise00"
     fn nrlmsise00_structured_atmosphere_kind_is_v3_only() {
         let toml = append(MINIMAL, NRLMSISE00_STRUCTURED_ATMOSPHERE_BLOCK);
         assert_v3_block_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsise00\"");
-        assert_v3_block_not_yet_supported(
-            &toml,
-            "atmosphere.kind = \"nrlmsise00\"",
-            "a future NRLMSISE-00 follow-on slice",
+
+        let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario =
+            Scenario::from_toml_str(&v3).expect("structured nrlmsise00 validates under v3");
+        assert_eq!(
+            scenario.document.atmosphere.as_ref().unwrap().kind,
+            "nrlmsise00"
         );
+    }
+
+    #[test]
+    fn nrlmsise00_structured_inputs_validate_under_v3() {
+        let block = r#"
+[atmosphere]
+kind = "nrlmsise00"
+year = 2024
+day_of_year = 80
+utc_s = 43200.0
+latitude_deg = 0.0
+longitude_deg = 0.0
+local_apparent_solar_time_h = 12.0
+f107_average_81day_sfu = 150.0
+f107_yesterday_sfu = 150.0
+ap_average = 4.0
+"#;
+        let toml = append(MINIMAL, block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario =
+            Scenario::from_toml_str(&toml).expect("structured nrlmsise00 inputs validate");
+        let atmosphere = scenario.document.atmosphere.as_ref().unwrap();
+        assert_eq!(atmosphere.day_of_year, Some(80));
+        assert_eq!(atmosphere.f107_average_81day_sfu, Some(150.0));
+    }
+
+    #[test]
+    fn nrlmsise00_structured_inputs_reject_bad_latitude() {
+        let block = r#"
+[atmosphere]
+kind = "nrlmsise00"
+latitude_deg = 100.0
+"#;
+        let toml = append(MINIMAL, block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        match err {
+            ScenarioError::InvalidNumber { field, .. } => {
+                assert_eq!(field, "atmosphere.latitude_deg");
+            }
+            other => panic!("expected InvalidNumber for atmosphere.latitude_deg, got: {other:?}"),
+        }
     }
 
     #[test]

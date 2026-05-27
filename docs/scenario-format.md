@@ -1957,7 +1957,7 @@ The model reports a scale-height-effective `temperature_k` for
 ideal-gas self-consistency; it is not a source-tabulated thermospheric
 temperature product.
 
-#### `atmosphere = "nrlmsise00"` (future follow-on)
+#### `atmosphere = "nrlmsise00"`
 
 ```toml
 [environment]
@@ -1965,15 +1965,28 @@ atmosphere = "nrlmsise00"
 
 [atmosphere]
 kind = "nrlmsise00"
+year = 2024
+day_of_year = 80
+utc_s = 43200.0
+latitude_deg = 0.0
+longitude_deg = 0.0
+local_apparent_solar_time_h = 12.0
+f107_average_81day_sfu = 150.0
+f107_yesterday_sfu = 150.0
+ap_average = 4.0
 ```
 
 Selects the NRLMSISE-00 empirical atmosphere model, supplied by the
-hypersonic extensions. In the base platform this kind
-value is registered so scenarios get a structured deferred-feature
-diagnostic; the base layered model is `piecewise_exponential`.
-Solar-flux inputs (`f10_7`, `f10_7_avg`, `ap_index`), epoch handling,
-per-species number densities, and coefficient-file loading belong to
-the NRLMSISE-00 model.
+hypersonic extensions. It is a v3-only atmosphere kind and is wired to
+the in-repository coefficient evaluator for the 0-1000 km model
+envelope.
+
+The structured `[atmosphere]` fields are optional; omitted values use
+the static mid-condition defaults shown above. If the legacy
+`environment.atmosphere` selector and the structured block are both
+present, both must name `nrlmsise00`. The runner stores these scalar
+environment inputs as deterministic scenario parameters and varies only
+altitude through the existing atmosphere sampling trait.
 
 ### Hard guardrails
 

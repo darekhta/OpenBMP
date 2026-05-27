@@ -48,8 +48,8 @@ Accept contributions that are limited to:
 - Coordinate frame transformations (ECI, ECEF, NED, ENU, body) implemented as
   type-tagged operations.
 - Atmosphere abstractions, including in-house implementations of public
-  models (e.g., US Standard Atmosphere 1976; NRLMSISE-00 if added later, with
-  public coefficients only).
+  models (e.g., US Standard Atmosphere 1976 and NRLMSISE-00, with public
+  coefficients only).
 - Gravity abstractions, including constant, point-mass, J2, and truncated
   spherical-harmonic expansions using public coefficients only (e.g., low-order
   EGM2008, with provenance).

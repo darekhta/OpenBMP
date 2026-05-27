@@ -105,8 +105,9 @@ lands with validation evidence:
 
 **Environment and real-gas**
 
-- The full coefficient-based NRLMSISE-00 path (the static-defaults profile
-  ships today); NRLMSIS 2.x and HWM14 winds.
+- NRLMSIS 2.x and HWM14 winds, once license-clean coefficient/data
+  redistribution is available. The NRLMSISE-00 static and full-input
+  coefficient paths ship today.
 - Verified equilibrium-air (`γ_eff`) and Park two-temperature reaction-rate
   tables. The trait surfaces exist but fail closed until clean-provenance
   public coefficient tables are imported; the Tauber-Sutton radiative model is

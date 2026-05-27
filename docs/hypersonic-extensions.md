@@ -381,9 +381,9 @@ a layered registry:
 | Model | Role | Repository policy |
 |---|---|---|
 | US Standard Atmosphere 1976 | deterministic lower/middle-atmosphere baseline | ship public table with provenance |
-| NRLMSISE-00 | stable high-altitude baseline from ground to thermosphere | in-house Rust port with public coefficients |
-| NRLMSIS 2.x | modern whole-atmosphere / thermosphere reference, including 2.1 NO number density | optional research profile after 00 is validated |
-| HWM14 | horizontal neutral winds for upper/middle/lower atmosphere | optional wind model with public coefficients |
+| NRLMSISE-00 | stable high-altitude baseline from ground to thermosphere | in-house Rust port with direct NASA/CCMC coefficient arrays |
+| NRLMSIS 2.x | modern whole-atmosphere / thermosphere reference, including 2.1 NO number density | not vendored until license-clean redistribution is available |
+| HWM14 | horizontal neutral winds for upper/middle/lower atmosphere | not vendored until coefficient/data redistribution is clear |
 | Earth-GRAM | engineering atmosphere with mean values and statistical variations | external-reference / validation oracle first; ship only if licensing and provenance are clean |
 
 Scenario authors pick the model and hand-off altitude explicitly. Solar,
@@ -394,10 +394,12 @@ of the determinism profile.
 
 NRLMSISE-00 (Naval Research Laboratory Mass Spectrometer and Incoherent Scatter
 Radar 2000) is a public empirical model for Earth's neutral atmosphere from
-the ground to ~1000 km. The Fortran source and full coefficient tables are in
-the public domain (NRL technical reports). For OpenBMP we re-implement in pure
-Rust and ship the coefficients as `data/atmosphere/nrlmsise00.toml` with a
-provenance entry.
+the ground to ~1000 km. OpenBMP ships a pure-Rust local evaluator and pulls the
+coefficient arrays directly from the NASA/CCMC archived `nrlmsise-00_data.c`
+source. The provenance entry records the source URLs, SHA-256 hashes, and the
+MIT-licensed Rust implementation used as the evaluator baseline; there is no
+runtime crate dependency, no coefficient-file loading, no FFI, and no network
+access on the hot path.
 
 Inputs (with sensible defaults for "static" mode):
 
@@ -446,20 +448,21 @@ For altitudes 0–86 km the model agrees with US Standard 1976 within a few
 percent; the scenario can stitch them deterministically using a smooth
 hand-off.
 
-### NRLMSIS 2.x and HWM14 (research follow-on)
+### NRLMSIS 2.x and HWM14 (license-clean follow-on)
 
 NRLMSIS 2.1 is the current public CCMC-hosted MSIS-family reference as of
 April 2026. It extends NRLMSIS 2.0 by adding nitric-oxide number density from
 approximately 73 km to the exobase while retaining the standard MSIS input set
-(date/time, geodetic position, local solar time, F10.7, and Ap). OpenBMP keeps
-NRLMSISE-00 as the first implementation target because it is a stable
-well-known baseline, then adds an `Nrlmsis2x` trait implementation once the
-validation tables and provenance are ready.
+(date/time, geodetic position, local solar time, F10.7, and Ap). The official
+NRLMSIS 2.x packages inspected for OpenBMP carry academic/non-commercial terms,
+so they are not vendored into this Apache-2.0/MIT repository.
 
 HWM14 is the companion empirical horizontal-wind model. It provides zonal and
 meridional winds as a function of latitude, longitude, time, altitude, and Ap.
-Hypersonic cases that opt into HWM14 must record the wind model, coefficient
-version, Ap source, and any static defaults in telemetry.
+Its public package includes binary data files with redistribution terms that
+were not clear enough for an in-repo import. Hypersonic cases that opt into a
+future HWM implementation must record the wind model, coefficient version, Ap
+source, and any static defaults in telemetry.
 
 ### Earth-GRAM and JB-2008 (deferred)
 
@@ -1379,7 +1382,7 @@ crates/
 data/
   atmosphere/
     us_standard_1976.toml
-    nrlmsise00.toml              # NEW: public coefficients
+    provenance.md                # includes NRLMSISE-00 coefficient hashes
   realgas/
     tannehill_5species.toml      # NEW: equilibrium correlation
     park87_reactions.toml        # NEW: Park 1987 5-species set
@@ -1474,10 +1477,10 @@ case passing in CI).
   event localization, implicit source-term sub-steppers, and deterministic
   coupling telemetry. Acceptance: adaptive event analytic-toy and implicit
   stiffness toy cases.
-- **High-altitude atmosphere.** NRLMSISE-00 in-house Rust port (static
-  defaults mode first), with NRLMSIS 2.x and HWM14 follow-ons. Acceptance:
-  NRLMSISE-00-vs-published-table case; optional 2.x / HWM14 reference-table
-  cases.
+- **High-altitude atmosphere.** NRLMSISE-00 in-house Rust port with
+  static-defaults and full-input coefficient paths. NRLMSIS 2.x and HWM14
+  remain license-clean follow-ons. Acceptance: NRLMSISE-00-vs-published-table
+  case; optional 2.x / HWM14 reference-table cases only after import approval.
 - **Real-gas thermodynamics.** Tannehill 5-species equilibrium air;
   `gamma_eff`, speed of sound. Acceptance: equilibrium-air `gamma_eff` case.
 - **Hypersonic aero methods.** Modified Newtonian, tangent-cone,

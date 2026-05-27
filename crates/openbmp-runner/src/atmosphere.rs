@@ -14,9 +14,10 @@
 
 use openbmp_core::SimTime;
 use openbmp_physics::{
-    AtmosphereModel, AtmosphereSample, PhysicsError, PiecewiseExponentialAtmosphere, UsStandard1976,
+    AtmosphereModel, AtmosphereSample, Nrlmsise00Full, Nrlmsise00Inputs, PhysicsError,
+    PiecewiseExponentialAtmosphere, UsStandard1976,
 };
-use openbmp_scenario::ScenarioDocument;
+use openbmp_scenario::{AtmosphereConfig, ScenarioDocument};
 
 use crate::error::RunnerError;
 
@@ -28,6 +29,8 @@ pub enum RuntimeAtmosphere {
     /// `piecewise_exponential` — engineering layered
     /// exponential model (0-1000 km).
     PiecewiseExponential(PiecewiseExponentialAtmosphere),
+    /// `nrlmsise00` — full empirical coefficient model (0-1000 km).
+    Nrlmsise00(Nrlmsise00Full),
 }
 
 impl AtmosphereModel for RuntimeAtmosphere {
@@ -39,12 +42,14 @@ impl AtmosphereModel for RuntimeAtmosphere {
         match self {
             Self::UsStandard1976(a) => a.sample(altitude_geometric_m, time),
             Self::PiecewiseExponential(a) => a.sample(altitude_geometric_m, time),
+            Self::Nrlmsise00(a) => a.sample(altitude_geometric_m, time),
         }
     }
 }
 
 /// Atmosphere kind names that the runner can construct.
-const SUPPORTED_ATMOSPHERE_KINDS: &[&str] = &["us_standard_1976", "piecewise_exponential"];
+const SUPPORTED_ATMOSPHERE_KINDS: &[&str] =
+    &["us_standard_1976", "piecewise_exponential", "nrlmsise00"];
 
 /// Resolve the atmosphere kind named by the scenario into a runtime
 /// dispatch enum. Returns [`RunnerError::UnsupportedScenario`] for kinds
@@ -55,11 +60,45 @@ const SUPPORTED_ATMOSPHERE_KINDS: &[&str] = &["us_standard_1976", "piecewise_exp
 /// Returns [`RunnerError::UnsupportedScenario`] when `atmosphere_kind`
 /// is not in `SUPPORTED_ATMOSPHERE_KINDS`.
 pub fn build_runtime_atmosphere(atmosphere_kind: &str) -> Result<RuntimeAtmosphere, RunnerError> {
+    build_runtime_atmosphere_with_config(atmosphere_kind, None)
+}
+
+/// Resolve a scenario document into a runtime atmosphere.
+///
+/// This preserves the structured `[atmosphere]` block's model-specific
+/// inputs for `nrlmsise00`; callers with only a legacy kind string
+/// continue to get deterministic mid-condition defaults.
+///
+/// # Errors
+///
+/// Returns [`RunnerError::UnsupportedScenario`] when the selected kind
+/// is not wired or model-specific inputs fail validation.
+pub fn build_document_runtime_atmosphere(
+    document: &ScenarioDocument,
+) -> Result<RuntimeAtmosphere, RunnerError> {
+    build_runtime_atmosphere_with_config(
+        scenario_atmosphere_kind(document),
+        document.atmosphere.as_ref(),
+    )
+}
+
+fn build_runtime_atmosphere_with_config(
+    atmosphere_kind: &str,
+    atmosphere: Option<&AtmosphereConfig>,
+) -> Result<RuntimeAtmosphere, RunnerError> {
     match atmosphere_kind {
         "us_standard_1976" => Ok(RuntimeAtmosphere::UsStandard1976(UsStandard1976::new())),
         "piecewise_exponential" => Ok(RuntimeAtmosphere::PiecewiseExponential(
             PiecewiseExponentialAtmosphere::new(),
         )),
+        "nrlmsise00" => {
+            let inputs = nrlmsise00_inputs(atmosphere)?;
+            let model =
+                Nrlmsise00Full::new(inputs).map_err(|err| RunnerError::UnsupportedScenario {
+                    what: format!("Nrlmsise00Full construction failed: {err}"),
+                })?;
+            Ok(RuntimeAtmosphere::Nrlmsise00(model))
+        }
         other => Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "atmosphere `{other}` is not wired (supported: {})",
@@ -67,6 +106,48 @@ pub fn build_runtime_atmosphere(atmosphere_kind: &str) -> Result<RuntimeAtmosphe
             ),
         }),
     }
+}
+
+fn nrlmsise00_inputs(
+    atmosphere: Option<&AtmosphereConfig>,
+) -> Result<Nrlmsise00Inputs, RunnerError> {
+    let Some(atmosphere) = atmosphere else {
+        return Ok(Nrlmsise00Inputs::mid_conditions(0.0));
+    };
+    let mut inputs = Nrlmsise00Inputs::mid_conditions(0.0);
+    if let Some(year) = atmosphere.year {
+        inputs.year = year;
+    }
+    if let Some(day_of_year) = atmosphere.day_of_year {
+        inputs.day_of_year = day_of_year;
+    }
+    if let Some(utc_s) = atmosphere.utc_s {
+        inputs.utc_seconds = utc_s;
+    }
+    if let Some(latitude_deg) = atmosphere.latitude_deg {
+        inputs.latitude_rad = latitude_deg.to_radians();
+    }
+    if let Some(longitude_deg) = atmosphere.longitude_deg {
+        inputs.longitude_rad = longitude_deg.to_radians();
+    }
+    if let Some(local_solar_time) = atmosphere.local_apparent_solar_time_h {
+        inputs.local_apparent_solar_time_hours = local_solar_time;
+    }
+    if let Some(f107_average) = atmosphere.f107_average_81day_sfu {
+        inputs.f107_average_81day = f107_average;
+    }
+    if let Some(f107_yesterday_sfu) = atmosphere.f107_yesterday_sfu {
+        inputs.f107_yesterday = f107_yesterday_sfu;
+    }
+    if let Some(ap_average) = atmosphere.ap_average {
+        inputs.ap_average = ap_average;
+    }
+    inputs
+        .validate_full_path()
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("invalid nrlmsise00 atmosphere inputs: {err}"),
+        })?;
+    Ok(inputs)
 }
 
 /// Whether `kind` is one of the layered atmospheres the runner

@@ -16,10 +16,13 @@
 //!   dependence, no per-species number densities. Captures the
 //!   altitude-dominant variation that determines orbital drag for
 //!   engineering analyses.
+//! * [`Nrlmsise00Static`] and [`Nrlmsise00Full`] — NRLMSISE-00
+//!   static-default and full-input coefficient paths covering
+//!   0-1000 km.
 //!
 //! Determinism: pure arithmetic on `f64`; locked operand order on
 //! barometric formulas; no FMA. No wall-clock time, no system RNG,
-//! no network, no file I/O.
+//! no network, no runtime file I/O.
 //!
 //! Layering: atmosphere models depend only on `openbmp-core` (L0)
 //! and `openbmp-physics::error`. The `AtmosphereSample` type lives here
