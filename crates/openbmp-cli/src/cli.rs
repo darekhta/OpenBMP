@@ -51,6 +51,11 @@ pub enum Command {
         /// Scenario TOML file.
         scenario: PathBuf,
     },
+    /// Run offline landing-footprint Monte Carlo post-processing.
+    FootprintMc {
+        /// Scenario TOML file.
+        scenario: PathBuf,
+    },
     /// Walk a data tree and verify provenance records.
     ///
     /// Lists files without a sibling `provenance.md` so the project can

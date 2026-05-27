@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use openbmp_cli::cli::{Cli, Command};
-use openbmp_cli::commands::{check, diff, provenance, run};
+use openbmp_cli::commands::{check, diff, footprint_mc, provenance, run};
 use openbmp_cli::tracing;
 
 fn main() -> ExitCode {
@@ -91,6 +91,17 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                     "  {} -> {} (sha256:{})",
                     entry.field, entry.path, entry.sha256_hex,
                 );
+            }
+            Ok(())
+        }
+        Command::FootprintMc { scenario } => {
+            let report = footprint_mc::run(&scenario)?;
+            println!(
+                "openbmp footprint-mc: ok — {} requested, {} succeeded, {} failed",
+                report.samples_requested, report.samples_succeeded, report.samples_failed,
+            );
+            for path in report.written {
+                println!("  wrote {}", path.display());
             }
             Ok(())
         }

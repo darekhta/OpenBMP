@@ -40,6 +40,10 @@ const MIN_FOOTPRINT_GRAVITY_M_S2: f64 = 1.0e-12;
 const MIN_NUMERICAL_FOOTPRINT_STEP_S: f64 = 1.0e-6;
 const DEFAULT_NUMERICAL_FOOTPRINT_STEP_S: f64 = 1.0;
 const DEFAULT_NUMERICAL_FOOTPRINT_MAX_TIME_S: f64 = 86_400.0;
+const DEFAULT_DRAG_WIND_FOOTPRINT_STEP_S: f64 = 0.25;
+const DEFAULT_DRAG_WIND_FOOTPRINT_MAX_TIME_S: f64 = 86_400.0;
+const DEFAULT_FOOTPRINT_SEA_LEVEL_DENSITY_KG_M3: f64 = 1.225;
+const DEFAULT_FOOTPRINT_DENSITY_SCALE_HEIGHT_M: f64 = 7_000.0;
 const MIN_LONGITUDE_COSINE: f64 = 1.0e-12;
 const MIN_ENTRY_CORRIDOR_BAND_RAD: f64 = 1.0e-12;
 const MIN_ENTRY_BANK_LIMIT_RAD: f64 = 1.0e-12;
@@ -557,6 +561,213 @@ pub trait RangeSafetyFootprint {
     ) -> Result<LandingFootprint, PhysicsError>;
 }
 
+/// Exponential atmosphere approximation used by the offline
+/// drag/wind-aware footprint Monte Carlo propagator.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FootprintDragModel {
+    /// Reference density at the cull-altitude surface (kg/m³).
+    pub surface_density_kg_m3: f64,
+    /// Exponential density scale height (m).
+    pub density_scale_height_m: f64,
+}
+
+impl Default for FootprintDragModel {
+    fn default() -> Self {
+        Self {
+            surface_density_kg_m3: DEFAULT_FOOTPRINT_SEA_LEVEL_DENSITY_KG_M3,
+            density_scale_height_m: DEFAULT_FOOTPRINT_DENSITY_SCALE_HEIGHT_M,
+        }
+    }
+}
+
+impl FootprintDragModel {
+    /// Validate the drag-density parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when either scalar is non-finite, the
+    /// density is negative, or the scale height is non-positive.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        if !self.surface_density_kg_m3.is_finite() || self.surface_density_kg_m3 < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint drag surface density must be finite and non-negative",
+            });
+        }
+        if !self.density_scale_height_m.is_finite() || self.density_scale_height_m <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint drag density scale height must be finite and positive",
+            });
+        }
+        Ok(())
+    }
+
+    fn density_at_altitude_m(self, altitude_m: f64) -> Result<f64, PhysicsError> {
+        if !altitude_m.is_finite() {
+            return Err(PhysicsError::NonFinite {
+                reason: "footprint drag altitude is non-finite",
+            });
+        }
+        let clamped_altitude_m = altitude_m.max(0.0);
+        let exponent = -clamped_altitude_m / self.density_scale_height_m;
+        let density = self.surface_density_kg_m3 * exponent.exp();
+        if !density.is_finite() || density < 0.0 {
+            return Err(PhysicsError::NonFinite {
+                reason: "footprint drag density calculation is invalid",
+            });
+        }
+        Ok(density)
+    }
+}
+
+/// One sampled footprint input produced by the runner-side Monte
+/// Carlo sampler.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FootprintSampleInput {
+    /// Zero-based sample index.
+    pub sample_index: u32,
+    /// Sampled burnout state.
+    pub state: BallisticState,
+    /// Sampled constant wind vector in the propagation frame (m/s).
+    pub wind_eci_m_s: [f64; 3],
+}
+
+impl FootprintSampleInput {
+    fn validate(&self) -> Result<(), PhysicsError> {
+        self.state.validate()?;
+        require_finite_vec3(
+            self.wind_eci_m_s,
+            "footprint sample wind components must be finite",
+        )
+    }
+}
+
+/// Monte-Carlo footprint input consumed by the physics propagator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FootprintMonteCarloInput {
+    /// Nominal burnout state used for the result's nominal footprint.
+    pub nominal_state: BallisticState,
+    /// Sampled burnout states and winds.
+    pub samples: Vec<FootprintSampleInput>,
+    /// Requested radial-distance confidence levels in `(0, 1)`.
+    pub confidence_levels: Vec<f64>,
+    /// Drag-density model for the sampled propagation.
+    pub drag: FootprintDragModel,
+    /// Fixed integration step in seconds.
+    pub step_s: f64,
+    /// Maximum propagation horizon in seconds.
+    pub max_time_s: f64,
+}
+
+impl FootprintMonteCarloInput {
+    /// Build input with default drag/wind propagation limits.
+    #[must_use]
+    pub fn new(
+        nominal_state: BallisticState,
+        samples: Vec<FootprintSampleInput>,
+        confidence_levels: Vec<f64>,
+    ) -> Self {
+        Self {
+            nominal_state,
+            samples,
+            confidence_levels,
+            drag: FootprintDragModel::default(),
+            step_s: DEFAULT_DRAG_WIND_FOOTPRINT_STEP_S,
+            max_time_s: DEFAULT_DRAG_WIND_FOOTPRINT_MAX_TIME_S,
+        }
+    }
+
+    /// Validate the full Monte-Carlo input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when the nominal state, sample list,
+    /// confidence levels, drag model, or integration limits are
+    /// invalid.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        self.nominal_state.validate()?;
+        if self.samples.is_empty() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint Monte Carlo requires at least one sample",
+            });
+        }
+        for sample in &self.samples {
+            sample.validate()?;
+        }
+        if self.confidence_levels.is_empty() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "footprint Monte Carlo requires at least one confidence level",
+            });
+        }
+        for level in &self.confidence_levels {
+            if !level.is_finite() || *level <= 0.0 || *level >= 1.0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "footprint Monte Carlo confidence levels must be in (0, 1)",
+                });
+            }
+        }
+        self.drag.validate()?;
+        validate_numerical_footprint_limits(self.step_s, self.max_time_s)
+    }
+}
+
+/// Successful propagated footprint sample.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FootprintSample {
+    /// Zero-based sample index.
+    pub sample_index: u32,
+    /// Sampled burnout state.
+    pub state: BallisticState,
+    /// Sampled constant wind vector in the propagation frame (m/s).
+    pub wind_eci_m_s: [f64; 3],
+    /// Landing footprint for this sample.
+    pub landing: LandingFootprint,
+}
+
+/// Failed propagated footprint sample.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FootprintSampleFailure {
+    /// Zero-based sample index.
+    pub sample_index: u32,
+    /// Failure reason surfaced by the propagator.
+    pub reason: String,
+}
+
+/// Radial-distance quantile from the Monte-Carlo sample cloud.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FootprintQuantile {
+    /// Confidence level in `(0, 1)`.
+    pub confidence_level: f64,
+    /// Distance from the sample mean in the downrange/crossrange
+    /// plane (m).
+    pub radial_distance_m: f64,
+}
+
+/// Monte-Carlo footprint result: sample cloud, summary statistics,
+/// covariance ellipse, and failed samples.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FootprintMonteCarloResult {
+    /// Drag/wind-aware nominal footprint from the nominal state.
+    pub nominal: LandingFootprint,
+    /// Successfully propagated samples.
+    pub samples: Vec<FootprintSample>,
+    /// Samples that failed propagation.
+    pub failures: Vec<FootprintSampleFailure>,
+    /// Mean downrange distance (m) across successful samples.
+    pub mean_downrange_m: f64,
+    /// Mean crossrange distance (m) across successful samples.
+    pub mean_crossrange_m: f64,
+    /// Downrange/downrange covariance element (m²).
+    pub covariance_downrange_downrange_m2: f64,
+    /// Downrange/crossrange covariance element (m²).
+    pub covariance_downrange_crossrange_m2: f64,
+    /// Crossrange/crossrange covariance element (m²).
+    pub covariance_crossrange_crossrange_m2: f64,
+    /// One- and three-sigma covariance ellipse from successful samples.
+    pub dispersion_ellipse: FootprintDispersionEllipse,
+    /// Requested radial-distance quantiles.
+    pub quantiles: Vec<FootprintQuantile>,
+}
+
 /// Constant-gravity closed-form footprint model.
 ///
 /// This is the first consumed offline footprint implementation: a
@@ -686,6 +897,7 @@ impl<G: GravityModel> RangeSafetyFootprint for NumericalGravityRangeSafetyFootpr
                 state.velocity_eci_m_s[1],
                 state.velocity_eci_m_s[2],
             ),
+            ballistic_coefficient_m2_kg: state.ballistic_coefficient_m2_kg,
             time_s: state.time.as_seconds(),
         };
         let mut current_altitude_above_cull_m =
@@ -735,6 +947,85 @@ impl<G: GravityModel> RangeSafetyFootprint for NumericalGravityRangeSafetyFootpr
             reason: "numerical footprint did not reach cull altitude before max_time_s",
         })
     }
+}
+
+/// Run drag/wind-aware Monte-Carlo footprint propagation under the
+/// flat constant-gravity footprint model.
+///
+/// This does not replace [`ConstantGravityRangeSafetyFootprint`]; it
+/// is the sampled dispersion path used when the scenario declares
+/// footprint uncertainty sources.
+///
+/// # Errors
+///
+/// Returns [`PhysicsError`] when the environment or Monte-Carlo input
+/// is invalid, the nominal footprint cannot be propagated, or every
+/// sample fails.
+pub fn constant_gravity_footprint_monte_carlo(
+    env: &FootprintEnvironment,
+    input: &FootprintMonteCarloInput,
+) -> Result<FootprintMonteCarloResult, PhysicsError> {
+    env.validate()?;
+    input.validate()?;
+    let nominal = drag_wind_landing_footprint_constant(
+        &input.nominal_state,
+        env,
+        input.drag,
+        [0.0, 0.0, 0.0],
+        input.step_s,
+        input.max_time_s,
+    )?;
+    run_footprint_monte_carlo(input, nominal, |sample| {
+        drag_wind_landing_footprint_constant(
+            &sample.state,
+            env,
+            input.drag,
+            sample.wind_eci_m_s,
+            input.step_s,
+            input.max_time_s,
+        )
+    })
+}
+
+/// Run drag/wind-aware Monte-Carlo footprint propagation under an
+/// Earth-gravity footprint model.
+///
+/// The gravity model is still deterministic; stochasticity is limited
+/// to the already-sampled burnout state, ballistic coefficient, and
+/// wind vector supplied in [`FootprintMonteCarloInput`].
+///
+/// # Errors
+///
+/// Returns [`PhysicsError`] when the environment or Monte-Carlo input
+/// is invalid, the nominal footprint cannot be propagated, or every
+/// sample fails.
+pub fn numerical_gravity_footprint_monte_carlo<G: GravityModel>(
+    gravity: &G,
+    env: &FootprintEnvironment,
+    input: &FootprintMonteCarloInput,
+) -> Result<FootprintMonteCarloResult, PhysicsError> {
+    env.validate_common()?;
+    input.validate()?;
+    let nominal = drag_wind_landing_footprint_numerical(
+        gravity,
+        &input.nominal_state,
+        env,
+        input.drag,
+        [0.0, 0.0, 0.0],
+        input.step_s,
+        input.max_time_s,
+    )?;
+    run_footprint_monte_carlo(input, nominal, |sample| {
+        drag_wind_landing_footprint_numerical(
+            gravity,
+            &sample.state,
+            env,
+            input.drag,
+            sample.wind_eci_m_s,
+            input.step_s,
+            input.max_time_s,
+        )
+    })
 }
 
 /// Partitioned rigid-body states produced by a stage separation:
@@ -1147,6 +1438,7 @@ impl EntryCorridorReference for BandLimitedEntryCorridorReference {
 struct NumericalFootprintState {
     position_eci_m: Vector3<f64>,
     velocity_eci_m_s: Vector3<f64>,
+    ballistic_coefficient_m2_kg: f64,
     time_s: f64,
 }
 
@@ -1173,18 +1465,21 @@ fn rk4_gravity_step<G: GravityModel>(
     let s2 = NumericalFootprintState {
         position_eci_m: state.position_eci_m + k1_r * (0.5 * dt_s),
         velocity_eci_m_s: state.velocity_eci_m_s + k1_v * (0.5 * dt_s),
+        ballistic_coefficient_m2_kg: state.ballistic_coefficient_m2_kg,
         time_s: state.time_s + 0.5 * dt_s,
     };
     let (k2_r, k2_v) = numerical_footprint_derivative(gravity, s2)?;
     let s3 = NumericalFootprintState {
         position_eci_m: state.position_eci_m + k2_r * (0.5 * dt_s),
         velocity_eci_m_s: state.velocity_eci_m_s + k2_v * (0.5 * dt_s),
+        ballistic_coefficient_m2_kg: state.ballistic_coefficient_m2_kg,
         time_s: state.time_s + 0.5 * dt_s,
     };
     let (k3_r, k3_v) = numerical_footprint_derivative(gravity, s3)?;
     let s4 = NumericalFootprintState {
         position_eci_m: state.position_eci_m + k3_r * dt_s,
         velocity_eci_m_s: state.velocity_eci_m_s + k3_v * dt_s,
+        ballistic_coefficient_m2_kg: state.ballistic_coefficient_m2_kg,
         time_s: state.time_s + dt_s,
     };
     let (k4_r, k4_v) = numerical_footprint_derivative(gravity, s4)?;
@@ -1203,6 +1498,7 @@ fn rk4_gravity_step<G: GravityModel>(
     Ok(NumericalFootprintState {
         position_eci_m,
         velocity_eci_m_s,
+        ballistic_coefficient_m2_kg: state.ballistic_coefficient_m2_kg,
         time_s: state.time_s + dt_s,
     })
 }
@@ -1221,6 +1517,398 @@ fn numerical_footprint_derivative<G: GravityModel>(
         SimTime::from_seconds(state.time_s),
     )?;
     Ok((state.velocity_eci_m_s, acceleration_eci_m_s2))
+}
+
+fn run_footprint_monte_carlo<F>(
+    input: &FootprintMonteCarloInput,
+    nominal: LandingFootprint,
+    mut propagate: F,
+) -> Result<FootprintMonteCarloResult, PhysicsError>
+where
+    F: FnMut(&FootprintSampleInput) -> Result<LandingFootprint, PhysicsError>,
+{
+    let mut samples = Vec::with_capacity(input.samples.len());
+    let mut failures = Vec::new();
+    for sample in &input.samples {
+        match propagate(sample) {
+            Ok(landing) => samples.push(FootprintSample {
+                sample_index: sample.sample_index,
+                state: sample.state,
+                wind_eci_m_s: sample.wind_eci_m_s,
+                landing,
+            }),
+            Err(err) => failures.push(FootprintSampleFailure {
+                sample_index: sample.sample_index,
+                reason: err.to_string(),
+            }),
+        }
+    }
+    if samples.is_empty() {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "footprint Monte Carlo produced no successful samples",
+        });
+    }
+    let stats = footprint_sample_statistics(&samples, &input.confidence_levels)?;
+    Ok(FootprintMonteCarloResult {
+        nominal,
+        samples,
+        failures,
+        mean_downrange_m: stats.mean_downrange_m,
+        mean_crossrange_m: stats.mean_crossrange_m,
+        covariance_downrange_downrange_m2: stats.covariance_downrange_downrange_m2,
+        covariance_downrange_crossrange_m2: stats.covariance_downrange_crossrange_m2,
+        covariance_crossrange_crossrange_m2: stats.covariance_crossrange_crossrange_m2,
+        dispersion_ellipse: stats.dispersion_ellipse,
+        quantiles: stats.quantiles,
+    })
+}
+
+struct FootprintSampleStatistics {
+    mean_downrange_m: f64,
+    mean_crossrange_m: f64,
+    covariance_downrange_downrange_m2: f64,
+    covariance_downrange_crossrange_m2: f64,
+    covariance_crossrange_crossrange_m2: f64,
+    dispersion_ellipse: FootprintDispersionEllipse,
+    quantiles: Vec<FootprintQuantile>,
+}
+
+fn footprint_sample_statistics(
+    samples: &[FootprintSample],
+    confidence_levels: &[f64],
+) -> Result<FootprintSampleStatistics, PhysicsError> {
+    let n = samples.len();
+    let inv_n = 1.0 / n as f64;
+    let mut sum_downrange_m = 0.0;
+    let mut sum_crossrange_m = 0.0;
+    for sample in samples {
+        sum_downrange_m += sample.landing.downrange_m;
+        sum_crossrange_m += sample.landing.crossrange_m;
+    }
+    let mean_downrange_m = sum_downrange_m * inv_n;
+    let mean_crossrange_m = sum_crossrange_m * inv_n;
+    let mut c_dd = 0.0;
+    let mut c_dc = 0.0;
+    let mut c_cc = 0.0;
+    let mut distances = Vec::with_capacity(n);
+    for sample in samples {
+        let d_downrange_m = sample.landing.downrange_m - mean_downrange_m;
+        let d_crossrange_m = sample.landing.crossrange_m - mean_crossrange_m;
+        c_dd += d_downrange_m * d_downrange_m;
+        c_dc += d_downrange_m * d_crossrange_m;
+        c_cc += d_crossrange_m * d_crossrange_m;
+        distances.push((d_downrange_m * d_downrange_m + d_crossrange_m * d_crossrange_m).sqrt());
+    }
+    let denom = if n > 1 { (n - 1) as f64 } else { 1.0 };
+    c_dd /= denom;
+    c_dc /= denom;
+    c_cc /= denom;
+    if !c_dd.is_finite() || !c_dc.is_finite() || !c_cc.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "footprint Monte Carlo covariance is non-finite",
+        });
+    }
+    distances.sort_by(f64::total_cmp);
+    let quantiles = confidence_levels
+        .iter()
+        .copied()
+        .map(|confidence_level| {
+            let rank = (confidence_level * n as f64).ceil();
+            let index = ((rank as usize).saturating_sub(1)).min(n - 1);
+            FootprintQuantile {
+                confidence_level,
+                radial_distance_m: distances[index],
+            }
+        })
+        .collect();
+    Ok(FootprintSampleStatistics {
+        mean_downrange_m,
+        mean_crossrange_m,
+        covariance_downrange_downrange_m2: c_dd,
+        covariance_downrange_crossrange_m2: c_dc,
+        covariance_crossrange_crossrange_m2: c_cc,
+        dispersion_ellipse: covariance_dispersion_ellipse(c_dd, c_dc, c_cc)?,
+        quantiles,
+    })
+}
+
+fn covariance_dispersion_ellipse(
+    covariance_downrange_downrange_m2: f64,
+    covariance_downrange_crossrange_m2: f64,
+    covariance_crossrange_crossrange_m2: f64,
+) -> Result<FootprintDispersionEllipse, PhysicsError> {
+    let trace = covariance_downrange_downrange_m2 + covariance_crossrange_crossrange_m2;
+    let diff = covariance_downrange_downrange_m2 - covariance_crossrange_crossrange_m2;
+    let root = (diff * diff + 4.0 * covariance_downrange_crossrange_m2.powi(2)).sqrt();
+    let lambda_major = 0.5 * (trace + root);
+    let lambda_minor = 0.5 * (trace - root);
+    if !lambda_major.is_finite() || !lambda_minor.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "footprint Monte Carlo covariance eigenvalues are non-finite",
+        });
+    }
+    let one_sigma_semi_major_m = lambda_major.max(0.0).sqrt();
+    let one_sigma_semi_minor_m = lambda_minor.max(0.0).sqrt();
+    let orientation_rad = 0.5 * (2.0 * covariance_downrange_crossrange_m2).atan2(diff);
+    Ok(FootprintDispersionEllipse {
+        one_sigma_semi_major_m,
+        one_sigma_semi_minor_m,
+        three_sigma_semi_major_m: 3.0 * one_sigma_semi_major_m,
+        three_sigma_semi_minor_m: 3.0 * one_sigma_semi_minor_m,
+        orientation_rad,
+    })
+}
+
+fn drag_wind_landing_footprint_constant(
+    state: &BallisticState,
+    env: &FootprintEnvironment,
+    drag: FootprintDragModel,
+    wind_eci_m_s: [f64; 3],
+    step_s: f64,
+    max_time_s: f64,
+) -> Result<LandingFootprint, PhysicsError> {
+    state.validate()?;
+    env.validate()?;
+    drag.validate()?;
+    validate_numerical_footprint_limits(step_s, max_time_s)?;
+    require_finite_vec3(
+        wind_eci_m_s,
+        "footprint drag/wind constant-gravity wind components must be finite",
+    )?;
+
+    let mut current = NumericalFootprintState {
+        position_eci_m: Vector3::new(
+            state.position_eci_m[0],
+            state.position_eci_m[1],
+            state.position_eci_m[2],
+        ),
+        velocity_eci_m_s: Vector3::new(
+            state.velocity_eci_m_s[0],
+            state.velocity_eci_m_s[1],
+            state.velocity_eci_m_s[2],
+        ),
+        ballistic_coefficient_m2_kg: state.ballistic_coefficient_m2_kg,
+        time_s: state.time.as_seconds(),
+    };
+    let mut current_altitude_above_cull_m = current.position_eci_m.z - env.cull_altitude_m;
+    if current_altitude_above_cull_m <= 0.0 {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "ballistic state must start above the footprint cull altitude",
+        });
+    }
+    let wind = Vector3::new(wind_eci_m_s[0], wind_eci_m_s[1], wind_eci_m_s[2]);
+    let mut elapsed_s = 0.0;
+    while elapsed_s < max_time_s {
+        let dt_s = step_s.min(max_time_s - elapsed_s);
+        let next = rk4_drag_wind_step(current, dt_s, |s| {
+            let altitude_m = s.position_eci_m.z - env.cull_altitude_m;
+            let gravity = Vector3::new(0.0, 0.0, -env.gravity_m_s2);
+            drag_wind_derivative(s, gravity, wind, drag, altitude_m)
+        })?;
+        let next_altitude_above_cull_m = next.position_eci_m.z - env.cull_altitude_m;
+        if next_altitude_above_cull_m <= 0.0 {
+            let denominator = current_altitude_above_cull_m - next_altitude_above_cull_m;
+            if !denominator.is_finite() || denominator <= 0.0 {
+                return Err(PhysicsError::NonFinite {
+                    reason: "drag/wind footprint cull interpolation is invalid",
+                });
+            }
+            let alpha = current_altitude_above_cull_m / denominator;
+            let landing_position_eci_m =
+                current.position_eci_m + (next.position_eci_m - current.position_eci_m) * alpha;
+            let time_to_cull_s = elapsed_s + dt_s * alpha;
+            let downrange_m = landing_position_eci_m.x - env.launch_origin_eci_m[0];
+            let crossrange_m = landing_position_eci_m.y - env.launch_origin_eci_m[1];
+            let bearing_rad =
+                if downrange_m.abs() <= f64::EPSILON && crossrange_m.abs() <= f64::EPSILON {
+                    0.0
+                } else {
+                    crossrange_m.atan2(downrange_m)
+                };
+            let (latitude_deg, longitude_deg) = match env.geodetic_origin {
+                Some(origin) => geodetic_from_range_relative(origin, downrange_m, crossrange_m)?,
+                None => (None, None),
+            };
+            return Ok(LandingFootprint {
+                downrange_m,
+                crossrange_m,
+                bearing_rad,
+                time_to_cull_s,
+                latitude_deg,
+                longitude_deg,
+                dispersion_ellipse: env.dispersion.map(dispersion_ellipse),
+            });
+        }
+        current = next;
+        current_altitude_above_cull_m = next_altitude_above_cull_m;
+        elapsed_s += dt_s;
+    }
+    Err(PhysicsError::OutOfEnvelope {
+        reason: "drag/wind footprint did not reach cull altitude before max_time_s",
+    })
+}
+
+fn drag_wind_landing_footprint_numerical<G: GravityModel>(
+    gravity: &G,
+    state: &BallisticState,
+    env: &FootprintEnvironment,
+    drag: FootprintDragModel,
+    wind_eci_m_s: [f64; 3],
+    step_s: f64,
+    max_time_s: f64,
+) -> Result<LandingFootprint, PhysicsError> {
+    state.validate()?;
+    env.validate_common()?;
+    drag.validate()?;
+    validate_numerical_footprint_limits(step_s, max_time_s)?;
+    require_finite_vec3(
+        wind_eci_m_s,
+        "footprint drag/wind numerical wind components must be finite",
+    )?;
+
+    let mut current = NumericalFootprintState {
+        position_eci_m: Vector3::new(
+            state.position_eci_m[0],
+            state.position_eci_m[1],
+            state.position_eci_m[2],
+        ),
+        velocity_eci_m_s: Vector3::new(
+            state.velocity_eci_m_s[0],
+            state.velocity_eci_m_s[1],
+            state.velocity_eci_m_s[2],
+        ),
+        ballistic_coefficient_m2_kg: state.ballistic_coefficient_m2_kg,
+        time_s: state.time.as_seconds(),
+    };
+    let mut current_altitude_above_cull_m =
+        altitude_above_numerical_cull_m(current.position_eci_m, env.cull_altitude_m)?;
+    if current_altitude_above_cull_m <= 0.0 {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "ballistic state must start above the footprint cull altitude",
+        });
+    }
+    let wind = Vector3::new(wind_eci_m_s[0], wind_eci_m_s[1], wind_eci_m_s[2]);
+    let mut elapsed_s = 0.0;
+    while elapsed_s < max_time_s {
+        let dt_s = step_s.min(max_time_s - elapsed_s);
+        let next = rk4_drag_wind_step(current, dt_s, |s| {
+            let gravity_acceleration = gravity.gravity_eci_m_s2(
+                Position3::<Eci>::from_vector(s.position_eci_m),
+                SimTime::from_seconds(s.time_s),
+            )?;
+            let altitude_m = altitude_above_numerical_cull_m(s.position_eci_m, 0.0)?;
+            drag_wind_derivative(s, gravity_acceleration, wind, drag, altitude_m)
+        })?;
+        let next_altitude_above_cull_m =
+            altitude_above_numerical_cull_m(next.position_eci_m, env.cull_altitude_m)?;
+        if next_altitude_above_cull_m <= 0.0 {
+            let denominator = current_altitude_above_cull_m - next_altitude_above_cull_m;
+            if !denominator.is_finite() || denominator <= 0.0 {
+                return Err(PhysicsError::NonFinite {
+                    reason: "drag/wind numerical footprint cull interpolation is invalid",
+                });
+            }
+            let alpha = current_altitude_above_cull_m / denominator;
+            let landing_position_eci_m =
+                current.position_eci_m + (next.position_eci_m - current.position_eci_m) * alpha;
+            let time_to_cull_s = elapsed_s + dt_s * alpha;
+            return numerical_landing_footprint_from_position(
+                state,
+                env,
+                landing_position_eci_m,
+                time_to_cull_s,
+            );
+        }
+        current = next;
+        current_altitude_above_cull_m = next_altitude_above_cull_m;
+        elapsed_s += dt_s;
+    }
+    Err(PhysicsError::OutOfEnvelope {
+        reason: "drag/wind numerical footprint did not reach cull altitude before max_time_s",
+    })
+}
+
+fn rk4_drag_wind_step<F>(
+    state: NumericalFootprintState,
+    dt_s: f64,
+    mut derivative: F,
+) -> Result<NumericalFootprintState, PhysicsError>
+where
+    F: FnMut(NumericalFootprintState) -> Result<(Vector3<f64>, Vector3<f64>), PhysicsError>,
+{
+    let (k1_r, k1_v) = derivative(state)?;
+    let s2 = NumericalFootprintState {
+        position_eci_m: state.position_eci_m + k1_r * (0.5 * dt_s),
+        velocity_eci_m_s: state.velocity_eci_m_s + k1_v * (0.5 * dt_s),
+        ballistic_coefficient_m2_kg: state.ballistic_coefficient_m2_kg,
+        time_s: state.time_s + 0.5 * dt_s,
+    };
+    let (k2_r, k2_v) = derivative(s2)?;
+    let s3 = NumericalFootprintState {
+        position_eci_m: state.position_eci_m + k2_r * (0.5 * dt_s),
+        velocity_eci_m_s: state.velocity_eci_m_s + k2_v * (0.5 * dt_s),
+        ballistic_coefficient_m2_kg: state.ballistic_coefficient_m2_kg,
+        time_s: state.time_s + 0.5 * dt_s,
+    };
+    let (k3_r, k3_v) = derivative(s3)?;
+    let s4 = NumericalFootprintState {
+        position_eci_m: state.position_eci_m + k3_r * dt_s,
+        velocity_eci_m_s: state.velocity_eci_m_s + k3_v * dt_s,
+        ballistic_coefficient_m2_kg: state.ballistic_coefficient_m2_kg,
+        time_s: state.time_s + dt_s,
+    };
+    let (k4_r, k4_v) = derivative(s4)?;
+    let one_sixth_dt = dt_s / 6.0;
+    let position_eci_m =
+        state.position_eci_m + (k1_r + 2.0 * k2_r + 2.0 * k3_r + k4_r) * one_sixth_dt;
+    let velocity_eci_m_s =
+        state.velocity_eci_m_s + (k1_v + 2.0 * k2_v + 2.0 * k3_v + k4_v) * one_sixth_dt;
+    if !position_eci_m.iter().all(|v| v.is_finite())
+        || !velocity_eci_m_s.iter().all(|v| v.is_finite())
+    {
+        return Err(PhysicsError::NonFinite {
+            reason: "drag/wind footprint RK4 step produced non-finite state",
+        });
+    }
+    Ok(NumericalFootprintState {
+        position_eci_m,
+        velocity_eci_m_s,
+        ballistic_coefficient_m2_kg: state.ballistic_coefficient_m2_kg,
+        time_s: state.time_s + dt_s,
+    })
+}
+
+fn drag_wind_derivative(
+    state: NumericalFootprintState,
+    gravity_acceleration_eci_m_s2: Vector3<f64>,
+    wind_eci_m_s: Vector3<f64>,
+    drag: FootprintDragModel,
+    altitude_m: f64,
+) -> Result<(Vector3<f64>, Vector3<f64>), PhysicsError> {
+    if !state.time_s.is_finite() {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "drag/wind footprint state time must be finite",
+        });
+    }
+    let density = drag.density_at_altitude_m(altitude_m)?;
+    let relative_velocity_m_s = state.velocity_eci_m_s - wind_eci_m_s;
+    let speed_m_s = relative_velocity_m_s.norm();
+    let drag_acceleration_m_s2 = if speed_m_s <= f64::EPSILON
+        || density <= f64::EPSILON
+        || state.ballistic_coefficient_m2_kg <= f64::EPSILON
+    {
+        Vector3::zeros()
+    } else {
+        let scale = -0.5 * density * state.ballistic_coefficient_m2_kg * speed_m_s;
+        relative_velocity_m_s * scale
+    };
+    let acceleration = gravity_acceleration_eci_m_s2 + drag_acceleration_m_s2;
+    if !acceleration.iter().all(|v| v.is_finite()) {
+        return Err(PhysicsError::NonFinite {
+            reason: "drag/wind footprint acceleration is non-finite",
+        });
+    }
+    Ok((state.velocity_eci_m_s, acceleration))
 }
 
 fn numerical_landing_footprint_from_position(
@@ -1599,9 +2287,11 @@ mod tests {
         AscentReferenceGenerator, AscentState, BallisticState, BandLimitedEntryCorridorReference,
         ConstantGravityRangeSafetyFootprint, EntryCorridor, EntryCorridorReference, EntryState,
         FootprintDispersionInput, FootprintEnvironment, FootprintGeodeticOrigin,
-        GravityTurnAscentReference, MomentumConservingStageSeparation,
-        NumericalGravityRangeSafetyFootprint, PitchProgramAscentReference, RangeSafetyFootprint,
+        FootprintMonteCarloInput, FootprintSampleInput, GravityTurnAscentReference,
+        MomentumConservingStageSeparation, NumericalGravityRangeSafetyFootprint,
+        PitchProgramAscentReference, RangeSafetyFootprint,
         STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageSeparationModel,
+        constant_gravity_footprint_monte_carlo,
     };
     use crate::{
         Egm2008ZonalGravity, J2Gravity, PhysicsError, WGS84_A_M, WGS84_J2, WGS84_MU_M3_S2,
@@ -1869,6 +2559,128 @@ mod tests {
         let dispersion = footprint.dispersion_ellipse.unwrap();
         assert_eq!(dispersion.three_sigma_semi_major_m, 120.0);
         assert_eq!(dispersion.three_sigma_semi_minor_m, 45.0);
+    }
+
+    #[test]
+    fn footprint_monte_carlo_zero_uncertainty_collapses_to_nominal() {
+        let nominal = BallisticState {
+            position_eci_m: [0.0, 0.0, 100.0],
+            velocity_eci_m_s: [20.0, 0.0, -5.0],
+            ballistic_coefficient_m2_kg: 0.01,
+            time: SimTime::from_seconds(0.0),
+        };
+        let samples = (0..4)
+            .map(|sample_index| FootprintSampleInput {
+                sample_index,
+                state: nominal,
+                wind_eci_m_s: [0.0, 0.0, 0.0],
+            })
+            .collect();
+        let input = FootprintMonteCarloInput::new(nominal, samples, vec![0.5, 0.9]);
+        let result =
+            constant_gravity_footprint_monte_carlo(&nominal_footprint_env(), &input).unwrap();
+        for sample in &result.samples {
+            assert!((sample.landing.downrange_m - result.nominal.downrange_m).abs() < 1.0e-12);
+            assert!((sample.landing.crossrange_m - result.nominal.crossrange_m).abs() < 1.0e-12);
+        }
+        assert!(result.dispersion_ellipse.one_sigma_semi_major_m < 1.0e-12);
+        assert!(result.dispersion_ellipse.one_sigma_semi_minor_m < 1.0e-12);
+    }
+
+    #[test]
+    fn footprint_monte_carlo_wind_and_bc_change_spread() {
+        let nominal = BallisticState {
+            position_eci_m: [0.0, 0.0, 100.0],
+            velocity_eci_m_s: [25.0, 2.0, -5.0],
+            ballistic_coefficient_m2_kg: 0.01,
+            time: SimTime::from_seconds(0.0),
+        };
+        let mut high_drag = nominal;
+        high_drag.ballistic_coefficient_m2_kg = 0.03;
+        let samples = vec![
+            FootprintSampleInput {
+                sample_index: 0,
+                state: nominal,
+                wind_eci_m_s: [0.0, 0.0, 0.0],
+            },
+            FootprintSampleInput {
+                sample_index: 1,
+                state: high_drag,
+                wind_eci_m_s: [0.0, 0.0, 0.0],
+            },
+            FootprintSampleInput {
+                sample_index: 2,
+                state: nominal,
+                wind_eci_m_s: [5.0, 0.0, 0.0],
+            },
+            FootprintSampleInput {
+                sample_index: 3,
+                state: nominal,
+                wind_eci_m_s: [-5.0, 0.0, 0.0],
+            },
+        ];
+        let input = FootprintMonteCarloInput::new(nominal, samples, vec![0.5, 0.9]);
+        let result =
+            constant_gravity_footprint_monte_carlo(&nominal_footprint_env(), &input).unwrap();
+        assert_eq!(result.samples.len(), 4);
+        assert!(result.dispersion_ellipse.one_sigma_semi_major_m > 0.1);
+        assert!(result.covariance_downrange_downrange_m2 > 0.0);
+        assert!(result.quantiles[1].radial_distance_m >= result.quantiles[0].radial_distance_m);
+    }
+
+    #[test]
+    fn footprint_monte_carlo_covariance_ellipse_is_stable() {
+        let nominal = BallisticState {
+            position_eci_m: [0.0, 0.0, 100.0],
+            velocity_eci_m_s: [25.0, 2.0, -5.0],
+            ballistic_coefficient_m2_kg: 0.01,
+            time: SimTime::from_seconds(0.0),
+        };
+        let samples = vec![
+            FootprintSampleInput {
+                sample_index: 0,
+                state: nominal,
+                wind_eci_m_s: [0.0, 0.0, 0.0],
+            },
+            FootprintSampleInput {
+                sample_index: 1,
+                state: BallisticState {
+                    velocity_eci_m_s: [26.0, 2.5, -5.0],
+                    ..nominal
+                },
+                wind_eci_m_s: [2.0, 0.0, 0.0],
+            },
+            FootprintSampleInput {
+                sample_index: 2,
+                state: BallisticState {
+                    velocity_eci_m_s: [24.0, 1.0, -5.0],
+                    ..nominal
+                },
+                wind_eci_m_s: [-2.0, 1.0, 0.0],
+            },
+            FootprintSampleInput {
+                sample_index: 3,
+                state: BallisticState {
+                    velocity_eci_m_s: [25.5, 3.0, -5.0],
+                    ..nominal
+                },
+                wind_eci_m_s: [0.0, -1.0, 0.0],
+            },
+        ];
+        let input = FootprintMonteCarloInput::new(nominal, samples, vec![0.5, 0.9]);
+        let result =
+            constant_gravity_footprint_monte_carlo(&nominal_footprint_env(), &input).unwrap();
+        assert!(
+            (result.dispersion_ellipse.one_sigma_semi_major_m - 5.515_605_369_845_789).abs()
+                < 1.0e-12
+        );
+        assert!(
+            (result.dispersion_ellipse.one_sigma_semi_minor_m - 0.716_847_007_223_690_8).abs()
+                < 1.0e-12
+        );
+        assert!(
+            (result.dispersion_ellipse.orientation_rad - 0.288_884_977_197_166_16).abs() < 1.0e-12
+        );
     }
 
     fn nominal_entry_corridor() -> EntryCorridor {

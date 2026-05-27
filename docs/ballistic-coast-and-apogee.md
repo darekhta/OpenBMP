@@ -23,6 +23,9 @@ for academic trajectory study and range-safety / recovery planning.
   a deterministic closed-form `constant_gravity` method for short constant-
   gravity profiles plus fixed-step numerical J2 and zonal-only EGM2008
   footprint propagation for longer coast / descent profiles.
+- `[landing_footprint.monte_carlo]` adds offline sampled dispersion over
+  declared wind, ballistic-coefficient, and burnout-state uncertainty sources.
+  The sampled path is drag/wind-aware and deterministic for the same seed.
 
 ## Design
 
@@ -109,10 +112,10 @@ pub trait RangeSafetyFootprint {
 - **Nominal landing point** — downrange distance, crossrange distance, and
   bearing from the launch origin (range-relative; geodetic lat/lon only if an
   origin is declared, for recovery mapping).
-- **Dispersion ellipse** — optional 1-σ / 3-σ landing scatter from a declared
-  input ellipse. Monte-Carlo dispersion over winds / ballistic coefficient /
-  burnout uncertainty remains deferred; requesting dispersion without a
-  declared source fails closed.
+- **Dispersion ellipse** — optional 1-σ / 3-σ landing scatter. This can be a
+  declared input ellipse or the covariance ellipse computed from a
+  `[landing_footprint.monte_carlo]` sample cloud over declared wind,
+  ballistic-coefficient, and burnout-state uncertainty sources.
 
 ```
         crossrange
@@ -153,9 +156,10 @@ inverse problem and any geographic aimpoint are rejected at load.
   never a fabricated geographic coordinate.
 - Any footprint-config field naming a *desired* landing location, aimpoint, or
   miss-distance is rejected by the lint.
-- Monte-Carlo dispersion requires declared input-uncertainty blocks; a
-  dispersion request with no uncertainty source fails closed rather than
-  reporting a degenerate zero-width ellipse.
+- Monte-Carlo dispersion requires declared input-uncertainty blocks under
+  `wind`, `ballistic_coefficient`, or `burnout_state`; a dispersion request
+  with no uncertainty source fails closed rather than reporting a degenerate
+  zero-width ellipse.
 - `landing_footprint.method` must agree with the scenario gravity selector:
   `constant_gravity` requires `environment.gravity = "constant"`, `j2`
   requires `environment.gravity = "j2"`, and `egm2008` requires

@@ -2006,6 +2006,9 @@ pub struct LandingFootprintConfig {
     /// Optional declared dispersion ellipse input.
     #[serde(default)]
     pub dispersion: Option<LandingFootprintDispersionConfig>,
+    /// Optional Monte-Carlo dispersion analysis configuration.
+    #[serde(default)]
+    pub monte_carlo: Option<LandingFootprintMonteCarloConfig>,
 }
 
 impl LandingFootprintConfig {
@@ -2013,6 +2016,9 @@ impl LandingFootprintConfig {
         require_finite("landing_footprint.cull_altitude_m", self.cull_altitude_m)?;
         if let Some(dispersion) = &self.dispersion {
             dispersion.validate()?;
+        }
+        if let Some(monte_carlo) = &self.monte_carlo {
+            monte_carlo.validate()?;
         }
         Ok(())
     }
@@ -2087,6 +2093,336 @@ impl LandingFootprintDispersionConfig {
         )?;
         Ok(())
     }
+}
+
+/// Monte-Carlo landing-footprint dispersion configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingFootprintMonteCarloConfig {
+    /// Number of samples to propagate.
+    pub samples: u32,
+    /// Optional seed override. When absent, `[time].seed` is used.
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// Confidence levels used for radial-distance quantiles.
+    pub confidence_levels: Vec<f64>,
+    /// Declared output paths for the offline analysis products.
+    pub output: LandingFootprintMonteCarloOutputConfig,
+    /// Optional wind uncertainty source.
+    #[serde(default)]
+    pub wind: Option<LandingFootprintMonteCarloWindConfig>,
+    /// Optional ballistic-coefficient uncertainty source.
+    #[serde(default)]
+    pub ballistic_coefficient: Option<LandingFootprintMonteCarloBallisticCoefficientConfig>,
+    /// Optional burnout-state uncertainty source.
+    #[serde(default)]
+    pub burnout_state: Option<LandingFootprintMonteCarloBurnoutStateConfig>,
+}
+
+impl LandingFootprintMonteCarloConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_positive_u32("landing_footprint.monte_carlo.samples", self.samples)?;
+        if self.confidence_levels.is_empty() {
+            return Err(ScenarioError::EmptyList {
+                field: "landing_footprint.monte_carlo.confidence_levels".to_owned(),
+            });
+        }
+        for (index, value) in self.confidence_levels.iter().copied().enumerate() {
+            require_in_range(
+                &format!("landing_footprint.monte_carlo.confidence_levels[{index}]"),
+                value,
+                f64::EPSILON,
+                1.0 - f64::EPSILON,
+            )?;
+        }
+        self.output.validate()?;
+        if self.wind.is_none()
+            && self.ballistic_coefficient.is_none()
+            && self.burnout_state.is_none()
+        {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "landing_footprint.monte_carlo".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "landing_footprint.monte_carlo.uncertainty_source".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
+        if let Some(wind) = &self.wind {
+            wind.validate()?;
+        }
+        if let Some(ballistic_coefficient) = &self.ballistic_coefficient {
+            ballistic_coefficient.validate()?;
+        }
+        if let Some(burnout_state) = &self.burnout_state {
+            burnout_state.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// Output files produced by a Monte-Carlo landing-footprint run.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingFootprintMonteCarloOutputConfig {
+    /// Optional deterministic CSV sample-cloud output path.
+    #[serde(default)]
+    pub samples_csv: Option<PathBuf>,
+    /// Optional deterministic Parquet sample-cloud output path.
+    #[serde(default)]
+    pub samples_parquet: Option<PathBuf>,
+    /// Optional TOML summary output path.
+    #[serde(default)]
+    pub summary_toml: Option<PathBuf>,
+}
+
+impl LandingFootprintMonteCarloOutputConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if self.samples_csv.is_none() && self.samples_parquet.is_none() {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "landing_footprint.monte_carlo.output".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "landing_footprint.monte_carlo.output.samples_csv_or_samples_parquet"
+                    .to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
+        if self.summary_toml.is_none() {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "landing_footprint.monte_carlo.output".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "landing_footprint.monte_carlo.output.summary_toml".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Wind uncertainty model for Monte-Carlo footprint sampling.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingFootprintMonteCarloWindConfig {
+    /// Wind uncertainty shape.
+    pub kind: LandingFootprintMonteCarloWindKind,
+    /// Independent one-sigma local-NED additive wind perturbation (m/s).
+    #[serde(default)]
+    pub sigma_ned_m_s: Option<[f64; 3]>,
+    /// One-sigma multiplicative speed-scale perturbation.
+    #[serde(default)]
+    pub speed_scale_sigma: Option<f64>,
+    /// Optional deterministic local-NED ensemble member vectors (m/s).
+    #[serde(default)]
+    pub ensemble_members_ned_m_s: Option<Vec<[f64; 3]>>,
+}
+
+impl LandingFootprintMonteCarloWindConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if let Some(sigma) = self.sigma_ned_m_s {
+            require_non_negative_array("landing_footprint.monte_carlo.wind.sigma_ned_m_s", &sigma)?;
+        }
+        if let Some(sigma) = self.speed_scale_sigma {
+            require_non_negative(
+                "landing_footprint.monte_carlo.wind.speed_scale_sigma",
+                sigma,
+            )?;
+        }
+        if let Some(members) = &self.ensemble_members_ned_m_s {
+            if members.is_empty() {
+                return Err(ScenarioError::EmptyList {
+                    field: "landing_footprint.monte_carlo.wind.ensemble_members_ned_m_s".to_owned(),
+                });
+            }
+            for (index, member) in members.iter().enumerate() {
+                require_finite_array(
+                    &format!(
+                        "landing_footprint.monte_carlo.wind.ensemble_members_ned_m_s[{index}]"
+                    ),
+                    member,
+                )?;
+            }
+        }
+        let has_parameter = self.sigma_ned_m_s.is_some()
+            || self.speed_scale_sigma.is_some()
+            || self.ensemble_members_ned_m_s.is_some();
+        if !has_parameter {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "landing_footprint.monte_carlo.wind".to_owned(),
+                value_a: self.kind.as_str().to_owned(),
+                field_b: "landing_footprint.monte_carlo.wind.uncertainty_parameter".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
+        if self.kind == LandingFootprintMonteCarloWindKind::Ensemble
+            && self.ensemble_members_ned_m_s.is_none()
+        {
+            return Err(ScenarioError::MissingRequiredField {
+                field: "landing_footprint.monte_carlo.wind.ensemble_members_ned_m_s".to_owned(),
+                role: ModelRole::Wind,
+                name: "ensemble".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Supported wind uncertainty shapes for footprint Monte Carlo.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LandingFootprintMonteCarloWindKind {
+    /// Additive perturbation around a constant wind vector.
+    Constant,
+    /// Layered-wind perturbation collapsed to the sampled footprint
+    /// propagation vector for the offline run.
+    Layered,
+    /// HWM14 perturbation factor collapsed to the sampled footprint
+    /// propagation vector for the offline run.
+    Hwm14,
+    /// Deterministically selected ensemble member.
+    Ensemble,
+}
+
+impl LandingFootprintMonteCarloWindKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Constant => "constant",
+            Self::Layered => "layered",
+            Self::Hwm14 => "hwm14",
+            Self::Ensemble => "ensemble",
+        }
+    }
+}
+
+/// Ballistic-coefficient uncertainty for footprint Monte Carlo.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingFootprintMonteCarloBallisticCoefficientConfig {
+    /// Nominal `C_d A / m` value (m²/kg).
+    pub nominal_m2_kg: f64,
+    /// One-sigma uncertainty (m²/kg).
+    pub sigma_m2_kg: f64,
+    /// Sampling distribution.
+    pub distribution: LandingFootprintMonteCarloDistribution,
+    /// Optional lower bound (m²/kg).
+    #[serde(default)]
+    pub min_m2_kg: Option<f64>,
+    /// Optional upper bound (m²/kg).
+    #[serde(default)]
+    pub max_m2_kg: Option<f64>,
+}
+
+impl LandingFootprintMonteCarloBallisticCoefficientConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_non_negative(
+            "landing_footprint.monte_carlo.ballistic_coefficient.nominal_m2_kg",
+            self.nominal_m2_kg,
+        )?;
+        require_non_negative(
+            "landing_footprint.monte_carlo.ballistic_coefficient.sigma_m2_kg",
+            self.sigma_m2_kg,
+        )?;
+        if let Some(min) = self.min_m2_kg {
+            require_non_negative(
+                "landing_footprint.monte_carlo.ballistic_coefficient.min_m2_kg",
+                min,
+            )?;
+        }
+        if let Some(max) = self.max_m2_kg {
+            require_non_negative(
+                "landing_footprint.monte_carlo.ballistic_coefficient.max_m2_kg",
+                max,
+            )?;
+        }
+        if let (Some(min), Some(max)) = (self.min_m2_kg, self.max_m2_kg)
+            && min > max
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: "landing_footprint.monte_carlo.ballistic_coefficient.min_m2_kg".to_owned(),
+                value: min,
+                rule: "must be less than or equal to max_m2_kg",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Scalar sampling distribution for footprint Monte Carlo sources.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LandingFootprintMonteCarloDistribution {
+    /// Gaussian sampling with the declared one-sigma value.
+    Normal,
+    /// Uniform sampling with the same standard deviation as the
+    /// declared one-sigma value.
+    Uniform,
+}
+
+/// Burnout-state uncertainty for footprint Monte Carlo.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingFootprintMonteCarloBurnoutStateConfig {
+    /// Independent one-sigma ECI position perturbations (m).
+    #[serde(default)]
+    pub position_sigma_eci_m: Option<[f64; 3]>,
+    /// Independent one-sigma ECI velocity perturbations (m/s).
+    #[serde(default)]
+    pub velocity_sigma_eci_m_s: Option<[f64; 3]>,
+    /// One-sigma timestamp perturbation (s).
+    #[serde(default)]
+    pub time_sigma_s: Option<f64>,
+}
+
+impl LandingFootprintMonteCarloBurnoutStateConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if let Some(sigma) = self.position_sigma_eci_m {
+            require_non_negative_array(
+                "landing_footprint.monte_carlo.burnout_state.position_sigma_eci_m",
+                &sigma,
+            )?;
+        }
+        if let Some(sigma) = self.velocity_sigma_eci_m_s {
+            require_non_negative_array(
+                "landing_footprint.monte_carlo.burnout_state.velocity_sigma_eci_m_s",
+                &sigma,
+            )?;
+        }
+        if let Some(sigma) = self.time_sigma_s {
+            require_non_negative(
+                "landing_footprint.monte_carlo.burnout_state.time_sigma_s",
+                sigma,
+            )?;
+        }
+        if self.position_sigma_eci_m.is_none()
+            && self.velocity_sigma_eci_m_s.is_none()
+            && self.time_sigma_s.is_none()
+        {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "landing_footprint.monte_carlo.burnout_state".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "landing_footprint.monte_carlo.burnout_state.sigma".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+fn require_non_negative(field: &str, value: f64) -> Result<(), ScenarioError> {
+    require_finite(field, value)?;
+    if value < 0.0 {
+        return Err(ScenarioError::InvalidNumber {
+            field: field.to_owned(),
+            value,
+            rule: "must be non-negative",
+        });
+    }
+    Ok(())
+}
+
+fn require_non_negative_array(field: &str, values: &[f64]) -> Result<(), ScenarioError> {
+    for value in values {
+        require_non_negative(field, *value)?;
+    }
+    Ok(())
 }
 
 const fn default_entry_surface_density_kg_m3() -> f64 {

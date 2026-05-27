@@ -140,6 +140,32 @@ impl Scenario {
                 paths.insert(format!("data_packages.{name}"), self.resolve_path(path));
             }
         }
+        if let Some(output) = self
+            .document
+            .landing_footprint
+            .as_ref()
+            .and_then(|footprint| footprint.monte_carlo.as_ref())
+            .map(|monte_carlo| &monte_carlo.output)
+        {
+            if let Some(path) = &output.samples_csv {
+                paths.insert(
+                    "landing_footprint.monte_carlo.output.samples_csv".to_owned(),
+                    self.resolve_path(path),
+                );
+            }
+            if let Some(path) = &output.samples_parquet {
+                paths.insert(
+                    "landing_footprint.monte_carlo.output.samples_parquet".to_owned(),
+                    self.resolve_path(path),
+                );
+            }
+            if let Some(path) = &output.summary_toml {
+                paths.insert(
+                    "landing_footprint.monte_carlo.output.summary_toml".to_owned(),
+                    self.resolve_path(path),
+                );
+            }
+        }
         paths
     }
 
@@ -4216,6 +4242,11 @@ file = "../sensors/star-tracker-textbook.toml""#,
         "/tests/fixtures/coast-footprint-valid.toml"
     ));
 
+    const COAST_FOOTPRINT_MC_SCENARIO: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/coast-footprint-mc-valid.toml"
+    ));
+
     const ENTRY_PROFILE_SCENARIO: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/entry-profile-valid.toml"
@@ -4301,6 +4332,38 @@ file = "../sensors/star-tracker-textbook.toml""#,
         );
         assert!(footprint.cull_altitude_m.abs() < f64::EPSILON);
         assert!(footprint.dispersion.is_some());
+    }
+
+    #[test]
+    fn parses_coast_landing_footprint_monte_carlo_config() {
+        let scenario = Scenario::from_toml_str(COAST_FOOTPRINT_MC_SCENARIO).unwrap();
+        let footprint = scenario.document.landing_footprint.as_ref().unwrap();
+        let monte_carlo = footprint.monte_carlo.as_ref().unwrap();
+        assert_eq!(monte_carlo.samples, 32);
+        assert_eq!(monte_carlo.confidence_levels, vec![0.5, 0.9, 0.99]);
+        assert!(monte_carlo.wind.is_some());
+        assert!(monte_carlo.ballistic_coefficient.is_some());
+        assert!(monte_carlo.burnout_state.is_some());
+
+        let paths = scenario.resolved_paths();
+        assert!(paths.contains_key("landing_footprint.monte_carlo.output.samples_csv"));
+        assert!(paths.contains_key("landing_footprint.monte_carlo.output.samples_parquet"));
+        assert!(paths.contains_key("landing_footprint.monte_carlo.output.summary_toml"));
+    }
+
+    #[test]
+    fn rejects_landing_footprint_monte_carlo_without_uncertainty_source() {
+        let toml = COAST_FOOTPRINT_MC_SCENARIO
+            .split("[landing_footprint.monte_carlo.wind]")
+            .next()
+            .unwrap();
+        let err = Scenario::from_toml_str(toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "landing_footprint.monte_carlo"
+                    && field_b == "landing_footprint.monte_carlo.uncertainty_source"),
+            "got {err:?}",
+        );
     }
 
     #[test]

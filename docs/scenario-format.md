@@ -1613,6 +1613,33 @@ include_geodetic = false
 one_sigma_semi_major_m = 25.0
 one_sigma_semi_minor_m = 10.0
 orientation_rad = 0.0
+
+[landing_footprint.monte_carlo]
+samples = 1024
+seed = 1234
+confidence_levels = [0.5, 0.9, 0.99]
+
+[landing_footprint.monte_carlo.output]
+samples_csv = "out/footprint-mc-samples.csv"
+samples_parquet = "out/footprint-mc-samples.parquet"
+summary_toml = "out/footprint-mc-summary.toml"
+
+[landing_footprint.monte_carlo.wind]
+kind = "constant"
+sigma_ned_m_s = [2.0, 1.0, 0.0]
+speed_scale_sigma = 0.0
+
+[landing_footprint.monte_carlo.ballistic_coefficient]
+nominal_m2_kg = 0.01
+sigma_m2_kg = 0.002
+distribution = "normal"
+min_m2_kg = 0.0
+max_m2_kg = 0.05
+
+[landing_footprint.monte_carlo.burnout_state]
+position_sigma_eci_m = [1.0, 1.0, 0.5]
+velocity_sigma_eci_m_s = [0.5, 0.5, 0.2]
+time_sigma_s = 0.01
 ```
 
 Consumed methods are:
@@ -1630,6 +1657,17 @@ range-relative `downrange_m` / `crossrange_m` output. The optional
 dispersion block is a declared ellipse source. If absent, no dispersion
 ellipse is reported. Numerical Earth-gravity methods stop at the WGS84
 radial ellipsoid surface plus `cull_altitude_m`.
+
+`[landing_footprint.monte_carlo]` enables offline sampled dispersion. It
+requires at least one declared uncertainty source under
+`wind`, `ballistic_coefficient`, or `burnout_state`; a Monte-Carlo block
+with no source fails closed. The runner samples deterministic streams
+from the Monte-Carlo seed (or `[time].seed` when omitted) plus the sample
+index, propagates each sample with drag and wind using the sampled
+ballistic coefficient, and writes the declared CSV/Parquet sample cloud
+plus TOML summary. `wind.kind` accepts `constant`, `layered`, `hwm14`, or
+`ensemble`; the current offline propagator consumes the sampled local-NED
+perturbation as the constant wind vector for that footprint sample.
 
 As everywhere else in the profile work, fields naming a desired landing
 location, aimpoint, miss distance, or equivalent targeting concept are

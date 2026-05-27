@@ -274,7 +274,7 @@ fn is_frame_exempt_3vector(path: &str, key: &str) -> bool {
     matches!(
         (path, key),
         ("$.wind.intensity_m_s", "intensity_m_s") | ("$.wind.length_scale_m", "length_scale_m")
-    )
+    ) || (path.starts_with("$.landing_footprint.monte_carlo") && key == "confidence_levels")
 }
 
 fn is_numeric_4vector(value: &toml::Value) -> bool {
@@ -367,6 +367,15 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     // Entry-profile fields. `lift_to_drag_ratio` is dimensionless
     // aerodynamic L/D by convention.
     if path.starts_with("$.entry_profile") && key == "lift_to_drag_ratio" {
+        return true;
+    }
+
+    // Landing-footprint Monte Carlo fields. Sample counts,
+    // confidence levels, and multiplicative wind-scale uncertainty are
+    // dimensionless; typed validation owns their ranges.
+    if path.starts_with("$.landing_footprint.monte_carlo")
+        && matches!(key, "samples" | "confidence_levels" | "speed_scale_sigma")
+    {
         return true;
     }
 
