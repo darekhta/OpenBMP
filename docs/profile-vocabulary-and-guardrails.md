@@ -92,8 +92,9 @@ must also declare, disagreement fails closed.
    conservation must hold to tolerance.
 6. **Deferred until validated.** New variants fail closed with a typed
    `Unsupported*` / deferral error until their implementation lands with
-   validation evidence. PR1 `jettison_stage` is limited to the documented
-   rigid-body gravity-only envelope; PR2 `ascent_reference` is limited to the
+   validation evidence. `jettison_stage` is limited to the documented
+   fixed-step RK4 rigid-body envelope with explicit per-body ownership; PR2
+   `ascent_reference` is limited to the
    documented schema-v3 pitch-program / gravity-turn envelope; PR3
    `landing_footprint` is limited to the schema-v3 constant-gravity, J2, and
    zonal-only EGM2008 offline footprint envelope; PR4 `entry_profile` is
@@ -113,7 +114,7 @@ This work requires the following edits to land alongside the implementation
   Operational Behaviour," note that ascent / entry references are
   reference-generation only and that the landing footprint is a forward,
   offline range-safety output — both explicitly distinguished from targeting.
-- [`roadmap.md`](roadmap.md): mark the PR1 gravity-only separation slice,
+- [`roadmap.md`](roadmap.md): mark the fixed-step RK4 separation slice,
   PR2 pitch-program / gravity-turn ascent-reference slice, and PR3
   constant-gravity landing-footprint slice as shipped, plus the PR4
   `[entry_profile]` diagnostics slice, while keeping explicit ascent

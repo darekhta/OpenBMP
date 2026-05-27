@@ -11,7 +11,8 @@ OpenBMP already ships the *physics* most of these phases need — J2 / EGM2008
 zonal gravity, atmosphere models to 1000 km, the Allen-Eggers and Vinh entry
 propagators, hypersonic aerodynamics, and a deterministic kernel. What is
 missing is **execution and wiring**: scripted stage separation now executes
-only in the PR1 gravity-only validation envelope, there is no
+for fixed-step RK4 rigid-body profiles with explicit per-body resource
+ownership, there is no
 powered-ascent reference generator, the coast and entry phases are not wired
 into the mission state machine, and there is no range-safety footprint tool.
 These documents close those gaps inside the platform's existing extension
@@ -24,8 +25,9 @@ research platform. The acronym is deliberate: the platform models *body
 motion*, not weapons. This document does not change that posture; it extends
 it.
 
-> **Status.** PR1 `jettison_stage` is implemented for fixed-step RK4,
-> rigid-body, gravity-only validation profiles. The remaining profile work is
+> **Status.** `jettison_stage` is implemented for fixed-step RK4,
+> rigid-body profiles with explicit per-body force-stack ownership. The
+> remaining profile work is
 > still design plus fail-closed schema and trait stubs; each capability is
 > rejected at scenario-load time with a typed deferral error until its
 > implementation lands and carries validation evidence, exactly as
@@ -125,9 +127,9 @@ same `Result<_, PhysicsError>` discipline.
 The design reuses, rather than bypasses, the documented seams:
 
 - **Scenario schema.** New phases, events, and the `jettison_stage` /
-  `select_guidance_profile` actions are additive to the v3 schema. PR1
+  `select_guidance_profile` actions are additive to the v3 schema.
   `jettison_stage` validates against `[multi_body]` and executes in the
-  gravity-only separation envelope; PR2 `guidance = "ascent_reference"`
+  fixed-step RK4 separation envelope; PR2 `guidance = "ascent_reference"`
   consumes `[fc.ascent_reference]` for pitch-program / gravity-turn reference
   generation; PR3 consumes `[landing_footprint]` for constant-gravity, J2, and
   zonal-only EGM2008 offline footprint methods; PR4 consumes
@@ -160,7 +162,7 @@ blocks become first-class and validated. Until then:
   burnout) so that no new `EventTriggerConfig` variant is needed for the common
   profile.
 - New actions are additive `ScenarioActionConfig` variants:
-  `jettison_stage` is implemented for the PR1 separation envelope, while
+  `jettison_stage` is implemented for the fixed-step RK4 separation envelope, while
   `select_guidance_profile` remains deferred.
 - New `[fc]` and `[profile]` sub-blocks are `Option<…>` and validated to fail
   closed.

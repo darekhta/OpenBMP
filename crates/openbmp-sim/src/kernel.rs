@@ -37,8 +37,8 @@ use crate::error::{IntegratorError, SimulationError, StopReason};
 use crate::integrator::Integrator;
 use crate::models::{
     EffectorActualsView, EngineSnapshot, EngineSnapshotView, EnvironmentModel, EnvironmentQuery,
-    EnvironmentSample, ForceContext, ForceModel, MassContext, MassModel, MassPropertiesRate,
-    RecoverySnapshot, RecoverySnapshotView, TankSnapshot, TankSnapshotView,
+    EnvironmentSample, ForceContext, ForceModel, MassContext, MassModel, RecoverySnapshot,
+    RecoverySnapshotView, TankSnapshot, TankSnapshotView,
 };
 use crate::solver_profile::{ProfiledIntegrator, SolverProfile, SolverProfileError};
 use crate::stop::StopCondition;
@@ -88,6 +88,8 @@ where
 /// Runtime specification for a rigid-body stage separation.
 #[derive(Clone, Copy, Debug)]
 pub struct RigidBodySeparation {
+    /// Continuing stack body id after the split.
+    pub stack_body: BodyId,
     /// Departing body id.
     pub body: BodyId,
     /// Mass properties of the continuing stack after separation.
@@ -278,6 +280,11 @@ where
     /// and step in vector order, giving a fixed body order after
     /// split.
     separated_rigid_bodies: Vec<SeparatedRigidBody>,
+    /// Active body represented by the primary rigid-body lane after
+    /// the first separation. `None` before separation and for
+    /// point-mass kernels, which preserves whole-vehicle model
+    /// evaluation.
+    primary_rigid_body: Option<BodyId>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -357,6 +364,7 @@ where
             wind_sample_override: None,
             recovery_snapshot: std::collections::BTreeMap::new(),
             separated_rigid_bodies: Vec::new(),
+            primary_rigid_body: None,
         })
     }
 
@@ -440,6 +448,7 @@ where
                 environment: &env,
                 mass_kg,
                 time: t,
+                active_body: None,
                 effector_actuals: EffectorActualsView::new(effector_actuals),
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
@@ -447,6 +456,7 @@ where
             })?;
             let mass_rate_kg_s = mass_model.mass_rate_kg_s_at(MassContext {
                 time: t,
+                active_body: None,
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
             })?;
@@ -1214,6 +1224,7 @@ where
             wind_sample_override: None,
             recovery_snapshot: std::collections::BTreeMap::new(),
             separated_rigid_bodies: Vec::new(),
+            primary_rigid_body: None,
         })
     }
 
@@ -1255,6 +1266,7 @@ where
         let tank_snapshot = &self.tank_snapshot;
         let recovery_snapshot = &self.recovery_snapshot;
         let wind_override = self.wind_sample_override;
+        let primary_body = self.primary_rigid_body;
 
         let derive = |s: &openbmp_state::RigidBodyState,
                       t: SimTime|
@@ -1275,6 +1287,7 @@ where
                 environment: &env,
                 mass_kg,
                 time: t,
+                active_body: primary_body,
                 effector_actuals: EffectorActualsView::new(effector_actuals),
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
@@ -1284,11 +1297,17 @@ where
                 state: s,
                 environment: &env,
                 time: t,
+                active_body: primary_body,
                 effector_actuals: EffectorActualsView::new(effector_actuals),
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
             })?;
-            let rate = mass_model.mass_properties_rate(t)?;
+            let rate = mass_model.mass_properties_rate_at(MassContext {
+                time: t,
+                active_body: primary_body,
+                engine_snapshot: EngineSnapshotView::new(engine_snapshot),
+                tank_snapshot: TankSnapshotView::new(tank_snapshot),
+            })?;
 
             // Quaternion kinematics: q_dot = 0.5 · q ⊗ [0, ω_body].
             let q = s.orientation.q.into_inner();
@@ -1301,73 +1320,6 @@ where
             let q_dot = q * omega_quat * 0.5;
 
             // Euler equation: ω_dot = I⁻¹ (M − ω × I ω − I_dot · ω).
-            let inertia = s.mass_props.inertia_body;
-            let i_omega = inertia * s.angular_velocity.vector;
-            let omega_cross_iomega = s.angular_velocity.vector.cross(&i_omega);
-            let i_dot_omega = rate.inertia_rate_body * s.angular_velocity.vector;
-            let net = moment_n_m_body - omega_cross_iomega - i_dot_omega;
-            let inv_inertia = inertia.try_inverse().ok_or_else(|| {
-                crate::error::ModelEvalError::InvalidState {
-                    model: RIGID_BODY_EQUATIONS_MODEL_ID,
-                    reason: "inertia tensor is not invertible".into(),
-                }
-            })?;
-            let omega_dot = inv_inertia * net;
-
-            Ok(crate::derivative::RigidBodyDerivative {
-                velocity_m_s_eci: s.velocity.vector,
-                acceleration_m_s2_eci: force_n_eci / mass_kg,
-                quaternion_rate: q_dot,
-                angular_acceleration_rad_s2_body: omega_dot,
-                mass_rate_kg_s: rate.mass_rate_kg_s,
-                center_of_mass_rate_body_m_s: rate.center_of_mass_rate_body_m_s,
-                inertia_rate_body: rate.inertia_rate_body,
-            })
-        };
-
-        let derive_separated = |s: &openbmp_state::RigidBodyState,
-                                t: SimTime|
-         -> Result<
-            crate::derivative::RigidBodyDerivative,
-            crate::error::ModelEvalError,
-        > {
-            let mut env = environment.sample(EnvironmentQuery {
-                time: t,
-                position_eci: s.position,
-            })?;
-            if let Some(wind) = wind_override {
-                env.wind_ned_m_s = wind;
-            }
-            let mass_kg = s.mass_props.mass.get::<kilogram>();
-            let force_n_eci = force_model.force_n_eci(ForceContext {
-                state: s,
-                environment: &env,
-                mass_kg,
-                time: t,
-                effector_actuals: EffectorActualsView::new(effector_actuals),
-                engine_snapshot: EngineSnapshotView::new(engine_snapshot),
-                tank_snapshot: TankSnapshotView::new(tank_snapshot),
-                recovery_snapshot: RecoverySnapshotView::new(recovery_snapshot),
-            })?;
-            let moment_n_m_body = moment_model.moment_n_m_body(crate::models::MomentContext {
-                state: s,
-                environment: &env,
-                time: t,
-                effector_actuals: EffectorActualsView::new(effector_actuals),
-                engine_snapshot: EngineSnapshotView::new(engine_snapshot),
-                tank_snapshot: TankSnapshotView::new(tank_snapshot),
-            })?;
-            let rate = MassPropertiesRate::zero();
-
-            let q = s.orientation.q.into_inner();
-            let omega_quat = nalgebra::Quaternion::new(
-                0.0,
-                s.angular_velocity.vector.x,
-                s.angular_velocity.vector.y,
-                s.angular_velocity.vector.z,
-            );
-            let q_dot = q * omega_quat * 0.5;
-
             let inertia = s.mass_props.inertia_body;
             let i_omega = inertia * s.angular_velocity.vector;
             let omega_cross_iomega = s.angular_velocity.vector.cross(&i_omega);
@@ -1405,6 +1357,81 @@ where
         let new_state = raw_new.with_time(SimTime::from_seconds(canonical_time_s));
         let mut separated_updates = Vec::with_capacity(self.separated_rigid_bodies.len());
         for separated in &self.separated_rigid_bodies {
+            let separated_body = Some(separated.body);
+            let derive_separated = |s: &openbmp_state::RigidBodyState,
+                                    t: SimTime|
+             -> Result<
+                crate::derivative::RigidBodyDerivative,
+                crate::error::ModelEvalError,
+            > {
+                let mut env = environment.sample(EnvironmentQuery {
+                    time: t,
+                    position_eci: s.position,
+                })?;
+                if let Some(wind) = wind_override {
+                    env.wind_ned_m_s = wind;
+                }
+                let mass_kg = s.mass_props.mass.get::<kilogram>();
+                let force_n_eci = force_model.force_n_eci(ForceContext {
+                    state: s,
+                    environment: &env,
+                    mass_kg,
+                    time: t,
+                    active_body: separated_body,
+                    effector_actuals: EffectorActualsView::new(effector_actuals),
+                    engine_snapshot: EngineSnapshotView::new(engine_snapshot),
+                    tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                    recovery_snapshot: RecoverySnapshotView::new(recovery_snapshot),
+                })?;
+                let moment_n_m_body =
+                    moment_model.moment_n_m_body(crate::models::MomentContext {
+                        state: s,
+                        environment: &env,
+                        time: t,
+                        active_body: separated_body,
+                        effector_actuals: EffectorActualsView::new(effector_actuals),
+                        engine_snapshot: EngineSnapshotView::new(engine_snapshot),
+                        tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                    })?;
+                let rate = mass_model.mass_properties_rate_at(MassContext {
+                    time: t,
+                    active_body: separated_body,
+                    engine_snapshot: EngineSnapshotView::new(engine_snapshot),
+                    tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                })?;
+
+                let q = s.orientation.q.into_inner();
+                let omega_quat = nalgebra::Quaternion::new(
+                    0.0,
+                    s.angular_velocity.vector.x,
+                    s.angular_velocity.vector.y,
+                    s.angular_velocity.vector.z,
+                );
+                let q_dot = q * omega_quat * 0.5;
+
+                let inertia = s.mass_props.inertia_body;
+                let i_omega = inertia * s.angular_velocity.vector;
+                let omega_cross_iomega = s.angular_velocity.vector.cross(&i_omega);
+                let i_dot_omega = rate.inertia_rate_body * s.angular_velocity.vector;
+                let net = moment_n_m_body - omega_cross_iomega - i_dot_omega;
+                let inv_inertia = inertia.try_inverse().ok_or_else(|| {
+                    crate::error::ModelEvalError::InvalidState {
+                        model: RIGID_BODY_EQUATIONS_MODEL_ID,
+                        reason: "inertia tensor is not invertible".into(),
+                    }
+                })?;
+                let omega_dot = inv_inertia * net;
+
+                Ok(crate::derivative::RigidBodyDerivative {
+                    velocity_m_s_eci: s.velocity.vector,
+                    acceleration_m_s2_eci: force_n_eci / mass_kg,
+                    quaternion_rate: q_dot,
+                    angular_acceleration_rad_s2_body: omega_dot,
+                    mass_rate_kg_s: rate.mass_rate_kg_s,
+                    center_of_mass_rate_body_m_s: rate.center_of_mass_rate_body_m_s,
+                    inertia_rate_body: rate.inertia_rate_body,
+                })
+            };
             let raw_separated =
                 match self
                     .integrator
@@ -1513,6 +1540,14 @@ where
         &self.separated_rigid_bodies
     }
 
+    /// Active body id for the primary rigid-body lane. `None` before
+    /// the first separation, meaning the primary state still
+    /// represents the whole composite assembly.
+    #[must_use]
+    pub const fn primary_rigid_body(&self) -> Option<BodyId> {
+        self.primary_rigid_body
+    }
+
     /// Apply a rigid-body stage separation at the current state.
     ///
     /// The primary state becomes the continuing stack, while the
@@ -1530,6 +1565,38 @@ where
         &mut self,
         separation: RigidBodySeparation,
     ) -> Result<(), SimulationError> {
+        if !self.force_model.supports_separated_body_propagation() {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "force model does not declare separated-body propagation support; \
+                         per-body force-stack ownership is required for aero, thrust, tanks, \
+                         recovery, or other vehicle-owned forces"
+                    .to_owned(),
+            });
+        }
+        if !self
+            .mass_model
+            .moment_model
+            .supports_separated_body_propagation()
+        {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "moment model does not declare separated-body propagation support; \
+                         per-body moment-stack ownership is required for engine, tank, aero, \
+                         effector, or other vehicle-owned moments"
+                    .to_owned(),
+            });
+        }
+        if !self
+            .mass_model
+            .mass_model
+            .supports_separated_body_propagation()
+        {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "rigid mass model does not declare separated-body propagation support; \
+                         per-body mass-property ownership is required for variable-mass \
+                         propulsion, tanks, or other time-varying mass models"
+                    .to_owned(),
+            });
+        }
         if self
             .separated_rigid_bodies
             .iter()
@@ -1577,6 +1644,7 @@ where
         let separated_at_step = self.step_index;
         let separated_at_time = self.state.time;
         self.state = stack_state;
+        self.primary_rigid_body = Some(separation.stack_body);
         self.separated_rigid_bodies.push(SeparatedRigidBody {
             body: separation.body,
             state: stage_state,

@@ -498,6 +498,10 @@ axes; see [Schema-2 aero decks](#schema-2-aero-decks) below.
 The `[aero]` block stays the same in both cases — it's just a reference
 plus an optional digest pin. The schema discriminator lives inside the
 deck file itself (`openbmp.aero_deck = 1` or `= 2`).
+When `[multi_body]` is declared and `forces.models` includes `"aero"`,
+`aero.mounted_to = "<body id>"` is required so post-separation lanes
+can route deck forces to only the body that still carries the aero
+surface model.
 
 ### Motor reference
 
@@ -506,6 +510,7 @@ deck file itself (`openbmp.aero_deck = 1` or `= 2`).
 file         = "../../data/motors/estes-c6-eng-derived.toml"
 ignite_at_s  = 0.0
 variant      = "solid"
+mounted_to   = "upper"
 file_sha256  = "da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e"
 ```
 
@@ -514,6 +519,10 @@ motor variant. Only the `solid` motor variant is wired.
 `ignite_at_s` is the time since scenario start when the motor begins
 burning; finite-required, no positivity rule (negative values are an
 explicit pre-roll convention).
+When `[multi_body]` is declared, `[propulsion.motor].mounted_to` is
+required and must reference a declared body. The continuing or
+separated lane that owns the motor receives its thrust and mass-rate;
+other lanes skip it.
 
 ### Wind block
 
@@ -748,7 +757,7 @@ common scripted-command case without a separate trigger surface.
 | `stop` | `label: string` | Halts the run with `StopReason::MissionEnded { label }`. Distinct from `EndTime` so determinism telemetry can distinguish CLI-driven stops from scenario-driven mission ends. |
 | `effector_override` | `id: string` (declared effector id), `command: f64` (finite) | One-shot command override for the named effector on the next runner step. Resolves the declared id against the runner's effector rack via FNV-1a-64 of `vehicle.assembly.effectors.<id>`. Unknown ids are rejected by `openbmp check`. The kernel records the action; the runner drains it from the per-step fired-event queue and applies it on the next rack tick before the kernel step. Override wins over any declared `command_schedule` for that rack tick only. |
 | `engine_command` | `id: string` (declared engine id), `command: { throttle_unit: f64 ∈ [0,1], gimbal_pitch_rad: f64, gimbal_yaw_rad: f64, ignite: bool, shutdown: bool }` | Per-engine command targeting a declared `[[vehicle.assembly.engines]]` by id. Resolves the declared id via FNV-1a-64 of `vehicle.assembly.engines.<id>`. Unknown ids are rejected by `openbmp check`. Kernel records; runner-side `EngineRack` drains and applies on the next rack tick before the kernel step. `ignite=true` is honoured only from `Idle`; `shutdown=true` only from `Igniting` / `Burning`. Throttle / gimbal values are clamped to engine limits at apply time. |
-| `jettison_stage` | `body: string` (declared body id) | Stage-separation command targeting a declared `[[vehicle.assembly.bodies]]` by id. Requires `vehicle.kind = "rigid_body"`, exactly one matching `[[multi_body.separation]]`, no duplicate jettison of the same body, and momentum conservation when `conserve_momentum = true`. The PR1 runner executes this only for fixed-step RK4, gravity-only rigid-body profiles; other force-rack shapes fail closed. |
+| `jettison_stage` | `body: string` (declared body id) | Stage-separation command targeting a declared `[[vehicle.assembly.bodies]]` by id. Requires `vehicle.kind = "rigid_body"`, exactly one matching `[[multi_body.separation]]`, no duplicate jettison of the same body, and momentum conservation when `conserve_momentum = true`. The runner executes this for fixed-step RK4 rigid-body profiles. Gravity-only profiles remain valid; aero, thrust, tanks, recovery, and effectors are allowed only when each resource declares an explicit owning body. |
 | `deploy_recovery` | `id: string` (declared recovery id), `command: "deploy" \| "deploy_drogue" \| "deploy_main" \| "stow"` | Recovery-device command targeting a declared `[[vehicle.assembly.recovery]]` by id. Resolves via FNV-1a-64 of `vehicle.assembly.recovery.<id>`. Unknown ids and kind-incompatible commands are rejected by `openbmp check`; runner-side `RecoveryRack` drains accepted firings on the next rack tick before the kernel step. |
 
 The reserved action `separation` is rejected at parse time with a typed
@@ -1109,6 +1118,9 @@ scenarios: every per-step rack operation is gated on
 Enforced at scenario-parse time:
 
 - `id` non-empty; effector ids unique within the assembly.
+- `mounted_to`, when present, must reference a declared body. It is
+  required for every effector when `[multi_body]` is declared so
+  post-separation aero-axis and direct-torque ownership is explicit.
 - `kind.kind` is a wired variant (`linear_actuator`).
 - `limits.{min, max, max_rate_per_s, deadband, latency_s}` finite;
   `min < max`; `max_rate_per_s > 0`; `deadband >= 0` and
@@ -1378,6 +1390,10 @@ Enforced at scenario-parse time:
 - `engines` non-empty when declared (zero-engine cluster is
   rejected).
 - All engine ids unique within the assembly.
+- `mounted_to`, when present, must reference a declared body. It is
+  required for every engine when `[multi_body]` is declared so
+  thrust, moment, and consumed-mass routing is per body after
+  separation.
 - `limits.{max_thrust_n, isp_s}` finite + strictly positive.
 - `limits.{ignition_transient_s, shutdown_transient_s, max_gimbal_rad}`
   finite + non-negative.
@@ -1400,12 +1416,10 @@ Enforced at scenario-parse time:
 
 #### Limitations
 
-- Rigid-body cluster mass-properties (with inertia tensor
-  evolution as propellant is consumed) are handled by the
-  tank-driven dynamics. Rigid scenarios with engine
-  clusters use `ConstantMassRigid` for kernel mass-properties;
-  the cluster's force and moment adapters still consume the
-  per-engine snapshot normally.
+- Rigid-body cluster mass-properties debit each engine's
+  `consumed_kg` from the body that owns that engine. Inertia
+  evolution from engine propellant geometry is not modelled; tanks
+  carry their own moving-mass inertia contribution.
 - Faults are load-time only.
 - Only the `liquid_engine` kind ships.
 - Per-engine `command_schedule` (effector-style declarative
@@ -1525,12 +1539,10 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
   from the dry mass). The exit-criterion scenario
   sizes the tank at about 5 % of vehicle dry mass to keep the
   overcount small.
-- Rigid-body cluster mass-properties (with inertia tensor
-  evolution from per-engine `consumed_kg`) are not consumed —
-  rigid scenarios with engine clusters use `ConstantMassRigid` for
-  kernel mass-properties. The
-  `TankSnapshot.inertia_delta_body_kg_m2` is published in the
-  snapshot but is not consumed by the rigid mass-properties model.
+- Rigid-body mass-properties consume each tank snapshot for the body
+  named by `mounted_to`: `mass_kg` contributes to that lane's mass,
+  `cg_offset_body_m` is applied from the tank mount point, and
+  `inertia_delta_body_kg_m2` is added to the lane inertia tensor.
 - Slosh telemetry channels (`tank.<id>.slosh_angle_rad`,
   `tank.<id>.fluid_kg`, etc.) are not separately exposed;
   the e2e test verifies determinism via
@@ -1632,8 +1644,9 @@ mass contribution and no recovery moment.
 
 ```toml
 [[vehicle.assembly.recovery]]
-id   = "dual_chute"
-kind = { kind = "drogue_main", drogue_c_d = 1.0, drogue_area_m2 = 0.5, main_c_d = 1.5, main_area_m2 = 4.0 }
+id         = "dual_chute"
+mounted_to = "lower"
+kind       = { kind = "drogue_main", drogue_c_d = 1.0, drogue_area_m2 = 0.5, main_c_d = 1.5, main_area_m2 = 4.0 }
 
 [[mission.events]]
 id      = "evt_apogee"
@@ -1653,6 +1666,9 @@ action  = { kind = "deploy_recovery", id = "dual_chute", command = "deploy_drogu
 
 All drag coefficients and areas must be finite and strictly positive.
 The runner publishes zero drag while a device is stowed.
+When `[multi_body]` is declared, every recovery device must set
+`mounted_to` to a declared body. After separation, only that body's
+lane receives the recovery drag.
 
 #### Event compatibility
 
@@ -1774,10 +1790,31 @@ and declares the two `vehicle.assembly.bodies[*].id` values that
 continue propagating after the event. Optional impulsive delta-V
 fields apply at the separation moment. `conserve_momentum` defaults
 to `true`; the loader verifies
-`m_u·Δv_u + m_l·Δv_l ≈ 0` to a documented tolerance. The PR1 runtime
-consumer supports fixed-step RK4, rigid-body, gravity-only profiles; aero,
-thrust, tank, recovery, and coupled-body ownership after separation remain
-fail-closed.
+`m_u·Δv_u + m_l·Δv_l ≈ 0` to a documented tolerance.
+
+The runtime consumer supports fixed-step RK4 rigid-body profiles.
+Post-separation force-stack ownership is explicit:
+
+- `[aero].mounted_to` is required when `"aero"` is in
+  `forces.models`.
+- `[propulsion.motor].mounted_to` is required when a motor is
+  declared.
+- `vehicle.assembly.engines[*].mounted_to` is required when engines
+  are declared.
+- `vehicle.assembly.effectors[*].mounted_to` is required when
+  effectors are declared.
+- `vehicle.assembly.recovery[*].mounted_to` is required when recovery
+  devices are declared.
+- `vehicle.assembly.tanks[*].mounted_to` is always required.
+
+After separation, each lane evaluates only the aero, thrust, engine,
+tank, recovery, effector, snapshot, and mass-property resources owned
+by that lane's active body. Ambiguous ownership fails at scenario load
+or at the model capability gate; the composite force stack is not
+silently reused for detached bodies. Telemetry includes the continuing
+primary lane in the existing state channels and each departing body in
+`body.<lower_body_id>.*` channels, including
+`body.<lower_body_id>.separated`.
 
 ### v3-only `[fc]` sub-blocks
 

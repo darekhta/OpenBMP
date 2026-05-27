@@ -31,13 +31,14 @@
 //! body-frame angular-velocity channels
 //! (`angular_velocity.x_rad_s` etc., frame `Body`).
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use nalgebra::Vector3;
 use openbmp_aero::{AeroDeck, AeroError};
 use openbmp_core::{
-    AngularVelocity3, Body, BodyId, ChannelId, Duration, ModelId, Position3, Quaternion,
-    RecoveryId, SimTime, ValidationStatus, Velocity3,
+    AngularVelocity3, Body, BodyId, ChannelId, Duration, EngineId, ModelId, Position3, Quaternion,
+    RecoveryId, SimTime, TankId, ValidationStatus, Velocity3,
 };
 use openbmp_physics::{
     AtmosphereModel, ConstantGravity, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
@@ -45,7 +46,7 @@ use openbmp_physics::{
 use openbmp_propulsion::{Motor, MotorError, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
-    ConstantMassRigid, EndTime, ForceContext, ForceModel, NullEnvironment, RigidBodySeparation,
+    EndTime, ForceContext, ForceModel, NullEnvironment, RigidBodySeparation, RigidMassModel,
     RigidModels, ScenarioScriptAction, SimulationConfig, SimulationKernel, StopReason, ZeroMoment,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
@@ -53,7 +54,7 @@ use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, Telemet
 use openbmp_vehicle::{
     Assembly, BoxedMassModel, DeckDragForceAdapter, EngineClusterForceAdapter,
     EngineClusterMassAdapter, EngineClusterMomentAdapter, GravityForceAdapter, KernelVehicle,
-    MotorThrustForceAdapter, NamedForceModel, RigidMotorMassAdapter, Vehicle, VehicleAssembly,
+    MotorThrustForceAdapter, NamedForceModel, Vehicle, VehicleAssembly,
 };
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -125,13 +126,30 @@ pub fn run(
     wind_rack.reset();
 
     let loaded = load_models(document, resolved_files)?;
-    let initial_state = build_initial_state(document, &loaded, &assembly)?;
+    let mass_resources = RigidMassResources::new(document, &assembly)?;
+    let initial_engine_snapshot = if engine_rack.is_empty() {
+        BTreeMap::new()
+    } else {
+        engine_rack.snapshot_map()
+    };
+    let initial_tank_snapshot = if tank_rack.is_empty() {
+        BTreeMap::new()
+    } else {
+        tank_rack.snapshot_map()
+    };
+    let initial_state = build_initial_state(
+        document,
+        &loaded,
+        &mass_resources,
+        &initial_engine_snapshot,
+        &initial_tank_snapshot,
+    )?;
     let kernel_vehicle = build_vehicle(document, &loaded, &assembly)?;
     let breakdown_vehicle = build_vehicle(document, &loaded, &assembly)?;
-    let mass_model = build_mass_model(document, &loaded, &assembly)?;
+    let mass_model = build_mass_model(&loaded, &mass_resources);
     let moment_model = build_moment_model(document)?;
-    let rigid_models = RigidModels::new(moment_model, mass_model);
-    let separation_specs = build_rigid_body_separations(document, &assembly)?;
+    let rigid_models = RigidModels::new(moment_model, mass_model.clone());
+    let separation_specs = build_rigid_body_separations(document, &mass_resources)?;
 
     // Runner-side `[solver]` block dispatch on the
     // rigid-body path. Default (no `[solver]`) selects `Rk4FixedStep`,
@@ -335,7 +353,7 @@ pub fn run(
         }
         let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();
-        apply_jettison_events(&mut kernel, &script_fired, &separation_specs)?;
+        apply_jettison_events(&mut kernel, &script_fired, &separation_specs, &mass_model)?;
         let snapshot = effector_rack.snapshot();
         record_step(
             &mut table,
@@ -475,61 +493,355 @@ fn require_supported_multi_body_shape(document: &ScenarioDocument) -> Result<(),
             });
         }
     }
-    let unsupported_models: Vec<String> = document
-        .force_models()
-        .iter()
-        .filter(|name| name.as_str() != "gravity")
-        .cloned()
-        .collect();
-    if !unsupported_models.is_empty() {
-        return Err(RunnerError::UnsupportedScenario {
-            what: format!(
-                "[multi_body] stage separation is wired for rigid-body gravity-only profiles; \
-                 unsupported force models: {unsupported_models:?}"
-            ),
-        });
-    }
-    if !document.vehicle.assembly.effectors.is_empty()
-        || !document.vehicle.assembly.engines.is_empty()
-        || !document.vehicle.assembly.tanks.is_empty()
-        || !document.vehicle.assembly.recovery.is_empty()
-        || document
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct TankMassRoute {
+    owner: BodyId,
+    mount_point_body_m: Vector3<f64>,
+}
+
+#[derive(Clone, Debug)]
+struct RigidMassResources {
+    dry_total: MassProperties,
+    dry_bodies: BTreeMap<BodyId, MassProperties>,
+    motor_owner: Option<BodyId>,
+    motor_ignition_time_s: Option<f64>,
+    engine_ids: Vec<EngineId>,
+    engine_owners: BTreeMap<EngineId, BodyId>,
+    tank_routes: BTreeMap<TankId, TankMassRoute>,
+}
+
+impl RigidMassResources {
+    fn new(document: &ScenarioDocument, assembly: &Assembly) -> Result<Self, RunnerError> {
+        let start_time = SimTime::from_seconds(document.time.start_s);
+        let dry_total = dry_mass_properties_at(assembly, start_time, "vehicle.assembly")?;
+        let dry_bodies: BTreeMap<BodyId, MassProperties> = assembly
+            .bodies()
+            .iter()
+            .map(|body| {
+                (
+                    body.id(),
+                    MassProperties::new(
+                        Mass::new::<kilogram>(body.dry_mass_kg()),
+                        *body.dry_cg_body(),
+                        *body.dry_inertia_body(),
+                    ),
+                )
+            })
+            .collect();
+        let motor_owner = document
+            .propulsion
+            .as_ref()
+            .and_then(|p| p.motor.as_ref())
+            .and_then(|m| m.mounted_to.as_deref())
+            .map(body_id_from_scenario_text);
+        let motor_ignition_time_s = if document
             .propulsion
             .as_ref()
             .and_then(|p| p.motor.as_ref())
             .is_some()
-    {
-        return Err(RunnerError::UnsupportedScenario {
-            what: "[multi_body] stage separation currently requires a gravity-only assembly \
-                 without effectors, engines, tanks, recovery devices, or motor mass"
-                .to_owned(),
-        });
+        {
+            Some(motor_ignition_time_s(document)?)
+        } else {
+            None
+        };
+        let engine_ids = document
+            .vehicle
+            .assembly
+            .engines
+            .iter()
+            .map(|engine| {
+                EngineId::from_path(&format!("vehicle.assembly.engines.{id}", id = engine.id))
+            })
+            .collect();
+        let engine_owners = engine_owner_map(document)?;
+        let tank_routes = document
+            .vehicle
+            .assembly
+            .tanks
+            .iter()
+            .map(|tank| {
+                let id = TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = tank.id));
+                (
+                    id,
+                    TankMassRoute {
+                        owner: body_id_from_scenario_text(&tank.mounted_to),
+                        mount_point_body_m: Vector3::new(
+                            tank.mount_point_body_m[0],
+                            tank.mount_point_body_m[1],
+                            tank.mount_point_body_m[2],
+                        ),
+                    },
+                )
+            })
+            .collect();
+        Ok(Self {
+            dry_total,
+            dry_bodies,
+            motor_owner,
+            motor_ignition_time_s,
+            engine_ids,
+            engine_owners,
+            tank_routes,
+        })
     }
-    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct RigidMassResourceModel<M> {
+    resources: RigidMassResources,
+    motor: Option<M>,
+    model_id: ModelId,
+}
+
+impl<M> RigidMassResourceModel<M> {
+    const fn new(resources: RigidMassResources, motor: Option<M>, model_id: ModelId) -> Self {
+        Self {
+            resources,
+            motor,
+            model_id,
+        }
+    }
+}
+
+impl<M: Motor> RigidMassResourceModel<M> {
+    fn base_properties_for(
+        &self,
+        active_body: Option<BodyId>,
+    ) -> Result<MassProperties, openbmp_sim::ModelEvalError> {
+        if let Some(body) = active_body {
+            self.resources
+                .dry_bodies
+                .get(&body)
+                .copied()
+                .ok_or_else(|| openbmp_sim::ModelEvalError::InvalidState {
+                    model: self.model_id,
+                    reason: format!("rigid mass resources missing body {}", body.value()).into(),
+                })
+        } else {
+            Ok(self.resources.dry_total)
+        }
+    }
+
+    fn owner_matches(
+        &self,
+        active_body: Option<BodyId>,
+        owner: Option<BodyId>,
+        resource: &'static str,
+    ) -> Result<bool, openbmp_sim::ModelEvalError> {
+        match (active_body, owner) {
+            (None, _) => Ok(true),
+            (Some(active), Some(owner)) => Ok(active == owner),
+            (Some(_), None) => Err(openbmp_sim::ModelEvalError::InvalidState {
+                model: self.model_id,
+                reason: format!(
+                    "{resource}: mounted_to is required for separated-body propagation"
+                )
+                .into(),
+            }),
+        }
+    }
+
+    fn mass_properties_from_snapshots(
+        &self,
+        time: SimTime,
+        active_body: Option<BodyId>,
+        engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+        tank_snapshot: &BTreeMap<TankId, openbmp_sim::TankSnapshot>,
+    ) -> Result<MassProperties, openbmp_sim::ModelEvalError> {
+        let base = self.base_properties_for(active_body)?;
+        let mut total_mass_kg = base.mass.get::<kilogram>();
+        let mut weighted_cg = base.center_of_mass_body.vector * total_mass_kg;
+        let mut inertia_body = base.inertia_body;
+
+        if let (Some(motor), Some(ignition_time_s)) =
+            (&self.motor, self.resources.motor_ignition_time_s)
+            && self.owner_matches(active_body, self.resources.motor_owner, "rigid motor mass")?
+        {
+            let t_since = time.as_seconds() - ignition_time_s;
+            let motor_mass_kg =
+                motor
+                    .mass_kg(t_since)
+                    .map_err(|_| openbmp_sim::ModelEvalError::OutOfEnvelope {
+                        model: self.model_id,
+                        reason: Cow::Borrowed("motor mass query failed"),
+                    })?;
+            total_mass_kg += motor_mass_kg;
+            weighted_cg += base.center_of_mass_body.vector * motor_mass_kg;
+        }
+
+        for id in &self.resources.engine_ids {
+            let owner = self.resources.engine_owners.get(id).copied();
+            if !self.owner_matches(active_body, owner, "engine cluster mass")? {
+                continue;
+            }
+            let Some(snap) = engine_snapshot.get(id) else {
+                if active_body.is_none() && engine_snapshot.is_empty() {
+                    continue;
+                }
+                return Err(openbmp_sim::ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "engine cluster mass: snapshot missing declared engine id",
+                    ),
+                });
+            };
+            total_mass_kg -= snap.consumed_kg;
+            weighted_cg -= base.center_of_mass_body.vector * snap.consumed_kg;
+        }
+
+        for (id, route) in &self.resources.tank_routes {
+            if !self.owner_matches(active_body, Some(route.owner), "tank mass")? {
+                continue;
+            }
+            let Some(snap) = tank_snapshot.get(id) else {
+                if active_body.is_none() && tank_snapshot.is_empty() {
+                    continue;
+                }
+                return Err(openbmp_sim::ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed("tank mass: snapshot missing declared tank id"),
+                });
+            };
+            let tank_cg = route.mount_point_body_m + snap.cg_offset_body_m;
+            total_mass_kg += snap.mass_kg;
+            weighted_cg += tank_cg * snap.mass_kg;
+            inertia_body += snap.inertia_delta_body_kg_m2;
+        }
+
+        if !total_mass_kg.is_finite() || total_mass_kg <= 0.0 {
+            return Err(openbmp_sim::ModelEvalError::InvalidState {
+                model: self.model_id,
+                reason: format!("rigid mass resources produced invalid mass {total_mass_kg}")
+                    .into(),
+            });
+        }
+        let cg = weighted_cg / total_mass_kg;
+        Ok(MassProperties::new(
+            Mass::new::<kilogram>(total_mass_kg),
+            Position3::<Body>::new(cg.x, cg.y, cg.z),
+            inertia_body,
+        ))
+    }
+
+    fn mass_properties_rate_from_snapshots(
+        &self,
+        time: SimTime,
+        active_body: Option<BodyId>,
+        engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    ) -> Result<openbmp_sim::MassPropertiesRate, openbmp_sim::ModelEvalError> {
+        let mut mass_rate_kg_s = 0.0_f64;
+        if let (Some(motor), Some(ignition_time_s)) =
+            (&self.motor, self.resources.motor_ignition_time_s)
+            && self.owner_matches(active_body, self.resources.motor_owner, "rigid motor mass")?
+        {
+            let t_since = time.as_seconds() - ignition_time_s;
+            mass_rate_kg_s += motor.mass_rate_kg_s(t_since).map_err(|_| {
+                openbmp_sim::ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed("motor mass-rate query failed"),
+                }
+            })?;
+        }
+        for id in &self.resources.engine_ids {
+            let owner = self.resources.engine_owners.get(id).copied();
+            if !self.owner_matches(active_body, owner, "engine cluster mass")? {
+                continue;
+            }
+            let Some(snap) = engine_snapshot.get(id) else {
+                if active_body.is_none() && engine_snapshot.is_empty() {
+                    continue;
+                }
+                return Err(openbmp_sim::ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "engine cluster mass-rate: snapshot missing declared engine id",
+                    ),
+                });
+            };
+            mass_rate_kg_s -= snap.mass_flow_kg_per_s;
+        }
+        if !mass_rate_kg_s.is_finite() {
+            return Err(openbmp_sim::ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(openbmp_sim::MassPropertiesRate {
+            mass_rate_kg_s,
+            center_of_mass_rate_body_m_s: Vector3::zeros(),
+            inertia_rate_body: nalgebra::Matrix3::zeros(),
+        })
+    }
+}
+
+impl<M: Motor> openbmp_sim::RigidMassModel for RigidMassResourceModel<M> {
+    fn mass_properties(&self, t: SimTime) -> Result<MassProperties, openbmp_sim::ModelEvalError> {
+        self.mass_properties_from_snapshots(t, None, &BTreeMap::new(), &BTreeMap::new())
+    }
+
+    fn mass_properties_rate(
+        &self,
+        t: SimTime,
+    ) -> Result<openbmp_sim::MassPropertiesRate, openbmp_sim::ModelEvalError> {
+        self.mass_properties_rate_from_snapshots(t, None, &BTreeMap::new())
+    }
+
+    fn mass_properties_at(
+        &self,
+        ctx: openbmp_sim::MassContext<'_>,
+    ) -> Result<MassProperties, openbmp_sim::ModelEvalError> {
+        let engine_snapshot: BTreeMap<EngineId, openbmp_sim::EngineSnapshot> =
+            ctx.engine_snapshot.iter().collect();
+        let tank_snapshot: BTreeMap<TankId, openbmp_sim::TankSnapshot> =
+            ctx.tank_snapshot.iter().collect();
+        self.mass_properties_from_snapshots(
+            ctx.time,
+            ctx.active_body,
+            &engine_snapshot,
+            &tank_snapshot,
+        )
+    }
+
+    fn mass_properties_rate_at(
+        &self,
+        ctx: openbmp_sim::MassContext<'_>,
+    ) -> Result<openbmp_sim::MassPropertiesRate, openbmp_sim::ModelEvalError> {
+        let engine_snapshot: BTreeMap<EngineId, openbmp_sim::EngineSnapshot> =
+            ctx.engine_snapshot.iter().collect();
+        self.mass_properties_rate_from_snapshots(ctx.time, ctx.active_body, &engine_snapshot)
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        (self.motor.is_none() || self.resources.motor_owner.is_some())
+            && self
+                .resources
+                .engine_ids
+                .iter()
+                .all(|id| self.resources.engine_owners.contains_key(id))
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+struct RigidBodySeparationSpec {
+    stack_body: BodyId,
+    body: BodyId,
+    stack_delta_v_body_m_s: [f64; 3],
+    stage_delta_v_body_m_s: [f64; 3],
 }
 
 fn build_rigid_body_separations(
     document: &ScenarioDocument,
-    assembly: &Assembly,
-) -> Result<BTreeMap<BodyId, RigidBodySeparation>, RunnerError> {
+    mass_resources: &RigidMassResources,
+) -> Result<BTreeMap<BodyId, RigidBodySeparationSpec>, RunnerError> {
     let Some(multi_body) = document.multi_body.as_ref() else {
         return Ok(BTreeMap::new());
     };
-
-    let body_props: BTreeMap<BodyId, MassProperties> = assembly
-        .bodies()
-        .iter()
-        .map(|body| {
-            (
-                body.id(),
-                MassProperties::new(
-                    Mass::new::<kilogram>(body.dry_mass_kg()),
-                    *body.dry_cg_body(),
-                    *body.dry_inertia_body(),
-                ),
-            )
-        })
-        .collect();
 
     let mut specs = BTreeMap::new();
     for separation in &multi_body.separations {
@@ -541,34 +853,29 @@ fn build_rigid_body_separations(
             "vehicle.assembly.bodies.{id}",
             id = separation.lower_body_id
         ));
-        let stack_mass_properties =
-            body_props
-                .get(&upper_body)
-                .copied()
-                .ok_or_else(|| RunnerError::Assembly {
-                    field: format!(
-                        "multi_body.separation[event_id={}].upper_body_id",
-                        separation.event_id
-                    ),
-                    reason: format!("body `{}` was not resolved", separation.upper_body_id),
-                })?;
-        let stage_mass_properties =
-            body_props
-                .get(&lower_body)
-                .copied()
-                .ok_or_else(|| RunnerError::Assembly {
-                    field: format!(
-                        "multi_body.separation[event_id={}].lower_body_id",
-                        separation.event_id
-                    ),
-                    reason: format!("body `{}` was not resolved", separation.lower_body_id),
-                })?;
+        if !mass_resources.dry_bodies.contains_key(&upper_body) {
+            return Err(RunnerError::Assembly {
+                field: format!(
+                    "multi_body.separation[event_id={}].upper_body_id",
+                    separation.event_id
+                ),
+                reason: format!("body `{}` was not resolved", separation.upper_body_id),
+            });
+        }
+        if !mass_resources.dry_bodies.contains_key(&lower_body) {
+            return Err(RunnerError::Assembly {
+                field: format!(
+                    "multi_body.separation[event_id={}].lower_body_id",
+                    separation.event_id
+                ),
+                reason: format!("body `{}` was not resolved", separation.lower_body_id),
+            });
+        }
         let previous = specs.insert(
             lower_body,
-            RigidBodySeparation {
+            RigidBodySeparationSpec {
+                stack_body: upper_body,
                 body: lower_body,
-                stack_mass_properties,
-                stage_mass_properties,
                 stack_delta_v_body_m_s: separation
                     .upper_delta_v_body_m_s
                     .unwrap_or([0.0, 0.0, 0.0]),
@@ -593,7 +900,8 @@ fn build_rigid_body_separations(
 fn apply_jettison_events<I, F, MOM, MM, E, SC>(
     kernel: &mut openbmp_sim::RigidBodyKernel<I, F, MOM, MM, E, SC>,
     fired: &[openbmp_sim::FiredEvent<ScenarioScriptAction>],
-    separation_specs: &BTreeMap<BodyId, RigidBodySeparation>,
+    separation_specs: &BTreeMap<BodyId, RigidBodySeparationSpec>,
+    mass_model: &RigidMassEither,
 ) -> Result<(), RunnerError>
 where
     I: openbmp_sim::Integrator<RigidBodyState>,
@@ -615,7 +923,37 @@ where
                     ),
                 }
             })?;
-            kernel.jettison_rigid_body(separation)?;
+            let time = kernel.current_time();
+            let engine_snapshot = kernel.engine_snapshot();
+            let tank_snapshot = kernel.tank_snapshot();
+            let stack_mass_properties = mass_model
+                .mass_properties_at(openbmp_sim::MassContext {
+                    time,
+                    active_body: Some(separation.stack_body),
+                    engine_snapshot: openbmp_sim::EngineSnapshotView::new(engine_snapshot),
+                    tank_snapshot: openbmp_sim::TankSnapshotView::new(tank_snapshot),
+                })
+                .map_err(|err| RunnerError::UnsupportedScenario {
+                    what: format!("continuing-stack mass properties at separation failed: {err}"),
+                })?;
+            let stage_mass_properties = mass_model
+                .mass_properties_at(openbmp_sim::MassContext {
+                    time,
+                    active_body: Some(separation.body),
+                    engine_snapshot: openbmp_sim::EngineSnapshotView::new(engine_snapshot),
+                    tank_snapshot: openbmp_sim::TankSnapshotView::new(tank_snapshot),
+                })
+                .map_err(|err| RunnerError::UnsupportedScenario {
+                    what: format!("departing-stage mass properties at separation failed: {err}"),
+                })?;
+            kernel.jettison_rigid_body(RigidBodySeparation {
+                stack_body: separation.stack_body,
+                body: separation.body,
+                stack_mass_properties,
+                stage_mass_properties,
+                stack_delta_v_body_m_s: separation.stack_delta_v_body_m_s,
+                stage_delta_v_body_m_s: separation.stage_delta_v_body_m_s,
+            })?;
         }
     }
     Ok(())
@@ -677,7 +1015,9 @@ fn required_resolved_file<'a>(
 fn build_initial_state(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
-    assembly: &Assembly,
+    mass_resources: &RigidMassResources,
+    engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    tank_snapshot: &BTreeMap<TankId, openbmp_sim::TankSnapshot>,
 ) -> Result<RigidBodyState, RunnerError> {
     let p = document.vehicle.initial_position_eci_m;
     let v = document.vehicle.initial_velocity_eci_m_s;
@@ -696,24 +1036,15 @@ fn build_initial_state(
                 .to_owned(),
         })?;
     let start_time = SimTime::from_seconds(document.time.start_s);
-    let dry_props = dry_mass_properties_at(assembly, start_time, "vehicle.assembly")?;
-
-    // Total mass at the initial state = assembly dry mass PLUS the
-    // motor's current mass when a motor is declared. Mirrors the
-    // point-mass runner so a rigid-body Niskanen reproduces the
-    // point-mass Niskanen physics under an identity orientation.
-    let mass_props = if let Some(motor) = &loaded.motor {
-        let t_since_ignition_s = motor_elapsed_at_start_s(document)?;
-        MassProperties::new(
-            Mass::new::<kilogram>(
-                dry_props.mass.get::<kilogram>() + motor.mass_kg(t_since_ignition_s)?,
-            ),
-            dry_props.center_of_mass_body,
-            dry_props.inertia_body,
-        )
-    } else {
-        dry_props
-    };
+    let mass_props = RigidMassResourceModel::new(
+        mass_resources.clone(),
+        loaded.motor.clone(),
+        RIGID_BODY_MOTOR_MASS_MODEL_ID,
+    )
+    .mass_properties_from_snapshots(start_time, None, engine_snapshot, tank_snapshot)
+    .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("initial rigid-body mass properties failed: {err}"),
+    })?;
 
     // Quaternion is [x, y, z, w] in the scenario file; nalgebra
     // expects (w, x, y, z) for `Quaternion::new`. Validation in the
@@ -816,6 +1147,72 @@ fn build_gravity_force_adapter_rigid_body(
     }
 }
 
+fn body_id_from_scenario_text(id: &str) -> BodyId {
+    BodyId::from_path(&format!("vehicle.assembly.bodies.{id}"))
+}
+
+fn optional_body_owner(owner: Option<&str>) -> Option<BodyId> {
+    owner.map(body_id_from_scenario_text)
+}
+
+fn engine_owner_map(
+    document: &ScenarioDocument,
+) -> Result<BTreeMap<openbmp_core::EngineId, BodyId>, RunnerError> {
+    let mut owners = BTreeMap::new();
+    for engine in &document.vehicle.assembly.engines {
+        let id = openbmp_core::EngineId::from_path(&format!(
+            "vehicle.assembly.engines.{id}",
+            id = engine.id
+        ));
+        if let Some(owner) = optional_body_owner(engine.mounted_to.as_deref()) {
+            owners.insert(id, owner);
+        } else if document.multi_body.is_some() {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "vehicle.assembly.engines.{}.mounted_to is required for multi_body \
+                     per-body force-stack ownership",
+                    engine.id
+                ),
+            });
+        }
+    }
+    Ok(owners)
+}
+
+fn tank_owner_map(document: &ScenarioDocument) -> BTreeMap<openbmp_core::TankId, BodyId> {
+    let mut owners = BTreeMap::new();
+    for tank in &document.vehicle.assembly.tanks {
+        let id =
+            openbmp_core::TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = tank.id));
+        owners.insert(id, body_id_from_scenario_text(&tank.mounted_to));
+    }
+    owners
+}
+
+fn recovery_owner_map(
+    document: &ScenarioDocument,
+) -> Result<BTreeMap<openbmp_core::RecoveryId, BodyId>, RunnerError> {
+    let mut owners = BTreeMap::new();
+    for recovery in &document.vehicle.assembly.recovery {
+        let id = openbmp_core::RecoveryId::from_path(&format!(
+            "vehicle.assembly.recovery.{id}",
+            id = recovery.id
+        ));
+        if let Some(owner) = optional_body_owner(recovery.mounted_to.as_deref()) {
+            owners.insert(id, owner);
+        } else if document.multi_body.is_some() {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "vehicle.assembly.recovery.{}.mounted_to is required for multi_body \
+                     per-body force-stack ownership",
+                    recovery.id
+                ),
+            });
+        }
+    }
+    Ok(owners)
+}
+
 #[allow(clippy::too_many_lines)] // the recovery-rack force-adapter wiring branch is large
 fn build_vehicle(
     document: &ScenarioDocument,
@@ -838,7 +1235,18 @@ fn build_vehicle(
                             what: "forces includes `aero` but [aero] block is missing".to_owned(),
                         })?;
                 let atmosphere = build_document_runtime_atmosphere(document)?;
-                let drag = DeckDragForceAdapter::new(deck, atmosphere, RIGID_BODY_AERO_MODEL_ID);
+                let drag = if let Some(owner) = optional_body_owner(
+                    document.aero.as_ref().and_then(|a| a.mounted_to.as_deref()),
+                ) {
+                    DeckDragForceAdapter::new_owned(
+                        deck,
+                        atmosphere,
+                        RIGID_BODY_AERO_MODEL_ID,
+                        owner,
+                    )
+                } else {
+                    DeckDragForceAdapter::new(deck, atmosphere, RIGID_BODY_AERO_MODEL_ID)
+                };
                 named.push(NamedForceModel::new("aero", Box::new(drag)));
             }
             "thrust" => {
@@ -857,11 +1265,26 @@ fn build_vehicle(
                                         .to_owned(),
                             })?;
                     let ignition_time_s = motor_ignition_time_s(document)?;
-                    let thrust = MotorThrustForceAdapter::new(
-                        motor,
-                        ignition_time_s,
-                        RIGID_BODY_THRUST_MODEL_ID,
-                    );
+                    let thrust = if let Some(owner) = optional_body_owner(
+                        document
+                            .propulsion
+                            .as_ref()
+                            .and_then(|p| p.motor.as_ref())
+                            .and_then(|m| m.mounted_to.as_deref()),
+                    ) {
+                        MotorThrustForceAdapter::new_owned(
+                            motor,
+                            ignition_time_s,
+                            RIGID_BODY_THRUST_MODEL_ID,
+                            owner,
+                        )
+                    } else {
+                        MotorThrustForceAdapter::new(
+                            motor,
+                            ignition_time_s,
+                            RIGID_BODY_THRUST_MODEL_ID,
+                        )
+                    };
                     named.push(NamedForceModel::new("thrust", Box::new(thrust)));
                 } else {
                     let engine_ids: Vec<openbmp_core::EngineId> = document
@@ -876,10 +1299,19 @@ fn build_vehicle(
                             ))
                         })
                         .collect();
-                    let thrust = EngineClusterForceAdapter::new(
-                        engine_ids,
-                        RIGID_BODY_ENGINE_CLUSTER_THRUST_MODEL_ID,
-                    );
+                    let engine_owners = engine_owner_map(document)?;
+                    let thrust = if engine_owners.is_empty() {
+                        EngineClusterForceAdapter::new(
+                            engine_ids,
+                            RIGID_BODY_ENGINE_CLUSTER_THRUST_MODEL_ID,
+                        )
+                    } else {
+                        EngineClusterForceAdapter::new_with_owners(
+                            engine_ids,
+                            engine_owners,
+                            RIGID_BODY_ENGINE_CLUSTER_THRUST_MODEL_ID,
+                        )
+                    };
                     named.push(NamedForceModel::new("thrust", Box::new(thrust)));
                 }
             }
@@ -898,8 +1330,10 @@ fn build_vehicle(
                 openbmp_core::TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = t.id))
             })
             .collect();
-        let tank_force = openbmp_vehicle::TankRackForceAdapter::new(
+        let tank_owners = tank_owner_map(document);
+        let tank_force = openbmp_vehicle::TankRackForceAdapter::new_with_owners(
             tank_ids,
+            tank_owners,
             RIGID_BODY_TANK_RACK_FORCE_MODEL_ID,
         );
         named.push(NamedForceModel::new("tank_reaction", Box::new(tank_force)));
@@ -920,11 +1354,21 @@ fn build_vehicle(
             })
             .collect();
         let atmosphere = build_document_runtime_atmosphere(document)?;
-        let recovery_force = openbmp_vehicle::RecoveryRackForceAdapter::new(
-            recovery_ids,
-            atmosphere,
-            RIGID_BODY_RECOVERY_RACK_FORCE_MODEL_ID,
-        );
+        let recovery_owners = recovery_owner_map(document)?;
+        let recovery_force = if recovery_owners.is_empty() {
+            openbmp_vehicle::RecoveryRackForceAdapter::new(
+                recovery_ids,
+                atmosphere,
+                RIGID_BODY_RECOVERY_RACK_FORCE_MODEL_ID,
+            )
+        } else {
+            openbmp_vehicle::RecoveryRackForceAdapter::new_with_owners(
+                recovery_ids,
+                recovery_owners,
+                atmosphere,
+                RIGID_BODY_RECOVERY_RACK_FORCE_MODEL_ID,
+            )
+        };
         named.push(NamedForceModel::new(
             "recovery_drag",
             Box::new(recovery_force),
@@ -969,11 +1413,21 @@ fn build_vehicle_scalar_mass_model(
                 ))
             })
             .collect();
-        Box::new(EngineClusterMassAdapter::new(
-            dry_mass_kg,
-            engine_ids,
-            RIGID_BODY_ENGINE_CLUSTER_MASS_MODEL_ID,
-        ))
+        let engine_owners = engine_owner_map(document)?;
+        if engine_owners.is_empty() {
+            Box::new(EngineClusterMassAdapter::new(
+                dry_mass_kg,
+                engine_ids,
+                RIGID_BODY_ENGINE_CLUSTER_MASS_MODEL_ID,
+            ))
+        } else {
+            Box::new(EngineClusterMassAdapter::new_with_owners(
+                dry_mass_kg,
+                engine_ids,
+                engine_owners,
+                RIGID_BODY_ENGINE_CLUSTER_MASS_MODEL_ID,
+            ))
+        }
     } else if let Some(motor) = &loaded.motor {
         Box::new(MotorMassAdapter::new(
             motor.clone(),
@@ -1038,6 +1492,20 @@ impl openbmp_sim::MomentModel<RigidBodyState> for RigidMomentEitherKind {
         }
     }
 
+    fn supports_separated_body_propagation(&self) -> bool {
+        match self {
+            Self::Zero(z) => {
+                <ZeroMoment as openbmp_sim::MomentModel<RigidBodyState>>::supports_separated_body_propagation(z)
+            }
+            Self::EngineCluster(c) => c.supports_separated_body_propagation(),
+            Self::TankRack(t) => t.supports_separated_body_propagation(),
+            Self::EngineClusterAndTankRack(c, t) => {
+                c.supports_separated_body_propagation() && t.supports_separated_body_propagation()
+            }
+            Self::DirectTorque(d) => d.supports_separated_body_propagation(),
+        }
+    }
+
     fn validation(&self) -> ValidationStatus {
         match self {
             Self::Zero(z) => {
@@ -1085,11 +1553,21 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
                 )
             })
             .collect();
-        let adapter = EngineClusterMomentAdapter::new(
-            engine_ids,
-            mount_points_body,
-            RIGID_BODY_ENGINE_CLUSTER_MOMENT_MODEL_ID,
-        )
+        let engine_owners = engine_owner_map(document)?;
+        let adapter = if engine_owners.is_empty() {
+            EngineClusterMomentAdapter::new(
+                engine_ids,
+                mount_points_body,
+                RIGID_BODY_ENGINE_CLUSTER_MOMENT_MODEL_ID,
+            )
+        } else {
+            EngineClusterMomentAdapter::new_with_owners(
+                engine_ids,
+                mount_points_body,
+                engine_owners,
+                RIGID_BODY_ENGINE_CLUSTER_MOMENT_MODEL_ID,
+            )
+        }
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("EngineClusterMomentAdapter construction failed: {err}"),
         })?;
@@ -1106,8 +1584,9 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
                 openbmp_core::TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = t.id))
             })
             .collect();
-        Some(openbmp_vehicle::TankRackMomentAdapter::new(
+        Some(openbmp_vehicle::TankRackMomentAdapter::new_with_owners(
             tank_ids,
+            tank_owner_map(document),
             RIGID_BODY_TANK_RACK_MOMENT_MODEL_ID,
         ))
     } else {
@@ -1154,6 +1633,7 @@ fn build_direct_torque_adapter(
         {
             bindings.push(openbmp_vehicle::DirectTorqueBinding {
                 snapshot_key: effector.id.clone(),
+                owner: optional_body_owner(effector.mounted_to.as_deref()),
                 body_axis_index: axis.body_axis_index(),
                 effectiveness_n_m_per_rad,
             });
@@ -1169,22 +1649,22 @@ fn build_direct_torque_adapter(
     }
 }
 
-/// Build the kernel's rigid mass model. When a motor is declared
-/// the runner uses `RigidMotorMassAdapter`; otherwise
-/// `ConstantMassRigid` over assembly dry mass properties.
+/// Build the kernel's rigid mass model. Dry body mass properties are
+/// augmented by body-owned motor, engine, and tank resources. Before
+/// separation `active_body = None` includes all resources; after
+/// separation each lane evaluates only resources mounted to that
+/// lane's body.
 type RigidMassEither = RigidMassEitherKind;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum RigidMassEitherKind {
-    Motor(RigidMotorMassAdapter<SolidMotor>),
-    Constant(ConstantMassRigid),
+    Resource(RigidMassResourceModel<SolidMotor>),
 }
 
 impl openbmp_sim::RigidMassModel for RigidMassEitherKind {
     fn mass_properties(&self, t: SimTime) -> Result<MassProperties, openbmp_sim::ModelEvalError> {
         match self {
-            Self::Motor(m) => m.mass_properties(t),
-            Self::Constant(c) => c.mass_properties(t),
+            Self::Resource(m) => m.mass_properties(t),
         }
     }
 
@@ -1193,44 +1673,41 @@ impl openbmp_sim::RigidMassModel for RigidMassEitherKind {
         t: SimTime,
     ) -> Result<openbmp_sim::MassPropertiesRate, openbmp_sim::ModelEvalError> {
         match self {
-            Self::Motor(m) => m.mass_properties_rate(t),
-            Self::Constant(c) => c.mass_properties_rate(t),
+            Self::Resource(m) => m.mass_properties_rate(t),
+        }
+    }
+
+    fn mass_properties_at(
+        &self,
+        ctx: openbmp_sim::MassContext<'_>,
+    ) -> Result<MassProperties, openbmp_sim::ModelEvalError> {
+        match self {
+            Self::Resource(m) => m.mass_properties_at(ctx),
+        }
+    }
+
+    fn mass_properties_rate_at(
+        &self,
+        ctx: openbmp_sim::MassContext<'_>,
+    ) -> Result<openbmp_sim::MassPropertiesRate, openbmp_sim::ModelEvalError> {
+        match self {
+            Self::Resource(m) => m.mass_properties_rate_at(ctx),
+        }
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        match self {
+            Self::Resource(m) => m.supports_separated_body_propagation(),
         }
     }
 }
 
-fn build_mass_model(
-    document: &ScenarioDocument,
-    loaded: &LoadedModels,
-    assembly: &Assembly,
-) -> Result<RigidMassEither, RunnerError> {
-    let start_time = SimTime::from_seconds(document.time.start_s);
-    let dry_props = dry_mass_properties_at(assembly, start_time, "vehicle.assembly")?;
-
-    // Rigid + engine cluster: propellant deficit isn't
-    // tracked in rigid mass-properties (that requires
-    // tank-driven mass-property dynamics). Fall through to
-    // `ConstantMassRigid` — the cluster's `EngineClusterForceAdapter`
-    // still applies thrust normally; only mass-properties is
-    // simplified.
-    if !document.vehicle.assembly.engines.is_empty() {
-        Ok(RigidMassEitherKind::Constant(ConstantMassRigid::new(
-            dry_props,
-        )))
-    } else if let Some(motor) = &loaded.motor {
-        Ok(RigidMassEitherKind::Motor(RigidMotorMassAdapter::new(
-            motor.clone(),
-            dry_props.mass.get::<kilogram>(),
-            dry_props.center_of_mass_body,
-            dry_props.inertia_body,
-            motor_ignition_time_s(document)?,
-            RIGID_BODY_MOTOR_MASS_MODEL_ID,
-        )))
-    } else {
-        Ok(RigidMassEitherKind::Constant(ConstantMassRigid::new(
-            dry_props,
-        )))
-    }
+fn build_mass_model(loaded: &LoadedModels, mass_resources: &RigidMassResources) -> RigidMassEither {
+    RigidMassEitherKind::Resource(RigidMassResourceModel::new(
+        mass_resources.clone(),
+        loaded.motor.clone(),
+        RIGID_BODY_MOTOR_MASS_MODEL_ID,
+    ))
 }
 
 fn motor_ignition_time_s(document: &ScenarioDocument) -> Result<f64, RunnerError> {
@@ -1242,10 +1719,6 @@ fn motor_ignition_time_s(document: &ScenarioDocument) -> Result<f64, RunnerError
             what: "[propulsion.motor] block missing".to_owned(),
         })?;
     Ok(document.time.start_s + motor.ignite_at_s)
-}
-
-fn motor_elapsed_at_start_s(document: &ScenarioDocument) -> Result<f64, RunnerError> {
-    Ok(document.time.start_s - motor_ignition_time_s(document)?)
 }
 
 fn build_schema_metadata(
@@ -1284,6 +1757,26 @@ type RecoveryTelemetryChannels = Vec<(
 )>;
 
 #[derive(Debug)]
+struct SeparatedBodyTelemetryChannels {
+    body: BodyId,
+    separated: TelemetryChannel<bool>,
+    position_x: TelemetryChannel<f64>,
+    position_y: TelemetryChannel<f64>,
+    position_z: TelemetryChannel<f64>,
+    velocity_x: TelemetryChannel<f64>,
+    velocity_y: TelemetryChannel<f64>,
+    velocity_z: TelemetryChannel<f64>,
+    mass: TelemetryChannel<f64>,
+    quaternion_x: TelemetryChannel<f64>,
+    quaternion_y: TelemetryChannel<f64>,
+    quaternion_z: TelemetryChannel<f64>,
+    quaternion_w: TelemetryChannel<f64>,
+    angular_velocity_x: TelemetryChannel<f64>,
+    angular_velocity_y: TelemetryChannel<f64>,
+    angular_velocity_z: TelemetryChannel<f64>,
+}
+
+#[derive(Debug)]
 struct RigidChannelSet {
     position_x: TelemetryChannel<f64>,
     position_y: TelemetryChannel<f64>,
@@ -1299,6 +1792,7 @@ struct RigidChannelSet {
     angular_velocity_x: TelemetryChannel<f64>,
     angular_velocity_y: TelemetryChannel<f64>,
     angular_velocity_z: TelemetryChannel<f64>,
+    separated_bodies: Vec<SeparatedBodyTelemetryChannels>,
     has_atmosphere: bool,
     atmosphere_density: Option<TelemetryChannel<f64>>,
     atmosphere_pressure: Option<TelemetryChannel<f64>>,
@@ -1365,6 +1859,107 @@ impl RigidChannelSet {
             "rad/s",
             Some("Body"),
         )?;
+
+        let mut separated_bodies = Vec::new();
+        if let Some(multi_body) = &document.multi_body {
+            for separation in &multi_body.separations {
+                let body = body_id_from_scenario_text(&separation.lower_body_id);
+                let prefix = format!("body.{}", separation.lower_body_id);
+                separated_bodies.push(SeparatedBodyTelemetryChannels {
+                    body,
+                    separated: TelemetryChannel::<bool>::new(
+                        alloc(),
+                        format!("{prefix}.separated"),
+                        "bool",
+                        None::<&str>,
+                    )?,
+                    position_x: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.position_x_m"),
+                        "m",
+                        Some("ECI"),
+                    )?,
+                    position_y: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.position_y_m"),
+                        "m",
+                        Some("ECI"),
+                    )?,
+                    position_z: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.position_z_m"),
+                        "m",
+                        Some("ECI"),
+                    )?,
+                    velocity_x: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.velocity_x_m_s"),
+                        "m/s",
+                        Some("ECI"),
+                    )?,
+                    velocity_y: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.velocity_y_m_s"),
+                        "m/s",
+                        Some("ECI"),
+                    )?,
+                    velocity_z: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.velocity_z_m_s"),
+                        "m/s",
+                        Some("ECI"),
+                    )?,
+                    mass: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.mass_kg"),
+                        "kg",
+                        None::<&str>,
+                    )?,
+                    quaternion_x: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.attitude.q_x"),
+                        "1",
+                        None::<&str>,
+                    )?,
+                    quaternion_y: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.attitude.q_y"),
+                        "1",
+                        None::<&str>,
+                    )?,
+                    quaternion_z: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.attitude.q_z"),
+                        "1",
+                        None::<&str>,
+                    )?,
+                    quaternion_w: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.attitude.q_w"),
+                        "1",
+                        None::<&str>,
+                    )?,
+                    angular_velocity_x: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.angular_velocity.x_rad_s"),
+                        "rad/s",
+                        Some("Body"),
+                    )?,
+                    angular_velocity_y: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.angular_velocity.y_rad_s"),
+                        "rad/s",
+                        Some("Body"),
+                    )?,
+                    angular_velocity_z: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("{prefix}.angular_velocity.z_rad_s"),
+                        "rad/s",
+                        Some("Body"),
+                    )?,
+                });
+            }
+        }
 
         let atmosphere_kind = scenario_atmosphere_kind(document);
         let has_atmosphere = is_runtime_atmosphere_kind(atmosphere_kind);
@@ -1502,6 +2097,7 @@ impl RigidChannelSet {
             angular_velocity_x,
             angular_velocity_y,
             angular_velocity_z,
+            separated_bodies,
             has_atmosphere,
             atmosphere_density,
             atmosphere_pressure,
@@ -1531,6 +2127,23 @@ impl RigidChannelSet {
             self.angular_velocity_y.metadata().clone(),
             self.angular_velocity_z.metadata().clone(),
         ];
+        for separated in &self.separated_bodies {
+            channels.push(separated.separated.metadata().clone());
+            channels.push(separated.position_x.metadata().clone());
+            channels.push(separated.position_y.metadata().clone());
+            channels.push(separated.position_z.metadata().clone());
+            channels.push(separated.velocity_x.metadata().clone());
+            channels.push(separated.velocity_y.metadata().clone());
+            channels.push(separated.velocity_z.metadata().clone());
+            channels.push(separated.mass.metadata().clone());
+            channels.push(separated.quaternion_x.metadata().clone());
+            channels.push(separated.quaternion_y.metadata().clone());
+            channels.push(separated.quaternion_z.metadata().clone());
+            channels.push(separated.quaternion_w.metadata().clone());
+            channels.push(separated.angular_velocity_x.metadata().clone());
+            channels.push(separated.angular_velocity_y.metadata().clone());
+            channels.push(separated.angular_velocity_z.metadata().clone());
+        }
         if let (Some(d), Some(p), Some(t), Some(s)) = (
             &self.atmosphere_density,
             &self.atmosphere_pressure,
@@ -1614,6 +2227,12 @@ where
         state.angular_velocity.vector.z,
     )?;
 
+    insert_separated_body_channels(
+        &mut row,
+        kernel.separated_rigid_bodies(),
+        &channels.separated_bodies,
+    )?;
+
     if let Some(atmosphere) = breakdown_atmosphere {
         let altitude_m = state.position.vector.z.max(0.0);
         let sample = atmosphere.sample(altitude_m, state.time)?;
@@ -1642,6 +2261,7 @@ where
         environment: &env_sample,
         mass_kg: state.mass_props.mass_kg(),
         time: state.time,
+        active_body: kernel.primary_rigid_body(),
         effector_actuals: openbmp_sim::EffectorActualsView::new(kernel_actuals),
         engine_snapshot: openbmp_sim::EngineSnapshotView::new(kernel_engine_snapshot),
         tank_snapshot: openbmp_sim::TankSnapshotView::new(kernel_tank_snapshot),
@@ -1696,6 +2316,53 @@ where
     Ok(())
 }
 
+fn insert_separated_body_channels(
+    row: &mut TelemetryRow,
+    separated_bodies: &[openbmp_sim::SeparatedRigidBody],
+    channels: &[SeparatedBodyTelemetryChannels],
+) -> Result<(), RunnerError> {
+    for channel in channels {
+        let separated = separated_bodies
+            .iter()
+            .find(|body| body.body == channel.body)
+            .map(|body| &body.state);
+        row.insert(&channel.separated, separated.is_some())?;
+        if let Some(state) = separated {
+            row.insert(&channel.position_x, state.position.vector.x)?;
+            row.insert(&channel.position_y, state.position.vector.y)?;
+            row.insert(&channel.position_z, state.position.vector.z)?;
+            row.insert(&channel.velocity_x, state.velocity.vector.x)?;
+            row.insert(&channel.velocity_y, state.velocity.vector.y)?;
+            row.insert(&channel.velocity_z, state.velocity.vector.z)?;
+            row.insert(&channel.mass, state.mass_props.mass_kg())?;
+            let raw = state.orientation.q.into_inner();
+            row.insert(&channel.quaternion_x, raw.coords.x)?;
+            row.insert(&channel.quaternion_y, raw.coords.y)?;
+            row.insert(&channel.quaternion_z, raw.coords.z)?;
+            row.insert(&channel.quaternion_w, raw.coords.w)?;
+            row.insert(&channel.angular_velocity_x, state.angular_velocity.vector.x)?;
+            row.insert(&channel.angular_velocity_y, state.angular_velocity.vector.y)?;
+            row.insert(&channel.angular_velocity_z, state.angular_velocity.vector.z)?;
+        } else {
+            row.insert(&channel.position_x, 0.0)?;
+            row.insert(&channel.position_y, 0.0)?;
+            row.insert(&channel.position_z, 0.0)?;
+            row.insert(&channel.velocity_x, 0.0)?;
+            row.insert(&channel.velocity_y, 0.0)?;
+            row.insert(&channel.velocity_z, 0.0)?;
+            row.insert(&channel.mass, 0.0)?;
+            row.insert(&channel.quaternion_x, 0.0)?;
+            row.insert(&channel.quaternion_y, 0.0)?;
+            row.insert(&channel.quaternion_z, 0.0)?;
+            row.insert(&channel.quaternion_w, 1.0)?;
+            row.insert(&channel.angular_velocity_x, 0.0)?;
+            row.insert(&channel.angular_velocity_y, 0.0)?;
+            row.insert(&channel.angular_velocity_z, 0.0)?;
+        }
+    }
+    Ok(())
+}
+
 fn insert_recovery_state_channels(
     row: &mut TelemetryRow,
     snapshot: &BTreeMap<RecoveryId, openbmp_sim::RecoverySnapshot>,
@@ -1722,6 +2389,14 @@ fn insert_recovery_state_channels(
 mod tests {
     use super::*;
 
+    fn valid_stage_separation_document() -> ScenarioDocument {
+        openbmp_scenario::Scenario::from_toml_str(include_str!(
+            "../../openbmp-scenario/tests/fixtures/stage-separation-valid.toml"
+        ))
+        .expect("fixture must parse")
+        .document
+    }
+
     #[test]
     fn direct_torque_snapshot_key_collision_fails_closed() {
         let mut aero_map = BTreeMap::from([("roll-torque".to_string(), 0.1)]);
@@ -1733,6 +2408,123 @@ mod tests {
                 assert!(what.contains("roll-torque"));
                 assert!(what.contains("aero-deck axis"));
                 assert!(what.contains("direct_torque effector"));
+            }
+            other => panic!("expected UnsupportedScenario, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rigid_mass_resources_filter_engine_mass_by_active_body() {
+        let upper = body_id_from_scenario_text("upper");
+        let lower = body_id_from_scenario_text("lower");
+        let engine_upper = EngineId::from_path("vehicle.assembly.engines.upper");
+        let engine_lower = EngineId::from_path("vehicle.assembly.engines.lower");
+        let dry_bodies = BTreeMap::from([
+            (
+                upper,
+                MassProperties::with_uniform_inertia(
+                    Mass::new::<kilogram>(4.0),
+                    Position3::<Body>::origin(),
+                    1.0,
+                ),
+            ),
+            (
+                lower,
+                MassProperties::with_uniform_inertia(
+                    Mass::new::<kilogram>(1.0),
+                    Position3::<Body>::origin(),
+                    0.25,
+                ),
+            ),
+        ]);
+        let resources = RigidMassResources {
+            dry_total: MassProperties::with_uniform_inertia(
+                Mass::new::<kilogram>(5.0),
+                Position3::<Body>::origin(),
+                1.25,
+            ),
+            dry_bodies,
+            motor_owner: None,
+            motor_ignition_time_s: None,
+            engine_ids: vec![engine_upper, engine_lower],
+            engine_owners: BTreeMap::from([(engine_upper, upper), (engine_lower, lower)]),
+            tank_routes: BTreeMap::new(),
+        };
+        let model = RigidMassResourceModel::<SolidMotor>::new(resources, None, ModelId::new(999));
+        let engine_snapshot = BTreeMap::from([
+            (
+                engine_upper,
+                openbmp_sim::EngineSnapshot {
+                    thrust_body: Vector3::zeros(),
+                    mass_flow_kg_per_s: 1.0,
+                    consumed_kg: 0.25,
+                    lifecycle_state_index: 2,
+                },
+            ),
+            (
+                engine_lower,
+                openbmp_sim::EngineSnapshot {
+                    thrust_body: Vector3::zeros(),
+                    mass_flow_kg_per_s: 2.0,
+                    consumed_kg: 0.75,
+                    lifecycle_state_index: 2,
+                },
+            ),
+        ]);
+        let tanks = BTreeMap::new();
+
+        let upper_props = model
+            .mass_properties_from_snapshots(SimTime::ZERO, Some(upper), &engine_snapshot, &tanks)
+            .unwrap();
+        let lower_props = model
+            .mass_properties_from_snapshots(SimTime::ZERO, Some(lower), &engine_snapshot, &tanks)
+            .unwrap();
+        let all_props = model
+            .mass_properties_from_snapshots(SimTime::ZERO, None, &engine_snapshot, &tanks)
+            .unwrap();
+        assert!((upper_props.mass_kg() - 3.75).abs() < 1.0e-12);
+        assert!((lower_props.mass_kg() - 0.25).abs() < 1.0e-12);
+        assert!((all_props.mass_kg() - 4.0).abs() < 1.0e-12);
+
+        let upper_rate = model
+            .mass_properties_rate_from_snapshots(SimTime::ZERO, Some(upper), &engine_snapshot)
+            .unwrap();
+        let lower_rate = model
+            .mass_properties_rate_from_snapshots(SimTime::ZERO, Some(lower), &engine_snapshot)
+            .unwrap();
+        let all_rate = model
+            .mass_properties_rate_from_snapshots(SimTime::ZERO, None, &engine_snapshot)
+            .unwrap();
+        assert_eq!(upper_rate.mass_rate_kg_s.to_bits(), (-1.0_f64).to_bits());
+        assert_eq!(lower_rate.mass_rate_kg_s.to_bits(), (-2.0_f64).to_bits());
+        assert_eq!(all_rate.mass_rate_kg_s.to_bits(), (-3.0_f64).to_bits());
+    }
+
+    #[test]
+    fn multi_body_allows_owned_non_gravity_force_models_but_still_requires_rk4() {
+        let mut document = valid_stage_separation_document();
+        document.forces = Some(openbmp_scenario::ForcesConfig {
+            models: vec!["gravity".to_owned(), "aero".to_owned()],
+        });
+        document.aero = Some(openbmp_scenario::AeroConfig {
+            deck: "aero.csv".into(),
+            mounted_to: Some("upper".to_owned()),
+            deck_sha256: None,
+        });
+        require_supported_multi_body_shape(&document).expect("owned non-gravity force is allowed");
+
+        document.solver = Some(openbmp_scenario::SolverConfig {
+            profile: Some("adaptive-explicit".to_owned()),
+            trajectory_method: Some("dopri853".to_owned()),
+            determinism: None,
+            adaptive: None,
+            source_terms: None,
+        });
+        let err = require_supported_multi_body_shape(&document).unwrap_err();
+        match err {
+            RunnerError::UnsupportedScenario { what } => {
+                assert!(what.contains("fixed-step RK4"));
+                assert!(what.contains("adaptive-explicit"));
             }
             other => panic!("expected UnsupportedScenario, got {other:?}"),
         }

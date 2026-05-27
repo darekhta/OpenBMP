@@ -20,7 +20,9 @@
 use std::collections::BTreeMap;
 
 use nalgebra::{Matrix3, Vector3};
-use openbmp_core::{Eci, EngineId, Position3, RecoveryId, SimTime, TankId, ValidationStatus};
+use openbmp_core::{
+    BodyId, Eci, EngineId, Position3, RecoveryId, SimTime, TankId, ValidationStatus,
+};
 use openbmp_state::{MassProperties, PointMassState};
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -482,6 +484,12 @@ pub struct ForceContext<'a, S: SimState> {
     /// Sub-step time. May be the kernel's published time
     /// (start-of-step) or one of the RK4 intermediate times.
     pub time: SimTime,
+    /// Active rigid body for this model evaluation. `None` means the
+    /// pre-separation composite or a legacy single-lane scenario.
+    /// `Some(body)` means force models must evaluate only resources
+    /// owned by that post-separation body and skip resources owned by
+    /// other bodies.
+    pub active_body: Option<BodyId>,
     /// Read-only view of the kernel's effector-actuals
     /// snapshot, keyed by deck-axis name. Empty for legacy /
     /// Schema-1 scenarios; populated by the runner before each
@@ -529,6 +537,19 @@ pub trait ForceModel<S: SimState> {
     /// its validity envelope or produces non-finite output.
     fn force_n_eci(&self, ctx: ForceContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError>;
 
+    /// `true` when this force model can be safely reused for every
+    /// independently propagated rigid body after a stage separation.
+    ///
+    /// Only state-local, body-agnostic models such as gravity or
+    /// zero-force should opt in. Vehicle-owned models whose force
+    /// depends on a specific engine, aero deck, tank, recovery device,
+    /// or effector must stay `false` until the caller supplies an
+    /// explicit per-body force stack.
+    #[must_use]
+    fn supports_separated_body_propagation(&self) -> bool {
+        false
+    }
+
     /// Validation status declared by this model.
     #[must_use]
     fn validation(&self) -> ValidationStatus {
@@ -575,6 +596,10 @@ impl ForceModel<PointMassState> for ConstantGravityForce {
         Ok(ctx.mass_kg * self.g_eci_m_s2)
     }
 
+    fn supports_separated_body_propagation(&self) -> bool {
+        true
+    }
+
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
     }
@@ -587,6 +612,10 @@ pub struct ZeroForce;
 impl<S: SimState> ForceModel<S> for ZeroForce {
     fn force_n_eci(&self, _ctx: ForceContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError> {
         Ok(Vector3::zeros())
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        true
     }
 
     fn validation(&self) -> ValidationStatus {
@@ -611,6 +640,12 @@ pub struct MomentContext<'a, S: SimState> {
     pub environment: &'a EnvironmentSample,
     /// Sub-step time.
     pub time: SimTime,
+    /// Active rigid body for this model evaluation. `None` means the
+    /// pre-separation composite or a legacy single-lane scenario.
+    /// `Some(body)` means moment models must evaluate only resources
+    /// owned by that post-separation body and skip resources owned by
+    /// other bodies.
+    pub active_body: Option<BodyId>,
     /// Read-only effector-actuals view (same shape as
     /// `ForceContext.effector_actuals`). Schema-2 moment models
     /// consume the deflection axes that perturb `CM`
@@ -640,6 +675,17 @@ pub trait MomentModel<S: SimState> {
     /// its validity envelope or produces non-finite output.
     fn moment_n_m_body(&self, ctx: MomentContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError>;
 
+    /// `true` when this moment model can be safely reused for every
+    /// independently propagated rigid body after a stage separation.
+    ///
+    /// Moment sources tied to specific engines, tanks, aero surfaces,
+    /// or effectors must stay `false` until the caller supplies an
+    /// explicit per-body moment stack.
+    #[must_use]
+    fn supports_separated_body_propagation(&self) -> bool {
+        false
+    }
+
     /// Validation status declared by this model.
     #[must_use]
     fn validation(&self) -> ValidationStatus {
@@ -655,6 +701,10 @@ pub struct ZeroMoment;
 impl<S: SimState> MomentModel<S> for ZeroMoment {
     fn moment_n_m_body(&self, _ctx: MomentContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError> {
         Ok(Vector3::zeros())
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        true
     }
 
     fn validation(&self) -> ValidationStatus {
@@ -680,6 +730,9 @@ pub struct MassContext<'a> {
     /// Sub-step time. May be the kernel's published time
     /// (start-of-step) or one of the RK4 intermediate times.
     pub time: SimTime,
+    /// Active rigid body for this mass-property query. `None` means
+    /// the pre-separation composite or a legacy single-lane scenario.
+    pub active_body: Option<BodyId>,
     /// Read-only engine snapshot view. Empty for legacy
     /// scenarios; populated by the runner before each `step()` for
     /// cluster scenarios.
@@ -879,6 +932,47 @@ pub trait RigidMassModel {
     /// its validity envelope or produces non-finite output.
     fn mass_properties_rate(&self, t: SimTime) -> Result<MassPropertiesRate, ModelEvalError>;
 
+    /// Context-carrying mass-properties query. The default
+    /// implementation preserves time-only legacy behaviour. Per-body
+    /// models override this to select resources owned by
+    /// `ctx.active_body` after separation.
+    ///
+    /// # Errors
+    ///
+    /// Forwards the [`ModelEvalError`] from the override or the
+    /// default's inner [`Self::mass_properties`] call.
+    fn mass_properties_at(&self, ctx: MassContext<'_>) -> Result<MassProperties, ModelEvalError> {
+        self.mass_properties(ctx.time)
+    }
+
+    /// Context-carrying mass-properties-rate query. The default
+    /// implementation preserves time-only legacy behaviour. Per-body
+    /// models override this to select resources owned by
+    /// `ctx.active_body` after separation.
+    ///
+    /// # Errors
+    ///
+    /// Forwards the [`ModelEvalError`] from the override or the
+    /// default's inner [`Self::mass_properties_rate`] call.
+    fn mass_properties_rate_at(
+        &self,
+        ctx: MassContext<'_>,
+    ) -> Result<MassPropertiesRate, ModelEvalError> {
+        self.mass_properties_rate(ctx.time)
+    }
+
+    /// `true` when the rigid mass model is compatible with a
+    /// separated-body lane whose mass properties are held on the lane
+    /// state itself.
+    ///
+    /// Constant mass properties opt in. Time-varying propellant,
+    /// engine, or tank models must stay `false` until separated lanes
+    /// own their own mass-property model.
+    #[must_use]
+    fn supports_separated_body_propagation(&self) -> bool {
+        false
+    }
+
     /// Validation status declared by this model.
     #[must_use]
     fn validation(&self) -> ValidationStatus {
@@ -912,6 +1006,10 @@ impl RigidMassModel for ConstantMassRigid {
 
     fn mass_properties_rate(&self, _t: SimTime) -> Result<MassPropertiesRate, ModelEvalError> {
         Ok(MassPropertiesRate::zero())
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        true
     }
 
     fn validation(&self) -> ValidationStatus {
@@ -1009,6 +1107,7 @@ mod tests {
                 environment: &env,
                 mass_kg: state.mass.get::<kilogram>(),
                 time: SimTime::ZERO,
+                active_body: None,
                 effector_actuals: EffectorActualsView::empty(),
                 engine_snapshot: EngineSnapshotView::empty(),
                 tank_snapshot: TankSnapshotView::empty(),
@@ -1031,6 +1130,7 @@ mod tests {
                 environment: &env,
                 mass_kg: state.mass.get::<kilogram>(),
                 time: SimTime::ZERO,
+                active_body: None,
                 effector_actuals: EffectorActualsView::empty(),
                 engine_snapshot: EngineSnapshotView::empty(),
                 tank_snapshot: TankSnapshotView::empty(),

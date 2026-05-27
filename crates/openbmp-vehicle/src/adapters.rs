@@ -41,10 +41,50 @@ use openbmp_physics::{AtmosphereModel, GravityModel};
 use openbmp_propulsion::Motor;
 use openbmp_state::{MassProperties, PointMassState, RigidBodyState};
 
-use openbmp_core::{Body, ModelId, Position3, SimTime, ValidationStatus};
+use openbmp_core::{Body, BodyId, ModelId, Position3, SimTime, ValidationStatus};
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
+
+fn owner_allows(
+    active_body: Option<BodyId>,
+    owner: Option<BodyId>,
+    model_id: ModelId,
+    missing_reason: &'static str,
+) -> Result<bool, ModelEvalError> {
+    match active_body {
+        None => Ok(true),
+        Some(active) => match owner {
+            Some(owner) => Ok(owner == active),
+            None => Err(ModelEvalError::InvalidState {
+                model: model_id,
+                reason: Cow::Borrowed(missing_reason),
+            }),
+        },
+    }
+}
+
+fn mapped_owner_allows<K: Ord>(
+    active_body: Option<BodyId>,
+    owners: &BTreeMap<K, BodyId>,
+    key: &K,
+    model_id: ModelId,
+    missing_reason: &'static str,
+) -> Result<bool, ModelEvalError> {
+    match active_body {
+        None => Ok(true),
+        Some(active) => owners.get(key).map_or_else(
+            || {
+                Err(ModelEvalError::InvalidState {
+                    model: model_id,
+                    reason: Cow::Borrowed(missing_reason),
+                })
+            },
+            |owner| Ok(*owner == active),
+        ),
+    }
+}
 
 // ---------------------------------------------------------------------
 // GravityForceAdapter
@@ -99,6 +139,10 @@ impl<G: GravityModel> ForceModel<PointMassState> for GravityForceAdapter<G> {
         Ok(f)
     }
 
+    fn supports_separated_body_propagation(&self) -> bool {
+        true
+    }
+
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
     }
@@ -130,6 +174,10 @@ impl<G: GravityModel> ForceModel<RigidBodyState> for GravityForceAdapter<G> {
         Ok(f)
     }
 
+    fn supports_separated_body_propagation(&self) -> bool {
+        true
+    }
+
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
     }
@@ -150,6 +198,7 @@ pub struct MotorThrustForceAdapter<M> {
     motor: M,
     ignition_time_s: f64,
     model_id: ModelId,
+    owner: Option<BodyId>,
 }
 
 impl<M> MotorThrustForceAdapter<M> {
@@ -161,6 +210,23 @@ impl<M> MotorThrustForceAdapter<M> {
             motor,
             ignition_time_s,
             model_id,
+            owner: None,
+        }
+    }
+
+    /// Construct with an owning body for post-separation routing.
+    #[must_use]
+    pub const fn new_owned(
+        motor: M,
+        ignition_time_s: f64,
+        model_id: ModelId,
+        owner: BodyId,
+    ) -> Self {
+        Self {
+            motor,
+            ignition_time_s,
+            model_id,
+            owner: Some(owner),
         }
     }
 
@@ -182,6 +248,14 @@ impl<M: Motor> ForceModel<PointMassState> for MotorThrustForceAdapter<M> {
         &self,
         ctx: ForceContext<'_, PointMassState>,
     ) -> Result<Vector3<f64>, ModelEvalError> {
+        if !owner_allows(
+            ctx.active_body,
+            self.owner,
+            self.model_id,
+            "motor thrust adapter: mounted_to is required for separated-body propagation",
+        )? {
+            return Ok(Vector3::zeros());
+        }
         let t_since = ctx.time.as_seconds() - self.ignition_time_s;
         let thrust_n =
             self.motor
@@ -208,6 +282,14 @@ impl<M: Motor> ForceModel<RigidBodyState> for MotorThrustForceAdapter<M> {
         &self,
         ctx: ForceContext<'_, RigidBodyState>,
     ) -> Result<Vector3<f64>, ModelEvalError> {
+        if !owner_allows(
+            ctx.active_body,
+            self.owner,
+            self.model_id,
+            "motor thrust adapter: mounted_to is required for separated-body propagation",
+        )? {
+            return Ok(Vector3::zeros());
+        }
         let t_since = ctx.time.as_seconds() - self.ignition_time_s;
         let thrust_n =
             self.motor
@@ -239,6 +321,10 @@ impl<M: Motor> ForceModel<RigidBodyState> for MotorThrustForceAdapter<M> {
 
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.owner.is_some()
     }
 }
 
@@ -352,6 +438,7 @@ pub struct DeckDragForceAdapter<Atm> {
     deck: AeroDeck,
     atmosphere: Atm,
     model_id: ModelId,
+    owner: Option<BodyId>,
 }
 
 impl<Atm> DeckDragForceAdapter<Atm> {
@@ -363,6 +450,23 @@ impl<Atm> DeckDragForceAdapter<Atm> {
             deck,
             atmosphere,
             model_id,
+            owner: None,
+        }
+    }
+
+    /// Construct with an owning body for post-separation routing.
+    #[must_use]
+    pub const fn new_owned(
+        deck: AeroDeck,
+        atmosphere: Atm,
+        model_id: ModelId,
+        owner: BodyId,
+    ) -> Self {
+        Self {
+            deck,
+            atmosphere,
+            model_id,
+            owner: Some(owner),
         }
     }
 
@@ -384,6 +488,14 @@ impl<Atm: AtmosphereModel> ForceModel<PointMassState> for DeckDragForceAdapter<A
         &self,
         ctx: ForceContext<'_, PointMassState>,
     ) -> Result<Vector3<f64>, ModelEvalError> {
+        if !owner_allows(
+            ctx.active_body,
+            self.owner,
+            self.model_id,
+            "aero deck adapter: mounted_to is required for separated-body propagation",
+        )? {
+            return Ok(Vector3::zeros());
+        }
         compute_axial_drag(
             &self.deck,
             &self.atmosphere,
@@ -405,6 +517,14 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for DeckDragForceAdapter<A
         &self,
         ctx: ForceContext<'_, RigidBodyState>,
     ) -> Result<Vector3<f64>, ModelEvalError> {
+        if !owner_allows(
+            ctx.active_body,
+            self.owner,
+            self.model_id,
+            "aero deck adapter: mounted_to is required for separated-body propagation",
+        )? {
+            return Ok(Vector3::zeros());
+        }
         // Axial-drag adapter is axisymmetric: drag opposes the ECI
         // velocity vector, magnitude depends only on speed and
         // altitude. RigidBodyState carries the same `velocity` and
@@ -424,6 +544,10 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for DeckDragForceAdapter<A
 
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.owner.is_some()
     }
 }
 
@@ -554,6 +678,7 @@ fn map_aero_lookup_error(model_id: ModelId, err: AeroError) -> ModelEvalError {
 #[derive(Clone, Debug)]
 pub struct EngineClusterForceAdapter {
     engine_ids: Vec<openbmp_core::EngineId>,
+    engine_owners: BTreeMap<openbmp_core::EngineId, BodyId>,
     model_id: ModelId,
 }
 
@@ -564,6 +689,22 @@ impl EngineClusterForceAdapter {
     pub fn new(engine_ids: Vec<openbmp_core::EngineId>, model_id: ModelId) -> Self {
         Self {
             engine_ids,
+            engine_owners: BTreeMap::new(),
+            model_id,
+        }
+    }
+
+    /// Construct with per-engine owner bodies for post-separation
+    /// routing.
+    #[must_use]
+    pub fn new_with_owners(
+        engine_ids: Vec<openbmp_core::EngineId>,
+        engine_owners: BTreeMap<openbmp_core::EngineId, BodyId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            engine_ids,
+            engine_owners,
             model_id,
         }
     }
@@ -576,6 +717,15 @@ impl ForceModel<PointMassState> for EngineClusterForceAdapter {
     ) -> Result<Vector3<f64>, ModelEvalError> {
         let mut force_eci = Vector3::zeros();
         for id in &self.engine_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.engine_owners,
+                id,
+                self.model_id,
+                "engine cluster force adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
             let snap = ctx
                 .engine_snapshot
                 .get(*id)
@@ -612,6 +762,15 @@ impl ForceModel<RigidBodyState> for EngineClusterForceAdapter {
     ) -> Result<Vector3<f64>, ModelEvalError> {
         let mut force_eci = Vector3::zeros();
         for id in &self.engine_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.engine_owners,
+                id,
+                self.model_id,
+                "engine cluster force adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
             let snap = ctx
                 .engine_snapshot
                 .get(*id)
@@ -638,6 +797,12 @@ impl ForceModel<RigidBodyState> for EngineClusterForceAdapter {
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
     }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.engine_ids
+            .iter()
+            .all(|id| self.engine_owners.contains_key(id))
+    }
 }
 
 /// Kernel-side moment adapter for a rigid-body engine cluster.
@@ -650,6 +815,7 @@ impl ForceModel<RigidBodyState> for EngineClusterForceAdapter {
 pub struct EngineClusterMomentAdapter {
     engine_ids: Vec<openbmp_core::EngineId>,
     mount_points_body: Vec<Position3<Body>>,
+    engine_owners: BTreeMap<openbmp_core::EngineId, BodyId>,
     model_id: ModelId,
 }
 
@@ -677,6 +843,36 @@ impl EngineClusterMomentAdapter {
         Ok(Self {
             engine_ids,
             mount_points_body,
+            engine_owners: BTreeMap::new(),
+            model_id,
+        })
+    }
+
+    /// Construct with per-engine owner bodies for post-separation
+    /// routing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelEvalError::InvalidState`] when the arrays are not
+    /// the same length.
+    pub fn new_with_owners(
+        engine_ids: Vec<openbmp_core::EngineId>,
+        mount_points_body: Vec<Position3<Body>>,
+        engine_owners: BTreeMap<openbmp_core::EngineId, BodyId>,
+        model_id: ModelId,
+    ) -> Result<Self, ModelEvalError> {
+        if engine_ids.len() != mount_points_body.len() {
+            return Err(ModelEvalError::InvalidState {
+                model: model_id,
+                reason: Cow::Borrowed(
+                    "engine cluster moment adapter: engine_ids and mount_points_body must have the same length",
+                ),
+            });
+        }
+        Ok(Self {
+            engine_ids,
+            mount_points_body,
+            engine_owners,
             model_id,
         })
     }
@@ -689,6 +885,15 @@ impl MomentModel<RigidBodyState> for EngineClusterMomentAdapter {
     ) -> Result<Vector3<f64>, ModelEvalError> {
         let mut total_moment_body = Vector3::zeros();
         for (id, mount) in self.engine_ids.iter().zip(self.mount_points_body.iter()) {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.engine_owners,
+                id,
+                self.model_id,
+                "engine cluster moment adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
             let snap = ctx
                 .engine_snapshot
                 .get(*id)
@@ -715,6 +920,12 @@ impl MomentModel<RigidBodyState> for EngineClusterMomentAdapter {
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
     }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.engine_ids
+            .iter()
+            .all(|id| self.engine_owners.contains_key(id))
+    }
 }
 
 /// Kernel-side mass adapter for an engine cluster.
@@ -732,6 +943,7 @@ impl MomentModel<RigidBodyState> for EngineClusterMomentAdapter {
 pub struct EngineClusterMassAdapter {
     dry_vehicle_mass_kg: f64,
     engine_ids: Vec<openbmp_core::EngineId>,
+    engine_owners: BTreeMap<openbmp_core::EngineId, BodyId>,
     model_id: ModelId,
 }
 
@@ -747,6 +959,24 @@ impl EngineClusterMassAdapter {
         Self {
             dry_vehicle_mass_kg,
             engine_ids,
+            engine_owners: BTreeMap::new(),
+            model_id,
+        }
+    }
+
+    /// Construct with per-engine owner bodies for post-separation
+    /// routing.
+    #[must_use]
+    pub fn new_with_owners(
+        dry_vehicle_mass_kg: f64,
+        engine_ids: Vec<openbmp_core::EngineId>,
+        engine_owners: BTreeMap<openbmp_core::EngineId, BodyId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            dry_vehicle_mass_kg,
+            engine_ids,
+            engine_owners,
             model_id,
         }
     }
@@ -768,6 +998,15 @@ impl MassModel for EngineClusterMassAdapter {
     fn mass_kg_at(&self, ctx: openbmp_models::MassContext<'_>) -> Result<f64, ModelEvalError> {
         let mut consumed = 0.0_f64;
         for id in &self.engine_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.engine_owners,
+                id,
+                self.model_id,
+                "engine cluster mass adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
             let snap = ctx
                 .engine_snapshot
                 .get(*id)
@@ -794,6 +1033,15 @@ impl MassModel for EngineClusterMassAdapter {
     ) -> Result<f64, ModelEvalError> {
         let mut total = 0.0_f64;
         for id in &self.engine_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.engine_owners,
+                id,
+                self.model_id,
+                "engine cluster mass adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
             let snap = ctx
                 .engine_snapshot
                 .get(*id)
@@ -839,6 +1087,7 @@ pub struct RigidMotorMassAdapter<M> {
     dry_inertia_body: nalgebra::Matrix3<f64>,
     ignition_time_s: f64,
     model_id: ModelId,
+    owner: Option<BodyId>,
 }
 
 impl<M> RigidMotorMassAdapter<M> {
@@ -863,6 +1112,30 @@ impl<M> RigidMotorMassAdapter<M> {
             dry_inertia_body,
             ignition_time_s,
             model_id,
+            owner: None,
+        }
+    }
+
+    /// Construct with an owning body for post-separation mass-rate
+    /// routing.
+    #[must_use]
+    pub const fn new_owned(
+        motor: M,
+        dry_vehicle_mass_kg: f64,
+        dry_center_of_mass_body: Position3<Body>,
+        dry_inertia_body: nalgebra::Matrix3<f64>,
+        ignition_time_s: f64,
+        model_id: ModelId,
+        owner: BodyId,
+    ) -> Self {
+        Self {
+            motor,
+            dry_vehicle_mass_kg,
+            dry_center_of_mass_body,
+            dry_inertia_body,
+            ignition_time_s,
+            model_id,
+            owner: Some(owner),
         }
     }
 
@@ -919,6 +1192,25 @@ impl<M: Motor> RigidMassModel for RigidMotorMassAdapter<M> {
         })
     }
 
+    fn mass_properties_rate_at(
+        &self,
+        ctx: openbmp_models::MassContext<'_>,
+    ) -> Result<MassPropertiesRate, ModelEvalError> {
+        if !owner_allows(
+            ctx.active_body,
+            self.owner,
+            self.model_id,
+            "rigid motor mass adapter: mounted_to is required for separated-body propagation",
+        )? {
+            return Ok(MassPropertiesRate::zero());
+        }
+        self.mass_properties_rate(ctx.time)
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.owner.is_some()
+    }
+
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
     }
@@ -942,6 +1234,7 @@ impl<M: Motor> RigidMassModel for RigidMotorMassAdapter<M> {
 #[derive(Clone, Debug)]
 pub struct TankRackForceAdapter {
     tank_ids: Vec<openbmp_core::TankId>,
+    tank_owners: BTreeMap<openbmp_core::TankId, BodyId>,
     model_id: ModelId,
 }
 
@@ -950,7 +1243,26 @@ impl TankRackForceAdapter {
     /// order) and a stable model id.
     #[must_use]
     pub fn new(tank_ids: Vec<openbmp_core::TankId>, model_id: ModelId) -> Self {
-        Self { tank_ids, model_id }
+        Self {
+            tank_ids,
+            tank_owners: BTreeMap::new(),
+            model_id,
+        }
+    }
+
+    /// Construct with per-tank owner bodies for post-separation
+    /// routing.
+    #[must_use]
+    pub fn new_with_owners(
+        tank_ids: Vec<openbmp_core::TankId>,
+        tank_owners: BTreeMap<openbmp_core::TankId, BodyId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            tank_ids,
+            tank_owners,
+            model_id,
+        }
     }
 }
 
@@ -961,6 +1273,15 @@ impl ForceModel<PointMassState> for TankRackForceAdapter {
     ) -> Result<Vector3<f64>, ModelEvalError> {
         let mut force_eci = Vector3::zeros();
         for id in &self.tank_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.tank_owners,
+                id,
+                self.model_id,
+                "tank rack force adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
             let snap = ctx
                 .tank_snapshot
                 .get(*id)
@@ -993,6 +1314,15 @@ impl ForceModel<RigidBodyState> for TankRackForceAdapter {
     ) -> Result<Vector3<f64>, ModelEvalError> {
         let mut force_eci = Vector3::zeros();
         for id in &self.tank_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.tank_owners,
+                id,
+                self.model_id,
+                "tank rack force adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
             let snap = ctx
                 .tank_snapshot
                 .get(*id)
@@ -1016,6 +1346,12 @@ impl ForceModel<RigidBodyState> for TankRackForceAdapter {
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
     }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.tank_ids
+            .iter()
+            .all(|id| self.tank_owners.contains_key(id))
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1030,6 +1366,7 @@ impl ForceModel<RigidBodyState> for TankRackForceAdapter {
 #[derive(Clone, Debug)]
 pub struct TankRackMomentAdapter {
     tank_ids: Vec<openbmp_core::TankId>,
+    tank_owners: BTreeMap<openbmp_core::TankId, BodyId>,
     model_id: ModelId,
 }
 
@@ -1038,7 +1375,26 @@ impl TankRackMomentAdapter {
     /// order) and a stable model id.
     #[must_use]
     pub fn new(tank_ids: Vec<openbmp_core::TankId>, model_id: ModelId) -> Self {
-        Self { tank_ids, model_id }
+        Self {
+            tank_ids,
+            tank_owners: BTreeMap::new(),
+            model_id,
+        }
+    }
+
+    /// Construct with per-tank owner bodies for post-separation
+    /// routing.
+    #[must_use]
+    pub fn new_with_owners(
+        tank_ids: Vec<openbmp_core::TankId>,
+        tank_owners: BTreeMap<openbmp_core::TankId, BodyId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            tank_ids,
+            tank_owners,
+            model_id,
+        }
     }
 }
 
@@ -1049,6 +1405,15 @@ impl MomentModel<RigidBodyState> for TankRackMomentAdapter {
     ) -> Result<Vector3<f64>, ModelEvalError> {
         let mut total = Vector3::zeros();
         for id in &self.tank_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.tank_owners,
+                id,
+                self.model_id,
+                "tank rack moment adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
             let snap = ctx
                 .tank_snapshot
                 .get(*id)
@@ -1070,6 +1435,12 @@ impl MomentModel<RigidBodyState> for TankRackMomentAdapter {
 
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.tank_ids
+            .iter()
+            .all(|id| self.tank_owners.contains_key(id))
     }
 }
 
@@ -1109,6 +1480,8 @@ pub struct DirectTorqueBinding {
     /// Snapshot map key the runner pushes the effector deflection
     /// under (typically the effector's bare scenario-text id).
     pub snapshot_key: String,
+    /// Optional owner body for post-separation routing.
+    pub owner: Option<BodyId>,
     /// Body-axis index in `[roll, pitch, yaw]` order.
     pub body_axis_index: usize,
     /// Per-rad torque effectiveness (N·m / rad).
@@ -1130,6 +1503,14 @@ impl MomentModel<RigidBodyState> for DirectTorqueMomentAdapter {
     ) -> Result<Vector3<f64>, ModelEvalError> {
         let mut total: Vector3<f64> = Vector3::zeros();
         for binding in &self.bindings {
+            if !owner_allows(
+                ctx.active_body,
+                binding.owner,
+                self.model_id,
+                "direct torque moment adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
             let deflection = ctx
                 .effector_actuals
                 .get(&binding.snapshot_key)
@@ -1160,6 +1541,10 @@ impl MomentModel<RigidBodyState> for DirectTorqueMomentAdapter {
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
     }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.bindings.iter().all(|binding| binding.owner.is_some())
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1183,6 +1568,7 @@ impl MomentModel<RigidBodyState> for DirectTorqueMomentAdapter {
 pub struct TankRackMassAdapter {
     inner: Box<dyn MassModel>,
     tank_ids: Vec<openbmp_core::TankId>,
+    tank_owners: BTreeMap<openbmp_core::TankId, BodyId>,
     model_id: ModelId,
 }
 
@@ -1190,6 +1576,7 @@ impl std::fmt::Debug for TankRackMassAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TankRackMassAdapter")
             .field("tank_ids", &self.tank_ids)
+            .field("tank_owners", &self.tank_owners)
             .field("model_id", &self.model_id)
             .field("inner", &"Box<dyn MassModel>")
             .finish()
@@ -1208,6 +1595,24 @@ impl TankRackMassAdapter {
         Self {
             inner,
             tank_ids,
+            tank_owners: BTreeMap::new(),
+            model_id,
+        }
+    }
+
+    /// Construct with per-tank owner bodies for post-separation
+    /// routing.
+    #[must_use]
+    pub fn new_with_owners(
+        inner: Box<dyn MassModel>,
+        tank_ids: Vec<openbmp_core::TankId>,
+        tank_owners: BTreeMap<openbmp_core::TankId, BodyId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            inner,
+            tank_ids,
+            tank_owners,
             model_id,
         }
     }
@@ -1227,6 +1632,15 @@ impl MassModel for TankRackMassAdapter {
     fn mass_kg_at(&self, ctx: openbmp_models::MassContext<'_>) -> Result<f64, ModelEvalError> {
         let mut total = self.inner.mass_kg_at(ctx)?;
         for id in &self.tank_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.tank_owners,
+                id,
+                self.model_id,
+                "tank rack mass adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
             let snap = ctx
                 .tank_snapshot
                 .get(*id)
@@ -1292,6 +1706,7 @@ impl MassModel for TankRackMassAdapter {
 /// summation skips them naturally.
 pub struct RecoveryRackForceAdapter<Atm> {
     recovery_ids: Vec<openbmp_core::RecoveryId>,
+    recovery_owners: BTreeMap<openbmp_core::RecoveryId, BodyId>,
     atmosphere: Atm,
     model_id: ModelId,
 }
@@ -1300,6 +1715,7 @@ impl<Atm: std::fmt::Debug> std::fmt::Debug for RecoveryRackForceAdapter<Atm> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RecoveryRackForceAdapter")
             .field("recovery_ids", &self.recovery_ids)
+            .field("recovery_owners", &self.recovery_owners)
             .field("atmosphere", &self.atmosphere)
             .field("model_id", &self.model_id)
             .finish()
@@ -1318,6 +1734,24 @@ impl<Atm> RecoveryRackForceAdapter<Atm> {
     ) -> Self {
         Self {
             recovery_ids,
+            recovery_owners: BTreeMap::new(),
+            atmosphere,
+            model_id,
+        }
+    }
+
+    /// Construct with per-recovery-device owner bodies for
+    /// post-separation routing.
+    #[must_use]
+    pub fn new_with_owners(
+        recovery_ids: Vec<openbmp_core::RecoveryId>,
+        recovery_owners: BTreeMap<openbmp_core::RecoveryId, BodyId>,
+        atmosphere: Atm,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            recovery_ids,
+            recovery_owners,
             atmosphere,
             model_id,
         }
@@ -1336,6 +1770,8 @@ impl<Atm: AtmosphereModel> ForceModel<PointMassState> for RecoveryRackForceAdapt
             ctx.state.velocity.vector,
             ctx.state.position.vector.z,
             ctx.time,
+            ctx.active_body,
+            &self.recovery_owners,
             ctx.recovery_snapshot,
         )
     }
@@ -1357,12 +1793,20 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for RecoveryRackForceAdapt
             ctx.state.velocity.vector,
             ctx.state.position.vector.z,
             ctx.time,
+            ctx.active_body,
+            &self.recovery_owners,
             ctx.recovery_snapshot,
         )
     }
 
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.recovery_ids
+            .iter()
+            .all(|id| self.recovery_owners.contains_key(id))
     }
 }
 
@@ -1377,6 +1821,8 @@ fn compute_recovery_drag<Atm: AtmosphereModel>(
     velocity_eci: Vector3<f64>,
     position_eci_z: f64,
     time: SimTime,
+    active_body: Option<BodyId>,
+    recovery_owners: &BTreeMap<openbmp_core::RecoveryId, BodyId>,
     recovery_snapshot: openbmp_models::RecoverySnapshotView<'_>,
 ) -> Result<Vector3<f64>, ModelEvalError> {
     // Sum (c_d * area) across every declared device. Locked operand
@@ -1384,6 +1830,15 @@ fn compute_recovery_drag<Atm: AtmosphereModel>(
     // left-fold convention as TankRackForceAdapter / EngineCluster.
     let mut sum_cd_area = 0.0_f64;
     for id in recovery_ids {
+        if !mapped_owner_allows(
+            active_body,
+            recovery_owners,
+            id,
+            model_id,
+            "recovery rack force adapter: mounted_to is required for separated-body propagation",
+        )? {
+            continue;
+        }
         let snap = recovery_snapshot
             .get(*id)
             .ok_or(ModelEvalError::OutOfEnvelope {
@@ -1444,7 +1899,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use openbmp_core::{EngineId, Position3, SimTime, Velocity3};
+    use openbmp_core::{BodyId, EngineId, Position3, SimTime, Velocity3};
     use openbmp_models::EngineSnapshot;
     use openbmp_models::EnvironmentSample;
     use openbmp_physics::{AtmosphereSample, ConstantGravity, IsothermalAtmosphere, PhysicsError};
@@ -1473,6 +1928,7 @@ mod tests {
             environment: env,
             mass_kg,
             time: SimTime::from_seconds(time_s),
+            active_body: None,
             effector_actuals: openbmp_models::EffectorActualsView::empty(),
             engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),
@@ -1702,6 +2158,7 @@ mod tests {
             environment: env,
             mass_kg,
             time: SimTime::from_seconds(time_s),
+            active_body: None,
             effector_actuals: openbmp_models::EffectorActualsView::empty(),
             engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),
@@ -1718,6 +2175,7 @@ mod tests {
             state,
             environment: env,
             time: SimTime::ZERO,
+            active_body: None,
             effector_actuals: openbmp_models::EffectorActualsView::empty(),
             engine_snapshot: openbmp_models::EngineSnapshotView::new(snapshot),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),
@@ -1986,6 +2444,7 @@ mod tests {
             environment: env,
             mass_kg: state.mass.get::<kilogram>(),
             time: SimTime::from_seconds(time_s),
+            active_body: None,
             effector_actuals: openbmp_models::EffectorActualsView::empty(),
             engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),
@@ -2136,6 +2595,67 @@ mod tests {
         let speed = speed_sq.sqrt();
         let expected_z = -drag_magnitude * (-40.0_f64 / speed);
         assert_eq!(f.z.to_bits(), expected_z.to_bits());
+    }
+
+    #[test]
+    fn recovery_rack_filters_drag_by_active_body_owner() {
+        let id_upper = RecoveryId::from_path("recovery.upper");
+        let id_lower = RecoveryId::from_path("recovery.lower");
+        let body_upper = BodyId::from_path("vehicle.assembly.bodies.upper");
+        let body_lower = BodyId::from_path("vehicle.assembly.bodies.lower");
+        let owners = BTreeMap::from([(id_upper, body_upper), (id_lower, body_lower)]);
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let adapter = RecoveryRackForceAdapter::new_with_owners(
+            vec![id_upper, id_lower],
+            owners,
+            atm,
+            ModelId::new(370),
+        );
+        let state = fixture_state(500.0, -40.0);
+        let env = null_env();
+        let snapshot =
+            recovery_snapshot_map(&[(id_upper, true, 1.0, 0.5), (id_lower, true, 1.5, 4.0)]);
+
+        let mut upper_ctx = recovery_ctx(&state, &env, 0.0, &snapshot);
+        upper_ctx.active_body = Some(body_upper);
+        let upper_force = adapter.force_n_eci(upper_ctx).unwrap();
+
+        let mut lower_ctx = recovery_ctx(&state, &env, 0.0, &snapshot);
+        lower_ctx.active_body = Some(body_lower);
+        let lower_force = adapter.force_n_eci(lower_ctx).unwrap();
+
+        let all_force = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+        assert!(
+            lower_force.z > upper_force.z * 10.0,
+            "lower body should receive only its larger recovery drag"
+        );
+        assert!((all_force.z - (upper_force.z + lower_force.z)).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn recovery_rack_missing_owner_fails_for_active_body() {
+        let id_upper = RecoveryId::from_path("recovery.upper");
+        let id_lower = RecoveryId::from_path("recovery.lower");
+        let body_upper = BodyId::from_path("vehicle.assembly.bodies.upper");
+        let body_lower = BodyId::from_path("vehicle.assembly.bodies.lower");
+        let owners = BTreeMap::from([(id_upper, body_upper)]);
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let adapter = RecoveryRackForceAdapter::new_with_owners(
+            vec![id_upper, id_lower],
+            owners,
+            atm,
+            ModelId::new(370),
+        );
+        let state = fixture_state(500.0, -40.0);
+        let env = null_env();
+        let snapshot =
+            recovery_snapshot_map(&[(id_upper, true, 1.0, 0.5), (id_lower, true, 1.5, 4.0)]);
+        let mut ctx = recovery_ctx(&state, &env, 0.0, &snapshot);
+        ctx.active_body = Some(body_lower);
+        let err = adapter.force_n_eci(ctx).unwrap_err();
+        assert!(matches!(err, ModelEvalError::InvalidState { .. }));
     }
 
     #[test]

@@ -337,6 +337,12 @@ impl<S: SimState> ForceModel<S> for KernelVehicle<S> {
         }
         Ok(total)
     }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.force_models
+            .iter()
+            .all(|model| model.supports_separated_body_propagation())
+    }
 }
 
 impl<S: SimState> MomentModel<S> for KernelVehicle<S> {
@@ -347,6 +353,12 @@ impl<S: SimState> MomentModel<S> for KernelVehicle<S> {
             total += component;
         }
         Ok(total)
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.moment_models
+            .iter()
+            .all(|model| model.supports_separated_body_propagation())
     }
 }
 
@@ -507,6 +519,7 @@ mod tests {
             environment: env,
             mass_kg: 1.0,
             time: SimTime::ZERO,
+            active_body: None,
             effector_actuals: openbmp_models::EffectorActualsView::empty(),
             engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),
@@ -715,6 +728,7 @@ mod tests {
                 state: &state,
                 environment: &env,
                 time: SimTime::ZERO,
+                active_body: None,
                 effector_actuals: openbmp_models::EffectorActualsView::empty(),
                 engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
                 tank_snapshot: openbmp_models::TankSnapshotView::empty(),

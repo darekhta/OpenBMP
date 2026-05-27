@@ -38,9 +38,10 @@ and are gated in CI.
   Vinh lifting-entry equations, cross-checked against their analytic forms.
 - **PR1 stage-separation core** — `jettison_stage` validates against
   `[multi_body]`, conserves linear momentum to tolerance, and executes a
-  fixed-step RK4, gravity-only rigid-body split with deterministic propagation
-  of the departing body. Broader force ownership and footprint reporting remain
-  deferred.
+  fixed-step RK4 rigid-body split with deterministic propagation of the
+  departing body. Per-body ownership now routes aero, thrust, tanks, recovery,
+  effectors, snapshots, and mass resources after separation; coupled-body
+  effects and footprint reporting remain deferred.
 
 ## Shipped at research grade
 
@@ -71,17 +72,16 @@ scope conversation does not need to be re-derived.
 **Kernel and scenario**
 
 - Multi-rate scheduling as a first-class kernel feature.
-- Per-body force-stack ownership after stage separation (aero, thrust, tanks,
-  recovery), coupled-body effects, and post-run spent-body footprint reporting.
-  The PR1 gravity-only split is implemented; see
+- Coupled-body effects and post-run spent-body footprint reporting after stage
+  separation. The fixed-step RK4 independent-body split is implemented; see
   [`staging-and-separation.md`](staging-and-separation.md).
 
 **Flight profiles**
 
 The multi-phase ascent → coast → apogee → descent → entry profile is designed
 across [`flight-profiles-architecture.md`](flight-profiles-architecture.md) and
-its companions. PR1 `jettison_stage` is implemented only inside the validated
-gravity-only separation envelope. PR2 implements the schema-v3
+its companions. `jettison_stage` is implemented inside the validated
+fixed-step RK4 rigid-body separation envelope. PR2 implements the schema-v3
 `[fc.ascent_reference]` path for pitch-program and gravity-turn references;
 the explicit reference family remains reserved. PR3 implements the first
 coast/footprint slice: schema-v3 `[landing_footprint]`, constant-gravity

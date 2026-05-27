@@ -1195,6 +1195,7 @@ where
         environment: &env_sample,
         mass_kg: state.mass.get::<kilogram>(),
         time: state.time,
+        active_body: None,
         effector_actuals: openbmp_sim::EffectorActualsView::new(kernel_actuals),
         engine_snapshot: openbmp_sim::EngineSnapshotView::new(kernel_engine_snapshot),
         tank_snapshot: openbmp_sim::TankSnapshotView::new(kernel_tank_snapshot),

@@ -18,8 +18,9 @@ use openbmp_core::{
     Velocity3,
 };
 use openbmp_sim::{
-    ConstantMassRigid, EndTime, NullEnvironment, RigidBodyKernel, RigidBodySeparation, RigidModels,
-    Rk4FixedStep, SimulationConfig, ZeroForce, ZeroMoment,
+    ConstantMassRigid, EndTime, ForceContext, ForceModel, ModelEvalError, NullEnvironment,
+    RigidBodyKernel, RigidBodySeparation, RigidModels, Rk4FixedStep, SimulationConfig, ZeroForce,
+    ZeroMoment,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use uom::si::f64::Mass;
@@ -43,9 +44,24 @@ fn composite_mass_props() -> MassProperties {
     )
 }
 
-fn build_kernel(
+#[derive(Copy, Clone, Debug)]
+struct BodyOwnedForce;
+
+impl ForceModel<RigidBodyState> for BodyOwnedForce {
+    fn force_n_eci(
+        &self,
+        _ctx: ForceContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        Ok(Vector3::zeros())
+    }
+}
+
+fn build_kernel_with_force<F>(
     stop_s: f64,
-) -> RigidBodyKernel<Rk4FixedStep, ZeroForce, ZeroMoment, ConstantMassRigid, NullEnvironment, EndTime>
+    force_model: F,
+) -> RigidBodyKernel<Rk4FixedStep, F, ZeroMoment, ConstantMassRigid, NullEnvironment, EndTime>
+where
+    F: ForceModel<RigidBodyState>,
 {
     let mass_props = composite_mass_props();
     let initial_state = RigidBodyState::new(
@@ -59,7 +75,7 @@ fn build_kernel(
     let config = SimulationConfig {
         initial_state,
         integrator: Rk4FixedStep,
-        force_model: ZeroForce,
+        force_model,
         mass_model: RigidModels::new(ZeroMoment, ConstantMassRigid::new(mass_props)),
         environment: NullEnvironment,
         stop_condition: EndTime::new(SimTime::from_seconds(stop_s)),
@@ -69,8 +85,16 @@ fn build_kernel(
     RigidBodyKernel::new_rigid(config).expect("valid rigid-body config must construct")
 }
 
+fn build_kernel(
+    stop_s: f64,
+) -> RigidBodyKernel<Rk4FixedStep, ZeroForce, ZeroMoment, ConstantMassRigid, NullEnvironment, EndTime>
+{
+    build_kernel_with_force(stop_s, ZeroForce)
+}
+
 fn textbook_separation() -> RigidBodySeparation {
     RigidBodySeparation {
+        stack_body: BodyId::from_path("vehicle.assembly.bodies.upper"),
         body: BodyId::from_path("vehicle.assembly.bodies.lower"),
         stack_mass_properties: mass_props(4.0, 0.0, [1.0, 1.0, 0.5]),
         stage_mass_properties: mass_props(1.0, -1.0, [0.2, 0.2, 0.1]),
@@ -197,6 +221,19 @@ fn duplicate_stage_jettison_is_rejected() {
         .expect_err("duplicate body separation must fail");
     assert!(
         err.to_string().contains("already been jettisoned"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn stage_jettison_rejects_force_stack_without_separated_body_support() {
+    let mut kernel = build_kernel_with_force(0.3, BodyOwnedForce);
+    let err = kernel
+        .jettison_rigid_body(textbook_separation())
+        .expect_err("body-owned force stack must fail closed");
+    assert!(
+        err.to_string()
+            .contains("per-body force-stack ownership is required"),
         "unexpected error: {err}"
     );
 }

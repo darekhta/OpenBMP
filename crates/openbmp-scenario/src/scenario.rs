@@ -3093,6 +3093,95 @@ action  = { kind = "separation" }
         assert_eq!(multi_body.separations[0].lower_body_id, "lower");
     }
 
+    fn with_assembly_resource(fragment: &str) -> String {
+        VALID_STAGE_SEPARATION_SCENARIO.replace(
+            "\n[environment]\n",
+            &format!("\n{fragment}\n[environment]\n"),
+        )
+    }
+
+    fn assert_missing_multi_body_owner(fragment: &str, expected_field: &str) {
+        let toml = with_assembly_resource(fragment);
+        assert_missing_multi_body_owner_in(&toml, expected_field);
+    }
+
+    fn assert_missing_multi_body_owner_in(toml: &str, expected_field: &str) {
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, ref reason }
+                if field == expected_field && reason.contains("explicit `mounted_to` body")),
+            "expected missing mounted_to for {expected_field}, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_multi_body_resources_without_explicit_owners() {
+        let aero = VALID_STAGE_SEPARATION_SCENARIO
+            .replace(r#"models = ["gravity"]"#, r#"models = ["gravity", "aero"]"#)
+            .replace(
+                "\n[telemetry]\n",
+                "\n[aero]\ndeck = \"aero.csv\"\n\n[telemetry]\n",
+            );
+        let err = Scenario::from_toml_str(&aero).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, ref reason }
+                if field == "aero.mounted_to" && reason.contains("explicit `mounted_to` body")),
+            "expected missing aero mounted_to, got {err:?}",
+        );
+
+        let motor = VALID_STAGE_SEPARATION_SCENARIO.replace(
+            "\n[forces]\n",
+            "\n[propulsion.motor]\nfile = \"motor.csv\"\nignite_at_s = 0.0\nvariant = \"solid\"\n\n[forces]\n",
+        );
+        let err = Scenario::from_toml_str(&motor).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, ref reason }
+                if field == "propulsion.motor.mounted_to" && reason.contains("explicit `mounted_to` body")),
+            "expected missing motor mounted_to, got {err:?}",
+        );
+
+        assert_missing_multi_body_owner(
+            r#"[[vehicle.assembly.effectors]]
+id               = "delta_e"
+kind             = { kind = "linear_actuator", tau_s = 0.05 }
+limits           = { min = -0.349, max = 0.349, max_rate_per_s = 5.236, deadband = 0.0, latency_s = 0.0 }
+"#,
+            "vehicle.assembly.effectors[0].mounted_to",
+        );
+        let engine = with_assembly_resource(
+            r#"[[vehicle.assembly.engines]]
+id                 = "engine_a"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, -0.5]
+limits             = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.1, shutdown_transient_s = 0.1, max_gimbal_rad = 0.087 }
+"#)
+        .replace(r#"models = ["gravity"]"#, r#"models = ["gravity", "thrust"]"#);
+        assert_missing_multi_body_owner_in(&engine, "vehicle.assembly.engines[0].mounted_to");
+        assert_missing_multi_body_owner(
+            r#"[[vehicle.assembly.recovery]]
+id   = "main_chute"
+kind = { kind = "parachute_drag", c_d = 1.5, area_inflated_m2 = 2.0 }
+"#,
+            "vehicle.assembly.recovery[0].mounted_to",
+        );
+    }
+
+    #[test]
+    fn rejects_multi_body_resource_owner_unknown_body() {
+        let toml = VALID_STAGE_SEPARATION_SCENARIO
+            .replace(r#"models = ["gravity"]"#, r#"models = ["gravity", "aero"]"#)
+            .replace(
+                "\n[telemetry]\n",
+                "\n[aero]\ndeck = \"aero.csv\"\nmounted_to = \"typo\"\n\n[telemetry]\n",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnknownBodyReference { ref field, ref value }
+                if field == "aero.mounted_to" && value == "typo"),
+            "expected unknown aero owner body, got {err:?}",
+        );
+    }
+
     #[test]
     fn rejects_jettison_stage_without_multi_body_block() {
         let toml = VALID_STAGE_SEPARATION_SCENARIO

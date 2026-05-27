@@ -11,8 +11,8 @@ angular momentum across a jettison.
 
 ## Current state
 
-Stage separation now has a PR1 implementation in a deliberately small,
-validated envelope:
+Stage separation has a fixed-step RK4 rigid-body implementation with explicit
+per-body ownership for the force and mass resources that can survive a split:
 
 - `[[multi_body.separation]]` parses into `MultiBodyConfig` /
   `MultiBodySeparationConfig` (`openbmp-scenario/src/document.rs`), v3-gated,
@@ -20,20 +20,32 @@ validated envelope:
 - `ScenarioActionConfig::JettisonStage { body }` validates when the body
   exists, the vehicle is `rigid_body`, the body is jettisoned only once, and a
   matching `[multi_body]` separation conserves linear momentum to tolerance.
-- The runner executes `jettison_stage` for rigid-body, fixed-step RK4,
-  gravity-only profiles. The kernel partitions the composite state into the
-  continuing stack and departing body, then propagates both lanes in a
-  deterministic body order.
+- The runner executes `jettison_stage` for rigid-body, fixed-step RK4
+  profiles. The kernel partitions the composite state into the continuing
+  stack and departing body, then propagates both lanes in a deterministic body
+  order.
+- Aero decks, motors, liquid engines, tanks, recovery devices, and effectors
+  participate after separation only when the scenario declares `mounted_to`
+  ownership for each resource. Each lane evaluates only resources owned by its
+  active body.
+- Split-time mass properties are rebuilt from dry body properties plus the
+  live owned motor, engine, and tank snapshots. Engine consumed mass is debited
+  from the owning body; tank mass, CG offset, and inertia delta are applied to
+  the owning body.
+- Telemetry keeps the continuing stack in the existing rigid-body channels and
+  records departing lanes under `body.<lower_body_id>.*`, including a
+  `body.<lower_body_id>.separated` flag.
 - `ScenarioActionConfig::Separation` exists but `validate()` rejects it with
   `ScenarioError::UnsupportedActionKind { kind: "separation",
   missing_capability: "scripted stage separation" }`.
-- Force-rack-specific detached-body propagation (aero, thrust, tanks,
-  recovery, coupled-body effects) remains deferred and fails closed at runner
-  construction.
+- The generic rigid-body kernel also fails closed unless the active force,
+  moment, and rigid-mass models explicitly declare that they are safe to reuse
+  for independently propagated separated bodies.
 
-The PR1 validation case is a textbook two-body split with closed-form momentum
-balance and byte-stable rerun evidence. It is not a footprint or recovery
-analysis implementation.
+The validation suite includes a textbook gravity-only two-body split and an
+owned-engine split proving the continuing body receives thrust after
+separation while the detached body coasts. This is not yet a footprint or
+range-safety analysis implementation.
 
 ## Design
 
@@ -67,7 +79,8 @@ once    = true
 ```
 
 > **Status.** `ScenarioActionConfig::JettisonStage { body }` is implemented for
-> the PR1 rigid-body gravity-only envelope. The legacy bare `separation`
+> fixed-step RK4 rigid-body profiles with explicit resource ownership. The
+> legacy bare `separation`
 > variant remains for backward compatibility and stays deferred because it does
 > not identify which body leaves the stack.
 
@@ -102,22 +115,21 @@ stack `m_c`.
 
 ### Simultaneous propagation
 
-After separation the kernel integrates **two** rigid-body states in the PR1
-envelope. The current implementation is fixed-step RK4, gravity-only, and
-deterministic by declared separation order. Broader force-stack support remains
-future work. The intended long-term strategies are:
+After separation the kernel integrates independent rigid-body states in
+fixed-step RK4 and deterministic declared separation order. The implemented
+default strategy is:
 
 - **Independent bodies (default).** Once separated, the bodies share no force
-  coupling. Each is its own integration target with its own force stack
-  (the spent stage typically: gravity + drag + recovery; the continuing stack:
-  full propulsion + aero + control). Determinism is preserved by a fixed,
+  coupling. Each is its own integration target with a filtered force stack:
+  the spent stage may keep gravity + drag + recovery; the continuing stack may
+  keep propulsion + aero + control. Determinism is preserved by a fixed,
   declared body-iteration order.
 - **Coupled (reserved).** Plume impingement or tether coupling between freshly
   separated bodies is out of scope and reserved.
 
-> **Status.** PR1 ships independent two-lane propagation for the validated
-> gravity-only case. Coupled-body effects and per-body force-stack ownership are
-> still deferred.
+> **Status.** Coupled-body effects are still deferred. Model-level capability
+> gates prevent any ambiguous composite force stack from being silently reused
+> for detached bodies.
 
 ### Spent-stage fate
 
@@ -146,6 +158,12 @@ validation is cross-block and fail-closed:
   `m_c·Δv_c + m_s·Δv_s = 0` beyond tolerance is rejected at load.
 - Separation requires a `rigid_body` vehicle; a `point_mass` vehicle with a
   `jettison_stage` action is rejected (a point mass has no body to part).
+- In a `[multi_body]` scenario, aero, motor, engine, recovery, and effector
+  resources must declare `mounted_to`; tanks already require it. Missing or
+  unknown ownership fails closed before the runner starts.
+- The runtime still requires fixed-step RK4 for `[multi_body]`; adaptive
+  trajectory solvers are rejected until event localization and lane insertion
+  are implemented for them.
 
 ## Schema stub summary
 
@@ -154,7 +172,7 @@ validation is cross-block and fail-closed:
 | `ScenarioActionConfig::JettisonStage { body }` | `openbmp-scenario/src/document.rs` | Implemented for v3 rigid-body stage separation. |
 | `StageSeparationModel` trait | `openbmp-physics/src/profile.rs` | Implemented by `MomentumConservingStageSeparation` with closed-form tests. |
 | `ScenarioError::UnknownBodyReference` | `openbmp-scenario/src/error.rs` | Reused (already exists for tank→body checks; `{ field, value }`). |
-| Multi-body simultaneous propagation | kernel (`openbmp-sim`) | Implemented for fixed-step RK4, gravity-only PR1 validation profiles; broader force ownership deferred. |
+| Multi-body simultaneous propagation | kernel (`openbmp-sim`) | Implemented for fixed-step RK4 rigid-body profiles with explicit per-body force, moment, snapshot, and mass ownership. |
 
 ## References
 

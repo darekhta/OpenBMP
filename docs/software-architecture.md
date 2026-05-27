@@ -1160,11 +1160,11 @@ repositories.
 > tank's `mass_kg` to the vehicle total without checking whether
 > the cluster already accounts for the same propellant, so
 > scenarios that declare both an engine cluster and a tank
-> intended as its propellant store overcount mass; (3) the
-> rigid-body cluster mass adapter is still
-> `ConstantMassRigid` — slosh inertia perturbations are published
-> in the snapshot but are not consumed by the rigid mass-properties
-> model; (4) slosh telemetry channels are not separately exposed,
+> intended as its propellant store overcount mass; (3) rigid-body
+> tank inertia perturbations are consumed from the snapshot for the
+> body named by `mounted_to`, but tank drain remains scenario-driven
+> rather than engine-coupled; (4) slosh telemetry channels are not
+> separately exposed,
 > with determinism asserted via full-Parquet byte
 > equality.
 >

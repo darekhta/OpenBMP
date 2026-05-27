@@ -224,6 +224,7 @@ impl ScenarioDocument {
         if let Some(propulsion) = &self.propulsion {
             propulsion.validate(registry)?;
         }
+        self.validate_top_level_resource_owners()?;
         if let Some(wind) = &self.wind {
             wind.validate(registry)?;
             if self.environment.wind != "none" && self.environment.wind != wind.kind {
@@ -295,6 +296,38 @@ impl ScenarioDocument {
         self.validate_v3_top_level_blocks(header)?;
         self.validate_v3_fc_blocks(header, self.time.dt_s)?;
         self.validate_v3_effector_kinds(header)?;
+        Ok(())
+    }
+
+    fn validate_top_level_resource_owners(&self) -> Result<(), ScenarioError> {
+        let body_ids: std::collections::BTreeSet<&str> = self
+            .vehicle
+            .assembly
+            .bodies
+            .iter()
+            .map(|body| body.id.as_str())
+            .collect();
+        if let Some(aero) = &self.aero
+            && let Some(owner) = &aero.mounted_to
+            && !body_ids.contains(owner.as_str())
+        {
+            return Err(ScenarioError::UnknownBodyReference {
+                field: "aero.mounted_to".to_owned(),
+                value: owner.clone(),
+            });
+        }
+        if let Some(motor) = self
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.motor.as_ref())
+            && let Some(owner) = &motor.mounted_to
+            && !body_ids.contains(owner.as_str())
+        {
+            return Err(ScenarioError::UnknownBodyReference {
+                field: "propulsion.motor.mounted_to".to_owned(),
+                value: owner.clone(),
+            });
+        }
         Ok(())
     }
 
@@ -964,6 +997,7 @@ impl ScenarioDocument {
         }
 
         let body_masses = assembly_body_mass_lookup(&self.vehicle.assembly);
+        validate_multi_body_resource_ownership(self, &body_masses)?;
         validate_stage_separation_body_references(
             &jettisons,
             multi_body_separations,
@@ -1290,6 +1324,60 @@ fn assembly_body_mass_lookup(assembly: &AssemblyConfig) -> BTreeMap<&str, f64> {
         .iter()
         .map(|body| (body.id.as_str(), body.dry_mass_kg))
         .collect()
+}
+
+fn validate_multi_body_resource_ownership(
+    document: &ScenarioDocument,
+    body_masses: &BTreeMap<&str, f64>,
+) -> Result<(), ScenarioError> {
+    let require_owner = |field: String, value: &Option<String>| -> Result<(), ScenarioError> {
+        let Some(owner) = value else {
+            return Err(ScenarioError::IncompatibleAssemblyEntry {
+                field,
+                reason: "multi_body force-stack ownership requires an explicit `mounted_to` body"
+                    .to_owned(),
+            });
+        };
+        if !body_masses.contains_key(owner.as_str()) {
+            return Err(ScenarioError::UnknownBodyReference {
+                field,
+                value: owner.clone(),
+            });
+        }
+        Ok(())
+    };
+
+    if let Some(aero) = &document.aero
+        && document.force_models().iter().any(|name| name == "aero")
+    {
+        require_owner("aero.mounted_to".to_owned(), &aero.mounted_to)?;
+    }
+    if let Some(motor) = document
+        .propulsion
+        .as_ref()
+        .and_then(|propulsion| propulsion.motor.as_ref())
+    {
+        require_owner("propulsion.motor.mounted_to".to_owned(), &motor.mounted_to)?;
+    }
+    for (index, effector) in document.vehicle.assembly.effectors.iter().enumerate() {
+        require_owner(
+            format!("vehicle.assembly.effectors[{index}].mounted_to"),
+            &effector.mounted_to,
+        )?;
+    }
+    for (index, engine) in document.vehicle.assembly.engines.iter().enumerate() {
+        require_owner(
+            format!("vehicle.assembly.engines[{index}].mounted_to"),
+            &engine.mounted_to,
+        )?;
+    }
+    for (index, recovery) in document.vehicle.assembly.recovery.iter().enumerate() {
+        require_owner(
+            format!("vehicle.assembly.recovery[{index}].mounted_to"),
+            &recovery.mounted_to,
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_stage_separation_body_references(
@@ -2188,6 +2276,11 @@ pub struct AeroConfig {
     /// Path to an aero deck TOML file (resolved relative to
     /// the scenario directory).
     pub deck: PathBuf,
+    /// Optional owner body for post-separation force-stack routing.
+    /// Required when `[multi_body]` is declared and `forces.models`
+    /// includes `aero`.
+    #[serde(default)]
+    pub mounted_to: Option<String>,
     /// Optional pinned SHA-256 digest (lower-case hex). When present,
     /// a mismatch with the file's actual digest fails closed.
     pub deck_sha256: Option<String>,
@@ -2199,6 +2292,9 @@ impl AeroConfig {
             return Err(ScenarioError::EmptyField {
                 field: "aero.deck".to_owned(),
             });
+        }
+        if let Some(mounted_to) = &self.mounted_to {
+            require_non_empty("aero.mounted_to", mounted_to)?;
         }
         Ok(())
     }
@@ -2230,6 +2326,11 @@ pub struct MotorConfig {
     pub file: PathBuf,
     /// Ignition time in seconds since scenario start.
     pub ignite_at_s: f64,
+    /// Optional owner body for post-separation force / mass routing.
+    /// Required when `[multi_body]` is declared and `[propulsion.motor]`
+    /// is present.
+    #[serde(default)]
+    pub mounted_to: Option<String>,
     /// Optional motor variant (defaults to whatever the motor file
     /// declares; when present, must match).
     pub variant: Option<String>,
@@ -2245,6 +2346,9 @@ impl MotorConfig {
             });
         }
         require_finite("propulsion.motor.ignite_at_s", self.ignite_at_s)?;
+        if let Some(mounted_to) = &self.mounted_to {
+            require_non_empty("propulsion.motor.mounted_to", mounted_to)?;
+        }
         if let Some(variant) = &self.variant {
             registry.resolve(ModelRole::Motor, variant)?;
         }
@@ -3684,13 +3788,32 @@ pub struct RecoveryConfig {
     /// `vehicle.assembly.recovery.<id>` path and FNV-hashed into a
     /// stable `RecoveryId` at scenario load.
     pub id: String,
+    /// Optional owner body for post-separation recovery-drag routing.
+    /// Required when `[multi_body]` is declared and recovery devices
+    /// are present.
+    #[serde(default)]
+    pub mounted_to: Option<String>,
     /// Recovery-device kind + per-kind parameters.
     pub kind: RecoveryKindConfig,
 }
 
 impl RecoveryConfig {
-    pub(crate) fn validate(&self, index: usize) -> Result<(), ScenarioError> {
-        require_non_empty(&format!("vehicle.assembly.recovery[{index}].id"), &self.id)?;
+    pub(crate) fn validate(
+        &self,
+        index: usize,
+        body_ids: &std::collections::BTreeSet<&str>,
+    ) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.recovery[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        if let Some(mounted_to) = &self.mounted_to {
+            require_non_empty(&path("mounted_to"), mounted_to)?;
+            if !body_ids.contains(mounted_to.as_str()) {
+                return Err(ScenarioError::UnknownBodyReference {
+                    field: path("mounted_to"),
+                    value: mounted_to.clone(),
+                });
+            }
+        }
         self.kind.validate(index)?;
         Ok(())
     }
@@ -3869,6 +3992,8 @@ impl AssemblyConfig {
             });
         }
         let rigid_body = vehicle_kind == "rigid_body";
+        let body_ids: std::collections::BTreeSet<&str> =
+            self.bodies.iter().map(|b| b.id.as_str()).collect();
         let mut seen_ids: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for (index, body) in self.bodies.iter().enumerate() {
             body.validate(index, rigid_body)?;
@@ -3882,7 +4007,7 @@ impl AssemblyConfig {
         let mut seen_effector_ids: std::collections::BTreeSet<&str> =
             std::collections::BTreeSet::new();
         for (index, effector) in self.effectors.iter().enumerate() {
-            effector.validate(index, dt_s)?;
+            effector.validate(index, dt_s, &body_ids)?;
             if !seen_effector_ids.insert(effector.id.as_str()) {
                 return Err(ScenarioError::DuplicateValue {
                     field: format!("vehicle.assembly.effectors[{index}].id"),
@@ -3893,7 +4018,7 @@ impl AssemblyConfig {
         let mut seen_engine_ids: std::collections::BTreeSet<&str> =
             std::collections::BTreeSet::new();
         for (index, engine) in self.engines.iter().enumerate() {
-            engine.validate(index)?;
+            engine.validate(index, &body_ids)?;
             if !seen_engine_ids.insert(engine.id.as_str()) {
                 return Err(ScenarioError::DuplicateValue {
                     field: format!("vehicle.assembly.engines[{index}].id"),
@@ -3902,8 +4027,6 @@ impl AssemblyConfig {
             }
         }
         let mut seen_tank_ids: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-        let body_ids: std::collections::BTreeSet<&str> =
-            self.bodies.iter().map(|b| b.id.as_str()).collect();
         for (index, tank) in self.tanks.iter().enumerate() {
             tank.validate(index, vehicle_kind, &body_ids, dt_s)?;
             if !seen_tank_ids.insert(tank.id.as_str()) {
@@ -3916,7 +4039,7 @@ impl AssemblyConfig {
         let mut seen_recovery_ids: std::collections::BTreeSet<&str> =
             std::collections::BTreeSet::new();
         for (index, recovery) in self.recovery.iter().enumerate() {
-            recovery.validate(index)?;
+            recovery.validate(index, &body_ids)?;
             if !seen_recovery_ids.insert(recovery.id.as_str()) {
                 return Err(ScenarioError::DuplicateValue {
                     field: format!("vehicle.assembly.recovery[{index}].id"),
@@ -4043,6 +4166,11 @@ impl BodyGeometryConfig {
 pub struct EffectorConfig {
     /// Stable effector id (`snake_case` scenario-text identifier).
     pub id: String,
+    /// Optional owner body for post-separation moment / aero-axis
+    /// routing. Required when `[multi_body]` is declared and effectors
+    /// are present.
+    #[serde(default)]
+    pub mounted_to: Option<String>,
     /// Effector kind + per-kind parameters (tagged on `kind`).
     pub kind: EffectorKindConfig,
     /// Position / rate / latency limits.
@@ -4066,9 +4194,23 @@ pub struct EffectorConfig {
 }
 
 impl EffectorConfig {
-    fn validate(&self, index: usize, dt_s: f64) -> Result<(), ScenarioError> {
+    fn validate(
+        &self,
+        index: usize,
+        dt_s: f64,
+        body_ids: &std::collections::BTreeSet<&str>,
+    ) -> Result<(), ScenarioError> {
         let path = |field: &str| format!("vehicle.assembly.effectors[{index}].{field}");
         require_non_empty(&path("id"), &self.id)?;
+        if let Some(mounted_to) = &self.mounted_to {
+            require_non_empty(&path("mounted_to"), mounted_to)?;
+            if !body_ids.contains(mounted_to.as_str()) {
+                return Err(ScenarioError::UnknownBodyReference {
+                    field: path("mounted_to"),
+                    value: mounted_to.clone(),
+                });
+            }
+        }
         self.kind.validate(index)?;
         self.limits.validate(index, dt_s)?;
         if let Some(unit) = &self.unit {
@@ -4422,6 +4564,11 @@ pub enum ClusterLayoutConfig {
 pub struct EngineConfig {
     /// Stable engine id (`snake_case` scenario-text identifier).
     pub id: String,
+    /// Optional owner body for post-separation thrust / moment / mass
+    /// routing. Required when `[multi_body]` is declared and engines
+    /// are present.
+    #[serde(default)]
+    pub mounted_to: Option<String>,
     /// Engine kind + per-kind parameters (tagged on `kind`).
     pub kind: EngineKindConfig,
     /// Body-frame mount point (m). `[x, y, z]`.
@@ -4434,9 +4581,22 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
-    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+    fn validate(
+        &self,
+        index: usize,
+        body_ids: &std::collections::BTreeSet<&str>,
+    ) -> Result<(), ScenarioError> {
         let path = |field: &str| format!("vehicle.assembly.engines[{index}].{field}");
         require_non_empty(&path("id"), &self.id)?;
+        if let Some(mounted_to) = &self.mounted_to {
+            require_non_empty(&path("mounted_to"), mounted_to)?;
+            if !body_ids.contains(mounted_to.as_str()) {
+                return Err(ScenarioError::UnknownBodyReference {
+                    field: path("mounted_to"),
+                    value: mounted_to.clone(),
+                });
+            }
+        }
         self.kind.validate(index)?;
         self.limits.validate(index)?;
         require_finite_array(&path("mount_point_body_m"), &self.mount_point_body_m)?;
