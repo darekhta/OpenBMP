@@ -19,8 +19,8 @@
 //!   `EarthDipoleField` (degree-1 academic toy), and `Wmm2025`
 //!   (NOAA / NCEI 2025 release, 12-degree spherical harmonic).
 //! * [`wind`] — `WindModel` trait + `NoWind`, `ConstantWind`,
-//!   `LayeredWind`, `GustWind` (Dryden, gated by the `synthetic`
-//!   feature).
+//!   `LayeredWind`, `Hwm14Wind`, `GustWind` (Dryden, gated by the
+//!   `synthetic` feature).
 //! * [`earth`] — Earth-radius constants used by low-order toy models.
 //! * [`validity`] — small finite-range helpers for model envelopes.
 //! * [`error::PhysicsError`] — uniform error type for runtime
@@ -64,9 +64,9 @@ pub mod wind;
 
 pub use atmosphere::{
     AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, ExponentialLayer,
-    IsothermalAtmosphere, Nrlmsise00Full, Nrlmsise00Inputs, Nrlmsise00Outputs, Nrlmsise00Static,
-    PIECEWISE_EXP_MAX_GEOMETRIC_M, PiecewiseExpExoatmosphericPolicy,
-    PiecewiseExponentialAtmosphere, UsStandard1976,
+    IsothermalAtmosphere, Nrlmsis2Compat, Nrlmsis2CompatOutputs, Nrlmsise00Full, Nrlmsise00Inputs,
+    Nrlmsise00Outputs, Nrlmsise00Static, PIECEWISE_EXP_MAX_GEOMETRIC_M,
+    PiecewiseExpExoatmosphericPolicy, PiecewiseExponentialAtmosphere, UsStandard1976,
 };
 pub use error::PhysicsError;
 pub use external_reference::{
@@ -113,7 +113,10 @@ pub use reentry::{
 pub use statistics::{chi_square_inverse_cdf_wilson_hilferty, inverse_standard_normal_cdf};
 pub use uq::{ErrorBudget, UncertaintyContribution, ValidationStatus};
 pub use validity::HalfOpenRange;
-pub use wind::{ConstantWind, LayerEntry, LayeredWind, NoWind, WindModel};
+pub use wind::{
+    ConstantWind, HWM14_REFERENCE_MAX_ALTITUDE_M, Hwm14Inputs, Hwm14ReferenceRow, Hwm14Wind,
+    LayerEntry, LayeredWind, NoWind, WindModel,
+};
 #[cfg(feature = "synthetic")]
 pub use wind::{GustWind, GustWindParams};
 

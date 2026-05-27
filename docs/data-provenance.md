@@ -185,6 +185,11 @@ Allowed examples include:
 
 - U.S. Standard Atmosphere 1976, from NASA/NTRS or NOAA.
 - NRLMSISE-00, from NASA CCMC or original public NRL/NASA publications.
+- OpenBMP NRLMSIS 2.x compatibility profiles derived from vendorable
+  baseline sources, with explicit notes that official 2.x packages are not
+  redistributed.
+- HWM14 public reference outputs plus redistributable source/data mirrors,
+  with source hashes, bundled-data hashes, and license review.
 - IERS Conventions and IERS Bulletins for Earth orientation reference data.
 - NGA WGS84, EGM96, and EGM2008 public coefficient releases.
 - NASA NAIF generic SPICE kernels when used as validation references.

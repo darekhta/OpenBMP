@@ -718,9 +718,11 @@ scenario. The scenario file lists `force_models = ["aero", "gravity_force",
   Rust from the public coefficients with a `provenance.md` entry. Each of
   the model's ~25 configuration flags is documented for its deterministic
   effect.
-- `Nrlmsis2x` and `Hwm14` (hypersonic follow-ons) — modern high-altitude
-  atmosphere and horizontal-wind references. These are profile-gated until
-  reference-table validation and provenance are complete.
+- `Nrlmsis2Compat` and `Hwm14` — modern high-altitude atmosphere and
+  horizontal-wind references. The NRLMSIS 2.x compatibility profile is
+  OpenBMP-derived over the NRLMSISE-00 coefficient path while the official
+  2.x coefficients remain out of tree; HWM14 ships as a pure-Rust evaluator
+  over bundled public quiet-time, DWM07, and geomagnetic data files.
 - `EarthGramReference` (hypersonic follow-on) — external-reference atmosphere
   profile for density / wind uncertainty envelopes when redistribution terms
   permit; not the default deterministic atmosphere.
@@ -2232,9 +2234,10 @@ See [roadmap.md](roadmap.md) for the broader picture. The platform provides:
 - Adaptive integrators behind profile flags, public-benchmark validation,
   an optional socket-bridge HIL pattern, and many-body propagation.
 - Hypersonic extensions (Earth atmosphere only): solver profiles beyond
-  RK4, high-altitude atmosphere (NRLMSISE-00 first, NRLMSIS 2.x / HWM14
-  follow-ons), real-gas equilibrium thermodynamics, hypersonic aero
-  methods, the `openbmp-aerothermal` crate, boundary-layer models,
+  RK4, high-altitude atmosphere (NRLMSISE-00 plus the NRLMSIS 2.x
+  compatibility profile) plus HWM14 winds, real-gas equilibrium
+  thermodynamics, hypersonic aero methods, the `openbmp-aerothermal` crate,
+  boundary-layer models,
   continuum-to-rarefied bridging, re-entry trajectory infrastructure,
   a hypersonic validation suite, Park two-temperature nonequilibrium
   thermochemistry, a generic surface ablation toy, offline high-fidelity

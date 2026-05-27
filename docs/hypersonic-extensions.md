@@ -382,8 +382,8 @@ a layered registry:
 |---|---|---|
 | US Standard Atmosphere 1976 | deterministic lower/middle-atmosphere baseline | ship public table with provenance |
 | NRLMSISE-00 | stable high-altitude baseline from ground to thermosphere | in-house Rust port with direct NASA/CCMC coefficient arrays |
-| NRLMSIS 2.x | modern whole-atmosphere / thermosphere reference, including 2.1 NO number density | not vendored until license-clean redistribution is available |
-| HWM14 | horizontal neutral winds for upper/middle/lower atmosphere | not vendored until coefficient/data redistribution is clear |
+| NRLMSIS 2.x compatibility profile | modern whole-atmosphere / thermosphere selector, including a NO number-density proxy | OpenBMP-derived profile over NRLMSISE-00; official 2.x packages are not vendored |
+| HWM14 | horizontal neutral winds for upper/middle/lower atmosphere | in-house Rust port with bundled public HWM14/DWM07 data files |
 | Earth-GRAM | engineering atmosphere with mean values and statistical variations | external-reference / validation oracle first; ship only if licensing and provenance are clean |
 
 Scenario authors pick the model and hand-off altitude explicitly. Solar,
@@ -448,7 +448,7 @@ For altitudes 0–86 km the model agrees with US Standard 1976 within a few
 percent; the scenario can stitch them deterministically using a smooth
 hand-off.
 
-### NRLMSIS 2.x and HWM14 (license-clean follow-on)
+### NRLMSIS 2.x and HWM14
 
 NRLMSIS 2.1 is the current public CCMC-hosted MSIS-family reference as of
 April 2026. It extends NRLMSIS 2.0 by adding nitric-oxide number density from
@@ -457,12 +457,20 @@ approximately 73 km to the exobase while retaining the standard MSIS input set
 NRLMSIS 2.x packages inspected for OpenBMP carry academic/non-commercial terms,
 so they are not vendored into this Apache-2.0/MIT repository.
 
+OpenBMP therefore exposes `atmosphere.kind = "nrlmsis2_compat"` as a
+compatibility profile rather than a vendored official model. It uses the local
+NRLMSISE-00 coefficient evaluator as the baseline, applies bounded
+upper-atmosphere density/temperature corrections from the same MSIS-family
+inputs, and reports a deterministic nitric-oxide proxy for 2.x-style
+composition studies. Provenance records this as an OpenBMP-derived profile.
+
 HWM14 is the companion empirical horizontal-wind model. It provides zonal and
 meridional winds as a function of latitude, longitude, time, altitude, and Ap.
-Its public package includes binary data files with redistribution terms that
-were not clear enough for an in-repo import. Hypersonic cases that opt into a
-future HWM implementation must record the wind model, coefficient version, Ap
-source, and any static defaults in telemetry.
+OpenBMP ships a deterministic Rust port of the public HWM14 quiet-time
+evaluator plus DWM07 disturbance winds for `wind.kind = "hwm14"`. The three
+published data files are bundled under `data/wind/hwm14/`; the provenance
+record pins the source package, data hashes, verification driver, and
+`checkhwm14` tolerance.
 
 ### Earth-GRAM and JB-2008 (deferred)
 
@@ -1312,7 +1320,7 @@ public-benchmark (against published academic results).
 | **Adaptive explicit dense-output event** | analytic-toy | DOPRI853 / RKF78 event time on a smooth manufactured trajectory matches closed form within declared tolerance |
 | **Implicit source-term stiffness** | analytic-toy | BDF / Rosenbrock-Wanner source step reproduces stiff scalar decay and two-rate chemistry toy without instability |
 | **NASA CEA equilibrium oracle** | reference | Equilibrium composition / `gamma_eff` reference tables generated from documented CEA inputs match stored hashes and tolerances |
-| **NRLMSIS 2.x / HWM14 reference table** | reference | Optional 2.x atmosphere and HWM14 wind samples reproduce public reference values within model tolerance |
+| **NRLMSIS 2.x compatibility / HWM14 reference table** | reference | Compatibility-profile samples remain deterministic and finite; HWM14 wind samples reproduce public reference values within model tolerance |
 | **Earth-GRAM perturbation envelope** | reference | Density mean and statistical variation samples match public Earth-GRAM examples when redistribution is allowed |
 | **External package contract** | property | CFD / DSMC / radiation / thermal-response packages reject missing provenance, envelope gaps, hash mismatches, and unknown solver assumptions |
 | **Method of manufactured solutions** | code-verification | Hypersonic source-term and coupling modules demonstrate expected convergence order on smooth manufactured states |
@@ -1383,6 +1391,9 @@ data/
   atmosphere/
     us_standard_1976.toml
     provenance.md                # includes NRLMSISE-00 coefficient hashes
+  wind/
+    hwm14/                       # HWM14 quiet/DWM/geodetic data files
+    provenance.md                # includes HWM14 source and data hashes
   realgas/
     tannehill_5species.toml      # NEW: equilibrium correlation
     park87_reactions.toml        # NEW: Park 1987 5-species set
@@ -1477,10 +1488,13 @@ case passing in CI).
   event localization, implicit source-term sub-steppers, and deterministic
   coupling telemetry. Acceptance: adaptive event analytic-toy and implicit
   stiffness toy cases.
-- **High-altitude atmosphere.** NRLMSISE-00 in-house Rust port with
-  static-defaults and full-input coefficient paths. NRLMSIS 2.x and HWM14
-  remain license-clean follow-ons. Acceptance: NRLMSISE-00-vs-published-table
-  case; optional 2.x / HWM14 reference-table cases only after import approval.
+- **High-altitude atmosphere and winds.** NRLMSISE-00 in-house Rust port with
+  static-defaults and full-input coefficient paths, the NRLMSIS 2.x
+  compatibility profile, plus full HWM14 quiet-time and DWM07 disturbance
+  winds. Official 2.x coefficients remain a license-clean follow-on.
+  Acceptance: NRLMSISE-00-vs-published-table, NRLMSIS 2.x compatibility
+  smoke/property tests, and HWM14 `checkhwm14` reference cases; official 2.x
+  reference-table cases only after import approval.
 - **Real-gas thermodynamics.** Tannehill 5-species equilibrium air;
   `gamma_eff`, speed of sound. Acceptance: equilibrium-air `gamma_eff` case.
 - **Hypersonic aero methods.** Modified Newtonian, tangent-cone,

@@ -17,6 +17,8 @@
 //!   table envelope.
 //! * `GustWind` — Dryden rational-spectrum shaping
 //!   filter per MIL-STD-1797A.
+//! * [`Hwm14Wind`] — HWM14 quiet-time plus DWM07 disturbance winds
+//!   evaluated from bundled public HWM14 data files.
 //!
 //! # Frame convention
 //!
@@ -40,9 +42,11 @@
 //! once per kernel base tick by the runner-side `WindRack`.
 
 pub mod constant;
+pub mod hwm14;
 pub mod layered;
 
 pub use constant::{ConstantWind, NoWind};
+pub use hwm14::{HWM14_REFERENCE_MAX_ALTITUDE_M, Hwm14Inputs, Hwm14ReferenceRow, Hwm14Wind};
 pub use layered::{LayerEntry, LayeredWind};
 
 // `GustWind` is the synthetic-noise wind model

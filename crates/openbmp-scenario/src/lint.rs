@@ -298,6 +298,7 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
             | "year"
             | "day_of_year"
             | "ap_average"
+            | "ap_current_3h"
             // Mission-block trigger fields: a mass fraction
             // ratio in [0, 1].
             | "remaining"

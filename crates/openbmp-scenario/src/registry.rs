@@ -132,6 +132,9 @@ impl ModelRegistry {
             // Full NRLMSISE-00 coefficient path is consumed under
             // v3 by the runner atmosphere dispatch.
             ModelDescriptor::new("nrlmsise00", ModelRole::Atmosphere),
+            // OpenBMP NRLMSIS 2.x compatibility profile derived from
+            // the NRLMSISE-00 coefficient path; v3-only runner dispatch.
+            ModelDescriptor::new("nrlmsis2_compat", ModelRole::Atmosphere),
             // Engineering layered exponential atmosphere
             // (Vallado 4th ed. Table 8-4 fit, 0-1000 km). Honest
             // downscope of the original "NRLMSISE-00" line item: no
@@ -142,6 +145,9 @@ impl ModelRegistry {
             // Wind extensions.
             ModelDescriptor::new("layered", ModelRole::Wind),
             ModelDescriptor::new("gust", ModelRole::Wind),
+            // HWM14 quiet-time plus DWM07 disturbance wind evaluator
+            // backed by bundled public HWM14 data files.
+            ModelDescriptor::new("hwm14", ModelRole::Wind),
             // Force terms.
             ModelDescriptor::new("aero", ModelRole::Force),
             ModelDescriptor::new("thrust", ModelRole::Force),

@@ -1869,6 +1869,62 @@ latitude_deg = 100.0
         }
     }
 
+    const NRLMSIS2_COMPAT_STRUCTURED_ATMOSPHERE_BLOCK: &str = r#"
+[atmosphere]
+kind = "nrlmsis2_compat"
+"#;
+
+    #[test]
+    fn nrlmsis2_compat_environment_atmosphere_is_v3_only() {
+        let toml = MINIMAL.replace(
+            "atmosphere    = \"none\"",
+            "atmosphere    = \"nrlmsis2_compat\"",
+        );
+        assert_v3_block_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsis2_compat\"");
+
+        let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&v3).expect("nrlmsis2_compat validates under v3");
+        assert_eq!(scenario.document.environment.atmosphere, "nrlmsis2_compat");
+    }
+
+    #[test]
+    fn nrlmsis2_compat_structured_atmosphere_kind_is_v3_only() {
+        let toml = append(MINIMAL, NRLMSIS2_COMPAT_STRUCTURED_ATMOSPHERE_BLOCK);
+        assert_v3_block_reserved_under_v2(&toml, "atmosphere.kind = \"nrlmsis2_compat\"");
+
+        let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario =
+            Scenario::from_toml_str(&v3).expect("structured nrlmsis2_compat validates under v3");
+        assert_eq!(
+            scenario.document.atmosphere.as_ref().unwrap().kind,
+            "nrlmsis2_compat"
+        );
+    }
+
+    #[test]
+    fn nrlmsis2_compat_structured_inputs_validate_under_v3() {
+        let block = r#"
+[atmosphere]
+kind = "nrlmsis2_compat"
+year = 2024
+day_of_year = 172
+utc_s = 29000.0
+latitude_deg = 60.0
+longitude_deg = -70.0
+local_apparent_solar_time_h = 16.0
+f107_average_81day_sfu = 150.0
+f107_yesterday_sfu = 150.0
+ap_average = 4.0
+"#;
+        let toml = append(MINIMAL, block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario =
+            Scenario::from_toml_str(&toml).expect("structured nrlmsis2_compat inputs validate");
+        let atmosphere = scenario.document.atmosphere.as_ref().unwrap();
+        assert_eq!(atmosphere.kind, "nrlmsis2_compat");
+        assert_eq!(atmosphere.day_of_year, Some(172));
+        assert_eq!(atmosphere.latitude_deg, Some(60.0));
+    }
+
     #[test]
     fn piecewise_exponential_environment_atmosphere_is_v3_only_and_validates_under_v3() {
         let toml_v2 = MINIMAL.replace(
@@ -2244,6 +2300,79 @@ kind = "piecewise_exponential"
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "wind.layers"),
+            "got {err:?}",
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // HWM14 wind
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn accepts_hwm14_wind_without_extra_fields() {
+        let toml = SOUNDING_ROCKET
+            .replace(
+                r#"wind          = "constant""#,
+                r#"wind          = "hwm14""#,
+            )
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "[wind]\nkind = \"hwm14\"\n",
+            );
+        let scenario = Scenario::from_toml_str(&toml).expect("hwm14 wind scenario must parse");
+        let wind = scenario.document.wind.as_ref().expect("wind block present");
+        assert_eq!(wind.kind, "hwm14");
+        assert!(wind.wind_ned_m_s.is_none());
+        assert!(wind.layers.is_none());
+        assert!(wind.day_of_year.is_none());
+        assert!(wind.utc_s.is_none());
+        assert!(wind.ap_current_3h.is_none());
+    }
+
+    #[test]
+    fn accepts_hwm14_wind_with_model_inputs() {
+        let toml = SOUNDING_ROCKET
+            .replace(r#"wind          = "constant""#, r#"wind          = "hwm14""#)
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "[wind]\nkind = \"hwm14\"\nyear = 1995\nday_of_year = 150\nutc_s = 43200.0\nlatitude_deg = -45.0\nlongitude_deg = -85.0\nap_current_3h = 80.0\n",
+            );
+        let scenario = Scenario::from_toml_str(&toml).expect("hwm14 wind scenario must parse");
+        let wind = scenario.document.wind.as_ref().expect("wind block present");
+        assert_eq!(wind.day_of_year, Some(150));
+        assert_eq!(wind.utc_s.unwrap().to_bits(), 43_200.0_f64.to_bits());
+        assert_eq!(wind.ap_current_3h.unwrap().to_bits(), 80.0_f64.to_bits());
+    }
+
+    #[test]
+    fn rejects_hwm14_wind_with_layered_table() {
+        let toml = SOUNDING_ROCKET
+            .replace(r#"wind          = "constant""#, r#"wind          = "hwm14""#)
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "[wind]\nkind = \"hwm14\"\nlayers = [\n  { altitude_m = 0.0, wind_ned_m_s = [5.0, 0.0, 0.0] },\n]\n",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "wind.layers"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_hwm14_wind_with_bad_latitude() {
+        let toml = SOUNDING_ROCKET
+            .replace(
+                r#"wind          = "constant""#,
+                r#"wind          = "hwm14""#,
+            )
+            .replace(
+                "[wind]\nkind         = \"constant\"\nwind_ned_m_s = [0.0, 0.0, 0.0]\n",
+                "[wind]\nkind = \"hwm14\"\nlatitude_deg = 91.0\n",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "wind.latitude_deg"),
             "got {err:?}",
         );
     }

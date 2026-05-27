@@ -670,13 +670,18 @@ impl ScenarioDocument {
             });
         }
         if self.environment.atmosphere == "nrlmsise00"
+            || self.environment.atmosphere == "nrlmsis2_compat"
             || self
                 .atmosphere
                 .as_ref()
-                .is_some_and(|a| a.kind == "nrlmsise00")
+                .is_some_and(|a| a.kind == "nrlmsise00" || a.kind == "nrlmsis2_compat")
         {
+            let kind = self
+                .atmosphere
+                .as_ref()
+                .map_or(self.environment.atmosphere.as_str(), |a| a.kind.as_str());
             return Err(ScenarioError::SchemaVersionFieldReserved {
-                field: "atmosphere.kind = \"nrlmsise00\"".to_owned(),
+                field: format!("atmosphere.kind = \"{kind}\""),
                 required: SCENARIO_VERSION_V3,
                 found: header,
             });
@@ -1218,7 +1223,7 @@ fn validate_entry_atmosphere_envelope(
     entry_interface_altitude_m: f64,
 ) -> Result<(), ScenarioError> {
     match atmosphere {
-        "piecewise_exponential" | "nrlmsise00" => Ok(()),
+        "piecewise_exponential" | "nrlmsise00" | "nrlmsis2_compat" => Ok(()),
         "us_standard_1976" if entry_interface_altitude_m <= USSA76_ENTRY_INTERFACE_CEILING_M => {
             Ok(())
         }
@@ -2246,7 +2251,8 @@ impl MotorConfig {
 #[serde(deny_unknown_fields)]
 pub struct WindConfig {
     /// Wind model name (must match a registered wind model). Supported
-    /// kinds are `"none"`, `"constant"`, `"layered"`, and `"gust"`.
+    /// kinds are `"none"`, `"constant"`, `"layered"`, `"gust"`,
+    /// and `"hwm14"`.
     pub kind: String,
     /// Constant wind in NED frame, m/s. Required when
     /// `kind = "constant"`; rejected for every other kind.
@@ -2275,6 +2281,27 @@ pub struct WindConfig {
     /// `[0, 0, 0]`. Accepted only when `kind = "gust"`.
     #[serde(default)]
     pub mean_wind_ned_m_s: Option<[f64; 3]>,
+    /// Calendar year for `kind = "hwm14"`; defaults to 1995.
+    #[serde(default)]
+    pub year: Option<u16>,
+    /// Day of year for `kind = "hwm14"`; defaults to the public
+    /// `checkhwm14` height-profile day, 150. Day 0 is accepted to
+    /// match the public verification driver.
+    #[serde(default)]
+    pub day_of_year: Option<u16>,
+    /// UTC seconds within the day for `kind = "hwm14"`; defaults to noon.
+    #[serde(default)]
+    pub utc_s: Option<f64>,
+    /// Geodetic latitude in degrees for `kind = "hwm14"`; defaults to -45.
+    #[serde(default)]
+    pub latitude_deg: Option<f64>,
+    /// Geodetic longitude in degrees for `kind = "hwm14"`; defaults to -85.
+    #[serde(default)]
+    pub longitude_deg: Option<f64>,
+    /// Current 3-hour Ap index for `kind = "hwm14"`.
+    /// Defaults to 80. Use `-1` for quiet-time winds only.
+    #[serde(default)]
+    pub ap_current_3h: Option<f64>,
 }
 
 impl WindConfig {
@@ -2299,6 +2326,7 @@ impl WindConfig {
                     });
                 }
                 self.reject_gust_fields("constant")?;
+                self.reject_hwm14_fields("constant")?;
             }
             "layered" => {
                 if self.wind_ned_m_s.is_some() {
@@ -2309,6 +2337,7 @@ impl WindConfig {
                     });
                 }
                 self.reject_gust_fields("layered")?;
+                self.reject_hwm14_fields("layered")?;
                 let layers =
                     self.layers
                         .as_ref()
@@ -2402,6 +2431,25 @@ impl WindConfig {
                 if let Some(mean) = self.mean_wind_ned_m_s {
                     require_finite_array("wind.mean_wind_ned_m_s", &mean)?;
                 }
+                self.reject_hwm14_fields("gust")?;
+            }
+            "hwm14" => {
+                if self.wind_ned_m_s.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "wind.wind_ned_m_s".to_owned(),
+                        role: ModelRole::Wind,
+                        name: "hwm14".to_owned(),
+                    });
+                }
+                if self.layers.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "wind.layers".to_owned(),
+                        role: ModelRole::Wind,
+                        name: "hwm14".to_owned(),
+                    });
+                }
+                self.reject_gust_fields("hwm14")?;
+                self.validate_hwm14_fields()?;
             }
             other => {
                 if self.wind_ned_m_s.is_some() {
@@ -2419,6 +2467,7 @@ impl WindConfig {
                     });
                 }
                 self.reject_gust_fields(other)?;
+                self.reject_hwm14_fields(other)?;
             }
         }
         Ok(())
@@ -2449,6 +2498,78 @@ impl WindConfig {
         if self.mean_wind_ned_m_s.is_some() {
             return Err(ScenarioError::UnexpectedField {
                 field: "wind.mean_wind_ned_m_s".to_owned(),
+                role: ModelRole::Wind,
+                name: kind.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_hwm14_fields(&self) -> Result<(), ScenarioError> {
+        if let Some(day_of_year) = self.day_of_year
+            && day_of_year > 366
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: "wind.day_of_year".to_owned(),
+                value: f64::from(day_of_year),
+                rule: "must be in 0..=366",
+            });
+        }
+        if let Some(utc_s) = self.utc_s {
+            require_finite("wind.utc_s", utc_s)?;
+            if !(0.0..86_400.0).contains(&utc_s) {
+                return Err(ScenarioError::InvalidNumber {
+                    field: "wind.utc_s".to_owned(),
+                    value: utc_s,
+                    rule: "must be in [0, 86400)",
+                });
+            }
+        }
+        if let Some(latitude_deg) = self.latitude_deg {
+            require_finite("wind.latitude_deg", latitude_deg)?;
+            if !(-90.0..=90.0).contains(&latitude_deg) {
+                return Err(ScenarioError::InvalidNumber {
+                    field: "wind.latitude_deg".to_owned(),
+                    value: latitude_deg,
+                    rule: "must be in [-90, 90]",
+                });
+            }
+        }
+        if let Some(longitude_deg) = self.longitude_deg {
+            require_finite("wind.longitude_deg", longitude_deg)?;
+            if !(-180.0..=180.0).contains(&longitude_deg) {
+                return Err(ScenarioError::InvalidNumber {
+                    field: "wind.longitude_deg".to_owned(),
+                    value: longitude_deg,
+                    rule: "must be in [-180, 180]",
+                });
+            }
+        }
+        if let Some(ap_current_3h) = self.ap_current_3h {
+            require_finite("wind.ap_current_3h", ap_current_3h)?;
+            if !((-1.0..=400.0).contains(&ap_current_3h)) {
+                return Err(ScenarioError::InvalidNumber {
+                    field: "wind.ap_current_3h".to_owned(),
+                    value: ap_current_3h,
+                    rule: "must be -1 or in [0, 400]",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn reject_hwm14_fields(&self, kind: &str) -> Result<(), ScenarioError> {
+        if self.year.is_some()
+            || self.day_of_year.is_some()
+            || self.utc_s.is_some()
+            || self.latitude_deg.is_some()
+            || self.longitude_deg.is_some()
+            || self.ap_current_3h.is_some()
+        {
+            return Err(ScenarioError::UnexpectedField {
+                field:
+                    "wind.year / day_of_year / utc_s / latitude_deg / longitude_deg / ap_current_3h"
+                        .to_owned(),
                 role: ModelRole::Wind,
                 name: kind.to_owned(),
             });
@@ -2495,23 +2616,23 @@ pub struct AtmosphereConfig {
     pub pressure_pa: Option<f64>,
     /// Temperature in kelvin. Required when `kind = "isothermal"`.
     pub temperature_k: Option<f64>,
-    /// Calendar year for `kind = "nrlmsise00"`; defaults to 2024.
+    /// Calendar year for MSIS-family atmosphere kinds; defaults to 2024.
     pub year: Option<u16>,
-    /// Day of year for `kind = "nrlmsise00"`; defaults to 80.
+    /// Day of year for MSIS-family atmosphere kinds; defaults to 80.
     pub day_of_year: Option<u16>,
-    /// UTC seconds within the day for `kind = "nrlmsise00"`; defaults to noon.
+    /// UTC seconds within the day for MSIS-family kinds; defaults to noon.
     pub utc_s: Option<f64>,
-    /// Geodetic latitude in degrees for `kind = "nrlmsise00"`; defaults to 0.
+    /// Geodetic latitude in degrees for MSIS-family kinds; defaults to 0.
     pub latitude_deg: Option<f64>,
-    /// Geodetic longitude in degrees for `kind = "nrlmsise00"`; defaults to 0.
+    /// Geodetic longitude in degrees for MSIS-family kinds; defaults to 0.
     pub longitude_deg: Option<f64>,
-    /// Local apparent solar time in hours for `kind = "nrlmsise00"`; defaults to 12.
+    /// Local apparent solar time in hours for MSIS-family kinds; defaults to 12.
     pub local_apparent_solar_time_h: Option<f64>,
-    /// 81-day average F10.7 solar flux for `kind = "nrlmsise00"`; defaults to 150.
+    /// 81-day average F10.7 solar flux for MSIS-family kinds; defaults to 150.
     pub f107_average_81day_sfu: Option<f64>,
-    /// Previous-day F10.7 solar flux for `kind = "nrlmsise00"`; defaults to 150.
+    /// Previous-day F10.7 solar flux for MSIS-family kinds; defaults to 150.
     pub f107_yesterday_sfu: Option<f64>,
-    /// Daily Ap geomagnetic index for `kind = "nrlmsise00"`; defaults to 4.
+    /// Daily Ap geomagnetic index for MSIS-family kinds; defaults to 4.
     pub ap_average: Option<f64>,
 }
 
@@ -2548,6 +2669,10 @@ impl AtmosphereConfig {
             }
             "nrlmsise00" => {
                 self.reject_isothermal_fields("nrlmsise00")?;
+                self.validate_nrlmsise00_fields()?;
+            }
+            "nrlmsis2_compat" => {
+                self.reject_isothermal_fields("nrlmsis2_compat")?;
                 self.validate_nrlmsise00_fields()?;
             }
             other => {

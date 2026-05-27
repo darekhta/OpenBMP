@@ -21,7 +21,8 @@ every scenario declares `[vehicle.assembly]`.
   including the structured blocks.
 - Model registry: `ModelRegistry::base()` (analytic-toy) and
   `ModelRegistry::full()` (adds rigid-body
-  vehicle, `j2`/`point_mass` gravity, `us_standard_1976` atmosphere,
+  vehicle, `j2`/`point_mass` gravity, `us_standard_1976`,
+  `nrlmsise00`, and `nrlmsis2_compat` atmosphere,
   `constant`/`layered`/`gust` wind, `aero`/`thrust` forces, six
   sensor kinds (`ideal_state` / `imu` / `barometer` plus
   `gnss` / `magnetometer` / `star_tracker`), and the

@@ -30,7 +30,9 @@ openbmp-physics/
 │                # constants live in `frames` above)
 ├── atmosphere   # AtmosphereModel trait + AtmosphereSample + ExoatmosphericPolicy
 │   ├── isothermal           # IsothermalAtmosphere (toy)
-│   └── us_standard_1976    # Full 7-layer USSA76 (geopotential 0–86 km)
+│   ├── us_standard_1976     # Full 7-layer USSA76 (geopotential 0–86 km)
+│   ├── nrlmsise00           # Direct NRLMSISE-00 coefficient evaluator
+│   └── nrlmsis2_compat      # NRLMSIS 2.x compatibility profile
 │                #
 │                # plus closed-form helpers (geopotential ↔ geometric,
 │                # pressure_altitude_troposphere_m, dynamic_pressure_pa)
@@ -45,7 +47,7 @@ openbmp-physics/
 │                # inverse_standard_normal_cdf — innovation-gate primitives
 │                # shared between FC estimators and FDIR detectors
 ├── validity     # HalfOpenRange — model-envelope validity helpers
-└── wind         # WindModel + NoWind, ConstantWind, LayeredWind, GustWind (synthetic)
+└── wind         # WindModel + NoWind, ConstantWind, LayeredWind, Hwm14Wind, GustWind
 ```
 
 ## Layering with `openbmp-core`

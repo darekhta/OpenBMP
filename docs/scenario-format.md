@@ -532,8 +532,25 @@ wind_ned_m_s = [3.0, 0.0, 0.0]
 
 `wind_ned_m_s` is required when `kind = "constant"`, rejected
 otherwise. The parser also accepts `kind = "layered"` with a `layers`
-table and `kind = "gust"` with Dryden `intensity_m_s`,
-`length_scale_m`, and `airspeed_m_s` parameters. Selecting any
+table, `kind = "gust"` with Dryden `intensity_m_s`,
+`length_scale_m`, and `airspeed_m_s` parameters, and `kind = "hwm14"`
+with optional HWM14 scalar inputs:
+
+```toml
+[wind]
+kind = "hwm14"
+year = 1995
+day_of_year = 150
+utc_s = 43200.0
+latitude_deg = -45.0
+longitude_deg = -85.0
+ap_current_3h = 80.0
+```
+
+The `hwm14` runtime evaluates the public HWM14 quiet-time model plus
+DWM07 disturbance winds from bundled data files. Omitted HWM14 fields
+use the public `checkhwm14` height-profile case shown above. Use
+`ap_current_3h = -1.0` for quiet-time winds only. Selecting any
 non-`none` `environment.wind` therefore requires the structured
 `[wind]` block; leaving `environment.wind = "none"` lets a structured
 `[wind]` block opt into the active model.
@@ -1987,6 +2004,35 @@ the static mid-condition defaults shown above. If the legacy
 present, both must name `nrlmsise00`. The runner stores these scalar
 environment inputs as deterministic scenario parameters and varies only
 altitude through the existing atmosphere sampling trait.
+
+#### `atmosphere = "nrlmsis2_compat"`
+
+```toml
+[environment]
+atmosphere = "nrlmsis2_compat"
+
+[atmosphere]
+kind = "nrlmsis2_compat"
+year = 2024
+day_of_year = 80
+utc_s = 43200.0
+latitude_deg = 0.0
+longitude_deg = 0.0
+local_apparent_solar_time_h = 12.0
+f107_average_81day_sfu = 150.0
+f107_yesterday_sfu = 150.0
+ap_average = 4.0
+```
+
+Selects OpenBMP's NRLMSIS 2.x compatibility atmosphere profile. It is
+a v3-only atmosphere kind wired to the in-repository NRLMSISE-00
+coefficient evaluator, with a bounded upper-atmosphere correction and a
+nitric-oxide number-density proxy. It does not vendor or claim to be
+the official NRLMSIS 2.0 / 2.1 coefficient package.
+
+The structured `[atmosphere]` fields use the same MSIS-family inputs as
+`nrlmsise00`. If the legacy `environment.atmosphere` selector and the
+structured block are both present, both must name `nrlmsis2_compat`.
 
 ### Hard guardrails
 

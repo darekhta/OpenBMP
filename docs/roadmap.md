@@ -22,9 +22,10 @@ and are gated in CI.
 - **Translational and rigid-body dynamics** — point-mass and 6-DOF
   rigid-body propagation with the full assembly tree, engine cluster, control
   effectors, tanks, and recovery devices.
-- **Environment** — US Standard Atmosphere 1976, layered-exponential and
-  NRLMSISE-00 static atmospheres; J2 and EGM2008 zonal-harmonic gravity; WMM
-  2025 magnetics; constant / layered / gust wind.
+- **Environment** — US Standard Atmosphere 1976, layered-exponential,
+  NRLMSISE-00 static/full, and NRLMSIS 2.x compatibility atmospheres; J2 and
+  EGM2008 zonal-harmonic gravity; WMM 2025 magnetics; constant / layered /
+  gust wind; full HWM14 quiet-time plus DWM07 disturbance wind.
 - **Estimators** — error-state EKF, MEKF, square-root UKF, and a 2-mode
   interacting-multiple-model bank, with multi-lane routing and a voter.
 - **Autopilots** — PID, LQR, INDI, L1-adaptive, and receding-horizon attitude
@@ -105,9 +106,10 @@ lands with validation evidence:
 
 **Environment and real-gas**
 
-- NRLMSIS 2.x and HWM14 winds, once license-clean coefficient/data
-  redistribution is available. The NRLMSISE-00 static and full-input
-  coefficient paths ship today.
+- Official NRLMSIS 2.x coefficients, once license-clean redistribution is
+  available. The NRLMSISE-00 static/full paths, the OpenBMP NRLMSIS 2.x
+  compatibility profile, and the full HWM14 data-file wind evaluator ship
+  today.
 - Verified equilibrium-air (`γ_eff`) and Park two-temperature reaction-rate
   tables. The trait surfaces exist but fail closed until clean-provenance
   public coefficient tables are imported; the Tauber-Sutton radiative model is

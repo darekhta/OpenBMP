@@ -1,9 +1,9 @@
 //! Runner-side wind rack.
 //!
 //! The rack owns the scenario-resolved wind model (one of `NoWind`,
-//! `ConstantWind`, `LayeredWind`, or `GustWind`) and orchestrates
-//! per-step state updates plus kernel snapshot pushes. Mirrors the
-//! `EngineRack` and `TankRack` patterns.
+//! `ConstantWind`, `LayeredWind`, `Hwm14Wind`, or `GustWind`) and
+//! orchestrates per-step state updates plus kernel
+//! snapshot pushes. Mirrors the `EngineRack` and `TankRack` patterns.
 //!
 //! Each kernel base tick the runner:
 //!
@@ -39,7 +39,8 @@
 use nalgebra::Vector3;
 use openbmp_core::{Eci, Position3, SimTime, StepIndex};
 use openbmp_physics::{
-    ConstantWind, FrameContext, GustWind, GustWindParams, LayerEntry, LayeredWind, WindModel,
+    ConstantWind, FrameContext, GustWind, GustWindParams, Hwm14Inputs, Hwm14Wind, LayerEntry,
+    LayeredWind, WindModel,
 };
 use openbmp_scenario::{ScenarioDocument, WindConfig};
 
@@ -58,6 +59,8 @@ pub enum WindRack {
     Constant(ConstantWind),
     /// Per-altitude NED wind table.
     Layered(LayeredWind),
+    /// HWM14 total wind.
+    Hwm14(Hwm14Wind),
     /// Dryden gust filter. Carries internal filter
     /// state advanced per-step.
     Gust(GustWind),
@@ -80,6 +83,7 @@ impl WindRack {
             "none" => Ok(Self::Inactive),
             "constant" => Self::build_constant(wind),
             "layered" => Self::build_layered(wind),
+            "hwm14" => Self::build_hwm14(wind),
             "gust" => Self::build_gust(wind, document.time.dt_s, document.time.seed),
             other => Err(RunnerError::UnsupportedScenario {
                 what: format!("unsupported [wind].kind = \"{other}\""),
@@ -121,6 +125,22 @@ impl WindRack {
             what: format!("LayeredWind construction failed: {err}"),
         })?;
         Ok(Self::Layered(model))
+    }
+
+    fn build_hwm14(wind: &WindConfig) -> Result<Self, RunnerError> {
+        let defaults = Hwm14Inputs::reference_conditions();
+        let inputs = Hwm14Inputs::from_degrees(
+            wind.year.unwrap_or(defaults.year),
+            wind.day_of_year.unwrap_or(defaults.day_of_year),
+            wind.utc_s.unwrap_or(defaults.utc_seconds),
+            wind.latitude_deg.unwrap_or(defaults.latitude_deg()),
+            wind.longitude_deg.unwrap_or(defaults.longitude_deg()),
+            wind.ap_current_3h.unwrap_or(defaults.ap_current_3h),
+        );
+        let model = Hwm14Wind::new(inputs).map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("Hwm14Wind construction failed: {err}"),
+        })?;
+        Ok(Self::Hwm14(model))
     }
 
     fn build_gust(wind: &WindConfig, dt_s: f64, scenario_seed: u64) -> Result<Self, RunnerError> {
@@ -196,6 +216,7 @@ impl WindRack {
             Self::Inactive => Ok(Vector3::zeros()),
             Self::Constant(c) => Ok(c.wind_ned_m_s(position_eci, frame, time)?.vector),
             Self::Layered(l) => Ok(l.wind_ned_m_s(position_eci, frame, time)?.vector),
+            Self::Hwm14(h) => Ok(h.wind_ned_m_s(position_eci, frame, time)?.vector),
             Self::Gust(g) => Ok(g.wind_ned_m_s(position_eci, frame, time)?.vector),
         }
     }

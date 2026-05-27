@@ -78,7 +78,8 @@ Implemented in this crate today:
 
 Explicitly deferred to downstream work:
 
-- NRLMSISE-00 upper atmosphere.
+- Direct FC consumption of upper-atmosphere and horizontal-wind model
+  outputs beyond the runner/kernel environment sample.
 - Multi-instance estimator routing with active-lane selection.
 - Full 15-state / square-root UKF.
 - Full receding-horizon MPC and LCvxLD / SCvx trajectory reproduction

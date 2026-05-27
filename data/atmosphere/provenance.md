@@ -245,6 +245,52 @@ safety_review:
 
 ---
 
+# Provenance — `openbmp.atmosphere.nrlmsis2.compat.v1`
+
+OpenBMP-local NRLMSIS 2.x compatibility atmosphere profile.
+
+```yaml
+dataset_id:       openbmp.atmosphere.nrlmsis2.compat.v1
+files:
+  - crates/openbmp-physics/src/atmosphere/nrlmsis2_compat.rs
+  - crates/openbmp-physics/src/atmosphere/nrlmsise00.rs
+  - crates/openbmp-physics/src/atmosphere/nrlmsise00_coefficients.rs
+  - crates/openbmp-physics/src/atmosphere/nrlmsise00_model.rs
+source_title:     OpenBMP NRLMSIS 2.x compatibility atmosphere profile
+source_class:     openbmp-derived
+source_urls:
+  - https://git.smce.nasa.gov/ccmc-share/modelwebarchive/-/raw/main/MSIS/NRLMSIS00/nrlmsis00_c_version/nrlmsise-00_data.c
+  - https://git.smce.nasa.gov/ccmc-share/modelwebarchive/-/raw/main/MSIS/NRLMSIS00/nrlmsis00_c_version/nrlmsise-00.c
+source_hashes_sha256:
+  nrlmsise-00_data.c: d0b3022f3c3e7ffdf703cc0e0d02339dfee01c0bf1520b29c68d5f4afd8784d5
+  nrlmsise-00.c: a20d6523420188241963f095ad0b65df44ac0a6fa6db52d2e1df823c366f0285
+license_or_terms: >-
+  OpenBMP code under the repository license. No official NRLMSIS 2.0
+  or 2.1 source, coefficient table, data package, or generated table is
+  redistributed by this profile.
+retrieved_utc:    2026-05-27
+transformation:
+  method: >-
+    Uses the in-repository NRLMSISE-00 full coefficient evaluator as the
+    baseline and applies deterministic bounded density/temperature
+    corrections plus a nitric-oxide number-density proxy from the same
+    MSIS-family scalar inputs (date/time, latitude, longitude, local
+    solar time, F10.7, and Ap).
+validation:
+  - test: cargo test -p openbmp-physics nrlmsis2
+  - test: cargo test -p openbmp-scenario nrlmsis2
+validation_status: partial
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted-with-limits
+  notes: >-
+    Compatibility profile for deterministic engineering simulations. It
+    is not the official NRLMSIS 2.0 or 2.1 model and should not be used
+    as validation evidence for those packages.
+```
+
+---
+
 # Provenance — `openbmp.atmosphere.nrlmsis2_hwm14.review.v1`
 
 Review record for atmosphere/wind packages that were inspected but
@@ -270,19 +316,20 @@ source_hashes_sha256:
 license_or_terms: >-
   NRLMSIS 2.1 and 2.0 packages carry academic/non-commercial
   restrictions that are not compatible with vendoring into this
-  Apache-2.0/MIT repository. HWM14 redistribution terms were not clear
-  enough to import its binary data files.
+  Apache-2.0/MIT repository. HWM14 was imported separately from the
+  inspected MIT-licensed mirror and is recorded in
+  `data/wind/provenance.md`.
 retrieved_utc:    2026-05-27
 transformation:
   method: >-
     No data were transformed or committed. The packages were inspected
     only to decide whether a license-clean direct import was possible.
-validation_status: rejected
+validation_status: partial
 safety_review:
   reviewer: dmitri.arekhta
-  decision: rejected
+  decision: partial
   notes: >-
-    NRLMSIS 2.x and HWM14 remain follow-on candidates until a
-    redistributable source path or explicit project-specific approval is
-    available.
+    NRLMSIS 2.x remains rejected until a redistributable source path or
+    explicit project-specific approval is available. HWM14 now ships
+    through the wind provenance record.
 ```

@@ -19,6 +19,9 @@
 //! * [`Nrlmsise00Static`] and [`Nrlmsise00Full`] — NRLMSISE-00
 //!   static-default and full-input coefficient paths covering
 //!   0-1000 km.
+//! * [`Nrlmsis2Compat`] — OpenBMP NRLMSIS 2.x compatibility profile
+//!   built on the NRLMSISE-00 full-input coefficient path with a
+//!   bounded upper-atmosphere correction and nitric-oxide proxy.
 //!
 //! Determinism: pure arithmetic on `f64`; locked operand order on
 //! barometric formulas; no FMA. No wall-clock time, no system RNG,
@@ -30,11 +33,13 @@
 //! and simulator consumers share one HAL-portable atmosphere surface.
 
 pub mod isothermal;
+pub mod nrlmsis2_compat;
 pub mod nrlmsise00;
 pub mod piecewise_exponential;
 pub mod us_standard_1976;
 
 pub use isothermal::IsothermalAtmosphere;
+pub use nrlmsis2_compat::{Nrlmsis2Compat, Nrlmsis2CompatOutputs};
 pub use nrlmsise00::{Nrlmsise00Full, Nrlmsise00Inputs, Nrlmsise00Outputs, Nrlmsise00Static};
 pub use piecewise_exponential::{
     ExponentialLayer, PIECEWISE_EXP_MAX_GEOMETRIC_M, PiecewiseExpExoatmosphericPolicy,

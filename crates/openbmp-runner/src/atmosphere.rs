@@ -14,8 +14,8 @@
 
 use openbmp_core::SimTime;
 use openbmp_physics::{
-    AtmosphereModel, AtmosphereSample, Nrlmsise00Full, Nrlmsise00Inputs, PhysicsError,
-    PiecewiseExponentialAtmosphere, UsStandard1976,
+    AtmosphereModel, AtmosphereSample, Nrlmsis2Compat, Nrlmsise00Full, Nrlmsise00Inputs,
+    PhysicsError, PiecewiseExponentialAtmosphere, UsStandard1976,
 };
 use openbmp_scenario::{AtmosphereConfig, ScenarioDocument};
 
@@ -31,6 +31,9 @@ pub enum RuntimeAtmosphere {
     PiecewiseExponential(PiecewiseExponentialAtmosphere),
     /// `nrlmsise00` — full empirical coefficient model (0-1000 km).
     Nrlmsise00(Nrlmsise00Full),
+    /// `nrlmsis2_compat` — OpenBMP compatibility profile for
+    /// NRLMSIS-2-family scenario selectors.
+    Nrlmsis2Compat(Nrlmsis2Compat),
 }
 
 impl AtmosphereModel for RuntimeAtmosphere {
@@ -43,13 +46,18 @@ impl AtmosphereModel for RuntimeAtmosphere {
             Self::UsStandard1976(a) => a.sample(altitude_geometric_m, time),
             Self::PiecewiseExponential(a) => a.sample(altitude_geometric_m, time),
             Self::Nrlmsise00(a) => a.sample(altitude_geometric_m, time),
+            Self::Nrlmsis2Compat(a) => a.sample(altitude_geometric_m, time),
         }
     }
 }
 
 /// Atmosphere kind names that the runner can construct.
-const SUPPORTED_ATMOSPHERE_KINDS: &[&str] =
-    &["us_standard_1976", "piecewise_exponential", "nrlmsise00"];
+const SUPPORTED_ATMOSPHERE_KINDS: &[&str] = &[
+    "us_standard_1976",
+    "piecewise_exponential",
+    "nrlmsise00",
+    "nrlmsis2_compat",
+];
 
 /// Resolve the atmosphere kind named by the scenario into a runtime
 /// dispatch enum. Returns [`RunnerError::UnsupportedScenario`] for kinds
@@ -66,8 +74,8 @@ pub fn build_runtime_atmosphere(atmosphere_kind: &str) -> Result<RuntimeAtmosphe
 /// Resolve a scenario document into a runtime atmosphere.
 ///
 /// This preserves the structured `[atmosphere]` block's model-specific
-/// inputs for `nrlmsise00`; callers with only a legacy kind string
-/// continue to get deterministic mid-condition defaults.
+/// inputs for MSIS-family models; callers with only a legacy kind
+/// string continue to get deterministic mid-condition defaults.
 ///
 /// # Errors
 ///
@@ -92,12 +100,20 @@ fn build_runtime_atmosphere_with_config(
             PiecewiseExponentialAtmosphere::new(),
         )),
         "nrlmsise00" => {
-            let inputs = nrlmsise00_inputs(atmosphere)?;
+            let inputs = msis_inputs("nrlmsise00", atmosphere)?;
             let model =
                 Nrlmsise00Full::new(inputs).map_err(|err| RunnerError::UnsupportedScenario {
                     what: format!("Nrlmsise00Full construction failed: {err}"),
                 })?;
             Ok(RuntimeAtmosphere::Nrlmsise00(model))
+        }
+        "nrlmsis2_compat" => {
+            let inputs = msis_inputs("nrlmsis2_compat", atmosphere)?;
+            let model =
+                Nrlmsis2Compat::new(inputs).map_err(|err| RunnerError::UnsupportedScenario {
+                    what: format!("Nrlmsis2Compat construction failed: {err}"),
+                })?;
+            Ok(RuntimeAtmosphere::Nrlmsis2Compat(model))
         }
         other => Err(RunnerError::UnsupportedScenario {
             what: format!(
@@ -108,7 +124,8 @@ fn build_runtime_atmosphere_with_config(
     }
 }
 
-fn nrlmsise00_inputs(
+fn msis_inputs(
+    model_kind: &str,
     atmosphere: Option<&AtmosphereConfig>,
 ) -> Result<Nrlmsise00Inputs, RunnerError> {
     let Some(atmosphere) = atmosphere else {
@@ -145,7 +162,7 @@ fn nrlmsise00_inputs(
     inputs
         .validate_full_path()
         .map_err(|err| RunnerError::UnsupportedScenario {
-            what: format!("invalid nrlmsise00 atmosphere inputs: {err}"),
+            what: format!("invalid {model_kind} atmosphere inputs: {err}"),
         })?;
     Ok(inputs)
 }
