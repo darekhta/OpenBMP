@@ -9,16 +9,19 @@
 use std::f64::consts::PI;
 use std::sync::{Arc, Mutex};
 
+use nalgebra::Vector3;
 use openbmp_aero::{knudsen_number, mean_free_path_m};
 use openbmp_aerothermal::{
     AerothermalContext, BackwallCondition, DepthResolvedCharringAblator, FayRiddell,
     HeatTransferModel, OneDThermalToy, SuttonGraves, ToyAblator, ToyMaterial, WallCatalysis,
 };
+use openbmp_core::{ModelId, ValidationStatus};
 use openbmp_physics::AtmosphereModel;
 use openbmp_scenario::{
     AerothermalAblationConfig, AerothermalBackwallConfig, AerothermalConfig,
     AerothermalThermalToyConfig, ScenarioDocument,
 };
+use openbmp_sim::{ForceContext, ForceModel, ModelEvalError};
 use openbmp_state::{PointMassState, RigidBodyState};
 
 use crate::atmosphere::{RuntimeAtmosphere, build_document_runtime_atmosphere};
@@ -79,6 +82,121 @@ pub struct LiveAerothermalOutput {
     pub mass_loss_kg_s: f64,
 }
 
+/// Shared latest aerothermal output for force-stack diagnostics and
+/// telemetry row writers.
+#[derive(Clone, Debug, Default)]
+pub struct LiveAerothermalSink {
+    inner: Arc<Mutex<LiveAerothermalOutput>>,
+}
+
+impl LiveAerothermalSink {
+    #[must_use]
+    fn new(output: LiveAerothermalOutput) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(output)),
+        }
+    }
+
+    /// Most recent live aerothermal diagnostic sample.
+    #[must_use]
+    pub fn output(&self) -> LiveAerothermalOutput {
+        match self.inner.lock() {
+            Ok(guard) => *guard,
+            Err(_) => LiveAerothermalOutput::default(),
+        }
+    }
+
+    fn set_output(&self, output: LiveAerothermalOutput) {
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = output;
+        }
+    }
+}
+
+/// Zero-force force-stack hook for live stagnation heating,
+/// conduction, and ablation diagnostics.
+#[derive(Clone, Debug)]
+pub struct StagnationHeatingForceAdapter {
+    sink: LiveAerothermalSink,
+    model_id: ModelId,
+}
+
+impl StagnationHeatingForceAdapter {
+    /// Construct a zero-force diagnostic adapter backed by the live
+    /// aerothermal sink owned by [`LiveAerothermalDriver`].
+    #[must_use]
+    pub const fn new(sink: LiveAerothermalSink, model_id: ModelId) -> Self {
+        Self { sink, model_id }
+    }
+
+    /// Most recent output that this adapter exposes to telemetry.
+    #[must_use]
+    pub fn output(&self) -> LiveAerothermalOutput {
+        self.sink.output()
+    }
+
+    fn validate_output(&self) -> Result<(), ModelEvalError> {
+        let output = self.sink.output();
+        let all_finite = [
+            output.q_conv_w_m2,
+            output.q_rad_w_m2,
+            output.h_aw_j_kg,
+            output.recovery_temperature_k,
+            output.knudsen,
+            output.wall_temperature_k,
+            output.backwall_temperature_k,
+            output.recession_depth_m,
+            output.gas_mdot_kg_m2_s,
+            output.mass_loss_kg_s,
+        ]
+        .into_iter()
+        .all(f64::is_finite);
+        if all_finite {
+            Ok(())
+        } else {
+            Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            })
+        }
+    }
+}
+
+impl ForceModel<PointMassState> for StagnationHeatingForceAdapter {
+    fn force_n_eci(
+        &self,
+        _ctx: ForceContext<'_, PointMassState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        self.validate_output()?;
+        Ok(Vector3::zeros())
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        true
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+impl ForceModel<RigidBodyState> for StagnationHeatingForceAdapter {
+    fn force_n_eci(
+        &self,
+        _ctx: ForceContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        self.validate_output()?;
+        Ok(Vector3::zeros())
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        true
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
 /// Stateful live aerothermal driver.
 #[derive(Clone, Debug)]
 pub struct LiveAerothermalDriver {
@@ -88,6 +206,7 @@ pub struct LiveAerothermalDriver {
     ablator: Option<DepthResolvedCharringAblator>,
     feedback_enabled: bool,
     mass_feedback: AerothermalMassFeedback,
+    sink: LiveAerothermalSink,
     output: LiveAerothermalOutput,
 }
 
@@ -121,6 +240,11 @@ impl LiveAerothermalDriver {
             config.wall_temperature_k,
             OneDThermalToy::backwall_temperature_k,
         );
+        let output = LiveAerothermalOutput {
+            wall_temperature_k,
+            backwall_temperature_k,
+            ..LiveAerothermalOutput::default()
+        };
         Ok(Some(Self {
             config: config.clone(),
             atmosphere,
@@ -128,11 +252,8 @@ impl LiveAerothermalDriver {
             ablator,
             feedback_enabled,
             mass_feedback: AerothermalMassFeedback::default(),
-            output: LiveAerothermalOutput {
-                wall_temperature_k,
-                backwall_temperature_k,
-                ..LiveAerothermalOutput::default()
-            },
+            sink: LiveAerothermalSink::new(output),
+            output,
         }))
     }
 
@@ -140,6 +261,12 @@ impl LiveAerothermalDriver {
     #[must_use]
     pub fn mass_feedback(&self) -> Option<AerothermalMassFeedback> {
         self.feedback_enabled.then(|| self.mass_feedback.clone())
+    }
+
+    /// Shared diagnostic sink for zero-force force-stack adapters.
+    #[must_use]
+    pub fn sink(&self) -> LiveAerothermalSink {
+        self.sink.clone()
     }
 
     /// Most recent diagnostic output.
@@ -214,6 +341,7 @@ impl LiveAerothermalDriver {
                 backwall_temperature_k,
                 ..LiveAerothermalOutput::default()
             };
+            self.sink.set_output(self.output);
             return Ok(&self.output);
         }
 
@@ -226,6 +354,7 @@ impl LiveAerothermalDriver {
                 backwall_temperature_k,
                 ..LiveAerothermalOutput::default()
             };
+            self.sink.set_output(self.output);
             return Ok(&self.output);
         }
 
@@ -313,6 +442,7 @@ impl LiveAerothermalDriver {
             gas_mdot_kg_m2_s,
             mass_loss_kg_s,
         };
+        self.sink.set_output(self.output);
         Ok(&self.output)
     }
 }

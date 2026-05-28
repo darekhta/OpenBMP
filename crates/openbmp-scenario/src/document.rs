@@ -190,16 +190,14 @@ impl ScenarioDocument {
     }
 
     /// Force-like model names used either by the default force stack
-    /// or any per-phase override. Diagnostic-only entries such as
-    /// `aerothermal_diagnostics` are excluded because they are not
-    /// `ForceModel` implementations.
+    /// or any per-phase override.
     #[must_use]
     pub fn force_model_universe(&self) -> Vec<String> {
         let mut models = self.resolved_force_models();
         if let Some(forces) = &self.forces {
             for override_config in &forces.phase_override {
                 for model in &override_config.models {
-                    if model != "aerothermal_diagnostics" && !models.contains(model) {
+                    if !models.contains(model) {
                         models.push(model.clone());
                     }
                 }

@@ -13,7 +13,7 @@
 //! - `[aero].deck = "<path>"` with optional pinned digest
 //! - `[propulsion.motor].file = "<path>"` with optional pinned digest
 //! - `forces.models` entries permuted from `["gravity", "aero",
-//!   "thrust"]`
+//!   "thrust", "aerothermal_diagnostics"]`
 //! - `vehicle.initial_quaternion_body_to_eci_xyzw`,
 //!   `vehicle.initial_angular_velocity_body_rad_s`, and per-body
 //!   `vehicle.assembly.bodies[*].dry_inertia_body_kg_m2` declared
@@ -78,6 +78,7 @@ const RIGID_BODY_GRAVITY_MODEL_ID: ModelId = ModelId::new(301);
 const RIGID_BODY_AERO_MODEL_ID: ModelId = ModelId::new(302);
 const RIGID_BODY_THRUST_MODEL_ID: ModelId = ModelId::new(303);
 const RIGID_BODY_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(304);
+const RIGID_BODY_AEROTHERMAL_MODEL_ID: ModelId = ModelId::new(305);
 // Distinct model ids for the engine-cluster path on the
 // rigid-body kernel.
 const RIGID_BODY_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(320);
@@ -89,6 +90,8 @@ const RIGID_BODY_RECOVERY_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(380);
 // Distinct model id for the direct-torque moment
 // adapter on the rigid-body kernel.
 const RIGID_BODY_DIRECT_TORQUE_MOMENT_MODEL_ID: ModelId = ModelId::new(500);
+const MISSING_AEROTHERMAL_DIAGNOSTICS_MESSAGE: &str =
+    "forces includes `aerothermal_diagnostics` but [aerothermal] block is missing";
 
 /// Run a rigid-body scenario through a freshly-built kernel
 /// and return the populated telemetry table.
@@ -130,6 +133,9 @@ pub fn run(
 
     let loaded = load_models(document, resolved_files)?;
     let mut aerothermal_driver = crate::aerothermal::LiveAerothermalDriver::maybe_new(document)?;
+    let aerothermal_sink = aerothermal_driver
+        .as_ref()
+        .map(crate::aerothermal::LiveAerothermalDriver::sink);
     let aerothermal_feedback = aerothermal_driver
         .as_ref()
         .and_then(crate::aerothermal::LiveAerothermalDriver::mass_feedback);
@@ -151,8 +157,8 @@ pub fn run(
         &initial_engine_snapshot,
         &initial_tank_snapshot,
     )?;
-    let kernel_vehicle = build_vehicle(document, &loaded, &assembly)?;
-    let breakdown_vehicle = build_vehicle(document, &loaded, &assembly)?;
+    let kernel_vehicle = build_vehicle(document, &loaded, &assembly, aerothermal_sink.clone())?;
+    let breakdown_vehicle = build_vehicle(document, &loaded, &assembly, aerothermal_sink)?;
     let mass_model = build_mass_model(&loaded, &mass_resources, aerothermal_feedback);
     let moment_model = build_moment_model(document, &loaded)?;
     let rigid_models = RigidModels::new(moment_model, mass_model.clone());
@@ -475,9 +481,15 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
         });
     }
     for name in document.force_model_universe() {
-        if !matches!(name.as_str(), "gravity" | "aero" | "thrust") {
+        if !matches!(
+            name.as_str(),
+            "gravity" | "aero" | "thrust" | "aerothermal_diagnostics"
+        ) {
             return Err(RunnerError::UnsupportedScenario {
-                what: format!("forces.models entry `{name}` (only gravity, aero, thrust wired)"),
+                what: format!(
+                    "forces.models entry `{name}` (only gravity, aero, thrust, \
+                     aerothermal_diagnostics wired)"
+                ),
             });
         }
     }
@@ -487,10 +499,27 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     // structured `[wind]` block and that the kind names agree.
     let atmosphere_kind = scenario_atmosphere_kind(document);
     let has_aero = document.force_model_universe().iter().any(|m| m == "aero");
+    let has_aerothermal = document
+        .force_model_universe()
+        .iter()
+        .any(|m| m == "aerothermal_diagnostics");
     if has_aero && !is_runtime_atmosphere_kind(atmosphere_kind) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "atmosphere `{atmosphere_kind}` is not wired with the aero force; \
+                 use `us_standard_1976` or `piecewise_exponential`"
+            ),
+        });
+    }
+    if has_aerothermal && document.aerothermal.is_none() {
+        return Err(RunnerError::UnsupportedScenario {
+            what: MISSING_AEROTHERMAL_DIAGNOSTICS_MESSAGE.to_owned(),
+        });
+    }
+    if has_aerothermal && !is_runtime_atmosphere_kind(atmosphere_kind) {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "atmosphere `{atmosphere_kind}` is not wired with aerothermal diagnostics; \
                  use `us_standard_1976` or `piecewise_exponential`"
             ),
         });
@@ -1217,6 +1246,7 @@ fn build_vehicle(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
     assembly: &Assembly,
+    aerothermal_sink: Option<crate::aerothermal::LiveAerothermalSink>,
 ) -> Result<KernelVehicle<RigidBodyState>, RunnerError> {
     let mut named: Vec<NamedForceModel<RigidBodyState>> = Vec::new();
     for name in document.force_model_universe() {
@@ -1343,6 +1373,22 @@ fn build_vehicle(
                     };
                     named.push(NamedForceModel::new("thrust", Box::new(thrust)));
                 }
+            }
+            "aerothermal_diagnostics" => {
+                let sink =
+                    aerothermal_sink
+                        .clone()
+                        .ok_or_else(|| RunnerError::UnsupportedScenario {
+                            what: MISSING_AEROTHERMAL_DIAGNOSTICS_MESSAGE.to_owned(),
+                        })?;
+                let adapter = crate::aerothermal::StagnationHeatingForceAdapter::new(
+                    sink,
+                    RIGID_BODY_AEROTHERMAL_MODEL_ID,
+                );
+                named.push(NamedForceModel::new(
+                    "aerothermal_diagnostics",
+                    Box::new(adapter),
+                ));
             }
             other => unreachable!("require_supported_shape rejects unknown force model `{other}`"),
         }
@@ -2720,6 +2766,19 @@ event = "entry_interface"
             force_aero_x.iter().skip(1).any(|value| value.abs() > 0.0),
             "aero force should activate after entry phase transition: {force_aero_x:?}"
         );
+        for channel in [
+            "force.aerothermal_diagnostics.x_n",
+            "force.aerothermal_diagnostics.y_n",
+            "force.aerothermal_diagnostics.z_n",
+        ] {
+            let force = f64_column(&outcome, channel);
+            assert!(
+                force
+                    .iter()
+                    .all(|value| value.to_bits() == 0.0_f64.to_bits()),
+                "{channel} should be present and zero-force: {force:?}"
+            );
+        }
 
         let active = text_column(&outcome, "forces.active_models");
         assert_eq!(active[0], "gravity");

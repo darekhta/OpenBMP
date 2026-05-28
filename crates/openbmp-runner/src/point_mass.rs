@@ -13,7 +13,7 @@
 //! - `[aero].deck = "<path>"` with optional pinned digest
 //! - `[propulsion.motor].file = "<path>"` with optional pinned digest
 //! - `forces.models` entries permuted from `["gravity", "aero",
-//!   "thrust"]`
+//!   "thrust", "aerothermal_diagnostics"]`
 //!
 //! Force evaluation order respects the scenario-declared
 //! `forces.models` order; this is the determinism contract. Bad
@@ -31,7 +31,7 @@
 //! - **Per-model force breakdown** for every entry in `forces.models`:
 //!   `force.<name>.x_n`, `.y_n`, `.z_n` with frame metadata `"ECI"`.
 //!   `<name>` matches the scenario-declared model name (`gravity`,
-//!   `thrust`, `aero`).
+//!   `thrust`, `aero`, `aerothermal_diagnostics`).
 //! - **Recovery state** when `[[vehicle.assembly.recovery]]` is
 //!   declared: `recovery.<id>.deployed`, `.phase_index`, and
 //!   `.drag_area_m2`.
@@ -90,6 +90,7 @@ const POINT_MASS_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(104);
 // `ConstantGravityForce` (a model with no model id) so
 // every existing constant-gravity scenario stays byte-stable.
 const POINT_MASS_GRAVITY_MODEL_ID: ModelId = ModelId::new(105);
+const POINT_MASS_AEROTHERMAL_MODEL_ID: ModelId = ModelId::new(106);
 // Distinct model ids for the engine-cluster path so the
 // determinism oracle can tell legacy single-motor scenarios apart
 // from cluster scenarios in the per-model force breakdown.
@@ -98,6 +99,8 @@ const RIGID_BODY_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(121);
 const RIGID_BODY_TANK_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(330);
 const RIGID_BODY_TANK_RACK_MASS_MODEL_ID: ModelId = ModelId::new(331);
 const RIGID_BODY_RECOVERY_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(370);
+const MISSING_AEROTHERMAL_DIAGNOSTICS_MESSAGE: &str =
+    "forces includes `aerothermal_diagnostics` but [aerothermal] block is missing";
 
 #[derive(Clone, Debug, Default)]
 struct LoadedModels {
@@ -159,15 +162,24 @@ pub fn run(
 
     let loaded_models = load_models(document, resolved_files)?;
     let initial_state = build_initial_state(document, &loaded_models, &assembly)?;
-    let kernel_vehicle = build_vehicle(document, &loaded_models, &assembly)?;
+    let mut aerothermal_driver = crate::aerothermal::LiveAerothermalDriver::maybe_new(document)?;
+    let aerothermal_sink = aerothermal_driver
+        .as_ref()
+        .map(crate::aerothermal::LiveAerothermalDriver::sink);
+    let kernel_vehicle = build_vehicle(
+        document,
+        &loaded_models,
+        &assembly,
+        aerothermal_sink.clone(),
+    )?;
     // The runner-side breakdown vehicle is a *separate* construction
     // of the same models. `KernelVehicle::evaluate_force_breakdown`
     // takes `&self`, but `KernelVehicle` is not `Clone` (the inner
     // `Box<dyn ForceModel>` lists are not). Re-building from scratch
-    // avoids interior-mutability or Arc gymnastics; both copies are
-    // stateless and evaluate identically per the force-model and
-    // mass-model contracts.
-    let breakdown_vehicle = build_vehicle(document, &loaded_models, &assembly)?;
+    // keeps the force-list ownership simple. Stateful aerothermal
+    // integration remains in the live driver; both vehicle copies get
+    // zero-force diagnostic adapters over the same latest-output sink.
+    let breakdown_vehicle = build_vehicle(document, &loaded_models, &assembly, aerothermal_sink)?;
     let mass_model = BoxedMassModel(build_mass_model(document, &loaded_models, &assembly)?);
 
     // Runtime integrator dispatch from the scenario
@@ -204,7 +216,6 @@ pub fn run(
     } else {
         None
     };
-    let mut aerothermal_driver = crate::aerothermal::LiveAerothermalDriver::maybe_new(document)?;
     let metadata = build_schema_metadata(document, resolved_files)?;
     let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
@@ -445,12 +456,19 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
         });
     }
 
-    // Force list: subset of {gravity, aero, thrust}, scenario-declared
-    // order is the determinism contract.
+    // Force list: subset of {gravity, aero, thrust,
+    // aerothermal_diagnostics}, scenario-declared order is the
+    // determinism contract.
     for name in document.force_model_universe() {
-        if !matches!(name.as_str(), "gravity" | "aero" | "thrust") {
+        if !matches!(
+            name.as_str(),
+            "gravity" | "aero" | "thrust" | "aerothermal_diagnostics"
+        ) {
             return Err(RunnerError::UnsupportedScenario {
-                what: format!("forces.models entry `{name}` (only gravity, aero, thrust wired)"),
+                what: format!(
+                    "forces.models entry `{name}` (only gravity, aero, thrust, \
+                     aerothermal_diagnostics wired)"
+                ),
             });
         }
     }
@@ -465,10 +483,27 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     // engineering 0-1000 km envelope).
     let atmosphere_kind = scenario_atmosphere_kind(document);
     let has_aero = document.force_model_universe().iter().any(|m| m == "aero");
+    let has_aerothermal = document
+        .force_model_universe()
+        .iter()
+        .any(|m| m == "aerothermal_diagnostics");
     if has_aero && !is_runtime_atmosphere_kind(atmosphere_kind) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "atmosphere `{atmosphere_kind}` is not wired with the aero force; \
+                 use `us_standard_1976` or `piecewise_exponential`"
+            ),
+        });
+    }
+    if has_aerothermal && document.aerothermal.is_none() {
+        return Err(RunnerError::UnsupportedScenario {
+            what: MISSING_AEROTHERMAL_DIAGNOSTICS_MESSAGE.to_owned(),
+        });
+    }
+    if has_aerothermal && !is_runtime_atmosphere_kind(atmosphere_kind) {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "atmosphere `{atmosphere_kind}` is not wired with aerothermal diagnostics; \
                  use `us_standard_1976` or `piecewise_exponential`"
             ),
         });
@@ -620,6 +655,7 @@ fn build_vehicle(
     document: &ScenarioDocument,
     loaded_models: &LoadedModels,
     assembly: &Assembly,
+    aerothermal_sink: Option<crate::aerothermal::LiveAerothermalSink>,
 ) -> Result<KernelVehicle<PointMassState>, RunnerError> {
     let mut named: Vec<NamedForceModel<PointMassState>> = Vec::new();
 
@@ -702,6 +738,22 @@ fn build_vehicle(
                     );
                     named.push(NamedForceModel::new("thrust", Box::new(thrust)));
                 }
+            }
+            "aerothermal_diagnostics" => {
+                let sink =
+                    aerothermal_sink
+                        .clone()
+                        .ok_or_else(|| RunnerError::UnsupportedScenario {
+                            what: MISSING_AEROTHERMAL_DIAGNOSTICS_MESSAGE.to_owned(),
+                        })?;
+                let adapter = crate::aerothermal::StagnationHeatingForceAdapter::new(
+                    sink,
+                    POINT_MASS_AEROTHERMAL_MODEL_ID,
+                );
+                named.push(NamedForceModel::new(
+                    "aerothermal_diagnostics",
+                    Box::new(adapter),
+                ));
             }
             other => unreachable!("require_supported_shape rejects unknown force model `{other}`"),
         }
@@ -1307,9 +1359,11 @@ where
 
     // Per-model force breakdown evaluated at the post-step state.
     // The breakdown vehicle is a separate construction of the same
-    // models the kernel uses; both are stateless and evaluate
-    // identically. The breakdown is therefore the per-model
-    // contribution to the kernel's total at the step boundary.
+    // models the kernel uses. Stateful aerothermal integration is
+    // owned by the live driver, while the zero-force diagnostic
+    // adapter reads the shared latest-output sink. The breakdown is
+    // therefore the per-model contribution to the kernel's total at
+    // the step boundary.
     //
     // The breakdown's `effector_actuals` view mirrors
     // the kernel's snapshot via `kernel.effector_actuals()`. For
@@ -1456,6 +1510,61 @@ mod tests {
 
     use super::*;
 
+    const POINT_MASS_ENTRY_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-live-entry-coupling-test"
+description = "Synthetic point-mass live entry coupling regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 7
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 80000.0]
+initial_velocity_eci_m_s = [7600.0, 0.0, -100.0]
+
+[vehicle.assembly]
+id = "point-mass-live-entry-coupling-test"
+
+[[vehicle.assembly.bodies]]
+id = "capsule"
+geometry = { kind = "cylinder", length_m = 1.0, diameter_m = 1.0 }
+dry_mass_kg = 100.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "piecewise_exponential"
+wind = "none"
+
+[atmosphere]
+kind = "piecewise_exponential"
+
+[aerothermal]
+stagnation_kind = "sutton_graves"
+nose_radius_m = 0.5
+wall_temperature_k = 1500.0
+wall_catalysis = "fully_catalytic"
+
+[forces]
+models = ["gravity", "aerothermal_diagnostics"]
+
+[telemetry]
+output.csv = "out/point-mass-live-entry-coupling-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn workspace_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1504,6 +1613,53 @@ mod tests {
         let row = outcome.table.rows().first().expect("initial row exists");
         row.get(channel.id)
             .unwrap_or_else(|| panic!("channel `{name}` must have an initial value"))
+    }
+
+    fn f64_column(outcome: &RunOutcome, name: &str) -> Vec<f64> {
+        let channel = outcome
+            .table
+            .schema()
+            .channels()
+            .iter()
+            .find(|channel| channel.name == name)
+            .unwrap_or_else(|| panic!("channel `{name}` must exist"));
+        outcome
+            .table
+            .rows()
+            .iter()
+            .map(|row| match row.get(channel.id) {
+                Some(TelemetryValue::Float64(value)) => *value,
+                other => panic!("unexpected value in {name}: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn point_mass_wires_aerothermal_diagnostics_into_force_stack() {
+        let scenario = Scenario::from_toml_str(POINT_MASS_ENTRY_SCENARIO)
+            .expect("point-mass live entry scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files).expect("point-mass live entry run succeeds");
+
+        for channel in [
+            "force.aerothermal_diagnostics.x_n",
+            "force.aerothermal_diagnostics.y_n",
+            "force.aerothermal_diagnostics.z_n",
+        ] {
+            let force = f64_column(&outcome, channel);
+            assert!(
+                force
+                    .iter()
+                    .all(|value| value.to_bits() == 0.0_f64.to_bits()),
+                "{channel} should be present and zero-force: {force:?}"
+            );
+        }
+
+        let heat_flux = f64_column(&outcome, "aerothermal.q_conv_w_m2");
+        assert!(
+            heat_flux.iter().any(|value| *value > 0.0),
+            "live aerothermal driver should emit positive heating: {heat_flux:?}"
+        );
     }
 
     #[test]

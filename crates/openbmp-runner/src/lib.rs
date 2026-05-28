@@ -61,12 +61,7 @@ pub(crate) fn phase_force_overrides(document: &ScenarioDocument) -> BTreeMap<u64
     };
     for override_config in &forces.phase_override {
         let phase = crate::mission::phase_id_from_scenario_text(&override_config.phase).value();
-        let models = override_config
-            .models
-            .iter()
-            .filter(|model| model.as_str() != "aerothermal_diagnostics")
-            .cloned()
-            .collect();
+        let models = override_config.models.clone();
         overrides.insert(phase, models);
     }
     overrides
