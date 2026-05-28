@@ -173,7 +173,13 @@ pub fn run(
         resolved_files,
         aerothermal_sink,
     )?;
-    let mass_model = build_mass_model(&loaded, &mass_resources, aerothermal_feedback);
+    let mass_model = build_mass_model(
+        &loaded,
+        &mass_resources,
+        &initial_engine_snapshot,
+        &initial_tank_snapshot,
+        aerothermal_feedback,
+    );
     let moment_model = build_moment_model(document, &loaded)?;
     let rigid_models = RigidModels::new(moment_model, mass_model.clone());
     let separation_specs = build_rigid_body_separations(document, &mass_resources)?;
@@ -194,7 +200,7 @@ pub fn run(
         mass_model: rigid_models,
         environment: RuntimeEnvironment::from_document(document)?,
         stop_condition: AnyStop::new(
-            GroundImpact::sea_level(),
+            automatic_ground_impact(document),
             EndTime::new(SimTime::from_seconds(document.time.stop_s)),
         ),
         dt: Duration::from_seconds(document.time.dt_s),
@@ -454,6 +460,14 @@ pub fn run(
     })
 }
 
+fn automatic_ground_impact(document: &ScenarioDocument) -> GroundImpact {
+    if document.environment.gravity == "constant" {
+        GroundImpact::sea_level()
+    } else {
+        GroundImpact::disabled()
+    }
+}
+
 fn merge_direct_torque_snapshot_map(
     snapshot_map: &mut BTreeMap<String, f64>,
     direct_torque_map: BTreeMap<String, f64>,
@@ -687,11 +701,13 @@ struct RigidMassResourceModel<M> {
     resources: RigidMassResources,
     motor: Option<M>,
     aerothermal_feedback: Option<crate::aerothermal::AerothermalMassFeedback>,
+    default_engine_snapshot: BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    default_tank_snapshot: BTreeMap<TankId, openbmp_sim::TankSnapshot>,
     model_id: ModelId,
 }
 
 impl<M> RigidMassResourceModel<M> {
-    const fn new(
+    fn new(
         resources: RigidMassResources,
         motor: Option<M>,
         aerothermal_feedback: Option<crate::aerothermal::AerothermalMassFeedback>,
@@ -701,8 +717,20 @@ impl<M> RigidMassResourceModel<M> {
             resources,
             motor,
             aerothermal_feedback,
+            default_engine_snapshot: BTreeMap::new(),
+            default_tank_snapshot: BTreeMap::new(),
             model_id,
         }
+    }
+
+    fn with_default_snapshots(
+        mut self,
+        engine_snapshot: BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+        tank_snapshot: BTreeMap<TankId, openbmp_sim::TankSnapshot>,
+    ) -> Self {
+        self.default_engine_snapshot = engine_snapshot;
+        self.default_tank_snapshot = tank_snapshot;
+        self
     }
 }
 
@@ -883,14 +911,19 @@ impl<M: Motor> RigidMassResourceModel<M> {
 
 impl<M: Motor> openbmp_sim::RigidMassModel for RigidMassResourceModel<M> {
     fn mass_properties(&self, t: SimTime) -> Result<MassProperties, openbmp_sim::ModelEvalError> {
-        self.mass_properties_from_snapshots(t, None, &BTreeMap::new(), &BTreeMap::new())
+        self.mass_properties_from_snapshots(
+            t,
+            None,
+            &self.default_engine_snapshot,
+            &self.default_tank_snapshot,
+        )
     }
 
     fn mass_properties_rate(
         &self,
         t: SimTime,
     ) -> Result<openbmp_sim::MassPropertiesRate, openbmp_sim::ModelEvalError> {
-        self.mass_properties_rate_from_snapshots(t, None, &BTreeMap::new())
+        self.mass_properties_rate_from_snapshots(t, None, &self.default_engine_snapshot)
     }
 
     fn mass_properties_at(
@@ -1142,7 +1175,8 @@ fn build_initial_state(
         None,
         RIGID_BODY_MOTOR_MASS_MODEL_ID,
     )
-    .mass_properties_from_snapshots(start_time, None, engine_snapshot, tank_snapshot)
+    .with_default_snapshots(engine_snapshot.clone(), tank_snapshot.clone())
+    .mass_properties(start_time)
     .map_err(|err| RunnerError::UnsupportedScenario {
         what: format!("initial rigid-body mass properties failed: {err}"),
     })?;
@@ -1944,14 +1978,19 @@ impl openbmp_sim::RigidMassModel for RigidMassEitherKind {
 fn build_mass_model(
     loaded: &LoadedModels,
     mass_resources: &RigidMassResources,
+    engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    tank_snapshot: &BTreeMap<TankId, openbmp_sim::TankSnapshot>,
     aerothermal_feedback: Option<crate::aerothermal::AerothermalMassFeedback>,
 ) -> RigidMassEither {
-    RigidMassEitherKind::Resource(RigidMassResourceModel::new(
-        mass_resources.clone(),
-        loaded.motor.clone(),
-        aerothermal_feedback,
-        RIGID_BODY_MOTOR_MASS_MODEL_ID,
-    ))
+    RigidMassEitherKind::Resource(
+        RigidMassResourceModel::new(
+            mass_resources.clone(),
+            loaded.motor.clone(),
+            aerothermal_feedback,
+            RIGID_BODY_MOTOR_MASS_MODEL_ID,
+        )
+        .with_default_snapshots(engine_snapshot.clone(), tank_snapshot.clone()),
+    )
 }
 
 fn motor_ignition_time_s(document: &ScenarioDocument) -> Result<f64, RunnerError> {

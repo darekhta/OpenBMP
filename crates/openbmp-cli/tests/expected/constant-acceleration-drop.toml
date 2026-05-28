@@ -1,12 +1,12 @@
 # Tolerance table for the constant-acceleration-drop analytic-toy
 # scenario. Reference values come from the closed-form solution
-# z(t) = -0.5 * g * t² and vz(t) = -g * t with g = 9.80665 m/s² and
-# t = 10 s. RK4 with constant force on constant mass is exact for the
+# z(t) = 1000 - 0.5 * g * t² and vz(t) = -g * t with g = 9.80665 m/s²
+# and t = 10 s. RK4 with constant force on constant mass is exact for the
 # integrated polynomials, so the tolerances are dominated by f64
 # round-off across 1000 steps (≤ 10⁻¹⁰ in this regime).
 
 case       = "constant-acceleration-drop"
-source     = "closed-form: z(t) = -0.5 * g * t^2, vz(t) = -g * t, g = 9.80665 m/s²"
+source     = "closed-form: z(t) = 1000 - 0.5 * g * t^2, vz(t) = -g * t, g = 9.80665 m/s²"
 validation = "validated-toy"
 
 [[metric]]
@@ -17,7 +17,7 @@ relative_tolerance  = 1.0e-13
 
 [[metric]]
 name                = "final_position_z_m"
-expected            = -490.3325
+expected            = 509.6675
 absolute_tolerance  = 1.0e-9
 relative_tolerance  = 1.0e-12
 

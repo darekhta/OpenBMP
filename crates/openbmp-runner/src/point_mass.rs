@@ -206,7 +206,7 @@ pub fn run(
         mass_model,
         environment: RuntimeEnvironment::from_document(document)?,
         stop_condition: AnyStop::new(
-            GroundImpact::sea_level(),
+            automatic_ground_impact(document),
             EndTime::new(SimTime::from_seconds(document.time.stop_s)),
         ),
         dt: Duration::from_seconds(document.time.dt_s),
@@ -449,6 +449,14 @@ pub fn run(
         stop_reason,
         table,
     })
+}
+
+fn automatic_ground_impact(document: &ScenarioDocument) -> GroundImpact {
+    if document.environment.gravity == "constant" {
+        GroundImpact::sea_level()
+    } else {
+        GroundImpact::disabled()
+    }
 }
 
 fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerError> {

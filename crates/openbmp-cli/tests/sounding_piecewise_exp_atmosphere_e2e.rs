@@ -154,8 +154,8 @@ fn sounding_piecewise_exp_atmosphere_runs_with_populated_atmosphere_channels() {
     let staged = stage_scenario(temp.path(), "run");
     let report = run::run(&staged).expect("scenario run must succeed");
 
-    assert_eq!(report.stop_label, "end-time");
-    assert_eq!(report.final_step, 4100);
+    assert_eq!(report.stop_label, "ground-impact");
+    assert_eq!(report.final_step, 4079);
 
     let parquet_path = report
         .written

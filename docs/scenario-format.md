@@ -179,7 +179,7 @@ seed = 42
 
 [vehicle]
 kind = "point_mass"
-initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_position_eci_m = [0.0, 0.0, 1000.0]
 initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
 
 [vehicle.assembly]
@@ -263,10 +263,13 @@ Allowed `validation` values are `experimental`, `checked`,
 
 `dt_s` is the base kernel step. Multi-rate schedules are integer divisors of
 the base step and must be declared under subsystem-specific `rate_hz` fields.
-Runner simulations also install an automatic sea-level ground-impact
-stop condition. `stop_s` remains the upper time bound; a descending
+For `environment.gravity = "constant"` scenarios, runner simulations
+also install an automatic sea-level ground-impact stop condition.
+`stop_s` remains the upper time bound; a descending local-altitude
 trajectory that crosses `position.z <= 0` stops earlier with a
 `ground-impact` stop reason, even without a manual mission event.
+Orbital gravity profiles do not install this stop because ECI
+`position.z` is not a ground-altitude proxy.
 
 TOML seed literals should stay in `0..=i64::MAX`. The scenario model
 stores seeds as `u64`, but TOML integer syntax itself cannot represent values

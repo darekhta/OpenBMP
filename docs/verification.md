@@ -73,7 +73,7 @@ validation = "validated-toy"
 
 [[metric]]
 name = "final_position_z_m"
-expected = -490.3325
+expected = 509.6675
 absolute_tolerance = 1.0e-9
 relative_tolerance = 1.0e-12
 ```

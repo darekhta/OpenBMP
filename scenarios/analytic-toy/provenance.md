@@ -14,9 +14,9 @@ files:
 source_class:     synthetic-openbmp
 source_title:     >-
   Closed-form analytic-toy validation scenario: a 1 kg
-  point mass at the ECI origin, zero initial velocity, falling
+  point mass at z = 1000 m, zero initial velocity, falling
   under constant gravity magnitude g = 9.80665 m/s² along -z for
-  10 s. The closed-form solution z(t) = -0.5 g t² and
+  10 s. The closed-form solution z(t) = 1000 - 0.5 g t² and
   vz(t) = -g t is reproduced exactly by the kernel's RK4
   fixed-step integrator for a constant force on a constant mass.
 source_authors:   OpenBMP project

@@ -19,10 +19,12 @@ time to apogee = v / g    ≈ 204 s
 total flight   ≈ 410 s
 ```
 
-`stop_s = 410` captures the full ballistic arc back to z = 0. No
-aerodynamic drag is applied (`forces = ["gravity"]`); the closed-form
-ballistic answer is therefore independent of the layered-atmosphere
-sampling. The scenario exists purely to exercise the runner's
+`stop_s = 410` is the upper bound; the runner's automatic
+constant-gravity ground-impact detector stops the run at about 407.9 s
+as the ballistic arc crosses z = 0. No aerodynamic drag is applied
+(`forces = ["gravity"]`); the closed-form ballistic answer is
+therefore independent of the layered-atmosphere sampling. The scenario
+exists purely to exercise the runner's
 per-step atmosphere telemetry channels with the new layered model
 across the 0-204 km altitude span — that span deliberately exceeds
 the 86 km USSA76 ceiling to demonstrate the piecewise-exponential

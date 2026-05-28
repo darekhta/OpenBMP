@@ -2,6 +2,8 @@
 
 Synthetic scenario-authoring demonstrator for hybrid aerodynamic method dispatch.
 
+Scenario file: `scenarios/hypersonic-hybrid-entry/scenario.toml`
+
 The scenario is not a vehicle validation case. It uses a compact point-mass
 entry trajectory with a US Standard Atmosphere sample, a geometry-baked
 low-Mach continuum deck, tangent-cone hypersonic continuum aero, and

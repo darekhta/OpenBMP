@@ -2541,8 +2541,8 @@ kind = "piecewise_exponential"
     #[test]
     fn rejects_missing_frame_suffix_on_numeric_vector() {
         let toml = MINIMAL.replace(
-            "initial_position_eci_m = [0.0, 0.0, 0.0]",
-            "initial_position_m = [0.0, 0.0, 0.0]",
+            "initial_position_eci_m = [0.0, 0.0, 1000.0]",
+            "initial_position_m = [0.0, 0.0, 1000.0]",
         );
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(matches!(err, ScenarioError::MissingFrameSuffix { .. }));

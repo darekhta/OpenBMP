@@ -90,6 +90,14 @@ const INCLUDE_STR_MACRO: &[u8] = b"include_str";
 const INLINE_TOML_ALLOW_LIST: &[&str] = &[
     // This file: contains the schema markers as needles.
     "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
+    // Parser/runner unit tests that build scenario text in-place to
+    // exercise narrow wiring paths and mutation-based negative cases.
+    "crates/openbmp-cli/tests/multi_body_e2e.rs",
+    "crates/openbmp-runner/src/aero.rs",
+    "crates/openbmp-runner/src/celestial.rs",
+    "crates/openbmp-runner/src/frames.rs",
+    "crates/openbmp-runner/src/point_mass.rs",
+    "crates/openbmp-runner/src/rigid_body.rs",
 ];
 
 /// Real benchmark constants. The needle is the canonical
@@ -113,6 +121,9 @@ const TRIPWIRES: &[Tripwire] = &[
             "data/gravity/wgs84-j2.toml",
             "docs/data-provenance.md",
             "crates/openbmp-physics/src/frames.rs",
+            "crates/openbmp-runner/src/celestial.rs",
+            "crates/openbmp-runner/src/point_mass.rs",
+            "crates/openbmp-scenario/src/scenario.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
         ],
     },
@@ -136,6 +147,7 @@ const TRIPWIRES: &[Tripwire] = &[
             "data/gravity/wgs84-j2.toml",
             "docs/data-provenance.md",
             "crates/openbmp-physics/src/frames.rs",
+            "crates/openbmp-scenario/src/scenario.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
         ],
     },

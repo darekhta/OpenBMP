@@ -180,18 +180,8 @@ impl<S> StopCondition<S> for GroundImpact
 where
     S: SimState + TranslationalState,
 {
-    fn evaluate(&self, state: &S, step: StepIndex) -> Option<StopReason> {
-        if !self.enabled {
-            return None;
-        }
-
-        let altitude_m = state.position_eci().vector.z;
-        let vertical_velocity_m_s = state.velocity_eci().vector.z;
-        if altitude_m < self.ground_altitude_m && vertical_velocity_m_s < 0.0 {
-            Some(self.reason(state, step))
-        } else {
-            None
-        }
+    fn evaluate(&self, _state: &S, _step: StepIndex) -> Option<StopReason> {
+        None
     }
 
     fn evaluate_step(&self, previous: &S, current: &S, step: StepIndex) -> Option<StopReason> {
@@ -204,9 +194,7 @@ where
         let current_vertical_velocity_m_s = current.velocity_eci().vector.z;
         let crossed_from_above = previous_altitude_m > self.ground_altitude_m
             && current_altitude_m <= self.ground_altitude_m;
-        let sank_from_surface = previous_altitude_m >= self.ground_altitude_m
-            && current_altitude_m < self.ground_altitude_m;
-        if (crossed_from_above || sank_from_surface) && current_vertical_velocity_m_s <= 0.0 {
+        if crossed_from_above && current_vertical_velocity_m_s <= 0.0 {
             Some(self.reason(current, step))
         } else {
             None

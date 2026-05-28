@@ -44,7 +44,7 @@ seed    = 0x436c_6f63_4631_3866   # "ClocF18f"
 
 [vehicle]
 kind                                = "rigid_body"
-initial_position_eci_m              = [0.0, 0.0, 100.0]
+initial_position_eci_m              = [0.0, 0.0, 1000.0]
 initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
 initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
 initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]

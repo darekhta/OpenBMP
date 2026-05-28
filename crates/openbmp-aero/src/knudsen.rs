@@ -364,6 +364,15 @@ impl HybridAeroMethod {
 
 impl AeroMethod for HybridAeroMethod {
     fn aero_force_moment_body(&self, ctx: &AeroContext) -> Result<AeroForceMomentBody, AeroError> {
+        if ctx.knudsen.is_nan() || ctx.knudsen < 0.0 {
+            return Err(AeroError::NonFinite {
+                reason: "HybridAeroMethod ctx.knudsen is NaN or negative",
+            });
+        }
+        let alpha = self.bridge.alpha(ctx.knudsen).clamp(0.0, 1.0);
+        if alpha >= 1.0 {
+            return self.free_molecular.aero_force_moment_body(ctx);
+        }
         let continuum = if let Some(mach_bridge) = self.mach_bridge {
             let low = self.continuum_low_mach.aero_force_moment_body(ctx)?;
             let high = self.continuum_high_mach.aero_force_moment_body(ctx)?;
@@ -374,13 +383,10 @@ impl AeroMethod for HybridAeroMethod {
         } else {
             self.continuum_low_mach.aero_force_moment_body(ctx)?
         };
-        let fm = self.free_molecular.aero_force_moment_body(ctx)?;
-        if !ctx.knudsen.is_finite() {
-            return Err(AeroError::NonFinite {
-                reason: "HybridAeroMethod ctx.knudsen is NaN or Inf",
-            });
+        if alpha <= 0.0 {
+            return Ok(continuum);
         }
-        let alpha = self.bridge.alpha(ctx.knudsen).clamp(0.0, 1.0);
+        let fm = self.free_molecular.aero_force_moment_body(ctx)?;
         Ok(blend_force_moment(&continuum, &fm, alpha))
     }
 }

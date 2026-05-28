@@ -16,6 +16,7 @@ Commands:
   run               Run a scenario through the kernel and write telemetry
   diff              Compare two telemetry archives byte-for-byte
   check             Lint a scenario without running it
+  footprint-mc      Run offline landing-footprint Monte Carlo post-processing
   check-provenance  Walk a data tree and verify provenance records
   help              Print this message or the help of the given subcommand(s)
 
