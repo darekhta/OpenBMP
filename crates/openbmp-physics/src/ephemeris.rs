@@ -233,11 +233,12 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 /// SPK type 2 (Chebyshev position), type 3 (Chebyshev position and
 /// velocity), type 8/9 (equal/unequal-time Lagrange state
 /// interpolation), and type 12/13 (equal/unequal-time Hermite state
-/// interpolation) segments in the J2000 inertial frame. It also
-/// accepts the built-in SPICE `ECLIPJ2000` inertial frame and rotates
-/// those segment states into J2000. It computes geometric states and
-/// does not implement light-time, aberration, non-inertial frame
-/// chains, or text-kernel loading.
+/// interpolation), and type 20 (Chebyshev velocity) segments in the
+/// J2000 inertial frame. It also accepts the built-in SPICE
+/// `ECLIPJ2000` inertial frame and rotates those segment states into
+/// J2000. It computes geometric states and does not implement
+/// light-time, aberration, non-inertial frame chains, or generic
+/// text-kernel loading.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpkEphemeris {
     epoch_tdb_julian_date: f64,
@@ -250,8 +251,8 @@ impl SpkEphemeris {
     /// # Errors
     ///
     /// Returns [`PhysicsError`] when the bytes are not a supported
-    /// DAF/SPK file or no supported type 2/3/8/9/12/13 J2000 segments
-    /// are found.
+    /// DAF/SPK file or no supported type 2/3/8/9/12/13/20 J2000
+    /// segments are found.
     pub fn from_bytes(epoch_tdb_julian_date: f64, bytes: &[u8]) -> Result<Self, PhysicsError> {
         Self::from_kernels(epoch_tdb_julian_date, [bytes])
     }
@@ -266,7 +267,7 @@ impl SpkEphemeris {
     ///
     /// Returns [`PhysicsError`] when any byte slice is not a supported
     /// DAF/SPK file, no kernels are supplied, or no supported type
-    /// 2/3/8/9/12/13 J2000 segments are found across all kernels.
+    /// 2/3/8/9/12/13/20 J2000 segments are found across all kernels.
     pub fn from_kernels<'a, I>(epoch_tdb_julian_date: f64, kernels: I) -> Result<Self, PhysicsError>
     where
         I: IntoIterator<Item = &'a [u8]>,
@@ -290,7 +291,7 @@ impl SpkEphemeris {
         }
         if segments.is_empty() {
             return Err(PhysicsError::InvalidParameter {
-                reason: "SPK kernel contains no supported type 2/3/8/9/12/13 J2000 segments",
+                reason: "SPK kernel contains no supported type 2/3/8/9/12/13/20 J2000 segments",
             });
         }
         Ok(Self {
@@ -509,6 +510,7 @@ impl SpkSegment {
             9 => self.unequal_step_lagrange_state_km_s(et_s),
             12 => self.equal_step_hermite_state_km_s(et_s),
             13 => self.unequal_step_hermite_state_km_s(et_s),
+            20 => self.chebyshev_velocity_state_km_s(et_s),
             _ => Err(PhysicsError::InvalidParameter {
                 reason: "unsupported SPK data type",
             }),
@@ -729,6 +731,83 @@ impl SpkSegment {
         hermite_state_from_unequal_step_window(states, epochs, start, window_size, et_s)
     }
 
+    fn chebyshev_velocity_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        if self.data.len() < 13 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 20 segment is too short",
+            });
+        }
+        let directory = self.data.len() - 7;
+        let distance_scale_km = self.data[directory];
+        let time_scale_s = self.data[directory + 1];
+        let init_julian_date = self.data[directory + 2] + self.data[directory + 3];
+        let interval_len_days = self.data[directory + 4];
+        let rsize = f64_to_usize(self.data[directory + 5])?;
+        let record_count = f64_to_usize(self.data[directory + 6])?;
+        if !distance_scale_km.is_finite()
+            || !time_scale_s.is_finite()
+            || !init_julian_date.is_finite()
+            || !interval_len_days.is_finite()
+            || distance_scale_km <= 0.0
+            || time_scale_s <= 0.0
+            || interval_len_days <= 0.0
+            || rsize < 6
+            || record_count == 0
+            || (rsize - 3) % 3 != 0
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "invalid SPK type 20 directory",
+            });
+        }
+        if rsize
+            .checked_mul(record_count)
+            .and_then(|records| records.checked_add(7))
+            != Some(self.data.len())
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 20 directory does not match segment length",
+            });
+        }
+
+        let interval_len_s = interval_len_days * SECONDS_PER_DAY;
+        let init_et_s = (init_julian_date - J2000_JULIAN_DATE) * SECONDS_PER_DAY;
+        if !interval_len_s.is_finite() || !init_et_s.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 20 epoch directory is invalid",
+            });
+        }
+        let mut record_index = ((et_s - init_et_s) / interval_len_s).floor();
+        if record_index < 0.0 {
+            record_index = 0.0;
+        }
+        let max_index = (record_count - 1) as f64;
+        if record_index > max_index {
+            record_index = max_index;
+        }
+        let record_index = record_index as usize;
+        let record_start = record_index * rsize;
+        let record = &self.data[record_start..record_start + rsize];
+        let coeff_count = (rsize - 3) / 3;
+        let midpoint_s = init_et_s + (record_index as f64 + 0.5) * interval_len_s;
+        let radius_s = 0.5 * interval_len_s;
+        let tau = (et_s - midpoint_s) / radius_s;
+        let velocity_scale = distance_scale_km / time_scale_s;
+
+        let mut state = [0.0_f64; 6];
+        for component in 0..3 {
+            let base = component * (coeff_count + 1);
+            let coefficients = &record[base..base + coeff_count];
+            let midpoint_position = record[base + coeff_count] * distance_scale_km;
+            let velocity = evaluate_chebyshev(tau, coefficients) * velocity_scale;
+            let displacement = radius_s
+                * velocity_scale
+                * evaluate_chebyshev_integral_from_zero(tau, coefficients);
+            state[component] = midpoint_position + displacement;
+            state[component + 3] = velocity;
+        }
+        finite_state_from_components(state, "SPK type 20 Chebyshev velocity interpolation")
+    }
+
     fn chebyshev_record(
         &self,
         et_s: f64,
@@ -860,7 +939,7 @@ impl<'a> DafView<'a> {
                     record_offset + (SPK_SUMMARY_CONTROL_WORDS + index * SPK_SUMMARY_WORDS) * 8;
                 let descriptor = self.spk_descriptor(summary_offset)?;
                 if supported_spk_inertial_frame(descriptor.frame)
-                    && matches!(descriptor.data_type, 2 | 3 | 8 | 9 | 12 | 13)
+                    && matches!(descriptor.data_type, 2 | 3 | 8 | 9 | 12 | 13 | 20)
                     && let Some(segment) = self.segment_from_descriptor(descriptor)?
                 {
                     segments.push(segment);
@@ -1085,6 +1164,38 @@ fn evaluate_chebyshev_derivative(tau: f64, coefficients: &[f64]) -> f64 {
         t_curr = t_next;
         dt_prev = dt_curr;
         dt_curr = dt_next;
+    }
+    sum
+}
+
+fn evaluate_chebyshev_integral_from_zero(tau: f64, coefficients: &[f64]) -> f64 {
+    if coefficients.is_empty() {
+        return 0.0;
+    }
+    let mut values = Vec::with_capacity(coefficients.len() + 1);
+    values.push(1.0);
+    values.push(tau);
+    for degree in 2..=coefficients.len() {
+        values.push(2.0 * tau * values[degree - 1] - values[degree - 2]);
+    }
+
+    let mut zero_values = Vec::with_capacity(coefficients.len() + 1);
+    zero_values.push(1.0);
+    zero_values.push(0.0);
+    for degree in 2..=coefficients.len() {
+        zero_values.push(-zero_values[degree - 2]);
+    }
+
+    let mut sum = coefficients[0] * tau;
+    for (degree, coefficient) in coefficients.iter().enumerate().skip(1) {
+        let integral = if degree == 1 {
+            0.5 * tau * tau
+        } else {
+            let degree_f = degree as f64;
+            0.5 * ((values[degree + 1] - zero_values[degree + 1]) / (degree_f + 1.0)
+                - (values[degree - 1] - zero_values[degree - 1]) / (degree_f - 1.0))
+        };
+        sum += coefficient * integral;
     }
     sum
 }
@@ -1649,6 +1760,48 @@ mod tests {
     }
 
     #[test]
+    fn spk_type20_state_integrates_velocity_coefficients() {
+        let segment = SpkSegment {
+            start_et_s: -10.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 20,
+            data: type20_single_record_segment(
+                J2000_JULIAN_DATE,
+                20.0 / SECONDS_PER_DAY,
+                [[2.0, 4.0], [-1.0, 0.0], [0.0, 2.0]],
+                [100.0, 10.0, -5.0],
+                1.0,
+                1.0,
+            ),
+        };
+        let state = segment.state_km_s(15.0).unwrap();
+        assert_vector_near(state.position_km, Vector3::new(115.0, 5.0, -2.5), 1.0e-8);
+        assert_vector_near(state.velocity_km_s, Vector3::new(4.0, -1.0, 1.0), 1.0e-9);
+    }
+
+    #[test]
+    fn spk_ephemeris_reads_type20_velocity_chebyshev_state() {
+        let bytes = synthetic_type20_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(10.0))
+            .unwrap();
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(149_597_870.0e3, 0.0, 0.0),
+            1.0e-4,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(0.0, 29_780.0, 0.0),
+            1.0e-8,
+        );
+    }
+
+    #[test]
     fn spk_ephemeris_rotates_eclipj2000_segments_to_j2000() {
         let bytes = synthetic_eclipj2000_spk();
         let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
@@ -1891,6 +2044,40 @@ mod tests {
         synthetic_spk_from_segments(&segments)
     }
 
+    fn synthetic_type20_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 20,
+                data: type20_single_record_segment(
+                    J2000_JULIAN_DATE,
+                    20.0 / SECONDS_PER_DAY,
+                    [[0.0], [29.78], [0.0]],
+                    [149_597_870.0, 0.0, 0.0],
+                    1.0,
+                    1.0,
+                ),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
     fn synthetic_spk_from_segments(segments: &[SyntheticSegment]) -> Vec<u8> {
         let record_count = 4 + segments.len();
         let mut bytes = vec![0_u8; record_count * DAF_RECORD_BYTES];
@@ -2045,6 +2232,29 @@ mod tests {
             4.0 * epoch,
             -2.0 * epoch,
         ]);
+    }
+
+    fn type20_single_record_segment<const N: usize>(
+        init_julian_date: f64,
+        interval_len_days: f64,
+        velocity_coefficients: [[f64; N]; 3],
+        midpoint_position: [f64; 3],
+        distance_scale_km: f64,
+        time_scale_s: f64,
+    ) -> Vec<f64> {
+        let mut data = Vec::new();
+        for component in 0..3 {
+            data.extend_from_slice(&velocity_coefficients[component]);
+            data.push(midpoint_position[component] / distance_scale_km);
+        }
+        data.push(distance_scale_km);
+        data.push(time_scale_s);
+        data.push(init_julian_date);
+        data.push(0.0);
+        data.push(interval_len_days);
+        data.push((3 + 3 * N) as f64);
+        data.push(1.0);
+        data
     }
 
     fn assert_vector_near(actual: Vector3<f64>, expected: Vector3<f64>, tolerance: f64) {

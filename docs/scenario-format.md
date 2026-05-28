@@ -586,16 +586,18 @@ wind          = "none"
 
 The SPK reader supports geometric Sun/Moon states from binary DAF/SPK
 kernels with type 2 or type 3 Chebyshev segments, type 8/9 Lagrange
-state segments, and type 12/13 Hermite state segments in the J2000
-frame. It also accepts the built-in SPICE `ECLIPJ2000` inertial frame
-and rotates those segment states into OpenBMP's J2000 ECI chain. Type
-2 velocities are derived from the Chebyshev position derivative; type 3
-velocities come from the segment velocity coefficients; type 8/9 states
-are interpolated from equal/unequal-time discrete position/velocity
-records; type 12/13 states use equal/unequal-time Hermite interpolation
-of position and velocity records. It follows SPK segment priority
-inside each file and preserves load-order precedence across a file
-list, so later files can override earlier overlapping segments. It
+state segments, type 12/13 Hermite state segments, and type 20
+Chebyshev velocity-only segments in the J2000 frame. It also accepts
+the built-in SPICE `ECLIPJ2000` inertial frame and rotates those segment
+states into OpenBMP's J2000 ECI chain. Type 2 velocities are derived
+from the Chebyshev position derivative; type 3 velocities come from the
+segment velocity coefficients; type 8/9 states are interpolated from
+equal/unequal-time discrete position/velocity records; type 12/13
+states use equal/unequal-time Hermite interpolation of position and
+velocity records; type 20 integrates Chebyshev velocity polynomials
+from each record midpoint position constant. It follows SPK segment
+priority inside each file and preserves load-order precedence across a
+file list, so later files can override earlier overlapping segments. It
 combines target/center chains such as Solar-System-Barycenter ->
 Earth-Moon Barycenter -> Earth/Moon. It does not yet implement
 light-time, stellar aberration, generic text kernels beyond NAIF LSK

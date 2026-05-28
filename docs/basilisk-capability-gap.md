@@ -64,6 +64,9 @@ OpenBMP implementation slice.
   interpolation, covering the fixed-record discrete-state segment
   family commonly used for mission kernels before the remaining generic
   and analytic SPK segment types.
+- Added SPK type 20 Chebyshev velocity-only segments, integrating the
+  velocity polynomials and midpoint position constants used by
+  EPM-style ephemerides.
 - Added SPK support for the built-in `ECLIPJ2000` inertial frame,
   rotating those segment states into OpenBMP's J2000 ECI chain.
 - Added pinned leap-second table ingestion for deterministic UTC -> TT
@@ -83,7 +86,10 @@ OpenBMP implementation slice.
   binary SPK/BSP kernels. It does not yet implement light-time
   correction, stellar aberration, generic text kernels beyond NAIF LSK
   leap-second files, non-J2000 frame transforms beyond built-in
-  `ECLIPJ2000`, or the remaining generic/analytic SPK segment types.
+  `ECLIPJ2000`, or the remaining SPK segment types such as modified
+  difference arrays, two-body propagation, TLE, type 14 generic
+  Chebyshev, precessing conics, equinoctial elements, and ESOC/DDID
+  packets.
 - The IERS path is intentionally compact: it does not yet implement a
   full SPICE frame chain, IAU 2006/2000A CIO-based transforms, or
   precession/nutation rate terms in velocity transport.
