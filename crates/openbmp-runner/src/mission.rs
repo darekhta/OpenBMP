@@ -323,6 +323,7 @@ fn mission_actions(
             | ScenarioActionConfig::EngineCommand { .. }
             | ScenarioActionConfig::Separation
             | ScenarioActionConfig::JettisonStage { .. }
+            | ScenarioActionConfig::JettisonBodies { .. }
             | ScenarioActionConfig::SelectGuidanceProfile { .. }
             | ScenarioActionConfig::DeployRecovery { .. } => Err(RunnerError::Scenario(
                 openbmp_scenario::ScenarioError::MissionGraph {
@@ -433,6 +434,23 @@ fn build_event_binding(
             },
             once: config.once,
         }),
+        ScenarioActionConfig::JettisonBodies { bodies } => {
+            RuntimeEventBinding::Script(EventBinding {
+                id,
+                trigger,
+                action: ScenarioScriptAction::JettisonBodies {
+                    bodies: bodies
+                        .iter()
+                        .map(|body| {
+                            openbmp_core::BodyId::from_path(&format!(
+                                "vehicle.assembly.bodies.{body}"
+                            ))
+                        })
+                        .collect(),
+                },
+                once: config.once,
+            })
+        }
         ScenarioActionConfig::RaiseHealthAlarm { region, alarm } => {
             RuntimeEventBinding::Mission(EventBinding {
                 id,
@@ -881,6 +899,41 @@ mod tests {
             binding.action,
             ScenarioScriptAction::JettisonStage {
                 body: openbmp_core::BodyId::from_path("vehicle.assembly.bodies.lower")
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn jettison_bodies_event_builds_batch_script_action() -> Result<(), RunnerError> {
+        let event = EventConfig {
+            id: "rv_deploy".to_owned(),
+            trigger: EventTriggerConfig::AtTime { time_s: 1.0 },
+            action: ScenarioActionConfig::JettisonBodies {
+                bodies: vec!["rv1".to_owned(), "rv2".to_owned()],
+            },
+            once: true,
+        };
+        let phase_lookup = BTreeMap::new();
+
+        let binding = build_event_binding(&event, &phase_lookup)?;
+        let binding = match binding {
+            RuntimeEventBinding::Script(binding) => binding,
+            RuntimeEventBinding::Mission(_) => {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: "jettison_bodies must build a script binding".to_owned(),
+                });
+            }
+        };
+
+        assert_eq!(binding.id, event_id("rv_deploy"));
+        assert_eq!(
+            binding.action,
+            ScenarioScriptAction::JettisonBodies {
+                bodies: vec![
+                    openbmp_core::BodyId::from_path("vehicle.assembly.bodies.rv1"),
+                    openbmp_core::BodyId::from_path("vehicle.assembly.bodies.rv2"),
+                ]
             }
         );
         Ok(())

@@ -103,6 +103,27 @@ fn textbook_separation() -> RigidBodySeparation {
     }
 }
 
+fn batch_separations() -> [RigidBodySeparation; 2] {
+    [
+        RigidBodySeparation {
+            stack_body: BodyId::from_path("vehicle.assembly.bodies.bus"),
+            body: BodyId::from_path("vehicle.assembly.bodies.rv1"),
+            stack_mass_properties: mass_props(3.0, 0.0, [1.0, 1.0, 0.5]),
+            stage_mass_properties: mass_props(1.0, -1.0, [0.2, 0.2, 0.1]),
+            stack_delta_v_body_m_s: [0.0, 0.0, 0.0],
+            stage_delta_v_body_m_s: [0.0, 1.0, 0.0],
+        },
+        RigidBodySeparation {
+            stack_body: BodyId::from_path("vehicle.assembly.bodies.bus"),
+            body: BodyId::from_path("vehicle.assembly.bodies.rv2"),
+            stack_mass_properties: mass_props(3.0, 0.0, [1.0, 1.0, 0.5]),
+            stage_mass_properties: mass_props(1.0, 1.0, [0.2, 0.2, 0.1]),
+            stack_delta_v_body_m_s: [0.0, 0.0, 0.0],
+            stage_delta_v_body_m_s: [0.0, -1.0, 0.0],
+        },
+    ]
+}
+
 fn assert_rigid_states_bit_equal(a: &RigidBodyState, b: &RigidBodyState) {
     assert_eq!(a.time.as_seconds().to_bits(), b.time.as_seconds().to_bits());
     for axis in 0..3 {
@@ -183,6 +204,34 @@ fn separated_body_lane_advances_with_primary_lane() {
     assert_abs_diff_eq!(
         kernel.separated_rigid_bodies()[0].state.position.vector.z,
         -1.1,
+        epsilon = 1.0e-15
+    );
+}
+
+#[test]
+fn batch_jettison_partitions_multiple_bodies_from_same_pre_split_state() {
+    let mut kernel = build_kernel(0.3);
+    kernel
+        .jettison_rigid_bodies(&batch_separations())
+        .expect("batch separation must apply");
+
+    assert_eq!(kernel.separated_rigid_bodies().len(), 2);
+    assert_eq!(
+        kernel.current_state().mass_props.mass.get::<kilogram>(),
+        3.0
+    );
+    assert_eq!(
+        kernel.primary_rigid_body(),
+        Some(BodyId::from_path("vehicle.assembly.bodies.bus"))
+    );
+    assert_abs_diff_eq!(
+        kernel.separated_rigid_bodies()[0].state.velocity.vector.y,
+        1.0,
+        epsilon = 1.0e-15
+    );
+    assert_abs_diff_eq!(
+        kernel.separated_rigid_bodies()[1].state.velocity.vector.y,
+        -1.0,
         epsilon = 1.0e-15
     );
 }

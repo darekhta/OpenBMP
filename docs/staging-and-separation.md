@@ -20,6 +20,10 @@ per-body ownership for the force and mass resources that can survive a split:
 - `ScenarioActionConfig::JettisonStage { body }` validates when the body
   exists, the vehicle is `rigid_body`, the body is jettisoned only once, and a
   matching `[multi_body]` separation conserves linear momentum to tolerance.
+- `ScenarioActionConfig::JettisonBodies { bodies }` validates the same body
+  references but applies a batch separation from one pre-split state. This is
+  the coordinated deployment path for a bus releasing multiple independent
+  bodies on the same event tick.
 - The runner executes `jettison_stage` for rigid-body, fixed-step RK4
   profiles. The kernel partitions the composite state into the continuing
   stack and departing body, then propagates both lanes in a deterministic body
@@ -78,9 +82,22 @@ action  = { kind = "jettison_stage", body = "stage1" }
 once    = true
 ```
 
+A single event can also release multiple bodies atomically:
+
+```toml
+[[mission.events]]
+id      = "evt_rv_deploy"
+trigger = { kind = "at_time", time_s = 120.0 }
+action  = { kind = "jettison_bodies", bodies = ["rv1", "rv2", "rv3"] }
+once    = true
+```
+
 > **Status.** `ScenarioActionConfig::JettisonStage { body }` is implemented for
-> fixed-step RK4 rigid-body profiles with explicit resource ownership. The
-> legacy bare `separation`
+> fixed-step RK4 rigid-body profiles with explicit resource ownership.
+> `ScenarioActionConfig::JettisonBodies { bodies }` is implemented as a batch
+> partition from the same pre-separation state, requiring matching
+> `[[multi_body.separation]]` entries for every body. The legacy bare
+> `separation`
 > variant remains for backward compatibility and stays deferred because it does
 > not identify which body leaves the stack.
 
@@ -124,6 +141,10 @@ default strategy is:
   the spent stage may keep gravity + drag + recovery; the continuing stack may
   keep propulsion + aero + control. Determinism is preserved by a fixed,
   declared body-iteration order.
+- **Batch deployment.** When `jettison_bodies` fires, every listed lower body
+  is partitioned from the same pre-split composite before the primary stack is
+  updated. This avoids the mass-loss artefact that would occur if multiple RVs
+  were jettisoned sequentially from an already-reduced bus state.
 - **Coupled (reserved).** Plume impingement or tether coupling between freshly
   separated bodies is out of scope and reserved.
 
@@ -170,6 +191,7 @@ validation is cross-block and fail-closed:
 | Item | Location | State |
 |---|---|---|
 | `ScenarioActionConfig::JettisonStage { body }` | `openbmp-scenario/src/document.rs` | Implemented for v3 rigid-body stage separation. |
+| `ScenarioActionConfig::JettisonBodies { bodies }` | `openbmp-scenario/src/document.rs` | Implemented for coordinated same-tick multi-body deployment. |
 | `StageSeparationModel` trait | `openbmp-physics/src/profile.rs` | Implemented by `MomentumConservingStageSeparation` with closed-form tests. |
 | `ScenarioError::UnknownBodyReference` | `openbmp-scenario/src/error.rs` | Reused (already exists for tank→body checks; `{ field, value }`). |
 | Multi-body simultaneous propagation | kernel (`openbmp-sim`) | Implemented for fixed-step RK4 rigid-body profiles with explicit per-body force, moment, snapshot, and mass ownership. |

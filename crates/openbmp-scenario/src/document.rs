@@ -751,9 +751,9 @@ impl ScenarioDocument {
         if header >= SCENARIO_VERSION_V3 {
             return Ok(());
         }
-        if self.environment.gravity == "egm2008" {
+        if self.environment.gravity == "egm2008" || self.environment.gravity == "third_body" {
             return Err(ScenarioError::SchemaVersionFieldReserved {
-                field: "environment.gravity = \"egm2008\"".to_owned(),
+                field: format!("environment.gravity = \"{}\"", self.environment.gravity),
                 required: SCENARIO_VERSION_V3,
                 found: header,
             });
@@ -1405,12 +1405,24 @@ struct JettisonStageAction<'a> {
 fn collect_jettison_stage_actions(mission: &MissionConfig) -> Vec<JettisonStageAction<'_>> {
     let mut actions = Vec::new();
     for (event_index, event) in mission.events.iter().enumerate() {
-        if let ScenarioActionConfig::JettisonStage { body } = &event.action {
-            actions.push(JettisonStageAction {
-                event_index,
-                event_id: event.id.as_str(),
-                body: body.as_str(),
-            });
+        match &event.action {
+            ScenarioActionConfig::JettisonStage { body } => {
+                actions.push(JettisonStageAction {
+                    event_index,
+                    event_id: event.id.as_str(),
+                    body: body.as_str(),
+                });
+            }
+            ScenarioActionConfig::JettisonBodies { bodies } => {
+                for body in bodies {
+                    actions.push(JettisonStageAction {
+                        event_index,
+                        event_id: event.id.as_str(),
+                        body: body.as_str(),
+                    });
+                }
+            }
+            _ => {}
         }
     }
     actions
@@ -1796,6 +1808,8 @@ pub struct EnvironmentConfig {
     pub frame_profile: String,
     /// Gravity model name.
     pub gravity: String,
+    /// Central gravity used when `gravity = "third_body"`.
+    pub gravity_base: Option<String>,
     /// Constant gravity magnitude in metres per second squared.
     /// Required when `gravity = "constant"`.
     pub gravity_m_s2: Option<f64>,
@@ -1807,6 +1821,13 @@ pub struct EnvironmentConfig {
     /// J2 zonal coefficient (dimensionless). Optional when
     /// `gravity = "j2"`; defaults to the WGS84 value when absent.
     pub j2: Option<f64>,
+    /// Perturbing celestial bodies used when
+    /// `gravity = "third_body"`.
+    #[serde(default)]
+    pub third_bodies: Vec<String>,
+    /// Celestial ephemeris provider used when
+    /// `gravity = "third_body"`.
+    pub ephemeris: Option<String>,
     /// Atmosphere model name.
     pub atmosphere: String,
     /// Wind model name.
@@ -1925,7 +1946,124 @@ impl EnvironmentConfig {
                     });
                 }
             }
+            "third_body" => {
+                let base = self.gravity_base.as_deref().ok_or_else(|| {
+                    ScenarioError::MissingRequiredField {
+                        field: "environment.gravity_base".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "third_body".to_owned(),
+                    }
+                })?;
+                require_supported(
+                    "environment.gravity_base",
+                    base,
+                    &["point_mass", "j2", "egm2008"],
+                )?;
+                require_non_empty_list("environment.third_bodies", &self.third_bodies)?;
+                require_unique("environment.third_bodies", &self.third_bodies)?;
+                for (index, body) in self.third_bodies.iter().enumerate() {
+                    require_supported(
+                        &format!("environment.third_bodies[{index}]"),
+                        body,
+                        &["sun", "moon"],
+                    )?;
+                }
+                if let Some(ephemeris) = &self.ephemeris {
+                    require_supported(
+                        "environment.ephemeris",
+                        ephemeris,
+                        &["low_precision_sun_moon"],
+                    )?;
+                }
+                if self.gravity_m_s2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "environment.gravity_m_s2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "third_body".to_owned(),
+                    });
+                }
+                match base {
+                    "point_mass" => {
+                        let mu =
+                            self.mu_m3_s2
+                                .ok_or_else(|| ScenarioError::MissingRequiredField {
+                                    field: "environment.mu_m3_s2".to_owned(),
+                                    role: ModelRole::Gravity,
+                                    name: "third_body".to_owned(),
+                                })?;
+                        require_positive("environment.mu_m3_s2", mu)?;
+                        if self.r_e_m.is_some() || self.j2.is_some() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.r_e_m / environment.j2".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body point_mass base".to_owned(),
+                            });
+                        }
+                    }
+                    "j2" => {
+                        let mu =
+                            self.mu_m3_s2
+                                .ok_or_else(|| ScenarioError::MissingRequiredField {
+                                    field: "environment.mu_m3_s2".to_owned(),
+                                    role: ModelRole::Gravity,
+                                    name: "third_body".to_owned(),
+                                })?;
+                        require_positive("environment.mu_m3_s2", mu)?;
+                        let r_e =
+                            self.r_e_m
+                                .ok_or_else(|| ScenarioError::MissingRequiredField {
+                                    field: "environment.r_e_m".to_owned(),
+                                    role: ModelRole::Gravity,
+                                    name: "third_body".to_owned(),
+                                })?;
+                        require_positive("environment.r_e_m", r_e)?;
+                        if let Some(j2) = self.j2 {
+                            require_finite("environment.j2", j2)?;
+                        }
+                    }
+                    "egm2008" => {
+                        if self.mu_m3_s2.is_some() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.mu_m3_s2".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body egm2008 base".to_owned(),
+                            });
+                        }
+                        if self.r_e_m.is_some() || self.j2.is_some() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.r_e_m / environment.j2".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body egm2008 base".to_owned(),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
+        }
+        if self.gravity != "third_body" {
+            if self.gravity_base.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.gravity_base".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: self.gravity.clone(),
+                });
+            }
+            if !self.third_bodies.is_empty() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.third_bodies".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: self.gravity.clone(),
+                });
+            }
+            if self.ephemeris.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.ephemeris".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: self.gravity.clone(),
+                });
+            }
         }
         registry.resolve(ModelRole::Atmosphere, &self.atmosphere)?;
         registry.resolve(ModelRole::Wind, &self.wind)?;
@@ -5230,6 +5368,7 @@ fn require_mission_only_action(
         | ScenarioActionConfig::EngineCommand { .. }
         | ScenarioActionConfig::Separation
         | ScenarioActionConfig::JettisonStage { .. }
+        | ScenarioActionConfig::JettisonBodies { .. }
         | ScenarioActionConfig::SelectGuidanceProfile { .. }
         | ScenarioActionConfig::DeployRecovery { .. } => Err(ScenarioError::MissionGraph {
             reason: format!("{field} may contain only mission actions"),
@@ -5671,6 +5810,12 @@ pub enum ScenarioActionConfig {
         /// `[[vehicle.assembly.bodies]]`).
         body: String,
     },
+    /// Commanded coordinated multi-body separation: jettison every
+    /// named assembly body from the same pre-separation state.
+    JettisonBodies {
+        /// Assembly body ids to jettison.
+        bodies: Vec<String>,
+    },
     /// Deferred. Switch the active guidance profile at a phase boundary
     /// (e.g. hand off from `ascent_reference` to passive `coast`). See
     /// `docs/ascent-guidance.md`.
@@ -5731,6 +5876,13 @@ impl ScenarioActionConfig {
             }
             Self::JettisonStage { body } => {
                 require_non_empty(&path("body"), body)?;
+            }
+            Self::JettisonBodies { bodies } => {
+                require_non_empty_list(&path("bodies"), bodies)?;
+                require_unique(&path("bodies"), bodies)?;
+                for (body_index, body) in bodies.iter().enumerate() {
+                    require_non_empty(&path(&format!("bodies[{body_index}]")), body)?;
+                }
             }
             Self::SelectGuidanceProfile { profile } => {
                 require_non_empty(&path("profile"), profile)?;
@@ -8770,15 +8922,8 @@ impl MultiBodyConfig {
                 field: "multi_body.separation".to_owned(),
             });
         }
-        let mut seen_events = BTreeSet::new();
         for (index, sep) in self.separations.iter().enumerate() {
             sep.validate(index)?;
-            if !seen_events.insert(sep.event_id.clone()) {
-                return Err(ScenarioError::DuplicateValue {
-                    field: format!("multi_body.separation[{index}].event_id"),
-                    value: sep.event_id.clone(),
-                });
-            }
         }
         Ok(())
     }

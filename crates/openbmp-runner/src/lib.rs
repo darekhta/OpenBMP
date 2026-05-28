@@ -31,6 +31,7 @@ pub mod aero_effector_match;
 pub mod aerothermal;
 pub mod assembly;
 pub mod atmosphere;
+pub mod celestial;
 pub mod effectors;
 pub mod engines;
 pub mod entry;

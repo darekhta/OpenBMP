@@ -82,6 +82,17 @@ pub enum ScenarioScriptAction {
         /// Body to detach from the continuing stack.
         body: BodyId,
     },
+    /// Commanded batch separation event for multiple declared
+    /// assembly bodies.
+    ///
+    /// Every listed body is partitioned from the same pre-separation
+    /// rigid-body state. This is the coordinated deployment path for
+    /// one bus releasing multiple independent bodies on the same
+    /// event tick.
+    JettisonBodies {
+        /// Bodies to detach from the continuing stack.
+        bodies: Vec<BodyId>,
+    },
     /// Deploy / stow a recovery device. Targets a declared
     /// recovery device by [`RecoveryId`]; the runner-side
     /// `RecoveryRack::apply_deploys` consumes the fired event and

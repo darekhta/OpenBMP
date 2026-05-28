@@ -475,11 +475,11 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     // that refused non-RK4 selections has been removed.
     if !matches!(
         document.environment.gravity.as_str(),
-        "constant" | "point_mass" | "j2" | "egm2008"
+        "constant" | "point_mass" | "j2" | "egm2008" | "third_body"
     ) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
-                "environment.gravity = {} (wired: constant, point_mass, j2, egm2008)",
+                "environment.gravity = {} (wired: constant, point_mass, j2, egm2008, third_body)",
                 document.environment.gravity
             ),
         });
@@ -998,51 +998,90 @@ where
     SC: openbmp_sim::StopCondition<RigidBodyState>,
 {
     for event in fired {
-        if let ScenarioScriptAction::JettisonStage { body } = event.action {
-            let separation = separation_specs.get(&body).copied().ok_or_else(|| {
-                RunnerError::UnsupportedScenario {
-                    what: format!(
-                        "jettison_stage event {} fired for body id {} with no \
-                             matching [multi_body] separation",
-                        event.binding_id.value(),
-                        body.value()
-                    ),
+        match &event.action {
+            ScenarioScriptAction::JettisonStage { body } => {
+                let separation = separation_specs.get(body).copied().ok_or_else(|| {
+                    RunnerError::UnsupportedScenario {
+                        what: format!(
+                            "jettison_stage event {} fired for body id {} with no \
+                                 matching [multi_body] separation",
+                            event.binding_id.value(),
+                            body.value()
+                        ),
+                    }
+                })?;
+                let runtime = build_runtime_rigid_body_separation(kernel, mass_model, separation)?;
+                kernel.jettison_rigid_body(runtime)?;
+            }
+            ScenarioScriptAction::JettisonBodies { bodies } => {
+                let mut batch = Vec::with_capacity(bodies.len());
+                for body in bodies {
+                    let separation = separation_specs.get(body).copied().ok_or_else(|| {
+                        RunnerError::UnsupportedScenario {
+                            what: format!(
+                                "jettison_bodies event {} fired for body id {} with no \
+                                     matching [multi_body] separation",
+                                event.binding_id.value(),
+                                body.value()
+                            ),
+                        }
+                    })?;
+                    batch.push(build_runtime_rigid_body_separation(
+                        kernel, mass_model, separation,
+                    )?);
                 }
-            })?;
-            let time = kernel.current_time();
-            let engine_snapshot = kernel.engine_snapshot();
-            let tank_snapshot = kernel.tank_snapshot();
-            let stack_mass_properties = mass_model
-                .mass_properties_at(openbmp_sim::MassContext {
-                    time,
-                    active_body: Some(separation.stack_body),
-                    engine_snapshot: openbmp_sim::EngineSnapshotView::new(engine_snapshot),
-                    tank_snapshot: openbmp_sim::TankSnapshotView::new(tank_snapshot),
-                })
-                .map_err(|err| RunnerError::UnsupportedScenario {
-                    what: format!("continuing-stack mass properties at separation failed: {err}"),
-                })?;
-            let stage_mass_properties = mass_model
-                .mass_properties_at(openbmp_sim::MassContext {
-                    time,
-                    active_body: Some(separation.body),
-                    engine_snapshot: openbmp_sim::EngineSnapshotView::new(engine_snapshot),
-                    tank_snapshot: openbmp_sim::TankSnapshotView::new(tank_snapshot),
-                })
-                .map_err(|err| RunnerError::UnsupportedScenario {
-                    what: format!("departing-stage mass properties at separation failed: {err}"),
-                })?;
-            kernel.jettison_rigid_body(RigidBodySeparation {
-                stack_body: separation.stack_body,
-                body: separation.body,
-                stack_mass_properties,
-                stage_mass_properties,
-                stack_delta_v_body_m_s: separation.stack_delta_v_body_m_s,
-                stage_delta_v_body_m_s: separation.stage_delta_v_body_m_s,
-            })?;
+                kernel.jettison_rigid_bodies(&batch)?;
+            }
+            _ => {}
         }
     }
     Ok(())
+}
+
+fn build_runtime_rigid_body_separation<I, F, MOM, MM, E, SC>(
+    kernel: &openbmp_sim::RigidBodyKernel<I, F, MOM, MM, E, SC>,
+    mass_model: &RigidMassEither,
+    separation: RigidBodySeparationSpec,
+) -> Result<RigidBodySeparation, RunnerError>
+where
+    I: openbmp_sim::Integrator<RigidBodyState>,
+    F: ForceModel<RigidBodyState>,
+    MOM: openbmp_sim::MomentModel<RigidBodyState>,
+    MM: openbmp_sim::RigidMassModel,
+    E: openbmp_sim::EnvironmentModel,
+    SC: openbmp_sim::StopCondition<RigidBodyState>,
+{
+    let time = kernel.current_time();
+    let engine_snapshot = kernel.engine_snapshot();
+    let tank_snapshot = kernel.tank_snapshot();
+    let stack_mass_properties = mass_model
+        .mass_properties_at(openbmp_sim::MassContext {
+            time,
+            active_body: Some(separation.stack_body),
+            engine_snapshot: openbmp_sim::EngineSnapshotView::new(engine_snapshot),
+            tank_snapshot: openbmp_sim::TankSnapshotView::new(tank_snapshot),
+        })
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("continuing-stack mass properties at separation failed: {err}"),
+        })?;
+    let stage_mass_properties = mass_model
+        .mass_properties_at(openbmp_sim::MassContext {
+            time,
+            active_body: Some(separation.body),
+            engine_snapshot: openbmp_sim::EngineSnapshotView::new(engine_snapshot),
+            tank_snapshot: openbmp_sim::TankSnapshotView::new(tank_snapshot),
+        })
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("departing-stage mass properties at separation failed: {err}"),
+        })?;
+    Ok(RigidBodySeparation {
+        stack_body: separation.stack_body,
+        body: separation.body,
+        stack_mass_properties,
+        stage_mass_properties,
+        stack_delta_v_body_m_s: separation.stack_delta_v_body_m_s,
+        stage_delta_v_body_m_s: separation.stage_delta_v_body_m_s,
+    })
 }
 
 fn load_models(
@@ -1179,6 +1218,13 @@ fn build_gravity_force_adapter_rigid_body(
             // per-scenario overrides are accepted, matching the parser
             // contract in `EnvironmentConfig::validate`.
             let model = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+            Ok(Box::new(GravityForceAdapter::new(
+                model,
+                RIGID_BODY_GRAVITY_MODEL_ID,
+            )))
+        }
+        "third_body" => {
+            let model = crate::celestial::build_third_body_gravity(document)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
                 RIGID_BODY_GRAVITY_MODEL_ID,
@@ -2736,6 +2782,98 @@ to = "entry"
 event = "entry_interface"
 "#;
 
+    const BATCH_RV_DEPLOY_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "batch-rv-deploy-test"
+description = "Synthetic bus deploying two rigid bodies on one event tick."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.3
+dt_s = 0.1
+seed = 19
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "batch-rv-deploy-test"
+
+[[vehicle.assembly.bodies]]
+id = "bus"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 3.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[[vehicle.assembly.bodies]]
+id = "rv1"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, -1.0]
+dry_inertia_body_kg_m2 = [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]]
+
+[[vehicle.assembly.bodies]]
+id = "rv2"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 1.0]
+dry_inertia_body_kg_m2 = [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "coast"
+
+[[mission.events]]
+id = "deploy_rvs"
+trigger = { kind = "at_time", time_s = 0.1 }
+action = { kind = "jettison_bodies", bodies = ["rv1", "rv2"] }
+once = true
+
+[multi_body]
+
+[[multi_body.separation]]
+event_id = "deploy_rvs"
+upper_body_id = "bus"
+lower_body_id = "rv1"
+lower_delta_v_body_m_s = [0.0, 1.0, 0.0]
+conserve_momentum = false
+
+[[multi_body.separation]]
+event_id = "deploy_rvs"
+upper_body_id = "bus"
+lower_body_id = "rv2"
+lower_delta_v_body_m_s = [0.0, -1.0, 0.0]
+conserve_momentum = false
+
+[telemetry]
+output.csv = "out/batch-rv-deploy-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn valid_stage_separation_document() -> ScenarioDocument {
         openbmp_scenario::Scenario::from_toml_str(include_str!(
             "../../openbmp-scenario/tests/fixtures/stage-separation-valid.toml"
@@ -2776,6 +2914,19 @@ event = "entry_interface"
             .iter()
             .map(|row| match row.get(id) {
                 Some(TelemetryValue::Text(value)) => value.clone(),
+                other => panic!("unexpected value in {name}: {other:?}"),
+            })
+            .collect()
+    }
+
+    fn bool_column(outcome: &RunOutcome, name: &str) -> Vec<bool> {
+        let id = channel_id(outcome, name);
+        outcome
+            .table
+            .rows()
+            .iter()
+            .map(|row| match row.get(id) {
+                Some(TelemetryValue::Bool(value)) => *value,
                 other => panic!("unexpected value in {name}: {other:?}"),
             })
             .collect()
@@ -2834,6 +2985,23 @@ event = "entry_interface"
             mass_loss.iter().any(|value| *value > 0.0),
             "ablation mass feedback should be observable: {mass_loss:?}"
         );
+    }
+
+    #[test]
+    fn batch_jettison_bodies_deploys_multiple_rigid_lanes() {
+        let scenario = openbmp_scenario::Scenario::from_toml_str(BATCH_RV_DEPLOY_SCENARIO)
+            .expect("batch deploy scenario must parse");
+        let outcome = crate::run(&scenario).expect("batch deploy scenario must run");
+
+        let rv1_separated = bool_column(&outcome, "body.rv1.separated");
+        let rv2_separated = bool_column(&outcome, "body.rv2.separated");
+        assert!(rv1_separated.iter().any(|value| *value));
+        assert!(rv2_separated.iter().any(|value| *value));
+
+        let rv1_vy = f64_column(&outcome, "body.rv1.velocity_y_m_s");
+        let rv2_vy = f64_column(&outcome, "body.rv2.velocity_y_m_s");
+        assert!(rv1_vy.iter().any(|value| (*value - 1.0).abs() < 1.0e-12));
+        assert!(rv2_vy.iter().any(|value| (*value + 1.0).abs() < 1.0e-12));
     }
 
     #[test]

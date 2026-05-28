@@ -126,6 +126,9 @@ impl ModelRegistry {
             // zonal-only EGM2008 gravity path. v2 scenarios are still
             // rejected by ScenarioDocument::validate.
             ModelDescriptor::new("egm2008", ModelRole::Gravity),
+            // Central Earth gravity plus Sun/Moon point-mass
+            // perturbations from the configured ephemeris source.
+            ModelDescriptor::new("third_body", ModelRole::Gravity),
             // Atmosphere models.
             ModelDescriptor::new("isothermal", ModelRole::Atmosphere),
             ModelDescriptor::new("us_standard_1976", ModelRole::Atmosphere),

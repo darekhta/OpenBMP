@@ -24,6 +24,7 @@
 use nalgebra::Vector3;
 use openbmp_core::{Eci, Position3, SimTime};
 
+use crate::ephemeris::{CelestialBody, EphemerisModel};
 use crate::error::PhysicsError;
 use crate::frames::{WGS84_A_M, WGS84_MU_M3_S2};
 
@@ -194,6 +195,164 @@ impl GravityModel for PointMassGravity {
         }
         Ok(g)
     }
+}
+
+// ---------------------------------------------------------------------
+// ThirdBodyGravity
+// ---------------------------------------------------------------------
+
+/// One perturbing third body.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ThirdBody {
+    body: CelestialBody,
+    mu_m3_s2: f64,
+}
+
+impl ThirdBody {
+    /// Construct from a built-in celestial body and its canonical
+    /// gravitational parameter.
+    #[must_use]
+    pub const fn canonical(body: CelestialBody) -> Self {
+        Self {
+            body,
+            mu_m3_s2: body.mu_m3_s2(),
+        }
+    }
+
+    /// Construct from an explicit gravitational parameter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `mu_m3_s2` is
+    /// not strictly positive and finite.
+    pub fn new(body: CelestialBody, mu_m3_s2: f64) -> Result<Self, PhysicsError> {
+        if !mu_m3_s2.is_finite() || mu_m3_s2 <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "third-body gravitational parameter must be strictly positive and finite",
+            });
+        }
+        Ok(Self { body, mu_m3_s2 })
+    }
+
+    /// Celestial body identifier.
+    #[must_use]
+    pub const fn body(&self) -> CelestialBody {
+        self.body
+    }
+
+    /// Gravitational parameter in m^3/s^2.
+    #[must_use]
+    pub const fn mu_m3_s2(&self) -> f64 {
+        self.mu_m3_s2
+    }
+}
+
+/// Central gravity plus third-body point-mass perturbations.
+///
+/// The perturbing acceleration is evaluated in the central-body frame:
+///
+/// ```text
+/// a_3 = μ_b · ((r_b - r) / |r_b - r|³ - r_b / |r_b|³)
+/// ```
+///
+/// where `r` is the vehicle position relative to Earth and `r_b` is
+/// the perturbing body's Earth-centered inertial position from the
+/// configured ephemeris model.
+#[derive(Clone, Debug)]
+pub struct ThirdBodyGravity<G, E> {
+    central: G,
+    ephemeris: E,
+    bodies: Vec<ThirdBody>,
+}
+
+impl<G, E> ThirdBodyGravity<G, E> {
+    /// Construct a third-body gravity model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if no perturbing
+    /// bodies are provided.
+    pub fn new(
+        central: G,
+        ephemeris: E,
+        bodies: impl Into<Vec<ThirdBody>>,
+    ) -> Result<Self, PhysicsError> {
+        let bodies = bodies.into();
+        if bodies.is_empty() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "third-body gravity requires at least one perturbing body",
+            });
+        }
+        Ok(Self {
+            central,
+            ephemeris,
+            bodies,
+        })
+    }
+
+    /// Wrapped central gravity model.
+    #[must_use]
+    pub const fn central(&self) -> &G {
+        &self.central
+    }
+
+    /// Wrapped ephemeris model.
+    #[must_use]
+    pub const fn ephemeris(&self) -> &E {
+        &self.ephemeris
+    }
+
+    /// Perturbing bodies in deterministic evaluation order.
+    #[must_use]
+    pub fn bodies(&self) -> &[ThirdBody] {
+        &self.bodies
+    }
+}
+
+impl<G: GravityModel, E: EphemerisModel> GravityModel for ThirdBodyGravity<G, E> {
+    fn gravity_eci_m_s2(
+        &self,
+        position_eci: Position3<Eci>,
+        time: SimTime,
+    ) -> Result<Vector3<f64>, PhysicsError> {
+        let mut acceleration = self.central.gravity_eci_m_s2(position_eci, time)?;
+        for body in &self.bodies {
+            let body_position = self.ephemeris.body_position_eci_m(body.body, time)?;
+            acceleration +=
+                third_body_perturbation(position_eci.vector, body_position, body.mu_m3_s2)?;
+        }
+        if !acceleration.iter().all(|v| v.is_finite()) {
+            return Err(PhysicsError::NonFinite {
+                reason: "third-body gravity produced non-finite acceleration",
+            });
+        }
+        Ok(acceleration)
+    }
+}
+
+fn third_body_perturbation(
+    vehicle_position: Vector3<f64>,
+    body_position: Vector3<f64>,
+    mu_m3_s2: f64,
+) -> Result<Vector3<f64>, PhysicsError> {
+    let relative = body_position - vehicle_position;
+    let relative_r2 = relative.dot(&relative);
+    let body_r2 = body_position.dot(&body_position);
+    if relative_r2 == 0.0 || body_r2 == 0.0 {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "third-body perturbation is singular at coincident body positions",
+        });
+    }
+    let relative_r = relative_r2.sqrt();
+    let body_r = body_r2.sqrt();
+    let perturbation =
+        mu_m3_s2 * (relative / (relative_r * relative_r2) - body_position / (body_r * body_r2));
+    if !perturbation.iter().all(|v| v.is_finite()) {
+        return Err(PhysicsError::NonFinite {
+            reason: "third-body perturbation produced non-finite acceleration",
+        });
+    }
+    Ok(perturbation)
 }
 
 // ---------------------------------------------------------------------
@@ -596,6 +755,7 @@ impl GravityModel for Egm2008ZonalGravity {
 )]
 mod tests {
     use super::*;
+    use crate::ephemeris::{CelestialBody, LowPrecisionSunMoonEphemeris};
     use approx::assert_abs_diff_eq;
 
     fn at_x(x: f64) -> Position3<Eci> {
@@ -604,6 +764,21 @@ mod tests {
 
     fn at_z(z: f64) -> Position3<Eci> {
         Position3::new(0.0, 0.0, z)
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    struct FixedEphemeris {
+        position: Vector3<f64>,
+    }
+
+    impl EphemerisModel for FixedEphemeris {
+        fn body_position_eci_m(
+            &self,
+            _body: CelestialBody,
+            _time: SimTime,
+        ) -> Result<Vector3<f64>, PhysicsError> {
+            Ok(self.position)
+        }
     }
 
     #[test]
@@ -616,6 +791,38 @@ mod tests {
         assert_abs_diff_eq!(out.x, 1.0);
         assert_abs_diff_eq!(out.y, -2.0);
         assert_abs_diff_eq!(out.z, -9.81);
+    }
+
+    #[test]
+    fn third_body_perturbation_is_zero_at_central_origin() {
+        let gravity = ThirdBodyGravity::new(
+            ConstantGravity::new(Vector3::zeros()).unwrap(),
+            FixedEphemeris {
+                position: Vector3::new(384_400_000.0, 0.0, 0.0),
+            },
+            vec![ThirdBody::canonical(CelestialBody::Moon)],
+        )
+        .unwrap();
+        let out = gravity
+            .gravity_eci_m_s2(Position3::origin(), SimTime::ZERO)
+            .unwrap();
+        assert_abs_diff_eq!(out.x, 0.0, epsilon = 1.0e-20);
+        assert_abs_diff_eq!(out.y, 0.0, epsilon = 1.0e-20);
+        assert_abs_diff_eq!(out.z, 0.0, epsilon = 1.0e-20);
+    }
+
+    #[test]
+    fn third_body_perturbation_is_measurable_at_high_apogee() {
+        let gravity = ThirdBodyGravity::new(
+            ConstantGravity::new(Vector3::zeros()).unwrap(),
+            LowPrecisionSunMoonEphemeris::j2000(),
+            vec![ThirdBody::canonical(CelestialBody::Moon)],
+        )
+        .unwrap();
+        let out = gravity
+            .gravity_eci_m_s2(at_x(100_000_000.0), SimTime::ZERO)
+            .unwrap();
+        assert!(out.norm() > 1.0e-6);
     }
 
     #[test]

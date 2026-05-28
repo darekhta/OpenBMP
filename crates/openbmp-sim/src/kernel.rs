@@ -1647,6 +1647,31 @@ where
         &mut self,
         separation: RigidBodySeparation,
     ) -> Result<(), SimulationError> {
+        self.jettison_rigid_bodies(&[separation])
+    }
+
+    /// Apply multiple rigid-body stage separations at the current
+    /// state.
+    ///
+    /// Every departing body is partitioned from the same pre-split
+    /// composite state, then the primary state becomes the common
+    /// continuing stack. This supports coordinated deployments where
+    /// one event releases multiple bodies on the same simulation tick.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::InvalidRigidBodySeparation`] when
+    /// the batch is empty, has inconsistent continuing-stack ids,
+    /// repeats a body, or any partition produces invalid states.
+    pub fn jettison_rigid_bodies(
+        &mut self,
+        separations: &[RigidBodySeparation],
+    ) -> Result<(), SimulationError> {
+        if separations.is_empty() {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "separation batch must contain at least one departing body".to_owned(),
+            });
+        }
         if !self.force_model.supports_separated_body_propagation() {
             return Err(SimulationError::InvalidRigidBodySeparation {
                 reason: "force model does not declare separated-body propagation support; \
@@ -1679,60 +1704,91 @@ where
                     .to_owned(),
             });
         }
-        if self
-            .separated_rigid_bodies
-            .iter()
-            .any(|body| body.body == separation.body)
-        {
-            return Err(SimulationError::InvalidRigidBodySeparation {
-                reason: format!(
-                    "body id {} has already been jettisoned",
-                    separation.body.value()
-                ),
-            });
+        let stack_body = separations[0].stack_body;
+        for (index, separation) in separations.iter().enumerate() {
+            if separation.stack_body != stack_body {
+                return Err(SimulationError::InvalidRigidBodySeparation {
+                    reason: format!(
+                        "separation batch entry {index} has stack body {} but expected {}",
+                        separation.stack_body.value(),
+                        stack_body.value()
+                    ),
+                });
+            }
+            if self
+                .separated_rigid_bodies
+                .iter()
+                .any(|body| body.body == separation.body)
+            {
+                return Err(SimulationError::InvalidRigidBodySeparation {
+                    reason: format!(
+                        "body id {} has already been jettisoned",
+                        separation.body.value()
+                    ),
+                });
+            }
+            if separations[..index]
+                .iter()
+                .any(|previous| previous.body == separation.body)
+            {
+                return Err(SimulationError::InvalidRigidBodySeparation {
+                    reason: format!(
+                        "body id {} appears more than once in separation batch",
+                        separation.body.value()
+                    ),
+                });
+            }
+            separation
+                .stack_mass_properties
+                .require_valid(POST_STEP_INERTIA_TOL)
+                .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                    reason: format!("continuing-stack mass properties are invalid: {source}"),
+                })?;
+            separation
+                .stage_mass_properties
+                .require_valid(POST_STEP_INERTIA_TOL)
+                .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                    reason: format!("departing-stage mass properties are invalid: {source}"),
+                })?;
         }
-        separation
-            .stack_mass_properties
-            .require_valid(POST_STEP_INERTIA_TOL)
-            .map_err(|source| SimulationError::InvalidRigidBodySeparation {
-                reason: format!("continuing-stack mass properties are invalid: {source}"),
-            })?;
-        separation
-            .stage_mass_properties
-            .require_valid(POST_STEP_INERTIA_TOL)
-            .map_err(|source| SimulationError::InvalidRigidBodySeparation {
-                reason: format!("departing-stage mass properties are invalid: {source}"),
-            })?;
+
+        let pre_split_state = self.state;
         let stack_state = partition_rigid_body_state(
-            &self.state,
-            separation.stack_mass_properties,
-            separation.stack_delta_v_body_m_s,
-        );
-        let stage_state = partition_rigid_body_state(
-            &self.state,
-            separation.stage_mass_properties,
-            separation.stage_delta_v_body_m_s,
+            &pre_split_state,
+            separations[0].stack_mass_properties,
+            separations[0].stack_delta_v_body_m_s,
         );
         stack_state
             .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
             .map_err(|source| SimulationError::InvalidRigidBodySeparation {
                 reason: format!("continuing-stack state is invalid: {source}"),
             })?;
-        stage_state
-            .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
-            .map_err(|source| SimulationError::InvalidRigidBodySeparation {
-                reason: format!("departing-stage state is invalid: {source}"),
-            })?;
+        let mut stage_states = Vec::with_capacity(separations.len());
+        for separation in separations {
+            let stage_state = partition_rigid_body_state(
+                &pre_split_state,
+                separation.stage_mass_properties,
+                separation.stage_delta_v_body_m_s,
+            );
+            stage_state
+                .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
+                .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                    reason: format!("departing-stage state is invalid: {source}"),
+                })?;
+            stage_states.push(stage_state);
+        }
         let separated_at_step = self.step_index;
         let separated_at_time = self.state.time;
         self.state = stack_state;
-        self.primary_rigid_body = Some(separation.stack_body);
-        self.separated_rigid_bodies.push(SeparatedRigidBody {
-            body: separation.body,
-            state: stage_state,
-            separated_at_step,
-            separated_at_time,
-        });
+        self.primary_rigid_body = Some(stack_body);
+        for (separation, stage_state) in separations.iter().zip(stage_states) {
+            self.separated_rigid_bodies.push(SeparatedRigidBody {
+                body: separation.body,
+                state: stage_state,
+                separated_at_step,
+                separated_at_time,
+            });
+        }
         Ok(())
     }
 

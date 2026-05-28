@@ -451,17 +451,49 @@ The rigid-body-only initial-state fields are rejected when
 
 ### Gravity coefficients
 
-`[environment].gravity` selects one of `constant`, `point_mass`, or `j2`,
-each with its own required-coefficient set:
+`[environment].gravity` selects one of `constant`, `point_mass`, `j2`,
+`egm2008`, or `third_body`, each with its own required-coefficient set:
 
 | `gravity` | Required | Rejected |
 |---|---|---|
-| `"constant"` | `gravity_m_s2` | `mu_m3_s2`, `r_e_m`, `j2` |
-| `"point_mass"` | `mu_m3_s2` | `gravity_m_s2`, `r_e_m`, `j2` |
+| `"constant"` | `gravity_m_s2` | `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris` |
+| `"point_mass"` | `mu_m3_s2` | `gravity_m_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris` |
 | `"j2"` | `mu_m3_s2`, `r_e_m` | `gravity_m_s2` |
+| `"egm2008"` | — pinned WGS84 / EGM2008 zonal constants | `gravity_m_s2`, `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris` |
+| `"third_body"` | `gravity_base`, `third_bodies`; plus the selected base coefficients | `gravity_m_s2` |
 
 For `gravity = "j2"` the dimensionless `j2` coefficient defaults to the
 WGS84 value (1.082626683 × 10⁻³) when omitted.
+
+`gravity = "third_body"` wraps a central Earth gravity model and adds
+Sun/Moon point-mass perturbations using
+`a_3 = mu_b * ((r_b - r) / |r_b - r|^3 - r_b / |r_b|^3)`.
+`gravity_base` is one of `point_mass`, `j2`, or `egm2008`. The
+`third_bodies` list accepts `"sun"` and/or `"moon"` and must be unique.
+`ephemeris = "low_precision_sun_moon"` selects the built-in
+deterministic analytical ephemeris; if `[epoch]` is omitted the
+ephemeris starts at J2000, otherwise the runner parses
+`epoch.iso8601` with `epoch.scale` `UTC`, `TT`, or `TDB`.
+
+```toml
+[epoch]
+scale = "UTC"
+iso8601 = "2000-01-01T12:00:00Z"
+
+[environment]
+frame_profile = "wgs84-uniform-rotation"
+gravity       = "third_body"
+gravity_base  = "egm2008"
+third_bodies  = ["sun", "moon"]
+ephemeris     = "low_precision_sun_moon"
+atmosphere    = "none"
+wind          = "none"
+```
+
+OpenBMP does not yet ingest JPL DE / SPICE kernels. The built-in
+ephemeris is intended for deterministic perturbation studies and
+regression tests; navigation-grade ephemeris files remain a future
+`spice-reference` frame/ephemeris profile.
 
 ### Frames local origin
 
@@ -983,13 +1015,14 @@ common scripted-command case without a separate trigger surface.
 | `effector_override` | `id: string` (declared effector id), `command: f64` (finite) | One-shot command override for the named effector on the next runner step. Resolves the declared id against the runner's effector rack via FNV-1a-64 of `vehicle.assembly.effectors.<id>`. Unknown ids are rejected by `openbmp check`. The kernel records the action; the runner drains it from the per-step fired-event queue and applies it on the next rack tick before the kernel step. Override wins over any declared `command_schedule` for that rack tick only. |
 | `engine_command` | `id: string` (declared engine id), `command: { throttle_unit: f64 ∈ [0,1], gimbal_pitch_rad: f64, gimbal_yaw_rad: f64, ignite: bool, shutdown: bool }` | Per-engine command targeting a declared `[[vehicle.assembly.engines]]` by id. Resolves the declared id via FNV-1a-64 of `vehicle.assembly.engines.<id>`. Unknown ids are rejected by `openbmp check`. Kernel records; runner-side `EngineRack` drains and applies on the next rack tick before the kernel step. `ignite=true` is honoured only from `Idle`; `shutdown=true` only from `Igniting` / `Burning`. Throttle / gimbal values are clamped to engine limits at apply time. |
 | `jettison_stage` | `body: string` (declared body id) | Stage-separation command targeting a declared `[[vehicle.assembly.bodies]]` by id. Requires `vehicle.kind = "rigid_body"`, exactly one matching `[[multi_body.separation]]`, no duplicate jettison of the same body, and momentum conservation when `conserve_momentum = true`. The runner executes this for fixed-step RK4 rigid-body profiles. Gravity-only profiles remain valid; aero, thrust, tanks, recovery, and effectors are allowed only when each resource declares an explicit owning body. |
+| `jettison_bodies` | `bodies: [string, ...]` (declared body ids) | Batch stage-separation command. Every listed body is partitioned from the same pre-separation rigid-body state and appended as an independent lane on the same event tick. Each body requires a matching `[[multi_body.separation]]` with the same `event_id`; duplicate body ids are rejected. This is the coordinated deployment path for a bus releasing multiple RV-like bodies. |
 | `deploy_recovery` | `id: string` (declared recovery id), `command: "deploy" \| "deploy_drogue" \| "deploy_main" \| "stow"` | Recovery-device command targeting a declared `[[vehicle.assembly.recovery]]` by id. Resolves via FNV-1a-64 of `vehicle.assembly.recovery.<id>`. Unknown ids and kind-incompatible commands are rejected by `openbmp check`; runner-side `RecoveryRack` drains accepted firings on the next rack tick before the kernel step. |
 
 The reserved action `separation` is rejected at parse time with a typed
 deferral error because it does not identify the departing body. The
-`effector_override`, `engine_command`, `jettison_stage`, and
-`deploy_recovery` actions are wired end-to-end inside their documented
-validation envelopes.
+`effector_override`, `engine_command`, `jettison_stage`,
+`jettison_bodies`, and `deploy_recovery` actions are wired end-to-end
+inside their documented validation envelopes.
 
 #### `once` semantics
 

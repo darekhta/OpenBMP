@@ -453,11 +453,11 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     }
     if !matches!(
         document.environment.gravity.as_str(),
-        "constant" | "point_mass" | "j2" | "egm2008"
+        "constant" | "point_mass" | "j2" | "egm2008" | "third_body"
     ) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
-                "environment.gravity = {} (wired: constant, point_mass, j2, egm2008)",
+                "environment.gravity = {} (wired: constant, point_mass, j2, egm2008, third_body)",
                 document.environment.gravity
             ),
         });
@@ -657,6 +657,13 @@ fn build_gravity_force_adapter_point_mass(
             // per-scenario overrides are accepted, matching the parser
             // contract in `EnvironmentConfig::validate`.
             let model = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+            Ok(Box::new(GravityForceAdapter::new(
+                model,
+                POINT_MASS_GRAVITY_MODEL_ID,
+            )))
+        }
+        "third_body" => {
+            let model = crate::celestial::build_third_body_gravity(document)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
                 POINT_MASS_GRAVITY_MODEL_ID,
@@ -1762,6 +1769,59 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const THIRD_BODY_POINT_MASS_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "third-body-point-mass-test"
+description = "Synthetic high-apogee point-mass run with lunar third-body perturbation."
+validation = "validated-toy"
+
+[epoch]
+scale = "UTC"
+iso8601 = "2000-01-01T12:00:00Z"
+
+[time]
+start_s = 0.0
+stop_s = 1.0
+dt_s = 1.0
+seed = 11
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [100000000.0, 0.0, 10.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "third-body-point-mass-test"
+
+[[vehicle.assembly.bodies]]
+id = "mass"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "third_body"
+gravity_base = "point_mass"
+mu_m3_s2 = 3.986004418e14
+third_bodies = ["moon"]
+ephemeris = "low_precision_sun_moon"
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/third-body-point-mass-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn workspace_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1946,6 +2006,20 @@ require_monotonic_time = true
             outcome.stop_reason,
             StopReason::MissionEnded { ref label, .. } if label == "q-rise"
         ));
+    }
+
+    #[test]
+    fn point_mass_wires_lunar_third_body_perturbation() {
+        let scenario = Scenario::from_toml_str(THIRD_BODY_POINT_MASS_SCENARIO)
+            .expect("third-body scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files).expect("third-body run succeeds");
+
+        let gravity_y = f64_column(&outcome, "force.gravity.y_n");
+        assert!(
+            gravity_y.iter().any(|value| value.abs() > 1.0e-8),
+            "lunar third-body force should produce a measurable cross-axis component: {gravity_y:?}"
+        );
     }
 
     #[test]

@@ -15,6 +15,8 @@
 //! * [`atmosphere`] — `AtmosphereModel` trait + `IsothermalAtmosphere`,
 //!   `UsStandard1976` (full 7-layer, 0–86 km), plus USSA76 constants
 //!   and closed-form helpers (`pressure_altitude_troposphere_m`).
+//! * [`ephemeris`] — deterministic celestial body position providers
+//!   for Sun/Moon third-body perturbation studies.
 //! * [`magnetic`] — `MagneticModel` and `MagneticFieldEci` traits,
 //!   `EarthDipoleField` (degree-1 academic toy), and `Wmm2025`
 //!   (NOAA / NCEI 2025 release, 12-degree spherical harmonic).
@@ -48,6 +50,7 @@
 #![deny(missing_docs)]
 
 pub mod atmosphere;
+pub mod ephemeris;
 pub mod error;
 pub mod external_reference;
 pub mod frames;
@@ -69,6 +72,10 @@ pub use atmosphere::{
     PiecewiseExpExoatmosphericPolicy, PiecewiseExponentialAtmosphere, UsStandard1976,
     sutherland_viscosity,
 };
+pub use ephemeris::{
+    ASTRONOMICAL_UNIT_M, CelestialBody, EphemerisModel, J2000_JULIAN_DATE,
+    LowPrecisionSunMoonEphemeris, MOON_MU_M3_S2, SUN_MU_M3_S2,
+};
 pub use error::PhysicsError;
 pub use external_reference::{
     EnvelopeBounds, ExternalReferencePackage, ProvenanceBlock, ReferencePackageKind, ReferenceQuery,
@@ -81,7 +88,7 @@ pub use frames::{
 pub use gravity::{
     ConstantGravity, EGM2008_J3, EGM2008_J4, EGM2008_J5, EGM2008_J6, EGM2008_MAX_DEGREE,
     Egm2008ZonalGravity, GravityModel, J2Gravity, PointMassGravity, STANDARD_GRAVITY_M_S2,
-    WGS84_J2, standard_down_z_eci_m_s2,
+    ThirdBody, ThirdBodyGravity, WGS84_J2, standard_down_z_eci_m_s2,
 };
 pub use kinematics::{
     quaternion_error_small_angle, quaternion_from_axis_angle, quaternion_from_omega,

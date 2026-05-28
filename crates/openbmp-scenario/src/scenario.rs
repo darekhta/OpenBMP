@@ -506,6 +506,45 @@ bogus_field = 1
         }
     }
 
+    #[test]
+    fn third_body_gravity_is_v3_only_and_validates_under_v3() {
+        let toml_v2 = MINIMAL.replace(
+            "gravity       = \"constant\"",
+            "gravity       = \"third_body\"",
+        );
+        assert_v3_block_reserved_under_v2(&toml_v2, "environment.gravity = \"third_body\"");
+
+        let toml_v3 = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665\n",
+                "gravity       = \"third_body\"\ngravity_base  = \"j2\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\nthird_bodies  = [\"sun\", \"moon\"]\nephemeris     = \"low_precision_sun_moon\"\n",
+            );
+        let scenario =
+            Scenario::from_toml_str(&toml_v3).expect("third_body must validate under v3");
+        assert_eq!(scenario.document.environment.gravity, "third_body");
+        assert_eq!(
+            scenario.document.environment.third_bodies,
+            ["sun".to_owned(), "moon".to_owned()]
+        );
+    }
+
+    #[test]
+    fn third_body_gravity_rejects_duplicate_bodies() {
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665\n",
+                "gravity       = \"third_body\"\ngravity_base  = \"point_mass\"\nmu_m3_s2      = 3.986004418e14\nthird_bodies  = [\"moon\", \"moon\"]\n",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::DuplicateValue { ref field, .. }
+                if field == "environment.third_bodies"
+        ));
+    }
+
     /// Canonical FC scenario used as the base for the v3-only
     /// FC sub-block tests. Loaded via `include_str!` so the test
     /// remains in sync with the shipped scenario contract.
