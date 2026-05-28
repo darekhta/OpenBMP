@@ -231,12 +231,14 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 /// This reader implements the subset required for JPL DE-style
 /// planetary and mission kernels used by third-body perturbations:
 /// SPK type 2 (Chebyshev position), type 3 (Chebyshev position and
-/// velocity), type 8/9 (equal/unequal-time Lagrange state
+/// velocity), type 5 (two-body propagation between discrete states),
+/// type 8/9 (equal/unequal-time Lagrange state
 /// interpolation), type 12/13 (equal/unequal-time Hermite state
 /// interpolation), type 14 (generic non-uniform Chebyshev position and
-/// velocity), type 18 (ESOC/DDID Hermite/Lagrange interpolation), type
-/// 19 (ESOC/DDID piecewise interpolation), and type 20 (Chebyshev
-/// velocity) segments in the J2000 inertial frame. It also accepts the
+/// velocity), type 15 (precessing conic propagation), type 18
+/// (ESOC/DDID Hermite/Lagrange interpolation), type 19 (ESOC/DDID
+/// piecewise interpolation), and type 20 (Chebyshev velocity) segments
+/// in the J2000 inertial frame. It also accepts the
 /// built-in SPICE
 /// `ECLIPJ2000` inertial frame and rotates those segment states into
 /// J2000. It computes geometric states and does not implement
@@ -254,7 +256,7 @@ impl SpkEphemeris {
     /// # Errors
     ///
     /// Returns [`PhysicsError`] when the bytes are not a supported
-    /// DAF/SPK file or no supported type 2/3/8/9/12/13/14/18/19/20 J2000
+    /// DAF/SPK file or no supported type 2/3/5/8/9/12/13/14/15/18/19/20 J2000
     /// segments are found.
     pub fn from_bytes(epoch_tdb_julian_date: f64, bytes: &[u8]) -> Result<Self, PhysicsError> {
         Self::from_kernels(epoch_tdb_julian_date, [bytes])
@@ -270,7 +272,7 @@ impl SpkEphemeris {
     ///
     /// Returns [`PhysicsError`] when any byte slice is not a supported
     /// DAF/SPK file, no kernels are supplied, or no supported type
-    /// 2/3/8/9/12/13/14/18/19/20 J2000 segments are found across all kernels.
+    /// 2/3/5/8/9/12/13/14/15/18/19/20 J2000 segments are found across all kernels.
     pub fn from_kernels<'a, I>(epoch_tdb_julian_date: f64, kernels: I) -> Result<Self, PhysicsError>
     where
         I: IntoIterator<Item = &'a [u8]>,
@@ -294,7 +296,7 @@ impl SpkEphemeris {
         }
         if segments.is_empty() {
             return Err(PhysicsError::InvalidParameter {
-                reason: "SPK kernel contains no supported type 2/3/8/9/12/13/14/18/19/20 J2000 segments",
+                reason: "SPK kernel contains no supported type 2/3/5/8/9/12/13/14/15/18/19/20 J2000 segments",
             });
         }
         Ok(Self {
@@ -596,11 +598,13 @@ impl SpkSegment {
                     ),
                 })
             }
+            5 => self.two_body_discrete_state_km_s(et_s),
             8 => self.equal_step_lagrange_state_km_s(et_s),
             9 => self.unequal_step_lagrange_state_km_s(et_s),
             12 => self.equal_step_hermite_state_km_s(et_s),
             13 => self.unequal_step_hermite_state_km_s(et_s),
             14 => self.generic_chebyshev_state_km_s(et_s),
+            15 => self.precessing_conic_state_km_s(et_s),
             18 => self.esoc_ddid_state_km_s(et_s),
             19 => self.esoc_ddid_piecewise_state_km_s(et_s),
             20 => self.chebyshev_velocity_state_km_s(et_s),
@@ -608,6 +612,56 @@ impl SpkSegment {
                 reason: "unsupported SPK data type",
             }),
         }
+    }
+
+    fn two_body_discrete_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        if self.data.len() < 9 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 5 segment is too short",
+            });
+        }
+        let n = f64_to_usize(self.data[self.data.len() - 1])?;
+        let gm_km3_s2 = self.data[self.data.len() - 2];
+        if n == 0 || !gm_km3_s2.is_finite() || gm_km3_s2 <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "invalid SPK type 5 directory",
+            });
+        }
+        let directory_count = n / 100;
+        let expected_len = 6_usize
+            .checked_mul(n)
+            .and_then(|state_len| state_len.checked_add(n))
+            .and_then(|base| base.checked_add(directory_count))
+            .and_then(|base| base.checked_add(2))
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK type 5 segment length overflow",
+            })?;
+        if expected_len != self.data.len() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 5 segment length does not match directory",
+            });
+        }
+
+        let states = &self.data[..6 * n];
+        let epochs = &self.data[6 * n..7 * n];
+        validate_strictly_increasing_epochs(epochs, "SPK type 5 epochs are invalid")?;
+
+        let insertion = epochs.partition_point(|epoch| *epoch < et_s);
+        let (first_index, second_index) = if insertion == 0 {
+            (0, 0)
+        } else if insertion >= n {
+            (n - 1, n - 1)
+        } else {
+            (insertion - 1, insertion)
+        };
+        type5_two_body_blend_state(
+            &states[first_index * 6..first_index * 6 + 6],
+            epochs[first_index],
+            &states[second_index * 6..second_index * 6 + 6],
+            epochs[second_index],
+            gm_km3_s2,
+            et_s,
+        )
     }
 
     fn equal_step_lagrange_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
@@ -941,6 +995,15 @@ impl SpkSegment {
                 reason: "SPK type 14 packet is outside the segment",
             })?;
         type14_chebyshev_state_from_packet(packet, ncoeff, et_s)
+    }
+
+    fn precessing_conic_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        if self.data.len() != 16 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 15 segment must contain exactly 16 values",
+            });
+        }
+        type15_precessing_conic_state(&self.data, et_s)
     }
 
     fn esoc_ddid_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
@@ -1306,7 +1369,7 @@ impl<'a> DafView<'a> {
                 if supported_spk_inertial_frame(descriptor.frame)
                     && matches!(
                         descriptor.data_type,
-                        2 | 3 | 8 | 9 | 12 | 13 | 14 | 18 | 19 | 20
+                        2 | 3 | 5 | 8 | 9 | 12 | 13 | 14 | 15 | 18 | 19 | 20
                     )
                     && let Some(segment) = self.segment_from_descriptor(descriptor)?
                 {
@@ -1597,6 +1660,366 @@ fn chebyshev_derivative_vector(
         evaluate_chebyshev_derivative(tau, &record[base + 2 * coeff_count..base + 3 * coeff_count])
             / radius_s,
     )
+}
+
+fn type5_two_body_blend_state(
+    first_state: &[f64],
+    first_epoch_s: f64,
+    second_state: &[f64],
+    second_epoch_s: f64,
+    gm_km3_s2: f64,
+    et_s: f64,
+) -> Result<SpkStateKmS, PhysicsError> {
+    if first_state.len() != 6 || second_state.len() != 6 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 5 record state size is invalid",
+        });
+    }
+    if !first_epoch_s.is_finite() || !second_epoch_s.is_finite() || second_epoch_s < first_epoch_s {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 5 record epochs are invalid",
+        });
+    }
+    let first = finite_state_from_components(
+        [
+            first_state[0],
+            first_state[1],
+            first_state[2],
+            first_state[3],
+            first_state[4],
+            first_state[5],
+        ],
+        "SPK type 5 first record",
+    )?;
+    if first_epoch_s == second_epoch_s {
+        return propagate_two_body_state_km_s(&first, gm_km3_s2, et_s - first_epoch_s);
+    }
+    let second = finite_state_from_components(
+        [
+            second_state[0],
+            second_state[1],
+            second_state[2],
+            second_state[3],
+            second_state[4],
+            second_state[5],
+        ],
+        "SPK type 5 second record",
+    )?;
+    let first_propagated = propagate_two_body_state_km_s(&first, gm_km3_s2, et_s - first_epoch_s)?;
+    let second_propagated =
+        propagate_two_body_state_km_s(&second, gm_km3_s2, et_s - second_epoch_s)?;
+    let denominator_s = second_epoch_s - first_epoch_s;
+    if denominator_s <= 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 5 bracketing interval is invalid",
+        });
+    }
+    let arg = core::f64::consts::PI * (et_s - first_epoch_s) / denominator_s;
+    let weight = 0.5 + 0.5 * arg.cos();
+    let weight_dot = -0.5 * arg.sin() * core::f64::consts::PI / denominator_s;
+    let position =
+        first_propagated.position_km * weight + second_propagated.position_km * (1.0 - weight);
+    let velocity = first_propagated.velocity_km_s * weight
+        + second_propagated.velocity_km_s * (1.0 - weight)
+        + (first_propagated.position_km - second_propagated.position_km) * weight_dot;
+    finite_state_from_components(
+        [
+            position.x, position.y, position.z, velocity.x, velocity.y, velocity.z,
+        ],
+        "SPK type 5 two-body interpolation",
+    )
+}
+
+fn propagate_two_body_state_km_s(
+    state: &SpkStateKmS,
+    gm_km3_s2: f64,
+    dt_s: f64,
+) -> Result<SpkStateKmS, PhysicsError> {
+    if !gm_km3_s2.is_finite() || gm_km3_s2 <= 0.0 || !dt_s.is_finite() {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 5 two-body propagation inputs are invalid",
+        });
+    }
+    let r0 = state.position_km;
+    let v0 = state.velocity_km_s;
+    let r0_norm = r0.norm();
+    let v0_norm = v0.norm();
+    if !r0_norm.is_finite() || !v0_norm.is_finite() || r0_norm == 0.0 || v0_norm == 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 5 two-body propagation state is invalid",
+        });
+    }
+    if r0.cross(&v0).norm_squared() == 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 5 two-body propagation has rectilinear motion",
+        });
+    }
+    if dt_s == 0.0 {
+        return Ok(*state);
+    }
+
+    let sqrt_mu = gm_km3_s2.sqrt();
+    let rv0 = r0.dot(&v0);
+    let alpha = 2.0 / r0_norm - v0.norm_squared() / gm_km3_s2;
+    let mut chi = initial_universal_anomaly(alpha, gm_km3_s2, sqrt_mu, r0_norm, rv0, dt_s);
+    if !chi.is_finite() {
+        chi = sqrt_mu * dt_s / r0_norm;
+    }
+
+    let mut converged = false;
+    for _ in 0..64 {
+        let z = alpha * chi * chi;
+        let (c2, c3) = stumpff_c2_c3(z)?;
+        let value = r0_norm * rv0 / sqrt_mu * chi * chi * c2
+            + (1.0 - alpha * r0_norm) * chi * chi * chi * c3
+            + r0_norm * chi
+            - sqrt_mu * dt_s;
+        let derivative = r0_norm * rv0 / sqrt_mu * chi * (1.0 - z * c3)
+            + (1.0 - alpha * r0_norm) * chi * chi * c2
+            + r0_norm;
+        if !value.is_finite() || !derivative.is_finite() || derivative == 0.0 {
+            return Err(PhysicsError::NonFinite {
+                reason: "SPK type 5 two-body propagation failed to converge",
+            });
+        }
+        let delta = value / derivative;
+        chi -= delta;
+        if !chi.is_finite() {
+            return Err(PhysicsError::NonFinite {
+                reason: "SPK type 5 two-body propagation failed to converge",
+            });
+        }
+        if delta.abs() <= 1.0e-12 * chi.abs().max(1.0) {
+            converged = true;
+            break;
+        }
+    }
+    if !converged {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 5 two-body propagation did not converge",
+        });
+    }
+
+    let z = alpha * chi * chi;
+    let (c2, c3) = stumpff_c2_c3(z)?;
+    let f = 1.0 - chi * chi * c2 / r0_norm;
+    let g = dt_s - chi * chi * chi * c3 / sqrt_mu;
+    let position = r0 * f + v0 * g;
+    let radius = position.norm();
+    if !radius.is_finite() || radius == 0.0 {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK type 5 two-body propagation produced invalid radius",
+        });
+    }
+    let f_dot = sqrt_mu * chi * (z * c3 - 1.0) / (radius * r0_norm);
+    let g_dot = 1.0 - chi * chi * c2 / radius;
+    let velocity = r0 * f_dot + v0 * g_dot;
+    finite_state_from_components(
+        [
+            position.x, position.y, position.z, velocity.x, velocity.y, velocity.z,
+        ],
+        "SPK type 5 two-body propagation",
+    )
+}
+
+fn initial_universal_anomaly(
+    alpha: f64,
+    gm_km3_s2: f64,
+    sqrt_mu: f64,
+    r0_norm: f64,
+    rv0: f64,
+    dt_s: f64,
+) -> f64 {
+    if alpha > 1.0e-12 {
+        sqrt_mu * alpha * dt_s
+    } else if alpha < -1.0e-12 {
+        let semi_major_axis_km = 1.0 / alpha;
+        let denominator = rv0
+            + dt_s.signum() * (-gm_km3_s2 * semi_major_axis_km).sqrt() * (1.0 - r0_norm * alpha);
+        let ratio = (-2.0 * gm_km3_s2 * alpha * dt_s) / denominator;
+        if ratio.is_finite() && ratio > 0.0 {
+            dt_s.signum() * (-semi_major_axis_km).sqrt() * ratio.ln()
+        } else {
+            dt_s.signum() * (-semi_major_axis_km).sqrt()
+        }
+    } else {
+        sqrt_mu * dt_s / r0_norm
+    }
+}
+
+fn stumpff_c2_c3(z: f64) -> Result<(f64, f64), PhysicsError> {
+    if !z.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK type 5 Stumpff argument is non-finite",
+        });
+    }
+    let (c2, c3) = if z > 1.0e-8 {
+        let root = z.sqrt();
+        (
+            (1.0 - root.cos()) / z,
+            (root - root.sin()) / (root * root * root),
+        )
+    } else if z < -1.0e-8 {
+        let root = (-z).sqrt();
+        if root > 700.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 5 Stumpff argument is outside the numeric envelope",
+            });
+        }
+        (
+            (root.cosh() - 1.0) / (-z),
+            (root.sinh() - root) / (root * root * root),
+        )
+    } else {
+        (
+            0.5 - z / 24.0 + z * z / 720.0 - z * z * z / 40_320.0,
+            1.0 / 6.0 - z / 120.0 + z * z / 5_040.0 - z * z * z / 362_880.0,
+        )
+    };
+    if !c2.is_finite() || !c3.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK type 5 Stumpff functions are non-finite",
+        });
+    }
+    Ok((c2, c3))
+}
+
+fn type15_precessing_conic_state(record: &[f64], et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+    if record.len() != 16 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 15 record size is invalid",
+        });
+    }
+    let epoch_s = record[0];
+    let trajectory_pole = unit_vector(
+        Vector3::new(record[1], record[2], record[3]),
+        "SPK type 15 trajectory pole vector is invalid",
+    )?;
+    let periapsis_direction = unit_vector(
+        Vector3::new(record[4], record[5], record[6]),
+        "SPK type 15 periapsis vector is invalid",
+    )?;
+    let semi_latus_rectum_km = record[7];
+    let eccentricity = record[8];
+    let j2_flag = f64_to_i32(record[9])?;
+    let central_pole = unit_vector(
+        Vector3::new(record[10], record[11], record[12]),
+        "SPK type 15 central body pole vector is invalid",
+    )?;
+    let gm_km3_s2 = record[13];
+    let j2 = record[14];
+    let central_radius_km = record[15];
+
+    if !epoch_s.is_finite()
+        || !semi_latus_rectum_km.is_finite()
+        || !eccentricity.is_finite()
+        || !gm_km3_s2.is_finite()
+        || !j2.is_finite()
+        || !central_radius_km.is_finite()
+        || semi_latus_rectum_km <= 0.0
+        || eccentricity < 0.0
+        || gm_km3_s2 <= 0.0
+        || central_radius_km < 0.0
+    {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 15 conic parameters are invalid",
+        });
+    }
+    if periapsis_direction.dot(&trajectory_pole).abs() > 1.0e-5 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 15 trajectory pole and periapsis vectors are not orthogonal",
+        });
+    }
+
+    let periapsis_radius_km = semi_latus_rectum_km / (1.0 + eccentricity);
+    let periapsis_speed_km_s = (gm_km3_s2 / semi_latus_rectum_km).sqrt() * (1.0 + eccentricity);
+    let periapsis_state = SpkStateKmS {
+        position_km: periapsis_direction * periapsis_radius_km,
+        velocity_km_s: trajectory_pole.cross(&periapsis_direction) * periapsis_speed_km_s,
+    };
+    let dt_s = et_s - epoch_s;
+    let mut state = propagate_two_body_state_km_s(&periapsis_state, gm_km3_s2, dt_s)?;
+
+    if j2_flag != 3 && j2 != 0.0 && eccentricity < 1.0 && periapsis_radius_km > central_radius_km {
+        let one_minus_e2 = 1.0 - eccentricity * eccentricity;
+        let mean_anomaly_rate = one_minus_e2 / semi_latus_rectum_km
+            * (gm_km3_s2 * one_minus_e2 / semi_latus_rectum_km).sqrt();
+        let mean_anomaly = mean_anomaly_rate * dt_s;
+        let mut theta = mean_anomaly % core::f64::consts::TAU;
+        if theta.abs() > core::f64::consts::PI {
+            theta -= theta.signum() * core::f64::consts::TAU;
+        }
+        let completed_revolutions_angle = mean_anomaly - theta;
+        let mut true_anomaly = vector_separation_rad(periapsis_direction, state.position_km)?;
+        true_anomaly = true_anomaly.copysign(theta) + completed_revolutions_angle;
+
+        let cos_inclination = central_pole.dot(&trajectory_pole);
+        let scaled_j2_angle =
+            true_anomaly * 1.5 * j2 * (central_radius_km / semi_latus_rectum_km).powi(2);
+        let node_regression_rad = -scaled_j2_angle * cos_inclination;
+        let apsis_precession_rad =
+            scaled_j2_angle * (2.5 * cos_inclination * cos_inclination - 0.5);
+
+        if j2_flag != 1 {
+            state = rotate_state_about_axis(state, trajectory_pole, apsis_precession_rad);
+        }
+        if j2_flag != 2 {
+            state = rotate_state_about_axis(state, central_pole, node_regression_rad);
+        }
+    }
+
+    finite_state_from_components(
+        [
+            state.position_km.x,
+            state.position_km.y,
+            state.position_km.z,
+            state.velocity_km_s.x,
+            state.velocity_km_s.y,
+            state.velocity_km_s.z,
+        ],
+        "SPK type 15 precessing conic propagation",
+    )
+}
+
+fn unit_vector(v: Vector3<f64>, reason: &'static str) -> Result<Vector3<f64>, PhysicsError> {
+    if !v.iter().all(|value| value.is_finite()) {
+        return Err(PhysicsError::InvalidParameter { reason });
+    }
+    let norm = v.norm();
+    if !norm.is_finite() || norm == 0.0 {
+        return Err(PhysicsError::InvalidParameter { reason });
+    }
+    Ok(v / norm)
+}
+
+fn vector_separation_rad(a: Vector3<f64>, b: Vector3<f64>) -> Result<f64, PhysicsError> {
+    let a_norm = a.norm();
+    let b_norm = b.norm();
+    if !a_norm.is_finite() || !b_norm.is_finite() || a_norm == 0.0 || b_norm == 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 15 vector separation is invalid",
+        });
+    }
+    let cos_angle = (a.dot(&b) / (a_norm * b_norm)).clamp(-1.0, 1.0);
+    let angle = cos_angle.acos();
+    if !angle.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK type 15 vector separation produced non-finite angle",
+        });
+    }
+    Ok(angle)
+}
+
+fn rotate_state_about_axis(state: SpkStateKmS, axis: Vector3<f64>, angle_rad: f64) -> SpkStateKmS {
+    SpkStateKmS {
+        position_km: rotate_about_axis(state.position_km, axis, angle_rad),
+        velocity_km_s: rotate_about_axis(state.velocity_km_s, axis, angle_rad),
+    }
+}
+
+fn rotate_about_axis(v: Vector3<f64>, axis: Vector3<f64>, angle_rad: f64) -> Vector3<f64> {
+    let (sin_angle, cos_angle) = angle_rad.sin_cos();
+    v * cos_angle + axis.cross(&v) * sin_angle + axis * axis.dot(&v) * (1.0 - cos_angle)
 }
 
 fn type14_chebyshev_state_from_packet(
@@ -2139,6 +2562,9 @@ mod tests {
     use super::*;
 
     const DAF_DOUBLE_WORDS_PER_RECORD: usize = 128;
+    const TYPE5_TEST_GM_KM3_S2: f64 = 398_600.435_436;
+    const TYPE5_TEST_RADIUS_KM: f64 = 7_000.0;
+    const TYPE15_TEST_CENTRAL_RADIUS_KM: f64 = 6_378.136_3;
 
     #[test]
     fn low_precision_sun_distance_is_near_one_au() {
@@ -2204,6 +2630,26 @@ mod tests {
     }
 
     #[test]
+    fn spk_ephemeris_reads_type5_two_body_state() {
+        let bytes = synthetic_type5_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(5.0))
+            .unwrap();
+        let expected = type5_circular_state(5.0);
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(expected[0], expected[1], expected[2]) * 1_000.0,
+            1.0e-5,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(expected[3], expected[4], expected[5]) * 1_000.0,
+            1.0e-8,
+        );
+    }
+
+    #[test]
     fn spk_ephemeris_reads_type9_lagrange_state() {
         let bytes = synthetic_type9_spk();
         let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
@@ -2236,6 +2682,26 @@ mod tests {
             sun.velocity_eci_m_s,
             Vector3::new(10_000.0, 2_000.0, -1_000.0),
             1.0e-10,
+        );
+    }
+
+    #[test]
+    fn spk_ephemeris_reads_type15_precessing_conic_state() {
+        let bytes = synthetic_type15_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(5.0))
+            .unwrap();
+        let expected = type5_circular_state(5.0);
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(expected[0], expected[1], expected[2]) * 1_000.0,
+            1.0e-5,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(expected[3], expected[4], expected[5]) * 1_000.0,
+            1.0e-8,
         );
     }
 
@@ -2322,6 +2788,92 @@ mod tests {
         let state = segment.state_km_s(3.0).unwrap();
         assert_eq!(state.position_km, Vector3::new(30.0, 6.0, -3.0));
         assert_eq!(state.velocity_km_s, Vector3::new(10.0, 2.0, -1.0));
+    }
+
+    #[test]
+    fn spk_type5_state_uses_two_body_propagation() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 5,
+            data: type5_circular_segment(&[0.0, 10.0]),
+        };
+        let state = segment.state_km_s(5.0).unwrap();
+        let expected = type5_circular_state(5.0);
+        assert_vector_near(
+            state.position_km,
+            Vector3::new(expected[0], expected[1], expected[2]),
+            1.0e-8,
+        );
+        assert_vector_near(
+            state.velocity_km_s,
+            Vector3::new(expected[3], expected[4], expected[5]),
+            1.0e-11,
+        );
+    }
+
+    #[test]
+    fn spk_type15_state_uses_precessing_conic_record() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 15,
+            data: type15_circular_segment(3.0, 0.0),
+        };
+        let state = segment.state_km_s(5.0).unwrap();
+        let expected = type5_circular_state(5.0);
+        assert_vector_near(
+            state.position_km,
+            Vector3::new(expected[0], expected[1], expected[2]),
+            1.0e-8,
+        );
+        assert_vector_near(
+            state.velocity_km_s,
+            Vector3::new(expected[3], expected[4], expected[5]),
+            1.0e-11,
+        );
+    }
+
+    #[test]
+    fn spk_type15_j2_flag_applies_node_and_apsis_precession() {
+        let j2 = 1.0e-3;
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 15,
+            data: type15_circular_segment(0.0, j2),
+        };
+        let state = segment.state_km_s(5.0).unwrap();
+        let mean_motion_rad_s = (TYPE5_TEST_GM_KM3_S2 / TYPE5_TEST_RADIUS_KM.powi(3)).sqrt();
+        let theta = mean_motion_rad_s * 5.0;
+        let radius_ratio = TYPE15_TEST_CENTRAL_RADIUS_KM / TYPE5_TEST_RADIUS_KM;
+        let precession = theta * 1.5 * j2 * radius_ratio * radius_ratio;
+        let expected_theta = theta + precession;
+        let (sin_theta, cos_theta) = expected_theta.sin_cos();
+        let speed_km_s = mean_motion_rad_s * TYPE5_TEST_RADIUS_KM;
+        assert_vector_near(
+            state.position_km,
+            Vector3::new(
+                TYPE5_TEST_RADIUS_KM * cos_theta,
+                TYPE5_TEST_RADIUS_KM * sin_theta,
+                0.0,
+            ),
+            1.0e-8,
+        );
+        assert_vector_near(
+            state.velocity_km_s,
+            Vector3::new(-speed_km_s * sin_theta, speed_km_s * cos_theta, 0.0),
+            1.0e-11,
+        );
     }
 
     #[test]
@@ -2686,6 +3238,33 @@ mod tests {
         synthetic_spk_from_segments(&segments)
     }
 
+    fn synthetic_type5_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 5,
+                data: type5_circular_segment(&[0.0, 10.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
     fn synthetic_type8_spk() -> Vec<u8> {
         let segments = [
             SyntheticSegment {
@@ -2755,6 +3334,33 @@ mod tests {
                 frame: SPK_J2000_FRAME_ID,
                 data_type: 14,
                 data: type14_linear_chebyshev_segment(&[0.0, 3.0, 10.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
+    fn synthetic_type15_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 15,
+                data: type15_circular_segment(3.0, 0.0),
             },
             SyntheticSegment {
                 target: NAIF_MOON,
@@ -2963,6 +3569,33 @@ mod tests {
         ]
     }
 
+    fn type5_circular_segment(epochs: &[f64]) -> Vec<f64> {
+        let mut data = Vec::new();
+        for epoch in epochs {
+            data.extend_from_slice(&type5_circular_state(*epoch));
+        }
+        data.extend_from_slice(epochs);
+        append_spk_type5_epoch_directory(&mut data, epochs);
+        data.push(TYPE5_TEST_GM_KM3_S2);
+        data.push(epochs.len() as f64);
+        data
+    }
+
+    fn type5_circular_state(epoch_s: f64) -> [f64; 6] {
+        let mean_motion_rad_s = (TYPE5_TEST_GM_KM3_S2 / TYPE5_TEST_RADIUS_KM.powi(3)).sqrt();
+        let theta = mean_motion_rad_s * epoch_s;
+        let (sin_theta, cos_theta) = theta.sin_cos();
+        let speed_km_s = mean_motion_rad_s * TYPE5_TEST_RADIUS_KM;
+        [
+            TYPE5_TEST_RADIUS_KM * cos_theta,
+            TYPE5_TEST_RADIUS_KM * sin_theta,
+            0.0,
+            -speed_km_s * sin_theta,
+            speed_km_s * cos_theta,
+            0.0,
+        ]
+    }
+
     fn type8_linear_segment(
         first_epoch_s: f64,
         step_s: f64,
@@ -3055,6 +3688,27 @@ mod tests {
             -1.0,
             0.0,
         ]);
+    }
+
+    fn type15_circular_segment(j2_flag: f64, j2: f64) -> Vec<f64> {
+        vec![
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            TYPE5_TEST_RADIUS_KM,
+            0.0,
+            j2_flag,
+            0.0,
+            0.0,
+            1.0,
+            TYPE5_TEST_GM_KM3_S2,
+            j2,
+            TYPE15_TEST_CENTRAL_RADIUS_KM,
+        ]
     }
 
     fn type18_lagrange_segment(epochs: &[f64], window_size: usize) -> Vec<f64> {
@@ -3208,6 +3862,12 @@ mod tests {
 
     fn append_spk_epoch_directory(data: &mut Vec<f64>, epochs: &[f64]) {
         for one_based_index in (100..epochs.len()).step_by(100) {
+            data.push(epochs[one_based_index - 1]);
+        }
+    }
+
+    fn append_spk_type5_epoch_directory(data: &mut Vec<f64>, epochs: &[f64]) {
+        for one_based_index in (100..=epochs.len()).step_by(100) {
             data.push(epochs[one_based_index - 1]);
         }
     }

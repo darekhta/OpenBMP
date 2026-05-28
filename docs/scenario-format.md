@@ -585,19 +585,24 @@ wind          = "none"
 ```
 
 The SPK reader supports geometric Sun/Moon states from binary DAF/SPK
-kernels with type 2 or type 3 Chebyshev segments, type 8/9 Lagrange
-state segments, type 12/13 Hermite state segments, type 14 generic
-Chebyshev position/velocity segments, type 18 ESOC/DDID subtype 0/1
-packets, type 19 ESOC/DDID piecewise mini-segments, and type 20
+kernels with type 2 or type 3 Chebyshev segments, type 5 two-body
+discrete-state segments, type 8/9 Lagrange state segments, type 12/13
+Hermite state segments, type 14 generic Chebyshev position/velocity
+segments, type 15 precessing-conic segments, type 18 ESOC/DDID subtype
+0/1 packets, type 19 ESOC/DDID piecewise mini-segments, and type 20
 Chebyshev velocity-only segments in the J2000 frame. It also accepts
 the built-in SPICE `ECLIPJ2000` inertial frame and rotates those segment
 states into OpenBMP's J2000 ECI chain. Type 2 velocities are derived
 from the Chebyshev position derivative; type 3 velocities come from the
-segment velocity coefficients; type 8/9 states are interpolated from
+segment velocity coefficients; type 5 propagates bracketing discrete
+states with two-body motion and blends the propagated states with
+NAIF's cosine weighting; type 8/9 states are interpolated from
 equal/unequal-time discrete position/velocity records; type 12/13
 states use equal/unequal-time Hermite interpolation of position and
 velocity records; type 14 evaluates fixed-packet generic-segment
 Chebyshev position and velocity records with explicit epoch indexing;
+type 15 propagates from periapsis and applies optional J2 node/apsis
+precession flags;
 type 18 subtype 0 interpolates ESOC/DDID position and velocity packets
 separately from their derivative fields, while subtype 1 uses Lagrange
 interpolation of position/velocity packets; type 19 selects the
