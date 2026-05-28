@@ -49,8 +49,9 @@ pub enum FrameProfile {
     Wgs84UniformRotation,
     /// WGS84 with scenario-pinned Earth-orientation parameters:
     /// absolute UTC epoch, interpolated UT1-UTC, and polar motion.
-    /// This remains a compact deterministic transform and does not
-    /// include precession, nutation, or a SPICE frame chain.
+    /// This remains a compact deterministic transform. It includes
+    /// IAU 1976 mean precession from J2000 to date, but not nutation
+    /// or a SPICE frame chain.
     IersTabulated,
 }
 
@@ -472,12 +473,15 @@ impl FrameContext {
 
     /// Transform an ECI position to ECEF at simulation time `t`.
     ///
-    /// `R_z(-θ) · p_eci`. `ToyFixedEarth` profile always returns
-    /// `p_eci` reinterpreted as ECEF.
+    /// For `iers-tabulated`, the path is J2000 ECI -> mean-of-date
+    /// precessed axes -> TIRS via Earth Rotation Angle -> ECEF via
+    /// polar motion. `ToyFixedEarth` profile always returns `p_eci`
+    /// reinterpreted as ECEF.
     #[must_use]
     pub fn eci_to_ecef_position(&self, t: SimTime, p_eci: Position3<Eci>) -> Position3<Ecef> {
         let theta = self.earth_rotation_angle(t);
-        let tirs = rotate_z(p_eci.vector, -theta);
+        let mean_of_date = self.eci_to_mean_of_date_vector(t, p_eci.vector);
+        let tirs = rotate_z(mean_of_date, -theta);
         Position3::from_vector(self.tirs_to_ecef_vector(t, tirs))
     }
 
@@ -487,7 +491,8 @@ impl FrameContext {
     pub fn ecef_to_eci_position(&self, t: SimTime, p_ecef: Position3<Ecef>) -> Position3<Eci> {
         let theta = self.earth_rotation_angle(t);
         let tirs = self.ecef_to_tirs_vector(t, p_ecef.vector);
-        Position3::from_vector(rotate_z(tirs, theta))
+        let mean_of_date = rotate_z(tirs, theta);
+        Position3::from_vector(self.mean_of_date_to_eci_vector(t, mean_of_date))
     }
 
     /// Transform an ECI velocity to ECEF velocity at simulation time
@@ -504,11 +509,12 @@ impl FrameContext {
         p_eci: Position3<Eci>,
     ) -> Velocity3<Ecef> {
         let omega = self.angular_velocity_z();
-        let r = p_eci.vector;
-        // ω × r where ω = (0, 0, ω_e):
-        // (ω × r)_x = -ω_e · y; (ω × r)_y = +ω_e · x; (ω × r)_z = 0.
+        let r = self.eci_to_mean_of_date_vector(t, p_eci.vector);
+        let v = self.eci_to_mean_of_date_vector(t, v_eci.vector);
+        // ω × r in the mean-of-date intermediate frame, where the
+        // Earth spin axis is the frame `+z` axis.
         let cross = nalgebra::Vector3::new(-omega * r.y, omega * r.x, 0.0);
-        let v_inertial_minus_transport = v_eci.vector - cross;
+        let v_inertial_minus_transport = v - cross;
         let theta = self.earth_rotation_angle(t);
         let tirs = rotate_z(v_inertial_minus_transport, -theta);
         Velocity3::from_vector(self.tirs_to_ecef_vector(t, tirs))
@@ -526,16 +532,17 @@ impl FrameContext {
         v_ecef: Velocity3<Ecef>,
         p_ecef: Position3<Ecef>,
     ) -> Velocity3<Eci> {
-        // Rotate the ECEF velocity into ECI orientation.
+        // Rotate the ECEF velocity into mean-of-date inertial
+        // orientation, add the transport rate there, then precess back
+        // to the scenario ECI axes.
         let theta = self.earth_rotation_angle(t);
         let tirs = self.ecef_to_tirs_vector(t, v_ecef.vector);
-        let v_rotated = rotate_z(tirs, theta);
-        // Add the transport rate ω × r_eci, where r_eci is the ECI
-        // position derived from p_ecef. We compute it inline.
-        let r_eci = self.ecef_to_eci_position(t, p_ecef).vector;
+        let v_rotated_mean_of_date = rotate_z(tirs, theta);
+        let r_tirs = self.ecef_to_tirs_vector(t, p_ecef.vector);
+        let r_mean_of_date = rotate_z(r_tirs, theta);
         let omega = self.angular_velocity_z();
-        let cross = Vector3::new(-omega * r_eci.y, omega * r_eci.x, 0.0);
-        Velocity3::from_vector(v_rotated + cross)
+        let cross = Vector3::new(-omega * r_mean_of_date.y, omega * r_mean_of_date.x, 0.0);
+        Velocity3::from_vector(self.mean_of_date_to_eci_vector(t, v_rotated_mean_of_date + cross))
     }
 
     /// Earth angular velocity along the inertial `+z` axis (rad/s).
@@ -582,6 +589,26 @@ impl FrameContext {
             rotate_x(v_ecef, eop.polar_motion_y_rad),
             eop.polar_motion_x_rad,
         )
+    }
+
+    fn eci_to_mean_of_date_vector(&self, t: SimTime, v_eci: Vector3<f64>) -> Vector3<f64> {
+        if self.profile != FrameProfile::IersTabulated {
+            return v_eci;
+        }
+        precess_j2000_to_mean_of_date_vector(self.precession_julian_date(t), v_eci)
+    }
+
+    fn mean_of_date_to_eci_vector(&self, t: SimTime, v_mod: Vector3<f64>) -> Vector3<f64> {
+        if self.profile != FrameProfile::IersTabulated {
+            return v_mod;
+        }
+        precess_mean_of_date_to_j2000_vector(self.precession_julian_date(t), v_mod)
+    }
+
+    fn precession_julian_date(&self, t: SimTime) -> f64 {
+        self.iers.as_ref().map_or(2_451_545.0, |iers| {
+            iers.epoch_utc_julian_date + t.as_seconds() / SECONDS_PER_DAY
+        })
     }
 
     // ---------------------------------------------------------------
@@ -690,6 +717,30 @@ fn lerp(a: f64, b: f64, alpha: f64) -> f64 {
 fn earth_rotation_angle_from_ut1_julian_date(jd_ut1: f64) -> f64 {
     let days_since_j2000 = jd_ut1 - 2_451_545.0;
     (TWO_PI * (0.779_057_273_264_0 + 1.002_737_811_911_354_6 * days_since_j2000)).rem_euclid(TWO_PI)
+}
+
+fn precession_angles_iau1976(julian_date: f64) -> (f64, f64, f64) {
+    let t = (julian_date - 2_451_545.0) / 36_525.0;
+    let zeta = (2_306.218_1 * t + 0.301_88 * t * t + 0.017_998 * t * t * t) * ARCSECOND_TO_RAD;
+    let theta = (2_004.310_9 * t - 0.426_65 * t * t - 0.041_833 * t * t * t) * ARCSECOND_TO_RAD;
+    let z = (2_306.218_1 * t + 1.094_68 * t * t + 0.018_203 * t * t * t) * ARCSECOND_TO_RAD;
+    (zeta, theta, z)
+}
+
+fn precess_j2000_to_mean_of_date_vector(julian_date: f64, v: Vector3<f64>) -> Vector3<f64> {
+    if !julian_date.is_finite() {
+        return v;
+    }
+    let (zeta, theta, z) = precession_angles_iau1976(julian_date);
+    rotate_z(rotate_y(rotate_z(v, zeta), -theta), z)
+}
+
+fn precess_mean_of_date_to_j2000_vector(julian_date: f64, v: Vector3<f64>) -> Vector3<f64> {
+    if !julian_date.is_finite() {
+        return v;
+    }
+    let (zeta, theta, z) = precession_angles_iau1976(julian_date);
+    rotate_z(rotate_y(rotate_z(v, -z), theta), -zeta)
 }
 
 fn rotate_z(v: Vector3<f64>, theta: f64) -> Vector3<f64> {
@@ -1082,6 +1133,66 @@ mod tests {
             assert_abs_diff_eq!(p_back.vector.x, p_eci.vector.x, epsilon = 1.0e-6);
             assert_abs_diff_eq!(p_back.vector.y, p_eci.vector.y, epsilon = 1.0e-6);
             assert_abs_diff_eq!(p_back.vector.z, p_eci.vector.z, epsilon = 1.0e-6);
+        }
+
+        #[test]
+        fn iers_precession_is_identity_at_j2000() {
+            let v = Vector3::new(1.0, 2.0, 3.0);
+            let precessed = precess_j2000_to_mean_of_date_vector(2_451_545.0, v);
+            assert_abs_diff_eq!(precessed.x, v.x, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(precessed.y, v.y, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(precessed.z, v.z, epsilon = 1.0e-15);
+        }
+
+        #[test]
+        fn iers_precession_moves_axes_over_decades() {
+            let jd_2050 = 2_451_545.0 + 0.5 * 36_525.0;
+            let x_axis = Vector3::new(1.0, 0.0, 0.0);
+            let precessed = precess_j2000_to_mean_of_date_vector(jd_2050, x_axis);
+            let (zeta, theta, z) = precession_angles_iau1976(jd_2050);
+            let (sin_zeta, cos_zeta) = zeta.sin_cos();
+            let (sin_theta, cos_theta) = theta.sin_cos();
+            let (sin_z, cos_z) = z.sin_cos();
+            let expected = Vector3::new(
+                cos_z * cos_theta * cos_zeta - sin_z * sin_zeta,
+                sin_z * cos_theta * cos_zeta + cos_z * sin_zeta,
+                sin_theta * cos_zeta,
+            );
+            assert_abs_diff_eq!(precessed.norm(), 1.0, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(precessed.x, expected.x, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(precessed.y, expected.y, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(precessed.z, expected.z, epsilon = 1.0e-15);
+            assert!(
+                precessed.y > 0.0,
+                "x-axis should precess toward positive RA"
+            );
+            assert!(
+                precessed.z > 0.0,
+                "x-axis should precess toward positive mean-date declination"
+            );
+            assert!(
+                (precessed - x_axis).norm() > 0.005,
+                "precession over five decades should be arcminute-scale: {precessed:?}"
+            );
+            let restored = precess_mean_of_date_to_j2000_vector(jd_2050, precessed);
+            assert_abs_diff_eq!(restored.x, x_axis.x, epsilon = 1.0e-14);
+            assert_abs_diff_eq!(restored.y, x_axis.y, epsilon = 1.0e-14);
+            assert_abs_diff_eq!(restored.z, x_axis.z, epsilon = 1.0e-14);
+        }
+
+        #[test]
+        fn iers_velocity_round_trip_with_precession() {
+            let epoch_2050 = 2_451_545.0 + 0.5 * 36_525.0;
+            let ctx = FrameContext::iers_tabulated(epoch_2050, None, table()).unwrap();
+            let t = SimTime::from_seconds(5.0);
+            let p_eci: Position3<Eci> = Position3::new(7_000_000.0, 1_500_000.0, 800_000.0);
+            let v_eci: Velocity3<Eci> = Velocity3::new(120.0, 7_400.0, -25.0);
+            let p_ecef = ctx.eci_to_ecef_position(t, p_eci);
+            let v_ecef = ctx.eci_to_ecef_velocity(t, v_eci, p_eci);
+            let v_back = ctx.ecef_to_eci_velocity(t, v_ecef, p_ecef);
+            assert_abs_diff_eq!(v_back.vector.x, v_eci.vector.x, epsilon = 1.0e-9);
+            assert_abs_diff_eq!(v_back.vector.y, v_eci.vector.y, epsilon = 1.0e-9);
+            assert_abs_diff_eq!(v_back.vector.z, v_eci.vector.z, epsilon = 1.0e-9);
         }
 
         #[test]

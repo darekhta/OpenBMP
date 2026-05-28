@@ -368,9 +368,10 @@ y_pole_arcsec = 0.312
 
 Samples must be strictly time-ordered and cover `[time.start_s,
 time.stop_s]`. OpenBMP linearly interpolates UT1-UTC and polar motion,
-uses the scenario UTC epoch to compute IAU Earth Rotation Angle, and
-applies a compact polar-motion rotation in the ECI/ECEF transform. It
-does not yet implement precession, nutation, or SPICE frame chains.
+applies compact IAU 1976 mean precession from J2000 to date, uses the
+scenario UTC epoch to compute IAU Earth Rotation Angle, and applies a
+compact polar-motion rotation in the ECI/ECEF transform. It does not
+yet implement nutation or SPICE frame chains.
 
 When `epoch.leap_second_table` is declared, the runner loads it through
 the same resolved-file path and optional SHA-256 pin as other external

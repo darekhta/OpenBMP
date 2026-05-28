@@ -97,10 +97,10 @@ y_pole_arcsec = 0.312
 ```
 
 Sample times are scenario-relative seconds and must cover the whole
-simulation interval. The transform computes IAU Earth Rotation Angle from the
-UTC scenario epoch plus interpolated UT1-UTC, then applies a compact
-polar-motion rotation. Precession, nutation, and SPICE frame chains remain
-future high-fidelity work.
+simulation interval. The transform applies compact IAU 1976 mean precession
+from J2000 to date, computes IAU Earth Rotation Angle from the UTC scenario
+epoch plus interpolated UT1-UTC, then applies polar motion. Nutation and SPICE
+frame chains remain future high-fidelity work.
 
 ## Transform Rules
 
