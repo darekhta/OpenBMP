@@ -516,10 +516,10 @@ The rigid-body-only initial-state fields are rejected when
 
 | `gravity` | Required | Rejected |
 |---|---|---|
-| `"constant"` | `gravity_m_s2` | `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files` |
-| `"point_mass"` | `mu_m3_s2` | `gravity_m_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files` |
+| `"constant"` | `gravity_m_s2` | `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files`, `ephemeris_meta_kernel` |
+| `"point_mass"` | `mu_m3_s2` | `gravity_m_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files`, `ephemeris_meta_kernel` |
 | `"j2"` | `mu_m3_s2`, `r_e_m` | `gravity_m_s2` |
-| `"egm2008"` | — pinned WGS84 / EGM2008 zonal constants | `gravity_m_s2`, `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files` |
+| `"egm2008"` | — pinned WGS84 / EGM2008 zonal constants | `gravity_m_s2`, `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files`, `ephemeris_meta_kernel` |
 | `"third_body"` | `gravity_base`, `third_bodies`; plus the selected base coefficients | `gravity_m_s2` |
 
 For `gravity = "j2"` the dimensionless `j2` coefficient defaults to the
@@ -535,13 +535,26 @@ deterministic analytical ephemeris; if `[epoch]` is omitted the
 ephemeris starts at J2000, otherwise the runner parses
 `epoch.iso8601` with `epoch.scale` `UTC`, `TT`, or `TDB`.
 `ephemeris = "spk"` selects pinned binary SPK/BSP kernels supplied by
-either singular `ephemeris_file` plus optional
-`ephemeris_file_sha256`, or ordered `ephemeris_files` plus optional
-`ephemeris_files_sha256`. The plural pin list, when present, must
-match the file list length. Later files take precedence over earlier
-files for overlapping SPK segments. The SPK reader evaluates seconds
-past J2000 on the ephemeris-time/TDB axis, so `[epoch].scale` may be
-`"TDB"`, `"TT"`, or `"UTC"`; `"UTC"` requires
+exactly one of:
+
+- Singular `ephemeris_file` plus optional `ephemeris_file_sha256`.
+- Ordered `ephemeris_files` plus optional `ephemeris_files_sha256`.
+- A NAIF `KPL/MK` `ephemeris_meta_kernel` plus optional
+  `ephemeris_meta_kernel_sha256` and ordered
+  `ephemeris_meta_kernel_files_sha256` pins for the expanded
+  `KERNELS_TO_LOAD` list.
+
+The plural pin lists, when present, must match their file-list length.
+Meta-kernel path symbols `PATH_SYMBOLS` / `PATH_VALUES` and `+`
+continuations are supported; relative referenced paths resolve against
+the meta-kernel's parent directory. The runner consumes binary SPK
+entries from the expanded list and records every referenced file for
+provenance. LSK files referenced by a meta-kernel are resolved and
+hashed, but UTC conversion still uses `epoch.leap_second_table` so the
+time axis remains explicit. Later SPK files take precedence over
+earlier files for overlapping SPK segments. The SPK reader evaluates
+seconds past J2000 on the ephemeris-time/TDB axis, so `[epoch].scale`
+may be `"TDB"`, `"TT"`, or `"UTC"`; `"UTC"` requires
 `epoch.leap_second_table` as either OpenBMP TOML or a NAIF LSK text
 kernel.
 
@@ -585,6 +598,23 @@ atmosphere    = "none"
 wind          = "none"
 ```
 
+```toml
+[environment]
+frame_profile = "wgs84-uniform-rotation"
+gravity       = "third_body"
+gravity_base  = "egm2008"
+third_bodies  = ["sun", "moon"]
+ephemeris     = "spk"
+ephemeris_meta_kernel = "data/ephemeris/mission.tm"
+ephemeris_meta_kernel_sha256 = "<64 hex chars>"
+ephemeris_meta_kernel_files_sha256 = [
+  "<64 hex chars>", # first KERNELS_TO_LOAD entry
+  "<64 hex chars>", # second KERNELS_TO_LOAD entry
+]
+atmosphere    = "none"
+wind          = "none"
+```
+
 The SPK reader supports geometric Sun/Moon states from binary DAF/SPK
 kernels with type 1 modified-difference arrays, type 2 or type 3
 Chebyshev segments, type 5 two-body discrete-state segments, type 8/9
@@ -622,8 +652,12 @@ modified difference lines. It follows SPK segment priority inside each file and
 preserves load-order precedence across a file list, so later files can
 override earlier overlapping segments. It combines target/center chains
 such as Solar-System-Barycenter -> Earth-Moon Barycenter -> Earth/Moon.
-It does not yet implement light-time, stellar aberration, generic text
-kernels beyond NAIF LSK leap-second files, non-J2000 frame transforms
+Geometric states are the default and remain the input to force models;
+the SPK API also exposes reception-side `LT`, `LT+S`, `CN`, and
+`CN+S` observer corrections plus transmission-side `XLT`, `XLT+S`,
+`XCN`, and `XCN+S` pointing corrections. It does not yet implement
+relativistic corrections, generic text kernels beyond NAIF LSK
+leap-second files and meta-kernel expansion, non-J2000 frame transforms
 beyond built-in `ECLIPJ2000`, or a full SPICE frame-kernel chain.
 
 ### Frames local origin
@@ -1029,12 +1063,14 @@ Every external file referenced by the scenario can carry an optional
 `*_sha256` companion field (`aero.deck_sha256`,
 `propulsion.motor.file_sha256`, `sensors.<name>.file_sha256`,
 `epoch.eop_sha256`, `environment.ephemeris_file_sha256`, or ordered
-`environment.ephemeris_files_sha256`). When present, the parser
-computes the file's SHA-256 digest at load time and fails closed on
-mismatch. The plural ephemeris pin list must have the same length as
-`environment.ephemeris_files`. When absent, the digest is still
-computed and surfaced by `openbmp check`; recording those digests in
-telemetry headers is handled runner-side.
+`environment.ephemeris_files_sha256`,
+`environment.ephemeris_meta_kernel_sha256`, and
+`environment.ephemeris_meta_kernel_files_sha256`). When present, the
+parser computes the file's SHA-256 digest at load time and fails closed
+on mismatch. The plural ephemeris pin lists must have the same length as
+their resolved file lists. When absent, the digest is still computed and
+surfaced by `openbmp check`; recording those digests in telemetry
+headers is handled runner-side.
 
 `openbmp check` surfaces resolved digests in its output:
 
@@ -1045,6 +1081,8 @@ openbmp check: ok — niskanen-2009-chapter6 (Checked)
   propulsion.motor.file -> .../data/motors/estes-c6-eng-derived.toml (sha256:da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e)
   environment.ephemeris_file -> .../data/ephemeris/de440s.bsp (sha256:...)
   environment.ephemeris_files[1] -> .../data/ephemeris/mission-overlay.bsp (sha256:...)
+  environment.ephemeris_meta_kernel -> .../data/ephemeris/mission.tm (sha256:...)
+  environment.ephemeris_meta_kernel.files[0] -> .../data/ephemeris/de440s.bsp (sha256:...)
 ```
 
 The digest is the SHA-256 of the file bytes encoded as 64 lower-case

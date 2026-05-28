@@ -252,6 +252,55 @@ impl Scenario {
             resolved.verify_pin(pin)?;
             files.insert(format!("environment.ephemeris_files[{index}]"), resolved);
         }
+        if let Some(meta_kernel) = &self.document.environment.ephemeris_meta_kernel {
+            let resolved = ResolvedFile::load(self.resolve_path(meta_kernel))?;
+            resolved.verify_pin(
+                self.document
+                    .environment
+                    .ephemeris_meta_kernel_sha256
+                    .as_deref(),
+            )?;
+            let kernel_paths = parse_spice_meta_kernel_paths(&resolved)?;
+            if !self
+                .document
+                .environment
+                .ephemeris_meta_kernel_files_sha256
+                .is_empty()
+                && self
+                    .document
+                    .environment
+                    .ephemeris_meta_kernel_files_sha256
+                    .len()
+                    != kernel_paths.len()
+            {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "environment.ephemeris_meta_kernel KERNELS_TO_LOAD".to_owned(),
+                    value_a: kernel_paths.len().to_string(),
+                    field_b: "environment.ephemeris_meta_kernel_files_sha256".to_owned(),
+                    value_b: self
+                        .document
+                        .environment
+                        .ephemeris_meta_kernel_files_sha256
+                        .len()
+                        .to_string(),
+                });
+            }
+            files.insert("environment.ephemeris_meta_kernel".to_owned(), resolved);
+            for (index, kernel_path) in kernel_paths.iter().enumerate() {
+                let resolved = ResolvedFile::load(kernel_path)?;
+                let pin = self
+                    .document
+                    .environment
+                    .ephemeris_meta_kernel_files_sha256
+                    .get(index)
+                    .map(String::as_str);
+                resolved.verify_pin(pin)?;
+                files.insert(
+                    format!("environment.ephemeris_meta_kernel.files[{index}]"),
+                    resolved,
+                );
+            }
+        }
 
         if let Some(packages) = &self.document.data_packages {
             for (name, path) in packages {
@@ -262,6 +311,271 @@ impl Scenario {
 
         Ok(files)
     }
+}
+
+fn parse_spice_meta_kernel_paths(
+    meta_kernel: &ResolvedFile,
+) -> Result<Vec<PathBuf>, ScenarioError> {
+    let text = std::str::from_utf8(&meta_kernel.bytes).map_err(|err| {
+        ScenarioError::InvalidReferencedFile {
+            path: meta_kernel.path.clone(),
+            reason: format!("SPICE meta-kernel is not UTF-8: {err}"),
+        }
+    })?;
+    if !text.trim_start().starts_with("KPL/MK") {
+        return Err(ScenarioError::InvalidReferencedFile {
+            path: meta_kernel.path.clone(),
+            reason: "SPICE meta-kernel must start with KPL/MK".to_owned(),
+        });
+    }
+
+    let kernels =
+        spice_kernel_values(text, "KERNELS_TO_LOAD", &meta_kernel.path)?.ok_or_else(|| {
+            ScenarioError::InvalidReferencedFile {
+                path: meta_kernel.path.clone(),
+                reason: "SPICE meta-kernel missing KERNELS_TO_LOAD".to_owned(),
+            }
+        })?;
+    let kernels = join_spice_continuations(kernels, &meta_kernel.path, "KERNELS_TO_LOAD")?;
+    if kernels.is_empty() {
+        return Err(ScenarioError::InvalidReferencedFile {
+            path: meta_kernel.path.clone(),
+            reason: "SPICE meta-kernel KERNELS_TO_LOAD must not be empty".to_owned(),
+        });
+    }
+
+    let symbols = spice_kernel_values(text, "PATH_SYMBOLS", &meta_kernel.path)?.unwrap_or_default();
+    let values = spice_kernel_values(text, "PATH_VALUES", &meta_kernel.path)?.unwrap_or_default();
+    if symbols.is_empty() != values.is_empty() {
+        return Err(ScenarioError::InvalidReferencedFile {
+            path: meta_kernel.path.clone(),
+            reason: "SPICE meta-kernel PATH_SYMBOLS and PATH_VALUES must be declared together"
+                .to_owned(),
+        });
+    }
+    let values = join_spice_continuations(values, &meta_kernel.path, "PATH_VALUES")?;
+    if symbols.len() != values.len() {
+        return Err(ScenarioError::InvalidReferencedFile {
+            path: meta_kernel.path.clone(),
+            reason: "SPICE meta-kernel PATH_SYMBOLS and PATH_VALUES length mismatch".to_owned(),
+        });
+    }
+
+    let mut substitutions = BTreeMap::new();
+    for (symbol, value) in symbols.iter().zip(values.iter()) {
+        if symbol.is_empty() || symbol.chars().any(char::is_whitespace) {
+            return Err(ScenarioError::InvalidReferencedFile {
+                path: meta_kernel.path.clone(),
+                reason: format!("SPICE meta-kernel PATH_SYMBOL `{symbol}` is invalid"),
+            });
+        }
+        substitutions.insert(symbol.as_str(), value.as_str());
+    }
+
+    let base_dir = meta_kernel.path.parent().unwrap_or_else(|| Path::new(""));
+    kernels
+        .iter()
+        .map(|kernel| {
+            let substituted =
+                substitute_spice_path_symbols(kernel, &substitutions, &meta_kernel.path)?;
+            let path = PathBuf::from(substituted);
+            Ok(if path.is_absolute() {
+                path
+            } else {
+                base_dir.join(path)
+            })
+        })
+        .collect()
+}
+
+fn spice_kernel_values(
+    text: &str,
+    key: &str,
+    path: &Path,
+) -> Result<Option<Vec<String>>, ScenarioError> {
+    let data = spice_data_text(text);
+    let Some(offset) = find_spice_assignment(&data, key) else {
+        return Ok(None);
+    };
+    let bytes = data.as_bytes();
+    let mut index = offset;
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    if index >= bytes.len() {
+        return Err(ScenarioError::InvalidReferencedFile {
+            path: path.to_path_buf(),
+            reason: format!("SPICE meta-kernel {key} assignment is empty"),
+        });
+    }
+    let slice = if bytes[index] == b'(' {
+        let end = data[index + 1..]
+            .find(')')
+            .map(|end| index + 1 + end)
+            .ok_or_else(|| ScenarioError::InvalidReferencedFile {
+                path: path.to_path_buf(),
+                reason: format!("SPICE meta-kernel {key} list is missing `)`"),
+            })?;
+        &data[index + 1..end]
+    } else if bytes[index] == b'\'' {
+        let end = data[index + 1..]
+            .find('\'')
+            .map(|end| index + 2 + end)
+            .ok_or_else(|| ScenarioError::InvalidReferencedFile {
+                path: path.to_path_buf(),
+                reason: format!("SPICE meta-kernel {key} scalar string is unterminated"),
+            })?;
+        &data[index..end]
+    } else {
+        return Err(ScenarioError::InvalidReferencedFile {
+            path: path.to_path_buf(),
+            reason: format!("SPICE meta-kernel {key} must be a quoted string or string list"),
+        });
+    };
+    collect_spice_quoted_strings(slice, path, key).map(Some)
+}
+
+fn spice_data_text(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_data = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("\\begindata") {
+            in_data = true;
+            continue;
+        }
+        if trimmed.starts_with("\\begintext") {
+            in_data = false;
+            continue;
+        }
+        if in_data {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn find_spice_assignment(data: &str, key: &str) -> Option<usize> {
+    let mut search_start = 0;
+    while let Some(relative) = data[search_start..].find(key) {
+        let start = search_start + relative;
+        let end = start + key.len();
+        let before_ok = start == 0
+            || !data.as_bytes()[start - 1].is_ascii_alphanumeric()
+                && data.as_bytes()[start - 1] != b'_';
+        let after_ok = end == data.len()
+            || !data.as_bytes()[end].is_ascii_alphanumeric() && data.as_bytes()[end] != b'_';
+        if before_ok && after_ok {
+            let mut index = end;
+            let bytes = data.as_bytes();
+            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            if index < bytes.len() && bytes[index] == b'=' {
+                return Some(index + 1);
+            }
+        }
+        search_start = end;
+    }
+    None
+}
+
+fn collect_spice_quoted_strings(
+    text: &str,
+    path: &Path,
+    key: &str,
+) -> Result<Vec<String>, ScenarioError> {
+    let mut values = Vec::new();
+    let mut chars = text.char_indices().peekable();
+    while let Some((_, ch)) = chars.next() {
+        if ch != '\'' {
+            continue;
+        }
+        let mut value = String::new();
+        let mut closed = false;
+        for (_, ch) in chars.by_ref() {
+            if ch == '\'' {
+                closed = true;
+                break;
+            }
+            value.push(ch);
+        }
+        if !closed {
+            return Err(ScenarioError::InvalidReferencedFile {
+                path: path.to_path_buf(),
+                reason: format!("SPICE meta-kernel {key} contains an unterminated string"),
+            });
+        }
+        values.push(value);
+    }
+    Ok(values)
+}
+
+fn join_spice_continuations(
+    values: Vec<String>,
+    path: &Path,
+    key: &str,
+) -> Result<Vec<String>, ScenarioError> {
+    let mut joined = Vec::new();
+    let mut pending = String::new();
+    for value in values {
+        if let Some(prefix) = value.strip_suffix('+') {
+            pending.push_str(prefix);
+        } else if pending.is_empty() {
+            joined.push(value);
+        } else {
+            pending.push_str(&value);
+            joined.push(std::mem::take(&mut pending));
+        }
+    }
+    if !pending.is_empty() {
+        return Err(ScenarioError::InvalidReferencedFile {
+            path: path.to_path_buf(),
+            reason: format!("SPICE meta-kernel {key} has unterminated `+` continuation"),
+        });
+    }
+    Ok(joined)
+}
+
+fn substitute_spice_path_symbols(
+    value: &str,
+    substitutions: &BTreeMap<&str, &str>,
+    path: &Path,
+) -> Result<String, ScenarioError> {
+    let mut out = String::new();
+    let mut chars = value.char_indices().peekable();
+    while let Some((_, ch)) = chars.next() {
+        if ch != '$' {
+            out.push(ch);
+            continue;
+        }
+        let mut symbol = String::new();
+        while let Some((_, next)) = chars.peek().copied() {
+            if next.is_ascii_alphanumeric() || next == '_' {
+                symbol.push(next);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if symbol.is_empty() {
+            return Err(ScenarioError::InvalidReferencedFile {
+                path: path.to_path_buf(),
+                reason: format!("SPICE meta-kernel path `{value}` contains an empty path symbol"),
+            });
+        }
+        let replacement = substitutions.get(symbol.as_str()).ok_or_else(|| {
+            ScenarioError::InvalidReferencedFile {
+                path: path.to_path_buf(),
+                reason: format!(
+                    "SPICE meta-kernel path `{value}` references undefined PATH_SYMBOL `{symbol}`"
+                ),
+            }
+        })?;
+        out.push_str(replacement);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -3028,7 +3342,7 @@ iso8601 = "2017-01-01T00:00:00Z"
             );
         let err = Scenario::from_toml_str(&toml_v2).unwrap_err();
         assert!(
-            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "environment.ephemeris_file or environment.ephemeris_files"),
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "environment.ephemeris_file, environment.ephemeris_files, or environment.ephemeris_meta_kernel"),
             "got {err:?}",
         );
     }
@@ -3081,6 +3395,59 @@ iso8601 = "2000-01-01T12:00:00Z"
         let files = scenario.resolved_files().expect("resolve files");
         assert!(files.contains_key("environment.ephemeris_files[0]"));
         assert!(files.contains_key("environment.ephemeris_files[1]"));
+    }
+
+    #[test]
+    fn resolved_files_expands_spk_meta_kernel() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("kernels/spk")).expect("create spk dir");
+        fs::create_dir_all(dir.path().join("kernels/lsk")).expect("create lsk dir");
+        fs::write(dir.path().join("kernels/spk/base.bsp"), b"base spk").expect("write spk");
+        fs::write(dir.path().join("kernels/lsk/naif0012.tls"), b"lsk").expect("write lsk");
+        fs::write(
+            dir.path().join("mission.tm"),
+            r#"
+KPL/MK
+
+\begindata
+PATH_SYMBOLS = ( 'SPK', 'LSK' )
+PATH_VALUES  = ( 'kernels/spk', 'kernels/lsk' )
+KERNELS_TO_LOAD = (
+    '$SPK/base.bsp'
+    '$LSK/naif0012.tls'
+)
+\begintext
+"#,
+        )
+        .expect("write meta-kernel");
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665",
+                "gravity       = \"third_body\"\ngravity_base  = \"point_mass\"\nmu_m3_s2      = 3.986004418e14\nthird_bodies  = [\"sun\"]\nephemeris     = \"spk\"\nephemeris_meta_kernel = \"mission.tm\"",
+            )
+            + r#"
+[epoch]
+scale = "TDB"
+iso8601 = "2000-01-01T12:00:00Z"
+"#;
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(dir.path()))
+            .expect("parse spk meta-kernel scenario");
+        let files = scenario.resolved_files().expect("resolve files");
+        assert!(files.contains_key("environment.ephemeris_meta_kernel"));
+        assert!(files.contains_key("environment.ephemeris_meta_kernel.files[0]"));
+        assert!(files.contains_key("environment.ephemeris_meta_kernel.files[1]"));
+        assert_eq!(
+            files["environment.ephemeris_meta_kernel.files[0]"].bytes,
+            b"base spk"
+        );
+        assert_eq!(
+            files["environment.ephemeris_meta_kernel.files[1]"].bytes,
+            b"lsk"
+        );
     }
 
     #[test]

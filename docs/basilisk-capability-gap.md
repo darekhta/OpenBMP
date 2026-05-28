@@ -100,6 +100,18 @@ OpenBMP implementation slice.
 - Added NAIF `KPL/LSK` leap-second text-kernel ingestion through the
   pinned `epoch.leap_second_table` path, so UTC SPK epochs can use the
   standard SPICE leap-second kernel format.
+- Added SPICE-style reception aberration helpers for SPK observation
+  queries: `NONE`, one-iteration light time (`LT`), converged
+  Newtonian light time (`CN`), and their stellar-aberration variants
+  (`LT+S`, `CN+S`). Third-body gravity remains geometric, as required
+  for force evaluation.
+- Added SPICE-style transmission aberration helpers for SPK pointing
+  queries: `XLT`, `XCN`, and their inverse stellar-aberration variants
+  (`XLT+S`, `XCN+S`).
+- Added deterministic NAIF `KPL/MK` meta-kernel expansion for SPK
+  ephemerides, including `KERNELS_TO_LOAD`, `PATH_SYMBOLS`,
+  `PATH_VALUES`, `+` continuations, SHA-256 pinning of the meta-kernel,
+  and optional ordered pins for every expanded referenced file.
 - Added compact IAU 1976 mean precession in the `iers-tabulated`
   ECI/ECEF path before Earth rotation and polar motion.
 - Added IAU 1980 nutation in the `iers-tabulated` celestial-frame path,
@@ -108,10 +120,11 @@ OpenBMP implementation slice.
 ## Still Missing Relative To Basilisk
 
 - SPK ingestion is intentionally limited to geometric state chains from
-  binary SPK/BSP kernels. It does not yet implement light-time
-  correction, stellar aberration, generic text kernels beyond NAIF LSK
-  leap-second files, non-J2000 frame transforms beyond built-in
-  `ECLIPJ2000`, or a full SPICE frame-kernel chain.
+  binary SPK/BSP kernels plus reception/transmission apparent-state
+  helpers. It does not yet implement relativistic corrections, generic
+  text kernels beyond NAIF LSK leap-second files and meta-kernel
+  expansion, non-J2000 frame transforms beyond built-in `ECLIPJ2000`,
+  or a full SPICE frame-kernel chain.
 - The IERS path is intentionally compact: it does not yet implement a
   full SPICE frame chain or IAU 2006/2000A CIO-based transforms.
   Velocity transport now includes the finite-difference rate of the full

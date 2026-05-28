@@ -1976,6 +1976,15 @@ pub struct EnvironmentConfig {
     /// present, the list length must match `ephemeris_files`.
     #[serde(default)]
     pub ephemeris_files_sha256: Vec<String>,
+    /// NAIF `KPL/MK` meta-kernel path used when `ephemeris = "spk"`.
+    /// Referenced kernels are resolved by the scenario loader.
+    pub ephemeris_meta_kernel: Option<PathBuf>,
+    /// Optional SHA-256 pin for [`Self::ephemeris_meta_kernel`].
+    pub ephemeris_meta_kernel_sha256: Option<String>,
+    /// Optional SHA-256 pins for kernels referenced by
+    /// [`Self::ephemeris_meta_kernel`], in `KERNELS_TO_LOAD` order.
+    #[serde(default)]
+    pub ephemeris_meta_kernel_files_sha256: Vec<String>,
     /// Atmosphere model name.
     pub atmosphere: String,
     /// Wind model name.
@@ -2127,10 +2136,12 @@ impl EnvironmentConfig {
                     Some("spk") => {
                         let has_single = self.ephemeris_file.is_some();
                         let has_list = !self.ephemeris_files.is_empty();
-                        if !has_single && !has_list {
+                        let has_meta = self.ephemeris_meta_kernel.is_some();
+                        if !has_single && !has_list && !has_meta {
                             return Err(ScenarioError::MissingRequiredField {
-                                field: "environment.ephemeris_file or environment.ephemeris_files"
-                                    .to_owned(),
+                                field:
+                                    "environment.ephemeris_file, environment.ephemeris_files, or environment.ephemeris_meta_kernel"
+                                        .to_owned(),
                                 role: ModelRole::Gravity,
                                 name: "third_body".to_owned(),
                             });
@@ -2140,6 +2151,22 @@ impl EnvironmentConfig {
                                 field_a: "environment.ephemeris_file".to_owned(),
                                 value_a: "declared".to_owned(),
                                 field_b: "environment.ephemeris_files".to_owned(),
+                                value_b: "declared".to_owned(),
+                            });
+                        }
+                        if has_single && has_meta {
+                            return Err(ScenarioError::InconsistentSection {
+                                field_a: "environment.ephemeris_file".to_owned(),
+                                value_a: "declared".to_owned(),
+                                field_b: "environment.ephemeris_meta_kernel".to_owned(),
+                                value_b: "declared".to_owned(),
+                            });
+                        }
+                        if has_list && has_meta {
+                            return Err(ScenarioError::InconsistentSection {
+                                field_a: "environment.ephemeris_files".to_owned(),
+                                value_a: "declared".to_owned(),
+                                field_b: "environment.ephemeris_meta_kernel".to_owned(),
                                 value_b: "declared".to_owned(),
                             });
                         }
@@ -2153,6 +2180,34 @@ impl EnvironmentConfig {
                         if has_list && self.ephemeris_file_sha256.is_some() {
                             return Err(ScenarioError::UnexpectedField {
                                 field: "environment.ephemeris_file_sha256".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if !has_meta && self.ephemeris_meta_kernel_sha256.is_some() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_meta_kernel_sha256".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if !has_meta && !self.ephemeris_meta_kernel_files_sha256.is_empty() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_meta_kernel_files_sha256".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if has_meta && self.ephemeris_file_sha256.is_some() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_file_sha256".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if has_meta && !self.ephemeris_files_sha256.is_empty() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_files_sha256".to_owned(),
                                 role: ModelRole::Gravity,
                                 name: "third_body".to_owned(),
                             });
@@ -2194,6 +2249,27 @@ impl EnvironmentConfig {
                         if !self.ephemeris_files_sha256.is_empty() {
                             return Err(ScenarioError::UnexpectedField {
                                 field: "environment.ephemeris_files_sha256".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if self.ephemeris_meta_kernel.is_some() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_meta_kernel".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if self.ephemeris_meta_kernel_sha256.is_some() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_meta_kernel_sha256".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if !self.ephemeris_meta_kernel_files_sha256.is_empty() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_meta_kernel_files_sha256".to_owned(),
                                 role: ModelRole::Gravity,
                                 name: "third_body".to_owned(),
                             });
@@ -2313,6 +2389,27 @@ impl EnvironmentConfig {
             if !self.ephemeris_files_sha256.is_empty() {
                 return Err(ScenarioError::UnexpectedField {
                     field: "environment.ephemeris_files_sha256".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: self.gravity.clone(),
+                });
+            }
+            if self.ephemeris_meta_kernel.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.ephemeris_meta_kernel".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: self.gravity.clone(),
+                });
+            }
+            if self.ephemeris_meta_kernel_sha256.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.ephemeris_meta_kernel_sha256".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: self.gravity.clone(),
+                });
+            }
+            if !self.ephemeris_meta_kernel_files_sha256.is_empty() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.ephemeris_meta_kernel_files_sha256".to_owned(),
                     role: ModelRole::Gravity,
                     name: self.gravity.clone(),
                 });

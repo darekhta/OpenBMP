@@ -49,6 +49,8 @@ const SPK_TYPE10_GEOPHYSICAL_CONSTANTS: usize = 8;
 const SPK_TYPE10_CURRENT_PACKET_SIZE: usize = 14;
 const SPK_TYPE10_LEGACY_PACKET_SIZE: usize = 10;
 const TEME_ROTATION_RATE_STEP_S: f64 = 1.0;
+const SPK_ABERRATION_RATE_STEP_S: f64 = 1.0;
+const SPEED_OF_LIGHT_KM_S: f64 = 299_792.458;
 
 const DEG_TO_RAD: f64 = core::f64::consts::PI / 180.0;
 
@@ -89,6 +91,100 @@ pub struct EphemerisState {
     pub position_eci_m: Vector3<f64>,
     /// Earth-centered inertial velocity in metres per second.
     pub velocity_eci_m_s: Vector3<f64>,
+}
+
+/// SPICE-style aberration correction for SPK observer-relative
+/// states.
+///
+/// OpenBMP's third-body gravity path intentionally uses geometric
+/// states. These corrections are for observation / pointing style
+/// ephemeris queries where the finite speed of light and observer
+/// velocity matter. The supported corrections are the SPICE flags:
+/// `NONE`, reception-side `LT`, `LT+S`, `CN`, `CN+S`, and
+/// transmission-side `XLT`, `XLT+S`, `XCN`, `XCN+S`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SpkAberrationCorrection {
+    /// `NONE`: return the geometric target state relative to the
+    /// observer.
+    None,
+    /// `LT`: one-iteration Newtonian one-way light-time correction for
+    /// photons arriving at the observer.
+    ReceptionLightTime,
+    /// `LT+S`: [`Self::ReceptionLightTime`] followed by Newtonian
+    /// stellar aberration.
+    ReceptionLightTimeStellar,
+    /// `CN`: converged Newtonian light-time correction. This mirrors
+    /// SPICE's practical three-iteration convergence path.
+    ReceptionConvergedLightTime,
+    /// `CN+S`: [`Self::ReceptionConvergedLightTime`] followed by
+    /// Newtonian stellar aberration.
+    ReceptionConvergedLightTimeStellar,
+    /// `XLT`: one-iteration Newtonian one-way light-time correction
+    /// for photons transmitted from the observer to the target.
+    TransmissionLightTime,
+    /// `XLT+S`: [`Self::TransmissionLightTime`] followed by the
+    /// inverse Newtonian stellar-aberration correction used for
+    /// transmission pointing.
+    TransmissionLightTimeStellar,
+    /// `XCN`: converged Newtonian transmission light-time correction.
+    TransmissionConvergedLightTime,
+    /// `XCN+S`: [`Self::TransmissionConvergedLightTime`] followed by
+    /// inverse Newtonian stellar aberration.
+    TransmissionConvergedLightTimeStellar,
+}
+
+impl SpkAberrationCorrection {
+    const fn light_time_iterations(self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::ReceptionLightTime
+            | Self::ReceptionLightTimeStellar
+            | Self::TransmissionLightTime
+            | Self::TransmissionLightTimeStellar => 1,
+            Self::ReceptionConvergedLightTime
+            | Self::ReceptionConvergedLightTimeStellar
+            | Self::TransmissionConvergedLightTime
+            | Self::TransmissionConvergedLightTimeStellar => 3,
+        }
+    }
+
+    const fn applies_stellar_aberration(self) -> bool {
+        matches!(
+            self,
+            Self::ReceptionLightTimeStellar
+                | Self::ReceptionConvergedLightTimeStellar
+                | Self::TransmissionLightTimeStellar
+                | Self::TransmissionConvergedLightTimeStellar
+        )
+    }
+
+    const fn light_time_epoch_sign(self) -> f64 {
+        match self {
+            Self::TransmissionLightTime
+            | Self::TransmissionLightTimeStellar
+            | Self::TransmissionConvergedLightTime
+            | Self::TransmissionConvergedLightTimeStellar => 1.0,
+            _ => -1.0,
+        }
+    }
+
+    const fn stellar_aberration_rotation_sign(self) -> f64 {
+        match self {
+            Self::TransmissionLightTimeStellar | Self::TransmissionConvergedLightTimeStellar => {
+                -1.0
+            }
+            _ => 1.0,
+        }
+    }
+}
+
+/// SPK state returned with its one-way light time.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct CorrectedEphemerisState {
+    /// Corrected Earth-centered inertial state.
+    pub state_eci_m_s: EphemerisState,
+    /// One-way light time between observer and target, in seconds.
+    pub one_way_light_time_s: f64,
 }
 
 /// Position provider for named celestial bodies.
@@ -252,9 +348,11 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 /// frame. It also accepts the
 /// built-in SPICE
 /// `ECLIPJ2000` inertial frame and rotates those segment states into
-/// J2000. It computes geometric states and does not implement
-/// light-time, aberration, non-inertial frame chains, or generic
-/// text-kernel loading.
+/// J2000. It computes geometric states by default, and exposes
+/// SPICE-style reception/transmission light-time and
+/// stellar-aberration helpers for observation and pointing queries. It
+/// does not implement relativistic corrections, non-inertial frame
+/// chains, or generic text-kernel loading.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpkEphemeris {
     epoch_tdb_julian_date: f64,
@@ -322,6 +420,58 @@ impl SpkEphemeris {
         self.segments.len()
     }
 
+    /// Earth-centered SPK body state with a SPICE-style aberration
+    /// correction.
+    ///
+    /// This is intentionally separate from [`EphemerisModel`]'s
+    /// geometric state path so force models do not accidentally use
+    /// apparent positions. Stellar aberration requires the observer
+    /// body, Earth for this public helper, to be connected to the
+    /// solar-system barycenter so the observer velocity is available in
+    /// the required inertial frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] if the SPK chain cannot provide the
+    /// target and observer states over the light-time-shifted epochs,
+    /// if stellar aberration is requested without an observer state
+    /// relative to the solar-system barycenter, or if any computed
+    /// component is non-finite.
+    pub fn corrected_body_state_eci_m_s(
+        &self,
+        body: CelestialBody,
+        time: SimTime,
+        correction: SpkAberrationCorrection,
+    ) -> Result<CorrectedEphemerisState, PhysicsError> {
+        let target = match body {
+            CelestialBody::Sun => NAIF_SUN,
+            CelestialBody::Moon => NAIF_MOON,
+        };
+        let et_s = self.ephemeris_seconds(time);
+        if !et_s.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK query produced non-finite ephemeris seconds",
+            });
+        }
+        let corrected = self.corrected_state_between_km_s(target, NAIF_EARTH, et_s, correction)?;
+        let state = EphemerisState {
+            position_eci_m: corrected.state.position_km * METRES_PER_KILOMETRE,
+            velocity_eci_m_s: corrected.state.velocity_km_s * METRES_PER_KILOMETRE,
+        };
+        if !state.position_eci_m.iter().all(|v| v.is_finite())
+            || !state.velocity_eci_m_s.iter().all(|v| v.is_finite())
+            || !corrected.one_way_light_time_s.is_finite()
+        {
+            return Err(PhysicsError::NonFinite {
+                reason: "SPK corrected ephemeris produced non-finite state",
+            });
+        }
+        Ok(CorrectedEphemerisState {
+            state_eci_m_s: state,
+            one_way_light_time_s: corrected.one_way_light_time_s,
+        })
+    }
+
     fn ephemeris_seconds(&self, time: SimTime) -> f64 {
         (self.epoch_tdb_julian_date - J2000_JULIAN_DATE) * SECONDS_PER_DAY + time.as_seconds()
     }
@@ -356,6 +506,108 @@ impl SpkEphemeris {
         Ok(SpkStateKmS {
             position_km: target_state.position_km - observer_state.position_km,
             velocity_km_s: target_state.velocity_km_s - observer_state.velocity_km_s,
+        })
+    }
+
+    fn corrected_state_between_km_s(
+        &self,
+        target: i32,
+        observer: i32,
+        et_s: f64,
+        correction: SpkAberrationCorrection,
+    ) -> Result<CorrectedSpkStateKmS, PhysicsError> {
+        if correction == SpkAberrationCorrection::None {
+            let state = self.state_between_km_s(target, observer, et_s)?;
+            return Ok(CorrectedSpkStateKmS {
+                one_way_light_time_s: one_way_light_time_s(state.position_km.norm())?,
+                state,
+            });
+        }
+
+        let position = self.corrected_position_between_km(target, observer, et_s, correction)?;
+        let before = self.corrected_position_between_km(
+            target,
+            observer,
+            et_s - SPK_ABERRATION_RATE_STEP_S,
+            correction,
+        )?;
+        let after = self.corrected_position_between_km(
+            target,
+            observer,
+            et_s + SPK_ABERRATION_RATE_STEP_S,
+            correction,
+        )?;
+        let velocity_km_s =
+            (after.position_km - before.position_km) / (2.0 * SPK_ABERRATION_RATE_STEP_S);
+        let state = SpkStateKmS {
+            position_km: position.position_km,
+            velocity_km_s,
+        };
+        if !state.position_km.iter().all(|v| v.is_finite())
+            || !state.velocity_km_s.iter().all(|v| v.is_finite())
+        {
+            return Err(PhysicsError::NonFinite {
+                reason: "SPK corrected state produced non-finite components",
+            });
+        }
+        Ok(CorrectedSpkStateKmS {
+            state,
+            one_way_light_time_s: position.one_way_light_time_s,
+        })
+    }
+
+    fn corrected_position_between_km(
+        &self,
+        target: i32,
+        observer: i32,
+        et_s: f64,
+        correction: SpkAberrationCorrection,
+    ) -> Result<CorrectedSpkPositionKm, PhysicsError> {
+        let (observer_root, observer_state) = self.state_to_root_km_s(observer, et_s)?;
+        let (target_root, target_state) = self.state_to_root_km_s(target, et_s)?;
+        if target_root != observer_root {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "SPK target and observer do not share a common center",
+            });
+        }
+
+        if correction.applies_stellar_aberration() && observer_root != NAIF_SOLAR_SYSTEM_BARYCENTER
+        {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "SPK stellar aberration requires observer state relative to the solar system barycenter",
+            });
+        }
+
+        let mut relative_position = target_state.position_km - observer_state.position_km;
+        let mut light_time_s = one_way_light_time_s(relative_position.norm())?;
+        for _ in 0..correction.light_time_iterations() {
+            let target_epoch_s = et_s + correction.light_time_epoch_sign() * light_time_s;
+            let (corrected_target_root, corrected_target_state) =
+                self.state_to_root_km_s(target, target_epoch_s)?;
+            if corrected_target_root != observer_root {
+                return Err(PhysicsError::OutOfEnvelope {
+                    reason: "SPK light-time target and observer do not share a common center",
+                });
+            }
+            relative_position = corrected_target_state.position_km - observer_state.position_km;
+            light_time_s = one_way_light_time_s(relative_position.norm())?;
+        }
+
+        if correction.applies_stellar_aberration() {
+            relative_position = stellar_aberration_position_km(
+                relative_position,
+                observer_state.velocity_km_s,
+                correction.stellar_aberration_rotation_sign(),
+            )?;
+        }
+        if !relative_position.iter().all(|v| v.is_finite()) || !light_time_s.is_finite() {
+            return Err(PhysicsError::NonFinite {
+                reason: "SPK corrected position produced non-finite components",
+            });
+        }
+        Ok(CorrectedSpkPositionKm {
+            position_km: relative_position,
+            one_way_light_time_s: light_time_s,
         })
     }
 
@@ -464,6 +716,18 @@ struct SpkSegment {
 struct SpkStateKmS {
     position_km: Vector3<f64>,
     velocity_km_s: Vector3<f64>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct CorrectedSpkStateKmS {
+    state: SpkStateKmS,
+    one_way_light_time_s: f64,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct CorrectedSpkPositionKm {
+    position_km: Vector3<f64>,
+    one_way_light_time_s: f64,
 }
 
 impl SpkStateKmS {
@@ -1835,6 +2099,68 @@ fn evaluate_chebyshev_integral_from_zero(tau: f64, coefficients: &[f64]) -> f64 
         sum += coefficient * integral;
     }
     sum
+}
+
+fn one_way_light_time_s(distance_km: f64) -> Result<f64, PhysicsError> {
+    if !distance_km.is_finite() || distance_km < 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK light-time distance must be finite and non-negative",
+        });
+    }
+    Ok(distance_km / SPEED_OF_LIGHT_KM_S)
+}
+
+fn stellar_aberration_position_km(
+    position_km: Vector3<f64>,
+    observer_velocity_km_s: Vector3<f64>,
+    rotation_sign: f64,
+) -> Result<Vector3<f64>, PhysicsError> {
+    if !position_km.iter().all(|v| v.is_finite())
+        || !observer_velocity_km_s.iter().all(|v| v.is_finite())
+        || !rotation_sign.is_finite()
+    {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK stellar aberration inputs must be finite",
+        });
+    }
+    if rotation_sign != -1.0 && rotation_sign != 1.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK stellar aberration rotation sign must be +/-1",
+        });
+    }
+
+    let radius_km = position_km.norm();
+    if radius_km == 0.0 {
+        return Ok(position_km);
+    }
+    let axis = position_km.cross(&observer_velocity_km_s);
+    let axis_norm = axis.norm();
+    if axis_norm == 0.0 {
+        return Ok(position_km);
+    }
+    let sin_phi = axis_norm / (radius_km * SPEED_OF_LIGHT_KM_S);
+    if !sin_phi.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK stellar aberration angle is non-finite",
+        });
+    }
+    if sin_phi > 1.0 + 1.0e-15 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK stellar aberration observer transverse speed exceeds light speed",
+        });
+    }
+    let phi = rotation_sign * sin_phi.min(1.0).asin();
+    let axis_unit = axis / axis_norm;
+    let (sin_phi, cos_phi) = phi.sin_cos();
+    let rotated = position_km * cos_phi
+        + axis_unit.cross(&position_km) * sin_phi
+        + axis_unit * axis_unit.dot(&position_km) * (1.0 - cos_phi);
+    if !rotated.iter().all(|v| v.is_finite()) {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK stellar aberration produced non-finite position",
+        });
+    }
+    Ok(rotated)
 }
 
 fn chebyshev_vector(
@@ -3382,6 +3708,132 @@ mod tests {
     }
 
     #[test]
+    fn spk_corrected_state_applies_reception_light_time() {
+        let bytes = synthetic_light_time_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let geometric = ephemeris
+            .corrected_body_state_eci_m_s(
+                CelestialBody::Sun,
+                SimTime::ZERO,
+                SpkAberrationCorrection::None,
+            )
+            .unwrap();
+        let light_time = ephemeris
+            .corrected_body_state_eci_m_s(
+                CelestialBody::Sun,
+                SimTime::ZERO,
+                SpkAberrationCorrection::ReceptionLightTime,
+            )
+            .unwrap();
+
+        let initial_light_time_s = 300_000.0 / SPEED_OF_LIGHT_KM_S;
+        let expected_x_m = (300_000.0 - 10.0 * initial_light_time_s) * 1_000.0;
+        assert_eq!(geometric.state_eci_m_s.position_eci_m.x, 300_000.0e3);
+        assert_vector_near(
+            light_time.state_eci_m_s.position_eci_m,
+            Vector3::new(expected_x_m, 0.0, 0.0),
+            1.0e-6,
+        );
+        assert!(
+            light_time.one_way_light_time_s < geometric.one_way_light_time_s,
+            "retarded moving target should be closer than the geometric state"
+        );
+    }
+
+    #[test]
+    fn spk_corrected_state_applies_transmission_light_time() {
+        let bytes = synthetic_light_time_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let geometric = ephemeris
+            .corrected_body_state_eci_m_s(
+                CelestialBody::Sun,
+                SimTime::ZERO,
+                SpkAberrationCorrection::None,
+            )
+            .unwrap();
+        let light_time = ephemeris
+            .corrected_body_state_eci_m_s(
+                CelestialBody::Sun,
+                SimTime::ZERO,
+                SpkAberrationCorrection::TransmissionLightTime,
+            )
+            .unwrap();
+
+        let initial_light_time_s = 300_000.0 / SPEED_OF_LIGHT_KM_S;
+        let expected_x_m = (300_000.0 + 10.0 * initial_light_time_s) * 1_000.0;
+        assert_eq!(geometric.state_eci_m_s.position_eci_m.x, 300_000.0e3);
+        assert_vector_near(
+            light_time.state_eci_m_s.position_eci_m,
+            Vector3::new(expected_x_m, 0.0, 0.0),
+            1.0e-6,
+        );
+        assert!(
+            light_time.one_way_light_time_s > geometric.one_way_light_time_s,
+            "transmitted moving target should be farther than the geometric state"
+        );
+    }
+
+    #[test]
+    fn spk_corrected_state_applies_reception_stellar_aberration() {
+        let bytes = synthetic_stellar_aberration_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let geometric = ephemeris
+            .corrected_body_state_eci_m_s(
+                CelestialBody::Sun,
+                SimTime::ZERO,
+                SpkAberrationCorrection::None,
+            )
+            .unwrap();
+        let apparent = ephemeris
+            .corrected_body_state_eci_m_s(
+                CelestialBody::Sun,
+                SimTime::ZERO,
+                SpkAberrationCorrection::ReceptionConvergedLightTimeStellar,
+            )
+            .unwrap();
+
+        assert_eq!(
+            geometric.state_eci_m_s.position_eci_m,
+            Vector3::new(1_000_000.0e3, 0.0, 0.0)
+        );
+        assert!(
+            apparent.state_eci_m_s.position_eci_m.y > 99_000.0,
+            "observer +Y velocity should rotate apparent direction toward +Y"
+        );
+        assert!(apparent.state_eci_m_s.position_eci_m.x < geometric.state_eci_m_s.position_eci_m.x);
+    }
+
+    #[test]
+    fn spk_corrected_state_applies_transmission_stellar_aberration() {
+        let bytes = synthetic_stellar_aberration_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let geometric = ephemeris
+            .corrected_body_state_eci_m_s(
+                CelestialBody::Sun,
+                SimTime::ZERO,
+                SpkAberrationCorrection::None,
+            )
+            .unwrap();
+        let apparent = ephemeris
+            .corrected_body_state_eci_m_s(
+                CelestialBody::Sun,
+                SimTime::ZERO,
+                SpkAberrationCorrection::TransmissionConvergedLightTimeStellar,
+            )
+            .unwrap();
+
+        assert_eq!(
+            geometric.state_eci_m_s.position_eci_m,
+            Vector3::new(1_000_000.0e3, 0.0, 0.0)
+        );
+        assert!(
+            apparent.state_eci_m_s.position_eci_m.y < -99_000.0,
+            "observer +Y velocity should rotate transmitted direction away from +Y"
+        );
+        assert!(apparent.state_eci_m_s.position_eci_m.x < geometric.state_eci_m_s.position_eci_m.x);
+    }
+
+    #[test]
     fn spk_ephemeris_reads_type1_modified_difference_state() {
         let bytes = synthetic_type1_spk();
         let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
@@ -4216,6 +4668,60 @@ mod tests {
         synthetic_spk_from_segments(&segments)
     }
 
+    fn synthetic_light_time_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_linear_segment([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_linear_segment([300_000.0, 0.0, 0.0], [10.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
+    fn synthetic_stellar_aberration_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 3,
+                data: type3_constant_segment([0.0, 0.0, 0.0], [0.0, 30.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([1_000_000.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
     fn synthetic_type1_spk() -> Vec<u8> {
         let segments = [
             SyntheticSegment {
@@ -4634,6 +5140,24 @@ mod tests {
             -10.0,
             20.0,
             5.0,
+            1.0,
+        ]
+    }
+
+    fn type2_linear_segment(position_km: [f64; 3], velocity_km_s: [f64; 3]) -> Vec<f64> {
+        let radius_s = 10.0;
+        vec![
+            0.0,
+            radius_s,
+            position_km[0],
+            velocity_km_s[0] * radius_s,
+            position_km[1],
+            velocity_km_s[1] * radius_s,
+            position_km[2],
+            velocity_km_s[2] * radius_s,
+            -10.0,
+            20.0,
+            8.0,
             1.0,
         ]
     }

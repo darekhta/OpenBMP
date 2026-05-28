@@ -148,6 +148,25 @@ fn resolved_spk_kernels<'a>(
             })?;
         return Ok(vec![resolved.bytes.as_slice()]);
     }
+    if document.environment.ephemeris_meta_kernel.is_some() {
+        let mut kernels = Vec::new();
+        for index in 0.. {
+            let key = format!("environment.ephemeris_meta_kernel.files[{index}]");
+            let Some(resolved) = resolved_files.get(&key) else {
+                break;
+            };
+            if resolved.bytes.starts_with(b"DAF/SPK ") {
+                kernels.push(resolved.bytes.as_slice());
+            }
+        }
+        if kernels.is_empty() {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "environment.ephemeris_meta_kernel did not resolve any binary SPK kernels"
+                    .to_owned(),
+            });
+        }
+        return Ok(kernels);
+    }
     let mut kernels = Vec::with_capacity(document.environment.ephemeris_files.len());
     for index in 0..document.environment.ephemeris_files.len() {
         let key = format!("environment.ephemeris_files[{index}]");
@@ -724,6 +743,33 @@ mod tests {
         let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
         match gravity.ephemeris() {
             RuntimeEphemeris::Spk(spk) => assert_eq!(spk.segment_count(), 8),
+            other => panic!("expected SPK ephemeris, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builds_spk_third_body_ephemeris_from_meta_kernel_files() {
+        let toml = SPK_THIRD_BODY_SCENARIO.replace(
+            "ephemeris_file = \"synthetic.bsp\"",
+            "ephemeris_meta_kernel = \"mission.tm\"",
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(
+            "environment.ephemeris_meta_kernel".to_owned(),
+            resolved_file("mission.tm", "KPL/MK\n"),
+        );
+        files.insert(
+            "environment.ephemeris_meta_kernel.files[0]".to_owned(),
+            resolved_file("naif0012.tls", "KPL/LSK\n"),
+        );
+        files.insert(
+            "environment.ephemeris_meta_kernel.files[1]".to_owned(),
+            resolved_bytes("de440s.bsp", synthetic_spk()),
+        );
+        let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
+        match gravity.ephemeris() {
+            RuntimeEphemeris::Spk(spk) => assert_eq!(spk.segment_count(), 4),
             other => panic!("expected SPK ephemeris, got {other:?}"),
         }
     }

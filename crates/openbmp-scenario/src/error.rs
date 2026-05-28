@@ -163,6 +163,15 @@ pub enum ScenarioError {
         /// Malformed pin string.
         value: String,
     },
+    /// A scenario-referenced external file was readable but its
+    /// content did not match the expected deterministic format.
+    #[error("invalid referenced file {path}: {reason}")]
+    InvalidReferencedFile {
+        /// Resolved file path whose content could not be interpreted.
+        path: PathBuf,
+        /// Human-readable parsing or validation failure.
+        reason: String,
+    },
     /// Two scenario sections disagreed about the same model selection.
     #[error("{field_a}={value_a} disagrees with {field_b}={value_b}")]
     InconsistentSection {
