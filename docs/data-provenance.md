@@ -205,6 +205,9 @@ Rejected examples include:
 - Data with unclear export-control status.
 - Any operational TPS material, sensor, motor, aero, mass-property, or
   controller tuning dataset.
+- Fielded-projectile drag tables, characterised rounds, G-functions for real
+  munitions, or "match this projectile" coefficient datasets. The aero
+  buildup may use public textbook physics and synthetic geometry only.
 
 ## Real-Data Package Credibility Format
 
@@ -227,8 +230,9 @@ fields the kernel needs to interpret the numbers.
 # data-package.yaml — sits next to the dataset file(s) it describes.
 package_id: arv-reference.aero.deck.v3
 package_kind: aero_deck
-# Allowed: aero_deck, engine_curve, tank, mass_inertia, sensor_noise,
-# controller_gains, environment, continuum_cfd_aero, rarefied_dsmc_aero,
+# Allowed: aero_deck, aero_buildup_geometry, engine_curve, tank,
+# mass_inertia, sensor_noise, controller_gains, environment,
+# continuum_cfd_aero, rarefied_dsmc_aero,
 # radiation_reference, thermal_response_reference, thermochemistry_reference,
 # trajectory_reference.
 files:

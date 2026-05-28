@@ -67,6 +67,7 @@ pub use atmosphere::{
     IsothermalAtmosphere, Nrlmsis2Compat, Nrlmsis2CompatOutputs, Nrlmsise00Full, Nrlmsise00Inputs,
     Nrlmsise00Outputs, Nrlmsise00Static, PIECEWISE_EXP_MAX_GEOMETRIC_M,
     PiecewiseExpExoatmosphericPolicy, PiecewiseExponentialAtmosphere, UsStandard1976,
+    sutherland_viscosity,
 };
 pub use error::PhysicsError;
 pub use external_reference::{

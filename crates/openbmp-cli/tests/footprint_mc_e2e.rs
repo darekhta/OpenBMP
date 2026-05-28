@@ -61,9 +61,13 @@ fn footprint_mc_writes_declared_outputs() {
     assert_eq!(report.samples_succeeded, 32);
     assert_eq!(report.samples_failed, 0);
     assert_eq!(report.written.len(), 3);
-    assert!(csv.metadata().expect("csv metadata").len() > 0);
+    let csv_text = fs::read_to_string(&csv).expect("read csv");
+    assert!(csv_text.contains("miss_distance_from_nominal_m"));
     assert!(parquet.metadata().expect("parquet metadata").len() > 0);
     let summary_text = fs::read_to_string(summary).expect("read summary");
+    assert!(summary_text.contains("[accuracy]"));
+    assert!(summary_text.contains("cep50_m"));
     assert!(summary_text.contains("[dispersion_ellipse]"));
     assert!(summary_text.contains("[[quantiles]]"));
+    assert!(summary_text.contains("[[nominal_miss_distance_quantiles]]"));
 }

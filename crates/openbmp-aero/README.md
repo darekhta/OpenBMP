@@ -10,7 +10,9 @@ axes (e.g. `delta_e_deg`); the lookup signature gains a name-keyed
 internal representation is N-D (3 ≤ N ≤ 6); at N = 3 the multilinear
 reduction is bit-identical to the original schema-1 trilinear path.
 Six-coefficient coefficient decks (`CY`, `Cl`, `Cn-yaw`) remain
-deferred. Hypersonic methods and a separate strict
+deferred. `ComponentBuildup` can bake a continuum launch-vehicle deck from
+declared geometry, including skin friction, drag polar, base drag, and
+boattail/flare terms. Hypersonic methods and a separate strict
 `openbmp.panel_mesh_aero = 1` TOML parser for
 `LocalInclinationPanels` mesh studies are also provided.
 
@@ -20,6 +22,8 @@ deferred. Hypersonic methods and a separate strict
   with provenance.
 - `AeroMethod` trait + implementations:
   - `DeckLookup`.
+  - `ComponentBuildup` deck producer for subsonic/transonic/low-supersonic
+    launch-vehicle aerodynamics.
   - `ModifiedNewtonian`, `TangentCone`, `TangentWedge`,
     `LocalInclinationPanels`, `FreeMolecular`.
   - `HybridAeroMethod` dispatching by Mach + Knudsen.
@@ -46,6 +50,8 @@ real fielded-vehicle coefficient decks.
 Each deck or method declares its own Mach, angle, Reynolds/Knudsen, and
 geometry validity ranges. Out-of-range use fails closed unless an explicit
 extrapolation policy is documented in the deck.
+The buildup path is power-off base drag with attached boattail/flare flow and
+small-to-moderate angle of attack.
 
 ## Determinism
 
@@ -63,6 +69,9 @@ exact-equality regression, eight-corner-centroid average lookup,
 single-axis sub-grid lookup, bit-stable clone-equivalence, and
 schema-2 lookup at zero deflection matching the schema-1 companion
 bit-for-bit, plus analytic hypersonic method checks.
+The buildup has component checks for Blasius/Schlichting friction, base-drag
+formula pins, boattail drag reduction, drag-polar alpha dependence, and
+bit-stable deck baking.
 
 ## Data Provenance
 
@@ -72,6 +81,8 @@ deck rendered from RocketPy's MIT-licensed
 `powerOff/powerOnDragCurve.csv` (byte-identical upstream), per
 `docs/data-provenance.md`. **Real fielded-vehicle aero decks are
 categorically rejected** per `docs/safety-boundaries.md`.
+The buildup admits only synthetic/textbook geometry and public physics
+relations; fielded-projectile drag tables are not shipped or ingested.
 
 ## Safety Boundary
 

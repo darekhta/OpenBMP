@@ -42,7 +42,7 @@
 use std::collections::BTreeMap;
 
 use nalgebra::Vector3;
-use openbmp_aero::{AeroDeck, AeroError};
+use openbmp_aero::AeroDeck;
 use openbmp_core::{ChannelId, Duration, ModelId, Position3, RecoveryId, SimTime, Velocity3};
 use openbmp_physics::{
     AtmosphereModel, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
@@ -56,9 +56,10 @@ use openbmp_sim::{
 use openbmp_state::PointMassState;
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
-    BoxedMassModel, DeckDragForceAdapter, EngineClusterForceAdapter, EngineClusterMassAdapter,
-    GravityForceAdapter, KernelVehicle, MotorMassAdapter, MotorThrustForceAdapter, NamedForceModel,
-    RecoveryRackForceAdapter, TankRackForceAdapter, TankRackMassAdapter, Vehicle,
+    AeroMethodForceAdapter, BoxedMassModel, DeckDragForceAdapter, EngineClusterForceAdapter,
+    EngineClusterMassAdapter, GravityForceAdapter, KernelVehicle, MotorMassAdapter,
+    MotorThrustForceAdapter, NamedForceModel, RecoveryRackForceAdapter, TankRackForceAdapter,
+    TankRackMassAdapter, Vehicle,
 };
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -203,6 +204,7 @@ pub fn run(
     } else {
         None
     };
+    let mut aerothermal_driver = crate::aerothermal::LiveAerothermalDriver::maybe_new(document)?;
     let metadata = build_schema_metadata(document, resolved_files)?;
     let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
@@ -250,13 +252,18 @@ pub fn run(
         let wind = wind_rack.sample(initial_state.position, &frame, initial_state.time)?;
         kernel.set_wind_sample(wind);
     }
+    if let Some(driver) = &mut aerothermal_driver {
+        driver.evaluate_point_mass(kernel.current_state(), 0.0)?;
+    }
     let mut fc_bridge = crate::fc_bridge::FcBridge::maybe_new(scenario, resolved_files)?;
     record_step(
+        document,
         &mut table,
         &kernel,
         &channel_set,
         &breakdown_vehicle,
         breakdown_atmosphere.as_ref(),
+        aerothermal_driver.as_ref().map(|driver| driver.output()),
         &[],
         &initial_snapshot,
     )?;
@@ -372,13 +379,18 @@ pub fn run(
         kernel.step()?;
         let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();
+        if let Some(driver) = &mut aerothermal_driver {
+            driver.evaluate_point_mass(kernel.current_state(), document.time.dt_s)?;
+        }
         let snapshot = effector_rack.snapshot();
         record_step(
+            document,
             &mut table,
             &kernel,
             &channel_set,
             &breakdown_vehicle,
             breakdown_atmosphere.as_ref(),
+            aerothermal_driver.as_ref().map(|driver| driver.output()),
             &mission_fired,
             &snapshot,
         )?;
@@ -435,7 +447,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
 
     // Force list: subset of {gravity, aero, thrust}, scenario-declared
     // order is the determinism contract.
-    for name in document.force_models() {
+    for name in document.force_model_universe() {
         if !matches!(name.as_str(), "gravity" | "aero" | "thrust") {
             return Err(RunnerError::UnsupportedScenario {
                 what: format!("forces.models entry `{name}` (only gravity, aero, thrust wired)"),
@@ -452,7 +464,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     // rocket envelope, piecewise-exponential for the
     // engineering 0-1000 km envelope).
     let atmosphere_kind = scenario_atmosphere_kind(document);
-    let has_aero = document.force_models().iter().any(|m| m == "aero");
+    let has_aero = document.force_model_universe().iter().any(|m| m == "aero");
     if has_aero && !is_runtime_atmosphere_kind(atmosphere_kind) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
@@ -478,37 +490,11 @@ fn load_models(
     document: &ScenarioDocument,
     resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> Result<LoadedModels, RunnerError> {
-    let aero_deck = if document.aero.is_some() {
-        let resolved = required_resolved_file(resolved_files, "aero.deck")?;
-        let text = std::str::from_utf8(&resolved.bytes).map_err(|e| {
-            RunnerError::Aero(AeroError::Io {
-                reason: format!(
-                    "could not read deck file {} as UTF-8: {e}",
-                    resolved.path.display()
-                ),
-            })
-        })?;
-        Some(AeroDeck::load_from_str(text)?)
-    } else {
-        None
-    };
+    let aero_deck = crate::aero::load_aero_deck(document, resolved_files)?;
 
     let motor = crate::propulsion::load_solid_motor(document, resolved_files)?;
 
     Ok(LoadedModels { aero_deck, motor })
-}
-
-fn required_resolved_file<'a>(
-    resolved_files: &'a BTreeMap<String, ResolvedFile>,
-    field: &str,
-) -> Result<&'a ResolvedFile, RunnerError> {
-    resolved_files
-        .get(field)
-        .ok_or_else(|| RunnerError::UnsupportedScenario {
-            what: format!(
-                "internal invariant: resolved file `{field}` missing after pin verification"
-            ),
-        })
 }
 
 fn build_initial_state(
@@ -637,21 +623,43 @@ fn build_vehicle(
 ) -> Result<KernelVehicle<PointMassState>, RunnerError> {
     let mut named: Vec<NamedForceModel<PointMassState>> = Vec::new();
 
-    for name in document.force_models() {
+    for name in document.force_model_universe() {
         match name.as_str() {
             "gravity" => {
                 let force = build_gravity_force_adapter_point_mass(document)?;
                 named.push(NamedForceModel::new("gravity", force));
             }
             "aero" => {
-                let deck = loaded_models.aero_deck.clone().ok_or_else(|| {
-                    RunnerError::UnsupportedScenario {
-                        what: "forces includes `aero` but [aero] block is missing".to_owned(),
-                    }
-                })?;
                 let atmosphere = build_document_runtime_atmosphere(document)?;
-                let drag = DeckDragForceAdapter::new(deck, atmosphere, POINT_MASS_AERO_MODEL_ID);
-                named.push(NamedForceModel::new("aero", Box::new(drag)));
+                let method_kind = document
+                    .aero
+                    .as_ref()
+                    .and_then(|aero| aero.method.as_ref())
+                    .map_or("deck", |method| method.kind.as_str());
+                if method_kind == "deck" {
+                    let deck = loaded_models.aero_deck.clone().ok_or_else(|| {
+                        RunnerError::UnsupportedScenario {
+                            what: "forces includes `aero` but [aero] block is missing".to_owned(),
+                        }
+                    })?;
+                    let drag =
+                        DeckDragForceAdapter::new(deck, atmosphere, POINT_MASS_AERO_MODEL_ID);
+                    named.push(NamedForceModel::new("aero", Box::new(drag)));
+                } else {
+                    let (method, reference_length_m) =
+                        crate::aero::build_aero_method(document, loaded_models.aero_deck.clone())?
+                            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                                what: "forces includes `aero` but [aero] block is missing"
+                                    .to_owned(),
+                            })?;
+                    let adapter = AeroMethodForceAdapter::new(
+                        method,
+                        atmosphere,
+                        POINT_MASS_AERO_MODEL_ID,
+                        reference_length_m,
+                    );
+                    named.push(NamedForceModel::new("aero", Box::new(adapter)));
+                }
             }
             "thrust" => {
                 // Dispatch between single-motor (legacy)
@@ -750,7 +758,14 @@ fn build_vehicle(
     // queries. The kernel's mass model is built
     // separately in `build_mass_model` because it owns its own copy.
     let vehicle_mass = build_mass_model(document, loaded_models, assembly)?;
-    KernelVehicle::new(named, vec![], vehicle_mass).map_err(|e| RunnerError::UnsupportedScenario {
+    KernelVehicle::new_with_default_active_models(
+        named,
+        vec![],
+        vehicle_mass,
+        crate::default_active_force_models(document),
+        crate::phase_force_overrides(document),
+    )
+    .map_err(|e| RunnerError::UnsupportedScenario {
         what: format!("KernelVehicle construction failed: {e}"),
     })
 }
@@ -873,6 +888,20 @@ type RecoveryTelemetryChannels = Vec<(
 )>;
 
 #[derive(Debug)]
+struct AerothermalTelemetryChannels {
+    q_conv: TelemetryChannel<f64>,
+    q_rad: TelemetryChannel<f64>,
+    h_aw: TelemetryChannel<f64>,
+    recovery_temperature: TelemetryChannel<f64>,
+    knudsen: TelemetryChannel<f64>,
+    wall_temperature: TelemetryChannel<f64>,
+    backwall_temperature: TelemetryChannel<f64>,
+    recession_depth: TelemetryChannel<f64>,
+    gas_mdot: TelemetryChannel<f64>,
+    mass_loss: TelemetryChannel<f64>,
+}
+
+#[derive(Debug)]
 struct PointMassChannelSet {
     position_x: TelemetryChannel<f64>,
     position_y: TelemetryChannel<f64>,
@@ -888,6 +917,11 @@ struct PointMassChannelSet {
     atmosphere_speed_of_sound: Option<TelemetryChannel<f64>>,
     /// Force-model components in declared order.
     force_components: ForceComponentChannels,
+    /// Active per-phase model list, present when phase overrides are
+    /// declared.
+    active_models: Option<TelemetryChannel<String>>,
+    /// Live aerothermal diagnostic channels.
+    aerothermal: Option<AerothermalTelemetryChannels>,
     /// Effector deflection channels, in scenario-declared
     /// order. One `effector.<id>.actual` `f64` channel per declared
     /// effector. Allocated AFTER force breakdown channels and BEFORE
@@ -972,8 +1006,8 @@ impl PointMassChannelSet {
 
         // Per-model force breakdown channels, in scenario-declared
         // order — the same order the kernel uses for the RK4 sum.
-        let mut force_components = Vec::with_capacity(document.force_models().len());
-        for name in document.force_models() {
+        let mut force_components = Vec::with_capacity(document.force_model_universe().len());
+        for name in document.force_model_universe() {
             let x_channel = TelemetryChannel::<f64>::new(
                 alloc(),
                 format!("force.{name}.x_n"),
@@ -994,6 +1028,87 @@ impl PointMassChannelSet {
             )?;
             force_components.push((name.clone(), x_channel, y_channel, z_channel));
         }
+
+        let active_models = document
+            .forces
+            .as_ref()
+            .is_some_and(|forces| !forces.phase_override.is_empty())
+            .then(|| {
+                TelemetryChannel::<String>::new(
+                    alloc(),
+                    "forces.active_models",
+                    "text",
+                    None::<&str>,
+                )
+            })
+            .transpose()?;
+
+        let aerothermal = if document.aerothermal.is_some() {
+            Some(AerothermalTelemetryChannels {
+                q_conv: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.q_conv_w_m2",
+                    "W/m^2",
+                    None::<&str>,
+                )?,
+                q_rad: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.q_rad_w_m2",
+                    "W/m^2",
+                    None::<&str>,
+                )?,
+                h_aw: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.h_aw_j_kg",
+                    "J/kg",
+                    None::<&str>,
+                )?,
+                recovery_temperature: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.recovery_temperature_k",
+                    "K",
+                    None::<&str>,
+                )?,
+                knudsen: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.knudsen",
+                    "1",
+                    None::<&str>,
+                )?,
+                wall_temperature: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.wall_temperature_k",
+                    "K",
+                    None::<&str>,
+                )?,
+                backwall_temperature: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.backwall_temperature_k",
+                    "K",
+                    None::<&str>,
+                )?,
+                recession_depth: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.recession_depth_m",
+                    "m",
+                    None::<&str>,
+                )?,
+                gas_mdot: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.gas_mdot_kg_m2_s",
+                    "kg/(m^2*s)",
+                    None::<&str>,
+                )?,
+                mass_loss: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "mass.aerothermal_mass_loss_kg_s",
+                    "kg/s",
+                    None::<&str>,
+                )?,
+            })
+        } else {
+            None
+        };
 
         // Effector deflection channels, in scenario-
         // declared order. One `effector.<id>.actual` channel per
@@ -1069,6 +1184,8 @@ impl PointMassChannelSet {
             atmosphere_temperature,
             atmosphere_speed_of_sound,
             force_components,
+            active_models,
+            aerothermal,
             effector_actuals,
             recovery_states,
             mission_markers,
@@ -1101,6 +1218,21 @@ impl PointMassChannelSet {
             channels.push(y.metadata().clone());
             channels.push(z.metadata().clone());
         }
+        if let Some(active_models) = &self.active_models {
+            channels.push(active_models.metadata().clone());
+        }
+        if let Some(aerothermal) = &self.aerothermal {
+            channels.push(aerothermal.q_conv.metadata().clone());
+            channels.push(aerothermal.q_rad.metadata().clone());
+            channels.push(aerothermal.h_aw.metadata().clone());
+            channels.push(aerothermal.recovery_temperature.metadata().clone());
+            channels.push(aerothermal.knudsen.metadata().clone());
+            channels.push(aerothermal.wall_temperature.metadata().clone());
+            channels.push(aerothermal.backwall_temperature.metadata().clone());
+            channels.push(aerothermal.recession_depth.metadata().clone());
+            channels.push(aerothermal.gas_mdot.metadata().clone());
+            channels.push(aerothermal.mass_loss.metadata().clone());
+        }
         // Effector deflection channels, in scenario-declared
         // order. Allocated AFTER force breakdown channels and BEFORE
         // mission markers — this ordering is the determinism contract.
@@ -1124,11 +1256,13 @@ impl PointMassChannelSet {
 
 #[allow(clippy::too_many_arguments)]
 fn record_step<I, F, MM, E, SC>(
+    document: &ScenarioDocument,
     table: &mut TelemetryTable,
     kernel: &SimulationKernel<PointMassState, I, F, MM, E, SC>,
     channels: &PointMassChannelSet,
     breakdown_vehicle: &KernelVehicle<PointMassState>,
     breakdown_atmosphere: Option<&RuntimeAtmosphere>,
+    aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
     effector_snapshot: &[openbmp_vehicle::EffectorState],
 ) -> Result<(), RunnerError>
@@ -1193,6 +1327,7 @@ where
         mass_kg: state.mass.get::<kilogram>(),
         time: state.time,
         active_body: None,
+        phase_id: kernel.current_phase().map(|phase| phase.value()),
         effector_actuals: openbmp_sim::EffectorActualsView::new(kernel_actuals),
         engine_snapshot: openbmp_sim::EngineSnapshotView::new(kernel_engine_snapshot),
         tank_snapshot: openbmp_sim::TankSnapshotView::new(kernel_tank_snapshot),
@@ -1217,6 +1352,38 @@ where
         row.insert(x_channel, component.x)?;
         row.insert(y_channel, component.y)?;
         row.insert(z_channel, component.z)?;
+    }
+
+    if let Some(channel) = &channels.active_models {
+        row.insert(
+            channel,
+            crate::active_model_label(document, kernel.current_phase().map(|phase| phase.value())),
+        )?;
+    }
+    if let Some(aerothermal_channels) = &channels.aerothermal {
+        let sample = aerothermal.copied().unwrap_or_default();
+        row.insert(&aerothermal_channels.q_conv, sample.q_conv_w_m2)?;
+        row.insert(&aerothermal_channels.q_rad, sample.q_rad_w_m2)?;
+        row.insert(&aerothermal_channels.h_aw, sample.h_aw_j_kg)?;
+        row.insert(
+            &aerothermal_channels.recovery_temperature,
+            sample.recovery_temperature_k,
+        )?;
+        row.insert(&aerothermal_channels.knudsen, sample.knudsen)?;
+        row.insert(
+            &aerothermal_channels.wall_temperature,
+            sample.wall_temperature_k,
+        )?;
+        row.insert(
+            &aerothermal_channels.backwall_temperature,
+            sample.backwall_temperature_k,
+        )?;
+        row.insert(
+            &aerothermal_channels.recession_depth,
+            sample.recession_depth_m,
+        )?;
+        row.insert(&aerothermal_channels.gas_mdot, sample.gas_mdot_kg_m2_s)?;
+        row.insert(&aerothermal_channels.mass_loss, sample.mass_loss_kg_s)?;
     }
 
     // Effector deflection channels. The snapshot is in
@@ -1346,6 +1513,7 @@ mod tests {
         scenario.document.propulsion = None;
         scenario.document.forces = Some(openbmp_scenario::ForcesConfig {
             models: vec!["gravity".to_owned(), "aero".to_owned()],
+            phase_override: Vec::new(),
         });
 
         let resolved_files = scenario.resolved_files().expect("resolve aero deck");
@@ -1429,6 +1597,7 @@ mod tests {
         scenario.document.propulsion = None;
         scenario.document.forces = Some(openbmp_scenario::ForcesConfig {
             models: vec!["gravity".to_owned()],
+            phase_override: Vec::new(),
         });
         // Override the assembly's single body's dry mass to a known
         // 12.5 kg value so the assertion below is checking that the

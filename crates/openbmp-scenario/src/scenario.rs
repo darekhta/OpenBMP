@@ -60,6 +60,7 @@ impl Scenario {
         if document.forces.is_none() {
             document.forces = Some(crate::ForcesConfig {
                 models: document.resolved_force_models(),
+                phase_override: Vec::new(),
             });
         }
 
@@ -190,9 +191,11 @@ impl Scenario {
         let mut files = BTreeMap::new();
 
         if let Some(aero) = &self.document.aero {
-            let resolved = ResolvedFile::load(self.resolve_path(&aero.deck))?;
-            resolved.verify_pin(aero.deck_sha256.as_deref())?;
-            files.insert("aero.deck".to_owned(), resolved);
+            if let Some(deck) = &aero.deck {
+                let resolved = ResolvedFile::load(self.resolve_path(deck))?;
+                resolved.verify_pin(aero.deck_sha256.as_deref())?;
+                files.insert("aero.deck".to_owned(), resolved);
+            }
         }
 
         if let Some(motor) = self
@@ -2721,6 +2724,68 @@ kind = "isothermal""#,
             matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "aero"),
             "got {err:?}",
         );
+    }
+
+    fn minimal_with_buildup_aero() -> String {
+        MINIMAL
+            .replace(
+                r#"atmosphere    = "none""#,
+                r#"atmosphere    = "us_standard_1976""#,
+            )
+            .replace(r#"models = ["gravity"]"#, r#"models = ["gravity", "aero"]"#)
+            + r#"
+
+[aero]
+
+[aero.buildup]
+body_diameter_m = 0.2
+body_length_m = 2.4
+surface_roughness_m = 6.0e-5
+reference_area_m2 = 0.031415926535897934
+reference_length_m = 0.2
+center_of_gravity_from_nose_m = 1.2
+mach_grid = { min = 0.0, max = 2.0, steps = 5 }
+alpha_grid_deg = { min = 0.0, max = 6.0, steps = 4 }
+reference_altitude_m = 0.0
+
+[aero.buildup.nose]
+shape = "ogive"
+fineness = 3.5
+
+[aero.buildup.afterbody]
+exit_diameter_m = 0.14
+length_m = 0.25
+
+[aero.buildup.fins]
+count = 4
+root_chord_m = 0.30
+tip_chord_m = 0.12
+span_m = 0.16
+thickness_ratio = 0.06
+sweep_rad = 0.52
+"#
+    }
+
+    #[test]
+    fn parses_aero_buildup_without_external_deck_file() {
+        let scenario = Scenario::from_toml_str(&minimal_with_buildup_aero()).unwrap();
+        let aero = scenario.document.aero.as_ref().expect("aero block parsed");
+        assert!(aero.deck.is_none());
+        assert!(aero.buildup.is_some());
+        let files = scenario
+            .resolved_files()
+            .expect("buildup has no external deck file");
+        assert!(!files.contains_key("aero.deck"));
+    }
+
+    #[test]
+    fn rejects_aero_deck_and_buildup_together() {
+        let toml = minimal_with_buildup_aero().replace(
+            "[aero]\n",
+            "[aero]\ndeck = \"data/aero/synthetic-finned-cylinder.toml\"\n",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(err, ScenarioError::AmbiguousAero), "got {err:?}");
     }
 
     #[test]

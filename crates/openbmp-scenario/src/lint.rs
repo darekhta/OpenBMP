@@ -55,6 +55,11 @@ const FORBIDDEN_SAFETY_TERMS: &[ForbiddenTerm] = &[
     ForbiddenTerm::new("targetrange", "target-range"),
     ForbiddenTerm::new("throwweight", "throw-weight"),
     ForbiddenTerm::new("impactenergy", "impact-energy"),
+    // Aerodynamics guardrails: drag curves are accepted, gunnery
+    // range-table products are not.
+    ForbiddenTerm::new("firingtable", "firing-table"),
+    ForbiddenTerm::new("rangetable", "range-table"),
+    ForbiddenTerm::new("ballisticmatch", "ballistic-match"),
 ];
 
 struct ForbiddenTerm {
@@ -382,6 +387,32 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     }
 
     if path.starts_with("$.staging_analysis") && matches!(key, "structural_coefficient") {
+        return true;
+    }
+
+    // Aero buildup grids and shape parameters. The grid bounds are
+    // dimensionless for Mach and degrees by the parent table name for
+    // alpha; typed validation owns the ranges.
+    if path.starts_with("$.aero.buildup")
+        && matches!(
+            key,
+            "min" | "max" | "steps" | "fineness" | "count" | "thickness_ratio"
+        )
+    {
+        return true;
+    }
+    if path.starts_with("$.aero.method")
+        && matches!(
+            key,
+            "cp_max" | "gamma" | "accommodation_normal" | "accommodation_tangential"
+        )
+    {
+        return true;
+    }
+
+    if path.starts_with("$.aerothermal")
+        && matches!(key, "n_nodes" | "gas_yield_fraction" | "lewis_number")
+    {
         return true;
     }
 

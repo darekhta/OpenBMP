@@ -549,6 +549,8 @@ fn validate_context(ctx: &AeroContext) -> Result<(), AeroError> {
         ("alpha_deg", ctx.alpha_deg),
         ("beta_deg", ctx.beta_deg),
         ("dynamic_pressure_pa", ctx.dynamic_pressure_pa),
+        ("knudsen", ctx.knudsen),
+        ("reynolds_length", ctx.reynolds_length),
     ] {
         if !v.is_finite() {
             let _ = name;
@@ -593,6 +595,8 @@ mod tests {
             alpha_deg: alpha,
             beta_deg: 0.0,
             dynamic_pressure_pa: q,
+            knudsen: 0.0,
+            reynolds_length: 0.0,
         }
     }
 

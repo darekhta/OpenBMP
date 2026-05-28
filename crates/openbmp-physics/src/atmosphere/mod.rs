@@ -153,6 +153,26 @@ pub fn dynamic_pressure_pa(density_kg_m3: f64, velocity_m_s: f64) -> f64 {
     0.5 * density_kg_m3 * velocity_m_s * velocity_m_s
 }
 
+/// Sutherland viscosity law for air.
+///
+/// `mu(T) = mu_ref * (T / T_ref)^1.5 * (T_ref + S) / (T + S)`,
+/// with `T_ref = 273.15 K`, `mu_ref = 1.716e-5 Pa*s`, and
+/// `S = 110.4 K`. Non-finite or non-positive temperatures return
+/// zero so callers can fail closed through their usual positive-viscosity
+/// checks.
+#[must_use]
+pub fn sutherland_viscosity(temperature_k: f64) -> f64 {
+    const MU_REF_PA_S: f64 = 1.716e-5;
+    const T_REF_K: f64 = 273.15;
+    const SUTHERLAND_K: f64 = 110.4;
+    if !temperature_k.is_finite() || temperature_k <= 0.0 {
+        return 0.0;
+    }
+    let t_ratio = temperature_k / T_REF_K;
+    let pow_15 = t_ratio.powf(1.5);
+    MU_REF_PA_S * pow_15 * (T_REF_K + SUTHERLAND_K) / (temperature_k + SUTHERLAND_K)
+}
+
 /// Atmosphere sample in SI units.
 ///
 /// All fields are raw `f64` in SI units, named with their unit
@@ -175,6 +195,9 @@ pub struct AtmosphereSample {
     pub temperature_k: f64,
     /// Local adiabatic speed of sound (m/s).
     pub speed_of_sound_m_s: f64,
+    /// Dynamic viscosity from Sutherland's law (Pa*s), derived from
+    /// [`Self::temperature_k`].
+    pub dynamic_viscosity_pa_s: f64,
 }
 
 impl AtmosphereSample {
@@ -197,6 +220,7 @@ impl AtmosphereSample {
             pressure_pa,
             temperature_k,
             speed_of_sound_m_s,
+            dynamic_viscosity_pa_s: sutherland_viscosity(temperature_k),
         };
         s.require_valid()?;
         Ok(s)
@@ -215,6 +239,7 @@ impl AtmosphereSample {
             self.pressure_pa,
             self.temperature_k,
             self.speed_of_sound_m_s,
+            self.dynamic_viscosity_pa_s,
         ] {
             if !v.is_finite() {
                 return Err(PhysicsError::NonFinite {
@@ -252,4 +277,30 @@ pub trait AtmosphereModel {
         altitude_geometric_m: f64,
         time: SimTime,
     ) -> Result<AtmosphereSample, PhysicsError>;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn sutherland_viscosity_at_reference_temperature_matches_pin() {
+        assert_relative_eq!(
+            sutherland_viscosity(273.15),
+            1.716e-5,
+            max_relative = 1.0e-14
+        );
+    }
+
+    #[test]
+    fn atmosphere_sample_carries_derived_dynamic_viscosity() {
+        let sample = AtmosphereSample::new(1.225, 101_325.0, 288.15, 340.294).unwrap();
+        assert_relative_eq!(
+            sample.dynamic_viscosity_pa_s,
+            sutherland_viscosity(288.15),
+            max_relative = 1.0e-14
+        );
+    }
 }

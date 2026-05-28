@@ -70,3 +70,13 @@ Minimum evidence by validation label:
 - `research`: public benchmark case passes with provenance and tolerance table.
 
 No model is accepted without at least `experimental` documentation.
+
+## Continuum Aero Buildup Checklist
+
+For `openbmp-aero::ComponentBuildup`, model authors must document the
+geometry envelope, reference area/length convention, reference Reynolds
+condition, and whether the result is baked as a deck or evaluated live.
+Validation evidence should include skin-friction pins, the base-drag
+formula, boattail/flare envelope checks, drag-polar behavior, and
+deterministic deck baking. Provenance is synthetic/textbook/public
+educational only; fielded-projectile drag tables are rejected.

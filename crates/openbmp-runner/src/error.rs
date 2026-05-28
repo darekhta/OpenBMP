@@ -6,6 +6,7 @@
 //! to a stable exit code.
 
 use openbmp_aero::AeroError;
+use openbmp_aerothermal::AerothermalError;
 use openbmp_physics::PhysicsError;
 use openbmp_propulsion::MotorError;
 use openbmp_scenario::ScenarioError;
@@ -76,6 +77,9 @@ pub enum RunnerError {
     /// An aerodynamic-deck loader or sample evaluation failed.
     #[error("aerodynamic deck error")]
     Aero(#[from] AeroError),
+    /// A live aerothermal model construction or evaluation failed.
+    #[error("aerothermal error")]
+    Aerothermal(#[from] AerothermalError),
     /// A schema-2 aero deck axis could not be matched against a
     /// scenario effector at runner build time.
     #[error("aero/effector mismatch at {field}: {reason}")]
@@ -112,6 +116,7 @@ impl RunnerError {
             | Self::Recovery { .. }
             | Self::UnsupportedScenario { .. }
             | Self::Aero(_)
+            | Self::Aerothermal(_)
             | Self::AeroEffectorMismatch { .. }
             | Self::Motor(_)
             | Self::Env(_) => 2,

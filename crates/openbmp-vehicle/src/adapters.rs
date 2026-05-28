@@ -32,7 +32,9 @@
 
 use nalgebra::Vector3;
 
-use openbmp_aero::{AeroDeck, AeroError};
+use openbmp_aero::{
+    AeroContext, AeroDeck, AeroError, AeroMethod, knudsen_number, mean_free_path_m,
+};
 use openbmp_models::{
     ForceContext, ForceModel, MassModel, MassPropertiesRate, ModelEvalError, MomentContext,
     MomentModel, RigidMassModel,
@@ -419,10 +421,11 @@ impl<M: Motor> MassModel for MotorMassAdapter<M> {
 /// Point-mass axial-drag adapter.
 ///
 /// Wraps an [`openbmp_aero::AeroDeck`] + [`openbmp_physics::AtmosphereModel`]
-/// as a `ForceModel<PointMassState>` that produces only axial drag
-/// (`F = -CD · q · S · v_hat`) opposing the vehicle's ECI velocity.
-/// Wind is assumed zero; wind-aware resolution into the body frame
-/// is handled by the runner-side wind rack.
+/// as a force model. Point-mass states produce axial drag
+/// (`F = -CD · q · S · v_hat`) with `(alpha, beta) = (0, 0)`.
+/// Rigid-body states resolve the ECI velocity into the body frame,
+/// query the deck at the resulting aerodynamic angles, and rotate the
+/// reduced body-frame aero force back to ECI.
 ///
 /// Altitude for the atmosphere lookup is taken as the ECI `z`
 /// component of position. This is the vertical-launch simplification:
@@ -430,9 +433,9 @@ impl<M: Motor> MassModel for MotorMassAdapter<M> {
 /// `+z` so `position.vector.z` is a good proxy for geometric
 /// altitude.
 ///
-/// CD is sampled at `(mach, alpha=0, beta=0)`. Non-axial aero
-/// (CN, CM in body frame) is intentionally not consumed by this
-/// adapter — that is rigid-body work.
+/// Wind is not subtracted here because the kernel currently exposes
+/// wind in local NED components but does not pass the frame context
+/// needed for a deterministic NED-to-ECI transform into force models.
 #[derive(Clone, Debug)]
 pub struct DeckDragForceAdapter<Atm> {
     deck: AeroDeck,
@@ -525,18 +528,11 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for DeckDragForceAdapter<A
         )? {
             return Ok(Vector3::zeros());
         }
-        // Axial-drag adapter is axisymmetric: drag opposes the ECI
-        // velocity vector, magnitude depends only on speed and
-        // altitude. RigidBodyState carries the same `velocity` and
-        // `position` fields PointMassState does, so the rigid impl
-        // delegates to the shared computation. Wind and aero
-        // moment / sideslip are handled elsewhere.
-        compute_axial_drag(
+        compute_rigid_body_deck_force(
             &self.deck,
             &self.atmosphere,
             self.model_id,
-            ctx.state.velocity.vector,
-            ctx.state.position.vector.z,
+            ctx.state,
             ctx.time,
             ctx.effector_actuals,
         )
@@ -549,6 +545,342 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for DeckDragForceAdapter<A
     fn supports_separated_body_propagation(&self) -> bool {
         self.owner.is_some()
     }
+}
+
+/// Force adapter for any [`AeroMethod`] implementation.
+///
+/// Unlike [`DeckDragForceAdapter`], this path consumes the unified
+/// `AeroMethod` trait and therefore exposes hypersonic methods in the
+/// live kernel loop. The method returns body-frame force; the rigid
+/// implementation rotates it into ECI with the current attitude.
+pub struct AeroMethodForceAdapter<M, Atm> {
+    method: M,
+    atmosphere: Atm,
+    model_id: ModelId,
+    reference_length_m: f64,
+    owner: Option<BodyId>,
+}
+
+impl<M, Atm> std::fmt::Debug for AeroMethodForceAdapter<M, Atm> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AeroMethodForceAdapter")
+            .field("method", &"<AeroMethod>")
+            .field("atmosphere", &"<AtmosphereModel>")
+            .field("model_id", &self.model_id)
+            .field("reference_length_m", &self.reference_length_m)
+            .field("owner", &self.owner)
+            .finish()
+    }
+}
+
+impl<M, Atm> AeroMethodForceAdapter<M, Atm> {
+    /// Construct from an aero method, atmosphere model, model id, and
+    /// reference length used for Knudsen / Reynolds context fields.
+    #[must_use]
+    pub const fn new(
+        method: M,
+        atmosphere: Atm,
+        model_id: ModelId,
+        reference_length_m: f64,
+    ) -> Self {
+        Self {
+            method,
+            atmosphere,
+            model_id,
+            reference_length_m,
+            owner: None,
+        }
+    }
+
+    /// Construct with an owning body for post-separation routing.
+    #[must_use]
+    pub const fn new_owned(
+        method: M,
+        atmosphere: Atm,
+        model_id: ModelId,
+        reference_length_m: f64,
+        owner: BodyId,
+    ) -> Self {
+        Self {
+            method,
+            atmosphere,
+            model_id,
+            reference_length_m,
+            owner: Some(owner),
+        }
+    }
+}
+
+impl<M: AeroMethod, Atm: AtmosphereModel> ForceModel<PointMassState>
+    for AeroMethodForceAdapter<M, Atm>
+{
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, PointMassState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        if !owner_allows(
+            ctx.active_body,
+            self.owner,
+            self.model_id,
+            "aero method adapter: mounted_to is required for separated-body propagation",
+        )? {
+            return Ok(Vector3::zeros());
+        }
+        let velocity_eci = ctx.state.velocity.vector;
+        let Some((aero_ctx, speed)) = aero_context_from_velocity(
+            &self.atmosphere,
+            self.model_id,
+            velocity_eci,
+            ctx.state.position.vector.z,
+            ctx.time,
+            self.reference_length_m,
+            false,
+        )?
+        else {
+            return Ok(Vector3::zeros());
+        };
+        let body = self
+            .method
+            .aero_force_moment_body(&aero_ctx)
+            .map_err(|err| map_aero_lookup_error(self.model_id, err))?;
+        let v_hat = velocity_eci / speed;
+        let force_eci = body.force_n_body.x * v_hat;
+        if !(force_eci.x.is_finite() && force_eci.y.is_finite() && force_eci.z.is_finite()) {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(force_eci)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+impl<M: AeroMethod, Atm: AtmosphereModel> ForceModel<RigidBodyState>
+    for AeroMethodForceAdapter<M, Atm>
+{
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        if !owner_allows(
+            ctx.active_body,
+            self.owner,
+            self.model_id,
+            "aero method adapter: mounted_to is required for separated-body propagation",
+        )? {
+            return Ok(Vector3::zeros());
+        }
+        let velocity_body = ctx.state.orientation.q.inverse() * ctx.state.velocity.vector;
+        let Some((aero_ctx, _)) = aero_context_from_velocity(
+            &self.atmosphere,
+            self.model_id,
+            velocity_body,
+            ctx.state.position.vector.z,
+            ctx.time,
+            self.reference_length_m,
+            true,
+        )?
+        else {
+            return Ok(Vector3::zeros());
+        };
+        let body = self
+            .method
+            .aero_force_moment_body(&aero_ctx)
+            .map_err(|err| map_aero_lookup_error(self.model_id, err))?;
+        let force_eci = ctx.state.orientation.q * body.force_n_body;
+        if !(force_eci.x.is_finite() && force_eci.y.is_finite() && force_eci.z.is_finite()) {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(force_eci)
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.owner.is_some()
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+/// Moment adapter for any [`AeroMethod`] implementation on the
+/// rigid-body path.
+pub struct AeroMethodMomentAdapter<M, Atm> {
+    method: M,
+    atmosphere: Atm,
+    model_id: ModelId,
+    reference_length_m: f64,
+    owner: Option<BodyId>,
+}
+
+impl<M, Atm> std::fmt::Debug for AeroMethodMomentAdapter<M, Atm> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AeroMethodMomentAdapter")
+            .field("method", &"<AeroMethod>")
+            .field("atmosphere", &"<AtmosphereModel>")
+            .field("model_id", &self.model_id)
+            .field("reference_length_m", &self.reference_length_m)
+            .field("owner", &self.owner)
+            .finish()
+    }
+}
+
+impl<M, Atm> AeroMethodMomentAdapter<M, Atm> {
+    /// Construct from an aero method, atmosphere model, model id, and
+    /// reference length used for Knudsen / Reynolds context fields.
+    #[must_use]
+    pub const fn new(
+        method: M,
+        atmosphere: Atm,
+        model_id: ModelId,
+        reference_length_m: f64,
+    ) -> Self {
+        Self {
+            method,
+            atmosphere,
+            model_id,
+            reference_length_m,
+            owner: None,
+        }
+    }
+
+    /// Construct with an owning body for post-separation routing.
+    #[must_use]
+    pub const fn new_owned(
+        method: M,
+        atmosphere: Atm,
+        model_id: ModelId,
+        reference_length_m: f64,
+        owner: BodyId,
+    ) -> Self {
+        Self {
+            method,
+            atmosphere,
+            model_id,
+            reference_length_m,
+            owner: Some(owner),
+        }
+    }
+}
+
+impl<M: AeroMethod, Atm: AtmosphereModel> MomentModel<RigidBodyState>
+    for AeroMethodMomentAdapter<M, Atm>
+{
+    fn moment_n_m_body(
+        &self,
+        ctx: MomentContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        if !owner_allows(
+            ctx.active_body,
+            self.owner,
+            self.model_id,
+            "aero method moment adapter: mounted_to is required for separated-body propagation",
+        )? {
+            return Ok(Vector3::zeros());
+        }
+        let velocity_body = ctx.state.orientation.q.inverse() * ctx.state.velocity.vector;
+        let Some((aero_ctx, _)) = aero_context_from_velocity(
+            &self.atmosphere,
+            self.model_id,
+            velocity_body,
+            ctx.state.position.vector.z,
+            ctx.time,
+            self.reference_length_m,
+            true,
+        )?
+        else {
+            return Ok(Vector3::zeros());
+        };
+        let body = self
+            .method
+            .aero_force_moment_body(&aero_ctx)
+            .map_err(|err| map_aero_lookup_error(self.model_id, err))?;
+        if !(body.moment_n_m_body.x.is_finite()
+            && body.moment_n_m_body.y.is_finite()
+            && body.moment_n_m_body.z.is_finite())
+        {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(body.moment_n_m_body)
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.owner.is_some()
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+fn aero_context_from_velocity<Atm: AtmosphereModel>(
+    atmosphere: &Atm,
+    model_id: ModelId,
+    velocity: Vector3<f64>,
+    altitude_proxy_m: f64,
+    time: SimTime,
+    reference_length_m: f64,
+    velocity_is_body_frame: bool,
+) -> Result<Option<(AeroContext, f64)>, ModelEvalError> {
+    let speed_sq = velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z;
+    if speed_sq <= 0.0 {
+        return Ok(None);
+    }
+    let speed = speed_sq.sqrt();
+    let sample = atmosphere
+        .sample(altitude_proxy_m.max(0.0), time)
+        .map_err(|_| ModelEvalError::OutOfEnvelope {
+            model: model_id,
+            reason: Cow::Borrowed("atmosphere out of envelope at altitude"),
+        })?;
+    if !(sample.speed_of_sound_m_s.is_finite() && sample.speed_of_sound_m_s > 0.0) {
+        return Err(ModelEvalError::OutOfEnvelope {
+            model: model_id,
+            reason: Cow::Borrowed("atmosphere returned non-positive speed of sound"),
+        });
+    }
+    let mach = speed / sample.speed_of_sound_m_s;
+    let dynamic_pressure_pa = 0.5 * sample.density_kg_m3 * speed_sq;
+    let (alpha_deg, beta_deg) = if velocity_is_body_frame {
+        let axial = velocity.x;
+        let lateral = velocity.y;
+        let normal = velocity.z;
+        let alpha = normal.atan2(axial).to_degrees();
+        let beta_denominator = (axial * axial + normal * normal).sqrt();
+        let beta = lateral.atan2(beta_denominator).to_degrees();
+        (alpha, beta)
+    } else {
+        (0.0, 0.0)
+    };
+    let mean_free_path = mean_free_path_m(sample.temperature_k, sample.pressure_pa);
+    let knudsen = knudsen_number(mean_free_path, reference_length_m);
+    let reynolds_length = if sample.dynamic_viscosity_pa_s > 0.0
+        && sample.dynamic_viscosity_pa_s.is_finite()
+        && reference_length_m > 0.0
+        && reference_length_m.is_finite()
+    {
+        sample.density_kg_m3 * speed * reference_length_m / sample.dynamic_viscosity_pa_s
+    } else {
+        0.0
+    };
+    Ok(Some((
+        AeroContext {
+            mach,
+            alpha_deg,
+            beta_deg,
+            dynamic_pressure_pa,
+            knudsen,
+            reynolds_length,
+        },
+        speed,
+    )))
 }
 
 /// Shared axial-drag force computation used by both the point-mass
@@ -603,21 +935,7 @@ fn compute_axial_drag<Atm: AtmosphereModel>(
     }
 
     let mach = speed / speed_of_sound;
-    // Build the deflections map keyed by deck-axis name
-    // from the kernel's effector-actuals view. For schema-1 decks
-    // `deck.effector_axis_names()` is empty, the loop is
-    // zero-iteration, and `deflections` stays empty. For schema-2
-    // decks, every declared effector axis must have a value (the
-    // runner's pre-step `assert_axes_match_effectors` check at
-    // construction time guarantees the rack populates each one);
-    // a missing key here would surface as `AeroError::InvalidParameter`
-    // from the deck.
-    let mut deflections: std::collections::BTreeMap<&str, f64> = std::collections::BTreeMap::new();
-    for axis_name in deck.effector_axis_names() {
-        if let Some(value) = effector_actuals.get(axis_name) {
-            deflections.insert(axis_name.as_str(), value);
-        }
-    }
+    let deflections = deck_deflections(deck, effector_actuals);
     let coefficients = deck
         .lookup(mach, 0.0, 0.0, &deflections)
         .map_err(|err| map_aero_lookup_error(model_id, err))?;
@@ -633,6 +951,71 @@ fn compute_axial_drag<Atm: AtmosphereModel>(
         return Err(ModelEvalError::NonFinite { model: model_id });
     }
     Ok(f)
+}
+
+fn compute_rigid_body_deck_force<Atm: AtmosphereModel>(
+    deck: &AeroDeck,
+    atmosphere: &Atm,
+    model_id: ModelId,
+    state: &RigidBodyState,
+    time: SimTime,
+    effector_actuals: openbmp_models::EffectorActualsView<'_>,
+) -> Result<Vector3<f64>, ModelEvalError> {
+    let velocity_eci = state.velocity.vector;
+    let speed_sq = velocity_eci.x * velocity_eci.x
+        + velocity_eci.y * velocity_eci.y
+        + velocity_eci.z * velocity_eci.z;
+    if speed_sq <= 0.0 {
+        return Ok(Vector3::zeros());
+    }
+    let speed = speed_sq.sqrt();
+    let altitude_m = state.position.vector.z.max(0.0);
+    let atm_sample =
+        atmosphere
+            .sample(altitude_m, time)
+            .map_err(|_| ModelEvalError::OutOfEnvelope {
+                model: model_id,
+                reason: Cow::Borrowed("atmosphere out of envelope at altitude"),
+            })?;
+    let speed_of_sound = atm_sample.speed_of_sound_m_s;
+    if speed_of_sound <= 0.0 || !speed_of_sound.is_finite() {
+        return Err(ModelEvalError::OutOfEnvelope {
+            model: model_id,
+            reason: Cow::Borrowed("atmosphere returned non-positive speed of sound"),
+        });
+    }
+
+    let mach = speed / speed_of_sound;
+    let velocity_body = state.orientation.q.inverse() * velocity_eci;
+    let alpha_deg = velocity_body.x.atan2(velocity_body.z).to_degrees();
+    let beta_denominator =
+        (velocity_body.x * velocity_body.x + velocity_body.z * velocity_body.z).sqrt();
+    let beta_deg = velocity_body.y.atan2(beta_denominator).to_degrees();
+    let deflections = deck_deflections(deck, effector_actuals);
+    let coefficients = deck
+        .lookup(mach, alpha_deg, beta_deg, &deflections)
+        .map_err(|err| map_aero_lookup_error(model_id, err))?;
+
+    let q_s = 0.5 * atm_sample.density_kg_m3 * speed_sq * deck.reference_area_m2();
+    let force_body = Vector3::new(-coefficients.cn * q_s, 0.0, -coefficients.cd * q_s);
+    let force_eci = state.orientation.q * force_body;
+    if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
+        return Err(ModelEvalError::NonFinite { model: model_id });
+    }
+    Ok(force_eci)
+}
+
+fn deck_deflections<'a>(
+    deck: &'a AeroDeck,
+    effector_actuals: openbmp_models::EffectorActualsView<'_>,
+) -> std::collections::BTreeMap<&'a str, f64> {
+    let mut deflections = std::collections::BTreeMap::new();
+    for axis_name in deck.effector_axis_names() {
+        if let Some(value) = effector_actuals.get(axis_name) {
+            deflections.insert(axis_name.as_str(), value);
+        }
+    }
+    deflections
 }
 
 fn map_aero_lookup_error(model_id: ModelId, err: AeroError) -> ModelEvalError {
@@ -1929,6 +2312,7 @@ mod tests {
             mass_kg,
             time: SimTime::from_seconds(time_s),
             active_body: None,
+            phase_id: None,
             effector_actuals: openbmp_models::EffectorActualsView::empty(),
             engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),
@@ -1954,6 +2338,20 @@ mod tests {
             "/../../data/aero/synthetic-finned-cylinder.toml"
         )))
         .expect("aero deck must parse")
+    }
+
+    fn simple_alpha_polar_deck() -> AeroDeck {
+        AeroDeck::new(
+            vec![0.0, 1.0],
+            vec![0.0, 10.0],
+            vec![0.0],
+            vec![0.0, 1.0, 0.0, 1.0],
+            vec![0.5, 0.7, 0.5, 0.7],
+            vec![0.0; 4],
+            1.0,
+            1.0,
+        )
+        .unwrap()
     }
 
     // -----------------------------------------------------------------
@@ -2159,6 +2557,7 @@ mod tests {
             mass_kg,
             time: SimTime::from_seconds(time_s),
             active_body: None,
+            phase_id: None,
             effector_actuals: openbmp_models::EffectorActualsView::empty(),
             engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),
@@ -2176,6 +2575,7 @@ mod tests {
             environment: env,
             time: SimTime::ZERO,
             active_body: None,
+            phase_id: None,
             effector_actuals: openbmp_models::EffectorActualsView::empty(),
             engine_snapshot: openbmp_models::EngineSnapshotView::new(snapshot),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),
@@ -2287,11 +2687,33 @@ mod tests {
             rigid_ctx(&rb_state, &env, 1.0, 0.0),
         )
         .unwrap();
-        // Axial drag is axisymmetric — depends only on speed and
-        // altitude, not on attitude. Bit-equal across the two paths.
-        assert_eq!(pm.x.to_bits(), rb.x.to_bits());
-        assert_eq!(pm.y.to_bits(), rb.y.to_bits());
+        // At zero alpha the rigid path reduces to axial drag. The
+        // zero-valued lateral components may differ only by sign bit
+        // because the rigid path forms `-CN` at CN = 0.
+        assert_eq!(pm.x, rb.x);
+        assert_eq!(pm.y, rb.y);
         assert_eq!(pm.z.to_bits(), rb.z.to_bits());
+    }
+
+    #[test]
+    fn rigid_drag_queries_alpha_axis_from_body_relative_velocity() {
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let deck = simple_alpha_polar_deck();
+        let adapter = DeckDragForceAdapter::new(deck, atm, ModelId::new(0));
+        let env = null_env();
+        let mut rb_state = rigid_state_with_orientation(0.0, 100.0, identity_body_to_eci());
+        let alpha = 5.0_f64.to_radians();
+        rb_state.velocity = Velocity3::new(100.0 * alpha.tan(), 0.0, 100.0);
+        let force = ForceModel::<RigidBodyState>::force_n_eci(
+            &adapter,
+            rigid_ctx(&rb_state, &env, 1.0, 0.0),
+        )
+        .unwrap();
+        assert!(
+            force.x < 0.0,
+            "positive body-x velocity should produce negative normal force, got {force:?}"
+        );
+        assert!(force.z < 0.0);
     }
 
     // -----------------------------------------------------------------
@@ -2445,6 +2867,7 @@ mod tests {
             mass_kg: state.mass.get::<kilogram>(),
             time: SimTime::from_seconds(time_s),
             active_body: None,
+            phase_id: None,
             effector_actuals: openbmp_models::EffectorActualsView::empty(),
             engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),

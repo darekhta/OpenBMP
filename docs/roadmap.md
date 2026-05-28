@@ -53,6 +53,11 @@ not as validated fidelity.
   tangent-wedge methods; Knudsen-number bridging and free-molecular aero. The
   tangent-cone uses the engineering modified-Newtonian approximation rather
   than a full Taylor-Maccoll cone-shock integration.
+- **Continuum launch-vehicle aerodynamics** — geometry-driven
+  `ComponentBuildup` deck producer with skin friction, transonic/supersonic
+  forebody drag, Mach-dependent drag polar, power-off base drag, and
+  boattail/flare terms. Point-mass vehicles remain axial; rigid-body aero
+  consumes attitude-derived alpha/beta.
 - **Aerothermal** — Sutton-Graves stagnation heating with wall-enthalpy and
   Allen-Eggers heat-load diagnostics, reference-enthalpy distributed heating,
   boundary-layer state, the 1-D thermal-conduction toy, and the generic
@@ -106,16 +111,18 @@ offline footprint prediction, and range-relative / optional geodetic reporting.
 PR4 implements the first descent/entry slice: schema-v3 `[entry_profile]`,
 entry-interface / final-descent handoff validation, Allen-Eggers entry
 diagnostics, and a corridor-limited Vinh bank-reference report. The footprint
-path now includes fixed-step numerical J2 and zonal-only EGM2008 propagation;
-richer live entry force-stack / aerothermal coupling remains deferred until it
-lands with validation evidence:
+path now includes fixed-step numerical J2 and zonal-only EGM2008 propagation.
+The live entry coupling gap is closed at research-extension scope: scenarios
+can select live `[aero.method]` hypersonic methods, turn force/moment models on
+per mission phase with `[[forces.phase_override]]`, emit live
+`aerothermal.*` telemetry, and opt rigid-body ablation into mass-rate feedback:
 
 - Powered-ascent reference-trajectory generation (gravity-turn / pitch-program;
   explicit reference reserved) — [`ascent-guidance.md`](ascent-guidance.md).
 - Coast / apogee phase wiring and the constant-gravity range-safety landing
   footprint — [`ballistic-coast-and-apogee.md`](ballistic-coast-and-apogee.md).
-- Entry `entry_interface` → `lifting_entry` → `final_descent` handoff and
-  diagnostics —
+- Entry `entry_interface` → `lifting_entry` → `final_descent` handoff,
+  diagnostics, and live force/aerothermal coupling —
   [`descent-and-entry-profiles.md`](descent-and-entry-profiles.md).
 
 **Estimator and control**
@@ -140,6 +147,10 @@ lands with validation evidence:
 
 **Aerodynamics**
 
+- Live Reynolds-varying buildup evaluation in the hot path; the shipped path
+  bakes a fixed reference-condition deck at scenario load.
+- Power-on plume/base-drag coupling and nonlinear viscous-crossflow normal
+  force at high angle of attack.
 - Mesh-based local-inclination panel methods with shadowing (the current path
   uses a single representative station).
 

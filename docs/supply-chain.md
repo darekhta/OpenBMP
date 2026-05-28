@@ -34,8 +34,11 @@ implemented from published textbook and public technical references, not from
 `openMotor` code.
 
 OpenRocket is GPL-licensed and is likewise treated only as related work for
-aerodynamics concepts already available from public technical references. No
-OpenRocket source is read or ported into OpenBMP.
+aerodynamics concepts already available from public technical references. The
+continuum drag buildup in `openbmp-aero` is implemented from textbook/public
+relations (Hoerner, Barrowman, DATCOM, Niskanen's published documentation),
+not from OpenRocket source. No OpenRocket source is read or ported into
+OpenBMP.
 
 ## Required Tools
 

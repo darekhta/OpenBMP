@@ -60,6 +60,11 @@ Accept contributions that are limited to:
 - Aerodynamic decks expressed as tabular `(Mach, alpha, beta) -> coefficient`
   with synthetic, textbook, or public/educational parameters and explicit
   provenance.
+- Continuum launch-vehicle drag buildup that maps declared body geometry and
+  flow condition to aerodynamic coefficients, then bakes an `AeroDeck`. This
+  includes subsonic/transonic skin-friction, Mach-dependent drag polar,
+  power-off base drag, and boattail/flare terms; it produces coefficients,
+  never range tables or steering commands.
 - Propulsion models (solid, liquid, hybrid, cold-gas) with synthetic, textbook,
   or public/educational thrust curves and explicit provenance.
 
@@ -228,12 +233,12 @@ is outside the project boundary.
 Use names that reinforce simulation-only scope:
 
 - Prefer: `RigidBody`, `Vehicle`, `Atmosphere`, `Gravity`, `Wind`, `Motor`,
-  `AeroDeck`, `SyntheticSensor`, `Estimator`, `Autopilot` (in the
+  `AeroDeck`, `DragBuildup`, `SyntheticSensor`, `Estimator`, `Autopilot` (in the
   `openbmp-fc` crate only, where the term is explicitly virtual), `Phase`,
   `MissionStateMachine`, `Scenario`, `Telemetry`, `Validation`, `FaultModel`.
 - Avoid: `Target`, `Seeker`, `Warhead`, `Strike`, `Interceptor`, `Kill`,
   `Threat`, `Launch` (as a verb implying real launch), `Engagement`,
-  `WeaponSystem`.
+  `WeaponSystem`, `FiringTable`, `RangeTable`, `BallisticMatch`.
 - The term `FlightController` is acceptable inside the `openbmp-fc` crate when
   the doc-comment makes it explicit that the implementation is a
   **simulator-local virtual flight controller, not deployable flight

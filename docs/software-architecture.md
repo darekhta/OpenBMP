@@ -1239,7 +1239,26 @@ methods (`ModifiedNewtonian`, `TangentCone`, `LocalInclinationPanels`,
 based on Mach and Knudsen number. See
 [hypersonic-extensions.md](hypersonic-extensions.md) for details.
 
-For the MVP deck path:
+`ComponentBuildup` is the deck-producer path for continuum launch-vehicle
+aerodynamics. At scenario load it takes declared body geometry, a fixed
+Mach/alpha grid, and a reference Reynolds condition, then bakes the same
+`AeroDeck` consumed by `DeckLookup`:
+
+```text
+[aero.buildup] geometry
+  -> ComponentBuildup
+  -> AeroDeck (CN, CD, CM over mach/alpha/beta=0)
+  -> DeckLookup / DeckDragForceAdapter
+```
+
+The buildup includes compressible skin friction, forebody wave/pressure
+drag, power-off base drag, boattail or flare afterbody drag, fin drag,
+Barrowman-style normal-force slope, and the small-angle drag polar
+`CD(alpha) ~= CD0 + CN_alpha * alpha^2`. Sutherland viscosity is shared
+from `openbmp-physics` so the bake-time Reynolds number and aerothermal
+boundary-layer calculations use one formula.
+
+For the deck path:
 
 ### Deck Format (in-house TOML)
 
@@ -1284,13 +1303,10 @@ Decks must include provenance and a validation label. **Real fielded-vehicle
 aero decks are explicitly rejected.** The MVP ships only synthetic textbook
 decks for canonical shapes (sphere, cone, simple finned cylinder).
 
-Users may pre-process aero coefficients into the deck format using public
-semi-empirical methods (Barrowman 1967; the OpenRocket / Sampo Niskanen
-2009 master's thesis, *Development of an Open-Source Model Rocket
-Simulation Software*, Helsinki University of Technology, is the canonical
-academic reference for the Barrowman extended component build-up applied
-to model-rocket aerodynamics). OpenBMP itself does not ship a Barrowman
-pre-processor; the deck is the boundary.
+Users may also pre-process aero coefficients into the deck format using
+public semi-empirical methods. OpenBMP's built-in `ComponentBuildup`
+implements the conservative launch-vehicle subset; more specialised
+datasets still cross the same deck/provenance boundary.
 
 ### Deck Format Extensions: Control-Effector Axes
 
@@ -1381,11 +1397,10 @@ body_flap_right / grid_fin_<n>`; the deck declares names and units, the
 >   any kernel step.
 > - Schema-2 supports up to 3 effector axes (6 axes total).
 >   The full six-coefficient `(CY, Cl, Cn-yaw)` deck is not yet
->   shipped; schema-2 ships only `(CN, CD, CM)`. The
->   `DeckDragForceAdapter` keeps its hard-coded `(alpha, beta) =
->   (0, 0)` query; real alpha/beta consumption from
->   `RigidBodyState` is the
->   `RigidAeroForceMomentAdapter` work.
+>   shipped; schema-2 ships only `(CN, CD, CM)`. Point-mass vehicles
+>   still query at `(alpha, beta) = (0, 0)`. Rigid-body vehicles
+>   resolve the velocity vector into body axes, query the deck's
+>   alpha/beta axes, and rotate the reduced force back to ECI.
 > - The exit-criterion scenario lives at
 >   `scenarios/effector-elevon-aero/single-elevon-aero-deflected.toml`
 >   with the schema-2 deck at `data/aero/synthetic-elevon-1d.toml`.

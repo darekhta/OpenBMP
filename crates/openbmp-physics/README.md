@@ -72,8 +72,9 @@ the local origin, and the `FrameTransform` trait + impls.
 `WindModel` takes `Position3<Eci>` + `&FrameContext` + `SimTime`; and
 the simple `MagneticFieldEci` takes `Vector3<f64>` ECI + `SimTime`.
 Output is the model's native quantity: gravity in m/s² ECI, atmosphere as
-`AtmosphereSample { density, pressure, temperature, speed_of_sound }`,
-mag in nT, wind in m/s NED.
+`AtmosphereSample { density, pressure, temperature, speed_of_sound,
+dynamic_viscosity }` with viscosity from Sutherland's law, mag in nT,
+wind in m/s NED.
 
 The two trait families coexist so:
 - The simulator-side adapter layer (in `openbmp-vehicle::adapters`

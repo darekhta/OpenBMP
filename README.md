@@ -42,9 +42,9 @@ HAL** — but no HAL, device driver, or bus protocol ships in this repository.
   FDIR seam with a windowed GLRT detector.
 - **Physics with a validity envelope.** US Standard Atmosphere 1976,
   layered-exponential and NRLMSISE-00 static atmospheres; J2 and EGM2008
-  zonal-harmonic gravity; WMM 2025 magnetics; tabulated and hypersonic
-  aerodynamic methods; stagnation heating, boundary-layer state, and a
-  generic ablation toy for re-entry studies.
+  zonal-harmonic gravity; WMM 2025 magnetics; tabulated, buildup, and
+  hypersonic aerodynamic methods; stagnation heating, boundary-layer
+  state, and a generic ablation toy for re-entry studies.
 - **Forward propulsion analysis.** Solid-grain regression for textbook
   end-burner/BATES/tabulated grains, liquid-engine throttle and tank-budget
   coupling, and offline ideal staging ΔV / mass analysis. These models accept
@@ -70,7 +70,7 @@ crates/
   openbmp-mission/      L1  mission state machine + event triggers (HAL-portable)
   openbmp-physics/      L2  gravity, atmosphere, magnetics, wind, real-gas, re-entry
   openbmp-vehicle/      L2  rigid-body composition, mass models, force/moment sum
-  openbmp-aero/         L2  aero decks + hypersonic methods + Knudsen bridging
+  openbmp-aero/         L2  aero decks + continuum buildup + hypersonic methods
   openbmp-aerothermal/  L2  stagnation heating, boundary layer, ablation toy
   openbmp-propulsion/   L2  motor models, thrust curves
   openbmp-sensors/      L3  synthetic sensors + fault models (no device drivers)
@@ -163,6 +163,7 @@ posture and acceptable use are in [`EXPORT-CONTROL.md`](EXPORT-CONTROL.md) and
 | [Mission Graph Architecture](docs/mission-graph-architecture.md) | Hierarchical mission state machine, orthogonal regions, HAL contract. |
 | [Mission States Vocabulary](docs/mission-states-vocabulary.md) | Canonical state names with citations; rejected operational vocabulary. |
 | [Hypersonic & Re-entry](docs/hypersonic-extensions.md) | High-altitude atmosphere, real-gas, hypersonic aero, aerothermal, ablation. |
+| [Scenario Format](docs/scenario-format.md) | Scenario schema, including `[aero]` deck and buildup forms. |
 | [Real-Rocket Integration](docs/real-rocket-integration.md) | How a downstream adopter assembles a vehicle on top of OpenBMP. |
 | [Roadmap](docs/roadmap.md) | Capabilities that are shipped, research-grade, or deferred. |
 | [Glossary](docs/glossary.md) | Shared vocabulary for frames, time, determinism, validation, safety. |

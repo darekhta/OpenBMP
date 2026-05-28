@@ -157,6 +157,22 @@ Sources:
   <https://www.thrustcurve.org/simfiles/5f4294d20002e900000004e7/download/Estes_C6.eng>,
   SHA-256 `90fa89edab96583266994ade8a8afd5b30a169f3a73d6db3a379495f24033570`.
 
+## Continuum Aerodynamics Buildup
+
+The launch-vehicle buildup is verified at the component level before any
+scenario uses its baked deck:
+
+1. Skin friction matches Blasius and Schlichting closed forms.
+2. Base drag matches `0.12 + 0.13 M^2` for `M < 1` and `0.25 / M` for
+   `M >= 1`.
+3. A boattail inside the separation-angle envelope reduces zero-lift drag
+   relative to the same blunt base.
+4. The drag polar adds the expected second-order alpha drag.
+5. Repeated deck baking over the same fixed Mach/alpha grid is bit-identical.
+
+Scenario-level smoke tests parse `[aero.buildup]`, bake an in-memory
+`AeroDeck`, and confirm no external `aero.deck` file is required.
+
 ## Hypersonic V&V and UQ Ladder
 
 Hypersonic models require stronger evidence than ordinary toy rocket models

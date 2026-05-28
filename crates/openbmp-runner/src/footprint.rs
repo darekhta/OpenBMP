@@ -391,6 +391,42 @@ fn monte_carlo_samples_table(
         TelemetryChannel::<f64>::new(ChannelId::new(16), "latitude_deg", "deg", None::<String>)?;
     let longitude =
         TelemetryChannel::<f64>::new(ChannelId::new(17), "longitude_deg", "deg", None::<String>)?;
+    let offset_downrange_from_nominal = TelemetryChannel::<f64>::new(
+        ChannelId::new(18),
+        "offset_downrange_from_nominal_m",
+        "m",
+        None::<String>,
+    )?;
+    let offset_crossrange_from_nominal = TelemetryChannel::<f64>::new(
+        ChannelId::new(19),
+        "offset_crossrange_from_nominal_m",
+        "m",
+        None::<String>,
+    )?;
+    let miss_distance_from_nominal = TelemetryChannel::<f64>::new(
+        ChannelId::new(20),
+        "miss_distance_from_nominal_m",
+        "m",
+        None::<String>,
+    )?;
+    let offset_downrange_from_mean = TelemetryChannel::<f64>::new(
+        ChannelId::new(21),
+        "offset_downrange_from_mean_m",
+        "m",
+        None::<String>,
+    )?;
+    let offset_crossrange_from_mean = TelemetryChannel::<f64>::new(
+        ChannelId::new(22),
+        "offset_crossrange_from_mean_m",
+        "m",
+        None::<String>,
+    )?;
+    let radial_distance_from_mean = TelemetryChannel::<f64>::new(
+        ChannelId::new(23),
+        "radial_distance_from_mean_m",
+        "m",
+        None::<String>,
+    )?;
     let channels = vec![
         downrange.metadata().clone(),
         crossrange.metadata().clone(),
@@ -409,6 +445,12 @@ fn monte_carlo_samples_table(
         burnout_time.metadata().clone(),
         latitude.metadata().clone(),
         longitude.metadata().clone(),
+        offset_downrange_from_nominal.metadata().clone(),
+        offset_crossrange_from_nominal.metadata().clone(),
+        miss_distance_from_nominal.metadata().clone(),
+        offset_downrange_from_mean.metadata().clone(),
+        offset_crossrange_from_mean.metadata().clone(),
+        radial_distance_from_mean.metadata().clone(),
     ];
     let schema = TelemetrySchema::new(channels)?;
     let mut table = TelemetryTable::new(schema);
@@ -441,6 +483,22 @@ fn monte_carlo_samples_table(
         if let Some(value) = sample.landing.longitude_deg {
             row.insert(&longitude, value)?;
         }
+        let nominal_downrange_offset_m = sample.landing.downrange_m - result.nominal.downrange_m;
+        let nominal_crossrange_offset_m = sample.landing.crossrange_m - result.nominal.crossrange_m;
+        row.insert(&offset_downrange_from_nominal, nominal_downrange_offset_m)?;
+        row.insert(&offset_crossrange_from_nominal, nominal_crossrange_offset_m)?;
+        row.insert(
+            &miss_distance_from_nominal,
+            radial_distance_m(nominal_downrange_offset_m, nominal_crossrange_offset_m),
+        )?;
+        let mean_downrange_offset_m = sample.landing.downrange_m - result.mean_downrange_m;
+        let mean_crossrange_offset_m = sample.landing.crossrange_m - result.mean_crossrange_m;
+        row.insert(&offset_downrange_from_mean, mean_downrange_offset_m)?;
+        row.insert(&offset_crossrange_from_mean, mean_crossrange_offset_m)?;
+        row.insert(
+            &radial_distance_from_mean,
+            radial_distance_m(mean_downrange_offset_m, mean_crossrange_offset_m),
+        )?;
         table.push_row(row)?;
     }
     Ok(table)
@@ -470,6 +528,28 @@ fn monte_carlo_summary_toml(
         &mut out,
         "covariance_crossrange_crossrange_m2",
         result.covariance_crossrange_crossrange_m2,
+    );
+    out.push_str("\n[nominal_footprint]\n");
+    push_summary_line(&mut out, "downrange_m", result.nominal.downrange_m);
+    push_summary_line(&mut out, "crossrange_m", result.nominal.crossrange_m);
+    push_summary_line(&mut out, "bearing_rad", result.nominal.bearing_rad);
+    push_summary_line(&mut out, "time_to_cull_s", result.nominal.time_to_cull_s);
+    out.push_str("\n[accuracy]\n");
+    push_summary_line(&mut out, "cep50_m", result.cep50_m);
+    push_summary_line(
+        &mut out,
+        "mean_offset_downrange_from_nominal_m",
+        result.mean_offset_downrange_from_nominal_m,
+    );
+    push_summary_line(
+        &mut out,
+        "mean_offset_crossrange_from_nominal_m",
+        result.mean_offset_crossrange_from_nominal_m,
+    );
+    push_summary_line(
+        &mut out,
+        "mean_miss_distance_from_nominal_m",
+        result.mean_miss_distance_from_nominal_m,
     );
     out.push_str("\n[dispersion_ellipse]\n");
     push_summary_line(
@@ -502,6 +582,15 @@ fn monte_carlo_summary_toml(
         push_summary_line(&mut out, "confidence_level", quantile.confidence_level);
         push_summary_line(&mut out, "radial_distance_m", quantile.radial_distance_m);
     }
+    for quantile in &result.nominal_radial_error_quantiles {
+        out.push_str("\n[[nominal_miss_distance_quantiles]]\n");
+        push_summary_line(&mut out, "confidence_level", quantile.confidence_level);
+        push_summary_line(
+            &mut out,
+            "miss_distance_from_nominal_m",
+            quantile.radial_distance_m,
+        );
+    }
     for failure in &result.failures {
         out.push_str("\n[[failures]]\n");
         out.push_str(&format!("sample_index = {}\n", failure.sample_index));
@@ -510,6 +599,10 @@ fn monte_carlo_summary_toml(
         out.push('\n');
     }
     out
+}
+
+fn radial_distance_m(downrange_m: f64, crossrange_m: f64) -> f64 {
+    (downrange_m * downrange_m + crossrange_m * crossrange_m).sqrt()
 }
 
 fn push_summary_line(out: &mut String, key: &str, value: f64) {
@@ -766,11 +859,20 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(first.summary_toml, second.summary_toml);
+        assert!(first.summary_toml.contains("[accuracy]"));
+        assert!(first.summary_toml.contains("cep50_m"));
+        assert!(
+            first
+                .summary_toml
+                .contains("[[nominal_miss_distance_quantiles]]")
+        );
         let mut first_csv = Vec::new();
         let mut second_csv = Vec::new();
         first.samples.write_csv(&mut first_csv).unwrap();
         second.samples.write_csv(&mut second_csv).unwrap();
         assert_eq!(first_csv, second_csv);
+        let csv_text = String::from_utf8(first_csv).unwrap();
+        assert!(csv_text.contains("miss_distance_from_nominal_m"));
     }
 
     #[test]
@@ -814,6 +916,8 @@ mod tests {
         let report = landing_footprint_monte_carlo_for_initial_state(&scenario)
             .unwrap()
             .unwrap();
+        assert!(report.result.cep50_m < 1.0e-12);
+        assert!(report.result.mean_miss_distance_from_nominal_m < 1.0e-12);
         for sample in &report.result.samples {
             assert!(
                 (sample.landing.downrange_m - report.result.nominal.downrange_m).abs() < 1.0e-12

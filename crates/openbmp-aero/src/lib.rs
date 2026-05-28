@@ -2,6 +2,8 @@
 //!
 //! Provides:
 //!
+//! * [`buildup`] — Semi-empirical continuum drag buildup that turns
+//!   declared launch-vehicle geometry into an [`deck::AeroDeck`].
 //! * [`deck`] — Tabulated aerodynamic deck. **Schema 1** is the
 //!   axisymmetric reduced sounding-rocket form indexed by
 //!   `(mach, alpha_deg, beta_deg)` returning the three reduced
@@ -48,6 +50,7 @@
 //! its `ForceModel` / `MomentModel` chain at a higher layer. See
 //! `docs/software-architecture.md#aerodynamics`.
 
+pub mod buildup;
 pub mod deck;
 pub mod error;
 pub mod hypersonic;
@@ -55,6 +58,10 @@ pub mod knudsen;
 pub mod method;
 pub mod parser;
 
+pub use buildup::{
+    Afterbody, BodyGeometry, BuildupGrid, ComponentBuildup, DragBuildupModel, FinSet,
+    FlowCondition, NoseShape,
+};
 pub use deck::{AeroCoefficients, AeroDeck, ExtrapolationPolicy};
 pub use error::AeroError;
 pub use hypersonic::{
@@ -63,6 +70,7 @@ pub use hypersonic::{
 };
 pub use knudsen::{
     AccommodationCoeffs, BridgeFunction, ChengBridge, ErfcBridge, FreeMolecularAero, GasRegime,
-    HybridAeroMethod, LinearKnudsenBridge, erfc_approx, knudsen_number, mean_free_path_m,
+    HybridAeroMethod, LinearKnudsenBridge, LinearMachBridge, erfc_approx, knudsen_number,
+    mean_free_path_m,
 };
 pub use method::{AeroContext, AeroForceMomentBody, AeroMethod, DeckLookup};

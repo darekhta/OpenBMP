@@ -210,12 +210,19 @@ pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRun
     })
 }
 
-fn phase_id(id: &str) -> PhaseId {
+/// Convert a scenario-text phase/state id into the stable runtime
+/// [`PhaseId`].
+#[must_use]
+pub fn phase_id_from_scenario_text(id: &str) -> PhaseId {
     if id.starts_with("mission.phases.") || id.starts_with("mission.states.") {
         PhaseId::from_path(id)
     } else {
         PhaseId::from_path(&format!("mission.phases.{id}"))
     }
+}
+
+fn phase_id(id: &str) -> PhaseId {
+    phase_id_from_scenario_text(id)
 }
 
 fn event_id(id: &str) -> EventId {

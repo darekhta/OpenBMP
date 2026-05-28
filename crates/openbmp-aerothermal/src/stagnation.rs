@@ -8,6 +8,7 @@
 //! until the published piecewise-polynomial Tauber-Sutton coefficients
 //! are imported with provenance.
 
+pub use openbmp_physics::sutherland_viscosity;
 use openbmp_physics::{AirComposition, AllenEggers, AtmosphereSample, PhysicsError};
 
 use crate::error::AerothermalError;
@@ -631,24 +632,6 @@ impl HeatTransferModel for TauberSuttonRadiative {
             reason: "Tauber-Sutton radiative heating is deferred pending published coefficients",
         })
     }
-}
-
-/// Sutherland viscosity law for air.
-///
-/// `μ(T) = μ_ref · (T / T_ref)^1.5 · (T_ref + S) / (T + S)` with
-/// `T_ref = 273.15`, `μ_ref = 1.716e-5 Pa·s`, `S = 110.4 K`. Pure
-/// `f64::powf`. State-stable across platforms.
-#[must_use]
-pub fn sutherland_viscosity(temperature_k: f64) -> f64 {
-    const MU_REF: f64 = 1.716e-5;
-    const T_REF: f64 = 273.15;
-    const S_K: f64 = 110.4;
-    if !temperature_k.is_finite() || temperature_k <= 0.0 {
-        return 0.0;
-    }
-    let t_ratio = temperature_k / T_REF;
-    let pow_15 = t_ratio.powf(1.5);
-    MU_REF * pow_15 * (T_REF + S_K) / (temperature_k + S_K)
 }
 
 fn validate_context_for_stagnation(ctx: &AerothermalContext) -> Result<(), AerothermalError> {

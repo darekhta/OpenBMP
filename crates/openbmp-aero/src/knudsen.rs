@@ -168,6 +168,44 @@ impl BridgeFunction for LinearKnudsenBridge {
     }
 }
 
+/// Linear bridge over a Mach-number handoff window.
+///
+/// The [`BridgeFunction`] input is interpreted as Mach number for this
+/// type: `alpha = 0` selects the low-Mach continuum method and
+/// `alpha = 1` selects the high-Mach continuum method.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct LinearMachBridge {
+    /// Lower Mach end of the transition band.
+    pub mach_lo: f64,
+    /// Upper Mach end of the transition band.
+    pub mach_hi: f64,
+}
+
+impl Default for LinearMachBridge {
+    fn default() -> Self {
+        Self {
+            mach_lo: 4.5,
+            mach_hi: 5.5,
+        }
+    }
+}
+
+impl BridgeFunction for LinearMachBridge {
+    fn alpha(&self, mach: f64) -> f64 {
+        if !mach.is_finite() {
+            return 1.0;
+        }
+        if mach <= self.mach_lo {
+            0.0
+        } else if mach >= self.mach_hi {
+            1.0
+        } else {
+            let span = (self.mach_hi - self.mach_lo).max(1.0e-30);
+            (mach - self.mach_lo) / span
+        }
+    }
+}
+
 /// Closed-form Abramowitz-Stegun 7.1.26 erfc approximation
 /// (max relative error ≈ 1.5e-7). Pure arithmetic on `f64`;
 /// no FMA. Used by [`ErfcBridge::alpha`] for state-stability.
@@ -291,17 +329,23 @@ pub struct HybridAeroMethod {
     pub free_molecular: Box<dyn AeroMethod>,
     /// Mach number at which low/high handoff occurs (default 4.0).
     pub mach_handoff: f64,
+    /// Optional Mach bridge for deterministic low/high continuum
+    /// blending. `None` preserves the legacy hard handoff.
+    pub mach_bridge: Option<LinearMachBridge>,
     /// Knudsen-number bridge.
     pub bridge: Box<dyn BridgeFunction>,
-    /// Knudsen number to feed the bridge — set per-call by the
-    /// caller via [`Self::with_knudsen`] before evaluation.
+    /// Legacy Knudsen number retained for source compatibility.
+    /// Runtime dispatch reads [`AeroContext::knudsen`] instead.
+    #[deprecated(note = "set AeroContext::knudsen at evaluation time instead")]
     pub knudsen: f64,
 }
 
 impl std::fmt::Debug for HybridAeroMethod {
+    #[allow(deprecated)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HybridAeroMethod")
             .field("mach_handoff", &self.mach_handoff)
+            .field("mach_bridge", &self.mach_bridge)
             .field("knudsen", &self.knudsen)
             .finish_non_exhaustive()
     }
@@ -309,7 +353,9 @@ impl std::fmt::Debug for HybridAeroMethod {
 
 impl HybridAeroMethod {
     /// Stamp the Knudsen number for the next evaluation.
+    #[deprecated(note = "set AeroContext::knudsen at evaluation time instead")]
     #[must_use]
+    #[allow(deprecated)]
     pub fn with_knudsen(mut self, kn: f64) -> Self {
         self.knudsen = kn;
         self
@@ -318,26 +364,44 @@ impl HybridAeroMethod {
 
 impl AeroMethod for HybridAeroMethod {
     fn aero_force_moment_body(&self, ctx: &AeroContext) -> Result<AeroForceMomentBody, AeroError> {
-        let continuum = if ctx.mach >= self.mach_handoff {
+        let continuum = if let Some(mach_bridge) = self.mach_bridge {
+            let low = self.continuum_low_mach.aero_force_moment_body(ctx)?;
+            let high = self.continuum_high_mach.aero_force_moment_body(ctx)?;
+            let mach_alpha = mach_bridge.alpha(ctx.mach).clamp(0.0, 1.0);
+            blend_force_moment(&low, &high, mach_alpha)
+        } else if ctx.mach >= self.mach_handoff {
             self.continuum_high_mach.aero_force_moment_body(ctx)?
         } else {
             self.continuum_low_mach.aero_force_moment_body(ctx)?
         };
         let fm = self.free_molecular.aero_force_moment_body(ctx)?;
-        let alpha = self.bridge.alpha(self.knudsen).clamp(0.0, 1.0);
-        let blend = |c: f64, f: f64| (1.0 - alpha) * c + alpha * f;
-        Ok(AeroForceMomentBody {
-            force_n_body: Vector3::new(
-                blend(continuum.force_n_body.x, fm.force_n_body.x),
-                blend(continuum.force_n_body.y, fm.force_n_body.y),
-                blend(continuum.force_n_body.z, fm.force_n_body.z),
-            ),
-            moment_n_m_body: Vector3::new(
-                blend(continuum.moment_n_m_body.x, fm.moment_n_m_body.x),
-                blend(continuum.moment_n_m_body.y, fm.moment_n_m_body.y),
-                blend(continuum.moment_n_m_body.z, fm.moment_n_m_body.z),
-            ),
-        })
+        if !ctx.knudsen.is_finite() {
+            return Err(AeroError::NonFinite {
+                reason: "HybridAeroMethod ctx.knudsen is NaN or Inf",
+            });
+        }
+        let alpha = self.bridge.alpha(ctx.knudsen).clamp(0.0, 1.0);
+        Ok(blend_force_moment(&continuum, &fm, alpha))
+    }
+}
+
+fn blend_force_moment(
+    low: &AeroForceMomentBody,
+    high: &AeroForceMomentBody,
+    alpha: f64,
+) -> AeroForceMomentBody {
+    let blend = |c: f64, f: f64| (1.0 - alpha) * c + alpha * f;
+    AeroForceMomentBody {
+        force_n_body: Vector3::new(
+            blend(low.force_n_body.x, high.force_n_body.x),
+            blend(low.force_n_body.y, high.force_n_body.y),
+            blend(low.force_n_body.z, high.force_n_body.z),
+        ),
+        moment_n_m_body: Vector3::new(
+            blend(low.moment_n_m_body.x, high.moment_n_m_body.x),
+            blend(low.moment_n_m_body.y, high.moment_n_m_body.y),
+            blend(low.moment_n_m_body.z, high.moment_n_m_body.z),
+        ),
     }
 }
 
@@ -414,6 +478,18 @@ mod tests {
     }
 
     #[test]
+    fn linear_mach_bridge_limits() {
+        let b = LinearMachBridge {
+            mach_lo: 4.5,
+            mach_hi: 5.5,
+        };
+        assert_eq!(b.alpha(4.0), 0.0);
+        assert_eq!(b.alpha(6.0), 1.0);
+        assert_relative_eq!(b.alpha(5.0), 0.5, max_relative = 1.0e-12);
+        assert_relative_eq!(b.alpha(f64::INFINITY), 1.0, epsilon = 0.0);
+    }
+
+    #[test]
     fn erfc_bridge_limits() {
         let b = ErfcBridge::default();
         assert!(b.alpha(1.0e-6) < 0.05);
@@ -460,6 +536,8 @@ mod tests {
             alpha_deg: 0.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1.0e-3,
+            knudsen: 1.0e-6,
+            reynolds_length: 0.0,
         };
         let force = fm.aero_force_moment_body(&ctx).unwrap();
         assert_relative_eq!(force.force_n_body.x, 0.0, epsilon = 1e-12);
@@ -476,6 +554,8 @@ mod tests {
             alpha_deg: f64::NAN,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1.0e-3,
+            knudsen: 100.0,
+            reynolds_length: 0.0,
         };
         assert!(matches!(
             fm.aero_force_moment_body(&ctx),
@@ -494,6 +574,8 @@ mod tests {
             alpha_deg: 45.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: -1.0e-3,
+            knudsen: f64::INFINITY,
+            reynolds_length: 0.0,
         };
         assert!(matches!(
             fm.aero_force_moment_body(&ctx),
@@ -546,6 +628,7 @@ mod tests {
                 reference_area_m2: 1.0,
             }),
             mach_handoff: 4.0,
+            mach_bridge: None,
             bridge: Box::new(ChengBridge),
             knudsen: 1.0e-6,
         };
@@ -554,6 +637,8 @@ mod tests {
             alpha_deg: 5.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1.0e4,
+            knudsen: 1.0e-6,
+            reynolds_length: 0.0,
         };
         let f = hybrid.aero_force_moment_body(&ctx).unwrap();
         // At Kn ≈ 0, force should be dominated by the continuum
@@ -580,6 +665,7 @@ mod tests {
                 reference_area_m2: 1.0,
             }),
             mach_handoff: 4.0,
+            mach_bridge: None,
             bridge: Box::new(LinearKnudsenBridge {
                 kn_lo: 0.01,
                 kn_hi: 1.0,
@@ -591,6 +677,8 @@ mod tests {
             alpha_deg: 5.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1.0e4,
+            knudsen: 100.0,
+            reynolds_length: 0.0,
         };
         let f = hybrid.aero_force_moment_body(&ctx).unwrap();
         // FM limit: pure FM contribution, no continuum blending.
@@ -616,6 +704,7 @@ mod tests {
             }),
             free_molecular: Box::new(fm),
             mach_handoff: 4.0,
+            mach_bridge: None,
             bridge: Box::new(ChengBridge),
             knudsen: f64::INFINITY,
         };
@@ -624,6 +713,8 @@ mod tests {
             alpha_deg: 5.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1.0e4,
+            knudsen: f64::INFINITY,
+            reynolds_length: 0.0,
         };
         let f = hybrid.aero_force_moment_body(&ctx).unwrap();
         let fm_only = fm.aero_force_moment_body(&ctx).unwrap();

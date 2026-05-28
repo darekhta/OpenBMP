@@ -41,7 +41,8 @@ fields over compact syntax.
 | `[validation]` | yes | Runtime validation rules |
 | `[epoch]` | no | Absolute time metadata |
 | `[frames]` | no | Frame profile and local origins |
-| `[aero]` | no | External aerodynamic deck reference |
+| `[aero]` | no | Aerodynamic coefficient source: external deck, inline buildup, or live method |
+| `[aerothermal]` | no | Live entry heating / thermal-toy / ablation diagnostics and optional rigid-body mass feedback |
 | `[propulsion]` | no | Motor reference; ignition time |
 | `[wind]` | no | Structured wind block; overrides `environment.wind` |
 | `[atmosphere]` | no | Structured atmosphere block; overrides `environment.atmosphere` |
@@ -233,7 +234,7 @@ The v1 to v2 rewrite is mechanical:
 - Keep `[forces]` only when the scenario needs a non-default order or wants to
   disable a derived force. When omitted, the loader derives `gravity`, then
   `thrust` if propulsion or assembly engines are declared, then `aero` if an
-  aero deck is declared.
+  `[aero]` coefficient source is declared.
 
 ## Metadata
 
@@ -479,7 +480,7 @@ field is a free-form provenance string for the declared origin and is
 not optional. If both `[environment].frame_profile` and
 `[frames].profile` are declared, they must match.
 
-### Aero deck reference
+### Aerodynamic coefficient source
 
 ```toml
 [aero]
@@ -487,22 +488,129 @@ deck         = "../../data/aero/synthetic-niskanen-ch6-rocket.toml"
 deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27"
 ```
 
-`deck` is resolved relative to the scenario file directory. The optional
-`deck_sha256` field pins the file's SHA-256 digest; mismatches fail
-closed.
+`[aero]` declares a coefficient source or a live method:
+
+- `deck = "..."`: an external TOML deck resolved relative to the
+  scenario file directory. Optional `deck_sha256` pins the file's
+  SHA-256 digest; mismatches fail closed.
+- `[aero.buildup]`: an inline launch-vehicle continuum drag buildup
+  that bakes a deck at load time from vehicle geometry and the declared
+  reference atmosphere.
+- `[aero.method]`: a runtime method selector. `kind = "deck"` is the
+  default and uses `deck` or `[aero.buildup]`; hypersonic live methods
+  (`modified_newtonian`, `tangent_cone`, `tangent_wedge`,
+  `free_molecular`) do not use an external deck and run directly in the
+  force / moment stack.
+
+Declaring both `deck` and `[aero.buildup]` fails with
+`ScenarioError::AmbiguousAero`.
+
+Runtime hypersonic method example:
+
+```toml
+[aero]
+
+[aero.method]
+kind = "modified_newtonian"
+
+[aero.method.modified_newtonian]
+cp_max = 2.0
+reference_area_m2 = 1.0
+reference_length_m = 1.0
+```
+
+Rigid-body runs wire the live aero method into both force and
+body-frame moment evaluation; point-mass runs consume only force.
+
+### Live aerothermal coupling
+
+`[aerothermal]` runs inside the runner loop when declared. The driver
+samples the runtime atmosphere at the current state, builds an
+`AerothermalContext`, evaluates Sutton-Graves or Fay-Riddell stagnation
+heating, and emits `aerothermal.*` telemetry. Optional
+`[aerothermal.thermal_toy]` and `[aerothermal.ablation]` sub-blocks
+advance one step per kernel tick. `feedback = "mass"` is accepted only
+for `rigid_body` vehicles and feeds the ablation gas mass rate into the
+rigid mass model.
+
+```toml
+[aerothermal]
+stagnation_kind = "sutton_graves" # or "fay_riddell"
+nose_radius_m = 0.5
+wall_temperature_k = 1500.0
+wall_catalysis = "fully_catalytic" # or "non_catalytic"
+
+[aerothermal.ablation]
+virgin_material = "textbook_pica_like"
+char_material = "textbook_char"
+thickness_m = 0.05
+n_nodes = 7
+pyrolysis_enthalpy_j_kg = 2.4e6
+gas_yield_fraction = 0.6
+feedback = "mass" # "none" by default
+```
+
+Telemetry channels include `aerothermal.q_conv_w_m2`,
+`aerothermal.q_rad_w_m2`, `aerothermal.h_aw_j_kg`,
+`aerothermal.recovery_temperature_k`, `aerothermal.knudsen`,
+`aerothermal.wall_temperature_k`,
+`aerothermal.backwall_temperature_k`,
+`aerothermal.recession_depth_m`,
+`aerothermal.gas_mdot_kg_m2_s`, and
+`mass.aerothermal_mass_loss_kg_s`.
 
 Two deck formats are supported. **Schema 1** is the three-axis
 `(mach, alpha, beta) → (CN, CD, CM)` deck documented in
 [`software-architecture.md § Deck Format`](software-architecture.md#deck-format-in-house-toml).
 **Schema 2** extends Schema 1 with optional control-effector
 axes; see [Schema-2 aero decks](#schema-2-aero-decks) below.
-The `[aero]` block stays the same in both cases — it's just a reference
-plus an optional digest pin. The schema discriminator lives inside the
-deck file itself (`openbmp.aero_deck = 1` or `= 2`).
+For external decks, the schema discriminator lives inside the deck file
+itself (`openbmp.aero_deck = 1` or `= 2`).
 When `[multi_body]` is declared and `forces.models` includes `"aero"`,
 `aero.mounted_to = "<body id>"` is required so post-separation lanes
-can route deck forces to only the body that still carries the aero
+can route aero forces to only the body that still carries the aero
 surface model.
+
+Inline buildup form:
+
+```toml
+[aero]
+
+[aero.buildup]
+body_diameter_m = 0.197
+body_length_m = 2.34
+surface_roughness_m = 6.0e-5
+reference_area_m2 = 0.0305
+reference_length_m = 0.197
+center_of_gravity_from_nose_m = 1.1 # optional; defaults to body midpoint
+mach_grid = { min = 0.0, max = 8.0, steps = 161 }
+alpha_grid_deg = { min = 0.0, max = 8.0, steps = 9 }
+reference_altitude_m = 0.0
+
+[aero.buildup.nose]
+shape = "ogive" # conical | ogive | von_karman | hemispherical
+fineness = 3.5
+
+[aero.buildup.afterbody] # optional boattail or flare
+exit_diameter_m = 0.140
+length_m = 0.180
+
+[aero.buildup.fins] # optional
+count = 4
+root_chord_m = 0.30
+tip_chord_m = 0.12
+span_m = 0.16
+thickness_ratio = 0.06
+sweep_rad = 0.52
+```
+
+The buildup uses Sutherland viscosity from the sampled reference
+temperature to compute bake-time Reynolds number, includes power-off
+base drag and boattail/flare effects, and produces a fixed
+`(mach, alpha, beta=0) -> (CN, CD, CM)` deck. Point-mass vehicles
+consume the baked deck axially at `alpha = beta = 0`; rigid-body
+vehicles resolve velocity into the body frame and query the alpha/beta
+axes before rotating the reduced force back to ECI.
 
 ### Motor reference
 
@@ -670,11 +778,29 @@ Force-model names accepted in `[forces].models`:
 | Name | Source | Notes |
 |---|---|---|
 | `gravity` | `openbmp-physics` | Constant, point-mass, or J2 (selected by `[environment].gravity`) |
-| `aero` | `openbmp-aero` | Requires `[aero]` block |
+| `aero` | `openbmp-aero` | Requires `[aero]` block with `deck` or `buildup` |
 | `thrust` | `openbmp-propulsion` | Requires `[propulsion.motor]` block |
 
 The list is ordered and deterministic; reordering changes telemetry
 bytes.
+
+Schema v3 also accepts phase-gated overrides:
+
+```toml
+[forces]
+models = ["gravity"] # default stack
+
+[[forces.phase_override]]
+phase = "entry_interface"
+models = ["gravity", "aero", "aerothermal_diagnostics"]
+```
+
+The override phase must match a declared mission phase/state. The
+runner builds the union of default and override force models, but in
+phases without an override only `[forces].models` plus runtime internal
+models such as recovery drag are active. When overrides are present,
+telemetry includes `forces.active_models` so the selected stack is
+observable after the run.
 
 ### Hash pinning
 

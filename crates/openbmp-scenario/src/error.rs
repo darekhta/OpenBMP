@@ -244,6 +244,13 @@ pub enum ScenarioError {
         "scenario declares both [propulsion.motor] and [[vehicle.assembly.engines]]; pick one path per vehicle"
     )]
     AmbiguousPropulsion,
+    /// A scenario simultaneously declares both an aero deck file and
+    /// an aero buildup block. By contract, a vehicle uses one aero
+    /// coefficient source or the other, never both.
+    #[error(
+        "scenario declares both [aero].deck and [aero.buildup]; pick one aerodynamic coefficient source"
+    )]
+    AmbiguousAero,
     /// A tank references a body id that is not declared in
     /// `[[vehicle.assembly.bodies]]`.
     #[error("{field} references unknown body id {value}")]

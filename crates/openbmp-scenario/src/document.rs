@@ -122,6 +122,8 @@ pub struct ScenarioDocument {
     pub staging_analysis: Option<StagingAnalysisConfig>,
     /// Optional descent / entry profile configuration (v3 only).
     pub entry_profile: Option<EntryProfileConfig>,
+    /// Optional live aerothermal driver configuration.
+    pub aerothermal: Option<AerothermalConfig>,
     /// Optional declarative mission block.
     ///
     /// When present, the runner builds an `openbmp_sim::MissionPhaseGraph`
@@ -187,6 +189,25 @@ impl ScenarioDocument {
         models
     }
 
+    /// Force-like model names used either by the default force stack
+    /// or any per-phase override. Diagnostic-only entries such as
+    /// `aerothermal_diagnostics` are excluded because they are not
+    /// `ForceModel` implementations.
+    #[must_use]
+    pub fn force_model_universe(&self) -> Vec<String> {
+        let mut models = self.resolved_force_models();
+        if let Some(forces) = &self.forces {
+            for override_config in &forces.phase_override {
+                for model in &override_config.models {
+                    if model != "aerothermal_diagnostics" && !models.contains(model) {
+                        models.push(model.clone());
+                    }
+                }
+            }
+        }
+        models
+    }
+
     /// Validate semantic constraints against a model registry.
     ///
     /// # Errors
@@ -223,6 +244,22 @@ impl ScenarioDocument {
         }
         if let Some(aero) = &self.aero {
             aero.validate()?;
+        }
+        if let Some(aerothermal) = &self.aerothermal {
+            aerothermal.validate(self.time.dt_s)?;
+            if aerothermal
+                .ablation
+                .as_ref()
+                .is_some_and(|ablation| ablation.feedback == "mass")
+                && self.vehicle.kind != "rigid_body"
+            {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "aerothermal.ablation.feedback".to_owned(),
+                    value_a: "mass".to_owned(),
+                    field_b: "vehicle.kind".to_owned(),
+                    value_b: self.vehicle.kind.clone(),
+                });
+            }
         }
         if let Some(propulsion) = &self.propulsion {
             propulsion.validate(registry)?;
@@ -279,6 +316,7 @@ impl ScenarioDocument {
         if let Some(mission) = &self.mission {
             mission.validate()?;
         }
+        self.validate_force_phase_overrides()?;
         if let Some(fc) = &self.fc {
             fc.validate()?;
         }
@@ -401,6 +439,13 @@ impl ScenarioDocument {
                 });
             }
             entry_profile.validate()?;
+        }
+        if self.aerothermal.is_some() && header < SCENARIO_VERSION_V3 {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "aerothermal".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
         }
         Ok(())
     }
@@ -1161,10 +1206,7 @@ impl ScenarioDocument {
         // populated model list. The `unwrap_or` keeps the helper
         // total-defined for future call paths that bypass parser
         // synthesis.
-        let force_models: &[String] = self
-            .forces
-            .as_ref()
-            .map_or(&[][..], |f| f.models.as_slice());
+        let force_models = self.force_model_universe();
         if force_models.iter().any(|model| model == "aero") && self.aero.is_none() {
             return Err(ScenarioError::MissingRequiredField {
                 field: "aero".to_owned(),
@@ -1199,6 +1241,51 @@ impl ScenarioDocument {
                 role: ModelRole::Force,
                 name: "thrust".to_owned(),
             });
+        }
+        Ok(())
+    }
+
+    fn validate_force_phase_overrides(&self) -> Result<(), ScenarioError> {
+        let Some(forces) = &self.forces else {
+            return Ok(());
+        };
+        if forces.phase_override.is_empty() {
+            return Ok(());
+        }
+        let Some(mission) = &self.mission else {
+            return Err(ScenarioError::MissingRequiredField {
+                field: "mission".to_owned(),
+                role: ModelRole::Force,
+                name: "forces.phase_override".to_owned(),
+            });
+        };
+        let declared: BTreeSet<String> = if mission.states.is_empty() {
+            mission
+                .phases
+                .iter()
+                .map(|phase| phase.id.clone())
+                .collect()
+        } else {
+            mission
+                .states
+                .iter()
+                .map(|state| state.id.clone())
+                .collect()
+        };
+        for override_config in &forces.phase_override {
+            let phase = override_config.phase.as_str();
+            let bare = phase
+                .strip_prefix("mission.phases.")
+                .or_else(|| phase.strip_prefix("mission.states."))
+                .unwrap_or(phase);
+            if !declared.contains(phase) && !declared.contains(bare) {
+                return Err(ScenarioError::MissionGraph {
+                    reason: format!(
+                        "forces.phase_override phase `{}` does not match any declared mission phase/state",
+                        override_config.phase
+                    ),
+                });
+            }
         }
         Ok(())
     }
@@ -1872,6 +1959,9 @@ impl EnvironmentConfig {
 pub struct ForcesConfig {
     /// Force model names in evaluation order.
     pub models: Vec<String>,
+    /// Optional per-mission-phase model-selection overrides.
+    #[serde(default)]
+    pub phase_override: Vec<ForcePhaseOverrideConfig>,
 }
 
 impl ForcesConfig {
@@ -1879,10 +1969,77 @@ impl ForcesConfig {
         require_non_empty_list("forces.models", &self.models)?;
         require_unique("forces.models", &self.models)?;
         for model in &self.models {
-            registry.resolve(ModelRole::Force, model)?;
+            validate_force_stack_model(registry, "forces.models", model)?;
+        }
+        let mut phases = BTreeSet::new();
+        for (index, override_config) in self.phase_override.iter().enumerate() {
+            override_config.validate(index, registry)?;
+            if !phases.insert(override_config.phase.clone()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: "forces.phase_override.phase".to_owned(),
+                    value: override_config.phase.clone(),
+                });
+            }
         }
         Ok(())
     }
+}
+
+/// Per-phase force-stack model selection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ForcePhaseOverrideConfig {
+    /// Mission phase id. Bare ids use the `mission.phases.<id>`
+    /// namespace; canonical `mission.phases.*` and `mission.states.*`
+    /// paths are also accepted by the runner.
+    pub phase: String,
+    /// Active model names during this phase.
+    pub models: Vec<String>,
+}
+
+impl ForcePhaseOverrideConfig {
+    fn validate(&self, index: usize, registry: &ModelRegistry) -> Result<(), ScenarioError> {
+        require_non_empty(
+            &format!("forces.phase_override[{index}].phase"),
+            &self.phase,
+        )?;
+        require_non_empty_list(
+            &format!("forces.phase_override[{index}].models"),
+            &self.models,
+        )?;
+        require_unique(
+            &format!("forces.phase_override[{index}].models"),
+            &self.models,
+        )?;
+        for model in &self.models {
+            validate_force_stack_model(
+                registry,
+                &format!("forces.phase_override[{index}].models"),
+                model,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_force_stack_model(
+    registry: &ModelRegistry,
+    field: &str,
+    model: &str,
+) -> Result<(), ScenarioError> {
+    if model == "aerothermal_diagnostics" {
+        return Ok(());
+    }
+    registry
+        .resolve(ModelRole::Force, model)
+        .map(|_| ())
+        .map_err(|err| match err {
+            ScenarioError::UnknownModel { .. } => ScenarioError::UnknownModel {
+                role: ModelRole::Force,
+                name: format!("{field}:{model}"),
+            },
+            other => other,
+        })
 }
 
 /// Telemetry table.
@@ -2755,13 +2912,24 @@ impl EntryCorridorConfig {
     }
 }
 
-/// Aerodynamic deck reference.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// Aerodynamic coefficient source.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AeroConfig {
     /// Path to an aero deck TOML file (resolved relative to
-    /// the scenario directory).
-    pub deck: PathBuf,
+    /// the scenario directory). Mutually exclusive with
+    /// [`Self::buildup`].
+    #[serde(default)]
+    pub deck: Option<PathBuf>,
+    /// Inline geometry-driven continuum drag buildup. Mutually
+    /// exclusive with [`Self::deck`].
+    #[serde(default)]
+    pub buildup: Option<AeroBuildupConfig>,
+    /// Runtime aero method dispatch. Absent or `kind = "deck"` keeps
+    /// the legacy deck / buildup path; hypersonic kinds are evaluated
+    /// directly in the kernel loop.
+    #[serde(default)]
+    pub method: Option<AeroMethodConfig>,
     /// Optional owner body for post-separation force-stack routing.
     /// Required when `[multi_body]` is declared and `forces.models`
     /// includes `aero`.
@@ -2774,13 +2942,868 @@ pub struct AeroConfig {
 
 impl AeroConfig {
     fn validate(&self) -> Result<(), ScenarioError> {
-        if self.deck.as_os_str().is_empty() {
-            return Err(ScenarioError::EmptyField {
-                field: "aero.deck".to_owned(),
-            });
+        let method_kind = self
+            .method
+            .as_ref()
+            .map_or("deck", |method| method.kind.as_str());
+        if let Some(method) = &self.method {
+            method.validate("aero.method")?;
+        }
+        if method_kind == "deck" {
+            match (&self.deck, &self.buildup) {
+                (Some(_), Some(_)) => return Err(ScenarioError::AmbiguousAero),
+                (None, None) => {
+                    return Err(ScenarioError::MissingRequiredField {
+                        field: "aero.deck_or_buildup".to_owned(),
+                        role: ModelRole::Force,
+                        name: "aero".to_owned(),
+                    });
+                }
+                (Some(deck), None) => {
+                    if deck.as_os_str().is_empty() {
+                        return Err(ScenarioError::EmptyField {
+                            field: "aero.deck".to_owned(),
+                        });
+                    }
+                }
+                (None, Some(buildup)) => {
+                    if self.deck_sha256.is_some() {
+                        return Err(ScenarioError::UnexpectedField {
+                            field: "aero.deck_sha256".to_owned(),
+                            role: ModelRole::Force,
+                            name: "buildup".to_owned(),
+                        });
+                    }
+                    buildup.validate("aero.buildup")?;
+                }
+            }
+        } else {
+            if self.deck.is_some() || self.buildup.is_some() || self.deck_sha256.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "aero.deck/aero.buildup/aero.deck_sha256".to_owned(),
+                    role: ModelRole::Force,
+                    name: method_kind.to_owned(),
+                });
+            }
         }
         if let Some(mounted_to) = &self.mounted_to {
             require_non_empty("aero.mounted_to", mounted_to)?;
+        }
+        Ok(())
+    }
+}
+
+/// Runtime aerodynamic method selector.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroMethodConfig {
+    /// Method kind: `deck`, `modified_newtonian`, `tangent_cone`,
+    /// `tangent_wedge`, or `free_molecular`.
+    pub kind: String,
+    /// Parameters for `kind = "modified_newtonian"`.
+    #[serde(default)]
+    pub modified_newtonian: Option<AeroModifiedNewtonianConfig>,
+    /// Parameters for `kind = "tangent_cone"`.
+    #[serde(default)]
+    pub tangent_cone: Option<AeroTangentConeConfig>,
+    /// Parameters for `kind = "tangent_wedge"`.
+    #[serde(default)]
+    pub tangent_wedge: Option<AeroTangentWedgeConfig>,
+    /// Parameters for `kind = "free_molecular"`.
+    #[serde(default)]
+    pub free_molecular: Option<AeroFreeMolecularConfig>,
+}
+
+impl AeroMethodConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_supported(
+            &format!("{path}.kind"),
+            &self.kind,
+            &[
+                "deck",
+                "modified_newtonian",
+                "tangent_cone",
+                "tangent_wedge",
+                "free_molecular",
+            ],
+        )?;
+        match self.kind.as_str() {
+            "deck" => self.reject_subtables(path, "deck"),
+            "modified_newtonian" => {
+                required_method(&self.modified_newtonian, path, "modified_newtonian")?
+                    .validate(&format!("{path}.modified_newtonian"))?;
+                self.reject_unselected(path, &["modified_newtonian"])
+            }
+            "tangent_cone" => {
+                required_method(&self.tangent_cone, path, "tangent_cone")?
+                    .validate(&format!("{path}.tangent_cone"))?;
+                self.reject_unselected(path, &["tangent_cone"])
+            }
+            "tangent_wedge" => {
+                required_method(&self.tangent_wedge, path, "tangent_wedge")?
+                    .validate(&format!("{path}.tangent_wedge"))?;
+                self.reject_unselected(path, &["tangent_wedge"])
+            }
+            "free_molecular" => {
+                required_method(&self.free_molecular, path, "free_molecular")?
+                    .validate(&format!("{path}.free_molecular"))?;
+                self.reject_unselected(path, &["free_molecular"])
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn reject_subtables(&self, path: &str, kind: &str) -> Result<(), ScenarioError> {
+        self.reject_unselected(path, &[])
+            .map_err(|_| ScenarioError::UnexpectedField {
+                field: format!("{path}.*"),
+                role: ModelRole::Force,
+                name: kind.to_owned(),
+            })
+    }
+
+    fn reject_unselected(&self, path: &str, selected: &[&str]) -> Result<(), ScenarioError> {
+        for (name, present) in [
+            ("modified_newtonian", self.modified_newtonian.is_some()),
+            ("tangent_cone", self.tangent_cone.is_some()),
+            ("tangent_wedge", self.tangent_wedge.is_some()),
+            ("free_molecular", self.free_molecular.is_some()),
+        ] {
+            if present && !selected.contains(&name) {
+                return Err(ScenarioError::UnexpectedField {
+                    field: format!("{path}.{name}"),
+                    role: ModelRole::Force,
+                    name: self.kind.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn required_method<'a, T>(
+    value: &'a Option<T>,
+    path: &str,
+    kind: &str,
+) -> Result<&'a T, ScenarioError> {
+    value
+        .as_ref()
+        .ok_or_else(|| ScenarioError::MissingRequiredField {
+            field: format!("{path}.{kind}"),
+            role: ModelRole::Force,
+            name: kind.to_owned(),
+        })
+}
+
+/// Modified-Newtonian method parameters.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroModifiedNewtonianConfig {
+    /// Stagnation pressure coefficient.
+    pub cp_max: f64,
+    /// Reference area (m^2).
+    pub reference_area_m2: f64,
+    /// Reference length (m).
+    pub reference_length_m: f64,
+}
+
+impl AeroModifiedNewtonianConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_finite(&format!("{path}.cp_max"), self.cp_max)?;
+        if self.cp_max < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.cp_max"),
+                value: self.cp_max,
+                rule: "must be non-negative",
+            });
+        }
+        require_positive(&format!("{path}.reference_area_m2"), self.reference_area_m2)?;
+        require_positive(
+            &format!("{path}.reference_length_m"),
+            self.reference_length_m,
+        )?;
+        Ok(())
+    }
+}
+
+/// Tangent-cone method parameters.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroTangentConeConfig {
+    /// Cone half angle (rad).
+    pub cone_half_angle_rad: f64,
+    /// Reference area (m^2).
+    pub reference_area_m2: f64,
+    /// Reference length (m).
+    pub reference_length_m: f64,
+    /// Ratio of specific heats.
+    #[serde(default = "default_gamma")]
+    pub gamma: f64,
+}
+
+impl AeroTangentConeConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_positive(
+            &format!("{path}.cone_half_angle_rad"),
+            self.cone_half_angle_rad,
+        )?;
+        if self.cone_half_angle_rad >= std::f64::consts::FRAC_PI_2 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.cone_half_angle_rad"),
+                value: self.cone_half_angle_rad,
+                rule: "must be less than pi/2",
+            });
+        }
+        require_positive(&format!("{path}.reference_area_m2"), self.reference_area_m2)?;
+        require_positive(
+            &format!("{path}.reference_length_m"),
+            self.reference_length_m,
+        )?;
+        require_positive(&format!("{path}.gamma"), self.gamma)?;
+        Ok(())
+    }
+}
+
+/// Tangent-wedge method parameters.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroTangentWedgeConfig {
+    /// Wedge half angle (rad).
+    pub wedge_half_angle_rad: f64,
+    /// Reference area (m^2).
+    pub reference_area_m2: f64,
+    /// Ratio of specific heats.
+    #[serde(default = "default_gamma")]
+    pub gamma: f64,
+}
+
+impl AeroTangentWedgeConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_positive(
+            &format!("{path}.wedge_half_angle_rad"),
+            self.wedge_half_angle_rad,
+        )?;
+        if self.wedge_half_angle_rad >= std::f64::consts::FRAC_PI_2 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.wedge_half_angle_rad"),
+                value: self.wedge_half_angle_rad,
+                rule: "must be less than pi/2",
+            });
+        }
+        require_positive(&format!("{path}.reference_area_m2"), self.reference_area_m2)?;
+        require_positive(&format!("{path}.gamma"), self.gamma)?;
+        Ok(())
+    }
+}
+
+/// Free-molecular method parameters.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroFreeMolecularConfig {
+    /// Reference area (m^2).
+    pub reference_area_m2: f64,
+    /// Normal accommodation coefficient.
+    pub accommodation_normal: f64,
+    /// Tangential accommodation coefficient.
+    pub accommodation_tangential: f64,
+}
+
+impl AeroFreeMolecularConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_positive(&format!("{path}.reference_area_m2"), self.reference_area_m2)?;
+        validate_unit_interval(
+            &format!("{path}.accommodation_normal"),
+            self.accommodation_normal,
+        )?;
+        validate_unit_interval(
+            &format!("{path}.accommodation_tangential"),
+            self.accommodation_tangential,
+        )?;
+        Ok(())
+    }
+}
+
+const fn default_gamma() -> f64 {
+    1.4
+}
+
+fn validate_unit_interval(field: &str, value: f64) -> Result<(), ScenarioError> {
+    require_finite(field, value)?;
+    if !(0.0..=1.0).contains(&value) {
+        return Err(ScenarioError::InvalidNumber {
+            field: field.to_owned(),
+            value,
+            rule: "must be in [0, 1]",
+        });
+    }
+    Ok(())
+}
+
+/// Live aerothermal driver configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AerothermalConfig {
+    /// Stagnation model kind: `sutton_graves` or `fay_riddell`.
+    pub stagnation_kind: String,
+    /// Stagnation-point nose radius (m).
+    pub nose_radius_m: f64,
+    /// Constant wall temperature unless a thermal toy is declared (K).
+    pub wall_temperature_k: f64,
+    /// Wall catalysis selector.
+    #[serde(default = "default_wall_catalysis")]
+    pub wall_catalysis: String,
+    /// Fay-Riddell parameters required when `stagnation_kind =
+    /// "fay_riddell"`.
+    #[serde(default)]
+    pub fay_riddell: Option<AerothermalFayRiddellConfig>,
+    /// Optional stateful thermal-conduction toy.
+    #[serde(default)]
+    pub thermal_toy: Option<AerothermalThermalToyConfig>,
+    /// Optional stateful depth-resolved ablation toy.
+    #[serde(default)]
+    pub ablation: Option<AerothermalAblationConfig>,
+}
+
+impl AerothermalConfig {
+    fn validate(&self, dt_s: f64) -> Result<(), ScenarioError> {
+        require_supported(
+            "aerothermal.stagnation_kind",
+            &self.stagnation_kind,
+            &["sutton_graves", "fay_riddell"],
+        )?;
+        require_positive("aerothermal.nose_radius_m", self.nose_radius_m)?;
+        require_finite("aerothermal.wall_temperature_k", self.wall_temperature_k)?;
+        if !(100.0..=5000.0).contains(&self.wall_temperature_k) {
+            return Err(ScenarioError::InvalidNumber {
+                field: "aerothermal.wall_temperature_k".to_owned(),
+                value: self.wall_temperature_k,
+                rule: "must be in [100, 5000]",
+            });
+        }
+        require_supported(
+            "aerothermal.wall_catalysis",
+            &self.wall_catalysis,
+            &["fully_catalytic", "non_catalytic"],
+        )?;
+        match self.stagnation_kind.as_str() {
+            "sutton_graves" => {
+                if self.fay_riddell.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "aerothermal.fay_riddell".to_owned(),
+                        role: ModelRole::Force,
+                        name: "sutton_graves".to_owned(),
+                    });
+                }
+            }
+            "fay_riddell" => {
+                self.fay_riddell
+                    .as_ref()
+                    .ok_or_else(|| ScenarioError::MissingRequiredField {
+                        field: "aerothermal.fay_riddell".to_owned(),
+                        role: ModelRole::Force,
+                        name: "fay_riddell".to_owned(),
+                    })?
+                    .validate("aerothermal.fay_riddell")?;
+            }
+            _ => {}
+        }
+        if let Some(thermal) = &self.thermal_toy {
+            thermal.validate("aerothermal.thermal_toy", dt_s)?;
+        }
+        if let Some(ablation) = &self.ablation {
+            ablation.validate("aerothermal.ablation")?;
+        }
+        Ok(())
+    }
+}
+
+fn default_wall_catalysis() -> String {
+    "fully_catalytic".to_owned()
+}
+
+/// Fay-Riddell scenario parameters.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AerothermalFayRiddellConfig {
+    /// Lewis number.
+    pub lewis_number: f64,
+}
+
+impl AerothermalFayRiddellConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_positive(&format!("{path}.lewis_number"), self.lewis_number)
+    }
+}
+
+/// Stateful thermal-toy configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AerothermalThermalToyConfig {
+    /// Textbook material selector.
+    pub material: String,
+    /// Slab thickness (m).
+    pub thickness_m: f64,
+    /// Number of interior nodes.
+    pub n_nodes: u32,
+    /// Initial uniform slab temperature (K).
+    pub initial_temperature_k: f64,
+    /// Backwall boundary condition.
+    #[serde(default)]
+    pub backwall: Option<AerothermalBackwallConfig>,
+}
+
+impl AerothermalThermalToyConfig {
+    fn validate(&self, path: &str, dt_s: f64) -> Result<(), ScenarioError> {
+        require_supported(
+            &format!("{path}.material"),
+            &self.material,
+            &["textbook_pica_like", "textbook_avcoat_like"],
+        )?;
+        require_positive(&format!("{path}.thickness_m"), self.thickness_m)?;
+        if self.n_nodes < 5 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.n_nodes"),
+                value: f64::from(self.n_nodes),
+                rule: "must be >= 5",
+            });
+        }
+        require_positive(
+            &format!("{path}.initial_temperature_k"),
+            self.initial_temperature_k,
+        )?;
+        if let Some(backwall) = &self.backwall {
+            backwall.validate(&format!("{path}.backwall"))?;
+        }
+        let alpha = match self.material.as_str() {
+            "textbook_pica_like" => 0.08 / (270.0 * 1200.0),
+            "textbook_avcoat_like" => 0.16 / (512.0 * 1250.0),
+            _ => 0.0,
+        };
+        let dx = self.thickness_m / f64::from(self.n_nodes + 1);
+        if alpha * dt_s / (dx * dx) >= 0.5 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.n_nodes"),
+                value: f64::from(self.n_nodes),
+                rule: "violates explicit thermal-toy Fourier stability bound for time.dt_s",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Thermal-toy backwall boundary condition.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AerothermalBackwallConfig {
+    /// `adiabatic`, `prescribed`, or `convective`.
+    pub kind: String,
+    /// Prescribed backwall temperature (K), required for
+    /// `kind = "prescribed"`.
+    #[serde(default)]
+    pub t_k: Option<f64>,
+    /// Convective heat-transfer coefficient, required for
+    /// `kind = "convective"`.
+    #[serde(default)]
+    pub h_w_m2_k: Option<f64>,
+    /// Convective sink temperature (K), required for
+    /// `kind = "convective"`.
+    #[serde(default)]
+    pub t_inf_k: Option<f64>,
+}
+
+impl AerothermalBackwallConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_supported(
+            &format!("{path}.kind"),
+            &self.kind,
+            &["adiabatic", "prescribed", "convective"],
+        )?;
+        match self.kind.as_str() {
+            "adiabatic" => {
+                if self.t_k.is_some() || self.h_w_m2_k.is_some() || self.t_inf_k.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: path.to_owned(),
+                        role: ModelRole::Force,
+                        name: "adiabatic".to_owned(),
+                    });
+                }
+            }
+            "prescribed" => {
+                require_positive(
+                    &format!("{path}.t_k"),
+                    self.t_k
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("{path}.t_k"),
+                            role: ModelRole::Force,
+                            name: "prescribed".to_owned(),
+                        })?,
+                )?;
+                if self.h_w_m2_k.is_some() || self.t_inf_k.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: format!("{path}.h_w_m2_k/t_inf_k"),
+                        role: ModelRole::Force,
+                        name: "prescribed".to_owned(),
+                    });
+                }
+            }
+            "convective" => {
+                require_positive(
+                    &format!("{path}.h_w_m2_k"),
+                    self.h_w_m2_k
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("{path}.h_w_m2_k"),
+                            role: ModelRole::Force,
+                            name: "convective".to_owned(),
+                        })?,
+                )?;
+                require_positive(
+                    &format!("{path}.t_inf_k"),
+                    self.t_inf_k
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("{path}.t_inf_k"),
+                            role: ModelRole::Force,
+                            name: "convective".to_owned(),
+                        })?,
+                )?;
+                if self.t_k.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: format!("{path}.t_k"),
+                        role: ModelRole::Force,
+                        name: "convective".to_owned(),
+                    });
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// Stateful ablation configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AerothermalAblationConfig {
+    /// Virgin textbook material selector.
+    pub virgin_material: String,
+    /// Char textbook material selector.
+    pub char_material: String,
+    /// Modeled slab thickness (m).
+    pub thickness_m: f64,
+    /// Number of depth nodes.
+    pub n_nodes: u32,
+    /// Pyrolysis enthalpy (J/kg).
+    pub pyrolysis_enthalpy_j_kg: f64,
+    /// Fraction of pyrolyzed mass emitted as gas.
+    pub gas_yield_fraction: f64,
+    /// Feedback mode: `none` or `mass`.
+    #[serde(default = "default_ablation_feedback")]
+    pub feedback: String,
+}
+
+impl AerothermalAblationConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_supported(
+            &format!("{path}.virgin_material"),
+            &self.virgin_material,
+            &[
+                "textbook_pica_like",
+                "textbook_avcoat_like",
+                "textbook_graphite",
+            ],
+        )?;
+        require_supported(
+            &format!("{path}.char_material"),
+            &self.char_material,
+            &["textbook_char", "textbook_graphite"],
+        )?;
+        require_positive(&format!("{path}.thickness_m"), self.thickness_m)?;
+        if self.n_nodes < 5 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.n_nodes"),
+                value: f64::from(self.n_nodes),
+                rule: "must be >= 5",
+            });
+        }
+        require_positive(
+            &format!("{path}.pyrolysis_enthalpy_j_kg"),
+            self.pyrolysis_enthalpy_j_kg,
+        )?;
+        validate_unit_interval(
+            &format!("{path}.gas_yield_fraction"),
+            self.gas_yield_fraction,
+        )?;
+        require_supported(
+            &format!("{path}.feedback"),
+            &self.feedback,
+            &["none", "mass"],
+        )?;
+        Ok(())
+    }
+}
+
+fn default_ablation_feedback() -> String {
+    "none".to_owned()
+}
+
+/// Inline launch-vehicle continuum aero buildup configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroBuildupConfig {
+    /// Maximum body diameter (m).
+    pub body_diameter_m: f64,
+    /// Total body length including nose and afterbody (m).
+    pub body_length_m: f64,
+    /// Surface roughness height (m).
+    pub surface_roughness_m: f64,
+    /// Coefficient reference area (m^2).
+    pub reference_area_m2: f64,
+    /// Moment reference length (m).
+    pub reference_length_m: f64,
+    /// Optional center of gravity from nose tip (m).
+    #[serde(default)]
+    pub center_of_gravity_from_nose_m: Option<f64>,
+    /// Inclusive Mach grid range.
+    pub mach_grid: AeroBuildupGridConfig,
+    /// Inclusive angle-of-attack grid range in degrees.
+    pub alpha_grid_deg: AeroBuildupGridConfig,
+    /// Reference altitude used to compute bake-time Reynolds number.
+    pub reference_altitude_m: f64,
+    /// Nose / forebody declaration.
+    pub nose: AeroBuildupNoseConfig,
+    /// Optional afterbody taper.
+    #[serde(default)]
+    pub afterbody: Option<AeroBuildupAfterbodyConfig>,
+    /// Optional fin set.
+    #[serde(default)]
+    pub fins: Option<AeroBuildupFinsConfig>,
+}
+
+impl AeroBuildupConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_positive(&format!("{path}.body_diameter_m"), self.body_diameter_m)?;
+        require_positive(&format!("{path}.body_length_m"), self.body_length_m)?;
+        if self.body_length_m <= self.body_diameter_m {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.body_length_m"),
+                value: self.body_length_m,
+                rule: "must be greater than body_diameter_m",
+            });
+        }
+        require_finite(
+            &format!("{path}.surface_roughness_m"),
+            self.surface_roughness_m,
+        )?;
+        if self.surface_roughness_m < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.surface_roughness_m"),
+                value: self.surface_roughness_m,
+                rule: "must be non-negative",
+            });
+        }
+        require_positive(&format!("{path}.reference_area_m2"), self.reference_area_m2)?;
+        require_positive(
+            &format!("{path}.reference_length_m"),
+            self.reference_length_m,
+        )?;
+        if let Some(x_cg) = self.center_of_gravity_from_nose_m {
+            require_finite(&format!("{path}.center_of_gravity_from_nose_m"), x_cg)?;
+            if !(0.0..=self.body_length_m).contains(&x_cg) {
+                return Err(ScenarioError::InvalidNumber {
+                    field: format!("{path}.center_of_gravity_from_nose_m"),
+                    value: x_cg,
+                    rule: "must lie within [0, body_length_m]",
+                });
+            }
+        }
+        self.mach_grid.validate(&format!("{path}.mach_grid"))?;
+        self.alpha_grid_deg
+            .validate(&format!("{path}.alpha_grid_deg"))?;
+        require_finite(
+            &format!("{path}.reference_altitude_m"),
+            self.reference_altitude_m,
+        )?;
+        if self.reference_altitude_m < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.reference_altitude_m"),
+                value: self.reference_altitude_m,
+                rule: "must be non-negative",
+            });
+        }
+        self.nose.validate(&format!("{path}.nose"))?;
+        if let Some(afterbody) = &self.afterbody {
+            afterbody.validate(&format!("{path}.afterbody"), self.body_diameter_m)?;
+        }
+        if let Some(fins) = &self.fins {
+            fins.validate(&format!("{path}.fins"), self.body_length_m)?;
+        }
+        Ok(())
+    }
+}
+
+/// Inclusive scalar grid declaration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroBuildupGridConfig {
+    /// Minimum grid value.
+    pub min: f64,
+    /// Maximum grid value.
+    pub max: f64,
+    /// Number of grid points.
+    pub steps: u32,
+}
+
+impl AeroBuildupGridConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_finite(&format!("{path}.min"), self.min)?;
+        require_finite(&format!("{path}.max"), self.max)?;
+        if self.max < self.min {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.max"),
+                value: self.max,
+                rule: "must be greater than or equal to min",
+            });
+        }
+        require_positive_u32(&format!("{path}.steps"), self.steps)?;
+        Ok(())
+    }
+}
+
+/// Nose declaration for the aero buildup.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroBuildupNoseConfig {
+    /// Shape name: `conical`, `ogive`, `von_karman`, or `hemispherical`.
+    pub shape: String,
+    /// Nose fineness ratio for ogive or von Karman shapes.
+    #[serde(default)]
+    pub fineness: Option<f64>,
+    /// Cone half-angle for conical shapes.
+    #[serde(default)]
+    pub half_angle_rad: Option<f64>,
+}
+
+impl AeroBuildupNoseConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("{path}.shape"), &self.shape)?;
+        match self.shape.as_str() {
+            "conical" => {
+                let angle =
+                    self.half_angle_rad
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("{path}.half_angle_rad"),
+                            role: ModelRole::Force,
+                            name: "conical".to_owned(),
+                        })?;
+                require_positive(&format!("{path}.half_angle_rad"), angle)?;
+                if self.fineness.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: format!("{path}.fineness"),
+                        role: ModelRole::Force,
+                        name: "conical".to_owned(),
+                    });
+                }
+            }
+            "ogive" | "von_karman" => {
+                let fineness =
+                    self.fineness
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("{path}.fineness"),
+                            role: ModelRole::Force,
+                            name: self.shape.clone(),
+                        })?;
+                require_positive(&format!("{path}.fineness"), fineness)?;
+                if self.half_angle_rad.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: format!("{path}.half_angle_rad"),
+                        role: ModelRole::Force,
+                        name: self.shape.clone(),
+                    });
+                }
+            }
+            "hemispherical" => {
+                if self.fineness.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: format!("{path}.fineness"),
+                        role: ModelRole::Force,
+                        name: "hemispherical".to_owned(),
+                    });
+                }
+                if self.half_angle_rad.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: format!("{path}.half_angle_rad"),
+                        role: ModelRole::Force,
+                        name: "hemispherical".to_owned(),
+                    });
+                }
+            }
+            other => {
+                return Err(ScenarioError::UnsupportedValue {
+                    field: format!("{path}.shape"),
+                    value: other.to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Afterbody taper declaration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroBuildupAfterbodyConfig {
+    /// Exit diameter (m).
+    pub exit_diameter_m: f64,
+    /// Taper length (m).
+    pub length_m: f64,
+}
+
+impl AeroBuildupAfterbodyConfig {
+    fn validate(&self, path: &str, _body_diameter_m: f64) -> Result<(), ScenarioError> {
+        require_positive(&format!("{path}.exit_diameter_m"), self.exit_diameter_m)?;
+        require_positive(&format!("{path}.length_m"), self.length_m)?;
+        Ok(())
+    }
+}
+
+/// Fin-set declaration for the aero buildup.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroBuildupFinsConfig {
+    /// Number of identical fins.
+    pub count: u32,
+    /// Root chord (m).
+    pub root_chord_m: f64,
+    /// Tip chord (m).
+    pub tip_chord_m: f64,
+    /// Semispan (m).
+    pub span_m: f64,
+    /// Thickness divided by chord.
+    pub thickness_ratio: f64,
+    /// Leading-edge sweep angle (rad).
+    pub sweep_rad: f64,
+}
+
+impl AeroBuildupFinsConfig {
+    fn validate(&self, path: &str, body_length_m: f64) -> Result<(), ScenarioError> {
+        require_positive_u32(&format!("{path}.count"), self.count)?;
+        require_positive(&format!("{path}.root_chord_m"), self.root_chord_m)?;
+        require_finite(&format!("{path}.tip_chord_m"), self.tip_chord_m)?;
+        if self.tip_chord_m < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.tip_chord_m"),
+                value: self.tip_chord_m,
+                rule: "must be non-negative",
+            });
+        }
+        require_positive(&format!("{path}.span_m"), self.span_m)?;
+        require_positive(&format!("{path}.thickness_ratio"), self.thickness_ratio)?;
+        require_finite(&format!("{path}.sweep_rad"), self.sweep_rad)?;
+        if self.root_chord_m > body_length_m {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.root_chord_m"),
+                value: self.root_chord_m,
+                rule: "must be less than or equal to body_length_m",
+            });
         }
         Ok(())
     }

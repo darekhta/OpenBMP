@@ -42,6 +42,7 @@ operational engagement meaning.
 | `delta_v_budget_m_s` | Ideal vehicle-intrinsic ΔV budget, never range-to-a-place. | Sutton & Biblarz; Curtis. |
 | `staging_analysis` | Offline rocket-equation budget or mass-optimal split over `Isp`, structural coefficient, and payload mass. | Sutton & Biblarz; Curtis. |
 | `burn_rate`, `chamber_pressure`, `grain`, `regression`, `mixture_ratio`, `mass_ratio`, `payload_fraction`, `structural_coefficient`, `klemmung`, `expansion_ratio`, `blowdown` | Propulsion mechanics vocabulary accepted for forward internal-ballistics, feed-system, and staging analysis. | Sutton & Biblarz; Huzel & Huang; Nakka. |
+| `drag_coefficient`, `cd0`, `zero_lift_drag`, `drag_polar`, `base_drag`, `boattail`, `flare`, `wave_drag`, `skin_friction`, `form_factor`, `reynolds`, `mach`, `normal_force`, `center_of_pressure`, `fineness_ratio`, `ballistic_coefficient` | Aerodynamics mechanics vocabulary accepted for forward geometry-to-coefficient models. | Hoerner; Barrowman; DATCOM; Niskanen. |
 
 ## Rejected operational vocabulary (lint additions)
 
@@ -65,6 +66,9 @@ of the existing rejected set documented in
 | `targetrange` | target-range | Desired range is an inverse-problem input; no staging or propulsion block accepts one. |
 | `throwweight` | throw-weight | Operational payload-at-range terminology; use `payload_mass_kg` at a declared ideal ΔV. |
 | `impactenergy` | impact-energy | Terminal-effect terminology, unrelated to forward propulsion analysis. |
+| `firingtable` | firing-table | A range/elevation product for gunnery; the aero buildup produces vehicle-intrinsic coefficients only. |
+| `rangetable` | range-table | A range-to-distance table is a targeting artifact, not an aerodynamic coefficient deck. |
+| `ballisticmatch` | ballistic-match | Operational "match this round" framing; accepted terms are `drag_coefficient`, `cd0`, and `drag_polar`. |
 
 > **Note.** Academic profile terms are deliberately *not* forbidden:
 > `ballistic`, `boost` (only the *phase* sense is replaced, not the word),
@@ -72,7 +76,10 @@ of the existing rejected set documented in
 > `downrange`, `delta_v`, `isp`, `mixture_ratio`, `mass_ratio`,
 > `payload_fraction`, `structural_coefficient`, `burn_rate`,
 > `chamber_pressure`, `grain`, `regression`, `klemmung`,
-> `expansion_ratio`, and `blowdown` are all accepted. The lint targets
+> `expansion_ratio`, `blowdown`, `drag_coefficient`, `cd0`,
+> `drag_polar`, `base_drag`, `boattail`, `wave_drag`,
+> `skin_friction`, `reynolds`, `mach`, `normal_force`, and
+> `ballistic_coefficient` are all accepted. The lint targets
 > engagement and targeting vocabulary, not trajectory or propulsion mechanics.
 
 ## Fail-closed validation rules

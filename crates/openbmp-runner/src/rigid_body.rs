@@ -32,10 +32,10 @@
 //! (`angular_velocity.x_rad_s` etc., frame `Body`).
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use nalgebra::Vector3;
-use openbmp_aero::{AeroDeck, AeroError};
+use openbmp_aero::AeroDeck;
 use openbmp_core::{
     AngularVelocity3, Body, BodyId, ChannelId, Duration, EngineId, ModelId, Position3, Quaternion,
     RecoveryId, SimTime, TankId, ValidationStatus, Velocity3,
@@ -46,15 +46,17 @@ use openbmp_physics::{
 use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
-    EndTime, ForceContext, ForceModel, NullEnvironment, RigidBodySeparation, RigidMassModel,
-    RigidModels, ScenarioScriptAction, SimulationConfig, SimulationKernel, StopReason, ZeroMoment,
+    ConstantMass, EndTime, ForceContext, ForceModel, NullEnvironment, RigidBodySeparation,
+    RigidMassModel, RigidModels, ScenarioScriptAction, SimulationConfig, SimulationKernel,
+    StopReason,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
 use openbmp_vehicle::{
-    Assembly, BoxedMassModel, DeckDragForceAdapter, EngineClusterForceAdapter,
-    EngineClusterMassAdapter, EngineClusterMomentAdapter, GravityForceAdapter, KernelVehicle,
-    MotorThrustForceAdapter, NamedForceModel, Vehicle, VehicleAssembly,
+    AeroMethodForceAdapter, AeroMethodMomentAdapter, Assembly, BoxedMassModel,
+    DeckDragForceAdapter, EngineClusterForceAdapter, EngineClusterMassAdapter,
+    EngineClusterMomentAdapter, GravityForceAdapter, KernelVehicle, MotorThrustForceAdapter,
+    NamedForceModel, NamedMomentModel, Vehicle, VehicleAssembly,
 };
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -127,6 +129,10 @@ pub fn run(
     wind_rack.reset();
 
     let loaded = load_models(document, resolved_files)?;
+    let mut aerothermal_driver = crate::aerothermal::LiveAerothermalDriver::maybe_new(document)?;
+    let aerothermal_feedback = aerothermal_driver
+        .as_ref()
+        .and_then(crate::aerothermal::LiveAerothermalDriver::mass_feedback);
     let mass_resources = RigidMassResources::new(document, &assembly)?;
     let initial_engine_snapshot = if engine_rack.is_empty() {
         BTreeMap::new()
@@ -147,8 +153,8 @@ pub fn run(
     )?;
     let kernel_vehicle = build_vehicle(document, &loaded, &assembly)?;
     let breakdown_vehicle = build_vehicle(document, &loaded, &assembly)?;
-    let mass_model = build_mass_model(&loaded, &mass_resources);
-    let moment_model = build_moment_model(document)?;
+    let mass_model = build_mass_model(&loaded, &mass_resources, aerothermal_feedback);
+    let moment_model = build_moment_model(document, &loaded)?;
     let rigid_models = RigidModels::new(moment_model, mass_model.clone());
     let separation_specs = build_rigid_body_separations(document, &mass_resources)?;
 
@@ -233,13 +239,18 @@ pub fn run(
         let wind = wind_rack.sample(s.position, &frame, s.time)?;
         kernel.set_wind_sample(wind);
     }
+    if let Some(driver) = &mut aerothermal_driver {
+        driver.evaluate_rigid_body(kernel.current_state(), 0.0)?;
+    }
     let mut fc_bridge = crate::fc_bridge::FcBridge::maybe_new(scenario, resolved_files)?;
     record_step(
+        document,
         &mut table,
         &kernel,
         &channel_set,
         &breakdown_vehicle,
         breakdown_atmosphere.as_ref(),
+        aerothermal_driver.as_ref().map(|driver| driver.output()),
         &[],
         &initial_snapshot,
     )?;
@@ -368,13 +379,18 @@ pub fn run(
         let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();
         apply_jettison_events(&mut kernel, &script_fired, &separation_specs, &mass_model)?;
+        if let Some(driver) = &mut aerothermal_driver {
+            driver.evaluate_rigid_body(kernel.current_state(), document.time.dt_s)?;
+        }
         let snapshot = effector_rack.snapshot();
         record_step(
+            document,
             &mut table,
             &kernel,
             &channel_set,
             &breakdown_vehicle,
             breakdown_atmosphere.as_ref(),
+            aerothermal_driver.as_ref().map(|driver| driver.output()),
             &mission_fired,
             &snapshot,
         )?;
@@ -458,7 +474,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
             ),
         });
     }
-    for name in document.force_models() {
+    for name in document.force_model_universe() {
         if !matches!(name.as_str(), "gravity" | "aero" | "thrust") {
             return Err(RunnerError::UnsupportedScenario {
                 what: format!("forces.models entry `{name}` (only gravity, aero, thrust wired)"),
@@ -470,7 +486,7 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     // validation guarantees that non-`none` flat selections carry a
     // structured `[wind]` block and that the kind names agree.
     let atmosphere_kind = scenario_atmosphere_kind(document);
-    let has_aero = document.force_models().iter().any(|m| m == "aero");
+    let has_aero = document.force_model_universe().iter().any(|m| m == "aero");
     if has_aero && !is_runtime_atmosphere_kind(atmosphere_kind) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
@@ -607,14 +623,21 @@ impl RigidMassResources {
 struct RigidMassResourceModel<M> {
     resources: RigidMassResources,
     motor: Option<M>,
+    aerothermal_feedback: Option<crate::aerothermal::AerothermalMassFeedback>,
     model_id: ModelId,
 }
 
 impl<M> RigidMassResourceModel<M> {
-    const fn new(resources: RigidMassResources, motor: Option<M>, model_id: ModelId) -> Self {
+    const fn new(
+        resources: RigidMassResources,
+        motor: Option<M>,
+        aerothermal_feedback: Option<crate::aerothermal::AerothermalMassFeedback>,
+        model_id: ModelId,
+    ) -> Self {
         Self {
             resources,
             motor,
+            aerothermal_feedback,
             model_id,
         }
     }
@@ -776,6 +799,11 @@ impl<M: Motor> RigidMassResourceModel<M> {
                 });
             };
             mass_rate_kg_s -= snap.mass_flow_kg_per_s;
+        }
+        if active_body.is_none()
+            && let Some(feedback) = &self.aerothermal_feedback
+        {
+            mass_rate_kg_s -= feedback.mass_loss_kg_s();
         }
         if !mass_rate_kg_s.is_finite() {
             return Err(openbmp_sim::ModelEvalError::NonFinite {
@@ -977,35 +1005,9 @@ fn load_models(
     document: &ScenarioDocument,
     resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> Result<LoadedModels, RunnerError> {
-    let aero_deck = if document.aero.is_some() {
-        let resolved = required_resolved_file(resolved_files, "aero.deck")?;
-        let text = std::str::from_utf8(&resolved.bytes).map_err(|e| {
-            RunnerError::Aero(AeroError::Io {
-                reason: format!(
-                    "could not read deck file {} as UTF-8: {e}",
-                    resolved.path.display()
-                ),
-            })
-        })?;
-        Some(AeroDeck::load_from_str(text)?)
-    } else {
-        None
-    };
+    let aero_deck = crate::aero::load_aero_deck(document, resolved_files)?;
     let motor = crate::propulsion::load_solid_motor(document, resolved_files)?;
     Ok(LoadedModels { aero_deck, motor })
-}
-
-fn required_resolved_file<'a>(
-    resolved_files: &'a BTreeMap<String, ResolvedFile>,
-    field: &str,
-) -> Result<&'a ResolvedFile, RunnerError> {
-    resolved_files
-        .get(field)
-        .ok_or_else(|| RunnerError::UnsupportedScenario {
-            what: format!(
-                "internal invariant: resolved file `{field}` missing after pin verification"
-            ),
-        })
 }
 
 fn build_initial_state(
@@ -1035,6 +1037,7 @@ fn build_initial_state(
     let mass_props = RigidMassResourceModel::new(
         mass_resources.clone(),
         loaded.motor.clone(),
+        None,
         RIGID_BODY_MOTOR_MASS_MODEL_ID,
     )
     .mass_properties_from_snapshots(start_time, None, engine_snapshot, tank_snapshot)
@@ -1216,34 +1219,64 @@ fn build_vehicle(
     assembly: &Assembly,
 ) -> Result<KernelVehicle<RigidBodyState>, RunnerError> {
     let mut named: Vec<NamedForceModel<RigidBodyState>> = Vec::new();
-    for name in document.force_models() {
+    for name in document.force_model_universe() {
         match name.as_str() {
             "gravity" => {
                 let force = build_gravity_force_adapter_rigid_body(document)?;
                 named.push(NamedForceModel::new("gravity", force));
             }
             "aero" => {
-                let deck =
-                    loaded
-                        .aero_deck
-                        .clone()
-                        .ok_or_else(|| RunnerError::UnsupportedScenario {
-                            what: "forces includes `aero` but [aero] block is missing".to_owned(),
-                        })?;
                 let atmosphere = build_document_runtime_atmosphere(document)?;
-                let drag = if let Some(owner) = optional_body_owner(
+                let owner = optional_body_owner(
                     document.aero.as_ref().and_then(|a| a.mounted_to.as_deref()),
-                ) {
-                    DeckDragForceAdapter::new_owned(
-                        deck,
-                        atmosphere,
-                        RIGID_BODY_AERO_MODEL_ID,
-                        owner,
-                    )
+                );
+                let method_kind = document
+                    .aero
+                    .as_ref()
+                    .and_then(|aero| aero.method.as_ref())
+                    .map_or("deck", |method| method.kind.as_str());
+                if method_kind == "deck" {
+                    let deck = loaded.aero_deck.clone().ok_or_else(|| {
+                        RunnerError::UnsupportedScenario {
+                            what: "forces includes `aero` but [aero] block is missing".to_owned(),
+                        }
+                    })?;
+                    let drag = if let Some(owner) = owner {
+                        DeckDragForceAdapter::new_owned(
+                            deck,
+                            atmosphere,
+                            RIGID_BODY_AERO_MODEL_ID,
+                            owner,
+                        )
+                    } else {
+                        DeckDragForceAdapter::new(deck, atmosphere, RIGID_BODY_AERO_MODEL_ID)
+                    };
+                    named.push(NamedForceModel::new("aero", Box::new(drag)));
                 } else {
-                    DeckDragForceAdapter::new(deck, atmosphere, RIGID_BODY_AERO_MODEL_ID)
-                };
-                named.push(NamedForceModel::new("aero", Box::new(drag)));
+                    let (method, reference_length_m) =
+                        crate::aero::build_aero_method(document, loaded.aero_deck.clone())?
+                            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                                what: "forces includes `aero` but [aero] block is missing"
+                                    .to_owned(),
+                            })?;
+                    let adapter = if let Some(owner) = owner {
+                        AeroMethodForceAdapter::new_owned(
+                            method,
+                            atmosphere,
+                            RIGID_BODY_AERO_MODEL_ID,
+                            reference_length_m,
+                            owner,
+                        )
+                    } else {
+                        AeroMethodForceAdapter::new(
+                            method,
+                            atmosphere,
+                            RIGID_BODY_AERO_MODEL_ID,
+                            reference_length_m,
+                        )
+                    };
+                    named.push(NamedForceModel::new("aero", Box::new(adapter)));
+                }
             }
             "thrust" => {
                 // Dispatch between single-motor and
@@ -1377,10 +1410,15 @@ fn build_vehicle(
     // `BoxedMassModel` view so the breakdown evaluator can query mass
     // when it needs to.
     let vehicle_mass = build_vehicle_scalar_mass_model(document, loaded, assembly)?;
-    KernelVehicle::new(named, vec![], Box::new(vehicle_mass)).map_err(|e| {
-        RunnerError::UnsupportedScenario {
-            what: format!("KernelVehicle construction failed: {e}"),
-        }
+    KernelVehicle::new_with_default_active_models(
+        named,
+        vec![],
+        Box::new(vehicle_mass),
+        crate::default_active_force_models(document),
+        crate::phase_force_overrides(document),
+    )
+    .map_err(|e| RunnerError::UnsupportedScenario {
+        what: format!("KernelVehicle construction failed: {e}"),
     })
 }
 
@@ -1437,97 +1475,48 @@ fn build_vehicle_scalar_mass_model(
     Ok(BoxedMassModel(inner))
 }
 
-type RigidMomentEither = RigidMomentEitherKind;
-
-#[derive(Debug)]
-enum RigidMomentEitherKind {
-    Zero(ZeroMoment),
-    EngineCluster(EngineClusterMomentAdapter),
-    TankRack(openbmp_vehicle::TankRackMomentAdapter),
-    EngineClusterAndTankRack(
-        EngineClusterMomentAdapter,
-        openbmp_vehicle::TankRackMomentAdapter,
-    ),
-    /// Direct-torque effectors only (no engine cluster,
-    /// no tanks). The closed-loop FC validation scenario for the
-    /// differential-flatness tracker uses this path.
-    DirectTorque(openbmp_vehicle::DirectTorqueMomentAdapter),
-}
-
-impl openbmp_sim::MomentModel<RigidBodyState> for RigidMomentEitherKind {
-    fn moment_n_m_body(
-        &self,
-        ctx: openbmp_sim::MomentContext<'_, RigidBodyState>,
-    ) -> Result<Vector3<f64>, openbmp_sim::ModelEvalError> {
-        match self {
-            Self::Zero(z) => {
-                <ZeroMoment as openbmp_sim::MomentModel<RigidBodyState>>::moment_n_m_body(z, ctx)
-            }
-            Self::EngineCluster(c) => <EngineClusterMomentAdapter as openbmp_sim::MomentModel<
-                RigidBodyState,
-            >>::moment_n_m_body(c, ctx),
-            Self::TankRack(t) => {
-                <openbmp_vehicle::TankRackMomentAdapter as openbmp_sim::MomentModel<
-                    RigidBodyState,
-                >>::moment_n_m_body(t, ctx)
-            }
-            Self::EngineClusterAndTankRack(c, t) => {
-                let cluster = <EngineClusterMomentAdapter as openbmp_sim::MomentModel<
-                    RigidBodyState,
-                >>::moment_n_m_body(c, ctx)?;
-                let tank = <openbmp_vehicle::TankRackMomentAdapter as openbmp_sim::MomentModel<
-                    RigidBodyState,
-                >>::moment_n_m_body(t, ctx)?;
-                Ok(cluster + tank)
-            }
-            Self::DirectTorque(d) => {
-                <openbmp_vehicle::DirectTorqueMomentAdapter as openbmp_sim::MomentModel<
-                    RigidBodyState,
-                >>::moment_n_m_body(d, ctx)
-            }
-        }
-    }
-
-    fn supports_separated_body_propagation(&self) -> bool {
-        match self {
-            Self::Zero(z) => {
-                <ZeroMoment as openbmp_sim::MomentModel<RigidBodyState>>::supports_separated_body_propagation(z)
-            }
-            Self::EngineCluster(c) => c.supports_separated_body_propagation(),
-            Self::TankRack(t) => t.supports_separated_body_propagation(),
-            Self::EngineClusterAndTankRack(c, t) => {
-                c.supports_separated_body_propagation() && t.supports_separated_body_propagation()
-            }
-            Self::DirectTorque(d) => d.supports_separated_body_propagation(),
-        }
-    }
-
-    fn validation(&self) -> ValidationStatus {
-        match self {
-            Self::Zero(z) => {
-                <ZeroMoment as openbmp_sim::MomentModel<RigidBodyState>>::validation(z)
-            }
-            Self::EngineCluster(c) => <EngineClusterMomentAdapter as openbmp_sim::MomentModel<
-                RigidBodyState,
-            >>::validation(c),
-            Self::TankRack(t) | Self::EngineClusterAndTankRack(_, t) => {
-                <openbmp_vehicle::TankRackMomentAdapter as openbmp_sim::MomentModel<
-                    RigidBodyState,
-                >>::validation(t)
-            }
-            Self::DirectTorque(d) => {
-                <openbmp_vehicle::DirectTorqueMomentAdapter as openbmp_sim::MomentModel<
-                    RigidBodyState,
-                >>::validation(d)
-            }
-        }
-    }
-}
-
 #[allow(clippy::if_not_else)]
-fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, RunnerError> {
+fn build_moment_model(
+    document: &ScenarioDocument,
+    loaded: &LoadedModels,
+) -> Result<KernelVehicle<RigidBodyState>, RunnerError> {
     let assembly = &document.vehicle.assembly;
-    let cluster_adapter = if !assembly.engines.is_empty() {
+    let mut named: Vec<NamedMomentModel<RigidBodyState>> = Vec::new();
+
+    if document
+        .force_model_universe()
+        .iter()
+        .any(|model| model == "aero")
+    {
+        let atmosphere = build_document_runtime_atmosphere(document)?;
+        let owner =
+            optional_body_owner(document.aero.as_ref().and_then(|a| a.mounted_to.as_deref()));
+        let (method, reference_length_m) =
+            crate::aero::build_aero_method(document, loaded.aero_deck.clone())?.ok_or_else(
+                || RunnerError::UnsupportedScenario {
+                    what: "forces includes `aero` but [aero] block is missing".to_owned(),
+                },
+            )?;
+        let adapter = if let Some(owner) = owner {
+            AeroMethodMomentAdapter::new_owned(
+                method,
+                atmosphere,
+                RIGID_BODY_AERO_MODEL_ID,
+                reference_length_m,
+                owner,
+            )
+        } else {
+            AeroMethodMomentAdapter::new(
+                method,
+                atmosphere,
+                RIGID_BODY_AERO_MODEL_ID,
+                reference_length_m,
+            )
+        };
+        named.push(NamedMomentModel::new("aero", Box::new(adapter)));
+    }
+
+    if !assembly.engines.is_empty() {
         let engine_ids: Vec<openbmp_core::EngineId> = assembly
             .engines
             .iter()
@@ -1567,12 +1556,10 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("EngineClusterMomentAdapter construction failed: {err}"),
         })?;
-        Some(adapter)
-    } else {
-        None
-    };
+        named.push(NamedMomentModel::new("thrust", Box::new(adapter)));
+    }
 
-    let tank_adapter = if !assembly.tanks.is_empty() {
+    if !assembly.tanks.is_empty() {
         let tank_ids: Vec<openbmp_core::TankId> = assembly
             .tanks
             .iter()
@@ -1580,22 +1567,25 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
                 openbmp_core::TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = t.id))
             })
             .collect();
-        Some(openbmp_vehicle::TankRackMomentAdapter::new_with_owners(
-            tank_ids,
-            tank_owner_map(document),
-            RIGID_BODY_TANK_RACK_MOMENT_MODEL_ID,
-        ))
-    } else {
-        None
-    };
+        named.push(NamedMomentModel::new(
+            "tank_reaction",
+            Box::new(openbmp_vehicle::TankRackMomentAdapter::new_with_owners(
+                tank_ids,
+                tank_owner_map(document),
+                RIGID_BODY_TANK_RACK_MOMENT_MODEL_ID,
+            )),
+        ));
+    }
 
     let direct_torque_adapter = build_direct_torque_adapter(document);
 
-    // Combinations of direct-torque with engine-cluster
-    // or tank-rack moment models are not supported.
-    // Closed-loop FC validation scenarios use direct-torque alone; if
-    // a downstream scenario combines them, fail closed.
-    if direct_torque_adapter.is_some() && (cluster_adapter.is_some() || tank_adapter.is_some()) {
+    // Combinations of direct-torque with engine-cluster or tank-rack
+    // moment models are not supported. Closed-loop FC validation
+    // scenarios use direct-torque alone; if a downstream scenario
+    // combines them, fail closed.
+    if direct_torque_adapter.is_some()
+        && (!assembly.engines.is_empty() || !assembly.tanks.is_empty())
+    {
         return Err(RunnerError::UnsupportedScenario {
             what: "direct_torque effectors combined with engine-cluster or tank moment models \
                    is not supported; use a dedicated closed-loop validation \
@@ -1603,18 +1593,47 @@ fn build_moment_model(document: &ScenarioDocument) -> Result<RigidMomentEither, 
                 .to_string(),
         });
     }
+    if let Some(adapter) = direct_torque_adapter {
+        named.push(NamedMomentModel::new("direct_torque", Box::new(adapter)));
+    }
 
-    Ok(
-        match (cluster_adapter, tank_adapter, direct_torque_adapter) {
-            (Some(c), Some(t), None) => RigidMomentEitherKind::EngineClusterAndTankRack(c, t),
-            (Some(c), None, None) => RigidMomentEitherKind::EngineCluster(c),
-            (None, Some(t), None) => RigidMomentEitherKind::TankRack(t),
-            (None, None, Some(d)) => RigidMomentEitherKind::DirectTorque(d),
-            (None, None, None) => RigidMomentEitherKind::Zero(ZeroMoment),
-            // Combinations with DirectTorque rejected above.
-            _ => unreachable!(),
-        },
+    let known_moments: Vec<String> = named.iter().map(|entry| entry.name.clone()).collect();
+    let mut default_active = crate::default_active_force_models(document);
+    if known_moments.iter().any(|name| name == "direct_torque")
+        && !default_active.iter().any(|name| name == "direct_torque")
+    {
+        default_active.push("direct_torque".to_owned());
+    }
+    let default_active = filter_models_to(&default_active, &known_moments);
+    KernelVehicle::new_with_default_active_models(
+        vec![],
+        named,
+        Box::new(ConstantMass::new(1.0)),
+        default_active,
+        phase_overrides_filtered_to(document, &known_moments),
     )
+    .map_err(|e| RunnerError::UnsupportedScenario {
+        what: format!("rigid moment KernelVehicle construction failed: {e}"),
+    })
+}
+
+fn phase_overrides_filtered_to(
+    document: &ScenarioDocument,
+    model_names: &[String],
+) -> BTreeMap<u64, Vec<String>> {
+    crate::phase_force_overrides(document)
+        .into_iter()
+        .map(|(phase, models)| (phase, filter_models_to(&models, model_names)))
+        .collect()
+}
+
+fn filter_models_to(models: &[String], model_names: &[String]) -> Vec<String> {
+    let known: BTreeSet<&str> = model_names.iter().map(String::as_str).collect();
+    models
+        .iter()
+        .filter(|model| known.contains(model.as_str()))
+        .cloned()
+        .collect()
 }
 
 fn build_direct_torque_adapter(
@@ -1698,10 +1717,15 @@ impl openbmp_sim::RigidMassModel for RigidMassEitherKind {
     }
 }
 
-fn build_mass_model(loaded: &LoadedModels, mass_resources: &RigidMassResources) -> RigidMassEither {
+fn build_mass_model(
+    loaded: &LoadedModels,
+    mass_resources: &RigidMassResources,
+    aerothermal_feedback: Option<crate::aerothermal::AerothermalMassFeedback>,
+) -> RigidMassEither {
     RigidMassEitherKind::Resource(RigidMassResourceModel::new(
         mass_resources.clone(),
         loaded.motor.clone(),
+        aerothermal_feedback,
         RIGID_BODY_MOTOR_MASS_MODEL_ID,
     ))
 }
@@ -1754,6 +1778,20 @@ type RecoveryTelemetryChannels = Vec<(
 )>;
 
 #[derive(Debug)]
+struct AerothermalTelemetryChannels {
+    q_conv: TelemetryChannel<f64>,
+    q_rad: TelemetryChannel<f64>,
+    h_aw: TelemetryChannel<f64>,
+    recovery_temperature: TelemetryChannel<f64>,
+    knudsen: TelemetryChannel<f64>,
+    wall_temperature: TelemetryChannel<f64>,
+    backwall_temperature: TelemetryChannel<f64>,
+    recession_depth: TelemetryChannel<f64>,
+    gas_mdot: TelemetryChannel<f64>,
+    mass_loss: TelemetryChannel<f64>,
+}
+
+#[derive(Debug)]
 struct SeparatedBodyTelemetryChannels {
     body: BodyId,
     separated: TelemetryChannel<bool>,
@@ -1796,6 +1834,8 @@ struct RigidChannelSet {
     atmosphere_temperature: Option<TelemetryChannel<f64>>,
     atmosphere_speed_of_sound: Option<TelemetryChannel<f64>>,
     force_components: ForceComponentChannels,
+    active_models: Option<TelemetryChannel<String>>,
+    aerothermal: Option<AerothermalTelemetryChannels>,
     /// Effector deflection channels, in scenario-declared
     /// order. One `effector.<id>.actual` `f64` channel per declared
     /// effector. Allocated AFTER force breakdown channels and BEFORE
@@ -2000,8 +2040,8 @@ impl RigidChannelSet {
             (None, None, None, None)
         };
 
-        let mut force_components = Vec::with_capacity(document.force_models().len());
-        for name in document.force_models() {
+        let mut force_components = Vec::with_capacity(document.force_model_universe().len());
+        for name in document.force_model_universe() {
             let x_channel = TelemetryChannel::<f64>::new(
                 alloc(),
                 format!("force.{name}.x_n"),
@@ -2022,6 +2062,87 @@ impl RigidChannelSet {
             )?;
             force_components.push((name.clone(), x_channel, y_channel, z_channel));
         }
+
+        let active_models = document
+            .forces
+            .as_ref()
+            .is_some_and(|forces| !forces.phase_override.is_empty())
+            .then(|| {
+                TelemetryChannel::<String>::new(
+                    alloc(),
+                    "forces.active_models",
+                    "text",
+                    None::<&str>,
+                )
+            })
+            .transpose()?;
+
+        let aerothermal = if document.aerothermal.is_some() {
+            Some(AerothermalTelemetryChannels {
+                q_conv: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.q_conv_w_m2",
+                    "W/m^2",
+                    None::<&str>,
+                )?,
+                q_rad: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.q_rad_w_m2",
+                    "W/m^2",
+                    None::<&str>,
+                )?,
+                h_aw: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.h_aw_j_kg",
+                    "J/kg",
+                    None::<&str>,
+                )?,
+                recovery_temperature: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.recovery_temperature_k",
+                    "K",
+                    None::<&str>,
+                )?,
+                knudsen: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.knudsen",
+                    "1",
+                    None::<&str>,
+                )?,
+                wall_temperature: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.wall_temperature_k",
+                    "K",
+                    None::<&str>,
+                )?,
+                backwall_temperature: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.backwall_temperature_k",
+                    "K",
+                    None::<&str>,
+                )?,
+                recession_depth: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.recession_depth_m",
+                    "m",
+                    None::<&str>,
+                )?,
+                gas_mdot: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.gas_mdot_kg_m2_s",
+                    "kg/(m^2*s)",
+                    None::<&str>,
+                )?,
+                mass_loss: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "mass.aerothermal_mass_loss_kg_s",
+                    "kg/s",
+                    None::<&str>,
+                )?,
+            })
+        } else {
+            None
+        };
 
         // Effector deflection channels, in scenario-declared
         // order. Allocated BEFORE mission markers so adding effectors
@@ -2101,6 +2222,8 @@ impl RigidChannelSet {
             atmosphere_temperature,
             atmosphere_speed_of_sound,
             force_components,
+            active_models,
+            aerothermal,
             effector_actuals,
             recovery_states,
             mission_markers,
@@ -2157,6 +2280,21 @@ impl RigidChannelSet {
             channels.push(y.metadata().clone());
             channels.push(z.metadata().clone());
         }
+        if let Some(active_models) = &self.active_models {
+            channels.push(active_models.metadata().clone());
+        }
+        if let Some(aerothermal) = &self.aerothermal {
+            channels.push(aerothermal.q_conv.metadata().clone());
+            channels.push(aerothermal.q_rad.metadata().clone());
+            channels.push(aerothermal.h_aw.metadata().clone());
+            channels.push(aerothermal.recovery_temperature.metadata().clone());
+            channels.push(aerothermal.knudsen.metadata().clone());
+            channels.push(aerothermal.wall_temperature.metadata().clone());
+            channels.push(aerothermal.backwall_temperature.metadata().clone());
+            channels.push(aerothermal.recession_depth.metadata().clone());
+            channels.push(aerothermal.gas_mdot.metadata().clone());
+            channels.push(aerothermal.mass_loss.metadata().clone());
+        }
         // Effector deflection channels, in scenario-declared
         // order, between force breakdown and mission markers.
         for actual in &self.effector_actuals {
@@ -2179,11 +2317,13 @@ impl RigidChannelSet {
 
 #[allow(clippy::too_many_arguments)]
 fn record_step<I, F, MOM, MM, E, SC>(
+    document: &ScenarioDocument,
     table: &mut TelemetryTable,
     kernel: &SimulationKernel<RigidBodyState, I, F, RigidModels<MOM, MM>, E, SC>,
     channels: &RigidChannelSet,
     breakdown_vehicle: &KernelVehicle<RigidBodyState>,
     breakdown_atmosphere: Option<&RuntimeAtmosphere>,
+    aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
     effector_snapshot: &[openbmp_vehicle::EffectorState],
 ) -> Result<(), RunnerError>
@@ -2259,6 +2399,7 @@ where
         mass_kg: state.mass_props.mass_kg(),
         time: state.time,
         active_body: kernel.primary_rigid_body(),
+        phase_id: kernel.current_phase().map(|phase| phase.value()),
         effector_actuals: openbmp_sim::EffectorActualsView::new(kernel_actuals),
         engine_snapshot: openbmp_sim::EngineSnapshotView::new(kernel_engine_snapshot),
         tank_snapshot: openbmp_sim::TankSnapshotView::new(kernel_tank_snapshot),
@@ -2278,6 +2419,38 @@ where
         row.insert(x_channel, component.x)?;
         row.insert(y_channel, component.y)?;
         row.insert(z_channel, component.z)?;
+    }
+
+    if let Some(channel) = &channels.active_models {
+        row.insert(
+            channel,
+            crate::active_model_label(document, kernel.current_phase().map(|phase| phase.value())),
+        )?;
+    }
+    if let Some(aerothermal_channels) = &channels.aerothermal {
+        let sample = aerothermal.copied().unwrap_or_default();
+        row.insert(&aerothermal_channels.q_conv, sample.q_conv_w_m2)?;
+        row.insert(&aerothermal_channels.q_rad, sample.q_rad_w_m2)?;
+        row.insert(&aerothermal_channels.h_aw, sample.h_aw_j_kg)?;
+        row.insert(
+            &aerothermal_channels.recovery_temperature,
+            sample.recovery_temperature_k,
+        )?;
+        row.insert(&aerothermal_channels.knudsen, sample.knudsen)?;
+        row.insert(
+            &aerothermal_channels.wall_temperature,
+            sample.wall_temperature_k,
+        )?;
+        row.insert(
+            &aerothermal_channels.backwall_temperature,
+            sample.backwall_temperature_k,
+        )?;
+        row.insert(
+            &aerothermal_channels.recession_depth,
+            sample.recession_depth_m,
+        )?;
+        row.insert(&aerothermal_channels.gas_mdot, sample.gas_mdot_kg_m2_s)?;
+        row.insert(&aerothermal_channels.mass_loss, sample.mass_loss_kg_s)?;
     }
 
     // Effector deflection channels, in scenario-declared
@@ -2385,6 +2558,110 @@ fn insert_recovery_state_channels(
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use openbmp_telemetry::TelemetryValue;
+
+    const LIVE_ENTRY_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "live-entry-coupling-test"
+description = "Synthetic live entry coupling regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.3
+dt_s = 0.1
+seed = 7
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 80000.0]
+initial_velocity_eci_m_s = [7600.0, 0.0, -100.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "live-entry-coupling-test"
+
+[[vehicle.assembly.bodies]]
+id = "capsule"
+geometry = { kind = "cylinder", length_m = 1.0, diameter_m = 1.0 }
+dry_mass_kg = 100.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "piecewise_exponential"
+wind = "none"
+
+[atmosphere]
+kind = "piecewise_exponential"
+
+[aero]
+
+[aero.method]
+kind = "modified_newtonian"
+
+[aero.method.modified_newtonian]
+cp_max = 2.0
+reference_area_m2 = 1.0
+reference_length_m = 1.0
+
+[aerothermal]
+stagnation_kind = "sutton_graves"
+nose_radius_m = 0.5
+wall_temperature_k = 1500.0
+wall_catalysis = "fully_catalytic"
+
+[aerothermal.ablation]
+virgin_material = "textbook_pica_like"
+char_material = "textbook_char"
+thickness_m = 0.05
+n_nodes = 7
+pyrolysis_enthalpy_j_kg = 2.4e6
+gas_yield_fraction = 0.6
+feedback = "mass"
+
+[forces]
+models = ["gravity"]
+
+[[forces.phase_override]]
+phase = "entry"
+models = ["gravity", "aero", "aerothermal_diagnostics"]
+
+[telemetry]
+output.csv = "out/live-entry-coupling-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "coast"
+
+[[mission.phases]]
+id = "entry"
+label = "entry"
+
+[[mission.events]]
+id = "entry_interface"
+trigger = { kind = "at_time", time_s = 0.1 }
+action = { kind = "emit_telemetry_marker", tag = "entry" }
+once = true
+
+[[mission.transitions]]
+from = "coast"
+to = "entry"
+event = "entry_interface"
+"#;
 
     fn valid_stage_separation_document() -> ScenarioDocument {
         openbmp_scenario::Scenario::from_toml_str(include_str!(
@@ -2392,6 +2669,79 @@ mod tests {
         ))
         .expect("fixture must parse")
         .document
+    }
+
+    fn channel_id(outcome: &RunOutcome, name: &str) -> openbmp_core::ChannelId {
+        outcome
+            .table
+            .schema()
+            .channels()
+            .iter()
+            .find(|channel| channel.name == name)
+            .unwrap_or_else(|| panic!("channel `{name}` must exist"))
+            .id
+    }
+
+    fn f64_column(outcome: &RunOutcome, name: &str) -> Vec<f64> {
+        let id = channel_id(outcome, name);
+        outcome
+            .table
+            .rows()
+            .iter()
+            .map(|row| match row.get(id) {
+                Some(TelemetryValue::Float64(value)) => *value,
+                other => panic!("unexpected value in {name}: {other:?}"),
+            })
+            .collect()
+    }
+
+    fn text_column(outcome: &RunOutcome, name: &str) -> Vec<String> {
+        let id = channel_id(outcome, name);
+        outcome
+            .table
+            .rows()
+            .iter()
+            .map(|row| match row.get(id) {
+                Some(TelemetryValue::Text(value)) => value.clone(),
+                other => panic!("unexpected value in {name}: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn live_entry_phase_turns_on_aero_heating_and_mass_feedback() {
+        let scenario = openbmp_scenario::Scenario::from_toml_str(LIVE_ENTRY_SCENARIO)
+            .expect("live entry scenario must parse");
+        let outcome = crate::run(&scenario).expect("live entry scenario must run");
+
+        let force_aero_x = f64_column(&outcome, "force.aero.x_n");
+        assert_eq!(force_aero_x[0].to_bits(), 0.0_f64.to_bits());
+        assert!(
+            force_aero_x.iter().skip(1).any(|value| value.abs() > 0.0),
+            "aero force should activate after entry phase transition: {force_aero_x:?}"
+        );
+
+        let active = text_column(&outcome, "forces.active_models");
+        assert_eq!(active[0], "gravity");
+        assert!(
+            active
+                .iter()
+                .skip(1)
+                .any(|value| value == "gravity,aero,aerothermal_diagnostics"),
+            "active model telemetry should show the entry override: {active:?}"
+        );
+
+        let heat_flux = f64_column(&outcome, "aerothermal.q_conv_w_m2");
+        assert!(
+            heat_flux.iter().any(|value| *value > 0.0),
+            "live aerothermal driver should emit positive heating: {heat_flux:?}"
+        );
+
+        let mass_loss = f64_column(&outcome, "mass.aerothermal_mass_loss_kg_s");
+        assert!(
+            mass_loss.iter().any(|value| *value > 0.0),
+            "ablation mass feedback should be observable: {mass_loss:?}"
+        );
     }
 
     #[test]
@@ -2447,7 +2797,8 @@ mod tests {
             engine_owners: BTreeMap::from([(engine_upper, upper), (engine_lower, lower)]),
             tank_routes: BTreeMap::new(),
         };
-        let model = RigidMassResourceModel::<SolidMotor>::new(resources, None, ModelId::new(999));
+        let model =
+            RigidMassResourceModel::<SolidMotor>::new(resources, None, None, ModelId::new(999));
         let engine_snapshot = BTreeMap::from([
             (
                 engine_upper,
@@ -2502,9 +2853,12 @@ mod tests {
         let mut document = valid_stage_separation_document();
         document.forces = Some(openbmp_scenario::ForcesConfig {
             models: vec!["gravity".to_owned(), "aero".to_owned()],
+            phase_override: Vec::new(),
         });
         document.aero = Some(openbmp_scenario::AeroConfig {
-            deck: "aero.csv".into(),
+            deck: Some("aero.csv".into()),
+            buildup: None,
+            method: None,
             mounted_to: Some("upper".to_owned()),
             deck_sha256: None,
         });

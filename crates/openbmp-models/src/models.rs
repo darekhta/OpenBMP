@@ -490,6 +490,11 @@ pub struct ForceContext<'a, S: SimState> {
     /// owned by that post-separation body and skip resources owned by
     /// other bodies.
     pub active_body: Option<BodyId>,
+    /// Active mission phase id, when a mission graph or flight
+    /// controller owns phase state. The value is the stable
+    /// path-derived `PhaseId` payload from `openbmp-mission`; keeping
+    /// it as a raw integer preserves this crate's dependency boundary.
+    pub phase_id: Option<u64>,
     /// Read-only view of the kernel's effector-actuals
     /// snapshot, keyed by deck-axis name. Empty for legacy /
     /// Schema-1 scenarios; populated by the runner before each
@@ -646,6 +651,10 @@ pub struct MomentContext<'a, S: SimState> {
     /// owned by that post-separation body and skip resources owned by
     /// other bodies.
     pub active_body: Option<BodyId>,
+    /// Active mission phase id, encoded as the stable path-derived
+    /// `PhaseId` payload. `None` means no phase-gated selection is
+    /// active.
+    pub phase_id: Option<u64>,
     /// Read-only effector-actuals view (same shape as
     /// `ForceContext.effector_actuals`). Schema-2 moment models
     /// consume the deflection axes that perturb `CM`
@@ -1108,6 +1117,7 @@ mod tests {
                 mass_kg: state.mass.get::<kilogram>(),
                 time: SimTime::ZERO,
                 active_body: None,
+                phase_id: None,
                 effector_actuals: EffectorActualsView::empty(),
                 engine_snapshot: EngineSnapshotView::empty(),
                 tank_snapshot: TankSnapshotView::empty(),
@@ -1131,6 +1141,7 @@ mod tests {
                 mass_kg: state.mass.get::<kilogram>(),
                 time: SimTime::ZERO,
                 active_body: None,
+                phase_id: None,
                 effector_actuals: EffectorActualsView::empty(),
                 engine_snapshot: EngineSnapshotView::empty(),
                 tank_snapshot: TankSnapshotView::empty(),

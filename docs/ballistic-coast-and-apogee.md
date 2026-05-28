@@ -116,6 +116,10 @@ pub trait RangeSafetyFootprint {
   declared input ellipse or the covariance ellipse computed from a
   `[landing_footprint.monte_carlo]` sample cloud over declared wind,
   ballistic-coefficient, and burnout-state uncertainty sources.
+- **Accuracy diagnostics** — the Monte-Carlo path emits output-only
+  `cep50_m` about the sample mean plus nominal-referenced radial-error /
+  miss-distance statistics. These are comparisons to the nominal forward
+  footprint, not to a desired landing point.
 
 ```
         crossrange
@@ -159,7 +163,8 @@ inverse problem and any geographic aimpoint are rejected at load.
 - Monte-Carlo dispersion requires declared input-uncertainty blocks under
   `wind`, `ballistic_coefficient`, or `burnout_state`; a dispersion request
   with no uncertainty source fails closed rather than reporting a degenerate
-  zero-width ellipse.
+  zero-width ellipse. Accuracy diagnostics are computed only from the
+  resulting forward sample cloud and nominal footprint.
 - `landing_footprint.method` must agree with the scenario gravity selector:
   `constant_gravity` requires `environment.gravity = "constant"`, `j2`
   requires `environment.gravity = "j2"`, and `egm2008` requires
@@ -174,6 +179,7 @@ inverse problem and any geographic aimpoint are rejected at load.
 | `RangeSafetyFootprint` trait + `LandingFootprint` / `BallisticState` | `openbmp-physics/src/profile.rs` | Consumed by `ConstantGravityRangeSafetyFootprint` and `NumericalGravityRangeSafetyFootprint`. |
 | `coast`, `ballistic_descent` phases | mission vocabulary | Accepted with existing event machinery. |
 | Footprint post-processing path | offline analysis (`openbmp-runner`) | `landing_footprint_for_state` consumes schema-v3 `[landing_footprint]` for constant-gravity, J2, and EGM2008 methods. |
+| Footprint Monte-Carlo accuracy diagnostics | offline analysis (`openbmp-runner`) | `footprint-mc` writes `cep50_m`, nominal-referenced miss-distance quantiles, and sample-cloud radial offsets without accepting a target input. |
 
 ## References
 
@@ -184,5 +190,7 @@ inverse problem and any geographic aimpoint are rejected at load.
 - Range Commanders Council, *Common Risk Criteria Standards for National Test
   Ranges* (RCC 321), public standard — the range-safety footprint / debris-
   dispersion framing this tool adopts.
+- JPL / NASA NTRS, *Calculating the CEP* (JPL D-4710 / NASA-CR-182996),
+  1987 — circular-radius probability checks against elliptical probability.
 - Knacke, T. W. *Parachute Recovery Systems Design Manual*, 1992 — recovery
   landing-dispersion conventions.

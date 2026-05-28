@@ -248,6 +248,8 @@ scenario must be migrated to the academic replacement before it parses.
 | `max_range`, `range_max`, `target_range` | `delta_v_budget_m_s`, `staging_analysis` | Range-to-target optimization vocabulary; staging analysis is limited to vehicle-intrinsic ideal ΔV / mass budget. |
 | `throw_weight` | `payload_mass_kg` | Operational payload-at-range terminology; OpenBMP uses payload mass at a declared ideal ΔV. |
 | `impact_energy` | (no replacement; rejected) | Terminal-effect terminology; unrelated to forward propulsion analysis. |
+| `firing_table`, `range_table` | `drag_coefficient`, `aero_deck` | Gunnery range products are rejected; OpenBMP stores geometry-intrinsic coefficient tables only. |
+| `ballistic_match` | `drag_polar`, `cd0` | Operational "match this round" framing is rejected; forward aerodynamics vocabulary is accepted. |
 | `threat`, `threat_track` | (no replacement; rejected) | Operational. |
 | `kill`, `kill_chain` | (no replacement; rejected) | Operational. |
 

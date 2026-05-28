@@ -26,7 +26,9 @@
 
 pub mod error;
 
+pub mod aero;
 pub mod aero_effector_match;
+pub mod aerothermal;
 pub mod assembly;
 pub mod atmosphere;
 pub mod effectors;
@@ -51,6 +53,58 @@ use openbmp_sim::StopReason;
 use openbmp_telemetry::TelemetryTable;
 
 pub use crate::error::RunnerError;
+
+pub(crate) fn phase_force_overrides(document: &ScenarioDocument) -> BTreeMap<u64, Vec<String>> {
+    let mut overrides = BTreeMap::new();
+    let Some(forces) = &document.forces else {
+        return overrides;
+    };
+    for override_config in &forces.phase_override {
+        let phase = crate::mission::phase_id_from_scenario_text(&override_config.phase).value();
+        let models = override_config
+            .models
+            .iter()
+            .filter(|model| model.as_str() != "aerothermal_diagnostics")
+            .cloned()
+            .collect();
+        overrides.insert(phase, models);
+    }
+    overrides
+}
+
+pub(crate) fn default_active_force_models(document: &ScenarioDocument) -> Vec<String> {
+    let mut models = document.resolved_force_models();
+    if !document.vehicle.assembly.tanks.is_empty()
+        && !models.iter().any(|model| model == "tank_reaction")
+    {
+        models.push("tank_reaction".to_owned());
+    }
+    if !document.vehicle.assembly.recovery.is_empty()
+        && !models.iter().any(|model| model == "recovery_drag")
+    {
+        models.push("recovery_drag".to_owned());
+    }
+    models
+}
+
+pub(crate) fn active_model_label(document: &ScenarioDocument, phase: Option<u64>) -> String {
+    let Some(forces) = &document.forces else {
+        return default_active_force_models(document).join(",");
+    };
+    let active = phase.and_then(|phase| {
+        forces
+            .phase_override
+            .iter()
+            .find(|override_config| {
+                crate::mission::phase_id_from_scenario_text(&override_config.phase).value() == phase
+            })
+            .map(|override_config| override_config.models.as_slice())
+    });
+    active.map_or_else(
+        || default_active_force_models(document).join(","),
+        |models| models.join(","),
+    )
+}
 
 /// Outcome of a scenario run.
 #[derive(Debug)]

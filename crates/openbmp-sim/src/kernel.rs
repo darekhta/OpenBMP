@@ -431,6 +431,7 @@ where
         let tank_snapshot = &self.tank_snapshot;
         let recovery_snapshot = &self.recovery_snapshot;
         let wind_override = self.wind_sample_override;
+        let phase_id = self.current_phase.map(|phase| phase.value());
 
         let derive = |s: &PointMassState,
                       t: SimTime|
@@ -449,6 +450,7 @@ where
                 mass_kg,
                 time: t,
                 active_body: None,
+                phase_id,
                 effector_actuals: EffectorActualsView::new(effector_actuals),
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
@@ -1267,6 +1269,7 @@ where
         let recovery_snapshot = &self.recovery_snapshot;
         let wind_override = self.wind_sample_override;
         let primary_body = self.primary_rigid_body;
+        let phase_id = self.current_phase.map(|phase| phase.value());
 
         let derive = |s: &openbmp_state::RigidBodyState,
                       t: SimTime|
@@ -1288,6 +1291,7 @@ where
                 mass_kg,
                 time: t,
                 active_body: primary_body,
+                phase_id,
                 effector_actuals: EffectorActualsView::new(effector_actuals),
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
@@ -1298,6 +1302,7 @@ where
                 environment: &env,
                 time: t,
                 active_body: primary_body,
+                phase_id,
                 effector_actuals: EffectorActualsView::new(effector_actuals),
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
@@ -1378,6 +1383,7 @@ where
                     mass_kg,
                     time: t,
                     active_body: separated_body,
+                    phase_id,
                     effector_actuals: EffectorActualsView::new(effector_actuals),
                     engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                     tank_snapshot: TankSnapshotView::new(tank_snapshot),
@@ -1389,6 +1395,7 @@ where
                         environment: &env,
                         time: t,
                         active_body: separated_body,
+                        phase_id,
                         effector_actuals: EffectorActualsView::new(effector_actuals),
                         engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                         tank_snapshot: TankSnapshotView::new(tank_snapshot),

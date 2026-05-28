@@ -49,6 +49,8 @@
 //! no FMA. Vehicle composition is a pure-function operation over the
 //! provided context — `KernelVehicle` itself carries no per-step state.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use nalgebra::Vector3;
 
 use openbmp_models::{
@@ -211,6 +213,8 @@ pub struct KernelVehicle<S: SimState> {
     force_models: Vec<Box<dyn ForceModel<S>>>,
     moment_model_names: Vec<String>,
     moment_models: Vec<Box<dyn MomentModel<S>>>,
+    default_active_models: BTreeSet<String>,
+    phase_force_overrides: BTreeMap<u64, BTreeSet<String>>,
     mass_model: BoxedMassModel,
 }
 
@@ -221,6 +225,8 @@ impl<S: SimState> std::fmt::Debug for KernelVehicle<S> {
             .field("force_models", &"<dyn ForceModel list>")
             .field("moment_model_names", &self.moment_model_names)
             .field("moment_models", &"<dyn MomentModel list>")
+            .field("default_active_models", &self.default_active_models)
+            .field("phase_force_overrides", &self.phase_force_overrides)
             .field("mass_model", &self.mass_model)
             .finish()
     }
@@ -241,6 +247,69 @@ impl<S: SimState> KernelVehicle<S> {
         force_models: Vec<NamedForceModel<S>>,
         moment_models: Vec<NamedMomentModel<S>>,
         mass_model: Box<dyn MassModel>,
+    ) -> Result<Self, VehicleError> {
+        Self::new_with_phase_overrides(force_models, moment_models, mass_model, BTreeMap::new())
+    }
+
+    /// Construct from explicit ordered force / moment lists, a mass
+    /// model, and phase-gated force-stack overrides keyed by stable
+    /// mission phase id.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`Self::new`] plus
+    /// [`VehicleError::InvalidParameter`] when an override references a
+    /// model name not present in the constructed force or moment stack.
+    pub fn new_with_phase_overrides(
+        force_models: Vec<NamedForceModel<S>>,
+        moment_models: Vec<NamedMomentModel<S>>,
+        mass_model: Box<dyn MassModel>,
+        phase_force_overrides: BTreeMap<u64, Vec<String>>,
+    ) -> Result<Self, VehicleError> {
+        Self::new_inner(
+            force_models,
+            moment_models,
+            mass_model,
+            None,
+            phase_force_overrides,
+        )
+    }
+
+    /// Construct from explicit ordered force / moment lists, a mass
+    /// model, default-active model names, and phase-gated overrides.
+    ///
+    /// The force/moment lists may be a superset of the default stack
+    /// when phase overrides need to activate a model later. Models
+    /// omitted from `default_active_models` remain inactive in phases
+    /// without an override.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VehicleError::InvalidParameter`] when a default or
+    /// override name does not match any registered force or moment
+    /// model.
+    pub fn new_with_default_active_models(
+        force_models: Vec<NamedForceModel<S>>,
+        moment_models: Vec<NamedMomentModel<S>>,
+        mass_model: Box<dyn MassModel>,
+        default_active_models: Vec<String>,
+        phase_force_overrides: BTreeMap<u64, Vec<String>>,
+    ) -> Result<Self, VehicleError> {
+        Self::new_inner(
+            force_models,
+            moment_models,
+            mass_model,
+            Some(default_active_models),
+            phase_force_overrides,
+        )
+    }
+
+    fn new_inner(
+        force_models: Vec<NamedForceModel<S>>,
+        moment_models: Vec<NamedMomentModel<S>>,
+        mass_model: Box<dyn MassModel>,
+        default_active_models: Option<Vec<String>>,
+        phase_force_overrides: BTreeMap<u64, Vec<String>>,
     ) -> Result<Self, VehicleError> {
         for m in &force_models {
             validate_model_name(
@@ -278,20 +347,56 @@ impl<S: SimState> KernelVehicle<S> {
                 }
             }
         }
-        let (force_model_names, force_models) = force_models
-            .into_iter()
-            .map(|entry| (entry.name, entry.model))
-            .unzip();
-        let (moment_model_names, moment_models) = moment_models
-            .into_iter()
-            .map(|entry| (entry.name, entry.model))
-            .unzip();
+        let (force_model_names, force_models): (Vec<String>, Vec<Box<dyn ForceModel<S>>>) =
+            force_models
+                .into_iter()
+                .map(|entry| (entry.name, entry.model))
+                .unzip();
+        let (moment_model_names, moment_models): (Vec<String>, Vec<Box<dyn MomentModel<S>>>) =
+            moment_models
+                .into_iter()
+                .map(|entry| (entry.name, entry.model))
+                .unzip();
+        let known: BTreeSet<&str> = force_model_names
+            .iter()
+            .map(String::as_str)
+            .chain(moment_model_names.iter().map(String::as_str))
+            .collect();
+        let default_active_models = if let Some(default_active_models) = default_active_models {
+            let mut set = BTreeSet::new();
+            for name in default_active_models {
+                if !known.contains(name.as_str()) {
+                    return Err(VehicleError::InvalidParameter {
+                        reason: "default active model set references an unregistered model name",
+                    });
+                }
+                set.insert(name);
+            }
+            set
+        } else {
+            known.iter().map(|name| (*name).to_owned()).collect()
+        };
+        let mut phase_overrides = BTreeMap::new();
+        for (phase, names) in phase_force_overrides {
+            let mut set = BTreeSet::new();
+            for name in names {
+                if !known.contains(name.as_str()) {
+                    return Err(VehicleError::InvalidParameter {
+                        reason: "phase force override references an unregistered model name",
+                    });
+                }
+                set.insert(name);
+            }
+            phase_overrides.insert(phase, set);
+        }
 
         Ok(Self {
             force_model_names,
             force_models,
             moment_model_names,
             moment_models,
+            default_active_models,
+            phase_force_overrides: phase_overrides,
             mass_model: BoxedMassModel(mass_model),
         })
     }
@@ -325,13 +430,25 @@ impl<S: SimState> KernelVehicle<S> {
     pub fn mass_model(&self) -> &dyn MassModel {
         self.mass_model.0.as_ref()
     }
+
+    fn model_active(&self, phase_id: Option<u64>, name: &str) -> bool {
+        phase_id
+            .and_then(|phase| self.phase_force_overrides.get(&phase))
+            .map_or_else(
+                || self.default_active_models.contains(name),
+                |active| active.contains(name),
+            )
+    }
 }
 
 impl<S: SimState> ForceModel<S> for KernelVehicle<S> {
     fn force_n_eci(&self, ctx: ForceContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError> {
         // Locked left fold in declared order. No FMA.
         let mut total = Vector3::zeros();
-        for f in &self.force_models {
+        for (name, f) in self.force_model_names.iter().zip(&self.force_models) {
+            if !self.model_active(ctx.phase_id, name) {
+                continue;
+            }
             let component = f.force_n_eci(ctx)?;
             total += component;
         }
@@ -348,7 +465,10 @@ impl<S: SimState> ForceModel<S> for KernelVehicle<S> {
 impl<S: SimState> MomentModel<S> for KernelVehicle<S> {
     fn moment_n_m_body(&self, ctx: MomentContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError> {
         let mut total = Vector3::zeros();
-        for m in &self.moment_models {
+        for (name, m) in self.moment_model_names.iter().zip(&self.moment_models) {
+            if !self.model_active(ctx.phase_id, name) {
+                continue;
+            }
             let component = m.moment_n_m_body(ctx)?;
             total += component;
         }
@@ -390,7 +510,11 @@ impl<S: SimState> Vehicle<S> for KernelVehicle<S> {
         let mut total = Vector3::zeros();
         let mut components = Vec::with_capacity(self.force_models.len());
         for (name, model) in self.force_model_names.iter().zip(&self.force_models) {
-            let component = model.force_n_eci(ctx)?;
+            let component = if self.model_active(ctx.phase_id, name) {
+                model.force_n_eci(ctx)?
+            } else {
+                Vector3::zeros()
+            };
             components.push((name.clone(), component));
             total += component;
         }
@@ -404,7 +528,11 @@ impl<S: SimState> Vehicle<S> for KernelVehicle<S> {
         let mut total = Vector3::zeros();
         let mut components = Vec::with_capacity(self.moment_models.len());
         for (name, model) in self.moment_model_names.iter().zip(&self.moment_models) {
-            let component = model.moment_n_m_body(ctx)?;
+            let component = if self.model_active(ctx.phase_id, name) {
+                model.moment_n_m_body(ctx)?
+            } else {
+                Vector3::zeros()
+            };
             components.push((name.clone(), component));
             total += component;
         }
@@ -520,6 +648,7 @@ mod tests {
             mass_kg: 1.0,
             time: SimTime::ZERO,
             active_body: None,
+            phase_id: None,
             effector_actuals: openbmp_models::EffectorActualsView::empty(),
             engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),
@@ -729,6 +858,7 @@ mod tests {
                 environment: &env,
                 time: SimTime::ZERO,
                 active_body: None,
+                phase_id: None,
                 effector_actuals: openbmp_models::EffectorActualsView::empty(),
                 engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
                 tank_snapshot: openbmp_models::TankSnapshotView::empty(),

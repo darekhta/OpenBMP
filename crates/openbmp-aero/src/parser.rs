@@ -947,6 +947,8 @@ triangles = [[0, 1, 2], [0, 2, 3]]
             alpha_deg: 0.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: q,
+            knudsen: 0.0,
+            reynolds_length: 0.0,
         }
     }
 

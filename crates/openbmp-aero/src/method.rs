@@ -58,6 +58,10 @@ pub struct AeroContext {
     pub beta_deg: f64,
     /// Dynamic pressure `q = 0.5 · ρ · V_∞²` (Pa).
     pub dynamic_pressure_pa: f64,
+    /// Knudsen number based on the method's reference length.
+    pub knudsen: f64,
+    /// Reynolds number based on the method's reference length.
+    pub reynolds_length: f64,
 }
 
 /// Aerodynamic force and moment in the body frame.
@@ -91,6 +95,12 @@ pub trait AeroMethod {
     /// [`AeroError::NonFinite`] when an input is `NaN` / `Inf` or an
     /// arithmetic step produces a non-finite value.
     fn aero_force_moment_body(&self, ctx: &AeroContext) -> Result<AeroForceMomentBody, AeroError>;
+}
+
+impl<T: AeroMethod + ?Sized> AeroMethod for Box<T> {
+    fn aero_force_moment_body(&self, ctx: &AeroContext) -> Result<AeroForceMomentBody, AeroError> {
+        self.as_ref().aero_force_moment_body(ctx)
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -217,6 +227,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: 0.0,
+                knudsen: 0.0,
+                reynolds_length: 0.0,
             })
             .unwrap();
         assert_eq!(result.force_n_body, Vector3::new(0.0, 0.0, 0.0));
@@ -240,6 +252,8 @@ mod tests {
                 alpha_deg: 1.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: q_pa,
+                knudsen: 0.0,
+                reynolds_length: 0.0,
             })
             .unwrap();
         assert_abs_diff_eq!(result.force_n_body.x, -0.5 * q_pa * area);
@@ -264,6 +278,8 @@ mod tests {
                 alpha_deg: -1.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: q_pa,
+                knudsen: 0.0,
+                reynolds_length: 0.0,
             })
             .unwrap();
         let r_plus = method
@@ -272,6 +288,8 @@ mod tests {
                 alpha_deg: 1.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: q_pa,
+                knudsen: 0.0,
+                reynolds_length: 0.0,
             })
             .unwrap();
         // CN at (m=0, α=-1) = -0.9; at (m=0, α=+1) = +1.1.
@@ -290,6 +308,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: 1000.0,
+                knudsen: 0.0,
+                reynolds_length: 0.0,
             })
             .unwrap_err();
         assert!(matches!(err, AeroError::OutOfEnvelope { .. }));
@@ -304,6 +324,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: f64::NAN,
+                knudsen: 0.0,
+                reynolds_length: 0.0,
             })
             .unwrap_err();
         assert!(matches!(err, AeroError::NonFinite { .. }));
@@ -318,6 +340,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: -1.0,
+                knudsen: 0.0,
+                reynolds_length: 0.0,
             })
             .unwrap_err();
         assert!(matches!(err, AeroError::InvalidParameter { .. }));
@@ -343,6 +367,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: f64::MAX,
+                knudsen: 0.0,
+                reynolds_length: 0.0,
             })
             .unwrap_err();
         assert!(matches!(err, AeroError::NonFinite { .. }));
@@ -368,6 +394,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: f64::MAX,
+                knudsen: 0.0,
+                reynolds_length: 0.0,
             })
             .unwrap_err();
         assert!(matches!(err, AeroError::NonFinite { .. }));
@@ -381,6 +409,8 @@ mod tests {
             alpha_deg: 0.5,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1234.5,
+            knudsen: 0.0,
+            reynolds_length: 0.0,
         };
         let first = method.aero_force_moment_body(&ctx).unwrap();
         let second = method.aero_force_moment_body(&ctx).unwrap();

@@ -163,6 +163,16 @@ Coupling is partitioned and explicit in the scenario:
 environment -> aero -> aerothermal -> material_response -> mass/geometry -> dynamics
 ```
 
+The live runner path implements the explicit one-step-lag subset of this
+chain. `[aero.method]` dispatches deck, modified-Newtonian, tangent-cone,
+tangent-wedge, and free-molecular methods through the kernel force stack; the
+rigid-body path also consumes the method's body-frame moment. `[aerothermal]`
+samples the same runtime atmosphere, emits stagnation heating diagnostics, can
+advance the thermal toy and depth-resolved charring ablator, and can route
+ablation mass loss into the rigid mass model when `feedback = "mass"` is
+declared. `[[forces.phase_override]]` controls when these models are active
+during entry phases and records `forces.active_models` in telemetry.
+
 Each coupling edge declares whether feedback is disabled, lagged one kernel
 step, sub-iterated to a fixed count, or solved with a profile-gated implicit
 coupling method. The default research-safe path is lagged one-step coupling
@@ -784,13 +794,16 @@ pub struct AccommodationCoeffs {
 
 The `HybridAeroMethod` (above) combines:
 
-1. The continuum-low-Mach method (deck lookup or aero deck).
+1. The continuum-low-Mach method (`DeckLookup` or a deck baked from
+   `ComponentBuildup`).
 2. The continuum-high-Mach method (Modified Newtonian).
 3. The free-molecular method.
 
 It blends them based on Mach (low/high handoff) and Knudsen number
-(continuum/FM bridging). The blend functions are deterministic and the
-scenario must declare them explicitly.
+(continuum/FM bridging). The Mach handoff uses `LinearMachBridge`
+when a transition window such as `4.5 <= M <= 5.5` is declared; omitting
+that bridge preserves the legacy hard `mach_handoff` switch. The blend
+functions are deterministic and the scenario must declare them explicitly.
 
 ## Aerothermal Heat Transfer
 
@@ -1175,6 +1188,7 @@ The atmosphere model exposes `mean_free_path`; the aero context computes Kn.
 | Cheng | `α(Kn) = exp(-π / (2 Kn))` | Smooth, classic |
 | Erfc | `α(Kn) = 0.5 · erfc(log10(Kn) / σ)` | Tunable σ |
 | Linear smoothstep | linear ramp over `[Kn_lo, Kn_hi]` | Most predictable |
+| Linear Mach | linear ramp over `[M_lo, M_hi]` | Continuum low/high handoff; the input is Mach |
 
 The hybrid aero method blends continuum and free-molecular coefficients:
 

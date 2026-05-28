@@ -40,7 +40,9 @@
 
 use openbmp_core::SimTime;
 
-use super::{AtmosphereModel, AtmosphereSample, USSA76_G0_M_S2, USSA76_GAMMA_AIR};
+use super::{
+    AtmosphereModel, AtmosphereSample, USSA76_G0_M_S2, USSA76_GAMMA_AIR, sutherland_viscosity,
+};
 use crate::error::PhysicsError;
 
 /// Layer-mean molecular weight of dry air (kg/kmol).
@@ -272,6 +274,7 @@ impl AtmosphereModel for PiecewiseExponentialAtmosphere {
                         pressure_pa: 0.0,
                         temperature_k,
                         speed_of_sound_m_s,
+                        dynamic_viscosity_pa_s: sutherland_viscosity(temperature_k),
                     })
                 }
             };
@@ -294,6 +297,7 @@ impl AtmosphereModel for PiecewiseExponentialAtmosphere {
             pressure_pa,
             temperature_k,
             speed_of_sound_m_s,
+            dynamic_viscosity_pa_s: sutherland_viscosity(temperature_k),
         };
         sample.require_valid()?;
         Ok(sample)

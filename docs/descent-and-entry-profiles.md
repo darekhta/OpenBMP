@@ -9,10 +9,10 @@ companion to
 
 The entry phase of a flight profile is the academically richest: it couples
 the rigid-body dynamics, the atmosphere, hypersonic aerodynamics, and (for a
-lifting body) the descent controller. OpenBMP ships the closed-form physics and
-the aerothermal models; what is missing is the *handoff* from the ballistic
-descent into a live, integrated entry phase, and a descent-phase control
-configuration.
+lifting body) the descent controller. OpenBMP now wires the live entry force
+stack through mission-phase selection: a coast phase can run gravity only,
+then `entry_interface` can activate aero and aerothermal diagnostics without
+introducing any targeting surface.
 
 ## Current state
 
@@ -23,6 +23,10 @@ configuration.
   Stardust). Schema v3 now adds `[entry_profile]` so a scenario can declare
   and validate the `ballistic_descent → entry_interface → final_descent`
   handoff and the runner can produce entry diagnostics from a supplied sample.
+- The runner also supports live `[aero.method]`, `[aerothermal]`, and
+  `[[forces.phase_override]]` wiring. Rigid-body scenarios receive both
+  aerodynamic force and pitching moment; optional ablation mass feedback is
+  routed through the rigid mass model.
 - `maneuvering` entry is a rejected operational term; `lifting_entry` is its
   accepted academic replacement (already in the vocabulary canon).
 
@@ -48,9 +52,10 @@ This is a phase-gated force-stack selection, which the assembly / force-model
 seam already supports — the new requirement is that the gate be keyed on the
 reserved entry phases.
 
-> **Status.** `entry_interface` is now consumed by schema-v3
-> `[entry_profile]` validation. The handoff uses the existing
-> `at_altitude_descending` trigger; no new trigger variant is required.
+> **Status.** `entry_interface` is consumed by schema-v3
+> `[entry_profile]` validation and by live force-stack phase overrides.
+> The handoff uses the existing `at_altitude_descending` trigger; no new
+> trigger variant is required.
 
 ### Ballistic vs lifting entry
 
@@ -109,11 +114,13 @@ footprint).
 
 ### Aerothermal coupling
 
-During `entry_interface` and `lifting_entry` the aerothermal models
-(`openbmp-aerothermal`: Sutton-Graves stagnation heating, boundary-layer
-state, the ablation toy) run as research-grade diagnostics over the entry
-state. These are already shipped at research grade; the only new wiring is that
-the entry phases activate them. No new heating physics is introduced here.
+During `entry_interface` and `lifting_entry`, `[aerothermal]` runs in the
+same runner loop as force evaluation. Sutton-Graves and Fay-Riddell
+stagnation heating emit live telemetry; optional `OneDThermalToy` and
+`DepthResolvedCharringAblator` state advance one tick at a time. If
+`[aerothermal.ablation].feedback = "mass"` is declared on a rigid-body
+scenario, the ablation gas mass rate becomes a mass-rate sink in the rigid
+mass model.
 
 ## Fail-closed validation
 
@@ -136,7 +143,7 @@ the entry phases activate them. No new heating physics is introduced here.
 | `entry_interface`, `lifting_entry`, `final_descent` phases | vocabulary canon + scenario validation | Consumed by schema-v3 `[entry_profile]` agreement checks. |
 | `EntryCorridorReference` trait | `openbmp-physics/src/profile.rs` | Implemented as a bounded corridor-reference helper. |
 | Entry diagnostics | `openbmp-runner/src/entry.rs` | `entry_profile_for_sample` consumes Allen-Eggers / Vinh without producing commands. |
-| Phase-gated entry force-stack activation | `openbmp-runner` | Deferred richer coupling; current slice validates the handoff and requires aero/atmosphere support. |
+| Phase-gated entry force-stack activation | `openbmp-runner` | Implemented through `[[forces.phase_override]]`; `forces.active_models` records the selected stack. |
 
 ## References
 
