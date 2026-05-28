@@ -38,6 +38,7 @@ pub mod entry;
 pub mod fc;
 pub mod fc_bridge;
 pub mod footprint;
+pub mod frames;
 pub mod integrator;
 pub mod mission;
 pub mod point_mass;
@@ -198,5 +199,19 @@ fn append_solver_metadata(document: &ScenarioDocument, metadata: &mut BTreeMap<S
             "openbmp.solver.source_terms.nonlinear_max_iter".to_owned(),
             source_terms.nonlinear_max_iter.to_string(),
         );
+    }
+}
+
+fn append_frame_time_metadata(
+    document: &ScenarioDocument,
+    metadata: &mut BTreeMap<String, String>,
+) {
+    metadata.insert(
+        "openbmp.frame.profile".to_owned(),
+        document.environment.frame_profile.clone(),
+    );
+    if let Some(epoch) = &document.epoch {
+        metadata.insert("openbmp.epoch.scale".to_owned(), epoch.scale.clone());
+        metadata.insert("openbmp.epoch.iso8601".to_owned(), epoch.iso8601.clone());
     }
 }

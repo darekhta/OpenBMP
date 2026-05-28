@@ -223,6 +223,9 @@ impl ScenarioDocument {
         self.validate_v3_kind_availability()?;
         self.meta.validate()?;
         self.time.validate()?;
+        if let Some(epoch) = &self.epoch {
+            epoch.validate()?;
+        }
         self.vehicle.validate(registry, self.time.dt_s)?;
         self.environment.validate(registry)?;
         if let Some(forces) = &self.forces {
@@ -240,6 +243,25 @@ impl ScenarioDocument {
                 });
             }
         }
+        if self.environment.gravity == "third_body"
+            && self.environment.ephemeris.as_deref() == Some("spk")
+        {
+            let epoch = self
+                .epoch
+                .as_ref()
+                .ok_or_else(|| ScenarioError::MissingRequiredField {
+                    field: "epoch".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: "third_body".to_owned(),
+                })?;
+            if epoch.scale.to_ascii_uppercase() != "TDB" {
+                return Err(ScenarioError::UnsupportedValue {
+                    field: "epoch.scale".to_owned(),
+                    value: epoch.scale.clone(),
+                });
+            }
+        }
+        self.validate_frame_epoch_requirements()?;
         if let Some(aero) = &self.aero {
             aero.validate()?;
         }
@@ -327,6 +349,43 @@ impl ScenarioDocument {
         self.validate_propulsion_unambiguous()?;
         self.validate_v3_blocks()?;
         self.validate_stage_separation_agreement()?;
+        Ok(())
+    }
+
+    fn validate_frame_epoch_requirements(&self) -> Result<(), ScenarioError> {
+        let profile = self.environment.frame_profile.as_str();
+        if profile == "iers-tabulated" {
+            let epoch = self
+                .epoch
+                .as_ref()
+                .ok_or_else(|| ScenarioError::MissingRequiredField {
+                    field: "epoch".to_owned(),
+                    role: ModelRole::Frame,
+                    name: "iers-tabulated".to_owned(),
+                })?;
+            if epoch.eop.is_none() {
+                return Err(ScenarioError::MissingRequiredField {
+                    field: "epoch.eop".to_owned(),
+                    role: ModelRole::Frame,
+                    name: "iers-tabulated".to_owned(),
+                });
+            }
+        } else if let Some(epoch) = &self.epoch {
+            if epoch.eop.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "epoch.eop".to_owned(),
+                    role: ModelRole::Frame,
+                    name: profile.to_owned(),
+                });
+            }
+            if epoch.eop_sha256.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "epoch.eop_sha256".to_owned(),
+                    role: ModelRole::Frame,
+                    name: profile.to_owned(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -1828,6 +1887,11 @@ pub struct EnvironmentConfig {
     /// Celestial ephemeris provider used when
     /// `gravity = "third_body"`.
     pub ephemeris: Option<String>,
+    /// Binary SPK/BSP ephemeris kernel path used when
+    /// `ephemeris = "spk"`.
+    pub ephemeris_file: Option<PathBuf>,
+    /// Optional SHA-256 pin for [`Self::ephemeris_file`].
+    pub ephemeris_file_sha256: Option<String>,
     /// Atmosphere model name.
     pub atmosphere: String,
     /// Wind model name.
@@ -1972,8 +2036,35 @@ impl EnvironmentConfig {
                     require_supported(
                         "environment.ephemeris",
                         ephemeris,
-                        &["low_precision_sun_moon"],
+                        &["low_precision_sun_moon", "spk"],
                     )?;
+                }
+                match self.ephemeris.as_deref() {
+                    Some("spk") => {
+                        if self.ephemeris_file.is_none() {
+                            return Err(ScenarioError::MissingRequiredField {
+                                field: "environment.ephemeris_file".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                    }
+                    _ => {
+                        if self.ephemeris_file.is_some() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_file".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if self.ephemeris_file_sha256.is_some() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_file_sha256".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                    }
                 }
                 if self.gravity_m_s2.is_some() {
                     return Err(ScenarioError::UnexpectedField {
@@ -2060,6 +2151,20 @@ impl EnvironmentConfig {
             if self.ephemeris.is_some() {
                 return Err(ScenarioError::UnexpectedField {
                     field: "environment.ephemeris".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: self.gravity.clone(),
+                });
+            }
+            if self.ephemeris_file.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.ephemeris_file".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: self.gravity.clone(),
+                });
+            }
+            if self.ephemeris_file_sha256.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.ephemeris_file_sha256".to_owned(),
                     role: ModelRole::Gravity,
                     name: self.gravity.clone(),
                 });
@@ -2229,6 +2334,25 @@ pub struct EpochConfig {
     pub iso8601: String,
     /// Optional leap-second table path.
     pub leap_second_table: Option<PathBuf>,
+    /// Optional Earth-orientation parameter table path.
+    pub eop: Option<PathBuf>,
+    /// Optional SHA-256 pin for [`Self::eop`].
+    pub eop_sha256: Option<String>,
+}
+
+impl EpochConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_non_empty("epoch.scale", &self.scale)?;
+        require_non_empty("epoch.iso8601", &self.iso8601)?;
+        if self.eop_sha256.is_some() && self.eop.is_none() {
+            return Err(ScenarioError::UnexpectedField {
+                field: "epoch.eop_sha256".to_owned(),
+                role: ModelRole::Frame,
+                name: "epoch without eop".to_owned(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Optional frames table.

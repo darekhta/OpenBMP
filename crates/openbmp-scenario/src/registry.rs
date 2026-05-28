@@ -24,6 +24,8 @@ pub enum ModelRole {
     Controller,
     /// Trajectory generator or trajectory-reference block.
     Trajectory,
+    /// Frame/time transform profile.
+    Frame,
     /// Force-model entry in deterministic force ordering.
     Force,
     /// Synthetic sensor model.
@@ -43,6 +45,7 @@ impl ModelRole {
             Self::Wind => "wind",
             Self::Controller => "controller",
             Self::Trajectory => "trajectory",
+            Self::Frame => "frame",
             Self::Force => "force",
             Self::Sensor => "sensor",
             Self::Motor => "motor",

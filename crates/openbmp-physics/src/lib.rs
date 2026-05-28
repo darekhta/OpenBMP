@@ -74,15 +74,16 @@ pub use atmosphere::{
 };
 pub use ephemeris::{
     ASTRONOMICAL_UNIT_M, CelestialBody, EphemerisModel, J2000_JULIAN_DATE,
-    LowPrecisionSunMoonEphemeris, MOON_MU_M3_S2, SUN_MU_M3_S2,
+    LowPrecisionSunMoonEphemeris, MOON_MU_M3_S2, SUN_MU_M3_S2, SpkEphemeris,
 };
 pub use error::PhysicsError;
 pub use external_reference::{
     EnvelopeBounds, ExternalReferencePackage, ProvenanceBlock, ReferencePackageKind, ReferenceQuery,
 };
 pub use frames::{
-    FrameContext, FrameProfile, FrameTransform, LocalGeodeticOrigin, WGS84_A_M,
-    WGS84_ECCENTRICITY_SQUARED, WGS84_FLATTENING, WGS84_INV_FLATTENING, WGS84_MU_M3_S2,
+    ARCSECOND_TO_RAD, EARTH_ROTATION_ANGLE_RATE_RAD_S, EarthOrientationSample,
+    EarthOrientationTable, FrameContext, FrameProfile, FrameTransform, LocalGeodeticOrigin,
+    WGS84_A_M, WGS84_ECCENTRICITY_SQUARED, WGS84_FLATTENING, WGS84_INV_FLATTENING, WGS84_MU_M3_S2,
     WGS84_OMEGA_RAD_S,
 };
 pub use gravity::{

@@ -130,6 +130,7 @@ pub fn run(
     // `[wind]` block is declared (or `kind = "none"`).
     let wind_rack = crate::wind::WindRack::build(document)?;
     wind_rack.reset();
+    let frame = crate::frames::build_frame_context(document, resolved_files)?;
 
     let loaded = load_models(document, resolved_files)?;
     crate::aero::reject_hypersonic_deck_only_out_of_envelope(document, loaded.aero_deck.as_ref())?;
@@ -158,8 +159,20 @@ pub fn run(
         &initial_engine_snapshot,
         &initial_tank_snapshot,
     )?;
-    let kernel_vehicle = build_vehicle(document, &loaded, &assembly, aerothermal_sink.clone())?;
-    let breakdown_vehicle = build_vehicle(document, &loaded, &assembly, aerothermal_sink)?;
+    let kernel_vehicle = build_vehicle(
+        document,
+        &loaded,
+        &assembly,
+        resolved_files,
+        aerothermal_sink.clone(),
+    )?;
+    let breakdown_vehicle = build_vehicle(
+        document,
+        &loaded,
+        &assembly,
+        resolved_files,
+        aerothermal_sink,
+    )?;
     let mass_model = build_mass_model(&loaded, &mass_resources, aerothermal_feedback);
     let moment_model = build_moment_model(document, &loaded)?;
     let rigid_models = RigidModels::new(moment_model, mass_model.clone());
@@ -245,7 +258,6 @@ pub fn run(
     }
     if !wind_rack.is_inactive() {
         let s = kernel.current_state();
-        let frame = openbmp_physics::FrameContext::toy_fixed_earth();
         let wind = wind_rack.sample(s.position, &frame, s.time)?;
         kernel.set_wind_sample(wind);
     }
@@ -356,7 +368,6 @@ pub fn run(
         if !wind_rack.is_inactive() {
             wind_rack.advance(kernel.current_step());
             let s = kernel.current_state();
-            let frame = openbmp_physics::FrameContext::toy_fixed_earth();
             let wind = wind_rack.sample(s.position, &frame, s.time)?;
             kernel.set_wind_sample(wind);
         }
@@ -1155,6 +1166,7 @@ fn build_initial_state(
 /// is `Send` + `Sync` so the kernel can store it in its force list.
 fn build_gravity_force_adapter_rigid_body(
     document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> Result<Box<dyn ForceModel<RigidBodyState> + Send + Sync>, RunnerError> {
     match document.environment.gravity.as_str() {
         "constant" => {
@@ -1224,7 +1236,7 @@ fn build_gravity_force_adapter_rigid_body(
             )))
         }
         "third_body" => {
-            let model = crate::celestial::build_third_body_gravity(document)?;
+            let model = crate::celestial::build_third_body_gravity(document, resolved_files)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
                 RIGID_BODY_GRAVITY_MODEL_ID,
@@ -1307,13 +1319,14 @@ fn build_vehicle(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
     assembly: &Assembly,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
     aerothermal_sink: Option<crate::aerothermal::LiveAerothermalSink>,
 ) -> Result<KernelVehicle<RigidBodyState>, RunnerError> {
     let mut named: Vec<NamedForceModel<RigidBodyState>> = Vec::new();
     for name in document.force_model_universe() {
         match name.as_str() {
             "gravity" => {
-                let force = build_gravity_force_adapter_rigid_body(document)?;
+                let force = build_gravity_force_adapter_rigid_body(document, resolved_files)?;
                 named.push(NamedForceModel::new("gravity", force));
             }
             "aero" => {
@@ -1859,6 +1872,7 @@ fn build_schema_metadata(
             file.sha256_hex.clone(),
         );
     }
+    super::append_frame_time_metadata(document, &mut metadata);
     super::append_solver_metadata(document, &mut metadata);
     crate::propulsion::append_staging_analysis_metadata(document, &mut metadata)?;
     Ok(metadata)

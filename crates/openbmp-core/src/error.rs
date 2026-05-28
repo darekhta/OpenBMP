@@ -107,4 +107,10 @@ pub enum FrameError {
         /// Short human-readable reason.
         reason: &'static str,
     },
+    /// A frame profile's pinned auxiliary data was malformed.
+    #[error("invalid frame-profile data: {reason}")]
+    InvalidFrameProfileData {
+        /// Short human-readable reason.
+        reason: &'static str,
+    },
 }

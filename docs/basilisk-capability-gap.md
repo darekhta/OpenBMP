@@ -42,15 +42,21 @@ OpenBMP implementation slice.
   `gravity_base`, `third_bodies`, and `ephemeris` fields.
 - Added `jettison_bodies`, a batch rigid-body deployment action that
   partitions multiple departing bodies from the same pre-split state.
+- Added `frame_profile = "iers-tabulated"` with pinned TOML EOP table
+  ingestion for interpolated UT1-UTC and polar motion.
+- Added `environment.ephemeris = "spk"` with SHA-256-pinned binary
+  DAF/SPK ingestion for JPL DE-style type 2/3 Chebyshev segments in
+  J2000.
 
 ## Still Missing Relative To Basilisk
 
-- JPL DE / SPICE file ingestion is not implemented. OpenBMP now has the
-  ephemeris trait boundary and a deterministic analytical provider, but
-  not a BSP/SPK kernel reader.
-- Time-varying Earth orientation, polar motion, leap-second tables, and
-  IERS EOP ingestion remain deferred behind the existing
-  `spice-reference` and `iers-tabulated` vocabulary.
+- SPK ingestion is intentionally limited to geometric state chains from
+  one binary kernel. It does not yet implement light-time correction,
+  stellar aberration, text kernels, non-J2000 frame transforms, or all
+  SPK segment types.
+- The IERS path is intentionally compact: it does not yet implement
+  precession, nutation, full leap-second table conversion, or a SPICE
+  frame chain.
 - Multi-body OpenBMP propagation is still independent-lane rigid-body
   propagation after deployment. Basilisk's message-passing architecture
   supports many simultaneously configured spacecraft modules more
@@ -73,3 +79,9 @@ OpenBMP implementation slice.
 - NASA NAIF's SPICE concept page describes SPK ephemerides and related
   spacecraft/planet/instrument kernel data:
   https://naif.jpl.nasa.gov/naif/spiceconcept.html
+- NASA NAIF SPK Required Reading describes binary SPK files, segment
+  precedence, and state retrieval concepts:
+  https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/spk.html
+- NASA NAIF DAF Required Reading describes the binary file
+  architecture used by SPK, CK, and binary PCK kernels:
+  https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/daf.html

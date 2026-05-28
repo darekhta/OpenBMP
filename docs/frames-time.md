@@ -52,15 +52,18 @@ scale = "UTC"
 iso8601 = "2026-01-01T00:00:00Z"
 leap_second_table = "data/time/leap_seconds_2026a.toml"
 eop = "data/earth_orientation/iers_bulletin_b_2026_01.toml"
+eop_sha256 = "<64 hex chars>"
 ```
 
 Rules:
 
-- Scenarios without `[epoch]` use deterministic toy transforms only.
-- Scenarios with `[epoch]` must name the time scale and source tables.
+- Scenarios without `[epoch]` use deterministic toy or uniform-rotation
+  transforms only.
+- Scenarios with `[epoch]` must name the time scale and source tables
+  required by their selected frame profile.
 - UTC is used only at input/output boundaries.
-- Internal high-fidelity transforms convert through TAI/TT/UT1 as required by
-  the selected frame profile.
+- The current `iers-tabulated` runner path requires `epoch.scale = "UTC"` and
+  converts UTC to UT1 using a pinned EOP table.
 - Leap-second and Earth-orientation tables are data files and require
   provenance.
 
@@ -72,11 +75,29 @@ OpenBMP should support explicit frame profiles:
 |---|---|---|
 | `toy-fixed-earth` | Textbook scenarios, no absolute epoch | Bit-stable |
 | `wgs84-uniform-rotation` | Earth rotation with constant rate, no EOP | Bit-stable |
-| `iers-tabulated` | IERS Earth orientation, leap seconds, polar motion | Bit-stable within platform profile when data is pinned |
+| `iers-tabulated` | Pinned UT1-UTC and polar motion table | Bit-stable within platform profile when data is pinned |
 | `spice-reference` | Validation against public SPICE kernels | Validation only, not default runtime |
 
 The default profile for MVP scenarios is `wgs84-uniform-rotation` unless an
 analytic toy states otherwise.
+
+`iers-tabulated` consumes deterministic TOML EOP tables:
+
+```toml
+format = "openbmp-eop-v1"
+
+[[samples]]
+time_s = 0.0
+ut1_minus_utc_s = 0.102
+x_pole_arcsec = 0.045
+y_pole_arcsec = 0.312
+```
+
+Sample times are scenario-relative seconds and must cover the whole
+simulation interval. The transform computes IAU Earth Rotation Angle from the
+UTC scenario epoch plus interpolated UT1-UTC, then applies a compact
+polar-motion rotation. Precession, nutation, leap-second table conversion, and
+SPICE frame chains remain future high-fidelity work.
 
 ## Transform Rules
 

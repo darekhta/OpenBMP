@@ -159,6 +159,7 @@ pub fn run(
     // `None`, preserving byte output for scenarios without wind.
     let wind_rack = crate::wind::WindRack::build(document)?;
     wind_rack.reset();
+    let frame = crate::frames::build_frame_context(document, resolved_files)?;
 
     let loaded_models = load_models(document, resolved_files)?;
     crate::aero::reject_hypersonic_deck_only_out_of_envelope(
@@ -174,6 +175,7 @@ pub fn run(
         document,
         &loaded_models,
         &assembly,
+        resolved_files,
         aerothermal_sink.clone(),
     )?;
     // The runner-side breakdown vehicle is a *separate* construction
@@ -183,7 +185,13 @@ pub fn run(
     // keeps the force-list ownership simple. Stateful aerothermal
     // integration remains in the live driver; both vehicle copies get
     // zero-force diagnostic adapters over the same latest-output sink.
-    let breakdown_vehicle = build_vehicle(document, &loaded_models, &assembly, aerothermal_sink)?;
+    let breakdown_vehicle = build_vehicle(
+        document,
+        &loaded_models,
+        &assembly,
+        resolved_files,
+        aerothermal_sink,
+    )?;
     let mass_model = BoxedMassModel(build_mass_model(document, &loaded_models, &assembly)?);
 
     // Runtime integrator dispatch from the scenario
@@ -266,7 +274,6 @@ pub fn run(
     // the same wind the kernel will see on its first step.
     if !wind_rack.is_inactive() {
         let initial_state = kernel.current_state();
-        let frame = openbmp_physics::FrameContext::toy_fixed_earth();
         let wind = wind_rack.sample(initial_state.position, &frame, initial_state.time)?;
         kernel.set_wind_sample(wind);
     }
@@ -390,7 +397,6 @@ pub fn run(
         if !wind_rack.is_inactive() {
             wind_rack.advance(kernel.current_step());
             let s = kernel.current_state();
-            let frame = openbmp_physics::FrameContext::toy_fixed_earth();
             let wind = wind_rack.sample(s.position, &frame, s.time)?;
             kernel.set_wind_sample(wind);
         }
@@ -593,6 +599,7 @@ fn build_initial_state(
 /// `openbmp_physics::GravityModel`.
 fn build_gravity_force_adapter_point_mass(
     document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> Result<Box<dyn ForceModel<PointMassState> + Send + Sync>, RunnerError> {
     match document.environment.gravity.as_str() {
         "constant" => {
@@ -663,7 +670,7 @@ fn build_gravity_force_adapter_point_mass(
             )))
         }
         "third_body" => {
-            let model = crate::celestial::build_third_body_gravity(document)?;
+            let model = crate::celestial::build_third_body_gravity(document, resolved_files)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
                 POINT_MASS_GRAVITY_MODEL_ID,
@@ -680,6 +687,7 @@ fn build_vehicle(
     document: &ScenarioDocument,
     loaded_models: &LoadedModels,
     assembly: &Assembly,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
     aerothermal_sink: Option<crate::aerothermal::LiveAerothermalSink>,
 ) -> Result<KernelVehicle<PointMassState>, RunnerError> {
     let mut named: Vec<NamedForceModel<PointMassState>> = Vec::new();
@@ -687,7 +695,7 @@ fn build_vehicle(
     for name in document.force_model_universe() {
         match name.as_str() {
             "gravity" => {
-                let force = build_gravity_force_adapter_point_mass(document)?;
+                let force = build_gravity_force_adapter_point_mass(document, resolved_files)?;
                 named.push(NamedForceModel::new("gravity", force));
             }
             "aero" => {
@@ -937,6 +945,7 @@ fn build_schema_metadata(
             file.sha256_hex.clone(),
         );
     }
+    super::append_frame_time_metadata(document, &mut metadata);
     super::append_solver_metadata(document, &mut metadata);
     crate::propulsion::append_staging_analysis_metadata(document, &mut metadata)?;
     Ok(metadata)

@@ -220,6 +220,20 @@ impl Scenario {
             }
         }
 
+        if let Some(epoch) = &self.document.epoch
+            && let Some(eop) = &epoch.eop
+        {
+            let resolved = ResolvedFile::load(self.resolve_path(eop))?;
+            resolved.verify_pin(epoch.eop_sha256.as_deref())?;
+            files.insert("epoch.eop".to_owned(), resolved);
+        }
+
+        if let Some(ephemeris_file) = &self.document.environment.ephemeris_file {
+            let resolved = ResolvedFile::load(self.resolve_path(ephemeris_file))?;
+            resolved.verify_pin(self.document.environment.ephemeris_file_sha256.as_deref())?;
+            files.insert("environment.ephemeris_file".to_owned(), resolved);
+        }
+
         if let Some(packages) = &self.document.data_packages {
             for (name, path) in packages {
                 let resolved = ResolvedFile::load(self.resolve_path(path))?;
@@ -2894,6 +2908,90 @@ kn_hi = 10.0
             matches!(err, ScenarioError::InconsistentSection { .. }),
             "got {err:?}",
         );
+    }
+
+    #[test]
+    fn iers_tabulated_frame_requires_epoch_eop() {
+        let toml = MINIMAL.replace(
+            r#"frame_profile = "toy-fixed-earth""#,
+            r#"frame_profile = "iers-tabulated""#,
+        ) + r#"
+[epoch]
+scale = "UTC"
+iso8601 = "2000-01-01T12:00:00Z"
+
+[frames]
+profile = "iers-tabulated"
+"#;
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "epoch.eop"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn resolved_files_includes_epoch_eop() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("eop.toml"), "format = \"openbmp-eop-v1\"\n").expect("write eop");
+        let toml = MINIMAL.replace(
+            r#"frame_profile = "toy-fixed-earth""#,
+            r#"frame_profile = "iers-tabulated""#,
+        ) + r#"
+[epoch]
+scale = "UTC"
+iso8601 = "2000-01-01T12:00:00Z"
+eop = "eop.toml"
+
+[frames]
+profile = "iers-tabulated"
+"#;
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(dir.path()))
+            .expect("parse iers scenario");
+        let files = scenario.resolved_files().expect("resolve files");
+        assert!(files.contains_key("epoch.eop"));
+    }
+
+    #[test]
+    fn third_body_spk_ephemeris_requires_file() {
+        let toml_v2 = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665",
+                "gravity       = \"third_body\"\ngravity_base  = \"point_mass\"\nmu_m3_s2      = 3.986004418e14\nthird_bodies  = [\"sun\"]\nephemeris     = \"spk\"",
+            );
+        let err = Scenario::from_toml_str(&toml_v2).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "environment.ephemeris_file"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn resolved_files_includes_spk_ephemeris_file() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("synthetic.bsp"), b"stub spk").expect("write spk");
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665",
+                "gravity       = \"third_body\"\ngravity_base  = \"point_mass\"\nmu_m3_s2      = 3.986004418e14\nthird_bodies  = [\"sun\"]\nephemeris     = \"spk\"\nephemeris_file = \"synthetic.bsp\"",
+            )
+            + r#"
+[epoch]
+scale = "TDB"
+iso8601 = "2000-01-01T12:00:00Z"
+"#;
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(dir.path()))
+            .expect("parse spk scenario");
+        let files = scenario.resolved_files().expect("resolve files");
+        assert!(files.contains_key("environment.ephemeris_file"));
     }
 
     #[test]

@@ -1,11 +1,14 @@
 //! Runner-side celestial ephemeris and third-body gravity wiring.
 
+use std::collections::BTreeMap;
+
 use openbmp_core::{Eci, Position3, SimTime};
 use openbmp_physics::{
-    CelestialBody, Egm2008ZonalGravity, GravityModel, J2Gravity, J2000_JULIAN_DATE,
-    LowPrecisionSunMoonEphemeris, PointMassGravity, ThirdBody, ThirdBodyGravity, WGS84_J2,
+    CelestialBody, Egm2008ZonalGravity, EphemerisModel, GravityModel, J2Gravity, J2000_JULIAN_DATE,
+    LowPrecisionSunMoonEphemeris, PointMassGravity, SpkEphemeris, ThirdBody, ThirdBodyGravity,
+    WGS84_J2,
 };
-use openbmp_scenario::ScenarioDocument;
+use openbmp_scenario::{ResolvedFile, ScenarioDocument};
 
 use crate::error::RunnerError;
 
@@ -35,9 +38,31 @@ impl GravityModel for RuntimeCentralGravity {
     }
 }
 
+/// Concrete ephemeris variants available under
+/// `environment.gravity = "third_body"`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RuntimeEphemeris {
+    /// Built-in deterministic analytical Sun/Moon approximation.
+    LowPrecisionSunMoon(LowPrecisionSunMoonEphemeris),
+    /// Pinned binary SPK/BSP kernel.
+    Spk(SpkEphemeris),
+}
+
+impl EphemerisModel for RuntimeEphemeris {
+    fn body_position_eci_m(
+        &self,
+        body: CelestialBody,
+        time: SimTime,
+    ) -> Result<nalgebra::Vector3<f64>, openbmp_physics::PhysicsError> {
+        match self {
+            Self::LowPrecisionSunMoon(ephemeris) => ephemeris.body_position_eci_m(body, time),
+            Self::Spk(ephemeris) => ephemeris.body_position_eci_m(body, time),
+        }
+    }
+}
+
 /// Concrete third-body gravity type used by both runner paths.
-pub(crate) type RuntimeThirdBodyGravity =
-    ThirdBodyGravity<RuntimeCentralGravity, LowPrecisionSunMoonEphemeris>;
+pub(crate) type RuntimeThirdBodyGravity = ThirdBodyGravity<RuntimeCentralGravity, RuntimeEphemeris>;
 
 /// Build the configured third-body gravity model.
 ///
@@ -48,24 +73,61 @@ pub(crate) type RuntimeThirdBodyGravity =
 /// parsed by the runner's low-precision ephemeris path.
 pub(crate) fn build_third_body_gravity(
     document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> Result<RuntimeThirdBodyGravity, RunnerError> {
     let central = build_central_gravity(document)?;
-    let ephemeris_kind = document
-        .environment
-        .ephemeris
-        .as_deref()
-        .unwrap_or("low_precision_sun_moon");
-    if ephemeris_kind != "low_precision_sun_moon" {
-        return Err(RunnerError::UnsupportedScenario {
-            what: format!("environment.ephemeris = {ephemeris_kind} is not wired"),
-        });
-    }
-    let ephemeris = LowPrecisionSunMoonEphemeris::new(epoch_julian_date(document)?)?;
+    let ephemeris = build_ephemeris(document, resolved_files)?;
     let mut bodies = Vec::with_capacity(document.environment.third_bodies.len());
     for label in &document.environment.third_bodies {
         bodies.push(ThirdBody::canonical(parse_celestial_body(label)?));
     }
     Ok(ThirdBodyGravity::new(central, ephemeris, bodies)?)
+}
+
+fn build_ephemeris(
+    document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<RuntimeEphemeris, RunnerError> {
+    let ephemeris_kind = document
+        .environment
+        .ephemeris
+        .as_deref()
+        .unwrap_or("low_precision_sun_moon");
+    match ephemeris_kind {
+        "low_precision_sun_moon" => Ok(RuntimeEphemeris::LowPrecisionSunMoon(
+            LowPrecisionSunMoonEphemeris::new(epoch_julian_date(document)?)?,
+        )),
+        "spk" => {
+            let epoch =
+                document
+                    .epoch
+                    .as_ref()
+                    .ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "environment.ephemeris = \"spk\" requires [epoch]".to_owned(),
+                    })?;
+            if epoch.scale.to_ascii_uppercase() != "TDB" {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "environment.ephemeris = \"spk\" requires epoch.scale = \"TDB\"; got \"{}\"",
+                        epoch.scale
+                    ),
+                });
+            }
+            let resolved = resolved_files.get("environment.ephemeris_file").ok_or_else(|| {
+                RunnerError::UnsupportedScenario {
+                    what: "environment.ephemeris = \"spk\" requires resolved environment.ephemeris_file"
+                        .to_owned(),
+                }
+            })?;
+            Ok(RuntimeEphemeris::Spk(SpkEphemeris::from_bytes(
+                parse_iso8601_julian_date(&epoch.iso8601)?,
+                &resolved.bytes,
+            )?))
+        }
+        other => Err(RunnerError::UnsupportedScenario {
+            what: format!("environment.ephemeris = {other} is not wired"),
+        }),
+    }
 }
 
 fn build_central_gravity(
@@ -143,7 +205,7 @@ fn epoch_julian_date(document: &ScenarioDocument) -> Result<f64, RunnerError> {
     parse_iso8601_julian_date(&epoch.iso8601)
 }
 
-fn parse_iso8601_julian_date(value: &str) -> Result<f64, RunnerError> {
+pub(crate) fn parse_iso8601_julian_date(value: &str) -> Result<f64, RunnerError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(RunnerError::UnsupportedScenario {
@@ -261,9 +323,11 @@ fn julian_date_from_gregorian(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use openbmp_scenario::Scenario;
+    use std::path::PathBuf;
 
     #[test]
     fn parses_j2000_noon_epoch() {
@@ -275,5 +339,171 @@ mod tests {
     fn parses_midnight_before_j2000() {
         let jd = parse_iso8601_julian_date("2000-01-01T00:00:00Z").unwrap();
         assert!((jd - (J2000_JULIAN_DATE - 0.5)).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn builds_spk_third_body_ephemeris_from_resolved_file() {
+        let scenario = Scenario::from_toml_str(SPK_THIRD_BODY_SCENARIO).unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(
+            "environment.ephemeris_file".to_owned(),
+            ResolvedFile {
+                path: PathBuf::from("synthetic.bsp"),
+                sha256_hex: "not-used-in-unit-test".to_owned(),
+                bytes: synthetic_spk(),
+            },
+        );
+        let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
+        match gravity.ephemeris() {
+            RuntimeEphemeris::Spk(spk) => assert_eq!(spk.segment_count(), 4),
+            other => panic!("expected SPK ephemeris, got {other:?}"),
+        }
+    }
+
+    const SPK_THIRD_BODY_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "spk-third-body-test"
+description = "SPK third-body wiring test."
+validation = "validated-toy"
+provenance = "synthetic runner unit test"
+
+[time]
+start_s = 0.0
+stop_s = 1.0
+dt_s = 1.0
+seed = 1
+
+[epoch]
+scale = "TDB"
+iso8601 = "2000-01-01T12:00:00Z"
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "spk-test"
+
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "third_body"
+gravity_base  = "point_mass"
+mu_m3_s2      = 3.986004418e14
+third_bodies  = ["sun", "moon"]
+ephemeris     = "spk"
+ephemeris_file = "synthetic.bsp"
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/spk-third-body-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
+    #[derive(Copy, Clone)]
+    struct SyntheticSegment {
+        target: i32,
+        center: i32,
+        position_km: [f64; 3],
+    }
+
+    fn synthetic_spk() -> Vec<u8> {
+        const RECORD_BYTES: usize = 1_024;
+        const WORDS_PER_RECORD: usize = 128;
+        const SUMMARY_CONTROL_WORDS: usize = 3;
+        const SUMMARY_WORDS: usize = 5;
+        const J2000_FRAME: i32 = 1;
+        let segments = [
+            SyntheticSegment {
+                target: 3,
+                center: 0,
+                position_km: [4_700.0, 1_200.0, -300.0],
+            },
+            SyntheticSegment {
+                target: 399,
+                center: 3,
+                position_km: [0.0, 0.0, 0.0],
+            },
+            SyntheticSegment {
+                target: 10,
+                center: 0,
+                position_km: [149_597_870.0, 0.0, 0.0],
+            },
+            SyntheticSegment {
+                target: 301,
+                center: 3,
+                position_km: [384_400.0, 0.0, 0.0],
+            },
+        ];
+        let mut bytes = vec![0_u8; (4 + segments.len()) * RECORD_BYTES];
+        bytes[0..8].copy_from_slice(b"DAF/SPK ");
+        write_i32(&mut bytes, 8, 2);
+        write_i32(&mut bytes, 12, 6);
+        write_i32(&mut bytes, 76, 2);
+        write_i32(&mut bytes, 80, 2);
+        write_i32(&mut bytes, 84, 1);
+        bytes[88..96].copy_from_slice(b"LTL-IEEE");
+
+        let summary_offset = RECORD_BYTES;
+        write_f64(&mut bytes, summary_offset, 0.0);
+        write_f64(&mut bytes, summary_offset + 8, 0.0);
+        write_f64(&mut bytes, summary_offset + 16, segments.len() as f64);
+        for (index, segment) in segments.iter().enumerate() {
+            let offset = summary_offset + (SUMMARY_CONTROL_WORDS + index * SUMMARY_WORDS) * 8;
+            write_f64(&mut bytes, offset, -10.0);
+            write_f64(&mut bytes, offset + 8, 10.0);
+            write_i32(&mut bytes, offset + 16, segment.target);
+            write_i32(&mut bytes, offset + 20, segment.center);
+            write_i32(&mut bytes, offset + 24, J2000_FRAME);
+            write_i32(&mut bytes, offset + 28, 2);
+            let address = (WORDS_PER_RECORD * (3 + index) + 1) as i32;
+            write_i32(&mut bytes, offset + 32, address);
+            write_i32(&mut bytes, offset + 36, address + 8);
+            let data = type2_constant_segment(segment.position_km);
+            for (data_index, value) in data.iter().enumerate() {
+                write_f64(
+                    &mut bytes,
+                    ((address as usize - 1) + data_index) * 8,
+                    *value,
+                );
+            }
+        }
+        bytes
+    }
+
+    fn type2_constant_segment(position_km: [f64; 3]) -> [f64; 9] {
+        [
+            0.0,
+            10.0,
+            position_km[0],
+            position_km[1],
+            position_km[2],
+            -10.0,
+            20.0,
+            5.0,
+            1.0,
+        ]
+    }
+
+    fn write_i32(bytes: &mut [u8], offset: usize, value: i32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_f64(bytes: &mut [u8], offset: usize, value: f64) {
+        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
     }
 }

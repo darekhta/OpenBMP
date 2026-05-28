@@ -333,13 +333,44 @@ Absolute epoch data is optional. If present, it follows
 scale = "UTC"
 iso8601 = "2026-01-01T00:00:00Z"
 leap_second_table = "data/time/leap_seconds_2026a.toml"
+eop = "data/earth_orientation/example-eop.toml"
+eop_sha256 = "<64 hex chars>"
 
 [frames]
-profile = "wgs84-uniform-rotation"
+profile = "iers-tabulated"
 ```
 
 Accepted frame profiles are `toy-fixed-earth`, `wgs84-uniform-rotation`,
 `iers-tabulated`, and validation-only `spice-reference`.
+`iers-tabulated` requires `[epoch]`, `epoch.scale = "UTC"`, and
+`epoch.eop`; the EOP file is loaded through the same SHA-256-pinned
+resolved-file path used for aero decks and motor curves.
+
+The EOP table format currently consumed by the runner is deterministic
+TOML with scenario-relative sample times:
+
+```toml
+format = "openbmp-eop-v1"
+
+[[samples]]
+time_s = 0.0
+ut1_minus_utc_s = 0.102
+x_pole_arcsec = 0.045
+y_pole_arcsec = 0.312
+
+[[samples]]
+time_s = 60.0
+ut1_minus_utc_s = 0.103
+x_pole_arcsec = 0.045
+y_pole_arcsec = 0.312
+```
+
+Samples must be strictly time-ordered and cover `[time.start_s,
+time.stop_s]`. OpenBMP linearly interpolates UT1-UTC and polar motion,
+uses the scenario UTC epoch to compute IAU Earth Rotation Angle, and
+applies a compact polar-motion rotation in the ECI/ECEF transform. It
+does not yet implement precession, nutation, leap-second table
+conversion, or SPICE frame chains.
 
 ## Model Ordering
 
@@ -456,10 +487,10 @@ The rigid-body-only initial-state fields are rejected when
 
 | `gravity` | Required | Rejected |
 |---|---|---|
-| `"constant"` | `gravity_m_s2` | `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris` |
-| `"point_mass"` | `mu_m3_s2` | `gravity_m_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris` |
+| `"constant"` | `gravity_m_s2` | `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file` |
+| `"point_mass"` | `mu_m3_s2` | `gravity_m_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file` |
 | `"j2"` | `mu_m3_s2`, `r_e_m` | `gravity_m_s2` |
-| `"egm2008"` | — pinned WGS84 / EGM2008 zonal constants | `gravity_m_s2`, `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris` |
+| `"egm2008"` | — pinned WGS84 / EGM2008 zonal constants | `gravity_m_s2`, `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file` |
 | `"third_body"` | `gravity_base`, `third_bodies`; plus the selected base coefficients | `gravity_m_s2` |
 
 For `gravity = "j2"` the dimensionless `j2` coefficient defaults to the
@@ -474,6 +505,10 @@ Sun/Moon point-mass perturbations using
 deterministic analytical ephemeris; if `[epoch]` is omitted the
 ephemeris starts at J2000, otherwise the runner parses
 `epoch.iso8601` with `epoch.scale` `UTC`, `TT`, or `TDB`.
+`ephemeris = "spk"` selects a pinned binary SPK/BSP kernel supplied by
+`ephemeris_file` and optional `ephemeris_file_sha256`; this path
+requires `[epoch].scale = "TDB"` because the SPK reader evaluates
+seconds past J2000 on the ephemeris-time/TDB axis.
 
 ```toml
 [epoch]
@@ -490,10 +525,30 @@ atmosphere    = "none"
 wind          = "none"
 ```
 
-OpenBMP does not yet ingest JPL DE / SPICE kernels. The built-in
-ephemeris is intended for deterministic perturbation studies and
-regression tests; navigation-grade ephemeris files remain a future
-`spice-reference` frame/ephemeris profile.
+```toml
+[epoch]
+scale = "TDB"
+iso8601 = "2000-01-01T12:00:00Z"
+
+[environment]
+frame_profile = "wgs84-uniform-rotation"
+gravity       = "third_body"
+gravity_base  = "egm2008"
+third_bodies  = ["sun", "moon"]
+ephemeris     = "spk"
+ephemeris_file = "data/ephemeris/de440s.bsp"
+ephemeris_file_sha256 = "<64 hex chars>"
+atmosphere    = "none"
+wind          = "none"
+```
+
+The SPK reader supports geometric Sun/Moon positions from binary
+DAF/SPK kernels with type 2 or type 3 Chebyshev segments in the J2000
+frame. It follows SPK segment priority inside one file and combines
+target/center chains such as Solar-System-Barycenter -> Earth-Moon
+Barycenter -> Earth/Moon. It does not yet implement light-time,
+stellar aberration, text kernels, non-J2000 frame transforms, or
+non-Chebyshev SPK segment types.
 
 ### Frames local origin
 
@@ -896,7 +951,8 @@ observable after the run.
 
 Every external file referenced by the scenario can carry an optional
 `*_sha256` companion field (`aero.deck_sha256`,
-`propulsion.motor.file_sha256`, `sensors.<name>.file_sha256`). When
+`propulsion.motor.file_sha256`, `sensors.<name>.file_sha256`,
+`epoch.eop_sha256`, `environment.ephemeris_file_sha256`). When
 present, the parser computes the file's SHA-256 digest at load time
 and fails closed on mismatch. When absent, the digest is still computed
 and surfaced by `openbmp check`; recording those digests in telemetry
@@ -909,6 +965,7 @@ openbmp check: ok — niskanen-2009-chapter6 (Checked)
   telemetry.output.parquet -> .../out/niskanen-2009-chapter6.parquet
   aero.deck -> .../data/aero/...toml (sha256:cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27)
   propulsion.motor.file -> .../data/motors/estes-c6-eng-derived.toml (sha256:da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e)
+  environment.ephemeris_file -> .../data/ephemeris/de440s.bsp (sha256:...)
 ```
 
 The digest is the SHA-256 of the file bytes encoded as 64 lower-case

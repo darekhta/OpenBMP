@@ -21,6 +21,7 @@
 //! Determinism: pure `f64` arithmetic with locked operand order; no
 //! FMA, no wall-clock time, no system RNG.
 
+use nalgebra::Vector3;
 use openbmp_core::{Ecef, Eci, Frame as CoreFrame, FrameError, Ned, Position3, SimTime, Velocity3};
 
 // ---------------------------------------------------------------------
@@ -31,8 +32,9 @@ use openbmp_core::{Ecef, Eci, Frame as CoreFrame, FrameError, Ned, Position3, Si
 ///
 /// The profile determines which [`FrameTransform`] implementations and
 /// time-aware methods are available. Provides
-/// [`FrameProfile::ToyFixedEarth`] and
-/// [`FrameProfile::Wgs84UniformRotation`].
+/// [`FrameProfile::ToyFixedEarth`],
+/// [`FrameProfile::Wgs84UniformRotation`], and
+/// [`FrameProfile::IersTabulated`].
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub enum FrameProfile {
     /// Toy: ECI and ECEF coincide; no Earth rotation; no leap seconds.
@@ -43,9 +45,13 @@ pub enum FrameProfile {
     /// WGS84 with uniform Earth rotation: ECI/ECEF differ only by a
     /// rotation about the inertial `+z` axis at the constant WGS84
     /// rate `ω_e = 7.2921151467 × 10⁻⁵ rad/s`. No EOP, no polar
-    /// motion, no leap seconds. IERS-tabulated and SPICE-reference
-    /// profiles are out of scope.
+    /// motion, no leap seconds.
     Wgs84UniformRotation,
+    /// WGS84 with scenario-pinned Earth-orientation parameters:
+    /// absolute UTC epoch, interpolated UT1-UTC, and polar motion.
+    /// This remains a compact deterministic transform and does not
+    /// include precession, nutation, or a SPICE frame chain.
+    IersTabulated,
 }
 
 impl FrameProfile {
@@ -55,8 +61,165 @@ impl FrameProfile {
         match self {
             Self::ToyFixedEarth => "toy-fixed-earth",
             Self::Wgs84UniformRotation => "wgs84-uniform-rotation",
+            Self::IersTabulated => "iers-tabulated",
         }
     }
+}
+
+// ---------------------------------------------------------------------
+// Earth orientation
+// ---------------------------------------------------------------------
+
+const SECONDS_PER_DAY: f64 = 86_400.0;
+const TWO_PI: f64 = 2.0 * std::f64::consts::PI;
+
+/// Radians per arcsecond.
+pub const ARCSECOND_TO_RAD: f64 = std::f64::consts::PI / (180.0 * 3_600.0);
+
+/// IAU Earth Rotation Angle rate, rad/s.
+///
+/// This is the ERA slope with respect to UT1:
+/// `2π * 1.00273781191135448 / 86400`.
+pub const EARTH_ROTATION_ANGLE_RATE_RAD_S: f64 = TWO_PI * 1.002_737_811_911_354_6 / SECONDS_PER_DAY;
+
+/// One scenario-relative Earth-orientation sample.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct EarthOrientationSample {
+    /// Scenario-relative simulation time, seconds.
+    pub time_s: f64,
+    /// UT1 minus UTC, seconds.
+    pub ut1_minus_utc_s: f64,
+    /// Polar motion `x_p`, radians.
+    pub polar_motion_x_rad: f64,
+    /// Polar motion `y_p`, radians.
+    pub polar_motion_y_rad: f64,
+}
+
+impl EarthOrientationSample {
+    /// Construct and validate a sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::InvalidFrameProfileData`] when any field
+    /// is non-finite.
+    pub fn new(
+        time_s: f64,
+        ut1_minus_utc_s: f64,
+        polar_motion_x_rad: f64,
+        polar_motion_y_rad: f64,
+    ) -> Result<Self, FrameError> {
+        if !time_s.is_finite()
+            || !ut1_minus_utc_s.is_finite()
+            || !polar_motion_x_rad.is_finite()
+            || !polar_motion_y_rad.is_finite()
+        {
+            return Err(FrameError::InvalidFrameProfileData {
+                reason: "Earth-orientation samples must be finite",
+            });
+        }
+        Ok(Self {
+            time_s,
+            ut1_minus_utc_s,
+            polar_motion_x_rad,
+            polar_motion_y_rad,
+        })
+    }
+}
+
+/// Scenario-pinned Earth-orientation parameter table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EarthOrientationTable {
+    samples: Vec<EarthOrientationSample>,
+}
+
+impl EarthOrientationTable {
+    /// Construct a table from strictly increasing samples.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::InvalidFrameProfileData`] when the table
+    /// is empty, contains non-finite values, or sample times are not
+    /// strictly increasing.
+    pub fn new(samples: Vec<EarthOrientationSample>) -> Result<Self, FrameError> {
+        if samples.is_empty() {
+            return Err(FrameError::InvalidFrameProfileData {
+                reason: "Earth-orientation table must contain at least one sample",
+            });
+        }
+        for sample in &samples {
+            EarthOrientationSample::new(
+                sample.time_s,
+                sample.ut1_minus_utc_s,
+                sample.polar_motion_x_rad,
+                sample.polar_motion_y_rad,
+            )?;
+        }
+        for pair in samples.windows(2) {
+            if pair[0].time_s >= pair[1].time_s {
+                return Err(FrameError::InvalidFrameProfileData {
+                    reason: "Earth-orientation sample times must be strictly increasing",
+                });
+            }
+        }
+        Ok(Self { samples })
+    }
+
+    /// Table samples.
+    #[must_use]
+    pub fn samples(&self) -> &[EarthOrientationSample] {
+        &self.samples
+    }
+
+    /// Whether the table covers the closed interval `[start_s, stop_s]`.
+    #[must_use]
+    pub fn covers_interval(&self, start_s: f64, stop_s: f64) -> bool {
+        let Some(first) = self.samples.first() else {
+            return false;
+        };
+        let Some(last) = self.samples.last() else {
+            return false;
+        };
+        start_s.is_finite()
+            && stop_s.is_finite()
+            && start_s <= stop_s
+            && first.time_s <= start_s
+            && last.time_s >= stop_s
+    }
+
+    /// Interpolate an orientation sample at scenario-relative time.
+    ///
+    /// Values outside the pinned table are endpoint-held; runners are
+    /// expected to validate table coverage for the configured
+    /// simulation interval before constructing the context.
+    #[must_use]
+    pub fn sample(&self, t: SimTime) -> EarthOrientationSample {
+        let time_s = t.as_seconds();
+        if time_s <= self.samples[0].time_s {
+            return self.samples[0];
+        }
+        let last_index = self.samples.len() - 1;
+        if time_s >= self.samples[last_index].time_s {
+            return self.samples[last_index];
+        }
+        let upper = self
+            .samples
+            .partition_point(|sample| sample.time_s < time_s);
+        let lo = self.samples[upper - 1];
+        let hi = self.samples[upper];
+        let alpha = (time_s - lo.time_s) / (hi.time_s - lo.time_s);
+        EarthOrientationSample {
+            time_s,
+            ut1_minus_utc_s: lerp(lo.ut1_minus_utc_s, hi.ut1_minus_utc_s, alpha),
+            polar_motion_x_rad: lerp(lo.polar_motion_x_rad, hi.polar_motion_x_rad, alpha),
+            polar_motion_y_rad: lerp(lo.polar_motion_y_rad, hi.polar_motion_y_rad, alpha),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct IersFrameData {
+    epoch_utc_julian_date: f64,
+    earth_orientation: EarthOrientationTable,
 }
 
 // ---------------------------------------------------------------------
@@ -198,6 +361,7 @@ impl LocalGeodeticOrigin {
 pub struct FrameContext {
     profile: FrameProfile,
     local_origin: Option<LocalGeodeticOrigin>,
+    iers: Option<IersFrameData>,
 }
 
 impl FrameContext {
@@ -207,6 +371,7 @@ impl FrameContext {
         Self {
             profile: FrameProfile::ToyFixedEarth,
             local_origin: None,
+            iers: None,
         }
     }
 
@@ -220,7 +385,38 @@ impl FrameContext {
         Self {
             profile: FrameProfile::Wgs84UniformRotation,
             local_origin,
+            iers: None,
         }
+    }
+
+    /// Construct a context for [`FrameProfile::IersTabulated`].
+    ///
+    /// `epoch_utc_julian_date` is the scenario UTC epoch expressed as
+    /// Julian Date; the Earth-orientation table is sampled against the
+    /// same scenario-relative [`SimTime`] values the kernel advances.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::InvalidFrameProfileData`] when the epoch
+    /// is non-finite.
+    pub fn iers_tabulated(
+        epoch_utc_julian_date: f64,
+        local_origin: Option<LocalGeodeticOrigin>,
+        earth_orientation: EarthOrientationTable,
+    ) -> Result<Self, FrameError> {
+        if !epoch_utc_julian_date.is_finite() {
+            return Err(FrameError::InvalidFrameProfileData {
+                reason: "IERS frame epoch Julian Date must be finite",
+            });
+        }
+        Ok(Self {
+            profile: FrameProfile::IersTabulated,
+            local_origin,
+            iers: Some(IersFrameData {
+                epoch_utc_julian_date,
+                earth_orientation,
+            }),
+        })
     }
 
     /// The active profile.
@@ -233,6 +429,13 @@ impl FrameContext {
     #[must_use]
     pub const fn local_origin(&self) -> Option<&LocalGeodeticOrigin> {
         self.local_origin.as_ref()
+    }
+
+    /// Pinned Earth-orientation table used by
+    /// [`FrameProfile::IersTabulated`], if any.
+    #[must_use]
+    pub fn earth_orientation_table(&self) -> Option<&EarthOrientationTable> {
+        self.iers.as_ref().map(|iers| &iers.earth_orientation)
     }
 
     // ---------------------------------------------------------------
@@ -255,6 +458,15 @@ impl FrameContext {
         match self.profile {
             FrameProfile::ToyFixedEarth => 0.0,
             FrameProfile::Wgs84UniformRotation => WGS84_OMEGA_RAD_S * t.as_seconds(),
+            FrameProfile::IersTabulated => {
+                let Some(iers) = self.iers.as_ref() else {
+                    return WGS84_OMEGA_RAD_S * t.as_seconds();
+                };
+                let eop = iers.earth_orientation.sample(t);
+                let jd_ut1 = iers.epoch_utc_julian_date
+                    + (t.as_seconds() + eop.ut1_minus_utc_s) / SECONDS_PER_DAY;
+                earth_rotation_angle_from_ut1_julian_date(jd_ut1)
+            }
         }
     }
 
@@ -265,10 +477,8 @@ impl FrameContext {
     #[must_use]
     pub fn eci_to_ecef_position(&self, t: SimTime, p_eci: Position3<Eci>) -> Position3<Ecef> {
         let theta = self.earth_rotation_angle(t);
-        let (s, c) = (theta.sin(), theta.cos());
-        // Rotate by -θ about z: x' = c x + s y; y' = -s x + c y; z' = z.
-        let v = p_eci.vector;
-        Position3::new(c * v.x + s * v.y, -s * v.x + c * v.y, v.z)
+        let tirs = rotate_z(p_eci.vector, -theta);
+        Position3::from_vector(self.tirs_to_ecef_vector(t, tirs))
     }
 
     /// Transform an ECEF position to ECI at simulation time `t`.
@@ -276,10 +486,8 @@ impl FrameContext {
     #[must_use]
     pub fn ecef_to_eci_position(&self, t: SimTime, p_ecef: Position3<Ecef>) -> Position3<Eci> {
         let theta = self.earth_rotation_angle(t);
-        let (s, c) = (theta.sin(), theta.cos());
-        // Rotate by +θ about z: x' = c x - s y; y' = s x + c y; z' = z.
-        let v = p_ecef.vector;
-        Position3::new(c * v.x - s * v.y, s * v.x + c * v.y, v.z)
+        let tirs = self.ecef_to_tirs_vector(t, p_ecef.vector);
+        Position3::from_vector(rotate_z(tirs, theta))
     }
 
     /// Transform an ECI velocity to ECEF velocity at simulation time
@@ -302,9 +510,8 @@ impl FrameContext {
         let cross = nalgebra::Vector3::new(-omega * r.y, omega * r.x, 0.0);
         let v_inertial_minus_transport = v_eci.vector - cross;
         let theta = self.earth_rotation_angle(t);
-        let (s, c) = (theta.sin(), theta.cos());
-        let v = v_inertial_minus_transport;
-        Velocity3::new(c * v.x + s * v.y, -s * v.x + c * v.y, v.z)
+        let tirs = rotate_z(v_inertial_minus_transport, -theta);
+        Velocity3::from_vector(self.tirs_to_ecef_vector(t, tirs))
     }
 
     /// Transform an ECEF velocity to ECI velocity at simulation time
@@ -319,17 +526,15 @@ impl FrameContext {
         v_ecef: Velocity3<Ecef>,
         p_ecef: Position3<Ecef>,
     ) -> Velocity3<Eci> {
-        // Rotate the ECEF velocity into ECI orientation:
+        // Rotate the ECEF velocity into ECI orientation.
         let theta = self.earth_rotation_angle(t);
-        let (s, c) = (theta.sin(), theta.cos());
-        let v = v_ecef.vector;
-        let v_rotated = nalgebra::Vector3::new(c * v.x - s * v.y, s * v.x + c * v.y, v.z);
+        let tirs = self.ecef_to_tirs_vector(t, v_ecef.vector);
+        let v_rotated = rotate_z(tirs, theta);
         // Add the transport rate ω × r_eci, where r_eci is the ECI
         // position derived from p_ecef. We compute it inline.
-        let r = p_ecef.vector;
-        let r_eci = nalgebra::Vector3::new(c * r.x - s * r.y, s * r.x + c * r.y, r.z);
+        let r_eci = self.ecef_to_eci_position(t, p_ecef).vector;
         let omega = self.angular_velocity_z();
-        let cross = nalgebra::Vector3::new(-omega * r_eci.y, omega * r_eci.x, 0.0);
+        let cross = Vector3::new(-omega * r_eci.y, omega * r_eci.x, 0.0);
         Velocity3::from_vector(v_rotated + cross)
     }
 
@@ -341,7 +546,42 @@ impl FrameContext {
         match self.profile {
             FrameProfile::ToyFixedEarth => 0.0,
             FrameProfile::Wgs84UniformRotation => WGS84_OMEGA_RAD_S,
+            FrameProfile::IersTabulated => EARTH_ROTATION_ANGLE_RATE_RAD_S,
         }
+    }
+
+    fn earth_orientation_sample(&self, t: SimTime) -> EarthOrientationSample {
+        self.iers.as_ref().map_or(
+            EarthOrientationSample {
+                time_s: t.as_seconds(),
+                ut1_minus_utc_s: 0.0,
+                polar_motion_x_rad: 0.0,
+                polar_motion_y_rad: 0.0,
+            },
+            |iers| iers.earth_orientation.sample(t),
+        )
+    }
+
+    fn tirs_to_ecef_vector(&self, t: SimTime, v_tirs: Vector3<f64>) -> Vector3<f64> {
+        if self.profile != FrameProfile::IersTabulated {
+            return v_tirs;
+        }
+        let eop = self.earth_orientation_sample(t);
+        rotate_x(
+            rotate_y(v_tirs, -eop.polar_motion_x_rad),
+            -eop.polar_motion_y_rad,
+        )
+    }
+
+    fn ecef_to_tirs_vector(&self, t: SimTime, v_ecef: Vector3<f64>) -> Vector3<f64> {
+        if self.profile != FrameProfile::IersTabulated {
+            return v_ecef;
+        }
+        let eop = self.earth_orientation_sample(t);
+        rotate_y(
+            rotate_x(v_ecef, eop.polar_motion_y_rad),
+            eop.polar_motion_x_rad,
+        )
     }
 
     // ---------------------------------------------------------------
@@ -441,6 +681,30 @@ impl FrameContext {
                 profile: self.profile.as_label(),
             })
     }
+}
+
+fn lerp(a: f64, b: f64, alpha: f64) -> f64 {
+    a + alpha * (b - a)
+}
+
+fn earth_rotation_angle_from_ut1_julian_date(jd_ut1: f64) -> f64 {
+    let days_since_j2000 = jd_ut1 - 2_451_545.0;
+    (TWO_PI * (0.779_057_273_264_0 + 1.002_737_811_911_354_6 * days_since_j2000)).rem_euclid(TWO_PI)
+}
+
+fn rotate_z(v: Vector3<f64>, theta: f64) -> Vector3<f64> {
+    let (s, c) = theta.sin_cos();
+    Vector3::new(c * v.x - s * v.y, s * v.x + c * v.y, v.z)
+}
+
+fn rotate_x(v: Vector3<f64>, theta: f64) -> Vector3<f64> {
+    let (s, c) = theta.sin_cos();
+    Vector3::new(v.x, c * v.y - s * v.z, s * v.y + c * v.z)
+}
+
+fn rotate_y(v: Vector3<f64>, theta: f64) -> Vector3<f64> {
+    let (s, c) = theta.sin_cos();
+    Vector3::new(c * v.x + s * v.z, v.y, -s * v.x + c * v.z)
 }
 
 /// Time-aware conversion from frame `From` to frame `To`.
@@ -726,6 +990,106 @@ mod tests {
             // down ≈ -up.
             let dot = v_ecef.vector.normalize().dot(&up_ecef);
             assert_abs_diff_eq!(dot, -1.0, epsilon = 1.0e-12);
+        }
+    }
+
+    mod iers {
+        use super::*;
+        use approx::assert_abs_diff_eq;
+
+        fn table() -> EarthOrientationTable {
+            EarthOrientationTable::new(vec![
+                EarthOrientationSample::new(
+                    0.0,
+                    0.1,
+                    0.01 * ARCSECOND_TO_RAD,
+                    -0.02 * ARCSECOND_TO_RAD,
+                )
+                .unwrap(),
+                EarthOrientationSample::new(
+                    10.0,
+                    1.1,
+                    0.03 * ARCSECOND_TO_RAD,
+                    0.04 * ARCSECOND_TO_RAD,
+                )
+                .unwrap(),
+            ])
+            .unwrap()
+        }
+
+        #[test]
+        fn frame_profile_label() {
+            assert_eq!(FrameProfile::IersTabulated.as_label(), "iers-tabulated");
+        }
+
+        #[test]
+        fn earth_orientation_table_requires_strictly_increasing_times() {
+            let err = EarthOrientationTable::new(vec![
+                EarthOrientationSample::new(1.0, 0.0, 0.0, 0.0).unwrap(),
+                EarthOrientationSample::new(1.0, 0.0, 0.0, 0.0).unwrap(),
+            ])
+            .unwrap_err();
+            assert!(matches!(err, FrameError::InvalidFrameProfileData { .. }));
+        }
+
+        #[test]
+        fn earth_orientation_table_interpolates_samples() {
+            let sample = table().sample(SimTime::from_seconds(5.0));
+            assert_abs_diff_eq!(sample.ut1_minus_utc_s, 0.6, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(
+                sample.polar_motion_x_rad,
+                0.02 * ARCSECOND_TO_RAD,
+                epsilon = 1.0e-20
+            );
+            assert_abs_diff_eq!(
+                sample.polar_motion_y_rad,
+                0.01 * ARCSECOND_TO_RAD,
+                epsilon = 1.0e-20
+            );
+        }
+
+        #[test]
+        fn iers_rotation_uses_interpolated_ut1() {
+            let base = EarthOrientationTable::new(vec![
+                EarthOrientationSample::new(0.0, 0.0, 0.0, 0.0).unwrap(),
+                EarthOrientationSample::new(10.0, 0.0, 0.0, 0.0).unwrap(),
+            ])
+            .unwrap();
+            let shifted = EarthOrientationTable::new(vec![
+                EarthOrientationSample::new(0.0, 0.0, 0.0, 0.0).unwrap(),
+                EarthOrientationSample::new(10.0, 1.0, 0.0, 0.0).unwrap(),
+            ])
+            .unwrap();
+            let epoch = 2_451_545.0;
+            let base_ctx = FrameContext::iers_tabulated(epoch, None, base).unwrap();
+            let shifted_ctx = FrameContext::iers_tabulated(epoch, None, shifted).unwrap();
+            let t = SimTime::from_seconds(5.0);
+            let delta = shifted_ctx.earth_rotation_angle(t) - base_ctx.earth_rotation_angle(t);
+            assert_abs_diff_eq!(
+                delta,
+                EARTH_ROTATION_ANGLE_RATE_RAD_S * 0.5,
+                epsilon = 2.0e-9
+            );
+        }
+
+        #[test]
+        fn iers_position_round_trip_with_polar_motion() {
+            let ctx = FrameContext::iers_tabulated(2_451_545.0, None, table()).unwrap();
+            let t = SimTime::from_seconds(5.0);
+            let p_eci: Position3<Eci> = Position3::new(7_000_000.0, 1_500_000.0, 800_000.0);
+            let p_ecef = ctx.eci_to_ecef_position(t, p_eci);
+            let p_back = ctx.ecef_to_eci_position(t, p_ecef);
+            assert_abs_diff_eq!(p_back.vector.x, p_eci.vector.x, epsilon = 1.0e-6);
+            assert_abs_diff_eq!(p_back.vector.y, p_eci.vector.y, epsilon = 1.0e-6);
+            assert_abs_diff_eq!(p_back.vector.z, p_eci.vector.z, epsilon = 1.0e-6);
+        }
+
+        #[test]
+        fn iers_table_reports_interval_coverage() {
+            let table = table();
+            assert!(table.covers_interval(0.0, 10.0));
+            assert!(!table.covers_interval(-1.0, 10.0));
+            assert!(!table.covers_interval(0.0, 11.0));
         }
     }
 }
