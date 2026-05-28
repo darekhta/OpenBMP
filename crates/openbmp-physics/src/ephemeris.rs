@@ -234,8 +234,9 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 /// velocity), type 8/9 (equal/unequal-time Lagrange state
 /// interpolation), and type 12/13 (equal/unequal-time Hermite state
 /// interpolation), type 18 (ESOC/DDID Hermite/Lagrange interpolation),
-/// and type 20 (Chebyshev velocity) segments in the J2000 inertial
-/// frame. It also accepts the built-in SPICE
+/// type 19 (ESOC/DDID piecewise interpolation), and type 20 (Chebyshev
+/// velocity) segments in the J2000 inertial frame. It also accepts the
+/// built-in SPICE
 /// `ECLIPJ2000` inertial frame and rotates those segment states into
 /// J2000. It computes geometric states and does not implement
 /// light-time, aberration, non-inertial frame chains, or generic
@@ -252,7 +253,7 @@ impl SpkEphemeris {
     /// # Errors
     ///
     /// Returns [`PhysicsError`] when the bytes are not a supported
-    /// DAF/SPK file or no supported type 2/3/8/9/12/13/18/20 J2000
+    /// DAF/SPK file or no supported type 2/3/8/9/12/13/18/19/20 J2000
     /// segments are found.
     pub fn from_bytes(epoch_tdb_julian_date: f64, bytes: &[u8]) -> Result<Self, PhysicsError> {
         Self::from_kernels(epoch_tdb_julian_date, [bytes])
@@ -268,7 +269,7 @@ impl SpkEphemeris {
     ///
     /// Returns [`PhysicsError`] when any byte slice is not a supported
     /// DAF/SPK file, no kernels are supplied, or no supported type
-    /// 2/3/8/9/12/13/18/20 J2000 segments are found across all kernels.
+    /// 2/3/8/9/12/13/18/19/20 J2000 segments are found across all kernels.
     pub fn from_kernels<'a, I>(epoch_tdb_julian_date: f64, kernels: I) -> Result<Self, PhysicsError>
     where
         I: IntoIterator<Item = &'a [u8]>,
@@ -292,7 +293,7 @@ impl SpkEphemeris {
         }
         if segments.is_empty() {
             return Err(PhysicsError::InvalidParameter {
-                reason: "SPK kernel contains no supported type 2/3/8/9/12/13/18/20 J2000 segments",
+                reason: "SPK kernel contains no supported type 2/3/8/9/12/13/18/19/20 J2000 segments",
             });
         }
         Ok(Self {
@@ -512,6 +513,7 @@ impl SpkSegment {
             12 => self.equal_step_hermite_state_km_s(et_s),
             13 => self.unequal_step_hermite_state_km_s(et_s),
             18 => self.esoc_ddid_state_km_s(et_s),
+            19 => self.esoc_ddid_piecewise_state_km_s(et_s),
             20 => self.chebyshev_velocity_state_km_s(et_s),
             _ => Err(PhysicsError::InvalidParameter {
                 reason: "unsupported SPK data type",
@@ -789,6 +791,103 @@ impl SpkSegment {
         }
     }
 
+    fn esoc_ddid_piecewise_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        if self.data.len() < 12 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 19 segment is too short",
+            });
+        }
+        let interval_count = f64_to_usize(self.data[self.data.len() - 1])?;
+        if interval_count == 0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 19 interval count is invalid",
+            });
+        }
+        let use_later_boundary = match self.data[self.data.len() - 2] {
+            0.0 => false,
+            1.0 => true,
+            _ => {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "SPK type 19 boundary choice flag is invalid",
+                });
+            }
+        };
+        let boundary_count =
+            interval_count
+                .checked_add(1)
+                .ok_or(PhysicsError::InvalidParameter {
+                    reason: "SPK type 19 interval count overflow",
+                })?;
+        let interval_directory_count = interval_count / 100;
+        let pointer_count = boundary_count;
+        let trailer_len = boundary_count
+            .checked_add(interval_directory_count)
+            .and_then(|len| len.checked_add(pointer_count))
+            .and_then(|len| len.checked_add(2))
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK type 19 segment length overflow",
+            })?;
+        if trailer_len >= self.data.len() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 19 segment length does not match directory",
+            });
+        }
+
+        let boundary_block_len = boundary_count.checked_add(interval_directory_count).ok_or(
+            PhysicsError::InvalidParameter {
+                reason: "SPK type 19 segment length overflow",
+            },
+        )?;
+        let pointer_start = self.data.len() - 2 - pointer_count;
+        let boundary_start = pointer_start.checked_sub(boundary_block_len).ok_or(
+            PhysicsError::InvalidParameter {
+                reason: "SPK type 19 segment length does not match directory",
+            },
+        )?;
+        let boundaries = &self.data[boundary_start..boundary_start + boundary_count];
+        validate_strictly_increasing_epochs(
+            boundaries,
+            "SPK type 19 interval boundaries are invalid",
+        )?;
+        if et_s < boundaries[0] || et_s > boundaries[boundary_count - 1] {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "SPK type 19 query is outside interval coverage",
+            });
+        }
+
+        let mut pointer_indices = Vec::with_capacity(pointer_count);
+        for pointer in &self.data[pointer_start..pointer_start + pointer_count] {
+            let pointer = f64_to_usize(*pointer)?;
+            if pointer == 0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "SPK type 19 mini-segment pointer is invalid",
+                });
+            }
+            pointer_indices.push(pointer - 1);
+        }
+        if pointer_indices[0] != 0 || pointer_indices[pointer_count - 1] != boundary_start {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 19 mini-segment pointers do not match segment layout",
+            });
+        }
+        for pair in pointer_indices.windows(2) {
+            if pair[1] <= pair[0] || pair[1] > boundary_start {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "SPK type 19 mini-segment pointers are invalid",
+                });
+            }
+        }
+
+        let interval_index = type19_interval_index(boundaries, et_s, use_later_boundary).ok_or(
+            PhysicsError::OutOfEnvelope {
+                reason: "SPK type 19 query is outside interval coverage",
+            },
+        )?;
+        let mini_start = pointer_indices[interval_index];
+        let mini_end = pointer_indices[interval_index + 1];
+        esoc_ddid_mini_segment_state_km_s(&self.data[mini_start..mini_end], et_s)
+    }
+
     fn chebyshev_velocity_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
         if self.data.len() < 13 {
             return Err(PhysicsError::InvalidParameter {
@@ -997,7 +1096,7 @@ impl<'a> DafView<'a> {
                     record_offset + (SPK_SUMMARY_CONTROL_WORDS + index * SPK_SUMMARY_WORDS) * 8;
                 let descriptor = self.spk_descriptor(summary_offset)?;
                 if supported_spk_inertial_frame(descriptor.frame)
-                    && matches!(descriptor.data_type, 2 | 3 | 8 | 9 | 12 | 13 | 18 | 20)
+                    && matches!(descriptor.data_type, 2 | 3 | 8 | 9 | 12 | 13 | 18 | 19 | 20)
                     && let Some(segment) = self.segment_from_descriptor(descriptor)?
                 {
                     segments.push(segment);
@@ -1501,6 +1600,63 @@ fn hermite_state_from_window(
     finite_state_from_components(state, "SPK Hermite interpolation")
 }
 
+fn esoc_ddid_mini_segment_state_km_s(data: &[f64], et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+    if data.len() < 10 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 19 mini-segment is too short",
+        });
+    }
+    let n = f64_to_usize(data[data.len() - 1])?;
+    let window_size = f64_to_usize(data[data.len() - 2])?;
+    let subtype = f64_to_i32(data[data.len() - 3])?;
+    if n == 0 || window_size == 0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "invalid SPK type 19 mini-segment interpolation window",
+        });
+    }
+    let packet_size: usize = match subtype {
+        0 => 12,
+        1 | 2 => 6,
+        _ => {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "unsupported SPK type 19 mini-segment subtype",
+            });
+        }
+    };
+    let directory_count = (n - 1) / 100;
+    let expected_len = packet_size
+        .checked_mul(n)
+        .and_then(|packet_len| packet_len.checked_add(n))
+        .and_then(|base| base.checked_add(directory_count))
+        .and_then(|base| base.checked_add(3))
+        .ok_or(PhysicsError::InvalidParameter {
+            reason: "SPK type 19 mini-segment length overflow",
+        })?;
+    if expected_len != data.len() {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 19 mini-segment length does not match directory",
+        });
+    }
+
+    let packets = &data[..packet_size * n];
+    let epochs = &data[packet_size * n..packet_size * n + n];
+    validate_strictly_increasing_epochs(epochs, "SPK type 19 mini-segment epochs are invalid")?;
+    if et_s < epochs[0] || et_s > epochs[n - 1] {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "SPK type 19 mini-segment query is outside packet epoch coverage",
+        });
+    }
+
+    let actual_window = window_size.min(n);
+    let start = lagrange_window_start(epochs, et_s, actual_window);
+    match subtype {
+        0 => esoc_ddid_hermite_state_from_window(packets, epochs, start, actual_window, et_s),
+        1 => esoc_ddid_lagrange_state_from_window(packets, epochs, start, actual_window, et_s),
+        2 => hermite_state_from_unequal_step_window(packets, epochs, start, actual_window, et_s),
+        _ => unreachable!(),
+    }
+}
+
 fn esoc_ddid_lagrange_state_from_window(
     packets: &[f64],
     epochs: &[f64],
@@ -1516,7 +1672,7 @@ fn esoc_ddid_lagrange_state_from_window(
             state[component] += basis * packets[source_index * 6 + component];
         }
     }
-    finite_state_from_components(state, "SPK type 18 Lagrange interpolation")
+    finite_state_from_components(state, "SPK ESOC/DDID Lagrange interpolation")
 }
 
 fn esoc_ddid_hermite_state_from_window(
@@ -1556,7 +1712,30 @@ fn esoc_ddid_hermite_state_from_window(
         state[component] = position;
         state[component + 3] = velocity;
     }
-    finite_state_from_components(state, "SPK type 18 Hermite interpolation")
+    finite_state_from_components(state, "SPK ESOC/DDID Hermite interpolation")
+}
+
+fn type19_interval_index(boundaries: &[f64], et_s: f64, use_later_boundary: bool) -> Option<usize> {
+    if boundaries.len() < 2 || et_s < boundaries[0] || et_s > boundaries[boundaries.len() - 1] {
+        return None;
+    }
+    let last_interval = boundaries.len() - 2;
+    if et_s <= boundaries[0] {
+        return Some(0);
+    }
+    if et_s >= boundaries[boundaries.len() - 1] {
+        return Some(last_interval);
+    }
+    let insertion = boundaries.partition_point(|boundary| *boundary < et_s);
+    if insertion < boundaries.len() && boundaries[insertion] == et_s {
+        if use_later_boundary {
+            Some(insertion.min(last_interval))
+        } else {
+            Some(insertion.saturating_sub(1))
+        }
+    } else {
+        Some(insertion.saturating_sub(1).min(last_interval))
+    }
 }
 
 fn hermite_interpolate_value_derivative(
@@ -1807,6 +1986,23 @@ mod tests {
     }
 
     #[test]
+    fn spk_ephemeris_reads_type19_piecewise_state() {
+        let bytes = synthetic_type19_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(7.0))
+            .unwrap();
+        assert_eq!(
+            sun.position_eci_m,
+            Vector3::new(170_000.0, 14_000.0, -7_000.0)
+        );
+        assert_eq!(
+            sun.velocity_eci_m_s,
+            Vector3::new(10_000.0, 2_000.0, -1_000.0)
+        );
+    }
+
+    #[test]
     fn spk_ephemeris_reads_type8_equal_step_lagrange_state() {
         let bytes = synthetic_type8_spk();
         let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
@@ -1874,6 +2070,38 @@ mod tests {
     }
 
     #[test]
+    fn spk_type19_boundary_flag_selects_later_mini_segment() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 19,
+            data: type19_piecewise_lagrange_segment(true),
+        };
+        let state = segment.state_km_s(5.0).unwrap();
+        assert_eq!(state.position_km, Vector3::new(150.0, 10.0, -5.0));
+        assert_eq!(state.velocity_km_s, Vector3::new(10.0, 2.0, -1.0));
+    }
+
+    #[test]
+    fn spk_type19_boundary_flag_selects_earlier_mini_segment() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 19,
+            data: type19_piecewise_lagrange_segment(false),
+        };
+        let state = segment.state_km_s(5.0).unwrap();
+        assert_eq!(state.position_km, Vector3::new(50.0, 10.0, -5.0));
+        assert_eq!(state.velocity_km_s, Vector3::new(10.0, 2.0, -1.0));
+    }
+
+    #[test]
     fn spk_type12_state_uses_hermite_position_derivative() {
         let segment = SpkSegment {
             start_et_s: 0.0,
@@ -1899,6 +2127,49 @@ mod tests {
             frame: SPK_J2000_FRAME_ID,
             data_type: 18,
             data: type18_hermite_segment(&[0.0, 1.0, 2.0, 4.0], 2),
+        };
+        let state = segment.state_km_s(3.0).unwrap();
+        assert_vector_near(state.position_km, Vector3::new(9.0, 18.0, -9.0), 1.0e-12);
+        assert_vector_near(state.velocity_km_s, Vector3::new(6.0, 12.0, -6.0), 1.0e-12);
+    }
+
+    #[test]
+    fn spk_type19_hermite_subtype0_evaluates_mini_segment() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 4.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 19,
+            data: type19_segment(
+                &[type18_hermite_segment(&[0.0, 1.0, 2.0, 4.0], 2)],
+                &[0.0, 4.0],
+                false,
+            ),
+        };
+        let state = segment.state_km_s(3.0).unwrap();
+        assert_vector_near(state.position_km, Vector3::new(9.0, 18.0, -9.0), 1.0e-12);
+        assert_vector_near(state.velocity_km_s, Vector3::new(6.0, 12.0, -6.0), 1.0e-12);
+    }
+
+    #[test]
+    fn spk_type19_coupled_hermite_subtype2_uses_state_derivatives() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 4.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 19,
+            data: type19_segment(
+                &[type19_coupled_hermite_mini_segment(
+                    &[0.0, 1.0, 2.0, 4.0],
+                    2,
+                )],
+                &[0.0, 4.0],
+                false,
+            ),
         };
         let state = segment.state_km_s(3.0).unwrap();
         assert_vector_near(state.position_km, Vector3::new(9.0, 18.0, -9.0), 1.0e-12);
@@ -2209,6 +2480,33 @@ mod tests {
         synthetic_spk_from_segments(&segments)
     }
 
+    fn synthetic_type19_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 19,
+                data: type19_piecewise_lagrange_segment(true),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
     fn synthetic_type13_spk() -> Vec<u8> {
         let segments = [
             SyntheticSegment {
@@ -2375,18 +2673,31 @@ mod tests {
             data.extend_from_slice(&[10.0 * *epoch, 2.0 * *epoch, -*epoch, 10.0, 2.0, -1.0]);
         }
         data.extend_from_slice(epochs);
-        for epoch in epochs.iter().skip(99).step_by(100) {
-            data.push(*epoch);
-        }
+        append_spk_epoch_directory(&mut data, epochs);
         data.push(degree as f64);
         data.push(epochs.len() as f64);
         data
     }
 
     fn type18_lagrange_segment(epochs: &[f64], window_size: usize) -> Vec<f64> {
+        type18_lagrange_segment_with_offset(epochs, window_size, 0.0)
+    }
+
+    fn type18_lagrange_segment_with_offset(
+        epochs: &[f64],
+        window_size: usize,
+        x_offset_km: f64,
+    ) -> Vec<f64> {
         let mut data = Vec::new();
         for epoch in epochs {
-            data.extend_from_slice(&[10.0 * *epoch, 2.0 * *epoch, -*epoch, 10.0, 2.0, -1.0]);
+            data.extend_from_slice(&[
+                x_offset_km + 10.0 * *epoch,
+                2.0 * *epoch,
+                -*epoch,
+                10.0,
+                2.0,
+                -1.0,
+            ]);
         }
         append_type18_directory(&mut data, epochs, 1, window_size);
         data
@@ -2398,6 +2709,51 @@ mod tests {
             append_type18_quadratic_packet(&mut data, *epoch);
         }
         append_type18_directory(&mut data, epochs, 0, window_size);
+        data
+    }
+
+    fn type19_piecewise_lagrange_segment(use_later_boundary: bool) -> Vec<f64> {
+        type19_segment(
+            &[
+                type18_lagrange_segment_with_offset(&[0.0, 2.0, 5.0], 2, 0.0),
+                type18_lagrange_segment_with_offset(&[5.0, 7.0, 10.0], 2, 100.0),
+            ],
+            &[0.0, 5.0, 10.0],
+            use_later_boundary,
+        )
+    }
+
+    fn type19_coupled_hermite_mini_segment(epochs: &[f64], window_size: usize) -> Vec<f64> {
+        let mut data = Vec::new();
+        for epoch in epochs {
+            append_quadratic_state(&mut data, *epoch);
+        }
+        data.extend_from_slice(epochs);
+        append_spk_epoch_directory(&mut data, epochs);
+        data.push(2.0);
+        data.push(window_size as f64);
+        data.push(epochs.len() as f64);
+        data
+    }
+
+    fn type19_segment(
+        mini_segments: &[Vec<f64>],
+        boundaries: &[f64],
+        use_later_boundary: bool,
+    ) -> Vec<f64> {
+        assert_eq!(boundaries.len(), mini_segments.len() + 1);
+        let mut data = Vec::new();
+        let mut pointers = Vec::new();
+        for mini_segment in mini_segments {
+            pointers.push(data.len() + 1);
+            data.extend_from_slice(mini_segment);
+        }
+        pointers.push(data.len() + 1);
+        data.extend_from_slice(boundaries);
+        append_type19_interval_directory(&mut data, boundaries);
+        data.extend(pointers.into_iter().map(|pointer| pointer as f64));
+        data.push(if use_later_boundary { 1.0 } else { 0.0 });
+        data.push(mini_segments.len() as f64);
         data
     }
 
@@ -2425,9 +2781,7 @@ mod tests {
         window_size: usize,
     ) {
         data.extend_from_slice(epochs);
-        for epoch in epochs.iter().skip(99).step_by(100) {
-            data.push(*epoch);
-        }
+        append_spk_epoch_directory(data, epochs);
         data.push(f64::from(subtype));
         data.push(window_size as f64);
         data.push(epochs.len() as f64);
@@ -2457,9 +2811,7 @@ mod tests {
             append_quadratic_state(&mut data, *epoch);
         }
         data.extend_from_slice(epochs);
-        for epoch in epochs.iter().skip(99).step_by(100) {
-            data.push(*epoch);
-        }
+        append_spk_epoch_directory(&mut data, epochs);
         data.push((window_size - 1) as f64);
         data.push(epochs.len() as f64);
         data
@@ -2474,6 +2826,19 @@ mod tests {
             4.0 * epoch,
             -2.0 * epoch,
         ]);
+    }
+
+    fn append_spk_epoch_directory(data: &mut Vec<f64>, epochs: &[f64]) {
+        for one_based_index in (100..epochs.len()).step_by(100) {
+            data.push(epochs[one_based_index - 1]);
+        }
+    }
+
+    fn append_type19_interval_directory(data: &mut Vec<f64>, boundaries: &[f64]) {
+        let interval_count = boundaries.len() - 1;
+        for one_based_index in (100..=interval_count).step_by(100) {
+            data.push(boundaries[one_based_index - 1]);
+        }
     }
 
     fn type20_single_record_segment<const N: usize>(
