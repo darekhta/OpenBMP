@@ -45,6 +45,9 @@ OpenBMP implementation slice.
 - Added `at_relative_distance` mission triggers so post-deployment
   events can observe ranges between detached rigid-body lanes and the
   primary bus, or between two detached lanes.
+- Added a shipped `bus-rv-deployment` scenario and CLI e2e coverage
+  for a bus releasing two rigid lanes on one event tick, then firing a
+  relative-distance clearance marker.
 - Added `frame_profile = "iers-tabulated"` with pinned TOML EOP table
   ingestion for interpolated UT1-UTC and polar motion.
 - Added `environment.ephemeris = "spk"` with SHA-256-pinned binary

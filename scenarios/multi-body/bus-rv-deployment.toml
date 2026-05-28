@@ -1,0 +1,103 @@
+# Synthetic coordinated deployment scenario.
+#
+# A rigid bus releases two small rigid bodies on the same mission event
+# using `jettison_bodies`. A post-deployment relative-distance event
+# observes one released body clearing the bus. All values are synthetic
+# round numbers for exercising the multi-body runner path.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "bus-rv-deployment"
+description = "Synthetic rigid bus deploying two bodies on one event tick with a relative-distance marker."
+validation  = "experimental"
+provenance  = "scenarios/multi-body/provenance.md#scenariosmulti-bodybus-rv-deploymenttoml"
+
+[time]
+start_s = 0.0
+stop_s  = 0.3
+dt_s    = 0.1
+seed    = 0x4255535256
+
+[vehicle]
+kind                                 = "rigid_body"
+initial_position_eci_m               = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s             = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw  = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s  = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "bus-rv-deployment"
+
+[[vehicle.assembly.bodies]]
+id                         = "bus"
+geometry                   = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg                = 3.0
+dry_cg_body_m              = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2     = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[[vehicle.assembly.bodies]]
+id                         = "rv1"
+geometry                   = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg                = 1.0
+dry_cg_body_m              = [0.0, 0.0, -1.0]
+dry_inertia_body_kg_m2     = [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]]
+
+[[vehicle.assembly.bodies]]
+id                         = "rv2"
+geometry                   = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg                = 1.0
+dry_cg_body_m              = [0.0, 0.0, 1.0]
+dry_inertia_body_kg_m2     = [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 0.0
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.parquet = "out/bus-rv-deployment.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id    = "coast"
+label = "coast"
+
+[[mission.events]]
+id      = "deploy_rvs"
+trigger = { kind = "at_time", time_s = 0.1 }
+action  = { kind = "jettison_bodies", bodies = ["rv1", "rv2"] }
+once    = true
+
+[[mission.events]]
+id      = "rv1_clear"
+trigger = { kind = "at_relative_distance", body = "rv1", distance_m = 1.01 }
+action  = { kind = "emit_telemetry_marker", tag = "rv1_clear" }
+once    = true
+
+[multi_body]
+
+[[multi_body.separation]]
+event_id                = "deploy_rvs"
+upper_body_id           = "bus"
+lower_body_id           = "rv1"
+lower_delta_v_body_m_s  = [0.0, 1.0, 0.0]
+conserve_momentum       = false
+
+[[multi_body.separation]]
+event_id                = "deploy_rvs"
+upper_body_id           = "bus"
+lower_body_id           = "rv2"
+lower_delta_v_body_m_s  = [0.0, -1.0, 0.0]
+conserve_momentum       = false

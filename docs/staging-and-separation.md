@@ -92,6 +92,10 @@ action  = { kind = "jettison_bodies", bodies = ["rv1", "rv2", "rv3"] }
 once    = true
 ```
 
+The shipped
+[`scenarios/multi-body/bus-rv-deployment.toml`](../scenarios/multi-body/bus-rv-deployment.toml)
+fixture exercises this path end-to-end through `openbmp run`.
+
 Post-separation events can observe detached lanes through relative
 range crossings:
 

@@ -1305,6 +1305,12 @@ dry inertia source of truth.
 The canonical multi-body example mirrors
 [`scenarios/multi-body/two-body-fairing.toml`](../scenarios/multi-body/two-body-fairing.toml):
 
+The coordinated deployment example
+[`scenarios/multi-body/bus-rv-deployment.toml`](../scenarios/multi-body/bus-rv-deployment.toml)
+uses `jettison_bodies` to release two rigid lanes from the same
+pre-separation bus state and emits a relative-distance clearance
+marker after deployment.
+
 ```toml
 [vehicle]
 kind                     = "point_mass"

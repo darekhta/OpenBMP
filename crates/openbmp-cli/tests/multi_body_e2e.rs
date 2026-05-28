@@ -137,6 +137,43 @@ fn two_body_fairing_scenario_runs_to_completion() {
 }
 
 #[test]
+fn bus_rv_deployment_scenario_runs_batch_release_and_clearance_marker() {
+    let scenario = workspace_root().join("scenarios/multi-body/bus-rv-deployment.toml");
+    let temp = tempdir("bus-rv-deployment-e2e");
+    let parquet = temp.path().join("bus-rv-deployment.parquet");
+
+    run_scenario(&scenario, &parquet);
+
+    let rv1_separated = read_bool_column(&parquet, "body.rv1.separated");
+    let rv2_separated = read_bool_column(&parquet, "body.rv2.separated");
+    assert!(
+        rv1_separated.iter().any(|value| *value),
+        "rv1 must become an active detached lane"
+    );
+    assert!(
+        rv2_separated.iter().any(|value| *value),
+        "rv2 must become an active detached lane"
+    );
+
+    let rv1_vy = read_f64_column(&parquet, "body.rv1.velocity_y_m_s");
+    let rv2_vy = read_f64_column(&parquet, "body.rv2.velocity_y_m_s");
+    assert!(
+        rv1_vy.iter().any(|value| (*value - 1.0).abs() < 1.0e-12),
+        "rv1 should receive its declared deployment velocity: {rv1_vy:?}"
+    );
+    assert!(
+        rv2_vy.iter().any(|value| (*value + 1.0).abs() < 1.0e-12),
+        "rv2 should receive its declared deployment velocity: {rv2_vy:?}"
+    );
+
+    let clearance_marker = read_bool_column(&parquet, "mission.marker.rv1_clear");
+    assert!(
+        clearance_marker.iter().any(|value| *value),
+        "relative-distance marker should fire after rv1 clears the bus: {clearance_marker:?}"
+    );
+}
+
+#[test]
 fn owned_engine_stage_separation_routes_thrust_to_continuing_body_only() {
     let temp = tempdir("owned-engine-stage-separation");
     let scenario = temp.path().join("owned-engine-stage-separation.toml");
