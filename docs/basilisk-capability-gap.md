@@ -64,6 +64,9 @@ OpenBMP implementation slice.
   interpolation, covering the fixed-record discrete-state segment
   family commonly used for mission kernels before the remaining generic
   and analytic SPK segment types.
+- Added SPK type 14 generic non-uniform Chebyshev position/velocity
+  segments, using the fixed-packet generic-segment metadata layout
+  produced by NAIF's type-14 writer.
 - Added SPK type 20 Chebyshev velocity-only segments, integrating the
   velocity polynomials and midpoint position constants used by
   EPM-style ephemerides.
@@ -91,8 +94,8 @@ OpenBMP implementation slice.
   correction, stellar aberration, generic text kernels beyond NAIF LSK
   leap-second files, non-J2000 frame transforms beyond built-in
   `ECLIPJ2000`, or the remaining SPK segment types such as modified
-  difference arrays, two-body propagation, TLE, type 14 generic
-  Chebyshev, precessing conics, and equinoctial elements.
+  difference arrays, two-body propagation, TLE, precessing conics, and
+  equinoctial elements.
 - The IERS path is intentionally compact: it does not yet implement a
   full SPICE frame chain, IAU 2006/2000A CIO-based transforms, or
   precession/nutation rate terms in velocity transport.

@@ -232,9 +232,10 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 /// planetary and mission kernels used by third-body perturbations:
 /// SPK type 2 (Chebyshev position), type 3 (Chebyshev position and
 /// velocity), type 8/9 (equal/unequal-time Lagrange state
-/// interpolation), and type 12/13 (equal/unequal-time Hermite state
-/// interpolation), type 18 (ESOC/DDID Hermite/Lagrange interpolation),
-/// type 19 (ESOC/DDID piecewise interpolation), and type 20 (Chebyshev
+/// interpolation), type 12/13 (equal/unequal-time Hermite state
+/// interpolation), type 14 (generic non-uniform Chebyshev position and
+/// velocity), type 18 (ESOC/DDID Hermite/Lagrange interpolation), type
+/// 19 (ESOC/DDID piecewise interpolation), and type 20 (Chebyshev
 /// velocity) segments in the J2000 inertial frame. It also accepts the
 /// built-in SPICE
 /// `ECLIPJ2000` inertial frame and rotates those segment states into
@@ -253,7 +254,7 @@ impl SpkEphemeris {
     /// # Errors
     ///
     /// Returns [`PhysicsError`] when the bytes are not a supported
-    /// DAF/SPK file or no supported type 2/3/8/9/12/13/18/19/20 J2000
+    /// DAF/SPK file or no supported type 2/3/8/9/12/13/14/18/19/20 J2000
     /// segments are found.
     pub fn from_bytes(epoch_tdb_julian_date: f64, bytes: &[u8]) -> Result<Self, PhysicsError> {
         Self::from_kernels(epoch_tdb_julian_date, [bytes])
@@ -269,7 +270,7 @@ impl SpkEphemeris {
     ///
     /// Returns [`PhysicsError`] when any byte slice is not a supported
     /// DAF/SPK file, no kernels are supplied, or no supported type
-    /// 2/3/8/9/12/13/18/19/20 J2000 segments are found across all kernels.
+    /// 2/3/8/9/12/13/14/18/19/20 J2000 segments are found across all kernels.
     pub fn from_kernels<'a, I>(epoch_tdb_julian_date: f64, kernels: I) -> Result<Self, PhysicsError>
     where
         I: IntoIterator<Item = &'a [u8]>,
@@ -293,7 +294,7 @@ impl SpkEphemeris {
         }
         if segments.is_empty() {
             return Err(PhysicsError::InvalidParameter {
-                reason: "SPK kernel contains no supported type 2/3/8/9/12/13/18/19/20 J2000 segments",
+                reason: "SPK kernel contains no supported type 2/3/8/9/12/13/14/18/19/20 J2000 segments",
             });
         }
         Ok(Self {
@@ -475,6 +476,93 @@ struct ChebyshevRecordView<'a> {
     coeff_count: usize,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct GenericSegmentMetadata {
+    conbas: usize,
+    ncon: usize,
+    rdrbas: usize,
+    nrdr: usize,
+    rdrtyp: usize,
+    refbas: usize,
+    nref: usize,
+    pdrbas: usize,
+    npdr: usize,
+    pdrtyp: usize,
+    pktbas: usize,
+    npkt: usize,
+    rsvbas: usize,
+    nrsv: usize,
+    pktsz: usize,
+    pktoff: usize,
+    nmeta: usize,
+}
+
+impl GenericSegmentMetadata {
+    fn from_data(data: &[f64]) -> Result<Self, PhysicsError> {
+        if data.len() < 18 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "generic SPK segment is too short",
+            });
+        }
+        let nmeta = f64_to_usize(*data.last().ok_or(PhysicsError::InvalidParameter {
+            reason: "generic SPK segment metadata is missing",
+        })?)?;
+        if nmeta < 17 || nmeta > data.len() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "generic SPK segment metadata size is invalid",
+            });
+        }
+        let metadata_start = data.len() - nmeta;
+        let mut metadata = [0_usize; 17];
+        for (index, value) in data[metadata_start..metadata_start + 17].iter().enumerate() {
+            metadata[index] = f64_to_usize(*value)?;
+        }
+        if metadata[16] < 17 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "generic SPK segment metadata count is invalid",
+            });
+        }
+        Ok(Self {
+            conbas: metadata[0],
+            ncon: metadata[1],
+            rdrbas: metadata[2],
+            nrdr: metadata[3],
+            rdrtyp: metadata[4],
+            refbas: metadata[5],
+            nref: metadata[6],
+            pdrbas: metadata[7],
+            npdr: metadata[8],
+            pdrtyp: metadata[9],
+            pktbas: metadata[10],
+            npkt: metadata[11],
+            rsvbas: metadata[12],
+            nrsv: metadata[13],
+            pktsz: metadata[14],
+            pktoff: metadata[15],
+            nmeta,
+        })
+    }
+
+    fn partition_range(
+        &self,
+        base: usize,
+        count: usize,
+        data_len: usize,
+        reason: &'static str,
+    ) -> Result<std::ops::Range<usize>, PhysicsError> {
+        let metadata_start = data_len
+            .checked_sub(self.nmeta)
+            .ok_or(PhysicsError::InvalidParameter { reason })?;
+        let end = base
+            .checked_add(count)
+            .ok_or(PhysicsError::InvalidParameter { reason })?;
+        if end > metadata_start {
+            return Err(PhysicsError::InvalidParameter { reason });
+        }
+        Ok(base..end)
+    }
+}
+
 impl SpkSegment {
     fn state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
         let state = self.raw_state_km_s(et_s)?;
@@ -512,6 +600,7 @@ impl SpkSegment {
             9 => self.unequal_step_lagrange_state_km_s(et_s),
             12 => self.equal_step_hermite_state_km_s(et_s),
             13 => self.unequal_step_hermite_state_km_s(et_s),
+            14 => self.generic_chebyshev_state_km_s(et_s),
             18 => self.esoc_ddid_state_km_s(et_s),
             19 => self.esoc_ddid_piecewise_state_km_s(et_s),
             20 => self.chebyshev_velocity_state_km_s(et_s),
@@ -733,6 +822,125 @@ impl SpkSegment {
 
         let start = lagrange_window_start(epochs, et_s, window_size);
         hermite_state_from_unequal_step_window(states, epochs, start, window_size, et_s)
+    }
+
+    fn generic_chebyshev_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        let metadata = GenericSegmentMetadata::from_data(&self.data)?;
+        if metadata.ncon != 1
+            || metadata.rdrtyp != 3
+            || metadata.pdrtyp != 0
+            || metadata.npdr != 0
+            || metadata.nref != metadata.npkt
+            || metadata.npkt == 0
+            || metadata.pktoff != 1
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "unsupported SPK type 14 generic segment layout",
+            });
+        }
+        let expected_reference_directory_count = (metadata.nref - 1) / 100;
+        if metadata.nrdr != expected_reference_directory_count || metadata.nrsv != 0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 14 generic segment directory is invalid",
+            });
+        }
+        let constants = metadata.partition_range(
+            metadata.conbas,
+            metadata.ncon,
+            self.data.len(),
+            "SPK type 14 constants are outside the segment",
+        )?;
+        let ncoeff = f64_to_usize(self.data[constants.start])?;
+        if ncoeff == 0 || ncoeff > 19 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "invalid SPK type 14 Chebyshev coefficient count",
+            });
+        }
+        let expected_packet_size = 2_usize
+            .checked_add(
+                6_usize
+                    .checked_mul(ncoeff)
+                    .ok_or(PhysicsError::InvalidParameter {
+                        reason: "SPK type 14 packet size overflow",
+                    })?,
+            )
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK type 14 packet size overflow",
+            })?;
+        if metadata.pktsz != expected_packet_size {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 14 packet size does not match coefficient count",
+            });
+        }
+        let packet_record_size =
+            metadata
+                .pktsz
+                .checked_add(metadata.pktoff)
+                .ok_or(PhysicsError::InvalidParameter {
+                    reason: "SPK type 14 packet record size overflow",
+                })?;
+        metadata.partition_range(
+            metadata.pktbas,
+            metadata.npkt.checked_mul(packet_record_size).ok_or(
+                PhysicsError::InvalidParameter {
+                    reason: "SPK type 14 packet partition size overflow",
+                },
+            )?,
+            self.data.len(),
+            "SPK type 14 packets are outside the segment",
+        )?;
+        let references = metadata.partition_range(
+            metadata.refbas,
+            metadata.nref,
+            self.data.len(),
+            "SPK type 14 reference epochs are outside the segment",
+        )?;
+        metadata.partition_range(
+            metadata.rdrbas,
+            metadata.nrdr,
+            self.data.len(),
+            "SPK type 14 reference directory is outside the segment",
+        )?;
+        metadata.partition_range(
+            metadata.pdrbas,
+            metadata.npdr,
+            self.data.len(),
+            "SPK type 14 packet directory is outside the segment",
+        )?;
+        metadata.partition_range(
+            metadata.rsvbas,
+            metadata.nrsv,
+            self.data.len(),
+            "SPK type 14 reserved partition is outside the segment",
+        )?;
+        let epochs = &self.data[references];
+        validate_strictly_increasing_epochs(epochs, "SPK type 14 reference epochs are invalid")?;
+        if et_s < epochs[0] || et_s > self.stop_et_s {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "SPK type 14 query is outside reference epoch coverage",
+            });
+        }
+
+        let insertion = epochs.partition_point(|epoch| *epoch <= et_s);
+        let packet_index = insertion.saturating_sub(1).min(metadata.npkt - 1);
+        let packet_start = metadata
+            .pktbas
+            .checked_add(packet_index.checked_mul(packet_record_size).ok_or(
+                PhysicsError::InvalidParameter {
+                    reason: "SPK type 14 packet address overflow",
+                },
+            )?)
+            .and_then(|start| start.checked_add(metadata.pktoff))
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK type 14 packet address overflow",
+            })?;
+        let packet = self
+            .data
+            .get(packet_start..packet_start + metadata.pktsz)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK type 14 packet is outside the segment",
+            })?;
+        type14_chebyshev_state_from_packet(packet, ncoeff, et_s)
     }
 
     fn esoc_ddid_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
@@ -1096,7 +1304,10 @@ impl<'a> DafView<'a> {
                     record_offset + (SPK_SUMMARY_CONTROL_WORDS + index * SPK_SUMMARY_WORDS) * 8;
                 let descriptor = self.spk_descriptor(summary_offset)?;
                 if supported_spk_inertial_frame(descriptor.frame)
-                    && matches!(descriptor.data_type, 2 | 3 | 8 | 9 | 12 | 13 | 18 | 19 | 20)
+                    && matches!(
+                        descriptor.data_type,
+                        2 | 3 | 8 | 9 | 12 | 13 | 14 | 18 | 19 | 20
+                    )
                     && let Some(segment) = self.segment_from_descriptor(descriptor)?
                 {
                     segments.push(segment);
@@ -1386,6 +1597,47 @@ fn chebyshev_derivative_vector(
         evaluate_chebyshev_derivative(tau, &record[base + 2 * coeff_count..base + 3 * coeff_count])
             / radius_s,
     )
+}
+
+fn type14_chebyshev_state_from_packet(
+    packet: &[f64],
+    coeff_count: usize,
+    et_s: f64,
+) -> Result<SpkStateKmS, PhysicsError> {
+    let expected_len =
+        2_usize
+            .checked_add(6_usize.checked_mul(coeff_count).ok_or(
+                PhysicsError::InvalidParameter {
+                    reason: "SPK type 14 packet size overflow",
+                },
+            )?)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK type 14 packet size overflow",
+            })?;
+    if packet.len() != expected_len {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 14 packet size is invalid",
+        });
+    }
+    let midpoint_s = packet[0];
+    let radius_s = packet[1];
+    if !midpoint_s.is_finite() || !radius_s.is_finite() || radius_s <= 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 14 packet interval is invalid",
+        });
+    }
+    let tau = (et_s - midpoint_s) / radius_s;
+    if !tau.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK type 14 Chebyshev interpolation produced non-finite state",
+        });
+    }
+    let mut state = [0.0_f64; 6];
+    for component in 0..6 {
+        let base = 2 + component * coeff_count;
+        state[component] = evaluate_chebyshev(tau, &packet[base..base + coeff_count]);
+    }
+    finite_state_from_components(state, "SPK type 14 Chebyshev interpolation")
 }
 
 fn validate_strictly_increasing_epochs(
@@ -1969,6 +2221,25 @@ mod tests {
     }
 
     #[test]
+    fn spk_ephemeris_reads_type14_generic_chebyshev_state() {
+        let bytes = synthetic_type14_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(7.0))
+            .unwrap();
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(70_000.0, 14_000.0, -7_000.0),
+            1.0e-10,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(10_000.0, 2_000.0, -1_000.0),
+            1.0e-10,
+        );
+    }
+
+    #[test]
     fn spk_ephemeris_reads_type18_lagrange_state() {
         let bytes = synthetic_type18_spk();
         let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
@@ -2051,6 +2322,22 @@ mod tests {
         let state = segment.state_km_s(3.0).unwrap();
         assert_eq!(state.position_km, Vector3::new(30.0, 6.0, -3.0));
         assert_eq!(state.velocity_km_s, Vector3::new(10.0, 2.0, -1.0));
+    }
+
+    #[test]
+    fn spk_type14_state_uses_generic_segment_metadata() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 14,
+            data: type14_linear_chebyshev_segment(&[0.0, 3.0, 10.0]),
+        };
+        let state = segment.state_km_s(7.0).unwrap();
+        assert_vector_near(state.position_km, Vector3::new(70.0, 14.0, -7.0), 1.0e-13);
+        assert_vector_near(state.velocity_km_s, Vector3::new(10.0, 2.0, -1.0), 1.0e-13);
     }
 
     #[test]
@@ -2453,6 +2740,33 @@ mod tests {
         synthetic_spk_from_segments(&segments)
     }
 
+    fn synthetic_type14_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 14,
+                data: type14_linear_chebyshev_segment(&[0.0, 3.0, 10.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
     fn synthetic_type18_spk() -> Vec<u8> {
         let segments = [
             SyntheticSegment {
@@ -2677,6 +2991,70 @@ mod tests {
         data.push(degree as f64);
         data.push(epochs.len() as f64);
         data
+    }
+
+    fn type14_linear_chebyshev_segment(boundaries: &[f64]) -> Vec<f64> {
+        assert!(boundaries.len() >= 2);
+        let references = &boundaries[..boundaries.len() - 1];
+        let coefficient_count = 2_usize;
+        let packet_size = 2 + 6 * coefficient_count;
+        let packet_offset = 1_usize;
+        let constant_count = 1_usize;
+        let mut data = vec![coefficient_count as f64];
+        for window in boundaries.windows(2) {
+            data.push(window[0]);
+            append_type14_linear_packet(&mut data, window[0], window[1]);
+        }
+        data.extend_from_slice(references);
+        append_spk_epoch_directory(&mut data, references);
+
+        let packet_count = references.len();
+        let reference_directory_count = (references.len() - 1) / 100;
+        let packet_base = constant_count;
+        let reference_base = packet_base + packet_count * (packet_size + packet_offset);
+        let reference_directory_base = reference_base + references.len();
+        let metadata = [
+            0.0,
+            constant_count as f64,
+            reference_directory_base as f64,
+            reference_directory_count as f64,
+            3.0,
+            reference_base as f64,
+            references.len() as f64,
+            0.0,
+            0.0,
+            0.0,
+            packet_base as f64,
+            packet_count as f64,
+            0.0,
+            0.0,
+            packet_size as f64,
+            packet_offset as f64,
+            17.0,
+        ];
+        data.extend_from_slice(&metadata);
+        data
+    }
+
+    fn append_type14_linear_packet(data: &mut Vec<f64>, start_epoch_s: f64, stop_epoch_s: f64) {
+        let midpoint_s = 0.5 * (start_epoch_s + stop_epoch_s);
+        let radius_s = 0.5 * (stop_epoch_s - start_epoch_s);
+        data.extend_from_slice(&[
+            midpoint_s,
+            radius_s,
+            10.0 * midpoint_s,
+            10.0 * radius_s,
+            2.0 * midpoint_s,
+            2.0 * radius_s,
+            -midpoint_s,
+            -radius_s,
+            10.0,
+            0.0,
+            2.0,
+            0.0,
+            -1.0,
+            0.0,
+        ]);
     }
 
     fn type18_lagrange_segment(epochs: &[f64], window_size: usize) -> Vec<f64> {
