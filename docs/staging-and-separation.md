@@ -92,6 +92,22 @@ action  = { kind = "jettison_bodies", bodies = ["rv1", "rv2", "rv3"] }
 once    = true
 ```
 
+Post-separation events can observe detached lanes through relative
+range crossings:
+
+```toml
+[[mission.events]]
+id      = "rv1_clear"
+trigger = { kind = "at_relative_distance", body = "rv1", distance_m = 25.0 }
+action  = { kind = "emit_telemetry_marker", tag = "rv1_clear" }
+once    = true
+```
+
+Omitting `reference_body` measures against the current primary lane.
+Supplying `reference_body = "rv2"` measures the range between two
+active propagated bodies. The trigger is false until all named lanes
+exist, so it is safe to declare before the deployment event.
+
 > **Status.** `ScenarioActionConfig::JettisonStage { body }` is implemented for
 > fixed-step RK4 rigid-body profiles with explicit resource ownership.
 > `ScenarioActionConfig::JettisonBodies { bodies }` is implemented as a batch
@@ -145,6 +161,10 @@ default strategy is:
   is partitioned from the same pre-split composite before the primary stack is
   updated. This avoids the mass-loss artefact that would occur if multiple RVs
   were jettisoned sequentially from an already-reduced bus state.
+- **Relative event observation.** `at_relative_distance` lets mission events
+  fire from ranges between detached bodies and the primary lane, or between two
+  detached bodies. The kernel seeds the previous range at the separation instant
+  so the first post-separation crossing is not missed.
 - **Coupled (reserved).** Plume impingement or tether coupling between freshly
   separated bodies is out of scope and reserved.
 

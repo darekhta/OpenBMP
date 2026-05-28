@@ -487,10 +487,10 @@ The rigid-body-only initial-state fields are rejected when
 
 | `gravity` | Required | Rejected |
 |---|---|---|
-| `"constant"` | `gravity_m_s2` | `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file` |
-| `"point_mass"` | `mu_m3_s2` | `gravity_m_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file` |
+| `"constant"` | `gravity_m_s2` | `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files` |
+| `"point_mass"` | `mu_m3_s2` | `gravity_m_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files` |
 | `"j2"` | `mu_m3_s2`, `r_e_m` | `gravity_m_s2` |
-| `"egm2008"` | — pinned WGS84 / EGM2008 zonal constants | `gravity_m_s2`, `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file` |
+| `"egm2008"` | — pinned WGS84 / EGM2008 zonal constants | `gravity_m_s2`, `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files` |
 | `"third_body"` | `gravity_base`, `third_bodies`; plus the selected base coefficients | `gravity_m_s2` |
 
 For `gravity = "j2"` the dimensionless `j2` coefficient defaults to the
@@ -505,10 +505,14 @@ Sun/Moon point-mass perturbations using
 deterministic analytical ephemeris; if `[epoch]` is omitted the
 ephemeris starts at J2000, otherwise the runner parses
 `epoch.iso8601` with `epoch.scale` `UTC`, `TT`, or `TDB`.
-`ephemeris = "spk"` selects a pinned binary SPK/BSP kernel supplied by
-`ephemeris_file` and optional `ephemeris_file_sha256`; this path
-requires `[epoch].scale = "TDB"` because the SPK reader evaluates
-seconds past J2000 on the ephemeris-time/TDB axis.
+`ephemeris = "spk"` selects pinned binary SPK/BSP kernels supplied by
+either singular `ephemeris_file` plus optional
+`ephemeris_file_sha256`, or ordered `ephemeris_files` plus optional
+`ephemeris_files_sha256`. The plural pin list, when present, must
+match the file list length. Later files take precedence over earlier
+files for overlapping SPK segments. This path requires
+`[epoch].scale = "TDB"` because the SPK reader evaluates seconds past
+J2000 on the ephemeris-time/TDB axis.
 
 ```toml
 [epoch]
@@ -536,19 +540,26 @@ gravity       = "third_body"
 gravity_base  = "egm2008"
 third_bodies  = ["sun", "moon"]
 ephemeris     = "spk"
-ephemeris_file = "data/ephemeris/de440s.bsp"
-ephemeris_file_sha256 = "<64 hex chars>"
+ephemeris_files = [
+  "data/ephemeris/de440s.bsp",
+  "data/ephemeris/mission-overlay.bsp",
+]
+ephemeris_files_sha256 = [
+  "<64 hex chars>",
+  "<64 hex chars>",
+]
 atmosphere    = "none"
 wind          = "none"
 ```
 
 The SPK reader supports geometric Sun/Moon positions from binary
 DAF/SPK kernels with type 2 or type 3 Chebyshev segments in the J2000
-frame. It follows SPK segment priority inside one file and combines
-target/center chains such as Solar-System-Barycenter -> Earth-Moon
-Barycenter -> Earth/Moon. It does not yet implement light-time,
-stellar aberration, text kernels, non-J2000 frame transforms, or
-non-Chebyshev SPK segment types.
+frame. It follows SPK segment priority inside each file and preserves
+load-order precedence across a file list, so later files can override
+earlier overlapping segments. It combines target/center chains such as
+Solar-System-Barycenter -> Earth-Moon Barycenter -> Earth/Moon. It
+does not yet implement light-time, stellar aberration, text kernels,
+non-J2000 frame transforms, or non-Chebyshev SPK segment types.
 
 ### Frames local origin
 
@@ -952,11 +963,13 @@ observable after the run.
 Every external file referenced by the scenario can carry an optional
 `*_sha256` companion field (`aero.deck_sha256`,
 `propulsion.motor.file_sha256`, `sensors.<name>.file_sha256`,
-`epoch.eop_sha256`, `environment.ephemeris_file_sha256`). When
-present, the parser computes the file's SHA-256 digest at load time
-and fails closed on mismatch. When absent, the digest is still computed
-and surfaced by `openbmp check`; recording those digests in telemetry
-headers is handled runner-side.
+`epoch.eop_sha256`, `environment.ephemeris_file_sha256`, or ordered
+`environment.ephemeris_files_sha256`). When present, the parser
+computes the file's SHA-256 digest at load time and fails closed on
+mismatch. The plural ephemeris pin list must have the same length as
+`environment.ephemeris_files`. When absent, the digest is still
+computed and surfaced by `openbmp check`; recording those digests in
+telemetry headers is handled runner-side.
 
 `openbmp check` surfaces resolved digests in its output:
 
@@ -966,6 +979,7 @@ openbmp check: ok — niskanen-2009-chapter6 (Checked)
   aero.deck -> .../data/aero/...toml (sha256:cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27)
   propulsion.motor.file -> .../data/motors/estes-c6-eng-derived.toml (sha256:da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e)
   environment.ephemeris_file -> .../data/ephemeris/de440s.bsp (sha256:...)
+  environment.ephemeris_files[1] -> .../data/ephemeris/mission-overlay.bsp (sha256:...)
 ```
 
 The digest is the SHA-256 of the file bytes encoded as 64 lower-case
@@ -1055,12 +1069,23 @@ return `false` on step 0 because no previous-step snapshot exists.
 | `at_mass_fraction` | `remaining: f64` (in `[0, 1]`) | Fires when mass fraction (current / initial) drops to or below `remaining`. |
 | `at_velocity` | `velocity_m_s: f64`, optional `falling: bool = false` | Fires when speed magnitude crosses `velocity_m_s`; `falling = false` selects the rising edge and `falling = true` selects the falling edge. |
 | `at_dynamic_pressure` | `pressure_pa: f64 >= 0`, `falling: bool` | Fires when dynamic pressure crosses `pressure_pa` in the direction set by `falling`. Runner event evaluation computes `q = 0.5 * rho * |v|^2` from the selected runtime atmosphere; use `us_standard_1976`, `piecewise_exponential`, `nrlmsise00`, or `nrlmsis2_compat`. |
+| `at_relative_distance` | `body: string`, `distance_m: f64 > 0`, optional `reference_body: string`, optional `falling: bool = false` | Rigid-body `[multi_body]` only. Fires when the range between `body` and `reference_body` crosses `distance_m`; if `reference_body` is omitted, the current primary lane is used. The trigger is false until the named bodies are active propagated lanes. |
 
 The `kind = "scripted"` trigger is rejected at parse time with a
 typed deferral error: scripted triggers are not supported. The
 deterministic per-effector `command_schedule` (see
 [Control effectors](#control-effectors) below) covers the
 common scripted-command case without a separate trigger surface.
+
+Example post-deployment clearance marker:
+
+```toml
+[[mission.events]]
+id      = "rv1_clear"
+trigger = { kind = "at_relative_distance", body = "rv1", distance_m = 25.0 }
+action  = { kind = "emit_telemetry_marker", tag = "rv1_clear" }
+once    = true
+```
 
 #### Action vocabulary
 
@@ -2254,7 +2279,9 @@ or at the model capability gate; the composite force stack is not
 silently reused for detached bodies. Telemetry includes the continuing
 primary lane in the existing state channels and each departing body in
 `body.<lower_body_id>.*` channels, including
-`body.<lower_body_id>.separated`.
+`body.<lower_body_id>.separated`. Relative range triggers can observe
+these lanes with `trigger.kind = "at_relative_distance"` after the
+separation has occurred.
 
 ### v3-only `[fc]` sub-blocks
 

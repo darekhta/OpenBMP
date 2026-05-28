@@ -42,25 +42,28 @@ OpenBMP implementation slice.
   `gravity_base`, `third_bodies`, and `ephemeris` fields.
 - Added `jettison_bodies`, a batch rigid-body deployment action that
   partitions multiple departing bodies from the same pre-split state.
+- Added `at_relative_distance` mission triggers so post-deployment
+  events can observe ranges between detached rigid-body lanes and the
+  primary bus, or between two detached lanes.
 - Added `frame_profile = "iers-tabulated"` with pinned TOML EOP table
   ingestion for interpolated UT1-UTC and polar motion.
 - Added `environment.ephemeris = "spk"` with SHA-256-pinned binary
-  DAF/SPK ingestion for JPL DE-style type 2/3 Chebyshev segments in
-  J2000.
+  DAF/SPK ingestion for ordered JPL DE-style kernel lists with type
+  2/3 Chebyshev segments in J2000.
 
 ## Still Missing Relative To Basilisk
 
 - SPK ingestion is intentionally limited to geometric state chains from
-  one binary kernel. It does not yet implement light-time correction,
-  stellar aberration, text kernels, non-J2000 frame transforms, or all
-  SPK segment types.
+  binary SPK/BSP kernels. It does not yet implement light-time
+  correction, stellar aberration, text kernels, non-J2000 frame
+  transforms, or all SPK segment types.
 - The IERS path is intentionally compact: it does not yet implement
   precession, nutation, full leap-second table conversion, or a SPICE
   frame chain.
 - Multi-body OpenBMP propagation is still independent-lane rigid-body
-  propagation after deployment. Basilisk's message-passing architecture
-  supports many simultaneously configured spacecraft modules more
-  generally.
+  propagation after deployment. Relative-distance triggers can observe
+  lane geometry, but Basilisk's message-passing architecture supports
+  many simultaneously configured spacecraft modules more generally.
 
 ## References
 

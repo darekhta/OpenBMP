@@ -13,6 +13,6 @@ pub use openbmp_mission::AlarmCode;
 pub use openbmp_mission::{
     BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars, EventTrigger,
     FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
-    PhaseTransition, RegionId, StateId,
+    PhaseTransition, RegionId, RelativeDistanceKey, StateId,
 };
 pub use openbmp_scenario_script::ScenarioScriptAction;

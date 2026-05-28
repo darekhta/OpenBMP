@@ -60,7 +60,7 @@ pub use error::{IntegratorError, ModelEvalError, SimulationError, StopReason};
 pub use events::{
     AlarmCode, BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars,
     EventTrigger, FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
-    PhaseTransition, RegionId, ScenarioScriptAction, StateId,
+    PhaseTransition, RegionId, RelativeDistanceKey, ScenarioScriptAction, StateId,
 };
 pub use integrator::{
     AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Dopri853Adaptive,

@@ -113,21 +113,50 @@ fn build_ephemeris(
                     ),
                 });
             }
-            let resolved = resolved_files.get("environment.ephemeris_file").ok_or_else(|| {
-                RunnerError::UnsupportedScenario {
-                    what: "environment.ephemeris = \"spk\" requires resolved environment.ephemeris_file"
-                        .to_owned(),
-                }
-            })?;
-            Ok(RuntimeEphemeris::Spk(SpkEphemeris::from_bytes(
+            let kernels = resolved_spk_kernels(document, resolved_files)?;
+            Ok(RuntimeEphemeris::Spk(SpkEphemeris::from_kernels(
                 parse_iso8601_julian_date(&epoch.iso8601)?,
-                &resolved.bytes,
+                kernels,
             )?))
         }
         other => Err(RunnerError::UnsupportedScenario {
             what: format!("environment.ephemeris = {other} is not wired"),
         }),
     }
+}
+
+fn resolved_spk_kernels<'a>(
+    document: &ScenarioDocument,
+    resolved_files: &'a BTreeMap<String, ResolvedFile>,
+) -> Result<Vec<&'a [u8]>, RunnerError> {
+    if document.environment.ephemeris_file.is_some() {
+        let resolved = resolved_files
+            .get("environment.ephemeris_file")
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what:
+                    "environment.ephemeris = \"spk\" requires resolved environment.ephemeris_file"
+                        .to_owned(),
+            })?;
+        return Ok(vec![resolved.bytes.as_slice()]);
+    }
+    let mut kernels = Vec::with_capacity(document.environment.ephemeris_files.len());
+    for index in 0..document.environment.ephemeris_files.len() {
+        let key = format!("environment.ephemeris_files[{index}]");
+        let resolved =
+            resolved_files
+                .get(&key)
+                .ok_or_else(|| RunnerError::UnsupportedScenario {
+                    what: format!("environment.ephemeris = \"spk\" requires resolved {key}"),
+                })?;
+        kernels.push(resolved.bytes.as_slice());
+    }
+    if kernels.is_empty() {
+        return Err(RunnerError::UnsupportedScenario {
+            what: "environment.ephemeris = \"spk\" requires at least one resolved SPK kernel"
+                .to_owned(),
+        });
+    }
+    Ok(kernels)
 }
 
 fn build_central_gravity(
@@ -356,6 +385,31 @@ mod tests {
         let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
         match gravity.ephemeris() {
             RuntimeEphemeris::Spk(spk) => assert_eq!(spk.segment_count(), 4),
+            other => panic!("expected SPK ephemeris, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builds_spk_third_body_ephemeris_from_resolved_file_list() {
+        let toml = SPK_THIRD_BODY_SCENARIO.replace(
+            "ephemeris_file = \"synthetic.bsp\"",
+            "ephemeris_files = [\"base.bsp\", \"override.bsp\"]",
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let mut files = BTreeMap::new();
+        for (index, name) in ["base.bsp", "override.bsp"].iter().enumerate() {
+            files.insert(
+                format!("environment.ephemeris_files[{index}]"),
+                ResolvedFile {
+                    path: PathBuf::from(name),
+                    sha256_hex: "not-used-in-unit-test".to_owned(),
+                    bytes: synthetic_spk(),
+                },
+            );
+        }
+        let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
+        match gravity.ephemeris() {
+            RuntimeEphemeris::Spk(spk) => assert_eq!(spk.segment_count(), 8),
             other => panic!("expected SPK ephemeris, got {other:?}"),
         }
     }

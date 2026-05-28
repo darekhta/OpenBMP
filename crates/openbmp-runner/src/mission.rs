@@ -531,6 +531,19 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Run
             pa: *pressure_pa,
             falling: *falling,
         },
+        EventTriggerConfig::AtRelativeDistance {
+            body,
+            reference_body,
+            distance_m,
+            falling,
+        } => BuiltInEventTrigger::AtRelativeDistance {
+            target: openbmp_core::BodyId::from_path(&format!("vehicle.assembly.bodies.{body}")),
+            reference: reference_body.as_ref().map(|body| {
+                openbmp_core::BodyId::from_path(&format!("vehicle.assembly.bodies.{body}"))
+            }),
+            meters: *distance_m,
+            falling: *falling,
+        },
         EventTriggerConfig::Scripted => {
             return Err(RunnerError::Scenario(
                 openbmp_scenario::ScenarioError::UnsupportedTriggerKind {
@@ -867,6 +880,29 @@ mod tests {
             BuiltInEventTrigger::AtVelocity {
                 velocity_m_s: 1_850.0,
                 falling: true,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn at_relative_distance_trigger_builds_runtime_trigger() -> Result<(), RunnerError> {
+        let trigger = build_trigger(&EventTriggerConfig::AtRelativeDistance {
+            body: "rv1".to_owned(),
+            reference_body: Some("bus".to_owned()),
+            distance_m: 25.0,
+            falling: false,
+        })?;
+
+        assert_eq!(
+            trigger,
+            BuiltInEventTrigger::AtRelativeDistance {
+                target: openbmp_core::BodyId::from_path("vehicle.assembly.bodies.rv1"),
+                reference: Some(openbmp_core::BodyId::from_path(
+                    "vehicle.assembly.bodies.bus"
+                )),
+                meters: 25.0,
+                falling: false,
             }
         );
         Ok(())

@@ -24,7 +24,7 @@ mod regions;
 pub use events::{
     AlarmCode, BuiltInEventTrigger, EventBinding, EventEvalState, EventId, EventScalars,
     EventTrigger, FiredEvent, MissionAction, MissionGraphError, MissionPhaseGraph, Phase, PhaseId,
-    PhaseTransition, RegionId, StateId,
+    PhaseTransition, RegionId, RelativeDistanceKey, StateId,
 };
 pub use hsm::{HistoryState, HsmError, MissionState, MissionStateMachine};
 pub use regions::{

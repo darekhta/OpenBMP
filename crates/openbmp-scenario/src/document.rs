@@ -346,6 +346,7 @@ impl ScenarioDocument {
         self.validate_effector_references()?;
         self.validate_engine_references()?;
         self.validate_recovery_references()?;
+        self.validate_relative_distance_trigger_references()?;
         self.validate_propulsion_unambiguous()?;
         self.validate_v3_blocks()?;
         self.validate_stage_separation_agreement()?;
@@ -1208,6 +1209,68 @@ impl ScenarioDocument {
         Ok(())
     }
 
+    fn validate_relative_distance_trigger_references(&self) -> Result<(), ScenarioError> {
+        let Some(mission) = &self.mission else {
+            return Ok(());
+        };
+        let body_ids: BTreeSet<&str> = self
+            .vehicle
+            .assembly
+            .bodies
+            .iter()
+            .map(|body| body.id.as_str())
+            .collect();
+
+        for (event_index, event) in mission.events.iter().enumerate() {
+            let EventTriggerConfig::AtRelativeDistance {
+                body,
+                reference_body,
+                ..
+            } = &event.trigger
+            else {
+                continue;
+            };
+            if self.vehicle.kind != "rigid_body" {
+                return Err(ScenarioError::IncompatibleAssemblyEntry {
+                    field: format!("mission.events[{event_index}].trigger.kind"),
+                    reason: "at_relative_distance requires vehicle.kind = \"rigid_body\""
+                        .to_owned(),
+                });
+            }
+            if self.multi_body.is_none() {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: format!("mission.events[{event_index}].trigger.kind"),
+                    value_a: "at_relative_distance".to_owned(),
+                    field_b: "multi_body".to_owned(),
+                    value_b: "missing".to_owned(),
+                });
+            }
+            if !body_ids.contains(body.as_str()) {
+                return Err(ScenarioError::UnknownBodyReference {
+                    field: format!("mission.events[{event_index}].trigger.body"),
+                    value: body.clone(),
+                });
+            }
+            if let Some(reference_body) = reference_body {
+                if reference_body == body {
+                    return Err(ScenarioError::InconsistentSection {
+                        field_a: format!("mission.events[{event_index}].trigger.body"),
+                        value_a: body.clone(),
+                        field_b: format!("mission.events[{event_index}].trigger.reference_body"),
+                        value_b: reference_body.clone(),
+                    });
+                }
+                if !body_ids.contains(reference_body.as_str()) {
+                    return Err(ScenarioError::UnknownBodyReference {
+                        field: format!("mission.events[{event_index}].trigger.reference_body"),
+                        value: reference_body.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn validate_effector_references(&self) -> Result<(), ScenarioError> {
         let Some(mission) = &self.mission else {
             return Ok(());
@@ -1892,6 +1955,15 @@ pub struct EnvironmentConfig {
     pub ephemeris_file: Option<PathBuf>,
     /// Optional SHA-256 pin for [`Self::ephemeris_file`].
     pub ephemeris_file_sha256: Option<String>,
+    /// Ordered binary SPK/BSP ephemeris kernel list used when
+    /// `ephemeris = "spk"`. Later files take precedence over earlier
+    /// files for overlapping SPK segments.
+    #[serde(default)]
+    pub ephemeris_files: Vec<PathBuf>,
+    /// Optional SHA-256 pins for [`Self::ephemeris_files`]. When
+    /// present, the list length must match `ephemeris_files`.
+    #[serde(default)]
+    pub ephemeris_files_sha256: Vec<String>,
     /// Atmosphere model name.
     pub atmosphere: String,
     /// Wind model name.
@@ -2041,11 +2113,47 @@ impl EnvironmentConfig {
                 }
                 match self.ephemeris.as_deref() {
                     Some("spk") => {
-                        if self.ephemeris_file.is_none() {
+                        let has_single = self.ephemeris_file.is_some();
+                        let has_list = !self.ephemeris_files.is_empty();
+                        if !has_single && !has_list {
                             return Err(ScenarioError::MissingRequiredField {
-                                field: "environment.ephemeris_file".to_owned(),
+                                field: "environment.ephemeris_file or environment.ephemeris_files"
+                                    .to_owned(),
                                 role: ModelRole::Gravity,
                                 name: "third_body".to_owned(),
+                            });
+                        }
+                        if has_single && has_list {
+                            return Err(ScenarioError::InconsistentSection {
+                                field_a: "environment.ephemeris_file".to_owned(),
+                                value_a: "declared".to_owned(),
+                                field_b: "environment.ephemeris_files".to_owned(),
+                                value_b: "declared".to_owned(),
+                            });
+                        }
+                        if has_single && !self.ephemeris_files_sha256.is_empty() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_files_sha256".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if has_list && self.ephemeris_file_sha256.is_some() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_file_sha256".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if has_list
+                            && !self.ephemeris_files_sha256.is_empty()
+                            && self.ephemeris_files_sha256.len() != self.ephemeris_files.len()
+                        {
+                            return Err(ScenarioError::InconsistentSection {
+                                field_a: "environment.ephemeris_files".to_owned(),
+                                value_a: self.ephemeris_files.len().to_string(),
+                                field_b: "environment.ephemeris_files_sha256".to_owned(),
+                                value_b: self.ephemeris_files_sha256.len().to_string(),
                             });
                         }
                     }
@@ -2060,6 +2168,20 @@ impl EnvironmentConfig {
                         if self.ephemeris_file_sha256.is_some() {
                             return Err(ScenarioError::UnexpectedField {
                                 field: "environment.ephemeris_file_sha256".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if !self.ephemeris_files.is_empty() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_files".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body".to_owned(),
+                            });
+                        }
+                        if !self.ephemeris_files_sha256.is_empty() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.ephemeris_files_sha256".to_owned(),
                                 role: ModelRole::Gravity,
                                 name: "third_body".to_owned(),
                             });
@@ -2165,6 +2287,20 @@ impl EnvironmentConfig {
             if self.ephemeris_file_sha256.is_some() {
                 return Err(ScenarioError::UnexpectedField {
                     field: "environment.ephemeris_file_sha256".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: self.gravity.clone(),
+                });
+            }
+            if !self.ephemeris_files.is_empty() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.ephemeris_files".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: self.gravity.clone(),
+                });
+            }
+            if !self.ephemeris_files_sha256.is_empty() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.ephemeris_files_sha256".to_owned(),
                     role: ModelRole::Gravity,
                     name: self.gravity.clone(),
                 });
@@ -5821,6 +5957,21 @@ pub enum EventTriggerConfig {
         /// `false`: rising-edge crossing. `true`: falling-edge.
         falling: bool,
     },
+    /// Relative distance crossing between a body and the current
+    /// primary lane, or another body if `reference_body` is supplied.
+    AtRelativeDistance {
+        /// Assembly body id to monitor.
+        body: String,
+        /// Optional reference assembly body id. When omitted, the
+        /// current primary rigid-body lane is used.
+        #[serde(default)]
+        reference_body: Option<String>,
+        /// Distance threshold (m).
+        distance_m: f64,
+        /// `false`: rising-edge crossing. `true`: falling-edge.
+        #[serde(default)]
+        falling: bool,
+    },
     /// Deferred: rejected at parse time.
     Scripted,
 }
@@ -5846,6 +5997,18 @@ impl EventTriggerConfig {
             }
             Self::AtDynamicPressure { pressure_pa, .. } => {
                 require_non_negative(&path("pressure_pa"), *pressure_pa)?;
+            }
+            Self::AtRelativeDistance {
+                body,
+                reference_body,
+                distance_m,
+                ..
+            } => {
+                require_non_empty(&path("body"), body)?;
+                if let Some(reference_body) = reference_body {
+                    require_non_empty(&path("reference_body"), reference_body)?;
+                }
+                require_positive(&path("distance_m"), *distance_m)?;
             }
             Self::Scripted => {
                 return Err(ScenarioError::UnsupportedTriggerKind {

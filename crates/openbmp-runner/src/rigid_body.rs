@@ -2864,6 +2864,12 @@ trigger = { kind = "at_time", time_s = 0.1 }
 action = { kind = "jettison_bodies", bodies = ["rv1", "rv2"] }
 once = true
 
+[[mission.events]]
+id = "rv1_clear"
+trigger = { kind = "at_relative_distance", body = "rv1", distance_m = 1.01 }
+action = { kind = "emit_telemetry_marker", tag = "rv1_clear" }
+once = true
+
 [multi_body]
 
 [[multi_body.separation]]
@@ -3016,6 +3022,12 @@ require_monotonic_time = true
         let rv2_vy = f64_column(&outcome, "body.rv2.velocity_y_m_s");
         assert!(rv1_vy.iter().any(|value| (*value - 1.0).abs() < 1.0e-12));
         assert!(rv2_vy.iter().any(|value| (*value + 1.0).abs() < 1.0e-12));
+
+        let rv1_clear = bool_column(&outcome, "mission.marker.rv1_clear");
+        assert!(
+            rv1_clear.iter().any(|value| *value),
+            "relative-distance event should mark when rv1 clears the bus: {rv1_clear:?}"
+        );
     }
 
     #[test]

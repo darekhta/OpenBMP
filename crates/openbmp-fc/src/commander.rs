@@ -192,6 +192,8 @@ impl Commander {
             current,
             previous: self.previous_scalars,
             current_phase: Some(self.current_phase),
+            relative_distances_m: std::collections::BTreeMap::new(),
+            previous_relative_distances_m: Some(std::collections::BTreeMap::new()),
         }
     }
 

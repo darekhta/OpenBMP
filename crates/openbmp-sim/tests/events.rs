@@ -8,9 +8,12 @@
 
 #![allow(clippy::float_cmp, clippy::expect_used)]
 
-use openbmp_core::{SimTime, StepIndex};
+use std::collections::BTreeMap;
+
+use openbmp_core::{BodyId, SimTime, StepIndex};
 use openbmp_sim::{
     BuiltInEventTrigger, EventEvalState, EventId, EventScalars, EventTrigger, PhaseId,
+    RelativeDistanceKey,
 };
 
 const ANY_TIME: SimTime = SimTime::ZERO;
@@ -32,6 +35,8 @@ fn step(curr: EventScalars, prev: Option<EventScalars>) -> EventEvalState {
         current: curr,
         previous: prev,
         current_phase: None,
+        relative_distances_m: BTreeMap::new(),
+        previous_relative_distances_m: Some(BTreeMap::new()),
     }
 }
 
@@ -275,6 +280,58 @@ fn at_dynamic_pressure_falling_edge_ignores_rising_crossing() {
         !BuiltInEventTrigger::AtDynamicPressure {
             pa: 10_000.0,
             falling: true,
+        }
+        .fired(&s, ANY_TIME, ANY_STEP)
+    );
+}
+
+// ---------------------------------------------------------------------
+// AtRelativeDistance
+// ---------------------------------------------------------------------
+
+#[test]
+fn at_relative_distance_rising_edge_fires_for_body_pair() {
+    let target = BodyId::from_path("vehicle.assembly.bodies.rv1");
+    let reference = BodyId::from_path("vehicle.assembly.bodies.bus");
+    let key = RelativeDistanceKey::new(target, Some(reference));
+    let mut prev_distances = BTreeMap::new();
+    prev_distances.insert(key, 9.0);
+    let mut curr_distances = BTreeMap::new();
+    curr_distances.insert(key, 11.0);
+    let mut s = step(
+        scalars(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+        Some(scalars(0.0, 0.0, 0.0, 0.0, 1.0, 0.0)),
+    );
+    s.previous_relative_distances_m = Some(prev_distances);
+    s.relative_distances_m = curr_distances;
+
+    assert!(
+        BuiltInEventTrigger::AtRelativeDistance {
+            target,
+            reference: Some(reference),
+            meters: 10.0,
+            falling: false,
+        }
+        .fired(&s, ANY_TIME, ANY_STEP)
+    );
+}
+
+#[test]
+fn at_relative_distance_ignores_missing_predeployment_body() {
+    let target = BodyId::from_path("vehicle.assembly.bodies.rv1");
+    let mut s = step(
+        scalars(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+        Some(scalars(0.0, 0.0, 0.0, 0.0, 1.0, 0.0)),
+    );
+    s.previous_relative_distances_m = Some(BTreeMap::new());
+    s.relative_distances_m = BTreeMap::new();
+
+    assert!(
+        !BuiltInEventTrigger::AtRelativeDistance {
+            target,
+            reference: None,
+            meters: 10.0,
+            falling: false,
         }
         .fired(&s, ANY_TIME, ANY_STEP)
     );

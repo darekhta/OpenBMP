@@ -233,6 +233,18 @@ impl Scenario {
             resolved.verify_pin(self.document.environment.ephemeris_file_sha256.as_deref())?;
             files.insert("environment.ephemeris_file".to_owned(), resolved);
         }
+        for (index, ephemeris_file) in self.document.environment.ephemeris_files.iter().enumerate()
+        {
+            let resolved = ResolvedFile::load(self.resolve_path(ephemeris_file))?;
+            let pin = self
+                .document
+                .environment
+                .ephemeris_files_sha256
+                .get(index)
+                .map(String::as_str);
+            resolved.verify_pin(pin)?;
+            files.insert(format!("environment.ephemeris_files[{index}]"), resolved);
+        }
 
         if let Some(packages) = &self.document.data_packages {
             for (name, path) in packages {
@@ -2965,7 +2977,7 @@ profile = "iers-tabulated"
             );
         let err = Scenario::from_toml_str(&toml_v2).unwrap_err();
         assert!(
-            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "environment.ephemeris_file"),
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "environment.ephemeris_file or environment.ephemeris_files"),
             "got {err:?}",
         );
     }
@@ -2992,6 +3004,32 @@ iso8601 = "2000-01-01T12:00:00Z"
             .expect("parse spk scenario");
         let files = scenario.resolved_files().expect("resolve files");
         assert!(files.contains_key("environment.ephemeris_file"));
+    }
+
+    #[test]
+    fn resolved_files_includes_spk_ephemeris_file_list() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("base.bsp"), b"base spk").expect("write base spk");
+        fs::write(dir.path().join("override.bsp"), b"override spk").expect("write override spk");
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665",
+                "gravity       = \"third_body\"\ngravity_base  = \"point_mass\"\nmu_m3_s2      = 3.986004418e14\nthird_bodies  = [\"sun\"]\nephemeris     = \"spk\"\nephemeris_files = [\"base.bsp\", \"override.bsp\"]",
+            )
+            + r#"
+[epoch]
+scale = "TDB"
+iso8601 = "2000-01-01T12:00:00Z"
+"#;
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(dir.path()))
+            .expect("parse spk scenario");
+        let files = scenario.resolved_files().expect("resolve files");
+        assert!(files.contains_key("environment.ephemeris_files[0]"));
+        assert!(files.contains_key("environment.ephemeris_files[1]"));
     }
 
     #[test]
@@ -3508,6 +3546,49 @@ action  = { kind = "separation" }
             .expect("multi_body present");
         assert_eq!(multi_body.separations.len(), 1);
         assert_eq!(multi_body.separations[0].lower_body_id, "lower");
+    }
+
+    #[test]
+    fn accepts_relative_distance_trigger_for_multi_body_lane() {
+        let relative_event = r#"
+[[mission.events]]
+id      = "lower_clear"
+trigger = { kind = "at_relative_distance", body = "lower", distance_m = 1.0 }
+action  = { kind = "emit_telemetry_marker", tag = "lower_clear" }
+once    = true
+"#;
+        let toml = VALID_STAGE_SEPARATION_SCENARIO.replace(
+            "\n[multi_body]\n",
+            &format!("{relative_event}\n[multi_body]\n"),
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
+        let mission = scenario.document.mission.as_ref().expect("mission present");
+        assert!(matches!(
+            mission.events[1].trigger,
+            crate::EventTriggerConfig::AtRelativeDistance { ref body, distance_m, .. }
+                if body == "lower" && (distance_m - 1.0).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn rejects_relative_distance_trigger_unknown_body() {
+        let relative_event = r#"
+[[mission.events]]
+id      = "lower_clear"
+trigger = { kind = "at_relative_distance", body = "typo", distance_m = 1.0 }
+action  = { kind = "emit_telemetry_marker", tag = "lower_clear" }
+once    = true
+"#;
+        let toml = VALID_STAGE_SEPARATION_SCENARIO.replace(
+            "\n[multi_body]\n",
+            &format!("{relative_event}\n[multi_body]\n"),
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnknownBodyReference { ref field, ref value }
+                if field == "mission.events[1].trigger.body" && value == "typo"),
+            "expected UnknownBodyReference, got {err:?}",
+        );
     }
 
     fn with_assembly_resource(fragment: &str) -> String {

@@ -49,7 +49,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use openbmp_core::{SimTime, StepIndex};
+use openbmp_core::{BodyId, SimTime, StepIndex};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------
@@ -162,11 +162,33 @@ pub struct EventScalars {
     pub dynamic_pressure_pa: f64,
 }
 
+/// Key used for relative-distance trigger samples.
+///
+/// `reference = None` means "the current primary rigid-body lane".
+/// A concrete reference body id means "that active separated or
+/// primary lane". Consumers omit keys until both bodies are available,
+/// so the corresponding trigger remains false before deployment.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct RelativeDistanceKey {
+    /// Body whose distance is being monitored.
+    pub target: BodyId,
+    /// Reference body. `None` selects the current primary lane.
+    pub reference: Option<BodyId>,
+}
+
+impl RelativeDistanceKey {
+    /// Construct a relative-distance key.
+    #[must_use]
+    pub const fn new(target: BodyId, reference: Option<BodyId>) -> Self {
+        Self { target, reference }
+    }
+}
+
 /// Per-tick snapshot threaded into trigger evaluation. Carries both
 /// the current-tick scalars and the previous-tick scalars (`None` on
 /// the first tick) so triggers can detect crossings without interior
 /// mutability.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EventEvalState {
     /// Current-tick scalar values.
     pub current: EventScalars,
@@ -175,6 +197,10 @@ pub struct EventEvalState {
     /// Active phase id at the start of this tick. `None` when no
     /// mission graph is wired.
     pub current_phase: Option<PhaseId>,
+    /// Current-tick relative body distances keyed by target/reference.
+    pub relative_distances_m: BTreeMap<RelativeDistanceKey, f64>,
+    /// Previous-tick relative body distances. `None` on the first tick.
+    pub previous_relative_distances_m: Option<BTreeMap<RelativeDistanceKey, f64>>,
 }
 
 // ---------------------------------------------------------------------
@@ -258,6 +284,19 @@ pub enum BuiltInEventTrigger {
         /// `true`: falling-edge crossing (q decreasing through pa).
         falling: bool,
     },
+    /// Fires when the distance between a target body and the primary
+    /// lane, or another named body, crosses `meters`.
+    AtRelativeDistance {
+        /// Target body to monitor.
+        target: BodyId,
+        /// Reference body. `None` selects the current primary lane.
+        reference: Option<BodyId>,
+        /// Distance threshold (m).
+        meters: f64,
+        /// `false`: rising-edge crossing (range increasing through
+        /// threshold). `true`: falling-edge crossing.
+        falling: bool,
+    },
 }
 
 impl EventTrigger for BuiltInEventTrigger {
@@ -293,6 +332,28 @@ impl EventTrigger for BuiltInEventTrigger {
             }
             Self::AtDynamicPressure { pa, falling: true } => {
                 prev.dynamic_pressure_pa > *pa && curr.dynamic_pressure_pa <= *pa
+            }
+            Self::AtRelativeDistance {
+                target,
+                reference,
+                meters,
+                falling,
+            } => {
+                let Some(previous_distances) = state.previous_relative_distances_m.as_ref() else {
+                    return false;
+                };
+                let key = RelativeDistanceKey::new(*target, *reference);
+                let Some(prev_distance_m) = previous_distances.get(&key).copied() else {
+                    return false;
+                };
+                let Some(curr_distance_m) = state.relative_distances_m.get(&key).copied() else {
+                    return false;
+                };
+                if *falling {
+                    prev_distance_m > *meters && curr_distance_m <= *meters
+                } else {
+                    prev_distance_m < *meters && curr_distance_m >= *meters
+                }
             }
         }
     }

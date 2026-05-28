@@ -191,13 +191,41 @@ impl SpkEphemeris {
     /// Returns [`PhysicsError`] when the bytes are not a supported
     /// DAF/SPK file or no supported type 2/3 J2000 segments are found.
     pub fn from_bytes(epoch_tdb_julian_date: f64, bytes: &[u8]) -> Result<Self, PhysicsError> {
+        Self::from_kernels(epoch_tdb_julian_date, [bytes])
+    }
+
+    /// Parse one or more binary SPK/BSP kernels from bytes.
+    ///
+    /// Segment precedence follows SPICE's practical load-order rule:
+    /// later kernels in the iterator take priority over earlier
+    /// kernels when overlapping target/coverage segments exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when any byte slice is not a supported
+    /// DAF/SPK file, no kernels are supplied, or no supported type 2/3
+    /// J2000 segments are found across all kernels.
+    pub fn from_kernels<'a, I>(epoch_tdb_julian_date: f64, kernels: I) -> Result<Self, PhysicsError>
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
         if !epoch_tdb_julian_date.is_finite() {
             return Err(PhysicsError::InvalidParameter {
                 reason: "SPK epoch Julian Date must be finite",
             });
         }
-        let daf = DafView::new(bytes)?;
-        let segments = daf.spk_segments()?;
+        let mut kernel_count = 0_usize;
+        let mut segments = Vec::new();
+        for bytes in kernels {
+            kernel_count += 1;
+            let daf = DafView::new(bytes)?;
+            segments.extend(daf.spk_segments()?);
+        }
+        if kernel_count == 0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK ephemeris requires at least one kernel",
+            });
+        }
         if segments.is_empty() {
             return Err(PhysicsError::InvalidParameter {
                 reason: "SPK kernel contains no supported type 2/3 J2000 segments",
@@ -759,6 +787,22 @@ mod tests {
     }
 
     #[test]
+    fn spk_ephemeris_combines_kernels_with_later_precedence() {
+        let first = synthetic_spk_with_sun_x_km(149_597_870.0);
+        let second = synthetic_spk_with_sun_x_km(149_597_880.0);
+        let ephemeris =
+            SpkEphemeris::from_kernels(J2000_JULIAN_DATE, [&first[..], &second[..]]).unwrap();
+        assert_eq!(ephemeris.segment_count(), 8);
+        let sun = ephemeris
+            .body_position_eci_m(CelestialBody::Sun, SimTime::ZERO)
+            .unwrap();
+        assert_eq!(
+            sun,
+            Vector3::new(149_597_880.0e3 - 4_700.0e3, -1_200.0e3, 300.0e3)
+        );
+    }
+
+    #[test]
     fn spk_ephemeris_rejects_invalid_file_id() {
         let mut bytes = synthetic_spk();
         bytes[0] = b'X';
@@ -784,6 +828,10 @@ mod tests {
     }
 
     fn synthetic_spk() -> Vec<u8> {
+        synthetic_spk_with_sun_x_km(149_597_870.0)
+    }
+
+    fn synthetic_spk_with_sun_x_km(sun_x_km: f64) -> Vec<u8> {
         let segments = [
             SyntheticSegment {
                 target: 3,
@@ -798,7 +846,7 @@ mod tests {
             SyntheticSegment {
                 target: NAIF_SUN,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
-                position_km: [149_597_870.0, 0.0, 0.0],
+                position_km: [sun_x_km, 0.0, 0.0],
             },
             SyntheticSegment {
                 target: NAIF_MOON,
