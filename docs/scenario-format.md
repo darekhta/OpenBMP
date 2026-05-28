@@ -585,37 +585,42 @@ wind          = "none"
 ```
 
 The SPK reader supports geometric Sun/Moon states from binary DAF/SPK
-kernels with type 2 or type 3 Chebyshev segments, type 5 two-body
-discrete-state segments, type 8/9 Lagrange state segments, type 12/13
-Hermite state segments, type 14 generic Chebyshev position/velocity
-segments, type 15 precessing-conic segments, type 18 ESOC/DDID subtype
-0/1 packets, type 19 ESOC/DDID piecewise mini-segments, and type 20
-Chebyshev velocity-only segments in the J2000 frame. It also accepts
-the built-in SPICE `ECLIPJ2000` inertial frame and rotates those segment
-states into OpenBMP's J2000 ECI chain. Type 2 velocities are derived
-from the Chebyshev position derivative; type 3 velocities come from the
-segment velocity coefficients; type 5 propagates bracketing discrete
-states with two-body motion and blends the propagated states with
-NAIF's cosine weighting; type 8/9 states are interpolated from
+kernels with type 1 modified-difference arrays, type 2 or type 3
+Chebyshev segments, type 5 two-body discrete-state segments, type 8/9
+Lagrange state segments, type 12/13 Hermite state segments, type 14
+generic Chebyshev position/velocity segments, type 15 precessing-conic
+segments, type 17 equinoctial-element segments, type 18 ESOC/DDID
+subtype 0/1 packets, type 19 ESOC/DDID piecewise mini-segments, type 20
+Chebyshev velocity-only segments, and type 21 extended
+modified-difference arrays in the J2000 frame. It also accepts the
+built-in SPICE `ECLIPJ2000` inertial frame and rotates those segment
+states into OpenBMP's J2000 ECI chain. Type 1 evaluates fixed-dimension
+modified difference lines; type 2 velocities are derived from the
+Chebyshev position derivative; type 3 velocities come from the segment
+velocity coefficients; type 5 propagates bracketing discrete states with
+two-body motion and blends the propagated states with NAIF's cosine
+weighting; type 8/9 states are interpolated from
 equal/unequal-time discrete position/velocity records; type 12/13
 states use equal/unequal-time Hermite interpolation of position and
 velocity records; type 14 evaluates fixed-packet generic-segment
 Chebyshev position and velocity records with explicit epoch indexing;
 type 15 propagates from periapsis and applies optional J2 node/apsis
-precession flags;
+precession flags; type 17 evaluates equinoctial elements, their constant
+rates, and the record's reference-plane pole transform;
 type 18 subtype 0 interpolates ESOC/DDID position and velocity packets
 separately from their derivative fields, while subtype 1 uses Lagrange
 interpolation of position/velocity packets; type 19 selects the
 appropriate interpolation interval, honors the segment's boundary-choice
 flag, and evaluates subtype 0/1/2 mini-segments; type 20 integrates
 Chebyshev velocity polynomials from each record midpoint position
-constant. It follows SPK segment priority inside each file and
+constant; type 21 evaluates variable-dimension extended modified
+difference lines. It follows SPK segment priority inside each file and
 preserves load-order precedence across a file list, so later files can
 override earlier overlapping segments. It combines target/center chains
 such as Solar-System-Barycenter -> Earth-Moon Barycenter -> Earth/Moon.
 It does not yet implement light-time, stellar aberration, generic text
 kernels beyond NAIF LSK leap-second files, non-J2000 frame transforms
-beyond built-in `ECLIPJ2000`, or the remaining SPK segment types.
+beyond built-in `ECLIPJ2000`, or SPK type 10 TLE segments.
 
 ### Frames local origin
 

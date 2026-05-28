@@ -56,6 +56,9 @@ OpenBMP implementation slice.
   Earth-centered body state as position plus velocity; SPK type 2
   velocities use the Chebyshev position derivative and type 3
   velocities use the stored velocity coefficients.
+- Added SPK type 1 modified-difference-array segments, including record
+  epoch selection and the Krogh difference-line position/velocity
+  evaluator used by legacy NAVIO-style SPKs.
 - Added SPK type 9 unequal-time Lagrange state interpolation for
   geometric position/velocity segments, extending the parser beyond
   Chebyshev-only planetary kernels toward mission-spacecraft SPK
@@ -73,9 +76,14 @@ OpenBMP implementation slice.
 - Added SPK type 15 precessing-conic segments, including the
   two-body periapsis propagation path and NAIF's optional J2 node /
   apsis precession flags.
+- Added SPK type 17 equinoctial-element segments, evaluating the
+  NAIF-style equinoctial Kepler equation, element rates, and reference
+  plane pole transform.
 - Added SPK type 20 Chebyshev velocity-only segments, integrating the
   velocity polynomials and midpoint position constants used by
   EPM-style ephemerides.
+- Added SPK type 21 extended modified-difference-array segments, sharing
+  the type-1 evaluator with variable per-component table dimensions.
 - Added SPK type 18 ESOC/DDID packet interpolation for subtype 0
   Hermite packets and subtype 1 Lagrange state packets.
 - Added SPK type 19 ESOC/DDID piecewise interpolation, including
@@ -99,8 +107,7 @@ OpenBMP implementation slice.
   binary SPK/BSP kernels. It does not yet implement light-time
   correction, stellar aberration, generic text kernels beyond NAIF LSK
   leap-second files, non-J2000 frame transforms beyond built-in
-  `ECLIPJ2000`, or the remaining SPK segment types such as modified
-  difference arrays, TLE, and equinoctial elements.
+  `ECLIPJ2000`, or the remaining SPK TLE segment type.
 - The IERS path is intentionally compact: it does not yet implement a
   full SPICE frame chain, IAU 2006/2000A CIO-based transforms, or
   precession/nutation rate terms in velocity transport.

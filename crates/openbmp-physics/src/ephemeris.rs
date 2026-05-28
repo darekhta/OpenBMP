@@ -230,15 +230,17 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 ///
 /// This reader implements the subset required for JPL DE-style
 /// planetary and mission kernels used by third-body perturbations:
-/// SPK type 2 (Chebyshev position), type 3 (Chebyshev position and
-/// velocity), type 5 (two-body propagation between discrete states),
-/// type 8/9 (equal/unequal-time Lagrange state
-/// interpolation), type 12/13 (equal/unequal-time Hermite state
-/// interpolation), type 14 (generic non-uniform Chebyshev position and
-/// velocity), type 15 (precessing conic propagation), type 18
+/// SPK type 1 (modified difference arrays), type 2 (Chebyshev
+/// position), type 3 (Chebyshev position and velocity), type 5
+/// (two-body propagation between discrete states), type 8/9
+/// (equal/unequal-time Lagrange state interpolation), type 12/13
+/// (equal/unequal-time Hermite state interpolation), type 14 (generic
+/// non-uniform Chebyshev position and velocity), type 15 (precessing
+/// conic propagation), type 17 (equinoctial elements), type 18
 /// (ESOC/DDID Hermite/Lagrange interpolation), type 19 (ESOC/DDID
-/// piecewise interpolation), and type 20 (Chebyshev velocity) segments
-/// in the J2000 inertial frame. It also accepts the
+/// piecewise interpolation), type 20 (Chebyshev velocity), and type 21
+/// (extended modified difference arrays) segments in the J2000 inertial
+/// frame. It also accepts the
 /// built-in SPICE
 /// `ECLIPJ2000` inertial frame and rotates those segment states into
 /// J2000. It computes geometric states and does not implement
@@ -256,7 +258,7 @@ impl SpkEphemeris {
     /// # Errors
     ///
     /// Returns [`PhysicsError`] when the bytes are not a supported
-    /// DAF/SPK file or no supported type 2/3/5/8/9/12/13/14/15/18/19/20 J2000
+    /// DAF/SPK file or no supported type 1/2/3/5/8/9/12/13/14/15/17/18/19/20/21 J2000
     /// segments are found.
     pub fn from_bytes(epoch_tdb_julian_date: f64, bytes: &[u8]) -> Result<Self, PhysicsError> {
         Self::from_kernels(epoch_tdb_julian_date, [bytes])
@@ -272,7 +274,7 @@ impl SpkEphemeris {
     ///
     /// Returns [`PhysicsError`] when any byte slice is not a supported
     /// DAF/SPK file, no kernels are supplied, or no supported type
-    /// 2/3/5/8/9/12/13/14/15/18/19/20 J2000 segments are found across all kernels.
+    /// 1/2/3/5/8/9/12/13/14/15/17/18/19/20/21 J2000 segments are found across all kernels.
     pub fn from_kernels<'a, I>(epoch_tdb_julian_date: f64, kernels: I) -> Result<Self, PhysicsError>
     where
         I: IntoIterator<Item = &'a [u8]>,
@@ -296,7 +298,7 @@ impl SpkEphemeris {
         }
         if segments.is_empty() {
             return Err(PhysicsError::InvalidParameter {
-                reason: "SPK kernel contains no supported type 2/3/5/8/9/12/13/14/15/18/19/20 J2000 segments",
+                reason: "SPK kernel contains no supported type 1/2/3/5/8/9/12/13/14/15/17/18/19/20/21 J2000 segments",
             });
         }
         Ok(Self {
@@ -478,6 +480,10 @@ struct ChebyshevRecordView<'a> {
     coeff_count: usize,
 }
 
+struct ModifiedDifferenceRecord<'a> {
+    record: &'a [f64],
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct GenericSegmentMetadata {
     conbas: usize,
@@ -573,6 +579,7 @@ impl SpkSegment {
 
     fn raw_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
         match self.data_type {
+            1 => self.modified_difference_state_km_s(et_s),
             2 => {
                 let record = self.chebyshev_record(et_s, 3)?;
                 Ok(SpkStateKmS {
@@ -605,13 +612,21 @@ impl SpkSegment {
             13 => self.unequal_step_hermite_state_km_s(et_s),
             14 => self.generic_chebyshev_state_km_s(et_s),
             15 => self.precessing_conic_state_km_s(et_s),
+            17 => self.equinoctial_state_km_s(et_s),
             18 => self.esoc_ddid_state_km_s(et_s),
             19 => self.esoc_ddid_piecewise_state_km_s(et_s),
             20 => self.chebyshev_velocity_state_km_s(et_s),
+            21 => self.extended_modified_difference_state_km_s(et_s),
             _ => Err(PhysicsError::InvalidParameter {
                 reason: "unsupported SPK data type",
             }),
         }
+    }
+
+    fn modified_difference_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        const MAXDIM: usize = 15;
+        let records = self.modified_difference_records(et_s, MAXDIM, 1)?;
+        modified_difference_state_from_record(records.record, MAXDIM, et_s, "SPK type 1")
     }
 
     fn two_body_discrete_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
@@ -662,6 +677,72 @@ impl SpkSegment {
             gm_km3_s2,
             et_s,
         )
+    }
+
+    fn extended_modified_difference_state_km_s(
+        &self,
+        et_s: f64,
+    ) -> Result<SpkStateKmS, PhysicsError> {
+        if self.data.len() < 14 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 21 segment is too short",
+            });
+        }
+        let maxdim = f64_to_usize(self.data[self.data.len() - 2])?;
+        if maxdim == 0 || maxdim > 25 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 21 difference table dimension is invalid",
+            });
+        }
+        let records = self.modified_difference_records(et_s, maxdim, 2)?;
+        modified_difference_state_from_record(records.record, maxdim, et_s, "SPK type 21")
+    }
+
+    fn modified_difference_records(
+        &self,
+        et_s: f64,
+        maxdim: usize,
+        trailer_count: usize,
+    ) -> Result<ModifiedDifferenceRecord<'_>, PhysicsError> {
+        let n = f64_to_usize(self.data[self.data.len() - 1])?;
+        if n == 0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK modified-difference record count is invalid",
+            });
+        }
+        let record_size = 4_usize
+            .checked_mul(maxdim)
+            .and_then(|size| size.checked_add(11))
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK modified-difference record size overflow",
+            })?;
+        let directory_count = n / 100;
+        let expected_len = record_size
+            .checked_mul(n)
+            .and_then(|records_len| records_len.checked_add(n))
+            .and_then(|base| base.checked_add(directory_count))
+            .and_then(|base| base.checked_add(trailer_count))
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK modified-difference segment length overflow",
+            })?;
+        if expected_len != self.data.len() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK modified-difference segment length does not match directory",
+            });
+        }
+
+        let records_end = record_size * n;
+        let epochs = &self.data[records_end..records_end + n];
+        validate_strictly_increasing_epochs(epochs, "SPK modified-difference epochs are invalid")?;
+        let record_index = epochs.partition_point(|epoch| *epoch < et_s);
+        if record_index >= n {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "SPK modified-difference query is outside record epoch coverage",
+            });
+        }
+        let record_start = record_index * record_size;
+        let record = &self.data[record_start..record_start + record_size];
+        Ok(ModifiedDifferenceRecord { record })
     }
 
     fn equal_step_lagrange_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
@@ -1004,6 +1085,15 @@ impl SpkSegment {
             });
         }
         type15_precessing_conic_state(&self.data, et_s)
+    }
+
+    fn equinoctial_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        if self.data.len() != 12 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 17 segment must contain exactly 12 values",
+            });
+        }
+        type17_equinoctial_state(&self.data, et_s)
     }
 
     fn esoc_ddid_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
@@ -1369,7 +1459,7 @@ impl<'a> DafView<'a> {
                 if supported_spk_inertial_frame(descriptor.frame)
                     && matches!(
                         descriptor.data_type,
-                        2 | 3 | 5 | 8 | 9 | 12 | 13 | 14 | 15 | 18 | 19 | 20
+                        1 | 2 | 3 | 5 | 8 | 9 | 12 | 13 | 14 | 15 | 17 | 18 | 19 | 20 | 21
                     )
                     && let Some(segment) = self.segment_from_descriptor(descriptor)?
                 {
@@ -1659,6 +1749,118 @@ fn chebyshev_derivative_vector(
             / radius_s,
         evaluate_chebyshev_derivative(tau, &record[base + 2 * coeff_count..base + 3 * coeff_count])
             / radius_s,
+    )
+}
+
+fn modified_difference_state_from_record(
+    record: &[f64],
+    maxdim: usize,
+    et_s: f64,
+    source: &'static str,
+) -> Result<SpkStateKmS, PhysicsError> {
+    let expected_len = 4_usize
+        .checked_mul(maxdim)
+        .and_then(|size| size.checked_add(11))
+        .ok_or(PhysicsError::InvalidParameter {
+            reason: "SPK modified-difference record size overflow",
+        })?;
+    if maxdim == 0
+        || record.len() != expected_len
+        || !record.iter().all(|value| value.is_finite())
+        || !et_s.is_finite()
+    {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK modified-difference record is invalid",
+        });
+    }
+
+    let tl_s = record[0];
+    let g = &record[1..1 + maxdim];
+    let refpos = Vector3::new(record[maxdim + 1], record[maxdim + 3], record[maxdim + 5]);
+    let refvel = Vector3::new(record[maxdim + 2], record[maxdim + 4], record[maxdim + 6]);
+    let dt = &record[maxdim + 7..maxdim + 7 + 3 * maxdim];
+    let kqmax1 = f64_to_usize(record[4 * maxdim + 7])?;
+    let kq = [
+        f64_to_usize(record[4 * maxdim + 8])?,
+        f64_to_usize(record[4 * maxdim + 9])?,
+        f64_to_usize(record[4 * maxdim + 10])?,
+    ];
+    if kqmax1 < 2
+        || kqmax1 > maxdim + 1
+        || kq.iter().any(|order| *order > maxdim || *order >= kqmax1)
+    {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK modified-difference integration orders are invalid",
+        });
+    }
+
+    let delta_s = et_s - tl_s;
+    let mut tp_s = delta_s;
+    let mq2 = kqmax1 - 2;
+    let mut fc = vec![0.0_f64; maxdim + 2];
+    let mut wc = vec![0.0_f64; maxdim + 1];
+    for j in 1..=mq2 {
+        let step_s = g[j - 1];
+        if step_s == 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK modified-difference step size is invalid",
+            });
+        }
+        fc[j] = tp_s / step_s;
+        wc[j - 1] = delta_s / step_s;
+        tp_s = delta_s + step_s;
+    }
+
+    let mut w = vec![0.0_f64; maxdim + 3];
+    for j in 1..=kqmax1 {
+        w[j - 1] = 1.0 / j as f64;
+    }
+
+    let mut jx = 0_usize;
+    let mut ks = kqmax1 - 1;
+    let mut ks1 = ks - 1;
+    while ks >= 2 {
+        jx += 1;
+        for j in 1..=jx {
+            w[j + ks - 1] = fc[j] * w[j + ks1 - 1] - wc[j - 1] * w[j + ks - 1];
+        }
+        ks = ks1;
+        ks1 = ks1.saturating_sub(1);
+    }
+
+    let mut position = [0.0_f64; 3];
+    for component in 0..3 {
+        let mut sum = 0.0;
+        for j in (1..=kq[component]).rev() {
+            sum += dt[component * maxdim + (j - 1)] * w[j + ks - 1];
+        }
+        position[component] = refpos[component] + delta_s * (refvel[component] + delta_s * sum);
+    }
+
+    for j in 1..=jx {
+        w[j + ks - 1] = fc[j] * w[j + ks1 - 1] - wc[j - 1] * w[j + ks - 1];
+    }
+    ks = ks.saturating_sub(1);
+
+    let mut velocity = [0.0_f64; 3];
+    for component in 0..3 {
+        let mut sum = 0.0;
+        for j in (1..=kq[component]).rev() {
+            sum += dt[component * maxdim + (j - 1)] * w[j + ks - 1];
+        }
+        velocity[component] = refvel[component] + delta_s * sum;
+    }
+
+    finite_state_from_components(
+        [
+            position[0],
+            position[1],
+            position[2],
+            velocity[0],
+            velocity[1],
+            velocity[2],
+        ],
+        source,
     )
 }
 
@@ -2020,6 +2222,230 @@ fn rotate_state_about_axis(state: SpkStateKmS, axis: Vector3<f64>, angle_rad: f6
 fn rotate_about_axis(v: Vector3<f64>, axis: Vector3<f64>, angle_rad: f64) -> Vector3<f64> {
     let (sin_angle, cos_angle) = angle_rad.sin_cos();
     v * cos_angle + axis.cross(&v) * sin_angle + axis * axis.dot(&v) * (1.0 - cos_angle)
+}
+
+fn type17_equinoctial_state(record: &[f64], et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+    if record.len() != 12 || !record.iter().all(|value| value.is_finite()) || !et_s.is_finite() {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 17 record is invalid",
+        });
+    }
+
+    let epoch_s = record[0];
+    let semi_major_axis_km = record[1];
+    let h0 = record[2];
+    let k0 = record[3];
+    let mean_longitude_epoch_rad = record[4];
+    let p0 = record[5];
+    let q0 = record[6];
+    let dlpdt_rad_s = record[7];
+    let mean_longitude_rate_rad_s = record[8];
+    let node_rate_rad_s = record[9];
+    let pole_right_ascension_rad = record[10];
+    let pole_declination_rad = record[11];
+
+    if semi_major_axis_km <= 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 17 semi-major axis is invalid",
+        });
+    }
+    if mean_longitude_rate_rad_s == 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 17 mean longitude rate is invalid",
+        });
+    }
+    let eccentricity = h0.hypot(k0);
+    if eccentricity >= 0.9 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 17 eccentricity is outside the supported range",
+        });
+    }
+
+    let dt_s = et_s - epoch_s;
+    let dlp_rad = dt_s * dlpdt_rad_s;
+    let (sin_dlp, cos_dlp) = dlp_rad.sin_cos();
+    let h = h0 * cos_dlp + k0 * sin_dlp;
+    let k = k0 * cos_dlp - h0 * sin_dlp;
+    let current_eccentricity = h.hypot(k);
+    if current_eccentricity >= 0.9 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 17 eccentricity is outside the supported range",
+        });
+    }
+
+    let node_rad = dt_s * node_rate_rad_s;
+    let (sin_node, cos_node) = node_rad.sin_cos();
+    let p = p0 * cos_node + q0 * sin_node;
+    let q = q0 * cos_node - p0 * sin_node;
+    let prate_rad_s = dlpdt_rad_s - node_rate_rad_s;
+
+    let eccentricity_squared = h * h + k * k;
+    let beta_argument = 1.0 - eccentricity_squared;
+    if beta_argument <= 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 17 eccentricity is outside the supported range",
+        });
+    }
+    let beta = 1.0 / (beta_argument.sqrt() + 1.0);
+    if !beta.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK type 17 Broucke beta is non-finite",
+        });
+    }
+
+    let inclination_denominator = p * p + 1.0 + q * q;
+    if !inclination_denominator.is_finite() || inclination_denominator == 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 17 inclination elements are invalid",
+        });
+    }
+    let di = 1.0 / inclination_denominator;
+    let vf = Vector3::new((1.0 - p * p + q * q) * di, 2.0 * p * q * di, -2.0 * p * di);
+    let vg = Vector3::new(2.0 * p * q * di, (p * p + 1.0 - q * q) * di, 2.0 * q * di);
+
+    let mean_longitude_rad =
+        mean_longitude_epoch_rad + (mean_longitude_rate_rad_s * dt_s) % core::f64::consts::TAU;
+    let eccentric_longitude_rad =
+        solve_equinoctial_kepler(mean_longitude_rad, h, k, current_eccentricity)?;
+    let (sin_eccentric_longitude, cos_eccentric_longitude) = eccentric_longitude_rad.sin_cos();
+
+    let x1 = semi_major_axis_km
+        * ((1.0 - beta * h * h) * cos_eccentric_longitude
+            + (h * k * beta * sin_eccentric_longitude - k));
+    let y1 = semi_major_axis_km
+        * ((1.0 - beta * k * k) * sin_eccentric_longitude
+            + (h * k * beta * cos_eccentric_longitude - h));
+    let rb = h * sin_eccentric_longitude + k * cos_eccentric_longitude;
+    let radius_km = semi_major_axis_km * (1.0 - rb);
+    if !radius_km.is_finite() || radius_km <= 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 17 radial distance is invalid",
+        });
+    }
+    let ra = mean_longitude_rate_rad_s * semi_major_axis_km * semi_major_axis_km / radius_km;
+    let dx1 = ra * (-sin_eccentric_longitude + h * beta * rb);
+    let dy1 = ra * (cos_eccentric_longitude - k * beta * rb);
+
+    let nfac = 1.0 - dlpdt_rad_s / mean_longitude_rate_rad_s;
+    let dx = nfac * dx1 - prate_rad_s * y1;
+    let dy = nfac * dy1 + prate_rad_s * x1;
+    let position_reference_km = vf * x1 + vg * y1;
+    let node_velocity_km_s = Vector3::new(
+        -node_rate_rad_s * position_reference_km.y,
+        node_rate_rad_s * position_reference_km.x,
+        0.0,
+    );
+    let velocity_reference_km_s = node_velocity_km_s + vf * dx + vg * dy;
+
+    let position_km = reference_plane_to_inertial(
+        position_reference_km,
+        pole_right_ascension_rad,
+        pole_declination_rad,
+    );
+    let velocity_km_s = reference_plane_to_inertial(
+        velocity_reference_km_s,
+        pole_right_ascension_rad,
+        pole_declination_rad,
+    );
+    finite_state_from_components(
+        [
+            position_km.x,
+            position_km.y,
+            position_km.z,
+            velocity_km_s.x,
+            velocity_km_s.y,
+            velocity_km_s.z,
+        ],
+        "SPK type 17 equinoctial propagation",
+    )
+}
+
+fn solve_equinoctial_kepler(
+    mean_longitude_rad: f64,
+    h: f64,
+    k: f64,
+    eccentricity: f64,
+) -> Result<f64, PhysicsError> {
+    if !mean_longitude_rad.is_finite()
+        || !h.is_finite()
+        || !k.is_finite()
+        || !eccentricity.is_finite()
+        || eccentricity >= 0.9
+    {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 17 Kepler inputs are invalid",
+        });
+    }
+    let evec_x = -h * mean_longitude_rad.cos() + k * mean_longitude_rad.sin();
+    let evec_y = h * mean_longitude_rad.sin() + k * mean_longitude_rad.cos();
+    let x_offset = solve_kepler_vector_form(evec_x, evec_y, eccentricity)?;
+    Ok(mean_longitude_rad + x_offset)
+}
+
+fn solve_kepler_vector_form(
+    evec_x: f64,
+    evec_y: f64,
+    eccentricity: f64,
+) -> Result<f64, PhysicsError> {
+    if !evec_x.is_finite()
+        || !evec_y.is_finite()
+        || !eccentricity.is_finite()
+        || eccentricity >= 1.0
+    {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 17 Kepler vector is invalid",
+        });
+    }
+    let y0 = -evec_x;
+    let mut midpoint = 0.0;
+    let (mut lower, mut upper) = if y0 > 0.0 {
+        (-eccentricity, 0.0)
+    } else if y0 < 0.0 {
+        (0.0, eccentricity)
+    } else {
+        return Ok(0.0);
+    };
+
+    let bisection_count = ((1.0 / (1.0 - eccentricity)).round() as usize).clamp(1, 32);
+    for _ in 0..bisection_count {
+        midpoint = (0.5 * (lower + upper)).clamp(lower, upper);
+        let y_midpoint = midpoint - evec_x * midpoint.cos() - evec_y * midpoint.sin();
+        if y_midpoint > 0.0 {
+            upper = midpoint;
+        } else {
+            lower = midpoint;
+        }
+    }
+
+    let mut x = midpoint;
+    for _ in 0..5 {
+        let (sin_x, cos_x) = x.sin_cos();
+        let y = x - evec_x * cos_x - evec_y * sin_x;
+        let y_prime = evec_x * sin_x + 1.0 - evec_y * cos_x;
+        if !y.is_finite() || !y_prime.is_finite() || y_prime == 0.0 {
+            return Err(PhysicsError::NonFinite {
+                reason: "SPK type 17 Kepler solve failed",
+            });
+        }
+        x -= y / y_prime;
+    }
+
+    if !x.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK type 17 Kepler solve produced non-finite value",
+        });
+    }
+    Ok(x)
+}
+
+fn reference_plane_to_inertial(v: Vector3<f64>, rapol_rad: f64, decpol_rad: f64) -> Vector3<f64> {
+    let (sin_ra, cos_ra) = rapol_rad.sin_cos();
+    let (sin_dec, cos_dec) = decpol_rad.sin_cos();
+    Vector3::new(
+        -sin_ra * v.x - cos_ra * sin_dec * v.y + cos_ra * cos_dec * v.z,
+        cos_ra * v.x - sin_ra * sin_dec * v.y + sin_ra * cos_dec * v.z,
+        cos_dec * v.y + sin_dec * v.z,
+    )
 }
 
 fn type14_chebyshev_state_from_packet(
@@ -2630,6 +3056,26 @@ mod tests {
     }
 
     #[test]
+    fn spk_ephemeris_reads_type1_modified_difference_state() {
+        let bytes = synthetic_type1_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(4.0))
+            .unwrap();
+        let expected = modified_difference_expected_state(4.0);
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(expected[0], expected[1], expected[2]) * 1_000.0,
+            1.0e-10,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(expected[3], expected[4], expected[5]) * 1_000.0,
+            1.0e-10,
+        );
+    }
+
+    #[test]
     fn spk_ephemeris_reads_type5_two_body_state() {
         let bytes = synthetic_type5_spk();
         let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
@@ -2688,6 +3134,26 @@ mod tests {
     #[test]
     fn spk_ephemeris_reads_type15_precessing_conic_state() {
         let bytes = synthetic_type15_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(5.0))
+            .unwrap();
+        let expected = type5_circular_state(5.0);
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(expected[0], expected[1], expected[2]) * 1_000.0,
+            1.0e-5,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(expected[3], expected[4], expected[5]) * 1_000.0,
+            1.0e-8,
+        );
+    }
+
+    #[test]
+    fn spk_ephemeris_reads_type17_equinoctial_state() {
+        let bytes = synthetic_type17_spk();
         let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
         let sun = ephemeris
             .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(5.0))
@@ -2772,6 +3238,31 @@ mod tests {
         let state = segment.state_km_s(0.0).unwrap();
         assert_eq!(state.position_km, Vector3::new(100.0, 0.0, 0.0));
         assert_eq!(state.velocity_km_s, Vector3::new(2.0, 3.0, 4.0));
+    }
+
+    #[test]
+    fn spk_type1_state_uses_modified_difference_record() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 1,
+            data: type1_modified_difference_segment(&[10.0]),
+        };
+        let state = segment.state_km_s(4.0).unwrap();
+        let expected = modified_difference_expected_state(4.0);
+        assert_vector_near(
+            state.position_km,
+            Vector3::new(expected[0], expected[1], expected[2]),
+            1.0e-10,
+        );
+        assert_vector_near(
+            state.velocity_km_s,
+            Vector3::new(expected[3], expected[4], expected[5]),
+            1.0e-10,
+        );
     }
 
     #[test]
@@ -2874,6 +3365,73 @@ mod tests {
             Vector3::new(-speed_km_s * sin_theta, speed_km_s * cos_theta, 0.0),
             1.0e-11,
         );
+    }
+
+    #[test]
+    fn spk_type17_state_uses_equinoctial_elements() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 17,
+            data: type17_circular_segment(),
+        };
+        let state = segment.state_km_s(5.0).unwrap();
+        let expected = type5_circular_state(5.0);
+        assert_vector_near(
+            state.position_km,
+            Vector3::new(expected[0], expected[1], expected[2]),
+            1.0e-8,
+        );
+        assert_vector_near(
+            state.velocity_km_s,
+            Vector3::new(expected[3], expected[4], expected[5]),
+            1.0e-11,
+        );
+    }
+
+    #[test]
+    fn spk_type17_state_solves_eccentric_equinoctial_kepler_equation() {
+        let eccentricity = 0.1;
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 17,
+            data: type17_eccentric_segment(eccentricity),
+        };
+        let state = segment.state_km_s(5.0).unwrap();
+        let expected = type17_eccentric_state(5.0, eccentricity);
+        assert_vector_near(
+            state.position_km,
+            Vector3::new(expected[0], expected[1], expected[2]),
+            1.0e-8,
+        );
+        assert_vector_near(
+            state.velocity_km_s,
+            Vector3::new(expected[3], expected[4], expected[5]),
+            1.0e-11,
+        );
+    }
+
+    #[test]
+    fn spk_type17_rejects_high_eccentricity() {
+        let mut data = type17_circular_segment();
+        data[2] = 0.9;
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 17,
+            data,
+        };
+        assert!(segment.state_km_s(5.0).is_err());
     }
 
     #[test]
@@ -3058,6 +3616,31 @@ mod tests {
     }
 
     #[test]
+    fn spk_type21_state_uses_extended_modified_difference_record() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 21,
+            data: type21_modified_difference_segment(&[10.0]),
+        };
+        let state = segment.state_km_s(4.0).unwrap();
+        let expected = modified_difference_expected_state(4.0);
+        assert_vector_near(
+            state.position_km,
+            Vector3::new(expected[0], expected[1], expected[2]),
+            1.0e-10,
+        );
+        assert_vector_near(
+            state.velocity_km_s,
+            Vector3::new(expected[3], expected[4], expected[5]),
+            1.0e-10,
+        );
+    }
+
+    #[test]
     fn spk_ephemeris_reads_type20_velocity_chebyshev_state() {
         let bytes = synthetic_type20_spk();
         let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
@@ -3073,6 +3656,26 @@ mod tests {
             sun.velocity_eci_m_s,
             Vector3::new(0.0, 29_780.0, 0.0),
             1.0e-8,
+        );
+    }
+
+    #[test]
+    fn spk_ephemeris_reads_type21_extended_modified_difference_state() {
+        let bytes = synthetic_type21_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(4.0))
+            .unwrap();
+        let expected = modified_difference_expected_state(4.0);
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(expected[0], expected[1], expected[2]) * 1_000.0,
+            1.0e-10,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(expected[3], expected[4], expected[5]) * 1_000.0,
+            1.0e-10,
         );
     }
 
@@ -3238,6 +3841,33 @@ mod tests {
         synthetic_spk_from_segments(&segments)
     }
 
+    fn synthetic_type1_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 1,
+                data: type1_modified_difference_segment(&[10.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
     fn synthetic_type5_spk() -> Vec<u8> {
         let segments = [
             SyntheticSegment {
@@ -3373,6 +4003,33 @@ mod tests {
         synthetic_spk_from_segments(&segments)
     }
 
+    fn synthetic_type17_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 17,
+                data: type17_circular_segment(),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
     fn synthetic_type18_spk() -> Vec<u8> {
         let segments = [
             SyntheticSegment {
@@ -3488,6 +4145,33 @@ mod tests {
         synthetic_spk_from_segments(&segments)
     }
 
+    fn synthetic_type21_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 21,
+                data: type21_modified_difference_segment(&[10.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
     fn synthetic_spk_from_segments(segments: &[SyntheticSegment]) -> Vec<u8> {
         let record_count = 4 + segments.len();
         let mut bytes = vec![0_u8; record_count * DAF_RECORD_BYTES];
@@ -3566,6 +4250,62 @@ mod tests {
             20.0,
             8.0,
             1.0,
+        ]
+    }
+
+    fn type1_modified_difference_segment(epochs: &[f64]) -> Vec<f64> {
+        const MAXDIM: usize = 15;
+        let mut data = Vec::new();
+        for _ in epochs {
+            data.extend_from_slice(&modified_difference_record(MAXDIM));
+        }
+        data.extend_from_slice(epochs);
+        append_spk_modified_difference_directory(&mut data, epochs);
+        data.push(epochs.len() as f64);
+        data
+    }
+
+    fn type21_modified_difference_segment(epochs: &[f64]) -> Vec<f64> {
+        const MAXDIM: usize = 4;
+        let mut data = Vec::new();
+        for _ in epochs {
+            data.extend_from_slice(&modified_difference_record(MAXDIM));
+        }
+        data.extend_from_slice(epochs);
+        append_spk_modified_difference_directory(&mut data, epochs);
+        data.push(MAXDIM as f64);
+        data.push(epochs.len() as f64);
+        data
+    }
+
+    fn modified_difference_record(maxdim: usize) -> Vec<f64> {
+        let mut data = Vec::new();
+        data.push(0.0);
+        data.push(1.0);
+        data.extend(std::iter::repeat_n(0.0, maxdim - 1));
+        data.extend_from_slice(&[100.0, 10.0, 20.0, 2.0, -10.0, -1.0]);
+        for acceleration in [0.5, -0.25, 0.1] {
+            data.push(acceleration);
+            data.extend(std::iter::repeat_n(0.0, maxdim - 1));
+        }
+        data.extend_from_slice(&[3.0, 1.0, 1.0, 1.0]);
+        data
+    }
+
+    fn modified_difference_expected_state(epoch_s: f64) -> [f64; 6] {
+        let position = Vector3::new(100.0, 20.0, -10.0);
+        let velocity = Vector3::new(10.0, 2.0, -1.0);
+        let acceleration = Vector3::new(0.5, -0.25, 0.1);
+        let expected_position =
+            position + velocity * epoch_s + acceleration * (0.5 * epoch_s.powi(2));
+        let expected_velocity = velocity + acceleration * epoch_s;
+        [
+            expected_position.x,
+            expected_position.y,
+            expected_position.z,
+            expected_velocity.x,
+            expected_velocity.y,
+            expected_velocity.z,
         ]
     }
 
@@ -3708,6 +4448,52 @@ mod tests {
             TYPE5_TEST_GM_KM3_S2,
             j2,
             TYPE15_TEST_CENTRAL_RADIUS_KM,
+        ]
+    }
+
+    fn type17_circular_segment() -> Vec<f64> {
+        vec![
+            0.0,
+            TYPE5_TEST_RADIUS_KM,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            (TYPE5_TEST_GM_KM3_S2 / TYPE5_TEST_RADIUS_KM.powi(3)).sqrt(),
+            0.0,
+            -core::f64::consts::FRAC_PI_2,
+            core::f64::consts::FRAC_PI_2,
+        ]
+    }
+
+    fn type17_eccentric_segment(eccentricity: f64) -> Vec<f64> {
+        let mut data = type17_circular_segment();
+        data[3] = eccentricity;
+        data
+    }
+
+    fn type17_eccentric_state(epoch_s: f64, eccentricity: f64) -> [f64; 6] {
+        let mean_motion_rad_s = (TYPE5_TEST_GM_KM3_S2 / TYPE5_TEST_RADIUS_KM.powi(3)).sqrt();
+        let mean_anomaly_rad = mean_motion_rad_s * epoch_s;
+        let mut eccentric_anomaly_rad = mean_anomaly_rad;
+        for _ in 0..16 {
+            let (sin_e, cos_e) = eccentric_anomaly_rad.sin_cos();
+            eccentric_anomaly_rad -=
+                (eccentric_anomaly_rad - eccentricity * sin_e - mean_anomaly_rad)
+                    / (1.0 - eccentricity * cos_e);
+        }
+        let (sin_e, cos_e) = eccentric_anomaly_rad.sin_cos();
+        let one_minus_e_cos = 1.0 - eccentricity * cos_e;
+        let one_minus_e2_sqrt = (1.0 - eccentricity * eccentricity).sqrt();
+        [
+            TYPE5_TEST_RADIUS_KM * (cos_e - eccentricity),
+            TYPE5_TEST_RADIUS_KM * one_minus_e2_sqrt * sin_e,
+            0.0,
+            -TYPE5_TEST_RADIUS_KM * mean_motion_rad_s * sin_e / one_minus_e_cos,
+            TYPE5_TEST_RADIUS_KM * mean_motion_rad_s * one_minus_e2_sqrt * cos_e / one_minus_e_cos,
+            0.0,
         ]
     }
 
@@ -3867,6 +4653,12 @@ mod tests {
     }
 
     fn append_spk_type5_epoch_directory(data: &mut Vec<f64>, epochs: &[f64]) {
+        for one_based_index in (100..=epochs.len()).step_by(100) {
+            data.push(epochs[one_based_index - 1]);
+        }
+    }
+
+    fn append_spk_modified_difference_directory(data: &mut Vec<f64>, epochs: &[f64]) {
         for one_based_index in (100..=epochs.len()).step_by(100) {
             data.push(epochs[one_based_index - 1]);
         }
