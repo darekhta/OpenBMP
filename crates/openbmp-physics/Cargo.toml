@@ -18,6 +18,7 @@ synthetic = []
 [dependencies]
 nalgebra          = { workspace = true }
 openbmp-core      = { workspace = true }
+sgp4              = { workspace = true }
 static_assertions = { workspace = true }
 thiserror         = { workspace = true }
 

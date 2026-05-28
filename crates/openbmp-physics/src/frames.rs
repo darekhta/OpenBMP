@@ -21,7 +21,7 @@
 //! Determinism: pure `f64` arithmetic with locked operand order; no
 //! FMA, no wall-clock time, no system RNG.
 
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 use openbmp_core::{Ecef, Eci, Frame as CoreFrame, FrameError, Ned, Position3, SimTime, Velocity3};
 
 // ---------------------------------------------------------------------
@@ -76,6 +76,7 @@ const J2000_JULIAN_DATE: f64 = 2_451_545.0;
 const JULIAN_CENTURY_DAYS: f64 = 36_525.0;
 const TWO_PI: f64 = 2.0 * std::f64::consts::PI;
 const TENTH_MILLIARCSECOND_TO_RAD: f64 = ARCSECOND_TO_RAD / 10_000.0;
+const FRAME_RATE_STEP_S: f64 = 1.0;
 
 /// Radians per arcsecond.
 pub const ARCSECOND_TO_RAD: f64 = std::f64::consts::PI / (180.0 * 3_600.0);
@@ -482,20 +483,14 @@ impl FrameContext {
     /// returns `p_eci` reinterpreted as ECEF.
     #[must_use]
     pub fn eci_to_ecef_position(&self, t: SimTime, p_eci: Position3<Eci>) -> Position3<Ecef> {
-        let theta = self.earth_rotation_angle(t);
-        let true_of_date = self.eci_to_true_of_date_vector(t, p_eci.vector);
-        let tirs = rotate_z(true_of_date, -theta);
-        Position3::from_vector(self.tirs_to_ecef_vector(t, tirs))
+        Position3::from_vector(self.eci_to_ecef_vector(t, p_eci.vector))
     }
 
     /// Transform an ECEF position to ECI at simulation time `t`.
     /// Inverse of [`Self::eci_to_ecef_position`].
     #[must_use]
     pub fn ecef_to_eci_position(&self, t: SimTime, p_ecef: Position3<Ecef>) -> Position3<Eci> {
-        let theta = self.earth_rotation_angle(t);
-        let tirs = self.ecef_to_tirs_vector(t, p_ecef.vector);
-        let true_of_date = rotate_z(tirs, theta);
-        Position3::from_vector(self.true_of_date_to_eci_vector(t, true_of_date))
+        Position3::from_vector(self.ecef_to_eci_vector(t, p_ecef.vector))
     }
 
     /// Transform an ECI velocity to ECEF velocity at simulation time
@@ -511,6 +506,11 @@ impl FrameContext {
         v_eci: Velocity3<Eci>,
         p_eci: Position3<Eci>,
     ) -> Velocity3<Ecef> {
+        if self.profile == FrameProfile::IersTabulated {
+            let rotation = self.eci_to_ecef_rotation_matrix(t);
+            let rotation_rate = self.eci_to_ecef_rotation_rate_matrix(t);
+            return Velocity3::from_vector(rotation * v_eci.vector + rotation_rate * p_eci.vector);
+        }
         let omega = self.angular_velocity_z();
         let r = self.eci_to_true_of_date_vector(t, p_eci.vector);
         let v = self.eci_to_true_of_date_vector(t, v_eci.vector);
@@ -535,6 +535,14 @@ impl FrameContext {
         v_ecef: Velocity3<Ecef>,
         p_ecef: Position3<Ecef>,
     ) -> Velocity3<Eci> {
+        if self.profile == FrameProfile::IersTabulated {
+            let ecef_to_eci = self.ecef_to_eci_rotation_matrix(t);
+            let r_eci = ecef_to_eci * p_ecef.vector;
+            let eci_to_ecef_rate = self.eci_to_ecef_rotation_rate_matrix(t);
+            return Velocity3::from_vector(
+                ecef_to_eci * (v_ecef.vector - eci_to_ecef_rate * r_eci),
+            );
+        }
         // Rotate the ECEF velocity into true-of-date inertial
         // orientation, add the transport rate there, then rotate back
         // to the scenario ECI axes.
@@ -570,6 +578,51 @@ impl FrameContext {
             },
             |iers| iers.earth_orientation.sample(t),
         )
+    }
+
+    fn eci_to_ecef_vector(&self, t: SimTime, v_eci: Vector3<f64>) -> Vector3<f64> {
+        let theta = self.earth_rotation_angle(t);
+        let true_of_date = self.eci_to_true_of_date_vector(t, v_eci);
+        let tirs = rotate_z(true_of_date, -theta);
+        self.tirs_to_ecef_vector(t, tirs)
+    }
+
+    fn ecef_to_eci_vector(&self, t: SimTime, v_ecef: Vector3<f64>) -> Vector3<f64> {
+        let theta = self.earth_rotation_angle(t);
+        let tirs = self.ecef_to_tirs_vector(t, v_ecef);
+        let true_of_date = rotate_z(tirs, theta);
+        self.true_of_date_to_eci_vector(t, true_of_date)
+    }
+
+    fn eci_to_ecef_rotation_matrix(&self, t: SimTime) -> Matrix3<f64> {
+        Matrix3::from_columns(&[
+            self.eci_to_ecef_vector(t, Vector3::new(1.0, 0.0, 0.0)),
+            self.eci_to_ecef_vector(t, Vector3::new(0.0, 1.0, 0.0)),
+            self.eci_to_ecef_vector(t, Vector3::new(0.0, 0.0, 1.0)),
+        ])
+    }
+
+    fn ecef_to_eci_rotation_matrix(&self, t: SimTime) -> Matrix3<f64> {
+        Matrix3::from_columns(&[
+            self.ecef_to_eci_vector(t, Vector3::new(1.0, 0.0, 0.0)),
+            self.ecef_to_eci_vector(t, Vector3::new(0.0, 1.0, 0.0)),
+            self.ecef_to_eci_vector(t, Vector3::new(0.0, 0.0, 1.0)),
+        ])
+    }
+
+    fn eci_to_ecef_rotation_rate_matrix(&self, t: SimTime) -> Matrix3<f64> {
+        self.rotation_rate_matrix(t, Self::eci_to_ecef_rotation_matrix)
+    }
+
+    fn rotation_rate_matrix(
+        &self,
+        t: SimTime,
+        rotation: fn(&Self, SimTime) -> Matrix3<f64>,
+    ) -> Matrix3<f64> {
+        let time_s = t.as_seconds();
+        let before = rotation(self, SimTime::from_seconds(time_s - FRAME_RATE_STEP_S));
+        let after = rotation(self, SimTime::from_seconds(time_s + FRAME_RATE_STEP_S));
+        (after - before) * (0.5 / FRAME_RATE_STEP_S)
     }
 
     fn tirs_to_ecef_vector(&self, t: SimTime, v_tirs: Vector3<f64>) -> Vector3<f64> {
@@ -742,7 +795,11 @@ fn precess_j2000_to_mean_of_date_vector(julian_date: f64, v: Vector3<f64>) -> Ve
     rotate_z(rotate_y(rotate_z(v, zeta), -theta), z)
 }
 
-fn precess_mean_of_date_to_j2000_vector(julian_date: f64, v: Vector3<f64>) -> Vector3<f64> {
+/// Rotate a vector from mean equator/equinox of date to J2000.
+pub(crate) fn precess_mean_of_date_to_j2000_vector(
+    julian_date: f64,
+    v: Vector3<f64>,
+) -> Vector3<f64> {
     if !julian_date.is_finite() {
         return v;
     }
@@ -831,7 +888,11 @@ fn nutate_mean_of_date_to_true_of_date_vector(julian_date: f64, v: Vector3<f64>)
     rotate_x(rotate_z(rotate_x(v, -eps), dpsi), eps + deps)
 }
 
-fn nutate_true_of_date_to_mean_of_date_vector(julian_date: f64, v: Vector3<f64>) -> Vector3<f64> {
+/// Rotate a vector from true equator/equinox of date to mean equator/equinox of date.
+pub(crate) fn nutate_true_of_date_to_mean_of_date_vector(
+    julian_date: f64,
+    v: Vector3<f64>,
+) -> Vector3<f64> {
     if !julian_date.is_finite() {
         return v;
     }
@@ -2548,6 +2609,57 @@ mod tests {
             assert_abs_diff_eq!(v_back.vector.x, v_eci.vector.x, epsilon = 1.0e-9);
             assert_abs_diff_eq!(v_back.vector.y, v_eci.vector.y, epsilon = 1.0e-9);
             assert_abs_diff_eq!(v_back.vector.z, v_eci.vector.z, epsilon = 1.0e-9);
+        }
+
+        #[test]
+        fn iers_velocity_includes_celestial_frame_rate() {
+            let constant_eop = EarthOrientationTable::new(vec![
+                EarthOrientationSample::new(0.0, 0.0, 0.0, 0.0).unwrap(),
+                EarthOrientationSample::new(10.0, 0.0, 0.0, 0.0).unwrap(),
+            ])
+            .unwrap();
+            let epoch_2050 = 2_451_545.0 + 0.5 * 36_525.0;
+            let ctx = FrameContext::iers_tabulated(epoch_2050, None, constant_eop).unwrap();
+            let t = SimTime::from_seconds(5.0);
+            let p_eci: Position3<Eci> = Position3::new(42_000_000.0, -7_000_000.0, 3_000_000.0);
+            let transported = ctx.eci_to_ecef_velocity(t, Velocity3::new(0.0, 0.0, 0.0), p_eci);
+
+            let before = ctx
+                .eci_to_ecef_position(SimTime::from_seconds(4.0), p_eci)
+                .vector;
+            let after = ctx
+                .eci_to_ecef_position(SimTime::from_seconds(6.0), p_eci)
+                .vector;
+            let numerical_derivative = (after - before) * 0.5;
+            assert_abs_diff_eq!(
+                transported.vector.x,
+                numerical_derivative.x,
+                epsilon = 1.0e-9
+            );
+            assert_abs_diff_eq!(
+                transported.vector.y,
+                numerical_derivative.y,
+                epsilon = 1.0e-9
+            );
+            assert_abs_diff_eq!(
+                transported.vector.z,
+                numerical_derivative.z,
+                epsilon = 1.0e-9
+            );
+
+            let theta = ctx.earth_rotation_angle(t);
+            let r_true_of_date = ctx.eci_to_true_of_date_vector(t, p_eci.vector);
+            let earth_spin_transport = Vector3::new(
+                -EARTH_ROTATION_ANGLE_RATE_RAD_S * r_true_of_date.y,
+                EARTH_ROTATION_ANGLE_RATE_RAD_S * r_true_of_date.x,
+                0.0,
+            );
+            let earth_spin_only =
+                ctx.tirs_to_ecef_vector(t, rotate_z(-earth_spin_transport, -theta));
+            assert!(
+                (transported.vector - earth_spin_only).norm() > 1.0e-5,
+                "precession/nutation frame rate should be measurable at GEO scale"
+            );
         }
 
         #[test]

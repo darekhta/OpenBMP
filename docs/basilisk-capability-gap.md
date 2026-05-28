@@ -63,6 +63,10 @@ OpenBMP implementation slice.
   geometric position/velocity segments, extending the parser beyond
   Chebyshev-only planetary kernels toward mission-spacecraft SPK
   shapes.
+- Added SPK type 10 TLE/SGP4 segments, including fixed-packet generic
+  segment parsing, NAIF-style closest-epoch packet selection and cosine
+  blending, and TEME-to-J2000 state rotation through the compact
+  IAU 1976/1980 frame helpers.
 - Added SPK type 8 equal-time Lagrange and type 12/13 Hermite state
   interpolation, covering the fixed-record discrete-state segment
   family commonly used for mission kernels before the remaining generic
@@ -107,10 +111,11 @@ OpenBMP implementation slice.
   binary SPK/BSP kernels. It does not yet implement light-time
   correction, stellar aberration, generic text kernels beyond NAIF LSK
   leap-second files, non-J2000 frame transforms beyond built-in
-  `ECLIPJ2000`, or the remaining SPK TLE segment type.
+  `ECLIPJ2000`, or a full SPICE frame-kernel chain.
 - The IERS path is intentionally compact: it does not yet implement a
-  full SPICE frame chain, IAU 2006/2000A CIO-based transforms, or
-  precession/nutation rate terms in velocity transport.
+  full SPICE frame chain or IAU 2006/2000A CIO-based transforms.
+  Velocity transport now includes the finite-difference rate of the full
+  compact J2000-to-ECEF orientation chain.
 - Multi-body OpenBMP propagation is still independent-lane rigid-body
   propagation after deployment. Relative-distance triggers can observe
   lane geometry, but Basilisk's message-passing architecture supports

@@ -54,6 +54,7 @@ uom         = { version = "0.38.0", default-features = false, features = ["f64",
 approx      = { version = "0.5.1",  default-features = false }
 ndarray     = { version = "0.17.2", default-features = false }
 clarabel    = { version = "0.9", default-features = false, features = ["serde"] }
+sgp4        = { version = "2.4.0", default-features = false, features = ["std"] }
 
 # --- Determinism
 rand        = { version = "0.10.1",  default-features = false, features = ["std", "std_rng"] }

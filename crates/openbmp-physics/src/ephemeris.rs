@@ -5,10 +5,13 @@
 //! approximation, and a small SPK/BSP byte parser for runner-supplied
 //! pinned JPL DE and mission kernels.
 
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 use openbmp_core::SimTime;
 
 use crate::error::PhysicsError;
+use crate::frames::{
+    nutate_true_of_date_to_mean_of_date_vector, precess_mean_of_date_to_j2000_vector,
+};
 
 /// Astronomical unit in metres (IAU 2012 exact definition).
 pub const ASTRONOMICAL_UNIT_M: f64 = 149_597_870_700.0;
@@ -28,6 +31,7 @@ pub const MOON_MU_M3_S2: f64 = 4.904_869_5e12;
 pub const J2000_JULIAN_DATE: f64 = 2_451_545.0;
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
+const JULIAN_YEAR_DAYS: f64 = 365.25;
 const METRES_PER_KILOMETRE: f64 = 1_000.0;
 const DAF_RECORD_BYTES: usize = 1_024;
 const SPK_ND: i32 = 2;
@@ -41,6 +45,10 @@ const NAIF_EARTH: i32 = 399;
 const NAIF_MOON: i32 = 301;
 const NAIF_SUN: i32 = 10;
 const J2000_ECLIPTIC_OBLIQUITY_RAD: f64 = 84_381.448 * DEG_TO_RAD / 3_600.0;
+const SPK_TYPE10_GEOPHYSICAL_CONSTANTS: usize = 8;
+const SPK_TYPE10_CURRENT_PACKET_SIZE: usize = 14;
+const SPK_TYPE10_LEGACY_PACKET_SIZE: usize = 10;
+const TEME_ROTATION_RATE_STEP_S: f64 = 1.0;
 
 const DEG_TO_RAD: f64 = core::f64::consts::PI / 180.0;
 
@@ -236,10 +244,11 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 /// (equal/unequal-time Lagrange state interpolation), type 12/13
 /// (equal/unequal-time Hermite state interpolation), type 14 (generic
 /// non-uniform Chebyshev position and velocity), type 15 (precessing
-/// conic propagation), type 17 (equinoctial elements), type 18
-/// (ESOC/DDID Hermite/Lagrange interpolation), type 19 (ESOC/DDID
-/// piecewise interpolation), type 20 (Chebyshev velocity), and type 21
-/// (extended modified difference arrays) segments in the J2000 inertial
+/// conic propagation), type 17 (equinoctial elements), type 10
+/// (TLE/SGP4), type 18 (ESOC/DDID Hermite/Lagrange interpolation),
+/// type 19 (ESOC/DDID piecewise interpolation), type 20 (Chebyshev
+/// velocity), and type 21 (extended modified difference arrays)
+/// segments in the J2000 inertial
 /// frame. It also accepts the
 /// built-in SPICE
 /// `ECLIPJ2000` inertial frame and rotates those segment states into
@@ -258,7 +267,7 @@ impl SpkEphemeris {
     /// # Errors
     ///
     /// Returns [`PhysicsError`] when the bytes are not a supported
-    /// DAF/SPK file or no supported type 1/2/3/5/8/9/12/13/14/15/17/18/19/20/21 J2000
+    /// DAF/SPK file or no supported type 1/2/3/5/8/9/10/12/13/14/15/17/18/19/20/21 J2000
     /// segments are found.
     pub fn from_bytes(epoch_tdb_julian_date: f64, bytes: &[u8]) -> Result<Self, PhysicsError> {
         Self::from_kernels(epoch_tdb_julian_date, [bytes])
@@ -274,7 +283,7 @@ impl SpkEphemeris {
     ///
     /// Returns [`PhysicsError`] when any byte slice is not a supported
     /// DAF/SPK file, no kernels are supplied, or no supported type
-    /// 1/2/3/5/8/9/12/13/14/15/17/18/19/20/21 J2000 segments are found across all kernels.
+    /// 1/2/3/5/8/9/10/12/13/14/15/17/18/19/20/21 J2000 segments are found across all kernels.
     pub fn from_kernels<'a, I>(epoch_tdb_julian_date: f64, kernels: I) -> Result<Self, PhysicsError>
     where
         I: IntoIterator<Item = &'a [u8]>,
@@ -298,7 +307,7 @@ impl SpkEphemeris {
         }
         if segments.is_empty() {
             return Err(PhysicsError::InvalidParameter {
-                reason: "SPK kernel contains no supported type 1/2/3/5/8/9/12/13/14/15/17/18/19/20/21 J2000 segments",
+                reason: "SPK kernel contains no supported type 1/2/3/5/8/9/10/12/13/14/15/17/18/19/20/21 J2000 segments",
             });
         }
         Ok(Self {
@@ -484,6 +493,13 @@ struct ModifiedDifferenceRecord<'a> {
     record: &'a [f64],
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct Type10TleRecord {
+    constants: [f64; SPK_TYPE10_GEOPHYSICAL_CONSTANTS],
+    first_packet: [f64; SPK_TYPE10_LEGACY_PACKET_SIZE],
+    second_packet: [f64; SPK_TYPE10_LEGACY_PACKET_SIZE],
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct GenericSegmentMetadata {
     conbas: usize,
@@ -608,6 +624,7 @@ impl SpkSegment {
             5 => self.two_body_discrete_state_km_s(et_s),
             8 => self.equal_step_lagrange_state_km_s(et_s),
             9 => self.unequal_step_lagrange_state_km_s(et_s),
+            10 => self.tle_state_km_s(et_s),
             12 => self.equal_step_hermite_state_km_s(et_s),
             13 => self.unequal_step_hermite_state_km_s(et_s),
             14 => self.generic_chebyshev_state_km_s(et_s),
@@ -1078,6 +1095,99 @@ impl SpkSegment {
         type14_chebyshev_state_from_packet(packet, ncoeff, et_s)
     }
 
+    fn tle_record(&self, et_s: f64) -> Result<Type10TleRecord, PhysicsError> {
+        let metadata = GenericSegmentMetadata::from_data(&self.data)?;
+        if metadata.ncon != SPK_TYPE10_GEOPHYSICAL_CONSTANTS
+            || metadata.rdrtyp != 4
+            || metadata.pdrtyp != 0
+            || metadata.npdr != 0
+            || metadata.nref != metadata.npkt
+            || metadata.npkt == 0
+            || metadata.pktoff != 1
+            || !matches!(
+                metadata.pktsz,
+                SPK_TYPE10_CURRENT_PACKET_SIZE | SPK_TYPE10_LEGACY_PACKET_SIZE
+            )
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "unsupported SPK type 10 generic segment layout",
+            });
+        }
+        let expected_reference_directory_count = (metadata.nref - 1) / 100;
+        if metadata.nrdr != expected_reference_directory_count || metadata.nrsv != 0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 10 generic segment directory is invalid",
+            });
+        }
+        let constants_range = metadata.partition_range(
+            metadata.conbas,
+            metadata.ncon,
+            self.data.len(),
+            "SPK type 10 constants are outside the segment",
+        )?;
+        let packet_record_size =
+            metadata
+                .pktsz
+                .checked_add(metadata.pktoff)
+                .ok_or(PhysicsError::InvalidParameter {
+                    reason: "SPK type 10 packet record size overflow",
+                })?;
+        metadata.partition_range(
+            metadata.pktbas,
+            metadata.npkt.checked_mul(packet_record_size).ok_or(
+                PhysicsError::InvalidParameter {
+                    reason: "SPK type 10 packet partition size overflow",
+                },
+            )?,
+            self.data.len(),
+            "SPK type 10 packets are outside the segment",
+        )?;
+        let references_range = metadata.partition_range(
+            metadata.refbas,
+            metadata.nref,
+            self.data.len(),
+            "SPK type 10 reference epochs are outside the segment",
+        )?;
+        metadata.partition_range(
+            metadata.rdrbas,
+            metadata.nrdr,
+            self.data.len(),
+            "SPK type 10 reference directory is outside the segment",
+        )?;
+        metadata.partition_range(
+            metadata.pdrbas,
+            metadata.npdr,
+            self.data.len(),
+            "SPK type 10 packet directory is outside the segment",
+        )?;
+        metadata.partition_range(
+            metadata.rsvbas,
+            metadata.nrsv,
+            self.data.len(),
+            "SPK type 10 reserved partition is outside the segment",
+        )?;
+
+        let epochs = &self.data[references_range];
+        validate_strictly_increasing_epochs(epochs, "SPK type 10 reference epochs are invalid")?;
+        let nearest = closest_type10_reference_epoch_index(epochs, et_s);
+        let (first_index, second_index) = if et_s <= epochs[nearest] {
+            (nearest.saturating_sub(1), nearest)
+        } else {
+            (nearest, (nearest + 1).min(metadata.npkt - 1))
+        };
+
+        Ok(Type10TleRecord {
+            constants: slice_to_array(&self.data[constants_range], "SPK type 10 constants")?,
+            first_packet: type10_packet(&self.data, &metadata, first_index)?,
+            second_packet: type10_packet(&self.data, &metadata, second_index)?,
+        })
+    }
+
+    fn tle_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        let record = self.tle_record(et_s)?;
+        type10_tle_state_from_record(&record, et_s)
+    }
+
     fn precessing_conic_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
         if self.data.len() != 16 {
             return Err(PhysicsError::InvalidParameter {
@@ -1456,11 +1566,7 @@ impl<'a> DafView<'a> {
                 let summary_offset =
                     record_offset + (SPK_SUMMARY_CONTROL_WORDS + index * SPK_SUMMARY_WORDS) * 8;
                 let descriptor = self.spk_descriptor(summary_offset)?;
-                if supported_spk_inertial_frame(descriptor.frame)
-                    && matches!(
-                        descriptor.data_type,
-                        1 | 2 | 3 | 5 | 8 | 9 | 12 | 13 | 14 | 15 | 17 | 18 | 19 | 20 | 21
-                    )
+                if descriptor_supported(descriptor)
                     && let Some(segment) = self.segment_from_descriptor(descriptor)?
                 {
                     segments.push(segment);
@@ -1625,6 +1731,16 @@ fn low_precision_moon_eci_m(days_since_j2000: f64) -> Vector3<f64> {
 
 fn supported_spk_inertial_frame(frame: i32) -> bool {
     matches!(frame, SPK_J2000_FRAME_ID | SPK_ECLIPJ2000_FRAME_ID)
+}
+
+fn descriptor_supported(descriptor: SpkDescriptor) -> bool {
+    match descriptor.data_type {
+        10 => descriptor.frame == SPK_J2000_FRAME_ID,
+        1 | 2 | 3 | 5 | 8 | 9 | 12 | 13 | 14 | 15 | 17 | 18 | 19 | 20 | 21 => {
+            supported_spk_inertial_frame(descriptor.frame)
+        }
+        _ => false,
+    }
 }
 
 fn spk_frame_state_to_j2000_km_s(
@@ -2448,6 +2564,216 @@ fn reference_plane_to_inertial(v: Vector3<f64>, rapol_rad: f64, decpol_rad: f64)
     )
 }
 
+fn closest_type10_reference_epoch_index(epochs: &[f64], et_s: f64) -> usize {
+    let upper = epochs.partition_point(|epoch| *epoch < et_s);
+    if upper == 0 {
+        return 0;
+    }
+    if upper >= epochs.len() {
+        return epochs.len() - 1;
+    }
+    let before = epochs[upper - 1];
+    let after = epochs[upper];
+    if et_s - before < after - et_s {
+        upper - 1
+    } else {
+        upper
+    }
+}
+
+fn type10_packet(
+    data: &[f64],
+    metadata: &GenericSegmentMetadata,
+    packet_index: usize,
+) -> Result<[f64; SPK_TYPE10_LEGACY_PACKET_SIZE], PhysicsError> {
+    let packet_record_size =
+        metadata
+            .pktsz
+            .checked_add(metadata.pktoff)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK type 10 packet record size overflow",
+            })?;
+    let packet_start = metadata
+        .pktbas
+        .checked_add(packet_index.checked_mul(packet_record_size).ok_or(
+            PhysicsError::InvalidParameter {
+                reason: "SPK type 10 packet address overflow",
+            },
+        )?)
+        .and_then(|start| start.checked_add(metadata.pktoff))
+        .ok_or(PhysicsError::InvalidParameter {
+            reason: "SPK type 10 packet address overflow",
+        })?;
+    let packet = data
+        .get(packet_start..packet_start + metadata.pktsz)
+        .ok_or(PhysicsError::InvalidParameter {
+            reason: "SPK type 10 packet is outside the segment",
+        })?;
+    slice_to_array(
+        &packet[..SPK_TYPE10_LEGACY_PACKET_SIZE],
+        "SPK type 10 TLE packet",
+    )
+}
+
+fn type10_tle_state_from_record(
+    record: &Type10TleRecord,
+    et_s: f64,
+) -> Result<SpkStateKmS, PhysicsError> {
+    let first_epoch_s = record.first_packet[9];
+    let second_epoch_s = record.second_packet[9];
+    let first_state =
+        type10_tle_packet_state_teme_km_s(&record.constants, &record.first_packet, et_s)?;
+    let denominator_s = second_epoch_s - first_epoch_s;
+    let teme_state = if denominator_s.abs() <= f64::EPSILON {
+        first_state
+    } else {
+        let second_state =
+            type10_tle_packet_state_teme_km_s(&record.constants, &record.second_packet, et_s)?;
+        if !first_epoch_s.is_finite() || !second_epoch_s.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 10 packet epochs are invalid",
+            });
+        }
+        if !denominator_s.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 10 packet epochs are invalid",
+            });
+        }
+        let argument = core::f64::consts::PI * (et_s - first_epoch_s) / denominator_s;
+        let weight = 0.5 + 0.5 * argument.cos();
+        let weight_dot_s = -0.5 * argument.sin() * core::f64::consts::PI / denominator_s;
+        SpkStateKmS {
+            position_km: first_state.position_km * weight
+                + second_state.position_km * (1.0 - weight),
+            velocity_km_s: first_state.velocity_km_s * weight
+                + second_state.velocity_km_s * (1.0 - weight)
+                + (first_state.position_km - second_state.position_km) * weight_dot_s,
+        }
+    };
+    teme_to_j2000_state_km_s(et_s, teme_state)
+}
+
+fn type10_tle_packet_state_teme_km_s(
+    constants: &[f64; SPK_TYPE10_GEOPHYSICAL_CONSTANTS],
+    packet: &[f64; SPK_TYPE10_LEGACY_PACKET_SIZE],
+    et_s: f64,
+) -> Result<SpkStateKmS, PhysicsError> {
+    if !constants.iter().all(|value| value.is_finite())
+        || !packet.iter().all(|value| value.is_finite())
+    {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 10 TLE data must be finite",
+        });
+    }
+    let geopotential = sgp4::Geopotential {
+        j2: constants[0],
+        j3: constants[1],
+        j4: constants[2],
+        ke: constants[3],
+        ae: constants[6],
+    };
+    if geopotential.j2 <= 0.0 || geopotential.ke <= 0.0 || geopotential.ae <= 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 10 geophysical constants are invalid",
+        });
+    }
+    let orbit = sgp4::Orbit::from_kozai_elements(
+        &geopotential,
+        packet[3],
+        packet[4],
+        packet[5],
+        packet[6],
+        packet[7],
+        packet[8],
+    )
+    .map_err(|_| PhysicsError::InvalidParameter {
+        reason: "SPK type 10 TLE elements are invalid",
+    })?;
+    let epoch_years_since_j2000 = packet[9] / (SECONDS_PER_DAY * JULIAN_YEAR_DAYS);
+    let propagator = sgp4::Constants::new(
+        geopotential,
+        sgp4::afspc_epoch_to_sidereal_time,
+        epoch_years_since_j2000,
+        packet[2],
+        orbit,
+    )
+    .map_err(|_| PhysicsError::InvalidParameter {
+        reason: "SPK type 10 TLE elements are invalid",
+    })?;
+    let minutes_since_epoch = (et_s - packet[9]) / 60.0;
+    let prediction = propagator
+        .propagate_afspc_compatibility_mode(sgp4::MinutesSinceEpoch(minutes_since_epoch))
+        .map_err(|_| PhysicsError::InvalidParameter {
+            reason: "SPK type 10 SGP4 propagation failed",
+        })?;
+    finite_state_from_components(
+        [
+            prediction.position[0],
+            prediction.position[1],
+            prediction.position[2],
+            prediction.velocity[0],
+            prediction.velocity[1],
+            prediction.velocity[2],
+        ],
+        "SPK type 10 SGP4 propagation",
+    )
+}
+
+fn teme_to_j2000_state_km_s(
+    et_s: f64,
+    teme_state: SpkStateKmS,
+) -> Result<SpkStateKmS, PhysicsError> {
+    let rotation = teme_to_j2000_rotation(et_s)?;
+    let before = teme_to_j2000_rotation(et_s - TEME_ROTATION_RATE_STEP_S)?;
+    let after = teme_to_j2000_rotation(et_s + TEME_ROTATION_RATE_STEP_S)?;
+    let rotation_dot = (after - before) * (0.5 / TEME_ROTATION_RATE_STEP_S);
+    let state = SpkStateKmS {
+        position_km: rotation * teme_state.position_km,
+        velocity_km_s: rotation * teme_state.velocity_km_s + rotation_dot * teme_state.position_km,
+    };
+    finite_state_from_components(
+        [
+            state.position_km.x,
+            state.position_km.y,
+            state.position_km.z,
+            state.velocity_km_s.x,
+            state.velocity_km_s.y,
+            state.velocity_km_s.z,
+        ],
+        "SPK type 10 TEME to J2000 transform",
+    )
+}
+
+fn teme_to_j2000_rotation(et_s: f64) -> Result<Matrix3<f64>, PhysicsError> {
+    if !et_s.is_finite() {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK type 10 TEME transform epoch is invalid",
+        });
+    }
+    let julian_date = J2000_JULIAN_DATE + et_s / SECONDS_PER_DAY;
+    let mean_x_j2000 =
+        precess_mean_of_date_to_j2000_vector(julian_date, Vector3::new(1.0, 0.0, 0.0));
+    let true_z_mean =
+        nutate_true_of_date_to_mean_of_date_vector(julian_date, Vector3::new(0.0, 0.0, 1.0));
+    let true_z_j2000 = precess_mean_of_date_to_j2000_vector(julian_date, true_z_mean);
+    let z_axis = unit_vector(true_z_j2000, "SPK type 10 TEME true pole is invalid")?;
+    let x_axis = unit_vector(
+        mean_x_j2000 - z_axis * mean_x_j2000.dot(&z_axis),
+        "SPK type 10 TEME mean equinox is invalid",
+    )?;
+    let y_axis = unit_vector(z_axis.cross(&x_axis), "SPK type 10 TEME basis is invalid")?;
+    Ok(Matrix3::from_columns(&[x_axis, y_axis, z_axis]))
+}
+
+fn slice_to_array<const N: usize>(
+    slice: &[f64],
+    reason: &'static str,
+) -> Result<[f64; N], PhysicsError> {
+    slice
+        .try_into()
+        .map_err(|_| PhysicsError::InvalidParameter { reason })
+}
+
 fn type14_chebyshev_state_from_packet(
     packet: &[f64],
     coeff_count: usize,
@@ -3132,6 +3458,22 @@ mod tests {
     }
 
     #[test]
+    fn spk_ephemeris_reads_type10_tle_state() {
+        let bytes = synthetic_type10_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(5.0))
+            .unwrap();
+        let expected = type10_expected_j2000_state(5.0, 0.0, 10.0);
+        assert_vector_near(sun.position_eci_m, expected.position_km * 1_000.0, 1.0e-7);
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            expected.velocity_km_s * 1_000.0,
+            1.0e-8,
+        );
+    }
+
+    #[test]
     fn spk_ephemeris_reads_type15_precessing_conic_state() {
         let bytes = synthetic_type15_spk();
         let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
@@ -3448,6 +3790,39 @@ mod tests {
         let state = segment.state_km_s(7.0).unwrap();
         assert_vector_near(state.position_km, Vector3::new(70.0, 14.0, -7.0), 1.0e-13);
         assert_vector_near(state.velocity_km_s, Vector3::new(10.0, 2.0, -1.0), 1.0e-13);
+    }
+
+    #[test]
+    fn spk_type10_state_uses_generic_tle_packets() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_EARTH,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 10,
+            data: type10_lume_segment(&[0.0, 10.0]),
+        };
+        let state = segment.state_km_s(5.0).unwrap();
+        let expected = type10_expected_j2000_state(5.0, 0.0, 10.0);
+        assert_vector_near(state.position_km, expected.position_km, 1.0e-10);
+        assert_vector_near(state.velocity_km_s, expected.velocity_km_s, 1.0e-11);
+    }
+
+    #[test]
+    fn spk_type10_rejects_invalid_tle_elements() {
+        let mut data = type10_lume_segment(&[0.0]);
+        data[8 + 1 + 5] = 1.0;
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_EARTH,
+            frame: SPK_J2000_FRAME_ID,
+            data_type: 10,
+            data,
+        };
+        assert!(segment.state_km_s(0.0).is_err());
     }
 
     #[test]
@@ -3976,6 +4351,33 @@ mod tests {
         synthetic_spk_from_segments(&segments)
     }
 
+    fn synthetic_type10_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 10,
+                data: type10_lume_segment(&[0.0, 10.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
     fn synthetic_type15_spk() -> Vec<u8> {
         let segments = [
             SyntheticSegment {
@@ -4407,6 +4809,149 @@ mod tests {
         ];
         data.extend_from_slice(&metadata);
         data
+    }
+
+    fn type10_lume_segment(epochs: &[f64]) -> Vec<f64> {
+        let mut data = type10_geophysical_constants().to_vec();
+        for epoch in epochs {
+            data.push(*epoch);
+            data.extend_from_slice(&type10_lume_packet(*epoch));
+            data.extend_from_slice(&[0.0; 4]);
+        }
+        data.extend_from_slice(epochs);
+        append_spk_epoch_directory(&mut data, epochs);
+
+        let packet_size = SPK_TYPE10_CURRENT_PACKET_SIZE;
+        let packet_offset = 1_usize;
+        let packet_count = epochs.len();
+        let constant_count = SPK_TYPE10_GEOPHYSICAL_CONSTANTS;
+        let packet_base = constant_count;
+        let reference_base = packet_base + packet_count * (packet_size + packet_offset);
+        let reference_directory_count = (epochs.len() - 1) / 100;
+        let reference_directory_base = reference_base + epochs.len();
+        let metadata = [
+            0.0,
+            constant_count as f64,
+            reference_directory_base as f64,
+            reference_directory_count as f64,
+            4.0,
+            reference_base as f64,
+            epochs.len() as f64,
+            0.0,
+            0.0,
+            0.0,
+            packet_base as f64,
+            packet_count as f64,
+            0.0,
+            0.0,
+            packet_size as f64,
+            packet_offset as f64,
+            17.0,
+        ];
+        data.extend_from_slice(&metadata);
+        data
+    }
+
+    fn type10_geophysical_constants() -> [f64; SPK_TYPE10_GEOPHYSICAL_CONSTANTS] {
+        [
+            1.082_616e-3,
+            -2.538_81e-6,
+            -1.655_97e-6,
+            7.436_691_61e-2,
+            120.0,
+            78.0,
+            6_378.135,
+            1.0,
+        ]
+    }
+
+    fn type10_lume_packet(epoch_s: f64) -> [f64; SPK_TYPE10_LEGACY_PACKET_SIZE] {
+        [
+            0.0,
+            0.0,
+            3.496_5e-5,
+            97.267_6 * DEG_TO_RAD,
+            47.213_6 * DEG_TO_RAD,
+            0.002_000_1,
+            220.605_0 * DEG_TO_RAD,
+            139.369_8 * DEG_TO_RAD,
+            15.249_995_21 * core::f64::consts::TAU / 1_440.0,
+            epoch_s,
+        ]
+    }
+
+    fn type10_expected_j2000_state(
+        et_s: f64,
+        first_epoch_s: f64,
+        second_epoch_s: f64,
+    ) -> SpkStateKmS {
+        let first_packet = type10_lume_packet(first_epoch_s);
+        let first_state = type10_direct_teme_state(&first_packet, et_s);
+        let denominator_s = second_epoch_s - first_epoch_s;
+        let teme_state = if denominator_s.abs() <= f64::EPSILON {
+            first_state
+        } else {
+            let second_packet = type10_lume_packet(second_epoch_s);
+            let second_state = type10_direct_teme_state(&second_packet, et_s);
+            let argument = core::f64::consts::PI * (et_s - first_epoch_s) / denominator_s;
+            let weight = 0.5 + 0.5 * argument.cos();
+            let weight_dot_s = -0.5 * argument.sin() * core::f64::consts::PI / denominator_s;
+            SpkStateKmS {
+                position_km: first_state.position_km * weight
+                    + second_state.position_km * (1.0 - weight),
+                velocity_km_s: first_state.velocity_km_s * weight
+                    + second_state.velocity_km_s * (1.0 - weight)
+                    + (first_state.position_km - second_state.position_km) * weight_dot_s,
+            }
+        };
+        teme_to_j2000_state_km_s(et_s, teme_state).unwrap()
+    }
+
+    fn type10_direct_teme_state(
+        packet: &[f64; SPK_TYPE10_LEGACY_PACKET_SIZE],
+        et_s: f64,
+    ) -> SpkStateKmS {
+        let constants = type10_geophysical_constants();
+        let geopotential = sgp4::Geopotential {
+            j2: constants[0],
+            j3: constants[1],
+            j4: constants[2],
+            ke: constants[3],
+            ae: constants[6],
+        };
+        let orbit = sgp4::Orbit::from_kozai_elements(
+            &geopotential,
+            packet[3],
+            packet[4],
+            packet[5],
+            packet[6],
+            packet[7],
+            packet[8],
+        )
+        .unwrap();
+        let propagator = sgp4::Constants::new(
+            geopotential,
+            sgp4::afspc_epoch_to_sidereal_time,
+            packet[9] / (SECONDS_PER_DAY * JULIAN_YEAR_DAYS),
+            packet[2],
+            orbit,
+        )
+        .unwrap();
+        let prediction = propagator
+            .propagate_afspc_compatibility_mode(sgp4::MinutesSinceEpoch((et_s - packet[9]) / 60.0))
+            .unwrap();
+        SpkStateKmS {
+            position_km: Vector3::new(
+                prediction.position[0],
+                prediction.position[1],
+                prediction.position[2],
+            ),
+            velocity_km_s: Vector3::new(
+                prediction.velocity[0],
+                prediction.velocity[1],
+                prediction.velocity[2],
+            ),
+        }
     }
 
     fn append_type14_linear_packet(data: &mut Vec<f64>, start_epoch_s: f64, stop_epoch_s: f64) {

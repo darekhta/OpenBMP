@@ -103,7 +103,9 @@ simulation interval. The transform applies compact IAU 1976 mean precession
 and IAU 1980 nutation from J2000 to date, computes IAU Earth Rotation Angle
 from the UTC scenario epoch plus interpolated UT1-UTC, then applies polar
 motion. SPICE frame chains, IAU 2006/2000A CIO-based transforms, and
-precession/nutation rate terms remain future high-fidelity work.
+other high-fidelity Earth-orientation refinements remain future work.
+Velocity transforms include the finite-difference rate of the full
+J2000-to-ECEF orientation chain.
 
 ## Transform Rules
 

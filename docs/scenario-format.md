@@ -370,9 +370,10 @@ Samples must be strictly time-ordered and cover `[time.start_s,
 time.stop_s]`. OpenBMP linearly interpolates UT1-UTC and polar motion,
 applies compact IAU 1976 mean precession and IAU 1980 nutation from J2000
 to date, uses the scenario UTC epoch to compute IAU Earth Rotation Angle,
-and applies a compact polar-motion rotation in the ECI/ECEF transform. It
-does not yet implement SPICE frame chains, IAU 2006/2000A CIO-based
-transforms, or precession/nutation rate terms in velocity transport.
+and applies a compact polar-motion rotation in the ECI/ECEF transform.
+Velocity transforms include the finite-difference rate of the full
+J2000-to-ECEF orientation chain. It does not yet implement SPICE frame
+chains or IAU 2006/2000A CIO-based transforms.
 
 When `epoch.leap_second_table` is declared, the runner loads it through
 the same resolved-file path and optional SHA-256 pin as other external
@@ -587,9 +588,10 @@ wind          = "none"
 The SPK reader supports geometric Sun/Moon states from binary DAF/SPK
 kernels with type 1 modified-difference arrays, type 2 or type 3
 Chebyshev segments, type 5 two-body discrete-state segments, type 8/9
-Lagrange state segments, type 12/13 Hermite state segments, type 14
-generic Chebyshev position/velocity segments, type 15 precessing-conic
-segments, type 17 equinoctial-element segments, type 18 ESOC/DDID
+Lagrange state segments, type 10 TLE/SGP4 segments, type 12/13 Hermite
+state segments, type 14 generic Chebyshev position/velocity segments,
+type 15 precessing-conic segments, type 17 equinoctial-element segments,
+type 18 ESOC/DDID
 subtype 0/1 packets, type 19 ESOC/DDID piecewise mini-segments, type 20
 Chebyshev velocity-only segments, and type 21 extended
 modified-difference arrays in the J2000 frame. It also accepts the
@@ -613,14 +615,16 @@ interpolation of position/velocity packets; type 19 selects the
 appropriate interpolation interval, honors the segment's boundary-choice
 flag, and evaluates subtype 0/1/2 mini-segments; type 20 integrates
 Chebyshev velocity polynomials from each record midpoint position
-constant; type 21 evaluates variable-dimension extended modified
-difference lines. It follows SPK segment priority inside each file and
+constant; type 10 evaluates fixed-packet TLE elements with SGP4,
+applies NAIF's cosine blend between bracketing element sets, and rotates
+TEME states into J2000; type 21 evaluates variable-dimension extended
+modified difference lines. It follows SPK segment priority inside each file and
 preserves load-order precedence across a file list, so later files can
 override earlier overlapping segments. It combines target/center chains
 such as Solar-System-Barycenter -> Earth-Moon Barycenter -> Earth/Moon.
 It does not yet implement light-time, stellar aberration, generic text
 kernels beyond NAIF LSK leap-second files, non-J2000 frame transforms
-beyond built-in `ECLIPJ2000`, or SPK type 10 TLE segments.
+beyond built-in `ECLIPJ2000`, or a full SPICE frame-kernel chain.
 
 ### Frames local origin
 
