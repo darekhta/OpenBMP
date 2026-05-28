@@ -1,0 +1,118 @@
+openbmp.scenario = 2
+
+[meta]
+name        = "hypersonic-hybrid-entry"
+description = "Synthetic hypersonic entry demonstrator using hybrid Knudsen-bridged aero: buildup deck at low Mach, tangent-cone continuum at hypersonic Mach, and free-molecular aero at high Knudsen number."
+validation  = "experimental"
+provenance  = "Synthetic scenario-authoring regression for live hybrid aero dispatch; parameters are chosen to exercise regime selection rather than to model a specific vehicle."
+
+[time]
+start_s = 0.0
+stop_s  = 45.0
+dt_s    = 0.05
+seed    = 0x485942524944
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m   = [0.0, 0.0, 80000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, -7000.0]
+
+[vehicle.assembly]
+id = "hypersonic-hybrid-entry"
+
+[[vehicle.assembly.bodies]]
+id                     = "reentry_body"
+geometry               = { kind = "reference", length_m = 5.0, area_m2 = 1.0 }
+dry_mass_kg            = 1000.0
+dry_cg_body_m          = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "us_standard_1976"
+wind          = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[forces]
+models = ["gravity", "aero"]
+
+[aero]
+
+[aero.buildup]
+body_diameter_m = 1.1283791670955126
+body_length_m = 5.0
+surface_roughness_m = 6.0e-5
+reference_area_m2 = 1.0
+reference_length_m = 1.0
+center_of_gravity_from_nose_m = 2.5
+mach_grid = { min = 0.0, max = 3.0, steps = 7 }
+alpha_grid_deg = { min = 0.0, max = 10.0, steps = 6 }
+reference_altitude_m = 0.0
+
+[aero.buildup.nose]
+shape = "von_karman"
+fineness = 3.0
+
+[aero.buildup.afterbody]
+exit_diameter_m = 0.8
+length_m = 0.8
+
+[aero.method]
+kind = "hybrid"
+
+[aero.method.hybrid]
+reference_length_m = 1.0
+mach_handoff = 3.0
+
+[aero.method.hybrid.continuum_low_mach]
+kind = "deck"
+
+[aero.method.hybrid.continuum_high_mach]
+kind = "tangent_cone"
+
+[aero.method.hybrid.continuum_high_mach.tangent_cone]
+cone_half_angle_rad = 0.17453292519943295
+reference_area_m2 = 1.0
+reference_length_m = 1.0
+
+[aero.method.hybrid.free_molecular]
+reference_area_m2 = 1.0
+accommodation_normal = 1.0
+accommodation_tangential = 1.0
+
+[aero.method.hybrid.bridge]
+kind = "linear"
+kn_lo = 0.01
+kn_hi = 10.0
+
+[telemetry]
+output.parquet = "out/hypersonic-hybrid-entry.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "entry"
+
+[[mission.phases]]
+id    = "entry"
+label = "hypersonic entry"
+
+[[mission.phases]]
+id    = "ground"
+label = "ground impact"
+
+[[mission.events]]
+id      = "evt_ground_impact"
+trigger = { kind = "at_altitude_descending", altitude_m = 0.0 }
+action  = { kind = "stop", label = "ground-impact" }
+once    = true
+
+[[mission.transitions]]
+from  = "entry"
+to    = "ground"
+event = "evt_ground_impact"
