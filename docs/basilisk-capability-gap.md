@@ -67,6 +67,8 @@ OpenBMP implementation slice.
 - Added SPK type 20 Chebyshev velocity-only segments, integrating the
   velocity polynomials and midpoint position constants used by
   EPM-style ephemerides.
+- Added SPK type 18 ESOC/DDID packet interpolation for subtype 0
+  Hermite packets and subtype 1 Lagrange state packets.
 - Added SPK support for the built-in `ECLIPJ2000` inertial frame,
   rotating those segment states into OpenBMP's J2000 ECI chain.
 - Added pinned leap-second table ingestion for deterministic UTC -> TT
@@ -88,8 +90,8 @@ OpenBMP implementation slice.
   leap-second files, non-J2000 frame transforms beyond built-in
   `ECLIPJ2000`, or the remaining SPK segment types such as modified
   difference arrays, two-body propagation, TLE, type 14 generic
-  Chebyshev, precessing conics, equinoctial elements, and ESOC/DDID
-  packets.
+  Chebyshev, precessing conics, equinoctial elements, and type 19
+  ESOC/DDID mini-segments.
 - The IERS path is intentionally compact: it does not yet implement a
   full SPICE frame chain, IAU 2006/2000A CIO-based transforms, or
   precession/nutation rate terms in velocity transport.
