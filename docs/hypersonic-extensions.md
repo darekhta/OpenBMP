@@ -165,8 +165,8 @@ environment -> aero -> aerothermal -> material_response -> mass/geometry -> dyna
 
 The live runner path implements the explicit one-step-lag subset of this
 chain. `[aero.method]` dispatches deck, modified-Newtonian, tangent-cone,
-tangent-wedge, and free-molecular methods through the kernel force stack; the
-rigid-body path also consumes the method's body-frame moment. `[aerothermal]`
+tangent-wedge, free-molecular, and hybrid Knudsen-bridged methods through the
+kernel force stack; the rigid-body path also consumes the method's body-frame moment. `[aerothermal]`
 samples the same runtime atmosphere, emits stagnation heating diagnostics, can
 advance the thermal toy and depth-resolved charring ablator, and can route
 ablation mass loss into the rigid mass model when `feedback = "mass"` is

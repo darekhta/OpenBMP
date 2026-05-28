@@ -486,8 +486,12 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Run
         EventTriggerConfig::AtMassFraction { remaining } => BuiltInEventTrigger::AtMassFraction {
             remaining: *remaining,
         },
-        EventTriggerConfig::AtVelocity { velocity_m_s } => BuiltInEventTrigger::AtVelocity {
+        EventTriggerConfig::AtVelocity {
+            velocity_m_s,
+            falling,
+        } => BuiltInEventTrigger::AtVelocity {
             velocity_m_s: *velocity_m_s,
+            falling: *falling,
         },
         EventTriggerConfig::AtDynamicPressure { .. } => {
             return Err(RunnerError::Scenario(
@@ -825,12 +829,14 @@ mod tests {
     fn at_velocity_trigger_builds_runtime_trigger() -> Result<(), RunnerError> {
         let trigger = build_trigger(&EventTriggerConfig::AtVelocity {
             velocity_m_s: 1_850.0,
+            falling: true,
         })?;
 
         assert_eq!(
             trigger,
             BuiltInEventTrigger::AtVelocity {
-                velocity_m_s: 1_850.0
+                velocity_m_s: 1_850.0,
+                falling: true,
             }
         );
         Ok(())

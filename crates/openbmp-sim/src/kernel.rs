@@ -2213,7 +2213,10 @@ mod tests {
         let event_id = crate::events::EventId::from_path("mission.events.burnout_velocity");
         let events = vec![crate::events::EventBinding {
             id: event_id,
-            trigger: crate::events::BuiltInEventTrigger::AtVelocity { velocity_m_s: 0.5 },
+            trigger: crate::events::BuiltInEventTrigger::AtVelocity {
+                velocity_m_s: 0.5,
+                falling: false,
+            },
             action: crate::events::MissionAction::Stop {
                 label: "burnout".to_owned(),
             },

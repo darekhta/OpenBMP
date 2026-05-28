@@ -241,11 +241,14 @@ pub enum BuiltInEventTrigger {
         /// Threshold mass fraction in `[0, 1]`.
         remaining: f64,
     },
-    /// Fires the first tick where speed crosses up through
-    /// `velocity_m_s`.
+    /// Fires the first tick where speed crosses `velocity_m_s`.
     AtVelocity {
         /// Speed threshold (m/s).
         velocity_m_s: f64,
+        /// `false`: rising-edge crossing (speed increasing through
+        /// threshold). `true`: falling-edge crossing (speed
+        /// decreasing through threshold).
+        falling: bool,
     },
     /// Fires when dynamic pressure crosses `pa`. The `falling` flag
     /// selects rising-edge (`false`) or falling-edge (`true`) crossing.
@@ -278,9 +281,14 @@ impl EventTrigger for BuiltInEventTrigger {
             Self::AtMassFraction { remaining } => {
                 prev.mass_fraction > *remaining && curr.mass_fraction <= *remaining
             }
-            Self::AtVelocity { velocity_m_s } => {
-                prev.velocity_m_s < *velocity_m_s && curr.velocity_m_s >= *velocity_m_s
-            }
+            Self::AtVelocity {
+                velocity_m_s,
+                falling: false,
+            } => prev.velocity_m_s < *velocity_m_s && curr.velocity_m_s >= *velocity_m_s,
+            Self::AtVelocity {
+                velocity_m_s,
+                falling: true,
+            } => prev.velocity_m_s > *velocity_m_s && curr.velocity_m_s <= *velocity_m_s,
             Self::AtDynamicPressure { pa, falling: false } => {
                 prev.dynamic_pressure_pa < *pa && curr.dynamic_pressure_pa >= *pa
             }

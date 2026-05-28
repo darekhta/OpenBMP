@@ -28,7 +28,8 @@ pub mod solver;
 
 pub use document::{
     AeroBuildupAfterbodyConfig, AeroBuildupConfig, AeroBuildupFinsConfig, AeroBuildupGridConfig,
-    AeroBuildupNoseConfig, AeroConfig, AeroFreeMolecularConfig, AeroMethodConfig,
+    AeroBuildupNoseConfig, AeroConfig, AeroFreeMolecularConfig, AeroHybridConfig,
+    AeroKnudsenBridgeConfig, AeroLinearMachBridgeConfig, AeroMethodConfig,
     AeroModifiedNewtonianConfig, AeroTangentConeConfig, AeroTangentWedgeConfig,
     AerothermalAblationConfig, AerothermalBackwallConfig, AerothermalConfig,
     AerothermalFayRiddellConfig, AerothermalThermalToyConfig, AssemblyBodyConfig, AssemblyConfig,

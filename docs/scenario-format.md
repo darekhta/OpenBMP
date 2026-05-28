@@ -500,7 +500,10 @@ deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27
   default and uses `deck` or `[aero.buildup]`; hypersonic live methods
   (`modified_newtonian`, `tangent_cone`, `tangent_wedge`,
   `free_molecular`) do not use an external deck and run directly in the
-  force / moment stack.
+  force / moment stack. `kind = "hybrid"` blends continuum and
+  free-molecular methods by runtime Knudsen number; its continuum
+  low-Mach method may use `kind = "deck"` to reuse the same `deck` or
+  `[aero.buildup]` source.
 
 Declaring both `deck` and `[aero.buildup]` fails with
 `ScenarioError::AmbiguousAero`.
@@ -517,6 +520,43 @@ kind = "modified_newtonian"
 cp_max = 2.0
 reference_area_m2 = 1.0
 reference_length_m = 1.0
+```
+
+Hybrid Knudsen-bridge example:
+
+```toml
+[aero]
+
+[aero.buildup]
+# ... geometry-driven deck source used by the low-Mach continuum branch ...
+
+[aero.method]
+kind = "hybrid"
+
+[aero.method.hybrid]
+reference_length_m = 0.2
+mach_handoff = 4.0
+
+[aero.method.hybrid.continuum_low_mach]
+kind = "deck"
+
+[aero.method.hybrid.continuum_high_mach]
+kind = "modified_newtonian"
+
+[aero.method.hybrid.continuum_high_mach.modified_newtonian]
+cp_max = 2.0
+reference_area_m2 = 0.0314
+reference_length_m = 0.2
+
+[aero.method.hybrid.free_molecular]
+reference_area_m2 = 0.0314
+accommodation_normal = 1.0
+accommodation_tangential = 1.0
+
+[aero.method.hybrid.bridge]
+kind = "linear" # cheng | erfc | linear
+kn_lo = 0.01
+kn_hi = 10.0
 ```
 
 Rigid-body runs wire the live aero method into both force and
@@ -552,7 +592,8 @@ feedback = "mass" # "none" by default
 
 Telemetry channels include `aerothermal.q_conv_w_m2`,
 `aerothermal.q_rad_w_m2`, `aerothermal.h_aw_j_kg`,
-`aerothermal.recovery_temperature_k`, `aerothermal.knudsen`,
+`aerothermal.recovery_temperature_k`,
+`aerothermal.stagnation_temperature_k`, `aerothermal.knudsen`,
 `aerothermal.wall_temperature_k`,
 `aerothermal.backwall_temperature_k`,
 `aerothermal.recession_depth_m`,
@@ -906,7 +947,7 @@ return `false` on step 0 because no previous-step snapshot exists.
 | `at_altitude_descending` | `altitude_m: f64` | Fires when altitude crosses down through `altitude_m`. |
 | `at_apogee` | — | Fires when vertical velocity flips from `> 0` to `<= 0`. |
 | `at_mass_fraction` | `remaining: f64` (in `[0, 1]`) | Fires when mass fraction (current / initial) drops to or below `remaining`. |
-| `at_velocity` | `velocity_m_s: f64` | Fires when speed magnitude crosses up through `velocity_m_s`. |
+| `at_velocity` | `velocity_m_s: f64`, optional `falling: bool = false` | Fires when speed magnitude crosses `velocity_m_s`; `falling = false` selects the rising edge and `falling = true` selects the falling edge. |
 | `at_dynamic_pressure` | `pressure_pa: f64`, `falling: bool` | Fires when dynamic pressure crosses `pressure_pa` in the direction set by `falling`. Requires atmosphere wired into event evaluation. |
 
 The `kind = "scripted"` trigger is rejected at parse time with a

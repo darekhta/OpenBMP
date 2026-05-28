@@ -504,7 +504,7 @@ pub enum BuiltInEventTrigger {
     AtAltitudeDescending { meters: f64 },
     AtApogee,
     AtMassFraction { remaining: f64 },
-    AtVelocity { velocity_m_s: f64 },
+    AtVelocity { velocity_m_s: f64, falling: bool },
     AtDynamicPressure { pa: f64, falling: bool },
     Scripted { label: &'static str },         // fires when scenario sets the flag
 }

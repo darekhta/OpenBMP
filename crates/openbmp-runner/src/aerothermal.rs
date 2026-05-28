@@ -66,6 +66,10 @@ pub struct LiveAerothermalOutput {
     pub h_aw_j_kg: f64,
     /// Recovery temperature (K).
     pub recovery_temperature_k: f64,
+    /// Stagnation/total temperature (K) used by live thermal
+    /// diagnostics. For the currently wired engineering correlations
+    /// this matches `recovery_temperature_k`.
+    pub stagnation_temperature_k: f64,
     /// Knudsen number based on nose radius.
     pub knudsen: f64,
     /// Current wall/surface temperature (K).
@@ -142,6 +146,7 @@ impl StagnationHeatingForceAdapter {
             output.q_rad_w_m2,
             output.h_aw_j_kg,
             output.recovery_temperature_k,
+            output.stagnation_temperature_k,
             output.knudsen,
             output.wall_temperature_k,
             output.backwall_temperature_k,
@@ -336,6 +341,7 @@ impl LiveAerothermalDriver {
         if airspeed_m_s <= 0.0 || sample.speed_of_sound_m_s <= 0.0 || sample.density_kg_m3 <= 0.0 {
             self.mass_feedback.set_mass_loss_kg_s(0.0);
             self.output = LiveAerothermalOutput {
+                stagnation_temperature_k: sample.temperature_k,
                 knudsen,
                 wall_temperature_k,
                 backwall_temperature_k,
@@ -349,6 +355,7 @@ impl LiveAerothermalDriver {
         if self.config.stagnation_kind == "fay_riddell" && mach <= 1.0 {
             self.mass_feedback.set_mass_loss_kg_s(0.0);
             self.output = LiveAerothermalOutput {
+                stagnation_temperature_k: sample.temperature_k,
                 knudsen,
                 wall_temperature_k,
                 backwall_temperature_k,
@@ -435,6 +442,7 @@ impl LiveAerothermalDriver {
             q_rad_w_m2: heating.q_rad_w_m2,
             h_aw_j_kg: heating.h_aw_j_kg,
             recovery_temperature_k: heating.recovery_temperature_k,
+            stagnation_temperature_k: heating.recovery_temperature_k,
             knudsen,
             wall_temperature_k,
             backwall_temperature_k,

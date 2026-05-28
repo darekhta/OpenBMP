@@ -404,7 +404,16 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     if path.starts_with("$.aero.method")
         && matches!(
             key,
-            "cp_max" | "gamma" | "accommodation_normal" | "accommodation_tangential"
+            "cp_max"
+                | "gamma"
+                | "accommodation_normal"
+                | "accommodation_tangential"
+                | "mach_handoff"
+                | "mach_lo"
+                | "mach_hi"
+                | "sigma"
+                | "kn_lo"
+                | "kn_hi"
         )
     {
         return true;

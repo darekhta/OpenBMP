@@ -4,12 +4,14 @@ use std::collections::BTreeMap;
 
 use openbmp_aero::{
     AccommodationCoeffs, AeroDeck, AeroError, AeroMethod, Afterbody, BodyGeometry, BuildupGrid,
-    ComponentBuildup, DeckLookup, DragBuildupModel, FinSet, FreeMolecularAero, ModifiedNewtonian,
+    ChengBridge, ComponentBuildup, DeckLookup, DragBuildupModel, ErfcBridge, FinSet,
+    FreeMolecularAero, HybridAeroMethod, LinearKnudsenBridge, LinearMachBridge, ModifiedNewtonian,
     NoseShape, TangentCone, TangentWedge,
 };
 use openbmp_physics::AtmosphereModel;
 use openbmp_scenario::{
-    AeroBuildupConfig, AeroBuildupNoseConfig, AeroMethodConfig, ResolvedFile, ScenarioDocument,
+    AeroBuildupConfig, AeroBuildupNoseConfig, AeroFreeMolecularConfig, AeroKnudsenBridgeConfig,
+    AeroMethodConfig, ResolvedFile, ScenarioDocument,
 };
 
 use crate::atmosphere::build_document_runtime_atmosphere;
@@ -50,20 +52,30 @@ pub fn build_aero_method(
     let Some(aero) = &document.aero else {
         return Ok(None);
     };
-    let kind = aero
-        .method
-        .as_ref()
-        .map_or("deck", |method| method.kind.as_str());
-    let method: Box<dyn AeroMethod> = match kind {
+    let Some(config) = aero.method.as_ref() else {
+        let deck = deck.ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "aero method kind `deck` requires [aero].deck or [aero.buildup]".to_owned(),
+        })?;
+        let reference_length_m = deck.reference_length_m();
+        return Ok(Some((Box::new(DeckLookup::new(deck)), reference_length_m)));
+    };
+    build_configured_aero_method(config, deck).map(Some)
+}
+
+fn build_configured_aero_method(
+    config: &AeroMethodConfig,
+    deck: Option<AeroDeck>,
+) -> Result<(Box<dyn AeroMethod>, f64), RunnerError> {
+    let method: Box<dyn AeroMethod> = match config.kind.as_str() {
         "deck" => {
             let deck = deck.ok_or_else(|| RunnerError::UnsupportedScenario {
                 what: "aero method kind `deck` requires [aero].deck or [aero.buildup]".to_owned(),
             })?;
             let reference_length_m = deck.reference_length_m();
-            return Ok(Some((Box::new(DeckLookup::new(deck)), reference_length_m)));
+            return Ok((Box::new(DeckLookup::new(deck)), reference_length_m));
         }
         "modified_newtonian" => {
-            let cfg = selected_method(aero.method.as_ref(), "modified_newtonian")?
+            let cfg = selected_method(Some(config), "modified_newtonian")?
                 .modified_newtonian
                 .as_ref()
                 .ok_or_else(|| RunnerError::UnsupportedScenario {
@@ -76,7 +88,7 @@ pub fn build_aero_method(
             })
         }
         "tangent_cone" => {
-            let cfg = selected_method(aero.method.as_ref(), "tangent_cone")?
+            let cfg = selected_method(Some(config), "tangent_cone")?
                 .tangent_cone
                 .as_ref()
                 .ok_or_else(|| RunnerError::UnsupportedScenario {
@@ -91,7 +103,7 @@ pub fn build_aero_method(
             })
         }
         "tangent_wedge" => {
-            let cfg = selected_method(aero.method.as_ref(), "tangent_wedge")?
+            let cfg = selected_method(Some(config), "tangent_wedge")?
                 .tangent_wedge
                 .as_ref()
                 .ok_or_else(|| RunnerError::UnsupportedScenario {
@@ -105,7 +117,7 @@ pub fn build_aero_method(
             })
         }
         "free_molecular" => {
-            let cfg = selected_method(aero.method.as_ref(), "free_molecular")?
+            let cfg = selected_method(Some(config), "free_molecular")?
                 .free_molecular
                 .as_ref()
                 .ok_or_else(|| RunnerError::UnsupportedScenario {
@@ -113,13 +125,33 @@ pub fn build_aero_method(
                         "aero.method.kind = `free_molecular` requires [aero.method.free_molecular]"
                             .to_owned(),
                 })?;
-            Box::new(FreeMolecularAero {
-                accommodation: AccommodationCoeffs {
-                    normal: cfg.accommodation_normal,
-                    tangential: cfg.accommodation_tangential,
-                },
-                reference_area_m2: cfg.reference_area_m2,
-            })
+            Box::new(free_molecular_method(cfg))
+        }
+        "hybrid" => {
+            let cfg = selected_method(Some(config), "hybrid")?
+                .hybrid
+                .as_ref()
+                .ok_or_else(|| RunnerError::UnsupportedScenario {
+                    what: "aero.method.kind = `hybrid` requires [aero.method.hybrid]".to_owned(),
+                })?;
+            let (continuum_low_mach, _) =
+                build_configured_aero_method(&cfg.continuum_low_mach, deck.clone())?;
+            let (continuum_high_mach, _) =
+                build_configured_aero_method(&cfg.continuum_high_mach, deck)?;
+            #[allow(deprecated)]
+            let hybrid = HybridAeroMethod {
+                continuum_low_mach,
+                continuum_high_mach,
+                free_molecular: Box::new(free_molecular_method(&cfg.free_molecular)),
+                mach_handoff: cfg.mach_handoff,
+                mach_bridge: cfg.mach_bridge.as_ref().map(|bridge| LinearMachBridge {
+                    mach_lo: bridge.mach_lo,
+                    mach_hi: bridge.mach_hi,
+                }),
+                bridge: knudsen_bridge(&cfg.bridge)?,
+                knudsen: 0.0,
+            };
+            Box::new(hybrid)
         }
         other => {
             return Err(RunnerError::UnsupportedScenario {
@@ -127,13 +159,36 @@ pub fn build_aero_method(
             });
         }
     };
-    let reference_length_m =
-        aero_method_reference_length(aero.method.as_ref().ok_or_else(|| {
-            RunnerError::UnsupportedScenario {
-                what: format!("aero.method.kind `{kind}` missing method config"),
-            }
-        })?)?;
-    Ok(Some((method, reference_length_m)))
+    let reference_length_m = aero_method_reference_length(config)?;
+    Ok((method, reference_length_m))
+}
+
+fn free_molecular_method(config: &AeroFreeMolecularConfig) -> FreeMolecularAero {
+    FreeMolecularAero {
+        accommodation: AccommodationCoeffs {
+            normal: config.accommodation_normal,
+            tangential: config.accommodation_tangential,
+        },
+        reference_area_m2: config.reference_area_m2,
+    }
+}
+
+fn knudsen_bridge(
+    config: &AeroKnudsenBridgeConfig,
+) -> Result<Box<dyn openbmp_aero::BridgeFunction>, RunnerError> {
+    match config.kind.as_str() {
+        "cheng" => Ok(Box::new(ChengBridge)),
+        "erfc" => Ok(Box::new(ErfcBridge {
+            sigma: config.sigma,
+        })),
+        "linear" => Ok(Box::new(LinearKnudsenBridge {
+            kn_lo: config.kn_lo,
+            kn_hi: config.kn_hi,
+        })),
+        other => Err(RunnerError::UnsupportedScenario {
+            what: format!("unsupported hybrid aero Knudsen bridge `{other}`"),
+        }),
+    }
 }
 
 fn selected_method<'a>(
@@ -163,6 +218,7 @@ fn aero_method_reference_length(config: &AeroMethodConfig) -> Result<f64, Runner
             .free_molecular
             .as_ref()
             .map(|cfg| cfg.reference_area_m2.sqrt()),
+        "hybrid" => config.hybrid.as_ref().map(|cfg| cfg.reference_length_m),
         _ => None,
     }
     .ok_or_else(|| RunnerError::UnsupportedScenario {
@@ -363,5 +419,75 @@ require_monotonic_time = true
         assert_eq!(deck.beta_grid_deg(), &[0.0]);
         let coefficients = deck.lookup(0.5, 2.0, 0.0, &BTreeMap::new()).unwrap();
         assert!(coefficients.cd > 0.0);
+    }
+
+    #[test]
+    fn build_aero_method_wires_hybrid_knudsen_bridge() {
+        let toml = format!(
+            r#"{BUILDUP_SCENARIO}
+
+[aero.method]
+kind = "hybrid"
+
+[aero.method.hybrid]
+reference_length_m = 0.2
+mach_handoff = 4.0
+
+[aero.method.hybrid.continuum_low_mach]
+kind = "deck"
+
+[aero.method.hybrid.continuum_high_mach]
+kind = "modified_newtonian"
+
+[aero.method.hybrid.continuum_high_mach.modified_newtonian]
+cp_max = 2.0
+reference_area_m2 = 0.031415926535897934
+reference_length_m = 0.2
+
+[aero.method.hybrid.free_molecular]
+reference_area_m2 = 0.031415926535897934
+accommodation_normal = 1.0
+accommodation_tangential = 1.0
+
+[aero.method.hybrid.bridge]
+kind = "linear"
+kn_lo = 0.01
+kn_hi = 10.0
+"#
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let deck = load_aero_deck(&scenario.document, &BTreeMap::new())
+            .unwrap()
+            .unwrap();
+        let (method, reference_length_m) = build_aero_method(&scenario.document, Some(deck))
+            .unwrap()
+            .unwrap();
+        assert_eq!(reference_length_m.to_bits(), 0.2_f64.to_bits());
+
+        let continuum_limit = method
+            .aero_force_moment_body(&openbmp_aero::AeroContext {
+                mach: 8.0,
+                alpha_deg: 12.0,
+                beta_deg: 0.0,
+                dynamic_pressure_pa: 1_000.0,
+                knudsen: 1.0e-6,
+                reynolds_length: 1.0e6,
+            })
+            .unwrap();
+        let free_molecular_limit = method
+            .aero_force_moment_body(&openbmp_aero::AeroContext {
+                mach: 8.0,
+                alpha_deg: 12.0,
+                beta_deg: 0.0,
+                dynamic_pressure_pa: 1_000.0,
+                knudsen: 100.0,
+                reynolds_length: 1.0e6,
+            })
+            .unwrap();
+        assert_ne!(
+            continuum_limit.force_n_body.z.to_bits(),
+            free_molecular_limit.force_n_body.z.to_bits(),
+            "hybrid method should move between continuum and free-molecular limits"
+        );
     }
 }

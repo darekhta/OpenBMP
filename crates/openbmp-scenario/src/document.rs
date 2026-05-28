@@ -2947,7 +2947,8 @@ impl AeroConfig {
         if let Some(method) = &self.method {
             method.validate("aero.method")?;
         }
-        if method_kind == "deck" {
+        let method_uses_deck = self.method.as_ref().is_none_or(AeroMethodConfig::uses_deck);
+        if method_uses_deck {
             match (&self.deck, &self.buildup) {
                 (Some(_), Some(_)) => return Err(ScenarioError::AmbiguousAero),
                 (None, None) => {
@@ -2996,7 +2997,7 @@ impl AeroConfig {
 #[serde(deny_unknown_fields)]
 pub struct AeroMethodConfig {
     /// Method kind: `deck`, `modified_newtonian`, `tangent_cone`,
-    /// `tangent_wedge`, or `free_molecular`.
+    /// `tangent_wedge`, `free_molecular`, or `hybrid`.
     pub kind: String,
     /// Parameters for `kind = "modified_newtonian"`.
     #[serde(default)]
@@ -3010,6 +3011,9 @@ pub struct AeroMethodConfig {
     /// Parameters for `kind = "free_molecular"`.
     #[serde(default)]
     pub free_molecular: Option<AeroFreeMolecularConfig>,
+    /// Parameters for `kind = "hybrid"`.
+    #[serde(default)]
+    pub hybrid: Option<AeroHybridConfig>,
 }
 
 impl AeroMethodConfig {
@@ -3023,6 +3027,7 @@ impl AeroMethodConfig {
                 "tangent_cone",
                 "tangent_wedge",
                 "free_molecular",
+                "hybrid",
             ],
         )?;
         match self.kind.as_str() {
@@ -3047,8 +3052,21 @@ impl AeroMethodConfig {
                     .validate(&format!("{path}.free_molecular"))?;
                 self.reject_unselected(path, &["free_molecular"])
             }
+            "hybrid" => {
+                required_method(&self.hybrid, path, "hybrid")?
+                    .validate(&format!("{path}.hybrid"))?;
+                self.reject_unselected(path, &["hybrid"])
+            }
             _ => Ok(()),
         }
+    }
+
+    fn uses_deck(&self) -> bool {
+        self.kind == "deck"
+            || self
+                .hybrid
+                .as_ref()
+                .is_some_and(AeroHybridConfig::uses_deck)
     }
 
     fn reject_subtables(&self, path: &str, kind: &str) -> Result<(), ScenarioError> {
@@ -3066,6 +3084,7 @@ impl AeroMethodConfig {
             ("tangent_cone", self.tangent_cone.is_some()),
             ("tangent_wedge", self.tangent_wedge.is_some()),
             ("free_molecular", self.free_molecular.is_some()),
+            ("hybrid", self.hybrid.is_some()),
         ] {
             if present && !selected.contains(&name) {
                 return Err(ScenarioError::UnexpectedField {
@@ -3219,6 +3238,170 @@ impl AeroFreeMolecularConfig {
         )?;
         Ok(())
     }
+}
+
+/// Runtime hybrid aero dispatch across continuum and free-molecular
+/// regimes.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroHybridConfig {
+    /// Reference length (m) used for Knudsen/Reynolds context fields.
+    pub reference_length_m: f64,
+    /// Continuum method below the Mach handoff. Use `kind = "deck"`
+    /// to reuse the enclosing `[aero].deck` or `[aero.buildup]`.
+    pub continuum_low_mach: Box<AeroMethodConfig>,
+    /// Continuum method above the Mach handoff.
+    pub continuum_high_mach: Box<AeroMethodConfig>,
+    /// Free-molecular method for the high-Knudsen-number limit.
+    pub free_molecular: AeroFreeMolecularConfig,
+    /// Mach number where low/high continuum methods switch when no
+    /// Mach bridge is configured.
+    #[serde(default = "default_hybrid_mach_handoff")]
+    pub mach_handoff: f64,
+    /// Optional linear Mach bridge across the continuum-method handoff.
+    #[serde(default)]
+    pub mach_bridge: Option<AeroLinearMachBridgeConfig>,
+    /// Knudsen bridge blending continuum and free-molecular methods.
+    #[serde(default)]
+    pub bridge: AeroKnudsenBridgeConfig,
+}
+
+impl AeroHybridConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_positive(
+            &format!("{path}.reference_length_m"),
+            self.reference_length_m,
+        )?;
+        require_positive(&format!("{path}.mach_handoff"), self.mach_handoff)?;
+        self.continuum_low_mach
+            .validate(&format!("{path}.continuum_low_mach"))?;
+        self.continuum_high_mach
+            .validate(&format!("{path}.continuum_high_mach"))?;
+        self.free_molecular
+            .validate(&format!("{path}.free_molecular"))?;
+        if let Some(mach_bridge) = &self.mach_bridge {
+            mach_bridge.validate(&format!("{path}.mach_bridge"))?;
+        }
+        self.bridge.validate(&format!("{path}.bridge"))?;
+        Ok(())
+    }
+
+    fn uses_deck(&self) -> bool {
+        self.continuum_low_mach.uses_deck() || self.continuum_high_mach.uses_deck()
+    }
+}
+
+/// Linear Mach bridge parameters for hybrid aero handoff.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroLinearMachBridgeConfig {
+    /// Lower Mach end of the transition band.
+    #[serde(default = "default_hybrid_mach_bridge_lo")]
+    pub mach_lo: f64,
+    /// Upper Mach end of the transition band.
+    #[serde(default = "default_hybrid_mach_bridge_hi")]
+    pub mach_hi: f64,
+}
+
+impl AeroLinearMachBridgeConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_positive(&format!("{path}.mach_lo"), self.mach_lo)?;
+        require_positive(&format!("{path}.mach_hi"), self.mach_hi)?;
+        if self.mach_hi <= self.mach_lo {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.mach_hi"),
+                value: self.mach_hi,
+                rule: "must be greater than mach_lo",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Knudsen bridge-function selector for hybrid aero.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroKnudsenBridgeConfig {
+    /// Bridge kind: `cheng`, `erfc`, or `linear`.
+    #[serde(default = "default_hybrid_knudsen_bridge_kind")]
+    pub kind: String,
+    /// Width parameter for `kind = "erfc"`.
+    #[serde(default = "default_hybrid_erfc_sigma")]
+    pub sigma: f64,
+    /// Lower Knudsen end of the transition band for
+    /// `kind = "linear"`.
+    #[serde(default = "default_hybrid_kn_lo")]
+    pub kn_lo: f64,
+    /// Upper Knudsen end of the transition band for
+    /// `kind = "linear"`.
+    #[serde(default = "default_hybrid_kn_hi")]
+    pub kn_hi: f64,
+}
+
+impl Default for AeroKnudsenBridgeConfig {
+    fn default() -> Self {
+        Self {
+            kind: default_hybrid_knudsen_bridge_kind(),
+            sigma: default_hybrid_erfc_sigma(),
+            kn_lo: default_hybrid_kn_lo(),
+            kn_hi: default_hybrid_kn_hi(),
+        }
+    }
+}
+
+impl AeroKnudsenBridgeConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_supported(
+            &format!("{path}.kind"),
+            &self.kind,
+            &["cheng", "erfc", "linear"],
+        )?;
+        match self.kind.as_str() {
+            "cheng" => {}
+            "erfc" => require_positive(&format!("{path}.sigma"), self.sigma)?,
+            "linear" => {
+                require_positive(&format!("{path}.kn_lo"), self.kn_lo)?;
+                require_positive(&format!("{path}.kn_hi"), self.kn_hi)?;
+                if self.kn_hi <= self.kn_lo {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: format!("{path}.kn_hi"),
+                        value: self.kn_hi,
+                        rule: "must be greater than kn_lo",
+                    });
+                }
+            }
+            _ => unreachable!("validated bridge kind"),
+        }
+        Ok(())
+    }
+}
+
+const fn default_hybrid_mach_handoff() -> f64 {
+    4.0
+}
+
+const fn default_hybrid_mach_bridge_lo() -> f64 {
+    4.5
+}
+
+const fn default_hybrid_mach_bridge_hi() -> f64 {
+    5.5
+}
+
+fn default_hybrid_knudsen_bridge_kind() -> String {
+    "cheng".to_owned()
+}
+
+const fn default_hybrid_erfc_sigma() -> f64 {
+    1.5
+}
+
+const fn default_hybrid_kn_lo() -> f64 {
+    0.01
+}
+
+const fn default_hybrid_kn_hi() -> f64 {
+    10.0
 }
 
 const fn default_gamma() -> f64 {
@@ -5360,11 +5543,13 @@ pub enum EventTriggerConfig {
         /// Threshold mass fraction in `[0, 1]`.
         remaining: f64,
     },
-    /// Speed-magnitude crossing on acceleration through a target
-    /// velocity.
+    /// Speed-magnitude crossing through a target velocity.
     AtVelocity {
         /// Speed threshold (m/s).
         velocity_m_s: f64,
+        /// `false`: rising-edge crossing. `true`: falling-edge.
+        #[serde(default)]
+        falling: bool,
     },
     /// Deferred: rejected at parse time until atmosphere is
     /// wired into event evaluation.
@@ -5394,7 +5579,7 @@ impl EventTriggerConfig {
                 require_finite(&path("remaining"), *remaining)?;
                 require_in_range(&path("remaining"), *remaining, 0.0, 1.0)?;
             }
-            Self::AtVelocity { velocity_m_s } => {
+            Self::AtVelocity { velocity_m_s, .. } => {
                 require_positive(&path("velocity_m_s"), *velocity_m_s)?;
             }
             Self::AtDynamicPressure { .. } => {

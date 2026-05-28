@@ -1829,6 +1829,7 @@ struct AerothermalTelemetryChannels {
     q_rad: TelemetryChannel<f64>,
     h_aw: TelemetryChannel<f64>,
     recovery_temperature: TelemetryChannel<f64>,
+    stagnation_temperature: TelemetryChannel<f64>,
     knudsen: TelemetryChannel<f64>,
     wall_temperature: TelemetryChannel<f64>,
     backwall_temperature: TelemetryChannel<f64>,
@@ -2149,6 +2150,12 @@ impl RigidChannelSet {
                     "K",
                     None::<&str>,
                 )?,
+                stagnation_temperature: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "aerothermal.stagnation_temperature_k",
+                    "K",
+                    None::<&str>,
+                )?,
                 knudsen: TelemetryChannel::<f64>::new(
                     alloc(),
                     "aerothermal.knudsen",
@@ -2334,6 +2341,7 @@ impl RigidChannelSet {
             channels.push(aerothermal.q_rad.metadata().clone());
             channels.push(aerothermal.h_aw.metadata().clone());
             channels.push(aerothermal.recovery_temperature.metadata().clone());
+            channels.push(aerothermal.stagnation_temperature.metadata().clone());
             channels.push(aerothermal.knudsen.metadata().clone());
             channels.push(aerothermal.wall_temperature.metadata().clone());
             channels.push(aerothermal.backwall_temperature.metadata().clone());
@@ -2481,6 +2489,10 @@ where
         row.insert(
             &aerothermal_channels.recovery_temperature,
             sample.recovery_temperature_k,
+        )?;
+        row.insert(
+            &aerothermal_channels.stagnation_temperature,
+            sample.stagnation_temperature_k,
         )?;
         row.insert(&aerothermal_channels.knudsen, sample.knudsen)?;
         row.insert(
@@ -2794,6 +2806,12 @@ event = "entry_interface"
         assert!(
             heat_flux.iter().any(|value| *value > 0.0),
             "live aerothermal driver should emit positive heating: {heat_flux:?}"
+        );
+
+        let stagnation_temperature = f64_column(&outcome, "aerothermal.stagnation_temperature_k");
+        assert!(
+            stagnation_temperature.iter().any(|value| *value > 0.0),
+            "live aerothermal driver should emit stagnation temperature: {stagnation_temperature:?}"
         );
 
         let mass_loss = f64_column(&outcome, "mass.aerothermal_mass_loss_kg_s");

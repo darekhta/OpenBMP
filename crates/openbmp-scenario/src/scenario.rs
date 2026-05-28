@@ -2779,6 +2779,52 @@ sweep_rad = 0.52
     }
 
     #[test]
+    fn parses_hybrid_aero_method_with_buildup_deck_source() {
+        let toml = minimal_with_buildup_aero()
+            + r#"
+
+[aero.method]
+kind = "hybrid"
+
+[aero.method.hybrid]
+reference_length_m = 0.2
+mach_handoff = 4.0
+
+[aero.method.hybrid.continuum_low_mach]
+kind = "deck"
+
+[aero.method.hybrid.continuum_high_mach]
+kind = "modified_newtonian"
+
+[aero.method.hybrid.continuum_high_mach.modified_newtonian]
+cp_max = 2.0
+reference_area_m2 = 0.031415926535897934
+reference_length_m = 0.2
+
+[aero.method.hybrid.free_molecular]
+reference_area_m2 = 0.031415926535897934
+accommodation_normal = 1.0
+accommodation_tangential = 1.0
+
+[aero.method.hybrid.bridge]
+kind = "linear"
+kn_lo = 0.01
+kn_hi = 10.0
+"#;
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let method = scenario
+            .document
+            .aero
+            .as_ref()
+            .and_then(|aero| aero.method.as_ref())
+            .expect("hybrid method parsed");
+        assert_eq!(method.kind, "hybrid");
+        assert!(method.hybrid.as_ref().is_some_and(|hybrid| {
+            hybrid.continuum_low_mach.kind == "deck" && hybrid.bridge.kind == "linear"
+        }));
+    }
+
+    #[test]
     fn rejects_aero_deck_and_buildup_together() {
         let toml = minimal_with_buildup_aero().replace(
             "[aero]\n",
@@ -3064,8 +3110,34 @@ action  = { kind = "stop", label = "burnout" }
         let mission = scenario.document.mission.as_ref().expect("mission");
         assert!(matches!(
             mission.events[0].trigger,
-            EventTriggerConfig::AtVelocity { velocity_m_s }
-                if velocity_m_s.to_bits() == 1850.0_f64.to_bits()
+            EventTriggerConfig::AtVelocity { velocity_m_s, falling }
+                if velocity_m_s.to_bits() == 1850.0_f64.to_bits() && !falling
+        ));
+    }
+
+    #[test]
+    fn parses_at_velocity_falling_trigger() {
+        let scenario = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "descent"
+
+[[mission.phases]]
+id    = "descent"
+label = "descent"
+
+[[mission.events]]
+id      = "terminal_velocity"
+trigger = { kind = "at_velocity", velocity_m_s = 250.0, falling = true }
+action  = { kind = "stop", label = "terminal" }
+"#,
+        ))
+        .expect("parse");
+        let mission = scenario.document.mission.as_ref().expect("mission");
+        assert!(matches!(
+            mission.events[0].trigger,
+            EventTriggerConfig::AtVelocity { velocity_m_s, falling }
+                if velocity_m_s.to_bits() == 250.0_f64.to_bits() && falling
         ));
     }
 

@@ -183,7 +183,8 @@ fn at_velocity_fires_on_upward_speed_crossing() {
     let s = step(curr, Some(prev));
     assert!(
         BuiltInEventTrigger::AtVelocity {
-            velocity_m_s: 250.0
+            velocity_m_s: 250.0,
+            falling: false,
         }
         .fired(&s, ANY_TIME, ANY_STEP)
     );
@@ -196,7 +197,22 @@ fn at_velocity_does_not_fire_on_downward_speed_crossing() {
     let s = step(curr, Some(prev));
     assert!(
         !BuiltInEventTrigger::AtVelocity {
-            velocity_m_s: 250.0
+            velocity_m_s: 250.0,
+            falling: false,
+        }
+        .fired(&s, ANY_TIME, ANY_STEP)
+    );
+}
+
+#[test]
+fn at_velocity_falling_fires_on_downward_speed_crossing() {
+    let prev = scalars(1.0, 50.0, 100.0, 255.0, 1.0, 0.0);
+    let curr = scalars(1.1, 60.0, 100.0, 245.0, 1.0, 0.0);
+    let s = step(curr, Some(prev));
+    assert!(
+        BuiltInEventTrigger::AtVelocity {
+            velocity_m_s: 250.0,
+            falling: true,
         }
         .fired(&s, ANY_TIME, ANY_STEP)
     );
