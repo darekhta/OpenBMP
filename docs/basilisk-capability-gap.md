@@ -66,6 +66,9 @@ OpenBMP implementation slice.
 - Added pinned leap-second table ingestion for deterministic UTC -> TT
   -> TDB and TT -> TDB ephemeris epoch conversion. SPK ephemerides can
   now use `TDB`, `TT`, or `UTC` epochs, with UTC requiring the table.
+- Added NAIF `KPL/LSK` leap-second text-kernel ingestion through the
+  pinned `epoch.leap_second_table` path, so UTC SPK epochs can use the
+  standard SPICE leap-second kernel format.
 - Added compact IAU 1976 mean precession in the `iers-tabulated`
   ECI/ECEF path before Earth rotation and polar motion.
 - Added IAU 1980 nutation in the `iers-tabulated` celestial-frame path,
@@ -75,9 +78,9 @@ OpenBMP implementation slice.
 
 - SPK ingestion is intentionally limited to geometric state chains from
   binary SPK/BSP kernels. It does not yet implement light-time
-  correction, stellar aberration, text kernels, non-J2000 frame
-  transforms beyond built-in `ECLIPJ2000`, or the remaining
-  generic/analytic SPK segment types.
+  correction, stellar aberration, generic text kernels beyond NAIF LSK
+  leap-second files, non-J2000 frame transforms beyond built-in
+  `ECLIPJ2000`, or the remaining generic/analytic SPK segment types.
 - The IERS path is intentionally compact: it does not yet implement a
   full SPICE frame chain, IAU 2006/2000A CIO-based transforms, or
   precession/nutation rate terms in velocity transport.
@@ -113,3 +116,6 @@ OpenBMP implementation slice.
   as `J2000` and `ECLIPJ2000` and distinguishes them from FK/PCK/CK
   frame chains:
   https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/frames.html
+- NASA NAIF generic kernels include the current leap-second kernel
+  (`LSK`) used by SPICE time conversion workflows:
+  https://naif.jpl.nasa.gov/naif/data_generic.html

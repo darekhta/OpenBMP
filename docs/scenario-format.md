@@ -376,7 +376,9 @@ transforms, or precession/nutation rate terms in velocity transport.
 
 When `epoch.leap_second_table` is declared, the runner loads it through
 the same resolved-file path and optional SHA-256 pin as other external
-inputs. The deterministic TOML format is:
+inputs. The field accepts either the deterministic OpenBMP TOML format
+or a NAIF `KPL/LSK` leap-second text kernel containing
+`DELTET/DELTA_AT` entries. The OpenBMP TOML format is:
 
 ```toml
 format = "openbmp-leap-seconds-v1"
@@ -394,7 +396,9 @@ Entries must be strictly time-ordered. UTC ephemeris epochs use the
 latest entry at or before `epoch.iso8601` to convert UTC -> TT -> TDB;
 TT epochs are converted to TDB with the runner's compact deterministic
 periodic correction. SPK ephemeris epochs may use `TDB`, `TT`, or `UTC`,
-but `UTC` requires a leap-second table.
+but `UTC` requires `epoch.leap_second_table` pointing at either an
+OpenBMP TOML leap-second table or a NAIF LSK file such as
+`naif0012.tls`.
 
 ## Model Ordering
 
@@ -537,7 +541,8 @@ match the file list length. Later files take precedence over earlier
 files for overlapping SPK segments. The SPK reader evaluates seconds
 past J2000 on the ephemeris-time/TDB axis, so `[epoch].scale` may be
 `"TDB"`, `"TT"`, or `"UTC"`; `"UTC"` requires
-`epoch.leap_second_table`.
+`epoch.leap_second_table` as either OpenBMP TOML or a NAIF LSK text
+kernel.
 
 ```toml
 [epoch]
@@ -558,7 +563,7 @@ wind          = "none"
 [epoch]
 scale = "UTC"
 iso8601 = "2017-01-01T00:00:00Z"
-leap_second_table = "data/time/leap_seconds_2026a.toml"
+leap_second_table = "data/time/naif0012.tls"
 leap_second_table_sha256 = "<64 hex chars>"
 
 [environment]
@@ -593,9 +598,9 @@ inside each file and preserves load-order precedence across a file
 list, so later files can override earlier overlapping segments. It
 combines target/center chains such as Solar-System-Barycenter ->
 Earth-Moon Barycenter -> Earth/Moon. It does not yet implement
-light-time, stellar aberration, text kernels, non-J2000 frame
-transforms beyond built-in `ECLIPJ2000`, or the remaining SPK segment
-types.
+light-time, stellar aberration, generic text kernels beyond NAIF LSK
+leap-second files, non-J2000 frame transforms beyond built-in
+`ECLIPJ2000`, or the remaining SPK segment types.
 
 ### Frames local origin
 

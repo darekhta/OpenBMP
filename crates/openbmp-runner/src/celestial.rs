@@ -367,6 +367,13 @@ fn parse_leap_second_table(resolved: &ResolvedFile) -> Result<LeapSecondTable, R
         std::str::from_utf8(&resolved.bytes).map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("epoch.leap_second_table is not valid UTF-8: {err}"),
         })?;
+    if text.trim_start().starts_with("KPL/LSK") || text.contains("DELTET/DELTA_AT") {
+        return parse_naif_leap_second_kernel(text);
+    }
+    parse_openbmp_leap_second_table(text)
+}
+
+fn parse_openbmp_leap_second_table(text: &str) -> Result<LeapSecondTable, RunnerError> {
     let value: toml::Value =
         toml::from_str(text).map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("epoch.leap_second_table TOML parse failed: {err}"),
@@ -394,6 +401,59 @@ fn parse_leap_second_table(resolved: &ResolvedFile) -> Result<LeapSecondTable, R
         parsed.push(parse_leap_second_entry(index, entry)?);
     }
     LeapSecondTable::new(parsed)
+}
+
+fn parse_naif_leap_second_kernel(text: &str) -> Result<LeapSecondTable, RunnerError> {
+    let data = if let Some((_, after_begin)) = text.split_once("\\begindata") {
+        after_begin
+            .split_once("\\begintext")
+            .map_or(after_begin, |(before_end, _)| before_end)
+    } else {
+        text
+    };
+    let assignment = data
+        .split_once("DELTET/DELTA_AT")
+        .map(|(_, after)| after)
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "epoch.leap_second_table NAIF LSK missing DELTET/DELTA_AT".to_owned(),
+        })?;
+    let after_equals = assignment
+        .split_once('=')
+        .map(|(_, after)| after)
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "epoch.leap_second_table NAIF LSK DELTET/DELTA_AT missing `=`".to_owned(),
+        })?;
+    let body = after_equals
+        .split_once('(')
+        .and_then(|(_, after_open)| after_open.split_once(')').map(|(inner, _)| inner))
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "epoch.leap_second_table NAIF LSK DELTET/DELTA_AT missing parenthesized entries"
+                .to_owned(),
+        })?;
+    let normalized = body.replace(',', " ");
+    let mut tokens = normalized.split_whitespace();
+    let mut entries = Vec::new();
+    while let Some(delta_at) = tokens.next() {
+        let Some(effective_utc) = tokens.next() else {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "epoch.leap_second_table NAIF LSK DELTET/DELTA_AT has an unmatched value"
+                    .to_owned(),
+            });
+        };
+        let tai_minus_utc_s =
+            delta_at
+                .parse::<f64>()
+                .map_err(|_| RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "epoch.leap_second_table NAIF LSK DELTET/DELTA_AT value `{delta_at}` is not numeric"
+                    ),
+                })?;
+        entries.push(LeapSecondEntry {
+            effective_utc_julian_date: parse_naif_lsk_epoch(effective_utc)?,
+            tai_minus_utc_s,
+        });
+    }
+    LeapSecondTable::new(entries)
 }
 
 fn parse_leap_second_entry(
@@ -434,6 +494,71 @@ fn leap_number_at(
         toml::Value::Integer(v) => Ok(*v as f64),
         _ => Err(RunnerError::UnsupportedScenario {
             what: format!("epoch.leap_second_table entries[{index}].{key} must be numeric"),
+        }),
+    }
+}
+
+fn parse_naif_lsk_epoch(value: &str) -> Result<f64, RunnerError> {
+    let trimmed =
+        value
+            .trim()
+            .strip_prefix('@')
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: format!(
+                    "epoch.leap_second_table NAIF LSK date `{value}` must start with `@`"
+                ),
+            })?;
+    let mut parts = trimmed.split('-');
+    let year = parts
+        .next()
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table NAIF LSK date `{value}` is missing year"),
+        })?;
+    let month = parts
+        .next()
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table NAIF LSK date `{value}` is missing month"),
+        })?;
+    let day = parts
+        .next()
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table NAIF LSK date `{value}` is missing day"),
+        })?;
+    if parts.next().is_some() {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table NAIF LSK date `{value}` has extra fields"),
+        });
+    }
+    let year = year
+        .parse::<i32>()
+        .map_err(|_| RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table NAIF LSK date `{value}` has invalid year"),
+        })?;
+    let month = naif_lsk_month_number(month)?;
+    let day = day
+        .parse::<u32>()
+        .map_err(|_| RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table NAIF LSK date `{value}` has invalid day"),
+        })?;
+    julian_date_from_gregorian(year, month, day, 0, 0, 0.0, value)
+}
+
+fn naif_lsk_month_number(month: &str) -> Result<u32, RunnerError> {
+    match month.to_ascii_uppercase().as_str() {
+        "JAN" => Ok(1),
+        "FEB" => Ok(2),
+        "MAR" => Ok(3),
+        "APR" => Ok(4),
+        "MAY" => Ok(5),
+        "JUN" => Ok(6),
+        "JUL" => Ok(7),
+        "AUG" => Ok(8),
+        "SEP" => Ok(9),
+        "OCT" => Ok(10),
+        "NOV" => Ok(11),
+        "DEC" => Ok(12),
+        _ => Err(RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table NAIF LSK month `{month}` is not supported"),
         }),
     }
 }
@@ -558,6 +683,16 @@ mod tests {
     }
 
     #[test]
+    fn naif_lsk_converts_utc_epoch_to_tdb_axis() {
+        let table = parse_leap_second_table(&resolved_file("naif0012.tls", NAIF_LSK))
+            .expect("parse NAIF leap-second kernel");
+        let utc = parse_iso8601_julian_date("2017-01-01T00:00:00Z").unwrap();
+        let tdb = utc_to_tdb_julian_date(utc, &table).unwrap();
+        let offset_s = (tdb - utc) * SECONDS_PER_DAY;
+        assert!((69.18..69.19).contains(&offset_s));
+    }
+
+    #[test]
     fn builds_spk_third_body_ephemeris_from_resolved_file() {
         let scenario = Scenario::from_toml_str(SPK_THIRD_BODY_SCENARIO).unwrap();
         let mut files = BTreeMap::new();
@@ -618,6 +753,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn builds_spk_third_body_ephemeris_from_utc_epoch_with_naif_lsk() {
+        let toml = SPK_THIRD_BODY_SCENARIO
+            .replace("scale = \"TDB\"", "scale = \"UTC\"")
+            .replace(
+                "iso8601 = \"2000-01-01T12:00:00Z\"",
+                "iso8601 = \"2017-01-01T00:00:00Z\"\nleap_second_table = \"naif0012.tls\"",
+            );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(
+            "environment.ephemeris_file".to_owned(),
+            resolved_bytes("synthetic.bsp", synthetic_spk()),
+        );
+        files.insert(
+            "epoch.leap_second_table".to_owned(),
+            resolved_file("naif0012.tls", NAIF_LSK),
+        );
+        let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
+        match gravity.ephemeris() {
+            RuntimeEphemeris::Spk(spk) => assert_eq!(spk.segment_count(), 4),
+            other => panic!("expected SPK ephemeris, got {other:?}"),
+        }
+    }
+
     const LEAP_SECOND_TABLE: &str = r#"
 format = "openbmp-leap-seconds-v1"
 
@@ -628,6 +788,23 @@ tai_minus_utc_s = 36
 [[entries]]
 effective_utc = "2017-01-01T00:00:00Z"
 tai_minus_utc_s = 37
+"#;
+
+    const NAIF_LSK: &str = r#"
+KPL/LSK
+
+\begindata
+
+DELTET/DELTA_T_A = 32.184
+DELTET/K         = 1.657D-3
+DELTET/EB        = 1.671D-2
+DELTET/M         = ( 6.239996D0 1.99096871D-7 )
+DELTET/DELTA_AT  = ( 10, @1972-JAN-1
+                     36, @2015-JUL-1
+                     37,
+                     @2017-JAN-1 )
+
+\begintext
 "#;
 
     const SPK_THIRD_BODY_SCENARIO: &str = r#"

@@ -66,7 +66,9 @@ Rules:
 - The current `iers-tabulated` runner path requires `epoch.scale = "UTC"` and
   converts UTC to UT1 using a pinned EOP table.
 - Ephemeris paths convert `UTC` or `TT` epochs onto the TDB axis. UTC
-  conversion uses the pinned leap-second table; SPK UTC epochs require it.
+  conversion uses the pinned `epoch.leap_second_table`, which may be an
+  OpenBMP TOML table or a NAIF `KPL/LSK` leap-second text kernel. SPK UTC
+  epochs require it.
 - Leap-second and Earth-orientation tables are data files and require
   provenance.
 

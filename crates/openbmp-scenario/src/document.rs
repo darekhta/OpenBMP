@@ -2480,7 +2480,9 @@ pub struct EpochConfig {
     pub scale: String,
     /// ISO-8601 epoch timestamp.
     pub iso8601: String,
-    /// Optional leap-second table path.
+    /// Optional leap-second table path. The runner accepts either the
+    /// deterministic OpenBMP TOML table or a NAIF `KPL/LSK` text
+    /// kernel containing `DELTET/DELTA_AT`.
     pub leap_second_table: Option<PathBuf>,
     /// Optional SHA-256 pin for [`Self::leap_second_table`].
     pub leap_second_table_sha256: Option<String>,
