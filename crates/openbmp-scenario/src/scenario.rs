@@ -227,6 +227,13 @@ impl Scenario {
             resolved.verify_pin(epoch.eop_sha256.as_deref())?;
             files.insert("epoch.eop".to_owned(), resolved);
         }
+        if let Some(epoch) = &self.document.epoch
+            && let Some(leap_second_table) = &epoch.leap_second_table
+        {
+            let resolved = ResolvedFile::load(self.resolve_path(leap_second_table))?;
+            resolved.verify_pin(epoch.leap_second_table_sha256.as_deref())?;
+            files.insert("epoch.leap_second_table".to_owned(), resolved);
+        }
 
         if let Some(ephemeris_file) = &self.document.environment.ephemeris_file {
             let resolved = ResolvedFile::load(self.resolve_path(ephemeris_file))?;
@@ -2965,6 +2972,50 @@ profile = "iers-tabulated"
             .expect("parse iers scenario");
         let files = scenario.resolved_files().expect("resolve files");
         assert!(files.contains_key("epoch.eop"));
+    }
+
+    #[test]
+    fn resolved_files_includes_epoch_leap_second_table() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("leaps.toml"),
+            "format = \"openbmp-leap-seconds-v1\"\n",
+        )
+        .expect("write leaps");
+        let toml = MINIMAL.to_owned()
+            + r#"
+[epoch]
+scale = "UTC"
+iso8601 = "2017-01-01T00:00:00Z"
+leap_second_table = "leaps.toml"
+"#;
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(dir.path()))
+            .expect("parse leap-second scenario");
+        let files = scenario.resolved_files().expect("resolve files");
+        assert!(files.contains_key("epoch.leap_second_table"));
+    }
+
+    #[test]
+    fn spk_utc_epoch_requires_leap_second_table() {
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665",
+                "gravity       = \"third_body\"\ngravity_base  = \"point_mass\"\nmu_m3_s2      = 3.986004418e14\nthird_bodies  = [\"sun\"]\nephemeris     = \"spk\"\nephemeris_file = \"synthetic.bsp\"",
+            )
+            + r#"
+[epoch]
+scale = "UTC"
+iso8601 = "2017-01-01T00:00:00Z"
+"#;
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "epoch.leap_second_table"),
+            "got {err:?}",
+        );
     }
 
     #[test]

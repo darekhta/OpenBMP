@@ -254,11 +254,23 @@ impl ScenarioDocument {
                     role: ModelRole::Gravity,
                     name: "third_body".to_owned(),
                 })?;
-            if epoch.scale.to_ascii_uppercase() != "TDB" {
-                return Err(ScenarioError::UnsupportedValue {
-                    field: "epoch.scale".to_owned(),
-                    value: epoch.scale.clone(),
-                });
+            match epoch.scale.to_ascii_uppercase().as_str() {
+                "TDB" | "TT" => {}
+                "UTC" => {
+                    if epoch.leap_second_table.is_none() {
+                        return Err(ScenarioError::MissingRequiredField {
+                            field: "epoch.leap_second_table".to_owned(),
+                            role: ModelRole::Gravity,
+                            name: "third_body spk ephemeris".to_owned(),
+                        });
+                    }
+                }
+                _ => {
+                    return Err(ScenarioError::UnsupportedValue {
+                        field: "epoch.scale".to_owned(),
+                        value: epoch.scale.clone(),
+                    });
+                }
             }
         }
         self.validate_frame_epoch_requirements()?;
@@ -2470,6 +2482,8 @@ pub struct EpochConfig {
     pub iso8601: String,
     /// Optional leap-second table path.
     pub leap_second_table: Option<PathBuf>,
+    /// Optional SHA-256 pin for [`Self::leap_second_table`].
+    pub leap_second_table_sha256: Option<String>,
     /// Optional Earth-orientation parameter table path.
     pub eop: Option<PathBuf>,
     /// Optional SHA-256 pin for [`Self::eop`].
@@ -2480,6 +2494,13 @@ impl EpochConfig {
     fn validate(&self) -> Result<(), ScenarioError> {
         require_non_empty("epoch.scale", &self.scale)?;
         require_non_empty("epoch.iso8601", &self.iso8601)?;
+        if self.leap_second_table_sha256.is_some() && self.leap_second_table.is_none() {
+            return Err(ScenarioError::UnexpectedField {
+                field: "epoch.leap_second_table_sha256".to_owned(),
+                role: ModelRole::Frame,
+                name: "epoch without leap_second_table".to_owned(),
+            });
+        }
         if self.eop_sha256.is_some() && self.eop.is_none() {
             return Err(ScenarioError::UnexpectedField {
                 field: "epoch.eop_sha256".to_owned(),

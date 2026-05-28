@@ -51,6 +51,7 @@ Absolute time is optional scenario metadata:
 scale = "UTC"
 iso8601 = "2026-01-01T00:00:00Z"
 leap_second_table = "data/time/leap_seconds_2026a.toml"
+leap_second_table_sha256 = "<64 hex chars>"
 eop = "data/earth_orientation/iers_bulletin_b_2026_01.toml"
 eop_sha256 = "<64 hex chars>"
 ```
@@ -64,6 +65,8 @@ Rules:
 - UTC is used only at input/output boundaries.
 - The current `iers-tabulated` runner path requires `epoch.scale = "UTC"` and
   converts UTC to UT1 using a pinned EOP table.
+- Ephemeris paths convert `UTC` or `TT` epochs onto the TDB axis. UTC
+  conversion uses the pinned leap-second table; SPK UTC epochs require it.
 - Leap-second and Earth-orientation tables are data files and require
   provenance.
 
@@ -96,8 +99,8 @@ y_pole_arcsec = 0.312
 Sample times are scenario-relative seconds and must cover the whole
 simulation interval. The transform computes IAU Earth Rotation Angle from the
 UTC scenario epoch plus interpolated UT1-UTC, then applies a compact
-polar-motion rotation. Precession, nutation, leap-second table conversion, and
-SPICE frame chains remain future high-fidelity work.
+polar-motion rotation. Precession, nutation, and SPICE frame chains remain
+future high-fidelity work.
 
 ## Transform Rules
 

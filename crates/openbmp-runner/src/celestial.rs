@@ -12,6 +12,10 @@ use openbmp_scenario::{ResolvedFile, ScenarioDocument};
 
 use crate::error::RunnerError;
 
+const SECONDS_PER_DAY: f64 = 86_400.0;
+const TT_MINUS_TAI_S: f64 = 32.184;
+const DEG_TO_RAD: f64 = std::f64::consts::PI / 180.0;
+
 /// Concrete central-gravity variants available under
 /// `environment.gravity = "third_body"`.
 #[derive(Copy, Clone, Debug)]
@@ -106,27 +110,21 @@ fn build_ephemeris(
         .unwrap_or("low_precision_sun_moon");
     match ephemeris_kind {
         "low_precision_sun_moon" => Ok(RuntimeEphemeris::LowPrecisionSunMoon(
-            LowPrecisionSunMoonEphemeris::new(epoch_julian_date(document)?)?,
+            LowPrecisionSunMoonEphemeris::new(epoch_tdb_julian_date(
+                document,
+                resolved_files,
+                false,
+            )?)?,
         )),
         "spk" => {
-            let epoch =
-                document
-                    .epoch
-                    .as_ref()
-                    .ok_or_else(|| RunnerError::UnsupportedScenario {
-                        what: "environment.ephemeris = \"spk\" requires [epoch]".to_owned(),
-                    })?;
-            if epoch.scale.to_ascii_uppercase() != "TDB" {
+            if document.epoch.is_none() {
                 return Err(RunnerError::UnsupportedScenario {
-                    what: format!(
-                        "environment.ephemeris = \"spk\" requires epoch.scale = \"TDB\"; got \"{}\"",
-                        epoch.scale
-                    ),
+                    what: "environment.ephemeris = \"spk\" requires [epoch]".to_owned(),
                 });
             }
             let kernels = resolved_spk_kernels(document, resolved_files)?;
             Ok(RuntimeEphemeris::Spk(SpkEphemeris::from_kernels(
-                parse_iso8601_julian_date(&epoch.iso8601)?,
+                epoch_tdb_julian_date(document, resolved_files, true)?,
                 kernels,
             )?))
         }
@@ -229,20 +227,37 @@ fn parse_celestial_body(label: &str) -> Result<CelestialBody, RunnerError> {
     }
 }
 
-fn epoch_julian_date(document: &ScenarioDocument) -> Result<f64, RunnerError> {
+fn epoch_tdb_julian_date(
+    document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+    require_leap_seconds_for_utc: bool,
+) -> Result<f64, RunnerError> {
     let Some(epoch) = &document.epoch else {
         return Ok(J2000_JULIAN_DATE);
     };
     let scale = epoch.scale.to_ascii_uppercase();
-    if !matches!(scale.as_str(), "UTC" | "TT" | "TDB") {
-        return Err(RunnerError::UnsupportedScenario {
+    let jd = parse_iso8601_julian_date(&epoch.iso8601)?;
+    match scale.as_str() {
+        "TDB" => Ok(jd),
+        "TT" => Ok(tt_to_tdb_julian_date(jd)),
+        "UTC" => {
+            let Some(table) = resolved_leap_second_table(resolved_files)? else {
+                if require_leap_seconds_for_utc {
+                    return Err(RunnerError::UnsupportedScenario {
+                        what: "epoch.scale = \"UTC\" requires resolved epoch.leap_second_table for TDB ephemeris conversion".to_owned(),
+                    });
+                }
+                return Ok(jd);
+            };
+            Ok(utc_to_tdb_julian_date(jd, &table)?)
+        }
+        _ => Err(RunnerError::UnsupportedScenario {
             what: format!(
-                "epoch.scale = {} is not supported by low_precision_sun_moon ephemeris",
+                "epoch.scale = {} is not supported by ephemeris conversion",
                 epoch.scale
             ),
-        });
+        }),
     }
-    parse_iso8601_julian_date(&epoch.iso8601)
 }
 
 pub(crate) fn parse_iso8601_julian_date(value: &str) -> Result<f64, RunnerError> {
@@ -287,6 +302,157 @@ pub(crate) fn parse_iso8601_julian_date(value: &str) -> Result<f64, RunnerError>
         });
     }
     julian_date_from_gregorian(year, month, day, hour, minute, second, value)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LeapSecondEntry {
+    effective_utc_julian_date: f64,
+    tai_minus_utc_s: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LeapSecondTable {
+    entries: Vec<LeapSecondEntry>,
+}
+
+impl LeapSecondTable {
+    fn new(entries: Vec<LeapSecondEntry>) -> Result<Self, RunnerError> {
+        if entries.is_empty() {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "epoch.leap_second_table requires at least one [[entries]] row".to_owned(),
+            });
+        }
+        for entry in &entries {
+            if !entry.effective_utc_julian_date.is_finite() || !entry.tai_minus_utc_s.is_finite() {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: "epoch.leap_second_table entries must be finite".to_owned(),
+                });
+            }
+        }
+        for pair in entries.windows(2) {
+            if pair[0].effective_utc_julian_date >= pair[1].effective_utc_julian_date {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: "epoch.leap_second_table entries must be strictly time-ordered"
+                        .to_owned(),
+                });
+            }
+        }
+        Ok(Self { entries })
+    }
+
+    fn tai_minus_utc_s(&self, utc_julian_date: f64) -> Result<f64, RunnerError> {
+        let index = self
+            .entries
+            .partition_point(|entry| entry.effective_utc_julian_date <= utc_julian_date);
+        if index == 0 {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "epoch.leap_second_table does not cover epoch.iso8601".to_owned(),
+            });
+        }
+        Ok(self.entries[index - 1].tai_minus_utc_s)
+    }
+}
+
+fn resolved_leap_second_table(
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<Option<LeapSecondTable>, RunnerError> {
+    let Some(resolved) = resolved_files.get("epoch.leap_second_table") else {
+        return Ok(None);
+    };
+    parse_leap_second_table(resolved).map(Some)
+}
+
+fn parse_leap_second_table(resolved: &ResolvedFile) -> Result<LeapSecondTable, RunnerError> {
+    let text =
+        std::str::from_utf8(&resolved.bytes).map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table is not valid UTF-8: {err}"),
+        })?;
+    let value: toml::Value =
+        toml::from_str(text).map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table TOML parse failed: {err}"),
+        })?;
+    if let Some(format) = value.get("format") {
+        let format = format
+            .as_str()
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "epoch.leap_second_table format must be a string".to_owned(),
+            })?;
+        if format != "openbmp-leap-seconds-v1" {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!("epoch.leap_second_table format \"{format}\" is not supported"),
+            });
+        }
+    }
+    let entries = value
+        .get("entries")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "epoch.leap_second_table requires [[entries]] rows".to_owned(),
+        })?;
+    let mut parsed = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        parsed.push(parse_leap_second_entry(index, entry)?);
+    }
+    LeapSecondTable::new(parsed)
+}
+
+fn parse_leap_second_entry(
+    index: usize,
+    entry: &toml::Value,
+) -> Result<LeapSecondEntry, RunnerError> {
+    let table = entry
+        .as_table()
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table entries[{index}] must be a table"),
+        })?;
+    let effective_utc = table
+        .get("effective_utc")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table entries[{index}].effective_utc is required"),
+        })?;
+    let tai_minus_utc_s = leap_number_at(table, "tai_minus_utc_s", index)?;
+    Ok(LeapSecondEntry {
+        effective_utc_julian_date: parse_iso8601_julian_date(effective_utc)?,
+        tai_minus_utc_s,
+    })
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn leap_number_at(
+    table: &toml::map::Map<String, toml::Value>,
+    key: &str,
+    index: usize,
+) -> Result<f64, RunnerError> {
+    let value = table
+        .get(key)
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table entries[{index}].{key} is required"),
+        })?;
+    match value {
+        toml::Value::Float(v) => Ok(*v),
+        toml::Value::Integer(v) => Ok(*v as f64),
+        _ => Err(RunnerError::UnsupportedScenario {
+            what: format!("epoch.leap_second_table entries[{index}].{key} must be numeric"),
+        }),
+    }
+}
+
+fn utc_to_tdb_julian_date(
+    utc_julian_date: f64,
+    leap_seconds: &LeapSecondTable,
+) -> Result<f64, RunnerError> {
+    let tai_minus_utc_s = leap_seconds.tai_minus_utc_s(utc_julian_date)?;
+    let tt_julian_date = utc_julian_date + (tai_minus_utc_s + TT_MINUS_TAI_S) / SECONDS_PER_DAY;
+    Ok(tt_to_tdb_julian_date(tt_julian_date))
+}
+
+fn tt_to_tdb_julian_date(tt_julian_date: f64) -> f64 {
+    let days_since_j2000 = tt_julian_date - J2000_JULIAN_DATE;
+    let mean_anomaly_rad = (357.53 + 0.985_600_3 * days_since_j2000) * DEG_TO_RAD;
+    let tdb_minus_tt_s =
+        0.001_657 * mean_anomaly_rad.sin() + 0.000_013_85 * (2.0 * mean_anomaly_rad).sin();
+    tt_julian_date + tdb_minus_tt_s / SECONDS_PER_DAY
 }
 
 fn parse_i32(part: Option<&str>, original: &str, field: &str) -> Result<i32, RunnerError> {
@@ -382,16 +548,22 @@ mod tests {
     }
 
     #[test]
+    fn leap_second_table_converts_utc_epoch_to_tdb_axis() {
+        let table = parse_leap_second_table(&resolved_file("leaps.toml", LEAP_SECOND_TABLE))
+            .expect("parse leap-second table");
+        let utc = parse_iso8601_julian_date("2017-01-01T00:00:00Z").unwrap();
+        let tdb = utc_to_tdb_julian_date(utc, &table).unwrap();
+        let offset_s = (tdb - utc) * SECONDS_PER_DAY;
+        assert!((69.18..69.19).contains(&offset_s));
+    }
+
+    #[test]
     fn builds_spk_third_body_ephemeris_from_resolved_file() {
         let scenario = Scenario::from_toml_str(SPK_THIRD_BODY_SCENARIO).unwrap();
         let mut files = BTreeMap::new();
         files.insert(
             "environment.ephemeris_file".to_owned(),
-            ResolvedFile {
-                path: PathBuf::from("synthetic.bsp"),
-                sha256_hex: "not-used-in-unit-test".to_owned(),
-                bytes: synthetic_spk(),
-            },
+            resolved_bytes("synthetic.bsp", synthetic_spk()),
         );
         let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
         match gravity.ephemeris() {
@@ -411,11 +583,7 @@ mod tests {
         for (index, name) in ["base.bsp", "override.bsp"].iter().enumerate() {
             files.insert(
                 format!("environment.ephemeris_files[{index}]"),
-                ResolvedFile {
-                    path: PathBuf::from(name),
-                    sha256_hex: "not-used-in-unit-test".to_owned(),
-                    bytes: synthetic_spk(),
-                },
+                resolved_bytes(name, synthetic_spk()),
             );
         }
         let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
@@ -424,6 +592,43 @@ mod tests {
             other => panic!("expected SPK ephemeris, got {other:?}"),
         }
     }
+
+    #[test]
+    fn builds_spk_third_body_ephemeris_from_utc_epoch_with_leap_seconds() {
+        let toml = SPK_THIRD_BODY_SCENARIO
+            .replace("scale = \"TDB\"", "scale = \"UTC\"")
+            .replace(
+                "iso8601 = \"2000-01-01T12:00:00Z\"",
+                "iso8601 = \"2017-01-01T00:00:00Z\"\nleap_second_table = \"leaps.toml\"",
+            );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(
+            "environment.ephemeris_file".to_owned(),
+            resolved_bytes("synthetic.bsp", synthetic_spk()),
+        );
+        files.insert(
+            "epoch.leap_second_table".to_owned(),
+            resolved_file("leaps.toml", LEAP_SECOND_TABLE),
+        );
+        let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
+        match gravity.ephemeris() {
+            RuntimeEphemeris::Spk(spk) => assert_eq!(spk.segment_count(), 4),
+            other => panic!("expected SPK ephemeris, got {other:?}"),
+        }
+    }
+
+    const LEAP_SECOND_TABLE: &str = r#"
+format = "openbmp-leap-seconds-v1"
+
+[[entries]]
+effective_utc = "2015-07-01T00:00:00Z"
+tai_minus_utc_s = 36
+
+[[entries]]
+effective_utc = "2017-01-01T00:00:00Z"
+tai_minus_utc_s = 37
+"#;
 
     const SPK_THIRD_BODY_SCENARIO: &str = r#"
 openbmp.scenario = 3
@@ -548,6 +753,18 @@ require_monotonic_time = true
             }
         }
         bytes
+    }
+
+    fn resolved_file(path: &str, text: &str) -> ResolvedFile {
+        resolved_bytes(path, text.as_bytes().to_vec())
+    }
+
+    fn resolved_bytes(path: &str, bytes: Vec<u8>) -> ResolvedFile {
+        ResolvedFile {
+            path: PathBuf::from(path),
+            sha256_hex: "not-used-in-unit-test".to_owned(),
+            bytes,
+        }
     }
 
     fn type2_constant_segment(position_km: [f64; 3]) -> [f64; 9] {

@@ -61,6 +61,9 @@ OpenBMP implementation slice.
   interpolation, covering the fixed-record discrete-state segment
   family commonly used for mission kernels before the remaining generic
   and analytic SPK segment types.
+- Added pinned leap-second table ingestion for deterministic UTC -> TT
+  -> TDB and TT -> TDB ephemeris epoch conversion. SPK ephemerides can
+  now use `TDB`, `TT`, or `UTC` epochs, with UTC requiring the table.
 
 ## Still Missing Relative To Basilisk
 
@@ -69,8 +72,7 @@ OpenBMP implementation slice.
   correction, stellar aberration, text kernels, non-J2000 frame
   transforms, or the remaining generic/analytic SPK segment types.
 - The IERS path is intentionally compact: it does not yet implement
-  precession, nutation, full leap-second table conversion, or a SPICE
-  frame chain.
+  precession, nutation, or a SPICE frame chain.
 - Multi-body OpenBMP propagation is still independent-lane rigid-body
   propagation after deployment. Relative-distance triggers can observe
   lane geometry, but Basilisk's message-passing architecture supports

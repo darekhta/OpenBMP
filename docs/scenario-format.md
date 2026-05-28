@@ -333,6 +333,7 @@ Absolute epoch data is optional. If present, it follows
 scale = "UTC"
 iso8601 = "2026-01-01T00:00:00Z"
 leap_second_table = "data/time/leap_seconds_2026a.toml"
+leap_second_table_sha256 = "<64 hex chars>"
 eop = "data/earth_orientation/example-eop.toml"
 eop_sha256 = "<64 hex chars>"
 
@@ -369,8 +370,29 @@ Samples must be strictly time-ordered and cover `[time.start_s,
 time.stop_s]`. OpenBMP linearly interpolates UT1-UTC and polar motion,
 uses the scenario UTC epoch to compute IAU Earth Rotation Angle, and
 applies a compact polar-motion rotation in the ECI/ECEF transform. It
-does not yet implement precession, nutation, leap-second table
-conversion, or SPICE frame chains.
+does not yet implement precession, nutation, or SPICE frame chains.
+
+When `epoch.leap_second_table` is declared, the runner loads it through
+the same resolved-file path and optional SHA-256 pin as other external
+inputs. The deterministic TOML format is:
+
+```toml
+format = "openbmp-leap-seconds-v1"
+
+[[entries]]
+effective_utc = "2015-07-01T00:00:00Z"
+tai_minus_utc_s = 36
+
+[[entries]]
+effective_utc = "2017-01-01T00:00:00Z"
+tai_minus_utc_s = 37
+```
+
+Entries must be strictly time-ordered. UTC ephemeris epochs use the
+latest entry at or before `epoch.iso8601` to convert UTC -> TT -> TDB;
+TT epochs are converted to TDB with the runner's compact deterministic
+periodic correction. SPK ephemeris epochs may use `TDB`, `TT`, or `UTC`,
+but `UTC` requires a leap-second table.
 
 ## Model Ordering
 
@@ -510,9 +532,10 @@ either singular `ephemeris_file` plus optional
 `ephemeris_file_sha256`, or ordered `ephemeris_files` plus optional
 `ephemeris_files_sha256`. The plural pin list, when present, must
 match the file list length. Later files take precedence over earlier
-files for overlapping SPK segments. This path requires
-`[epoch].scale = "TDB"` because the SPK reader evaluates seconds past
-J2000 on the ephemeris-time/TDB axis.
+files for overlapping SPK segments. The SPK reader evaluates seconds
+past J2000 on the ephemeris-time/TDB axis, so `[epoch].scale` may be
+`"TDB"`, `"TT"`, or `"UTC"`; `"UTC"` requires
+`epoch.leap_second_table`.
 
 ```toml
 [epoch]
@@ -531,8 +554,10 @@ wind          = "none"
 
 ```toml
 [epoch]
-scale = "TDB"
-iso8601 = "2000-01-01T12:00:00Z"
+scale = "UTC"
+iso8601 = "2017-01-01T00:00:00Z"
+leap_second_table = "data/time/leap_seconds_2026a.toml"
+leap_second_table_sha256 = "<64 hex chars>"
 
 [environment]
 frame_profile = "wgs84-uniform-rotation"
