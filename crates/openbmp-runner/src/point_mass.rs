@@ -1577,6 +1577,65 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const USSA76_EXO_AERO_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "ussa76-exo-aero-test"
+description = "Synthetic point-mass aero run above the USSA76 ceiling."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 8
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 90000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, -1000.0]
+
+[vehicle.assembly]
+id = "ussa76-exo-aero-test"
+
+[[vehicle.assembly.bodies]]
+id = "capsule"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 100.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "us_standard_1976"
+wind = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[aero]
+
+[aero.method]
+kind = "modified_newtonian"
+
+[aero.method.modified_newtonian]
+cp_max = 2.0
+reference_area_m2 = 1.0
+reference_length_m = 1.0
+
+[forces]
+models = ["gravity", "aero"]
+
+[telemetry]
+output.csv = "out/ussa76-exo-aero-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn workspace_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1704,6 +1763,23 @@ require_monotonic_time = true
                 .iter()
                 .any(|channel| channel.name == "force.aero.z_n"),
             "aero force channel should be present"
+        );
+    }
+
+    #[test]
+    fn ussa76_aero_above_ceiling_uses_vacuum_fallback() {
+        let scenario =
+            Scenario::from_toml_str(USSA76_EXO_AERO_SCENARIO).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome =
+            run(&scenario, &resolved_files).expect("USSA76 above ceiling should not fault");
+
+        let aero_force_z = f64_column(&outcome, "force.aero.z_n");
+        assert!(
+            aero_force_z
+                .iter()
+                .all(|value| value.to_bits() == 0.0_f64.to_bits()),
+            "USSA76 exo fallback should produce zero aero force above 86 km: {aero_force_z:?}"
         );
     }
 

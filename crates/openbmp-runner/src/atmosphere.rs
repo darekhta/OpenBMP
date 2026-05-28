@@ -7,15 +7,15 @@
 //! can hold a single concrete type instead of being generic over
 //! [`AtmosphereModel`].
 //!
-//! The enum dispatch keeps the legacy `us_standard_1976` byte-stable
-//! contract intact: when the scenario selects `us_standard_1976` the
-//! enum forwards to the existing `UsStandard1976` implementation
-//! verbatim, so no existing tolerance evidence shifts.
+//! The enum dispatch keeps the legacy `us_standard_1976` in-envelope
+//! contract intact and uses the explicit
+//! `ZeroDensityAboveCeiling` exoatmospheric policy for runner calls
+//! above the 86 km USSA76 implementation ceiling.
 
 use openbmp_core::SimTime;
 use openbmp_physics::{
-    AtmosphereModel, AtmosphereSample, Nrlmsis2Compat, Nrlmsise00Full, Nrlmsise00Inputs,
-    PhysicsError, PiecewiseExponentialAtmosphere, UsStandard1976,
+    AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, Nrlmsis2Compat, Nrlmsise00Full,
+    Nrlmsise00Inputs, PhysicsError, PiecewiseExponentialAtmosphere, UsStandard1976,
 };
 use openbmp_scenario::{AtmosphereConfig, ScenarioDocument};
 
@@ -95,7 +95,11 @@ fn build_runtime_atmosphere_with_config(
     atmosphere: Option<&AtmosphereConfig>,
 ) -> Result<RuntimeAtmosphere, RunnerError> {
     match atmosphere_kind {
-        "us_standard_1976" => Ok(RuntimeAtmosphere::UsStandard1976(UsStandard1976::new())),
+        "us_standard_1976" => Ok(RuntimeAtmosphere::UsStandard1976(
+            UsStandard1976::with_exoatmospheric_policy(
+                ExoatmosphericPolicy::ZeroDensityAboveCeiling,
+            ),
+        )),
         "piecewise_exponential" => Ok(RuntimeAtmosphere::PiecewiseExponential(
             PiecewiseExponentialAtmosphere::new(),
         )),

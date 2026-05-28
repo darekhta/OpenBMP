@@ -840,6 +840,13 @@ fn aero_context_from_velocity<Atm: AtmosphereModel>(
             model: model_id,
             reason: Cow::Borrowed("atmosphere out of envelope at altitude"),
         })?;
+    let dynamic_pressure_pa = 0.5 * sample.density_kg_m3 * speed_sq;
+    if !dynamic_pressure_pa.is_finite() {
+        return Err(ModelEvalError::NonFinite { model: model_id });
+    }
+    if dynamic_pressure_pa <= 0.0 {
+        return Ok(None);
+    }
     if !(sample.speed_of_sound_m_s.is_finite() && sample.speed_of_sound_m_s > 0.0) {
         return Err(ModelEvalError::OutOfEnvelope {
             model: model_id,
@@ -847,7 +854,6 @@ fn aero_context_from_velocity<Atm: AtmosphereModel>(
         });
     }
     let mach = speed / sample.speed_of_sound_m_s;
-    let dynamic_pressure_pa = 0.5 * sample.density_kg_m3 * speed_sq;
     let (alpha_deg, beta_deg) = if velocity_is_body_frame {
         let axial = velocity.x;
         let lateral = velocity.y;
@@ -926,6 +932,16 @@ fn compute_axial_drag<Atm: AtmosphereModel>(
                 reason: Cow::Borrowed("atmosphere out of envelope at altitude"),
             })?;
 
+    // Vacuum/zero-density atmospheres have no aerodynamic load, so
+    // avoid deck envelope checks and Mach-dependent math entirely.
+    let q = 0.5 * atm_sample.density_kg_m3 * speed_sq;
+    if !q.is_finite() {
+        return Err(ModelEvalError::NonFinite { model: model_id });
+    }
+    if q <= 0.0 {
+        return Ok(Vector3::zeros());
+    }
+
     let speed_of_sound = atm_sample.speed_of_sound_m_s;
     if speed_of_sound <= 0.0 || !speed_of_sound.is_finite() {
         return Err(ModelEvalError::OutOfEnvelope {
@@ -940,8 +956,6 @@ fn compute_axial_drag<Atm: AtmosphereModel>(
         .lookup(mach, 0.0, 0.0, &deflections)
         .map_err(|err| map_aero_lookup_error(model_id, err))?;
 
-    // Locked operand order: q = 0.5 · ρ · |v|².
-    let q = 0.5 * atm_sample.density_kg_m3 * speed_sq;
     let drag_magnitude = coefficients.cd * q * deck.reference_area_m2();
 
     // Force opposes the velocity unit vector.
@@ -977,6 +991,13 @@ fn compute_rigid_body_deck_force<Atm: AtmosphereModel>(
                 model: model_id,
                 reason: Cow::Borrowed("atmosphere out of envelope at altitude"),
             })?;
+    let q_s = 0.5 * atm_sample.density_kg_m3 * speed_sq * deck.reference_area_m2();
+    if !q_s.is_finite() {
+        return Err(ModelEvalError::NonFinite { model: model_id });
+    }
+    if q_s <= 0.0 {
+        return Ok(Vector3::zeros());
+    }
     let speed_of_sound = atm_sample.speed_of_sound_m_s;
     if speed_of_sound <= 0.0 || !speed_of_sound.is_finite() {
         return Err(ModelEvalError::OutOfEnvelope {
@@ -996,7 +1017,6 @@ fn compute_rigid_body_deck_force<Atm: AtmosphereModel>(
         .lookup(mach, alpha_deg, beta_deg, &deflections)
         .map_err(|err| map_aero_lookup_error(model_id, err))?;
 
-    let q_s = 0.5 * atm_sample.density_kg_m3 * speed_sq * deck.reference_area_m2();
     let force_body = Vector3::new(-coefficients.cn * q_s, 0.0, -coefficients.cd * q_s);
     let force_eci = state.orientation.q * force_body;
     if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
@@ -2354,6 +2374,19 @@ mod tests {
         .unwrap()
     }
 
+    #[derive(Copy, Clone, Debug)]
+    struct ZeroDensityAtmosphere;
+
+    impl AtmosphereModel for ZeroDensityAtmosphere {
+        fn sample(
+            &self,
+            _altitude_m: f64,
+            _time: SimTime,
+        ) -> Result<AtmosphereSample, PhysicsError> {
+            AtmosphereSample::new(0.0, 0.0, 0.0, 0.0)
+        }
+    }
+
     // -----------------------------------------------------------------
     // GravityForceAdapter
     // -----------------------------------------------------------------
@@ -2465,6 +2498,31 @@ mod tests {
         let deck = small_drag_deck();
         let adapter = DeckDragForceAdapter::new(deck, atm, ModelId::new(0));
         let state = fixture_state(0.0, 0.0);
+        let env = null_env();
+        let f = adapter.force_n_eci(ctx(&state, &env, 1.0, 0.0)).unwrap();
+        assert_eq!(f, Vector3::zeros());
+    }
+
+    #[test]
+    fn axial_drag_adapter_zero_density_returns_zero_force_without_deck_lookup() {
+        let deck = small_drag_deck();
+        let adapter = DeckDragForceAdapter::new(deck, ZeroDensityAtmosphere, ModelId::new(0));
+        let state = fixture_state(90_000.0, 10_000.0);
+        let env = null_env();
+        let f = adapter.force_n_eci(ctx(&state, &env, 1.0, 0.0)).unwrap();
+        assert_eq!(f, Vector3::zeros());
+    }
+
+    #[test]
+    fn aero_method_adapter_zero_density_returns_zero_force_without_context_math() {
+        let method = openbmp_aero::ModifiedNewtonian {
+            cp_max: 2.0,
+            reference_area_m2: 1.0,
+            reference_length_m: 1.0,
+        };
+        let adapter =
+            AeroMethodForceAdapter::new(method, ZeroDensityAtmosphere, ModelId::new(0), 1.0);
+        let state = fixture_state(90_000.0, -10_000.0);
         let env = null_env();
         let f = adapter.force_n_eci(ctx(&state, &env, 1.0, 0.0)).unwrap();
         assert_eq!(f, Vector3::zeros());

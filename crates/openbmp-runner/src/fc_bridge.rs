@@ -14,7 +14,7 @@ use openbmp_core::{Position3, SensorId, StepIndex, Velocity3};
 use openbmp_fc::topics::{
     BarometerSample, GnssSample, ImuSample, MagnetometerSample, StarTrackerSample,
 };
-use openbmp_physics::atmosphere::{AtmosphereModel, UsStandard1976};
+use openbmp_physics::atmosphere::{AtmosphereModel, ExoatmosphericPolicy, UsStandard1976};
 use openbmp_physics::magnetic::{EarthDipoleField, MagneticFieldEci, Wmm2025};
 use openbmp_scenario::{
     FcConfig, FcEstimatorKind, FcMagFieldKind, ResolvedFile, Scenario, ScenarioDocument,
@@ -94,7 +94,9 @@ impl FcBridge {
         Ok(Some(Self {
             runner,
             sensors,
-            atmosphere: UsStandard1976::new(),
+            atmosphere: UsStandard1976::with_exoatmospheric_policy(
+                ExoatmosphericPolicy::ZeroDensityAboveCeiling,
+            ),
             magnetic,
             scenario_seed: scenario.document.time.seed,
             previous_velocity_eci_m_s: None,

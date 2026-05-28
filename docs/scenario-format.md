@@ -769,7 +769,12 @@ When `kind = "isothermal"`, the block requires `density_kg_m3`,
 `pressure_pa`, and `temperature_k`, so selecting
 `environment.atmosphere = "isothermal"` requires the structured
 `[atmosphere]` block. For `us_standard_1976` no additional state is
-required (the model is parameterless).
+required (the model is parameterless). Runner-side `us_standard_1976`
+sampling preserves the 0-86 km model in-envelope and returns a
+zero-density vacuum sample above the ceiling so high-apogee coast or
+entry trajectories do not fault at the first exoatmospheric aero
+sample. Use `nrlmsise00` or `nrlmsis2_compat` when upper-atmosphere
+density above 86 km is physically relevant rather than negligible.
 
 ### Sensors
 
