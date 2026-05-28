@@ -180,6 +180,53 @@ fn bus_rv_deployment_scenario_runs_batch_release_and_clearance_marker() {
 }
 
 #[test]
+fn initial_formation_scenario_runs_initial_lanes_and_relative_marker() {
+    let scenario = workspace_root().join("scenarios/multi-body/initial-formation.toml");
+    let temp = tempdir("initial-formation-e2e");
+    let parquet = temp.path().join("initial-formation.parquet");
+
+    run_scenario(&scenario, &parquet);
+
+    let observer_active = read_bool_column(&parquet, "body.observer.separated");
+    assert_eq!(
+        observer_active.first().copied(),
+        Some(true),
+        "observer lane should be active from the first row"
+    );
+    assert!(
+        observer_active.iter().all(|value| *value),
+        "observer lane should remain active: {observer_active:?}"
+    );
+
+    let primary_mass = read_f64_column(&parquet, "mass_kg");
+    assert_eq!(
+        primary_mass[0].to_bits(),
+        3.0_f64.to_bits(),
+        "primary lane mass should be the primary body mass"
+    );
+
+    let observer_x = read_f64_column(&parquet, "body.observer.position_x_m");
+    let observer_y = read_f64_column(&parquet, "body.observer.position_y_m");
+    assert_eq!(
+        observer_x[0].to_bits(),
+        1.0_f64.to_bits(),
+        "observer initial x offset should be preserved"
+    );
+    assert!(
+        observer_y
+            .iter()
+            .any(|value| (*value - 0.3).abs() < 1.0e-12),
+        "observer lane should propagate independently from t=0: {observer_y:?}"
+    );
+
+    let marker = read_bool_column(&parquet, "mission.marker.observer_clear");
+    assert!(
+        marker.iter().any(|value| *value),
+        "relative-distance marker should observe initially active lanes: {marker:?}"
+    );
+}
+
+#[test]
 fn owned_engine_stage_separation_routes_thrust_to_continuing_body_only() {
     let temp = tempdir("owned-engine-stage-separation");
     let scenario = temp.path().join("owned-engine-stage-separation.toml");

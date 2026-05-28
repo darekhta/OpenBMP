@@ -18,9 +18,9 @@ use openbmp_core::{
     Velocity3,
 };
 use openbmp_sim::{
-    ConstantMassRigid, EndTime, ForceContext, ForceModel, ModelEvalError, NullEnvironment,
-    RigidBodyKernel, RigidBodySeparation, RigidModels, Rk4FixedStep, SimulationConfig, ZeroForce,
-    ZeroMoment,
+    ConstantMassRigid, EndTime, ForceContext, ForceModel, InitialRigidBodyLane, ModelEvalError,
+    NullEnvironment, RigidBodyKernel, RigidBodySeparation, RigidModels, Rk4FixedStep,
+    SimulationConfig, ZeroForce, ZeroMoment,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use uom::si::f64::Mass;
@@ -232,6 +232,52 @@ fn batch_jettison_partitions_multiple_bodies_from_same_pre_split_state() {
     assert_abs_diff_eq!(
         kernel.separated_rigid_bodies()[1].state.velocity.vector.y,
         -1.0,
+        epsilon = 1.0e-15
+    );
+}
+
+#[test]
+fn initial_rigid_body_lanes_are_active_from_step_zero() {
+    let bus = BodyId::from_path("vehicle.assembly.bodies.bus");
+    let observer = BodyId::from_path("vehicle.assembly.bodies.observer");
+    let mut kernel = build_kernel(0.3);
+    let observer_state = RigidBodyState::new(
+        SimTime::ZERO,
+        Position3::new(10.0, 0.0, 0.0),
+        Velocity3::new(0.0, 1.0, 0.0),
+        Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+        AngularVelocity3::new(0.0, 0.0, 0.0),
+        mass_props(1.0, 0.0, [0.2, 0.2, 0.1]),
+    );
+
+    kernel
+        .seed_rigid_body_lanes(
+            bus,
+            mass_props(3.0, 0.0, [1.0, 1.0, 0.5]),
+            &[InitialRigidBodyLane {
+                body: observer,
+                state: observer_state,
+            }],
+        )
+        .expect("initial lane seeding must apply");
+
+    assert_eq!(kernel.primary_rigid_body(), Some(bus));
+    assert_eq!(
+        kernel.current_state().mass_props.mass.get::<kilogram>(),
+        3.0
+    );
+    assert_eq!(kernel.separated_rigid_bodies().len(), 1);
+    assert_eq!(kernel.separated_rigid_bodies()[0].body, observer);
+    assert_abs_diff_eq!(
+        kernel.separated_rigid_bodies()[0].state.position.vector.x,
+        10.0,
+        epsilon = 1.0e-15
+    );
+
+    kernel.run().expect("kernel run must succeed");
+    assert_abs_diff_eq!(
+        kernel.separated_rigid_bodies()[0].state.position.vector.y,
+        0.3,
         epsilon = 1.0e-15
     );
 }

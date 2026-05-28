@@ -46,9 +46,9 @@ use openbmp_physics::{
 use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
-    AnyStop, ConstantMass, EndTime, ForceContext, ForceModel, GroundImpact, RigidBodySeparation,
-    RigidMassModel, RigidModels, ScenarioScriptAction, SimulationConfig, SimulationKernel,
-    StopReason,
+    AnyStop, ConstantMass, EndTime, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane,
+    RigidBodySeparation, RigidMassModel, RigidModels, ScenarioScriptAction, SimulationConfig,
+    SimulationKernel, StopReason,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -213,6 +213,14 @@ pub fn run(
     } else {
         kernel_base
     };
+    seed_initial_rigid_body_lanes(
+        &mut kernel,
+        document,
+        &loaded,
+        &mass_resources,
+        &initial_engine_snapshot,
+        &initial_tank_snapshot,
+    )?;
     let channel_set = RigidChannelSet::new(document)?;
     let breakdown_atmosphere = if channel_set.has_atmosphere {
         Some(build_document_runtime_atmosphere(document)?)
@@ -572,7 +580,7 @@ fn require_supported_multi_body_shape(document: &ScenarioDocument) -> Result<(),
         if profile != "fixed-step-explicit" || method != "rk4" {
             return Err(RunnerError::UnsupportedScenario {
                 what: format!(
-                    "[multi_body] stage separation currently requires the fixed-step RK4 \
+                    "[multi_body] rigid-body lanes currently require the fixed-step RK4 \
                      trajectory solver; got profile={profile:?}, method={method:?}"
                 ),
             });
@@ -1139,22 +1147,118 @@ fn build_initial_state(
         what: format!("initial rigid-body mass properties failed: {err}"),
     })?;
 
+    Ok(rigid_body_state_from_parts(
+        start_time, p, v, q, omega, mass_props,
+    ))
+}
+
+fn rigid_body_state_from_parts(
+    time: SimTime,
+    position_eci_m: [f64; 3],
+    velocity_eci_m_s: [f64; 3],
+    quaternion_body_to_eci_xyzw: [f64; 4],
+    angular_velocity_body_rad_s: [f64; 3],
+    mass_props: MassProperties,
+) -> RigidBodyState {
     // Quaternion is [x, y, z, w] in the scenario file; nalgebra
     // expects (w, x, y, z) for `Quaternion::new`. Validation in the
     // scenario layer guarantees unit-norm to 1e-9.
+    let q = quaternion_body_to_eci_xyzw;
     let raw = nalgebra::Quaternion::new(q[3], q[0], q[1], q[2]);
     let unit = nalgebra::UnitQuaternion::from_quaternion(raw);
     let orientation =
         Quaternion::<openbmp_core::Body, openbmp_core::Eci>::from_unit_quaternion(unit);
 
-    Ok(RigidBodyState::new(
-        start_time,
+    let p = position_eci_m;
+    let v = velocity_eci_m_s;
+    let omega = angular_velocity_body_rad_s;
+    RigidBodyState::new(
+        time,
         Position3::new(p[0], p[1], p[2]),
         Velocity3::new(v[0], v[1], v[2]),
         orientation,
         AngularVelocity3::<Body>::new(omega[0], omega[1], omega[2]),
         mass_props,
-    ))
+    )
+}
+
+fn seed_initial_rigid_body_lanes<I, F, MOM, MM, E, SC>(
+    kernel: &mut openbmp_sim::RigidBodyKernel<I, F, MOM, MM, E, SC>,
+    document: &ScenarioDocument,
+    loaded: &LoadedModels,
+    mass_resources: &RigidMassResources,
+    engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    tank_snapshot: &BTreeMap<TankId, openbmp_sim::TankSnapshot>,
+) -> Result<(), RunnerError>
+where
+    I: openbmp_sim::Integrator<RigidBodyState>,
+    F: ForceModel<RigidBodyState>,
+    MOM: openbmp_sim::MomentModel<RigidBodyState>,
+    MM: openbmp_sim::RigidMassModel,
+    E: openbmp_sim::EnvironmentModel,
+    SC: openbmp_sim::StopCondition<RigidBodyState>,
+{
+    let Some(multi_body) = document.multi_body.as_ref() else {
+        return Ok(());
+    };
+    if multi_body.initial_lanes.is_empty() {
+        return Ok(());
+    }
+
+    let primary_body_id =
+        multi_body
+            .primary_body_id
+            .as_ref()
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "internal invariant: multi_body.primary_body_id missing for initial lanes"
+                    .to_owned(),
+            })?;
+    let primary_body = body_id_from_scenario_text(primary_body_id);
+    let start_time = SimTime::from_seconds(document.time.start_s);
+    let mass_model = RigidMassResourceModel::new(
+        mass_resources.clone(),
+        loaded.motor.clone(),
+        None,
+        RIGID_BODY_MOTOR_MASS_MODEL_ID,
+    );
+    let primary_mass_properties = mass_model
+        .mass_properties_from_snapshots(
+            start_time,
+            Some(primary_body),
+            engine_snapshot,
+            tank_snapshot,
+        )
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("initial primary body `{primary_body_id}` mass properties failed: {err}"),
+        })?;
+
+    let mut lanes = Vec::with_capacity(multi_body.initial_lanes.len());
+    for lane in &multi_body.initial_lanes {
+        let body = body_id_from_scenario_text(&lane.body_id);
+        let mass_props = mass_model
+            .mass_properties_from_snapshots(start_time, Some(body), engine_snapshot, tank_snapshot)
+            .map_err(|err| RunnerError::UnsupportedScenario {
+                what: format!(
+                    "initial lane body `{}` mass properties failed: {err}",
+                    lane.body_id
+                ),
+            })?;
+        lanes.push(InitialRigidBodyLane {
+            body,
+            state: rigid_body_state_from_parts(
+                start_time,
+                lane.position_eci_m,
+                lane.velocity_eci_m_s,
+                lane.quaternion_body_to_eci_xyzw,
+                lane.angular_velocity_body_rad_s,
+                mass_props,
+            ),
+        });
+    }
+
+    kernel
+        .seed_rigid_body_lanes(primary_body, primary_mass_properties, &lanes)
+        .map_err(RunnerError::Simulation)
 }
 
 /// Construct the gravity-force adapter for the runtime gravity model
@@ -2021,9 +2125,21 @@ impl RigidChannelSet {
 
         let mut separated_bodies = Vec::new();
         if let Some(multi_body) = &document.multi_body {
+            let mut seen_lanes = BTreeSet::new();
+            let mut lane_ids: Vec<&str> = Vec::new();
+            for lane in &multi_body.initial_lanes {
+                if seen_lanes.insert(lane.body_id.as_str()) {
+                    lane_ids.push(lane.body_id.as_str());
+                }
+            }
             for separation in &multi_body.separations {
-                let body = body_id_from_scenario_text(&separation.lower_body_id);
-                let prefix = format!("body.{}", separation.lower_body_id);
+                if seen_lanes.insert(separation.lower_body_id.as_str()) {
+                    lane_ids.push(separation.lower_body_id.as_str());
+                }
+            }
+            for lane_id in lane_ids {
+                let body = body_id_from_scenario_text(lane_id);
+                let prefix = format!("body.{lane_id}");
                 separated_bodies.push(SeparatedBodyTelemetryChannels {
                     body,
                     separated: TelemetryChannel::<bool>::new(
@@ -2894,6 +3010,85 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const INITIAL_MULTI_BODY_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "initial-multi-body-test"
+description = "Synthetic two rigid bodies active from simulation start."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.3
+dt_s = 0.1
+seed = 23
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "initial-multi-body-test"
+
+[[vehicle.assembly.bodies]]
+id = "bus"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 3.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[[vehicle.assembly.bodies]]
+id = "observer"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "coast"
+
+[[mission.events]]
+id = "observer_clear"
+trigger = { kind = "at_relative_distance", body = "observer", distance_m = 1.01 }
+action = { kind = "emit_telemetry_marker", tag = "observer_clear" }
+once = true
+
+[multi_body]
+primary_body_id = "bus"
+
+[[multi_body.initial_lane]]
+body_id = "observer"
+position_eci_m = [1.0, 0.0, 100.0]
+velocity_eci_m_s = [0.0, 1.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[telemetry]
+output.csv = "out/initial-multi-body-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn valid_stage_separation_document() -> ScenarioDocument {
         openbmp_scenario::Scenario::from_toml_str(include_str!(
             "../../openbmp-scenario/tests/fixtures/stage-separation-valid.toml"
@@ -3027,6 +3222,36 @@ require_monotonic_time = true
         assert!(
             rv1_clear.iter().any(|value| *value),
             "relative-distance event should mark when rv1 clears the bus: {rv1_clear:?}"
+        );
+    }
+
+    #[test]
+    fn initial_multi_body_lanes_run_from_step_zero() {
+        let scenario = openbmp_scenario::Scenario::from_toml_str(INITIAL_MULTI_BODY_SCENARIO)
+            .expect("initial multi-body scenario must parse");
+        let outcome = crate::run(&scenario).expect("initial multi-body scenario must run");
+
+        let observer_active = bool_column(&outcome, "body.observer.separated");
+        assert_eq!(observer_active.first().copied(), Some(true));
+        assert!(observer_active.iter().all(|value| *value));
+
+        let bus_mass = f64_column(&outcome, "mass_kg");
+        assert_eq!(bus_mass[0].to_bits(), 3.0_f64.to_bits());
+
+        let observer_x = f64_column(&outcome, "body.observer.position_x_m");
+        let observer_y = f64_column(&outcome, "body.observer.position_y_m");
+        assert_eq!(observer_x[0].to_bits(), 1.0_f64.to_bits());
+        assert!(
+            observer_y
+                .iter()
+                .any(|value| (*value - 0.3).abs() < 1.0e-12),
+            "observer lane should advance independently from t=0: {observer_y:?}"
+        );
+
+        let marker = bool_column(&outcome, "mission.marker.observer_clear");
+        assert!(
+            marker.iter().any(|value| *value),
+            "relative-distance event should observe initially active lanes: {marker:?}"
         );
     }
 

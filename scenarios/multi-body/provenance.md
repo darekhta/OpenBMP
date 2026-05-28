@@ -146,3 +146,70 @@ notes: >-
   post-separation lane velocities are directly attributable to the
   declared separation impulses.
 ```
+
+## `scenarios/multi-body/initial-formation.toml`
+
+```yaml
+dataset_id:       openbmp.scenario.multi_body.initial_formation.v1
+files:
+  - scenarios/multi-body/initial-formation.toml
+source_class:     synthetic-openbmp
+source_title:     >-
+  Initial rigid-body formation scenario. A synthetic primary body and
+  a synthetic observer body are both propagated from simulation start
+  through `[[multi_body.initial_lane]]`; a mission marker observes the
+  observer crossing a relative-distance threshold.
+source_authors:   OpenBMP (Dmitri Arekhta) for the initial multi-body lane case
+source_id:        Synthetic OpenBMP initial formation fixture
+source_url:       —
+publication_date: 2026-05-28
+methodology_reference: >-
+  `docs/scenario-format.md` § `[multi_body]` describes
+  `multi_body.primary_body_id`, `[[multi_body.initial_lane]]`, and
+  relative-distance event observation for active lanes. This scenario
+  is a synthetic executable example of multiple rigid-body lanes
+  active before any separation event.
+methodology_urls:
+  - —
+license_or_terms: >-
+  Synthetic OpenBMP-authored scenario; no external license.
+retrieved_utc:    2026-05-28
+transformation:
+  method: >-
+    Authored by hand from the runner's unit-level initial-lane
+    coverage. No script.
+  script: none
+verification:
+  method: >-
+    `openbmp check` parses the scenario; the e2e test
+    `initial_formation_scenario_runs_initial_lanes_and_relative_marker`
+    runs it via `openbmp run`, asserts the observer lane is active
+    from the first telemetry row, asserts the primary mass is routed
+    to the primary body, asserts observer propagation from t=0, and
+    asserts the relative-distance marker fires.
+  test: >-
+    crates/openbmp-cli/tests/multi_body_e2e.rs
+  tolerance: >-
+    Observer position propagation is checked to an absolute tolerance
+    of 1e-12 m.
+validation_status: experimental
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Synthetic round-number scenario. No targeting, no fielded-vehicle
+    data, no environmental fidelity. The scenario exists to exercise
+    OpenBMP's initial multi-body lane architecture and inter-body event
+    surface.
+units:            metres, metres-per-second, seconds, kilograms, kilograms-metres-squared
+frame_profile:    toy-fixed-earth
+local_origin:     >-
+  None — the toy frame profile uses a fixed-Earth abstraction
+  with the scenario's initial position interpreted as ECI +z.
+related_files:
+  - crates/openbmp-cli/tests/multi_body_e2e.rs
+notes: >-
+  The scenario uses zero constant gravity and no atmosphere so the
+  observer lane's relative motion is directly attributable to the
+  declared initial velocity.
+```

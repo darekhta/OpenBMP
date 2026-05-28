@@ -131,6 +131,15 @@ pub struct SeparatedRigidBody {
     pub separated_at_time: SimTime,
 }
 
+/// One rigid-body lane active from simulation start.
+#[derive(Clone, Copy, Debug)]
+pub struct InitialRigidBodyLane {
+    /// Body id represented by this lane.
+    pub body: BodyId,
+    /// Initial propagated state for the lane.
+    pub state: openbmp_state::RigidBodyState,
+}
+
 /// Named-field input for [`SimulationConfig::from_trajectory_profile`].
 #[derive(Debug)]
 pub struct TrajectoryProfileConfig<S, F, MM, E, SC>
@@ -305,9 +314,9 @@ where
     /// split.
     separated_rigid_bodies: Vec<SeparatedRigidBody>,
     /// Active body represented by the primary rigid-body lane after
-    /// the first separation. `None` before separation and for
-    /// point-mass kernels, which preserves whole-vehicle model
-    /// evaluation.
+    /// initial lane seeding or the first separation. `None` before
+    /// either transition and for point-mass kernels, which preserves
+    /// whole-vehicle model evaluation.
     primary_rigid_body: Option<BodyId>,
 }
 
@@ -1686,11 +1695,142 @@ where
     }
 
     /// Active body id for the primary rigid-body lane. `None` before
-    /// the first separation, meaning the primary state still
-    /// represents the whole composite assembly.
+    /// initial lane seeding or the first separation, meaning the
+    /// primary state still represents the whole composite assembly.
     #[must_use]
     pub const fn primary_rigid_body(&self) -> Option<BodyId> {
         self.primary_rigid_body
+    }
+
+    /// Seed independent rigid-body lanes at the initial time.
+    ///
+    /// This is the explicit multi-vehicle start path: the primary
+    /// state is rebound from the whole-assembly mass properties to
+    /// `primary_body`, and each supplied lane is inserted as an
+    /// already-active propagated body. The method is only valid before
+    /// the first integration step.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::InvalidRigidBodySeparation`] when
+    /// called after propagation has started, with duplicate body ids,
+    /// invalid states, or force/mass/moment models that cannot route
+    /// per-body resources.
+    pub fn seed_rigid_body_lanes(
+        &mut self,
+        primary_body: BodyId,
+        primary_mass_properties: MassProperties,
+        lanes: &[InitialRigidBodyLane],
+    ) -> Result<(), SimulationError> {
+        if self.step_index != StepIndex::ZERO {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "initial rigid-body lanes must be seeded before the first step".to_owned(),
+            });
+        }
+        if !self.separated_rigid_bodies.is_empty() || self.primary_rigid_body.is_some() {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "initial rigid-body lanes have already been seeded or separated".to_owned(),
+            });
+        }
+        if lanes.is_empty() {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "initial rigid-body lane batch must contain at least one body".to_owned(),
+            });
+        }
+        if !self.force_model.supports_separated_body_propagation() {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "force model does not declare separated-body propagation support; \
+                         per-body force-stack ownership is required for initial multi-body lanes"
+                    .to_owned(),
+            });
+        }
+        if !self
+            .mass_model
+            .moment_model
+            .supports_separated_body_propagation()
+        {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "moment model does not declare separated-body propagation support; \
+                         per-body moment-stack ownership is required for initial multi-body lanes"
+                    .to_owned(),
+            });
+        }
+        if !self
+            .mass_model
+            .mass_model
+            .supports_separated_body_propagation()
+        {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "rigid mass model does not declare separated-body propagation support; \
+                         per-body mass-property ownership is required for initial multi-body lanes"
+                    .to_owned(),
+            });
+        }
+        primary_mass_properties
+            .require_valid(POST_STEP_INERTIA_TOL)
+            .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                reason: format!("primary-lane mass properties are invalid: {source}"),
+            })?;
+
+        let mut seen = std::collections::BTreeSet::new();
+        seen.insert(primary_body);
+        let mut separated = Vec::with_capacity(lanes.len());
+        for lane in lanes {
+            if !seen.insert(lane.body) {
+                return Err(SimulationError::InvalidRigidBodySeparation {
+                    reason: format!(
+                        "body id {} appears more than once in initial lane batch",
+                        lane.body.value()
+                    ),
+                });
+            }
+            if lane.state.time != self.state.time {
+                return Err(SimulationError::InvalidRigidBodySeparation {
+                    reason: format!(
+                        "initial lane body {} starts at {} s but primary starts at {} s",
+                        lane.body.value(),
+                        lane.state.time.as_seconds(),
+                        self.state.time.as_seconds()
+                    ),
+                });
+            }
+            lane.state
+                .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
+                .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                    reason: format!(
+                        "initial lane body {} state is invalid: {source}",
+                        lane.body.value()
+                    ),
+                })?;
+            separated.push(SeparatedRigidBody {
+                body: lane.body,
+                state: lane.state,
+                separated_at_step: self.step_index,
+                separated_at_time: self.state.time,
+            });
+        }
+
+        self.state.mass_props = primary_mass_properties;
+        self.state
+            .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
+            .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                reason: format!("primary-lane state is invalid: {source}"),
+            })?;
+        self.initial_state = self.state;
+        self.initial_mass_kg = self.state.mass_props.mass.get::<kilogram>();
+        self.primary_rigid_body = Some(primary_body);
+        self.separated_rigid_bodies = separated;
+        self.previous_event_relative_distances_m = Some(rigid_body_relative_distances_m(
+            self.primary_rigid_body,
+            &self.state,
+            &self.separated_rigid_bodies,
+        ));
+        self.previous_event_relative_speeds_m_s = Some(rigid_body_relative_speeds_m_s(
+            self.primary_rigid_body,
+            &self.state,
+            &self.separated_rigid_bodies,
+        ));
+        Ok(())
     }
 
     /// Apply a rigid-body stage separation at the current state.
@@ -1768,6 +1908,17 @@ where
             });
         }
         let stack_body = separations[0].stack_body;
+        if let Some(primary_body) = self.primary_rigid_body
+            && primary_body != stack_body
+        {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: format!(
+                    "separation stack body {} does not match active primary body {}",
+                    stack_body.value(),
+                    primary_body.value()
+                ),
+            });
+        }
         for (index, separation) in separations.iter().enumerate() {
             if separation.stack_body != stack_body {
                 return Err(SimulationError::InvalidRigidBodySeparation {

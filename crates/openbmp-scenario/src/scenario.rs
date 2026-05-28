@@ -3991,6 +3991,62 @@ action  = { kind = "separation" }
     }
 
     #[test]
+    fn accepts_initial_multi_body_lane() {
+        let prefix = VALID_STAGE_SEPARATION_SCENARIO
+            .split("\n[mission]\n")
+            .next()
+            .expect("fixture contains mission block");
+        let toml = format!(
+            r#"{prefix}
+[multi_body]
+primary_body_id = "upper"
+
+[[multi_body.initial_lane]]
+body_id                         = "lower"
+position_eci_m                  = [10.0, 0.0, 100.0]
+velocity_eci_m_s                = [0.0, 1.0, 10.0]
+quaternion_body_to_eci_xyzw     = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
+"#
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
+        let multi_body = scenario
+            .document
+            .multi_body
+            .as_ref()
+            .expect("multi_body present");
+        assert_eq!(multi_body.primary_body_id.as_deref(), Some("upper"));
+        assert_eq!(multi_body.initial_lanes.len(), 1);
+        assert_eq!(multi_body.initial_lanes[0].body_id, "lower");
+    }
+
+    #[test]
+    fn rejects_initial_multi_body_lane_without_primary_body() {
+        let prefix = VALID_STAGE_SEPARATION_SCENARIO
+            .split("\n[mission]\n")
+            .next()
+            .expect("fixture contains mission block");
+        let toml = format!(
+            r#"{prefix}
+[multi_body]
+
+[[multi_body.initial_lane]]
+body_id                         = "lower"
+position_eci_m                  = [10.0, 0.0, 100.0]
+velocity_eci_m_s                = [0.0, 1.0, 10.0]
+quaternion_body_to_eci_xyzw     = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
+"#
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. }
+                if field == "multi_body.primary_body_id"),
+            "expected MissingRequiredField for primary_body_id, got {err:?}",
+        );
+    }
+
+    #[test]
     fn accepts_relative_distance_trigger_for_multi_body_lane() {
         let relative_event = r#"
 [[mission.events]]

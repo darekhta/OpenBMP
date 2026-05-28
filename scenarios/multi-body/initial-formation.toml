@@ -1,0 +1,85 @@
+# Synthetic initial multi-body formation scenario.
+#
+# A rigid primary body and a rigid observer lane are both active from
+# simulation start through `[[multi_body.initial_lane]]`. A
+# relative-distance event observes the observer moving away from the
+# primary without any separation event. All values are synthetic round
+# numbers for exercising the initial multi-body runner path.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "initial-formation"
+description = "Synthetic rigid two-body formation active from simulation start with an inter-body marker."
+validation  = "experimental"
+provenance  = "scenarios/multi-body/provenance.md#scenariosmulti-bodyinitial-formationtoml"
+
+[time]
+start_s = 0.0
+stop_s  = 0.3
+dt_s    = 0.1
+seed    = 0x464f524d
+
+[vehicle]
+kind                                 = "rigid_body"
+initial_position_eci_m               = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s             = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw  = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s  = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "initial-formation"
+
+[[vehicle.assembly.bodies]]
+id                         = "primary"
+geometry                   = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg                = 3.0
+dry_cg_body_m              = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2     = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[[vehicle.assembly.bodies]]
+id                         = "observer"
+geometry                   = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg                = 1.0
+dry_cg_body_m              = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2     = [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 0.0
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.parquet = "out/initial-formation.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id    = "coast"
+label = "coast"
+
+[[mission.events]]
+id      = "observer_clear"
+trigger = { kind = "at_relative_distance", body = "observer", distance_m = 1.01 }
+action  = { kind = "emit_telemetry_marker", tag = "observer_clear" }
+once    = true
+
+[multi_body]
+primary_body_id = "primary"
+
+[[multi_body.initial_lane]]
+body_id                         = "observer"
+position_eci_m                  = [1.0, 0.0, 100.0]
+velocity_eci_m_s                = [0.0, 1.0, 0.0]
+quaternion_body_to_eci_xyzw     = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]

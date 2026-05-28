@@ -67,9 +67,9 @@ pub use integrator::{
     Dopri853FixedStep, Integrator, IntegratorDeterminism, Rk4FixedStep,
 };
 pub use kernel::{
-    PointMassKernel, ProfiledPointMassKernel, ProfiledRigidBodyKernel, RigidBodyKernel,
-    RigidBodySeparation, RigidModels, SeparatedRigidBody, SimulationConfig, SimulationKernel,
-    TrajectoryProfileConfig,
+    InitialRigidBodyLane, PointMassKernel, ProfiledPointMassKernel, ProfiledRigidBodyKernel,
+    RigidBodyKernel, RigidBodySeparation, RigidModels, SeparatedRigidBody, SimulationConfig,
+    SimulationKernel, TrajectoryProfileConfig,
 };
 pub use models::{
     ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshot,

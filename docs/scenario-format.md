@@ -1389,6 +1389,11 @@ uses `jettison_bodies` to release two rigid lanes from the same
 pre-separation bus state and emits a relative-distance clearance
 marker after deployment.
 
+The initial-formation example
+[`scenarios/multi-body/initial-formation.toml`](../scenarios/multi-body/initial-formation.toml)
+uses `[[multi_body.initial_lane]]` to start with two active rigid-body
+lanes and emits a relative-distance marker without a separation event.
+
 ```toml
 [vehicle]
 kind                     = "point_mass"
@@ -2365,15 +2370,34 @@ kernel walks the same fixed list every tick.
 
 ```toml
 [multi_body]
+primary_body_id = "bus"
+
+[[multi_body.initial_lane]]
+body_id                         = "observer"
+position_eci_m                  = [25.0, 0.0, 1000.0]
+velocity_eci_m_s                = [0.0, 1.0, 0.0]
+quaternion_body_to_eci_xyzw     = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
 
 [[multi_body.separation]]
 event_id              = "fairing_separation"
-upper_body_id         = "main"
+upper_body_id         = "bus"
 lower_body_id         = "lower_stage"
 upper_delta_v_body_m_s = [0.0, 0.0, 0.5]
 lower_delta_v_body_m_s = [0.0, 0.0, -0.5]
 conserve_momentum     = true
 ```
+
+`primary_body_id` and `[[multi_body.initial_lane]]` declare rigid-body
+lanes that are active from simulation start. The main vehicle
+`[vehicle]` initial position, velocity, attitude, and angular rate
+belong to `primary_body_id`; each initial lane supplies its own
+inertial state and body-to-ECI attitude. The runner computes each
+lane's mass properties from its owned assembly body and routes
+per-body resources exactly as it does after separation. Initial-lane
+telemetry uses the same `body.<body_id>.*` channel family as detached
+bodies; `body.<body_id>.separated` is `true` from the first row for
+these lanes.
 
 Each `[[multi_body.separation]]` entry binds to a mission event by id
 and declares the two `vehicle.assembly.bodies[*].id` values that
@@ -2383,7 +2407,7 @@ to `true`; the loader verifies
 `m_u·Δv_u + m_l·Δv_l ≈ 0` to a documented tolerance.
 
 The runtime consumer supports fixed-step RK4 rigid-body profiles.
-Post-separation force-stack ownership is explicit:
+Initial and post-separation force-stack ownership is explicit:
 
 - `[aero].mounted_to` is required when `"aero"` is in
   `forces.models`.
@@ -2397,17 +2421,17 @@ Post-separation force-stack ownership is explicit:
   devices are declared.
 - `vehicle.assembly.tanks[*].mounted_to` is always required.
 
-After separation, each lane evaluates only the aero, thrust, engine,
-tank, recovery, effector, snapshot, and mass-property resources owned
-by that lane's active body. Ambiguous ownership fails at scenario load
-or at the model capability gate; the composite force stack is not
-silently reused for detached bodies. Telemetry includes the continuing
-primary lane in the existing state channels and each departing body in
-`body.<lower_body_id>.*` channels, including
-`body.<lower_body_id>.separated`. Relative range and speed triggers
-can observe these lanes with `trigger.kind = "at_relative_distance"`
-or `trigger.kind = "at_relative_speed"` after the separation has
-occurred.
+Each lane evaluates only the aero, thrust, engine, tank, recovery,
+effector, snapshot, and mass-property resources owned by that lane's
+active body. Ambiguous ownership fails at scenario load or at the
+model capability gate; the composite force stack is not silently reused
+for an active body lane. Telemetry includes the continuing primary lane
+in the existing state channels and each non-primary lane in
+`body.<body_id>.*` channels, including `body.<body_id>.separated`.
+Relative range and speed triggers can observe initial or detached
+lanes with `trigger.kind = "at_relative_distance"` or
+`trigger.kind = "at_relative_speed"` once the referenced bodies are
+active.
 
 ### v3-only `[fc]` sub-blocks
 

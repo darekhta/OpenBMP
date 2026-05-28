@@ -51,6 +51,13 @@ OpenBMP implementation slice.
 - Added a shipped `bus-rv-deployment` scenario and CLI e2e coverage
   for a bus releasing two rigid lanes on one event tick, then firing
   relative-distance clearance and relative-speed markers.
+- Added initial rigid-body multi-lane seeding with
+  `multi_body.primary_body_id` and `[[multi_body.initial_lane]]`, so a
+  scenario can start with multiple independently propagated rigid-body
+  lanes before any separation event.
+- Added a shipped `initial-formation` scenario and CLI e2e coverage
+  for initially active rigid-body lanes and an inter-body
+  relative-distance marker.
 - Added `frame_profile = "iers-tabulated"` with pinned TOML EOP table
   ingestion for interpolated UT1-UTC and polar motion.
 - Added `environment.ephemeris = "spk"` with SHA-256-pinned binary
@@ -146,14 +153,21 @@ OpenBMP implementation slice.
   full SPICE frame chain or IAU 2006/2000A CIO-based transforms.
   Velocity transport now includes the finite-difference rate of the full
   compact J2000-to-ECEF orientation chain.
-- Multi-body OpenBMP propagation is still independent-lane rigid-body
-  propagation after deployment. Relative-distance and relative-speed
-  triggers can observe lane geometry and kinematics, but Basilisk's
-  message-passing architecture supports many simultaneously configured
-  spacecraft modules more generally.
+- Multi-body OpenBMP propagation now covers rigid-body lanes active at
+  simulation start and lanes created by deployment. Relative-distance
+  and relative-speed triggers can observe lane geometry and kinematics,
+  but Basilisk's message-passing architecture supports many
+  simultaneously configured spacecraft modules more generally.
 
 ## References
 
+- Basilisk 2.10.2 overview describes the framework as spacecraft-centric,
+  module/message-based, and aimed at complex spacecraft dynamics:
+  https://avslab.github.io/basilisk/
+- Basilisk 2.10.2 `spacecraft` module documentation describes each
+  spacecraft object as a dynamic object with attached state and dynamic
+  effectors and its own state-output messages:
+  https://avslab.github.io/basilisk/Documentation/simulation/dynamics/spacecraft/spacecraft.html
 - Basilisk `scenarioBasicOrbit` documentation notes multi-body gravity
   lists and SPICE-updated planet ephemerides:
   https://hanspeterschaub.info/bskOlderDocs/bsk_1_4_2/_modules/scenarioBasicOrbit.html

@@ -363,6 +363,7 @@ impl ScenarioDocument {
         self.validate_relative_distance_trigger_references()?;
         self.validate_propulsion_unambiguous()?;
         self.validate_v3_blocks()?;
+        self.validate_initial_multi_body_references()?;
         self.validate_stage_separation_agreement()?;
         Ok(())
     }
@@ -1286,6 +1287,74 @@ impl ScenarioDocument {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn validate_initial_multi_body_references(&self) -> Result<(), ScenarioError> {
+        let Some(multi_body) = &self.multi_body else {
+            return Ok(());
+        };
+        if multi_body.initial_lanes.is_empty() {
+            return Ok(());
+        }
+        if self.vehicle.kind != "rigid_body" {
+            return Err(ScenarioError::IncompatibleAssemblyEntry {
+                field: "multi_body.initial_lane".to_owned(),
+                reason: "initial multi-body lanes require vehicle.kind = \"rigid_body\"".to_owned(),
+            });
+        }
+
+        let body_masses = assembly_body_mass_lookup(&self.vehicle.assembly);
+        let Some(primary_body_id) = multi_body.primary_body_id.as_ref() else {
+            return Err(ScenarioError::MissingRequiredField {
+                field: "multi_body.primary_body_id".to_owned(),
+                role: ModelRole::Vehicle,
+                name: "multi_body initial lanes".to_owned(),
+            });
+        };
+        if !body_masses.contains_key(primary_body_id.as_str()) {
+            return Err(ScenarioError::UnknownBodyReference {
+                field: "multi_body.primary_body_id".to_owned(),
+                value: primary_body_id.clone(),
+            });
+        }
+        let mut initial_lane_bodies = BTreeSet::new();
+        for (index, lane) in multi_body.initial_lanes.iter().enumerate() {
+            if lane.body_id == *primary_body_id {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: format!("multi_body.initial_lane[{index}].body_id"),
+                    value_a: lane.body_id.clone(),
+                    field_b: "multi_body.primary_body_id".to_owned(),
+                    value_b: primary_body_id.clone(),
+                });
+            }
+            if !body_masses.contains_key(lane.body_id.as_str()) {
+                return Err(ScenarioError::UnknownBodyReference {
+                    field: format!("multi_body.initial_lane[{index}].body_id"),
+                    value: lane.body_id.clone(),
+                });
+            }
+            initial_lane_bodies.insert(lane.body_id.as_str());
+        }
+        for (index, separation) in multi_body.separations.iter().enumerate() {
+            if separation.upper_body_id != *primary_body_id {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: format!("multi_body.separation[{index}].upper_body_id"),
+                    value_a: separation.upper_body_id.clone(),
+                    field_b: "multi_body.primary_body_id".to_owned(),
+                    value_b: primary_body_id.clone(),
+                });
+            }
+            if initial_lane_bodies.contains(separation.lower_body_id.as_str()) {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: format!("multi_body.separation[{index}].lower_body_id"),
+                    value_a: separation.lower_body_id.clone(),
+                    field_b: "multi_body.initial_lane.body_id".to_owned(),
+                    value_b: separation.lower_body_id.clone(),
+                });
+            }
+        }
+        validate_multi_body_resource_ownership(self, &body_masses)?;
         Ok(())
     }
 
@@ -9347,6 +9416,16 @@ impl ScheduleGroupConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MultiBodyConfig {
+    /// Assembly body represented by the primary rigid-body lane when
+    /// `[[multi_body.initial_lane]]` entries are declared. Existing
+    /// separation-only scenarios leave this unset so the primary lane
+    /// starts as the whole composite assembly until the first split.
+    pub primary_body_id: Option<String>,
+    /// Rigid-body lanes active from simulation start. Serde key is
+    /// `[[multi_body.initial_lane]]`; the field is exposed as
+    /// `initial_lanes` in Rust.
+    #[serde(default, rename = "initial_lane")]
+    pub initial_lanes: Vec<MultiBodyInitialLaneConfig>,
     /// Separation events that promote a single-body scenario into a
     /// multi-body simulation post-event. Serde key is
     /// `[[multi_body.separation]]`; the field is exposed as
@@ -9357,14 +9436,100 @@ pub struct MultiBodyConfig {
 
 impl MultiBodyConfig {
     fn validate(&self) -> Result<(), ScenarioError> {
-        if self.separations.is_empty() {
+        if self.initial_lanes.is_empty() && self.separations.is_empty() {
             return Err(ScenarioError::EmptyList {
-                field: "multi_body.separation".to_owned(),
+                field: "multi_body.initial_lane or multi_body.separation".to_owned(),
             });
+        }
+        if !self.initial_lanes.is_empty() {
+            let primary_body_id = self.primary_body_id.as_ref().ok_or_else(|| {
+                ScenarioError::MissingRequiredField {
+                    field: "multi_body.primary_body_id".to_owned(),
+                    role: ModelRole::Vehicle,
+                    name: "multi_body initial lanes".to_owned(),
+                }
+            })?;
+            require_non_empty("multi_body.primary_body_id", primary_body_id)?;
+        }
+        if let Some(primary_body_id) = &self.primary_body_id {
+            require_non_empty("multi_body.primary_body_id", primary_body_id)?;
+        }
+        let mut seen_initial_lanes = BTreeSet::new();
+        for (index, lane) in self.initial_lanes.iter().enumerate() {
+            lane.validate(index)?;
+            if !seen_initial_lanes.insert(lane.body_id.as_str()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("multi_body.initial_lane[{index}].body_id"),
+                    value: lane.body_id.clone(),
+                });
+            }
+            if self
+                .primary_body_id
+                .as_ref()
+                .is_some_and(|primary| primary == &lane.body_id)
+            {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: format!("multi_body.initial_lane[{index}].body_id"),
+                    value_a: lane.body_id.clone(),
+                    field_b: "multi_body.primary_body_id".to_owned(),
+                    value_b: lane.body_id.clone(),
+                });
+            }
         }
         for (index, sep) in self.separations.iter().enumerate() {
             sep.validate(index)?;
         }
+        Ok(())
+    }
+}
+
+/// One entry under `[[multi_body.initial_lane]]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MultiBodyInitialLaneConfig {
+    /// Assembly body id propagated as an independent lane from
+    /// simulation start.
+    pub body_id: String,
+    /// Initial inertial position in metres.
+    pub position_eci_m: [f64; 3],
+    /// Initial inertial velocity in metres per second.
+    pub velocity_eci_m_s: [f64; 3],
+    /// Initial body-to-ECI quaternion `[x, y, z, w]`.
+    pub quaternion_body_to_eci_xyzw: [f64; 4],
+    /// Initial body-frame angular velocity in rad/s.
+    pub angular_velocity_body_rad_s: [f64; 3],
+}
+
+impl MultiBodyInitialLaneConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(
+            &format!("multi_body.initial_lane[{index}].body_id"),
+            &self.body_id,
+        )?;
+        require_finite_array(
+            &format!("multi_body.initial_lane[{index}].position_eci_m"),
+            &self.position_eci_m,
+        )?;
+        require_finite_array(
+            &format!("multi_body.initial_lane[{index}].velocity_eci_m_s"),
+            &self.velocity_eci_m_s,
+        )?;
+        require_finite_array(
+            &format!("multi_body.initial_lane[{index}].quaternion_body_to_eci_xyzw"),
+            &self.quaternion_body_to_eci_xyzw,
+        )?;
+        let norm_sq: f64 = self.quaternion_body_to_eci_xyzw.iter().map(|q| q * q).sum();
+        if (norm_sq - 1.0).abs() > 1.0e-9 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("multi_body.initial_lane[{index}].quaternion_body_to_eci_xyzw"),
+                value: norm_sq,
+                rule: "must be a unit quaternion (||q||² = 1)",
+            });
+        }
+        require_finite_array(
+            &format!("multi_body.initial_lane[{index}].angular_velocity_body_rad_s"),
+            &self.angular_velocity_body_rad_s,
+        )?;
         Ok(())
     }
 }
