@@ -98,6 +98,13 @@ pub struct EarthOrientationSample {
     pub polar_motion_x_rad: f64,
     /// Polar motion `y_p`, radians.
     pub polar_motion_y_rad: f64,
+    /// Optional excess length of day, seconds.
+    ///
+    /// When both bracketing samples provide `lod_s`, the table uses it
+    /// as the endpoint derivative for Hermite interpolation of
+    /// UT1-UTC. Omitted values preserve the legacy linear
+    /// interpolation path.
+    pub lod_s: Option<f64>,
 }
 
 impl EarthOrientationSample {
@@ -127,6 +134,46 @@ impl EarthOrientationSample {
             ut1_minus_utc_s,
             polar_motion_x_rad,
             polar_motion_y_rad,
+            lod_s: None,
+        })
+    }
+
+    /// Construct and validate a sample with length-of-day data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::InvalidFrameProfileData`] when any field
+    /// is non-finite.
+    pub fn new_with_lod(
+        time_s: f64,
+        ut1_minus_utc_s: f64,
+        polar_motion_x_rad: f64,
+        polar_motion_y_rad: f64,
+        lod_s: f64,
+    ) -> Result<Self, FrameError> {
+        let mut sample = Self::new(
+            time_s,
+            ut1_minus_utc_s,
+            polar_motion_x_rad,
+            polar_motion_y_rad,
+        )?;
+        if !lod_s.is_finite() {
+            return Err(FrameError::InvalidFrameProfileData {
+                reason: "Earth-orientation length-of-day samples must be finite",
+            });
+        }
+        sample.lod_s = Some(lod_s);
+        Ok(sample)
+    }
+
+    /// Earth rotation angle rate implied by this sample, rad/s.
+    ///
+    /// `lod_s` is excess length of day, so positive values slow the
+    /// UT1 rotation rate relative to the nominal ERA slope.
+    #[must_use]
+    pub fn earth_rotation_rate_rad_s(self) -> f64 {
+        self.lod_s.map_or(EARTH_ROTATION_ANGLE_RATE_RAD_S, |lod_s| {
+            EARTH_ROTATION_ANGLE_RATE_RAD_S * (1.0 - lod_s / SECONDS_PER_DAY)
         })
     }
 }
@@ -152,12 +199,7 @@ impl EarthOrientationTable {
             });
         }
         for sample in &samples {
-            EarthOrientationSample::new(
-                sample.time_s,
-                sample.ut1_minus_utc_s,
-                sample.polar_motion_x_rad,
-                sample.polar_motion_y_rad,
-            )?;
+            sample.validate()?;
         }
         for pair in samples.windows(2) {
             if pair[0].time_s >= pair[1].time_s {
@@ -214,10 +256,27 @@ impl EarthOrientationTable {
         let alpha = (time_s - lo.time_s) / (hi.time_s - lo.time_s);
         EarthOrientationSample {
             time_s,
-            ut1_minus_utc_s: lerp(lo.ut1_minus_utc_s, hi.ut1_minus_utc_s, alpha),
+            ut1_minus_utc_s: interpolate_ut1_minus_utc(lo, hi, alpha),
             polar_motion_x_rad: lerp(lo.polar_motion_x_rad, hi.polar_motion_x_rad, alpha),
             polar_motion_y_rad: lerp(lo.polar_motion_y_rad, hi.polar_motion_y_rad, alpha),
+            lod_s: interpolate_optional_lod(lo.lod_s, hi.lod_s, alpha),
         }
+    }
+}
+
+impl EarthOrientationSample {
+    fn validate(self) -> Result<(), FrameError> {
+        if !self.time_s.is_finite()
+            || !self.ut1_minus_utc_s.is_finite()
+            || !self.polar_motion_x_rad.is_finite()
+            || !self.polar_motion_y_rad.is_finite()
+            || self.lod_s.is_some_and(|lod_s| !lod_s.is_finite())
+        {
+            return Err(FrameError::InvalidFrameProfileData {
+                reason: "Earth-orientation samples must be finite",
+            });
+        }
+        Ok(())
     }
 }
 
@@ -568,6 +627,23 @@ impl FrameContext {
         }
     }
 
+    /// Earth angular velocity along the frame spin axis at simulation
+    /// time `t`, rad/s.
+    ///
+    /// For [`FrameProfile::IersTabulated`], this uses the sampled
+    /// length-of-day value when available. Without `lod_s`, the
+    /// nominal ERA slope is returned.
+    #[must_use]
+    pub fn angular_velocity_z_at(&self, t: SimTime) -> f64 {
+        match self.profile {
+            FrameProfile::ToyFixedEarth => 0.0,
+            FrameProfile::Wgs84UniformRotation => WGS84_OMEGA_RAD_S,
+            FrameProfile::IersTabulated => {
+                self.earth_orientation_sample(t).earth_rotation_rate_rad_s()
+            }
+        }
+    }
+
     fn earth_orientation_sample(&self, t: SimTime) -> EarthOrientationSample {
         self.iers.as_ref().map_or(
             EarthOrientationSample {
@@ -575,6 +651,7 @@ impl FrameContext {
                 ut1_minus_utc_s: 0.0,
                 polar_motion_x_rad: 0.0,
                 polar_motion_y_rad: 0.0,
+                lod_s: None,
             },
             |iers| iers.earth_orientation.sample(t),
         )
@@ -768,6 +845,46 @@ impl FrameContext {
 
 fn lerp(a: f64, b: f64, alpha: f64) -> f64 {
     a + alpha * (b - a)
+}
+
+fn interpolate_optional_lod(lo: Option<f64>, hi: Option<f64>, alpha: f64) -> Option<f64> {
+    match (lo, hi) {
+        (Some(lo), Some(hi)) => Some(lerp(lo, hi, alpha)),
+        _ => None,
+    }
+}
+
+fn interpolate_ut1_minus_utc(
+    lo: EarthOrientationSample,
+    hi: EarthOrientationSample,
+    alpha: f64,
+) -> f64 {
+    match (lo.lod_s, hi.lod_s) {
+        (Some(lo_lod_s), Some(hi_lod_s)) => {
+            let interval_s = hi.time_s - lo.time_s;
+            let lo_slope_s_per_s = -lo_lod_s / SECONDS_PER_DAY;
+            let hi_slope_s_per_s = -hi_lod_s / SECONDS_PER_DAY;
+            cubic_hermite(
+                lo.ut1_minus_utc_s,
+                hi.ut1_minus_utc_s,
+                lo_slope_s_per_s,
+                hi_slope_s_per_s,
+                interval_s,
+                alpha,
+            )
+        }
+        _ => lerp(lo.ut1_minus_utc_s, hi.ut1_minus_utc_s, alpha),
+    }
+}
+
+fn cubic_hermite(y0: f64, y1: f64, m0: f64, m1: f64, interval_s: f64, alpha: f64) -> f64 {
+    let alpha2 = alpha * alpha;
+    let alpha3 = alpha2 * alpha;
+    let h00 = 2.0 * alpha3 - 3.0 * alpha2 + 1.0;
+    let h10 = alpha3 - 2.0 * alpha2 + alpha;
+    let h01 = -2.0 * alpha3 + 3.0 * alpha2;
+    let h11 = alpha3 - alpha2;
+    h00 * y0 + h10 * interval_s * m0 + h01 * y1 + h11 * interval_s * m1
 }
 
 fn earth_rotation_angle_from_ut1_julian_date(jd_ut1: f64) -> f64 {
@@ -2461,6 +2578,7 @@ mod tests {
         fn earth_orientation_table_interpolates_samples() {
             let sample = table().sample(SimTime::from_seconds(5.0));
             assert_abs_diff_eq!(sample.ut1_minus_utc_s, 0.6, epsilon = 1.0e-15);
+            assert_eq!(sample.lod_s, None);
             assert_abs_diff_eq!(
                 sample.polar_motion_x_rad,
                 0.02 * ARCSECOND_TO_RAD,
@@ -2470,6 +2588,34 @@ mod tests {
                 sample.polar_motion_y_rad,
                 0.01 * ARCSECOND_TO_RAD,
                 epsilon = 1.0e-20
+            );
+        }
+
+        #[test]
+        fn earth_orientation_table_uses_lod_for_ut1_hermite_interpolation() {
+            let table = EarthOrientationTable::new(vec![
+                EarthOrientationSample::new_with_lod(0.0, 0.0, 0.0, 0.0, -8_640.0).unwrap(),
+                EarthOrientationSample::new_with_lod(10.0, 0.0, 0.0, 0.0, 0.0).unwrap(),
+            ])
+            .unwrap();
+            let sample = table.sample(SimTime::from_seconds(5.0));
+            assert_abs_diff_eq!(sample.ut1_minus_utc_s, 0.125, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(sample.lod_s.unwrap(), -4_320.0, epsilon = 1.0e-15);
+        }
+
+        #[test]
+        fn iers_angular_velocity_uses_sampled_lod() {
+            let table = EarthOrientationTable::new(vec![
+                EarthOrientationSample::new_with_lod(0.0, 0.0, 0.0, 0.0, 1.0).unwrap(),
+                EarthOrientationSample::new_with_lod(10.0, 0.0, 0.0, 0.0, 3.0).unwrap(),
+            ])
+            .unwrap();
+            let ctx = FrameContext::iers_tabulated(2_451_545.0, None, table).unwrap();
+            let expected = EARTH_ROTATION_ANGLE_RATE_RAD_S * (1.0 - 2.0 / SECONDS_PER_DAY);
+            assert_abs_diff_eq!(
+                ctx.angular_velocity_z_at(SimTime::from_seconds(5.0)),
+                expected,
+                epsilon = 1.0e-18
             );
         }
 

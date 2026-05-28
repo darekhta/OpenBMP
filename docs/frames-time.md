@@ -80,7 +80,7 @@ OpenBMP should support explicit frame profiles:
 |---|---|---|
 | `toy-fixed-earth` | Textbook scenarios, no absolute epoch | Bit-stable |
 | `wgs84-uniform-rotation` | Earth rotation with constant rate, no EOP | Bit-stable |
-| `iers-tabulated` | Pinned UT1-UTC and polar motion table | Bit-stable within platform profile when data is pinned |
+| `iers-tabulated` | Pinned UT1-UTC, polar motion, and optional LOD table | Bit-stable within platform profile when data is pinned |
 | `spice-reference` | Validation against public SPICE kernels | Validation only, not default runtime |
 
 The default profile for MVP scenarios is `wgs84-uniform-rotation` unless an
@@ -96,13 +96,18 @@ time_s = 0.0
 ut1_minus_utc_s = 0.102
 x_pole_arcsec = 0.045
 y_pole_arcsec = 0.312
+lod_s = 0.001
 ```
 
 Sample times are scenario-relative seconds and must cover the whole
 simulation interval. The transform applies compact IAU 1976 mean precession
 and IAU 1980 nutation from J2000 to date, computes IAU Earth Rotation Angle
 from the UTC scenario epoch plus interpolated UT1-UTC, then applies polar
-motion. SPICE frame chains, IAU 2006/2000A CIO-based transforms, and
+motion. If both bracketing EOP samples include optional `lod_s`, UT1-UTC
+uses length-of-day-constrained Hermite interpolation and the sampled Earth
+spin rate reports the corresponding LOD-adjusted value; otherwise UT1-UTC
+uses linear interpolation for backwards-compatible tables. SPICE frame
+chains, IAU 2006/2000A CIO-based transforms, and
 other high-fidelity Earth-orientation refinements remain future work.
 Velocity transforms include the finite-difference rate of the full
 J2000-to-ECEF orientation chain.

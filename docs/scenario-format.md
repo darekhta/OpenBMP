@@ -358,19 +358,25 @@ time_s = 0.0
 ut1_minus_utc_s = 0.102
 x_pole_arcsec = 0.045
 y_pole_arcsec = 0.312
+lod_s = 0.001
 
 [[samples]]
 time_s = 60.0
 ut1_minus_utc_s = 0.103
 x_pole_arcsec = 0.045
 y_pole_arcsec = 0.312
+lod_s = 0.001
 ```
 
 Samples must be strictly time-ordered and cover `[time.start_s,
-time.stop_s]`. OpenBMP linearly interpolates UT1-UTC and polar motion,
-applies compact IAU 1976 mean precession and IAU 1980 nutation from J2000
-to date, uses the scenario UTC epoch to compute IAU Earth Rotation Angle,
-and applies a compact polar-motion rotation in the ECI/ECEF transform.
+time.stop_s]`. OpenBMP linearly interpolates polar motion. UT1-UTC uses
+linear interpolation unless both bracketing samples include optional
+`lod_s`; with `lod_s`, it uses length-of-day-constrained Hermite
+interpolation and reports the corresponding sampled Earth spin rate.
+The transform applies compact IAU 1976 mean precession and IAU 1980
+nutation from J2000 to date, uses the scenario UTC epoch to compute IAU
+Earth Rotation Angle, and applies a compact polar-motion rotation in the
+ECI/ECEF transform.
 Velocity transforms include the finite-difference rate of the full
 J2000-to-ECEF orientation chain. It does not yet implement SPICE frame
 chains or IAU 2006/2000A CIO-based transforms.

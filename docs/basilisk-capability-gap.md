@@ -60,6 +60,9 @@ OpenBMP implementation slice.
   relative-distance marker.
 - Added `frame_profile = "iers-tabulated"` with pinned TOML EOP table
   ingestion for interpolated UT1-UTC and polar motion.
+- Added optional EOP `lod_s` ingestion for length-of-day-constrained
+  UT1-UTC Hermite interpolation and LOD-adjusted sampled Earth spin-rate
+  reporting in the `iers-tabulated` frame path.
 - Added `environment.ephemeris = "spk"` with SHA-256-pinned binary
   DAF/SPK ingestion for ordered JPL DE-style kernel lists with type
   2/3 Chebyshev segments in J2000. The ephemeris API now exposes
@@ -152,7 +155,9 @@ OpenBMP implementation slice.
 - The IERS path is intentionally compact: it does not yet implement a
   full SPICE frame chain or IAU 2006/2000A CIO-based transforms.
   Velocity transport now includes the finite-difference rate of the full
-  compact J2000-to-ECEF orientation chain.
+  compact J2000-to-ECEF orientation chain, and EOP `lod_s` can shape
+  UT1-UTC interpolation, but the transform remains a compact
+  IAU 1976/1980 implementation rather than a full IERS 2010 stack.
 - Multi-body OpenBMP propagation now covers rigid-body lanes active at
   simulation start and lanes created by deployment. Relative-distance
   and relative-speed triggers can observe lane geometry and kinematics,

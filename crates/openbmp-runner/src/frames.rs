@@ -141,13 +141,42 @@ fn parse_eop_sample(
     let ut1_minus_utc_s = number_at(table, "ut1_minus_utc_s", index)?;
     let x_pole_arcsec = number_at(table, "x_pole_arcsec", index)?;
     let y_pole_arcsec = number_at(table, "y_pole_arcsec", index)?;
-    EarthOrientationSample::new(
-        time_s,
-        ut1_minus_utc_s,
-        x_pole_arcsec * ARCSECOND_TO_RAD,
-        y_pole_arcsec * ARCSECOND_TO_RAD,
-    )
-    .map_err(|err| RunnerError::Env(err.into()))
+    let lod_s = optional_number_at(table, "lod_s", index)?;
+    let sample = if let Some(lod_s) = lod_s {
+        EarthOrientationSample::new_with_lod(
+            time_s,
+            ut1_minus_utc_s,
+            x_pole_arcsec * ARCSECOND_TO_RAD,
+            y_pole_arcsec * ARCSECOND_TO_RAD,
+            lod_s,
+        )
+    } else {
+        EarthOrientationSample::new(
+            time_s,
+            ut1_minus_utc_s,
+            x_pole_arcsec * ARCSECOND_TO_RAD,
+            y_pole_arcsec * ARCSECOND_TO_RAD,
+        )
+    };
+    sample.map_err(|err| RunnerError::Env(err.into()))
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn optional_number_at(
+    table: &toml::map::Map<String, toml::Value>,
+    key: &str,
+    index: usize,
+) -> Result<Option<f64>, RunnerError> {
+    let Some(value) = table.get(key) else {
+        return Ok(None);
+    };
+    match value {
+        toml::Value::Float(v) => Ok(Some(*v)),
+        toml::Value::Integer(v) => Ok(Some(*v as f64)),
+        _ => Err(RunnerError::UnsupportedScenario {
+            what: format!("epoch.eop samples[{index}].{key} must be numeric"),
+        }),
+    }
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -236,12 +265,14 @@ time_s = 0.0
 ut1_minus_utc_s = 0.0
 x_pole_arcsec = 0.1
 y_pole_arcsec = -0.2
+lod_s = 0.001
 
 [[samples]]
 time_s = 10.0
 ut1_minus_utc_s = 1.0
 x_pole_arcsec = 0.2
 y_pole_arcsec = -0.1
+lod_s = 0.003
 "#;
 
     fn resolved_eop(bytes: &[u8]) -> BTreeMap<String, ResolvedFile> {
@@ -267,6 +298,7 @@ y_pole_arcsec = -0.1
         let table = parse_earth_orientation_table(&file).unwrap();
         assert_eq!(table.samples().len(), 2);
         assert!(table.covers_interval(0.0, 10.0));
+        assert_eq!(table.samples()[0].lod_s, Some(0.001));
     }
 
     #[test]
