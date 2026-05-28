@@ -57,13 +57,17 @@ OpenBMP implementation slice.
   geometric position/velocity segments, extending the parser beyond
   Chebyshev-only planetary kernels toward mission-spacecraft SPK
   shapes.
+- Added SPK type 8 equal-time Lagrange and type 12/13 Hermite state
+  interpolation, covering the fixed-record discrete-state segment
+  family commonly used for mission kernels before the remaining generic
+  and analytic SPK segment types.
 
 ## Still Missing Relative To Basilisk
 
 - SPK ingestion is intentionally limited to geometric state chains from
   binary SPK/BSP kernels. It does not yet implement light-time
   correction, stellar aberration, text kernels, non-J2000 frame
-  transforms, or all remaining SPK segment types.
+  transforms, or the remaining generic/analytic SPK segment types.
 - The IERS path is intentionally compact: it does not yet implement
   precession, nutation, full leap-second table conversion, or a SPICE
   frame chain.

@@ -229,10 +229,11 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 /// This reader implements the subset required for JPL DE-style
 /// planetary and mission kernels used by third-body perturbations:
 /// SPK type 2 (Chebyshev position), type 3 (Chebyshev position and
-/// velocity), and type 9 (unequal-time Lagrange state interpolation)
-/// segments in the J2000 inertial frame. It computes geometric states
-/// and does not implement light-time, aberration, non-inertial frame
-/// transforms, or text-kernel loading.
+/// velocity), type 8/9 (equal/unequal-time Lagrange state
+/// interpolation), and type 12/13 (equal/unequal-time Hermite state
+/// interpolation) segments in the J2000 inertial frame. It computes
+/// geometric states and does not implement light-time, aberration,
+/// non-inertial frame transforms, or text-kernel loading.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpkEphemeris {
     epoch_tdb_julian_date: f64,
@@ -245,7 +246,8 @@ impl SpkEphemeris {
     /// # Errors
     ///
     /// Returns [`PhysicsError`] when the bytes are not a supported
-    /// DAF/SPK file or no supported type 2/3/9 J2000 segments are found.
+    /// DAF/SPK file or no supported type 2/3/8/9/12/13 J2000 segments
+    /// are found.
     pub fn from_bytes(epoch_tdb_julian_date: f64, bytes: &[u8]) -> Result<Self, PhysicsError> {
         Self::from_kernels(epoch_tdb_julian_date, [bytes])
     }
@@ -260,7 +262,7 @@ impl SpkEphemeris {
     ///
     /// Returns [`PhysicsError`] when any byte slice is not a supported
     /// DAF/SPK file, no kernels are supplied, or no supported type
-    /// 2/3/9 J2000 segments are found across all kernels.
+    /// 2/3/8/9/12/13 J2000 segments are found across all kernels.
     pub fn from_kernels<'a, I>(epoch_tdb_julian_date: f64, kernels: I) -> Result<Self, PhysicsError>
     where
         I: IntoIterator<Item = &'a [u8]>,
@@ -284,7 +286,7 @@ impl SpkEphemeris {
         }
         if segments.is_empty() {
             return Err(PhysicsError::InvalidParameter {
-                reason: "SPK kernel contains no supported type 2/3/9 J2000 segments",
+                reason: "SPK kernel contains no supported type 2/3/8/9/12/13 J2000 segments",
             });
         }
         Ok(Self {
@@ -493,14 +495,74 @@ impl SpkSegment {
                     ),
                 })
             }
-            9 => self.lagrange_state_km_s(et_s),
+            8 => self.equal_step_lagrange_state_km_s(et_s),
+            9 => self.unequal_step_lagrange_state_km_s(et_s),
+            12 => self.equal_step_hermite_state_km_s(et_s),
+            13 => self.unequal_step_hermite_state_km_s(et_s),
             _ => Err(PhysicsError::InvalidParameter {
                 reason: "unsupported SPK data type",
             }),
         }
     }
 
-    fn lagrange_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+    fn equal_step_lagrange_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        if self.data.len() < 10 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 8 segment is too short",
+            });
+        }
+        let n = f64_to_usize(self.data[self.data.len() - 1])?;
+        let degree = f64_to_usize(self.data[self.data.len() - 2])?;
+        let step_s = self.data[self.data.len() - 3];
+        let first_epoch_s = self.data[self.data.len() - 4];
+        if !first_epoch_s.is_finite() || !step_s.is_finite() || step_s <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "invalid SPK type 8 epoch directory",
+            });
+        }
+        if degree == 0 || n <= degree {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "invalid SPK type 8 interpolation degree",
+            });
+        }
+        let expected_len = 6_usize
+            .checked_mul(n)
+            .and_then(|state_len| state_len.checked_add(4))
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK type 8 segment length overflow",
+            })?;
+        if expected_len != self.data.len() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 8 segment length does not match state count",
+            });
+        }
+        let last_epoch_s = first_epoch_s + step_s * (n - 1) as f64;
+        if !last_epoch_s.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 8 epoch coverage is invalid",
+            });
+        }
+        if et_s < first_epoch_s || et_s > last_epoch_s {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "SPK type 8 query is outside state epoch coverage",
+            });
+        }
+
+        let window_size = degree + 1;
+        let start = equal_step_window_start(first_epoch_s, step_s, n, et_s, window_size);
+        let mut state = [0.0_f64; 6];
+        for offset in 0..window_size {
+            let source_index = start + offset;
+            let basis =
+                equal_step_lagrange_basis(first_epoch_s, step_s, start, window_size, offset, et_s)?;
+            for component in 0..6 {
+                state[component] += basis * self.data[source_index * 6 + component];
+            }
+        }
+        finite_state_from_components(state, "SPK type 8 Lagrange interpolation")
+    }
+
+    fn unequal_step_lagrange_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
         if self.data.len() < 9 {
             return Err(PhysicsError::InvalidParameter {
                 reason: "SPK type 9 segment is too short",
@@ -542,15 +604,119 @@ impl SpkSegment {
         let mut state = [0.0_f64; 6];
         for offset in 0..window_size {
             let source_index = start + offset;
-            let basis = lagrange_basis(epochs, start, window_size, offset, et_s)?;
+            let basis = unequal_step_lagrange_basis(epochs, start, window_size, offset, et_s)?;
             for component in 0..6 {
                 state[component] += basis * states[source_index * 6 + component];
             }
         }
-        Ok(SpkStateKmS {
-            position_km: Vector3::new(state[0], state[1], state[2]),
-            velocity_km_s: Vector3::new(state[3], state[4], state[5]),
-        })
+        finite_state_from_components(state, "SPK type 9 Lagrange interpolation")
+    }
+
+    fn equal_step_hermite_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        if self.data.len() < 10 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 12 segment is too short",
+            });
+        }
+        let n = f64_to_usize(self.data[self.data.len() - 1])?;
+        let window_size_minus_one = f64_to_usize(self.data[self.data.len() - 2])?;
+        let step_s = self.data[self.data.len() - 3];
+        let first_epoch_s = self.data[self.data.len() - 4];
+        if !first_epoch_s.is_finite() || !step_s.is_finite() || step_s <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "invalid SPK type 12 epoch directory",
+            });
+        }
+        let window_size =
+            window_size_minus_one
+                .checked_add(1)
+                .ok_or(PhysicsError::InvalidParameter {
+                    reason: "SPK type 12 window size overflow",
+                })?;
+        if n == 0 || window_size > n {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "invalid SPK type 12 interpolation window",
+            });
+        }
+        let expected_len = 6_usize
+            .checked_mul(n)
+            .and_then(|state_len| state_len.checked_add(4))
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK type 12 segment length overflow",
+            })?;
+        if expected_len != self.data.len() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 12 segment length does not match state count",
+            });
+        }
+        let last_epoch_s = first_epoch_s + step_s * (n - 1) as f64;
+        if !last_epoch_s.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 12 epoch coverage is invalid",
+            });
+        }
+        if et_s < first_epoch_s || et_s > last_epoch_s {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "SPK type 12 query is outside state epoch coverage",
+            });
+        }
+
+        let start = equal_step_window_start(first_epoch_s, step_s, n, et_s, window_size);
+        hermite_state_from_equal_step_window(
+            &self.data[..6 * n],
+            first_epoch_s,
+            step_s,
+            start,
+            window_size,
+            et_s,
+        )
+    }
+
+    fn unequal_step_hermite_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        if self.data.len() < 9 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 13 segment is too short",
+            });
+        }
+        let n = f64_to_usize(self.data[self.data.len() - 1])?;
+        let window_size_minus_one = f64_to_usize(self.data[self.data.len() - 2])?;
+        let window_size =
+            window_size_minus_one
+                .checked_add(1)
+                .ok_or(PhysicsError::InvalidParameter {
+                    reason: "SPK type 13 window size overflow",
+                })?;
+        if n == 0 || window_size > n {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "invalid SPK type 13 interpolation window",
+            });
+        }
+        let directory_count = (n - 1) / 100;
+        let expected_len = 6_usize
+            .checked_mul(n)
+            .and_then(|state_len| state_len.checked_add(n))
+            .and_then(|base| base.checked_add(directory_count))
+            .and_then(|base| base.checked_add(2))
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK type 13 segment length overflow",
+            })?;
+        if expected_len != self.data.len() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 13 segment length does not match directory",
+            });
+        }
+
+        let states = &self.data[..6 * n];
+        let epochs = &self.data[6 * n..7 * n];
+        validate_strictly_increasing_epochs(epochs, "SPK type 13 epochs are invalid")?;
+        if et_s < epochs[0] || et_s > epochs[n - 1] {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "SPK type 13 query is outside state epoch coverage",
+            });
+        }
+
+        let start = lagrange_window_start(epochs, et_s, window_size);
+        hermite_state_from_unequal_step_window(states, epochs, start, window_size, et_s)
     }
 
     fn chebyshev_record(
@@ -684,7 +850,7 @@ impl<'a> DafView<'a> {
                     record_offset + (SPK_SUMMARY_CONTROL_WORDS + index * SPK_SUMMARY_WORDS) * 8;
                 let descriptor = self.spk_descriptor(summary_offset)?;
                 if descriptor.frame == SPK_J2000_FRAME_ID
-                    && matches!(descriptor.data_type, 2 | 3 | 9)
+                    && matches!(descriptor.data_type, 2 | 3 | 8 | 9 | 12 | 13)
                     && let Some(segment) = self.segment_from_descriptor(descriptor)?
                 {
                     segments.push(segment);
@@ -946,6 +1112,59 @@ fn lagrange_window_start(epochs: &[f64], et_s: f64, window_size: usize) -> usize
     candidate.min(last_start)
 }
 
+fn equal_step_window_start(
+    first_epoch_s: f64,
+    step_s: f64,
+    count: usize,
+    et_s: f64,
+    window_size: usize,
+) -> usize {
+    debug_assert!(window_size <= count);
+    let last_start = count - window_size;
+    let half = window_size / 2;
+    let candidate = if window_size % 2 == 0 {
+        equal_step_insertion_index(first_epoch_s, step_s, count, et_s).saturating_sub(half)
+    } else {
+        nearest_equal_step_epoch_index(first_epoch_s, step_s, count, et_s).saturating_sub(half)
+    };
+    candidate.min(last_start)
+}
+
+fn equal_step_insertion_index(first_epoch_s: f64, step_s: f64, count: usize, et_s: f64) -> usize {
+    if et_s <= first_epoch_s {
+        return 0;
+    }
+    let scaled = ((et_s - first_epoch_s) / step_s).ceil();
+    if scaled >= count as f64 {
+        count
+    } else {
+        scaled as usize
+    }
+}
+
+fn nearest_equal_step_epoch_index(
+    first_epoch_s: f64,
+    step_s: f64,
+    count: usize,
+    et_s: f64,
+) -> usize {
+    if et_s <= first_epoch_s {
+        return 0;
+    }
+    let scaled = (et_s - first_epoch_s) / step_s;
+    let before = scaled.floor() as usize;
+    if before + 1 >= count {
+        return count - 1;
+    }
+    let before_epoch = first_epoch_s + step_s * before as f64;
+    let after_epoch = before_epoch + step_s;
+    if (et_s - before_epoch).abs() <= (after_epoch - et_s).abs() {
+        before
+    } else {
+        before + 1
+    }
+}
+
 fn nearest_epoch_index(epochs: &[f64], et_s: f64) -> usize {
     let insertion = epochs.partition_point(|epoch| *epoch < et_s);
     if insertion == 0 {
@@ -962,7 +1181,38 @@ fn nearest_epoch_index(epochs: &[f64], et_s: f64) -> usize {
     }
 }
 
-fn lagrange_basis(
+fn equal_step_lagrange_basis(
+    first_epoch_s: f64,
+    step_s: f64,
+    start: usize,
+    window_size: usize,
+    offset: usize,
+    et_s: f64,
+) -> Result<f64, PhysicsError> {
+    let source_epoch = first_epoch_s + step_s * (start + offset) as f64;
+    let mut basis = 1.0;
+    for other_offset in 0..window_size {
+        if other_offset == offset {
+            continue;
+        }
+        let other_epoch = first_epoch_s + step_s * (start + other_offset) as f64;
+        let denominator = source_epoch - other_epoch;
+        if denominator == 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK equal-step Lagrange epochs contain duplicates",
+            });
+        }
+        basis *= (et_s - other_epoch) / denominator;
+    }
+    if !basis.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK equal-step Lagrange interpolation produced non-finite basis",
+        });
+    }
+    Ok(basis)
+}
+
+fn unequal_step_lagrange_basis(
     epochs: &[f64],
     start: usize,
     window_size: usize,
@@ -979,17 +1229,151 @@ fn lagrange_basis(
         let denominator = source_epoch - other_epoch;
         if denominator == 0.0 {
             return Err(PhysicsError::InvalidParameter {
-                reason: "SPK type 9 epochs contain duplicates",
+                reason: "SPK unequal-step Lagrange epochs contain duplicates",
             });
         }
         basis *= (et_s - other_epoch) / denominator;
     }
     if !basis.is_finite() {
         return Err(PhysicsError::NonFinite {
-            reason: "SPK type 9 Lagrange interpolation produced non-finite basis",
+            reason: "SPK unequal-step Lagrange interpolation produced non-finite basis",
         });
     }
     Ok(basis)
+}
+
+fn hermite_state_from_equal_step_window(
+    states: &[f64],
+    first_epoch_s: f64,
+    step_s: f64,
+    start: usize,
+    window_size: usize,
+    et_s: f64,
+) -> Result<SpkStateKmS, PhysicsError> {
+    let epochs: Vec<f64> = (0..window_size)
+        .map(|offset| first_epoch_s + step_s * (start + offset) as f64)
+        .collect();
+    hermite_state_from_window(states, &epochs, start, window_size, et_s)
+}
+
+fn hermite_state_from_unequal_step_window(
+    states: &[f64],
+    epochs: &[f64],
+    start: usize,
+    window_size: usize,
+    et_s: f64,
+) -> Result<SpkStateKmS, PhysicsError> {
+    hermite_state_from_window(
+        states,
+        &epochs[start..start + window_size],
+        start,
+        window_size,
+        et_s,
+    )
+}
+
+fn hermite_state_from_window(
+    states: &[f64],
+    epochs: &[f64],
+    state_start: usize,
+    window_size: usize,
+    et_s: f64,
+) -> Result<SpkStateKmS, PhysicsError> {
+    let mut state = [0.0_f64; 6];
+    for component in 0..3 {
+        let mut positions = Vec::with_capacity(window_size);
+        let mut velocities = Vec::with_capacity(window_size);
+        for offset in 0..window_size {
+            let state_index = state_start + offset;
+            positions.push(states[state_index * 6 + component]);
+            velocities.push(states[state_index * 6 + 3 + component]);
+        }
+        let (position, velocity) =
+            hermite_interpolate_value_derivative(epochs, &positions, &velocities, et_s)?;
+        state[component] = position;
+        state[component + 3] = velocity;
+    }
+    finite_state_from_components(state, "SPK Hermite interpolation")
+}
+
+fn hermite_interpolate_value_derivative(
+    epochs: &[f64],
+    values: &[f64],
+    derivatives: &[f64],
+    et_s: f64,
+) -> Result<(f64, f64), PhysicsError> {
+    let count = epochs.len();
+    if count == 0 || values.len() != count || derivatives.len() != count {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK Hermite interpolation window is invalid",
+        });
+    }
+
+    let repeated_count = count.checked_mul(2).ok_or(PhysicsError::InvalidParameter {
+        reason: "SPK Hermite interpolation window is too large",
+    })?;
+    let mut z = vec![0.0_f64; repeated_count];
+    let mut table = vec![vec![0.0_f64; repeated_count]; repeated_count];
+
+    for index in 0..count {
+        let even = 2 * index;
+        let odd = even + 1;
+        z[even] = epochs[index];
+        z[odd] = epochs[index];
+        table[even][0] = values[index];
+        table[odd][0] = values[index];
+        table[odd][1] = derivatives[index];
+        if index == 0 {
+            table[even][1] = derivatives[index];
+        } else {
+            let denominator = z[even] - z[even - 1];
+            if denominator == 0.0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "SPK Hermite interpolation epochs contain duplicates",
+                });
+            }
+            table[even][1] = (table[even][0] - table[even - 1][0]) / denominator;
+        }
+    }
+
+    for row in 2..repeated_count {
+        for column in 2..=row {
+            let denominator = z[row] - z[row - column];
+            if denominator == 0.0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "SPK Hermite interpolation epochs contain duplicates",
+                });
+            }
+            table[row][column] =
+                (table[row][column - 1] - table[row - 1][column - 1]) / denominator;
+        }
+    }
+
+    let mut value = table[repeated_count - 1][repeated_count - 1];
+    let mut derivative = 0.0;
+    for index in (0..repeated_count - 1).rev() {
+        derivative = value + (et_s - z[index]) * derivative;
+        value = table[index][index] + (et_s - z[index]) * value;
+    }
+    if !value.is_finite() || !derivative.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK Hermite interpolation produced non-finite state",
+        });
+    }
+    Ok((value, derivative))
+}
+
+fn finite_state_from_components(
+    state: [f64; 6],
+    source: &'static str,
+) -> Result<SpkStateKmS, PhysicsError> {
+    if !state.iter().all(|value| value.is_finite()) {
+        return Err(PhysicsError::NonFinite { reason: source });
+    }
+    Ok(SpkStateKmS {
+        position_km: Vector3::new(state[0], state[1], state[2]),
+        velocity_km_s: Vector3::new(state[3], state[4], state[5]),
+    })
 }
 
 fn read_i32_at(bytes: &[u8], offset: usize, endian: DafEndian) -> Result<i32, PhysicsError> {
@@ -1143,6 +1527,23 @@ mod tests {
     }
 
     #[test]
+    fn spk_ephemeris_reads_type8_equal_step_lagrange_state() {
+        let bytes = synthetic_type8_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(3.0))
+            .unwrap();
+        assert_eq!(
+            sun.position_eci_m,
+            Vector3::new(30_000.0, 6_000.0, -3_000.0)
+        );
+        assert_eq!(
+            sun.velocity_eci_m_s,
+            Vector3::new(10_000.0, 2_000.0, -1_000.0)
+        );
+    }
+
+    #[test]
     fn spk_type2_state_uses_chebyshev_position_derivative() {
         let segment = SpkSegment {
             start_et_s: -10.0,
@@ -1172,6 +1573,40 @@ mod tests {
         let state = segment.state_km_s(3.0).unwrap();
         assert_eq!(state.position_km, Vector3::new(30.0, 6.0, -3.0));
         assert_eq!(state.velocity_km_s, Vector3::new(10.0, 2.0, -1.0));
+    }
+
+    #[test]
+    fn spk_type12_state_uses_hermite_position_derivative() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 4.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            data_type: 12,
+            data: type12_quadratic_segment(0.0, 1.0, 5, 2),
+        };
+        let state = segment.state_km_s(2.5).unwrap();
+        assert_vector_near(state.position_km, Vector3::new(6.25, 12.5, -6.25), 1.0e-12);
+        assert_vector_near(state.velocity_km_s, Vector3::new(5.0, 10.0, -5.0), 1.0e-12);
+    }
+
+    #[test]
+    fn spk_ephemeris_reads_type13_unequal_step_hermite_state() {
+        let bytes = synthetic_type13_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(3.0))
+            .unwrap();
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(9_000.0, 18_000.0, -9_000.0),
+            1.0e-9,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(6_000.0, 12_000.0, -6_000.0),
+            1.0e-9,
+        );
     }
 
     #[test]
@@ -1280,6 +1715,30 @@ mod tests {
         synthetic_spk_from_segments(&segments)
     }
 
+    fn synthetic_type8_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                data_type: 8,
+                data: type8_linear_segment(0.0, 1.0, 5, 1),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
     fn synthetic_type9_spk() -> Vec<u8> {
         let segments = [
             SyntheticSegment {
@@ -1293,6 +1752,30 @@ mod tests {
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
                 data_type: 9,
                 data: type9_linear_segment(&[0.0, 1.0, 2.0, 4.0], 1),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
+    fn synthetic_type13_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                data_type: 13,
+                data: type13_quadratic_segment(&[0.0, 1.0, 2.0, 4.0], 2),
             },
             SyntheticSegment {
                 target: NAIF_MOON,
@@ -1385,6 +1868,24 @@ mod tests {
         ]
     }
 
+    fn type8_linear_segment(
+        first_epoch_s: f64,
+        step_s: f64,
+        count: usize,
+        degree: usize,
+    ) -> Vec<f64> {
+        let mut data = Vec::new();
+        for index in 0..count {
+            let epoch = first_epoch_s + step_s * index as f64;
+            data.extend_from_slice(&[10.0 * epoch, 2.0 * epoch, -epoch, 10.0, 2.0, -1.0]);
+        }
+        data.push(first_epoch_s);
+        data.push(step_s);
+        data.push(degree as f64);
+        data.push(count as f64);
+        data
+    }
+
     fn type9_linear_segment(epochs: &[f64], degree: usize) -> Vec<f64> {
         let mut data = Vec::new();
         for epoch in epochs {
@@ -1397,6 +1898,57 @@ mod tests {
         data.push(degree as f64);
         data.push(epochs.len() as f64);
         data
+    }
+
+    fn type12_quadratic_segment(
+        first_epoch_s: f64,
+        step_s: f64,
+        count: usize,
+        window_size: usize,
+    ) -> Vec<f64> {
+        let mut data = Vec::new();
+        for index in 0..count {
+            let epoch = first_epoch_s + step_s * index as f64;
+            append_quadratic_state(&mut data, epoch);
+        }
+        data.push(first_epoch_s);
+        data.push(step_s);
+        data.push((window_size - 1) as f64);
+        data.push(count as f64);
+        data
+    }
+
+    fn type13_quadratic_segment(epochs: &[f64], window_size: usize) -> Vec<f64> {
+        let mut data = Vec::new();
+        for epoch in epochs {
+            append_quadratic_state(&mut data, *epoch);
+        }
+        data.extend_from_slice(epochs);
+        for epoch in epochs.iter().skip(99).step_by(100) {
+            data.push(*epoch);
+        }
+        data.push((window_size - 1) as f64);
+        data.push(epochs.len() as f64);
+        data
+    }
+
+    fn append_quadratic_state(data: &mut Vec<f64>, epoch: f64) {
+        data.extend_from_slice(&[
+            epoch * epoch,
+            2.0 * epoch * epoch,
+            -epoch * epoch,
+            2.0 * epoch,
+            4.0 * epoch,
+            -2.0 * epoch,
+        ]);
+    }
+
+    fn assert_vector_near(actual: Vector3<f64>, expected: Vector3<f64>, tolerance: f64) {
+        let delta = (actual - expected).norm();
+        assert!(
+            delta <= tolerance,
+            "actual {actual:?} expected {expected:?} delta {delta}"
+        );
     }
 
     fn write_f64_data(bytes: &mut [u8], start_address: i32, data: &[f64]) {
