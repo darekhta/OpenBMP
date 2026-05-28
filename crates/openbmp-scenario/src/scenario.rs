@@ -3333,6 +3333,30 @@ iso8601 = "2017-01-01T00:00:00Z"
     }
 
     #[test]
+    fn spk_utc_epoch_allows_meta_kernel_lsk() {
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665",
+                "gravity       = \"third_body\"\ngravity_base  = \"point_mass\"\nmu_m3_s2      = 3.986004418e14\nthird_bodies  = [\"sun\"]\nephemeris     = \"spk\"\nephemeris_meta_kernel = \"mission.tm\"",
+            )
+            + r#"
+[epoch]
+scale = "UTC"
+iso8601 = "2017-01-01T00:00:00Z"
+"#;
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        assert_eq!(
+            scenario
+                .document
+                .environment
+                .ephemeris_meta_kernel
+                .as_deref(),
+            Some(std::path::Path::new("mission.tm")),
+        );
+    }
+
+    #[test]
     fn third_body_spk_ephemeris_requires_file() {
         let toml_v2 = MINIMAL
             .replace("openbmp.scenario = 2", "openbmp.scenario = 3")

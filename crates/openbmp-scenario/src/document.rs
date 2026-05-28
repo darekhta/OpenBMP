@@ -257,7 +257,9 @@ impl ScenarioDocument {
             match epoch.scale.to_ascii_uppercase().as_str() {
                 "TDB" | "TT" => {}
                 "UTC" => {
-                    if epoch.leap_second_table.is_none() {
+                    if epoch.leap_second_table.is_none()
+                        && self.environment.ephemeris_meta_kernel.is_none()
+                    {
                         return Err(ScenarioError::MissingRequiredField {
                             field: "epoch.leap_second_table".to_owned(),
                             role: ModelRole::Gravity,

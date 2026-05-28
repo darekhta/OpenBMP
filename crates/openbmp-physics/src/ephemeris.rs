@@ -39,12 +39,18 @@ const SPK_NI: i32 = 6;
 const SPK_SUMMARY_WORDS: usize = 5;
 const SPK_SUMMARY_CONTROL_WORDS: usize = 3;
 const SPK_J2000_FRAME_ID: i32 = 1;
+const SPK_B1950_FRAME_ID: i32 = 2;
+const SPK_GALACTIC_FRAME_ID: i32 = 13;
+const SPK_DE200_FRAME_ID: i32 = 14;
+const SPK_DE202_FRAME_ID: i32 = 15;
+const SPK_MARSIAU_FRAME_ID: i32 = 16;
 const SPK_ECLIPJ2000_FRAME_ID: i32 = 17;
+const SPK_ECLIPB1950_FRAME_ID: i32 = 18;
+const SPK_DE143_FRAME_ID: i32 = 21;
 const NAIF_SOLAR_SYSTEM_BARYCENTER: i32 = 0;
 const NAIF_EARTH: i32 = 399;
 const NAIF_MOON: i32 = 301;
 const NAIF_SUN: i32 = 10;
-const J2000_ECLIPTIC_OBLIQUITY_RAD: f64 = 84_381.448 * DEG_TO_RAD / 3_600.0;
 const SPK_TYPE10_GEOPHYSICAL_CONSTANTS: usize = 8;
 const SPK_TYPE10_CURRENT_PACKET_SIZE: usize = 14;
 const SPK_TYPE10_LEGACY_PACKET_SIZE: usize = 10;
@@ -344,15 +350,14 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 /// (TLE/SGP4), type 18 (ESOC/DDID Hermite/Lagrange interpolation),
 /// type 19 (ESOC/DDID piecewise interpolation), type 20 (Chebyshev
 /// velocity), and type 21 (extended modified difference arrays)
-/// segments in the J2000 inertial
-/// frame. It also accepts the
-/// built-in SPICE
-/// `ECLIPJ2000` inertial frame and rotates those segment states into
-/// J2000. It computes geometric states by default, and exposes
+/// segments in NAIF's built-in SPICE inertial frames 1 through 21
+/// (type 10 remains J2000-only). Segment states are rotated into
+/// OpenBMP's J2000 ECI chain. It computes geometric states by default,
+/// and exposes
 /// SPICE-style reception/transmission light-time and
 /// stellar-aberration helpers for observation and pointing queries. It
-/// does not implement relativistic corrections, non-inertial frame
-/// chains, or generic text-kernel loading.
+/// does not implement higher-order relativistic corrections,
+/// non-inertial frame chains, or generic text-kernel loading.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpkEphemeris {
     epoch_tdb_julian_date: f64,
@@ -365,8 +370,9 @@ impl SpkEphemeris {
     /// # Errors
     ///
     /// Returns [`PhysicsError`] when the bytes are not a supported
-    /// DAF/SPK file or no supported type 1/2/3/5/8/9/10/12/13/14/15/17/18/19/20/21 J2000
-    /// segments are found.
+    /// DAF/SPK file or no supported type
+    /// 1/2/3/5/8/9/10/12/13/14/15/17/18/19/20/21 segments in a
+    /// supported built-in inertial frame are found.
     pub fn from_bytes(epoch_tdb_julian_date: f64, bytes: &[u8]) -> Result<Self, PhysicsError> {
         Self::from_kernels(epoch_tdb_julian_date, [bytes])
     }
@@ -381,7 +387,8 @@ impl SpkEphemeris {
     ///
     /// Returns [`PhysicsError`] when any byte slice is not a supported
     /// DAF/SPK file, no kernels are supplied, or no supported type
-    /// 1/2/3/5/8/9/10/12/13/14/15/17/18/19/20/21 J2000 segments are found across all kernels.
+    /// 1/2/3/5/8/9/10/12/13/14/15/17/18/19/20/21 segments in supported
+    /// built-in inertial frames are found across all kernels.
     pub fn from_kernels<'a, I>(epoch_tdb_julian_date: f64, kernels: I) -> Result<Self, PhysicsError>
     where
         I: IntoIterator<Item = &'a [u8]>,
@@ -405,7 +412,7 @@ impl SpkEphemeris {
         }
         if segments.is_empty() {
             return Err(PhysicsError::InvalidParameter {
-                reason: "SPK kernel contains no supported type 1/2/3/5/8/9/10/12/13/14/15/17/18/19/20/21 J2000 segments",
+                reason: "SPK kernel contains no supported type 1/2/3/5/8/9/10/12/13/14/15/17/18/19/20/21 segments in a supported inertial frame",
             });
         }
         Ok(Self {
@@ -1994,7 +2001,7 @@ fn low_precision_moon_eci_m(days_since_j2000: f64) -> Vector3<f64> {
 }
 
 fn supported_spk_inertial_frame(frame: i32) -> bool {
-    matches!(frame, SPK_J2000_FRAME_ID | SPK_ECLIPJ2000_FRAME_ID)
+    (SPK_J2000_FRAME_ID..=SPK_DE143_FRAME_ID).contains(&frame)
 }
 
 fn descriptor_supported(descriptor: SpkDescriptor) -> bool {
@@ -2011,21 +2018,156 @@ fn spk_frame_state_to_j2000_km_s(
     frame: i32,
     state: SpkStateKmS,
 ) -> Result<SpkStateKmS, PhysicsError> {
-    match frame {
-        SPK_J2000_FRAME_ID => Ok(state),
-        SPK_ECLIPJ2000_FRAME_ID => Ok(SpkStateKmS {
-            position_km: rotate_x(state.position_km, J2000_ECLIPTIC_OBLIQUITY_RAD),
-            velocity_km_s: rotate_x(state.velocity_km_s, J2000_ECLIPTIC_OBLIQUITY_RAD),
-        }),
-        _ => Err(PhysicsError::InvalidParameter {
+    let Some(position_km) = spice_builtin_inertial_to_j2000_vector(frame, state.position_km) else {
+        return Err(PhysicsError::InvalidParameter {
             reason: "unsupported SPK inertial frame",
-        }),
+        });
+    };
+    let Some(velocity_km_s) = spice_builtin_inertial_to_j2000_vector(frame, state.velocity_km_s)
+    else {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "unsupported SPK inertial frame",
+        });
+    };
+    Ok(SpkStateKmS {
+        position_km,
+        velocity_km_s,
+    })
+}
+
+fn spice_builtin_inertial_to_j2000_vector(frame: i32, v: Vector3<f64>) -> Option<Vector3<f64>> {
+    match frame {
+        SPK_J2000_FRAME_ID | SPK_DE200_FRAME_ID | SPK_DE202_FRAME_ID => Some(v),
+        SPK_B1950_FRAME_ID => Some(apply_spice_frame_to_base_definition(
+            v,
+            &[
+                (1_152.842_485_967_24, 3),
+                (-1_002.261_084_391_17, 2),
+                (1_153.040_662_003_30, 3),
+            ],
+        )),
+        3 => spice_builtin_inertial_to_j2000_vector(
+            2,
+            apply_spice_frame_to_base_definition(v, &[(0.525, 3)]),
+        ),
+        4 => spice_builtin_inertial_to_j2000_vector(
+            2,
+            apply_spice_frame_to_base_definition(v, &[(0.531_55, 3)]),
+        ),
+        5 => spice_builtin_inertial_to_j2000_vector(
+            2,
+            apply_spice_frame_to_base_definition(v, &[(0.410_7, 3)]),
+        ),
+        6 => spice_builtin_inertial_to_j2000_vector(
+            2,
+            apply_spice_frame_to_base_definition(v, &[(0.135_9, 3)]),
+        ),
+        7 => spice_builtin_inertial_to_j2000_vector(
+            2,
+            apply_spice_frame_to_base_definition(v, &[(0.477_5, 3)]),
+        ),
+        8 => spice_builtin_inertial_to_j2000_vector(
+            2,
+            apply_spice_frame_to_base_definition(v, &[(0.588_0, 3)]),
+        ),
+        9 => spice_builtin_inertial_to_j2000_vector(
+            2,
+            apply_spice_frame_to_base_definition(v, &[(0.552_9, 3)]),
+        ),
+        10 => spice_builtin_inertial_to_j2000_vector(
+            2,
+            apply_spice_frame_to_base_definition(v, &[(0.531_6, 3)]),
+        ),
+        11 => spice_builtin_inertial_to_j2000_vector(
+            2,
+            apply_spice_frame_to_base_definition(v, &[(0.575_4, 3)]),
+        ),
+        12 => spice_builtin_inertial_to_j2000_vector(
+            2,
+            apply_spice_frame_to_base_definition(v, &[(0.524_7, 3)]),
+        ),
+        SPK_GALACTIC_FRAME_ID => spice_builtin_inertial_to_j2000_vector(
+            3,
+            apply_spice_frame_to_base_definition(
+                v,
+                &[(1_177_200.0, 3), (225_360.0, 1), (1_016_100.0, 3)],
+            ),
+        ),
+        SPK_MARSIAU_FRAME_ID => Some(apply_spice_frame_to_base_definition(
+            v,
+            &[(324_000.0, 3), (133_610.4, 2), (-152_348.4, 3)],
+        )),
+        SPK_ECLIPJ2000_FRAME_ID => {
+            Some(apply_spice_frame_to_base_definition(v, &[(84_381.448, 1)]))
+        }
+        SPK_ECLIPB1950_FRAME_ID => spice_builtin_inertial_to_j2000_vector(
+            SPK_B1950_FRAME_ID,
+            apply_spice_frame_to_base_definition(v, &[(84_404.836, 1)]),
+        ),
+        19 => Some(apply_spice_frame_to_base_definition(
+            v,
+            &[
+                (1_152.710_137_772_52, 3),
+                (-1_002.250_420_105_33, 2),
+                (1_153.757_195_444_91, 3),
+            ],
+        )),
+        20 => Some(apply_spice_frame_to_base_definition(
+            v,
+            &[
+                (1_152.720_614_538_64, 3),
+                (-1_002.250_528_303_51, 2),
+                (1_153.746_638_575_21, 3),
+            ],
+        )),
+        SPK_DE143_FRAME_ID => Some(apply_spice_frame_to_base_definition(
+            v,
+            &[
+                (1_153.039_190_938_33, 3),
+                (-1_002.248_223_822_86, 2),
+                (1_153.429_002_223_57, 3),
+            ],
+        )),
+        _ => None,
     }
+}
+
+fn apply_spice_frame_to_base_definition(
+    mut v: Vector3<f64>,
+    rotations_arcsec_axis: &[(f64, i32)],
+) -> Vector3<f64> {
+    for (angle_arcsec, axis) in rotations_arcsec_axis {
+        v = rotate_axis(v, arcsec_to_rad(*angle_arcsec), *axis);
+    }
+    v
+}
+
+fn arcsec_to_rad(arcsec: f64) -> f64 {
+    arcsec * DEG_TO_RAD / 3_600.0
 }
 
 fn rotate_x(v: Vector3<f64>, theta: f64) -> Vector3<f64> {
     let (s, c) = theta.sin_cos();
     Vector3::new(v.x, c * v.y - s * v.z, s * v.y + c * v.z)
+}
+
+fn rotate_axis(v: Vector3<f64>, theta: f64, axis: i32) -> Vector3<f64> {
+    match axis {
+        1 => rotate_x(v, theta),
+        2 => rotate_y(v, theta),
+        3 => rotate_z(v, theta),
+        _ => v,
+    }
+}
+
+fn rotate_y(v: Vector3<f64>, theta: f64) -> Vector3<f64> {
+    let (s, c) = theta.sin_cos();
+    Vector3::new(c * v.x + s * v.z, v.y, -s * v.x + c * v.z)
+}
+
+fn rotate_z(v: Vector3<f64>, theta: f64) -> Vector3<f64> {
+    let (s, c) = theta.sin_cos();
+    Vector3::new(c * v.x - s * v.y, s * v.x + c * v.y, v.z)
 }
 
 fn evaluate_chebyshev(tau: f64, coefficients: &[f64]) -> f64 {
@@ -4513,7 +4655,7 @@ mod tests {
         let sun = ephemeris
             .body_state_eci_m_s(CelestialBody::Sun, SimTime::ZERO)
             .unwrap();
-        let (sin_eps, cos_eps) = J2000_ECLIPTIC_OBLIQUITY_RAD.sin_cos();
+        let (sin_eps, cos_eps) = arcsec_to_rad(84_381.448).sin_cos();
         assert_vector_near(
             sun.position_eci_m,
             Vector3::new(0.0, -sin_eps * 1_000.0, cos_eps * 1_000.0),
@@ -4524,6 +4666,148 @@ mod tests {
             Vector3::new(0.0, cos_eps * 1_000.0, sin_eps * 1_000.0),
             1.0e-12,
         );
+    }
+
+    #[test]
+    fn spk_ephemeris_rotates_b1950_segments_to_j2000() {
+        let bytes = synthetic_frame_spk(SPK_B1950_FRAME_ID, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::ZERO)
+            .unwrap();
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(
+                9.999_257_079_523_629e2,
+                1.117_893_812_642_769_1e1,
+                4.859_003_841_454_429,
+            ),
+            1.0e-12,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(
+                -1.117_893_813_777_013_5e1,
+                9.999_375_133_499_887e2,
+                -2.715_792_625_851_078e-2,
+            ),
+            1.0e-12,
+        );
+    }
+
+    #[test]
+    fn spk_ephemeris_treats_de200_de202_as_j2000() {
+        for frame in [SPK_DE200_FRAME_ID, SPK_DE202_FRAME_ID] {
+            let bytes = synthetic_frame_spk(frame, [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]);
+            let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+            let sun = ephemeris
+                .body_state_eci_m_s(CelestialBody::Sun, SimTime::ZERO)
+                .unwrap();
+            assert_vector_near(
+                sun.position_eci_m,
+                Vector3::new(1_000.0, 2_000.0, 3_000.0),
+                1.0e-12,
+            );
+            assert_vector_near(
+                sun.velocity_eci_m_s,
+                Vector3::new(4_000.0, 5_000.0, 6_000.0),
+                1.0e-12,
+            );
+        }
+    }
+
+    #[test]
+    fn spk_ephemeris_rotates_eclipb1950_segments_to_j2000() {
+        let bytes = synthetic_frame_spk(SPK_ECLIPB1950_FRAME_ID, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]);
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::ZERO)
+            .unwrap();
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(
+                -9.940_500_920_351_588e-3,
+                -3.978_812_427_417_045_5e2,
+                9.174_369_278_459_982e2,
+            ),
+            1.0e-12,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(
+                -1.218_927_713_821_492_4e1,
+                9.173_688_178_789_829e2,
+                3.978_515_722_052_201e2,
+            ),
+            1.0e-12,
+        );
+    }
+
+    #[test]
+    fn spk_ephemeris_rotates_galactic_segments_to_j2000() {
+        let bytes = synthetic_frame_spk(SPK_GALACTIC_FRAME_ID, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::ZERO)
+            .unwrap();
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(
+                -5.487_553_939_574_251e1,
+                -8.734_371_047_275_959e2,
+                -4.838_349_917_700_252e2,
+            ),
+            1.0e-12,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(
+                4.941_094_536_277_438e2,
+                -4.448_295_942_975_749_6e2,
+                7.469_822_486_998_92e2,
+            ),
+            1.0e-12,
+        );
+    }
+
+    #[test]
+    fn spk_ephemeris_rotates_marsiau_and_de143_segments_to_j2000() {
+        for (frame, expected_position, expected_velocity) in [
+            (
+                SPK_MARSIAU_FRAME_ID,
+                Vector3::new(
+                    6.732_577_474_600_25e2,
+                    7.394_078_749_141_46e2,
+                    -3.694_776_882_543_678_4e-14,
+                ),
+                Vector3::new(
+                    -5.896_308_378_262_532e2,
+                    5.368_803_108_216_340_5e2,
+                    6.034_028_562_547_383e2,
+                ),
+            ),
+            (
+                SPK_DE143_FRAME_ID,
+                Vector3::new(
+                    9.999_256_765_435_851e2,
+                    1.118_177_430_774_305_5e1,
+                    4.858_941_467_468_586,
+                ),
+                Vector3::new(
+                    -1.118_177_433_005_301_4e1,
+                    9.999_374_816_382_502e2,
+                    -2.716_221_152_505_747_6e-2,
+                ),
+            ),
+        ] {
+            let bytes = synthetic_frame_spk(frame, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+            let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+            let sun = ephemeris
+                .body_state_eci_m_s(CelestialBody::Sun, SimTime::ZERO)
+                .unwrap();
+            assert_vector_near(sun.position_eci_m, expected_position, 1.0e-12);
+            assert_vector_near(sun.velocity_eci_m_s, expected_velocity, 1.0e-12);
+        }
     }
 
     #[test]
@@ -4608,6 +4892,10 @@ mod tests {
     }
 
     fn synthetic_eclipj2000_spk() -> Vec<u8> {
+        synthetic_frame_spk(SPK_ECLIPJ2000_FRAME_ID, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    }
+
+    fn synthetic_frame_spk(frame: i32, position_km: [f64; 3], velocity_km_s: [f64; 3]) -> Vec<u8> {
         let segments = [
             SyntheticSegment {
                 target: NAIF_EARTH,
@@ -4619,9 +4907,9 @@ mod tests {
             SyntheticSegment {
                 target: NAIF_SUN,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
-                frame: SPK_ECLIPJ2000_FRAME_ID,
+                frame,
                 data_type: 3,
-                data: type3_constant_segment([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+                data: type3_constant_segment(position_km, velocity_km_s),
             },
             SyntheticSegment {
                 target: NAIF_MOON,

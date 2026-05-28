@@ -260,10 +260,10 @@ fn epoch_tdb_julian_date(
         "TDB" => Ok(jd),
         "TT" => Ok(tt_to_tdb_julian_date(jd)),
         "UTC" => {
-            let Some(table) = resolved_leap_second_table(resolved_files)? else {
+            let Some(table) = resolved_leap_second_table(document, resolved_files)? else {
                 if require_leap_seconds_for_utc {
                     return Err(RunnerError::UnsupportedScenario {
-                        what: "epoch.scale = \"UTC\" requires resolved epoch.leap_second_table for TDB ephemeris conversion".to_owned(),
+                        what: "epoch.scale = \"UTC\" requires resolved epoch.leap_second_table or a NAIF LSK in environment.ephemeris_meta_kernel for TDB ephemeris conversion".to_owned(),
                     });
                 }
                 return Ok(jd);
@@ -373,12 +373,26 @@ impl LeapSecondTable {
 }
 
 fn resolved_leap_second_table(
+    document: &ScenarioDocument,
     resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> Result<Option<LeapSecondTable>, RunnerError> {
-    let Some(resolved) = resolved_files.get("epoch.leap_second_table") else {
+    if let Some(resolved) = resolved_files.get("epoch.leap_second_table") {
+        return parse_leap_second_table(resolved).map(Some);
+    }
+    if document.environment.ephemeris_meta_kernel.is_none() {
         return Ok(None);
-    };
-    parse_leap_second_table(resolved).map(Some)
+    }
+    let mut table = None;
+    for index in 0.. {
+        let key = format!("environment.ephemeris_meta_kernel.files[{index}]");
+        let Some(resolved) = resolved_files.get(&key) else {
+            break;
+        };
+        if is_naif_leap_second_kernel(resolved) {
+            table = Some(parse_leap_second_table(resolved)?);
+        }
+    }
+    Ok(table)
 }
 
 fn parse_leap_second_table(resolved: &ResolvedFile) -> Result<LeapSecondTable, RunnerError> {
@@ -390,6 +404,13 @@ fn parse_leap_second_table(resolved: &ResolvedFile) -> Result<LeapSecondTable, R
         return parse_naif_leap_second_kernel(text);
     }
     parse_openbmp_leap_second_table(text)
+}
+
+fn is_naif_leap_second_kernel(resolved: &ResolvedFile) -> bool {
+    let Ok(text) = std::str::from_utf8(&resolved.bytes) else {
+        return false;
+    };
+    text.trim_start().starts_with("KPL/LSK") || text.contains("DELTET/DELTA_AT")
 }
 
 fn parse_openbmp_leap_second_table(text: &str) -> Result<LeapSecondTable, RunnerError> {
@@ -816,6 +837,39 @@ mod tests {
         files.insert(
             "epoch.leap_second_table".to_owned(),
             resolved_file("naif0012.tls", NAIF_LSK),
+        );
+        let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
+        match gravity.ephemeris() {
+            RuntimeEphemeris::Spk(spk) => assert_eq!(spk.segment_count(), 4),
+            other => panic!("expected SPK ephemeris, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builds_spk_third_body_ephemeris_from_utc_epoch_with_meta_kernel_lsk() {
+        let toml = SPK_THIRD_BODY_SCENARIO
+            .replace("scale = \"TDB\"", "scale = \"UTC\"")
+            .replace(
+                "iso8601 = \"2000-01-01T12:00:00Z\"",
+                "iso8601 = \"2017-01-01T00:00:00Z\"",
+            )
+            .replace(
+                "ephemeris_file = \"synthetic.bsp\"",
+                "ephemeris_meta_kernel = \"mission.tm\"",
+            );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(
+            "environment.ephemeris_meta_kernel".to_owned(),
+            resolved_file("mission.tm", "KPL/MK\n"),
+        );
+        files.insert(
+            "environment.ephemeris_meta_kernel.files[0]".to_owned(),
+            resolved_file("naif0012.tls", NAIF_LSK),
+        );
+        files.insert(
+            "environment.ephemeris_meta_kernel.files[1]".to_owned(),
+            resolved_bytes("de440s.bsp", synthetic_spk()),
         );
         let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
         match gravity.ephemeris() {

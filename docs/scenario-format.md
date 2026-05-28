@@ -379,7 +379,11 @@ When `epoch.leap_second_table` is declared, the runner loads it through
 the same resolved-file path and optional SHA-256 pin as other external
 inputs. The field accepts either the deterministic OpenBMP TOML format
 or a NAIF `KPL/LSK` leap-second text kernel containing
-`DELTET/DELTA_AT` entries. The OpenBMP TOML format is:
+`DELTET/DELTA_AT` entries. For `environment.ephemeris = "spk"` with an
+`ephemeris_meta_kernel`, a NAIF LSK referenced by `KERNELS_TO_LOAD` can
+also supply UTC -> TDB conversion when `epoch.leap_second_table` is
+omitted. An explicit `epoch.leap_second_table` takes precedence. The
+OpenBMP TOML format is:
 
 ```toml
 format = "openbmp-leap-seconds-v1"
@@ -396,10 +400,10 @@ tai_minus_utc_s = 37
 Entries must be strictly time-ordered. UTC ephemeris epochs use the
 latest entry at or before `epoch.iso8601` to convert UTC -> TT -> TDB;
 TT epochs are converted to TDB with the runner's compact deterministic
-periodic correction. SPK ephemeris epochs may use `TDB`, `TT`, or `UTC`,
-but `UTC` requires `epoch.leap_second_table` pointing at either an
-OpenBMP TOML leap-second table or a NAIF LSK file such as
-`naif0012.tls`.
+periodic correction. SPK ephemeris epochs may use `TDB`, `TT`, or
+`UTC`; `UTC` requires either `epoch.leap_second_table` pointing at an
+OpenBMP TOML leap-second table / NAIF LSK file such as `naif0012.tls`,
+or a NAIF LSK in the selected SPK meta-kernel.
 
 ## Model Ordering
 
@@ -549,14 +553,14 @@ Meta-kernel path symbols `PATH_SYMBOLS` / `PATH_VALUES` and `+`
 continuations are supported; relative referenced paths resolve against
 the meta-kernel's parent directory. The runner consumes binary SPK
 entries from the expanded list and records every referenced file for
-provenance. LSK files referenced by a meta-kernel are resolved and
-hashed, but UTC conversion still uses `epoch.leap_second_table` so the
-time axis remains explicit. Later SPK files take precedence over
-earlier files for overlapping SPK segments. The SPK reader evaluates
-seconds past J2000 on the ephemeris-time/TDB axis, so `[epoch].scale`
-may be `"TDB"`, `"TT"`, or `"UTC"`; `"UTC"` requires
-`epoch.leap_second_table` as either OpenBMP TOML or a NAIF LSK text
-kernel.
+provenance. A NAIF LSK referenced by the meta-kernel can supply UTC
+time conversion if `epoch.leap_second_table` is omitted; when several
+referenced LSK files are present, the last one in `KERNELS_TO_LOAD`
+order is used. Later SPK files take precedence over earlier files for
+overlapping SPK segments. The SPK reader evaluates seconds past J2000
+on the ephemeris-time/TDB axis, so `[epoch].scale` may be `"TDB"`,
+`"TT"`, or `"UTC"`; `"UTC"` requires either `epoch.leap_second_table`
+or a NAIF LSK in the selected meta-kernel.
 
 ```toml
 [epoch]
@@ -624,9 +628,10 @@ type 15 precessing-conic segments, type 17 equinoctial-element segments,
 type 18 ESOC/DDID
 subtype 0/1 packets, type 19 ESOC/DDID piecewise mini-segments, type 20
 Chebyshev velocity-only segments, and type 21 extended
-modified-difference arrays in the J2000 frame. It also accepts the
-built-in SPICE `ECLIPJ2000` inertial frame and rotates those segment
-states into OpenBMP's J2000 ECI chain. Type 1 evaluates fixed-dimension
+modified-difference arrays in NAIF's built-in SPICE inertial frame IDs
+1-21, rotating those segment states into OpenBMP's J2000 ECI chain.
+Type 10 remains J2000-only because its evaluator already rotates TEME
+states into J2000. Type 1 evaluates fixed-dimension
 modified difference lines; type 2 velocities are derived from the
 Chebyshev position derivative; type 3 velocities come from the segment
 velocity coefficients; type 5 propagates bracketing discrete states with
@@ -655,10 +660,12 @@ such as Solar-System-Barycenter -> Earth-Moon Barycenter -> Earth/Moon.
 Geometric states are the default and remain the input to force models;
 the SPK API also exposes reception-side `LT`, `LT+S`, `CN`, and
 `CN+S` observer corrections plus transmission-side `XLT`, `XLT+S`,
-`XCN`, and `XCN+S` pointing corrections. It does not yet implement
-relativistic corrections, generic text kernels beyond NAIF LSK
-leap-second files and meta-kernel expansion, non-J2000 frame transforms
-beyond built-in `ECLIPJ2000`, or a full SPICE frame-kernel chain.
+`XCN`, and `XCN+S` pointing corrections. These are Newtonian
+light-time / stellar-aberration corrections like SPICE's documented
+`ABCORR` flags; higher-order relativistic effects remain outside
+scope. It does not yet implement generic text kernels beyond NAIF LSK
+leap-second files and meta-kernel expansion, dynamic frames, or a full
+FK/PCK/CK frame-kernel chain.
 
 ### Frames local origin
 

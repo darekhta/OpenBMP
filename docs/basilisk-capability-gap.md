@@ -92,8 +92,10 @@ OpenBMP implementation slice.
   Hermite packets and subtype 1 Lagrange state packets.
 - Added SPK type 19 ESOC/DDID piecewise interpolation, including
   mini-segment boundary selection and subtype 0/1/2 packet evaluators.
-- Added SPK support for the built-in `ECLIPJ2000` inertial frame,
-  rotating those segment states into OpenBMP's J2000 ECI chain.
+- Added SPK support for NAIF's built-in SPICE inertial frame IDs 1-21
+  for geometric segments, rotating those segment states into OpenBMP's
+  J2000 ECI chain. Type 10 TLE/SPK segments remain J2000-only because
+  their evaluator already performs TEME -> J2000 conversion.
 - Added pinned leap-second table ingestion for deterministic UTC -> TT
   -> TDB and TT -> TDB ephemeris epoch conversion. SPK ephemerides can
   now use `TDB`, `TT`, or `UTC` epochs, with UTC requiring the table.
@@ -112,6 +114,10 @@ OpenBMP implementation slice.
   ephemerides, including `KERNELS_TO_LOAD`, `PATH_SYMBOLS`,
   `PATH_VALUES`, `+` continuations, SHA-256 pinning of the meta-kernel,
   and optional ordered pins for every expanded referenced file.
+- Added UTC ephemeris conversion from NAIF LSK files referenced by an
+  SPK meta-kernel, matching the common SPICE workflow where the
+  meta-kernel loads both the planetary BSP and `naif*.tls`. An explicit
+  `epoch.leap_second_table` still takes precedence.
 - Added compact IAU 1976 mean precession in the `iers-tabulated`
   ECI/ECEF path before Earth rotation and polar motion.
 - Added IAU 1980 nutation in the `iers-tabulated` celestial-frame path,
@@ -121,10 +127,12 @@ OpenBMP implementation slice.
 
 - SPK ingestion is intentionally limited to geometric state chains from
   binary SPK/BSP kernels plus reception/transmission apparent-state
-  helpers. It does not yet implement relativistic corrections, generic
-  text kernels beyond NAIF LSK leap-second files and meta-kernel
-  expansion, non-J2000 frame transforms beyond built-in `ECLIPJ2000`,
-  or a full SPICE frame-kernel chain.
+  helpers. It does not yet implement generic text kernels beyond NAIF
+  LSK leap-second files and meta-kernel expansion, dynamic frames, or a
+  full FK/PCK/CK frame-kernel chain. Relativistic corrections beyond
+  Newtonian light time / stellar aberration are outside this scope; NAIF's own
+  aberration-correction documentation says those effects are not
+  performed by SPICE aberration routines either.
 - The IERS path is intentionally compact: it does not yet implement a
   full SPICE frame chain or IAU 2006/2000A CIO-based transforms.
   Velocity transport now includes the finite-difference rate of the full
@@ -157,10 +165,12 @@ OpenBMP implementation slice.
 - NASA NAIF DAF Required Reading describes the binary file
   architecture used by SPK, CK, and binary PCK kernels:
   https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/daf.html
-- NASA NAIF Frames Required Reading lists built-in inertial frames such
-  as `J2000` and `ECLIPJ2000` and distinguishes them from FK/PCK/CK
-  frame chains:
+- NASA NAIF Frames Required Reading lists built-in inertial frames and
+  distinguishes them from FK/PCK/CK frame chains:
   https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/frames.html
+- NASA NAIF `IRFROT` documents the built-in inertial frame IDs used by
+  the SPICE frame subsystem:
+  https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/spicelib/irfrot.html
 - NASA NAIF generic kernels include the current leap-second kernel
   (`LSK`) used by SPICE time conversion workflows:
   https://naif.jpl.nasa.gov/naif/data_generic.html
