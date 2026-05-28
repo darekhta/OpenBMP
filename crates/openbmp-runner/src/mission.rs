@@ -24,7 +24,7 @@ use openbmp_mission::{
 };
 use openbmp_scenario::{
     EventConfig, EventTriggerConfig, MissionConfig, PhaseConfig, PhaseTransitionConfig,
-    RegionConfig, RegionStateConfig, ScenarioActionConfig, StateConfig,
+    RegionConfig, RegionStateConfig, ScenarioActionConfig, ScenarioDocument, StateConfig,
 };
 use openbmp_sim::{
     AlarmCode, BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase,
@@ -47,6 +47,19 @@ pub struct MissionRuntime {
     pub hsm: MissionStateMachine,
     /// Canonical orthogonal regions.
     pub regions: RegionSet,
+}
+
+/// Whether the scenario mission block declares any dynamic-pressure
+/// trigger. Runners use this to require an atmosphere that can supply
+/// density to kernel event evaluation.
+#[must_use]
+pub(crate) fn uses_dynamic_pressure_trigger(document: &ScenarioDocument) -> bool {
+    document.mission.as_ref().is_some_and(|mission| {
+        mission
+            .events
+            .iter()
+            .any(|event| matches!(&event.trigger, EventTriggerConfig::AtDynamicPressure { .. }))
+    })
 }
 
 enum RuntimeEventBinding {
@@ -493,14 +506,13 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Run
             velocity_m_s: *velocity_m_s,
             falling: *falling,
         },
-        EventTriggerConfig::AtDynamicPressure { .. } => {
-            return Err(RunnerError::Scenario(
-                openbmp_scenario::ScenarioError::UnsupportedTriggerKind {
-                    kind: "at_dynamic_pressure".to_owned(),
-                    reason: "dynamic-pressure triggers are not yet supported; they require atmosphere wired into event evaluation".to_owned(),
-                },
-            ));
-        }
+        EventTriggerConfig::AtDynamicPressure {
+            pressure_pa,
+            falling,
+        } => BuiltInEventTrigger::AtDynamicPressure {
+            pa: *pressure_pa,
+            falling: *falling,
+        },
         EventTriggerConfig::Scripted => {
             return Err(RunnerError::Scenario(
                 openbmp_scenario::ScenarioError::UnsupportedTriggerKind {

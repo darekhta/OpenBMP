@@ -26,14 +26,14 @@
 
 use std::borrow::Cow;
 
-use openbmp_core::{BodyId, Duration, SimTime, StepIndex};
+use openbmp_core::{BodyId, Duration, ModelId, SimTime, StepIndex};
 use openbmp_state::{MassProperties, PointMassState};
 use uom::si::mass::kilogram;
 
 use openbmp_models::{SimState, VehicleState};
 
 use crate::derivative::PointMassDerivative;
-use crate::error::{IntegratorError, SimulationError, StopReason};
+use crate::error::{IntegratorError, ModelEvalError, SimulationError, StopReason};
 use crate::integrator::Integrator;
 use crate::models::{
     EffectorActualsView, EngineSnapshot, EngineSnapshotView, EnvironmentModel, EnvironmentQuery,
@@ -42,6 +42,22 @@ use crate::models::{
 };
 use crate::solver_profile::{ProfiledIntegrator, SolverProfile, SolverProfileError};
 use crate::stop::StopCondition;
+
+const EVENT_SCALARS_MODEL_ID: ModelId = ModelId::new(0);
+
+fn dynamic_pressure_pa_from_density_velocity(
+    density_kg_m3: f64,
+    velocity: nalgebra::Vector3<f64>,
+) -> Result<f64, SimulationError> {
+    let speed_sq = velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z;
+    let dynamic_pressure_pa = 0.5 * density_kg_m3 * speed_sq;
+    if !dynamic_pressure_pa.is_finite() || dynamic_pressure_pa < 0.0 {
+        return Err(SimulationError::ModelEval(ModelEvalError::NonFinite {
+            model: EVENT_SCALARS_MODEL_ID,
+        }));
+    }
+    Ok(dynamic_pressure_pa)
+}
 
 /// Configuration for [`SimulationKernel`].
 ///
@@ -493,26 +509,36 @@ where
         // declared so legacy scenarios stay bit-stable.
         if self.has_event_bindings() {
             if self.previous_event_scalars.is_none() {
+                let previous_env = self.environment.sample(EnvironmentQuery {
+                    time: self.state.time,
+                    position_eci: self.state.position,
+                })?;
                 self.previous_event_scalars = Some(crate::events::EventScalars {
                     time_s: self.state.time.as_seconds(),
                     altitude_m: self.state.position.vector.z,
                     vertical_velocity_m_s: self.state.velocity.vector.z,
                     velocity_m_s: self.state.velocity.vector.norm(),
                     mass_fraction: self.state.mass.get::<kilogram>() / self.initial_mass_kg,
-                    dynamic_pressure_pa: 0.0,
+                    dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
+                        previous_env.atmosphere_density_kg_m3,
+                        self.state.velocity.vector,
+                    )?,
                 });
             }
+            let event_env = self.environment.sample(EnvironmentQuery {
+                time: SimTime::from_seconds(canonical_time_s),
+                position_eci: new_state.position,
+            })?;
             let scalars = crate::events::EventScalars {
                 time_s: canonical_time_s,
                 altitude_m: new_state.position.vector.z,
                 vertical_velocity_m_s: new_state.velocity.vector.z,
                 velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass.get::<kilogram>() / self.initial_mass_kg,
-                // The kernel does not wire atmosphere into
-                // the trigger eval; dynamic pressure is reported as
-                // 0.0 regardless of altitude. The atmosphere model
-                // would route in here.
-                dynamic_pressure_pa: 0.0,
+                dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
+                    event_env.atmosphere_density_kg_m3,
+                    new_state.velocity.vector,
+                )?,
             };
             self.evaluate_events(scalars, next_step, SimTime::from_seconds(canonical_time_s));
         }
@@ -1494,6 +1520,10 @@ where
         // declared so legacy byte-stability is preserved.
         if self.has_event_bindings() {
             if self.previous_event_scalars.is_none() {
+                let previous_env = self.environment.sample(EnvironmentQuery {
+                    time: self.state.time,
+                    position_eci: self.state.position,
+                })?;
                 self.previous_event_scalars = Some(crate::events::EventScalars {
                     time_s: self.state.time.as_seconds(),
                     altitude_m: self.state.position.vector.z,
@@ -1501,18 +1531,26 @@ where
                     velocity_m_s: self.state.velocity.vector.norm(),
                     mass_fraction: self.state.mass_props.mass.get::<kilogram>()
                         / self.initial_mass_kg,
-                    dynamic_pressure_pa: 0.0,
+                    dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
+                        previous_env.atmosphere_density_kg_m3,
+                        self.state.velocity.vector,
+                    )?,
                 });
             }
+            let event_env = self.environment.sample(EnvironmentQuery {
+                time: SimTime::from_seconds(canonical_time_s),
+                position_eci: new_state.position,
+            })?;
             let scalars = crate::events::EventScalars {
                 time_s: canonical_time_s,
                 altitude_m: new_state.position.vector.z,
                 vertical_velocity_m_s: new_state.velocity.vector.z,
                 velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass_props.mass.get::<kilogram>() / self.initial_mass_kg,
-                // See point-mass kernel comment — atmosphere
-                // is not wired into the trigger eval.
-                dynamic_pressure_pa: 0.0,
+                dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
+                    event_env.atmosphere_density_kg_m3,
+                    new_state.velocity.vector,
+                )?,
             };
             self.evaluate_events(scalars, next_step, SimTime::from_seconds(canonical_time_s));
         }

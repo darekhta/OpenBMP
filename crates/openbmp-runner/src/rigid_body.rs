@@ -46,7 +46,7 @@ use openbmp_physics::{
 use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
-    ConstantMass, EndTime, ForceContext, ForceModel, NullEnvironment, RigidBodySeparation,
+    AnyStop, ConstantMass, EndTime, ForceContext, ForceModel, GroundImpact, RigidBodySeparation,
     RigidMassModel, RigidModels, ScenarioScriptAction, SimulationConfig, SimulationKernel,
     StopReason,
 };
@@ -64,8 +64,8 @@ use uom::si::mass::kilogram;
 use crate::RunOutcome;
 use crate::assembly::{dry_mass_kg_at, dry_mass_properties_at};
 use crate::atmosphere::{
-    RuntimeAtmosphere, build_document_runtime_atmosphere, is_runtime_atmosphere_kind,
-    scenario_atmosphere_kind,
+    RuntimeAtmosphere, RuntimeEnvironment, build_document_runtime_atmosphere,
+    is_runtime_atmosphere_kind, scenario_atmosphere_kind,
 };
 use crate::error::RunnerError;
 use crate::integrator::build_runtime_integrator;
@@ -132,6 +132,7 @@ pub fn run(
     wind_rack.reset();
 
     let loaded = load_models(document, resolved_files)?;
+    crate::aero::reject_hypersonic_deck_only_out_of_envelope(document, loaded.aero_deck.as_ref())?;
     let mut aerothermal_driver = crate::aerothermal::LiveAerothermalDriver::maybe_new(document)?;
     let aerothermal_sink = aerothermal_driver
         .as_ref()
@@ -178,8 +179,11 @@ pub fn run(
         integrator: runtime_integrator,
         force_model: kernel_vehicle,
         mass_model: rigid_models,
-        environment: NullEnvironment,
-        stop_condition: EndTime::new(SimTime::from_seconds(document.time.stop_s)),
+        environment: RuntimeEnvironment::from_document(document)?,
+        stop_condition: AnyStop::new(
+            GroundImpact::sea_level(),
+            EndTime::new(SimTime::from_seconds(document.time.stop_s)),
+        ),
         dt: Duration::from_seconds(document.time.dt_s),
         scenario_seed: document.time.seed,
     };
@@ -503,6 +507,17 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
         .force_model_universe()
         .iter()
         .any(|m| m == "aerothermal_diagnostics");
+    if crate::mission::uses_dynamic_pressure_trigger(document)
+        && !is_runtime_atmosphere_kind(atmosphere_kind)
+    {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "atmosphere `{atmosphere_kind}` is not wired with dynamic-pressure triggers; \
+                 use `us_standard_1976`, `piecewise_exponential`, `nrlmsise00`, or \
+                 `nrlmsis2_compat`"
+            ),
+        });
+    }
     if has_aero && !is_runtime_atmosphere_kind(atmosphere_kind) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(

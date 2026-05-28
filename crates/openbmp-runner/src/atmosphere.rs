@@ -12,14 +12,19 @@
 //! `ZeroDensityAboveCeiling` exoatmospheric policy for runner calls
 //! above the 86 km USSA76 implementation ceiling.
 
-use openbmp_core::SimTime;
+use std::borrow::Cow;
+
+use openbmp_core::{ModelId, SimTime};
 use openbmp_physics::{
     AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, Nrlmsis2Compat, Nrlmsise00Full,
     Nrlmsise00Inputs, PhysicsError, PiecewiseExponentialAtmosphere, UsStandard1976,
 };
 use openbmp_scenario::{AtmosphereConfig, ScenarioDocument};
+use openbmp_sim::{EnvironmentModel, EnvironmentQuery, EnvironmentSample, ModelEvalError};
 
 use crate::error::RunnerError;
+
+const RUNNER_ENVIRONMENT_MODEL_ID: ModelId = ModelId::new(900);
 
 /// Atmosphere model selected by the scenario.
 #[derive(Copy, Clone, Debug)]
@@ -34,6 +39,56 @@ pub enum RuntimeAtmosphere {
     /// `nrlmsis2_compat` — OpenBMP compatibility profile for
     /// NRLMSIS-2-family scenario selectors.
     Nrlmsis2Compat(Nrlmsis2Compat),
+}
+
+/// Kernel environment wrapper used for event-scalar evaluation.
+///
+/// Force models still own their atmosphere instances. This wrapper
+/// exposes the same scenario atmosphere density through
+/// [`EnvironmentSample`] so kernel-owned mission triggers can compute
+/// dynamic pressure without reaching into force-model internals.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct RuntimeEnvironment {
+    atmosphere: Option<RuntimeAtmosphere>,
+}
+
+impl RuntimeEnvironment {
+    /// Build a runtime environment from the scenario atmosphere when
+    /// the runner supports that atmosphere kind. Unsupported or
+    /// `none` atmospheres preserve the legacy null-environment
+    /// density of zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError`] when the selected runner atmosphere is
+    /// supported but model-specific construction fails.
+    pub fn from_document(document: &ScenarioDocument) -> Result<Self, RunnerError> {
+        let atmosphere_kind = scenario_atmosphere_kind(document);
+        let atmosphere = if is_runtime_atmosphere_kind(atmosphere_kind) {
+            Some(build_document_runtime_atmosphere(document)?)
+        } else {
+            None
+        };
+        Ok(Self { atmosphere })
+    }
+}
+
+impl EnvironmentModel for RuntimeEnvironment {
+    fn sample(&self, query: EnvironmentQuery) -> Result<EnvironmentSample, ModelEvalError> {
+        let mut sample = EnvironmentSample::default();
+        let Some(atmosphere) = &self.atmosphere else {
+            return Ok(sample);
+        };
+        let altitude_m = query.position_eci.vector.z.max(0.0);
+        let atmosphere_sample = atmosphere.sample(altitude_m, query.time).map_err(|_| {
+            ModelEvalError::OutOfEnvelope {
+                model: RUNNER_ENVIRONMENT_MODEL_ID,
+                reason: Cow::Borrowed("atmosphere out of envelope at altitude"),
+            }
+        })?;
+        sample.atmosphere_density_kg_m3 = atmosphere_sample.density_kg_m3;
+        Ok(sample)
+    }
 }
 
 impl AtmosphereModel for RuntimeAtmosphere {

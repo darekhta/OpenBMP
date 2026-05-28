@@ -3760,8 +3760,8 @@ action  = { kind = "stop", label = "burnout" }
     }
 
     #[test]
-    fn rejects_dynamic_pressure_trigger_kind() {
-        let err = Scenario::from_toml_str(&with_mission(
+    fn accepts_dynamic_pressure_trigger_kind() {
+        let scenario = Scenario::from_toml_str(&with_mission(
             r#"
 [mission]
 initial_phase = "ascent"
@@ -3776,11 +3776,36 @@ trigger = { kind = "at_dynamic_pressure", pressure_pa = 0.0, falling = false }
 action  = { kind = "stop", label = "max-q" }
 "#,
         ))
+        .expect("dynamic pressure trigger should parse");
+        assert!(matches!(
+            &scenario.document.mission.as_ref().unwrap().events[0].trigger,
+            EventTriggerConfig::AtDynamicPressure { pressure_pa, falling: false }
+                if *pressure_pa == 0.0
+        ));
+    }
+
+    #[test]
+    fn rejects_negative_dynamic_pressure_trigger_threshold() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_dynamic_pressure", pressure_pa = -1.0, falling = false }
+action  = { kind = "stop", label = "max-q" }
+"#,
+        ))
         .unwrap_err();
         assert!(matches!(
             err,
-            ScenarioError::UnsupportedTriggerKind { ref kind, .. }
-                if kind == "at_dynamic_pressure"
+            ScenarioError::InvalidNumber { ref field, .. }
+                if field == "mission.events[0].trigger.pressure_pa"
         ));
     }
 

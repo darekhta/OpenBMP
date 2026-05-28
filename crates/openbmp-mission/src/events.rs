@@ -157,9 +157,8 @@ pub struct EventScalars {
     pub velocity_m_s: f64,
     /// Current mass divided by initial mass.
     pub mass_fraction: f64,
-    /// Dynamic pressure (Pa). Left at `0.0` until atmosphere is wired
-    /// into event evaluation; scenario parsing rejects
-    /// [`BuiltInEventTrigger::AtDynamicPressure`] in the meantime.
+    /// Dynamic pressure (Pa), computed by the event consumer from the
+    /// local atmosphere density and speed magnitude.
     pub dynamic_pressure_pa: f64,
 }
 

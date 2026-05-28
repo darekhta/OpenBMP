@@ -263,6 +263,10 @@ Allowed `validation` values are `experimental`, `checked`,
 
 `dt_s` is the base kernel step. Multi-rate schedules are integer divisors of
 the base step and must be declared under subsystem-specific `rate_hz` fields.
+Runner simulations also install an automatic sea-level ground-impact
+stop condition. `stop_s` remains the upper time bound; a descending
+trajectory that crosses `position.z <= 0` stops earlier with a
+`ground-impact` stop reason, even without a manual mission event.
 
 TOML seed literals should stay in `0..=i64::MAX`. The scenario model
 stores seeds as `u64`, but TOML integer syntax itself cannot represent values
@@ -507,6 +511,14 @@ deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27
 
 Declaring both `deck` and `[aero.buildup]` fails with
 `ScenarioError::AmbiguousAero`.
+
+The shipped decks in `data/aero/` are launch-vehicle fixtures whose
+Mach coverage tops out in the low-supersonic range. Do not use a
+deck-only method for Mach-20 re-entry unless the deck explicitly covers
+that envelope with a documented extrapolation policy. Re-entry scenarios
+should use `kind = "hybrid"` so a low-Mach deck can hand off to a
+hypersonic continuum method and then to `free_molecular` as Knudsen
+number rises.
 
 Runtime hypersonic method example:
 
@@ -953,7 +965,7 @@ return `false` on step 0 because no previous-step snapshot exists.
 | `at_apogee` | — | Fires when vertical velocity flips from `> 0` to `<= 0`. |
 | `at_mass_fraction` | `remaining: f64` (in `[0, 1]`) | Fires when mass fraction (current / initial) drops to or below `remaining`. |
 | `at_velocity` | `velocity_m_s: f64`, optional `falling: bool = false` | Fires when speed magnitude crosses `velocity_m_s`; `falling = false` selects the rising edge and `falling = true` selects the falling edge. |
-| `at_dynamic_pressure` | `pressure_pa: f64`, `falling: bool` | Fires when dynamic pressure crosses `pressure_pa` in the direction set by `falling`. Requires atmosphere wired into event evaluation. |
+| `at_dynamic_pressure` | `pressure_pa: f64 >= 0`, `falling: bool` | Fires when dynamic pressure crosses `pressure_pa` in the direction set by `falling`. Runner event evaluation computes `q = 0.5 * rho * |v|^2` from the selected runtime atmosphere; use `us_standard_1976`, `piecewise_exponential`, `nrlmsise00`, or `nrlmsis2_compat`. |
 
 The `kind = "scripted"` trigger is rejected at parse time with a
 typed deferral error: scripted triggers are not supported. The

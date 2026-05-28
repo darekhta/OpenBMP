@@ -8,6 +8,7 @@ use openbmp_aero::{
     FreeMolecularAero, HybridAeroMethod, LinearKnudsenBridge, LinearMachBridge, ModifiedNewtonian,
     NoseShape, TangentCone, TangentWedge,
 };
+use openbmp_core::SimTime;
 use openbmp_physics::AtmosphereModel;
 use openbmp_scenario::{
     AeroBuildupConfig, AeroBuildupNoseConfig, AeroFreeMolecularConfig, AeroKnudsenBridgeConfig,
@@ -16,6 +17,8 @@ use openbmp_scenario::{
 
 use crate::atmosphere::build_document_runtime_atmosphere;
 use crate::error::RunnerError;
+
+const HYPERSONIC_DECK_GUARD_MACH: f64 = 5.0;
 
 /// Load or bake the aerodynamic deck declared by `[aero]`.
 ///
@@ -60,6 +63,70 @@ pub fn build_aero_method(
         return Ok(Some((Box::new(DeckLookup::new(deck)), reference_length_m)));
     };
     build_configured_aero_method(config, deck).map(Some)
+}
+
+/// Reject deck-only aerodynamic use when the initial state is already
+/// hypersonic and outside the deck's Mach envelope.
+///
+/// This does not police mild launch-vehicle clamp policies near the
+/// edge of low-Mach decks. It catches the re-entry failure mode where a
+/// Mach-20 trajectory would either fail closed immediately or clamp a
+/// launch deck far beyond its intended range. Hybrid/live aero methods
+/// are exempt because they do not rely on a single low-Mach deck over
+/// the full flight envelope.
+///
+/// # Errors
+///
+/// Returns [`RunnerError::UnsupportedScenario`] with guidance to use a
+/// hybrid method when deck-only aero starts hypersonic above the deck's
+/// maximum Mach.
+pub fn reject_hypersonic_deck_only_out_of_envelope(
+    document: &ScenarioDocument,
+    deck: Option<&AeroDeck>,
+) -> Result<(), RunnerError> {
+    let Some(aero) = &document.aero else {
+        return Ok(());
+    };
+    let method_kind = aero
+        .method
+        .as_ref()
+        .map_or("deck", |method| method.kind.as_str());
+    if method_kind != "deck" {
+        return Ok(());
+    }
+    let Some(deck) = deck else {
+        return Ok(());
+    };
+    let Some(max_deck_mach) = deck.mach_grid().last().copied() else {
+        return Ok(());
+    };
+
+    let [vx, vy, vz] = document.vehicle.initial_velocity_eci_m_s;
+    let speed_m_s = (vx * vx + vy * vy + vz * vz).sqrt();
+    if !speed_m_s.is_finite() || speed_m_s <= 0.0 {
+        return Ok(());
+    }
+    let atmosphere = build_document_runtime_atmosphere(document)?;
+    let altitude_m = document.vehicle.initial_position_eci_m[2].max(0.0);
+    let sample = atmosphere
+        .sample(altitude_m, SimTime::from_seconds(document.time.start_s))
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("initial aero deck Mach check could not sample atmosphere: {err}"),
+        })?;
+    if sample.speed_of_sound_m_s <= 0.0 || !sample.speed_of_sound_m_s.is_finite() {
+        return Ok(());
+    }
+    let initial_mach = speed_m_s / sample.speed_of_sound_m_s;
+    if initial_mach > max_deck_mach && initial_mach >= HYPERSONIC_DECK_GUARD_MACH {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "deck-only aero initial Mach {initial_mach:.3} exceeds deck max Mach \
+                 {max_deck_mach:.3}; use [aero.method] kind = \"hybrid\" with a \
+                 hypersonic continuum method and free_molecular branch for re-entry"
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn build_configured_aero_method(

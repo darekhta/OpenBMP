@@ -50,8 +50,8 @@ use openbmp_physics::{
 use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
-    ConstantGravityForce, ConstantMass, EndTime, ForceContext, ForceModel, MassModel,
-    NullEnvironment, ScenarioScriptAction, SimulationConfig, SimulationKernel, StopReason,
+    AnyStop, ConstantGravityForce, ConstantMass, EndTime, ForceContext, ForceModel, GroundImpact,
+    MassModel, ScenarioScriptAction, SimulationConfig, SimulationKernel, StopReason,
 };
 use openbmp_state::PointMassState;
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -67,8 +67,8 @@ use uom::si::mass::kilogram;
 use crate::RunOutcome;
 use crate::assembly::dry_mass_kg_at;
 use crate::atmosphere::{
-    RuntimeAtmosphere, build_document_runtime_atmosphere, is_runtime_atmosphere_kind,
-    scenario_atmosphere_kind,
+    RuntimeAtmosphere, RuntimeEnvironment, build_document_runtime_atmosphere,
+    is_runtime_atmosphere_kind, scenario_atmosphere_kind,
 };
 use crate::error::RunnerError;
 use crate::integrator::build_runtime_integrator;
@@ -161,6 +161,10 @@ pub fn run(
     wind_rack.reset();
 
     let loaded_models = load_models(document, resolved_files)?;
+    crate::aero::reject_hypersonic_deck_only_out_of_envelope(
+        document,
+        loaded_models.aero_deck.as_ref(),
+    )?;
     let initial_state = build_initial_state(document, &loaded_models, &assembly)?;
     let mut aerothermal_driver = crate::aerothermal::LiveAerothermalDriver::maybe_new(document)?;
     let aerothermal_sink = aerothermal_driver
@@ -192,8 +196,11 @@ pub fn run(
         integrator: runtime_integrator,
         force_model: kernel_vehicle,
         mass_model,
-        environment: NullEnvironment,
-        stop_condition: EndTime::new(SimTime::from_seconds(document.time.stop_s)),
+        environment: RuntimeEnvironment::from_document(document)?,
+        stop_condition: AnyStop::new(
+            GroundImpact::sea_level(),
+            EndTime::new(SimTime::from_seconds(document.time.stop_s)),
+        ),
         dt: Duration::from_seconds(document.time.dt_s),
         scenario_seed: document.time.seed,
     };
@@ -487,6 +494,17 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
         .force_model_universe()
         .iter()
         .any(|m| m == "aerothermal_diagnostics");
+    if crate::mission::uses_dynamic_pressure_trigger(document)
+        && !is_runtime_atmosphere_kind(atmosphere_kind)
+    {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "atmosphere `{atmosphere_kind}` is not wired with dynamic-pressure triggers; \
+                 use `us_standard_1976`, `piecewise_exponential`, `nrlmsise00`, or \
+                 `nrlmsis2_compat`"
+            ),
+        });
+    }
     if has_aero && !is_runtime_atmosphere_kind(atmosphere_kind) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
@@ -1636,6 +1654,114 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const GROUND_IMPACT_AUTO_STOP_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "ground-impact-auto-stop-test"
+description = "Synthetic point-mass descent without a manual ground-stop event."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 10.0
+dt_s = 1.0
+seed = 9
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 10.0]
+initial_velocity_eci_m_s = [0.0, 0.0, -10.0]
+
+[vehicle.assembly]
+id = "ground-impact-auto-stop-test"
+
+[[vehicle.assembly.bodies]]
+id = "mass"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/ground-impact-auto-stop-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
+    const DYNAMIC_PRESSURE_EVENT_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "dynamic-pressure-event-test"
+description = "Synthetic point-mass run with a dynamic-pressure mission stop."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 10.0
+dt_s = 1.0
+seed = 10
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 1000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "dynamic-pressure-event-test"
+
+[[vehicle.assembly.bodies]]
+id = "mass"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "us_standard_1976"
+wind = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[forces]
+models = ["gravity"]
+
+[mission]
+initial_phase = "descent"
+
+[[mission.phases]]
+id = "descent"
+label = "descent"
+
+[[mission.events]]
+id = "evt_dynamic_pressure"
+trigger = { kind = "at_dynamic_pressure", pressure_pa = 10.0, falling = false }
+action = { kind = "stop", label = "q-rise" }
+once = true
+
+[telemetry]
+output.csv = "out/dynamic-pressure-event-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn workspace_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1656,6 +1782,13 @@ require_monotonic_time = true
             workspace_root().join("scenarios/parachute-recovery/parachute-descent.toml"),
         )
         .expect("canonical parachute scenario must parse")
+    }
+
+    fn hypersonic_hybrid_scenario() -> Scenario {
+        Scenario::from_file(
+            workspace_root().join("scenarios/hypersonic-hybrid-entry/scenario.toml"),
+        )
+        .expect("canonical hypersonic hybrid scenario must parse")
     }
 
     fn first_mass_kg(outcome: &RunOutcome) -> f64 {
@@ -1743,6 +1876,7 @@ require_monotonic_time = true
     fn point_mass_supports_motorless_aero_scenarios() {
         let mut scenario = niskanen_scenario();
         scenario.document.time.stop_s = 0.010;
+        scenario.document.vehicle.initial_position_eci_m[2] = 10.0;
         scenario.document.propulsion = None;
         scenario.document.forces = Some(openbmp_scenario::ForcesConfig {
             models: vec!["gravity".to_owned(), "aero".to_owned()],
@@ -1780,6 +1914,57 @@ require_monotonic_time = true
                 .iter()
                 .all(|value| value.to_bits() == 0.0_f64.to_bits()),
             "USSA76 exo fallback should produce zero aero force above 86 km: {aero_force_z:?}"
+        );
+    }
+
+    #[test]
+    fn point_mass_auto_stops_on_ground_impact() {
+        let scenario =
+            Scenario::from_toml_str(GROUND_IMPACT_AUTO_STOP_SCENARIO).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files).expect("ground-impact run succeeds");
+
+        assert_eq!(outcome.final_step, 1);
+        assert!(matches!(
+            outcome.stop_reason,
+            StopReason::GroundImpact {
+                ground_altitude_m,
+                ..
+            } if ground_altitude_m == 0.0
+        ));
+    }
+
+    #[test]
+    fn at_dynamic_pressure_event_stops_when_q_crosses_threshold() {
+        let scenario =
+            Scenario::from_toml_str(DYNAMIC_PRESSURE_EVENT_SCENARIO).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files).expect("dynamic-pressure event run succeeds");
+
+        assert_eq!(outcome.final_step, 1);
+        assert!(matches!(
+            outcome.stop_reason,
+            StopReason::MissionEnded { ref label, .. } if label == "q-rise"
+        ));
+    }
+
+    #[test]
+    fn deck_only_hypersonic_entry_is_rejected_with_hybrid_guidance() {
+        let mut scenario = hypersonic_hybrid_scenario();
+        scenario
+            .document
+            .aero
+            .as_mut()
+            .expect("scenario has aero")
+            .method = None;
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let err = run(&scenario, &resolved_files).expect_err("deck-only Mach-20 entry rejects");
+
+        assert!(
+            matches!(&err, RunnerError::UnsupportedScenario { what }
+                if what.contains("deck-only aero initial Mach")
+                    && what.contains("kind = \"hybrid\"")),
+            "unexpected error: {err:?}"
         );
     }
 

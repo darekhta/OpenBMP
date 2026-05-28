@@ -5551,8 +5551,7 @@ pub enum EventTriggerConfig {
         #[serde(default)]
         falling: bool,
     },
-    /// Deferred: rejected at parse time until atmosphere is
-    /// wired into event evaluation.
+    /// Dynamic-pressure crossing.
     AtDynamicPressure {
         /// Threshold dynamic pressure (Pa).
         pressure_pa: f64,
@@ -5582,11 +5581,8 @@ impl EventTriggerConfig {
             Self::AtVelocity { velocity_m_s, .. } => {
                 require_positive(&path("velocity_m_s"), *velocity_m_s)?;
             }
-            Self::AtDynamicPressure { .. } => {
-                return Err(ScenarioError::UnsupportedTriggerKind {
-                    kind: "at_dynamic_pressure".to_owned(),
-                    reason: "dynamic-pressure triggers are not yet supported; they require atmosphere wired into event evaluation".to_owned(),
-                });
+            Self::AtDynamicPressure { pressure_pa, .. } => {
+                require_non_negative(&path("pressure_pa"), *pressure_pa)?;
             }
             Self::Scripted => {
                 return Err(ScenarioError::UnsupportedTriggerKind {

@@ -424,6 +424,9 @@ pub struct EnvironmentQuery {
 pub struct EnvironmentSample {
     /// Local gravitational acceleration in `Eci`, m/s².
     pub gravity_eci_m_s2: Vector3<f64>,
+    /// Local atmospheric mass density, kg/m³. Defaults to zero so
+    /// environments without an atmosphere preserve vacuum semantics.
+    pub atmosphere_density_kg_m3: f64,
     /// NED wind vector at the kernel's current step,
     /// `(north, east, down)`, m/s. Defaults to zero — the runner
     /// pushes a non-zero value via `kernel.set_wind_sample` only for
