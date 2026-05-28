@@ -50,8 +50,8 @@ pub enum FrameProfile {
     /// WGS84 with scenario-pinned Earth-orientation parameters:
     /// absolute UTC epoch, interpolated UT1-UTC, and polar motion.
     /// This remains a compact deterministic transform. It includes
-    /// IAU 1976 mean precession from J2000 to date, but not nutation
-    /// or a SPICE frame chain.
+    /// IAU 1976 mean precession and IAU 1980 nutation from J2000 to
+    /// date, but not a full SPICE frame chain.
     IersTabulated,
 }
 
@@ -72,7 +72,10 @@ impl FrameProfile {
 // ---------------------------------------------------------------------
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
+const J2000_JULIAN_DATE: f64 = 2_451_545.0;
+const JULIAN_CENTURY_DAYS: f64 = 36_525.0;
 const TWO_PI: f64 = 2.0 * std::f64::consts::PI;
+const TENTH_MILLIARCSECOND_TO_RAD: f64 = ARCSECOND_TO_RAD / 10_000.0;
 
 /// Radians per arcsecond.
 pub const ARCSECOND_TO_RAD: f64 = std::f64::consts::PI / (180.0 * 3_600.0);
@@ -473,15 +476,15 @@ impl FrameContext {
 
     /// Transform an ECI position to ECEF at simulation time `t`.
     ///
-    /// For `iers-tabulated`, the path is J2000 ECI -> mean-of-date
-    /// precessed axes -> TIRS via Earth Rotation Angle -> ECEF via
-    /// polar motion. `ToyFixedEarth` profile always returns `p_eci`
-    /// reinterpreted as ECEF.
+    /// For `iers-tabulated`, the path is J2000 ECI -> true-of-date
+    /// axes via precession and nutation -> TIRS via Earth Rotation
+    /// Angle -> ECEF via polar motion. `ToyFixedEarth` profile always
+    /// returns `p_eci` reinterpreted as ECEF.
     #[must_use]
     pub fn eci_to_ecef_position(&self, t: SimTime, p_eci: Position3<Eci>) -> Position3<Ecef> {
         let theta = self.earth_rotation_angle(t);
-        let mean_of_date = self.eci_to_mean_of_date_vector(t, p_eci.vector);
-        let tirs = rotate_z(mean_of_date, -theta);
+        let true_of_date = self.eci_to_true_of_date_vector(t, p_eci.vector);
+        let tirs = rotate_z(true_of_date, -theta);
         Position3::from_vector(self.tirs_to_ecef_vector(t, tirs))
     }
 
@@ -491,8 +494,8 @@ impl FrameContext {
     pub fn ecef_to_eci_position(&self, t: SimTime, p_ecef: Position3<Ecef>) -> Position3<Eci> {
         let theta = self.earth_rotation_angle(t);
         let tirs = self.ecef_to_tirs_vector(t, p_ecef.vector);
-        let mean_of_date = rotate_z(tirs, theta);
-        Position3::from_vector(self.mean_of_date_to_eci_vector(t, mean_of_date))
+        let true_of_date = rotate_z(tirs, theta);
+        Position3::from_vector(self.true_of_date_to_eci_vector(t, true_of_date))
     }
 
     /// Transform an ECI velocity to ECEF velocity at simulation time
@@ -509,10 +512,10 @@ impl FrameContext {
         p_eci: Position3<Eci>,
     ) -> Velocity3<Ecef> {
         let omega = self.angular_velocity_z();
-        let r = self.eci_to_mean_of_date_vector(t, p_eci.vector);
-        let v = self.eci_to_mean_of_date_vector(t, v_eci.vector);
-        // ω × r in the mean-of-date intermediate frame, where the
-        // Earth spin axis is the frame `+z` axis.
+        let r = self.eci_to_true_of_date_vector(t, p_eci.vector);
+        let v = self.eci_to_true_of_date_vector(t, v_eci.vector);
+        // ω × r in the true-of-date intermediate frame, where the
+        // compact Earth spin axis is the frame `+z` axis.
         let cross = nalgebra::Vector3::new(-omega * r.y, omega * r.x, 0.0);
         let v_inertial_minus_transport = v - cross;
         let theta = self.earth_rotation_angle(t);
@@ -532,17 +535,17 @@ impl FrameContext {
         v_ecef: Velocity3<Ecef>,
         p_ecef: Position3<Ecef>,
     ) -> Velocity3<Eci> {
-        // Rotate the ECEF velocity into mean-of-date inertial
-        // orientation, add the transport rate there, then precess back
+        // Rotate the ECEF velocity into true-of-date inertial
+        // orientation, add the transport rate there, then rotate back
         // to the scenario ECI axes.
         let theta = self.earth_rotation_angle(t);
         let tirs = self.ecef_to_tirs_vector(t, v_ecef.vector);
-        let v_rotated_mean_of_date = rotate_z(tirs, theta);
+        let v_rotated_true_of_date = rotate_z(tirs, theta);
         let r_tirs = self.ecef_to_tirs_vector(t, p_ecef.vector);
-        let r_mean_of_date = rotate_z(r_tirs, theta);
+        let r_true_of_date = rotate_z(r_tirs, theta);
         let omega = self.angular_velocity_z();
-        let cross = Vector3::new(-omega * r_mean_of_date.y, omega * r_mean_of_date.x, 0.0);
-        Velocity3::from_vector(self.mean_of_date_to_eci_vector(t, v_rotated_mean_of_date + cross))
+        let cross = Vector3::new(-omega * r_true_of_date.y, omega * r_true_of_date.x, 0.0);
+        Velocity3::from_vector(self.true_of_date_to_eci_vector(t, v_rotated_true_of_date + cross))
     }
 
     /// Earth angular velocity along the inertial `+z` axis (rad/s).
@@ -591,22 +594,22 @@ impl FrameContext {
         )
     }
 
-    fn eci_to_mean_of_date_vector(&self, t: SimTime, v_eci: Vector3<f64>) -> Vector3<f64> {
+    fn eci_to_true_of_date_vector(&self, t: SimTime, v_eci: Vector3<f64>) -> Vector3<f64> {
         if self.profile != FrameProfile::IersTabulated {
             return v_eci;
         }
-        precess_j2000_to_mean_of_date_vector(self.precession_julian_date(t), v_eci)
+        precess_j2000_to_true_of_date_vector(self.frame_model_julian_date(t), v_eci)
     }
 
-    fn mean_of_date_to_eci_vector(&self, t: SimTime, v_mod: Vector3<f64>) -> Vector3<f64> {
+    fn true_of_date_to_eci_vector(&self, t: SimTime, v_tod: Vector3<f64>) -> Vector3<f64> {
         if self.profile != FrameProfile::IersTabulated {
-            return v_mod;
+            return v_tod;
         }
-        precess_mean_of_date_to_j2000_vector(self.precession_julian_date(t), v_mod)
+        true_of_date_to_j2000_vector(self.frame_model_julian_date(t), v_tod)
     }
 
-    fn precession_julian_date(&self, t: SimTime) -> f64 {
-        self.iers.as_ref().map_or(2_451_545.0, |iers| {
+    fn frame_model_julian_date(&self, t: SimTime) -> f64 {
+        self.iers.as_ref().map_or(J2000_JULIAN_DATE, |iers| {
             iers.epoch_utc_julian_date + t.as_seconds() / SECONDS_PER_DAY
         })
     }
@@ -715,12 +718,16 @@ fn lerp(a: f64, b: f64, alpha: f64) -> f64 {
 }
 
 fn earth_rotation_angle_from_ut1_julian_date(jd_ut1: f64) -> f64 {
-    let days_since_j2000 = jd_ut1 - 2_451_545.0;
+    let days_since_j2000 = jd_ut1 - J2000_JULIAN_DATE;
     (TWO_PI * (0.779_057_273_264_0 + 1.002_737_811_911_354_6 * days_since_j2000)).rem_euclid(TWO_PI)
 }
 
+fn julian_centuries_since_j2000(julian_date: f64) -> f64 {
+    (julian_date - J2000_JULIAN_DATE) / JULIAN_CENTURY_DAYS
+}
+
 fn precession_angles_iau1976(julian_date: f64) -> (f64, f64, f64) {
-    let t = (julian_date - 2_451_545.0) / 36_525.0;
+    let t = julian_centuries_since_j2000(julian_date);
     let zeta = (2_306.218_1 * t + 0.301_88 * t * t + 0.017_998 * t * t * t) * ARCSECOND_TO_RAD;
     let theta = (2_004.310_9 * t - 0.426_65 * t * t - 0.041_833 * t * t * t) * ARCSECOND_TO_RAD;
     let z = (2_306.218_1 * t + 1.094_68 * t * t + 0.018_203 * t * t * t) * ARCSECOND_TO_RAD;
@@ -742,6 +749,1312 @@ fn precess_mean_of_date_to_j2000_vector(julian_date: f64, v: Vector3<f64>) -> Ve
     let (zeta, theta, z) = precession_angles_iau1976(julian_date);
     rotate_z(rotate_y(rotate_z(v, -z), theta), -zeta)
 }
+
+fn precess_j2000_to_true_of_date_vector(julian_date: f64, v: Vector3<f64>) -> Vector3<f64> {
+    nutate_mean_of_date_to_true_of_date_vector(
+        julian_date,
+        precess_j2000_to_mean_of_date_vector(julian_date, v),
+    )
+}
+
+fn true_of_date_to_j2000_vector(julian_date: f64, v: Vector3<f64>) -> Vector3<f64> {
+    precess_mean_of_date_to_j2000_vector(
+        julian_date,
+        nutate_true_of_date_to_mean_of_date_vector(julian_date, v),
+    )
+}
+
+fn mean_obliquity_iau1980(julian_date: f64) -> f64 {
+    let t = julian_centuries_since_j2000(julian_date);
+    (84_381.448 + (-46.815_0 + (-0.000_59 + 0.001_813 * t) * t) * t) * ARCSECOND_TO_RAD
+}
+
+fn nutation_angles_iau1980(julian_date: f64) -> (f64, f64) {
+    if !julian_date.is_finite() {
+        return (0.0, 0.0);
+    }
+    let t = julian_centuries_since_j2000(julian_date);
+    let (l, l_prime, f, d, omega) = nutation_fundamental_arguments_iau1980(t);
+    let mut dpsi = 0.0;
+    let mut deps = 0.0;
+    for term in IAU_1980_NUTATION_TERMS.iter().rev() {
+        let arg = f64::from(term.l) * l
+            + f64::from(term.l_prime) * l_prime
+            + f64::from(term.f) * f
+            + f64::from(term.d) * d
+            + f64::from(term.omega) * omega;
+        let sine_coeff = term.dpsi_0 + term.dpsi_t * t;
+        let cosine_coeff = term.deps_0 + term.deps_t * t;
+        if sine_coeff != 0.0 {
+            dpsi += sine_coeff * arg.sin();
+        }
+        if cosine_coeff != 0.0 {
+            deps += cosine_coeff * arg.cos();
+        }
+    }
+    (
+        dpsi * TENTH_MILLIARCSECOND_TO_RAD,
+        deps * TENTH_MILLIARCSECOND_TO_RAD,
+    )
+}
+
+fn nutation_fundamental_arguments_iau1980(t: f64) -> (f64, f64, f64, f64, f64) {
+    let l = normalize_angle_pm_pi(
+        (485_866.733 + (715_922.633 + (31.310 + 0.064 * t) * t) * t) * ARCSECOND_TO_RAD
+            + (1_325.0 * t % 1.0) * TWO_PI,
+    );
+    let l_prime = normalize_angle_pm_pi(
+        (1_287_099.804 + (1_292_581.224 + (-0.577 - 0.012 * t) * t) * t) * ARCSECOND_TO_RAD
+            + (99.0 * t % 1.0) * TWO_PI,
+    );
+    let f = normalize_angle_pm_pi(
+        (335_778.877 + (295_263.137 + (-13.257 + 0.011 * t) * t) * t) * ARCSECOND_TO_RAD
+            + (1_342.0 * t % 1.0) * TWO_PI,
+    );
+    let d = normalize_angle_pm_pi(
+        (1_072_261.307 + (1_105_601.328 + (-6.891 + 0.019 * t) * t) * t) * ARCSECOND_TO_RAD
+            + (1_236.0 * t % 1.0) * TWO_PI,
+    );
+    let omega = normalize_angle_pm_pi(
+        (450_160.280 + (-482_890.539 + (7.455 + 0.008 * t) * t) * t) * ARCSECOND_TO_RAD
+            + (-5.0 * t % 1.0) * TWO_PI,
+    );
+    (l, l_prime, f, d, omega)
+}
+
+fn nutate_mean_of_date_to_true_of_date_vector(julian_date: f64, v: Vector3<f64>) -> Vector3<f64> {
+    if !julian_date.is_finite() {
+        return v;
+    }
+    let (dpsi, deps) = nutation_angles_iau1980(julian_date);
+    let eps = mean_obliquity_iau1980(julian_date);
+    rotate_x(rotate_z(rotate_x(v, -eps), dpsi), eps + deps)
+}
+
+fn nutate_true_of_date_to_mean_of_date_vector(julian_date: f64, v: Vector3<f64>) -> Vector3<f64> {
+    if !julian_date.is_finite() {
+        return v;
+    }
+    let (dpsi, deps) = nutation_angles_iau1980(julian_date);
+    let eps = mean_obliquity_iau1980(julian_date);
+    rotate_x(rotate_z(rotate_x(v, -(eps + deps)), -dpsi), eps)
+}
+
+fn normalize_angle_pm_pi(theta: f64) -> f64 {
+    let mut normalized = theta.rem_euclid(TWO_PI);
+    if normalized >= std::f64::consts::PI {
+        normalized -= TWO_PI;
+    }
+    normalized
+}
+
+#[derive(Copy, Clone)]
+struct NutationTerm {
+    l: i32,
+    l_prime: i32,
+    f: i32,
+    d: i32,
+    omega: i32,
+    dpsi_0: f64,
+    dpsi_t: f64,
+    deps_0: f64,
+    deps_t: f64,
+}
+
+// Third-party notice: the IAU 1980 nutation terms and compact helper
+// formulas below are adapted from ERFA `eraNut80` and `eraObl80`.
+// ERFA is Copyright (C) 2013-2023, NumFOCUS Foundation, all rights
+// reserved, and is derived with permission from the IAU SOFA library.
+// This OpenBMP implementation is not SOFA software and is not endorsed
+// by SOFA, the IAU, or NumFOCUS.
+//
+// ERFA terms: redistribution and use in source and binary forms, with
+// or without modification, are permitted provided that redistributions
+// of source code retain the copyright notice, conditions, and
+// disclaimer; redistributions in binary form reproduce them in the
+// documentation and/or other materials; and neither the name of the
+// Standards Of Fundamental Astronomy Board, the International
+// Astronomical Union nor the names of contributors may be used to
+// endorse or promote products derived from this software without
+// specific prior written permission.
+//
+// ERFA disclaimer: this software is provided by the copyright holders
+// and contributors "as is" and any express or implied warranties,
+// including, but not limited to, the implied warranties of
+// merchantability and fitness for a particular purpose are disclaimed.
+// In no event shall the copyright holder or contributors be liable for
+// any direct, indirect, incidental, special, exemplary, or consequential
+// damages however caused and on any theory of liability, whether in
+// contract, strict liability, or tort, arising in any way out of the use
+// of this software, even if advised of the possibility of such damage.
+const IAU_1980_NUTATION_TERMS: [NutationTerm; 106] = [
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 0,
+        d: 0,
+        omega: 1,
+        dpsi_0: -171996.0,
+        dpsi_t: -174.2,
+        deps_0: 92025.0,
+        deps_t: 8.9,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 0,
+        d: 0,
+        omega: 2,
+        dpsi_0: 2062.0,
+        dpsi_t: 0.2,
+        deps_0: -895.0,
+        deps_t: 0.5,
+    },
+    NutationTerm {
+        l: -2,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 1,
+        dpsi_0: 46.0,
+        dpsi_t: 0.0,
+        deps_0: -24.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: -2,
+        d: 0,
+        omega: 0,
+        dpsi_0: 11.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -2,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 2,
+        dpsi_0: -3.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: -1,
+        f: 0,
+        d: -1,
+        omega: 0,
+        dpsi_0: -3.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: -2,
+        f: 2,
+        d: -2,
+        omega: 1,
+        dpsi_0: -2.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: -2,
+        d: 0,
+        omega: 1,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 2,
+        d: -2,
+        omega: 2,
+        dpsi_0: -13187.0,
+        dpsi_t: -1.6,
+        deps_0: 5736.0,
+        deps_t: -3.1,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: 0,
+        d: 0,
+        omega: 0,
+        dpsi_0: 1426.0,
+        dpsi_t: -3.4,
+        deps_0: 54.0,
+        deps_t: -0.1,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: 2,
+        d: -2,
+        omega: 2,
+        dpsi_0: -517.0,
+        dpsi_t: 1.2,
+        deps_0: 224.0,
+        deps_t: -0.6,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: -1,
+        f: 2,
+        d: -2,
+        omega: 2,
+        dpsi_0: 217.0,
+        dpsi_t: -0.5,
+        deps_0: -95.0,
+        deps_t: 0.3,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 2,
+        d: -2,
+        omega: 1,
+        dpsi_0: 129.0,
+        dpsi_t: 0.1,
+        deps_0: -70.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: 0,
+        d: -2,
+        omega: 0,
+        dpsi_0: 48.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 2,
+        d: -2,
+        omega: 0,
+        dpsi_0: -22.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 2,
+        f: 0,
+        d: 0,
+        omega: 0,
+        dpsi_0: 17.0,
+        dpsi_t: -0.1,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: 0,
+        d: 0,
+        omega: 1,
+        dpsi_0: -15.0,
+        dpsi_t: 0.0,
+        deps_0: 9.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 2,
+        f: 2,
+        d: -2,
+        omega: 2,
+        dpsi_0: -16.0,
+        dpsi_t: 0.1,
+        deps_0: 7.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: -1,
+        f: 0,
+        d: 0,
+        omega: 1,
+        dpsi_0: -12.0,
+        dpsi_t: 0.0,
+        deps_0: 6.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -2,
+        l_prime: 0,
+        f: 0,
+        d: 2,
+        omega: 1,
+        dpsi_0: -6.0,
+        dpsi_t: 0.0,
+        deps_0: 3.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: -1,
+        f: 2,
+        d: -2,
+        omega: 1,
+        dpsi_0: -5.0,
+        dpsi_t: 0.0,
+        deps_0: 3.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: 0,
+        d: -2,
+        omega: 1,
+        dpsi_0: 4.0,
+        dpsi_t: 0.0,
+        deps_0: -2.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: 2,
+        d: -2,
+        omega: 1,
+        dpsi_0: 4.0,
+        dpsi_t: 0.0,
+        deps_0: -2.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 0,
+        d: -1,
+        omega: 0,
+        dpsi_0: -4.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 1,
+        f: 0,
+        d: -2,
+        omega: 0,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: -2,
+        d: 2,
+        omega: 1,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: -2,
+        d: 2,
+        omega: 0,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: 0,
+        d: 0,
+        omega: 2,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: 0,
+        f: 0,
+        d: 1,
+        omega: 1,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: 2,
+        d: -2,
+        omega: 0,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 2,
+        dpsi_0: -2274.0,
+        dpsi_t: -0.2,
+        deps_0: 977.0,
+        deps_t: -0.5,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 0,
+        d: 0,
+        omega: 0,
+        dpsi_0: 712.0,
+        dpsi_t: 0.1,
+        deps_0: -7.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 1,
+        dpsi_0: -386.0,
+        dpsi_t: -0.4,
+        deps_0: 200.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 2,
+        dpsi_0: -301.0,
+        dpsi_t: 0.0,
+        deps_0: 129.0,
+        deps_t: -0.1,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 0,
+        d: -2,
+        omega: 0,
+        dpsi_0: -158.0,
+        dpsi_t: 0.0,
+        deps_0: -1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 2,
+        dpsi_0: 123.0,
+        dpsi_t: 0.0,
+        deps_0: -53.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 0,
+        d: 2,
+        omega: 0,
+        dpsi_0: 63.0,
+        dpsi_t: 0.0,
+        deps_0: -2.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 0,
+        d: 0,
+        omega: 1,
+        dpsi_0: 63.0,
+        dpsi_t: 0.1,
+        deps_0: -33.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: 0,
+        f: 0,
+        d: 0,
+        omega: 1,
+        dpsi_0: -58.0,
+        dpsi_t: -0.1,
+        deps_0: 32.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: 0,
+        f: 2,
+        d: 2,
+        omega: 2,
+        dpsi_0: -59.0,
+        dpsi_t: 0.0,
+        deps_0: 26.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 1,
+        dpsi_0: -51.0,
+        dpsi_t: 0.0,
+        deps_0: 27.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 2,
+        d: 2,
+        omega: 2,
+        dpsi_0: -38.0,
+        dpsi_t: 0.0,
+        deps_0: 16.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: 0,
+        d: 0,
+        omega: 0,
+        dpsi_0: 29.0,
+        dpsi_t: 0.0,
+        deps_0: -1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 2,
+        d: -2,
+        omega: 2,
+        dpsi_0: 29.0,
+        dpsi_t: 0.0,
+        deps_0: -12.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 2,
+        dpsi_0: -31.0,
+        dpsi_t: 0.0,
+        deps_0: 13.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 0,
+        dpsi_0: 26.0,
+        dpsi_t: 0.0,
+        deps_0: -1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 1,
+        dpsi_0: 21.0,
+        dpsi_t: 0.0,
+        deps_0: -10.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: 0,
+        f: 0,
+        d: 2,
+        omega: 1,
+        dpsi_0: 16.0,
+        dpsi_t: 0.0,
+        deps_0: -8.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 0,
+        d: -2,
+        omega: 1,
+        dpsi_0: -13.0,
+        dpsi_t: 0.0,
+        deps_0: 7.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: 0,
+        f: 2,
+        d: 2,
+        omega: 1,
+        dpsi_0: -10.0,
+        dpsi_t: 0.0,
+        deps_0: 5.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 1,
+        f: 0,
+        d: -2,
+        omega: 0,
+        dpsi_0: -7.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: 2,
+        d: 0,
+        omega: 2,
+        dpsi_0: 7.0,
+        dpsi_t: 0.0,
+        deps_0: -3.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: -1,
+        f: 2,
+        d: 0,
+        omega: 2,
+        dpsi_0: -7.0,
+        dpsi_t: 0.0,
+        deps_0: 3.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 2,
+        d: 2,
+        omega: 2,
+        dpsi_0: -8.0,
+        dpsi_t: 0.0,
+        deps_0: 3.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 0,
+        d: 2,
+        omega: 0,
+        dpsi_0: 6.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: 2,
+        d: -2,
+        omega: 2,
+        dpsi_0: 6.0,
+        dpsi_t: 0.0,
+        deps_0: -3.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 0,
+        d: 2,
+        omega: 1,
+        dpsi_0: -6.0,
+        dpsi_t: 0.0,
+        deps_0: 3.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 2,
+        d: 2,
+        omega: 1,
+        dpsi_0: -7.0,
+        dpsi_t: 0.0,
+        deps_0: 3.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 2,
+        d: -2,
+        omega: 1,
+        dpsi_0: 6.0,
+        dpsi_t: 0.0,
+        deps_0: -3.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 0,
+        d: -2,
+        omega: 1,
+        dpsi_0: -5.0,
+        dpsi_t: 0.0,
+        deps_0: 3.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: -1,
+        f: 0,
+        d: 0,
+        omega: 0,
+        dpsi_0: 5.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 1,
+        dpsi_0: -5.0,
+        dpsi_t: 0.0,
+        deps_0: 3.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: 0,
+        d: -2,
+        omega: 0,
+        dpsi_0: -4.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: -2,
+        d: 0,
+        omega: 0,
+        dpsi_0: 4.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 0,
+        d: 1,
+        omega: 0,
+        dpsi_0: -4.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 1,
+        f: 0,
+        d: 0,
+        omega: 0,
+        dpsi_0: -3.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 0,
+        dpsi_0: 3.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: -1,
+        f: 2,
+        d: 0,
+        omega: 2,
+        dpsi_0: -3.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: -1,
+        f: 2,
+        d: 2,
+        omega: 2,
+        dpsi_0: -3.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -2,
+        l_prime: 0,
+        f: 0,
+        d: 0,
+        omega: 1,
+        dpsi_0: -2.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 3,
+        l_prime: 0,
+        f: 2,
+        d: 0,
+        omega: 2,
+        dpsi_0: -3.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: -1,
+        f: 2,
+        d: 2,
+        omega: 2,
+        dpsi_0: -3.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 1,
+        f: 2,
+        d: 0,
+        omega: 2,
+        dpsi_0: 2.0,
+        dpsi_t: 0.0,
+        deps_0: -1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: 0,
+        f: 2,
+        d: -2,
+        omega: 1,
+        dpsi_0: -2.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: 0,
+        d: 0,
+        omega: 1,
+        dpsi_0: 2.0,
+        dpsi_t: 0.0,
+        deps_0: -1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 0,
+        d: 0,
+        omega: 2,
+        dpsi_0: -2.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 3,
+        l_prime: 0,
+        f: 0,
+        d: 0,
+        omega: 0,
+        dpsi_0: 2.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 2,
+        d: 1,
+        omega: 2,
+        dpsi_0: 2.0,
+        dpsi_t: 0.0,
+        deps_0: -1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: 0,
+        f: 0,
+        d: 0,
+        omega: 2,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: -1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 0,
+        d: -4,
+        omega: 0,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -2,
+        l_prime: 0,
+        f: 2,
+        d: 2,
+        omega: 2,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: -1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: 0,
+        f: 2,
+        d: 4,
+        omega: 2,
+        dpsi_0: -2.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: 0,
+        d: -4,
+        omega: 0,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 1,
+        f: 2,
+        d: -2,
+        omega: 2,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: -1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 2,
+        d: 2,
+        omega: 1,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -2,
+        l_prime: 0,
+        f: 2,
+        d: 4,
+        omega: 2,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: 0,
+        f: 4,
+        d: 0,
+        omega: 2,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: -1,
+        f: 0,
+        d: -2,
+        omega: 0,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: 2,
+        d: -2,
+        omega: 1,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: -1.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: 2,
+        d: 2,
+        omega: 2,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 0,
+        d: 2,
+        omega: 1,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 4,
+        d: -2,
+        omega: 2,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 3,
+        l_prime: 0,
+        f: 2,
+        d: -2,
+        omega: 2,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: 2,
+        d: -2,
+        omega: 0,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: 2,
+        d: 0,
+        omega: 1,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: -1,
+        l_prime: -1,
+        f: 0,
+        d: 2,
+        omega: 1,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: -2,
+        d: 0,
+        omega: 1,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 2,
+        d: -1,
+        omega: 2,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: 0,
+        d: 2,
+        omega: 0,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: -2,
+        d: -2,
+        omega: 0,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: -1,
+        f: 2,
+        d: 0,
+        omega: 1,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 1,
+        f: 0,
+        d: -2,
+        omega: 1,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 1,
+        l_prime: 0,
+        f: -2,
+        d: 2,
+        omega: 0,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 2,
+        l_prime: 0,
+        f: 0,
+        d: 2,
+        omega: 0,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 0,
+        f: 2,
+        d: 4,
+        omega: 2,
+        dpsi_0: -1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+    NutationTerm {
+        l: 0,
+        l_prime: 1,
+        f: 0,
+        d: 1,
+        omega: 0,
+        dpsi_0: 1.0,
+        dpsi_t: 0.0,
+        deps_0: 0.0,
+        deps_t: 0.0,
+    },
+];
 
 fn rotate_z(v: Vector3<f64>, theta: f64) -> Vector3<f64> {
     let (s, c) = theta.sin_cos();
@@ -1181,7 +2494,49 @@ mod tests {
         }
 
         #[test]
-        fn iers_velocity_round_trip_with_precession() {
+        fn iers_nutation_angles_match_erfa_reference() {
+            let jd = 2_400_000.5 + 53_736.0;
+            let (dpsi, deps) = nutation_angles_iau1980(jd);
+            assert_abs_diff_eq!(dpsi, -0.9643658353226563966e-5, epsilon = 1.0e-17);
+            assert_abs_diff_eq!(deps, 0.4060051006879713322e-4, epsilon = 1.0e-17);
+        }
+
+        #[test]
+        fn iers_nutation_matrix_matches_erfa_reference() {
+            let jd = 2_400_000.5 + 53_736.0;
+            let x = nutate_mean_of_date_to_true_of_date_vector(jd, Vector3::new(1.0, 0.0, 0.0));
+            let y = nutate_mean_of_date_to_true_of_date_vector(jd, Vector3::new(0.0, 1.0, 0.0));
+            let z = nutate_mean_of_date_to_true_of_date_vector(jd, Vector3::new(0.0, 0.0, 1.0));
+            assert_abs_diff_eq!(x.x, 0.9999999999534999268, epsilon = 1.0e-14);
+            assert_abs_diff_eq!(x.y, -0.8847780042583435924e-5, epsilon = 1.0e-14);
+            assert_abs_diff_eq!(x.z, -0.3836265729708478796e-5, epsilon = 1.0e-14);
+            assert_abs_diff_eq!(y.x, 0.8847935789636432161e-5, epsilon = 1.0e-14);
+            assert_abs_diff_eq!(y.y, 0.9999999991366569963, epsilon = 1.0e-14);
+            assert_abs_diff_eq!(y.z, 0.4060049308612638555e-4, epsilon = 1.0e-14);
+            assert_abs_diff_eq!(z.x, 0.3835906502164019142e-5, epsilon = 1.0e-14);
+            assert_abs_diff_eq!(z.y, -0.4060052702727130809e-4, epsilon = 1.0e-14);
+            assert_abs_diff_eq!(z.z, 0.9999999991684415129, epsilon = 1.0e-14);
+        }
+
+        #[test]
+        fn iers_precession_nutation_matrix_matches_erfa_reference() {
+            let jd = 2_400_000.5 + 50_123.9999;
+            let x = precess_j2000_to_true_of_date_vector(jd, Vector3::new(1.0, 0.0, 0.0));
+            let y = precess_j2000_to_true_of_date_vector(jd, Vector3::new(0.0, 1.0, 0.0));
+            let z = precess_j2000_to_true_of_date_vector(jd, Vector3::new(0.0, 0.0, 1.0));
+            assert_abs_diff_eq!(x.x, 0.9999995831934611169, epsilon = 1.0e-13);
+            assert_abs_diff_eq!(x.y, -0.8373804896118301316e-3, epsilon = 1.0e-13);
+            assert_abs_diff_eq!(x.z, -0.3638774789072144473e-3, epsilon = 1.0e-13);
+            assert_abs_diff_eq!(y.x, 0.8373654045728124011e-3, epsilon = 1.0e-13);
+            assert_abs_diff_eq!(y.y, 0.9999996485439674092, epsilon = 1.0e-13);
+            assert_abs_diff_eq!(y.z, -0.4160674085851722359e-4, epsilon = 1.0e-13);
+            assert_abs_diff_eq!(z.x, 0.3639121916933106191e-3, epsilon = 1.0e-13);
+            assert_abs_diff_eq!(z.y, 0.4130202510421549752e-4, epsilon = 1.0e-13);
+            assert_abs_diff_eq!(z.z, 0.9999999329310274805, epsilon = 1.0e-13);
+        }
+
+        #[test]
+        fn iers_velocity_round_trip_with_precession_and_nutation() {
             let epoch_2050 = 2_451_545.0 + 0.5 * 36_525.0;
             let ctx = FrameContext::iers_tabulated(epoch_2050, None, table()).unwrap();
             let t = SimTime::from_seconds(5.0);

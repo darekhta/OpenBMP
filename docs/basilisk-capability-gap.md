@@ -66,6 +66,8 @@ OpenBMP implementation slice.
   now use `TDB`, `TT`, or `UTC` epochs, with UTC requiring the table.
 - Added compact IAU 1976 mean precession in the `iers-tabulated`
   ECI/ECEF path before Earth rotation and polar motion.
+- Added IAU 1980 nutation in the `iers-tabulated` celestial-frame path,
+  using the 106-term lunisolar series before Earth rotation.
 
 ## Still Missing Relative To Basilisk
 
@@ -73,8 +75,9 @@ OpenBMP implementation slice.
   binary SPK/BSP kernels. It does not yet implement light-time
   correction, stellar aberration, text kernels, non-J2000 frame
   transforms, or the remaining generic/analytic SPK segment types.
-- The IERS path is intentionally compact: it does not yet implement
-  nutation or a SPICE frame chain.
+- The IERS path is intentionally compact: it does not yet implement a
+  full SPICE frame chain, IAU 2006/2000A CIO-based transforms, or
+  precession/nutation rate terms in velocity transport.
 - Multi-body OpenBMP propagation is still independent-lane rigid-body
   propagation after deployment. Relative-distance triggers can observe
   lane geometry, but Basilisk's message-passing architecture supports
