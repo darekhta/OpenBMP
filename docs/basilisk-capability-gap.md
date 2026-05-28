@@ -61,6 +61,8 @@ OpenBMP implementation slice.
   interpolation, covering the fixed-record discrete-state segment
   family commonly used for mission kernels before the remaining generic
   and analytic SPK segment types.
+- Added SPK support for the built-in `ECLIPJ2000` inertial frame,
+  rotating those segment states into OpenBMP's J2000 ECI chain.
 - Added pinned leap-second table ingestion for deterministic UTC -> TT
   -> TDB and TT -> TDB ephemeris epoch conversion. SPK ephemerides can
   now use `TDB`, `TT`, or `UTC` epochs, with UTC requiring the table.
@@ -74,7 +76,8 @@ OpenBMP implementation slice.
 - SPK ingestion is intentionally limited to geometric state chains from
   binary SPK/BSP kernels. It does not yet implement light-time
   correction, stellar aberration, text kernels, non-J2000 frame
-  transforms, or the remaining generic/analytic SPK segment types.
+  transforms beyond built-in `ECLIPJ2000`, or the remaining
+  generic/analytic SPK segment types.
 - The IERS path is intentionally compact: it does not yet implement a
   full SPICE frame chain, IAU 2006/2000A CIO-based transforms, or
   precession/nutation rate terms in velocity transport.
@@ -106,3 +109,7 @@ OpenBMP implementation slice.
 - NASA NAIF DAF Required Reading describes the binary file
   architecture used by SPK, CK, and binary PCK kernels:
   https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/daf.html
+- NASA NAIF Frames Required Reading lists built-in inertial frames such
+  as `J2000` and `ECLIPJ2000` and distinguishes them from FK/PCK/CK
+  frame chains:
+  https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/frames.html

@@ -35,10 +35,12 @@ const SPK_NI: i32 = 6;
 const SPK_SUMMARY_WORDS: usize = 5;
 const SPK_SUMMARY_CONTROL_WORDS: usize = 3;
 const SPK_J2000_FRAME_ID: i32 = 1;
+const SPK_ECLIPJ2000_FRAME_ID: i32 = 17;
 const NAIF_SOLAR_SYSTEM_BARYCENTER: i32 = 0;
 const NAIF_EARTH: i32 = 399;
 const NAIF_MOON: i32 = 301;
 const NAIF_SUN: i32 = 10;
+const J2000_ECLIPTIC_OBLIQUITY_RAD: f64 = 84_381.448 * DEG_TO_RAD / 3_600.0;
 
 const DEG_TO_RAD: f64 = core::f64::consts::PI / 180.0;
 
@@ -231,9 +233,11 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 /// SPK type 2 (Chebyshev position), type 3 (Chebyshev position and
 /// velocity), type 8/9 (equal/unequal-time Lagrange state
 /// interpolation), and type 12/13 (equal/unequal-time Hermite state
-/// interpolation) segments in the J2000 inertial frame. It computes
-/// geometric states and does not implement light-time, aberration,
-/// non-inertial frame transforms, or text-kernel loading.
+/// interpolation) segments in the J2000 inertial frame. It also
+/// accepts the built-in SPICE `ECLIPJ2000` inertial frame and rotates
+/// those segment states into J2000. It computes geometric states and
+/// does not implement light-time, aberration, non-inertial frame
+/// chains, or text-kernel loading.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpkEphemeris {
     epoch_tdb_julian_date: f64,
@@ -434,6 +438,7 @@ struct SpkSegment {
     stop_et_s: f64,
     target: i32,
     center: i32,
+    frame: i32,
     data_type: i32,
     data: Vec<f64>,
 }
@@ -469,6 +474,11 @@ struct ChebyshevRecordView<'a> {
 
 impl SpkSegment {
     fn state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        let state = self.raw_state_km_s(et_s)?;
+        spk_frame_state_to_j2000_km_s(self.frame, state)
+    }
+
+    fn raw_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
         match self.data_type {
             2 => {
                 let record = self.chebyshev_record(et_s, 3)?;
@@ -849,7 +859,7 @@ impl<'a> DafView<'a> {
                 let summary_offset =
                     record_offset + (SPK_SUMMARY_CONTROL_WORDS + index * SPK_SUMMARY_WORDS) * 8;
                 let descriptor = self.spk_descriptor(summary_offset)?;
-                if descriptor.frame == SPK_J2000_FRAME_ID
+                if supported_spk_inertial_frame(descriptor.frame)
                     && matches!(descriptor.data_type, 2 | 3 | 8 | 9 | 12 | 13)
                     && let Some(segment) = self.segment_from_descriptor(descriptor)?
                 {
@@ -930,6 +940,7 @@ impl<'a> DafView<'a> {
             stop_et_s: descriptor.stop_et_s,
             target: descriptor.target,
             center: descriptor.center,
+            frame: descriptor.frame,
             data_type: descriptor.data_type,
             data,
         }))
@@ -1010,6 +1021,31 @@ fn low_precision_moon_eci_m(days_since_j2000: f64) -> Vector3<f64> {
         radius_m * (cos_beta * sin_lambda * cos_eps - sin_beta * sin_eps),
         radius_m * (cos_beta * sin_lambda * sin_eps + sin_beta * cos_eps),
     )
+}
+
+fn supported_spk_inertial_frame(frame: i32) -> bool {
+    matches!(frame, SPK_J2000_FRAME_ID | SPK_ECLIPJ2000_FRAME_ID)
+}
+
+fn spk_frame_state_to_j2000_km_s(
+    frame: i32,
+    state: SpkStateKmS,
+) -> Result<SpkStateKmS, PhysicsError> {
+    match frame {
+        SPK_J2000_FRAME_ID => Ok(state),
+        SPK_ECLIPJ2000_FRAME_ID => Ok(SpkStateKmS {
+            position_km: rotate_x(state.position_km, J2000_ECLIPTIC_OBLIQUITY_RAD),
+            velocity_km_s: rotate_x(state.velocity_km_s, J2000_ECLIPTIC_OBLIQUITY_RAD),
+        }),
+        _ => Err(PhysicsError::InvalidParameter {
+            reason: "unsupported SPK inertial frame",
+        }),
+    }
+}
+
+fn rotate_x(v: Vector3<f64>, theta: f64) -> Vector3<f64> {
+    let (s, c) = theta.sin_cos();
+    Vector3::new(v.x, c * v.y - s * v.z, s * v.y + c * v.z)
 }
 
 fn evaluate_chebyshev(tau: f64, coefficients: &[f64]) -> f64 {
@@ -1550,6 +1586,7 @@ mod tests {
             stop_et_s: 10.0,
             target: NAIF_SUN,
             center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
             data_type: 2,
             data: vec![
                 0.0, 10.0, 100.0, 20.0, 0.0, 30.0, 0.0, 40.0, -10.0, 20.0, 8.0, 1.0,
@@ -1567,6 +1604,7 @@ mod tests {
             stop_et_s: 4.0,
             target: NAIF_SUN,
             center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
             data_type: 9,
             data: type9_linear_segment(&[0.0, 1.0, 2.0, 4.0], 1),
         };
@@ -1582,6 +1620,7 @@ mod tests {
             stop_et_s: 4.0,
             target: NAIF_SUN,
             center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            frame: SPK_J2000_FRAME_ID,
             data_type: 12,
             data: type12_quadratic_segment(0.0, 1.0, 5, 2),
         };
@@ -1606,6 +1645,26 @@ mod tests {
             sun.velocity_eci_m_s,
             Vector3::new(6_000.0, 12_000.0, -6_000.0),
             1.0e-9,
+        );
+    }
+
+    #[test]
+    fn spk_ephemeris_rotates_eclipj2000_segments_to_j2000() {
+        let bytes = synthetic_eclipj2000_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::ZERO)
+            .unwrap();
+        let (sin_eps, cos_eps) = J2000_ECLIPTIC_OBLIQUITY_RAD.sin_cos();
+        assert_vector_near(
+            sun.position_eci_m,
+            Vector3::new(0.0, -sin_eps * 1_000.0, cos_eps * 1_000.0),
+            1.0e-12,
+        );
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(0.0, cos_eps * 1_000.0, sin_eps * 1_000.0),
+            1.0e-12,
         );
     }
 
@@ -1647,6 +1706,7 @@ mod tests {
     struct SyntheticSegment {
         target: i32,
         center: i32,
+        frame: i32,
         data_type: i32,
         data: Vec<f64>,
     }
@@ -1660,24 +1720,55 @@ mod tests {
             SyntheticSegment {
                 target: 3,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 2,
                 data: type2_constant_segment([4_700.0, 1_200.0, -300.0]),
             },
             SyntheticSegment {
                 target: NAIF_EARTH,
                 center: 3,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 2,
                 data: type2_constant_segment([0.0, 0.0, 0.0]),
             },
             SyntheticSegment {
                 target: NAIF_SUN,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 2,
                 data: type2_constant_segment([sun_x_km, 0.0, 0.0]),
             },
             SyntheticSegment {
                 target: NAIF_MOON,
                 center: 3,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
+    fn synthetic_eclipj2000_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_ECLIPJ2000_FRAME_ID,
+                data_type: 3,
+                data: type3_constant_segment([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 2,
                 data: type2_constant_segment([384_400.0, 0.0, 0.0]),
             },
@@ -1690,24 +1781,28 @@ mod tests {
             SyntheticSegment {
                 target: 3,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 3,
                 data: type3_constant_segment([4_700.0, 1_200.0, -300.0], [0.0, 0.0, 0.0]),
             },
             SyntheticSegment {
                 target: NAIF_EARTH,
                 center: 3,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 3,
                 data: type3_constant_segment([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
             },
             SyntheticSegment {
                 target: NAIF_SUN,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 3,
                 data: type3_constant_segment([149_597_870.0, 0.0, 0.0], [0.0, 29.78, 0.0]),
             },
             SyntheticSegment {
                 target: NAIF_MOON,
                 center: 3,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 3,
                 data: type3_constant_segment([384_400.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
             },
@@ -1720,18 +1815,21 @@ mod tests {
             SyntheticSegment {
                 target: NAIF_EARTH,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 2,
                 data: type2_constant_segment([0.0, 0.0, 0.0]),
             },
             SyntheticSegment {
                 target: NAIF_SUN,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 8,
                 data: type8_linear_segment(0.0, 1.0, 5, 1),
             },
             SyntheticSegment {
                 target: NAIF_MOON,
                 center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 2,
                 data: type2_constant_segment([384_400.0, 0.0, 0.0]),
             },
@@ -1744,18 +1842,21 @@ mod tests {
             SyntheticSegment {
                 target: NAIF_EARTH,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 2,
                 data: type2_constant_segment([0.0, 0.0, 0.0]),
             },
             SyntheticSegment {
                 target: NAIF_SUN,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 9,
                 data: type9_linear_segment(&[0.0, 1.0, 2.0, 4.0], 1),
             },
             SyntheticSegment {
                 target: NAIF_MOON,
                 center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 2,
                 data: type2_constant_segment([384_400.0, 0.0, 0.0]),
             },
@@ -1768,18 +1869,21 @@ mod tests {
             SyntheticSegment {
                 target: NAIF_EARTH,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 2,
                 data: type2_constant_segment([0.0, 0.0, 0.0]),
             },
             SyntheticSegment {
                 target: NAIF_SUN,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 13,
                 data: type13_quadratic_segment(&[0.0, 1.0, 2.0, 4.0], 2),
             },
             SyntheticSegment {
                 target: NAIF_MOON,
                 center: NAIF_EARTH,
+                frame: SPK_J2000_FRAME_ID,
                 data_type: 2,
                 data: type2_constant_segment([384_400.0, 0.0, 0.0]),
             },
@@ -1822,7 +1926,7 @@ mod tests {
             write_f64(bytes, offset + 8, 10.0);
             write_i32(bytes, offset + 16, segment.target);
             write_i32(bytes, offset + 20, segment.center);
-            write_i32(bytes, offset + 24, SPK_J2000_FRAME_ID);
+            write_i32(bytes, offset + 24, segment.frame);
             write_i32(bytes, offset + 28, segment.data_type);
             write_i32(bytes, offset + 32, data_address(index));
             write_i32(
