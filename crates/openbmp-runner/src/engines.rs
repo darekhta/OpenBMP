@@ -41,6 +41,7 @@ use openbmp_scenario::{
     ClusterLayoutConfig, EngineConfig, EngineFaultConfig, EngineKindConfig, ScenarioDocument,
 };
 use openbmp_sim::{EngineSnapshot, FiredEvent, ScenarioScriptAction};
+use openbmp_vehicle::PropellantBudgetReport;
 
 use crate::error::RunnerError;
 
@@ -230,6 +231,65 @@ impl EngineRack {
             })
     }
 
+    /// Apply vehicle-side propellant-budget outputs before stepping
+    /// the engines for this tick.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::Engine`] if a referenced engine id is
+    /// not present or the feed-pressure scalar is invalid.
+    pub fn apply_propellant_budget(
+        &mut self,
+        report: &PropellantBudgetReport,
+    ) -> Result<(), RunnerError> {
+        for (id, scale) in &report.feed_pressure_scales {
+            self.cluster
+                .set_feed_pressure_scale(*id, *scale)
+                .map_err(|err| RunnerError::Engine {
+                    field: format!(
+                        "vehicle.assembly.engines.{id_value}.propellant.feed",
+                        id_value = id.value()
+                    ),
+                    reason: err.to_string(),
+                })?;
+        }
+        for id in &report.shutdown_engines {
+            self.cluster
+                .apply_command(
+                    *id,
+                    openbmp_propulsion::EngineCommand {
+                        throttle_unit: 0.0,
+                        gimbal_pitch_rad: 0.0,
+                        gimbal_yaw_rad: 0.0,
+                        ignite: false,
+                        shutdown: true,
+                    },
+                )
+                .map_err(|err| RunnerError::Engine {
+                    field: format!(
+                        "vehicle.assembly.engines.{id_value}.propellant",
+                        id_value = id.value()
+                    ),
+                    reason: err.to_string(),
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Propulsion-side snapshots keyed by engine id for vehicle-side
+    /// propellant budget evaluation.
+    #[must_use]
+    pub fn propulsion_snapshot_map(
+        &self,
+    ) -> BTreeMap<EngineId, openbmp_propulsion::EngineSnapshot> {
+        let mut out = BTreeMap::new();
+        let snapshots = self.cluster.current_snapshot();
+        for (id, snap) in self.cluster.engine_ids().iter().zip(snapshots.iter()) {
+            out.insert(*id, *snap);
+        }
+        out
+    }
+
     /// Produce the per-engine snapshot map the kernel consumes via
     /// `set_engine_snapshot`. Keys are `EngineId`; values are the
     /// engine's `current_snapshot()` (gimbal-applied body-frame
@@ -275,6 +335,9 @@ fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, Run
         ignition_transient_s: config.limits.ignition_transient_s,
         shutdown_transient_s: config.limits.shutdown_transient_s,
         max_gimbal_rad: config.limits.max_gimbal_rad,
+        throttle_slew_per_s: config.limits.throttle_slew_per_s,
+        min_throttle_unit: config.limits.min_throttle_unit,
+        isp_throttle_falloff: config.limits.isp_throttle_falloff,
     };
     let kind_ok = matches!(config.kind, EngineKindConfig::LiquidEngine);
     if !kind_ok {
@@ -324,6 +387,9 @@ mod tests {
             ignition_transient_s: 0.1,
             shutdown_transient_s: 0.1,
             max_gimbal_rad: 0.1,
+            throttle_slew_per_s: f64::INFINITY,
+            min_throttle_unit: 0.0,
+            isp_throttle_falloff: 0.0,
         }
     }
 

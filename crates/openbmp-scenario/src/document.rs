@@ -117,6 +117,9 @@ pub struct ScenarioDocument {
     /// Optional offline range-safety landing-footprint
     /// post-processing configuration (v3 only).
     pub landing_footprint: Option<LandingFootprintConfig>,
+    /// Optional offline ideal staging budget / mass-optimal split
+    /// analysis (v3 only).
+    pub staging_analysis: Option<StagingAnalysisConfig>,
     /// Optional descent / entry profile configuration (v3 only).
     pub entry_profile: Option<EntryProfileConfig>,
     /// Optional declarative mission block.
@@ -378,6 +381,16 @@ impl ScenarioDocument {
                 });
             }
             landing_footprint.validate()?;
+        }
+        if let Some(staging_analysis) = self.staging_analysis.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "staging_analysis".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            staging_analysis.validate()?;
         }
         if let Some(entry_profile) = self.entry_profile.as_ref() {
             if header < SCENARIO_VERSION_V3 {
@@ -2024,6 +2037,143 @@ impl LandingFootprintConfig {
     }
 }
 
+/// Offline ideal staging budget / optimal split configuration. This
+/// is post-processing only and carries no trajectory, range, target,
+/// or location fields.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StagingAnalysisConfig {
+    /// Analysis mode.
+    pub mode: StagingAnalysisMode,
+    /// Required ideal ΔV for `mode = "optimal"`; rejected for
+    /// `mode = "budget"`.
+    #[serde(default)]
+    pub delta_v_budget_m_s: Option<f64>,
+    /// Payload mass (kg).
+    pub payload_mass_kg: f64,
+    /// Stages ordered bottom-up.
+    pub stages: Vec<StagingAnalysisStageConfig>,
+}
+
+impl StagingAnalysisConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_finite("staging_analysis.payload_mass_kg", self.payload_mass_kg)?;
+        require_positive("staging_analysis.payload_mass_kg", self.payload_mass_kg)?;
+        if self.stages.is_empty() {
+            return Err(ScenarioError::EmptyList {
+                field: "staging_analysis.stages".to_owned(),
+            });
+        }
+        match self.mode {
+            StagingAnalysisMode::Budget => {
+                if self.delta_v_budget_m_s.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "staging_analysis.delta_v_budget_m_s".to_owned(),
+                        role: ModelRole::Vehicle,
+                        name: "staging_budget".to_owned(),
+                    });
+                }
+            }
+            StagingAnalysisMode::Optimal => {
+                let delta_v =
+                    self.delta_v_budget_m_s
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: "staging_analysis.delta_v_budget_m_s".to_owned(),
+                            role: ModelRole::Vehicle,
+                            name: "staging_optimal".to_owned(),
+                        })?;
+                require_finite("staging_analysis.delta_v_budget_m_s", delta_v)?;
+                require_positive("staging_analysis.delta_v_budget_m_s", delta_v)?;
+            }
+        }
+        for (index, stage) in self.stages.iter().enumerate() {
+            stage.validate(index, self.mode)?;
+        }
+        Ok(())
+    }
+}
+
+/// Staging analysis mode.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum StagingAnalysisMode {
+    /// Forward budget from declared stage masses.
+    Budget,
+    /// Mass-optimal split for the declared ideal ΔV.
+    Optimal,
+}
+
+/// One stage in `[staging_analysis]`, ordered bottom-up.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StagingAnalysisStageConfig {
+    /// Specific impulse (s).
+    pub isp_s: f64,
+    /// Structural coefficient.
+    pub structural_coefficient: f64,
+    /// Structural mass (kg), required for budget mode.
+    #[serde(default)]
+    pub structural_mass_kg: Option<f64>,
+    /// Propellant mass (kg), required for budget mode.
+    #[serde(default)]
+    pub propellant_mass_kg: Option<f64>,
+}
+
+impl StagingAnalysisStageConfig {
+    fn validate(&self, index: usize, mode: StagingAnalysisMode) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("staging_analysis.stages[{index}].{field}");
+        require_finite(&path("isp_s"), self.isp_s)?;
+        require_positive(&path("isp_s"), self.isp_s)?;
+        require_finite(&path("structural_coefficient"), self.structural_coefficient)?;
+        if !(0.0..1.0).contains(&self.structural_coefficient) {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("structural_coefficient"),
+                value: self.structural_coefficient,
+                rule: "must lie in (0, 1)",
+            });
+        }
+        match mode {
+            StagingAnalysisMode::Budget => {
+                let structural =
+                    self.structural_mass_kg
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: path("structural_mass_kg"),
+                            role: ModelRole::Vehicle,
+                            name: "staging_budget".to_owned(),
+                        })?;
+                let propellant =
+                    self.propellant_mass_kg
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: path("propellant_mass_kg"),
+                            role: ModelRole::Vehicle,
+                            name: "staging_budget".to_owned(),
+                        })?;
+                require_finite(&path("structural_mass_kg"), structural)?;
+                require_positive(&path("structural_mass_kg"), structural)?;
+                require_finite(&path("propellant_mass_kg"), propellant)?;
+                require_positive(&path("propellant_mass_kg"), propellant)?;
+            }
+            StagingAnalysisMode::Optimal => {
+                if self.structural_mass_kg.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: path("structural_mass_kg"),
+                        role: ModelRole::Vehicle,
+                        name: "staging_optimal".to_owned(),
+                    });
+                }
+                if self.propellant_mass_kg.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: path("propellant_mass_kg"),
+                        role: ModelRole::Vehicle,
+                        name: "staging_optimal".to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Landing-footprint prediction method.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -2658,8 +2808,13 @@ impl PropulsionConfig {
 #[serde(deny_unknown_fields)]
 pub struct MotorConfig {
     /// Path to a motor TOML file (resolved relative to the
-    /// scenario directory).
-    pub file: PathBuf,
+    /// scenario directory). Mutually exclusive with `grain`.
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+    /// Optional grain-regression producer. Mutually exclusive with
+    /// `file`.
+    #[serde(default)]
+    pub grain: Option<MotorGrainConfig>,
     /// Ignition time in seconds since scenario start.
     pub ignite_at_s: f64,
     /// Optional owner body for post-separation force / mass routing.
@@ -2676,10 +2831,32 @@ pub struct MotorConfig {
 
 impl MotorConfig {
     fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
-        if self.file.as_os_str().is_empty() {
-            return Err(ScenarioError::EmptyField {
-                field: "propulsion.motor.file".to_owned(),
-            });
+        match (&self.file, &self.grain) {
+            (Some(_), Some(_)) => return Err(ScenarioError::AmbiguousPropulsion),
+            (None, None) => {
+                return Err(ScenarioError::MissingRequiredField {
+                    field: "propulsion.motor.file_or_grain".to_owned(),
+                    role: ModelRole::Motor,
+                    name: "solid".to_owned(),
+                });
+            }
+            (Some(file), None) => {
+                if file.as_os_str().is_empty() {
+                    return Err(ScenarioError::EmptyField {
+                        field: "propulsion.motor.file".to_owned(),
+                    });
+                }
+            }
+            (None, Some(grain)) => {
+                if self.file_sha256.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "propulsion.motor.file_sha256".to_owned(),
+                        role: ModelRole::Motor,
+                        name: "grain".to_owned(),
+                    });
+                }
+                grain.validate()?;
+            }
         }
         require_finite("propulsion.motor.ignite_at_s", self.ignite_at_s)?;
         if let Some(mounted_to) = &self.mounted_to {
@@ -2688,6 +2865,287 @@ impl MotorConfig {
         if let Some(variant) = &self.variant {
             registry.resolve(ModelRole::Motor, variant)?;
         }
+        Ok(())
+    }
+}
+
+/// Inline solid-grain regression configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MotorGrainConfig {
+    /// Grain geometry kind.
+    pub geometry: GrainGeometryConfig,
+    /// Number of BATES segments.
+    #[serde(default)]
+    pub segments: Option<u32>,
+    /// End-burner cross-section area (m²).
+    #[serde(default)]
+    pub cross_section_area_m2: Option<f64>,
+    /// End-burner grain length (m).
+    #[serde(default)]
+    pub length_m: Option<f64>,
+    /// BATES outer radius (m).
+    #[serde(default)]
+    pub outer_radius_m: Option<f64>,
+    /// BATES initial core radius (m).
+    #[serde(default)]
+    pub core_radius_m: Option<f64>,
+    /// BATES segment length (m).
+    #[serde(default)]
+    pub segment_length_m: Option<f64>,
+    /// Tabulated `(web_m, burn_area_m2)` points.
+    #[serde(default)]
+    pub points: Option<Vec<[f64; 2]>>,
+    /// Tabulated-grain propellant volume (m³).
+    #[serde(default)]
+    pub propellant_volume_m3: Option<f64>,
+    /// Nozzle throat radius (m).
+    pub throat_radius_m: f64,
+    /// Nozzle expansion ratio `Ae / At`.
+    pub expansion_ratio: f64,
+    /// Optional dry case/nozzle mass (kg). Defaults to zero.
+    #[serde(default)]
+    pub dry_mass_kg: f64,
+    /// Optional display name. Defaults to the propellant label.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Optional provenance sentence.
+    #[serde(default)]
+    pub provenance: Option<String>,
+    /// Propellant constants and fixed web-grid count.
+    pub propellant: GrainPropellantConfig,
+}
+
+impl MotorGrainConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        self.validate_geometry_fields()?;
+        require_finite(
+            "propulsion.motor.grain.throat_radius_m",
+            self.throat_radius_m,
+        )?;
+        require_positive(
+            "propulsion.motor.grain.throat_radius_m",
+            self.throat_radius_m,
+        )?;
+        require_finite(
+            "propulsion.motor.grain.expansion_ratio",
+            self.expansion_ratio,
+        )?;
+        if self.expansion_ratio < 1.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "propulsion.motor.grain.expansion_ratio".to_owned(),
+                value: self.expansion_ratio,
+                rule: "must be at least 1",
+            });
+        }
+        require_finite("propulsion.motor.grain.dry_mass_kg", self.dry_mass_kg)?;
+        if self.dry_mass_kg < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "propulsion.motor.grain.dry_mass_kg".to_owned(),
+                value: self.dry_mass_kg,
+                rule: "must be non-negative",
+            });
+        }
+        if let Some(name) = &self.name {
+            require_non_empty("propulsion.motor.grain.name", name)?;
+        }
+        if let Some(provenance) = &self.provenance {
+            require_non_empty("propulsion.motor.grain.provenance", provenance)?;
+        }
+        self.propellant.validate()?;
+        Ok(())
+    }
+
+    fn validate_geometry_fields(&self) -> Result<(), ScenarioError> {
+        let prefix = "propulsion.motor.grain";
+        match self.geometry {
+            GrainGeometryConfig::EndBurner => {
+                let cross_section_area_m2 = self.cross_section_area_m2.ok_or_else(|| {
+                    ScenarioError::MissingRequiredField {
+                        field: format!("{prefix}.cross_section_area_m2"),
+                        role: ModelRole::Motor,
+                        name: "end_burner".to_owned(),
+                    }
+                })?;
+                let length_m =
+                    self.length_m
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("{prefix}.length_m"),
+                            role: ModelRole::Motor,
+                            name: "end_burner".to_owned(),
+                        })?;
+                require_finite(
+                    &format!("{prefix}.cross_section_area_m2"),
+                    cross_section_area_m2,
+                )?;
+                require_positive(
+                    &format!("{prefix}.cross_section_area_m2"),
+                    cross_section_area_m2,
+                )?;
+                require_finite(&format!("{prefix}.length_m"), length_m)?;
+                require_positive(&format!("{prefix}.length_m"), length_m)?;
+            }
+            GrainGeometryConfig::Bates => {
+                let segments =
+                    self.segments
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("{prefix}.segments"),
+                            role: ModelRole::Motor,
+                            name: "bates".to_owned(),
+                        })?;
+                let outer_radius_m =
+                    self.outer_radius_m
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("{prefix}.outer_radius_m"),
+                            role: ModelRole::Motor,
+                            name: "bates".to_owned(),
+                        })?;
+                let core_radius_m =
+                    self.core_radius_m
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("{prefix}.core_radius_m"),
+                            role: ModelRole::Motor,
+                            name: "bates".to_owned(),
+                        })?;
+                let segment_length_m =
+                    self.segment_length_m
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("{prefix}.segment_length_m"),
+                            role: ModelRole::Motor,
+                            name: "bates".to_owned(),
+                        })?;
+                if segments == 0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: format!("{prefix}.segments"),
+                        value: f64::from(segments),
+                        rule: "must be positive",
+                    });
+                }
+                require_finite(&format!("{prefix}.outer_radius_m"), outer_radius_m)?;
+                require_positive(&format!("{prefix}.outer_radius_m"), outer_radius_m)?;
+                require_finite(&format!("{prefix}.core_radius_m"), core_radius_m)?;
+                require_positive(&format!("{prefix}.core_radius_m"), core_radius_m)?;
+                if core_radius_m >= outer_radius_m {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: format!("{prefix}.core_radius_m"),
+                        value: core_radius_m,
+                        rule: "must be smaller than outer_radius_m",
+                    });
+                }
+                require_finite(&format!("{prefix}.segment_length_m"), segment_length_m)?;
+                require_positive(&format!("{prefix}.segment_length_m"), segment_length_m)?;
+            }
+            GrainGeometryConfig::Tabulated => {
+                let points =
+                    self.points
+                        .as_ref()
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: format!("{prefix}.points"),
+                            role: ModelRole::Motor,
+                            name: "tabulated".to_owned(),
+                        })?;
+                let propellant_volume_m3 = self.propellant_volume_m3.ok_or_else(|| {
+                    ScenarioError::MissingRequiredField {
+                        field: format!("{prefix}.propellant_volume_m3"),
+                        role: ModelRole::Motor,
+                        name: "tabulated".to_owned(),
+                    }
+                })?;
+                if points.len() < 2 {
+                    return Err(ScenarioError::EmptyList {
+                        field: format!("{prefix}.points"),
+                    });
+                }
+                require_finite(
+                    &format!("{prefix}.propellant_volume_m3"),
+                    propellant_volume_m3,
+                )?;
+                require_positive(
+                    &format!("{prefix}.propellant_volume_m3"),
+                    propellant_volume_m3,
+                )?;
+                for (index, point) in points.iter().enumerate() {
+                    require_finite_array(&format!("{prefix}.points[{index}]"), point)?;
+                    if point[0] < 0.0 || point[1] < 0.0 {
+                        return Err(ScenarioError::InvalidNumber {
+                            field: format!("{prefix}.points[{index}]"),
+                            value: point[0].min(point[1]),
+                            rule: "web and area values must be non-negative",
+                        });
+                    }
+                    if index > 0 && point[0] <= points[index - 1][0] {
+                        return Err(ScenarioError::InvalidNumber {
+                            field: format!("{prefix}.points[{index}][0]"),
+                            value: point[0],
+                            rule: "web grid must be strictly increasing",
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Grain geometry kind for inline regression.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum GrainGeometryConfig {
+    /// Constant-area end burner.
+    EndBurner,
+    /// BATES/tubular segments.
+    Bates,
+    /// User-supplied web/area table.
+    Tabulated,
+}
+
+/// Grain propellant constants.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GrainPropellantConfig {
+    /// Synthetic/textbook label.
+    pub label: String,
+    /// Bulk density (kg/m³).
+    pub density_kg_m3: f64,
+    /// Saint-Robert coefficient, SI.
+    pub burn_rate_a: f64,
+    /// Saint-Robert pressure exponent.
+    pub burn_rate_n: f64,
+    /// Characteristic velocity (m/s).
+    pub c_star_m_s: f64,
+    /// Specific heat ratio.
+    pub gamma: f64,
+    /// Fixed web-grid count.
+    pub web_steps: u32,
+}
+
+impl GrainPropellantConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("propulsion.motor.grain.propellant.{field}");
+        require_non_empty(&path("label"), &self.label)?;
+        require_finite(&path("density_kg_m3"), self.density_kg_m3)?;
+        require_positive(&path("density_kg_m3"), self.density_kg_m3)?;
+        require_finite(&path("burn_rate_a"), self.burn_rate_a)?;
+        require_positive(&path("burn_rate_a"), self.burn_rate_a)?;
+        require_finite(&path("burn_rate_n"), self.burn_rate_n)?;
+        if !(0.0..1.0).contains(&self.burn_rate_n) {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("burn_rate_n"),
+                value: self.burn_rate_n,
+                rule: "must lie in (0, 1)",
+            });
+        }
+        require_finite(&path("c_star_m_s"), self.c_star_m_s)?;
+        require_positive(&path("c_star_m_s"), self.c_star_m_s)?;
+        require_finite(&path("gamma"), self.gamma)?;
+        if self.gamma <= 1.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("gamma"),
+                value: self.gamma,
+                rule: "must be greater than 1",
+            });
+        }
+        require_positive_u32(&path("web_steps"), self.web_steps)?;
         Ok(())
     }
 }
@@ -4372,6 +4830,7 @@ impl AssemblyConfig {
                 });
             }
         }
+        self.validate_engine_propellant_references()?;
         let mut seen_recovery_ids: std::collections::BTreeSet<&str> =
             std::collections::BTreeSet::new();
         for (index, recovery) in self.recovery.iter().enumerate() {
@@ -4381,6 +4840,69 @@ impl AssemblyConfig {
                     field: format!("vehicle.assembly.recovery[{index}].id"),
                     value: recovery.id.clone(),
                 });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_engine_propellant_references(&self) -> Result<(), ScenarioError> {
+        let tank_lookup: std::collections::BTreeMap<&str, &TankConfig> = self
+            .tanks
+            .iter()
+            .map(|tank| (tank.id.as_str(), tank))
+            .collect();
+        for (engine_index, engine) in self.engines.iter().enumerate() {
+            let Some(propellant) = &engine.propellant else {
+                continue;
+            };
+            let path = |field: &str| {
+                format!("vehicle.assembly.engines[{engine_index}].propellant.{field}")
+            };
+            let Some(engine_body) = engine.mounted_to.as_deref() else {
+                return Err(ScenarioError::MissingRequiredField {
+                    field: format!("vehicle.assembly.engines[{engine_index}].mounted_to"),
+                    role: ModelRole::Vehicle,
+                    name: "engine_propellant".to_owned(),
+                });
+            };
+            let fuel = tank_lookup
+                .get(propellant.fuel_tank.as_str())
+                .ok_or_else(|| ScenarioError::IncompatibleAssemblyEntry {
+                    field: path("fuel_tank"),
+                    reason: format!("unknown tank id `{}`", propellant.fuel_tank),
+                })?;
+            if fuel.mounted_to != engine_body {
+                return Err(ScenarioError::IncompatibleAssemblyEntry {
+                    field: path("fuel_tank"),
+                    reason: "fuel_tank must be mounted_to the same body as the engine".to_owned(),
+                });
+            }
+            if propellant.feed == FeedModeConfig::Blowdown && fuel.ullage.is_none() {
+                return Err(ScenarioError::IncompatibleAssemblyEntry {
+                    field: path("feed"),
+                    reason: "feed = \"blowdown\" requires fuel_tank.ullage".to_owned(),
+                });
+            }
+            if let Some(oxidizer_tank) = &propellant.oxidizer_tank {
+                let oxidizer = tank_lookup.get(oxidizer_tank.as_str()).ok_or_else(|| {
+                    ScenarioError::IncompatibleAssemblyEntry {
+                        field: path("oxidizer_tank"),
+                        reason: format!("unknown tank id `{oxidizer_tank}`"),
+                    }
+                })?;
+                if oxidizer.mounted_to != engine_body {
+                    return Err(ScenarioError::IncompatibleAssemblyEntry {
+                        field: path("oxidizer_tank"),
+                        reason: "oxidizer_tank must be mounted_to the same body as the engine"
+                            .to_owned(),
+                    });
+                }
+                if propellant.feed == FeedModeConfig::Blowdown && oxidizer.ullage.is_none() {
+                    return Err(ScenarioError::IncompatibleAssemblyEntry {
+                        field: path("feed"),
+                        reason: "feed = \"blowdown\" requires oxidizer_tank.ullage".to_owned(),
+                    });
+                }
             }
         }
         Ok(())
@@ -4911,6 +5433,9 @@ pub struct EngineConfig {
     pub mount_point_body_m: [f64; 3],
     /// Position / rate / gimbal limits.
     pub limits: EngineLimitsConfig,
+    /// Optional engine-to-tank propellant budget.
+    #[serde(default)]
+    pub propellant: Option<EnginePropellantConfig>,
     /// Optional fault mounted at scenario load time.
     #[serde(default)]
     pub fault: Option<EngineFaultConfig>,
@@ -4935,12 +5460,85 @@ impl EngineConfig {
         }
         self.kind.validate(index)?;
         self.limits.validate(index)?;
+        if let Some(propellant) = &self.propellant {
+            propellant.validate(index)?;
+        }
         require_finite_array(&path("mount_point_body_m"), &self.mount_point_body_m)?;
         if let Some(fault) = &self.fault {
             fault.validate(index, &self.limits)?;
         }
         Ok(())
     }
+}
+
+/// Engine propellant budget declaration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EnginePropellantConfig {
+    /// Oxidizer/fuel mass ratio. `0.0` denotes monopropellant.
+    pub oxidizer_fuel_ratio: f64,
+    /// Fuel or monopropellant tank id.
+    pub fuel_tank: String,
+    /// Oxidizer tank id, required when `oxidizer_fuel_ratio > 0`.
+    #[serde(default)]
+    pub oxidizer_tank: Option<String>,
+    /// Feed model.
+    #[serde(default)]
+    pub feed: FeedModeConfig,
+    /// Per-tank residual reserve (kg).
+    #[serde(default)]
+    pub residual_reserve_kg: f64,
+}
+
+impl EnginePropellantConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.engines[{index}].propellant.{field}");
+        require_finite(&path("oxidizer_fuel_ratio"), self.oxidizer_fuel_ratio)?;
+        if self.oxidizer_fuel_ratio < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("oxidizer_fuel_ratio"),
+                value: self.oxidizer_fuel_ratio,
+                rule: "must be non-negative",
+            });
+        }
+        require_non_empty(&path("fuel_tank"), &self.fuel_tank)?;
+        if self.oxidizer_fuel_ratio > 0.0 {
+            let Some(oxidizer_tank) = &self.oxidizer_tank else {
+                return Err(ScenarioError::MissingRequiredField {
+                    field: path("oxidizer_tank"),
+                    role: ModelRole::Vehicle,
+                    name: "bipropellant_engine".to_owned(),
+                });
+            };
+            require_non_empty(&path("oxidizer_tank"), oxidizer_tank)?;
+        } else if self.oxidizer_tank.is_some() {
+            return Err(ScenarioError::UnexpectedField {
+                field: path("oxidizer_tank"),
+                role: ModelRole::Vehicle,
+                name: "monopropellant_engine".to_owned(),
+            });
+        }
+        require_finite(&path("residual_reserve_kg"), self.residual_reserve_kg)?;
+        if self.residual_reserve_kg < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("residual_reserve_kg"),
+                value: self.residual_reserve_kg,
+                rule: "must be non-negative",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Feed model selector.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedModeConfig {
+    /// Regulated feed pressure.
+    #[default]
+    Regulated,
+    /// Pressure-fed blowdown.
+    Blowdown,
 }
 
 /// Engine kind tagged enum. `liquid_engine` is the only kind.
@@ -4982,6 +5580,21 @@ pub struct EngineLimitsConfig {
     /// Maximum absolute gimbal angle on either axis (rad). `0.0` →
     /// fixed-axis engine (no gimbal).
     pub max_gimbal_rad: f64,
+    /// Maximum throttle slew rate (1/s). Defaults to `+∞`,
+    /// preserving instantaneous latching.
+    #[serde(default = "default_infinite")]
+    pub throttle_slew_per_s: f64,
+    /// Deep-throttle floor. Defaults to `0.0`.
+    #[serde(default)]
+    pub min_throttle_unit: f64,
+    /// Linear Isp derate coefficient at low throttle. Defaults to
+    /// `0.0`.
+    #[serde(default)]
+    pub isp_throttle_falloff: f64,
+}
+
+fn default_infinite() -> f64 {
+    f64::INFINITY
 }
 
 impl EngineLimitsConfig {
@@ -5013,6 +5626,29 @@ impl EngineLimitsConfig {
                 field: path("max_gimbal_rad"),
                 value: self.max_gimbal_rad,
                 rule: "must be non-negative",
+            });
+        }
+        if self.throttle_slew_per_s.is_nan() || self.throttle_slew_per_s < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("throttle_slew_per_s"),
+                value: self.throttle_slew_per_s,
+                rule: "must be non-negative or +infinity",
+            });
+        }
+        require_finite(&path("min_throttle_unit"), self.min_throttle_unit)?;
+        if !(0.0..=1.0).contains(&self.min_throttle_unit) {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("min_throttle_unit"),
+                value: self.min_throttle_unit,
+                rule: "must lie in [0, 1]",
+            });
+        }
+        require_finite(&path("isp_throttle_falloff"), self.isp_throttle_falloff)?;
+        if !(0.0..1.0).contains(&self.isp_throttle_falloff) {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("isp_throttle_falloff"),
+                value: self.isp_throttle_falloff,
+                rule: "must lie in [0, 1)",
             });
         }
         Ok(())
@@ -5158,6 +5794,10 @@ pub struct TankConfig {
     /// Optional baffle model (consumed only by `BaffledPendulum`).
     #[serde(default)]
     pub baffle_model: Option<BaffleModelConfig>,
+    /// Optional ullage/pressurant declaration, required by engine
+    /// propellant budgets that select `feed = "blowdown"`.
+    #[serde(default)]
+    pub ullage: Option<TankUllageConfig>,
     /// Decoupled drain. Constant `kg/s`; defaults to
     /// `0.0` when omitted. A future revision may tie this to the engine
     /// cluster's per-step total mdot.
@@ -5213,6 +5853,17 @@ impl TankConfig {
                 });
             }
         }
+        if let Some(ullage) = &self.ullage {
+            ullage.validate(index)?;
+            let initial_fluid_volume_m3 = self.geometry.volume_m3() * self.initial_fill_fraction;
+            if initial_fluid_volume_m3 >= self.geometry.volume_m3() {
+                return Err(ScenarioError::InvalidNumber {
+                    field: path("initial_fill_fraction"),
+                    value: self.initial_fill_fraction,
+                    rule: "must leave positive ullage volume when ullage is declared",
+                });
+            }
+        }
         if let Some(rate) = self.drain_rate_kg_per_s {
             require_finite(&path("drain_rate_kg_per_s"), rate)?;
             if rate < 0.0 {
@@ -5236,6 +5887,34 @@ impl TankConfig {
         }
         if let Some(initial) = &self.initial_slosh {
             initial.validate(index, self.moving_mass)?;
+        }
+        Ok(())
+    }
+}
+
+/// Tank ullage/pressurant declaration for blowdown feed coupling.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TankUllageConfig {
+    /// Initial tank pressure (Pa). Recorded for provenance; the
+    /// current normalized feed-pressure scale uses the volume ratio.
+    pub initial_pressure_pa: f64,
+    /// Pressurant heat-capacity ratio.
+    pub gas_gamma: f64,
+}
+
+impl TankUllageConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.tanks[{index}].ullage.{field}");
+        require_finite(&path("initial_pressure_pa"), self.initial_pressure_pa)?;
+        require_positive(&path("initial_pressure_pa"), self.initial_pressure_pa)?;
+        require_finite(&path("gas_gamma"), self.gas_gamma)?;
+        if self.gas_gamma <= 1.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("gas_gamma"),
+                value: self.gas_gamma,
+                rule: "must be greater than 1",
+            });
         }
         Ok(())
     }

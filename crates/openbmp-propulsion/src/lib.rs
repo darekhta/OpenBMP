@@ -16,6 +16,9 @@
 //!   as a locked-order pitch-then-yaw rotation. Mass flow is
 //!   `thrust / (g0 · isp)`. Used for liquid (and later hybrid /
 //!   cold-gas) propulsion.
+//! * [`grain`] — solid-grain geometry and quasi-steady regression
+//!   models that produce validated [`motor::SolidMotor`] instances
+//!   from textbook/synthetic internal-ballistics constants.
 //! * [`cluster`] — [`cluster::EngineCluster`] container:
 //!   `Vec<Box<dyn EngineModel>>` plus body-frame mount points and a
 //!   layout tag. Not a kernel-side force model — the kernel-side
@@ -62,6 +65,7 @@
 pub mod cluster;
 pub mod engine;
 pub mod error;
+pub mod grain;
 pub mod motor;
 pub mod parser;
 
@@ -71,6 +75,10 @@ pub use engine::{
     LiquidEngine,
 };
 pub use error::{EngineError, MotorError};
+pub use grain::{
+    BatesGrain, EndBurnerGrain, EquilibriumInternalBallistics, GrainGeometry, GrainPropellant,
+    GrainRegressionModel, TabulatedGrain,
+};
 pub use motor::{
     AmbientPressureCorrection, BurnSpec, Motor, MotorGeometry, MotorMeta, MotorVariant, SolidMotor,
     ThrustCurve, Validation,

@@ -138,9 +138,15 @@ Reject contributions that add or request:
 > range-safety landing footprint is a *forward, offline* prediction of where an
 > unpowered body comes down, in range-relative coordinates, for recovery and
 > range-safety planning — it accepts no desired landing location, no aimpoint,
-> and emits no steering command. The bank-angle modulation in a lifting entry
-> is corridor-driven (heat-rate / load-factor limits), not a terminal-mode
-> end-game variant. New aimpoint / miss-distance / terminal-guidance /
+> and emits no steering command. Offline Monte-Carlo accuracy diagnostics are
+> nominal-referenced sample statistics, never target-scored objectives. The
+> offline staging analysis is likewise vehicle-intrinsic: it optimizes only an
+> ideal ΔV / mass budget over `Isp`, structural coefficient, and payload mass,
+> never range or trajectory to a location, and it emits report metadata rather
+> than commands. The
+> bank-angle modulation in a lifting entry is corridor-driven (heat-rate /
+> load-factor limits), not a terminal-mode end-game variant. New aimpoint /
+> miss-distance / terminal-guidance /
 > bank-to-turn / skid-to-turn / intercept terms are added to the parse-time
 > lint. See [`profile-vocabulary-and-guardrails.md`](profile-vocabulary-and-guardrails.md).
 

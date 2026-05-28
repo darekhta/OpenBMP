@@ -22,9 +22,10 @@
 //! - [`EngineFault`] — four canonical fault modes (`Stuck`,
 //!   `HardOff`, `OverThrust`, `GimbalLocked`).
 //! - [`LiquidEngine`] — reference impl: linear ignition transient
-//!   (0 → commanded thrust over `ignition_transient_s`), constant
-//!   throttle in burn, linear shutdown transient (current → 0 over
-//!   `shutdown_transient_s`). Mass flow is `thrust / (g0 · isp)`.
+//!   (0 → commanded thrust over `ignition_transient_s`), rate-limited
+//!   throttle tracking in burn, linear shutdown transient (current → 0
+//!   over `shutdown_transient_s`). Mass flow is
+//!   `thrust / (g0 · effective_isp)`.
 //!   Gimbal applied as a locked-order pitch-then-yaw rotation
 //!   around the engine's nominal +z axis.
 //!
@@ -82,6 +83,15 @@ pub struct EngineLimits {
     /// Maximum absolute gimbal angle on either axis, in radians.
     /// Non-negative. `0.0` → fixed-axis engine (no gimbal).
     pub max_gimbal_rad: f64,
+    /// Maximum absolute throttle slew rate, in throttle units per
+    /// second. `+∞` preserves the pre-existing instantaneous latch.
+    pub throttle_slew_per_s: f64,
+    /// Deep-throttle floor. Non-zero commands below this value clamp
+    /// to this value; zero remains shutdown.
+    pub min_throttle_unit: f64,
+    /// Linear specific-impulse derate coefficient:
+    /// `Isp(τ) = Isp · (1 - k · (1 - τ))`.
+    pub isp_throttle_falloff: f64,
 }
 
 impl EngineLimits {
@@ -117,6 +127,28 @@ impl EngineLimits {
         if !self.max_gimbal_rad.is_finite() || self.max_gimbal_rad < 0.0 {
             return Err(EngineError::InvalidLimits {
                 reason: "max_gimbal_rad must be finite and non-negative",
+            });
+        }
+        if self.throttle_slew_per_s.is_nan() || self.throttle_slew_per_s < 0.0 {
+            return Err(EngineError::InvalidLimits {
+                reason: "throttle_slew_per_s must be non-negative or +infinity",
+            });
+        }
+        if self.throttle_slew_per_s.is_infinite() && self.throttle_slew_per_s.is_sign_negative() {
+            return Err(EngineError::InvalidLimits {
+                reason: "throttle_slew_per_s must be non-negative or +infinity",
+            });
+        }
+        if !self.min_throttle_unit.is_finite() || !(0.0..=1.0).contains(&self.min_throttle_unit) {
+            return Err(EngineError::InvalidLimits {
+                reason: "min_throttle_unit must be finite and lie in [0, 1]",
+            });
+        }
+        if !self.isp_throttle_falloff.is_finite()
+            || !(0.0..1.0).contains(&self.isp_throttle_falloff)
+        {
+            return Err(EngineError::InvalidLimits {
+                reason: "isp_throttle_falloff must be finite and lie in [0, 1)",
             });
         }
         Ok(())
@@ -325,6 +357,24 @@ pub trait EngineModel: std::fmt::Debug + Send + Sync {
     /// re-stepping.
     fn current_snapshot(&self) -> EngineSnapshot;
 
+    /// Apply a feed-pressure scale to the next step. `1.0` is the
+    /// regulated/default path; lower values model blowdown thrust and
+    /// Isp decay. Implementations that do not support feed coupling
+    /// should validate the scalar and otherwise ignore it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InvalidParameter`] when `scale` is
+    /// non-finite or negative.
+    fn set_feed_pressure_scale(&mut self, scale: f64) -> Result<(), EngineError> {
+        if !scale.is_finite() || scale < 0.0 {
+            return Err(EngineError::InvalidParameter {
+                reason: "feed pressure scale must be finite and non-negative",
+            });
+        }
+        Ok(())
+    }
+
     /// Validation-status declaration. Matches the kernel's
     /// `ForceModel::validation()` / `MassModel::validation()` shape
     /// so adapters can forward through.
@@ -336,8 +386,8 @@ pub trait EngineModel: std::fmt::Debug + Send + Sync {
 // ---------------------------------------------------------------------
 
 /// Reference [`EngineModel`] implementation: linear
-/// ignition transient, constant-throttle burn, linear shutdown
-/// transient. Mass flow `mdot = thrust / (g0 · isp)`. Gimbal applied
+/// ignition transient, rate-limited throttle burn, linear shutdown
+/// transient. Mass flow `mdot = thrust / (g0 · effective_isp)`. Gimbal applied
 /// as locked-order pitch-around-body-y then yaw-around-body-x
 /// rotation of nominal body-`+z` thrust.
 #[derive(Debug)]
@@ -348,7 +398,9 @@ pub struct LiquidEngine {
     /// Seconds elapsed since entering the current state. Reset on
     /// transition.
     elapsed_in_state_s: f64,
-    /// Latched throttle, clamped to `[0, 1]` at apply time.
+    /// Commanded throttle target, clamped to `[0, 1]` at apply time.
+    commanded_throttle: f64,
+    /// Current delivered throttle after slew and floor handling.
     latched_throttle: f64,
     /// Latched gimbal pitch (rad), clamped to `±max_gimbal_rad`.
     latched_pitch_rad: f64,
@@ -359,6 +411,9 @@ pub struct LiquidEngine {
     shutdown_start_thrust_n: f64,
     /// Cumulative propellant consumed in kg.
     consumed_kg: f64,
+    /// Feed-pressure multiplier supplied by the vehicle-side
+    /// propellant budget. `1.0` is regulated/default.
+    feed_pressure_scale: f64,
     /// Last computed snapshot. Returned by `current_snapshot()`.
     last_snapshot: EngineSnapshot,
     /// Active fault, if any.
@@ -379,11 +434,13 @@ impl LiquidEngine {
             limits,
             state: EngineState::Idle,
             elapsed_in_state_s: 0.0,
+            commanded_throttle: 0.0,
             latched_throttle: 0.0,
             latched_pitch_rad: 0.0,
             latched_yaw_rad: 0.0,
             shutdown_start_thrust_n: 0.0,
             consumed_kg: 0.0,
+            feed_pressure_scale: 1.0,
             last_snapshot: EngineSnapshot::idle(),
             fault: None,
         })
@@ -508,9 +565,9 @@ impl EngineModel for LiquidEngine {
             EngineState::Shutdown | EngineState::Failed => {}
         }
 
-        // Latch throttle (clamped to [0, 1]) and gimbal angles
+        // Latch throttle target (clamped to [0, 1]) and gimbal angles
         // (clamped to ±max_gimbal_rad).
-        self.latched_throttle = cmd.throttle_unit.clamp(0.0, 1.0);
+        self.commanded_throttle = cmd.throttle_unit.clamp(0.0, 1.0);
         let g = self.limits.max_gimbal_rad;
         self.latched_pitch_rad = cmd.gimbal_pitch_rad.clamp(-g, g);
         self.latched_yaw_rad = cmd.gimbal_yaw_rad.clamp(-g, g);
@@ -532,10 +589,18 @@ impl EngineModel for LiquidEngine {
 
         // Advance the in-state timer.
         self.elapsed_in_state_s += dt_s;
+        self.latched_throttle = next_throttle(
+            self.latched_throttle,
+            self.commanded_throttle,
+            self.limits.throttle_slew_per_s,
+            self.limits.min_throttle_unit,
+            dt_s,
+        );
 
         // Determine the un-gimballed scalar thrust along the engine
         // nominal axis based on state + elapsed.
-        let commanded_thrust_n = self.latched_throttle * self.limits.max_thrust_n;
+        let commanded_thrust_n =
+            self.latched_throttle * self.limits.max_thrust_n * self.feed_pressure_scale;
         let mut thrust_z_n = match self.state {
             EngineState::Idle | EngineState::Failed => 0.0,
             EngineState::Igniting => {
@@ -570,7 +635,9 @@ impl EngineModel for LiquidEngine {
                 // Stuck overrides throttle but respects state-based
                 // ramps (e.g. during Shutdown the engine still tapers
                 // off).
-                let stuck_thrust = at_throttle * self.limits.max_thrust_n;
+                let stuck_throttle = floor_throttle(at_throttle, self.limits.min_throttle_unit);
+                let stuck_thrust =
+                    stuck_throttle * self.limits.max_thrust_n * self.feed_pressure_scale;
                 thrust_z_n = match self.state {
                     EngineState::Idle | EngineState::Failed => 0.0,
                     EngineState::Igniting => {
@@ -605,7 +672,17 @@ impl EngineModel for LiquidEngine {
         // Mass flow from current scalar thrust magnitude. Always
         // non-negative.
         let scalar_thrust = thrust_z_n.abs();
-        let mass_flow_kg_per_s = scalar_thrust / (STANDARD_GRAVITY_M_S2 * self.limits.isp_s);
+        let effective_isp_s = effective_isp_s(
+            self.limits.isp_s,
+            self.limits.isp_throttle_falloff,
+            self.latched_throttle,
+            self.feed_pressure_scale,
+        );
+        let mass_flow_kg_per_s = if scalar_thrust == 0.0 || effective_isp_s <= 0.0 {
+            0.0
+        } else {
+            scalar_thrust / (STANDARD_GRAVITY_M_S2 * effective_isp_s)
+        };
         // Locked operand order: rate · dt → integrated kg this step.
         self.consumed_kg += mass_flow_kg_per_s * dt_s;
 
@@ -650,9 +727,58 @@ impl EngineModel for LiquidEngine {
         self.last_snapshot
     }
 
+    fn set_feed_pressure_scale(&mut self, scale: f64) -> Result<(), EngineError> {
+        if !scale.is_finite() || scale < 0.0 {
+            return Err(EngineError::InvalidParameter {
+                reason: "feed pressure scale must be finite and non-negative",
+            });
+        }
+        self.feed_pressure_scale = scale;
+        Ok(())
+    }
+
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
     }
+}
+
+fn floor_throttle(throttle_unit: f64, min_throttle_unit: f64) -> f64 {
+    if throttle_unit <= 0.0 {
+        0.0
+    } else {
+        throttle_unit.max(min_throttle_unit)
+    }
+}
+
+fn next_throttle(
+    current: f64,
+    commanded: f64,
+    slew_per_s: f64,
+    min_throttle_unit: f64,
+    dt_s: f64,
+) -> f64 {
+    let target = floor_throttle(commanded.clamp(0.0, 1.0), min_throttle_unit);
+    let raw = if slew_per_s.is_infinite() {
+        target
+    } else {
+        let max_delta = slew_per_s * dt_s;
+        let delta = (target - current).clamp(-max_delta, max_delta);
+        current + delta
+    };
+    floor_throttle(raw.clamp(0.0, 1.0), min_throttle_unit)
+}
+
+fn effective_isp_s(
+    base_isp_s: f64,
+    throttle_falloff: f64,
+    throttle_unit: f64,
+    feed_pressure_scale: f64,
+) -> f64 {
+    if throttle_unit <= 0.0 || feed_pressure_scale <= 0.0 {
+        return 0.0;
+    }
+    let throttle_factor = 1.0 - throttle_falloff * (1.0 - throttle_unit);
+    base_isp_s * throttle_factor * feed_pressure_scale
 }
 
 #[cfg(test)]
@@ -677,6 +803,9 @@ mod tests {
             ignition_transient_s: 0.1,
             shutdown_transient_s: 0.1,
             max_gimbal_rad: 0.1,
+            throttle_slew_per_s: f64::INFINITY,
+            min_throttle_unit: 0.0,
+            isp_throttle_falloff: 0.0,
         }
     }
 
@@ -919,6 +1048,51 @@ mod tests {
         .unwrap();
         let snap = e.step(dt()).unwrap();
         assert_eq!(snap.thrust_body.z.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn liquid_engine_throttle_slew_limits_commanded_step() {
+        let limits = EngineLimits {
+            ignition_transient_s: 0.0,
+            throttle_slew_per_s: 2.0,
+            ..make_limits()
+        };
+        let mut e = LiquidEngine::new(EngineId::from_path("test.engine"), limits).unwrap();
+        e.apply_command(EngineCommand {
+            throttle_unit: 1.0,
+            gimbal_pitch_rad: 0.0,
+            gimbal_yaw_rad: 0.0,
+            ignite: true,
+            shutdown: false,
+        })
+        .unwrap();
+        let snap = e.step(Duration::from_seconds(0.25)).unwrap();
+        assert_eq!(snap.state, EngineState::Burning);
+        assert_eq!(snap.thrust_body.z.to_bits(), 500.0_f64.to_bits());
+    }
+
+    #[test]
+    fn liquid_engine_min_throttle_floor_derates_isp() {
+        let limits = EngineLimits {
+            ignition_transient_s: 0.0,
+            min_throttle_unit: 0.4,
+            isp_throttle_falloff: 0.5,
+            ..make_limits()
+        };
+        let mut e = LiquidEngine::new(EngineId::from_path("test.engine"), limits).unwrap();
+        e.apply_command(EngineCommand {
+            throttle_unit: 0.1,
+            gimbal_pitch_rad: 0.0,
+            gimbal_yaw_rad: 0.0,
+            ignite: true,
+            shutdown: false,
+        })
+        .unwrap();
+        let snap = e.step(dt()).unwrap();
+        let expected_isp_s = 250.0 * (1.0 - 0.5 * (1.0 - 0.4));
+        let expected_mdot = 400.0 / (STANDARD_GRAVITY_M_S2 * expected_isp_s);
+        assert_eq!(snap.thrust_body.z.to_bits(), 400.0_f64.to_bits());
+        assert!((snap.mass_flow_kg_per_s - expected_mdot).abs() < 1e-12);
     }
 
     #[test]

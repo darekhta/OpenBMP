@@ -21,6 +21,22 @@ The deterministic kernel and model crates should keep dependencies small.
 Optional tooling crates may have broader dependency trees, but they must stay
 out of the kernel.
 
+## Related Work and License Boundaries
+
+Academic or open-source simulators may be cited as related work when they
+document the same public equations OpenBMP implements, but their source code is
+not read, copied, ported, or translated into OpenBMP unless the license and
+provenance record explicitly allow it.
+
+The `openMotor` project is GPL-3.0 and is treated only as related work for
+solid-motor internal-ballistics concepts. OpenBMP's grain regression solver is
+implemented from published textbook and public technical references, not from
+`openMotor` code.
+
+OpenRocket is GPL-licensed and is likewise treated only as related work for
+aerodynamics concepts already available from public technical references. No
+OpenRocket source is read or ported into OpenBMP.
+
 ## Required Tools
 
 CI and release tooling include:

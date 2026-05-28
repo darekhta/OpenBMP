@@ -38,6 +38,7 @@ pub mod footprint;
 pub mod integrator;
 pub mod mission;
 pub mod point_mass;
+pub mod propulsion;
 pub mod recovery;
 pub mod rigid_body;
 pub mod tanks;

@@ -156,6 +156,24 @@ impl EngineCluster {
         self.engines[index].apply_command(cmd)
     }
 
+    /// Apply a feed-pressure scale to a specific engine by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InvalidParameter`] when no engine in
+    /// the cluster has the given id. Forwards scalar validation from
+    /// the engine implementation.
+    pub fn set_feed_pressure_scale(&mut self, id: EngineId, scale: f64) -> Result<(), EngineError> {
+        let index =
+            self.engine_ids
+                .iter()
+                .position(|x| *x == id)
+                .ok_or(EngineError::InvalidParameter {
+                    reason: "engine id not found in cluster",
+                })?;
+        self.engines[index].set_feed_pressure_scale(scale)
+    }
+
     /// Step every engine in the cluster by one kernel base tick. The
     /// returned `Vec<EngineSnapshot>` is in scenario-declared order.
     ///
@@ -193,6 +211,9 @@ mod tests {
             ignition_transient_s: 0.1,
             shutdown_transient_s: 0.1,
             max_gimbal_rad: 0.1,
+            throttle_slew_per_s: f64::INFINITY,
+            min_throttle_unit: 0.0,
+            isp_throttle_falloff: 0.0,
         }
     }
 

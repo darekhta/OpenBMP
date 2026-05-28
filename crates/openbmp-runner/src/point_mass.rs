@@ -47,7 +47,7 @@ use openbmp_core::{ChannelId, Duration, ModelId, Position3, RecoveryId, SimTime,
 use openbmp_physics::{
     AtmosphereModel, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
 };
-use openbmp_propulsion::{Motor, MotorError, SolidMotor};
+use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
     ConstantGravityForce, ConstantMass, EndTime, ForceContext, ForceModel, MassModel,
@@ -142,6 +142,7 @@ pub fn run(
     // per-step rack operation short-circuits and the legacy
     // byte-stable path is preserved.
     let mut tank_rack = crate::tanks::TankRack::build(document)?;
+    let propellant_budget = crate::propulsion::build_propellant_budget(document)?;
     // Build the runner-side recovery rack. Empty when no
     // `[[vehicle.assembly.recovery]]` are declared, in which case
     // every per-step rack operation short-circuits and the kernel's
@@ -202,7 +203,7 @@ pub fn run(
     } else {
         None
     };
-    let metadata = build_schema_metadata(document, resolved_files);
+    let metadata = build_schema_metadata(document, resolved_files)?;
     let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
     // Pair schema-2 deck axes with scenario effectors.
@@ -295,6 +296,19 @@ pub fn run(
             if let Some(state_id) = bridge.latest_mission_state_id() {
                 kernel.set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
             }
+        }
+        if let Some(propellant_budget) = &propellant_budget {
+            let report = propellant_budget
+                .evaluate(
+                    &engine_rack.propulsion_snapshot_map(),
+                    &tank_rack.propellant_tank_states(document),
+                )
+                .map_err(|err| RunnerError::Engine {
+                    field: "vehicle.assembly.engines[*].propellant".to_owned(),
+                    reason: err.to_string(),
+                })?;
+            tank_rack.set_propellant_budget_drain_rates(report.tank_drain_rates_kg_per_s.clone());
+            engine_rack.apply_propellant_budget(&report)?;
         }
         if !effector_rack.is_empty() {
             effector_rack.step(kernel.current_time())?;
@@ -479,25 +493,7 @@ fn load_models(
         None
     };
 
-    let motor = if document
-        .propulsion
-        .as_ref()
-        .and_then(|p| p.motor.as_ref())
-        .is_some()
-    {
-        let resolved = required_resolved_file(resolved_files, "propulsion.motor.file")?;
-        let text = std::str::from_utf8(&resolved.bytes).map_err(|e| {
-            RunnerError::Motor(MotorError::Io {
-                reason: format!(
-                    "could not read motor file {} as UTF-8: {e}",
-                    resolved.path.display()
-                ),
-            })
-        })?;
-        Some(SolidMotor::load_from_str(text)?)
-    } else {
-        None
-    };
+    let motor = crate::propulsion::load_solid_motor(document, resolved_files)?;
 
     Ok(LoadedModels { aero_deck, motor })
 }
@@ -841,7 +837,7 @@ fn motor_elapsed_at_start_s(document: &ScenarioDocument) -> Result<f64, RunnerEr
 fn build_schema_metadata(
     document: &ScenarioDocument,
     resolved_files: &BTreeMap<String, ResolvedFile>,
-) -> BTreeMap<String, String> {
+) -> Result<BTreeMap<String, String>, RunnerError> {
     let mut metadata = BTreeMap::new();
     for (field, file) in resolved_files {
         metadata.insert(
@@ -850,7 +846,8 @@ fn build_schema_metadata(
         );
     }
     super::append_solver_metadata(document, &mut metadata);
-    metadata
+    crate::propulsion::append_staging_analysis_metadata(document, &mut metadata)?;
+    Ok(metadata)
 }
 
 // ---------------------------------------------------------------------

@@ -200,8 +200,9 @@ impl Scenario {
             .propulsion
             .as_ref()
             .and_then(|prop| prop.motor.as_ref())
+            && let Some(file) = &motor.file
         {
-            let resolved = ResolvedFile::load(self.resolve_path(&motor.file))?;
+            let resolved = ResolvedFile::load(self.resolve_path(file))?;
             resolved.verify_pin(motor.file_sha256.as_deref())?;
             files.insert("propulsion.motor.file".to_owned(), resolved);
         }
@@ -233,8 +234,8 @@ mod tests {
     use super::*;
     use crate::document::{
         FcAntiWindupConfig, FcAttitudeLoopKind, FcAttitudeMpcConfig, FcFdirDetectorKindV5,
-        FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind, MissionScope,
-        MissionScopeKind, WGS84_J2_DEFAULT,
+        FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind, GrainGeometryConfig,
+        MissionScope, MissionScopeKind, WGS84_J2_DEFAULT,
     };
     use openbmp_core::ValidationStatus;
 
@@ -2028,6 +2029,16 @@ kind = "piecewise_exponential"
     }
 
     #[test]
+    fn rejects_staging_range_optimization_vocabulary() {
+        let toml = MINIMAL.replace(
+            r#"name = "constant-acceleration-drop""#,
+            r#"name = "maxrange-demo""#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(err, ScenarioError::SafetyName { term, .. } if term == "max-range"));
+    }
+
+    #[test]
     fn safety_lint_has_global_priority_over_unit_lint() {
         let toml = MINIMAL
             .replace(
@@ -2037,6 +2048,86 @@ kind = "piecewise_exponential"
             .replace("[environment]\n", "[environment]\nbad = 1.0\n");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(matches!(err, ScenarioError::SafetyName { .. }));
+    }
+
+    #[test]
+    fn parses_inline_grain_motor_schema() {
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                r#"models = ["gravity"]"#,
+                r#"models = ["gravity", "thrust"]"#,
+            );
+        let toml = format!(
+            "{toml}\n\
+             [propulsion.motor]\n\
+             variant = \"solid\"\n\
+             ignite_at_s = 0.0\n\
+             mounted_to = \"main\"\n\
+             \n\
+             [propulsion.motor.grain]\n\
+             geometry = \"end_burner\"\n\
+             cross_section_area_m2 = 0.001\n\
+             length_m = 0.05\n\
+             throat_radius_m = 0.003\n\
+             expansion_ratio = 8.0\n\
+             \n\
+             [propulsion.motor.grain.propellant]\n\
+             label = \"synthetic_textbook\"\n\
+             density_kg_m3 = 1700.0\n\
+             burn_rate_a = 0.00004\n\
+             burn_rate_n = 0.32\n\
+             c_star_m_s = 1400.0\n\
+             gamma = 1.2\n\
+             web_steps = 64\n"
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let grain = scenario
+            .document
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.motor.as_ref())
+            .and_then(|motor| motor.grain.as_ref())
+            .expect("grain motor parsed");
+        assert_eq!(grain.geometry, GrainGeometryConfig::EndBurner);
+        assert!(grain.propellant.web_steps == 64);
+    }
+
+    #[test]
+    fn parses_offline_staging_analysis_schema() {
+        let toml = MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let toml = format!(
+            "{toml}\n\
+             [staging_analysis]\n\
+             mode = \"optimal\"\n\
+             delta_v_budget_m_s = 6000.0\n\
+             payload_mass_kg = 100.0\n\
+             \n\
+             [[staging_analysis.stages]]\n\
+             isp_s = 300.0\n\
+             structural_coefficient = 0.1\n\
+             \n\
+             [[staging_analysis.stages]]\n\
+             isp_s = 320.0\n\
+             structural_coefficient = 0.12\n"
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        assert!(scenario.document.staging_analysis.is_some());
+    }
+
+    #[test]
+    fn staging_analysis_is_v3_only() {
+        let toml = format!(
+            "{MINIMAL}\n\
+             [staging_analysis]\n\
+             mode = \"optimal\"\n\
+             delta_v_budget_m_s = 6000.0\n\
+             payload_mass_kg = 100.0\n\
+             [[staging_analysis.stages]]\n\
+             isp_s = 300.0\n\
+             structural_coefficient = 0.1\n"
+        );
+        assert_v3_block_reserved_under_v2(&toml, "staging_analysis");
     }
 
     #[test]

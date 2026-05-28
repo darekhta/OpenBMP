@@ -52,6 +52,7 @@ fields over compact syntax.
 | `[faults]` | no | Scenario-injected fault models |
 | `[batch]` | no | Batch or Monte Carlo sweep metadata |
 | `[landing_footprint]` | no | Schema-v3 offline range-safety footprint post-processing |
+| `[staging_analysis]` | no | Schema-v3 offline ideal ΔV budget / mass-optimal staging analysis |
 | `[entry_profile]` | no | Schema-v3 descent / entry handoff and entry diagnostics |
 
 ## Flight Controller Block
@@ -523,6 +524,45 @@ When `[multi_body]` is declared, `[propulsion.motor].mounted_to` is
 required and must reference a declared body. The continuing or
 separated lane that owns the motor receives its thrust and mass-rate;
 other lanes skip it.
+
+Instead of `file`, `[propulsion.motor]` may declare an inline
+`[propulsion.motor.grain]` producer. `file` and `grain` are mutually
+exclusive (`AmbiguousPropulsion`). The grain path is a forward internal
+ballistics model: it produces the same validated `SolidMotor` thrust curve
+the file path consumes.
+
+```toml
+[propulsion.motor]
+variant     = "solid"
+ignite_at_s = 0.0
+mounted_to  = "upper"
+
+[propulsion.motor.grain]
+geometry              = "bates"       # end_burner | bates | tabulated
+segments              = 4
+outer_radius_m        = 0.025
+core_radius_m         = 0.010
+segment_length_m      = 0.090
+throat_radius_m       = 0.0085
+expansion_ratio       = 8.0
+dry_mass_kg           = 0.0
+provenance            = "synthetic/textbook inline grain regression"
+
+[propulsion.motor.grain.propellant]
+label          = "synthetic_textbook"
+density_kg_m3  = 1841.0
+burn_rate_a    = 0.00882
+burn_rate_n    = 0.319
+c_star_m_s     = 912.0
+gamma          = 1.131
+web_steps      = 200
+```
+
+`end_burner` uses `cross_section_area_m2` and `length_m`; `bates` uses
+`segments`, `outer_radius_m`, `core_radius_m`, and `segment_length_m`;
+`tabulated` uses `points = [[web_m, burn_area_m2], ...]` plus
+`propellant_volume_m3`. All parameters are synthetic/textbook/public and are
+rejected if non-finite or outside the quasi-steady envelope.
 
 ### Wind block
 
@@ -1042,7 +1082,8 @@ extensions.
 
 #### Limits vocabulary
 
-`limits` is a flat table with five required fields:
+`limits` is a flat table with five required fields and three optional throttle
+dynamics fields:
 
 | Field | Units | Constraint |
 |---|---|---|
@@ -1323,6 +1364,43 @@ possible extensions.
 | `ignition_transient_s` | s | finite, `>= 0` (`0.0` → instantaneous ignition) |
 | `shutdown_transient_s` | s | finite, `>= 0` (`0.0` → instantaneous shutdown) |
 | `max_gimbal_rad` | rad | finite, `>= 0` (`0.0` → fixed-axis engine) |
+| `throttle_slew_per_s` | 1/s | optional; non-negative or `+inf`; default `+inf` preserves instantaneous throttle |
+| `min_throttle_unit` | — | optional; finite in `[0, 1]`; non-zero commands below the floor clamp up |
+| `isp_throttle_falloff` | — | optional; finite in `[0, 1)`; linear low-throttle Isp derate |
+
+#### Propellant budget and feed coupling
+
+An engine may declare a `propellant` sub-table that binds its mass flow to one
+or two tanks. The runner uses a one-step lag: the current engine snapshot
+sets next-step tank drain and depletion shutdown, preserving deterministic
+force/tank ordering.
+
+```toml
+[[vehicle.assembly.engines]]
+id                 = "main"
+mounted_to         = "stage1"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, 0.0]
+limits             = { max_thrust_n = 5000.0, isp_s = 300.0,
+                       ignition_transient_s = 0.2,
+                       shutdown_transient_s = 0.2,
+                       max_gimbal_rad = 0.087,
+                       throttle_slew_per_s = 2.0,
+                       min_throttle_unit = 0.4,
+                       isp_throttle_falloff = 0.05 }
+propellant         = { oxidizer_fuel_ratio = 2.3,
+                       fuel_tank = "tank_fuel",
+                       oxidizer_tank = "tank_ox",
+                       feed = "blowdown",
+                       residual_reserve_kg = 0.5 }
+```
+
+`oxidizer_fuel_ratio = 0.0` is monopropellant and rejects
+`oxidizer_tank`; positive O/F requires `oxidizer_tank`. Bound tanks must exist
+and be mounted to the same body as the engine. `feed = "regulated"` is the
+default. `feed = "blowdown"` requires each bound tank to declare
+`ullage = { initial_pressure_pa = ..., gas_gamma = ... }`; delivered thrust
+and Isp scale with the isentropic ullage pressure ratio.
 
 #### Mount geometry
 
@@ -1397,6 +1475,11 @@ Enforced at scenario-parse time:
 - `limits.{max_thrust_n, isp_s}` finite + strictly positive.
 - `limits.{ignition_transient_s, shutdown_transient_s, max_gimbal_rad}`
   finite + non-negative.
+- `limits.throttle_slew_per_s` non-negative or `+inf`;
+  `min_throttle_unit` in `[0, 1]`; `isp_throttle_falloff` in `[0, 1)`.
+- Engine `propellant` bindings require declared tanks on the same owner body;
+  positive O/F requires `oxidizer_tank`; monopropellant rejects it; blowdown
+  requires tank `ullage`.
 - `mount_point_body_m` finite components.
 - `kind.kind` is a wired variant (`liquid_engine`).
 - `fault` when present: `stuck.at_throttle` in `[0, 1]`;
@@ -1482,9 +1565,11 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
 - `baffle_model = { damping_increment_zeta }` — additive damping
   increment consumed only by `baffled_pendulum`: a scalar increment
   per Abramson Eq 7-46 simplified.
+- `ullage = { initial_pressure_pa, gas_gamma }` — pressurant state required
+  when an engine bound to this tank selects `feed = "blowdown"`.
 - `drain_rate_kg_per_s` — drain is decoupled from
-  engine clusters. Defaults to `0.0` (no drain). A future revision could tie
-  this to the engine-cluster total mdot.
+  engine propellant budgets. Defaults to `0.0` (no scenario drain); engine
+  coupling adds its own deterministic one-step-lag drain rate.
 - `initial_slosh = { angles_rad: [θ_x, θ_y], rates_rad_s: [θ̇_x,
   θ̇_y] }` — initial slosh perturbation for `equivalent_pendulum`
   and `baffled_pendulum`.
@@ -1504,6 +1589,8 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
   silently producing a no-op tank.
 - `initial_slosh` is rejected for `rigid_liquid`; `baffle_model` is
   rejected unless `moving_mass.kind = "baffled_pendulum"`.
+- `ullage` requires `initial_fill_fraction < 1.0`; blowdown engine bindings
+  reject tanks without `ullage`.
 - `drain_rate_kg_per_s × time.dt_s` must not exceed the initial tank
   fluid mass; single-step emptying is rejected rather than
   silently clamping away the moving-mass dynamics.
@@ -1669,9 +1756,49 @@ plus TOML summary. `wind.kind` accepts `constant`, `layered`, `hwm14`, or
 `ensemble`; the current offline propagator consumes the sampled local-NED
 perturbation as the constant wind vector for that footprint sample.
 
+The Monte-Carlo summary includes an output-only `[accuracy]` block:
+`cep50_m` is the empirical 50% circular radius about the successful sample
+mean, while `mean_miss_distance_from_nominal_m` is the radial offset from
+the nominal forward footprint to that sample mean. The sample cloud also
+contains per-sample `offset_*_from_nominal_m`,
+`miss_distance_from_nominal_m`, and `radial_distance_from_mean_m`
+channels. `[[quantiles]]` are mean-centered radial-distance quantiles;
+`[[nominal_miss_distance_quantiles]]` are radial-error quantiles about the
+nominal forward footprint. These diagnostics do not add a target, aimpoint,
+or desired landing coordinate.
+
 As everywhere else in the profile work, fields naming a desired landing
 location, aimpoint, miss distance, or equivalent targeting concept are
 rejected by the lint before deserialization.
+
+### Staging analysis
+
+`[staging_analysis]` is a schema-v3 offline post-processing block. It runs the
+ideal loss-free rocket equation and writes compact report metadata under
+`openbmp.staging_analysis.*` in the telemetry schema. It is not a guidance
+input and cannot express range, launch site, target, azimuth, impact point, or
+accuracy.
+
+```toml
+[staging_analysis]
+mode               = "optimal"  # budget | optimal
+delta_v_budget_m_s = 9400.0     # required for optimal, rejected for budget
+payload_mass_kg    = 250.0
+
+[[staging_analysis.stages]]     # bottom-up
+isp_s                  = 280.0
+structural_coefficient = 0.08
+
+[[staging_analysis.stages]]
+isp_s                  = 320.0
+structural_coefficient = 0.10
+```
+
+`mode = "budget"` omits `delta_v_budget_m_s` and requires each stage to also
+declare `structural_mass_kg` and `propellant_mass_kg`. `mode = "optimal"`
+rejects per-stage masses and computes the mass-optimal split for the declared
+ideal ΔV. `structural_coefficient` must lie in `(0, 1)`, and all masses and
+`isp_s` values must be finite and positive.
 
 ### Recovery and descent
 

@@ -32,11 +32,16 @@ operational engagement meaning.
 | `lifting_entry` | Entry with non-zero lift and bank modulation. Already in canon; replaces *maneuvering*. | Vinh et al., 1980. |
 | `final_descent` | Low-altitude descent to recovery. Already in canon; replaces the rejected end-phase label. | — |
 | `landing_footprint` | Predicted touchdown region of an unpowered body. Replaces *impact point*. | RCC 321 range-safety. |
-| `dispersion_ellipse` | Statistical landing scatter. Replaces *CEP / accuracy*. | RCC 321. |
+| `dispersion_ellipse` | Statistical landing scatter. Primary schema term replacing target-accuracy wording. | RCC 321. |
+| `cep50_m` | Output-only empirical 50% circular radius about the Monte-Carlo sample mean. No target or aimpoint input. | NASA/JPL D-4710. |
+| `miss_distance_from_nominal_m` | Output-only radial error from the nominal forward footprint, used in sample clouds and summaries. Not a miss distance to a desired point. | Statistical post-processing. |
 | `downrange_m` / `crossrange_m` | Range-relative landing coordinates. Replaces geographic aimpoint. | Range-safety convention. |
 | `entry_corridor` | Heat-rate / load-factor / flight-path-angle limit band steering a lifting entry. Replaces end-phase steering language. | Vinh et al., 1980. |
 | `jettison_stage` | Commanded stage / booster / fairing separation. | Niskanen, Ch. 4. |
 | `ascent_reference` | Generated powered-ascent attitude reference. | Tewari, Ch. 11; PEG literature. |
+| `delta_v_budget_m_s` | Ideal vehicle-intrinsic ΔV budget, never range-to-a-place. | Sutton & Biblarz; Curtis. |
+| `staging_analysis` | Offline rocket-equation budget or mass-optimal split over `Isp`, structural coefficient, and payload mass. | Sutton & Biblarz; Curtis. |
+| `burn_rate`, `chamber_pressure`, `grain`, `regression`, `mixture_ratio`, `mass_ratio`, `payload_fraction`, `structural_coefficient`, `klemmung`, `expansion_ratio`, `blowdown` | Propulsion mechanics vocabulary accepted for forward internal-ballistics, feed-system, and staging analysis. | Sutton & Biblarz; Huzel & Huang; Nakka. |
 
 ## Rejected operational vocabulary (lint additions)
 
@@ -49,19 +54,26 @@ of the existing rejected set documented in
 | Rejected (normalized needle) | Label | Reason |
 |---|---|---|
 | `aimpoint` | aimpoint | A desired landing location. OpenBMP computes where a body lands, never steers to a chosen place. |
-| `missdistance` | miss-distance | An accuracy-against-target metric. OpenBMP reports statistical dispersion, never miss distance to an aimpoint. |
+| `missdistance` | miss-distance | Rejected in scenario inputs because it normally denotes accuracy against a target. Output-only `*_from_nominal_m` diagnostics may compare samples to the nominal forward footprint, never to an aimpoint. |
 | `terminalguidance` | terminal-guidance | Operational end-game guidance; categorically out of scope. |
 | `banktoturn` | bank-to-turn | An explicitly-named terminal-mode end-game autopilot. The entry bank command is corridor-driven, not a steering mode. |
 | `skidtoturn` | skid-to-turn | As above. |
 | `intercept` | intercept | Operational engagement; also guards the `interceptor` family. |
 | `reentryvehicle` | reentry-vehicle | Operational RV terminology; the academic term is *entry body* / *test article*. |
-| `circularerror` | circular-error | The "circular error probable" accuracy family; out of scope. |
+| `circularerror` | circular-error | Rejected in scenario inputs. The offline Monte-Carlo summary may report `cep50_m` as an output-only sample statistic about the predicted footprint. |
+| `maxrange` / `rangemax` | max-range / range-max | Range maximization is a trajectory objective; staging analysis optimizes only ideal vehicle-intrinsic ΔV/mass budget. |
+| `targetrange` | target-range | Desired range is an inverse-problem input; no staging or propulsion block accepts one. |
+| `throwweight` | throw-weight | Operational payload-at-range terminology; use `payload_mass_kg` at a declared ideal ΔV. |
+| `impactenergy` | impact-energy | Terminal-effect terminology, unrelated to forward propulsion analysis. |
 
 > **Note.** Academic profile terms are deliberately *not* forbidden:
 > `ballistic`, `boost` (only the *phase* sense is replaced, not the word),
 > `coast`, `ascent`, `apogee`, `entry`, `descent`, `footprint`, `dispersion`,
-> `downrange` are all accepted. The lint targets engagement and targeting
-> vocabulary, not trajectory mechanics.
+> `downrange`, `delta_v`, `isp`, `mixture_ratio`, `mass_ratio`,
+> `payload_fraction`, `structural_coefficient`, `burn_rate`,
+> `chamber_pressure`, `grain`, `regression`, `klemmung`,
+> `expansion_ratio`, and `blowdown` are all accepted. The lint targets
+> engagement and targeting vocabulary, not trajectory or propulsion mechanics.
 
 ## Fail-closed validation rules
 
@@ -73,7 +85,10 @@ must also declare, disagreement fails closed.
 1. **No desired-landing input anywhere.** No config block accepts a target
    location, aimpoint, or desired touchdown coordinate. The
    `RangeSafetyFootprint` tool takes only a propagated state and reports a
-   forward prediction. (Lint + absence of any such field in the schema.)
+   forward prediction. Nominal-referenced `cep50_m` /
+   `miss_distance_from_nominal_m` outputs are computed after propagation and
+   cannot be configured against a geographic point. (Lint + absence of any
+   such field in the schema.)
 2. **Footprint is forward-only and offline.** The footprint path is in the
    offline-analysis surface, never on the flight controller's loop; it produces
    no actuator command. Mirrors the telemetry-viewer boundary in
@@ -90,7 +105,13 @@ must also declare, disagreement fails closed.
 5. **Separation symmetry.** A separation declared in `[multi_body]` must be
    commanded by a matching `jettison_stage` action and vice-versa; momentum-
    conservation must hold to tolerance.
-6. **Deferred until validated.** New variants fail closed with a typed
+6. **Staging analysis is offline and vehicle-intrinsic.** `[staging_analysis]`
+   is schema-v3 post-processing. Its fields are limited to `delta_v_budget_m_s`,
+   `payload_mass_kg`, per-stage `isp_s`, structural coefficients, and optional
+   masses for forward budget mode. It produces report metadata only, never a
+   controller command, and no field can express range, launch site, target, or
+   aimpoint.
+7. **Deferred until validated.** New variants fail closed with a typed
    `Unsupported*` / deferral error until their implementation lands with
    validation evidence. `jettison_stage` is limited to the documented
    fixed-step RK4 rigid-body envelope with explicit per-body ownership; PR2

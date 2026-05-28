@@ -737,8 +737,9 @@ pub struct FootprintSampleFailure {
 pub struct FootprintQuantile {
     /// Confidence level in `(0, 1)`.
     pub confidence_level: f64,
-    /// Distance from the sample mean in the downrange/crossrange
-    /// plane (m).
+    /// Radial distance in the downrange/crossrange plane (m). The
+    /// reference point is determined by the result field that carries
+    /// this quantile.
     pub radial_distance_m: f64,
 }
 
@@ -756,6 +757,18 @@ pub struct FootprintMonteCarloResult {
     pub mean_downrange_m: f64,
     /// Mean crossrange distance (m) across successful samples.
     pub mean_crossrange_m: f64,
+    /// Empirical 50% circular probable radius about the sample mean
+    /// in the downrange/crossrange plane (m).
+    pub cep50_m: f64,
+    /// Downrange component of the sample mean offset from the nominal
+    /// footprint (m).
+    pub mean_offset_downrange_from_nominal_m: f64,
+    /// Crossrange component of the sample mean offset from the
+    /// nominal footprint (m).
+    pub mean_offset_crossrange_from_nominal_m: f64,
+    /// Radial miss distance from the nominal footprint to the sample
+    /// mean (m). This is output-only and accepts no target input.
+    pub mean_miss_distance_from_nominal_m: f64,
     /// Downrange/downrange covariance element (m²).
     pub covariance_downrange_downrange_m2: f64,
     /// Downrange/crossrange covariance element (m²).
@@ -764,8 +777,10 @@ pub struct FootprintMonteCarloResult {
     pub covariance_crossrange_crossrange_m2: f64,
     /// One- and three-sigma covariance ellipse from successful samples.
     pub dispersion_ellipse: FootprintDispersionEllipse,
-    /// Requested radial-distance quantiles.
+    /// Requested radial-distance quantiles about the sample mean.
     pub quantiles: Vec<FootprintQuantile>,
+    /// Requested radial-error quantiles about the nominal footprint.
+    pub nominal_radial_error_quantiles: Vec<FootprintQuantile>,
 }
 
 /// Constant-gravity closed-form footprint model.
@@ -1193,6 +1208,403 @@ impl StageSeparationModel for MomentumConservingStageSeparation {
     }
 }
 
+/// Per-stage mass and performance properties for ideal staging
+/// analysis. Stages are ordered bottom-up: index 0 lights first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StageMassProperties {
+    /// Specific impulse (s).
+    pub isp_s: f64,
+    /// Structural coefficient `m_struct / (m_struct + m_prop)`.
+    pub structural_coefficient: f64,
+    /// Optional structural mass (kg), required for forward budget
+    /// mode and computed for optimal mode.
+    pub structural_mass_kg: Option<f64>,
+    /// Optional propellant mass (kg), required for forward budget
+    /// mode and computed for optimal mode.
+    pub propellant_mass_kg: Option<f64>,
+}
+
+impl StageMassProperties {
+    fn validate_common(&self) -> Result<(), PhysicsError> {
+        if !self.isp_s.is_finite() || self.isp_s <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "staging stage isp_s must be finite and positive",
+            });
+        }
+        if !self.structural_coefficient.is_finite()
+            || !(0.0..1.0).contains(&self.structural_coefficient)
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "staging structural_coefficient must lie in (0, 1)",
+            });
+        }
+        Ok(())
+    }
+
+    fn require_masses(&self) -> Result<(f64, f64), PhysicsError> {
+        let structural = self
+            .structural_mass_kg
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "forward staging budget requires structural_mass_kg",
+            })?;
+        let propellant = self
+            .propellant_mass_kg
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "forward staging budget requires propellant_mass_kg",
+            })?;
+        if !structural.is_finite() || structural <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "staging structural_mass_kg must be finite and positive",
+            });
+        }
+        if !propellant.is_finite() || propellant <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "staging propellant_mass_kg must be finite and positive",
+            });
+        }
+        let coeff = structural / (structural + propellant);
+        if (coeff - self.structural_coefficient).abs() > 1.0e-9 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "staging masses do not match structural_coefficient",
+            });
+        }
+        Ok((structural, propellant))
+    }
+}
+
+/// Forward staging budget / mass-optimal split input. Every field is
+/// vehicle-intrinsic: there is deliberately no launch site, target,
+/// range, azimuth, impact point, or accuracy field.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StagingBudgetInput {
+    /// Stages ordered bottom-up.
+    pub stages: Vec<StageMassProperties>,
+    /// Payload mass above the upper stage (kg).
+    pub payload_mass_kg: f64,
+    /// Required ideal ΔV for optimal mode. `None` selects forward
+    /// budget mode from declared masses.
+    pub delta_v_budget_m_s: Option<f64>,
+}
+
+impl StagingBudgetInput {
+    fn validate(&self) -> Result<(), PhysicsError> {
+        if self.stages.is_empty() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "staging analysis requires at least one stage",
+            });
+        }
+        require_positive_mass(
+            self.payload_mass_kg,
+            "staging payload mass must be finite and positive",
+        )?;
+        for stage in &self.stages {
+            stage.validate_common()?;
+        }
+        if let Some(delta_v) = self.delta_v_budget_m_s {
+            if !delta_v.is_finite() || delta_v <= 0.0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "staging delta_v_budget_m_s must be finite and positive",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Staging analysis mode used in the output report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StagingBudgetMode {
+    /// Forward rocket-equation budget from declared masses.
+    Budget,
+    /// Mass-optimal split for a declared ideal ΔV.
+    Optimal,
+}
+
+/// Per-stage staging analysis output.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StagingStageReport {
+    /// Bottom-up stage index.
+    pub stage_index: usize,
+    /// Specific impulse (s).
+    pub isp_s: f64,
+    /// Effective exhaust velocity `g0 * Isp` (m/s).
+    pub effective_exhaust_velocity_m_s: f64,
+    /// Structural coefficient.
+    pub structural_coefficient: f64,
+    /// Payload ratio `m_above / (m_struct + m_prop)`.
+    pub payload_ratio: f64,
+    /// Stage initial/final mass ratio.
+    pub mass_ratio: f64,
+    /// Ideal ΔV contribution (m/s).
+    pub delta_v_m_s: f64,
+    /// Structural mass (kg).
+    pub structural_mass_kg: f64,
+    /// Propellant mass (kg).
+    pub propellant_mass_kg: f64,
+    /// Mass above this stage (kg).
+    pub mass_above_kg: f64,
+}
+
+/// Pure output report for ideal staging analysis.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StagingBudgetReport {
+    /// Analysis mode.
+    pub mode: StagingBudgetMode,
+    /// Per-stage output ordered bottom-up.
+    pub stages: Vec<StagingStageReport>,
+    /// Total ideal ΔV (m/s).
+    pub total_delta_v_m_s: f64,
+    /// Payload mass (kg).
+    pub payload_mass_kg: f64,
+    /// Gross liftoff mass (kg).
+    pub gross_liftoff_mass_kg: f64,
+    /// Payload fraction `payload / GLOW`.
+    pub payload_fraction: f64,
+    /// Whether gravity/drag/steering losses are excluded. Always true
+    /// for this model.
+    pub ideal_loss_free: bool,
+}
+
+/// Offline, output-only staging budget analysis.
+pub trait StagingBudgetAnalysis {
+    /// Analyze a forward budget or, when `delta_v_budget_m_s` is
+    /// present, solve the mass-optimal split achieving it.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on invalid coefficients/masses, infeasible ΔV,
+    /// or a missing multiplier bracket.
+    fn analyze(&self, input: &StagingBudgetInput) -> Result<StagingBudgetReport, PhysicsError>;
+}
+
+/// Ideal rocket-equation staging analyzer with fixed-iteration
+/// bisection for optimal mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IdealStagingBudgetAnalysis {
+    bisection_iterations: usize,
+}
+
+impl IdealStagingBudgetAnalysis {
+    /// Construct with a fixed bisection iteration count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when `bisection_iterations` is zero.
+    pub fn new(bisection_iterations: usize) -> Result<Self, PhysicsError> {
+        if bisection_iterations == 0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "staging bisection_iterations must be positive",
+            });
+        }
+        Ok(Self {
+            bisection_iterations,
+        })
+    }
+
+    /// Fixed iteration count.
+    #[must_use]
+    pub const fn bisection_iterations(&self) -> usize {
+        self.bisection_iterations
+    }
+}
+
+impl Default for IdealStagingBudgetAnalysis {
+    fn default() -> Self {
+        Self {
+            bisection_iterations: 96,
+        }
+    }
+}
+
+impl StagingBudgetAnalysis for IdealStagingBudgetAnalysis {
+    fn analyze(&self, input: &StagingBudgetInput) -> Result<StagingBudgetReport, PhysicsError> {
+        input.validate()?;
+        match input.delta_v_budget_m_s {
+            Some(delta_v) => self.analyze_optimal(input, delta_v),
+            None => analyze_forward_staging(input),
+        }
+    }
+}
+
+impl IdealStagingBudgetAnalysis {
+    fn analyze_optimal(
+        &self,
+        input: &StagingBudgetInput,
+        required_delta_v_m_s: f64,
+    ) -> Result<StagingBudgetReport, PhysicsError> {
+        let max_delta_v: f64 = input
+            .stages
+            .iter()
+            .map(|stage| {
+                let c = crate::gravity::STANDARD_GRAVITY_M_S2 * stage.isp_s;
+                c * (1.0 / stage.structural_coefficient).ln()
+            })
+            .sum();
+        if required_delta_v_m_s >= max_delta_v {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "staging requested delta-v is infeasible for structural coefficients",
+            });
+        }
+        let min_mu = input
+            .stages
+            .iter()
+            .map(|stage| 1.0 / (crate::gravity::STANDARD_GRAVITY_M_S2 * stage.isp_s))
+            .fold(0.0_f64, f64::max);
+        let mut lo = min_mu * (1.0 + 1.0e-12);
+        if lo <= min_mu {
+            lo = min_mu + 1.0e-15;
+        }
+        let hi = 1.0_f64.max(2.0 * lo);
+        if staging_constraint(input, hi)? < required_delta_v_m_s {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "staging multiplier root was not bracketed",
+            });
+        }
+        let mut low = lo;
+        let mut high = hi;
+        for _ in 0..self.bisection_iterations {
+            let mid = 0.5 * (low + high);
+            if staging_constraint(input, mid)? < required_delta_v_m_s {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        let mu = 0.5 * (low + high);
+        let mut stage_reports = Vec::with_capacity(input.stages.len());
+        let mut above_mass_kg = input.payload_mass_kg;
+        let mut computed = Vec::with_capacity(input.stages.len());
+        for (stage_index, stage) in input.stages.iter().enumerate().rev() {
+            let c = crate::gravity::STANDARD_GRAVITY_M_S2 * stage.isp_s;
+            let mass_ratio = optimal_mass_ratio(c, stage.structural_coefficient, mu)?;
+            let payload_ratio =
+                (1.0 - mass_ratio * stage.structural_coefficient) / (mass_ratio - 1.0);
+            if !payload_ratio.is_finite() || payload_ratio <= 0.0 {
+                return Err(PhysicsError::OutOfEnvelope {
+                    reason: "staging optimal payload ratio is infeasible",
+                });
+            }
+            let stage_total = above_mass_kg / payload_ratio;
+            let structural_mass = stage.structural_coefficient * stage_total;
+            let propellant_mass = (1.0 - stage.structural_coefficient) * stage_total;
+            let delta_v = c * mass_ratio.ln();
+            computed.push(StagingStageReport {
+                stage_index,
+                isp_s: stage.isp_s,
+                effective_exhaust_velocity_m_s: c,
+                structural_coefficient: stage.structural_coefficient,
+                payload_ratio,
+                mass_ratio,
+                delta_v_m_s: delta_v,
+                structural_mass_kg: structural_mass,
+                propellant_mass_kg: propellant_mass,
+                mass_above_kg: above_mass_kg,
+            });
+            above_mass_kg += stage_total;
+        }
+        computed.reverse();
+        stage_reports.extend(computed);
+        finish_staging_report(
+            StagingBudgetMode::Optimal,
+            stage_reports,
+            input.payload_mass_kg,
+        )
+    }
+}
+
+fn analyze_forward_staging(
+    input: &StagingBudgetInput,
+) -> Result<StagingBudgetReport, PhysicsError> {
+    let mut mass_above_by_stage = vec![input.payload_mass_kg; input.stages.len()];
+    let mut running_above = input.payload_mass_kg;
+    for (index, stage) in input.stages.iter().enumerate().rev() {
+        mass_above_by_stage[index] = running_above;
+        let (structural, propellant) = stage.require_masses()?;
+        running_above += structural + propellant;
+    }
+    let mut reports = Vec::with_capacity(input.stages.len());
+    for (index, stage) in input.stages.iter().enumerate() {
+        let (structural, propellant) = stage.require_masses()?;
+        let stage_total = structural + propellant;
+        let payload_ratio = mass_above_by_stage[index] / stage_total;
+        let mass_ratio = (1.0 + payload_ratio) / (stage.structural_coefficient + payload_ratio);
+        if !mass_ratio.is_finite() || mass_ratio <= 1.0 {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "staging forward mass ratio must be greater than 1",
+            });
+        }
+        let c = crate::gravity::STANDARD_GRAVITY_M_S2 * stage.isp_s;
+        reports.push(StagingStageReport {
+            stage_index: index,
+            isp_s: stage.isp_s,
+            effective_exhaust_velocity_m_s: c,
+            structural_coefficient: stage.structural_coefficient,
+            payload_ratio,
+            mass_ratio,
+            delta_v_m_s: c * mass_ratio.ln(),
+            structural_mass_kg: structural,
+            propellant_mass_kg: propellant,
+            mass_above_kg: mass_above_by_stage[index],
+        });
+    }
+    finish_staging_report(StagingBudgetMode::Budget, reports, input.payload_mass_kg)
+}
+
+fn finish_staging_report(
+    mode: StagingBudgetMode,
+    stages: Vec<StagingStageReport>,
+    payload_mass_kg: f64,
+) -> Result<StagingBudgetReport, PhysicsError> {
+    let total_delta_v_m_s = stages.iter().map(|stage| stage.delta_v_m_s).sum();
+    let stage_mass_sum: f64 = stages
+        .iter()
+        .map(|stage| stage.structural_mass_kg + stage.propellant_mass_kg)
+        .sum();
+    let gross_liftoff_mass_kg = payload_mass_kg + stage_mass_sum;
+    let payload_fraction = payload_mass_kg / gross_liftoff_mass_kg;
+    for value in [total_delta_v_m_s, gross_liftoff_mass_kg, payload_fraction] {
+        if !value.is_finite() {
+            return Err(PhysicsError::NonFinite {
+                reason: "staging report contains a non-finite value",
+            });
+        }
+    }
+    Ok(StagingBudgetReport {
+        mode,
+        stages,
+        total_delta_v_m_s,
+        payload_mass_kg,
+        gross_liftoff_mass_kg,
+        payload_fraction,
+        ideal_loss_free: true,
+    })
+}
+
+fn staging_constraint(input: &StagingBudgetInput, mu: f64) -> Result<f64, PhysicsError> {
+    let mut sum = 0.0;
+    for stage in &input.stages {
+        let c = crate::gravity::STANDARD_GRAVITY_M_S2 * stage.isp_s;
+        let n = optimal_mass_ratio(c, stage.structural_coefficient, mu)?;
+        sum += c * n.ln();
+    }
+    if !sum.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "staging multiplier constraint is non-finite",
+        });
+    }
+    Ok(sum)
+}
+
+fn optimal_mass_ratio(c: f64, epsilon: f64, mu: f64) -> Result<f64, PhysicsError> {
+    let n = (c * mu - 1.0) / (c * epsilon * mu);
+    if !n.is_finite() || n <= 1.0 {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "staging optimal mass ratio is outside feasible envelope",
+        });
+    }
+    Ok(n)
+}
+
 /// Entry-corridor limits steering a lifting entry: the bank-angle
 /// reference is driven by these limits, never by a location. See
 /// `docs/descent-and-entry-profiles.md`.
@@ -1548,32 +1960,43 @@ where
             reason: "footprint Monte Carlo produced no successful samples",
         });
     }
-    let stats = footprint_sample_statistics(&samples, &input.confidence_levels)?;
+    let stats = footprint_sample_statistics(&nominal, &samples, &input.confidence_levels)?;
     Ok(FootprintMonteCarloResult {
         nominal,
         samples,
         failures,
         mean_downrange_m: stats.mean_downrange_m,
         mean_crossrange_m: stats.mean_crossrange_m,
+        cep50_m: stats.cep50_m,
+        mean_offset_downrange_from_nominal_m: stats.mean_offset_downrange_from_nominal_m,
+        mean_offset_crossrange_from_nominal_m: stats.mean_offset_crossrange_from_nominal_m,
+        mean_miss_distance_from_nominal_m: stats.mean_miss_distance_from_nominal_m,
         covariance_downrange_downrange_m2: stats.covariance_downrange_downrange_m2,
         covariance_downrange_crossrange_m2: stats.covariance_downrange_crossrange_m2,
         covariance_crossrange_crossrange_m2: stats.covariance_crossrange_crossrange_m2,
         dispersion_ellipse: stats.dispersion_ellipse,
         quantiles: stats.quantiles,
+        nominal_radial_error_quantiles: stats.nominal_radial_error_quantiles,
     })
 }
 
 struct FootprintSampleStatistics {
     mean_downrange_m: f64,
     mean_crossrange_m: f64,
+    cep50_m: f64,
+    mean_offset_downrange_from_nominal_m: f64,
+    mean_offset_crossrange_from_nominal_m: f64,
+    mean_miss_distance_from_nominal_m: f64,
     covariance_downrange_downrange_m2: f64,
     covariance_downrange_crossrange_m2: f64,
     covariance_crossrange_crossrange_m2: f64,
     dispersion_ellipse: FootprintDispersionEllipse,
     quantiles: Vec<FootprintQuantile>,
+    nominal_radial_error_quantiles: Vec<FootprintQuantile>,
 }
 
 fn footprint_sample_statistics(
+    nominal: &LandingFootprint,
     samples: &[FootprintSample],
     confidence_levels: &[f64],
 ) -> Result<FootprintSampleStatistics, PhysicsError> {
@@ -1587,17 +2010,33 @@ fn footprint_sample_statistics(
     }
     let mean_downrange_m = sum_downrange_m * inv_n;
     let mean_crossrange_m = sum_crossrange_m * inv_n;
+    let mean_offset_downrange_from_nominal_m = mean_downrange_m - nominal.downrange_m;
+    let mean_offset_crossrange_from_nominal_m = mean_crossrange_m - nominal.crossrange_m;
+    let mean_miss_distance_from_nominal_m = radial_norm_m(
+        mean_offset_downrange_from_nominal_m,
+        mean_offset_crossrange_from_nominal_m,
+    );
+    if !mean_miss_distance_from_nominal_m.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "footprint Monte Carlo nominal miss distance is non-finite",
+        });
+    }
     let mut c_dd = 0.0;
     let mut c_dc = 0.0;
     let mut c_cc = 0.0;
-    let mut distances = Vec::with_capacity(n);
+    let mut mean_distances = Vec::with_capacity(n);
+    let mut nominal_distances = Vec::with_capacity(n);
     for sample in samples {
         let d_downrange_m = sample.landing.downrange_m - mean_downrange_m;
         let d_crossrange_m = sample.landing.crossrange_m - mean_crossrange_m;
         c_dd += d_downrange_m * d_downrange_m;
         c_dc += d_downrange_m * d_crossrange_m;
         c_cc += d_crossrange_m * d_crossrange_m;
-        distances.push((d_downrange_m * d_downrange_m + d_crossrange_m * d_crossrange_m).sqrt());
+        mean_distances.push(radial_norm_m(d_downrange_m, d_crossrange_m));
+        nominal_distances.push(radial_norm_m(
+            sample.landing.downrange_m - nominal.downrange_m,
+            sample.landing.crossrange_m - nominal.crossrange_m,
+        ));
     }
     let denom = if n > 1 { (n - 1) as f64 } else { 1.0 };
     c_dd /= denom;
@@ -1608,28 +2047,49 @@ fn footprint_sample_statistics(
             reason: "footprint Monte Carlo covariance is non-finite",
         });
     }
-    distances.sort_by(f64::total_cmp);
-    let quantiles = confidence_levels
-        .iter()
-        .copied()
-        .map(|confidence_level| {
-            let rank = (confidence_level * n as f64).ceil();
-            let index = ((rank as usize).saturating_sub(1)).min(n - 1);
-            FootprintQuantile {
-                confidence_level,
-                radial_distance_m: distances[index],
-            }
-        })
-        .collect();
+    mean_distances.sort_by(f64::total_cmp);
+    nominal_distances.sort_by(f64::total_cmp);
+    let cep50_m = radial_quantile_m(&mean_distances, 0.5);
+    let quantiles = radial_quantiles(&mean_distances, confidence_levels);
+    let nominal_radial_error_quantiles = radial_quantiles(&nominal_distances, confidence_levels);
     Ok(FootprintSampleStatistics {
         mean_downrange_m,
         mean_crossrange_m,
+        cep50_m,
+        mean_offset_downrange_from_nominal_m,
+        mean_offset_crossrange_from_nominal_m,
+        mean_miss_distance_from_nominal_m,
         covariance_downrange_downrange_m2: c_dd,
         covariance_downrange_crossrange_m2: c_dc,
         covariance_crossrange_crossrange_m2: c_cc,
         dispersion_ellipse: covariance_dispersion_ellipse(c_dd, c_dc, c_cc)?,
         quantiles,
+        nominal_radial_error_quantiles,
     })
+}
+
+fn radial_norm_m(downrange_m: f64, crossrange_m: f64) -> f64 {
+    (downrange_m * downrange_m + crossrange_m * crossrange_m).sqrt()
+}
+
+fn radial_quantiles(
+    sorted_distances_m: &[f64],
+    confidence_levels: &[f64],
+) -> Vec<FootprintQuantile> {
+    confidence_levels
+        .iter()
+        .copied()
+        .map(|confidence_level| FootprintQuantile {
+            confidence_level,
+            radial_distance_m: radial_quantile_m(sorted_distances_m, confidence_level),
+        })
+        .collect()
+}
+
+fn radial_quantile_m(sorted_distances_m: &[f64], confidence_level: f64) -> f64 {
+    let rank = (confidence_level * sorted_distances_m.len() as f64).ceil();
+    let index = ((rank as usize).saturating_sub(1)).min(sorted_distances_m.len() - 1);
+    sorted_distances_m[index]
 }
 
 fn covariance_dispersion_ellipse(
@@ -2288,9 +2748,10 @@ mod tests {
         ConstantGravityRangeSafetyFootprint, EntryCorridor, EntryCorridorReference, EntryState,
         FootprintDispersionInput, FootprintEnvironment, FootprintGeodeticOrigin,
         FootprintMonteCarloInput, FootprintSampleInput, GravityTurnAscentReference,
-        MomentumConservingStageSeparation, NumericalGravityRangeSafetyFootprint,
-        PitchProgramAscentReference, RangeSafetyFootprint,
-        STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageSeparationModel,
+        IdealStagingBudgetAnalysis, MomentumConservingStageSeparation,
+        NumericalGravityRangeSafetyFootprint, PitchProgramAscentReference, RangeSafetyFootprint,
+        STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageMassProperties, StageSeparationModel,
+        StagingBudgetAnalysis, StagingBudgetInput, StagingBudgetMode,
         constant_gravity_footprint_monte_carlo,
     };
     use crate::{
@@ -2585,6 +3046,11 @@ mod tests {
         }
         assert!(result.dispersion_ellipse.one_sigma_semi_major_m < 1.0e-12);
         assert!(result.dispersion_ellipse.one_sigma_semi_minor_m < 1.0e-12);
+        assert!(result.cep50_m < 1.0e-12);
+        assert!(result.mean_miss_distance_from_nominal_m < 1.0e-12);
+        for quantile in &result.nominal_radial_error_quantiles {
+            assert!(quantile.radial_distance_m < 1.0e-12);
+        }
     }
 
     #[test]
@@ -2626,6 +3092,11 @@ mod tests {
         assert!(result.dispersion_ellipse.one_sigma_semi_major_m > 0.1);
         assert!(result.covariance_downrange_downrange_m2 > 0.0);
         assert!(result.quantiles[1].radial_distance_m >= result.quantiles[0].radial_distance_m);
+        assert!(result.cep50_m > 0.0);
+        assert!(
+            result.nominal_radial_error_quantiles[1].radial_distance_m
+                >= result.nominal_radial_error_quantiles[0].radial_distance_m
+        );
     }
 
     #[test]
@@ -2681,6 +3152,8 @@ mod tests {
         assert!(
             (result.dispersion_ellipse.orientation_rad - 0.288_884_977_197_166_16).abs() < 1.0e-12
         );
+        assert!((result.cep50_m - result.quantiles[0].radial_distance_m).abs() < 1.0e-12);
+        assert!(result.mean_miss_distance_from_nominal_m > 0.0);
     }
 
     fn nominal_entry_corridor() -> EntryCorridor {
@@ -2817,5 +3290,87 @@ mod tests {
         let model =
             MomentumConservingStageSeparation::new([0.0, 0.0, 1.0], [0.0, 0.0, -1.0], 1.0).unwrap();
         model.separate(2.0, 1.0).unwrap();
+    }
+
+    #[test]
+    fn staging_optimal_equal_stages_split_equal_delta_v() {
+        let input = StagingBudgetInput {
+            stages: vec![
+                StageMassProperties {
+                    isp_s: 300.0,
+                    structural_coefficient: 0.1,
+                    structural_mass_kg: None,
+                    propellant_mass_kg: None,
+                },
+                StageMassProperties {
+                    isp_s: 300.0,
+                    structural_coefficient: 0.1,
+                    structural_mass_kg: None,
+                    propellant_mass_kg: None,
+                },
+            ],
+            payload_mass_kg: 100.0,
+            delta_v_budget_m_s: Some(6000.0),
+        };
+        let report = IdealStagingBudgetAnalysis::default()
+            .analyze(&input)
+            .unwrap();
+        assert_eq!(report.mode, StagingBudgetMode::Optimal);
+        assert!((report.total_delta_v_m_s - 6000.0).abs() < 1.0e-9);
+        assert!((report.stages[0].delta_v_m_s - 3000.0).abs() < 1.0e-8);
+        assert!((report.stages[1].delta_v_m_s - 3000.0).abs() < 1.0e-8);
+        let c = crate::gravity::STANDARD_GRAVITY_M_S2 * 300.0;
+        let expected_n = (3000.0_f64 / c).exp();
+        assert!((report.stages[0].mass_ratio - expected_n).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn staging_forward_budget_matches_tsiolkovsky_sum() {
+        let input = StagingBudgetInput {
+            stages: vec![
+                StageMassProperties {
+                    isp_s: 280.0,
+                    structural_coefficient: 0.1,
+                    structural_mass_kg: Some(100.0),
+                    propellant_mass_kg: Some(900.0),
+                },
+                StageMassProperties {
+                    isp_s: 320.0,
+                    structural_coefficient: 0.2,
+                    structural_mass_kg: Some(20.0),
+                    propellant_mass_kg: Some(80.0),
+                },
+            ],
+            payload_mass_kg: 50.0,
+            delta_v_budget_m_s: None,
+        };
+        let report = IdealStagingBudgetAnalysis::default()
+            .analyze(&input)
+            .unwrap();
+        let recomputed: f64 = report
+            .stages
+            .iter()
+            .map(|stage| stage.effective_exhaust_velocity_m_s * stage.mass_ratio.ln())
+            .sum();
+        assert!((report.total_delta_v_m_s - recomputed).abs() < 1.0e-12);
+        assert_eq!(report.mode, StagingBudgetMode::Budget);
+    }
+
+    #[test]
+    fn staging_optimal_rejects_infeasible_delta_v() {
+        let input = StagingBudgetInput {
+            stages: vec![StageMassProperties {
+                isp_s: 250.0,
+                structural_coefficient: 0.2,
+                structural_mass_kg: None,
+                propellant_mass_kg: None,
+            }],
+            payload_mass_kg: 10.0,
+            delta_v_budget_m_s: Some(100_000.0),
+        };
+        assert!(matches!(
+            IdealStagingBudgetAnalysis::default().analyze(&input),
+            Err(PhysicsError::OutOfEnvelope { .. })
+        ));
     }
 }

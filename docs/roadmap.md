@@ -61,6 +61,12 @@ not as validated fidelity.
   neutral-composition helper for the dissociation-enthalpy term.
 - **Uncertainty reporting** — per-model uncertainty contributions,
   root-sum-square aggregation, and credibility-report rendering.
+- **Propulsion analysis models** — solid-grain regression for
+  end-burner/BATES/tabulated burn-area inputs, liquid-engine throttle slew /
+  deep-throttle / Isp derate, vehicle-side engine-to-tank propellant budgets
+  with regulated or blowdown feed, and offline ideal staging ΔV / mass-optimal
+  analysis. These are forward, vehicle-intrinsic models with synthetic /
+  textbook parameters only.
 
 ## Deferred
 
@@ -75,6 +81,17 @@ scope conversation does not need to be re-derived.
 - Coupled-body effects and post-run spent-body footprint reporting after stage
   separation. The fixed-step RK4 independent-body split is implemented; see
   [`staging-and-separation.md`](staging-and-separation.md).
+
+**Propulsion**
+
+- Higher-fidelity solid internal ballistics effects: erosive burning,
+  ignition/tail-off transients, throat erosion, two-phase flow, temperature
+  sensitivity, and thermochemistry / CEA-class `c*` solving.
+- Higher-fidelity liquid feed dynamics: turbopumps, combustion stability,
+  regulator depletion, injector pressure-drop dynamics, and engine/tank
+  thermal coupling.
+- Loss-inclusive staging budgets with gravity/drag/steering losses. The
+  shipped staging analysis is ideal, loss-free, vehicle-intrinsic, and offline.
 
 **Flight profiles**
 

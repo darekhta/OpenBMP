@@ -48,7 +48,7 @@ use openbmp_scenario::{
 use openbmp_sim::TankSnapshot;
 use openbmp_vehicle::{
     BaffleModel, BaffledPendulum, EquivalentPendulum, EquivalentSpringMass, MovingMassModel,
-    PropellantSpec, RigidLiquid, Tank, TankGeometry,
+    PropellantSpec, PropellantTankState, RigidLiquid, Tank, TankGeometry,
 };
 
 use crate::error::RunnerError;
@@ -61,6 +61,9 @@ pub struct TankRack {
     /// Per-tank scenario-declared drain rates (kg/s). Drain is
     /// decoupled from engines.
     drain_rates_kg_per_s: BTreeMap<TankId, f64>,
+    /// Per-tank engine-coupled drain rates (kg/s) produced by the
+    /// propellant budget from the prior engine snapshot.
+    propellant_budget_drain_rates_kg_per_s: BTreeMap<TankId, f64>,
     /// Cached `(accel_body_m_s2, omega_body_rad_s)` from the prior
     /// kernel step. Initialised to zeros at construction.
     last_drivers: (Vector3<f64>, Vector3<f64>),
@@ -72,6 +75,10 @@ impl std::fmt::Debug for TankRack {
             .field("tank_count", &self.tanks.len())
             .field("dt", &self.dt)
             .field("drain_rates_kg_per_s", &self.drain_rates_kg_per_s)
+            .field(
+                "propellant_budget_drain_rates_kg_per_s",
+                &self.propellant_budget_drain_rates_kg_per_s,
+            )
             .field("last_drivers", &self.last_drivers)
             .finish()
     }
@@ -107,6 +114,7 @@ impl TankRack {
             tanks,
             dt,
             drain_rates_kg_per_s: drain_rates,
+            propellant_budget_drain_rates_kg_per_s: BTreeMap::new(),
             last_drivers: (Vector3::zeros(), Vector3::zeros()),
         })
     }
@@ -144,6 +152,39 @@ impl TankRack {
         self.last_drivers = (accel_body_m_s2, omega_body_rad_s);
     }
 
+    /// Replace engine-coupled drain rates for the next
+    /// [`Self::step`]. Scenario-declared drain remains additive.
+    pub fn set_propellant_budget_drain_rates(&mut self, rates: BTreeMap<TankId, f64>) {
+        self.propellant_budget_drain_rates_kg_per_s = rates;
+    }
+
+    /// Live tank states consumed by the vehicle-side propellant
+    /// budget.
+    #[must_use]
+    pub fn propellant_tank_states(
+        &self,
+        document: &ScenarioDocument,
+    ) -> BTreeMap<TankId, PropellantTankState> {
+        let mut out = BTreeMap::new();
+        for config in &document.vehicle.assembly.tanks {
+            let id = TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = config.id));
+            if let Some(tank) = self.tanks.get(&id) {
+                out.insert(
+                    id,
+                    PropellantTankState {
+                        fluid_remaining_kg: tank.fluid_remaining_kg(),
+                        initial_fluid_mass_kg: tank.initial_fluid_mass_kg(),
+                        volume_m3: tank.geometry().volume_m3(),
+                        density_kg_m3: tank.propellant().density_kg_m3,
+                        has_ullage: config.ullage.is_some(),
+                        ullage_gamma: config.ullage.map_or(1.4, |ullage| ullage.gas_gamma),
+                    },
+                );
+            }
+        }
+        out
+    }
+
     /// Drain every tank by its scenario-declared rate, then advance
     /// every tank's slosh state using the cached `(accel, omega)`
     /// from the prior step (one-step lag).
@@ -155,7 +196,12 @@ impl TankRack {
     pub fn step(&mut self) -> Result<(), RunnerError> {
         let (accel, omega) = self.last_drivers;
         for (id, tank) in &mut self.tanks {
-            let rate = self.drain_rates_kg_per_s.get(id).copied().unwrap_or(0.0);
+            let rate = self.drain_rates_kg_per_s.get(id).copied().unwrap_or(0.0)
+                + self
+                    .propellant_budget_drain_rates_kg_per_s
+                    .get(id)
+                    .copied()
+                    .unwrap_or(0.0);
             tank.drain(rate).map_err(|err| RunnerError::Tank {
                 field: format!("vehicle.assembly.tanks.{id_v}", id_v = id.value()),
                 reason: err.to_string(),

@@ -52,6 +52,7 @@ pub mod adapters;
 pub mod assembly;
 pub mod effector;
 pub mod error;
+pub mod propellant_budget;
 pub mod recovery;
 pub mod tank;
 pub mod vehicle;
@@ -70,6 +71,10 @@ pub use effector::{
     ControlEffector, EffectorError, EffectorFault, EffectorLimits, EffectorState, LinearActuator,
 };
 pub use error::VehicleError;
+pub use propellant_budget::{
+    EnginePropellantBinding, EnginePropellantUtilization, FeedMode, PropellantBudget,
+    PropellantBudgetError, PropellantBudgetReport, PropellantTankState,
+};
 pub use recovery::{
     DragDevice, DrogueMainRecovery, ParachuteDrag, RecoveryCommand, RecoveryError, RecoveryModel,
     RecoveryPhase,

@@ -245,6 +245,9 @@ scenario must be migrated to the academic replacement before it parses.
 | `target` (as guidance reference state) | `waypoint`, `reference_trajectory` | Operational. Use waypoints in inertial space, never real-world locations. |
 | `seeker_active`, `seeker_lock` | (no replacement; rejected) | Operational; OpenBMP does not ship target-seeking guidance. |
 | `interceptor`, `intercept` | (no replacement; rejected) | Operational; categorically out of scope. |
+| `max_range`, `range_max`, `target_range` | `delta_v_budget_m_s`, `staging_analysis` | Range-to-target optimization vocabulary; staging analysis is limited to vehicle-intrinsic ideal ΔV / mass budget. |
+| `throw_weight` | `payload_mass_kg` | Operational payload-at-range terminology; OpenBMP uses payload mass at a declared ideal ΔV. |
+| `impact_energy` | (no replacement; rejected) | Terminal-effect terminology; unrelated to forward propulsion analysis. |
 | `threat`, `threat_track` | (no replacement; rejected) | Operational. |
 | `kill`, `kill_chain` | (no replacement; rejected) | Operational. |
 

@@ -89,6 +89,10 @@ pub use kinematics::{
 pub use magnetic::{
     EARTH_DIPOLE_EQUATORIAL_FIELD_NT, EarthDipoleField, MagneticFieldEci, MagneticModel, Wmm2025,
 };
+pub use profile::{
+    IdealStagingBudgetAnalysis, StageMassProperties, StagingBudgetAnalysis, StagingBudgetInput,
+    StagingBudgetMode, StagingBudgetReport, StagingStageReport,
+};
 pub use realgas::{
     AirComposition, ArrheniusForwardCoefficient, EquilibriumAir, EquilibriumAirState, FlowContext,
     MillikanWhitePairCoefficient, MugalevEquilibriumAir, NonequilibriumAir,

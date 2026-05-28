@@ -48,6 +48,13 @@ const FORBIDDEN_SAFETY_TERMS: &[ForbiddenTerm] = &[
     ForbiddenTerm::new("intercept", "intercept"),
     ForbiddenTerm::new("reentryvehicle", "reentry-vehicle"),
     ForbiddenTerm::new("circularerror", "circular-error"),
+    // Propulsion/staging guardrails: vehicle-intrinsic staging
+    // analysis is accepted, range/target optimization vocabulary is not.
+    ForbiddenTerm::new("maxrange", "max-range"),
+    ForbiddenTerm::new("rangemax", "range-max"),
+    ForbiddenTerm::new("targetrange", "target-range"),
+    ForbiddenTerm::new("throwweight", "throw-weight"),
+    ForbiddenTerm::new("impactenergy", "impact-energy"),
 ];
 
 struct ForbiddenTerm {
@@ -75,6 +82,7 @@ const UNIT_SUFFIXES: &[&str] = &[
     "_kg_m3",
     "_kg_m2",
     "_kg_per_s",
+    "_per_s",
     "_kg",
     "_w_m2",
     "_m3",
@@ -335,7 +343,15 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     // by convention; `at_throttle` is the same scalar; `factor` is a
     // dimensionless multiplier on thrust.
     if path.starts_with("$.vehicle.assembly.engines")
-        && matches!(key, "throttle_unit" | "at_throttle" | "factor")
+        && matches!(
+            key,
+            "throttle_unit"
+                | "at_throttle"
+                | "factor"
+                | "min_throttle_unit"
+                | "isp_throttle_falloff"
+                | "oxidizer_fuel_ratio"
+        )
     {
         return true;
     }
@@ -350,8 +366,22 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
                 | "damping_ratio_zeta"
                 | "base_damping_ratio_zeta"
                 | "damping_increment_zeta"
+                | "gas_gamma"
         )
     {
+        return true;
+    }
+
+    if path.starts_with("$.propulsion.motor.grain")
+        && matches!(
+            key,
+            "segments" | "expansion_ratio" | "burn_rate_a" | "burn_rate_n" | "gamma" | "web_steps"
+        )
+    {
+        return true;
+    }
+
+    if path.starts_with("$.staging_analysis") && matches!(key, "structural_coefficient") {
         return true;
     }
 

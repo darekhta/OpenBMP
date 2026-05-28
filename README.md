@@ -45,6 +45,10 @@ HAL** — but no HAL, device driver, or bus protocol ships in this repository.
   zonal-harmonic gravity; WMM 2025 magnetics; tabulated and hypersonic
   aerodynamic methods; stagnation heating, boundary-layer state, and a
   generic ablation toy for re-entry studies.
+- **Forward propulsion analysis.** Solid-grain regression for textbook
+  end-burner/BATES/tabulated grains, liquid-engine throttle and tank-budget
+  coupling, and offline ideal staging ΔV / mass analysis. These models accept
+  vehicle-intrinsic inputs only and emit no range or targeting objective.
 - **High-order integration.** Fixed-step RK4 for byte-stable goldens, plus
   Dormand-Prince 5(4) and 8(5,3) fixed-step and adaptive variants behind an
   explicit solver profile.
