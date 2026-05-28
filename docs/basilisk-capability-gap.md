@@ -7,13 +7,16 @@ OpenBMP implementation slice.
 
 - **Third-body gravity.** Basilisk's gravity-body factory can create
   multiple celestial gravity bodies and assign the complete body list
-  to a spacecraft gravity field. The examples and utility docs show
-  Earth plus non-central bodies such as Sun and Moon, with point-mass
-  gravity or spherical harmonics on selected central bodies.
+  to a spacecraft gravity field. Current examples create body lists
+  containing Earth, Sun, Moon, Mars barycenter, and Jupiter barycenter,
+  with point-mass gravity from non-central bodies and spherical
+  harmonics on selected central bodies.
 - **SPICE / JPL ephemeris.** Basilisk's `gravBodyFactory` can create a
   SPICE interface that connects gravity-body data to planet-state
-  messages. Flyby examples load kernels and create bodies such as
-  Earth, Sun, Moon, Venus, and Mars barycenter.
+  messages. Current examples load JPL DE kernels such as `de430`,
+  leap-second kernels, planetary constants kernels, and spacecraft BSPs,
+  then compare Basilisk propagation against SPICE-generated states or
+  prescribe motion from custom SPICE files.
 - **Multiple spacecraft.** Basilisk's spacecraft module is a reusable
   6-DOF dynamic object, and the MultiSat examples instantiate multiple
   spacecraft in one simulation for formation and station-keeping
@@ -148,10 +151,10 @@ OpenBMP implementation slice.
   helpers. Text-kernel support is limited to NAIF LSK leap-second files
   and fixed TK frames referenced by meta-kernels; it does not yet
   implement dynamic frames or a full FK/PCK/CK frame-kernel chain.
-  Relativistic corrections beyond
-  Newtonian light time / stellar aberration are outside this scope; NAIF's own
-  aberration-correction documentation says those effects are not
-  performed by SPICE aberration routines either.
+  Relativistic corrections beyond Newtonian light time / stellar
+  aberration are outside this scope; NAIF's own aberration-correction
+  documentation says those effects are not performed by SPICE
+  aberration routines either.
 - The IERS path is intentionally compact: it does not yet implement a
   full SPICE frame chain or IAU 2006/2000A CIO-based transforms.
   Velocity transport now includes the finite-difference rate of the full
@@ -173,15 +176,19 @@ OpenBMP implementation slice.
   spacecraft object as a dynamic object with attached state and dynamic
   effectors and its own state-output messages:
   https://avslab.github.io/basilisk/Documentation/simulation/dynamics/spacecraft/spacecraft.html
-- Basilisk `scenarioBasicOrbit` documentation notes multi-body gravity
-  lists and SPICE-updated planet ephemerides:
-  https://hanspeterschaub.info/bskOlderDocs/bsk_1_4_2/_modules/scenarioBasicOrbit.html
-- Basilisk `simIncludeGravBody` utility documentation describes
-  `createMoon` and `createSpiceInterface`:
-  https://hanspeterschaub.info/bskOlderDocs/bsk_2_1_7/Documentation/utilities/simIncludeGravBody.html
-- Basilisk `scenarioFlybySpice` shows Earth/Sun/Moon body creation and
-  SPICE kernel loading:
-  https://hanspeterschaub.info/bskOlderDocs/bsk_2_1_7/_modules/scenarioFlybySpice.html
+- Basilisk 2.10 `scenarioOrbitMultiBody` documents a spacecraft in a
+  multi-gravity environment, SPICE-updated celestial object locations,
+  and comparison against SPICE generated trajectories:
+  https://avslab.github.io/basilisk/examples/scenarioOrbitMultiBody.html
+- Basilisk 2.9.1 `scenarioOrbitMultiBody` source creates Earth, Mars
+  barycenter, Sun, Moon, and Jupiter barycenter gravity bodies, enables
+  Earth spherical harmonics, builds a SPICE interface, and loads `de430`
+  plus other SPICE support kernels for comparison:
+  https://avslab.github.io/basilisk/_modules/scenarioOrbitMultiBody.html
+- Basilisk 2.9.1 `scenarioFlybySpice` shows custom SPICE/BSP kernel
+  loading and consuming SPICE translational output messages for flyby
+  motion:
+  https://avslab.github.io/basilisk/examples/scenarioFlybySpice.html
 - Basilisk MultiSat station-keeping documentation describes a
   three-spacecraft formation simulation:
   https://avslab.github.io/basilisk/examples/MultiSatBskSim/scenariosMultiSat/scenario_StationKeepingMultiSat.html
