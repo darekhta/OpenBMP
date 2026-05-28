@@ -198,7 +198,7 @@ pub fn run(
         integrator: runtime_integrator,
         force_model: kernel_vehicle,
         mass_model: rigid_models,
-        environment: RuntimeEnvironment::from_document(document)?,
+        environment: RuntimeEnvironment::from_document(document, &frame)?,
         stop_condition: AnyStop::new(
             automatic_ground_impact(document),
             EndTime::new(SimTime::from_seconds(document.time.stop_s)),
@@ -276,7 +276,8 @@ pub fn run(
         kernel.set_wind_sample(wind);
     }
     if let Some(driver) = &mut aerothermal_driver {
-        driver.evaluate_rigid_body(kernel.current_state(), 0.0)?;
+        let environment = kernel.current_environment_sample()?;
+        driver.evaluate_rigid_body(kernel.current_state(), &environment, 0.0)?;
     }
     let mut fc_bridge = crate::fc_bridge::FcBridge::maybe_new(scenario, resolved_files)?;
     record_step(
@@ -415,7 +416,8 @@ pub fn run(
         let script_fired = kernel.drain_script_fired_events();
         apply_jettison_events(&mut kernel, &script_fired, &separation_specs, &mass_model)?;
         if let Some(driver) = &mut aerothermal_driver {
-            driver.evaluate_rigid_body(kernel.current_state(), document.time.dt_s)?;
+            let environment = kernel.current_environment_sample()?;
+            driver.evaluate_rigid_body(kernel.current_state(), &environment, document.time.dt_s)?;
         }
         let snapshot = effector_rack.snapshot();
         record_step(

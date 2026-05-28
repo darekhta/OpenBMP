@@ -21,7 +21,7 @@ use openbmp_scenario::{
     AerothermalAblationConfig, AerothermalBackwallConfig, AerothermalConfig,
     AerothermalThermalToyConfig, ScenarioDocument,
 };
-use openbmp_sim::{ForceContext, ForceModel, ModelEvalError};
+use openbmp_sim::{EnvironmentSample, ForceContext, ForceModel, ModelEvalError};
 use openbmp_state::{PointMassState, RigidBodyState};
 
 use crate::atmosphere::{RuntimeAtmosphere, build_document_runtime_atmosphere};
@@ -289,11 +289,14 @@ impl LiveAerothermalDriver {
     pub fn evaluate_point_mass(
         &mut self,
         state: &PointMassState,
+        environment: &EnvironmentSample,
         dt_s: f64,
     ) -> Result<&LiveAerothermalOutput, RunnerError> {
         self.evaluate_common(
             state.position.vector.z,
-            state.velocity.vector.norm(),
+            environment
+                .air_relative_velocity_eci_m_s(state.velocity.vector)
+                .norm(),
             state.time,
             dt_s,
         )
@@ -308,11 +311,14 @@ impl LiveAerothermalDriver {
     pub fn evaluate_rigid_body(
         &mut self,
         state: &RigidBodyState,
+        environment: &EnvironmentSample,
         dt_s: f64,
     ) -> Result<&LiveAerothermalOutput, RunnerError> {
         self.evaluate_common(
             state.position.vector.z,
-            state.velocity.vector.norm(),
+            environment
+                .air_relative_velocity_eci_m_s(state.velocity.vector)
+                .norm(),
             state.time,
             dt_s,
         )

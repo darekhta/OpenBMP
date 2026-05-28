@@ -26,7 +26,7 @@
 //! guardrails this module is built under.
 
 use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
-use openbmp_core::{Eci, Position3, SimTime};
+use openbmp_core::{Ecef, Eci, Position3, SimTime, Velocity3};
 
 use crate::error::PhysicsError;
 use crate::frames::{
@@ -2157,13 +2157,14 @@ fn drag_wind_landing_footprint_constant(
         });
     }
     let wind = Vector3::new(wind_eci_m_s[0], wind_eci_m_s[1], wind_eci_m_s[2]);
+    let still_air = Vector3::zeros();
     let mut elapsed_s = 0.0;
     while elapsed_s < max_time_s {
         let dt_s = step_s.min(max_time_s - elapsed_s);
         let next = rk4_drag_wind_step(current, dt_s, |s| {
             let altitude_m = s.position_eci_m.z - env.cull_altitude_m;
             let gravity = Vector3::new(0.0, 0.0, -env.gravity_m_s2);
-            drag_wind_derivative(s, gravity, wind, drag, altitude_m)
+            drag_wind_derivative(s, gravity, wind, still_air, drag, altitude_m)
         })?;
         let next_altitude_above_cull_m = next.position_eci_m.z - env.cull_altitude_m;
         if next_altitude_above_cull_m <= 0.0 {
@@ -2248,6 +2249,7 @@ fn drag_wind_landing_footprint_numerical<G: GravityModel>(
         });
     }
     let wind = Vector3::new(wind_eci_m_s[0], wind_eci_m_s[1], wind_eci_m_s[2]);
+    let atmosphere_frame = numerical_footprint_atmosphere_frame(env)?;
     let mut elapsed_s = 0.0;
     while elapsed_s < max_time_s {
         let dt_s = step_s.min(max_time_s - elapsed_s);
@@ -2257,7 +2259,8 @@ fn drag_wind_landing_footprint_numerical<G: GravityModel>(
                 SimTime::from_seconds(s.time_s),
             )?;
             let altitude_m = altitude_above_numerical_cull_m(s.position_eci_m, 0.0)?;
-            drag_wind_derivative(s, gravity_acceleration, wind, drag, altitude_m)
+            let still_air = numerical_footprint_still_air_velocity_eci_m_s(&atmosphere_frame, s);
+            drag_wind_derivative(s, gravity_acceleration, wind, still_air, drag, altitude_m)
         })?;
         let next_altitude_above_cull_m =
             altitude_above_numerical_cull_m(next.position_eci_m, env.cull_altitude_m)?;
@@ -2342,6 +2345,7 @@ fn drag_wind_derivative(
     state: NumericalFootprintState,
     gravity_acceleration_eci_m_s2: Vector3<f64>,
     wind_eci_m_s: Vector3<f64>,
+    still_air_eci_m_s: Vector3<f64>,
     drag: FootprintDragModel,
     altitude_m: f64,
 ) -> Result<(Vector3<f64>, Vector3<f64>), PhysicsError> {
@@ -2351,7 +2355,7 @@ fn drag_wind_derivative(
         });
     }
     let density = drag.density_at_altitude_m(altitude_m)?;
-    let relative_velocity_m_s = state.velocity_eci_m_s - wind_eci_m_s;
+    let relative_velocity_m_s = state.velocity_eci_m_s - still_air_eci_m_s - wind_eci_m_s;
     let speed_m_s = relative_velocity_m_s.norm();
     let drag_acceleration_m_s2 = if speed_m_s <= f64::EPSILON
         || density <= f64::EPSILON
@@ -2369,6 +2373,35 @@ fn drag_wind_derivative(
         });
     }
     Ok((state.velocity_eci_m_s, acceleration))
+}
+
+fn numerical_footprint_atmosphere_frame(
+    env: &FootprintEnvironment,
+) -> Result<Option<FrameContext>, PhysicsError> {
+    let Some(origin) = env.geodetic_origin else {
+        return Ok(None);
+    };
+    let origin = LocalGeodeticOrigin::new_degrees(
+        origin.latitude_deg,
+        origin.longitude_deg,
+        origin.height_m,
+    )?;
+    Ok(Some(FrameContext::wgs84_uniform_rotation(Some(origin))))
+}
+
+fn numerical_footprint_still_air_velocity_eci_m_s(
+    frame: &Option<FrameContext>,
+    state: NumericalFootprintState,
+) -> Vector3<f64> {
+    let Some(frame) = frame else {
+        return Vector3::zeros();
+    };
+    let time = SimTime::from_seconds(state.time_s);
+    let position_eci = Position3::<Eci>::from_vector(state.position_eci_m);
+    let position_ecef = frame.eci_to_ecef_position(time, position_eci);
+    frame
+        .ecef_to_eci_velocity(time, Velocity3::<Ecef>::zero(), position_ecef)
+        .vector
 }
 
 fn numerical_landing_footprint_from_position(
@@ -2746,13 +2779,13 @@ mod tests {
     use super::{
         AscentReferenceGenerator, AscentState, BallisticState, BandLimitedEntryCorridorReference,
         ConstantGravityRangeSafetyFootprint, EntryCorridor, EntryCorridorReference, EntryState,
-        FootprintDispersionInput, FootprintEnvironment, FootprintGeodeticOrigin,
-        FootprintMonteCarloInput, FootprintSampleInput, GravityTurnAscentReference,
-        IdealStagingBudgetAnalysis, MomentumConservingStageSeparation,
-        NumericalGravityRangeSafetyFootprint, PitchProgramAscentReference, RangeSafetyFootprint,
-        STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageMassProperties, StageSeparationModel,
-        StagingBudgetAnalysis, StagingBudgetInput, StagingBudgetMode,
-        constant_gravity_footprint_monte_carlo,
+        FootprintDispersionInput, FootprintDragModel, FootprintEnvironment,
+        FootprintGeodeticOrigin, FootprintMonteCarloInput, FootprintSampleInput,
+        GravityTurnAscentReference, IdealStagingBudgetAnalysis, MomentumConservingStageSeparation,
+        NumericalFootprintState, NumericalGravityRangeSafetyFootprint, PitchProgramAscentReference,
+        RangeSafetyFootprint, STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageMassProperties,
+        StageSeparationModel, StagingBudgetAnalysis, StagingBudgetInput, StagingBudgetMode,
+        constant_gravity_footprint_monte_carlo, drag_wind_derivative,
     };
     use crate::{
         Egm2008ZonalGravity, J2Gravity, PhysicsError, WGS84_A_M, WGS84_J2, WGS84_MU_M3_S2,
@@ -2954,6 +2987,29 @@ mod tests {
         assert!(footprint.crossrange_m.abs() < 1.0e-6);
         assert!(footprint.latitude_deg.is_none());
         assert!(footprint.longitude_deg.is_none());
+    }
+
+    #[test]
+    fn drag_wind_derivative_subtracts_still_air_velocity() {
+        let state = NumericalFootprintState {
+            position_eci_m: Vector3::new(WGS84_A_M, 0.0, 0.0),
+            velocity_eci_m_s: Vector3::new(0.0, WGS84_OMEGA_RAD_S * WGS84_A_M, 0.0),
+            ballistic_coefficient_m2_kg: 0.5,
+            time_s: 0.0,
+        };
+        let (_, acceleration) = drag_wind_derivative(
+            state,
+            Vector3::zeros(),
+            Vector3::zeros(),
+            state.velocity_eci_m_s,
+            FootprintDragModel {
+                surface_density_kg_m3: 1.225,
+                density_scale_height_m: 7_000.0,
+            },
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(acceleration, Vector3::zeros());
     }
 
     #[test]

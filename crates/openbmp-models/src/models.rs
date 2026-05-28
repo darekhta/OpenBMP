@@ -412,14 +412,13 @@ pub struct EnvironmentQuery {
 
 /// One environment sample returned by an [`EnvironmentModel`].
 ///
-/// Carries a gravity field plus a NED wind
-/// vector populated by the runner-side `WindRack` before each
-/// `kernel.step()`. The default-zero wind keeps wind-free scenarios
-/// byte-stable: a runner that does not declare `[wind] kind != "none"`
-/// never calls `kernel.set_wind_sample`, so the kernel keeps the
-/// `EnvironmentSample::default()` zero vector and downstream
-/// consumers (such as axial drag, which still ignores wind)
-/// see no change.
+/// Carries a gravity field, atmospheric density, the inertial
+/// velocity of the local still atmosphere, and a wind vector populated
+/// by the runner-side `WindRack` before each `kernel.step()`. The
+/// default-zero velocities keep legacy toy / vacuum scenarios stable:
+/// callers that do not provide rotating-atmosphere or wind data retain
+/// the historical `vehicle velocity == air-relative velocity`
+/// semantics.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct EnvironmentSample {
     /// Local gravitational acceleration in `Eci`, m/s².
@@ -427,11 +426,42 @@ pub struct EnvironmentSample {
     /// Local atmospheric mass density, kg/m³. Defaults to zero so
     /// environments without an atmosphere preserve vacuum semantics.
     pub atmosphere_density_kg_m3: f64,
+    /// Inertial ECI velocity of a still atmosphere parcel at the
+    /// query point, m/s. WGS84/IERS runner environments populate this
+    /// from the ECEF↔ECI state transform; toy fixed-Earth and null
+    /// environments leave it at zero.
+    pub atmosphere_velocity_eci_m_s: Vector3<f64>,
     /// NED wind vector at the kernel's current step,
     /// `(north, east, down)`, m/s. Defaults to zero — the runner
     /// pushes a non-zero value via `kernel.set_wind_sample` only for
     /// scenarios that declare a non-`none` `[wind]` kind.
     pub wind_ned_m_s: Vector3<f64>,
+    /// Same wind sample expressed as an ECI vector, m/s. This is the
+    /// value force and heating models subtract from vehicle velocity
+    /// after subtracting [`Self::atmosphere_velocity_eci_m_s`].
+    pub wind_eci_m_s: Vector3<f64>,
+    /// Linear map from `(north, east, down)` wind components to ECI at
+    /// this sample. The kernel uses it when splicing the per-step NED
+    /// wind override into a sampled environment.
+    pub wind_ned_to_eci: Matrix3<f64>,
+}
+
+impl EnvironmentSample {
+    /// Replace the NED wind sample and refresh its ECI representation.
+    pub fn set_wind_ned_m_s(&mut self, wind_ned_m_s: Vector3<f64>) {
+        self.wind_ned_m_s = wind_ned_m_s;
+        self.wind_eci_m_s = self.wind_ned_to_eci * wind_ned_m_s;
+    }
+
+    /// Vehicle velocity relative to the local moving atmosphere, in
+    /// ECI components.
+    #[must_use]
+    pub fn air_relative_velocity_eci_m_s(
+        &self,
+        vehicle_velocity_eci_m_s: Vector3<f64>,
+    ) -> Vector3<f64> {
+        vehicle_velocity_eci_m_s - self.atmosphere_velocity_eci_m_s - self.wind_eci_m_s
+    }
 }
 
 /// Trait implemented by environment-providing models.

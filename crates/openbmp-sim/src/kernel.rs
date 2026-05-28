@@ -294,8 +294,8 @@ where
     tank_snapshot: std::collections::BTreeMap<openbmp_core::TankId, TankSnapshot>,
     /// Optional kernel-owned NED wind sample pushed by the
     /// runner-side `WindRack`. When `Some`, the kernel splices it
-    /// into the `EnvironmentSample.wind_ned_m_s` field at every RK4
-    /// stage so all four stages see the same wind. When `None` (no
+    /// into the `EnvironmentSample` wind fields at every RK4 stage so
+    /// all four stages see the same wind. When `None` (no
     /// `[wind]` block, or `kind = "none"`), the environment sample's
     /// default-zero wind flows through, preserving the wind-free byte
     /// output.
@@ -477,7 +477,7 @@ where
                 position_eci: s.position,
             })?;
             if let Some(wind) = wind_override {
-                env.wind_ned_m_s = wind;
+                env.set_wind_ned_m_s(wind);
             }
             let mass_kg = s.mass.get::<kilogram>();
             let force_n_eci = force_model.force_n_eci(ForceContext {
@@ -667,7 +667,7 @@ where
             position_eci: self.state.position,
         })?;
         if let Some(wind) = self.wind_sample_override {
-            env.wind_ned_m_s = wind;
+            env.set_wind_ned_m_s(wind);
         }
         Ok(env)
     }
@@ -1368,7 +1368,7 @@ where
                 position_eci: s.position,
             })?;
             if let Some(wind) = wind_override {
-                env.wind_ned_m_s = wind;
+                env.set_wind_ned_m_s(wind);
             }
             let mass_kg = s.mass_props.mass.get::<kilogram>();
             let force_n_eci = force_model.force_n_eci(ForceContext {
@@ -1460,7 +1460,7 @@ where
                     position_eci: s.position,
                 })?;
                 if let Some(wind) = wind_override {
-                    env.wind_ned_m_s = wind;
+                    env.set_wind_ned_m_s(wind);
                 }
                 let mass_kg = s.mass_props.mass.get::<kilogram>();
                 let force_n_eci = force_model.force_n_eci(ForceContext {
@@ -2053,7 +2053,7 @@ where
             position_eci: self.state.position,
         })?;
         if let Some(wind) = self.wind_sample_override {
-            env.wind_ned_m_s = wind;
+            env.set_wind_ned_m_s(wind);
         }
         Ok(env)
     }

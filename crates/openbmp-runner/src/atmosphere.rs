@@ -14,10 +14,12 @@
 
 use std::borrow::Cow;
 
-use openbmp_core::{ModelId, SimTime};
+use nalgebra::{Matrix3, Vector3};
+use openbmp_core::{Ecef, ModelId, Ned, SimTime, Velocity3};
 use openbmp_physics::{
-    AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, Nrlmsis2Compat, Nrlmsise00Full,
-    Nrlmsise00Inputs, PhysicsError, PiecewiseExponentialAtmosphere, UsStandard1976,
+    AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, FrameContext, FrameProfile,
+    Nrlmsis2Compat, Nrlmsise00Full, Nrlmsise00Inputs, PhysicsError, PiecewiseExponentialAtmosphere,
+    UsStandard1976,
 };
 use openbmp_scenario::{AtmosphereConfig, ScenarioDocument};
 use openbmp_sim::{EnvironmentModel, EnvironmentQuery, EnvironmentSample, ModelEvalError};
@@ -47,9 +49,10 @@ pub enum RuntimeAtmosphere {
 /// exposes the same scenario atmosphere density through
 /// [`EnvironmentSample`] so kernel-owned mission triggers can compute
 /// dynamic pressure without reaching into force-model internals.
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct RuntimeEnvironment {
     atmosphere: Option<RuntimeAtmosphere>,
+    frame: FrameContext,
 }
 
 impl RuntimeEnvironment {
@@ -62,20 +65,28 @@ impl RuntimeEnvironment {
     ///
     /// Returns [`RunnerError`] when the selected runner atmosphere is
     /// supported but model-specific construction fails.
-    pub fn from_document(document: &ScenarioDocument) -> Result<Self, RunnerError> {
+    pub fn from_document(
+        document: &ScenarioDocument,
+        frame: &FrameContext,
+    ) -> Result<Self, RunnerError> {
+        validate_wind_frame(document, frame)?;
         let atmosphere_kind = scenario_atmosphere_kind(document);
         let atmosphere = if is_runtime_atmosphere_kind(atmosphere_kind) {
             Some(build_document_runtime_atmosphere(document)?)
         } else {
             None
         };
-        Ok(Self { atmosphere })
+        Ok(Self {
+            atmosphere,
+            frame: frame.clone(),
+        })
     }
 }
 
 impl EnvironmentModel for RuntimeEnvironment {
     fn sample(&self, query: EnvironmentQuery) -> Result<EnvironmentSample, ModelEvalError> {
         let mut sample = EnvironmentSample::default();
+        populate_frame_motion(&self.frame, query, &mut sample)?;
         let Some(atmosphere) = &self.atmosphere else {
             return Ok(sample);
         };
@@ -89,6 +100,78 @@ impl EnvironmentModel for RuntimeEnvironment {
         sample.atmosphere_density_kg_m3 = atmosphere_sample.density_kg_m3;
         Ok(sample)
     }
+}
+
+fn populate_frame_motion(
+    frame: &FrameContext,
+    query: EnvironmentQuery,
+    sample: &mut EnvironmentSample,
+) -> Result<(), ModelEvalError> {
+    let p_ecef = frame.eci_to_ecef_position(query.time, query.position_eci);
+    let still_air_eci = frame
+        .ecef_to_eci_velocity(query.time, Velocity3::<Ecef>::zero(), p_ecef)
+        .vector;
+    sample.atmosphere_velocity_eci_m_s = still_air_eci;
+    sample.wind_ned_to_eci = wind_ned_to_eci_matrix(frame, query.time, p_ecef, still_air_eci)?;
+    Ok(())
+}
+
+fn wind_ned_to_eci_matrix(
+    frame: &FrameContext,
+    time: SimTime,
+    p_ecef: openbmp_core::Position3<Ecef>,
+    still_air_eci_m_s: Vector3<f64>,
+) -> Result<Matrix3<f64>, ModelEvalError> {
+    if frame.profile() == FrameProfile::ToyFixedEarth {
+        return Ok(Matrix3::from_columns(&[
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(0.0, 0.0, -1.0),
+        ]));
+    }
+    if frame.local_origin().is_none() {
+        return Ok(Matrix3::zeros());
+    }
+
+    let basis = [
+        Velocity3::<Ned>::new(1.0, 0.0, 0.0),
+        Velocity3::<Ned>::new(0.0, 1.0, 0.0),
+        Velocity3::<Ned>::new(0.0, 0.0, 1.0),
+    ];
+    let mut matrix = Matrix3::zeros();
+    for (column, wind_ned) in basis.into_iter().enumerate() {
+        let wind_ecef =
+            frame
+                .ned_to_ecef_velocity(wind_ned)
+                .map_err(|_| ModelEvalError::InvalidState {
+                    model: RUNNER_ENVIRONMENT_MODEL_ID,
+                    reason: Cow::Borrowed("NED wind requires a local geodetic origin"),
+                })?;
+        let wind_eci =
+            frame.ecef_to_eci_velocity(time, wind_ecef, p_ecef).vector - still_air_eci_m_s;
+        matrix.set_column(column, &wind_eci);
+    }
+    Ok(matrix)
+}
+
+fn validate_wind_frame(
+    document: &ScenarioDocument,
+    frame: &FrameContext,
+) -> Result<(), RunnerError> {
+    let wind_active = document
+        .wind
+        .as_ref()
+        .is_some_and(|wind| wind.kind.as_str() != "none");
+    if wind_active
+        && frame.profile() != FrameProfile::ToyFixedEarth
+        && frame.local_origin().is_none()
+    {
+        return Err(RunnerError::UnsupportedScenario {
+            what: "[wind] with a rotating Earth frame requires [frames.local_origin] so NED wind can be transformed to ECI for air-relative aerodynamics"
+                .to_owned(),
+        });
+    }
+    Ok(())
 }
 
 impl AtmosphereModel for RuntimeAtmosphere {
@@ -245,4 +328,69 @@ pub fn scenario_atmosphere_kind(document: &ScenarioDocument) -> &str {
         .map_or(document.environment.atmosphere.as_str(), |a| {
             a.kind.as_str()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openbmp_core::Position3;
+    use openbmp_physics::{LocalGeodeticOrigin, WGS84_A_M, WGS84_OMEGA_RAD_S};
+
+    #[test]
+    fn wgs84_environment_reports_corotating_still_air_velocity() {
+        let environment = RuntimeEnvironment {
+            atmosphere: None,
+            frame: FrameContext::wgs84_uniform_rotation(None),
+        };
+        let sample = environment
+            .sample(EnvironmentQuery {
+                time: SimTime::ZERO,
+                position_eci: Position3::new(WGS84_A_M, 0.0, 0.0),
+            })
+            .unwrap();
+
+        let expected = WGS84_OMEGA_RAD_S * WGS84_A_M;
+        assert!(sample.atmosphere_velocity_eci_m_s.x.abs() < 1.0e-12);
+        assert!((sample.atmosphere_velocity_eci_m_s.y - expected).abs() < 1.0e-9);
+        assert!(sample.atmosphere_velocity_eci_m_s.z.abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn wgs84_environment_maps_ned_wind_to_eci_relative_to_still_air() {
+        let origin = LocalGeodeticOrigin::new_degrees(0.0, 0.0, 0.0).unwrap();
+        let environment = RuntimeEnvironment {
+            atmosphere: None,
+            frame: FrameContext::wgs84_uniform_rotation(Some(origin)),
+        };
+        let sample = environment
+            .sample(EnvironmentQuery {
+                time: SimTime::ZERO,
+                position_eci: Position3::new(WGS84_A_M, 0.0, 0.0),
+            })
+            .unwrap();
+
+        let mut with_wind = sample;
+        with_wind.set_wind_ned_m_s(Vector3::new(0.0, 12.0, 0.0));
+        assert!(with_wind.wind_eci_m_s.x.abs() < 1.0e-12);
+        assert!((with_wind.wind_eci_m_s.y - 12.0).abs() < 1.0e-12);
+        assert!(with_wind.wind_eci_m_s.z.abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn toy_environment_keeps_flat_ned_mapping() {
+        let environment = RuntimeEnvironment {
+            atmosphere: None,
+            frame: FrameContext::toy_fixed_earth(),
+        };
+        let mut sample = environment
+            .sample(EnvironmentQuery {
+                time: SimTime::ZERO,
+                position_eci: Position3::origin(),
+            })
+            .unwrap();
+
+        sample.set_wind_ned_m_s(Vector3::new(1.0, 2.0, 3.0));
+        assert_eq!(sample.atmosphere_velocity_eci_m_s, Vector3::zeros());
+        assert_eq!(sample.wind_eci_m_s, Vector3::new(1.0, 2.0, -3.0));
+    }
 }

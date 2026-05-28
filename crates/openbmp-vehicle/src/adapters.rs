@@ -433,9 +433,10 @@ impl<M: Motor> MassModel for MotorMassAdapter<M> {
 /// `+z` so `position.vector.z` is a good proxy for geometric
 /// altitude.
 ///
-/// Wind is not subtracted here because the kernel currently exposes
-/// wind in local NED components but does not pass the frame context
-/// needed for a deterministic NED-to-ECI transform into force models.
+/// Drag is evaluated against the air-relative velocity carried by the
+/// kernel environment sample. Runner environments express rotating
+/// still-air velocity and NED wind in ECI before the force model is
+/// called; null / toy callers leave those values at zero.
 #[derive(Clone, Debug)]
 pub struct DeckDragForceAdapter<Atm> {
     deck: AeroDeck,
@@ -499,11 +500,14 @@ impl<Atm: AtmosphereModel> ForceModel<PointMassState> for DeckDragForceAdapter<A
         )? {
             return Ok(Vector3::zeros());
         }
+        let velocity_eci = ctx
+            .environment
+            .air_relative_velocity_eci_m_s(ctx.state.velocity.vector);
         compute_axial_drag(
             &self.deck,
             &self.atmosphere,
             self.model_id,
-            ctx.state.velocity.vector,
+            velocity_eci,
             ctx.state.position.vector.z,
             ctx.time,
             ctx.effector_actuals,
@@ -528,11 +532,15 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for DeckDragForceAdapter<A
         )? {
             return Ok(Vector3::zeros());
         }
+        let velocity_eci = ctx
+            .environment
+            .air_relative_velocity_eci_m_s(ctx.state.velocity.vector);
         compute_rigid_body_deck_force(
             &self.deck,
             &self.atmosphere,
             self.model_id,
             ctx.state,
+            velocity_eci,
             ctx.time,
             ctx.effector_actuals,
         )
@@ -626,7 +634,9 @@ impl<M: AeroMethod, Atm: AtmosphereModel> ForceModel<PointMassState>
         )? {
             return Ok(Vector3::zeros());
         }
-        let velocity_eci = ctx.state.velocity.vector;
+        let velocity_eci = ctx
+            .environment
+            .air_relative_velocity_eci_m_s(ctx.state.velocity.vector);
         let Some((aero_ctx, speed)) = aero_context_from_velocity(
             &self.atmosphere,
             self.model_id,
@@ -673,7 +683,10 @@ impl<M: AeroMethod, Atm: AtmosphereModel> ForceModel<RigidBodyState>
         )? {
             return Ok(Vector3::zeros());
         }
-        let velocity_body = ctx.state.orientation.q.inverse() * ctx.state.velocity.vector;
+        let velocity_eci = ctx
+            .environment
+            .air_relative_velocity_eci_m_s(ctx.state.velocity.vector);
+        let velocity_body = ctx.state.orientation.q.inverse() * velocity_eci;
         let Some((aero_ctx, _)) = aero_context_from_velocity(
             &self.atmosphere,
             self.model_id,
@@ -783,7 +796,10 @@ impl<M: AeroMethod, Atm: AtmosphereModel> MomentModel<RigidBodyState>
         )? {
             return Ok(Vector3::zeros());
         }
-        let velocity_body = ctx.state.orientation.q.inverse() * ctx.state.velocity.vector;
+        let velocity_eci = ctx
+            .environment
+            .air_relative_velocity_eci_m_s(ctx.state.velocity.vector);
+        let velocity_body = ctx.state.orientation.q.inverse() * velocity_eci;
         let Some((aero_ctx, _)) = aero_context_from_velocity(
             &self.atmosphere,
             self.model_id,
@@ -972,10 +988,10 @@ fn compute_rigid_body_deck_force<Atm: AtmosphereModel>(
     atmosphere: &Atm,
     model_id: ModelId,
     state: &RigidBodyState,
+    velocity_eci: Vector3<f64>,
     time: SimTime,
     effector_actuals: openbmp_models::EffectorActualsView<'_>,
 ) -> Result<Vector3<f64>, ModelEvalError> {
-    let velocity_eci = state.velocity.vector;
     let speed_sq = velocity_eci.x * velocity_eci.x
         + velocity_eci.y * velocity_eci.y
         + velocity_eci.z * velocity_eci.z;
@@ -2170,7 +2186,8 @@ impl<Atm: AtmosphereModel> ForceModel<PointMassState> for RecoveryRackForceAdapt
             &self.recovery_ids,
             &self.atmosphere,
             self.model_id,
-            ctx.state.velocity.vector,
+            ctx.environment
+                .air_relative_velocity_eci_m_s(ctx.state.velocity.vector),
             ctx.state.position.vector.z,
             ctx.time,
             ctx.active_body,
@@ -2193,7 +2210,8 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for RecoveryRackForceAdapt
             &self.recovery_ids,
             &self.atmosphere,
             self.model_id,
-            ctx.state.velocity.vector,
+            ctx.environment
+                .air_relative_velocity_eci_m_s(ctx.state.velocity.vector),
             ctx.state.position.vector.z,
             ctx.time,
             ctx.active_body,
@@ -2342,6 +2360,13 @@ mod tests {
 
     fn null_env() -> EnvironmentSample {
         EnvironmentSample::default()
+    }
+
+    fn env_with_atmosphere_velocity(velocity_eci_m_s: Vector3<f64>) -> EnvironmentSample {
+        EnvironmentSample {
+            atmosphere_velocity_eci_m_s: velocity_eci_m_s,
+            ..EnvironmentSample::default()
+        }
     }
 
     fn d12_textbook_motor() -> SolidMotor {
@@ -2504,6 +2529,16 @@ mod tests {
     }
 
     #[test]
+    fn axial_drag_adapter_uses_air_relative_velocity() {
+        let deck = small_drag_deck();
+        let adapter = DeckDragForceAdapter::new(deck, RejectingAtmosphere, ModelId::new(0));
+        let state = fixture_state(0.0, 50.0);
+        let env = env_with_atmosphere_velocity(state.velocity.vector);
+        let f = adapter.force_n_eci(ctx(&state, &env, 1.0, 0.0)).unwrap();
+        assert_eq!(f, Vector3::zeros());
+    }
+
+    #[test]
     fn axial_drag_adapter_zero_density_returns_zero_force_without_deck_lookup() {
         let deck = small_drag_deck();
         let adapter = DeckDragForceAdapter::new(deck, ZeroDensityAtmosphere, ModelId::new(0));
@@ -2524,6 +2559,21 @@ mod tests {
             AeroMethodForceAdapter::new(method, ZeroDensityAtmosphere, ModelId::new(0), 1.0);
         let state = fixture_state(90_000.0, -10_000.0);
         let env = null_env();
+        let f = adapter.force_n_eci(ctx(&state, &env, 1.0, 0.0)).unwrap();
+        assert_eq!(f, Vector3::zeros());
+    }
+
+    #[test]
+    fn aero_method_adapter_uses_air_relative_velocity() {
+        let method = openbmp_aero::ModifiedNewtonian {
+            cp_max: 2.0,
+            reference_area_m2: 1.0,
+            reference_length_m: 1.0,
+        };
+        let adapter =
+            AeroMethodForceAdapter::new(method, RejectingAtmosphere, ModelId::new(0), 1.0);
+        let state = fixture_state(90_000.0, -10_000.0);
+        let env = env_with_atmosphere_velocity(state.velocity.vector);
         let f = adapter.force_n_eci(ctx(&state, &env, 1.0, 0.0)).unwrap();
         assert_eq!(f, Vector3::zeros());
     }
@@ -3013,6 +3063,20 @@ mod tests {
         assert_eq!(f.x.to_bits(), 0.0_f64.to_bits());
         assert_eq!(f.y.to_bits(), 0.0_f64.to_bits());
         assert_eq!(f.z.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn recovery_rack_uses_air_relative_velocity() {
+        let id_a = RecoveryId::from_path("recovery.a");
+        let adapter =
+            RecoveryRackForceAdapter::new(vec![id_a], RejectingAtmosphere, ModelId::new(370));
+        let state = fixture_state(1000.0, -50.0);
+        let env = env_with_atmosphere_velocity(state.velocity.vector);
+        let snapshot = recovery_snapshot_map(&[(id_a, true, 1.5, 2.0)]);
+        let f = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+        assert_eq!(f, Vector3::zeros());
     }
 
     #[test]
