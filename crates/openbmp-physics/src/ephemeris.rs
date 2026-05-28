@@ -3,7 +3,7 @@
 //! This module keeps file I/O out of `openbmp-physics`. It provides a
 //! HAL-portable ephemeris trait, a deterministic built-in Sun/Moon
 //! approximation, and a small SPK/BSP byte parser for runner-supplied
-//! pinned JPL DE kernels.
+//! pinned JPL DE and mission kernels.
 
 use nalgebra::Vector3;
 use openbmp_core::SimTime;
@@ -72,6 +72,15 @@ impl CelestialBody {
     }
 }
 
+/// Earth-centered inertial celestial body state.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct EphemerisState {
+    /// Earth-centered inertial position in metres.
+    pub position_eci_m: Vector3<f64>,
+    /// Earth-centered inertial velocity in metres per second.
+    pub velocity_eci_m_s: Vector3<f64>,
+}
+
 /// Position provider for named celestial bodies.
 ///
 /// Returned vectors are Earth-centered inertial, in metres, expressed
@@ -88,6 +97,52 @@ pub trait EphemerisModel {
         body: CelestialBody,
         time: SimTime,
     ) -> Result<Vector3<f64>, PhysicsError>;
+
+    /// Earth-centered inertial body state in metres and metres per
+    /// second.
+    ///
+    /// The default implementation uses a one-second finite difference
+    /// around [`Self::body_position_eci_m`]. Higher-fidelity ephemeris
+    /// backends should override this when the source supplies velocity
+    /// directly or supports an analytic derivative.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] if the position query or derived state
+    /// is outside the model envelope or non-finite.
+    fn body_state_eci_m_s(
+        &self,
+        body: CelestialBody,
+        time: SimTime,
+    ) -> Result<EphemerisState, PhysicsError> {
+        let position = self.body_position_eci_m(body, time)?;
+        let t_s = time.as_seconds();
+        if !t_s.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ephemeris state query time must be finite",
+            });
+        }
+        let velocity = if t_s >= 1.0 {
+            let before = self.body_position_eci_m(body, SimTime::from_seconds(t_s - 1.0))?;
+            let after = self.body_position_eci_m(body, SimTime::from_seconds(t_s + 1.0))?;
+            (after - before) * 0.5
+        } else {
+            let after = self.body_position_eci_m(body, SimTime::from_seconds(t_s + 1.0))?;
+            after - position
+        };
+        let state = EphemerisState {
+            position_eci_m: position,
+            velocity_eci_m_s: velocity,
+        };
+        if !state.position_eci_m.iter().all(|v| v.is_finite())
+            || !state.velocity_eci_m_s.iter().all(|v| v.is_finite())
+        {
+            return Err(PhysicsError::NonFinite {
+                reason: "ephemeris state produced non-finite components",
+            });
+        }
+        Ok(state)
+    }
 }
 
 /// Low-precision deterministic Sun/Moon ephemeris.
@@ -172,11 +227,12 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 /// Deterministic SPK/BSP ephemeris backed by parsed DAF bytes.
 ///
 /// This reader implements the subset required for JPL DE-style
-/// planetary kernels used by third-body perturbations: SPK type 2
-/// (Chebyshev position) and type 3 (Chebyshev position and velocity)
-/// segments in the J2000 inertial frame. It computes geometric
-/// positions only and does not implement light-time, aberration,
-/// non-inertial frame transforms, or text-kernel loading.
+/// planetary and mission kernels used by third-body perturbations:
+/// SPK type 2 (Chebyshev position), type 3 (Chebyshev position and
+/// velocity), and type 9 (unequal-time Lagrange state interpolation)
+/// segments in the J2000 inertial frame. It computes geometric states
+/// and does not implement light-time, aberration, non-inertial frame
+/// transforms, or text-kernel loading.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpkEphemeris {
     epoch_tdb_julian_date: f64,
@@ -189,7 +245,7 @@ impl SpkEphemeris {
     /// # Errors
     ///
     /// Returns [`PhysicsError`] when the bytes are not a supported
-    /// DAF/SPK file or no supported type 2/3 J2000 segments are found.
+    /// DAF/SPK file or no supported type 2/3/9 J2000 segments are found.
     pub fn from_bytes(epoch_tdb_julian_date: f64, bytes: &[u8]) -> Result<Self, PhysicsError> {
         Self::from_kernels(epoch_tdb_julian_date, [bytes])
     }
@@ -203,8 +259,8 @@ impl SpkEphemeris {
     /// # Errors
     ///
     /// Returns [`PhysicsError`] when any byte slice is not a supported
-    /// DAF/SPK file, no kernels are supplied, or no supported type 2/3
-    /// J2000 segments are found across all kernels.
+    /// DAF/SPK file, no kernels are supplied, or no supported type
+    /// 2/3/9 J2000 segments are found across all kernels.
     pub fn from_kernels<'a, I>(epoch_tdb_julian_date: f64, kernels: I) -> Result<Self, PhysicsError>
     where
         I: IntoIterator<Item = &'a [u8]>,
@@ -228,7 +284,7 @@ impl SpkEphemeris {
         }
         if segments.is_empty() {
             return Err(PhysicsError::InvalidParameter {
-                reason: "SPK kernel contains no supported type 2/3 J2000 segments",
+                reason: "SPK kernel contains no supported type 2/3/9 J2000 segments",
             });
         }
         Ok(Self {
@@ -247,51 +303,50 @@ impl SpkEphemeris {
         (self.epoch_tdb_julian_date - J2000_JULIAN_DATE) * SECONDS_PER_DAY + time.as_seconds()
     }
 
-    fn body_position_relative_to_earth_km(
+    fn body_state_relative_to_earth_km_s(
         &self,
         target: i32,
         time: SimTime,
-    ) -> Result<Vector3<f64>, PhysicsError> {
+    ) -> Result<SpkStateKmS, PhysicsError> {
         let et_s = self.ephemeris_seconds(time);
         if !et_s.is_finite() {
             return Err(PhysicsError::InvalidParameter {
                 reason: "SPK query produced non-finite ephemeris seconds",
             });
         }
-        self.position_between_km(target, NAIF_EARTH, et_s)
+        self.state_between_km_s(target, NAIF_EARTH, et_s)
     }
 
-    fn position_between_km(
+    fn state_between_km_s(
         &self,
         target: i32,
         observer: i32,
         et_s: f64,
-    ) -> Result<Vector3<f64>, PhysicsError> {
-        let (target_root, target_position) = self.position_to_root_km(target, et_s)?;
-        let (observer_root, observer_position) = self.position_to_root_km(observer, et_s)?;
+    ) -> Result<SpkStateKmS, PhysicsError> {
+        let (target_root, target_state) = self.state_to_root_km_s(target, et_s)?;
+        let (observer_root, observer_state) = self.state_to_root_km_s(observer, et_s)?;
         if target_root != observer_root {
             return Err(PhysicsError::OutOfEnvelope {
                 reason: "SPK target and observer do not share a common center",
             });
         }
-        Ok(target_position - observer_position)
+        Ok(SpkStateKmS {
+            position_km: target_state.position_km - observer_state.position_km,
+            velocity_km_s: target_state.velocity_km_s - observer_state.velocity_km_s,
+        })
     }
 
-    fn position_to_root_km(
-        &self,
-        body: i32,
-        et_s: f64,
-    ) -> Result<(i32, Vector3<f64>), PhysicsError> {
+    fn state_to_root_km_s(&self, body: i32, et_s: f64) -> Result<(i32, SpkStateKmS), PhysicsError> {
         let mut current = body;
-        let mut position = Vector3::zeros();
+        let mut state = SpkStateKmS::zero();
         for _ in 0..16 {
             if current == NAIF_SOLAR_SYSTEM_BARYCENTER {
-                return Ok((current, position));
+                return Ok((current, state));
             }
             let Some(segment) = self.select_segment(current, et_s) else {
-                return Ok((current, position));
+                return Ok((current, state));
             };
-            position += segment.position_km(et_s)?;
+            state += segment.state_km_s(et_s)?;
             current = segment.center;
         }
         Err(PhysicsError::InvalidParameter {
@@ -316,7 +371,9 @@ impl EphemerisModel for SpkEphemeris {
             CelestialBody::Sun => NAIF_SUN,
             CelestialBody::Moon => NAIF_MOON,
         };
-        let position_km = self.body_position_relative_to_earth_km(target, time)?;
+        let position_km = self
+            .body_state_relative_to_earth_km_s(target, time)?
+            .position_km;
         let position_m = position_km * METRES_PER_KILOMETRE;
         if !position_m.iter().all(|v| v.is_finite()) {
             return Err(PhysicsError::NonFinite {
@@ -324,6 +381,30 @@ impl EphemerisModel for SpkEphemeris {
             });
         }
         Ok(position_m)
+    }
+
+    fn body_state_eci_m_s(
+        &self,
+        body: CelestialBody,
+        time: SimTime,
+    ) -> Result<EphemerisState, PhysicsError> {
+        let target = match body {
+            CelestialBody::Sun => NAIF_SUN,
+            CelestialBody::Moon => NAIF_MOON,
+        };
+        let state_km_s = self.body_state_relative_to_earth_km_s(target, time)?;
+        let state = EphemerisState {
+            position_eci_m: state_km_s.position_km * METRES_PER_KILOMETRE,
+            velocity_eci_m_s: state_km_s.velocity_km_s * METRES_PER_KILOMETRE,
+        };
+        if !state.position_eci_m.iter().all(|v| v.is_finite())
+            || !state.velocity_eci_m_s.iter().all(|v| v.is_finite())
+        {
+            return Err(PhysicsError::NonFinite {
+                reason: "SPK ephemeris produced non-finite state",
+            });
+        }
+        Ok(state)
     }
 }
 
@@ -355,22 +436,128 @@ struct SpkSegment {
     data: Vec<f64>,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct SpkStateKmS {
+    position_km: Vector3<f64>,
+    velocity_km_s: Vector3<f64>,
+}
+
+impl SpkStateKmS {
+    fn zero() -> Self {
+        Self {
+            position_km: Vector3::zeros(),
+            velocity_km_s: Vector3::zeros(),
+        }
+    }
+}
+
+impl std::ops::AddAssign for SpkStateKmS {
+    fn add_assign(&mut self, rhs: Self) {
+        self.position_km += rhs.position_km;
+        self.velocity_km_s += rhs.velocity_km_s;
+    }
+}
+
+struct ChebyshevRecordView<'a> {
+    record: &'a [f64],
+    tau: f64,
+    radius_s: f64,
+    coeff_count: usize,
+}
+
 impl SpkSegment {
-    fn position_km(&self, et_s: f64) -> Result<Vector3<f64>, PhysicsError> {
+    fn state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
         match self.data_type {
-            2 => self.chebyshev_position_km(et_s, 3),
-            3 => self.chebyshev_position_km(et_s, 6),
+            2 => {
+                let record = self.chebyshev_record(et_s, 3)?;
+                Ok(SpkStateKmS {
+                    position_km: chebyshev_vector(record.record, record.coeff_count, 0, record.tau),
+                    velocity_km_s: chebyshev_derivative_vector(
+                        record.record,
+                        record.coeff_count,
+                        0,
+                        record.radius_s,
+                        record.tau,
+                    ),
+                })
+            }
+            3 => {
+                let record = self.chebyshev_record(et_s, 6)?;
+                Ok(SpkStateKmS {
+                    position_km: chebyshev_vector(record.record, record.coeff_count, 0, record.tau),
+                    velocity_km_s: chebyshev_vector(
+                        record.record,
+                        record.coeff_count,
+                        3,
+                        record.tau,
+                    ),
+                })
+            }
+            9 => self.lagrange_state_km_s(et_s),
             _ => Err(PhysicsError::InvalidParameter {
                 reason: "unsupported SPK data type",
             }),
         }
     }
 
-    fn chebyshev_position_km(
+    fn lagrange_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        if self.data.len() < 9 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 9 segment is too short",
+            });
+        }
+        let n = f64_to_usize(self.data[self.data.len() - 1])?;
+        let degree = f64_to_usize(self.data[self.data.len() - 2])?;
+        if n == 0 || n <= degree {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "invalid SPK type 9 interpolation degree",
+            });
+        }
+        let window_size = degree + 1;
+        let directory_count = (n - 1) / 100;
+        let expected_len = 6_usize
+            .checked_mul(n)
+            .and_then(|state_len| state_len.checked_add(n))
+            .and_then(|base| base.checked_add(directory_count))
+            .and_then(|base| base.checked_add(2))
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "SPK type 9 segment length overflow",
+            })?;
+        if expected_len != self.data.len() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 9 segment length does not match directory",
+            });
+        }
+
+        let states = &self.data[..6 * n];
+        let epochs = &self.data[6 * n..7 * n];
+        validate_strictly_increasing_epochs(epochs, "SPK type 9 epochs are invalid")?;
+        if et_s < epochs[0] || et_s > epochs[n - 1] {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "SPK type 9 query is outside state epoch coverage",
+            });
+        }
+
+        let start = lagrange_window_start(epochs, et_s, window_size);
+        let mut state = [0.0_f64; 6];
+        for offset in 0..window_size {
+            let source_index = start + offset;
+            let basis = lagrange_basis(epochs, start, window_size, offset, et_s)?;
+            for component in 0..6 {
+                state[component] += basis * states[source_index * 6 + component];
+            }
+        }
+        Ok(SpkStateKmS {
+            position_km: Vector3::new(state[0], state[1], state[2]),
+            velocity_km_s: Vector3::new(state[3], state[4], state[5]),
+        })
+    }
+
+    fn chebyshev_record(
         &self,
         et_s: f64,
         component_count: usize,
-    ) -> Result<Vector3<f64>, PhysicsError> {
+    ) -> Result<ChebyshevRecordView<'_>, PhysicsError> {
         if self.data.len() < 4 {
             return Err(PhysicsError::InvalidParameter {
                 reason: "SPK Chebyshev segment is too short",
@@ -424,11 +611,12 @@ impl SpkSegment {
                 reason: "invalid SPK Chebyshev coefficient count",
             });
         }
-        let tau = (et_s - midpoint) / radius;
-        let x = evaluate_chebyshev(tau, &record[2..2 + coeff_count]);
-        let y = evaluate_chebyshev(tau, &record[2 + coeff_count..2 + 2 * coeff_count]);
-        let z = evaluate_chebyshev(tau, &record[2 + 2 * coeff_count..2 + 3 * coeff_count]);
-        Ok(Vector3::new(x, y, z))
+        Ok(ChebyshevRecordView {
+            record,
+            tau: (et_s - midpoint) / radius,
+            radius_s: radius,
+            coeff_count,
+        })
     }
 }
 
@@ -496,7 +684,7 @@ impl<'a> DafView<'a> {
                     record_offset + (SPK_SUMMARY_CONTROL_WORDS + index * SPK_SUMMARY_WORDS) * 8;
                 let descriptor = self.spk_descriptor(summary_offset)?;
                 if descriptor.frame == SPK_J2000_FRAME_ID
-                    && matches!(descriptor.data_type, 2 | 3)
+                    && matches!(descriptor.data_type, 2 | 3 | 9)
                     && let Some(segment) = self.segment_from_descriptor(descriptor)?
                 {
                     segments.push(segment);
@@ -678,6 +866,132 @@ fn evaluate_chebyshev(tau: f64, coefficients: &[f64]) -> f64 {
     sum
 }
 
+fn evaluate_chebyshev_derivative(tau: f64, coefficients: &[f64]) -> f64 {
+    if coefficients.len() <= 1 {
+        return 0.0;
+    }
+    let mut sum = coefficients[1];
+    let mut t_prev = 1.0;
+    let mut t_curr = tau;
+    let mut dt_prev = 0.0;
+    let mut dt_curr = 1.0;
+    for coefficient in &coefficients[2..] {
+        let t_next = 2.0 * tau * t_curr - t_prev;
+        let dt_next = 2.0 * t_curr + 2.0 * tau * dt_curr - dt_prev;
+        sum += coefficient * dt_next;
+        t_prev = t_curr;
+        t_curr = t_next;
+        dt_prev = dt_curr;
+        dt_curr = dt_next;
+    }
+    sum
+}
+
+fn chebyshev_vector(
+    record: &[f64],
+    coeff_count: usize,
+    component_offset: usize,
+    tau: f64,
+) -> Vector3<f64> {
+    let base = 2 + component_offset * coeff_count;
+    Vector3::new(
+        evaluate_chebyshev(tau, &record[base..base + coeff_count]),
+        evaluate_chebyshev(tau, &record[base + coeff_count..base + 2 * coeff_count]),
+        evaluate_chebyshev(tau, &record[base + 2 * coeff_count..base + 3 * coeff_count]),
+    )
+}
+
+fn chebyshev_derivative_vector(
+    record: &[f64],
+    coeff_count: usize,
+    component_offset: usize,
+    radius_s: f64,
+    tau: f64,
+) -> Vector3<f64> {
+    let base = 2 + component_offset * coeff_count;
+    Vector3::new(
+        evaluate_chebyshev_derivative(tau, &record[base..base + coeff_count]) / radius_s,
+        evaluate_chebyshev_derivative(tau, &record[base + coeff_count..base + 2 * coeff_count])
+            / radius_s,
+        evaluate_chebyshev_derivative(tau, &record[base + 2 * coeff_count..base + 3 * coeff_count])
+            / radius_s,
+    )
+}
+
+fn validate_strictly_increasing_epochs(
+    epochs: &[f64],
+    reason: &'static str,
+) -> Result<(), PhysicsError> {
+    if epochs.is_empty() || !epochs[0].is_finite() {
+        return Err(PhysicsError::InvalidParameter { reason });
+    }
+    for pair in epochs.windows(2) {
+        if !pair[1].is_finite() || pair[1] <= pair[0] {
+            return Err(PhysicsError::InvalidParameter { reason });
+        }
+    }
+    Ok(())
+}
+
+fn lagrange_window_start(epochs: &[f64], et_s: f64, window_size: usize) -> usize {
+    debug_assert!(window_size <= epochs.len());
+    let last_start = epochs.len() - window_size;
+    let half = window_size / 2;
+    let candidate = if window_size % 2 == 0 {
+        let insertion = epochs.partition_point(|epoch| *epoch < et_s);
+        insertion.saturating_sub(half)
+    } else {
+        nearest_epoch_index(epochs, et_s).saturating_sub(half)
+    };
+    candidate.min(last_start)
+}
+
+fn nearest_epoch_index(epochs: &[f64], et_s: f64) -> usize {
+    let insertion = epochs.partition_point(|epoch| *epoch < et_s);
+    if insertion == 0 {
+        return 0;
+    }
+    if insertion >= epochs.len() {
+        return epochs.len() - 1;
+    }
+    let before = insertion - 1;
+    if (et_s - epochs[before]).abs() <= (epochs[insertion] - et_s).abs() {
+        before
+    } else {
+        insertion
+    }
+}
+
+fn lagrange_basis(
+    epochs: &[f64],
+    start: usize,
+    window_size: usize,
+    offset: usize,
+    et_s: f64,
+) -> Result<f64, PhysicsError> {
+    let source_epoch = epochs[start + offset];
+    let mut basis = 1.0;
+    for other_offset in 0..window_size {
+        if other_offset == offset {
+            continue;
+        }
+        let other_epoch = epochs[start + other_offset];
+        let denominator = source_epoch - other_epoch;
+        if denominator == 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK type 9 epochs contain duplicates",
+            });
+        }
+        basis *= (et_s - other_epoch) / denominator;
+    }
+    if !basis.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "SPK type 9 Lagrange interpolation produced non-finite basis",
+        });
+    }
+    Ok(basis)
+}
+
 fn read_i32_at(bytes: &[u8], offset: usize, endian: DafEndian) -> Result<i32, PhysicsError> {
     let slice = bytes
         .get(offset..offset + 4)
@@ -769,6 +1083,17 @@ mod tests {
     }
 
     #[test]
+    fn low_precision_state_reports_finite_velocity() {
+        let ephemeris = LowPrecisionSunMoonEphemeris::j2000();
+        let state = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(60.0))
+            .unwrap();
+        assert!(state.position_eci_m.iter().all(|v| v.is_finite()));
+        assert!(state.velocity_eci_m_s.iter().all(|v| v.is_finite()));
+        assert!(state.velocity_eci_m_s.norm() > 100.0);
+    }
+
+    #[test]
     fn spk_ephemeris_reads_synthetic_type2_sun_and_moon() {
         let bytes = synthetic_spk();
         let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
@@ -784,6 +1109,69 @@ mod tests {
             Vector3::new(149_597_870.0e3 - 4_700.0e3, -1_200.0e3, 300.0e3)
         );
         assert_eq!(moon, Vector3::new(384_400.0e3, 0.0, 0.0));
+    }
+
+    #[test]
+    fn spk_ephemeris_reports_state_from_type3_velocity_coefficients() {
+        let bytes = synthetic_type3_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::ZERO)
+            .unwrap();
+        assert_eq!(
+            sun.position_eci_m,
+            Vector3::new(149_597_870.0e3 - 4_700.0e3, -1_200.0e3, 300.0e3)
+        );
+        assert_eq!(sun.velocity_eci_m_s, Vector3::new(0.0, 29_780.0, 0.0));
+    }
+
+    #[test]
+    fn spk_ephemeris_reads_type9_lagrange_state() {
+        let bytes = synthetic_type9_spk();
+        let ephemeris = SpkEphemeris::from_bytes(J2000_JULIAN_DATE, &bytes).unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::from_seconds(3.0))
+            .unwrap();
+        assert_eq!(
+            sun.position_eci_m,
+            Vector3::new(30_000.0, 6_000.0, -3_000.0)
+        );
+        assert_eq!(
+            sun.velocity_eci_m_s,
+            Vector3::new(10_000.0, 2_000.0, -1_000.0)
+        );
+    }
+
+    #[test]
+    fn spk_type2_state_uses_chebyshev_position_derivative() {
+        let segment = SpkSegment {
+            start_et_s: -10.0,
+            stop_et_s: 10.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            data_type: 2,
+            data: vec![
+                0.0, 10.0, 100.0, 20.0, 0.0, 30.0, 0.0, 40.0, -10.0, 20.0, 8.0, 1.0,
+            ],
+        };
+        let state = segment.state_km_s(0.0).unwrap();
+        assert_eq!(state.position_km, Vector3::new(100.0, 0.0, 0.0));
+        assert_eq!(state.velocity_km_s, Vector3::new(2.0, 3.0, 4.0));
+    }
+
+    #[test]
+    fn spk_type9_state_uses_centered_lagrange_window() {
+        let segment = SpkSegment {
+            start_et_s: 0.0,
+            stop_et_s: 4.0,
+            target: NAIF_SUN,
+            center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+            data_type: 9,
+            data: type9_linear_segment(&[0.0, 1.0, 2.0, 4.0], 1),
+        };
+        let state = segment.state_km_s(3.0).unwrap();
+        assert_eq!(state.position_km, Vector3::new(30.0, 6.0, -3.0));
+        assert_eq!(state.velocity_km_s, Vector3::new(10.0, 2.0, -1.0));
     }
 
     #[test]
@@ -820,11 +1208,12 @@ mod tests {
         assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
     }
 
-    #[derive(Copy, Clone)]
+    #[derive(Clone)]
     struct SyntheticSegment {
         target: i32,
         center: i32,
-        position_km: [f64; 3],
+        data_type: i32,
+        data: Vec<f64>,
     }
 
     fn synthetic_spk() -> Vec<u8> {
@@ -836,32 +1225,93 @@ mod tests {
             SyntheticSegment {
                 target: 3,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
-                position_km: [4_700.0, 1_200.0, -300.0],
+                data_type: 2,
+                data: type2_constant_segment([4_700.0, 1_200.0, -300.0]),
             },
             SyntheticSegment {
                 target: NAIF_EARTH,
                 center: 3,
-                position_km: [0.0, 0.0, 0.0],
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
             },
             SyntheticSegment {
                 target: NAIF_SUN,
                 center: NAIF_SOLAR_SYSTEM_BARYCENTER,
-                position_km: [sun_x_km, 0.0, 0.0],
+                data_type: 2,
+                data: type2_constant_segment([sun_x_km, 0.0, 0.0]),
             },
             SyntheticSegment {
                 target: NAIF_MOON,
                 center: 3,
-                position_km: [384_400.0, 0.0, 0.0],
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
             },
         ];
+        synthetic_spk_from_segments(&segments)
+    }
+
+    fn synthetic_type3_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: 3,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                data_type: 3,
+                data: type3_constant_segment([4_700.0, 1_200.0, -300.0], [0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: 3,
+                data_type: 3,
+                data: type3_constant_segment([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                data_type: 3,
+                data: type3_constant_segment([149_597_870.0, 0.0, 0.0], [0.0, 29.78, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: 3,
+                data_type: 3,
+                data: type3_constant_segment([384_400.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
+    fn synthetic_type9_spk() -> Vec<u8> {
+        let segments = [
+            SyntheticSegment {
+                target: NAIF_EARTH,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                data_type: 2,
+                data: type2_constant_segment([0.0, 0.0, 0.0]),
+            },
+            SyntheticSegment {
+                target: NAIF_SUN,
+                center: NAIF_SOLAR_SYSTEM_BARYCENTER,
+                data_type: 9,
+                data: type9_linear_segment(&[0.0, 1.0, 2.0, 4.0], 1),
+            },
+            SyntheticSegment {
+                target: NAIF_MOON,
+                center: NAIF_EARTH,
+                data_type: 2,
+                data: type2_constant_segment([384_400.0, 0.0, 0.0]),
+            },
+        ];
+        synthetic_spk_from_segments(&segments)
+    }
+
+    fn synthetic_spk_from_segments(segments: &[SyntheticSegment]) -> Vec<u8> {
         let record_count = 4 + segments.len();
         let mut bytes = vec![0_u8; record_count * DAF_RECORD_BYTES];
         write_file_record(&mut bytes);
-        write_summary_record(&mut bytes, &segments);
+        write_summary_record(&mut bytes, segments);
         for (index, segment) in segments.iter().enumerate() {
             let address = data_address(index);
-            let data = type2_constant_segment(segment.position_km);
-            write_f64_data(&mut bytes, address, &data);
+            write_f64_data(&mut bytes, address, &segment.data);
         }
         bytes
     }
@@ -890,9 +1340,13 @@ mod tests {
             write_i32(bytes, offset + 16, segment.target);
             write_i32(bytes, offset + 20, segment.center);
             write_i32(bytes, offset + 24, SPK_J2000_FRAME_ID);
-            write_i32(bytes, offset + 28, 2);
+            write_i32(bytes, offset + 28, segment.data_type);
             write_i32(bytes, offset + 32, data_address(index));
-            write_i32(bytes, offset + 36, data_address(index) + 8);
+            write_i32(
+                bytes,
+                offset + 36,
+                data_address(index) + segment.data.len() as i32 - 1,
+            );
         }
     }
 
@@ -900,8 +1354,8 @@ mod tests {
         (DAF_DOUBLE_WORDS_PER_RECORD * (3 + index) + 1) as i32
     }
 
-    fn type2_constant_segment(position_km: [f64; 3]) -> [f64; 9] {
-        [
+    fn type2_constant_segment(position_km: [f64; 3]) -> Vec<f64> {
+        vec![
             0.0,
             10.0,
             position_km[0],
@@ -912,6 +1366,37 @@ mod tests {
             5.0,
             1.0,
         ]
+    }
+
+    fn type3_constant_segment(position_km: [f64; 3], velocity_km_s: [f64; 3]) -> Vec<f64> {
+        vec![
+            0.0,
+            10.0,
+            position_km[0],
+            position_km[1],
+            position_km[2],
+            velocity_km_s[0],
+            velocity_km_s[1],
+            velocity_km_s[2],
+            -10.0,
+            20.0,
+            8.0,
+            1.0,
+        ]
+    }
+
+    fn type9_linear_segment(epochs: &[f64], degree: usize) -> Vec<f64> {
+        let mut data = Vec::new();
+        for epoch in epochs {
+            data.extend_from_slice(&[10.0 * *epoch, 2.0 * *epoch, -*epoch, 10.0, 2.0, -1.0]);
+        }
+        data.extend_from_slice(epochs);
+        for epoch in epochs.iter().skip(99).step_by(100) {
+            data.push(*epoch);
+        }
+        data.push(degree as f64);
+        data.push(epochs.len() as f64);
+        data
     }
 
     fn write_f64_data(bytes: &mut [u8], start_address: i32, data: &[f64]) {

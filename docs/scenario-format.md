@@ -552,14 +552,18 @@ atmosphere    = "none"
 wind          = "none"
 ```
 
-The SPK reader supports geometric Sun/Moon positions from binary
-DAF/SPK kernels with type 2 or type 3 Chebyshev segments in the J2000
-frame. It follows SPK segment priority inside each file and preserves
-load-order precedence across a file list, so later files can override
-earlier overlapping segments. It combines target/center chains such as
+The SPK reader supports geometric Sun/Moon states from binary DAF/SPK
+kernels with type 2 or type 3 Chebyshev segments and type 9
+unequal-time Lagrange state segments in the J2000 frame. Type 2
+velocities are derived from the Chebyshev position derivative; type 3
+velocities come from the segment velocity coefficients; type 9 states
+are interpolated from discrete position/velocity records. It follows
+SPK segment priority inside each file and preserves load-order
+precedence across a file list, so later files can override earlier
+overlapping segments. It combines target/center chains such as
 Solar-System-Barycenter -> Earth-Moon Barycenter -> Earth/Moon. It
 does not yet implement light-time, stellar aberration, text kernels,
-non-J2000 frame transforms, or non-Chebyshev SPK segment types.
+non-J2000 frame transforms, or the remaining SPK segment types.
 
 ### Frames local origin
 

@@ -49,14 +49,21 @@ OpenBMP implementation slice.
   ingestion for interpolated UT1-UTC and polar motion.
 - Added `environment.ephemeris = "spk"` with SHA-256-pinned binary
   DAF/SPK ingestion for ordered JPL DE-style kernel lists with type
-  2/3 Chebyshev segments in J2000.
+  2/3 Chebyshev segments in J2000. The ephemeris API now exposes
+  Earth-centered body state as position plus velocity; SPK type 2
+  velocities use the Chebyshev position derivative and type 3
+  velocities use the stored velocity coefficients.
+- Added SPK type 9 unequal-time Lagrange state interpolation for
+  geometric position/velocity segments, extending the parser beyond
+  Chebyshev-only planetary kernels toward mission-spacecraft SPK
+  shapes.
 
 ## Still Missing Relative To Basilisk
 
 - SPK ingestion is intentionally limited to geometric state chains from
   binary SPK/BSP kernels. It does not yet implement light-time
   correction, stellar aberration, text kernels, non-J2000 frame
-  transforms, or all SPK segment types.
+  transforms, or all remaining SPK segment types.
 - The IERS path is intentionally compact: it does not yet implement
   precession, nutation, full leap-second table conversion, or a SPICE
   frame chain.

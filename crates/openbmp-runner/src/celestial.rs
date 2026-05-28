@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use openbmp_core::{Eci, Position3, SimTime};
 use openbmp_physics::{
-    CelestialBody, Egm2008ZonalGravity, EphemerisModel, GravityModel, J2Gravity, J2000_JULIAN_DATE,
-    LowPrecisionSunMoonEphemeris, PointMassGravity, SpkEphemeris, ThirdBody, ThirdBodyGravity,
-    WGS84_J2,
+    CelestialBody, Egm2008ZonalGravity, EphemerisModel, EphemerisState, GravityModel, J2Gravity,
+    J2000_JULIAN_DATE, LowPrecisionSunMoonEphemeris, PointMassGravity, SpkEphemeris, ThirdBody,
+    ThirdBodyGravity, WGS84_J2,
 };
 use openbmp_scenario::{ResolvedFile, ScenarioDocument};
 
@@ -57,6 +57,17 @@ impl EphemerisModel for RuntimeEphemeris {
         match self {
             Self::LowPrecisionSunMoon(ephemeris) => ephemeris.body_position_eci_m(body, time),
             Self::Spk(ephemeris) => ephemeris.body_position_eci_m(body, time),
+        }
+    }
+
+    fn body_state_eci_m_s(
+        &self,
+        body: CelestialBody,
+        time: SimTime,
+    ) -> Result<EphemerisState, openbmp_physics::PhysicsError> {
+        match self {
+            Self::LowPrecisionSunMoon(ephemeris) => ephemeris.body_state_eci_m_s(body, time),
+            Self::Spk(ephemeris) => ephemeris.body_state_eci_m_s(body, time),
         }
     }
 }

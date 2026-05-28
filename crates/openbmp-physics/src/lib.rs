@@ -73,7 +73,7 @@ pub use atmosphere::{
     sutherland_viscosity,
 };
 pub use ephemeris::{
-    ASTRONOMICAL_UNIT_M, CelestialBody, EphemerisModel, J2000_JULIAN_DATE,
+    ASTRONOMICAL_UNIT_M, CelestialBody, EphemerisModel, EphemerisState, J2000_JULIAN_DATE,
     LowPrecisionSunMoonEphemeris, MOON_MU_M3_S2, SUN_MU_M3_S2, SpkEphemeris,
 };
 pub use error::PhysicsError;
