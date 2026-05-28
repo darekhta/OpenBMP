@@ -158,9 +158,10 @@ reserved for the point where the full hierarchical profile graph and the new
 blocks become first-class and validated. Until then:
 
 - New event triggers reuse existing kinds where possible (`at_apogee`,
-  `at_altitude_descending` for the entry interface, `at_mass_fraction` for
-  burnout) so that no new `EventTriggerConfig` variant is needed for the common
-  profile.
+  `at_altitude_descending` for the entry interface). Burnout can be declared as
+  an `at_velocity` target-speed crossing when the profile defines burnout by
+  achieved velocity, or as `at_mass_fraction` when depletion is the intended
+  boundary.
 - New actions are additive `ScenarioActionConfig` variants:
   `jettison_stage` is implemented for the fixed-step RK4 separation envelope, while
   `select_guidance_profile` remains deferred.

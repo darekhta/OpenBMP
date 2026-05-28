@@ -153,6 +153,8 @@ pub struct EventScalars {
     /// ECI +z component of the velocity vector. Treated as vertical
     /// velocity for apogee / ascent / descent detection.
     pub vertical_velocity_m_s: f64,
+    /// Magnitude of the ECI velocity vector (m/s).
+    pub velocity_m_s: f64,
     /// Current mass divided by initial mass.
     pub mass_fraction: f64,
     /// Dynamic pressure (Pa). Left at `0.0` until atmosphere is wired
@@ -239,6 +241,12 @@ pub enum BuiltInEventTrigger {
         /// Threshold mass fraction in `[0, 1]`.
         remaining: f64,
     },
+    /// Fires the first tick where speed crosses up through
+    /// `velocity_m_s`.
+    AtVelocity {
+        /// Speed threshold (m/s).
+        velocity_m_s: f64,
+    },
     /// Fires when dynamic pressure crosses `pa`. The `falling` flag
     /// selects rising-edge (`false`) or falling-edge (`true`) crossing.
     AtDynamicPressure {
@@ -269,6 +277,9 @@ impl EventTrigger for BuiltInEventTrigger {
             Self::AtApogee => prev.vertical_velocity_m_s > 0.0 && curr.vertical_velocity_m_s <= 0.0,
             Self::AtMassFraction { remaining } => {
                 prev.mass_fraction > *remaining && curr.mass_fraction <= *remaining
+            }
+            Self::AtVelocity { velocity_m_s } => {
+                prev.velocity_m_s < *velocity_m_s && curr.velocity_m_s >= *velocity_m_s
             }
             Self::AtDynamicPressure { pa, falling: false } => {
                 prev.dynamic_pressure_pa < *pa && curr.dynamic_pressure_pa >= *pa

@@ -496,6 +496,7 @@ where
                     time_s: self.state.time.as_seconds(),
                     altitude_m: self.state.position.vector.z,
                     vertical_velocity_m_s: self.state.velocity.vector.z,
+                    velocity_m_s: self.state.velocity.vector.norm(),
                     mass_fraction: self.state.mass.get::<kilogram>() / self.initial_mass_kg,
                     dynamic_pressure_pa: 0.0,
                 });
@@ -504,6 +505,7 @@ where
                 time_s: canonical_time_s,
                 altitude_m: new_state.position.vector.z,
                 vertical_velocity_m_s: new_state.velocity.vector.z,
+                velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass.get::<kilogram>() / self.initial_mass_kg,
                 // The kernel does not wire atmosphere into
                 // the trigger eval; dynamic pressure is reported as
@@ -1479,6 +1481,7 @@ where
                     time_s: self.state.time.as_seconds(),
                     altitude_m: self.state.position.vector.z,
                     vertical_velocity_m_s: self.state.velocity.vector.z,
+                    velocity_m_s: self.state.velocity.vector.norm(),
                     mass_fraction: self.state.mass_props.mass.get::<kilogram>()
                         / self.initial_mass_kg,
                     dynamic_pressure_pa: 0.0,
@@ -1488,6 +1491,7 @@ where
                 time_s: canonical_time_s,
                 altitude_m: new_state.position.vector.z,
                 vertical_velocity_m_s: new_state.velocity.vector.z,
+                velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass_props.mass.get::<kilogram>() / self.initial_mass_kg,
                 // See point-mass kernel comment — atmosphere
                 // is not wired into the trigger eval.
@@ -2080,6 +2084,45 @@ mod tests {
         assert!(matches!(
             kernel.stop_reason(),
             Some(StopReason::MissionEnded { label, .. }) if label == "half-second"
+        ));
+    }
+
+    #[test]
+    fn at_velocity_event_uses_speed_magnitude_from_kernel_state() {
+        let event_id = crate::events::EventId::from_path("mission.events.burnout_velocity");
+        let events = vec![crate::events::EventBinding {
+            id: event_id,
+            trigger: crate::events::BuiltInEventTrigger::AtVelocity { velocity_m_s: 0.5 },
+            action: crate::events::MissionAction::Stop {
+                label: "burnout".to_owned(),
+            },
+            once: true,
+        }];
+        let config = SimulationConfig {
+            initial_state: PointMassState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Mass::new::<kilogram>(1.0),
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ConstantGravityForce::down_z(1.0),
+            mass_model: ConstantMass::new(1.0),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(1.0),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new(config)
+            .expect("construct")
+            .with_mission_split(events, Vec::new(), None, None)
+            .expect("mission wiring");
+
+        kernel.step().expect("step");
+
+        assert!(matches!(
+            kernel.stop_reason(),
+            Some(StopReason::MissionEnded { label, .. }) if label == "burnout"
         ));
     }
 

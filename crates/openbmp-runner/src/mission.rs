@@ -486,6 +486,9 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Run
         EventTriggerConfig::AtMassFraction { remaining } => BuiltInEventTrigger::AtMassFraction {
             remaining: *remaining,
         },
+        EventTriggerConfig::AtVelocity { velocity_m_s } => BuiltInEventTrigger::AtVelocity {
+            velocity_m_s: *velocity_m_s,
+        },
         EventTriggerConfig::AtDynamicPressure { .. } => {
             return Err(RunnerError::Scenario(
                 openbmp_scenario::ScenarioError::UnsupportedTriggerKind {
@@ -816,6 +819,21 @@ mod tests {
             marker_tags(&mission),
             vec!["entry_marker", "event_marker", "exit_marker"]
         );
+    }
+
+    #[test]
+    fn at_velocity_trigger_builds_runtime_trigger() -> Result<(), RunnerError> {
+        let trigger = build_trigger(&EventTriggerConfig::AtVelocity {
+            velocity_m_s: 1_850.0,
+        })?;
+
+        assert_eq!(
+            trigger,
+            BuiltInEventTrigger::AtVelocity {
+                velocity_m_s: 1_850.0
+            }
+        );
+        Ok(())
     }
 
     #[test]

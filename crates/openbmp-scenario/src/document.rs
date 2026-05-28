@@ -5360,6 +5360,12 @@ pub enum EventTriggerConfig {
         /// Threshold mass fraction in `[0, 1]`.
         remaining: f64,
     },
+    /// Speed-magnitude crossing on acceleration through a target
+    /// velocity.
+    AtVelocity {
+        /// Speed threshold (m/s).
+        velocity_m_s: f64,
+    },
     /// Deferred: rejected at parse time until atmosphere is
     /// wired into event evaluation.
     AtDynamicPressure {
@@ -5387,6 +5393,9 @@ impl EventTriggerConfig {
             Self::AtMassFraction { remaining } => {
                 require_finite(&path("remaining"), *remaining)?;
                 require_in_range(&path("remaining"), *remaining, 0.0, 1.0)?;
+            }
+            Self::AtVelocity { velocity_m_s } => {
+                require_positive(&path("velocity_m_s"), *velocity_m_s)?;
             }
             Self::AtDynamicPressure { .. } => {
                 return Err(ScenarioError::UnsupportedTriggerKind {

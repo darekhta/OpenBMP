@@ -236,9 +236,9 @@ impl Scenario {
 mod tests {
     use super::*;
     use crate::document::{
-        FcAntiWindupConfig, FcAttitudeLoopKind, FcAttitudeMpcConfig, FcFdirDetectorKindV5,
-        FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind, GrainGeometryConfig,
-        MissionScope, MissionScopeKind, WGS84_J2_DEFAULT,
+        EventTriggerConfig, FcAntiWindupConfig, FcAttitudeLoopKind, FcAttitudeMpcConfig,
+        FcFdirDetectorKindV5, FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind,
+        GrainGeometryConfig, MissionScope, MissionScopeKind, WGS84_J2_DEFAULT,
     };
     use openbmp_core::ValidationStatus;
 
@@ -3044,6 +3044,32 @@ id = "abort_requested"
     }
 
     #[test]
+    fn parses_at_velocity_trigger() {
+        let scenario = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "burnout_velocity"
+trigger = { kind = "at_velocity", velocity_m_s = 1850.0 }
+action  = { kind = "stop", label = "burnout" }
+"#,
+        ))
+        .expect("parse");
+        let mission = scenario.document.mission.as_ref().expect("mission");
+        assert!(matches!(
+            mission.events[0].trigger,
+            EventTriggerConfig::AtVelocity { velocity_m_s }
+                if velocity_m_s.to_bits() == 1850.0_f64.to_bits()
+        ));
+    }
+
+    #[test]
     fn rejects_unknown_field_in_mission_phase() {
         let err = Scenario::from_toml_str(&with_mission(
             r#"
@@ -3633,6 +3659,31 @@ action  = { kind = "stop", label = "burnout" }
         assert!(
             matches!(err, ScenarioError::InvalidNumber { .. }),
             "expected InvalidNumber, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_at_velocity_non_positive_threshold() {
+        let err = Scenario::from_toml_str(&with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[mission.events]]
+id      = "evt"
+trigger = { kind = "at_velocity", velocity_m_s = 0.0 }
+action  = { kind = "stop", label = "burnout" }
+"#,
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field == "mission.events[0].trigger.velocity_m_s"),
+            "expected InvalidNumber for velocity_m_s, got {err:?}",
         );
     }
 

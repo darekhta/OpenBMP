@@ -29,7 +29,7 @@ slosh sub-step plumbing
 - Mission scheduling: `EventTrigger` trait,
   `BuiltInEventTrigger` (AtTime / AtAltitudeAscending /
   AtAltitudeDescending / AtApogee / AtMassFraction /
-  AtDynamicPressure), typed `EventBinding` lists, and
+  AtVelocity / AtDynamicPressure), typed `EventBinding` lists, and
   `MissionPhaseGraph` with cycle-rejection at construction time and
   event-driven phase transitions.
 - `ModelEvalError` typed error surface; RK stages short-circuit

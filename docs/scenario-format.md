@@ -906,6 +906,7 @@ return `false` on step 0 because no previous-step snapshot exists.
 | `at_altitude_descending` | `altitude_m: f64` | Fires when altitude crosses down through `altitude_m`. |
 | `at_apogee` | — | Fires when vertical velocity flips from `> 0` to `<= 0`. |
 | `at_mass_fraction` | `remaining: f64` (in `[0, 1]`) | Fires when mass fraction (current / initial) drops to or below `remaining`. |
+| `at_velocity` | `velocity_m_s: f64` | Fires when speed magnitude crosses up through `velocity_m_s`. |
 | `at_dynamic_pressure` | `pressure_pa: f64`, `falling: bool` | Fires when dynamic pressure crosses `pressure_pa` in the direction set by `falling`. Requires atmosphere wired into event evaluation. |
 
 The `kind = "scripted"` trigger is rejected at parse time with a
