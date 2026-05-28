@@ -5,6 +5,8 @@
 //! approximation, and a small SPK/BSP byte parser for runner-supplied
 //! pinned JPL DE and mission kernels.
 
+use std::collections::BTreeMap;
+
 use nalgebra::{Matrix3, Vector3};
 use openbmp_core::SimTime;
 
@@ -356,12 +358,46 @@ impl EphemerisModel for LowPrecisionSunMoonEphemeris {
 /// and exposes
 /// SPICE-style reception/transmission light-time and
 /// stellar-aberration helpers for observation and pointing queries. It
-/// does not implement higher-order relativistic corrections,
-/// non-inertial frame chains, or generic text-kernel loading.
+/// supports runner-supplied fixed TK frame matrices. It does not
+/// implement higher-order relativistic corrections, dynamic frame
+/// chains, or generic text-kernel loading.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpkEphemeris {
     epoch_tdb_julian_date: f64,
     segments: Vec<SpkSegment>,
+    fixed_frames: BTreeMap<i32, SpkFixedFrame>,
+}
+
+/// Constant SPICE text-kernel frame transform for an SPK segment frame.
+///
+/// `frame_to_relative` follows NAIF TK frame matrix semantics:
+/// `V_relative = M * V_tkframe`. Because the transform is fixed, the
+/// same matrix is applied to position and velocity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpkFixedFrame {
+    relative_frame: i32,
+    frame_to_relative: Matrix3<f64>,
+}
+
+impl SpkFixedFrame {
+    /// Construct a fixed frame transform relative to another SPICE
+    /// frame ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when the matrix contains non-finite
+    /// values.
+    pub fn new(relative_frame: i32, frame_to_relative: Matrix3<f64>) -> Result<Self, PhysicsError> {
+        if !frame_to_relative.iter().all(|value| value.is_finite()) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SPK fixed frame matrix must be finite",
+            });
+        }
+        Ok(Self {
+            relative_frame,
+            frame_to_relative,
+        })
+    }
 }
 
 impl SpkEphemeris {
@@ -393,6 +429,31 @@ impl SpkEphemeris {
     where
         I: IntoIterator<Item = &'a [u8]>,
     {
+        Self::from_kernels_with_fixed_frames(epoch_tdb_julian_date, kernels, BTreeMap::new())
+    }
+
+    /// Parse one or more binary SPK/BSP kernels from bytes with
+    /// runner-supplied fixed TK frame transforms.
+    ///
+    /// Segment precedence follows SPICE's practical load-order rule:
+    /// later kernels in the iterator take priority over earlier
+    /// kernels when overlapping target/coverage segments exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when any byte slice is not a supported
+    /// DAF/SPK file, no kernels are supplied, or no supported type
+    /// 1/2/3/5/8/9/10/12/13/14/15/17/18/19/20/21 segments in supported
+    /// built-in inertial frames or supplied fixed frames are found
+    /// across all kernels.
+    pub fn from_kernels_with_fixed_frames<'a, I>(
+        epoch_tdb_julian_date: f64,
+        kernels: I,
+        fixed_frames: BTreeMap<i32, SpkFixedFrame>,
+    ) -> Result<Self, PhysicsError>
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
         if !epoch_tdb_julian_date.is_finite() {
             return Err(PhysicsError::InvalidParameter {
                 reason: "SPK epoch Julian Date must be finite",
@@ -403,7 +464,7 @@ impl SpkEphemeris {
         for bytes in kernels {
             kernel_count += 1;
             let daf = DafView::new(bytes)?;
-            segments.extend(daf.spk_segments()?);
+            segments.extend(daf.spk_segments(&fixed_frames)?);
         }
         if kernel_count == 0 {
             return Err(PhysicsError::InvalidParameter {
@@ -418,6 +479,7 @@ impl SpkEphemeris {
         Ok(Self {
             epoch_tdb_julian_date,
             segments,
+            fixed_frames,
         })
     }
 
@@ -628,7 +690,7 @@ impl SpkEphemeris {
             let Some(segment) = self.select_segment(current, et_s) else {
                 return Ok((current, state));
             };
-            state += segment.state_km_s(et_s)?;
+            state += segment.state_km_s_with_fixed_frames(et_s, &self.fixed_frames)?;
             current = segment.center;
         }
         Err(PhysicsError::InvalidParameter {
@@ -859,9 +921,18 @@ impl GenericSegmentMetadata {
 }
 
 impl SpkSegment {
+    #[cfg(test)]
     fn state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
+        self.state_km_s_with_fixed_frames(et_s, &BTreeMap::new())
+    }
+
+    fn state_km_s_with_fixed_frames(
+        &self,
+        et_s: f64,
+        fixed_frames: &BTreeMap<i32, SpkFixedFrame>,
+    ) -> Result<SpkStateKmS, PhysicsError> {
         let state = self.raw_state_km_s(et_s)?;
-        spk_frame_state_to_j2000_km_s(self.frame, state)
+        spk_frame_state_to_j2000_km_s(self.frame, state, fixed_frames)
     }
 
     fn raw_state_km_s(&self, et_s: f64) -> Result<SpkStateKmS, PhysicsError> {
@@ -1822,7 +1893,10 @@ impl<'a> DafView<'a> {
         })
     }
 
-    fn spk_segments(&self) -> Result<Vec<SpkSegment>, PhysicsError> {
+    fn spk_segments(
+        &self,
+        fixed_frames: &BTreeMap<i32, SpkFixedFrame>,
+    ) -> Result<Vec<SpkSegment>, PhysicsError> {
         let mut segments = Vec::new();
         let mut record = self.forward_record;
         for _ in 0..1_024 {
@@ -1837,7 +1911,7 @@ impl<'a> DafView<'a> {
                 let summary_offset =
                     record_offset + (SPK_SUMMARY_CONTROL_WORDS + index * SPK_SUMMARY_WORDS) * 8;
                 let descriptor = self.spk_descriptor(summary_offset)?;
-                if descriptor_supported(descriptor)
+                if descriptor_supported(descriptor, fixed_frames)
                     && let Some(segment) = self.segment_from_descriptor(descriptor)?
                 {
                     segments.push(segment);
@@ -2004,11 +2078,18 @@ fn supported_spk_inertial_frame(frame: i32) -> bool {
     (SPK_J2000_FRAME_ID..=SPK_DE143_FRAME_ID).contains(&frame)
 }
 
-fn descriptor_supported(descriptor: SpkDescriptor) -> bool {
+fn supported_spk_segment_frame(frame: i32, fixed_frames: &BTreeMap<i32, SpkFixedFrame>) -> bool {
+    supported_spk_inertial_frame(frame) || fixed_frames.contains_key(&frame)
+}
+
+fn descriptor_supported(
+    descriptor: SpkDescriptor,
+    fixed_frames: &BTreeMap<i32, SpkFixedFrame>,
+) -> bool {
     match descriptor.data_type {
         10 => descriptor.frame == SPK_J2000_FRAME_ID,
         1 | 2 | 3 | 5 | 8 | 9 | 12 | 13 | 14 | 15 | 17 | 18 | 19 | 20 | 21 => {
-            supported_spk_inertial_frame(descriptor.frame)
+            supported_spk_segment_frame(descriptor.frame, fixed_frames)
         }
         _ => false,
     }
@@ -2017,22 +2098,41 @@ fn descriptor_supported(descriptor: SpkDescriptor) -> bool {
 fn spk_frame_state_to_j2000_km_s(
     frame: i32,
     state: SpkStateKmS,
+    fixed_frames: &BTreeMap<i32, SpkFixedFrame>,
 ) -> Result<SpkStateKmS, PhysicsError> {
-    let Some(position_km) = spice_builtin_inertial_to_j2000_vector(frame, state.position_km) else {
-        return Err(PhysicsError::InvalidParameter {
-            reason: "unsupported SPK inertial frame",
-        });
-    };
-    let Some(velocity_km_s) = spice_builtin_inertial_to_j2000_vector(frame, state.velocity_km_s)
-    else {
-        return Err(PhysicsError::InvalidParameter {
-            reason: "unsupported SPK inertial frame",
-        });
-    };
+    let position_km = spk_frame_to_j2000_vector(frame, state.position_km, fixed_frames, 0)?;
+    let velocity_km_s = spk_frame_to_j2000_vector(frame, state.velocity_km_s, fixed_frames, 0)?;
     Ok(SpkStateKmS {
         position_km,
         velocity_km_s,
     })
+}
+
+fn spk_frame_to_j2000_vector(
+    frame: i32,
+    v: Vector3<f64>,
+    fixed_frames: &BTreeMap<i32, SpkFixedFrame>,
+    depth: usize,
+) -> Result<Vector3<f64>, PhysicsError> {
+    if let Some(rotated) = spice_builtin_inertial_to_j2000_vector(frame, v) {
+        return Ok(rotated);
+    }
+    if depth >= 16 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SPK fixed frame chain is too deep",
+        });
+    }
+    let Some(fixed_frame) = fixed_frames.get(&frame) else {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "unsupported SPK inertial or fixed frame",
+        });
+    };
+    spk_frame_to_j2000_vector(
+        fixed_frame.relative_frame,
+        fixed_frame.frame_to_relative * v,
+        fixed_frames,
+        depth + 1,
+    )
 }
 
 fn spice_builtin_inertial_to_j2000_vector(frame: i32, v: Vector3<f64>) -> Option<Vector3<f64>> {
@@ -4714,6 +4814,36 @@ mod tests {
                 1.0e-12,
             );
         }
+    }
+
+    #[test]
+    fn spk_ephemeris_rotates_fixed_frame_segments_to_j2000() {
+        const MISSION_FRAME: i32 = 123_001;
+        let bytes = synthetic_frame_spk(MISSION_FRAME, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let mut fixed_frames = BTreeMap::new();
+        fixed_frames.insert(
+            MISSION_FRAME,
+            SpkFixedFrame::new(
+                SPK_J2000_FRAME_ID,
+                Matrix3::new(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+            )
+            .unwrap(),
+        );
+        let ephemeris = SpkEphemeris::from_kernels_with_fixed_frames(
+            J2000_JULIAN_DATE,
+            [&bytes[..]],
+            fixed_frames,
+        )
+        .unwrap();
+        let sun = ephemeris
+            .body_state_eci_m_s(CelestialBody::Sun, SimTime::ZERO)
+            .unwrap();
+        assert_vector_near(sun.position_eci_m, Vector3::new(0.0, 1_000.0, 0.0), 1.0e-12);
+        assert_vector_near(
+            sun.velocity_eci_m_s,
+            Vector3::new(-1_000.0, 0.0, 0.0),
+            1.0e-12,
+        );
     }
 
     #[test]

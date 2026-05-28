@@ -255,6 +255,10 @@ where
     /// event triggers. Empty for point-mass kernels and before
     /// rigid-body lanes have detached.
     previous_event_relative_distances_m: Option<BTreeMap<crate::events::RelativeDistanceKey, f64>>,
+    /// Previous-step relative body-speed samples for inter-body event
+    /// triggers. Empty for point-mass kernels and before rigid-body
+    /// lanes have detached.
+    previous_event_relative_speeds_m_s: Option<BTreeMap<crate::events::RelativeDistanceKey, f64>>,
     /// Kernel-owned snapshot of effector-actuals values
     /// keyed by deck-axis name. The runner refreshes this map via
     /// [`Self::set_effector_actuals`] before each `step()` call so
@@ -379,6 +383,7 @@ where
             fired_once_events: std::collections::BTreeSet::new(),
             previous_event_scalars: None,
             previous_event_relative_distances_m: None,
+            previous_event_relative_speeds_m_s: None,
             effector_actuals: std::collections::BTreeMap::new(),
             engine_snapshot: std::collections::BTreeMap::new(),
             tank_snapshot: std::collections::BTreeMap::new(),
@@ -532,6 +537,9 @@ where
                 if self.previous_event_relative_distances_m.is_none() {
                     self.previous_event_relative_distances_m = Some(BTreeMap::new());
                 }
+                if self.previous_event_relative_speeds_m_s.is_none() {
+                    self.previous_event_relative_speeds_m_s = Some(BTreeMap::new());
+                }
             }
             let event_env = self.environment.sample(EnvironmentQuery {
                 time: SimTime::from_seconds(canonical_time_s),
@@ -550,6 +558,7 @@ where
             };
             self.evaluate_events(
                 scalars,
+                BTreeMap::new(),
                 BTreeMap::new(),
                 next_step,
                 SimTime::from_seconds(canonical_time_s),
@@ -947,6 +956,7 @@ where
         &mut self,
         scalars: crate::events::EventScalars,
         relative_distances_m: BTreeMap<crate::events::RelativeDistanceKey, f64>,
+        relative_speeds_m_s: BTreeMap<crate::events::RelativeDistanceKey, f64>,
         step: StepIndex,
         time: SimTime,
     ) {
@@ -957,6 +967,8 @@ where
             current_phase: self.current_phase,
             relative_distances_m: relative_distances_m.clone(),
             previous_relative_distances_m: self.previous_event_relative_distances_m.clone(),
+            relative_speeds_m_s: relative_speeds_m_s.clone(),
+            previous_relative_speeds_m_s: self.previous_event_relative_speeds_m_s.clone(),
         };
         let fc_owned = self.mission_state_authority == MissionStateAuthority::FlightController;
         let mut transitioned = false;
@@ -1037,6 +1049,7 @@ where
         }
         self.previous_event_scalars = Some(scalars);
         self.previous_event_relative_distances_m = Some(relative_distances_m);
+        self.previous_event_relative_speeds_m_s = Some(relative_speeds_m_s);
     }
 
     fn apply_graph_transition_for_event(
@@ -1283,6 +1296,7 @@ where
             fired_once_events: std::collections::BTreeSet::new(),
             previous_event_scalars: None,
             previous_event_relative_distances_m: None,
+            previous_event_relative_speeds_m_s: None,
             effector_actuals: std::collections::BTreeMap::new(),
             engine_snapshot: std::collections::BTreeMap::new(),
             tank_snapshot: std::collections::BTreeMap::new(),
@@ -1562,6 +1576,13 @@ where
                             &self.separated_rigid_bodies,
                         ));
                 }
+                if self.previous_event_relative_speeds_m_s.is_none() {
+                    self.previous_event_relative_speeds_m_s = Some(rigid_body_relative_speeds_m_s(
+                        self.primary_rigid_body,
+                        &self.state,
+                        &self.separated_rigid_bodies,
+                    ));
+                }
             }
             let event_env = self.environment.sample(EnvironmentQuery {
                 time: SimTime::from_seconds(canonical_time_s),
@@ -1583,9 +1604,15 @@ where
                 &new_state,
                 &self.separated_rigid_bodies,
             );
+            let relative_speeds_m_s = rigid_body_relative_speeds_m_s(
+                self.primary_rigid_body,
+                &new_state,
+                &self.separated_rigid_bodies,
+            );
             self.evaluate_events(
                 scalars,
                 relative_distances_m,
+                relative_speeds_m_s,
                 next_step,
                 SimTime::from_seconds(canonical_time_s),
             );
@@ -1830,6 +1857,20 @@ where
             &self.state,
             &self.separated_rigid_bodies,
         ));
+        self.previous_event_relative_speeds_m_s = Some(rigid_body_relative_speeds_m_s_from(
+            self.primary_rigid_body,
+            pre_split_state.velocity.vector,
+            &self.separated_rigid_bodies,
+            |body| {
+                if body.separated_at_step == separated_at_step
+                    && body.separated_at_time == separated_at_time
+                {
+                    pre_split_state.velocity.vector
+                } else {
+                    body.state.velocity.vector
+                }
+            },
+        ));
         Ok(())
     }
 
@@ -1956,6 +1997,61 @@ fn rigid_body_relative_distances_m(
         }
     }
     distances
+}
+
+fn rigid_body_relative_speeds_m_s(
+    primary_body: Option<BodyId>,
+    primary_state: &openbmp_state::RigidBodyState,
+    separated_bodies: &[SeparatedRigidBody],
+) -> BTreeMap<crate::events::RelativeDistanceKey, f64> {
+    rigid_body_relative_speeds_m_s_from(
+        primary_body,
+        primary_state.velocity.vector,
+        separated_bodies,
+        |body| body.state.velocity.vector,
+    )
+}
+
+fn rigid_body_relative_speeds_m_s_from<F>(
+    primary_body: Option<BodyId>,
+    primary_velocity: nalgebra::Vector3<f64>,
+    separated_bodies: &[SeparatedRigidBody],
+    separated_velocity: F,
+) -> BTreeMap<crate::events::RelativeDistanceKey, f64>
+where
+    F: Fn(&SeparatedRigidBody) -> nalgebra::Vector3<f64>,
+{
+    let mut speeds = BTreeMap::new();
+    for (index, target) in separated_bodies.iter().enumerate() {
+        let target_velocity = separated_velocity(target);
+        let speed_to_primary = (target_velocity - primary_velocity).norm();
+        speeds.insert(
+            crate::events::RelativeDistanceKey::new(target.body, None),
+            speed_to_primary,
+        );
+        if let Some(primary_body) = primary_body {
+            speeds.insert(
+                crate::events::RelativeDistanceKey::new(target.body, Some(primary_body)),
+                speed_to_primary,
+            );
+            speeds.insert(
+                crate::events::RelativeDistanceKey::new(primary_body, Some(target.body)),
+                speed_to_primary,
+            );
+        }
+        for reference in &separated_bodies[(index + 1)..] {
+            let pair_speed = (target_velocity - separated_velocity(reference)).norm();
+            speeds.insert(
+                crate::events::RelativeDistanceKey::new(target.body, Some(reference.body)),
+                pair_speed,
+            );
+            speeds.insert(
+                crate::events::RelativeDistanceKey::new(reference.body, Some(target.body)),
+                pair_speed,
+            );
+        }
+    }
+    speeds
 }
 
 // ---------------------------------------------------------------------
@@ -2363,6 +2459,66 @@ mod tests {
         assert!(matches!(
             kernel.stop_reason(),
             Some(StopReason::MissionEnded { label, .. }) if label == "rv-clear"
+        ));
+    }
+
+    #[test]
+    fn relative_speed_event_fires_after_rigid_body_deployment() {
+        let mass_props = unit_rigid_mass_properties();
+        let stack_body = BodyId::from_path("vehicle.assembly.bodies.bus");
+        let deployed_body = BodyId::from_path("vehicle.assembly.bodies.rv1");
+        let event_id = crate::events::EventId::from_path("mission.events.rv_departing");
+        let events = vec![crate::events::EventBinding {
+            id: event_id,
+            trigger: crate::events::BuiltInEventTrigger::AtRelativeSpeed {
+                target: deployed_body,
+                reference: None,
+                meters_per_second: 0.5,
+                falling: false,
+            },
+            action: crate::events::MissionAction::Stop {
+                label: "rv-departing".to_owned(),
+            },
+            once: true,
+        }];
+        let config = SimulationConfig {
+            initial_state: RigidBodyState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+                AngularVelocity3::zero(),
+                mass_props,
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ZeroForce,
+            mass_model: RigidModels::new(ZeroMoment, ConstantMassRigid::new(mass_props)),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(1.0),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new_rigid(config)
+            .expect("construct")
+            .with_mission_split(events, Vec::new(), None, None)
+            .expect("mission wiring");
+
+        kernel
+            .jettison_rigid_body(RigidBodySeparation {
+                stack_body,
+                body: deployed_body,
+                stack_mass_properties: mass_props,
+                stage_mass_properties: mass_props,
+                stack_delta_v_body_m_s: [0.0, 0.0, 0.0],
+                stage_delta_v_body_m_s: [0.0, 0.0, 0.0],
+            })
+            .expect("manual separation");
+        kernel.separated_rigid_bodies[0].state.velocity = Velocity3::new(1.0, 0.0, 0.0);
+        kernel.step().expect("step");
+
+        assert!(matches!(
+            kernel.stop_reason(),
+            Some(StopReason::MissionEnded { label, .. }) if label == "rv-departing"
         ));
     }
 

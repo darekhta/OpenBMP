@@ -171,6 +171,12 @@ fn bus_rv_deployment_scenario_runs_batch_release_and_clearance_marker() {
         clearance_marker.iter().any(|value| *value),
         "relative-distance marker should fire after rv1 clears the bus: {clearance_marker:?}"
     );
+
+    let departing_marker = read_bool_column(&parquet, "mission.marker.rv1_departing");
+    assert!(
+        departing_marker.iter().any(|value| *value),
+        "relative-speed marker should fire after rv1 receives deployment velocity: {departing_marker:?}"
+    );
 }
 
 #[test]

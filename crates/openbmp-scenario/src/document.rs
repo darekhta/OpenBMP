@@ -1236,25 +1236,29 @@ impl ScenarioDocument {
             .collect();
 
         for (event_index, event) in mission.events.iter().enumerate() {
-            let EventTriggerConfig::AtRelativeDistance {
-                body,
-                reference_body,
-                ..
-            } = &event.trigger
-            else {
-                continue;
+            let (kind, body, reference_body) = match &event.trigger {
+                EventTriggerConfig::AtRelativeDistance {
+                    body,
+                    reference_body,
+                    ..
+                } => ("at_relative_distance", body, reference_body),
+                EventTriggerConfig::AtRelativeSpeed {
+                    body,
+                    reference_body,
+                    ..
+                } => ("at_relative_speed", body, reference_body),
+                _ => continue,
             };
             if self.vehicle.kind != "rigid_body" {
                 return Err(ScenarioError::IncompatibleAssemblyEntry {
                     field: format!("mission.events[{event_index}].trigger.kind"),
-                    reason: "at_relative_distance requires vehicle.kind = \"rigid_body\""
-                        .to_owned(),
+                    reason: format!("{kind} requires vehicle.kind = \"rigid_body\""),
                 });
             }
             if self.multi_body.is_none() {
                 return Err(ScenarioError::InconsistentSection {
                     field_a: format!("mission.events[{event_index}].trigger.kind"),
-                    value_a: "at_relative_distance".to_owned(),
+                    value_a: kind.to_owned(),
                     field_b: "multi_body".to_owned(),
                     value_b: "missing".to_owned(),
                 });
@@ -6094,6 +6098,21 @@ pub enum EventTriggerConfig {
         #[serde(default)]
         falling: bool,
     },
+    /// Relative speed crossing between a body and the current primary
+    /// lane, or another body if `reference_body` is supplied.
+    AtRelativeSpeed {
+        /// Assembly body id to monitor.
+        body: String,
+        /// Optional reference assembly body id. When omitted, the
+        /// current primary rigid-body lane is used.
+        #[serde(default)]
+        reference_body: Option<String>,
+        /// Relative-speed threshold (m/s).
+        speed_m_s: f64,
+        /// `false`: rising-edge crossing. `true`: falling-edge.
+        #[serde(default)]
+        falling: bool,
+    },
     /// Deferred: rejected at parse time.
     Scripted,
 }
@@ -6131,6 +6150,18 @@ impl EventTriggerConfig {
                     require_non_empty(&path("reference_body"), reference_body)?;
                 }
                 require_positive(&path("distance_m"), *distance_m)?;
+            }
+            Self::AtRelativeSpeed {
+                body,
+                reference_body,
+                speed_m_s,
+                ..
+            } => {
+                require_non_empty(&path("body"), body)?;
+                if let Some(reference_body) = reference_body {
+                    require_non_empty(&path("reference_body"), reference_body)?;
+                }
+                require_positive(&path("speed_m_s"), *speed_m_s)?;
             }
             Self::Scripted => {
                 return Err(ScenarioError::UnsupportedTriggerKind {

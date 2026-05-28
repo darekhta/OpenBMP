@@ -556,11 +556,15 @@ entries from the expanded list and records every referenced file for
 provenance. A NAIF LSK referenced by the meta-kernel can supply UTC
 time conversion if `epoch.leap_second_table` is omitted; when several
 referenced LSK files are present, the last one in `KERNELS_TO_LOAD`
-order is used. Later SPK files take precedence over earlier files for
-overlapping SPK segments. The SPK reader evaluates seconds past J2000
-on the ephemeris-time/TDB axis, so `[epoch].scale` may be `"TDB"`,
-`"TT"`, or `"UTC"`; `"UTC"` requires either `epoch.leap_second_table`
-or a NAIF LSK in the selected meta-kernel.
+order is used. Meta-kernel referenced text kernels can also define fixed
+mission frames with `TKFRAME_*_SPEC` values `MATRIX`, `ANGLES`, or
+`QUATERNION`; matrices use NAIF's column-major kernel order and the
+resolved transform is applied as `V_relative = M * V_tkframe`. Later SPK
+files take precedence over earlier files for overlapping SPK segments.
+The SPK reader evaluates seconds past J2000 on the ephemeris-time/TDB
+axis, so `[epoch].scale` may be `"TDB"`, `"TT"`, or `"UTC"`; `"UTC"`
+requires either `epoch.leap_second_table` or a NAIF LSK in the selected
+meta-kernel.
 
 ```toml
 [epoch]
@@ -629,9 +633,13 @@ type 18 ESOC/DDID
 subtype 0/1 packets, type 19 ESOC/DDID piecewise mini-segments, type 20
 Chebyshev velocity-only segments, and type 21 extended
 modified-difference arrays in NAIF's built-in SPICE inertial frame IDs
-1-21, rotating those segment states into OpenBMP's J2000 ECI chain.
-Type 10 remains J2000-only because its evaluator already rotates TEME
-states into J2000. Type 1 evaluates fixed-dimension
+1-21 or in fixed `TKFRAME_*_SPEC` frames loaded from the selected
+meta-kernel, rotating those segment states into OpenBMP's J2000 ECI
+chain. Fixed TK frames may use `MATRIX`, `ANGLES`, or `QUATERNION`
+specs, and may be relative to a supported built-in inertial frame or to
+another fixed TK frame declared in the same text kernel. Type 10 remains
+J2000-only because its evaluator already rotates TEME states into J2000.
+Type 1 evaluates fixed-dimension
 modified difference lines; type 2 velocities are derived from the
 Chebyshev position derivative; type 3 velocities come from the segment
 velocity coefficients; type 5 propagates bracketing discrete states with
@@ -664,7 +672,7 @@ the SPK API also exposes reception-side `LT`, `LT+S`, `CN`, and
 light-time / stellar-aberration corrections like SPICE's documented
 `ABCORR` flags; higher-order relativistic effects remain outside
 scope. It does not yet implement generic text kernels beyond NAIF LSK
-leap-second files and meta-kernel expansion, dynamic frames, or a full
+leap-second files and fixed TK frames, dynamic frames, or a full
 FK/PCK/CK frame-kernel chain.
 
 ### Frames local origin
@@ -1180,6 +1188,7 @@ return `false` on step 0 because no previous-step snapshot exists.
 | `at_velocity` | `velocity_m_s: f64`, optional `falling: bool = false` | Fires when speed magnitude crosses `velocity_m_s`; `falling = false` selects the rising edge and `falling = true` selects the falling edge. |
 | `at_dynamic_pressure` | `pressure_pa: f64 >= 0`, `falling: bool` | Fires when dynamic pressure crosses `pressure_pa` in the direction set by `falling`. Runner event evaluation computes `q = 0.5 * rho * |v|^2` from the selected runtime atmosphere; use `us_standard_1976`, `piecewise_exponential`, `nrlmsise00`, or `nrlmsis2_compat`. |
 | `at_relative_distance` | `body: string`, `distance_m: f64 > 0`, optional `reference_body: string`, optional `falling: bool = false` | Rigid-body `[multi_body]` only. Fires when the range between `body` and `reference_body` crosses `distance_m`; if `reference_body` is omitted, the current primary lane is used. The trigger is false until the named bodies are active propagated lanes. |
+| `at_relative_speed` | `body: string`, `speed_m_s: f64 > 0`, optional `reference_body: string`, optional `falling: bool = false` | Rigid-body `[multi_body]` only. Fires when the relative speed between `body` and `reference_body` crosses `speed_m_s`; if `reference_body` is omitted, the current primary lane is used. The trigger is false until the named bodies are active propagated lanes. |
 
 The `kind = "scripted"` trigger is rejected at parse time with a
 typed deferral error: scripted triggers are not supported. The
@@ -2395,9 +2404,10 @@ or at the model capability gate; the composite force stack is not
 silently reused for detached bodies. Telemetry includes the continuing
 primary lane in the existing state channels and each departing body in
 `body.<lower_body_id>.*` channels, including
-`body.<lower_body_id>.separated`. Relative range triggers can observe
-these lanes with `trigger.kind = "at_relative_distance"` after the
-separation has occurred.
+`body.<lower_body_id>.separated`. Relative range and speed triggers
+can observe these lanes with `trigger.kind = "at_relative_distance"`
+or `trigger.kind = "at_relative_speed"` after the separation has
+occurred.
 
 ### v3-only `[fc]` sub-blocks
 

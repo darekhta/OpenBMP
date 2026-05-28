@@ -45,9 +45,12 @@ OpenBMP implementation slice.
 - Added `at_relative_distance` mission triggers so post-deployment
   events can observe ranges between detached rigid-body lanes and the
   primary bus, or between two detached lanes.
+- Added `at_relative_speed` mission triggers so post-deployment events
+  can observe relative velocity between detached rigid-body lanes and
+  the primary bus, or between two detached lanes.
 - Added a shipped `bus-rv-deployment` scenario and CLI e2e coverage
-  for a bus releasing two rigid lanes on one event tick, then firing a
-  relative-distance clearance marker.
+  for a bus releasing two rigid lanes on one event tick, then firing
+  relative-distance clearance and relative-speed markers.
 - Added `frame_profile = "iers-tabulated"` with pinned TOML EOP table
   ingestion for interpolated UT1-UTC and polar motion.
 - Added `environment.ephemeris = "spk"` with SHA-256-pinned binary
@@ -118,6 +121,11 @@ OpenBMP implementation slice.
   SPK meta-kernel, matching the common SPICE workflow where the
   meta-kernel loads both the planetary BSP and `naif*.tls`. An explicit
   `epoch.leap_second_table` still takes precedence.
+- Added fixed NAIF TK frame text-kernel ingestion from SPK meta-kernel
+  referenced files. The runner resolves `FRAME_<name> = <id>` aliases,
+  supports `TKFRAME_*_SPEC` values `MATRIX`, `ANGLES`, and
+  `QUATERNION`, and supplies fixed segment-frame transforms to the SPK
+  evaluator.
 - Added compact IAU 1976 mean precession in the `iers-tabulated`
   ECI/ECEF path before Earth rotation and polar motion.
 - Added IAU 1980 nutation in the `iers-tabulated` celestial-frame path,
@@ -127,9 +135,10 @@ OpenBMP implementation slice.
 
 - SPK ingestion is intentionally limited to geometric state chains from
   binary SPK/BSP kernels plus reception/transmission apparent-state
-  helpers. It does not yet implement generic text kernels beyond NAIF
-  LSK leap-second files and meta-kernel expansion, dynamic frames, or a
-  full FK/PCK/CK frame-kernel chain. Relativistic corrections beyond
+  helpers. Text-kernel support is limited to NAIF LSK leap-second files
+  and fixed TK frames referenced by meta-kernels; it does not yet
+  implement dynamic frames or a full FK/PCK/CK frame-kernel chain.
+  Relativistic corrections beyond
   Newtonian light time / stellar aberration are outside this scope; NAIF's own
   aberration-correction documentation says those effects are not
   performed by SPICE aberration routines either.
@@ -138,9 +147,10 @@ OpenBMP implementation slice.
   Velocity transport now includes the finite-difference rate of the full
   compact J2000-to-ECEF orientation chain.
 - Multi-body OpenBMP propagation is still independent-lane rigid-body
-  propagation after deployment. Relative-distance triggers can observe
-  lane geometry, but Basilisk's message-passing architecture supports
-  many simultaneously configured spacecraft modules more generally.
+  propagation after deployment. Relative-distance and relative-speed
+  triggers can observe lane geometry and kinematics, but Basilisk's
+  message-passing architecture supports many simultaneously configured
+  spacecraft modules more generally.
 
 ## References
 
@@ -165,8 +175,9 @@ OpenBMP implementation slice.
 - NASA NAIF DAF Required Reading describes the binary file
   architecture used by SPK, CK, and binary PCK kernels:
   https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/daf.html
-- NASA NAIF Frames Required Reading lists built-in inertial frames and
-  distinguishes them from FK/PCK/CK frame chains:
+- NASA NAIF Frames Required Reading lists built-in inertial frames,
+  defines fixed TK frame matrix kernels, and distinguishes those from
+  dynamic FK/PCK/CK frame chains:
   https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/FORTRAN/req/frames.html
 - NASA NAIF `IRFROT` documents the built-in inertial frame IDs used by
   the SPICE frame subsystem:

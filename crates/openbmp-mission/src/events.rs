@@ -201,6 +201,10 @@ pub struct EventEvalState {
     pub relative_distances_m: BTreeMap<RelativeDistanceKey, f64>,
     /// Previous-tick relative body distances. `None` on the first tick.
     pub previous_relative_distances_m: Option<BTreeMap<RelativeDistanceKey, f64>>,
+    /// Current-tick relative speed magnitudes keyed by target/reference.
+    pub relative_speeds_m_s: BTreeMap<RelativeDistanceKey, f64>,
+    /// Previous-tick relative speed magnitudes. `None` on the first tick.
+    pub previous_relative_speeds_m_s: Option<BTreeMap<RelativeDistanceKey, f64>>,
 }
 
 // ---------------------------------------------------------------------
@@ -297,6 +301,19 @@ pub enum BuiltInEventTrigger {
         /// threshold). `true`: falling-edge crossing.
         falling: bool,
     },
+    /// Fires when the relative speed between a target body and the
+    /// primary lane, or another named body, crosses `meters_per_second`.
+    AtRelativeSpeed {
+        /// Target body to monitor.
+        target: BodyId,
+        /// Reference body. `None` selects the current primary lane.
+        reference: Option<BodyId>,
+        /// Relative-speed threshold (m/s).
+        meters_per_second: f64,
+        /// `false`: rising-edge crossing (relative speed increasing
+        /// through threshold). `true`: falling-edge crossing.
+        falling: bool,
+    },
 }
 
 impl EventTrigger for BuiltInEventTrigger {
@@ -353,6 +370,28 @@ impl EventTrigger for BuiltInEventTrigger {
                     prev_distance_m > *meters && curr_distance_m <= *meters
                 } else {
                     prev_distance_m < *meters && curr_distance_m >= *meters
+                }
+            }
+            Self::AtRelativeSpeed {
+                target,
+                reference,
+                meters_per_second,
+                falling,
+            } => {
+                let Some(previous_speeds) = state.previous_relative_speeds_m_s.as_ref() else {
+                    return false;
+                };
+                let key = RelativeDistanceKey::new(*target, *reference);
+                let Some(prev_speed_m_s) = previous_speeds.get(&key).copied() else {
+                    return false;
+                };
+                let Some(curr_speed_m_s) = state.relative_speeds_m_s.get(&key).copied() else {
+                    return false;
+                };
+                if *falling {
+                    prev_speed_m_s > *meters_per_second && curr_speed_m_s <= *meters_per_second
+                } else {
+                    prev_speed_m_s < *meters_per_second && curr_speed_m_s >= *meters_per_second
                 }
             }
         }

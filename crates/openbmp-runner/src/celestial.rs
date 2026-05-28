@@ -2,11 +2,12 @@
 
 use std::collections::BTreeMap;
 
+use nalgebra::Matrix3;
 use openbmp_core::{Eci, Position3, SimTime};
 use openbmp_physics::{
     CelestialBody, Egm2008ZonalGravity, EphemerisModel, EphemerisState, GravityModel, J2Gravity,
-    J2000_JULIAN_DATE, LowPrecisionSunMoonEphemeris, PointMassGravity, SpkEphemeris, ThirdBody,
-    ThirdBodyGravity, WGS84_J2,
+    J2000_JULIAN_DATE, LowPrecisionSunMoonEphemeris, PointMassGravity, SpkEphemeris, SpkFixedFrame,
+    ThirdBody, ThirdBodyGravity, WGS84_J2,
 };
 use openbmp_scenario::{ResolvedFile, ScenarioDocument};
 
@@ -123,10 +124,14 @@ fn build_ephemeris(
                 });
             }
             let kernels = resolved_spk_kernels(document, resolved_files)?;
-            Ok(RuntimeEphemeris::Spk(SpkEphemeris::from_kernels(
-                epoch_tdb_julian_date(document, resolved_files, true)?,
-                kernels,
-            )?))
+            let fixed_frames = resolved_spk_fixed_frames(document, resolved_files)?;
+            Ok(RuntimeEphemeris::Spk(
+                SpkEphemeris::from_kernels_with_fixed_frames(
+                    epoch_tdb_julian_date(document, resolved_files, true)?,
+                    kernels,
+                    fixed_frames,
+                )?,
+            ))
         }
         other => Err(RunnerError::UnsupportedScenario {
             what: format!("environment.ephemeris = {other} is not wired"),
@@ -185,6 +190,436 @@ fn resolved_spk_kernels<'a>(
         });
     }
     Ok(kernels)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SpiceKernelAssignment {
+    key: String,
+    value: String,
+}
+
+fn resolved_spk_fixed_frames(
+    document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<BTreeMap<i32, SpkFixedFrame>, RunnerError> {
+    let mut fixed_frames = BTreeMap::new();
+    if document.environment.ephemeris_meta_kernel.is_none() {
+        return Ok(fixed_frames);
+    }
+    for index in 0.. {
+        let key = format!("environment.ephemeris_meta_kernel.files[{index}]");
+        let Some(resolved) = resolved_files.get(&key) else {
+            break;
+        };
+        if resolved.bytes.starts_with(b"DAF/SPK ") {
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(&resolved.bytes) else {
+            continue;
+        };
+        if !text.to_ascii_uppercase().contains("TKFRAME_") {
+            continue;
+        }
+        fixed_frames.extend(parse_spk_fixed_frames_text_kernel(text)?);
+    }
+    Ok(fixed_frames)
+}
+
+fn parse_spk_fixed_frames_text_kernel(
+    text: &str,
+) -> Result<BTreeMap<i32, SpkFixedFrame>, RunnerError> {
+    let assignments = spice_text_kernel_assignments(text);
+    let mut values = BTreeMap::new();
+    for assignment in assignments {
+        values.insert(assignment.key, assignment.value);
+    }
+    let frame_names = spice_frame_name_assignments(&values);
+    let mut fixed_frames = BTreeMap::new();
+    for (key, spec_value) in &values {
+        let Some(frame_token) = key
+            .strip_prefix("TKFRAME_")
+            .and_then(|suffix| suffix.strip_suffix("_SPEC"))
+        else {
+            continue;
+        };
+        let relative_key = format!("TKFRAME_{frame_token}_RELATIVE");
+        let Some(spec) = spice_scalar(spec_value) else {
+            continue;
+        };
+        let Some(frame_id) = spice_frame_reference_to_id(frame_token, &frame_names) else {
+            continue;
+        };
+        let Some(relative) = values
+            .get(&relative_key)
+            .and_then(|value| spice_scalar(value))
+        else {
+            continue;
+        };
+        let Some(relative_frame) = spice_frame_reference_to_id(&relative, &frame_names) else {
+            continue;
+        };
+        let Some(frame_to_relative) = spice_tkframe_matrix(frame_token, &spec, &values)? else {
+            continue;
+        };
+        fixed_frames.insert(
+            frame_id,
+            SpkFixedFrame::new(relative_frame, frame_to_relative)?,
+        );
+    }
+    Ok(fixed_frames)
+}
+
+fn spice_tkframe_matrix(
+    frame_token: &str,
+    spec: &str,
+    values: &BTreeMap<String, String>,
+) -> Result<Option<Matrix3<f64>>, RunnerError> {
+    match spec.to_ascii_uppercase().as_str() {
+        "MATRIX" => {
+            let matrix_key = format!("TKFRAME_{frame_token}_MATRIX");
+            let Some(matrix_value) = values.get(&matrix_key) else {
+                return Ok(None);
+            };
+            let entries = spice_numeric_values(matrix_value)?;
+            if entries.len() != 9 {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "SPICE TKFRAME_{frame_token}_MATRIX must contain exactly 9 numeric values"
+                    ),
+                });
+            }
+            Ok(Some(Matrix3::new(
+                entries[0], entries[3], entries[6], entries[1], entries[4], entries[7], entries[2],
+                entries[5], entries[8],
+            )))
+        }
+        "ANGLES" => spice_tkframe_angles_matrix(frame_token, values).map(Some),
+        "QUATERNION" => spice_tkframe_quaternion_matrix(frame_token, values).map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn spice_tkframe_angles_matrix(
+    frame_token: &str,
+    values: &BTreeMap<String, String>,
+) -> Result<Matrix3<f64>, RunnerError> {
+    let angles_key = format!("TKFRAME_{frame_token}_ANGLES");
+    let axes_key = format!("TKFRAME_{frame_token}_AXES");
+    let units_key = format!("TKFRAME_{frame_token}_UNITS");
+    let angles = required_spice_numeric_values(values, &angles_key)?;
+    let axes = required_spice_numeric_values(values, &axes_key)?;
+    if angles.len() != 3 {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!("SPICE {angles_key} must contain exactly 3 numeric values"),
+        });
+    }
+    if axes.len() != 3 {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!("SPICE {axes_key} must contain exactly 3 numeric values"),
+        });
+    }
+    let units = values
+        .get(&units_key)
+        .and_then(|value| spice_scalar(value))
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!("SPICE {units_key} is required for ANGLES TK frames"),
+        })?;
+    let scale =
+        spice_angle_unit_to_radians(&units).ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!("SPICE {units_key} value `{units}` is not supported"),
+        })?;
+    let mut axis_values = [0_i32; 3];
+    for (index, value) in axes.iter().enumerate() {
+        axis_values[index] =
+            spice_axis_number(*value).ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: format!("SPICE {axes_key}[{index}] must be one of 1, 2, or 3"),
+            })?;
+    }
+    Ok(spice_euler_matrix(
+        [angles[0] * scale, angles[1] * scale, angles[2] * scale],
+        axis_values,
+    ))
+}
+
+fn spice_tkframe_quaternion_matrix(
+    frame_token: &str,
+    values: &BTreeMap<String, String>,
+) -> Result<Matrix3<f64>, RunnerError> {
+    let q_key = format!("TKFRAME_{frame_token}_Q");
+    let q = required_spice_numeric_values(values, &q_key)?;
+    if q.len() != 4 {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!("SPICE {q_key} must contain exactly 4 numeric values"),
+        });
+    }
+    Ok(spice_quaternion_to_matrix([q[0], q[1], q[2], q[3]]))
+}
+
+fn spice_text_kernel_assignments(text: &str) -> Vec<SpiceKernelAssignment> {
+    let parse_all = !text
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("\\begindata"));
+    let mut assignments = Vec::new();
+    let mut in_data = parse_all;
+    let mut current_key: Option<String> = None;
+    let mut current_value = String::new();
+    let mut paren_balance = 0_i32;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("\\begindata") {
+            in_data = true;
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("\\begintext") {
+            in_data = parse_all;
+            current_key = None;
+            current_value.clear();
+            paren_balance = 0;
+            continue;
+        }
+        if !in_data || trimmed.is_empty() {
+            continue;
+        }
+        if let Some(key) = &current_key {
+            current_value.push(' ');
+            current_value.push_str(trimmed);
+            paren_balance += spice_paren_balance_delta(trimmed);
+            if paren_balance <= 0 {
+                assignments.push(SpiceKernelAssignment {
+                    key: key.clone(),
+                    value: current_value.trim().to_owned(),
+                });
+                current_key = None;
+                current_value.clear();
+                paren_balance = 0;
+            }
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_uppercase();
+        let value = value.trim().to_owned();
+        paren_balance = spice_paren_balance_delta(&value);
+        if paren_balance > 0 {
+            current_key = Some(key);
+            current_value = value;
+        } else {
+            assignments.push(SpiceKernelAssignment { key, value });
+        }
+    }
+    assignments
+}
+
+fn spice_paren_balance_delta(value: &str) -> i32 {
+    value.chars().fold(0_i32, |balance, character| {
+        balance
+            + match character {
+                '(' => 1,
+                ')' => -1,
+                _ => 0,
+            }
+    })
+}
+
+fn spice_frame_name_assignments(values: &BTreeMap<String, String>) -> BTreeMap<String, i32> {
+    let mut names = BTreeMap::new();
+    for (key, value) in values {
+        let Some(frame_key) = key.strip_prefix("FRAME_") else {
+            continue;
+        };
+        if let Some(id_token) = frame_key.strip_suffix("_NAME") {
+            if let Ok(frame_id) = id_token.parse::<i32>()
+                && let Some(name) = spice_scalar(value)
+            {
+                names.insert(name.to_ascii_uppercase(), frame_id);
+            }
+            continue;
+        }
+        if spice_direct_frame_id_key(frame_key)
+            && let Ok(frame_id) = spice_scalar(value)
+                .unwrap_or_else(|| value.trim().to_owned())
+                .parse::<i32>()
+        {
+            names.insert(frame_key.to_ascii_uppercase(), frame_id);
+        }
+    }
+    names
+}
+
+fn spice_direct_frame_id_key(frame_key: &str) -> bool {
+    !frame_key.starts_with('-')
+        && !frame_key
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+        && !frame_key.ends_with("_NAME")
+        && !frame_key.ends_with("_CLASS")
+        && !frame_key.ends_with("_CLASS_ID")
+        && !frame_key.ends_with("_CENTER")
+}
+
+fn spice_frame_reference_to_id(
+    reference: &str,
+    frame_names: &BTreeMap<String, i32>,
+) -> Option<i32> {
+    let trimmed = reference.trim();
+    if let Ok(frame_id) = trimmed.parse::<i32>() {
+        return Some(frame_id);
+    }
+    let normalized = trimmed.to_ascii_uppercase();
+    if let Some(frame_id) = frame_names.get(&normalized) {
+        return Some(*frame_id);
+    }
+    spice_builtin_frame_name_to_id(&normalized)
+}
+
+fn spice_builtin_frame_name_to_id(name: &str) -> Option<i32> {
+    let compact: String = name
+        .chars()
+        .filter(|character| !matches!(character, '-' | '_' | ' '))
+        .collect();
+    match compact.as_str() {
+        "J2000" => Some(1),
+        "B1950" => Some(2),
+        "FK4" => Some(3),
+        "DE118" => Some(4),
+        "DE96" => Some(5),
+        "DE102" => Some(6),
+        "DE108" => Some(7),
+        "DE111" => Some(8),
+        "DE114" => Some(9),
+        "DE122" => Some(10),
+        "DE125" => Some(11),
+        "DE130" => Some(12),
+        "GALACTIC" => Some(13),
+        "DE200" => Some(14),
+        "DE202" => Some(15),
+        "MARSIAU" => Some(16),
+        "ECLIPJ2000" => Some(17),
+        "ECLIPB1950" => Some(18),
+        "DE140" => Some(19),
+        "DE142" => Some(20),
+        "DE143" => Some(21),
+        _ => None,
+    }
+}
+
+fn spice_scalar(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches(',').trim();
+    for quote in ['\'', '"'] {
+        if let Some(rest) = trimmed.strip_prefix(quote)
+            && let Some((scalar, _)) = rest.split_once(quote)
+        {
+            return Some(scalar.trim().to_owned());
+        }
+    }
+    trimmed
+        .trim_matches(|character| matches!(character, '(' | ')' | ','))
+        .split_whitespace()
+        .next()
+        .map(str::to_owned)
+}
+
+fn spice_numeric_values(value: &str) -> Result<Vec<f64>, RunnerError> {
+    let normalized = value.replace(['(', ')', ','], " ");
+    let mut parsed = Vec::new();
+    for token in normalized.split_whitespace() {
+        let token = token
+            .chars()
+            .map(|character| match character {
+                'D' => 'E',
+                'd' => 'e',
+                other => other,
+            })
+            .collect::<String>();
+        let value = token
+            .parse::<f64>()
+            .map_err(|_| RunnerError::UnsupportedScenario {
+                what: format!("SPICE TKFRAME matrix value `{token}` is not numeric"),
+            })?;
+        if !value.is_finite() {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!("SPICE TKFRAME matrix value `{token}` is not finite"),
+            });
+        }
+        parsed.push(value);
+    }
+    Ok(parsed)
+}
+
+fn required_spice_numeric_values(
+    values: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<Vec<f64>, RunnerError> {
+    let Some(value) = values.get(key) else {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!("SPICE {key} is required for TK frame definition"),
+        });
+    };
+    spice_numeric_values(value)
+}
+
+fn spice_angle_unit_to_radians(units: &str) -> Option<f64> {
+    match units.to_ascii_uppercase().as_str() {
+        "RADIANS" | "RADIAN" => Some(1.0),
+        "DEGREES" | "DEGREE" => Some(std::f64::consts::PI / 180.0),
+        "ARCSECONDS" | "ARCSECOND" => Some(std::f64::consts::PI / (180.0 * 3_600.0)),
+        _ => None,
+    }
+}
+
+fn spice_axis_number(value: f64) -> Option<i32> {
+    if !value.is_finite() {
+        return None;
+    }
+    let rounded = value.round();
+    if (value - rounded).abs() > 0.0 {
+        return None;
+    }
+    match rounded as i32 {
+        axis @ 1..=3 => Some(axis),
+        _ => None,
+    }
+}
+
+fn spice_euler_matrix(angles_rad: [f64; 3], axes: [i32; 3]) -> Matrix3<f64> {
+    spice_coordinate_rotation_matrix(angles_rad[2], axes[2])
+        * spice_coordinate_rotation_matrix(angles_rad[1], axes[1])
+        * spice_coordinate_rotation_matrix(angles_rad[0], axes[0])
+}
+
+fn spice_coordinate_rotation_matrix(angle_rad: f64, axis: i32) -> Matrix3<f64> {
+    let (sin, cos) = angle_rad.sin_cos();
+    match axis {
+        1 => Matrix3::new(1.0, 0.0, 0.0, 0.0, cos, sin, 0.0, -sin, cos),
+        2 => Matrix3::new(cos, 0.0, -sin, 0.0, 1.0, 0.0, sin, 0.0, cos),
+        3 => Matrix3::new(cos, sin, 0.0, -sin, cos, 0.0, 0.0, 0.0, 1.0),
+        _ => Matrix3::identity(),
+    }
+}
+
+fn spice_quaternion_to_matrix(q: [f64; 4]) -> Matrix3<f64> {
+    let norm = q.iter().map(|value| value * value).sum::<f64>().sqrt();
+    if norm == 0.0 || !norm.is_finite() {
+        return Matrix3::identity();
+    }
+    let q0 = q[0] / norm;
+    let q1 = q[1] / norm;
+    let q2 = q[2] / norm;
+    let q3 = q[3] / norm;
+    Matrix3::new(
+        1.0 - 2.0 * (q2 * q2 + q3 * q3),
+        2.0 * (q1 * q2 - q0 * q3),
+        2.0 * (q1 * q3 + q0 * q2),
+        2.0 * (q1 * q2 + q0 * q3),
+        1.0 - 2.0 * (q1 * q1 + q3 * q3),
+        2.0 * (q2 * q3 - q0 * q1),
+        2.0 * (q1 * q3 - q0 * q2),
+        2.0 * (q2 * q3 + q0 * q1),
+        1.0 - 2.0 * (q1 * q1 + q2 * q2),
+    )
 }
 
 fn build_central_gravity(
@@ -796,6 +1231,115 @@ mod tests {
     }
 
     #[test]
+    fn builds_spk_third_body_ephemeris_from_meta_kernel_fixed_frame() {
+        const MISSION_FRAME: i32 = 123_001;
+        let sun = spk_meta_kernel_sun_position_for_frame(
+            MISSION_FRAME,
+            r#"
+KPL/FK
+
+\begindata
+FRAME_MISSION_FRAME = 123001
+TKFRAME_MISSION_FRAME_SPEC = 'MATRIX'
+TKFRAME_MISSION_FRAME_RELATIVE = 'J2000'
+TKFRAME_MISSION_FRAME_MATRIX = (  0
+                                  1
+                                  0
+                                 -1
+                                  0
+                                  0
+                                  0
+                                  0
+                                  1 )
+\begintext
+"#,
+        );
+        assert_rotated_fixed_frame_sun_position(sun);
+    }
+
+    #[test]
+    fn builds_spk_third_body_ephemeris_from_meta_kernel_angle_frame() {
+        const ANGLE_FRAME: i32 = 123_002;
+        let sun = spk_meta_kernel_sun_position_for_frame(
+            ANGLE_FRAME,
+            r#"
+KPL/FK
+
+\begindata
+FRAME_ANGLE_FRAME = 123002
+TKFRAME_ANGLE_FRAME_SPEC = 'ANGLES'
+TKFRAME_ANGLE_FRAME_RELATIVE = 'J2000'
+TKFRAME_ANGLE_FRAME_ANGLES = ( -90.0, 0.0, 0.0 )
+TKFRAME_ANGLE_FRAME_AXES = ( 3, 2, 1 )
+TKFRAME_ANGLE_FRAME_UNITS = 'DEGREES'
+\begintext
+"#,
+        );
+        assert_rotated_fixed_frame_sun_position(sun);
+    }
+
+    #[test]
+    fn builds_spk_third_body_ephemeris_from_meta_kernel_quaternion_frame() {
+        const QUATERNION_FRAME: i32 = 123_003;
+        let root_half = 0.5_f64.sqrt();
+        let frame_kernel = format!(
+            r#"
+KPL/FK
+
+\begindata
+FRAME_QUATERNION_FRAME = 123003
+TKFRAME_QUATERNION_FRAME_SPEC = 'QUATERNION'
+TKFRAME_QUATERNION_FRAME_RELATIVE = 'J2000'
+TKFRAME_QUATERNION_FRAME_Q = ( {root_half}, 0.0, 0.0, {root_half} )
+\begintext
+"#,
+        );
+        let sun = spk_meta_kernel_sun_position_for_frame(QUATERNION_FRAME, &frame_kernel);
+        assert_rotated_fixed_frame_sun_position(sun);
+    }
+
+    fn assert_rotated_fixed_frame_sun_position(sun: nalgebra::Vector3<f64>) {
+        let expected = nalgebra::Vector3::new(-4_700.0e3, 149_596_670.0e3, 300.0e3);
+        assert!(
+            (sun - expected).norm() < 1.0e-3,
+            "rotated fixed-frame Sun position {sun:?} differs from {expected:?}"
+        );
+    }
+
+    fn spk_meta_kernel_sun_position_for_frame(
+        frame: i32,
+        frame_kernel: &str,
+    ) -> nalgebra::Vector3<f64> {
+        let toml = SPK_THIRD_BODY_SCENARIO.replace(
+            "ephemeris_file = \"synthetic.bsp\"",
+            "ephemeris_meta_kernel = \"mission.tm\"",
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(
+            "environment.ephemeris_meta_kernel".to_owned(),
+            resolved_file("mission.tm", "KPL/MK\n"),
+        );
+        files.insert(
+            "environment.ephemeris_meta_kernel.files[0]".to_owned(),
+            resolved_file("mission.tf", frame_kernel),
+        );
+        files.insert(
+            "environment.ephemeris_meta_kernel.files[1]".to_owned(),
+            resolved_bytes("custom.bsp", synthetic_spk_with_sun_frame(frame)),
+        );
+        let gravity = build_third_body_gravity(&scenario.document, &files).unwrap();
+        match gravity.ephemeris() {
+            RuntimeEphemeris::Spk(spk) => {
+                assert_eq!(spk.segment_count(), 4);
+                spk.body_position_eci_m(CelestialBody::Sun, SimTime::ZERO)
+                    .unwrap()
+            }
+            other => panic!("expected SPK ephemeris, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn builds_spk_third_body_ephemeris_from_utc_epoch_with_leap_seconds() {
         let toml = SPK_THIRD_BODY_SCENARIO
             .replace("scale = \"TDB\"", "scale = \"UTC\"")
@@ -965,10 +1509,15 @@ require_monotonic_time = true
     struct SyntheticSegment {
         target: i32,
         center: i32,
+        frame: i32,
         position_km: [f64; 3],
     }
 
     fn synthetic_spk() -> Vec<u8> {
+        synthetic_spk_with_sun_frame(1)
+    }
+
+    fn synthetic_spk_with_sun_frame(sun_frame: i32) -> Vec<u8> {
         const RECORD_BYTES: usize = 1_024;
         const WORDS_PER_RECORD: usize = 128;
         const SUMMARY_CONTROL_WORDS: usize = 3;
@@ -978,21 +1527,25 @@ require_monotonic_time = true
             SyntheticSegment {
                 target: 3,
                 center: 0,
+                frame: J2000_FRAME,
                 position_km: [4_700.0, 1_200.0, -300.0],
             },
             SyntheticSegment {
                 target: 399,
                 center: 3,
+                frame: J2000_FRAME,
                 position_km: [0.0, 0.0, 0.0],
             },
             SyntheticSegment {
                 target: 10,
                 center: 0,
+                frame: sun_frame,
                 position_km: [149_597_870.0, 0.0, 0.0],
             },
             SyntheticSegment {
                 target: 301,
                 center: 3,
+                frame: J2000_FRAME,
                 position_km: [384_400.0, 0.0, 0.0],
             },
         ];
@@ -1015,7 +1568,7 @@ require_monotonic_time = true
             write_f64(&mut bytes, offset + 8, 10.0);
             write_i32(&mut bytes, offset + 16, segment.target);
             write_i32(&mut bytes, offset + 20, segment.center);
-            write_i32(&mut bytes, offset + 24, J2000_FRAME);
+            write_i32(&mut bytes, offset + 24, segment.frame);
             write_i32(&mut bytes, offset + 28, 2);
             let address = (WORDS_PER_RECORD * (3 + index) + 1) as i32;
             write_i32(&mut bytes, offset + 32, address);

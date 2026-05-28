@@ -74,7 +74,7 @@ pub use atmosphere::{
 };
 pub use ephemeris::{
     ASTRONOMICAL_UNIT_M, CelestialBody, EphemerisModel, EphemerisState, J2000_JULIAN_DATE,
-    LowPrecisionSunMoonEphemeris, MOON_MU_M3_S2, SUN_MU_M3_S2, SpkEphemeris,
+    LowPrecisionSunMoonEphemeris, MOON_MU_M3_S2, SUN_MU_M3_S2, SpkEphemeris, SpkFixedFrame,
 };
 pub use error::PhysicsError;
 pub use external_reference::{

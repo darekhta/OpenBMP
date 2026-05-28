@@ -37,6 +37,8 @@ fn step(curr: EventScalars, prev: Option<EventScalars>) -> EventEvalState {
         current_phase: None,
         relative_distances_m: BTreeMap::new(),
         previous_relative_distances_m: Some(BTreeMap::new()),
+        relative_speeds_m_s: BTreeMap::new(),
+        previous_relative_speeds_m_s: Some(BTreeMap::new()),
     }
 }
 
@@ -331,6 +333,58 @@ fn at_relative_distance_ignores_missing_predeployment_body() {
             target,
             reference: None,
             meters: 10.0,
+            falling: false,
+        }
+        .fired(&s, ANY_TIME, ANY_STEP)
+    );
+}
+
+// ---------------------------------------------------------------------
+// AtRelativeSpeed
+// ---------------------------------------------------------------------
+
+#[test]
+fn at_relative_speed_rising_edge_fires_for_body_pair() {
+    let target = BodyId::from_path("vehicle.assembly.bodies.rv1");
+    let reference = BodyId::from_path("vehicle.assembly.bodies.bus");
+    let key = RelativeDistanceKey::new(target, Some(reference));
+    let mut prev_speeds = BTreeMap::new();
+    prev_speeds.insert(key, 0.4);
+    let mut curr_speeds = BTreeMap::new();
+    curr_speeds.insert(key, 0.6);
+    let mut s = step(
+        scalars(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+        Some(scalars(0.0, 0.0, 0.0, 0.0, 1.0, 0.0)),
+    );
+    s.previous_relative_speeds_m_s = Some(prev_speeds);
+    s.relative_speeds_m_s = curr_speeds;
+
+    assert!(
+        BuiltInEventTrigger::AtRelativeSpeed {
+            target,
+            reference: Some(reference),
+            meters_per_second: 0.5,
+            falling: false,
+        }
+        .fired(&s, ANY_TIME, ANY_STEP)
+    );
+}
+
+#[test]
+fn at_relative_speed_ignores_missing_predeployment_body() {
+    let target = BodyId::from_path("vehicle.assembly.bodies.rv1");
+    let mut s = step(
+        scalars(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+        Some(scalars(0.0, 0.0, 0.0, 0.0, 1.0, 0.0)),
+    );
+    s.previous_relative_speeds_m_s = Some(BTreeMap::new());
+    s.relative_speeds_m_s = BTreeMap::new();
+
+    assert!(
+        !BuiltInEventTrigger::AtRelativeSpeed {
+            target,
+            reference: None,
+            meters_per_second: 0.5,
             falling: false,
         }
         .fired(&s, ANY_TIME, ANY_STEP)

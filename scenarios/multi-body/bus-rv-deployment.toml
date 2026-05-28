@@ -2,14 +2,15 @@
 #
 # A rigid bus releases two small rigid bodies on the same mission event
 # using `jettison_bodies`. A post-deployment relative-distance event
-# observes one released body clearing the bus. All values are synthetic
-# round numbers for exercising the multi-body runner path.
+# observes one released body clearing the bus and crossing a relative
+# speed threshold. All values are synthetic round numbers for exercising
+# the multi-body runner path.
 
 openbmp.scenario = 3
 
 [meta]
 name        = "bus-rv-deployment"
-description = "Synthetic rigid bus deploying two bodies on one event tick with a relative-distance marker."
+description = "Synthetic rigid bus deploying two bodies on one event tick with relative-distance and relative-speed markers."
 validation  = "experimental"
 provenance  = "scenarios/multi-body/provenance.md#scenariosmulti-bodybus-rv-deploymenttoml"
 
@@ -84,6 +85,12 @@ once    = true
 id      = "rv1_clear"
 trigger = { kind = "at_relative_distance", body = "rv1", distance_m = 1.01 }
 action  = { kind = "emit_telemetry_marker", tag = "rv1_clear" }
+once    = true
+
+[[mission.events]]
+id      = "rv1_departing"
+trigger = { kind = "at_relative_speed", body = "rv1", speed_m_s = 0.5 }
+action  = { kind = "emit_telemetry_marker", tag = "rv1_departing" }
 once    = true
 
 [multi_body]

@@ -4013,6 +4013,28 @@ once    = true
     }
 
     #[test]
+    fn accepts_relative_speed_trigger_for_multi_body_lane() {
+        let relative_event = r#"
+[[mission.events]]
+id      = "lower_departing"
+trigger = { kind = "at_relative_speed", body = "lower", speed_m_s = 0.5 }
+action  = { kind = "emit_telemetry_marker", tag = "lower_departing" }
+once    = true
+"#;
+        let toml = VALID_STAGE_SEPARATION_SCENARIO.replace(
+            "\n[multi_body]\n",
+            &format!("{relative_event}\n[multi_body]\n"),
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
+        let mission = scenario.document.mission.as_ref().expect("mission present");
+        assert!(matches!(
+            mission.events[1].trigger,
+            crate::EventTriggerConfig::AtRelativeSpeed { ref body, speed_m_s, .. }
+                if body == "lower" && (speed_m_s - 0.5).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
     fn rejects_relative_distance_trigger_unknown_body() {
         let relative_event = r#"
 [[mission.events]]
