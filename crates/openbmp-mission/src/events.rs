@@ -450,9 +450,10 @@ pub struct EventBinding<A> {
 // ---------------------------------------------------------------------
 
 /// Mission-phase node. `allowed_effectors` and `allowed_engines` are
-/// declared but not actively gated yet. Scenario loading validates
-/// effector references; active command gating is handled by the
-/// controller / propulsion layers.
+/// command/resource metadata; scenario loading validates references,
+/// while active command gating is handled by controller / propulsion
+/// layers. Force-stack phase dispatch is driven separately by the
+/// active phase id threaded through kernel model contexts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Phase {
     /// Path-derived stable id.

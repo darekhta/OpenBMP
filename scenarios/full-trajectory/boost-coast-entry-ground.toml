@@ -1,0 +1,167 @@
+openbmp.scenario = 3
+
+[meta]
+name        = "boost-coast-entry-ground"
+description = "Synthetic full-chain trajectory scenario: boost, burnout, coast, stage separation, apogee, ballistic descent, entry interface, entry, and ground impact."
+validation  = "validated-toy"
+provenance  = "Built as a deterministic mission-graph regression from NASA/RocketPy phase references; the initial upward velocity stands in for powered boost impulse so the fixture stays self-contained."
+
+[time]
+start_s = 0.0
+stop_s  = 32.0
+dt_s    = 0.05
+seed    = 0xB0057C0A57
+
+[vehicle]
+kind                                  = "rigid_body"
+initial_position_eci_m                = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s              = [0.0, 0.0, 120.0]
+initial_quaternion_body_to_eci_xyzw   = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s   = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "synthetic-two-stage-trajectory"
+
+[[vehicle.assembly.bodies]]
+id                          = "upper"
+geometry                    = { kind = "cylinder", length_m = 1.2, diameter_m = 0.18 }
+dry_mass_kg                 = 4.0
+dry_cg_body_m               = [0.0, 0.0, 0.35]
+dry_inertia_body_kg_m2      = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.05]]
+
+[[vehicle.assembly.bodies]]
+id                          = "booster"
+geometry                    = { kind = "cylinder", length_m = 0.8, diameter_m = 0.18 }
+dry_mass_kg                 = 1.0
+dry_cg_body_m               = [0.0, 0.0, -0.65]
+dry_inertia_body_kg_m2      = [[0.25, 0.0, 0.0], [0.0, 0.25, 0.0], [0.0, 0.0, 0.02]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "us_standard_1976"
+wind          = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.parquet = "out/boost-coast-entry-ground.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "boost"
+
+[[mission.phases]]
+id    = "boost"
+label = "boost"
+
+[[mission.phases]]
+id    = "coast"
+label = "coast"
+
+[[mission.phases]]
+id    = "ballistic_descent"
+label = "ballistic descent"
+
+[[mission.phases]]
+id    = "entry_interface"
+label = "entry interface"
+
+[[mission.phases]]
+id    = "entry"
+label = "entry"
+
+[[mission.phases]]
+id    = "ground"
+label = "ground impact"
+
+[[mission.events]]
+id      = "evt_burnout"
+trigger = { kind = "at_time", time_s = 0.5 }
+action  = { kind = "emit_telemetry_marker", tag = "burnout" }
+once    = true
+
+[[mission.events]]
+id      = "evt_stage_separation_marker"
+trigger = { kind = "at_time", time_s = 0.6 }
+action  = { kind = "emit_telemetry_marker", tag = "stage_separation" }
+once    = true
+
+[[mission.events]]
+id      = "evt_stage_separation"
+trigger = { kind = "at_time", time_s = 0.6 }
+action  = { kind = "jettison_stage", body = "booster" }
+once    = true
+
+[[mission.events]]
+id      = "evt_apogee"
+trigger = { kind = "at_apogee" }
+action  = { kind = "emit_telemetry_marker", tag = "apogee" }
+once    = true
+
+[[mission.events]]
+id      = "evt_entry_interface"
+trigger = { kind = "at_altitude_descending", altitude_m = 120.0 }
+action  = { kind = "emit_telemetry_marker", tag = "entry_interface" }
+once    = true
+
+[[mission.events]]
+id      = "evt_entry"
+trigger = { kind = "at_altitude_descending", altitude_m = 60.0 }
+action  = { kind = "emit_telemetry_marker", tag = "entry" }
+once    = true
+
+[[mission.events]]
+id      = "evt_ground_impact_marker"
+trigger = { kind = "at_altitude_descending", altitude_m = 0.0 }
+action  = { kind = "emit_telemetry_marker", tag = "ground_impact" }
+once    = true
+
+[[mission.events]]
+id      = "evt_ground_impact"
+trigger = { kind = "at_altitude_descending", altitude_m = 0.0 }
+action  = { kind = "stop", label = "ground-impact" }
+once    = true
+
+[[mission.transitions]]
+from  = "boost"
+to    = "coast"
+event = "evt_burnout"
+
+[[mission.transitions]]
+from  = "coast"
+to    = "ballistic_descent"
+event = "evt_apogee"
+
+[[mission.transitions]]
+from  = "ballistic_descent"
+to    = "entry_interface"
+event = "evt_entry_interface"
+
+[[mission.transitions]]
+from  = "entry_interface"
+to    = "entry"
+event = "evt_entry"
+
+[[mission.transitions]]
+from  = "entry"
+to    = "ground"
+event = "evt_ground_impact"
+
+[multi_body]
+
+[[multi_body.separation]]
+event_id                  = "evt_stage_separation"
+upper_body_id             = "upper"
+lower_body_id             = "booster"
+upper_delta_v_body_m_s    = [0.0, 0.0, 0.25]
+lower_delta_v_body_m_s    = [0.0, 0.0, -1.0]
+conserve_momentum         = true

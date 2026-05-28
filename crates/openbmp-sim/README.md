@@ -24,8 +24,12 @@ slosh sub-step plumbing
 - `ConstantGravityForce` is the byte-stable
   analytic-toy gravity scaffold; the higher-layer `GravityForceAdapter`
   in `openbmp-vehicle` is the sounding-rocket path.
-- `StopCondition` trait and simple stop conditions
-  (`AlwaysContinue`, `EndTime`, `MaxSteps`).
+- `PhaseGatedForceModel` wraps one default force stack plus
+  phase-specific overrides, selecting by the mission phase id the
+  kernel passes through `ForceContext`.
+- `StopCondition` trait and stop conditions
+  (`AlwaysContinue`, `EndTime`, `MaxSteps`, `GroundImpact`) plus
+  `AnyStop` for composing terminal predicates.
 - Mission scheduling: `EventTrigger` trait,
   `BuiltInEventTrigger` (AtTime / AtAltitudeAscending /
   AtAltitudeDescending / AtApogee / AtMassFraction /

@@ -384,7 +384,8 @@ where
     /// 6. Overwrite the new state's time with the canonical
     ///    `start + step * dt` value.
     /// 7. Validate post-step state.
-    /// 8. Emit a `tracing::trace!` event.
+    /// 8. Evaluate transition-sensitive stop conditions.
+    /// 9. Emit a `tracing::trace!` event.
     ///
     /// # Errors
     ///
@@ -431,7 +432,7 @@ where
         let tank_snapshot = &self.tank_snapshot;
         let recovery_snapshot = &self.recovery_snapshot;
         let wind_override = self.wind_sample_override;
-        let phase_id = self.current_phase.map(|phase| phase.value());
+        let phase_id = self.current_phase.map(crate::events::PhaseId::value);
 
         let derive = |s: &PointMassState,
                       t: SimTime|
@@ -525,8 +526,24 @@ where
             });
         }
 
+        let post_step_stop = if self.stopped.is_none() {
+            self.stop_condition
+                .evaluate_step(&self.state, &new_state, next_step)
+        } else {
+            None
+        };
+
         self.state = new_state;
         self.step_index = next_step;
+
+        if let Some(reason) = post_step_stop {
+            tracing::debug!(
+                step = self.step_index.value(),
+                stop = reason.label(),
+                "stop condition fired"
+            );
+            self.stopped = Some(reason);
+        }
 
         tracing::trace!(
             step = next_step.value(),
@@ -1271,7 +1288,7 @@ where
         let recovery_snapshot = &self.recovery_snapshot;
         let wind_override = self.wind_sample_override;
         let primary_body = self.primary_rigid_body;
-        let phase_id = self.current_phase.map(|phase| phase.value());
+        let phase_id = self.current_phase.map(crate::events::PhaseId::value);
 
         let derive = |s: &openbmp_state::RigidBodyState,
                       t: SimTime|
@@ -1510,8 +1527,24 @@ where
             });
         }
 
+        let post_step_stop = if self.stopped.is_none() {
+            self.stop_condition
+                .evaluate_step(&self.state, &new_state, next_step)
+        } else {
+            None
+        };
+
         self.state = new_state;
         self.step_index = next_step;
+
+        if let Some(reason) = post_step_stop {
+            tracing::debug!(
+                step = self.step_index.value(),
+                stop = reason.label(),
+                "stop condition fired"
+            );
+            self.stopped = Some(reason);
+        }
 
         tracing::trace!(
             step = next_step.value(),
@@ -1802,15 +1835,22 @@ fn assert_clean_mxcsr() -> Result<(), SimulationError> {
     clippy::cast_precision_loss
 )]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::integrator::{IntegratorDeterminism, Rk4FixedStep};
     use crate::models::{
-        ConstantGravityForce, ConstantMass, LinearBurnMass, NullEnvironment, ZeroForce,
+        ConstantGravityForce, ConstantMass, ConstantMassRigid, ForceModel, LinearBurnMass,
+        NullEnvironment, PhaseGatedForceModel, ZeroForce, ZeroMoment,
     };
-    use crate::stop::{AlwaysContinue, EndTime, MaxSteps};
+    use crate::stop::{AlwaysContinue, AnyStop, EndTime, GroundImpact, MaxSteps};
     use approx::assert_abs_diff_eq;
-    use openbmp_core::{Position3, SimTime, Velocity3};
+    use openbmp_core::{
+        AngularVelocity3, Body, Eci, Position3, Quaternion, SimTime, UnitQuaternion, Vector3,
+        Velocity3,
+    };
     use openbmp_mission::MissionState;
+    use openbmp_state::{MassProperties, RigidBodyState};
     use openbmp_testkit::strategies;
     use proptest::prelude::*;
     use uom::si::f64::Mass;
@@ -2014,6 +2054,87 @@ mod tests {
     }
 
     #[test]
+    fn point_mass_ground_impact_stops_on_first_ground_crossing_step() {
+        let config = SimulationConfig {
+            initial_state: PointMassState::new(
+                SimTime::ZERO,
+                Position3::new(0.0, 0.0, 1.0),
+                Velocity3::zero(),
+                Mass::new::<kilogram>(1.0),
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ConstantGravityForce::down_z(9.80665),
+            mass_model: ConstantMass::new(1.0),
+            environment: NullEnvironment,
+            stop_condition: AnyStop::new(
+                GroundImpact::sea_level(),
+                EndTime::new(SimTime::from_seconds(10.0)),
+            ),
+            dt: Duration::from_seconds(1.0),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new(config).expect("construct");
+        let reason = kernel.run().expect("run");
+
+        assert!(matches!(
+            reason,
+            StopReason::GroundImpact {
+                step,
+                time_s,
+                ground_altitude_m,
+                ..
+            } if step.value() == 1
+                && (time_s - 1.0).abs() < 1.0e-12
+                && (ground_altitude_m - 0.0).abs() < 1.0e-12
+        ));
+        assert_eq!(kernel.current_step().value(), 1);
+    }
+
+    fn unit_rigid_mass_properties() -> MassProperties {
+        MassProperties::with_diagonal_inertia(
+            Mass::new::<kilogram>(1.0),
+            Position3::origin(),
+            1.0,
+            1.0,
+            1.0,
+        )
+    }
+
+    #[test]
+    fn rigid_body_ground_impact_stops_on_first_ground_crossing_step() {
+        let mass_props = unit_rigid_mass_properties();
+        let config = SimulationConfig {
+            initial_state: RigidBodyState::new(
+                SimTime::ZERO,
+                Position3::new(0.0, 0.0, 1.0),
+                Velocity3::new(0.0, 0.0, -2.0),
+                Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+                AngularVelocity3::zero(),
+                mass_props,
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ZeroForce,
+            mass_model: RigidModels::new(ZeroMoment, ConstantMassRigid::new(mass_props)),
+            environment: NullEnvironment,
+            stop_condition: AnyStop::new(
+                GroundImpact::sea_level(),
+                EndTime::new(SimTime::from_seconds(10.0)),
+            ),
+            dt: Duration::from_seconds(1.0),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new_rigid(config).expect("construct");
+        let reason = kernel.run().expect("run");
+
+        assert!(matches!(
+            reason,
+            StopReason::GroundImpact { step, time_s, .. }
+                if step.value() == 1 && (time_s - 1.0).abs() < 1.0e-12
+        ));
+        assert_eq!(kernel.current_step().value(), 1);
+    }
+
+    #[test]
     fn always_continue_allows_manual_steps() {
         let config = SimulationConfig {
             initial_state: PointMassState::new(
@@ -2186,6 +2307,87 @@ mod tests {
 
         assert_eq!(kernel.current_phase(), Some(descent));
         assert_eq!(kernel.drain_mission_fired_events().len(), 1);
+    }
+
+    #[test]
+    fn phase_gated_force_model_uses_current_mission_phase_after_transition() {
+        let coast = crate::events::PhaseId::from_path("mission.phases.coast");
+        let burn = crate::events::PhaseId::from_path("mission.phases.burn");
+        let event_id = crate::events::EventId::from_path("mission.events.ignite");
+        let graph = crate::events::MissionPhaseGraph::new(
+            vec![
+                crate::events::Phase {
+                    id: coast,
+                    label: "coast".to_owned(),
+                    allowed_effectors: Vec::new(),
+                    allowed_engines: Vec::new(),
+                },
+                crate::events::Phase {
+                    id: burn,
+                    label: "burn".to_owned(),
+                    allowed_effectors: Vec::new(),
+                    allowed_engines: Vec::new(),
+                },
+            ],
+            vec![crate::events::PhaseTransition {
+                from: coast,
+                to: burn,
+                event: event_id,
+            }],
+            coast,
+            &[event_id],
+        )
+        .expect("valid graph");
+        let events = vec![crate::events::EventBinding {
+            id: event_id,
+            trigger: crate::events::BuiltInEventTrigger::AtTime { time_s: 0.5 },
+            action: crate::events::MissionAction::EmitTelemetryMarker {
+                tag: "ignite".to_owned(),
+            },
+            once: true,
+        }];
+
+        let mut phase_models: BTreeMap<u64, Box<dyn ForceModel<PointMassState>>> = BTreeMap::new();
+        phase_models.insert(
+            burn.value(),
+            Box::new(ConstantGravityForce::new(Vector3::new(0.0, 0.0, 1.0))),
+        );
+        let force_model = PhaseGatedForceModel::new(Box::new(ZeroForce), phase_models);
+        let config = SimulationConfig {
+            initial_state: PointMassState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Mass::new::<kilogram>(1.0),
+            ),
+            integrator: Rk4FixedStep,
+            force_model,
+            mass_model: ConstantMass::new(1.0),
+            environment: NullEnvironment,
+            stop_condition: EndTime::new(SimTime::from_seconds(2.0)),
+            dt: Duration::from_seconds(1.0),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new(config)
+            .expect("construct")
+            .with_mission_split(events, Vec::new(), Some(graph), None)
+            .expect("mission wiring");
+
+        let reason = kernel.run().expect("run");
+
+        assert!(matches!(reason, StopReason::EndTime { .. }));
+        assert_eq!(kernel.current_phase(), Some(burn));
+        assert_abs_diff_eq!(kernel.current_time().as_seconds(), 2.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(
+            kernel.current_state().velocity.vector.z,
+            1.0,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            kernel.current_state().position.vector.z,
+            0.5,
+            epsilon = 1.0e-12
+        );
     }
 
     #[test]

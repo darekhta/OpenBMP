@@ -628,6 +628,99 @@ impl<S: SimState> ForceModel<S> for ZeroForce {
     }
 }
 
+/// Phase-dispatching force model.
+///
+/// The kernel still stores one `F: ForceModel<S>` value, but this
+/// wrapper lets that value select a phase-specific force stack from
+/// [`ForceContext::phase_id`]. Each phase entry can itself be any
+/// compound force model, so higher layers can install different
+/// ascent, coast, or entry stacks without mutating kernel-owned model
+/// state on a phase transition.
+pub struct PhaseGatedForceModel<S: SimState> {
+    default_model: Box<dyn ForceModel<S>>,
+    phase_models: BTreeMap<u64, Box<dyn ForceModel<S>>>,
+}
+
+impl<S: SimState> std::fmt::Debug for PhaseGatedForceModel<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PhaseGatedForceModel")
+            .field("default_model", &"<dyn ForceModel>")
+            .field("phase_count", &self.phase_models.len())
+            .finish()
+    }
+}
+
+impl<S: SimState> PhaseGatedForceModel<S> {
+    /// Construct from a default model and per-phase overrides keyed by
+    /// the stable path-derived [`openbmp_mission::PhaseId`] payload.
+    #[must_use]
+    pub fn new(
+        default_model: Box<dyn ForceModel<S>>,
+        phase_models: BTreeMap<u64, Box<dyn ForceModel<S>>>,
+    ) -> Self {
+        Self {
+            default_model,
+            phase_models,
+        }
+    }
+
+    /// Construct with no phase overrides.
+    #[must_use]
+    pub fn from_default(default_model: Box<dyn ForceModel<S>>) -> Self {
+        Self::new(default_model, BTreeMap::new())
+    }
+
+    /// Add or replace the model used for one phase.
+    ///
+    /// Returns the previous phase model if one existed.
+    pub fn insert_phase_model(
+        &mut self,
+        phase_id: u64,
+        model: Box<dyn ForceModel<S>>,
+    ) -> Option<Box<dyn ForceModel<S>>> {
+        self.phase_models.insert(phase_id, model)
+    }
+
+    /// Number of phase-specific model entries.
+    #[must_use]
+    pub fn phase_count(&self) -> usize {
+        self.phase_models.len()
+    }
+
+    fn active_model(&self, phase_id: Option<u64>) -> &dyn ForceModel<S> {
+        phase_id
+            .and_then(|phase| self.phase_models.get(&phase))
+            .map_or(self.default_model.as_ref(), |model| model.as_ref())
+    }
+}
+
+impl<S: SimState> ForceModel<S> for PhaseGatedForceModel<S> {
+    fn force_n_eci(&self, ctx: ForceContext<'_, S>) -> Result<Vector3<f64>, ModelEvalError> {
+        self.active_model(ctx.phase_id).force_n_eci(ctx)
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.default_model.supports_separated_body_propagation()
+            && self
+                .phase_models
+                .values()
+                .all(|model| model.supports_separated_body_propagation())
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        if self.default_model.validation() == ValidationStatus::Checked
+            && self
+                .phase_models
+                .values()
+                .all(|model| model.validation() == ValidationStatus::Checked)
+        {
+            ValidationStatus::Checked
+        } else {
+            ValidationStatus::Experimental
+        }
+    }
+}
+
 // ---------------------------------------------------------------------
 // Moment trait surface
 // ---------------------------------------------------------------------
@@ -1149,6 +1242,39 @@ mod tests {
             })
             .expect("zero force eval must succeed");
         assert_abs_diff_eq!(f.norm(), 0.0);
+    }
+
+    #[test]
+    fn phase_gated_force_model_dispatches_by_phase_id() {
+        let state = sample_state();
+        let env = EnvironmentSample::default();
+        let entry_phase = 42_u64;
+        let default = ConstantGravityForce::new(Vector3::new(0.0, 1.0, 0.0));
+        let entry = ConstantGravityForce::new(Vector3::new(2.0, 0.0, 0.0));
+        let mut phase_models: BTreeMap<u64, Box<dyn ForceModel<PointMassState>>> = BTreeMap::new();
+        phase_models.insert(entry_phase, Box::new(entry));
+        let model = PhaseGatedForceModel::new(Box::new(default), phase_models);
+
+        let force_at = |phase_id| {
+            model
+                .force_n_eci(ForceContext {
+                    state: &state,
+                    environment: &env,
+                    mass_kg: state.mass.get::<kilogram>(),
+                    time: SimTime::ZERO,
+                    active_body: None,
+                    phase_id,
+                    effector_actuals: EffectorActualsView::empty(),
+                    engine_snapshot: EngineSnapshotView::empty(),
+                    tank_snapshot: TankSnapshotView::empty(),
+                    recovery_snapshot: RecoverySnapshotView::empty(),
+                })
+                .expect("phase-gated force eval")
+        };
+
+        assert_eq!(force_at(None), Vector3::new(0.0, 2.5, 0.0));
+        assert_eq!(force_at(Some(7)), Vector3::new(0.0, 2.5, 0.0));
+        assert_eq!(force_at(Some(entry_phase)), Vector3::new(5.0, 0.0, 0.0));
     }
 
     #[test]

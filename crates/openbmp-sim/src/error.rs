@@ -111,6 +111,18 @@ pub enum StopReason {
         /// Static label describing the user-defined stop trigger.
         label: &'static str,
     },
+    /// The integrated translational state crossed the configured
+    /// ground altitude while descending.
+    GroundImpact {
+        /// Step at which the stop fired.
+        step: StepIndex,
+        /// Simulation time at which the stop fired.
+        time_s: f64,
+        /// Current altitude proxy (`position.z`) at the stop.
+        altitude_m: f64,
+        /// Ground altitude threshold that was crossed.
+        ground_altitude_m: f64,
+    },
     /// The kernel observed a non-finite state and aborted.
     NonFiniteState {
         /// Step at which the failure was observed.
@@ -144,6 +156,7 @@ impl StopReason {
         match self {
             Self::EndTime { .. } => "end-time",
             Self::UserRequested { label } => label,
+            Self::GroundImpact { .. } => "ground-impact",
             Self::NonFiniteState { .. } => "non-finite-state",
             Self::StepOverflow { .. } => "step-overflow",
             Self::MissionEnded { label, .. } => label,

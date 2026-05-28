@@ -11,6 +11,6 @@ pub use openbmp_models::models::{
     ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshot,
     EngineSnapshotView, EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext,
     ForceModel, LinearBurnMass, LinearBurnMassRigid, MassContext, MassModel, MassPropertiesRate,
-    MomentContext, MomentModel, NullEnvironment, RecoverySnapshot, RecoverySnapshotView,
-    RigidMassModel, TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
+    MomentContext, MomentModel, NullEnvironment, PhaseGatedForceModel, RecoverySnapshot,
+    RecoverySnapshotView, RigidMassModel, TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
 };

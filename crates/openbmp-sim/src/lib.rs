@@ -20,9 +20,11 @@
 //!   [`EnvironmentModel`] — model trait surfaces. The crate ships
 //!   [`ConstantGravityForce`], [`ZeroForce`], [`ZeroMoment`],
 //!   [`ConstantMass`], [`LinearBurnMass`], [`ConstantMassRigid`],
-//!   [`LinearBurnMassRigid`], and [`NullEnvironment`].
+//!   [`LinearBurnMassRigid`], [`PhaseGatedForceModel`], and
+//!   [`NullEnvironment`].
 //! * [`StopCondition`] — trait for halt-the-kernel predicates. Phase
-//!   1.3 ships [`AlwaysContinue`], [`EndTime`], [`MaxSteps`].
+//!   1.3 ships [`AlwaysContinue`], [`EndTime`], [`MaxSteps`],
+//!   [`GroundImpact`], and [`AnyStop`].
 //! * [`SimulationKernel`] — owns the integrator + models + stop
 //!   condition + state. Drives the step loop.
 //!
@@ -73,8 +75,8 @@ pub use models::{
     ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshot,
     EngineSnapshotView, EnvironmentModel, EnvironmentQuery, EnvironmentSample, ForceContext,
     ForceModel, LinearBurnMass, LinearBurnMassRigid, MassContext, MassModel, MassPropertiesRate,
-    MomentContext, MomentModel, NullEnvironment, RecoverySnapshot, RecoverySnapshotView,
-    RigidMassModel, TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
+    MomentContext, MomentModel, NullEnvironment, PhaseGatedForceModel, RecoverySnapshot,
+    RecoverySnapshotView, RigidMassModel, TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
 };
 pub use openbmp_mission::MissionStateMachine;
 pub use openbmp_models::{
@@ -85,4 +87,4 @@ pub use solver_profile::{
     SolverProfile, SolverProfileError, SourceTermCouplingProfile, SourceTermProfile,
     implicit_euler_step,
 };
-pub use stop::{AlwaysContinue, EndTime, MaxSteps, StopCondition};
+pub use stop::{AlwaysContinue, AnyStop, EndTime, GroundImpact, MaxSteps, StopCondition};
