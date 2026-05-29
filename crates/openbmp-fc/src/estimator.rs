@@ -484,75 +484,62 @@ impl Estimator for Ekf {
         Ok(())
     }
 
-    #[allow(clippy::many_single_char_names)] // standard EKF naming: z, h, s, k, l, etc.
     fn update_gnss(&mut self, sample: &GnssSample) -> Result<(), EstimatorError> {
-        // 6-D GNSS update on position + velocity. H projects the
-        // first 6 state elements.
-        let z = stack6(sample.position_eci_m, sample.velocity_eci_m_s);
-        let mut h: SMatrix<f64, 6, 15> = SMatrix::zeros();
-        for i in 0..6 {
-            h[(i, i)] = 1.0;
-        }
-        let r_var = SMatrix::<f64, 6, 6>::from_diagonal(&SVector::<f64, 6>::from_iterator(
-            (0..6).map(|i| {
-                if i < 3 {
-                    self.params.sigma_gnss_pos_m * self.params.sigma_gnss_pos_m
-                } else {
-                    self.params.sigma_gnss_vel_m_s * self.params.sigma_gnss_vel_m_s
-                }
-            }),
-        ));
-        let predicted = stack6(self.pos_eci, self.vel_eci);
-        let innovation = z - predicted;
-
-        let s = h * self.p * h.transpose() + r_var;
-        // Cholesky-whiten the innovation so the FDIR
-        // windowed-mean-shift GLRT operates on `ν̃ ~ N(0, I_d)`. The
-        // squared-norm invariant `‖ν̃‖² = chi2` is asserted by the
-        // unit tests in `whitened_innovation_norm_squared_equals_chi2`.
-        let Some(chol) = s.cholesky() else {
-            return Err(EstimatorError::InvalidConfig {
-                reason: "GNSS innovation covariance non-positive-definite".to_string(),
-            });
-        };
-        let l = chol.l();
-        let Some(whitened) = l.solve_lower_triangular(&innovation) else {
-            return Err(EstimatorError::InvalidConfig {
-                reason: "Cholesky lower-triangular solve failed (should be unreachable)"
-                    .to_string(),
-            });
-        };
-        // log det S = 2 · Σ log L_ii from the same
-        // Cholesky factor. Locked-order summation; no FMA.
-        let mut log_det_s = 0.0_f64;
-        for i in 0..6 {
-            log_det_s += l[(i, i)].ln();
-        }
-        log_det_s *= 2.0;
-        self.last_log_det_s_gnss = log_det_s;
-        let s_inv = chol.inverse();
-        let chi2 = innovation.dot(&(s_inv * innovation));
-        self.last_chi2_gnss = chi2;
-        for i in 0..6 {
-            self.last_gnss_innovation_whitened[i] = whitened[i];
-        }
+        // GNSS is fused as two INDEPENDENT, independently-gated 3-D blocks
+        // — position (states 0..3) then velocity (states 3..6) —
+        // processed sequentially. The GNSS measurement-noise R is
+        // block-diagonal (position and velocity receiver errors are
+        // independent), so sequential processing is mathematically
+        // identical to the joint 6-D update when BOTH blocks pass their
+        // gate; the difference is that each block is gated on its own
+        // 3-DOF chi-square. A velocity-innovation spike under high thrust
+        // therefore rejects ONLY the velocity block — the good position
+        // fix is still applied — instead of the previous single combined
+        // 6-D gate dropping the whole fix and dead-reckoning the filter
+        // into divergence. (Sequential per-sensor gating is the standard
+        // robust-INS/GNSS treatment.)
         self.last_gnss_updated_this_tick = true;
-        let gate = self.params.gate_for_dof(6.0);
-        if chi2 > gate {
+        let sigma_pos2 = self.params.sigma_gnss_pos_m * self.params.sigma_gnss_pos_m;
+        let sigma_vel2 = self.params.sigma_gnss_vel_m_s * self.params.sigma_gnss_vel_m_s;
+        let (chi2_p, ld_p, w_p, applied_p) =
+            self.gnss_block_update(sample.position_eci_m, self.pos_eci, 0, sigma_pos2)?;
+        // Velocity block reads the velocity AFTER the position update so
+        // the two form a proper sequential (joint-equivalent) pass.
+        let (chi2_v, ld_v, w_v, applied_v) =
+            self.gnss_block_update(sample.velocity_eci_m_s, self.vel_eci, 3, sigma_vel2)?;
+
+        // Combined diagnostics for the FDIR GLRT / IMM likelihood: the
+        // whitened innovation is the concatenation of the two blocks and
+        // the chi-square / log-det are their sums, so the invariant
+        // `‖ν̃‖² = chi2` still holds (asserted by
+        // `whitened_innovation_norm_squared_equals_chi2`).
+        for i in 0..3 {
+            self.last_gnss_innovation_whitened[i] = w_p[i];
+            self.last_gnss_innovation_whitened[i + 3] = w_v[i];
+        }
+        self.last_chi2_gnss = chi2_p + chi2_v;
+        self.last_log_det_s_gnss = ld_p + ld_v;
+
+        if applied_p || applied_v {
+            self.time_since_corrective_s = 0.0;
+            self.initialized = true;
+        }
+        if !applied_p || !applied_v {
             self.last_innovation_rejected = true;
+            // Report the rejected block's statistic (velocity first, since
+            // it is the one that spikes under high dynamics).
+            let (chi2, gate) = if !applied_v {
+                (chi2_v, self.params.gate_for_dof(3.0))
+            } else {
+                (chi2_p, self.params.gate_for_dof(3.0))
+            };
             return Err(EstimatorError::InnovationGateRejected {
                 measurement: "gnss",
                 chi2,
                 gate,
             });
         }
-        let k = self.p * h.transpose() * s_inv;
-        let dx: SVector<f64, 15> = k * innovation;
-        self.apply_state_update(&dx);
-        self.p = joseph_covariance_update(&self.p, &k, &h, &r_var);
-        self.time_since_corrective_s = 0.0;
         self.last_innovation_rejected = false;
-        self.initialized = true;
         Ok(())
     }
 
@@ -730,6 +717,58 @@ impl Estimator for Ekf {
 }
 
 impl Ekf {
+    /// One 3-component GNSS block (position or velocity) as an
+    /// independent, gated, Joseph-form update on state indices
+    /// `start..start+3`. Returns `(chi2, log_det_s, whitened, applied)`;
+    /// `applied` is false when the block's 3-DOF chi-square exceeds the
+    /// gate (the state/covariance are then left untouched).
+    #[allow(clippy::many_single_char_names)] // standard EKF naming: h, s, k, l, etc.
+    fn gnss_block_update(
+        &mut self,
+        measurement: Vector3<f64>,
+        predicted: Vector3<f64>,
+        start: usize,
+        var: f64,
+    ) -> Result<(f64, f64, [f64; 3], bool), EstimatorError> {
+        let innovation = measurement - predicted;
+        let mut h: SMatrix<f64, 3, 15> = SMatrix::zeros();
+        for i in 0..3 {
+            h[(i, start + i)] = 1.0;
+        }
+        let r_var = SMatrix::<f64, 3, 3>::from_diagonal_element(var);
+        let s = h * self.p * h.transpose() + r_var;
+        let Some(chol) = s.cholesky() else {
+            return Err(EstimatorError::InvalidConfig {
+                reason: "GNSS innovation covariance non-positive-definite".to_string(),
+            });
+        };
+        let l = chol.l();
+        let Some(whitened) = l.solve_lower_triangular(&innovation) else {
+            return Err(EstimatorError::InvalidConfig {
+                reason: "Cholesky lower-triangular solve failed (should be unreachable)"
+                    .to_string(),
+            });
+        };
+        // log det S = 2 · Σ log L_ii (locked-order; no FMA).
+        let mut log_det_s = 0.0_f64;
+        for i in 0..3 {
+            log_det_s += l[(i, i)].ln();
+        }
+        log_det_s *= 2.0;
+        let s_inv = chol.inverse();
+        let chi2 = innovation.dot(&(s_inv * innovation));
+        let w = [whitened[0], whitened[1], whitened[2]];
+        let gate = self.params.gate_for_dof(3.0);
+        if chi2 > gate {
+            return Ok((chi2, log_det_s, w, false));
+        }
+        let k = self.p * h.transpose() * s_inv;
+        let dx: SVector<f64, 15> = k * innovation;
+        self.apply_state_update(&dx);
+        self.p = joseph_covariance_update(&self.p, &k, &h, &r_var);
+        Ok((chi2, log_det_s, w, true))
+    }
+
     fn apply_state_update(&mut self, dx: &SVector<f64, 15>) {
         self.pos_eci += Vector3::new(dx[0], dx[1], dx[2]);
         self.vel_eci += Vector3::new(dx[3], dx[4], dx[5]);
@@ -1238,6 +1277,47 @@ mod tests {
             (norm_sq - status.gnss_chi2).abs() < 1.0e-9,
             "‖ν̃‖² = {norm_sq} should equal chi2 = {} for GNSS",
             status.gnss_chi2
+        );
+    }
+
+    #[test]
+    fn ekf_gnss_velocity_spike_rejects_velocity_keeps_position() {
+        // A GNSS fix with a good position but a large velocity-component
+        // outlier must apply the position correction and reject ONLY the
+        // velocity block. The previous single combined 6-D gate dropped
+        // the whole fix (including the good position), which under thrust
+        // dead-reckoned the filter into divergence.
+        let mut ekf = Ekf::new(EkfParams::default());
+        ekf.seed(
+            Vector3::zeros(),
+            Vector3::zeros(),
+            UnitQuaternion::identity(),
+        );
+        ekf.begin_tick();
+        let res = ekf.update_gnss(&GnssSample {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::new(2.0, 0.0, 0.0), // small → passes 3-DOF gate
+            velocity_eci_m_s: Vector3::new(20.0, 0.0, 0.0), // huge → fails velocity gate
+            position_bias_eci_m: Vector3::zeros(),
+            healthy: true,
+        });
+        // The velocity block is rejected, so the call reports a gate breach…
+        assert!(
+            res.is_err(),
+            "a velocity-component outlier should report a gate rejection"
+        );
+        let est = ekf.position();
+        // …but the position correction WAS applied (moved toward the fix)…
+        assert!(
+            est.position_eci_m.x > 1.0,
+            "position should still be corrected, got x = {}",
+            est.position_eci_m.x
+        );
+        // …and the velocity was NOT corrupted by the rejected outlier.
+        assert!(
+            est.velocity_eci_m_s.x.abs() < 1.0,
+            "velocity outlier should be rejected, got x = {}",
+            est.velocity_eci_m_s.x
         );
     }
 

@@ -468,8 +468,14 @@ mag_epoch_decimal_year      = 2025.0
 sigma_w_gyro                = 0.01
 sigma_w_accel_bias          = 1.0e-4
 sigma_w_gyro_bias           = 1.0e-5
-sigma_w_position_m          = 5.0
-sigma_w_velocity_m_s        = 20.0
+# Position/velocity process noise. The EKF now gates GNSS as independent
+# position and velocity blocks (estimator.rs), so this no longer has to be
+# inflated to keep a combined 6-D gate open under thrust — it was 20 for
+# that crutch and is now 4, a value set by the actual 2-3 g ascent
+# dynamics (it sizes how fast the velocity estimate tracks GNSS vs the
+# tactical IMU through the burn).
+sigma_w_position_m          = 2.0
+sigma_w_velocity_m_s        = 4.0
 tau_gyro_bias_s             = 100.0
 tau_accel_bias_s            = 100.0
 sigma_gnss_pos_m            = 5.0
