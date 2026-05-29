@@ -25,12 +25,15 @@
 //! See `docs/profile-vocabulary-and-guardrails.md` for the binding
 //! guardrails this module is built under.
 
+use std::cell::Cell;
+
 use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
 use openbmp_core::{Ecef, Eci, Position3, SimTime, Velocity3};
 
 use crate::error::PhysicsError;
 use crate::frames::{
     FrameContext, LocalGeodeticOrigin, WGS84_A_M, WGS84_ECCENTRICITY_SQUARED, WGS84_FLATTENING,
+    WGS84_MU_M3_S2,
 };
 use crate::gravity::GravityModel;
 
@@ -462,6 +465,331 @@ impl AscentReferenceGenerator for ClosedLoopInsertionAscentReference {
             reference_quaternion_from_body_z([forward.x, forward.y, forward.z])?;
         Ok(AscentReference {
             q_body_to_eci_xyzw,
+            body_rate_rad_s: None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------
+// Powered Explicit Guidance (PEG)
+// ---------------------------------------------------------------------
+
+/// Solve the PEG steering constants `(A, B)` from the thrust integrals
+/// over time-to-go `t`, the exhaust velocity `ve`, the normalised
+/// burn-time constant `tau`, the current radial velocity `vr`, and the
+/// radius deficit `tgt - r`. The 2×2 system enforces the terminal
+/// radial-velocity (= 0) and terminal-radius constraints. Returns `None`
+/// when the system is singular or the integrals are non-finite (e.g. a
+/// time-to-go estimate at/above `tau`).
+fn peg_solve_ab(ve: f64, tau: f64, t: f64, vr: f64, r: f64, tgt: f64) -> Option<(f64, f64)> {
+    if !(t > 0.0) || t >= tau {
+        return None;
+    }
+    let b0 = -ve * (1.0 - t / tau).ln();
+    let b1 = b0 * tau - ve * t;
+    let c0 = b0 * t - b1;
+    let c1 = c0 * tau - ve * t * t / 2.0;
+    let det = b0 * c1 - b1 * c0;
+    if det.abs() <= f64::MIN_POSITIVE {
+        return None;
+    }
+    let rhs0 = -vr;
+    let rhs1 = tgt - r - vr * t;
+    let a = (rhs0 * c1 - b1 * rhs1) / det;
+    let b = (b0 * rhs1 - rhs0 * c0) / det;
+    if a.is_finite() && b.is_finite() {
+        Some((a, b))
+    } else {
+        None
+    }
+}
+
+/// PEG iteration state carried across guidance cycles via interior
+/// mutability (the `AscentReferenceGenerator` trait takes `&self`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PegState {
+    a: f64,
+    b: f64,
+    t_go_s: f64,
+    burn_start_s: f64,
+    last_time_s: f64,
+    started: bool,
+}
+
+/// Powered Explicit Guidance — classic in-plane PEG ascent reference.
+///
+/// Each cycle PEG solves the two-point boundary-value problem for the
+/// remaining powered flight: it places the thrust direction so the
+/// vehicle reaches the target orbital RADIUS with circular tangential
+/// speed and zero radial velocity (flight-path angle → 0), and updates
+/// the time-to-go. Steering is the closed-form `theta(t) = A + B·t + C`
+/// where `C` offsets gravity minus centrifugal force; `A, B` come from
+/// the thrust integrals over time-to-go. This is the fuel-optimal
+/// upper-stage insertion law (Jaggers / Shuttle PEG); it is intended to
+/// run once the vehicle is already fast (pair it with a gravity-turn for
+/// the low-speed phase). Forward-only: it targets a radius + speed, not a
+/// ground location.
+///
+/// Thrust acceleration is reconstructed from a constant-thrust burn-time
+/// model: `acc = ve / (tau0 - t_burn)` with `tau0 = ve / a0`, valid for
+/// the constant-thrust vacuum upper stage PEG flies.
+#[derive(Debug)]
+pub struct PegAscentReference {
+    insertion_radius_m: f64,
+    exhaust_velocity_m_s: f64,
+    initial_thrust_accel_m_s2: f64,
+    downrange_axis_eci: [f64; 3],
+    min_speed_m_s: f64,
+    initial_t_go_s: f64,
+    state: Cell<PegState>,
+}
+
+impl PegAscentReference {
+    /// Construct a PEG reference.
+    ///
+    /// * `insertion_radius_m` — target orbital radius (m), > 0.
+    /// * `exhaust_velocity_m_s` — `Isp · g0` (m/s), > 0.
+    /// * `initial_thrust_accel_m_s2` — thrust acceleration at burn start
+    ///   `a0 = T/m0` (m/s²), > 0; used for the `tau` burn-time model.
+    /// * `downrange_axis_eci` — seeds the in-plane prograde direction
+    ///   before angular momentum is well-defined.
+    /// * `min_speed_m_s` — below this inertial speed PEG is not run
+    ///   (commands velocity-aligned / vertical); PEG is invalid at low
+    ///   speed.
+    /// * `initial_t_go_s` — initial time-to-go estimate (s), > 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] for non-finite or
+    /// non-physical parameters.
+    pub fn new(
+        insertion_radius_m: f64,
+        exhaust_velocity_m_s: f64,
+        initial_thrust_accel_m_s2: f64,
+        downrange_axis_eci: [f64; 3],
+        min_speed_m_s: f64,
+        initial_t_go_s: f64,
+    ) -> Result<Self, PhysicsError> {
+        for v in [
+            insertion_radius_m,
+            exhaust_velocity_m_s,
+            initial_thrust_accel_m_s2,
+            min_speed_m_s,
+            initial_t_go_s,
+        ] {
+            if !v.is_finite() {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "PEG parameters must be finite",
+                });
+            }
+        }
+        require_finite_vec3(
+            downrange_axis_eci,
+            "PEG downrange axis components must be finite",
+        )?;
+        if insertion_radius_m <= 0.0
+            || exhaust_velocity_m_s <= 0.0
+            || initial_thrust_accel_m_s2 <= 0.0
+            || initial_t_go_s <= 0.0
+            || min_speed_m_s < 0.0
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "PEG: radius, exhaust velocity, initial accel and t_go must be > 0",
+            });
+        }
+        if vector_norm(downrange_axis_eci) <= MIN_DIRECTION_NORM {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "PEG downrange axis must be non-degenerate",
+            });
+        }
+        Ok(Self {
+            insertion_radius_m,
+            exhaust_velocity_m_s,
+            initial_thrust_accel_m_s2,
+            downrange_axis_eci,
+            min_speed_m_s,
+            initial_t_go_s,
+            state: Cell::new(PegState {
+                a: 0.0,
+                b: 0.0,
+                t_go_s: initial_t_go_s,
+                burn_start_s: 0.0,
+                last_time_s: 0.0,
+                started: false,
+            }),
+        })
+    }
+
+    /// In-plane prograde (downrange) unit vector: the configured axis
+    /// projected into the local horizontal, falling back to a
+    /// deterministic perpendicular when (near-)parallel to the radial.
+    fn downrange_dir(&self, up: Vector3<f64>) -> Option<Vector3<f64>> {
+        let axis = Vector3::new(
+            self.downrange_axis_eci[0],
+            self.downrange_axis_eci[1],
+            self.downrange_axis_eci[2],
+        );
+        let projected = axis - up * axis.dot(&up);
+        if projected.norm() > MIN_DIRECTION_NORM {
+            return Some(projected.normalize());
+        }
+        let alt = Vector3::new(0.0, 0.0, 1.0);
+        let alt_proj = alt - up * alt.dot(&up);
+        if alt_proj.norm() > MIN_DIRECTION_NORM {
+            Some(alt_proj.normalize())
+        } else {
+            None
+        }
+    }
+}
+
+impl AscentReferenceGenerator for PegAscentReference {
+    fn ascent_reference(
+        &self,
+        state: &AscentState,
+        time: SimTime,
+    ) -> Result<AscentReference, PhysicsError> {
+        state.validate()?;
+        let pos = Vector3::from(state.position_eci_m);
+        let vel = Vector3::from(state.velocity_eci_m_s);
+        let r = pos.norm();
+        let speed = vel.norm();
+
+        // Low-speed / pre-flight: PEG is invalid until the vehicle is
+        // moving fast. Command velocity-aligned if moving, else vertical.
+        if r <= MIN_DIRECTION_NORM || speed < self.min_speed_m_s {
+            if speed > MIN_DIRECTION_NORM {
+                let q = reference_quaternion_from_body_z([vel.x, vel.y, vel.z])?;
+                return Ok(AscentReference {
+                    q_body_to_eci_xyzw: q,
+                    body_rate_rad_s: None,
+                });
+            }
+            if r > MIN_DIRECTION_NORM {
+                let up = pos / r;
+                let q = reference_quaternion_from_body_z([up.x, up.y, up.z])?;
+                return Ok(AscentReference {
+                    q_body_to_eci_xyzw: q,
+                    body_rate_rad_s: None,
+                });
+            }
+            return Ok(AscentReference {
+                q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+                body_rate_rad_s: None,
+            });
+        }
+
+        let up = pos / r;
+        let h_vec = pos.cross(&vel);
+        let h_mag = h_vec.norm();
+        let downrange = if h_mag > MIN_DIRECTION_NORM {
+            (h_vec / h_mag).cross(&up)
+        } else {
+            self.downrange_dir(up).ok_or(PhysicsError::OutOfEnvelope {
+                reason: "PEG could not construct a downrange direction",
+            })?
+        };
+        let vr = vel.dot(&up);
+        let vt = vel.dot(&downrange);
+        let ve = self.exhaust_velocity_m_s;
+        let mu = WGS84_MU_M3_S2;
+        let tgt = self.insertion_radius_m;
+        let now = time.as_seconds();
+
+        let mut st = self.state.get();
+        if !st.started {
+            st.started = true;
+            st.burn_start_s = now;
+            st.last_time_s = now;
+            st.t_go_s = self.initial_t_go_s;
+            st.a = 0.0;
+            st.b = 0.0;
+        }
+        let cycletime = (now - st.last_time_s).max(0.0);
+        st.last_time_s = now;
+
+        // Constant-thrust burn-time model: tau decreases linearly with
+        // elapsed powered time. Guard against propellant exhaustion.
+        let elapsed = (now - st.burn_start_s).max(0.0);
+        let tau0 = ve / self.initial_thrust_accel_m_s2;
+        let tau = tau0 - elapsed;
+        if tau <= 1.0 {
+            // Effectively out of propellant for the model: hold the last
+            // steering direction (A,B) with the live gravity term.
+            let acc = ve / tau.max(MIN_DIRECTION_NORM);
+            let c = (mu / (r * r) - vt * vt / r) / acc;
+            let fr = (st.a + c).clamp(-1.0, 1.0);
+            let ftheta = (1.0 - fr * fr).max(0.0).sqrt();
+            let forward = up * fr + downrange * ftheta;
+            self.state.set(st);
+            let q = reference_quaternion_from_body_z([forward.x, forward.y, forward.z])?;
+            return Ok(AscentReference {
+                q_body_to_eci_xyzw: q,
+                body_rate_rad_s: None,
+            });
+        }
+        let acc = ve / tau;
+
+        // (A, B): solve from scratch on the first cycle, otherwise reuse.
+        let (mut a, mut b) = if st.a == 0.0 && st.b == 0.0 {
+            let old_t = if st.t_go_s >= tau { 0.9 * tau } else { st.t_go_s };
+            peg_solve_ab(ve, tau, old_t, vr, r, tgt).unwrap_or((0.0, 0.0))
+        } else {
+            (st.a, st.b)
+        };
+
+        // Angular-momentum-to-gain and the pitch-rate expansion.
+        let v_tgt = (mu / tgt).sqrt();
+        let h_now = r * vt;
+        let h_tgt = tgt * v_tgt;
+        let dh = h_tgt - h_now;
+        let rbar = (r + tgt) / 2.0;
+        let c = (mu / (r * r) - vt * vt / r) / acc;
+        let fr = a + c;
+        let burnout_accel = acc / (1.0 - st.t_go_s / tau).max(MIN_DIRECTION_NORM);
+        let ct = (mu / (tgt * tgt) - v_tgt * v_tgt / tgt) / burnout_accel;
+        let frt = a + b * st.t_go_s + ct;
+        let frdot = (frt - fr) / st.t_go_s;
+        let ftheta = 1.0 - fr * fr / 2.0;
+        let fthetadot = -(fr * frdot);
+        let fthetadotdot = -frdot * frdot / 2.0;
+
+        let denom = ftheta + fthetadot * tau + fthetadotdot * tau * tau;
+        let t_rem = st.t_go_s - cycletime;
+        let dv = (dh / rbar
+            + ve * t_rem * (fthetadot + fthetadotdot * tau)
+            + fthetadotdot * ve * t_rem * t_rem / 2.0)
+            / denom;
+        let mut t_go = if denom.abs() > MIN_DIRECTION_NORM && dv.is_finite() {
+            tau * (1.0 - (-dv / ve).exp())
+        } else {
+            st.t_go_s
+        };
+        if !t_go.is_finite() || t_go <= 0.0 {
+            t_go = st.t_go_s;
+        }
+
+        // Re-solve A,B with the refreshed time-to-go (skip near burnout
+        // where the integrals become ill-conditioned).
+        if t_go >= 7.5 && t_go < tau {
+            if let Some((na, nb)) = peg_solve_ab(ve, tau, t_go, vr, r, tgt) {
+                a = na;
+                b = nb;
+            }
+        }
+        st.a = a;
+        st.b = b;
+        st.t_go_s = t_go;
+        self.state.set(st);
+
+        // Commanded thrust unit vector: radial component fr = A + C,
+        // tangential (prograde) component sqrt(1 - fr²).
+        let fr_cmd = (a + c).clamp(-1.0, 1.0);
+        let ftheta_cmd = (1.0 - fr_cmd * fr_cmd).max(0.0).sqrt();
+        let forward = up * fr_cmd + downrange * ftheta_cmd;
+        let q = reference_quaternion_from_body_z([forward.x, forward.y, forward.z])?;
+        Ok(AscentReference {
+            q_body_to_eci_xyzw: q,
             body_rate_rad_s: None,
         })
     }
@@ -2950,7 +3278,8 @@ mod tests {
         FootprintDispersionInput, FootprintDragModel, FootprintEnvironment,
         FootprintGeodeticOrigin, FootprintMonteCarloInput, FootprintSampleInput,
         GravityTurnAscentReference, IdealStagingBudgetAnalysis, MomentumConservingStageSeparation,
-        NumericalFootprintState, NumericalGravityRangeSafetyFootprint, PitchProgramAscentReference,
+        NumericalFootprintState, NumericalGravityRangeSafetyFootprint, PegAscentReference,
+        PitchProgramAscentReference,
         RangeSafetyFootprint, STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageMassProperties,
         StageSeparationModel, StagingBudgetAnalysis, StagingBudgetInput, StagingBudgetMode,
         constant_gravity_footprint_monte_carlo, drag_wind_derivative,
@@ -3040,6 +3369,53 @@ mod tests {
             .ascent_reference(&state, SimTime::from_seconds(1.0))
             .unwrap_err();
         assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
+    }
+
+    #[test]
+    fn peg_commands_prograde_dominant_finite_steering_near_insertion() {
+        // Near-insertion regime (PEG's design point): at the ~200 km
+        // target radius, near-horizontal, tangential speed just below
+        // circular, ~zero radial velocity (equatorial: +x radial, +y
+        // prograde). PEG should command a finite, prograde-dominant
+        // thrust direction (only a small radial gravity/centrifugal
+        // trim), and stay finite across cycles.
+        let re = WGS84_A_M;
+        let r = re + 200_000.0;
+        let vt = 7600.0; // just below circular (~7785 m/s at 200 km)
+        let state = AscentState {
+            position_eci_m: [r, 0.0, 0.0],
+            velocity_eci_m_s: [0.0, vt, 0.0],
+            altitude_m: r - re,
+            inertial_speed_m_s: vt,
+            flight_path_angle_rad: 0.0,
+            dynamic_pressure_pa: 0.0,
+            mass_fraction: 1.0,
+        };
+        let peg = PegAscentReference::new(
+            re + 200_000.0,  // insertion radius (= current)
+            3334.0,          // exhaust velocity (Isp ~340 s)
+            9.0,             // initial thrust accel
+            [0.0, 1.0, 0.0], // downrange seed = +y
+            100.0,           // min speed
+            120.0,           // initial time-to-go guess
+        )
+        .unwrap();
+        for cycle in 0..5 {
+            let reference = peg
+                .ascent_reference(&state, SimTime::from_seconds(f64::from(cycle)))
+                .unwrap();
+            let body_z = body_z_axis(reference.q_body_to_eci_xyzw);
+            assert!(
+                body_z.iter().all(|c| c.is_finite()),
+                "PEG thrust direction must be finite on cycle {cycle}, got {body_z:?}"
+            );
+            // up = +x, prograde = +y; near-circular horizontal flight =>
+            // the prograde component dominates the radial trim.
+            assert!(
+                body_z[1].abs() > body_z[0].abs(),
+                "PEG steering should be prograde-dominant on cycle {cycle}, got {body_z:?}"
+            );
+        }
     }
 
     #[test]
