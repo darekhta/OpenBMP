@@ -707,9 +707,12 @@ useful as a public, academic re-entry comparison case. Downstream
 consumers replicating this pattern with OpenBMP get the kernel and
 infrastructure; they own the data-quality story.
 
-OpenBMP itself never ships parameter sets for any specific real vehicle,
-operator, or programme. The framework is intended to remain strictly
-civilian-academic and free of restricted content; OpenBMP does not make
+OpenBMP itself never ships *parameter sets* for any specific real vehicle,
+operator, or programme. (A synthetic demonstration vehicle whose name
+*evokes* a class — see § "Synthetic demonstration vehicles" — is not such a
+parameter set: its numbers are synthetic, and the prohibition is on real
+parameter content, not on an evocative name.) The framework is intended to
+remain strictly civilian-academic and free of restricted content; OpenBMP does not make
 an EAR, ITAR, MTCR, or national export-control classification for any
 downstream integration.
 
@@ -745,6 +748,44 @@ Recommended workflow for any downstream integration:
    manifests.
 7. **Cite it.** When publishing results, cite OpenBMP's commit hash,
    your data package hashes, and your reference comparison codes.
+
+## Synthetic demonstration vehicles
+
+ARV-Reference (above) is *deliberately* fiction-named so the integration
+pattern references no operator. That remains the recommended default for
+downstream, real-data integrations. **In-tree, OpenBMP also permits a
+second, narrower category: the synthetic demonstration vehicle.**
+
+A synthetic demonstration vehicle is an in-tree showcase whose name may
+*evoke* a real vehicle class (so the demo is legible — "a medium-lift
+two-stage launcher" reads faster as `Phalcon-9` than as `MLV-Ref-Config-A`)
+while every number remains synthetic. It is permitted **only** under all
+of the following, which keep the actual safety boundary untouched:
+
+1. **Synthetic parameters only.** Every mass, thrust, Isp, dimension, and
+   coefficient is a rounded, order-of-magnitude class figure — never a
+   real fielded, validated, or proprietary value. Public figures may be
+   used *only* as an order-of-magnitude plausibility check, never copied
+   in as the model. This is the same Tier-3 provenance rule as everywhere
+   else (see [`data-provenance.md`](data-provenance.md)); the name does
+   not relax it.
+2. **Labelled synthetic.** The scenario header comment and `provenance.md`
+   state plainly that the vehicle is wholly synthetic, is not a model of
+   or claim about any fielded vehicle/operator/engine, and is tagged
+   `validation = "experimental"`.
+3. **Forward-only, no targeting.** No target, aimpoint, range,
+   throw-weight, or terminal-guidance field — the Tier-1/Tier-2 locks
+   and lint apply unchanged.
+
+Under these conditions an evocative name is a **demonstration aid, not an
+endorsement** of or a performance claim about any operator or programme,
+and carries no real parameter content. The reference example is
+[`scenarios/phalcon9/`](../scenarios/phalcon9/) — a synthetic medium-lift
+two-stage kerolox launcher used to demonstrate the two-stage powered-ascent
+path (engine→tank propellant coupling, stage separation, recovery
+footprint). The distinction this section draws is deliberate: the proscribed
+thing is **real parameter content and operational framing**, not a
+class-evoking string.
 
 ## Anti-patterns
 

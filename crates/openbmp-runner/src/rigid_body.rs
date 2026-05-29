@@ -619,6 +619,14 @@ struct RigidMassResources {
     motor_ignition_time_s: Option<f64>,
     engine_ids: Vec<EngineId>,
     engine_owners: BTreeMap<EngineId, BodyId>,
+    /// Engines whose propellant is owned by a tank (they declare a
+    /// `[propellant]` binding). In the ABSOLUTE mass path the tank's
+    /// `mass_kg` already reflects depletion, so the engine cluster must
+    /// NOT also subtract its integrated `consumed_kg` there — doing so
+    /// double-counts the burned propellant and can drive a separated
+    /// stage to negative mass. (The mass-RATE path still uses
+    /// `-mass_flow`; it carries no separate tank term.)
+    tank_coupled_engines: std::collections::BTreeSet<EngineId>,
     tank_routes: BTreeMap<TankId, TankMassRoute>,
 }
 
@@ -666,6 +674,16 @@ impl RigidMassResources {
             })
             .collect();
         let engine_owners = engine_owner_map(document)?;
+        let tank_coupled_engines = document
+            .vehicle
+            .assembly
+            .engines
+            .iter()
+            .filter(|engine| engine.propellant.is_some())
+            .map(|engine| {
+                EngineId::from_path(&format!("vehicle.assembly.engines.{id}", id = engine.id))
+            })
+            .collect();
         let tank_routes = document
             .vehicle
             .assembly
@@ -693,6 +711,7 @@ impl RigidMassResources {
             motor_ignition_time_s,
             engine_ids,
             engine_owners,
+            tank_coupled_engines,
             tank_routes,
         })
     }
@@ -818,6 +837,13 @@ impl<M: Motor> RigidMassResourceModel<M> {
                     ),
                 });
             };
+            // Tank-coupled engines burn propellant owned and depleted by
+            // their tank; subtracting consumed_kg here too would
+            // double-count it. Self-contained engines (no binding) burn
+            // vehicle mass directly.
+            if self.resources.tank_coupled_engines.contains(id) {
+                continue;
+            }
             total_mass_kg -= snap.consumed_kg;
             weighted_cg -= base.center_of_mass_body.vector * snap.consumed_kg;
         }
@@ -891,6 +917,13 @@ impl<M: Motor> RigidMassResourceModel<M> {
                     ),
                 });
             };
+            // Mass-loss RATE: -mass_flow is exactly the propellant
+            // leaving the engine, whether it is self-contained or
+            // tank-coupled. The rate path carries no separate tank term,
+            // so (unlike the absolute mass_properties path) tank-coupled
+            // engines are NOT skipped here. The kernel reseeds the
+            // integrated mass from the absolute partition at separation,
+            // keeping the two paths consistent.
             mass_rate_kg_s -= snap.mass_flow_kg_per_s;
         }
         if active_body.is_none()
@@ -3347,6 +3380,7 @@ require_monotonic_time = true
             motor_ignition_time_s: None,
             engine_ids: vec![engine_upper, engine_lower],
             engine_owners: BTreeMap::from([(engine_upper, upper), (engine_lower, lower)]),
+            tank_coupled_engines: std::collections::BTreeSet::new(),
             tank_routes: BTreeMap::new(),
         };
         let model =
@@ -3398,6 +3432,87 @@ require_monotonic_time = true
         assert_eq!(upper_rate.mass_rate_kg_s.to_bits(), (-1.0_f64).to_bits());
         assert_eq!(lower_rate.mass_rate_kg_s.to_bits(), (-2.0_f64).to_bits());
         assert_eq!(all_rate.mass_rate_kg_s.to_bits(), (-3.0_f64).to_bits());
+    }
+
+    #[test]
+    fn tank_coupled_engine_mass_is_not_double_counted() {
+        // An engine that draws from a tank must NOT also subtract its
+        // integrated consumed_kg in the absolute mass path — the tank's
+        // mass_kg already reflects depletion. The mass RATE, which has
+        // no tank term, still uses -mass_flow. Regression for a
+        // negative departing-stage mass at separation.
+        let body = body_id_from_scenario_text("core");
+        let engine = EngineId::from_path("vehicle.assembly.engines.main");
+        let tank = TankId::from_path("vehicle.assembly.tanks.prop");
+        let dry_bodies = BTreeMap::from([(
+            body,
+            MassProperties::with_uniform_inertia(
+                Mass::new::<kilogram>(20.0),
+                Position3::<Body>::origin(),
+                1.0,
+            ),
+        )]);
+        let resources = RigidMassResources {
+            dry_total: MassProperties::with_uniform_inertia(
+                Mass::new::<kilogram>(20.0),
+                Position3::<Body>::origin(),
+                1.0,
+            ),
+            dry_bodies,
+            motor_owner: None,
+            motor_ignition_time_s: None,
+            engine_ids: vec![engine],
+            engine_owners: BTreeMap::from([(engine, body)]),
+            tank_coupled_engines: std::collections::BTreeSet::from([engine]),
+            tank_routes: BTreeMap::from([(
+                tank,
+                TankMassRoute {
+                    owner: body,
+                    mount_point_body_m: Vector3::zeros(),
+                },
+            )]),
+        };
+        let model =
+            RigidMassResourceModel::<SolidMotor>::new(resources, None, None, ModelId::new(999));
+        // Engine has burned 5 kg (consumed_kg); tank retains 70 kg.
+        let engine_snapshot = BTreeMap::from([(
+            engine,
+            openbmp_sim::EngineSnapshot {
+                thrust_body: Vector3::zeros(),
+                mass_flow_kg_per_s: 3.0,
+                consumed_kg: 5.0,
+                lifecycle_state_index: 2,
+            },
+        )]);
+        let tank_snapshot = BTreeMap::from([(
+            tank,
+            openbmp_sim::TankSnapshot {
+                mass_kg: 70.0,
+                cg_offset_body_m: Vector3::zeros(),
+                inertia_delta_body_kg_m2: nalgebra::Matrix3::zeros(),
+                reaction_force_body_n: Vector3::zeros(),
+                reaction_moment_body_n_m: Vector3::zeros(),
+                fluid_remaining_kg: 70.0,
+            },
+        )]);
+
+        // Absolute mass = dry(20) + tank(70), with consumed_kg (5) NOT
+        // subtracted. The buggy path would give 85.
+        let props = model
+            .mass_properties_from_snapshots(
+                SimTime::ZERO,
+                Some(body),
+                &engine_snapshot,
+                &tank_snapshot,
+            )
+            .unwrap();
+        assert!((props.mass_kg() - 90.0).abs() < 1.0e-9);
+
+        // Rate still tracks the engine mass-flow (the tank drain).
+        let rate = model
+            .mass_properties_rate_from_snapshots(SimTime::ZERO, Some(body), &engine_snapshot)
+            .unwrap();
+        assert_eq!(rate.mass_rate_kg_s.to_bits(), (-3.0_f64).to_bits());
     }
 
     #[test]

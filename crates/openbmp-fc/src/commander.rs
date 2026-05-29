@@ -164,7 +164,24 @@ impl Commander {
             .map(|(s, _)| s);
 
         let altitude_m = pos.map_or(0.0, |p| p.position_eci_m.z);
-        let vertical_velocity_m_s = pos.map_or(0.0, |p| p.velocity_eci_m_s.z);
+        // Vertical climb rate for the apogee / ascent / descent
+        // detectors. For a geocentric configuration (position well beyond
+        // a flat-earth / local-frame launch radius) "up" is radial, so
+        // the climb rate is the radial projection `v · r̂`; the raw ECI +z
+        // component would cross zero long before the true radial apogee
+        // once the trajectory curves away from the launch meridian. For a
+        // near-origin launch the +z component is the vertical (legacy
+        // behaviour). Threshold matches the kernel's `vertical_climb_rate`.
+        const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
+        let vertical_velocity_m_s = pos.map_or(0.0, |p| {
+            let r = p.position_eci_m;
+            let rn = r.norm();
+            if rn > GEOCENTRIC_RADIUS_THRESHOLD_M {
+                p.velocity_eci_m_s.dot(&r) / rn
+            } else {
+                p.velocity_eci_m_s.z
+            }
+        });
         let velocity_m_s = pos.map_or(0.0, |p| p.velocity_eci_m_s.norm());
         // Academic approximation: q = ½ · ρ_SL · |v|². The proper
         // computation uses relative airspeed and the local atmospheric
@@ -243,7 +260,7 @@ impl Commander {
         if self.in_flight || !self.armed {
             return;
         }
-        if self.current_phase_allows_effectors() {
+        if self.current_phase_allows_effectors() || self.current_phase_allows_engines() {
             self.in_flight = true;
             return;
         }
@@ -265,6 +282,23 @@ impl Commander {
                 .hsm
                 .state(self.current_phase)
                 .is_some_and(|state| !state.allowed_effectors.is_empty())
+    }
+
+    /// `true` when the current phase authorizes engine commands. A
+    /// thrust-vector-controlled vehicle (gimballed engines, no aero
+    /// effectors) lifts off and goes in-flight on its engines, so
+    /// engine authority is a valid liftoff trigger alongside effector
+    /// authority.
+    fn current_phase_allows_engines(&self) -> bool {
+        self.graph
+            .phases
+            .iter()
+            .find(|phase| phase.id == self.current_phase)
+            .is_some_and(|phase| !phase.allowed_engines.is_empty())
+            || self
+                .hsm
+                .state(self.current_phase)
+                .is_some_and(|state| !state.allowed_engines.is_empty())
     }
 
     fn request_safe_state(&mut self) {

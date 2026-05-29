@@ -1,0 +1,426 @@
+# Phalcon-9 closed-loop ORBITAL INSERTION under EGM2008 gravity.
+# DEMONSTRATION ARTIFACT; wholly synthetic (see provenance.md).
+#
+# A single-stage rigid body launches from the +z pole (so radial-up =
+# ECI +z) and flies a full two-burn ascent to a low circular orbit under
+# engine-gimbal thrust-vector control: EKF navigation + three-loop
+# autopilot + closed-loop insertion guidance (fc.ascent_reference,
+# method = "closed_loop_insertion"). The EKF uses the EGM2008 central
+# gravity nav model (fc.ekf.gravity_model = "egm2008") matching the truth
+# field, is seeded from the known launch state, and carries position /
+# velocity process noise so the navigation solution stays valid through
+# the long ballistic coast.
+#
+# Mission profile (phases gate engine throttle; the FC owns it):
+#   1. powered_ascent  - all 9 engines; the closed-loop law lofts the
+#                        vehicle and builds horizontal velocity.
+#   2. coast           - MECO1 at ~6.6 km/s; engines idled (throttle 0,
+#                        not shut down); ballistic climb to apogee.
+#   3. circularize     - re-throttled at apogee (radial velocity ~0); the
+#                        same law thrusts prograde to raise perigee.
+#   4. orbit           - SECO at circular velocity; engines idled.
+#
+# RESULT (verified from telemetry): a bound, sustainable low Earth orbit,
+# perigee ~245 km x apogee ~535 km, eccentricity ~0.02. Specific orbital
+# energy is negative (closed orbit) and perigee is well above the
+# atmosphere, so it does not decay. See scenarios/phalcon9/provenance.md.
+#
+# Forward-only: no target/aimpoint/range fields (the guidance steers from
+# the live state toward an insertion RADIUS, not a ground location).
+
+openbmp.scenario = 3
+
+[meta]
+name        = "phalcon9-gravity-turn"
+description = "Phalcon-9 synthetic single-stage-to-orbit TVC ascent under EGM2008 gravity: closed-loop engine-gimbal gravity turn toward orbital insertion. Synthetic; not a benchmark."
+validation  = "experimental"
+provenance  = "Wholly synthetic control-loop probe; rounded figures, not a fielded-vehicle model. See scenarios/phalcon9/provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 1000.0
+dt_s    = 0.02
+seed    = 0x5476635f70726f62   # "Tvc_prob"
+
+[vehicle]
+kind                                = "rigid_body"
+initial_position_eci_m              = [0.0, 0.0, 6_370_000.0]
+initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id             = "phalcon9-probe"
+cluster_layout = "octaweb"
+
+# Body origin is placed AT the vehicle CG (cluster moment is computed
+# about the body origin), so the engine plane 12 m below the origin
+# gives the gimbal a real pitch/yaw moment arm.
+[[vehicle.assembly.bodies]]
+id                     = "core"
+geometry               = { kind = "cylinder", length_m = 30.0, diameter_m = 3.7 }
+dry_mass_kg            = 12_000.0
+dry_cg_body_m          = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[1.0e7, 0.0, 0.0], [0.0, 1.0e7, 0.0], [0.0, 0.0, 2.0e5]]
+
+[[vehicle.assembly.tanks]]
+id                    = "prop"
+mounted_to            = "core"
+mount_point_body_m    = [0.0, 0.0, 0.0]
+geometry              = { kind = "cylinder", radius_m = 1.85, height_m = 28.0 }
+propellant            = { density_kg_m3 = 1030.0, label = "synthetic_kerolox_bulk" }
+initial_fill_fraction = 1.0
+moving_mass           = { kind = "rigid_liquid" }
+
+# 9-engine octaweb cluster (1 center + 8 ring); each ~850 kN, Isp 300 s,
+# drawing from `prop`, gimbal limit 5 deg for TVC.
+[[vehicle.assembly.engines]]
+id = "eng_0"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, -12.0]
+limits = { max_thrust_n = 500_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_1"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [1.6, 0.0, -12.0]
+limits = { max_thrust_n = 500_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_2"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [1.13137, 1.13137, -12.0]
+limits = { max_thrust_n = 500_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_3"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 1.6, -12.0]
+limits = { max_thrust_n = 500_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_4"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [-1.6, 0.0, -12.0]
+limits = { max_thrust_n = 500_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_5"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [-1.13137, 1.13137, -12.0]
+limits = { max_thrust_n = 500_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_6"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [-1.13137, -1.13137, -12.0]
+limits = { max_thrust_n = 500_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_7"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, -1.6, -12.0]
+limits = { max_thrust_n = 500_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_8"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [1.13137, -1.13137, -12.0]
+limits = { max_thrust_n = 500_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "egm2008"
+atmosphere    = "none"
+wind          = "none"
+magnetic      = "wmm_2025"
+
+[forces]
+models = ["gravity", "thrust"]
+
+[sensors.imu]
+kind = "imu"
+file = "../../data/sensors/imu-consumer-mems.toml"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../../data/sensors/gnss-textbook.toml"
+
+[sensors.mag]
+kind = "magnetometer"
+file = "../../data/sensors/magnetometer-textbook.toml"
+
+[telemetry]
+output.csv = "out/phalcon9-gravity-turn.csv"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "mission.phases.powered_ascent"
+
+# Two-burn orbital insertion. The flight controller owns engine
+# throttle, so cutoff is expressed as a PHASE change (the mixer
+# zeroes throttle when a phase disallows engines) rather than a
+# mission engine_command, which the autopilot would overwrite each
+# tick. Engines are throttled to zero in coast/orbit (kept in the
+# Burning state, no propellant flow) and throttled back up for the
+# circularisation burn -- a real cutoff/restart, no terminal
+# shutdown. Forward-only: no target/aimpoint/range fields.
+
+[[mission.phases]]
+id              = "mission.phases.powered_ascent"
+label           = "burn 1: ascent loft (TVC)"
+allowed_engines = ["eng_0", "eng_1", "eng_2", "eng_3", "eng_4", "eng_5", "eng_6", "eng_7", "eng_8"]
+
+[[mission.phases]]
+id              = "mission.phases.coast"
+label           = "ballistic coast to apogee (engines idle)"
+allowed_engines = ["eng_0", "eng_1", "eng_2", "eng_3", "eng_4", "eng_5", "eng_6", "eng_7", "eng_8"]
+
+[[mission.phases]]
+id              = "mission.phases.circularize"
+label           = "burn 2: apogee circularisation (TVC)"
+allowed_engines = ["eng_0", "eng_1", "eng_2", "eng_3", "eng_4", "eng_5", "eng_6", "eng_7", "eng_8"]
+
+[[mission.phases]]
+id              = "mission.phases.orbit"
+label           = "orbital insertion (engines idle)"
+allowed_engines = ["eng_0", "eng_1", "eng_2", "eng_3", "eng_4", "eng_5", "eng_6", "eng_7", "eng_8"]
+
+# Light all nine engines just after t=0.
+[[mission.events]]
+id      = "ign_0"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_0", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "ign_1"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_1", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "ign_2"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_2", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "ign_3"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_3", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "ign_4"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_4", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "ign_5"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_5", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "ign_6"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_6", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "ign_7"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_7", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "ign_8"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_8", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+# MECO1: end the ascent burn at velocity V1 (sets the coast apogee).
+[[mission.events]]
+id      = "meco1"
+once    = true
+trigger = { kind = "at_velocity", velocity_m_s = 6600.0, falling = false }
+action  = { kind = "emit_telemetry_marker", tag = "meco1" }
+
+# Apogee: the commander's radial climb rate (v . r_hat) flips from
+# positive to negative -> the vehicle is at peak radius. Begin burn 2.
+# NOT `once`: the radial rate jitters through zero at launch (speed ~0,
+# estimator noise) before the vehicle is moving, which would consume a
+# one-shot event before the real apogee. Leaving it repeatable is safe
+# because only the firing that occurs while in the `coast` phase has a
+# matching transition; every other firing is a no-op.
+[[mission.events]]
+id      = "apogee"
+once    = false
+trigger = { kind = "at_apogee" }
+action  = { kind = "emit_telemetry_marker", tag = "apogee" }
+
+# SECO: cut at circular velocity for the ~220 km apogee (only reached
+# during burn 2; the ascent burn stops at V1 < this threshold and the
+# coast only decelerates).
+[[mission.events]]
+id      = "seco"
+once    = true
+trigger = { kind = "at_velocity", velocity_m_s = 7820.0, falling = false }
+action  = { kind = "emit_telemetry_marker", tag = "seco" }
+
+[[mission.transitions]]
+from  = "mission.phases.powered_ascent"
+to    = "mission.phases.coast"
+event = "meco1"
+
+[[mission.transitions]]
+from  = "mission.phases.coast"
+to    = "mission.phases.circularize"
+event = "apogee"
+
+[[mission.transitions]]
+from  = "mission.phases.circularize"
+to    = "mission.phases.orbit"
+event = "seco"
+
+
+[fc]
+estimator        = "ekf"
+autopilot        = "three_loop"
+guidance         = "ascent_reference"
+base_rate_hz     = 50
+frame_budget_us  = 4000
+
+[fc.ascent_reference]
+# Closed-loop orbital insertion: steer the thrust from the live state to
+# reach the target radius with zero radial velocity (flight-path angle
+# -> 0), building horizontal velocity for orbit. Robust to vehicle /
+# timing variation, unlike an open-loop pitch-vs-time table. Target is a
+# ~200 km orbit (launch radius 6_370_000 m + 200 km).
+method             = "closed_loop_insertion"
+insertion_radius_m  = 6_625_000.0
+# Gains tuned for a gradual gravity-turn pitch-over: the elevation
+# command spans ~80 deg (near-vertical) at liftoff down to 0 deg
+# (horizontal) as the vehicle nears the insertion radius, building
+# horizontal velocity throughout rather than climbing vertical then
+# slamming over. The radial-velocity term damps the climb so the
+# flight-path angle settles toward 0 at insertion.
+k_alt_rad_per_m     = 1.6e-5
+k_vr_rad_per_m_s    = 2.0e-3
+theta_min_rad       = -0.70
+theta_max_rad       = 1.45
+
+[fc.ekf]
+mag_field                   = "wmm_2025"
+# Central gravity matching the EGM2008 truth, so the nav estimate stays
+# valid as the vehicle pitches over and leaves the launch pole.
+gravity_model               = "egm2008"
+mag_epoch_decimal_year      = 2025.0
+sigma_w_gyro                = 0.01
+sigma_w_accel_bias          = 1.0e-4
+sigma_w_gyro_bias           = 1.0e-5
+# Position/velocity process noise. Without these the position/velocity
+# covariance collapses during the high-dynamics ascent, after which the
+# filter stops trusting GNSS and dead-reckons (drifting ~1 km/s) through
+# the long ballistic coast -- which would defeat the velocity-triggered
+# circularisation cutoff. Keeping the covariance alive lets GNSS hold the
+# velocity solution through coast.
+sigma_w_position_m          = 1.0
+sigma_w_velocity_m_s        = 1.0
+tau_gyro_bias_s             = 100.0
+tau_accel_bias_s            = 100.0
+sigma_gnss_pos_m            = 5.0
+sigma_gnss_vel_m_s          = 0.5
+sigma_baro_alt_m            = 2.0
+sigma_mag_nt                = 100.0
+innovation_false_alarm_rate = 0.01
+dead_reckon_timeout_s       = 1.5
+
+[fc.autopilot_params]
+thrust_vector_control = true
+rate_deadband_rad_s   = 0.001
+trajectory_loop_enabled = false
+trajectory_kind       = "pid"
+
+[fc.health]
+imu_stale_after_s   = 0.1
+gnss_stale_after_s  = 0.5
+baro_stale_after_s  = 10.0
+mag_stale_after_s   = 0.2
+overrun_burst_count = 5
+
+[fc.fdir]
+detector_kind          = "burst_counter"
+innovation_threshold   = 25.0
+innovation_burst_count  = 5
+failsafe_burst_count   = 5
+
+[fc.gain_schedule."mission.phases.powered_ascent"]
+rate_kp            = [0.2, 0.2, 0.1]
+rate_kd            = [0.05, 0.05, 0.02]
+attitude_kp        = [0.7, 0.7, 0.4]
+elevator_limit_rad = 0.087
+aileron_limit_rad  = 0.087
+rudder_limit_rad   = 0.087
+throttle_baseline  = 1.0
+
+[fc.gain_schedule."mission.phases.coast"]
+rate_kp            = [0.2, 0.2, 0.1]
+rate_kd            = [0.05, 0.05, 0.02]
+attitude_kp        = [0.7, 0.7, 0.4]
+elevator_limit_rad = 0.087
+aileron_limit_rad  = 0.087
+rudder_limit_rad   = 0.087
+throttle_baseline  = 1.0
+
+[fc.gain_schedule."mission.phases.circularize"]
+rate_kp            = [0.2, 0.2, 0.1]
+rate_kd            = [0.05, 0.05, 0.02]
+attitude_kp        = [0.7, 0.7, 0.4]
+elevator_limit_rad = 0.087
+aileron_limit_rad  = 0.087
+rudder_limit_rad   = 0.087
+# Throttled down for the apogee circularisation burn: at ~22 t the full
+# 4.5 MN cluster is 225 m/s^2, which overshoots the velocity cutoff by
+# hundreds of m/s before SECO can act; 12% throttle keeps the burn gentle
+# so the cutoff lands near circular velocity.
+throttle_baseline  = 0.12
+
+[fc.gain_schedule."mission.phases.orbit"]
+rate_kp            = [0.2, 0.2, 0.1]
+rate_kd            = [0.05, 0.05, 0.02]
+attitude_kp        = [0.7, 0.7, 0.4]
+elevator_limit_rad = 0.087
+aileron_limit_rad  = 0.087
+rudder_limit_rad   = 0.087
+throttle_baseline  = 1.0
+
+[fc.phase_authority."mission.phases.powered_ascent"]
+autopilot_allowed = true
+engines_allowed   = true
+
+[fc.phase_authority."mission.phases.coast"]
+autopilot_allowed = true
+engines_allowed   = false
+
+[fc.phase_authority."mission.phases.circularize"]
+autopilot_allowed = true
+engines_allowed   = true
+
+[fc.phase_authority."mission.phases.orbit"]
+autopilot_allowed = true
+engines_allowed   = false

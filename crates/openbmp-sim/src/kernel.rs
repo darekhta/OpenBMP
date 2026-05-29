@@ -43,6 +43,29 @@ use crate::models::{
 use crate::solver_profile::{ProfiledIntegrator, SolverProfile, SolverProfileError};
 use crate::stop::StopCondition;
 
+/// Vertical climb rate for apogee / ascent / descent event detection.
+///
+/// For a geocentric configuration (position well beyond a flat-earth /
+/// local-frame launch radius) "up" is the radial direction, so the climb
+/// rate is the radial projection `v · r̂` — this is correct even after a
+/// trajectory curves away from the launch meridian, where the raw ECI +z
+/// component would cross zero long before the true (radial) apogee. For a
+/// near-origin launch (flat-earth or local tangent frame, where +z is the
+/// vertical) it falls back to the frame +z component, byte-identical to
+/// the legacy behaviour.
+fn vertical_climb_rate(
+    position_eci: &nalgebra::Vector3<f64>,
+    velocity_eci: &nalgebra::Vector3<f64>,
+) -> f64 {
+    const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
+    let r = position_eci.norm();
+    if r > GEOCENTRIC_RADIUS_THRESHOLD_M {
+        velocity_eci.dot(position_eci) / r
+    } else {
+        velocity_eci.z
+    }
+}
+
 const EVENT_SCALARS_MODEL_ID: ModelId = ModelId::new(0);
 
 fn dynamic_pressure_pa_from_density_velocity(
@@ -535,7 +558,7 @@ where
                 self.previous_event_scalars = Some(crate::events::EventScalars {
                     time_s: self.state.time.as_seconds(),
                     altitude_m: self.state.position.vector.z,
-                    vertical_velocity_m_s: self.state.velocity.vector.z,
+                    vertical_velocity_m_s: vertical_climb_rate(&self.state.position.vector, &self.state.velocity.vector),
                     velocity_m_s: self.state.velocity.vector.norm(),
                     mass_fraction: self.state.mass.get::<kilogram>() / self.initial_mass_kg,
                     dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
@@ -557,7 +580,7 @@ where
             let scalars = crate::events::EventScalars {
                 time_s: canonical_time_s,
                 altitude_m: new_state.position.vector.z,
-                vertical_velocity_m_s: new_state.velocity.vector.z,
+                vertical_velocity_m_s: vertical_climb_rate(&new_state.position.vector, &new_state.velocity.vector),
                 velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass.get::<kilogram>() / self.initial_mass_kg,
                 dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
@@ -1568,7 +1591,7 @@ where
                 self.previous_event_scalars = Some(crate::events::EventScalars {
                     time_s: self.state.time.as_seconds(),
                     altitude_m: self.state.position.vector.z,
-                    vertical_velocity_m_s: self.state.velocity.vector.z,
+                    vertical_velocity_m_s: vertical_climb_rate(&self.state.position.vector, &self.state.velocity.vector),
                     velocity_m_s: self.state.velocity.vector.norm(),
                     mass_fraction: self.state.mass_props.mass.get::<kilogram>()
                         / self.initial_mass_kg,
@@ -1600,7 +1623,7 @@ where
             let scalars = crate::events::EventScalars {
                 time_s: canonical_time_s,
                 altitude_m: new_state.position.vector.z,
-                vertical_velocity_m_s: new_state.velocity.vector.z,
+                vertical_velocity_m_s: vertical_climb_rate(&new_state.position.vector, &new_state.velocity.vector),
                 velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass_props.mass.get::<kilogram>() / self.initial_mass_kg,
                 dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(

@@ -236,7 +236,7 @@ impl AscentReferenceGenerator for PitchProgramAscentReference {
         state.validate()?;
         let pitch = self.pitch_at(time)?;
         let forward_eci = [pitch.sin(), 0.0, pitch.cos()];
-        let q_body_to_eci_xyzw = reference_quaternion_from_body_x(forward_eci)?;
+        let q_body_to_eci_xyzw = reference_quaternion_from_body_z(forward_eci)?;
         Ok(AscentReference {
             q_body_to_eci_xyzw,
             body_rate_rad_s: None,
@@ -298,7 +298,168 @@ impl AscentReferenceGenerator for GravityTurnAscentReference {
                 reason: "gravity-turn reference requires non-zero inertial speed",
             });
         }
-        let q_body_to_eci_xyzw = reference_quaternion_from_body_x(state.velocity_eci_m_s)?;
+        let q_body_to_eci_xyzw = reference_quaternion_from_body_z(state.velocity_eci_m_s)?;
+        Ok(AscentReference {
+            q_body_to_eci_xyzw,
+            body_rate_rad_s: None,
+        })
+    }
+}
+
+/// Closed-loop orbital-insertion ascent reference.
+///
+/// Computes the commanded thrust direction (engine axis, body `+z`)
+/// from the current state so the vehicle flies to a target orbital
+/// radius with zero radial velocity — i.e. flight-path angle → 0 —
+/// while building the horizontal velocity needed for orbit. The thrust
+/// elevation above the local horizon is
+///
+/// ```text
+/// theta = clamp(k_alt * (r_target - r) - k_vr * v_radial,
+///               theta_min, theta_max)
+/// ```
+///
+/// Far below the target the altitude term saturates `theta` to
+/// `theta_max` (steep climb); approaching the target radius with a
+/// positive climb rate, the radial-velocity term drives `theta` down
+/// toward (and below) zero, flattening the trajectory. Unlike an
+/// open-loop pitch-versus-time program, this is robust to vehicle and
+/// timing variations because it steers on the live state. Pair it with
+/// a velocity-triggered engine cutoff at circular speed for insertion.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClosedLoopInsertionAscentReference {
+    target_radius_m: f64,
+    k_alt_rad_per_m: f64,
+    k_vr_rad_per_m_s: f64,
+    theta_min_rad: f64,
+    theta_max_rad: f64,
+    downrange_axis_eci: [f64; 3],
+}
+
+impl ClosedLoopInsertionAscentReference {
+    /// Construct a closed-loop insertion reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] for non-finite or non-physical
+    /// parameters (`target_radius_m <= 0`, negative gains,
+    /// `theta_min > theta_max`, degenerate downrange axis).
+    pub fn new(
+        target_radius_m: f64,
+        k_alt_rad_per_m: f64,
+        k_vr_rad_per_m_s: f64,
+        theta_min_rad: f64,
+        theta_max_rad: f64,
+        downrange_axis_eci: [f64; 3],
+    ) -> Result<Self, PhysicsError> {
+        for v in [
+            target_radius_m,
+            k_alt_rad_per_m,
+            k_vr_rad_per_m_s,
+            theta_min_rad,
+            theta_max_rad,
+        ] {
+            if !v.is_finite() {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "closed-loop insertion parameters must be finite",
+                });
+            }
+        }
+        require_finite_vec3(
+            downrange_axis_eci,
+            "closed-loop insertion downrange axis components must be finite",
+        )?;
+        if target_radius_m <= 0.0 || k_alt_rad_per_m < 0.0 || k_vr_rad_per_m_s < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "closed-loop insertion: target_radius_m > 0 and non-negative gains required",
+            });
+        }
+        if theta_min_rad > theta_max_rad {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "closed-loop insertion: theta_min_rad must not exceed theta_max_rad",
+            });
+        }
+        if vector_norm(downrange_axis_eci) <= MIN_DIRECTION_NORM {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "closed-loop insertion downrange axis must be non-degenerate",
+            });
+        }
+        Ok(Self {
+            target_radius_m,
+            k_alt_rad_per_m,
+            k_vr_rad_per_m_s,
+            theta_min_rad,
+            theta_max_rad,
+            downrange_axis_eci,
+        })
+    }
+}
+
+impl AscentReferenceGenerator for ClosedLoopInsertionAscentReference {
+    fn ascent_reference(
+        &self,
+        state: &AscentState,
+        _time: SimTime,
+    ) -> Result<AscentReference, PhysicsError> {
+        state.validate()?;
+        let pos = Vector3::new(
+            state.position_eci_m[0],
+            state.position_eci_m[1],
+            state.position_eci_m[2],
+        );
+        let vel = Vector3::new(
+            state.velocity_eci_m_s[0],
+            state.velocity_eci_m_s[1],
+            state.velocity_eci_m_s[2],
+        );
+        let r = pos.norm();
+        if r <= MIN_DIRECTION_NORM {
+            // Position estimate not yet initialised (e.g. seeded at the
+            // origin before the first navigation fix). Command a benign
+            // reference — aligned with the inertial velocity if moving,
+            // otherwise vertical (body +z) — rather than failing. The
+            // autopilot is not yet active this early in the run.
+            if vel.norm() > MIN_DIRECTION_NORM {
+                let q_body_to_eci_xyzw = reference_quaternion_from_body_z([vel.x, vel.y, vel.z])?;
+                return Ok(AscentReference {
+                    q_body_to_eci_xyzw,
+                    body_rate_rad_s: None,
+                });
+            }
+            return Ok(AscentReference {
+                q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+                body_rate_rad_s: None,
+            });
+        }
+        let up = pos / r;
+        let v_radial = vel.dot(&up);
+        // Local downrange: the configured axis projected into the local
+        // horizontal plane. Falls back to a deterministic perpendicular
+        // when the axis is (near-)parallel to the radial.
+        let axis = Vector3::new(
+            self.downrange_axis_eci[0],
+            self.downrange_axis_eci[1],
+            self.downrange_axis_eci[2],
+        );
+        let projected = axis - up * axis.dot(&up);
+        let downrange = if projected.norm() > MIN_DIRECTION_NORM {
+            projected.normalize()
+        } else {
+            let alt_axis = Vector3::new(0.0, 0.0, 1.0);
+            let alt_proj = alt_axis - up * alt_axis.dot(&up);
+            if alt_proj.norm() <= MIN_DIRECTION_NORM {
+                return Err(PhysicsError::OutOfEnvelope {
+                    reason: "closed-loop insertion could not construct a downrange direction",
+                });
+            }
+            alt_proj.normalize()
+        };
+        let theta = (self.k_alt_rad_per_m * (self.target_radius_m - r)
+            - self.k_vr_rad_per_m_s * v_radial)
+            .clamp(self.theta_min_rad, self.theta_max_rad);
+        let forward = downrange * theta.cos() + up * theta.sin();
+        let q_body_to_eci_xyzw =
+            reference_quaternion_from_body_z([forward.x, forward.y, forward.z])?;
         Ok(AscentReference {
             q_body_to_eci_xyzw,
             body_rate_rad_s: None,
@@ -2705,7 +2866,14 @@ fn validate_pitch_program(schedule_s: &[f64], pitch_rad: &[f64]) -> Result<(), P
     Ok(())
 }
 
-fn reference_quaternion_from_body_x(forward_eci: [f64; 3]) -> Result<[f64; 4], PhysicsError> {
+/// Reference attitude aligning body **+z** (the engine thrust axis in
+/// OpenBMP's propulsion model) with `forward_eci`. Launch-vehicle
+/// ascent references use this so that tracking the reference points the
+/// engines along the desired flight direction. Body `+y` is the
+/// projection of ECI `+y` orthogonal to forward (with an ECI `+x`
+/// fallback for the degenerate case), and body `+x = body_y × body_z`
+/// completes the right-handed frame.
+fn reference_quaternion_from_body_z(forward_eci: [f64; 3]) -> Result<[f64; 4], PhysicsError> {
     require_finite_vec3(
         forward_eci,
         "ascent reference direction components must be finite",
@@ -2716,19 +2884,19 @@ fn reference_quaternion_from_body_x(forward_eci: [f64; 3]) -> Result<[f64; 4], P
             reason: "ascent reference direction norm is too small",
         });
     }
-    let body_x = Vector3::new(
+    let body_z = Vector3::new(
         forward_eci[0] / norm,
         forward_eci[1] / norm,
         forward_eci[2] / norm,
     );
     let mut reference_y = Vector3::new(0.0, 1.0, 0.0);
-    let projected_y = reference_y - body_x * body_x.dot(&reference_y);
+    let projected_y = reference_y - body_z * body_z.dot(&reference_y);
     let projected_y_norm = projected_y.norm();
     let body_y = if projected_y_norm > MIN_DIRECTION_NORM {
         projected_y / projected_y_norm
     } else {
-        reference_y = Vector3::new(0.0, 0.0, 1.0);
-        let fallback_y = reference_y - body_x * body_x.dot(&reference_y);
+        reference_y = Vector3::new(1.0, 0.0, 0.0);
+        let fallback_y = reference_y - body_z * body_z.dot(&reference_y);
         let fallback_y_norm = fallback_y.norm();
         if fallback_y_norm <= MIN_DIRECTION_NORM {
             return Err(PhysicsError::OutOfEnvelope {
@@ -2737,7 +2905,7 @@ fn reference_quaternion_from_body_x(forward_eci: [f64; 3]) -> Result<[f64; 4], P
         }
         fallback_y / fallback_y_norm
     };
-    let body_z = body_x.cross(&body_y);
+    let body_x = body_y.cross(&body_z);
     let matrix = Matrix3::from_columns(&[body_x, body_y, body_z]);
     let rotation = Rotation3::from_matrix_unchecked(matrix);
     let q = UnitQuaternion::from_rotation_matrix(&rotation);
@@ -2816,9 +2984,9 @@ mod tests {
         }
     }
 
-    fn body_x_axis(q_xyzw: [f64; 4]) -> Vector3<f64> {
+    fn body_z_axis(q_xyzw: [f64; 4]) -> Vector3<f64> {
         let q = Quaternion::new(q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]);
-        UnitQuaternion::new_normalize(q).transform_vector(&Vector3::new(1.0, 0.0, 0.0))
+        UnitQuaternion::new_normalize(q).transform_vector(&Vector3::new(0.0, 0.0, 1.0))
     }
 
     #[test]
@@ -2831,15 +2999,17 @@ mod tests {
     }
 
     #[test]
-    fn pitch_program_reference_aligns_body_x_with_pitch_direction() {
+    fn pitch_program_reference_aligns_thrust_axis_with_pitch_direction() {
         let program = PitchProgramAscentReference::new(vec![0.0, 10.0], vec![0.0, 0.4]).unwrap();
         let reference = program
             .ascent_reference(&nominal_ascent_state(), SimTime::from_seconds(5.0))
             .unwrap();
-        let body_x = body_x_axis(reference.q_body_to_eci_xyzw);
+        // The ascent reference aligns the engine thrust axis (body +z)
+        // with the pitch direction.
+        let body_z = body_z_axis(reference.q_body_to_eci_xyzw);
         let expected_pitch = 0.2_f64;
         let expected = Vector3::new(expected_pitch.sin(), 0.0, expected_pitch.cos());
-        assert!((body_x - expected).norm() < 1.0e-12);
+        assert!((body_z - expected).norm() < 1.0e-12);
     }
 
     #[test]
@@ -2850,13 +3020,15 @@ mod tests {
     }
 
     #[test]
-    fn gravity_turn_aligns_body_x_with_inertial_velocity() {
+    fn gravity_turn_aligns_thrust_axis_with_inertial_velocity() {
         let reference = GravityTurnAscentReference::default()
             .ascent_reference(&nominal_ascent_state(), SimTime::from_seconds(1.0))
             .unwrap();
-        let body_x = body_x_axis(reference.q_body_to_eci_xyzw);
+        // Gravity turn aligns the engine thrust axis (body +z) with the
+        // inertial velocity vector (zero angle of attack).
+        let body_z = body_z_axis(reference.q_body_to_eci_xyzw);
         let expected = Vector3::new(10.0, 0.0, 100.0).normalize();
-        assert!((body_x - expected).norm() < 1.0e-12);
+        assert!((body_z - expected).norm() < 1.0e-12);
     }
 
     #[test]

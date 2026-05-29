@@ -7452,6 +7452,11 @@ pub struct EngineLimitsConfig {
     /// Maximum absolute gimbal angle on either axis (rad). `0.0` →
     /// fixed-axis engine (no gimbal).
     pub max_gimbal_rad: f64,
+    /// Maximum gimbal slew rate (rad/s). Defaults to `+∞`, preserving
+    /// instantaneous gimbal latching; set a finite rate to model a
+    /// real actuator and damp step-frequency gimbal chatter.
+    #[serde(default = "default_infinite")]
+    pub gimbal_slew_rad_per_s: f64,
     /// Maximum throttle slew rate (1/s). Defaults to `+∞`,
     /// preserving instantaneous latching.
     #[serde(default = "default_infinite")]
@@ -7498,6 +7503,13 @@ impl EngineLimitsConfig {
                 field: path("max_gimbal_rad"),
                 value: self.max_gimbal_rad,
                 rule: "must be non-negative",
+            });
+        }
+        if self.gimbal_slew_rad_per_s.is_nan() || self.gimbal_slew_rad_per_s < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("gimbal_slew_rad_per_s"),
+                value: self.gimbal_slew_rad_per_s,
+                rule: "must be non-negative or +infinity",
             });
         }
         if self.throttle_slew_per_s.is_nan() || self.throttle_slew_per_s < 0.0 {
@@ -8187,6 +8199,29 @@ pub struct FcAscentReferenceConfig {
     /// `schedule_s` entry.
     #[serde(default)]
     pub pitch_rad: Option<Vec<f64>>,
+    /// Closed-loop insertion: desired orbital radius (m, from Earth
+    /// centre) the guidance flies to with zero radial velocity.
+    #[serde(default)]
+    pub insertion_radius_m: Option<f64>,
+    /// Closed-loop insertion: altitude-error gain (rad per m).
+    #[serde(default)]
+    pub k_alt_rad_per_m: Option<f64>,
+    /// Closed-loop insertion: radial-velocity damping gain (rad per
+    /// m/s).
+    #[serde(default)]
+    pub k_vr_rad_per_m_s: Option<f64>,
+    /// Closed-loop insertion: minimum thrust elevation above horizon
+    /// (rad); may be negative to push the flight-path angle down.
+    #[serde(default)]
+    pub theta_min_rad: Option<f64>,
+    /// Closed-loop insertion: maximum thrust elevation above horizon
+    /// (rad).
+    #[serde(default)]
+    pub theta_max_rad: Option<f64>,
+    /// Closed-loop insertion: ECI downrange reference axis (projected
+    /// into the local horizontal each step).
+    #[serde(default)]
+    pub downrange_axis_eci: Option<[f64; 3]>,
 }
 
 /// Supported powered-ascent reference methods.
@@ -8197,6 +8232,12 @@ pub enum FcAscentReferenceMethod {
     PitchProgram,
     /// Body `+x` aligned with inertial velocity after motion starts.
     GravityTurn,
+    /// Closed-loop orbital insertion: steer the thrust from the live
+    /// state to reach a target radius with zero radial velocity
+    /// (flight-path angle → 0). Uses `[fc.ascent_reference]`'s
+    /// `target_radius_m` / `k_alt_rad_per_m` / `k_vr_rad_per_m_s` /
+    /// `theta_min_rad` / `theta_max_rad` / `downrange_axis_eci`.
+    ClosedLoopInsertion,
     /// Reserved future ingestion of explicit inertial references.
     ExplicitReference,
 }
@@ -8206,6 +8247,22 @@ impl FcAscentReferenceConfig {
         match self.method {
             FcAscentReferenceMethod::PitchProgram => self.validate_pitch_program(),
             FcAscentReferenceMethod::GravityTurn => self.validate_gravity_turn(),
+            FcAscentReferenceMethod::ClosedLoopInsertion => {
+                let radius = self
+                    .insertion_radius_m
+                    .ok_or_else(|| ScenarioError::InvalidFc {
+                        reason: "fc.ascent_reference.method = \"closed_loop_insertion\" requires \
+                                 insertion_radius_m"
+                            .to_owned(),
+                    })?;
+                if !radius.is_finite() || radius <= 0.0 {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: "fc.ascent_reference.insertion_radius_m must be finite and positive"
+                            .to_owned(),
+                    });
+                }
+                Ok(())
+            }
             FcAscentReferenceMethod::ExplicitReference => {
                 Err(ScenarioError::ElementNotYetSupported {
                     field: "fc.ascent_reference.method = \"explicit_reference\"".to_owned(),
@@ -8501,12 +8558,36 @@ pub enum FcMagFieldKind {
     Wmm2025,
 }
 
+/// EKF navigation gravity model selector.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcGravityModelKind {
+    /// Uniform −z gravity at standard magnitude. Byte-identical to the
+    /// historical EKF behaviour; the default.
+    #[default]
+    ConstantZ,
+    /// Newtonian point-mass central gravity, WGS84 µ.
+    PointMass,
+    /// Point-mass plus the J2 zonal harmonic (WGS84 µ, R_e, J2).
+    J2,
+    /// EGM2008 zonal harmonics (degrees 2–6), matching the runner's
+    /// `egm2008` truth gravity.
+    Egm2008,
+}
+
 /// EKF parameter overrides.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcEkfConfig {
     /// Magnetic-field model used by magnetometer prediction.
     pub mag_field: Option<FcMagFieldKind>,
+    /// Navigation gravity model used in the EKF velocity propagation.
+    /// Defaults to `constant_z` (uniform −z gravity), which is accurate
+    /// near a fixed launch site but mismatches a central field as the
+    /// vehicle travels. Use `point_mass`, `j2`, or `egm2008` for ascent
+    /// / orbital trajectories so the nav estimate stays valid as the
+    /// gravity direction rotates with position.
+    pub gravity_model: Option<FcGravityModelKind>,
     /// Scenario-start decimal year for WMM secular variation.
     /// Defaults to 2025.0 when `mag_field = "wmm_2025"`.
     pub mag_epoch_decimal_year: Option<f64>,
@@ -8516,6 +8597,14 @@ pub struct FcEkfConfig {
     pub sigma_w_accel_bias: Option<f64>,
     /// Process-noise stddev on gyro-bias random walk (rad/s/√s).
     pub sigma_w_gyro_bias: Option<f64>,
+    /// Process-noise stddev on the position state (m/√s). Keeps the
+    /// position covariance from collapsing so GNSS keeps correcting.
+    pub sigma_w_position_m: Option<f64>,
+    /// Process-noise stddev on the velocity state (m/s/√s). Prevents
+    /// velocity-covariance collapse during high-dynamics flight, which
+    /// otherwise makes the filter ignore GNSS velocity and drift through
+    /// a subsequent low-specific-force coast.
+    pub sigma_w_velocity_m_s: Option<f64>,
     /// First-order Gauss-Markov gyro-bias time constant (s).
     pub tau_gyro_bias_s: Option<f64>,
     /// First-order Gauss-Markov accelerometer-bias time constant (s).
@@ -8708,6 +8797,16 @@ impl FcImmModeConfig {
 pub struct FcAutopilotParams {
     /// Rate-loop integrator deadband (rad/s).
     pub rate_deadband_rad_s: Option<f64>,
+    /// Steer by engine-gimbal thrust-vector control (TVC). When `true`,
+    /// the autopilot emits its rate-loop pitch/yaw command as the
+    /// engine `gimbal_pitch_rad`/`gimbal_yaw_rad` (clamped to the
+    /// gain-schedule limits). Defaults to `false` (aerodynamic
+    /// effectors only; zero gimbal).
+    pub thrust_vector_control: Option<bool>,
+    /// Settling time (s) before TVC gimbal output engages. Holds the
+    /// gimbal at zero (open-loop axial thrust) until the nav estimate
+    /// converges, suppressing an EKF-init transient. Defaults to `0.0`.
+    pub thrust_vector_settle_s: Option<f64>,
     /// Whether to enable the trajectory loop.
     pub trajectory_loop_enabled: Option<bool>,
     /// Trajectory-loop strategy.

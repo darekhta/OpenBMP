@@ -573,8 +573,19 @@ pub struct EngineCommand {
 }
 
 /// Maximum number of engine-specific commands published by the FC
-/// mixer in one tick.
-pub const MAX_ENGINE_COMMANDS: usize = 8;
+/// mixer in one tick — i.e. the largest engine cluster the FC can
+/// command in one phase.
+///
+/// Sized to cover a Super-Heavy-class cluster (33 engines) with
+/// headroom. This is a hard capacity, not a soft truncation: the runner
+/// FAILS CLOSED at scenario load if a phase authorizes more engines than
+/// this (see `build_authority`). It must never silently drop commands —
+/// an un-commanded engine in an otherwise-gimbaled cluster breaks
+/// symmetry and injects a spurious roll moment. A historical value of 8
+/// silently dropped the 9th engine of an octaweb and caused exactly that
+/// roll divergence. If a future vehicle needs a larger cluster, raise
+/// this constant (and the fail-closed check reports the required size).
+pub const MAX_ENGINE_COMMANDS: usize = 64;
 
 /// Engine-specific command set emitted by the mixer for kernel
 /// consumption.

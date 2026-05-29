@@ -29,7 +29,7 @@ use openbmp_sensors::{
 use openbmp_state::{PointMassState, RigidBodyState};
 
 use crate::error::RunnerError;
-use crate::fc::{FcAutopilotLqrContext, FcRunner, FcRunnerMission};
+use crate::fc::{EstimatorSeed, FcAutopilotLqrContext, FcRunner, FcRunnerMission};
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
 
@@ -80,12 +80,32 @@ impl FcBridge {
         let magnetic = build_magnetic_field(fc_config)?;
         let lqr_ctx = build_autopilot_lqr_context(scenario)?;
         let allocator = build_autopilot_allocator(scenario)?;
+        // Seed the estimator from the scenario's known initial state so
+        // the navigation filter starts near truth. Without this the EKF
+        // seeds at the ECI origin and its first GNSS fix lands outside
+        // the innovation gate (the vehicle is thousands of km away), so
+        // it rejects every correction and dead-reckons from zero — any
+        // guidance keyed off the position estimate is then wrong for the
+        // whole flight.
+        let v = &scenario.document.vehicle;
+        let estimator_seed = EstimatorSeed {
+            position_eci_m: Vector3::from(v.initial_position_eci_m),
+            velocity_eci_m_s: Vector3::from(v.initial_velocity_eci_m_s),
+            attitude_body_to_eci: v
+                .initial_quaternion_body_to_eci_xyzw
+                .map_or_else(UnitQuaternion::identity, |q| {
+                    UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        q[3], q[0], q[1], q[2],
+                    ))
+                }),
+        };
         let runner = FcRunner::new(
             fc_config,
             fc_mission,
             lqr_ctx,
             scenario.document.time.dt_s,
             allocator,
+            estimator_seed,
         )
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("flight-controller construction failed: {err}"),

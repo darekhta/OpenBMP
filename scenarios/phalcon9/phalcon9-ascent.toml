@@ -1,0 +1,315 @@
+# Phalcon-9 — synthetic medium-lift two-stage kerolox launch vehicle.
+#
+# DEMONSTRATION ARTIFACT. Phalcon-9 is a WHOLLY SYNTHETIC vehicle. Its
+# parameters are rounded, order-of-magnitude figures for a generic
+# medium-lift two-stage kerosene/LOX launcher class; they are NOT a
+# validated model of, and carry no performance claim about, any real
+# fielded vehicle, operator, engine, or programme. Numbers are
+# illustrative round values, not benchmarks. See provenance.md.
+#
+# This scenario is the first OpenBMP scenario to exercise the wired
+# engine -> tank propellant-budget coupling end to end across TWO
+# powered stages: each stage's engine cluster draws mass-flow from a
+# tank mounted to its own body, depletes it, and shuts down on
+# depletion. Stage 1 (9-engine cluster on body `lower`) lifts the
+# stack; at burnout the `lower` body is jettisoned and the single
+# stage-2 engine on body `upper` burns to high velocity.
+#
+# This first cut flies a VERTICAL ascent under EGM2008 zonal gravity to
+# validate the staging + mass-depletion mechanics. The gravity-turn
+# pitch program, atmosphere/aero, and booster recovery footprint are
+# layered on in follow-on revisions.
+#
+# Forward-only: this is a vehicle-intrinsic ascent. There is no target,
+# aimpoint, range, or terminal-guidance field anywhere in this scenario.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "phalcon9-ascent"
+description = "Phalcon-9 synthetic medium-lift two-stage kerolox launcher; vertical two-stage powered ascent exercising engine->tank propellant coupling and stage separation. Synthetic; not a benchmark."
+validation  = "experimental"
+provenance  = "Wholly synthetic medium-lift two-stage kerolox vehicle. Rounded order-of-magnitude class figures; not validated against and not a claim about any fielded vehicle, operator, or engine. See scenarios/phalcon9/provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 545.0
+dt_s    = 0.1
+seed    = 0x5068616c636f6e39   # "Phalcon9"
+
+[vehicle]
+kind                                = "rigid_body"
+# A synthetic spherical-Earth surface radius (rounded, not the WGS84
+# equatorial value) in ECI; body +z (engine thrust axis) is rotated to
+# point radially outward (ECI +x) by a 90-deg rotation about ECI +y.
+initial_position_eci_m              = [6_370_000.0, 0.0, 0.0]
+initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.707_106_781_186_547_5, 0.0, 0.707_106_781_186_547_5]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id             = "phalcon9"
+cluster_layout = "octaweb"
+
+# Stage 1 ("lower"): dry structure 22 t, carries the 9-engine cluster
+# and the stage-1 propellant tank.
+[[vehicle.assembly.bodies]]
+id                     = "lower"
+geometry               = { kind = "cylinder", length_m = 42.0, diameter_m = 3.7 }
+dry_mass_kg            = 22_000.0
+dry_cg_body_m          = [0.0, 0.0, 18.0]
+dry_inertia_body_kg_m2 = [[5.0e7, 0.0, 0.0], [0.0, 5.0e7, 0.0], [0.0, 0.0, 7.0e5]]
+
+# Stage 2 + payload ("upper"): 4 t stage-2 dry + 15 t payload = 19 t
+# dry, single vacuum engine and the stage-2 propellant tank.
+[[vehicle.assembly.bodies]]
+id                     = "upper"
+geometry               = { kind = "cylinder", length_m = 13.0, diameter_m = 3.7 }
+dry_mass_kg            = 19_000.0
+dry_cg_body_m          = [0.0, 0.0, 48.0]
+dry_inertia_body_kg_m2 = [[2.0e6, 0.0, 0.0], [0.0, 2.0e6, 0.0], [0.0, 0.0, 1.0e5]]
+
+# --- Stage-1 propellant tank (mounted to `lower`) -------------------
+# Synthetic kerolox bulk density ~1030 kg/m^3 (single combined store;
+# monopropellant-style budget binding, oxidizer_fuel_ratio = 0).
+# Volume = pi*1.85^2*37.2 ~= 400 m^3 -> ~412 t at full fill.
+[[vehicle.assembly.tanks]]
+id                    = "s1_prop"
+mounted_to            = "lower"
+mount_point_body_m    = [0.0, 0.0, 18.0]
+geometry              = { kind = "cylinder", radius_m = 1.85, height_m = 37.2 }
+propellant            = { density_kg_m3 = 1030.0, label = "synthetic_kerolox_bulk" }
+initial_fill_fraction = 1.0
+moving_mass           = { kind = "rigid_liquid" }
+
+# --- Stage-2 propellant tank (mounted to `upper`) -------------------
+# Volume = pi*1.85^2*9.78 ~= 105 m^3 -> ~108 t at full fill.
+[[vehicle.assembly.tanks]]
+id                    = "s2_prop"
+mounted_to            = "upper"
+mount_point_body_m    = [0.0, 0.0, 47.0]
+geometry              = { kind = "cylinder", radius_m = 1.85, height_m = 9.78 }
+propellant            = { density_kg_m3 = 1030.0, label = "synthetic_kerolox_bulk" }
+initial_fill_fraction = 1.0
+moving_mass           = { kind = "rigid_liquid" }
+
+# --- Stage-1 cluster: 1 center + 8 ring engines, each ~850 kN, Isp
+# 300 s, all drawing from s1_prop. mdot/engine ~289 kg/s; 9 engines
+# ~2600 kg/s; ~412 t burns in ~158 s. -------------------------------
+[[vehicle.assembly.engines]]
+id                 = "eng_s1_0"
+mounted_to         = "lower"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, 0.0]
+limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id                 = "eng_s1_1"
+mounted_to         = "lower"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [1.6, 0.0, 0.0]
+limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id                 = "eng_s1_2"
+mounted_to         = "lower"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [1.131, 1.131, 0.0]
+limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id                 = "eng_s1_3"
+mounted_to         = "lower"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 1.6, 0.0]
+limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id                 = "eng_s1_4"
+mounted_to         = "lower"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [-1.6, 0.0, 0.0]
+limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id                 = "eng_s1_5"
+mounted_to         = "lower"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [-1.131, 1.131, 0.0]
+limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id                 = "eng_s1_6"
+mounted_to         = "lower"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [-1.131, -1.131, 0.0]
+limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id                 = "eng_s1_7"
+mounted_to         = "lower"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, -1.6, 0.0]
+limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id                 = "eng_s1_8"
+mounted_to         = "lower"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [1.131, -1.131, 0.0]
+limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+# --- Stage-2 vacuum engine (mounted to `upper`) ~980 kN, Isp 348 s,
+# draws from s2_prop; ~108 t burns in ~376 s. -----------------------
+[[vehicle.assembly.engines]]
+id                 = "eng_vac"
+mounted_to         = "upper"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, 43.0]
+limits             = { max_thrust_n = 980_000.0, isp_s = 348.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s2_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "egm2008"
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity", "thrust"]
+
+[telemetry]
+output.csv     = "out/phalcon9-ascent.csv"
+output.parquet = "out/phalcon9-ascent.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+# --- Mission timeline ------------------------------------------------
+[mission]
+initial_phase = "powered_ascent"
+
+[[mission.states]]
+id    = "powered_ascent"
+label = "stage-1 powered ascent"
+
+[[mission.states]]
+id    = "stage_coast"
+label = "post-MECO coast and separation"
+
+[[mission.states]]
+id    = "second_stage_burn"
+label = "stage-2 powered flight"
+
+[[mission.states]]
+id    = "orbit"
+label = "stage-2 cutoff / orbital insertion coast"
+
+# Stage-1 ignition: light all nine engines just after t = 0.
+[[mission.events]]
+id      = "s1_ign_0"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_s1_0", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "s1_ign_1"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_s1_1", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "s1_ign_2"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_s1_2", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "s1_ign_3"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_s1_3", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "s1_ign_4"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_s1_4", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "s1_ign_5"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_s1_5", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "s1_ign_6"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_s1_6", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "s1_ign_7"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_s1_7", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[mission.events]]
+id      = "s1_ign_8"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "eng_s1_8", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+# MECO marker (engines also auto-shut-down on s1_prop depletion ~158 s).
+[[mission.events]]
+id      = "meco"
+trigger = { kind = "at_time", time_s = 159.0 }
+action  = { kind = "emit_telemetry_marker", tag = "meco" }
+once    = true
+
+# Stage separation: jettison the spent `lower` booster.
+[[mission.events]]
+id      = "sep"
+trigger = { kind = "at_time", time_s = 162.0 }
+action  = { kind = "jettison_stage", body = "lower" }
+once    = true
+
+# Stage-2 ignition.
+[[mission.events]]
+id      = "s2_ign"
+trigger = { kind = "at_time", time_s = 164.0 }
+action  = { kind = "engine_command", id = "eng_vac", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+# SECO marker (engine auto-shuts-down on s2_prop depletion ~540 s).
+[[mission.events]]
+id      = "seco"
+trigger = { kind = "at_time", time_s = 541.0 }
+action  = { kind = "emit_telemetry_marker", tag = "seco" }
+once    = true
+
+[[mission.transitions]]
+from  = "powered_ascent"
+to    = "stage_coast"
+event = "meco"
+
+[[mission.transitions]]
+from  = "stage_coast"
+to    = "second_stage_burn"
+event = "s2_ign"
+
+[[mission.transitions]]
+from  = "second_stage_burn"
+to    = "orbit"
+event = "seco"
+
+# --- Multi-body separation bookkeeping ------------------------------
+[multi_body]
+
+[[multi_body.separation]]
+event_id               = "sep"
+upper_body_id          = "upper"
+lower_body_id          = "lower"
+upper_delta_v_body_m_s = [0.0, 0.0, 0.3]
+lower_delta_v_body_m_s = [0.0, 0.0, -0.3]
+conserve_momentum      = false

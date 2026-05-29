@@ -1,0 +1,142 @@
+# Phalcon-9 — synthetic booster (stage-1) recovery footprint.
+#
+# DEMONSTRATION ARTIFACT. Companion to phalcon9-ascent.toml. Phalcon-9 is
+# a WHOLLY SYNTHETIC vehicle (see provenance.md); all numbers are rounded
+# class figures, not a model of or claim about any fielded vehicle.
+#
+# OpenBMP's [landing_footprint] block is an OFFLINE ballistic projection
+# from the scenario's initial state (a coast/burnout handoff), not a
+# tracker of a live separated lane. So booster recovery is modelled the
+# way the framework intends: a standalone coast scenario seeded with the
+# spent stage-1's representative state at separation, propagated to the
+# ground, with a landing footprint + dispersion ellipse.
+#
+# The separation state here is a representative, synthetic post-MECO
+# condition for a pitched (gravity-turn-style) ascent: the empty booster
+# is high and downrange with mostly-horizontal velocity. It is illustrative,
+# not extracted from a validated trajectory.
+#
+# Forward-only: this computes WHERE a ballistic body lands from a given
+# state. There is no target, aimpoint, or guidance — the footprint is a
+# range-safety / recovery prediction, not an aimpoint solution.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "phalcon9-booster-recovery"
+description = "Phalcon-9 synthetic spent stage-1 booster: ballistic coast from a representative separation state to a landing footprint with dispersion. Synthetic; not a benchmark."
+validation  = "experimental"
+provenance  = "Wholly synthetic. Representative post-MECO booster state for a pitched ascent; rounded illustrative figures, not extracted from or validated against any trajectory or fielded vehicle. See scenarios/phalcon9/provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 400.0
+dt_s    = 0.05
+seed    = 0x5068616c39726563   # "Phal9rec"
+
+[vehicle]
+kind = "point_mass"
+# Toy frame: x = downrange, z = altitude. Representative spent-booster
+# state at separation: ~80 km up, ~60 km downrange, ~1.8 km/s horizontal
+# and still slightly ascending.
+initial_position_eci_m   = [60_000.0, 0.0, 80_000.0]
+initial_velocity_eci_m_s = [1_800.0, 0.0, 400.0]
+
+[vehicle.assembly]
+id = "phalcon9-booster"
+
+[[vehicle.assembly.bodies]]
+id          = "lower"
+geometry    = { kind = "cylinder", length_m = 42.0, diameter_m = 3.7 }
+dry_mass_kg = 22_000.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv     = "out/phalcon9-booster-recovery.csv"
+output.parquet = "out/phalcon9-booster-recovery.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id    = "coast"
+label = "post-separation coast to apogee"
+
+[[mission.phases]]
+id    = "ballistic_descent"
+label = "ballistic descent"
+
+[[mission.phases]]
+id    = "recovery"
+label = "recovery / ground crossing"
+
+[[mission.events]]
+id      = "apogee"
+trigger = { kind = "at_apogee" }
+action  = { kind = "emit_telemetry_marker", tag = "apogee" }
+
+[[mission.events]]
+id      = "cull"
+trigger = { kind = "at_altitude_descending", altitude_m = 0.0 }
+action  = { kind = "emit_telemetry_marker", tag = "ground_crossing" }
+
+[[mission.transitions]]
+from  = "coast"
+to    = "ballistic_descent"
+event = "apogee"
+
+[[mission.transitions]]
+from  = "ballistic_descent"
+to    = "recovery"
+event = "cull"
+
+# Offline range-safety / recovery footprint projected from the initial
+# (separation) state. Run with: `openbmp footprint-mc <this file>`.
+# Monte-Carlo dispersion over separation-state, ballistic-coefficient, and
+# wind uncertainty produces the recovery footprint + confidence ellipses.
+[landing_footprint]
+method           = "constant_gravity"
+cull_altitude_m  = 0.0
+include_geodetic = false
+
+[landing_footprint.monte_carlo]
+samples           = 256
+seed              = 0x426f6f7374    # "Boost"
+confidence_levels = [0.5, 0.9, 0.99]
+
+[landing_footprint.monte_carlo.output]
+samples_csv  = "out/phalcon9-booster-recovery-mc-samples.csv"
+summary_toml = "out/phalcon9-booster-recovery-mc-summary.toml"
+
+# Empty-booster ballistic coefficient C_d*A/m ~ 0.8 * 10.75 m^2 / 22000 kg.
+[landing_footprint.monte_carlo.ballistic_coefficient]
+nominal_m2_kg = 0.0004
+sigma_m2_kg   = 0.0001
+distribution  = "normal"
+min_m2_kg     = 0.0
+max_m2_kg     = 0.005
+
+[landing_footprint.monte_carlo.wind]
+kind              = "constant"
+sigma_ned_m_s     = [5.0, 5.0, 0.0]
+speed_scale_sigma = 0.0
+
+# Separation-state dispersion (synthetic): a few hundred metres and a
+# few m/s, representative of staging-event scatter.
+[landing_footprint.monte_carlo.burnout_state]
+position_sigma_eci_m   = [300.0, 300.0, 200.0]
+velocity_sigma_eci_m_s = [10.0, 10.0, 5.0]
+time_sigma_s           = 0.1

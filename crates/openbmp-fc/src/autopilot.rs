@@ -118,6 +118,24 @@ pub struct AutopilotParams {
     /// Deadband in body angular velocity below which the rate loop
     /// integrator is frozen.
     pub rate_deadband_rad_s: f64,
+    /// `true` to steer by engine-gimbal thrust-vector control (TVC).
+    /// When set, the rate-loop pitch/yaw output (`torque[1]`/`torque[2]`,
+    /// already clamped to the gain-schedule limits, which a TVC scenario
+    /// sets to the engine gimbal limit) is emitted as the
+    /// `EngineDemand` gimbal angles instead of the hardcoded zero. The
+    /// aerodynamic `ActuatorCommand` path is unchanged. Defaults to
+    /// `false`, so aero-effector scenarios and all existing golden
+    /// runs keep zero gimbal.
+    pub thrust_vector_control: bool,
+    /// Settling time (s, scenario clock) before TVC gimbal output is
+    /// enabled. Until this time the gimbal command is held at zero so
+    /// the vehicle flies open-loop (axial thrust, attitude neutrally
+    /// stable) while the navigation estimate converges — preventing an
+    /// EKF-initialisation transient from slamming the gimbal and
+    /// exciting the (uniform-cluster-uncontrollable) roll axis. Defaults
+    /// to `0.0` (gimbal active immediately). Only consulted when
+    /// `thrust_vector_control` is set.
+    pub thrust_vector_settle_s: f64,
     /// `true` to enable the trajectory loop. When `false`, the
     /// reference attitude is taken directly from the guidance topic.
     pub trajectory_loop_enabled: bool,
@@ -178,6 +196,8 @@ impl Default for AutopilotParams {
         Self {
             anti_windup: crate::anti_windup::AntiWindupKind::default(),
             rate_deadband_rad_s: 1e-3,
+            thrust_vector_control: false,
+            thrust_vector_settle_s: 0.0,
             trajectory_loop_enabled: false,
             trajectory_kind: TrajectoryKind::Pid,
             gyro_notch: None,
@@ -821,11 +841,41 @@ impl Job for ThreeLoopAutopilot {
         };
         let _ = ctx.bus.publish(cmd);
 
+        // Thrust-vector control: steer by gimbaling engines.
+        //
+        // Axis convention: the engine cluster thrusts along body +z, so
+        // body +z is the ROLL (thrust) axis and body +x / +y are the two
+        // TRANSVERSE axes a gimbal can control. The autopilot's `torque`
+        // vector is the control effort about body axes [x, y, z]. A
+        // gimbal-pitch deflection produces a body-y moment; a gimbal-yaw
+        // deflection produces a body-x moment. So the two transverse
+        // commands `torque[0]` (body-x) and `torque[1]` (body-y) drive
+        // gimbal-yaw and gimbal-pitch respectively. `torque[2]` is roll
+        // about the thrust axis, which a uniform cluster cannot produce
+        // (it would need differential gimbal / RCS) and is left unmapped.
+        //
+        // Sign: the cluster is mounted aft of the CG, so a positive
+        // gimbal deflection yields a negative moment about its control
+        // axis; the gimbal command is therefore the negated rate-loop
+        // output for both transverse axes.
+        let tvc_settled =
+            ctx.clock.now().as_seconds() >= self.params.thrust_vector_settle_s;
+        let (gimbal_pitch_rad, gimbal_yaw_rad) = if self.params.thrust_vector_control && tvc_settled
+        {
+            // Defensive: never emit a non-finite gimbal command to the
+            // actuator stack — a transient non-finite control signal
+            // commands zero gimbal rather than faulting the engine rack.
+            let gp = if torque[1].is_finite() { -torque[1] } else { 0.0 };
+            let gy = if torque[0].is_finite() { -torque[0] } else { 0.0 };
+            (gp, gy)
+        } else {
+            (0.0, 0.0)
+        };
         let engine = EngineDemand {
             time: ctx.clock.now(),
             throttle_unit: gains.throttle_baseline,
-            gimbal_pitch_rad: 0.0,
-            gimbal_yaw_rad: 0.0,
+            gimbal_pitch_rad,
+            gimbal_yaw_rad,
             ignite: false,
             shutdown: false,
         };

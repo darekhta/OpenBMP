@@ -171,6 +171,17 @@ pub struct EkfParams {
     /// Process-noise standard deviation on gyro bias random walk
     /// (rad/s/√s).
     pub sigma_w_gyro_bias: f64,
+    /// Process-noise standard deviation on the position state
+    /// (m/√s). Keeps the position covariance from collapsing so the
+    /// filter stays responsive to GNSS. `0` reproduces the legacy
+    /// no-process-noise behaviour.
+    pub sigma_w_position_m: f64,
+    /// Process-noise standard deviation on the velocity state
+    /// (m/s/√s). Without it the velocity covariance collapses during
+    /// high-dynamics flight and the filter stops trusting GNSS
+    /// velocity, dead-reckoning (and drifting) through any subsequent
+    /// low-specific-force coast. `0` reproduces the legacy behaviour.
+    pub sigma_w_velocity_m_s: f64,
     /// First-order Gauss-Markov gyro-bias time constant. `∞`
     /// preserves the legacy random-walk limit.
     pub tau_gyro_bias_s: f64,
@@ -208,6 +219,8 @@ impl Default for EkfParams {
             sigma_w_gyro: 0.01,
             sigma_w_accel_bias: 1.0e-4,
             sigma_w_gyro_bias: 1.0e-5,
+            sigma_w_position_m: 0.0,
+            sigma_w_velocity_m_s: 0.0,
             tau_gyro_bias_s: f64::INFINITY,
             tau_accel_bias_s: f64::INFINITY,
             sigma_gnss_pos_m: 5.0,
@@ -432,6 +445,8 @@ impl Estimator for Ekf {
 
         // Covariance propagation: Q dt added on the diagonals.
         let q_diag = SVector::<f64, 15>::from_iterator((0..15).map(|i| match i {
+            0..=2 => self.params.sigma_w_position_m * self.params.sigma_w_position_m * dt,
+            3..=5 => self.params.sigma_w_velocity_m_s * self.params.sigma_w_velocity_m_s * dt,
             6..=8 => self.params.sigma_w_gyro * self.params.sigma_w_gyro * dt,
             9..=11 => gauss_markov_process_variance(
                 self.params.sigma_w_gyro_bias,
@@ -1127,6 +1142,49 @@ mod tests {
             "velocity z {} not within 5 cm/s of {expected_velocity_z} m/s",
             pos.velocity_eci_m_s.z
         );
+    }
+
+    #[test]
+    fn ekf_point_mass_gravity_pulls_toward_earth_center() {
+        // With the central (point-mass) nav gravity model, free fall at
+        // a position on the +x axis accelerates the velocity toward the
+        // origin (−x), NOT along a fixed −z as the constant-Z model
+        // would. This is the position-dependent behaviour an orbital
+        // ascent needs. Magnitude matches µ/r².
+        use openbmp_physics::gravity::PointMassGravity;
+        let r_m = 6_371_000.0;
+        let mu = openbmp_physics::frames::WGS84_MU_M3_S2;
+        let mut ekf = Ekf::new(EkfParams::default()).with_gravity_model(PointMassGravity::wgs84());
+        ekf.seed(
+            Vector3::new(r_m, 0.0, 0.0),
+            Vector3::zeros(),
+            UnitQuaternion::identity(),
+        );
+        ekf.update_imu(&ImuSample {
+            time: openbmp_core::SimTime::ZERO,
+            gyro_rad_s: Vector3::zeros(),
+            accel_m_s2: Vector3::zeros(),
+            healthy: true,
+        })
+        .unwrap();
+        let dt = 0.001;
+        let n = 100; // 0.1 s — short, so position barely moves
+        for _ in 0..n {
+            ekf.predict(dt).unwrap();
+        }
+        let pos = ekf.position();
+        let elapsed_s = f64::from(n) * dt;
+        let g_expected = mu / (r_m * r_m); // ≈ 9.82 m/s² toward −x
+        let expected_vx = -g_expected * elapsed_s;
+        assert!(
+            (pos.velocity_eci_m_s.x - expected_vx).abs() < 1.0e-3,
+            "central gravity vx {} not ≈ {expected_vx} m/s (toward Earth center)",
+            pos.velocity_eci_m_s.x,
+        );
+        // Off-axis components stay ~zero (gravity is purely radial here),
+        // unlike the constant-Z model which would put it all on z.
+        assert!(pos.velocity_eci_m_s.y.abs() < 1.0e-9);
+        assert!(pos.velocity_eci_m_s.z.abs() < 1.0e-9);
     }
 
     // -----------------------------------------------------------------

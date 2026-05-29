@@ -83,6 +83,12 @@ pub struct EngineLimits {
     /// Maximum absolute gimbal angle on either axis, in radians.
     /// Non-negative. `0.0` → fixed-axis engine (no gimbal).
     pub max_gimbal_rad: f64,
+    /// Maximum absolute gimbal slew rate, in radians per second.
+    /// `+∞` preserves the pre-existing instantaneous gimbal latch; a
+    /// finite rate bounds the per-step gimbal change, which prevents a
+    /// step-frequency bang-bang limit cycle when an autopilot commands
+    /// large gimbal swings every tick.
+    pub gimbal_slew_rad_per_s: f64,
     /// Maximum absolute throttle slew rate, in throttle units per
     /// second. `+∞` preserves the pre-existing instantaneous latch.
     pub throttle_slew_per_s: f64,
@@ -127,6 +133,11 @@ impl EngineLimits {
         if !self.max_gimbal_rad.is_finite() || self.max_gimbal_rad < 0.0 {
             return Err(EngineError::InvalidLimits {
                 reason: "max_gimbal_rad must be finite and non-negative",
+            });
+        }
+        if self.gimbal_slew_rad_per_s.is_nan() || self.gimbal_slew_rad_per_s < 0.0 {
+            return Err(EngineError::InvalidLimits {
+                reason: "gimbal_slew_rad_per_s must be non-negative or +infinity",
             });
         }
         if self.throttle_slew_per_s.is_nan() || self.throttle_slew_per_s < 0.0 {
@@ -402,9 +413,16 @@ pub struct LiquidEngine {
     commanded_throttle: f64,
     /// Current delivered throttle after slew and floor handling.
     latched_throttle: f64,
-    /// Latched gimbal pitch (rad), clamped to `±max_gimbal_rad`.
+    /// Commanded gimbal pitch target (rad), clamped to `±max_gimbal_rad`
+    /// at apply time. The delivered `latched_pitch_rad` slews toward
+    /// this at the actuator slew rate.
+    commanded_pitch_rad: f64,
+    /// Commanded gimbal yaw target (rad), clamped to `±max_gimbal_rad`.
+    commanded_yaw_rad: f64,
+    /// Latched (delivered) gimbal pitch (rad). Slews toward the
+    /// commanded target each step at the gimbal slew rate.
     latched_pitch_rad: f64,
-    /// Latched gimbal yaw (rad), clamped to `±max_gimbal_rad`.
+    /// Latched (delivered) gimbal yaw (rad).
     latched_yaw_rad: f64,
     /// Thrust at the moment shutdown was commanded; the linear
     /// shutdown transient ramps from this value to 0.
@@ -436,6 +454,8 @@ impl LiquidEngine {
             elapsed_in_state_s: 0.0,
             commanded_throttle: 0.0,
             latched_throttle: 0.0,
+            commanded_pitch_rad: 0.0,
+            commanded_yaw_rad: 0.0,
             latched_pitch_rad: 0.0,
             latched_yaw_rad: 0.0,
             shutdown_start_thrust_n: 0.0,
@@ -569,8 +589,8 @@ impl EngineModel for LiquidEngine {
         // (clamped to ±max_gimbal_rad).
         self.commanded_throttle = cmd.throttle_unit.clamp(0.0, 1.0);
         let g = self.limits.max_gimbal_rad;
-        self.latched_pitch_rad = cmd.gimbal_pitch_rad.clamp(-g, g);
-        self.latched_yaw_rad = cmd.gimbal_yaw_rad.clamp(-g, g);
+        self.commanded_pitch_rad = cmd.gimbal_pitch_rad.clamp(-g, g);
+        self.commanded_yaw_rad = cmd.gimbal_yaw_rad.clamp(-g, g);
 
         Ok(())
     }
@@ -596,6 +616,18 @@ impl EngineModel for LiquidEngine {
             self.limits.min_throttle_unit,
             dt_s,
         );
+
+        // Gimbal actuator slew. Real TVC gimbals move at a finite rate;
+        // an instantaneous latch lets the autopilot slam the gimbal
+        // ±max each step, producing a step-frequency bang-bang limit
+        // cycle. Slewing the delivered angle toward the command bounds
+        // the per-step change and stabilises the loop. `+∞` (the
+        // default) reproduces the instantaneous latch.
+        let max_gimbal_step = self.limits.gimbal_slew_rad_per_s * dt_s;
+        self.latched_pitch_rad += (self.commanded_pitch_rad - self.latched_pitch_rad)
+            .clamp(-max_gimbal_step, max_gimbal_step);
+        self.latched_yaw_rad +=
+            (self.commanded_yaw_rad - self.latched_yaw_rad).clamp(-max_gimbal_step, max_gimbal_step);
 
         // Determine the un-gimballed scalar thrust along the engine
         // nominal axis based on state + elapsed.
@@ -803,6 +835,7 @@ mod tests {
             ignition_transient_s: 0.1,
             shutdown_transient_s: 0.1,
             max_gimbal_rad: 0.1,
+            gimbal_slew_rad_per_s: f64::INFINITY,
             throttle_slew_per_s: f64::INFINITY,
             min_throttle_unit: 0.0,
             isp_throttle_falloff: 0.0,

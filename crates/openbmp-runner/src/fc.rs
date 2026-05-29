@@ -47,14 +47,15 @@ use openbmp_mission::{
 };
 use openbmp_physics::magnetic::Wmm2025;
 use openbmp_physics::profile::{
-    AscentReferenceGenerator, GravityTurnAscentReference, PitchProgramAscentReference,
+    AscentReferenceGenerator, ClosedLoopInsertionAscentReference, GravityTurnAscentReference,
+    PitchProgramAscentReference,
 };
 use openbmp_scenario::{
     FcActuatorChannelsConfig, FcAntiWindupConfig, FcAscentReferenceMethod, FcAutopilotKind,
     FcAutopilotParams, FcConfig, FcEkfConfig, FcEstimatorKind, FcEstimatorLanesConfig,
     FcEstimatorVoterKind, FcFdirConfig, FcFdirDetectorKind, FcFdirDetectorKindV5, FcGainsConfig,
-    FcGuidanceKind, FcHealthConfig, FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig,
-    FcTrajectoryKind,
+    FcGravityModelKind, FcGuidanceKind, FcHealthConfig, FcMagFieldKind, FcMekfConfig,
+    FcPhaseAuthorityConfig, FcTrajectoryKind,
 };
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
@@ -118,6 +119,7 @@ impl FcRunner {
         autopilot_lqr_context: Option<FcAutopilotLqrContext>,
         loop_step_dt_s: f64,
         allocator: Option<openbmp_fc::allocation::PrioritisedRedistributedAllocator>,
+        estimator_seed: EstimatorSeed,
     ) -> Result<Self, openbmp_fc::ControllerError> {
         let mut fc = FlightControllerBuilder::new()
             .frame_budget_us(config.frame_budget_us)
@@ -135,7 +137,7 @@ impl FcRunner {
         // to the single-estimator construction path keyed off
         // `config.estimator`.
         if let Some(lanes_cfg) = &config.estimator_lanes {
-            let multi = build_multi_lane_estimator(config, lanes_cfg)?;
+            let multi = build_multi_lane_estimator(config, lanes_cfg, estimator_seed)?;
             fc.scheduler_mut().register_periodic(
                 1,
                 200,
@@ -143,7 +145,7 @@ impl FcRunner {
                 Box::new(EstimatorJob::new(multi)),
             )?;
         } else {
-            let estimator = build_single_estimator(config, config.estimator)?;
+            let estimator = build_single_estimator(config, config.estimator, estimator_seed)?;
             // The trait object is wrapped in EstimatorJob the same way
             // any concrete Estimator would be; the boxed-dyn shape is
             // because the per-lane construction in the multi-lane path
@@ -194,7 +196,7 @@ impl FcRunner {
         }
         next_priority = next_priority.saturating_add(5);
 
-        let authority = build_authority(&mission.graph, config.phase_authority.as_ref());
+        let authority = build_authority(&mission.graph, config.phase_authority.as_ref())?;
 
         // Commander.
         let commander = Commander::new(
@@ -460,6 +462,12 @@ fn powered_ascent_phase_ids() -> Vec<u64> {
     vec![
         PhaseId::from_path("mission.phases.powered_ascent").value(),
         PhaseId::from_path("mission.states.powered_ascent").value(),
+        // The closed-loop ascent reference also drives the apogee
+        // circularisation burn of a two-burn insertion: at apogee the
+        // radial velocity is ~zero, so the same law commands a prograde
+        // (horizontal) reference that raises perigee to orbital radius.
+        PhaseId::from_path("mission.phases.circularize").value(),
+        PhaseId::from_path("mission.states.circularize").value(),
     ]
 }
 
@@ -493,6 +501,34 @@ fn build_ascent_reference_generator(
             Ok(Box::new(generator))
         }
         FcAscentReferenceMethod::GravityTurn => Ok(Box::new(GravityTurnAscentReference::default())),
+        FcAscentReferenceMethod::ClosedLoopInsertion => {
+            let insertion_radius_m =
+                cfg.insertion_radius_m
+                    .ok_or_else(|| GuidanceError::InvalidConfig {
+                        reason: "closed_loop_insertion requires insertion_radius_m".to_owned(),
+                    })?;
+            // Defaults chosen for a launch-vehicle insertion: steep
+            // climb until ~within range of the target, flattening as
+            // radial velocity is nulled; a small negative floor lets the
+            // thrust push the flight-path angle through zero.
+            let k_alt = cfg.k_alt_rad_per_m.unwrap_or(5.0e-5);
+            let k_vr = cfg.k_vr_rad_per_m_s.unwrap_or(8.0e-4);
+            let theta_min = cfg.theta_min_rad.unwrap_or(-0.35);
+            let theta_max = cfg.theta_max_rad.unwrap_or(1.40);
+            let downrange = cfg.downrange_axis_eci.unwrap_or([1.0, 0.0, 0.0]);
+            let generator = ClosedLoopInsertionAscentReference::new(
+                insertion_radius_m,
+                k_alt,
+                k_vr,
+                theta_min,
+                theta_max,
+                downrange,
+            )
+            .map_err(|err| GuidanceError::InvalidConfig {
+                reason: err.to_string(),
+            })?;
+            Ok(Box::new(generator))
+        }
         FcAscentReferenceMethod::ExplicitReference => Err(GuidanceError::InvalidConfig {
             reason: "explicit_reference ascent method is reserved".to_owned(),
         }
@@ -511,6 +547,27 @@ fn apply_ekf_mag_model(ekf: Ekf, cfg: Option<&FcEkfConfig>) -> Result<Ekf, Contr
             Ok(ekf.with_mag_field_model(build_wmm_2025(epoch)?))
         }
     }
+}
+
+/// Select the EKF navigation gravity model. `constant_z` (the default)
+/// preserves the historical uniform −z behaviour byte-for-byte;
+/// `point_mass` / `j2` / `egm2008` install a position-dependent central
+/// field so the velocity propagation stays valid across an ascent /
+/// orbital trajectory (where the gravity direction rotates with
+/// position). The constructors are infallible; the `Result` keeps the
+/// call site uniform with the other estimator builders.
+#[allow(clippy::unnecessary_wraps)]
+fn apply_ekf_gravity_model(ekf: Ekf, cfg: Option<&FcEkfConfig>) -> Result<Ekf, ControllerError> {
+    use openbmp_physics::gravity::{Egm2008ZonalGravity, J2Gravity, PointMassGravity};
+    let kind = cfg.and_then(|c| c.gravity_model).unwrap_or_default();
+    Ok(match kind {
+        FcGravityModelKind::ConstantZ => ekf,
+        FcGravityModelKind::PointMass => ekf.with_gravity_model(PointMassGravity::wgs84()),
+        FcGravityModelKind::J2 => ekf.with_gravity_model(J2Gravity::wgs84()),
+        FcGravityModelKind::Egm2008 => {
+            ekf.with_gravity_model(Egm2008ZonalGravity::wgs84_egm2008_zonal())
+        }
+    })
 }
 
 fn apply_mekf_mag_model(mekf: Mekf, cfg: Option<&FcMekfConfig>) -> Result<Mekf, ControllerError> {
@@ -544,6 +601,12 @@ fn apply_ekf_overrides(params: &mut EkfParams, cfg: &FcEkfConfig) {
     }
     if let Some(v) = cfg.sigma_w_gyro_bias {
         params.sigma_w_gyro_bias = v;
+    }
+    if let Some(v) = cfg.sigma_w_position_m {
+        params.sigma_w_position_m = v;
+    }
+    if let Some(v) = cfg.sigma_w_velocity_m_s {
+        params.sigma_w_velocity_m_s = v;
     }
     if let Some(v) = cfg.tau_gyro_bias_s {
         params.tau_gyro_bias_s = v;
@@ -668,6 +731,39 @@ impl Estimator for BoxedEstimator {
     }
 }
 
+/// Initial navigation seed for the estimator, taken from the
+/// scenario's known launch state.
+///
+/// A flight EKF must be initialised near truth: the first GNSS fixes
+/// produce position innovations of `|truth - seed|`, and those
+/// innovations are checked against an outlier gate before they are
+/// fused. Seeding at the ECI origin for a vehicle thousands of
+/// kilometres away makes every fix fall outside the gate, so the
+/// filter rejects all corrections and dead-reckons from zero — the
+/// navigation solution (and any guidance keyed off it) is then wrong
+/// for the whole flight. Seeding from the scenario's known initial
+/// state (a launch pad position is known to a real flight computer)
+/// keeps the innovations inside the gate.
+#[derive(Clone, Copy, Debug)]
+pub struct EstimatorSeed {
+    /// Initial ECI position estimate (m).
+    pub position_eci_m: Vector3<f64>,
+    /// Initial ECI velocity estimate (m/s).
+    pub velocity_eci_m_s: Vector3<f64>,
+    /// Initial body→ECI attitude estimate.
+    pub attitude_body_to_eci: UnitQuaternion<f64>,
+}
+
+impl Default for EstimatorSeed {
+    fn default() -> Self {
+        Self {
+            position_eci_m: Vector3::zeros(),
+            velocity_eci_m_s: Vector3::zeros(),
+            attitude_body_to_eci: UnitQuaternion::identity(),
+        }
+    }
+}
+
 /// Build a single estimator instance for the given kind. The
 /// scenario validator already guarantees the required `[fc.*]`
 /// blocks are present for each kind; this builder still fails closed
@@ -675,6 +771,7 @@ impl Estimator for BoxedEstimator {
 fn build_single_estimator(
     config: &FcConfig,
     kind: FcEstimatorKind,
+    seed: EstimatorSeed,
 ) -> Result<Box<dyn Estimator + Send>, ControllerError> {
     match kind {
         FcEstimatorKind::Ekf => {
@@ -682,10 +779,11 @@ fn build_single_estimator(
             let mut params = EkfParams::default();
             apply_ekf_overrides(&mut params, ekf_cfg);
             let mut ekf = apply_ekf_mag_model(Ekf::new(params), Some(ekf_cfg))?;
+            ekf = apply_ekf_gravity_model(ekf, Some(ekf_cfg))?;
             ekf.seed(
-                Vector3::zeros(),
-                Vector3::zeros(),
-                UnitQuaternion::identity(),
+                seed.position_eci_m,
+                seed.velocity_eci_m_s,
+                seed.attitude_body_to_eci,
             );
             Ok(Box::new(ekf))
         }
@@ -699,7 +797,7 @@ fn build_single_estimator(
             let mut params = MekfParams::default();
             apply_mekf_overrides(&mut params, mekf_cfg);
             let mut mekf = apply_mekf_mag_model(Mekf::new(params), Some(mekf_cfg))?;
-            mekf.seed(UnitQuaternion::identity());
+            mekf.seed(seed.attitude_body_to_eci);
             Ok(Box::new(mekf))
         }
         FcEstimatorKind::Imm => {
@@ -753,9 +851,9 @@ fn build_single_estimator(
             // resolution path as the EKF / IMM lanes.
             sr_ukf = apply_sr_ukf_mag_model(sr_ukf, Some(ekf_cfg))?;
             sr_ukf.seed(
-                Vector3::zeros(),
-                Vector3::zeros(),
-                UnitQuaternion::identity(),
+                seed.position_eci_m,
+                seed.velocity_eci_m_s,
+                seed.attitude_body_to_eci,
             );
             Ok(Box::new(sr_ukf))
         }
@@ -767,7 +865,7 @@ fn build_single_estimator(
             copy_ekf_to_sr_ukf_params(&ekf_params, &mut sr_params);
             let mut sr_ukf = SquareRootUkfAttitude::new(sr_params);
             sr_ukf = apply_sr_ukf_attitude_mag_model(sr_ukf, Some(ekf_cfg))?;
-            sr_ukf.seed(UnitQuaternion::identity());
+            sr_ukf.seed(seed.attitude_body_to_eci);
             Ok(Box::new(sr_ukf))
         }
     }
@@ -837,11 +935,12 @@ fn apply_sr_ukf_attitude_mag_model(
 fn build_multi_lane_estimator(
     config: &FcConfig,
     lanes_cfg: &FcEstimatorLanesConfig,
+    seed: EstimatorSeed,
 ) -> Result<MultiLaneEstimator, ControllerError> {
     let mut lanes: Vec<(LaneId, Box<dyn Estimator + Send>)> =
         Vec::with_capacity(lanes_cfg.lanes.len());
     for lane in &lanes_cfg.lanes {
-        let estimator = build_single_estimator(config, lane.estimator)?;
+        let estimator = build_single_estimator(config, lane.estimator, seed)?;
         lanes.push((LaneId::from(lane.id.clone()), estimator));
     }
     let policy = match lanes_cfg.voter {
@@ -892,6 +991,12 @@ fn build_autopilot_params(
     };
     if let Some(v) = cfg.rate_deadband_rad_s {
         params.rate_deadband_rad_s = v;
+    }
+    if let Some(v) = cfg.thrust_vector_control {
+        params.thrust_vector_control = v;
+    }
+    if let Some(v) = cfg.thrust_vector_settle_s {
+        params.thrust_vector_settle_s = v;
     }
     if let Some(v) = cfg.trajectory_loop_enabled {
         params.trajectory_loop_enabled = v;
@@ -1199,7 +1304,29 @@ enum GainAxis {
 fn build_authority(
     graph: &MissionPhaseGraph,
     cfg: Option<&BTreeMap<String, FcPhaseAuthorityConfig>>,
-) -> PhaseAuthorityTable {
+) -> Result<PhaseAuthorityTable, ControllerError> {
+    // Fail closed: the mixer publishes at most MAX_ENGINE_COMMANDS
+    // per-engine commands per tick. If a phase authorizes more engines
+    // than that, the mixer would SILENTLY drop the overflow — leaving
+    // some cluster engines un-commanded, breaking symmetry and injecting
+    // a spurious roll moment. Reject at build time with the required
+    // capacity rather than truncate.
+    for phase in &graph.phases {
+        if phase.allowed_engines.len() > openbmp_fc::topics::MAX_ENGINE_COMMANDS {
+            return Err(GuidanceError::InvalidConfig {
+                reason: format!(
+                    "mission phase 0x{:016x} authorizes {} engines, but the FC mixer commands \
+                     at most MAX_ENGINE_COMMANDS = {} per tick; reduce the cluster or raise \
+                     MAX_ENGINE_COMMANDS to >= {}",
+                    phase.id.value(),
+                    phase.allowed_engines.len(),
+                    openbmp_fc::topics::MAX_ENGINE_COMMANDS,
+                    phase.allowed_engines.len(),
+                ),
+            }
+            .into());
+        }
+    }
     let mut table = PhaseAuthorityTable::default();
     for phase in &graph.phases {
         table.allowed.insert(
@@ -1228,7 +1355,7 @@ fn build_authority(
             phase.engines_allowed = entry.engines_allowed;
         }
     }
-    table
+    Ok(table)
 }
 
 fn build_actuator_channel_map(cfg: Option<&FcActuatorChannelsConfig>) -> ActuatorChannelMap {
@@ -1338,6 +1465,47 @@ mod tests {
         (graph, bindings, pad)
     }
 
+    #[test]
+    fn build_authority_fails_closed_when_phase_exceeds_engine_command_capacity() {
+        // A phase that authorizes more engines than the mixer can
+        // command per tick must be rejected at build time, not silently
+        // truncated (which would leave engines un-commanded and break
+        // cluster symmetry → spurious roll).
+        let p = PhaseId::from_path("mission.phases.powered_ascent");
+        let too_many: Vec<String> = (0..=openbmp_fc::topics::MAX_ENGINE_COMMANDS)
+            .map(|i| format!("eng_{i}"))
+            .collect();
+        let phases = vec![Phase {
+            id: p,
+            label: "powered_ascent".to_string(),
+            allowed_effectors: Vec::new(),
+            allowed_engines: too_many,
+        }];
+        let graph = MissionPhaseGraph::new(phases, Vec::new(), p, &[]).unwrap();
+        let err = build_authority(&graph, None).expect_err("over-capacity cluster must fail closed");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("MAX_ENGINE_COMMANDS"),
+            "fail-closed error should name the capacity limit; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_authority_accepts_octaweb_nine_engine_cluster() {
+        // Regression: an octaweb (9 engines) must build fine — the
+        // historical capacity of 8 silently dropped the 9th.
+        let p = PhaseId::from_path("mission.phases.powered_ascent");
+        let nine: Vec<String> = (0..9).map(|i| format!("eng_{i}")).collect();
+        let phases = vec![Phase {
+            id: p,
+            label: "powered_ascent".to_string(),
+            allowed_effectors: Vec::new(),
+            allowed_engines: nine,
+        }];
+        let graph = MissionPhaseGraph::new(phases, Vec::new(), p, &[]).unwrap();
+        assert!(build_authority(&graph, None).is_ok());
+    }
+
     fn hsm_from_graph(graph: &MissionPhaseGraph) -> MissionStateMachine {
         let states = graph
             .phases
@@ -1392,7 +1560,7 @@ mod tests {
         let hsm = hsm_from_graph(&graph);
         let regions = regions_from_graph(&graph);
         let mission = FcRunnerMission::new(graph, hsm, regions, bindings, pad);
-        FcRunner::new(config, mission, None, 0.001, None).unwrap()
+        FcRunner::new(config, mission, None, 0.001, None, EstimatorSeed::default()).unwrap()
     }
 
     /// Multi-lane configuration runs end-to-end through
@@ -1616,6 +1784,12 @@ mod tests {
                 method: FcAscentReferenceMethod::PitchProgram,
                 schedule_s: Some(vec![0.0, 10.0, 30.0]),
                 pitch_rad: Some(vec![0.0, 0.2, 0.6]),
+                insertion_radius_m: None,
+                k_alt_rad_per_m: None,
+                k_vr_rad_per_m_s: None,
+                theta_min_rad: None,
+                theta_max_rad: None,
+                downrange_axis_eci: None,
             }),
         };
         let (graph, bindings, pad) = powered_ascent_graph();

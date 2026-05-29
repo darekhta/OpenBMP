@@ -243,6 +243,17 @@ Use names that reinforce simulation-only scope:
   the doc-comment makes it explicit that the implementation is a
   **simulator-local virtual flight controller, not deployable flight
   software**.
+- **Synthetic demonstration vehicles** may carry a name that *evokes* a
+  real-vehicle class (e.g. a medium-lift launcher) when, and only when,
+  (a) every parameter is synthetic / rounded / order-of-magnitude rather
+  than a real fielded value, (b) the artifact is labelled synthetic and
+  tagged `validation = "experimental"`, and (c) it adds no
+  target/aimpoint/range/terminal-guidance surface. The safety boundary is
+  the **parameter set and the forward-only architecture, not the name** —
+  an evocative name on synthetic data is a demonstration aid, not an
+  endorsement of or claim about any operator or fielded vehicle. See
+  [`real-rocket-integration.md` § Synthetic demonstration
+  vehicles](real-rocket-integration.md#synthetic-demonstration-vehicles).
 
 ## Hypersonic Extensions
 

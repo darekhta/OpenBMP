@@ -1,0 +1,272 @@
+# Phalcon-9 TVC probe — validate closed-loop engine-gimbal thrust-vector
+# control tracking an ascent pitch program. DEMONSTRATION ARTIFACT;
+# wholly synthetic (see provenance.md).
+#
+# Single-stage rigid body under CONSTANT gravity (no aero -> attitude is
+# neutrally stable, a clean double integrator for the TVC loop). The
+# flight controller (EKF + three-loop autopilot + ascent-reference
+# guidance) steers by gimbaling the engine cluster (thrust_vector_control
+# = true). The pitch program holds vertical, then pitches over to ~0.5 rad
+# (~29 deg). Success = the vehicle's thrust axis (body +z) tracks the
+# commanded pitch and the trajectory bends downrange, without diverging.
+#
+# This is the control-loop proof; the two-stage orbital ascent builds on
+# it. Forward-only: no target/aimpoint/range fields.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "phalcon9-tvc-probe"
+description = "Phalcon-9 single-stage TVC probe: closed-loop engine-gimbal steering tracks an ascent pitch program. Synthetic; not a benchmark."
+validation  = "experimental"
+provenance  = "Wholly synthetic control-loop probe; rounded figures, not a fielded-vehicle model. See scenarios/phalcon9/provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 40.0
+dt_s    = 0.01
+seed    = 0x5476635f70726f62   # "Tvc_prob"
+
+[vehicle]
+kind                                = "rigid_body"
+initial_position_eci_m              = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id             = "phalcon9-probe"
+cluster_layout = "octaweb"
+
+# Body origin is placed AT the vehicle CG (cluster moment is computed
+# about the body origin), so the engine plane 12 m below the origin
+# gives the gimbal a real pitch/yaw moment arm.
+[[vehicle.assembly.bodies]]
+id                     = "core"
+geometry               = { kind = "cylinder", length_m = 30.0, diameter_m = 3.7 }
+dry_mass_kg            = 20_000.0
+dry_cg_body_m          = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[1.0e7, 0.0, 0.0], [0.0, 1.0e7, 0.0], [0.0, 0.0, 2.0e5]]
+
+[[vehicle.assembly.tanks]]
+id                    = "prop"
+mounted_to            = "core"
+mount_point_body_m    = [0.0, 0.0, 0.0]
+geometry              = { kind = "cylinder", radius_m = 1.85, height_m = 11.0 }
+propellant            = { density_kg_m3 = 1030.0, label = "synthetic_kerolox_bulk" }
+initial_fill_fraction = 1.0
+moving_mass           = { kind = "rigid_liquid" }
+
+# 9-engine octaweb cluster (1 center + 8 ring); each ~850 kN, Isp 300 s,
+# drawing from `prop`, gimbal limit 5 deg for TVC.
+[[vehicle.assembly.engines]]
+id = "eng_0"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, -12.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_1"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [1.6, 0.0, -12.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_2"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [1.131, 1.131, -12.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_3"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 1.6, -12.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_4"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [-1.6, 0.0, -12.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_5"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [-1.131, 1.131, -12.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_6"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [-1.131, -1.131, -12.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_7"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, -1.6, -12.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_8"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [1.131, -1.131, -12.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+magnetic      = "wmm_2025"
+
+[forces]
+models = ["gravity", "thrust"]
+
+[sensors.imu]
+kind = "imu"
+file = "../../data/sensors/imu-consumer-mems.toml"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../../data/sensors/gnss-textbook.toml"
+
+[sensors.mag]
+kind = "magnetometer"
+file = "../../data/sensors/magnetometer-textbook.toml"
+
+[telemetry]
+output.csv = "out/phalcon9-tvc-probe.csv"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "mission.phases.powered_ascent"
+
+[[mission.phases]]
+id              = "mission.phases.powered_ascent"
+label           = "powered ascent (TVC)"
+allowed_engines = ["eng_0", "eng_1", "eng_2", "eng_3", "eng_4", "eng_5", "eng_6", "eng_7", "eng_8"]
+
+# Ignite all nine engines at t=0 so the vehicle is always under thrust
+# (well-defined specific force keeps the EKF attitude observable; the
+# autopilot engages once the EKF has armed and liftoff is detected).
+[[mission.events]]
+id = "ign_0"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_0", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_1"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_1", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_2"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_2", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_3"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_3", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_4"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_4", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_5"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_5", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_6"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_6", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_7"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_7", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_8"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_8", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[fc]
+estimator        = "ekf"
+autopilot        = "three_loop"
+guidance         = "ascent_reference"
+base_rate_hz     = 100
+frame_budget_us  = 4000
+
+[fc.ascent_reference]
+method     = "pitch_program"
+# pitch measured from vertical (0 = thrust up). Hold vertical until well
+# after TVC engages (T+8 s), then pitch over to ~29 deg by T+30 s and
+# hold, so the command is still ~0 at engagement (smooth handover).
+schedule_s = [0.0, 10.0, 30.0, 40.0]
+pitch_rad  = [0.0, 0.0, 0.5, 0.5]
+
+[fc.ekf]
+mag_field                   = "wmm_2025"
+mag_epoch_decimal_year      = 2025.0
+sigma_w_gyro                = 0.01
+sigma_w_accel_bias          = 1.0e-4
+sigma_w_gyro_bias           = 1.0e-5
+tau_gyro_bias_s             = 100.0
+tau_accel_bias_s            = 100.0
+sigma_gnss_pos_m            = 5.0
+sigma_gnss_vel_m_s          = 0.5
+sigma_baro_alt_m            = 2.0
+sigma_mag_nt                = 100.0
+innovation_false_alarm_rate = 0.01
+dead_reckon_timeout_s       = 1.5
+
+[fc.autopilot_params]
+thrust_vector_control = true
+rate_deadband_rad_s   = 0.001
+trajectory_loop_enabled = false
+trajectory_kind       = "pid"
+
+[fc.health]
+imu_stale_after_s   = 0.1
+gnss_stale_after_s  = 0.5
+baro_stale_after_s  = 10.0
+mag_stale_after_s   = 0.2
+overrun_burst_count = 5
+
+[fc.fdir]
+detector_kind          = "burst_counter"
+innovation_threshold   = 25.0
+innovation_burst_count  = 5
+failsafe_burst_count   = 5
+
+[fc.gain_schedule."mission.phases.powered_ascent"]
+rate_kp            = [0.4, 0.4, 0.2]
+rate_kd            = [0.2, 0.2, 0.05]
+attitude_kp        = [0.6, 0.6, 0.3]
+elevator_limit_rad = 0.087
+aileron_limit_rad  = 0.087
+rudder_limit_rad   = 0.087
+throttle_baseline  = 1.0
+
+[fc.phase_authority."mission.phases.powered_ascent"]
+autopilot_allowed = true
+engines_allowed   = true

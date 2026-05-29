@@ -211,6 +211,7 @@ mod tests {
             ignition_transient_s: 0.1,
             shutdown_transient_s: 0.1,
             max_gimbal_rad: 0.1,
+            gimbal_slew_rad_per_s: f64::INFINITY,
             throttle_slew_per_s: f64::INFINITY,
             min_throttle_unit: 0.0,
             isp_throttle_falloff: 0.0,
