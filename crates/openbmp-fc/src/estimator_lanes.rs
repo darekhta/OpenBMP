@@ -69,7 +69,7 @@ use crate::error::EstimatorError;
 use crate::estimator::Estimator;
 use crate::topics::{
     AttitudeEstimate, BarometerSample, EstimatorMode, EstimatorStatus, GnssSample, ImuSample,
-    MagnetometerSample, PositionEstimate,
+    MagnetometerSample, PositionEstimate, StarTrackerSample,
 };
 
 /// Stable identifier for a registered lane. Mirrors the scenario
@@ -394,6 +394,26 @@ impl Estimator for MultiLaneEstimator {
                 continue;
             }
             if let Err(e) = entry.estimator.update_mag(sample)
+                && !matches!(e, EstimatorError::InnovationGateRejected { .. })
+            {
+                entry.healthy = false;
+                last_err = Some(e);
+            }
+        }
+        self.vote();
+        self.finish_dispatch(last_err)
+    }
+
+    fn update_star_tracker(
+        &mut self,
+        sample: &StarTrackerSample,
+    ) -> Result<(), EstimatorError> {
+        let mut last_err: Option<EstimatorError> = None;
+        for entry in &mut self.lanes {
+            if !entry.healthy {
+                continue;
+            }
+            if let Err(e) = entry.estimator.update_star_tracker(sample)
                 && !matches!(e, EstimatorError::InnovationGateRejected { .. })
             {
                 entry.healthy = false;

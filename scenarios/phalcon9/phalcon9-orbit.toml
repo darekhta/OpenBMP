@@ -31,13 +31,14 @@
 # Per-phase guidance ([fc.ascent_reference_by_phase]): closed-loop
 # insertion on the booster, PEG on the upper stage. Navigation is an
 # EGM2008-gravity EKF seeded from the launch state, fed by a
-# navigation-grade (tactical) IMU + GNSS — NO magnetometer (see the
-# sensors block for why a magnetometer is both unrealistic and harmful
-# for an equatorial launch). It carries position/velocity process noise
-# so GNSS stays fused (and nav stays valid) through the high-thrust
-# phases and the long coast. Frame: wgs84-uniform-rotation (uniform Earth
-# rotation); the launch boost is carried by the initial co-rotation
-# velocity.
+# navigation-grade (tactical) IMU + GNSS + a STAR TRACKER (an independent
+# full-attitude fix the EKF fuses via update_star_tracker; see the sensors
+# block — it closes the off-pole attitude-observability gap that a single
+# magnetometer left open). The EKF gates GNSS as independent position and
+# velocity blocks, so a velocity-innovation spike under thrust rejects only
+# velocity and never drops the position fix. Frame: wgs84-uniform-rotation
+# (uniform Earth rotation); the launch boost is carried by the initial
+# co-rotation velocity.
 #
 # Forward-only: vehicle-intrinsic ascent toward an insertion RADIUS; no
 # target / aimpoint / range / terminal-guidance field anywhere.
@@ -240,14 +241,19 @@ file = "../../data/sensors/imu-tactical.toml"
 kind = "gnss"
 file = "../../data/sensors/gnss-textbook.toml"
 
-# No magnetometer: a launch vehicle navigates attitude with its
-# navigation-grade IMU (gyro) + GNSS, not a magnetometer. A single
-# magnetometer cannot observe rotation about the local field direction;
-# at this equatorial launch that unobservable axis is the orbital-plane
-# normal, so a magnetometer (with any hard-iron bias) drives the attitude
-# estimate out of plane. The tactical IMU's gyro holds attitude through
-# the powered ascent, so the magnetometer is both unrealistic here and
-# actively harmful. See task #23 / provenance.md.
+# Star tracker: an independent full 3-DOF attitude fix, fused by the EKF
+# via update_star_tracker (estimator.rs). This is the realistic
+# launch-vehicle attitude reference and the proper fix for the earlier
+# off-pole divergence: attitude no longer leans solely on the gyro. A
+# single magnetometer was dropped because it cannot observe rotation about
+# the local field direction (the orbital-plane normal at an equatorial
+# launch) — its hard-iron bias drove the attitude, and thus the thrust,
+# out of plane. A star tracker observes EVERY axis, so it closes that
+# observability gap directly (a magnetometer is not a launch-vehicle
+# attitude sensor and is unnecessary alongside it).
+[sensors.star_tracker]
+kind = "star_tracker"
+file = "../../data/sensors/star-tracker-textbook.toml"
 
 [telemetry]
 output.csv = "out/phalcon9-orbit.csv"

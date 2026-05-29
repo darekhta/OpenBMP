@@ -43,7 +43,7 @@ use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{
     AttitudeEstimate, BarometerSample, EstimatorMode, EstimatorStatus, GnssSample, ImuSample,
-    MagnetometerSample, PositionEstimate,
+    MagnetometerSample, PositionEstimate, StarTrackerSample,
 };
 
 /// Adapter that wraps the rich [`openbmp_physics::gravity::GravityModel`]
@@ -139,6 +139,20 @@ pub trait Estimator {
     /// See [`Estimator::update_imu`].
     fn update_mag(&mut self, sample: &MagnetometerSample) -> Result<(), EstimatorError>;
 
+    /// Applies a star-tracker (full-attitude) measurement update.
+    /// Default is a no-op for estimators that do not consume attitude
+    /// fixes; the error-state EKF overrides it.
+    ///
+    /// # Errors
+    ///
+    /// See [`Estimator::update_imu`].
+    fn update_star_tracker(
+        &mut self,
+        _sample: &StarTrackerSample,
+    ) -> Result<(), EstimatorError> {
+        Ok(())
+    }
+
     /// Returns the current attitude estimate.
     fn attitude(&self) -> AttitudeEstimate;
 
@@ -200,6 +214,11 @@ pub struct EkfParams {
     /// Measurement-noise standard deviation on each magnetometer
     /// component (nT).
     pub sigma_mag_nt: f64,
+    /// Measurement-noise standard deviation on each star-tracker
+    /// attitude-error component (rad). A star tracker provides a full
+    /// 3-DOF attitude fix, so it (unlike a single magnetometer vector)
+    /// observes rotation about the local field direction too.
+    pub sigma_star_tracker_rad: f64,
     /// Optional explicit innovation-gate threshold. Leave as `NaN`
     /// to derive per-measurement gates from
     /// [`EkfParams::innovation_false_alarm_rate`].
@@ -227,6 +246,7 @@ impl Default for EkfParams {
             sigma_gnss_vel_m_s: 0.5,
             sigma_baro_alt_m: 2.0,
             sigma_mag_nt: 100.0,
+            sigma_star_tracker_rad: 1.0e-4,
             innovation_gate: f64::NAN,
             innovation_false_alarm_rate: 0.01,
             dead_reckon_timeout_s: 1.5,
@@ -271,6 +291,7 @@ pub struct Ekf {
     last_chi2_gnss: f64,
     last_chi2_baro: f64,
     last_chi2_mag: f64,
+    last_star_tracker_chi2: f64,
     last_innovation_rejected: bool,
     /// Last whitened innovation per corrective sensor.
     /// Reset every tick by `begin_tick`; set by the corresponding
@@ -350,6 +371,7 @@ impl Ekf {
             last_chi2_gnss: 0.0,
             last_chi2_baro: 0.0,
             last_chi2_mag: 0.0,
+            last_star_tracker_chi2: 0.0,
             last_innovation_rejected: false,
             last_gnss_innovation_whitened: [0.0; 6],
             last_gnss_updated_this_tick: false,
@@ -659,6 +681,66 @@ impl Estimator for Ekf {
         Ok(())
     }
 
+    #[allow(clippy::many_single_char_names)] // standard EKF naming: h, s, k.
+    fn update_star_tracker(
+        &mut self,
+        sample: &StarTrackerSample,
+    ) -> Result<(), EstimatorError> {
+        if !sample.healthy {
+            return Ok(());
+        }
+        // The star tracker delivers the full attitude q_eci_to_body. Form
+        // the body-frame small-angle error between the measured and
+        // nominal attitude — a direct observation of the attitude-error
+        // state (indices 6..9), so H is the identity on those columns.
+        // A star tracker is a 3-DOF attitude fix, so (unlike a single
+        // magnetometer vector, which leaves rotation about the local field
+        // unobservable) it constrains EVERY axis — this is what resolves
+        // the off-pole / equatorial observability gap.
+        let [mx, my, mz, mw] = sample.q_eci_to_body_xyzw;
+        // q_body_to_eci(measured) = inverse(q_eci_to_body) = conjugate for
+        // a unit quaternion: (x, y, z, w) -> (-x, -y, -z, w).
+        let q_be_meas_xyzw = [-mx, -my, -mz, mw];
+        let q_nom = self.q_body_to_eci;
+        let innovation = quaternion_error_small_angle(
+            [q_nom.i, q_nom.j, q_nom.k, q_nom.w],
+            q_be_meas_xyzw,
+        );
+        let mut h: SMatrix<f64, 3, 15> = SMatrix::zeros();
+        for i in 0..3 {
+            h[(i, i + 6)] = 1.0;
+        }
+        let r_var = SMatrix::<f64, 3, 3>::from_diagonal_element(
+            self.params.sigma_star_tracker_rad * self.params.sigma_star_tracker_rad,
+        );
+        let s = h * self.p * h.transpose() + r_var;
+        let Some(chol) = s.cholesky() else {
+            return Err(EstimatorError::InvalidConfig {
+                reason: "star-tracker innovation covariance non-positive-definite".to_string(),
+            });
+        };
+        let s_inv = chol.inverse();
+        let chi2 = innovation.dot(&(s_inv * innovation));
+        self.last_star_tracker_chi2 = chi2;
+        let gate = self.params.gate_for_dof(3.0);
+        if chi2 > gate {
+            self.last_innovation_rejected = true;
+            return Err(EstimatorError::InnovationGateRejected {
+                measurement: "star_tracker",
+                chi2,
+                gate,
+            });
+        }
+        let k = self.p * h.transpose() * s_inv;
+        let dx: SVector<f64, 15> = k * innovation;
+        self.apply_state_update(&dx);
+        self.p = joseph_covariance_update(&self.p, &k, &h, &r_var);
+        self.time_since_corrective_s = 0.0;
+        self.last_innovation_rejected = false;
+        self.initialized = true;
+        Ok(())
+    }
+
     fn attitude(&self) -> AttitudeEstimate {
         let q = self.q_body_to_eci.into_inner();
         AttitudeEstimate {
@@ -687,7 +769,7 @@ impl Estimator for Ekf {
             gnss_chi2: self.last_chi2_gnss,
             baro_chi2: self.last_chi2_baro,
             mag_chi2: self.last_chi2_mag,
-            star_tracker_chi2: 0.0,
+            star_tracker_chi2: self.last_star_tracker_chi2,
             innovation_rejected: self.last_innovation_rejected,
             gnss_innovation_whitened: self.last_gnss_innovation_whitened,
             gnss_updated_this_tick: self.last_gnss_updated_this_tick,
@@ -703,6 +785,7 @@ impl Estimator for Ekf {
         self.last_chi2_gnss = 0.0;
         self.last_chi2_baro = 0.0;
         self.last_chi2_mag = 0.0;
+        self.last_star_tracker_chi2 = 0.0;
         self.last_innovation_rejected = false;
         self.last_gnss_innovation_whitened = [0.0; 6];
         self.last_gnss_updated_this_tick = false;
@@ -888,7 +971,8 @@ fn stack6(a: Vector3<f64>, b: Vector3<f64>) -> SVector<f64, 6> {
 }
 
 use openbmp_physics::kinematics::{
-    quaternion_from_axis_angle, quaternion_from_omega, renormalize_quaternion, skew_symmetric,
+    quaternion_error_small_angle, quaternion_from_axis_angle, quaternion_from_omega,
+    renormalize_quaternion, skew_symmetric,
 };
 
 fn joseph_covariance_update<const N: usize, const M: usize>(
@@ -958,6 +1042,7 @@ pub struct EstimatorJob<E: Estimator + std::fmt::Debug> {
     last_gnss_seq: u64,
     last_baro_seq: u64,
     last_mag_seq: u64,
+    last_star_tracker_seq: u64,
     last_predict_time_s: f64,
 }
 
@@ -973,6 +1058,7 @@ impl<E: Estimator + std::fmt::Debug + 'static> EstimatorJob<E> {
             last_gnss_seq: 0,
             last_baro_seq: 0,
             last_mag_seq: 0,
+            last_star_tracker_seq: 0,
             last_predict_time_s: 0.0,
         }
     }
@@ -1025,6 +1111,17 @@ impl<E: Estimator + std::fmt::Debug + 'static> EstimatorJob<E> {
         }
         Ok(())
     }
+
+    fn drain_star_tracker(&mut self, bus: &Bus) -> Result<(), ControllerError> {
+        let seq = bus.sequence::<StarTrackerSample>()?;
+        if seq.value() > self.last_star_tracker_seq {
+            if let Some((sample, _)) = bus.latest::<StarTrackerSample>()? {
+                let _ = self.estimator.update_star_tracker(&sample);
+            }
+            self.last_star_tracker_seq = seq.value();
+        }
+        Ok(())
+    }
 }
 
 impl<E: Estimator + std::fmt::Debug + 'static> Job for EstimatorJob<E> {
@@ -1038,6 +1135,7 @@ impl<E: Estimator + std::fmt::Debug + 'static> Job for EstimatorJob<E> {
         let _ = self.drain_imu(ctx.bus);
         let _ = self.drain_baro(ctx.bus);
         let _ = self.drain_mag(ctx.bus);
+        let _ = self.drain_star_tracker(ctx.bus);
         let _ = self.drain_gnss(ctx.bus);
 
         // Predict.
@@ -1319,6 +1417,29 @@ mod tests {
             "velocity outlier should be rejected, got x = {}",
             est.velocity_eci_m_s.x
         );
+    }
+
+    #[test]
+    fn ekf_star_tracker_update_corrects_attitude_toward_measurement() {
+        // Seeded attitude is identity. The star tracker reports the true
+        // attitude q_body_to_eci = R_z(+0.01 rad) (so q_eci_to_body is its
+        // inverse, R_z(-0.01)). The EKF attitude must rotate toward +z.
+        let mut ekf = ekf_for_innovation_test();
+        ekf.begin_tick();
+        let half = 0.005_f64; // half of the 0.01 rad rotation
+        ekf.update_star_tracker(&StarTrackerSample {
+            time: SimTime::ZERO,
+            q_eci_to_body_xyzw: [0.0, 0.0, -half.sin(), half.cos()],
+            healthy: true,
+        })
+        .unwrap();
+        let q = ekf.attitude().q_body_to_eci_xyzw; // [x, y, z, w]
+        assert!(
+            q[2] > 1.0e-4,
+            "attitude should rotate toward the measured +z (qz>0), got qz = {}",
+            q[2]
+        );
+        assert!(ekf.status().star_tracker_chi2 >= 0.0);
     }
 
     #[test]
