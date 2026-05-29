@@ -231,7 +231,7 @@ models = ["gravity", "thrust", "aero"]
 # while the full stack is together; the booster is jettisoned near MECO at
 # high altitude where the remaining drag is negligible.
 deck        = "../../data/aero/phalcon9-drag.toml"
-deck_sha256 = "5aace6c7185d536bd09dae8d2640b3a0c15e35527ca577dd5333e069fb7dcec2"
+deck_sha256 = "88259d8f3400538535be070ce4d6045a1c24b38033267dc9e326780cc927921f"
 mounted_to  = "lower"
 
 [sensors.imu]

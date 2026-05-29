@@ -450,37 +450,44 @@ files:
   - data/aero/phalcon9-drag.toml
 source_class:     synthetic-openbmp
 source_title:     >-
-  Synthetic OpenBMP-authored axial-drag deck for the Phalcon-9
-  demonstration launch vehicle — a wholly synthetic, rounded
-  order-of-magnitude Cd(Mach) polar for a ~3.7 m-diameter medium-lift
-  kerolox launcher. Drag-only at zero angle of attack (CN = CM = 0); a
-  smooth subsonic-to-hypersonic Cd curve with the usual transonic drag
-  rise (~M1). Referenced to the body cross-section area
-  π·(3.7/2)² ≈ 10.75 m². NOT a fielded-vehicle deck and not validated
-  against any real drag data.
+  Synthetic OpenBMP-authored full force+moment aero deck for the
+  Phalcon-9 demonstration launch vehicle — a wholly synthetic, rounded
+  order-of-magnitude deck for a ~3.7 m-diameter medium-lift kerolox
+  launcher, tabulated over a Mach × angle-of-attack grid. Normal-force
+  CN (lift) and pitching-moment CM vary linearly with angle of attack;
+  axial CD is a CD0(Mach) polar with a quadratic induced-drag term. The
+  rigid-body aero path applies CN as body normal force and CD as axial
+  drag; the aero moment adapter applies CM as the body pitching moment
+  (referenced to the 3.7 m body length). Referenced to the body
+  cross-section area π·(3.7/2)² ≈ 10.75 m². NOT a fielded-vehicle deck
+  and not validated against any real aero data.
 source_authors:   OpenBMP (Dmitri Arekhta)
 source_id:        synthetic; not derived from any fielded vehicle
 source_url:       https://github.com/openbmp/openbmp/blob/main/data/aero/phalcon9-drag.toml
-publication_date: 2026-05-29
+publication_date: 2026-05-30
 methodology_reference: >-
-  Hand-chosen class-anchor Cd(Mach) values for a medium-lift launcher
-  (Cd ≈ 0.30 subsonic, ~0.65 transonic peak at M1, decaying to ~0.22
-  hypersonic), referenced to the body cross-section. CN = CM = 0 (the
-  ascent flies a near-zero-AoA gravity turn, so only axial drag is
-  modelled). Order-of-magnitude figures, not a build-up against any
-  fielded geometry.
+  Hand-chosen class-anchor linear-in-alpha coefficients for a medium-lift
+  launcher: CN = 2.5·α_rad (slender-body normal-force slope), CM =
+  −0.20·α_rad (mildly statically STABLE / restoring), CD = CD0(Mach) +
+  0.5·α_rad² with CD0 ≈ 0.30 subsonic / ~0.65 transonic peak at M1 /
+  ~0.22 hypersonic, referenced to the body cross-section. The ascent
+  flies a near-zero-AoA gravity turn, so the nominal CN/CM contribution
+  is small; the deck exists so off-nominal angle of attack (e.g. winds)
+  produces physical lift and a trimmed pitching moment. Order-of-magnitude
+  figures, not a build-up against any fielded geometry. (Upper-stage aero
+  is intentionally absent: stage-2 flight is exoatmospheric.)
 methodology_urls:
   - https://github.com/openbmp/openbmp/blob/main/scenarios/phalcon9/provenance.md
 license_or_terms: >-
   Synthetic OpenBMP-authored content; CC0 / public domain. No
   third-party data is incorporated.
-source_hash_sha256: 5aace6c7185d536bd09dae8d2640b3a0c15e35527ca577dd5333e069fb7dcec2
-retrieved_utc:    2026-05-29
+source_hash_sha256: 88259d8f3400538535be070ce4d6045a1c24b38033267dc9e326780cc927921f
+retrieved_utc:    2026-05-30
 transformation:
   method: >-
-    Hand-authored class-anchor values written directly into the TOML
-    deck file; no transcription from a published deck and no generator
-    script. The Cd(Mach) curve is a rounded illustrative polar.
+    Hand-authored linear-in-alpha generator (CN/CM/CD formulas above)
+    evaluated on the (Mach, alpha_deg, beta_deg) grid and written into
+    the TOML deck; no transcription from a published deck.
   script: none
   script_hash_sha256: not-applicable; values are hand-authored class anchors
 verification:
