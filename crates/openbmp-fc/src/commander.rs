@@ -163,16 +163,29 @@ impl Commander {
             .flatten()
             .map(|(s, _)| s);
 
-        let altitude_m = pos.map_or(0.0, |p| p.position_eci_m.z);
-        // Vertical climb rate for the apogee / ascent / descent
-        // detectors. For a geocentric configuration (position well beyond
-        // a flat-earth / local-frame launch radius) "up" is radial, so
-        // the climb rate is the radial projection `v · r̂`; the raw ECI +z
-        // component would cross zero long before the true radial apogee
-        // once the trajectory curves away from the launch meridian. For a
-        // near-origin launch the +z component is the vertical (legacy
-        // behaviour). Threshold matches the kernel's `vertical_climb_rate`.
+        // Altitude and vertical climb rate for the altitude / apogee /
+        // ascent / descent detectors. For a geocentric configuration
+        // (position well beyond a flat-earth / local-frame launch radius)
+        // "up" is radial: altitude is the geocentric height `|r| - R⊕` and
+        // the climb rate is the radial projection `v · r̂`. The raw ECI +z
+        // component would be wrong once the trajectory curves away from the
+        // launch meridian (e.g. an equatorial launch stays near z = 0, so a
+        // z-altitude reads ~0 the whole ascent and a z-climb-rate crosses
+        // zero long before the true radial apogee). For a near-origin launch
+        // the +z component is the vertical (legacy behaviour). Threshold and
+        // mean radius match the kernel's `vertical_climb_rate` and the
+        // runner / aero geocentric altitude.
         const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
+        const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
+        let altitude_m = pos.map_or(0.0, |p| {
+            let r = p.position_eci_m;
+            let rn = r.norm();
+            if rn > GEOCENTRIC_RADIUS_THRESHOLD_M {
+                (rn - EARTH_MEAN_RADIUS_M).max(0.0)
+            } else {
+                r.z
+            }
+        });
         let vertical_velocity_m_s = pos.map_or(0.0, |p| {
             let r = p.position_eci_m;
             let rn = r.norm();
