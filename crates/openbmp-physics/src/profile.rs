@@ -795,6 +795,186 @@ impl AscentReferenceGenerator for PegAscentReference {
     }
 }
 
+/// Local in-plane prograde (downrange) unit vector: the configured ECI
+/// axis projected into the local horizontal plane, with a deterministic
+/// fallback when (near-)parallel to the radial. Returns `None` only when
+/// no horizontal direction can be formed.
+fn local_downrange_unit(up: Vector3<f64>, axis_eci: [f64; 3]) -> Option<Vector3<f64>> {
+    let axis = Vector3::from(axis_eci);
+    let projected = axis - up * axis.dot(&up);
+    if projected.norm() > MIN_DIRECTION_NORM {
+        return Some(projected.normalize());
+    }
+    let alt = Vector3::new(0.0, 0.0, 1.0);
+    let alt_proj = alt - up * alt.dot(&up);
+    if alt_proj.norm() > MIN_DIRECTION_NORM {
+        Some(alt_proj.normalize())
+    } else {
+        None
+    }
+}
+
+/// Sequenced launch-to-orbit ascent reference.
+///
+/// Chains the standard ascent guidance regimes, selected by inertial
+/// speed, into the one reference a flight controller drives end to end:
+///
+/// 1. **Vertical rise** (`speed < kick_start`): thrust radially up — let
+///    the vehicle clear the pad before any steering.
+/// 2. **Pitch kick** (`kick_start ≤ speed < kick_end`): hold the thrust
+///    axis `kick_angle` off vertical toward downrange to inject the small
+///    horizontal velocity that starts the gravity turn (the single
+///    steering event of an ideal ascent).
+/// 3. **Gravity turn** (`kick_end ≤ speed < peg_handoff`): align the
+///    thrust axis with the inertial velocity (angle of attack ≈ 0), so
+///    gravity turns the trajectory with minimal steering/aero load.
+/// 4. **PEG insertion** (`speed ≥ peg_handoff`): hand off to Powered
+///    Explicit Guidance for the precise orbital insertion.
+///
+/// Forward-only: every regime steers from the live state toward an
+/// insertion radius / velocity, never a ground location.
+#[derive(Debug)]
+pub struct SequencedAscentReference {
+    kick_start_speed_m_s: f64,
+    kick_end_speed_m_s: f64,
+    kick_angle_rad: f64,
+    peg_handoff_speed_m_s: f64,
+    downrange_axis_eci: [f64; 3],
+    peg: PegAscentReference,
+}
+
+impl SequencedAscentReference {
+    /// Construct a sequenced ascent reference. The speed thresholds must
+    /// be non-decreasing (`kick_start ≤ kick_end ≤ peg_handoff`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] for non-finite or
+    /// mis-ordered thresholds, a degenerate downrange axis, or invalid
+    /// PEG parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        kick_start_speed_m_s: f64,
+        kick_end_speed_m_s: f64,
+        kick_angle_rad: f64,
+        peg_handoff_speed_m_s: f64,
+        downrange_axis_eci: [f64; 3],
+        insertion_radius_m: f64,
+        exhaust_velocity_m_s: f64,
+        initial_thrust_accel_m_s2: f64,
+        peg_initial_t_go_s: f64,
+    ) -> Result<Self, PhysicsError> {
+        for v in [
+            kick_start_speed_m_s,
+            kick_end_speed_m_s,
+            kick_angle_rad,
+            peg_handoff_speed_m_s,
+        ] {
+            if !v.is_finite() {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "sequenced ascent thresholds must be finite",
+                });
+            }
+        }
+        if kick_start_speed_m_s < 0.0
+            || kick_end_speed_m_s < kick_start_speed_m_s
+            || peg_handoff_speed_m_s < kick_end_speed_m_s
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "sequenced ascent: require 0 <= kick_start <= kick_end <= peg_handoff",
+            });
+        }
+        require_finite_vec3(
+            downrange_axis_eci,
+            "sequenced ascent downrange axis components must be finite",
+        )?;
+        if vector_norm(downrange_axis_eci) <= MIN_DIRECTION_NORM {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "sequenced ascent downrange axis must be non-degenerate",
+            });
+        }
+        let peg = PegAscentReference::new(
+            insertion_radius_m,
+            exhaust_velocity_m_s,
+            initial_thrust_accel_m_s2,
+            downrange_axis_eci,
+            peg_handoff_speed_m_s,
+            peg_initial_t_go_s,
+        )?;
+        Ok(Self {
+            kick_start_speed_m_s,
+            kick_end_speed_m_s,
+            kick_angle_rad,
+            peg_handoff_speed_m_s,
+            downrange_axis_eci,
+            peg,
+        })
+    }
+}
+
+impl AscentReferenceGenerator for SequencedAscentReference {
+    fn ascent_reference(
+        &self,
+        state: &AscentState,
+        time: SimTime,
+    ) -> Result<AscentReference, PhysicsError> {
+        state.validate()?;
+        let pos = Vector3::from(state.position_eci_m);
+        let vel = Vector3::from(state.velocity_eci_m_s);
+        let r = pos.norm();
+        let speed = vel.norm();
+
+        // PEG handles its own low-speed gating, so hand off as soon as the
+        // vehicle is fast enough.
+        if speed >= self.peg_handoff_speed_m_s {
+            return self.peg.ascent_reference(state, time);
+        }
+
+        if r <= MIN_DIRECTION_NORM {
+            // Pre-navigation: command velocity-aligned if moving, else
+            // identity (vertical at the pad).
+            if speed > MIN_DIRECTION_NORM {
+                let q = reference_quaternion_from_body_z([vel.x, vel.y, vel.z])?;
+                return Ok(AscentReference {
+                    q_body_to_eci_xyzw: q,
+                    body_rate_rad_s: None,
+                });
+            }
+            return Ok(AscentReference {
+                q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+                body_rate_rad_s: None,
+            });
+        }
+        let up = pos / r;
+
+        let forward = if speed < self.kick_start_speed_m_s {
+            // Vertical rise.
+            up
+        } else if speed < self.kick_end_speed_m_s {
+            // Pitch kick: tilt `kick_angle` off vertical toward downrange.
+            let downrange =
+                local_downrange_unit(up, self.downrange_axis_eci).ok_or(
+                    PhysicsError::OutOfEnvelope {
+                        reason: "sequenced ascent could not construct a downrange direction",
+                    },
+                )?;
+            up * self.kick_angle_rad.cos() + downrange * self.kick_angle_rad.sin()
+        } else {
+            // Gravity turn: follow the inertial velocity (zero AoA).
+            if speed > MIN_DIRECTION_NORM {
+                vel / speed
+            } else {
+                up
+            }
+        };
+        let q = reference_quaternion_from_body_z([forward.x, forward.y, forward.z])?;
+        Ok(AscentReference {
+            q_body_to_eci_xyzw: q,
+            body_rate_rad_s: None,
+        })
+    }
+}
+
 /// Ballistic state of an unpowered body at a point on its arc, used to
 /// seed a range-safety footprint prediction.
 #[derive(Clone, Copy, Debug, PartialEq)]

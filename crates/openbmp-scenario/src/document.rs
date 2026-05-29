@@ -8222,6 +8222,33 @@ pub struct FcAscentReferenceConfig {
     /// into the local horizontal each step).
     #[serde(default)]
     pub downrange_axis_eci: Option<[f64; 3]>,
+    /// PEG / ascent_sequence: effective exhaust velocity `ve = Isp · g0`
+    /// (m/s).
+    #[serde(default)]
+    pub exhaust_velocity_m_s: Option<f64>,
+    /// PEG / ascent_sequence: thrust acceleration at burn start
+    /// `a0 = T / m0` (m/s²); seeds PEG's constant-thrust burn-time model.
+    #[serde(default)]
+    pub initial_thrust_accel_m_s2: Option<f64>,
+    /// PEG / ascent_sequence: initial time-to-go estimate (s).
+    #[serde(default)]
+    pub peg_initial_t_go_s: Option<f64>,
+    /// PEG: minimum inertial speed below which PEG is not run (m/s).
+    #[serde(default)]
+    pub peg_min_speed_m_s: Option<f64>,
+    /// ascent_sequence: inertial speed to begin the pitch kick (m/s).
+    #[serde(default)]
+    pub kick_start_speed_m_s: Option<f64>,
+    /// ascent_sequence: inertial speed to end the pitch kick (m/s).
+    #[serde(default)]
+    pub kick_end_speed_m_s: Option<f64>,
+    /// ascent_sequence: pitch-kick angle off vertical toward downrange
+    /// (rad).
+    #[serde(default)]
+    pub kick_angle_rad: Option<f64>,
+    /// ascent_sequence: inertial speed at which to hand off to PEG (m/s).
+    #[serde(default)]
+    pub peg_handoff_speed_m_s: Option<f64>,
 }
 
 /// Supported powered-ascent reference methods.
@@ -8238,6 +8265,18 @@ pub enum FcAscentReferenceMethod {
     /// `target_radius_m` / `k_alt_rad_per_m` / `k_vr_rad_per_m_s` /
     /// `theta_min_rad` / `theta_max_rad` / `downrange_axis_eci`.
     ClosedLoopInsertion,
+    /// Powered Explicit Guidance: closed-form fuel-optimal insertion
+    /// targeting orbital radius + circular speed + zero radial velocity.
+    /// Requires `insertion_radius_m`, `exhaust_velocity_m_s`,
+    /// `initial_thrust_accel_m_s2`; intended for the fast (upper-stage)
+    /// phase — pair with a gravity turn for the launch phase.
+    Peg,
+    /// Sequenced launch-to-orbit reference: vertical rise → pitch kick →
+    /// gravity turn → PEG, selected by inertial speed. The full
+    /// single-reference ascent. Requires the PEG fields plus
+    /// `kick_start_speed_m_s` / `kick_end_speed_m_s` / `kick_angle_rad` /
+    /// `peg_handoff_speed_m_s`.
+    AscentSequence,
     /// Reserved future ingestion of explicit inertial references.
     ExplicitReference,
 }
@@ -8263,6 +8302,8 @@ impl FcAscentReferenceConfig {
                 }
                 Ok(())
             }
+            FcAscentReferenceMethod::Peg => self.validate_peg(),
+            FcAscentReferenceMethod::AscentSequence => self.validate_ascent_sequence(),
             FcAscentReferenceMethod::ExplicitReference => {
                 Err(ScenarioError::ElementNotYetSupported {
                     field: "fc.ascent_reference.method = \"explicit_reference\"".to_owned(),
@@ -8270,6 +8311,46 @@ impl FcAscentReferenceConfig {
                 })
             }
         }
+    }
+
+    fn require_positive_field(&self, name: &str, value: Option<f64>) -> Result<f64, ScenarioError> {
+        let v = value.ok_or_else(|| ScenarioError::InvalidFc {
+            reason: format!("fc.ascent_reference.{name} is required for this method"),
+        })?;
+        if !v.is_finite() || v <= 0.0 {
+            return Err(ScenarioError::InvalidFc {
+                reason: format!("fc.ascent_reference.{name} must be finite and positive"),
+            });
+        }
+        Ok(v)
+    }
+
+    fn validate_peg(&self) -> Result<(), ScenarioError> {
+        self.require_positive_field("insertion_radius_m", self.insertion_radius_m)?;
+        self.require_positive_field("exhaust_velocity_m_s", self.exhaust_velocity_m_s)?;
+        self.require_positive_field(
+            "initial_thrust_accel_m_s2",
+            self.initial_thrust_accel_m_s2,
+        )?;
+        Ok(())
+    }
+
+    fn validate_ascent_sequence(&self) -> Result<(), ScenarioError> {
+        self.validate_peg()?;
+        let kick_start = self.require_positive_field("kick_start_speed_m_s", self.kick_start_speed_m_s)?;
+        let kick_end = self.require_positive_field("kick_end_speed_m_s", self.kick_end_speed_m_s)?;
+        let handoff = self.require_positive_field("peg_handoff_speed_m_s", self.peg_handoff_speed_m_s)?;
+        let kick_angle = self.kick_angle_rad.ok_or_else(|| ScenarioError::InvalidFc {
+            reason: "fc.ascent_reference.kick_angle_rad is required for ascent_sequence".to_owned(),
+        })?;
+        require_finite("fc.ascent_reference.kick_angle_rad", kick_angle)?;
+        if kick_end < kick_start || handoff < kick_end {
+            return Err(ScenarioError::InvalidFc {
+                reason: "fc.ascent_reference: require kick_start <= kick_end <= peg_handoff speeds"
+                    .to_owned(),
+            });
+        }
+        Ok(())
     }
 
     fn validate_pitch_program(&self) -> Result<(), ScenarioError> {

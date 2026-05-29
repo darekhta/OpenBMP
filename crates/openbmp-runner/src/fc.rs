@@ -48,10 +48,11 @@ use openbmp_mission::{
 use openbmp_physics::magnetic::Wmm2025;
 use openbmp_physics::profile::{
     AscentReferenceGenerator, ClosedLoopInsertionAscentReference, GravityTurnAscentReference,
-    PitchProgramAscentReference,
+    PegAscentReference, PitchProgramAscentReference, SequencedAscentReference,
 };
 use openbmp_scenario::{
-    FcActuatorChannelsConfig, FcAntiWindupConfig, FcAscentReferenceMethod, FcAutopilotKind,
+    FcActuatorChannelsConfig, FcAntiWindupConfig, FcAscentReferenceConfig, FcAscentReferenceMethod,
+    FcAutopilotKind,
     FcAutopilotParams, FcConfig, FcEkfConfig, FcEstimatorKind, FcEstimatorLanesConfig,
     FcEstimatorVoterKind, FcFdirConfig, FcFdirDetectorKind, FcFdirDetectorKindV5, FcGainsConfig,
     FcGravityModelKind, FcGuidanceKind, FcHealthConfig, FcMagFieldKind, FcMekfConfig,
@@ -529,10 +530,81 @@ fn build_ascent_reference_generator(
             })?;
             Ok(Box::new(generator))
         }
+        FcAscentReferenceMethod::Peg => {
+            let generator = build_peg(cfg, cfg.peg_min_speed_m_s.unwrap_or(0.0))?;
+            Ok(Box::new(generator))
+        }
+        FcAscentReferenceMethod::AscentSequence => {
+            let kick_start = cfg.kick_start_speed_m_s.ok_or_else(invalid("kick_start_speed_m_s"))?;
+            let kick_end = cfg.kick_end_speed_m_s.ok_or_else(invalid("kick_end_speed_m_s"))?;
+            let kick_angle = cfg.kick_angle_rad.ok_or_else(invalid("kick_angle_rad"))?;
+            let handoff = cfg.peg_handoff_speed_m_s.ok_or_else(invalid("peg_handoff_speed_m_s"))?;
+            let insertion_radius_m = cfg.insertion_radius_m.ok_or_else(invalid("insertion_radius_m"))?;
+            let exhaust_velocity_m_s = cfg.exhaust_velocity_m_s.ok_or_else(invalid("exhaust_velocity_m_s"))?;
+            let initial_thrust_accel_m_s2 =
+                cfg.initial_thrust_accel_m_s2.ok_or_else(invalid("initial_thrust_accel_m_s2"))?;
+            let downrange = cfg.downrange_axis_eci.unwrap_or([1.0, 0.0, 0.0]);
+            let initial_t_go = cfg.peg_initial_t_go_s.unwrap_or(300.0);
+            let generator = SequencedAscentReference::new(
+                kick_start,
+                kick_end,
+                kick_angle,
+                handoff,
+                downrange,
+                insertion_radius_m,
+                exhaust_velocity_m_s,
+                initial_thrust_accel_m_s2,
+                initial_t_go,
+            )
+            .map_err(|err| GuidanceError::InvalidConfig {
+                reason: err.to_string(),
+            })?;
+            Ok(Box::new(generator))
+        }
         FcAscentReferenceMethod::ExplicitReference => Err(GuidanceError::InvalidConfig {
             reason: "explicit_reference ascent method is reserved".to_owned(),
         }
         .into()),
+    }
+}
+
+/// Build a standalone PEG generator from the `[fc.ascent_reference]`
+/// block. `min_speed_m_s` is the inertial speed below which PEG defers
+/// (the sequenced reference passes its hand-off speed here).
+fn build_peg(
+    cfg: &FcAscentReferenceConfig,
+    min_speed_m_s: f64,
+) -> Result<PegAscentReference, ControllerError> {
+    let insertion_radius_m = cfg.insertion_radius_m.ok_or_else(invalid("insertion_radius_m"))?;
+    let exhaust_velocity_m_s = cfg.exhaust_velocity_m_s.ok_or_else(invalid("exhaust_velocity_m_s"))?;
+    let initial_thrust_accel_m_s2 =
+        cfg.initial_thrust_accel_m_s2.ok_or_else(invalid("initial_thrust_accel_m_s2"))?;
+    let downrange = cfg.downrange_axis_eci.unwrap_or([1.0, 0.0, 0.0]);
+    let initial_t_go = cfg.peg_initial_t_go_s.unwrap_or(300.0);
+    PegAscentReference::new(
+        insertion_radius_m,
+        exhaust_velocity_m_s,
+        initial_thrust_accel_m_s2,
+        downrange,
+        min_speed_m_s,
+        initial_t_go,
+    )
+    .map_err(|err| {
+        GuidanceError::InvalidConfig {
+            reason: err.to_string(),
+        }
+        .into()
+    })
+}
+
+/// Helper: produce a closure that builds a "field required" guidance
+/// config error for a missing `[fc.ascent_reference]` field.
+fn invalid(field: &'static str) -> impl Fn() -> ControllerError {
+    move || {
+        GuidanceError::InvalidConfig {
+            reason: format!("fc.ascent_reference.{field} is required for this method"),
+        }
+        .into()
     }
 }
 
@@ -1790,6 +1862,14 @@ mod tests {
                 theta_min_rad: None,
                 theta_max_rad: None,
                 downrange_axis_eci: None,
+                exhaust_velocity_m_s: None,
+                initial_thrust_accel_m_s2: None,
+                peg_initial_t_go_s: None,
+                peg_min_speed_m_s: None,
+                kick_start_speed_m_s: None,
+                kick_end_speed_m_s: None,
+                kick_angle_rad: None,
+                peg_handoff_speed_m_s: None,
             }),
         };
         let (graph, bindings, pad) = powered_ascent_graph();
