@@ -41,6 +41,7 @@ insta             = { workspace = true }
 insta-cmd         = { workspace = true }
 nalgebra          = { workspace = true }
 openbmp-fc        = { workspace = true }
+openbmp-physics   = { workspace = true }
 openbmp-testkit   = { workspace = true }
 predicates        = { workspace = true }
 tempfile          = { workspace = true }

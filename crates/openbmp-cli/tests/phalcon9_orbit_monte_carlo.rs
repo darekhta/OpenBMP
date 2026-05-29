@@ -30,11 +30,14 @@
 
 use std::path::{Path, PathBuf};
 
+use openbmp_physics::frames::WGS84_MU_M3_S2;
 use openbmp_runner as runner;
 use openbmp_scenario::Scenario;
 
-/// WGS84/EGM2008 gravitational parameter (m^3/s^2).
-const MU_EARTH: f64 = 3.986_004_418e14;
+/// WGS84/EGM2008 gravitational parameter (m^3/s^2) — canonical
+/// source-of-truth in openbmp-physics (not inlined; satisfies the
+/// inline-data tripwire).
+const MU_EARTH: f64 = WGS84_MU_M3_S2;
 /// Mean spherical Earth radius (m).
 const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
 
