@@ -15,15 +15,26 @@
 #                        jettisoned; ballistic climb to apogee.
 #   3. circularize     - at apogee the stage-2 vacuum engine ignites and
 #                        Powered Explicit Guidance (PEG) trims the orbit
-#                        (its near-horizontal terminal regime), cutting
-#                        on the PEG time-to-go at insertion.
+#                        in its near-horizontal terminal regime. The
+#                        coast-apogee deficit is small (the eastward
+#                        launch already banks ~465 m/s of Earth-rotation
+#                        velocity), so the stage-2 store is sized to a
+#                        propellant-limited insertion: PEG steers and the
+#                        stage burns to depletion right at circular
+#                        velocity. The PEG time-to-go cutoff (`seco`) is
+#                        retained as an overshoot backstop.
 #   4. orbit           - engines idle.
 #
 # Per-phase guidance ([fc.ascent_reference_by_phase]): closed-loop
-# insertion on the booster, PEG on the upper stage. EKF navigation uses
-# the EGM2008 central gravity model, is seeded from the launch state, and
-# carries position/velocity process noise so nav stays valid through the
-# coast.
+# insertion on the booster, PEG on the upper stage. Navigation is an
+# EGM2008-gravity EKF seeded from the launch state, fed by a
+# navigation-grade (tactical) IMU + GNSS — NO magnetometer (see the
+# sensors block for why a magnetometer is both unrealistic and harmful
+# for an equatorial launch). It carries position/velocity process noise
+# so GNSS stays fused (and nav stays valid) through the high-thrust
+# phases and the long coast. Frame: wgs84-uniform-rotation (uniform Earth
+# rotation); the launch boost is carried by the initial co-rotation
+# velocity.
 #
 # Forward-only: vehicle-intrinsic ascent toward an insertion RADIUS; no
 # target / aimpoint / range / terminal-guidance field anywhere.
@@ -44,13 +55,17 @@ seed    = 0x5068616c39306f72   # "Phal9or"
 
 [vehicle]
 kind                                = "rigid_body"
-# Launch from the +z pole: body +z (thrust axis) = radial up = ECI +z
-# (identity attitude). This is the geometry the EKF navigation handled
-# cleanly in the single-stage validation; the equatorial / rotating-Earth
-# launch is layered on separately (see task: wgs84-uniform-rotation).
-initial_position_eci_m              = [0.0, 0.0, 6_370_000.0]
-initial_velocity_eci_m_s            = [0.0, 0.0, 0.0]
-initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+# Equatorial due-east launch under uniform Earth rotation. The launch
+# site sits on the equator at ECI +x at t=0; body +z (the thrust axis)
+# points radially out = ECI +x (a +90 deg rotation about ECI +y), and
+# body +y points east = ECI +y (the prograde / downrange direction, which
+# is also the direction of Earth rotation). The vehicle starts co-rotating
+# with the surface, so its inertial velocity is the eastward surface speed
+# Omega_e * R = 7.2921151467e-5 * 6.370e6 ~= 464.5 m/s (+y). The runner
+# does NOT auto-add co-rotation, so the full ECI velocity is given here.
+initial_position_eci_m              = [6_370_000.0, 0.0, 0.0]
+initial_velocity_eci_m_s            = [0.0, 464.5, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.70710678118654752, 0.0, 0.70710678118654752]
 initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
 
 [vehicle.assembly]
@@ -179,26 +194,40 @@ limits = { max_thrust_n = 450000.0, isp_s = 348.0, ignition_transient_s = 0.3, s
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s2_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [environment]
-frame_profile = "toy-fixed-earth"
+frame_profile = "wgs84-uniform-rotation"
 gravity       = "egm2008"
 atmosphere    = "none"
 wind          = "none"
 magnetic      = "wmm_2025"
+
+[frames]
+profile = "wgs84-uniform-rotation"
+
+[frames.local_origin]
+latitude_deg  = 0.0
+longitude_deg = 0.0
+height_m      = 0.0
+source        = "Synthetic equatorial launch site (lat 0, lon 0) for the due-east demo; not a real range."
 
 [forces]
 models = ["gravity", "thrust"]
 
 [sensors.imu]
 kind = "imu"
-file = "../../data/sensors/imu-consumer-mems.toml"
+file = "../../data/sensors/imu-tactical.toml"
 
 [sensors.gnss]
 kind = "gnss"
 file = "../../data/sensors/gnss-textbook.toml"
 
-[sensors.mag]
-kind = "magnetometer"
-file = "../../data/sensors/magnetometer-textbook.toml"
+# No magnetometer: a launch vehicle navigates attitude with its
+# navigation-grade IMU (gyro) + GNSS, not a magnetometer. A single
+# magnetometer cannot observe rotation about the local field direction;
+# at this equatorial launch that unobservable axis is the orbital-plane
+# normal, so a magnetometer (with any hard-iron bias) drives the attitude
+# estimate out of plane. The tactical IMU's gyro holds attitude through
+# the powered ascent, so the magnetometer is both unrealistic here and
+# actively harmful. See task #23 / provenance.md.
 
 [telemetry]
 output.csv = "out/phalcon9-orbit.csv"
@@ -282,14 +311,14 @@ action = { kind = "engine_command", id = "eng_vac", command = { throttle_unit = 
 [[mission.events]]
 id      = "meco1"
 once    = true
-trigger = { kind = "at_velocity", velocity_m_s = 7300.0, falling = false }
+trigger = { kind = "at_velocity", velocity_m_s = 7150.0, falling = false }
 action  = { kind = "emit_telemetry_marker", tag = "meco1" }
 
 # Stage separation: jettison the spent booster at MECO-1.
 [[mission.events]]
 id      = "sep"
 once    = true
-trigger = { kind = "at_velocity", velocity_m_s = 7300.0, falling = false }
+trigger = { kind = "at_velocity", velocity_m_s = 7150.0, falling = false }
 action  = { kind = "jettison_stage", body = "lower" }
 
 # Apogee marker: drives the coast -> circularize transition. A commander

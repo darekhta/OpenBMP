@@ -82,17 +82,27 @@ This provenance record covers the following synthetic scenario files:
   launch-state seed, position/velocity process noise) that make the long
   coast and precise circularisation cutoff possible.
 - `scenarios/phalcon9/phalcon9-orbit.toml` — *two-stage* closed-loop TVC
-  orbital insertion under EGM2008 gravity. A full staged profile
-  (stage-1 closed-loop ascent → MECO + booster jettison → ballistic coast
-  to apogee → stage-2 PEG circularisation → orbit) reaches a near-circular
-  bound low Earth orbit: perigee ~259 km × apogee ~306 km, eccentricity
-  ~0.004 (verified from telemetry). Exercises per-phase ascent guidance
+  orbital insertion under EGM2008 gravity, launched **due east from the
+  equator on a uniformly-rotating Earth** (`wgs84-uniform-rotation`). A
+  full staged profile (stage-1 closed-loop ascent → MECO + booster
+  jettison → ballistic coast to apogee → stage-2 PEG circularisation →
+  orbit) reaches a near-circular, near-equatorial bound low Earth orbit:
+  perigee ~260 km × apogee ~313 km, eccentricity ~0.004, inclination
+  ~1.8° (verified from telemetry). Exercises per-phase ascent guidance
   (closed-loop on the booster, Powered Explicit Guidance on the upper
   stage), engine-moment-about-CG rigid-body dynamics across a CG-shifting
   staging event, and a high-dynamics EKF tuning (raised velocity/position
-  process noise) that keeps GNSS fused through the high-thrust phases so
-  the apogee detection and PEG cutoff are accurate. See the scenario
-  header for the full mission profile.
+  process noise) that keeps GNSS fused through the high-thrust phases.
+  Navigation uses a navigation-grade (tactical) IMU + GNSS and **no
+  magnetometer**: a single magnetometer cannot observe rotation about the
+  local field direction, which at an equatorial launch is the
+  orbital-plane normal, so a magnetometer drives the attitude estimate
+  (and thus the thrust) out of plane; the tactical IMU's gyro holds
+  attitude through the powered ascent. The eastward launch banks the
+  Earth-rotation surface speed (~465 m/s) as initial inertial velocity,
+  leaving a small coast-apogee deficit, so the stage-2 store is sized to
+  a propellant-limited insertion (PEG steers; the stage burns to depletion
+  at circular velocity). See the scenario header for the full profile.
 
 All numeric content in these files is synthetic / rounded /
 order-of-magnitude and contains no real fielded-vehicle parameter set.
