@@ -90,7 +90,7 @@ impl EnvironmentModel for RuntimeEnvironment {
         let Some(atmosphere) = &self.atmosphere else {
             return Ok(sample);
         };
-        let altitude_m = query.position_eci.vector.z.max(0.0);
+        let altitude_m = atmosphere_altitude_m(query.position_eci.vector);
         let atmosphere_sample = atmosphere.sample(altitude_m, query.time).map_err(|_| {
             ModelEvalError::OutOfEnvelope {
                 model: RUNNER_ENVIRONMENT_MODEL_ID,
@@ -99,6 +99,28 @@ impl EnvironmentModel for RuntimeEnvironment {
         })?;
         sample.atmosphere_density_kg_m3 = atmosphere_sample.density_kg_m3;
         Ok(sample)
+    }
+}
+
+/// Geometric altitude (m) for atmosphere sampling, frame-aware.
+///
+/// For a geocentric configuration — position well beyond any
+/// flat-earth / local-frame launch radius — altitude is the height
+/// above the mean spherical Earth, `|r| - R⊕`. A near-origin local
+/// launch (sounding rocket, drop test) keeps the legacy flat-earth
+/// `+z` reading, where `+z` is the local vertical. The 1e6 m threshold
+/// and the 6 371 km mean radius match the geocentric/local split used
+/// by `openbmp-sim`'s `vertical_climb_rate` and the FC commander, so a
+/// geocentric launch (e.g. an equatorial ascent that stays near `z=0`)
+/// no longer reads sea-level density all the way to orbit.
+fn atmosphere_altitude_m(position_eci_m: Vector3<f64>) -> f64 {
+    const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
+    const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
+    let rn = position_eci_m.norm();
+    if rn > GEOCENTRIC_RADIUS_THRESHOLD_M {
+        (rn - EARTH_MEAN_RADIUS_M).max(0.0)
+    } else {
+        position_eci_m.z.max(0.0)
     }
 }
 
@@ -335,6 +357,23 @@ mod tests {
     use super::*;
     use openbmp_core::Position3;
     use openbmp_physics::{LocalGeodeticOrigin, WGS84_A_M, WGS84_OMEGA_RAD_S};
+
+    #[test]
+    fn atmosphere_altitude_is_frame_aware() {
+        // Local-frame launch (near origin): altitude is the flat-earth +z.
+        assert_eq!(atmosphere_altitude_m(Vector3::new(0.0, 0.0, 1_000.0)), 1_000.0);
+        assert_eq!(atmosphere_altitude_m(Vector3::new(10.0, 20.0, 0.0)), 0.0);
+        // Geocentric launch (|r| ~ Earth radius): altitude is |r| - R_earth,
+        // independent of which axis the position lies on. An equatorial
+        // launch at +x must NOT read sea level all the way up.
+        let surface = Vector3::new(6_371_000.0, 0.0, 0.0);
+        assert_eq!(atmosphere_altitude_m(surface), 0.0);
+        let up_100km = Vector3::new(6_471_000.0, 0.0, 0.0);
+        assert!((atmosphere_altitude_m(up_100km) - 100_000.0).abs() < 1.0e-6);
+        // Same altitude regardless of orbital-plane orientation (z-axis launch).
+        let polar_100km = Vector3::new(0.0, 0.0, 6_471_000.0);
+        assert!((atmosphere_altitude_m(polar_100km) - 100_000.0).abs() < 1.0e-6);
+    }
 
     #[test]
     fn wgs84_environment_reports_corotating_still_air_velocity() {
