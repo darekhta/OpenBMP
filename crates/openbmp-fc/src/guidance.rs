@@ -220,6 +220,15 @@ impl AscentReferenceGuidance {
         }
     }
 
+    /// Override the scheduler job name. Required when more than one
+    /// ascent-reference guidance job is registered (per-phase guidance),
+    /// since the scheduler rejects duplicate job names.
+    #[must_use]
+    pub fn with_name(mut self, name: &'static str) -> Self {
+        self.name = name;
+        self
+    }
+
     /// Restrict reference publication to the listed mission phase ids.
     #[must_use]
     pub fn with_active_phase_ids(mut self, phase_ids: Vec<u64>) -> Self {

@@ -534,11 +534,26 @@ struct PegState {
 }
 
 /// Maximum radial component of the PEG thrust unit vector (sin of the
-/// pitch above the local horizon). PEG operates near-horizontal in its
-/// terminal insertion regime; clamping the radial component keeps an
-/// ill-conditioned terminal solve from saturating the command into a
-/// near-vertical (or retrograde-climb) attitude.
-const PEG_MAX_RADIAL_THRUST: f64 = 0.04;
+/// pitch above the local horizon), as a function of time-to-go. Early in
+/// a long burn the two-point boundary-value solve is well-conditioned and
+/// the vehicle may legitimately need a steep pitch to loft, so the clamp
+/// is loose; as time-to-go shrinks the terminal solve becomes
+/// ill-conditioned and would otherwise saturate the command into a
+/// near-vertical (or retrograde) attitude, so the clamp tightens toward
+/// near-horizontal. Linearly interpolated between the two regimes.
+fn peg_max_radial_thrust(t_go_s: f64) -> f64 {
+    const TIGHT: f64 = 0.06; // ~3.4 deg, terminal
+    const LOOSE: f64 = 0.70; // ~44 deg, early loft
+    const T_TIGHT: f64 = 10.0;
+    const T_LOOSE: f64 = 40.0;
+    if t_go_s <= T_TIGHT {
+        TIGHT
+    } else if t_go_s >= T_LOOSE {
+        LOOSE
+    } else {
+        TIGHT + (LOOSE - TIGHT) * (t_go_s - T_TIGHT) / (T_LOOSE - T_TIGHT)
+    }
+}
 
 /// PEG major-cycle period (s): the two-point boundary-value solve runs
 /// at this cadence (as in the Shuttle implementation). Between major
@@ -831,7 +846,8 @@ impl AscentReferenceGenerator for PegAscentReference {
         // gravity/centrifugal term), clamped to the near-horizontal
         // terminal regime; tangential (prograde) sqrt(1 - fr²).
         let c = (mu / (r * r) - vt * vt / r) / acc;
-        let fr_cmd = (st.a + c).clamp(-PEG_MAX_RADIAL_THRUST, PEG_MAX_RADIAL_THRUST);
+        let max_radial = peg_max_radial_thrust(st.t_go_s);
+        let fr_cmd = (st.a + c).clamp(-max_radial, max_radial);
         let ftheta_cmd = (1.0 - fr_cmd * fr_cmd).max(0.0).sqrt();
         let forward = up * fr_cmd + downrange * ftheta_cmd;
         let q = reference_quaternion_from_body_z([forward.x, forward.y, forward.z])?;

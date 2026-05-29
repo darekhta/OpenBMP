@@ -1303,6 +1303,15 @@ impl MomentModel<RigidBodyState> for EngineClusterMomentAdapter {
         ctx: MomentContext<'_, RigidBodyState>,
     ) -> Result<Vector3<f64>, ModelEvalError> {
         let mut total_moment_body = Vector3::zeros();
+        // Moments enter the rigid-body Euler equation paired with the
+        // inertia tensor about the centre of mass, so engine thrust
+        // moments must be taken about the live CG: `(mount − cg) ×
+        // thrust`. Using the body origin is correct only when the origin
+        // coincides with the CG; for a staged vehicle (or any CG that
+        // shifts as propellant drains) the origin-referenced moment gives
+        // the autopilot the wrong gimbal→moment gain and destabilises
+        // thrust-vector control.
+        let cg = ctx.state.mass_props.center_of_mass_body.vector;
         for (id, mount) in self.engine_ids.iter().zip(self.mount_points_body.iter()) {
             if !mapped_owner_allows(
                 ctx.active_body,
@@ -1322,7 +1331,7 @@ impl MomentModel<RigidBodyState> for EngineClusterMomentAdapter {
                         "engine cluster moment adapter: snapshot missing declared engine id",
                     ),
                 })?;
-            let moment_body = mount.vector.cross(&snap.thrust_body);
+            let moment_body = (mount.vector - cg).cross(&snap.thrust_body);
             total_moment_body += moment_body;
         }
         if !total_moment_body.x.is_finite()

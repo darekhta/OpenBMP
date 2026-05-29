@@ -8183,10 +8183,19 @@ pub struct FcConfig {
     /// `openbmp.scenario = 3`.
     pub trajectory: Option<FcTrajectoryConfig>,
     /// Optional powered-ascent reference generator block. Required
-    /// when `guidance = "ascent_reference"`. See
+    /// when `guidance = "ascent_reference"` unless
+    /// `ascent_reference_by_phase` is given. See
     /// `docs/ascent-guidance.md`.
     #[serde(default)]
     pub ascent_reference: Option<FcAscentReferenceConfig>,
+    /// Optional per-phase ascent reference generators, keyed by mission
+    /// phase id. When present, a phase-gated guidance job is built for
+    /// each entry, so a staged vehicle can fly different guidance per
+    /// phase (e.g. a gravity turn on the booster, PEG on the upper
+    /// stage). Coexists with `ascent_reference` (the default for any
+    /// powered-ascent phase not listed here).
+    #[serde(default)]
+    pub ascent_reference_by_phase: Option<BTreeMap<String, FcAscentReferenceConfig>>,
 }
 
 /// Powered-ascent reference generator configuration.
@@ -8459,16 +8468,28 @@ impl FcConfig {
             });
         }
         if matches!(self.guidance, FcGuidanceKind::AscentReference) {
-            let Some(ascent_reference) = &self.ascent_reference else {
+            let has_by_phase = self
+                .ascent_reference_by_phase
+                .as_ref()
+                .is_some_and(|m| !m.is_empty());
+            if self.ascent_reference.is_none() && !has_by_phase {
                 return Err(ScenarioError::InvalidFc {
-                    reason: "guidance = \"ascent_reference\" requires [fc.ascent_reference]"
+                    reason: "guidance = \"ascent_reference\" requires [fc.ascent_reference] or \
+                             at least one [fc.ascent_reference_by_phase.<phase>]"
                         .to_owned(),
                 });
-            };
-            ascent_reference.validate()?;
-        } else if self.ascent_reference.is_some() {
+            }
+            if let Some(ascent_reference) = &self.ascent_reference {
+                ascent_reference.validate()?;
+            }
+            if let Some(by_phase) = &self.ascent_reference_by_phase {
+                for cfg in by_phase.values() {
+                    cfg.validate()?;
+                }
+            }
+        } else if self.ascent_reference.is_some() || self.ascent_reference_by_phase.is_some() {
             return Err(ScenarioError::InvalidFc {
-                reason: "[fc.ascent_reference] requires guidance = \"ascent_reference\"".to_owned(),
+                reason: "[fc.ascent_reference*] requires guidance = \"ascent_reference\"".to_owned(),
             });
         }
         if self.base_rate_hz == 0 {

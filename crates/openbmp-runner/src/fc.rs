@@ -184,16 +184,48 @@ impl FcRunner {
                 )?;
             }
             FcGuidanceKind::AscentReference => {
-                let generator = build_ascent_reference_generator(config)?;
-                fc.scheduler_mut().register_periodic(
-                    slow_period_ticks,
-                    100,
-                    next_priority,
-                    Box::new(
-                        AscentReferenceGuidance::new(generator)
-                            .with_active_phase_ids(powered_ascent_phase_ids()),
-                    ),
-                )?;
+                // Default generator: active in any powered-ascent phase
+                // not overridden by a per-phase entry.
+                if let Some(cfg) = &config.ascent_reference {
+                    let generator = build_ascent_reference_generator(cfg)?;
+                    fc.scheduler_mut().register_periodic(
+                        slow_period_ticks,
+                        100,
+                        next_priority,
+                        Box::new(
+                            AscentReferenceGuidance::new(generator)
+                                .with_active_phase_ids(powered_ascent_phase_ids()),
+                        ),
+                    )?;
+                    next_priority = next_priority.saturating_add(1);
+                }
+                // Per-phase generators: one phase-gated guidance job each,
+                // so a staged vehicle flies different guidance per phase
+                // (e.g. gravity turn on the booster, PEG on the upper
+                // stage).
+                if let Some(by_phase) = &config.ascent_reference_by_phase {
+                    for (phase_path, cfg) in by_phase {
+                        let generator = build_ascent_reference_generator(cfg)?;
+                        let phase_id = PhaseId::from_path(phase_path).value();
+                        // Unique, stable job name per phase (the scheduler
+                        // rejects duplicates). Leaked once at FC build,
+                        // matching the label-interning pattern elsewhere.
+                        let job_name: &'static str = Box::leak(
+                            format!("guidance.ascent_reference.{phase_path}").into_boxed_str(),
+                        );
+                        fc.scheduler_mut().register_periodic(
+                            slow_period_ticks,
+                            100,
+                            next_priority,
+                            Box::new(
+                                AscentReferenceGuidance::new(generator)
+                                    .with_name(job_name)
+                                    .with_active_phase_ids(vec![phase_id]),
+                            ),
+                        )?;
+                        next_priority = next_priority.saturating_add(1);
+                    }
+                }
             }
         }
         next_priority = next_priority.saturating_add(5);
@@ -475,14 +507,8 @@ fn powered_ascent_phase_ids() -> Vec<u64> {
 }
 
 fn build_ascent_reference_generator(
-    config: &FcConfig,
+    cfg: &FcAscentReferenceConfig,
 ) -> Result<Box<dyn AscentReferenceGenerator + Send>, ControllerError> {
-    let cfg = config
-        .ascent_reference
-        .as_ref()
-        .ok_or_else(|| GuidanceError::InvalidConfig {
-            reason: "guidance = \"ascent_reference\" requires [fc.ascent_reference]".to_owned(),
-        })?;
     match cfg.method {
         FcAscentReferenceMethod::PitchProgram => {
             let schedule = cfg
@@ -1708,6 +1734,7 @@ mod tests {
             estimator_lanes: Some(lanes),
             autopilot_allocation: None,
             trajectory: None,
+            ascent_reference_by_phase: None,
             ascent_reference: None,
         };
         let (graph, bindings, pad) = minimal_graph();
@@ -1784,6 +1811,7 @@ mod tests {
             estimator_lanes: None,
             autopilot_allocation: None,
             trajectory: None,
+            ascent_reference_by_phase: None,
             ascent_reference: None,
         };
         let (graph, bindings, pad) = minimal_graph();
@@ -1854,6 +1882,7 @@ mod tests {
             estimator_lanes: None,
             autopilot_allocation: None,
             trajectory: None,
+            ascent_reference_by_phase: None,
             ascent_reference: Some(FcAscentReferenceConfig {
                 method: FcAscentReferenceMethod::PitchProgram,
                 schedule_s: Some(vec![0.0, 10.0, 30.0]),
