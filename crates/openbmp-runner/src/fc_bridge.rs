@@ -389,15 +389,44 @@ impl BridgeSensor {
 }
 
 fn require_bridge_frame(document: &ScenarioDocument) -> Result<(), RunnerError> {
-    if document.environment.frame_profile == "toy-fixed-earth" {
-        return Ok(());
-    }
-    Err(RunnerError::UnsupportedScenario {
-        what: format!(
-            "[fc] bridge requires frame_profile = \"toy-fixed-earth\"; got `{}`",
-            document.environment.frame_profile
+    bridge_frame_supported(
+        &document.environment.frame_profile,
+        &document.environment.atmosphere,
+    )
+    .map_err(|what| RunnerError::UnsupportedScenario { what })
+}
+
+/// Pure decision for whether the FC sensor bridge supports a given
+/// `(frame_profile, atmosphere)` pair. Extracted from
+/// [`require_bridge_frame`] so the policy is unit-testable without
+/// constructing a full [`ScenarioDocument`].
+///
+/// `wgs84-uniform-rotation` differs from `toy-fixed-earth` only by a
+/// rotation of the ECEF frame about the inertial +z axis. The kernel
+/// integrates the dynamics in ECI and the bridge derives sensor truth
+/// entirely in ECI (the IMU specific force is `d/dt v_eci - g_eci`; GNSS
+/// and magnetometer truth are ECI quantities), so neither the dynamics nor
+/// the sensor truth depend on the Earth-rotation phase. The rotation only
+/// becomes physically active through the *atmosphere* (the air co-rotates,
+/// setting the relative wind) and ground-relative measurements. Until that
+/// co-rotating-air path is wired through the bridge, accept the rotating
+/// frame for vacuum flight only; the Earth-rotation launch boost is then
+/// carried entirely by the scenario's initial co-rotation velocity.
+fn bridge_frame_supported(frame_profile: &str, atmosphere: &str) -> Result<(), String> {
+    match frame_profile {
+        "toy-fixed-earth" => Ok(()),
+        "wgs84-uniform-rotation" if atmosphere == "none" => Ok(()),
+        "wgs84-uniform-rotation" => Err(
+            "[fc] bridge supports frame_profile = \"wgs84-uniform-rotation\" only for \
+             atmosphere = \"none\" (atmospheric flight on a rotating frame needs the \
+             co-rotating-air bridge)"
+                .to_owned(),
         ),
-    })
+        other => Err(format!(
+            "[fc] bridge requires frame_profile = \"toy-fixed-earth\" or \
+             \"wgs84-uniform-rotation\"; got `{other}`"
+        )),
+    }
 }
 
 /// Precondition: per-axis rate loops (LQR
@@ -969,5 +998,28 @@ estimator = "ekf"
         let (kind, epoch) = magnetic_field_settings(fc);
         assert_eq!(kind, FcMagFieldKind::Wmm2025);
         assert_eq!(epoch.to_bits(), 2025.0f64.to_bits());
+    }
+
+    #[test]
+    fn bridge_frame_policy_accepts_rotating_frame_only_in_vacuum() {
+        // toy-fixed-earth is always supported.
+        assert!(bridge_frame_supported("toy-fixed-earth", "none").is_ok());
+        assert!(bridge_frame_supported("toy-fixed-earth", "us_standard_1976").is_ok());
+
+        // wgs84-uniform-rotation is supported for vacuum flight (the
+        // rotation only changes the ECI dynamics through the initial
+        // co-rotation velocity, which the scenario supplies).
+        assert!(bridge_frame_supported("wgs84-uniform-rotation", "none").is_ok());
+
+        // ...but not yet with an atmosphere: the co-rotating-air relative
+        // wind is not wired through the bridge.
+        let err = bridge_frame_supported("wgs84-uniform-rotation", "us_standard_1976")
+            .expect_err("rotating frame + atmosphere is rejected");
+        assert!(err.contains("co-rotating-air"), "unexpected message: {err}");
+
+        // Frames the bridge cannot derive ECI sensor truth for are rejected.
+        let err = bridge_frame_supported("iers-tabulated", "none")
+            .expect_err("iers-tabulated is rejected");
+        assert!(err.contains("toy-fixed-earth"), "unexpected message: {err}");
     }
 }
