@@ -31,6 +31,11 @@ propellant, single restartable vacuum upper-stage engine). No proprietary,
 fielded, or validated parameter set was used or reproduced; all values
 are rounded illustrative figures.
 
+The table below is the **reference class anchor**, as flown in
+`phalcon9-ascent`. The other scenarios re-tune these synthetic figures
+for their specific demonstration (see the per-file notes); the numbers
+are all illustrative, not fidelity targets, so they vary between files.
+
 | Quantity | Synthetic value | Notes |
 |---|---|---|
 | Stage-1 dry mass | 22 t | rounded class figure |
@@ -44,6 +49,15 @@ Ideal (loss-free) staged Δv from these figures is ≈10.4 km/s; after
 nominal gravity/drag losses this lands a Phalcon-9-class vehicle in the
 right order of magnitude for low Earth orbit. The figures are tuned for
 demonstration, not for fidelity to any real vehicle.
+
+**Scenario-specific re-tunes.** `phalcon9-orbit` (the flagship orbital
+insertion) re-tunes the stack to close a clean two-stage insertion:
+stage-1 ~10 t dry + ~552 t propellant + 9 × 850 kN at Isp 340 s; a small,
+propellant-limited stage-2 of ~9 t dry + payload + ~10 t propellant +
+1 × 450 kN at Isp 348 s (the eastward equatorial launch banks ~465 m/s of
+Earth-rotation velocity, leaving only a small circularisation deficit).
+`phalcon9-gravity-turn` is a single-stage variant (9 × 500 kN at Isp
+340 s). All values remain synthetic, rounded, order-of-magnitude figures.
 
 ## Models
 
