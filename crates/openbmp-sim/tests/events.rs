@@ -27,6 +27,7 @@ fn scalars(time_s: f64, alt: f64, v_z: f64, speed: f64, mf: f64, q: f64) -> Even
         velocity_m_s: speed,
         mass_fraction: mf,
         dynamic_pressure_pa: q,
+        guidance_time_to_go_s: f64::INFINITY,
     }
 }
 

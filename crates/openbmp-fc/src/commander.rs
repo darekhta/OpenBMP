@@ -26,7 +26,7 @@ use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{
     BarometerSample, CommsRegionStatePublish, EstimatorRegimeRegionStatePublish, EstimatorStatus,
-    FailsafeFlags, FdirStatus, GnssSample, HealthRegionStatePublish, ImuSample,
+    FailsafeFlags, FdirStatus, GnssSample, GuidanceCutoff, HealthRegionStatePublish, ImuSample,
     MissionRegionStatePublish, MissionStatePublish, PositionEstimate, VehicleStatus,
 };
 
@@ -195,6 +195,11 @@ impl Commander {
             )
         });
         let mass_fraction = 1.0; // not currently estimated by the controller.
+        let guidance_time_to_go_s = bus
+            .latest::<GuidanceCutoff>()
+            .ok()
+            .flatten()
+            .map_or(f64::INFINITY, |(c, _)| c.time_to_go_s);
 
         let current = EventScalars {
             time_s: 0.0,
@@ -203,6 +208,7 @@ impl Commander {
             velocity_m_s,
             mass_fraction,
             dynamic_pressure_pa,
+            guidance_time_to_go_s,
         };
 
         EventEvalState {

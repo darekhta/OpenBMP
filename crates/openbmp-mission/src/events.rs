@@ -160,6 +160,11 @@ pub struct EventScalars {
     /// Dynamic pressure (Pa), computed by the event consumer from the
     /// local atmosphere density and speed magnitude.
     pub dynamic_pressure_pa: f64,
+    /// Closed-loop guidance time-to-go (s); `+∞` when the active
+    /// guidance has no terminal-time solution. Drives engine cutoff at
+    /// orbital insertion (PEG). Populated by the flight controller; the
+    /// kernel-side event evaluation leaves it `+∞`.
+    pub guidance_time_to_go_s: f64,
 }
 
 /// Key used for relative-distance trigger samples.
@@ -264,6 +269,13 @@ pub enum BuiltInEventTrigger {
     /// fixed-step integration. Sub-tick apogee localization is an
     /// adaptive-integrator concern.
     AtApogee,
+    /// Fires the first tick where the closed-loop guidance time-to-go
+    /// drops to or below `time_to_go_s` — i.e. powered flight is nearly
+    /// complete (PEG insertion). Used to schedule engine cutoff.
+    AtGuidanceCutoff {
+        /// Time-to-go threshold (s).
+        time_to_go_s: f64,
+    },
     /// Fires the first tick where mass fraction (current / initial)
     /// drops to or below `remaining`.
     AtMassFraction {
@@ -333,6 +345,10 @@ impl EventTrigger for BuiltInEventTrigger {
                 prev.altitude_m > *meters && curr.altitude_m <= *meters
             }
             Self::AtApogee => prev.vertical_velocity_m_s > 0.0 && curr.vertical_velocity_m_s <= 0.0,
+            Self::AtGuidanceCutoff { time_to_go_s } => {
+                prev.guidance_time_to_go_s > *time_to_go_s
+                    && curr.guidance_time_to_go_s <= *time_to_go_s
+            }
             Self::AtMassFraction { remaining } => {
                 prev.mass_fraction > *remaining && curr.mass_fraction <= *remaining
             }

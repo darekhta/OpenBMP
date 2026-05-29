@@ -561,6 +561,7 @@ where
                     vertical_velocity_m_s: vertical_climb_rate(&self.state.position.vector, &self.state.velocity.vector),
                     velocity_m_s: self.state.velocity.vector.norm(),
                     mass_fraction: self.state.mass.get::<kilogram>() / self.initial_mass_kg,
+                    guidance_time_to_go_s: f64::INFINITY,
                     dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
                         previous_env.atmosphere_density_kg_m3,
                         self.state.velocity.vector,
@@ -583,6 +584,7 @@ where
                 vertical_velocity_m_s: vertical_climb_rate(&new_state.position.vector, &new_state.velocity.vector),
                 velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass.get::<kilogram>() / self.initial_mass_kg,
+                guidance_time_to_go_s: f64::INFINITY,
                 dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
                     event_env.atmosphere_density_kg_m3,
                     new_state.velocity.vector,
@@ -1599,6 +1601,7 @@ where
                         previous_env.atmosphere_density_kg_m3,
                         self.state.velocity.vector,
                     )?,
+                    guidance_time_to_go_s: f64::INFINITY,
                 });
                 if self.previous_event_relative_distances_m.is_none() {
                     self.previous_event_relative_distances_m =
@@ -1626,6 +1629,7 @@ where
                 vertical_velocity_m_s: vertical_climb_rate(&new_state.position.vector, &new_state.velocity.vector),
                 velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass_props.mass.get::<kilogram>() / self.initial_mass_kg,
+                guidance_time_to_go_s: f64::INFINITY,
                 dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
                     event_env.atmosphere_density_kg_m3,
                     new_state.velocity.vector,

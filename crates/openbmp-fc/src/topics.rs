@@ -709,3 +709,29 @@ pub struct ReferenceState {
 impl Topic for ReferenceState {
     const NAME: &'static str = "guidance.reference";
 }
+
+/// Powered-flight guidance time-to-go, published by the ascent-reference
+/// guidance and read by the commander to drive an engine-cutoff
+/// transition when the closed-loop insertion (PEG) is nearly complete.
+/// `f64::INFINITY` means the active guidance has no terminal-time
+/// solution (no cutoff to schedule).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct GuidanceCutoff {
+    /// Reference timestamp.
+    pub time: SimTime,
+    /// Estimated remaining powered-flight time (s); `+∞` when unknown.
+    pub time_to_go_s: f64,
+}
+
+impl Default for GuidanceCutoff {
+    fn default() -> Self {
+        Self {
+            time: SimTime::ZERO,
+            time_to_go_s: f64::INFINITY,
+        }
+    }
+}
+
+impl Topic for GuidanceCutoff {
+    const NAME: &'static str = "guidance.cutoff";
+}

@@ -6132,6 +6132,12 @@ pub enum EventTriggerConfig {
     },
     /// Velocity sign-flip apogee detector.
     AtApogee,
+    /// Closed-loop guidance time-to-go drops to/through a threshold —
+    /// schedules engine cutoff at orbital insertion (PEG).
+    AtGuidanceCutoff {
+        /// Time-to-go threshold (s).
+        time_to_go_s: f64,
+    },
     /// Mass-fraction crossing (current/initial mass below threshold).
     AtMassFraction {
         /// Threshold mass fraction in `[0, 1]`.
@@ -6198,6 +6204,9 @@ impl EventTriggerConfig {
                 require_finite(&path("altitude_m"), *altitude_m)?;
             }
             Self::AtApogee => {}
+            Self::AtGuidanceCutoff { time_to_go_s } => {
+                require_non_negative(&path("time_to_go_s"), *time_to_go_s)?;
+            }
             Self::AtMassFraction { remaining } => {
                 require_finite(&path("remaining"), *remaining)?;
                 require_in_range(&path("remaining"), *remaining, 0.0, 1.0)?;

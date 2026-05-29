@@ -514,6 +514,11 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Run
             }
         }
         EventTriggerConfig::AtApogee => BuiltInEventTrigger::AtApogee,
+        EventTriggerConfig::AtGuidanceCutoff { time_to_go_s } => {
+            BuiltInEventTrigger::AtGuidanceCutoff {
+                time_to_go_s: *time_to_go_s,
+            }
+        }
         EventTriggerConfig::AtMassFraction { remaining } => BuiltInEventTrigger::AtMassFraction {
             remaining: *remaining,
         },

@@ -76,6 +76,11 @@ pub struct AscentState {
     pub dynamic_pressure_pa: f64,
     /// Remaining mass fraction in `[0, 1]`.
     pub mass_fraction: f64,
+    /// Sensed thrust acceleration magnitude (m/s²) — the specific force
+    /// from the IMU. `0` when unpowered or unavailable. Closed-loop
+    /// guidance (PEG) uses it to reconstruct the burn-time constant
+    /// `tau = ve / acc` from the live state rather than a static model.
+    pub thrust_accel_m_s2: f64,
 }
 
 impl AscentState {
@@ -151,6 +156,14 @@ pub trait AscentReferenceGenerator {
         state: &AscentState,
         time: SimTime,
     ) -> Result<AscentReference, PhysicsError>;
+
+    /// Most recent estimate of powered-flight time-to-go (s), if the
+    /// method computes one. Read after [`Self::ascent_reference`] to
+    /// drive an engine-cutoff event when the burn is (nearly) complete.
+    /// Methods without an explicit terminal-time solution return `None`.
+    fn time_to_go_s(&self) -> Option<f64> {
+        None
+    }
 }
 
 /// Pitch-program ascent reference.
@@ -511,10 +524,28 @@ struct PegState {
     a: f64,
     b: f64,
     t_go_s: f64,
-    burn_start_s: f64,
+    /// Robust cutoff time-to-go from the velocity-to-be-gained
+    /// magnitude (decoupled from the fragile steering expansion), used
+    /// to schedule engine cutoff.
+    cutoff_t_go_s: f64,
     last_time_s: f64,
+    last_major_s: f64,
     started: bool,
 }
+
+/// Maximum radial component of the PEG thrust unit vector (sin of the
+/// pitch above the local horizon). PEG operates near-horizontal in its
+/// terminal insertion regime; clamping the radial component keeps an
+/// ill-conditioned terminal solve from saturating the command into a
+/// near-vertical (or retrograde-climb) attitude.
+const PEG_MAX_RADIAL_THRUST: f64 = 0.04;
+
+/// PEG major-cycle period (s): the two-point boundary-value solve runs
+/// at this cadence (as in the Shuttle implementation). Between major
+/// cycles the steering reuses the solved `A,B` (with the live gravity
+/// term) and the time-to-go counts down in real time — re-solving every
+/// guidance tick makes the dv→time-to-go inversion numerically noisy.
+const PEG_MAJOR_CYCLE_S: f64 = 1.0;
 
 /// Powered Explicit Guidance — classic in-plane PEG ascent reference.
 ///
@@ -613,8 +644,9 @@ impl PegAscentReference {
                 a: 0.0,
                 b: 0.0,
                 t_go_s: initial_t_go_s,
-                burn_start_s: 0.0,
+                cutoff_t_go_s: initial_t_go_s,
                 last_time_s: 0.0,
+                last_major_s: 0.0,
                 started: false,
             }),
         })
@@ -699,8 +731,9 @@ impl AscentReferenceGenerator for PegAscentReference {
         let mut st = self.state.get();
         if !st.started {
             st.started = true;
-            st.burn_start_s = now;
             st.last_time_s = now;
+            // Force a major-cycle solve on the first call.
+            st.last_major_s = now - PEG_MAJOR_CYCLE_S;
             st.t_go_s = self.initial_t_go_s;
             st.a = 0.0;
             st.b = 0.0;
@@ -708,83 +741,97 @@ impl AscentReferenceGenerator for PegAscentReference {
         let cycletime = (now - st.last_time_s).max(0.0);
         st.last_time_s = now;
 
-        // Constant-thrust burn-time model: tau decreases linearly with
-        // elapsed powered time. Guard against propellant exhaustion.
-        let elapsed = (now - st.burn_start_s).max(0.0);
-        let tau0 = ve / self.initial_thrust_accel_m_s2;
-        let tau = tau0 - elapsed;
-        if tau <= 1.0 {
-            // Effectively out of propellant for the model: hold the last
-            // steering direction (A,B) with the live gravity term.
-            let acc = ve / tau.max(MIN_DIRECTION_NORM);
+        // Thrust acceleration from the sensed specific force (the IMU
+        // magnitude), so the burn-time constant tau = ve / acc tracks the
+        // live state as mass depletes — correct even when PEG engages
+        // mid-burn (after a gravity-turn phase). Falls back to the
+        // configured initial acceleration before ignition / without an
+        // IMU. tau = m / mdot (current mass to zero) is the classic PEG
+        // integration constant; thrust integrals stay valid while the
+        // demanded time-to-go is below the propellant-limited burn time.
+        let acc = if state.thrust_accel_m_s2 > MIN_DIRECTION_NORM {
+            state.thrust_accel_m_s2
+        } else {
+            self.initial_thrust_accel_m_s2
+        };
+        let tau = ve / acc;
+
+        if (now - st.last_major_s) >= PEG_MAJOR_CYCLE_S {
+            // --- Major cycle: re-converge the steering (A, B) and the
+            // time-to-go from the two-point boundary-value problem. ---
+            st.last_major_s = now;
+            let (mut a, mut b) = if st.a == 0.0 && st.b == 0.0 {
+                let old_t = if st.t_go_s >= tau { 0.9 * tau } else { st.t_go_s };
+                peg_solve_ab(ve, tau, old_t, vr, r, tgt).unwrap_or((0.0, 0.0))
+            } else {
+                (st.a, st.b)
+            };
+            let v_tgt = (mu / tgt).sqrt();
+            let h_now = r * vt;
+            let h_tgt = tgt * v_tgt;
+            let dh = h_tgt - h_now;
+            let rbar = (r + tgt) / 2.0;
             let c = (mu / (r * r) - vt * vt / r) / acc;
-            let fr = (st.a + c).clamp(-1.0, 1.0);
-            let ftheta = (1.0 - fr * fr).max(0.0).sqrt();
-            let forward = up * fr + downrange * ftheta;
-            self.state.set(st);
-            let q = reference_quaternion_from_body_z([forward.x, forward.y, forward.z])?;
-            return Ok(AscentReference {
-                q_body_to_eci_xyzw: q,
-                body_rate_rad_s: None,
-            });
-        }
-        let acc = ve / tau;
-
-        // (A, B): solve from scratch on the first cycle, otherwise reuse.
-        let (mut a, mut b) = if st.a == 0.0 && st.b == 0.0 {
-            let old_t = if st.t_go_s >= tau { 0.9 * tau } else { st.t_go_s };
-            peg_solve_ab(ve, tau, old_t, vr, r, tgt).unwrap_or((0.0, 0.0))
-        } else {
-            (st.a, st.b)
-        };
-
-        // Angular-momentum-to-gain and the pitch-rate expansion.
-        let v_tgt = (mu / tgt).sqrt();
-        let h_now = r * vt;
-        let h_tgt = tgt * v_tgt;
-        let dh = h_tgt - h_now;
-        let rbar = (r + tgt) / 2.0;
-        let c = (mu / (r * r) - vt * vt / r) / acc;
-        let fr = a + c;
-        let burnout_accel = acc / (1.0 - st.t_go_s / tau).max(MIN_DIRECTION_NORM);
-        let ct = (mu / (tgt * tgt) - v_tgt * v_tgt / tgt) / burnout_accel;
-        let frt = a + b * st.t_go_s + ct;
-        let frdot = (frt - fr) / st.t_go_s;
-        let ftheta = 1.0 - fr * fr / 2.0;
-        let fthetadot = -(fr * frdot);
-        let fthetadotdot = -frdot * frdot / 2.0;
-
-        let denom = ftheta + fthetadot * tau + fthetadotdot * tau * tau;
-        let t_rem = st.t_go_s - cycletime;
-        let dv = (dh / rbar
-            + ve * t_rem * (fthetadot + fthetadotdot * tau)
-            + fthetadotdot * ve * t_rem * t_rem / 2.0)
-            / denom;
-        let mut t_go = if denom.abs() > MIN_DIRECTION_NORM && dv.is_finite() {
-            tau * (1.0 - (-dv / ve).exp())
-        } else {
-            st.t_go_s
-        };
-        if !t_go.is_finite() || t_go <= 0.0 {
-            t_go = st.t_go_s;
-        }
-
-        // Re-solve A,B with the refreshed time-to-go (skip near burnout
-        // where the integrals become ill-conditioned).
-        if t_go >= 7.5 && t_go < tau {
-            if let Some((na, nb)) = peg_solve_ab(ve, tau, t_go, vr, r, tgt) {
-                a = na;
-                b = nb;
+            let fr = a + c;
+            let burnout_accel = acc / (1.0 - st.t_go_s / tau).max(MIN_DIRECTION_NORM);
+            let ct = (mu / (tgt * tgt) - v_tgt * v_tgt / tgt) / burnout_accel;
+            let frt = a + b * st.t_go_s + ct;
+            let frdot = (frt - fr) / st.t_go_s;
+            let ftheta = 1.0 - fr * fr / 2.0;
+            let fthetadot = -(fr * frdot);
+            let fthetadotdot = -frdot * frdot / 2.0;
+            let denom = ftheta + fthetadot * tau + fthetadotdot * tau * tau;
+            let dv = (dh / rbar
+                + ve * st.t_go_s * (fthetadot + fthetadotdot * tau)
+                + fthetadotdot * ve * st.t_go_s * st.t_go_s / 2.0)
+                / denom;
+            let mut t_go = if denom.abs() > MIN_DIRECTION_NORM && dv.is_finite() {
+                tau * (1.0 - (-dv / ve).exp())
+            } else {
+                st.t_go_s
+            };
+            if !t_go.is_finite() || t_go <= 0.0 {
+                t_go = st.t_go_s;
             }
+            // Re-solve A,B with the refreshed time-to-go (skip near
+            // burnout where the integrals become ill-conditioned).
+            if t_go >= 7.5 && t_go < tau {
+                if let Some((na, nb)) = peg_solve_ab(ve, tau, t_go, vr, r, tgt) {
+                    a = na;
+                    b = nb;
+                }
+            }
+            st.a = a;
+            st.b = b;
+            st.t_go_s = t_go;
+        } else {
+            // --- Between major cycles: count the time-to-go down in real
+            // time; reuse the solved steering (the live gravity term in
+            // `fr = A + C` is still applied below). ---
+            st.t_go_s = (st.t_go_s - cycletime).max(0.0);
         }
-        st.a = a;
-        st.b = b;
-        st.t_go_s = t_go;
+
+        // Robust cutoff time-to-go from the TANGENTIAL velocity deficit
+        // to circular speed, mapped through the rocket equation. The
+        // orbit is energetically complete when the horizontal (orbital)
+        // speed reaches circular; the radial velocity is the steering's
+        // job and must not re-open the cutoff once tangential speed
+        // passes circular (hence tangential-only, clamped at zero). This
+        // is independent of the fragile A/B steering expansion.
+        let v_circ = (mu / tgt).sqrt();
+        let dv_deficit = (v_circ - vt).max(0.0);
+        st.cutoff_t_go_s = if dv_deficit < ve * 0.999 {
+            tau * (1.0 - (-dv_deficit / ve).exp())
+        } else {
+            tau
+        };
         self.state.set(st);
 
-        // Commanded thrust unit vector: radial component fr = A + C,
-        // tangential (prograde) component sqrt(1 - fr²).
-        let fr_cmd = (a + c).clamp(-1.0, 1.0);
+        // Commanded thrust unit vector: radial component fr = A + C (live
+        // gravity/centrifugal term), clamped to the near-horizontal
+        // terminal regime; tangential (prograde) sqrt(1 - fr²).
+        let c = (mu / (r * r) - vt * vt / r) / acc;
+        let fr_cmd = (st.a + c).clamp(-PEG_MAX_RADIAL_THRUST, PEG_MAX_RADIAL_THRUST);
         let ftheta_cmd = (1.0 - fr_cmd * fr_cmd).max(0.0).sqrt();
         let forward = up * fr_cmd + downrange * ftheta_cmd;
         let q = reference_quaternion_from_body_z([forward.x, forward.y, forward.z])?;
@@ -792,6 +839,10 @@ impl AscentReferenceGenerator for PegAscentReference {
             q_body_to_eci_xyzw: q,
             body_rate_rad_s: None,
         })
+    }
+
+    fn time_to_go_s(&self) -> Option<f64> {
+        Some(self.state.get().cutoff_t_go_s)
     }
 }
 
@@ -972,6 +1023,13 @@ impl AscentReferenceGenerator for SequencedAscentReference {
             q_body_to_eci_xyzw: q,
             body_rate_rad_s: None,
         })
+    }
+
+    fn time_to_go_s(&self) -> Option<f64> {
+        // Meaningful only once the PEG phase has engaged; before that the
+        // inner generator reports its (large) initial estimate, which
+        // safely stays above any cutoff threshold.
+        self.peg.time_to_go_s()
     }
 }
 
@@ -3480,6 +3538,7 @@ mod tests {
             flight_path_angle_rad: 1.471_127_674_303_734_7,
             dynamic_pressure_pa: 0.0,
             mass_fraction: 1.0,
+            thrust_accel_m_s2: 0.0,
         }
     }
 
@@ -3570,6 +3629,7 @@ mod tests {
             flight_path_angle_rad: 0.0,
             dynamic_pressure_pa: 0.0,
             mass_fraction: 1.0,
+            thrust_accel_m_s2: 9.0, // sensed thrust acceleration
         };
         let peg = PegAscentReference::new(
             re + 200_000.0,  // insertion radius (= current)

@@ -15,7 +15,9 @@ use openbmp_physics::profile::{AscentReferenceGenerator, AscentState};
 use crate::error::{ControllerError, GuidanceError};
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
-use crate::topics::{PositionEstimate, ReferenceState, VehicleStatus};
+use crate::topics::{
+    GuidanceCutoff, ImuSample, PositionEstimate, ReferenceState, VehicleStatus,
+};
 
 /// Guidance configuration.
 #[derive(Clone, Debug)]
@@ -248,6 +250,15 @@ impl Job for AscentReferenceGuidance {
         let Some((position, _)) = ctx.bus.latest::<PositionEstimate>()? else {
             return Ok(());
         };
+        // Sensed thrust acceleration: the IMU specific-force magnitude
+        // (≈ thrust/mass in flight). PEG uses it to track the burn-time
+        // constant from the live state.
+        let thrust_accel_m_s2 = ctx
+            .bus
+            .latest::<ImuSample>()
+            .ok()
+            .flatten()
+            .map_or(0.0, |(s, _)| s.accel_m_s2.norm());
         let speed = position.velocity_eci_m_s.norm();
         let flight_path_angle_rad = if speed > 0.0 {
             (position.velocity_eci_m_s.z / speed)
@@ -272,6 +283,7 @@ impl Job for AscentReferenceGuidance {
             flight_path_angle_rad,
             dynamic_pressure_pa: 0.0,
             mass_fraction: 1.0,
+            thrust_accel_m_s2,
         };
         let reference = self
             .generator
@@ -290,6 +302,12 @@ impl Job for AscentReferenceGuidance {
             position_eci_m: position.position_eci_m,
             velocity_eci_m_s: position.velocity_eci_m_s,
         })?;
+        // Publish the guidance time-to-go (if the active method computes
+        // one) so the commander can schedule engine cutoff at insertion.
+        let _ = ctx.bus.publish(GuidanceCutoff {
+            time: ctx.clock.now(),
+            time_to_go_s: self.generator.time_to_go_s().unwrap_or(f64::INFINITY),
+        });
         Ok(())
     }
 }

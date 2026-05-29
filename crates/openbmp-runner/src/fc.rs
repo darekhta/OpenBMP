@@ -34,6 +34,7 @@ use openbmp_fc::topics::{
     ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, CommsRegionStatePublish,
     EffectorCommandSet, EngineCommandSet, EngineDemand, EstimatorMode,
     EstimatorRegimeRegionStatePublish, EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic,
+    GuidanceCutoff,
     FdirStatus, GnssSample, HealthRegionStatePublish, ImuSample, MagnetometerSample,
     MissionRegionStatePublish, MissionStatePublish, PositionEstimate, ReferenceState, SensorStatus,
     StarTrackerSample, VehicleStatus,
@@ -420,6 +421,7 @@ impl FcRunner {
         bus.register::<VehicleStatus>()?;
         bus.register::<FailsafeFlags>()?;
         bus.register::<ReferenceState>()?;
+        bus.register::<GuidanceCutoff>()?;
         bus.register::<ActuatorCommand>()?;
         bus.register::<AutopilotStatus>()?;
         bus.register::<EffectorCommandSet>()?;
