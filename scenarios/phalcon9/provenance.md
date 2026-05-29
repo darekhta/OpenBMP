@@ -101,8 +101,13 @@ This provenance record covers the following synthetic scenario files:
   full staged profile (stage-1 closed-loop ascent → MECO + booster
   jettison → ballistic coast to apogee → stage-2 PEG circularisation →
   orbit) reaches a near-circular, near-equatorial bound low Earth orbit:
-  perigee ~260 km × apogee ~313 km, eccentricity ~0.004, inclination
-  ~1.8° (verified from telemetry). Exercises per-phase ascent guidance
+  perigee ~255 km × apogee ~356 km, eccentricity ~0.008, inclination
+  ~1.8° (verified from telemetry). The ascent flies through an
+  atmosphere (US Standard 1976) under a synthetic drag deck
+  ([`data/aero/phalcon9-drag.toml`](../../data/aero/phalcon9-drag.toml)),
+  with a pre-planned max-Q throttle bucket (80% through the ~6-16 km
+  altitude window) that limits peak air-relative dynamic pressure
+  (~29 → ~27 kPa); MECO is at 7300 m/s to recover the drag/throttle loss. Exercises per-phase ascent guidance
   (closed-loop on the booster, Powered Explicit Guidance on the upper
   stage), engine-moment-about-CG rigid-body dynamics across a CG-shifting
   staging event, and a high-dynamics EKF tuning (raised velocity/position

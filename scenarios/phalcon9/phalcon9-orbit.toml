@@ -11,6 +11,11 @@
 #   1. powered_ascent  - stage-1 9-engine cluster; the closed-loop
 #                        insertion law lofts the stack toward the
 #                        insertion radius, building horizontal velocity.
+#   1a. max_q          - through the max-Q altitude window (~6-16 km) the
+#                        cluster throttles to 80% (a pre-planned open-loop
+#                        throttle bucket) to limit the structural load,
+#                        then `ascent_hi` returns to full throttle. Same
+#                        closed-loop steering throughout.
 #   2. coast           - MECO-1 at velocity V1; stage-1 (`lower`)
 #                        jettisoned; ballistic climb to apogee.
 #   3. circularize     - at apogee the stage-2 vacuum engine ignites and
@@ -262,6 +267,16 @@ label           = "stage-1 closed-loop ascent (TVC)"
 allowed_engines = ["eng_s1_0", "eng_s1_1", "eng_s1_2", "eng_s1_3", "eng_s1_4", "eng_s1_5", "eng_s1_6", "eng_s1_7", "eng_s1_8"]
 
 [[mission.phases]]
+id              = "mission.phases.max_q"
+label           = "max-Q throttle window"
+allowed_engines = ["eng_s1_0", "eng_s1_1", "eng_s1_2", "eng_s1_3", "eng_s1_4", "eng_s1_5", "eng_s1_6", "eng_s1_7", "eng_s1_8"]
+
+[[mission.phases]]
+id              = "mission.phases.ascent_hi"
+label           = "stage-1 ascent above max-Q"
+allowed_engines = ["eng_s1_0", "eng_s1_1", "eng_s1_2", "eng_s1_3", "eng_s1_4", "eng_s1_5", "eng_s1_6", "eng_s1_7", "eng_s1_8"]
+
+[[mission.phases]]
 id              = "mission.phases.coast"
 label           = "post-MECO coast to apogee (booster jettisoned)"
 allowed_engines = []
@@ -324,18 +339,30 @@ id = "ign_vac"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_vac", command = { throttle_unit = 0.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
+[[mission.events]]
+id      = "max_q_enter"
+once    = false
+trigger = { kind = "at_altitude_ascending", altitude_m = 6_000.0 }
+action  = { kind = "emit_telemetry_marker", tag = "max_q_enter" }
+
+[[mission.events]]
+id      = "max_q_exit"
+once    = false
+trigger = { kind = "at_altitude_ascending", altitude_m = 16_000.0 }
+action  = { kind = "emit_telemetry_marker", tag = "max_q_exit" }
+
 # MECO-1: end the stage-1 burn at V1 (sets the coast apogee).
 [[mission.events]]
 id      = "meco1"
 once    = true
-trigger = { kind = "at_velocity", velocity_m_s = 7250.0, falling = false }
+trigger = { kind = "at_velocity", velocity_m_s = 7300.0, falling = false }
 action  = { kind = "emit_telemetry_marker", tag = "meco1" }
 
 # Stage separation: jettison the spent booster at MECO-1.
 [[mission.events]]
 id      = "sep"
 once    = true
-trigger = { kind = "at_velocity", velocity_m_s = 7250.0, falling = false }
+trigger = { kind = "at_velocity", velocity_m_s = 7300.0, falling = false }
 action  = { kind = "jettison_stage", body = "lower" }
 
 # Apogee marker: drives the coast -> circularize transition. A commander
@@ -357,6 +384,14 @@ action  = { kind = "emit_telemetry_marker", tag = "seco" }
 
 [[mission.transitions]]
 from  = "mission.phases.powered_ascent"
+to    = "mission.phases.max_q"
+event = "max_q_enter"
+[[mission.transitions]]
+from  = "mission.phases.max_q"
+to    = "mission.phases.ascent_hi"
+event = "max_q_exit"
+[[mission.transitions]]
+from  = "mission.phases.ascent_hi"
 to    = "mission.phases.coast"
 event = "meco1"
 [[mission.transitions]]
@@ -387,6 +422,24 @@ frame_budget_us  = 4000
 # Stage-1 booster: closed-loop insertion law lofts toward the insertion
 # radius (proven to build a good coast apogee).
 [fc.ascent_reference_by_phase."mission.phases.powered_ascent"]
+method             = "closed_loop_insertion"
+insertion_radius_m = 6_625_000.0
+k_alt_rad_per_m    = 1.6e-5
+k_vr_rad_per_m_s   = 2.0e-3
+theta_min_rad      = -0.70
+theta_max_rad      = 1.45
+downrange_axis_eci = [0.0, 1.0, 0.0]
+
+[fc.ascent_reference_by_phase."mission.phases.max_q"]
+method             = "closed_loop_insertion"
+insertion_radius_m = 6_625_000.0
+k_alt_rad_per_m    = 1.6e-5
+k_vr_rad_per_m_s   = 2.0e-3
+theta_min_rad      = -0.70
+theta_max_rad      = 1.45
+downrange_axis_eci = [0.0, 1.0, 0.0]
+
+[fc.ascent_reference_by_phase."mission.phases.ascent_hi"]
 method             = "closed_loop_insertion"
 insertion_radius_m = 6_625_000.0
 k_alt_rad_per_m    = 1.6e-5
@@ -443,6 +496,24 @@ innovation_burst_count  = 5
 failsafe_burst_count   = 5
 
 [fc.gain_schedule."mission.phases.powered_ascent"]
+rate_kp            = [0.2, 0.2, 0.1]
+rate_kd            = [0.05, 0.05, 0.02]
+attitude_kp        = [0.7, 0.7, 0.4]
+elevator_limit_rad = 0.087
+aileron_limit_rad  = 0.087
+rudder_limit_rad   = 0.087
+throttle_baseline  = 1.0
+
+[fc.gain_schedule."mission.phases.max_q"]
+rate_kp            = [0.2, 0.2, 0.1]
+rate_kd            = [0.05, 0.05, 0.02]
+attitude_kp        = [0.7, 0.7, 0.4]
+elevator_limit_rad = 0.087
+aileron_limit_rad  = 0.087
+rudder_limit_rad   = 0.087
+throttle_baseline  = 0.80
+
+[fc.gain_schedule."mission.phases.ascent_hi"]
 rate_kp            = [0.2, 0.2, 0.1]
 rate_kd            = [0.05, 0.05, 0.02]
 attitude_kp        = [0.7, 0.7, 0.4]
