@@ -66,6 +66,25 @@ fn vertical_climb_rate(
     }
 }
 
+/// Geometric altitude (m) for the event-scalar altitude detectors,
+/// frame-aware to match [`vertical_climb_rate`]. For a geocentric
+/// configuration (`|r|` beyond any flat-earth launch radius) it is the
+/// height above the mean spherical Earth, `|r| - R⊕`; for a near-origin
+/// local-frame launch it is the +z component (byte-identical to the legacy
+/// behaviour). Without this an equatorial launch — which stays near `z = 0`
+/// the whole ascent — would report ~0 m altitude all the way to orbit, so
+/// `at_altitude` triggers (e.g. a max-Q throttle bucket) would never fire.
+fn geometric_altitude_m(position_eci: &nalgebra::Vector3<f64>) -> f64 {
+    const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
+    const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
+    let r = position_eci.norm();
+    if r > GEOCENTRIC_RADIUS_THRESHOLD_M {
+        (r - EARTH_MEAN_RADIUS_M).max(0.0)
+    } else {
+        position_eci.z
+    }
+}
+
 const EVENT_SCALARS_MODEL_ID: ModelId = ModelId::new(0);
 
 fn dynamic_pressure_pa_from_density_velocity(
@@ -557,7 +576,7 @@ where
                 })?;
                 self.previous_event_scalars = Some(crate::events::EventScalars {
                     time_s: self.state.time.as_seconds(),
-                    altitude_m: self.state.position.vector.z,
+                    altitude_m: geometric_altitude_m(&self.state.position.vector),
                     vertical_velocity_m_s: vertical_climb_rate(&self.state.position.vector, &self.state.velocity.vector),
                     velocity_m_s: self.state.velocity.vector.norm(),
                     mass_fraction: self.state.mass.get::<kilogram>() / self.initial_mass_kg,
@@ -580,7 +599,7 @@ where
             })?;
             let scalars = crate::events::EventScalars {
                 time_s: canonical_time_s,
-                altitude_m: new_state.position.vector.z,
+                altitude_m: geometric_altitude_m(&new_state.position.vector),
                 vertical_velocity_m_s: vertical_climb_rate(&new_state.position.vector, &new_state.velocity.vector),
                 velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass.get::<kilogram>() / self.initial_mass_kg,
@@ -1592,7 +1611,7 @@ where
                 })?;
                 self.previous_event_scalars = Some(crate::events::EventScalars {
                     time_s: self.state.time.as_seconds(),
-                    altitude_m: self.state.position.vector.z,
+                    altitude_m: geometric_altitude_m(&self.state.position.vector),
                     vertical_velocity_m_s: vertical_climb_rate(&self.state.position.vector, &self.state.velocity.vector),
                     velocity_m_s: self.state.velocity.vector.norm(),
                     mass_fraction: self.state.mass_props.mass.get::<kilogram>()
@@ -1625,7 +1644,7 @@ where
             })?;
             let scalars = crate::events::EventScalars {
                 time_s: canonical_time_s,
-                altitude_m: new_state.position.vector.z,
+                altitude_m: geometric_altitude_m(&new_state.position.vector),
                 vertical_velocity_m_s: vertical_climb_rate(&new_state.position.vector, &new_state.velocity.vector),
                 velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass_props.mass.get::<kilogram>() / self.initial_mass_kg,
