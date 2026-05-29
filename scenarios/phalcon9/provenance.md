@@ -81,6 +81,18 @@ This provenance record covers the following synthetic scenario files:
   for the mission profile and the navigation fixes (EGM2008 EKF gravity,
   launch-state seed, position/velocity process noise) that make the long
   coast and precise circularisation cutoff possible.
+- `scenarios/phalcon9/phalcon9-orbit.toml` — *two-stage* closed-loop TVC
+  orbital insertion under EGM2008 gravity. A full staged profile
+  (stage-1 closed-loop ascent → MECO + booster jettison → ballistic coast
+  to apogee → stage-2 PEG circularisation → orbit) reaches a near-circular
+  bound low Earth orbit: perigee ~259 km × apogee ~306 km, eccentricity
+  ~0.004 (verified from telemetry). Exercises per-phase ascent guidance
+  (closed-loop on the booster, Powered Explicit Guidance on the upper
+  stage), engine-moment-about-CG rigid-body dynamics across a CG-shifting
+  staging event, and a high-dynamics EKF tuning (raised velocity/position
+  process noise) that keeps GNSS fused through the high-thrust phases so
+  the apogee detection and PEG cutoff are accurate. See the scenario
+  header for the full mission profile.
 
 All numeric content in these files is synthetic / rounded /
 order-of-magnitude and contains no real fielded-vehicle parameter set.
