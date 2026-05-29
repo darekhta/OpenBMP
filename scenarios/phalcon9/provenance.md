@@ -71,9 +71,21 @@ Earth-rotation velocity, leaving only a small circularisation deficit).
 
 ## Validation status
 
-`validation = "experimental"`. This is a demonstration trajectory, not a
-verified or benchmarked result. It is **not** suitable as a reference,
-golden, or validation case for any real vehicle.
+`phalcon9-orbit` is labelled `validation = "validated-toy"`: its insertion
+is checked against first-principles **orbital-mechanics invariants** by
+`crates/openbmp-cli/tests/phalcon9_orbit_validation.rs` — vis-viva bound
+near-circular LEO (ε < 0, e < 0.02, perigee 200–500 km, |v| 7–8.5 km/s);
+axial angular momentum `(r×v)_z` conserved (< 1e-3 relative drift) on the
+post-SECO coast under axisymmetric EGM2008 gravity; and two-body specific
+energy conserved (< 2e-2, J2-level oscillation only). These are analytic,
+open, physics-based references — **no real-vehicle data and no fielded
+trajectory** are used; the vehicle remains a synthetic class anchor. The
+other scenarios in this directory remain `validation = "experimental"`.
+
+This validates that the closed-loop ascent + PEG cutoff genuinely achieves
+a sustainable LEO insertion and that the integrator/gravity model conserve
+the invariants — it is **not** a benchmark against, reference for, or
+golden case for any real vehicle.
 
 ## Files
 

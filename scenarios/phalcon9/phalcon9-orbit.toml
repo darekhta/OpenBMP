@@ -49,8 +49,8 @@ openbmp.scenario = 3
 [meta]
 name        = "phalcon9-orbit"
 description = "Phalcon-9 synthetic two-stage closed-loop orbital insertion (closed-loop booster ascent + PEG upper-stage insertion). Synthetic; not a benchmark."
-validation  = "experimental"
-provenance  = "Wholly synthetic two-stage kerolox vehicle; rounded class figures, not validated against any fielded vehicle. See scenarios/phalcon9/provenance.md."
+validation  = "validated-toy"
+provenance  = "Wholly synthetic two-stage kerolox vehicle; rounded class figures, not validated against any fielded vehicle. The INSERTION is validated against first-principles orbital-mechanics invariants (vis-viva bound near-circular LEO; axial angular momentum + specific energy conserved on the coast) by crates/openbmp-cli/tests/phalcon9_orbit_validation.rs — analytic references only, no real-vehicle data. See scenarios/phalcon9/provenance.md."
 
 [time]
 start_s = 0.0
