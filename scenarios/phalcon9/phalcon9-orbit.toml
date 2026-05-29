@@ -20,15 +20,13 @@
 #                        jettisoned; ballistic climb to apogee.
 #   3. circularize     - at apogee the stage-2 vacuum engine ignites and
 #                        Powered Explicit Guidance (PEG) trims the orbit
-#                        in its near-horizontal terminal regime. The
-#                        coast-apogee deficit is small (the eastward
-#                        launch already banks ~465 m/s of Earth-rotation
-#                        velocity), so the stage-2 store is sized to a
-#                        propellant-limited insertion: PEG steers and the
-#                        stage burns to depletion right at circular
-#                        velocity. The PEG time-to-go cutoff (`seco`) is
-#                        retained as an overshoot backstop.
-#   4. orbit           - engines idle.
+#                        in its near-horizontal terminal regime. PEG steers
+#                        and the `seco` event cuts the engine on the PEG
+#                        time-to-go (~0.5 s short of circular), leaving
+#                        propellant margin — a CONTROLLED cutoff, not a
+#                        propellant-limited burn-to-depletion.
+#   4. orbit           - engines idle (eng_vac gated to throttle 0 via
+#                        [fc.phase_authority]; see that block).
 #
 # Per-phase guidance ([fc.ascent_reference_by_phase]): closed-loop
 # insertion on the booster, PEG on the upper stage. Navigation is an
@@ -289,7 +287,12 @@ allowed_engines = ["eng_vac"]
 [[mission.phases]]
 id              = "mission.phases.orbit"
 label           = "orbital insertion (engines idle)"
-allowed_engines = []
+# eng_vac is listed here so the mixer ADDRESSES it (sends a command), but
+# [fc.phase_authority] sets engines_allowed=false for this phase so that
+# command is gated to throttle 0 — i.e. SECO actively cuts the engine.
+# (With an empty list the mixer sends no command and the engine would hold
+# its last circularize throttle and burn on to depletion.)
+allowed_engines = ["eng_vac"]
 
 # Stage-1 ignition: light the cluster just after t=0.
 [[mission.events]]
@@ -379,7 +382,7 @@ action  = { kind = "emit_telemetry_marker", tag = "apogee" }
 [[mission.events]]
 id      = "seco"
 once    = true
-trigger = { kind = "at_guidance_cutoff", time_to_go_s = 6.0 }
+trigger = { kind = "at_guidance_cutoff", time_to_go_s = 0.5 }
 action  = { kind = "emit_telemetry_marker", tag = "seco" }
 
 [[mission.transitions]]

@@ -101,8 +101,10 @@ This provenance record covers the following synthetic scenario files:
   full staged profile (stage-1 closed-loop ascent → MECO + booster
   jettison → ballistic coast to apogee → stage-2 PEG circularisation →
   orbit) reaches a near-circular, near-equatorial bound low Earth orbit:
-  perigee ~255 km × apogee ~356 km, eccentricity ~0.008, inclination
-  ~1.8° (verified from telemetry). The ascent flies through an
+  perigee ~298 km × apogee ~357 km, eccentricity ~0.004, inclination
+  ~1.8° (verified from telemetry). The upper stage is cut by a CONTROLLED
+  PEG time-to-go cutoff (`seco`, ~0.5 s short of circular) with propellant
+  margin remaining — not a burn-to-depletion. The ascent flies through an
   atmosphere (US Standard 1976) under a synthetic drag deck
   ([`data/aero/phalcon9-drag.toml`](../../data/aero/phalcon9-drag.toml)),
   with a pre-planned max-Q throttle bucket (80% through the ~6-16 km
@@ -119,9 +121,11 @@ This provenance record covers the following synthetic scenario files:
   (and thus the thrust) out of plane; the tactical IMU's gyro holds
   attitude through the powered ascent. The eastward launch banks the
   Earth-rotation surface speed (~465 m/s) as initial inertial velocity,
-  leaving a small coast-apogee deficit, so the stage-2 store is sized to
-  a propellant-limited insertion (PEG steers; the stage burns to depletion
-  at circular velocity). See the scenario header for the full profile.
+  leaving a small coast-apogee deficit. PEG steers the upper stage and the
+  `seco` PEG time-to-go cutoff (gated through [fc.phase_authority] so the
+  orbit phase throttles eng_vac to zero) cuts the engine ~0.5 s short of
+  circular with propellant margin — a controlled cutoff. See the scenario
+  header for the full profile.
 
 All numeric content in these files is synthetic / rounded /
 order-of-magnitude and contains no real fielded-vehicle parameter set.
