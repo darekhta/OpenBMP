@@ -783,7 +783,10 @@ and carries no real parameter content. The reference example is
 [`scenarios/phalcon9/`](../scenarios/phalcon9/) — a synthetic medium-lift
 two-stage kerolox launcher used to demonstrate the two-stage powered-ascent
 path (engine→tank propellant coupling, stage separation, recovery
-footprint). The distinction this section draws is deliberate: the proscribed
+footprint) through to a full closed-loop **orbital insertion**: an
+equatorial due-east launch on a rotating Earth that reaches a clean
+near-circular low orbit under EKF navigation + closed-loop / PEG guidance
+(`phalcon9-orbit`). The distinction this section draws is deliberate: the proscribed
 thing is **real parameter content and operational framing**, not a
 class-evoking string.
 
