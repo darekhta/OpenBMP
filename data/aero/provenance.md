@@ -441,3 +441,64 @@ safety_review:
     purely for cross-tool validation against a published
     open-source rocket-trajectory simulator.
 ```
+
+## `data/aero/phalcon9-drag.toml`
+
+```yaml
+dataset_id:       openbmp.aero.phalcon9_drag.v1
+files:
+  - data/aero/phalcon9-drag.toml
+source_class:     synthetic-openbmp
+source_title:     >-
+  Synthetic OpenBMP-authored axial-drag deck for the Phalcon-9
+  demonstration launch vehicle — a wholly synthetic, rounded
+  order-of-magnitude Cd(Mach) polar for a ~3.7 m-diameter medium-lift
+  kerolox launcher. Drag-only at zero angle of attack (CN = CM = 0); a
+  smooth subsonic-to-hypersonic Cd curve with the usual transonic drag
+  rise (~M1). Referenced to the body cross-section area
+  π·(3.7/2)² ≈ 10.75 m². NOT a fielded-vehicle deck and not validated
+  against any real drag data.
+source_authors:   OpenBMP (Dmitri Arekhta)
+source_id:        synthetic; not derived from any fielded vehicle
+source_url:       https://github.com/openbmp/openbmp/blob/main/data/aero/phalcon9-drag.toml
+publication_date: 2026-05-29
+methodology_reference: >-
+  Hand-chosen class-anchor Cd(Mach) values for a medium-lift launcher
+  (Cd ≈ 0.30 subsonic, ~0.65 transonic peak at M1, decaying to ~0.22
+  hypersonic), referenced to the body cross-section. CN = CM = 0 (the
+  ascent flies a near-zero-AoA gravity turn, so only axial drag is
+  modelled). Order-of-magnitude figures, not a build-up against any
+  fielded geometry.
+methodology_urls:
+  - https://github.com/openbmp/openbmp/blob/main/scenarios/phalcon9/provenance.md
+license_or_terms: >-
+  Synthetic OpenBMP-authored content; CC0 / public domain. No
+  third-party data is incorporated.
+source_hash_sha256: 5aace6c7185d536bd09dae8d2640b3a0c15e35527ca577dd5333e069fb7dcec2
+retrieved_utc:    2026-05-29
+transformation:
+  method: >-
+    Hand-authored class-anchor values written directly into the TOML
+    deck file; no transcription from a published deck and no generator
+    script. The Cd(Mach) curve is a rounded illustrative polar.
+  script: none
+  script_hash_sha256: not-applicable; values are hand-authored class anchors
+verification:
+  method: >-
+    Exercised end-to-end by the phalcon9-orbit scenario (atmospheric
+    two-stage ascent under DeckDragForceAdapter); the scenario pins
+    this deck via deck_sha256 so any edit to the values is caught at
+    load time.
+  test:   scenarios/phalcon9/phalcon9-orbit.toml (deck_sha256 pin)
+  tolerance: >-
+    SHA-256 equality between the deck file and the scenario's
+    deck_sha256 pin.
+validation_status: experimental
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Wholly synthetic, rounded order-of-magnitude drag polar for a
+    clearly-labelled synthetic demonstration launcher. No
+    export-controlled, fielded, or manufacturer-proprietary content.
+```

@@ -508,7 +508,7 @@ impl<Atm: AtmosphereModel> ForceModel<PointMassState> for DeckDragForceAdapter<A
             &self.atmosphere,
             self.model_id,
             velocity_eci,
-            ctx.state.position.vector.z,
+            geometric_altitude_m(ctx.state.position.vector),
             ctx.time,
             ctx.effector_actuals,
         )
@@ -641,7 +641,7 @@ impl<M: AeroMethod, Atm: AtmosphereModel> ForceModel<PointMassState>
             &self.atmosphere,
             self.model_id,
             velocity_eci,
-            ctx.state.position.vector.z,
+            geometric_altitude_m(ctx.state.position.vector),
             ctx.time,
             self.reference_length_m,
             false,
@@ -691,7 +691,7 @@ impl<M: AeroMethod, Atm: AtmosphereModel> ForceModel<RigidBodyState>
             &self.atmosphere,
             self.model_id,
             velocity_body,
-            ctx.state.position.vector.z,
+            geometric_altitude_m(ctx.state.position.vector),
             ctx.time,
             self.reference_length_m,
             true,
@@ -804,7 +804,7 @@ impl<M: AeroMethod, Atm: AtmosphereModel> MomentModel<RigidBodyState>
             &self.atmosphere,
             self.model_id,
             velocity_body,
-            ctx.state.position.vector.z,
+            geometric_altitude_m(ctx.state.position.vector),
             ctx.time,
             self.reference_length_m,
             true,
@@ -916,6 +916,28 @@ fn aero_context_from_velocity<Atm: AtmosphereModel>(
 /// Schema-1 decks have `effector_axis_names() == []`, the loop is
 /// zero-iteration, and the lookup ignores the empty map — the
 /// schema-1 path is byte-identical to pre-3.5.
+/// Geometric altitude (m) for atmosphere lookups, frame-aware.
+///
+/// For a near-origin local-frame launch (sounding rocket, drop test) the
+/// vehicle climbs in `+z`, so `position.z` is the geometric altitude
+/// (legacy behaviour). For a geocentric configuration — position well
+/// beyond any flat-earth launch radius — altitude is the height above the
+/// mean spherical Earth `|r| - R⊕`, so an equatorial ascent that stays
+/// near `z = 0` no longer reads sea-level density all the way to orbit.
+/// The 1e6 m threshold and 6371 km mean radius match the geocentric/local
+/// split used by `openbmp-runner`'s atmosphere altitude, `openbmp-sim`'s
+/// `vertical_climb_rate`, and the FC commander.
+fn geometric_altitude_m(position_m: Vector3<f64>) -> f64 {
+    const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
+    const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
+    let rn = position_m.norm();
+    if rn > GEOCENTRIC_RADIUS_THRESHOLD_M {
+        (rn - EARTH_MEAN_RADIUS_M).max(0.0)
+    } else {
+        position_m.z.max(0.0)
+    }
+}
+
 fn compute_axial_drag<Atm: AtmosphereModel>(
     deck: &AeroDeck,
     atmosphere: &Atm,
@@ -999,7 +1021,7 @@ fn compute_rigid_body_deck_force<Atm: AtmosphereModel>(
         return Ok(Vector3::zeros());
     }
     let speed = speed_sq.sqrt();
-    let altitude_m = state.position.vector.z.max(0.0);
+    let altitude_m = geometric_altitude_m(state.position.vector);
     let atm_sample =
         atmosphere
             .sample(altitude_m, time)
@@ -2197,7 +2219,7 @@ impl<Atm: AtmosphereModel> ForceModel<PointMassState> for RecoveryRackForceAdapt
             self.model_id,
             ctx.environment
                 .air_relative_velocity_eci_m_s(ctx.state.velocity.vector),
-            ctx.state.position.vector.z,
+            geometric_altitude_m(ctx.state.position.vector),
             ctx.time,
             ctx.active_body,
             &self.recovery_owners,
@@ -2221,7 +2243,7 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for RecoveryRackForceAdapt
             self.model_id,
             ctx.environment
                 .air_relative_velocity_eci_m_s(ctx.state.velocity.vector),
-            ctx.state.position.vector.z,
+            geometric_altitude_m(ctx.state.position.vector),
             ctx.time,
             ctx.active_body,
             &self.recovery_owners,

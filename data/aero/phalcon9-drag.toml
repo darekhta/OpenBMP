@@ -1,0 +1,34 @@
+# Synthetic axial-drag deck for the Phalcon-9 demonstration launch
+# vehicle (see scenarios/phalcon9/provenance.md). WHOLLY SYNTHETIC,
+# order-of-magnitude class figures for a ~3.7 m-diameter medium-lift
+# kerolox launcher — NOT a fielded-vehicle aero deck and not validated
+# against any real drag data.
+#
+# Drag-only buildup at zero angle of attack (the ascent flies a
+# near-zero-AoA gravity turn): cn = cm = 0, and a smooth Cd(Mach) polar
+# with the usual transonic drag rise (~M1) decaying through the
+# supersonic/hypersonic regime. Coefficients are referenced to the body
+# cross-section area, π·(3.7/2)² ≈ 10.75 m².
+
+openbmp.aero_deck = 1
+
+reference.area_m2  = 10.752  # π · (3.7 m / 2)² cross-section
+reference.length_m = 3.7     # body diameter
+
+provenance    = "synthetic OpenBMP-authored class-anchor drag polar for the Phalcon-9 demonstration launcher; rounded order-of-magnitude Cd(Mach) with a transonic rise, not a fielded or validated deck"
+validation    = "experimental"
+extrapolation = "clamp"
+
+[grid]
+mach      = [0.0, 0.3, 0.8, 1.0, 1.2, 2.0, 3.0, 5.0, 8.0, 15.0, 25.0]
+alpha_deg = [0.0]
+beta_deg  = [0.0]
+
+[coefficients.cn]
+data = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+[coefficients.cd]
+data = [0.30, 0.30, 0.40, 0.65, 0.60, 0.45, 0.35, 0.28, 0.24, 0.22, 0.22]
+
+[coefficients.cm]
+data = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

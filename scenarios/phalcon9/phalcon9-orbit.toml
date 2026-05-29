@@ -196,9 +196,16 @@ propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s2_prop", feed = "regulat
 [environment]
 frame_profile = "wgs84-uniform-rotation"
 gravity       = "egm2008"
-atmosphere    = "none"
+atmosphere    = "us_standard_1976"
 wind          = "none"
 magnetic      = "wmm_2025"
+
+[atmosphere]
+# US Standard Atmosphere 1976 (0-86 km); zero density above the ceiling
+# (the exoatmospheric coast/insertion sees no drag). The aero altitude is
+# geocentric (|r| - R_earth), so the equatorial ascent climbs out of the
+# atmosphere correctly rather than reading sea level the whole way up.
+kind = "us_standard_1976"
 
 [frames]
 profile = "wgs84-uniform-rotation"
@@ -210,7 +217,17 @@ height_m      = 0.0
 source        = "Synthetic equatorial launch site (lat 0, lon 0) for the due-east demo; not a real range."
 
 [forces]
-models = ["gravity", "thrust"]
+models = ["gravity", "thrust", "aero"]
+
+[aero]
+# Synthetic axial-drag deck (Cd vs Mach at 0 AoA). See the deck header and
+# data/aero/provenance.md. Pinned by SHA-256 so edits are caught at load.
+# Mounted on the booster (`lower`): the dense-atmosphere ascent happens
+# while the full stack is together; the booster is jettisoned near MECO at
+# high altitude where the remaining drag is negligible.
+deck        = "../../data/aero/phalcon9-drag.toml"
+deck_sha256 = "5aace6c7185d536bd09dae8d2640b3a0c15e35527ca577dd5333e069fb7dcec2"
+mounted_to  = "lower"
 
 [sensors.imu]
 kind = "imu"
@@ -311,14 +328,14 @@ action = { kind = "engine_command", id = "eng_vac", command = { throttle_unit = 
 [[mission.events]]
 id      = "meco1"
 once    = true
-trigger = { kind = "at_velocity", velocity_m_s = 7150.0, falling = false }
+trigger = { kind = "at_velocity", velocity_m_s = 7250.0, falling = false }
 action  = { kind = "emit_telemetry_marker", tag = "meco1" }
 
 # Stage separation: jettison the spent booster at MECO-1.
 [[mission.events]]
 id      = "sep"
 once    = true
-trigger = { kind = "at_velocity", velocity_m_s = 7150.0, falling = false }
+trigger = { kind = "at_velocity", velocity_m_s = 7250.0, falling = false }
 action  = { kind = "jettison_stage", body = "lower" }
 
 # Apogee marker: drives the coast -> circularize transition. A commander

@@ -389,37 +389,52 @@ impl BridgeSensor {
 }
 
 fn require_bridge_frame(document: &ScenarioDocument) -> Result<(), RunnerError> {
+    let has_barometer = document
+        .sensors
+        .as_ref()
+        .is_some_and(|sensors| sensors.values().any(|s| s.kind == "barometer"));
     bridge_frame_supported(
         &document.environment.frame_profile,
         &document.environment.atmosphere,
+        has_barometer,
     )
     .map_err(|what| RunnerError::UnsupportedScenario { what })
 }
 
 /// Pure decision for whether the FC sensor bridge supports a given
-/// `(frame_profile, atmosphere)` pair. Extracted from
-/// [`require_bridge_frame`] so the policy is unit-testable without
+/// `(frame_profile, atmosphere, has_barometer)` configuration. Extracted
+/// from [`require_bridge_frame`] so the policy is unit-testable without
 /// constructing a full [`ScenarioDocument`].
 ///
 /// `wgs84-uniform-rotation` differs from `toy-fixed-earth` only by a
 /// rotation of the ECEF frame about the inertial +z axis. The kernel
 /// integrates the dynamics in ECI and the bridge derives sensor truth
-/// entirely in ECI (the IMU specific force is `d/dt v_eci - g_eci`; GNSS
-/// and magnetometer truth are ECI quantities), so neither the dynamics nor
-/// the sensor truth depend on the Earth-rotation phase. The rotation only
-/// becomes physically active through the *atmosphere* (the air co-rotates,
-/// setting the relative wind) and ground-relative measurements. Until that
-/// co-rotating-air path is wired through the bridge, accept the rotating
-/// frame for vacuum flight only; the Earth-rotation launch boost is then
-/// carried entirely by the scenario's initial co-rotation velocity.
-fn bridge_frame_supported(frame_profile: &str, atmosphere: &str) -> Result<(), String> {
+/// entirely in ECI: the IMU specific force is `d/dt v_eci - g_eci` (so it
+/// senses atmospheric drag correctly through the truth velocity), and GNSS
+/// and magnetometer truth are ECI quantities. None of those depend on the
+/// Earth-rotation phase. The ONE frame-dependent sensor-truth path in the
+/// bridge is the **barometer**: its altitude is taken as `position.z`
+/// (a flat-earth reading) which is wrong on a geocentric/rotating frame.
+///
+/// So `wgs84-uniform-rotation` is supported either in vacuum
+/// (`atmosphere = "none"`) or, in atmosphere, when the scenario carries no
+/// barometer (the launch boost is carried by the initial co-rotation
+/// velocity, and aero drag is applied kernel-side with a frame-aware
+/// geocentric altitude). Atmospheric flight WITH a barometer on a rotating
+/// frame still needs the bridge baro altitude made geocentric (a follow-up),
+/// so it stays rejected.
+fn bridge_frame_supported(
+    frame_profile: &str,
+    atmosphere: &str,
+    has_barometer: bool,
+) -> Result<(), String> {
     match frame_profile {
         "toy-fixed-earth" => Ok(()),
-        "wgs84-uniform-rotation" if atmosphere == "none" => Ok(()),
+        "wgs84-uniform-rotation" if atmosphere == "none" || !has_barometer => Ok(()),
         "wgs84-uniform-rotation" => Err(
-            "[fc] bridge supports frame_profile = \"wgs84-uniform-rotation\" only for \
-             atmosphere = \"none\" (atmospheric flight on a rotating frame needs the \
-             co-rotating-air bridge)"
+            "[fc] bridge supports frame_profile = \"wgs84-uniform-rotation\" with an \
+             atmosphere only when no barometer is present (the bridge barometer altitude \
+             is a flat-earth position.z reading; a geocentric baro altitude is a follow-up)"
                 .to_owned(),
         ),
         other => Err(format!(
@@ -1001,24 +1016,27 @@ estimator = "ekf"
     }
 
     #[test]
-    fn bridge_frame_policy_accepts_rotating_frame_only_in_vacuum() {
-        // toy-fixed-earth is always supported.
-        assert!(bridge_frame_supported("toy-fixed-earth", "none").is_ok());
-        assert!(bridge_frame_supported("toy-fixed-earth", "us_standard_1976").is_ok());
+    fn bridge_frame_policy_allows_rotating_frame_without_barometer() {
+        // toy-fixed-earth is always supported, with or without a baro.
+        assert!(bridge_frame_supported("toy-fixed-earth", "none", false).is_ok());
+        assert!(bridge_frame_supported("toy-fixed-earth", "us_standard_1976", true).is_ok());
 
-        // wgs84-uniform-rotation is supported for vacuum flight (the
-        // rotation only changes the ECI dynamics through the initial
-        // co-rotation velocity, which the scenario supplies).
-        assert!(bridge_frame_supported("wgs84-uniform-rotation", "none").is_ok());
+        // wgs84-uniform-rotation in vacuum is fine regardless of baro.
+        assert!(bridge_frame_supported("wgs84-uniform-rotation", "none", false).is_ok());
+        assert!(bridge_frame_supported("wgs84-uniform-rotation", "none", true).is_ok());
 
-        // ...but not yet with an atmosphere: the co-rotating-air relative
-        // wind is not wired through the bridge.
-        let err = bridge_frame_supported("wgs84-uniform-rotation", "us_standard_1976")
-            .expect_err("rotating frame + atmosphere is rejected");
-        assert!(err.contains("co-rotating-air"), "unexpected message: {err}");
+        // wgs84-uniform-rotation + atmosphere is supported when there is no
+        // barometer (IMU senses drag via specific force; aero is kernel-side
+        // with a frame-aware altitude).
+        assert!(bridge_frame_supported("wgs84-uniform-rotation", "us_standard_1976", false).is_ok());
+
+        // ...but rejected with a barometer (bridge baro altitude is flat z).
+        let err = bridge_frame_supported("wgs84-uniform-rotation", "us_standard_1976", true)
+            .expect_err("rotating frame + atmosphere + barometer is rejected");
+        assert!(err.contains("barometer"), "unexpected message: {err}");
 
         // Frames the bridge cannot derive ECI sensor truth for are rejected.
-        let err = bridge_frame_supported("iers-tabulated", "none")
+        let err = bridge_frame_supported("iers-tabulated", "none", false)
             .expect_err("iers-tabulated is rejected");
         assert!(err.contains("toy-fixed-earth"), "unexpected message: {err}");
     }
