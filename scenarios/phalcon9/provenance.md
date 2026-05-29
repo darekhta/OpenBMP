@@ -101,25 +101,28 @@ This provenance record covers the following synthetic scenario files:
   full staged profile (stage-1 closed-loop ascent → MECO + booster
   jettison → ballistic coast to apogee → stage-2 PEG circularisation →
   orbit) reaches a near-circular, near-equatorial bound low Earth orbit:
-  perigee ~298 km × apogee ~357 km, eccentricity ~0.004, inclination
+  perigee ~334 km × apogee ~381 km, eccentricity ~0.004, inclination
   ~1.8° (verified from telemetry). The upper stage is cut by a CONTROLLED
   PEG time-to-go cutoff (`seco`, ~0.5 s short of circular) with propellant
   margin remaining — not a burn-to-depletion. The ascent flies through an
   atmosphere (US Standard 1976) under a synthetic drag deck
   ([`data/aero/phalcon9-drag.toml`](../../data/aero/phalcon9-drag.toml)),
-  with a pre-planned max-Q throttle bucket (80% through the ~6-16 km
-  altitude window) that limits peak air-relative dynamic pressure
-  (~29 → ~27 kPa); MECO is at 7300 m/s to recover the drag/throttle loss. Exercises per-phase ascent guidance
+  with CLOSED-LOOP max-Q load relief — the autopilot computes the real
+  dynamic pressure (actual density at the navigated geocentric altitude ×
+  air-relative speed²) and throttles down to hold it at the limit (peak q
+  held to ~26 kPa vs a ~29 kPa unconstrained peak); MECO is at 7270 m/s to
+  recover the drag/throttle loss. Exercises per-phase ascent guidance
   (closed-loop on the booster, Powered Explicit Guidance on the upper
   stage), engine-moment-about-CG rigid-body dynamics across a CG-shifting
-  staging event, and a high-dynamics EKF tuning (raised velocity/position
-  process noise) that keeps GNSS fused through the high-thrust phases.
-  Navigation uses a navigation-grade (tactical) IMU + GNSS and **no
-  magnetometer**: a single magnetometer cannot observe rotation about the
-  local field direction, which at an equatorial launch is the
-  orbital-plane normal, so a magnetometer drives the attitude estimate
-  (and thus the thrust) out of plane; the tactical IMU's gyro holds
-  attitude through the powered ascent. The eastward launch banks the
+  staging event, and an error-state EKF that gates GNSS as INDEPENDENT
+  position and velocity blocks (a velocity-innovation spike under thrust
+  rejects only velocity and never drops the position fix). Navigation uses
+  a navigation-grade (tactical) IMU + GNSS + a STAR TRACKER — an
+  independent full 3-DOF attitude fix the EKF fuses (update_star_tracker),
+  which observes rotation about every axis and so closes the off-pole
+  attitude-observability gap that a single magnetometer (unable to observe
+  rotation about the local field, the orbital-plane normal at an
+  equatorial launch) left open. The eastward launch banks the
   Earth-rotation surface speed (~465 m/s) as initial inertial velocity,
   leaving a small coast-apogee deficit. PEG steers the upper stage and the
   `seco` PEG time-to-go cutoff (gated through [fc.phase_authority] so the

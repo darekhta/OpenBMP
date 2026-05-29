@@ -136,6 +136,15 @@ pub struct AutopilotParams {
     /// to `0.0` (gimbal active immediately). Only consulted when
     /// `thrust_vector_control` is set.
     pub thrust_vector_settle_s: f64,
+    /// Maximum dynamic pressure (Pa) for closed-loop max-Q load relief.
+    /// When the real dynamic pressure q = ½·ρ(h)·|v_air|² (actual
+    /// atmospheric density at the navigated geocentric altitude and the
+    /// AIR-RELATIVE velocity) exceeds this limit, the engine throttle is
+    /// proportionally reduced toward `q_max/q` so the structural load is
+    /// held at the limit — the standard launch-vehicle "throttle bucket"
+    /// done closed-loop on q rather than open-loop on a schedule. Defaults
+    /// to `f64::INFINITY` (no limit), so existing scenarios are unchanged.
+    pub max_dynamic_pressure_pa: f64,
     /// `true` to enable the trajectory loop. When `false`, the
     /// reference attitude is taken directly from the guidance topic.
     pub trajectory_loop_enabled: bool,
@@ -198,6 +207,7 @@ impl Default for AutopilotParams {
             rate_deadband_rad_s: 1e-3,
             thrust_vector_control: false,
             thrust_vector_settle_s: 0.0,
+            max_dynamic_pressure_pa: f64::INFINITY,
             trajectory_loop_enabled: false,
             trajectory_kind: TrajectoryKind::Pid,
             gyro_notch: None,
@@ -871,9 +881,27 @@ impl Job for ThreeLoopAutopilot {
         } else {
             (0.0, 0.0)
         };
+        // Closed-loop max-Q load relief: if the real dynamic pressure
+        // (actual density at the navigated geocentric altitude × the
+        // air-relative speed²) exceeds the configured limit, throttle
+        // down toward q_max/q so the structural load is held at the limit.
+        // No-op when max_dynamic_pressure_pa is infinite (the default) or
+        // there is no navigation estimate yet.
+        let throttle_unit = match position.as_ref() {
+            Some(p) if self.params.max_dynamic_pressure_pa.is_finite() => {
+                let q = dynamic_pressure_air_relative(p);
+                if q > self.params.max_dynamic_pressure_pa && q > 0.0 {
+                    (gains.throttle_baseline * (self.params.max_dynamic_pressure_pa / q))
+                        .clamp(0.0, gains.throttle_baseline)
+                } else {
+                    gains.throttle_baseline
+                }
+            }
+            _ => gains.throttle_baseline,
+        };
         let engine = EngineDemand {
             time: ctx.clock.now(),
-            throttle_unit: gains.throttle_baseline,
+            throttle_unit,
             gimbal_pitch_rad,
             gimbal_yaw_rad,
             ignite: false,
@@ -898,6 +926,36 @@ fn reference_yaw_rad(q_body_to_eci_xyzw: [f64; 4]) -> f64 {
     ));
     let (_roll, _pitch, yaw) = q.euler_angles();
     yaw
+}
+
+/// Real dynamic pressure (Pa) from a navigation estimate, for closed-loop
+/// max-Q load relief: actual atmospheric density at the navigated
+/// geocentric altitude × ½ × the squared AIR-RELATIVE speed (inertial
+/// velocity minus the co-rotating atmosphere Ω×r). This is the true q the
+/// structure feels — unlike a sea-level-density |v_eci|² proxy, which on a
+/// rotating frame is dominated by the ~465 m/s co-rotation at lift-off.
+/// Density above the USSA76 ceiling is zero (no load up there).
+fn dynamic_pressure_air_relative(position: &PositionEstimate) -> f64 {
+    use openbmp_physics::AtmosphereModel;
+    const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
+    const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
+    let r = position.position_eci_m;
+    let rn = r.norm();
+    let altitude_m = if rn > GEOCENTRIC_RADIUS_THRESHOLD_M {
+        (rn - EARTH_MEAN_RADIUS_M).max(0.0)
+    } else {
+        r.z.max(0.0)
+    };
+    // Air-relative velocity: subtract the co-rotating atmosphere Ω×r
+    // (Ω about ECI +z), so a vehicle co-rotating with the surface has
+    // ~zero airspeed at lift-off.
+    let omega = openbmp_physics::frames::WGS84_OMEGA_RAD_S;
+    let v_air =
+        position.velocity_eci_m_s - nalgebra::Vector3::new(-omega * r.y, omega * r.x, 0.0);
+    let rho = openbmp_physics::UsStandard1976::new()
+        .sample(altitude_m, openbmp_core::SimTime::ZERO)
+        .map_or(0.0, |s| s.density_kg_m3);
+    0.5 * rho * v_air.norm_squared()
 }
 
 /// Default academic gain schedule — every phase falls through to the
@@ -965,6 +1023,42 @@ mod tests {
         let q_xyzw = [0.0, 0.0, half.sin(), half.cos()];
         let yaw = reference_yaw_rad(q_xyzw);
         assert!((yaw - theta).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn dynamic_pressure_air_relative_zero_corotating_positive_in_airflow() {
+        use super::dynamic_pressure_air_relative;
+        use crate::topics::PositionEstimate;
+        let omega = openbmp_physics::frames::WGS84_OMEGA_RAD_S;
+        let r = 6_371_000.0;
+        // Co-rotating at the equatorial surface (v_eci = Ω×r): the
+        // air-relative speed is ~zero, so the real dynamic pressure is ~0
+        // even though the inertial speed is ~465 m/s (the bug the
+        // sea-level-density |v_eci|² proxy had).
+        let corotating = PositionEstimate {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::new(r, 0.0, 0.0),
+            velocity_eci_m_s: Vector3::new(0.0, omega * r, 0.0),
+            accel_bias_body_m_s2: Vector3::zeros(),
+        };
+        assert!(
+            dynamic_pressure_air_relative(&corotating) < 1.0,
+            "co-rotating surface q should be ~0, got {}",
+            dynamic_pressure_air_relative(&corotating)
+        );
+        // 300 m/s eastward airspeed at ~10 km altitude → a sizeable q.
+        let r2 = r + 10_000.0;
+        let flying = PositionEstimate {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::new(r2, 0.0, 0.0),
+            velocity_eci_m_s: Vector3::new(0.0, omega * r2 + 300.0, 0.0),
+            accel_bias_body_m_s2: Vector3::zeros(),
+        };
+        let q = dynamic_pressure_air_relative(&flying);
+        assert!(
+            (5_000.0..50_000.0).contains(&q),
+            "10 km / 300 m/s air-relative q out of expected range: {q}"
+        );
     }
 
     #[test]

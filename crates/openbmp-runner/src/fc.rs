@@ -1098,6 +1098,9 @@ fn build_autopilot_params(
     if let Some(v) = cfg.thrust_vector_settle_s {
         params.thrust_vector_settle_s = v;
     }
+    if let Some(v) = cfg.max_dynamic_pressure_pa {
+        params.max_dynamic_pressure_pa = v;
+    }
     if let Some(v) = cfg.trajectory_loop_enabled {
         params.trajectory_loop_enabled = v;
     }

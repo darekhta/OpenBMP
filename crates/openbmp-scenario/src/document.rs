@@ -8918,6 +8918,11 @@ pub struct FcAutopilotParams {
     /// gimbal at zero (open-loop axial thrust) until the nav estimate
     /// converges, suppressing an EKF-init transient. Defaults to `0.0`.
     pub thrust_vector_settle_s: Option<f64>,
+    /// Maximum dynamic pressure (Pa) for closed-loop max-Q load relief.
+    /// The autopilot throttles down toward `q_max/q` whenever the real
+    /// dynamic pressure (density at the navigated geocentric altitude ×
+    /// air-relative speed²) exceeds this. Omit for no limit.
+    pub max_dynamic_pressure_pa: Option<f64>,
     /// Whether to enable the trajectory loop.
     pub trajectory_loop_enabled: Option<bool>,
     /// Trajectory-loop strategy.
