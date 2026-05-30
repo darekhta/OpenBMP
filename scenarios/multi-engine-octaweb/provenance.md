@@ -98,3 +98,35 @@ notes: >-
   reaches roughly 3000 m at t ≈ 5 s; the 0.1 s ignition transient
   only shifts the crossing slightly.
 ```
+
+## `scenarios/multi-engine-octaweb/engine-restart.toml`
+
+```yaml
+dataset_id:       openbmp.scenario.multi_engine_octaweb.engine_restart.v1
+files:
+  - scenarios/multi-engine-octaweb/engine-restart.toml
+source_class:     synthetic-openbmp
+source_title:     >-
+  Exit-criterion scenario for the opt-in RESTARTABLE engine policy
+  (`limits.restartable = true`). A single self-contained liquid
+  engine (5000 N, Isp 250 s) on a 100 kg point-mass vehicle does
+  two distinct burns separated by a ballistic coast: ignite at
+  t=0.5 s, shutdown at t=3.0 s (the engine ramps to zero then
+  re-arms to Idle), coast with the engine off, then RE-IGNITE at
+  t=6.0 s for a second burn, shutdown at t=9.0 s. Propellant is
+  consumed in two separate intervals with a flat-mass coast in
+  between, demonstrating that a shut-down engine can restart — the
+  default one-shot lifecycle latches Shutdown terminally and could
+  never re-ignite.
+source_authors:   OpenBMP (Dmitri Arekhta) for the engine-restart
+                  exit-criterion case
+source_id:        Synthetic OpenBMP engine-restart fixture
+publication_date: 2026-05-30
+methodology_reference: >-
+  `docs/scenario-format.md` § Engine lifecycle
+notes: >-
+  All figures synthetic round numbers, not a benchmark. Verified by
+  crates/openbmp-cli/tests/engine_restart_e2e.rs (two burns consume
+  propellant, the mid-coast mass is flat). Constant gravity, no
+  atmosphere; vertical point-mass.
+```

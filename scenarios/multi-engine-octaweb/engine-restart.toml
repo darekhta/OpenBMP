@@ -1,0 +1,99 @@
+# Engine-restart exit criterion — a single RESTARTABLE liquid engine on a
+# point-mass vehicle does two distinct burns separated by a coast, which is
+# only possible because `limits.restartable = true` lets the engine re-arm
+# after a completed shutdown transient (the default one-shot lifecycle
+# latches Shutdown terminally and could never re-ignite).
+#
+# Profile (vertical, constant gravity, no atmosphere):
+#   t=0.5 s  ignite  — first burn
+#   t=3.0 s  shutdown — engine ramps to 0, then re-arms to Idle
+#   t=3.0..6.0 s     — ballistic coast (engine Idle, no propellant flow)
+#   t=6.0 s  ignite  — RESTART: second burn
+#   t=9.0 s  shutdown
+# Propellant is consumed in TWO separate intervals; the coast in between
+# shows the engine truly off (mass flat), proving the restart.
+#
+# Synthetic round numbers; not a benchmark.
+
+openbmp.scenario = 2
+
+[meta]
+name        = "engine-restart"
+description = "Exit-criterion: a restartable liquid engine does two burns separated by a coast (shutdown -> re-arm -> re-ignite). Synthetic; not a benchmark."
+validation  = "experimental"
+
+[time]
+start_s = 0.0
+stop_s  = 10.0
+dt_s    = 0.001
+seed    = 0x52657374_61727430   # "Restart0"
+
+[vehicle]
+kind                     = "point_mass"
+initial_position_eci_m   = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "engine-restart"
+
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 2.0, area_m2 = 0.5 }
+dry_mass_kg = 100.0
+
+# Stage-2-like vacuum engine, RESTARTABLE for a second burn. A self-contained
+# engine (no tank coupling) burns vehicle mass directly via its Isp.
+[[vehicle.assembly.engines]]
+id                 = "eng_restart"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, 0.0]
+limits             = { max_thrust_n = 5000.0, isp_s = 250.0, ignition_transient_s = 0.1, shutdown_transient_s = 0.1, max_gimbal_rad = 0.0, restartable = true }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[telemetry]
+output.csv = "out/engine-restart.csv"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "flight"
+
+[[mission.phases]]
+id    = "flight"
+label = "flight"
+
+# First burn.
+[[mission.events]]
+id      = "ignite_1"
+once    = true
+trigger = { kind = "at_time", time_s = 0.5 }
+action  = { kind = "engine_command", id = "eng_restart", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+# Shutdown — the engine ramps to zero then (because restartable) re-arms.
+[[mission.events]]
+id      = "shutdown_1"
+once    = true
+trigger = { kind = "at_time", time_s = 3.0 }
+action  = { kind = "engine_command", id = "eng_restart", command = { throttle_unit = 0.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = false, shutdown = true } }
+
+# RESTART — second ignition after the coast.
+[[mission.events]]
+id      = "ignite_2"
+once    = true
+trigger = { kind = "at_time", time_s = 6.0 }
+action  = { kind = "engine_command", id = "eng_restart", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+# End the second burn.
+[[mission.events]]
+id      = "shutdown_2"
+once    = true
+trigger = { kind = "at_time", time_s = 9.0 }
+action  = { kind = "engine_command", id = "eng_restart", command = { throttle_unit = 0.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = false, shutdown = true } }
