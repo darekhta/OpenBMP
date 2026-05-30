@@ -103,16 +103,24 @@ impl BendingMode {
         slope_at_gyro: f64,
     ) -> Result<Self, BendingError> {
         if !omega_b_rad_s.is_finite() || omega_b_rad_s <= 0.0 {
-            return Err(BendingError::InvalidParameter("omega_b_rad_s must be finite and > 0"));
+            return Err(BendingError::InvalidParameter(
+                "omega_b_rad_s must be finite and > 0",
+            ));
         }
         if !zeta_b.is_finite() || zeta_b < 0.0 {
-            return Err(BendingError::InvalidParameter("zeta_b must be finite and >= 0"));
+            return Err(BendingError::InvalidParameter(
+                "zeta_b must be finite and >= 0",
+            ));
         }
         if !modal_mass_kg.is_finite() || modal_mass_kg <= 0.0 {
-            return Err(BendingError::InvalidParameter("modal_mass_kg must be finite and > 0"));
+            return Err(BendingError::InvalidParameter(
+                "modal_mass_kg must be finite and > 0",
+            ));
         }
         if !slope_at_engine.is_finite() || !slope_at_gyro.is_finite() {
-            return Err(BendingError::InvalidParameter("mode-shape slopes must be finite"));
+            return Err(BendingError::InvalidParameter(
+                "mode-shape slopes must be finite",
+            ));
         }
         Ok(Self {
             omega_b_rad_s,
@@ -136,7 +144,11 @@ impl BendingMode {
     /// # Errors
     ///
     /// Returns [`BendingError::NonFiniteStepInput`] for non-finite inputs.
-    pub fn step(&mut self, accel_body_m_s2: Vector3<f64>, dt: Duration) -> Result<(), BendingError> {
+    pub fn step(
+        &mut self,
+        accel_body_m_s2: Vector3<f64>,
+        dt: Duration,
+    ) -> Result<(), BendingError> {
         if !accel_body_m_s2.iter().all(|c| c.is_finite()) {
             return Err(BendingError::NonFiniteStepInput("accel_body_m_s2"));
         }
@@ -173,7 +185,11 @@ impl BendingMode {
     /// roll/transverse (+x) pickup. `[slope·q̇_y, slope·q̇_x, 0]`.
     #[must_use]
     pub fn gyro_pickup_rad_s(&self) -> Vector3<f64> {
-        Vector3::new(self.slope_at_gyro * self.q_dot_y, self.slope_at_gyro * self.q_dot_x, 0.0)
+        Vector3::new(
+            self.slope_at_gyro * self.q_dot_y,
+            self.slope_at_gyro * self.q_dot_x,
+            0.0,
+        )
     }
 
     /// Reaction moment on the rigid body from the modal acceleration
@@ -227,8 +243,14 @@ mod tests {
         let (qx, _qy) = m.modal_coordinates();
         assert!(qx.abs() > 0.0, "lateral accel must excite q_x");
         let pickup = m.gyro_pickup_rad_s();
-        assert!(pickup.y.abs() > 0.0, "gyro must pick up the bending slope rate on pitch");
-        assert!(pickup.x.abs() < 1.0e-15, "no y-plane bending => no x pickup");
+        assert!(
+            pickup.y.abs() > 0.0,
+            "gyro must pick up the bending slope rate on pitch"
+        );
+        assert!(
+            pickup.x.abs() < 1.0e-15,
+            "no y-plane bending => no x pickup"
+        );
         // Reaction moment opposes the modal acceleration about pitch.
         let reaction = m.reaction_moment_body_n_m();
         assert!(reaction.iter().all(|c| c.is_finite()));
@@ -246,13 +268,18 @@ mod tests {
         let mut m = BendingMode::new(6.283_185_307_2, 0.05, 500.0, 1.0, 1.0).unwrap();
         // Excite, then let it ring down with no forcing.
         for _ in 0..100 {
-            m.step(Vector3::new(10.0, 0.0, 0.0), Duration::from_seconds(0.001)).unwrap();
+            m.step(Vector3::new(10.0, 0.0, 0.0), Duration::from_seconds(0.001))
+                .unwrap();
         }
         let peak = m.modal_coordinates().0.abs();
         for _ in 0..20_000 {
-            m.step(Vector3::zeros(), Duration::from_seconds(0.001)).unwrap();
+            m.step(Vector3::zeros(), Duration::from_seconds(0.001))
+                .unwrap();
         }
         let after = m.modal_coordinates().0.abs();
-        assert!(after < 0.1 * peak, "damped free response must decay: {after} vs {peak}");
+        assert!(
+            after < 0.1 * peak,
+            "damped free response must decay: {after} vs {peak}"
+        );
     }
 }

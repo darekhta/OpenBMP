@@ -91,13 +91,14 @@ impl FcBridge {
         let estimator_seed = EstimatorSeed {
             position_eci_m: Vector3::from(v.initial_position_eci_m),
             velocity_eci_m_s: Vector3::from(v.initial_velocity_eci_m_s),
-            attitude_body_to_eci: v
-                .initial_quaternion_body_to_eci_xyzw
-                .map_or_else(UnitQuaternion::identity, |q| {
+            attitude_body_to_eci: v.initial_quaternion_body_to_eci_xyzw.map_or_else(
+                UnitQuaternion::identity,
+                |q| {
                     UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                         q[3], q[0], q[1], q[2],
                     ))
-                }),
+                },
+            ),
         };
         let runner = FcRunner::new(
             fc_config,
@@ -445,9 +446,7 @@ fn bridge_frame_supported(
         // Both rotating-Earth frames share the same bridge contract: the
         // sensor truth is frame-invariant in ECI; only the flat-earth
         // barometer altitude is frame-dependent.
-        "wgs84-uniform-rotation" | "iers-tabulated"
-            if atmosphere == "none" || !has_barometer =>
-        {
+        "wgs84-uniform-rotation" | "iers-tabulated" if atmosphere == "none" || !has_barometer => {
             Ok(())
         }
         frame @ ("wgs84-uniform-rotation" | "iers-tabulated") => Err(format!(
@@ -1046,7 +1045,9 @@ estimator = "ekf"
         // wgs84-uniform-rotation + atmosphere is supported when there is no
         // barometer (IMU senses drag via specific force; aero is kernel-side
         // with a frame-aware altitude).
-        assert!(bridge_frame_supported("wgs84-uniform-rotation", "us_standard_1976", false).is_ok());
+        assert!(
+            bridge_frame_supported("wgs84-uniform-rotation", "us_standard_1976", false).is_ok()
+        );
 
         // ...but rejected with a barometer (bridge baro altitude is flat z).
         let err = bridge_frame_supported("wgs84-uniform-rotation", "us_standard_1976", true)

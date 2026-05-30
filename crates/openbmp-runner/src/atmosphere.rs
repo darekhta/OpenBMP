@@ -13,20 +13,23 @@
 //! above the 86 km USSA76 implementation ceiling.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use nalgebra::{Matrix3, Vector3};
 use openbmp_core::{Ecef, ModelId, Ned, SimTime, Velocity3};
 use openbmp_physics::{
-    AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, FrameContext, FrameProfile,
-    Nrlmsis2Compat, Nrlmsise00Full, Nrlmsise00Inputs, PhysicsError, PiecewiseExponentialAtmosphere,
-    UsStandard1976,
+    AtmosphereModel, AtmosphereSample, ConstantGravity, Egm2008ZonalGravity, ExoatmosphericPolicy,
+    FrameContext, FrameProfile, GravityModel, J2Gravity, Nrlmsis2Compat, Nrlmsise00Full,
+    Nrlmsise00Inputs, PhysicsError, PiecewiseExponentialAtmosphere, PointMassGravity,
+    UsStandard1976, WGS84_J2,
 };
-use openbmp_scenario::{AtmosphereConfig, ScenarioDocument};
+use openbmp_scenario::{AtmosphereConfig, ResolvedFile, ScenarioDocument};
 use openbmp_sim::{EnvironmentModel, EnvironmentQuery, EnvironmentSample, ModelEvalError};
 
 use crate::error::RunnerError;
 
 const RUNNER_ENVIRONMENT_MODEL_ID: ModelId = ModelId::new(900);
+const RUNNER_ENVIRONMENT_GRAVITY_MODEL_ID: ModelId = ModelId::new(901);
 
 /// Atmosphere model selected by the scenario.
 #[derive(Copy, Clone, Debug)]
@@ -43,15 +46,47 @@ pub enum RuntimeAtmosphere {
     Nrlmsis2Compat(Nrlmsis2Compat),
 }
 
+/// Gravity model selected by the scenario for environment sampling.
+#[derive(Clone, Debug)]
+pub(crate) enum RuntimeGravity {
+    /// Constant ECI -z gravity.
+    Constant(ConstantGravity),
+    /// Point-mass central gravity.
+    PointMass(PointMassGravity),
+    /// J2 central gravity.
+    J2(J2Gravity),
+    /// Pinned zonal-only EGM2008 gravity.
+    Egm2008(Egm2008ZonalGravity),
+    /// Central gravity plus configured third-body perturbations.
+    ThirdBody(crate::celestial::RuntimeThirdBodyGravity),
+}
+
+impl GravityModel for RuntimeGravity {
+    fn gravity_eci_m_s2(
+        &self,
+        position_eci: openbmp_core::Position3<openbmp_core::Eci>,
+        time: SimTime,
+    ) -> Result<Vector3<f64>, PhysicsError> {
+        match self {
+            Self::Constant(model) => model.gravity_eci_m_s2(position_eci, time),
+            Self::PointMass(model) => model.gravity_eci_m_s2(position_eci, time),
+            Self::J2(model) => model.gravity_eci_m_s2(position_eci, time),
+            Self::Egm2008(model) => model.gravity_eci_m_s2(position_eci, time),
+            Self::ThirdBody(model) => model.gravity_eci_m_s2(position_eci, time),
+        }
+    }
+}
+
 /// Kernel environment wrapper used for event-scalar evaluation.
 ///
 /// Force models still own their atmosphere instances. This wrapper
 /// exposes the same scenario atmosphere density through
 /// [`EnvironmentSample`] so kernel-owned mission triggers can compute
 /// dynamic pressure without reaching into force-model internals.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RuntimeEnvironment {
     atmosphere: Option<RuntimeAtmosphere>,
+    gravity: RuntimeGravity,
     frame: FrameContext,
 }
 
@@ -67,6 +102,7 @@ impl RuntimeEnvironment {
     /// supported but model-specific construction fails.
     pub fn from_document(
         document: &ScenarioDocument,
+        resolved_files: &BTreeMap<String, ResolvedFile>,
         frame: &FrameContext,
     ) -> Result<Self, RunnerError> {
         validate_wind_frame(document, frame)?;
@@ -76,8 +112,10 @@ impl RuntimeEnvironment {
         } else {
             None
         };
+        let gravity = build_document_runtime_gravity(document, resolved_files)?;
         Ok(Self {
             atmosphere,
+            gravity,
             frame: frame.clone(),
         })
     }
@@ -86,6 +124,13 @@ impl RuntimeEnvironment {
 impl EnvironmentModel for RuntimeEnvironment {
     fn sample(&self, query: EnvironmentQuery) -> Result<EnvironmentSample, ModelEvalError> {
         let mut sample = EnvironmentSample::default();
+        sample.gravity_eci_m_s2 = self
+            .gravity
+            .gravity_eci_m_s2(query.position_eci, query.time)
+            .map_err(|_| ModelEvalError::OutOfEnvelope {
+                model: RUNNER_ENVIRONMENT_GRAVITY_MODEL_ID,
+                reason: Cow::Borrowed("gravity model out of envelope"),
+            })?;
         populate_frame_motion(&self.frame, query, &mut sample)?;
         let Some(atmosphere) = &self.atmosphere else {
             return Ok(sample);
@@ -99,6 +144,73 @@ impl EnvironmentModel for RuntimeEnvironment {
         })?;
         sample.atmosphere_density_kg_m3 = atmosphere_sample.density_kg_m3;
         Ok(sample)
+    }
+}
+
+/// Resolve the scenario gravity block into the runtime environment gravity
+/// dispatcher used to populate [`EnvironmentSample::gravity_eci_m_s2`].
+///
+/// # Errors
+///
+/// Returns [`RunnerError`] when the scenario's gravity selector or required
+/// fields cannot be constructed by the runner.
+pub(crate) fn build_document_runtime_gravity(
+    document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<RuntimeGravity, RunnerError> {
+    match document.environment.gravity.as_str() {
+        "constant" => {
+            let g = document.environment.gravity_m_s2.ok_or_else(|| {
+                RunnerError::UnsupportedScenario {
+                    what: "environment.gravity_m_s2 missing for constant gravity".to_owned(),
+                }
+            })?;
+            if g < 0.0 {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: "environment.gravity_m_s2 must be a non-negative magnitude; \
+                         constant gravity is -z in ECI"
+                        .to_owned(),
+                });
+            }
+            Ok(RuntimeGravity::Constant(ConstantGravity::down_z(g)?))
+        }
+        "point_mass" => {
+            let mu =
+                document
+                    .environment
+                    .mu_m3_s2
+                    .ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "environment.mu_m3_s2 missing for point_mass gravity".to_owned(),
+                    })?;
+            Ok(RuntimeGravity::PointMass(PointMassGravity::new(mu)?))
+        }
+        "j2" => {
+            let mu =
+                document
+                    .environment
+                    .mu_m3_s2
+                    .ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "environment.mu_m3_s2 missing for j2 gravity".to_owned(),
+                    })?;
+            let r_e =
+                document
+                    .environment
+                    .r_e_m
+                    .ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "environment.r_e_m missing for j2 gravity".to_owned(),
+                    })?;
+            let j2 = document.environment.j2.unwrap_or(WGS84_J2);
+            Ok(RuntimeGravity::J2(J2Gravity::new(mu, r_e, j2)?))
+        }
+        "egm2008" => Ok(RuntimeGravity::Egm2008(
+            Egm2008ZonalGravity::wgs84_egm2008_zonal(),
+        )),
+        "third_body" => Ok(RuntimeGravity::ThirdBody(
+            crate::celestial::build_third_body_gravity(document, resolved_files)?,
+        )),
+        other => Err(RunnerError::UnsupportedScenario {
+            what: format!("environment.gravity = {other} is not wired"),
+        }),
     }
 }
 
@@ -358,10 +470,17 @@ mod tests {
     use openbmp_core::Position3;
     use openbmp_physics::{LocalGeodeticOrigin, WGS84_A_M, WGS84_OMEGA_RAD_S};
 
+    fn zero_gravity() -> RuntimeGravity {
+        RuntimeGravity::Constant(ConstantGravity::down_z(0.0).unwrap())
+    }
+
     #[test]
     fn atmosphere_altitude_is_frame_aware() {
         // Local-frame launch (near origin): altitude is the flat-earth +z.
-        assert_eq!(atmosphere_altitude_m(Vector3::new(0.0, 0.0, 1_000.0)), 1_000.0);
+        assert_eq!(
+            atmosphere_altitude_m(Vector3::new(0.0, 0.0, 1_000.0)),
+            1_000.0
+        );
         assert_eq!(atmosphere_altitude_m(Vector3::new(10.0, 20.0, 0.0)), 0.0);
         // Geocentric launch (|r| ~ Earth radius): altitude is |r| - R_earth,
         // independent of which axis the position lies on. An equatorial
@@ -379,6 +498,7 @@ mod tests {
     fn wgs84_environment_reports_corotating_still_air_velocity() {
         let environment = RuntimeEnvironment {
             atmosphere: None,
+            gravity: zero_gravity(),
             frame: FrameContext::wgs84_uniform_rotation(None),
         };
         let sample = environment
@@ -399,6 +519,7 @@ mod tests {
         let origin = LocalGeodeticOrigin::new_degrees(0.0, 0.0, 0.0).unwrap();
         let environment = RuntimeEnvironment {
             atmosphere: None,
+            gravity: zero_gravity(),
             frame: FrameContext::wgs84_uniform_rotation(Some(origin)),
         };
         let sample = environment
@@ -419,6 +540,7 @@ mod tests {
     fn toy_environment_keeps_flat_ned_mapping() {
         let environment = RuntimeEnvironment {
             atmosphere: None,
+            gravity: zero_gravity(),
             frame: FrameContext::toy_fixed_earth(),
         };
         let mut sample = environment
@@ -431,5 +553,22 @@ mod tests {
         sample.set_wind_ned_m_s(Vector3::new(1.0, 2.0, 3.0));
         assert_eq!(sample.atmosphere_velocity_eci_m_s, Vector3::zeros());
         assert_eq!(sample.wind_eci_m_s, Vector3::new(1.0, 2.0, -3.0));
+    }
+
+    #[test]
+    fn environment_sample_reports_configured_gravity() {
+        let environment = RuntimeEnvironment {
+            atmosphere: None,
+            gravity: RuntimeGravity::Constant(ConstantGravity::down_z(9.80665).unwrap()),
+            frame: FrameContext::toy_fixed_earth(),
+        };
+        let sample = environment
+            .sample(EnvironmentQuery {
+                time: SimTime::ZERO,
+                position_eci: Position3::origin(),
+            })
+            .unwrap();
+
+        assert_eq!(sample.gravity_eci_m_s2, Vector3::new(0.0, 0.0, -9.80665));
     }
 }

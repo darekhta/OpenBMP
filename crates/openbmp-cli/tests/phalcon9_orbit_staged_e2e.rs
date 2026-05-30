@@ -72,7 +72,10 @@ fn parse_rows(csv: &Path) -> Vec<Row> {
 
     let mut out = Vec::new();
     for line in lines.filter(|l| !l.trim().is_empty()) {
-        let f: Vec<f64> = line.split(',').map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN)).collect();
+        let f: Vec<f64> = line
+            .split(',')
+            .map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN))
+            .collect();
         let primary_mass = f[mi];
         let total_mass = primary_mass + lane_cols.iter().map(|&c| f[c]).sum::<f64>();
         out.push(Row {
@@ -95,7 +98,11 @@ fn mass_at(rows: &[Row], t: f64, primary: bool) -> f64 {
         .iter()
         .min_by(|a, b| (a.t - t).abs().partial_cmp(&(b.t - t).abs()).unwrap())
         .expect("row near t");
-    if primary { row.primary_mass } else { row.total_mass }
+    if primary {
+        row.primary_mass
+    } else {
+        row.total_mass
+    }
 }
 
 #[test]
@@ -121,13 +128,21 @@ fn phalcon9_orbit_staged_sheds_mass_and_conserves_total() {
         last.r[0] * last.v[1] - last.r[1] * last.v[0],
     ];
     let h_mag = norm(h);
-    let e = (1.0 + 2.0 * eps * h_mag * h_mag / (MU_EARTH * MU_EARTH)).max(0.0).sqrt();
+    let e = (1.0 + 2.0 * eps * h_mag * h_mag / (MU_EARTH * MU_EARTH))
+        .max(0.0)
+        .sqrt();
     let perigee_km = (a * (1.0 - e) - EARTH_MEAN_RADIUS_M) / 1000.0;
     let incl_deg = (h[2] / h_mag).clamp(-1.0, 1.0).acos().to_degrees();
     assert!(eps < 0.0, "insertion must be bound");
     assert!(e < 0.02, "insertion must be near-circular, e={e:.4}");
-    assert!((150.0..600.0).contains(&perigee_km), "perigee {perigee_km:.1} km must be LEO");
-    assert!(incl_deg < 1.0, "inclination {incl_deg:.3} deg must stay near-equatorial");
+    assert!(
+        (150.0..600.0).contains(&perigee_km),
+        "perigee {perigee_km:.1} km must be LEO"
+    );
+    assert!(
+        incl_deg < 1.0,
+        "inclination {incl_deg:.3} deg must stay near-equatorial"
+    );
 
     // (2) Each jettison sheds its body's dry mass from the continuing stack.
     // Fairing (600 kg) jettisons at t=320; payload (1500 kg) at t=900.

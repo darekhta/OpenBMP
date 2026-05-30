@@ -1969,7 +1969,7 @@ mount_point_body_m       = [0.0, 0.0, 1.5]
 geometry                 = { kind = "cylinder", radius_m = 0.5, height_m = 1.5 }
 propellant               = { density_kg_m3 = 1000.0, label = "water_textbook" }
 initial_fill_fraction    = 0.7
-moving_mass              = { kind = "equivalent_pendulum", damping_ratio_zeta = 0.005 }
+moving_mass              = { kind = "equivalent_pendulum", damping_ratio_zeta = 0.005, freefall_restoring = { kind = "capillary_surface_wave", surface_tension_n_m = 0.072, damping_ratio_zeta = 1.0 } }
 drain_rate_kg_per_s      = 0.0
 initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] }
 ```
@@ -1992,8 +1992,11 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
   `geometry.volume × density × fill`.
 - `moving_mass` — `kind`-tagged enum:
   - `rigid_liquid` — no slosh (rigid-liquid toy);
-  - `equivalent_pendulum { damping_ratio_zeta }` — Abramson
-    cylindrical-tank antisymmetric fundamental mode;
+  - `equivalent_pendulum { damping_ratio_zeta, freefall_restoring? }` —
+    Abramson cylindrical-tank antisymmetric fundamental mode. Optional
+    `freefall_restoring = { kind = "capillary_surface_wave",
+    surface_tension_n_m, damping_ratio_zeta }` adds the low-g capillary
+    term `ω_cap² = (σ / ρ) · k³ · tanh(kh)`, where `k = 1.841 / radius`;
   - `equivalent_spring_mass { damping_ratio_zeta }` — translational
     alternative;
   - `baffled_pendulum { base_damping_ratio_zeta }` — pendulum +
@@ -2047,10 +2050,11 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
   over 100 oscillations at any practical `dt`. The semi-implicit
   variant has the same operation count, the same locked operand
   order, and the same bit-stable replay properties.
-- The slosh state advances using **prior step's** `(accel_body,
-  omega_body)` — the documented one-step lag that breaks the
-  circular dependency between the tank's reaction force and the
-  kernel's per-step force evaluation. The first step uses zeros.
+- The slosh state advances using the **prior step's**
+  `(specific_force_body, omega_body)` — the documented one-step lag
+  that breaks the circular dependency between the tank's reaction
+  force and the kernel's per-step force evaluation. The first step
+  uses zeros.
 
 #### Limitations
 

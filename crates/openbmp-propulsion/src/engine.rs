@@ -642,8 +642,8 @@ impl EngineModel for LiquidEngine {
         let max_gimbal_step = self.limits.gimbal_slew_rad_per_s * dt_s;
         self.latched_pitch_rad += (self.commanded_pitch_rad - self.latched_pitch_rad)
             .clamp(-max_gimbal_step, max_gimbal_step);
-        self.latched_yaw_rad +=
-            (self.commanded_yaw_rad - self.latched_yaw_rad).clamp(-max_gimbal_step, max_gimbal_step);
+        self.latched_yaw_rad += (self.commanded_yaw_rad - self.latched_yaw_rad)
+            .clamp(-max_gimbal_step, max_gimbal_step);
 
         // Determine the un-gimballed scalar thrust along the engine
         // nominal axis based on state + elapsed.
@@ -1103,8 +1103,15 @@ mod tests {
         for _ in 0..150 {
             e.step(dt()).unwrap();
         }
-        assert_eq!(e.current_state(), EngineState::Idle, "restartable engine must re-arm to Idle");
-        assert_eq!(e.current_snapshot().thrust_body.norm().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            e.current_state(),
+            EngineState::Idle,
+            "restartable engine must re-arm to Idle"
+        );
+        assert_eq!(
+            e.current_snapshot().thrust_body.norm().to_bits(),
+            0.0_f64.to_bits()
+        );
 
         // Re-ignite for a second burn.
         e.apply_command(EngineCommand {
@@ -1118,8 +1125,15 @@ mod tests {
         for _ in 0..101 {
             e.step(dt()).unwrap();
         }
-        assert_eq!(e.current_state(), EngineState::Burning, "must re-ignite to Burning");
-        assert!(e.current_snapshot().thrust_body.norm() > 0.0, "second burn must produce thrust");
+        assert_eq!(
+            e.current_state(),
+            EngineState::Burning,
+            "must re-ignite to Burning"
+        );
+        assert!(
+            e.current_snapshot().thrust_body.norm() > 0.0,
+            "second burn must produce thrust"
+        );
         // The second burn consumes additional propellant.
         assert!(e.current_snapshot().consumed_kg > consumed_after_first);
     }

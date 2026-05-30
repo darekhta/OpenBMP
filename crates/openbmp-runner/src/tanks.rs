@@ -3,8 +3,8 @@
 //! The rack owns a `BTreeMap<TankId, openbmp_vehicle::Tank>` resolved
 //! from the scenario's `[[vehicle.assembly.tanks]]` block, plus the
 //! construction-time `dt` that's passed to each tank's `step(...)`
-//! call and a cached pair `(accel_body, omega_body)` from the prior
-//! kernel step's solution.
+//! call and a cached pair `(specific_force_body, omega_body)` from
+//! the prior kernel step's solution.
 //!
 //! Each kernel base tick the runner:
 //!
@@ -12,8 +12,8 @@
 //!    `drain_rate_kg_per_s` (drain is decoupled from
 //!    engine-cluster mdot).
 //! 2. Steps every tank using the **prior step's** cached
-//!    `(accel_body, omega_body)`. The runner caches the freshly-
-//!    computed drivers from the step that just completed via
+//!    `(specific_force_body, omega_body)`. The runner caches the
+//!    freshly computed drivers from the step that just completed via
 //!    [`TankRack::update_drivers`]. The first step uses zeros.
 //! 3. Packs the resulting `mass_contribution()` and
 //!    `reaction_body()` observations into a `BTreeMap<TankId,
@@ -32,7 +32,7 @@
 //!   for `from_path`-derived ids is deterministic across reruns.
 //! - The kernel-pushed snapshot map is also `BTreeMap<TankId,
 //!   TankSnapshot>`.
-//! - One-step lag on `(accel_body, omega_body)` is the only
+//! - One-step lag on `(specific_force_body, omega_body)` is the only
 //!   defensible bit-stable solution to the circular dependency
 //!   between tank reaction force / mass contribution and the
 //!   kernel's per-step force / mass evaluation. Initial step: zeros.
@@ -42,8 +42,8 @@ use std::collections::BTreeMap;
 use nalgebra::Vector3;
 use openbmp_core::{Duration, TankId};
 use openbmp_scenario::{
-    InitialSloshConfig, MovingMassKindConfig, PropellantSpecConfig, ScenarioDocument, TankConfig,
-    TankGeometryConfig,
+    FreefallRestoringConfig, InitialSloshConfig, MovingMassKindConfig, PropellantSpecConfig,
+    ScenarioDocument, TankConfig, TankGeometryConfig,
 };
 use openbmp_sim::TankSnapshot;
 use openbmp_vehicle::{
@@ -64,8 +64,8 @@ pub struct TankRack {
     /// Per-tank engine-coupled drain rates (kg/s) produced by the
     /// propellant budget from the prior engine snapshot.
     propellant_budget_drain_rates_kg_per_s: BTreeMap<TankId, f64>,
-    /// Cached `(accel_body_m_s2, omega_body_rad_s)` from the prior
-    /// kernel step. Initialised to zeros at construction.
+    /// Cached `(specific_force_body_m_s2, omega_body_rad_s)` from the
+    /// prior kernel step. Initialised to zeros at construction.
     last_drivers: (Vector3<f64>, Vector3<f64>),
 }
 
@@ -139,7 +139,7 @@ impl TankRack {
         self.tanks.keys().copied().collect()
     }
 
-    /// Replace the cached prior-step `(accel_body, omega_body)`.
+    /// Replace the cached prior-step `(specific_force_body, omega_body)`.
     /// The runner calls this with the freshly-computed body-frame
     /// translational acceleration and angular rate after the kernel
     /// step that just completed; the next [`Self::step`] uses these
@@ -269,7 +269,10 @@ fn build_tank(config: &TankConfig) -> Result<(TankId, Tank), RunnerError> {
                 },
             )?,
         ),
-        MovingMassKindConfig::EquivalentPendulum { damping_ratio_zeta } => {
+        MovingMassKindConfig::EquivalentPendulum {
+            damping_ratio_zeta,
+            freefall_restoring,
+        } => {
             let mut model = EquivalentPendulum::new(
                 geometry,
                 propellant,
@@ -281,6 +284,18 @@ fn build_tank(config: &TankConfig) -> Result<(TankId, Tank), RunnerError> {
                 field: path.clone(),
                 reason: err.to_string(),
             })?;
+            if let Some(FreefallRestoringConfig::CapillarySurfaceWave {
+                surface_tension_n_m,
+                damping_ratio_zeta,
+            }) = freefall_restoring
+            {
+                model = model
+                    .with_capillary_freefall_restoring(surface_tension_n_m, damping_ratio_zeta)
+                    .map_err(|err| RunnerError::Tank {
+                        field: path.clone(),
+                        reason: err.to_string(),
+                    })?;
+            }
             apply_initial_slosh_pendulum(&mut model, config.initial_slosh.as_ref())?;
             Box::new(model)
         }

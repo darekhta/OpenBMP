@@ -146,10 +146,7 @@ pub trait Estimator {
     /// # Errors
     ///
     /// See [`Estimator::update_imu`].
-    fn update_star_tracker(
-        &mut self,
-        _sample: &StarTrackerSample,
-    ) -> Result<(), EstimatorError> {
+    fn update_star_tracker(&mut self, _sample: &StarTrackerSample) -> Result<(), EstimatorError> {
         Ok(())
     }
 
@@ -682,10 +679,7 @@ impl Estimator for Ekf {
     }
 
     #[allow(clippy::many_single_char_names)] // standard EKF naming: h, s, k.
-    fn update_star_tracker(
-        &mut self,
-        sample: &StarTrackerSample,
-    ) -> Result<(), EstimatorError> {
+    fn update_star_tracker(&mut self, sample: &StarTrackerSample) -> Result<(), EstimatorError> {
         if !sample.healthy {
             return Ok(());
         }
@@ -702,10 +696,8 @@ impl Estimator for Ekf {
         // a unit quaternion: (x, y, z, w) -> (-x, -y, -z, w).
         let q_be_meas_xyzw = [-mx, -my, -mz, mw];
         let q_nom = self.q_body_to_eci;
-        let innovation = quaternion_error_small_angle(
-            [q_nom.i, q_nom.j, q_nom.k, q_nom.w],
-            q_be_meas_xyzw,
-        );
+        let innovation =
+            quaternion_error_small_angle([q_nom.i, q_nom.j, q_nom.k, q_nom.w], q_be_meas_xyzw);
         let mut h: SMatrix<f64, 3, 15> = SMatrix::zeros();
         for i in 0..3 {
             h[(i, i + 6)] = 1.0;

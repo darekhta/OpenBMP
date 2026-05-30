@@ -427,9 +427,10 @@ impl PlaneSteering {
     /// pitch-over); otherwise it uses the fixed-axis builder.
     fn reference_quaternion(&self, forward: Vector3<f64>) -> Result<[f64; 4], PhysicsError> {
         match self.plane_normal_eci {
-            Some(normal) => {
-                reference_quaternion_from_body_z_with_roll([forward.x, forward.y, forward.z], normal)
-            }
+            Some(normal) => reference_quaternion_from_body_z_with_roll(
+                [forward.x, forward.y, forward.z],
+                normal,
+            ),
             None => reference_quaternion_from_body_z([forward.x, forward.y, forward.z]),
         }
     }
@@ -913,7 +914,11 @@ impl AscentReferenceGenerator for PegAscentReference {
             // time-to-go from the two-point boundary-value problem. ---
             st.last_major_s = now;
             let (mut a, mut b) = if st.a == 0.0 && st.b == 0.0 {
-                let old_t = if st.t_go_s >= tau { 0.9 * tau } else { st.t_go_s };
+                let old_t = if st.t_go_s >= tau {
+                    0.9 * tau
+                } else {
+                    st.t_go_s
+                };
                 peg_solve_ab(ve, tau, old_t, vr, r, tgt).unwrap_or((0.0, 0.0))
             } else {
                 (st.a, st.b)
@@ -1157,12 +1162,11 @@ impl AscentReferenceGenerator for SequencedAscentReference {
             up
         } else if speed < self.kick_end_speed_m_s {
             // Pitch kick: tilt `kick_angle` off vertical toward downrange.
-            let downrange =
-                local_downrange_unit(up, self.downrange_axis_eci).ok_or(
-                    PhysicsError::OutOfEnvelope {
-                        reason: "sequenced ascent could not construct a downrange direction",
-                    },
-                )?;
+            let downrange = local_downrange_unit(up, self.downrange_axis_eci).ok_or(
+                PhysicsError::OutOfEnvelope {
+                    reason: "sequenced ascent could not construct a downrange direction",
+                },
+            )?;
             up * self.kick_angle_rad.cos() + downrange * self.kick_angle_rad.sin()
         } else {
             // Gravity turn: follow the inertial velocity (zero AoA).
@@ -3648,8 +3652,14 @@ fn reference_quaternion_from_body_z_with_roll(
     forward_eci: [f64; 3],
     roll_reference_eci: [f64; 3],
 ) -> Result<[f64; 4], PhysicsError> {
-    require_finite_vec3(forward_eci, "ascent reference direction components must be finite")?;
-    require_finite_vec3(roll_reference_eci, "ascent roll reference components must be finite")?;
+    require_finite_vec3(
+        forward_eci,
+        "ascent reference direction components must be finite",
+    )?;
+    require_finite_vec3(
+        roll_reference_eci,
+        "ascent roll reference components must be finite",
+    )?;
     let norm = vector_norm(forward_eci);
     let ref_norm = vector_norm(roll_reference_eci);
     if norm <= MIN_DIRECTION_NORM || ref_norm <= MIN_DIRECTION_NORM {
@@ -3711,9 +3721,9 @@ mod tests {
         FootprintGeodeticOrigin, FootprintMonteCarloInput, FootprintSampleInput,
         GravityTurnAscentReference, IdealStagingBudgetAnalysis, MomentumConservingStageSeparation,
         NumericalFootprintState, NumericalGravityRangeSafetyFootprint, PegAscentReference,
-        PitchProgramAscentReference,
-        RangeSafetyFootprint, STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageMassProperties,
-        StageSeparationModel, StagingBudgetAnalysis, StagingBudgetInput, StagingBudgetMode,
+        PitchProgramAscentReference, RangeSafetyFootprint,
+        STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageMassProperties, StageSeparationModel,
+        StagingBudgetAnalysis, StagingBudgetInput, StagingBudgetMode,
         constant_gravity_footprint_monte_carlo, drag_wind_derivative,
     };
     use super::{
@@ -3781,7 +3791,10 @@ mod tests {
         // And the commanded thrust axis (body +z) still matches `forward`.
         let body_z = roll_a * Vector3::new(0.0, 0.0, 1.0);
         let expect = Vector3::from(forward_a).normalize();
-        assert!((body_z - expect).norm() < 1e-9, "body +z must point along forward");
+        assert!(
+            (body_z - expect).norm() < 1e-9,
+            "body +z must point along forward"
+        );
     }
 
     /// Yaw steering rotates the commanded thrust toward `-n` when the
@@ -3797,13 +3810,23 @@ mod tests {
         let forward_inplane = Vector3::new(0.0, 1.0, 0.0);
         let vel = Vector3::new(7000.0, 100.0, 50.0); // +z (out-of-plane) component
         let steered = steering.apply(forward_inplane, vel);
-        assert!((steered.norm() - 1.0).abs() < 1e-9, "steered direction must stay unit");
-        assert!(steered.z < 0.0, "thrust must tilt toward -z to null +z velocity, got {}", steered.z);
+        assert!(
+            (steered.norm() - 1.0).abs() < 1e-9,
+            "steered direction must stay unit"
+        );
+        assert!(
+            steered.z < 0.0,
+            "thrust must tilt toward -z to null +z velocity, got {}",
+            steered.z
+        );
 
         // Disabled steering (no normal) is a no-op.
         let off = PlaneSteering::default();
         let same = off.apply(forward_inplane, vel);
-        assert!((same - forward_inplane).norm() < 1e-12, "disabled steering must pass through");
+        assert!(
+            (same - forward_inplane).norm() < 1e-12,
+            "disabled steering must pass through"
+        );
     }
 
     fn nominal_footprint_env() -> FootprintEnvironment {

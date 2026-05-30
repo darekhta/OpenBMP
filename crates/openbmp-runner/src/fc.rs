@@ -34,10 +34,9 @@ use openbmp_fc::topics::{
     ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, CommsRegionStatePublish,
     EffectorCommandSet, EngineCommandSet, EngineDemand, EstimatorMode,
     EstimatorRegimeRegionStatePublish, EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic,
-    GuidanceCutoff,
-    FdirStatus, GnssSample, HealthRegionStatePublish, ImuSample, MagnetometerSample,
-    MissionRegionStatePublish, MissionStatePublish, PositionEstimate, ReferenceState, SensorStatus,
-    StarTrackerSample, VehicleStatus,
+    FdirStatus, GnssSample, GuidanceCutoff, HealthRegionStatePublish, ImuSample,
+    MagnetometerSample, MissionRegionStatePublish, MissionStatePublish, PositionEstimate,
+    ReferenceState, SensorStatus, StarTrackerSample, VehicleStatus,
 };
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
@@ -53,11 +52,10 @@ use openbmp_physics::profile::{
 };
 use openbmp_scenario::{
     FcActuatorChannelsConfig, FcAntiWindupConfig, FcAscentReferenceConfig, FcAscentReferenceMethod,
-    FcAutopilotKind,
-    FcAutopilotParams, FcConfig, FcEkfConfig, FcEstimatorKind, FcEstimatorLanesConfig,
-    FcEstimatorVoterKind, FcFdirConfig, FcFdirDetectorKind, FcFdirDetectorKindV5, FcGainsConfig,
-    FcGravityModelKind, FcGuidanceKind, FcHealthConfig, FcMagFieldKind, FcMekfConfig,
-    FcPhaseAuthorityConfig, FcTrajectoryKind,
+    FcAutopilotKind, FcAutopilotParams, FcConfig, FcEkfConfig, FcEstimatorKind,
+    FcEstimatorLanesConfig, FcEstimatorVoterKind, FcFdirConfig, FcFdirDetectorKind,
+    FcFdirDetectorKindV5, FcGainsConfig, FcGravityModelKind, FcGuidanceKind, FcHealthConfig,
+    FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig, FcTrajectoryKind,
 };
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
@@ -570,14 +568,25 @@ fn build_ascent_reference_generator(
             Ok(Box::new(generator))
         }
         FcAscentReferenceMethod::AscentSequence => {
-            let kick_start = cfg.kick_start_speed_m_s.ok_or_else(invalid("kick_start_speed_m_s"))?;
-            let kick_end = cfg.kick_end_speed_m_s.ok_or_else(invalid("kick_end_speed_m_s"))?;
+            let kick_start = cfg
+                .kick_start_speed_m_s
+                .ok_or_else(invalid("kick_start_speed_m_s"))?;
+            let kick_end = cfg
+                .kick_end_speed_m_s
+                .ok_or_else(invalid("kick_end_speed_m_s"))?;
             let kick_angle = cfg.kick_angle_rad.ok_or_else(invalid("kick_angle_rad"))?;
-            let handoff = cfg.peg_handoff_speed_m_s.ok_or_else(invalid("peg_handoff_speed_m_s"))?;
-            let insertion_radius_m = cfg.insertion_radius_m.ok_or_else(invalid("insertion_radius_m"))?;
-            let exhaust_velocity_m_s = cfg.exhaust_velocity_m_s.ok_or_else(invalid("exhaust_velocity_m_s"))?;
-            let initial_thrust_accel_m_s2 =
-                cfg.initial_thrust_accel_m_s2.ok_or_else(invalid("initial_thrust_accel_m_s2"))?;
+            let handoff = cfg
+                .peg_handoff_speed_m_s
+                .ok_or_else(invalid("peg_handoff_speed_m_s"))?;
+            let insertion_radius_m = cfg
+                .insertion_radius_m
+                .ok_or_else(invalid("insertion_radius_m"))?;
+            let exhaust_velocity_m_s = cfg
+                .exhaust_velocity_m_s
+                .ok_or_else(invalid("exhaust_velocity_m_s"))?;
+            let initial_thrust_accel_m_s2 = cfg
+                .initial_thrust_accel_m_s2
+                .ok_or_else(invalid("initial_thrust_accel_m_s2"))?;
             let downrange = cfg.downrange_axis_eci.unwrap_or([1.0, 0.0, 0.0]);
             let initial_t_go = cfg.peg_initial_t_go_s.unwrap_or(300.0);
             let generator = SequencedAscentReference::new(
@@ -610,10 +619,15 @@ fn build_peg(
     cfg: &FcAscentReferenceConfig,
     min_speed_m_s: f64,
 ) -> Result<PegAscentReference, ControllerError> {
-    let insertion_radius_m = cfg.insertion_radius_m.ok_or_else(invalid("insertion_radius_m"))?;
-    let exhaust_velocity_m_s = cfg.exhaust_velocity_m_s.ok_or_else(invalid("exhaust_velocity_m_s"))?;
-    let initial_thrust_accel_m_s2 =
-        cfg.initial_thrust_accel_m_s2.ok_or_else(invalid("initial_thrust_accel_m_s2"))?;
+    let insertion_radius_m = cfg
+        .insertion_radius_m
+        .ok_or_else(invalid("insertion_radius_m"))?;
+    let exhaust_velocity_m_s = cfg
+        .exhaust_velocity_m_s
+        .ok_or_else(invalid("exhaust_velocity_m_s"))?;
+    let initial_thrust_accel_m_s2 = cfg
+        .initial_thrust_accel_m_s2
+        .ok_or_else(invalid("initial_thrust_accel_m_s2"))?;
     let downrange = cfg.downrange_axis_eci.unwrap_or([1.0, 0.0, 0.0]);
     let initial_t_go = cfg.peg_initial_t_go_s.unwrap_or(300.0);
     let generator = PegAscentReference::new(
@@ -1632,7 +1646,8 @@ mod tests {
             allowed_engines: too_many,
         }];
         let graph = MissionPhaseGraph::new(phases, Vec::new(), p, &[]).unwrap();
-        let err = build_authority(&graph, None).expect_err("over-capacity cluster must fail closed");
+        let err =
+            build_authority(&graph, None).expect_err("over-capacity cluster must fail closed");
         let msg = format!("{err}");
         assert!(
             msg.contains("MAX_ENGINE_COMMANDS"),

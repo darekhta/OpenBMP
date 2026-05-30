@@ -72,8 +72,8 @@ propellant            = { density_kg_m3 = 1030.0, label = "synthetic_kerolox_bul
 initial_fill_fraction = 1.0
 moving_mass           = { kind = "rigid_liquid" }
 
-# 9-engine octaweb cluster (1 center + 8 ring); each ~850 kN, Isp 300 s,
-# drawing from `prop`, gimbal limit 5 deg for TVC.
+# 9-engine octaweb cluster (1 center + 8 ring); each synthetic 500 kN,
+# Isp 340 s, drawing from `prop`, gimbal limit 5 deg for TVC.
 [[vehicle.assembly.engines]]
 id = "eng_0"
 mounted_to = "core"

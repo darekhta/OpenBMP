@@ -52,7 +52,12 @@ fn run_and_parse(scenario_rel: &str) -> Vec<Sample> {
     let text = fs::read_to_string(csv).expect("read CSV");
     let mut lines = text.lines();
     let header: Vec<&str> = lines.next().expect("header").split(',').collect();
-    let col = |n: &str| header.iter().position(|h| *h == n).unwrap_or_else(|| panic!("col {n}"));
+    let col = |n: &str| {
+        header
+            .iter()
+            .position(|h| *h == n)
+            .unwrap_or_else(|| panic!("col {n}"))
+    };
     let (px, py, pz, vx, vy, vz) = (
         col("position_x_m"),
         col("position_y_m"),
@@ -64,9 +69,14 @@ fn run_and_parse(scenario_rel: &str) -> Vec<Sample> {
     lines
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
-            let f: Vec<f64> =
-                l.split(',').map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN)).collect();
-            Sample { r: [f[px], f[py], f[pz]], v: [f[vx], f[vy], f[vz]] }
+            let f: Vec<f64> = l
+                .split(',')
+                .map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN))
+                .collect();
+            Sample {
+                r: [f[px], f[py], f[pz]],
+                v: [f[vx], f[vy], f[vz]],
+            }
         })
         .collect()
 }
@@ -93,7 +103,9 @@ fn orbit_of(s: Sample) -> Orbit {
         s.r[0] * s.v[1] - s.r[1] * s.v[0],
     ];
     let h_mag = norm(h);
-    let e = (1.0 + 2.0 * eps * h_mag * h_mag / (MU_EARTH * MU_EARTH)).max(0.0).sqrt();
+    let e = (1.0 + 2.0 * eps * h_mag * h_mag / (MU_EARTH * MU_EARTH))
+        .max(0.0)
+        .sqrt();
     Orbit {
         specific_energy: eps,
         eccentricity: e,
@@ -111,14 +123,26 @@ fn phalcon9_orbit_iers_inserts_and_frame_is_engaged() {
     // (1) The IERS-frame launch reaches a bound, near-circular,
     //     near-equatorial LEO.
     let o = orbit_of(*iers.last().expect("final IERS sample"));
-    assert!(o.specific_energy < 0.0, "IERS insertion must be bound, eps={:.3e}", o.specific_energy);
-    assert!(o.eccentricity < 0.02, "IERS insertion eccentricity {:.4} must be near-circular", o.eccentricity);
+    assert!(
+        o.specific_energy < 0.0,
+        "IERS insertion must be bound, eps={:.3e}",
+        o.specific_energy
+    );
+    assert!(
+        o.eccentricity < 0.02,
+        "IERS insertion eccentricity {:.4} must be near-circular",
+        o.eccentricity
+    );
     assert!(
         (150.0..600.0).contains(&o.perigee_km),
         "IERS perigee {:.1} km must be a sustainable LEO",
         o.perigee_km
     );
-    assert!(o.inclination_deg < 1.0, "IERS inclination {:.3} deg must stay near-equatorial", o.inclination_deg);
+    assert!(
+        o.inclination_deg < 1.0,
+        "IERS inclination {:.3} deg must stay near-equatorial",
+        o.inclination_deg
+    );
 
     // (2) The IERS frame is genuinely engaged: the trajectory diverges from
     //     the uniform-rotation run by a non-trivial amount (precession /

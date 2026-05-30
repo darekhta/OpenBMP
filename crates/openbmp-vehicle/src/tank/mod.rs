@@ -34,12 +34,13 @@
 //!   `reaction_body()` — both must be pure observers of the model's
 //!   internal state, so the runner can call them in any order
 //!   without changing observable behaviour.
-//! - One-step lag on `(accel_body, omega_body)`: the kernel can't
+//! - One-step lag on `(specific_force_body, omega_body)`: the kernel can't
 //!   supply current-step accelerations before force evaluation
 //!   completes (circular dependency through tank reaction force /
-//!   mass contribution). The runner caches `(accel, omega)` from
-//!   step `n` and feeds them to `step()` at the start of step
-//!   `n+1`. The first step uses zeros.
+//!   mass contribution). The flight runner caches proper
+//!   acceleration `(total acceleration - gravity, omega)` from step
+//!   `n` and feeds it to `step()` at the start of step `n+1`. The
+//!   first step uses zeros.
 //! - Semi-implicit Euler default (single sub-step inside the main
 //!   RK4). Bit-stable across reruns at fixed sub-step count; per-tank
 //!   `slosh_substeps` opt-in for higher fidelity changes the byte
@@ -397,8 +398,10 @@ impl Tank {
     }
 
     /// Advance the moving-mass internal state by one kernel base
-    /// tick. `accel_body_m_s2` and `omega_body_rad_s` come from the
-    /// **prior** kernel step (one-step lag — see module docs).
+    /// tick. In the flight runner, `accel_body_m_s2` is the
+    /// body-frame specific force from the **prior** kernel step
+    /// (one-step lag — see module docs), paired with the prior
+    /// `omega_body_rad_s`.
     ///
     /// # Errors
     ///
@@ -464,10 +467,12 @@ pub trait MovingMassModel: Send + Sync + std::fmt::Debug {
 
     /// Advance internal state by one main-step `dt`.
     ///
-    /// `accel_body_m_s2` and `omega_body_rad_s` are the **prior
-    /// step's** body-frame translational acceleration and angular
-    /// rate at the parent body's reference point. The runner is
-    /// responsible for the one-step lag — see module docs.
+    /// In the flight runner, `accel_body_m_s2` is the **prior
+    /// step's** body-frame specific force at the parent body's
+    /// reference point (proper acceleration = total acceleration minus
+    /// sampled gravity), and `omega_body_rad_s` is the prior angular
+    /// rate. The runner is responsible for the one-step lag — see
+    /// module docs.
     ///
     /// # Errors
     ///

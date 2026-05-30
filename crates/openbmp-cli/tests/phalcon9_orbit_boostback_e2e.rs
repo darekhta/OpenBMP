@@ -50,7 +50,12 @@ fn parse(csv: &Path) -> Vec<Row> {
     let text = fs::read_to_string(csv).expect("read CSV");
     let mut lines = text.lines();
     let header: Vec<&str> = lines.next().expect("header").split(',').collect();
-    let col = |n: &str| header.iter().position(|h| *h == n).unwrap_or_else(|| panic!("col {n}"));
+    let col = |n: &str| {
+        header
+            .iter()
+            .position(|h| *h == n)
+            .unwrap_or_else(|| panic!("col {n}"))
+    };
     let (ti, px, py, pz, vx, vy, vz) = (
         col("time_s"),
         col("position_x_m"),
@@ -69,7 +74,10 @@ fn parse(csv: &Path) -> Vec<Row> {
     lines
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
-            let f: Vec<f64> = l.split(',').map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN)).collect();
+            let f: Vec<f64> = l
+                .split(',')
+                .map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN))
+                .collect();
             Row {
                 t: f[ti],
                 r: [f[px], f[py], f[pz]],
@@ -82,7 +90,9 @@ fn parse(csv: &Path) -> Vec<Row> {
 }
 
 fn at<'a>(rows: &'a [Row], t: f64) -> &'a Row {
-    rows.iter().min_by(|a, b| (a.t - t).abs().partial_cmp(&(b.t - t).abs()).unwrap()).expect("row")
+    rows.iter()
+        .min_by(|a, b| (a.t - t).abs().partial_cmp(&(b.t - t).abs()).unwrap())
+        .expect("row")
 }
 
 #[test]
@@ -108,21 +118,32 @@ fn phalcon9_boostback_ascends_to_orbit_and_booster_burns_retrograde() {
         last.r[0] * last.v[1] - last.r[1] * last.v[0],
     ];
     let h_mag = (h[0] * h[0] + h[1] * h[1] + h[2] * h[2]).sqrt();
-    let e = (1.0 + 2.0 * eps * h_mag * h_mag / (MU_EARTH * MU_EARTH)).max(0.0).sqrt();
+    let e = (1.0 + 2.0 * eps * h_mag * h_mag / (MU_EARTH * MU_EARTH))
+        .max(0.0)
+        .sqrt();
     let perigee_km = (a * (1.0 - e) - EARTH_MEAN_RADIUS_M) / 1000.0;
     assert!(eps < 0.0, "ascent must reach a bound orbit");
     assert!(e < 0.05, "ascent must be near-circular, e={e:.4}");
-    assert!((150.0..500.0).contains(&perigee_km), "ascent perigee {perigee_km:.1} km must be LEO");
+    assert!(
+        (150.0..500.0).contains(&perigee_km),
+        "ascent perigee {perigee_km:.1} km must be LEO"
+    );
 
     // (2) The booster burns its dedicated boostback propellant across the
     //     scripted window (ignite 250 s → cut 290 s).
     let m_before = at(&rows, 248.0).booster_mass;
     let m_after = at(&rows, 292.0).booster_mass;
     let burned = m_before - m_after;
-    assert!(burned > 3000.0, "boostback engine must burn its reserve; burned {burned:.0} kg");
+    assert!(
+        burned > 3000.0,
+        "boostback engine must burn its reserve; burned {burned:.0} kg"
+    );
     // ...and the burn ends (mass flat after the cut).
     let m_coast = at(&rows, 350.0).booster_mass;
-    assert!((m_after - m_coast).abs() < 1.0, "boostback engine must cut (mass flat after 290 s)");
+    assert!(
+        (m_after - m_coast).abs() < 1.0,
+        "boostback engine must cut (mass flat after 290 s)"
+    );
 
     // (3) The burn DECELERATES the booster — the boostback maneuver.
     let v_before = at(&rows, 248.0).booster_speed;

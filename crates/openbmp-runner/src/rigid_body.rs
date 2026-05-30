@@ -212,7 +212,7 @@ pub fn run(
         integrator: runtime_integrator,
         force_model: kernel_vehicle,
         mass_model: rigid_models,
-        environment: RuntimeEnvironment::from_document(document, &frame)?,
+        environment: RuntimeEnvironment::from_document(document, resolved_files, &frame)?,
         stop_condition: AnyStop::new(
             automatic_ground_impact(document),
             EndTime::new(SimTime::from_seconds(document.time.stop_s)),
@@ -316,14 +316,7 @@ pub fn run(
             engine_rack.apply_commands(&pending_engine_events)?;
         }
         if let Some(bridge) = &mut fc_bridge {
-            let gravity = Vector3::new(
-                0.0,
-                0.0,
-                -document
-                    .environment
-                    .gravity_m_s2
-                    .unwrap_or(openbmp_physics::gravity::STANDARD_GRAVITY_M_S2),
-            );
+            let gravity = kernel.current_environment_sample()?.gravity_eci_m_s2;
             bridge.tick_rigid_body(
                 kernel.current_state(),
                 kernel.current_step(),
@@ -440,7 +433,20 @@ pub fn run(
             let accel_body = inverse_orientation * accel_eci;
             let omega_body = new_state.angular_velocity.vector;
             if !tank_rack.is_empty() {
-                tank_rack.update_drivers(accel_body, omega_body);
+                // Propellant slosh is driven by the SPECIFIC FORCE (proper,
+                // non-gravitational acceleration — what the tank structurally
+                // feels / an accelerometer reads), NOT the total kinematic
+                // acceleration. `accel_eci` (finite-differenced from the
+                // integrated velocity) includes gravity; feeding it as the
+                // lateral forcing makes the body-frame gravity component
+                // spuriously drive the pendulum, and in freefall — where the
+                // axial restoring vanishes — that self-excites through the
+                // reaction → body-accel → forcing loop. Subtract the scenario's
+                // own gravitational acceleration to recover the specific force:
+                // ~0 in coast (no spurious drive), ~thrust/m under power.
+                let gravity_eci = kernel.current_environment_sample()?.gravity_eci_m_s2;
+                let slosh_accel_body = inverse_orientation * (accel_eci - gravity_eci);
+                tank_rack.update_drivers(slosh_accel_body, omega_body);
             }
             // The bending mode is forced by the body lateral specific force.
             structural_rack.update_drivers(accel_body);
@@ -1979,20 +1985,16 @@ fn build_moment_model(
 
     let direct_torque_adapter = build_direct_torque_adapter(document);
 
-    // Combinations of direct-torque with engine-cluster or tank-rack
-    // moment models are not supported. Closed-loop FC validation
-    // scenarios use direct-torque alone; if a downstream scenario
-    // combines them, fail closed.
-    if direct_torque_adapter.is_some()
-        && (!assembly.engines.is_empty() || !assembly.tanks.is_empty())
-    {
-        return Err(RunnerError::UnsupportedScenario {
-            what: "direct_torque effectors combined with engine-cluster or tank moment models \
-                   is not supported; use a dedicated closed-loop validation \
-                   scenario without engines/tanks"
-                .to_string(),
-        });
-    }
+    // direct_torque effectors coexist with the engine-cluster and
+    // tank-rack moment models: every tick the per-tick loop builds and
+    // sets the engine, tank, and effector-actual snapshots independently
+    // (see the `set_engine_snapshot` / `set_tank_snapshot` /
+    // `set_effector_actuals` calls in `run_rigid_body`), and the kernel
+    // sums each NamedMomentModel. This combination drives RCS-class
+    // body-torque effectors — e.g. a coast attitude-hold thruster set
+    // that arrests propellant-slosh-induced tumble with the main engines
+    // off (no gimbal authority). Validated end-to-end by the
+    // `phalcon9-orbit-slosh-rcs` scenario / `phalcon9_orbit_slosh_rcs_e2e`.
     if let Some(adapter) = direct_torque_adapter {
         named.push(NamedMomentModel::new("direct_torque", Box::new(adapter)));
     }

@@ -23,7 +23,7 @@
 #                        Powered Explicit Guidance (PEG) trims the orbit
 #                        in its near-horizontal terminal regime. PEG steers
 #                        and the `seco` event cuts the engine on the PEG
-#                        time-to-go (~0.5 s short of circular), leaving
+#                        time-to-go reaches zero, leaving
 #                        propellant margin — a CONTROLLED cutoff, not a
 #                        propellant-limited burn-to-depletion.
 #   4. orbit           - engines idle (eng_vac gated to throttle 0 via
@@ -122,14 +122,14 @@ propellant            = { density_kg_m3 = 1030.0, label = "synthetic_kerolox_bul
 initial_fill_fraction = 1.0
 moving_mass           = { kind = "rigid_liquid" }
 
-# Stage-1 cluster: 1 center + 8 ring, each 500 kN, Isp 300 s, from
+# Stage-1 cluster: 1 center + 8 ring, each 854 kN, Isp 340 s, from
 # s1_prop, gimballed for TVC.
 [[vehicle.assembly.engines]]
 id = "eng_s1_0"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, 0.0, -14.0]
-limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -137,7 +137,7 @@ id = "eng_s1_1"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [1.6, 0.0, -14.0]
-limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -145,7 +145,7 @@ id = "eng_s1_2"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [1.13137, 1.13137, -14.0]
-limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -153,7 +153,7 @@ id = "eng_s1_3"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, 1.6, -14.0]
-limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -161,7 +161,7 @@ id = "eng_s1_4"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [-1.6, 0.0, -14.0]
-limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -169,7 +169,7 @@ id = "eng_s1_5"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [-1.13137, 1.13137, -14.0]
-limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -177,7 +177,7 @@ id = "eng_s1_6"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [-1.13137, -1.13137, -14.0]
-limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -185,7 +185,7 @@ id = "eng_s1_7"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, -1.6, -14.0]
-limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -193,17 +193,17 @@ id = "eng_s1_8"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [1.13137, -1.13137, -14.0]
-limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
-# Stage-2 vacuum engine (mounted to `upper`): 260 kN, Isp 348 s, from
+# Stage-2 vacuum engine (mounted to `upper`): 981 kN, Isp 348 s, from
 # s2_prop, gimballed for TVC. Below the upper-stage CG for a pitch arm.
 [[vehicle.assembly.engines]]
 id = "eng_vac"
 mounted_to = "upper"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, 0.0, 10.0]
-limits = { max_thrust_n = 450000.0, isp_s = 348.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 981_000.0, isp_s = 348.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s2_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [environment]
@@ -375,7 +375,7 @@ action  = { kind = "emit_telemetry_marker", tag = "apogee" }
 [[mission.events]]
 id      = "seco"
 once    = true
-trigger = { kind = "at_guidance_cutoff", time_to_go_s = 0.5 }
+trigger = { kind = "at_guidance_cutoff", time_to_go_s = 0.0 }
 action  = { kind = "emit_telemetry_marker", tag = "seco" }
 
 [[mission.transitions]]
@@ -437,7 +437,7 @@ psi_max_rad              = 0.15
 # Stage-2 upper: PEG terminal insertion at apogee.
 [fc.ascent_reference_by_phase."mission.phases.circularize"]
 method                    = "peg"
-insertion_radius_m        = 6_652_000.0
+insertion_radius_m        = 6_710_000.0
 exhaust_velocity_m_s      = 3413.0
 initial_thrust_accel_m_s2 = 5.0
 peg_initial_t_go_s        = 120.0

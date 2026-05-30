@@ -57,7 +57,12 @@ fn final_orbit(scenario_rel: &str) -> Orbit {
     let text = fs::read_to_string(csv).expect("read CSV");
     let mut lines = text.lines();
     let header: Vec<&str> = lines.next().expect("header").split(',').collect();
-    let col = |n: &str| header.iter().position(|h| *h == n).unwrap_or_else(|| panic!("col {n}"));
+    let col = |n: &str| {
+        header
+            .iter()
+            .position(|h| *h == n)
+            .unwrap_or_else(|| panic!("col {n}"))
+    };
     let (px, py, pz, vx, vy, vz) = (
         col("position_x_m"),
         col("position_y_m"),
@@ -66,17 +71,29 @@ fn final_orbit(scenario_rel: &str) -> Orbit {
         col("velocity_y_m_s"),
         col("velocity_z_m_s"),
     );
-    let last = lines.filter(|l| !l.trim().is_empty()).next_back().expect("final row");
-    let f: Vec<f64> = last.split(',').map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN)).collect();
+    let last = lines
+        .filter(|l| !l.trim().is_empty())
+        .next_back()
+        .expect("final row");
+    let f: Vec<f64> = last
+        .split(',')
+        .map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN))
+        .collect();
     let r = [f[px], f[py], f[pz]];
     let v = [f[vx], f[vy], f[vz]];
     let r_mag = norm(r);
     let speed_sq = v.iter().map(|c| c * c).sum::<f64>();
     let eps = 0.5 * speed_sq - MU_EARTH / r_mag;
     let a = -MU_EARTH / (2.0 * eps);
-    let h = [r[1] * v[2] - r[2] * v[1], r[2] * v[0] - r[0] * v[2], r[0] * v[1] - r[1] * v[0]];
+    let h = [
+        r[1] * v[2] - r[2] * v[1],
+        r[2] * v[0] - r[0] * v[2],
+        r[0] * v[1] - r[1] * v[0],
+    ];
     let h_mag = norm(h);
-    let e = (1.0 + 2.0 * eps * h_mag * h_mag / (MU_EARTH * MU_EARTH)).max(0.0).sqrt();
+    let e = (1.0 + 2.0 * eps * h_mag * h_mag / (MU_EARTH * MU_EARTH))
+        .max(0.0)
+        .sqrt();
     Orbit {
         bound: eps < 0.0,
         eccentricity: e,
@@ -93,13 +110,21 @@ fn phalcon9_orbit_flex_inserts_and_bending_couples() {
     // (1) The flex vehicle still reaches a bound, near-circular,
     //     near-equatorial LEO.
     assert!(flex.bound, "flex insertion must be bound");
-    assert!(flex.eccentricity < 0.05, "flex insertion must be near-circular, e={:.4}", flex.eccentricity);
+    assert!(
+        flex.eccentricity < 0.05,
+        "flex insertion must be near-circular, e={:.4}",
+        flex.eccentricity
+    );
     assert!(
         (150.0..500.0).contains(&flex.perigee_km),
         "flex perigee {:.1} km must be a sustainable LEO",
         flex.perigee_km
     );
-    assert!(flex.inclination_deg < 2.0, "flex inclination {:.3} deg must stay near-equatorial", flex.inclination_deg);
+    assert!(
+        flex.inclination_deg < 2.0,
+        "flex inclination {:.3} deg must stay near-equatorial",
+        flex.inclination_deg
+    );
 
     // (2) The bending mode genuinely couples — the flex insertion differs
     //     measurably from the rigid run (a no-op flex model would be
@@ -110,7 +135,10 @@ fn phalcon9_orbit_flex_inserts_and_bending_couples() {
         perigee_diff > 10.0 || ecc_diff > 0.002,
         "bending mode must measurably couple into the trajectory; \
          flex perigee {:.1} km vs rigid {:.1} km (Δ {perigee_diff:.1}), e {:.4} vs {:.4}",
-        flex.perigee_km, rigid.perigee_km, flex.eccentricity, rigid.eccentricity
+        flex.perigee_km,
+        rigid.perigee_km,
+        flex.eccentricity,
+        rigid.eccentricity
     );
 
     println!(

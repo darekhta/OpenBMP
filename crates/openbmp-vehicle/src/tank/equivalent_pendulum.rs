@@ -39,6 +39,18 @@
 //! The pendulum is decoupled across `(x, y)` — cross-axis slosh
 //! coupling (e.g. swirling) is not modelled.
 //!
+//! In low axial acceleration, a scenario may enable the capillary
+//! surface-wave term
+//!
+//! ```text
+//! ω_cap² = (σ / ρ) · k³ · tanh(k · h),  k = ξ_1 / a
+//! ```
+//!
+//! which is the zero-gravity limit of the linear gravity-capillary
+//! surface-wave dispersion relation using the same cylindrical first
+//! mode wavenumber. This keeps freefall slosh asymptotically stable
+//! without fitting an arbitrary frequency to a trajectory.
+//!
 //! # Integration scheme
 //!
 //! The integration uses **semi-implicit (symplectic) Euler** rather than
@@ -137,6 +149,42 @@ fn clamp_slosh_amplitude(theta_rad: &mut f64, theta_dot_rad_s: &mut f64) {
     }
 }
 
+/// Capillary restoring model used in low axial acceleration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CapillaryFreefallRestoring {
+    surface_tension_n_m: f64,
+    damping_ratio_zeta: f64,
+}
+
+impl CapillaryFreefallRestoring {
+    /// Construct a capillary freefall restoring model.
+    ///
+    /// `surface_tension_n_m` is the liquid-vapour surface tension. The
+    /// damping ratio applies when the capillary term dominates the axial
+    /// acceleration term; use `1.0` for critical damping.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TankError::InvalidBaffle`] when either value is non-finite,
+    /// or when surface tension is not positive / damping is negative.
+    pub fn new(surface_tension_n_m: f64, damping_ratio_zeta: f64) -> Result<Self, TankError> {
+        if !surface_tension_n_m.is_finite() || surface_tension_n_m <= 0.0 {
+            return Err(TankError::InvalidBaffle {
+                reason: "surface_tension_n_m must be finite and positive",
+            });
+        }
+        if !damping_ratio_zeta.is_finite() || damping_ratio_zeta < 0.0 {
+            return Err(TankError::InvalidBaffle {
+                reason: "freefall damping_ratio_zeta must be finite and non-negative",
+            });
+        }
+        Ok(Self {
+            surface_tension_n_m,
+            damping_ratio_zeta,
+        })
+    }
+}
+
 /// Equivalent-pendulum slosh model.
 #[derive(Debug, Clone)]
 pub struct EquivalentPendulum {
@@ -145,6 +193,10 @@ pub struct EquivalentPendulum {
     tank_radius_m: f64,
     propellant_density_kg_m3: f64,
     damping_ratio_zeta: f64,
+    /// Optional capillary restoring term for low axial acceleration.
+    /// Defaults to `None`, preserving the bare Abramson launch-vehicle
+    /// pendulum for existing scenarios.
+    capillary_freefall: Option<CapillaryFreefallRestoring>,
     pending_drain_kg_per_s: f64,
 
     theta_x_rad: f64,
@@ -209,6 +261,7 @@ impl EquivalentPendulum {
             tank_radius_m: radius_m,
             propellant_density_kg_m3: propellant.density_kg_m3,
             damping_ratio_zeta,
+            capillary_freefall: None,
             pending_drain_kg_per_s: 0.0,
             theta_x_rad: 0.0,
             theta_dot_x_rad_s: 0.0,
@@ -251,6 +304,24 @@ impl EquivalentPendulum {
         Ok(())
     }
 
+    /// Enable the capillary surface-wave restoring term in freefall.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TankError::InvalidBaffle`] when the capillary parameters are
+    /// invalid.
+    pub fn with_capillary_freefall_restoring(
+        mut self,
+        surface_tension_n_m: f64,
+        damping_ratio_zeta: f64,
+    ) -> Result<Self, TankError> {
+        self.capillary_freefall = Some(CapillaryFreefallRestoring::new(
+            surface_tension_n_m,
+            damping_ratio_zeta,
+        )?);
+        Ok(self)
+    }
+
     /// Current slosh-tilt angles `(θ_x, θ_y)`, radians.
     #[must_use]
     pub fn slosh_angles_rad(&self) -> (f64, f64) {
@@ -285,6 +356,21 @@ impl EquivalentPendulum {
         }
         let arg = KSI_1 * h / self.tank_radius_m;
         (axial_accel_m_s2 / self.tank_radius_m) * KSI_1 * arg.tanh()
+    }
+
+    /// Capillary surface-wave contribution to the first-mode natural
+    /// frequency, `ω_cap² = (σ/ρ) k³ tanh(kh)`.
+    #[must_use]
+    pub fn capillary_omega_squared_rad2_s2(&self, surface_tension_n_m: f64) -> f64 {
+        if surface_tension_n_m <= 0.0 {
+            return 0.0;
+        }
+        let h = self.fluid_height_m();
+        if h <= 0.0 {
+            return 0.0;
+        }
+        let k = KSI_1 / self.tank_radius_m;
+        (surface_tension_n_m / self.propellant_density_kg_m3) * k.powi(3) * (k * h).tanh()
     }
 
     /// Closed-form pendulum length at the current fluid level.
@@ -357,14 +443,32 @@ impl MovingMassModel for EquivalentPendulum {
         let axial_accel = accel_body_m_s2.z;
         let lateral_accel_x = accel_body_m_s2.x;
         let lateral_accel_y = accel_body_m_s2.y;
-        let omega_n_squared = self.omega_n_squared_rad2_s2(axial_accel);
-        let omega_n = omega_n_squared.sqrt();
+        let thrust_omega_n_squared = self.omega_n_squared_rad2_s2(axial_accel);
         let l_pend = self.pendulum_length_m();
         self.last_pendulum_length_m = l_pend;
 
+        // Optional capillary low-g restoring. Under axial thrust the
+        // Abramson term dominates; in freefall it vanishes and the
+        // gravity-capillary dispersion relation leaves only the
+        // surface-tension term. The damping ratio switches to the
+        // capillary model's value only when that capillary term dominates.
+        let capillary = self.capillary_freefall.map(|model| {
+            (
+                self.capillary_omega_squared_rad2_s2(model.surface_tension_n_m),
+                model.damping_ratio_zeta,
+            )
+        });
+        let capillary_omega_squared = capillary.map_or(0.0, |(omega_sq, _)| omega_sq);
+        let omega_n_squared = thrust_omega_n_squared + capillary_omega_squared;
+        let damping_ratio = match capillary {
+            Some((omega_sq, zeta)) if omega_sq > thrust_omega_n_squared => zeta,
+            _ => self.damping_ratio_zeta,
+        };
+        let damping_coeff = 2.0 * damping_ratio * omega_n_squared.sqrt();
+
         // 3. θ̈ for x axis (locked operand order: damping, restoring,
         //    forcing, then theta_ddot = forcing - damping - restoring).
-        let damping_x = 2.0 * self.damping_ratio_zeta * omega_n * self.theta_dot_x_rad_s;
+        let damping_x = damping_coeff * self.theta_dot_x_rad_s;
         let restoring_x = omega_n_squared * self.theta_x_rad;
         let forcing_x = lateral_accel_x / l_pend;
         let theta_ddot_x = forcing_x - damping_x - restoring_x;
@@ -377,7 +481,7 @@ impl MovingMassModel for EquivalentPendulum {
         clamp_slosh_amplitude(&mut self.theta_x_rad, &mut self.theta_dot_x_rad_s);
 
         // 5. Same for y axis (declared after x).
-        let damping_y = 2.0 * self.damping_ratio_zeta * omega_n * self.theta_dot_y_rad_s;
+        let damping_y = damping_coeff * self.theta_dot_y_rad_s;
         let restoring_y = omega_n_squared * self.theta_y_rad;
         let forcing_y = lateral_accel_y / l_pend;
         let theta_ddot_y = forcing_y - damping_y - restoring_y;
@@ -496,6 +600,17 @@ mod tests {
     }
 
     #[test]
+    fn capillary_frequency_matches_surface_wave_limit() {
+        let pend = EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.0)
+            .unwrap();
+        let sigma = 0.072;
+        let k = KSI_1 / 0.5;
+        let expected = (sigma / 1000.0) * k.powi(3) * (k * 2.0).tanh();
+        let omega_sq = pend.capillary_omega_squared_rad2_s2(sigma);
+        assert!((omega_sq - expected).abs() < 1e-12);
+    }
+
+    #[test]
     fn pendulum_length_falls_back_when_fluid_empty() {
         let mut pend =
             EquivalentPendulum::new(cylinder_a05_h2(), water(), 0.001, Vector3::zeros(), 0.0)
@@ -552,12 +667,19 @@ mod tests {
         let dt = Duration::from_seconds(0.01);
         // 5000 steps of zero-axial (freefall) with a steady lateral push.
         for _ in 0..5000 {
-            pend.step(Vector3::new(2.0, -1.5, 0.0), Vector3::zeros(), dt).unwrap();
+            pend.step(Vector3::new(2.0, -1.5, 0.0), Vector3::zeros(), dt)
+                .unwrap();
         }
         let (tx, ty) = pend.slosh_angles_rad();
         let (dx, dy) = pend.slosh_rates_rad_s();
-        assert!(tx.is_finite() && ty.is_finite(), "slosh angles must stay finite in coast");
-        assert!(dx.is_finite() && dy.is_finite(), "slosh rates must stay finite in coast");
+        assert!(
+            tx.is_finite() && ty.is_finite(),
+            "slosh angles must stay finite in coast"
+        );
+        assert!(
+            dx.is_finite() && dy.is_finite(),
+            "slosh rates must stay finite in coast"
+        );
         assert!(
             tx.abs() <= core::f64::consts::FRAC_PI_2 + 1.0e-9
                 && ty.abs() <= core::f64::consts::FRAC_PI_2 + 1.0e-9,
@@ -566,8 +688,33 @@ mod tests {
         // Reaction force / mass contribution stays finite (would otherwise
         // blow up the vehicle integrator).
         assert!(
-            pend.reaction_body().force_body_n.iter().all(|c| c.is_finite()),
+            pend.reaction_body()
+                .force_body_n
+                .iter()
+                .all(|c| c.is_finite()),
             "reaction force must stay finite"
+        );
+    }
+
+    #[test]
+    fn capillary_freefall_response_decays_without_fitted_frequency() {
+        let mut pend =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.005)
+                .unwrap()
+                .with_capillary_freefall_restoring(0.072, 1.0)
+                .unwrap();
+        pend.set_initial_slosh((0.05, 0.0), (0.0, 0.0)).unwrap();
+        let dt = Duration::from_seconds(0.02);
+        let initial = pend.slosh_angles_rad().0.abs();
+
+        for _ in 0..2000 {
+            pend.step(Vector3::zeros(), Vector3::zeros(), dt).unwrap();
+        }
+
+        let final_theta = pend.slosh_angles_rad().0.abs();
+        assert!(
+            final_theta < initial * 0.35,
+            "expected capillary-damped freefall decay; initial {initial}, final {final_theta}"
         );
     }
 

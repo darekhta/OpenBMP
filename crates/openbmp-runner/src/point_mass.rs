@@ -204,7 +204,7 @@ pub fn run(
         integrator: runtime_integrator,
         force_model: kernel_vehicle,
         mass_model,
-        environment: RuntimeEnvironment::from_document(document, &frame)?,
+        environment: RuntimeEnvironment::from_document(document, resolved_files, &frame)?,
         stop_condition: AnyStop::new(
             automatic_ground_impact(document),
             EndTime::new(SimTime::from_seconds(document.time.stop_s)),
@@ -306,14 +306,7 @@ pub fn run(
             engine_rack.apply_commands(&pending_engine_events)?;
         }
         if let Some(bridge) = &mut fc_bridge {
-            let gravity = Vector3::new(
-                0.0,
-                0.0,
-                -document
-                    .environment
-                    .gravity_m_s2
-                    .unwrap_or(openbmp_physics::gravity::STANDARD_GRAVITY_M_S2),
-            );
+            let gravity = kernel.current_environment_sample()?.gravity_eci_m_s2;
             bridge.tick_point_mass(
                 kernel.current_state(),
                 kernel.current_step(),

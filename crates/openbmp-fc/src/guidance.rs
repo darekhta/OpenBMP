@@ -15,9 +15,7 @@ use openbmp_physics::profile::{AscentReferenceGenerator, AscentState};
 use crate::error::{ControllerError, GuidanceError};
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
-use crate::topics::{
-    GuidanceCutoff, ImuSample, PositionEstimate, ReferenceState, VehicleStatus,
-};
+use crate::topics::{GuidanceCutoff, ImuSample, PositionEstimate, ReferenceState, VehicleStatus};
 
 /// Guidance configuration.
 #[derive(Clone, Debug)]

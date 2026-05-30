@@ -7968,6 +7968,44 @@ impl PropellantSpecConfig {
     }
 }
 
+/// Low-g / freefall restoring model for an equivalent-pendulum tank.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FreefallRestoringConfig {
+    /// Capillary surface-wave term,
+    /// `ω_cap² = (σ/ρ) · k³ · tanh(kh)`.
+    CapillarySurfaceWave {
+        /// Liquid-vapour surface tension, N/m.
+        surface_tension_n_m: f64,
+        /// Damping ratio used when the capillary term dominates; `1.0`
+        /// gives critical damping.
+        damping_ratio_zeta: f64,
+    },
+}
+
+impl FreefallRestoringConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        match *self {
+            Self::CapillarySurfaceWave {
+                surface_tension_n_m,
+                damping_ratio_zeta,
+            } => {
+                require_finite(&format!("{path}.surface_tension_n_m"), surface_tension_n_m)?;
+                require_positive(&format!("{path}.surface_tension_n_m"), surface_tension_n_m)?;
+                require_finite(&format!("{path}.damping_ratio_zeta"), damping_ratio_zeta)?;
+                if damping_ratio_zeta < 0.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: format!("{path}.damping_ratio_zeta"),
+                        value: damping_ratio_zeta,
+                        rule: "must be non-negative",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Moving-mass kind tagged enum. Four implementations.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -7979,6 +8017,10 @@ pub enum MovingMassKindConfig {
         /// Bare-tank damping ratio (typical academic value `0.005`).
         #[serde(default)]
         damping_ratio_zeta: f64,
+        /// Optional capillary surface-wave restoring term for low-g /
+        /// freefall slosh. Defaults to `None` (bare Abramson pendulum).
+        #[serde(default)]
+        freefall_restoring: Option<FreefallRestoringConfig>,
     },
     /// Linear translational alternative.
     EquivalentSpringMass {
@@ -8021,8 +8063,23 @@ impl MovingMassKindConfig {
         }
         match self {
             Self::RigidLiquid => {}
-            Self::EquivalentPendulum { damping_ratio_zeta }
-            | Self::EquivalentSpringMass { damping_ratio_zeta } => {
+            Self::EquivalentPendulum {
+                damping_ratio_zeta,
+                freefall_restoring,
+            } => {
+                require_finite(&path("damping_ratio_zeta"), *damping_ratio_zeta)?;
+                if *damping_ratio_zeta < 0.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("damping_ratio_zeta"),
+                        value: *damping_ratio_zeta,
+                        rule: "must be non-negative",
+                    });
+                }
+                if let Some(freefall_restoring) = freefall_restoring {
+                    freefall_restoring.validate(&path("freefall_restoring"))?;
+                }
+            }
+            Self::EquivalentSpringMass { damping_ratio_zeta } => {
                 require_finite(&path("damping_ratio_zeta"), *damping_ratio_zeta)?;
                 if *damping_ratio_zeta < 0.0 {
                     return Err(ScenarioError::InvalidNumber {
@@ -8394,8 +8451,9 @@ impl FcAscentReferenceConfig {
                     })?;
                 if !radius.is_finite() || radius <= 0.0 {
                     return Err(ScenarioError::InvalidFc {
-                        reason: "fc.ascent_reference.insertion_radius_m must be finite and positive"
-                            .to_owned(),
+                        reason:
+                            "fc.ascent_reference.insertion_radius_m must be finite and positive"
+                                .to_owned(),
                     });
                 }
                 Ok(())
@@ -8426,21 +8484,24 @@ impl FcAscentReferenceConfig {
     fn validate_peg(&self) -> Result<(), ScenarioError> {
         self.require_positive_field("insertion_radius_m", self.insertion_radius_m)?;
         self.require_positive_field("exhaust_velocity_m_s", self.exhaust_velocity_m_s)?;
-        self.require_positive_field(
-            "initial_thrust_accel_m_s2",
-            self.initial_thrust_accel_m_s2,
-        )?;
+        self.require_positive_field("initial_thrust_accel_m_s2", self.initial_thrust_accel_m_s2)?;
         Ok(())
     }
 
     fn validate_ascent_sequence(&self) -> Result<(), ScenarioError> {
         self.validate_peg()?;
-        let kick_start = self.require_positive_field("kick_start_speed_m_s", self.kick_start_speed_m_s)?;
-        let kick_end = self.require_positive_field("kick_end_speed_m_s", self.kick_end_speed_m_s)?;
-        let handoff = self.require_positive_field("peg_handoff_speed_m_s", self.peg_handoff_speed_m_s)?;
-        let kick_angle = self.kick_angle_rad.ok_or_else(|| ScenarioError::InvalidFc {
-            reason: "fc.ascent_reference.kick_angle_rad is required for ascent_sequence".to_owned(),
-        })?;
+        let kick_start =
+            self.require_positive_field("kick_start_speed_m_s", self.kick_start_speed_m_s)?;
+        let kick_end =
+            self.require_positive_field("kick_end_speed_m_s", self.kick_end_speed_m_s)?;
+        let handoff =
+            self.require_positive_field("peg_handoff_speed_m_s", self.peg_handoff_speed_m_s)?;
+        let kick_angle = self
+            .kick_angle_rad
+            .ok_or_else(|| ScenarioError::InvalidFc {
+                reason: "fc.ascent_reference.kick_angle_rad is required for ascent_sequence"
+                    .to_owned(),
+            })?;
         require_finite("fc.ascent_reference.kick_angle_rad", kick_angle)?;
         if kick_end < kick_start || handoff < kick_end {
             return Err(ScenarioError::InvalidFc {
@@ -8569,7 +8630,8 @@ impl FcConfig {
             }
         } else if self.ascent_reference.is_some() || self.ascent_reference_by_phase.is_some() {
             return Err(ScenarioError::InvalidFc {
-                reason: "[fc.ascent_reference*] requires guidance = \"ascent_reference\"".to_owned(),
+                reason: "[fc.ascent_reference*] requires guidance = \"ascent_reference\""
+                    .to_owned(),
             });
         }
         if self.base_rate_hz == 0 {
@@ -10321,11 +10383,23 @@ mod gyro_notch_tests {
 
     #[test]
     fn gyro_notch_rejects_nonpositive_and_negative_fields() {
-        let zero_center = FcGyroNotchConfig { center_hz: 0.0, bandwidth_hz: 0.6, depth_db: 18.0 };
+        let zero_center = FcGyroNotchConfig {
+            center_hz: 0.0,
+            bandwidth_hz: 0.6,
+            depth_db: 18.0,
+        };
         assert!(zero_center.validate(0).is_err());
-        let zero_bw = FcGyroNotchConfig { center_hz: 0.8, bandwidth_hz: 0.0, depth_db: 18.0 };
+        let zero_bw = FcGyroNotchConfig {
+            center_hz: 0.8,
+            bandwidth_hz: 0.0,
+            depth_db: 18.0,
+        };
         assert!(zero_bw.validate(0).is_err());
-        let neg_depth = FcGyroNotchConfig { center_hz: 0.8, bandwidth_hz: 0.6, depth_db: -1.0 };
+        let neg_depth = FcGyroNotchConfig {
+            center_hz: 0.8,
+            bandwidth_hz: 0.6,
+            depth_db: -1.0,
+        };
         assert!(neg_depth.validate(0).is_err());
     }
 }

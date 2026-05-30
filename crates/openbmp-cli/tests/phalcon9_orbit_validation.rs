@@ -68,7 +68,12 @@ fn parse_samples(csv_path: &Path) -> Vec<Sample> {
     let text = fs::read_to_string(csv_path).expect("read phalcon9-orbit CSV");
     let mut lines = text.lines();
     let header: Vec<&str> = lines.next().expect("csv header").split(',').collect();
-    let col = |name: &str| header.iter().position(|h| *h == name).unwrap_or_else(|| panic!("column {name}"));
+    let col = |name: &str| {
+        header
+            .iter()
+            .position(|h| *h == name)
+            .unwrap_or_else(|| panic!("column {name}"))
+    };
     let (ti, pxi, pyi, pzi, vxi, vyi, vzi) = (
         col("time_s"),
         col("position_x_m"),
@@ -83,7 +88,10 @@ fn parse_samples(csv_path: &Path) -> Vec<Sample> {
         if line.trim().is_empty() {
             continue;
         }
-        let f: Vec<f64> = line.split(',').map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN)).collect();
+        let f: Vec<f64> = line
+            .split(',')
+            .map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN))
+            .collect();
         out.push(Sample {
             t: f[ti],
             r: [f[pxi], f[pyi], f[pzi]],
@@ -123,16 +131,25 @@ fn phalcon9_orbit_meets_orbital_mechanics_invariants() {
         .find(|p| p.extension().and_then(|e| e.to_str()) == Some("csv"))
         .expect("CSV output path in report");
     let samples = parse_samples(csv);
-    assert!(samples.len() > 100, "expected a full trajectory, got {} rows", samples.len());
+    assert!(
+        samples.len() > 100,
+        "expected a full trajectory, got {} rows",
+        samples.len()
+    );
 
     // --- (1) Vis-viva: bound, near-circular, sustainable insertion. ---
     let last = *samples.last().expect("final sample");
     let v_f = norm(last.v);
     let eps = specific_energy(last);
-    assert!(eps < 0.0, "final specific energy {eps:.3e} J/kg must be negative (bound orbit)");
+    assert!(
+        eps < 0.0,
+        "final specific energy {eps:.3e} J/kg must be negative (bound orbit)"
+    );
     let a = -MU_EARTH / (2.0 * eps); // semi-major axis
     let h = ang_mom(last.r, last.v);
-    let e = (1.0 + 2.0 * eps * h * h / (MU_EARTH * MU_EARTH)).max(0.0).sqrt();
+    let e = (1.0 + 2.0 * eps * h * h / (MU_EARTH * MU_EARTH))
+        .max(0.0)
+        .sqrt();
     let perigee_alt = a * (1.0 - e) - EARTH_MEAN_RADIUS_M;
     let apogee_alt = a * (1.0 + e) - EARTH_MEAN_RADIUS_M;
     assert!(
@@ -169,7 +186,11 @@ fn phalcon9_orbit_meets_orbital_mechanics_invariants() {
     // Engines are off well before t = 820 s (SECO ~760 s); sample the
     // coast to the end of the run.
     let coast: Vec<Sample> = samples.iter().copied().filter(|s| s.t >= 820.0).collect();
-    assert!(coast.len() > 50, "expected a coast window, got {} samples", coast.len());
+    assert!(
+        coast.len() > 50,
+        "expected a coast window, got {} samples",
+        coast.len()
+    );
 
     let hz: Vec<f64> = coast.iter().map(|s| cross_z(s.r, s.v)).collect();
     let hz_min = hz.iter().cloned().fold(f64::INFINITY, f64::min);

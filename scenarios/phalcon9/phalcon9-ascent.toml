@@ -93,15 +93,15 @@ propellant            = { density_kg_m3 = 1030.0, label = "synthetic_kerolox_bul
 initial_fill_fraction = 1.0
 moving_mass           = { kind = "rigid_liquid" }
 
-# --- Stage-1 cluster: 1 center + 8 ring engines, each ~850 kN, Isp
-# 300 s, all drawing from s1_prop. mdot/engine ~289 kg/s; 9 engines
+# --- Stage-1 cluster: 1 center + 8 ring engines, each 854 kN, Isp
+# 300 s, all drawing from s1_prop. mdot/engine ~290 kg/s; 9 engines
 # ~2600 kg/s; ~412 t burns in ~158 s. -------------------------------
 [[vehicle.assembly.engines]]
 id                 = "eng_s1_0"
 mounted_to         = "lower"
 kind               = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, 0.0, 0.0]
-limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+limits             = { max_thrust_n = 854_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
 propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -109,7 +109,7 @@ id                 = "eng_s1_1"
 mounted_to         = "lower"
 kind               = { kind = "liquid_engine" }
 mount_point_body_m = [1.6, 0.0, 0.0]
-limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+limits             = { max_thrust_n = 854_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
 propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -117,7 +117,7 @@ id                 = "eng_s1_2"
 mounted_to         = "lower"
 kind               = { kind = "liquid_engine" }
 mount_point_body_m = [1.131, 1.131, 0.0]
-limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+limits             = { max_thrust_n = 854_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
 propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -125,7 +125,7 @@ id                 = "eng_s1_3"
 mounted_to         = "lower"
 kind               = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, 1.6, 0.0]
-limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+limits             = { max_thrust_n = 854_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
 propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -133,7 +133,7 @@ id                 = "eng_s1_4"
 mounted_to         = "lower"
 kind               = { kind = "liquid_engine" }
 mount_point_body_m = [-1.6, 0.0, 0.0]
-limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+limits             = { max_thrust_n = 854_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
 propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -141,7 +141,7 @@ id                 = "eng_s1_5"
 mounted_to         = "lower"
 kind               = { kind = "liquid_engine" }
 mount_point_body_m = [-1.131, 1.131, 0.0]
-limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+limits             = { max_thrust_n = 854_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
 propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -149,7 +149,7 @@ id                 = "eng_s1_6"
 mounted_to         = "lower"
 kind               = { kind = "liquid_engine" }
 mount_point_body_m = [-1.131, -1.131, 0.0]
-limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+limits             = { max_thrust_n = 854_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
 propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -157,7 +157,7 @@ id                 = "eng_s1_7"
 mounted_to         = "lower"
 kind               = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, -1.6, 0.0]
-limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+limits             = { max_thrust_n = 854_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
 propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -165,17 +165,17 @@ id                 = "eng_s1_8"
 mounted_to         = "lower"
 kind               = { kind = "liquid_engine" }
 mount_point_body_m = [1.131, -1.131, 0.0]
-limits             = { max_thrust_n = 850_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+limits             = { max_thrust_n = 854_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
 propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
-# --- Stage-2 vacuum engine (mounted to `upper`) ~980 kN, Isp 348 s,
+# --- Stage-2 vacuum engine (mounted to `upper`) 981 kN, Isp 348 s,
 # draws from s2_prop; ~108 t burns in ~376 s. -----------------------
 [[vehicle.assembly.engines]]
 id                 = "eng_vac"
 mounted_to         = "upper"
 kind               = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, 0.0, 43.0]
-limits             = { max_thrust_n = 980_000.0, isp_s = 348.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
+limits             = { max_thrust_n = 981_000.0, isp_s = 348.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087 }
 propellant         = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s2_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [environment]

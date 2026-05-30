@@ -69,7 +69,10 @@ struct SplitMix64 {
 
 impl SplitMix64 {
     fn new(seed: u64) -> Self {
-        Self { state: seed, spare_normal: None }
+        Self {
+            state: seed,
+            spare_normal: None,
+        }
     }
 
     fn next_u64(&mut self) -> u64 {
@@ -131,7 +134,10 @@ fn norm(a: [f64; 3]) -> f64 {
 /// CSV round-trip (name-based column lookup — robust to channel ordering).
 fn final_state(outcome: &runner::RunOutcome) -> ([f64; 3], [f64; 3]) {
     let mut buf: Vec<u8> = Vec::new();
-    outcome.table.write_csv(&mut buf).expect("serialise telemetry to CSV");
+    outcome
+        .table
+        .write_csv(&mut buf)
+        .expect("serialise telemetry to CSV");
     let text = String::from_utf8(buf).expect("utf8 telemetry");
     let mut lines = text.lines();
     let header: Vec<&str> = lines.next().expect("csv header").split(',').collect();
@@ -153,7 +159,10 @@ fn final_state(outcome: &runner::RunOutcome) -> ([f64; 3], [f64; 3]) {
         .filter(|l| !l.trim().is_empty())
         .next_back()
         .expect("at least one telemetry row");
-    let f: Vec<f64> = last.split(',').map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN)).collect();
+    let f: Vec<f64> = last
+        .split(',')
+        .map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN))
+        .collect();
     ([f[pxi], f[pyi], f[pzi]], [f[vxi], f[vyi], f[vzi]])
 }
 
@@ -168,7 +177,9 @@ fn insertion_from_state(r: [f64; 3], v: [f64; 3]) -> Insertion {
         r[0] * v[1] - r[1] * v[0],
     ];
     let h_mag = norm(h);
-    let e = (1.0 + 2.0 * eps * h_mag * h_mag / (MU_EARTH * MU_EARTH)).max(0.0).sqrt();
+    let e = (1.0 + 2.0 * eps * h_mag * h_mag / (MU_EARTH * MU_EARTH))
+        .max(0.0)
+        .sqrt();
     let inclination_deg = (h[2] / h_mag).clamp(-1.0, 1.0).acos().to_degrees();
     Insertion {
         specific_energy: eps,
@@ -208,7 +219,8 @@ fn run_sample(idx: u64) -> Insertion {
 
     if idx > 0 {
         // Deterministic per-sample stream — fixed base XOR sample index.
-        let mut rng = SplitMix64::new(0x0B19_C900_0000_0000u64 ^ idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let mut rng =
+            SplitMix64::new(0x0B19_C900_0000_0000u64 ^ idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
 
         // (1) Full reseed → fresh sensor + process-noise realisation.
         doc.time.seed ^= rng.next_u64() | 1;
@@ -276,8 +288,14 @@ fn phalcon9_orbit_monte_carlo_robustness() {
     let peri_max = perigees.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let peri_mean = perigees.iter().sum::<f64>() / perigees.len() as f64;
     let ecc_max = results.iter().map(|r| r.eccentricity).fold(0.0, f64::max);
-    let incl_min = results.iter().map(|r| r.inclination_deg).fold(f64::INFINITY, f64::min);
-    let incl_max = results.iter().map(|r| r.inclination_deg).fold(f64::NEG_INFINITY, f64::max);
+    let incl_min = results
+        .iter()
+        .map(|r| r.inclination_deg)
+        .fold(f64::INFINITY, f64::min);
+    let incl_max = results
+        .iter()
+        .map(|r| r.inclination_deg)
+        .fold(f64::NEG_INFINITY, f64::max);
 
     println!(
         "phalcon9-orbit Monte-Carlo: {SAMPLES} samples\n  \
@@ -337,7 +355,19 @@ fn phalcon9_orbit_monte_carlo_is_deterministic() {
     // nondeterminism leaking into the dispersed runs.
     let a = run_sample(3);
     let b = run_sample(3);
-    assert_eq!(a.perigee_km.to_bits(), b.perigee_km.to_bits(), "perigee must be reproducible");
-    assert_eq!(a.eccentricity.to_bits(), b.eccentricity.to_bits(), "eccentricity must be reproducible");
-    assert_eq!(a.speed_m_s.to_bits(), b.speed_m_s.to_bits(), "speed must be reproducible");
+    assert_eq!(
+        a.perigee_km.to_bits(),
+        b.perigee_km.to_bits(),
+        "perigee must be reproducible"
+    );
+    assert_eq!(
+        a.eccentricity.to_bits(),
+        b.eccentricity.to_bits(),
+        "eccentricity must be reproducible"
+    );
+    assert_eq!(
+        a.speed_m_s.to_bits(),
+        b.speed_m_s.to_bits(),
+        "speed must be reproducible"
+    );
 }

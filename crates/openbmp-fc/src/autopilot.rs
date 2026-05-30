@@ -868,15 +868,22 @@ impl Job for ThreeLoopAutopilot {
         // gimbal deflection yields a negative moment about its control
         // axis; the gimbal command is therefore the negated rate-loop
         // output for both transverse axes.
-        let tvc_settled =
-            ctx.clock.now().as_seconds() >= self.params.thrust_vector_settle_s;
+        let tvc_settled = ctx.clock.now().as_seconds() >= self.params.thrust_vector_settle_s;
         let (gimbal_pitch_rad, gimbal_yaw_rad) = if self.params.thrust_vector_control && tvc_settled
         {
             // Defensive: never emit a non-finite gimbal command to the
             // actuator stack — a transient non-finite control signal
             // commands zero gimbal rather than faulting the engine rack.
-            let gp = if torque[1].is_finite() { -torque[1] } else { 0.0 };
-            let gy = if torque[0].is_finite() { -torque[0] } else { 0.0 };
+            let gp = if torque[1].is_finite() {
+                -torque[1]
+            } else {
+                0.0
+            };
+            let gy = if torque[0].is_finite() {
+                -torque[0]
+            } else {
+                0.0
+            };
             (gp, gy)
         } else {
             (0.0, 0.0)
@@ -950,8 +957,7 @@ fn dynamic_pressure_air_relative(position: &PositionEstimate) -> f64 {
     // (Ω about ECI +z), so a vehicle co-rotating with the surface has
     // ~zero airspeed at lift-off.
     let omega = openbmp_physics::frames::WGS84_OMEGA_RAD_S;
-    let v_air =
-        position.velocity_eci_m_s - nalgebra::Vector3::new(-omega * r.y, omega * r.x, 0.0);
+    let v_air = position.velocity_eci_m_s - nalgebra::Vector3::new(-omega * r.y, omega * r.x, 0.0);
     let rho = openbmp_physics::UsStandard1976::new()
         .sample(altitude_m, openbmp_core::SimTime::ZERO)
         .map_or(0.0, |s| s.density_kg_m3);

@@ -207,7 +207,9 @@ fn jettison_applies_tip_off_angular_rates() {
         stage_delta_omega_body_rad_s: [0.1, 0.0, -0.7],
         ..textbook_separation()
     };
-    kernel.jettison_rigid_body(separation).expect("separation must apply");
+    kernel
+        .jettison_rigid_body(separation)
+        .expect("separation must apply");
 
     let stack = kernel.current_state();
     let stage = &kernel.separated_rigid_bodies()[0].state;
@@ -231,7 +233,9 @@ fn jettison_applies_stage_attitude_offset() {
         stage_attitude_offset_body_xyzw: [0.0, 1.0, 0.0, 0.0],
         ..textbook_separation()
     };
-    kernel.jettison_rigid_body(separation).expect("separation must apply");
+    kernel
+        .jettison_rigid_body(separation)
+        .expect("separation must apply");
 
     let stack = kernel.current_state();
     let stage = &kernel.separated_rigid_bodies()[0].state;

@@ -597,7 +597,10 @@ where
                 self.previous_event_scalars = Some(crate::events::EventScalars {
                     time_s: self.state.time.as_seconds(),
                     altitude_m: geometric_altitude_m(&self.state.position.vector),
-                    vertical_velocity_m_s: vertical_climb_rate(&self.state.position.vector, &self.state.velocity.vector),
+                    vertical_velocity_m_s: vertical_climb_rate(
+                        &self.state.position.vector,
+                        &self.state.velocity.vector,
+                    ),
                     velocity_m_s: self.state.velocity.vector.norm(),
                     mass_fraction: self.state.mass.get::<kilogram>() / self.initial_mass_kg,
                     guidance_time_to_go_s: f64::INFINITY,
@@ -620,7 +623,10 @@ where
             let scalars = crate::events::EventScalars {
                 time_s: canonical_time_s,
                 altitude_m: geometric_altitude_m(&new_state.position.vector),
-                vertical_velocity_m_s: vertical_climb_rate(&new_state.position.vector, &new_state.velocity.vector),
+                vertical_velocity_m_s: vertical_climb_rate(
+                    &new_state.position.vector,
+                    &new_state.velocity.vector,
+                ),
                 velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass.get::<kilogram>() / self.initial_mass_kg,
                 guidance_time_to_go_s: f64::INFINITY,
@@ -1492,8 +1498,7 @@ where
             let i_omega = inertia * s.angular_velocity.vector;
             let omega_cross_iomega = s.angular_velocity.vector.cross(&i_omega);
             let i_dot_omega = rate.inertia_rate_body * s.angular_velocity.vector;
-            let net =
-                moment_n_m_body + bending_reaction_moment - omega_cross_iomega - i_dot_omega;
+            let net = moment_n_m_body + bending_reaction_moment - omega_cross_iomega - i_dot_omega;
             let inv_inertia = inertia.try_inverse().ok_or_else(|| {
                 crate::error::ModelEvalError::InvalidState {
                     model: RIGID_BODY_EQUATIONS_MODEL_ID,
@@ -1585,7 +1590,7 @@ where
                 let omega_cross_iomega = s.angular_velocity.vector.cross(&i_omega);
                 let i_dot_omega = rate.inertia_rate_body * s.angular_velocity.vector;
                 let net =
-                moment_n_m_body + bending_reaction_moment - omega_cross_iomega - i_dot_omega;
+                    moment_n_m_body + bending_reaction_moment - omega_cross_iomega - i_dot_omega;
                 let inv_inertia = inertia.try_inverse().ok_or_else(|| {
                     crate::error::ModelEvalError::InvalidState {
                         model: RIGID_BODY_EQUATIONS_MODEL_ID,
@@ -1647,7 +1652,10 @@ where
                 self.previous_event_scalars = Some(crate::events::EventScalars {
                     time_s: self.state.time.as_seconds(),
                     altitude_m: geometric_altitude_m(&self.state.position.vector),
-                    vertical_velocity_m_s: vertical_climb_rate(&self.state.position.vector, &self.state.velocity.vector),
+                    vertical_velocity_m_s: vertical_climb_rate(
+                        &self.state.position.vector,
+                        &self.state.velocity.vector,
+                    ),
                     velocity_m_s: self.state.velocity.vector.norm(),
                     mass_fraction: self.state.mass_props.mass.get::<kilogram>()
                         / self.initial_mass_kg,
@@ -1680,7 +1688,10 @@ where
             let scalars = crate::events::EventScalars {
                 time_s: canonical_time_s,
                 altitude_m: geometric_altitude_m(&new_state.position.vector),
-                vertical_velocity_m_s: vertical_climb_rate(&new_state.position.vector, &new_state.velocity.vector),
+                vertical_velocity_m_s: vertical_climb_rate(
+                    &new_state.position.vector,
+                    &new_state.velocity.vector,
+                ),
                 velocity_m_s: new_state.velocity.vector.norm(),
                 mass_fraction: new_state.mass_props.mass.get::<kilogram>() / self.initial_mass_kg,
                 guidance_time_to_go_s: f64::INFINITY,
@@ -2209,7 +2220,8 @@ fn partition_rigid_body_state(
         attitude_offset_body_xyzw[1],
         attitude_offset_body_xyzw[2],
     ));
-    let orientation = openbmp_core::Quaternion::from_unit_quaternion(composite.orientation.q * offset);
+    let orientation =
+        openbmp_core::Quaternion::from_unit_quaternion(composite.orientation.q * offset);
     openbmp_state::RigidBodyState::new(
         composite.time,
         openbmp_core::Position3::from_vector(composite.position.vector + position_offset_eci_m),

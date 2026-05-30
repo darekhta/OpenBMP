@@ -404,10 +404,7 @@ impl Estimator for MultiLaneEstimator {
         self.finish_dispatch(last_err)
     }
 
-    fn update_star_tracker(
-        &mut self,
-        sample: &StarTrackerSample,
-    ) -> Result<(), EstimatorError> {
+    fn update_star_tracker(&mut self, sample: &StarTrackerSample) -> Result<(), EstimatorError> {
         let mut last_err: Option<EstimatorError> = None;
         for entry in &mut self.lanes {
             if !entry.healthy {

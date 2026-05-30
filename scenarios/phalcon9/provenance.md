@@ -31,6 +31,14 @@ propellant, single restartable vacuum upper-stage engine). No proprietary,
 fielded, or validated parameter set was used or reproduced; all values
 are rounded illustrative figures.
 
+Public thrust anchors are taken from SpaceX's openly published
+[*Falcon User's Guide*](https://spacex.relayto.com/e/spacex-falcon-user-s-guide-oc92qkoxzo1jf)
+(April 2020), Table 2-1: Falcon 9 first-stage thrust is 7,686 kN total /
+854 kN per Merlin 1D at sea level, and the second-stage MVac thrust is
+981 kN in vacuum. Those values are used as public class anchors only; the
+mass split, tank geometry, guidance gains, aero deck, sensors, and
+trajectory remain synthetic OpenBMP demonstration data.
+
 The table below is the **reference class anchor**, as flown in
 `phalcon9-ascent`. The other scenarios re-tune these synthetic figures
 for their specific demonstration (see the per-file notes); the numbers
@@ -40,10 +48,10 @@ are all illustrative, not fidelity targets, so they vary between files.
 |---|---|---|
 | Stage-1 dry mass | 22 t | rounded class figure |
 | Stage-1 propellant | ~412 t | single synthetic kerolox store, ρ≈1030 kg/m³ |
-| Stage-1 engines | 9 × 850 kN, Isp 300 s | octaweb layout; round numbers |
+| Stage-1 engines | 9 × 854 kN, Isp 300 s | octaweb layout; round numbers |
 | Stage-2 dry + payload | 19 t (4 t stage + 15 t payload) | rounded |
 | Stage-2 propellant | ~108 t | single synthetic kerolox store |
-| Stage-2 engine | 1 × 980 kN, Isp 348 s | vacuum-optimized; round numbers |
+| Stage-2 engine | 1 × 981 kN, Isp 348 s | vacuum-optimized; round numbers |
 
 Ideal (loss-free) staged Δv from these figures is ≈10.4 km/s; after
 nominal gravity/drag losses this lands a Phalcon-9-class vehicle in the
@@ -52,9 +60,9 @@ demonstration, not for fidelity to any real vehicle.
 
 **Scenario-specific re-tunes.** `phalcon9-orbit` (the flagship orbital
 insertion) re-tunes the stack to close a clean two-stage insertion:
-stage-1 ~10 t dry + ~552 t propellant + 9 × 850 kN at Isp 340 s; a small,
+stage-1 ~10 t dry + ~552 t propellant + 9 × 854 kN at Isp 340 s; a small,
 propellant-limited stage-2 of ~9 t dry + payload + ~10 t propellant +
-1 × 450 kN at Isp 348 s (the eastward equatorial launch banks ~465 m/s of
+1 × 981 kN at Isp 348 s (the eastward equatorial launch banks ~465 m/s of
 Earth-rotation velocity, leaving only a small circularisation deficit).
 `phalcon9-gravity-turn` is a single-stage variant (9 × 500 kN at Isp
 340 s). All values remain synthetic, rounded, order-of-magnitude figures.
@@ -80,7 +88,8 @@ post-SECO coast under axisymmetric EGM2008 gravity; and two-body specific
 energy conserved (< 2e-2, J2-level oscillation only). These are analytic,
 open, physics-based references — **no real-vehicle data and no fielded
 trajectory** are used; the vehicle remains a synthetic class anchor. The
-other scenarios in this directory remain `validation = "experimental"`.
+dedicated orbital variants that carry e2e invariant tests are also labelled
+`validated-toy`; the earlier ascent/control probes remain `experimental`.
 
 This validates that the closed-loop ascent + PEG cutoff genuinely achieves
 a sustainable LEO insertion and that the integrator/gravity model conserve
@@ -97,13 +106,13 @@ per-tank propellant underfill, and small initial-state offsets (~30 m /
 ~0.5 m/s 1σ). All dispersion figures are synthetic, modest, class-level —
 not a tuned reproduction of any real flight-dispersion deck. Observed over
 16 samples: **every** sample reaches a bound orbit and a sustainable
-near-circular LEO (perigee envelope ≈ 206–339 km, e ≤ ~0.027), with the
-inclination held near-equatorial across the whole ensemble (≈ 0.2–0.7°).
+near-circular LEO (perigee envelope ≈ 244–339 km, e ≤ ~0.016), with the
+inclination held near-equatorial across the whole ensemble (≈ 0.24–0.76°).
 This shows it is the *controller*, not a single hand-tuned trajectory, that
 reaches orbit.
 
 **Near-equatorial insertion / roll-reference continuity.** The nominal
-insertion is ≈ 320 × 398 km, e ≈ 0.006, inclination ≈ 0.34° for this
+insertion is ≈ 304 × 367 km, e ≈ 0.0047, inclination ≈ 0.24° for this
 equatorial due-east launch. The residual inclination was previously ≈ 2.4°:
 the ascent guidance resolved its roll DOF against a fixed ECI +y axis, which
 degenerates and flips to +x exactly as the thrust axis swings toward
@@ -142,14 +151,14 @@ This provenance record covers the following synthetic scenario files:
   full staged profile (stage-1 closed-loop ascent → MECO + booster
   jettison → ballistic coast to apogee → stage-2 PEG circularisation →
   orbit) reaches a near-circular, near-equatorial bound low Earth orbit:
-  perigee ~320 km × apogee ~398 km, eccentricity ~0.006, inclination
-  ~0.34° (verified from telemetry). The low residual inclination comes from
+  perigee ~304 km × apogee ~367 km, eccentricity ~0.0047, inclination
+  ~0.24° (verified from telemetry). The low residual inclination comes from
   resolving the ascent-guidance roll reference against the orbital-plane
   normal, which keeps the commanded attitude continuous through the
   horizontal pitch-over (see the "near-equatorial insertion" note above).
-  The upper stage is cut by a CONTROLLED
-  PEG time-to-go cutoff (`seco`, ~0.5 s short of circular) with propellant
-  margin remaining — not a burn-to-depletion. The ascent flies through an
+  The upper stage is cut by a CONTROLLED PEG time-to-go cutoff (`seco`, at
+  the guidance zero-time-to-go crossing) with propellant margin remaining —
+  not a burn-to-depletion. The ascent flies through an
   atmosphere (US Standard 1976) under a synthetic drag deck
   ([`data/aero/phalcon9-drag.toml`](../../data/aero/phalcon9-drag.toml)),
   with CLOSED-LOOP max-Q load relief — the autopilot computes the real
@@ -171,9 +180,9 @@ This provenance record covers the following synthetic scenario files:
   Earth-rotation surface speed (~465 m/s) as initial inertial velocity,
   leaving a small coast-apogee deficit. PEG steers the upper stage and the
   `seco` PEG time-to-go cutoff (gated through [fc.phase_authority] so the
-  orbit phase throttles eng_vac to zero) cuts the engine ~0.5 s short of
-  circular with propellant margin — a controlled cutoff. See the scenario
-  header for the full profile.
+  orbit phase throttles eng_vac to zero) cuts the engine at the guidance
+  zero-time-to-go crossing with propellant margin — a controlled cutoff. See
+  the scenario header for the full profile.
 - `scenarios/phalcon9/phalcon9-orbit-staged.toml` — the full discrete
   mission sequence on the same synthetic vehicle: booster separation, then
   **payload-fairing jettison** in the exo-atmospheric coast, then **payload
@@ -183,8 +192,8 @@ This provenance record covers the following synthetic scenario files:
   are inert bodies (no engines/tanks) jettisoned via `jettison_stage`. Each
   jettison genuinely sheds mass from the continuing stack (verified: with
   vs without jettison differ, and total mass is conserved across each
-  separation), reaching a clean near-equatorial insertion (perigee ~323 km ×
-  apogee ~392 km, e ~0.005, inclination ~0.34°). Exercises the multi-body
+  separation), reaching a clean near-equatorial insertion (perigee ~308 km ×
+  apogee ~364 km, e ~0.004, inclination ~0.24°). Exercises the multi-body
   continuing-stack mass aggregation (the continuing upper stack carries the
   still-attached fairing/payload until each departs).
 - `scenarios/phalcon9/phalcon9-orbit-boostback.toml` — the same ascent with an
@@ -193,9 +202,9 @@ This provenance record covers the following synthetic scenario files:
   ascent), separates at MECO, **flips retrograde** (separation attitude
   offset), and fires the boostback engine on a scripted ignite→cut window
   (t≈250–290 s) — all in the SAME run as the ascent. The upper stage still
-  reaches a bound near-circular LEO (perigee ~271 km × apogee ~449 km, e
-  ~0.013), while the separated booster lane burns its reserve (~5.4 t) and
-  decelerates ~450 m/s (a partial boostback). This is an OPEN-LOOP (scripted)
+  reaches a bound near-circular LEO (perigee ~239 km × apogee ~439 km, e
+  ~0.015), while the separated booster lane burns its reserve (~5.4 t) and
+  decelerates ~441 m/s (a partial boostback). This is an OPEN-LOOP (scripted)
   boostback; closed-loop guided boostback+landing needs a per-lane control
   loop (see `docs/launch-vehicle-fidelity-frontier.md`). Verified by
   `crates/openbmp-cli/tests/phalcon9_orbit_boostback_e2e.rs`.
@@ -203,22 +212,57 @@ This provenance record covers the following synthetic scenario files:
   first lateral structural **bending mode** (`[vehicle.bending]`, ~1.5 Hz)
   whose local slope rate the FC rate gyro picks up, so the autopilot interacts
   with the flex. The closed-loop GNC still inserts to a bound near-circular LEO
-  (perigee ~265 km × apogee ~449 km, e ~0.014, inclination ~0.6°) — the
+  (perigee ~329 km × apogee ~343 km, e ~0.001, inclination ~0.29°) — the
   autopilot is robust to a first bending mode at its tuned gains — while the
-  insertion differs measurably from the rigid run (Δperigee ~55 km), confirming
-  the bending genuinely couples (not a cosmetic model). A gyro notch
-  (`[fc.autopilot_params].gyro_notch`) is the standard flex gain-stabilisation
-  tool and is wired, but is not needed here. Verified by
+  insertion differs measurably from the rigid run (Δperigee ~25 km, Δe
+  ~0.004), confirming the bending genuinely couples (not a cosmetic model).
+  A gyro notch (`[fc.autopilot_params].gyro_notch`) is the standard flex
+  gain-stabilisation tool and is wired, but is not needed here. Verified by
   `crates/openbmp-cli/tests/phalcon9_orbit_flex_e2e.rs`.
+- `scenarios/phalcon9/phalcon9-orbit-slosh-rcs.toml` — the same vehicle and
+  guidance as `phalcon9-orbit.toml`, but the upper-stage propellant tank
+  (`s2_prop`) carries an **EquivalentPendulum slosh** model with a non-zero
+  initial perturbation, and the upper stage carries a three-axis **reaction
+  control system** (RCS: body-axis `direct_torque` effectors). Slosh on the
+  stage-2 tank survives separation; with the corrected specific-force and
+  capillary low-g model it no longer causes the old runaway tumble, but the RCS
+  commands measurable coast damping and the stage inserts to a bound
+  near-circular LEO (end-of-run e ~0.0017, perigee ~345 km, apogee ~368 km)
+  that holds steady to the end of the run. The RCS `effectiveness_n_m_per_rad`
+  is sized from a declared
+  torque-capacity anchor (~12 kN*m saturation per axis for ~0.01 rad/s² on the
+  upper-stage transverse inertia), not fitted to the trajectory; its
+  powered-phase contribution remains a negligible fraction of the engine gimbal
+  moment. This required lifting the
+  prior fail-closed guard that forbade `direct_torque` effectors alongside
+  engine/tank moment models (`crates/openbmp-runner/src/rigid_body.rs`): the
+  per-tick snapshot machinery already builds the engine, tank, and effector
+  snapshots together, so the combination is sound and is now exercised here.
+  The freefall slosh dynamics are also made **well-posed** so the insertion is a
+  genuinely stable orbit: (a) the shared `RuntimeEnvironment::sample` now
+  populates `gravity_eci_m_s2`, and the runner feeds the slosh model the
+  SPECIFIC force (total − sampled gravity), not gravity-laden kinematic
+  acceleration; and (b) the tank carries a capillary surface-wave restoring term
+  (`freefall_restoring.kind = "capillary_surface_wave"`) derived from surface
+  tension, density, tank radius, and fill height, with the 0.026 N/m kerosene
+  class value cross-checked against a public surface-tension table for
+  [kerosene at 20 C](https://www.sciencedirect.com/topics/earth-and-planetary-sciences/capillarity),
+  and with critical damping only in the capillary-dominated regime. Without
+  these an undamped, gravity-forced
+  freefall pendulum self-excites through its reaction force and can drift the
+  orbit over minutes. All figures synthetic. Verified by
+  `crates/openbmp-cli/tests/phalcon9_orbit_slosh_rcs_e2e.rs` (asserts the
+  coast rate is small with measurable RCS command, the insertion is bound
+  near-circular LEO, AND the orbit is stable to end-of-run — no drift).
 - `scenarios/phalcon9/phalcon9-orbit-iers.toml` — the same vehicle and
   guidance as `phalcon9-orbit.toml`, re-flown on the higher-fidelity
   **`iers-tabulated`** Earth frame (IAU 1976 precession + IAU 1980 nutation,
   plus tabulated UT1-UTC / polar motion / length-of-day) instead of uniform
   rotation. It demonstrates that the launch flies on a non-uniform-rotation
   Earth through the FC bridge and still delivers the same clean
-  near-equatorial insertion (perigee ~320 km × apogee ~398 km, e ~0.006,
-  inclination ~0.34°); the frame is genuinely engaged (the trajectory
-  differs from the uniform-rotation run by a few metres by orbit insertion,
+  near-equatorial insertion (perigee ~304 km × apogee ~367 km, e ~0.0047,
+  inclination ~0.24°); the frame is genuinely engaged (the trajectory
+  differs from the uniform-rotation run by ~2.9 m by orbit insertion,
   from the precession/nutation/polar-motion/LOD terms acting on the
   air-relative velocity). The Earth-orientation table it reads,
   [`scenarios/phalcon9/eop-synthetic.toml`](eop-synthetic.toml), is WHOLLY
