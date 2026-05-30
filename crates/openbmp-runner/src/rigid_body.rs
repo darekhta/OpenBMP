@@ -1054,6 +1054,7 @@ struct RigidBodySeparationSpec {
     stage_delta_v_body_m_s: [f64; 3],
     stack_delta_omega_body_rad_s: [f64; 3],
     stage_delta_omega_body_rad_s: [f64; 3],
+    stage_attitude_offset_body_xyzw: [f64; 4],
 }
 
 fn build_rigid_body_separations(
@@ -1109,6 +1110,9 @@ fn build_rigid_body_separations(
                 stage_delta_omega_body_rad_s: separation
                     .lower_delta_omega_body_rad_s
                     .unwrap_or([0.0, 0.0, 0.0]),
+                stage_attitude_offset_body_xyzw: separation
+                    .lower_attitude_offset_body_xyzw
+                    .unwrap_or([0.0, 0.0, 0.0, 1.0]),
             },
         );
         if previous.is_some() {
@@ -1270,6 +1274,7 @@ where
         stage_delta_v_body_m_s: separation.stage_delta_v_body_m_s,
         stack_delta_omega_body_rad_s: separation.stack_delta_omega_body_rad_s,
         stage_delta_omega_body_rad_s: separation.stage_delta_omega_body_rad_s,
+        stage_attitude_offset_body_xyzw: separation.stage_attitude_offset_body_xyzw,
     })
 }
 

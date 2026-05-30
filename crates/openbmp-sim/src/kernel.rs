@@ -166,6 +166,11 @@ pub struct RigidBodySeparation {
     /// Body-frame angular-rate tip-off applied to the departing body
     /// (rad/s).
     pub stage_delta_omega_body_rad_s: [f64; 3],
+    /// Body-frame attitude offset (`[x, y, z, w]`) applied to the DEPARTING
+    /// body at separation — a re-orientation such as a booster flipping
+    /// retrograde for a boostback burn. Identity `[0, 0, 0, 1]` = no
+    /// re-orientation (the departing body keeps the stack attitude).
+    pub stage_attitude_offset_body_xyzw: [f64; 4],
 }
 
 /// One rigid body detached from the primary stack.
@@ -2048,6 +2053,8 @@ where
             separations[0].stack_mass_properties,
             separations[0].stack_delta_v_body_m_s,
             separations[0].stack_delta_omega_body_rad_s,
+            // The continuing stack never re-orients at separation.
+            [0.0, 0.0, 0.0, 1.0],
         );
         stack_state
             .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
@@ -2061,6 +2068,7 @@ where
                 separation.stage_mass_properties,
                 separation.stage_delta_v_body_m_s,
                 separation.stage_delta_omega_body_rad_s,
+                separation.stage_attitude_offset_body_xyzw,
             );
             stage_state
                 .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
@@ -2167,6 +2175,7 @@ fn partition_rigid_body_state(
     mass_properties: MassProperties,
     delta_v_body_m_s: [f64; 3],
     delta_omega_body_rad_s: [f64; 3],
+    attitude_offset_body_xyzw: [f64; 4],
 ) -> openbmp_state::RigidBodyState {
     let relative_body_m = mass_properties.center_of_mass_body.vector
         - composite.mass_props.center_of_mass_body.vector;
@@ -2189,13 +2198,25 @@ fn partition_rigid_body_state(
                 delta_omega_body_rad_s[2],
             ),
     );
+    // Optional body-frame attitude offset applied to the departing lane (a
+    // separation re-orientation — e.g. a booster flipping retrograde before a
+    // boostback burn). Identity `[0,0,0,1]` leaves the composite attitude
+    // unchanged. The delta-V above is in the PRE-offset body frame (the kick
+    // is imparted at the separation instant, before the re-orientation).
+    let offset = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        attitude_offset_body_xyzw[3],
+        attitude_offset_body_xyzw[0],
+        attitude_offset_body_xyzw[1],
+        attitude_offset_body_xyzw[2],
+    ));
+    let orientation = openbmp_core::Quaternion::from_unit_quaternion(composite.orientation.q * offset);
     openbmp_state::RigidBodyState::new(
         composite.time,
         openbmp_core::Position3::from_vector(composite.position.vector + position_offset_eci_m),
         openbmp_core::Velocity3::from_vector(
             composite.velocity.vector + rotational_velocity_eci_m_s + delta_v_eci_m_s,
         ),
-        composite.orientation,
+        orientation,
         angular_velocity,
         mass_properties,
     )
@@ -2694,6 +2715,7 @@ mod tests {
                 stage_delta_v_body_m_s: [1.0, 0.0, 0.0],
                 stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
                 stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+                stage_attitude_offset_body_xyzw: [0.0, 0.0, 0.0, 1.0],
             })
             .expect("manual separation");
         kernel.step().expect("step");
@@ -2755,6 +2777,7 @@ mod tests {
                 stage_delta_v_body_m_s: [0.0, 0.0, 0.0],
                 stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
                 stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+                stage_attitude_offset_body_xyzw: [0.0, 0.0, 0.0, 1.0],
             })
             .expect("manual separation");
         kernel.separated_rigid_bodies[0].state.velocity = Velocity3::new(1.0, 0.0, 0.0);

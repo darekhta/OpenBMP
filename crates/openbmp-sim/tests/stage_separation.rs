@@ -102,6 +102,7 @@ fn textbook_separation() -> RigidBodySeparation {
         stage_delta_v_body_m_s: [0.0, 0.0, -1.0],
         stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
         stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+        stage_attitude_offset_body_xyzw: [0.0, 0.0, 0.0, 1.0],
     }
 }
 
@@ -116,6 +117,7 @@ fn batch_separations() -> [RigidBodySeparation; 2] {
             stage_delta_v_body_m_s: [0.0, 1.0, 0.0],
             stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
             stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+            stage_attitude_offset_body_xyzw: [0.0, 0.0, 0.0, 1.0],
         },
         RigidBodySeparation {
             stack_body: BodyId::from_path("vehicle.assembly.bodies.bus"),
@@ -126,6 +128,7 @@ fn batch_separations() -> [RigidBodySeparation; 2] {
             stage_delta_v_body_m_s: [0.0, -1.0, 0.0],
             stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
             stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+            stage_attitude_offset_body_xyzw: [0.0, 0.0, 0.0, 1.0],
         },
     ]
 }
@@ -214,6 +217,31 @@ fn jettison_applies_tip_off_angular_rates() {
     // Mass partition and delta-V are unchanged by the tip-off.
     assert_eq!(stack.mass_props.mass.get::<kilogram>(), 4.0);
     assert_abs_diff_eq!(stage.velocity.vector.z, -1.0, epsilon = 1.0e-15);
+}
+
+#[test]
+fn jettison_applies_stage_attitude_offset() {
+    // A separation with a body-frame attitude offset re-orients the departing
+    // body (e.g. a booster flipping retrograde before a boostback burn) while
+    // the continuing stack keeps the composite attitude. A 180° rotation
+    // about body +y ([x,y,z,w] = [0,1,0,0]) flips the departing body's thrust
+    // axis (+z) to point opposite.
+    let mut kernel = build_kernel(0.3);
+    let separation = RigidBodySeparation {
+        stage_attitude_offset_body_xyzw: [0.0, 1.0, 0.0, 0.0],
+        ..textbook_separation()
+    };
+    kernel.jettison_rigid_body(separation).expect("separation must apply");
+
+    let stack = kernel.current_state();
+    let stage = &kernel.separated_rigid_bodies()[0].state;
+    // The stack keeps the composite attitude; the stage is rotated ~180°.
+    let relative = stack.orientation.q.rotation_to(&stage.orientation.q);
+    assert_abs_diff_eq!(relative.angle(), std::f64::consts::PI, epsilon = 1.0e-9);
+    // The departing body's +z (thrust axis) is flipped relative to the stack.
+    let stack_z = stack.orientation.q * nalgebra::Vector3::z();
+    let stage_z = stage.orientation.q * nalgebra::Vector3::z();
+    assert_abs_diff_eq!(stack_z.dot(&stage_z), -1.0, epsilon = 1.0e-9);
 }
 
 #[test]

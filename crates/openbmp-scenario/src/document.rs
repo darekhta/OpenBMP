@@ -9896,6 +9896,12 @@ pub struct MultiBodySeparationConfig {
     /// (departing) body at separation (rad/s).
     #[serde(default)]
     pub lower_delta_omega_body_rad_s: Option<[f64; 3]>,
+    /// Optional body-frame attitude offset `[x, y, z, w]` applied to the
+    /// lower (departing) body at separation — a re-orientation such as a
+    /// booster flipping retrograde for a boostback burn. Defaults to identity
+    /// (the departing body keeps the stack attitude).
+    #[serde(default)]
+    pub lower_attitude_offset_body_xyzw: Option<[f64; 4]>,
     /// Whether the loader must verify momentum conservation
     /// (`m_u·Δv_u + m_l·Δv_l ≈ 0`). Default `true`.
     #[serde(default = "default_true")]
@@ -9947,6 +9953,18 @@ impl MultiBodySeparationConfig {
                 &format!("multi_body.separation[{index}].lower_delta_omega_body_rad_s"),
                 &dw,
             )?;
+        }
+        if let Some(q) = self.lower_attitude_offset_body_xyzw {
+            let field = format!("multi_body.separation[{index}].lower_attitude_offset_body_xyzw");
+            require_finite_array(&field, &q)?;
+            let norm_sq: f64 = q.iter().map(|c| c * c).sum();
+            if (norm_sq - 1.0).abs() > 1.0e-6 {
+                return Err(ScenarioError::InvalidNumber {
+                    field,
+                    value: norm_sq,
+                    rule: "must be a unit quaternion (||q||² = 1)",
+                });
+            }
         }
         Ok(())
     }
