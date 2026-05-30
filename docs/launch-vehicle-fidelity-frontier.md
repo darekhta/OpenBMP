@@ -88,12 +88,25 @@ In an integrated ascent run the jettisoned booster lane propagates
 **ballistically** — there is no boostback burn, entry guidance, or controlled
 landing on the separated lane.
 
-**What already exists.**
-- The multi-body kernel tracks each separated body as an independent
-  `SeparatedRigidBody` lane and propagates it
-  (`crates/openbmp-sim/src/kernel.rs`); the continuing-stack mass model and
-  separation tip-off are in place.
-- The FC / autopilot / mixer drive only the **primary** lane.
+**What already exists** (updated after investigation — the gap is narrower than
+"deep ballistic-only rewrite"):
+- Separated lanes are **NOT ballistic**: the kernel advances each
+  `SeparatedRigidBody` with the *same* force/moment/mass models as the primary,
+  scoped by `active_body` (`kernel.rs` `derive_separated`). A booster lane
+  already runs gravity + aero + its own engines + mass depletion, all
+  owner-gated — so a **thrusting** booster lane is physically supported today.
+- Engines stay addressable across separation (static `mounted_to` ownership);
+  a booster engine commanded after separation routes its thrust to the lane.
+- Separation **re-orientation** is now implemented
+  (`stage_attitude_offset_body_xyzw`) — the booster can flip retrograde at
+  separation. Tip-off rates and per-body continuing-stack mass are also in.
+- **Remaining gaps for a guided boostback:** (a) RESERVED booster propellant
+  (the stage-1 tank is depleted at MECO — verified the booster lane mass is
+  constant post-separation; needs vehicle re-sizing / earlier staging);
+  (b) the booster engines scripted/commanded to fire on the lane after
+  separation; (c) per-lane guidance/control — the FC / autopilot / mixer drive
+  only the **primary** lane today. (c) is the core remaining architectural
+  piece (a per-lane control loop).
 
 **Integration seam / proposed design.**
 1. Allow a separated lane to retain **active engines** (the booster's engines
@@ -153,7 +166,7 @@ slosh stays demonstrated on the continuous-thrust `sloshing-tank` scenario.
 | Item | State |
 |------|-------|
 | Structural flex / bending | IMPLEMENTED end-to-end (model + rack + gyro pickup + body reaction moment + scenario + e2e). Optional: multiple modes; aggressive-gain notch-rescue demo. |
-| Integrated controlled boostback/landing | Not started; needs multi-lane control. Ballistic recovery already exists separately. |
+| Integrated controlled boostback/landing | Per-lane PHYSICS confirmed working (thrusting lane supported); separation re-orientation primitive implemented. Remaining: reserved booster propellant (re-sizing) + scripted lane burn + per-lane control loop. |
 | Slosh-coupled orbit closure | Diagnosed (post-separation upper-stage tumble); a knob-combination attempt did not close it. Needs slosh-control co-design. |
 
 All three are forward-only and synthetic. None changes the project's doctrine
