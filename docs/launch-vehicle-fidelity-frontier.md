@@ -24,7 +24,19 @@ Companion docs: [`staging-and-separation.md`](staging-and-separation.md),
 
 ## 1. Structural flex / bending modes
 
-**Gap.** The vehicle is a rigid body; there is no lateral structural bending.
+**Status: first increment IMPLEMENTED** (commit adding `openbmp-vehicle/src/structural.rs`
+`BendingMode` + `openbmp-runner/src/structural.rs` `StructuralRack` + the FC-bridge
+rate-gyro pickup + `[vehicle.bending]` + `scenarios/phalcon9/phalcon9-orbit-flex.toml`).
+A first lateral bending mode is modelled, gyro-sensed, and the GNC inserts
+robustly through it. **Remaining follow-up:** wire the bending REACTION moment
+into the rigid-body dynamics via the snapshot→adapter path (item below); it is
+computed + exposed by the rack today but not yet fed to the body. Also: this
+vehicle's tuned gains are naturally flex-robust, so the gyro notch is not needed
+here — a flex-unstable (aggressive-gain) demonstration of the notch rescuing the
+loop is a separate scenario.
+
+**Gap (original).** The vehicle was a rigid body; there was no lateral
+structural bending.
 A real launch vehicle's first bending mode couples to the autopilot through the
 rate-gyro pickup (the gyro at its station senses the local bending slope rate,
 not just the rigid-body rate), and an over-reactive loop can drive the mode
@@ -139,7 +151,7 @@ slosh stays demonstrated on the continuous-thrust `sloshing-tank` scenario.
 
 | Item | State |
 |------|-------|
-| Structural flex / bending | Not started; new modal module + sensor-pickup change. Gyro notch already wired as the stabiliser. |
+| Structural flex / bending | First bending mode IMPLEMENTED (model + rack + gyro pickup + scenario + e2e). Follow-up: wire the reaction moment into the body dynamics; aggressive-gain notch-rescue demo. |
 | Integrated controlled boostback/landing | Not started; needs multi-lane control. Ballistic recovery already exists separately. |
 | Slosh-coupled orbit closure | Diagnosed (post-separation upper-stage tumble); a knob-combination attempt did not close it. Needs slosh-control co-design. |
 
