@@ -187,6 +187,18 @@ This provenance record covers the following synthetic scenario files:
   apogee ~392 km, e ~0.005, inclination ~0.34°). Exercises the multi-body
   continuing-stack mass aggregation (the continuing upper stack carries the
   still-attached fairing/payload until each departs).
+- `scenarios/phalcon9/phalcon9-orbit-boostback.toml` — the same ascent with an
+  **integrated booster boostback**: the booster carries a dedicated ~6 t
+  boostback propellant tank + a 400 kN on-axis boostback engine (idle during
+  ascent), separates at MECO, **flips retrograde** (separation attitude
+  offset), and fires the boostback engine on a scripted ignite→cut window
+  (t≈250–290 s) — all in the SAME run as the ascent. The upper stage still
+  reaches a bound near-circular LEO (perigee ~271 km × apogee ~449 km, e
+  ~0.013), while the separated booster lane burns its reserve (~5.4 t) and
+  decelerates ~450 m/s (a partial boostback). This is an OPEN-LOOP (scripted)
+  boostback; closed-loop guided boostback+landing needs a per-lane control
+  loop (see `docs/launch-vehicle-fidelity-frontier.md`). Verified by
+  `crates/openbmp-cli/tests/phalcon9_orbit_boostback_e2e.rs`.
 - `scenarios/phalcon9/phalcon9-orbit-flex.toml` — the same vehicle carrying a
   first lateral structural **bending mode** (`[vehicle.bending]`, ~1.5 Hz)
   whose local slope rate the FC rate gyro picks up, so the autopilot interacts
