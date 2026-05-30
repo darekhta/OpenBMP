@@ -1,0 +1,35 @@
+# Synthetic Earth-orientation-parameter (EOP) table for the Phalcon-9 IERS
+# frame demonstration. WHOLLY SYNTHETIC, illustrative values of REALISTIC
+# MAGNITUDE — NOT a real IERS Bulletin A/B record and not pinned to any
+# actual date's published Earth orientation. They exercise the
+# iers-tabulated frame (IAU 1976 precession + IAU 1980 nutation, plus the
+# tabulated UT1-UTC / polar-motion / length-of-day terms) so the launch
+# flies on a non-uniform-rotation Earth. See scenarios/phalcon9/provenance.md.
+#
+# Times are scenario-relative seconds and must cover [time.start_s,
+# time.stop_s] = [0, 1000]. Polar motion is in arcseconds (~0.1-0.4" is a
+# realistic order); UT1-UTC and excess length-of-day are in seconds
+# (sub-second / few-ms order).
+
+format = "openbmp-eop-v1"
+
+[[samples]]
+time_s          = 0.0
+ut1_minus_utc_s = -0.108_0
+x_pole_arcsec   = 0.161_0
+y_pole_arcsec   = 0.347_0
+lod_s           = 0.001_4
+
+[[samples]]
+time_s          = 500.0
+ut1_minus_utc_s = -0.108_8
+x_pole_arcsec   = 0.162_3
+y_pole_arcsec   = 0.346_2
+lod_s           = 0.001_5
+
+[[samples]]
+time_s          = 1000.0
+ut1_minus_utc_s = -0.109_6
+x_pole_arcsec   = 0.163_6
+y_pole_arcsec   = 0.345_4
+lod_s           = 0.001_6

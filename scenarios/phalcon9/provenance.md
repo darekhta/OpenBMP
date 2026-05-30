@@ -142,8 +142,12 @@ This provenance record covers the following synthetic scenario files:
   full staged profile (stage-1 closed-loop ascent → MECO + booster
   jettison → ballistic coast to apogee → stage-2 PEG circularisation →
   orbit) reaches a near-circular, near-equatorial bound low Earth orbit:
-  perigee ~334 km × apogee ~381 km, eccentricity ~0.004, inclination
-  ~1.8° (verified from telemetry). The upper stage is cut by a CONTROLLED
+  perigee ~320 km × apogee ~398 km, eccentricity ~0.006, inclination
+  ~0.34° (verified from telemetry). The low residual inclination comes from
+  resolving the ascent-guidance roll reference against the orbital-plane
+  normal, which keeps the commanded attitude continuous through the
+  horizontal pitch-over (see the "near-equatorial insertion" note above).
+  The upper stage is cut by a CONTROLLED
   PEG time-to-go cutoff (`seco`, ~0.5 s short of circular) with propellant
   margin remaining — not a burn-to-depletion. The ascent flies through an
   atmosphere (US Standard 1976) under a synthetic drag deck
@@ -151,7 +155,7 @@ This provenance record covers the following synthetic scenario files:
   with CLOSED-LOOP max-Q load relief — the autopilot computes the real
   dynamic pressure (actual density at the navigated geocentric altitude ×
   air-relative speed²) and throttles down to hold it at the limit (peak q
-  held to ~26 kPa vs a ~29 kPa unconstrained peak); MECO is at 7270 m/s to
+  held to ~26 kPa vs a ~29 kPa unconstrained peak); MECO is at 7235 m/s to
   recover the drag/throttle loss. Exercises per-phase ascent guidance
   (closed-loop on the booster, Powered Explicit Guidance on the upper
   stage), engine-moment-about-CG rigid-body dynamics across a CG-shifting
@@ -170,6 +174,22 @@ This provenance record covers the following synthetic scenario files:
   orbit phase throttles eng_vac to zero) cuts the engine ~0.5 s short of
   circular with propellant margin — a controlled cutoff. See the scenario
   header for the full profile.
+- `scenarios/phalcon9/phalcon9-orbit-iers.toml` — the same vehicle and
+  guidance as `phalcon9-orbit.toml`, re-flown on the higher-fidelity
+  **`iers-tabulated`** Earth frame (IAU 1976 precession + IAU 1980 nutation,
+  plus tabulated UT1-UTC / polar motion / length-of-day) instead of uniform
+  rotation. It demonstrates that the launch flies on a non-uniform-rotation
+  Earth through the FC bridge and still delivers the same clean
+  near-equatorial insertion (perigee ~320 km × apogee ~398 km, e ~0.006,
+  inclination ~0.34°); the frame is genuinely engaged (the trajectory
+  differs from the uniform-rotation run by a few metres by orbit insertion,
+  from the precession/nutation/polar-motion/LOD terms acting on the
+  air-relative velocity). The Earth-orientation table it reads,
+  [`scenarios/phalcon9/eop-synthetic.toml`](eop-synthetic.toml), is WHOLLY
+  SYNTHETIC and illustrative — realistic-magnitude polar motion (~0.1–0.4
+  arcsec), UT1-UTC (sub-second) and excess LOD (few ms), but NOT a real IERS
+  Bulletin A/B record for any actual date. The `[epoch]` date only sets the
+  precession/nutation reference angles.
 
 All numeric content in these files is synthetic / rounded /
 order-of-magnitude and contains no real fielded-vehicle parameter set.
