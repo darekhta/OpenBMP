@@ -20,6 +20,23 @@ Companion docs: [`staging-and-separation.md`](staging-and-separation.md),
 [`ascent-guidance.md`](ascent-guidance.md),
 [`software-architecture.md`](software-architecture.md).
 
+## 0. Upper-stage aero (resolved by physics + owner-scoping)
+
+The aero deck (`[aero]`, full lift + pitching moment + AoA grid) is owner-scoped
+to the booster (`mounted_to = "lower"`). It applies during the entire
+atmospheric ascent (the full stack, via the pre-separation composite) and, by
+the force-stack owner gate, **stays with the booster lane after staging** — so
+the booster retains aerodynamics for any atmospheric descent. The **upper stage
+flies exoatmospheric**: the booster jettisons near MECO above ~110 km, and the
+US-Standard-1976 atmosphere has zero density above 86 km, so the upper stage
+experiences **zero aerodynamic force by physics**. "No upper-stage aero" is
+therefore the physically-correct state for this vacuum-only upper stage, not an
+omission. Distinct *simultaneous* per-stage decks (two bodies aerodynamic at
+once — e.g. a vehicle whose upper stage flies in-atmosphere) would need
+multi-deck support (`aero` is a single `Option<AeroConfig>` today); that is a
+real general capability but has **zero effect on this exoatmospheric
+trajectory**, so it is deliberately not added here.
+
 ---
 
 ## 1. Structural flex / bending modes
