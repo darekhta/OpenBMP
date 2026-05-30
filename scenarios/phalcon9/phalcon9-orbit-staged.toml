@@ -420,6 +420,11 @@ upper_body_id          = "upper"
 lower_body_id          = "lower"
 upper_delta_v_body_m_s = [0.0, 0.0, 0.3]
 lower_delta_v_body_m_s = [0.0, 0.0, -0.3]
+# Detailed separation dynamics: a small tip-off rate imparted to the
+# DEPARTING booster (residual push-off torque). It spins the spent stage
+# only; the continuing stack is left torque-free, so the insertion is
+# unaffected.
+lower_delta_omega_body_rad_s = [0.05, -0.03, 0.0]
 conserve_momentum      = false
 
 [[multi_body.separation]]

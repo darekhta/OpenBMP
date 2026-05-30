@@ -100,6 +100,8 @@ fn textbook_separation() -> RigidBodySeparation {
         stage_mass_properties: mass_props(1.0, -1.0, [0.2, 0.2, 0.1]),
         stack_delta_v_body_m_s: [0.0, 0.0, 0.25],
         stage_delta_v_body_m_s: [0.0, 0.0, -1.0],
+        stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+        stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
     }
 }
 
@@ -112,6 +114,8 @@ fn batch_separations() -> [RigidBodySeparation; 2] {
             stage_mass_properties: mass_props(1.0, -1.0, [0.2, 0.2, 0.1]),
             stack_delta_v_body_m_s: [0.0, 0.0, 0.0],
             stage_delta_v_body_m_s: [0.0, 1.0, 0.0],
+            stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+            stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
         },
         RigidBodySeparation {
             stack_body: BodyId::from_path("vehicle.assembly.bodies.bus"),
@@ -120,6 +124,8 @@ fn batch_separations() -> [RigidBodySeparation; 2] {
             stage_mass_properties: mass_props(1.0, 1.0, [0.2, 0.2, 0.1]),
             stack_delta_v_body_m_s: [0.0, 0.0, 0.0],
             stage_delta_v_body_m_s: [0.0, -1.0, 0.0],
+            stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+            stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
         },
     ]
 }
@@ -184,6 +190,30 @@ fn jettison_partitions_textbook_two_stage_state() {
 
     let total_momentum_z = 4.0 * stack.velocity.vector.z + stage.velocity.vector.z;
     assert_abs_diff_eq!(total_momentum_z, 0.0, epsilon = 1.0e-15);
+}
+
+#[test]
+fn jettison_applies_tip_off_angular_rates() {
+    // A separation with non-zero body-frame tip-off rates imparts them to
+    // the continuing stack and departing stage angular velocities (the
+    // composite started at rest). The default (zero) path leaves angular
+    // velocity untouched, as the other separation tests confirm.
+    let mut kernel = build_kernel(0.3);
+    let separation = RigidBodySeparation {
+        stack_delta_omega_body_rad_s: [0.0, 0.0, 0.4],
+        stage_delta_omega_body_rad_s: [0.1, 0.0, -0.7],
+        ..textbook_separation()
+    };
+    kernel.jettison_rigid_body(separation).expect("separation must apply");
+
+    let stack = kernel.current_state();
+    let stage = &kernel.separated_rigid_bodies()[0].state;
+    assert_abs_diff_eq!(stack.angular_velocity.vector.z, 0.4, epsilon = 1.0e-15);
+    assert_abs_diff_eq!(stage.angular_velocity.vector.x, 0.1, epsilon = 1.0e-15);
+    assert_abs_diff_eq!(stage.angular_velocity.vector.z, -0.7, epsilon = 1.0e-15);
+    // Mass partition and delta-V are unchanged by the tip-off.
+    assert_eq!(stack.mass_props.mass.get::<kilogram>(), 4.0);
+    assert_abs_diff_eq!(stage.velocity.vector.z, -1.0, epsilon = 1.0e-15);
 }
 
 #[test]

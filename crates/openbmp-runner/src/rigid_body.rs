@@ -1030,6 +1030,8 @@ struct RigidBodySeparationSpec {
     body: BodyId,
     stack_delta_v_body_m_s: [f64; 3],
     stage_delta_v_body_m_s: [f64; 3],
+    stack_delta_omega_body_rad_s: [f64; 3],
+    stage_delta_omega_body_rad_s: [f64; 3],
 }
 
 fn build_rigid_body_separations(
@@ -1078,6 +1080,12 @@ fn build_rigid_body_separations(
                     .unwrap_or([0.0, 0.0, 0.0]),
                 stage_delta_v_body_m_s: separation
                     .lower_delta_v_body_m_s
+                    .unwrap_or([0.0, 0.0, 0.0]),
+                stack_delta_omega_body_rad_s: separation
+                    .upper_delta_omega_body_rad_s
+                    .unwrap_or([0.0, 0.0, 0.0]),
+                stage_delta_omega_body_rad_s: separation
+                    .lower_delta_omega_body_rad_s
                     .unwrap_or([0.0, 0.0, 0.0]),
             },
         );
@@ -1238,6 +1246,8 @@ where
         stage_mass_properties,
         stack_delta_v_body_m_s: separation.stack_delta_v_body_m_s,
         stage_delta_v_body_m_s: separation.stage_delta_v_body_m_s,
+        stack_delta_omega_body_rad_s: separation.stack_delta_omega_body_rad_s,
+        stage_delta_omega_body_rad_s: separation.stage_delta_omega_body_rad_s,
     })
 }
 

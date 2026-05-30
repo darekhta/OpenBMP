@@ -158,6 +158,14 @@ pub struct RigidBodySeparation {
     pub stack_delta_v_body_m_s: [f64; 3],
     /// Body-frame delta-V applied to the departing body (m/s).
     pub stage_delta_v_body_m_s: [f64; 3],
+    /// Body-frame angular-rate tip-off applied to the continuing stack
+    /// (rad/s). Models the residual torque imparted at separation (uneven
+    /// push-off, pyro asymmetry, latch friction). `[0, 0, 0]` = clean,
+    /// torque-free separation (the default).
+    pub stack_delta_omega_body_rad_s: [f64; 3],
+    /// Body-frame angular-rate tip-off applied to the departing body
+    /// (rad/s).
+    pub stage_delta_omega_body_rad_s: [f64; 3],
 }
 
 /// One rigid body detached from the primary stack.
@@ -2017,6 +2025,7 @@ where
             &pre_split_state,
             separations[0].stack_mass_properties,
             separations[0].stack_delta_v_body_m_s,
+            separations[0].stack_delta_omega_body_rad_s,
         );
         stack_state
             .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
@@ -2029,6 +2038,7 @@ where
                 &pre_split_state,
                 separation.stage_mass_properties,
                 separation.stage_delta_v_body_m_s,
+                separation.stage_delta_omega_body_rad_s,
             );
             stage_state
                 .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
@@ -2134,6 +2144,7 @@ fn partition_rigid_body_state(
     composite: &openbmp_state::RigidBodyState,
     mass_properties: MassProperties,
     delta_v_body_m_s: [f64; 3],
+    delta_omega_body_rad_s: [f64; 3],
 ) -> openbmp_state::RigidBodyState {
     let relative_body_m = mass_properties.center_of_mass_body.vector
         - composite.mass_props.center_of_mass_body.vector;
@@ -2146,6 +2157,16 @@ fn partition_rigid_body_state(
         delta_v_body_m_s[2],
     );
     let delta_v_eci_m_s = composite.orientation.q * delta_v_body;
+    // Tip-off: add the body-frame angular-rate impulse to the composite's
+    // angular velocity (also body-frame). Zero = clean torque-free split.
+    let angular_velocity = openbmp_core::AngularVelocity3::from_vector(
+        composite.angular_velocity.vector
+            + nalgebra::Vector3::new(
+                delta_omega_body_rad_s[0],
+                delta_omega_body_rad_s[1],
+                delta_omega_body_rad_s[2],
+            ),
+    );
     openbmp_state::RigidBodyState::new(
         composite.time,
         openbmp_core::Position3::from_vector(composite.position.vector + position_offset_eci_m),
@@ -2153,7 +2174,7 @@ fn partition_rigid_body_state(
             composite.velocity.vector + rotational_velocity_eci_m_s + delta_v_eci_m_s,
         ),
         composite.orientation,
-        composite.angular_velocity,
+        angular_velocity,
         mass_properties,
     )
 }
@@ -2649,6 +2670,8 @@ mod tests {
                 stage_mass_properties: mass_props,
                 stack_delta_v_body_m_s: [0.0, 0.0, 0.0],
                 stage_delta_v_body_m_s: [1.0, 0.0, 0.0],
+                stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+                stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
             })
             .expect("manual separation");
         kernel.step().expect("step");
@@ -2708,6 +2731,8 @@ mod tests {
                 stage_mass_properties: mass_props,
                 stack_delta_v_body_m_s: [0.0, 0.0, 0.0],
                 stage_delta_v_body_m_s: [0.0, 0.0, 0.0],
+                stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+                stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
             })
             .expect("manual separation");
         kernel.separated_rigid_bodies[0].state.velocity = Velocity3::new(1.0, 0.0, 0.0);

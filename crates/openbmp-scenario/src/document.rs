@@ -9832,6 +9832,16 @@ pub struct MultiBodySeparationConfig {
     /// Optional impulsive delta-V applied to the lower body in body
     /// frame at separation (m/s).
     pub lower_delta_v_body_m_s: Option<[f64; 3]>,
+    /// Optional body-frame angular-rate TIP-OFF applied to the upper
+    /// (continuing) body at separation (rad/s). Models the residual
+    /// torque a real separation imparts (uneven push-off, pyro asymmetry,
+    /// latch friction). Defaults to zero (clean torque-free separation).
+    #[serde(default)]
+    pub upper_delta_omega_body_rad_s: Option<[f64; 3]>,
+    /// Optional body-frame angular-rate tip-off applied to the lower
+    /// (departing) body at separation (rad/s).
+    #[serde(default)]
+    pub lower_delta_omega_body_rad_s: Option<[f64; 3]>,
     /// Whether the loader must verify momentum conservation
     /// (`m_u·Δv_u + m_l·Δv_l ≈ 0`). Default `true`.
     #[serde(default = "default_true")]
@@ -9870,6 +9880,18 @@ impl MultiBodySeparationConfig {
             require_finite_array(
                 &format!("multi_body.separation[{index}].lower_delta_v_body_m_s"),
                 &dv,
+            )?;
+        }
+        if let Some(dw) = self.upper_delta_omega_body_rad_s {
+            require_finite_array(
+                &format!("multi_body.separation[{index}].upper_delta_omega_body_rad_s"),
+                &dw,
+            )?;
+        }
+        if let Some(dw) = self.lower_delta_omega_body_rad_s {
+            require_finite_array(
+                &format!("multi_body.separation[{index}].lower_delta_omega_body_rad_s"),
+                &dw,
             )?;
         }
         Ok(())
