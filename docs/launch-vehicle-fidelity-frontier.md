@@ -24,16 +24,17 @@ Companion docs: [`staging-and-separation.md`](staging-and-separation.md),
 
 ## 1. Structural flex / bending modes
 
-**Status: first increment IMPLEMENTED** (commit adding `openbmp-vehicle/src/structural.rs`
+**Status: IMPLEMENTED end-to-end.** `openbmp-vehicle/src/structural.rs`
 `BendingMode` + `openbmp-runner/src/structural.rs` `StructuralRack` + the FC-bridge
-rate-gyro pickup + `[vehicle.bending]` + `scenarios/phalcon9/phalcon9-orbit-flex.toml`).
-A first lateral bending mode is modelled, gyro-sensed, and the GNC inserts
-robustly through it. **Remaining follow-up:** wire the bending REACTION moment
-into the rigid-body dynamics via the snapshot→adapter path (item below); it is
-computed + exposed by the rack today but not yet fed to the body. Also: this
-vehicle's tuned gains are naturally flex-robust, so the gyro notch is not needed
-here — a flex-unstable (aggressive-gain) demonstration of the notch rescuing the
-loop is a separate scenario.
+rate-gyro pickup + the rigid-body **reaction moment** (kernel-held, added to the
+net body torque) + `[vehicle.bending]` + `scenarios/phalcon9/phalcon9-orbit-flex.toml`.
+A first lateral bending mode is modelled, gyro-sensed, couples back into the body
+dynamics, and the GNC inserts robustly through it. Byte-identical when no
+`[vehicle.bending]`. **Remaining (optional refinements):** multiple modes /
+distributed mode shape; and an aggressive-gain scenario demonstrating the gyro
+notch rescuing a flex-UNSTABLE loop (this vehicle's tuned gains are naturally
+flex-robust, so the notch isn't needed at nominal gains — it only attenuates
+flex-band rate when the loop is intentionally driven flex-sensitive).
 
 **Gap (original).** The vehicle was a rigid body; there was no lateral
 structural bending.
@@ -151,7 +152,7 @@ slosh stays demonstrated on the continuous-thrust `sloshing-tank` scenario.
 
 | Item | State |
 |------|-------|
-| Structural flex / bending | First bending mode IMPLEMENTED (model + rack + gyro pickup + scenario + e2e). Follow-up: wire the reaction moment into the body dynamics; aggressive-gain notch-rescue demo. |
+| Structural flex / bending | IMPLEMENTED end-to-end (model + rack + gyro pickup + body reaction moment + scenario + e2e). Optional: multiple modes; aggressive-gain notch-rescue demo. |
 | Integrated controlled boostback/landing | Not started; needs multi-lane control. Ballistic recovery already exists separately. |
 | Slosh-coupled orbit closure | Diagnosed (post-separation upper-stage tumble); a knob-combination attempt did not close it. Needs slosh-control co-design. |
 
