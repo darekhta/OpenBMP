@@ -7477,6 +7477,12 @@ pub struct EngineLimitsConfig {
     /// `0.0`.
     #[serde(default)]
     pub isp_throttle_falloff: f64,
+    /// When `true`, the engine may be RESTARTED: after a completed
+    /// shutdown transient it re-arms and a later ignition begins a new
+    /// burn (e.g. an upper-stage restart for a second burn). Defaults to
+    /// `false` — `shutdown` is then a one-shot terminal command.
+    #[serde(default)]
+    pub restartable: bool,
 }
 
 fn default_infinite() -> f64 {

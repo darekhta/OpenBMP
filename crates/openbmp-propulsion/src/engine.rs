@@ -436,6 +436,11 @@ pub struct LiquidEngine {
     last_snapshot: EngineSnapshot,
     /// Active fault, if any.
     fault: Option<EngineFault>,
+    /// When `true`, `Shutdown` is NOT terminal: once the shutdown
+    /// transient completes the engine re-arms to `Idle` and a later
+    /// `ignite` re-ignites it (e.g. an upper-stage restart for a second
+    /// burn). Default `false` keeps the one-shot lifecycle.
+    restartable: bool,
 }
 
 impl LiquidEngine {
@@ -463,7 +468,18 @@ impl LiquidEngine {
             feed_pressure_scale: 1.0,
             last_snapshot: EngineSnapshot::idle(),
             fault: None,
+            restartable: false,
         })
+    }
+
+    /// Set the restart policy. When `restartable` is `true`, the engine
+    /// re-arms to `Idle` after a completed shutdown transient instead of
+    /// latching `Shutdown` terminally, so a later `ignite` command starts a
+    /// new burn. Builder-style; defaults to `false` (one-shot).
+    #[must_use]
+    pub fn with_restart_policy(mut self, restartable: bool) -> Self {
+        self.restartable = restartable;
+        self
     }
 
     /// Construction-time fault validator. Rejects non-finite,
@@ -729,6 +745,22 @@ impl EngineModel for LiquidEngine {
         {
             self.state = EngineState::Burning;
             self.elapsed_in_state_s = 0.0;
+        }
+
+        // Restartable engines re-arm to Idle once the shutdown transient has
+        // fully tapered thrust to zero, so a later `ignite` begins a new
+        // burn (e.g. an upper-stage restart). Non-restartable engines (the
+        // default) leave `Shutdown` terminal — byte-identical to before.
+        if self.restartable
+            && matches!(self.state, EngineState::Shutdown)
+            && (self.limits.shutdown_transient_s <= 0.0
+                || self.elapsed_in_state_s >= self.limits.shutdown_transient_s)
+        {
+            self.state = EngineState::Idle;
+            self.elapsed_in_state_s = 0.0;
+            self.shutdown_start_thrust_n = 0.0;
+            self.commanded_throttle = 0.0;
+            self.latched_throttle = 0.0;
         }
 
         let snapshot = EngineSnapshot {
@@ -1048,6 +1080,48 @@ mod tests {
         })
         .unwrap();
         assert_eq!(e.current_state(), EngineState::Shutdown);
+    }
+
+    #[test]
+    fn liquid_engine_restartable_re_ignites_after_shutdown() {
+        let mut e = fresh_engine().with_restart_policy(true);
+        ignite_to_burning(&mut e);
+        // First-burn propellant consumed.
+        let consumed_after_first = e.current_snapshot().consumed_kg;
+        assert!(consumed_after_first > 0.0);
+
+        // Shut down and step past the shutdown transient: a restartable
+        // engine re-arms to Idle (vs the terminal Shutdown of the default).
+        e.apply_command(EngineCommand {
+            shutdown: true,
+            throttle_unit: 0.0,
+            gimbal_pitch_rad: 0.0,
+            gimbal_yaw_rad: 0.0,
+            ignite: false,
+        })
+        .unwrap();
+        for _ in 0..150 {
+            e.step(dt()).unwrap();
+        }
+        assert_eq!(e.current_state(), EngineState::Idle, "restartable engine must re-arm to Idle");
+        assert_eq!(e.current_snapshot().thrust_body.norm().to_bits(), 0.0_f64.to_bits());
+
+        // Re-ignite for a second burn.
+        e.apply_command(EngineCommand {
+            ignite: true,
+            throttle_unit: 1.0,
+            gimbal_pitch_rad: 0.0,
+            gimbal_yaw_rad: 0.0,
+            shutdown: false,
+        })
+        .unwrap();
+        for _ in 0..101 {
+            e.step(dt()).unwrap();
+        }
+        assert_eq!(e.current_state(), EngineState::Burning, "must re-ignite to Burning");
+        assert!(e.current_snapshot().thrust_body.norm() > 0.0, "second burn must produce thrust");
+        // The second burn consumes additional propellant.
+        assert!(e.current_snapshot().consumed_kg > consumed_after_first);
     }
 
     // -----------------------------------------------------------------

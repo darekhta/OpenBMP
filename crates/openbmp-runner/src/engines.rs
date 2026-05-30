@@ -350,10 +350,12 @@ fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, Run
             reason: "unsupported engine kind".to_owned(),
         });
     }
-    let mut engine = LiquidEngine::new(id, limits).map_err(|err| RunnerError::Engine {
-        field: format!("vehicle.assembly.engines[{index}]"),
-        reason: err.to_string(),
-    })?;
+    let mut engine = LiquidEngine::new(id, limits)
+        .map_err(|err| RunnerError::Engine {
+            field: format!("vehicle.assembly.engines[{index}]"),
+            reason: err.to_string(),
+        })?
+        .with_restart_policy(config.limits.restartable);
     if let Some(fault_config) = &config.fault {
         let fault = match *fault_config {
             EngineFaultConfig::Stuck { at_throttle } => EngineFault::Stuck { at_throttle },
