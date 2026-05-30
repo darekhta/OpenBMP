@@ -99,11 +99,19 @@ end-to-end demonstration of the already-wired notch.
 
 ## 2. Integrated controlled boostback / landing
 
-**Gap.** Booster recovery exists only as a *separate* ballistic scenario
-(`scenarios/phalcon9/phalcon9-booster-recovery.toml` + footprint Monte-Carlo).
-In an integrated ascent run the jettisoned booster lane propagates
-**ballistically** — there is no boostback burn, entry guidance, or controlled
-landing on the separated lane.
+**Status: OPEN-LOOP integrated boostback IMPLEMENTED**
+(`scenarios/phalcon9/phalcon9-orbit-boostback.toml` + e2e). The booster carries
+a dedicated boostback engine + reserve tank, separates, flips retrograde
+(separation attitude offset), and fires the engine on a scripted ignite→cut
+window — decelerating ~450 m/s in the same run as the ascent-to-orbit. The
+**remaining** piece is the closed-loop GUIDED version (feedback to a landing
+site-radius + entry-attitude hold + terminal landing burn), which needs the
+**per-lane control loop** below — control is single-lane today.
+
+**Gap (original).** Booster recovery existed only as a *separate* ballistic
+scenario; an integrated ascent run propagated the jettisoned booster lane
+**ballistically** — no boostback burn. (Now: an open-loop scripted boostback
+burn is integrated; closed-loop guidance remains.)
 
 **What already exists** (updated after investigation — the gap is narrower than
 "deep ballistic-only rewrite"):
@@ -194,7 +202,7 @@ slosh stays demonstrated on the continuous-thrust `sloshing-tank` scenario.
 | Item | State |
 |------|-------|
 | Structural flex / bending | IMPLEMENTED end-to-end (model + rack + gyro pickup + body reaction moment + scenario + e2e). Optional: multiple modes; aggressive-gain notch-rescue demo. |
-| Integrated controlled boostback/landing | Per-lane PHYSICS confirmed working (thrusting lane supported); separation re-orientation primitive implemented. Remaining: reserved booster propellant (re-sizing) + scripted lane burn + per-lane control loop. |
+| Integrated controlled boostback/landing | OPEN-LOOP integrated boostback IMPLEMENTED (dedicated boostback engine + retrograde flip + scripted burn; booster decelerates ~450 m/s in the same run as ascent-to-orbit). Remaining: closed-loop GUIDED boostback + landing (per-lane control loop). |
 | Slosh-coupled orbit closure | Diagnosed (post-separation upper-stage tumble); a knob-combination attempt did not close it. Needs slosh-control co-design. |
 
 All three are forward-only and synthetic. None changes the project's doctrine
