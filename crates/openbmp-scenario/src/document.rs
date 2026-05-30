@@ -767,6 +767,11 @@ impl ScenarioDocument {
                 }
                 attitude_mpc.validate()?;
             }
+            if let Some(notches) = autopilot_params.gyro_notch.as_ref() {
+                for (axis, notch) in notches.iter().enumerate() {
+                    notch.validate(axis)?;
+                }
+            }
         }
 
         // fc.trajectory — consumed block, v3-only; the
@@ -8983,6 +8988,46 @@ pub struct FcAutopilotParams {
     /// (v3-only). Required when `attitude_loop_kind = "mpc"`; ignored
     /// otherwise.
     pub attitude_mpc: Option<FcAttitudeMpcConfig>,
+    /// Optional per-axis gyro notch filters, applied to the body-rate
+    /// feedback before the rate loop — the standard slosh / structural-flex
+    /// GAIN-STABILISATION technique (attenuate the rate loop's response in
+    /// the slosh/flex band so the controller does not chase, and amplify,
+    /// the oscillation). `[roll, pitch, yaw]` order. Omit for no notch.
+    #[serde(default)]
+    pub gyro_notch: Option<[FcGyroNotchConfig; 3]>,
+}
+
+/// One axis' gyro notch-filter configuration
+/// (`[fc.autopilot_params.gyro_notch]`).
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcGyroNotchConfig {
+    /// Notch centre frequency (Hz), strictly positive. Set near the slosh
+    /// or first structural-bending frequency to be rejected.
+    pub center_hz: f64,
+    /// Notch bandwidth (Hz), strictly positive.
+    pub bandwidth_hz: f64,
+    /// Requested notch depth (dB), non-negative.
+    pub depth_db: f64,
+}
+
+impl FcGyroNotchConfig {
+    fn validate(&self, axis: usize) -> Result<(), ScenarioError> {
+        let path = |f: &str| format!("fc.autopilot_params.gyro_notch[{axis}].{f}");
+        require_finite(&path("center_hz"), self.center_hz)?;
+        require_positive(&path("center_hz"), self.center_hz)?;
+        require_finite(&path("bandwidth_hz"), self.bandwidth_hz)?;
+        require_positive(&path("bandwidth_hz"), self.bandwidth_hz)?;
+        require_finite(&path("depth_db"), self.depth_db)?;
+        if self.depth_db < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("depth_db"),
+                value: self.depth_db,
+                rule: "must be non-negative",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Per-axis L1 adaptive parameters declared in
@@ -10163,6 +10208,31 @@ mod fc_string_tests {
         assert!(
             toml::from_str::<DetectorWrapper>("detector_kind = \"single-sample-glrt\"").is_err()
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod gyro_notch_tests {
+    use super::FcGyroNotchConfig;
+
+    #[test]
+    fn gyro_notch_deserializes_and_validates() {
+        let notch: FcGyroNotchConfig =
+            toml::from_str("center_hz = 0.8\nbandwidth_hz = 0.6\ndepth_db = 18.0").unwrap();
+        assert_eq!(notch.center_hz, 0.8);
+        assert_eq!(notch.bandwidth_hz, 0.6);
+        assert!(notch.validate(1).is_ok());
+    }
+
+    #[test]
+    fn gyro_notch_rejects_nonpositive_and_negative_fields() {
+        let zero_center = FcGyroNotchConfig { center_hz: 0.0, bandwidth_hz: 0.6, depth_db: 18.0 };
+        assert!(zero_center.validate(0).is_err());
+        let zero_bw = FcGyroNotchConfig { center_hz: 0.8, bandwidth_hz: 0.0, depth_db: 18.0 };
+        assert!(zero_bw.validate(0).is_err());
+        let neg_depth = FcGyroNotchConfig { center_hz: 0.8, bandwidth_hz: 0.6, depth_db: -1.0 };
+        assert!(neg_depth.validate(0).is_err());
     }
 }
 

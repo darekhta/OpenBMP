@@ -1129,6 +1129,25 @@ fn build_autopilot_params(
     if let Some(v) = cfg.max_dynamic_pressure_pa {
         params.max_dynamic_pressure_pa = v;
     }
+    if let Some(notches) = cfg.gyro_notch.as_ref() {
+        params.gyro_notch = Some([
+            openbmp_fc::filters::NotchConfig {
+                center_hz: notches[0].center_hz,
+                bandwidth_hz: notches[0].bandwidth_hz,
+                depth_db: notches[0].depth_db,
+            },
+            openbmp_fc::filters::NotchConfig {
+                center_hz: notches[1].center_hz,
+                bandwidth_hz: notches[1].bandwidth_hz,
+                depth_db: notches[1].depth_db,
+            },
+            openbmp_fc::filters::NotchConfig {
+                center_hz: notches[2].center_hz,
+                bandwidth_hz: notches[2].bandwidth_hz,
+                depth_db: notches[2].depth_db,
+            },
+        ]);
+    }
     if let Some(v) = cfg.trajectory_loop_enabled {
         params.trajectory_loop_enabled = v;
     }
