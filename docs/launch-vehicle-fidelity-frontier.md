@@ -99,14 +99,27 @@ end-to-end demonstration of the already-wired notch.
 
 ## 2. Integrated controlled boostback / landing
 
-**Status: OPEN-LOOP integrated boostback IMPLEMENTED**
+**Status: integrated boostback IMPLEMENTED**
 (`scenarios/phalcon9/phalcon9-orbit-boostback.toml` + e2e). The booster carries
 a dedicated boostback engine + reserve tank, separates, flips retrograde
 (separation attitude offset), and fires the engine on a scripted ignite→cut
 window — decelerating ~450 m/s in the same run as the ascent-to-orbit. The
-**remaining** piece is the closed-loop GUIDED version (feedback to a landing
-site-radius + entry-attitude hold + terminal landing burn), which needs the
-**per-lane control loop** below — control is single-lane today.
+booster's landing point is an **emergent ballistic consequence** of that
+deceleration; nothing aims it.
+
+**Doctrine boundary (not a gap).** A *guided* boostback that flies the booster
+back to a specific **landing site / pad** is a **ground aimpoint** — precisely
+the capability OpenBMP's forward-only / not-a-weapon doctrine
+([`dual-use-assessment.md`](dual-use-assessment.md),
+[`safety-boundaries.md`](safety-boundaries.md)) deliberately excludes (no
+target / aimpoint / range fields; the ascent guidance itself targets an
+*insertion-radius*, an orbital element, never a ground point). Precision
+return-to-pad guidance is the same math as precision terminal targeting, so it
+is **out of scope by design**, not an unfinished feature. The
+deceleration-only boostback (shed velocity, no aimpoint) is the forward-only
+boostback and it is implemented. The per-lane control loop below remains a
+general capability (e.g. lane attitude hold), but a landing-*site* guidance law
+must not be built.
 
 **Gap (original).** Booster recovery existed only as a *separate* ballistic
 scenario; an integrated ascent run propagated the jettisoned booster lane
@@ -202,7 +215,7 @@ slosh stays demonstrated on the continuous-thrust `sloshing-tank` scenario.
 | Item | State |
 |------|-------|
 | Structural flex / bending | IMPLEMENTED end-to-end (model + rack + gyro pickup + body reaction moment + scenario + e2e). Optional: multiple modes; aggressive-gain notch-rescue demo. |
-| Integrated controlled boostback/landing | OPEN-LOOP integrated boostback IMPLEMENTED (dedicated boostback engine + retrograde flip + scripted burn; booster decelerates ~450 m/s in the same run as ascent-to-orbit). Remaining: closed-loop GUIDED boostback + landing (per-lane control loop). |
+| Integrated boostback | IMPLEMENTED (deceleration-only, forward-only: dedicated boostback engine + retrograde flip + scripted burn; ~450 m/s decel in the same run as ascent-to-orbit). Precision guided return-to-landing-SITE is a ground aimpoint → **out of scope by doctrine**, not a gap. |
 | Slosh-coupled orbit closure | Diagnosed (post-separation upper-stage tumble); a knob-combination attempt did not close it. Needs slosh-control co-design. |
 
 All three are forward-only and synthetic. None changes the project's doctrine
