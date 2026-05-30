@@ -16,7 +16,9 @@
 //!   * stage performance — common-mode Isp and thrust scale per stage;
 //!   * structural dry mass — per body;
 //!   * propellant load — per tank (underfill only, stays physical);
-//!   * initial state — small ECI position/velocity offsets.
+//!   * initial state — small ECI position/velocity offsets;
+//!   * winds — a per-sample horizontal wind (the dominant lower-atmosphere
+//!     ascent dispersion), perturbing the air-relative velocity / drag.
 //!
 //! Guidance is NOT dispersed: the MECO/PEG/SECO setpoints are the same in
 //! every sample, so a successful ensemble shows the controller — not a
@@ -33,6 +35,7 @@ use std::path::{Path, PathBuf};
 use openbmp_physics::frames::WGS84_MU_M3_S2;
 use openbmp_runner as runner;
 use openbmp_scenario::Scenario;
+use openbmp_scenario::document::WindConfig;
 
 /// WGS84/EGM2008 gravitational parameter (m^3/s^2) — canonical
 /// source-of-truth in openbmp-physics (not inlined; satisfies the
@@ -177,6 +180,26 @@ fn insertion_from_state(r: [f64; 3], v: [f64; 3]) -> Insertion {
     }
 }
 
+/// A constant-NED-wind [`WindConfig`] (only the `kind` + `wind_ned_m_s`
+/// fields apply; everything else is unset).
+fn constant_wind(wind_ned_m_s: [f64; 3]) -> WindConfig {
+    WindConfig {
+        kind: "constant".to_owned(),
+        wind_ned_m_s: Some(wind_ned_m_s),
+        layers: None,
+        intensity_m_s: None,
+        length_scale_m: None,
+        airspeed_m_s: None,
+        mean_wind_ned_m_s: None,
+        year: None,
+        day_of_year: None,
+        utc_s: None,
+        latitude_deg: None,
+        longitude_deg: None,
+        ap_current_3h: None,
+    }
+}
+
 /// Run sample `idx`. Sample 0 is the undispersed nominal; samples >= 1 are
 /// dispersed deterministically from `idx`.
 fn run_sample(idx: u64) -> Insertion {
@@ -221,6 +244,19 @@ fn run_sample(idx: u64) -> Insertion {
             doc.vehicle.initial_position_eci_m[k] += 30.0 * rng.normal();
             doc.vehicle.initial_velocity_eci_m_s[k] += 0.5 * rng.normal();
         }
+
+        // (6) WINDS — a per-sample horizontal wind (~12 m/s 1σ each axis, no
+        //     vertical; jet-stream-class tails ~25-35 m/s), the dominant
+        //     lower-atmosphere ascent dispersion.
+        //     A constant NED wind avoids the flat-earth altitude proxy that
+        //     the layered/HWM14 models use (wrong for this geocentric
+        //     equatorial launch); drag only acts in the lower atmosphere
+        //     anyway, where a constant wind is a fair approximation. The
+        //     scenario carries [frames.local_origin], required to rotate the
+        //     NED wind into ECI for the air-relative aerodynamics.
+        let wind_ned = [12.0 * rng.normal(), 12.0 * rng.normal(), 0.0];
+        doc.environment.wind = "constant".to_owned();
+        doc.wind = Some(constant_wind(wind_ned));
     }
 
     let outcome = runner::run(&scenario).expect("dispersed phalcon9-orbit must run to completion");
