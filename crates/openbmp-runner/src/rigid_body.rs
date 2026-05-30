@@ -183,6 +183,17 @@ pub fn run(
     let moment_model = build_moment_model(document, &loaded)?;
     let rigid_models = RigidModels::new(moment_model, mass_model.clone());
     let separation_specs = build_rigid_body_separations(document, &mass_resources)?;
+    // Bodies currently attached to the primary continuing stack. Starts as
+    // every configured body (minus any seeded as independent initial lanes)
+    // and shrinks as jettison events fire. Used so a multi-body continuing
+    // stack (e.g. an upper stage still carrying a fairing + payload)
+    // conserves mass at each separation.
+    let mut stack_bodies: BTreeSet<BodyId> = mass_resources.dry_bodies.keys().copied().collect();
+    if let Some(multi_body) = document.multi_body.as_ref() {
+        for lane in &multi_body.initial_lanes {
+            stack_bodies.remove(&body_id_from_scenario_text(&lane.body_id));
+        }
+    }
 
     // Runner-side `[solver]` block dispatch on the
     // rigid-body path. Default (no `[solver]`) selects `Rk4FixedStep`,
@@ -414,7 +425,13 @@ pub fn run(
         }
         let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();
-        apply_jettison_events(&mut kernel, &script_fired, &separation_specs, &mass_model)?;
+        apply_jettison_events(
+            &mut kernel,
+            &script_fired,
+            &separation_specs,
+            &mass_model,
+            &mut stack_bodies,
+        )?;
         if let Some(driver) = &mut aerothermal_driver {
             let environment = kernel.current_environment_sample()?;
             driver.evaluate_rigid_body(kernel.current_state(), &environment, document.time.dt_s)?;
@@ -774,6 +791,13 @@ impl<M: Motor> RigidMassResourceModel<M> {
         }
     }
 
+    /// Dry mass properties of a single configured body (no engines / tanks
+    /// / motor). Used to aggregate inert bodies that ride along with a
+    /// multi-body continuing stack at a separation.
+    fn dry_body_properties(&self, body: BodyId) -> Option<MassProperties> {
+        self.resources.dry_bodies.get(&body).copied()
+    }
+
     fn owner_matches(
         &self,
         active_body: Option<BodyId>,
@@ -1070,11 +1094,23 @@ fn build_rigid_body_separations(
     Ok(specs)
 }
 
+/// Bodies (other than `stack_body`) still attached to the continuing stack,
+/// i.e. the membership minus the lead body. Their dry mass must be folded
+/// into `stack_mass_properties` so a multi-body stack conserves mass.
+fn continuing_inert_bodies(stack_bodies: &BTreeSet<BodyId>, stack_body: BodyId) -> Vec<BodyId> {
+    stack_bodies
+        .iter()
+        .copied()
+        .filter(|b| *b != stack_body)
+        .collect()
+}
+
 fn apply_jettison_events<I, F, MOM, MM, E, SC>(
     kernel: &mut openbmp_sim::RigidBodyKernel<I, F, MOM, MM, E, SC>,
     fired: &[openbmp_sim::FiredEvent<ScenarioScriptAction>],
     separation_specs: &BTreeMap<BodyId, RigidBodySeparationSpec>,
     mass_model: &RigidMassEither,
+    stack_bodies: &mut BTreeSet<BodyId>,
 ) -> Result<(), RunnerError>
 where
     I: openbmp_sim::Integrator<RigidBodyState>,
@@ -1097,10 +1133,21 @@ where
                         ),
                     }
                 })?;
-                let runtime = build_runtime_rigid_body_separation(kernel, mass_model, separation)?;
+                // The departing body leaves the stack; the remaining
+                // members (minus the lead stack body) ride along and their
+                // dry mass is folded into the continuing-stack mass.
+                stack_bodies.remove(body);
+                let inert = continuing_inert_bodies(stack_bodies, separation.stack_body);
+                let runtime =
+                    build_runtime_rigid_body_separation(kernel, mass_model, separation, &inert)?;
                 kernel.jettison_rigid_body(runtime)?;
             }
             ScenarioScriptAction::JettisonBodies { bodies } => {
+                // Remove every departing body from the stack FIRST so the
+                // continuing-inert set reflects the post-batch membership.
+                for body in bodies {
+                    stack_bodies.remove(body);
+                }
                 let mut batch = Vec::with_capacity(bodies.len());
                 for body in bodies {
                     let separation = separation_specs.get(body).copied().ok_or_else(|| {
@@ -1113,8 +1160,9 @@ where
                             ),
                         }
                     })?;
+                    let inert = continuing_inert_bodies(stack_bodies, separation.stack_body);
                     batch.push(build_runtime_rigid_body_separation(
-                        kernel, mass_model, separation,
+                        kernel, mass_model, separation, &inert,
                     )?);
                 }
                 kernel.jettison_rigid_bodies(&batch)?;
@@ -1129,6 +1177,7 @@ fn build_runtime_rigid_body_separation<I, F, MOM, MM, E, SC>(
     kernel: &openbmp_sim::RigidBodyKernel<I, F, MOM, MM, E, SC>,
     mass_model: &RigidMassEither,
     separation: RigidBodySeparationSpec,
+    continuing_inert: &[BodyId],
 ) -> Result<RigidBodySeparation, RunnerError>
 where
     I: openbmp_sim::Integrator<RigidBodyState>,
@@ -1161,6 +1210,27 @@ where
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("departing-stage mass properties at separation failed: {err}"),
         })?;
+    // A continuing stack may be MORE than the single `stack_body` (e.g. an
+    // upper stage that still carries an unjettisoned fairing and payload).
+    // mass_properties_at(stack_body) covers only that body's dry mass plus
+    // its own engines/tanks, so fold in the dry mass of every other body
+    // still attached to the stack. Without this the still-attached inert
+    // bodies' mass would vanish at this separation (stack + stage would not
+    // conserve the pre-separation composite). For a single-body continuing
+    // stack `continuing_inert` is empty and this is a no-op (byte-identical
+    // to the prior behaviour).
+    let mut stack_mass_properties = stack_mass_properties;
+    for body in continuing_inert {
+        let dry = mass_model.dry_body_properties(*body).ok_or_else(|| {
+            RunnerError::UnsupportedScenario {
+                what: format!(
+                    "continuing-stack inert body {} has no dry mass properties",
+                    body.value()
+                ),
+            }
+        })?;
+        stack_mass_properties = combine_dry_body(stack_mass_properties, dry);
+    }
     Ok(RigidBodySeparation {
         stack_body: separation.stack_body,
         body: separation.body,
@@ -2008,6 +2078,41 @@ impl openbmp_sim::RigidMassModel for RigidMassEitherKind {
             Self::Resource(m) => m.supports_separated_body_propagation(),
         }
     }
+}
+
+impl RigidMassEitherKind {
+    /// Dry mass properties of one configured body (no engines / tanks /
+    /// motor). Used to fold still-attached inert bodies into a multi-body
+    /// continuing stack at separation time.
+    fn dry_body_properties(&self, body: BodyId) -> Option<MassProperties> {
+        match self {
+            Self::Resource(m) => m.dry_body_properties(body),
+        }
+    }
+}
+
+/// Fold an inert body's dry mass properties into a running aggregate, using
+/// the same convention as [`mass_properties_from_snapshots`]: masses add,
+/// the center of mass is the mass-weighted centroid, and the inertia tensor
+/// (expressed about the shared body-frame origin) sums. This is how a
+/// multi-body continuing stack's mass is assembled at a separation so that
+/// stack + departing stage conserve the pre-separation composite mass.
+fn combine_dry_body(base: MassProperties, add: MassProperties) -> MassProperties {
+    let m_base = base.mass.get::<kilogram>();
+    let m_add = add.mass.get::<kilogram>();
+    let total = m_base + m_add;
+    let weighted =
+        base.center_of_mass_body.vector * m_base + add.center_of_mass_body.vector * m_add;
+    let cg = if total > 0.0 {
+        weighted / total
+    } else {
+        base.center_of_mass_body.vector
+    };
+    MassProperties::new(
+        Mass::new::<kilogram>(total),
+        Position3::<Body>::new(cg.x, cg.y, cg.z),
+        base.inertia_body + add.inertia_body,
+    )
 }
 
 fn build_mass_model(
@@ -2882,6 +2987,44 @@ fn insert_recovery_state_channels(
 mod tests {
     use super::*;
     use openbmp_telemetry::TelemetryValue;
+
+    #[test]
+    fn combine_dry_body_adds_mass_weights_cg_and_sums_inertia() {
+        let base = MassProperties::new(
+            Mass::new::<kilogram>(6900.0),
+            Position3::<Body>::new(0.0, 0.0, 16.0),
+            nalgebra::Matrix3::from_diagonal(&nalgebra::Vector3::new(0.92e6, 0.92e6, 4.6e4)),
+        );
+        let add = MassProperties::new(
+            Mass::new::<kilogram>(600.0),
+            Position3::<Body>::new(0.0, 0.0, 16.0),
+            nalgebra::Matrix3::from_diagonal(&nalgebra::Vector3::new(0.08e6, 0.08e6, 0.4e4)),
+        );
+        let c = combine_dry_body(base, add);
+        // Mass adds.
+        assert!((c.mass.get::<kilogram>() - 7500.0).abs() < 1.0e-9);
+        // Shared CG is preserved (both at z=16).
+        assert!((c.center_of_mass_body.vector.z - 16.0).abs() < 1.0e-9);
+        // Inertia (about the shared origin) sums.
+        assert!((c.inertia_body[(0, 0)] - 1.0e6).abs() < 1.0);
+        assert!((c.inertia_body[(2, 2)] - 5.0e4).abs() < 1.0);
+
+        // Distinct CGs: the combined CG is the mass-weighted centroid.
+        let a2 = MassProperties::new(
+            Mass::new::<kilogram>(100.0),
+            Position3::<Body>::new(0.0, 0.0, 0.0),
+            nalgebra::Matrix3::zeros(),
+        );
+        let b2 = MassProperties::new(
+            Mass::new::<kilogram>(300.0),
+            Position3::<Body>::new(0.0, 0.0, 4.0),
+            nalgebra::Matrix3::zeros(),
+        );
+        let c2 = combine_dry_body(a2, b2);
+        assert!((c2.mass.get::<kilogram>() - 400.0).abs() < 1.0e-9);
+        // (100*0 + 300*4) / 400 = 3.0
+        assert!((c2.center_of_mass_body.vector.z - 3.0).abs() < 1.0e-9);
+    }
 
     const LIVE_ENTRY_SCENARIO: &str = r#"
 openbmp.scenario = 3

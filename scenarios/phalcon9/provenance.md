@@ -174,6 +174,19 @@ This provenance record covers the following synthetic scenario files:
   orbit phase throttles eng_vac to zero) cuts the engine ~0.5 s short of
   circular with propellant margin — a controlled cutoff. See the scenario
   header for the full profile.
+- `scenarios/phalcon9/phalcon9-orbit-staged.toml` — the full discrete
+  mission sequence on the same synthetic vehicle: booster separation, then
+  **payload-fairing jettison** in the exo-atmospheric coast, then **payload
+  deploy** in orbit. The lumped 9000 kg upper body is split into stage-2 dry
+  (6900) + fairing (600) + payload (1500) at the same combined CG/inertia,
+  so the pre-jettison dynamics match the flagship; the fairing and payload
+  are inert bodies (no engines/tanks) jettisoned via `jettison_stage`. Each
+  jettison genuinely sheds mass from the continuing stack (verified: with
+  vs without jettison differ, and total mass is conserved across each
+  separation), reaching a clean near-equatorial insertion (perigee ~323 km ×
+  apogee ~392 km, e ~0.005, inclination ~0.34°). Exercises the multi-body
+  continuing-stack mass aggregation (the continuing upper stack carries the
+  still-attached fairing/payload until each departs).
 - `scenarios/phalcon9/phalcon9-orbit-iers.toml` — the same vehicle and
   guidance as `phalcon9-orbit.toml`, re-flown on the higher-fidelity
   **`iers-tabulated`** Earth frame (IAU 1976 precession + IAU 1980 nutation,
