@@ -343,14 +343,14 @@ action = { kind = "engine_command", id = "eng_vac", command = { throttle_unit = 
 [[mission.events]]
 id      = "meco1"
 once    = true
-trigger = { kind = "at_velocity", velocity_m_s = 7270.0, falling = false }
+trigger = { kind = "at_velocity", velocity_m_s = 7235.0, falling = false }
 action  = { kind = "emit_telemetry_marker", tag = "meco1" }
 
 # Stage separation: jettison the spent booster at MECO-1.
 [[mission.events]]
 id      = "sep"
 once    = true
-trigger = { kind = "at_velocity", velocity_m_s = 7270.0, falling = false }
+trigger = { kind = "at_velocity", velocity_m_s = 7235.0, falling = false }
 action  = { kind = "jettison_stage", body = "lower" }
 
 # Apogee marker: drives the coast -> circularize transition. A commander
@@ -409,6 +409,22 @@ k_vr_rad_per_m_s   = 2.0e-3
 theta_min_rad      = -0.70
 theta_max_rad      = 1.45
 downrange_axis_eci = [0.0, 1.0, 0.0]
+# Orbital-plane normal (h along ECI +z for this equatorial launch). Its
+# PRIMARY job here is to resolve the guidance ROLL reference (body +y)
+# continuously through the horizontal downrange pitch-over: the default
+# fixed ECI +y reference degenerates and flips to +x exactly when the
+# thrust axis swings toward downrange (+y), and that commanded-attitude
+# discontinuity used to excite a large late-ascent pitch/yaw transient that
+# threw ~340 m/s of out-of-plane velocity in and locked in ~2.4 deg of
+# inclination. Resolving roll against the plane normal removes the flip; the
+# residual inclination then collapses to <1 deg with no Δv cost. Active yaw
+# (cross-track) steering is available (k_cross_rad_per_m_s > 0) but left OFF
+# (= 0) — it is not needed for this in-plane equatorial ascent and would
+# only spend Δv. Forward-only: a plane normal is an orbital element, not a
+# ground location.
+orbital_plane_normal_eci = [0.0, 0.0, 1.0]
+k_cross_rad_per_m_s      = 0.0
+psi_max_rad              = 0.15
 
 # Stage-2 upper: PEG terminal insertion at apogee.
 [fc.ascent_reference_by_phase."mission.phases.circularize"]
@@ -419,6 +435,11 @@ initial_thrust_accel_m_s2 = 5.0
 peg_initial_t_go_s        = 120.0
 peg_min_speed_m_s         = 500.0
 downrange_axis_eci        = [0.0, 1.0, 0.0]
+# Same roll-reference continuity through the terminal PEG burn (yaw
+# nulling off; the plane is already held from ascent).
+orbital_plane_normal_eci  = [0.0, 0.0, 1.0]
+k_cross_rad_per_m_s       = 0.0
+psi_max_rad               = 0.30
 
 [fc.ekf]
 mag_field                   = "wmm_2025"

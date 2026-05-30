@@ -151,6 +151,20 @@ fn phalcon9_orbit_meets_orbital_mechanics_invariants() {
         "final orbital speed {v_f:.0} m/s must be LEO-class (7-8.5 km/s)"
     );
 
+    // Inclination: this is an equatorial due-east launch, so the orbital
+    // plane should be near-equatorial. The guidance resolves its roll
+    // reference against the orbital-plane normal, which keeps the commanded
+    // attitude continuous through the horizontal pitch-over and so holds the
+    // residual inclination low (the fixed-axis reference used to flip there,
+    // injecting ~2.4 deg). h_z/|h| = cos(inclination).
+    let h_z = last.r[0] * last.v[1] - last.r[1] * last.v[0];
+    let inclination_deg = (h_z / h).clamp(-1.0, 1.0).acos().to_degrees();
+    assert!(
+        inclination_deg < 1.0,
+        "equatorial insertion inclination {inclination_deg:.3} deg must stay below 1 deg \
+         (roll-reference continuity holds the plane)"
+    );
+
     // --- (2)/(3) Conservation on the post-SECO orbital coast. ---
     // Engines are off well before t = 820 s (SECO ~760 s); sample the
     // coast to the end of the run.

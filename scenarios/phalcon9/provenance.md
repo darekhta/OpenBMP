@@ -96,12 +96,25 @@ are randomised: full nav/process reseed, per-stage common-mode Isp (~0.4%
 per-tank propellant underfill, and small initial-state offsets (~30 m /
 ~0.5 m/s 1σ). All dispersion figures are synthetic, modest, class-level —
 not a tuned reproduction of any real flight-dispersion deck. Observed over
-16 samples: **every** sample reaches a bound orbit; the great majority
-reach a sustainable near-circular LEO (perigee envelope ≈ 149–344 km, e ≤
-~0.032, inclination ≈ 1.9–3.6°); the low dispersion tail can graze a
-short-lived perigee, which the test reports honestly rather than tuning
-away. This shows it is the *controller*, not a single hand-tuned
-trajectory, that reaches orbit.
+16 samples: **every** sample reaches a bound orbit and a sustainable
+near-circular LEO (perigee envelope ≈ 206–339 km, e ≤ ~0.027), with the
+inclination held near-equatorial across the whole ensemble (≈ 0.2–0.7°).
+This shows it is the *controller*, not a single hand-tuned trajectory, that
+reaches orbit.
+
+**Near-equatorial insertion / roll-reference continuity.** The nominal
+insertion is ≈ 320 × 398 km, e ≈ 0.006, inclination ≈ 0.34° for this
+equatorial due-east launch. The residual inclination was previously ≈ 2.4°:
+the ascent guidance resolved its roll DOF against a fixed ECI +y axis, which
+degenerates and flips to +x exactly as the thrust axis swings toward
+downrange (+y) at the horizontal pitch-over — a commanded-attitude
+discontinuity that excited a large late-ascent pitch/yaw transient and threw
+out-of-plane velocity into the orbit. Resolving the roll reference against
+the orbital-plane normal (an inertial orbital element, forward-only — not a
+ground location) removes the flip, and the residual inclination collapses to
+sub-degree with no Δv cost. Optional active yaw (cross-track) steering is
+available in the guidance but is left off here (not needed for an in-plane
+equatorial ascent).
 
 ## Files
 

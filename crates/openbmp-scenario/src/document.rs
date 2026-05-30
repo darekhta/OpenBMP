@@ -8267,6 +8267,21 @@ pub struct FcAscentReferenceConfig {
     /// ascent_sequence: inertial speed at which to hand off to PEG (m/s).
     #[serde(default)]
     pub peg_handoff_speed_m_s: Option<f64>,
+    /// Yaw (out-of-plane) steering: inertial normal of the desired orbital
+    /// plane (its angular-momentum direction). When set, `closed_loop_insertion`
+    /// and `peg` add a cross-track thrust component that nulls velocity out
+    /// of this plane, holding inclination. Forward-only: an orbital element,
+    /// not a ground location.
+    #[serde(default)]
+    pub orbital_plane_normal_eci: Option<[f64; 3]>,
+    /// Yaw steering: cross-track velocity gain (rad per m/s). Used only
+    /// when `orbital_plane_normal_eci` is set.
+    #[serde(default)]
+    pub k_cross_rad_per_m_s: Option<f64>,
+    /// Yaw steering: yaw-angle clamp (rad). Used only when
+    /// `orbital_plane_normal_eci` is set.
+    #[serde(default)]
+    pub psi_max_rad: Option<f64>,
 }
 
 /// Supported powered-ascent reference methods.

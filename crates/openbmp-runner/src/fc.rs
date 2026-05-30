@@ -545,7 +545,7 @@ fn build_ascent_reference_generator(
             let theta_min = cfg.theta_min_rad.unwrap_or(-0.35);
             let theta_max = cfg.theta_max_rad.unwrap_or(1.40);
             let downrange = cfg.downrange_axis_eci.unwrap_or([1.0, 0.0, 0.0]);
-            let generator = ClosedLoopInsertionAscentReference::new(
+            let mut generator = ClosedLoopInsertionAscentReference::new(
                 insertion_radius_m,
                 k_alt,
                 k_vr,
@@ -556,6 +556,13 @@ fn build_ascent_reference_generator(
             .map_err(|err| GuidanceError::InvalidConfig {
                 reason: err.to_string(),
             })?;
+            if let Some((normal, k_cross, psi_max)) = plane_steering_params(cfg) {
+                generator = generator
+                    .with_orbital_plane_steering(normal, k_cross, psi_max)
+                    .map_err(|err| GuidanceError::InvalidConfig {
+                        reason: err.to_string(),
+                    })?;
+            }
             Ok(Box::new(generator))
         }
         FcAscentReferenceMethod::Peg => {
@@ -609,7 +616,7 @@ fn build_peg(
         cfg.initial_thrust_accel_m_s2.ok_or_else(invalid("initial_thrust_accel_m_s2"))?;
     let downrange = cfg.downrange_axis_eci.unwrap_or([1.0, 0.0, 0.0]);
     let initial_t_go = cfg.peg_initial_t_go_s.unwrap_or(300.0);
-    PegAscentReference::new(
+    let generator = PegAscentReference::new(
         insertion_radius_m,
         exhaust_velocity_m_s,
         initial_thrust_accel_m_s2,
@@ -617,11 +624,32 @@ fn build_peg(
         min_speed_m_s,
         initial_t_go,
     )
-    .map_err(|err| {
-        GuidanceError::InvalidConfig {
-            reason: err.to_string(),
-        }
-        .into()
+    .map_err(|err| GuidanceError::InvalidConfig {
+        reason: err.to_string(),
+    })?;
+    if let Some((normal, k_cross, psi_max)) = plane_steering_params(cfg) {
+        return generator
+            .with_orbital_plane_steering(normal, k_cross, psi_max)
+            .map_err(|err| {
+                GuidanceError::InvalidConfig {
+                    reason: err.to_string(),
+                }
+                .into()
+            });
+    }
+    Ok(generator)
+}
+
+/// Yaw-steering parameters from the ascent-reference config: present only
+/// when an orbital-plane normal is declared. Defaults the cross-track gain
+/// and yaw clamp to gentle launch-vehicle values.
+fn plane_steering_params(cfg: &FcAscentReferenceConfig) -> Option<([f64; 3], f64, f64)> {
+    cfg.orbital_plane_normal_eci.map(|normal| {
+        (
+            normal,
+            cfg.k_cross_rad_per_m_s.unwrap_or(2.0e-3),
+            cfg.psi_max_rad.unwrap_or(0.2),
+        )
     })
 }
 
@@ -1904,6 +1932,9 @@ mod tests {
                 kick_end_speed_m_s: None,
                 kick_angle_rad: None,
                 peg_handoff_speed_m_s: None,
+                orbital_plane_normal_eci: None,
+                k_cross_rad_per_m_s: None,
+                psi_max_rad: None,
             }),
         };
         let (graph, bindings, pad) = powered_ascent_graph();

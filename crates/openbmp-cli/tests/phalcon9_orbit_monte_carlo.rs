@@ -283,6 +283,15 @@ fn phalcon9_orbit_monte_carlo_robustness() {
         (120.0..700.0).contains(&peri_min) && (120.0..700.0).contains(&peri_max),
         "perigee envelope [{peri_min:.1}, {peri_max:.1}] km must stay within LEO"
     );
+    // Inclination is tightly held near-equatorial across the whole ensemble:
+    // the guidance resolves its roll reference against the orbital-plane
+    // normal, so the residual inclination stays sub-degree even under the
+    // dispersions (it was ~1.9-3.6 deg before the roll-reference fix).
+    assert!(
+        incl_max < 1.5,
+        "every dispersed sample must stay near-equatorial; max inclination {incl_max:.2} deg",
+    );
+    let _ = incl_min;
 }
 
 #[test]

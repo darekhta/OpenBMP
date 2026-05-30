@@ -350,6 +350,89 @@ pub struct ClosedLoopInsertionAscentReference {
     theta_min_rad: f64,
     theta_max_rad: f64,
     downrange_axis_eci: [f64; 3],
+    plane_steering: PlaneSteering,
+}
+
+/// Optional yaw (out-of-plane) steering shared by the ascent guidance
+/// laws. When an orbital-plane normal is configured, the law adds a small
+/// cross-track thrust component that drives the velocity out of the
+/// desired plane toward zero — the standard "yaw steering" that holds an
+/// orbit's inclination. The desired plane is an inertial orbital element
+/// (its angular-momentum direction), NOT a ground location, so this stays
+/// forward-only: it steers toward an orbital plane, never a target point.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+struct PlaneSteering {
+    /// Unit normal of the desired orbital plane in ECI. `None` disables
+    /// yaw steering (the law steers purely in the {downrange, radial}
+    /// plane, the original behaviour).
+    plane_normal_eci: Option<[f64; 3]>,
+    /// Cross-track velocity gain (rad per m/s).
+    k_cross_rad_per_m_s: f64,
+    /// Yaw-angle clamp (rad).
+    psi_max_rad: f64,
+}
+
+impl PlaneSteering {
+    fn validate(&self) -> Result<(), PhysicsError> {
+        if let Some(normal) = self.plane_normal_eci {
+            require_finite_vec3(normal, "orbital plane normal components must be finite")?;
+            if vector_norm(normal) <= MIN_DIRECTION_NORM {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "orbital plane normal must be non-degenerate",
+                });
+            }
+        }
+        if !self.k_cross_rad_per_m_s.is_finite() || !self.psi_max_rad.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "plane-steering gain and clamp must be finite",
+            });
+        }
+        if self.k_cross_rad_per_m_s < 0.0 || self.psi_max_rad < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "plane-steering gain and clamp must be non-negative",
+            });
+        }
+        Ok(())
+    }
+
+    /// Rotate an in-plane thrust direction toward `-n` by a yaw angle
+    /// proportional to the velocity out of the desired plane, nulling that
+    /// component. Returns `forward_inplane` unchanged when disabled.
+    fn apply(&self, forward_inplane: Vector3<f64>, vel: Vector3<f64>) -> Vector3<f64> {
+        let Some(normal) = self.plane_normal_eci else {
+            return forward_inplane;
+        };
+        let n = Vector3::from(normal);
+        let nn = n.norm();
+        if nn <= MIN_DIRECTION_NORM {
+            return forward_inplane;
+        }
+        let n = n / nn;
+        let v_cross = vel.dot(&n);
+        let psi = (self.k_cross_rad_per_m_s * v_cross).clamp(-self.psi_max_rad, self.psi_max_rad);
+        // Steer toward -n by psi (when v_cross > 0, command a -n thrust
+        // component that decelerates the out-of-plane velocity).
+        let steered = forward_inplane * psi.cos() - n * psi.sin();
+        let m = steered.norm();
+        if m > MIN_DIRECTION_NORM {
+            steered / m
+        } else {
+            forward_inplane
+        }
+    }
+
+    /// Body→ECI reference quaternion for a commanded thrust axis `forward`.
+    /// When an orbital-plane normal is configured it resolves the roll DOF
+    /// against that normal (continuous through a horizontal downrange
+    /// pitch-over); otherwise it uses the fixed-axis builder.
+    fn reference_quaternion(&self, forward: Vector3<f64>) -> Result<[f64; 4], PhysicsError> {
+        match self.plane_normal_eci {
+            Some(normal) => {
+                reference_quaternion_from_body_z_with_roll([forward.x, forward.y, forward.z], normal)
+            }
+            None => reference_quaternion_from_body_z([forward.x, forward.y, forward.z]),
+        }
+    }
 }
 
 impl ClosedLoopInsertionAscentReference {
@@ -407,7 +490,34 @@ impl ClosedLoopInsertionAscentReference {
             theta_min_rad,
             theta_max_rad,
             downrange_axis_eci,
+            plane_steering: PlaneSteering::default(),
         })
+    }
+
+    /// Enable yaw steering toward a desired orbital plane (inertial normal
+    /// `plane_normal_eci`), nulling out-of-plane velocity to hold
+    /// inclination. `k_cross_rad_per_m_s` is the cross-track velocity gain
+    /// and `psi_max_rad` clamps the yaw angle. Forward-only: the plane is
+    /// an orbital element, not a ground location.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] for a degenerate normal,
+    /// or non-finite / negative gain or clamp.
+    pub fn with_orbital_plane_steering(
+        mut self,
+        plane_normal_eci: [f64; 3],
+        k_cross_rad_per_m_s: f64,
+        psi_max_rad: f64,
+    ) -> Result<Self, PhysicsError> {
+        let steering = PlaneSteering {
+            plane_normal_eci: Some(plane_normal_eci),
+            k_cross_rad_per_m_s,
+            psi_max_rad,
+        };
+        steering.validate()?;
+        self.plane_steering = steering;
+        Ok(self)
     }
 }
 
@@ -473,9 +583,9 @@ impl AscentReferenceGenerator for ClosedLoopInsertionAscentReference {
         let theta = (self.k_alt_rad_per_m * (self.target_radius_m - r)
             - self.k_vr_rad_per_m_s * v_radial)
             .clamp(self.theta_min_rad, self.theta_max_rad);
-        let forward = downrange * theta.cos() + up * theta.sin();
-        let q_body_to_eci_xyzw =
-            reference_quaternion_from_body_z([forward.x, forward.y, forward.z])?;
+        let forward_inplane = downrange * theta.cos() + up * theta.sin();
+        let forward = self.plane_steering.apply(forward_inplane, vel);
+        let q_body_to_eci_xyzw = self.plane_steering.reference_quaternion(forward)?;
         Ok(AscentReference {
             q_body_to_eci_xyzw,
             body_rate_rad_s: None,
@@ -587,6 +697,7 @@ pub struct PegAscentReference {
     downrange_axis_eci: [f64; 3],
     min_speed_m_s: f64,
     initial_t_go_s: f64,
+    plane_steering: PlaneSteering,
     state: Cell<PegState>,
 }
 
@@ -655,6 +766,7 @@ impl PegAscentReference {
             downrange_axis_eci,
             min_speed_m_s,
             initial_t_go_s,
+            plane_steering: PlaneSteering::default(),
             state: Cell::new(PegState {
                 a: 0.0,
                 b: 0.0,
@@ -665,6 +777,31 @@ impl PegAscentReference {
                 started: false,
             }),
         })
+    }
+
+    /// Enable yaw steering toward a desired orbital plane (inertial normal
+    /// `plane_normal_eci`), nulling out-of-plane velocity to hold
+    /// inclination through the terminal burn. Forward-only: the plane is
+    /// an orbital element, not a ground location.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] for a degenerate normal,
+    /// or non-finite / negative gain or clamp.
+    pub fn with_orbital_plane_steering(
+        mut self,
+        plane_normal_eci: [f64; 3],
+        k_cross_rad_per_m_s: f64,
+        psi_max_rad: f64,
+    ) -> Result<Self, PhysicsError> {
+        let steering = PlaneSteering {
+            plane_normal_eci: Some(plane_normal_eci),
+            k_cross_rad_per_m_s,
+            psi_max_rad,
+        };
+        steering.validate()?;
+        self.plane_steering = steering;
+        Ok(self)
     }
 
     /// In-plane prograde (downrange) unit vector: the configured axis
@@ -849,8 +986,9 @@ impl AscentReferenceGenerator for PegAscentReference {
         let max_radial = peg_max_radial_thrust(st.t_go_s);
         let fr_cmd = (st.a + c).clamp(-max_radial, max_radial);
         let ftheta_cmd = (1.0 - fr_cmd * fr_cmd).max(0.0).sqrt();
-        let forward = up * fr_cmd + downrange * ftheta_cmd;
-        let q = reference_quaternion_from_body_z([forward.x, forward.y, forward.z])?;
+        let forward_inplane = up * fr_cmd + downrange * ftheta_cmd;
+        let forward = self.plane_steering.apply(forward_inplane, vel);
+        let q = self.plane_steering.reference_quaternion(forward)?;
         Ok(AscentReference {
             q_body_to_eci_xyzw: q,
             body_rate_rad_s: None,
@@ -3496,6 +3634,46 @@ fn reference_quaternion_from_body_z(forward_eci: [f64; 3]) -> Result<[f64; 4], P
     Ok(q_body_to_eci_xyzw)
 }
 
+/// Build the body→ECI quaternion for a commanded thrust axis (`body_z =
+/// forward_eci`) while resolving the free roll DOF against an explicit
+/// reference direction `roll_reference_eci` (the orbital-plane normal),
+/// which maps to body `+y`. Unlike [`reference_quaternion_from_body_z`],
+/// which projects a fixed ECI `+y` and FLIPS to `+x` when the thrust axis
+/// aligns with `+y` (a commanded-attitude discontinuity for a downrange
+/// equatorial ascent), this stays continuous as long as the reference is
+/// not parallel to the thrust axis — which holds for an in-plane thrust
+/// vector and its orbital-plane normal. Falls back to the fixed-axis
+/// builder when the reference degenerates (near-parallel).
+fn reference_quaternion_from_body_z_with_roll(
+    forward_eci: [f64; 3],
+    roll_reference_eci: [f64; 3],
+) -> Result<[f64; 4], PhysicsError> {
+    require_finite_vec3(forward_eci, "ascent reference direction components must be finite")?;
+    require_finite_vec3(roll_reference_eci, "ascent roll reference components must be finite")?;
+    let norm = vector_norm(forward_eci);
+    let ref_norm = vector_norm(roll_reference_eci);
+    if norm <= MIN_DIRECTION_NORM || ref_norm <= MIN_DIRECTION_NORM {
+        return reference_quaternion_from_body_z(forward_eci);
+    }
+    let body_z = Vector3::from(forward_eci) / norm;
+    let n = Vector3::from(roll_reference_eci) / ref_norm;
+    // body_x ⊥ both the plane normal and the thrust axis; body_y ≈ +n.
+    let body_x_raw = n.cross(&body_z);
+    if body_x_raw.norm() <= MIN_DIRECTION_NORM {
+        // Thrust axis ~parallel to the plane normal (out-of-plane thrust):
+        // the normal can't resolve roll. Use the fixed-axis builder.
+        return reference_quaternion_from_body_z(forward_eci);
+    }
+    let body_x = body_x_raw.normalize();
+    let body_y = body_z.cross(&body_x);
+    let matrix = Matrix3::from_columns(&[body_x, body_y, body_z]);
+    let rotation = Rotation3::from_matrix_unchecked(matrix);
+    let q = UnitQuaternion::from_rotation_matrix(&rotation);
+    let q_body_to_eci_xyzw = [q.i, q.j, q.k, q.w];
+    validate_reference_quaternion(q_body_to_eci_xyzw)?;
+    Ok(q_body_to_eci_xyzw)
+}
+
 fn vector_norm(value: [f64; 3]) -> f64 {
     let mut sum = 0.0_f64;
     sum += value[0] * value[0];
@@ -3538,6 +3716,9 @@ mod tests {
         StageSeparationModel, StagingBudgetAnalysis, StagingBudgetInput, StagingBudgetMode,
         constant_gravity_footprint_monte_carlo, drag_wind_derivative,
     };
+    use super::{
+        PlaneSteering, reference_quaternion_from_body_z, reference_quaternion_from_body_z_with_roll,
+    };
     use crate::{
         Egm2008ZonalGravity, J2Gravity, PhysicsError, WGS84_A_M, WGS84_J2, WGS84_MU_M3_S2,
         WGS84_OMEGA_RAD_S,
@@ -3556,6 +3737,73 @@ mod tests {
             mass_fraction: 1.0,
             thrust_accel_m_s2: 0.0,
         }
+    }
+
+    fn unit_quat_xyzw(q: [f64; 4]) -> UnitQuaternion<f64> {
+        UnitQuaternion::from_quaternion(Quaternion::new(q[3], q[0], q[1], q[2]))
+    }
+
+    /// The roll-referenced builder stays continuous as the commanded thrust
+    /// axis sweeps through the ECI +y direction (a downrange equatorial
+    /// pitch-over), where the fixed-axis builder flips its roll reference
+    /// and jumps. This discontinuity was the root cause of the residual
+    /// orbital inclination.
+    #[test]
+    fn roll_referenced_quaternion_is_continuous_through_downrange_pitchover() {
+        // Two thrust directions straddling +y by ~2.3 deg.
+        let forward_a = [0.02, 1.0, 0.0];
+        let forward_b = [-0.02, 1.0, 0.0];
+        let plane_normal = [0.0, 0.0, 1.0];
+
+        let roll_a = unit_quat_xyzw(
+            reference_quaternion_from_body_z_with_roll(forward_a, plane_normal).unwrap(),
+        );
+        let roll_b = unit_quat_xyzw(
+            reference_quaternion_from_body_z_with_roll(forward_b, plane_normal).unwrap(),
+        );
+        let roll_jump = roll_a.angle_to(&roll_b);
+
+        let fixed_a = unit_quat_xyzw(reference_quaternion_from_body_z(forward_a).unwrap());
+        let fixed_b = unit_quat_xyzw(reference_quaternion_from_body_z(forward_b).unwrap());
+        let fixed_jump = fixed_a.angle_to(&fixed_b);
+
+        // The roll-referenced builder barely moves (≈ the 2.3 deg input
+        // change); the fixed-axis builder makes a large (~quarter-turn) jump.
+        assert!(
+            roll_jump < 0.1,
+            "roll-referenced quaternion jumped {roll_jump:.4} rad through +y (should be ~continuous)"
+        );
+        assert!(
+            fixed_jump > 1.0,
+            "fixed-axis builder should show the large discontinuity it is known for, got {fixed_jump:.4} rad"
+        );
+
+        // And the commanded thrust axis (body +z) still matches `forward`.
+        let body_z = roll_a * Vector3::new(0.0, 0.0, 1.0);
+        let expect = Vector3::from(forward_a).normalize();
+        assert!((body_z - expect).norm() < 1e-9, "body +z must point along forward");
+    }
+
+    /// Yaw steering rotates the commanded thrust toward `-n` when the
+    /// velocity has a component along the plane normal `+n`, decelerating
+    /// the out-of-plane velocity.
+    #[test]
+    fn plane_steering_yaws_against_out_of_plane_velocity() {
+        let steering = PlaneSteering {
+            plane_normal_eci: Some([0.0, 0.0, 1.0]),
+            k_cross_rad_per_m_s: 1.0e-3,
+            psi_max_rad: 0.2,
+        };
+        let forward_inplane = Vector3::new(0.0, 1.0, 0.0);
+        let vel = Vector3::new(7000.0, 100.0, 50.0); // +z (out-of-plane) component
+        let steered = steering.apply(forward_inplane, vel);
+        assert!((steered.norm() - 1.0).abs() < 1e-9, "steered direction must stay unit");
+        assert!(steered.z < 0.0, "thrust must tilt toward -z to null +z velocity, got {}", steered.z);
+
+        // Disabled steering (no normal) is a no-op.
+        let off = PlaneSteering::default();
+        let same = off.apply(forward_inplane, vel);
+        assert!((same - forward_inplane).norm() < 1e-12, "disabled steering must pass through");
     }
 
     fn nominal_footprint_env() -> FootprintEnvironment {
