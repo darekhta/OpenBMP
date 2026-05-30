@@ -109,6 +109,34 @@ use super::{
 /// a cylindrical tank (Abramson SP-106 Table 7.1).
 const KSI_1: f64 = 1.841_183_781_340_659_3;
 
+/// Physical amplitude limit for the equivalent-pendulum slosh angle. The
+/// pendulum cannot meaningfully swing past horizontal (the fluid is bounded
+/// by the tank wall), and the linear small-angle model is only valid well
+/// below this. The clamp matters only when the restoring term vanishes —
+/// i.e. in (near-)freefall coast, where axial acceleration is ≤ 0 so
+/// `ω_n² = 0`: without restoring or damping the angle would otherwise drift
+/// unbounded and eventually produce non-finite vehicle mass properties. In
+/// the normal small-angle regime the clamp never engages, so thrust-phase
+/// behaviour is unchanged.
+const SLOSH_MAX_ANGLE_RAD: f64 = core::f64::consts::FRAC_PI_2;
+
+/// Saturate a slosh angle at the physical amplitude limit. On contact with
+/// the limit the outward rate is absorbed (inelastic "wall"), which also
+/// prevents the rate from drifting unbounded during a restoring-free coast.
+fn clamp_slosh_amplitude(theta_rad: &mut f64, theta_dot_rad_s: &mut f64) {
+    if *theta_rad > SLOSH_MAX_ANGLE_RAD {
+        *theta_rad = SLOSH_MAX_ANGLE_RAD;
+        if *theta_dot_rad_s > 0.0 {
+            *theta_dot_rad_s = 0.0;
+        }
+    } else if *theta_rad < -SLOSH_MAX_ANGLE_RAD {
+        *theta_rad = -SLOSH_MAX_ANGLE_RAD;
+        if *theta_dot_rad_s < 0.0 {
+            *theta_dot_rad_s = 0.0;
+        }
+    }
+}
+
 /// Equivalent-pendulum slosh model.
 #[derive(Debug, Clone)]
 pub struct EquivalentPendulum {
@@ -346,6 +374,7 @@ impl MovingMassModel for EquivalentPendulum {
         //    position update using the freshly-updated velocity.
         self.theta_dot_x_rad_s += dt_s * theta_ddot_x;
         self.theta_x_rad += dt_s * self.theta_dot_x_rad_s;
+        clamp_slosh_amplitude(&mut self.theta_x_rad, &mut self.theta_dot_x_rad_s);
 
         // 5. Same for y axis (declared after x).
         let damping_y = 2.0 * self.damping_ratio_zeta * omega_n * self.theta_dot_y_rad_s;
@@ -356,6 +385,7 @@ impl MovingMassModel for EquivalentPendulum {
 
         self.theta_dot_y_rad_s += dt_s * theta_ddot_y;
         self.theta_y_rad += dt_s * self.theta_dot_y_rad_s;
+        clamp_slosh_amplitude(&mut self.theta_y_rad, &mut self.theta_dot_y_rad_s);
 
         Ok(())
     }
@@ -506,6 +536,38 @@ mod tests {
                 .force_body_n
                 .iter()
                 .all(|c| c.to_bits() == 0.0_f64.to_bits())
+        );
+    }
+
+    #[test]
+    fn freefall_coast_keeps_slosh_angle_bounded_and_finite() {
+        // In (near-)freefall the axial accel is ≤ 0 so ω_n² = 0: there is
+        // no restoring or damping term. A sustained lateral acceleration
+        // would otherwise integrate the slosh angle without bound and
+        // eventually produce non-finite mass properties. The amplitude
+        // clamp must keep the angle finite and within the physical limit.
+        let mut pend =
+            EquivalentPendulum::new(cylinder_a05_h2(), water(), 1.0, Vector3::zeros(), 0.005)
+                .unwrap();
+        let dt = Duration::from_seconds(0.01);
+        // 5000 steps of zero-axial (freefall) with a steady lateral push.
+        for _ in 0..5000 {
+            pend.step(Vector3::new(2.0, -1.5, 0.0), Vector3::zeros(), dt).unwrap();
+        }
+        let (tx, ty) = pend.slosh_angles_rad();
+        let (dx, dy) = pend.slosh_rates_rad_s();
+        assert!(tx.is_finite() && ty.is_finite(), "slosh angles must stay finite in coast");
+        assert!(dx.is_finite() && dy.is_finite(), "slosh rates must stay finite in coast");
+        assert!(
+            tx.abs() <= core::f64::consts::FRAC_PI_2 + 1.0e-9
+                && ty.abs() <= core::f64::consts::FRAC_PI_2 + 1.0e-9,
+            "slosh angle must stay within the physical limit; got ({tx:.4}, {ty:.4})"
+        );
+        // Reaction force / mass contribution stays finite (would otherwise
+        // blow up the vehicle integrator).
+        assert!(
+            pend.reaction_body().force_body_n.iter().all(|c| c.is_finite()),
+            "reaction force must stay finite"
         );
     }
 
