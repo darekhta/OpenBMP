@@ -124,6 +124,17 @@ landing on the separated lane.
   separation; (c) per-lane guidance/control — the FC / autopilot / mixer drive
   only the **primary** lane today. (c) is the core remaining architectural
   piece (a per-lane control loop).
+- **Open-loop attempt (confirmed not bounded).** Tried the cheap path —
+  lower MECO to leave a stage-1 reserve + flip the booster retrograde at
+  separation + let the engines burn the reserve. The run diverged
+  ("integrator state is not valid"): lowering MECO breaks the ascent tuning
+  (the upper stage can no longer close the orbit from the reduced staging
+  velocity), AND the post-separation booster burn is uncontrolled (the engines
+  hold their last full-throttle command, with no lane controller to throttle/
+  cut/steer them) so it diverges. So even the open-loop boostback is NOT a
+  config-only change — it requires an ascent re-tune (reserve vs performance)
+  AND a per-lane controller (c) to throttle and steer the burn. Both confirmed
+  empirically, not just asserted.
 
 **Integration seam / proposed design.**
 1. Allow a separated lane to retain **active engines** (the booster's engines
