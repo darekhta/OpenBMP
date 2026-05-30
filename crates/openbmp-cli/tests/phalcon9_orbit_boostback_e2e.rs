@@ -11,9 +11,12 @@
 //!      the burn) — the boostback maneuver, observed live on the separated
 //!      lane in the same run as the ascent.
 //!
-//! This is an open-loop (scripted) boostback; a closed-loop guided
-//! boostback+landing additionally needs a per-lane control loop (see
-//! docs/launch-vehicle-fidelity-frontier.md).
+//! This is a DECELERATION-ONLY boostback: a scripted retrograde Δv that sheds
+//! velocity, with the booster's landing point an emergent ballistic
+//! consequence — never an input. A *guided* boostback flown to a landing
+//! site/pad would be a ground aimpoint (the same math as terminal targeting)
+//! and is out of scope by doctrine, not an unfinished feature — see
+//! docs/dual-use-assessment.md §4 and docs/launch-vehicle-fidelity-frontier.md.
 
 #![allow(clippy::expect_used, clippy::panic, clippy::float_cmp)]
 
