@@ -1910,6 +1910,50 @@ pub struct VehicleConfig {
     /// inertia (rigid-body only) lives on
     /// `[[vehicle.assembly.bodies]].dry_inertia_body_kg_m2`.
     pub assembly: AssemblyConfig,
+    /// Optional first lateral structural bending mode (rigid-body only).
+    /// When present, the FC rate gyro picks up the bending slope rate (so
+    /// the autopilot senses flex and `[fc.autopilot_params].gyro_notch` can
+    /// gain-stabilise it). Absent = perfectly rigid (the default;
+    /// byte-identical).
+    #[serde(default)]
+    pub bending: Option<BendingConfig>,
+}
+
+/// First lateral structural bending mode (`[vehicle.bending]`).
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BendingConfig {
+    /// Modal natural frequency (Hz), strictly positive. Set the autopilot
+    /// gyro notch near this to gain-stabilise the mode.
+    pub frequency_hz: f64,
+    /// Modal damping ratio, non-negative.
+    pub damping_ratio: f64,
+    /// Generalised modal mass (kg), strictly positive.
+    pub modal_mass_kg: f64,
+    /// Mode-shape slope at the engine station (forcing lever).
+    pub slope_at_engine: f64,
+    /// Mode-shape slope at the rate-gyro station (sensor pickup lever).
+    pub slope_at_gyro: f64,
+}
+
+impl BendingConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_finite("vehicle.bending.frequency_hz", self.frequency_hz)?;
+        require_positive("vehicle.bending.frequency_hz", self.frequency_hz)?;
+        require_finite("vehicle.bending.modal_mass_kg", self.modal_mass_kg)?;
+        require_positive("vehicle.bending.modal_mass_kg", self.modal_mass_kg)?;
+        require_finite("vehicle.bending.damping_ratio", self.damping_ratio)?;
+        if self.damping_ratio < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "vehicle.bending.damping_ratio".to_owned(),
+                value: self.damping_ratio,
+                rule: "must be non-negative",
+            });
+        }
+        require_finite("vehicle.bending.slope_at_engine", self.slope_at_engine)?;
+        require_finite("vehicle.bending.slope_at_gyro", self.slope_at_gyro)?;
+        Ok(())
+    }
 }
 
 impl VehicleConfig {
@@ -1968,6 +2012,16 @@ impl VehicleConfig {
             }
         }
         self.assembly.validate(descriptor.name.as_str(), dt_s)?;
+        if let Some(bending) = &self.bending {
+            if descriptor.name.as_str() != "rigid_body" {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "vehicle.bending".to_owned(),
+                    role: ModelRole::Vehicle,
+                    name: descriptor.name.clone(),
+                });
+            }
+            bending.validate()?;
+        }
         Ok(())
     }
 }

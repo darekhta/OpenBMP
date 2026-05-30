@@ -45,6 +45,7 @@ pub mod point_mass;
 pub mod propulsion;
 pub mod recovery;
 pub mod rigid_body;
+pub mod structural;
 pub mod tanks;
 pub mod wind;
 

@@ -187,6 +187,17 @@ This provenance record covers the following synthetic scenario files:
   apogee ~392 km, e ~0.005, inclination ~0.34°). Exercises the multi-body
   continuing-stack mass aggregation (the continuing upper stack carries the
   still-attached fairing/payload until each departs).
+- `scenarios/phalcon9/phalcon9-orbit-flex.toml` — the same vehicle carrying a
+  first lateral structural **bending mode** (`[vehicle.bending]`, ~1.5 Hz)
+  whose local slope rate the FC rate gyro picks up, so the autopilot interacts
+  with the flex. The closed-loop GNC still inserts to a bound near-circular LEO
+  (perigee ~265 km × apogee ~449 km, e ~0.014, inclination ~0.6°) — the
+  autopilot is robust to a first bending mode at its tuned gains — while the
+  insertion differs measurably from the rigid run (Δperigee ~55 km), confirming
+  the bending genuinely couples (not a cosmetic model). A gyro notch
+  (`[fc.autopilot_params].gyro_notch`) is the standard flex gain-stabilisation
+  tool and is wired, but is not needed here. Verified by
+  `crates/openbmp-cli/tests/phalcon9_orbit_flex_e2e.rs`.
 - `scenarios/phalcon9/phalcon9-orbit-iers.toml` — the same vehicle and
   guidance as `phalcon9-orbit.toml`, re-flown on the higher-fidelity
   **`iers-tabulated`** Earth frame (IAU 1976 precession + IAU 1980 nutation,

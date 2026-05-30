@@ -54,6 +54,7 @@ pub mod effector;
 pub mod error;
 pub mod propellant_budget;
 pub mod recovery;
+pub mod structural;
 pub mod tank;
 pub mod vehicle;
 

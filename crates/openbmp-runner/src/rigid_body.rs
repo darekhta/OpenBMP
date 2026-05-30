@@ -130,6 +130,9 @@ pub fn run(
     // `[wind]` block is declared (or `kind = "none"`).
     let wind_rack = crate::wind::WindRack::build(document)?;
     wind_rack.reset();
+    // Structural bending-mode rack. Inactive when no `[vehicle.bending]`.
+    let mut structural_rack = crate::structural::StructuralRack::build(document)?;
+    structural_rack.reset();
     let frame = crate::frames::build_frame_context(document, resolved_files)?;
 
     let loaded = load_models(document, resolved_files)?;
@@ -327,6 +330,10 @@ pub fn run(
                 gravity,
                 &mut effector_rack,
                 &mut engine_rack,
+                // Bending slope-rate pickup from the previous tick's modal
+                // state — contemporaneous with the body rate read above
+                // (one-step lag, mirroring the slosh rack). Zero when rigid.
+                structural_rack.gyro_pickup_rad_s(),
             )?;
             // Forward the mission state published by
             // this FC tick into the kernel before the kernel evaluates
@@ -361,6 +368,12 @@ pub fn run(
         // zeros (initialised by `TankRack::build`).
         if !tank_rack.is_empty() {
             tank_rack.step()?;
+        }
+        // Advance the bending mode against the prior-step body lateral accel
+        // (one-step lag, like the slosh rack); refreshes the gyro pickup the
+        // next bridge tick reads.
+        if !structural_rack.is_inactive() {
+            structural_rack.step()?;
         }
         // Drain pending deploy/stow events and step the
         // recovery rack (no-op step for the instantaneous-
@@ -406,7 +419,7 @@ pub fn run(
         // frame; `omega_body_rad_s` is read directly from the new
         // state. Slosh state on the next tick uses these drivers
         // (one-step lag, see TankRack module docs).
-        if !tank_rack.is_empty() {
+        if !tank_rack.is_empty() || !structural_rack.is_inactive() {
             let dt_s = document.time.dt_s;
             let new_state = kernel.current_state();
             let dv_eci = new_state.velocity.vector - prev_velocity_eci;
@@ -415,13 +428,17 @@ pub fn run(
             } else {
                 nalgebra::Vector3::zeros()
             };
-            // Rotate ECI accel into prior-step body frame: the slosh
-            // dynamics react to body-frame accel, and the prior body
-            // frame matches the slosh state's reference.
+            // Rotate ECI accel into prior-step body frame: the slosh and
+            // bending dynamics react to body-frame accel, and the prior body
+            // frame matches their state's reference.
             let inverse_orientation = prev_orientation.inverse();
             let accel_body = inverse_orientation * accel_eci;
             let omega_body = new_state.angular_velocity.vector;
-            tank_rack.update_drivers(accel_body, omega_body);
+            if !tank_rack.is_empty() {
+                tank_rack.update_drivers(accel_body, omega_body);
+            }
+            // The bending mode is forced by the body lateral specific force.
+            structural_rack.update_drivers(accel_body);
         }
         let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();

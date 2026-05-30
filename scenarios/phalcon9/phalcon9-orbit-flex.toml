@@ -1,0 +1,550 @@
+# Phalcon-9 — synthetic two-stage launch vehicle: full closed-loop
+# ORBITAL INSERTION. DEMONSTRATION ARTIFACT; wholly synthetic (rounded,
+# order-of-magnitude class figures, not a fielded-vehicle model; see
+# provenance.md).
+#
+# A two-stage rigid-body stack launches from the +x equatorial radial
+# (body +z, the engine thrust axis, is rotated to point radially outward
+# = ECI +x) and flies a closed-loop ascent to a low circular orbit under
+# engine-gimbal thrust-vector control. Profile:
+#
+#   1. powered_ascent  - stage-1 9-engine cluster; the closed-loop
+#                        insertion law lofts the stack toward the
+#                        insertion radius, building horizontal velocity.
+#                        Max-Q is handled by a CLOSED-LOOP load-relief law
+#                        in the autopilot (max_dynamic_pressure_pa): it
+#                        computes the real dynamic pressure from the
+#                        navigated altitude + air-relative velocity and
+#                        throttles down to hold q at the limit — not an
+#                        open-loop altitude/time throttle schedule.
+#   2. coast           - MECO-1 at velocity V1; stage-1 (`lower`)
+#                        jettisoned; ballistic climb to apogee.
+#   3. circularize     - at apogee the stage-2 vacuum engine ignites and
+#                        Powered Explicit Guidance (PEG) trims the orbit
+#                        in its near-horizontal terminal regime. PEG steers
+#                        and the `seco` event cuts the engine on the PEG
+#                        time-to-go (~0.5 s short of circular), leaving
+#                        propellant margin — a CONTROLLED cutoff, not a
+#                        propellant-limited burn-to-depletion.
+#   4. orbit           - engines idle (eng_vac gated to throttle 0 via
+#                        [fc.phase_authority]; see that block).
+#
+# Per-phase guidance ([fc.ascent_reference_by_phase]): closed-loop
+# insertion on the booster, PEG on the upper stage. Navigation is an
+# EGM2008-gravity EKF seeded from the launch state, fed by a
+# navigation-grade (tactical) IMU + GNSS + a STAR TRACKER (an independent
+# full-attitude fix the EKF fuses via update_star_tracker; see the sensors
+# block — it closes the off-pole attitude-observability gap that a single
+# magnetometer left open). The EKF gates GNSS as independent position and
+# velocity blocks, so a velocity-innovation spike under thrust rejects only
+# velocity and never drops the position fix. Frame: wgs84-uniform-rotation
+# (uniform Earth rotation); the launch boost is carried by the initial
+# co-rotation velocity.
+#
+# Forward-only: vehicle-intrinsic ascent toward an insertion RADIUS; no
+# target / aimpoint / range / terminal-guidance field anywhere.
+
+openbmp.scenario = 3
+
+[meta]
+name        = "phalcon9-orbit-flex"
+description = "Phalcon-9 carrying a first lateral structural BENDING MODE sensed by the rate gyro; the closed-loop GNC inserts to orbit robustly through the flex coupling. Synthetic; not a benchmark."
+validation  = "validated-toy"
+provenance  = "Wholly synthetic two-stage kerolox vehicle; rounded class figures, not validated against any fielded vehicle. The INSERTION is validated against first-principles orbital-mechanics invariants (vis-viva bound near-circular LEO; axial angular momentum + specific energy conserved on the coast) by crates/openbmp-cli/tests/phalcon9_orbit_validation.rs — analytic references only, no real-vehicle data. See scenarios/phalcon9/provenance.md."
+
+[time]
+start_s = 0.0
+stop_s  = 1000.0
+dt_s    = 0.02
+seed    = 0x5068616c39306f72   # "Phal9or"
+
+[vehicle]
+kind                                = "rigid_body"
+# Equatorial due-east launch under uniform Earth rotation. The launch
+# site sits on the equator at ECI +x at t=0; body +z (the thrust axis)
+# points radially out = ECI +x (a +90 deg rotation about ECI +y), and
+# body +y points east = ECI +y (the prograde / downrange direction, which
+# is also the direction of Earth rotation). The vehicle starts co-rotating
+# with the surface, so its inertial velocity is the eastward surface speed
+# Omega_e * R = 7.2921151467e-5 * 6.370e6 ~= 464.5 m/s (+y). The runner
+# does NOT auto-add co-rotation, so the full ECI velocity is given here.
+initial_position_eci_m              = [6_370_000.0, 0.0, 0.0]
+initial_velocity_eci_m_s            = [0.0, 464.5, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.70710678118654752, 0.0, 0.70710678118654752]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+# First lateral structural bending mode (~1.5 Hz). The rate gyro picks up
+# its local slope rate (slope_at_gyro), so the autopilot interacts with the
+# flex. A gyro notch at this frequency (see [fc.autopilot_params].gyro_notch)
+# is available to gain-stabilize it; at this vehicle's tuned gains the loop
+# is naturally flex-robust, so none is applied here.
+[vehicle.bending]
+frequency_hz    = 1.2
+damping_ratio   = 0.005
+modal_mass_kg   = 300.0
+slope_at_engine = 1.0
+slope_at_gyro   = 4.0
+
+[vehicle.assembly]
+id             = "phalcon9"
+cluster_layout = "octaweb"
+
+# Stage 1 ("lower"): booster structure + 9-engine cluster + stage-1 tank.
+[[vehicle.assembly.bodies]]
+id                     = "lower"
+geometry               = { kind = "cylinder", length_m = 30.0, diameter_m = 3.7 }
+dry_mass_kg            = 10_000.0
+dry_cg_body_m          = [0.0, 0.0, -2.0]
+dry_inertia_body_kg_m2 = [[3.0e7, 0.0, 0.0], [0.0, 3.0e7, 0.0], [0.0, 0.0, 5.0e5]]
+
+# Stage 2 + payload ("upper"): stage-2 dry + payload, vacuum engine,
+# stage-2 tank.
+[[vehicle.assembly.bodies]]
+id                     = "upper"
+geometry               = { kind = "cylinder", length_m = 11.0, diameter_m = 3.7 }
+dry_mass_kg            = 9_000.0
+dry_cg_body_m          = [0.0, 0.0, 16.0]
+dry_inertia_body_kg_m2 = [[1.2e6, 0.0, 0.0], [0.0, 1.2e6, 0.0], [0.0, 0.0, 6.0e4]]
+
+# Stage-1 propellant (mounted to `lower`). ~250 t at full fill.
+[[vehicle.assembly.tanks]]
+id                    = "s1_prop"
+mounted_to            = "lower"
+mount_point_body_m    = [0.0, 0.0, -2.0]
+geometry              = { kind = "cylinder", radius_m = 1.85, height_m = 49.8 }
+propellant            = { density_kg_m3 = 1030.0, label = "synthetic_kerolox_bulk" }
+initial_fill_fraction = 1.0
+moving_mass           = { kind = "rigid_liquid" }
+
+# Stage-2 propellant (mounted to `upper`). ~40 t at full fill.
+[[vehicle.assembly.tanks]]
+id                    = "s2_prop"
+mounted_to            = "upper"
+mount_point_body_m    = [0.0, 0.0, 15.0]
+geometry              = { kind = "cylinder", radius_m = 1.85, height_m = 0.9 }
+propellant            = { density_kg_m3 = 1030.0, label = "synthetic_kerolox_bulk" }
+initial_fill_fraction = 1.0
+moving_mass           = { kind = "rigid_liquid" }
+
+# Stage-1 cluster: 1 center + 8 ring, each 500 kN, Isp 300 s, from
+# s1_prop, gimballed for TVC.
+[[vehicle.assembly.engines]]
+id = "eng_s1_0"
+mounted_to = "lower"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, -14.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_1"
+mounted_to = "lower"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [1.6, 0.0, -14.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_2"
+mounted_to = "lower"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [1.13137, 1.13137, -14.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_3"
+mounted_to = "lower"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 1.6, -14.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_4"
+mounted_to = "lower"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [-1.6, 0.0, -14.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_5"
+mounted_to = "lower"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [-1.13137, 1.13137, -14.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_6"
+mounted_to = "lower"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [-1.13137, -1.13137, -14.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_7"
+mounted_to = "lower"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, -1.6, -14.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_8"
+mounted_to = "lower"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [1.13137, -1.13137, -14.0]
+limits = { max_thrust_n = 850_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+# Stage-2 vacuum engine (mounted to `upper`): 260 kN, Isp 348 s, from
+# s2_prop, gimballed for TVC. Below the upper-stage CG for a pitch arm.
+[[vehicle.assembly.engines]]
+id = "eng_vac"
+mounted_to = "upper"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, 10.0]
+limits = { max_thrust_n = 450000.0, isp_s = 348.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s2_prop", feed = "regulated", residual_reserve_kg = 50.0 }
+
+[environment]
+frame_profile = "wgs84-uniform-rotation"
+gravity       = "egm2008"
+atmosphere    = "us_standard_1976"
+wind          = "none"
+magnetic      = "wmm_2025"
+
+[atmosphere]
+# US Standard Atmosphere 1976 (0-86 km); zero density above the ceiling
+# (the exoatmospheric coast/insertion sees no drag). The aero altitude is
+# geocentric (|r| - R_earth), so the equatorial ascent climbs out of the
+# atmosphere correctly rather than reading sea level the whole way up.
+kind = "us_standard_1976"
+
+[frames]
+profile = "wgs84-uniform-rotation"
+
+[frames.local_origin]
+latitude_deg  = 0.0
+longitude_deg = 0.0
+height_m      = 0.0
+source        = "Synthetic equatorial launch site (lat 0, lon 0) for the due-east demo; not a real range."
+
+[forces]
+models = ["gravity", "thrust", "aero"]
+
+[aero]
+# Synthetic axial-drag deck (Cd vs Mach at 0 AoA). See the deck header and
+# data/aero/provenance.md. Pinned by SHA-256 so edits are caught at load.
+# Mounted on the booster (`lower`): the dense-atmosphere ascent happens
+# while the full stack is together; the booster is jettisoned near MECO at
+# high altitude where the remaining drag is negligible.
+deck        = "../../data/aero/phalcon9-drag.toml"
+deck_sha256 = "88259d8f3400538535be070ce4d6045a1c24b38033267dc9e326780cc927921f"
+mounted_to  = "lower"
+
+[sensors.imu]
+kind = "imu"
+file = "../../data/sensors/imu-tactical.toml"
+
+[sensors.gnss]
+kind = "gnss"
+file = "../../data/sensors/gnss-textbook.toml"
+
+# Star tracker: an independent full 3-DOF attitude fix, fused by the EKF
+# via update_star_tracker (estimator.rs). This is the realistic
+# launch-vehicle attitude reference and the proper fix for the earlier
+# off-pole divergence: attitude no longer leans solely on the gyro. A
+# single magnetometer was dropped because it cannot observe rotation about
+# the local field direction (the orbital-plane normal at an equatorial
+# launch) — its hard-iron bias drove the attitude, and thus the thrust,
+# out of plane. A star tracker observes EVERY axis, so it closes that
+# observability gap directly (a magnetometer is not a launch-vehicle
+# attitude sensor and is unnecessary alongside it).
+[sensors.star_tracker]
+kind = "star_tracker"
+file = "../../data/sensors/star-tracker-textbook.toml"
+
+[telemetry]
+output.csv = "out/phalcon9-orbit-flex.csv"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "mission.phases.powered_ascent"
+
+[[mission.phases]]
+id              = "mission.phases.powered_ascent"
+label           = "stage-1 closed-loop ascent (TVC)"
+allowed_engines = ["eng_s1_0", "eng_s1_1", "eng_s1_2", "eng_s1_3", "eng_s1_4", "eng_s1_5", "eng_s1_6", "eng_s1_7", "eng_s1_8"]
+
+[[mission.phases]]
+id              = "mission.phases.coast"
+label           = "post-MECO coast to apogee (booster jettisoned)"
+allowed_engines = []
+
+[[mission.phases]]
+id              = "mission.phases.circularize"
+label           = "stage-2 PEG circularisation (TVC)"
+allowed_engines = ["eng_vac"]
+
+[[mission.phases]]
+id              = "mission.phases.orbit"
+label           = "orbital insertion (engines idle)"
+# eng_vac is listed here so the mixer ADDRESSES it (sends a command), but
+# [fc.phase_authority] sets engines_allowed=false for this phase so that
+# command is gated to throttle 0 — i.e. SECO actively cuts the engine.
+# (With an empty list the mixer sends no command and the engine would hold
+# its last circularize throttle and burn on to depletion.)
+allowed_engines = ["eng_vac"]
+
+# Stage-1 ignition: light the cluster just after t=0.
+[[mission.events]]
+id = "ign_0"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_s1_0", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_1"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_s1_1", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_2"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_s1_2", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_3"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_s1_3", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_4"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_s1_4", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_5"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_s1_5", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_6"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_s1_6", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_7"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_s1_7", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+[[mission.events]]
+id = "ign_8"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_s1_8", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+# Stage-2 vacuum engine: ignited at launch and held Burning at throttle 0
+# (it is absent from the powered_ascent/coast allowed_engines, so the mixer
+# gates its throttle to zero -> no propellant flow). The circularize phase
+# throttles it up; the orbit phase throttles it back to zero (SECO). This
+# keeps ignition synchronised with PEG instead of a kernel engine_command
+# firing at the truth apogee while the commander phase still lags.
+[[mission.events]]
+id = "ign_vac"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "eng_vac", command = { throttle_unit = 0.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+# MECO-1: end the stage-1 burn at V1 (sets the coast apogee).
+[[mission.events]]
+id      = "meco1"
+once    = true
+trigger = { kind = "at_velocity", velocity_m_s = 7235.0, falling = false }
+action  = { kind = "emit_telemetry_marker", tag = "meco1" }
+
+# Stage separation: jettison the spent booster at MECO-1.
+[[mission.events]]
+id      = "sep"
+once    = true
+trigger = { kind = "at_velocity", velocity_m_s = 7235.0, falling = false }
+action  = { kind = "jettison_stage", body = "lower" }
+
+# Apogee marker: drives the coast -> circularize transition. A commander
+# event (engine-command events are kernel-side and cannot drive
+# transitions). Not one-shot: the radial climb rate jitters through zero
+# at launch, which would consume a one-shot before the real apogee.
+[[mission.events]]
+id      = "apogee"
+once    = false
+trigger = { kind = "at_apogee" }
+action  = { kind = "emit_telemetry_marker", tag = "apogee" }
+
+# SECO: cut on the PEG time-to-go at orbital insertion.
+[[mission.events]]
+id      = "seco"
+once    = true
+trigger = { kind = "at_guidance_cutoff", time_to_go_s = 0.5 }
+action  = { kind = "emit_telemetry_marker", tag = "seco" }
+
+[[mission.transitions]]
+from  = "mission.phases.powered_ascent"
+to    = "mission.phases.coast"
+event = "meco1"
+[[mission.transitions]]
+from  = "mission.phases.coast"
+to    = "mission.phases.circularize"
+event = "apogee"
+[[mission.transitions]]
+from  = "mission.phases.circularize"
+to    = "mission.phases.orbit"
+event = "seco"
+
+[multi_body]
+[[multi_body.separation]]
+event_id               = "sep"
+upper_body_id          = "upper"
+lower_body_id          = "lower"
+upper_delta_v_body_m_s = [0.0, 0.0, 0.3]
+lower_delta_v_body_m_s = [0.0, 0.0, -0.3]
+conserve_momentum      = false
+
+[fc]
+estimator        = "ekf"
+autopilot        = "three_loop"
+guidance         = "ascent_reference"
+base_rate_hz     = 50
+frame_budget_us  = 4000
+
+# Stage-1 booster: closed-loop insertion law lofts toward the insertion
+# radius (proven to build a good coast apogee).
+[fc.ascent_reference_by_phase."mission.phases.powered_ascent"]
+method             = "closed_loop_insertion"
+insertion_radius_m = 6_625_000.0
+k_alt_rad_per_m    = 1.6e-5
+k_vr_rad_per_m_s   = 2.0e-3
+theta_min_rad      = -0.70
+theta_max_rad      = 1.45
+downrange_axis_eci = [0.0, 1.0, 0.0]
+# Orbital-plane normal (h along ECI +z for this equatorial launch). Its
+# PRIMARY job here is to resolve the guidance ROLL reference (body +y)
+# continuously through the horizontal downrange pitch-over: the default
+# fixed ECI +y reference degenerates and flips to +x exactly when the
+# thrust axis swings toward downrange (+y), and that commanded-attitude
+# discontinuity used to excite a large late-ascent pitch/yaw transient that
+# threw ~340 m/s of out-of-plane velocity in and locked in ~2.4 deg of
+# inclination. Resolving roll against the plane normal removes the flip; the
+# residual inclination then collapses to <1 deg with no Δv cost. Active yaw
+# (cross-track) steering is available (k_cross_rad_per_m_s > 0) but left OFF
+# (= 0) — it is not needed for this in-plane equatorial ascent and would
+# only spend Δv. Forward-only: a plane normal is an orbital element, not a
+# ground location.
+orbital_plane_normal_eci = [0.0, 0.0, 1.0]
+k_cross_rad_per_m_s      = 0.0
+psi_max_rad              = 0.15
+
+# Stage-2 upper: PEG terminal insertion at apogee.
+[fc.ascent_reference_by_phase."mission.phases.circularize"]
+method                    = "peg"
+insertion_radius_m        = 6_652_000.0
+exhaust_velocity_m_s      = 3413.0
+initial_thrust_accel_m_s2 = 5.0
+peg_initial_t_go_s        = 120.0
+peg_min_speed_m_s         = 500.0
+downrange_axis_eci        = [0.0, 1.0, 0.0]
+# Same roll-reference continuity through the terminal PEG burn (yaw
+# nulling off; the plane is already held from ascent).
+orbital_plane_normal_eci  = [0.0, 0.0, 1.0]
+k_cross_rad_per_m_s       = 0.0
+psi_max_rad               = 0.30
+
+[fc.ekf]
+mag_field                   = "wmm_2025"
+gravity_model               = "egm2008"
+mag_epoch_decimal_year      = 2025.0
+sigma_w_gyro                = 0.01
+sigma_w_accel_bias          = 1.0e-4
+sigma_w_gyro_bias           = 1.0e-5
+# Position/velocity process noise. The EKF now gates GNSS as independent
+# position and velocity blocks (estimator.rs), so this no longer has to be
+# inflated to keep a combined 6-D gate open under thrust — it was 20 for
+# that crutch and is now 4, a value set by the actual 2-3 g ascent
+# dynamics (it sizes how fast the velocity estimate tracks GNSS vs the
+# tactical IMU through the burn).
+sigma_w_position_m          = 2.0
+sigma_w_velocity_m_s        = 4.0
+tau_gyro_bias_s             = 100.0
+tau_accel_bias_s            = 100.0
+sigma_gnss_pos_m            = 5.0
+sigma_gnss_vel_m_s          = 0.5
+sigma_baro_alt_m            = 2.0
+sigma_mag_nt                = 100.0
+innovation_false_alarm_rate = 0.01
+dead_reckon_timeout_s       = 1.5
+
+[fc.autopilot_params]
+thrust_vector_control = true
+rate_deadband_rad_s   = 0.001
+# Closed-loop max-Q load relief: throttle down to hold the REAL dynamic
+# pressure (density at the navigated geocentric altitude x air-relative
+# speed^2) at this limit, replacing the old open-loop altitude bucket.
+max_dynamic_pressure_pa = 26000.0
+trajectory_loop_enabled = false
+trajectory_kind       = "pid"
+
+[fc.health]
+imu_stale_after_s   = 0.1
+gnss_stale_after_s  = 0.5
+baro_stale_after_s  = 10.0
+mag_stale_after_s   = 0.2
+overrun_burst_count = 5
+
+[fc.fdir]
+detector_kind          = "burst_counter"
+innovation_threshold   = 25.0
+innovation_burst_count  = 5
+failsafe_burst_count   = 5
+
+[fc.gain_schedule."mission.phases.powered_ascent"]
+rate_kp            = [0.2, 0.2, 0.1]
+rate_kd            = [0.05, 0.05, 0.02]
+attitude_kp        = [0.7, 0.7, 0.4]
+elevator_limit_rad = 0.087
+aileron_limit_rad  = 0.087
+rudder_limit_rad   = 0.087
+throttle_baseline  = 1.0
+
+[fc.gain_schedule."mission.phases.coast"]
+rate_kp            = [0.2, 0.2, 0.1]
+rate_kd            = [0.05, 0.05, 0.02]
+attitude_kp        = [0.7, 0.7, 0.4]
+elevator_limit_rad = 0.087
+aileron_limit_rad  = 0.087
+rudder_limit_rad   = 0.087
+throttle_baseline  = 1.0
+
+[fc.gain_schedule."mission.phases.circularize"]
+rate_kp            = [0.3, 0.3, 0.1]
+rate_kd            = [0.08, 0.08, 0.02]
+attitude_kp        = [0.9, 0.9, 0.4]
+elevator_limit_rad = 0.087
+aileron_limit_rad  = 0.087
+rudder_limit_rad   = 0.087
+throttle_baseline  = 1.0
+
+[fc.gain_schedule."mission.phases.orbit"]
+rate_kp            = [0.2, 0.2, 0.1]
+rate_kd            = [0.05, 0.05, 0.02]
+attitude_kp        = [0.7, 0.7, 0.4]
+elevator_limit_rad = 0.087
+aileron_limit_rad  = 0.087
+rudder_limit_rad   = 0.087
+throttle_baseline  = 1.0
+
+[fc.phase_authority."mission.phases.powered_ascent"]
+autopilot_allowed = true
+engines_allowed   = true
+[fc.phase_authority."mission.phases.coast"]
+autopilot_allowed = true
+engines_allowed   = false
+[fc.phase_authority."mission.phases.circularize"]
+autopilot_allowed = true
+engines_allowed   = true
+[fc.phase_authority."mission.phases.orbit"]
+autopilot_allowed = true
+engines_allowed   = false

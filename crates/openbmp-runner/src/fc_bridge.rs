@@ -168,8 +168,9 @@ impl FcBridge {
         gravity_eci_m_s2: Vector3<f64>,
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
+        gyro_pickup_rad_s: Vector3<f64>,
     ) -> Result<(), RunnerError> {
-        let truth = self.rigid_body_truth(state, gravity_eci_m_s2);
+        let truth = self.rigid_body_truth(state, gravity_eci_m_s2, gyro_pickup_rad_s);
         self.step_from_truth(truth, step, effectors, engines)
     }
 
@@ -285,6 +286,7 @@ impl FcBridge {
         &mut self,
         state: &RigidBodyState,
         gravity_eci_m_s2: Vector3<f64>,
+        gyro_pickup_rad_s: Vector3<f64>,
     ) -> SensorTruth {
         let attitude_body_to_eci = state.orientation.q;
         let specific_force_eci = self.specific_force_eci(
@@ -292,11 +294,14 @@ impl FcBridge {
             state.time.as_seconds(),
             gravity_eci_m_s2,
         );
+        // The rate gyro senses the rigid-body rate PLUS the local structural
+        // bending slope rate (zero for a rigid vehicle). This is what lets the
+        // autopilot — and its gyro notch — interact with the flex mode.
         self.truth_common(
             state.position,
             state.velocity,
             attitude_body_to_eci,
-            state.angular_velocity.vector,
+            state.angular_velocity.vector + gyro_pickup_rad_s,
             specific_force_eci,
             state.time,
         )

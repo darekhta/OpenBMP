@@ -319,6 +319,15 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
+    // Bending-mode fields: `damping_ratio` is a dimensionless modal damping
+    // ratio; `slope_at_engine` / `slope_at_gyro` are dimensionless mode-shape
+    // slopes (the frequency and modal mass carry `_hz` / `_kg` suffixes).
+    if path.starts_with("$.vehicle.bending")
+        && matches!(key, "damping_ratio" | "slope_at_engine" | "slope_at_gyro")
+    {
+        return true;
+    }
+
     // Effector-block fields are unit-agnostic command
     // magnitudes: their concrete unit depends on the effector kind
     // (rad, m, fraction, etc.). Keep this exemption path-scoped so
