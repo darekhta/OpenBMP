@@ -410,6 +410,11 @@ pub fn run(
             let wind = wind_rack.sample(s.position, &frame, s.time)?;
             kernel.set_wind_sample(wind);
         }
+        // Feed the bending mode's reaction moment to the rigid-body torque for
+        // this step (held across the RK4 stages). Zero when no flex mode.
+        if !structural_rack.is_inactive() {
+            kernel.set_bending_reaction_moment(structural_rack.reaction_moment_body_n_m());
+        }
         let prev_velocity_eci = kernel.current_state().velocity.vector;
         let prev_orientation = kernel.current_state().orientation.q;
         kernel.step()?;

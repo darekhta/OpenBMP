@@ -350,6 +350,12 @@ where
     /// default-zero wind flows through, preserving the wind-free byte
     /// output.
     wind_sample_override: Option<nalgebra::Vector3<f64>>,
+    /// Body-frame reaction moment from an internal structural bending mode,
+    /// refreshed via [`Self::set_bending_reaction_moment`] before each
+    /// `step()` so every RK4 stage sees the same value (held constant across
+    /// the step, like the tank/engine snapshots). Zero for scenarios without
+    /// `[vehicle.bending]`, preserving byte output.
+    bending_reaction_moment_body_n_m: nalgebra::Vector3<f64>,
     /// Kernel-owned snapshot of per-recovery-device state,
     /// keyed by [`openbmp_core::RecoveryId`]. Refreshed via
     /// [`Self::set_recovery_snapshot`] before each `step()` call so
@@ -447,6 +453,7 @@ where
             engine_snapshot: std::collections::BTreeMap::new(),
             tank_snapshot: std::collections::BTreeMap::new(),
             wind_sample_override: None,
+            bending_reaction_moment_body_n_m: nalgebra::Vector3::zeros(),
             recovery_snapshot: std::collections::BTreeMap::new(),
             separated_rigid_bodies: Vec::new(),
             primary_rigid_body: None,
@@ -1002,6 +1009,14 @@ where
         self.wind_sample_override
     }
 
+    /// Set the body-frame structural-bending reaction moment added to the
+    /// rigid-body net torque. The runner's `StructuralRack` calls this once
+    /// per base tick so all four RK4 stages observe the same value. Zero (the
+    /// default) leaves the dynamics byte-identical.
+    pub fn set_bending_reaction_moment(&mut self, moment_body_n_m: nalgebra::Vector3<f64>) {
+        self.bending_reaction_moment_body_n_m = moment_body_n_m;
+    }
+
     fn has_event_bindings(&self) -> bool {
         !self.mission_events_typed.is_empty() || !self.script_events_typed.is_empty()
     }
@@ -1362,6 +1377,7 @@ where
             engine_snapshot: std::collections::BTreeMap::new(),
             tank_snapshot: std::collections::BTreeMap::new(),
             wind_sample_override: None,
+            bending_reaction_moment_body_n_m: nalgebra::Vector3::zeros(),
             recovery_snapshot: std::collections::BTreeMap::new(),
             separated_rigid_bodies: Vec::new(),
             primary_rigid_body: None,
@@ -1408,6 +1424,10 @@ where
         let wind_override = self.wind_sample_override;
         let primary_body = self.primary_rigid_body;
         let phase_id = self.current_phase.map(crate::events::PhaseId::value);
+        // Body-frame reaction moment from an internal structural bending mode
+        // (zero unless a `[vehicle.bending]` rack feeds it). Held constant
+        // across the RK4 stages, like the tank/engine snapshots.
+        let bending_reaction_moment = self.bending_reaction_moment_body_n_m;
 
         let derive = |s: &openbmp_state::RigidBodyState,
                       t: SimTime|
@@ -1467,7 +1487,8 @@ where
             let i_omega = inertia * s.angular_velocity.vector;
             let omega_cross_iomega = s.angular_velocity.vector.cross(&i_omega);
             let i_dot_omega = rate.inertia_rate_body * s.angular_velocity.vector;
-            let net = moment_n_m_body - omega_cross_iomega - i_dot_omega;
+            let net =
+                moment_n_m_body + bending_reaction_moment - omega_cross_iomega - i_dot_omega;
             let inv_inertia = inertia.try_inverse().ok_or_else(|| {
                 crate::error::ModelEvalError::InvalidState {
                     model: RIGID_BODY_EQUATIONS_MODEL_ID,
@@ -1558,7 +1579,8 @@ where
                 let i_omega = inertia * s.angular_velocity.vector;
                 let omega_cross_iomega = s.angular_velocity.vector.cross(&i_omega);
                 let i_dot_omega = rate.inertia_rate_body * s.angular_velocity.vector;
-                let net = moment_n_m_body - omega_cross_iomega - i_dot_omega;
+                let net =
+                moment_n_m_body + bending_reaction_moment - omega_cross_iomega - i_dot_omega;
                 let inv_inertia = inertia.try_inverse().ok_or_else(|| {
                     crate::error::ModelEvalError::InvalidState {
                         model: RIGID_BODY_EQUATIONS_MODEL_ID,
