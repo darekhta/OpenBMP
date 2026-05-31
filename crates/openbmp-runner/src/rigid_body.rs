@@ -3817,6 +3817,86 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const SEPARATED_DIRECT_TORQUE_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "separated-direct-torque-test"
+description = "Synthetic separated-lane direct-torque routing regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.3
+dt_s = 0.1
+seed = 41
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 10.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "separated-direct-torque-test"
+
+[[vehicle.assembly.bodies]]
+id = "bus"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 3.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[3.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 3.0]]
+
+[[vehicle.assembly.bodies]]
+id = "booster"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[[vehicle.assembly.effectors]]
+id = "booster-pitch-torque"
+mounted_to = "booster"
+kind = { kind = "direct_torque", axis = "pitch", effectiveness_n_m_per_rad = 10.0 }
+limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+command_schedule = { kind = "constant", value = 1.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "coast"
+
+[multi_body]
+primary_body_id = "bus"
+
+[[multi_body.initial_lane]]
+body_id = "booster"
+position_eci_m = [0.0, 0.0, 10.0]
+velocity_eci_m_s = [0.0, 0.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[telemetry]
+output.csv = "out/separated-direct-torque-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn valid_stage_separation_document() -> ScenarioDocument {
         openbmp_scenario::Scenario::from_toml_str(include_str!(
             "../../openbmp-scenario/tests/fixtures/stage-separation-valid.toml"
@@ -4034,6 +4114,31 @@ require_monotonic_time = true
         assert!(
             message.contains("retired separated body"),
             "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn direct_torque_routes_to_separated_body_owner() {
+        let scenario = openbmp_scenario::Scenario::from_toml_str(SEPARATED_DIRECT_TORQUE_SCENARIO)
+            .expect("separated direct-torque scenario must parse");
+        let outcome = crate::run(&scenario).expect("separated direct-torque scenario must run");
+
+        let primary_pitch_rate = f64_column(&outcome, "angular_velocity.y_rad_s");
+        assert!(
+            primary_pitch_rate.iter().all(|value| value.abs() < 1.0e-12),
+            "booster-owned torque must not rotate the primary lane: {primary_pitch_rate:?}"
+        );
+
+        let booster_pitch_rate = f64_column(&outcome, "body.booster.angular_velocity.y_rad_s");
+        assert!(
+            booster_pitch_rate.iter().any(|value| *value > 0.5),
+            "booster-owned torque should spin the separated lane: {booster_pitch_rate:?}"
+        );
+
+        let effector_actual = f64_column(&outcome, "effector.booster-pitch-torque.actual");
+        assert!(
+            effector_actual.iter().any(|value| *value > 0.0),
+            "direct-torque effector command should be observable: {effector_actual:?}"
         );
     }
 
