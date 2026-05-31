@@ -88,6 +88,7 @@ pub struct RuntimeEnvironment {
     atmosphere: Option<RuntimeAtmosphere>,
     gravity: RuntimeGravity,
     frame: FrameContext,
+    geocentric_surface_radius_m: Option<f64>,
 }
 
 impl RuntimeEnvironment {
@@ -117,6 +118,7 @@ impl RuntimeEnvironment {
             atmosphere,
             gravity,
             frame: frame.clone(),
+            geocentric_surface_radius_m: document_geocentric_surface_radius_m(document),
         })
     }
 }
@@ -135,7 +137,10 @@ impl EnvironmentModel for RuntimeEnvironment {
         let Some(atmosphere) = &self.atmosphere else {
             return Ok(sample);
         };
-        let altitude_m = atmosphere_altitude_m(query.position_eci.vector);
+        let altitude_m = atmosphere_altitude_m_with_surface_radius(
+            query.position_eci.vector,
+            self.geocentric_surface_radius_m,
+        );
         let atmosphere_sample = atmosphere.sample(altitude_m, query.time).map_err(|_| {
             ModelEvalError::OutOfEnvelope {
                 model: RUNNER_ENVIRONMENT_MODEL_ID,
@@ -218,21 +223,47 @@ pub(crate) fn build_document_runtime_gravity(
 ///
 /// For a geocentric configuration — position well beyond any
 /// flat-earth / local-frame launch radius — altitude is the height
-/// above the mean spherical Earth, `|r| - R⊕`. A near-origin local
-/// launch (sounding rocket, drop test) keeps the legacy flat-earth
-/// `+z` reading, where `+z` is the local vertical. The 1e6 m threshold
-/// and the 6 371 km mean radius match the geocentric/local split used
-/// by `openbmp-sim`'s `vertical_climb_rate` and the FC commander, so a
-/// geocentric launch (e.g. an equatorial ascent that stays near `z=0`)
-/// no longer reads sea-level density all the way to orbit.
-pub(crate) fn atmosphere_altitude_m(position_eci_m: Vector3<f64>) -> f64 {
+/// above the inferred launch surface radius, `|r| - R_surface`, or
+/// above the 6 371 km mean Earth fallback when no near-surface launch
+/// radius is available. A near-origin local launch (sounding rocket,
+/// drop test) keeps the legacy flat-earth `+z` reading, where `+z` is
+/// the local vertical. The 1e6 m threshold matches the geocentric/local
+/// split used by `openbmp-sim`'s `vertical_climb_rate` and the FC
+/// commander, so a geocentric launch (e.g. an equatorial ascent that
+/// stays near `z=0`) no longer reads sea-level density all the way to
+/// orbit.
+pub(crate) fn atmosphere_altitude_m_with_surface_radius(
+    position_eci_m: Vector3<f64>,
+    geocentric_surface_radius_m: Option<f64>,
+) -> f64 {
     const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
-    const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
+    const DEFAULT_EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
     let rn = position_eci_m.norm();
     if rn > GEOCENTRIC_RADIUS_THRESHOLD_M {
-        (rn - EARTH_MEAN_RADIUS_M).max(0.0)
+        let surface_radius_m = geocentric_surface_radius_m.unwrap_or(DEFAULT_EARTH_MEAN_RADIUS_M);
+        (rn - surface_radius_m).max(0.0)
     } else {
         position_eci_m.z.max(0.0)
+    }
+}
+
+pub(crate) fn document_geocentric_surface_radius_m(document: &ScenarioDocument) -> Option<f64> {
+    infer_geocentric_surface_radius_m(Vector3::new(
+        document.vehicle.initial_position_eci_m[0],
+        document.vehicle.initial_position_eci_m[1],
+        document.vehicle.initial_position_eci_m[2],
+    ))
+}
+
+pub(crate) fn infer_geocentric_surface_radius_m(position_eci_m: Vector3<f64>) -> Option<f64> {
+    let radius_m = position_eci_m.norm();
+    // Sea-level Earth radii are roughly 6.357e6..6.378e6 m. Include a
+    // little margin for rounded synthetic launch radii, but avoid
+    // treating high-altitude entry/orbit initial states as the ground.
+    if radius_m.is_finite() && (6_330_000.0..=6_390_000.0).contains(&radius_m) {
+        Some(radius_m)
+    } else {
+        None
     }
 }
 
@@ -478,20 +509,44 @@ mod tests {
     fn atmosphere_altitude_is_frame_aware() {
         // Local-frame launch (near origin): altitude is the flat-earth +z.
         assert_eq!(
-            atmosphere_altitude_m(Vector3::new(0.0, 0.0, 1_000.0)),
+            atmosphere_altitude_m_with_surface_radius(Vector3::new(0.0, 0.0, 1_000.0), None),
             1_000.0
         );
-        assert_eq!(atmosphere_altitude_m(Vector3::new(10.0, 20.0, 0.0)), 0.0);
+        assert_eq!(
+            atmosphere_altitude_m_with_surface_radius(Vector3::new(10.0, 20.0, 0.0), None),
+            0.0
+        );
         // Geocentric launch (|r| ~ Earth radius): altitude is |r| - R_earth,
         // independent of which axis the position lies on. An equatorial
         // launch at +x must NOT read sea level all the way up.
         let surface = Vector3::new(6_371_000.0, 0.0, 0.0);
-        assert_eq!(atmosphere_altitude_m(surface), 0.0);
+        assert_eq!(
+            atmosphere_altitude_m_with_surface_radius(surface, None),
+            0.0
+        );
         let up_100km = Vector3::new(6_471_000.0, 0.0, 0.0);
-        assert!((atmosphere_altitude_m(up_100km) - 100_000.0).abs() < 1.0e-6);
+        assert!(
+            (atmosphere_altitude_m_with_surface_radius(up_100km, None) - 100_000.0).abs() < 1.0e-6
+        );
         // Same altitude regardless of orbital-plane orientation (z-axis launch).
         let polar_100km = Vector3::new(0.0, 0.0, 6_471_000.0);
-        assert!((atmosphere_altitude_m(polar_100km) - 100_000.0).abs() < 1.0e-6);
+        assert!(
+            (atmosphere_altitude_m_with_surface_radius(polar_100km, None) - 100_000.0).abs()
+                < 1.0e-6
+        );
+
+        let rounded_surface = Vector3::new(6_370_000.0, 0.0, 0.0);
+        assert_eq!(
+            atmosphere_altitude_m_with_surface_radius(rounded_surface, Some(6_370_000.0)),
+            0.0
+        );
+        let rounded_up_1km = Vector3::new(6_371_000.0, 0.0, 0.0);
+        assert!(
+            (atmosphere_altitude_m_with_surface_radius(rounded_up_1km, Some(6_370_000.0))
+                - 1_000.0)
+                .abs()
+                < 1.0e-6
+        );
     }
 
     #[test]
@@ -500,6 +555,7 @@ mod tests {
             atmosphere: None,
             gravity: zero_gravity(),
             frame: FrameContext::wgs84_uniform_rotation(None),
+            geocentric_surface_radius_m: None,
         };
         let sample = environment
             .sample(EnvironmentQuery {
@@ -521,6 +577,7 @@ mod tests {
             atmosphere: None,
             gravity: zero_gravity(),
             frame: FrameContext::wgs84_uniform_rotation(Some(origin)),
+            geocentric_surface_radius_m: None,
         };
         let sample = environment
             .sample(EnvironmentQuery {
@@ -542,6 +599,7 @@ mod tests {
             atmosphere: None,
             gravity: zero_gravity(),
             frame: FrameContext::toy_fixed_earth(),
+            geocentric_surface_radius_m: None,
         };
         let mut sample = environment
             .sample(EnvironmentQuery {
@@ -561,6 +619,7 @@ mod tests {
             atmosphere: None,
             gravity: RuntimeGravity::Constant(ConstantGravity::down_z(9.80665).unwrap()),
             frame: FrameContext::toy_fixed_earth(),
+            geocentric_surface_radius_m: None,
         };
         let sample = environment
             .sample(EnvironmentQuery {

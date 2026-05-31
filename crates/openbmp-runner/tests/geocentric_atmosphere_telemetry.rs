@@ -153,3 +153,69 @@ require_monotonic_time = true
         densities
     );
 }
+
+#[test]
+fn point_mass_atmosphere_telemetry_uses_declared_launch_radius() {
+    let outcome = run_scenario(
+        r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-rounded-radius-atmosphere-telemetry"
+description = "Synthetic rounded geocentric launch-radius atmosphere regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 14
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [6370000.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [10000.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-rounded-radius-atmosphere-telemetry"
+
+[[vehicle.assembly.bodies]]
+id = "mass"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "piecewise_exponential"
+wind = "none"
+
+[atmosphere]
+kind = "piecewise_exponential"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/point-mass-rounded-radius-atmosphere-telemetry.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#,
+    );
+
+    let densities = atmosphere_density_column(&outcome);
+    assert!(
+        densities[0] > 1.2,
+        "initial rounded-radius launch point should sample sea-level density: {:?}",
+        densities
+    );
+    assert!(
+        densities[1] < 1.1,
+        "1 km above a rounded 6370 km launch radius must not still sample sea-level density: {:?}",
+        densities
+    );
+}

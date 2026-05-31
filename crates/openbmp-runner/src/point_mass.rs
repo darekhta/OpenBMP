@@ -67,8 +67,9 @@ use uom::si::mass::kilogram;
 use crate::RunOutcome;
 use crate::assembly::dry_mass_kg_at;
 use crate::atmosphere::{
-    RuntimeAtmosphere, RuntimeEnvironment, atmosphere_altitude_m,
-    build_document_runtime_atmosphere, is_runtime_atmosphere_kind, scenario_atmosphere_kind,
+    RuntimeAtmosphere, RuntimeEnvironment, atmosphere_altitude_m_with_surface_radius,
+    build_document_runtime_atmosphere, document_geocentric_surface_radius_m,
+    is_runtime_atmosphere_kind, scenario_atmosphere_kind,
 };
 use crate::error::RunnerError;
 use crate::integrator::build_runtime_integrator;
@@ -226,6 +227,7 @@ pub fn run(
         kernel_base
     };
     let channel_set = PointMassChannelSet::new(document)?;
+    let geocentric_surface_radius_m = document_geocentric_surface_radius_m(document);
     let breakdown_atmosphere = if channel_set.has_atmosphere {
         Some(build_document_runtime_atmosphere(document)?)
     } else {
@@ -289,6 +291,7 @@ pub fn run(
         &channel_set,
         &breakdown_vehicle,
         breakdown_atmosphere.as_ref(),
+        geocentric_surface_radius_m,
         aerothermal_driver.as_ref().map(|driver| driver.output()),
         fc_bridge.as_ref(),
         &[],
@@ -410,6 +413,7 @@ pub fn run(
             &channel_set,
             &breakdown_vehicle,
             breakdown_atmosphere.as_ref(),
+            geocentric_surface_radius_m,
             aerothermal_driver.as_ref().map(|driver| driver.output()),
             fc_bridge.as_ref(),
             &mission_fired,
@@ -1445,6 +1449,7 @@ fn record_step<I, F, MM, E, SC>(
     channels: &PointMassChannelSet,
     breakdown_vehicle: &KernelVehicle<PointMassState>,
     breakdown_atmosphere: Option<&RuntimeAtmosphere>,
+    geocentric_surface_radius_m: Option<f64>,
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
     fc_bridge: Option<&crate::fc_bridge::FcBridge>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
@@ -1473,7 +1478,10 @@ where
     // environment's frame-aware altitude conversion so ECI launches
     // do not report sea-level telemetry density at orbital radius.
     if let Some(atmosphere) = breakdown_atmosphere {
-        let altitude_m = atmosphere_altitude_m(state.position.vector);
+        let altitude_m = atmosphere_altitude_m_with_surface_radius(
+            state.position.vector,
+            geocentric_surface_radius_m,
+        );
         let sample = atmosphere.sample(altitude_m, state.time)?;
         if let (Some(d), Some(p), Some(t), Some(s)) = (
             &channels.atmosphere_density,

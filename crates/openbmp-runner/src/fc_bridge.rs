@@ -31,8 +31,9 @@ use openbmp_sensors::{
 use openbmp_state::{PointMassState, RigidBodyState};
 
 use crate::atmosphere::{
-    RuntimeAtmosphere, build_document_runtime_atmosphere, is_runtime_atmosphere_kind,
-    scenario_atmosphere_kind,
+    RuntimeAtmosphere, atmosphere_altitude_m_with_surface_radius,
+    build_document_runtime_atmosphere, document_geocentric_surface_radius_m,
+    is_runtime_atmosphere_kind, scenario_atmosphere_kind,
 };
 use crate::error::RunnerError;
 use crate::fc::{EstimatorSeed, FcAutopilotLqrContext, FcRunner, FcRunnerMission};
@@ -46,6 +47,7 @@ pub struct FcBridge {
     sensors: Vec<BridgeSensor>,
     atmosphere: Option<RuntimeAtmosphere>,
     fallback_atmosphere: UsStandard1976,
+    geocentric_surface_radius_m: Option<f64>,
     magnetic: Box<dyn MagneticFieldEci>,
     scenario_seed: u64,
     previous_velocity_eci_m_s: Option<Vector3<f64>>,
@@ -132,6 +134,7 @@ impl FcBridge {
             fallback_atmosphere: UsStandard1976::with_exoatmospheric_policy(
                 ExoatmosphericPolicy::ZeroDensityAboveCeiling,
             ),
+            geocentric_surface_radius_m: document_geocentric_surface_radius_m(&scenario.document),
             magnetic,
             scenario_seed: scenario.document.time.seed,
             previous_velocity_eci_m_s: None,
@@ -349,7 +352,8 @@ impl FcBridge {
         specific_force_eci_m_s2: Vector3<f64>,
         time: openbmp_core::SimTime,
     ) -> SensorTruth {
-        let altitude_m = bridge_sensor_altitude_m(position.vector);
+        let altitude_m =
+            bridge_sensor_altitude_m(position.vector, self.geocentric_surface_radius_m);
         let atmosphere = self.sample_atmosphere(altitude_m, time);
         let static_pressure_pa = atmosphere.pressure_pa;
         let attitude_eci_to_body = attitude_body_to_eci.inverse();
@@ -452,8 +456,11 @@ fn require_bridge_frame(document: &ScenarioDocument) -> Result<(), RunnerError> 
     .map_err(|what| RunnerError::UnsupportedScenario { what })
 }
 
-fn bridge_sensor_altitude_m(position_eci_m: Vector3<f64>) -> f64 {
-    crate::atmosphere::atmosphere_altitude_m(position_eci_m)
+fn bridge_sensor_altitude_m(
+    position_eci_m: Vector3<f64>,
+    geocentric_surface_radius_m: Option<f64>,
+) -> f64 {
+    atmosphere_altitude_m_with_surface_radius(position_eci_m, geocentric_surface_radius_m)
 }
 
 /// Pure decision for whether the FC sensor bridge supports a given
@@ -1066,15 +1073,25 @@ estimator = "ekf"
         // Local-frame launch (near origin): preserve the legacy flat-earth
         // altitude convention.
         assert_eq!(
-            bridge_sensor_altitude_m(Vector3::new(0.0, 0.0, 1_000.0)),
+            bridge_sensor_altitude_m(Vector3::new(0.0, 0.0, 1_000.0), None),
             1_000.0
         );
 
         // Geocentric launch: use radius above the Earth model, not ECI z.
         let surface = Vector3::new(6_371_000.0, 0.0, 0.0);
-        assert_eq!(bridge_sensor_altitude_m(surface), 0.0);
+        assert_eq!(bridge_sensor_altitude_m(surface, None), 0.0);
         let up_100km = Vector3::new(6_371_000.0 + 100_000.0, 0.0, 0.0);
-        assert!((bridge_sensor_altitude_m(up_100km) - 100_000.0).abs() < 1.0e-6);
+        assert!((bridge_sensor_altitude_m(up_100km, None) - 100_000.0).abs() < 1.0e-6);
+
+        let rounded_surface = Vector3::new(6_370_000.0, 0.0, 0.0);
+        assert_eq!(
+            bridge_sensor_altitude_m(rounded_surface, Some(6_370_000.0)),
+            0.0
+        );
+        let rounded_up_1km = Vector3::new(6_371_000.0, 0.0, 0.0);
+        assert!(
+            (bridge_sensor_altitude_m(rounded_up_1km, Some(6_370_000.0)) - 1_000.0).abs() < 1.0e-6
+        );
     }
 
     #[test]
