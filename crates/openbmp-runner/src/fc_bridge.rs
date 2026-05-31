@@ -324,7 +324,7 @@ impl FcBridge {
         specific_force_eci_m_s2: Vector3<f64>,
         time: openbmp_core::SimTime,
     ) -> SensorTruth {
-        let altitude_m = position.vector.z.max(0.0);
+        let altitude_m = bridge_sensor_altitude_m(position.vector);
         let static_pressure_pa = self.atmosphere.sample(altitude_m, time).map_or(
             openbmp_physics::atmosphere::USSA76_SEA_LEVEL_PRESSURE_PA,
             |s| s.pressure_pa,
@@ -414,6 +414,10 @@ fn require_bridge_frame(document: &ScenarioDocument) -> Result<(), RunnerError> 
     .map_err(|what| RunnerError::UnsupportedScenario { what })
 }
 
+fn bridge_sensor_altitude_m(position_eci_m: Vector3<f64>) -> f64 {
+    crate::atmosphere::atmosphere_altitude_m(position_eci_m)
+}
+
 /// Pure decision for whether the FC sensor bridge supports a given
 /// `(frame_profile, atmosphere, has_barometer)` configuration. Extracted
 /// from [`require_bridge_frame`] so the policy is unit-testable without
@@ -423,44 +427,24 @@ fn require_bridge_frame(document: &ScenarioDocument) -> Result<(), RunnerError> 
 /// rotation of the ECEF frame about the inertial +z axis. The kernel
 /// integrates the dynamics in ECI and the bridge derives sensor truth
 /// entirely in ECI: the IMU specific force is `d/dt v_eci - g_eci` (so it
-/// senses atmospheric drag correctly through the truth velocity), and GNSS
-/// and magnetometer truth are ECI quantities. None of those depend on the
-/// Earth-rotation phase. The ONE frame-dependent sensor-truth path in the
-/// bridge is the **barometer**: its altitude is taken as `position.z`
-/// (a flat-earth reading) which is wrong on a geocentric/rotating frame.
-///
-/// So `wgs84-uniform-rotation` is supported either in vacuum
-/// (`atmosphere = "none"`) or, in atmosphere, when the scenario carries no
-/// barometer (the launch boost is carried by the initial co-rotation
-/// velocity, and aero drag is applied kernel-side with a frame-aware
-/// geocentric altitude). Atmospheric flight WITH a barometer on a rotating
-/// frame still needs the bridge baro altitude made geocentric (a follow-up),
-/// so it stays rejected.
+/// senses atmospheric drag correctly through the truth velocity), GNSS and
+/// magnetometer truth are ECI quantities, and barometric pressure now uses
+/// the same frame-aware altitude helper as the kernel atmosphere path.
 ///
 /// `iers-tabulated` is treated identically: it differs from
 /// `wgs84-uniform-rotation` only in the ECI↔ECEF transform (IAU precession +
 /// nutation, tabulated UT1-UTC / polar motion / LOD), which the KERNEL
 /// applies to the dynamics (atmospheric co-rotation, gravity). The bridge
 /// sensor truth is derived in ECI and so is identical under either rotating
-/// frame; the same barometer caveat is the only frame-dependent path.
+/// frame.
 fn bridge_frame_supported(
     frame_profile: &str,
-    atmosphere: &str,
-    has_barometer: bool,
+    _atmosphere: &str,
+    _has_barometer: bool,
 ) -> Result<(), String> {
     match frame_profile {
         "toy-fixed-earth" => Ok(()),
-        // Both rotating-Earth frames share the same bridge contract: the
-        // sensor truth is frame-invariant in ECI; only the flat-earth
-        // barometer altitude is frame-dependent.
-        "wgs84-uniform-rotation" | "iers-tabulated" if atmosphere == "none" || !has_barometer => {
-            Ok(())
-        }
-        frame @ ("wgs84-uniform-rotation" | "iers-tabulated") => Err(format!(
-            "[fc] bridge supports frame_profile = \"{frame}\" with an atmosphere only when \
-             no barometer is present (the bridge barometer altitude is a flat-earth \
-             position.z reading; a geocentric baro altitude is a follow-up)"
-        )),
+        "wgs84-uniform-rotation" | "iers-tabulated" => Ok(()),
         other => Err(format!(
             "[fc] bridge requires frame_profile = \"toy-fixed-earth\", \
              \"wgs84-uniform-rotation\", or \"iers-tabulated\"; got `{other}`"
@@ -1040,7 +1024,23 @@ estimator = "ekf"
     }
 
     #[test]
-    fn bridge_frame_policy_allows_rotating_frame_without_barometer() {
+    fn bridge_sensor_altitude_is_frame_aware() {
+        // Local-frame launch (near origin): preserve the legacy flat-earth
+        // altitude convention.
+        assert_eq!(
+            bridge_sensor_altitude_m(Vector3::new(0.0, 0.0, 1_000.0)),
+            1_000.0
+        );
+
+        // Geocentric launch: use radius above the Earth model, not ECI z.
+        let surface = Vector3::new(6_371_000.0, 0.0, 0.0);
+        assert_eq!(bridge_sensor_altitude_m(surface), 0.0);
+        let up_100km = Vector3::new(6_371_000.0 + 100_000.0, 0.0, 0.0);
+        assert!((bridge_sensor_altitude_m(up_100km) - 100_000.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn bridge_frame_policy_allows_rotating_frame_with_barometer() {
         // toy-fixed-earth is always supported, with or without a baro.
         assert!(bridge_frame_supported("toy-fixed-earth", "none", false).is_ok());
         assert!(bridge_frame_supported("toy-fixed-earth", "us_standard_1976", true).is_ok());
@@ -1049,26 +1049,20 @@ estimator = "ekf"
         assert!(bridge_frame_supported("wgs84-uniform-rotation", "none", false).is_ok());
         assert!(bridge_frame_supported("wgs84-uniform-rotation", "none", true).is_ok());
 
-        // wgs84-uniform-rotation + atmosphere is supported when there is no
-        // barometer (IMU senses drag via specific force; aero is kernel-side
-        // with a frame-aware altitude).
+        // wgs84-uniform-rotation + atmosphere is supported with and without
+        // a barometer because bridge sensor truth now uses frame-aware
+        // altitude for pressure.
         assert!(
             bridge_frame_supported("wgs84-uniform-rotation", "us_standard_1976", false).is_ok()
         );
-
-        // ...but rejected with a barometer (bridge baro altitude is flat z).
-        let err = bridge_frame_supported("wgs84-uniform-rotation", "us_standard_1976", true)
-            .expect_err("rotating frame + atmosphere + barometer is rejected");
-        assert!(err.contains("barometer"), "unexpected message: {err}");
+        assert!(bridge_frame_supported("wgs84-uniform-rotation", "us_standard_1976", true).is_ok());
 
         // iers-tabulated shares the rotating-Earth bridge contract: the
         // sensor truth is frame-invariant in ECI, so it is accepted under
         // the same conditions as wgs84-uniform-rotation.
         assert!(bridge_frame_supported("iers-tabulated", "none", true).is_ok());
         assert!(bridge_frame_supported("iers-tabulated", "us_standard_1976", false).is_ok());
-        let err = bridge_frame_supported("iers-tabulated", "us_standard_1976", true)
-            .expect_err("iers-tabulated + atmosphere + barometer is rejected");
-        assert!(err.contains("barometer"), "unexpected message: {err}");
+        assert!(bridge_frame_supported("iers-tabulated", "us_standard_1976", true).is_ok());
 
         // A genuinely unsupported frame is still rejected.
         let err = bridge_frame_supported("spice-reference", "none", false)
