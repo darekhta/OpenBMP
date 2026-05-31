@@ -2268,6 +2268,7 @@ struct FcReferenceTelemetryChannels {
 struct SeparatedBodyTelemetryChannels {
     body: BodyId,
     separated: TelemetryChannel<bool>,
+    propagating: TelemetryChannel<bool>,
     position_x: TelemetryChannel<f64>,
     position_y: TelemetryChannel<f64>,
     position_z: TelemetryChannel<f64>,
@@ -2460,6 +2461,12 @@ impl RigidChannelSet {
                     separated: TelemetryChannel::<bool>::new(
                         alloc(),
                         format!("{prefix}.separated"),
+                        "bool",
+                        None::<&str>,
+                    )?,
+                    propagating: TelemetryChannel::<bool>::new(
+                        alloc(),
+                        format!("{prefix}.propagating"),
                         "bool",
                         None::<&str>,
                     )?,
@@ -2856,6 +2863,7 @@ impl RigidChannelSet {
         }
         for separated in &self.separated_bodies {
             channels.push(separated.separated.metadata().clone());
+            channels.push(separated.propagating.metadata().clone());
             channels.push(separated.position_x.metadata().clone());
             channels.push(separated.position_y.metadata().clone());
             channels.push(separated.position_z.metadata().clone());
@@ -3152,10 +3160,13 @@ fn insert_separated_body_channels(
     for channel in channels {
         let separated = separated_bodies
             .iter()
-            .find(|body| body.body == channel.body)
-            .map(|body| &body.state);
+            .find(|body| body.body == channel.body);
         row.insert(&channel.separated, separated.is_some())?;
-        if let Some(state) = separated {
+        row.insert(
+            &channel.propagating,
+            separated.is_some_and(|body| body.propagating),
+        )?;
+        if let Some(state) = separated.map(|body| &body.state) {
             row.insert(&channel.position_x, state.position.vector.x)?;
             row.insert(&channel.position_y, state.position.vector.y)?;
             row.insert(&channel.position_z, state.position.vector.z)?;
@@ -3629,6 +3640,79 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const SEPARATED_RETIREMENT_TELEMETRY_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "separated-retirement-telemetry-test"
+description = "Synthetic separated-lane retirement telemetry regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 2.0
+dt_s = 1.0
+seed = 31
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [6371100.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "separated-retirement-telemetry-test"
+
+[[vehicle.assembly.bodies]]
+id = "bus"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 3.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[[vehicle.assembly.bodies]]
+id = "booster"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "coast"
+
+[multi_body]
+primary_body_id = "bus"
+
+[[multi_body.initial_lane]]
+body_id = "booster"
+position_eci_m = [6371101.0, 0.0, 0.0]
+velocity_eci_m_s = [-2.0, 0.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[telemetry]
+output.csv = "out/separated-retirement-telemetry-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn valid_stage_separation_document() -> ScenarioDocument {
         openbmp_scenario::Scenario::from_toml_str(include_str!(
             "../../openbmp-scenario/tests/fixtures/stage-separation-valid.toml"
@@ -3787,6 +3871,9 @@ require_monotonic_time = true
         let observer_active = bool_column(&outcome, "body.observer.separated");
         assert_eq!(observer_active.first().copied(), Some(true));
         assert!(observer_active.iter().all(|value| *value));
+        let observer_propagating = bool_column(&outcome, "body.observer.propagating");
+        assert_eq!(observer_propagating.first().copied(), Some(true));
+        assert!(observer_propagating.iter().all(|value| *value));
 
         let bus_mass = f64_column(&outcome, "mass_kg");
         assert_eq!(bus_mass[0].to_bits(), 3.0_f64.to_bits());
@@ -3805,6 +3892,28 @@ require_monotonic_time = true
         assert!(
             marker.iter().any(|value| *value),
             "relative-distance event should observe initially active lanes: {marker:?}"
+        );
+    }
+
+    #[test]
+    fn separated_body_retirement_is_recorded_without_clearing_lane() {
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(SEPARATED_RETIREMENT_TELEMETRY_SCENARIO)
+                .expect("separated retirement telemetry scenario must parse");
+        let outcome =
+            crate::run(&scenario).expect("separated retirement telemetry scenario must run");
+
+        let separated = bool_column(&outcome, "body.booster.separated");
+        assert!(
+            separated.iter().all(|value| *value),
+            "retired lane should remain present for diagnostics: {separated:?}"
+        );
+
+        let propagating = bool_column(&outcome, "body.booster.propagating");
+        assert_eq!(propagating.first().copied(), Some(true));
+        assert!(
+            propagating.iter().any(|value| !*value),
+            "ground-crossing lane should be marked non-propagating: {propagating:?}"
         );
     }
 
