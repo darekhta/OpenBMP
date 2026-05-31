@@ -8376,17 +8376,21 @@ pub struct FcAscentReferenceConfig {
     /// PEG: minimum inertial speed below which PEG is not run (m/s).
     #[serde(default)]
     pub peg_min_speed_m_s: Option<f64>,
-    /// ascent_sequence: inertial speed to begin the pitch kick (m/s).
+    /// ascent_sequence: surface-relative speed to begin the pitch kick
+    /// (m/s). `0` means the kick/gravity-turn sequence may start
+    /// immediately.
     #[serde(default)]
     pub kick_start_speed_m_s: Option<f64>,
-    /// ascent_sequence: inertial speed to end the pitch kick (m/s).
+    /// ascent_sequence: surface-relative speed to end the pitch kick
+    /// (m/s). Set equal to `kick_start_speed_m_s` to skip the pitch kick.
     #[serde(default)]
     pub kick_end_speed_m_s: Option<f64>,
     /// ascent_sequence: pitch-kick angle off vertical toward downrange
     /// (rad).
     #[serde(default)]
     pub kick_angle_rad: Option<f64>,
-    /// ascent_sequence: inertial speed at which to hand off to PEG (m/s).
+    /// ascent_sequence: surface-relative speed at which to hand off to PEG
+    /// (m/s).
     #[serde(default)]
     pub peg_handoff_speed_m_s: Option<f64>,
     /// Yaw (out-of-plane) steering: inertial normal of the desired orbital
@@ -8427,7 +8431,7 @@ pub enum FcAscentReferenceMethod {
     /// phase — pair with a gravity turn for the launch phase.
     Peg,
     /// Sequenced launch-to-orbit reference: vertical rise → pitch kick →
-    /// gravity turn → PEG, selected by inertial speed. The full
+    /// gravity turn → PEG, selected by surface-relative speed. The full
     /// single-reference ascent. Requires the PEG fields plus
     /// `kick_start_speed_m_s` / `kick_end_speed_m_s` / `kick_angle_rad` /
     /// `peg_handoff_speed_m_s`.
@@ -8481,6 +8485,22 @@ impl FcAscentReferenceConfig {
         Ok(v)
     }
 
+    fn require_non_negative_field(
+        &self,
+        name: &str,
+        value: Option<f64>,
+    ) -> Result<f64, ScenarioError> {
+        let v = value.ok_or_else(|| ScenarioError::InvalidFc {
+            reason: format!("fc.ascent_reference.{name} is required for this method"),
+        })?;
+        if !v.is_finite() || v < 0.0 {
+            return Err(ScenarioError::InvalidFc {
+                reason: format!("fc.ascent_reference.{name} must be finite and non-negative"),
+            });
+        }
+        Ok(v)
+    }
+
     fn validate_peg(&self) -> Result<(), ScenarioError> {
         self.require_positive_field("insertion_radius_m", self.insertion_radius_m)?;
         self.require_positive_field("exhaust_velocity_m_s", self.exhaust_velocity_m_s)?;
@@ -8491,9 +8511,9 @@ impl FcAscentReferenceConfig {
     fn validate_ascent_sequence(&self) -> Result<(), ScenarioError> {
         self.validate_peg()?;
         let kick_start =
-            self.require_positive_field("kick_start_speed_m_s", self.kick_start_speed_m_s)?;
+            self.require_non_negative_field("kick_start_speed_m_s", self.kick_start_speed_m_s)?;
         let kick_end =
-            self.require_positive_field("kick_end_speed_m_s", self.kick_end_speed_m_s)?;
+            self.require_non_negative_field("kick_end_speed_m_s", self.kick_end_speed_m_s)?;
         let handoff =
             self.require_positive_field("peg_handoff_speed_m_s", self.peg_handoff_speed_m_s)?;
         let kick_angle = self
@@ -10401,6 +10421,48 @@ mod gyro_notch_tests {
             depth_db: -1.0,
         };
         assert!(neg_depth.validate(0).is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod ascent_reference_config_tests {
+    use super::{FcAscentReferenceConfig, FcAscentReferenceMethod};
+
+    fn ascent_sequence_config(kick_start: f64, kick_end: f64) -> FcAscentReferenceConfig {
+        FcAscentReferenceConfig {
+            method: FcAscentReferenceMethod::AscentSequence,
+            schedule_s: None,
+            pitch_rad: None,
+            insertion_radius_m: Some(6_710_000.0),
+            k_alt_rad_per_m: None,
+            k_vr_rad_per_m_s: None,
+            theta_min_rad: None,
+            theta_max_rad: None,
+            downrange_axis_eci: Some([0.0, 1.0, 0.0]),
+            exhaust_velocity_m_s: Some(3_413.0),
+            initial_thrust_accel_m_s2: Some(5.0),
+            peg_initial_t_go_s: Some(220.0),
+            peg_min_speed_m_s: None,
+            kick_start_speed_m_s: Some(kick_start),
+            kick_end_speed_m_s: Some(kick_end),
+            kick_angle_rad: Some(0.0),
+            peg_handoff_speed_m_s: Some(3_500.0),
+            orbital_plane_normal_eci: None,
+            k_cross_rad_per_m_s: None,
+            psi_max_rad: None,
+        }
+    }
+
+    #[test]
+    fn ascent_sequence_accepts_zero_kick_thresholds() {
+        ascent_sequence_config(0.0, 0.0).validate().unwrap();
+    }
+
+    #[test]
+    fn ascent_sequence_rejects_negative_kick_thresholds() {
+        assert!(ascent_sequence_config(-1.0, 0.0).validate().is_err());
+        assert!(ascent_sequence_config(0.0, -1.0).validate().is_err());
     }
 }
 
