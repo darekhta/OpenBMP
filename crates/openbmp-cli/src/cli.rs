@@ -51,14 +51,15 @@ pub enum Command {
         /// Scenario TOML file.
         scenario: PathBuf,
     },
-    /// Compare a scenario run against an external local telemetry CSV.
+    /// Compare a scenario run against external local telemetry CSV / JSON.
     CompareTelemetry {
         /// Scenario TOML file.
         scenario: PathBuf,
-        /// External reference CSV. The file is read locally and is not
+        /// External reference CSV or JSON. The file is read locally and is not
         /// copied into OpenBMP.
+        #[arg(value_name = "REFERENCE")]
         reference_csv: PathBuf,
-        /// TOML mapping from reference CSV columns to OpenBMP telemetry
+        /// TOML mapping from reference columns to OpenBMP telemetry
         /// observables and tolerances.
         #[arg(long = "mapping")]
         mapping: PathBuf,

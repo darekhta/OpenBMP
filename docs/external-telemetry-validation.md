@@ -1,7 +1,7 @@
 # External Telemetry Validation
 
-OpenBMP can compare a scenario run against a local telemetry CSV that is
-kept outside the repository. This is intended as a quarantined diagnostic
+OpenBMP can compare a scenario run against local telemetry CSV or JSON that
+is kept outside the repository. This is intended as a quarantined diagnostic
 workflow: use external observations to expose simulator, environment,
 controller, or event-model bugs, then fix the underlying code and keep the
 committed scenarios synthetic.
@@ -19,9 +19,27 @@ openbmp compare-telemetry \
   --mapping ../openbmp-private-data/reference-flight-map.toml
 ```
 
-The reference CSV is read locally. OpenBMP does not copy it, hash it into
+The reference file is read locally. OpenBMP does not copy it, hash it into
 scenario provenance, or write it to a project output directory. The mapping
-file may live outside the repository alongside the reference data.
+file may live outside the repository alongside the reference data. JSON
+references may be either an object of column arrays:
+
+```json
+{
+  "time": [0.0, 1.0],
+  "altitude": [0.0, 0.002],
+  "velocity": [0.0, 2.832]
+}
+```
+
+or an array of row objects:
+
+```json
+[
+  { "time": 0.0, "altitude": 0.0, "velocity": 0.0 },
+  { "time": 1.0, "altitude": 0.002, "velocity": 2.832 }
+]
+```
 
 ## Mapping Format
 
@@ -86,7 +104,7 @@ Good uses:
 Bad uses:
 
 - Fitting scenario constants until the external curve matches.
-- Importing the reference CSV, mapping, or derived fitted parameters into
+- Importing the reference data, mapping, or derived fitted parameters into
   the repository.
 - Treating one real flight as a golden trajectory for a committed in-tree
   scenario.

@@ -91,6 +91,57 @@ actual = { kind = "surface_relative_axis_velocity", axis_eci = [0.0, 1.0, 0.0], 
 }
 
 #[test]
+fn compare_telemetry_accepts_external_reference_json() {
+    let temp = Builder::new()
+        .prefix("openbmp_compare_telemetry_json")
+        .tempdir()
+        .expect("tempdir");
+    let json = temp.path().join("external-reference.json");
+    let mapping = temp.path().join("mapping.toml");
+
+    fs::write(
+        &json,
+        r#"
+{
+  "time": [0.0, 5.0, 10.0],
+  "altitude_km": [1.0, 0.877416875, 0.5096675],
+  "speed_m_s": [0.0, 49.03325, 98.0665]
+}
+"#,
+    )
+    .expect("write reference json");
+    fs::write(
+        &mapping,
+        r#"
+[reference]
+time_column = "time"
+
+[comparison]
+time_tolerance_s = 0.02
+
+[[metrics]]
+id = "altitude"
+reference_column = "altitude_km"
+reference_scale = 1000.0
+tolerance_abs = 1e-9
+actual = { kind = "altitude_from_position", radius_m = 0.0 }
+
+[[metrics]]
+id = "speed"
+reference_column = "speed_m_s"
+tolerance_abs = 1e-9
+actual = { kind = "speed_from_velocity" }
+"#,
+    )
+    .expect("write mapping");
+
+    let report = compare_telemetry::run(&scenario_path(), &json, &mapping).expect("compare");
+    assert!(report.passed(), "{report:#?}");
+    assert_eq!(report.reference_rows, 3);
+    assert_eq!(report.metrics.len(), 2);
+}
+
+#[test]
 fn compare_telemetry_reports_envelope_exceedances() {
     let temp = Builder::new()
         .prefix("openbmp_compare_telemetry_fail")
@@ -151,7 +202,7 @@ fn compare_telemetry_respects_metric_time_windows() {
 time_column = "time_s"
 
 [[metrics]]
-id = "midcourse_altitude"
+id = "coast_altitude"
 reference_column = "altitude_m"
 time_min_s = 4.0
 time_max_s = 6.0

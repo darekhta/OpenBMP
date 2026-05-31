@@ -1,9 +1,9 @@
 //! `openbmp compare-telemetry` — compare a scenario run against a
-//! local external telemetry CSV without importing that data into the
+//! local external telemetry CSV / JSON without importing that data into the
 //! repository.
 //!
 //! The command is deliberately source-agnostic. A mapping TOML names the
-//! external CSV columns, OpenBMP telemetry observables, and broad
+//! external columns, OpenBMP telemetry observables, and broad
 //! tolerances. The command runs the scenario, interpolates OpenBMP
 //! telemetry to the reference timestamps, and reports envelope
 //! differences. It does not fit parameters, mutate scenarios, or persist
@@ -31,7 +31,7 @@ const WGS84_EARTH_ROTATION_RAD_S: f64 = 7.292_115_146_7e-5;
 pub struct CompareReport {
     /// Scenario name that was run.
     pub scenario_name: String,
-    /// Number of rows in the external reference CSV.
+    /// Number of rows in the external reference data.
     pub reference_rows: usize,
     /// Final simulation time in seconds.
     pub final_time_s: f64,
@@ -162,16 +162,16 @@ impl MetricReport {
 }
 
 /// Run a scenario and compare selected telemetry observables with a
-/// local external CSV reference.
+/// local external CSV or JSON reference.
 ///
 /// # Errors
 ///
 /// Returns [`CliError`] for scenario/runner failures, unreadable mapping
-/// or CSV files, malformed mapping entries, missing telemetry channels,
+/// or reference files, malformed mapping entries, missing telemetry channels,
 /// and malformed reference rows.
 pub fn run(
     scenario_path: &Path,
-    reference_csv_path: &Path,
+    reference_path: &Path,
     mapping_path: &Path,
 ) -> Result<CompareReport, CliError> {
     let mapping = read_mapping(mapping_path)?;
@@ -179,7 +179,7 @@ pub fn run(
 
     let scenario = Scenario::from_file(scenario_path)?;
     let outcome = runner::run(&scenario)?;
-    let reference = read_reference(reference_csv_path, mapping_path, &mapping)?;
+    let reference = read_reference(reference_path, mapping_path, &mapping)?;
     let actual = build_actual_series(&outcome.table, mapping_path, &mapping.metrics)?;
 
     let mut metric_reports: Vec<MetricReport> =
@@ -545,6 +545,21 @@ fn validate_mapping(mapping: &MappingDocument, path: &Path) -> Result<(), CliErr
 }
 
 fn read_reference(
+    reference_path: &Path,
+    mapping_path: &Path,
+    mapping: &MappingDocument,
+) -> Result<ReferenceTable, CliError> {
+    if reference_path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+    {
+        return read_reference_json(reference_path, mapping_path, mapping);
+    }
+    read_reference_csv(reference_path, mapping_path, mapping)
+}
+
+fn read_reference_csv(
     csv_path: &Path,
     mapping_path: &Path,
     mapping: &MappingDocument,
@@ -584,12 +599,138 @@ fn read_reference(
     }
 
     if rows.is_empty() {
-        return Err(config_error(
-            csv_path,
-            "reference CSV contains no data rows",
-        ));
+        return Err(config_error(csv_path, "reference data contains no rows"));
     }
     Ok(ReferenceTable { rows })
+}
+
+fn read_reference_json(
+    json_path: &Path,
+    mapping_path: &Path,
+    mapping: &MappingDocument,
+) -> Result<ReferenceTable, CliError> {
+    let text = fs::read_to_string(json_path).map_err(|source| CliError::Io {
+        path: json_path.to_path_buf(),
+        source,
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|source| {
+        config_error(
+            json_path,
+            format!("could not parse reference JSON: {source}"),
+        )
+    })?;
+    match value {
+        serde_json::Value::Array(rows) => read_reference_json_rows(rows, json_path, mapping),
+        serde_json::Value::Object(columns) => {
+            read_reference_json_columns(columns, json_path, mapping_path, mapping)
+        }
+        _ => Err(config_error(
+            json_path,
+            "reference JSON must be an object of column arrays or an array of row objects",
+        )),
+    }
+}
+
+fn read_reference_json_columns(
+    columns: serde_json::Map<String, serde_json::Value>,
+    json_path: &Path,
+    mapping_path: &Path,
+    mapping: &MappingDocument,
+) -> Result<ReferenceTable, CliError> {
+    let time_values = json_column(&columns, &mapping.reference.time_column, mapping_path)?;
+    let metric_values: Vec<&[serde_json::Value]> = mapping
+        .metrics
+        .iter()
+        .map(|metric| json_column(&columns, &metric.reference_column, mapping_path))
+        .collect::<Result<_, _>>()?;
+
+    let mut rows = Vec::with_capacity(time_values.len());
+    for index in 0..time_values.len() {
+        let time_s = parse_required_json_value(
+            time_values
+                .get(index)
+                .ok_or_else(|| config_error(json_path, "missing required time value"))?,
+            "time",
+            json_path,
+        )?;
+        let mut values = Vec::with_capacity(mapping.metrics.len());
+        for (metric, column) in mapping.metrics.iter().zip(metric_values.iter().copied()) {
+            let value = column
+                .get(index)
+                .map(|value| parse_optional_json_value(value, json_path))
+                .transpose()?
+                .flatten()
+                .map(|raw| raw * metric.reference_scale + metric.reference_offset);
+            values.push(value);
+        }
+        rows.push(ReferenceRow { time_s, values });
+    }
+
+    if rows.is_empty() {
+        return Err(config_error(json_path, "reference data contains no rows"));
+    }
+    Ok(ReferenceTable { rows })
+}
+
+fn read_reference_json_rows(
+    raw_rows: Vec<serde_json::Value>,
+    json_path: &Path,
+    mapping: &MappingDocument,
+) -> Result<ReferenceTable, CliError> {
+    let mut rows = Vec::with_capacity(raw_rows.len());
+    for (row_index, value) in raw_rows.iter().enumerate() {
+        let serde_json::Value::Object(row) = value else {
+            return Err(config_error(
+                json_path,
+                format!("reference JSON row {row_index} is not an object"),
+            ));
+        };
+        let time_value = row.get(&mapping.reference.time_column).ok_or_else(|| {
+            config_error(
+                json_path,
+                format!(
+                    "reference JSON row {row_index} missing time column {:?}",
+                    mapping.reference.time_column
+                ),
+            )
+        })?;
+        let time_s = parse_required_json_value(time_value, "time", json_path)?;
+        let mut values = Vec::with_capacity(mapping.metrics.len());
+        for metric in &mapping.metrics {
+            let value = row
+                .get(&metric.reference_column)
+                .map(|value| parse_optional_json_value(value, json_path))
+                .transpose()?
+                .flatten()
+                .map(|raw| raw * metric.reference_scale + metric.reference_offset);
+            values.push(value);
+        }
+        rows.push(ReferenceRow { time_s, values });
+    }
+    if rows.is_empty() {
+        return Err(config_error(json_path, "reference data contains no rows"));
+    }
+    Ok(ReferenceTable { rows })
+}
+
+fn json_column<'a>(
+    columns: &'a serde_json::Map<String, serde_json::Value>,
+    column: &str,
+    mapping_path: &Path,
+) -> Result<&'a [serde_json::Value], CliError> {
+    let Some(value) = columns.get(column) else {
+        return Err(config_error(
+            mapping_path,
+            format!("reference JSON column {column:?} is not present"),
+        ));
+    };
+    let serde_json::Value::Array(values) = value else {
+        return Err(config_error(
+            mapping_path,
+            format!("reference JSON column {column:?} is not an array"),
+        ));
+    };
+    Ok(values)
 }
 
 fn build_actual_series(
@@ -893,6 +1034,54 @@ fn parse_optional_cell(
         return Ok(None);
     }
     parse_finite(trimmed, path).map(Some)
+}
+
+fn parse_required_json_value(
+    value: &serde_json::Value,
+    label: &str,
+    path: &Path,
+) -> Result<f64, CliError> {
+    match parse_optional_json_value(value, path)? {
+        Some(value) => Ok(value),
+        None => Err(config_error(path, format!("empty required {label} value"))),
+    }
+}
+
+fn parse_optional_json_value(
+    value: &serde_json::Value,
+    path: &Path,
+) -> Result<Option<f64>, CliError> {
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(number) => {
+            let value = number.as_f64().ok_or_else(|| {
+                config_error(
+                    path,
+                    format!("could not read JSON number {number} as float64"),
+                )
+            })?;
+            if value.is_finite() {
+                Ok(Some(value))
+            } else {
+                Err(config_error(
+                    path,
+                    format!("non-finite JSON float64 value {number}"),
+                ))
+            }
+        }
+        serde_json::Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                parse_finite(trimmed, path).map(Some)
+            }
+        }
+        _ => Err(config_error(
+            path,
+            format!("reference JSON value {value:?} is not numeric"),
+        )),
+    }
 }
 
 fn parse_finite(raw: &str, path: &Path) -> Result<f64, CliError> {
