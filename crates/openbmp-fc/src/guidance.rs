@@ -16,7 +16,9 @@ use crate::error::{ControllerError, GuidanceError};
 use crate::nav_metrics;
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
-use crate::topics::{GuidanceCutoff, ImuSample, PositionEstimate, ReferenceState, VehicleStatus};
+use crate::topics::{
+    EnvironmentEstimate, GuidanceCutoff, ImuSample, PositionEstimate, ReferenceState, VehicleStatus,
+};
 
 /// Guidance configuration.
 #[derive(Clone, Debug)]
@@ -267,8 +269,23 @@ impl Job for AscentReferenceGuidance {
             .ok()
             .flatten()
             .map_or(0.0, |(s, _)| s.accel_m_s2.norm());
+        let environment = ctx
+            .bus
+            .latest::<EnvironmentEstimate>()
+            .ok()
+            .flatten()
+            .map(|(e, _)| e);
         let surface_relative_velocity = nav_metrics::air_relative_velocity_eci_m_s(&position);
         let speed = position.velocity_eci_m_s.norm();
+        let dynamic_pressure_pa = environment.map_or_else(
+            || nav_metrics::dynamic_pressure_air_relative(&position),
+            |env| {
+                nav_metrics::dynamic_pressure_air_relative_with_density(
+                    &position,
+                    env.density_kg_m3,
+                )
+            },
+        );
         let state = AscentState {
             position_eci_m: [
                 position.position_eci_m.x,
@@ -292,7 +309,7 @@ impl Job for AscentReferenceGuidance {
                 position.position_eci_m,
                 surface_relative_velocity,
             ),
-            dynamic_pressure_pa: nav_metrics::dynamic_pressure_air_relative(&position),
+            dynamic_pressure_pa,
             mass_fraction: 1.0,
             thrust_accel_m_s2,
         };
@@ -487,5 +504,59 @@ mod tests {
             expected_surface_relative_velocity,
         );
         assert!((state.flight_path_angle_rad - expected_gamma).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn ascent_state_dynamic_pressure_uses_published_environment_density() {
+        let bus = Bus::new();
+        bus.register::<VehicleStatus>().unwrap();
+        bus.register::<PositionEstimate>().unwrap();
+        bus.register::<EnvironmentEstimate>().unwrap();
+        bus.register::<ReferenceState>().unwrap();
+        bus.register::<GuidanceCutoff>().unwrap();
+        bus.publish(VehicleStatus {
+            phase_id: 42,
+            armed: true,
+            in_flight: true,
+            safe_state_requested: false,
+        })
+        .unwrap();
+        let surface_radius_m = 6_371_000.0;
+        let omega = openbmp_physics::frames::WGS84_OMEGA_RAD_S;
+        bus.publish(PositionEstimate {
+            time: SimTime::ZERO,
+            position_eci_m: Vector3::new(surface_radius_m, 0.0, 0.0),
+            velocity_eci_m_s: Vector3::new(0.0, omega * surface_radius_m + 300.0, 0.0),
+            accel_bias_body_m_s2: Vector3::zeros(),
+        })
+        .unwrap();
+        bus.publish(EnvironmentEstimate {
+            time: SimTime::ZERO,
+            density_kg_m3: 0.01,
+        })
+        .unwrap();
+
+        let clock = SimulatedClock::at(SimTime::ZERO, StepIndex::ZERO);
+        let captured = Arc::new(Mutex::new(None));
+        let mut job = AscentReferenceGuidance::new(Box::new(RecordingReference {
+            state: Arc::clone(&captured),
+        }))
+        .with_active_phase_ids(vec![42]);
+
+        job.run(&JobContext {
+            bus: &bus,
+            clock: &clock,
+        })
+        .unwrap();
+
+        let state = captured
+            .lock()
+            .unwrap()
+            .expect("guidance should pass ascent state to generator");
+        assert!(
+            (state.dynamic_pressure_pa - 450.0).abs() < 1.0e-9,
+            "ascent guidance should derive q from the runtime atmosphere density: {}",
+            state.dynamic_pressure_pa
+        );
     }
 }

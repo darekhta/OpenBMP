@@ -26,9 +26,10 @@ use crate::nav_metrics;
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{
-    BarometerSample, CommsRegionStatePublish, EstimatorRegimeRegionStatePublish, EstimatorStatus,
-    FailsafeFlags, FdirStatus, GnssSample, GuidanceCutoff, HealthRegionStatePublish, ImuSample,
-    MissionRegionStatePublish, MissionStatePublish, PositionEstimate, VehicleStatus,
+    BarometerSample, CommsRegionStatePublish, EnvironmentEstimate,
+    EstimatorRegimeRegionStatePublish, EstimatorStatus, FailsafeFlags, FdirStatus, GnssSample,
+    GuidanceCutoff, HealthRegionStatePublish, ImuSample, MissionRegionStatePublish,
+    MissionStatePublish, PositionEstimate, VehicleStatus,
 };
 
 /// Commander parameters.
@@ -169,9 +170,17 @@ impl Commander {
             nav_metrics::vertical_velocity_m_s(p.position_eci_m, p.velocity_eci_m_s)
         });
         let velocity_m_s = pos.map_or(0.0, |p| p.velocity_eci_m_s.norm());
-        let dynamic_pressure_pa = pos
-            .as_ref()
-            .map_or(0.0, nav_metrics::dynamic_pressure_air_relative);
+        let environment = bus
+            .latest::<EnvironmentEstimate>()
+            .ok()
+            .flatten()
+            .map(|(e, _)| e);
+        let dynamic_pressure_pa = pos.as_ref().map_or(0.0, |p| {
+            environment.map_or_else(
+                || nav_metrics::dynamic_pressure_air_relative(p),
+                |env| nav_metrics::dynamic_pressure_air_relative_with_density(p, env.density_kg_m3),
+            )
+        });
         let mass_fraction = 1.0; // not currently estimated by the controller.
         let guidance_time_to_go_s = bus
             .latest::<GuidanceCutoff>()
@@ -621,6 +630,7 @@ mod tests {
         bus.register::<BarometerSample>().unwrap();
         bus.register::<EstimatorStatus>().unwrap();
         bus.register::<PositionEstimate>().unwrap();
+        bus.register::<EnvironmentEstimate>().unwrap();
         bus.register::<FailsafeFlags>().unwrap();
         bus.register::<FdirStatus>().unwrap();
         bus.register::<VehicleStatus>().unwrap();
@@ -816,6 +826,35 @@ mod tests {
             flying.current.dynamic_pressure_pa > 50_000.0,
             "300 m/s air-relative speed at sea level should produce real q: {}",
             flying.current.dynamic_pressure_pa
+        );
+    }
+
+    #[test]
+    fn eval_state_dynamic_pressure_uses_published_environment_density() {
+        let (graph, bindings, pad) = build_graph();
+        let commander = commander_from_graph(graph, bindings, pad);
+        let bus = fresh_bus();
+        let surface_radius_m = 6_371_000.0;
+        let omega = openbmp_physics::frames::WGS84_OMEGA_RAD_S;
+
+        bus.publish(PositionEstimate {
+            time: SimTime::ZERO,
+            position_eci_m: nalgebra::Vector3::new(surface_radius_m, 0.0, 0.0),
+            velocity_eci_m_s: nalgebra::Vector3::new(0.0, omega * surface_radius_m + 300.0, 0.0),
+            accel_bias_body_m_s2: nalgebra::Vector3::zeros(),
+        })
+        .unwrap();
+        bus.publish(EnvironmentEstimate {
+            time: SimTime::ZERO,
+            density_kg_m3: 0.01,
+        })
+        .unwrap();
+
+        let state = commander.build_eval_state(&bus);
+        assert!(
+            (state.current.dynamic_pressure_pa - 450.0).abs() < 1.0e-9,
+            "commander should derive event q from the runtime atmosphere density: {}",
+            state.current.dynamic_pressure_pa
         );
     }
 
