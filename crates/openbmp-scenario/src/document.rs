@@ -7292,6 +7292,23 @@ pub enum EffectorCommandScheduleConfig {
         /// Command at `end_time_s`.
         end: f64,
     },
+    /// Piecewise-linear schedule. Holds the first point before its
+    /// time, linearly interpolates between adjacent points, and holds
+    /// the final point thereafter.
+    PiecewiseLinear {
+        /// Strictly time-ordered schedule points.
+        points: Vec<EffectorSchedulePointConfig>,
+    },
+}
+
+/// One point in a piecewise-linear effector command schedule.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EffectorSchedulePointConfig {
+    /// Point time (s).
+    pub time_s: f64,
+    /// Command value at `time_s`.
+    pub value: f64,
 }
 
 impl EffectorCommandScheduleConfig {
@@ -7325,6 +7342,29 @@ impl EffectorCommandScheduleConfig {
                         value: *end_time_s,
                         rule: "must be strictly greater than start_time_s",
                     });
+                }
+            }
+            Self::PiecewiseLinear { points } => {
+                if points.is_empty() {
+                    return Err(ScenarioError::EmptyList {
+                        field: path("points"),
+                    });
+                }
+                let mut previous_time_s: Option<f64> = None;
+                for (point_index, point) in points.iter().enumerate() {
+                    let point_path = |field: &str| path(&format!("points[{point_index}].{field}"));
+                    require_finite(&point_path("time_s"), point.time_s)?;
+                    require_finite(&point_path("value"), point.value)?;
+                    if let Some(previous) = previous_time_s {
+                        if point.time_s <= previous {
+                            return Err(ScenarioError::InvalidNumber {
+                                field: point_path("time_s"),
+                                value: point.time_s,
+                                rule: "must be strictly greater than the previous point time_s",
+                            });
+                        }
+                    }
+                    previous_time_s = Some(point.time_s);
                 }
             }
         }

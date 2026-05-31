@@ -1511,13 +1511,14 @@ command_schedule = { kind = "step_at", time_s = 0.5, before = 0.0, after = 0.087
 
 #### Effector kinds
 
-`kind.kind` is tagged on the inner `kind` field. One variant is
+`kind.kind` is tagged on the inner `kind` field. Two variants are
 currently wired; nonlinear / multi-axis / smart actuators are possible
 extensions.
 
 | `kind.kind` | Required fields | Semantics |
 |---|---|---|
 | `linear_actuator` | `tau_s: f64` (optional, default `0.0`) | First-order lag with rate clamp + saturation + deadband + pure-delay buffer. `tau_s = 0` collapses to a rate-clamped tracker (no lag). The latency must be an integer multiple of the scenario's `time.dt_s` (sub-`dt` latency is rejected at construction). |
+| `direct_torque` | `axis: "roll" \| "pitch" \| "yaw"`, `effectiveness_n_m_per_rad: f64` | v3 rigid-body effector interpreted as a body-axis torque command by the moment-model layer. It uses the same actuator limits and command schedules as `linear_actuator`. |
 
 #### Limits vocabulary
 
@@ -1544,13 +1545,14 @@ declare `unit = "rad"`.
 
 `command_schedule` is optional. When omitted, the effector holds
 `initial_position` indefinitely. When present, it carries one of
-three deterministic shapes:
+four deterministic shapes:
 
 | `command_schedule.kind` | Required fields | Semantics |
 |---|---|---|
 | `constant` | `value: f64` | Commands `value` at every step. |
 | `step_at` | `time_s`, `before`, `after` (all `f64`) | Commands `before` while `t < time_s`; `after` thereafter. |
 | `linear_ramp` | `start_time_s`, `end_time_s`, `start`, `end` (all `f64`) | Holds `start` while `t <= start_time_s`; ramps linearly to `end` over `[start_time_s, end_time_s]`; holds `end` thereafter. |
+| `piecewise_linear` | `points = [{ time_s, value }, ...]` | Holds the first point before its time, linearly interpolates between strictly time-ordered adjacent points, and holds the final point thereafter. |
 
 A scenario-declared `command_schedule` is the deterministic baseline.
 A mission `effector_override` action (see
@@ -1601,13 +1603,15 @@ Enforced at scenario-parse time:
 - `mounted_to`, when present, must reference a declared body. It is
   required for every effector when `[multi_body]` is declared so
   post-separation aero-axis and direct-torque ownership is explicit.
-- `kind.kind` is a wired variant (`linear_actuator`).
+- `kind.kind` is a wired variant (`linear_actuator` or v3
+  `direct_torque`).
 - `limits.{min, max, max_rate_per_s, deadband, latency_s}` finite;
   `min < max`; `max_rate_per_s > 0`; `deadband >= 0` and
   `deadband <= (max - min)`; `latency_s >= 0`.
 - `initial_position`, when present, finite and in `[min, max]`.
 - `command_schedule` finite numeric fields; `linear_ramp` requires
-  `start_time_s < end_time_s`.
+  `start_time_s < end_time_s`; `piecewise_linear.points` must be
+  non-empty with strictly increasing `time_s` entries.
 - `unit`, when present, non-empty.
 - `fault` when present: `jam.at` and `hardover.to` in `[min, max]`;
   `runaway.rate_per_s` finite; `reduced_rate.factor` in `[0, 1]`.

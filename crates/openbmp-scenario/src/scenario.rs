@@ -4908,6 +4908,43 @@ action  = { kind = "stop", label = "max-q" }
     }
 
     #[test]
+    fn parses_piecewise_linear_effector_schedule() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+            "command_schedule = { kind = \"piecewise_linear\", points = [ \
+             { time_s = 0.0, value = 0.0 }, \
+             { time_s = 0.5, value = 0.087 }, \
+             { time_s = 1.0, value = 0.0 } ] }",
+        );
+        let scenario = Scenario::from_toml_str(&toml)
+            .expect("piecewise-linear effector schedule should validate");
+        match &scenario.document.vehicle.assembly.effectors[0].command_schedule {
+            Some(crate::EffectorCommandScheduleConfig::PiecewiseLinear { points }) => {
+                assert_eq!(points.len(), 3);
+                assert!((points[1].time_s - 0.5).abs() < 1.0e-12);
+                assert!((points[1].value - 0.087).abs() < 1.0e-12);
+            }
+            other => panic!("expected piecewise-linear command schedule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_piecewise_linear_effector_schedule_with_non_increasing_times() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+            "command_schedule = { kind = \"piecewise_linear\", points = [ \
+             { time_s = 0.5, value = 0.0 }, \
+             { time_s = 0.5, value = 0.087 } ] }",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field.contains("command_schedule.points[1].time_s")),
+            "expected InvalidNumber on piecewise-linear point time, got {err:?}",
+        );
+    }
+
+    #[test]
     fn direct_torque_effector_is_v3_only() {
         let toml = ASSEMBLY_WITH_EFFECTOR
             .replace(

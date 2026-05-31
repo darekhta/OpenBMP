@@ -87,20 +87,23 @@ enum EffectorSchedule {
         start: f64,
         end: f64,
     },
+    PiecewiseLinear {
+        points: Vec<(f64, f64)>,
+    },
 }
 
 impl EffectorSchedule {
     fn from_config(config: &EffectorCommandScheduleConfig) -> Self {
-        match *config {
-            EffectorCommandScheduleConfig::Constant { value } => Self::Constant(value),
+        match config {
+            EffectorCommandScheduleConfig::Constant { value } => Self::Constant(*value),
             EffectorCommandScheduleConfig::StepAt {
                 time_s,
                 before,
                 after,
             } => Self::StepAt {
-                time_s,
-                before,
-                after,
+                time_s: *time_s,
+                before: *before,
+                after: *after,
             },
             EffectorCommandScheduleConfig::LinearRamp {
                 start_time_s,
@@ -108,10 +111,16 @@ impl EffectorSchedule {
                 start,
                 end,
             } => Self::LinearRamp {
-                start_time_s,
-                end_time_s,
-                start,
-                end,
+                start_time_s: *start_time_s,
+                end_time_s: *end_time_s,
+                start: *start,
+                end: *end,
+            },
+            EffectorCommandScheduleConfig::PiecewiseLinear { points } => Self::PiecewiseLinear {
+                points: points
+                    .iter()
+                    .map(|point| (point.time_s, point.value))
+                    .collect(),
             },
         }
     }
@@ -145,6 +154,23 @@ impl EffectorSchedule {
                     let alpha = (t - start_time_s) / (end_time_s - start_time_s);
                     start + alpha * (end - start)
                 }
+            }
+            Self::PiecewiseLinear { ref points } => {
+                let Some(first) = points.first() else {
+                    return 0.0;
+                };
+                if t <= first.0 {
+                    return first.1;
+                }
+                for window in points.windows(2) {
+                    let (t0, value0) = window[0];
+                    let (t1, value1) = window[1];
+                    if t <= t1 {
+                        let alpha = (t - t0) / (t1 - t0);
+                        return value0 + alpha * (value1 - value0);
+                    }
+                }
+                points.last().map_or(first.1, |point| point.1)
             }
         }
     }
@@ -407,6 +433,31 @@ mod tests {
 
         rack.step(SimTime::from_seconds(0.001)).unwrap();
         assert!(rack.snapshot()[0].commanded.abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn piecewise_linear_schedule_interpolates_and_holds_endpoints() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+            "command_schedule = { kind = \"piecewise_linear\", points = [ \
+             { time_s = 0.25, value = 0.0 }, \
+             { time_s = 0.50, value = 0.10 }, \
+             { time_s = 1.00, value = 0.20 } ] }",
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let mut rack = EffectorRack::build(&scenario.document).unwrap();
+
+        rack.step(SimTime::from_seconds(0.0)).unwrap();
+        assert!(rack.snapshot()[0].commanded.abs() < 1.0e-12);
+
+        rack.step(SimTime::from_seconds(0.375)).unwrap();
+        assert!((rack.snapshot()[0].commanded - 0.05).abs() < 1.0e-12);
+
+        rack.step(SimTime::from_seconds(0.75)).unwrap();
+        assert!((rack.snapshot()[0].commanded - 0.15).abs() < 1.0e-12);
+
+        rack.step(SimTime::from_seconds(2.0)).unwrap();
+        assert!((rack.snapshot()[0].commanded - 0.20).abs() < 1.0e-12);
     }
 
     #[test]
