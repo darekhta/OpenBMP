@@ -98,6 +98,7 @@ Supported `actual.kind` values:
 | `surface_relative_local_axis_velocity` | Compare signed surface-relative velocity along `axis_eci` after projecting that axis into the local horizontal plane for geocentric states. |
 | `surface_relative_horizontal_speed` | Compare local-horizontal speed from `v_eci - omega x r_eci`; useful when recovered telemetry reports the horizontal component magnitude rather than a fixed inertial-axis component. |
 | `surface_relative_radial_velocity` | Compare signed radial velocity from `v_eci - omega x r_eci`; geocentric states use `r_hat`, local-frame states use `+z`. |
+| `dynamic_pressure` | Compare `0.5 * rho * |v_eci - omega x r_eci|^2`; defaults to `atmosphere.density_kg_m3` plus the standard position/velocity channels. |
 | `norm3` | Compare a generic vector norm from three named float telemetry channels. |
 
 Each metric uses the envelope

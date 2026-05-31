@@ -24,6 +24,10 @@ fn scenario_path() -> PathBuf {
     workspace_root().join("scenarios/analytic-toy/constant-acceleration-drop.toml")
 }
 
+fn sounding_piecewise_atmosphere_path() -> PathBuf {
+    workspace_root().join("scenarios/sounding-piecewise-exp-atmosphere/scenario.toml")
+}
+
 #[test]
 fn compare_telemetry_accepts_external_reference_csv() {
     let temp = Builder::new()
@@ -296,4 +300,42 @@ actual = { kind = "altitude_from_position", radius_m = 0.0 }
     assert_eq!(report.reference_rows, 3);
     assert_eq!(report.metrics[0].compared_samples, 1);
     assert_eq!(report.metrics[0].skipped_samples, 0);
+}
+
+#[test]
+fn compare_telemetry_can_derive_dynamic_pressure() {
+    let temp = Builder::new()
+        .prefix("openbmp_compare_telemetry_qbar")
+        .tempdir()
+        .expect("tempdir");
+    let csv = temp.path().join("external-reference.csv");
+    let mapping = temp.path().join("mapping.toml");
+
+    fs::write(&csv, "time_s,q_pa\n0.0,0.0\n").expect("write reference csv");
+    fs::write(
+        &mapping,
+        r#"
+[reference]
+time_column = "time_s"
+
+[[metrics]]
+id = "dynamic_pressure"
+reference_column = "q_pa"
+tolerance_abs = 1e10
+actual = { kind = "dynamic_pressure", omega_rad_s = 0.0 }
+"#,
+    )
+    .expect("write mapping");
+
+    let report = compare_telemetry::run(&sounding_piecewise_atmosphere_path(), &csv, &mapping)
+        .expect("compare");
+    assert!(report.passed(), "{report:#?}");
+    assert_eq!(report.metrics[0].compared_samples, 1);
+    let actual = report.metrics[0]
+        .max_abs_error_actual
+        .expect("dynamic pressure actual");
+    assert!(
+        (1.0e6..4.0e6).contains(&actual),
+        "unexpected sea-level dynamic pressure: {actual}"
+    );
 }

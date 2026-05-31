@@ -408,6 +408,24 @@ enum ActualSpec {
         #[serde(default = "default_earth_rotation_rad_s")]
         omega_rad_s: f64,
     },
+    DynamicPressure {
+        #[serde(default = "default_density")]
+        density: String,
+        #[serde(default = "default_position_x")]
+        position_x: String,
+        #[serde(default = "default_position_y")]
+        position_y: String,
+        #[serde(default = "default_position_z")]
+        position_z: String,
+        #[serde(default = "default_velocity_x")]
+        velocity_x: String,
+        #[serde(default = "default_velocity_y")]
+        velocity_y: String,
+        #[serde(default = "default_velocity_z")]
+        velocity_z: String,
+        #[serde(default = "default_earth_rotation_rad_s")]
+        omega_rad_s: f64,
+    },
     Norm3 {
         x: String,
         y: String,
@@ -1124,6 +1142,43 @@ fn actual_value(
                 Ok(Some(rel_v[2]))
             }
         }
+        ActualSpec::DynamicPressure {
+            density,
+            position_x,
+            position_y,
+            position_z,
+            velocity_x,
+            velocity_y,
+            velocity_z,
+            omega_rad_s,
+        } => {
+            let Some(rho) = f64_channel(row, lookup, density, mapping_path)? else {
+                return Ok(None);
+            };
+            if !rho.is_finite() || rho < 0.0 {
+                return Err(config_error(
+                    mapping_path,
+                    "dynamic_pressure.density must be finite and non-negative",
+                ));
+            }
+            let Some((_, rel_v)) = surface_relative_state(
+                row,
+                lookup,
+                mapping_path,
+                position_x,
+                position_y,
+                position_z,
+                velocity_x,
+                velocity_y,
+                velocity_z,
+                *omega_rad_s,
+            )?
+            else {
+                return Ok(None);
+            };
+            let speed_sq = rel_v[0].mul_add(rel_v[0], rel_v[1] * rel_v[1]) + rel_v[2] * rel_v[2];
+            Ok(Some(0.5 * rho * speed_sq))
+        }
     }
 }
 
@@ -1339,6 +1394,10 @@ fn default_velocity_y() -> String {
 
 fn default_velocity_z() -> String {
     "velocity_z_m_s".to_owned()
+}
+
+fn default_density() -> String {
+    "atmosphere.density_kg_m3".to_owned()
 }
 
 const fn default_earth_rotation_rad_s() -> f64 {
