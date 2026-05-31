@@ -63,6 +63,9 @@ pub enum Command {
         /// observables and tolerances.
         #[arg(long = "mapping")]
         mapping: PathBuf,
+        /// Write a machine-readable comparison report to this JSON file.
+        #[arg(long = "report-json")]
+        report_json: Option<PathBuf>,
     },
     /// Run offline landing-footprint Monte Carlo post-processing.
     FootprintMc {

@@ -53,6 +53,15 @@ pub enum CliError {
         /// Short, human-readable configuration error.
         summary: String,
     },
+    /// A telemetry comparison report could not be serialized.
+    #[error("telemetry comparison report json error: {path}")]
+    TelemetryCompareReportJson {
+        /// Offending output path.
+        path: PathBuf,
+        /// Source JSON serialization error.
+        #[source]
+        source: serde_json::Error,
+    },
     /// CSV parsing failed.
     #[error("csv error: {path}")]
     Csv {
@@ -84,7 +93,10 @@ impl CliError {
             Self::Scenario(_) | Self::TelemetryCompareConfig { .. } => 2,
             Self::Run(err) => err.exit_code(),
             Self::Io { .. } | Self::Csv { .. } => 3,
-            Self::Telemetry(_) | Self::Parquet(_) | Self::Arrow(_) => 4,
+            Self::Telemetry(_)
+            | Self::TelemetryCompareReportJson { .. }
+            | Self::Parquet(_)
+            | Self::Arrow(_) => 4,
         }
     }
 }

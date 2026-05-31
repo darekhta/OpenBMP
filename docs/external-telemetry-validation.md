@@ -16,12 +16,16 @@ or mission constants derived from a real flight into OpenBMP.
 openbmp compare-telemetry \
   scenarios/phalcon9/phalcon9-orbit.toml \
   ../openbmp-private-data/reference-flight.csv \
-  --mapping ../openbmp-private-data/reference-flight-map.toml
+  --mapping ../openbmp-private-data/reference-flight-map.toml \
+  --report-json ../openbmp-private-data/reference-flight-report.json
 ```
 
 The reference file is read locally. OpenBMP does not copy it, hash it into
 scenario provenance, or write it to a project output directory. The mapping
-file may live outside the repository alongside the reference data. JSON
+file may live outside the repository alongside the reference data. The
+optional `--report-json` output is a local machine-readable comparison
+summary for batch diagnostics, and is written before the command returns a
+failed comparison status. JSON
 references may be an object of column arrays:
 
 ```json

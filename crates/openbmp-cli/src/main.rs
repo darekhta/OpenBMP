@@ -98,6 +98,7 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
             scenario,
             reference_csv,
             mapping,
+            report_json,
         } => {
             let report = compare_telemetry::run(&scenario, &reference_csv, &mapping)?;
             println!(
@@ -131,6 +132,19 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                     metric.rms_abs_error,
                     metric.exceedances,
                 );
+            }
+            if let Some(path) = report_json {
+                let text = serde_json::to_string_pretty(&report).map_err(|source| {
+                    openbmp_cli::CliError::TelemetryCompareReportJson {
+                        path: path.clone(),
+                        source,
+                    }
+                })?;
+                std::fs::write(&path, text).map_err(|source| openbmp_cli::CliError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+                println!("  wrote report {}", path.display());
             }
             if report.passed() {
                 Ok(())

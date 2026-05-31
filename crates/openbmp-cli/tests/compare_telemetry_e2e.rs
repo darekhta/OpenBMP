@@ -100,6 +100,13 @@ actual = { kind = "surface_relative_horizontal_speed", omega_rad_s = 0.0 }
     assert_eq!(report.reference_rows, 3);
     assert_eq!(report.metrics.len(), 7);
     assert!(report.metrics.iter().all(|metric| metric.exceedances == 0));
+
+    let value = serde_json::to_value(&report).expect("serialize report");
+    assert_eq!(value["scenario_name"], "constant-acceleration-drop");
+    assert_eq!(value["metrics"][0]["id"], "altitude");
+    assert!(value["metrics"][0]["max_abs_error_reference"].is_number());
+    assert!(value["metrics"][0]["max_abs_error_actual"].is_number());
+    assert!(value["metrics"][0]["sum_sq_abs_error"].is_null());
 }
 
 #[test]

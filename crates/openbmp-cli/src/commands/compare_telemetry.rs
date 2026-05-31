@@ -18,7 +18,7 @@ use openbmp_core::ChannelId;
 use openbmp_runner as runner;
 use openbmp_scenario::Scenario;
 use openbmp_telemetry::{TelemetryRow, TelemetryTable, TelemetryValue};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::CliError;
 
@@ -27,7 +27,7 @@ const DEFAULT_RELATIVE_FLOOR: f64 = 1.0;
 const WGS84_EARTH_ROTATION_RAD_S: f64 = 7.292_115_146_7e-5;
 
 /// Top-level report from an external telemetry comparison.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct CompareReport {
     /// Scenario name that was run.
     pub scenario_name: String,
@@ -88,7 +88,7 @@ impl CompareReport {
 }
 
 /// Per-observable comparison statistics.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct MetricReport {
     /// Stable metric identifier from the mapping file.
     pub id: String,
@@ -115,6 +115,7 @@ pub struct MetricReport {
     /// `max(tolerance_abs, tolerance_rel * max(abs(reference),
     /// relative_floor))`.
     pub exceedances: usize,
+    #[serde(skip)]
     sum_sq_abs_error: f64,
 }
 
