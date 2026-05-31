@@ -2430,6 +2430,16 @@ kind = "piecewise_exponential"
             matches!(err, ScenarioError::ParseToml(_)),
             "target_range_m should reach schema validation, not safety-name lint: {err:?}"
         );
+
+        let toml = MINIMAL.replace(
+            "openbmp.scenario = 2",
+            r#"openbmp.target_schema = "civilian-target""#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::ParseToml(_)),
+            "target_schema should reach schema validation, not safety-name lint: {err:?}"
+        );
     }
 
     #[test]
