@@ -585,11 +585,17 @@ fn read_reference(
     if reference_path
         .extension()
         .and_then(std::ffi::OsStr::to_str)
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        .is_some_and(is_json_reference_extension)
     {
         return read_reference_json(reference_path, mapping_path, mapping);
     }
     read_reference_csv(reference_path, mapping_path, mapping)
+}
+
+fn is_json_reference_extension(extension: &str) -> bool {
+    extension.eq_ignore_ascii_case("json")
+        || extension.eq_ignore_ascii_case("jsonl")
+        || extension.eq_ignore_ascii_case("ndjson")
 }
 
 fn read_reference_csv(
@@ -646,12 +652,20 @@ fn read_reference_json(
         path: json_path.to_path_buf(),
         source,
     })?;
-    let value: serde_json::Value = serde_json::from_str(&text).map_err(|source| {
-        config_error(
-            json_path,
-            format!("could not parse reference JSON: {source}"),
-        )
-    })?;
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(container_error) => {
+            return read_reference_json_lines(&text, json_path, mapping).map_err(|line_error| {
+                config_error(
+                    json_path,
+                    format!(
+                        "could not parse reference JSON ({container_error}); also failed as \
+                         newline-delimited JSON: {line_error}"
+                    ),
+                )
+            });
+        }
+    };
     match value {
         serde_json::Value::Array(rows) => read_reference_json_rows(rows, json_path, mapping),
         serde_json::Value::Object(columns) => {
@@ -662,6 +676,24 @@ fn read_reference_json(
             "reference JSON must be an object of column arrays or an array of row objects",
         )),
     }
+}
+
+fn read_reference_json_lines(
+    text: &str,
+    json_path: &Path,
+    mapping: &MappingDocument,
+) -> Result<ReferenceTable, String> {
+    let mut rows = Vec::new();
+    for (line_index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let value = serde_json::from_str(line)
+            .map_err(|source| format!("line {}: {source}", line_index + 1))?;
+        rows.push(value);
+    }
+    read_reference_json_rows(rows, json_path, mapping).map_err(|source| source.to_string())
 }
 
 fn read_reference_json_columns(

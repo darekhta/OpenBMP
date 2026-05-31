@@ -22,7 +22,7 @@ openbmp compare-telemetry \
 The reference file is read locally. OpenBMP does not copy it, hash it into
 scenario provenance, or write it to a project output directory. The mapping
 file may live outside the repository alongside the reference data. JSON
-references may be either an object of column arrays:
+references may be an object of column arrays:
 
 ```json
 {
@@ -39,6 +39,13 @@ or an array of row objects:
   { "time": 0.0, "altitude": 0.0, "velocity": 0.0 },
   { "time": 1.0, "altitude": 0.002, "velocity": 2.832 }
 ]
+```
+
+JSONL / NDJSON references use the same row-object shape, one object per line:
+
+```jsonl
+{ "time": 0.0, "altitude": 0.0, "velocity": 0.0 }
+{ "time": 1.0, "altitude": 0.002, "velocity": 2.832 }
 ```
 
 ## Mapping Format
