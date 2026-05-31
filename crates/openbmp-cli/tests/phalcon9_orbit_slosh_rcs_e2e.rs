@@ -173,17 +173,32 @@ fn phalcon9_slosh_rcs_damps_coast_rates_and_inserts_to_leo() {
         .map(|r| r.t)
         .expect("apogee event must fire");
 
+    // Closed-loop circularisation starts from the controller's estimated
+    // apogee transition. The truth apogee marker can occur a few seconds
+    // later because the burn immediately pushes radial velocity positive, so
+    // use thrust onset as the physical end of the unpowered coast window.
+    let burn_start_t = rows
+        .iter()
+        .filter(|r| r.t > 245.0)
+        .find(|r| r.thrust_mag > 1000.0)
+        .map(|r| r.t)
+        .expect("upper-stage circularisation burn must start");
+    assert!(
+        burn_start_t > 700.0 && burn_start_t < 760.0,
+        "circularisation burn must start near apogee; t = {burn_start_t:.1} s"
+    );
+
     // (2) RCS is actively engaged and the slosh-driven coast rate stays
-    //     small. The window is the unpowered coast (post-separation up to
-    //     the apogee boundary).
+    //     small. The window is the unpowered coast: post-separation up to the
+    //     first upper-stage thrust.
     let peak_coast_omega = rows
         .iter()
-        .filter(|r| r.t > 245.0 && r.t < apogee_t)
+        .filter(|r| r.t > 245.0 && r.t < burn_start_t)
         .map(|r| r.omega_mag)
         .fold(0.0_f64, f64::max);
     let peak_coast_rcs = rows
         .iter()
-        .filter(|r| r.t > 245.0 && r.t < apogee_t)
+        .filter(|r| r.t > 245.0 && r.t < burn_start_t)
         .map(|r| r.rcs_actual_mag)
         .fold(0.0_f64, f64::max);
     assert!(
@@ -191,17 +206,17 @@ fn phalcon9_slosh_rcs_damps_coast_rates_and_inserts_to_leo() {
         "RCS must command measurable coast damping; peak command magnitude = {peak_coast_rcs:.4}"
     );
     assert!(
-        peak_coast_omega < 0.2,
+        peak_coast_omega < 0.02,
         "RCS coast hold must keep the slosh-driven body rate small; peak |omega| = {peak_coast_omega:.3} rad/s"
     );
 
     // (3) At PEG burn cutoff the stage is inserted to a bound near-circular
-    //     LEO. Burn cutoff = first time after apogee the thrust returns to
-    //     ~0 having been firing; assess the orbit a short settle after.
+    //     LEO. Burn cutoff = first time after upper-stage thrust onset that
+    //     thrust returns to ~0; assess the orbit a short settle after.
     let mut burning = false;
     let cutoff_t = rows
         .iter()
-        .filter(|r| r.t >= apogee_t)
+        .filter(|r| r.t >= burn_start_t)
         .find_map(|r| {
             if r.thrust_mag > 1000.0 {
                 burning = true;
@@ -254,8 +269,8 @@ fn phalcon9_slosh_rcs_damps_coast_rates_and_inserts_to_leo() {
     );
 
     println!(
-        "phalcon9-orbit-slosh-rcs: peak coast |omega| {peak_coast_omega:.3} rad/s, peak RCS command {peak_coast_rcs:.3}; \
-         insertion at cutoff+30s (t={:.0}s): e {:.4}, perigee {:.1} km, apogee {:.1} km; \
+        "phalcon9-orbit-slosh-rcs: coast ends at t={burn_start_t:.1}s; peak coast |omega| {peak_coast_omega:.3} rad/s, peak RCS command {peak_coast_rcs:.3}; \
+         truth apogee marker t={apogee_t:.1}s; insertion at cutoff+30s (t={:.0}s): e {:.4}, perigee {:.1} km, apogee {:.1} km; \
          end-of-run (t={:.0}s): e {:.4}, perigee {:.1} km, apogee {:.1} km (stable)",
         cutoff_t + 30.0,
         insertion.e,

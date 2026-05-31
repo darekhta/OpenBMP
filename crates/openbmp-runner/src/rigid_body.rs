@@ -446,26 +446,24 @@ pub fn run(
             // bending dynamics react to body-frame accel, and the prior body
             // frame matches their state's reference.
             let inverse_orientation = prev_orientation.inverse();
-            let accel_body = inverse_orientation * accel_eci;
             let omega_body = new_state.angular_velocity.vector;
+            // Propellant slosh and structural bending are driven by the
+            // SPECIFIC FORCE (proper, non-gravitational acceleration — what the
+            // tank / structure feels, and what an accelerometer reads), NOT the
+            // total kinematic acceleration. `accel_eci` (finite-differenced
+            // from the integrated velocity) includes gravity; feeding it as
+            // lateral forcing makes the body-frame gravity component
+            // spuriously drive internal modes. Subtract the scenario's own
+            // gravitational acceleration to recover the specific force: ~0 in
+            // coast (no spurious drive), ~thrust/m under power.
+            let gravity_eci = kernel.current_environment_sample()?.gravity_eci_m_s2;
+            let specific_accel_body = inverse_orientation * (accel_eci - gravity_eci);
             if !tank_rack.is_empty() {
-                // Propellant slosh is driven by the SPECIFIC FORCE (proper,
-                // non-gravitational acceleration — what the tank structurally
-                // feels / an accelerometer reads), NOT the total kinematic
-                // acceleration. `accel_eci` (finite-differenced from the
-                // integrated velocity) includes gravity; feeding it as the
-                // lateral forcing makes the body-frame gravity component
-                // spuriously drive the pendulum, and in freefall — where the
-                // axial restoring vanishes — that self-excites through the
-                // reaction → body-accel → forcing loop. Subtract the scenario's
-                // own gravitational acceleration to recover the specific force:
-                // ~0 in coast (no spurious drive), ~thrust/m under power.
-                let gravity_eci = kernel.current_environment_sample()?.gravity_eci_m_s2;
-                let slosh_accel_body = inverse_orientation * (accel_eci - gravity_eci);
-                tank_rack.update_drivers(slosh_accel_body, omega_body);
+                tank_rack.update_drivers(specific_accel_body, omega_body);
             }
-            // The bending mode is forced by the body lateral specific force.
-            structural_rack.update_drivers(accel_body);
+            if !structural_rack.is_inactive() {
+                structural_rack.update_drivers(specific_accel_body);
+            }
         }
         let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();
