@@ -302,6 +302,7 @@ pub fn run(
         &breakdown_vehicle,
         breakdown_atmosphere.as_ref(),
         aerothermal_driver.as_ref().map(|driver| driver.output()),
+        fc_bridge.as_ref(),
         &[],
         &initial_snapshot,
     )?;
@@ -473,6 +474,7 @@ pub fn run(
             &breakdown_vehicle,
             breakdown_atmosphere.as_ref(),
             aerothermal_driver.as_ref().map(|driver| driver.output()),
+            fc_bridge.as_ref(),
             &mission_fired,
             &snapshot,
         )?;
@@ -2236,6 +2238,15 @@ struct AerothermalTelemetryChannels {
 }
 
 #[derive(Debug)]
+struct FcReferenceTelemetryChannels {
+    valid: TelemetryChannel<bool>,
+    quaternion_x: TelemetryChannel<f64>,
+    quaternion_y: TelemetryChannel<f64>,
+    quaternion_z: TelemetryChannel<f64>,
+    quaternion_w: TelemetryChannel<f64>,
+}
+
+#[derive(Debug)]
 struct SeparatedBodyTelemetryChannels {
     body: BodyId,
     separated: TelemetryChannel<bool>,
@@ -2271,6 +2282,7 @@ struct RigidChannelSet {
     angular_velocity_x: TelemetryChannel<f64>,
     angular_velocity_y: TelemetryChannel<f64>,
     angular_velocity_z: TelemetryChannel<f64>,
+    fc_reference: Option<FcReferenceTelemetryChannels>,
     separated_bodies: Vec<SeparatedBodyTelemetryChannels>,
     has_atmosphere: bool,
     atmosphere_density: Option<TelemetryChannel<f64>>,
@@ -2340,6 +2352,43 @@ impl RigidChannelSet {
             "rad/s",
             Some("Body"),
         )?;
+
+        let fc_reference = if document.fc.is_some() {
+            Some(FcReferenceTelemetryChannels {
+                valid: TelemetryChannel::<bool>::new(
+                    alloc(),
+                    "guidance.reference.valid",
+                    "bool",
+                    None::<&str>,
+                )?,
+                quaternion_x: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "guidance.reference.q_x",
+                    "1",
+                    None::<&str>,
+                )?,
+                quaternion_y: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "guidance.reference.q_y",
+                    "1",
+                    None::<&str>,
+                )?,
+                quaternion_z: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "guidance.reference.q_z",
+                    "1",
+                    None::<&str>,
+                )?,
+                quaternion_w: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "guidance.reference.q_w",
+                    "1",
+                    None::<&str>,
+                )?,
+            })
+        } else {
+            None
+        };
 
         let mut separated_bodies = Vec::new();
         if let Some(multi_body) = &document.multi_body {
@@ -2677,6 +2726,7 @@ impl RigidChannelSet {
             angular_velocity_x,
             angular_velocity_y,
             angular_velocity_z,
+            fc_reference,
             separated_bodies,
             has_atmosphere,
             atmosphere_density,
@@ -2709,6 +2759,13 @@ impl RigidChannelSet {
             self.angular_velocity_y.metadata().clone(),
             self.angular_velocity_z.metadata().clone(),
         ];
+        if let Some(reference) = &self.fc_reference {
+            channels.push(reference.valid.metadata().clone());
+            channels.push(reference.quaternion_x.metadata().clone());
+            channels.push(reference.quaternion_y.metadata().clone());
+            channels.push(reference.quaternion_z.metadata().clone());
+            channels.push(reference.quaternion_w.metadata().clone());
+        }
         for separated in &self.separated_bodies {
             channels.push(separated.separated.metadata().clone());
             channels.push(separated.position_x.metadata().clone());
@@ -2787,6 +2844,7 @@ fn record_step<I, F, MOM, MM, E, SC>(
     breakdown_vehicle: &KernelVehicle<RigidBodyState>,
     breakdown_atmosphere: Option<&RuntimeAtmosphere>,
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
+    fc_bridge: Option<&crate::fc_bridge::FcBridge>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
     effector_snapshot: &[openbmp_vehicle::EffectorState],
 ) -> Result<(), RunnerError>
@@ -2826,6 +2884,7 @@ where
         &channels.angular_velocity_z,
         state.angular_velocity.vector.z,
     )?;
+    insert_fc_reference_channels(&mut row, &channels.fc_reference, fc_bridge)?;
 
     insert_separated_body_channels(
         &mut row,
@@ -2950,6 +3009,24 @@ where
     }
 
     table.push_row(row)?;
+    Ok(())
+}
+
+fn insert_fc_reference_channels(
+    row: &mut TelemetryRow,
+    channels: &Option<FcReferenceTelemetryChannels>,
+    fc_bridge: Option<&crate::fc_bridge::FcBridge>,
+) -> Result<(), RunnerError> {
+    let Some(channels) = channels else {
+        return Ok(());
+    };
+    let reference = fc_bridge.and_then(crate::fc_bridge::FcBridge::latest_reference_state);
+    row.insert(&channels.valid, reference.is_some())?;
+    let q = reference.map_or([0.0, 0.0, 0.0, 1.0], |r| r.q_body_to_eci_xyzw);
+    row.insert(&channels.quaternion_x, q[0])?;
+    row.insert(&channels.quaternion_y, q[1])?;
+    row.insert(&channels.quaternion_z, q[2])?;
+    row.insert(&channels.quaternion_w, q[3])?;
     Ok(())
 }
 

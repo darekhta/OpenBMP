@@ -290,6 +290,7 @@ pub fn run(
         &breakdown_vehicle,
         breakdown_atmosphere.as_ref(),
         aerothermal_driver.as_ref().map(|driver| driver.output()),
+        fc_bridge.as_ref(),
         &[],
         &initial_snapshot,
     )?;
@@ -410,6 +411,7 @@ pub fn run(
             &breakdown_vehicle,
             breakdown_atmosphere.as_ref(),
             aerothermal_driver.as_ref().map(|driver| driver.output()),
+            fc_bridge.as_ref(),
             &mission_fired,
             &snapshot,
         )?;
@@ -992,6 +994,15 @@ struct AerothermalTelemetryChannels {
 }
 
 #[derive(Debug)]
+struct FcReferenceTelemetryChannels {
+    valid: TelemetryChannel<bool>,
+    quaternion_x: TelemetryChannel<f64>,
+    quaternion_y: TelemetryChannel<f64>,
+    quaternion_z: TelemetryChannel<f64>,
+    quaternion_w: TelemetryChannel<f64>,
+}
+
+#[derive(Debug)]
 struct PointMassChannelSet {
     position_x: TelemetryChannel<f64>,
     position_y: TelemetryChannel<f64>,
@@ -1005,6 +1016,8 @@ struct PointMassChannelSet {
     atmosphere_pressure: Option<TelemetryChannel<f64>>,
     atmosphere_temperature: Option<TelemetryChannel<f64>>,
     atmosphere_speed_of_sound: Option<TelemetryChannel<f64>>,
+    /// Latest FC guidance reference, present only for `[fc]` scenarios.
+    fc_reference: Option<FcReferenceTelemetryChannels>,
     /// Force-model components in declared order.
     force_components: ForceComponentChannels,
     /// Active per-phase model list, present when phase overrides are
@@ -1048,6 +1061,43 @@ impl PointMassChannelSet {
         let velocity_z =
             TelemetryChannel::<f64>::new(alloc(), "velocity_z_m_s", "m/s", Some("ECI"))?;
         let mass = TelemetryChannel::<f64>::new(alloc(), "mass_kg", "kg", None::<&str>)?;
+
+        let fc_reference = if document.fc.is_some() {
+            Some(FcReferenceTelemetryChannels {
+                valid: TelemetryChannel::<bool>::new(
+                    alloc(),
+                    "guidance.reference.valid",
+                    "bool",
+                    None::<&str>,
+                )?,
+                quaternion_x: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "guidance.reference.q_x",
+                    "1",
+                    None::<&str>,
+                )?,
+                quaternion_y: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "guidance.reference.q_y",
+                    "1",
+                    None::<&str>,
+                )?,
+                quaternion_z: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "guidance.reference.q_z",
+                    "1",
+                    None::<&str>,
+                )?,
+                quaternion_w: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    "guidance.reference.q_w",
+                    "1",
+                    None::<&str>,
+                )?,
+            })
+        } else {
+            None
+        };
 
         // Atmosphere channels: emitted whenever the scenario declares
         // a layered atmosphere the runner can sample (USSA76 and
@@ -1279,6 +1329,7 @@ impl PointMassChannelSet {
             atmosphere_pressure,
             atmosphere_temperature,
             atmosphere_speed_of_sound,
+            fc_reference,
             force_components,
             active_models,
             aerothermal,
@@ -1298,6 +1349,13 @@ impl PointMassChannelSet {
             self.velocity_z.metadata().clone(),
             self.mass.metadata().clone(),
         ];
+        if let Some(reference) = &self.fc_reference {
+            channels.push(reference.valid.metadata().clone());
+            channels.push(reference.quaternion_x.metadata().clone());
+            channels.push(reference.quaternion_y.metadata().clone());
+            channels.push(reference.quaternion_z.metadata().clone());
+            channels.push(reference.quaternion_w.metadata().clone());
+        }
         if let (Some(d), Some(p), Some(t), Some(s)) = (
             &self.atmosphere_density,
             &self.atmosphere_pressure,
@@ -1360,6 +1418,7 @@ fn record_step<I, F, MM, E, SC>(
     breakdown_vehicle: &KernelVehicle<PointMassState>,
     breakdown_atmosphere: Option<&RuntimeAtmosphere>,
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
+    fc_bridge: Option<&crate::fc_bridge::FcBridge>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
     effector_snapshot: &[openbmp_vehicle::EffectorState],
 ) -> Result<(), RunnerError>
@@ -1380,6 +1439,7 @@ where
     row.insert(&channels.velocity_y, state.velocity.vector.y)?;
     row.insert(&channels.velocity_z, state.velocity.vector.z)?;
     row.insert(&channels.mass, state.mass.get::<kilogram>())?;
+    insert_fc_reference_channels(&mut row, &channels.fc_reference, fc_bridge)?;
 
     // Atmosphere sample at the post-step state. Match the runtime
     // environment's frame-aware altitude conversion so ECI launches
@@ -1524,6 +1584,24 @@ where
     }
 
     table.push_row(row)?;
+    Ok(())
+}
+
+fn insert_fc_reference_channels(
+    row: &mut TelemetryRow,
+    channels: &Option<FcReferenceTelemetryChannels>,
+    fc_bridge: Option<&crate::fc_bridge::FcBridge>,
+) -> Result<(), RunnerError> {
+    let Some(channels) = channels else {
+        return Ok(());
+    };
+    let reference = fc_bridge.and_then(crate::fc_bridge::FcBridge::latest_reference_state);
+    row.insert(&channels.valid, reference.is_some())?;
+    let q = reference.map_or([0.0, 0.0, 0.0, 1.0], |r| r.q_body_to_eci_xyzw);
+    row.insert(&channels.quaternion_x, q[0])?;
+    row.insert(&channels.quaternion_y, q[1])?;
+    row.insert(&channels.quaternion_z, q[2])?;
+    row.insert(&channels.quaternion_w, q[3])?;
     Ok(())
 }
 

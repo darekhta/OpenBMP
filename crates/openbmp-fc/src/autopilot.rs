@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use nalgebra::Vector3;
+use nalgebra::{UnitQuaternion, Vector3};
 use openbmp_physics::kinematics::quaternion_error_small_angle;
 
 use crate::error::{AutopilotError, ControllerError};
@@ -271,6 +271,13 @@ struct PidState {
     last_error: f64,
 }
 
+impl PidState {
+    fn reset_and_prime(&mut self, error: f64) {
+        self.integral = 0.0;
+        self.last_error = error;
+    }
+}
+
 /// Trajectory-loop strategy.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum TrajectoryKind {
@@ -297,6 +304,7 @@ pub struct ThreeLoopAutopilot {
     attitude_state: [PidState; 3],
     trajectory_state: [PidState; 3],
     last_predict_time_s: f64,
+    last_phase_id: Option<u64>,
     schedule: GainSchedule,
     params: AutopilotParams,
     gyro_notch_state: Option<[Biquad; 3]>,
@@ -345,6 +353,7 @@ impl ThreeLoopAutopilot {
             attitude_state: <[PidState; 3] as Default>::default(),
             trajectory_state: <[PidState; 3] as Default>::default(),
             last_predict_time_s: 0.0,
+            last_phase_id: None,
             schedule,
             params: AutopilotParams::default(),
             gyro_notch_state: None,
@@ -574,12 +583,27 @@ impl Job for ThreeLoopAutopilot {
         if !(status.armed && status.in_flight) {
             return Ok(());
         }
+        let phase_changed = self.last_phase_id != Some(status.phase_id);
+        if phase_changed {
+            self.last_phase_id = Some(status.phase_id);
+            #[cfg(feature = "lqr")]
+            {
+                self.lqr_integrators = [0.0; 3];
+            }
+            #[cfg(feature = "indi")]
+            {
+                self.indi_state = None;
+            }
+        }
         let gains = self.gains_for_phase(status.phase_id).clone();
         let mut saturated = false;
 
         // Attitude loop input: small-angle error in body frame.
-        let mut attitude_error =
-            quaternion_error_small_angle(attitude.q_body_to_eci_xyzw, reference.q_body_to_eci_xyzw);
+        let mut attitude_error = if self.params.thrust_vector_control {
+            thrust_axis_error_body(attitude.q_body_to_eci_xyzw, reference.q_body_to_eci_xyzw)
+        } else {
+            quaternion_error_small_angle(attitude.q_body_to_eci_xyzw, reference.q_body_to_eci_xyzw)
+        };
         let mut differential_flatness_active = false;
         let mut differential_flatness_reference_suppressed = false;
 
@@ -613,8 +637,12 @@ impl Job for ThreeLoopAutopilot {
             };
             if let Some(reference_kin) = flat_output_attitude_reference(&flat, yaw) {
                 let q = reference_kin.q_body_to_eci.into_inner();
-                attitude_error =
-                    quaternion_error_small_angle(attitude.q_body_to_eci_xyzw, [q.i, q.j, q.k, q.w]);
+                let q_xyzw = [q.i, q.j, q.k, q.w];
+                attitude_error = if self.params.thrust_vector_control {
+                    thrust_axis_error_body(attitude.q_body_to_eci_xyzw, q_xyzw)
+                } else {
+                    quaternion_error_small_angle(attitude.q_body_to_eci_xyzw, q_xyzw)
+                };
             } else {
                 differential_flatness_reference_suppressed = true;
             }
@@ -650,6 +678,9 @@ impl Job for ThreeLoopAutopilot {
                     let r_eci_to_body = q_est.to_rotation_matrix().transpose();
                     let pos_error_body = r_eci_to_body * pos_error_eci;
                     for i in 0..3 {
+                        if phase_changed {
+                            self.trajectory_state[i].reset_and_prime(pos_error_body[i]);
+                        }
                         let (cmd, sat) = pid_step(
                             &mut self.trajectory_state[i],
                             &gains.trajectory[i],
@@ -681,6 +712,9 @@ impl Job for ThreeLoopAutopilot {
         match self.params.attitude_loop_kind {
             AttitudeLoopKind::Pid => {
                 for i in 0..3 {
+                    if phase_changed {
+                        self.attitude_state[i].reset_and_prime(attitude_error[i]);
+                    }
                     let (cmd, sat) = pid_step(
                         &mut self.attitude_state[i],
                         &gains.attitude[i],
@@ -734,6 +768,9 @@ impl Job for ThreeLoopAutopilot {
         let rate_error = rate_cmd - omega_body_rad_s;
         let mut torque = Vector3::zeros();
         for i in 0..3 {
+            if phase_changed {
+                self.rate_state[i].reset_and_prime(rate_error[i]);
+            }
             let limit = match i {
                 0 => gains.aileron_limit_rad,
                 1 => gains.elevator_limit_rad,
@@ -936,6 +973,30 @@ fn reference_yaw_rad(q_body_to_eci_xyzw: [f64; 4]) -> f64 {
     yaw
 }
 
+fn unit_quat_xyzw(q_body_to_eci_xyzw: [f64; 4]) -> UnitQuaternion<f64> {
+    UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        q_body_to_eci_xyzw[3],
+        q_body_to_eci_xyzw[0],
+        q_body_to_eci_xyzw[1],
+        q_body_to_eci_xyzw[2],
+    ))
+}
+
+fn thrust_axis_error_body(q_estimate_xyzw: [f64; 4], q_reference_xyzw: [f64; 4]) -> Vector3<f64> {
+    let q_est = unit_quat_xyzw(q_estimate_xyzw);
+    let q_ref = unit_quat_xyzw(q_reference_xyzw);
+    let current_axis_eci = q_est * Vector3::z();
+    let reference_axis_eci = q_ref * Vector3::z();
+    let axis_cross = current_axis_eci.cross(&reference_axis_eci);
+    let sin_angle = axis_cross.norm();
+    if sin_angle <= f64::EPSILON {
+        return Vector3::zeros();
+    }
+    let cos_angle = current_axis_eci.dot(&reference_axis_eci).clamp(-1.0, 1.0);
+    let error_eci = (axis_cross / sin_angle) * sin_angle.atan2(cos_angle);
+    q_est.inverse_transform_vector(&error_eci)
+}
+
 /// Default academic gain schedule — every phase falls through to the
 /// default gains. The runner overrides these via the table registry.
 #[must_use]
@@ -989,10 +1050,10 @@ pub fn default_gains() -> ThreeLoopGains {
     clippy::panic
 )]
 mod tests {
-    use nalgebra::Vector3;
+    use nalgebra::{UnitQuaternion, Vector3};
     use openbmp_core::SimTime;
 
-    use super::reference_yaw_rad;
+    use super::{PidGains, PidState, pid_step, reference_yaw_rad, thrust_axis_error_body};
 
     #[test]
     fn reference_yaw_rad_recovers_z_rotation() {
@@ -1001,6 +1062,67 @@ mod tests {
         let q_xyzw = [0.0, 0.0, half.sin(), half.cos()];
         let yaw = reference_yaw_rad(q_xyzw);
         assert!((yaw - theta).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn thrust_axis_error_ignores_roll_about_thrust_axis() {
+        let pitch = 0.3;
+        let roll = 1.2;
+        let q_pitch = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pitch);
+        let q_roll = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), roll);
+        let q_ref = (q_pitch * q_roll).into_inner();
+        let err =
+            thrust_axis_error_body([0.0, 0.0, 0.0, 1.0], [q_ref.i, q_ref.j, q_ref.k, q_ref.w]);
+
+        assert!(err.x.abs() < 1.0e-12, "unexpected body-x error: {err:?}");
+        assert!(
+            (err.y - pitch).abs() < 1.0e-12,
+            "unexpected pitch error: {err:?}"
+        );
+        assert!(
+            err.z.abs() < 1.0e-12,
+            "roll about thrust axis must be ignored: {err:?}"
+        );
+
+        let q_est = q_pitch.into_inner();
+        let err_roll_only = thrust_axis_error_body(
+            [q_est.i, q_est.j, q_est.k, q_est.w],
+            [q_ref.i, q_ref.j, q_ref.k, q_ref.w],
+        );
+        assert!(
+            err_roll_only.norm() < 1.0e-12,
+            "same thrust axis with different roll should have no TVC error: {err_roll_only:?}"
+        );
+    }
+
+    #[test]
+    fn pid_reset_and_prime_suppresses_derivative_kick() {
+        let mut state = PidState {
+            integral: 5.0,
+            last_error: -2.0,
+        };
+        let gains = PidGains {
+            kp: 0.0,
+            ki: 0.0,
+            kd: 10.0,
+        };
+
+        state.reset_and_prime(1.25);
+        assert_eq!(state.integral.to_bits(), 0.0_f64.to_bits());
+        let (cmd, saturated) = pid_step(
+            &mut state,
+            &gains,
+            1.25,
+            0.01,
+            -1000.0,
+            1000.0,
+            &crate::anti_windup::AntiWindupKind::default(),
+            true,
+        );
+
+        assert!(!saturated);
+        assert_eq!(cmd.to_bits(), 0.0_f64.to_bits());
+        assert!((state.integral - 0.0125).abs() < 1.0e-15);
     }
 
     #[test]

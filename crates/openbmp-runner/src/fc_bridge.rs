@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use nalgebra::{UnitQuaternion, Vector3};
 use openbmp_core::{Position3, SensorId, StepIndex, Velocity3};
+pub(crate) use openbmp_fc::topics::ReferenceState;
 use openbmp_fc::topics::{
     BarometerSample, GnssSample, ImuSample, MagnetometerSample, StarTrackerSample,
 };
@@ -136,6 +137,12 @@ impl FcBridge {
         self.runner
             .latest_mission_state()
             .map(|s| s.mission_state_id)
+    }
+
+    /// Returns the most recent guidance reference published by the FC.
+    #[must_use]
+    pub fn latest_reference_state(&self) -> Option<ReferenceState> {
+        self.runner.latest_reference_state()
     }
 
     /// Run one point-mass bridge tick and push FC commands into the

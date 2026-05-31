@@ -437,6 +437,17 @@ impl FcRunner {
             .map(|(a, _)| a)
     }
 
+    /// Returns the latest guidance reference, if any.
+    #[must_use]
+    pub fn latest_reference_state(&self) -> Option<ReferenceState> {
+        self.fc
+            .bus()
+            .latest::<ReferenceState>()
+            .ok()
+            .flatten()
+            .map(|(r, _)| r)
+    }
+
     fn register_canonical_topics(fc: &FlightController) -> Result<(), openbmp_fc::ControllerError> {
         let bus = fc.bus();
         bus.register::<ImuSample>()?;
