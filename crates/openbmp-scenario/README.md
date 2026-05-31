@@ -31,9 +31,10 @@ every scenario declares `[vehicle.assembly]`.
   `_xyzw`).
 - **Safety-name lint** — reject `seeker`, `warhead`, `strike`,
   `interceptor`, `kill`, `threat`, `engagement`, terminal-homing
-  variants, and specific operational compounds such as `targetrange`
-  per `docs/safety-boundaries.md` § Naming Rules. The bare word
-  `target` is accepted as neutral simulation vocabulary.
+  variants, and specific operational compounds such as `impact_point`
+  per `docs/safety-boundaries.md` § Naming Rules. Neutral target
+  vocabulary, including `target` and `target_range`, is accepted as
+  simulation vocabulary.
 - File-resolution helper rooted at the scenario file path; the
   `Scenario::resolved_files()` API loads each external file
   reference, computes its SHA-256 digest, and verifies the optional

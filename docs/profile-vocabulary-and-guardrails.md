@@ -63,7 +63,6 @@ of the existing rejected set documented in
 | `reentryvehicle` | reentry-vehicle | Operational RV terminology; the academic term is *entry body* / *test article*. |
 | `circularerror` | circular-error | Rejected in scenario inputs. The offline Monte-Carlo summary may report `cep50_m` as an output-only sample statistic about the predicted footprint. |
 | `maxrange` / `rangemax` | max-range / range-max | Range maximization is a trajectory objective; staging analysis optimizes only ideal vehicle-intrinsic ΔV/mass budget. |
-| `targetrange` | target-range | Desired range is an inverse-problem input; no staging or propulsion block accepts one. |
 | `throwweight` | throw-weight | Operational payload-at-range terminology; use `payload_mass_kg` at a declared ideal ΔV. |
 | `impactenergy` | impact-energy | Terminal-effect terminology, unrelated to forward propulsion analysis. |
 | `firingtable` | firing-table | A range/elevation product for gunnery; the aero buildup produces vehicle-intrinsic coefficients only. |

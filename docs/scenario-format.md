@@ -433,15 +433,16 @@ CI lint should reject names containing forbidden operational terms listed in
 [safety-boundaries.md](safety-boundaries.md), including `seeker`, `warhead`,
 `strike`, `interceptor`, `kill`, `threat`, `engagement`, and terminal-homing
 equivalents. The bare word `target` is accepted as neutral simulation
-vocabulary; the lint rejects specific operational compounds such as
-`targetrange` and `terminal_guidance`.
+vocabulary, including neutral schema names such as `target_range`; the lint
+rejects specific operational compounds such as `impact_point` and
+`terminal_guidance`.
 
 Location-like fields are allowed only when their role is unambiguous:
 
 - Accepted: `local_origin`, `entry_interface`, `recovery_area_toy`,
-  `target_state`.
+  `target_state`, `target_range`.
 - Rejected: `impact_point`, `terminal_waypoint`, `strike_coordinate`,
-  `targetrange`.
+  `seeker_target`.
 
 ## Batch Runs
 

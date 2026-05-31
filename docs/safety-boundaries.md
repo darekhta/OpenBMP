@@ -121,8 +121,9 @@ Reject contributions that add or request:
   whose stated purpose is to strike a real-world point.
 - Any code or documentation labelled "Seeker", "Warhead", "Strike",
   "Interceptor", "Kill", "Threat", or equivalent operational terminology.
-  The bare word "target" is allowed when it is neutral simulation vocabulary;
-  operational target compounds remain rejected.
+  Neutral target vocabulary is allowed; operational terms remain rejected when
+  they describe seeker integration, terminal homing, strike objectives, impact
+  points, intercepts, or equivalent out-of-scope behavior.
 - Mission-planning tools for operational launches, weapon-employment scripts,
   field procedures, or launch-site procedures.
 - Counter-defense, counter-radar, electronic-warfare, jamming, decoy, or

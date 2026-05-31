@@ -48,10 +48,9 @@ const FORBIDDEN_SAFETY_TERMS: &[ForbiddenTerm] = &[
     ForbiddenTerm::new("reentryvehicle", "reentry-vehicle"),
     ForbiddenTerm::new("circularerror", "circular-error"),
     // Propulsion/staging guardrails: vehicle-intrinsic staging
-    // analysis is accepted, range/target optimization vocabulary is not.
+    // analysis is accepted, operational range optimization vocabulary is not.
     ForbiddenTerm::new("maxrange", "max-range"),
     ForbiddenTerm::new("rangemax", "range-max"),
-    ForbiddenTerm::new("targetrange", "target-range"),
     ForbiddenTerm::new("throwweight", "throw-weight"),
     ForbiddenTerm::new("impactenergy", "impact-energy"),
     // Aerodynamics guardrails: drag curves are accepted, gunnery

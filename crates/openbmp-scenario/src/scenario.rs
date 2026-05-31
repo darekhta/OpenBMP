@@ -2417,6 +2417,22 @@ kind = "piecewise_exponential"
     }
 
     #[test]
+    fn accepts_neutral_target_range_vocabulary() {
+        let toml = MINIMAL.replace(
+            r#"name = "constant-acceleration-drop""#,
+            r#"name = "target-range-demo""#,
+        );
+        Scenario::from_toml_str(&toml).expect("neutral target-range vocabulary should be accepted");
+
+        let toml = MINIMAL.replace("[environment]\n", "[environment]\ntarget_range_m = 1.0\n");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::ParseToml(_)),
+            "target_range_m should reach schema validation, not safety-name lint: {err:?}"
+        );
+    }
+
+    #[test]
     fn rejects_safety_limited_names() {
         let toml = MINIMAL.replace(
             r#"name = "constant-acceleration-drop""#,

@@ -242,10 +242,9 @@ scenario must be migrated to the academic replacement before it parses.
 | `endgame` | `post_flight`, `recovery` | Operational engagement vocabulary. |
 | `engagement`, `engaged` | (no replacement; rejected) | Operational. No academic context for these names in OpenBMP. |
 | `strike`, `strike_phase` | (no replacement; rejected) | Operational. |
-| `target` (as guidance reference state) | `waypoint`, `reference_trajectory` | Operational. Use waypoints in inertial space, never real-world locations. |
 | `seeker_active`, `seeker_lock` | (no replacement; rejected) | Operational; OpenBMP does not ship target-seeking guidance. |
 | `interceptor`, `intercept` | (no replacement; rejected) | Operational; categorically out of scope. |
-| `max_range`, `range_max`, `target_range` | `delta_v_budget_m_s`, `staging_analysis` | Range-to-target optimization vocabulary; staging analysis is limited to vehicle-intrinsic ideal ΔV / mass budget. |
+| `max_range`, `range_max` | `delta_v_budget_m_s`, `staging_analysis` | Range optimization vocabulary; staging analysis is limited to vehicle-intrinsic ideal ΔV / mass budget. |
 | `throw_weight` | `payload_mass_kg` | Operational payload-at-range terminology; OpenBMP uses payload mass at a declared ideal ΔV. |
 | `impact_energy` | (no replacement; rejected) | Terminal-effect terminology; unrelated to forward propulsion analysis. |
 | `firing_table`, `range_table` | `drag_coefficient`, `aero_deck` | Gunnery range products are rejected; OpenBMP stores geometry-intrinsic coefficient tables only. |
