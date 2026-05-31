@@ -1000,6 +1000,8 @@ struct FcReferenceTelemetryChannels {
     quaternion_y: TelemetryChannel<f64>,
     quaternion_z: TelemetryChannel<f64>,
     quaternion_w: TelemetryChannel<f64>,
+    cutoff_valid: Option<TelemetryChannel<bool>>,
+    cutoff_time_to_go_s: Option<TelemetryChannel<f64>>,
 }
 
 #[derive(Debug)]
@@ -1094,6 +1096,26 @@ impl PointMassChannelSet {
                     "1",
                     None::<&str>,
                 )?,
+                cutoff_valid: if document_exports_guidance_cutoff(document) {
+                    Some(TelemetryChannel::<bool>::new(
+                        alloc(),
+                        "guidance.cutoff.valid",
+                        "bool",
+                        None::<&str>,
+                    )?)
+                } else {
+                    None
+                },
+                cutoff_time_to_go_s: if document_exports_guidance_cutoff(document) {
+                    Some(TelemetryChannel::<f64>::new(
+                        alloc(),
+                        "guidance.cutoff.time_to_go_s",
+                        "s",
+                        None::<&str>,
+                    )?)
+                } else {
+                    None
+                },
             })
         } else {
             None
@@ -1355,6 +1377,12 @@ impl PointMassChannelSet {
             channels.push(reference.quaternion_y.metadata().clone());
             channels.push(reference.quaternion_z.metadata().clone());
             channels.push(reference.quaternion_w.metadata().clone());
+            if let Some(cutoff_valid) = &reference.cutoff_valid {
+                channels.push(cutoff_valid.metadata().clone());
+            }
+            if let Some(cutoff_time_to_go_s) = &reference.cutoff_time_to_go_s {
+                channels.push(cutoff_time_to_go_s.metadata().clone());
+            }
         }
         if let (Some(d), Some(p), Some(t), Some(s)) = (
             &self.atmosphere_density,
@@ -1602,7 +1630,26 @@ fn insert_fc_reference_channels(
     row.insert(&channels.quaternion_y, q[1])?;
     row.insert(&channels.quaternion_z, q[2])?;
     row.insert(&channels.quaternion_w, q[3])?;
+    if let (Some(valid_channel), Some(time_channel)) =
+        (&channels.cutoff_valid, &channels.cutoff_time_to_go_s)
+    {
+        let time_to_go_s = fc_bridge
+            .and_then(crate::fc_bridge::FcBridge::latest_guidance_cutoff)
+            .map(|cutoff| cutoff.time_to_go_s)
+            .filter(|time_to_go_s| time_to_go_s.is_finite());
+        row.insert(valid_channel, time_to_go_s.is_some())?;
+        row.insert(time_channel, time_to_go_s.unwrap_or(0.0))?;
+    }
     Ok(())
+}
+
+fn document_exports_guidance_cutoff(document: &ScenarioDocument) -> bool {
+    document.fc.as_ref().is_some_and(|fc| {
+        matches!(
+            fc.guidance,
+            openbmp_scenario::FcGuidanceKind::AscentReference
+        )
+    })
 }
 
 fn insert_recovery_state_channels(

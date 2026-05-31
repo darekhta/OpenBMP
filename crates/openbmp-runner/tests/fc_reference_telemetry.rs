@@ -16,8 +16,7 @@ fn channel_id(outcome: &openbmp_runner::RunOutcome, name: &str) -> ChannelId {
 
 #[test]
 fn fc_scenarios_export_guidance_reference_quaternion() {
-    let scenario = openbmp_scenario::Scenario::from_toml_str(
-        r#"
+    let base_toml = r#"
 openbmp.scenario = 3
 
 [meta]
@@ -118,9 +117,8 @@ elevator_limit_rad = 0.35
 aileron_limit_rad = 0.35
 rudder_limit_rad = 0.35
 throttle_baseline = 0.0
-"#,
-    )
-    .expect("scenario parses");
+"#;
+    let scenario = openbmp_scenario::Scenario::from_toml_str(base_toml).expect("scenario parses");
 
     let outcome = openbmp_runner::run(&scenario).expect("scenario runs");
 
@@ -154,4 +152,29 @@ throttle_baseline = 0.0
             "reference quaternion must stay unit length, got {q:?} with norm {norm}"
         );
     }
+
+    assert!(
+        outcome
+            .table
+            .schema()
+            .channels()
+            .iter()
+            .all(|channel| channel.name != "guidance.cutoff.time_to_go_s"),
+        "attitude-hold guidance should not export ascent cutoff telemetry"
+    );
+
+    let ascent_reference_toml = base_toml.replace(
+        "guidance = \"attitude_hold\"\nreference_q_xyzw = [0.0, 9.98334166468281548e-2, 0.0, 9.95004165278025821e-1]",
+        "guidance = \"ascent_reference\"",
+    )
+    .replace(
+        "[fc.ekf]",
+        "[fc.ascent_reference]\nmethod = \"pitch_program\"\nschedule_s = [0.0, 1.0]\npitch_rad = [0.0, 0.0]\n\n[fc.ekf]",
+    );
+    let ascent_reference = openbmp_scenario::Scenario::from_toml_str(&ascent_reference_toml)
+        .expect("ascent-reference scenario parses");
+    let ascent_outcome =
+        openbmp_runner::run(&ascent_reference).expect("ascent-reference scenario runs");
+    let _cutoff_valid = channel_id(&ascent_outcome, "guidance.cutoff.valid");
+    let _cutoff_time = channel_id(&ascent_outcome, "guidance.cutoff.time_to_go_s");
 }

@@ -1068,6 +1068,7 @@ pub struct SequencedAscentReference {
     peg_handoff_speed_m_s: f64,
     downrange_axis_eci: [f64; 3],
     peg: PegAscentReference,
+    peg_engaged: Cell<bool>,
 }
 
 impl SequencedAscentReference {
@@ -1135,6 +1136,7 @@ impl SequencedAscentReference {
             peg_handoff_speed_m_s,
             downrange_axis_eci,
             peg,
+            peg_engaged: Cell::new(false),
         })
     }
 }
@@ -1154,6 +1156,7 @@ impl AscentReferenceGenerator for SequencedAscentReference {
         // PEG handles its own low-speed gating, so hand off as soon as the
         // vehicle is fast enough.
         if surface_speed >= self.peg_handoff_speed_m_s {
+            self.peg_engaged.set(true);
             return self.peg.ascent_reference(state, time);
         }
 
@@ -1206,10 +1209,10 @@ impl AscentReferenceGenerator for SequencedAscentReference {
     }
 
     fn time_to_go_s(&self) -> Option<f64> {
-        // Meaningful only once the PEG phase has engaged; before that the
-        // inner generator reports its (large) initial estimate, which
-        // safely stays above any cutoff threshold.
-        self.peg.time_to_go_s()
+        self.peg_engaged
+            .get()
+            .then(|| self.peg.time_to_go_s())
+            .flatten()
     }
 }
 
@@ -3979,6 +3982,10 @@ mod tests {
         assert!(
             (body_z - Vector3::new(1.0, 0.0, 0.0)).norm() < 1.0e-12,
             "surface corotation must not skip vertical rise, got {body_z:?}"
+        );
+        assert!(
+            sequence.time_to_go_s().is_none(),
+            "sequenced ascent must not publish PEG cutoff time before PEG handoff"
         );
     }
 

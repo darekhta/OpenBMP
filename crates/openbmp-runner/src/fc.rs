@@ -448,6 +448,17 @@ impl FcRunner {
             .map(|(r, _)| r)
     }
 
+    /// Returns the latest guidance cutoff estimate, if any.
+    #[must_use]
+    pub fn latest_guidance_cutoff(&self) -> Option<GuidanceCutoff> {
+        self.fc
+            .bus()
+            .latest::<GuidanceCutoff>()
+            .ok()
+            .flatten()
+            .map(|(c, _)| c)
+    }
+
     fn register_canonical_topics(fc: &FlightController) -> Result<(), openbmp_fc::ControllerError> {
         let bus = fc.bus();
         bus.register::<ImuSample>()?;
