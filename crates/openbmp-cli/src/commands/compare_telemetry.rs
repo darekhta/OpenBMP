@@ -192,6 +192,10 @@ pub fn run(
 
     for row in &reference.rows {
         for (index, maybe_reference) in row.values.iter().enumerate() {
+            let metric = &mapping.metrics[index];
+            if !metric.applies_at(row.time_s) {
+                continue;
+            }
             let Some(reference_value) = maybe_reference else {
                 metric_reports[index].skip();
                 continue;
@@ -200,7 +204,6 @@ pub fn run(
                 metric_reports[index].skip();
                 continue;
             };
-            let metric = &mapping.metrics[index];
             let abs_error = (actual_value - reference_value).abs();
             let tolerance = metric.tolerance_for(*reference_value);
             metric_reports[index].record(
@@ -260,6 +263,10 @@ struct MetricConfig {
     tolerance_rel: Option<f64>,
     #[serde(default)]
     relative_floor: Option<f64>,
+    #[serde(default)]
+    time_min_s: Option<f64>,
+    #[serde(default)]
+    time_max_s: Option<f64>,
 }
 
 impl MetricConfig {
@@ -268,6 +275,11 @@ impl MetricConfig {
         let floor = self.relative_floor.unwrap_or(DEFAULT_RELATIVE_FLOOR);
         self.tolerance_abs
             .max(rel * reference_value.abs().max(floor))
+    }
+
+    fn applies_at(&self, time_s: f64) -> bool {
+        self.time_min_s.is_none_or(|min| time_s >= min)
+            && self.time_max_s.is_none_or(|max| time_s <= max)
     }
 }
 
@@ -469,6 +481,30 @@ fn validate_mapping(mapping: &MappingDocument, path: &Path) -> Result<(), CliErr
                     "metric {} relative_floor must be finite and non-negative",
                     metric.id
                 ),
+            ));
+        }
+        if let Some(value) = metric.time_min_s
+            && !value.is_finite()
+        {
+            return Err(config_error(
+                path,
+                format!("metric {} time_min_s must be finite", metric.id),
+            ));
+        }
+        if let Some(value) = metric.time_max_s
+            && !value.is_finite()
+        {
+            return Err(config_error(
+                path,
+                format!("metric {} time_max_s must be finite", metric.id),
+            ));
+        }
+        if let (Some(min), Some(max)) = (metric.time_min_s, metric.time_max_s)
+            && min > max
+        {
+            return Err(config_error(
+                path,
+                format!("metric {} time_min_s must be <= time_max_s", metric.id),
             ));
         }
     }

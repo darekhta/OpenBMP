@@ -1055,7 +1055,12 @@ fn compute_rigid_body_deck_force<Atm: AtmosphereModel>(
         .lookup(mach, alpha_deg, beta_deg, &deflections)
         .map_err(|err| map_aero_lookup_error(model_id, err))?;
 
-    let force_body = Vector3::new(-coefficients.cn * q_s, 0.0, -coefficients.cd * q_s);
+    let axial_drag_sign = if velocity_body.z < 0.0 { 1.0 } else { -1.0 };
+    let force_body = Vector3::new(
+        -coefficients.cn * q_s,
+        0.0,
+        axial_drag_sign * coefficients.cd * q_s,
+    );
     let force_eci = state.orientation.q * force_body;
     if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
         return Err(ModelEvalError::NonFinite { model: model_id });
@@ -2430,6 +2435,20 @@ mod tests {
         .unwrap()
     }
 
+    fn bidirectional_axial_drag_deck() -> AeroDeck {
+        AeroDeck::new(
+            vec![0.0, 1.0],
+            vec![-180.0, 0.0, 180.0],
+            vec![0.0],
+            vec![0.0; 6],
+            vec![0.5; 6],
+            vec![0.0; 6],
+            1.0,
+            1.0,
+        )
+        .unwrap()
+    }
+
     #[derive(Copy, Clone, Debug)]
     struct ZeroDensityAtmosphere;
 
@@ -2832,6 +2851,30 @@ mod tests {
         assert_eq!(pm.x, rb.x);
         assert_eq!(pm.y, rb.y);
         assert_eq!(pm.z.to_bits(), rb.z.to_bits());
+    }
+
+    #[test]
+    fn rigid_axial_drag_opposes_reversed_body_axis_flow() {
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let deck = bidirectional_axial_drag_deck();
+        let adapter = DeckDragForceAdapter::new(deck, atm, ModelId::new(0));
+        let env = null_env();
+        let rb_state = rigid_state_with_orientation(0.0, -50.0, identity_body_to_eci());
+        let force = ForceModel::<RigidBodyState>::force_n_eci(
+            &adapter,
+            rigid_ctx(&rb_state, &env, 1.0, 0.0),
+        )
+        .unwrap();
+
+        assert!(
+            force.z > 0.0,
+            "drag must oppose reversed body-axis flow; got {force:?}"
+        );
+        assert!(
+            force.dot(&rb_state.velocity.vector) < 0.0,
+            "drag must remove kinetic energy; force={force:?}, velocity={:?}",
+            rb_state.velocity.vector
+        );
     }
 
     #[test]

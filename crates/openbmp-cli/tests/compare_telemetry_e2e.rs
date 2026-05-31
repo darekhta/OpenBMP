@@ -114,3 +114,44 @@ actual = { kind = "altitude_from_position", radius_m = 0.0 }
     assert_eq!(report.metrics[0].exceedances, 1);
     assert!(report.failure_summary().contains("exceeded tolerance"));
 }
+
+#[test]
+fn compare_telemetry_respects_metric_time_windows() {
+    let temp = Builder::new()
+        .prefix("openbmp_compare_telemetry_window")
+        .tempdir()
+        .expect("tempdir");
+    let csv = temp.path().join("external-reference.csv");
+    let mapping = temp.path().join("mapping.toml");
+
+    fs::write(
+        &csv,
+        "time_s,altitude_m\n\
+         0.0,1000.0\n\
+         5.0,877.416875\n\
+         10.0,509.6675\n",
+    )
+    .expect("write reference csv");
+    fs::write(
+        &mapping,
+        r#"
+[reference]
+time_column = "time_s"
+
+[[metrics]]
+id = "midcourse_altitude"
+reference_column = "altitude_m"
+time_min_s = 4.0
+time_max_s = 6.0
+tolerance_abs = 1e-9
+actual = { kind = "altitude_from_position", radius_m = 0.0 }
+"#,
+    )
+    .expect("write mapping");
+
+    let report = compare_telemetry::run(&scenario_path(), &csv, &mapping).expect("compare");
+    assert!(report.passed(), "{report:#?}");
+    assert_eq!(report.reference_rows, 3);
+    assert_eq!(report.metrics[0].compared_samples, 1);
+    assert_eq!(report.metrics[0].skipped_samples, 0);
+}
