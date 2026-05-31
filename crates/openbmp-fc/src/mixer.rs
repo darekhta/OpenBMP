@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use openbmp_core::EffectorId;
+use openbmp_core::{EffectorId, EngineId};
 
 use crate::allocation::PrioritisedRedistributedAllocator;
 use crate::error::ControllerError;
@@ -139,6 +139,7 @@ pub struct Mixer {
     name: &'static str,
     last_seen_actuator: u64,
     last_seen_engine: u64,
+    last_commanded_engines: Vec<EngineId>,
     authority: PhaseAuthorityTable,
     channel_map: ActuatorChannelMap,
     allocator: Option<PrioritisedRedistributedAllocator>,
@@ -154,6 +155,7 @@ impl Mixer {
             name: "mixer.tick",
             last_seen_actuator: 0,
             last_seen_engine: 0,
+            last_commanded_engines: Vec::new(),
             authority: PhaseAuthorityTable::default(),
             channel_map: ActuatorChannelMap::default(),
             allocator: None,
@@ -304,10 +306,23 @@ impl Mixer {
         set
     }
 
-    fn engine_command_set(cmd: EngineDemand, authority: &PhaseAuthority) -> EngineCommandSet {
+    fn engine_command_set(
+        &mut self,
+        cmd: EngineDemand,
+        authority: &PhaseAuthority,
+        engine_allowed: bool,
+    ) -> EngineCommandSet {
         let mut set = EngineCommandSet {
             time: cmd.time,
             ..EngineCommandSet::default()
+        };
+        let zero = EngineCommand {
+            throttle_unit: 0.0,
+            gimbal_pitch_rad: 0.0,
+            gimbal_yaw_rad: 0.0,
+            ignite: false,
+            shutdown: true,
+            ..EngineCommand::default()
         };
         for id in &authority.engines {
             let index = usize::from(set.count);
@@ -316,14 +331,50 @@ impl Mixer {
             }
             set.commands[index] = EngineCommand {
                 engine_id: id.value(),
-                throttle_unit: cmd.throttle_unit,
-                gimbal_pitch_rad: cmd.gimbal_pitch_rad,
-                gimbal_yaw_rad: cmd.gimbal_yaw_rad,
-                ignite: cmd.ignite,
-                shutdown: cmd.shutdown,
+                throttle_unit: if engine_allowed {
+                    cmd.throttle_unit
+                } else {
+                    zero.throttle_unit
+                },
+                gimbal_pitch_rad: if engine_allowed {
+                    cmd.gimbal_pitch_rad
+                } else {
+                    zero.gimbal_pitch_rad
+                },
+                gimbal_yaw_rad: if engine_allowed {
+                    cmd.gimbal_yaw_rad
+                } else {
+                    zero.gimbal_yaw_rad
+                },
+                ignite: engine_allowed && cmd.ignite,
+                shutdown: if engine_allowed {
+                    cmd.shutdown
+                } else {
+                    zero.shutdown
+                },
             };
             set.count = set.count.saturating_add(1);
         }
+        for id in &self.last_commanded_engines {
+            if authority.engines.contains(id) {
+                continue;
+            }
+            let index = usize::from(set.count);
+            if index >= MAX_ENGINE_COMMANDS {
+                break;
+            }
+            set.commands[index] = EngineCommand {
+                engine_id: id.value(),
+                ..zero
+            };
+            set.count = set.count.saturating_add(1);
+        }
+        self.last_commanded_engines = set
+            .commands
+            .iter()
+            .take(usize::from(set.count))
+            .map(|command| EngineId::new(command.engine_id))
+            .collect();
         set
     }
 }
@@ -343,7 +394,7 @@ impl Job for Mixer {
         let status = ctx.bus.latest::<VehicleStatus>()?.map(|(s, _)| s);
         let armed_in_flight = matches!(status, Some(s) if s.armed && s.in_flight);
         let phase_id = status.as_ref().map_or(0, |s| s.phase_id);
-        let authority = self.authority.lookup(phase_id);
+        let authority = self.authority.lookup(phase_id).clone();
         let actuator_allowed = armed_in_flight && authority.autopilot_allowed;
         let engine_allowed = armed_in_flight && authority.engines_allowed;
 
@@ -352,9 +403,9 @@ impl Job for Mixer {
         {
             self.last_seen_actuator = seq.value();
             let gated = if actuator_allowed {
-                self.gate_actuator_command(cmd, true, authority)
+                self.gate_actuator_command(cmd, true, &authority)
             } else {
-                self.gate_actuator_command(cmd, false, authority)
+                self.gate_actuator_command(cmd, false, &authority)
             };
             if let Ok(new_seq) = ctx.bus.publish(gated) {
                 self.last_seen_actuator = new_seq.value();
@@ -367,7 +418,7 @@ impl Job for Mixer {
                 };
                 let _ = ctx
                     .bus
-                    .publish(self.effector_command_set(effector_source, authority));
+                    .publish(self.effector_command_set(effector_source, &authority));
             }
         }
 
@@ -384,15 +435,14 @@ impl Job for Mixer {
                     gimbal_pitch_rad: 0.0,
                     gimbal_yaw_rad: 0.0,
                     ignite: false,
-                    shutdown: cmd.shutdown,
+                    shutdown: true,
                 }
             };
             if let Ok(new_seq) = ctx.bus.publish(gated) {
                 self.last_seen_engine = new_seq.value();
             }
-            if !authority.engines.is_empty() {
-                let _ = ctx.bus.publish(Self::engine_command_set(gated, authority));
-            }
+            let engine_set = self.engine_command_set(gated, &authority, engine_allowed);
+            let _ = ctx.bus.publish(engine_set);
         }
 
         Ok(())
@@ -510,6 +560,88 @@ mod tests {
 
         let (latest, _) = bus.latest::<ActuatorCommand>().unwrap().unwrap();
         assert!((latest.elevator_rad - 0.4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn phase_disallowed_shutdowns_stale_engine_commands() {
+        let bus = build_bus();
+        let clock = SimulatedClock::new();
+        let engine = EngineId::from_path("vehicle.assembly.engines.main");
+        let mut allowed = BTreeMap::new();
+        allowed.insert(
+            1,
+            PhaseAuthority {
+                effectors: Vec::new(),
+                engines: vec![engine],
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+        allowed.insert(
+            2,
+            PhaseAuthority {
+                effectors: Vec::new(),
+                engines: Vec::new(),
+                autopilot_allowed: true,
+                engines_allowed: false,
+            },
+        );
+        let mut mixer = Mixer::new().with_authority(PhaseAuthorityTable {
+            allowed,
+            default: PhaseAuthority::default(),
+        });
+
+        publish_status(&bus, true, true, 1);
+        bus.publish(EngineDemand {
+            time: SimTime::ZERO,
+            throttle_unit: 1.0,
+            gimbal_pitch_rad: 0.1,
+            gimbal_yaw_rad: -0.1,
+            ignite: true,
+            shutdown: false,
+        })
+        .unwrap();
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (burning, _) = bus.latest::<EngineCommandSet>().unwrap().unwrap();
+        assert_eq!(burning.count, 1);
+        assert_eq!(burning.commands[0].engine_id, engine.value());
+        assert_eq!(burning.commands[0].throttle_unit, 1.0);
+        assert!(burning.commands[0].ignite);
+        assert!(!burning.commands[0].shutdown);
+
+        publish_status(&bus, true, true, 2);
+        bus.publish(EngineDemand {
+            time: SimTime::from_seconds(0.02),
+            throttle_unit: 1.0,
+            gimbal_pitch_rad: 0.1,
+            gimbal_yaw_rad: -0.1,
+            ignite: true,
+            shutdown: false,
+        })
+        .unwrap();
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (gated, _) = bus.latest::<EngineDemand>().unwrap().unwrap();
+        assert_eq!(gated.throttle_unit, 0.0);
+        assert!(!gated.ignite);
+        assert!(gated.shutdown);
+
+        let (shutdown, _) = bus.latest::<EngineCommandSet>().unwrap().unwrap();
+        assert_eq!(shutdown.count, 1);
+        assert_eq!(shutdown.commands[0].engine_id, engine.value());
+        assert_eq!(shutdown.commands[0].throttle_unit, 0.0);
+        assert!(!shutdown.commands[0].ignite);
+        assert!(shutdown.commands[0].shutdown);
     }
 
     #[test]
