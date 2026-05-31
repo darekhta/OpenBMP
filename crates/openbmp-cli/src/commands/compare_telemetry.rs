@@ -339,6 +339,39 @@ enum ActualSpec {
         #[serde(default = "default_earth_rotation_rad_s")]
         omega_rad_s: f64,
     },
+    SurfaceRelativeLocalAxisVelocity {
+        #[serde(default = "default_position_x")]
+        position_x: String,
+        #[serde(default = "default_position_y")]
+        position_y: String,
+        #[serde(default = "default_position_z")]
+        position_z: String,
+        #[serde(default = "default_velocity_x")]
+        velocity_x: String,
+        #[serde(default = "default_velocity_y")]
+        velocity_y: String,
+        #[serde(default = "default_velocity_z")]
+        velocity_z: String,
+        axis_eci: [f64; 3],
+        #[serde(default = "default_earth_rotation_rad_s")]
+        omega_rad_s: f64,
+    },
+    SurfaceRelativeHorizontalSpeed {
+        #[serde(default = "default_position_x")]
+        position_x: String,
+        #[serde(default = "default_position_y")]
+        position_y: String,
+        #[serde(default = "default_position_z")]
+        position_z: String,
+        #[serde(default = "default_velocity_x")]
+        velocity_x: String,
+        #[serde(default = "default_velocity_y")]
+        velocity_y: String,
+        #[serde(default = "default_velocity_z")]
+        velocity_z: String,
+        #[serde(default = "default_earth_rotation_rad_s")]
+        omega_rad_s: f64,
+    },
     SurfaceRelativeRadialVelocity {
         #[serde(default = "default_position_x")]
         position_x: String,
@@ -882,6 +915,126 @@ fn actual_value(
                     + rel_v[1] * axis_eci[1] / axis_norm
                     + rel_v[2] * axis_eci[2] / axis_norm,
             ))
+        }
+        ActualSpec::SurfaceRelativeLocalAxisVelocity {
+            position_x,
+            position_y,
+            position_z,
+            velocity_x,
+            velocity_y,
+            velocity_z,
+            axis_eci,
+            omega_rad_s,
+        } => {
+            let Some((position, rel_v)) = surface_relative_state(
+                row,
+                lookup,
+                mapping_path,
+                position_x,
+                position_y,
+                position_z,
+                velocity_x,
+                velocity_y,
+                velocity_z,
+                *omega_rad_s,
+            )?
+            else {
+                return Ok(None);
+            };
+            let axis_norm = (axis_eci[0].mul_add(axis_eci[0], axis_eci[1] * axis_eci[1])
+                + axis_eci[2] * axis_eci[2])
+                .sqrt();
+            if !axis_norm.is_finite() || axis_norm <= 0.0 {
+                return Err(config_error(
+                    mapping_path,
+                    "surface_relative_local_axis_velocity.axis_eci must be finite and non-zero",
+                ));
+            }
+            let radius = (position[0].mul_add(position[0], position[1] * position[1])
+                + position[2] * position[2])
+                .sqrt();
+            let local_axis = if radius > 1.0e6 {
+                let radial = [
+                    position[0] / radius,
+                    position[1] / radius,
+                    position[2] / radius,
+                ];
+                let axis_unit = [
+                    axis_eci[0] / axis_norm,
+                    axis_eci[1] / axis_norm,
+                    axis_eci[2] / axis_norm,
+                ];
+                let radial_component =
+                    axis_unit[0] * radial[0] + axis_unit[1] * radial[1] + axis_unit[2] * radial[2];
+                let projected = [
+                    axis_unit[0] - radial_component * radial[0],
+                    axis_unit[1] - radial_component * radial[1],
+                    axis_unit[2] - radial_component * radial[2],
+                ];
+                let projected_norm = (projected[0]
+                    .mul_add(projected[0], projected[1] * projected[1])
+                    + projected[2] * projected[2])
+                    .sqrt();
+                if !projected_norm.is_finite() || projected_norm <= 0.0 {
+                    return Err(config_error(
+                        mapping_path,
+                        "surface_relative_local_axis_velocity.axis_eci must not be parallel to the local radial direction",
+                    ));
+                }
+                [
+                    projected[0] / projected_norm,
+                    projected[1] / projected_norm,
+                    projected[2] / projected_norm,
+                ]
+            } else {
+                [
+                    axis_eci[0] / axis_norm,
+                    axis_eci[1] / axis_norm,
+                    axis_eci[2] / axis_norm,
+                ]
+            };
+            Ok(Some(
+                rel_v[0] * local_axis[0] + rel_v[1] * local_axis[1] + rel_v[2] * local_axis[2],
+            ))
+        }
+        ActualSpec::SurfaceRelativeHorizontalSpeed {
+            position_x,
+            position_y,
+            position_z,
+            velocity_x,
+            velocity_y,
+            velocity_z,
+            omega_rad_s,
+        } => {
+            let Some((position, rel_v)) = surface_relative_state(
+                row,
+                lookup,
+                mapping_path,
+                position_x,
+                position_y,
+                position_z,
+                velocity_x,
+                velocity_y,
+                velocity_z,
+                *omega_rad_s,
+            )?
+            else {
+                return Ok(None);
+            };
+            let speed_sq = rel_v[0].mul_add(rel_v[0], rel_v[1] * rel_v[1]) + rel_v[2] * rel_v[2];
+            let radius = (position[0].mul_add(position[0], position[1] * position[1])
+                + position[2] * position[2])
+                .sqrt();
+            if radius > 1.0e6 {
+                let radial_v =
+                    (rel_v[0] * position[0] + rel_v[1] * position[1] + rel_v[2] * position[2])
+                        / radius;
+                Ok(Some((speed_sq - radial_v * radial_v).max(0.0).sqrt()))
+            } else {
+                Ok(Some(
+                    (rel_v[0].mul_add(rel_v[0], rel_v[1] * rel_v[1])).sqrt(),
+                ))
+            }
         }
         ActualSpec::SurfaceRelativeRadialVelocity {
             position_x,

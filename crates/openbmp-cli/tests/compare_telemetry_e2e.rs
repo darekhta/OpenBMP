@@ -79,6 +79,18 @@ id = "surface_relative_axis_velocity"
 reference_column = "downrange_velocity_m_s"
 tolerance_abs = 1e-9
 actual = { kind = "surface_relative_axis_velocity", axis_eci = [0.0, 1.0, 0.0], omega_rad_s = 0.0 }
+
+[[metrics]]
+id = "surface_relative_local_axis_velocity"
+reference_column = "downrange_velocity_m_s"
+tolerance_abs = 1e-9
+actual = { kind = "surface_relative_local_axis_velocity", axis_eci = [0.0, 1.0, 0.0], omega_rad_s = 0.0 }
+
+[[metrics]]
+id = "surface_relative_horizontal_speed"
+reference_column = "downrange_velocity_m_s"
+tolerance_abs = 1e-9
+actual = { kind = "surface_relative_horizontal_speed", omega_rad_s = 0.0 }
 "#,
     )
     .expect("write mapping");
@@ -86,7 +98,7 @@ actual = { kind = "surface_relative_axis_velocity", axis_eci = [0.0, 1.0, 0.0], 
     let report = compare_telemetry::run(&scenario_path(), &csv, &mapping).expect("compare");
     assert!(report.passed(), "{report:#?}");
     assert_eq!(report.reference_rows, 3);
-    assert_eq!(report.metrics.len(), 5);
+    assert_eq!(report.metrics.len(), 7);
     assert!(report.metrics.iter().all(|metric| metric.exceedances == 0));
 }
 
