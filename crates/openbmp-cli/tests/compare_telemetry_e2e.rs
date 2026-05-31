@@ -103,6 +103,8 @@ actual = { kind = "surface_relative_horizontal_speed", omega_rad_s = 0.0 }
 
     let value = serde_json::to_value(&report).expect("serialize report");
     assert_eq!(value["scenario_name"], "constant-acceleration-drop");
+    assert_eq!(value["passed"], true);
+    assert!(value["failure_summary"].is_null());
     assert_eq!(value["metrics"][0]["id"], "altitude");
     assert!(value["metrics"][0]["max_abs_error_reference"].is_number());
     assert!(value["metrics"][0]["max_abs_error_actual"].is_number());
@@ -245,6 +247,14 @@ actual = { kind = "altitude_from_position", radius_m = 0.0 }
     assert_eq!(report.metrics[0].compared_samples, 1);
     assert_eq!(report.metrics[0].exceedances, 1);
     assert!(report.failure_summary().contains("exceeded tolerance"));
+
+    let value = serde_json::to_value(&report).expect("serialize failing report");
+    assert_eq!(value["passed"], false);
+    assert!(
+        value["failure_summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("exceeded tolerance"))
+    );
 }
 
 #[test]

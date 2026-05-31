@@ -18,7 +18,8 @@ use openbmp_core::ChannelId;
 use openbmp_runner as runner;
 use openbmp_scenario::Scenario;
 use openbmp_telemetry::{TelemetryRow, TelemetryTable, TelemetryValue};
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::error::CliError;
 
@@ -27,7 +28,7 @@ const DEFAULT_RELATIVE_FLOOR: f64 = 1.0;
 const WGS84_EARTH_ROTATION_RAD_S: f64 = 7.292_115_146_7e-5;
 
 /// Top-level report from an external telemetry comparison.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct CompareReport {
     /// Scenario name that was run.
     pub scenario_name: String,
@@ -39,6 +40,24 @@ pub struct CompareReport {
     pub stop_label: String,
     /// Per-metric comparison reports.
     pub metrics: Vec<MetricReport>,
+}
+
+impl Serialize for CompareReport {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("CompareReport", 7)?;
+        state.serialize_field("scenario_name", &self.scenario_name)?;
+        state.serialize_field("reference_rows", &self.reference_rows)?;
+        state.serialize_field("final_time_s", &self.final_time_s)?;
+        state.serialize_field("stop_label", &self.stop_label)?;
+        state.serialize_field("metrics", &self.metrics)?;
+        state.serialize_field("passed", &self.passed())?;
+        let failure_summary = (!self.passed()).then(|| self.failure_summary());
+        state.serialize_field("failure_summary", &failure_summary)?;
+        state.end()
+    }
 }
 
 impl CompareReport {

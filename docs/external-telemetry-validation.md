@@ -24,8 +24,9 @@ The reference file is read locally. OpenBMP does not copy it, hash it into
 scenario provenance, or write it to a project output directory. The mapping
 file may live outside the repository alongside the reference data. The
 optional `--report-json` output is a local machine-readable comparison
-summary for batch diagnostics, and is written before the command returns a
-failed comparison status. JSON
+summary for batch diagnostics, including `passed`, `failure_summary`, and
+per-metric error fields. It is written before the command returns a failed
+comparison status. JSON
 references may be an object of column arrays:
 
 ```json
