@@ -55,6 +55,7 @@ pub mod lqr;
 pub mod mixer;
 #[cfg(feature = "mpc")]
 pub mod mpc;
+mod nav_metrics;
 pub mod params;
 pub mod replay;
 pub mod scheduler;

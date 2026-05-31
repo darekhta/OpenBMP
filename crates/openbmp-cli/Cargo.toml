@@ -27,11 +27,15 @@ mpc         = ["openbmp-runner/mpc"]
 [dependencies]
 arrow              = { workspace = true }
 clap               = { workspace = true }
+csv                = { workspace = true }
+openbmp-core       = { workspace = true }
 openbmp-runner     = { workspace = true }
 openbmp-scenario   = { workspace = true }
 openbmp-telemetry  = { workspace = true }
 parquet            = { workspace = true }
+serde              = { workspace = true }
 thiserror          = { workspace = true }
+toml               = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 

@@ -13,12 +13,13 @@ OpenBMP — Open Body Motion Platform CLI
 Usage: openbmp [OPTIONS] <COMMAND>
 
 Commands:
-  run               Run a scenario through the kernel and write telemetry
-  diff              Compare two telemetry archives byte-for-byte
-  check             Lint a scenario without running it
-  footprint-mc      Run offline landing-footprint Monte Carlo post-processing
-  check-provenance  Walk a data tree and verify provenance records
-  help              Print this message or the help of the given subcommand(s)
+  run                Run a scenario through the kernel and write telemetry
+  diff               Compare two telemetry archives byte-for-byte
+  check              Lint a scenario without running it
+  compare-telemetry  Compare a scenario run against an external local telemetry CSV
+  footprint-mc       Run offline landing-footprint Monte Carlo post-processing
+  check-provenance   Walk a data tree and verify provenance records
+  help               Print this message or the help of the given subcommand(s)
 
 Options:
   -t, --trace...  Increase tracing verbosity. May be passed multiple times (`-t`, `-tt`, `-ttt` ⇒

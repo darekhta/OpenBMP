@@ -51,6 +51,18 @@ pub enum Command {
         /// Scenario TOML file.
         scenario: PathBuf,
     },
+    /// Compare a scenario run against an external local telemetry CSV.
+    CompareTelemetry {
+        /// Scenario TOML file.
+        scenario: PathBuf,
+        /// External reference CSV. The file is read locally and is not
+        /// copied into OpenBMP.
+        reference_csv: PathBuf,
+        /// TOML mapping from reference CSV columns to OpenBMP telemetry
+        /// observables and tolerances.
+        #[arg(long = "mapping")]
+        mapping: PathBuf,
+    },
     /// Run offline landing-footprint Monte Carlo post-processing.
     FootprintMc {
         /// Scenario TOML file.

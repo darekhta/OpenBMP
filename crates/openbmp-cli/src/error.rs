@@ -39,6 +39,29 @@ pub enum CliError {
         /// Short, human-readable divergence description.
         summary: String,
     },
+    /// A telemetry comparison exceeded its declared envelope.
+    #[error("telemetry comparison: {summary}")]
+    TelemetryCompare {
+        /// Short, human-readable comparison failure summary.
+        summary: String,
+    },
+    /// A telemetry comparison mapping is malformed.
+    #[error("telemetry comparison config error: {path}: {summary}")]
+    TelemetryCompareConfig {
+        /// Offending mapping path.
+        path: PathBuf,
+        /// Short, human-readable configuration error.
+        summary: String,
+    },
+    /// CSV parsing failed.
+    #[error("csv error: {path}")]
+    Csv {
+        /// Offending CSV path.
+        path: PathBuf,
+        /// Source CSV error.
+        #[source]
+        source: csv::Error,
+    },
     /// A Parquet read failed.
     #[error("parquet read error")]
     Parquet(#[from] parquet::errors::ParquetError),
@@ -57,10 +80,10 @@ impl CliError {
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         match self {
-            Self::Diff { .. } => 1,
-            Self::Scenario(_) => 2,
+            Self::Diff { .. } | Self::TelemetryCompare { .. } => 1,
+            Self::Scenario(_) | Self::TelemetryCompareConfig { .. } => 2,
             Self::Run(err) => err.exit_code(),
-            Self::Io { .. } => 3,
+            Self::Io { .. } | Self::Csv { .. } => 3,
             Self::Telemetry(_) | Self::Parquet(_) | Self::Arrow(_) => 4,
         }
     }

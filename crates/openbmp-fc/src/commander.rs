@@ -22,6 +22,7 @@ use openbmp_mission::{
 
 use crate::bus::Bus;
 use crate::error::{CommanderError, ControllerError};
+use crate::nav_metrics;
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{
@@ -157,56 +158,20 @@ impl Commander {
             .map(|(p, _)| p);
         let _imu = bus.latest::<ImuSample>().ok().flatten().map(|(s, _)| s);
         let _gnss = bus.latest::<GnssSample>().ok().flatten().map(|(s, _)| s);
-        let baro = bus
+        let _baro = bus
             .latest::<BarometerSample>()
             .ok()
             .flatten()
             .map(|(s, _)| s);
 
-        // Altitude and vertical climb rate for the altitude / apogee /
-        // ascent / descent detectors. For a geocentric configuration
-        // (position well beyond a flat-earth / local-frame launch radius)
-        // "up" is radial: altitude is the geocentric height `|r| - R⊕` and
-        // the climb rate is the radial projection `v · r̂`. The raw ECI +z
-        // component would be wrong once the trajectory curves away from the
-        // launch meridian (e.g. an equatorial launch stays near z = 0, so a
-        // z-altitude reads ~0 the whole ascent and a z-climb-rate crosses
-        // zero long before the true radial apogee). For a near-origin launch
-        // the +z component is the vertical (legacy behaviour). Threshold and
-        // mean radius match the kernel's `vertical_climb_rate` and the
-        // runner / aero geocentric altitude.
-        const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
-        const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
-        let altitude_m = pos.map_or(0.0, |p| {
-            let r = p.position_eci_m;
-            let rn = r.norm();
-            if rn > GEOCENTRIC_RADIUS_THRESHOLD_M {
-                (rn - EARTH_MEAN_RADIUS_M).max(0.0)
-            } else {
-                r.z
-            }
-        });
+        let altitude_m = pos.map_or(0.0, |p| nav_metrics::altitude_m(p.position_eci_m));
         let vertical_velocity_m_s = pos.map_or(0.0, |p| {
-            let r = p.position_eci_m;
-            let rn = r.norm();
-            if rn > GEOCENTRIC_RADIUS_THRESHOLD_M {
-                p.velocity_eci_m_s.dot(&r) / rn
-            } else {
-                p.velocity_eci_m_s.z
-            }
+            nav_metrics::vertical_velocity_m_s(p.position_eci_m, p.velocity_eci_m_s)
         });
         let velocity_m_s = pos.map_or(0.0, |p| p.velocity_eci_m_s.norm());
-        // Academic approximation: q = ½ · ρ_SL · |v|². The proper
-        // computation uses relative airspeed and the local atmospheric
-        // density. We delegate the closed form and the sea-level
-        // density constant to openbmp-physics so the formula isn't
-        // reinvented per consumer.
-        let dynamic_pressure_pa = baro.map_or(0.0, |_| {
-            openbmp_physics::atmosphere::dynamic_pressure_pa(
-                openbmp_physics::atmosphere::USSA76_SEA_LEVEL_DENSITY_KG_M3,
-                velocity_m_s,
-            )
-        });
+        let dynamic_pressure_pa = pos
+            .as_ref()
+            .map_or(0.0, nav_metrics::dynamic_pressure_air_relative);
         let mass_fraction = 1.0; // not currently estimated by the controller.
         let guidance_time_to_go_s = bus
             .latest::<GuidanceCutoff>()
@@ -813,6 +778,45 @@ mod tests {
             .unwrap();
 
         assert_eq!(commander.current_phase(), ascent);
+    }
+
+    #[test]
+    fn eval_state_dynamic_pressure_uses_air_relative_velocity() {
+        let (graph, bindings, pad) = build_graph();
+        let commander = commander_from_graph(graph, bindings, pad);
+        let bus = fresh_bus();
+        let surface_radius_m = 6_371_000.0;
+        let omega = openbmp_physics::frames::WGS84_OMEGA_RAD_S;
+
+        bus.publish(PositionEstimate {
+            time: SimTime::ZERO,
+            position_eci_m: nalgebra::Vector3::new(surface_radius_m, 0.0, 0.0),
+            velocity_eci_m_s: nalgebra::Vector3::new(0.0, omega * surface_radius_m, 0.0),
+            accel_bias_body_m_s2: nalgebra::Vector3::zeros(),
+        })
+        .unwrap();
+
+        let corotating = commander.build_eval_state(&bus);
+        assert!(
+            corotating.current.dynamic_pressure_pa < 1.0,
+            "surface-corotating vehicle should not see inertial-speed q: {}",
+            corotating.current.dynamic_pressure_pa
+        );
+
+        bus.publish(PositionEstimate {
+            time: SimTime::ZERO,
+            position_eci_m: nalgebra::Vector3::new(surface_radius_m, 0.0, 0.0),
+            velocity_eci_m_s: nalgebra::Vector3::new(0.0, omega * surface_radius_m + 300.0, 0.0),
+            accel_bias_body_m_s2: nalgebra::Vector3::zeros(),
+        })
+        .unwrap();
+
+        let flying = commander.build_eval_state(&bus);
+        assert!(
+            flying.current.dynamic_pressure_pa > 50_000.0,
+            "300 m/s air-relative speed at sea level should produce real q: {}",
+            flying.current.dynamic_pressure_pa
+        );
     }
 
     #[test]

@@ -67,8 +67,8 @@ use uom::si::mass::kilogram;
 use crate::RunOutcome;
 use crate::assembly::dry_mass_kg_at;
 use crate::atmosphere::{
-    RuntimeAtmosphere, RuntimeEnvironment, build_document_runtime_atmosphere,
-    is_runtime_atmosphere_kind, scenario_atmosphere_kind,
+    RuntimeAtmosphere, RuntimeEnvironment, atmosphere_altitude_m,
+    build_document_runtime_atmosphere, is_runtime_atmosphere_kind, scenario_atmosphere_kind,
 };
 use crate::error::RunnerError;
 use crate::integrator::build_runtime_integrator;
@@ -1381,13 +1381,11 @@ where
     row.insert(&channels.velocity_z, state.velocity.vector.z)?;
     row.insert(&channels.mass, state.mass.get::<kilogram>())?;
 
-    // Atmosphere sample at the post-step state. The runner uses ECI
-    // +z as the altitude proxy, matching the DeckDragForceAdapter
-    // convention. Sub-zero altitudes are clamped to 0 m so the
-    // atmosphere model does not reject post-apogee descent past
-    // ground.
+    // Atmosphere sample at the post-step state. Match the runtime
+    // environment's frame-aware altitude conversion so ECI launches
+    // do not report sea-level telemetry density at orbital radius.
     if let Some(atmosphere) = breakdown_atmosphere {
-        let altitude_m = state.position.vector.z.max(0.0);
+        let altitude_m = atmosphere_altitude_m(state.position.vector);
         let sample = atmosphere.sample(altitude_m, state.time)?;
         if let (Some(d), Some(p), Some(t), Some(s)) = (
             &channels.atmosphere_density,

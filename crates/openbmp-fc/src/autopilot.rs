@@ -22,6 +22,7 @@ use openbmp_physics::kinematics::quaternion_error_small_angle;
 
 use crate::error::{AutopilotError, ControllerError};
 use crate::filters::Biquad;
+use crate::nav_metrics::dynamic_pressure_air_relative;
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::tables::Table;
@@ -935,35 +936,6 @@ fn reference_yaw_rad(q_body_to_eci_xyzw: [f64; 4]) -> f64 {
     yaw
 }
 
-/// Real dynamic pressure (Pa) from a navigation estimate, for closed-loop
-/// max-Q load relief: actual atmospheric density at the navigated
-/// geocentric altitude × ½ × the squared AIR-RELATIVE speed (inertial
-/// velocity minus the co-rotating atmosphere Ω×r). This is the true q the
-/// structure feels — unlike a sea-level-density |v_eci|² proxy, which on a
-/// rotating frame is dominated by the ~465 m/s co-rotation at lift-off.
-/// Density above the USSA76 ceiling is zero (no load up there).
-fn dynamic_pressure_air_relative(position: &PositionEstimate) -> f64 {
-    use openbmp_physics::AtmosphereModel;
-    const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
-    const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
-    let r = position.position_eci_m;
-    let rn = r.norm();
-    let altitude_m = if rn > GEOCENTRIC_RADIUS_THRESHOLD_M {
-        (rn - EARTH_MEAN_RADIUS_M).max(0.0)
-    } else {
-        r.z.max(0.0)
-    };
-    // Air-relative velocity: subtract the co-rotating atmosphere Ω×r
-    // (Ω about ECI +z), so a vehicle co-rotating with the surface has
-    // ~zero airspeed at lift-off.
-    let omega = openbmp_physics::frames::WGS84_OMEGA_RAD_S;
-    let v_air = position.velocity_eci_m_s - nalgebra::Vector3::new(-omega * r.y, omega * r.x, 0.0);
-    let rho = openbmp_physics::UsStandard1976::new()
-        .sample(altitude_m, openbmp_core::SimTime::ZERO)
-        .map_or(0.0, |s| s.density_kg_m3);
-    0.5 * rho * v_air.norm_squared()
-}
-
 /// Default academic gain schedule — every phase falls through to the
 /// default gains. The runner overrides these via the table registry.
 #[must_use]
@@ -1033,7 +1005,7 @@ mod tests {
 
     #[test]
     fn dynamic_pressure_air_relative_zero_corotating_positive_in_airflow() {
-        use super::dynamic_pressure_air_relative;
+        use crate::nav_metrics::dynamic_pressure_air_relative;
         use crate::topics::PositionEstimate;
         let omega = openbmp_physics::frames::WGS84_OMEGA_RAD_S;
         let r = 6_371_000.0;

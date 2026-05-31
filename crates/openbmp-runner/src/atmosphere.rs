@@ -225,7 +225,7 @@ pub(crate) fn build_document_runtime_gravity(
 /// by `openbmp-sim`'s `vertical_climb_rate` and the FC commander, so a
 /// geocentric launch (e.g. an equatorial ascent that stays near `z=0`)
 /// no longer reads sea-level density all the way to orbit.
-fn atmosphere_altitude_m(position_eci_m: Vector3<f64>) -> f64 {
+pub(crate) fn atmosphere_altitude_m(position_eci_m: Vector3<f64>) -> f64 {
     const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
     const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
     let rn = position_eci_m.norm();

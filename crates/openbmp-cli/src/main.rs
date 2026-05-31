@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use openbmp_cli::cli::{Cli, Command};
-use openbmp_cli::commands::{check, diff, footprint_mc, provenance, run};
+use openbmp_cli::commands::{check, compare_telemetry, diff, footprint_mc, provenance, run};
 use openbmp_cli::tracing;
 
 fn main() -> ExitCode {
@@ -93,6 +93,43 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                 );
             }
             Ok(())
+        }
+        Command::CompareTelemetry {
+            scenario,
+            reference_csv,
+            mapping,
+        } => {
+            let report = compare_telemetry::run(&scenario, &reference_csv, &mapping)?;
+            println!(
+                "openbmp compare-telemetry: {} — {} metrics, {} reference rows, stop = {} at t = {:.6} s",
+                if report.passed() { "ok" } else { "FAILED" },
+                report.metrics.len(),
+                report.reference_rows,
+                report.stop_label,
+                report.final_time_s,
+            );
+            for metric in &report.metrics {
+                let max_error_at = metric
+                    .max_abs_error_time_s
+                    .map_or_else(|| "n/a".to_owned(), |time_s| format!("{time_s:.3} s"));
+                println!(
+                    "  {}: compared={}, skipped={}, max_abs_error={:.6e} at {}, rms_abs_error={:.6e}, exceedances={}",
+                    metric.id,
+                    metric.compared_samples,
+                    metric.skipped_samples,
+                    metric.max_abs_error,
+                    max_error_at,
+                    metric.rms_abs_error,
+                    metric.exceedances,
+                );
+            }
+            if report.passed() {
+                Ok(())
+            } else {
+                Err(openbmp_cli::CliError::TelemetryCompare {
+                    summary: report.failure_summary(),
+                })
+            }
         }
         Command::FootprintMc { scenario } => {
             let report = footprint_mc::run(&scenario)?;

@@ -35,6 +35,9 @@ and the architecture; reach for the others as needed.
 - [Data Provenance](data-provenance.md) — required source records, source
   classes, transformation rules, machine checks, and the inline-data
   tripwires that fail the build on benchmark-data smuggling.
+- [External Telemetry Validation](external-telemetry-validation.md) —
+  quarantined comparison against local user-supplied CSV telemetry, without
+  importing recovered flight data or fitted parameters into the repository.
 - [Supply Chain](supply-chain.md) — Rust dependency policy, release SBOM,
   dependency checks, and build-provenance expectations.
 - [Modeling Guide](modeling-guide.md) — the model-author contract:

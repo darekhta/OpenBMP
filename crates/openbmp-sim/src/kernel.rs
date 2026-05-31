@@ -75,14 +75,36 @@ fn vertical_climb_rate(
 /// the whole ascent — would report ~0 m altitude all the way to orbit, so
 /// `at_altitude` triggers (e.g. a max-Q throttle bucket) would never fire.
 fn geometric_altitude_m(position_eci: &nalgebra::Vector3<f64>) -> f64 {
-    const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
+    geometric_altitude_unclamped_m(position_eci).max(0.0)
+}
+
+fn geometric_altitude_unclamped_m(position_eci: &nalgebra::Vector3<f64>) -> f64 {
     const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
     let r = position_eci.norm();
-    if r > GEOCENTRIC_RADIUS_THRESHOLD_M {
-        (r - EARTH_MEAN_RADIUS_M).max(0.0)
+    if is_geocentric_position(position_eci) {
+        r - EARTH_MEAN_RADIUS_M
     } else {
         position_eci.z
     }
+}
+
+fn is_geocentric_position(position_eci: &nalgebra::Vector3<f64>) -> bool {
+    const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
+    position_eci.norm() > GEOCENTRIC_RADIUS_THRESHOLD_M
+}
+
+fn separated_rigid_body_has_impacted_ground(state: &openbmp_state::RigidBodyState) -> bool {
+    is_geocentric_position(&state.position.vector)
+        && geometric_altitude_unclamped_m(&state.position.vector) <= 0.0
+        && vertical_climb_rate(&state.position.vector, &state.velocity.vector) < 0.0
+}
+
+fn separated_rigid_body_crossed_ground(
+    previous: &openbmp_state::RigidBodyState,
+    current: &openbmp_state::RigidBodyState,
+) -> bool {
+    geometric_altitude_unclamped_m(&previous.position.vector) > 0.0
+        && separated_rigid_body_has_impacted_ground(current)
 }
 
 const EVENT_SCALARS_MODEL_ID: ModelId = ModelId::new(0);
@@ -180,6 +202,10 @@ pub struct SeparatedRigidBody {
     pub body: BodyId,
     /// Current propagated body state.
     pub state: openbmp_state::RigidBodyState,
+    /// Whether this lane is still integrated. A separated body that
+    /// impacts geocentric ground is retained for telemetry and
+    /// relative-state diagnostics, but no longer advances.
+    pub propagating: bool,
     /// Kernel step at which the split was applied.
     pub separated_at_step: StepIndex,
     /// Simulation time at which the split was applied.
@@ -606,7 +632,7 @@ where
                     guidance_time_to_go_s: f64::INFINITY,
                     dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
                         previous_env.atmosphere_density_kg_m3,
-                        self.state.velocity.vector,
+                        previous_env.air_relative_velocity_eci_m_s(self.state.velocity.vector),
                     )?,
                 });
                 if self.previous_event_relative_distances_m.is_none() {
@@ -632,7 +658,7 @@ where
                 guidance_time_to_go_s: f64::INFINITY,
                 dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
                     event_env.atmosphere_density_kg_m3,
-                    new_state.velocity.vector,
+                    event_env.air_relative_velocity_eci_m_s(new_state.velocity.vector),
                 )?,
             };
             self.evaluate_events(
@@ -1531,6 +1557,17 @@ where
         let new_state = raw_new.with_time(SimTime::from_seconds(canonical_time_s));
         let mut separated_updates = Vec::with_capacity(self.separated_rigid_bodies.len());
         for separated in &self.separated_rigid_bodies {
+            if !separated.propagating || separated_rigid_body_has_impacted_ground(&separated.state)
+            {
+                separated_updates.push(SeparatedRigidBody {
+                    state: separated
+                        .state
+                        .with_time(SimTime::from_seconds(canonical_time_s)),
+                    propagating: false,
+                    ..*separated
+                });
+                continue;
+            }
             let separated_body = Some(separated.body);
             let derive_separated = |s: &openbmp_state::RigidBodyState,
                                     t: SimTime|
@@ -1636,6 +1673,10 @@ where
             }
             separated_updates.push(SeparatedRigidBody {
                 state: separated_state,
+                propagating: !separated_rigid_body_crossed_ground(
+                    &separated.state,
+                    &separated_state,
+                ),
                 ..*separated
             });
         }
@@ -1661,7 +1702,7 @@ where
                         / self.initial_mass_kg,
                     dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
                         previous_env.atmosphere_density_kg_m3,
-                        self.state.velocity.vector,
+                        previous_env.air_relative_velocity_eci_m_s(self.state.velocity.vector),
                     )?,
                     guidance_time_to_go_s: f64::INFINITY,
                 });
@@ -1697,7 +1738,7 @@ where
                 guidance_time_to_go_s: f64::INFINITY,
                 dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
                     event_env.atmosphere_density_kg_m3,
-                    new_state.velocity.vector,
+                    event_env.air_relative_velocity_eci_m_s(new_state.velocity.vector),
                 )?,
             };
             let relative_distances_m = rigid_body_relative_distances_m(
@@ -1897,6 +1938,7 @@ where
             separated.push(SeparatedRigidBody {
                 body: lane.body,
                 state: lane.state,
+                propagating: true,
                 separated_at_step: self.step_index,
                 separated_at_time: self.state.time,
             });
@@ -2096,6 +2138,7 @@ where
             self.separated_rigid_bodies.push(SeparatedRigidBody {
                 body: separation.body,
                 state: stage_state,
+                propagating: true,
                 separated_at_step,
                 separated_at_time,
             });
@@ -2802,6 +2845,65 @@ mod tests {
     }
 
     #[test]
+    fn separated_rigid_body_impact_retires_lane_without_stopping_primary() {
+        let mass_props = unit_rigid_mass_properties();
+        let stack_body = BodyId::from_path("vehicle.assembly.bodies.upper");
+        let booster_body = BodyId::from_path("vehicle.assembly.bodies.booster");
+        let config = SimulationConfig {
+            initial_state: RigidBodyState::new(
+                SimTime::ZERO,
+                Position3::new(6_371_100.0, 0.0, 0.0),
+                Velocity3::zero(),
+                Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+                AngularVelocity3::zero(),
+                mass_props,
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ZeroForce,
+            mass_model: RigidModels::new(ZeroMoment, ConstantMassRigid::new(mass_props)),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(1.0),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new_rigid(config).expect("construct");
+
+        kernel
+            .jettison_rigid_body(RigidBodySeparation {
+                stack_body,
+                body: booster_body,
+                stack_mass_properties: mass_props,
+                stage_mass_properties: mass_props,
+                stack_delta_v_body_m_s: [0.0, 0.0, 0.0],
+                stage_delta_v_body_m_s: [0.0, 0.0, 0.0],
+                stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+                stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+                stage_attitude_offset_body_xyzw: [0.0, 0.0, 0.0, 1.0],
+            })
+            .expect("manual separation");
+        kernel.separated_rigid_bodies[0].state.position = Position3::new(6_371_001.0, 0.0, 0.0);
+        kernel.separated_rigid_bodies[0].state.velocity = Velocity3::new(-2.0, 0.0, 0.0);
+
+        kernel.step().expect("impact-crossing step");
+        assert!(
+            !kernel.separated_rigid_bodies()[0].propagating,
+            "impacted separated lane should be retained but retired"
+        );
+        let impacted_position = kernel.separated_rigid_bodies()[0].state.position.vector;
+
+        kernel
+            .step()
+            .expect("primary continues after separated impact");
+        assert_eq!(kernel.current_step().value(), 2);
+        assert_eq!(
+            kernel.separated_rigid_bodies()[0].state.position.vector,
+            impacted_position,
+            "retired separated lane should not keep integrating underground"
+        );
+        assert!(kernel.stop_reason().is_none());
+    }
+
+    #[test]
     fn always_continue_allows_manual_steps() {
         let config = SimulationConfig {
             initial_state: PointMassState::new(
@@ -2915,6 +3017,68 @@ mod tests {
             kernel.stop_reason(),
             Some(StopReason::MissionEnded { label, .. }) if label == "burnout"
         ));
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct FixedMovingAtmosphere {
+        density_kg_m3: f64,
+        atmosphere_velocity_eci_m_s: Vector3<f64>,
+    }
+
+    impl EnvironmentModel for FixedMovingAtmosphere {
+        fn sample(&self, _query: EnvironmentQuery) -> Result<EnvironmentSample, ModelEvalError> {
+            Ok(EnvironmentSample {
+                atmosphere_density_kg_m3: self.density_kg_m3,
+                atmosphere_velocity_eci_m_s: self.atmosphere_velocity_eci_m_s,
+                ..EnvironmentSample::default()
+            })
+        }
+    }
+
+    #[test]
+    fn at_dynamic_pressure_event_uses_air_relative_velocity() {
+        let event_id = crate::events::EventId::from_path("mission.events.max_q");
+        let events = vec![crate::events::EventBinding {
+            id: event_id,
+            trigger: crate::events::BuiltInEventTrigger::AtDynamicPressure {
+                pa: 1.0,
+                falling: false,
+            },
+            action: crate::events::MissionAction::Stop {
+                label: "max-q".to_owned(),
+            },
+            once: true,
+        }];
+        let velocity = Vector3::new(100.0, 0.0, 0.0);
+        let config = SimulationConfig {
+            initial_state: PointMassState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::new(velocity.x, velocity.y, velocity.z),
+                Mass::new::<kilogram>(1.0),
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ZeroForce,
+            mass_model: ConstantMass::new(1.0),
+            environment: FixedMovingAtmosphere {
+                density_kg_m3: 1.0,
+                atmosphere_velocity_eci_m_s: velocity,
+            },
+            stop_condition: EndTime::new(SimTime::from_seconds(1.0)),
+            dt: Duration::from_seconds(1.0),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new(config)
+            .expect("construct")
+            .with_mission_split(events, Vec::new(), None, None)
+            .expect("mission wiring");
+
+        let reason = kernel.run().expect("run");
+
+        assert!(
+            matches!(reason, StopReason::EndTime { .. }),
+            "co-moving atmosphere should not trigger q event from inertial speed: {reason:?}"
+        );
     }
 
     #[test]

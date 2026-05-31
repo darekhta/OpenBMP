@@ -13,6 +13,7 @@ use nalgebra::Vector3;
 use openbmp_physics::profile::{AscentReferenceGenerator, AscentState};
 
 use crate::error::{ControllerError, GuidanceError};
+use crate::nav_metrics;
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{GuidanceCutoff, ImuSample, PositionEstimate, ReferenceState, VehicleStatus};
@@ -267,13 +268,6 @@ impl Job for AscentReferenceGuidance {
             .flatten()
             .map_or(0.0, |(s, _)| s.accel_m_s2.norm());
         let speed = position.velocity_eci_m_s.norm();
-        let flight_path_angle_rad = if speed > 0.0 {
-            (position.velocity_eci_m_s.z / speed)
-                .clamp(-1.0, 1.0)
-                .asin()
-        } else {
-            0.0
-        };
         let state = AscentState {
             position_eci_m: [
                 position.position_eci_m.x,
@@ -285,10 +279,13 @@ impl Job for AscentReferenceGuidance {
                 position.velocity_eci_m_s.y,
                 position.velocity_eci_m_s.z,
             ],
-            altitude_m: position.position_eci_m.z,
+            altitude_m: nav_metrics::altitude_m(position.position_eci_m),
             inertial_speed_m_s: speed,
-            flight_path_angle_rad,
-            dynamic_pressure_pa: 0.0,
+            flight_path_angle_rad: nav_metrics::flight_path_angle_rad(
+                position.position_eci_m,
+                position.velocity_eci_m_s,
+            ),
+            dynamic_pressure_pa: nav_metrics::dynamic_pressure_air_relative(&position),
             mass_fraction: 1.0,
             thrust_accel_m_s2,
         };
@@ -322,12 +319,35 @@ impl Job for AscentReferenceGuidance {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use openbmp_core::{SimTime, StepIndex};
-    use openbmp_physics::profile::PitchProgramAscentReference;
+    use openbmp_physics::profile::{
+        AscentReference, AscentReferenceGenerator, AscentState, PitchProgramAscentReference,
+    };
 
     use super::*;
     use crate::bus::Bus;
     use crate::clock::SimulatedClock;
+
+    #[derive(Debug)]
+    struct RecordingReference {
+        state: Arc<Mutex<Option<AscentState>>>,
+    }
+
+    impl AscentReferenceGenerator for RecordingReference {
+        fn ascent_reference(
+            &self,
+            state: &AscentState,
+            _time: SimTime,
+        ) -> Result<AscentReference, openbmp_physics::PhysicsError> {
+            *self.state.lock().unwrap() = Some(*state);
+            Ok(AscentReference {
+                q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+                body_rate_rad_s: None,
+            })
+        }
+    }
 
     #[test]
     fn ascent_reference_guidance_publishes_pitch_program_reference() {
@@ -401,5 +421,48 @@ mod tests {
         .unwrap();
 
         assert!(bus.latest::<ReferenceState>().unwrap().is_none());
+    }
+
+    #[test]
+    fn ascent_state_uses_geocentric_altitude_and_flight_path_angle() {
+        let bus = Bus::new();
+        bus.register::<VehicleStatus>().unwrap();
+        bus.register::<PositionEstimate>().unwrap();
+        bus.register::<ReferenceState>().unwrap();
+        bus.register::<GuidanceCutoff>().unwrap();
+        bus.publish(VehicleStatus {
+            phase_id: 42,
+            armed: true,
+            in_flight: true,
+            safe_state_requested: false,
+        })
+        .unwrap();
+        bus.publish(PositionEstimate {
+            time: SimTime::from_seconds(5.0),
+            position_eci_m: Vector3::new(6_471_000.0, 0.0, 0.0),
+            velocity_eci_m_s: Vector3::new(100.0, 100.0, 0.0),
+            accel_bias_body_m_s2: Vector3::zeros(),
+        })
+        .unwrap();
+        let clock = SimulatedClock::at(SimTime::from_seconds(5.0), StepIndex::new(5));
+        let captured = Arc::new(Mutex::new(None));
+        let mut job = AscentReferenceGuidance::new(Box::new(RecordingReference {
+            state: Arc::clone(&captured),
+        }))
+        .with_active_phase_ids(vec![42]);
+
+        job.run(&JobContext {
+            bus: &bus,
+            clock: &clock,
+        })
+        .unwrap();
+
+        let state = captured
+            .lock()
+            .unwrap()
+            .expect("guidance should pass ascent state to generator");
+        assert!((state.altitude_m - 100_000.0).abs() < 1.0e-9);
+        let expected_gamma = (100.0_f64 / (100.0_f64.hypot(100.0))).asin();
+        assert!((state.flight_path_angle_rad - expected_gamma).abs() < 1.0e-12);
     }
 }
