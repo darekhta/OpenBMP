@@ -35,10 +35,10 @@ fn compare_telemetry_accepts_external_reference_csv() {
 
     fs::write(
         &csv,
-        "time_s,altitude_m,speed_m_s\n\
-         0.0,1000.0,0.0\n\
-         5.0,877.416875,49.03325\n\
-         10.0,509.6675,98.0665\n",
+        "time_s,altitude_m,speed_m_s,vertical_velocity_m_s,downrange_velocity_m_s\n\
+         0.0,1000.0,0.0,0.0,0.0\n\
+         5.0,877.416875,49.03325,-49.03325,0.0\n\
+         10.0,509.6675,98.0665,-98.0665,0.0\n",
     )
     .expect("write reference csv");
     fs::write(
@@ -67,6 +67,18 @@ id = "surface_relative_speed"
 reference_column = "speed_m_s"
 tolerance_abs = 1e-9
 actual = { kind = "surface_relative_speed", omega_rad_s = 0.0 }
+
+[[metrics]]
+id = "surface_relative_radial_velocity"
+reference_column = "vertical_velocity_m_s"
+tolerance_abs = 1e-9
+actual = { kind = "surface_relative_radial_velocity", omega_rad_s = 0.0 }
+
+[[metrics]]
+id = "surface_relative_axis_velocity"
+reference_column = "downrange_velocity_m_s"
+tolerance_abs = 1e-9
+actual = { kind = "surface_relative_axis_velocity", axis_eci = [0.0, 1.0, 0.0], omega_rad_s = 0.0 }
 "#,
     )
     .expect("write mapping");
@@ -74,7 +86,7 @@ actual = { kind = "surface_relative_speed", omega_rad_s = 0.0 }
     let report = compare_telemetry::run(&scenario_path(), &csv, &mapping).expect("compare");
     assert!(report.passed(), "{report:#?}");
     assert_eq!(report.reference_rows, 3);
-    assert_eq!(report.metrics.len(), 3);
+    assert_eq!(report.metrics.len(), 5);
     assert!(report.metrics.iter().all(|metric| metric.exceedances == 0));
 }
 

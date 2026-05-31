@@ -322,6 +322,39 @@ enum ActualSpec {
         #[serde(default = "default_earth_rotation_rad_s")]
         omega_rad_s: f64,
     },
+    SurfaceRelativeAxisVelocity {
+        #[serde(default = "default_position_x")]
+        position_x: String,
+        #[serde(default = "default_position_y")]
+        position_y: String,
+        #[serde(default = "default_position_z")]
+        position_z: String,
+        #[serde(default = "default_velocity_x")]
+        velocity_x: String,
+        #[serde(default = "default_velocity_y")]
+        velocity_y: String,
+        #[serde(default = "default_velocity_z")]
+        velocity_z: String,
+        axis_eci: [f64; 3],
+        #[serde(default = "default_earth_rotation_rad_s")]
+        omega_rad_s: f64,
+    },
+    SurfaceRelativeRadialVelocity {
+        #[serde(default = "default_position_x")]
+        position_x: String,
+        #[serde(default = "default_position_y")]
+        position_y: String,
+        #[serde(default = "default_position_z")]
+        position_z: String,
+        #[serde(default = "default_velocity_x")]
+        velocity_x: String,
+        #[serde(default = "default_velocity_y")]
+        velocity_y: String,
+        #[serde(default = "default_velocity_z")]
+        velocity_z: String,
+        #[serde(default = "default_earth_rotation_rad_s")]
+        omega_rad_s: f64,
+    },
     Norm3 {
         x: String,
         y: String,
@@ -669,7 +702,126 @@ fn actual_value(
                 (rel_vx.mul_add(rel_vx, rel_vy * rel_vy) + vz * vz).sqrt(),
             ))
         }
+        ActualSpec::SurfaceRelativeAxisVelocity {
+            position_x,
+            position_y,
+            position_z,
+            velocity_x,
+            velocity_y,
+            velocity_z,
+            axis_eci,
+            omega_rad_s,
+        } => {
+            let Some((_, rel_v)) = surface_relative_state(
+                row,
+                lookup,
+                mapping_path,
+                position_x,
+                position_y,
+                position_z,
+                velocity_x,
+                velocity_y,
+                velocity_z,
+                *omega_rad_s,
+            )?
+            else {
+                return Ok(None);
+            };
+            let axis_norm = (axis_eci[0].mul_add(axis_eci[0], axis_eci[1] * axis_eci[1])
+                + axis_eci[2] * axis_eci[2])
+                .sqrt();
+            if !axis_norm.is_finite() || axis_norm <= 0.0 {
+                return Err(config_error(
+                    mapping_path,
+                    "surface_relative_axis_velocity.axis_eci must be finite and non-zero",
+                ));
+            }
+            Ok(Some(
+                rel_v[0] * axis_eci[0] / axis_norm
+                    + rel_v[1] * axis_eci[1] / axis_norm
+                    + rel_v[2] * axis_eci[2] / axis_norm,
+            ))
+        }
+        ActualSpec::SurfaceRelativeRadialVelocity {
+            position_x,
+            position_y,
+            position_z,
+            velocity_x,
+            velocity_y,
+            velocity_z,
+            omega_rad_s,
+        } => {
+            let Some((position, rel_v)) = surface_relative_state(
+                row,
+                lookup,
+                mapping_path,
+                position_x,
+                position_y,
+                position_z,
+                velocity_x,
+                velocity_y,
+                velocity_z,
+                *omega_rad_s,
+            )?
+            else {
+                return Ok(None);
+            };
+            let radius = (position[0].mul_add(position[0], position[1] * position[1])
+                + position[2] * position[2])
+                .sqrt();
+            if radius > 1.0e6 {
+                Ok(Some(
+                    (rel_v[0] * position[0] + rel_v[1] * position[1] + rel_v[2] * position[2])
+                        / radius,
+                ))
+            } else {
+                Ok(Some(rel_v[2]))
+            }
+        }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn surface_relative_state(
+    row: &TelemetryRow,
+    lookup: &BTreeMap<String, ChannelId>,
+    mapping_path: &Path,
+    position_x: &str,
+    position_y: &str,
+    position_z: &str,
+    velocity_x: &str,
+    velocity_y: &str,
+    velocity_z: &str,
+    omega_rad_s: f64,
+) -> Result<Option<([f64; 3], [f64; 3])>, CliError> {
+    if !omega_rad_s.is_finite() {
+        return Err(config_error(
+            mapping_path,
+            "surface-relative velocity omega_rad_s must be finite",
+        ));
+    }
+    let Some(px) = f64_channel(row, lookup, position_x, mapping_path)? else {
+        return Ok(None);
+    };
+    let Some(py) = f64_channel(row, lookup, position_y, mapping_path)? else {
+        return Ok(None);
+    };
+    let Some(pz) = f64_channel(row, lookup, position_z, mapping_path)? else {
+        return Ok(None);
+    };
+    let Some(vx) = f64_channel(row, lookup, velocity_x, mapping_path)? else {
+        return Ok(None);
+    };
+    let Some(vy) = f64_channel(row, lookup, velocity_y, mapping_path)? else {
+        return Ok(None);
+    };
+    let Some(vz) = f64_channel(row, lookup, velocity_z, mapping_path)? else {
+        return Ok(None);
+    };
+
+    let surface_vx = -omega_rad_s * py;
+    let surface_vy = omega_rad_s * px;
+    Ok(Some(([px, py, pz], [vx - surface_vx, vy - surface_vy, vz])))
 }
 
 fn f64_channel(

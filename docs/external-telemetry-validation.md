@@ -64,6 +64,8 @@ Supported `actual.kind` values:
 | `altitude_from_position` | Compare `sqrt(x^2+y^2+z^2) - radius_m`; defaults to `position_x_m`, `position_y_m`, `position_z_m`. |
 | `speed_from_velocity` | Compare `sqrt(vx^2+vy^2+vz^2)`; defaults to `velocity_x_m_s`, `velocity_y_m_s`, `velocity_z_m_s`. |
 | `surface_relative_speed` | Compare `|v_eci - omega x r_eci|` for Earth-rotating webcast velocity; defaults to WGS84 `omega_rad_s = 7.2921151467e-5` and the standard position/velocity channels. |
+| `surface_relative_axis_velocity` | Compare signed `(v_eci - omega x r_eci) dot axis_eci`, with `axis_eci = [x, y, z]`. |
+| `surface_relative_radial_velocity` | Compare signed radial velocity from `v_eci - omega x r_eci`; geocentric states use `r_hat`, local-frame states use `+z`. |
 | `norm3` | Compare a generic vector norm from three named float telemetry channels. |
 
 Each metric uses the envelope
