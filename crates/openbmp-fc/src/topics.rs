@@ -213,6 +213,21 @@ impl Topic for PositionEstimate {
     const NAME: &'static str = "estimator.position";
 }
 
+/// Local environment estimate published by the simulator bridge for
+/// controller logic that needs atmospheric properties but should not
+/// hard-code a particular atmosphere model.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct EnvironmentEstimate {
+    /// Estimate timestamp.
+    pub time: SimTime,
+    /// Atmospheric mass density at the vehicle (kg/m^3).
+    pub density_kg_m3: f64,
+}
+
+impl Topic for EnvironmentEstimate {
+    const NAME: &'static str = "estimator.environment";
+}
+
 /// Diagnostic snapshot of estimator health.
 #[allow(clippy::struct_excessive_bools)] // per-sensor `*_updated_this_tick` flags
 #[derive(Copy, Clone, Debug, Default, PartialEq)]

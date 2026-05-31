@@ -22,13 +22,15 @@ use openbmp_physics::kinematics::quaternion_error_small_angle;
 
 use crate::error::{AutopilotError, ControllerError};
 use crate::filters::Biquad;
-use crate::nav_metrics::dynamic_pressure_air_relative;
+use crate::nav_metrics::{
+    dynamic_pressure_air_relative, dynamic_pressure_air_relative_with_density,
+};
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::tables::Table;
 use crate::topics::{
-    ActuatorCommand, AttitudeEstimate, AutopilotStatus, EngineDemand, PositionEstimate,
-    ReferenceState, VehicleStatus,
+    ActuatorCommand, AttitudeEstimate, AutopilotStatus, EngineDemand, EnvironmentEstimate,
+    PositionEstimate, ReferenceState, VehicleStatus,
 };
 use crate::trajectory::{MinimumSnapTrajectory, YawProfile, flat_output_attitude_reference};
 
@@ -572,6 +574,12 @@ impl Job for ThreeLoopAutopilot {
             return Ok(());
         };
         let position = ctx.bus.latest::<PositionEstimate>()?.map(|(p, _)| p);
+        let environment = ctx
+            .bus
+            .latest::<EnvironmentEstimate>()
+            .ok()
+            .flatten()
+            .map(|(e, _)| e);
         let reference = ctx
             .bus
             .latest::<ReferenceState>()?
@@ -934,7 +942,10 @@ impl Job for ThreeLoopAutopilot {
         // there is no navigation estimate yet.
         let throttle_unit = match position.as_ref() {
             Some(p) if self.params.max_dynamic_pressure_pa.is_finite() => {
-                let q = dynamic_pressure_air_relative(p);
+                let q = environment.map_or_else(
+                    || dynamic_pressure_air_relative(p),
+                    |env| dynamic_pressure_air_relative_with_density(p, env.density_kg_m3),
+                );
                 if q > self.params.max_dynamic_pressure_pa && q > 0.0 {
                     (gains.throttle_baseline * (self.params.max_dynamic_pressure_pa / q))
                         .clamp(0.0, gains.throttle_baseline)
@@ -1159,6 +1170,108 @@ mod tests {
             (5_000.0..50_000.0).contains(&q),
             "10 km / 300 m/s air-relative q out of expected range: {q}"
         );
+    }
+
+    #[test]
+    fn max_q_throttle_uses_published_environment_density() {
+        use std::collections::BTreeMap;
+
+        use openbmp_core::StepIndex;
+
+        use crate::autopilot::{
+            AutopilotParams, GainSchedule, PidGains, ThreeLoopAutopilot, ThreeLoopGains,
+        };
+        use crate::bus::Bus;
+        use crate::clock::SimulatedClock;
+        use crate::scheduler::{Job as _, JobContext};
+        use crate::topics::{
+            ActuatorCommand, AttitudeEstimate, EngineDemand, EnvironmentEstimate, PositionEstimate,
+            ReferenceState, VehicleStatus,
+        };
+
+        let bus = Bus::new();
+        bus.register::<AttitudeEstimate>().unwrap();
+        bus.register::<PositionEstimate>().unwrap();
+        bus.register::<EnvironmentEstimate>().unwrap();
+        bus.register::<ReferenceState>().unwrap();
+        bus.register::<VehicleStatus>().unwrap();
+        bus.register::<ActuatorCommand>().unwrap();
+        bus.register::<EngineDemand>().unwrap();
+
+        let omega = openbmp_physics::frames::WGS84_OMEGA_RAD_S;
+        let r = 6_371_000.0;
+        bus.publish(AttitudeEstimate {
+            time: SimTime::from_seconds(0.001),
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            omega_body_rad_s: Vector3::zeros(),
+            gyro_bias_body_rad_s: Vector3::zeros(),
+        })
+        .unwrap();
+        bus.publish(PositionEstimate {
+            time: SimTime::from_seconds(0.001),
+            position_eci_m: Vector3::new(r, 0.0, 0.0),
+            velocity_eci_m_s: Vector3::new(0.0, omega * r + 300.0, 0.0),
+            accel_bias_body_m_s2: Vector3::zeros(),
+        })
+        .unwrap();
+        bus.publish(EnvironmentEstimate {
+            time: SimTime::from_seconds(0.001),
+            density_kg_m3: 0.0,
+        })
+        .unwrap();
+        bus.publish(VehicleStatus {
+            armed: true,
+            in_flight: true,
+            phase_id: 0,
+            safe_state_requested: false,
+        })
+        .unwrap();
+        bus.publish(ReferenceState {
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            ..ReferenceState::default()
+        })
+        .unwrap();
+
+        let gains = ThreeLoopGains {
+            rate: [PidGains::default(); 3],
+            attitude: [PidGains::default(); 3],
+            trajectory: [PidGains::default(); 3],
+            elevator_limit_rad: 1.0,
+            aileron_limit_rad: 1.0,
+            rudder_limit_rad: 1.0,
+            throttle_baseline: 1.0,
+        };
+        let schedule = GainSchedule {
+            by_phase: BTreeMap::new(),
+            default: gains,
+        };
+        let mut autopilot =
+            ThreeLoopAutopilot::with_schedule(schedule).with_params(AutopilotParams {
+                max_dynamic_pressure_pa: 10_000.0,
+                ..AutopilotParams::default()
+            });
+        let clock = SimulatedClock::new();
+
+        clock.set(SimTime::from_seconds(0.001), StepIndex::new(1));
+        autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .expect("warm-up tick");
+        clock.set(SimTime::from_seconds(0.002), StepIndex::new(2));
+        autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .expect("control tick");
+
+        let (cmd, _) = bus
+            .latest::<EngineDemand>()
+            .unwrap()
+            .expect("engine demand");
+        assert_eq!(cmd.throttle_unit, 1.0);
     }
 
     #[test]

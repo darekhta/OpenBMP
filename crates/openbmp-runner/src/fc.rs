@@ -32,7 +32,7 @@ use openbmp_fc::mixer::{ActuatorChannelMap, Mixer, PhaseAuthority, PhaseAuthorit
 use openbmp_fc::sr_ukf::{SquareRootUkf, SquareRootUkfAttitude, SquareRootUkfParams};
 use openbmp_fc::topics::{
     ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, CommsRegionStatePublish,
-    EffectorCommandSet, EngineCommandSet, EngineDemand, EstimatorMode,
+    EffectorCommandSet, EngineCommandSet, EngineDemand, EnvironmentEstimate, EstimatorMode,
     EstimatorRegimeRegionStatePublish, EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic,
     FdirStatus, GnssSample, GuidanceCutoff, HealthRegionStatePublish, ImuSample,
     MagnetometerSample, MissionRegionStatePublish, MissionStatePublish, PositionEstimate,
@@ -345,6 +345,12 @@ impl FcRunner {
         let _ = self.fc.bus().publish(sample);
     }
 
+    /// Publishes the local environment estimate used by controller
+    /// paths such as max-Q load relief.
+    pub fn publish_environment(&self, sample: EnvironmentEstimate) {
+        let _ = self.fc.bus().publish(sample);
+    }
+
     /// Returns the latest gated actuator command, if any.
     #[must_use]
     pub fn latest_actuator_command(&self) -> Option<ActuatorCommand> {
@@ -469,6 +475,7 @@ impl FcRunner {
         bus.register::<SensorStatus>()?;
         bus.register::<AttitudeEstimate>()?;
         bus.register::<PositionEstimate>()?;
+        bus.register::<EnvironmentEstimate>()?;
         bus.register::<EstimatorStatus>()?;
         bus.register::<VehicleStatus>()?;
         bus.register::<FailsafeFlags>()?;

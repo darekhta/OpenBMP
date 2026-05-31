@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 use nalgebra::{UnitQuaternion, Vector3};
 use openbmp_core::{Position3, SensorId, StepIndex, Velocity3};
 use openbmp_fc::topics::{
-    BarometerSample, GnssSample, ImuSample, MagnetometerSample, StarTrackerSample,
+    BarometerSample, EnvironmentEstimate, GnssSample, ImuSample, MagnetometerSample,
+    StarTrackerSample,
 };
 pub(crate) use openbmp_fc::topics::{GuidanceCutoff, ReferenceState};
 use openbmp_physics::atmosphere::{AtmosphereModel, ExoatmosphericPolicy, UsStandard1976};
@@ -29,6 +30,10 @@ use openbmp_sensors::{
 };
 use openbmp_state::{PointMassState, RigidBodyState};
 
+use crate::atmosphere::{
+    RuntimeAtmosphere, build_document_runtime_atmosphere, is_runtime_atmosphere_kind,
+    scenario_atmosphere_kind,
+};
 use crate::error::RunnerError;
 use crate::fc::{EstimatorSeed, FcAutopilotLqrContext, FcRunner, FcRunnerMission};
 
@@ -39,7 +44,8 @@ const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
 pub struct FcBridge {
     runner: FcRunner,
     sensors: Vec<BridgeSensor>,
-    atmosphere: UsStandard1976,
+    atmosphere: Option<RuntimeAtmosphere>,
+    fallback_atmosphere: UsStandard1976,
     magnetic: Box<dyn MagneticFieldEci>,
     scenario_seed: u64,
     previous_velocity_eci_m_s: Option<Vector3<f64>>,
@@ -113,10 +119,17 @@ impl FcBridge {
             what: format!("flight-controller construction failed: {err}"),
         })?;
         let sensors = build_sensors(&scenario.document, resolved_files)?;
+        let atmosphere_kind = scenario_atmosphere_kind(&scenario.document);
+        let atmosphere = if is_runtime_atmosphere_kind(atmosphere_kind) {
+            Some(build_document_runtime_atmosphere(&scenario.document)?)
+        } else {
+            None
+        };
         Ok(Some(Self {
             runner,
             sensors,
-            atmosphere: UsStandard1976::with_exoatmospheric_policy(
+            atmosphere,
+            fallback_atmosphere: UsStandard1976::with_exoatmospheric_policy(
                 ExoatmosphericPolicy::ZeroDensityAboveCeiling,
             ),
             magnetic,
@@ -203,6 +216,12 @@ impl FcBridge {
             };
             self.publish_measurement(&measurement);
         }
+        self.runner.publish_environment(EnvironmentEstimate {
+            time: truth.time,
+            density_kg_m3: self
+                .sample_atmosphere(truth.altitude_geometric_m, truth.time)
+                .density_kg_m3,
+        });
         self.runner
             .step(truth.time, step)
             .map_err(|err| RunnerError::UnsupportedScenario {
@@ -331,10 +350,8 @@ impl FcBridge {
         time: openbmp_core::SimTime,
     ) -> SensorTruth {
         let altitude_m = bridge_sensor_altitude_m(position.vector);
-        let static_pressure_pa = self.atmosphere.sample(altitude_m, time).map_or(
-            openbmp_physics::atmosphere::USSA76_SEA_LEVEL_PRESSURE_PA,
-            |s| s.pressure_pa,
-        );
+        let atmosphere = self.sample_atmosphere(altitude_m, time);
+        let static_pressure_pa = atmosphere.pressure_pa;
         let attitude_eci_to_body = attitude_body_to_eci.inverse();
         let specific_force_body_m_s2 = attitude_eci_to_body * specific_force_eci_m_s2;
         let magnetic_field_body_nt =
@@ -350,6 +367,21 @@ impl FcBridge {
             magnetic_field_body_nt,
             time,
         }
+    }
+
+    fn sample_atmosphere(
+        &self,
+        altitude_m: f64,
+        time: openbmp_core::SimTime,
+    ) -> openbmp_physics::AtmosphereSample {
+        let sample = self.atmosphere.as_ref().map_or_else(
+            || self.fallback_atmosphere.sample(altitude_m, time),
+            |atmosphere| atmosphere.sample(altitude_m, time),
+        );
+        sample.unwrap_or_else(|_| openbmp_physics::AtmosphereSample {
+            pressure_pa: openbmp_physics::atmosphere::USSA76_SEA_LEVEL_PRESSURE_PA,
+            ..openbmp_physics::AtmosphereSample::default()
+        })
     }
 
     fn specific_force_eci(

@@ -53,5 +53,15 @@ pub(crate) fn dynamic_pressure_air_relative(position: &PositionEstimate) -> f64 
     let density_kg_m3 = openbmp_physics::UsStandard1976::new()
         .sample(altitude_m, SimTime::ZERO)
         .map_or(0.0, |sample| sample.density_kg_m3);
+    dynamic_pressure_air_relative_with_density(position, density_kg_m3)
+}
+
+pub(crate) fn dynamic_pressure_air_relative_with_density(
+    position: &PositionEstimate,
+    density_kg_m3: f64,
+) -> f64 {
+    if !density_kg_m3.is_finite() || density_kg_m3 < 0.0 {
+        return 0.0;
+    }
     0.5 * density_kg_m3 * air_relative_velocity_eci_m_s(position).norm_squared()
 }
