@@ -2285,6 +2285,15 @@ struct SeparatedBodyTelemetryChannels {
 }
 
 #[derive(Debug)]
+struct EngineTelemetryChannels {
+    engine: EngineId,
+    thrust: TelemetryChannel<f64>,
+    mass_flow: TelemetryChannel<f64>,
+    consumed: TelemetryChannel<f64>,
+    state_index: TelemetryChannel<i64>,
+}
+
+#[derive(Debug)]
 struct RigidChannelSet {
     position_x: TelemetryChannel<f64>,
     position_y: TelemetryChannel<f64>,
@@ -2302,6 +2311,7 @@ struct RigidChannelSet {
     angular_velocity_z: TelemetryChannel<f64>,
     fc_reference: Option<FcReferenceTelemetryChannels>,
     separated_bodies: Vec<SeparatedBodyTelemetryChannels>,
+    engine_states: Vec<EngineTelemetryChannels>,
     has_atmosphere: bool,
     atmosphere_density: Option<TelemetryChannel<f64>>,
     atmosphere_pressure: Option<TelemetryChannel<f64>>,
@@ -2541,6 +2551,39 @@ impl RigidChannelSet {
             }
         }
 
+        let mut engine_states = Vec::new();
+        for engine in &document.vehicle.assembly.engines {
+            let id = EngineId::from_path(&format!("vehicle.assembly.engines.{id}", id = engine.id));
+            let prefix = format!("engine.{}", engine.id);
+            engine_states.push(EngineTelemetryChannels {
+                engine: id,
+                thrust: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    format!("{prefix}.thrust_n"),
+                    "N",
+                    Some("Body"),
+                )?,
+                mass_flow: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    format!("{prefix}.mass_flow_kg_s"),
+                    "kg/s",
+                    None::<&str>,
+                )?,
+                consumed: TelemetryChannel::<f64>::new(
+                    alloc(),
+                    format!("{prefix}.consumed_kg"),
+                    "kg",
+                    None::<&str>,
+                )?,
+                state_index: TelemetryChannel::<i64>::new(
+                    alloc(),
+                    format!("{prefix}.state_index"),
+                    "1",
+                    None::<&str>,
+                )?,
+            });
+        }
+
         let atmosphere_kind = scenario_atmosphere_kind(document);
         let has_atmosphere = is_runtime_atmosphere_kind(atmosphere_kind);
         let (
@@ -2766,6 +2809,7 @@ impl RigidChannelSet {
             angular_velocity_z,
             fc_reference,
             separated_bodies,
+            engine_states,
             has_atmosphere,
             atmosphere_density,
             atmosphere_pressure,
@@ -2826,6 +2870,12 @@ impl RigidChannelSet {
             channels.push(separated.angular_velocity_x.metadata().clone());
             channels.push(separated.angular_velocity_y.metadata().clone());
             channels.push(separated.angular_velocity_z.metadata().clone());
+        }
+        for engine in &self.engine_states {
+            channels.push(engine.thrust.metadata().clone());
+            channels.push(engine.mass_flow.metadata().clone());
+            channels.push(engine.consumed.metadata().clone());
+            channels.push(engine.state_index.metadata().clone());
         }
         if let (Some(d), Some(p), Some(t), Some(s)) = (
             &self.atmosphere_density,
@@ -2959,6 +3009,7 @@ where
     let kernel_engine_snapshot = kernel.engine_snapshot();
     let kernel_tank_snapshot = kernel.tank_snapshot();
     let kernel_recovery_snapshot = kernel.recovery_snapshot();
+    insert_engine_state_channels(&mut row, kernel_engine_snapshot, &channels.engine_states)?;
     let ctx = ForceContext {
         state,
         environment: &env_sample,
@@ -3135,6 +3186,30 @@ fn insert_separated_body_channels(
             row.insert(&channel.angular_velocity_x, 0.0)?;
             row.insert(&channel.angular_velocity_y, 0.0)?;
             row.insert(&channel.angular_velocity_z, 0.0)?;
+        }
+    }
+    Ok(())
+}
+
+fn insert_engine_state_channels(
+    row: &mut TelemetryRow,
+    engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    channels: &[EngineTelemetryChannels],
+) -> Result<(), RunnerError> {
+    for channel in channels {
+        if let Some(snapshot) = engine_snapshot.get(&channel.engine) {
+            row.insert(&channel.thrust, snapshot.thrust_body.norm())?;
+            row.insert(&channel.mass_flow, snapshot.mass_flow_kg_per_s)?;
+            row.insert(&channel.consumed, snapshot.consumed_kg)?;
+            row.insert(
+                &channel.state_index,
+                i64::from(snapshot.lifecycle_state_index),
+            )?;
+        } else {
+            row.insert(&channel.thrust, 0.0)?;
+            row.insert(&channel.mass_flow, 0.0)?;
+            row.insert(&channel.consumed, 0.0)?;
+            row.insert(&channel.state_index, 0_i64)?;
         }
     }
     Ok(())
@@ -3485,6 +3560,75 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const RIGID_ENGINE_TELEMETRY_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "rigid-engine-telemetry-test"
+description = "Synthetic rigid-body engine telemetry smoke test."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.5
+dt_s = 0.1
+seed = 29
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 10.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "rigid-engine-telemetry-test"
+
+[[vehicle.assembly.bodies]]
+id = "core"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 100.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]
+
+[[vehicle.assembly.engines]]
+id = "main"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, 0.0]
+limits = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity", "thrust"]
+
+[mission]
+initial_phase = "flight"
+
+[[mission.phases]]
+id = "flight"
+label = "flight"
+
+[[mission.events]]
+id = "ignite"
+trigger = { kind = "at_time", time_s = 0.1 }
+action = { kind = "engine_command", id = "main", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+once = true
+
+[telemetry]
+output.csv = "out/rigid-engine-telemetry-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn valid_stage_separation_document() -> ScenarioDocument {
         openbmp_scenario::Scenario::from_toml_str(include_str!(
             "../../openbmp-scenario/tests/fixtures/stage-separation-valid.toml"
@@ -3538,6 +3682,19 @@ require_monotonic_time = true
             .iter()
             .map(|row| match row.get(id) {
                 Some(TelemetryValue::Bool(value)) => *value,
+                other => panic!("unexpected value in {name}: {other:?}"),
+            })
+            .collect()
+    }
+
+    fn i64_column(outcome: &RunOutcome, name: &str) -> Vec<i64> {
+        let id = channel_id(outcome, name);
+        outcome
+            .table
+            .rows()
+            .iter()
+            .map(|row| match row.get(id) {
+                Some(TelemetryValue::Int64(value)) => *value,
                 other => panic!("unexpected value in {name}: {other:?}"),
             })
             .collect()
@@ -3648,6 +3805,31 @@ require_monotonic_time = true
         assert!(
             marker.iter().any(|value| *value),
             "relative-distance event should observe initially active lanes: {marker:?}"
+        );
+    }
+
+    #[test]
+    fn rigid_engine_snapshots_are_recorded() {
+        let scenario = openbmp_scenario::Scenario::from_toml_str(RIGID_ENGINE_TELEMETRY_SCENARIO)
+            .expect("engine telemetry scenario must parse");
+        let outcome = crate::run(&scenario).expect("engine telemetry scenario must run");
+
+        let thrust = f64_column(&outcome, "engine.main.thrust_n");
+        assert!(
+            thrust.iter().any(|value| *value > 0.0),
+            "engine thrust telemetry should reflect the ignited engine: {thrust:?}"
+        );
+
+        let state = i64_column(&outcome, "engine.main.state_index");
+        assert!(
+            state.iter().any(|value| *value == 2),
+            "engine state telemetry should show Burning state: {state:?}"
+        );
+
+        let consumed = f64_column(&outcome, "engine.main.consumed_kg");
+        assert!(
+            consumed.windows(2).any(|pair| pair[1] > pair[0]),
+            "engine consumed mass telemetry should increase during burn: {consumed:?}"
         );
     }
 
