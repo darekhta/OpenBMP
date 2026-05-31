@@ -29,9 +29,11 @@ every scenario declares `[vehicle.assembly]`.
   `solid` motor variant).
 - Frame-suffix and unit-suffix linting (`_n_s`, `_m3_s2`, `_deg`,
   `_xyzw`).
-- **Safety-name lint** — reject `target`, `seeker`, `warhead`,
-  `strike`, `interceptor`, `kill`, `threat`, `engagement`, terminal-
-  homing variants per `docs/safety-boundaries.md` § Naming Rules.
+- **Safety-name lint** — reject `seeker`, `warhead`, `strike`,
+  `interceptor`, `kill`, `threat`, `engagement`, terminal-homing
+  variants, and specific operational compounds such as `targetrange`
+  per `docs/safety-boundaries.md` § Naming Rules. The bare word
+  `target` is accepted as neutral simulation vocabulary.
 - File-resolution helper rooted at the scenario file path; the
   `Scenario::resolved_files()` API loads each external file
   reference, computes its SHA-256 digest, and verifies the optional

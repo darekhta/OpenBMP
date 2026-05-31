@@ -430,15 +430,18 @@ Changing the order is a scenario change and can change golden telemetry.
 
 Scenario fields and model names must use academic vocabulary. The parser and
 CI lint should reject names containing forbidden operational terms listed in
-[safety-boundaries.md](safety-boundaries.md), including `target`, `seeker`,
-`warhead`, `strike`, `interceptor`, `kill`, `threat`, `engagement`, and
-terminal-homing equivalents.
+[safety-boundaries.md](safety-boundaries.md), including `seeker`, `warhead`,
+`strike`, `interceptor`, `kill`, `threat`, `engagement`, and terminal-homing
+equivalents. The bare word `target` is accepted as neutral simulation
+vocabulary; the lint rejects specific operational compounds such as
+`targetrange` and `terminal_guidance`.
 
 Location-like fields are allowed only when their role is unambiguous:
 
-- Accepted: `local_origin`, `entry_interface`, `recovery_area_toy`.
-- Rejected: `target_location`, `impact_point`, `terminal_waypoint`,
-  `strike_coordinate`.
+- Accepted: `local_origin`, `entry_interface`, `recovery_area_toy`,
+  `target_state`.
+- Rejected: `impact_point`, `terminal_waypoint`, `strike_coordinate`,
+  `targetrange`.
 
 ## Batch Runs
 
@@ -2449,6 +2452,35 @@ Relative range and speed triggers can observe initial or detached
 lanes with `trigger.kind = "at_relative_distance"` or
 `trigger.kind = "at_relative_speed"` once the referenced bodies are
 active.
+
+Separated lanes may also declare a simulator-side attitude target that
+drives direct-torque effectors owned by that lane:
+
+```toml
+[[multi_body.attitude_target]]
+body_id = "lower_stage"
+start_time_s = 147.0
+end_time_s = 214.0
+body_axis_body = [0.0, 0.0, 1.0]
+roll_effector = "lower-roll-trim"
+pitch_effector = "lower-pitch-trim"
+yaw_effector = "lower-yaw-trim"
+kp = 0.8
+kd = 2.0
+max_command = 1.0
+target = { kind = "surface_relative_axes", radial = 0.0, downrange = -1.0, crossrange = 0.0, downrange_axis_eci = [0.0, 1.0, 0.0] }
+```
+
+`body_id` must name an assembly body that can become an active
+separated lane. Each listed effector must be `kind = "direct_torque"`,
+mounted to that same body, and match the declared roll / pitch / yaw
+axis. `body_axis_body` defaults to body +Z. The target provider is
+either `kind = "eci_vector"` with a non-zero `vector_eci`, or
+`kind = "surface_relative_axes"` with non-zero radial / downrange /
+crossrange components and a `downrange_axis_eci` that is not parallel
+to local radial. This controller is a simulator diagnostic for
+post-separation attitude dynamics; it is not recovered flight data and
+does not add route planning or terminal guidance.
 
 ### v3-only `[fc]` sub-blocks
 

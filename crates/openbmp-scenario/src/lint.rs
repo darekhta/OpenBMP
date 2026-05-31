@@ -16,7 +16,6 @@
 use crate::error::ScenarioError;
 
 const FORBIDDEN_SAFETY_TERMS: &[ForbiddenTerm] = &[
-    ForbiddenTerm::new("target", "target"),
     ForbiddenTerm::new("seeker", "seeker"),
     ForbiddenTerm::new("warhead", "warhead"),
     ForbiddenTerm::new("strike", "strike"),

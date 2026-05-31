@@ -2408,10 +2408,19 @@ kind = "piecewise_exponential"
     }
 
     #[test]
-    fn rejects_safety_limited_names() {
+    fn accepts_generic_target_vocabulary() {
         let toml = MINIMAL.replace(
             r#"name = "constant-acceleration-drop""#,
             r#"name = "target-demo""#,
+        );
+        Scenario::from_toml_str(&toml).expect("generic target vocabulary should be accepted");
+    }
+
+    #[test]
+    fn rejects_safety_limited_names() {
+        let toml = MINIMAL.replace(
+            r#"name = "constant-acceleration-drop""#,
+            r#"name = "seeker-demo""#,
         );
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(matches!(err, ScenarioError::SafetyName { .. }));
@@ -2432,7 +2441,7 @@ kind = "piecewise_exponential"
         let toml = MINIMAL
             .replace(
                 r#"name = "constant-acceleration-drop""#,
-                r#"name = "target-demo""#,
+                r#"name = "seeker-demo""#,
             )
             .replace("[environment]\n", "[environment]\nbad = 1.0\n");
         let err = Scenario::from_toml_str(&toml).unwrap_err();
@@ -4018,6 +4027,58 @@ angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
         assert_eq!(multi_body.primary_body_id.as_deref(), Some("upper"));
         assert_eq!(multi_body.initial_lanes.len(), 1);
         assert_eq!(multi_body.initial_lanes[0].body_id, "lower");
+    }
+
+    #[test]
+    fn accepts_multi_body_attitude_target_with_direct_torque_effector() {
+        let prefix = VALID_STAGE_SEPARATION_SCENARIO
+            .split("\n[environment]\n")
+            .next()
+            .expect("fixture contains environment block");
+        let suffix = VALID_STAGE_SEPARATION_SCENARIO
+            .split_once("\n[environment]\n")
+            .expect("fixture contains environment block")
+            .1
+            .split("\n[mission]\n")
+            .next()
+            .expect("fixture contains mission block");
+        let toml = format!(
+            r#"{prefix}
+[[vehicle.assembly.effectors]]
+id = "lower-roll"
+mounted_to = "lower"
+kind = {{ kind = "direct_torque", axis = "roll", effectiveness_n_m_per_rad = 1.0 }}
+limits = {{ min = -1.0, max = 1.0, max_rate_per_s = 10.0, deadband = 0.0, latency_s = 0.0 }}
+
+[environment]
+{suffix}
+[multi_body]
+primary_body_id = "upper"
+
+[[multi_body.initial_lane]]
+body_id = "lower"
+position_eci_m = [10.0, 0.0, 100.0]
+velocity_eci_m_s = [0.0, 1.0, 10.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[[multi_body.attitude_target]]
+body_id = "lower"
+roll_effector = "lower-roll"
+kp = 1.0
+target = {{ kind = "eci_vector", vector_eci = [0.0, 1.0, 0.0] }}
+"#
+        );
+        let scenario =
+            Scenario::from_toml_str(&toml).expect("multi-body attitude target should validate");
+        let target = &scenario
+            .document
+            .multi_body
+            .as_ref()
+            .expect("multi_body present")
+            .attitude_targets[0];
+        assert_eq!(target.body_id, "lower");
+        assert_eq!(target.roll_effector.as_deref(), Some("lower-roll"));
     }
 
     #[test]

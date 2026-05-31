@@ -126,6 +126,8 @@ pub fn run(
     let propellant_budget = crate::propulsion::build_propellant_budget(document)?;
     // Recovery rack mirroring the point-mass runner.
     let mut recovery_rack = crate::recovery::RecoveryRack::build(document)?;
+    let separated_attitude_targets =
+        crate::separated_attitude::SeparatedAttitudeTargets::build(document)?;
     // Build the runner-side wind rack. Inactive when no
     // `[wind]` block is declared (or `kind = "none"`).
     let wind_rack = crate::wind::WindRack::build(document)?;
@@ -341,6 +343,13 @@ pub fn run(
             if let Some(state_id) = bridge.latest_mission_state_id() {
                 kernel.set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
             }
+        }
+        if !separated_attitude_targets.is_empty() {
+            separated_attitude_targets.apply(
+                kernel.separated_rigid_bodies(),
+                kernel.current_time(),
+                &mut effector_rack,
+            )?;
         }
         if let Some(propellant_budget) = &propellant_budget {
             let report = propellant_budget
@@ -4139,6 +4148,40 @@ require_monotonic_time = true
         assert!(
             effector_actual.iter().any(|value| *value > 0.0),
             "direct-torque effector command should be observable: {effector_actual:?}"
+        );
+    }
+
+    #[test]
+    fn separated_attitude_target_commands_owned_direct_torque_effector() {
+        let toml = SEPARATED_DIRECT_TORQUE_SCENARIO
+            .replace(
+                "command_schedule = { kind = \"constant\", value = 1.0 }\n",
+                "",
+            )
+            .replace(
+                "primary_body_id = \"bus\"\n",
+                "primary_body_id = \"bus\"\n\n[[multi_body.attitude_target]]\nbody_id = \"booster\"\npitch_effector = \"booster-pitch-torque\"\nkp = 1.0\nkd = 0.0\nmax_command = 1.0\ntarget = { kind = \"eci_vector\", vector_eci = [1.0, 0.0, 0.0] }\n\n",
+            );
+        let scenario = openbmp_scenario::Scenario::from_toml_str(&toml)
+            .expect("separated attitude-target scenario must parse");
+        let outcome = crate::run(&scenario).expect("separated attitude-target scenario must run");
+
+        let primary_pitch_rate = f64_column(&outcome, "angular_velocity.y_rad_s");
+        assert!(
+            primary_pitch_rate.iter().all(|value| value.abs() < 1.0e-12),
+            "attitude target must not rotate the primary lane: {primary_pitch_rate:?}"
+        );
+
+        let booster_pitch_rate = f64_column(&outcome, "body.booster.angular_velocity.y_rad_s");
+        assert!(
+            booster_pitch_rate.iter().any(|value| *value > 0.5),
+            "attitude target should spin the separated lane toward +ECI x: {booster_pitch_rate:?}"
+        );
+
+        let effector_actual = f64_column(&outcome, "effector.booster-pitch-torque.actual");
+        assert!(
+            effector_actual.iter().any(|value| *value > 0.0),
+            "attitude target should command the direct-torque effector: {effector_actual:?}"
         );
     }
 

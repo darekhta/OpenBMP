@@ -361,6 +361,7 @@ impl ScenarioDocument {
         self.validate_engine_references()?;
         self.validate_recovery_references()?;
         self.validate_relative_distance_trigger_references()?;
+        self.validate_multi_body_attitude_target_references()?;
         self.validate_propulsion_unambiguous()?;
         self.validate_v3_blocks()?;
         self.validate_initial_multi_body_references()?;
@@ -1412,6 +1413,69 @@ impl ScenarioDocument {
         Ok(())
     }
 
+    fn validate_multi_body_attitude_target_references(&self) -> Result<(), ScenarioError> {
+        let Some(multi_body) = &self.multi_body else {
+            return Ok(());
+        };
+        if multi_body.attitude_targets.is_empty() {
+            return Ok(());
+        }
+        if self.vehicle.kind != "rigid_body" {
+            return Err(ScenarioError::IncompatibleAssemblyEntry {
+                field: "multi_body.attitude_target".to_owned(),
+                reason: "multi-body attitude targets require vehicle.kind = \"rigid_body\""
+                    .to_owned(),
+            });
+        }
+        let body_ids: BTreeSet<&str> = self
+            .vehicle
+            .assembly
+            .bodies
+            .iter()
+            .map(|body| body.id.as_str())
+            .collect();
+        let effectors: BTreeMap<&str, &EffectorConfig> = self
+            .vehicle
+            .assembly
+            .effectors
+            .iter()
+            .map(|effector| (effector.id.as_str(), effector))
+            .collect();
+        for (index, target) in multi_body.attitude_targets.iter().enumerate() {
+            if !body_ids.contains(target.body_id.as_str()) {
+                return Err(ScenarioError::UnknownBodyReference {
+                    field: format!("multi_body.attitude_target[{index}].body_id"),
+                    value: target.body_id.clone(),
+                });
+            }
+            validate_attitude_target_effector(
+                index,
+                &target.body_id,
+                "roll_effector",
+                target.roll_effector.as_ref(),
+                TorqueAxis::Roll,
+                &effectors,
+            )?;
+            validate_attitude_target_effector(
+                index,
+                &target.body_id,
+                "pitch_effector",
+                target.pitch_effector.as_ref(),
+                TorqueAxis::Pitch,
+                &effectors,
+            )?;
+            validate_attitude_target_effector(
+                index,
+                &target.body_id,
+                "yaw_effector",
+                target.yaw_effector.as_ref(),
+                TorqueAxis::Yaw,
+                &effectors,
+            )?;
+        }
+        Ok(())
+    }
+
     fn validate_force_dependencies(&self) -> Result<(), ScenarioError> {
         // `forces` is auto-synthesised at parse time
         // from the assembly when absent, so this hook always sees a
@@ -1510,6 +1574,52 @@ impl ScenarioDocument {
             });
         }
         Ok(())
+    }
+}
+
+fn validate_attitude_target_effector(
+    controller_index: usize,
+    body_id: &str,
+    field_name: &str,
+    effector_id: Option<&String>,
+    expected_axis: TorqueAxis,
+    effectors: &BTreeMap<&str, &EffectorConfig>,
+) -> Result<(), ScenarioError> {
+    let Some(effector_id) = effector_id else {
+        return Ok(());
+    };
+    let field = format!("multi_body.attitude_target[{controller_index}].{field_name}");
+    let Some(effector) = effectors.get(effector_id.as_str()) else {
+        return Err(ScenarioError::UnknownEffectorReference {
+            field,
+            id: effector_id.clone(),
+        });
+    };
+    if effector.mounted_to.as_deref() != Some(body_id) {
+        return Err(ScenarioError::IncompatibleAssemblyEntry {
+            field,
+            reason: format!(
+                "effector `{effector_id}` must be mounted_to the attitude target body `{body_id}`"
+            ),
+        });
+    }
+    match effector.kind {
+        EffectorKindConfig::DirectTorque { axis, .. } if axis == expected_axis => Ok(()),
+        EffectorKindConfig::DirectTorque { axis, .. } => {
+            Err(ScenarioError::IncompatibleAssemblyEntry {
+                field,
+                reason: format!(
+                    "effector `{effector_id}` is a direct_torque {:?} axis, expected {:?}",
+                    axis, expected_axis
+                ),
+            })
+        }
+        EffectorKindConfig::LinearActuator { .. } => {
+            Err(ScenarioError::IncompatibleAssemblyEntry {
+                field,
+                reason: format!("effector `{effector_id}` must be kind = \"direct_torque\""),
+            })
+        }
     }
 }
 
@@ -9889,13 +9999,24 @@ pub struct MultiBodyConfig {
     /// `separations` in Rust.
     #[serde(default, rename = "separation")]
     pub separations: Vec<MultiBodySeparationConfig>,
+    /// Optional closed-loop attitude targets for already-separated
+    /// rigid-body lanes. Serde key is
+    /// `[[multi_body.attitude_target]]`; the field is exposed as
+    /// `attitude_targets` in Rust.
+    #[serde(default, rename = "attitude_target")]
+    pub attitude_targets: Vec<MultiBodyAttitudeTargetConfig>,
 }
 
 impl MultiBodyConfig {
     fn validate(&self) -> Result<(), ScenarioError> {
-        if self.initial_lanes.is_empty() && self.separations.is_empty() {
+        if self.initial_lanes.is_empty()
+            && self.separations.is_empty()
+            && self.attitude_targets.is_empty()
+        {
             return Err(ScenarioError::EmptyList {
-                field: "multi_body.initial_lane or multi_body.separation".to_owned(),
+                field:
+                    "multi_body.initial_lane, multi_body.separation, or multi_body.attitude_target"
+                        .to_owned(),
             });
         }
         if !self.initial_lanes.is_empty() {
@@ -9935,6 +10056,9 @@ impl MultiBodyConfig {
         }
         for (index, sep) in self.separations.iter().enumerate() {
             sep.validate(index)?;
+        }
+        for (index, target) in self.attitude_targets.iter().enumerate() {
+            target.validate(index)?;
         }
         Ok(())
     }
@@ -10094,6 +10218,179 @@ impl MultiBodySeparationConfig {
 
 fn default_true() -> bool {
     true
+}
+
+/// One entry under `[[multi_body.attitude_target]]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MultiBodyAttitudeTargetConfig {
+    /// Separated body id this controller acts on.
+    pub body_id: String,
+    /// Optional start time (s). Before this time the controller emits no
+    /// commands.
+    #[serde(default)]
+    pub start_time_s: Option<f64>,
+    /// Optional end time (s). At and after this time the controller
+    /// emits no commands.
+    #[serde(default)]
+    pub end_time_s: Option<f64>,
+    /// Body-frame axis to align to the target ECI direction. Defaults
+    /// to body +z when omitted.
+    #[serde(default)]
+    pub body_axis_body: Option<[f64; 3]>,
+    /// Optional roll-axis direct-torque effector id.
+    #[serde(default)]
+    pub roll_effector: Option<String>,
+    /// Optional pitch-axis direct-torque effector id.
+    #[serde(default)]
+    pub pitch_effector: Option<String>,
+    /// Optional yaw-axis direct-torque effector id.
+    #[serde(default)]
+    pub yaw_effector: Option<String>,
+    /// Proportional attitude-error gain.
+    pub kp: f64,
+    /// Body-rate damping gain. Defaults to zero.
+    #[serde(default)]
+    pub kd: f64,
+    /// Optional symmetric command clamp applied before the effector's
+    /// own limits.
+    #[serde(default)]
+    pub max_command: Option<f64>,
+    /// Target direction provider.
+    pub target: MultiBodyAttitudeTargetKindConfig,
+}
+
+impl MultiBodyAttitudeTargetConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("multi_body.attitude_target[{index}].{field}");
+        require_non_empty(&path("body_id"), &self.body_id)?;
+        if let Some(start_time_s) = self.start_time_s {
+            require_finite(&path("start_time_s"), start_time_s)?;
+        }
+        if let Some(end_time_s) = self.end_time_s {
+            require_finite(&path("end_time_s"), end_time_s)?;
+        }
+        if let (Some(start_time_s), Some(end_time_s)) = (self.start_time_s, self.end_time_s)
+            && start_time_s >= end_time_s
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("end_time_s"),
+                value: end_time_s,
+                rule: "must be strictly greater than start_time_s",
+            });
+        }
+        if let Some(axis) = self.body_axis_body {
+            require_finite_array(&path("body_axis_body"), &axis)?;
+            require_nonzero_vector(&path("body_axis_body"), &axis)?;
+        }
+        validate_optional_effector_id(&path("roll_effector"), &self.roll_effector)?;
+        validate_optional_effector_id(&path("pitch_effector"), &self.pitch_effector)?;
+        validate_optional_effector_id(&path("yaw_effector"), &self.yaw_effector)?;
+        if self.roll_effector.is_none()
+            && self.pitch_effector.is_none()
+            && self.yaw_effector.is_none()
+        {
+            return Err(ScenarioError::EmptyList {
+                field: path("roll_effector, pitch_effector, or yaw_effector"),
+            });
+        }
+        require_finite(&path("kp"), self.kp)?;
+        require_positive(&path("kp"), self.kp)?;
+        require_finite(&path("kd"), self.kd)?;
+        if self.kd < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("kd"),
+                value: self.kd,
+                rule: "must be greater than or equal to zero",
+            });
+        }
+        if let Some(max_command) = self.max_command {
+            require_finite(&path("max_command"), max_command)?;
+            require_positive(&path("max_command"), max_command)?;
+        }
+        self.target.validate(index)?;
+        Ok(())
+    }
+}
+
+fn validate_optional_effector_id(field: &str, value: &Option<String>) -> Result<(), ScenarioError> {
+    if let Some(value) = value {
+        require_non_empty(field, value)?;
+    }
+    Ok(())
+}
+
+fn require_nonzero_vector(field: &str, value: &[f64; 3]) -> Result<(), ScenarioError> {
+    let norm_sq = value
+        .iter()
+        .map(|component| component * component)
+        .sum::<f64>();
+    if norm_sq <= 0.0 {
+        return Err(ScenarioError::InvalidNumber {
+            field: field.to_owned(),
+            value: norm_sq,
+            rule: "must have non-zero norm",
+        });
+    }
+    Ok(())
+}
+
+/// Direction provider for `[[multi_body.attitude_target]]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MultiBodyAttitudeTargetKindConfig {
+    /// Fixed ECI direction.
+    EciVector {
+        /// Target ECI vector. It is normalised at runtime.
+        vector_eci: [f64; 3],
+    },
+    /// State-relative direction in the local radial / downrange /
+    /// crossrange basis.
+    SurfaceRelativeAxes {
+        /// Radial component, positive outward from Earth centre.
+        radial: f64,
+        /// Downrange component along `downrange_axis_eci` projected into
+        /// the local horizontal plane.
+        downrange: f64,
+        /// Crossrange component completing the right-handed local basis.
+        crossrange: f64,
+        /// Nominal downrange ECI axis.
+        downrange_axis_eci: [f64; 3],
+    },
+}
+
+impl MultiBodyAttitudeTargetKindConfig {
+    fn validate(&self, controller_index: usize) -> Result<(), ScenarioError> {
+        let path =
+            |field: &str| format!("multi_body.attitude_target[{controller_index}].target.{field}");
+        match self {
+            Self::EciVector { vector_eci } => {
+                require_finite_array(&path("vector_eci"), vector_eci)?;
+                require_nonzero_vector(&path("vector_eci"), vector_eci)?;
+            }
+            Self::SurfaceRelativeAxes {
+                radial,
+                downrange,
+                crossrange,
+                downrange_axis_eci,
+            } => {
+                require_finite(&path("radial"), *radial)?;
+                require_finite(&path("downrange"), *downrange)?;
+                require_finite(&path("crossrange"), *crossrange)?;
+                require_finite_array(&path("downrange_axis_eci"), downrange_axis_eci)?;
+                require_nonzero_vector(&path("downrange_axis_eci"), downrange_axis_eci)?;
+                let norm_sq = radial * radial + downrange * downrange + crossrange * crossrange;
+                if norm_sq <= 0.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("radial/downrange/crossrange"),
+                        value: norm_sq,
+                        rule: "combined reference vector must have non-zero norm",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Multi-instance estimator-routing block (`[fc.estimator_lanes]`, v3 only).

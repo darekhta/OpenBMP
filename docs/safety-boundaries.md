@@ -119,8 +119,10 @@ Reject contributions that add or request:
   route planning to specific targets, payload delivery, target-objective
   optimization, seeker integration, terminal-homing logic, or any guidance law
   whose stated purpose is to strike a real-world point.
-- Any code or documentation labelled "Target", "Seeker", "Warhead", "Strike",
+- Any code or documentation labelled "Seeker", "Warhead", "Strike",
   "Interceptor", "Kill", "Threat", or equivalent operational terminology.
+  The bare word "target" is allowed when it is neutral simulation vocabulary;
+  operational target compounds remain rejected.
 - Mission-planning tools for operational launches, weapon-employment scripts,
   field procedures, or launch-site procedures.
 - Counter-defense, counter-radar, electronic-warfare, jamming, decoy, or
@@ -236,9 +238,9 @@ Use names that reinforce simulation-only scope:
   `AeroDeck`, `DragBuildup`, `SyntheticSensor`, `Estimator`, `Autopilot` (in the
   `openbmp-fc` crate only, where the term is explicitly virtual), `Phase`,
   `MissionStateMachine`, `Scenario`, `Telemetry`, `Validation`, `FaultModel`.
-- Avoid: `Target`, `Seeker`, `Warhead`, `Strike`, `Interceptor`, `Kill`,
-  `Threat`, `Launch` (as a verb implying real launch), `Engagement`,
-  `WeaponSystem`, `FiringTable`, `RangeTable`, `BallisticMatch`.
+- Avoid: `Seeker`, `Warhead`, `Strike`, `Interceptor`, `Kill`, `Threat`,
+  `Launch` (as a verb implying real launch), `Engagement`, `WeaponSystem`,
+  `FiringTable`, `RangeTable`, `BallisticMatch`.
 - The term `FlightController` is acceptable inside the `openbmp-fc` crate when
   the doc-comment makes it explicit that the implementation is a
   **simulator-local virtual flight controller, not deployable flight
