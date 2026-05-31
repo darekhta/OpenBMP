@@ -32,7 +32,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use openbmp_core::{Body, Duration, EngineId, Position3};
+use openbmp_core::{Body, BodyId, Duration, EngineId, Position3};
 use openbmp_propulsion::{
     ClusterLayout as PropulsionClusterLayout, EngineCluster, EngineFault, EngineLimits,
     EngineModel, EngineState, LiquidEngine,
@@ -51,6 +51,8 @@ use crate::error::RunnerError;
 pub struct EngineRack {
     cluster: EngineCluster,
     dt: Duration,
+    engine_owners: BTreeMap<EngineId, BodyId>,
+    retired_bodies: BTreeSet<BodyId>,
 }
 
 impl EngineRack {
@@ -68,11 +70,15 @@ impl EngineRack {
         let mut engines: Vec<Box<dyn EngineModel>> = Vec::new();
         let mut mount_points_body: Vec<Position3<Body>> = Vec::new();
         let mut engine_ids: Vec<EngineId> = Vec::new();
+        let mut engine_owners: BTreeMap<EngineId, BodyId> = BTreeMap::new();
         let assembly = &document.vehicle.assembly;
         let layout = assembly.cluster_layout.unwrap_or_default();
         for (index, config) in assembly.engines.iter().enumerate() {
             let engine = build_engine(index, config)?;
             let id = engine.id();
+            if let Some(owner) = config.mounted_to.as_deref() {
+                engine_owners.insert(id, body_id_from_scenario_text(owner));
+            }
             engines.push(Box::new(engine));
             mount_points_body.push(Position3::<Body>::new(
                 config.mount_point_body_m[0],
@@ -95,7 +101,12 @@ impl EngineRack {
                 reason: err.to_string(),
             })?;
 
-        Ok(Self { cluster, dt })
+        Ok(Self {
+            cluster,
+            dt,
+            engine_owners,
+            retired_bodies: BTreeSet::new(),
+        })
     }
 
     /// Number of engines in the rack.
@@ -122,6 +133,48 @@ impl EngineRack {
     #[must_use]
     pub fn mount_points_body(&self) -> &[Position3<Body>] {
         self.cluster.mount_points_body()
+    }
+
+    /// Replace the set of rigid-body lanes that have been retired
+    /// after separated-body ground impact.
+    pub fn set_retired_bodies<I>(&mut self, retired_bodies: I)
+    where
+        I: IntoIterator<Item = BodyId>,
+    {
+        self.retired_bodies = retired_bodies.into_iter().collect();
+    }
+
+    /// Force engines mounted to retired separated bodies into shutdown
+    /// before publishing the next kernel snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::Engine`] if the underlying propulsion
+    /// cluster rejects the shutdown command.
+    pub fn shutdown_retired_body_engines(&mut self) -> Result<(), RunnerError> {
+        let retired_engines: Vec<EngineId> = self
+            .cluster
+            .engine_ids()
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.engine_owners
+                    .get(id)
+                    .is_some_and(|owner| self.retired_bodies.contains(owner))
+            })
+            .collect();
+        for id in retired_engines {
+            self.cluster
+                .apply_command(id, shutdown_command())
+                .map_err(|err| RunnerError::Engine {
+                    field: format!(
+                        "vehicle.assembly.engines.{id_value}.retired_body_shutdown",
+                        id_value = id.value()
+                    ),
+                    reason: err.to_string(),
+                })?;
+        }
+        Ok(())
     }
 
     /// Apply any scenario-script engine-command actions drained from
@@ -171,6 +224,14 @@ impl EngineRack {
                     ignite,
                     shutdown,
                 };
+                self.reject_retired_body_command(
+                    id,
+                    &command,
+                    format!(
+                        "mission.events[*].action.engine_command.{id_value}",
+                        id_value = id.value()
+                    ),
+                )?;
                 self.cluster
                     .apply_command(id, command)
                     .map_err(|err| RunnerError::Engine {
@@ -205,12 +266,38 @@ impl EngineRack {
                 ignite: command.ignite,
                 shutdown: command.shutdown,
             };
+            self.reject_retired_body_command(
+                id,
+                &payload,
+                format!("fc.actuator.engine_cmds.{id_value}", id_value = id.value()),
+            )?;
             self.cluster
                 .apply_command(id, payload)
                 .map_err(|err| RunnerError::Engine {
                     field: "fc.actuator.engine_cmds".to_owned(),
                     reason: err.to_string(),
                 })?;
+        }
+        Ok(())
+    }
+
+    fn reject_retired_body_command(
+        &self,
+        id: EngineId,
+        command: &openbmp_propulsion::EngineCommand,
+        field: String,
+    ) -> Result<(), RunnerError> {
+        let Some(owner) = self.engine_owners.get(&id) else {
+            return Ok(());
+        };
+        if self.retired_bodies.contains(owner) && command_requests_activity(command) {
+            return Err(RunnerError::Engine {
+                field,
+                reason: format!(
+                    "active engine command targets retired separated body {body}",
+                    body = owner.value()
+                ),
+            });
         }
         Ok(())
     }
@@ -314,6 +401,28 @@ impl EngineRack {
     }
 }
 
+fn body_id_from_scenario_text(id: &str) -> BodyId {
+    BodyId::from_path(&format!("vehicle.assembly.bodies.{id}"))
+}
+
+fn shutdown_command() -> openbmp_propulsion::EngineCommand {
+    openbmp_propulsion::EngineCommand {
+        throttle_unit: 0.0,
+        gimbal_pitch_rad: 0.0,
+        gimbal_yaw_rad: 0.0,
+        ignite: false,
+        shutdown: true,
+    }
+}
+
+fn command_requests_activity(command: &openbmp_propulsion::EngineCommand) -> bool {
+    command.ignite
+        || command.throttle_unit > 0.0
+        || command.gimbal_pitch_rad != 0.0
+        || command.gimbal_yaw_rad != 0.0
+        || !command.shutdown
+}
+
 fn engine_state_index(state: EngineState) -> u8 {
     match state {
         EngineState::Idle => 0,
@@ -411,6 +520,8 @@ mod tests {
             EngineRack {
                 cluster,
                 dt: Duration::from_seconds(0.001),
+                engine_owners: BTreeMap::new(),
+                retired_bodies: BTreeSet::new(),
             },
             id,
         )

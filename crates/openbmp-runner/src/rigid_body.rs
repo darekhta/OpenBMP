@@ -318,6 +318,8 @@ pub fn run(
     while kernel.stop_reason().is_none() {
         effector_rack.apply_overrides(&pending_effector_events)?;
         if !engine_rack.is_empty() {
+            engine_rack
+                .set_retired_bodies(retired_separated_body_ids(kernel.separated_rigid_bodies()));
             engine_rack.apply_commands(&pending_engine_events)?;
         }
         if let Some(bridge) = &mut fc_bridge {
@@ -465,6 +467,12 @@ pub fn run(
             &mass_model,
             &mut stack_bodies,
         )?;
+        if !engine_rack.is_empty() {
+            engine_rack
+                .set_retired_bodies(retired_separated_body_ids(kernel.separated_rigid_bodies()));
+            engine_rack.shutdown_retired_body_engines()?;
+            kernel.set_engine_snapshot(engine_rack.snapshot_map());
+        }
         if let Some(driver) = &mut aerothermal_driver {
             let environment = kernel.current_environment_sample()?;
             driver.evaluate_rigid_body(kernel.current_state(), &environment, document.time.dt_s)?;
@@ -511,6 +519,16 @@ pub fn run(
         stop_reason,
         table,
     })
+}
+
+fn retired_separated_body_ids(
+    separated_bodies: &[openbmp_sim::SeparatedRigidBody],
+) -> BTreeSet<BodyId> {
+    separated_bodies
+        .iter()
+        .filter(|body| !body.propagating)
+        .map(|body| body.body)
+        .collect()
 }
 
 fn automatic_ground_impact(document: &ScenarioDocument) -> GroundImpact {
@@ -3713,6 +3731,92 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const RETIRED_BODY_ENGINE_COMMAND_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "retired-body-engine-command-test"
+description = "Synthetic retired separated-lane engine command regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 3.0
+dt_s = 1.0
+seed = 37
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [6371100.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "retired-body-engine-command-test"
+
+[[vehicle.assembly.bodies]]
+id = "bus"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 3.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[[vehicle.assembly.bodies]]
+id = "booster"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]]
+
+[[vehicle.assembly.engines]]
+id = "boost"
+mounted_to = "booster"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, 0.0]
+limits = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity", "thrust"]
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "coast"
+
+[[mission.events]]
+id = "ignite_retired_booster"
+trigger = { kind = "at_time", time_s = 2.0 }
+action = { kind = "engine_command", id = "boost", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+once = true
+
+[multi_body]
+primary_body_id = "bus"
+
+[[multi_body.initial_lane]]
+body_id = "booster"
+position_eci_m = [6371101.0, 0.0, 0.0]
+velocity_eci_m_s = [-2.0, 0.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[telemetry]
+output.csv = "out/retired-body-engine-command-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn valid_stage_separation_document() -> ScenarioDocument {
         openbmp_scenario::Scenario::from_toml_str(include_str!(
             "../../openbmp-scenario/tests/fixtures/stage-separation-valid.toml"
@@ -3914,6 +4018,22 @@ require_monotonic_time = true
         assert!(
             propagating.iter().any(|value| !*value),
             "ground-crossing lane should be marked non-propagating: {propagating:?}"
+        );
+    }
+
+    #[test]
+    fn engine_command_to_retired_separated_body_fails_closed() {
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(RETIRED_BODY_ENGINE_COMMAND_SCENARIO)
+                .expect("retired-body engine command scenario must parse");
+        let err = match crate::run(&scenario) {
+            Ok(_) => panic!("retired-body engine command scenario should fail"),
+            Err(err) => err,
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("retired separated body"),
+            "unexpected error: {message}"
         );
     }
 
