@@ -267,6 +267,7 @@ impl Job for AscentReferenceGuidance {
             .ok()
             .flatten()
             .map_or(0.0, |(s, _)| s.accel_m_s2.norm());
+        let surface_relative_velocity = nav_metrics::air_relative_velocity_eci_m_s(&position);
         let speed = position.velocity_eci_m_s.norm();
         let state = AscentState {
             position_eci_m: [
@@ -279,11 +280,17 @@ impl Job for AscentReferenceGuidance {
                 position.velocity_eci_m_s.y,
                 position.velocity_eci_m_s.z,
             ],
+            surface_relative_velocity_eci_m_s: [
+                surface_relative_velocity.x,
+                surface_relative_velocity.y,
+                surface_relative_velocity.z,
+            ],
             altitude_m: nav_metrics::altitude_m(position.position_eci_m),
             inertial_speed_m_s: speed,
+            surface_relative_speed_m_s: surface_relative_velocity.norm(),
             flight_path_angle_rad: nav_metrics::flight_path_angle_rad(
                 position.position_eci_m,
-                position.velocity_eci_m_s,
+                surface_relative_velocity,
             ),
             dynamic_pressure_pa: nav_metrics::dynamic_pressure_air_relative(&position),
             mass_fraction: 1.0,
@@ -424,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn ascent_state_uses_geocentric_altitude_and_flight_path_angle() {
+    fn ascent_state_uses_geocentric_altitude_and_surface_relative_flight_path_angle() {
         let bus = Bus::new();
         bus.register::<VehicleStatus>().unwrap();
         bus.register::<PositionEstimate>().unwrap();
@@ -437,13 +444,15 @@ mod tests {
             safe_state_requested: false,
         })
         .unwrap();
-        bus.publish(PositionEstimate {
+        let position = PositionEstimate {
             time: SimTime::from_seconds(5.0),
             position_eci_m: Vector3::new(6_471_000.0, 0.0, 0.0),
             velocity_eci_m_s: Vector3::new(100.0, 100.0, 0.0),
             accel_bias_body_m_s2: Vector3::zeros(),
-        })
-        .unwrap();
+        };
+        let expected_surface_relative_velocity =
+            nav_metrics::air_relative_velocity_eci_m_s(&position);
+        bus.publish(position).unwrap();
         let clock = SimulatedClock::at(SimTime::from_seconds(5.0), StepIndex::new(5));
         let captured = Arc::new(Mutex::new(None));
         let mut job = AscentReferenceGuidance::new(Box::new(RecordingReference {
@@ -462,7 +471,21 @@ mod tests {
             .unwrap()
             .expect("guidance should pass ascent state to generator");
         assert!((state.altitude_m - 100_000.0).abs() < 1.0e-9);
-        let expected_gamma = (100.0_f64 / (100.0_f64.hypot(100.0))).asin();
+        assert_eq!(state.velocity_eci_m_s, [100.0, 100.0, 0.0]);
+        assert!(
+            (Vector3::from(state.surface_relative_velocity_eci_m_s)
+                - expected_surface_relative_velocity)
+                .norm()
+                < 1.0e-12
+        );
+        assert!(
+            (state.surface_relative_speed_m_s - expected_surface_relative_velocity.norm()).abs()
+                < 1.0e-12
+        );
+        let expected_gamma = nav_metrics::flight_path_angle_rad(
+            position.position_eci_m,
+            expected_surface_relative_velocity,
+        );
         assert!((state.flight_path_angle_rad - expected_gamma).abs() < 1.0e-12);
     }
 }

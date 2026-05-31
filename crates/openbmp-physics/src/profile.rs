@@ -51,7 +51,7 @@ const MIN_LONGITUDE_COSINE: f64 = 1.0e-12;
 const MIN_ENTRY_CORRIDOR_BAND_RAD: f64 = 1.0e-12;
 const MIN_ENTRY_BANK_LIMIT_RAD: f64 = 1.0e-12;
 
-/// Default minimum inertial speed for gravity-turn alignment (m/s).
+/// Default minimum surface-relative speed for gravity-turn alignment (m/s).
 pub const GRAVITY_TURN_MINIMUM_SPEED_M_S: f64 = 1.0e-6;
 
 /// Default absolute tolerance for checking linear momentum residuals
@@ -66,10 +66,15 @@ pub struct AscentState {
     pub position_eci_m: [f64; 3],
     /// ECI velocity `[x, y, z]` (m/s).
     pub velocity_eci_m_s: [f64; 3],
+    /// Velocity relative to the rotating surface / atmosphere, expressed
+    /// in ECI axes (m/s).
+    pub surface_relative_velocity_eci_m_s: [f64; 3],
     /// Geometric altitude above the WGS84 ellipsoid (m).
     pub altitude_m: f64,
     /// Inertial speed magnitude (m/s).
     pub inertial_speed_m_s: f64,
+    /// Surface-relative speed magnitude (m/s).
+    pub surface_relative_speed_m_s: f64,
     /// Flight-path angle above the local horizon (rad).
     pub flight_path_angle_rad: f64,
     /// Dynamic pressure (Pa).
@@ -100,6 +105,10 @@ impl AscentState {
             self.velocity_eci_m_s,
             "ascent velocity components must be finite",
         )?;
+        require_finite_vec3(
+            self.surface_relative_velocity_eci_m_s,
+            "ascent surface-relative velocity components must be finite",
+        )?;
         if !self.altitude_m.is_finite() {
             return Err(PhysicsError::InvalidParameter {
                 reason: "ascent altitude must be finite",
@@ -108,6 +117,11 @@ impl AscentState {
         if !self.inertial_speed_m_s.is_finite() || self.inertial_speed_m_s < 0.0 {
             return Err(PhysicsError::InvalidParameter {
                 reason: "ascent inertial speed must be finite and non-negative",
+            });
+        }
+        if !self.surface_relative_speed_m_s.is_finite() || self.surface_relative_speed_m_s < 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ascent surface-relative speed must be finite and non-negative",
             });
         }
         if !self.flight_path_angle_rad.is_finite() {
@@ -308,13 +322,14 @@ impl AscentReferenceGenerator for GravityTurnAscentReference {
         _time: SimTime,
     ) -> Result<AscentReference, PhysicsError> {
         state.validate()?;
-        let speed = vector_norm(state.velocity_eci_m_s);
+        let speed = state.surface_relative_speed_m_s;
         if speed < self.minimum_speed_m_s {
             return Err(PhysicsError::OutOfEnvelope {
-                reason: "gravity-turn reference requires non-zero inertial speed",
+                reason: "gravity-turn reference requires non-zero surface-relative speed",
             });
         }
-        let q_body_to_eci_xyzw = reference_quaternion_from_body_z(state.velocity_eci_m_s)?;
+        let q_body_to_eci_xyzw =
+            reference_quaternion_from_body_z(state.surface_relative_velocity_eci_m_s)?;
         Ok(AscentReference {
             q_body_to_eci_xyzw,
             body_rate_rad_s: None,
@@ -1026,8 +1041,9 @@ fn local_downrange_unit(up: Vector3<f64>, axis_eci: [f64; 3]) -> Option<Vector3<
 
 /// Sequenced launch-to-orbit ascent reference.
 ///
-/// Chains the standard ascent guidance regimes, selected by inertial
-/// speed, into the one reference a flight controller drives end to end:
+/// Chains the standard ascent guidance regimes, selected by surface-relative
+/// speed until PEG handoff, into the one reference a flight controller drives
+/// end to end:
 ///
 /// 1. **Vertical rise** (`speed < kick_start`): thrust radially up — let
 ///    the vehicle clear the pad before any steering.
@@ -1036,8 +1052,9 @@ fn local_downrange_unit(up: Vector3<f64>, axis_eci: [f64; 3]) -> Option<Vector3<
 ///    horizontal velocity that starts the gravity turn (the single
 ///    steering event of an ideal ascent).
 /// 3. **Gravity turn** (`kick_end ≤ speed < peg_handoff`): align the
-///    thrust axis with the inertial velocity (angle of attack ≈ 0), so
-///    gravity turns the trajectory with minimal steering/aero load.
+///    thrust axis with the surface-relative velocity (angle of attack ≈ 0
+///    under a still rotating atmosphere), so gravity turns the trajectory with
+///    minimal steering/aero load.
 /// 4. **PEG insertion** (`speed ≥ peg_handoff`): hand off to Powered
 ///    Explicit Guidance for the precise orbital insertion.
 ///
@@ -1130,21 +1147,25 @@ impl AscentReferenceGenerator for SequencedAscentReference {
     ) -> Result<AscentReference, PhysicsError> {
         state.validate()?;
         let pos = Vector3::from(state.position_eci_m);
-        let vel = Vector3::from(state.velocity_eci_m_s);
+        let surface_vel = Vector3::from(state.surface_relative_velocity_eci_m_s);
         let r = pos.norm();
-        let speed = vel.norm();
+        let surface_speed = state.surface_relative_speed_m_s;
 
         // PEG handles its own low-speed gating, so hand off as soon as the
         // vehicle is fast enough.
-        if speed >= self.peg_handoff_speed_m_s {
+        if surface_speed >= self.peg_handoff_speed_m_s {
             return self.peg.ascent_reference(state, time);
         }
 
         if r <= MIN_DIRECTION_NORM {
             // Pre-navigation: command velocity-aligned if moving, else
             // identity (vertical at the pad).
-            if speed > MIN_DIRECTION_NORM {
-                let q = reference_quaternion_from_body_z([vel.x, vel.y, vel.z])?;
+            if surface_speed > MIN_DIRECTION_NORM {
+                let q = reference_quaternion_from_body_z([
+                    surface_vel.x,
+                    surface_vel.y,
+                    surface_vel.z,
+                ])?;
                 return Ok(AscentReference {
                     q_body_to_eci_xyzw: q,
                     body_rate_rad_s: None,
@@ -1157,10 +1178,10 @@ impl AscentReferenceGenerator for SequencedAscentReference {
         }
         let up = pos / r;
 
-        let forward = if speed < self.kick_start_speed_m_s {
+        let forward = if surface_speed < self.kick_start_speed_m_s {
             // Vertical rise.
             up
-        } else if speed < self.kick_end_speed_m_s {
+        } else if surface_speed < self.kick_end_speed_m_s {
             // Pitch kick: tilt `kick_angle` off vertical toward downrange.
             let downrange = local_downrange_unit(up, self.downrange_axis_eci).ok_or(
                 PhysicsError::OutOfEnvelope {
@@ -1169,9 +1190,10 @@ impl AscentReferenceGenerator for SequencedAscentReference {
             )?;
             up * self.kick_angle_rad.cos() + downrange * self.kick_angle_rad.sin()
         } else {
-            // Gravity turn: follow the inertial velocity (zero AoA).
-            if speed > MIN_DIRECTION_NORM {
-                vel / speed
+            // Gravity turn: follow the surface-relative velocity (zero
+            // air-relative AoA under a still rotating atmosphere).
+            if surface_speed > MIN_DIRECTION_NORM {
+                surface_vel / surface_speed
             } else {
                 up
             }
@@ -3722,8 +3744,8 @@ mod tests {
         GravityTurnAscentReference, IdealStagingBudgetAnalysis, MomentumConservingStageSeparation,
         NumericalFootprintState, NumericalGravityRangeSafetyFootprint, PegAscentReference,
         PitchProgramAscentReference, RangeSafetyFootprint,
-        STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, StageMassProperties, StageSeparationModel,
-        StagingBudgetAnalysis, StagingBudgetInput, StagingBudgetMode,
+        STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, SequencedAscentReference, StageMassProperties,
+        StageSeparationModel, StagingBudgetAnalysis, StagingBudgetInput, StagingBudgetMode,
         constant_gravity_footprint_monte_carlo, drag_wind_derivative,
     };
     use super::{
@@ -3740,8 +3762,10 @@ mod tests {
         AscentState {
             position_eci_m: [0.0, 0.0, 100.0],
             velocity_eci_m_s: [10.0, 0.0, 100.0],
+            surface_relative_velocity_eci_m_s: [10.0, 0.0, 100.0],
             altitude_m: 100.0,
             inertial_speed_m_s: 100.498_756_211_208_9,
+            surface_relative_speed_m_s: 100.498_756_211_208_9,
             flight_path_angle_rad: 1.471_127_674_303_734_7,
             dynamic_pressure_pa: 0.0,
             mass_fraction: 1.0,
@@ -3875,26 +3899,87 @@ mod tests {
     }
 
     #[test]
-    fn gravity_turn_aligns_thrust_axis_with_inertial_velocity() {
+    fn gravity_turn_aligns_thrust_axis_with_surface_relative_velocity() {
         let reference = GravityTurnAscentReference::default()
             .ascent_reference(&nominal_ascent_state(), SimTime::from_seconds(1.0))
             .unwrap();
         // Gravity turn aligns the engine thrust axis (body +z) with the
-        // inertial velocity vector (zero angle of attack).
+        // surface-relative velocity vector (zero air-relative angle of
+        // attack under a still rotating atmosphere).
         let body_z = body_z_axis(reference.q_body_to_eci_xyzw);
         let expected = Vector3::new(10.0, 0.0, 100.0).normalize();
         assert!((body_z - expected).norm() < 1.0e-12);
     }
 
     #[test]
+    fn gravity_turn_ignores_surface_corotation_in_inertial_velocity() {
+        let r = WGS84_A_M;
+        let corotation_speed = WGS84_OMEGA_RAD_S * r;
+        let mut state = nominal_ascent_state();
+        state.position_eci_m = [r, 0.0, 0.0];
+        state.velocity_eci_m_s = [100.0, corotation_speed, 0.0];
+        state.surface_relative_velocity_eci_m_s = [100.0, 0.0, 0.0];
+        state.altitude_m = 0.0;
+        state.inertial_speed_m_s = 100.0_f64.hypot(corotation_speed);
+        state.surface_relative_speed_m_s = 100.0;
+        state.flight_path_angle_rad = std::f64::consts::FRAC_PI_2;
+
+        let reference = GravityTurnAscentReference::default()
+            .ascent_reference(&state, SimTime::from_seconds(1.0))
+            .unwrap();
+
+        let body_z = body_z_axis(reference.q_body_to_eci_xyzw);
+        assert!(
+            (body_z - Vector3::new(1.0, 0.0, 0.0)).norm() < 1.0e-12,
+            "gravity turn must follow surface-relative velocity, got {body_z:?}"
+        );
+    }
+
+    #[test]
     fn gravity_turn_rejects_zero_velocity() {
         let mut state = nominal_ascent_state();
-        state.velocity_eci_m_s = [0.0, 0.0, 0.0];
-        state.inertial_speed_m_s = 0.0;
+        state.surface_relative_velocity_eci_m_s = [0.0, 0.0, 0.0];
+        state.surface_relative_speed_m_s = 0.0;
         let err = GravityTurnAscentReference::default()
             .ascent_reference(&state, SimTime::from_seconds(1.0))
             .unwrap_err();
         assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
+    }
+
+    #[test]
+    fn sequenced_ascent_uses_surface_relative_speed_for_initial_gates() {
+        let r = WGS84_A_M;
+        let corotation_speed = WGS84_OMEGA_RAD_S * r;
+        let mut state = nominal_ascent_state();
+        state.position_eci_m = [r, 0.0, 0.0];
+        state.velocity_eci_m_s = [0.0, corotation_speed, 0.0];
+        state.surface_relative_velocity_eci_m_s = [0.0, 0.0, 0.0];
+        state.altitude_m = 0.0;
+        state.inertial_speed_m_s = corotation_speed;
+        state.surface_relative_speed_m_s = 0.0;
+        state.flight_path_angle_rad = 0.0;
+
+        let sequence = SequencedAscentReference::new(
+            10.0,
+            20.0,
+            0.2,
+            30.0,
+            [0.0, 1.0, 0.0],
+            r + 200_000.0,
+            3334.0,
+            9.0,
+            120.0,
+        )
+        .unwrap();
+
+        let reference = sequence
+            .ascent_reference(&state, SimTime::from_seconds(1.0))
+            .unwrap();
+        let body_z = body_z_axis(reference.q_body_to_eci_xyzw);
+        assert!(
+            (body_z - Vector3::new(1.0, 0.0, 0.0)).norm() < 1.0e-12,
+            "surface corotation must not skip vertical rise, got {body_z:?}"
+        );
     }
 
     #[test]
@@ -3911,8 +3996,10 @@ mod tests {
         let state = AscentState {
             position_eci_m: [r, 0.0, 0.0],
             velocity_eci_m_s: [0.0, vt, 0.0],
+            surface_relative_velocity_eci_m_s: [0.0, vt - WGS84_OMEGA_RAD_S * r, 0.0],
             altitude_m: r - re,
             inertial_speed_m_s: vt,
+            surface_relative_speed_m_s: vt - WGS84_OMEGA_RAD_S * r,
             flight_path_angle_rad: 0.0,
             dynamic_pressure_pa: 0.0,
             mass_fraction: 1.0,
