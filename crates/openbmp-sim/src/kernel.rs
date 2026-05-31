@@ -78,33 +78,46 @@ fn geometric_altitude_m(position_eci: &nalgebra::Vector3<f64>) -> f64 {
     geometric_altitude_unclamped_m(position_eci).max(0.0)
 }
 
+const DEFAULT_GEOCENTRIC_GROUND_RADIUS_M: f64 = 6_371_000.0;
+const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
+
 fn geometric_altitude_unclamped_m(position_eci: &nalgebra::Vector3<f64>) -> f64 {
-    const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
+    geometric_altitude_unclamped_m_with_radius(position_eci, DEFAULT_GEOCENTRIC_GROUND_RADIUS_M)
+}
+
+fn geometric_altitude_unclamped_m_with_radius(
+    position_eci: &nalgebra::Vector3<f64>,
+    ground_radius_m: f64,
+) -> f64 {
     let r = position_eci.norm();
     if is_geocentric_position(position_eci) {
-        r - EARTH_MEAN_RADIUS_M
+        r - ground_radius_m
     } else {
         position_eci.z
     }
 }
 
 fn is_geocentric_position(position_eci: &nalgebra::Vector3<f64>) -> bool {
-    const GEOCENTRIC_RADIUS_THRESHOLD_M: f64 = 1.0e6;
     position_eci.norm() > GEOCENTRIC_RADIUS_THRESHOLD_M
 }
 
-fn separated_rigid_body_has_impacted_ground(state: &openbmp_state::RigidBodyState) -> bool {
+fn separated_rigid_body_has_impacted_ground(
+    state: &openbmp_state::RigidBodyState,
+    ground_radius_m: f64,
+) -> bool {
     is_geocentric_position(&state.position.vector)
-        && geometric_altitude_unclamped_m(&state.position.vector) <= 0.0
+        && geometric_altitude_unclamped_m_with_radius(&state.position.vector, ground_radius_m)
+            <= 0.0
         && vertical_climb_rate(&state.position.vector, &state.velocity.vector) < 0.0
 }
 
 fn separated_rigid_body_crossed_ground(
     previous: &openbmp_state::RigidBodyState,
     current: &openbmp_state::RigidBodyState,
+    ground_radius_m: f64,
 ) -> bool {
-    geometric_altitude_unclamped_m(&previous.position.vector) > 0.0
-        && separated_rigid_body_has_impacted_ground(current)
+    geometric_altitude_unclamped_m_with_radius(&previous.position.vector, ground_radius_m) > 0.0
+        && separated_rigid_body_has_impacted_ground(current, ground_radius_m)
 }
 
 const EVENT_SCALARS_MODEL_ID: ModelId = ModelId::new(0);
@@ -400,6 +413,10 @@ where
     /// and step in vector order, giving a fixed body order after
     /// split.
     separated_rigid_bodies: Vec<SeparatedRigidBody>,
+    /// Spherical ground radius used to retire separated geocentric
+    /// rigid-body lanes after impact. Primary-body ground stops remain
+    /// owned by `stop_condition`.
+    separated_geocentric_ground_radius_m: f64,
     /// Active body represented by the primary rigid-body lane after
     /// initial lane seeding or the first separation. `None` before
     /// either transition and for point-mass kernels, which preserves
@@ -487,6 +504,7 @@ where
             bending_reaction_moment_body_n_m: nalgebra::Vector3::zeros(),
             recovery_snapshot: std::collections::BTreeMap::new(),
             separated_rigid_bodies: Vec::new(),
+            separated_geocentric_ground_radius_m: DEFAULT_GEOCENTRIC_GROUND_RADIUS_M,
             primary_rigid_body: None,
         })
     }
@@ -841,6 +859,31 @@ where
         &mut self,
     ) -> Vec<crate::events::FiredEvent<crate::events::ScenarioScriptAction>> {
         std::mem::take(&mut self.pending_script_fired)
+    }
+
+    /// Override the spherical ground radius used to retire separated
+    /// geocentric rigid-body lanes after impact.
+    ///
+    /// Primary-body stop conditions remain owned by `stop_condition`;
+    /// this only controls telemetry-retained separated bodies.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::InvalidConfig`] if `radius_m` is not a
+    /// finite positive geocentric radius.
+    pub fn set_separated_geocentric_ground_radius_m(
+        &mut self,
+        radius_m: f64,
+    ) -> Result<(), SimulationError> {
+        if !radius_m.is_finite() || radius_m <= GEOCENTRIC_RADIUS_THRESHOLD_M {
+            return Err(SimulationError::InvalidConfig {
+                reason: format!(
+                    "separated geocentric ground radius must be finite and greater than {GEOCENTRIC_RADIUS_THRESHOLD_M} m, got {radius_m}"
+                ),
+            });
+        }
+        self.separated_geocentric_ground_radius_m = radius_m;
+        Ok(())
     }
 
     /// Inject the externally-owned mission state published by the FC
@@ -1417,6 +1460,7 @@ where
             bending_reaction_moment_body_n_m: nalgebra::Vector3::zeros(),
             recovery_snapshot: std::collections::BTreeMap::new(),
             separated_rigid_bodies: Vec::new(),
+            separated_geocentric_ground_radius_m: DEFAULT_GEOCENTRIC_GROUND_RADIUS_M,
             primary_rigid_body: None,
         })
     }
@@ -1556,8 +1600,13 @@ where
         let canonical_time_s = self.initial_time_s + (next_step.value() as f64) * self.dt_s;
         let new_state = raw_new.with_time(SimTime::from_seconds(canonical_time_s));
         let mut separated_updates = Vec::with_capacity(self.separated_rigid_bodies.len());
+        let separated_ground_radius_m = self.separated_geocentric_ground_radius_m;
         for separated in &self.separated_rigid_bodies {
-            if !separated.propagating || separated_rigid_body_has_impacted_ground(&separated.state)
+            if !separated.propagating
+                || separated_rigid_body_has_impacted_ground(
+                    &separated.state,
+                    separated_ground_radius_m,
+                )
             {
                 separated_updates.push(SeparatedRigidBody {
                     state: separated
@@ -1676,6 +1725,7 @@ where
                 propagating: !separated_rigid_body_crossed_ground(
                     &separated.state,
                     &separated_state,
+                    separated_ground_radius_m,
                 ),
                 ..*separated
             });
@@ -2901,6 +2951,60 @@ mod tests {
             "retired separated lane should not keep integrating underground"
         );
         assert!(kernel.stop_reason().is_none());
+    }
+
+    #[test]
+    fn separated_rigid_body_impact_uses_configured_geocentric_ground_radius() {
+        let mass_props = unit_rigid_mass_properties();
+        let stack_body = BodyId::from_path("vehicle.assembly.bodies.upper");
+        let booster_body = BodyId::from_path("vehicle.assembly.bodies.booster");
+        let config = SimulationConfig {
+            initial_state: RigidBodyState::new(
+                SimTime::ZERO,
+                Position3::new(6_370_000.0, 0.0, 0.0),
+                Velocity3::zero(),
+                Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+                AngularVelocity3::zero(),
+                mass_props,
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ZeroForce,
+            mass_model: RigidModels::new(ZeroMoment, ConstantMassRigid::new(mass_props)),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(1.0),
+            scenario_seed: 1,
+        };
+        let mut kernel = SimulationKernel::new_rigid(config).expect("construct");
+        kernel
+            .set_separated_geocentric_ground_radius_m(6_370_000.0)
+            .expect("configured ground radius is valid");
+
+        kernel
+            .jettison_rigid_body(RigidBodySeparation {
+                stack_body,
+                body: booster_body,
+                stack_mass_properties: mass_props,
+                stage_mass_properties: mass_props,
+                stack_delta_v_body_m_s: [0.0, 0.0, 0.0],
+                stage_delta_v_body_m_s: [0.0, 0.0, 0.0],
+                stack_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+                stage_delta_omega_body_rad_s: [0.0, 0.0, 0.0],
+                stage_attitude_offset_body_xyzw: [0.0, 0.0, 0.0, 1.0],
+            })
+            .expect("manual separation");
+        kernel.separated_rigid_bodies[0].state.position = Position3::new(6_370_001.0, 0.0, 0.0);
+        kernel.separated_rigid_bodies[0].state.velocity = Velocity3::new(-2.0, 0.0, 0.0);
+
+        kernel.step().expect("impact-crossing step");
+        assert!(
+            !kernel.separated_rigid_bodies()[0].propagating,
+            "impacted separated lane should be retired at the configured radius"
+        );
+        assert!(
+            kernel.separated_rigid_bodies()[0].state.position.vector.x < 6_370_000.0,
+            "lane should integrate through the configured ground crossing instead of retiring at the default radius"
+        );
     }
 
     #[test]

@@ -206,6 +206,7 @@ pub fn run(
     // rigid-body kernel; the old reject gate that refused non-RK4
     // selections has been removed.
     let runtime_integrator = build_runtime_integrator(document)?;
+    let separated_ground_radius_m = infer_near_surface_geocentric_radius_m(&initial_state);
 
     let config = SimulationConfig {
         initial_state,
@@ -221,7 +222,10 @@ pub fn run(
         scenario_seed: document.time.seed,
     };
 
-    let kernel_base = SimulationKernel::new_rigid(config)?;
+    let mut kernel_base = SimulationKernel::new_rigid(config)?;
+    if let Some(radius_m) = separated_ground_radius_m {
+        kernel_base.set_separated_geocentric_ground_radius_m(radius_m)?;
+    }
     let mut kernel = if let Some(mission) = &document.mission {
         let mission_runtime = crate::mission::build_mission_runtime_typed(mission)?;
         kernel_base.with_mission_split(
@@ -514,6 +518,18 @@ fn automatic_ground_impact(document: &ScenarioDocument) -> GroundImpact {
         GroundImpact::sea_level()
     } else {
         GroundImpact::disabled()
+    }
+}
+
+fn infer_near_surface_geocentric_radius_m(initial_state: &RigidBodyState) -> Option<f64> {
+    let radius_m = initial_state.position.vector.norm();
+    // Sea-level Earth radii are roughly 6.357e6..6.378e6 m. Include a
+    // little margin for rounded synthetic launch radii, but avoid
+    // treating high-altitude entry/orbit initial states as the ground.
+    if radius_m.is_finite() && (6_330_000.0..=6_390_000.0).contains(&radius_m) {
+        Some(radius_m)
+    } else {
+        None
     }
 }
 
