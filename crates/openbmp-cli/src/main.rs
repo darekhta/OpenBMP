@@ -112,13 +112,22 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                 let max_error_at = metric
                     .max_abs_error_time_s
                     .map_or_else(|| "n/a".to_owned(), |time_s| format!("{time_s:.3} s"));
+                let max_error_values =
+                    match (metric.max_abs_error_reference, metric.max_abs_error_actual) {
+                        (Some(reference), Some(actual)) => format!(
+                            ", reference={reference:.6e}, actual={actual:.6e}, signed_error={:.6e}",
+                            actual - reference
+                        ),
+                        _ => String::new(),
+                    };
                 println!(
-                    "  {}: compared={}, skipped={}, max_abs_error={:.6e} at {}, rms_abs_error={:.6e}, exceedances={}",
+                    "  {}: compared={}, skipped={}, max_abs_error={:.6e} at {}{}, rms_abs_error={:.6e}, exceedances={}",
                     metric.id,
                     metric.compared_samples,
                     metric.skipped_samples,
                     metric.max_abs_error,
                     max_error_at,
+                    max_error_values,
                     metric.rms_abs_error,
                     metric.exceedances,
                 );
