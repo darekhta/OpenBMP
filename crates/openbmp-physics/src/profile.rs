@@ -1217,6 +1217,86 @@ impl AscentReferenceGenerator for SequencedAscentReference {
     }
 }
 
+/// Closed provenance categories allowed to produce a
+/// [`BallisticState`].
+///
+/// The enum deliberately names forward/offline sources only. It is
+/// audited by `openbmp-testkit`; adding a target-like variant is a
+/// dual-use review event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForwardSimulationSource {
+    /// Scenario initial state used as an offline coast/burnout seed.
+    ScenarioInitialState,
+    /// State extracted from runner telemetry produced by a forward
+    /// simulation.
+    RunnerTelemetryState,
+    /// State derived by offline Monte-Carlo perturbation around a
+    /// forward seed.
+    MonteCarloSample,
+}
+
+/// Capability token that binds a candidate ballistic state to an
+/// allowed forward/offline provenance category.
+///
+/// Callers cannot pass raw numbers to
+/// [`BallisticState::from_forward_simulation`] without also presenting
+/// this token. The token fingerprints the exact state tuple, so it
+/// cannot be reused for a different propagation seed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForwardSimulationProvenance {
+    fingerprint: u64,
+    source: ForwardSimulationSource,
+}
+
+impl ForwardSimulationProvenance {
+    /// Build a provenance token for one forward/offline state tuple.
+    ///
+    /// The resulting token is accepted only for the exact tuple used
+    /// here.
+    #[must_use]
+    pub fn for_state(
+        position_eci_m: [f64; 3],
+        velocity_eci_m_s: [f64; 3],
+        ballistic_coefficient_m2_kg: f64,
+        time: SimTime,
+        source: ForwardSimulationSource,
+    ) -> Self {
+        Self {
+            fingerprint: ballistic_state_fingerprint(
+                position_eci_m,
+                velocity_eci_m_s,
+                ballistic_coefficient_m2_kg,
+                time,
+                source,
+            ),
+            source,
+        }
+    }
+
+    /// Returns the reviewed source category represented by this token.
+    #[must_use]
+    pub const fn source(&self) -> ForwardSimulationSource {
+        self.source
+    }
+
+    fn matches_state(
+        &self,
+        position_eci_m: [f64; 3],
+        velocity_eci_m_s: [f64; 3],
+        ballistic_coefficient_m2_kg: f64,
+        time: SimTime,
+    ) -> bool {
+        self.fingerprint
+            == ballistic_state_fingerprint(
+                position_eci_m,
+                velocity_eci_m_s,
+                ballistic_coefficient_m2_kg,
+                time,
+                self.source,
+            )
+    }
+}
+
 /// Ballistic state of an unpowered body at a point on its arc, used to
 /// seed a range-safety footprint prediction.
 ///
@@ -1240,11 +1320,10 @@ impl BallisticState {
     /// Construct a free-flight state derived from a forward
     /// simulation output.
     ///
-    /// This constructor is intentionally named for provenance. It is
-    /// the only public way to create a [`BallisticState`], so a
-    /// caller has to make the forward-output claim at the API
-    /// boundary instead of assembling a propagation seed with a struct
-    /// literal.
+    /// The required [`ForwardSimulationProvenance`] token is bound to
+    /// the same tuple, so downstream code cannot construct a state
+    /// from arbitrary raw numbers without crossing the reviewed
+    /// provenance-token API.
     ///
     /// # Errors
     ///
@@ -1256,6 +1335,7 @@ impl BallisticState {
         velocity_eci_m_s: [f64; 3],
         ballistic_coefficient_m2_kg: f64,
         time: SimTime,
+        provenance: ForwardSimulationProvenance,
     ) -> Result<Self, PhysicsError> {
         let state = Self {
             position_eci_m,
@@ -1264,6 +1344,16 @@ impl BallisticState {
             time,
         };
         state.validate()?;
+        if !provenance.matches_state(
+            position_eci_m,
+            velocity_eci_m_s,
+            ballistic_coefficient_m2_kg,
+            time,
+        ) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ballistic state provenance token does not match state tuple",
+            });
+        }
         Ok(state)
     }
 
@@ -1320,6 +1410,38 @@ impl BallisticState {
         }
         Ok(())
     }
+}
+
+fn ballistic_state_fingerprint(
+    position_eci_m: [f64; 3],
+    velocity_eci_m_s: [f64; 3],
+    ballistic_coefficient_m2_kg: f64,
+    time: SimTime,
+    source: ForwardSimulationSource,
+) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for value in position_eci_m {
+        hash = mix_fingerprint(hash, value.to_bits());
+    }
+    for value in velocity_eci_m_s {
+        hash = mix_fingerprint(hash, value.to_bits());
+    }
+    hash = mix_fingerprint(hash, ballistic_coefficient_m2_kg.to_bits());
+    hash = mix_fingerprint(hash, time.as_seconds().to_bits());
+    hash = mix_fingerprint(hash, forward_simulation_source_tag(source));
+    hash
+}
+
+const fn forward_simulation_source_tag(source: ForwardSimulationSource) -> u64 {
+    match source {
+        ForwardSimulationSource::ScenarioInitialState => 1,
+        ForwardSimulationSource::RunnerTelemetryState => 2,
+        ForwardSimulationSource::MonteCarloSample => 3,
+    }
+}
+
+fn mix_fingerprint(hash: u64, value: u64) -> u64 {
+    (hash ^ value).wrapping_mul(0x0000_0100_0000_01b3)
 }
 
 /// Offline optimizer terminal condition variants allowed by the
@@ -3994,12 +4116,12 @@ mod tests {
         ConstantGravityRangeSafetyFootprint, EntryCorridor, EntryCorridorReference, EntryState,
         FootprintDispersionInput, FootprintDragModel, FootprintEnvironment,
         FootprintGeodeticOrigin, FootprintMonteCarloInput, FootprintSampleInput,
-        GravityTurnAscentReference, IdealStagingBudgetAnalysis, MomentumConservingStageSeparation,
-        NumericalFootprintState, NumericalGravityRangeSafetyFootprint, PegAscentReference,
-        PitchProgramAscentReference, RangeSafetyFootprint,
-        STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, SequencedAscentReference, StageMassProperties,
-        StageSeparationModel, StagingBudgetAnalysis, StagingBudgetInput, StagingBudgetMode,
-        constant_gravity_footprint_monte_carlo, drag_wind_derivative,
+        ForwardSimulationProvenance, ForwardSimulationSource, GravityTurnAscentReference,
+        IdealStagingBudgetAnalysis, MomentumConservingStageSeparation, NumericalFootprintState,
+        NumericalGravityRangeSafetyFootprint, PegAscentReference, PitchProgramAscentReference,
+        RangeSafetyFootprint, STAGE_SEPARATION_MOMENTUM_TOLERANCE_KG_M_S, SequencedAscentReference,
+        StageMassProperties, StageSeparationModel, StagingBudgetAnalysis, StagingBudgetInput,
+        StagingBudgetMode, constant_gravity_footprint_monte_carlo, drag_wind_derivative,
     };
     use super::{
         PlaneSteering, reference_quaternion_from_body_z, reference_quaternion_from_body_z_with_roll,
@@ -4010,6 +4132,26 @@ mod tests {
     };
     use nalgebra::{Quaternion, UnitQuaternion, Vector3};
     use openbmp_core::SimTime;
+
+    #[test]
+    fn ballistic_state_provenance_token_must_match_tuple() {
+        let token = ForwardSimulationProvenance::for_state(
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            0.0,
+            SimTime::ZERO,
+            ForwardSimulationSource::RunnerTelemetryState,
+        );
+        let err = BallisticState::from_forward_simulation(
+            [2.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            0.0,
+            SimTime::ZERO,
+            token,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PhysicsError::InvalidParameter { .. }));
+    }
 
     fn nominal_ascent_state() -> AscentState {
         AscentState {

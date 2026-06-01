@@ -5622,11 +5622,13 @@ file = "../sensors/star-tracker-textbook.toml""#,
 
     #[test]
     fn rejects_landing_footprint_geodetic_output_without_origin() {
-        let toml =
-            COAST_FOOTPRINT_SCENARIO.replace("include_geodetic = false", "include_geodetic = true");
+        let toml = COAST_FOOTPRINT_SCENARIO.replace(
+            r#"geodetic_output = "range_relative_only""#,
+            r#"geodetic_output = "reviewed_recovery_coordinates""#,
+        );
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
-            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. } if field_a == "landing_footprint.include_geodetic" && field_b == "frames.local_origin"),
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. } if field_a == "landing_footprint.geodetic_output" && field_b == "frames.local_origin"),
             "got {err:?}",
         );
     }

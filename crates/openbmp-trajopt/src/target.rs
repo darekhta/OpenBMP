@@ -160,19 +160,34 @@ mod tests {
     use super::*;
     use openbmp_core::SimTime;
     use openbmp_physics::WGS84_MU_M3_S2;
+    use openbmp_physics::profile::{ForwardSimulationProvenance, ForwardSimulationSource};
+
+    fn test_state(
+        position_eci_m: [f64; 3],
+        velocity_eci_m_s: [f64; 3],
+    ) -> Result<BallisticState, openbmp_physics::PhysicsError> {
+        let provenance = ForwardSimulationProvenance::for_state(
+            position_eci_m,
+            velocity_eci_m_s,
+            0.0,
+            SimTime::ZERO,
+            ForwardSimulationSource::RunnerTelemetryState,
+        );
+        BallisticState::from_forward_simulation(
+            position_eci_m,
+            velocity_eci_m_s,
+            0.0,
+            SimTime::ZERO,
+            provenance,
+        )
+    }
 
     #[test]
     fn circular_orbit_residual_is_zero_for_matching_elements() {
         let mu = WGS84_MU_M3_S2;
         let radius = 7_000_000.0_f64;
         let speed = (mu / radius).sqrt();
-        let state = BallisticState::from_forward_simulation(
-            [radius, 0.0, 0.0],
-            [0.0, speed, 0.0],
-            0.0,
-            SimTime::ZERO,
-        )
-        .unwrap();
+        let state = test_state([radius, 0.0, 0.0], [0.0, speed, 0.0]).unwrap();
         let condition = TerminalCondition::OrbitalElements {
             semi_major_axis_m: radius,
             eccentricity: 0.0,
@@ -184,13 +199,7 @@ mod tests {
 
     #[test]
     fn rendezvous_residual_reports_inertial_state_difference() {
-        let state = BallisticState::from_forward_simulation(
-            [1.0, 2.0, 3.0],
-            [0.0, 7_800.0, 1.0],
-            0.0,
-            SimTime::ZERO,
-        )
-        .unwrap();
+        let state = test_state([1.0, 2.0, 3.0], [0.0, 7_800.0, 1.0]).unwrap();
         let condition = TerminalCondition::RendezvousState {
             position_eci_m: [1.0, 4.0, 3.0],
             velocity_eci_m_s: [0.0, 7_799.0, 1.0],

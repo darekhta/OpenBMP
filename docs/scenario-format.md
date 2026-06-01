@@ -2192,7 +2192,7 @@ controller and accepts no desired landing coordinate.
 [landing_footprint]
 method = "egm2008"
 cull_altitude_m = 0.0
-include_geodetic = false
+geodetic_output = "range_relative_only"
 
 [landing_footprint.dispersion]
 one_sigma_semi_major_m = 25.0
@@ -2236,12 +2236,13 @@ Consumed methods are:
 | `egm2008` | `egm2008` | Fixed-step RK4 propagation under the pinned zonal-only EGM2008 degree-2 through degree-6 model. |
 
 Every method requires a mission phase named `coast` or
-`ballistic_descent`. `include_geodetic = true` additionally requires
-`[frames.local_origin]`; otherwise the offline report contains only
-range-relative `downrange_m` / `crossrange_m` output. The optional
-dispersion block is a declared ellipse source. If absent, no dispersion
-ellipse is reported. Numerical Earth-gravity methods stop at the WGS84
-radial ellipsoid surface plus `cull_altitude_m`.
+`ballistic_descent`. `geodetic_output = "reviewed_recovery_coordinates"`
+additionally requires `[frames.local_origin]`; the default
+`"range_relative_only"` emits only range-relative `downrange_m` /
+`crossrange_m` output. The optional dispersion block is a declared
+ellipse source. If absent, no dispersion ellipse is reported. Numerical
+Earth-gravity methods stop at the WGS84 radial ellipsoid surface plus
+`cull_altitude_m`.
 
 `[landing_footprint.monte_carlo]` enables offline sampled dispersion. It
 requires at least one declared uncertainty source under

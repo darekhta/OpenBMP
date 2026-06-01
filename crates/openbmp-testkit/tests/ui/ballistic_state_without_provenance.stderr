@@ -1,0 +1,25 @@
+error[E0061]: this function takes 5 arguments but 4 arguments were supplied
+  --> tests/ui/ballistic_state_without_provenance.rs:5:13
+   |
+ 5 |       let _ = BallisticState::from_forward_simulation(
+   |  _____________^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^-
+ 6 | |         [0.0, 0.0, 0.0],
+ 7 | |         [0.0, 0.0, 0.0],
+ 8 | |         0.0,
+ 9 | |         SimTime::ZERO,
+10 | |     );
+   | |_____- argument #5 of type `ForwardSimulationProvenance` is missing
+   |
+note: associated function defined here
+  --> $WORKSPACE/crates/openbmp-physics/src/profile.rs
+   |
+   |     pub fn from_forward_simulation(
+   |            ^^^^^^^^^^^^^^^^^^^^^^^
+help: provide the argument
+   |
+ 5 |     let _ = BallisticState::from_forward_simulation(
+ ...
+   9 |         SimTime::ZERO,
+  10 ~         /* ForwardSimulationProvenance */,
+  11 ~     );
+     |

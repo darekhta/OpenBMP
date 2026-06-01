@@ -129,6 +129,10 @@ pub const SENSITIVE_FIELD_ALLOWLISTS: &[FileFieldAllowlist] = &[
                 fields: &[],
             },
             StructFieldAllowlist {
+                name: "ForwardSimulationProvenance",
+                fields: &[],
+            },
+            StructFieldAllowlist {
                 name: "ConstantGravityRangeSafetyFootprint",
                 fields: &[],
             },
@@ -245,7 +249,7 @@ pub const SENSITIVE_FIELD_ALLOWLISTS: &[FileFieldAllowlist] = &[
                 fields: &[
                     "method",
                     "cull_altitude_m",
-                    "include_geodetic",
+                    "geodetic_output",
                     "dispersion",
                     "monte_carlo",
                 ],
@@ -387,6 +391,14 @@ pub const SENSITIVE_ENUM_ALLOWLISTS: &[FileEnumAllowlist] = &[
                     "ActuatorLag",
                 ],
             },
+            EnumVariantAllowlist {
+                name: "ForwardSimulationSource",
+                variants: &[
+                    "ScenarioInitialState",
+                    "RunnerTelemetryState",
+                    "MonteCarloSample",
+                ],
+            },
         ],
     },
     FileEnumAllowlist {
@@ -395,6 +407,10 @@ pub const SENSITIVE_ENUM_ALLOWLISTS: &[FileEnumAllowlist] = &[
             EnumVariantAllowlist {
                 name: "LandingFootprintMethod",
                 variants: &["ConstantGravity", "J2", "Egm2008"],
+            },
+            EnumVariantAllowlist {
+                name: "LandingFootprintGeodeticOutput",
+                variants: &["RangeRelativeOnly", "ReviewedRecoveryCoordinates"],
             },
             EnumVariantAllowlist {
                 name: "LandingFootprintMonteCarloWindKind",
@@ -717,6 +733,7 @@ fn public_type_names(source: &str) -> Vec<String> {
 fn is_dual_use_sensitive_type_name(name: &str) -> bool {
     name == "TerminalCondition"
         || name == "DispersionSource"
+        || name.starts_with("ForwardSimulation")
         || name.starts_with("Ballistic")
         || name.starts_with("Footprint")
         || name.starts_with("LandingFootprint")
@@ -838,6 +855,7 @@ pub enum TerminalCondition {
     #[test]
     fn sensitive_type_detector_catches_unenrolled_names() {
         assert!(is_dual_use_sensitive_type_name("TerminalCondition"));
+        assert!(is_dual_use_sensitive_type_name("ForwardSimulationSource"));
         assert!(is_dual_use_sensitive_type_name("FootprintMonteCarloInput"));
         assert!(!is_dual_use_sensitive_type_name("AscentState"));
     }

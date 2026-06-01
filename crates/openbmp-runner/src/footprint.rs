@@ -11,9 +11,10 @@ use openbmp_core::{ChannelId, DeterministicRng, SimTime, StepIndex};
 use openbmp_physics::profile::{
     BallisticState, ConstantGravityRangeSafetyFootprint, FootprintDispersionInput,
     FootprintEnvironment, FootprintGeodeticOrigin, FootprintMonteCarloInput,
-    FootprintMonteCarloResult, FootprintSampleInput, LandingFootprint,
-    NumericalGravityRangeSafetyFootprint, RangeSafetyFootprint,
-    constant_gravity_footprint_monte_carlo, numerical_gravity_footprint_monte_carlo,
+    FootprintMonteCarloResult, FootprintSampleInput, ForwardSimulationProvenance,
+    ForwardSimulationSource, LandingFootprint, NumericalGravityRangeSafetyFootprint,
+    RangeSafetyFootprint, constant_gravity_footprint_monte_carlo,
+    numerical_gravity_footprint_monte_carlo,
 };
 use openbmp_physics::{Egm2008ZonalGravity, J2Gravity, STANDARD_GRAVITY_M_S2, WGS84_J2};
 use openbmp_scenario::{
@@ -86,11 +87,12 @@ pub fn nominal_ballistic_state_from_scenario(
         .and_then(|footprint| footprint.monte_carlo.as_ref())
         .and_then(|monte_carlo| monte_carlo.ballistic_coefficient.as_ref())
         .map_or(0.0, |bc| bc.nominal_m2_kg);
-    Ok(BallisticState::from_forward_simulation(
+    Ok(ballistic_state_from_forward_simulation(
         scenario.document.vehicle.initial_position_eci_m,
         scenario.document.vehicle.initial_velocity_eci_m_s,
         ballistic_coefficient_m2_kg,
         SimTime::from_seconds(scenario.document.time.start_s),
+        ForwardSimulationSource::ScenarioInitialState,
     )?)
 }
 
@@ -164,11 +166,12 @@ fn monte_carlo_input(
     let seed = config.seed.unwrap_or(document.time.seed);
     let mut nominal = *nominal_state;
     if let Some(ballistic_coefficient) = &config.ballistic_coefficient {
-        nominal = BallisticState::from_forward_simulation(
+        nominal = ballistic_state_from_forward_simulation(
             nominal.position_eci_m(),
             nominal.velocity_eci_m_s(),
             ballistic_coefficient.nominal_m2_kg,
             nominal.time(),
+            ForwardSimulationSource::MonteCarloSample,
         )?;
     }
     let mut samples = Vec::with_capacity(config.samples as usize);
@@ -218,11 +221,12 @@ fn sampled_state(
             let t = time.as_seconds() + sample_normal(seed, sample_index, 6, time_sigma_s);
             time = SimTime::from_seconds(t);
         }
-        nominal = BallisticState::from_forward_simulation(
+        nominal = ballistic_state_from_forward_simulation(
             position_eci_m,
             velocity_eci_m_s,
             nominal.ballistic_coefficient_m2_kg(),
             time,
+            ForwardSimulationSource::MonteCarloSample,
         )?;
     }
     if let Some(ballistic_coefficient) = &config.ballistic_coefficient {
@@ -244,14 +248,38 @@ fn sampled_state(
         {
             sampled_ballistic_coefficient_m2_kg = max;
         }
-        nominal = BallisticState::from_forward_simulation(
+        nominal = ballistic_state_from_forward_simulation(
             nominal.position_eci_m(),
             nominal.velocity_eci_m_s(),
             sampled_ballistic_coefficient_m2_kg,
             nominal.time(),
+            ForwardSimulationSource::MonteCarloSample,
         )?;
     }
     Ok(nominal)
+}
+
+fn ballistic_state_from_forward_simulation(
+    position_eci_m: [f64; 3],
+    velocity_eci_m_s: [f64; 3],
+    ballistic_coefficient_m2_kg: f64,
+    time: SimTime,
+    source: ForwardSimulationSource,
+) -> Result<BallisticState, openbmp_physics::PhysicsError> {
+    let provenance = ForwardSimulationProvenance::for_state(
+        position_eci_m,
+        velocity_eci_m_s,
+        ballistic_coefficient_m2_kg,
+        time,
+        source,
+    );
+    BallisticState::from_forward_simulation(
+        position_eci_m,
+        velocity_eci_m_s,
+        ballistic_coefficient_m2_kg,
+        time,
+        provenance,
+    )
 }
 
 fn sampled_speed_magnitude(
@@ -645,15 +673,15 @@ fn footprint_environment(
         LandingFootprintMethod::J2 | LandingFootprintMethod::Egm2008 => STANDARD_GRAVITY_M_S2,
     };
     let launch_origin_eci_m = launch_origin_eci_m(document, config);
-    let geodetic_origin = if config.include_geodetic {
+    let geodetic_origin = if config.geodetic_output.includes_geodetic() {
         let origin = document
             .frames
             .as_ref()
             .and_then(|frames| frames.local_origin.as_ref())
             .ok_or_else(|| {
                 RunnerError::Scenario(ScenarioError::InconsistentSection {
-                    field_a: "landing_footprint.include_geodetic".to_owned(),
-                    value_a: "true".to_owned(),
+                    field_a: "landing_footprint.geodetic_output".to_owned(),
+                    value_a: "reviewed_recovery_coordinates".to_owned(),
                     field_b: "frames.local_origin".to_owned(),
                     value_b: "missing".to_owned(),
                 })
@@ -690,7 +718,7 @@ fn launch_origin_eci_m(document: &ScenarioDocument, config: &LandingFootprintCon
             config.cull_altitude_m,
         ],
         LandingFootprintMethod::J2 | LandingFootprintMethod::Egm2008 => {
-            if config.include_geodetic
+            if config.geodetic_output.includes_geodetic()
                 && let Some(origin) = document
                     .frames
                     .as_ref()
@@ -769,11 +797,12 @@ mod tests {
     #[test]
     fn runner_computes_configured_landing_footprint() {
         let scenario = Scenario::from_toml_str(COAST_FOOTPRINT_SCENARIO).unwrap();
-        let state = BallisticState::from_forward_simulation(
+        let state = ballistic_state_from_forward_simulation(
             [0.0, 0.0, 100.0],
             [5.0, 2.0, 0.0],
             0.0,
             SimTime::from_seconds(0.0),
+            ForwardSimulationSource::RunnerTelemetryState,
         )
         .unwrap();
         let footprint = landing_footprint_for_state(&scenario, &state)
@@ -797,11 +826,12 @@ mod tests {
             .replace("gravity_m_s2 = 9.80665", &gravity_config)
             .replace(r#"method = "constant_gravity""#, r#"method = "j2""#);
         let scenario = Scenario::from_toml_str(&toml).unwrap();
-        let state = BallisticState::from_forward_simulation(
+        let state = ballistic_state_from_forward_simulation(
             [WGS84_A_M + 1_000.0, 0.0, 0.0],
             [0.0, 100.0, 0.0],
             0.0,
             SimTime::from_seconds(0.0),
+            ForwardSimulationSource::RunnerTelemetryState,
         )
         .unwrap();
         let footprint = landing_footprint_for_state(&scenario, &state)
@@ -824,11 +854,12 @@ mod tests {
             .replace("gravity_m_s2 = 9.80665\n", "")
             .replace(r#"method = "constant_gravity""#, r#"method = "egm2008""#);
         let scenario = Scenario::from_toml_str(&toml).unwrap();
-        let state = BallisticState::from_forward_simulation(
+        let state = ballistic_state_from_forward_simulation(
             [WGS84_A_M + 1_000.0, 0.0, 0.0],
             [0.0, 100.0, 0.0],
             0.0,
             SimTime::from_seconds(0.0),
+            ForwardSimulationSource::RunnerTelemetryState,
         )
         .unwrap();
         let footprint = landing_footprint_for_state(&scenario, &state)
@@ -842,11 +873,12 @@ mod tests {
     #[test]
     fn runner_returns_none_without_footprint_config() {
         let scenario = Scenario::from_toml_str(MINIMAL_SCENARIO).unwrap();
-        let state = BallisticState::from_forward_simulation(
+        let state = ballistic_state_from_forward_simulation(
             [0.0, 0.0, 100.0],
             [0.0, 0.0, 0.0],
             0.0,
             SimTime::from_seconds(0.0),
+            ForwardSimulationSource::RunnerTelemetryState,
         )
         .unwrap();
         assert!(

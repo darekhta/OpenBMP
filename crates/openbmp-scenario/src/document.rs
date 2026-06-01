@@ -1105,15 +1105,15 @@ impl ScenarioDocument {
                 value_b: self.environment.gravity.clone(),
             });
         }
-        if landing_footprint.include_geodetic
+        if landing_footprint.geodetic_output.includes_geodetic()
             && self
                 .frames
                 .as_ref()
                 .is_none_or(|frames| frames.local_origin.is_none())
         {
             return Err(ScenarioError::InconsistentSection {
-                field_a: "landing_footprint.include_geodetic".to_owned(),
-                value_a: "true".to_owned(),
+                field_a: "landing_footprint.geodetic_output".to_owned(),
+                value_a: "reviewed_recovery_coordinates".to_owned(),
                 field_b: "frames.local_origin".to_owned(),
                 value_b: "missing".to_owned(),
             });
@@ -3061,18 +3061,37 @@ pub struct LandingFootprintConfig {
     pub method: LandingFootprintMethod,
     /// Cull altitude where propagation stops (m).
     pub cull_altitude_m: f64,
-    /// Whether the offline report should include geodetic
-    /// latitude/longitude. Requires `[frames.local_origin]`; when
-    /// `false`, only range-relative downrange/crossrange output is
-    /// produced.
+    /// Reviewed geodetic-output mode. The default emits only
+    /// range-relative downrange/crossrange output.
     #[serde(default)]
-    pub include_geodetic: bool,
+    pub geodetic_output: LandingFootprintGeodeticOutput,
     /// Optional declared dispersion ellipse input.
     #[serde(default)]
     pub dispersion: Option<LandingFootprintDispersionConfig>,
     /// Optional Monte-Carlo dispersion analysis configuration.
     #[serde(default)]
     pub monte_carlo: Option<LandingFootprintMonteCarloConfig>,
+}
+
+/// Reviewed geodetic output selector for offline footprint reports.
+#[derive(Copy, Clone, Debug, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LandingFootprintGeodeticOutput {
+    /// Emit only range-relative downrange/crossrange coordinates.
+    #[default]
+    RangeRelativeOnly,
+    /// Also emit recovery-map latitude/longitude derived from
+    /// `[frames.local_origin]`.
+    ReviewedRecoveryCoordinates,
+}
+
+impl LandingFootprintGeodeticOutput {
+    /// Returns true when geodetic latitude/longitude output is
+    /// explicitly enabled.
+    #[must_use]
+    pub const fn includes_geodetic(self) -> bool {
+        matches!(self, Self::ReviewedRecoveryCoordinates)
+    }
 }
 
 impl LandingFootprintConfig {

@@ -79,7 +79,7 @@ event = "evt_cull"
 [landing_footprint]
 method = "constant_gravity"
 cull_altitude_m = 0.0
-include_geodetic = false
+geodetic_output = "range_relative_only"
 
 [landing_footprint.monte_carlo]
 samples = 32
