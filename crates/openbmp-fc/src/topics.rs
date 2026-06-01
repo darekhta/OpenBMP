@@ -362,6 +362,13 @@ pub struct EstimatorStatus {
     /// on this tick. The measurement may still have been gate-rejected
     /// before state correction.
     pub mag_updated_this_tick: bool,
+    /// Maximum attitude-error covariance diagonal entry, rad².
+    pub attitude_variance_max_rad2: f64,
+    /// Diagonal covariance condition proxy (`max_diag / min_diag`).
+    pub covariance_condition_proxy: f64,
+    /// `true` when the attitude covariance indicates under-observable
+    /// geometry or numerical loss of attitude confidence.
+    pub attitude_under_observable: bool,
 }
 
 impl Topic for EstimatorStatus {

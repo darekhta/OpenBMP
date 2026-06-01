@@ -427,6 +427,28 @@ pub fn covariance_from_cholesky(s: &DMatrix<f64>) -> DMatrix<f64> {
     s * s.transpose()
 }
 
+fn covariance_diag_condition(p: &DMatrix<f64>) -> f64 {
+    let dim = p.nrows().min(p.ncols());
+    let mut max_diag = 0.0_f64;
+    let mut min_diag = f64::INFINITY;
+    for i in 0..dim {
+        let diag = p[(i, i)];
+        if !diag.is_finite() {
+            return f64::INFINITY;
+        }
+        let non_negative = diag.max(0.0);
+        max_diag = max_diag.max(non_negative);
+        if non_negative > 0.0 {
+            min_diag = min_diag.min(non_negative);
+        }
+    }
+    if !min_diag.is_finite() || min_diag == 0.0 {
+        f64::INFINITY
+    } else {
+        max_diag / min_diag
+    }
+}
+
 // =====================================================================
 // `SquareRootUkf` (15-state error-state filter)
 // =====================================================================
@@ -448,6 +470,7 @@ use crate::topics::{
 
 /// 15-state error-state vector dimension.
 const SRUKF_STATE_DIM: usize = 15;
+const ATTITUDE_UNDER_OBSERVABLE_VARIANCE_RAD2: f64 = 1.0;
 const ATTITUDE_ONLY_UNUSED_VARIANCE: f64 = 1.0e-12;
 
 /// Configuration parameters for the SR-UKF — same physical interpretation
@@ -770,6 +793,18 @@ impl SquareRootUkf {
     pub fn covariance_max_diag(&self) -> f64 {
         let p = covariance_from_cholesky(&self.s);
         (0..SRUKF_STATE_DIM).map(|i| p[(i, i)]).fold(0.0, f64::max)
+    }
+
+    fn observability_metrics(&self) -> (f64, f64, bool) {
+        let p = covariance_from_cholesky(&self.s);
+        let attitude_variance_max_rad2 = (6..9).map(|i| p[(i, i)]).fold(0.0, f64::max);
+        let condition_proxy = covariance_diag_condition(&p);
+        (
+            attitude_variance_max_rad2,
+            condition_proxy,
+            !attitude_variance_max_rad2.is_finite()
+                || attitude_variance_max_rad2 > ATTITUDE_UNDER_OBSERVABLE_VARIANCE_RAD2,
+        )
     }
 
     /// Apply an error-state delta `δx` to the nominal state. Same
@@ -1316,6 +1351,8 @@ impl crate::estimator::Estimator for SquareRootUkf {
     }
 
     fn status(&self) -> EstimatorStatus {
+        let (attitude_variance_max_rad2, covariance_condition_proxy, attitude_under_observable) =
+            self.observability_metrics();
         EstimatorStatus {
             time: SimTime::ZERO,
             initialized: self.initialized,
@@ -1332,6 +1369,9 @@ impl crate::estimator::Estimator for SquareRootUkf {
             baro_updated_this_tick: self.last_baro_updated_this_tick,
             mag_innovation_whitened: self.last_mag_innovation_whitened,
             mag_updated_this_tick: self.last_mag_updated_this_tick,
+            attitude_variance_max_rad2,
+            covariance_condition_proxy,
+            attitude_under_observable,
         }
     }
 

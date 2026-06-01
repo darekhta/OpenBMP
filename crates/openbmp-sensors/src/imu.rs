@@ -31,7 +31,7 @@
 //! accel_z      25
 //! ```
 
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 use openbmp_core::{DeterministicRng, SensorId, StepIndex};
 
 use crate::error::SensorError;
@@ -150,6 +150,16 @@ pub struct ImuNoiseBudget {
     pub accel: TriaxialNoiseBudget,
     /// IMU sample interval (s).
     pub dt_s: f64,
+    /// Deterministic gyro misalignment / non-orthogonality matrix.
+    pub gyro_misalignment: Matrix3<f64>,
+    /// Deterministic accelerometer misalignment / non-orthogonality
+    /// matrix.
+    pub accel_misalignment: Matrix3<f64>,
+    /// IMU mount offset from the vehicle CG in body coordinates (m).
+    pub mount_offset_body_m: Vector3<f64>,
+    /// Gyro g-sensitivity matrix, rad/s per (m/s²), applied to the
+    /// specific force at the IMU mount.
+    pub gyro_g_sensitivity_rad_s_per_m_s2: Matrix3<f64>,
 }
 
 impl ImuNoiseBudget {
@@ -176,7 +186,56 @@ impl ImuNoiseBudget {
                 reason: "IMU dt must be > 0",
             });
         }
-        Ok(Self { gyro, accel, dt_s })
+        Ok(Self {
+            gyro,
+            accel,
+            dt_s,
+            gyro_misalignment: Matrix3::identity(),
+            accel_misalignment: Matrix3::identity(),
+            mount_offset_body_m: Vector3::zeros(),
+            gyro_g_sensitivity_rad_s_per_m_s2: Matrix3::zeros(),
+        })
+    }
+
+    /// Add deterministic IMU error terms after validating they are
+    /// finite.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SensorError::NonFinite`] if any matrix/vector
+    /// component is NaN or infinite.
+    pub fn with_deterministic_errors(
+        mut self,
+        gyro_misalignment: Matrix3<f64>,
+        accel_misalignment: Matrix3<f64>,
+        mount_offset_body_m: Vector3<f64>,
+        gyro_g_sensitivity_rad_s_per_m_s2: Matrix3<f64>,
+    ) -> Result<Self, SensorError> {
+        require_matrix_finite(&gyro_misalignment, "IMU gyro misalignment")?;
+        require_matrix_finite(&accel_misalignment, "IMU accel misalignment")?;
+        require_vector_finite(&mount_offset_body_m, "IMU mount offset")?;
+        require_matrix_finite(&gyro_g_sensitivity_rad_s_per_m_s2, "IMU gyro g-sensitivity")?;
+        self.gyro_misalignment = gyro_misalignment;
+        self.accel_misalignment = accel_misalignment;
+        self.mount_offset_body_m = mount_offset_body_m;
+        self.gyro_g_sensitivity_rad_s_per_m_s2 = gyro_g_sensitivity_rad_s_per_m_s2;
+        Ok(self)
+    }
+}
+
+fn require_vector_finite(v: &Vector3<f64>, label: &'static str) -> Result<(), SensorError> {
+    if v.iter().all(|component| component.is_finite()) {
+        Ok(())
+    } else {
+        Err(SensorError::NonFinite { reason: label })
+    }
+}
+
+fn require_matrix_finite(m: &Matrix3<f64>, label: &'static str) -> Result<(), SensorError> {
+    if m.iter().all(|component| component.is_finite()) {
+        Ok(())
+    } else {
+        Err(SensorError::NonFinite { reason: label })
     }
 }
 
@@ -318,6 +377,19 @@ impl SyntheticImu {
     }
 }
 
+fn specific_force_at_mount(
+    specific_force_cg_body_m_s2: Vector3<f64>,
+    omega_body_rad_s: Vector3<f64>,
+    alpha_body_rad_s2: Vector3<f64>,
+    mount_offset_body_m: Vector3<f64>,
+) -> Result<Vector3<f64>, SensorError> {
+    let centripetal = omega_body_rad_s.cross(&omega_body_rad_s.cross(&mount_offset_body_m));
+    let euler = alpha_body_rad_s2.cross(&mount_offset_body_m);
+    let specific_force = specific_force_cg_body_m_s2 + centripetal + euler;
+    require_vector_finite(&specific_force, "IMU lever-arm specific force")?;
+    Ok(specific_force)
+}
+
 impl SyntheticSensor for SyntheticImu {
     fn sensor_id(&self) -> SensorId {
         self.sensor_id
@@ -340,8 +412,15 @@ impl SyntheticSensor for SyntheticImu {
         let gyro_budget = self.budget.gyro;
         let accel_budget = self.budget.accel;
 
-        let truth_omega = truth.angular_velocity_body_rad_s;
-        let truth_accel = truth.specific_force_body_m_s2;
+        let truth_accel_at_mount = specific_force_at_mount(
+            truth.specific_force_body_m_s2,
+            truth.angular_velocity_body_rad_s,
+            truth.angular_acceleration_body_rad_s2,
+            self.budget.mount_offset_body_m,
+        )?;
+        let truth_omega = self.budget.gyro_misalignment * truth.angular_velocity_body_rad_s
+            + self.budget.gyro_g_sensitivity_rad_s_per_m_s2 * truth_accel_at_mount;
+        let truth_accel = self.budget.accel_misalignment * truth_accel_at_mount;
 
         let gyro_x = self.measure_axis(
             truth_omega.x,
@@ -428,6 +507,7 @@ impl SyntheticSensor for SyntheticImu {
 )]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
     use nalgebra::UnitQuaternion;
     use openbmp_core::{ChannelId, Position3, SimTime, Velocity3};
 
@@ -437,6 +517,7 @@ mod tests {
             velocity_eci: Velocity3::new(0.0, 0.0, 0.0),
             attitude_eci_to_body: UnitQuaternion::identity(),
             angular_velocity_body_rad_s: Vector3::new(0.01, 0.02, 0.03),
+            angular_acceleration_body_rad_s2: Vector3::zeros(),
             specific_force_body_m_s2: Vector3::new(0.5, 1.0, 9.806_65),
             static_pressure_pa: 0.0,
             altitude_geometric_m: 0.0,
@@ -485,6 +566,59 @@ mod tests {
             }
             _ => panic!("expected Imu variant"),
         }
+    }
+
+    #[test]
+    fn imu_lever_arm_applies_centripetal_and_euler_terms() {
+        let budget = zero_noise_budget()
+            .with_deterministic_errors(
+                Matrix3::identity(),
+                Matrix3::identity(),
+                Vector3::new(1.0, 0.0, 0.0),
+                Matrix3::zeros(),
+            )
+            .unwrap();
+        let mut imu = SyntheticImu::new(SensorId::from_path("sensors.imu"), budget).unwrap();
+        let mut truth = fixture_truth();
+        truth.angular_velocity_body_rad_s = Vector3::new(0.0, 0.0, 2.0);
+        truth.angular_acceleration_body_rad_s2 = Vector3::new(0.0, 0.0, 3.0);
+        truth.specific_force_body_m_s2 = Vector3::zeros();
+
+        let m = imu.measure(&truth, StepIndex::new(0), 0).unwrap();
+
+        let SensorMeasurement::Imu { accel_m_s2, .. } = m else {
+            panic!("expected Imu variant");
+        };
+        assert_abs_diff_eq!(accel_m_s2.x, -4.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(accel_m_s2.y, 3.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(accel_m_s2.z, 0.0, epsilon = 1.0e-12);
+    }
+
+    #[test]
+    fn imu_gyro_g_sensitivity_adds_accel_coupled_bias() {
+        let mut g_sensitivity = Matrix3::zeros();
+        g_sensitivity[(0, 0)] = 0.01;
+        let budget = zero_noise_budget()
+            .with_deterministic_errors(
+                Matrix3::identity(),
+                Matrix3::identity(),
+                Vector3::zeros(),
+                g_sensitivity,
+            )
+            .unwrap();
+        let mut imu = SyntheticImu::new(SensorId::from_path("sensors.imu"), budget).unwrap();
+        let mut truth = fixture_truth();
+        truth.angular_velocity_body_rad_s = Vector3::zeros();
+        truth.specific_force_body_m_s2 = Vector3::new(10.0, 0.0, 0.0);
+
+        let m = imu.measure(&truth, StepIndex::new(0), 0).unwrap();
+
+        let SensorMeasurement::Imu { gyro_rad_s, .. } = m else {
+            panic!("expected Imu variant");
+        };
+        assert_abs_diff_eq!(gyro_rad_s.x, 0.1, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(gyro_rad_s.y, 0.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(gyro_rad_s.z, 0.0, epsilon = 1.0e-12);
     }
 
     #[test]

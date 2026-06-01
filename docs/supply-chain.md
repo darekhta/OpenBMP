@@ -64,7 +64,7 @@ that configuration lands.
 
 The reference toolchain is pinned in `rust-toolchain.toml`: Rust
 `1.95`, `rustfmt`, `clippy`, and the `x86_64-unknown-linux-gnu` target. The
-workspace MSRV remains `1.93` and is checked by CI with a separate Rust `1.93`
+workspace MSRV remains `1.95` and is checked by CI with a separate Rust `1.95`
 build. Byte-stable replay is guaranteed only inside the reference platform
 profile documented in [verification.md](verification.md) and
 [software-architecture.md](software-architecture.md).

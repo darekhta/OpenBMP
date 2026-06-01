@@ -72,6 +72,27 @@ pub enum SchedulerError {
         /// Job name as registered.
         job_name: &'static str,
     },
+    /// The fixed dispatch table is full.
+    #[error("scheduler: too many jobs registered (max {max_jobs})")]
+    TooManyJobs {
+        /// Maximum supported jobs in the fixed dispatch table.
+        max_jobs: usize,
+    },
+    /// The declared schedule cannot fit within the frame budget.
+    #[error(
+        "scheduler: declared budgets require {worst_frame_budget_us} us at frame {worst_frame_tick} \
+         of hyperperiod {hyperperiod_ticks}, exceeding frame budget {frame_budget_us} us"
+    )]
+    FrameBudgetInfeasible {
+        /// Hyperperiod length in ticks.
+        hyperperiod_ticks: u64,
+        /// Worst frame inside the hyperperiod.
+        worst_frame_tick: u64,
+        /// Declared budget demand on the worst frame.
+        worst_frame_budget_us: u64,
+        /// Configured frame budget.
+        frame_budget_us: u64,
+    },
 }
 
 /// Errors raised by the parameter registry.
@@ -219,6 +240,54 @@ pub enum CommanderError {
     },
 }
 
+/// Errors raised by actuator backend interactions.
+#[derive(Debug, Error)]
+pub enum ActuatorError {
+    /// An actuator backend rejected a command or could not apply it.
+    #[error("actuator `{backend}` rejected command: {reason}")]
+    CommandRejected {
+        /// Backend or channel name.
+        backend: &'static str,
+        /// Human-readable failure reason.
+        reason: String,
+    },
+    /// An actuator backend returned a non-finite state or command.
+    #[error("actuator `{backend}` produced non-finite value in `{stage}`")]
+    NonFinite {
+        /// Backend or channel name.
+        backend: &'static str,
+        /// Stage where the non-finite value was detected.
+        stage: &'static str,
+    },
+}
+
+/// Errors raised by watchdog service interactions.
+#[derive(Debug, Error)]
+pub enum WatchdogError {
+    /// The watchdog service operation failed or was not acknowledged.
+    #[error("watchdog `{backend}` was not serviced: {reason}")]
+    NotServiced {
+        /// Backend name.
+        backend: &'static str,
+        /// Human-readable failure reason.
+        reason: String,
+    },
+}
+
+/// Errors raised by storage / flight-recorder interactions.
+#[derive(Debug, Error)]
+pub enum StorageError {
+    /// A storage write failed. Storage failures are reportable health
+    /// faults, but must not block the control loop.
+    #[error("storage `{backend}` write failed: {reason}")]
+    WriteFailed {
+        /// Backend name.
+        backend: &'static str,
+        /// Human-readable failure reason.
+        reason: String,
+    },
+}
+
 /// Top-level error returned by the [`FlightController::step`](crate::FlightController::step) entry point.
 #[derive(Debug, Error)]
 pub enum ControllerError {
@@ -246,4 +315,13 @@ pub enum ControllerError {
     /// A commander failed.
     #[error(transparent)]
     Commander(#[from] CommanderError),
+    /// An actuator backend failed.
+    #[error(transparent)]
+    Actuator(#[from] ActuatorError),
+    /// Watchdog service failed.
+    #[error(transparent)]
+    Watchdog(#[from] WatchdogError),
+    /// Storage / flight-recorder operation failed.
+    #[error(transparent)]
+    Storage(#[from] StorageError),
 }

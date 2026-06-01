@@ -45,6 +45,7 @@ Required status checks from `CI`:
 - `clippy`
 - `build`
 - `test`
+- `coverage`
 - `doc-tests`
 - `cargo-deny`
 - `cargo-audit`
@@ -71,7 +72,7 @@ and reflected in this list in the same PR.
 
 ## Code
 
-- Rust **1.95** stable, **Edition 2024**, MSRV pinned at `1.93`.
+- Rust **1.95** stable, **Edition 2024**, MSRV pinned at `1.95`.
 - All public items have `///` doc comments. `missing_docs` is
   `deny`-level.
 - `unsafe_code` is `deny` workspace-wide. If you genuinely need it,

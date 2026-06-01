@@ -235,6 +235,19 @@ impl Bus {
         Ok(Sequence(cell.seq))
     }
 
+    /// Returns the current sequence counter for a topic by canonical
+    /// name. This avoids materialising the dictionary snapshot in hot
+    /// topic-triggered scheduler paths.
+    #[must_use]
+    pub(crate) fn sequence_by_name(&self, name: &'static str) -> Sequence {
+        let inner = self.inner.borrow();
+        inner
+            .cells
+            .values()
+            .find(|cell| cell.name == name)
+            .map_or(Sequence::ZERO, |cell| Sequence(cell.seq))
+    }
+
     /// Returns `true` if the topic has been published with a sequence
     /// strictly greater than `last_seen`.
     ///

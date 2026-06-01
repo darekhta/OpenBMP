@@ -14,6 +14,7 @@ use crate::topics::{
     ActuatorCommand, AttitudeEstimate, AutopilotStatus, EstimatorLaneSelection, EstimatorStatus,
     FailsafeFlags, FdirGlrtDiagnostic, FdirStatus,
 };
+use std::vec::Vec;
 
 /// Fault-tree bit: IMU lane or innovation fault.
 pub const FDIR_BIT_IMU: u64 = 1 << 0;
@@ -46,6 +47,9 @@ pub const FDIR_BIT_STORAGE_WRITE_FAIL: u64 = 1 << 12;
 /// Fault-tree bit: measured scheduler job execution exceeded its
 /// declared budget.
 pub const FDIR_BIT_DEADLINE_SLIP: u64 = 1 << 13;
+/// Fault-tree bit: estimator attitude state is under-observable or
+/// covariance-conditioned beyond the configured monitor.
+pub const FDIR_BIT_ESTIMATOR_UNDER_OBSERVABLE: u64 = 1 << 14;
 
 /// Detector family.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -66,6 +70,46 @@ pub enum DetectorKind {
     /// [`crate::topics::EstimatorStatus`]. See [`crate::glrt`] for the
     /// algorithm, threshold derivation, and determinism contract.
     WindowedMeanShiftGlrt,
+}
+
+/// Redline watchpoint source.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RedlineSource {
+    /// Norm of body angular velocity, rad/s.
+    BodyRateNormRadS,
+}
+
+/// Redline comparison operator.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RedlineOp {
+    /// Trips when the source value is greater than the threshold.
+    GreaterThan,
+}
+
+/// cFS-LC-style redline watchpoint.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct FdirRedlineWatchpoint {
+    /// Monitored source.
+    pub source: RedlineSource,
+    /// Comparison operator.
+    pub op: RedlineOp,
+    /// Trip threshold in the source units.
+    pub threshold: f64,
+    /// Fault bit OR-ed into the FDIR mask when the watchpoint trips.
+    pub fault_bit: u64,
+}
+
+impl FdirRedlineWatchpoint {
+    /// Body-rate norm redline watchpoint.
+    #[must_use]
+    pub const fn body_rate_norm_rad_s(threshold: f64, fault_bit: u64) -> Self {
+        Self {
+            source: RedlineSource::BodyRateNormRadS,
+            op: RedlineOp::GreaterThan,
+            threshold,
+            fault_bit,
+        }
+    }
 }
 
 /// FDIR parameters.
@@ -97,6 +141,8 @@ pub struct FdirParams {
     /// Body-rate magnitude redline (rad/s). `+∞` disables this
     /// watchpoint.
     pub body_rate_redline_rad_s: f64,
+    /// Declarative redline watchpoints.
+    pub redline_watchpoints: Vec<FdirRedlineWatchpoint>,
 }
 
 impl Default for FdirParams {
@@ -111,6 +157,7 @@ impl Default for FdirParams {
             glrt_window_samples: 32,
             glrt_false_alarm_rate: 0.001,
             body_rate_redline_rad_s: f64::INFINITY,
+            redline_watchpoints: Vec::new(),
         }
     }
 }
@@ -211,6 +258,9 @@ impl FdirJob {
         if est.dead_reckoning {
             mask |= FDIR_BIT_ESTIMATOR_DEAD_RECKONING;
         }
+        if est.attitude_under_observable {
+            mask |= FDIR_BIT_ESTIMATOR_UNDER_OBSERVABLE;
+        }
         let mut max_chi2 = est.imu_chi2;
         let mut max_mask = FDIR_BIT_IMU;
         for (chi2, bit) in [
@@ -265,15 +315,30 @@ impl FdirJob {
     }
 
     fn attitude_redline_mask(&self, attitude: AttitudeEstimate) -> u64 {
+        let body_rate_norm = attitude.omega_body_rad_s.norm();
+        let mut mask = 0_u64;
         let limit = self.params.body_rate_redline_rad_s;
-        if !limit.is_finite() || limit <= 0.0 {
-            return 0;
+        if limit.is_finite() && limit > 0.0 && body_rate_norm > limit {
+            mask |= FDIR_BIT_BODY_RATE_REDLINE;
         }
-        if attitude.omega_body_rad_s.norm() > limit {
-            FDIR_BIT_BODY_RATE_REDLINE
-        } else {
-            0
+        for watchpoint in &self.params.redline_watchpoints {
+            let value = match watchpoint.source {
+                RedlineSource::BodyRateNormRadS => body_rate_norm,
+            };
+            if redline_tripped(watchpoint.op, value, watchpoint.threshold) {
+                mask |= watchpoint.fault_bit;
+            }
         }
+        mask
+    }
+}
+
+fn redline_tripped(op: RedlineOp, value: f64, threshold: f64) -> bool {
+    if !value.is_finite() || !threshold.is_finite() {
+        return false;
+    }
+    match op {
+        RedlineOp::GreaterThan => value > threshold,
     }
 }
 
@@ -294,7 +359,8 @@ impl Job for FdirJob {
             latest_estimator = Some(est);
             let (mask, statistic, statistic_mask) = self.estimator_mask(est);
             current_mask |= mask;
-            non_innovation_mask |= mask & FDIR_BIT_ESTIMATOR_DEAD_RECKONING;
+            non_innovation_mask |=
+                mask & (FDIR_BIT_ESTIMATOR_DEAD_RECKONING | FDIR_BIT_ESTIMATOR_UNDER_OBSERVABLE);
             max_chi2 = statistic;
             max_chi2_mask = statistic_mask;
         }
@@ -685,6 +751,27 @@ mod tests {
     }
 
     #[test]
+    fn estimator_under_observable_status_trips_fdir() {
+        let bus = bus_with_fdir_topics();
+        bus.publish(EstimatorStatus {
+            attitude_under_observable: true,
+            attitude_variance_max_rad2: 2.0,
+            covariance_condition_proxy: 1.0e6,
+            ..EstimatorStatus::default()
+        })
+        .unwrap();
+        let mut job = FdirJob::new(FdirParams {
+            detector_kind: DetectorKind::WindowedMeanShiftGlrt,
+            ..FdirParams::default()
+        });
+
+        let status = run_once(&mut job, &bus);
+
+        assert!(status.triggered);
+        assert_ne!(status.tripped_mask & FDIR_BIT_ESTIMATOR_UNDER_OBSERVABLE, 0);
+    }
+
+    #[test]
     fn body_rate_redline_trips_fdir_watchpoint() {
         let bus = bus_with_fdir_topics();
         bus.publish(AttitudeEstimate {
@@ -696,6 +783,31 @@ mod tests {
         .unwrap();
         let mut job = FdirJob::new(FdirParams {
             body_rate_redline_rad_s: 2.0,
+            failsafe_burst_count: 1,
+            ..FdirParams::default()
+        });
+
+        let status = run_once(&mut job, &bus);
+
+        assert!(status.triggered);
+        assert_ne!(status.tripped_mask & FDIR_BIT_BODY_RATE_REDLINE, 0);
+    }
+
+    #[test]
+    fn declarative_redline_table_trips_fdir_watchpoint() {
+        let bus = bus_with_fdir_topics();
+        bus.publish(AttitudeEstimate {
+            time: SimTime::ZERO,
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            omega_body_rad_s: nalgebra::Vector3::new(0.0, 0.0, 3.0),
+            gyro_bias_body_rad_s: nalgebra::Vector3::zeros(),
+        })
+        .unwrap();
+        let mut job = FdirJob::new(FdirParams {
+            redline_watchpoints: vec![FdirRedlineWatchpoint::body_rate_norm_rad_s(
+                2.0,
+                FDIR_BIT_BODY_RATE_REDLINE,
+            )],
             failsafe_burst_count: 1,
             ..FdirParams::default()
         });

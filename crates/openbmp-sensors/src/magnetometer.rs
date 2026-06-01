@@ -223,6 +223,7 @@ mod tests {
             velocity_eci: Velocity3::new(0.0, 0.0, 0.0),
             attitude_eci_to_body: nalgebra::UnitQuaternion::identity(),
             angular_velocity_body_rad_s: Vector3::zeros(),
+            angular_acceleration_body_rad_s2: Vector3::zeros(),
             specific_force_body_m_s2: Vector3::zeros(),
             static_pressure_pa: 101_325.0,
             altitude_geometric_m: 0.0,

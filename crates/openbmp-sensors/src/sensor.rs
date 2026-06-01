@@ -38,6 +38,8 @@ pub struct SensorTruth {
     pub attitude_eci_to_body: UnitQuaternion<f64>,
     /// Body-frame angular velocity (rad/s).
     pub angular_velocity_body_rad_s: Vector3<f64>,
+    /// Body-frame angular acceleration (rad/s²).
+    pub angular_acceleration_body_rad_s2: Vector3<f64>,
     /// Body-frame **specific force** (m/s²) — i.e., total
     /// non-gravitational acceleration of the body, which is what an
     /// accelerometer actually measures.
@@ -359,6 +361,9 @@ pub(crate) fn require_truth_finite(truth: &SensorTruth) -> Result<(), SensorErro
         truth.angular_velocity_body_rad_s.x,
         truth.angular_velocity_body_rad_s.y,
         truth.angular_velocity_body_rad_s.z,
+        truth.angular_acceleration_body_rad_s2.x,
+        truth.angular_acceleration_body_rad_s2.y,
+        truth.angular_acceleration_body_rad_s2.z,
         truth.specific_force_body_m_s2.x,
         truth.specific_force_body_m_s2.y,
         truth.specific_force_body_m_s2.z,
@@ -436,6 +441,7 @@ mod tests {
             velocity_eci: Velocity3::new(0.0, 0.0, 0.0),
             attitude_eci_to_body: UnitQuaternion::identity(),
             angular_velocity_body_rad_s: Vector3::zeros(),
+            angular_acceleration_body_rad_s2: Vector3::zeros(),
             specific_force_body_m_s2: Vector3::zeros(),
             static_pressure_pa: 101_325.0,
             altitude_geometric_m: 0.0,

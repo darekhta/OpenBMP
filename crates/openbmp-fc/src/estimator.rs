@@ -53,6 +53,8 @@ use crate::topics::{
     PositionEstimate, StarTrackerSample,
 };
 
+const ATTITUDE_UNDER_OBSERVABLE_VARIANCE_RAD2: f64 = 1.0;
+
 /// Adapter that wraps the rich [`openbmp_physics::gravity::GravityModel`]
 /// trait (frame-tagged `Position3<Eci>`, `SimTime`, `Result`) into the
 /// simple `Vec3 → Vec3` shape the FC's predict / update path uses.
@@ -450,6 +452,35 @@ impl Ekf {
     }
 }
 
+fn covariance_diag_condition<const N: usize>(p: &SMatrix<f64, N, N>) -> f64 {
+    let mut max_diag = 0.0_f64;
+    let mut min_diag = f64::INFINITY;
+    for i in 0..N {
+        let diag = p[(i, i)];
+        if !diag.is_finite() {
+            return f64::INFINITY;
+        }
+        let non_negative = diag.max(0.0);
+        max_diag = max_diag.max(non_negative);
+        if non_negative > 0.0 {
+            min_diag = min_diag.min(non_negative);
+        }
+    }
+    if !min_diag.is_finite() || min_diag == 0.0 {
+        f64::INFINITY
+    } else {
+        max_diag / min_diag
+    }
+}
+
+fn attitude_variance_max<const N: usize>(p: &SMatrix<f64, N, N>, start: usize) -> f64 {
+    (start..start + 3).map(|i| p[(i, i)]).fold(0.0, f64::max)
+}
+
+fn attitude_under_observable(variance_rad2: f64) -> bool {
+    !variance_rad2.is_finite() || variance_rad2 > ATTITUDE_UNDER_OBSERVABLE_VARIANCE_RAD2
+}
+
 impl Estimator for Ekf {
     fn name(&self) -> &'static str {
         "estimator.ekf"
@@ -796,6 +827,7 @@ impl Estimator for Ekf {
     }
 
     fn status(&self) -> EstimatorStatus {
+        let attitude_variance_max_rad2 = attitude_variance_max(&self.p, 6);
         EstimatorStatus {
             time: openbmp_core::SimTime::ZERO,
             initialized: self.initialized,
@@ -812,6 +844,9 @@ impl Estimator for Ekf {
             baro_updated_this_tick: self.last_baro_updated_this_tick,
             mag_innovation_whitened: self.last_mag_innovation_whitened,
             mag_updated_this_tick: self.last_mag_updated_this_tick,
+            attitude_variance_max_rad2,
+            covariance_condition_proxy: covariance_diag_condition(&self.p),
+            attitude_under_observable: attitude_under_observable(attitude_variance_max_rad2),
         }
     }
 
@@ -1493,6 +1528,18 @@ mod tests {
     }
 
     #[test]
+    fn ekf_status_reports_observability_metrics() {
+        let ekf = ekf_for_innovation_test();
+        let status = ekf.status();
+
+        assert!(status.attitude_variance_max_rad2.is_finite());
+        assert!(status.attitude_variance_max_rad2 > 0.0);
+        assert!(status.covariance_condition_proxy.is_finite());
+        assert!(status.covariance_condition_proxy >= 1.0);
+        assert!(!status.attitude_under_observable);
+    }
+
+    #[test]
     fn ekf_gnss_velocity_spike_rejects_velocity_keeps_position() {
         // A GNSS fix with a good position but a large velocity-component
         // outlier must apply the position correction and reject ONLY the
@@ -2029,6 +2076,7 @@ impl Estimator for Mekf {
     }
 
     fn status(&self) -> EstimatorStatus {
+        let attitude_variance_max_rad2 = attitude_variance_max(&self.p, 0);
         EstimatorStatus {
             time: openbmp_core::SimTime::ZERO,
             initialized: self.initialized,
@@ -2045,6 +2093,9 @@ impl Estimator for Mekf {
             baro_updated_this_tick: false,
             mag_innovation_whitened: self.last_mag_innovation_whitened,
             mag_updated_this_tick: self.last_mag_updated_this_tick,
+            attitude_variance_max_rad2,
+            covariance_condition_proxy: covariance_diag_condition(&self.p),
+            attitude_under_observable: attitude_under_observable(attitude_variance_max_rad2),
         }
     }
 

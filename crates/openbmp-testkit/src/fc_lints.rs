@@ -194,6 +194,14 @@ mod tests {
             dispatch.contains("self.dispatch_order"),
             "scheduler dispatch should iterate the cached dispatch_order"
         );
+        assert!(
+            !dispatch.contains("bus.topics()"),
+            "topic-triggered scheduler dispatch must not allocate a topics() snapshot"
+        );
+        assert!(
+            scheduler.contains("MAX_SCHEDULED_JOBS"),
+            "scheduler should bound its dispatch table with a fixed job cap"
+        );
     }
 
     #[test]

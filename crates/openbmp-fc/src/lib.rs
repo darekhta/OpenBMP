@@ -155,6 +155,7 @@ pub use error::{
     ParamError, SchedulerError, TableError,
 };
 pub use scheduler::{
-    DeadlineSlipEvent, DispatchSummary, Job, JobContext, JobInfo, OverrunEvent, Priority,
-    Scheduler, TimingBudgetReport, Trigger,
+    DeadlineSlipEvent, DispatchSummary, FramePackingReport, Job, JobContext, JobInfo,
+    JobTimingObserver, NoJobTimingObserver, OverrunEvent, Priority, Scheduler, TimingBudgetReport,
+    Trigger,
 };

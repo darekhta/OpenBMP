@@ -8629,6 +8629,10 @@ pub struct FcConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct FcSchedulerConfig {
+    /// Enables host-side per-job wall-clock timing in the runner.
+    /// The measurement hook lives outside `openbmp-fc`; the controller
+    /// only receives measured microseconds.
+    pub instrument_timing: Option<bool>,
     /// Estimator job cadence in Hz.
     pub estimator_rate_hz: Option<u32>,
     /// Guidance job cadence in Hz.

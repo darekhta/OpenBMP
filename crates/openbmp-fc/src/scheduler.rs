@@ -40,6 +40,15 @@ use crate::topics::topic_index;
 /// Job priority — lower runs first.
 pub type Priority = u8;
 
+/// Maximum number of jobs accepted by the fixed dispatch table.
+pub const MAX_SCHEDULED_JOBS: usize = 64;
+
+/// Number of recent host timing samples retained per job.
+pub const MAX_JOB_TIMING_SAMPLES: usize = 128;
+
+/// Safety cap for static frame-packing enumeration.
+pub const MAX_FRAME_PACKING_HYPERPERIOD_TICKS: u64 = 100_000;
+
 /// Trigger condition for a registered job.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Trigger {
@@ -91,6 +100,44 @@ pub trait Job {
     /// Any error returned aborts the frame and is propagated to the
     /// caller of [`Scheduler::dispatch`].
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError>;
+}
+
+/// Optional runner-supplied timing hook.
+///
+/// The default implementation simply invokes [`Job::run`]. Host
+/// runners can implement this trait with `std::time::Instant` without
+/// importing wall-clock APIs into `openbmp-fc`.
+pub trait JobTimingObserver {
+    /// Runs a job and optionally returns measured wall-clock duration
+    /// in microseconds.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the job error or any observer-side error.
+    fn run_job(
+        &mut self,
+        job_name: &'static str,
+        declared_budget_us: u64,
+        job: &mut dyn Job,
+        ctx: &JobContext<'_>,
+    ) -> Result<Option<u64>, ControllerError>;
+}
+
+/// Observer used by normal lockstep dispatch: no host timing.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct NoJobTimingObserver;
+
+impl JobTimingObserver for NoJobTimingObserver {
+    fn run_job(
+        &mut self,
+        _job_name: &'static str,
+        _declared_budget_us: u64,
+        job: &mut dyn Job,
+        ctx: &JobContext<'_>,
+    ) -> Result<Option<u64>, ControllerError> {
+        job.run(ctx)?;
+        Ok(None)
+    }
 }
 
 /// Event published on `scheduler.overrun` when a job is skipped
@@ -157,6 +204,52 @@ impl Topic for TimingBudgetReport {
     const INDEX: usize = topic_index::SCHEDULER_TIMING_BUDGET_REPORT;
 }
 
+#[derive(Clone, Debug)]
+struct TimingSamples {
+    retained: [u64; MAX_JOB_TIMING_SAMPLES],
+    len: usize,
+    total_count: u64,
+}
+
+impl Default for TimingSamples {
+    fn default() -> Self {
+        Self {
+            retained: [0; MAX_JOB_TIMING_SAMPLES],
+            len: 0,
+            total_count: 0,
+        }
+    }
+}
+
+impl TimingSamples {
+    fn push(&mut self, sample_us: u64) {
+        if self.len < MAX_JOB_TIMING_SAMPLES {
+            self.retained[self.len] = sample_us;
+            self.len += 1;
+        } else {
+            self.retained.copy_within(1..MAX_JOB_TIMING_SAMPLES, 0);
+            self.retained[MAX_JOB_TIMING_SAMPLES - 1] = sample_us;
+        }
+        self.total_count = self.total_count.saturating_add(1);
+    }
+
+    fn max_us(&self) -> u64 {
+        self.retained[..self.len].iter().copied().max().unwrap_or(0)
+    }
+
+    fn percentile_us(&self, quantile: f64) -> u64 {
+        if self.len == 0 {
+            return 0;
+        }
+        let mut sorted = [0_u64; MAX_JOB_TIMING_SAMPLES];
+        sorted[..self.len].copy_from_slice(&self.retained[..self.len]);
+        sorted[..self.len].sort_unstable();
+        let last = self.len.saturating_sub(1);
+        let rank = (quantile.clamp(0.0, 1.0) * last as f64).ceil() as usize;
+        sorted[rank.min(last)]
+    }
+}
+
 struct ScheduledJob {
     job: Box<dyn Job>,
     trigger: Trigger,
@@ -171,7 +264,7 @@ struct ScheduledJob {
     /// Total tick count this job has been skipped for budget reasons.
     overrun_count: u64,
     /// Host-side measured execution times reported for this job.
-    actual_samples_us: Vec<u64>,
+    actual_samples_us: TimingSamples,
 }
 
 /// Descriptor exposed via [`Scheduler::jobs`] for dictionary generation
@@ -192,8 +285,28 @@ pub struct JobInfo {
     pub overrun_count: u64,
 }
 
+/// Static declared-budget feasibility report over one schedule
+/// hyperperiod.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FramePackingReport {
+    /// Least common multiple of periodic job periods. Topic-driven
+    /// jobs are conservatively treated as due on every frame.
+    pub hyperperiod_ticks: u64,
+    /// Tick inside the hyperperiod with the largest declared demand.
+    pub worst_frame_tick: u64,
+    /// Declared budget demand on the worst frame.
+    pub worst_frame_budget_us: u64,
+    /// Scheduler frame budget.
+    pub frame_budget_us: u64,
+    /// `true` when every frame in the hyperperiod fits.
+    pub feasible: bool,
+    /// `true` when the full hyperperiod was enumerated. If false,
+    /// `feasible` is also false because the schedule was too large to
+    /// prove with this host-side check.
+    pub complete: bool,
+}
+
 /// Cyclic scheduler.
-#[derive(Default)]
 pub struct Scheduler {
     /// Declared frame period in microseconds; the sum of declared
     /// budgets is gated against this on every dispatch.
@@ -204,7 +317,14 @@ pub struct Scheduler {
     jobs: StableIndexMap<&'static str, ScheduledJob>,
     /// Cached `(priority, registration_order)` dispatch order. This
     /// avoids allocating and sorting on the hot dispatch path.
-    dispatch_order: Vec<usize>,
+    dispatch_order: [usize; MAX_SCHEDULED_JOBS],
+    dispatch_order_len: usize,
+}
+
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self::new(0)
+    }
 }
 
 impl std::fmt::Debug for Scheduler {
@@ -212,7 +332,7 @@ impl std::fmt::Debug for Scheduler {
         f.debug_struct("Scheduler")
             .field("frame_budget_us", &self.frame_budget_us)
             .field("jobs", &self.jobs())
-            .field("dispatch_order", &self.dispatch_order)
+            .field("dispatch_order", &self.dispatch_order())
             .finish()
     }
 }
@@ -227,7 +347,8 @@ impl Scheduler {
         Self {
             frame_budget_us,
             jobs: StableIndexMap::default(),
-            dispatch_order: Vec::new(),
+            dispatch_order: [0; MAX_SCHEDULED_JOBS],
+            dispatch_order_len: 0,
         }
     }
 
@@ -301,6 +422,11 @@ impl Scheduler {
         if self.jobs.contains_key(name) {
             return Err(SchedulerError::DuplicateJob { job_name: name });
         }
+        if self.jobs.len() >= MAX_SCHEDULED_JOBS {
+            return Err(SchedulerError::TooManyJobs {
+                max_jobs: MAX_SCHEDULED_JOBS,
+            });
+        }
         let registration_index = self.jobs.len();
         self.jobs.insert(
             name,
@@ -312,13 +438,15 @@ impl Scheduler {
                 last_seen: Sequence::ZERO,
                 run_count: 0,
                 overrun_count: 0,
-                actual_samples_us: Vec::new(),
+                actual_samples_us: TimingSamples::default(),
             },
         );
-        self.dispatch_order.push(registration_index);
-        self.dispatch_order.sort_by_key(|idx| {
-            self.jobs
-                .get_index(*idx)
+        self.dispatch_order[self.dispatch_order_len] = registration_index;
+        self.dispatch_order_len += 1;
+        let jobs = &self.jobs;
+        let dispatch_order = &mut self.dispatch_order[..self.dispatch_order_len];
+        dispatch_order.sort_by_key(|idx| {
+            jobs.get_index(*idx)
                 .map_or((Priority::MAX, usize::MAX), |(_, j)| (j.priority, *idx))
         });
         Ok(())
@@ -341,10 +469,30 @@ impl Scheduler {
         bus: &Bus,
         clock: &dyn Clock,
     ) -> Result<DispatchSummary, ControllerError> {
+        let mut observer = NoJobTimingObserver;
+        self.dispatch_with_timing_observer(tick, bus, clock, &mut observer)
+    }
+
+    /// Dispatches a single tick with a runner-supplied timing
+    /// observer. This is the hook used by host SIL runners to measure
+    /// per-job wall time while keeping wall-clock APIs out of
+    /// `openbmp-fc`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error returned by [`Job::run`] or by publishing
+    /// timing / overrun topics.
+    pub fn dispatch_with_timing_observer<O: JobTimingObserver>(
+        &mut self,
+        tick: u64,
+        bus: &Bus,
+        clock: &dyn Clock,
+        observer: &mut O,
+    ) -> Result<DispatchSummary, ControllerError> {
         let mut remaining_budget = self.frame_budget_us;
         let mut summary = DispatchSummary::default();
 
-        for order_idx in 0..self.dispatch_order.len() {
+        for order_idx in 0..self.dispatch_order_len {
             let idx = self.dispatch_order[order_idx];
             let Some((_, scheduled)) = self.jobs.get_index(idx) else {
                 continue;
@@ -373,22 +521,38 @@ impl Scheduler {
 
             // Run the job.
             let ctx = JobContext { bus, clock };
-            let Some((_, scheduled_mut)) = self.jobs.get_index_mut(idx) else {
-                continue;
+            let (consumed, actual_us) = {
+                let Some((_, scheduled_mut)) = self.jobs.get_index_mut(idx) else {
+                    continue;
+                };
+                let job_name = scheduled_mut.job.name();
+                let declared_budget_us = scheduled_mut.budget_us;
+                let actual_us = observer.run_job(
+                    job_name,
+                    declared_budget_us,
+                    scheduled_mut.job.as_mut(),
+                    &ctx,
+                )?;
+                scheduled_mut.run_count = scheduled_mut.run_count.saturating_add(1);
+                if let Trigger::TopicUpdated { topic_name } = scheduled_mut.trigger {
+                    let seq = bus_sequence_by_name(bus, topic_name);
+                    scheduled_mut.last_seen = seq;
+                }
+                (scheduled_mut.budget_us, actual_us)
             };
-            scheduled_mut.job.run(&ctx)?;
-            scheduled_mut.run_count = scheduled_mut.run_count.saturating_add(1);
-            if let Trigger::TopicUpdated { topic_name } = scheduled_mut.trigger {
-                let seq = bus_sequence_by_name(bus, topic_name);
-                scheduled_mut.last_seen = seq;
+            if let Some(actual_us) = actual_us {
+                self.record_actual_us_by_index(idx, actual_us, bus)?;
             }
-            let consumed = scheduled_mut.budget_us;
             remaining_budget = remaining_budget.saturating_sub(consumed);
             summary.run_count = summary.run_count.saturating_add(1);
         }
 
         summary.remaining_budget_us = remaining_budget;
         Ok(summary)
+    }
+
+    fn dispatch_order(&self) -> &[usize] {
+        &self.dispatch_order[..self.dispatch_order_len]
     }
 
     /// Returns descriptors for every registered job in registration
@@ -406,6 +570,75 @@ impl Scheduler {
                 overrun_count: j.overrun_count,
             })
             .collect()
+    }
+
+    /// Computes a static declared-budget frame-packing report over
+    /// one hyperperiod. Topic-driven jobs are conservatively included
+    /// in every frame because their publish cadence is external to
+    /// the scheduler.
+    #[must_use]
+    pub fn frame_packing_report(&self) -> FramePackingReport {
+        let mut complete = true;
+        let mut hyperperiod_ticks = 1_u64;
+        for period_ticks in self.jobs.values().filter_map(|job| match job.trigger {
+            Trigger::Periodic { period_ticks } => Some(period_ticks.max(1)),
+            Trigger::TopicUpdated { .. } => None,
+        }) {
+            let next = saturating_lcm(hyperperiod_ticks, period_ticks);
+            if next > MAX_FRAME_PACKING_HYPERPERIOD_TICKS {
+                hyperperiod_ticks = MAX_FRAME_PACKING_HYPERPERIOD_TICKS;
+                complete = false;
+                break;
+            }
+            hyperperiod_ticks = next;
+        }
+
+        let mut worst_frame_tick = 0_u64;
+        let mut worst_frame_budget_us = 0_u64;
+        for tick in 0..hyperperiod_ticks {
+            let frame_budget = self
+                .jobs
+                .values()
+                .filter(|job| match job.trigger {
+                    Trigger::Periodic { period_ticks } => tick.is_multiple_of(period_ticks.max(1)),
+                    Trigger::TopicUpdated { .. } => true,
+                })
+                .fold(0_u64, |sum, job| sum.saturating_add(job.budget_us));
+            if frame_budget > worst_frame_budget_us {
+                worst_frame_budget_us = frame_budget;
+                worst_frame_tick = tick;
+            }
+        }
+
+        FramePackingReport {
+            hyperperiod_ticks,
+            worst_frame_tick,
+            worst_frame_budget_us,
+            frame_budget_us: self.frame_budget_us,
+            feasible: complete && worst_frame_budget_us <= self.frame_budget_us,
+            complete,
+        }
+    }
+
+    /// Validates that the declared schedule fits in every frame of
+    /// the computed hyperperiod.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::FrameBudgetInfeasible`] if the
+    /// complete hyperperiod cannot be enumerated or any frame exceeds
+    /// `frame_budget_us`.
+    pub fn validate_frame_packing(&self) -> Result<FramePackingReport, SchedulerError> {
+        let report = self.frame_packing_report();
+        if report.feasible {
+            return Ok(report);
+        }
+        Err(SchedulerError::FrameBudgetInfeasible {
+            hyperperiod_ticks: report.hyperperiod_ticks,
+            worst_frame_tick: report.worst_frame_tick,
+            worst_frame_budget_us: report.worst_frame_budget_us,
+            frame_budget_us: report.frame_budget_us,
+        })
     }
 
     /// Records a runner-side wall-time measurement of how long a job
@@ -428,19 +661,26 @@ impl Scheduler {
         actual_us: u64,
         bus: &Bus,
     ) -> Result<(), ControllerError> {
-        let Some(scheduled) = self.jobs.get_mut(job_name) else {
+        let Some(idx) = self.jobs.get_index_of(job_name) else {
+            return Ok(());
+        };
+        self.record_actual_us_by_index(idx, actual_us, bus)
+    }
+
+    fn record_actual_us_by_index(
+        &mut self,
+        idx: usize,
+        actual_us: u64,
+        bus: &Bus,
+    ) -> Result<(), ControllerError> {
+        let Some((_, scheduled)) = self.jobs.get_index_mut(idx) else {
             return Ok(());
         };
         scheduled.actual_samples_us.push(actual_us);
-        let sample_count = scheduled.actual_samples_us.len() as u64;
-        let max_us = scheduled
-            .actual_samples_us
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or(actual_us);
-        let p50_us = percentile_us(&scheduled.actual_samples_us, 0.50);
-        let p99_us = percentile_us(&scheduled.actual_samples_us, 0.99);
+        let sample_count = scheduled.actual_samples_us.total_count;
+        let max_us = scheduled.actual_samples_us.max_us();
+        let p50_us = scheduled.actual_samples_us.percentile_us(0.50);
+        let p99_us = scheduled.actual_samples_us.percentile_us(0.99);
         let report = TimingBudgetReport {
             job_name: scheduled.job.name(),
             declared_budget_us: scheduled.budget_us,
@@ -498,21 +738,23 @@ fn trigger_due(trigger: &Trigger, tick: u64, last_seen: Sequence, bus: &Bus) -> 
 /// has registered the topic; the job simply never fires until the
 /// producer publishes the first value.
 fn bus_sequence_by_name(bus: &Bus, name: &'static str) -> Sequence {
-    bus.topics()
-        .into_iter()
-        .find(|t| t.name == name)
-        .map_or(Sequence::ZERO, |t| Sequence::from_u64(t.seq))
+    bus.sequence_by_name(name)
 }
 
-fn percentile_us(samples: &[u64], quantile: f64) -> u64 {
-    if samples.is_empty() {
+fn saturating_lcm(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 {
         return 0;
     }
-    let mut sorted = samples.to_vec();
-    sorted.sort_unstable();
-    let last = sorted.len().saturating_sub(1);
-    let rank = (quantile.clamp(0.0, 1.0) * last as f64).ceil() as usize;
-    sorted[rank.min(last)]
+    a.saturating_div(gcd(a, b)).saturating_mul(b)
+}
+
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
 }
 
 #[cfg(test)]
@@ -554,6 +796,23 @@ mod tests {
         fn run(&mut self, _ctx: &JobContext<'_>) -> Result<(), ControllerError> {
             self.counter.set(self.counter.get() + 1);
             Ok(())
+        }
+    }
+
+    struct FixedTimingObserver {
+        actual_us: u64,
+    }
+
+    impl JobTimingObserver for FixedTimingObserver {
+        fn run_job(
+            &mut self,
+            _job_name: &'static str,
+            _declared_budget_us: u64,
+            job: &mut dyn Job,
+            ctx: &JobContext<'_>,
+        ) -> Result<Option<u64>, ControllerError> {
+            job.run(ctx)?;
+            Ok(Some(self.actual_us))
         }
     }
 
@@ -670,6 +929,127 @@ mod tests {
         assert_eq!(slip.job_name, "timed");
         assert_eq!(slip.actual_us, 125);
         assert_eq!(slip.declared_budget_us, 100);
+    }
+
+    #[test]
+    fn dispatch_timing_observer_feeds_timing_topics() {
+        let bus = Bus::new();
+        bus.register::<OverrunEvent>().unwrap();
+        bus.register::<TimingBudgetReport>().unwrap();
+        bus.register::<DeadlineSlipEvent>().unwrap();
+        let clock = SimulatedClock::new();
+        let counter = Rc::new(Cell::new(0u32));
+        let mut sched = Scheduler::new(1_000);
+        sched
+            .register_periodic(
+                1,
+                100,
+                10,
+                Box::new(CounterJob {
+                    name: "observed",
+                    counter: counter.clone(),
+                }),
+            )
+            .unwrap();
+        let mut observer = FixedTimingObserver { actual_us: 125 };
+
+        let summary = sched
+            .dispatch_with_timing_observer(0, &bus, &clock, &mut observer)
+            .unwrap();
+
+        assert_eq!(summary.run_count, 1);
+        assert_eq!(counter.get(), 1);
+        let (report, _) = bus.latest::<TimingBudgetReport>().unwrap().unwrap();
+        assert_eq!(report.job_name, "observed");
+        assert_eq!(report.latest_us, 125);
+        let (slip, _) = bus.latest::<DeadlineSlipEvent>().unwrap().unwrap();
+        assert_eq!(slip.job_name, "observed");
+    }
+
+    #[test]
+    fn frame_packing_report_proves_worst_hyperperiod_frame() {
+        let counter = Rc::new(Cell::new(0u32));
+        let mut sched = Scheduler::new(120);
+        sched
+            .register_periodic(
+                1,
+                40,
+                10,
+                Box::new(CounterJob {
+                    name: "fast",
+                    counter: counter.clone(),
+                }),
+            )
+            .unwrap();
+        sched
+            .register_periodic(
+                2,
+                70,
+                20,
+                Box::new(CounterJob {
+                    name: "slow",
+                    counter: counter.clone(),
+                }),
+            )
+            .unwrap();
+        sched
+            .register_topic_driven(
+                Beat::NAME,
+                10,
+                30,
+                Box::new(CounterJob {
+                    name: "topic",
+                    counter,
+                }),
+            )
+            .unwrap();
+
+        let report = sched.frame_packing_report();
+
+        assert_eq!(report.hyperperiod_ticks, 2);
+        assert_eq!(report.worst_frame_tick, 0);
+        assert_eq!(report.worst_frame_budget_us, 120);
+        assert!(report.feasible);
+        assert!(report.complete);
+    }
+
+    #[test]
+    fn frame_packing_validation_rejects_infeasible_schedule() {
+        let counter = Rc::new(Cell::new(0u32));
+        let mut sched = Scheduler::new(99);
+        sched
+            .register_periodic(
+                1,
+                40,
+                10,
+                Box::new(CounterJob {
+                    name: "fast",
+                    counter: counter.clone(),
+                }),
+            )
+            .unwrap();
+        sched
+            .register_periodic(
+                2,
+                60,
+                20,
+                Box::new(CounterJob {
+                    name: "slow",
+                    counter,
+                }),
+            )
+            .unwrap();
+
+        let err = sched.validate_frame_packing().unwrap_err();
+
+        assert!(matches!(
+            err,
+            SchedulerError::FrameBudgetInfeasible {
+                worst_frame_budget_us: 100,
+                frame_budget_us: 99,
+                ..
+            }
+        ));
     }
 
     #[test]

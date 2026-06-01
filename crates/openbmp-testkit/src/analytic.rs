@@ -13,6 +13,42 @@ use thiserror::Error;
 /// Convergence tolerance used by the Kepler solver.
 pub const KEPLER_TOLERANCE: f64 = 1.0e-12;
 
+/// Specific orbital energy `ε = v²/2 - μ/r`.
+///
+/// This is conserved on an unforced two-body coast arc. Use as a
+/// drift-bounded invariant for fixed-step integration, not as an
+/// exact equality over a finite numerical trajectory.
+#[must_use]
+pub fn specific_orbital_energy(mu_m3_s2: f64, radius_m: f64, speed_m_s: f64) -> f64 {
+    0.5 * speed_m_s * speed_m_s - mu_m3_s2 / radius_m
+}
+
+/// Vis-viva speed `v = sqrt(μ(2/r - 1/a))`.
+///
+/// This is an exact closed-form pin for an ideal two-body orbit.
+#[must_use]
+pub fn vis_viva_speed(mu_m3_s2: f64, radius_m: f64, semi_major_axis_m: f64) -> f64 {
+    (mu_m3_s2 * (2.0 / radius_m - 1.0 / semi_major_axis_m)).sqrt()
+}
+
+/// Specific angular momentum `h = r × v`.
+///
+/// Conserved on a torque-free two-body coast arc.
+#[must_use]
+pub fn specific_angular_momentum(position_m: [f64; 3], velocity_m_s: [f64; 3]) -> [f64; 3] {
+    [
+        position_m[1] * velocity_m_s[2] - position_m[2] * velocity_m_s[1],
+        position_m[2] * velocity_m_s[0] - position_m[0] * velocity_m_s[2],
+        position_m[0] * velocity_m_s[1] - position_m[1] * velocity_m_s[0],
+    ]
+}
+
+/// Euclidean norm of a 3-vector.
+#[must_use]
+pub fn norm3(v: [f64; 3]) -> f64 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
 /// Errors produced by checked Keplerian helper methods.
 #[derive(Copy, Clone, Debug, Error, PartialEq)]
 pub enum KeplerError {
@@ -339,6 +375,27 @@ mod tests {
         // Circular orbit: radius is constant at any time.
         assert_abs_diff_eq!(orbit.radius_at(0.0), 7.0e6, epsilon = 1.0);
         assert_abs_diff_eq!(orbit.radius_at(1000.0), 7.0e6, epsilon = 1.0);
+    }
+
+    #[test]
+    fn vis_viva_and_specific_energy_agree_for_circular_orbit() {
+        let mu = 3.986_004_418e14;
+        let radius = 7.0e6;
+        let speed = vis_viva_speed(mu, radius, radius);
+        let energy = specific_orbital_energy(mu, radius, speed);
+
+        assert_abs_diff_eq!(speed * speed, mu / radius, epsilon = 1.0e-6);
+        assert_abs_diff_eq!(energy, -mu / (2.0 * radius), epsilon = 1.0e-6);
+    }
+
+    #[test]
+    fn specific_angular_momentum_cross_product_matches_right_hand_rule() {
+        let h = specific_angular_momentum([7.0e6, 0.0, 0.0], [0.0, 7.5e3, 0.0]);
+
+        assert_abs_diff_eq!(h[0], 0.0);
+        assert_abs_diff_eq!(h[1], 0.0);
+        assert_abs_diff_eq!(h[2], 7.0e6 * 7.5e3);
+        assert_abs_diff_eq!(norm3(h), 7.0e6 * 7.5e3);
     }
 
     #[test]

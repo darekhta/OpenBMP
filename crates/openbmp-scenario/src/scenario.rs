@@ -5744,7 +5744,8 @@ file = "../sensors/star-tracker-textbook.toml""#,
              guidance_rate_hz = 50\n\
              health_rate_hz = 25\n\
              fdir_rate_hz = 25\n\
-             guidance_budget_us = 150\n"
+             guidance_budget_us = 150\n\
+             instrument_timing = true\n"
         );
         let scenario = Scenario::from_toml_str(&toml).unwrap();
         let scheduler = scenario
@@ -5757,6 +5758,7 @@ file = "../sensors/star-tracker-textbook.toml""#,
         assert_eq!(scheduler.health_rate_hz, Some(25));
         assert_eq!(scheduler.fdir_rate_hz, Some(25));
         assert_eq!(scheduler.guidance_budget_us, Some(150));
+        assert_eq!(scheduler.instrument_timing, Some(true));
     }
 
     #[test]

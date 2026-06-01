@@ -11,6 +11,7 @@
 //! directly.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use nalgebra::{UnitQuaternion, Vector3};
 use openbmp_core::{EffectorId, EngineId, SimTime, StepIndex};
@@ -21,7 +22,9 @@ use openbmp_fc::autopilot::{
 use openbmp_fc::commander::{Commander, CommanderParams};
 use openbmp_fc::estimator::{Ekf, EkfParams, Estimator, EstimatorJob, Mekf, MekfParams};
 use openbmp_fc::estimator_lanes::{LaneId, MultiLaneEstimator, VoterPolicy};
-use openbmp_fc::fdir::{DetectorKind, FdirJob, FdirParams};
+use openbmp_fc::fdir::{
+    DetectorKind, FDIR_BIT_BODY_RATE_REDLINE, FdirJob, FdirParams, FdirRedlineWatchpoint,
+};
 use openbmp_fc::guidance::{
     AscentReferenceGuidance, AttitudeHoldGuidance, GuidanceParams, WaypointGuidance,
     WaypointSequence,
@@ -41,7 +44,7 @@ use openbmp_fc::topics::{
 };
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
-    GuidanceError,
+    GuidanceError, Job, JobContext, JobTimingObserver,
 };
 use openbmp_mission::{
     EventBinding, MissionAction, MissionPhaseGraph, MissionStateMachine, PhaseId, RegionSet,
@@ -61,6 +64,24 @@ use openbmp_scenario::{
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
 
+struct HostTimingObserver;
+
+impl JobTimingObserver for HostTimingObserver {
+    fn run_job(
+        &mut self,
+        _job_name: &'static str,
+        _declared_budget_us: u64,
+        job: &mut dyn Job,
+        ctx: &JobContext<'_>,
+    ) -> Result<Option<u64>, ControllerError> {
+        let start = Instant::now();
+        job.run(ctx)?;
+        let micros = start.elapsed().as_micros();
+        let actual_us = u64::try_from(micros).unwrap_or(u64::MAX);
+        Ok(Some(actual_us))
+    }
+}
+
 /// Bridges an [`FcConfig`] to a fully wired [`FlightController`].
 ///
 /// The runner owns the controller; the kernel pushes sensor samples
@@ -72,6 +93,7 @@ const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
 #[derive(Debug)]
 pub struct FcRunner {
     fc: FlightController,
+    instrument_timing: bool,
 }
 
 /// Mission runtime inputs owned by the FC runner.
@@ -310,7 +332,18 @@ impl FcRunner {
             Box::new(FdirJob::new(build_fdir_params(config.fdir.as_ref()))),
         )?;
 
-        Ok(Self { fc })
+        fc.scheduler().validate_frame_packing()?;
+
+        let instrument_timing = config
+            .scheduler
+            .as_ref()
+            .and_then(|scheduler| scheduler.instrument_timing)
+            .unwrap_or(false);
+
+        Ok(Self {
+            fc,
+            instrument_timing,
+        })
     }
 
     /// Steps the controller once. Call after the kernel has published
@@ -324,7 +357,12 @@ impl FcRunner {
         time: SimTime,
         tick: StepIndex,
     ) -> Result<DispatchSummary, openbmp_fc::ControllerError> {
-        self.fc.step(time, tick)
+        if self.instrument_timing {
+            let mut observer = HostTimingObserver;
+            self.fc.step_with_timing_observer(time, tick, &mut observer)
+        } else {
+            self.fc.step(time, tick)
+        }
     }
 
     /// Borrows the underlying flight controller.
@@ -1558,6 +1596,12 @@ fn build_fdir_params(cfg: Option<&FcFdirConfig>) -> FdirParams {
         && let Some(limit) = redlines.body_rate_rad_s
     {
         params.body_rate_redline_rad_s = limit;
+        params
+            .redline_watchpoints
+            .push(FdirRedlineWatchpoint::body_rate_norm_rad_s(
+                limit,
+                FDIR_BIT_BODY_RATE_REDLINE,
+            ));
     }
     // When `[fc.fdir.detector]` is present its `kind`
     // overrides the legacy `detector_kind`. The scenario validator
@@ -1810,6 +1854,11 @@ mod tests {
         let params = build_fdir_params(Some(&cfg));
 
         assert!((params.body_rate_redline_rad_s - 2.5).abs() < f64::EPSILON);
+        assert_eq!(params.redline_watchpoints.len(), 1);
+        assert_eq!(
+            params.redline_watchpoints[0].fault_bit,
+            FDIR_BIT_BODY_RATE_REDLINE
+        );
     }
 
     fn powered_ascent_graph() -> (MissionPhaseGraph, Vec<EventBinding<MissionAction>>, PhaseId) {

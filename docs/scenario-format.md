@@ -160,7 +160,11 @@ topology: estimator, commander, autopilot, and mixer run at
 rates must be in `1..=base_rate_hz`, and declared budgets must be
 positive microsecond values. The scheduler converts rates to integer
 base-rate periods with ceil division, so a requested 50 Hz task under
-`base_rate_hz = 1000` runs every 20 ticks.
+`base_rate_hz = 1000` runs every 20 ticks. `instrument_timing = true`
+enables host-side per-job wall-clock timing in the runner; measured
+microseconds are reported through `scheduler.timing_budget_report` and
+deadline slips through `scheduler.deadline_slip`. The wall-clock call
+remains outside `openbmp-fc`.
 
 For flight builds, the validated declarative tables are loaded as a
 compact I-load payload, not as TOML. `openbmp-hal` defines the `OBIL`

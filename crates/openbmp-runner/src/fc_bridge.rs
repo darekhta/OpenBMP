@@ -53,6 +53,8 @@ pub struct FcBridge {
     scenario_seed: u64,
     previous_velocity_eci_m_s: Option<Vector3<f64>>,
     previous_time_s: Option<f64>,
+    previous_angular_velocity_body_rad_s: Option<Vector3<f64>>,
+    previous_angular_time_s: Option<f64>,
     last_mission_action_sequence: Option<u64>,
 }
 
@@ -141,6 +143,8 @@ impl FcBridge {
             scenario_seed: scenario.document.time.seed,
             previous_velocity_eci_m_s: None,
             previous_time_s: None,
+            previous_angular_velocity_body_rad_s: None,
+            previous_angular_time_s: None,
             last_mission_action_sequence: None,
         }))
     }
@@ -337,6 +341,7 @@ impl FcBridge {
             state.velocity,
             attitude_body_to_eci,
             Vector3::zeros(),
+            Vector3::zeros(),
             specific_force_eci,
             state.time,
         )
@@ -357,11 +362,15 @@ impl FcBridge {
         // The rate gyro senses the rigid-body rate PLUS the local structural
         // bending slope rate (zero for a rigid vehicle). This is what lets the
         // autopilot — and its gyro notch — interact with the flex mode.
+        let angular_velocity_body_rad_s = state.angular_velocity.vector + gyro_pickup_rad_s;
+        let angular_acceleration_body_rad_s2 =
+            self.angular_acceleration_body(angular_velocity_body_rad_s, state.time.as_seconds());
         self.truth_common(
             state.position,
             state.velocity,
             attitude_body_to_eci,
-            state.angular_velocity.vector + gyro_pickup_rad_s,
+            angular_velocity_body_rad_s,
+            angular_acceleration_body_rad_s2,
             specific_force_eci,
             state.time,
         )
@@ -373,6 +382,7 @@ impl FcBridge {
         velocity: Velocity3<openbmp_core::Eci>,
         attitude_body_to_eci: UnitQuaternion<f64>,
         angular_velocity_body_rad_s: Vector3<f64>,
+        angular_acceleration_body_rad_s2: Vector3<f64>,
         specific_force_eci_m_s2: Vector3<f64>,
         time: openbmp_core::SimTime,
     ) -> SensorTruth {
@@ -389,6 +399,7 @@ impl FcBridge {
             velocity_eci: velocity,
             attitude_eci_to_body,
             angular_velocity_body_rad_s,
+            angular_acceleration_body_rad_s2,
             specific_force_body_m_s2,
             static_pressure_pa,
             altitude_geometric_m: altitude_m,
@@ -427,6 +438,25 @@ impl FcBridge {
         self.previous_velocity_eci_m_s = Some(velocity_eci_m_s);
         self.previous_time_s = Some(time_s);
         total_accel - gravity_eci_m_s2
+    }
+
+    fn angular_acceleration_body(
+        &mut self,
+        angular_velocity_body_rad_s: Vector3<f64>,
+        time_s: f64,
+    ) -> Vector3<f64> {
+        let angular_accel = match (
+            self.previous_angular_velocity_body_rad_s,
+            self.previous_angular_time_s,
+        ) {
+            (Some(prev_omega), Some(prev_t)) if time_s > prev_t => {
+                (angular_velocity_body_rad_s - prev_omega) / (time_s - prev_t)
+            }
+            _ => Vector3::zeros(),
+        };
+        self.previous_angular_velocity_body_rad_s = Some(angular_velocity_body_rad_s);
+        self.previous_angular_time_s = Some(time_s);
+        angular_accel
     }
 }
 

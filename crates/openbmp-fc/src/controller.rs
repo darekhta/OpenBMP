@@ -14,7 +14,8 @@ use crate::dictionary::Dictionary;
 use crate::error::ControllerError;
 use crate::params::Parameters;
 use crate::scheduler::{
-    DeadlineSlipEvent, DispatchSummary, OverrunEvent, Scheduler, TimingBudgetReport,
+    DeadlineSlipEvent, DispatchSummary, JobTimingObserver, OverrunEvent, Scheduler,
+    TimingBudgetReport,
 };
 use crate::tables::Tables;
 
@@ -103,6 +104,23 @@ impl FlightController {
         self.clock.set(time, tick);
         self.scheduler
             .dispatch(tick.value(), &self.bus, &self.clock)
+    }
+
+    /// Drives one controller step using a runner-supplied per-job
+    /// timing observer.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any job, timing-topic, or overrun-topic error.
+    pub fn step_with_timing_observer<O: JobTimingObserver>(
+        &mut self,
+        time: openbmp_core::SimTime,
+        tick: openbmp_core::StepIndex,
+        observer: &mut O,
+    ) -> Result<DispatchSummary, ControllerError> {
+        self.clock.set(time, tick);
+        self.scheduler
+            .dispatch_with_timing_observer(tick.value(), &self.bus, &self.clock, observer)
     }
 }
 
