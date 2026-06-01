@@ -5,9 +5,13 @@
 //! free-molecular aero per Schaaf & Chambré, and a
 //! `HybridAeroMethod` that dispatches across the regimes.
 
-use std::f64::consts::PI;
+#[cfg(not(feature = "std"))]
+use alloc::boxed::Box;
+use core::{f64::consts::PI, fmt};
 
 use nalgebra::Vector3;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 use crate::error::AeroError;
 use crate::method::{AeroContext, AeroForceMomentBody, AeroMethod};
@@ -340,9 +344,9 @@ pub struct HybridAeroMethod {
     pub knudsen: f64,
 }
 
-impl std::fmt::Debug for HybridAeroMethod {
+impl fmt::Debug for HybridAeroMethod {
     #[allow(deprecated)]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HybridAeroMethod")
             .field("mach_handoff", &self.mach_handoff)
             .field("mach_bridge", &self.mach_bridge)
@@ -417,7 +421,8 @@ fn blend_force_moment(
     clippy::unwrap_used,
     clippy::float_cmp,
     clippy::missing_panics_doc,
-    clippy::similar_names
+    clippy::similar_names,
+    deprecated
 )]
 mod tests {
     use super::*;

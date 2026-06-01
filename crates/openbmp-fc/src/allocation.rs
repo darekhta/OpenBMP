@@ -62,6 +62,7 @@
 //! identical inputs produces bit-identical outputs.
 
 use std::collections::BTreeSet;
+use std::vec::Vec;
 
 use thiserror::Error;
 

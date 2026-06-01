@@ -35,9 +35,9 @@
 //!   transition: a guard either fires consistently or doesn't fire
 //!   for a given `(transition, region-state)` pair.
 
-use std::collections::BTreeMap;
-
-use std::borrow::Cow;
+use alloc::borrow::Cow;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::vec::Vec;
 
 use thiserror::Error;
 
@@ -220,7 +220,7 @@ impl Region {
         mut states: Vec<Phase>,
         initial: PhaseId,
     ) -> Result<Self, RegionError> {
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BTreeSet::new();
         for state in &states {
             if !seen.insert(state.id) {
                 return Err(RegionError::DuplicateState {
@@ -378,7 +378,7 @@ mod tests {
         let estimator = CanonicalRegions::estimator_regime();
         let aero = CanonicalRegions::aerodynamic_regime();
         let ids = [mission, health, comms, estimator, aero];
-        let unique: std::collections::BTreeSet<_> = ids.iter().copied().collect();
+        let unique: BTreeSet<_> = ids.iter().copied().collect();
         assert_eq!(unique.len(), ids.len(), "all canonical region ids distinct");
         assert_ne!(
             CanonicalRegionStates::health_nominal(),

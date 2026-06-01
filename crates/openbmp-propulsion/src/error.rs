@@ -40,6 +40,7 @@ pub enum MotorError {
         reason: &'static str,
     },
     /// A motor file could not be read from disk.
+    #[cfg(feature = "std")]
     #[error("motor file I/O error: {reason}")]
     Io {
         /// Path and underlying I/O error message.

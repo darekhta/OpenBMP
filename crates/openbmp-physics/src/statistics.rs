@@ -18,6 +18,9 @@
 //!   normal cumulative distribution function." Used for the
 //!   standard-normal inverse step.
 
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 /// Returns the inverse of the chi-square cumulative distribution
 /// function at probability `p` for `dof` degrees of freedom, using
 /// the Wilson-Hilferty (1931) cube-root approximation. Returns

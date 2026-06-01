@@ -50,12 +50,18 @@
 //! its `ForceModel` / `MomentModel` chain at a higher layer. See
 //! `docs/software-architecture.md#aerodynamics`.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
 pub mod buildup;
 pub mod deck;
 pub mod error;
 pub mod hypersonic;
 pub mod knudsen;
 pub mod method;
+#[cfg(feature = "parser")]
 pub mod parser;
 
 pub use buildup::{

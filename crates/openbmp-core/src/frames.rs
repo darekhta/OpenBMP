@@ -24,8 +24,8 @@
 //! let _ = inertial - fixed; // frame mismatch: does not compile
 //! ```
 
-use std::marker::PhantomData;
-use std::ops::{Add, Mul, Neg, Sub};
+use core::marker::PhantomData;
+use core::ops::{Add, Mul, Neg, Sub};
 
 use nalgebra::{Quaternion as NalgebraQuaternion, UnitQuaternion, Vector3};
 

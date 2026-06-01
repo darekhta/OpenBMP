@@ -11,8 +11,8 @@ use crate::glrt::{StepOutcome, WindowedMeanShiftGlrt};
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{
-    ActuatorCommand, AutopilotStatus, EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic,
-    FdirStatus,
+    ActuatorCommand, AttitudeEstimate, AutopilotStatus, EstimatorLaneSelection, EstimatorStatus,
+    FailsafeFlags, FdirGlrtDiagnostic, FdirStatus,
 };
 
 /// Fault-tree bit: IMU lane or innovation fault.
@@ -31,6 +31,10 @@ pub const FDIR_BIT_ESTIMATOR_DEAD_RECKONING: u64 = 1 << 5;
 pub const FDIR_BIT_AUTOPILOT_SATURATION: u64 = 1 << 6;
 /// Fault-tree bit: differential-flatness reference suppression.
 pub const FDIR_BIT_AUTOPILOT_REFERENCE_SUPPRESSED: u64 = 1 << 7;
+/// Fault-tree bit: estimator lane failover or total lane loss.
+pub const FDIR_BIT_ESTIMATOR_LANE_FAILOVER: u64 = 1 << 8;
+/// Fault-tree bit: body-rate redline breach.
+pub const FDIR_BIT_BODY_RATE_REDLINE: u64 = 1 << 9;
 
 /// Detector family.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -79,6 +83,9 @@ pub struct FdirParams {
     /// jump time. Only read when
     /// `detector_kind = WindowedMeanShiftGlrt`.
     pub glrt_false_alarm_rate: f64,
+    /// Body-rate magnitude redline (rad/s). `+∞` disables this
+    /// watchpoint.
+    pub body_rate_redline_rad_s: f64,
 }
 
 impl Default for FdirParams {
@@ -92,6 +99,7 @@ impl Default for FdirParams {
             cusum_threshold: 25.0,
             glrt_window_samples: 32,
             glrt_false_alarm_rate: 0.001,
+            body_rate_redline_rad_s: f64::INFINITY,
         }
     }
 }
@@ -232,6 +240,18 @@ impl FdirJob {
         }
         mask
     }
+
+    fn attitude_redline_mask(&self, attitude: AttitudeEstimate) -> u64 {
+        let limit = self.params.body_rate_redline_rad_s;
+        if !limit.is_finite() || limit <= 0.0 {
+            return 0;
+        }
+        if attitude.omega_body_rad_s.norm() > limit {
+            FDIR_BIT_BODY_RATE_REDLINE
+        } else {
+            0
+        }
+    }
 }
 
 impl Job for FdirJob {
@@ -271,6 +291,16 @@ impl Job for FdirJob {
         {
             current_mask |= FDIR_BIT_AUTOPILOT_REFERENCE_SUPPRESSED;
             non_innovation_mask |= FDIR_BIT_AUTOPILOT_REFERENCE_SUPPRESSED;
+        }
+        if let Ok(Some((attitude, _))) = ctx.bus.latest::<AttitudeEstimate>() {
+            let mask = self.attitude_redline_mask(attitude);
+            current_mask |= mask;
+            non_innovation_mask |= mask;
+        }
+        if let Ok(Some((lanes, _))) = ctx.bus.latest::<EstimatorLaneSelection>() {
+            let mask = estimator_lane_mask(lanes);
+            current_mask |= mask;
+            non_innovation_mask |= mask;
         }
 
         match self.params.detector_kind {
@@ -413,6 +443,21 @@ fn single_sample_glrt_fault_mask(
     current_mask | innovation_fault
 }
 
+fn estimator_lane_mask(lanes: EstimatorLaneSelection) -> u64 {
+    if lanes.all_lanes_failed {
+        return FDIR_BIT_ESTIMATOR_LANE_FAILOVER | FDIR_BIT_ESTIMATOR_DEAD_RECKONING;
+    }
+    if lanes.active_lane_index != 0 {
+        return FDIR_BIT_ESTIMATOR_LANE_FAILOVER;
+    }
+    let active = usize::from(lanes.active_lane_index);
+    let lane_count = usize::from(lanes.lane_count);
+    if active < lane_count && !lanes.lanes[active].healthy {
+        return FDIR_BIT_ESTIMATOR_LANE_FAILOVER;
+    }
+    0
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -426,6 +471,8 @@ mod tests {
     fn bus_with_fdir_topics() -> Bus {
         let bus = Bus::new();
         bus.register::<EstimatorStatus>().unwrap();
+        bus.register::<EstimatorLaneSelection>().unwrap();
+        bus.register::<AttitudeEstimate>().unwrap();
         bus.register::<FailsafeFlags>().unwrap();
         bus.register::<ActuatorCommand>().unwrap();
         bus.register::<AutopilotStatus>().unwrap();
@@ -520,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn windowed_glrt_latches_non_innovation_fault_without_sensor_trip() {
+    fn scheduler_overrun_failsafe_trips_fdir() {
         let bus = bus_with_fdir_topics();
         bus.publish(FailsafeFlags {
             scheduler_overrun: true,
@@ -536,6 +583,79 @@ mod tests {
 
         assert!(status.triggered);
         assert_ne!(status.tripped_mask & FDIR_BIT_SCHEDULER_OVERRUN, 0);
+    }
+
+    #[test]
+    fn sensor_failsafe_flags_trip_fdir_sensor_bit() {
+        let bus = bus_with_fdir_topics();
+        bus.publish(FailsafeFlags {
+            imu_unhealthy: true,
+            ..FailsafeFlags::default()
+        })
+        .unwrap();
+        let mut job = FdirJob::new(FdirParams {
+            failsafe_burst_count: 1,
+            ..FdirParams::default()
+        });
+
+        let status = run_once(&mut job, &bus);
+
+        assert!(status.triggered);
+        assert_ne!(status.tripped_mask & FDIR_BIT_IMU, 0);
+    }
+
+    #[test]
+    fn estimator_lane_failover_trips_fdir() {
+        let bus = bus_with_fdir_topics();
+        let mut lanes = EstimatorLaneSelection {
+            active_lane_index: 1,
+            lane_count: 2,
+            ..EstimatorLaneSelection::default()
+        };
+        lanes.lanes[0] = crate::topics::EstimatorLaneStatus {
+            lane_id: 1,
+            lane_index: 0,
+            healthy: false,
+            active: false,
+        };
+        lanes.lanes[1] = crate::topics::EstimatorLaneStatus {
+            lane_id: 2,
+            lane_index: 1,
+            healthy: true,
+            active: true,
+        };
+        bus.publish(lanes).unwrap();
+        let mut job = FdirJob::new(FdirParams {
+            failsafe_burst_count: 1,
+            ..FdirParams::default()
+        });
+
+        let status = run_once(&mut job, &bus);
+
+        assert!(status.triggered);
+        assert_ne!(status.tripped_mask & FDIR_BIT_ESTIMATOR_LANE_FAILOVER, 0);
+    }
+
+    #[test]
+    fn body_rate_redline_trips_fdir_watchpoint() {
+        let bus = bus_with_fdir_topics();
+        bus.publish(AttitudeEstimate {
+            time: SimTime::ZERO,
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            omega_body_rad_s: nalgebra::Vector3::new(0.0, 0.0, 3.0),
+            gyro_bias_body_rad_s: nalgebra::Vector3::zeros(),
+        })
+        .unwrap();
+        let mut job = FdirJob::new(FdirParams {
+            body_rate_redline_rad_s: 2.0,
+            failsafe_burst_count: 1,
+            ..FdirParams::default()
+        });
+
+        let status = run_once(&mut job, &bus);
+
+        assert!(status.triggered);
+        assert_ne!(status.tripped_mask & FDIR_BIT_BODY_RATE_REDLINE, 0);
     }
 
     #[test]

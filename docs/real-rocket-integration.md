@@ -670,7 +670,12 @@ transport**:
 ```
 
 The OpenBMP-side half (`openbmp-bridge`) is generic and ships
-`postcard`-encoded `BridgeSensorPacket` and `BridgeCommandPacket` types.
+`postcard`-encoded `SensorPacket`, `ActuatorCommandPacket`,
+`BridgeHelloPacket`, `StepAckPacket`, and `BridgeMessage` types. The
+lockstep contract is explicit: the simulator emits one sensor frame for step
+`N` and must not advance the plant past `N` until the external controller
+returns either an `ActuatorCommandPacket` or `StepAckPacket` with the exact
+same `step` and `sim_time_s`; mismatches are rejected by the bridge validators.
 **You write the lab-side adapter** that translates your specific test
 rig's protocol to the in-house wire format. That adapter lives in your
 repository, with your protocol stack, your timing posture, your

@@ -2045,32 +2045,32 @@ diffs are expected; intra-platform-profile bit identity is required.
 
 The HIL pattern is **optional** and lives in `openbmp-bridge`. It is **not**
 a hardware integration framework. It exposes a **generic socket bridge**
-that emits simulated sensor packets and accepts abstract normalized command
-packets, using an in-house `postcard`-encoded wire format.
+schema that emits simulated sensor packets and accepts abstract normalized
+command or acknowledgement packets, using an in-house `postcard`-encoded wire
+format.
 
 ```rust
-// Wire types (postcard-encoded over UDP or TCP)
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct BridgeSensorPacket {
-    pub schema_version: u32,
-    pub time_s: f64,
-    pub imu: ImuMeasurement,
-    pub baro: BaroMeasurement,
-    pub gnss: Option<GnssMeasurement>,
-}
+use openbmp_bridge::{
+    ActuatorCommandPacket, BridgeEndpointRole, BridgeHelloPacket, SensorPacket,
+    validate_command_for_sensor,
+};
 
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct BridgeCommandPacket {
-    pub schema_version: u32,
-    pub time_s: f64,
-    pub commands: NormalizedCommands,    // abstract values in [-1, 1] ranges
-}
+let hello = BridgeHelloPacket::new(BridgeEndpointRole::Simulator, 4096);
+let sensor = SensorPacket { step: 42, sim_time_s: 0.42, ..SensorPacket::default() };
+let command = ActuatorCommandPacket {
+    step: sensor.step,
+    sim_time_s: sensor.sim_time_s,
+    effector_commands: vec![(0, 0.25)],
+    engine_throttles: vec![(0, 0.8)],
+};
+validate_command_for_sensor(&sensor, &command).unwrap();
 ```
 
 The bridge ships:
 - An in-house wire format definition.
-- A reference Rust client library that connects, sends commands, receives
-  sensor packets.
+- Length-prefixed `postcard` framing plus lockstep validators that reject
+  commands or acknowledgements whose `step` / `sim_time_s` do not match the
+  outstanding sensor frame.
 
 The bridge does **not** ship:
 - MAVLink, DDS, MIL-STD-1553, CAN, I2C, SPI, UART, or any real bus protocol.

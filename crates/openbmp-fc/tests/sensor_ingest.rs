@@ -293,3 +293,83 @@ mod voted_status_for_all_sensor_kinds {
         assert!(status.lanes[2].divergent);
     }
 }
+
+mod sensor_fault_path {
+    use openbmp_core::{SensorId, SimTime, StepIndex};
+    use openbmp_fc::bus::Bus;
+    use openbmp_fc::clock::{Clock as _, FixedClock};
+    use openbmp_fc::scheduler::{Job, JobContext};
+    use openbmp_fc::sensor_ingest::{ImuIngest, VotedGnssIngest};
+    use openbmp_fc::topics::{GnssSample, ImuSample, SensorKind, SensorStatus};
+    use openbmp_fc::voter::MidValueSelectScalar;
+    use openbmp_sensors::{Sensor, SensorError, SensorMeasurement, Timestamped};
+
+    #[derive(Clone, Debug)]
+    struct FailingLane {
+        id: SensorId,
+    }
+
+    impl Sensor for FailingLane {
+        type Output = SensorMeasurement;
+
+        fn sensor_id(&self) -> SensorId {
+            self.id
+        }
+
+        fn read(&mut self) -> Result<Timestamped<Self::Output>, SensorError> {
+            Err(SensorError::NoSample)
+        }
+    }
+
+    fn context<'a>(bus: &'a Bus, clock: &'a FixedClock) -> JobContext<'a> {
+        JobContext { bus, clock }
+    }
+
+    #[test]
+    fn single_imu_read_error_publishes_unhealthy_sample() {
+        let bus = Bus::new();
+        bus.register::<ImuSample>().unwrap();
+        let clock = FixedClock::new(SimTime::from_seconds(0.02), StepIndex::new(2));
+        let mut ingest = ImuIngest::new(FailingLane {
+            id: SensorId::from_path("sensors.imu.failed"),
+        });
+
+        ingest.run(&context(&bus, &clock)).unwrap();
+
+        let (sample, _) = bus.latest::<ImuSample>().unwrap().unwrap();
+        assert_eq!(sample.time, clock.now());
+        assert!(!sample.healthy);
+    }
+
+    #[test]
+    fn voted_gnss_all_lane_errors_publish_unhealthy_sample_and_status() {
+        let bus = Bus::new();
+        bus.register::<GnssSample>().unwrap();
+        bus.register::<SensorStatus>().unwrap();
+        let clock = FixedClock::new(SimTime::from_seconds(0.03), StepIndex::new(3));
+        let mut ingest = VotedGnssIngest::new(
+            vec![
+                FailingLane {
+                    id: SensorId::from_path("sensors.gnss.a"),
+                },
+                FailingLane {
+                    id: SensorId::from_path("sensors.gnss.b"),
+                },
+            ],
+            MidValueSelectScalar {
+                divergence_tol: 1.0,
+            },
+        );
+
+        ingest.run(&context(&bus, &clock)).unwrap();
+
+        let (sample, _) = bus.latest::<GnssSample>().unwrap().unwrap();
+        let (status, _) = bus.latest::<SensorStatus>().unwrap().unwrap();
+        assert_eq!(sample.time, clock.now());
+        assert!(!sample.healthy);
+        assert_eq!(status.kind, SensorKind::Gnss);
+        assert_eq!(status.lane_count, 2);
+        assert!(!status.lanes[0].healthy);
+        assert!(!status.lanes[1].healthy);
+    }
+}

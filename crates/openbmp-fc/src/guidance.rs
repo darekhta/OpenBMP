@@ -9,16 +9,23 @@
 //! proportional navigation, no terminal-homing, no targeting, no
 //! real-world-location guidance.
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
 use nalgebra::Vector3;
+#[cfg(feature = "std")]
 use openbmp_physics::profile::{AscentReferenceGenerator, AscentState};
 
-use crate::error::{ControllerError, GuidanceError};
+use crate::error::ControllerError;
+#[cfg(feature = "std")]
+use crate::error::GuidanceError;
+#[cfg(feature = "std")]
 use crate::nav_metrics;
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
-use crate::topics::{
-    EnvironmentEstimate, GuidanceCutoff, ImuSample, PositionEstimate, ReferenceState, VehicleStatus,
-};
+#[cfg(feature = "std")]
+use crate::topics::{EnvironmentEstimate, GuidanceCutoff, ImuSample};
+use crate::topics::{PositionEstimate, ReferenceState, VehicleStatus};
 
 /// Guidance configuration.
 #[derive(Clone, Debug)]
@@ -195,12 +202,14 @@ impl Job for AttitudeHoldGuidance {
 /// reference attitude to an [`AscentReferenceGenerator`], and publishes
 /// a [`ReferenceState`] for the autopilot. It is phase-gated by
 /// mission phase id when constructed with active phase ids.
+#[cfg(feature = "std")]
 pub struct AscentReferenceGuidance {
     name: &'static str,
     generator: Box<dyn AscentReferenceGenerator + Send>,
     active_phase_ids: Vec<u64>,
 }
 
+#[cfg(feature = "std")]
 impl std::fmt::Debug for AscentReferenceGuidance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AscentReferenceGuidance")
@@ -210,6 +219,7 @@ impl std::fmt::Debug for AscentReferenceGuidance {
     }
 }
 
+#[cfg(feature = "std")]
 impl AscentReferenceGuidance {
     /// Constructs an ascent-reference guidance job.
     #[must_use]
@@ -245,6 +255,7 @@ impl AscentReferenceGuidance {
     }
 }
 
+#[cfg(feature = "std")]
 impl Job for AscentReferenceGuidance {
     fn name(&self) -> &'static str {
         self.name
@@ -488,7 +499,10 @@ mod tests {
             .unwrap()
             .expect("guidance should pass ascent state to generator");
         assert!((state.altitude_m - 100_000.0).abs() < 1.0e-9);
-        assert_eq!(state.velocity_eci_m_s, [100.0, 100.0, 0.0]);
+        assert!(
+            (Vector3::from(state.velocity_eci_m_s) - Vector3::new(100.0, 100.0, 0.0)).norm()
+                < 1.0e-12
+        );
         assert!(
             (Vector3::from(state.surface_relative_velocity_eci_m_s)
                 - expected_surface_relative_velocity)

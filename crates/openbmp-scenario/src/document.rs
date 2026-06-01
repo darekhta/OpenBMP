@@ -110,6 +110,11 @@ pub struct ScenarioDocument {
     /// this config and drives it lockstepped with the kernel
     /// integrator.
     pub fc: Option<FcConfig>,
+    /// Optional simulator-side director controls. This is intended
+    /// for test stimulus only; flight-controller scenarios default to
+    /// FC-owned mission state unless this block explicitly opts into
+    /// kernel authority.
+    pub scenario_director: Option<ScenarioDirectorConfig>,
     /// Optional fault-injection hook table.
     pub faults: Option<BTreeMap<String, toml::Value>>,
     /// Optional batch metadata.
@@ -354,6 +359,9 @@ impl ScenarioDocument {
         if let Some(fc) = &self.fc {
             fc.validate()?;
         }
+        self.validate_scenario_director()?;
+        self.validate_fc_sensor_boundary()?;
+        self.validate_fc_relative_nav_observability()?;
         self.validate_landing_footprint_agreement()?;
         self.validate_entry_profile_agreement()?;
         self.validate_ascent_reference_agreement()?;
@@ -366,6 +374,92 @@ impl ScenarioDocument {
         self.validate_v3_blocks()?;
         self.validate_initial_multi_body_references()?;
         self.validate_stage_separation_agreement()?;
+        Ok(())
+    }
+
+    /// Returns `true` when the flight controller should own mission
+    /// state for this scenario.
+    #[must_use]
+    pub fn flight_controller_owns_mission_state(&self) -> bool {
+        self.fc.is_some()
+            && self.mission.is_some()
+            && !matches!(
+                self.scenario_director
+                    .as_ref()
+                    .map(|director| director.mission_authority),
+                Some(ScenarioMissionAuthority::Kernel)
+            )
+    }
+
+    fn validate_scenario_director(&self) -> Result<(), ScenarioError> {
+        let Some(director) = &self.scenario_director else {
+            return Ok(());
+        };
+        if director.mission_authority == ScenarioMissionAuthority::FlightController
+            && self.fc.is_none()
+        {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "scenario_director.mission_authority".to_owned(),
+                value_a: "flight_controller".to_owned(),
+                field_b: "fc".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
+        if director.mission_authority == ScenarioMissionAuthority::FlightController
+            && self.mission.is_none()
+        {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "scenario_director.mission_authority".to_owned(),
+                value_a: "flight_controller".to_owned(),
+                field_b: "mission".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_fc_sensor_boundary(&self) -> Result<(), ScenarioError> {
+        if self.fc.is_none() {
+            return Ok(());
+        }
+        let Some(sensors) = &self.sensors else {
+            return Ok(());
+        };
+        if let Some((name, _)) = sensors
+            .iter()
+            .find(|(_, config)| config.kind == "ideal_state")
+        {
+            return Err(ScenarioError::InvalidFc {
+                reason: format!(
+                    "[fc] scenarios may not use sensors.{name}.kind = \"ideal_state\"; \
+                     IdealStateSensor echoes integrated truth and bypasses the sensor boundary"
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_fc_relative_nav_observability(&self) -> Result<(), ScenarioError> {
+        if self.fc.is_none() {
+            return Ok(());
+        }
+        let Some(mission) = &self.mission else {
+            return Ok(());
+        };
+        for (event_index, event) in mission.events.iter().enumerate() {
+            let kind = match event.trigger {
+                EventTriggerConfig::AtRelativeDistance { .. } => "at_relative_distance",
+                EventTriggerConfig::AtRelativeSpeed { .. } => "at_relative_speed",
+                _ => continue,
+            };
+            return Err(ScenarioError::InvalidFc {
+                reason: format!(
+                    "[fc] scenarios may not use mission.events[{event_index}].trigger.kind = \
+                     \"{kind}\" until an onboard relative-navigation observable is wired; \
+                     simulator truth-relative maps are not available to the flight controller"
+                ),
+            });
+        }
         Ok(())
     }
 
@@ -612,6 +706,21 @@ impl ScenarioDocument {
                 });
             }
             detector.validate()?;
+        }
+        if let Some(fdir) = &fc.fdir
+            && let Some(redlines) = fdir.redlines.as_ref()
+        {
+            // `[fc.fdir.redlines]` is a consumed v3-only I-load
+            // block; the runner maps it into `FdirParams`
+            // watchpoints evaluated by the FDIR job.
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.fdir.redlines".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            redlines.validate()?;
         }
         // fc.autopilot_params.l1_adaptive — consumed
         // block, v3-only; the runner translates to AutopilotParams.l1_adaptive
@@ -2813,6 +2922,31 @@ pub struct ValidationConfig {
     pub require_monotonic_time: bool,
 }
 
+/// Simulator-side director controls.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioDirectorConfig {
+    /// Mission-state authority. Defaults to `flight_controller` for
+    /// scenarios that declare both `[fc]` and `[mission]`; use
+    /// `kernel` only for simulator test stimulus that must evaluate
+    /// mission events on truth.
+    #[serde(default)]
+    pub mission_authority: ScenarioMissionAuthority,
+}
+
+/// Mission-state authority selection for `[scenario_director]`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScenarioMissionAuthority {
+    /// FC commander owns mission decisions and the kernel observes
+    /// the published phase.
+    #[default]
+    FlightController,
+    /// Kernel evaluates mission events against integrated truth. This
+    /// is a simulator test-stimulus escape hatch, not SIL authority.
+    Kernel,
+}
+
 /// Optional epoch metadata.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -4229,14 +4363,12 @@ impl AerothermalConfig {
             &["fully_catalytic", "non_catalytic"],
         )?;
         match self.stagnation_kind.as_str() {
-            "sutton_graves" => {
-                if self.fay_riddell.is_some() {
-                    return Err(ScenarioError::UnexpectedField {
-                        field: "aerothermal.fay_riddell".to_owned(),
-                        role: ModelRole::Force,
-                        name: "sutton_graves".to_owned(),
-                    });
-                }
+            "sutton_graves" if self.fay_riddell.is_some() => {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "aerothermal.fay_riddell".to_owned(),
+                    role: ModelRole::Force,
+                    name: "sutton_graves".to_owned(),
+                });
             }
             "fay_riddell" => {
                 self.fay_riddell
@@ -4362,14 +4494,14 @@ impl AerothermalBackwallConfig {
             &["adiabatic", "prescribed", "convective"],
         )?;
         match self.kind.as_str() {
-            "adiabatic" => {
-                if self.t_k.is_some() || self.h_w_m2_k.is_some() || self.t_inf_k.is_some() {
-                    return Err(ScenarioError::UnexpectedField {
-                        field: path.to_owned(),
-                        role: ModelRole::Force,
-                        name: "adiabatic".to_owned(),
-                    });
-                }
+            "adiabatic"
+                if self.t_k.is_some() || self.h_w_m2_k.is_some() || self.t_inf_k.is_some() =>
+            {
+                return Err(ScenarioError::UnexpectedField {
+                    field: path.to_owned(),
+                    role: ModelRole::Force,
+                    name: "adiabatic".to_owned(),
+                });
             }
             "prescribed" => {
                 require_positive(
@@ -5987,6 +6119,7 @@ fn require_mission_only_action(
         | ScenarioActionConfig::EmitTelemetryMarker { .. }
         | ScenarioActionConfig::Stop { .. }
         | ScenarioActionConfig::RaiseHealthAlarm { .. }
+        | ScenarioActionConfig::SetRegionState { .. }
         | ScenarioActionConfig::RequestSafeState { .. } => Ok(()),
         ScenarioActionConfig::EffectorOverride { .. }
         | ScenarioActionConfig::EngineCommand { .. }
@@ -6457,6 +6590,17 @@ pub enum ScenarioActionConfig {
         /// `health` region to `abort_requested`.
         alarm: u32,
     },
+    /// Declaratively set an orthogonal region state. Used by mission
+    /// HSM entry/exit actions to publish regime signals such as
+    /// `estimator_regime.boost_mode`.
+    SetRegionState {
+        /// Target region id (canonical or bare; bare resolves to
+        /// `mission.regions.<region>`).
+        region: String,
+        /// Target state id (canonical or bare; bare resolves under
+        /// the target region).
+        state: String,
+    },
     /// Declarative safe-state request. Symmetric to
     /// `raise_health_alarm` but does not require the scenario author
     /// to pick a region or alarm code; the commander applies a
@@ -6543,6 +6687,10 @@ impl ScenarioActionConfig {
                 if let Some(region) = region {
                     require_non_empty(&path("region"), region)?;
                 }
+            }
+            Self::SetRegionState { region, state } => {
+                require_non_empty(&path("region"), region)?;
+                require_non_empty(&path("state"), state)?;
             }
             Self::RequestSafeState { reason } => {
                 require_non_empty(&path("reason"), reason)?;
@@ -7465,14 +7613,14 @@ impl EffectorCommandScheduleConfig {
                     let point_path = |field: &str| path(&format!("points[{point_index}].{field}"));
                     require_finite(&point_path("time_s"), point.time_s)?;
                     require_finite(&point_path("value"), point.value)?;
-                    if let Some(previous) = previous_time_s {
-                        if point.time_s <= previous {
-                            return Err(ScenarioError::InvalidNumber {
-                                field: point_path("time_s"),
-                                value: point.time_s,
-                                rule: "must be strictly greater than the previous point time_s",
-                            });
-                        }
+                    if let Some(previous) = previous_time_s
+                        && point.time_s <= previous
+                    {
+                        return Err(ScenarioError::InvalidNumber {
+                            field: point_path("time_s"),
+                            value: point.time_s,
+                            rule: "must be strictly greater than the previous point time_s",
+                        });
                     }
                     previous_time_s = Some(point.time_s);
                 }
@@ -8413,6 +8561,9 @@ pub struct FcConfig {
     pub base_rate_hz: u32,
     /// Controller frame budget in microseconds.
     pub frame_budget_us: u64,
+    /// Optional scheduler job cadence / declared-budget overrides.
+    #[serde(default)]
+    pub scheduler: Option<FcSchedulerConfig>,
     /// Optional EKF parameter overrides. Required when
     /// `estimator = "ekf"`.
     pub ekf: Option<FcEkfConfig>,
@@ -8468,6 +8619,82 @@ pub struct FcConfig {
     /// powered-ascent phase not listed here).
     #[serde(default)]
     pub ascent_reference_by_phase: Option<BTreeMap<String, FcAscentReferenceConfig>>,
+}
+
+/// Optional scheduler I-loads for FC job cadences and declared budgets.
+///
+/// Missing fields preserve OpenBMP's current reference topology:
+/// estimator, commander, autopilot, and mixer run at the base FC rate;
+/// guidance, health, and FDIR run at 100 Hz.
+#[derive(Clone, Debug, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FcSchedulerConfig {
+    /// Estimator job cadence in Hz.
+    pub estimator_rate_hz: Option<u32>,
+    /// Guidance job cadence in Hz.
+    pub guidance_rate_hz: Option<u32>,
+    /// Commander job cadence in Hz.
+    pub commander_rate_hz: Option<u32>,
+    /// Autopilot job cadence in Hz.
+    pub autopilot_rate_hz: Option<u32>,
+    /// Mixer job cadence in Hz.
+    pub mixer_rate_hz: Option<u32>,
+    /// Health-monitor job cadence in Hz.
+    pub health_rate_hz: Option<u32>,
+    /// FDIR job cadence in Hz.
+    pub fdir_rate_hz: Option<u32>,
+    /// Estimator declared budget in microseconds.
+    pub estimator_budget_us: Option<u64>,
+    /// Guidance declared budget in microseconds.
+    pub guidance_budget_us: Option<u64>,
+    /// Commander declared budget in microseconds.
+    pub commander_budget_us: Option<u64>,
+    /// Autopilot declared budget in microseconds.
+    pub autopilot_budget_us: Option<u64>,
+    /// Mixer declared budget in microseconds.
+    pub mixer_budget_us: Option<u64>,
+    /// Health-monitor declared budget in microseconds.
+    pub health_budget_us: Option<u64>,
+    /// FDIR declared budget in microseconds.
+    pub fdir_budget_us: Option<u64>,
+}
+
+impl FcSchedulerConfig {
+    fn validate(&self, base_rate_hz: u32) -> Result<(), ScenarioError> {
+        for (name, rate_hz) in [
+            ("estimator_rate_hz", self.estimator_rate_hz),
+            ("guidance_rate_hz", self.guidance_rate_hz),
+            ("commander_rate_hz", self.commander_rate_hz),
+            ("autopilot_rate_hz", self.autopilot_rate_hz),
+            ("mixer_rate_hz", self.mixer_rate_hz),
+            ("health_rate_hz", self.health_rate_hz),
+            ("fdir_rate_hz", self.fdir_rate_hz),
+        ] {
+            if let Some(rate_hz) = rate_hz
+                && (rate_hz == 0 || rate_hz > base_rate_hz)
+            {
+                return Err(ScenarioError::InvalidFc {
+                    reason: format!("fc.scheduler.{name} must be in 1..={base_rate_hz} Hz"),
+                });
+            }
+        }
+        for (name, budget_us) in [
+            ("estimator_budget_us", self.estimator_budget_us),
+            ("guidance_budget_us", self.guidance_budget_us),
+            ("commander_budget_us", self.commander_budget_us),
+            ("autopilot_budget_us", self.autopilot_budget_us),
+            ("mixer_budget_us", self.mixer_budget_us),
+            ("health_budget_us", self.health_budget_us),
+            ("fdir_budget_us", self.fdir_budget_us),
+        ] {
+            if let Some(0) = budget_us {
+                return Err(ScenarioError::InvalidFc {
+                    reason: format!("fc.scheduler.{name} must be > 0"),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Powered-ascent reference generator configuration.
@@ -8814,6 +9041,9 @@ impl FcConfig {
                 reason: "frame_budget_us must be > 0".to_string(),
             });
         }
+        if let Some(scheduler) = self.scheduler.as_ref() {
+            scheduler.validate(self.base_rate_hz)?;
+        }
         if self.gain_schedule.is_empty() {
             return Err(ScenarioError::InvalidFc {
                 reason: "[fc.gain_schedule] must declare at least one phase-specific tuning"
@@ -8830,6 +9060,9 @@ impl FcConfig {
             }
             if let Some(v) = ekf.mag_epoch_decimal_year {
                 require_finite("fc.ekf.mag_epoch_decimal_year", v)?;
+            }
+            if let Some(v) = ekf.high_dynamics_q_scale {
+                require_positive("fc.ekf.high_dynamics_q_scale", v)?;
             }
         }
         if let Some(mekf) = &self.mekf
@@ -9048,6 +9281,10 @@ pub struct FcEkfConfig {
     pub innovation_false_alarm_rate: Option<f64>,
     /// Dead-reckoning timeout (s).
     pub dead_reckon_timeout_s: Option<f64>,
+    /// Multiplier applied to EKF position/velocity process-noise
+    /// covariance while the commander-published `estimator_regime`
+    /// region is `boost_mode`. `1.0` preserves the base schedule.
+    pub high_dynamics_q_scale: Option<f64>,
 }
 
 /// MEKF parameter overrides.
@@ -9760,6 +9997,11 @@ pub struct FcFdirConfig {
     /// Scenarios that declare `[fc.fdir.detector]` must
     /// have `openbmp.scenario = 3`.
     pub detector: Option<FcFdirDetectorConfig>,
+    /// Optional declarative redline watchpoint block
+    /// (`[fc.fdir.redlines]`).
+    ///
+    /// v3 only. The runner maps these I-loads into `FdirParams`.
+    pub redlines: Option<FcFdirRedlinesConfig>,
 }
 
 impl FcFdirConfig {
@@ -9786,6 +10028,29 @@ impl FcFdirConfig {
         }
         if let Some(v) = self.cusum_threshold {
             require_positive("fc.fdir.cusum_threshold", v)?;
+        }
+        Ok(())
+    }
+}
+
+/// FDIR redline watchpoints (`[fc.fdir.redlines]`, v3 only).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcFdirRedlinesConfig {
+    /// Body-rate magnitude redline (rad/s). When exceeded, FDIR
+    /// latches the body-rate redline fault bit.
+    pub body_rate_rad_s: Option<f64>,
+}
+
+impl FcFdirRedlinesConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if self.body_rate_rad_s.is_none() {
+            return Err(ScenarioError::InvalidFc {
+                reason: "fc.fdir.redlines must declare at least one redline".to_string(),
+            });
+        }
+        if let Some(v) = self.body_rate_rad_s {
+            require_positive("fc.fdir.redlines.body_rate_rad_s", v)?;
         }
         Ok(())
     }
@@ -10733,8 +10998,8 @@ mod gyro_notch_tests {
     fn gyro_notch_deserializes_and_validates() {
         let notch: FcGyroNotchConfig =
             toml::from_str("center_hz = 0.8\nbandwidth_hz = 0.6\ndepth_db = 18.0").unwrap();
-        assert_eq!(notch.center_hz, 0.8);
-        assert_eq!(notch.bandwidth_hz, 0.6);
+        assert_eq!(notch.center_hz.to_bits(), 0.8_f64.to_bits());
+        assert_eq!(notch.bandwidth_hz.to_bits(), 0.6_f64.to_bits());
         assert!(notch.validate(1).is_ok());
     }
 

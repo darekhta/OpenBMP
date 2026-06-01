@@ -16,7 +16,12 @@
 //! flex gain-stabilisation tool is available (`[fc.autopilot_params].gyro_notch`)
 //! but is not needed at this vehicle's gains, so none is applied here.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::float_cmp)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::many_single_char_names
+)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -71,10 +76,7 @@ fn final_orbit(scenario_rel: &str) -> Orbit {
         col("velocity_y_m_s"),
         col("velocity_z_m_s"),
     );
-    let last = lines
-        .filter(|l| !l.trim().is_empty())
-        .next_back()
-        .expect("final row");
+    let last = lines.rfind(|l| !l.trim().is_empty()).expect("final row");
     let f: Vec<f64> = last
         .split(',')
         .map(|s| s.trim().parse::<f64>().unwrap_or(f64::NAN))

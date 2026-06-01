@@ -6,7 +6,9 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use openbmp_cli::cli::{Cli, Command};
-use openbmp_cli::commands::{check, compare_telemetry, diff, footprint_mc, provenance, run};
+use openbmp_cli::commands::{
+    check, compare_telemetry, conform, diff, footprint_mc, provenance, run,
+};
 use openbmp_cli::tracing;
 
 fn main() -> ExitCode {
@@ -30,6 +32,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
     match command {
         Command::Run {
@@ -49,8 +52,22 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
             }
             Ok(())
         }
-        Command::Diff { golden, actual } => {
+        Command::Diff {
+            golden,
+            actual,
+            report_json,
+        } => {
             let report = diff::run(&golden, &actual)?;
+            if let Some(path) = report_json {
+                let text = serde_json::to_string_pretty(&report).map_err(|source| {
+                    openbmp_cli::CliError::DiffReportJson {
+                        path: path.clone(),
+                        source,
+                    }
+                })?;
+                std::fs::write(&path, text)
+                    .map_err(|source| openbmp_cli::CliError::Io { path, source })?;
+            }
             if report.identical {
                 println!(
                     "openbmp diff: identical ({} rows, {} columns matched)",
@@ -90,6 +107,25 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                 println!(
                     "  {} -> {} (sha256:{})",
                     entry.field, entry.path, entry.sha256_hex,
+                );
+            }
+            Ok(())
+        }
+        Command::Conform { scenarios } => {
+            let report = conform::run(&scenarios)?;
+            println!(
+                "openbmp conform: ok — {} scenario(s)",
+                report.scenarios.len()
+            );
+            for scenario in report.scenarios {
+                println!(
+                    "  {}: {} ({}) — {} steps, t = {:.6} s, stop = {}",
+                    scenario.path.display(),
+                    scenario.scenario_name,
+                    scenario.validation_label,
+                    scenario.final_step,
+                    scenario.final_time_s,
+                    scenario.stop_label,
                 );
             }
             Ok(())

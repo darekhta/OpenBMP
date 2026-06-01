@@ -71,7 +71,15 @@
 //! `state-stable` discipline.
 
 use nalgebra::{SMatrix, UnitQuaternion, Vector3};
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 use openbmp_core::SimTime;
+use std::format;
+use std::string::String;
+use std::vec::Vec;
+
+#[cfg(not(feature = "std"))]
+use alloc::vec;
 
 use crate::error::EstimatorError;
 use crate::estimator::{Ekf, EkfParams, Estimator};
@@ -622,6 +630,12 @@ impl Estimator for ImmEstimator {
     fn begin_tick(&mut self) {
         for mode in self.modes.iter_mut() {
             mode.begin_tick();
+        }
+    }
+
+    fn set_high_dynamics_process_noise(&mut self, active: bool) {
+        for mode in self.modes.iter_mut() {
+            mode.set_high_dynamics_process_noise(active);
         }
     }
 }

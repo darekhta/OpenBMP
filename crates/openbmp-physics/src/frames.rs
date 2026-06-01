@@ -22,7 +22,12 @@
 //! FMA, no wall-clock time, no system RNG.
 
 use nalgebra::{Matrix3, Vector3};
+#[cfg(not(feature = "std"))]
+use num_traits::{Euclid, Float};
 use openbmp_core::{Ecef, Eci, Frame as CoreFrame, FrameError, Ned, Position3, SimTime, Velocity3};
+
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 
 // ---------------------------------------------------------------------
 // FrameProfile
@@ -74,12 +79,12 @@ impl FrameProfile {
 const SECONDS_PER_DAY: f64 = 86_400.0;
 const J2000_JULIAN_DATE: f64 = 2_451_545.0;
 const JULIAN_CENTURY_DAYS: f64 = 36_525.0;
-const TWO_PI: f64 = 2.0 * std::f64::consts::PI;
+const TWO_PI: f64 = 2.0 * core::f64::consts::PI;
 const TENTH_MILLIARCSECOND_TO_RAD: f64 = ARCSECOND_TO_RAD / 10_000.0;
 const FRAME_RATE_STEP_S: f64 = 1.0;
 
 /// Radians per arcsecond.
-pub const ARCSECOND_TO_RAD: f64 = std::f64::consts::PI / (180.0 * 3_600.0);
+pub const ARCSECOND_TO_RAD: f64 = core::f64::consts::PI / (180.0 * 3_600.0);
 
 /// IAU Earth Rotation Angle rate, rad/s.
 ///
@@ -353,12 +358,12 @@ impl LocalGeodeticOrigin {
         longitude_rad: f64,
         height_m: f64,
     ) -> Result<Self, FrameError> {
-        if !latitude_rad.is_finite() || latitude_rad.abs() > std::f64::consts::FRAC_PI_2 {
+        if !latitude_rad.is_finite() || latitude_rad.abs() > core::f64::consts::FRAC_PI_2 {
             return Err(FrameError::InvalidGeodeticCoordinate {
                 reason: "latitude must be finite and in [-π/2, π/2] rad",
             });
         }
-        if !longitude_rad.is_finite() || longitude_rad.abs() > std::f64::consts::PI {
+        if !longitude_rad.is_finite() || longitude_rad.abs() > core::f64::consts::PI {
             return Err(FrameError::InvalidGeodeticCoordinate {
                 reason: "longitude must be finite and in [-π, π] rad",
             });
@@ -889,7 +894,7 @@ fn cubic_hermite(y0: f64, y1: f64, m0: f64, m1: f64, interval_s: f64, alpha: f64
 
 fn earth_rotation_angle_from_ut1_julian_date(jd_ut1: f64) -> f64 {
     let days_since_j2000 = jd_ut1 - J2000_JULIAN_DATE;
-    (TWO_PI * (0.779_057_273_264_0 + 1.002_737_811_911_354_6 * days_since_j2000)).rem_euclid(TWO_PI)
+    rem_euclid_two_pi(TWO_PI * (0.779_057_273_264_0 + 1.002_737_811_911_354_6 * days_since_j2000))
 }
 
 fn julian_centuries_since_j2000(julian_date: f64) -> f64 {
@@ -1019,11 +1024,22 @@ pub(crate) fn nutate_true_of_date_to_mean_of_date_vector(
 }
 
 fn normalize_angle_pm_pi(theta: f64) -> f64 {
-    let mut normalized = theta.rem_euclid(TWO_PI);
-    if normalized >= std::f64::consts::PI {
+    let mut normalized = rem_euclid_two_pi(theta);
+    if normalized >= core::f64::consts::PI {
         normalized -= TWO_PI;
     }
     normalized
+}
+
+fn rem_euclid_two_pi(theta: f64) -> f64 {
+    #[cfg(feature = "std")]
+    {
+        theta.rem_euclid(TWO_PI)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        Euclid::rem_euclid(&theta, &TWO_PI)
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -2317,7 +2333,7 @@ impl FrameTransform<Ecef, Eci> for FrameContext {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
+#[allow(clippy::excessive_precision, clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
@@ -2727,7 +2743,7 @@ mod tests {
 
         #[test]
         fn iers_precession_nutation_matrix_matches_erfa_reference() {
-            let jd = 2_400_000.5 + 50_123.9999;
+            let jd = 2_400_000.5 + 50_123.999_9;
             let x = precess_j2000_to_true_of_date_vector(jd, Vector3::new(1.0, 0.0, 0.0));
             let y = precess_j2000_to_true_of_date_vector(jd, Vector3::new(0.0, 1.0, 0.0));
             let z = precess_j2000_to_true_of_date_vector(jd, Vector3::new(0.0, 0.0, 1.0));

@@ -14,7 +14,7 @@
 //! {
 //!   "schema_version": 1,
 //!   "controller_name": "openbmp-fc",
-//!   "topics": [{"name": "...", "version": 1}],
+//!   "topics": [{"name": "...", "version": 1, "index": 0}],
 //!   "parameters": [{"name": "..."}],
 //!   "tables": [{"name": "..."}],
 //!   "jobs": [{"name": "...", "trigger": "...", "budget_us": 0, "priority": 0}]
@@ -22,6 +22,9 @@
 //! ```
 
 use thiserror::Error;
+
+use std::format;
+use std::string::String;
 
 use crate::bus::Bus;
 use crate::params::Parameters;
@@ -85,7 +88,7 @@ impl<'a> Dictionary<'a> {
         out.push_str("=====================\n");
         out.push_str("topics:\n");
         for t in self.bus.topics() {
-            let _ = writeln!(out, "  {} v{}", t.name, t.version);
+            let _ = writeln!(out, "  [{}] {} v{}", t.index, t.name, t.version);
         }
         out.push_str("parameters:\n");
         for s in self.params.sections() {
@@ -125,6 +128,7 @@ impl<'a> Dictionary<'a> {
             "topics": self.bus.topics().iter().map(|t| serde_json::json!({
                 "name": t.name,
                 "version": t.version,
+                "index": t.index,
             })).collect::<Vec<_>>(),
             "parameters": self.params.sections().iter().map(|s| serde_json::json!({
                 "name": s.name,

@@ -137,6 +137,19 @@ impl Job for HealthMonitor {
         flags.baro_unhealthy = self.baro.is_stale(now, self.params.baro_stale_after_s);
         flags.mag_unhealthy = self.mag.is_stale(now, self.params.mag_stale_after_s);
 
+        if let Ok(Some((sample, _))) = ctx.bus.latest::<ImuSample>() {
+            flags.imu_unhealthy |= !sample.healthy;
+        }
+        if let Ok(Some((sample, _))) = ctx.bus.latest::<GnssSample>() {
+            flags.gnss_unhealthy |= !sample.healthy;
+        }
+        if let Ok(Some((sample, _))) = ctx.bus.latest::<BarometerSample>() {
+            flags.baro_unhealthy |= !sample.healthy;
+        }
+        if let Ok(Some((sample, _))) = ctx.bus.latest::<MagnetometerSample>() {
+            flags.mag_unhealthy |= !sample.healthy;
+        }
+
         if let Ok(Some((est, _))) = ctx.bus.latest::<EstimatorStatus>() {
             flags.estimator_dead_reckoning = est.dead_reckoning;
         }
@@ -241,5 +254,92 @@ mod tests {
         }
         let (flags, _) = bus.latest::<FailsafeFlags>().unwrap().unwrap();
         assert!(!flags.imu_unhealthy);
+    }
+
+    #[test]
+    fn unhealthy_sample_flags_sensor_fault_without_waiting_for_stale_timeout() {
+        use nalgebra::Vector3;
+
+        let bus = Bus::new();
+        bus.register::<ImuSample>().unwrap();
+        bus.register::<GnssSample>().unwrap();
+        bus.register::<BarometerSample>().unwrap();
+        bus.register::<MagnetometerSample>().unwrap();
+        bus.register::<EstimatorStatus>().unwrap();
+        bus.register::<OverrunEvent>().unwrap();
+        bus.register::<FailsafeFlags>().unwrap();
+        let clock = SimulatedClock::new();
+        clock.set(SimTime::ZERO, StepIndex::new(0));
+        bus.publish(ImuSample {
+            time: SimTime::ZERO,
+            gyro_rad_s: Vector3::zeros(),
+            accel_m_s2: Vector3::zeros(),
+            healthy: false,
+        })
+        .unwrap();
+
+        let mut h = HealthMonitor::new(HealthParams {
+            imu_stale_after_s: 10.0,
+            ..HealthParams::default()
+        });
+        h.run(&JobContext {
+            bus: &bus,
+            clock: &clock,
+        })
+        .unwrap();
+
+        let (flags, _) = bus.latest::<FailsafeFlags>().unwrap().unwrap();
+        assert!(flags.imu_unhealthy);
+    }
+
+    #[test]
+    fn scheduler_overrun_burst_flags_failsafe() {
+        let bus = Bus::new();
+        bus.register::<ImuSample>().unwrap();
+        bus.register::<GnssSample>().unwrap();
+        bus.register::<BarometerSample>().unwrap();
+        bus.register::<MagnetometerSample>().unwrap();
+        bus.register::<EstimatorStatus>().unwrap();
+        bus.register::<OverrunEvent>().unwrap();
+        bus.register::<FailsafeFlags>().unwrap();
+        let clock = SimulatedClock::new();
+        let mut h = HealthMonitor::new(HealthParams {
+            imu_stale_after_s: 10.0,
+            gnss_stale_after_s: 10.0,
+            baro_stale_after_s: 10.0,
+            mag_stale_after_s: 10.0,
+            overrun_burst_count: 2,
+        });
+
+        for tick in 0..2_u64 {
+            clock.set(
+                SimTime::from_seconds(tick as f64 * 0.001),
+                StepIndex::new(tick),
+            );
+            bus.publish(OverrunEvent {
+                job_name: "guidance.tick",
+                tick,
+                remaining_budget_us: 25,
+                declared_budget_us: 100,
+            })
+            .unwrap();
+            h.run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        }
+
+        let (flags, _) = bus.latest::<FailsafeFlags>().unwrap().unwrap();
+        assert!(flags.scheduler_overrun);
+
+        clock.set(SimTime::from_seconds(0.003), StepIndex::new(3));
+        h.run(&JobContext {
+            bus: &bus,
+            clock: &clock,
+        })
+        .unwrap();
+        let (flags, _) = bus.latest::<FailsafeFlags>().unwrap().unwrap();
+        assert!(!flags.scheduler_overrun);
     }
 }

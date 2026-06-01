@@ -16,6 +16,7 @@ Commands:
   run                Run a scenario through the kernel and write telemetry
   diff               Compare two telemetry archives byte-for-byte
   check              Lint a scenario without running it
+  conform            Run one or more scenarios as a fork-runnable conformance smoke suite
   compare-telemetry  Compare a scenario run against external local telemetry CSV / JSON
   footprint-mc       Run offline landing-footprint Monte Carlo post-processing
   check-provenance   Walk a data tree and verify provenance records

@@ -44,8 +44,12 @@
 //! - Reordering declarations in the scenario produces an identical
 //!   HSM.
 //!
-use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
+use alloc::borrow::Cow;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use thiserror::Error;
 

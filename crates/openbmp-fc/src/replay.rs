@@ -10,6 +10,7 @@
 //! contract.
 
 use std::collections::VecDeque;
+use std::vec::Vec;
 
 use openbmp_core::SimTime;
 

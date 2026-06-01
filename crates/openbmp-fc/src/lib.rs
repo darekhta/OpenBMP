@@ -25,7 +25,84 @@
 //! See `docs/software-architecture.md § Flight Controller` for the
 //! architectural contract.
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
+#![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+extern crate self as std;
+
+#[cfg(not(feature = "std"))]
+pub use alloc::format;
+
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+pub mod any {
+    pub use core::any::*;
+}
+
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+pub mod boxed {
+    pub use alloc::boxed::*;
+}
+
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+pub mod borrow {
+    pub use alloc::borrow::*;
+}
+
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+pub mod cell {
+    pub use core::cell::*;
+}
+
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+pub mod cmp {
+    pub use core::cmp::*;
+}
+
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+pub mod collections {
+    pub use alloc::collections::*;
+}
+
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+pub mod f64 {
+    pub use core::f64::*;
+}
+
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+pub mod fmt {
+    pub use core::fmt::*;
+}
+
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+pub mod ops {
+    pub use core::ops::*;
+}
+
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+pub mod string {
+    pub use alloc::string::*;
+}
+
+#[cfg(not(feature = "std"))]
+#[doc(hidden)]
+pub mod vec {
+    pub use alloc::vec::*;
+}
 
 pub mod allocation;
 pub mod anti_windup;
@@ -61,6 +138,7 @@ pub mod replay;
 pub mod scheduler;
 pub mod sensor_ingest;
 pub mod sr_ukf;
+mod stable_map;
 pub mod tables;
 pub mod topics;
 pub mod trajectory;

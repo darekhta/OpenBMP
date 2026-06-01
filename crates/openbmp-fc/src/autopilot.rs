@@ -16,8 +16,13 @@
 //! envelope justifies replacing the simpler back-calculation path.
 
 use std::collections::BTreeMap;
+use std::format;
+use std::string::String;
+use std::string::ToString;
 
 use nalgebra::{UnitQuaternion, Vector3};
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 use openbmp_physics::kinematics::quaternion_error_small_angle;
 
 use crate::error::{AutopilotError, ControllerError};
@@ -140,7 +145,7 @@ pub struct AutopilotParams {
     /// `thrust_vector_control` is set.
     pub thrust_vector_settle_s: f64,
     /// Maximum dynamic pressure (Pa) for closed-loop max-Q load relief.
-    /// When the real dynamic pressure q = ½·ρ(h)·|v_air|² (actual
+    /// When the real dynamic pressure `q = ½·ρ(h)·|v_air|²` (actual
     /// atmospheric density at the navigated geocentric altitude and the
     /// AIR-RELATIVE velocity) exceeds this limit, the engine throttle is
     /// proportionally reduced toward `q_max/q` so the structural load is

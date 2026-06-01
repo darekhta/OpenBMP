@@ -84,6 +84,7 @@ sigma_baro_alt_m           = 2.0
 sigma_mag_nt               = 100.0
 innovation_false_alarm_rate = 0.01
 dead_reckon_timeout_s      = 1.5
+high_dynamics_q_scale      = 4.0 # optional; > 0, default 1.0
 
 [fc.autopilot_params]
 anti_windup             = { kind = "back_calculation", gain = 1.0 }
@@ -98,11 +99,20 @@ baro_stale_after_s  = 10.0
 mag_stale_after_s   = 0.2
 overrun_burst_count = 5
 
+[fc.scheduler]
+guidance_rate_hz   = 100
+health_rate_hz     = 100
+fdir_rate_hz       = 100
+guidance_budget_us = 100
+
 [fc.fdir]
 detector_kind          = "burst_counter" # "burst_counter" | "single_sample_glrt" | "cusum"
 innovation_threshold   = 25.0
 innovation_burst_count = 5
 failsafe_burst_count   = 5
+
+[fc.fdir.redlines]
+body_rate_rad_s = 4.0
 
 [fc.gain_schedule."mission.phases.ascent"]
 rate_kp            = [0.5, 0.5, 0.5]
@@ -138,6 +148,27 @@ the scenario provenance record must explain those tunings. `[fc.fdir]`
 is optional and defaults to the controller's burst-counter parameters
 when omitted. `tau_gyro_bias_s` / `tau_accel_bias_s` are optional;
 omitting them preserves random-walk bias dynamics (`tau = infinity`).
+`high_dynamics_q_scale` is optional and defaults to `1.0`; when the
+commander publishes `mission.regions.estimator_regime.boost_mode`, the
+EKF multiplies position/velocity process-noise covariance by this
+scale. Use `set_region_state` actions in the mission HSM to declare
+boost/coast regime changes.
+
+`[fc.scheduler]` is optional. Missing fields preserve the reference
+topology: estimator, commander, autopilot, and mixer run at
+`base_rate_hz`; guidance, health, and FDIR run at 100 Hz. Declared
+rates must be in `1..=base_rate_hz`, and declared budgets must be
+positive microsecond values. The scheduler converts rates to integer
+base-rate periods with ceil division, so a requested 50 Hz task under
+`base_rate_hz = 1000` runs every 20 ticks.
+
+For flight builds, the validated declarative tables are loaded as a
+compact I-load payload, not as TOML. `openbmp-hal` defines the `OBIL`
+envelope around that payload: envelope version, payload schema
+version, payload length, and CRC-32. Flight loaders must reject a
+stale schema or CRC mismatch before deserializing the payload, and may
+select a separately stored fallback I-load if the primary image fails
+validation.
 
 Schema v3 also supports powered-ascent reference generation:
 
@@ -1203,6 +1234,12 @@ return `false` on step 0 because no previous-step snapshot exists.
 | `at_relative_distance` | `body: string`, `distance_m: f64 > 0`, optional `reference_body: string`, optional `falling: bool = false` | Rigid-body `[multi_body]` only. Fires when the range between `body` and `reference_body` crosses `distance_m`; if `reference_body` is omitted, the current primary lane is used. The trigger is false until the named bodies are active propagated lanes. |
 | `at_relative_speed` | `body: string`, `speed_m_s: f64 > 0`, optional `reference_body: string`, optional `falling: bool = false` | Rigid-body `[multi_body]` only. Fires when the relative speed between `body` and `reference_body` crosses `speed_m_s`; if `reference_body` is omitted, the current primary lane is used. The trigger is false until the named bodies are active propagated lanes. |
 
+Flight-controller-owned missions reject `at_relative_distance` and
+`at_relative_speed` at scenario validation until an onboard
+relative-navigation observable is wired. Those triggers depend on
+simulator truth-relative lane maps and are allowed only for
+kernel-authority / scenario-director evaluation today.
+
 The `kind = "scripted"` trigger is rejected at parse time with a
 typed deferral error: scripted triggers are not supported. The
 deterministic per-effector `command_schedule` (see
@@ -1225,6 +1262,7 @@ once    = true
 |---|---|---|
 | `enter_phase` | `phase: string` (declared phase id) | Sets the active mission phase; visible via runner-side telemetry / diagnostics. |
 | `emit_telemetry_marker` | `tag: string` (snake_case) | Allocates a `bool` telemetry channel `mission.marker.<tag>`; runner writes `true` on every step the event fires, `false` on every other step. Channel allocation is alphabetical by tag for declaration-order independence. |
+| `set_region_state` | `region: string`, `state: string` | HAL-portable region-state update. Bare `region = "estimator_regime"` resolves to `mission.regions.estimator_regime`; bare `state = "boost_mode"` resolves under that region. The commander publishes the updated per-region topic; the EKF uses `estimator_regime.boost_mode` to apply `fc.ekf.high_dynamics_q_scale` to position/velocity process noise. |
 | `stop` | `label: string` | Halts the run with `StopReason::MissionEnded { label }`. Distinct from `EndTime` so determinism telemetry can distinguish CLI-driven stops from scenario-driven mission ends. |
 | `effector_override` | `id: string` (declared effector id), `command: f64` (finite) | One-shot command override for the named effector on the next runner step. Resolves the declared id against the runner's effector rack via FNV-1a-64 of `vehicle.assembly.effectors.<id>`. Unknown ids are rejected by `openbmp check`. The kernel records the action; the runner drains it from the per-step fired-event queue and applies it on the next rack tick before the kernel step. Override wins over any declared `command_schedule` for that rack tick only. |
 | `engine_command` | `id: string` (declared engine id), `command: { throttle_unit: f64 ∈ [0,1], gimbal_pitch_rad: f64, gimbal_yaw_rad: f64, ignite: bool, shutdown: bool }` | Per-engine command targeting a declared `[[vehicle.assembly.engines]]` by id. Resolves the declared id via FNV-1a-64 of `vehicle.assembly.engines.<id>`. Unknown ids are rejected by `openbmp check`. Kernel records; runner-side `EngineRack` drains and applies on the next rack tick before the kernel step. `ignite=true` is honoured only from `Idle`; `shutdown=true` only from `Igniting` / `Burning`. Throttle / gimbal values are clamped to engine limits at apply time. |
@@ -1298,12 +1336,17 @@ allowed_effectors = ["pitch", "yaw"]
 allowed_engines   = ["s1.merlin1"]
 
 # Action arrays are HAL-portable: `enter_state`,
-# `emit_telemetry_marker`, `stop`. Scenario-script actions (engine /
-# effector / separation / recovery) belong in `[[mission.events]]`
-# bindings, not in state action lists.
+# `set_region_state`, `emit_telemetry_marker`, `stop`.
+# Scenario-script actions (engine / effector / separation / recovery)
+# belong in `[[mission.events]]` bindings, not in state action lists.
 [[mission.states.on_entry]]
 kind = "emit_telemetry_marker"
 tag  = "first_stage_ignite"
+
+[[mission.states.on_entry]]
+kind   = "set_region_state"
+region = "estimator_regime"
+state  = "boost_mode"
 
 [[mission.states.on_exit]]
 kind = "emit_telemetry_marker"
@@ -1366,7 +1409,7 @@ test_only_state_override = true   # default false
 When `true`, the simulator may write the
 `commander.scenario_state_override` topic to force the commander into
 a specific state for validation. HAL builds of `openbmp-fc`
-(`--features hal --no-default-features`) compile out this topic
+(`--features "std hal" --no-default-features`) compile out this topic
 entirely; setting the flag in a HAL deployment is a load-time error.
 
 #### Migrating v3 → v4
@@ -2207,14 +2250,15 @@ plus TOML summary. `wind.kind` accepts `constant`, `layered`, `hwm14`, or
 `ensemble`; the current offline propagator consumes the sampled local-NED
 perturbation as the constant wind vector for that footprint sample.
 
-The Monte-Carlo summary includes an output-only `[accuracy]` block:
+The Monte-Carlo summary includes an output-only `[dispersion_statistics]` block:
 `cep50_m` is the empirical 50% circular radius about the successful sample
-mean, while `mean_miss_distance_from_nominal_m` is the radial offset from
-the nominal forward footprint to that sample mean. The sample cloud also
-contains per-sample `offset_*_from_nominal_m`,
-`miss_distance_from_nominal_m`, and `radial_distance_from_mean_m`
-channels. `[[quantiles]]` are mean-centered radial-distance quantiles;
-`[[nominal_miss_distance_quantiles]]` are radial-error quantiles about the
+mean, while `mean_radial_offset_from_nominal_m` is the radial offset from
+the nominal forward footprint to that sample mean. The persisted sample cloud
+contains per-sample landing and radial-offset diagnostics only: it deliberately
+does not write the sampled burnout state, ballistic coefficient, or wind vector
+next to each landing point. `[[quantiles]]` are mean-centered
+radial-distance quantiles;
+`[[nominal_radial_offset_quantiles]]` are radial-error quantiles about the
 nominal forward footprint. These diagnostics do not add a target, aimpoint,
 or desired landing coordinate.
 
@@ -2452,7 +2496,8 @@ in the existing state channels and each non-primary lane in
 Relative range and speed triggers can observe initial or detached
 lanes with `trigger.kind = "at_relative_distance"` or
 `trigger.kind = "at_relative_speed"` once the referenced bodies are
-active.
+active. They remain simulator/kernel-authority triggers; `[fc]`
+missions reject them until FC relative navigation exists.
 
 Separated lanes may also declare a simulator-side attitude target that
 drives direct-torque effectors owned by that lane:
@@ -2503,7 +2548,10 @@ estimator = "mekf"
 `voter` is one of `simplex_pass_through`, `mid_value_select_by_innovation`,
 or `best_by_covariance_trace`. Lane ids must be unique. The
 consumer wires parallel filter instances to the controller's pub/sub
-bus and selects the active lane each tick.
+bus and selects the active lane each tick. Multi-lane estimators publish
+`estimator.lane_selection`; FDIR latches
+`FDIR_BIT_ESTIMATOR_LANE_FAILOVER` when the active lane moves away from
+lane 0 or when all lanes fail.
 
 #### `[fc.autopilot_allocation]` — control allocation
 
@@ -2529,7 +2577,7 @@ zero commands and do not contribute capacity.
 
 ```toml
 [fc.fdir.detector]
-kind             = "windowed_glrt"
+kind             = "windowed_mean_shift_glrt"
 window_samples   = 32
 parity_threshold = 25.0
 ```
@@ -2538,6 +2586,18 @@ The `detector_kind` field on `[fc.fdir]` drives
 the burst / single-sample-GLRT / CUSUM detectors; this
 sub-block adds tuning data for the windowed-mean-shift GLRT
 (Willsky 1976) and Patton-Frank parity-space residual generator.
+
+#### `[fc.fdir.redlines]` — FDIR watchpoints
+
+```toml
+[fc.fdir.redlines]
+body_rate_rad_s = 4.0
+```
+
+Redlines are v3-only FDIR I-load watchpoints. `body_rate_rad_s`
+sets a body-rate magnitude limit; exceeding it causes the FDIR job to
+latch the body-rate redline fault bit. Omit the block to disable these
+watchpoints.
 
 #### `[fc.trajectory]` — minimum-snap trajectory waypoints
 

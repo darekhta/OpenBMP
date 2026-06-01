@@ -6,10 +6,12 @@
 //! trait. Wall-clock APIs (`std::time::Instant::now`,
 //! `std::time::SystemTime::now`) are banned crate-wide.
 //!
-//! This module ships a tripwire: a string-grep over the controller's
-//! source tree that fails CI if any forbidden pattern reappears.
+//! This module ships tripwires: string-greps over the controller's
+//! source tree that fail CI if forbidden patterns reappear.
 //! The contract is structural — without enforcement it rots silently
 //! when a deeply-nested utility quietly imports `std::time` again.
+//! The same lint module also locks a few known no-hot-path-allocation
+//! regressions that are easy to reintroduce during refactors.
 
 use std::path::{Path, PathBuf};
 
@@ -92,6 +94,20 @@ fn scan_file(path: &Path, findings: &mut TripwireFindings) -> std::io::Result<()
     Ok(())
 }
 
+/// Returns the subsection of `source` starting at `start_marker` and
+/// ending before `end_marker`.
+#[must_use]
+pub fn source_between<'a>(
+    source: &'a str,
+    start_marker: &str,
+    end_marker: &str,
+) -> Option<&'a str> {
+    let start = source.find(start_marker)?;
+    let tail = &source[start..];
+    let end = tail.find(end_marker)?;
+    Some(&tail[..end])
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -151,6 +167,98 @@ mod tests {
             panic!(
                 "lockstep-clock contract violated: openbmp-runner fc_bridge must not \
                  reach for std::time wall-clock APIs"
+            );
+        }
+    }
+
+    #[test]
+    fn scheduler_dispatch_uses_cached_order_not_per_tick_sort_allocation() {
+        let scheduler =
+            std::fs::read_to_string(project_root().join("crates/openbmp-fc/src/scheduler.rs"))
+                .expect("read scheduler.rs");
+        let dispatch = source_between(
+            &scheduler,
+            "    pub fn dispatch(",
+            "    /// Returns descriptors for every registered job",
+        )
+        .expect("scheduler dispatch section");
+
+        for forbidden in [".collect()", "sort_by_key", "Vec::new", "Vec<("] {
+            assert!(
+                !dispatch.contains(forbidden),
+                "scheduler dispatch must use its cached registration-time order; \
+                 found `{forbidden}` in dispatch hot path"
+            );
+        }
+        assert!(
+            dispatch.contains("self.dispatch_order"),
+            "scheduler dispatch should iterate the cached dispatch_order"
+        );
+    }
+
+    #[test]
+    fn commander_run_does_not_clone_binding_table_per_tick() {
+        let commander =
+            std::fs::read_to_string(project_root().join("crates/openbmp-fc/src/commander.rs"))
+                .expect("read commander.rs");
+        let run = source_between(
+            &commander,
+            "    fn run(&mut self, ctx: &JobContext<'_>)",
+            "        self.previous_scalars = Some(eval_state.current);",
+        )
+        .expect("commander run section");
+
+        for forbidden in [
+            "bindings_snapshot",
+            "self.bindings.clone()",
+            "bindings.clone()",
+        ] {
+            assert!(
+                !run.contains(forbidden),
+                "commander tick must not clone the full mission binding table; \
+                 found `{forbidden}` in run hot path"
+            );
+        }
+    }
+
+    #[test]
+    fn voted_sensor_ingest_reuses_scratch_buffers_per_tick() {
+        let ingest =
+            std::fs::read_to_string(project_root().join("crates/openbmp-fc/src/sensor_ingest.rs"))
+                .expect("read sensor_ingest.rs");
+
+        let sections = [
+            (
+                "barometer",
+                "impl<S, V> Job for VotedBarometerIngest",
+                "/// Voted ingest job for redundant GNSS lanes.",
+            ),
+            (
+                "gnss",
+                "impl<S, V> Job for VotedGnssIngest",
+                "/// Voted ingest job for redundant magnetometer lanes.",
+            ),
+            (
+                "magnetometer",
+                "impl<S, V> Job for VotedMagnetometerIngest",
+                "",
+            ),
+        ];
+
+        for (name, start, end) in sections {
+            let section = if end.is_empty() {
+                let start_idx = ingest.find(start).expect("voted sensor ingest job start");
+                &ingest[start_idx..]
+            } else {
+                source_between(&ingest, start, end).expect("voted sensor ingest job section")
+            };
+            assert!(
+                !section.contains("Vec::with_capacity"),
+                "{name} voted ingest must allocate scratch buffers at construction, not per tick"
+            );
+            assert!(
+                section.contains(".clear()"),
+                "{name} voted ingest should clear and reuse scratch buffers each tick"
             );
         }
     }

@@ -1,7 +1,7 @@
 //! Internal pub/sub bus for the flight controller.
 //!
 //! The bus is a typed-topic registry adapted from PX4 uORB. Each
-//! topic carries a name, version, a monotonically incrementing
+//! topic carries a name, version, static topic-table index, a monotonically incrementing
 //! sequence counter, and the latest value. Producers
 //! [`publish`](Bus::publish) typed values; consumers
 //! [`latest`](Bus::latest) typed snapshots and check
@@ -33,17 +33,19 @@
 //!   the registration itself.
 
 use std::any::{Any, TypeId};
+use std::boxed::Box;
 use std::cell::RefCell;
-
-use indexmap::IndexMap;
+use std::vec::Vec;
 
 use crate::error::BusError;
+use crate::stable_map::StableIndexMap;
 
 /// Marker trait implemented by every type that flows through the bus.
 ///
 /// `NAME` is the canonical wire name (used in dictionaries and logs);
 /// `VERSION` is the schema version used when external consumers parse
-/// dictionaries or logs.
+/// dictionaries or logs, and `INDEX` is the compile-time topic slot
+/// used by static bus backends.
 pub trait Topic: 'static + Clone {
     /// Canonical topic name. Convention: `snake_case`, no whitespace,
     /// `<subsystem>.<topic>` for namespaced topics.
@@ -52,6 +54,9 @@ pub trait Topic: 'static + Clone {
     /// reject topics whose version does not match what they were
     /// compiled against.
     const VERSION: u32 = 1;
+    /// Compile-time slot index for static bus backends. Dynamic
+    /// host-only test topics may leave this as `usize::MAX`.
+    const INDEX: usize = usize::MAX;
 }
 
 /// Monotonically-increasing topic sequence counter.
@@ -90,6 +95,7 @@ impl Sequence {
 struct BusCell {
     name: &'static str,
     version: u32,
+    index: usize,
     seq: u64,
     /// Stores `Option<T>` so a subscriber knows the difference between
     /// "registered but not yet published" (`None`) and "published"
@@ -105,6 +111,8 @@ pub struct TopicInfo {
     pub name: &'static str,
     /// Schema version (`Topic::VERSION`).
     pub version: u32,
+    /// Static bus table index (`Topic::INDEX`).
+    pub index: usize,
     /// Number of publishes the bus has observed since the topic was
     /// registered.
     pub seq: u64,
@@ -120,7 +128,7 @@ pub struct Bus {
 
 #[derive(Default)]
 struct BusInner {
-    cells: IndexMap<TypeId, BusCell>,
+    cells: StableIndexMap<TypeId, BusCell>,
 }
 
 impl Bus {
@@ -152,6 +160,7 @@ impl Bus {
             BusCell {
                 name: T::NAME,
                 version: T::VERSION,
+                index: T::INDEX,
                 seq: 0,
                 storage: Box::new(storage),
             },
@@ -250,6 +259,7 @@ impl Bus {
             .map(|c| TopicInfo {
                 name: c.name,
                 version: c.version,
+                index: c.index,
                 seq: c.seq,
                 has_value: cell_has_value(&c.storage),
             })
@@ -301,6 +311,7 @@ mod tests {
     impl Topic for Heartbeat {
         const NAME: &'static str = "diagnostics.heartbeat";
         const VERSION: u32 = 1;
+        const INDEX: usize = 0;
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -311,6 +322,7 @@ mod tests {
     impl Topic for Status {
         const NAME: &'static str = "diagnostics.status";
         const VERSION: u32 = 1;
+        const INDEX: usize = 1;
     }
 
     #[test]
@@ -377,7 +389,9 @@ mod tests {
         let infos = bus.topics();
         assert_eq!(infos.len(), 2);
         assert_eq!(infos[0].name, Heartbeat::NAME);
+        assert_eq!(infos[0].index, Heartbeat::INDEX);
         assert_eq!(infos[1].name, Status::NAME);
+        assert_eq!(infos[1].index, Status::INDEX);
     }
 
     #[test]

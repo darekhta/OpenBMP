@@ -37,6 +37,57 @@ No OpenBMP artifact uses labels such as `flight-qualified`, `certified`,
 | Provenance check | `openbmp check-provenance` | Data source review | Every PR once data exists |
 | Supply-chain check | `cargo deny`, `cargo audit`, `cargo machete` | Dependency policy | Every PR or dependency PR |
 
+## Requirements Traceability
+
+Machine-readable requirements live in [`../requirements.toml`](../requirements.toml).
+Each requirement lists verification evidence, and each verification item links
+back to one or more requirements. CI runs
+`python3 scripts/check_requirements_traceability.py` to reject orphan
+requirements, orphan verification items, missing evidence paths, and stale test
+or CI anchors.
+
+Flight I-load integrity is part of the traceable evidence set. The
+`openbmp-hal` I-load envelope tests verify schema-version rejection,
+CRC rejection, output-buffer bounds, and primary/fallback selection
+without requiring `std` or a TOML parser on the flight side.
+
+HAL sensor acquisition failures are also traceable FDIR evidence:
+sensor-ingest jobs publish `healthy = false` samples on read failure,
+the health monitor promotes those samples to failsafe flags without
+waiting for a stale-timeout, and FDIR maps the flags to sensor fault
+bits.
+
+FDIR redline watchpoints are tracked as I-load evidence. Scenario v3
+parses `[fc.fdir.redlines]`, the runner maps body-rate limits into
+`FdirParams`, and the FDIR job latches the body-rate redline fault bit
+when the active attitude estimate exceeds the declared limit.
+
+Fork-facing conformance starts with `openbmp conform <scenario...>`.
+The command validates each supplied scenario and runs it through the
+normal runner path without writing telemetry files, making it a small
+portable smoke suite for downstream board or HAL forks.
+
+The heavier seeded dispersion evidence has its own CI lane:
+`monte-carlo-nightly` runs the offline footprint Monte-Carlo reporting
+test and the Phalcon-9-class seeded ascent dispersion checks on a weekly
+schedule or manual workflow dispatch.
+
+Static bus dictionary evidence is also traceable: canonical FC topics
+declare stable `Topic::INDEX` slots, the scheduler overrun topic uses
+the same index table, and the dictionary dumps those indices alongside
+topic names and schema versions.
+
+Scheduler budget enforcement is traceable FDIR evidence. The cyclic
+scheduler publishes `scheduler.overrun` when a due job's declared budget
+does not fit in the remaining frame envelope; the health monitor promotes
+sustained overrun bursts to `FailsafeFlags.scheduler_overrun`, and FDIR
+can latch the scheduler-overrun fault bit from that failsafe flag.
+
+The HAL-side static bus contract is tested separately in
+`openbmp-hal`: `StaticBus` stores fixed-size encoded topic payloads by
+`Topic::INDEX`, rejects out-of-range topic slots, and avoids `TypeId`,
+`Any`, and heap-backed topic storage.
+
 ## Golden Telemetry
 
 Golden tests compare canonical scenario output against committed reference
@@ -60,6 +111,12 @@ The diff tool reports:
 - Expected and actual values.
 - Absolute and relative error.
 - Scenario hash and determinism profile.
+
+`openbmp diff --report-json <path>` writes the same comparison result as a
+machine-readable provenance artifact. The report records the compared
+paths, OpenBMP version, git commit and `rustc --version` when available,
+host platform, build profile, floating-point contract, first divergence,
+and table-level Parquet metadata from both archives.
 
 ## Tolerance Tables
 
@@ -225,7 +282,8 @@ If any answer is unclear, the validation label remains `experimental`.
 ## External V&V Reference Frames
 
 OpenBMP is academic and does not certify under any safety-critical regime
-(see [safety-boundaries.md § Non-Compliance Statement](safety-boundaries.md)).
+(see [safety-boundaries.md § Non-Compliance Statement](safety-boundaries.md)
+and [standards-posture.md](standards-posture.md)).
 Two civilian standards are nonetheless useful as **vocabulary and
 practice-level references** for organising V&V evidence. OpenBMP borrows
 their *terminology and structure*, not their compliance machinery.

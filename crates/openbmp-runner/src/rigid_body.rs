@@ -240,6 +240,11 @@ pub fn run(
     } else {
         kernel_base
     };
+    if document.flight_controller_owns_mission_state()
+        && let Some(initial_phase) = kernel.current_phase()
+    {
+        kernel.set_external_mission_state(Some(initial_phase));
+    }
     seed_initial_rigid_body_lanes(
         &mut kernel,
         document,
@@ -329,10 +334,15 @@ pub fn run(
         }
         if let Some(bridge) = &mut fc_bridge {
             let gravity = kernel.current_environment_sample()?.gravity_eci_m_s2;
+            let propellant_state = crate::fc_bridge::propellant_state_from_tanks(
+                kernel.current_time(),
+                &tank_rack.propellant_tank_states(document),
+            );
             bridge.tick_rigid_body(
                 kernel.current_state(),
                 kernel.current_step(),
                 gravity,
+                propellant_state,
                 &mut effector_rack,
                 &mut engine_rack,
                 // Bending slope-rate pickup from the previous tick's modal
@@ -345,6 +355,9 @@ pub fn run(
             // mission events for the next integrated state.
             if let Some(state_id) = bridge.latest_mission_state_id() {
                 kernel.set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
+            }
+            for fired in bridge.drain_mission_actions() {
+                kernel.record_external_mission_fired(fired);
             }
         }
         if !separated_attitude_targets.is_empty() {
@@ -4205,7 +4218,7 @@ require_monotonic_time = true
 
         let state = i64_column(&outcome, "engine.main.state_index");
         assert!(
-            state.iter().any(|value| *value == 2),
+            state.contains(&2),
             "engine state telemetry should show Burning state: {state:?}"
         );
 

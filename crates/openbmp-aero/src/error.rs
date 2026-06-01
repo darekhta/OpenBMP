@@ -40,6 +40,7 @@ pub enum AeroError {
     /// A deck file could not be read from disk (path missing,
     /// permission denied, etc.). The contained `String` carries the
     /// path and the underlying I/O error message.
+    #[cfg(feature = "std")]
     #[error("aero deck I/O error: {reason}")]
     Io {
         /// Path and underlying I/O error message.

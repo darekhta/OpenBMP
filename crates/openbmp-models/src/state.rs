@@ -39,7 +39,7 @@ use crate::derivative::SimStateDerivative;
 /// state-history validity checks depends on `VehicleState` only; code
 /// that needs kinematics should use [`TranslationalState`] or
 /// [`RigidBodyKinematicState`].
-pub trait VehicleState: Copy + std::fmt::Debug {
+pub trait VehicleState: Copy + core::fmt::Debug {
     /// The state's current monotonic timestamp.
     #[must_use]
     fn time(&self) -> SimTime;
@@ -219,6 +219,8 @@ impl<T: VehicleState + Integratable> SimState for T {}
 // ---------------------------------------------------------------------
 
 mod point_mass_impl {
+    #[cfg(not(feature = "std"))]
+    use nalgebra::ComplexField as _;
     use openbmp_core::{Position3, SimTime, Velocity3};
     use openbmp_state::PointMassState;
     use uom::si::f64::Mass;
@@ -371,6 +373,8 @@ mod point_mass_impl {
 // ---------------------------------------------------------------------
 
 mod rigid_body_impl {
+    #[cfg(not(feature = "std"))]
+    use nalgebra::ComplexField as _;
     use nalgebra::Quaternion as NalgebraQuaternion;
     use openbmp_core::{
         AngularVelocity3, Position3, Quaternion, SimTime, UnitQuaternion, Velocity3,

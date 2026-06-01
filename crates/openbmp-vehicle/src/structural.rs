@@ -214,13 +214,13 @@ impl BendingMode {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)]
+#[allow(clippy::float_cmp, clippy::unwrap_used)]
 mod tests {
     use super::*;
 
     fn mode() -> BendingMode {
         // ω_b ≈ 6.28 rad/s (1 Hz), light damping, unit slopes.
-        BendingMode::new(6.283_185_307_2, 0.01, 500.0, 1.0, 1.0).unwrap()
+        BendingMode::new(std::f64::consts::TAU, 0.01, 500.0, 1.0, 1.0).unwrap()
     }
 
     #[test]
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn free_response_decays_with_damping() {
-        let mut m = BendingMode::new(6.283_185_307_2, 0.05, 500.0, 1.0, 1.0).unwrap();
+        let mut m = BendingMode::new(std::f64::consts::TAU, 0.05, 500.0, 1.0, 1.0).unwrap();
         // Excite, then let it ring down with no forcing.
         for _ in 0..100 {
             m.step(Vector3::new(10.0, 0.0, 0.0), Duration::from_seconds(0.001))

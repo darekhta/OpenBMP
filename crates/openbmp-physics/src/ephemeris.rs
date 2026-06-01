@@ -1154,8 +1154,8 @@ impl SpkSegment {
             let source_index = start + offset;
             let basis =
                 equal_step_lagrange_basis(first_epoch_s, step_s, start, window_size, offset, et_s)?;
-            for component in 0..6 {
-                state[component] += basis * self.data[source_index * 6 + component];
+            for (component, value) in state.iter_mut().enumerate() {
+                *value += basis * self.data[source_index * 6 + component];
             }
         }
         finite_state_from_components(state, "SPK type 8 Lagrange interpolation")
@@ -2365,7 +2365,9 @@ fn stellar_aberration_position_km(
             reason: "SPK stellar aberration inputs must be finite",
         });
     }
-    if rotation_sign != -1.0 && rotation_sign != 1.0 {
+    if rotation_sign.to_bits() != (-1.0_f64).to_bits()
+        && rotation_sign.to_bits() != 1.0_f64.to_bits()
+    {
         return Err(PhysicsError::InvalidParameter {
             reason: "SPK stellar aberration rotation sign must be +/-1",
         });
@@ -2577,7 +2579,7 @@ fn type5_two_body_blend_state(
         ],
         "SPK type 5 first record",
     )?;
-    if first_epoch_s == second_epoch_s {
+    if first_epoch_s.to_bits() == second_epoch_s.to_bits() {
         return propagate_two_body_state_km_s(&first, gm_km3_s2, et_s - first_epoch_s);
     }
     let second = finite_state_from_components(
@@ -3376,9 +3378,9 @@ fn type14_chebyshev_state_from_packet(
         });
     }
     let mut state = [0.0_f64; 6];
-    for component in 0..6 {
+    for (component, value) in state.iter_mut().enumerate() {
         let base = 2 + component * coeff_count;
-        state[component] = evaluate_chebyshev(tau, &packet[base..base + coeff_count]);
+        *value = evaluate_chebyshev(tau, &packet[base..base + coeff_count]);
     }
     finite_state_from_components(state, "SPK type 14 Chebyshev interpolation")
 }
@@ -3402,7 +3404,7 @@ fn lagrange_window_start(epochs: &[f64], et_s: f64, window_size: usize) -> usize
     debug_assert!(window_size <= epochs.len());
     let last_start = epochs.len() - window_size;
     let half = window_size / 2;
-    let candidate = if window_size % 2 == 0 {
+    let candidate = if window_size.is_multiple_of(2) {
         let insertion = epochs.partition_point(|epoch| *epoch < et_s);
         insertion.saturating_sub(half)
     } else {
@@ -3421,7 +3423,7 @@ fn equal_step_window_start(
     debug_assert!(window_size <= count);
     let last_start = count - window_size;
     let half = window_size / 2;
-    let candidate = if window_size % 2 == 0 {
+    let candidate = if window_size.is_multiple_of(2) {
         equal_step_insertion_index(first_epoch_s, step_s, count, et_s).saturating_sub(half)
     } else {
         nearest_equal_step_epoch_index(first_epoch_s, step_s, count, et_s).saturating_sub(half)
@@ -3722,7 +3724,7 @@ fn type19_interval_index(boundaries: &[f64], et_s: f64, use_later_boundary: bool
         return Some(last_interval);
     }
     let insertion = boundaries.partition_point(|boundary| *boundary < et_s);
-    if insertion < boundaries.len() && boundaries[insertion] == et_s {
+    if insertion < boundaries.len() && boundaries[insertion].to_bits() == et_s.to_bits() {
         if use_later_boundary {
             Some(insertion.min(last_interval))
         } else {
@@ -3877,7 +3879,7 @@ fn f64_to_usize(value: f64) -> Result<usize, PhysicsError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::float_cmp)]
+#[allow(clippy::excessive_precision, clippy::float_cmp, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

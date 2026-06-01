@@ -36,9 +36,11 @@
 //! chain lives in the kernel runner.
 
 pub mod dipole;
+#[cfg(feature = "std")]
 pub mod wmm2025;
 
 pub use dipole::EarthDipoleField;
+#[cfg(feature = "std")]
 pub use wmm2025::Wmm2025;
 
 use nalgebra::Vector3;
@@ -86,7 +88,7 @@ pub trait MagneticModel {
 /// nearest physical fallback), never an error — the FC's hot path
 /// must remain total. Models that need to surface envelope errors
 /// implement [`MagneticModel`] instead.
-pub trait MagneticFieldEci: std::fmt::Debug + Send + Sync {
+pub trait MagneticFieldEci: core::fmt::Debug + Send + Sync {
     /// Sample the magnetic flux density at an ECI position and
     /// simulation time, in **nanotesla (nT)**, expressed in ECI.
     fn field_eci_nt(&self, position_eci_m: Vector3<f64>, time: SimTime) -> Vector3<f64>;

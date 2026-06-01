@@ -27,4 +27,28 @@ pub enum BridgeError {
         /// Bytes currently available.
         have: usize,
     },
+    /// Peer reported an incompatible wire protocol version.
+    #[error("bridge protocol mismatch: expected version {expected}, got {got}")]
+    ProtocolVersionMismatch {
+        /// Version supported by this crate.
+        expected: u16,
+        /// Version reported by the peer.
+        got: u16,
+    },
+    /// A lockstep response targeted a different kernel step.
+    #[error("bridge lockstep step mismatch: expected step {expected}, got {got}")]
+    StepMismatch {
+        /// Step emitted by the simulator sensor frame.
+        expected: u64,
+        /// Step reported by the response packet.
+        got: u64,
+    },
+    /// A lockstep response targeted a different simulation timestamp.
+    #[error("bridge lockstep time mismatch: expected {expected:.9}s, got {got:.9}s")]
+    TimeMismatch {
+        /// Simulation timestamp emitted by the sensor frame.
+        expected: f64,
+        /// Simulation timestamp reported by the response packet.
+        got: f64,
+    },
 }

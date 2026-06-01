@@ -621,7 +621,7 @@ impl AscentReferenceGenerator for ClosedLoopInsertionAscentReference {
 /// when the system is singular or the integrals are non-finite (e.g. a
 /// time-to-go estimate at/above `tau`).
 fn peg_solve_ab(ve: f64, tau: f64, t: f64, vr: f64, r: f64, tgt: f64) -> Option<(f64, f64)> {
-    if !(t > 0.0) || t >= tau {
+    if t <= 0.0 || t >= tau {
         return None;
     }
     let b0 = -ve * (1.0 - t / tau).ln();
@@ -967,11 +967,12 @@ impl AscentReferenceGenerator for PegAscentReference {
             }
             // Re-solve A,B with the refreshed time-to-go (skip near
             // burnout where the integrals become ill-conditioned).
-            if t_go >= 7.5 && t_go < tau {
-                if let Some((na, nb)) = peg_solve_ab(ve, tau, t_go, vr, r, tgt) {
-                    a = na;
-                    b = nb;
-                }
+            if t_go >= 7.5
+                && t_go < tau
+                && let Some((na, nb)) = peg_solve_ab(ve, tau, t_go, vr, r, tgt)
+            {
+                a = na;
+                b = nb;
             }
             st.a = a;
             st.b = b;
@@ -1218,19 +1219,78 @@ impl AscentReferenceGenerator for SequencedAscentReference {
 
 /// Ballistic state of an unpowered body at a point on its arc, used to
 /// seed a range-safety footprint prediction.
+///
+/// The fields are private by design. A free-flight state must be
+/// produced through [`Self::from_forward_simulation`] so downstream
+/// crates cannot use a struct literal as an unreviewed propagation
+/// seed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BallisticState {
     /// ECI position `[x, y, z]` (m).
-    pub position_eci_m: [f64; 3],
+    position_eci_m: [f64; 3],
     /// ECI velocity `[x, y, z]` (m/s).
-    pub velocity_eci_m_s: [f64; 3],
+    velocity_eci_m_s: [f64; 3],
     /// Ballistic coefficient `B = C_d · A / m` (m²/kg).
-    pub ballistic_coefficient_m2_kg: f64,
+    ballistic_coefficient_m2_kg: f64,
     /// Simulation time at this state.
-    pub time: SimTime,
+    time: SimTime,
 }
 
 impl BallisticState {
+    /// Construct a free-flight state derived from a forward
+    /// simulation output.
+    ///
+    /// This constructor is intentionally named for provenance. It is
+    /// the only public way to create a [`BallisticState`], so a
+    /// caller has to make the forward-output claim at the API
+    /// boundary instead of assembling a propagation seed with a struct
+    /// literal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when any vector component is
+    /// non-finite, the ballistic coefficient is negative /
+    /// non-finite, or the timestamp is non-finite.
+    pub fn from_forward_simulation(
+        position_eci_m: [f64; 3],
+        velocity_eci_m_s: [f64; 3],
+        ballistic_coefficient_m2_kg: f64,
+        time: SimTime,
+    ) -> Result<Self, PhysicsError> {
+        let state = Self {
+            position_eci_m,
+            velocity_eci_m_s,
+            ballistic_coefficient_m2_kg,
+            time,
+        };
+        state.validate()?;
+        Ok(state)
+    }
+
+    /// ECI position `[x, y, z]` (m).
+    #[must_use]
+    pub const fn position_eci_m(&self) -> [f64; 3] {
+        self.position_eci_m
+    }
+
+    /// ECI velocity `[x, y, z]` (m/s).
+    #[must_use]
+    pub const fn velocity_eci_m_s(&self) -> [f64; 3] {
+        self.velocity_eci_m_s
+    }
+
+    /// Ballistic coefficient `B = C_d · A / m` (m²/kg).
+    #[must_use]
+    pub const fn ballistic_coefficient_m2_kg(&self) -> f64 {
+        self.ballistic_coefficient_m2_kg
+    }
+
+    /// Simulation time at this state.
+    #[must_use]
+    pub const fn time(&self) -> SimTime {
+        self.time
+    }
+
     /// Validate the state carried into a landing-footprint
     /// prediction.
     ///
@@ -1676,9 +1736,9 @@ pub struct FootprintMonteCarloResult {
     /// Crossrange component of the sample mean offset from the
     /// nominal footprint (m).
     pub mean_offset_crossrange_from_nominal_m: f64,
-    /// Radial miss distance from the nominal footprint to the sample
-    /// mean (m). This is output-only and accepts no target input.
-    pub mean_miss_distance_from_nominal_m: f64,
+    /// Radial offset from the nominal footprint to the sample mean
+    /// (m). This is output-only and accepts no target input.
+    pub mean_radial_offset_from_nominal_m: f64,
     /// Downrange/downrange covariance element (m²).
     pub covariance_downrange_downrange_m2: f64,
     /// Downrange/crossrange covariance element (m²).
@@ -2210,12 +2270,12 @@ impl StagingBudgetInput {
         for stage in &self.stages {
             stage.validate_common()?;
         }
-        if let Some(delta_v) = self.delta_v_budget_m_s {
-            if !delta_v.is_finite() || delta_v <= 0.0 {
-                return Err(PhysicsError::InvalidParameter {
-                    reason: "staging delta_v_budget_m_s must be finite and positive",
-                });
-            }
+        if let Some(delta_v) = self.delta_v_budget_m_s
+            && (!delta_v.is_finite() || delta_v <= 0.0)
+        {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "staging delta_v_budget_m_s must be finite and positive",
+            });
         }
         Ok(())
     }
@@ -2880,7 +2940,7 @@ where
         cep50_m: stats.cep50_m,
         mean_offset_downrange_from_nominal_m: stats.mean_offset_downrange_from_nominal_m,
         mean_offset_crossrange_from_nominal_m: stats.mean_offset_crossrange_from_nominal_m,
-        mean_miss_distance_from_nominal_m: stats.mean_miss_distance_from_nominal_m,
+        mean_radial_offset_from_nominal_m: stats.mean_radial_offset_from_nominal_m,
         covariance_downrange_downrange_m2: stats.covariance_downrange_downrange_m2,
         covariance_downrange_crossrange_m2: stats.covariance_downrange_crossrange_m2,
         covariance_crossrange_crossrange_m2: stats.covariance_crossrange_crossrange_m2,
@@ -2896,7 +2956,7 @@ struct FootprintSampleStatistics {
     cep50_m: f64,
     mean_offset_downrange_from_nominal_m: f64,
     mean_offset_crossrange_from_nominal_m: f64,
-    mean_miss_distance_from_nominal_m: f64,
+    mean_radial_offset_from_nominal_m: f64,
     covariance_downrange_downrange_m2: f64,
     covariance_downrange_crossrange_m2: f64,
     covariance_crossrange_crossrange_m2: f64,
@@ -2922,13 +2982,13 @@ fn footprint_sample_statistics(
     let mean_crossrange_m = sum_crossrange_m * inv_n;
     let mean_offset_downrange_from_nominal_m = mean_downrange_m - nominal.downrange_m;
     let mean_offset_crossrange_from_nominal_m = mean_crossrange_m - nominal.crossrange_m;
-    let mean_miss_distance_from_nominal_m = radial_norm_m(
+    let mean_radial_offset_from_nominal_m = radial_norm_m(
         mean_offset_downrange_from_nominal_m,
         mean_offset_crossrange_from_nominal_m,
     );
-    if !mean_miss_distance_from_nominal_m.is_finite() {
+    if !mean_radial_offset_from_nominal_m.is_finite() {
         return Err(PhysicsError::NonFinite {
-            reason: "footprint Monte Carlo nominal miss distance is non-finite",
+            reason: "footprint Monte Carlo nominal radial offset is non-finite",
         });
     }
     let mut c_dd = 0.0;
@@ -2968,7 +3028,7 @@ fn footprint_sample_statistics(
         cep50_m,
         mean_offset_downrange_from_nominal_m,
         mean_offset_crossrange_from_nominal_m,
-        mean_miss_distance_from_nominal_m,
+        mean_radial_offset_from_nominal_m,
         covariance_downrange_downrange_m2: c_dd,
         covariance_downrange_crossrange_m2: c_dc,
         covariance_crossrange_crossrange_m2: c_cc,
@@ -4272,7 +4332,7 @@ mod tests {
         assert!(result.dispersion_ellipse.one_sigma_semi_major_m < 1.0e-12);
         assert!(result.dispersion_ellipse.one_sigma_semi_minor_m < 1.0e-12);
         assert!(result.cep50_m < 1.0e-12);
-        assert!(result.mean_miss_distance_from_nominal_m < 1.0e-12);
+        assert!(result.mean_radial_offset_from_nominal_m < 1.0e-12);
         for quantile in &result.nominal_radial_error_quantiles {
             assert!(quantile.radial_distance_m < 1.0e-12);
         }
@@ -4378,7 +4438,7 @@ mod tests {
             (result.dispersion_ellipse.orientation_rad - 0.288_884_977_197_166_16).abs() < 1.0e-12
         );
         assert!((result.cep50_m - result.quantiles[0].radial_distance_m).abs() < 1.0e-12);
-        assert!(result.mean_miss_distance_from_nominal_m > 0.0);
+        assert!(result.mean_radial_offset_from_nominal_m > 0.0);
     }
 
     fn nominal_entry_corridor() -> EntryCorridor {

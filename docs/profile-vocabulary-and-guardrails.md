@@ -34,7 +34,7 @@ operational engagement meaning.
 | `landing_footprint` | Predicted touchdown region of an unpowered body. Replaces *impact point*. | RCC 321 range-safety. |
 | `dispersion_ellipse` | Statistical landing scatter. Primary schema term replacing target-accuracy wording. | RCC 321. |
 | `cep50_m` | Output-only empirical 50% circular radius about the Monte-Carlo sample mean. No target or aimpoint input. | NASA/JPL D-4710. |
-| `miss_distance_from_nominal_m` | Output-only radial error from the nominal forward footprint, used in sample clouds and summaries. Not a miss distance to a desired point. | Statistical post-processing. |
+| `radial_offset_from_nominal_m` | Output-only radial error from the nominal forward footprint, used in sample clouds and summaries. Not a miss distance to a desired point. | Statistical post-processing. |
 | `downrange_m` / `crossrange_m` | Range-relative landing coordinates. Replaces geographic aimpoint. | Range-safety convention. |
 | `entry_corridor` | Heat-rate / load-factor / flight-path-angle limit band steering a lifting entry. Replaces end-phase steering language. | Vinh et al., 1980. |
 | `jettison_stage` | Commanded stage / booster / fairing separation. | Niskanen, Ch. 4. |
@@ -92,13 +92,16 @@ must also declare, disagreement fails closed.
    location, aimpoint, or desired touchdown coordinate. The
    `RangeSafetyFootprint` tool takes only a propagated state and reports a
    forward prediction. Nominal-referenced `cep50_m` /
-   `miss_distance_from_nominal_m` outputs are computed after propagation and
+   `radial_offset_from_nominal_m` outputs are computed after propagation and
    cannot be configured against a geographic point. (Lint + absence of any
    such field in the schema.)
 2. **Footprint is forward-only and offline.** The footprint path is in the
    offline-analysis surface, never on the flight controller's loop; it produces
    no actuator command. Mirrors the telemetry-viewer boundary in
    [`safety-boundaries.md`](safety-boundaries.md).
+   Persisted Monte-Carlo sample-cloud files contain landing and dispersion
+   diagnostics only, not the sampled burnout state or uncertainty vector paired
+   with each landing point.
 3. **Ascent / entry references are inertial / corridor only.** The ascent
    explicit-reference cutoff accepts inertial state (altitude, speed,
    flight-path angle); the entry-corridor reference accepts corridor limits

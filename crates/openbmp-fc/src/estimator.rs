@@ -31,19 +31,26 @@
 //! the error is reset and folded into `q_nominal`.
 
 use nalgebra::{Matrix3, SMatrix, SVector, UnitQuaternion, Vector3};
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 use openbmp_core::{Eci, Position3, SimTime};
+use openbmp_mission::CanonicalRegionStates;
 use openbmp_physics::atmosphere;
 use openbmp_physics::earth;
 use openbmp_physics::gravity::{self, ConstantGravity, GravityModel};
 use openbmp_physics::magnetic::{EarthDipoleField, MagneticFieldEci};
+use std::boxed::Box;
+use std::format;
+use std::string::ToString;
 
 use crate::bus::Bus;
 use crate::error::{ControllerError, EstimatorError};
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{
-    AttitudeEstimate, BarometerSample, EstimatorMode, EstimatorStatus, GnssSample, ImuSample,
-    MagnetometerSample, PositionEstimate, StarTrackerSample,
+    AttitudeEstimate, BarometerSample, EstimatorLaneSelection, EstimatorMode,
+    EstimatorRegimeRegionStatePublish, EstimatorStatus, GnssSample, ImuSample, MagnetometerSample,
+    PositionEstimate, StarTrackerSample,
 };
 
 /// Adapter that wraps the rich [`openbmp_physics::gravity::GravityModel`]
@@ -165,10 +172,21 @@ pub trait Estimator {
         None
     }
 
+    /// Returns an optional active-lane diagnostic snapshot for
+    /// estimators that route multiple redundant estimator lanes.
+    fn estimator_lane_selection(&self) -> Option<EstimatorLaneSelection> {
+        None
+    }
+
     /// Clears one-cycle diagnostic state before draining this tick's
     /// measurements. Persistent health, covariance, and dead-reckoning
     /// state are left unchanged.
     fn begin_tick(&mut self) {}
+
+    /// Selects the high-dynamics process-noise schedule. Estimators
+    /// that do not expose a position / velocity process-noise schedule
+    /// leave this as a no-op.
+    fn set_high_dynamics_process_noise(&mut self, _active: bool) {}
 }
 
 /// Configuration parameters for the EKF.
@@ -227,6 +245,10 @@ pub struct EkfParams {
     /// star-tracker update after which the filter flags
     /// dead-reckoning.
     pub dead_reckon_timeout_s: f64,
+    /// Multiplier on position/velocity process-noise covariance while
+    /// the commander-published estimator regime is high dynamics.
+    /// `1.0` preserves the base schedule exactly.
+    pub high_dynamics_q_scale: f64,
 }
 
 impl Default for EkfParams {
@@ -247,6 +269,7 @@ impl Default for EkfParams {
             innovation_gate: f64::NAN,
             innovation_false_alarm_rate: 0.01,
             dead_reckon_timeout_s: 1.5,
+            high_dynamics_q_scale: 1.0,
         }
     }
 }
@@ -320,6 +343,9 @@ pub struct Ekf {
     /// Magnetic-field model — used by `update_mag` to predict the
     /// body-frame magnetic vector and form an innovation.
     mag_field: Box<dyn MagneticFieldEci>,
+    /// `true` while the commander-published estimator-regime state is
+    /// the canonical high-dynamics mode.
+    high_dynamics_q_active: bool,
 }
 
 impl std::fmt::Debug for Ekf {
@@ -382,6 +408,7 @@ impl Ekf {
             initialized: false,
             gravity: GravityAdapter::new(default_constant_gravity_down_z()),
             mag_field: Box::new(EarthDipoleField::default()),
+            high_dynamics_q_active: false,
         }
     }
 
@@ -463,9 +490,27 @@ impl Estimator for Ekf {
         self.pos_eci += self.vel_eci * dt;
 
         // Covariance propagation: Q dt added on the diagonals.
+        let position_velocity_q_scale = if self.high_dynamics_q_active
+            && self.params.high_dynamics_q_scale.is_finite()
+            && self.params.high_dynamics_q_scale > 0.0
+        {
+            self.params.high_dynamics_q_scale
+        } else {
+            1.0
+        };
         let q_diag = SVector::<f64, 15>::from_iterator((0..15).map(|i| match i {
-            0..=2 => self.params.sigma_w_position_m * self.params.sigma_w_position_m * dt,
-            3..=5 => self.params.sigma_w_velocity_m_s * self.params.sigma_w_velocity_m_s * dt,
+            0..=2 => {
+                self.params.sigma_w_position_m
+                    * self.params.sigma_w_position_m
+                    * position_velocity_q_scale
+                    * dt
+            }
+            3..=5 => {
+                self.params.sigma_w_velocity_m_s
+                    * self.params.sigma_w_velocity_m_s
+                    * position_velocity_q_scale
+                    * dt
+            }
             6..=8 => self.params.sigma_w_gyro * self.params.sigma_w_gyro * dt,
             9..=11 => gauss_markov_process_variance(
                 self.params.sigma_w_gyro_bias,
@@ -532,10 +577,8 @@ impl Estimator for Ekf {
         // the chi-square / log-det are their sums, so the invariant
         // `‖ν̃‖² = chi2` still holds (asserted by
         // `whitened_innovation_norm_squared_equals_chi2`).
-        for i in 0..3 {
-            self.last_gnss_innovation_whitened[i] = w_p[i];
-            self.last_gnss_innovation_whitened[i + 3] = w_v[i];
-        }
+        self.last_gnss_innovation_whitened[..3].copy_from_slice(&w_p);
+        self.last_gnss_innovation_whitened[3..].copy_from_slice(&w_v);
         self.last_chi2_gnss = chi2_p + chi2_v;
         self.last_log_det_s_gnss = ld_p + ld_v;
 
@@ -547,10 +590,10 @@ impl Estimator for Ekf {
             self.last_innovation_rejected = true;
             // Report the rejected block's statistic (velocity first, since
             // it is the one that spikes under high dynamics).
-            let (chi2, gate) = if !applied_v {
-                (chi2_v, self.params.gate_for_dof(3.0))
-            } else {
+            let (chi2, gate) = if applied_v {
                 (chi2_p, self.params.gate_for_dof(3.0))
+            } else {
+                (chi2_v, self.params.gate_for_dof(3.0))
             };
             return Err(EstimatorError::InnovationGateRejected {
                 measurement: "gnss",
@@ -789,6 +832,10 @@ impl Estimator for Ekf {
         self.last_log_det_s_baro = f64::NAN;
         self.last_log_det_s_mag = f64::NAN;
     }
+
+    fn set_high_dynamics_process_noise(&mut self, active: bool) {
+        self.high_dynamics_q_active = active;
+    }
 }
 
 impl Ekf {
@@ -863,7 +910,7 @@ impl Ekf {
         time: SimTime,
     ) -> (Vector3<f64>, SMatrix<f64, 3, 15>) {
         let r_eci_to_body = self.q_body_to_eci.to_rotation_matrix().transpose();
-        let predicted = r_eci_to_body * self.mag_field.field_eci_nt(self.pos_eci, time);
+        let predicted = r_eci_to_body.matrix() * self.mag_field.field_eci_nt(self.pos_eci, time);
         let innovation = measured_body_nt - predicted;
         let mut h: SMatrix<f64, 3, 15> = SMatrix::zeros();
         let skew = skew_symmetric(predicted);
@@ -1114,6 +1161,17 @@ impl<E: Estimator + std::fmt::Debug + 'static> EstimatorJob<E> {
         }
         Ok(())
     }
+
+    fn sync_process_noise_regime(&mut self, bus: &Bus) {
+        let boost_state = CanonicalRegionStates::estimator_boost_mode().value();
+        let high_dynamics = bus
+            .latest::<EstimatorRegimeRegionStatePublish>()
+            .ok()
+            .flatten()
+            .is_some_and(|(state, _)| state.state_id == boost_state);
+        self.estimator
+            .set_high_dynamics_process_noise(high_dynamics);
+    }
 }
 
 impl<E: Estimator + std::fmt::Debug + 'static> Job for EstimatorJob<E> {
@@ -1123,6 +1181,7 @@ impl<E: Estimator + std::fmt::Debug + 'static> Job for EstimatorJob<E> {
 
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
         self.estimator.begin_tick();
+        self.sync_process_noise_regime(ctx.bus);
         // Drain sensor topics (in deterministic order).
         let _ = self.drain_imu(ctx.bus);
         let _ = self.drain_baro(ctx.bus);
@@ -1160,6 +1219,11 @@ impl<E: Estimator + std::fmt::Debug + 'static> Job for EstimatorJob<E> {
             let _ = ctx.bus.publish(mode);
         }
 
+        if let Some(mut lanes) = self.estimator.estimator_lane_selection() {
+            lanes.time = ctx.clock.now();
+            let _ = ctx.bus.publish(lanes);
+        }
+
         Ok(())
     }
 }
@@ -1180,6 +1244,64 @@ mod tests {
         let pos = ekf.position();
         assert!((pos.position_eci_m.x - 1.0).abs() < f64::EPSILON);
         assert!((pos.velocity_eci_m_s.y - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ekf_high_dynamics_q_scale_multiplies_position_velocity_process_noise() {
+        let params = EkfParams {
+            sigma_w_position_m: 2.0,
+            sigma_w_velocity_m_s: 3.0,
+            high_dynamics_q_scale: 4.0,
+            ..EkfParams::default()
+        };
+        let imu = ImuSample {
+            time: SimTime::ZERO,
+            gyro_rad_s: Vector3::zeros(),
+            accel_m_s2: Vector3::new(0.0, 0.0, gravity::STANDARD_GRAVITY_M_S2),
+            healthy: true,
+        };
+
+        let mut nominal = Ekf::new(params.clone());
+        nominal.update_imu(&imu).unwrap();
+        let p0_pos = nominal.p[(0, 0)];
+        let p0_vel = nominal.p[(3, 3)];
+        nominal.predict(1.0).unwrap();
+        assert!((nominal.p[(0, 0)] - p0_pos - 4.0).abs() < 1.0e-12);
+        assert!((nominal.p[(3, 3)] - p0_vel - 9.0).abs() < 1.0e-12);
+
+        let mut boosted = Ekf::new(params);
+        boosted.set_high_dynamics_process_noise(true);
+        boosted.update_imu(&imu).unwrap();
+        let p0_pos = boosted.p[(0, 0)];
+        let p0_vel = boosted.p[(3, 3)];
+        boosted.predict(1.0).unwrap();
+        assert!((boosted.p[(0, 0)] - p0_pos - 16.0).abs() < 1.0e-12);
+        assert!((boosted.p[(3, 3)] - p0_vel - 36.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn estimator_job_reads_estimator_regime_topic_for_high_dynamics_schedule() {
+        let bus = Bus::new();
+        bus.register::<EstimatorRegimeRegionStatePublish>().unwrap();
+        let mut job = EstimatorJob::new(Ekf::new(EkfParams::default()));
+
+        job.sync_process_noise_regime(&bus);
+        assert!(!job.estimator().high_dynamics_q_active);
+
+        bus.publish(EstimatorRegimeRegionStatePublish {
+            state_id: CanonicalRegionStates::estimator_boost_mode().value(),
+        })
+        .unwrap();
+        job.sync_process_noise_regime(&bus);
+        assert!(job.estimator().high_dynamics_q_active);
+
+        bus.publish(EstimatorRegimeRegionStatePublish {
+            state_id: openbmp_mission::PhaseId::from_path("mission.regions.estimator_regime.coast")
+                .value(),
+        })
+        .unwrap();
+        job.sync_process_noise_regime(&bus);
+        assert!(!job.estimator().high_dynamics_q_active);
     }
 
     #[test]
@@ -1951,7 +2073,7 @@ impl Mekf {
         time: SimTime,
     ) -> (Vector3<f64>, SMatrix<f64, 3, 6>) {
         let r_eci_to_body = self.q_body_to_eci.to_rotation_matrix().transpose();
-        let predicted = r_eci_to_body
+        let predicted = r_eci_to_body.matrix()
             * self
                 .mag_field
                 .field_eci_nt(self.reference_position_eci_m, time);

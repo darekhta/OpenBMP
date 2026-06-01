@@ -14,8 +14,48 @@
 
 use nalgebra::Vector3;
 use openbmp_core::SimTime;
+use openbmp_mission::{FiredEvent, MissionAction};
+use std::vec::Vec;
 
 use crate::bus::Topic;
+
+pub(crate) mod topic_index {
+    pub const SENSOR_IMU: usize = 0;
+    pub const SENSOR_BAROMETER: usize = 1;
+    pub const SENSOR_GNSS: usize = 2;
+    pub const SENSOR_MAGNETOMETER: usize = 3;
+    pub const SENSOR_STAR_TRACKER: usize = 4;
+    pub const SENSOR_STATUS: usize = 5;
+    pub const ESTIMATOR_ATTITUDE: usize = 6;
+    pub const ESTIMATOR_POSITION: usize = 7;
+    pub const ESTIMATOR_ENVIRONMENT: usize = 8;
+    pub const PROPULSION_PROPELLANT_STATE: usize = 9;
+    pub const ESTIMATOR_STATUS: usize = 10;
+    pub const ESTIMATOR_LANE_SELECTION: usize = 11;
+    pub const COMMANDER_VEHICLE_STATUS: usize = 12;
+    pub const COMMANDER_MISSION_STATE: usize = 13;
+    pub const COMMANDER_MISSION_ACTIONS: usize = 14;
+    pub const COMMANDER_REGION_MISSION: usize = 15;
+    pub const COMMANDER_REGION_HEALTH: usize = 16;
+    pub const COMMANDER_REGION_COMMS: usize = 17;
+    pub const COMMANDER_REGION_ESTIMATOR_REGIME: usize = 18;
+    #[allow(dead_code)] // compiled out of HAL topic surfaces, still reserved in the table
+    pub const COMMANDER_SCENARIO_STATE_OVERRIDE: usize = 19;
+    pub const HEALTH_FAILSAFE_FLAGS: usize = 20;
+    pub const AUTOPILOT_ACTUATOR_CMD: usize = 21;
+    pub const AUTOPILOT_STATUS: usize = 22;
+    pub const ACTUATOR_EFFECTOR_CMDS: usize = 23;
+    pub const AUTOPILOT_ENGINE_CMD: usize = 24;
+    pub const ACTUATOR_ENGINE_CMDS: usize = 25;
+    pub const FDIR_STATUS: usize = 26;
+    pub const FDIR_GLRT_DIAGNOSTIC: usize = 27;
+    pub const ESTIMATOR_MODE: usize = 28;
+    pub const GUIDANCE_REFERENCE: usize = 29;
+    pub const GUIDANCE_CUTOFF: usize = 30;
+    pub const SCHEDULER_OVERRUN: usize = 31;
+    #[allow(dead_code)]
+    pub const COUNT: usize = 32;
+}
 
 // ---------------------------------------------------------------------
 // Sensor sample topics
@@ -37,6 +77,7 @@ pub struct ImuSample {
 
 impl Topic for ImuSample {
     const NAME: &'static str = "sensor.imu";
+    const INDEX: usize = topic_index::SENSOR_IMU;
 }
 
 /// Barometric-altimeter sample.
@@ -54,6 +95,7 @@ pub struct BarometerSample {
 
 impl Topic for BarometerSample {
     const NAME: &'static str = "sensor.barometer";
+    const INDEX: usize = topic_index::SENSOR_BAROMETER;
 }
 
 /// GNSS receiver sample.
@@ -73,6 +115,7 @@ pub struct GnssSample {
 
 impl Topic for GnssSample {
     const NAME: &'static str = "sensor.gnss";
+    const INDEX: usize = topic_index::SENSOR_GNSS;
 }
 
 /// Magnetometer sample.
@@ -90,6 +133,7 @@ pub struct MagnetometerSample {
 
 impl Topic for MagnetometerSample {
     const NAME: &'static str = "sensor.magnetometer";
+    const INDEX: usize = topic_index::SENSOR_MAGNETOMETER;
 }
 
 /// Star-tracker sample (attitude only).
@@ -106,11 +150,16 @@ pub struct StarTrackerSample {
 
 impl Topic for StarTrackerSample {
     const NAME: &'static str = "sensor.star_tracker";
+    const INDEX: usize = topic_index::SENSOR_STAR_TRACKER;
 }
 
 /// Maximum number of redundant lanes represented in a per-kind
 /// sensor-status publication.
 pub const MAX_SENSOR_STATUS_LANES: usize = 8;
+
+/// Maximum number of estimator lanes represented in
+/// [`EstimatorLaneSelection`].
+pub const MAX_ESTIMATOR_STATUS_LANES: usize = 8;
 
 /// Sensor class represented by [`SensorStatus`].
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -172,6 +221,7 @@ impl Default for SensorStatus {
 
 impl Topic for SensorStatus {
     const NAME: &'static str = "sensor.status";
+    const INDEX: usize = topic_index::SENSOR_STATUS;
 }
 
 // ---------------------------------------------------------------------
@@ -193,6 +243,7 @@ pub struct AttitudeEstimate {
 
 impl Topic for AttitudeEstimate {
     const NAME: &'static str = "estimator.attitude";
+    const INDEX: usize = topic_index::ESTIMATOR_ATTITUDE;
 }
 
 /// Translational state estimate published by an
@@ -211,6 +262,7 @@ pub struct PositionEstimate {
 
 impl Topic for PositionEstimate {
     const NAME: &'static str = "estimator.position";
+    const INDEX: usize = topic_index::ESTIMATOR_POSITION;
 }
 
 /// Local environment estimate published by the simulator bridge for
@@ -226,6 +278,29 @@ pub struct EnvironmentEstimate {
 
 impl Topic for EnvironmentEstimate {
     const NAME: &'static str = "estimator.environment";
+    const INDEX: usize = topic_index::ESTIMATOR_ENVIRONMENT;
+}
+
+/// Onboard propellant estimate used by mission triggers such as
+/// `AtMassFraction`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PropellantState {
+    /// Estimate timestamp.
+    pub time: SimTime,
+    /// Current usable propellant mass divided by declared initial
+    /// propellant mass.
+    pub mass_fraction: f64,
+    /// Current usable propellant mass (kg).
+    pub mass_remaining_kg: f64,
+    /// Declared initial usable propellant mass (kg).
+    pub mass_initial_kg: f64,
+    /// `true` when usable propellant is depleted.
+    pub depleted: bool,
+}
+
+impl Topic for PropellantState {
+    const NAME: &'static str = "propulsion.propellant_state";
+    const INDEX: usize = topic_index::PROPULSION_PROPELLANT_STATE;
 }
 
 /// Diagnostic snapshot of estimator health.
@@ -286,6 +361,59 @@ pub struct EstimatorStatus {
 
 impl Topic for EstimatorStatus {
     const NAME: &'static str = "estimator.status";
+    const INDEX: usize = topic_index::ESTIMATOR_STATUS;
+}
+
+/// Per-lane estimator-voter status.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct EstimatorLaneStatus {
+    /// Stable hash of the lane id string from
+    /// `[[fc.estimator_lanes.lane]]`.
+    pub lane_id: u64,
+    /// Lane index in deterministic declaration order.
+    pub lane_index: u8,
+    /// `true` if this lane survived the most recent predict/update
+    /// dispatch.
+    pub healthy: bool,
+    /// `true` if this lane currently drives the canonical estimator
+    /// output topics.
+    pub active: bool,
+}
+
+/// Active estimator-lane selection snapshot.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct EstimatorLaneSelection {
+    /// Publication timestamp.
+    pub time: SimTime,
+    /// Active lane index in declaration order.
+    pub active_lane_index: u8,
+    /// Number of valid entries in [`Self::lanes`].
+    pub lane_count: u8,
+    /// Fixed-capacity lane records. Entries beyond `lane_count` are
+    /// zero-filled.
+    pub lanes: [EstimatorLaneStatus; MAX_ESTIMATOR_STATUS_LANES],
+    /// `true` if more lanes existed than fit in this fixed record.
+    pub overflowed: bool,
+    /// `true` if no lane is healthy after the most recent dispatch.
+    pub all_lanes_failed: bool,
+}
+
+impl Default for EstimatorLaneSelection {
+    fn default() -> Self {
+        Self {
+            time: SimTime::ZERO,
+            active_lane_index: 0,
+            lane_count: 0,
+            lanes: [EstimatorLaneStatus::default(); MAX_ESTIMATOR_STATUS_LANES],
+            overflowed: false,
+            all_lanes_failed: false,
+        }
+    }
+}
+
+impl Topic for EstimatorLaneSelection {
+    const NAME: &'static str = "estimator.lane_selection";
+    const INDEX: usize = topic_index::ESTIMATOR_LANE_SELECTION;
 }
 
 // ---------------------------------------------------------------------
@@ -312,6 +440,7 @@ pub struct VehicleStatus {
 
 impl Topic for VehicleStatus {
     const NAME: &'static str = "commander.vehicle_status";
+    const INDEX: usize = topic_index::COMMANDER_VEHICLE_STATUS;
 }
 
 /// Single-source-of-truth mission state publish.
@@ -349,6 +478,24 @@ pub struct MissionStatePublish {
 
 impl Topic for MissionStatePublish {
     const NAME: &'static str = "commander.mission_state";
+    const INDEX: usize = topic_index::COMMANDER_MISSION_STATE;
+}
+
+/// Mission actions fired by the FC commander on this tick.
+///
+/// FC-owned mission scenarios suppress the simulator kernel's truth
+/// evaluator, so runner-side telemetry markers and stop requests must
+/// subscribe to this topic instead of relying on
+/// `kernel.drain_mission_fired_events()`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MissionActionBatch {
+    /// Fired action records for the current commander tick.
+    pub events: Vec<FiredEvent<MissionAction>>,
+}
+
+impl Topic for MissionActionBatch {
+    const NAME: &'static str = "commander.mission_actions";
+    const INDEX: usize = topic_index::COMMANDER_MISSION_ACTIONS;
 }
 
 /// Per-region state publish for the canonical `mission` region.
@@ -365,6 +512,7 @@ pub struct MissionRegionStatePublish {
 
 impl Topic for MissionRegionStatePublish {
     const NAME: &'static str = "commander.region.mission";
+    const INDEX: usize = topic_index::COMMANDER_REGION_MISSION;
 }
 
 /// Per-region state publish for the canonical `health` region
@@ -377,6 +525,7 @@ pub struct HealthRegionStatePublish {
 
 impl Topic for HealthRegionStatePublish {
     const NAME: &'static str = "commander.region.health";
+    const INDEX: usize = topic_index::COMMANDER_REGION_HEALTH;
 }
 
 /// Per-region state publish for the canonical `comms` region
@@ -389,6 +538,7 @@ pub struct CommsRegionStatePublish {
 
 impl Topic for CommsRegionStatePublish {
     const NAME: &'static str = "commander.region.comms";
+    const INDEX: usize = topic_index::COMMANDER_REGION_COMMS;
 }
 
 /// Per-region state publish for the canonical `estimator_regime`
@@ -401,6 +551,7 @@ pub struct EstimatorRegimeRegionStatePublish {
 
 impl Topic for EstimatorRegimeRegionStatePublish {
     const NAME: &'static str = "commander.region.estimator_regime";
+    const INDEX: usize = topic_index::COMMANDER_REGION_ESTIMATOR_REGIME;
 }
 
 /// Test-only override topic: scenarios can script the commander
@@ -421,6 +572,7 @@ pub struct ScenarioStateOverride {
 #[cfg(not(feature = "hal"))]
 impl Topic for ScenarioStateOverride {
     const NAME: &'static str = "commander.scenario_state_override";
+    const INDEX: usize = topic_index::COMMANDER_SCENARIO_STATE_OVERRIDE;
 }
 
 /// Aggregate failsafe-flag bitfield published by the
@@ -460,6 +612,7 @@ impl FailsafeFlags {
 
 impl Topic for FailsafeFlags {
     const NAME: &'static str = "health.failsafe_flags";
+    const INDEX: usize = topic_index::HEALTH_FAILSAFE_FLAGS;
 }
 
 // ---------------------------------------------------------------------
@@ -486,6 +639,7 @@ pub struct ActuatorCommand {
 
 impl Topic for ActuatorCommand {
     const NAME: &'static str = "autopilot.actuator_cmd";
+    const INDEX: usize = topic_index::AUTOPILOT_ACTUATOR_CMD;
 }
 
 /// Diagnostic status emitted by the autopilot.
@@ -500,6 +654,7 @@ pub struct AutopilotStatus {
 
 impl Topic for AutopilotStatus {
     const NAME: &'static str = "autopilot.status";
+    const INDEX: usize = topic_index::AUTOPILOT_STATUS;
 }
 
 /// Maximum number of effector-specific commands published by the FC
@@ -546,6 +701,7 @@ impl Default for EffectorCommandSet {
 
 impl Topic for EffectorCommandSet {
     const NAME: &'static str = "actuator.effector_cmds";
+    const INDEX: usize = topic_index::ACTUATOR_EFFECTOR_CMDS;
 }
 
 /// Demanded engine throttle / gimbal command emitted by the autopilot,
@@ -568,6 +724,7 @@ pub struct EngineDemand {
 
 impl Topic for EngineDemand {
     const NAME: &'static str = "autopilot.engine_cmd";
+    const INDEX: usize = topic_index::AUTOPILOT_ENGINE_CMD;
 }
 
 /// One engine-specific command after mixer phase gating.
@@ -626,6 +783,7 @@ impl Default for EngineCommandSet {
 
 impl Topic for EngineCommandSet {
     const NAME: &'static str = "actuator.engine_cmds";
+    const INDEX: usize = topic_index::ACTUATOR_ENGINE_CMDS;
 }
 
 // ---------------------------------------------------------------------
@@ -645,6 +803,7 @@ pub struct FdirStatus {
 
 impl Topic for FdirStatus {
     const NAME: &'static str = "fdir.status";
+    const INDEX: usize = topic_index::FDIR_STATUS;
 }
 
 /// Diagnostic slot published when the windowed
@@ -671,6 +830,7 @@ pub struct FdirGlrtDiagnostic {
 
 impl Topic for FdirGlrtDiagnostic {
     const NAME: &'static str = "fdir.glrt.diagnostic";
+    const INDEX: usize = topic_index::FDIR_GLRT_DIAGNOSTIC;
 }
 
 /// Maximum number of estimator modes represented in [`EstimatorMode`].
@@ -699,6 +859,7 @@ pub struct EstimatorMode {
 
 impl Topic for EstimatorMode {
     const NAME: &'static str = "estimator.mode";
+    const INDEX: usize = topic_index::ESTIMATOR_MODE;
 }
 
 // ---------------------------------------------------------------------
@@ -723,6 +884,7 @@ pub struct ReferenceState {
 
 impl Topic for ReferenceState {
     const NAME: &'static str = "guidance.reference";
+    const INDEX: usize = topic_index::GUIDANCE_REFERENCE;
 }
 
 /// Powered-flight guidance time-to-go, published by the ascent-reference
@@ -749,4 +911,155 @@ impl Default for GuidanceCutoff {
 
 impl Topic for GuidanceCutoff {
     const NAME: &'static str = "guidance.cutoff";
+    const INDEX: usize = topic_index::GUIDANCE_CUTOFF;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scheduler::OverrunEvent;
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn static_topic_indices_are_unique_and_in_range() {
+        let topics = [
+            (<ImuSample as Topic>::NAME, <ImuSample as Topic>::INDEX),
+            (
+                <BarometerSample as Topic>::NAME,
+                <BarometerSample as Topic>::INDEX,
+            ),
+            (<GnssSample as Topic>::NAME, <GnssSample as Topic>::INDEX),
+            (
+                <MagnetometerSample as Topic>::NAME,
+                <MagnetometerSample as Topic>::INDEX,
+            ),
+            (
+                <StarTrackerSample as Topic>::NAME,
+                <StarTrackerSample as Topic>::INDEX,
+            ),
+            (
+                <SensorStatus as Topic>::NAME,
+                <SensorStatus as Topic>::INDEX,
+            ),
+            (
+                <AttitudeEstimate as Topic>::NAME,
+                <AttitudeEstimate as Topic>::INDEX,
+            ),
+            (
+                <PositionEstimate as Topic>::NAME,
+                <PositionEstimate as Topic>::INDEX,
+            ),
+            (
+                <EnvironmentEstimate as Topic>::NAME,
+                <EnvironmentEstimate as Topic>::INDEX,
+            ),
+            (
+                <PropellantState as Topic>::NAME,
+                <PropellantState as Topic>::INDEX,
+            ),
+            (
+                <EstimatorStatus as Topic>::NAME,
+                <EstimatorStatus as Topic>::INDEX,
+            ),
+            (
+                <EstimatorLaneSelection as Topic>::NAME,
+                <EstimatorLaneSelection as Topic>::INDEX,
+            ),
+            (
+                <VehicleStatus as Topic>::NAME,
+                <VehicleStatus as Topic>::INDEX,
+            ),
+            (
+                <MissionStatePublish as Topic>::NAME,
+                <MissionStatePublish as Topic>::INDEX,
+            ),
+            (
+                <MissionActionBatch as Topic>::NAME,
+                <MissionActionBatch as Topic>::INDEX,
+            ),
+            (
+                <MissionRegionStatePublish as Topic>::NAME,
+                <MissionRegionStatePublish as Topic>::INDEX,
+            ),
+            (
+                <HealthRegionStatePublish as Topic>::NAME,
+                <HealthRegionStatePublish as Topic>::INDEX,
+            ),
+            (
+                <CommsRegionStatePublish as Topic>::NAME,
+                <CommsRegionStatePublish as Topic>::INDEX,
+            ),
+            (
+                <EstimatorRegimeRegionStatePublish as Topic>::NAME,
+                <EstimatorRegimeRegionStatePublish as Topic>::INDEX,
+            ),
+            #[cfg(not(feature = "hal"))]
+            (
+                <ScenarioStateOverride as Topic>::NAME,
+                <ScenarioStateOverride as Topic>::INDEX,
+            ),
+            (
+                <FailsafeFlags as Topic>::NAME,
+                <FailsafeFlags as Topic>::INDEX,
+            ),
+            (
+                <ActuatorCommand as Topic>::NAME,
+                <ActuatorCommand as Topic>::INDEX,
+            ),
+            (
+                <AutopilotStatus as Topic>::NAME,
+                <AutopilotStatus as Topic>::INDEX,
+            ),
+            (
+                <EffectorCommandSet as Topic>::NAME,
+                <EffectorCommandSet as Topic>::INDEX,
+            ),
+            (
+                <EngineDemand as Topic>::NAME,
+                <EngineDemand as Topic>::INDEX,
+            ),
+            (
+                <EngineCommandSet as Topic>::NAME,
+                <EngineCommandSet as Topic>::INDEX,
+            ),
+            (<FdirStatus as Topic>::NAME, <FdirStatus as Topic>::INDEX),
+            (
+                <FdirGlrtDiagnostic as Topic>::NAME,
+                <FdirGlrtDiagnostic as Topic>::INDEX,
+            ),
+            (
+                <EstimatorMode as Topic>::NAME,
+                <EstimatorMode as Topic>::INDEX,
+            ),
+            (
+                <ReferenceState as Topic>::NAME,
+                <ReferenceState as Topic>::INDEX,
+            ),
+            (
+                <GuidanceCutoff as Topic>::NAME,
+                <GuidanceCutoff as Topic>::INDEX,
+            ),
+            (
+                <OverrunEvent as Topic>::NAME,
+                <OverrunEvent as Topic>::INDEX,
+            ),
+        ];
+
+        let expected_count = if cfg!(feature = "hal") {
+            topic_index::COUNT - 1
+        } else {
+            topic_index::COUNT
+        };
+        assert_eq!(topics.len(), expected_count);
+
+        let mut seen = [false; topic_index::COUNT];
+        for (name, index) in topics {
+            assert!(
+                index < topic_index::COUNT,
+                "{name} index {index} is out of range"
+            );
+            assert!(!seen[index], "{name} reuses topic index {index}");
+            seen[index] = true;
+        }
+    }
 }

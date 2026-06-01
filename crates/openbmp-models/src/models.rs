@@ -17,7 +17,10 @@
 //! No model in this module accesses wall-clock time, system RNG,
 //! network, or the file system.
 
-use std::collections::BTreeMap;
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use core::fmt;
 
 use nalgebra::{Matrix3, Vector3};
 use openbmp_core::{
@@ -674,8 +677,8 @@ pub struct PhaseGatedForceModel<S: SimState> {
     phase_models: BTreeMap<u64, Box<dyn ForceModel<S>>>,
 }
 
-impl<S: SimState> std::fmt::Debug for PhaseGatedForceModel<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<S: SimState> fmt::Debug for PhaseGatedForceModel<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PhaseGatedForceModel")
             .field("default_model", &"<dyn ForceModel>")
             .field("phase_count", &self.phase_models.len())

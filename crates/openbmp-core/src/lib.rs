@@ -42,6 +42,9 @@
 //! * [`error`] — project-wide error types.
 //! * [`validation`] — [`ValidationStatus`] enum.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+#![forbid(unsafe_code)]
+
 pub mod error;
 pub mod frames;
 pub mod ids;

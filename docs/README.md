@@ -32,6 +32,9 @@ and the architecture; reach for the others as needed.
   and per-capability rationale.
 - [Verification](verification.md) — validation labels, golden telemetry,
   tolerance tables, fuzzing, and public-benchmark rules.
+- [Standards Posture](standards-posture.md) — how OpenBMP references
+  civilian V&V and flight-software standards without claiming upstream
+  certification or transferable assurance.
 - [Data Provenance](data-provenance.md) — required source records, source
   classes, transformation rules, machine checks, and the inline-data
   tripwires that fail the build on benchmark-data smuggling.
@@ -56,6 +59,9 @@ and the architecture; reach for the others as needed.
   hierarchical mission state machine, orthogonal regions, the single source of
   truth, the `openbmp-mission` / `openbmp-scenario-script` split, and the HAL
   adopter contract.
+- [HAL Contract](HAL.md) — the L1 trait contract for clocks, sensors,
+  actuators, static bus backends, storage, I-loads, watchdog service, and
+  downstream adopter limits.
 - [Mission States Vocabulary](mission-states-vocabulary.md) — canonical
   state-name vocabulary with academic citations, and the rejected
   operational-vocabulary table.

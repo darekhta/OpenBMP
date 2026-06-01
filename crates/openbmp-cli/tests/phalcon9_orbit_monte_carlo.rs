@@ -28,7 +28,14 @@
 //! same first-principles invariants asserted by the companion test
 //! `phalcon9_orbit_validation.rs`.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::float_cmp)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::many_single_char_names,
+    clippy::panic
+)]
 
 use std::path::{Path, PathBuf};
 
@@ -59,7 +66,7 @@ fn scenario_path() -> PathBuf {
     workspace_root().join("scenarios/phalcon9/phalcon9-orbit.toml")
 }
 
-/// SplitMix64 — a tiny, fully deterministic PRNG. Self-contained so the
+/// `SplitMix64` — a tiny, fully deterministic PRNG. Self-contained so the
 /// harness needs no RNG dependency; identical seed => identical stream,
 /// which keeps the whole Monte-Carlo byte-reproducible.
 struct SplitMix64 {
@@ -156,8 +163,7 @@ fn final_state(outcome: &runner::RunOutcome) -> ([f64; 3], [f64; 3]) {
         col("velocity_z_m_s"),
     );
     let last = lines
-        .filter(|l| !l.trim().is_empty())
-        .next_back()
+        .rfind(|l| !l.trim().is_empty())
         .expect("at least one telemetry row");
     let f: Vec<f64> = last
         .split(',')
@@ -267,7 +273,7 @@ fn run_sample(idx: u64) -> Insertion {
         //     scenario carries [frames.local_origin], required to rotate the
         //     NED wind into ECI for the air-relative aerodynamics.
         let wind_ned = [12.0 * rng.normal(), 12.0 * rng.normal(), 0.0];
-        doc.environment.wind = "constant".to_owned();
+        "constant".clone_into(&mut doc.environment.wind);
         doc.wind = Some(constant_wind(wind_ned));
     }
 
@@ -284,8 +290,8 @@ fn phalcon9_orbit_monte_carlo_robustness() {
     let sustainable = results.iter().filter(|r| r.sustainable()).count();
 
     let perigees: Vec<f64> = results.iter().map(|r| r.perigee_km).collect();
-    let peri_min = perigees.iter().cloned().fold(f64::INFINITY, f64::min);
-    let peri_max = perigees.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let peri_min = perigees.iter().copied().fold(f64::INFINITY, f64::min);
+    let peri_max = perigees.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let peri_mean = perigees.iter().sum::<f64>() / perigees.len() as f64;
     let ecc_max = results.iter().map(|r| r.eccentricity).fold(0.0, f64::max);
     let incl_min = results

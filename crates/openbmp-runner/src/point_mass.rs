@@ -226,6 +226,11 @@ pub fn run(
     } else {
         kernel_base
     };
+    if document.flight_controller_owns_mission_state()
+        && let Some(initial_phase) = kernel.current_phase()
+    {
+        kernel.set_external_mission_state(Some(initial_phase));
+    }
     let channel_set = PointMassChannelSet::new(document)?;
     let geocentric_surface_radius_m = document_geocentric_surface_radius_m(document);
     let breakdown_atmosphere = if channel_set.has_atmosphere {
@@ -311,10 +316,15 @@ pub fn run(
         }
         if let Some(bridge) = &mut fc_bridge {
             let gravity = kernel.current_environment_sample()?.gravity_eci_m_s2;
+            let propellant_state = crate::fc_bridge::propellant_state_from_tanks(
+                kernel.current_time(),
+                &tank_rack.propellant_tank_states(document),
+            );
             bridge.tick_point_mass(
                 kernel.current_state(),
                 kernel.current_step(),
                 gravity,
+                propellant_state,
                 &mut effector_rack,
                 &mut engine_rack,
             )?;
@@ -325,6 +335,9 @@ pub fn run(
             // evaluation.
             if let Some(state_id) = bridge.latest_mission_state_id() {
                 kernel.set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
+            }
+            for fired in bridge.drain_mission_actions() {
+                kernel.record_external_mission_fired(fired);
             }
         }
         if let Some(propellant_budget) = &propellant_budget {

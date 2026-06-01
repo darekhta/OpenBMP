@@ -45,11 +45,20 @@ pub enum Command {
         golden: PathBuf,
         /// Archive produced by the run under test.
         actual: PathBuf,
+        /// Write a machine-readable determinism/diff report.
+        #[arg(long = "report-json")]
+        report_json: Option<PathBuf>,
     },
     /// Lint a scenario without running it.
     Check {
         /// Scenario TOML file.
         scenario: PathBuf,
+    },
+    /// Run one or more scenarios as a fork-runnable conformance smoke suite.
+    Conform {
+        /// Scenario TOML files to validate and run without writing telemetry.
+        #[arg(required = true)]
+        scenarios: Vec<PathBuf>,
     },
     /// Compare a scenario run against external local telemetry CSV / JSON.
     CompareTelemetry {

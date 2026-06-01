@@ -28,11 +28,14 @@
 //! kernel's lockstep contract still bans `std::time` inside the
 //! controller crate.
 
-use indexmap::IndexMap;
+use std::boxed::Box;
+use std::vec::Vec;
 
 use crate::bus::{Bus, Sequence, Topic};
 use crate::clock::Clock;
 use crate::error::{ControllerError, SchedulerError};
+use crate::stable_map::StableIndexMap;
+use crate::topics::topic_index;
 
 /// Job priority — lower runs first.
 pub type Priority = u8;
@@ -106,6 +109,7 @@ pub struct OverrunEvent {
 
 impl Topic for OverrunEvent {
     const NAME: &'static str = "scheduler.overrun";
+    const INDEX: usize = topic_index::SCHEDULER_OVERRUN;
 }
 
 struct ScheduledJob {
@@ -148,8 +152,12 @@ pub struct Scheduler {
     /// budgets is gated against this on every dispatch.
     frame_budget_us: u64,
     /// Jobs registered in declaration order. Dispatch order is
-    /// stable-sorted by priority on every tick.
-    jobs: IndexMap<&'static str, ScheduledJob>,
+    /// stable-sorted by priority in [`Scheduler::dispatch_order`] at
+    /// registration time.
+    jobs: StableIndexMap<&'static str, ScheduledJob>,
+    /// Cached `(priority, registration_order)` dispatch order. This
+    /// avoids allocating and sorting on the hot dispatch path.
+    dispatch_order: Vec<usize>,
 }
 
 impl std::fmt::Debug for Scheduler {
@@ -157,6 +165,7 @@ impl std::fmt::Debug for Scheduler {
         f.debug_struct("Scheduler")
             .field("frame_budget_us", &self.frame_budget_us)
             .field("jobs", &self.jobs())
+            .field("dispatch_order", &self.dispatch_order)
             .finish()
     }
 }
@@ -170,7 +179,8 @@ impl Scheduler {
     pub fn new(frame_budget_us: u64) -> Self {
         Self {
             frame_budget_us,
-            jobs: IndexMap::new(),
+            jobs: StableIndexMap::default(),
+            dispatch_order: Vec::new(),
         }
     }
 
@@ -244,6 +254,7 @@ impl Scheduler {
         if self.jobs.contains_key(name) {
             return Err(SchedulerError::DuplicateJob { job_name: name });
         }
+        let registration_index = self.jobs.len();
         self.jobs.insert(
             name,
             ScheduledJob {
@@ -256,6 +267,12 @@ impl Scheduler {
                 overrun_count: 0,
             },
         );
+        self.dispatch_order.push(registration_index);
+        self.dispatch_order.sort_by_key(|idx| {
+            self.jobs
+                .get_index(*idx)
+                .map_or((Priority::MAX, usize::MAX), |(_, j)| (j.priority, *idx))
+        });
         Ok(())
     }
 
@@ -276,21 +293,11 @@ impl Scheduler {
         bus: &Bus,
         clock: &dyn Clock,
     ) -> Result<DispatchSummary, ControllerError> {
-        // Sort job indices by (priority, registration order) — stable
-        // sort preserves the registration order for ties. Indices are
-        // skipped if absent rather than panicking.
-        let mut order: Vec<(u8, usize)> = self
-            .jobs
-            .values()
-            .enumerate()
-            .map(|(i, j)| (j.priority, i))
-            .collect();
-        order.sort_by_key(|(p, i)| (*p, *i));
-
         let mut remaining_budget = self.frame_budget_us;
         let mut summary = DispatchSummary::default();
 
-        for (_, idx) in order {
+        for order_idx in 0..self.dispatch_order.len() {
+            let idx = self.dispatch_order[order_idx];
             let Some((_, scheduled)) = self.jobs.get_index(idx) else {
                 continue;
             };

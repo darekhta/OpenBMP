@@ -10,7 +10,7 @@ This is one documented operating point, not a best-vs-best controller ranking.
 
 | Rate loop | max \|ω\| (rad/s) | RMS \|ω\| (rad/s) | Peak τx (N·m) | Peak τy (N·m) | Peak τz (N·m) | Saturation fraction |
 |---|---|---|---|---|---|---|
-| PID baseline | 0.5921 | 0.4017 | 0.3500 | 0.3500 | 0.1553 | 0.4107 |
-| PID + L1 | 0.0508 | 0.0434 | 0.1768 | 0.2219 | 0.1146 | 0.0000 |
+| PID baseline | 0.5921 | 0.4016 | 0.3500 | 0.3500 | 0.1553 | 0.4107 |
+| PID + L1 | 0.0508 | 0.0434 | 0.1768 | 0.2183 | 0.1125 | 0.0000 |
 | LQR | 0.7014 | 0.4337 | 0.3500 | 0.3500 | 0.3500 | 0.5781 |
 | INDI | 0.7504 | 0.4424 | 0.3500 | 0.3500 | 0.3500 | 0.6992 |

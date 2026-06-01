@@ -6,18 +6,21 @@
 //! the first row that differs in any column, we emit a structured
 //! description and stop.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray, UInt64Array};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use serde::Serialize;
 
 use crate::error::CliError;
 
 /// Outcome of `openbmp diff`.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct DiffReport {
     /// `true` when the two archives are identical row-for-row,
     /// column-for-column.
@@ -30,10 +33,12 @@ pub struct DiffReport {
     pub columns_matched: usize,
     /// First divergence, if any.
     pub first_divergence: Option<Divergence>,
+    /// Determinism provenance for the comparison run.
+    pub provenance: DiffProvenance,
 }
 
 /// First divergent cell.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Divergence {
     /// Row index (0-based) where divergence was first seen.
     pub row: usize,
@@ -45,6 +50,31 @@ pub struct Divergence {
     pub actual: String,
 }
 
+/// Machine-readable provenance attached to a diff report.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DiffProvenance {
+    /// Reference / golden archive path.
+    pub golden_path: String,
+    /// Archive produced by the run under test.
+    pub actual_path: String,
+    /// OpenBMP package version.
+    pub openbmp_version: &'static str,
+    /// Git commit if available from the current checkout or CI env.
+    pub git_commit: Option<String>,
+    /// `rustc --version` if the compiler is discoverable.
+    pub rustc_version: Option<String>,
+    /// Operating-system / CPU tuple for the diff host.
+    pub host_platform: String,
+    /// Cargo build profile of the diff binary.
+    pub build_profile: &'static str,
+    /// Floating-point contract used by this report.
+    pub fp_contract: &'static str,
+    /// Table-level metadata from the golden Parquet schema.
+    pub golden_metadata: BTreeMap<String, String>,
+    /// Table-level metadata from the actual Parquet schema.
+    pub actual_metadata: BTreeMap<String, String>,
+}
+
 /// Entry point.
 ///
 /// # Errors
@@ -54,6 +84,7 @@ pub struct Divergence {
 pub fn run(golden: &Path, actual: &Path) -> Result<DiffReport, CliError> {
     let golden_table = read_parquet(golden)?;
     let actual_table = read_parquet(actual)?;
+    let provenance = DiffProvenance::new(golden, actual, &golden_table, &actual_table);
 
     if golden_table.column_names != actual_table.column_names {
         let golden_cols = golden_table.column_names.join(",");
@@ -98,6 +129,7 @@ pub fn run(golden: &Path, actual: &Path) -> Result<DiffReport, CliError> {
                     actual_rows: actual_table.row_count,
                     columns_matched: golden_table.column_names.len(),
                     first_divergence: Some(divergence),
+                    provenance,
                 });
             }
         }
@@ -115,6 +147,7 @@ pub fn run(golden: &Path, actual: &Path) -> Result<DiffReport, CliError> {
                 golden: golden_table.row_count.to_string(),
                 actual: actual_table.row_count.to_string(),
             }),
+            provenance,
         });
     }
 
@@ -124,6 +157,7 @@ pub fn run(golden: &Path, actual: &Path) -> Result<DiffReport, CliError> {
         actual_rows: actual_table.row_count,
         columns_matched: golden_table.column_names.len(),
         first_divergence: None,
+        provenance,
     })
 }
 
@@ -132,6 +166,7 @@ struct DecodedTable {
     column_types: Vec<DataType>,
     row_count: usize,
     columns: Vec<Vec<String>>,
+    metadata: BTreeMap<String, String>,
 }
 
 impl DecodedTable {
@@ -151,6 +186,11 @@ fn read_parquet(path: &Path) -> Result<DecodedTable, CliError> {
     })?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
     let schema = builder.schema().clone();
+    let metadata = schema
+        .metadata()
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
 
     let column_names = schema
         .fields()
@@ -181,6 +221,7 @@ fn read_parquet(path: &Path) -> Result<DecodedTable, CliError> {
         column_types,
         row_count,
         columns,
+        metadata,
     })
 }
 
@@ -231,4 +272,47 @@ fn decode_column(array: &dyn Array, into: &mut Vec<String>) {
             into.push(format!("<unsupported:{}>", array.data_type()));
         }
     }
+}
+
+impl DiffProvenance {
+    fn new(
+        golden: &Path,
+        actual: &Path,
+        golden_table: &DecodedTable,
+        actual_table: &DecodedTable,
+    ) -> Self {
+        Self {
+            golden_path: golden.display().to_string(),
+            actual_path: actual.display().to_string(),
+            openbmp_version: env!("CARGO_PKG_VERSION"),
+            git_commit: git_commit(),
+            rustc_version: command_stdout("rustc", &["--version"]),
+            host_platform: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+            build_profile: if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            },
+            fp_contract: "reference-platform bit-stable; cross-platform state-stable",
+            golden_metadata: golden_table.metadata.clone(),
+            actual_metadata: actual_table.metadata.clone(),
+        }
+    }
+}
+
+fn git_commit() -> Option<String> {
+    std::env::var("GITHUB_SHA")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| command_stdout("git", &["rev-parse", "HEAD"]))
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }

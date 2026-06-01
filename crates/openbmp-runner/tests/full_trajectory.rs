@@ -1,5 +1,7 @@
 //! End-to-end scenario coverage for the full boost-to-ground mission chain.
 
+#![allow(clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 
 use openbmp_core::ChannelId;

@@ -213,6 +213,7 @@ pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRun
         },
     )?;
     let regions = build_region_set(mission, &graph)?;
+    validate_region_state_actions(&hsm, &mission_bindings, &regions)?;
 
     Ok(MissionRuntime {
         mission_bindings,
@@ -312,6 +313,12 @@ fn mission_actions(
                 Ok(MissionAction::RaiseHealthAlarm {
                     region: resolve_region_id(region.as_deref()),
                     alarm: AlarmCode::new(*alarm),
+                })
+            }
+            ScenarioActionConfig::SetRegionState { region, state } => {
+                Ok(MissionAction::SetRegionState {
+                    region: resolve_region_id(Some(region.as_str())),
+                    state: resolve_region_state_id(region, state),
                 })
             }
             ScenarioActionConfig::RequestSafeState { reason } => {
@@ -462,6 +469,17 @@ fn build_event_binding(
                 once: config.once,
             })
         }
+        ScenarioActionConfig::SetRegionState { region, state } => {
+            RuntimeEventBinding::Mission(EventBinding {
+                id,
+                trigger,
+                action: MissionAction::SetRegionState {
+                    region: resolve_region_id(Some(region.as_str())),
+                    state: resolve_region_state_id(region, state),
+                },
+                once: config.once,
+            })
+        }
         ScenarioActionConfig::RequestSafeState { reason } => {
             RuntimeEventBinding::Mission(EventBinding {
                 id,
@@ -497,6 +515,21 @@ fn resolve_region_id(id: Option<&str>) -> RegionId {
         Some(id) if id.starts_with("mission.regions.") => RegionId::from_path(id),
         Some(id) if !id.is_empty() => RegionId::from_path(&format!("mission.regions.{id}")),
         _ => openbmp_mission::CanonicalRegions::health(),
+    }
+}
+
+/// Resolve a scenario-text region-state id. Bare state ids resolve
+/// underneath the named region; fully-qualified state ids are used as
+/// supplied. This mirrors `build_region_state` so a
+/// `set_region_state` action can target the same states declared in
+/// `[[mission.regions.states]]`.
+fn resolve_region_state_id(region: &str, state: &str) -> PhaseId {
+    if state.starts_with("mission.regions.") {
+        PhaseId::from_path(state)
+    } else if region.starts_with("mission.regions.") {
+        PhaseId::from_path(&format!("{region}.{state}"))
+    } else {
+        PhaseId::from_path(&format!("mission.regions.{region}.{state}"))
     }
 }
 
@@ -571,6 +604,76 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Run
             ));
         }
     })
+}
+
+fn validate_region_state_actions(
+    hsm: &MissionStateMachine,
+    mission_bindings: &[EventBinding<MissionAction>],
+    regions: &RegionSet,
+) -> Result<(), RunnerError> {
+    for binding in mission_bindings {
+        validate_region_state_action(
+            &binding.action,
+            &format!("mission.events[0x{:016x}].action", binding.id.value()),
+            regions,
+        )?;
+    }
+    for state in &hsm.states {
+        for action in &state.on_entry {
+            validate_region_state_action(
+                action,
+                &format!("mission.states[0x{:016x}].on_entry", state.id.value()),
+                regions,
+            )?;
+        }
+        for action in &state.on_exit {
+            validate_region_state_action(
+                action,
+                &format!("mission.states[0x{:016x}].on_exit", state.id.value()),
+                regions,
+            )?;
+        }
+        for action in &state.on_active {
+            validate_region_state_action(
+                action,
+                &format!("mission.states[0x{:016x}].on_active", state.id.value()),
+                regions,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_region_state_action(
+    action: &MissionAction,
+    field: &str,
+    regions: &RegionSet,
+) -> Result<(), RunnerError> {
+    let MissionAction::SetRegionState { region, state } = action else {
+        return Ok(());
+    };
+    let Some(region_entry) = regions.regions.get(region) else {
+        return Err(RunnerError::Scenario(
+            openbmp_scenario::ScenarioError::MissionGraph {
+                reason: format!(
+                    "{field} targets an undeclared region 0x{:016x}",
+                    region.value()
+                ),
+            },
+        ));
+    };
+    if !region_entry.contains_state(*state) {
+        return Err(RunnerError::Scenario(
+            openbmp_scenario::ScenarioError::MissionGraph {
+                reason: format!(
+                    "{field} targets undeclared state 0x{:016x} in region 0x{:016x}",
+                    state.value(),
+                    region.value(),
+                ),
+            },
+        ));
+    }
+    Ok(())
 }
 
 fn build_region_set(
@@ -838,6 +941,7 @@ fn collect_marker_tags(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -979,6 +1083,74 @@ mod tests {
             }
         );
         Ok(())
+    }
+
+    #[test]
+    fn set_region_state_event_builds_mission_action() -> Result<(), RunnerError> {
+        let event = EventConfig {
+            id: "estimator_boost".to_owned(),
+            trigger: EventTriggerConfig::AtTime { time_s: 1.0 },
+            action: ScenarioActionConfig::SetRegionState {
+                region: "estimator_regime".to_owned(),
+                state: "boost_mode".to_owned(),
+            },
+            once: true,
+        };
+        let phase_lookup = BTreeMap::new();
+
+        let binding = build_event_binding(&event, &phase_lookup)?;
+        let binding = match binding {
+            RuntimeEventBinding::Mission(binding) => binding,
+            RuntimeEventBinding::Script(_) => {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: "set_region_state must build a mission binding".to_owned(),
+                });
+            }
+        };
+
+        assert_eq!(binding.id, event_id("estimator_boost"));
+        assert_eq!(
+            binding.action,
+            MissionAction::SetRegionState {
+                region: openbmp_mission::CanonicalRegions::estimator_regime(),
+                state: openbmp_mission::CanonicalRegionStates::estimator_boost_mode(),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn set_region_state_rejects_undeclared_region_state() {
+        let mission = MissionConfig {
+            initial_phase: "pad".to_owned(),
+            phases: vec![PhaseConfig {
+                id: "pad".to_owned(),
+                label: "pad".to_owned(),
+                allowed_effectors: Vec::new(),
+                allowed_engines: Vec::new(),
+            }],
+            events: vec![EventConfig {
+                id: "estimator_coast".to_owned(),
+                trigger: EventTriggerConfig::AtTime { time_s: 1.0 },
+                action: ScenarioActionConfig::SetRegionState {
+                    region: "estimator_regime".to_owned(),
+                    state: "coast".to_owned(),
+                },
+                once: true,
+            }],
+            transitions: Vec::new(),
+            states: Vec::new(),
+            regions: Vec::new(),
+            scope: None,
+            test_only_state_override: false,
+        };
+
+        let err = build_mission_runtime_typed(&mission).expect_err("unknown region state");
+        assert!(
+            matches!(err, RunnerError::Scenario(openbmp_scenario::ScenarioError::MissionGraph { ref reason })
+                if reason.contains("targets undeclared state")),
+            "got {err:?}",
+        );
     }
 
     #[test]

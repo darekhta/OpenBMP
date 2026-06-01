@@ -64,7 +64,7 @@ fn build_iers_tabulated_frame(
         .ok_or_else(|| RunnerError::UnsupportedScenario {
             what: "frame_profile = \"iers-tabulated\" requires [epoch]".to_owned(),
         })?;
-    if epoch.scale.to_ascii_uppercase() != "UTC" {
+    if !epoch.scale.eq_ignore_ascii_case("UTC") {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "frame_profile = \"iers-tabulated\" requires epoch.scale = \"UTC\"; got \"{}\"",

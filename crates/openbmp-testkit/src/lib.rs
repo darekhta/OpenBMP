@@ -13,14 +13,18 @@
 //! - [`determinism`] — byte-stable diff and replay utilities for the
 //!   determinism oracle.
 //! - [`filters`] — placeholder for the `compare_filters` harness.
-//! - [`fc_lints`] — tripwire that fails CI if
-//!   `openbmp-fc` ever imports `std::time` wall-clock APIs.
+//! - [`fc_lints`] — tripwires that fail CI if
+//!   `openbmp-fc` imports `std::time` wall-clock APIs or regresses
+//!   known hot-path allocation fixes.
+//! - [`dual_use_field_lints`] — structural field allowlists for
+//!   forward-only trajectory / footprint surfaces.
 //!
 //! All helpers respect the OpenBMP determinism contract: no
 //! wall-clock time, no system RNG, seeded RNG only.
 
 pub mod analytic;
 pub mod determinism;
+pub mod dual_use_field_lints;
 pub mod error;
 pub mod fc_lints;
 pub mod filters;

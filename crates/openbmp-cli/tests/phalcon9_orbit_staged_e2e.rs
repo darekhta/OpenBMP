@@ -96,7 +96,7 @@ fn norm(a: [f64; 3]) -> f64 {
 fn mass_at(rows: &[Row], t: f64, primary: bool) -> f64 {
     let row = rows
         .iter()
-        .min_by(|a, b| (a.t - t).abs().partial_cmp(&(b.t - t).abs()).unwrap())
+        .min_by(|a, b| (a.t - t).abs().total_cmp(&(b.t - t).abs()))
         .expect("row near t");
     if primary {
         row.primary_mass

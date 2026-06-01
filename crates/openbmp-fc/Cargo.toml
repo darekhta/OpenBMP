@@ -15,27 +15,39 @@ description             = "OpenBMP flight controller: bus, scheduler, commander,
 # the controller compiles down against the bare `Sensor` trait without
 # the `synthetic` noise machinery from `openbmp-sensors`.
 default     = ["sim-default"]
-sim-default = ["openbmp-sensors/synthetic"]
-# HAL adopters set `--features hal --no-default-features` to compile
-# out the test-only `commander.scenario_state_override` topic. The
+std         = [
+    "indexmap/std",
+    "nalgebra/std",
+    "num-traits/std",
+    "openbmp-core/std",
+    "openbmp-mission/std",
+    "openbmp-physics/std",
+    "openbmp-sensors/std",
+    "thiserror/std",
+]
+sim-default = ["std", "openbmp-physics/synthetic", "openbmp-sensors/synthetic"]
+# Host HAL checks set `--features "std hal" --no-default-features`
+# to compile out the test-only `commander.scenario_state_override`
+# topic while keeping the current std-backed controller build. The
 # simulator's default build path leaves `hal` off.
 hal         = []
-serde       = ["dep:serde_json"]
-mpc         = ["dep:clarabel"]
+serde       = ["std", "dep:serde_json"]
+mpc         = ["std", "dep:clarabel"]
 square-root-ekf = []
 l1-adaptive = []
 lqr         = []
 indi        = []
 
 [dependencies]
-openbmp-core       = { workspace = true }
-openbmp-physics    = { workspace = true }
-openbmp-mission    = { workspace = true }
-openbmp-sensors    = { workspace = true }
-nalgebra           = { workspace = true }
-thiserror          = { workspace = true }
+openbmp-core       = { version = "0.0.1", path = "../openbmp-core", default-features = false }
+openbmp-physics    = { version = "0.0.1", path = "../openbmp-physics", default-features = false }
+openbmp-mission    = { version = "0.0.1", path = "../openbmp-mission", default-features = false }
+openbmp-sensors    = { version = "0.0.1", path = "../openbmp-sensors", default-features = false }
+nalgebra           = { version = "0.34.2", default-features = false, features = ["alloc", "libm"] }
+num-traits         = { version = "0.2.19", default-features = false, features = ["libm"] }
+thiserror          = { version = "2.0.18", default-features = false }
 serde_json         = { workspace = true, optional = true }
-indexmap           = { workspace = true }
+indexmap           = { version = "2.14.0", default-features = false }
 clarabel           = { workspace = true, optional = true }
 
 [dev-dependencies]

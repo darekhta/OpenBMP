@@ -47,36 +47,51 @@
 //! [`openbmp_core::DeterministicRng`], whose seed is derived
 //! deterministically from `(scenario_seed, step, channel_id)`.
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![deny(missing_docs)]
 
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
 pub mod atmosphere;
+#[cfg(feature = "std")]
 pub mod ephemeris;
 pub mod error;
+#[cfg(feature = "std")]
 pub mod external_reference;
 pub mod frames;
 pub mod gravity;
 pub mod kinematics;
 pub mod magnetic;
+#[cfg(feature = "std")]
 pub mod profile;
+#[cfg(feature = "std")]
 pub mod realgas;
+#[cfg(feature = "std")]
 pub mod reentry;
 pub mod statistics;
+#[cfg(feature = "std")]
 pub mod uq;
 pub mod validity;
 pub mod wind;
 
 pub use atmosphere::{
     AtmosphereModel, AtmosphereSample, ExoatmosphericPolicy, ExponentialLayer,
-    IsothermalAtmosphere, Nrlmsis2Compat, Nrlmsis2CompatOutputs, Nrlmsise00Full, Nrlmsise00Inputs,
-    Nrlmsise00Outputs, Nrlmsise00Static, PIECEWISE_EXP_MAX_GEOMETRIC_M,
-    PiecewiseExpExoatmosphericPolicy, PiecewiseExponentialAtmosphere, UsStandard1976,
-    sutherland_viscosity,
+    IsothermalAtmosphere, PIECEWISE_EXP_MAX_GEOMETRIC_M, PiecewiseExpExoatmosphericPolicy,
+    PiecewiseExponentialAtmosphere, UsStandard1976, sutherland_viscosity,
 };
+#[cfg(feature = "std")]
+pub use atmosphere::{
+    Nrlmsis2Compat, Nrlmsis2CompatOutputs, Nrlmsise00Full, Nrlmsise00Inputs, Nrlmsise00Outputs,
+    Nrlmsise00Static,
+};
+#[cfg(feature = "std")]
 pub use ephemeris::{
     ASTRONOMICAL_UNIT_M, CelestialBody, EphemerisModel, EphemerisState, J2000_JULIAN_DATE,
     LowPrecisionSunMoonEphemeris, MOON_MU_M3_S2, SUN_MU_M3_S2, SpkEphemeris, SpkFixedFrame,
 };
 pub use error::PhysicsError;
+#[cfg(feature = "std")]
 pub use external_reference::{
     EnvelopeBounds, ExternalReferencePackage, ProvenanceBlock, ReferencePackageKind, ReferenceQuery,
 };
@@ -89,19 +104,25 @@ pub use frames::{
 pub use gravity::{
     ConstantGravity, EGM2008_J3, EGM2008_J4, EGM2008_J5, EGM2008_J6, EGM2008_MAX_DEGREE,
     Egm2008ZonalGravity, GravityModel, J2Gravity, PointMassGravity, STANDARD_GRAVITY_M_S2,
-    ThirdBody, ThirdBodyGravity, WGS84_J2, standard_down_z_eci_m_s2,
+    WGS84_J2, standard_down_z_eci_m_s2,
 };
+#[cfg(feature = "std")]
+pub use gravity::{ThirdBody, ThirdBodyGravity};
 pub use kinematics::{
     quaternion_error_small_angle, quaternion_from_axis_angle, quaternion_from_omega,
     renormalize_quaternion, skew_symmetric,
 };
+#[cfg(feature = "std")]
+pub use magnetic::Wmm2025;
 pub use magnetic::{
-    EARTH_DIPOLE_EQUATORIAL_FIELD_NT, EarthDipoleField, MagneticFieldEci, MagneticModel, Wmm2025,
+    EARTH_DIPOLE_EQUATORIAL_FIELD_NT, EarthDipoleField, MagneticFieldEci, MagneticModel,
 };
+#[cfg(feature = "std")]
 pub use profile::{
     IdealStagingBudgetAnalysis, StageMassProperties, StagingBudgetAnalysis, StagingBudgetInput,
     StagingBudgetMode, StagingBudgetReport, StagingStageReport,
 };
+#[cfg(feature = "std")]
 pub use realgas::{
     AirComposition, ArrheniusForwardCoefficient, EquilibriumAir, EquilibriumAirState, FlowContext,
     MillikanWhitePairCoefficient, MugalevEquilibriumAir, NonequilibriumAir,
@@ -112,6 +133,7 @@ pub use realgas::{
     park_2t_reference_package, park87_millikan_white_pair_coefficients,
     validate_park_2t_reference_package,
 };
+#[cfg(feature = "std")]
 pub use reentry::{
     APOLLO_CM_TABLE13_HEATING, APOLLO4_ENTRY_INTERFACE, APOLLO4_ENTRY_TIMELINE_EVENTS, AllenEggers,
     EntryInterfaceBuilder, PUBLIC_ENTRY_BENCHMARK_PAYLOAD_SHA256_HEX,
@@ -124,14 +146,17 @@ pub use reentry::{
     validate_public_entry_timeline,
 };
 pub use statistics::{chi_square_inverse_cdf_wilson_hilferty, inverse_standard_normal_cdf};
+#[cfg(feature = "std")]
 pub use uq::{ErrorBudget, UncertaintyContribution, ValidationStatus};
 pub use validity::HalfOpenRange;
-pub use wind::{
-    ConstantWind, HWM14_REFERENCE_MAX_ALTITUDE_M, Hwm14Inputs, Hwm14ReferenceRow, Hwm14Wind,
-    LayerEntry, LayeredWind, NoWind, WindModel,
-};
+pub use wind::{ConstantWind, NoWind, WindModel};
 #[cfg(feature = "synthetic")]
 pub use wind::{GustWind, GustWindParams};
+#[cfg(feature = "std")]
+pub use wind::{
+    HWM14_REFERENCE_MAX_ALTITUDE_M, Hwm14Inputs, Hwm14ReferenceRow, Hwm14Wind, LayerEntry,
+    LayeredWind,
+};
 
 /// Earth constants used by low-order academic reference models.
 pub mod earth {

@@ -9,7 +9,7 @@
 //!
 //! No type in this module accesses `std::time` or any system clock.
 
-use std::ops::{Add, AddAssign, Neg, Sub, SubAssign};
+use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 
 use crate::error::TimeError;
 

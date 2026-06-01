@@ -32,6 +32,9 @@
 
 use openbmp_core::SimTime;
 
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use super::{
     AtmosphereModel, AtmosphereSample, USSA76_G0_M_S2, USSA76_GAMMA_AIR, USSA76_MAX_GEOMETRIC_M,
     USSA76_MAX_GEOPOTENTIAL_M, USSA76_MOLAR_MASS_AIR_KG_KMOL, USSA76_SEA_LEVEL_PRESSURE_PA,

@@ -1,4 +1,6 @@
 use nalgebra::Vector3;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 use openbmp_core::SimTime;
 use openbmp_physics::AtmosphereModel;
 
@@ -28,6 +30,7 @@ pub(crate) fn vertical_velocity_m_s(
     }
 }
 
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) fn flight_path_angle_rad(
     position_eci_m: Vector3<f64>,
     velocity_eci_m_s: Vector3<f64>,

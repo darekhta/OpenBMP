@@ -13,9 +13,10 @@ use nalgebra::{UnitQuaternion, Vector3};
 use openbmp_core::{Position3, SensorId, StepIndex, Velocity3};
 use openbmp_fc::topics::{
     BarometerSample, EnvironmentEstimate, GnssSample, ImuSample, MagnetometerSample,
-    StarTrackerSample,
+    PropellantState, StarTrackerSample,
 };
 pub(crate) use openbmp_fc::topics::{GuidanceCutoff, ReferenceState};
+use openbmp_mission::{FiredEvent, MissionAction};
 use openbmp_physics::atmosphere::{AtmosphereModel, ExoatmosphericPolicy, UsStandard1976};
 use openbmp_physics::magnetic::{EarthDipoleField, MagneticFieldEci, Wmm2025};
 use openbmp_scenario::{
@@ -52,6 +53,7 @@ pub struct FcBridge {
     scenario_seed: u64,
     previous_velocity_eci_m_s: Option<Vector3<f64>>,
     previous_time_s: Option<f64>,
+    last_mission_action_sequence: Option<u64>,
 }
 
 impl FcBridge {
@@ -139,6 +141,7 @@ impl FcBridge {
             scenario_seed: scenario.document.time.seed,
             previous_velocity_eci_m_s: None,
             previous_time_s: None,
+            last_mission_action_sequence: None,
         }))
     }
 
@@ -153,6 +156,20 @@ impl FcBridge {
         self.runner
             .latest_mission_state()
             .map(|s| s.mission_state_id)
+    }
+
+    /// Drain FC-fired mission actions published since the previous
+    /// bridge read.
+    #[must_use]
+    pub fn drain_mission_actions(&mut self) -> Vec<FiredEvent<MissionAction>> {
+        let Some((batch, sequence)) = self.runner.latest_mission_action_batch() else {
+            return Vec::new();
+        };
+        if self.last_mission_action_sequence == Some(sequence) {
+            return Vec::new();
+        }
+        self.last_mission_action_sequence = Some(sequence);
+        batch.events
     }
 
     /// Returns the most recent guidance reference published by the FC.
@@ -178,11 +195,12 @@ impl FcBridge {
         state: &PointMassState,
         step: StepIndex,
         gravity_eci_m_s2: Vector3<f64>,
+        propellant_state: Option<PropellantState>,
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
     ) -> Result<(), RunnerError> {
         let truth = self.point_mass_truth(state, gravity_eci_m_s2);
-        self.step_from_truth(truth, step, effectors, engines)
+        self.step_from_truth(truth, step, propellant_state, effectors, engines)
     }
 
     /// Run one rigid-body bridge tick and push FC commands into the
@@ -191,23 +209,26 @@ impl FcBridge {
     /// # Errors
     ///
     /// Propagates sensor, controller, or rack errors as [`RunnerError`].
+    #[allow(clippy::too_many_arguments)]
     pub fn tick_rigid_body(
         &mut self,
         state: &RigidBodyState,
         step: StepIndex,
         gravity_eci_m_s2: Vector3<f64>,
+        propellant_state: Option<PropellantState>,
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
         gyro_pickup_rad_s: Vector3<f64>,
     ) -> Result<(), RunnerError> {
         let truth = self.rigid_body_truth(state, gravity_eci_m_s2, gyro_pickup_rad_s);
-        self.step_from_truth(truth, step, effectors, engines)
+        self.step_from_truth(truth, step, propellant_state, effectors, engines)
     }
 
     fn step_from_truth(
         &mut self,
         truth: SensorTruth,
         step: StepIndex,
+        propellant_state: Option<PropellantState>,
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
     ) -> Result<(), RunnerError> {
@@ -225,6 +246,9 @@ impl FcBridge {
                 .sample_atmosphere(truth.altitude_geometric_m, truth.time)
                 .density_kg_m3,
         });
+        if let Some(state) = propellant_state {
+            self.runner.publish_propellant_state(state);
+        }
         self.runner
             .step(truth.time, step)
             .map_err(|err| RunnerError::UnsupportedScenario {
@@ -404,6 +428,36 @@ impl FcBridge {
         self.previous_time_s = Some(time_s);
         total_accel - gravity_eci_m_s2
     }
+}
+
+pub(crate) fn propellant_state_from_tanks(
+    time: openbmp_core::SimTime,
+    tanks: &BTreeMap<openbmp_core::TankId, openbmp_vehicle::PropellantTankState>,
+) -> Option<PropellantState> {
+    if tanks.is_empty() {
+        return None;
+    }
+    let mut initial_kg = 0.0;
+    let mut remaining_kg = 0.0;
+    for tank in tanks.values() {
+        if !tank.initial_fluid_mass_kg.is_finite() || !tank.fluid_remaining_kg.is_finite() {
+            return None;
+        }
+        initial_kg += tank.initial_fluid_mass_kg.max(0.0);
+        remaining_kg += tank.fluid_remaining_kg.max(0.0);
+    }
+    if !initial_kg.is_finite() || initial_kg <= 0.0 {
+        return None;
+    }
+    let remaining_kg = remaining_kg.min(initial_kg);
+    let mass_fraction = (remaining_kg / initial_kg).clamp(0.0, 1.0);
+    Some(PropellantState {
+        time,
+        mass_fraction,
+        mass_remaining_kg: remaining_kg,
+        mass_initial_kg: initial_kg,
+        depleted: remaining_kg <= f64::EPSILON * initial_kg.max(1.0),
+    })
 }
 
 #[derive(Debug)]
@@ -1017,7 +1071,7 @@ impl From<openbmp_sensors::SensorError> for RunnerError {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -1092,6 +1146,43 @@ estimator = "ekf"
         assert!(
             (bridge_sensor_altitude_m(rounded_up_1km, Some(6_370_000.0)) - 1_000.0).abs() < 1.0e-6
         );
+    }
+
+    #[test]
+    fn propellant_state_from_tanks_reports_remaining_fraction() {
+        let tanks = BTreeMap::from([
+            (
+                openbmp_core::TankId::from_path("vehicle.assembly.tanks.fuel"),
+                openbmp_vehicle::PropellantTankState {
+                    fluid_remaining_kg: 30.0,
+                    initial_fluid_mass_kg: 80.0,
+                    volume_m3: 1.0,
+                    density_kg_m3: 800.0,
+                    has_ullage: false,
+                    ullage_gamma: 1.4,
+                },
+            ),
+            (
+                openbmp_core::TankId::from_path("vehicle.assembly.tanks.oxidizer"),
+                openbmp_vehicle::PropellantTankState {
+                    fluid_remaining_kg: 20.0,
+                    initial_fluid_mass_kg: 120.0,
+                    volume_m3: 1.0,
+                    density_kg_m3: 1_000.0,
+                    has_ullage: false,
+                    ullage_gamma: 1.4,
+                },
+            ),
+        ]);
+
+        let state = propellant_state_from_tanks(openbmp_core::SimTime::from_seconds(3.0), &tanks)
+            .expect("propellant state");
+
+        assert_eq!(state.time, openbmp_core::SimTime::from_seconds(3.0));
+        assert_eq!(state.mass_remaining_kg.to_bits(), 50.0_f64.to_bits());
+        assert_eq!(state.mass_initial_kg.to_bits(), 200.0_f64.to_bits());
+        assert_eq!(state.mass_fraction.to_bits(), 0.25_f64.to_bits());
+        assert!(!state.depleted);
     }
 
     #[test]

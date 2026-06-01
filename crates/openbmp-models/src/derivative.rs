@@ -7,8 +7,8 @@
 //!
 //! * Per-component finiteness check.
 //! * Componentwise scalar multiplication (`d * f64`) via
-//!   [`std::ops::Mul`].
-//! * Componentwise addition (`d + d`) via [`std::ops::Add`].
+//!   [`core::ops::Mul`].
+//! * Componentwise addition (`d + d`) via [`core::ops::Add`].
 //!
 //! The trait deliberately omits an `rk4_weighted_sum` method that
 //! would bake the RK4 stage scheme into the trait. The locked-operand-order
@@ -28,8 +28,11 @@
 //! See `docs/software-architecture.md § Determinism Profile` for the
 //! full contract.
 
-use std::ops::{Add, Mul};
+use core::fmt::Debug;
+use core::ops::{Add, Mul};
 
+#[cfg(not(feature = "std"))]
+use nalgebra::ComplexField as _;
 use nalgebra::{Matrix3, Quaternion as NalgebraQuaternion, Vector3};
 
 /// Trait implemented by the time-derivative of every
@@ -46,9 +49,7 @@ use nalgebra::{Matrix3, Quaternion as NalgebraQuaternion, Vector3};
 /// uses the **scalar approximation** `err = h · ||e'||
 /// / (atol + rtol · ||y||)`; the per-component tolerance refinement
 /// lives in [`crate::Integratable::weighted_error_norm`].
-pub trait SimStateDerivative:
-    Copy + std::fmt::Debug + Add<Output = Self> + Mul<f64, Output = Self>
-{
+pub trait SimStateDerivative: Copy + Debug + Add<Output = Self> + Mul<f64, Output = Self> {
     /// Returns `true` if every numeric component is finite.
     #[must_use]
     fn is_finite(&self) -> bool;
@@ -144,8 +145,8 @@ impl Mul<f64> for PointMassDerivative {
 
 impl SimStateDerivative for PointMassDerivative {
     fn is_finite(&self) -> bool {
-        self.velocity_m_s.iter().all(|v| v.is_finite())
-            && self.acceleration_m_s2.iter().all(|v| v.is_finite())
+        self.velocity_m_s.iter().copied().all(f64::is_finite)
+            && self.acceleration_m_s2.iter().copied().all(f64::is_finite)
             && self.mass_rate_kg_s.is_finite()
     }
 
@@ -299,19 +300,30 @@ impl Mul<f64> for RigidBodyDerivative {
 
 impl SimStateDerivative for RigidBodyDerivative {
     fn is_finite(&self) -> bool {
-        self.velocity_m_s_eci.iter().all(|v| v.is_finite())
-            && self.acceleration_m_s2_eci.iter().all(|v| v.is_finite())
-            && self.quaternion_rate.coords.iter().all(|v| v.is_finite())
+        self.velocity_m_s_eci.iter().copied().all(f64::is_finite)
+            && self
+                .acceleration_m_s2_eci
+                .iter()
+                .copied()
+                .all(f64::is_finite)
+            && self
+                .quaternion_rate
+                .coords
+                .iter()
+                .copied()
+                .all(f64::is_finite)
             && self
                 .angular_acceleration_rad_s2_body
                 .iter()
-                .all(|v| v.is_finite())
+                .copied()
+                .all(f64::is_finite)
             && self.mass_rate_kg_s.is_finite()
             && self
                 .center_of_mass_rate_body_m_s
                 .iter()
-                .all(|v| v.is_finite())
-            && self.inertia_rate_body.iter().all(|v| v.is_finite())
+                .copied()
+                .all(f64::is_finite)
+            && self.inertia_rate_body.iter().copied().all(f64::is_finite)
     }
 
     fn l2_norm(&self) -> f64 {

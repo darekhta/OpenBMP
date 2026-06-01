@@ -27,6 +27,8 @@ const DEFAULT_TIME_TOLERANCE_S: f64 = 0.25;
 const DEFAULT_RELATIVE_FLOOR: f64 = 1.0;
 const WGS84_EARTH_ROTATION_RAD_S: f64 = 7.292_115_146_7e-5;
 
+type SurfaceRelativeState = ([f64; 3], [f64; 3]);
+
 /// Top-level report from an external telemetry comparison.
 #[derive(Clone, Debug)]
 pub struct CompareReport {
@@ -174,6 +176,7 @@ impl MetricReport {
         self.skipped_samples += 1;
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn finish(&mut self) {
         if self.compared_samples > 0 {
             self.rms_abs_error = (self.sum_sq_abs_error / self.compared_samples as f64).sqrt();
@@ -504,6 +507,7 @@ fn read_mapping(path: &Path) -> Result<MappingDocument, CliError> {
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_mapping(mapping: &MappingDocument, path: &Path) -> Result<(), CliError> {
     if mapping.reference.time_column.trim().is_empty() {
         return Err(config_error(
@@ -705,9 +709,9 @@ fn read_reference_json(
         }
     };
     match value {
-        serde_json::Value::Array(rows) => read_reference_json_rows(rows, json_path, mapping),
+        serde_json::Value::Array(rows) => read_reference_json_rows(&rows, json_path, mapping),
         serde_json::Value::Object(columns) => {
-            read_reference_json_columns(columns, json_path, mapping_path, mapping)
+            read_reference_json_columns(&columns, json_path, mapping_path, mapping)
         }
         _ => Err(config_error(
             json_path,
@@ -731,20 +735,20 @@ fn read_reference_json_lines(
             .map_err(|source| format!("line {}: {source}", line_index + 1))?;
         rows.push(value);
     }
-    read_reference_json_rows(rows, json_path, mapping).map_err(|source| source.to_string())
+    read_reference_json_rows(&rows, json_path, mapping).map_err(|source| source.to_string())
 }
 
 fn read_reference_json_columns(
-    columns: serde_json::Map<String, serde_json::Value>,
+    columns: &serde_json::Map<String, serde_json::Value>,
     json_path: &Path,
     mapping_path: &Path,
     mapping: &MappingDocument,
 ) -> Result<ReferenceTable, CliError> {
-    let time_values = json_column(&columns, &mapping.reference.time_column, mapping_path)?;
+    let time_values = json_column(columns, &mapping.reference.time_column, mapping_path)?;
     let metric_values: Vec<&[serde_json::Value]> = mapping
         .metrics
         .iter()
-        .map(|metric| json_column(&columns, &metric.reference_column, mapping_path))
+        .map(|metric| json_column(columns, &metric.reference_column, mapping_path))
         .collect::<Result<_, _>>()?;
 
     let mut rows = Vec::with_capacity(time_values.len());
@@ -776,7 +780,7 @@ fn read_reference_json_columns(
 }
 
 fn read_reference_json_rows(
-    raw_rows: Vec<serde_json::Value>,
+    raw_rows: &[serde_json::Value],
     json_path: &Path,
     mapping: &MappingDocument,
 ) -> Result<ReferenceTable, CliError> {
@@ -863,6 +867,7 @@ fn channel_lookup(table: &TelemetryTable) -> BTreeMap<String, ChannelId> {
         .collect()
 }
 
+#[allow(clippy::too_many_lines)]
 fn actual_value(
     spec: &ActualSpec,
     row: &TelemetryRow,
@@ -938,12 +943,14 @@ fn actual_value(
             // For the current OpenBMP Earth-frame profiles, the body-fixed
             // surface rotates about ECI +z. Webcast velocity is surface
             // relative, so remove omega x r from the inertial velocity.
-            let surface_vx = -omega_rad_s * py;
-            let surface_vy = omega_rad_s * px;
-            let rel_vx = vx - surface_vx;
-            let rel_vy = vy - surface_vy;
+            let surface_velocity = [-omega_rad_s * py, omega_rad_s * px, 0.0];
+            let relative_velocity = [vx - surface_velocity[0], vy - surface_velocity[1], vz];
             Ok(Some(
-                (rel_vx.mul_add(rel_vx, rel_vy * rel_vy) + vz * vz).sqrt(),
+                (relative_velocity[0].mul_add(
+                    relative_velocity[0],
+                    relative_velocity[1] * relative_velocity[1],
+                ) + relative_velocity[2] * relative_velocity[2])
+                    .sqrt(),
             ))
         }
         ActualSpec::SurfaceRelativeAxisVelocity {
@@ -1194,7 +1201,7 @@ fn surface_relative_state(
     velocity_y: &str,
     velocity_z: &str,
     omega_rad_s: f64,
-) -> Result<Option<([f64; 3], [f64; 3])>, CliError> {
+) -> Result<Option<SurfaceRelativeState>, CliError> {
     if !omega_rad_s.is_finite() {
         return Err(config_error(
             mapping_path,
@@ -1220,9 +1227,11 @@ fn surface_relative_state(
         return Ok(None);
     };
 
-    let surface_vx = -omega_rad_s * py;
-    let surface_vy = omega_rad_s * px;
-    Ok(Some(([px, py, pz], [vx - surface_vx, vy - surface_vy, vz])))
+    let surface_velocity = [-omega_rad_s * py, omega_rad_s * px, 0.0];
+    Ok(Some((
+        [px, py, pz],
+        [vx - surface_velocity[0], vy - surface_velocity[1], vz],
+    )))
 }
 
 fn f64_channel(

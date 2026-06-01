@@ -42,11 +42,15 @@
 //! once per kernel base tick by the runner-side `WindRack`.
 
 pub mod constant;
+#[cfg(feature = "std")]
 pub mod hwm14;
+#[cfg(feature = "std")]
 pub mod layered;
 
 pub use constant::{ConstantWind, NoWind};
+#[cfg(feature = "std")]
 pub use hwm14::{HWM14_REFERENCE_MAX_ALTITUDE_M, Hwm14Inputs, Hwm14ReferenceRow, Hwm14Wind};
+#[cfg(feature = "std")]
 pub use layered::{LayerEntry, LayeredWind};
 
 // `GustWind` is the synthetic-noise wind model

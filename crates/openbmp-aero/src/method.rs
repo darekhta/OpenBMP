@@ -33,6 +33,11 @@
 //! caller from the env / state slice. `S = reference_area_m2` and
 //! `L = reference_length_m` are deck-side reference quantities.
 
+#[cfg(not(feature = "std"))]
+use alloc::{boxed::Box, collections::BTreeMap};
+#[cfg(feature = "std")]
+use std::collections::BTreeMap;
+
 use nalgebra::Vector3;
 
 use crate::deck::{AeroCoefficients, AeroDeck};
@@ -148,7 +153,7 @@ impl AeroMethod for DeckLookup {
         // consumers thread the live `EffectorActualsView` from the kernel
         // through a higher-level adapter; this method-level
         // entry point keeps a Schema-1-only signature for now.
-        let deflections = std::collections::BTreeMap::<&str, f64>::new();
+        let deflections = BTreeMap::<&str, f64>::new();
         let AeroCoefficients { cn, cd, cm } =
             self.deck
                 .lookup(ctx.mach, ctx.alpha_deg, ctx.beta_deg, &deflections)?;

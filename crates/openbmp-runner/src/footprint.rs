@@ -76,8 +76,9 @@ pub struct FootprintMonteCarloReport {
 /// initial state is the coast/burnout handoff can run without an
 /// external telemetry extractor. Library callers that already have a
 /// burnout state should call [`landing_footprint_monte_carlo_for_state`].
-#[must_use]
-pub fn nominal_ballistic_state_from_scenario(scenario: &Scenario) -> BallisticState {
+pub fn nominal_ballistic_state_from_scenario(
+    scenario: &Scenario,
+) -> Result<BallisticState, RunnerError> {
     let ballistic_coefficient_m2_kg = scenario
         .document
         .landing_footprint
@@ -85,12 +86,12 @@ pub fn nominal_ballistic_state_from_scenario(scenario: &Scenario) -> BallisticSt
         .and_then(|footprint| footprint.monte_carlo.as_ref())
         .and_then(|monte_carlo| monte_carlo.ballistic_coefficient.as_ref())
         .map_or(0.0, |bc| bc.nominal_m2_kg);
-    BallisticState {
-        position_eci_m: scenario.document.vehicle.initial_position_eci_m,
-        velocity_eci_m_s: scenario.document.vehicle.initial_velocity_eci_m_s,
+    Ok(BallisticState::from_forward_simulation(
+        scenario.document.vehicle.initial_position_eci_m,
+        scenario.document.vehicle.initial_velocity_eci_m_s,
         ballistic_coefficient_m2_kg,
-        time: SimTime::from_seconds(scenario.document.time.start_s),
-    }
+        SimTime::from_seconds(scenario.document.time.start_s),
+    )?)
 }
 
 /// Run configured Monte-Carlo footprint analysis from the scenario
@@ -106,7 +107,7 @@ pub fn nominal_ballistic_state_from_scenario(scenario: &Scenario) -> BallisticSt
 pub fn landing_footprint_monte_carlo_for_initial_state(
     scenario: &Scenario,
 ) -> Result<Option<FootprintMonteCarloReport>, RunnerError> {
-    let state = nominal_ballistic_state_from_scenario(scenario);
+    let state = nominal_ballistic_state_from_scenario(scenario)?;
     landing_footprint_monte_carlo_for_state(scenario, &state)
 }
 
@@ -131,7 +132,7 @@ pub fn landing_footprint_monte_carlo_for_state(
         return Ok(None);
     };
     let env = footprint_environment(&scenario.document, config)?;
-    let input = monte_carlo_input(&scenario.document, &env, monte_carlo, state);
+    let input = monte_carlo_input(&scenario.document, &env, monte_carlo, state)?;
     let result = match config.method {
         LandingFootprintMethod::ConstantGravity => {
             constant_gravity_footprint_monte_carlo(&env, &input)?
@@ -159,16 +160,21 @@ fn monte_carlo_input(
     env: &FootprintEnvironment,
     config: &LandingFootprintMonteCarloConfig,
     nominal_state: &BallisticState,
-) -> FootprintMonteCarloInput {
+) -> Result<FootprintMonteCarloInput, RunnerError> {
     let seed = config.seed.unwrap_or(document.time.seed);
     let mut nominal = *nominal_state;
     if let Some(ballistic_coefficient) = &config.ballistic_coefficient {
-        nominal.ballistic_coefficient_m2_kg = ballistic_coefficient.nominal_m2_kg;
+        nominal = BallisticState::from_forward_simulation(
+            nominal.position_eci_m(),
+            nominal.velocity_eci_m_s(),
+            ballistic_coefficient.nominal_m2_kg,
+            nominal.time(),
+        )?;
     }
     let mut samples = Vec::with_capacity(config.samples as usize);
     let base_wind_ned_m_s = base_wind_ned_m_s(document);
     for sample_index in 0..config.samples {
-        let state = sampled_state(seed, sample_index, config, nominal);
+        let state = sampled_state(seed, sample_index, config, nominal)?;
         let wind_eci_m_s = sampled_wind(
             seed,
             sample_index,
@@ -182,7 +188,11 @@ fn monte_carlo_input(
             wind_eci_m_s,
         });
     }
-    FootprintMonteCarloInput::new(nominal, samples, config.confidence_levels.clone())
+    Ok(FootprintMonteCarloInput::new(
+        nominal,
+        samples,
+        config.confidence_levels.clone(),
+    ))
 }
 
 fn sampled_state(
@@ -190,27 +200,34 @@ fn sampled_state(
     sample_index: u32,
     config: &LandingFootprintMonteCarloConfig,
     mut nominal: BallisticState,
-) -> BallisticState {
+) -> Result<BallisticState, RunnerError> {
     if let Some(burnout) = &config.burnout_state {
+        let mut position_eci_m = nominal.position_eci_m();
+        let mut velocity_eci_m_s = nominal.velocity_eci_m_s();
+        let mut time = nominal.time();
         if let Some(position_sigma_eci_m) = burnout.position_sigma_eci_m {
             for (axis, sigma) in position_sigma_eci_m.iter().copied().enumerate() {
-                nominal.position_eci_m[axis] +=
-                    sample_normal(seed, sample_index, axis as u32, sigma);
+                position_eci_m[axis] += sample_normal(seed, sample_index, axis as u32, sigma);
             }
         }
         if let Some(velocity_sigma_eci_m_s) = burnout.velocity_sigma_eci_m_s {
             for (axis, sigma) in velocity_sigma_eci_m_s.iter().copied().enumerate() {
-                nominal.velocity_eci_m_s[axis] +=
-                    sample_normal(seed, sample_index, 3 + axis as u32, sigma);
+                velocity_eci_m_s[axis] += sample_normal(seed, sample_index, 3 + axis as u32, sigma);
             }
         }
         if let Some(time_sigma_s) = burnout.time_sigma_s {
-            let t = nominal.time.as_seconds() + sample_normal(seed, sample_index, 6, time_sigma_s);
-            nominal.time = SimTime::from_seconds(t);
+            let t = time.as_seconds() + sample_normal(seed, sample_index, 6, time_sigma_s);
+            time = SimTime::from_seconds(t);
         }
+        nominal = BallisticState::from_forward_simulation(
+            position_eci_m,
+            velocity_eci_m_s,
+            nominal.ballistic_coefficient_m2_kg(),
+            time,
+        )?;
     }
     if let Some(ballistic_coefficient) = &config.ballistic_coefficient {
-        nominal.ballistic_coefficient_m2_kg = sample_distribution(
+        let mut sampled_ballistic_coefficient_m2_kg = sample_distribution(
             seed,
             sample_index,
             7,
@@ -219,17 +236,23 @@ fn sampled_state(
             ballistic_coefficient.distribution,
         );
         if let Some(min) = ballistic_coefficient.min_m2_kg
-            && nominal.ballistic_coefficient_m2_kg < min
+            && sampled_ballistic_coefficient_m2_kg < min
         {
-            nominal.ballistic_coefficient_m2_kg = min;
+            sampled_ballistic_coefficient_m2_kg = min;
         }
         if let Some(max) = ballistic_coefficient.max_m2_kg
-            && nominal.ballistic_coefficient_m2_kg > max
+            && sampled_ballistic_coefficient_m2_kg > max
         {
-            nominal.ballistic_coefficient_m2_kg = max;
+            sampled_ballistic_coefficient_m2_kg = max;
         }
+        nominal = BallisticState::from_forward_simulation(
+            nominal.position_eci_m(),
+            nominal.velocity_eci_m_s(),
+            sampled_ballistic_coefficient_m2_kg,
+            nominal.time(),
+        )?;
     }
-    nominal
+    Ok(nominal)
 }
 
 fn sampled_wind(
@@ -364,29 +387,6 @@ fn monte_carlo_samples_table(
         TelemetryChannel::<f64>::new(ChannelId::new(3), "bearing_rad", "rad", None::<String>)?;
     let time_to_cull =
         TelemetryChannel::<f64>::new(ChannelId::new(4), "time_to_cull_s", "s", None::<String>)?;
-    let ballistic_coefficient = TelemetryChannel::<f64>::new(
-        ChannelId::new(5),
-        "ballistic_coefficient_m2_kg",
-        "m2/kg",
-        None::<String>,
-    )?;
-    let wind_x = TelemetryChannel::<f64>::new(ChannelId::new(6), "wind_x_m_s", "m/s", Some("ECI"))?;
-    let wind_y = TelemetryChannel::<f64>::new(ChannelId::new(7), "wind_y_m_s", "m/s", Some("ECI"))?;
-    let wind_z = TelemetryChannel::<f64>::new(ChannelId::new(8), "wind_z_m_s", "m/s", Some("ECI"))?;
-    let position_x =
-        TelemetryChannel::<f64>::new(ChannelId::new(9), "position_x_eci_m", "m", Some("ECI"))?;
-    let position_y =
-        TelemetryChannel::<f64>::new(ChannelId::new(10), "position_y_eci_m", "m", Some("ECI"))?;
-    let position_z =
-        TelemetryChannel::<f64>::new(ChannelId::new(11), "position_z_eci_m", "m", Some("ECI"))?;
-    let velocity_x =
-        TelemetryChannel::<f64>::new(ChannelId::new(12), "velocity_x_eci_m_s", "m/s", Some("ECI"))?;
-    let velocity_y =
-        TelemetryChannel::<f64>::new(ChannelId::new(13), "velocity_y_eci_m_s", "m/s", Some("ECI"))?;
-    let velocity_z =
-        TelemetryChannel::<f64>::new(ChannelId::new(14), "velocity_z_eci_m_s", "m/s", Some("ECI"))?;
-    let burnout_time =
-        TelemetryChannel::<f64>::new(ChannelId::new(15), "burnout_time_s", "s", None::<String>)?;
     let latitude =
         TelemetryChannel::<f64>::new(ChannelId::new(16), "latitude_deg", "deg", None::<String>)?;
     let longitude =
@@ -403,9 +403,9 @@ fn monte_carlo_samples_table(
         "m",
         None::<String>,
     )?;
-    let miss_distance_from_nominal = TelemetryChannel::<f64>::new(
+    let radial_offset_from_nominal = TelemetryChannel::<f64>::new(
         ChannelId::new(20),
-        "miss_distance_from_nominal_m",
+        "radial_offset_from_nominal_m",
         "m",
         None::<String>,
     )?;
@@ -432,22 +432,11 @@ fn monte_carlo_samples_table(
         crossrange.metadata().clone(),
         bearing.metadata().clone(),
         time_to_cull.metadata().clone(),
-        ballistic_coefficient.metadata().clone(),
-        wind_x.metadata().clone(),
-        wind_y.metadata().clone(),
-        wind_z.metadata().clone(),
-        position_x.metadata().clone(),
-        position_y.metadata().clone(),
-        position_z.metadata().clone(),
-        velocity_x.metadata().clone(),
-        velocity_y.metadata().clone(),
-        velocity_z.metadata().clone(),
-        burnout_time.metadata().clone(),
         latitude.metadata().clone(),
         longitude.metadata().clone(),
         offset_downrange_from_nominal.metadata().clone(),
         offset_crossrange_from_nominal.metadata().clone(),
-        miss_distance_from_nominal.metadata().clone(),
+        radial_offset_from_nominal.metadata().clone(),
         offset_downrange_from_mean.metadata().clone(),
         offset_crossrange_from_mean.metadata().clone(),
         radial_distance_from_mean.metadata().clone(),
@@ -463,20 +452,6 @@ fn monte_carlo_samples_table(
         row.insert(&crossrange, sample.landing.crossrange_m)?;
         row.insert(&bearing, sample.landing.bearing_rad)?;
         row.insert(&time_to_cull, sample.landing.time_to_cull_s)?;
-        row.insert(
-            &ballistic_coefficient,
-            sample.state.ballistic_coefficient_m2_kg,
-        )?;
-        row.insert(&wind_x, sample.wind_eci_m_s[0])?;
-        row.insert(&wind_y, sample.wind_eci_m_s[1])?;
-        row.insert(&wind_z, sample.wind_eci_m_s[2])?;
-        row.insert(&position_x, sample.state.position_eci_m[0])?;
-        row.insert(&position_y, sample.state.position_eci_m[1])?;
-        row.insert(&position_z, sample.state.position_eci_m[2])?;
-        row.insert(&velocity_x, sample.state.velocity_eci_m_s[0])?;
-        row.insert(&velocity_y, sample.state.velocity_eci_m_s[1])?;
-        row.insert(&velocity_z, sample.state.velocity_eci_m_s[2])?;
-        row.insert(&burnout_time, sample.state.time.as_seconds())?;
         if let Some(value) = sample.landing.latitude_deg {
             row.insert(&latitude, value)?;
         }
@@ -488,7 +463,7 @@ fn monte_carlo_samples_table(
         row.insert(&offset_downrange_from_nominal, nominal_downrange_offset_m)?;
         row.insert(&offset_crossrange_from_nominal, nominal_crossrange_offset_m)?;
         row.insert(
-            &miss_distance_from_nominal,
+            &radial_offset_from_nominal,
             radial_distance_m(nominal_downrange_offset_m, nominal_crossrange_offset_m),
         )?;
         let mean_downrange_offset_m = sample.landing.downrange_m - result.mean_downrange_m;
@@ -534,7 +509,7 @@ fn monte_carlo_summary_toml(
     push_summary_line(&mut out, "crossrange_m", result.nominal.crossrange_m);
     push_summary_line(&mut out, "bearing_rad", result.nominal.bearing_rad);
     push_summary_line(&mut out, "time_to_cull_s", result.nominal.time_to_cull_s);
-    out.push_str("\n[accuracy]\n");
+    out.push_str("\n[dispersion_statistics]\n");
     push_summary_line(&mut out, "cep50_m", result.cep50_m);
     push_summary_line(
         &mut out,
@@ -548,8 +523,8 @@ fn monte_carlo_summary_toml(
     );
     push_summary_line(
         &mut out,
-        "mean_miss_distance_from_nominal_m",
-        result.mean_miss_distance_from_nominal_m,
+        "mean_radial_offset_from_nominal_m",
+        result.mean_radial_offset_from_nominal_m,
     );
     out.push_str("\n[dispersion_ellipse]\n");
     push_summary_line(
@@ -583,11 +558,11 @@ fn monte_carlo_summary_toml(
         push_summary_line(&mut out, "radial_distance_m", quantile.radial_distance_m);
     }
     for quantile in &result.nominal_radial_error_quantiles {
-        out.push_str("\n[[nominal_miss_distance_quantiles]]\n");
+        out.push_str("\n[[nominal_radial_offset_quantiles]]\n");
         push_summary_line(&mut out, "confidence_level", quantile.confidence_level);
         push_summary_line(
             &mut out,
-            "miss_distance_from_nominal_m",
+            "radial_offset_from_nominal_m",
             quantile.radial_distance_m,
         );
     }
@@ -766,12 +741,13 @@ mod tests {
     #[test]
     fn runner_computes_configured_landing_footprint() {
         let scenario = Scenario::from_toml_str(COAST_FOOTPRINT_SCENARIO).unwrap();
-        let state = BallisticState {
-            position_eci_m: [0.0, 0.0, 100.0],
-            velocity_eci_m_s: [5.0, 2.0, 0.0],
-            ballistic_coefficient_m2_kg: 0.0,
-            time: SimTime::from_seconds(0.0),
-        };
+        let state = BallisticState::from_forward_simulation(
+            [0.0, 0.0, 100.0],
+            [5.0, 2.0, 0.0],
+            0.0,
+            SimTime::from_seconds(0.0),
+        )
+        .unwrap();
         let footprint = landing_footprint_for_state(&scenario, &state)
             .unwrap()
             .unwrap();
@@ -793,12 +769,13 @@ mod tests {
             .replace("gravity_m_s2 = 9.80665", &gravity_config)
             .replace(r#"method = "constant_gravity""#, r#"method = "j2""#);
         let scenario = Scenario::from_toml_str(&toml).unwrap();
-        let state = BallisticState {
-            position_eci_m: [WGS84_A_M + 1_000.0, 0.0, 0.0],
-            velocity_eci_m_s: [0.0, 100.0, 0.0],
-            ballistic_coefficient_m2_kg: 0.0,
-            time: SimTime::from_seconds(0.0),
-        };
+        let state = BallisticState::from_forward_simulation(
+            [WGS84_A_M + 1_000.0, 0.0, 0.0],
+            [0.0, 100.0, 0.0],
+            0.0,
+            SimTime::from_seconds(0.0),
+        )
+        .unwrap();
         let footprint = landing_footprint_for_state(&scenario, &state)
             .unwrap()
             .unwrap();
@@ -819,12 +796,13 @@ mod tests {
             .replace("gravity_m_s2 = 9.80665\n", "")
             .replace(r#"method = "constant_gravity""#, r#"method = "egm2008""#);
         let scenario = Scenario::from_toml_str(&toml).unwrap();
-        let state = BallisticState {
-            position_eci_m: [WGS84_A_M + 1_000.0, 0.0, 0.0],
-            velocity_eci_m_s: [0.0, 100.0, 0.0],
-            ballistic_coefficient_m2_kg: 0.0,
-            time: SimTime::from_seconds(0.0),
-        };
+        let state = BallisticState::from_forward_simulation(
+            [WGS84_A_M + 1_000.0, 0.0, 0.0],
+            [0.0, 100.0, 0.0],
+            0.0,
+            SimTime::from_seconds(0.0),
+        )
+        .unwrap();
         let footprint = landing_footprint_for_state(&scenario, &state)
             .unwrap()
             .unwrap();
@@ -836,12 +814,13 @@ mod tests {
     #[test]
     fn runner_returns_none_without_footprint_config() {
         let scenario = Scenario::from_toml_str(MINIMAL_SCENARIO).unwrap();
-        let state = BallisticState {
-            position_eci_m: [0.0, 0.0, 100.0],
-            velocity_eci_m_s: [0.0, 0.0, 0.0],
-            ballistic_coefficient_m2_kg: 0.0,
-            time: SimTime::from_seconds(0.0),
-        };
+        let state = BallisticState::from_forward_simulation(
+            [0.0, 0.0, 100.0],
+            [0.0, 0.0, 0.0],
+            0.0,
+            SimTime::from_seconds(0.0),
+        )
+        .unwrap();
         assert!(
             landing_footprint_for_state(&scenario, &state)
                 .unwrap()
@@ -859,12 +838,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(first.summary_toml, second.summary_toml);
-        assert!(first.summary_toml.contains("[accuracy]"));
+        assert!(first.summary_toml.contains("[dispersion_statistics]"));
+        assert!(!first.summary_toml.contains("[accuracy]"));
+        assert!(!first.summary_toml.contains("miss_distance"));
         assert!(first.summary_toml.contains("cep50_m"));
         assert!(
             first
                 .summary_toml
-                .contains("[[nominal_miss_distance_quantiles]]")
+                .contains("[[nominal_radial_offset_quantiles]]")
         );
         let mut first_csv = Vec::new();
         let mut second_csv = Vec::new();
@@ -872,7 +853,12 @@ mod tests {
         second.samples.write_csv(&mut second_csv).unwrap();
         assert_eq!(first_csv, second_csv);
         let csv_text = String::from_utf8(first_csv).unwrap();
-        assert!(csv_text.contains("miss_distance_from_nominal_m"));
+        assert!(csv_text.contains("radial_offset_from_nominal_m"));
+        assert!(!csv_text.contains("miss_distance"));
+        assert!(!csv_text.contains("position_x_eci_m"));
+        assert!(!csv_text.contains("velocity_x_eci_m_s"));
+        assert!(!csv_text.contains("ballistic_coefficient_m2_kg"));
+        assert!(!csv_text.contains("wind_x_m_s"));
     }
 
     #[test]
@@ -917,7 +903,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(report.result.cep50_m < 1.0e-12);
-        assert!(report.result.mean_miss_distance_from_nominal_m < 1.0e-12);
+        assert!(report.result.mean_radial_offset_from_nominal_m < 1.0e-12);
         for sample in &report.result.samples {
             assert!(
                 (sample.landing.downrange_m - report.result.nominal.downrange_m).abs() < 1.0e-12

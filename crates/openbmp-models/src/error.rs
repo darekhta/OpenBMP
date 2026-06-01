@@ -6,7 +6,7 @@
 //! simulator. The simulator's broader `SimulationError` family remains
 //! in `openbmp-sim`.
 
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use openbmp_core::ModelId;
 use thiserror::Error;

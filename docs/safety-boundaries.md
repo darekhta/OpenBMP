@@ -146,7 +146,7 @@ Reject contributions that add or request:
 > range-safety landing footprint is a *forward, offline* prediction of where an
 > unpowered body comes down, in range-relative coordinates, for recovery and
 > range-safety planning — it accepts no desired landing location, no aimpoint,
-> and emits no steering command. Offline Monte-Carlo accuracy diagnostics are
+> and emits no steering command. Offline Monte-Carlo dispersion diagnostics are
 > nominal-referenced sample statistics, never target-scored objectives. The
 > offline staging analysis is likewise vehicle-intrinsic: it optimizes only an
 > ideal ΔV / mass budget over `Isp`, structural coefficient, and payload mass,

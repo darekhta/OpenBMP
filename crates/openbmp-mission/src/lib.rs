@@ -17,6 +17,11 @@
 //! validator, which are the items a real-hardware adopter would also
 //! need.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+#![forbid(unsafe_code)]
+
+extern crate alloc;
+
 mod events;
 mod hsm;
 mod regions;

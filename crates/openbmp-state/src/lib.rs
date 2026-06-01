@@ -20,6 +20,9 @@
 //! State types are pure data with no IO and no system-clock or RNG
 //! access. They inherit the determinism contract of `openbmp-core`.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+#![forbid(unsafe_code)]
+
 pub mod error;
 pub mod mass_properties;
 pub mod point_mass;

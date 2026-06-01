@@ -5,6 +5,9 @@
 //! time source, and is therefore compatible with the lockstep
 //! controller clock.
 
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 /// Per-axis notch-filter configuration.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct NotchConfig {

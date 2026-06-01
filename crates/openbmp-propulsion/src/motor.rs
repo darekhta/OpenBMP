@@ -38,6 +38,9 @@
 //! cumulative-impulse table built at construction; no FMA, no
 //! wall-clock, no system RNG, no network, no file I/O on the hot path.
 
+#[cfg(not(feature = "std"))]
+use alloc::{string::String, vec::Vec};
+
 use crate::error::MotorError;
 
 const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;

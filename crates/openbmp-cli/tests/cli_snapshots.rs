@@ -413,6 +413,7 @@ fn diff_reports_identical_for_self_compare() {
     let staged = temp.path().join("scenario.toml");
     let parquet = temp.path().join("out.parquet");
     let csv = temp.path().join("out.csv");
+    let report = temp.path().join("diff-report.json");
     let original = fs::read_to_string(
         workspace_root().join("scenarios/analytic-toy/constant-acceleration-drop.toml"),
     )
@@ -430,7 +431,11 @@ fn diff_reports_identical_for_self_compare() {
     openbmp().arg("run").arg(&staged).assert().success();
 
     let mut cmd = openbmp();
-    cmd.arg("diff").arg(&parquet).arg(&parquet);
+    cmd.arg("diff")
+        .arg(&parquet)
+        .arg(&parquet)
+        .arg("--report-json")
+        .arg(&report);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
     assert!(
@@ -440,5 +445,17 @@ fn diff_reports_identical_for_self_compare() {
     assert!(
         stdout.contains("12 columns matched"),
         "stdout was: {stdout}"
+    );
+    let report_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(report).expect("read diff report"))
+            .expect("parse diff report");
+    assert_eq!(report_json["identical"], true);
+    assert_eq!(
+        report_json["provenance"]["fp_contract"],
+        "reference-platform bit-stable; cross-platform state-stable"
+    );
+    assert!(
+        report_json["provenance"]["golden_metadata"]["openbmp.schema_version"].is_string(),
+        "report should include parquet schema metadata: {report_json}"
     );
 }

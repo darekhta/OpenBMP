@@ -20,10 +20,11 @@
 //!   updates overwrite the in-place storage.
 
 use std::any::{Any, TypeId};
-
-use indexmap::IndexMap;
+use std::boxed::Box;
+use std::vec::Vec;
 
 use crate::error::ParamError;
+use crate::stable_map::StableIndexMap;
 
 /// Marker trait implemented by every typed parameter section.
 pub trait ParamSection: 'static + Clone {
@@ -35,7 +36,7 @@ pub trait ParamSection: 'static + Clone {
 /// Runtime parameter registry.
 #[derive(Default)]
 pub struct Parameters {
-    sections: IndexMap<TypeId, ParamCell>,
+    sections: StableIndexMap<TypeId, ParamCell>,
 }
 
 struct ParamCell {

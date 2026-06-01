@@ -8,9 +8,13 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP mission graph + event triggers — hardware-portable; no simulator dependency."
 
+[features]
+default = ["std"]
+std     = ["openbmp-core/std"]
+
 [dependencies]
-openbmp-core = { workspace = true }
-thiserror    = { workspace = true }
+openbmp-core = { version = "0.0.1", path = "../openbmp-core", default-features = false }
+thiserror    = { version = "2.0.18", default-features = false }
 
 [dev-dependencies]
 proptest = { workspace = true }

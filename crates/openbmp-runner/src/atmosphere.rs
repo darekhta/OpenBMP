@@ -125,14 +125,16 @@ impl RuntimeEnvironment {
 
 impl EnvironmentModel for RuntimeEnvironment {
     fn sample(&self, query: EnvironmentQuery) -> Result<EnvironmentSample, ModelEvalError> {
-        let mut sample = EnvironmentSample::default();
-        sample.gravity_eci_m_s2 = self
-            .gravity
-            .gravity_eci_m_s2(query.position_eci, query.time)
-            .map_err(|_| ModelEvalError::OutOfEnvelope {
-                model: RUNNER_ENVIRONMENT_GRAVITY_MODEL_ID,
-                reason: Cow::Borrowed("gravity model out of envelope"),
-            })?;
+        let mut sample = EnvironmentSample {
+            gravity_eci_m_s2: self
+                .gravity
+                .gravity_eci_m_s2(query.position_eci, query.time)
+                .map_err(|_| ModelEvalError::OutOfEnvelope {
+                    model: RUNNER_ENVIRONMENT_GRAVITY_MODEL_ID,
+                    reason: Cow::Borrowed("gravity model out of envelope"),
+                })?,
+            ..EnvironmentSample::default()
+        };
         populate_frame_motion(&self.frame, query, &mut sample)?;
         let Some(atmosphere) = &self.atmosphere else {
             return Ok(sample);
@@ -496,6 +498,7 @@ pub fn scenario_atmosphere_kind(document: &ScenarioDocument) -> &str {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use openbmp_core::Position3;

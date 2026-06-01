@@ -22,8 +22,11 @@
 //! J2 sum; no FMA.
 
 use nalgebra::Vector3;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 use openbmp_core::{Eci, Position3, SimTime};
 
+#[cfg(feature = "std")]
 use crate::ephemeris::{CelestialBody, EphemerisModel};
 use crate::error::PhysicsError;
 use crate::frames::{WGS84_A_M, WGS84_MU_M3_S2};
@@ -202,12 +205,14 @@ impl GravityModel for PointMassGravity {
 // ---------------------------------------------------------------------
 
 /// One perturbing third body.
+#[cfg(feature = "std")]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ThirdBody {
     body: CelestialBody,
     mu_m3_s2: f64,
 }
 
+#[cfg(feature = "std")]
 impl ThirdBody {
     /// Construct from a built-in celestial body and its canonical
     /// gravitational parameter.
@@ -259,12 +264,14 @@ impl ThirdBody {
 /// the perturbing body's Earth-centered inertial position from the
 /// configured ephemeris model.
 #[derive(Clone, Debug)]
+#[cfg(feature = "std")]
 pub struct ThirdBodyGravity<G, E> {
     central: G,
     ephemeris: E,
     bodies: Vec<ThirdBody>,
 }
 
+#[cfg(feature = "std")]
 impl<G, E> ThirdBodyGravity<G, E> {
     /// Construct a third-body gravity model.
     ///
@@ -309,6 +316,7 @@ impl<G, E> ThirdBodyGravity<G, E> {
     }
 }
 
+#[cfg(feature = "std")]
 impl<G: GravityModel, E: EphemerisModel> GravityModel for ThirdBodyGravity<G, E> {
     fn gravity_eci_m_s2(
         &self,
@@ -330,6 +338,7 @@ impl<G: GravityModel, E: EphemerisModel> GravityModel for ThirdBodyGravity<G, E>
     }
 }
 
+#[cfg(feature = "std")]
 fn third_body_perturbation(
     vehicle_position: Vector3<f64>,
     body_position: Vector3<f64>,

@@ -30,6 +30,7 @@ pub enum SensorError {
         reason: &'static str,
     },
     /// A noise-budget file could not be read from disk.
+    #[cfg(feature = "std")]
     #[error("sensor budget file I/O error: {reason}")]
     Io {
         /// Path and underlying I/O error message.

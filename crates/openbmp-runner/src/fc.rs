@@ -32,10 +32,11 @@ use openbmp_fc::mixer::{ActuatorChannelMap, Mixer, PhaseAuthority, PhaseAuthorit
 use openbmp_fc::sr_ukf::{SquareRootUkf, SquareRootUkfAttitude, SquareRootUkfParams};
 use openbmp_fc::topics::{
     ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, CommsRegionStatePublish,
-    EffectorCommandSet, EngineCommandSet, EngineDemand, EnvironmentEstimate, EstimatorMode,
-    EstimatorRegimeRegionStatePublish, EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic,
-    FdirStatus, GnssSample, GuidanceCutoff, HealthRegionStatePublish, ImuSample,
-    MagnetometerSample, MissionRegionStatePublish, MissionStatePublish, PositionEstimate,
+    EffectorCommandSet, EngineCommandSet, EngineDemand, EnvironmentEstimate,
+    EstimatorLaneSelection, EstimatorMode, EstimatorRegimeRegionStatePublish, EstimatorStatus,
+    FailsafeFlags, FdirGlrtDiagnostic, FdirStatus, GnssSample, GuidanceCutoff,
+    HealthRegionStatePublish, ImuSample, MagnetometerSample, MissionActionBatch,
+    MissionRegionStatePublish, MissionStatePublish, PositionEstimate, PropellantState,
     ReferenceState, SensorStatus, StarTrackerSample, VehicleStatus,
 };
 use openbmp_fc::{
@@ -55,7 +56,7 @@ use openbmp_scenario::{
     FcAutopilotKind, FcAutopilotParams, FcConfig, FcEkfConfig, FcEstimatorKind,
     FcEstimatorLanesConfig, FcEstimatorVoterKind, FcFdirConfig, FcFdirDetectorKind,
     FcFdirDetectorKindV5, FcGainsConfig, FcGravityModelKind, FcGuidanceKind, FcHealthConfig,
-    FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig, FcTrajectoryKind,
+    FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig, FcSchedulerConfig, FcTrajectoryKind,
 };
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
@@ -127,7 +128,7 @@ impl FcRunner {
 
         Self::register_canonical_topics(&fc)?;
 
-        let slow_period_ticks = period_ticks_for_hz(config.base_rate_hz, 100);
+        let job_schedule = FcJobSchedule::from_config(config);
         let mut next_priority = 5_u8;
         // When the scenario declares `[fc.estimator_lanes]`,
         // build a `MultiLaneEstimator` containing one estimator per
@@ -139,8 +140,8 @@ impl FcRunner {
         if let Some(lanes_cfg) = &config.estimator_lanes {
             let multi = build_multi_lane_estimator(config, lanes_cfg, estimator_seed)?;
             fc.scheduler_mut().register_periodic(
-                1,
-                200,
+                job_schedule.estimator_period_ticks,
+                job_schedule.estimator_budget_us,
                 next_priority,
                 Box::new(EstimatorJob::new(multi)),
             )?;
@@ -151,8 +152,8 @@ impl FcRunner {
             // because the per-lane construction in the multi-lane path
             // also returns `Box<dyn Estimator + Send>`.
             fc.scheduler_mut().register_periodic(
-                1,
-                200,
+                job_schedule.estimator_period_ticks,
+                job_schedule.estimator_budget_us,
                 next_priority,
                 Box::new(EstimatorJob::new(BoxedEstimator(estimator))),
             )?;
@@ -164,8 +165,8 @@ impl FcRunner {
             FcGuidanceKind::AttitudeHold => {
                 let q = config.reference_q_xyzw.unwrap_or([0.0, 0.0, 0.0, 1.0]);
                 fc.scheduler_mut().register_periodic(
-                    slow_period_ticks,
-                    100,
+                    job_schedule.guidance_period_ticks,
+                    job_schedule.guidance_budget_us,
                     next_priority,
                     Box::new(AttitudeHoldGuidance::new(q)),
                 )?;
@@ -175,8 +176,8 @@ impl FcRunner {
                     waypoints: Vec::new(),
                 };
                 fc.scheduler_mut().register_periodic(
-                    slow_period_ticks,
-                    100,
+                    job_schedule.guidance_period_ticks,
+                    job_schedule.guidance_budget_us,
                     next_priority,
                     Box::new(WaypointGuidance::new(sequence, GuidanceParams::default())),
                 )?;
@@ -187,8 +188,8 @@ impl FcRunner {
                 if let Some(cfg) = &config.ascent_reference {
                     let generator = build_ascent_reference_generator(cfg)?;
                     fc.scheduler_mut().register_periodic(
-                        slow_period_ticks,
-                        100,
+                        job_schedule.guidance_period_ticks,
+                        job_schedule.guidance_budget_us,
                         next_priority,
                         Box::new(
                             AscentReferenceGuidance::new(generator)
@@ -212,8 +213,8 @@ impl FcRunner {
                             format!("guidance.ascent_reference.{phase_path}").into_boxed_str(),
                         );
                         fc.scheduler_mut().register_periodic(
-                            slow_period_ticks,
-                            100,
+                            job_schedule.guidance_period_ticks,
+                            job_schedule.guidance_budget_us,
                             next_priority,
                             Box::new(
                                 AscentReferenceGuidance::new(generator)
@@ -240,8 +241,12 @@ impl FcRunner {
             CommanderParams::default(),
         )
         .map_err(openbmp_fc::ControllerError::from)?;
-        fc.scheduler_mut()
-            .register_periodic(1, 200, next_priority, Box::new(commander))?;
+        fc.scheduler_mut().register_periodic(
+            job_schedule.commander_period_ticks,
+            job_schedule.commander_budget_us,
+            next_priority,
+            Box::new(commander),
+        )?;
         next_priority = next_priority.saturating_add(5);
 
         // Autopilot.
@@ -263,8 +268,12 @@ impl FcRunner {
                 .with_minimum_snap_trajectory(trajectory)
                 .with_minimum_snap_yaw_rad(trajectory_cfg.yaw_rad.unwrap_or(0.0));
         }
-        fc.scheduler_mut()
-            .register_periodic(1, 300, next_priority, Box::new(autopilot))?;
+        fc.scheduler_mut().register_periodic(
+            job_schedule.autopilot_period_ticks,
+            job_schedule.autopilot_budget_us,
+            next_priority,
+            Box::new(autopilot),
+        )?;
         next_priority = next_priority.saturating_add(5);
 
         // Mixer.
@@ -276,14 +285,18 @@ impl FcRunner {
         if let Some(alloc) = allocator {
             mixer = mixer.with_allocator(alloc);
         }
-        fc.scheduler_mut()
-            .register_periodic(1, 100, next_priority, Box::new(mixer))?;
+        fc.scheduler_mut().register_periodic(
+            job_schedule.mixer_period_ticks,
+            job_schedule.mixer_budget_us,
+            next_priority,
+            Box::new(mixer),
+        )?;
         next_priority = next_priority.saturating_add(5);
 
         // Health monitor (100 Hz).
         fc.scheduler_mut().register_periodic(
-            slow_period_ticks,
-            100,
+            job_schedule.health_period_ticks,
+            job_schedule.health_budget_us,
             next_priority,
             Box::new(HealthMonitor::new(build_health_params(&config.health))),
         )?;
@@ -291,8 +304,8 @@ impl FcRunner {
 
         // FDIR (100 Hz).
         fc.scheduler_mut().register_periodic(
-            slow_period_ticks,
-            100,
+            job_schedule.fdir_period_ticks,
+            job_schedule.fdir_budget_us,
             next_priority,
             Box::new(FdirJob::new(build_fdir_params(config.fdir.as_ref()))),
         )?;
@@ -348,6 +361,12 @@ impl FcRunner {
     /// Publishes the local environment estimate used by controller
     /// paths such as max-Q load relief.
     pub fn publish_environment(&self, sample: EnvironmentEstimate) {
+        let _ = self.fc.bus().publish(sample);
+    }
+
+    /// Publishes the propellant estimate used by onboard mission
+    /// event triggers such as `AtMassFraction`.
+    pub fn publish_propellant_state(&self, sample: PropellantState) {
         let _ = self.fc.bus().publish(sample);
     }
 
@@ -421,6 +440,19 @@ impl FcRunner {
             .map(|(s, _)| s)
     }
 
+    /// Returns the latest FC-fired mission action batch and its bus
+    /// sequence counter. The bridge uses the sequence to drain each
+    /// commander publication once.
+    #[must_use]
+    pub fn latest_mission_action_batch(&self) -> Option<(MissionActionBatch, u64)> {
+        self.fc
+            .bus()
+            .latest::<MissionActionBatch>()
+            .ok()
+            .flatten()
+            .map(|(batch, seq)| (batch, seq.value()))
+    }
+
     /// Returns the latest failsafe-flag publication, if any.
     #[must_use]
     pub fn latest_failsafe_flags(&self) -> Option<FailsafeFlags> {
@@ -476,6 +508,7 @@ impl FcRunner {
         bus.register::<AttitudeEstimate>()?;
         bus.register::<PositionEstimate>()?;
         bus.register::<EnvironmentEstimate>()?;
+        bus.register::<PropellantState>()?;
         bus.register::<EstimatorStatus>()?;
         bus.register::<VehicleStatus>()?;
         bus.register::<FailsafeFlags>()?;
@@ -498,11 +531,18 @@ impl FcRunner {
         // publish without a separate setup step. Idle when the
         // selected estimator is not IMM.
         bus.register::<EstimatorMode>()?;
+        // Multi-lane estimator active-lane diagnostic. Idle when the
+        // selected estimator is not multi-lane.
+        bus.register::<EstimatorLaneSelection>()?;
         // Single-source-of-truth mission state topic.
         // The commander publishes here every tick; downstream code
         // (simulator-side subscriber, telemetry recorder) reads in
         // place of the legacy parallel-state pattern.
         bus.register::<MissionStatePublish>()?;
+        // FC-fired mission action batch. Runner-side telemetry and
+        // stop handling drain this topic when mission authority
+        // belongs to the commander.
+        bus.register::<MissionActionBatch>()?;
         // Per-region state topics (one per canonical
         // region) so a consumer can watch a single region without
         // parsing the aggregate `commander.mission_state` payload.
@@ -518,6 +558,86 @@ fn period_ticks_for_hz(base_rate_hz: u32, task_rate_hz: u32) -> u64 {
     let base = u64::from(base_rate_hz);
     let task = u64::from(task_rate_hz.max(1));
     base.div_ceil(task).max(1)
+}
+
+#[derive(Copy, Clone, Debug)]
+struct FcJobSchedule {
+    estimator_period_ticks: u64,
+    guidance_period_ticks: u64,
+    commander_period_ticks: u64,
+    autopilot_period_ticks: u64,
+    mixer_period_ticks: u64,
+    health_period_ticks: u64,
+    fdir_period_ticks: u64,
+    estimator_budget_us: u64,
+    guidance_budget_us: u64,
+    commander_budget_us: u64,
+    autopilot_budget_us: u64,
+    mixer_budget_us: u64,
+    health_budget_us: u64,
+    fdir_budget_us: u64,
+}
+
+impl FcJobSchedule {
+    fn from_config(config: &FcConfig) -> Self {
+        Self::from_scheduler(config.base_rate_hz, config.scheduler.as_ref())
+    }
+
+    fn from_scheduler(base_rate_hz: u32, scheduler: Option<&FcSchedulerConfig>) -> Self {
+        Self {
+            estimator_period_ticks: period_ticks_for_hz(
+                base_rate_hz,
+                rate_or(scheduler, |cfg| cfg.estimator_rate_hz, base_rate_hz),
+            ),
+            guidance_period_ticks: period_ticks_for_hz(
+                base_rate_hz,
+                rate_or(scheduler, |cfg| cfg.guidance_rate_hz, 100),
+            ),
+            commander_period_ticks: period_ticks_for_hz(
+                base_rate_hz,
+                rate_or(scheduler, |cfg| cfg.commander_rate_hz, base_rate_hz),
+            ),
+            autopilot_period_ticks: period_ticks_for_hz(
+                base_rate_hz,
+                rate_or(scheduler, |cfg| cfg.autopilot_rate_hz, base_rate_hz),
+            ),
+            mixer_period_ticks: period_ticks_for_hz(
+                base_rate_hz,
+                rate_or(scheduler, |cfg| cfg.mixer_rate_hz, base_rate_hz),
+            ),
+            health_period_ticks: period_ticks_for_hz(
+                base_rate_hz,
+                rate_or(scheduler, |cfg| cfg.health_rate_hz, 100),
+            ),
+            fdir_period_ticks: period_ticks_for_hz(
+                base_rate_hz,
+                rate_or(scheduler, |cfg| cfg.fdir_rate_hz, 100),
+            ),
+            estimator_budget_us: budget_or(scheduler, |cfg| cfg.estimator_budget_us, 200),
+            guidance_budget_us: budget_or(scheduler, |cfg| cfg.guidance_budget_us, 100),
+            commander_budget_us: budget_or(scheduler, |cfg| cfg.commander_budget_us, 200),
+            autopilot_budget_us: budget_or(scheduler, |cfg| cfg.autopilot_budget_us, 300),
+            mixer_budget_us: budget_or(scheduler, |cfg| cfg.mixer_budget_us, 100),
+            health_budget_us: budget_or(scheduler, |cfg| cfg.health_budget_us, 100),
+            fdir_budget_us: budget_or(scheduler, |cfg| cfg.fdir_budget_us, 100),
+        }
+    }
+}
+
+fn rate_or(
+    scheduler: Option<&FcSchedulerConfig>,
+    accessor: impl FnOnce(&FcSchedulerConfig) -> Option<u32>,
+    default: u32,
+) -> u32 {
+    scheduler.and_then(accessor).unwrap_or(default)
+}
+
+fn budget_or(
+    scheduler: Option<&FcSchedulerConfig>,
+    accessor: impl FnOnce(&FcSchedulerConfig) -> Option<u64>,
+    default: u64,
+) -> u64 {
+    scheduler.and_then(accessor).unwrap_or(default)
 }
 
 fn powered_ascent_phase_ids() -> Vec<u64> {
@@ -807,6 +927,9 @@ fn apply_ekf_overrides(params: &mut EkfParams, cfg: &FcEkfConfig) {
     if let Some(v) = cfg.dead_reckon_timeout_s {
         params.dead_reckon_timeout_s = v;
     }
+    if let Some(v) = cfg.high_dynamics_q_scale {
+        params.high_dynamics_q_scale = v;
+    }
 }
 
 fn apply_mekf_overrides(params: &mut MekfParams, cfg: &FcMekfConfig) {
@@ -897,8 +1020,16 @@ impl Estimator for BoxedEstimator {
         self.0.estimator_mode()
     }
 
+    fn estimator_lane_selection(&self) -> Option<openbmp_fc::topics::EstimatorLaneSelection> {
+        self.0.estimator_lane_selection()
+    }
+
     fn begin_tick(&mut self) {
         self.0.begin_tick();
+    }
+
+    fn set_high_dynamics_process_noise(&mut self, active: bool) {
+        self.0.set_high_dynamics_process_noise(active);
     }
 }
 
@@ -1419,6 +1550,11 @@ fn build_fdir_params(cfg: Option<&FcFdirConfig>) -> FdirParams {
     if let Some(v) = cfg.cusum_threshold {
         params.cusum_threshold = v;
     }
+    if let Some(redlines) = cfg.redlines.as_ref()
+        && let Some(limit) = redlines.body_rate_rad_s
+    {
+        params.body_rate_redline_rad_s = limit;
+    }
     // When `[fc.fdir.detector]` is present its `kind`
     // overrides the legacy `detector_kind`. The scenario validator
     // already guarantees `window_samples` is set for
@@ -1587,7 +1723,8 @@ mod tests {
         MissionState, Phase, PhaseTransition, Region, RegionSet,
     };
     use openbmp_scenario::{
-        FcAscentReferenceConfig, FcAutopilotKind, FcEstimatorKind, FcGuidanceKind,
+        FcAscentReferenceConfig, FcAutopilotKind, FcEstimatorKind, FcFdirRedlinesConfig,
+        FcGuidanceKind,
     };
 
     use super::*;
@@ -1623,6 +1760,52 @@ mod tests {
             once: true,
         }];
         (graph, bindings, pad)
+    }
+
+    #[test]
+    fn fc_job_schedule_preserves_defaults_and_applies_iloads() {
+        let default_schedule = FcJobSchedule::from_scheduler(1_000, None);
+        assert_eq!(default_schedule.estimator_period_ticks, 1);
+        assert_eq!(default_schedule.commander_period_ticks, 1);
+        assert_eq!(default_schedule.autopilot_period_ticks, 1);
+        assert_eq!(default_schedule.mixer_period_ticks, 1);
+        assert_eq!(default_schedule.guidance_period_ticks, 10);
+        assert_eq!(default_schedule.health_period_ticks, 10);
+        assert_eq!(default_schedule.fdir_period_ticks, 10);
+        assert_eq!(default_schedule.guidance_budget_us, 100);
+
+        let overrides = FcSchedulerConfig {
+            guidance_rate_hz: Some(50),
+            health_rate_hz: Some(25),
+            fdir_rate_hz: Some(25),
+            guidance_budget_us: Some(150),
+            ..FcSchedulerConfig::default()
+        };
+        let custom_schedule = FcJobSchedule::from_scheduler(1_000, Some(&overrides));
+        assert_eq!(custom_schedule.guidance_period_ticks, 20);
+        assert_eq!(custom_schedule.health_period_ticks, 40);
+        assert_eq!(custom_schedule.fdir_period_ticks, 40);
+        assert_eq!(custom_schedule.guidance_budget_us, 150);
+    }
+
+    #[test]
+    fn build_fdir_params_applies_redline_iloads() {
+        let cfg = FcFdirConfig {
+            detector_kind: FcFdirDetectorKind::BurstCounter,
+            innovation_threshold: None,
+            innovation_burst_count: None,
+            failsafe_burst_count: None,
+            cusum_drift: None,
+            cusum_threshold: None,
+            detector: None,
+            redlines: Some(FcFdirRedlinesConfig {
+                body_rate_rad_s: Some(2.5),
+            }),
+        };
+
+        let params = build_fdir_params(Some(&cfg));
+
+        assert!((params.body_rate_redline_rad_s - 2.5).abs() < f64::EPSILON);
     }
 
     fn powered_ascent_graph() -> (MissionPhaseGraph, Vec<EventBinding<MissionAction>>, PhaseId) {
@@ -1810,6 +1993,7 @@ mod tests {
             reference_q_xyzw: Some([0.0, 0.0, 0.0, 1.0]),
             base_rate_hz: 1_000,
             frame_budget_us: 2_000,
+            scheduler: None,
             ekf: Some(FcEkfConfig::default()),
             mekf: None,
             imm: None,
@@ -1883,6 +2067,7 @@ mod tests {
             reference_q_xyzw: Some([0.0, 0.0, 0.0, 1.0]),
             base_rate_hz: 1_000,
             frame_budget_us: 2_000,
+            scheduler: None,
             ekf: Some(FcEkfConfig {
                 mag_field: Some(FcMagFieldKind::Wmm2025),
                 mag_epoch_decimal_year: Some(2025.0),
@@ -1958,6 +2143,7 @@ mod tests {
             reference_q_xyzw: None,
             base_rate_hz: 1_000,
             frame_budget_us: 2_000,
+            scheduler: None,
             ekf: Some(FcEkfConfig::default()),
             mekf: None,
             imm: None,

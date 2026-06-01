@@ -190,12 +190,12 @@ impl Scenario {
     pub fn resolved_files(&self) -> Result<BTreeMap<String, ResolvedFile>, ScenarioError> {
         let mut files = BTreeMap::new();
 
-        if let Some(aero) = &self.document.aero {
-            if let Some(deck) = &aero.deck {
-                let resolved = ResolvedFile::load(self.resolve_path(deck))?;
-                resolved.verify_pin(aero.deck_sha256.as_deref())?;
-                files.insert("aero.deck".to_owned(), resolved);
-            }
+        if let Some(aero) = &self.document.aero
+            && let Some(deck) = &aero.deck
+        {
+            let resolved = ResolvedFile::load(self.resolve_path(deck))?;
+            resolved.verify_pin(aero.deck_sha256.as_deref())?;
+            files.insert("aero.deck".to_owned(), resolved);
         }
 
         if let Some(motor) = self
@@ -1083,6 +1083,46 @@ false_alarm_rate = 0.001
         assert_eq!(detector.kind, FcFdirDetectorKindV5::WindowedMeanShiftGlrt);
         assert_eq!(detector.window_samples, Some(32));
         assert_eq!(detector.false_alarm_rate, Some(0.001));
+    }
+
+    #[test]
+    fn fc_fdir_redlines_block_is_v3_only_and_validates_under_v3() {
+        let block = r"
+[fc.fdir.redlines]
+body_rate_rad_s = 2.5
+";
+        let toml_v2 = append(fc_v2_scenario(), block);
+        assert_v3_block_reserved_under_v2(&toml_v2, "fc.fdir.redlines");
+        let toml_v3 = toml_v2.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario =
+            Scenario::from_toml_str(&toml_v3).expect("FDIR redlines must validate under v3");
+        let redlines = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.fdir.as_ref())
+            .and_then(|fdir| fdir.redlines.as_ref())
+            .expect("redlines block parsed");
+        assert_eq!(redlines.body_rate_rad_s, Some(2.5));
+    }
+
+    #[test]
+    fn fc_fdir_redlines_rejects_non_positive_body_rate() {
+        let block = r"
+[fc.fdir.redlines]
+body_rate_rad_s = 0.0
+";
+        let toml =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InvalidNumber { ref field, .. }
+                    if field == "fc.fdir.redlines.body_rate_rad_s"
+            ),
+            "expected body-rate redline InvalidNumber, got {err:?}"
+        );
     }
 
     #[test]
@@ -4211,7 +4251,7 @@ once    = true
     }
 
     fn assert_missing_multi_body_owner_in(toml: &str, expected_field: &str) {
-        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        let err = Scenario::from_toml_str(toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, ref reason }
                 if field == expected_field && reason.contains("explicit `mounted_to` body")),
@@ -5694,5 +5734,133 @@ file = "../sensors/star-tracker-textbook.toml""#,
         assert_eq!(fc.base_rate_hz, 1000);
         assert!(!fc.gain_schedule.is_empty());
         assert!(fc.phase_authority.as_ref().is_some_and(|m| m.len() == 2));
+    }
+
+    #[test]
+    fn parses_fc_scheduler_iloads() {
+        let toml = format!(
+            "{CLOSED_LOOP_ATTITUDE_HOLD}\n\
+             [fc.scheduler]\n\
+             guidance_rate_hz = 50\n\
+             health_rate_hz = 25\n\
+             fdir_rate_hz = 25\n\
+             guidance_budget_us = 150\n"
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let scheduler = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.scheduler.as_ref())
+            .expect("scheduler block should parse");
+        assert_eq!(scheduler.guidance_rate_hz, Some(50));
+        assert_eq!(scheduler.health_rate_hz, Some(25));
+        assert_eq!(scheduler.fdir_rate_hz, Some(25));
+        assert_eq!(scheduler.guidance_budget_us, Some(150));
+    }
+
+    #[test]
+    fn rejects_fc_scheduler_rate_above_base_rate() {
+        let toml = format!(
+            "{CLOSED_LOOP_ATTITUDE_HOLD}\n\
+             [fc.scheduler]\n\
+             guidance_rate_hz = 2000\n"
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidFc { ref reason } if reason.contains("fc.scheduler.guidance_rate_hz")),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn parses_fc_ekf_high_dynamics_q_scale() {
+        let toml = CLOSED_LOOP_ATTITUDE_HOLD.replace(
+            "dead_reckon_timeout_s = 1.5",
+            "dead_reckon_timeout_s = 1.5\nhigh_dynamics_q_scale = 8.0",
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let scale = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.ekf.as_ref())
+            .and_then(|ekf| ekf.high_dynamics_q_scale)
+            .expect("high-dynamics Q scale should parse");
+        assert_eq!(scale.to_bits(), 8.0_f64.to_bits());
+    }
+
+    #[test]
+    fn rejects_nonpositive_fc_ekf_high_dynamics_q_scale() {
+        let toml = CLOSED_LOOP_ATTITUDE_HOLD.replace(
+            "dead_reckon_timeout_s = 1.5",
+            "dead_reckon_timeout_s = 1.5\nhigh_dynamics_q_scale = 0.0",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "fc.ekf.high_dynamics_q_scale"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_fc_scenario_with_ideal_state_sensor() {
+        let toml =
+            format!("{CLOSED_LOOP_ATTITUDE_HOLD}\n[sensors.truth]\nkind = \"ideal_state\"\n");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidFc { ref reason } if reason.contains("ideal_state")),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_fc_scenario_with_relative_nav_trigger() {
+        let relative_event = r#"
+[[mission.events]]
+id      = "mission.events.relative"
+trigger = { kind = "at_relative_distance", body = "main", distance_m = 1.0 }
+action  = { kind = "emit_telemetry_marker", tag = "relative" }
+"#;
+        let toml = CLOSED_LOOP_ATTITUDE_HOLD.replace(
+            "\n# Flight-controller block.\n",
+            &format!("{relative_event}\n# Flight-controller block.\n"),
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidFc { ref reason }
+                if reason.contains("relative-navigation") && reason.contains("at_relative_distance")),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn fc_mission_authority_defaults_to_flight_controller() {
+        let scenario = Scenario::from_toml_str(CLOSED_LOOP_ATTITUDE_HOLD).unwrap();
+        assert!(scenario.document.flight_controller_owns_mission_state());
+    }
+
+    #[test]
+    fn scenario_director_can_opt_into_kernel_mission_authority() {
+        let toml = format!(
+            "{CLOSED_LOOP_ATTITUDE_HOLD}\n[scenario_director]\nmission_authority = \"kernel\"\n"
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        assert!(!scenario.document.flight_controller_owns_mission_state());
+    }
+
+    #[test]
+    fn scenario_director_rejects_fc_authority_without_fc_block() {
+        let toml =
+            format!("{MINIMAL}\n[scenario_director]\nmission_authority = \"flight_controller\"\n");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref value_a, ref field_b, ref value_b }
+                if field_a == "scenario_director.mission_authority"
+                    && value_a == "flight_controller"
+                    && field_b == "fc"
+                    && value_b == "missing"),
+            "got {err:?}",
+        );
     }
 }

@@ -40,6 +40,9 @@
 
 use openbmp_core::SimTime;
 
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use super::{
     AtmosphereModel, AtmosphereSample, USSA76_G0_M_S2, USSA76_GAMMA_AIR, sutherland_viscosity,
 };

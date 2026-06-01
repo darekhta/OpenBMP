@@ -6,6 +6,11 @@
 //! [`crate::motor::BurnSpec`] consumed by [`crate::motor::SolidMotor`].
 //! It does not alter the hot motor trait surface.
 
+#[cfg(not(feature = "std"))]
+use alloc::{string::String, vec::Vec};
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use crate::error::MotorError;
 use crate::motor::{
     AmbientPressureCorrection, BurnSpec, MotorGeometry, MotorMeta, SolidMotor, ThrustCurve,
@@ -239,7 +244,7 @@ impl GrainGeometry for BatesGrain {
         if live_length <= 0.0 || core_radius >= self.outer_radius_m {
             return Ok(0.0);
         }
-        let pi = std::f64::consts::PI;
+        let pi = core::f64::consts::PI;
         let inner = 2.0 * pi * core_radius * live_length;
         let ends =
             2.0 * pi * (self.outer_radius_m * self.outer_radius_m - core_radius * core_radius);
@@ -257,7 +262,7 @@ impl GrainGeometry for BatesGrain {
     }
 
     fn propellant_volume_m3(&self) -> f64 {
-        let pi = std::f64::consts::PI;
+        let pi = core::f64::consts::PI;
         let annulus = pi
             * (self.outer_radius_m * self.outer_radius_m - self.core_radius_m * self.core_radius_m);
         f64::from(self.segments) * annulus * self.segment_length_m

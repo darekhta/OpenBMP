@@ -39,6 +39,15 @@ pub enum CliError {
         /// Short, human-readable divergence description.
         summary: String,
     },
+    /// A telemetry diff report could not be serialized.
+    #[error("telemetry diff report json error: {path}")]
+    DiffReportJson {
+        /// Offending output path.
+        path: PathBuf,
+        /// Source JSON serialization error.
+        #[source]
+        source: serde_json::Error,
+    },
     /// A telemetry comparison exceeded its declared envelope.
     #[error("telemetry comparison: {summary}")]
     TelemetryCompare {
@@ -95,6 +104,7 @@ impl CliError {
             Self::Io { .. } | Self::Csv { .. } => 3,
             Self::Telemetry(_)
             | Self::TelemetryCompareReportJson { .. }
+            | Self::DiffReportJson { .. }
             | Self::Parquet(_)
             | Self::Arrow(_) => 4,
         }

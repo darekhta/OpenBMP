@@ -41,6 +41,13 @@
 //! are bit-stable across reruns on the same platform profile.
 
 use nalgebra::{DMatrix, DVector, Matrix3, Rotation3, UnitQuaternion, Vector3};
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+use std::string::ToString;
+use std::vec::Vec;
+
+#[cfg(not(feature = "std"))]
+use alloc::vec;
 
 use crate::error::{AutopilotError, ControllerError};
 

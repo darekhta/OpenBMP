@@ -32,9 +32,13 @@
 //! limit `Cp_max = 2.0` (classical Newtonian) and avoid the
 //! per-Mach correction.
 
-use std::f64::consts::PI;
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+use core::f64::consts::PI;
 
 use nalgebra::Vector3;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 use crate::error::AeroError;
 use crate::method::{AeroContext, AeroForceMomentBody, AeroMethod};

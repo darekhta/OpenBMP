@@ -13,11 +13,12 @@
 //! bus topics.
 
 use std::collections::BTreeSet;
+use std::vec::Vec;
 
 use openbmp_mission::{
     AlarmCode, BuiltInEventTrigger, CanonicalRegionStates, CanonicalRegions, EventBinding,
-    EventEvalState, EventId, EventScalars, EventTrigger, MissionAction, MissionPhaseGraph,
-    MissionStateMachine, PhaseId, RegionId, RegionSet,
+    EventEvalState, EventId, EventScalars, EventTrigger, FiredEvent, MissionAction,
+    MissionPhaseGraph, MissionStateMachine, PhaseId, RegionId, RegionSet,
 };
 
 use crate::bus::Bus;
@@ -28,8 +29,9 @@ use crate::scheduler::{Job, JobContext};
 use crate::topics::{
     BarometerSample, CommsRegionStatePublish, EnvironmentEstimate,
     EstimatorRegimeRegionStatePublish, EstimatorStatus, FailsafeFlags, FdirStatus, GnssSample,
-    GuidanceCutoff, HealthRegionStatePublish, ImuSample, MissionRegionStatePublish,
-    MissionStatePublish, PositionEstimate, VehicleStatus,
+    GuidanceCutoff, HealthRegionStatePublish, ImuSample, MissionActionBatch,
+    MissionRegionStatePublish, MissionStatePublish, PositionEstimate, PropellantState,
+    VehicleStatus,
 };
 
 /// Commander parameters.
@@ -181,7 +183,11 @@ impl Commander {
                 |env| nav_metrics::dynamic_pressure_air_relative_with_density(p, env.density_kg_m3),
             )
         });
-        let mass_fraction = 1.0; // not currently estimated by the controller.
+        let mass_fraction = bus
+            .latest::<PropellantState>()
+            .ok()
+            .flatten()
+            .map_or(1.0, |(state, _)| state.mass_fraction);
         let guidance_time_to_go_s = bus
             .latest::<GuidanceCutoff>()
             .ok()
@@ -203,9 +209,9 @@ impl Commander {
             previous: self.previous_scalars,
             current_phase: Some(self.current_phase),
             relative_distances_m: std::collections::BTreeMap::new(),
-            previous_relative_distances_m: Some(std::collections::BTreeMap::new()),
+            previous_relative_distances_m: None,
             relative_speeds_m_s: std::collections::BTreeMap::new(),
-            previous_relative_speeds_m_s: Some(std::collections::BTreeMap::new()),
+            previous_relative_speeds_m_s: None,
         }
     }
 
@@ -316,34 +322,80 @@ impl Commander {
             .set_current_state(CanonicalRegions::mission(), self.current_phase);
     }
 
-    fn apply_transition(&mut self, target: PhaseId) {
+    fn apply_transition(
+        &mut self,
+        target: PhaseId,
+        cause: EventId,
+        step: openbmp_core::StepIndex,
+        time: openbmp_core::SimTime,
+        fired_events: &mut Vec<FiredEvent<MissionAction>>,
+    ) {
         let from = self.current_phase;
-        self.fire_hsm_exit_actions(from, target);
+        self.fire_hsm_exit_actions(from, target, cause, step, time, fired_events);
         self.current_phase = target;
         self.sync_mission_region();
-        self.fire_hsm_entry_actions(from, target);
+        self.fire_hsm_entry_actions(from, target, cause, step, time, fired_events);
     }
 
-    fn fire_hsm_exit_actions(&mut self, from: PhaseId, to: PhaseId) {
+    fn fire_hsm_exit_actions(
+        &mut self,
+        from: PhaseId,
+        to: PhaseId,
+        cause: EventId,
+        step: openbmp_core::StepIndex,
+        time: openbmp_core::SimTime,
+        fired_events: &mut Vec<FiredEvent<MissionAction>>,
+    ) {
         // The FC commander owns mission state, but physical script
         // actions are intentionally not part of `MissionAction`. HSM
-        // action lists here can only request mission-state changes or
-        // telemetry markers; telemetry fan-out remains simulator-side.
+        // action lists here can only request mission-state changes,
+        // telemetry markers, stops, or health/safe-state requests.
         for state in self.hsm.exit_chain(from, to) {
             let actions: Vec<_> = self.hsm.on_exit_actions(state).to_vec();
-            self.apply_hsm_actions(&actions);
+            self.apply_hsm_actions(&actions, cause, step, time, fired_events);
         }
     }
 
-    fn fire_hsm_entry_actions(&mut self, from: PhaseId, to: PhaseId) {
+    fn fire_hsm_entry_actions(
+        &mut self,
+        from: PhaseId,
+        to: PhaseId,
+        cause: EventId,
+        step: openbmp_core::StepIndex,
+        time: openbmp_core::SimTime,
+        fired_events: &mut Vec<FiredEvent<MissionAction>>,
+    ) {
         for state in self.hsm.enter_chain(from, to) {
             let actions: Vec<_> = self.hsm.on_entry_actions(state).to_vec();
-            self.apply_hsm_actions(&actions);
+            self.apply_hsm_actions(&actions, cause, step, time, fired_events);
         }
     }
 
-    fn apply_hsm_actions(&mut self, actions: &[MissionAction]) {
+    fn fire_hsm_active_actions(
+        &mut self,
+        step: openbmp_core::StepIndex,
+        time: openbmp_core::SimTime,
+        fired_events: &mut Vec<FiredEvent<MissionAction>>,
+    ) {
+        let actions: Vec<_> = self.hsm.on_active_actions(self.current_phase).to_vec();
+        self.apply_hsm_actions(&actions, EventId::new(0), step, time, fired_events);
+    }
+
+    fn apply_hsm_actions(
+        &mut self,
+        actions: &[MissionAction],
+        cause: EventId,
+        step: openbmp_core::StepIndex,
+        time: openbmp_core::SimTime,
+        fired_events: &mut Vec<FiredEvent<MissionAction>>,
+    ) {
         for action in actions {
+            fired_events.push(FiredEvent {
+                binding_id: cause,
+                step,
+                time,
+                action: action.clone(),
+            });
             match action {
                 MissionAction::EnterState(target) => {
                     if self
@@ -359,6 +411,9 @@ impl Commander {
                 MissionAction::EmitTelemetryMarker { .. } | MissionAction::Stop { .. } => {}
                 MissionAction::RaiseHealthAlarm { region, alarm } => {
                     self.handle_health_alarm(*region, *alarm);
+                }
+                MissionAction::SetRegionState { region, state } => {
+                    let _ = self.regions.set_current_state(*region, *state);
                 }
                 MissionAction::RequestSafeState { .. } => {
                     self.request_safe_state();
@@ -400,21 +455,39 @@ impl Job for Commander {
         let mut eval_state = self.build_eval_state(ctx.bus);
         eval_state.current.time_s = now.as_seconds();
 
+        let mut fired_events: Vec<FiredEvent<MissionAction>> = Vec::new();
         let mut transitions: Vec<(EventId, Option<PhaseId>)> = Vec::new();
-        let bindings_snapshot = self.bindings.clone();
-        for binding in &bindings_snapshot {
-            if binding.once && self.fired_once.contains(&binding.id.value()) {
+        for binding_idx in 0..self.bindings.len() {
+            let binding_id = self.bindings[binding_idx].id;
+            let once = self.bindings[binding_idx].once;
+            if once && self.fired_once.contains(&binding_id.value()) {
                 continue;
             }
-            if BuiltInEventTrigger::fired(&binding.trigger, &eval_state, now, tick) {
-                if binding.once {
-                    self.fired_once.insert(binding.id.value());
+            if BuiltInEventTrigger::fired(
+                &self.bindings[binding_idx].trigger,
+                &eval_state,
+                now,
+                tick,
+            ) {
+                let action = self.bindings[binding_idx].action.clone();
+                if once {
+                    self.fired_once.insert(binding_id.value());
                 }
-                let action_target = match &binding.action {
+                fired_events.push(FiredEvent {
+                    binding_id,
+                    step: tick,
+                    time: now,
+                    action: action.clone(),
+                });
+                let action_target = match &action {
                     MissionAction::EnterState(target) => Some(*target),
                     MissionAction::EmitTelemetryMarker { .. } | MissionAction::Stop { .. } => None,
                     MissionAction::RaiseHealthAlarm { region, alarm } => {
                         self.handle_health_alarm(*region, *alarm);
+                        None
+                    }
+                    MissionAction::SetRegionState { region, state } => {
+                        let _ = self.regions.set_current_state(*region, *state);
                         None
                     }
                     MissionAction::RequestSafeState { .. } => {
@@ -422,9 +495,10 @@ impl Job for Commander {
                         None
                     }
                 };
-                transitions.push((binding.id, action_target));
+                transitions.push((binding_id, action_target));
             }
         }
+        let mut transitioned = false;
         for (event_id, action_target) in transitions {
             let graph_target = self
                 .graph
@@ -433,7 +507,8 @@ impl Job for Commander {
                 .find(|t| t.from == self.current_phase && t.event == event_id)
                 .map(|t| t.to);
             if let Some(target) = graph_target {
-                self.apply_transition(target);
+                self.apply_transition(target, event_id, tick, now, &mut fired_events);
+                transitioned = true;
             } else if let Some(target) = action_target {
                 // Legacy direct-entry fallback for scenarios that use
                 // `EnterState` as the transition declaration itself.
@@ -443,9 +518,13 @@ impl Job for Commander {
                     .iter()
                     .any(|t| t.from == self.current_phase && t.to == target);
                 if allowed {
-                    self.apply_transition(target);
+                    self.apply_transition(target, event_id, tick, now, &mut fired_events);
+                    transitioned = true;
                 }
             }
+        }
+        if !transitioned {
+            self.fire_hsm_active_actions(tick, now, &mut fired_events);
         }
 
         self.try_arm(ctx.bus);
@@ -507,6 +586,9 @@ impl Job for Commander {
         });
         let _ = ctx.bus.publish(EstimatorRegimeRegionStatePublish {
             state_id: estimator_regime_state_id,
+        });
+        let _ = ctx.bus.publish(MissionActionBatch {
+            events: fired_events,
         });
 
         self.previous_scalars = Some(eval_state.current);
@@ -631,9 +713,11 @@ mod tests {
         bus.register::<EstimatorStatus>().unwrap();
         bus.register::<PositionEstimate>().unwrap();
         bus.register::<EnvironmentEstimate>().unwrap();
+        bus.register::<PropellantState>().unwrap();
         bus.register::<FailsafeFlags>().unwrap();
         bus.register::<FdirStatus>().unwrap();
         bus.register::<VehicleStatus>().unwrap();
+        bus.register::<MissionActionBatch>().unwrap();
         bus.register::<MissionStatePublish>().unwrap();
         bus.register::<MissionRegionStatePublish>().unwrap();
         bus.register::<HealthRegionStatePublish>().unwrap();
@@ -788,6 +872,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(commander.current_phase(), ascent);
+        let (batch, _) = bus.latest::<MissionActionBatch>().unwrap().unwrap();
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.events[0].binding_id, liftoff);
+        assert_eq!(batch.events[0].step, StepIndex::new(1));
+        assert_eq!(batch.events[0].time, SimTime::from_seconds(0.5));
+        assert!(matches!(
+            &batch.events[0].action,
+            MissionAction::EmitTelemetryMarker { tag } if tag == "liftoff"
+        ));
     }
 
     #[test]
@@ -859,6 +952,100 @@ mod tests {
     }
 
     #[test]
+    fn eval_state_mass_fraction_uses_published_propellant_state() {
+        let (graph, bindings, pad) = build_graph();
+        let commander = commander_from_graph(graph, bindings, pad);
+        let bus = fresh_bus();
+
+        bus.publish(PropellantState {
+            time: SimTime::ZERO,
+            mass_fraction: 0.42,
+            mass_remaining_kg: 42.0,
+            mass_initial_kg: 100.0,
+            depleted: false,
+        })
+        .unwrap();
+
+        let state = commander.build_eval_state(&bus);
+        assert_eq!(state.current.mass_fraction.to_bits(), 0.42_f64.to_bits());
+    }
+
+    #[test]
+    fn at_mass_fraction_transition_uses_propellant_state() {
+        let pad = PhaseId::from_path("mission.phases.pad");
+        let cutoff = PhaseId::from_path("mission.phases.cutoff");
+        let depletion = EventId::from_path("mission.events.depletion");
+        let graph = MissionPhaseGraph::new(
+            vec![
+                Phase {
+                    id: pad,
+                    label: "pad".to_string(),
+                    allowed_effectors: Vec::new(),
+                    allowed_engines: Vec::new(),
+                },
+                Phase {
+                    id: cutoff,
+                    label: "cutoff".to_string(),
+                    allowed_effectors: Vec::new(),
+                    allowed_engines: Vec::new(),
+                },
+            ],
+            vec![PhaseTransition {
+                from: pad,
+                to: cutoff,
+                event: depletion,
+            }],
+            pad,
+            &[depletion],
+        )
+        .unwrap();
+        let bindings = vec![EventBinding {
+            id: depletion,
+            trigger: BuiltInEventTrigger::AtMassFraction { remaining: 0.5 },
+            action: MissionAction::EnterState(cutoff),
+            once: true,
+        }];
+        let mut commander = commander_from_graph(graph, bindings, pad);
+        let bus = fresh_bus();
+        let clock = SimulatedClock::new();
+
+        bus.publish(PropellantState {
+            time: SimTime::ZERO,
+            mass_fraction: 0.6,
+            mass_remaining_kg: 60.0,
+            mass_initial_kg: 100.0,
+            depleted: false,
+        })
+        .unwrap();
+        clock.set(SimTime::ZERO, StepIndex::ZERO);
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        assert_eq!(commander.current_phase(), pad);
+
+        bus.publish(PropellantState {
+            time: SimTime::from_seconds(1.0),
+            mass_fraction: 0.4,
+            mass_remaining_kg: 40.0,
+            mass_initial_kg: 100.0,
+            depleted: false,
+        })
+        .unwrap();
+        clock.set(SimTime::from_seconds(1.0), StepIndex::new(1));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        assert_eq!(commander.current_phase(), cutoff);
+    }
+
+    #[test]
     fn raise_health_alarm_binding_demotes_health_region() {
         use openbmp_mission::AlarmCode;
 
@@ -920,6 +1107,85 @@ mod tests {
             health.state_id,
             CanonicalRegionStates::health_abort_requested().value(),
         );
+    }
+
+    #[test]
+    fn set_region_state_binding_updates_estimator_regime_region() {
+        let (graph, _legacy_bindings, pad) = build_graph();
+        let coast = PhaseId::from_path("mission.regions.estimator_regime.coast");
+        let boost = CanonicalRegionStates::estimator_boost_mode();
+        let event = EventId::from_path("mission.events.estimator_boost");
+        let bindings = vec![EventBinding {
+            id: event,
+            trigger: BuiltInEventTrigger::AtTime { time_s: 0.5 },
+            action: MissionAction::SetRegionState {
+                region: CanonicalRegions::estimator_regime(),
+                state: boost,
+            },
+            once: true,
+        }];
+        let hsm = hsm_from_graph(&graph);
+        let mut regions = regions_from_graph(&graph);
+        regions.insert(
+            Region::from_states(
+                CanonicalRegions::estimator_regime(),
+                vec![
+                    Phase {
+                        id: coast,
+                        label: "coast".into(),
+                        allowed_effectors: Vec::new(),
+                        allowed_engines: Vec::new(),
+                    },
+                    Phase {
+                        id: boost,
+                        label: "boost_mode".into(),
+                        allowed_effectors: Vec::new(),
+                        allowed_engines: Vec::new(),
+                    },
+                ],
+                coast,
+            )
+            .unwrap(),
+        );
+        let mut commander = Commander::new(
+            graph,
+            hsm,
+            regions,
+            bindings,
+            pad,
+            CommanderParams::default(),
+        )
+        .unwrap();
+
+        let bus = fresh_bus();
+        let clock = SimulatedClock::new();
+        publish_initialized_estimator(&bus);
+
+        clock.set(SimTime::ZERO, StepIndex::ZERO);
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (regime, _) = bus
+            .latest::<EstimatorRegimeRegionStatePublish>()
+            .unwrap()
+            .unwrap();
+        assert_eq!(regime.state_id, coast.value());
+
+        clock.set(SimTime::from_seconds(0.5), StepIndex::new(1));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (regime, _) = bus
+            .latest::<EstimatorRegimeRegionStatePublish>()
+            .unwrap()
+            .unwrap();
+        assert_eq!(regime.state_id, boost.value());
     }
 
     #[test]

@@ -10,6 +10,8 @@
 
 use thiserror::Error;
 
+use std::string::String;
+
 /// Errors raised by the internal pub/sub bus.
 ///
 /// The bus is single-writer-many-reader by construction; the variants

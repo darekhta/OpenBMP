@@ -24,6 +24,8 @@
 //! (downward into the planet, matching the magnetic-dip convention).
 
 use nalgebra::Vector3;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 use openbmp_core::SimTime;
 
 use crate::earth;

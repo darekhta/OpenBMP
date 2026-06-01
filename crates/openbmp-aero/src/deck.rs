@@ -68,7 +68,15 @@
 //! offered — the OpenRocket / Niskanen 2009 corpus shows linear
 //! extrapolation produces nonsensical drag for high Mach decks.
 
-use std::collections::BTreeMap;
+#[cfg(not(feature = "std"))]
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    string::String,
+    vec,
+    vec::Vec,
+};
+#[cfg(feature = "std")]
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::AeroError;
 
@@ -164,7 +172,11 @@ impl AeroDeck {
         reference_length_m: f64,
     ) -> Result<Self, AeroError> {
         Self::new_n_d(
-            vec!["mach".to_string(), "alpha".to_string(), "beta".to_string()],
+            vec![
+                String::from("mach"),
+                String::from("alpha"),
+                String::from("beta"),
+            ],
             vec![mach, alpha_deg, beta_deg],
             cn,
             cd,
@@ -462,7 +474,7 @@ fn validate_axis_order(axis_order: &[String], axes_len: usize) -> Result<(), Aer
             });
         }
     }
-    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
     for name in axis_order {
         if !seen.insert(name.as_str()) {
             return Err(AeroError::MalformedDeck {

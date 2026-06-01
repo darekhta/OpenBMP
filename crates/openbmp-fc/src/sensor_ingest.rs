@@ -12,8 +12,10 @@
 //! ready to register with the scheduler.
 
 use std::fmt;
+use std::vec::Vec;
 
 use nalgebra::Vector3;
+use openbmp_core::SimTime;
 use openbmp_sensors::{Sensor, SensorMeasurement, Timestamped};
 
 use crate::error::ControllerError;
@@ -44,6 +46,51 @@ ingest_debug_impl!(BarometerIngest);
 ingest_debug_impl!(GnssIngest);
 ingest_debug_impl!(MagnetometerIngest);
 ingest_debug_impl!(StarTrackerIngest);
+
+fn unhealthy_imu_sample(time: SimTime) -> ImuSample {
+    ImuSample {
+        time,
+        gyro_rad_s: Vector3::zeros(),
+        accel_m_s2: Vector3::zeros(),
+        healthy: false,
+    }
+}
+
+fn unhealthy_barometer_sample(time: SimTime) -> BarometerSample {
+    BarometerSample {
+        time,
+        pressure_pa: 0.0,
+        bias_pa: 0.0,
+        healthy: false,
+    }
+}
+
+fn unhealthy_gnss_sample(time: SimTime) -> GnssSample {
+    GnssSample {
+        time,
+        position_eci_m: Vector3::zeros(),
+        velocity_eci_m_s: Vector3::zeros(),
+        position_bias_eci_m: Vector3::zeros(),
+        healthy: false,
+    }
+}
+
+fn unhealthy_magnetometer_sample(time: SimTime) -> MagnetometerSample {
+    MagnetometerSample {
+        time,
+        field_body_nt: Vector3::zeros(),
+        hard_iron_body_nt: Vector3::zeros(),
+        healthy: false,
+    }
+}
+
+fn unhealthy_star_tracker_sample(time: SimTime) -> StarTrackerSample {
+    StarTrackerSample {
+        time,
+        q_eci_to_body_xyzw: [0.0, 0.0, 0.0, 1.0],
+        healthy: false,
+    }
+}
 
 /// Ingest job for an IMU `Sensor` source. Reads via
 /// [`Sensor::read`] and publishes [`ImuSample`] on the bus.
@@ -77,24 +124,25 @@ where
     }
 
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
-        match self.sensor.read() {
-            Ok(Timestamped { time, value }) => {
-                if let SensorMeasurement::Imu {
+        if let Ok(Timestamped {
+            time,
+            value:
+                SensorMeasurement::Imu {
                     gyro_rad_s,
                     accel_m_s2,
-                } = value
-                {
-                    let _ = ctx.bus.publish(ImuSample {
-                        time,
-                        gyro_rad_s,
-                        accel_m_s2,
-                        healthy: true,
-                    })?;
-                }
-                Ok(())
-            }
-            Err(_) => Ok(()),
+                },
+        }) = self.sensor.read()
+        {
+            let _ = ctx.bus.publish(ImuSample {
+                time,
+                gyro_rad_s,
+                accel_m_s2,
+                healthy: true,
+            })?;
+        } else {
+            ctx.bus.publish(unhealthy_imu_sample(ctx.clock.now()))?;
         }
+        Ok(())
     }
 }
 
@@ -128,24 +176,26 @@ where
         self.name
     }
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
-        match self.sensor.read() {
-            Ok(Timestamped { time, value }) => {
-                if let SensorMeasurement::Barometer {
+        if let Ok(Timestamped {
+            time,
+            value:
+                SensorMeasurement::Barometer {
                     pressure_pa,
                     bias_pa,
-                } = value
-                {
-                    let _ = ctx.bus.publish(BarometerSample {
-                        time,
-                        pressure_pa,
-                        bias_pa,
-                        healthy: true,
-                    })?;
-                }
-                Ok(())
-            }
-            Err(_) => Ok(()),
+                },
+        }) = self.sensor.read()
+        {
+            let _ = ctx.bus.publish(BarometerSample {
+                time,
+                pressure_pa,
+                bias_pa,
+                healthy: true,
+            })?;
+        } else {
+            ctx.bus
+                .publish(unhealthy_barometer_sample(ctx.clock.now()))?;
         }
+        Ok(())
     }
 }
 
@@ -179,26 +229,27 @@ where
         self.name
     }
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
-        match self.sensor.read() {
-            Ok(Timestamped { time, value }) => {
-                if let SensorMeasurement::Gnss {
+        if let Ok(Timestamped {
+            time,
+            value:
+                SensorMeasurement::Gnss {
                     position_eci_m,
                     velocity_eci_m_s,
                     position_bias_eci_m,
-                } = value
-                {
-                    let _ = ctx.bus.publish(GnssSample {
-                        time,
-                        position_eci_m,
-                        velocity_eci_m_s,
-                        position_bias_eci_m,
-                        healthy: true,
-                    })?;
-                }
-                Ok(())
-            }
-            Err(_) => Ok(()),
+                },
+        }) = self.sensor.read()
+        {
+            let _ = ctx.bus.publish(GnssSample {
+                time,
+                position_eci_m,
+                velocity_eci_m_s,
+                position_bias_eci_m,
+                healthy: true,
+            })?;
+        } else {
+            ctx.bus.publish(unhealthy_gnss_sample(ctx.clock.now()))?;
         }
+        Ok(())
     }
 }
 
@@ -232,24 +283,26 @@ where
         self.name
     }
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
-        match self.sensor.read() {
-            Ok(Timestamped { time, value }) => {
-                if let SensorMeasurement::Magnetometer {
+        if let Ok(Timestamped {
+            time,
+            value:
+                SensorMeasurement::Magnetometer {
                     field_body_nt,
                     hard_iron_body_nt,
-                } = value
-                {
-                    let _ = ctx.bus.publish(MagnetometerSample {
-                        time,
-                        field_body_nt,
-                        hard_iron_body_nt,
-                        healthy: true,
-                    })?;
-                }
-                Ok(())
-            }
-            Err(_) => Ok(()),
+                },
+        }) = self.sensor.read()
+        {
+            let _ = ctx.bus.publish(MagnetometerSample {
+                time,
+                field_body_nt,
+                hard_iron_body_nt,
+                healthy: true,
+            })?;
+        } else {
+            ctx.bus
+                .publish(unhealthy_magnetometer_sample(ctx.clock.now()))?;
         }
+        Ok(())
     }
 }
 
@@ -283,23 +336,25 @@ where
         self.name
     }
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
-        match self.sensor.read() {
-            Ok(Timestamped { time, value }) => {
-                if let SensorMeasurement::StarTracker {
+        if let Ok(Timestamped {
+            time,
+            value:
+                SensorMeasurement::StarTracker {
                     attitude_eci_to_body,
-                } = value
-                {
-                    let q = attitude_eci_to_body.into_inner();
-                    let _ = ctx.bus.publish(StarTrackerSample {
-                        time,
-                        q_eci_to_body_xyzw: [q.i, q.j, q.k, q.w],
-                        healthy: true,
-                    })?;
-                }
-                Ok(())
-            }
-            Err(_) => Ok(()),
+                },
+        }) = self.sensor.read()
+        {
+            let q = attitude_eci_to_body.into_inner();
+            let _ = ctx.bus.publish(StarTrackerSample {
+                time,
+                q_eci_to_body_xyzw: [q.i, q.j, q.k, q.w],
+                healthy: true,
+            })?;
+        } else {
+            ctx.bus
+                .publish(unhealthy_star_tracker_sample(ctx.clock.now()))?;
         }
+        Ok(())
     }
 }
 
@@ -430,9 +485,13 @@ where
             }
         }
         let Some((gyro, gyro_divergent)) = vote_vec3(&self.voter, &gyros[..sample_count]) else {
+            ctx.bus.publish(unhealthy_imu_sample(ctx.clock.now()))?;
+            let _ = ctx.bus.publish(status);
             return Ok(());
         };
         let Some((accel, accel_divergent)) = vote_vec3(&self.voter, &accels[..sample_count]) else {
+            ctx.bus.publish(unhealthy_imu_sample(ctx.clock.now()))?;
+            let _ = ctx.bus.publish(status);
             return Ok(());
         };
         for sample_index in 0..sample_count {
@@ -471,15 +530,22 @@ where
 {
     sensors: Vec<S>,
     voter: V,
+    pressures: Vec<f64>,
+    biases: Vec<f64>,
+    sample_lanes: Vec<usize>,
     name: &'static str,
 }
 
 impl<S: Sensor<Output = SensorMeasurement>, V: Voter<f64>> VotedBarometerIngest<S, V> {
     /// Constructs the voted ingest job.
     pub fn new(sensors: Vec<S>, voter: V) -> Self {
+        let sensor_count = sensors.len();
         Self {
             sensors,
             voter,
+            pressures: Vec::with_capacity(sensor_count),
+            biases: Vec::with_capacity(sensor_count),
+            sample_lanes: Vec::with_capacity(sensor_count),
             name: "sensor_ingest.voted_barometer",
         }
     }
@@ -507,9 +573,9 @@ where
         self.name
     }
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
-        let mut pressures = Vec::with_capacity(self.sensors.len());
-        let mut biases = Vec::with_capacity(self.sensors.len());
-        let mut sample_lanes = Vec::with_capacity(self.sensors.len());
+        self.pressures.clear();
+        self.biases.clear();
+        self.sample_lanes.clear();
         let mut status = SensorStatus {
             time: ctx.clock.now(),
             kind: SensorKind::Barometer,
@@ -536,24 +602,34 @@ where
                 if lane_index < MAX_SENSOR_STATUS_LANES {
                     status.lanes[lane_index].healthy = true;
                 }
-                pressures.push(pressure_pa);
-                biases.push(bias_pa);
-                sample_lanes.push(lane_index);
+                self.pressures.push(pressure_pa);
+                self.biases.push(bias_pa);
+                self.sample_lanes.push(lane_index);
                 last_time = time;
             }
         }
-        let Some(p) = self.voter.vote(&pressures) else {
+        let Some(p) = self.voter.vote(&self.pressures) else {
+            ctx.bus
+                .publish(unhealthy_barometer_sample(ctx.clock.now()))?;
+            let _ = ctx.bus.publish(status);
             return Ok(());
         };
-        let Some(b) = self.voter.vote(&biases) else {
+        let Some(b) = self.voter.vote(&self.biases) else {
+            ctx.bus
+                .publish(unhealthy_barometer_sample(ctx.clock.now()))?;
+            let _ = ctx.bus.publish(status);
             return Ok(());
         };
-        for (sample_index, lane_index) in sample_lanes.iter().copied().enumerate() {
+        for (sample_index, lane_index) in self.sample_lanes.iter().copied().enumerate() {
             if lane_index >= MAX_SENSOR_STATUS_LANES {
                 continue;
             }
-            let lane_divergent = self.voter.sample_diverges(pressures[sample_index], p.value)
-                || self.voter.sample_diverges(biases[sample_index], b.value);
+            let lane_divergent = self
+                .voter
+                .sample_diverges(self.pressures[sample_index], p.value)
+                || self
+                    .voter
+                    .sample_diverges(self.biases[sample_index], b.value);
             status.lanes[lane_index].divergent = lane_divergent;
             status.any_divergent |= lane_divergent;
         }
@@ -576,15 +652,24 @@ where
 {
     sensors: Vec<S>,
     voter: V,
+    positions: Vec<Vector3<f64>>,
+    velocities: Vec<Vector3<f64>>,
+    biases: Vec<Vector3<f64>>,
+    sample_lanes: Vec<usize>,
     name: &'static str,
 }
 
 impl<S: Sensor<Output = SensorMeasurement>, V: Voter<f64>> VotedGnssIngest<S, V> {
     /// Constructs the voted ingest job.
     pub fn new(sensors: Vec<S>, voter: V) -> Self {
+        let sensor_count = sensors.len();
         Self {
             sensors,
             voter,
+            positions: Vec::with_capacity(sensor_count),
+            velocities: Vec::with_capacity(sensor_count),
+            biases: Vec::with_capacity(sensor_count),
+            sample_lanes: Vec::with_capacity(sensor_count),
             name: "sensor_ingest.voted_gnss",
         }
     }
@@ -612,10 +697,10 @@ where
         self.name
     }
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
-        let mut positions = Vec::with_capacity(self.sensors.len());
-        let mut velocities = Vec::with_capacity(self.sensors.len());
-        let mut biases = Vec::with_capacity(self.sensors.len());
-        let mut sample_lanes = Vec::with_capacity(self.sensors.len());
+        self.positions.clear();
+        self.velocities.clear();
+        self.biases.clear();
+        self.sample_lanes.clear();
         let mut status = SensorStatus {
             time: ctx.clock.now(),
             kind: SensorKind::Gnss,
@@ -643,30 +728,36 @@ where
                 if lane_index < MAX_SENSOR_STATUS_LANES {
                     status.lanes[lane_index].healthy = true;
                 }
-                positions.push(position_eci_m);
-                velocities.push(velocity_eci_m_s);
-                biases.push(position_bias_eci_m);
-                sample_lanes.push(lane_index);
+                self.positions.push(position_eci_m);
+                self.velocities.push(velocity_eci_m_s);
+                self.biases.push(position_bias_eci_m);
+                self.sample_lanes.push(lane_index);
                 last_time = time;
             }
         }
-        let Some((position, position_div)) = vote_vec3(&self.voter, &positions) else {
+        let Some((position, position_div)) = vote_vec3(&self.voter, &self.positions) else {
+            ctx.bus.publish(unhealthy_gnss_sample(ctx.clock.now()))?;
+            let _ = ctx.bus.publish(status);
             return Ok(());
         };
-        let Some((velocity, velocity_div)) = vote_vec3(&self.voter, &velocities) else {
+        let Some((velocity, velocity_div)) = vote_vec3(&self.voter, &self.velocities) else {
+            ctx.bus.publish(unhealthy_gnss_sample(ctx.clock.now()))?;
+            let _ = ctx.bus.publish(status);
             return Ok(());
         };
-        let Some((bias, bias_div)) = vote_vec3(&self.voter, &biases) else {
+        let Some((bias, bias_div)) = vote_vec3(&self.voter, &self.biases) else {
+            ctx.bus.publish(unhealthy_gnss_sample(ctx.clock.now()))?;
+            let _ = ctx.bus.publish(status);
             return Ok(());
         };
-        for (sample_index, lane_index) in sample_lanes.iter().copied().enumerate() {
+        for (sample_index, lane_index) in self.sample_lanes.iter().copied().enumerate() {
             if lane_index >= MAX_SENSOR_STATUS_LANES {
                 continue;
             }
             let lane_divergent =
-                vec3_sample_diverges(&self.voter, positions[sample_index], position)
-                    || vec3_sample_diverges(&self.voter, velocities[sample_index], velocity)
-                    || vec3_sample_diverges(&self.voter, biases[sample_index], bias);
+                vec3_sample_diverges(&self.voter, self.positions[sample_index], position)
+                    || vec3_sample_diverges(&self.voter, self.velocities[sample_index], velocity)
+                    || vec3_sample_diverges(&self.voter, self.biases[sample_index], bias);
             status.lanes[lane_index].divergent = lane_divergent;
             status.any_divergent |= lane_divergent;
         }
@@ -690,15 +781,22 @@ where
 {
     sensors: Vec<S>,
     voter: V,
+    fields: Vec<Vector3<f64>>,
+    hard_irons: Vec<Vector3<f64>>,
+    sample_lanes: Vec<usize>,
     name: &'static str,
 }
 
 impl<S: Sensor<Output = SensorMeasurement>, V: Voter<f64>> VotedMagnetometerIngest<S, V> {
     /// Constructs the voted ingest job.
     pub fn new(sensors: Vec<S>, voter: V) -> Self {
+        let sensor_count = sensors.len();
         Self {
             sensors,
             voter,
+            fields: Vec::with_capacity(sensor_count),
+            hard_irons: Vec::with_capacity(sensor_count),
+            sample_lanes: Vec::with_capacity(sensor_count),
             name: "sensor_ingest.voted_magnetometer",
         }
     }
@@ -726,9 +824,9 @@ where
         self.name
     }
     fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
-        let mut fields = Vec::with_capacity(self.sensors.len());
-        let mut hard_irons = Vec::with_capacity(self.sensors.len());
-        let mut sample_lanes = Vec::with_capacity(self.sensors.len());
+        self.fields.clear();
+        self.hard_irons.clear();
+        self.sample_lanes.clear();
         let mut status = SensorStatus {
             time: ctx.clock.now(),
             kind: SensorKind::Magnetometer,
@@ -755,24 +853,31 @@ where
                 if lane_index < MAX_SENSOR_STATUS_LANES {
                     status.lanes[lane_index].healthy = true;
                 }
-                fields.push(field_body_nt);
-                hard_irons.push(hard_iron_body_nt);
-                sample_lanes.push(lane_index);
+                self.fields.push(field_body_nt);
+                self.hard_irons.push(hard_iron_body_nt);
+                self.sample_lanes.push(lane_index);
                 last_time = time;
             }
         }
-        let Some((field, field_div)) = vote_vec3(&self.voter, &fields) else {
+        let Some((field, field_div)) = vote_vec3(&self.voter, &self.fields) else {
+            ctx.bus
+                .publish(unhealthy_magnetometer_sample(ctx.clock.now()))?;
+            let _ = ctx.bus.publish(status);
             return Ok(());
         };
-        let Some((hard_iron, hard_iron_div)) = vote_vec3(&self.voter, &hard_irons) else {
+        let Some((hard_iron, hard_iron_div)) = vote_vec3(&self.voter, &self.hard_irons) else {
+            ctx.bus
+                .publish(unhealthy_magnetometer_sample(ctx.clock.now()))?;
+            let _ = ctx.bus.publish(status);
             return Ok(());
         };
-        for (sample_index, lane_index) in sample_lanes.iter().copied().enumerate() {
+        for (sample_index, lane_index) in self.sample_lanes.iter().copied().enumerate() {
             if lane_index >= MAX_SENSOR_STATUS_LANES {
                 continue;
             }
-            let lane_divergent = vec3_sample_diverges(&self.voter, fields[sample_index], field)
-                || vec3_sample_diverges(&self.voter, hard_irons[sample_index], hard_iron);
+            let lane_divergent =
+                vec3_sample_diverges(&self.voter, self.fields[sample_index], field)
+                    || vec3_sample_diverges(&self.voter, self.hard_irons[sample_index], hard_iron);
             status.lanes[lane_index].divergent = lane_divergent;
             status.any_divergent |= lane_divergent;
         }

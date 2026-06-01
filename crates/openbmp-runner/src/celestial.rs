@@ -1129,7 +1129,7 @@ fn julian_date_from_gregorian(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use openbmp_scenario::Scenario;

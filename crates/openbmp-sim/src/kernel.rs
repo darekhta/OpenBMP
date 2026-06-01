@@ -897,6 +897,27 @@ where
         }
     }
 
+    /// Record a mission action fired by the externally-owned FC
+    /// commander.
+    ///
+    /// FC-owned scenarios suppress the kernel's truth-side mission
+    /// evaluator, but the runner still needs the kernel's pending
+    /// fired-event queue for telemetry marker fan-out and stop
+    /// handling. This method appends the already-fired FC action
+    /// without evaluating any trigger against truth.
+    pub fn record_external_mission_fired(
+        &mut self,
+        fired: crate::events::FiredEvent<crate::events::MissionAction>,
+    ) {
+        if let crate::events::MissionAction::Stop { label } = &fired.action {
+            self.stopped = Some(StopReason::MissionEnded {
+                phase: self.current_phase,
+                label: label.clone(),
+            });
+        }
+        self.pending_mission_fired.push(fired);
+    }
+
     /// Read the externally-supplied mission state when the FC owns it.
     #[must_use]
     pub fn external_mission_state(&self) -> Option<crate::events::PhaseId> {
@@ -1102,11 +1123,12 @@ where
     }
 
     /// Evaluate every declared event binding against a post-step
-    /// `EventScalars` snapshot. Mission bindings are evaluated first,
-    /// followed by simulator-only script bindings. Fired bindings are
-    /// recorded into their typed drain queues, graph transitions are
-    /// applied only on the pure-sim path, and the once-fired set is
-    /// updated after each firing.
+    /// `EventScalars` snapshot. Mission bindings are evaluated first
+    /// only when the kernel owns mission state, followed by
+    /// simulator-only script bindings. Fired bindings are recorded
+    /// into their typed drain queues, graph transitions are applied
+    /// only on the pure-sim path, and the once-fired set is updated
+    /// after each firing.
     #[allow(clippy::match_same_arms)] // deferred actions vs. runner-side markers
     fn evaluate_events(
         &mut self,
@@ -1128,57 +1150,58 @@ where
         };
         let fc_owned = self.mission_state_authority == MissionStateAuthority::FlightController;
         let mut transitioned = false;
-        let mission_bindings = self.mission_events_typed.clone();
-        for binding in &mission_bindings {
-            if binding.once && self.fired_once_events.contains(&binding.id) {
-                continue;
-            }
-            if !binding.trigger.fired(&eval_state, time, step) {
-                continue;
-            }
-            self.pending_mission_fired.push(crate::events::FiredEvent {
-                binding_id: binding.id,
-                step,
-                time,
-                action: binding.action.clone(),
-            });
-            let graph_transitioned =
-                self.apply_graph_transition_for_event(binding.id, fc_owned, step, time);
-            transitioned |= graph_transitioned;
-            match &binding.action {
-                crate::events::MissionAction::EnterState(phase) => {
-                    // When FC owns mission state,
-                    // ignore in-binding phase entries — the commander
-                    // already applied them. When pure-sim, the graph
-                    // transition table takes precedence; direct
-                    // EnterState is only the legacy fallback for an
-                    // event with no graph edge from the current state.
-                    if !fc_owned && !graph_transitioned {
-                        self.current_phase = Some(*phase);
+        if !fc_owned {
+            let mission_bindings = self.mission_events_typed.clone();
+            for binding in &mission_bindings {
+                if binding.once && self.fired_once_events.contains(&binding.id) {
+                    continue;
+                }
+                if !binding.trigger.fired(&eval_state, time, step) {
+                    continue;
+                }
+                self.pending_mission_fired.push(crate::events::FiredEvent {
+                    binding_id: binding.id,
+                    step,
+                    time,
+                    action: binding.action.clone(),
+                });
+                let graph_transitioned =
+                    self.apply_graph_transition_for_event(binding.id, fc_owned, step, time);
+                transitioned |= graph_transitioned;
+                match &binding.action {
+                    crate::events::MissionAction::EnterState(phase) => {
+                        // In pure-sim, the graph transition table
+                        // takes precedence; direct EnterState is only
+                        // the legacy fallback for an event with no
+                        // graph edge from the current state.
+                        if !graph_transitioned {
+                            self.current_phase = Some(*phase);
+                        }
+                    }
+                    crate::events::MissionAction::EmitTelemetryMarker { .. } => {
+                        // Runner-side fan-out; kernel records the fire.
+                    }
+                    crate::events::MissionAction::Stop { label } => {
+                        self.stopped = Some(StopReason::MissionEnded {
+                            phase: self.current_phase,
+                            label: label.clone(),
+                        });
+                    }
+                    crate::events::MissionAction::RaiseHealthAlarm { .. }
+                    | crate::events::MissionAction::SetRegionState { .. }
+                    | crate::events::MissionAction::RequestSafeState { .. } => {
+                        // Health-region demotion is the FC commander's
+                        // job — the kernel records the fire in the typed
+                        // pending queue (above) and the commander reads
+                        // it via `drain_mission_fired_events`. Pure-sim
+                        // scenarios without an FC observe the fire but
+                        // do not act on it because the simulator owns no
+                        // region set.
                     }
                 }
-                crate::events::MissionAction::EmitTelemetryMarker { .. } => {
-                    // Runner-side fan-out; kernel records the fire.
+                if binding.once {
+                    self.fired_once_events.insert(binding.id);
                 }
-                crate::events::MissionAction::Stop { label } => {
-                    self.stopped = Some(StopReason::MissionEnded {
-                        phase: self.current_phase,
-                        label: label.clone(),
-                    });
-                }
-                crate::events::MissionAction::RaiseHealthAlarm { .. }
-                | crate::events::MissionAction::RequestSafeState { .. } => {
-                    // Health-region demotion is the FC commander's
-                    // job — the kernel records the fire in the typed
-                    // pending queue (above) and the commander reads
-                    // it via `drain_mission_fired_events`. Pure-sim
-                    // scenarios without an FC observe the fire but
-                    // do not act on it because the simulator owns no
-                    // region set.
-                }
-            }
-            if binding.once {
-                self.fired_once_events.insert(binding.id);
             }
         }
         let script_bindings = self.script_events_typed.clone();
@@ -1200,7 +1223,7 @@ where
                 self.fired_once_events.insert(binding.id);
             }
         }
-        if !transitioned {
+        if !fc_owned && !transitioned {
             self.fire_active_state_actions(step, time);
         }
         self.previous_event_scalars = Some(scalars);
@@ -3082,6 +3105,107 @@ mod tests {
     }
 
     #[test]
+    fn fc_owned_mission_event_does_not_fire_from_kernel_truth() {
+        let event_id = crate::events::EventId::from_path("mission.events.truth_stop");
+        let fc_phase = crate::events::PhaseId::from_path("mission.phases.fc_owned");
+        let events = vec![crate::events::EventBinding {
+            id: event_id,
+            trigger: crate::events::BuiltInEventTrigger::AtTime { time_s: 0.5 },
+            action: crate::events::MissionAction::Stop {
+                label: "truth-stop".to_owned(),
+            },
+            once: true,
+        }];
+        let mut kernel = zero_force_always_continue_kernel(1.0)
+            .with_mission_split(events, Vec::new(), None, None)
+            .expect("mission wiring");
+        kernel.set_external_mission_state(Some(fc_phase));
+
+        kernel.step().expect("step");
+
+        assert_eq!(kernel.current_phase(), Some(fc_phase));
+        assert!(kernel.stop_reason().is_none());
+        assert!(kernel.drain_mission_fired_events().is_empty());
+    }
+
+    #[test]
+    fn fc_owned_external_stop_action_records_without_truth_eval() {
+        let event_id = crate::events::EventId::from_path("mission.events.fc_stop");
+        let fc_phase = crate::events::PhaseId::from_path("mission.phases.fc_owned");
+        let mut kernel = zero_force_always_continue_kernel(1.0);
+        kernel.set_external_mission_state(Some(fc_phase));
+
+        kernel.record_external_mission_fired(crate::events::FiredEvent {
+            binding_id: event_id,
+            step: StepIndex::new(7),
+            time: SimTime::from_seconds(1.25),
+            action: crate::events::MissionAction::Stop {
+                label: "fc-stop".to_owned(),
+            },
+        });
+
+        assert!(matches!(
+            kernel.stop_reason(),
+            Some(StopReason::MissionEnded { label, phase }) if label == "fc-stop" && *phase == Some(fc_phase)
+        ));
+        let fired = kernel.drain_mission_fired_events();
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].binding_id, event_id);
+    }
+
+    #[test]
+    fn fc_owned_hsm_active_actions_do_not_fire_from_kernel_truth() {
+        let pad = crate::events::PhaseId::from_path("mission.phases.pad");
+        let future_event = crate::events::EventId::from_path("mission.events.future");
+        let graph = crate::events::MissionPhaseGraph::new(
+            vec![crate::events::Phase {
+                id: pad,
+                label: "pad".to_owned(),
+                allowed_effectors: Vec::new(),
+                allowed_engines: Vec::new(),
+            }],
+            Vec::new(),
+            pad,
+            &[future_event],
+        )
+        .expect("valid graph");
+        let hsm = crate::MissionStateMachine::new(
+            vec![MissionState {
+                id: pad,
+                label: "pad".to_owned(),
+                parent: None,
+                on_entry: Vec::new(),
+                on_exit: Vec::new(),
+                on_active: vec![crate::events::MissionAction::Stop {
+                    label: "active-stop".to_owned(),
+                }],
+                allowed_effectors: Vec::new(),
+                allowed_engines: Vec::new(),
+            }],
+            pad,
+        )
+        .expect("valid hsm");
+        let events = vec![crate::events::EventBinding {
+            id: future_event,
+            trigger: crate::events::BuiltInEventTrigger::AtTime { time_s: 100.0 },
+            action: crate::events::MissionAction::EmitTelemetryMarker {
+                tag: "future".to_owned(),
+            },
+            once: true,
+        }];
+        let mut kernel = zero_force_always_continue_kernel(1.0)
+            .with_mission_split(events, Vec::new(), Some(graph), Some(hsm))
+            .expect("mission wiring");
+        kernel.set_external_mission_state(Some(pad));
+
+        kernel.step().expect("step");
+
+        assert_eq!(kernel.current_phase(), Some(pad));
+        assert!(kernel.stop_reason().is_none());
+        assert!(kernel.drain_mission_fired_events().is_empty());
+    }
+
+    #[test]
     fn at_velocity_event_uses_speed_magnitude_from_kernel_state() {
         let event_id = crate::events::EventId::from_path("mission.events.burnout_velocity");
         let events = vec![crate::events::EventBinding {
@@ -3407,6 +3531,7 @@ mod tests {
                 crate::events::MissionAction::EnterState(_)
                 | crate::events::MissionAction::Stop { .. }
                 | crate::events::MissionAction::RaiseHealthAlarm { .. }
+                | crate::events::MissionAction::SetRegionState { .. }
                 | crate::events::MissionAction::RequestSafeState { .. } => None,
             })
             .collect();

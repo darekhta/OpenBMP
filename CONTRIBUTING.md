@@ -31,6 +31,42 @@ posture in [`EXPORT-CONTROL.md`](EXPORT-CONTROL.md).
    commit during review.
 7. A maintainer merges once CI is green and review is complete.
 
+## Protected Branch Gates
+
+The `main` branch must be protected in GitHub repository settings. Pull
+requests may merge only after the required CI status checks below pass
+and after code-owner review from `.github/CODEOWNERS`; the safety and
+dual-use checks are not optional even for maintainer or solo-author
+changes.
+
+Required status checks from `CI`:
+
+- `rustfmt`
+- `clippy`
+- `build`
+- `test`
+- `doc-tests`
+- `cargo-deny`
+- `cargo-audit`
+- `cargo-machete`
+- `cargo-hack feature powerset`
+- `msrv`
+- `typos`
+- `rustdoc`
+- `HAL portability`
+- `FC dependency graph tripwire`
+- `lockstep-clock tripwire`
+- `mission-vocabulary tripwire`
+- `dual-use field audit`
+- `dual-use reachability audit`
+- `requirements traceability`
+- `fc HAL build-time gate`
+- `determinism-gate`
+
+Changes that alter these job names, remove one of the checks, or make a
+dual-use tripwire advisory-only must be reviewed as a governance change
+and reflected in this list in the same PR.
+
 ## Code
 
 - Rust **1.95** stable, **Edition 2024**, MSRV pinned at `1.93`.

@@ -1,5 +1,7 @@
 //! End-to-end coverage for the hypersonic hybrid aero scenario example.
 
+#![allow(clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 
 use openbmp_core::ChannelId;

@@ -25,6 +25,10 @@
 //!   order.
 //! - `snapshot()` returns a `Vec<EngineSnapshot>` in the same order.
 
+#[cfg(not(feature = "std"))]
+use alloc::{boxed::Box, vec::Vec};
+use core::fmt;
+
 use openbmp_core::{Body, Duration, EngineId, Position3};
 
 use crate::engine::{EngineCommand, EngineModel, EngineSnapshot};
@@ -60,8 +64,8 @@ pub struct EngineCluster {
     layout: ClusterLayout,
 }
 
-impl std::fmt::Debug for EngineCluster {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for EngineCluster {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EngineCluster")
             .field("engine_count", &self.engines.len())
             .field("layout", &self.layout)

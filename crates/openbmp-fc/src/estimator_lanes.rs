@@ -65,11 +65,17 @@
 
 #![allow(clippy::doc_markdown)]
 
+use std::borrow::ToOwned;
+use std::boxed::Box;
+use std::string::String;
+use std::vec::Vec;
+
 use crate::error::EstimatorError;
 use crate::estimator::Estimator;
 use crate::topics::{
-    AttitudeEstimate, BarometerSample, EstimatorMode, EstimatorStatus, GnssSample, ImuSample,
-    MagnetometerSample, PositionEstimate, StarTrackerSample,
+    AttitudeEstimate, BarometerSample, EstimatorLaneSelection, EstimatorLaneStatus, EstimatorMode,
+    EstimatorStatus, GnssSample, ImuSample, MAX_ESTIMATOR_STATUS_LANES, MagnetometerSample,
+    PositionEstimate, StarTrackerSample,
 };
 
 /// Stable identifier for a registered lane. Mirrors the scenario
@@ -217,6 +223,31 @@ impl MultiLaneEstimator {
                 mode: entry.estimator.estimator_mode(),
             })
             .collect()
+    }
+
+    fn lane_selection_topic(&self) -> EstimatorLaneSelection {
+        let mut topic = EstimatorLaneSelection {
+            active_lane_index: u8::try_from(self.active_index).unwrap_or(u8::MAX),
+            lane_count: u8::try_from(self.lanes.len().min(MAX_ESTIMATOR_STATUS_LANES))
+                .unwrap_or(u8::MAX),
+            overflowed: self.lanes.len() > MAX_ESTIMATOR_STATUS_LANES,
+            all_lanes_failed: self.lanes.iter().all(|entry| !entry.healthy),
+            ..EstimatorLaneSelection::default()
+        };
+        for (index, entry) in self
+            .lanes
+            .iter()
+            .take(MAX_ESTIMATOR_STATUS_LANES)
+            .enumerate()
+        {
+            topic.lanes[index] = EstimatorLaneStatus {
+                lane_id: stable_lane_id(entry.id.as_str()),
+                lane_index: u8::try_from(index).unwrap_or(u8::MAX),
+                healthy: entry.healthy,
+                active: index == self.active_index,
+            };
+        }
+        topic
     }
 
     /// Recompute the active lane index per the configured policy.
@@ -437,6 +468,10 @@ impl Estimator for MultiLaneEstimator {
         self.lanes[self.active_index].estimator.estimator_mode()
     }
 
+    fn estimator_lane_selection(&self) -> Option<EstimatorLaneSelection> {
+        Some(self.lane_selection_topic())
+    }
+
     fn begin_tick(&mut self) {
         // Reset per-tick health so a transient failure on one tick
         // doesn't permanently sideline the lane. Persistent
@@ -447,6 +482,23 @@ impl Estimator for MultiLaneEstimator {
             entry.estimator.begin_tick();
         }
     }
+
+    fn set_high_dynamics_process_noise(&mut self, active: bool) {
+        for entry in &mut self.lanes {
+            entry.estimator.set_high_dynamics_process_noise(active);
+        }
+    }
+}
+
+fn stable_lane_id(id: &str) -> u64 {
+    const FNV_OFFSET_BASIS_64: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME_64: u64 = 0x100_0000_01b3;
+    let mut hash = FNV_OFFSET_BASIS_64;
+    for byte in id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME_64);
+    }
+    hash
 }
 
 // ---------------------------------------------------------------------
@@ -766,6 +818,28 @@ mod tests {
         let err = m.predict(0.01).unwrap_err();
         assert!(matches!(err, EstimatorError::InvalidConfig { .. }));
         assert!(m.lane_status().iter().all(|s| !s.healthy));
+    }
+
+    #[test]
+    fn simplex_lane_failover_is_visible_in_lane_selection_topic() {
+        let lanes = vec![
+            (
+                LaneId::from("primary"),
+                fake_predict_failure_lane(FakeFailure::InvalidConfig),
+            ),
+            (LaneId::from("backup"), fake_lane(0.0)),
+        ];
+        let mut m = MultiLaneEstimator::new(lanes, VoterPolicy::SimplexPassThrough);
+        m.predict(0.01).unwrap();
+        let topic = m.estimator_lane_selection().expect("lane selection");
+
+        assert_eq!(m.active_lane_id().as_str(), "backup");
+        assert_eq!(topic.active_lane_index, 1);
+        assert_eq!(topic.lane_count, 2);
+        assert!(!topic.lanes[0].healthy);
+        assert!(topic.lanes[1].healthy);
+        assert!(topic.lanes[1].active);
+        assert!(!topic.all_lanes_failed);
     }
 
     #[test]

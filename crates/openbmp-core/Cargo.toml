@@ -8,13 +8,17 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP foundation: math, units, frames, time, deterministic RNG."
 
+[features]
+default = ["std"]
+std     = ["nalgebra/std", "rand/std", "rand/std_rng", "serde/std", "uom/std"]
+
 [dependencies]
-nalgebra    = { workspace = true }
-uom         = { workspace = true }
-rand        = { workspace = true }
-rand_chacha = { workspace = true }
-serde       = { workspace = true }
-thiserror   = { workspace = true }
+nalgebra    = { version = "0.34.2", default-features = false, features = ["libm"] }
+uom         = { version = "0.38.0", default-features = false, features = ["f64", "si", "autoconvert"] }
+rand        = { version = "0.10.1", default-features = false }
+rand_chacha = { version = "0.10.0", default-features = false }
+serde       = { version = "1.0.228", default-features = false, features = ["derive"] }
+thiserror   = { version = "2.0.18", default-features = false }
 # num-traits is intentionally absent (removed per cargo-machete); add
 # it back if state types or integrators need generic numeric traits.
 

@@ -12,7 +12,12 @@
 //! provenance-pinned to open textbook relations. No inverse range,
 //! target, or aimpoint inputs exist in this module.
 
-use std::f64::consts::PI;
+#[cfg(not(feature = "std"))]
+use alloc::{vec, vec::Vec};
+use core::f64::consts::PI;
+
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 use crate::deck::{AeroCoefficients, AeroDeck};
 use crate::error::AeroError;

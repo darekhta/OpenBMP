@@ -11,6 +11,38 @@ use serde::{Deserialize, Serialize};
 /// that does not match. Bump on any breaking schema change.
 pub const PROTOCOL_VERSION: u16 = 1;
 
+/// Endpoint role advertised during the in-house lockstep handshake.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum BridgeEndpointRole {
+    /// OpenBMP simulator side: emits sensor frames and waits for matching commands.
+    Simulator,
+    /// External flight-controller side: consumes sensor frames and emits commands.
+    FlightController,
+}
+
+/// Versioned hello packet exchanged before a lockstep stream starts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BridgeHelloPacket {
+    /// Wire protocol version supported by the sender.
+    pub protocol_version: u16,
+    /// Sender role in the lockstep exchange.
+    pub role: BridgeEndpointRole,
+    /// Maximum length-prefixed payload the sender will accept, in bytes.
+    pub max_payload_len: u32,
+}
+
+impl BridgeHelloPacket {
+    /// Construct a hello packet for the current protocol version.
+    #[must_use]
+    pub const fn new(role: BridgeEndpointRole, max_payload_len: u32) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            role,
+            max_payload_len,
+        }
+    }
+}
+
 /// Simulated sensor measurements emitted by the simulator each tick.
 ///
 /// Every optional field is `None` when the scenario does not model
@@ -56,4 +88,72 @@ pub struct ActuatorCommandPacket {
     pub effector_commands: Vec<(u32, f64)>,
     /// `(engine_id, throttle_unit)` pairs, throttle in `[0, 1]`.
     pub engine_throttles: Vec<(u32, f64)>,
+}
+
+/// Result of consuming one simulator sensor frame.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum StepAckStatus {
+    /// The frame was consumed and matching commands are ready or intentionally empty.
+    Accepted,
+    /// The frame was rejected because it arrived after a newer step.
+    RejectedLate,
+    /// The frame was rejected because the receiver could not process it.
+    RejectedFault,
+}
+
+/// Explicit acknowledgement for a lockstep sensor frame.
+///
+/// In the normal path an [`ActuatorCommandPacket`] with the same
+/// `step` and `sim_time_s` is also an acknowledgement. This packet is
+/// available for empty-command, fault, or heartbeat paths where the
+/// receiver must still unblock the simulator deterministically.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StepAckPacket {
+    /// Simulation time of the sensor frame being acknowledged (s).
+    pub sim_time_s: f64,
+    /// Kernel step index of the sensor frame being acknowledged.
+    pub step: u64,
+    /// Receiver disposition for this step.
+    pub status: StepAckStatus,
+}
+
+/// Generic lockstep fault code.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum BridgeFaultCode {
+    /// Peer protocol version did not match [`PROTOCOL_VERSION`].
+    ProtocolVersionMismatch,
+    /// A response referenced a different step than the outstanding frame.
+    StepMismatch,
+    /// A response referenced a different simulation timestamp.
+    TimeMismatch,
+    /// The incoming payload exceeded the receiver's advertised limit.
+    PayloadTooLarge,
+    /// The incoming payload could not be decoded.
+    DecodeFailed,
+    /// The receiver hit an application-level fault outside the wire schema.
+    ApplicationFault,
+}
+
+/// Fault packet for fail-closed lockstep streams.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BridgeFaultPacket {
+    /// Step associated with the fault, when known.
+    pub step: Option<u64>,
+    /// Machine-readable fault class.
+    pub code: BridgeFaultCode,
+}
+
+/// One typed message on the in-house HIL stream.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum BridgeMessage {
+    /// Initial protocol-version and role announcement.
+    Hello(BridgeHelloPacket),
+    /// Simulator-to-controller sensor frame.
+    Sensor(SensorPacket),
+    /// Controller-to-simulator actuator command frame.
+    Command(ActuatorCommandPacket),
+    /// Controller-to-simulator explicit step acknowledgement.
+    Ack(StepAckPacket),
+    /// Either direction fail-closed fault notification.
+    Fault(BridgeFaultPacket),
 }

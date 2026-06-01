@@ -89,9 +89,9 @@ fn parse(csv: &Path) -> Vec<Row> {
         .collect()
 }
 
-fn at<'a>(rows: &'a [Row], t: f64) -> &'a Row {
+fn at(rows: &[Row], t: f64) -> &Row {
     rows.iter()
-        .min_by(|a, b| (a.t - t).abs().partial_cmp(&(b.t - t).abs()).unwrap())
+        .min_by(|a, b| (a.t - t).abs().total_cmp(&(b.t - t).abs()))
         .expect("row")
 }
 

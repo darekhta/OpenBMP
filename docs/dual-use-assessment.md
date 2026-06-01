@@ -63,7 +63,7 @@ near-the-line capability.
 | 1 — Architectural *(primary)* | Forward-only trait signatures; input types with no target / aimpoint / desired miss-distance field | `openbmp-physics/src/profile.rs`, `openbmp-fc` | Making the operational objective *unconstructible*, not merely unnamed |
 | 2 — Lexical | Parse-time lint `FORBIDDEN_SAFETY_TERMS`, run before deserialization | `openbmp-scenario/src/lint.rs` (`scenario.rs:49`) | Rejecting engagement / targeting vocabulary in keys and short values |
 | 3 — Provenance | No real fielded-vehicle data; SHA-256 content pins; inline-data tripwires | [`data-provenance.md`](data-provenance.md), CI | Denying real vehicle / motor / TPS parameter sets |
-| 4 — Governance | Forward-not-inverse PR checklist + enforcement-tier declaration | [`../CONTRIBUTING.md`](../CONTRIBUTING.md), PR template | Catching boundary drift in review |
+| 4 — Governance | Forward-not-inverse PR checklist, enforcement-tier declaration, protected required status checks for the safety / dual-use CI jobs | [`../CONTRIBUTING.md`](../CONTRIBUTING.md), PR template, repository branch-protection settings | Catching boundary drift in review and preventing maintainer-only bypasses |
 | 5 — Documentation / policy | This assessment, export-control notice, acceptable-use policy, disclaimers | repo root + `docs/` | Declaring intent and user responsibility |
 
 The rule, stated plainly: **a new near-the-line capability lands only when a
@@ -99,7 +99,7 @@ Each near-the-line item is admissible only under the constraint named here.
 - **Monte-Carlo dispersion** — scatter around the *predicted* mean, sampled from
   *declared* input uncertainties (winds, ballistic coefficient, burnout-state
   covariance) and propagated forward. There is **no aimpoint to measure
-  against**; `cep50_m` and `miss_distance_from_nominal_m` are output-only
+  against**; `cep50_m` and `radial_offset_from_nominal_m` are output-only
   statistics relative to the sample mean or nominal forward footprint, not a
   target. Seeded, deterministic RNG; fails closed when dispersion is requested
   without a declared uncertainty source.

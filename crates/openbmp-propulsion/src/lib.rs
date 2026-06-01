@@ -62,11 +62,17 @@
 //! [`cluster::EngineCluster`] live in `openbmp-vehicle`
 //! alongside the gravity / atmosphere / wind / aero adapters.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
 pub mod cluster;
 pub mod engine;
 pub mod error;
 pub mod grain;
 pub mod motor;
+#[cfg(feature = "parser")]
 pub mod parser;
 
 pub use cluster::{ClusterLayout, EngineCluster};

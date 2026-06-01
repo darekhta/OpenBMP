@@ -2,7 +2,7 @@
 //! insertion with upper-stage propellant SLOSH damped by an RCS
 //! (reaction-control) coast attitude hold.
 //!
-//! With an EquivalentPendulum slosh model on the stage-2 tank, the
+//! With an `EquivalentPendulum` slosh model on the stage-2 tank, the
 //! engines-off coast has no gimbal authority and no aerodynamic moment in
 //! vacuum. The upper stage's three body-axis `direct_torque` RCS effectors
 //! provide the active coast attitude-hold path; with the corrected
@@ -28,8 +28,14 @@
 //!      orbit drifted to reentry over minutes; that is now fixed, so insertion
 //!      is a genuine stable orbit rather than a burn-cutoff snapshot.)
 
-#![allow(clippy::expect_used, clippy::panic, clippy::float_cmp)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::too_many_lines
+)]
 
+use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -142,7 +148,12 @@ fn orbit(row: &Row) -> Orbit {
 
 fn at(rows: &[Row], t: f64) -> &Row {
     rows.iter()
-        .min_by(|a, b| (a.t - t).abs().partial_cmp(&(b.t - t).abs()).unwrap())
+        .min_by(|a, b| {
+            (a.t - t)
+                .abs()
+                .partial_cmp(&(b.t - t).abs())
+                .unwrap_or(Ordering::Equal)
+        })
         .expect("row")
 }
 

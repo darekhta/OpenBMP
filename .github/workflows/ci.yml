@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Weekly heavier dispersion campaign. PRs keep the normal deterministic
+    # gates; this lane carries the Monte-Carlo acceptance burden.
+    - cron: "17 3 * * 0"
 
 env:
   CARGO_TERM_COLOR: always
@@ -213,8 +218,32 @@ jobs:
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
-      - run: cargo build -p openbmp-fc --no-default-features --locked
-      - run: cargo test -p openbmp-fc --no-default-features --locked
+      - run: rustup target add thumbv7em-none-eabihf
+      - run: cargo check -p openbmp-core -p openbmp-state -p openbmp-models -p openbmp-mission -p openbmp-physics -p openbmp-propulsion -p openbmp-aero -p openbmp-sensors -p openbmp-hal -p openbmp-fc --no-default-features --target thumbv7em-none-eabihf --locked
+      - run: cargo check -p openbmp-hal --no-default-features --locked
+      - run: cargo test -p openbmp-hal flight_record --locked
+      - run: cargo build -p openbmp-fc --no-default-features --features std --locked
+      - run: cargo test -p openbmp-fc --no-default-features --features std --locked
+
+  # ----------------------------------------------------------------------
+  # Flight-core dependency graph tripwire
+  #
+  # Required structural guard: `openbmp-fc` must not acquire any
+  # simulator/tooling dependency edge. This is separate from the
+  # compile-only HAL portability build so renamed deps, target-
+  # conditional deps, and feature-activated `dep:*` aliases fail
+  # closed at manifest level.
+  # ----------------------------------------------------------------------
+  fc-dependency-graph:
+    name: FC dependency graph tripwire
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: cargo test -p openbmp-testkit --test fc_dependency_tripwire --locked
 
   # ----------------------------------------------------------------------
   # Lockstep-clock tripwire — fails if any wall-clock API
@@ -255,16 +284,71 @@ jobs:
       - run: cargo test -p openbmp-testkit --lib --locked mission_vocabulary
 
   # ----------------------------------------------------------------------
+  # Dual-use field audit
+  #
+  # Locks the public field sets of the forward-only footprint /
+  # Monte-Carlo structs. Any field-set change is a Tier-1 safety
+  # review event because these surfaces must not grow a target,
+  # aimpoint, range-table, or miss-distance-to-target input.
+  # ----------------------------------------------------------------------
+  dual-use-field-audit:
+    name: dual-use field audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: cargo test -p openbmp-testkit --lib --locked dual_use_field_lints
+
+  # ----------------------------------------------------------------------
+  # Dual-use reachability audit
+  #
+  # Separate from the manifest dependency graph: `openbmp-fc` may
+  # legitimately depend on `openbmp-physics`, but it must never reach
+  # the offline free-flight / footprint propagator symbols. This also
+  # locks the scenario-consumer agreement that BallisticState remains a
+  # forward-output consumed only by offline footprint post-processing.
+  # ----------------------------------------------------------------------
+  dual-use-reachability:
+    name: dual-use reachability audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: cargo test -p openbmp-testkit --test dual_use_reachability_tripwire --locked
+
+  # ----------------------------------------------------------------------
+  # Requirements traceability
+  #
+  # Validates the checked-in requirements register:
+  #   - requirement and verification IDs are unique and well-formed;
+  #   - every requirement has verification evidence;
+  #   - every verification item links back to at least one requirement;
+  #   - evidence paths exist and contain the named test / CI anchors.
+  # ----------------------------------------------------------------------
+  requirements-traceability:
+    name: requirements traceability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 scripts/check_requirements_traceability.py
+
+  # ----------------------------------------------------------------------
   # HAL build-time gate
   #
   # `openbmp-fc` carries the test-only `ScenarioStateOverride` topic
-  # gated behind `#[cfg(not(feature = "hal"))]`. A HAL adopter sets
-  # `--features hal --no-default-features` and the topic compiles out
-  # entirely. Without enforcement, an accidental `#[cfg]` change
+  # gated behind `#[cfg(not(feature = "hal"))]`. The current host HAL
+  # build uses `--features "std hal" --no-default-features` and the
+  # topic compiles out entirely. Without enforcement, an accidental `#[cfg]` change
   # could silently leak the test-only override into a HAL build.
   #
   # This job:
-  #   1. Builds `openbmp-fc` in HAL mode (`--features hal
+  #   1. Builds `openbmp-fc` in HAL mode (`--features "std hal"
   #      --no-default-features`); the build must succeed.
   #   2. Compiles a probe that imports `ScenarioStateOverride` against
   #      the HAL build; the probe must fail to build (the symbol must
@@ -285,7 +369,7 @@ jobs:
       # test-only `ScenarioStateOverride` topic gated out. The
       # build must succeed cleanly.
       - name: HAL build of openbmp-fc must succeed
-        run: cargo build -p openbmp-fc --no-default-features --features hal --locked
+        run: cargo build -p openbmp-fc --no-default-features --features "std hal" --locked
       # The default (sim) build must still expose
       # `ScenarioStateOverride` so the simulator can use it. The
       # `hal_topic_gate` test in `crates/openbmp-fc/tests/`
@@ -295,12 +379,12 @@ jobs:
       - name: ScenarioStateOverride must be visible in default build
         run: cargo test -p openbmp-fc --test hal_topic_gate --locked
       # The same test target compiled with `--features hal
-      # --no-default-features` must compile down to no test bodies
+      # --no-default-features --features "std hal"` must compile down to no test bodies
       # (the cfg-gated module is empty under HAL). The compile pass
       # alone proves the gate behaves; we just check that
       # `cargo build --tests` succeeds under HAL.
       - name: HAL build of fc test targets must succeed
-        run: cargo build -p openbmp-fc --tests --no-default-features --features hal --locked
+        run: cargo build -p openbmp-fc --tests --no-default-features --features "std hal" --locked
 
   # ----------------------------------------------------------------------
   # Determinism gate
@@ -327,6 +411,17 @@ jobs:
   #    end-to-end (assembly tree, engine cluster, mission events,
   #    drogue + main recovery) so a regression on any of those
   #    surfaces fails the gate.
+  #
+  # 4. `scenarios/diff-flatness-figure-eight/scenario.toml` —
+  #    the canonical closed-loop rigid-body figure-eight. Runs twice
+  #    with clean tracing and byte-diffs the Parquet archive.
+  #
+  # 5. `scenarios/phalcon9/phalcon9-orbit.toml` — the canonical
+  #    closed-loop orbital insertion. Runs twice with clean tracing
+  #    and byte-diffs the Parquet archive. This is intentionally a
+  #    heavier gate than the analytic/public-reference cases because
+  #    the sequencer migration must not drift the flagship SIL case
+  #    silently.
   #
   # Cross-platform matrix (macos/windows) runs the same scenarios as
   # state-stable smoke tests via `cargo test -p openbmp-cli --tests`.
@@ -430,6 +525,61 @@ jobs:
           diff -q \
               target/det/calisto1/calisto.parquet \
               target/det/calisto3/calisto.parquet
+      # ----- Differential-flatness closed-loop byte-stability gate ---
+      - name: Run diff-flatness figure-eight twice (clean tracing)
+        run: |
+          mkdir -p target/det/flatness1 target/det/flatness2
+          ./target/release/openbmp run \
+              scenarios/diff-flatness-figure-eight/scenario.toml \
+              --output-parquet target/det/flatness1/diff-flatness-figure-eight.parquet
+          ./target/release/openbmp run \
+              scenarios/diff-flatness-figure-eight/scenario.toml \
+              --output-parquet target/det/flatness2/diff-flatness-figure-eight.parquet
+      - name: Diff diff-flatness Parquet bytes
+        run: |
+          ./target/release/openbmp diff \
+              target/det/flatness1/diff-flatness-figure-eight.parquet \
+              target/det/flatness2/diff-flatness-figure-eight.parquet
+      # ----- Phalcon-9 closed-loop orbital byte-stability gate --------
+      - name: Run Phalcon-9 orbit twice (clean tracing)
+        run: |
+          mkdir -p target/det/phalcon9-orbit1 target/det/phalcon9-orbit2
+          ./target/release/openbmp run \
+              scenarios/phalcon9/phalcon9-orbit.toml \
+              --output-csv     target/det/phalcon9-orbit1/phalcon9-orbit.csv \
+              --output-parquet target/det/phalcon9-orbit1/phalcon9-orbit.parquet
+          ./target/release/openbmp run \
+              scenarios/phalcon9/phalcon9-orbit.toml \
+              --output-csv     target/det/phalcon9-orbit2/phalcon9-orbit.csv \
+              --output-parquet target/det/phalcon9-orbit2/phalcon9-orbit.parquet
+      - name: Diff Phalcon-9 orbit Parquet bytes
+        run: |
+          ./target/release/openbmp diff \
+              target/det/phalcon9-orbit1/phalcon9-orbit.parquet \
+              target/det/phalcon9-orbit2/phalcon9-orbit.parquet
+
+  # ----------------------------------------------------------------------
+  # Monte-Carlo nightly
+  #
+  # Heavier seeded dispersion evidence, exposed as its own scheduled/manual
+  # lane so acceptance statistics stay reproducible and visible.
+  # ----------------------------------------------------------------------
+  monte-carlo-nightly:
+    name: monte-carlo-nightly
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - name: Footprint Monte-Carlo reporting
+        run: cargo test -p openbmp-cli footprint_mc_writes_declared_outputs --locked
+      - name: Phalcon-9 Monte-Carlo determinism
+        run: cargo test -p openbmp-cli phalcon9_orbit_monte_carlo_is_deterministic --locked
+      - name: Phalcon-9 Monte-Carlo robustness
+        run: cargo test -p openbmp-cli phalcon9_orbit_monte_carlo_robustness --locked -- --nocapture
 
   # ----------------------------------------------------------------------
   # Cross-platform state-stable gate

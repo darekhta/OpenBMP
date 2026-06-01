@@ -21,10 +21,12 @@
 //! is dropped. Validation runs synchronously on the calling thread.
 
 use std::any::{Any, TypeId};
-
-use indexmap::IndexMap;
+use std::boxed::Box;
+use std::string::String;
+use std::vec::Vec;
 
 use crate::error::TableError;
+use crate::stable_map::StableIndexMap;
 
 /// Marker trait implemented by every typed table.
 pub trait Table: 'static + Clone {
@@ -46,7 +48,7 @@ pub trait Table: 'static + Clone {
 /// Runtime table registry.
 #[derive(Default)]
 pub struct Tables {
-    cells: IndexMap<TypeId, TableCell>,
+    cells: StableIndexMap<TypeId, TableCell>,
 }
 
 struct TableCell {

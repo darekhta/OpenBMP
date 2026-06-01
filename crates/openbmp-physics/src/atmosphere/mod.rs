@@ -33,13 +33,17 @@
 //! and simulator consumers share one HAL-portable atmosphere surface.
 
 pub mod isothermal;
+#[cfg(feature = "std")]
 pub mod nrlmsis2_compat;
+#[cfg(feature = "std")]
 pub mod nrlmsise00;
 pub mod piecewise_exponential;
 pub mod us_standard_1976;
 
 pub use isothermal::IsothermalAtmosphere;
+#[cfg(feature = "std")]
 pub use nrlmsis2_compat::{Nrlmsis2Compat, Nrlmsis2CompatOutputs};
+#[cfg(feature = "std")]
 pub use nrlmsise00::{Nrlmsise00Full, Nrlmsise00Inputs, Nrlmsise00Outputs, Nrlmsise00Static};
 pub use piecewise_exponential::{
     ExponentialLayer, PIECEWISE_EXP_MAX_GEOMETRIC_M, PiecewiseExpExoatmosphericPolicy,
@@ -48,6 +52,9 @@ pub use piecewise_exponential::{
 pub use us_standard_1976::{ExoatmosphericPolicy, UsStandard1976};
 
 use openbmp_core::SimTime;
+
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 use crate::error::PhysicsError;
 

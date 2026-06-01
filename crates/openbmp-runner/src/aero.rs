@@ -20,6 +20,10 @@ use crate::error::RunnerError;
 
 const HYPERSONIC_DECK_GUARD_MACH: f64 = 5.0;
 
+/// Built aerodynamic method plus reference length (m), or `None`
+/// when the scenario has no aerodynamic model.
+pub type BuiltAeroMethod = Option<(Box<dyn AeroMethod>, f64)>;
+
 /// Load or bake the aerodynamic deck declared by `[aero]`.
 ///
 /// # Errors
@@ -51,7 +55,7 @@ pub fn load_aero_deck(
 pub fn build_aero_method(
     document: &ScenarioDocument,
     deck: Option<AeroDeck>,
-) -> Result<Option<(Box<dyn AeroMethod>, f64)>, RunnerError> {
+) -> Result<BuiltAeroMethod, RunnerError> {
     let Some(aero) = &document.aero else {
         return Ok(None);
     };

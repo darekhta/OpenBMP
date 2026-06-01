@@ -50,7 +50,7 @@ fn mass_series(csv: &Path) -> Vec<(f64, f64)> {
 fn mass_at(series: &[(f64, f64)], t: f64) -> f64 {
     series
         .iter()
-        .min_by(|a, b| (a.0 - t).abs().partial_cmp(&(b.0 - t).abs()).unwrap())
+        .min_by(|a, b| (a.0 - t).abs().total_cmp(&(b.0 - t).abs()))
         .expect("sample")
         .1
 }
@@ -63,7 +63,7 @@ fn engine_restart_does_two_burns_separated_by_coast() {
         .iter()
         .find(|p| p.extension().and_then(|e| e.to_str()) == Some("csv"))
         .expect("CSV output");
-    let series = mass_series(&csv);
+    let series = mass_series(csv);
     assert!(series.len() > 1000);
 
     // First burn: 0.5 -> 2.9 s consumes propellant.

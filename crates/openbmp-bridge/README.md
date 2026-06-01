@@ -2,18 +2,20 @@
 
 L7 optional generic socket bridge for the academic HIL pattern.
 
-**Status:** Stub. The wire-format types and reference client are defined; full
-schema round-trip handling is future work.
+**Status:** Generic schema and lockstep validators. This crate defines the
+in-house wire-format packets, length-prefixed `postcard` framing, and the
+step/time checks that keep a simulator-side plant from advancing past an
+unacknowledged sensor frame.
 
 ## Purpose
 
 A generic socket bridge enabling academic HIL-style scenarios without
 shipping real device drivers or real bus protocols.
 
-- Wire format: in-house `postcard`-encoded
-  `BridgeSensorPacket` / `BridgeCommandPacket` per
-  `docs/software-architecture.md` § HIL Pattern.
-- Reference Rust client library.
+- Wire format: in-house `postcard`-encoded `SensorPacket`,
+  `ActuatorCommandPacket`, `BridgeHelloPacket`, `StepAckPacket`, and
+  `BridgeMessage` per `docs/software-architecture.md` § HIL Pattern.
+- Reference Rust codec and lockstep validation helpers.
 
 ## What this crate **does NOT** ship
 
@@ -32,8 +34,10 @@ export-control posture (see
 
 ## Inputs and Outputs
 
-Sensor packets out, command packets in. All payloads are in-house
-types defined here.
+Sensor packets out, command or acknowledgement packets in. A command packet
+unblocks the simulator only when its `step` and `sim_time_s` exactly match the
+outstanding sensor packet. `StepAckPacket` exists for empty-command,
+heartbeat, and fail-closed paths.
 
 ## Units and Frames
 
@@ -54,15 +58,16 @@ wire format. Real protocol adapters are out of repository scope.
 
 ## Determinism
 
-Bridge runs on `tokio`; this crate is **the only crate in the
-workspace permitted to depend on tokio**. Determinism guarantees
-inside the bridge are state-stable, not bit-stable, because of the
-async runtime.
+This crate is only schema, framing, and validation logic; it ships no async
+runtime or socket loop. Deterministic lockstep is enforced by exact
+`step`/`sim_time_s` matching, while wall-clock timing and retry behavior belong
+to downstream transports.
 
 ## Validation
 
-`experimental` (stub). Future validation covers schema round trips and
-fail-closed handling of malformed packets.
+`experimental`. Current validation covers schema round trips, stream framing,
+protocol-version checks, and fail-closed rejection of mismatched lockstep
+responses.
 
 ## Data Provenance
 

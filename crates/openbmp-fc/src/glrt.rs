@@ -40,6 +40,10 @@
 //! produce bit-identical outputs across reruns.
 
 use openbmp_physics::statistics::chi_square_inverse_cdf_wilson_hilferty;
+use std::vec::Vec;
+
+#[cfg(not(feature = "std"))]
+use alloc::vec;
 
 /// Outcome of a single `step()` call.
 #[derive(Copy, Clone, Debug, PartialEq)]

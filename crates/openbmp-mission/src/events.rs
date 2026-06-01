@@ -46,8 +46,11 @@
 //! `docs/software-architecture.md § MissionPhaseGraph and Event
 //! Scheduling` for the contract.
 
-use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::borrow::Cow;
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use openbmp_core::{BodyId, SimTime, StepIndex};
 use thiserror::Error;
@@ -522,6 +525,16 @@ pub enum MissionAction {
         /// from `nominal` to `abort_requested` (see
         /// `mission-states-vocabulary.md § Health Region`).
         alarm: AlarmCode,
+    },
+    /// Set an orthogonal region to a declared state. This is the
+    /// generic mission-vocabulary hook for phase-driven regime
+    /// signals such as `estimator_regime.boost_mode`; it carries no
+    /// simulator-side actuator or plant authority.
+    SetRegionState {
+        /// Target orthogonal region.
+        region: RegionId,
+        /// Target state inside the named region.
+        state: StateId,
     },
     /// Request a safe-state transition with a human-readable reason.
     /// Declarative replacement for the legacy hand-rolled

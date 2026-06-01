@@ -1,0 +1,494 @@
+schema_version = 1
+
+[[requirements]]
+id = "REQ-SIL-001"
+title = "FC-owned mission decisions use the estimated-state commander"
+statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
+verification = ["V-SIL-001", "V-SIL-002"]
+
+[[requirements]]
+id = "REQ-SIL-002"
+title = "FC scenarios reject ideal truth sensors"
+statement = "A scenario that declares a flight-controller block must not use an ideal-state sensor, because that bypasses the SIL sensor boundary."
+verification = ["V-SIL-003"]
+
+[[requirements]]
+id = "REQ-SIL-003"
+title = "Propellant depletion is visible to the commander"
+statement = "The commander reads onboard PropellantState mass fraction when evaluating mass-fraction mission triggers."
+verification = ["V-SIL-004"]
+
+[[requirements]]
+id = "REQ-SIL-004"
+title = "Unsupported FC relative-navigation triggers fail closed"
+statement = "A flight-controller-owned mission must reject relative-distance or relative-speed triggers until an onboard relative-navigation observable is wired, so simulator truth-relative maps cannot silently drive FC mission decisions."
+verification = ["V-SIL-005"]
+
+[[requirements]]
+id = "REQ-SCHED-001"
+title = "FC job rates and budgets are declarative I-loads"
+statement = "Estimator, guidance, commander, autopilot, mixer, health, and FDIR rates and declared budgets are configurable through the scenario FC scheduler block with validated positive values."
+verification = ["V-SCHED-001", "V-SCHED-002"]
+
+[[requirements]]
+id = "REQ-SCHED-002"
+title = "Scheduler budget overruns are health and FDIR visible"
+statement = "A scheduler budget overrun publishes an overrun event; sustained overrun bursts set the health failsafe flag and FDIR can latch the scheduler-overrun fault bit."
+verification = ["V-SCHED-003"]
+
+[[requirements]]
+id = "REQ-RT-001"
+title = "Known FC tick allocation regressions are guarded"
+statement = "The scheduler dispatch hot path must use a registration-time cached order rather than sorting or collecting per tick, the commander tick must not clone the full mission binding table each tick, and voted sensor ingest jobs must reuse scratch buffers instead of allocating them per tick."
+verification = ["V-RT-001"]
+
+[[requirements]]
+id = "REQ-BUS-001"
+title = "Canonical FC topics have static bus indices"
+statement = "Every canonical flight-controller topic exposes a stable compile-time topic-table index for static bus dictionaries and downstream fixed-storage backends."
+verification = ["V-BUS-001"]
+
+[[requirements]]
+id = "REQ-ILOAD-001"
+title = "Flight I-load blobs are versioned and integrity checked"
+statement = "A serialized flight I-load is wrapped in a fixed envelope with a schema version, payload length, CRC-32 integrity check, and primary/fallback validation path."
+verification = ["V-ILOAD-001"]
+
+[[requirements]]
+id = "REQ-NAV-001"
+title = "High-dynamics navigation process noise is phase driven"
+statement = "The EKF applies the high-dynamics position and velocity process-noise scale only when the commander-published estimator-regime state is boost mode."
+verification = ["V-NAV-001", "V-NAV-002", "V-NAV-003"]
+
+[[requirements]]
+id = "REQ-FDIR-001"
+title = "Estimator lane failover is visible to FDIR"
+statement = "When a multi-lane estimator switches away from the primary lane or loses all lanes, it publishes lane-selection status and FDIR latches an estimator-lane failover fault bit."
+verification = ["V-FDIR-001"]
+
+[[requirements]]
+id = "REQ-FDIR-002"
+title = "HAL sensor read failures surface as FDIR sensor faults"
+statement = "Sensor ingest publishes unhealthy samples when a HAL or synthetic sensor read fails; the health monitor turns unhealthy samples into failsafe flags and FDIR latches the corresponding sensor fault bit."
+verification = ["V-FDIR-002"]
+
+[[requirements]]
+id = "REQ-FDIR-003"
+title = "FDIR redlines are declarative I-load watchpoints"
+statement = "A scenario can declare FDIR redline watchpoints; the runner maps them into FdirParams and the FDIR job latches a fault bit when the watched estimate exceeds the limit."
+verification = ["V-FDIR-003"]
+
+[[requirements]]
+id = "REQ-HAL-001"
+title = "Shared and flight-math contracts compile without std"
+statement = "The shared core, state, model, mission, HAL, bare sensor-trait, no_std flight-math physics, propulsion core, aerodynamics core, and alloc-aware flight controller crates compile for the embedded thumb target with default features disabled."
+verification = ["V-HAL-001"]
+
+[[requirements]]
+id = "REQ-HAL-002"
+title = "HAL provides a no-heap static bus contract"
+statement = "The HAL crate exposes a fixed-capacity latest-value StaticBus keyed by Topic::INDEX and backed by explicit payload encoders rather than TypeId, Any, or heap storage."
+verification = ["V-HAL-002"]
+
+[[requirements]]
+id = "REQ-HAL-003"
+title = "HAL adopter contract is documented"
+statement = "The repository documents the HAL boundary, the single-threaded lockstep stance, sensor-error-to-FDIR mapping, I-load/storage contract, dual-use limits, and the current PIL/HIL limits for downstream adopters."
+verification = ["V-HAL-003"]
+
+[[requirements]]
+id = "REQ-HAL-004"
+title = "HAL flight records are bounded and integrity checked"
+statement = "The HAL crate exposes a fixed flight-recorder frame format with version, record kind, sequence, timestamp, payload length, CRC-32, and a no-heap queue with explicit overflow policy."
+verification = ["V-HAL-004"]
+
+[[requirements]]
+id = "REQ-HIL-001"
+title = "HIL bridge lockstep messages are versioned and step-matched"
+statement = "The optional in-house HIL bridge schema carries a versioned hello, sensor/command/ack/fault messages, and validators that reject command or acknowledgement packets whose step or simulation timestamp does not match the outstanding sensor frame."
+verification = ["V-HIL-001"]
+
+[[requirements]]
+id = "REQ-DUAL-001"
+title = "Forward-only dual-use boundary is mechanically guarded"
+statement = "Flight-controller and board-facing code must not reach offline free-flight footprint capabilities, expose target-like footprint input fields, or emit footprint Monte-Carlo output names that frame nominal-relative dispersion as target accuracy."
+verification = ["V-DUAL-001", "V-DUAL-002", "V-DUAL-003"]
+
+[[requirements]]
+id = "REQ-GOV-001"
+title = "Safety gates have protected review ownership"
+statement = "Repository governance documents require protected branch status checks and code-owner review for safety and dual-use changes, including maintainer and solo-author changes."
+verification = ["V-GOV-001"]
+
+[[requirements]]
+id = "REQ-TRACE-001"
+title = "Requirements and verification evidence remain linked"
+statement = "Every requirement in this register has verification evidence, and every verification item points back to at least one valid requirement."
+verification = ["V-TRACE-001"]
+
+[[requirements]]
+id = "REQ-DET-001"
+title = "Telemetry diffs can emit determinism provenance"
+statement = "The diff tool can write a machine-readable report containing the comparison result, first divergence if present, host/toolchain provenance, floating-point contract, and Parquet archive metadata."
+verification = ["V-DET-001"]
+
+[[requirements]]
+id = "REQ-STD-001"
+title = "Standards posture avoids certification overclaim"
+statement = "The repository documents that upstream OpenBMP uses civil aerospace and simulation standards as vocabulary and evidence organization only; certification, qualification, real-time proof, and export-control posture are re-earned by downstream real-vehicle forks."
+verification = ["V-STD-001"]
+
+[[requirements]]
+id = "REQ-CONFORM-001"
+title = "A fork-runnable conformance entry point exists"
+statement = "The CLI exposes a conformance command that validates and runs one or more scenarios without writing telemetry, so downstream forks can smoke-test the shared scenario and runner path."
+verification = ["V-CONFORM-001"]
+
+[[requirements]]
+id = "REQ-MC-001"
+title = "Seeded Monte-Carlo evidence has a visible CI lane"
+statement = "The repository exposes a scheduled or manually runnable CI lane for the seeded footprint and ascent Monte-Carlo checks, so dispersion acceptance evidence is reproducible outside ad hoc local runs."
+verification = ["V-MC-001"]
+
+[[verification]]
+id = "V-SIL-001"
+kind = "test"
+command = "cargo test -p openbmp-sim kernel::tests::fc_owned --locked"
+paths = ["crates/openbmp-sim/src/kernel.rs"]
+contains = ["fc_owned"]
+requirements = ["REQ-SIL-001"]
+
+[[verification]]
+id = "V-SIL-002"
+kind = "test"
+command = "cargo test -p openbmp-cli closed_loop_imm_runs_to_completion --locked"
+paths = ["crates/openbmp-cli/tests/closed_loop_imm_e2e.rs"]
+contains = ["closed_loop_imm_runs_to_completion"]
+requirements = ["REQ-SIL-001"]
+
+[[verification]]
+id = "V-SIL-003"
+kind = "test"
+command = "cargo test -p openbmp-scenario rejects_fc_scenario_with_ideal_state_sensor --locked"
+paths = ["crates/openbmp-scenario/src/scenario.rs"]
+contains = ["rejects_fc_scenario_with_ideal_state_sensor"]
+requirements = ["REQ-SIL-002"]
+
+[[verification]]
+id = "V-SIL-004"
+kind = "test"
+command = "cargo test -p openbmp-fc at_mass_fraction_transition_uses_propellant_state --locked"
+paths = ["crates/openbmp-fc/src/commander.rs"]
+contains = ["at_mass_fraction_transition_uses_propellant_state"]
+requirements = ["REQ-SIL-003"]
+
+[[verification]]
+id = "V-SIL-005"
+kind = "test"
+command = "cargo test -p openbmp-scenario rejects_fc_scenario_with_relative_nav_trigger --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "docs/scenario-format.md",
+]
+contains = [
+  "validate_fc_relative_nav_observability",
+  "rejects_fc_scenario_with_relative_nav_trigger",
+  "at_relative_distance",
+]
+requirements = ["REQ-SIL-004"]
+
+[[verification]]
+id = "V-SCHED-001"
+kind = "test"
+command = "cargo test -p openbmp-scenario fc_scheduler --locked"
+paths = ["crates/openbmp-scenario/src/scenario.rs"]
+contains = ["parses_fc_scheduler_iloads", "rejects_fc_scheduler_rate_above_base_rate"]
+requirements = ["REQ-SCHED-001"]
+
+[[verification]]
+id = "V-SCHED-002"
+kind = "test"
+command = "cargo test -p openbmp-runner fc_job_schedule_preserves_defaults_and_applies_iloads --locked"
+paths = ["crates/openbmp-runner/src/fc.rs"]
+contains = ["fc_job_schedule_preserves_defaults_and_applies_iloads"]
+requirements = ["REQ-SCHED-001"]
+
+[[verification]]
+id = "V-SCHED-003"
+kind = "test"
+command = "cargo test -p openbmp-fc scheduler_overrun --locked"
+paths = ["crates/openbmp-fc/src/scheduler.rs", "crates/openbmp-fc/src/health.rs", "crates/openbmp-fc/src/fdir.rs"]
+contains = ["budget_overrun_emits_event_and_skips_job", "scheduler_overrun_burst_flags_failsafe", "scheduler_overrun_failsafe_trips_fdir"]
+requirements = ["REQ-SCHED-002"]
+
+[[verification]]
+id = "V-RT-001"
+kind = "ci"
+command = "cargo test -p openbmp-testkit --lib --locked fc_lints"
+paths = [
+  "crates/openbmp-testkit/src/fc_lints.rs",
+  "crates/openbmp-fc/src/scheduler.rs",
+  "crates/openbmp-fc/src/commander.rs",
+  "crates/openbmp-fc/src/sensor_ingest.rs",
+  ".github/workflows/ci.yml",
+]
+contains = [
+  "scheduler_dispatch_uses_cached_order_not_per_tick_sort_allocation",
+  "commander_run_does_not_clone_binding_table_per_tick",
+  "voted_sensor_ingest_reuses_scratch_buffers_per_tick",
+  "lockstep-clock tripwire",
+]
+requirements = ["REQ-RT-001"]
+
+[[verification]]
+id = "V-BUS-001"
+kind = "test"
+command = "cargo test -p openbmp-fc static_topic_indices --locked"
+paths = [
+  "crates/openbmp-fc/src/topics.rs",
+  "crates/openbmp-fc/src/scheduler.rs",
+  "crates/openbmp-fc/src/bus.rs",
+  "crates/openbmp-fc/src/dictionary.rs",
+]
+contains = [
+  "static_topic_indices_are_unique_and_in_range",
+  "topic_index",
+  "Topic::INDEX",
+  "SCHEDULER_OVERRUN",
+]
+requirements = ["REQ-BUS-001"]
+
+[[verification]]
+id = "V-ILOAD-001"
+kind = "test"
+command = "cargo test -p openbmp-hal iload --locked"
+paths = ["crates/openbmp-hal/src/lib.rs"]
+contains = [
+  "iload_envelope_round_trips_payload_and_crc",
+  "iload_envelope_rejects_crc_mismatch",
+  "iload_envelope_rejects_unsupported_schema_version",
+  "iload_fallback_selects_fallback_when_primary_is_corrupt",
+]
+requirements = ["REQ-ILOAD-001"]
+
+[[verification]]
+id = "V-NAV-001"
+kind = "test"
+command = "cargo test -p openbmp-fc high_dynamics --locked"
+paths = ["crates/openbmp-fc/src/estimator.rs"]
+contains = [
+  "ekf_high_dynamics_q_scale_multiplies_position_velocity_process_noise",
+  "estimator_job_reads_estimator_regime_topic_for_high_dynamics_schedule",
+]
+requirements = ["REQ-NAV-001"]
+
+[[verification]]
+id = "V-NAV-002"
+kind = "test"
+command = "cargo test -p openbmp-fc set_region_state_binding_updates_estimator_regime_region --locked"
+paths = ["crates/openbmp-fc/src/commander.rs"]
+contains = ["set_region_state_binding_updates_estimator_regime_region"]
+requirements = ["REQ-NAV-001"]
+
+[[verification]]
+id = "V-NAV-003"
+kind = "test"
+command = "cargo test -p openbmp-runner set_region_state_event_builds_mission_action --locked"
+paths = ["crates/openbmp-runner/src/mission.rs"]
+contains = ["set_region_state_event_builds_mission_action"]
+requirements = ["REQ-NAV-001"]
+
+[[verification]]
+id = "V-FDIR-001"
+kind = "test"
+command = "cargo test -p openbmp-fc lane_failover --locked"
+paths = ["crates/openbmp-fc/src/estimator_lanes.rs", "crates/openbmp-fc/src/fdir.rs"]
+contains = ["simplex_lane_failover_is_visible_in_lane_selection_topic", "estimator_lane_failover_trips_fdir"]
+requirements = ["REQ-FDIR-001"]
+
+[[verification]]
+id = "V-FDIR-002"
+kind = "test"
+command = "cargo test -p openbmp-fc sensor --locked"
+paths = [
+  "crates/openbmp-fc/src/sensor_ingest.rs",
+  "crates/openbmp-fc/src/health.rs",
+  "crates/openbmp-fc/src/fdir.rs",
+  "crates/openbmp-fc/tests/sensor_ingest.rs",
+]
+contains = [
+  "single_imu_read_error_publishes_unhealthy_sample",
+  "voted_gnss_all_lane_errors_publish_unhealthy_sample_and_status",
+  "unhealthy_sample_flags_sensor_fault_without_waiting_for_stale_timeout",
+  "sensor_failsafe_flags_trip_fdir_sensor_bit",
+]
+requirements = ["REQ-FDIR-002"]
+
+[[verification]]
+id = "V-FDIR-003"
+kind = "test"
+command = "cargo test -p openbmp-fc body_rate_redline --locked && cargo test -p openbmp-scenario fc_fdir_redlines --locked && cargo test -p openbmp-runner build_fdir_params_applies_redline_iloads --locked"
+paths = [
+  "crates/openbmp-fc/src/fdir.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/fc.rs",
+]
+contains = [
+  "body_rate_redline_trips_fdir_watchpoint",
+  "fc_fdir_redlines_block_is_v3_only_and_validates_under_v3",
+  "build_fdir_params_applies_redline_iloads",
+  "body_rate_rad_s",
+]
+requirements = ["REQ-FDIR-003"]
+
+[[verification]]
+id = "V-HAL-001"
+kind = "ci"
+command = "cargo check -p openbmp-core -p openbmp-state -p openbmp-models -p openbmp-mission -p openbmp-physics -p openbmp-propulsion -p openbmp-aero -p openbmp-sensors -p openbmp-hal -p openbmp-fc --no-default-features --target thumbv7em-none-eabihf --locked"
+paths = [".github/workflows/ci.yml"]
+contains = ["HAL portability", "thumbv7em-none-eabihf"]
+requirements = ["REQ-HAL-001"]
+
+[[verification]]
+id = "V-HAL-002"
+kind = "test"
+command = "cargo test -p openbmp-hal static_bus --locked"
+paths = ["crates/openbmp-hal/src/lib.rs"]
+contains = [
+  "StaticBus",
+  "EncodedTopic",
+  "static_bus_round_trips_encoded_topics_without_heap",
+  "static_bus_rejects_out_of_range_topic_index",
+]
+requirements = ["REQ-HAL-002"]
+
+[[verification]]
+id = "V-HAL-003"
+kind = "analysis"
+command = "review docs/HAL.md"
+paths = ["docs/HAL.md", "docs/README.md"]
+contains = [
+  "StaticBus",
+  "healthy = false",
+  "decode_iload_or_fallback",
+  "FlightRecorder",
+  "Current Limits",
+]
+requirements = ["REQ-HAL-003"]
+
+[[verification]]
+id = "V-HAL-004"
+kind = "test"
+command = "cargo test -p openbmp-hal flight_record --locked"
+paths = ["crates/openbmp-hal/src/lib.rs", "docs/HAL.md", ".github/workflows/ci.yml"]
+contains = [
+  "OBFR",
+  "flight_record",
+  "flight_record_envelope_round_trips_payload",
+  "flight_recorder_overwrites_oldest_and_counts_drop",
+  "flight_recorder_flush_encodes_and_pops_after_storage_success",
+]
+requirements = ["REQ-HAL-004"]
+
+[[verification]]
+id = "V-HIL-001"
+kind = "test"
+command = "cargo test -p openbmp-bridge lockstep --locked"
+paths = ["crates/openbmp-bridge/src/packet.rs", "crates/openbmp-bridge/src/lockstep.rs", "docs/real-rocket-integration.md"]
+contains = [
+  "BridgeHelloPacket",
+  "BridgeMessage",
+  "StepAckPacket",
+  "validate_command_for_sensor",
+  "command_for_wrong_step_is_rejected",
+]
+requirements = ["REQ-HIL-001"]
+
+[[verification]]
+id = "V-DUAL-001"
+kind = "ci"
+command = "cargo test -p openbmp-testkit --lib --locked dual_use_field_lints"
+paths = ["crates/openbmp-testkit/src/dual_use_field_lints.rs", ".github/workflows/ci.yml"]
+contains = ["dual_use_field_lints", "dual-use field audit"]
+requirements = ["REQ-DUAL-001"]
+
+[[verification]]
+id = "V-DUAL-002"
+kind = "ci"
+command = "cargo test -p openbmp-testkit --test dual_use_reachability_tripwire --locked"
+paths = ["crates/openbmp-testkit/tests/dual_use_reachability_tripwire.rs", ".github/workflows/ci.yml"]
+contains = ["dual_use_reachability_tripwire", "dual-use reachability audit"]
+requirements = ["REQ-DUAL-001"]
+
+[[verification]]
+id = "V-DUAL-003"
+kind = "test"
+command = "cargo test -p openbmp-runner footprint_monte_carlo --locked && cargo test -p openbmp-cli footprint_mc_writes_declared_outputs --locked"
+paths = ["crates/openbmp-runner/src/footprint.rs", "crates/openbmp-cli/tests/footprint_mc_e2e.rs", "docs/scenario-format.md"]
+contains = ["radial_offset_from_nominal_m", "dispersion_statistics", "miss_distance", "position_x_eci_m", "ballistic_coefficient_m2_kg"]
+requirements = ["REQ-DUAL-001"]
+
+[[verification]]
+id = "V-GOV-001"
+kind = "analysis"
+command = "review branch-protection and code-owner governance docs"
+paths = ["CONTRIBUTING.md", ".github/CODEOWNERS", ".github/pull_request_template.md"]
+contains = ["code-owner review", "dual-use checks are not optional", "@darekhta", "Dual-use gate"]
+requirements = ["REQ-GOV-001"]
+
+[[verification]]
+id = "V-TRACE-001"
+kind = "ci"
+command = "python3 scripts/check_requirements_traceability.py"
+paths = ["scripts/check_requirements_traceability.py", ".github/workflows/ci.yml"]
+contains = ["check_requirements_traceability.py", "requirements traceability"]
+requirements = ["REQ-TRACE-001"]
+
+[[verification]]
+id = "V-DET-001"
+kind = "test"
+command = "cargo test -p openbmp-cli diff_reports_identical_for_self_compare --locked"
+paths = ["crates/openbmp-cli/src/cli.rs", "crates/openbmp-cli/src/commands/diff.rs", "crates/openbmp-cli/src/main.rs", "crates/openbmp-cli/tests/cli_snapshots.rs", "docs/verification.md"]
+contains = ["report_json", "DiffProvenance", "fp_contract", "golden_metadata", "diff_reports_identical_for_self_compare"]
+requirements = ["REQ-DET-001"]
+
+[[verification]]
+id = "V-STD-001"
+kind = "analysis"
+command = "review docs/standards-posture.md"
+paths = ["docs/standards-posture.md", "docs/README.md", "docs/verification.md"]
+contains = ["PIL", "HIL", "does not claim certification", "downstream real-vehicle fork"]
+requirements = ["REQ-STD-001"]
+
+[[verification]]
+id = "V-CONFORM-001"
+kind = "test"
+command = "cargo test -p openbmp-cli conform_runs_reference_scenario_without_writing_outputs --locked"
+paths = [
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/conform.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/tests/conform_cli.rs",
+]
+contains = [
+  "Conform",
+  "conform_runs_reference_scenario_without_writing_outputs",
+]
+requirements = ["REQ-CONFORM-001"]
+
+[[verification]]
+id = "V-MC-001"
+kind = "ci"
+command = "GitHub Actions monte-carlo-nightly"
+paths = [".github/workflows/ci.yml", "docs/verification.md", "crates/openbmp-cli/tests/phalcon9_orbit_monte_carlo.rs", "crates/openbmp-cli/tests/footprint_mc_e2e.rs"]
+contains = [
+  "monte-carlo-nightly",
+  "workflow_dispatch",
+  "schedule",
+  "footprint_mc_writes_declared_outputs",
+  "phalcon9_orbit_monte_carlo_is_deterministic",
+  "phalcon9_orbit_monte_carlo_robustness",
+]
+requirements = ["REQ-MC-001"]

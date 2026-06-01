@@ -6,6 +6,7 @@ members = [
     "crates/openbmp-state",
     "crates/openbmp-models",
     "crates/openbmp-mission",
+    "crates/openbmp-hal",
     "crates/openbmp-sim",
     "crates/openbmp-vehicle",
     "crates/openbmp-aero",
@@ -38,7 +39,6 @@ unsafe_code                   = "deny"
 unused_must_use               = "deny"
 
 [workspace.lints.clippy]
-pedantic    = { level = "warn", priority = -1 }
 all         = { level = "warn", priority = -1 }
 unwrap_used = "warn"
 expect_used = "warn"
@@ -122,6 +122,7 @@ openbmp-physics    = { version = "0.0.1", path = "crates/openbmp-physics" }
 openbmp-state      = { version = "0.0.1", path = "crates/openbmp-state" }
 openbmp-models     = { version = "0.0.1", path = "crates/openbmp-models" }
 openbmp-mission    = { version = "0.0.1", path = "crates/openbmp-mission" }
+openbmp-hal        = { version = "0.0.1", path = "crates/openbmp-hal" }
 openbmp-sim        = { version = "0.0.1", path = "crates/openbmp-sim" }
 openbmp-vehicle    = { version = "0.0.1", path = "crates/openbmp-vehicle" }
 openbmp-aero       = { version = "0.0.1", path = "crates/openbmp-aero" }

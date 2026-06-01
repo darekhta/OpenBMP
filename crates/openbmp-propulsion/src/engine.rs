@@ -50,7 +50,11 @@
 //! EngineCluster` and `docs/scenario-format.md § Engine clusters`
 //! for the contract.
 
+use core::fmt::Debug;
+
 use nalgebra::Vector3;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 use openbmp_core::{Duration, EngineId, ValidationStatus};
 
 use crate::error::EngineError;
@@ -324,7 +328,7 @@ pub enum EngineFault {
 /// `&mut self`. The trait is scalar/vector at the engine boundary;
 /// kernel coupling lives in the runner-side rack and the
 /// vehicle-side cluster adapters.
-pub trait EngineModel: std::fmt::Debug + Send + Sync {
+pub trait EngineModel: Debug + Send + Sync {
     /// Stable identifier for telemetry and event-action targeting.
     fn id(&self) -> EngineId;
 

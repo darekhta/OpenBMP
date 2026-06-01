@@ -88,6 +88,11 @@
 #![allow(clippy::doc_markdown)] // Author surnames are not code identifiers.
 
 use nalgebra::{DMatrix, DVector};
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+use std::boxed::Box;
+use std::format;
+use std::vec::Vec;
 
 // ---------------------------------------------------------------------
 // Sigma-point machinery
@@ -1277,7 +1282,7 @@ impl crate::estimator::Estimator for SquareRootUkf {
             };
             let q_perturbed = filter.q_body_to_eci * dq;
             let r_eci_to_body = q_perturbed.to_rotation_matrix().transpose();
-            let predicted = r_eci_to_body * mag_field_eci;
+            let predicted = r_eci_to_body.matrix() * mag_field_eci;
             DVector::<f64>::from_iterator(3, (0..3).map(|i| predicted[i]))
         };
         let (chi2, whitened, log_det_s) =

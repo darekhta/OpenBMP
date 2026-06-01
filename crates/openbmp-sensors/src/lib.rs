@@ -33,6 +33,8 @@
 //! wires sensors into the runner's measurement chain remains a later
 //! integration phase.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
 // Always-available items: the abstract `Sensor` trait + the typed
 // measurement / truth value shapes. A HAL adopter compiles
 // `openbmp-sensors` with `default-features = false` and gets only
