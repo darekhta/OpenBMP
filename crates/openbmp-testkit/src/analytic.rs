@@ -313,6 +313,7 @@ impl TwoBodyKeplerian {
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+    use openbmp_physics::WGS84_MU_M3_S2;
 
     #[test]
     fn constant_acceleration_drop_at_t0() {
@@ -379,7 +380,7 @@ mod tests {
 
     #[test]
     fn vis_viva_and_specific_energy_agree_for_circular_orbit() {
-        let mu = 3.986_004_418e14;
+        let mu = WGS84_MU_M3_S2;
         let radius = 7.0e6;
         let speed = vis_viva_speed(mu, radius, radius);
         let energy = specific_orbital_energy(mu, radius, speed);

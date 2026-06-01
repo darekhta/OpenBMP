@@ -312,6 +312,53 @@ pub const SENSITIVE_FIELD_ALLOWLISTS: &[FileFieldAllowlist] = &[
             },
         ],
     },
+    FileFieldAllowlist {
+        path: "crates/openbmp-trajopt/src/iload.rs",
+        structs: &[
+            StructFieldAllowlist {
+                name: "ILoadSchemaVersion",
+                fields: &["major", "minor", "patch"],
+            },
+            StructFieldAllowlist {
+                name: "ILoadHeader",
+                fields: &[
+                    "schema_version",
+                    "terminal_condition_kind",
+                    "synthesis_seed",
+                    "producer",
+                ],
+            },
+            StructFieldAllowlist {
+                name: "SynthesisMetadata",
+                fields: &["scenario_digest", "source_revision", "method"],
+            },
+            StructFieldAllowlist {
+                name: "ReferenceProfileSample",
+                fields: &["time_s", "radius_m", "speed_m_s", "flight_path_angle_rad"],
+            },
+            StructFieldAllowlist {
+                name: "GainTable",
+                fields: &["name", "axis", "breakpoints", "values"],
+            },
+            StructFieldAllowlist {
+                name: "ILoadPayload",
+                fields: &[
+                    "header",
+                    "metadata",
+                    "event_bindings_postcard",
+                    "gain_tables",
+                    "reference_profile",
+                ],
+            },
+        ],
+    },
+    FileFieldAllowlist {
+        path: "crates/openbmp-trajopt/src/target.rs",
+        structs: &[StructFieldAllowlist {
+            name: "TerminalResidual",
+            fields: &["components", "norm"],
+        }],
+    },
 ];
 
 /// Dual-use-sensitive public enum variant allowlists.
@@ -360,6 +407,25 @@ pub const SENSITIVE_ENUM_ALLOWLISTS: &[FileEnumAllowlist] = &[
             EnumVariantAllowlist {
                 name: "StagingAnalysisMode",
                 variants: &["Budget", "Optimal"],
+            },
+        ],
+    },
+    FileEnumAllowlist {
+        path: "crates/openbmp-trajopt/src/iload.rs",
+        enums: &[
+            EnumVariantAllowlist {
+                name: "TerminalConditionKind",
+                variants: &[
+                    "OrbitalElements",
+                    "ApogeeRadius",
+                    "FlightPathAngleAtBurnout",
+                    "RendezvousState",
+                    "MaximizePayloadMass",
+                ],
+            },
+            EnumVariantAllowlist {
+                name: "GainAxis",
+                variants: &["Time", "Mach", "DynamicPressure"],
             },
         ],
     },
@@ -655,6 +721,12 @@ fn is_dual_use_sensitive_type_name(name: &str) -> bool {
         || name.starts_with("Footprint")
         || name.starts_with("LandingFootprint")
         || name.starts_with("StagingAnalysis")
+        || name.starts_with("ILoad")
+        || name.starts_with("Synthesis")
+        || name == "TerminalConditionKind"
+        || name == "TerminalResidual"
+        || name == "GainAxis"
+        || name == "GainTable"
         || name.contains("RangeSafetyFootprint")
 }
 

@@ -677,11 +677,11 @@ impl ScenarioDocument {
             lanes_cfg.validate()?;
         }
         // fc.autopilot_allocation — consumed block,
-        // v3-only; the runner builds a
-        // `PrioritisedRedistributedAllocator` from this block plus
-        // the per-effector axis declarations and installs it on the
-        // mixer. The PseudoInverse kind is parsed but the runner
-        // emits `UnsupportedScenario` for it (not yet consumed).
+        // v3-only; the runner builds a `ControlAllocator` from this
+        // block plus the per-effector axis declarations and installs
+        // it on the mixer. The PseudoInverse kind is consumed by the
+        // bounded direct-axis pseudo-inverse path; the future coupled
+        // `G_eff` schema remains out of scope here.
         if let Some(allocation) = fc.autopilot_allocation.as_ref() {
             if header < SCENARIO_VERSION_V3 {
                 return Err(ScenarioError::SchemaVersionFieldReserved {
@@ -10741,7 +10741,8 @@ pub struct FcAutopilotAllocationConfig {
     pub kind: FcAutopilotAllocationKind,
     /// Optional per-axis priority order (highest first). Field names
     /// are body-frame axis labels (`"roll"`, `"pitch"`, `"yaw"`).
-    /// Default for `prioritised_redistributed`: `["roll", "yaw", "pitch"]`.
+    /// Applies to `prioritised_redistributed`; default:
+    /// `["roll", "yaw", "pitch"]`.
     pub axis_priority: Option<Vec<String>>,
 }
 

@@ -17,7 +17,7 @@ use std::vec::Vec;
 
 use openbmp_core::{EffectorId, EngineId};
 
-use crate::allocation::PrioritisedRedistributedAllocator;
+use crate::allocation::ControlAllocator;
 use crate::error::ControllerError;
 use crate::scheduler::{Job, JobContext};
 use crate::tables::Table;
@@ -126,11 +126,10 @@ impl Table for PhaseAuthorityTable {
 /// - **Direct channel map** — `with_actuator_channel_map(...)` —
 ///   1:1 routing from the autopilot's `aileron / elevator / rudder /
 ///   body_flap` semantic channels to a single effector each.
-/// - **Redistributed allocator** — `with_allocator(...)` — distributes
+/// - **Control allocator** — `with_allocator(...)` — distributes
 ///   the per-axis torque demand (`aileron_rad → roll`, `elevator_rad
 ///   → pitch`, `rudder_rad → yaw`) across all effectors assigned to
-///   that axis via
-///   [`crate::allocation::PrioritisedRedistributedAllocator`].
+///   that axis via [`crate::allocation::ControlAllocator`].
 ///
 /// When an allocator is installed, it supersedes the channel map for
 /// the [`EffectorCommandSet`] publish path. The legacy
@@ -144,7 +143,7 @@ pub struct Mixer {
     last_commanded_engines: Vec<EngineId>,
     authority: PhaseAuthorityTable,
     channel_map: ActuatorChannelMap,
-    allocator: Option<PrioritisedRedistributedAllocator>,
+    allocator: Option<ControlAllocator>,
 }
 
 impl Mixer {
@@ -186,8 +185,11 @@ impl Mixer {
     /// not contribute capacity. Disallowed effectors are still emitted
     /// with zero commands to withdraw authority explicitly.
     #[must_use]
-    pub fn with_allocator(mut self, allocator: PrioritisedRedistributedAllocator) -> Self {
-        self.allocator = Some(allocator);
+    pub fn with_allocator<A>(mut self, allocator: A) -> Self
+    where
+        A: Into<ControlAllocator>,
+    {
+        self.allocator = Some(allocator.into());
         self
     }
 

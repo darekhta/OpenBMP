@@ -36,6 +36,7 @@ use crate::clock::Clock;
 use crate::error::{ControllerError, SchedulerError};
 use crate::stable_map::StableIndexMap;
 use crate::topics::topic_index;
+use openbmp_msgs::TopicId;
 
 /// Job priority — lower runs first.
 pub type Priority = u8;
@@ -57,11 +58,13 @@ pub enum Trigger {
         /// Period in ticks.
         period_ticks: u64,
     },
-    /// Run when the topic identified by `topic_name` has a sequence
+    /// Run when the topic identified by `topic_id` has a sequence
     /// strictly greater than the value the job last consumed.
     /// Subscribers track their own `last_seen` sequence inside their
     /// state.
     TopicUpdated {
+        /// Dense topic table id (`Topic::INDEX`).
+        topic_id: TopicId,
         /// Canonical topic name (`Topic::NAME`).
         topic_name: &'static str,
     },
@@ -390,15 +393,17 @@ impl Scheduler {
     /// Returns [`SchedulerError::NonPositiveBudget`] if `budget_us` is
     /// `0`, and [`SchedulerError::DuplicateJob`] if a job with the
     /// same name is already registered.
-    pub fn register_topic_driven(
+    pub fn register_topic_driven<T: Topic>(
         &mut self,
-        topic_name: &'static str,
         budget_us: u64,
         priority: Priority,
         job: Box<dyn Job>,
     ) -> Result<(), SchedulerError> {
         self.register_inner(
-            Trigger::TopicUpdated { topic_name },
+            Trigger::TopicUpdated {
+                topic_id: TopicId::of::<T>(),
+                topic_name: T::NAME,
+            },
             budget_us,
             priority,
             job,
@@ -534,8 +539,8 @@ impl Scheduler {
                     &ctx,
                 )?;
                 scheduled_mut.run_count = scheduled_mut.run_count.saturating_add(1);
-                if let Trigger::TopicUpdated { topic_name } = scheduled_mut.trigger {
-                    let seq = bus_sequence_by_name(bus, topic_name);
+                if let Trigger::TopicUpdated { topic_id, .. } = scheduled_mut.trigger {
+                    let seq = bus_sequence_by_id(bus, topic_id);
                     scheduled_mut.last_seen = seq;
                 }
                 (scheduled_mut.budget_us, actual_us)
@@ -725,20 +730,20 @@ fn trigger_due(trigger: &Trigger, tick: u64, last_seen: Sequence, bus: &Bus) -> 
             }
             tick.is_multiple_of(*period_ticks)
         }
-        Trigger::TopicUpdated { topic_name } => {
-            let current = bus_sequence_by_name(bus, topic_name);
+        Trigger::TopicUpdated { topic_id, .. } => {
+            let current = bus_sequence_by_id(bus, *topic_id);
             current.value() > last_seen.value()
         }
     }
 }
 
-/// Looks up a topic's sequence counter by canonical name. Returns
+/// Looks up a topic's sequence counter by dense topic id. Returns
 /// `Sequence::ZERO` for unknown topics — the scheduler is permissive
 /// here so a topic-driven job can be registered before its producer
 /// has registered the topic; the job simply never fires until the
 /// producer publishes the first value.
-fn bus_sequence_by_name(bus: &Bus, name: &'static str) -> Sequence {
-    bus.sequence_by_name(name)
+fn bus_sequence_by_id(bus: &Bus, topic_id: TopicId) -> Sequence {
+    bus.sequence_by_id(topic_id)
 }
 
 fn saturating_lcm(a: u64, b: u64) -> u64 {
@@ -993,8 +998,7 @@ mod tests {
             )
             .unwrap();
         sched
-            .register_topic_driven(
-                Beat::NAME,
+            .register_topic_driven::<Beat>(
                 10,
                 30,
                 Box::new(CounterJob {
@@ -1115,8 +1119,7 @@ mod tests {
 
         let mut sched = Scheduler::new(1_000_000);
         sched
-            .register_topic_driven(
-                Beat::NAME,
+            .register_topic_driven::<Beat>(
                 100,
                 10,
                 Box::new(CounterJob {

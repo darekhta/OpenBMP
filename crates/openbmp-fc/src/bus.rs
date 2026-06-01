@@ -37,59 +37,10 @@ use std::boxed::Box;
 use std::cell::RefCell;
 use std::vec::Vec;
 
+pub use openbmp_msgs::{Sequence, Topic, TopicId};
+
 use crate::error::BusError;
 use crate::stable_map::StableIndexMap;
-
-/// Marker trait implemented by every type that flows through the bus.
-///
-/// `NAME` is the canonical wire name (used in dictionaries and logs);
-/// `VERSION` is the schema version used when external consumers parse
-/// dictionaries or logs, and `INDEX` is the compile-time topic slot
-/// used by static bus backends.
-pub trait Topic: 'static + Clone {
-    /// Canonical topic name. Convention: `snake_case`, no whitespace,
-    /// `<subsystem>.<topic>` for namespaced topics.
-    const NAME: &'static str;
-    /// Schema version. Bump on incompatible field changes; consumers
-    /// reject topics whose version does not match what they were
-    /// compiled against.
-    const VERSION: u32 = 1;
-    /// Compile-time slot index for static bus backends. Dynamic
-    /// host-only test topics may leave this as `usize::MAX`.
-    const INDEX: usize = usize::MAX;
-}
-
-/// Monotonically-increasing topic sequence counter.
-///
-/// Each [`Bus::publish`] of a given topic increments the topic's
-/// sequence counter by `1`. A subscriber records the sequence value
-/// it has consumed and queries
-/// [`Bus::changed_since`](Bus::changed_since) to detect newer
-/// publishes without re-reading the value.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Sequence(u64);
-
-impl Sequence {
-    /// `Sequence::ZERO` is the value held by a freshly-registered
-    /// topic that has not yet been published. The first [`Bus::publish`]
-    /// raises the sequence to `1`.
-    pub const ZERO: Self = Self(0);
-
-    /// Returns the underlying integer.
-    #[must_use]
-    pub const fn value(self) -> u64 {
-        self.0
-    }
-
-    /// Constructs a [`Sequence`] from a raw integer. Used by the
-    /// scheduler's name-based topic lookup; not normally part of the
-    /// caller-facing API.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn from_u64(value: u64) -> Self {
-        Self(value)
-    }
-}
 
 /// Internal storage cell for one topic.
 struct BusCell {
@@ -192,7 +143,7 @@ impl Bus {
                 })?;
         *storage = Some(value);
         cell.seq = cell.seq.saturating_add(1);
-        Ok(Sequence(cell.seq))
+        Ok(Sequence::from_u64(cell.seq))
     }
 
     /// Returns the latest value for a topic and the sequence counter
@@ -215,7 +166,7 @@ impl Bus {
             .ok_or(BusError::UnknownTopic {
                 topic_name: T::NAME,
             })?;
-        Ok(storage.clone().map(|v| (v, Sequence(cell.seq))))
+        Ok(storage.clone().map(|v| (v, Sequence::from_u64(cell.seq))))
     }
 
     /// Returns the current sequence counter for a topic without
@@ -232,20 +183,20 @@ impl Bus {
         let cell = inner.cells.get(&id).ok_or(BusError::UnknownTopic {
             topic_name: T::NAME,
         })?;
-        Ok(Sequence(cell.seq))
+        Ok(Sequence::from_u64(cell.seq))
     }
 
-    /// Returns the current sequence counter for a topic by canonical
-    /// name. This avoids materialising the dictionary snapshot in hot
-    /// topic-triggered scheduler paths.
+    /// Returns the current sequence counter for a topic by dense
+    /// topic-table id. This avoids materialising the dictionary
+    /// snapshot in hot topic-triggered scheduler paths.
     #[must_use]
-    pub(crate) fn sequence_by_name(&self, name: &'static str) -> Sequence {
+    pub(crate) fn sequence_by_id(&self, topic_id: TopicId) -> Sequence {
         let inner = self.inner.borrow();
         inner
             .cells
             .values()
-            .find(|cell| cell.name == name)
-            .map_or(Sequence::ZERO, |cell| Sequence(cell.seq))
+            .find(|cell| cell.index == topic_id.index())
+            .map_or(Sequence::ZERO, |cell| Sequence::from_u64(cell.seq))
     }
 
     /// Returns `true` if the topic has been published with a sequence
@@ -257,7 +208,7 @@ impl Bus {
     /// registered.
     pub fn changed_since<T: Topic>(&self, last_seen: Sequence) -> Result<bool, BusError> {
         let seq = self.sequence::<T>()?;
-        Ok(seq.0 > last_seen.0)
+        Ok(seq.value() > last_seen.value())
     }
 
     /// Returns descriptors for every registered topic in registration

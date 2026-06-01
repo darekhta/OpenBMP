@@ -1,0 +1,27 @@
+[package]
+name                    = "openbmp-trajopt"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP offline trajectory-optimization and I-load synthesis scaffolding."
+
+[features]
+default = ["std"]
+std     = [
+    "openbmp-core/std",
+    "openbmp-physics/std",
+    "postcard/use-std",
+]
+
+[dependencies]
+openbmp-core    = { version = "0.0.1", path = "../openbmp-core", default-features = false }
+openbmp-physics = { version = "0.0.1", path = "../openbmp-physics", default-features = false }
+postcard        = { workspace = true }
+serde           = { workspace = true }
+thiserror       = { workspace = true }
+
+[lints]
+workspace = true

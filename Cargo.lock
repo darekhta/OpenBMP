@@ -1513,6 +1513,7 @@ dependencies = [
  "num-traits",
  "openbmp-core",
  "openbmp-mission",
+ "openbmp-msgs",
  "openbmp-physics",
  "openbmp-sensors",
  "openbmp-testkit",
@@ -1527,6 +1528,7 @@ name = "openbmp-hal"
 version = "0.0.1"
 dependencies = [
  "openbmp-core",
+ "openbmp-msgs",
 ]
 
 [[package]]
@@ -1549,6 +1551,16 @@ dependencies = [
  "proptest",
  "thiserror 2.0.18",
  "uom",
+]
+
+[[package]]
+name = "openbmp-msgs"
+version = "0.0.1"
+dependencies = [
+ "nalgebra",
+ "openbmp-core",
+ "openbmp-mission",
+ "static_assertions",
 ]
 
 [[package]]
@@ -1699,6 +1711,17 @@ dependencies = [
  "toml",
  "trybuild",
  "uom",
+]
+
+[[package]]
+name = "openbmp-trajopt"
+version = "0.0.1"
+dependencies = [
+ "openbmp-core",
+ "openbmp-physics",
+ "postcard",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

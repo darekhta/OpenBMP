@@ -2569,11 +2569,12 @@ axis_priority = ["roll", "yaw", "pitch"]
 ```
 
 `kind` is one of `pseudo_inverse` (Stevens & Lewis 2015 §3.5) or
-`prioritised_redistributed` (Härkegård 2002). Only
-`prioritised_redistributed` is consumed; `pseudo_inverse` remains parseable but the
-runner fails closed because the general `G_eff` path is not wired. `axis_priority`
-lists body-frame axes in highest-first order and must contain exactly
-`"roll"`, `"pitch"`, and `"yaw"` once each.
+`prioritised_redistributed` (Härkegård 2002). Both are consumed for the
+current `direct_torque` effector surface. `pseudo_inverse` uses a bounded
+weighted pseudo-inverse per body axis; coupled `G_eff` rows are not part of
+the scenario schema yet. `axis_priority` applies to
+`prioritised_redistributed`, lists body-frame axes in highest-first order, and
+must contain exactly `"roll"`, `"pitch"`, and `"yaw"` once each.
 
 The allocator derives capacity only from `direct_torque`
 effectors with exact symmetric limits (`max == -min`). Phase authority is

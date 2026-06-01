@@ -1,0 +1,27 @@
+[package]
+name                    = "openbmp-msgs"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP flight message dictionary: topic trait, topic ids, and FC bus payload structs."
+
+[features]
+default = ["std"]
+std     = ["openbmp-core/std", "openbmp-mission/std", "nalgebra/std"]
+# Mirrors `openbmp-fc/hal`: compile out simulator-only topics from
+# hardware-facing topic surfaces.
+hal     = []
+
+[dependencies]
+openbmp-core    = { version = "0.0.1", path = "../openbmp-core", default-features = false }
+openbmp-mission = { version = "0.0.1", path = "../openbmp-mission", default-features = false }
+nalgebra        = { version = "0.34.2", default-features = false, features = ["alloc", "libm"] }
+
+[dev-dependencies]
+static_assertions = { workspace = true }
+
+[lints]
+workspace = true

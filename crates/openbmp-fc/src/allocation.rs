@@ -6,10 +6,9 @@
 //! `direct_torque` effector per channel. With more than one
 //! effector contributing to a body axis — a 4-thruster RCS bank
 //! with redundant roll authority, or a multi-engine cluster sharing
-//! pitch/yaw — that 1:1 assumption breaks. A
-//! prioritised redistributed allocator consumes the
-//! per-axis torque demand from
-//! [`crate::topics::ActuatorCommand`] and emits a per-effector
+//! pitch/yaw — that 1:1 assumption breaks. The allocators consume
+//! the per-axis command demand from
+//! [`crate::topics::ActuatorCommand`] and emit a per-effector
 //! [`crate::topics::EffectorCommandSet`] honouring each effector's
 //! symmetric box bound.
 //!
@@ -29,8 +28,11 @@
 //!   scenarios all use symmetric bounds.)
 //! - The pseudo-inverse allocator named in
 //!   `openbmp_scenario::FcAutopilotAllocationKind::PseudoInverse`
-//!   is parsed but not yet consumed: a later slice will add the
-//!   general `G_eff` path.
+//!   is consumed for the current `direct_torque` surface. It solves
+//!   the diagonal body-axis case with a bounded weighted
+//!   pseudo-inverse; a later slice can extend the same public strategy
+//!   to coupled `G_eff` rows when the scenario schema can express
+//!   them.
 //!
 //! # Math (per axis, simple single-axis-effector case)
 //!
@@ -100,7 +102,7 @@ impl BodyAxis {
     }
 }
 
-/// Errors raised by [`PrioritisedRedistributedAllocator::new`].
+/// Errors raised by allocator constructors.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum AllocatorError {
     /// Same effector id appears twice in the assignment list.
@@ -181,6 +183,34 @@ pub struct PrioritisedRedistributedAllocator {
     per_axis: [Vec<(EffectorId, f64)>; 3],
 }
 
+/// Weighted pseudo-inverse allocator over direct body-axis effectors.
+///
+/// For the current scenario surface every `direct_torque` effector
+/// contributes to exactly one body axis, so the allocation matrix is a
+/// sparse selector matrix. The unconstrained solution for each axis is:
+///
+/// `u_i = tau_axis * L_i^2 / sum(L_j^2)`
+///
+/// where `L_i` is the effector's symmetric command limit. This is the
+/// weighted pseudo-inverse solution that minimizes normalized command
+/// effort. Bounds are enforced with a deterministic active-set pass:
+/// any tentative command outside its limit is pinned, removed from the
+/// free set, and the residual demand is redistributed over the
+/// remaining free effectors.
+#[derive(Clone, Debug)]
+pub struct WeightedPseudoInverseAllocator {
+    per_axis: [Vec<(EffectorId, f64)>; 3],
+}
+
+/// Runtime control allocator selected by scenario I-load.
+#[derive(Clone, Debug)]
+pub enum ControlAllocator {
+    /// Harkegard-style prioritized redistributed allocator.
+    PrioritisedRedistributed(PrioritisedRedistributedAllocator),
+    /// Bounded weighted pseudo-inverse allocator.
+    WeightedPseudoInverse(WeightedPseudoInverseAllocator),
+}
+
 /// Result of one allocator step.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AllocationOutput {
@@ -191,6 +221,47 @@ pub struct AllocationOutput {
     /// `true` for axes whose demand exceeded the allocator's total
     /// capacity. Bit `i` corresponds to [`BodyAxis::index`] `i`.
     pub saturated_axes: [bool; 3],
+}
+
+impl From<PrioritisedRedistributedAllocator> for ControlAllocator {
+    fn from(value: PrioritisedRedistributedAllocator) -> Self {
+        Self::PrioritisedRedistributed(value)
+    }
+}
+
+impl From<WeightedPseudoInverseAllocator> for ControlAllocator {
+    fn from(value: WeightedPseudoInverseAllocator) -> Self {
+        Self::WeightedPseudoInverse(value)
+    }
+}
+
+impl ControlAllocator {
+    /// Allocates a per-axis demand without phase masking.
+    #[must_use]
+    pub fn allocate(&self, demand: [f64; 3]) -> AllocationOutput {
+        match self {
+            Self::PrioritisedRedistributed(allocator) => allocator.allocate(demand),
+            Self::WeightedPseudoInverse(allocator) => allocator.allocate(demand),
+        }
+    }
+
+    /// Allocates a per-axis demand while removing disallowed
+    /// effectors from the available authority set.
+    #[must_use]
+    pub fn allocate_with_allowed_effectors(
+        &self,
+        demand: [f64; 3],
+        allowed_effectors: &[EffectorId],
+    ) -> AllocationOutput {
+        match self {
+            Self::PrioritisedRedistributed(allocator) => {
+                allocator.allocate_with_allowed_effectors(demand, allowed_effectors)
+            }
+            Self::WeightedPseudoInverse(allocator) => {
+                allocator.allocate_with_allowed_effectors(demand, allowed_effectors)
+            }
+        }
+    }
 }
 
 impl PrioritisedRedistributedAllocator {
@@ -346,6 +417,146 @@ impl PrioritisedRedistributedAllocator {
 
 fn effector_allowed(effector_id: EffectorId, allowed_effectors: Option<&[EffectorId]>) -> bool {
     allowed_effectors.is_none_or(|allowed| allowed.contains(&effector_id))
+}
+
+impl WeightedPseudoInverseAllocator {
+    /// Build a bounded weighted pseudo-inverse allocator from a list of
+    /// direct-axis assignments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AllocatorError`] when:
+    /// - any effector appears twice in `assignments`;
+    /// - any `max_abs` is non-positive or non-finite;
+    /// - any body axis has no matching effector.
+    pub fn new(assignments: Vec<EffectorAxisAssignment>) -> Result<Self, AllocatorError> {
+        let mut by_id: BTreeSet<EffectorId> = BTreeSet::new();
+        for assignment in &assignments {
+            if !by_id.insert(assignment.effector_id) {
+                return Err(AllocatorError::DuplicateEffector {
+                    effector_id: assignment.effector_id,
+                });
+            }
+            if !assignment.max_abs.is_finite() || assignment.max_abs <= 0.0 {
+                return Err(AllocatorError::NonPositiveOrNonFiniteLimit {
+                    effector_id: assignment.effector_id,
+                    value: assignment.max_abs,
+                });
+            }
+        }
+
+        let mut per_axis: [Vec<(EffectorId, f64)>; 3] = Default::default();
+        for assignment in assignments {
+            per_axis[assignment.axis.index()].push((assignment.effector_id, assignment.max_abs));
+        }
+        for axis in BodyAxis::all() {
+            if per_axis[axis.index()].is_empty() {
+                return Err(AllocatorError::NoEffectorForAxis { axis });
+            }
+        }
+        Ok(Self { per_axis })
+    }
+
+    /// Allocates a per-axis command demand without phase masking.
+    #[must_use]
+    pub fn allocate(&self, demand: [f64; 3]) -> AllocationOutput {
+        self.allocate_inner(demand, None)
+    }
+
+    /// Allocates a per-axis demand while treating only
+    /// `allowed_effectors` as available authority.
+    #[must_use]
+    pub fn allocate_with_allowed_effectors(
+        &self,
+        demand: [f64; 3],
+        allowed_effectors: &[EffectorId],
+    ) -> AllocationOutput {
+        self.allocate_inner(demand, Some(allowed_effectors))
+    }
+
+    fn allocate_inner(
+        &self,
+        demand: [f64; 3],
+        allowed_effectors: Option<&[EffectorId]>,
+    ) -> AllocationOutput {
+        let mut commands: Vec<(EffectorId, f64)> = Vec::new();
+        let mut saturated_axes = [false; 3];
+        for axis in BodyAxis::all() {
+            let group = &self.per_axis[axis.index()];
+            let axis_demand = demand[axis.index()];
+            let (axis_commands, saturated) =
+                allocate_axis_weighted_pseudo_inverse(group, axis_demand, allowed_effectors);
+            commands.extend(axis_commands);
+            saturated_axes[axis.index()] = saturated;
+        }
+        AllocationOutput {
+            commands,
+            saturated_axes,
+        }
+    }
+}
+
+fn allocate_axis_weighted_pseudo_inverse(
+    group: &[(EffectorId, f64)],
+    demand: f64,
+    allowed_effectors: Option<&[EffectorId]>,
+) -> (Vec<(EffectorId, f64)>, bool) {
+    let mut commands = vec![0.0; group.len()];
+    let mut free: Vec<usize> = group
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (id, _))| effector_allowed(*id, allowed_effectors).then_some(index))
+        .collect();
+    let mut residual = demand;
+    const EPS: f64 = 1.0e-12;
+
+    while !free.is_empty() {
+        let denom: f64 = free
+            .iter()
+            .map(|index| {
+                let limit = group[*index].1;
+                limit * limit
+            })
+            .sum();
+        if denom <= EPS {
+            break;
+        }
+
+        let mut clamped_any = false;
+        let mut next_free: Vec<usize> = Vec::new();
+        for index in &free {
+            let limit = group[*index].1;
+            let tentative = residual * limit * limit / denom;
+            if tentative.abs() > limit + EPS {
+                let pinned = tentative.signum() * limit;
+                commands[*index] += pinned;
+                residual -= pinned;
+                clamped_any = true;
+            } else {
+                next_free.push(*index);
+            }
+        }
+        if !clamped_any {
+            for index in &free {
+                let limit = group[*index].1;
+                let u = residual * limit * limit / denom;
+                commands[*index] += u;
+            }
+            residual = 0.0;
+            break;
+        }
+        free = next_free;
+    }
+
+    let saturated = residual.abs() > EPS;
+    (
+        group
+            .iter()
+            .zip(commands)
+            .map(|((id, _), command)| (*id, command))
+            .collect(),
+        saturated,
+    )
 }
 
 #[cfg(test)]
@@ -669,6 +880,128 @@ mod tests {
             let _ = u;
         }
         assert_eq!(a.saturated_axes, b.saturated_axes);
+    }
+
+    #[test]
+    fn pseudo_inverse_splits_by_squared_capacity() {
+        let assignments = vec![
+            EffectorAxisAssignment {
+                effector_id: eid("vehicle.assembly.effectors.roll-a"),
+                axis: BodyAxis::Roll,
+                max_abs: 0.1,
+            },
+            EffectorAxisAssignment {
+                effector_id: eid("vehicle.assembly.effectors.roll-b"),
+                axis: BodyAxis::Roll,
+                max_abs: 0.3,
+            },
+            EffectorAxisAssignment {
+                effector_id: eid("vehicle.assembly.effectors.pitch"),
+                axis: BodyAxis::Pitch,
+                max_abs: 0.35,
+            },
+            EffectorAxisAssignment {
+                effector_id: eid("vehicle.assembly.effectors.yaw"),
+                axis: BodyAxis::Yaw,
+                max_abs: 0.35,
+            },
+        ];
+        let alloc = WeightedPseudoInverseAllocator::new(assignments).expect("ok");
+        let out = alloc.allocate([0.2, 0.0, 0.0]);
+        let by_id: BTreeMap<_, _> = out.commands.iter().map(|(id, u)| (*id, *u)).collect();
+        assert_abs_diff_eq!(
+            by_id[&eid("vehicle.assembly.effectors.roll-a")],
+            0.02,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            by_id[&eid("vehicle.assembly.effectors.roll-b")],
+            0.18,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(out.saturated_axes, [false; 3]);
+    }
+
+    #[test]
+    fn pseudo_inverse_redistributes_after_bound_hit() {
+        let assignments = vec![
+            EffectorAxisAssignment {
+                effector_id: eid("vehicle.assembly.effectors.roll-a"),
+                axis: BodyAxis::Roll,
+                max_abs: 0.1,
+            },
+            EffectorAxisAssignment {
+                effector_id: eid("vehicle.assembly.effectors.roll-b"),
+                axis: BodyAxis::Roll,
+                max_abs: 0.3,
+            },
+            EffectorAxisAssignment {
+                effector_id: eid("vehicle.assembly.effectors.pitch"),
+                axis: BodyAxis::Pitch,
+                max_abs: 0.35,
+            },
+            EffectorAxisAssignment {
+                effector_id: eid("vehicle.assembly.effectors.yaw"),
+                axis: BodyAxis::Yaw,
+                max_abs: 0.35,
+            },
+        ];
+        let alloc = WeightedPseudoInverseAllocator::new(assignments).expect("ok");
+        let out = alloc.allocate([0.4, 0.0, 0.0]);
+        let by_id: BTreeMap<_, _> = out.commands.iter().map(|(id, u)| (*id, *u)).collect();
+        assert_abs_diff_eq!(
+            by_id[&eid("vehicle.assembly.effectors.roll-a")],
+            0.1,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            by_id[&eid("vehicle.assembly.effectors.roll-b")],
+            0.3,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(out.saturated_axes, [false; 3]);
+    }
+
+    #[test]
+    fn pseudo_inverse_reports_saturation_when_capacity_is_exceeded() {
+        let alloc = WeightedPseudoInverseAllocator::new(nominal_assignments()).expect("ok");
+        let out = alloc.allocate([1.0, 0.0, 0.0]);
+        let by_id: BTreeMap<_, _> = out.commands.iter().map(|(id, u)| (*id, *u)).collect();
+        assert_abs_diff_eq!(
+            by_id[&eid("vehicle.assembly.effectors.roll-a")],
+            0.2,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            by_id[&eid("vehicle.assembly.effectors.roll-b")],
+            0.2,
+            epsilon = 1.0e-12
+        );
+        assert!(out.saturated_axes[BodyAxis::Roll.index()]);
+    }
+
+    #[test]
+    fn control_allocator_dispatches_pseudo_inverse_with_phase_mask() {
+        let alloc: ControlAllocator = WeightedPseudoInverseAllocator::new(nominal_assignments())
+            .expect("ok")
+            .into();
+        let allowed = [
+            eid("vehicle.assembly.effectors.roll-b"),
+            eid("vehicle.assembly.effectors.pitch"),
+            eid("vehicle.assembly.effectors.yaw"),
+        ];
+        let out = alloc.allocate_with_allowed_effectors([0.1, 0.0, 0.0], &allowed);
+        let by_id: BTreeMap<_, _> = out.commands.iter().map(|(id, u)| (*id, *u)).collect();
+        assert_eq!(
+            by_id[&eid("vehicle.assembly.effectors.roll-a")].to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_abs_diff_eq!(
+            by_id[&eid("vehicle.assembly.effectors.roll-b")],
+            0.1,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(out.saturated_axes, [false; 3]);
     }
 
     #[test]

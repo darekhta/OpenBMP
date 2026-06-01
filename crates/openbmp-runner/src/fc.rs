@@ -141,7 +141,7 @@ impl FcRunner {
         mission: FcRunnerMission,
         autopilot_lqr_context: Option<FcAutopilotLqrContext>,
         loop_step_dt_s: f64,
-        allocator: Option<openbmp_fc::allocation::PrioritisedRedistributedAllocator>,
+        allocator: Option<openbmp_fc::allocation::ControlAllocator>,
         estimator_seed: EstimatorSeed,
     ) -> Result<Self, openbmp_fc::ControllerError> {
         let mut fc = FlightControllerBuilder::new()

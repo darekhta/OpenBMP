@@ -12,6 +12,7 @@
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use openbmp_core::SimTime;
+pub use openbmp_msgs::Topic;
 
 /// HAL result alias.
 pub type HalResult<T, E> = core::result::Result<T, E>;
@@ -856,22 +857,6 @@ pub trait Clock {
     /// Return the current monotonic mission time.
     #[must_use]
     fn now(&self) -> SimTime;
-}
-
-/// Typed bus topic identity for flight-portable backends.
-///
-/// Concrete topic payloads live above this crate. The L1 contract only
-/// requires a stable name, version, and static table index so host and
-/// board bus backends can agree on identity without referencing
-/// simulator crates.
-pub trait Topic {
-    /// Stable topic name.
-    const NAME: &'static str;
-    /// Schema version for this topic payload.
-    const VERSION: u16 = 1;
-    /// Compile-time slot index inside the generated flight-topic
-    /// table. This is the no-`TypeId` lookup key used by static buses.
-    const INDEX: usize;
 }
 
 /// Error returned by topic payload encoders and decoders.

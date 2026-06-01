@@ -10,10 +10,11 @@ description             = "OpenBMP hardware abstraction traits for clock, sensor
 
 [features]
 default = ["std"]
-std     = ["openbmp-core/std"]
+std     = ["openbmp-core/std", "openbmp-msgs/std"]
 
 [dependencies]
 openbmp-core = { version = "0.0.1", path = "../openbmp-core", default-features = false }
+openbmp-msgs = { version = "0.0.1", path = "../openbmp-msgs", default-features = false }
 
 [lints]
 workspace = true

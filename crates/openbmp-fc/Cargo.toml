@@ -20,6 +20,7 @@ std         = [
     "nalgebra/std",
     "num-traits/std",
     "openbmp-core/std",
+    "openbmp-msgs/std",
     "openbmp-mission/std",
     "openbmp-physics/std",
     "openbmp-sensors/std",
@@ -30,7 +31,7 @@ sim-default = ["std", "openbmp-physics/synthetic", "openbmp-sensors/synthetic"]
 # to compile out the test-only `commander.scenario_state_override`
 # topic while keeping the current std-backed controller build. The
 # simulator's default build path leaves `hal` off.
-hal         = []
+hal         = ["openbmp-msgs/hal"]
 serde       = ["std", "dep:serde_json"]
 mpc         = ["std", "dep:clarabel"]
 square-root-ekf = []
@@ -40,6 +41,7 @@ indi        = []
 
 [dependencies]
 openbmp-core       = { version = "0.0.1", path = "../openbmp-core", default-features = false }
+openbmp-msgs       = { version = "0.0.1", path = "../openbmp-msgs", default-features = false }
 openbmp-physics    = { version = "0.0.1", path = "../openbmp-physics", default-features = false }
 openbmp-mission    = { version = "0.0.1", path = "../openbmp-mission", default-features = false }
 openbmp-sensors    = { version = "0.0.1", path = "../openbmp-sensors", default-features = false }

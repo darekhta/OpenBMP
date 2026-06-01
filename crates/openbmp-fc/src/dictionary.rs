@@ -102,7 +102,7 @@ impl<'a> Dictionary<'a> {
         for j in self.scheduler.jobs() {
             let trigger = match j.trigger {
                 Trigger::Periodic { period_ticks } => format!("periodic({period_ticks})"),
-                Trigger::TopicUpdated { topic_name } => format!("on_topic({topic_name})"),
+                Trigger::TopicUpdated { topic_name, .. } => format!("on_topic({topic_name})"),
             };
             let _ = writeln!(
                 out,
@@ -139,7 +139,7 @@ impl<'a> Dictionary<'a> {
             "jobs": self.scheduler.jobs().iter().map(|j| {
                 let trigger = match j.trigger {
                     Trigger::Periodic { period_ticks } => serde_json::json!({"kind": "periodic", "period_ticks": period_ticks}),
-                    Trigger::TopicUpdated { topic_name } => serde_json::json!({"kind": "on_topic", "topic": topic_name}),
+                    Trigger::TopicUpdated { topic_name, topic_id } => serde_json::json!({"kind": "on_topic", "topic": topic_name, "topic_id": topic_id.index()}),
                 };
                 serde_json::json!({
                     "name": j.name,

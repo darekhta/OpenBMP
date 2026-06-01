@@ -680,39 +680,38 @@ fn build_autopilot_lqr_context(
     Ok(None)
 }
 
-/// Helper to derive a `PrioritisedRedistributedAllocator`
+/// Helper to derive a control allocator
 /// from `[fc.autopilot_allocation]` plus the
 /// `[[vehicle.assembly.effectors]]` declarations.
 ///
 /// Returns `Ok(None)` when the FC config has no allocation block, or
-/// when the configured kind is not yet wired in this slice
-/// (`pseudo_inverse` is parsed but consumed by a future slice; for
-/// now its presence triggers fail-closed). For the consumed
-/// `prioritised_redistributed` kind, walks every `direct_torque`
-/// effector in the assembly and groups them by axis. The optional
-/// scenario `axis_priority` is honoured in priority order; absent →
-/// the documented default `[roll, yaw, pitch]`.
+/// when the scenario has no `[fc]` block. Walks every
+/// `direct_torque` effector in the assembly and groups them by axis.
+/// For `prioritised_redistributed`, the optional scenario
+/// `axis_priority` is honoured in priority order; absent → the
+/// documented default `[roll, yaw, pitch]`. For `pseudo_inverse`, the
+/// current direct-axis surface is allocated by a bounded weighted
+/// pseudo-inverse.
 fn build_autopilot_allocator(
     scenario: &Scenario,
-) -> Result<Option<openbmp_fc::allocation::PrioritisedRedistributedAllocator>, RunnerError> {
-    use openbmp_fc::allocation::{BodyAxis, EffectorAxisAssignment};
+) -> Result<Option<openbmp_fc::allocation::ControlAllocator>, RunnerError> {
+    use openbmp_fc::allocation::{
+        BodyAxis, ControlAllocator, EffectorAxisAssignment, PrioritisedRedistributedAllocator,
+        WeightedPseudoInverseAllocator,
+    };
     let Some(fc_config) = &scenario.document.fc else {
         return Ok(None);
     };
     let Some(alloc_cfg) = fc_config.autopilot_allocation.as_ref() else {
         return Ok(None);
     };
-    match alloc_cfg.kind {
-        openbmp_scenario::FcAutopilotAllocationKind::PrioritisedRedistributed => {}
-        openbmp_scenario::FcAutopilotAllocationKind::PseudoInverse => {
-            return Err(RunnerError::UnsupportedScenario {
-                what: "fc.autopilot_allocation.kind = \"pseudo_inverse\" is parsed but not yet \
-                       consumed; use \"prioritised_redistributed\" or remove the \
-                       block until the pseudo-inverse path lands"
-                    .to_owned(),
-            });
+    let allocation_kind = alloc_cfg.kind;
+    let kind_label = match allocation_kind {
+        openbmp_scenario::FcAutopilotAllocationKind::PrioritisedRedistributed => {
+            "prioritised_redistributed"
         }
-    }
+        openbmp_scenario::FcAutopilotAllocationKind::PseudoInverse => "pseudo_inverse",
+    };
     // Walk effectors and pull out direct_torque assignments.
     let mut assignments: Vec<EffectorAxisAssignment> = Vec::new();
     for effector in &scenario.document.vehicle.assembly.effectors {
@@ -730,7 +729,7 @@ fn build_autopilot_allocator(
         if !limits_are_exactly_symmetric(effector.limits.min, effector.limits.max) {
             return Err(RunnerError::UnsupportedScenario {
                 what: format!(
-                    "fc.autopilot_allocation = \"prioritised_redistributed\" requires symmetric \
+                    "fc.autopilot_allocation.kind = \"{kind_label}\" requires symmetric \
                      effector limits; effector \"{}\" has min = {}, max = {}",
                     effector.id, effector.limits.min, effector.limits.max
                 ),
@@ -747,49 +746,65 @@ fn build_autopilot_allocator(
     }
     if assignments.is_empty() {
         return Err(RunnerError::UnsupportedScenario {
-            what: "fc.autopilot_allocation = \"prioritised_redistributed\" requires at least one \
-                   direct_torque effector in vehicle.assembly.effectors"
-                .to_owned(),
+            what: format!(
+                "fc.autopilot_allocation.kind = \"{kind_label}\" requires at least one \
+                 direct_torque effector in vehicle.assembly.effectors"
+            ),
         });
     }
-    // Resolve axis priority. Default per the scenario block:
-    // [roll, yaw, pitch]. Any axis named in `axis_priority` must
-    // appear; absent → fall back to the default permutation.
-    let priority = if let Some(priority_strs) = alloc_cfg.axis_priority.as_ref() {
-        let mut axes = [BodyAxis::Roll, BodyAxis::Yaw, BodyAxis::Pitch];
-        // The scenario validator already requires unique entries
-        // drawn from {roll, pitch, yaw}; we still defend in depth.
-        if priority_strs.len() != 3 {
-            return Err(RunnerError::UnsupportedScenario {
-                what: "fc.autopilot_allocation.axis_priority must list each of \
-                       [roll, pitch, yaw] exactly once"
-                    .to_owned(),
-            });
-        }
-        for (slot, label) in axes.iter_mut().zip(priority_strs.iter()) {
-            *slot = match label.as_str() {
-                "roll" => BodyAxis::Roll,
-                "pitch" => BodyAxis::Pitch,
-                "yaw" => BodyAxis::Yaw,
-                other => {
+    let allocator = match allocation_kind {
+        openbmp_scenario::FcAutopilotAllocationKind::PrioritisedRedistributed => {
+            // Resolve axis priority. Default per the scenario block:
+            // [roll, yaw, pitch]. Any axis named in `axis_priority`
+            // must appear; absent → fall back to the default
+            // permutation.
+            let priority = if let Some(priority_strs) = alloc_cfg.axis_priority.as_ref() {
+                let mut axes = [BodyAxis::Roll, BodyAxis::Yaw, BodyAxis::Pitch];
+                // The scenario validator already requires unique
+                // entries drawn from {roll, pitch, yaw}; we still
+                // defend in depth.
+                if priority_strs.len() != 3 {
                     return Err(RunnerError::UnsupportedScenario {
-                        what: format!(
-                            "fc.autopilot_allocation.axis_priority entry \"{other}\" is not a \
-                             body axis"
-                        ),
+                        what: "fc.autopilot_allocation.axis_priority must list each of \
+                               [roll, pitch, yaw] exactly once"
+                            .to_owned(),
                     });
                 }
+                for (slot, label) in axes.iter_mut().zip(priority_strs.iter()) {
+                    *slot = match label.as_str() {
+                        "roll" => BodyAxis::Roll,
+                        "pitch" => BodyAxis::Pitch,
+                        "yaw" => BodyAxis::Yaw,
+                        other => {
+                            return Err(RunnerError::UnsupportedScenario {
+                                what: format!(
+                                    "fc.autopilot_allocation.axis_priority entry \"{other}\" is \
+                                     not a body axis"
+                                ),
+                            });
+                        }
+                    };
+                }
+                axes
+            } else {
+                [BodyAxis::Roll, BodyAxis::Yaw, BodyAxis::Pitch]
             };
+            ControlAllocator::from(
+                PrioritisedRedistributedAllocator::new(priority, assignments).map_err(|err| {
+                    RunnerError::UnsupportedScenario {
+                        what: format!("control allocator construction failed: {err}"),
+                    }
+                })?,
+            )
         }
-        axes
-    } else {
-        [BodyAxis::Roll, BodyAxis::Yaw, BodyAxis::Pitch]
+        openbmp_scenario::FcAutopilotAllocationKind::PseudoInverse => {
+            ControlAllocator::from(WeightedPseudoInverseAllocator::new(assignments).map_err(
+                |err| RunnerError::UnsupportedScenario {
+                    what: format!("control allocator construction failed: {err}"),
+                },
+            )?)
+        }
     };
-    let allocator =
-        openbmp_fc::allocation::PrioritisedRedistributedAllocator::new(priority, assignments)
-            .map_err(|err| RunnerError::UnsupportedScenario {
-                what: format!("control allocator construction failed: {err}"),
-            })?;
     Ok(Some(allocator))
 }
 
@@ -1172,6 +1187,22 @@ mod tests {
             matches!(err, RunnerError::UnsupportedScenario { ref what } if what.contains("requires symmetric effector limits")),
             "expected symmetric-limit UnsupportedScenario, got {err:?}"
         );
+    }
+
+    #[test]
+    fn allocator_builder_consumes_pseudo_inverse_kind() {
+        let toml = ALLOCATOR_SCENARIO.replace(
+            "kind          = \"prioritised_redistributed\"",
+            "kind          = \"pseudo_inverse\"",
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let allocator = build_autopilot_allocator(&scenario)
+            .expect("pseudo-inverse allocator builds")
+            .expect("allocator present");
+        assert!(matches!(
+            allocator,
+            openbmp_fc::allocation::ControlAllocator::WeightedPseudoInverse(_)
+        ));
     }
 
     #[test]
