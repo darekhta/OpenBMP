@@ -22,6 +22,11 @@
 #    steady-state position-bias stddev is 0.5 · √(1/(2·1/60)) =
 #    0.5 · √30 ≈ 2.74 m, comfortably inside the IS-GPS-200 nominal
 #    URE bias envelope.
+#  - mount_offset_body_m — antenna phase-center lever arm in body
+#    axes. Zero preserves the vehicle-reference-point output.
+#  - clock_* and fixed_latency_s — receiver-output-level clock and
+#    timing model. They default to zero and do not introduce
+#    pseudorange, satellite geometry, ionosphere, or troposphere.
 #
 # These are textbook synthetic numbers; not lifted from any real
 # fielded receiver's spec sheet (see safety-boundaries.md).
@@ -34,3 +39,9 @@ sigma_position_m                   = [3.0, 3.0, 3.0]
 sigma_velocity_m_s                 = [0.1, 0.1, 0.1]
 position_bias_ou_theta_per_s       = [0.0166666666666666666, 0.0166666666666666666, 0.0166666666666666666]
 position_bias_ou_sigma_m_sqrt_s    = [0.5, 0.5, 0.5]
+mount_offset_body_m                = [0.0, 0.0, 0.0]
+clock_bias_s                       = 0.0
+clock_drift_s_per_s                = 0.0
+clock_bias_rw_sigma_s_sqrt_s       = 0.0
+clock_drift_rw_sigma_s_per_s_sqrt_s = 0.0
+fixed_latency_s                    = 0.0

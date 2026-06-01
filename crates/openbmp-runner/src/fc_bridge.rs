@@ -1030,7 +1030,7 @@ fn budget_table(value: &toml::Value) -> Result<&toml::value::Table, RunnerError>
 fn parse_gnss_budget(text: &str, dt_s: f64) -> Result<GnssNoiseBudget, RunnerError> {
     let value = parse_toml_budget(text)?;
     let table = budget_table(&value)?;
-    GnssNoiseBudget::new(
+    let mut budget = GnssNoiseBudget::new(
         array3(table, "sigma_position_m")?,
         array3(table, "sigma_velocity_m_s")?,
         array3(table, "position_bias_ou_theta_per_s")?,
@@ -1039,7 +1039,52 @@ fn parse_gnss_budget(text: &str, dt_s: f64) -> Result<GnssNoiseBudget, RunnerErr
     )
     .map_err(|err| RunnerError::UnsupportedScenario {
         what: format!("GNSS budget rejected: {err}"),
-    })
+    })?;
+    let mount_offset_body_m =
+        optional_array3(table, "mount_offset_body_m")?.map_or_else(Vector3::zeros, Vector3::from);
+    let clock_bias_s = optional_number(table, "clock_bias_s")?.unwrap_or(0.0);
+    let clock_drift_s_per_s = optional_number(table, "clock_drift_s_per_s")?.unwrap_or(0.0);
+    let fixed_latency_s = optional_number(table, "fixed_latency_s")?.unwrap_or(0.0);
+    budget = budget
+        .with_deterministic_errors(
+            mount_offset_body_m,
+            clock_bias_s,
+            clock_drift_s_per_s,
+            fixed_latency_s,
+        )
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("GNSS deterministic error budget rejected: {err}"),
+        })?;
+    let clock_bias_rw_sigma_s_sqrt_s =
+        optional_number(table, "clock_bias_rw_sigma_s_sqrt_s")?.unwrap_or(0.0);
+    let clock_drift_rw_sigma_s_per_s_sqrt_s =
+        optional_number(table, "clock_drift_rw_sigma_s_per_s_sqrt_s")?.unwrap_or(0.0);
+    budget
+        .with_clock_random_walk(
+            clock_bias_rw_sigma_s_sqrt_s,
+            clock_drift_rw_sigma_s_per_s_sqrt_s,
+        )
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("GNSS clock random-walk budget rejected: {err}"),
+        })
+}
+
+fn optional_number(table: &toml::value::Table, key: &str) -> Result<Option<f64>, RunnerError> {
+    table
+        .get(key)
+        .map(|value| {
+            toml_number_as_f64(value).ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: format!("sensor budget `{key}` contains a non-number"),
+            })
+        })
+        .transpose()
+}
+
+fn optional_array3(table: &toml::value::Table, key: &str) -> Result<Option<[f64; 3]>, RunnerError> {
+    if !table.contains_key(key) {
+        return Ok(None);
+    }
+    array3(table, key).map(Some)
 }
 
 fn parse_magnetometer_budget(text: &str) -> Result<MagnetometerNoiseBudget, RunnerError> {

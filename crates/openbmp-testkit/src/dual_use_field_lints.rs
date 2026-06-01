@@ -295,11 +295,7 @@ pub const SENSITIVE_FIELD_ALLOWLISTS: &[FileFieldAllowlist] = &[
             },
             StructFieldAllowlist {
                 name: "LandingFootprintMonteCarloBurnoutStateConfig",
-                fields: &[
-                    "position_sigma_eci_m",
-                    "velocity_sigma_eci_m_s",
-                    "time_sigma_s",
-                ],
+                fields: &["position_sigma_eci_m", "speed_sigma_m_s", "time_sigma_s"],
             },
             StructFieldAllowlist {
                 name: "StagingAnalysisConfig",

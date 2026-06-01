@@ -210,10 +210,9 @@ fn sampled_state(
                 position_eci_m[axis] += sample_normal(seed, sample_index, axis as u32, sigma);
             }
         }
-        if let Some(velocity_sigma_eci_m_s) = burnout.velocity_sigma_eci_m_s {
-            for (axis, sigma) in velocity_sigma_eci_m_s.iter().copied().enumerate() {
-                velocity_eci_m_s[axis] += sample_normal(seed, sample_index, 3 + axis as u32, sigma);
-            }
+        if let Some(speed_sigma_m_s) = burnout.speed_sigma_m_s {
+            velocity_eci_m_s =
+                sampled_speed_magnitude(seed, sample_index, 3, velocity_eci_m_s, speed_sigma_m_s);
         }
         if let Some(time_sigma_s) = burnout.time_sigma_s {
             let t = time.as_seconds() + sample_normal(seed, sample_index, 6, time_sigma_s);
@@ -253,6 +252,31 @@ fn sampled_state(
         )?;
     }
     Ok(nominal)
+}
+
+fn sampled_speed_magnitude(
+    seed: u64,
+    sample_index: u32,
+    component: u32,
+    velocity_eci_m_s: [f64; 3],
+    sigma_m_s: f64,
+) -> [f64; 3] {
+    let speed_m_s = norm3(velocity_eci_m_s);
+    if speed_m_s <= f64::EPSILON {
+        return velocity_eci_m_s;
+    }
+    let delta_speed_m_s = sample_normal(seed, sample_index, component, sigma_m_s);
+    let sampled_speed_m_s = (speed_m_s + delta_speed_m_s).max(0.0);
+    let scale = sampled_speed_m_s / speed_m_s;
+    [
+        velocity_eci_m_s[0] * scale,
+        velocity_eci_m_s[1] * scale,
+        velocity_eci_m_s[2] * scale,
+    ]
+}
+
+fn norm3(values: [f64; 3]) -> f64 {
+    (values[0] * values[0] + values[1] * values[1] + values[2] * values[2]).sqrt()
 }
 
 fn sampled_wind(
@@ -897,10 +921,7 @@ mod tests {
                 "position_sigma_eci_m = [1.0, 1.0, 0.5]",
                 "position_sigma_eci_m = [0.0, 0.0, 0.0]",
             )
-            .replace(
-                "velocity_sigma_eci_m_s = [0.5, 0.5, 0.2]",
-                "velocity_sigma_eci_m_s = [0.0, 0.0, 0.0]",
-            )
+            .replace("speed_sigma_m_s = 0.5", "speed_sigma_m_s = 0.0")
             .replace("time_sigma_s = 0.01", "time_sigma_s = 0.0");
         let scenario = Scenario::from_toml_str(&toml).unwrap();
         let report = landing_footprint_monte_carlo_for_initial_state(&scenario)

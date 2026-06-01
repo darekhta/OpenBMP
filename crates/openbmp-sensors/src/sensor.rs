@@ -236,6 +236,16 @@ pub trait SyntheticSensor {
         step: StepIndex,
         scenario_seed: u64,
     ) -> Result<SensorMeasurement, SensorError>;
+
+    /// Capture timestamp for a measurement derived from `truth_time`.
+    ///
+    /// Most synthetic sensors sample the current truth tick. Sensors
+    /// with an explicit latency model override this to report the
+    /// delayed capture time through the hardware-portable
+    /// [`Timestamped`] surface.
+    fn capture_time(&self, truth_time: SimTime) -> SimTime {
+        truth_time
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -330,7 +340,10 @@ impl<S: SyntheticSensor> Sensor for SyntheticSensorAdapter<S> {
         let measurement =
             self.inner
                 .measure(&pending.truth, pending.step, pending.scenario_seed)?;
-        Ok(Timestamped::new(pending.truth.time, measurement))
+        Ok(Timestamped::new(
+            self.inner.capture_time(pending.truth.time),
+            measurement,
+        ))
     }
 }
 

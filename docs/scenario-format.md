@@ -2223,7 +2223,7 @@ max_m2_kg = 0.05
 
 [landing_footprint.monte_carlo.burnout_state]
 position_sigma_eci_m = [1.0, 1.0, 0.5]
-velocity_sigma_eci_m_s = [0.5, 0.5, 0.2]
+speed_sigma_m_s = 0.5
 time_sigma_s = 0.01
 ```
 
@@ -2250,7 +2250,10 @@ with no source fails closed. The runner samples deterministic streams
 from the Monte-Carlo seed (or `[time].seed` when omitted) plus the sample
 index, propagates each sample with drag and wind using the sampled
 ballistic coefficient, and writes the declared CSV/Parquet sample cloud
-plus TOML summary. `wind.kind` accepts `constant`, `layered`, `hwm14`, or
+plus TOML summary. Burnout-state velocity uncertainty is deliberately
+limited to scalar `speed_sigma_m_s`, sampled along the nominal velocity
+direction, so the scenario cannot express per-axis launch-direction
+dispersion. `wind.kind` accepts `constant`, `layered`, `hwm14`, or
 `ensemble`; the current offline propagator consumes the sampled local-NED
 perturbation as the constant wind vector for that footprint sample.
 

@@ -3564,9 +3564,13 @@ pub struct LandingFootprintMonteCarloBurnoutStateConfig {
     /// Independent one-sigma ECI position perturbations (m).
     #[serde(default)]
     pub position_sigma_eci_m: Option<[f64; 3]>,
-    /// Independent one-sigma ECI velocity perturbations (m/s).
+    /// One-sigma inertial speed-magnitude perturbation (m/s).
+    ///
+    /// This intentionally perturbs only the scalar speed along the
+    /// nominal velocity direction. It does not expose per-axis
+    /// velocity-direction control.
     #[serde(default)]
-    pub velocity_sigma_eci_m_s: Option<[f64; 3]>,
+    pub speed_sigma_m_s: Option<f64>,
     /// One-sigma timestamp perturbation (s).
     #[serde(default)]
     pub time_sigma_s: Option<f64>,
@@ -3580,10 +3584,10 @@ impl LandingFootprintMonteCarloBurnoutStateConfig {
                 &sigma,
             )?;
         }
-        if let Some(sigma) = self.velocity_sigma_eci_m_s {
-            require_non_negative_array(
-                "landing_footprint.monte_carlo.burnout_state.velocity_sigma_eci_m_s",
-                &sigma,
+        if let Some(sigma) = self.speed_sigma_m_s {
+            require_non_negative(
+                "landing_footprint.monte_carlo.burnout_state.speed_sigma_m_s",
+                sigma,
             )?;
         }
         if let Some(sigma) = self.time_sigma_s {
@@ -3593,7 +3597,7 @@ impl LandingFootprintMonteCarloBurnoutStateConfig {
             )?;
         }
         if self.position_sigma_eci_m.is_none()
-            && self.velocity_sigma_eci_m_s.is_none()
+            && self.speed_sigma_m_s.is_none()
             && self.time_sigma_s.is_none()
         {
             return Err(ScenarioError::InconsistentSection {
