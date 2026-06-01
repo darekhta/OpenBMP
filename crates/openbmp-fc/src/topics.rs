@@ -53,8 +53,13 @@ pub(crate) mod topic_index {
     pub const GUIDANCE_REFERENCE: usize = 29;
     pub const GUIDANCE_CUTOFF: usize = 30;
     pub const SCHEDULER_OVERRUN: usize = 31;
+    pub const SCHEDULER_DEADLINE_SLIP: usize = 32;
+    pub const SCHEDULER_TIMING_BUDGET_REPORT: usize = 33;
+    pub const HEALTH_ACTUATOR_STATUS: usize = 34;
+    pub const HEALTH_WATCHDOG_STATUS: usize = 35;
+    pub const HEALTH_STORAGE_STATUS: usize = 36;
     #[allow(dead_code)]
-    pub const COUNT: usize = 32;
+    pub const COUNT: usize = 37;
 }
 
 // ---------------------------------------------------------------------
@@ -592,6 +597,18 @@ pub struct FailsafeFlags {
     pub estimator_dead_reckoning: bool,
     /// `true` if the scheduler emitted a sustained overrun.
     pub scheduler_overrun: bool,
+    /// `true` if measured job execution time has slipped its
+    /// declared budget for a sustained burst.
+    pub deadline_slip: bool,
+    /// `true` if an actuator backend rejected a command or stopped
+    /// publishing healthy status.
+    pub actuator_unhealthy: bool,
+    /// `true` if the watchdog backend reports missed service or
+    /// stopped publishing healthy status.
+    pub watchdog_unhealthy: bool,
+    /// `true` if the storage / flight-recorder backend reports
+    /// write failure or stopped publishing healthy status.
+    pub storage_unhealthy: bool,
     /// `true` if any registered FDIR detector tripped.
     pub fdir_triggered: bool,
 }
@@ -606,6 +623,10 @@ impl FailsafeFlags {
             || self.mag_unhealthy
             || self.estimator_dead_reckoning
             || self.scheduler_overrun
+            || self.deadline_slip
+            || self.actuator_unhealthy
+            || self.watchdog_unhealthy
+            || self.storage_unhealthy
             || self.fdir_triggered
     }
 }
@@ -613,6 +634,75 @@ impl FailsafeFlags {
 impl Topic for FailsafeFlags {
     const NAME: &'static str = "health.failsafe_flags";
     const INDEX: usize = topic_index::HEALTH_FAILSAFE_FLAGS;
+}
+
+/// Health status for actuator command backends.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ActuatorStatus {
+    /// Status timestamp.
+    pub time: SimTime,
+    /// `true` if the last actuator backend interaction was healthy.
+    pub healthy: bool,
+}
+
+impl Default for ActuatorStatus {
+    fn default() -> Self {
+        Self {
+            time: SimTime::ZERO,
+            healthy: true,
+        }
+    }
+}
+
+impl Topic for ActuatorStatus {
+    const NAME: &'static str = "health.actuator_status";
+    const INDEX: usize = topic_index::HEALTH_ACTUATOR_STATUS;
+}
+
+/// Health status for watchdog service.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct WatchdogStatus {
+    /// Status timestamp.
+    pub time: SimTime,
+    /// `true` if watchdog service succeeded this cycle.
+    pub healthy: bool,
+}
+
+impl Default for WatchdogStatus {
+    fn default() -> Self {
+        Self {
+            time: SimTime::ZERO,
+            healthy: true,
+        }
+    }
+}
+
+impl Topic for WatchdogStatus {
+    const NAME: &'static str = "health.watchdog_status";
+    const INDEX: usize = topic_index::HEALTH_WATCHDOG_STATUS;
+}
+
+/// Health status for flight-recorder / I-load storage.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct StorageStatus {
+    /// Status timestamp.
+    pub time: SimTime,
+    /// `true` if the latest storage interaction succeeded.
+    pub healthy: bool,
+}
+
+impl Default for StorageStatus {
+    fn default() -> Self {
+        Self {
+            time: SimTime::ZERO,
+            healthy: true,
+        }
+    }
+}
+
+impl Topic for StorageStatus {
+    const NAME: &'static str = "health.storage_status";
+    const INDEX: usize = topic_index::HEALTH_STORAGE_STATUS;
 }
 
 // ---------------------------------------------------------------------
@@ -917,7 +1007,7 @@ impl Topic for GuidanceCutoff {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scheduler::OverrunEvent;
+    use crate::scheduler::{DeadlineSlipEvent, OverrunEvent, TimingBudgetReport};
 
     #[test]
     #[allow(clippy::too_many_lines)]
@@ -1003,6 +1093,18 @@ mod tests {
                 <FailsafeFlags as Topic>::INDEX,
             ),
             (
+                <ActuatorStatus as Topic>::NAME,
+                <ActuatorStatus as Topic>::INDEX,
+            ),
+            (
+                <WatchdogStatus as Topic>::NAME,
+                <WatchdogStatus as Topic>::INDEX,
+            ),
+            (
+                <StorageStatus as Topic>::NAME,
+                <StorageStatus as Topic>::INDEX,
+            ),
+            (
                 <ActuatorCommand as Topic>::NAME,
                 <ActuatorCommand as Topic>::INDEX,
             ),
@@ -1042,6 +1144,14 @@ mod tests {
             (
                 <OverrunEvent as Topic>::NAME,
                 <OverrunEvent as Topic>::INDEX,
+            ),
+            (
+                <DeadlineSlipEvent as Topic>::NAME,
+                <DeadlineSlipEvent as Topic>::INDEX,
+            ),
+            (
+                <TimingBudgetReport as Topic>::NAME,
+                <TimingBudgetReport as Topic>::INDEX,
             ),
         ];
 

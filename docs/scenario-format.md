@@ -2251,7 +2251,7 @@ plus TOML summary. `wind.kind` accepts `constant`, `layered`, `hwm14`, or
 perturbation as the constant wind vector for that footprint sample.
 
 The Monte-Carlo summary includes an output-only `[dispersion_statistics]` block:
-`cep50_m` is the empirical 50% circular radius about the successful sample
+`radial_dispersion_p50_m` is the empirical 50% radial dispersion about the successful sample
 mean, while `mean_radial_offset_from_nominal_m` is the radial offset from
 the nominal forward footprint to that sample mean. The persisted sample cloud
 contains per-sample landing and radial-offset diagnostics only: it deliberately

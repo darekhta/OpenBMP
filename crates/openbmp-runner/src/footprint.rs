@@ -510,7 +510,11 @@ fn monte_carlo_summary_toml(
     push_summary_line(&mut out, "bearing_rad", result.nominal.bearing_rad);
     push_summary_line(&mut out, "time_to_cull_s", result.nominal.time_to_cull_s);
     out.push_str("\n[dispersion_statistics]\n");
-    push_summary_line(&mut out, "cep50_m", result.cep50_m);
+    push_summary_line(
+        &mut out,
+        "radial_dispersion_p50_m",
+        result.radial_dispersion_p50_m,
+    );
     push_summary_line(
         &mut out,
         "mean_offset_downrange_from_nominal_m",
@@ -841,7 +845,7 @@ mod tests {
         assert!(first.summary_toml.contains("[dispersion_statistics]"));
         assert!(!first.summary_toml.contains("[accuracy]"));
         assert!(!first.summary_toml.contains("miss_distance"));
-        assert!(first.summary_toml.contains("cep50_m"));
+        assert!(first.summary_toml.contains("radial_dispersion_p50_m"));
         assert!(
             first
                 .summary_toml
@@ -902,7 +906,7 @@ mod tests {
         let report = landing_footprint_monte_carlo_for_initial_state(&scenario)
             .unwrap()
             .unwrap();
-        assert!(report.result.cep50_m < 1.0e-12);
+        assert!(report.result.radial_dispersion_p50_m < 1.0e-12);
         assert!(report.result.mean_radial_offset_from_nominal_m < 1.0e-12);
         for sample in &report.result.samples {
             assert!(

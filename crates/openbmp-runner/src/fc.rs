@@ -31,13 +31,13 @@ use openbmp_fc::imm::ImmEstimator;
 use openbmp_fc::mixer::{ActuatorChannelMap, Mixer, PhaseAuthority, PhaseAuthorityTable};
 use openbmp_fc::sr_ukf::{SquareRootUkf, SquareRootUkfAttitude, SquareRootUkfParams};
 use openbmp_fc::topics::{
-    ActuatorCommand, AttitudeEstimate, AutopilotStatus, BarometerSample, CommsRegionStatePublish,
-    EffectorCommandSet, EngineCommandSet, EngineDemand, EnvironmentEstimate,
-    EstimatorLaneSelection, EstimatorMode, EstimatorRegimeRegionStatePublish, EstimatorStatus,
-    FailsafeFlags, FdirGlrtDiagnostic, FdirStatus, GnssSample, GuidanceCutoff,
+    ActuatorCommand, ActuatorStatus, AttitudeEstimate, AutopilotStatus, BarometerSample,
+    CommsRegionStatePublish, EffectorCommandSet, EngineCommandSet, EngineDemand,
+    EnvironmentEstimate, EstimatorLaneSelection, EstimatorMode, EstimatorRegimeRegionStatePublish,
+    EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic, FdirStatus, GnssSample, GuidanceCutoff,
     HealthRegionStatePublish, ImuSample, MagnetometerSample, MissionActionBatch,
     MissionRegionStatePublish, MissionStatePublish, PositionEstimate, PropellantState,
-    ReferenceState, SensorStatus, StarTrackerSample, VehicleStatus,
+    ReferenceState, SensorStatus, StarTrackerSample, StorageStatus, VehicleStatus, WatchdogStatus,
 };
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
@@ -512,6 +512,9 @@ impl FcRunner {
         bus.register::<EstimatorStatus>()?;
         bus.register::<VehicleStatus>()?;
         bus.register::<FailsafeFlags>()?;
+        bus.register::<ActuatorStatus>()?;
+        bus.register::<WatchdogStatus>()?;
+        bus.register::<StorageStatus>()?;
         bus.register::<ReferenceState>()?;
         bus.register::<GuidanceCutoff>()?;
         bus.register::<ActuatorCommand>()?;
@@ -1523,6 +1526,7 @@ fn build_health_params(cfg: &FcHealthConfig) -> HealthParams {
         baro_stale_after_s: cfg.baro_stale_after_s,
         mag_stale_after_s: cfg.mag_stale_after_s,
         overrun_burst_count: cfg.overrun_burst_count,
+        ..HealthParams::default()
     }
 }
 

@@ -35,6 +35,17 @@ pub const FDIR_BIT_AUTOPILOT_REFERENCE_SUPPRESSED: u64 = 1 << 7;
 pub const FDIR_BIT_ESTIMATOR_LANE_FAILOVER: u64 = 1 << 8;
 /// Fault-tree bit: body-rate redline breach.
 pub const FDIR_BIT_BODY_RATE_REDLINE: u64 = 1 << 9;
+/// Fault-tree bit: actuator backend rejected a command or became
+/// unhealthy.
+pub const FDIR_BIT_ACTUATOR_REJECT: u64 = 1 << 10;
+/// Fault-tree bit: watchdog service failed or became unhealthy.
+pub const FDIR_BIT_WATCHDOG_NOT_SERVICED: u64 = 1 << 11;
+/// Fault-tree bit: flight-recorder / I-load storage write failed or
+/// became unhealthy.
+pub const FDIR_BIT_STORAGE_WRITE_FAIL: u64 = 1 << 12;
+/// Fault-tree bit: measured scheduler job execution exceeded its
+/// declared budget.
+pub const FDIR_BIT_DEADLINE_SLIP: u64 = 1 << 13;
 
 /// Detector family.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -234,6 +245,18 @@ impl FdirJob {
         }
         if flags.scheduler_overrun {
             mask |= FDIR_BIT_SCHEDULER_OVERRUN;
+        }
+        if flags.deadline_slip {
+            mask |= FDIR_BIT_DEADLINE_SLIP;
+        }
+        if flags.actuator_unhealthy {
+            mask |= FDIR_BIT_ACTUATOR_REJECT;
+        }
+        if flags.watchdog_unhealthy {
+            mask |= FDIR_BIT_WATCHDOG_NOT_SERVICED;
+        }
+        if flags.storage_unhealthy {
+            mask |= FDIR_BIT_STORAGE_WRITE_FAIL;
         }
         if flags.estimator_dead_reckoning {
             mask |= FDIR_BIT_ESTIMATOR_DEAD_RECKONING;
@@ -583,6 +606,31 @@ mod tests {
 
         assert!(status.triggered);
         assert_ne!(status.tripped_mask & FDIR_BIT_SCHEDULER_OVERRUN, 0);
+    }
+
+    #[test]
+    fn non_sensor_resource_failsafe_flags_trip_fdir_bits() {
+        let bus = bus_with_fdir_topics();
+        bus.publish(FailsafeFlags {
+            deadline_slip: true,
+            actuator_unhealthy: true,
+            watchdog_unhealthy: true,
+            storage_unhealthy: true,
+            ..FailsafeFlags::default()
+        })
+        .unwrap();
+        let mut job = FdirJob::new(FdirParams {
+            detector_kind: DetectorKind::WindowedMeanShiftGlrt,
+            ..FdirParams::default()
+        });
+
+        let status = run_once(&mut job, &bus);
+
+        assert!(status.triggered);
+        assert_ne!(status.tripped_mask & FDIR_BIT_DEADLINE_SLIP, 0);
+        assert_ne!(status.tripped_mask & FDIR_BIT_ACTUATOR_REJECT, 0);
+        assert_ne!(status.tripped_mask & FDIR_BIT_WATCHDOG_NOT_SERVICED, 0);
+        assert_ne!(status.tripped_mask & FDIR_BIT_STORAGE_WRITE_FAIL, 0);
     }
 
     #[test]

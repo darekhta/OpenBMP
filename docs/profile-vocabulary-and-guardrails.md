@@ -33,7 +33,7 @@ operational engagement meaning.
 | `final_descent` | Low-altitude descent to recovery. Already in canon; replaces the rejected end-phase label. | — |
 | `landing_footprint` | Predicted touchdown region of an unpowered body. Replaces *impact point*. | RCC 321 range-safety. |
 | `dispersion_ellipse` | Statistical landing scatter. Primary schema term replacing target-accuracy wording. | RCC 321. |
-| `cep50_m` | Output-only empirical 50% circular radius about the Monte-Carlo sample mean. No target or aimpoint input. | NASA/JPL D-4710. |
+| `radial_dispersion_p50_m` | Output-only empirical 50% radial dispersion about the Monte-Carlo sample mean. No target or aimpoint input. | NASA/JPL D-4710. |
 | `radial_offset_from_nominal_m` | Output-only radial error from the nominal forward footprint, used in sample clouds and summaries. Not a miss distance to a desired point. | Statistical post-processing. |
 | `downrange_m` / `crossrange_m` | Range-relative landing coordinates. Replaces geographic aimpoint. | Range-safety convention. |
 | `entry_corridor` | Heat-rate / load-factor / flight-path-angle limit band steering a lifting entry. Replaces end-phase steering language. | Vinh et al., 1980. |
@@ -61,7 +61,7 @@ of the existing rejected set documented in
 | `skidtoturn` | skid-to-turn | As above. |
 | `intercept` | intercept | Operational engagement; also guards the `interceptor` family. |
 | `reentryvehicle` | reentry-vehicle | Operational RV terminology; the academic term is *entry body* / *test article*. |
-| `circularerror` | circular-error | Rejected in scenario inputs. The offline Monte-Carlo summary may report `cep50_m` as an output-only sample statistic about the predicted footprint. |
+| `circularerror` | circular-error | Rejected in scenario inputs. The offline Monte-Carlo summary may report `radial_dispersion_p50_m` as an output-only sample statistic about the predicted footprint. |
 | `maxrange` / `rangemax` | max-range / range-max | Range maximization is a trajectory objective; staging analysis optimizes only ideal vehicle-intrinsic ΔV/mass budget. |
 | `throwweight` | throw-weight | Operational payload-at-range terminology; use `payload_mass_kg` at a declared ideal ΔV. |
 | `impactenergy` | impact-energy | Terminal-effect terminology, unrelated to forward propulsion analysis. |
@@ -91,7 +91,7 @@ must also declare, disagreement fails closed.
 1. **No desired-landing input anywhere.** No config block accepts a target
    location, aimpoint, or desired touchdown coordinate. The
    `RangeSafetyFootprint` tool takes only a propagated state and reports a
-   forward prediction. Nominal-referenced `cep50_m` /
+   forward prediction. Nominal-referenced `radial_dispersion_p50_m` /
    `radial_offset_from_nominal_m` outputs are computed after propagation and
    cannot be configured against a geographic point. (Lint + absence of any
    such field in the schema.)

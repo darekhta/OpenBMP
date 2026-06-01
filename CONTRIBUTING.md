@@ -58,7 +58,9 @@ Required status checks from `CI`:
 - `lockstep-clock tripwire`
 - `mission-vocabulary tripwire`
 - `dual-use field audit`
+- `dual-use compile-fail audit`
 - `dual-use reachability audit`
+- `optimizer gate`
 - `requirements traceability`
 - `fc HAL build-time gate`
 - `determinism-gate`

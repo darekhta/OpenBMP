@@ -7,6 +7,7 @@
 //! future edit adds, removes, or renames one of these fields, CI fails
 //! and the dual-use assessment must be reviewed with the code change.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 /// One struct whose public field set is locked by the audit.
@@ -25,6 +26,24 @@ pub struct FileFieldAllowlist {
     pub path: &'static str,
     /// Sensitive public structs in this file.
     pub structs: &'static [StructFieldAllowlist],
+}
+
+/// One enum whose public variant set is locked by the audit.
+#[derive(Clone, Debug)]
+pub struct EnumVariantAllowlist {
+    /// Rust enum name.
+    pub name: &'static str,
+    /// Public variant names that are allowed on the enum.
+    pub variants: &'static [&'static str],
+}
+
+/// A source file and the sensitive enums it contains.
+#[derive(Clone, Debug)]
+pub struct FileEnumAllowlist {
+    /// Workspace-relative source path.
+    pub path: &'static str,
+    /// Sensitive public enums in this file.
+    pub enums: &'static [EnumVariantAllowlist],
 }
 
 /// Field-set mismatch reported by the audit.
@@ -56,6 +75,33 @@ pub enum FieldAuditMismatch {
         /// Sorted actual field names.
         actual: Vec<String>,
     },
+    /// The expected enum declaration was not found.
+    MissingEnum {
+        /// Workspace-relative source path.
+        path: &'static str,
+        /// Rust enum name.
+        enum_name: &'static str,
+    },
+    /// The enum exists, but its public variant set differs from the
+    /// sealed allowlist.
+    VariantSetChanged {
+        /// Workspace-relative source path.
+        path: &'static str,
+        /// Rust enum name.
+        enum_name: &'static str,
+        /// Sorted expected variant names.
+        expected: Vec<String>,
+        /// Sorted actual variant names.
+        actual: Vec<String>,
+    },
+    /// A public sensitive type exists in a scanned module but is not
+    /// covered by either the field or variant audit.
+    UnenrolledPublicType {
+        /// Workspace-relative source path.
+        path: &'static str,
+        /// Rust type name.
+        type_name: String,
+    },
 }
 
 /// Result of a structural field audit.
@@ -80,6 +126,14 @@ pub const SENSITIVE_FIELD_ALLOWLISTS: &[FileFieldAllowlist] = &[
         structs: &[
             StructFieldAllowlist {
                 name: "BallisticState",
+                fields: &[],
+            },
+            StructFieldAllowlist {
+                name: "ConstantGravityRangeSafetyFootprint",
+                fields: &[],
+            },
+            StructFieldAllowlist {
+                name: "NumericalGravityRangeSafetyFootprint",
                 fields: &[],
             },
             StructFieldAllowlist {
@@ -147,7 +201,7 @@ pub const SENSITIVE_FIELD_ALLOWLISTS: &[FileFieldAllowlist] = &[
             },
             StructFieldAllowlist {
                 name: "FootprintSample",
-                fields: &["sample_index", "state", "wind_eci_m_s", "landing"],
+                fields: &["sample_index", "landing"],
             },
             StructFieldAllowlist {
                 name: "FootprintSampleFailure",
@@ -165,7 +219,7 @@ pub const SENSITIVE_FIELD_ALLOWLISTS: &[FileFieldAllowlist] = &[
                     "failures",
                     "mean_downrange_m",
                     "mean_crossrange_m",
-                    "cep50_m",
+                    "radial_dispersion_p50_m",
                     "mean_offset_downrange_from_nominal_m",
                     "mean_offset_crossrange_from_nominal_m",
                     "mean_radial_offset_from_nominal_m",
@@ -264,6 +318,57 @@ pub const SENSITIVE_FIELD_ALLOWLISTS: &[FileFieldAllowlist] = &[
     },
 ];
 
+/// Dual-use-sensitive public enum variant allowlists.
+pub const SENSITIVE_ENUM_ALLOWLISTS: &[FileEnumAllowlist] = &[
+    FileEnumAllowlist {
+        path: "crates/openbmp-physics/src/profile.rs",
+        enums: &[
+            EnumVariantAllowlist {
+                name: "TerminalCondition",
+                variants: &[
+                    "OrbitalElements",
+                    "ApogeeRadius",
+                    "FlightPathAngleAtBurnout",
+                    "RendezvousState",
+                    "MaximizePayloadMass",
+                ],
+            },
+            EnumVariantAllowlist {
+                name: "DispersionSource",
+                variants: &[
+                    "Wind",
+                    "BallisticCoefficient",
+                    "VehicleMass",
+                    "ThrustScale",
+                    "SensorNoiseScale",
+                    "ActuatorLag",
+                ],
+            },
+        ],
+    },
+    FileEnumAllowlist {
+        path: "crates/openbmp-scenario/src/document.rs",
+        enums: &[
+            EnumVariantAllowlist {
+                name: "LandingFootprintMethod",
+                variants: &["ConstantGravity", "J2", "Egm2008"],
+            },
+            EnumVariantAllowlist {
+                name: "LandingFootprintMonteCarloWindKind",
+                variants: &["Constant", "Layered", "Hwm14", "Ensemble"],
+            },
+            EnumVariantAllowlist {
+                name: "LandingFootprintMonteCarloDistribution",
+                variants: &["Normal", "Uniform"],
+            },
+            EnumVariantAllowlist {
+                name: "StagingAnalysisMode",
+                variants: &["Budget", "Optimal"],
+            },
+        ],
+    },
+];
+
 /// Audit the workspace's dual-use-sensitive struct field sets.
 #[must_use]
 pub fn audit_workspace(root: &Path) -> FieldAuditFindings {
@@ -301,6 +406,40 @@ pub fn audit_workspace(root: &Path) -> FieldAuditFindings {
             }
         }
     }
+    for file in SENSITIVE_ENUM_ALLOWLISTS {
+        let path = root.join(file.path);
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) => {
+                findings.mismatches.push(FieldAuditMismatch::MissingFile {
+                    path: file.path,
+                    error: error.to_string(),
+                });
+                continue;
+            }
+        };
+        for enum_allowlist in file.enums {
+            let Some(actual) = public_enum_variants(&contents, enum_allowlist.name) else {
+                findings.mismatches.push(FieldAuditMismatch::MissingEnum {
+                    path: file.path,
+                    enum_name: enum_allowlist.name,
+                });
+                continue;
+            };
+            let expected = sorted_field_names(enum_allowlist.variants);
+            if actual != expected {
+                findings
+                    .mismatches
+                    .push(FieldAuditMismatch::VariantSetChanged {
+                        path: file.path,
+                        enum_name: enum_allowlist.name,
+                        expected,
+                        actual,
+                    });
+            }
+        }
+    }
+    audit_enrolled_sensitive_types(root, &mut findings);
     findings
 }
 
@@ -316,7 +455,7 @@ fn public_struct_fields(source: &str, struct_name: &str) -> Option<Vec<String>> 
     let semicolon = after.find(';');
     let open = after.find('{')?;
     if semicolon.is_some_and(|index| index < open) {
-        return None;
+        return Some(Vec::new());
     }
     let body_start = start + open + 1;
     let mut depth = 1usize;
@@ -375,6 +514,154 @@ fn find_pub_struct(source: &str, struct_name: &str) -> Option<usize> {
     None
 }
 
+fn public_enum_variants(source: &str, enum_name: &str) -> Option<Vec<String>> {
+    let start = find_pub_enum(source, enum_name)?;
+    let after = &source[start..];
+    let open = after.find('{')?;
+    let body_start = start + open + 1;
+    let mut depth = 1usize;
+    let mut body_end = None;
+    for (offset, ch) in source[body_start..].char_indices() {
+        match ch {
+            '{' => depth = depth.saturating_add(1),
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    body_end = Some(body_start + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let body = &source[body_start..body_end?];
+    let mut variants = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty()
+            || trimmed.starts_with('#')
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("///")
+            || trimmed.starts_with("pub ")
+        {
+            continue;
+        }
+        let name = trimmed
+            .split(|ch: char| {
+                ch == '{' || ch == '(' || ch == '=' || ch == ',' || ch.is_whitespace()
+            })
+            .next()
+            .unwrap_or_default();
+        if name
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_uppercase())
+            && name
+                .chars()
+                .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+        {
+            variants.push(name.to_owned());
+        }
+    }
+    variants.sort();
+    Some(variants)
+}
+
+fn find_pub_enum(source: &str, enum_name: &str) -> Option<usize> {
+    find_pub_type(source, "enum", enum_name)
+}
+
+fn find_pub_type(source: &str, kind: &str, type_name: &str) -> Option<usize> {
+    let needle = format!("pub {kind} {type_name}");
+    let mut search_start = 0usize;
+    while let Some(relative) = source[search_start..].find(&needle) {
+        let start = search_start + relative;
+        let end = start + needle.len();
+        let boundary_ok = source[end..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !(ch == '_' || ch.is_ascii_alphanumeric()));
+        if boundary_ok {
+            return Some(start);
+        }
+        search_start = end;
+    }
+    None
+}
+
+fn audit_enrolled_sensitive_types(root: &Path, findings: &mut FieldAuditFindings) {
+    let field_names: BTreeSet<&str> = SENSITIVE_FIELD_ALLOWLISTS
+        .iter()
+        .flat_map(|file| file.structs.iter().map(|item| item.name))
+        .collect();
+    let enum_names: BTreeSet<&str> = SENSITIVE_ENUM_ALLOWLISTS
+        .iter()
+        .flat_map(|file| file.enums.iter().map(|item| item.name))
+        .collect();
+    let mut audited_paths: BTreeSet<&str> = SENSITIVE_FIELD_ALLOWLISTS
+        .iter()
+        .map(|file| file.path)
+        .collect();
+    audited_paths.extend(SENSITIVE_ENUM_ALLOWLISTS.iter().map(|file| file.path));
+
+    for path in audited_paths {
+        let file_path = root.join(path);
+        let Ok(contents) = std::fs::read_to_string(&file_path) else {
+            continue;
+        };
+        for type_name in public_type_names(&contents) {
+            if !is_dual_use_sensitive_type_name(&type_name) {
+                continue;
+            }
+            if !field_names.contains(type_name.as_str()) && !enum_names.contains(type_name.as_str())
+            {
+                findings
+                    .mismatches
+                    .push(FieldAuditMismatch::UnenrolledPublicType { path, type_name });
+            }
+        }
+    }
+}
+
+fn public_type_names(source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for kind in ["struct", "enum"] {
+        let needle = format!("pub {kind} ");
+        let mut search_start = 0usize;
+        while let Some(relative) = source[search_start..].find(&needle) {
+            let start = search_start + relative + needle.len();
+            let tail = &source[start..];
+            let name = tail
+                .split(|ch: char| {
+                    ch == '<' || ch == '{' || ch == ';' || ch == '(' || ch.is_whitespace()
+                })
+                .next()
+                .unwrap_or_default();
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+            {
+                names.push(name.to_owned());
+            }
+            search_start = start + name.len();
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn is_dual_use_sensitive_type_name(name: &str) -> bool {
+    name == "TerminalCondition"
+        || name == "DispersionSource"
+        || name.starts_with("Ballistic")
+        || name.starts_with("Footprint")
+        || name.starts_with("LandingFootprint")
+        || name.starts_with("StagingAnalysis")
+        || name.contains("RangeSafetyFootprint")
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -414,6 +701,24 @@ mod tests {
                             "  {path}: {struct_name} field set changed\n    expected: {expected:?}\n    actual:   {actual:?}",
                         ));
                     }
+                    FieldAuditMismatch::MissingEnum { path, enum_name } => {
+                        lines.push(format!("  {path}: missing enum {enum_name}"));
+                    }
+                    FieldAuditMismatch::VariantSetChanged {
+                        path,
+                        enum_name,
+                        expected,
+                        actual,
+                    } => {
+                        lines.push(format!(
+                            "  {path}: {enum_name} variant set changed\n    expected: {expected:?}\n    actual:   {actual:?}",
+                        ));
+                    }
+                    FieldAuditMismatch::UnenrolledPublicType { path, type_name } => {
+                        lines.push(format!(
+                            "  {path}: public sensitive type {type_name} is not enrolled in the field/variant audit",
+                        ));
+                    }
                 }
             }
             panic!(
@@ -438,5 +743,34 @@ pub struct Example {
 ";
         let fields = public_struct_fields(source, "Example").expect("fields");
         assert_eq!(fields, vec!["alpha".to_owned(), "beta_value".to_owned()]);
+    }
+
+    #[test]
+    fn enum_extractor_reports_variants() {
+        let source = r#"
+pub enum TerminalCondition {
+    /// doc
+    OrbitalElements { semi_major_axis_m: f64 },
+    #[serde(rename = "apogee_radius")]
+    ApogeeRadius { radius_m: f64 },
+    MaximizePayloadMass,
+}
+"#;
+        let variants = public_enum_variants(source, "TerminalCondition").expect("variants");
+        assert_eq!(
+            variants,
+            vec![
+                "ApogeeRadius".to_owned(),
+                "MaximizePayloadMass".to_owned(),
+                "OrbitalElements".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn sensitive_type_detector_catches_unenrolled_names() {
+        assert!(is_dual_use_sensitive_type_name("TerminalCondition"));
+        assert!(is_dual_use_sensitive_type_name("FootprintMonteCarloInput"));
+        assert!(!is_dual_use_sensitive_type_name("AscentState"));
     }
 }

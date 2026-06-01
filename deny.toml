@@ -50,6 +50,15 @@ deny = [
         "arrow-cast",
         "parquet",
     ], reason = "prefer jiff for new code; Arrow/Parquet require chrono transitively" },
+    # Dual-use capability denylist: adding geospatial target/route
+    # optimization crates requires an explicit architecture review and
+    # an update to docs/dual-use-assessment.md before the dependency
+    # may enter the workspace.
+    { crate = "proj",                       reason = "geodetic transformation capability requires dual-use review" },
+    { crate = "geozero",                    reason = "geospatial data plumbing requires dual-use review" },
+    { crate = "geo",                        reason = "geospatial algorithm capability requires dual-use review" },
+    { crate = "geo-types",                  reason = "geospatial coordinate types require dual-use review" },
+    { crate = "pathfinding",                reason = "route/search optimization capability requires dual-use review" },
 ]
 
 # Tokio is permitted only in openbmp-bridge. Workspace policy enforced via

@@ -117,7 +117,7 @@ pub trait RangeSafetyFootprint {
   `[landing_footprint.monte_carlo]` sample cloud over declared wind,
   ballistic-coefficient, and burnout-state uncertainty sources.
 - **Dispersion diagnostics** — the Monte-Carlo path emits output-only
-  `cep50_m` about the sample mean plus nominal-referenced radial-offset
+  `radial_dispersion_p50_m` about the sample mean plus nominal-referenced radial-offset
   statistics. These are comparisons to the nominal forward footprint, not to a
   desired landing point.
 
@@ -181,7 +181,7 @@ inverse problem and any geographic aimpoint are rejected at load.
 | `RangeSafetyFootprint` trait + `LandingFootprint` / `BallisticState` | `openbmp-physics/src/profile.rs` | Consumed by `ConstantGravityRangeSafetyFootprint` and `NumericalGravityRangeSafetyFootprint`. |
 | `coast`, `ballistic_descent` phases | mission vocabulary | Accepted with existing event machinery. |
 | Footprint post-processing path | offline analysis (`openbmp-runner`) | `landing_footprint_for_state` consumes schema-v3 `[landing_footprint]` for constant-gravity, J2, and EGM2008 methods. |
-| Footprint Monte-Carlo dispersion diagnostics | offline analysis (`openbmp-runner`) | `footprint-mc` writes `cep50_m`, nominal-referenced radial-offset quantiles, and sample-cloud radial offsets without accepting a target input. |
+| Footprint Monte-Carlo dispersion diagnostics | offline analysis (`openbmp-runner`) | `footprint-mc` writes `radial_dispersion_p50_m`, nominal-referenced radial-offset quantiles, and sample-cloud radial offsets without accepting a target input. |
 
 ## References
 

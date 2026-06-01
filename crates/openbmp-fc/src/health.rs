@@ -10,9 +10,10 @@
 
 use crate::error::ControllerError;
 use crate::params::ParamSection;
-use crate::scheduler::{Job, JobContext, OverrunEvent};
+use crate::scheduler::{DeadlineSlipEvent, Job, JobContext, OverrunEvent};
 use crate::topics::{
-    BarometerSample, EstimatorStatus, FailsafeFlags, GnssSample, ImuSample, MagnetometerSample,
+    ActuatorStatus, BarometerSample, EstimatorStatus, FailsafeFlags, GnssSample, ImuSample,
+    MagnetometerSample, StorageStatus, WatchdogStatus,
 };
 
 /// Health-monitor configuration.
@@ -33,6 +34,15 @@ pub struct HealthParams {
     /// Number of consecutive scheduler overruns before flagging the
     /// scheduler unhealthy.
     pub overrun_burst_count: u32,
+    /// Maximum tolerable interval (s) between actuator status
+    /// publishes after the first status has been observed.
+    pub actuator_stale_after_s: f64,
+    /// Maximum tolerable interval (s) between watchdog status
+    /// publishes after the first status has been observed.
+    pub watchdog_stale_after_s: f64,
+    /// Maximum tolerable interval (s) between storage status
+    /// publishes after the first status has been observed.
+    pub storage_stale_after_s: f64,
 }
 
 impl Default for HealthParams {
@@ -43,6 +53,9 @@ impl Default for HealthParams {
             baro_stale_after_s: 0.2,
             mag_stale_after_s: 0.2,
             overrun_burst_count: 5,
+            actuator_stale_after_s: 0.2,
+            watchdog_stale_after_s: 1.0,
+            storage_stale_after_s: 10.0,
         }
     }
 }
@@ -78,6 +91,10 @@ impl TopicStaleness {
         }
         (now_s - self.last_advance_time_s) > threshold_s
     }
+
+    fn is_stale_after_first_publish(&self, now_s: f64, threshold_s: f64) -> bool {
+        self.last_seq > 0 && self.is_stale(now_s, threshold_s)
+    }
 }
 
 /// Health monitor job.
@@ -89,8 +106,13 @@ pub struct HealthMonitor {
     gnss: TopicStaleness,
     baro: TopicStaleness,
     mag: TopicStaleness,
+    actuator: TopicStaleness,
+    watchdog: TopicStaleness,
+    storage: TopicStaleness,
     consecutive_overruns: u32,
+    consecutive_deadline_slips: u32,
     last_overrun_seq: u64,
+    last_deadline_slip_seq: u64,
 }
 
 impl HealthMonitor {
@@ -104,8 +126,13 @@ impl HealthMonitor {
             gnss: TopicStaleness::default(),
             baro: TopicStaleness::default(),
             mag: TopicStaleness::default(),
+            actuator: TopicStaleness::default(),
+            watchdog: TopicStaleness::default(),
+            storage: TopicStaleness::default(),
             consecutive_overruns: 0,
+            consecutive_deadline_slips: 0,
             last_overrun_seq: 0,
+            last_deadline_slip_seq: 0,
         }
     }
 }
@@ -131,11 +158,29 @@ impl Job for HealthMonitor {
         if let Ok(seq) = ctx.bus.sequence::<MagnetometerSample>() {
             self.mag.observe(seq.value(), now);
         }
+        if let Ok(seq) = ctx.bus.sequence::<ActuatorStatus>() {
+            self.actuator.observe(seq.value(), now);
+        }
+        if let Ok(seq) = ctx.bus.sequence::<WatchdogStatus>() {
+            self.watchdog.observe(seq.value(), now);
+        }
+        if let Ok(seq) = ctx.bus.sequence::<StorageStatus>() {
+            self.storage.observe(seq.value(), now);
+        }
 
         flags.imu_unhealthy = self.imu.is_stale(now, self.params.imu_stale_after_s);
         flags.gnss_unhealthy = self.gnss.is_stale(now, self.params.gnss_stale_after_s);
         flags.baro_unhealthy = self.baro.is_stale(now, self.params.baro_stale_after_s);
         flags.mag_unhealthy = self.mag.is_stale(now, self.params.mag_stale_after_s);
+        flags.actuator_unhealthy = self
+            .actuator
+            .is_stale_after_first_publish(now, self.params.actuator_stale_after_s);
+        flags.watchdog_unhealthy = self
+            .watchdog
+            .is_stale_after_first_publish(now, self.params.watchdog_stale_after_s);
+        flags.storage_unhealthy = self
+            .storage
+            .is_stale_after_first_publish(now, self.params.storage_stale_after_s);
 
         if let Ok(Some((sample, _))) = ctx.bus.latest::<ImuSample>() {
             flags.imu_unhealthy |= !sample.healthy;
@@ -148,6 +193,15 @@ impl Job for HealthMonitor {
         }
         if let Ok(Some((sample, _))) = ctx.bus.latest::<MagnetometerSample>() {
             flags.mag_unhealthy |= !sample.healthy;
+        }
+        if let Ok(Some((status, _))) = ctx.bus.latest::<ActuatorStatus>() {
+            flags.actuator_unhealthy |= !status.healthy;
+        }
+        if let Ok(Some((status, _))) = ctx.bus.latest::<WatchdogStatus>() {
+            flags.watchdog_unhealthy |= !status.healthy;
+        }
+        if let Ok(Some((status, _))) = ctx.bus.latest::<StorageStatus>() {
+            flags.storage_unhealthy |= !status.healthy;
         }
 
         if let Ok(Some((est, _))) = ctx.bus.latest::<EstimatorStatus>() {
@@ -163,6 +217,15 @@ impl Job for HealthMonitor {
             }
         }
         flags.scheduler_overrun = self.consecutive_overruns >= self.params.overrun_burst_count;
+        if let Ok(seq) = ctx.bus.sequence::<DeadlineSlipEvent>() {
+            if seq.value() > self.last_deadline_slip_seq {
+                self.consecutive_deadline_slips = self.consecutive_deadline_slips.saturating_add(1);
+                self.last_deadline_slip_seq = seq.value();
+            } else {
+                self.consecutive_deadline_slips = 0;
+            }
+        }
+        flags.deadline_slip = self.consecutive_deadline_slips >= self.params.overrun_burst_count;
 
         let _ = ctx.bus.publish(flags);
         Ok(())
@@ -309,6 +372,7 @@ mod tests {
             baro_stale_after_s: 10.0,
             mag_stale_after_s: 10.0,
             overrun_burst_count: 2,
+            ..HealthParams::default()
         });
 
         for tick in 0..2_u64 {
@@ -341,5 +405,81 @@ mod tests {
         .unwrap();
         let (flags, _) = bus.latest::<FailsafeFlags>().unwrap().unwrap();
         assert!(!flags.scheduler_overrun);
+    }
+
+    #[test]
+    fn deadline_slip_burst_flags_failsafe() {
+        let bus = Bus::new();
+        bus.register::<DeadlineSlipEvent>().unwrap();
+        bus.register::<FailsafeFlags>().unwrap();
+        let clock = SimulatedClock::new();
+        let mut h = HealthMonitor::new(HealthParams {
+            imu_stale_after_s: 10.0,
+            gnss_stale_after_s: 10.0,
+            baro_stale_after_s: 10.0,
+            mag_stale_after_s: 10.0,
+            overrun_burst_count: 2,
+            ..HealthParams::default()
+        });
+
+        for tick in 0..2_u64 {
+            clock.set(
+                SimTime::from_seconds(tick as f64 * 0.001),
+                StepIndex::new(tick),
+            );
+            bus.publish(DeadlineSlipEvent {
+                job_name: "guidance.tick",
+                actual_us: 250,
+                declared_budget_us: 100,
+                sample_count: tick + 1,
+            })
+            .unwrap();
+            h.run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        }
+
+        let (flags, _) = bus.latest::<FailsafeFlags>().unwrap().unwrap();
+        assert!(flags.deadline_slip);
+    }
+
+    #[test]
+    fn unhealthy_non_sensor_status_flags_failsafe() {
+        let bus = Bus::new();
+        bus.register::<ActuatorStatus>().unwrap();
+        bus.register::<WatchdogStatus>().unwrap();
+        bus.register::<StorageStatus>().unwrap();
+        bus.register::<FailsafeFlags>().unwrap();
+        let clock = SimulatedClock::new();
+        clock.set(SimTime::ZERO, StepIndex::ZERO);
+        bus.publish(ActuatorStatus {
+            time: SimTime::ZERO,
+            healthy: false,
+        })
+        .unwrap();
+        bus.publish(WatchdogStatus {
+            time: SimTime::ZERO,
+            healthy: false,
+        })
+        .unwrap();
+        bus.publish(StorageStatus {
+            time: SimTime::ZERO,
+            healthy: false,
+        })
+        .unwrap();
+
+        let mut h = HealthMonitor::new(HealthParams::default());
+        h.run(&JobContext {
+            bus: &bus,
+            clock: &clock,
+        })
+        .unwrap();
+
+        let (flags, _) = bus.latest::<FailsafeFlags>().unwrap().unwrap();
+        assert!(flags.actuator_unhealthy);
+        assert!(flags.watchdog_unhealthy);
+        assert!(flags.storage_unhealthy);
     }
 }

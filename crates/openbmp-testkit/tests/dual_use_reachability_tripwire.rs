@@ -11,22 +11,41 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const PROHIBITED_FC_SYMBOLS: &[&str] = &[
     "BallisticState",
+    "DispersionSource",
     "FootprintEnvironment",
     "FootprintMonteCarloInput",
     "FootprintSampleInput",
     "RangeSafetyFootprint",
+    "TerminalCondition",
+    "constant_gravity_footprint_monte_carlo",
     "landing_footprint",
+    "numerical_gravity_footprint_monte_carlo",
 ];
 
 const FREE_FLIGHT_STATE_SYMBOLS: &[&str] = &[
     "BallisticState",
+    "DispersionSource",
     "FootprintEnvironment",
     "FootprintMonteCarloInput",
     "FootprintSampleInput",
     "RangeSafetyFootprint",
+    "TerminalCondition",
+    "constant_gravity_footprint_monte_carlo",
+    "numerical_gravity_footprint_monte_carlo",
+];
+
+const FORBIDDEN_FC_GRAPH_PACKAGES: &[&str] = &[
+    "openbmp-trajopt",
+    "openbmp-runner",
+    "openbmp-cli",
+    "openbmp-scenario",
+    "openbmp-bridge",
+    "openbmp-sim",
+    "openbmp-telemetry",
 ];
 
 const FREE_FLIGHT_SCAN_ROOTS: &[&str] = &[
@@ -88,10 +107,105 @@ fn free_flight_state_symbols_are_only_consumed_by_offline_footprint_code() {
 }
 
 #[test]
+fn openbmp_fc_metadata_graph_does_not_reach_offline_optimizer_or_tooling() {
+    let root = workspace_root();
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--locked"])
+        .current_dir(&root)
+        .output()
+        .expect("run cargo metadata");
+    assert!(
+        output.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse cargo metadata json");
+    let package_ids = package_ids_by_name(&metadata);
+    let fc_id = package_ids
+        .iter()
+        .find_map(|(name, id)| (*name == "openbmp-fc").then_some(id.clone()))
+        .expect("openbmp-fc package id");
+    let reachable = reachable_package_ids(&metadata, &fc_id);
+    let mut violations = Vec::new();
+    for forbidden in FORBIDDEN_FC_GRAPH_PACKAGES {
+        if let Some(forbidden_id) = package_ids.get(*forbidden)
+            && reachable.contains(forbidden_id)
+        {
+            violations.push((*forbidden).to_owned());
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "openbmp-fc dependency graph must not reach offline optimizer/tooling packages: \
+         {violations:?}"
+    );
+}
+
+#[test]
 fn tripwire_fixture_catches_prohibited_fc_symbol() {
     let source = "use openbmp_physics::profile::BallisticState;";
     let matches = matching_symbols(source, PROHIBITED_FC_SYMBOLS);
     assert_eq!(matches, vec!["BallisticState"]);
+}
+
+fn package_ids_by_name(metadata: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
+    let mut ids = std::collections::BTreeMap::new();
+    let packages = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .expect("metadata packages");
+    for package in packages {
+        let name = package
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .expect("package name");
+        let id = package
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .expect("package id");
+        ids.insert(name.to_owned(), id.to_owned());
+    }
+    ids
+}
+
+fn reachable_package_ids(
+    metadata: &serde_json::Value,
+    root_id: &str,
+) -> std::collections::BTreeSet<String> {
+    let nodes = metadata
+        .get("resolve")
+        .and_then(|resolve| resolve.get("nodes"))
+        .and_then(serde_json::Value::as_array)
+        .expect("metadata resolve nodes");
+    let mut graph = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for node in nodes {
+        let id = node
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .expect("node id");
+        let deps = node
+            .get("dependencies")
+            .and_then(serde_json::Value::as_array)
+            .expect("node dependencies")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .collect();
+        graph.insert(id.to_owned(), deps);
+    }
+
+    let mut reachable = std::collections::BTreeSet::new();
+    let mut stack = vec![root_id.to_owned()];
+    while let Some(id) = stack.pop() {
+        if !reachable.insert(id.clone()) {
+            continue;
+        }
+        if let Some(deps) = graph.get(&id) {
+            stack.extend(deps.iter().cloned());
+        }
+    }
+    reachable
 }
 
 fn rust_files_under(root: &Path) -> Vec<PathBuf> {

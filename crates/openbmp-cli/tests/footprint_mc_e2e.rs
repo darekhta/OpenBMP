@@ -73,7 +73,7 @@ fn footprint_mc_writes_declared_outputs() {
     assert!(summary_text.contains("[dispersion_statistics]"));
     assert!(!summary_text.contains("[accuracy]"));
     assert!(!summary_text.contains("miss_distance"));
-    assert!(summary_text.contains("cep50_m"));
+    assert!(summary_text.contains("radial_dispersion_p50_m"));
     assert!(summary_text.contains("[dispersion_ellipse]"));
     assert!(summary_text.contains("[[quantiles]]"));
     assert!(summary_text.contains("[[nominal_radial_offset_quantiles]]"));

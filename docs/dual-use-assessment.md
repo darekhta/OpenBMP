@@ -60,7 +60,7 @@ near-the-line capability.
 
 | Tier | Mechanism | Where | Binds by |
 |---|---|---|---|
-| 1 — Architectural *(primary)* | Forward-only trait signatures; input types with no target / aimpoint / desired miss-distance field | `openbmp-physics/src/profile.rs`, `openbmp-fc` | Making the operational objective *unconstructible*, not merely unnamed |
+| 1 — Architectural *(primary)* | Forward-only trait signatures; input types with no target / aimpoint / desired miss-distance field; closed optimizer / dispersion enums; field + variant + enrollment audits; dependency reachability checks | `openbmp-physics/src/profile.rs`, `openbmp-testkit`, `openbmp-fc` | Making the operational objective *unconstructible*, not merely unnamed |
 | 2 — Lexical | Parse-time lint `FORBIDDEN_SAFETY_TERMS`, run before deserialization | `openbmp-scenario/src/lint.rs` (`scenario.rs:49`) | Rejecting engagement / targeting vocabulary in keys and short values |
 | 3 — Provenance | No real fielded-vehicle data; SHA-256 content pins; inline-data tripwires | [`data-provenance.md`](data-provenance.md), CI | Denying real vehicle / motor / TPS parameter sets |
 | 4 — Governance | Forward-not-inverse PR checklist, enforcement-tier declaration, protected required status checks for the safety / dual-use CI jobs | [`../CONTRIBUTING.md`](../CONTRIBUTING.md), PR template, repository branch-protection settings | Catching boundary drift in review and preventing maintainer-only bypasses |
@@ -81,6 +81,7 @@ it today; each is held by a specific Tier-1 control.
 | Guidance-grade estimator + controller stack (EKF/MEKF/SR-UKF/IMM, LQR/INDI/L1/MPC) | The same algorithm families fly on guided vehicles; IMM is the canonical ballistic-target tracking filter | Tracks scripted references; estimates the vehicle's *own* state; synthetic sensors measure own-state truth and never an external track |
 | Geodetic footprint projection (`profile.rs`) | Emits latitude / longitude | Produced only from a scenario-declared launch origin, as a forward prediction of where an unpowered body lands; offline, off the control loop; never compared to a desired point |
 | Mass-optimal staging analysis | "Optimize a rocket" is near the line if the objective is range or a place | `[staging_analysis]` accepts only vehicle-intrinsic ideal ΔV, `Isp`, structural coefficient, and payload mass; no range, target, azimuth, launch site, or impact field exists; output is offline report metadata |
+| Trajectory optimizer / differential corrector | A general optimizer becomes unsafe when pointed at a surface aimpoint or scored by miss distance | `TerminalCondition` is a closed enum with orbital / inertial / vehicle-intrinsic variants only; `DispersionSource` excludes launch-direction and aimpoint perturbations; optimizer packages are forbidden from `openbmp-fc`; the `optimizer gate` requires field, variant, enrollment, compile-fail, and reachability audits |
 | Mach-dependent drag / base / boattail buildup | Shares exterior-ballistics drag-function heritage with projectiles | Forward geometry-to-coefficient model only; `[aero.buildup]` has no range, target, aimpoint, launch-site, or azimuth fields; provenance admits synthetic/textbook/public educational data and no fielded-projectile drag tables |
 | Shared coast / entry / hypersonic physics | Structurally shared with boost-glide and multi-stage ballistic vehicles | Implements the shared public physics; refuses operational specialization (real HGV/MaRV parameters, skip-glide-to-a-target, penetration aids) per [`safety-boundaries.md`](safety-boundaries.md) |
 | Booster boostback burn (`phalcon9-orbit-boostback`) | A reusable-booster return maneuver shares the "fly back to a place" intent with a powered return-to-target | **Deceleration-only**: a scripted retrograde Δv that sheds velocity; the booster's landing point is an emergent ballistic consequence, never an input. No fly-back guidance to a landing **site / pad** is implemented — that would be a ground aimpoint (the same math as terminal targeting) and is out of scope by design, consistent with §2 and §7 |
@@ -99,10 +100,12 @@ Each near-the-line item is admissible only under the constraint named here.
 - **Monte-Carlo dispersion** — scatter around the *predicted* mean, sampled from
   *declared* input uncertainties (winds, ballistic coefficient, burnout-state
   covariance) and propagated forward. There is **no aimpoint to measure
-  against**; `cep50_m` and `radial_offset_from_nominal_m` are output-only
-  statistics relative to the sample mean or nominal forward footprint, not a
-  target. Seeded, deterministic RNG; fails closed when dispersion is requested
-  without a declared uncertainty source.
+  against**; `radial_dispersion_p50_m` and `radial_offset_from_nominal_m` are
+  output-only statistics relative to the sample mean or nominal forward
+  footprint, not a target. Persisted samples carry landing output only, not the
+  sampled burnout state, wind vector, or ballistic coefficient on the same row.
+  Seeded, deterministic RNG; fails closed when dispersion is requested without a
+  declared uncertainty source.
 - **Translational MPC** — tracks a scenario-scripted reference trajectory or a
   self / recovery site expressed in the simulator's own frame. The terminal
   constraint **cannot be a geographic target**; the input type makes an aimpoint

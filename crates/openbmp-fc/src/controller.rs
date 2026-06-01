@@ -13,7 +13,9 @@ use crate::clock::SimulatedClock;
 use crate::dictionary::Dictionary;
 use crate::error::ControllerError;
 use crate::params::Parameters;
-use crate::scheduler::{DispatchSummary, OverrunEvent, Scheduler};
+use crate::scheduler::{
+    DeadlineSlipEvent, DispatchSummary, OverrunEvent, Scheduler, TimingBudgetReport,
+};
 use crate::tables::Tables;
 
 /// Top-level flight-controller façade.
@@ -159,6 +161,8 @@ impl FlightControllerBuilder {
         // can publish overruns even before any module-level topic is
         // declared.
         let _ = controller.bus.register::<OverrunEvent>();
+        let _ = controller.bus.register::<DeadlineSlipEvent>();
+        let _ = controller.bus.register::<TimingBudgetReport>();
         controller
     }
 }

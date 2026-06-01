@@ -1322,6 +1322,202 @@ impl BallisticState {
     }
 }
 
+/// Offline optimizer terminal condition variants allowed by the
+/// forward-only trajectory design.
+///
+/// This enum deliberately excludes surface aimpoints, latitude /
+/// longitude goals, miss-distance objectives, and range-table style
+/// targets. Variants are orbital, inertial, or vehicle-intrinsic
+/// conditions only.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TerminalCondition {
+    /// Match classical orbital elements at cutoff.
+    OrbitalElements {
+        /// Desired semi-major axis (m).
+        semi_major_axis_m: f64,
+        /// Desired eccentricity in `[0, 1)`.
+        eccentricity: f64,
+        /// Desired inclination (rad).
+        inclination_rad: f64,
+    },
+    /// Match apogee radius from the central body (m).
+    ApogeeRadius {
+        /// Desired apogee radius (m).
+        radius_m: f64,
+    },
+    /// Match flight-path angle at burnout (rad).
+    FlightPathAngleAtBurnout {
+        /// Desired flight-path angle (rad).
+        angle_rad: f64,
+    },
+    /// Match an inertial rendezvous state. This is an orbital /
+    /// spacecraft-state condition, not a surface coordinate.
+    RendezvousState {
+        /// Desired inertial position `[x, y, z]` (m).
+        position_eci_m: [f64; 3],
+        /// Desired inertial velocity `[x, y, z]` (m/s).
+        velocity_eci_m_s: [f64; 3],
+    },
+    /// Maximize payload mass subject to the other declared mission
+    /// constraints.
+    MaximizePayloadMass,
+}
+
+impl TerminalCondition {
+    /// Validate the terminal condition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when a scalar/vector is non-finite or
+    /// outside its physically meaningful range.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        match *self {
+            Self::OrbitalElements {
+                semi_major_axis_m,
+                eccentricity,
+                inclination_rad,
+            } => {
+                require_positive_length(semi_major_axis_m, "terminal semi-major axis")?;
+                if !eccentricity.is_finite() || !(0.0..1.0).contains(&eccentricity) {
+                    return Err(PhysicsError::InvalidParameter {
+                        reason: "terminal eccentricity must be finite and in [0, 1)",
+                    });
+                }
+                if !inclination_rad.is_finite()
+                    || !(0.0..=core::f64::consts::PI).contains(&inclination_rad)
+                {
+                    return Err(PhysicsError::InvalidParameter {
+                        reason: "terminal inclination must be finite and in [0, pi]",
+                    });
+                }
+            }
+            Self::ApogeeRadius { radius_m } => {
+                require_positive_length(radius_m, "terminal apogee radius")?;
+            }
+            Self::FlightPathAngleAtBurnout { angle_rad } => {
+                if !angle_rad.is_finite()
+                    || !(-core::f64::consts::FRAC_PI_2..=core::f64::consts::FRAC_PI_2)
+                        .contains(&angle_rad)
+                {
+                    return Err(PhysicsError::InvalidParameter {
+                        reason: "terminal flight-path angle must be finite and in [-pi/2, pi/2]",
+                    });
+                }
+            }
+            Self::RendezvousState {
+                position_eci_m,
+                velocity_eci_m_s,
+            } => {
+                require_finite_vec3(position_eci_m, "terminal rendezvous position")?;
+                require_finite_vec3(velocity_eci_m_s, "terminal rendezvous velocity")?;
+            }
+            Self::MaximizePayloadMass => {}
+        }
+        Ok(())
+    }
+}
+
+/// Closed set of Monte-Carlo dispersion sources permitted on the
+/// forward footprint / trajectory-optimization boundary.
+///
+/// The enum excludes launch azimuth/elevation and desired impact
+/// location perturbations so persisted outputs cannot form a
+/// launch-direction-to-impact range table.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DispersionSource {
+    /// Local-NED wind perturbation (m/s).
+    Wind {
+        /// One-sigma NED wind perturbation (m/s).
+        sigma_ned_m_s: [f64; 3],
+    },
+    /// Ballistic coefficient perturbation (m^2/kg).
+    BallisticCoefficient {
+        /// Nominal `C_d A / m` value (m^2/kg).
+        nominal_m2_kg: f64,
+        /// One-sigma perturbation (m^2/kg).
+        sigma_m2_kg: f64,
+    },
+    /// Vehicle mass perturbation (kg).
+    VehicleMass {
+        /// One-sigma mass perturbation (kg).
+        sigma_kg: f64,
+    },
+    /// Thrust scale perturbation.
+    ThrustScale {
+        /// One-sigma dimensionless thrust-scale perturbation.
+        sigma_unit: f64,
+    },
+    /// Sensor-noise scale perturbation.
+    SensorNoiseScale {
+        /// One-sigma dimensionless sensor-noise-scale perturbation.
+        sigma_unit: f64,
+    },
+    /// Actuator lag perturbation (s).
+    ActuatorLag {
+        /// One-sigma actuator lag perturbation (s).
+        sigma_s: f64,
+    },
+}
+
+impl DispersionSource {
+    /// Validate the dispersion source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when a scalar/vector is non-finite or
+    /// negative.
+    pub fn validate(&self) -> Result<(), PhysicsError> {
+        match *self {
+            Self::Wind { sigma_ned_m_s } => {
+                for value in sigma_ned_m_s {
+                    if !value.is_finite() || value < 0.0 {
+                        return Err(PhysicsError::InvalidParameter {
+                            reason: "wind dispersion sigma must be finite and non-negative",
+                        });
+                    }
+                }
+            }
+            Self::BallisticCoefficient {
+                nominal_m2_kg,
+                sigma_m2_kg,
+            } => {
+                if !nominal_m2_kg.is_finite() || nominal_m2_kg < 0.0 {
+                    return Err(PhysicsError::InvalidParameter {
+                        reason: "ballistic-coefficient nominal must be finite and non-negative",
+                    });
+                }
+                if !sigma_m2_kg.is_finite() || sigma_m2_kg < 0.0 {
+                    return Err(PhysicsError::InvalidParameter {
+                        reason: "ballistic-coefficient sigma must be finite and non-negative",
+                    });
+                }
+            }
+            Self::VehicleMass { sigma_kg } => {
+                if !sigma_kg.is_finite() || sigma_kg < 0.0 {
+                    return Err(PhysicsError::InvalidParameter {
+                        reason: "vehicle-mass sigma must be finite and non-negative",
+                    });
+                }
+            }
+            Self::ThrustScale { sigma_unit } | Self::SensorNoiseScale { sigma_unit } => {
+                if !sigma_unit.is_finite() || sigma_unit < 0.0 {
+                    return Err(PhysicsError::InvalidParameter {
+                        reason: "dimensionless dispersion sigma must be finite and non-negative",
+                    });
+                }
+            }
+            Self::ActuatorLag { sigma_s } => {
+                if !sigma_s.is_finite() || sigma_s < 0.0 {
+                    return Err(PhysicsError::InvalidParameter {
+                        reason: "actuator-lag sigma must be finite and non-negative",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Optional geodetic launch origin used only to project a
 /// range-relative footprint onto recovery-map coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1685,10 +1881,6 @@ impl FootprintMonteCarloInput {
 pub struct FootprintSample {
     /// Zero-based sample index.
     pub sample_index: u32,
-    /// Sampled burnout state.
-    pub state: BallisticState,
-    /// Sampled constant wind vector in the propagation frame (m/s).
-    pub wind_eci_m_s: [f64; 3],
     /// Landing footprint for this sample.
     pub landing: LandingFootprint,
 }
@@ -1727,9 +1919,9 @@ pub struct FootprintMonteCarloResult {
     pub mean_downrange_m: f64,
     /// Mean crossrange distance (m) across successful samples.
     pub mean_crossrange_m: f64,
-    /// Empirical 50% circular probable radius about the sample mean
-    /// in the downrange/crossrange plane (m).
-    pub cep50_m: f64,
+    /// Empirical 50% radial dispersion about the sample mean in the
+    /// downrange/crossrange plane (m).
+    pub radial_dispersion_p50_m: f64,
     /// Downrange component of the sample mean offset from the nominal
     /// footprint (m).
     pub mean_offset_downrange_from_nominal_m: f64,
@@ -2915,8 +3107,6 @@ where
         match propagate(sample) {
             Ok(landing) => samples.push(FootprintSample {
                 sample_index: sample.sample_index,
-                state: sample.state,
-                wind_eci_m_s: sample.wind_eci_m_s,
                 landing,
             }),
             Err(err) => failures.push(FootprintSampleFailure {
@@ -2937,7 +3127,7 @@ where
         failures,
         mean_downrange_m: stats.mean_downrange_m,
         mean_crossrange_m: stats.mean_crossrange_m,
-        cep50_m: stats.cep50_m,
+        radial_dispersion_p50_m: stats.radial_dispersion_p50_m,
         mean_offset_downrange_from_nominal_m: stats.mean_offset_downrange_from_nominal_m,
         mean_offset_crossrange_from_nominal_m: stats.mean_offset_crossrange_from_nominal_m,
         mean_radial_offset_from_nominal_m: stats.mean_radial_offset_from_nominal_m,
@@ -2953,7 +3143,7 @@ where
 struct FootprintSampleStatistics {
     mean_downrange_m: f64,
     mean_crossrange_m: f64,
-    cep50_m: f64,
+    radial_dispersion_p50_m: f64,
     mean_offset_downrange_from_nominal_m: f64,
     mean_offset_crossrange_from_nominal_m: f64,
     mean_radial_offset_from_nominal_m: f64,
@@ -3019,13 +3209,13 @@ fn footprint_sample_statistics(
     }
     mean_distances.sort_by(f64::total_cmp);
     nominal_distances.sort_by(f64::total_cmp);
-    let cep50_m = radial_quantile_m(&mean_distances, 0.5);
+    let radial_dispersion_p50_m = radial_quantile_m(&mean_distances, 0.5);
     let quantiles = radial_quantiles(&mean_distances, confidence_levels);
     let nominal_radial_error_quantiles = radial_quantiles(&nominal_distances, confidence_levels);
     Ok(FootprintSampleStatistics {
         mean_downrange_m,
         mean_crossrange_m,
-        cep50_m,
+        radial_dispersion_p50_m,
         mean_offset_downrange_from_nominal_m,
         mean_offset_crossrange_from_nominal_m,
         mean_radial_offset_from_nominal_m,
@@ -4331,7 +4521,7 @@ mod tests {
         }
         assert!(result.dispersion_ellipse.one_sigma_semi_major_m < 1.0e-12);
         assert!(result.dispersion_ellipse.one_sigma_semi_minor_m < 1.0e-12);
-        assert!(result.cep50_m < 1.0e-12);
+        assert!(result.radial_dispersion_p50_m < 1.0e-12);
         assert!(result.mean_radial_offset_from_nominal_m < 1.0e-12);
         for quantile in &result.nominal_radial_error_quantiles {
             assert!(quantile.radial_distance_m < 1.0e-12);
@@ -4377,7 +4567,7 @@ mod tests {
         assert!(result.dispersion_ellipse.one_sigma_semi_major_m > 0.1);
         assert!(result.covariance_downrange_downrange_m2 > 0.0);
         assert!(result.quantiles[1].radial_distance_m >= result.quantiles[0].radial_distance_m);
-        assert!(result.cep50_m > 0.0);
+        assert!(result.radial_dispersion_p50_m > 0.0);
         assert!(
             result.nominal_radial_error_quantiles[1].radial_distance_m
                 >= result.nominal_radial_error_quantiles[0].radial_distance_m
@@ -4437,7 +4627,10 @@ mod tests {
         assert!(
             (result.dispersion_ellipse.orientation_rad - 0.288_884_977_197_166_16).abs() < 1.0e-12
         );
-        assert!((result.cep50_m - result.quantiles[0].radial_distance_m).abs() < 1.0e-12);
+        assert!(
+            (result.radial_dispersion_p50_m - result.quantiles[0].radial_distance_m).abs()
+                < 1.0e-12
+        );
         assert!(result.mean_radial_offset_from_nominal_m > 0.0);
     }
 

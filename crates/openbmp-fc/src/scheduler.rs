@@ -112,6 +112,51 @@ impl Topic for OverrunEvent {
     const INDEX: usize = topic_index::SCHEDULER_OVERRUN;
 }
 
+/// Event published on `scheduler.deadline_slip` when a measured job
+/// execution time exceeds that job's declared budget.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct DeadlineSlipEvent {
+    /// Job name as registered.
+    pub job_name: &'static str,
+    /// Measured execution time in microseconds.
+    pub actual_us: u64,
+    /// Job's declared budget in microseconds.
+    pub declared_budget_us: u64,
+    /// Number of measurements recorded for this job after this
+    /// sample was ingested.
+    pub sample_count: u64,
+}
+
+impl Topic for DeadlineSlipEvent {
+    const NAME: &'static str = "scheduler.deadline_slip";
+    const INDEX: usize = topic_index::SCHEDULER_DEADLINE_SLIP;
+}
+
+/// Per-job timing budget report produced by
+/// [`Scheduler::report_actual_us`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TimingBudgetReport {
+    /// Job name as registered.
+    pub job_name: &'static str,
+    /// Declared budget in microseconds.
+    pub declared_budget_us: u64,
+    /// Most recent measured execution time in microseconds.
+    pub latest_us: u64,
+    /// Maximum measured execution time in microseconds.
+    pub max_us: u64,
+    /// Median measured execution time in microseconds.
+    pub p50_us: u64,
+    /// 99th percentile measured execution time in microseconds.
+    pub p99_us: u64,
+    /// Number of samples recorded.
+    pub sample_count: u64,
+}
+
+impl Topic for TimingBudgetReport {
+    const NAME: &'static str = "scheduler.timing_budget_report";
+    const INDEX: usize = topic_index::SCHEDULER_TIMING_BUDGET_REPORT;
+}
+
 struct ScheduledJob {
     job: Box<dyn Job>,
     trigger: Trigger,
@@ -125,6 +170,8 @@ struct ScheduledJob {
     run_count: u64,
     /// Total tick count this job has been skipped for budget reasons.
     overrun_count: u64,
+    /// Host-side measured execution times reported for this job.
+    actual_samples_us: Vec<u64>,
 }
 
 /// Descriptor exposed via [`Scheduler::jobs`] for dictionary generation
@@ -265,6 +312,7 @@ impl Scheduler {
                 last_seen: Sequence::ZERO,
                 run_count: 0,
                 overrun_count: 0,
+                actual_samples_us: Vec::new(),
             },
         );
         self.dispatch_order.push(registration_index);
@@ -361,11 +409,57 @@ impl Scheduler {
     }
 
     /// Records a runner-side wall-time measurement of how long a job
-    /// took on the host. The current implementation is a no-op; the
-    /// hook exists so a future FDIR upgrade can react to sustained
-    /// real-time slips without re-plumbing the scheduler API.
-    pub fn report_actual_us(&mut self, _job_name: &str, _actual_us: u64) {
-        // Reserved for health monitor integration.
+    /// took on the host.
+    ///
+    /// The controller crate still does not read wall-clock time; the
+    /// runner or board shell owns measurement and feeds the result in
+    /// here. The scheduler stores a per-job timing sample set,
+    /// publishes a [`TimingBudgetReport`], and emits
+    /// [`DeadlineSlipEvent`] when `actual_us > budget_us`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControllerError`] when publishing either timing topic
+    /// fails. Unknown job names are ignored so instrumentation can be
+    /// wired opportunistically around partial schedules.
+    pub fn report_actual_us(
+        &mut self,
+        job_name: &str,
+        actual_us: u64,
+        bus: &Bus,
+    ) -> Result<(), ControllerError> {
+        let Some(scheduled) = self.jobs.get_mut(job_name) else {
+            return Ok(());
+        };
+        scheduled.actual_samples_us.push(actual_us);
+        let sample_count = scheduled.actual_samples_us.len() as u64;
+        let max_us = scheduled
+            .actual_samples_us
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(actual_us);
+        let p50_us = percentile_us(&scheduled.actual_samples_us, 0.50);
+        let p99_us = percentile_us(&scheduled.actual_samples_us, 0.99);
+        let report = TimingBudgetReport {
+            job_name: scheduled.job.name(),
+            declared_budget_us: scheduled.budget_us,
+            latest_us: actual_us,
+            max_us,
+            p50_us,
+            p99_us,
+            sample_count,
+        };
+        bus.publish(report)?;
+        if actual_us > scheduled.budget_us {
+            bus.publish(DeadlineSlipEvent {
+                job_name: scheduled.job.name(),
+                actual_us,
+                declared_budget_us: scheduled.budget_us,
+                sample_count,
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -408,6 +502,17 @@ fn bus_sequence_by_name(bus: &Bus, name: &'static str) -> Sequence {
         .into_iter()
         .find(|t| t.name == name)
         .map_or(Sequence::ZERO, |t| Sequence::from_u64(t.seq))
+}
+
+fn percentile_us(samples: &[u64], quantile: f64) -> u64 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let last = sorted.len().saturating_sub(1);
+    let rank = (quantile.clamp(0.0, 1.0) * last as f64).ceil() as usize;
+    sorted[rank.min(last)]
 }
 
 #[cfg(test)]
@@ -531,6 +636,40 @@ mod tests {
         sched.dispatch(0, &bus, &clock).unwrap();
         let log = log.borrow();
         assert_eq!(log.as_slice(), &["high", "low"]);
+    }
+
+    #[test]
+    fn report_actual_us_publishes_timing_report_and_deadline_slip() {
+        let bus = Bus::new();
+        bus.register::<TimingBudgetReport>().unwrap();
+        bus.register::<DeadlineSlipEvent>().unwrap();
+        let counter = Rc::new(Cell::new(0u32));
+        let mut sched = Scheduler::new(1_000);
+        sched
+            .register_periodic(
+                1,
+                100,
+                10,
+                Box::new(CounterJob {
+                    name: "timed",
+                    counter,
+                }),
+            )
+            .unwrap();
+
+        sched.report_actual_us("timed", 75, &bus).unwrap();
+        sched.report_actual_us("timed", 125, &bus).unwrap();
+
+        let (report, _) = bus.latest::<TimingBudgetReport>().unwrap().unwrap();
+        assert_eq!(report.job_name, "timed");
+        assert_eq!(report.declared_budget_us, 100);
+        assert_eq!(report.latest_us, 125);
+        assert_eq!(report.max_us, 125);
+        assert_eq!(report.sample_count, 2);
+        let (slip, _) = bus.latest::<DeadlineSlipEvent>().unwrap().unwrap();
+        assert_eq!(slip.job_name, "timed");
+        assert_eq!(slip.actual_us, 125);
+        assert_eq!(slip.declared_budget_us, 100);
     }
 
     #[test]
