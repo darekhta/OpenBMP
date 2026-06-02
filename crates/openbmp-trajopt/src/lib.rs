@@ -13,9 +13,11 @@
 
 extern crate alloc;
 
+pub mod corrector;
 pub mod iload;
 pub mod target;
 
+pub use corrector::{DifferentialCorrection, DifferentialCorrector};
 pub use iload::{
     GainAxis, GainTable, ILoadHeader, ILoadPayload, ILoadSchemaVersion, ReferenceProfileSample,
     SynthesisMetadata, TrajoptError, encode_iload_payload,

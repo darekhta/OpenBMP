@@ -164,6 +164,12 @@ pub enum TrajoptError {
     /// Postcard serialization failed.
     #[error("trajopt I-load postcard serialization failed: {0}")]
     Serialize(#[from] postcard::Error),
+    /// A differential-correction normal-equation solve was singular.
+    #[error("trajopt differential correction linear system was singular: {reason}")]
+    SingularSystem {
+        /// Human-readable reason.
+        reason: &'static str,
+    },
 }
 
 impl ILoadPayload {

@@ -5,6 +5,13 @@
 # names here so `clippy::doc_markdown` does not require them to be wrapped in
 # backticks.
 
+# Restriction lints unwrap_used / expect_used / panic stay denied for non-test
+# code but are permitted inside test functions and `#[cfg(test)]` modules,
+# matching the existing test style (e.g. openbmp-trajopt target/corrector tests).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests  = true
+
 doc-valid-idents = [
     "..",
     "OpenBMP",
