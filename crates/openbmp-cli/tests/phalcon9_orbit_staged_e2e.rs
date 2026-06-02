@@ -145,9 +145,9 @@ fn phalcon9_orbit_staged_sheds_mass_and_conserves_total() {
     );
 
     // (2) Each jettison sheds its body's dry mass from the continuing stack.
-    // Fairing (600 kg) jettisons at t=320; payload (1500 kg) at t=900.
-    let primary_before_fairing = mass_at(&rows, 318.0, true);
-    let primary_after_fairing = mass_at(&rows, 322.0, true);
+    // Fairing (600 kg) jettisons at t=250; payload (1500 kg) at t=900.
+    let primary_before_fairing = mass_at(&rows, 248.0, true);
+    let primary_after_fairing = mass_at(&rows, 252.0, true);
     let fairing_shed = primary_before_fairing - primary_after_fairing;
     assert!(
         (fairing_shed - 600.0).abs() < 1.0,
@@ -165,8 +165,8 @@ fn phalcon9_orbit_staged_sheds_mass_and_conserves_total() {
     // separation — the shed mass moves to a lane, it does not vanish. (Away
     // from the stage-2 burn the only total-mass change is propellant; both
     // jettisons happen with engines off, so total is flat across them.)
-    let total_before_fairing = mass_at(&rows, 318.0, false);
-    let total_after_fairing = mass_at(&rows, 322.0, false);
+    let total_before_fairing = mass_at(&rows, 248.0, false);
+    let total_after_fairing = mass_at(&rows, 252.0, false);
     assert!(
         (total_before_fairing - total_after_fairing).abs() < 1.0e-3,
         "total mass must be conserved across fairing jettison: {total_before_fairing:.3} -> {total_after_fairing:.3}"

@@ -376,6 +376,10 @@ impl FcBridge {
         )
     }
 
+    // Assembles one full truth-state record; the eight components
+    // (position, velocity, attitude, rates, mass, time, ...) are
+    // intrinsic to the record, not a refactor smell.
+    #[allow(clippy::too_many_arguments)]
     fn truth_common(
         &self,
         position: Position3<openbmp_core::Eci>,

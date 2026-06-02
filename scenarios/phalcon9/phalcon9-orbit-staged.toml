@@ -112,34 +112,34 @@ dry_mass_kg            = 1_500.0
 dry_cg_body_m          = [0.0, 0.0, 16.0]
 dry_inertia_body_kg_m2 = [[0.20e6, 0.0, 0.0], [0.0, 0.20e6, 0.0], [0.0, 0.0, 1.0e4]]
 
-# Stage-1 propellant (mounted to `lower`). ~250 t at full fill.
+# Stage-1 propellant (mounted to `lower`). ~220 t at full fill.
 [[vehicle.assembly.tanks]]
 id                    = "s1_prop"
 mounted_to            = "lower"
 mount_point_body_m    = [0.0, 0.0, -2.0]
-geometry              = { kind = "cylinder", radius_m = 1.85, height_m = 49.8 }
+geometry              = { kind = "cylinder", radius_m = 1.85, height_m = 19.86 }
 propellant            = { density_kg_m3 = 1030.0, label = "synthetic_kerolox_bulk" }
 initial_fill_fraction = 1.0
 moving_mass           = { kind = "rigid_liquid" }
 
-# Stage-2 propellant (mounted to `upper`). ~40 t at full fill.
+# Stage-2 propellant (mounted to `upper`). ~55 t at full fill.
 [[vehicle.assembly.tanks]]
 id                    = "s2_prop"
 mounted_to            = "upper"
 mount_point_body_m    = [0.0, 0.0, 15.0]
-geometry              = { kind = "cylinder", radius_m = 1.85, height_m = 0.9 }
+geometry              = { kind = "cylinder", radius_m = 1.85, height_m = 4.97 }
 propellant            = { density_kg_m3 = 1030.0, label = "synthetic_kerolox_bulk" }
 initial_fill_fraction = 1.0
 moving_mass           = { kind = "rigid_liquid" }
 
-# Stage-1 cluster: 1 center + 8 ring, each 854 kN, Isp 340 s, from
+# Stage-1 cluster: 1 center + 8 ring, each 433 kN, Isp 340 s, from
 # s1_prop, gimballed for TVC.
 [[vehicle.assembly.engines]]
 id = "eng_s1_0"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, 0.0, -14.0]
-limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 433_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -147,7 +147,7 @@ id = "eng_s1_1"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [1.6, 0.0, -14.0]
-limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 433_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -155,7 +155,7 @@ id = "eng_s1_2"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [1.13137, 1.13137, -14.0]
-limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 433_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -163,7 +163,7 @@ id = "eng_s1_3"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, 1.6, -14.0]
-limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 433_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -171,7 +171,7 @@ id = "eng_s1_4"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [-1.6, 0.0, -14.0]
-limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 433_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -179,7 +179,7 @@ id = "eng_s1_5"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [-1.13137, 1.13137, -14.0]
-limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 433_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -187,7 +187,7 @@ id = "eng_s1_6"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [-1.13137, -1.13137, -14.0]
-limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 433_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -195,7 +195,7 @@ id = "eng_s1_7"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, -1.6, -14.0]
-limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 433_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 [[vehicle.assembly.engines]]
@@ -203,7 +203,7 @@ id = "eng_s1_8"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [1.13137, -1.13137, -14.0]
-limits = { max_thrust_n = 854_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
+limits = { max_thrust_n = 433_000.0, isp_s = 340.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s1_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
 # Stage-2 vacuum engine (mounted to `upper`): 981 kN, Isp 348 s, from
@@ -361,14 +361,14 @@ action = { kind = "engine_command", id = "eng_vac", command = { throttle_unit = 
 [[mission.events]]
 id      = "meco1"
 once    = true
-trigger = { kind = "at_velocity", velocity_m_s = 7235.0, falling = false }
+trigger = { kind = "at_velocity", velocity_m_s = 2765.0, falling = false }
 action  = { kind = "emit_telemetry_marker", tag = "meco1" }
 
 # Stage separation: jettison the spent booster at MECO-1.
 [[mission.events]]
 id      = "sep"
 once    = true
-trigger = { kind = "at_velocity", velocity_m_s = 7235.0, falling = false }
+trigger = { kind = "at_velocity", velocity_m_s = 2765.0, falling = false }
 action  = { kind = "jettison_stage", body = "lower" }
 
 # Apogee marker: drives the coast -> circularize transition. A commander
@@ -391,7 +391,7 @@ action  = { kind = "emit_telemetry_marker", tag = "seco" }
 [[mission.events]]
 id      = "jettison_fairing"
 once    = true
-trigger = { kind = "at_time", time_s = 320.0 }
+trigger = { kind = "at_time", time_s = 250.0 }
 action  = { kind = "jettison_stage", body = "fairing" }
 
 [[mission.events]]
@@ -480,7 +480,7 @@ psi_max_rad              = 0.15
 # Stage-2 upper: PEG terminal insertion at apogee.
 [fc.ascent_reference_by_phase."mission.phases.circularize"]
 method                    = "peg"
-insertion_radius_m        = 6_710_000.0
+insertion_radius_m        = 6_545_000.0
 exhaust_velocity_m_s      = 3413.0
 initial_thrust_accel_m_s2 = 5.0
 peg_initial_t_go_s        = 120.0
