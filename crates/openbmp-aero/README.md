@@ -84,10 +84,11 @@ categorically rejected** per `docs/safety-boundaries.md`.
 The buildup admits only synthetic/textbook geometry and public physics
 relations; fielded-projectile drag tables are not shipped or ingested.
 
-## Safety Boundary
+## Scope Boundary
 
-No operational vehicle decks, no targeting-driven aero configurations, and no
-terminal-mode aerodynamic tuning.
+In-tree aero data must be synthetic, textbook-derived, or public with
+reviewable provenance. Downstream users own the provenance and validation for
+project-specific decks.
 
 ## References
 

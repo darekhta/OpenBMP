@@ -40,15 +40,12 @@
 # velocity and never drops the position fix. Frame: wgs84-uniform-rotation
 # (uniform Earth rotation); the launch boost is carried by the initial
 # co-rotation velocity.
-#
-# Forward-only: vehicle-intrinsic ascent toward an insertion RADIUS; no
-# target / aimpoint / range / terminal-guidance field anywhere.
 
 openbmp.scenario = 3
 
 [meta]
 name        = "phalcon9-orbit-boostback"
-description = "Phalcon-9 two-stage ascent to orbit with an INTEGRATED booster boostback: the separated booster flips retrograde and fires a dedicated boostback engine (scripted burn) in the same run. Synthetic; not a benchmark."
+description = "Phalcon-9 two-stage ascent to orbit with an INTEGRATED booster boostback: the separated booster flips retrograde and fires a dedicated boostback engine from lane-local range/relative-speed triggers in the same run. Synthetic; not a benchmark."
 validation  = "validated-toy"
 provenance  = "Wholly synthetic two-stage kerolox vehicle; rounded class figures, not validated against any fielded vehicle. The INSERTION is validated against first-principles orbital-mechanics invariants (vis-viva bound near-circular LEO; axial angular momentum + specific energy conserved on the coast) by crates/openbmp-cli/tests/phalcon9_orbit_validation.rs — analytic references only, no real-vehicle data. See scenarios/phalcon9/provenance.md."
 
@@ -209,15 +206,17 @@ mount_point_body_m = [0.0, 0.0, 10.0]
 limits = { max_thrust_n = 981_000.0, isp_s = 348.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0 }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "s2_prop", feed = "regulated", residual_reserve_kg = 50.0 }
 
-# Dedicated boostback engine on the booster (`lower`): 400 kN, Isp 300 s,
-# fed from boost_prop, on-axis (no gimbal). Idle during ascent (absent from
-# every phase's allowed_engines); ignited post-separation by mission events.
+# Dedicated boostback/landing engine on the booster (`lower`): 400 kN, Isp
+# 300 s, fed from boost_prop, with modest gimbal authority for the
+# scenario-director terminal site-targeting controller. Idle during ascent
+# (absent from every phase's allowed_engines); ignited post-separation by
+# mission events and re-armed for the terminal controller after boostback cut.
 [[vehicle.assembly.engines]]
 id = "eng_boost"
 mounted_to = "lower"
 kind = { kind = "liquid_engine" }
 mount_point_body_m = [0.0, 0.0, -14.0]
-limits = { max_thrust_n = 400_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.0 }
+limits = { max_thrust_n = 400_000.0, isp_s = 300.0, ignition_transient_s = 0.3, shutdown_transient_s = 0.3, max_gimbal_rad = 0.087, gimbal_slew_rad_per_s = 1.0, restartable = true }
 propellant = { oxidizer_fuel_ratio = 0.0, fuel_tank = "boost_prop", feed = "regulated", residual_reserve_kg = 10.0 }
 
 [environment]
@@ -313,40 +312,92 @@ label           = "orbital insertion (engines idle)"
 # its last circularize throttle and burn on to depletion.)
 allowed_engines = ["eng_vac"]
 
+[[mission.regions]]
+id            = "booster"
+initial_state = "attached"
+
+[[mission.regions.states]]
+id    = "attached"
+label = "booster attached to ascent stack"
+
+[[mission.regions.states]]
+id    = "post_sep_reorient"
+label = "separated booster reorienting retrograde"
+
+[[mission.regions.states]]
+id    = "boostback_burn"
+label = "booster boostback burn"
+
+[[mission.regions.states]]
+id    = "coast_entry"
+label = "booster coast toward entry"
+
+[[mission.regions.states]]
+id    = "entry_attitude"
+label = "booster entry-attitude interface"
+
+[[mission.regions.states]]
+id    = "landing_burn"
+label = "booster terminal burn window"
+
+[[mission.regions.states]]
+id    = "touchdown_or_safed"
+label = "booster ground crossing or safed terminal state"
+
+[[mission.regions]]
+id            = "upper_stage"
+initial_state = "attached"
+
+[[mission.regions.states]]
+id    = "attached"
+label = "upper stage attached to ascent stack"
+
+[[mission.regions.states]]
+id    = "coast"
+label = "upper-stage coast to apogee"
+
+[[mission.regions.states]]
+id    = "circularize"
+label = "upper-stage circularization burn"
+
+[[mission.regions.states]]
+id    = "orbit"
+label = "upper-stage orbital insertion complete"
+
 # Stage-1 ignition: light the cluster just after t=0.
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_0"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_0", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_1"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_1", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_2"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_2", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_3"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_3", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_4"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_4", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_5"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_5", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_6"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_6", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_7"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_7", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_8"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_8", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
@@ -356,7 +407,7 @@ action = { kind = "engine_command", id = "eng_s1_8", command = { throttle_unit =
 # throttles it up; the orbit phase throttles it back to zero (SECO). This
 # keeps ignition synchronised with PEG instead of a kernel engine_command
 # firing at the truth apogee while the commander phase still lags.
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_vac"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_vac", command = { throttle_unit = 0.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
@@ -369,25 +420,77 @@ trigger = { kind = "at_velocity", velocity_m_s = 2765.0, falling = false }
 action  = { kind = "emit_telemetry_marker", tag = "meco1" }
 
 # Stage separation: jettison the spent booster at MECO-1.
-[[mission.events]]
+[[scenario_script.events]]
 id      = "sep"
 once    = true
 trigger = { kind = "at_velocity", velocity_m_s = 2765.0, falling = false }
 action  = { kind = "jettison_stage", body = "lower" }
 
-# Boostback burn: ignite the booster's dedicated boostback engine ~5 s after
-# separation (booster now flipped retrograde) and cut it 40 s later. The burn
-# decelerates the separated booster lane (a scripted, open-loop boostback).
+[[mission.events]]
+id      = "booster_sep"
+once    = true
+trigger = { kind = "at_velocity", velocity_m_s = 2765.0, falling = false }
+action  = { kind = "set_region_state", region = "booster", state = "post_sep_reorient" }
+
+[[mission.events]]
+id      = "upper_stage_coast"
+once    = true
+trigger = { kind = "at_velocity", velocity_m_s = 2765.0, falling = false }
+action  = { kind = "set_region_state", region = "upper_stage", state = "coast" }
+
+# Boostback burn: the mission region enters boostback on an upper-stage
+# coast-energy condition after separation. The physical boost engine itself is
+# script-owned and fires from separated-lane geometry: ignite once the booster
+# and upper stage have at least 600 m of range, then cut when the relative-speed
+# residual reaches 1200 m/s. This preserves deterministic test repeatability
+# without using an absolute time-only burn as the validation path.
 [[mission.events]]
 id      = "boostback_ignite"
 once    = true
-trigger = { kind = "at_time", time_s = 250.0 }
+trigger = { kind = "at_velocity", velocity_m_s = 2575.0, falling = true }
+action  = { kind = "set_region_state", region = "booster", state = "boostback_burn" }
+
+[[scenario_script.events]]
+id      = "boostback_ignite"
+once    = true
+trigger = { kind = "at_relative_distance", body = "lower", reference_body = "upper", distance_m = 600.0, falling = false }
 action  = { kind = "engine_command", id = "eng_boost", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
 [[mission.events]]
 id      = "boostback_cut"
 once    = true
-trigger = { kind = "at_time", time_s = 290.0 }
+trigger = { kind = "at_velocity", velocity_m_s = 2527.0, falling = true }
+action  = { kind = "set_region_state", region = "booster", state = "coast_entry" }
+
+[[scenario_script.events]]
+id      = "boostback_cut"
+once    = true
+trigger = { kind = "at_relative_speed", body = "lower", reference_body = "upper", speed_m_s = 1200.0, falling = false }
 action  = { kind = "engine_command", id = "eng_boost", command = { throttle_unit = 0.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = false, shutdown = true } }
+
+# Recovery region evidence: these states are driven by separated-booster
+# lane altitude, not by wall-clock guesses. Below the terminal window, a
+# simulator-side landing controller commands the boost engine from the
+# propagated lower-body lane's altitude and radial velocity. It is still a
+# synthetic scenario-director controller, not flight software or a fielded
+# landing algorithm.
+[[mission.events]]
+id      = "booster_entry_interface"
+once    = true
+trigger = { kind = "at_body_altitude_descending", body = "lower", altitude_m = 120000.0 }
+action  = { kind = "set_region_state", region = "booster", state = "entry_attitude" }
+
+[[mission.events]]
+id      = "booster_terminal_window"
+once    = true
+trigger = { kind = "at_body_altitude_descending", body = "lower", altitude_m = 10000.0 }
+action  = { kind = "set_region_state", region = "booster", state = "landing_burn" }
+
+[[mission.events]]
+id      = "booster_ground_crossing"
+once    = true
+trigger = { kind = "at_body_altitude_descending", body = "lower", altitude_m = 0.0 }
+action  = { kind = "set_region_state", region = "booster", state = "touchdown_or_safed" }
 
 # Apogee marker: drives the coast -> circularize transition. A commander
 # event (engine-command events are kernel-side and cannot drive
@@ -399,12 +502,24 @@ once    = false
 trigger = { kind = "at_apogee" }
 action  = { kind = "emit_telemetry_marker", tag = "apogee" }
 
+[[mission.events]]
+id      = "upper_stage_circularize"
+once    = false
+trigger = { kind = "at_apogee" }
+action  = { kind = "set_region_state", region = "upper_stage", state = "circularize" }
+
 # SECO: cut on the PEG time-to-go at orbital insertion.
 [[mission.events]]
 id      = "seco"
 once    = true
 trigger = { kind = "at_guidance_cutoff", time_to_go_s = 0.0 }
 action  = { kind = "emit_telemetry_marker", tag = "seco" }
+
+[[mission.events]]
+id      = "upper_stage_orbit"
+once    = true
+trigger = { kind = "at_guidance_cutoff", time_to_go_s = 0.0 }
+action  = { kind = "set_region_state", region = "upper_stage", state = "orbit" }
 
 [[mission.transitions]]
 from  = "mission.phases.powered_ascent"
@@ -419,6 +534,9 @@ from  = "mission.phases.circularize"
 to    = "mission.phases.orbit"
 event = "seco"
 
+[scenario_director]
+mission_authority = "kernel"
+
 [multi_body]
 [[multi_body.separation]]
 event_id               = "sep"
@@ -428,6 +546,20 @@ upper_delta_v_body_m_s = [0.0, 0.0, 0.3]
 lower_delta_v_body_m_s = [0.0, 0.0, -0.3]
 lower_attitude_offset_body_xyzw = [0.0, 1.0, 0.0, 0.0]
 conserve_momentum      = false
+
+[[multi_body.landing_controller]]
+body_id                    = "lower"
+engine_id                  = "eng_boost"
+start_altitude_m           = 10000.0
+target_altitude_m          = 0.0
+target_vertical_speed_m_s  = -5.0
+target_position_eci_m      = [6_370_000.0, 0.0, 0.0]
+lateral_kp_s2              = 0.00002
+lateral_kd_s               = 0.05
+max_lateral_accel_m_s2     = 3.0
+gravity_margin_m_s2        = 9.80665
+min_throttle_unit          = 0.0
+max_throttle_unit          = 1.0
 
 [fc]
 estimator        = "ekf"
@@ -573,3 +705,5 @@ engines_allowed   = true
 [fc.phase_authority."mission.phases.orbit"]
 autopilot_allowed = true
 engines_allowed   = false
+
+[scenario_script]

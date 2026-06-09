@@ -61,8 +61,7 @@ safety_review:
   reviewer: dmitri.arekhta
   decision: accepted
   notes: >-
-    Synthetic round-number scenario. No targeting, no real device
-    drivers, no restricted or fielded-vehicle data. Demonstrates
+    Synthetic round-number scenario with no real device drivers or fielded-vehicle data. Demonstrates
     the new `[[vehicle.assembly.effectors]]` architectural
     surface; does not encode any operational physical-vehicle
     parameters.

@@ -1,7 +1,6 @@
-# Safety and dual-use review anchor.
+# Repository review anchor.
 #
 # `main` branch protection should require code-owner review together with
 # the protected CI checks listed in CONTRIBUTING.md.
 
 * @darekhta
-

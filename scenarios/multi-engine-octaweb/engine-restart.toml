@@ -1,21 +1,4 @@
-# Engine-restart exit criterion — a single RESTARTABLE liquid engine on a
-# point-mass vehicle does two distinct burns separated by a coast, which is
-# only possible because `limits.restartable = true` lets the engine re-arm
-# after a completed shutdown transient (the default one-shot lifecycle
-# latches Shutdown terminally and could never re-ignite).
-#
-# Profile (vertical, constant gravity, no atmosphere):
-#   t=0.5 s  ignite  — first burn
-#   t=3.0 s  shutdown — engine ramps to 0, then re-arms to Idle
-#   t=3.0..6.0 s     — ballistic coast (engine Idle, no propellant flow)
-#   t=6.0 s  ignite  — RESTART: second burn
-#   t=9.0 s  shutdown
-# Propellant is consumed in TWO separate intervals; the coast in between
-# shows the engine truly off (mass flat), proving the restart.
-#
-# Synthetic round numbers; not a benchmark.
-
-openbmp.scenario = 2
+openbmp.scenario = 3
 
 [meta]
 name        = "engine-restart"
@@ -70,29 +53,31 @@ initial_phase = "flight"
 id    = "flight"
 label = "flight"
 
+[scenario_script]
+
 # First burn.
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ignite_1"
 once    = true
 trigger = { kind = "at_time", time_s = 0.5 }
 action  = { kind = "engine_command", id = "eng_restart", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
 # Shutdown — the engine ramps to zero then (because restartable) re-arms.
-[[mission.events]]
+[[scenario_script.events]]
 id      = "shutdown_1"
 once    = true
 trigger = { kind = "at_time", time_s = 3.0 }
 action  = { kind = "engine_command", id = "eng_restart", command = { throttle_unit = 0.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = false, shutdown = true } }
 
 # RESTART — second ignition after the coast.
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ignite_2"
 once    = true
 trigger = { kind = "at_time", time_s = 6.0 }
 action  = { kind = "engine_command", id = "eng_restart", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
 # End the second burn.
-[[mission.events]]
+[[scenario_script.events]]
 id      = "shutdown_2"
 once    = true
 trigger = { kind = "at_time", time_s = 9.0 }

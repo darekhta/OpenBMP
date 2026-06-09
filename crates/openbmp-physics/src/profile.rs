@@ -6,24 +6,15 @@
 //! [`crate::gravity`], [`crate::atmosphere`], and [`crate::reentry`] as
 //! peers and follow the same `Result<_, PhysicsError>` discipline.
 //!
-//! # Safety posture
-//!
-//! Every method here answers a *forward* physics question — given a
-//! vehicle and a trajectory, what happens — and never the inverse
-//! operational question — given a place to reach, what to do.
+//! # Scope
 //!
 //! - [`AscentReferenceGenerator`] produces a *reference attitude the
-//!   autopilot tracks*; it consumes only the vehicle's own state and
-//!   accepts no geographic location.
+//!   autopilot tracks*.
 //! - [`RangeSafetyFootprint`] reports *where an unpowered body is
 //!   predicted to come down* in range-relative coordinates, for
-//!   recovery and range-safety planning. It accepts no desired landing
-//!   location and emits no steering command.
+//!   recovery and range-safety planning.
 //! - [`StageSeparationModel`] and [`EntryCorridorReference`] are the
 //!   staging and lifting-entry surfaces.
-//!
-//! See `docs/profile-vocabulary-and-guardrails.md` for the binding
-//! guardrails this module is built under.
 
 use std::cell::Cell;
 
@@ -1220,9 +1211,9 @@ impl AscentReferenceGenerator for SequencedAscentReference {
 /// Closed provenance categories allowed to produce a
 /// [`BallisticState`].
 ///
-/// The enum deliberately names forward/offline sources only. It is
-/// audited by `openbmp-testkit`; adding a target-like variant is a
-/// dual-use review event.
+/// The enum deliberately names forward/offline sources only so
+/// provenance remains clear when offline footprint analysis is seeded
+/// from simulator state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForwardSimulationSource {
     /// Scenario initial state used as an offline coast/burnout seed.
@@ -1444,13 +1435,9 @@ fn mix_fingerprint(hash: u64, value: u64) -> u64 {
     (hash ^ value).wrapping_mul(0x0000_0100_0000_01b3)
 }
 
-/// Offline optimizer terminal condition variants allowed by the
-/// forward-only trajectory design.
+/// Offline optimizer terminal condition variants.
 ///
-/// This enum deliberately excludes surface aimpoints, latitude /
-/// longitude goals, miss-distance objectives, and range-table style
-/// targets. Variants are orbital, inertial, or vehicle-intrinsic
-/// conditions only.
+/// Variants are orbital, inertial, or vehicle-intrinsic conditions.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TerminalCondition {
     /// Match classical orbital elements at cutoff.
@@ -1807,8 +1794,7 @@ pub struct FootprintDispersionEllipse {
 }
 
 /// Predicted landing footprint of an unpowered body, in range-relative
-/// coordinates. This is a recovery / range-safety output, not a
-/// targeting or accuracy claim. See `docs/ballistic-coast-and-apogee.md`.
+/// coordinates. See `docs/ballistic-coast-and-apogee.md`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LandingFootprint {
     /// Nominal downrange distance from the launch origin (m).
@@ -2051,7 +2037,7 @@ pub struct FootprintMonteCarloResult {
     /// nominal footprint (m).
     pub mean_offset_crossrange_from_nominal_m: f64,
     /// Radial offset from the nominal footprint to the sample mean
-    /// (m). This is output-only and accepts no target input.
+    /// (m).
     pub mean_radial_offset_from_nominal_m: f64,
     /// Downrange/downrange covariance element (m²).
     pub covariance_downrange_downrange_m2: f64,
@@ -3001,8 +2987,7 @@ pub struct EntryCorridorReferenceOutput {
 }
 
 /// Produces a bank-angle reference for a lifting entry from corridor
-/// limits and the current entry state. Corridor-driven, never
-/// target-driven.
+/// limits and the current entry state.
 pub trait EntryCorridorReference {
     /// Reference bank angle and corridor margins for the current
     /// entry state.
@@ -3023,7 +3008,7 @@ pub trait EntryCorridorReference {
 ///
 /// The command is proportional only to flight-path angle within the
 /// declared corridor and is saturated by `max_bank_rad`. Heat-rate and
-/// load-factor limits are fail-closed envelope checks, not targets.
+/// load-factor limits are fail-closed envelope checks.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BandLimitedEntryCorridorReference {
     nominal_bank_rad: f64,

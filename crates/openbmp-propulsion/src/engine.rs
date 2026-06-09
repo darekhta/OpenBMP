@@ -329,7 +329,7 @@ pub enum EngineFault {
 /// kernel coupling lives in the runner-side rack and the
 /// vehicle-side cluster adapters.
 pub trait EngineModel: Debug + Send + Sync {
-    /// Stable identifier for telemetry and event-action targeting.
+    /// Stable identifier for telemetry and event-action addressing.
     fn id(&self) -> EngineId;
 
     /// Latch a controller-or-event command for the next `step()`.

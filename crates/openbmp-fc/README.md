@@ -13,8 +13,8 @@ arming gate, a phase-gated actuator mixer, and the academic
 algorithms (estimator / autopilot / mission FSM / guidance / FDIR).
 Outputs are abstract semantic commands and optional `EffectorId` keyed
 command sets consumed by simulator-local actuator models or the
-optional generic socket bridge. **No real hardware protocols, no
-targeting, no terminal-homing.**
+optional generic socket bridge. No real hardware protocols ship in this
+repository.
 
 The architecture is hardware-portable: the same binary, linked
 against a downstream HAL crate that implements the `Sensor` /
@@ -154,15 +154,10 @@ Any shipped gain sets or noise models are synthetic or textbook
 examples with provenance. No real fielded controller gains ship in
 this crate.
 
-## Safety Boundary
+## Scope Boundary
 
 Guidance laws shipped: `AttitudeHoldGuidance`, `WaypointGuidance`
 (scenario-defined inertial waypoints).
-
-**Explicitly NOT shipped:** proportional navigation, augmented PN,
-sliding-mode terminal-homing, target-tracking guidance, intercept
-geometry, terminal-mode autopilots (BTT/STT), TERCOM, DSMAC,
-scene-matching. See `docs/safety-boundaries.md`.
 
 ## References
 

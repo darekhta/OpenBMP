@@ -16,19 +16,15 @@
 //! - [`fc_lints`] — tripwires that fail CI if
 //!   `openbmp-fc` imports `std::time` wall-clock APIs or regresses
 //!   known hot-path allocation fixes.
-//! - [`dual_use_field_lints`] — structural field allowlists for
-//!   forward-only trajectory / footprint surfaces.
 //!
 //! All helpers respect the OpenBMP determinism contract: no
 //! wall-clock time, no system RNG, seeded RNG only.
 
 pub mod analytic;
 pub mod determinism;
-pub mod dual_use_field_lints;
 pub mod error;
 pub mod fc_lints;
 pub mod filters;
-pub mod mission_vocabulary_lints;
 pub mod strategies;
 pub mod tolerance;
 

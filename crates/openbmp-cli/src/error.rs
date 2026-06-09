@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use openbmp_runner::RunnerError;
 use openbmp_scenario::ScenarioError;
+use openbmp_sil::SilError;
 use openbmp_telemetry::TelemetryError;
 use thiserror::Error;
 
@@ -21,6 +22,9 @@ pub enum CliError {
     /// The runner failed to build or drive the simulation.
     #[error("runner error")]
     Run(#[from] RunnerError),
+    /// The native SIL package/testbench API failed.
+    #[error("sil error")]
+    Sil(#[from] SilError),
     /// Writing a telemetry archive (CSV / JSON / Parquet) failed.
     #[error("telemetry error")]
     Telemetry(#[from] TelemetryError),
@@ -32,6 +36,29 @@ pub enum CliError {
         /// Source IO error.
         #[source]
         source: std::io::Error,
+    },
+    /// TOML editing failed while applying a migration.
+    #[error("migration TOML parse error: {path}")]
+    MigrateToml {
+        /// Offending scenario path.
+        path: PathBuf,
+        /// TOML editor parse error.
+        #[source]
+        source: toml_edit::TomlError,
+    },
+    /// A scenario migration could not be applied.
+    #[error("migration error: {path}: {summary}")]
+    Migrate {
+        /// Offending scenario path.
+        path: PathBuf,
+        /// Short, human-readable failure summary.
+        summary: String,
+    },
+    /// Dictionary export failed before writing output.
+    #[error("dictionary error: {summary}")]
+    Dictionary {
+        /// Short, human-readable failure summary.
+        summary: String,
     },
     /// Two telemetry archives differ.
     #[error("telemetry diff: {summary}")]
@@ -99,10 +126,15 @@ impl CliError {
     pub const fn exit_code(&self) -> u8 {
         match self {
             Self::Diff { .. } | Self::TelemetryCompare { .. } => 1,
-            Self::Scenario(_) | Self::TelemetryCompareConfig { .. } => 2,
+            Self::Scenario(_)
+            | Self::TelemetryCompareConfig { .. }
+            | Self::MigrateToml { .. }
+            | Self::Migrate { .. }
+            | Self::Dictionary { .. } => 2,
             Self::Run(err) => err.exit_code(),
             Self::Io { .. } | Self::Csv { .. } => 3,
             Self::Telemetry(_)
+            | Self::Sil(_)
             | Self::TelemetryCompareReportJson { .. }
             | Self::DiffReportJson { .. }
             | Self::Parquet(_)

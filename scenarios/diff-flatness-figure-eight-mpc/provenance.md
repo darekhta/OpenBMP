@@ -58,10 +58,6 @@ the deterministic settings shared by the
 runs on the reference platform). The validation does not claim real-time
 solver budget compliance or a production cascaded-loop plant model.
 
-## Safety boundary
+## Scope notes
 
-`docs/safety-boundaries.md` accept list — academic guidance laws
-(attitude tracking, scenario-defined waypoint navigation in inertial
-space). The waypoints are scenario-internal points in inertial space,
-not real-world locations or targets. No proportional-navigation or
-terminal-homing logic.
+Scenario-defined waypoints are inertial-space references for controller-regression tests.

@@ -24,9 +24,6 @@
 # perigee ~245 km x apogee ~535 km, eccentricity ~0.02. Specific orbital
 # energy is negative (closed orbit) and perigee is well above the
 # atmosphere, so it does not decay. See scenarios/phalcon9/provenance.md.
-#
-# Forward-only: no target/aimpoint/range fields (the guidance steers from
-# the live state toward an insertion RADIUS, not a ground location).
 
 openbmp.scenario = 3
 
@@ -185,7 +182,7 @@ initial_phase = "mission.phases.powered_ascent"
 # tick. Engines are throttled to zero in coast/orbit (kept in the
 # Burning state, no propellant flow) and throttled back up for the
 # circularisation burn -- a real cutoff/restart, no terminal
-# shutdown. Forward-only: no target/aimpoint/range fields.
+# shutdown.
 
 [[mission.phases]]
 id              = "mission.phases.powered_ascent"
@@ -208,47 +205,47 @@ label           = "orbital insertion (engines idle)"
 allowed_engines = ["eng_0", "eng_1", "eng_2", "eng_3", "eng_4", "eng_5", "eng_6", "eng_7", "eng_8"]
 
 # Light all nine engines just after t=0.
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ign_0"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_0", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ign_1"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_1", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ign_2"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_2", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ign_3"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_3", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ign_4"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_4", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ign_5"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_5", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ign_6"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_6", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ign_7"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_7", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ign_8"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_8", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
@@ -424,3 +421,5 @@ engines_allowed   = true
 [fc.phase_authority."mission.phases.orbit"]
 autopilot_allowed = true
 engines_allowed   = false
+
+[scenario_script]

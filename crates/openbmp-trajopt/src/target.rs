@@ -1,4 +1,4 @@
-//! Forward-only terminal-condition residuals.
+//! Terminal-condition residuals.
 
 use openbmp_physics::profile::{BallisticState, TerminalCondition};
 
@@ -13,12 +13,10 @@ pub struct TerminalResidual {
     pub norm: f64,
 }
 
-/// Compute residuals for the closed, forward-only
-/// [`TerminalCondition`] enum.
+/// Compute residuals for the closed [`TerminalCondition`] enum.
 ///
 /// The residual is always relative to an orbital / inertial /
-/// vehicle-intrinsic condition. It never scores miss distance to a
-/// surface aimpoint.
+/// vehicle-intrinsic condition.
 ///
 /// # Errors
 ///

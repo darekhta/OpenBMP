@@ -4,8 +4,8 @@
 //! rejects unknown top-level tables and unknown fields in the
 //! schema, validates model names through a compile-time
 //! [`ModelRegistry`], checks dimensional field suffixes and 3-vector
-//! frame suffixes, rejects safety-limited operational vocabulary, and
-//! resolves relative paths against the scenario file directory.
+//! frame suffixes, and resolves relative paths against the scenario
+//! file directory.
 //!
 //! # Module map
 //!
@@ -57,14 +57,14 @@ pub use document::{
     MetaConfig, MissionConfig, MissionScope, MissionScopeConfig, MissionScopeKind, MotorConfig,
     MotorGrainConfig, MovingMassKindConfig, MultiBodyAttitudeTargetConfig,
     MultiBodyAttitudeTargetKindConfig, MultiBodyConfig, MultiBodyInitialLaneConfig,
-    MultiBodySeparationConfig, OpenBmpHeader, PhaseConfig, PhaseTransitionConfig,
-    PropellantSpecConfig, PropulsionConfig, RecoveryConfig, RecoveryKindConfig, RegionConfig,
-    RegionStateConfig, SCENARIO_VERSION_V2, SCENARIO_VERSION_V3, SUPPORTED_SCENARIO_VERSIONS,
-    ScenarioActionConfig, ScenarioDocument, ScheduleConfig, ScheduleGroupConfig, SensorConfig,
-    StagingAnalysisConfig, StagingAnalysisMode, StagingAnalysisStageConfig, StateConfig,
-    TankConfig, TankGeometryConfig, TankUllageConfig, TelemetryConfig, TelemetryOutputConfig,
-    TimeConfig, TorqueAxis, ValidationConfig, VehicleConfig, WGS84_J2_DEFAULT, WindConfig,
-    WindLayerConfig,
+    MultiBodyLandingControllerConfig, MultiBodySeparationConfig, OpenBmpHeader, PhaseConfig,
+    PhaseTransitionConfig, PropellantSpecConfig, PropulsionConfig, RecoveryConfig,
+    RecoveryKindConfig, RegionConfig, RegionStateConfig, SCENARIO_VERSION_V2, SCENARIO_VERSION_V3,
+    SUPPORTED_SCENARIO_VERSIONS, ScenarioActionConfig, ScenarioDocument, ScenarioScriptConfig,
+    ScheduleConfig, ScheduleGroupConfig, SensorConfig, StagingAnalysisConfig, StagingAnalysisMode,
+    StagingAnalysisStageConfig, StateConfig, TankConfig, TankGeometryConfig, TankUllageConfig,
+    TelemetryConfig, TelemetryOutputConfig, TimeConfig, TorqueAxis, ValidationConfig,
+    VehicleConfig, WGS84_J2_DEFAULT, WindConfig, WindLayerConfig,
 };
 pub use error::ScenarioError;
 pub use files::ResolvedFile;

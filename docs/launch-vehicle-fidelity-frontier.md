@@ -11,10 +11,9 @@ and separation tip-off rates).
 The three items below are **not** configuration choices or bounded model fixes
 — each is a new subsystem or a control co-design effort that warrants its own
 designed, reviewed change. This note captures the integration seams already
-mapped in the code so each is ready to pick up. It is forward-only and
-synthetic throughout, consistent with
-[`dual-use-assessment.md`](dual-use-assessment.md): every quantity remains a
-rounded, class-level figure with no fielded-vehicle parameters.
+mapped in the code so each is ready to pick up. The scenario remains synthetic
+throughout: every quantity is a rounded, class-level figure with no
+fielded-vehicle parameters.
 
 Companion docs: [`staging-and-separation.md`](staging-and-separation.md),
 [`ascent-guidance.md`](ascent-guidance.md),
@@ -99,32 +98,35 @@ end-to-end demonstration of the already-wired notch.
 
 ## 2. Integrated controlled boostback / landing
 
-**Status: integrated boostback IMPLEMENTED**
+**Status: integrated boostback + terminal throttle IMPLEMENTED**
 (`scenarios/phalcon9/phalcon9-orbit-boostback.toml` + e2e). The booster carries
 a dedicated boostback engine + reserve tank, separates, flips retrograde
-(separation attitude offset), and fires the engine on a scripted ignite→cut
-window — decelerating ~450 m/s in the same run as the ascent-to-orbit. The
-booster's landing point is an **emergent ballistic consequence** of that
-deceleration; nothing aims it.
+(separation attitude offset), and fires the engine from separated-lane
+range/relative-speed triggers — decelerating in the same run as the
+ascent-to-orbit. The boostback e2e asserts the lane-local range trigger,
+relative-speed cutoff, propellant burn, deceleration, and independent
+`mission.region.booster` / `mission.region.upper_stage` traces in SIL evidence.
+The SIL boostback package also records booster entry-interface, terminal-window,
+and ground-crossing region transitions from separated-lane altitude triggers.
+Below the terminal window the booster lane also uses a simulator-side
+`[[multi_body.landing_controller]]` to throttle the booster-owned engine toward
+a configured vertical touchdown-speed target and gimbal laterally toward a
+declared ECI landing-site target.
 
-**Doctrine boundary (not a gap).** A *guided* boostback that flies the booster
-back to a specific **landing site / pad** is a **ground aimpoint** — precisely
-the capability OpenBMP's forward-only / not-a-weapon doctrine
-([`dual-use-assessment.md`](dual-use-assessment.md),
-[`safety-boundaries.md`](safety-boundaries.md)) deliberately excludes (no
-target / aimpoint / range fields; the ascent guidance itself targets an
-*insertion-radius*, an orbital element, never a ground point). Precision
-return-to-pad guidance is the same math as precision terminal targeting, so it
-is **out of scope by design**, not an unfinished feature. The
-deceleration-only boostback (shed velocity, no aimpoint) is the forward-only
-boostback and it is implemented. The per-lane control loop below remains a
-general capability (e.g. lane attitude hold), but a landing-*site* guidance law
-must not be built.
+**Remaining gap.** The recovery guidance is still a simulator-director
+demonstrator, not onboard flight software or a precision fielded landing
+algorithm. The integrated boostback slice covers the booster's separate lane,
+retrograde attitude offset, reserve tank, range/relative-speed triggered burn,
+body-altitude recovery-region evidence, terminal vertical-speed throttle
+control, and declared-site lateral feedback. Full recovery fidelity would need
+navigation observables, aero-surface/engine authority scheduling, divert
+constraints, propellant-reserve co-design, and a lane-local FC/GNC stack.
 
 **Gap (original).** Booster recovery existed only as a *separate* ballistic
 scenario; an integrated ascent run propagated the jettisoned booster lane
-**ballistically** — no boostback burn. (Now: an open-loop scripted boostback
-burn is integrated; closed-loop guidance remains.)
+**ballistically** — no boostback burn. (Now: a lane-local
+range/relative-speed triggered burn is integrated; closed-loop guidance
+remains.)
 
 **What already exists** (updated after investigation — the gap is narrower than
 "deep ballistic-only rewrite"):
@@ -139,12 +141,13 @@ burn is integrated; closed-loop guidance remains.)
   (`stage_attitude_offset_body_xyzw`) — the booster can flip retrograde at
   separation. Tip-off rates and per-body continuing-stack mass are also in.
 - **Remaining gaps for a guided boostback:** (a) RESERVED booster propellant
-  (the stage-1 tank is depleted at MECO — verified the booster lane mass is
-  constant post-separation; needs vehicle re-sizing / earlier staging);
-  (b) the booster engines scripted/commanded to fire on the lane after
-  separation; (c) per-lane guidance/control — the FC / autopilot / mixer drive
-  only the **primary** lane today. (c) is the core remaining architectural
-  piece (a per-lane control loop).
+  is currently modeled as a synthetic dedicated reserve tank rather than a
+  full ascent/recovery propellant-management workflow; (b) booster ignition
+  and cutoff are lane-local event triggers, not closed-loop recovery guidance;
+  (c) terminal throttle is simulator-directed vertical-speed control, not
+  onboard flight software; (d) per-lane horizontal guidance/control — the FC /
+  autopilot / mixer drive only the **primary** lane today. (d) is the core
+  remaining architectural piece for precision site targeting.
 - **Open-loop attempt (confirmed not bounded).** Tried the cheap path —
   lower MECO to leave a stage-1 reserve + flip the booster retrograde at
   separation + let the engines burn the reserve. The run diverged
@@ -166,8 +169,8 @@ burn is integrated; closed-loop guidance remains.)
    architectural addition — multi-lane control, where today control is
    single-lane.
 3. Recovery guidance: a boostback burn (retrograde Δv toward a landing
-   *site-radius*, forward-only — not a ground target), an entry-attitude hold,
-   and a terminal landing-burn law. The descent/entry corridor references in
+   *site-radius*), an entry-attitude hold, and a terminal landing-burn law.
+   The descent/entry corridor references in
    [`descent-and-entry-profiles.md`](descent-and-entry-profiles.md) supply the
    guidance shapes.
 
@@ -215,9 +218,9 @@ slosh stays demonstrated on the continuous-thrust `sloshing-tank` scenario.
 | Item | State |
 |------|-------|
 | Structural flex / bending | IMPLEMENTED end-to-end (model + rack + gyro pickup + body reaction moment + scenario + e2e). Optional: multiple modes; aggressive-gain notch-rescue demo. |
-| Integrated boostback | IMPLEMENTED (deceleration-only, forward-only: dedicated boostback engine + retrograde flip + scripted burn; ~450 m/s decel in the same run as ascent-to-orbit). Precision guided return-to-landing-SITE is a ground aimpoint → **out of scope by doctrine**, not a gap. |
+| Integrated boostback | IMPLEMENTED (dedicated boostback engine + retrograde flip + lane-local range/relative-speed triggered burn + terminal vertical-speed throttle + declared-site lateral feedback in the same run as ascent-to-orbit). Fielded/onboard precision recovery remains future work. |
 | Slosh-coupled orbit closure | Diagnosed (post-separation upper-stage tumble); a knob-combination attempt did not close it. Needs slosh-control co-design. |
 
-All three are forward-only and synthetic. None changes the project's doctrine
+All three are synthetic demonstrator tasks.
 position: the Phalcon-9 remains a deliberately-synthetic class anchor with no
 fielded-vehicle parameters.

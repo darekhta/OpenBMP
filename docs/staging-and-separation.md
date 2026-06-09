@@ -182,8 +182,7 @@ A jettisoned body is not deleted in PR1: the kernel retains and propagates its
 rigid-body state. Ground-intersection, cull policy, and range-safety footprint
 reporting remain future work in
 [`ballistic-coast-and-apogee.md`](ballistic-coast-and-apogee.md). This is the
-recovery / range-safety use case — *where does the spent hardware come down* —
-not targeting.
+recovery / range-safety use case — *where does the spent hardware come down*.
 
 ## Fail-closed validation
 

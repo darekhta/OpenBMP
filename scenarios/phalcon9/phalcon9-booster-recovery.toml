@@ -16,9 +16,8 @@
 # is high and downrange with mostly-horizontal velocity. It is illustrative,
 # not extracted from a validated trajectory.
 #
-# Forward-only: this computes WHERE a ballistic body lands from a given
-# state. There is no target, aimpoint, or guidance — the footprint is a
-# range-safety / recovery prediction, not an aimpoint solution.
+# This computes where a ballistic body lands from a given state.
+# The footprint is a recovery prediction.
 
 openbmp.scenario = 3
 

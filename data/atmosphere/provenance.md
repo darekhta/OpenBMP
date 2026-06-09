@@ -94,9 +94,7 @@ USSA76 is a U.S. government joint-agency standard with a stable
 NTRS citation and a freely downloadable PDF on the NOAA NGDC
 publications portal. The values used here are the standard's own
 defining constants and layer structure, with base pressures
-regenerated from the standard barometric formulas — not derived from
-any fielded vehicle's atmospheric measurements, and not subject to
-export control.
+regenerated from the standard barometric formulas.
 
 ## Why the values are pinned in code as well
 

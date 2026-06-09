@@ -138,15 +138,12 @@ A dataset is accepted only when all of these are true:
   hashable.
 - The transformation from source to OpenBMP format is reproducible.
 - The dataset has a validation test or a documented analytic check.
-- The dataset does not encode real fielded-vehicle parameters, operational
-  tuning, targeting, terminal guidance, or deployment procedures.
 - `converted-public` and `external-generated` datasets are generated only from
-  accepted source classes; a public tool output derived from rejected inputs is
-  still rejected.
+  accepted source classes.
 - `downstream-private` data is never committed to the OpenBMP repository,
   examples, release archives, or CI fixtures. The loader may consume it in a
   downstream workspace only when the sidecar states that the downstream owner
-  has performed their own export-control, license, and safety review.
+  has performed their own license, data-rights, and qualification review.
 
 If any item is uncertain, the dataset is rejected until the uncertainty is
 resolved. "Publicly visible" is not sufficient; provenance must also be
@@ -202,12 +199,11 @@ Rejected examples include:
 - News-reported performance parameters for current or recent vehicles.
 - Defense-industry marketing numbers for operational systems.
 - Recruiter, hiring-channel, procurement, or production-rate reporting.
-- Data with unclear export-control status.
+- Data with unclear legal or redistribution status.
 - Any operational TPS material, sensor, motor, aero, mass-property, or
   controller tuning dataset.
-- Fielded-projectile drag tables, characterised rounds, G-functions for real
-  munitions, or "match this projectile" coefficient datasets. The aero
-  buildup may use public textbook physics and synthetic geometry only.
+- Opaque coefficient datasets whose source, licensing, or applicability cannot
+  be reviewed.
 
 ## Real-Data Package Credibility Format
 
@@ -420,18 +416,13 @@ metadata is:
 
 - A `provenance.md` source class on the rejected list (see § Source
   Classes above): `unknown`, `operational-reporting`, `restricted`.
-- Real fielded-vehicle parameter sets for operational missiles, HGVs, MaRVs,
-  hypersonic cruise weapons, or any controlled / non-public operational system.
+- Non-public or otherwise controlled fielded-vehicle parameter sets.
 - Real fielded TPS material data, controller gains, sensor parameters, or
   operational engine performance tables for a specific fielded vehicle.
 - Public civilian flight data used as a validation reference is allowed only
   when it is source-classed `public-civilian-flight`, limited to externally
   observable trajectory / timing / environment facts, and does not include
-  restricted material, propulsion, control, targeting, or operational
-  performance data.
-- Datasets whose `notes` describe targeting, terminal homing, defence
-  penetration, or any other use that crosses the
-  [safety-boundaries.md](safety-boundaries.md) reject list.
+  restricted material, propulsion, control, or operational performance data.
 
 The credibility sidecar is **about how to use a dataset**; it is not a
 laundering channel for restricted data.

@@ -5,7 +5,7 @@ dependency and release-artifact policy. This document defines the minimum
 supply-chain checks for project code, generated data, and releases.
 
 Supply-chain checks support reproducibility and review. They are not safety
-certification, export-control clearance, or operational qualification.
+certification, legal clearance, or operational qualification.
 
 ## Dependency Policy
 

@@ -71,8 +71,7 @@ safety_review:
   reviewer: dmitri.arekhta
   decision: accepted
   notes: >-
-    Synthetic round-number scenario. No targeting, no real device
-    drivers, no restricted or fielded-vehicle data. Demonstrates
+    Synthetic round-number scenario with no real device drivers or fielded-vehicle data. Demonstrates
     the new `EngineCluster` architectural surface; does not encode
     any operational physical-vehicle parameters.
 units:            metres, metres-per-second, metres-per-second-squared, seconds, kilograms, radians, Newtons

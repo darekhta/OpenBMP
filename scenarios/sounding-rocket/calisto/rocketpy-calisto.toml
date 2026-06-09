@@ -1,60 +1,4 @@
-# RocketPy Calisto cross-tool validation scenario.
-#
-# Replicates the canonical RocketPy Calisto example
-# (Souza et al. 2022, https://github.com/RocketPy-Team/RocketPy)
-# in the OpenBMP rigid-body kernel. Cross-tool comparison target:
-# RocketPy's published apogee 3 349 m AGL within the audited 2 %
-# cross-tool envelope. The 1 % stretch goal remains follow-up work;
-# the cross-tool audit found the pre-audit 5 % envelope was masking
-# a RocketPy/OpenBMP motor-mass mismatch, not RK4 truncation error.
-#
-# Vehicle (from the RocketPy Calisto example):
-#   - body radius 0.0635 m (ref area = π · 0.0635² ≈ 0.01267 m²)
-#   - dry rocket mass (without motor) 14.426 kg
-#   - inertia tensor (Ixx, Iyy, Izz) = (6.321, 6.321, 0.034) kg·m²
-#     about CG (axisymmetric body of revolution; small Izz is the
-#     roll-axis inertia, large Ixx = Iyy are the transverse pitch
-#     and yaw inertias)
-#
-# Motor:
-#   - Cesaroni Pro75 M1670 (`data/motors/rocketpy-calisto-m1670.toml`)
-#   - 6 026 N·s total impulse, 3.9 s burn, RocketPy SolidMotor
-#     mass profile: 2.9559119613920224 kg propellant and
-#     1.815 kg motor dry mass
-#
-# Aerodynamics:
-#   - Single-deck CD-vs-Mach curve from RocketPy's
-#     `powerOffDragCurve.csv` and `powerOnDragCurve.csv` (byte-
-#     identical upstream — RocketPy treats Calisto with one CD
-#     curve regardless of motor burn state)
-#   - Axisymmetric reduced point-mass deck: CN ≡ 0, CM ≡ 0
-#
-# Launch site: Spaceport America, NM
-#   (32.99° N, 106.97° W, 1 401 m geodetic elevation).
-#   The OpenBMP scenario uses a `toy-fixed-earth` frame (no Earth
-#   rotation, no Coriolis) for direct apparent-trajectory
-#   comparison with RocketPy's flat-earth assumption over the
-#   short Calisto flight duration. Altitude is offset by 1400 m so
-#   the USSA76 atmosphere sees Spaceport's elevation.
-#
-# Rail: 5.2 m at 85° inclination from horizontal, heading 90°
-#   (due east). The scenario uses the kinematic-only initial
-#   condition — vehicle starts at the rail tip at rest, body +z
-#   aligned with the rail direction. Full rail-launcher dynamics
-#   (rail friction, unloaded-tip transient) are not modelled;
-#   rail residence
-#   time is well below the 1 % apogee envelope's sensitivity.
-#
-# Recovery: drogue at apogee, main at altitude 467 m AGL on
-#   descent. CD·A values match the RocketPy Calisto example
-#   (drogue cd_s = 1.0; main cd_s = 10.0). OpenBMP splits CD·A
-#   into separate (CD, area) values; the physics is identical
-#   since drag = ½ ρ |v|² · CD · A.
-#
-# Pinned digests are SHA-256 of the referenced files at the
-# commit that ships this scenario; mismatches fail closed.
-
-openbmp.scenario = 2
+openbmp.scenario = 3
 
 [meta]
 name        = "rocketpy-calisto"
@@ -156,11 +100,24 @@ label = "main_descent"
 [[mission.events]]
 id      = "evt_apogee_deploy_drogue"
 trigger = { kind = "at_apogee" }
+action = { kind = "emit_telemetry_marker", tag = "evt_apogee_deploy_drogue" }
+
+# Apogee → drogue (drogue stage of the dual-stage device).
+[[scenario_script.events]]
+id      = "evt_apogee_deploy_drogue"
+trigger = { kind = "at_apogee" }
 action  = { kind = "deploy_recovery", id = "calisto_chute", command = "deploy_drogue" }
 
 # Altitude 467 m AGL on descent → main. With the 1400 m
 # scenario-z offset, the absolute altitude is 1867 m.
 [[mission.events]]
+id      = "evt_altitude_deploy_main"
+trigger = { kind = "at_altitude_descending", altitude_m = 1867.0 }
+action = { kind = "emit_telemetry_marker", tag = "evt_altitude_deploy_main" }
+
+# Altitude 467 m AGL on descent → main. With the 1400 m
+# scenario-z offset, the absolute altitude is 1867 m.
+[[scenario_script.events]]
 id      = "evt_altitude_deploy_main"
 trigger = { kind = "at_altitude_descending", altitude_m = 1867.0 }
 action  = { kind = "deploy_recovery", id = "calisto_chute", command = "deploy_main" }
@@ -174,3 +131,5 @@ event = "evt_apogee_deploy_drogue"
 from  = "drogue_descent"
 to    = "main_descent"
 event = "evt_altitude_deploy_main"
+
+[scenario_script]

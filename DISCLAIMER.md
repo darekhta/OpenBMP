@@ -8,7 +8,6 @@ OpenBMP is:
 
 - **Not** validated for operational flight.
 - **Not** suitable for hardware deployment.
-- **Not** a weapon system.
 - **Not** a substitute for any qualified flight-software stack.
 - **Not** validated under IEC 61508, ISO 26262, DO-178C, DO-254, or any
   equivalent civilian or military safety-critical certification regime.
@@ -25,5 +24,5 @@ Downstream consumers who integrate OpenBMP components into stacks
 subject to such regimes are responsible for their own qualification
 work; the OpenBMP project itself makes no compliance claims.
 
-See `docs/safety-boundaries.md` for the full acceptance / rejection
-list and the project's enforcement posture.
+See `docs/safety-boundaries.md` for the project scope and validation
+boundaries.

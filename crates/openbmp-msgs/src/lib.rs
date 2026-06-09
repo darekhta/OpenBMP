@@ -40,6 +40,44 @@ pub trait Topic: 'static + Clone {
     const INDEX: usize = usize::MAX;
 }
 
+/// One command/telemetry dictionary topic descriptor.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct TopicDescriptor {
+    /// Stable dense topic index.
+    pub index: usize,
+    /// Canonical topic name.
+    pub name: &'static str,
+    /// Topic schema version.
+    pub version: u32,
+    /// `true` when the index is reserved but no payload struct is
+    /// exported yet.
+    pub reserved: bool,
+}
+
+impl TopicDescriptor {
+    /// Build a descriptor from a concrete topic type.
+    #[must_use]
+    pub const fn of<T: Topic>() -> Self {
+        Self {
+            index: T::INDEX,
+            name: T::NAME,
+            version: T::VERSION,
+            reserved: false,
+        }
+    }
+
+    /// Build a descriptor for a reserved topic-table slot.
+    #[must_use]
+    pub const fn reserved(index: usize, name: &'static str) -> Self {
+        Self {
+            index,
+            name,
+            version: 0,
+            reserved: true,
+        }
+    }
+}
+
 /// Monotonically-increasing topic sequence counter.
 ///
 /// Each publish of a given topic increments the topic's sequence
@@ -1087,4 +1125,79 @@ impl Default for GuidanceCutoff {
 impl Topic for GuidanceCutoff {
     const NAME: &'static str = "guidance.cutoff";
     const INDEX: usize = topic_index::GUIDANCE_CUTOFF;
+}
+
+/// Canonical OpenBMP command/telemetry topic dictionary.
+///
+/// The table is ordered by stable topic index. Reserved entries keep
+/// their index visible so external dictionaries do not silently reuse
+/// an ABI slot.
+pub const CANONICAL_TOPIC_DESCRIPTORS: [TopicDescriptor; topic_index::COUNT] = [
+    TopicDescriptor::of::<ImuSample>(),
+    TopicDescriptor::of::<BarometerSample>(),
+    TopicDescriptor::of::<GnssSample>(),
+    TopicDescriptor::of::<MagnetometerSample>(),
+    TopicDescriptor::of::<StarTrackerSample>(),
+    TopicDescriptor::of::<SensorStatus>(),
+    TopicDescriptor::of::<AttitudeEstimate>(),
+    TopicDescriptor::of::<PositionEstimate>(),
+    TopicDescriptor::of::<EnvironmentEstimate>(),
+    TopicDescriptor::of::<PropellantState>(),
+    TopicDescriptor::of::<EstimatorStatus>(),
+    TopicDescriptor::of::<EstimatorLaneSelection>(),
+    TopicDescriptor::of::<VehicleStatus>(),
+    TopicDescriptor::of::<MissionStatePublish>(),
+    TopicDescriptor::of::<MissionActionBatch>(),
+    TopicDescriptor::of::<MissionRegionStatePublish>(),
+    TopicDescriptor::of::<HealthRegionStatePublish>(),
+    TopicDescriptor::of::<CommsRegionStatePublish>(),
+    TopicDescriptor::of::<EstimatorRegimeRegionStatePublish>(),
+    TopicDescriptor::of::<ScenarioStateOverride>(),
+    TopicDescriptor::of::<FailsafeFlags>(),
+    TopicDescriptor::of::<ActuatorCommand>(),
+    TopicDescriptor::of::<AutopilotStatus>(),
+    TopicDescriptor::of::<EffectorCommandSet>(),
+    TopicDescriptor::of::<EngineDemand>(),
+    TopicDescriptor::of::<EngineCommandSet>(),
+    TopicDescriptor::of::<FdirStatus>(),
+    TopicDescriptor::of::<FdirGlrtDiagnostic>(),
+    TopicDescriptor::of::<EstimatorMode>(),
+    TopicDescriptor::of::<ReferenceState>(),
+    TopicDescriptor::of::<GuidanceCutoff>(),
+    TopicDescriptor::reserved(topic_index::SCHEDULER_OVERRUN, "scheduler.overrun"),
+    TopicDescriptor::reserved(
+        topic_index::SCHEDULER_DEADLINE_SLIP,
+        "scheduler.deadline_slip",
+    ),
+    TopicDescriptor::reserved(
+        topic_index::SCHEDULER_TIMING_BUDGET_REPORT,
+        "scheduler.timing_budget_report",
+    ),
+    TopicDescriptor::of::<ActuatorStatus>(),
+    TopicDescriptor::of::<WatchdogStatus>(),
+    TopicDescriptor::of::<StorageStatus>(),
+];
+
+/// Borrow the canonical OpenBMP command/telemetry topic dictionary.
+#[must_use]
+pub const fn canonical_topic_descriptors() -> &'static [TopicDescriptor] {
+    &CANONICAL_TOPIC_DESCRIPTORS
+}
+
+#[cfg(test)]
+mod dictionary_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_dictionary_covers_topic_index_table() {
+        let descriptors = canonical_topic_descriptors();
+        assert_eq!(descriptors.len(), topic_index::COUNT);
+        for (index, descriptor) in descriptors.iter().enumerate() {
+            assert_eq!(descriptor.index, index);
+        }
+        assert_eq!(
+            descriptors[topic_index::SCHEDULER_OVERRUN],
+            TopicDescriptor::reserved(topic_index::SCHEDULER_OVERRUN, "scheduler.overrun")
+        );
+    }
 }

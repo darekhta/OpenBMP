@@ -6,7 +6,7 @@ rust-version.workspace  = true
 license.workspace       = true
 repository.workspace    = true
 authors.workspace       = true
-description             = "OpenBMP scenario format: TOML parser, model registry, validator, safety-name lint."
+description             = "OpenBMP scenario format: TOML parser, model registry, validator, and unit/frame lint."
 
 [dependencies]
 openbmp-core = { workspace = true }

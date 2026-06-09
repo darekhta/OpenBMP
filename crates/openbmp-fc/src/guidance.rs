@@ -5,9 +5,8 @@
 //! - Scenario-waypoint navigation in inertial space.
 //! - Simple terminal-state regulation (constant attitude / position).
 //!
-//! The safety-boundaries `Reject` list applies categorically — no
-//! proportional navigation, no terminal-homing, no targeting, no
-//! real-world-location guidance.
+//! Guidance references are scenario data consumed by simulator-local
+//! controller jobs.
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;

@@ -129,6 +129,8 @@ pub fn run(
     let mut recovery_rack = crate::recovery::RecoveryRack::build(document)?;
     let separated_attitude_targets =
         crate::separated_attitude::SeparatedAttitudeTargets::build(document)?;
+    let separated_landing_controllers =
+        crate::separated_landing::SeparatedLandingControllers::build(document)?;
     // Build the runner-side wind rack. Inactive when no
     // `[wind]` block is declared (or `kind = "none"`).
     let wind_rack = crate::wind::WindRack::build(document)?;
@@ -229,8 +231,9 @@ pub fn run(
     if let Some(radius_m) = separated_ground_radius_m {
         kernel_base.set_separated_geocentric_ground_radius_m(radius_m)?;
     }
-    let mut kernel = if let Some(mission) = &document.mission {
-        let mission_runtime = crate::mission::build_mission_runtime_typed(mission)?;
+    let mut kernel = if let Some(mission_runtime) =
+        crate::mission::build_mission_runtime_from_document(document)?
+    {
         kernel_base.with_mission_split(
             mission_runtime.mission_bindings,
             mission_runtime.script_bindings,
@@ -307,6 +310,8 @@ pub fn run(
         driver.evaluate_rigid_body(kernel.current_state(), &environment, 0.0)?;
     }
     let mut fc_bridge = crate::fc_bridge::FcBridge::maybe_new(scenario, resolved_files)?;
+    let mut mission_region_trace =
+        crate::MissionRegionTraceState::new(&crate::mission_region_declarations(document));
     record_step(
         document,
         &mut table,
@@ -318,6 +323,7 @@ pub fn run(
         aerothermal_driver.as_ref().map(|driver| driver.output()),
         fc_bridge.as_ref(),
         &[],
+        &mut mission_region_trace,
         &initial_snapshot,
     )?;
     let mut pending_effector_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
@@ -350,14 +356,16 @@ pub fn run(
                 // (one-step lag, mirroring the slosh rack). Zero when rigid.
                 structural_rack.gyro_pickup_rad_s(),
             )?;
-            // Forward the mission state published by
-            // this FC tick into the kernel before the kernel evaluates
-            // mission events for the next integrated state.
-            if let Some(state_id) = bridge.latest_mission_state_id() {
-                kernel.set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
-            }
-            for fired in bridge.drain_mission_actions() {
-                kernel.record_external_mission_fired(fired);
+            if document.flight_controller_owns_mission_state() {
+                // Forward the FC commander's published mission state into
+                // the kernel's external view. Kernel-directed scenarios
+                // intentionally keep the kernel event stream authoritative.
+                if let Some(state_id) = bridge.latest_mission_state_id() {
+                    kernel.set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
+                }
+                for fired in bridge.drain_mission_actions() {
+                    kernel.record_external_mission_fired(fired);
+                }
             }
         }
         if !separated_attitude_targets.is_empty() {
@@ -365,6 +373,14 @@ pub fn run(
                 kernel.separated_rigid_bodies(),
                 kernel.current_time(),
                 &mut effector_rack,
+            )?;
+        }
+        if !separated_landing_controllers.is_empty() {
+            separated_landing_controllers.apply(
+                kernel.separated_rigid_bodies(),
+                kernel.current_time(),
+                separated_ground_radius_m,
+                &mut engine_rack,
             )?;
         }
         if let Some(propellant_budget) = &propellant_budget {
@@ -512,6 +528,7 @@ pub fn run(
             aerothermal_driver.as_ref().map(|driver| driver.output()),
             fc_bridge.as_ref(),
             &mission_fired,
+            &mut mission_region_trace,
             &snapshot,
         )?;
         // Partition typed script-action fired queue.
@@ -2345,6 +2362,8 @@ struct RigidChannelSet {
     velocity_y: TelemetryChannel<f64>,
     velocity_z: TelemetryChannel<f64>,
     mass: TelemetryChannel<f64>,
+    mission_phase: Option<TelemetryChannel<String>>,
+    mission_regions: Vec<(crate::MissionRegionDeclaration, TelemetryChannel<String>)>,
     quaternion_x: TelemetryChannel<f64>,
     quaternion_y: TelemetryChannel<f64>,
     quaternion_z: TelemetryChannel<f64>,
@@ -2396,6 +2415,23 @@ impl RigidChannelSet {
         let velocity_z =
             TelemetryChannel::<f64>::new(alloc(), "velocity_z_m_s", "m/s", Some("ECI"))?;
         let mass = TelemetryChannel::<f64>::new(alloc(), "mass_kg", "kg", None::<&str>)?;
+        let mission_phase = document
+            .mission
+            .is_some()
+            .then(|| {
+                TelemetryChannel::<String>::new(alloc(), "mission.phase", "text", None::<&str>)
+            })
+            .transpose()?;
+        let mut mission_regions = Vec::new();
+        for declaration in crate::mission_region_declarations(document) {
+            let channel = TelemetryChannel::<String>::new(
+                alloc(),
+                format!("mission.region.{}", declaration.channel_suffix),
+                "text",
+                None::<&str>,
+            )?;
+            mission_regions.push((declaration, channel));
+        }
 
         let quaternion_x =
             TelemetryChannel::<f64>::new(alloc(), "attitude.q_x", "1", None::<&str>)?;
@@ -2849,6 +2885,8 @@ impl RigidChannelSet {
             velocity_y,
             velocity_z,
             mass,
+            mission_phase,
+            mission_regions,
             quaternion_x,
             quaternion_y,
             quaternion_z,
@@ -2890,6 +2928,12 @@ impl RigidChannelSet {
             self.angular_velocity_y.metadata().clone(),
             self.angular_velocity_z.metadata().clone(),
         ];
+        if let Some(mission_phase) = &self.mission_phase {
+            channels.push(mission_phase.metadata().clone());
+        }
+        for (_, region) in &self.mission_regions {
+            channels.push(region.metadata().clone());
+        }
         if let Some(reference) = &self.fc_reference {
             channels.push(reference.valid.metadata().clone());
             channels.push(reference.quaternion_x.metadata().clone());
@@ -2991,6 +3035,7 @@ fn record_step<I, F, MOM, MM, E, SC>(
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
     fc_bridge: Option<&crate::fc_bridge::FcBridge>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
+    mission_region_trace: &mut crate::MissionRegionTraceState,
     effector_snapshot: &[openbmp_vehicle::EffectorState],
 ) -> Result<(), RunnerError>
 where
@@ -3011,6 +3056,16 @@ where
     row.insert(&channels.velocity_y, state.velocity.vector.y)?;
     row.insert(&channels.velocity_z, state.velocity.vector.z)?;
     row.insert(&channels.mass, state.mass_props.mass_kg())?;
+    if let Some(mission_phase) = &channels.mission_phase {
+        row.insert(
+            mission_phase,
+            crate::mission_phase_label(document, kernel.current_phase().map(|phase| phase.value())),
+        )?;
+    }
+    mission_region_trace.apply_fired_events(fired_events);
+    for (declaration, channel) in &channels.mission_regions {
+        row.insert(channel, mission_region_trace.label(declaration))?;
+    }
 
     let raw = state.orientation.q.into_inner();
     row.insert(&channels.quaternion_x, raw.coords.x)?;
@@ -3925,6 +3980,96 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const SEPARATED_LANDING_CONTROLLER_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "separated-landing-controller-test"
+description = "Synthetic separated-lane terminal throttle controller regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.6
+dt_s = 0.1
+seed = 43
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [6371000.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.7071067811865475, 0.0, 0.7071067811865475]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "separated-landing-controller-test"
+
+[[vehicle.assembly.bodies]]
+id = "bus"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1000.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[100.0, 0.0, 0.0], [0.0, 100.0, 0.0], [0.0, 0.0, 100.0]]
+
+[[vehicle.assembly.bodies]]
+id = "booster"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1000.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[100.0, 0.0, 0.0], [0.0, 100.0, 0.0], [0.0, 0.0, 100.0]]
+
+[[vehicle.assembly.engines]]
+id = "land"
+mounted_to = "booster"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, -0.5]
+limits = { max_thrust_n = 30000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity", "thrust"]
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "coast"
+
+[multi_body]
+primary_body_id = "bus"
+
+[[multi_body.initial_lane]]
+body_id = "booster"
+position_eci_m = [6371500.0, 0.0, 0.0]
+velocity_eci_m_s = [-50.0, 0.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.7071067811865475, 0.0, 0.7071067811865475]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[[multi_body.landing_controller]]
+body_id = "booster"
+engine_id = "land"
+start_altitude_m = 1000.0
+target_altitude_m = 0.0
+target_vertical_speed_m_s = -5.0
+gravity_margin_m_s2 = 9.80665
+min_throttle_unit = 0.0
+max_throttle_unit = 1.0
+
+[telemetry]
+output.csv = "out/separated-landing-controller-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn valid_stage_separation_document() -> ScenarioDocument {
         openbmp_scenario::Scenario::from_toml_str(include_str!(
             "../../openbmp-scenario/tests/fixtures/stage-separation-valid.toml"
@@ -4201,6 +4346,47 @@ require_monotonic_time = true
         assert!(
             effector_actual.iter().any(|value| *value > 0.0),
             "attitude target should command the direct-torque effector: {effector_actual:?}"
+        );
+    }
+
+    #[test]
+    fn separated_landing_controller_commands_owned_engine() {
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(SEPARATED_LANDING_CONTROLLER_SCENARIO)
+                .expect("separated landing-controller scenario must parse");
+        let outcome =
+            crate::run(&scenario).expect("separated landing-controller scenario must run");
+
+        let thrust = f64_column(&outcome, "engine.land.thrust_n");
+        assert!(
+            thrust.iter().any(|value| *value > 0.0),
+            "landing controller should command terminal thrust: {thrust:?}"
+        );
+
+        let booster_separated = bool_column(&outcome, "body.booster.separated");
+        assert!(
+            booster_separated.iter().any(|value| *value),
+            "booster lane should remain observable: {booster_separated:?}"
+        );
+    }
+
+    #[test]
+    fn separated_landing_controller_site_target_adds_lateral_authority() {
+        let toml = SEPARATED_LANDING_CONTROLLER_SCENARIO
+            .replace("max_gimbal_rad = 0.0", "max_gimbal_rad = 0.2")
+            .replace(
+                "max_throttle_unit = 1.0\n",
+                "max_throttle_unit = 1.0\ntarget_position_eci_m = [6371000.0, 1000.0, 0.0]\nlateral_kp_s2 = 0.0002\nlateral_kd_s = 0.0\nmax_lateral_accel_m_s2 = 20.0\n",
+            );
+        let scenario = openbmp_scenario::Scenario::from_toml_str(&toml)
+            .expect("site-target landing-controller scenario must parse");
+        let outcome =
+            crate::run(&scenario).expect("site-target landing-controller scenario must run");
+
+        let booster_vy = f64_column(&outcome, "body.booster.velocity_y_m_s");
+        assert!(
+            booster_vy.iter().any(|value| *value > 0.01),
+            "site-target controller should add lateral velocity toward +ECI y: {booster_vy:?}"
         );
     }
 

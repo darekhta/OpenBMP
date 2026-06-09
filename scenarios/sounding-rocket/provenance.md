@@ -72,8 +72,7 @@ safety_review:
   notes: >-
     Public academic benchmark from a master's thesis. The modeled
     object is a hobby-class sounding/model rocket reduction, not an
-    operational vehicle. The scenario contains no targeting, no
-    real device drivers, and no restricted or fielded-vehicle data.
+    operational vehicle. The scenario uses documented public or synthetic data and no real device drivers.
 units:            metres, metres-per-second, metres-per-second-squared, seconds, kilograms, degrees
 frame_profile:    wgs84-uniform-rotation
 local_origin:     >-
@@ -184,9 +183,9 @@ safety_review:
     Public academic benchmark from a master's thesis, rendered as
     the rigid-body variant of an already-accepted scenario. The
     modeled object is a hobby-class sounding/model rocket reduction,
-    not an operational vehicle. The scenario contains no targeting,
-    no real device drivers, and no restricted or fielded-vehicle
-    data. The inertia tensor is an academic rod-shape estimate, not
+    not an operational vehicle. The scenario uses documented public or
+    synthetic data and no real device drivers. The inertia tensor is an
+    academic rod-shape estimate, not
     a measured property of any specific airframe.
 units:            metres, metres-per-second, metres-per-second-squared, seconds, kilograms, kilogram-metres-squared, degrees, dimensionless quaternion
 frame_profile:    wgs84-uniform-rotation
@@ -277,9 +276,7 @@ safety_review:
   decision: accepted
   notes: >-
     Public academic benchmark from a master's thesis, rendered as
-    the mission-block variant of an already-accepted scenario. No
-    targeting, no real device drivers, no restricted or fielded-
-    vehicle data.
+    the mission-block variant of an already-accepted scenario. The scenario uses documented public or synthetic data and no real device drivers.
 units:            metres, metres-per-second, metres-per-second-squared, seconds, kilograms, degrees
 frame_profile:    wgs84-uniform-rotation
 local_origin:     >-

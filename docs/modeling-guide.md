@@ -32,7 +32,7 @@ Models should not:
 - Hide file or network IO inside `step()` or hot-path evaluation.
 - Import real fielded-vehicle parameter sets.
 - Expose real hardware commands or bus protocols.
-- Use operational targeting or terminal-homing vocabulary.
+- Leave units, frames, assumptions, or validation status undocumented.
 
 ## Model README Template
 
@@ -57,7 +57,7 @@ Each model family should include:
 
 ## Data Provenance
 
-## Safety Boundary
+## Scope Boundary
 ```
 
 ## Acceptance Levels

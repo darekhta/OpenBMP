@@ -95,7 +95,7 @@ trigger = { kind = "at_time", time_s = 0.6 }
 action  = { kind = "emit_telemetry_marker", tag = "stage_separation" }
 once    = true
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "evt_stage_separation"
 trigger = { kind = "at_time", time_s = 0.6 }
 action  = { kind = "jettison_stage", body = "booster" }
@@ -165,3 +165,5 @@ lower_body_id             = "booster"
 upper_delta_v_body_m_s    = [0.0, 0.0, 0.25]
 lower_delta_v_body_m_s    = [0.0, 0.0, -1.0]
 conserve_momentum         = true
+
+[scenario_script]

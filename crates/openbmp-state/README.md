@@ -53,7 +53,7 @@ types. Pure data, no system access.
 
 This crate ships no data files.
 
-## Safety Boundary
+## Scope Boundary
 
 State types are physics-neutral; no operational vocabulary. The
 project's full accept/reject list lives in

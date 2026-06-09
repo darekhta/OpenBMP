@@ -215,8 +215,9 @@ pub fn run(
     };
 
     let kernel_base = SimulationKernel::new(config)?;
-    let mut kernel = if let Some(mission) = &document.mission {
-        let mission_runtime = crate::mission::build_mission_runtime_typed(mission)?;
+    let mut kernel = if let Some(mission_runtime) =
+        crate::mission::build_mission_runtime_from_document(document)?
+    {
         kernel_base.with_mission_split(
             mission_runtime.mission_bindings,
             mission_runtime.script_bindings,
@@ -289,6 +290,8 @@ pub fn run(
         driver.evaluate_point_mass(kernel.current_state(), &environment, 0.0)?;
     }
     let mut fc_bridge = crate::fc_bridge::FcBridge::maybe_new(scenario, resolved_files)?;
+    let mut mission_region_trace =
+        crate::MissionRegionTraceState::new(&crate::mission_region_declarations(document));
     record_step(
         document,
         &mut table,
@@ -300,6 +303,7 @@ pub fn run(
         aerothermal_driver.as_ref().map(|driver| driver.output()),
         fc_bridge.as_ref(),
         &[],
+        &mut mission_region_trace,
         &initial_snapshot,
     )?;
     let mut pending_effector_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
@@ -328,16 +332,16 @@ pub fn run(
                 &mut effector_rack,
                 &mut engine_rack,
             )?;
-            // Forward the FC commander's published
-            // mission state into the kernel's external view. The
-            // kernel uses the externally-supplied state in
-            // preference to its internal current_phase during event
-            // evaluation.
-            if let Some(state_id) = bridge.latest_mission_state_id() {
-                kernel.set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
-            }
-            for fired in bridge.drain_mission_actions() {
-                kernel.record_external_mission_fired(fired);
+            if document.flight_controller_owns_mission_state() {
+                // Forward the FC commander's published mission state into
+                // the kernel's external view. Kernel-directed scenarios
+                // intentionally keep the kernel event stream authoritative.
+                if let Some(state_id) = bridge.latest_mission_state_id() {
+                    kernel.set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
+                }
+                for fired in bridge.drain_mission_actions() {
+                    kernel.record_external_mission_fired(fired);
+                }
             }
         }
         if let Some(propellant_budget) = &propellant_budget {
@@ -430,6 +434,7 @@ pub fn run(
             aerothermal_driver.as_ref().map(|driver| driver.output()),
             fc_bridge.as_ref(),
             &mission_fired,
+            &mut mission_region_trace,
             &snapshot,
         )?;
         // Partition the typed script-action fired
@@ -1030,6 +1035,8 @@ struct PointMassChannelSet {
     velocity_y: TelemetryChannel<f64>,
     velocity_z: TelemetryChannel<f64>,
     mass: TelemetryChannel<f64>,
+    mission_phase: Option<TelemetryChannel<String>>,
+    mission_regions: Vec<(crate::MissionRegionDeclaration, TelemetryChannel<String>)>,
     has_atmosphere: bool,
     atmosphere_density: Option<TelemetryChannel<f64>>,
     atmosphere_pressure: Option<TelemetryChannel<f64>>,
@@ -1080,6 +1087,23 @@ impl PointMassChannelSet {
         let velocity_z =
             TelemetryChannel::<f64>::new(alloc(), "velocity_z_m_s", "m/s", Some("ECI"))?;
         let mass = TelemetryChannel::<f64>::new(alloc(), "mass_kg", "kg", None::<&str>)?;
+        let mission_phase = document
+            .mission
+            .is_some()
+            .then(|| {
+                TelemetryChannel::<String>::new(alloc(), "mission.phase", "text", None::<&str>)
+            })
+            .transpose()?;
+        let mut mission_regions = Vec::new();
+        for declaration in crate::mission_region_declarations(document) {
+            let channel = TelemetryChannel::<String>::new(
+                alloc(),
+                format!("mission.region.{}", declaration.channel_suffix),
+                "text",
+                None::<&str>,
+            )?;
+            mission_regions.push((declaration, channel));
+        }
 
         let fc_reference = if document.fc.is_some() {
             Some(FcReferenceTelemetryChannels {
@@ -1363,6 +1387,8 @@ impl PointMassChannelSet {
             velocity_y,
             velocity_z,
             mass,
+            mission_phase,
+            mission_regions,
             has_atmosphere,
             atmosphere_density,
             atmosphere_pressure,
@@ -1388,6 +1414,12 @@ impl PointMassChannelSet {
             self.velocity_z.metadata().clone(),
             self.mass.metadata().clone(),
         ];
+        if let Some(mission_phase) = &self.mission_phase {
+            channels.push(mission_phase.metadata().clone());
+        }
+        for (_, region) in &self.mission_regions {
+            channels.push(region.metadata().clone());
+        }
         if let Some(reference) = &self.fc_reference {
             channels.push(reference.valid.metadata().clone());
             channels.push(reference.quaternion_x.metadata().clone());
@@ -1466,6 +1498,7 @@ fn record_step<I, F, MM, E, SC>(
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
     fc_bridge: Option<&crate::fc_bridge::FcBridge>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
+    mission_region_trace: &mut crate::MissionRegionTraceState,
     effector_snapshot: &[openbmp_vehicle::EffectorState],
 ) -> Result<(), RunnerError>
 where
@@ -1485,6 +1518,16 @@ where
     row.insert(&channels.velocity_y, state.velocity.vector.y)?;
     row.insert(&channels.velocity_z, state.velocity.vector.z)?;
     row.insert(&channels.mass, state.mass.get::<kilogram>())?;
+    if let Some(mission_phase) = &channels.mission_phase {
+        row.insert(
+            mission_phase,
+            crate::mission_phase_label(document, kernel.current_phase().map(|phase| phase.value())),
+        )?;
+    }
+    mission_region_trace.apply_fired_events(fired_events);
+    for (declaration, channel) in &channels.mission_regions {
+        row.insert(channel, mission_region_trace.label(declaration))?;
+    }
     insert_fc_reference_channels(&mut row, &channels.fc_reference, fc_bridge)?;
 
     // Atmosphere sample at the post-step state. Match the runtime

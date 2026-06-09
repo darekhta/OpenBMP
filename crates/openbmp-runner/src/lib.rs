@@ -46,6 +46,7 @@ pub mod propulsion;
 pub mod recovery;
 pub mod rigid_body;
 pub mod separated_attitude;
+pub mod separated_landing;
 pub mod structural;
 pub mod tanks;
 pub mod wind;
@@ -53,7 +54,7 @@ pub mod wind;
 use std::collections::BTreeMap;
 
 use openbmp_scenario::{Scenario, ScenarioDocument};
-use openbmp_sim::StopReason;
+use openbmp_sim::{MissionAction, PhaseId, RegionId, StopReason};
 use openbmp_telemetry::TelemetryTable;
 
 pub use crate::error::RunnerError;
@@ -103,6 +104,134 @@ pub(crate) fn active_model_label(document: &ScenarioDocument, phase: Option<u64>
         || default_active_force_models(document).join(","),
         |models| models.join(","),
     )
+}
+
+pub(crate) fn mission_phase_label(document: &ScenarioDocument, phase: Option<u64>) -> String {
+    let Some(phase) = phase else {
+        return "none".to_owned();
+    };
+    if let Some(mission) = &document.mission {
+        let phase_id = |id: &str| crate::mission::phase_id_from_scenario_text(id).value();
+        for declared in &mission.phases {
+            if phase_id(&declared.id) == phase {
+                return declared.id.clone();
+            }
+        }
+        for declared in &mission.states {
+            if phase_id(&declared.id) == phase {
+                return declared.id.clone();
+            }
+        }
+    }
+    format!("0x{phase:016x}")
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MissionRegionDeclaration {
+    pub region_id: u64,
+    pub channel_suffix: String,
+    pub initial_state: u64,
+    pub state_labels: BTreeMap<u64, String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MissionRegionTraceState {
+    current: BTreeMap<u64, u64>,
+}
+
+impl MissionRegionTraceState {
+    pub(crate) fn new(declarations: &[MissionRegionDeclaration]) -> Self {
+        Self {
+            current: declarations
+                .iter()
+                .map(|declaration| (declaration.region_id, declaration.initial_state))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn apply_fired_events(
+        &mut self,
+        fired_events: &[openbmp_sim::FiredEvent<MissionAction>],
+    ) {
+        for fired in fired_events {
+            if let MissionAction::SetRegionState { region, state } = fired.action {
+                self.current.insert(region.value(), state.value());
+            }
+        }
+    }
+
+    pub(crate) fn label(&self, declaration: &MissionRegionDeclaration) -> String {
+        let state = self
+            .current
+            .get(&declaration.region_id)
+            .copied()
+            .unwrap_or(declaration.initial_state);
+        declaration
+            .state_labels
+            .get(&state)
+            .cloned()
+            .unwrap_or_else(|| format!("0x{state:016x}"))
+    }
+}
+
+pub(crate) fn mission_region_declarations(
+    document: &ScenarioDocument,
+) -> Vec<MissionRegionDeclaration> {
+    let Some(mission) = &document.mission else {
+        return Vec::new();
+    };
+    mission
+        .regions
+        .iter()
+        .map(|region| {
+            let region_path = mission_region_path(&region.id);
+            let mut state_labels = BTreeMap::new();
+            for state in &region.states {
+                let state_path = mission_region_state_path(&region.id, &state.id);
+                state_labels.insert(PhaseId::from_path(&state_path).value(), state_path);
+            }
+            let initial_path = mission_region_state_path(&region.id, &region.initial_state);
+            MissionRegionDeclaration {
+                region_id: RegionId::from_path(&region_path).value(),
+                channel_suffix: telemetry_suffix(
+                    region_path.trim_start_matches("mission.regions."),
+                ),
+                initial_state: PhaseId::from_path(&initial_path).value(),
+                state_labels,
+            }
+        })
+        .collect()
+}
+
+fn mission_region_path(region: &str) -> String {
+    if region.starts_with("mission.regions.") {
+        region.to_owned()
+    } else {
+        format!("mission.regions.{region}")
+    }
+}
+
+fn mission_region_state_path(region: &str, state: &str) -> String {
+    if state.starts_with("mission.regions.") {
+        state.to_owned()
+    } else if region.starts_with("mission.regions.") {
+        format!("{region}.{state}")
+    } else {
+        format!("mission.regions.{region}.{state}")
+    }
+}
+
+fn telemetry_suffix(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Outcome of a scenario run.

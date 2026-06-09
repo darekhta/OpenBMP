@@ -6,14 +6,13 @@ This document is the technical architecture for **OpenBMP** — a Rust-first,
 simulation-only research platform for rigid-body dynamics with a primary focus
 on rocket-class and launch-vehicle-class flight simulation. The architecture
 optimizes for **deterministic simulation, modular model replacement, strong
-testability, and explicit safety boundaries**.
+testability, and explicit scope boundaries**.
 
 OpenBMP intentionally excludes hardware integration, deployable flight code,
 real bus protocols, real device drivers, real-time deployment guarantees,
-targeting, terminal guidance to real-world locations, real fielded-vehicle
-parameter sets, and operational mission planning. See
-[safety-boundaries.md](safety-boundaries.md) for the full acceptance/rejection
-list and [design-concept.md](design-concept.md) for the project framing.
+and upstream certification claims. See [safety-boundaries.md](safety-boundaries.md)
+for the repository scope and [design-concept.md](design-concept.md) for the
+project framing.
 
 ## Architecture at a Glance
 
@@ -30,7 +29,7 @@ list and [design-concept.md](design-concept.md) for the project framing.
 | Concurrency in kernel | Synchronous, single-threaded |
 | Async | Only for optional socket-bridge tooling, never in kernel |
 | Scenario format | In-house, TOML-shaped, versioned, reject unknown fields |
-| Scenario lint | `openbmp check` validates schema, provenance, safety names, determinism |
+| Scenario lint | `openbmp check` validates schema, provenance, units/frames, and determinism |
 | Telemetry channels | Typed in-process bus (software bus pattern) |
 | Telemetry archive | Parquet with explicit unit/frame metadata |
 | Testing | proptest, insta, cargo-fuzz, criterion, golden CSV |
@@ -150,6 +149,7 @@ openbmp/
 │   ├── openbmp-testkit/                 # L6: helpers (proptest strategies,
 │   │                                    #     analytic-toy fixtures, fuzzers)
 │   ├── openbmp-runner/                  # L7: scenario → kernel → telemetry orchestration
+│   ├── openbmp-fmi/                     # L7: host FMI dynamic-library smoke adapter
 │   ├── openbmp-cli/                     # L7: `openbmp` binary, checks, diff tool
 │   └── openbmp-bridge/                  # L7 (optional): abstract HIL messages
 ├── docs/
@@ -793,7 +793,7 @@ Mass models:
 - `LinearBurn` — linear depletion from `m0` to `m_dry` over a burn time.
 - `TableBurn` — interpolated mass / inertia from a synthetic table.
 - `MultiStage` — composed of stages with separation events at scripted
-  conditions; scenario-driven, not target-driven.
+  scenario conditions.
 
 The flat `Vehicle` trait above is the single-stick MVP shape. Anything
 larger than a textbook rocket — multi-engine boosters, multi-tank stages,
@@ -1588,8 +1588,7 @@ MVP-plus recovery models:
 - `DragDevice` - generic airbrake or drag-device coefficient change.
 
 Deployment events are driven by simulator-observable state such as apogee,
-altitude threshold, elapsed time, or mission phase. They are not driven by
-targets, impact points, or terminal objectives.
+altitude threshold, elapsed time, or mission phase.
 
 Telemetry channels:
 
@@ -1608,7 +1607,7 @@ conditions.
 `openbmp-fc` is the hardware-portable controller crate. In this repository
 every output is consumed by simulator-internal models or by the optional
 abstract bridge message schema. There are no real bus protocols, no real
-device drivers, and no targeting / terminal-homing logic.
+device drivers, and no upstream flight-computer firmware.
 
 Top-level structure:
 
@@ -1622,7 +1621,7 @@ pub struct FcInput {
     pub time: SimTime,
     pub measurements: SensorBundle,
     pub mission_phase: MissionPhase,
-    pub references: ReferenceState,    // scripted, not target-driven
+    pub references: ReferenceState,
 }
 
 pub struct FcOutput {
@@ -1700,7 +1699,7 @@ scenario-supplied. The OpenBMP repository ships only **academic** gain
 sets for canonical toy vehicles; no real fielded tuning data is included.
 The trait surface, however, accepts any scenario-supplied gain table —
 downstream consumers may integrate production gain sets in their own
-repositories under their own export-control posture (see
+repositories under their own data-rights and qualification posture (see
 [Extensibility for Downstream Integration](#extensibility-for-downstream-integration)).
 Gain scheduling tables are part of the scenario file with explicit
 provenance.
@@ -1738,10 +1737,9 @@ pub trait MissionStateMachine {
 
 Transitions are driven by **simulator-observable conditions** (apogee
 detected from estimated vertical velocity, descent detected from negative
-altitude rate, recovery from descent + altitude threshold). They are
-**not** driven by target acquisition, terminal homing, or any real-world
-location. Vocabulary is borrowed from BPS.space Signal flight computer
-patterns; implementation is in-house and simulator-only.
+altitude rate, recovery from descent + altitude threshold). Vocabulary is
+borrowed from BPS.space Signal flight computer patterns; implementation is
+in-house and simulator-only.
 
 ### Academic Guidance
 
@@ -1750,16 +1748,9 @@ Guidance laws shipped:
 - `AttitudeHold` — track a scripted attitude reference.
 - `RateHold` — track a scripted body-rate reference.
 - `WaypointTrack` — track a sequence of scripted waypoints in inertial space
-  (waypoints are scenario-defined points, not real-world locations or
-  targets).
+  (waypoints are scenario-defined points).
 - `GravityTurnReference` — pre-computed pitch profile for textbook ascent
   studies.
-
-**Explicitly not shipped:** proportional navigation, augmented PN, sliding-mode
-homing, target-tracking guidance, terminal-homing logic, intercept geometry,
-or any guidance law whose stated purpose is to strike a real-world point.
-This is a permanent restriction; any pull request adding such code is
-rejected on safety grounds.
 
 ### FDIR
 
@@ -2024,6 +2015,83 @@ openbmp run scenarios/examples/attitude-damping-toy.toml \
 openbmp diff tests/golden/attitude-damping-toy.parquet out/run-001.parquet
 ```
 
+Mission-package SIL runs use the native `openbmp-sil` crate. A package
+manifest names the scenario, optional plant/I-load/dictionary/provenance
+sidecars, test cases, and optional package-relative SHA-256 pins:
+
+```bash
+openbmp package check scenarios/phalcon9/mission-package.toml
+openbmp package materialize-sidecars scenarios/phalcon9/mission-package.toml
+openbmp run-package scenarios/phalcon9/mission-package.toml \
+  --case orbit-insertion \
+  --evidence out/sil-evidence/phalcon9-orbit
+openbmp sil verdict out/sil-evidence/phalcon9-orbit/manifest.json
+```
+
+`openbmp sil step` is the native "step N ticks" testbench operation: it
+loads the same package and scenario, clamps the scenario stop time to the
+requested tick count, runs the normal deterministic runner path, and can
+write the same evidence bundle shape. `openbmp sil run-until` adds
+time/event/phase stop targets by projecting them into package-local mission
+stop conditions. `openbmp sil read-channel` summarizes one telemetry signal
+from a full or tick-limited run, while `openbmp sil capture-bus` emits the
+host-side mission/event/region/command frame stream used for review.
+The Rust `openbmp-sil` API also supports in-memory stimulation for one run:
+load-time engine/effector fault injection, dotted TOML parameter/I-load
+overrides, and one-shot engine/effector command writes projected into
+`[[scenario_script.events]]`.
+
+The experimental `openbmp-sil-py` extension wraps that native API for Python
+test harnesses. It exposes package check/materialization, run, step,
+run-until, JSON stimulation, telemetry readout, bus-frame capture, evidence
+writing, and verdict JSON helpers while preserving the same evidence bundle
+shape.
+
+For SIL scenarios that explicitly set
+`[scenario_director].mission_authority = "kernel"`, the kernel-owned event
+stream may also evaluate simulator truth lane maps such as
+`at_body_altitude_descending`. The Phalcon-9 boostback package uses this for
+reviewable booster recovery-region evidence after separation: entry interface,
+terminal window, and ground crossing are driven by the propagated lower-body
+lane rather than by wall-clock timers. Flight-controller-owned mission state
+continues to reject those truth-lane triggers until onboard relative/body-lane
+observables exist.
+
+The same boostback scenario also uses
+`[[multi_body.landing_controller]]`, a deterministic scenario-director
+controller that commands a separated-lane-owned engine from propagated altitude
+and radial velocity. This gives SIL evidence a closed terminal throttle loop
+without claiming onboard landing-site guidance or fielded propulsive-landing
+fidelity.
+
+The evidence manifest records package, scenario, dictionary/I-load sidecar
+hashes when present, git commit when available, Rust toolchain/target triple
+when available, final stop reason, final time/step, telemetry shape,
+applied SIL stimuli, mission-marker event trace, mission phase trace,
+mission-region trace, engine command-state trace, synthesized SIL bus-frame capture,
+requirement-style verdict records, and an empty-or-populated failure list.
+
+The command/telemetry dictionary surface is generated from the stable
+`openbmp-msgs` topic table:
+
+```bash
+openbmp dict export --format json --output dictionary.json
+openbmp dict export --format xtce --experimental --output dictionary.xtce.xml
+```
+
+JSON is the stable OpenBMP dictionary format. XTCE output is an experimental
+metadata interchange export only; OpenBMP does not claim XTCE, CCSDS, or PUS
+conformance.
+
+Model interchange has the same posture. `openbmp-models` exposes
+`ModelPort`, `FmuCoSimulationPortSpec`, a restricted stored-entry `.fmu`
+archive reader, and native-vs-FMU toy co-simulation equivalence tests.
+`openbmp-fmi` is the host-only unsafe adapter boundary: it can materialize an
+explicit FMU binary entry, open the shared library with `libloading`, call
+`fmi3GetVersion`, and verify a small FMI 3 co-simulation lifecycle/step symbol
+set including Float64 get/set entry points. This is a dynamic-library import smoke probe, not a full FMI conformance
+or variable-access implementation.
+
 CI runs the full SIL test corpus on every PR.
 
 ### Determinism CI gate
@@ -2081,7 +2149,7 @@ The bridge does **not** ship:
 
 Users who want to integrate with a specific external system are responsible
 for writing that integration **outside the OpenBMP repository** under their
-own license, governance, and export-control posture.
+own license, governance, and qualification posture.
 
 ## Testing Taxonomy
 
@@ -2209,7 +2277,7 @@ Required documentation set:
 | `glossary.md` | Vocabulary (frames, time systems, validation labels) |
 
 Each crate carries a `README.md` describing its public API, its dependencies,
-and its safety posture (which `safety-boundaries.md` rules it touches).
+and its scope posture (which `safety-boundaries.md` rules it touches).
 
 ### Foundational textbook references
 
@@ -2263,17 +2331,16 @@ See [roadmap.md](roadmap.md) for the broader picture. The platform provides:
   reference packages, and UQ / credibility reporting. Detailed in
   [hypersonic-extensions.md](hypersonic-extensions.md).
 
-**Out of scope (explicitly never):** real device drivers, real bus
-protocols, deployable executive, real-time scheduling guarantees, real
-fielded-vehicle parameter sets, targeting, terminal homing, intercept
-logic, payload-delivery code, operational mission planning.
+**Out of scope upstream:** real device drivers, real bus protocols,
+deployable executive, real-time scheduling guarantees, and undocumented
+fielded-vehicle parameter sets.
 
 ## Extensibility for Downstream Integration
 
 OpenBMP's trait surfaces and crate boundaries are deliberately designed
 to be **extensible by downstream consumers**. The OpenBMP repository
 itself ships only academic, public, synthetic, or textbook content under
-the safety boundaries; downstream consumers may build research,
+the scope boundaries; downstream consumers may build research,
 engineering, or independently qualified applications in their own
 repositories, with their own data and compliance posture.
 
@@ -2286,9 +2353,9 @@ repositories, with their own data and compliance posture.
   `AblationModel`, `NonequilibriumAir`, `BridgeFunction`, `Integrator`,
   `FaultModel`.
 - Lab-specific hardware adapters that translate between a downstream
-  test rig and the abstract bridge message schema (`openbmp-bridge`), in
-  their own repositories, with their own export-control and qualification
-  posture. OpenBMP does not ship those adapters.
+test rig and the abstract bridge message schema (`openbmp-bridge`), in
+their own repositories, with their own data-rights and qualification
+posture. OpenBMP does not ship those adapters.
 - Production gain sets, validated aerodynamic decks, real motor data,
   operationally-tuned sensor noise budgets, fielded-vehicle mass
   properties — all kept in downstream repositories with downstream
@@ -2313,13 +2380,13 @@ repositories, with their own data and compliance posture.
   iteration, etc.). Extensions that violate the profile produce
   `state-stable, not bit-stable` outputs and must be flagged as such.
 - The OpenBMP core repository remains free of any downstream's restricted
-  data; it is the downstream's responsibility to keep their integration
-  in their own repository with their own license and export-control
-  compliance.
+data; it is the downstream's responsibility to keep their integration
+in their own repository with their own license and data-rights
+compliance.
 
 ### Where the line is
 
-OpenBMP's safety boundaries (`safety-boundaries.md`) apply to the
+OpenBMP's scope boundaries (`safety-boundaries.md`) apply to the
 **OpenBMP repository** — to what code, data, and documentation live in
 this tree. They do **not** certify or endorse what downstream consumers
 do in their own repositories. A downstream consumer integrating OpenBMP
@@ -2327,8 +2394,7 @@ into any qualified or operational stack is responsible for:
 
 - Their own provenance and licensing compliance for any vehicle data
   they bring.
-- Their own export-control posture (ITAR, EAR, MTCR, Wassenaar, national
-  equivalents).
+- Their own data-rights, legal, and compliance posture.
 - Their own qualification regime (DO-178C, ISO 26262, IEC 61508, etc.) —
   OpenBMP claims none.
 - Their own validation of any trait extensions they ship: OpenBMP's

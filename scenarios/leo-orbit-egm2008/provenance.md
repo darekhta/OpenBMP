@@ -90,10 +90,8 @@ Math-side coverage (the unit tests in
   (no NaN, finite radial acceleration, x and y components vanish at a
   pure-z position).
 
-## Safety boundary
+## Scope notes
 
-`docs/safety-boundaries.md` accept list — academic gravity-model
-verification scenario, no guidance / navigation / control logic, no
-target geometry, no real-world locations. The orbit altitude and
+Academic gravity-model verification scenario. The orbit altitude and
 inclination are scenario-internal numbers that demonstrate the
-gravity-model surface, not parameters of any fielded asset.
+gravity-model surface; no geodetic site data is used.

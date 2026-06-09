@@ -75,7 +75,7 @@ initial_phase = "coast"
 id    = "coast"
 label = "coast"
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "deploy_rvs"
 trigger = { kind = "at_time", time_s = 0.1 }
 action  = { kind = "jettison_bodies", bodies = ["rv1", "rv2"] }
@@ -108,3 +108,5 @@ upper_body_id           = "bus"
 lower_body_id           = "rv2"
 lower_delta_v_body_m_s  = [0.0, -1.0, 0.0]
 conserve_momentum       = false
+
+[scenario_script]

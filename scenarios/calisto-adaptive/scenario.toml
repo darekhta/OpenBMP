@@ -1,30 +1,4 @@
-# Demo: RocketPy Calisto cross-tool sounding-rocket
-# scenario integrated with the Dormand-Prince 5(4) adaptive embedded
-# RK pair on the **rigid-body runner**.
-#
-# Identical vehicle, motor, aero, atmosphere, recovery, and mission
-# graph to `scenarios/sounding-rocket/calisto/rocketpy-calisto.toml`
-# (the fixed-RK4 cross-tool validation scenario); the only
-# differences are the new `[solver]` and `[solver.adaptive]` blocks.
-# The point of this scenario is the end-to-end rigid-body adaptive
-# wiring path: `phase2_rigid_body::run` dispatches through
-# `RuntimeIntegrator::Dopri54Adaptive` rather than the previously
-# hardcoded `Rk4FixedStep`, exercising the per-component
-# Hairer-Nørsett-Wanner Vol I §II.4 RMS error norm on a 26-component
-# rigid-body state (position, velocity, quaternion, angular velocity,
-# mass, cg offset, full inertia matrix).
-#
-# Outer kernel cadence stays at `dt_s = 0.001` to match the fixed-RK4
-# baseline; `max_dt_s = 0.001` caps internal sub-steps at the same
-# resolution. Tolerances `rtol = 1e-7`, `atol = 1e-9` are looser than
-# the LEO-orbit demo because the Calisto trajectory mixes
-# tame 1-ms ascent dynamics with sharp drogue / main parachute
-# transients that drive the controller into rejection territory at
-# tighter bands. The scenario stops at 180 s, the same horizon as the
-# RocketPy cross-tool baseline, so the adaptive trajectory can be
-# compared directly against the fixed-RK4 apogee envelope.
-
-openbmp.scenario = 2
+openbmp.scenario = 3
 
 [meta]
 name        = "calisto-adaptive"
@@ -120,9 +94,19 @@ label = "main_descent"
 [[mission.events]]
 id      = "evt_apogee_deploy_drogue"
 trigger = { kind = "at_apogee" }
+action = { kind = "emit_telemetry_marker", tag = "evt_apogee_deploy_drogue" }
+
+[[scenario_script.events]]
+id      = "evt_apogee_deploy_drogue"
+trigger = { kind = "at_apogee" }
 action  = { kind = "deploy_recovery", id = "calisto_chute", command = "deploy_drogue" }
 
 [[mission.events]]
+id      = "evt_altitude_deploy_main"
+trigger = { kind = "at_altitude_descending", altitude_m = 1867.0 }
+action = { kind = "emit_telemetry_marker", tag = "evt_altitude_deploy_main" }
+
+[[scenario_script.events]]
 id      = "evt_altitude_deploy_main"
 trigger = { kind = "at_altitude_descending", altitude_m = 1867.0 }
 action  = { kind = "deploy_recovery", id = "calisto_chute", command = "deploy_main" }
@@ -136,3 +120,5 @@ event = "evt_apogee_deploy_drogue"
 from  = "drogue_descent"
 to    = "main_descent"
 event = "evt_altitude_deploy_main"
+
+[scenario_script]

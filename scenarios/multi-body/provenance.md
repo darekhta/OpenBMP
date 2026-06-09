@@ -61,8 +61,7 @@ safety_review:
   reviewer: dmitri.arekhta
   decision: accepted
   notes: >-
-    Synthetic round-number scenario. No targeting, no real device
-    drivers, no restricted or fielded-vehicle data. Demonstrates a
+    Synthetic round-number scenario with no real device drivers or fielded-vehicle data. Demonstrates a
     new architectural surface (`[vehicle.assembly]`); does not
     encode any operational physical-vehicle parameters.
 units:            metres, metres-per-second, metres-per-second-squared, seconds, kilograms
@@ -129,8 +128,8 @@ safety_review:
   reviewer: dmitri.arekhta
   decision: accepted
   notes: >-
-    Synthetic round-number scenario. No targeting, no real deployment
-    mechanism, no fielded-vehicle data, no environmental fidelity.
+    Synthetic round-number scenario with no real deployment mechanism,
+    fielded-vehicle data, or environmental fidelity.
     The scenario exists to exercise OpenBMP's multi-body architecture
     and inter-body event surface.
 units:            metres, metres-per-second, seconds, kilograms, kilograms-metres-squared
@@ -197,8 +196,7 @@ safety_review:
   reviewer: dmitri.arekhta
   decision: accepted
   notes: >-
-    Synthetic round-number scenario. No targeting, no fielded-vehicle
-    data, no environmental fidelity. The scenario exists to exercise
+    Synthetic round-number scenario with no fielded-vehicle data, no environmental fidelity. The scenario exists to exercise
     OpenBMP's initial multi-body lane architecture and inter-body event
     surface.
 units:            metres, metres-per-second, seconds, kilograms, kilograms-metres-squared

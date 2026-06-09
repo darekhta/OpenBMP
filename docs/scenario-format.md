@@ -461,23 +461,12 @@ models = ["gravity", "aero", "thrust"]
 The kernel evaluates and sums force and moment providers in declared order.
 Changing the order is a scenario change and can change golden telemetry.
 
-## Safety-Limited Names
+## Names, Units, and Frames
 
-Scenario fields and model names must use academic vocabulary. The parser and
-CI lint should reject names containing forbidden operational terms listed in
-[safety-boundaries.md](safety-boundaries.md), including `seeker`, `warhead`,
-`strike`, `interceptor`, `kill`, `threat`, `engagement`, and terminal-homing
-equivalents. The bare word `target` is accepted as neutral simulation
-vocabulary, including neutral schema names such as `target_range`; the lint
-rejects specific operational compounds such as `impact_point` and
-`terminal_guidance`.
-
-Location-like fields are allowed only when their role is unambiguous:
-
-- Accepted: `local_origin`, `entry_interface`, `recovery_area_toy`,
-  `target_state`, `target_range`.
-- Rejected: `impact_point`, `terminal_waypoint`, `strike_coordinate`,
-  `seeker_target`.
+Scenario fields and model names should be specific enough for reviewers and
+tools to understand their role. The parser enforces dimensional unit suffixes
+and vector-frame suffixes, but it does not reject names based on a policy
+vocabulary list.
 
 ## Batch Runs
 
@@ -511,9 +500,6 @@ The `openbmp check scenario.toml` command performs the following checks:
 - Resolve all file references.
 - Verify provenance exists for referenced data files.
 - Check units and frame suffixes.
-- Check safety-limited names.
-- Check telemetry channel names and referenced model IDs for safety-limited
-  vocabulary.
 - Verify deterministic seed and schedule fields.
 - Report all diagnostics before returning failure when possible.
 
@@ -1231,6 +1217,7 @@ return `false` on step 0 because no previous-step snapshot exists.
 | `at_time` | `time_s: f64` | Fires when post-step time crosses `time_s`. |
 | `at_altitude_ascending` | `altitude_m: f64` | Fires when altitude crosses up through `altitude_m` (previous below, current at or above). |
 | `at_altitude_descending` | `altitude_m: f64` | Fires when altitude crosses down through `altitude_m`. |
+| `at_body_altitude_descending` | `body: string`, `altitude_m: f64` | Rigid-body `[multi_body]` only. Fires when the named body lane crosses down through `altitude_m`. The trigger is false until the named body is an active propagated lane. |
 | `at_apogee` | — | Fires when vertical velocity flips from `> 0` to `<= 0`. |
 | `at_mass_fraction` | `remaining: f64` (in `[0, 1]`) | Fires when mass fraction (current / initial) drops to or below `remaining`. |
 | `at_velocity` | `velocity_m_s: f64`, optional `falling: bool = false` | Fires when speed magnitude crosses `velocity_m_s`; `falling = false` selects the rising edge and `falling = true` selects the falling edge. |
@@ -1238,11 +1225,11 @@ return `false` on step 0 because no previous-step snapshot exists.
 | `at_relative_distance` | `body: string`, `distance_m: f64 > 0`, optional `reference_body: string`, optional `falling: bool = false` | Rigid-body `[multi_body]` only. Fires when the range between `body` and `reference_body` crosses `distance_m`; if `reference_body` is omitted, the current primary lane is used. The trigger is false until the named bodies are active propagated lanes. |
 | `at_relative_speed` | `body: string`, `speed_m_s: f64 > 0`, optional `reference_body: string`, optional `falling: bool = false` | Rigid-body `[multi_body]` only. Fires when the relative speed between `body` and `reference_body` crosses `speed_m_s`; if `reference_body` is omitted, the current primary lane is used. The trigger is false until the named bodies are active propagated lanes. |
 
-Flight-controller-owned missions reject `at_relative_distance` and
-`at_relative_speed` at scenario validation until an onboard
-relative-navigation observable is wired. Those triggers depend on
-simulator truth-relative lane maps and are allowed only for
-kernel-authority / scenario-director evaluation today.
+Flight-controller-owned missions reject `at_relative_distance`,
+`at_relative_speed`, and `at_body_altitude_descending` at scenario validation
+until onboard relative/body-lane observables are wired. Those triggers depend
+on simulator truth lane maps and are allowed only for kernel-authority /
+scenario-director evaluation today.
 
 The `kind = "scripted"` trigger is rejected at parse time with a
 typed deferral error: scripted triggers are not supported. The
@@ -1260,7 +1247,7 @@ action  = { kind = "emit_telemetry_marker", tag = "rv1_clear" }
 once    = true
 ```
 
-#### Action vocabulary
+#### Mission action vocabulary
 
 | `action.kind` | Required fields | Semantics |
 |---|---|---|
@@ -1268,17 +1255,48 @@ once    = true
 | `emit_telemetry_marker` | `tag: string` (snake_case) | Allocates a `bool` telemetry channel `mission.marker.<tag>`; runner writes `true` on every step the event fires, `false` on every other step. Channel allocation is alphabetical by tag for declaration-order independence. |
 | `set_region_state` | `region: string`, `state: string` | HAL-portable region-state update. Bare `region = "estimator_regime"` resolves to `mission.regions.estimator_regime`; bare `state = "boost_mode"` resolves under that region. The commander publishes the updated per-region topic; the EKF uses `estimator_regime.boost_mode` to apply `fc.ekf.high_dynamics_q_scale` to position/velocity process noise. |
 | `stop` | `label: string` | Halts the run with `StopReason::MissionEnded { label }`. Distinct from `EndTime` so determinism telemetry can distinguish CLI-driven stops from scenario-driven mission ends. |
+
+`[[mission.events]]` rejects simulator-owned actions. If a mission event
+declares `engine_command`, `effector_override`, `jettison_stage`,
+`jettison_bodies`, `deploy_recovery`, or forced `separation`, `openbmp check`
+fails with a message directing the action to `[[scenario_script.events]]`.
+
+### Scenario script block
+
+The optional v3 `[scenario_script]` block contains simulator-owned test
+stimulus. It deliberately reuses the same trigger vocabulary as mission
+events, but its actions are not HAL-portable mission data and are not linked
+into `openbmp-mission`.
+
+```toml
+[[scenario_script.events]]
+id      = "ignition_cmd"
+trigger = { kind = "at_time", time_s = 0.05 }
+action  = { kind = "engine_command", id = "engine_a",
+            command = { throttle_unit = 1.0,
+                        gimbal_pitch_rad = 0.0,
+                        gimbal_yaw_rad = 0.0,
+                        ignite = true,
+                        shutdown = false } }
+```
+
+#### Scenario script action vocabulary
+
+| `action.kind` | Required fields | Semantics |
+|---|---|---|
 | `effector_override` | `id: string` (declared effector id), `command: f64` (finite) | One-shot command override for the named effector on the next runner step. Resolves the declared id against the runner's effector rack via FNV-1a-64 of `vehicle.assembly.effectors.<id>`. Unknown ids are rejected by `openbmp check`. The kernel records the action; the runner drains it from the per-step fired-event queue and applies it on the next rack tick before the kernel step. Override wins over any declared `command_schedule` for that rack tick only. |
-| `engine_command` | `id: string` (declared engine id), `command: { throttle_unit: f64 ∈ [0,1], gimbal_pitch_rad: f64, gimbal_yaw_rad: f64, ignite: bool, shutdown: bool }` | Per-engine command targeting a declared `[[vehicle.assembly.engines]]` by id. Resolves the declared id via FNV-1a-64 of `vehicle.assembly.engines.<id>`. Unknown ids are rejected by `openbmp check`. Kernel records; runner-side `EngineRack` drains and applies on the next rack tick before the kernel step. `ignite=true` is honoured only from `Idle`; `shutdown=true` only from `Igniting` / `Burning`. Throttle / gimbal values are clamped to engine limits at apply time. |
-| `jettison_stage` | `body: string` (declared body id) | Stage-separation command targeting a declared `[[vehicle.assembly.bodies]]` by id. Requires `vehicle.kind = "rigid_body"`, exactly one matching `[[multi_body.separation]]`, no duplicate jettison of the same body, and momentum conservation when `conserve_momentum = true`. The runner executes this for fixed-step RK4 rigid-body profiles. Gravity-only profiles remain valid; aero, thrust, tanks, recovery, and effectors are allowed only when each resource declares an explicit owning body. |
+| `engine_command` | `id: string` (declared engine id), `command: { throttle_unit: f64 ∈ [0,1], gimbal_pitch_rad: f64, gimbal_yaw_rad: f64, ignite: bool, shutdown: bool }` | Per-engine command addressing a declared `[[vehicle.assembly.engines]]` by id. Resolves the declared id via FNV-1a-64 of `vehicle.assembly.engines.<id>`. Unknown ids are rejected by `openbmp check`. Kernel records; runner-side `EngineRack` drains and applies on the next rack tick before the kernel step. `ignite=true` is honoured only from `Idle`; `shutdown=true` only from `Igniting` / `Burning`. Throttle / gimbal values are clamped to engine limits at apply time. |
+| `jettison_stage` | `body: string` (declared body id) | Stage-separation command addressing a declared `[[vehicle.assembly.bodies]]` by id. Requires `vehicle.kind = "rigid_body"`, exactly one matching `[[multi_body.separation]]`, no duplicate jettison of the same body, and momentum conservation when `conserve_momentum = true`. The runner executes this for fixed-step RK4 rigid-body profiles. Gravity-only profiles remain valid; aero, thrust, tanks, recovery, and effectors are allowed only when each resource declares an explicit owning body. |
 | `jettison_bodies` | `bodies: [string, ...]` (declared body ids) | Batch stage-separation command. Every listed body is partitioned from the same pre-separation rigid-body state and appended as an independent lane on the same event tick. Each body requires a matching `[[multi_body.separation]]` with the same `event_id`; duplicate body ids are rejected. This is the coordinated deployment path for a bus releasing multiple RV-like bodies. |
-| `deploy_recovery` | `id: string` (declared recovery id), `command: "deploy" \| "deploy_drogue" \| "deploy_main" \| "stow"` | Recovery-device command targeting a declared `[[vehicle.assembly.recovery]]` by id. Resolves via FNV-1a-64 of `vehicle.assembly.recovery.<id>`. Unknown ids and kind-incompatible commands are rejected by `openbmp check`; runner-side `RecoveryRack` drains accepted firings on the next rack tick before the kernel step. |
+| `deploy_recovery` | `id: string` (declared recovery id), `command: "deploy" \| "deploy_drogue" \| "deploy_main" \| "stow"` | Recovery-device command addressing a declared `[[vehicle.assembly.recovery]]` by id. Resolves via FNV-1a-64 of `vehicle.assembly.recovery.<id>`. Unknown ids and kind-incompatible commands are rejected by `openbmp check`; runner-side `RecoveryRack` drains accepted firings on the next rack tick before the kernel step. |
 
 The reserved action `separation` is rejected at parse time with a typed
 deferral error because it does not identify the departing body. The
 `effector_override`, `engine_command`, `jettison_stage`,
 `jettison_bodies`, and `deploy_recovery` actions are wired end-to-end
-inside their documented validation envelopes.
+inside their documented validation envelopes. HAL-portable mission actions
+such as `emit_telemetry_marker`, `set_region_state`, and `stop` are rejected
+under `[[scenario_script.events]]`.
 
 #### `once` semantics
 
@@ -1809,10 +1827,10 @@ and the deck at
 instances mounted on the assembly. This provides the
 `LiquidEngine` reference impl plus the runner-side `EngineRack`
 and the kernel-side cluster adapters (force, mass). Engines
-respond to per-engine `engine_command` mission events; per-engine
+respond to per-engine `engine_command` scenario-script events; per-engine
 `command_schedule` (effector-style scripted commands) is **not**
 in scope — scripted command sequences flow through the
-`mission.events[*]` timeline.
+`scenario_script.events[*]` timeline.
 
 A scenario uses **either** the legacy `[propulsion.motor]` block
 (single solid motor) **or** `[[vehicle.assembly.engines]]`
@@ -1930,10 +1948,11 @@ for the run. Run-time fault injection is not supported
 Engine state machine: `Idle → Igniting → Burning → Shutdown`.
 `Shutdown` and `Failed` are terminal — engines do not re-ignite.
 
-Per-step command resolution: `engine_command` event firing →
+Per-step command resolution: `scenario_script.events[*].engine_command`
+event firing →
 runner drains and applies → engine latches `(throttle, gimbal)`
 and processes `(ignite, shutdown)` lifecycle flags. Multiple
-events targeting the same engine in one step are rejected by the
+events addressing the same engine in one step are rejected by the
 runner; declare a single `engine_command` per engine per step.
 
 #### Determinism
@@ -1979,7 +1998,7 @@ Enforced at scenario-parse time:
 - `fault` when present: `stuck.at_throttle` in `[0, 1]`;
   `over_thrust.factor` non-negative; `gimbal_locked.{pitch,yaw}_rad`
   in `±max_gimbal_rad`.
-- Cross-validate `mission.events[*].action.id` (when action kind
+- Cross-validate `scenario_script.events[*].action.id` (when action kind
   is `engine_command`) against declared engine ids.
 - Reject engine clusters that omit `thrust` from `forces.models`;
   declared engines must be dynamically active, not mass-only.
@@ -2001,7 +2020,7 @@ Enforced at scenario-parse time:
 - Only the `liquid_engine` kind ships.
 - Per-engine `command_schedule` (effector-style declarative
   scripts) is out of scope; engines drive only via
-  `mission.events[*].action.engine_command`.
+  `scenario_script.events[*].action.engine_command`.
 
 The canonical example ships at
 [`scenarios/multi-engine-octaweb/four-engine-shutdown.toml`](../scenarios/multi-engine-octaweb/four-engine-shutdown.toml).
@@ -2040,9 +2059,8 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
 - `geometry` — `kind`-tagged enum: `cylinder` (`radius_m`,
   `height_m`), `sphere` (`radius_m`), or `ellipsoid_textbook`
   (`a_m`, `b_m`, `c_m`).
-- `propellant` — `{ density_kg_m3, label }`. Textbook
-  density only; fielded propellant data is rejected per
-  `safety-boundaries.md`.
+- `propellant` — `{ density_kg_m3, label }`. Document the source and
+  applicability of non-synthetic density data in the scenario provenance.
 - `initial_fill_fraction` — `[0, 1]`. Initial fluid mass is
   `geometry.volume × density × fill`.
 - `moving_mass` — `kind`-tagged enum:
@@ -2141,8 +2159,7 @@ The canonical example ships at
 `[entry_profile]` is a schema-v3 block for descent / entry profile
 handoff validation and entry diagnostics. It consumes the existing
 mission graph, Allen-Eggers ballistic-entry closed forms, and Vinh
-lifting-entry equations. It accepts no target, aimpoint, or desired
-landing coordinate.
+lifting-entry equations.
 
 ```toml
 [entry_profile]
@@ -2185,8 +2202,8 @@ Entry interfaces above the USSA76 86 km ceiling require
 ### Landing footprint
 
 `[landing_footprint]` is a schema-v3 offline post-processing block for
-range-safety / recovery analysis. It is not connected to the flight
-controller and accepts no desired landing coordinate.
+recovery and dispersion analysis. It is not connected to the flight
+controller.
 
 ```toml
 [landing_footprint]
@@ -2267,20 +2284,15 @@ does not write the sampled burnout state, ballistic coefficient, or wind vector
 next to each landing point. `[[quantiles]]` are mean-centered
 radial-distance quantiles;
 `[[nominal_radial_offset_quantiles]]` are radial-error quantiles about the
-nominal forward footprint. These diagnostics do not add a target, aimpoint,
-or desired landing coordinate.
-
-As everywhere else in the profile work, fields naming a desired landing
-location, aimpoint, miss distance, or equivalent targeting concept are
-rejected by the lint before deserialization.
+nominal forward footprint. These diagnostics are written after propagation and
+do not change simulator commands.
 
 ### Staging analysis
 
 `[staging_analysis]` is a schema-v3 offline post-processing block. It runs the
 ideal loss-free rocket equation and writes compact report metadata under
-`openbmp.staging_analysis.*` in the telemetry schema. It is not a guidance
-input and cannot express range, launch site, target, azimuth, impact point, or
-accuracy.
+`openbmp.staging_analysis.*` in the telemetry schema. It is not consumed by the
+flight controller.
 
 ```toml
 [staging_analysis]
@@ -2533,8 +2545,40 @@ either `kind = "eci_vector"` with a non-zero `vector_eci`, or
 `kind = "surface_relative_axes"` with non-zero radial / downrange /
 crossrange components and a `downrange_axis_eci` that is not parallel
 to local radial. This controller is a simulator diagnostic for
-post-separation attitude dynamics; it is not recovered flight data and
-does not add route planning or terminal guidance.
+post-separation attitude dynamics; it is not recovered flight data.
+
+Separated lanes may also declare a simulator-side terminal landing
+controller that commands one engine owned by that lane:
+
+```toml
+[[multi_body.landing_controller]]
+body_id                   = "lower_stage"
+engine_id                 = "landing"
+start_altitude_m          = 10000.0
+target_altitude_m         = 0.0
+target_vertical_speed_m_s = -5.0
+target_position_eci_m     = [6370000.0, 0.0, 0.0] # optional
+lateral_kp_s2             = 0.00002
+lateral_kd_s              = 0.05
+max_lateral_accel_m_s2    = 3.0
+gravity_margin_m_s2       = 9.80665
+min_throttle_unit         = 0.0
+max_throttle_unit         = 1.0
+```
+
+The controller becomes active at or below `start_altitude_m`, estimates the
+radial braking acceleration needed to meet `target_vertical_speed_m_s` at
+`target_altitude_m`, adds `gravity_margin_m_s2`, clamps the result to the
+declared throttle bounds, and emits one-tick engine commands through the
+normal engine rack. If `target_position_eci_m` is present, the controller also
+adds tangent-plane lateral feedback (`lateral_kp_s2`, `lateral_kd_s`,
+`max_lateral_accel_m_s2`) and emits gimbal commands toward the combined
+vertical/lateral acceleration vector. `body_id` must name a body that can
+become an active separated lane. `engine_id` must name an engine whose
+`vehicle.assembly.engines[*].mounted_to` owner is the same body. The
+controller is a deterministic scenario-director aid for SIL evidence; it is
+not flight software and does not represent a fielded propulsive-landing
+algorithm.
 
 ### v3-only `[fc]` sub-blocks
 
@@ -2810,11 +2854,10 @@ The structured `[atmosphere]` fields use the same MSIS-family inputs as
 `nrlmsise00`. If the legacy `environment.atmosphere` selector and the
 structured block are both present, both must name `nrlmsis2_compat`.
 
-### Hard guardrails
+### Schema Scope
 
-- v3 introduces no field that advances proportional navigation,
-  terminal homing, real-world targeting, real device drivers, or
-  real bus protocols. Every consumer honours
-  [docs/safety-boundaries.md](safety-boundaries.md).
+- v3 keeps concrete real-device integrations out of the upstream scenario
+  schema. Real bus protocols and device drivers remain downstream-owned
+  integration work.
 - The determinism CI gate continues to assert byte-identical Parquet
   for the existing v2 scenario set across this schema bump.

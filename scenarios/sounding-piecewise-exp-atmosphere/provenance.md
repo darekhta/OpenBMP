@@ -90,10 +90,8 @@ verifies that:
 - ρ(400 km) lands in the engineering envelope of the published
   exponential-atmosphere references.
 
-## Safety boundary
+## Scope notes
 
-`docs/safety-boundaries.md` accept list — academic atmosphere-model
-verification scenario. No guidance / navigation / control logic, no
-target geometry, no real-world locations. The vertical ballistic
-profile is a scenario-internal trajectory that demonstrates the
-atmosphere-model surface, not a parameter of any fielded asset.
+Academic atmosphere-model verification scenario. The vertical
+ballistic profile is a scenario-internal trajectory that demonstrates
+the atmosphere-model surface; no geodetic site data is used.

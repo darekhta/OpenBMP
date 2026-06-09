@@ -9,8 +9,8 @@ rocket-class ascent, launch vehicles, propulsive landers, and lifting re-entry.
 
 > [!IMPORTANT]
 > OpenBMP is an **academic simulation platform**. It is not validated for
-> operational flight, not suitable for hardware deployment, not a weapon
-> system, and not a substitute for any qualified flight-software stack. No
+> operational flight, not suitable for hardware deployment, and not a
+> substitute for any qualified flight-software stack. No
 > compliance claims are made under IEC 61508, ISO 26262, DO-178C, or
 > equivalent regimes. See [`docs/safety-boundaries.md`](docs/safety-boundaries.md).
 
@@ -47,8 +47,7 @@ HAL** — but no HAL, device driver, or bus protocol ships in this repository.
   state, and a generic ablation toy for re-entry studies.
 - **Forward propulsion analysis.** Solid-grain regression for textbook
   end-burner/BATES/tabulated grains, liquid-engine throttle and tank-budget
-  coupling, and offline ideal staging ΔV / mass analysis. These models accept
-  vehicle-intrinsic inputs only and emit no range or targeting objective.
+  coupling, and offline ideal staging ΔV / mass analysis.
 - **High-order integration.** Fixed-step RK4 for byte-stable goldens, plus
   Dormand-Prince 5(4) and 8(5,3) fixed-step and adaptive variants behind an
   explicit solver profile.
@@ -132,19 +131,16 @@ Every model declares its validity envelope and a validation label —
 outside the envelope fail closed. See
 [`docs/verification.md`](docs/verification.md).
 
-## Safety boundaries
+## Scope boundaries
 
 OpenBMP simulates generic rigid bodies and rocket-class vehicles using
-synthetic, textbook, and public-benchmark data. It categorically **rejects**
-targeting and terminal-guidance logic, real fielded-vehicle parameter sets,
-real device drivers and bus protocols, operational thermal-protection
-material data, and any weapon-employment capability — in every part of the
-codebase, enforced by review and by CI tripwires. The full accept/reject
-contract is in [`docs/safety-boundaries.md`](docs/safety-boundaries.md); the
-dual-use threat model and enforcement tiers are in
-[`docs/dual-use-assessment.md`](docs/dual-use-assessment.md), and the export
-posture and acceptable use are in [`EXPORT-CONTROL.md`](EXPORT-CONTROL.md) and
-[`ACCEPTABLE-USE.md`](ACCEPTABLE-USE.md).
+synthetic, textbook, public-benchmark, or user-supplied local data. The
+repository itself ships a simulator, synthetic sensors, and abstract
+interfaces; it does not ship real device drivers, real bus integrations, a
+board support package, or a certified flight-software stack. The project scope,
+data provenance rules, and validation labels are documented in
+[`docs/safety-boundaries.md`](docs/safety-boundaries.md) and
+[`docs/data-provenance.md`](docs/data-provenance.md).
 
 ## Documentation
 
@@ -152,10 +148,9 @@ posture and acceptable use are in [`EXPORT-CONTROL.md`](EXPORT-CONTROL.md) and
 |---|---|
 | [Design Concept](docs/design-concept.md) | Purpose, principles, vehicle classes, capabilities. |
 | [Software Architecture](docs/software-architecture.md) | Layered design, kernel, integrators, frames, models, controller, telemetry. |
-| [Scenario Format](docs/scenario-format.md) | The TOML scenario contract: tables, parsing rules, safety-name lint. |
+| [Scenario Format](docs/scenario-format.md) | The TOML scenario contract: tables, parsing rules, unit and frame lint. |
 | [Verification](docs/verification.md) | Validation labels, golden telemetry, tolerance tables, fuzzing. |
-| [Safety Boundaries](docs/safety-boundaries.md) | Accept / reject rules, review checklist, naming and provenance rules. |
-| [Dual-Use Assessment](docs/dual-use-assessment.md) | Dual-use threat model: forward-not-inverse, enforcement tiers, residual surface, per-capability rationale. |
+| [Scope Boundaries](docs/safety-boundaries.md) | Project scope, validation limits, hardware boundary, and provenance rules. |
 | [Frames and Time](docs/frames-time.md) | Frame profiles, ECI/ECEF/NED conventions, epoch and leap-second handling. |
 | [Data Provenance](docs/data-provenance.md) | Source records, transformation rules, machine checks, inline-data tripwires. |
 | [Supply Chain](docs/supply-chain.md) | Rust dependency policy, SBOM, build-provenance expectations. |
@@ -172,7 +167,6 @@ posture and acceptable use are in [`EXPORT-CONTROL.md`](EXPORT-CONTROL.md) and
 | [Ascent Guidance](docs/ascent-guidance.md) | Gravity-turn / pitch-program reference-trajectory generation for powered ascent. |
 | [Ballistic Coast and Apogee](docs/ballistic-coast-and-apogee.md) | Exo-atmospheric coast, apogee detection, and the range-safety landing footprint. |
 | [Descent and Entry Profiles](docs/descent-and-entry-profiles.md) | Wiring Allen-Eggers / Vinh into live entry phases and recovery. |
-| [Profile Vocabulary and Guardrails](docs/profile-vocabulary-and-guardrails.md) | Accepted / rejected profile vocabulary and the fail-closed non-weapon validation. |
 
 ## Toolchain
 
@@ -190,9 +184,9 @@ cargo deny   check
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow, the safety-boundary
-review checklist, and the documentation discipline required before any code
-or data change is accepted. Conduct expectations are in
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow, scope-review
+checklist, and documentation discipline required before any code or data
+change is accepted. Conduct expectations are in
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md); vulnerability disclosure is in
 [`SECURITY.md`](SECURITY.md).
 

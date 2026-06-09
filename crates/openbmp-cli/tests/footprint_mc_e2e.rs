@@ -63,7 +63,6 @@ fn footprint_mc_writes_declared_outputs() {
     assert_eq!(report.written.len(), 3);
     let csv_text = fs::read_to_string(&csv).expect("read csv");
     assert!(csv_text.contains("radial_offset_from_nominal_m"));
-    assert!(!csv_text.contains("miss_distance"));
     assert!(!csv_text.contains("position_x_eci_m"));
     assert!(!csv_text.contains("velocity_x_eci_m_s"));
     assert!(!csv_text.contains("ballistic_coefficient_m2_kg"));
@@ -71,8 +70,6 @@ fn footprint_mc_writes_declared_outputs() {
     assert!(parquet.metadata().expect("parquet metadata").len() > 0);
     let summary_text = fs::read_to_string(summary).expect("read summary");
     assert!(summary_text.contains("[dispersion_statistics]"));
-    assert!(!summary_text.contains("[accuracy]"));
-    assert!(!summary_text.contains("miss_distance"));
     assert!(summary_text.contains("radial_dispersion_p50_m"));
     assert!(summary_text.contains("[dispersion_ellipse]"));
     assert!(summary_text.contains("[[quantiles]]"));

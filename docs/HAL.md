@@ -9,14 +9,12 @@ I-load/storage, and watchdog service.
 This document is an integration contract, not a hardware qualification guide.
 OpenBMP does not ship board drivers, hardware protocols, timing certification,
 or a deployment-ready flight binary. A downstream adopter owns those artifacts
-and their certification/export posture.
+and their certification posture.
 
 ## Layering Rules
 
 - HAL traits must not depend on `openbmp-sim`, `openbmp-runner`,
   `openbmp-scenario`, `openbmp-cli`, or telemetry crates.
-- HAL traits must not accept targets, aimpoints, desired impact locations,
-  bearings, ranges, or guidance-to-location commands.
 - Simulator and board backends differ only below the HAL boundary. GNC modules
   above it communicate through typed topics and injected clocks/sensors.
 - The current portable contract is single-threaded and cooperative. The bus
@@ -78,8 +76,7 @@ pub trait Actuator {
 ```
 
 Marker traits (`TvcActuator`, `RcsValve`, `ThrottleCommand`) describe
-vehicle-intrinsic command sinks only. They do not carry target, aimpoint, or
-location-seeking semantics.
+vehicle command sinks used by the controller and simulator.
 
 ## I-Load And Storage
 

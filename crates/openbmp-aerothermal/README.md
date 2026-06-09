@@ -57,12 +57,11 @@ coefficients fail closed instead of returning guessed values.
 Any coefficients, reaction sets, or toy-material tables ship with
 `provenance.md` records per `docs/data-provenance.md`.
 
-## Safety Boundary
+## Scope Boundary
 
-**No real fielded TPS material parameters** (PICA, AVCOAT, RCC,
-SLA-561V, etc.). Generic textbook materials only. **No operational
-HGV / MaRV / cruise-weapon data.** See `docs/safety-boundaries.md`
-§ Hypersonic Extensions.
+Generic textbook materials ship in-tree. Downstream users who need specific
+material packages own the provenance, applicability, and validation evidence
+for those packages.
 
 ## References
 

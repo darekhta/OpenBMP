@@ -76,9 +76,8 @@ EKF-side invariant coverage (`crates/openbmp-fc/src/estimator.rs`):
   bit-stable whitening across two EKF instances fed the same
   measurement.
 
-## Safety boundary
+## Scope notes
 
-`docs/safety-boundaries.md` accept list — academic FDIR-detector
-verification scenario. No guidance / navigation / control logic
-beyond the existing closed-loop attitude-hold pipeline; no target
-geometry; no real-world locations.
+Academic FDIR-detector verification scenario. It exercises the
+closed-loop attitude-hold pipeline with scenario-internal state and
+synthetic measurements; it does not depend on geodetic site data.

@@ -6,14 +6,8 @@ explicit-guidance methods that shape a launch vehicle's climb. It is a
 companion to
 [`flight-profiles-architecture.md`](flight-profiles-architecture.md).
 
-The scope boundary is precise and load-bearing for the platform's posture: the
-methods here **generate a reference trajectory or reference attitude** that the
-existing three-loop autopilot then tracks. They do not solve for, or steer
-toward, any real-world location. This is the same boundary the platform
-already draws — `openbmp-fc/src/guidance.rs` ships waypoint navigation in
-inertial space and *"no proportional navigation, no terminal-homing, no
-targeting, no real-world-location guidance."* Ascent guidance extends the
-*reference-generation* side of that line only.
+The methods here **generate a reference trajectory or reference attitude** that
+the existing three-loop autopilot then tracks.
 
 ## Current state
 
@@ -33,8 +27,7 @@ reference job publishes the reference quaternion it already tracks.
 
 A new trait in `openbmp-physics::profile` produces, at each guidance tick, the
 reference attitude (and optionally reference rate) the trajectory loop should
-track during `powered_ascent`. It consumes only the vehicle's own estimated
-state and inertial/atmospheric quantities — never a target.
+track during `powered_ascent`.
 
 ```rust
 /// Generates a powered-ascent attitude reference. The output is a
@@ -92,16 +85,8 @@ Brown, Johnson & Mumford, *Powered Explicit Guidance*, NASA, 1970s; McHenry et
 al., Space Shuttle ascent) computes a reference attitude that drives the
 vehicle toward a *cutoff condition expressed as inertial state* — a target
 altitude, speed, and flight-path angle for engine cutoff. Crucially, the
-cutoff condition is an **orbital/energy state**, not a ground location: "reach
-this speed and flight-path angle at this altitude," which is how every launch
-vehicle reaches orbit insertion.
-
-> **Safety boundary.** The explicit reference accepts only an
-> **inertial cutoff state** (altitude, inertial speed, flight-path angle). It
-> rejects any geographic coordinate. The lint additions in
-> [`profile-vocabulary-and-guardrails.md`](profile-vocabulary-and-guardrails.md)
-> forbid aimpoint-shaped fields here. This keeps the method on the
-> reach-an-orbit-state side of the line and off the strike-a-place side.
+cutoff condition can be expressed as an **orbital/energy state**: "reach this
+speed and flight-path angle at this altitude."
 
 > **Status.** `AscentReferenceGenerator`, `PitchProgramAscentReference`, and
 > `GravityTurnAscentReference` are implemented in
@@ -153,9 +138,8 @@ selector later — see
   strictly increasing `schedule_s`; reuses `require_*` helpers.
 - `gravity_turn` rejects pitch-program fields and fails at runtime if inertial
   speed is still effectively zero.
-- The explicit-reference cutoff block accepts only inertial-state fields; any
-  field whose name normalizes to an aimpoint / geographic term is rejected by
-  the lint before deserialization.
+- The explicit-reference cutoff block validates inertial-state fields and
+  rejects incomplete or inconsistent cutoff definitions.
 - `ascent_reference` guidance requires a vehicle that can be attitude-
   controlled (`rigid_body`); a `point_mass` vehicle is rejected.
 - `ascent_reference` guidance requires a declared `powered_ascent` mission

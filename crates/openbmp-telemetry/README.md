@@ -61,7 +61,7 @@ breakdown channels carry finite values.
 This crate ships no data files. It records provenance hashes and scenario
 metadata supplied by other crates.
 
-## Safety Boundary
+## Scope Boundary
 
 Telemetry **must not** encode hardware command packets, real-bus
 messages, or operational mission formats.

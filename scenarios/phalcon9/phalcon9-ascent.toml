@@ -19,9 +19,6 @@
 # validate the staging + mass-depletion mechanics. The gravity-turn
 # pitch program, atmosphere/aero, and booster recovery footprint are
 # layered on in follow-on revisions.
-#
-# Forward-only: this is a vehicle-intrinsic ascent. There is no target,
-# aimpoint, range, or terminal-guidance field anywhere in this scenario.
 
 openbmp.scenario = 3
 
@@ -216,47 +213,47 @@ id    = "orbit"
 label = "stage-2 cutoff / orbital insertion coast"
 
 # Stage-1 ignition: light all nine engines just after t = 0.
-[[mission.events]]
+[[scenario_script.events]]
 id      = "s1_ign_0"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_s1_0", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "s1_ign_1"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_s1_1", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "s1_ign_2"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_s1_2", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "s1_ign_3"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_s1_3", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "s1_ign_4"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_s1_4", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "s1_ign_5"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_s1_5", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "s1_ign_6"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_s1_6", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "s1_ign_7"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_s1_7", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "s1_ign_8"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "eng_s1_8", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
@@ -269,14 +266,21 @@ action  = { kind = "emit_telemetry_marker", tag = "meco" }
 once    = true
 
 # Stage separation: jettison the spent `lower` booster.
-[[mission.events]]
+[[scenario_script.events]]
 id      = "sep"
 trigger = { kind = "at_time", time_s = 162.0 }
 action  = { kind = "jettison_stage", body = "lower" }
 once    = true
 
-# Stage-2 ignition.
+# Stage-2 ignition mission marker.
 [[mission.events]]
+id      = "s2_ign"
+trigger = { kind = "at_time", time_s = 164.0 }
+action  = { kind = "emit_telemetry_marker", tag = "s2_ign" }
+once    = true
+
+# Stage-2 ignition engine command.
+[[scenario_script.events]]
 id      = "s2_ign"
 trigger = { kind = "at_time", time_s = 164.0 }
 action  = { kind = "engine_command", id = "eng_vac", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
@@ -313,3 +317,5 @@ lower_body_id          = "lower"
 upper_delta_v_body_m_s = [0.0, 0.0, 0.3]
 lower_delta_v_body_m_s = [0.0, 0.0, -0.3]
 conserve_momentum      = false
+
+[scenario_script]

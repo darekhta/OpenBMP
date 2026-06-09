@@ -1,0 +1,30 @@
+[package]
+name                    = "openbmp-fmi"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "Host-only FMI adapter boundary for OpenBMP model-port import smoke tests."
+
+[dependencies]
+libloading     = { workspace = true }
+openbmp-models = { workspace = true }
+thiserror      = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints.rust]
+missing_docs = "deny"
+missing_debug_implementations = "warn"
+unsafe_code = "allow"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+float_cmp = "deny"

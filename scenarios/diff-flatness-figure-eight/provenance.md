@@ -43,10 +43,6 @@ coefficients are bit-stable across reruns on the reference platform
 profile, validated by `crates/openbmp-fc/src/trajectory.rs` unit tests
 and the `diff_flatness_e2e.rs` end-to-end test.
 
-## Safety boundary
+## Scope notes
 
-`docs/safety-boundaries.md` accept list — academic guidance laws
-(attitude tracking, scenario-defined waypoint navigation in inertial
-space). The waypoints are scenario-internal points in inertial space,
-not real-world locations or targets. No proportional-navigation or
-terminal-homing logic.
+Scenario-defined waypoints are inertial-space references for controller-regression tests.

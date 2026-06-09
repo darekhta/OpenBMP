@@ -82,13 +82,13 @@ Synthetic textbook motors, public Estes hobby motor files (B4,
 C6, D12) derived from ThrustCurve.org RASP data, and the
 Cesaroni Pro75 M1670 import (manufacturer-mass and RocketPy-mass
 variants), each with a SHA-256-pinned source digest in
-`data/motors/provenance.md`. **Real fielded operational motor data
-is categorically rejected.**
+`data/motors/provenance.md`.
 
-## Safety Boundary
+## Scope Boundary
 
-No operational motor data, no real fielded engine curves, and no propulsion
-configuration intended for payload delivery or weapon employment.
+In-tree motor data must carry provenance and validation notes. Downstream
+users who need project-specific motor or engine data own the data-rights and
+validation evidence for those packages.
 
 ## References
 

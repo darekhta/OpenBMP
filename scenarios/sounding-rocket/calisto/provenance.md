@@ -108,9 +108,8 @@ safety_review:
     Public open-source rocket simulator example (MIT-licensed
     upstream). The modeled object is a hobby-class research
     sounding rocket (Calisto airframe + Cesaroni Pro75 M1670
-    commercial hobby motor). The scenario contains no targeting,
-    no real device drivers, and no restricted or fielded-vehicle
-    data. Spaceport America is a publicly-published commercial
+    commercial hobby motor). The scenario uses documented public data and no
+    real device drivers. Spaceport America is a publicly-published commercial
     launch site.
 units:            metres, metres-per-second, metres-per-second-squared, seconds, kilograms, kilogram-metres-squared, dimensionless quaternion
 frame_profile:    toy-fixed-earth

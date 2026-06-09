@@ -87,7 +87,7 @@ RocketPy Calisto cross-tool case (via the
 This crate ships no data files. Analytic-toy fixtures cite their derivations
 in validation metadata.
 
-## Safety Boundary
+## Scope Boundary
 
 No real-time guarantees, no actuator packets, no external command/
 control links. See `docs/safety-boundaries.md`.

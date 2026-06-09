@@ -6,11 +6,11 @@ rocket-class ascent, launch vehicles, propulsive landers, and lifting
 re-entry.
 
 > OpenBMP is an academic simulation platform. It is not validated for
-> operational flight, not suitable for hardware deployment, not a weapon
-> system, and not a substitute for any qualified flight-software stack.
+> operational flight, not suitable for hardware deployment, and not a
+> substitute for any qualified flight-software stack.
 
 This directory is the authoritative source for the project's scope,
-architecture, safety posture, and data policy. Start with the design concept
+architecture, validation posture, and data policy. Start with the design concept
 and the architecture; reach for the others as needed.
 
 ## Orientation
@@ -25,11 +25,8 @@ and the architecture; reach for the others as needed.
 
 ## Contracts and policy
 
-- [Safety Boundaries](safety-boundaries.md) — accept / reject rules, review
-  checklist, naming rules, dependency rules, provenance requirements.
-- [Dual-Use Assessment](dual-use-assessment.md) — the dual-use threat model:
-  the forward-not-inverse rule, the enforcement tiers, the residual surface,
-  and per-capability rationale.
+- [Scope Boundaries](safety-boundaries.md) — project scope, hardware boundary,
+  validation limits, dependency rules, and provenance requirements.
 - [Verification](verification.md) — validation labels, golden telemetry,
   tolerance tables, fuzzing, and public-benchmark rules.
 - [Standards Posture](standards-posture.md) — how OpenBMP references
@@ -44,15 +41,12 @@ and the architecture; reach for the others as needed.
 - [Supply Chain](supply-chain.md) — Rust dependency policy, release SBOM,
   dependency checks, and build-provenance expectations.
 - [Modeling Guide](modeling-guide.md) — the model-author contract:
-  documentation template, validation evidence, and safety posture.
-- [Acceptable-Use Policy](../ACCEPTABLE-USE.md) and
-  [Export-Control & Dual-Use Notice](../EXPORT-CONTROL.md) — intended use,
-  out-of-scope use, export posture, and user responsibility (repository root).
+  documentation template, validation evidence, and scope posture.
 
 ## Reference
 
 - [Scenario Format](scenario-format.md) — the TOML scenario contract: required
-  tables, parsing rules, safety-limited names, and batch metadata.
+  tables, parsing rules, unit/frame lint, and batch metadata.
 - [Frames and Time](frames-time.md) — frame profiles, WGS84 / ECI / ECEF /
   local conventions, epoch metadata, and leap-second / EOP handling.
 - [Mission Graph Architecture](mission-graph-architecture.md) — the
@@ -81,12 +75,11 @@ and the architecture; reach for the others as needed.
 ## Flight profiles
 
 Design specs for the multi-phase ascent → coast → apogee → descent → entry
-flight profile. These are forward-physics trajectory mechanics under the
-platform's existing non-weapon guardrails; the capabilities ship as
-fail-closed schema and trait stubs until each lands with validation evidence.
+flight profile. These are trajectory-mechanics capabilities that ship with
+schema, trait, and validation evidence as they land.
 
 - [Flight Profiles Architecture](flight-profiles-architecture.md) — umbrella:
-  the phase canon, the academic vocabulary, the safety posture, and how the
+  the phase canon, the academic vocabulary, the scope posture, and how the
   companions fit together.
 - [Staging and Separation](staging-and-separation.md) — executing multi-body
   stage separation: jettison, separation impulse, simultaneous spent-stage
@@ -97,6 +90,3 @@ fail-closed schema and trait stubs until each lands with validation evidence.
   coast, apogee detection, and the range-safety landing footprint.
 - [Descent and Entry Profiles](descent-and-entry-profiles.md) — wiring
   Allen-Eggers / Vinh into live entry phases and recovery.
-- [Profile Vocabulary and Guardrails](profile-vocabulary-and-guardrails.md) —
-  accepted / rejected vocabulary and the fail-closed validation that keeps
-  profiles non-weaponizable.

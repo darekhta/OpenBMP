@@ -1,30 +1,4 @@
-# Exit-criterion scenario — single-engine rigid-body
-# vehicle with one cylindrical tank carrying an EquivalentPendulum
-# slosh model with a non-zero initial slosh angle.
-#
-# The scenario demonstrates the full tank path:
-#   - tank scenario block parses through the structured TankConfig
-#     family;
-#   - the runner-side TankRack is built, the Tank is constructed
-#     with EquivalentPendulum + initial slosh perturbation;
-#   - per-step the rack drains the tank (drain rate 0 here, the
-#     fluid mass stays constant), advances slosh state with prior-
-#     step body-frame accel/omega, and pushes a TankSnapshot to the
-#     kernel;
-#   - the kernel-side TankRackForceAdapter and TankRackMomentAdapter
-#     read the snapshot and add the tank's reaction force / moment
-#     to the rigid-body force / moment evaluation.
-#
-# Known limitation: the cluster mass adapter and the
-# TankRackMassAdapter both contribute mass in point-mass cluster+tank
-# assemblies; for a tank intended as the cluster's propellant store
-# this overcounts the propellant. This scenario keeps the tank fluid
-# at about 49 kg (4.9% of vehicle dry mass) so the known accounting
-# gap stays small in scalar-mass paths.
-#
-# Synthetic round numbers; not a benchmark.
-
-openbmp.scenario = 2
+openbmp.scenario = 3
 
 [meta]
 name        = "sloshing-tank"
@@ -108,9 +82,11 @@ initial_phase = "boost"
 id    = "boost"
 label = "boost"
 
+[scenario_script]
+
 # Ignite engine_main at t = 0.001 (first step crosses 0.1 m altitude
 # from initial 100 m/s upward velocity).
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ignite_engine"
 trigger = { kind = "at_altitude_ascending", altitude_m = 0.001 }
 action  = { kind = "engine_command", id = "engine_main", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }

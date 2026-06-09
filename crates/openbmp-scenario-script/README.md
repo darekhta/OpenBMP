@@ -64,13 +64,12 @@ Crate carries no external data. See
 [`docs/data-provenance.md`](../../docs/data-provenance.md) for the
 project-wide policy.
 
-## Safety Boundary
+## Scope Boundary
 
 OpenBMP is an academic simulation platform. It is **not** validated
 for operational flight, **not** suitable for hardware deployment,
-**not** a weapon system. The action variants in this crate are
-scenario-script overrides for academic study; they do not encode
-real-launch authorities or operational targeting logic. See
+or a substitute for a qualified flight-software stack. The action variants in
+this crate are scenario-script overrides for simulation studies. See
 [`docs/safety-boundaries.md`](../../docs/safety-boundaries.md) and
 [`docs/mission-graph-architecture.md`](../../docs/mission-graph-architecture.md)
-for the full safety posture.
+for the project scope.

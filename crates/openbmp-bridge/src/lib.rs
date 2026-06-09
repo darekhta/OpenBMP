@@ -13,7 +13,7 @@
 //! protocols** (MAVLink / CAN / MIL-STD-1553 / I²C / SPI / UART), and
 //! no concrete transport. The socket loop and any hardware adapter are
 //! the adopter's responsibility, under their own qualification and
-//! export-control posture, in their own repository. See
+//! data-rights posture, in their own repository. See
 //! `docs/safety-boundaries.md`.
 //!
 //! # Wire format

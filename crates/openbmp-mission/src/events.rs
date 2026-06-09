@@ -213,6 +213,13 @@ pub struct EventEvalState {
     pub relative_speeds_m_s: BTreeMap<RelativeDistanceKey, f64>,
     /// Previous-tick relative speed magnitudes. `None` on the first tick.
     pub previous_relative_speeds_m_s: Option<BTreeMap<RelativeDistanceKey, f64>>,
+    /// Current-tick geocentric body altitudes keyed by assembly body id.
+    ///
+    /// Consumers omit keys until the body lane exists, so the corresponding
+    /// trigger remains false before deployment.
+    pub body_altitudes_m: BTreeMap<BodyId, f64>,
+    /// Previous-tick body altitudes. `None` on the first tick.
+    pub previous_body_altitudes_m: Option<BTreeMap<BodyId, f64>>,
 }
 
 // ---------------------------------------------------------------------
@@ -264,6 +271,14 @@ pub enum BuiltInEventTrigger {
     /// Fires the first tick where altitude crosses down through
     /// `meters`.
     AtAltitudeDescending {
+        /// Altitude threshold (m).
+        meters: f64,
+    },
+    /// Fires the first tick where a named body lane crosses down through
+    /// `meters`.
+    AtBodyAltitudeDescending {
+        /// Target body to monitor.
+        target: BodyId,
         /// Altitude threshold (m).
         meters: f64,
     },
@@ -346,6 +361,18 @@ impl EventTrigger for BuiltInEventTrigger {
             }
             Self::AtAltitudeDescending { meters } => {
                 prev.altitude_m > *meters && curr.altitude_m <= *meters
+            }
+            Self::AtBodyAltitudeDescending { target, meters } => {
+                let Some(previous_altitudes) = state.previous_body_altitudes_m.as_ref() else {
+                    return false;
+                };
+                let Some(prev_altitude_m) = previous_altitudes.get(target).copied() else {
+                    return false;
+                };
+                let Some(curr_altitude_m) = state.body_altitudes_m.get(target).copied() else {
+                    return false;
+                };
+                prev_altitude_m > *meters && curr_altitude_m <= *meters
             }
             Self::AtApogee => prev.vertical_velocity_m_s > 0.0 && curr.vertical_velocity_m_s <= 0.0,
             Self::AtGuidanceCutoff { time_to_go_s } => {

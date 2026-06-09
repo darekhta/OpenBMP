@@ -13,6 +13,31 @@ platform for rigid-body dynamics and rocket-class flight simulation.
 A versioned TOML-shaped file that selects models, initial state, schedule,
 telemetry outputs, and validation rules for one simulation run.
 
+**Mission Package**
+A versioned SIL manifest that names the scenario, optional plant/I-load,
+mission, scenario-script, dictionary, test-case, provenance, and hash inputs
+for one reviewable run family.
+
+**Plant Config**
+Simulator-owned vehicle, environment, sensor, actuator, and disturbance
+configuration. It is not flight-controller mission data.
+
+**Scenario Script**
+Simulator-owned test stimulus under `[scenario_script]`, such as engine
+commands, effector overrides, recovery deploys, and jettison actions.
+
+**I-load**
+Flight-software initialization load. OpenBMP HAL exposes an `OBIL` envelope
+with schema version, payload length, CRC, and fallback selection.
+
+**Test Case**
+A named package entry selecting a scenario and objective for repeatable SIL
+execution.
+
+**Telemetry Dictionary**
+Stable command/telemetry metadata generated from OpenBMP topic definitions and
+exported as JSON, with experimental interchange exports kept separate.
+
 **Model**
 A deterministic Rust implementation of a physical, synthetic sensor,
 controller, telemetry, or validation component.
@@ -98,13 +123,12 @@ validated.
 **Accepted Data**
 Synthetic, textbook, public standard, or public academic data with provenance.
 
-**Rejected Data**
-Restricted, unverifiable, operationally framed, or real fielded-vehicle data
-outside the safety boundary.
+**Out-of-Scope Data**
+Restricted, unverifiable, or undocumented fielded-vehicle data outside the
+repository scope.
 
 **Scenario Waypoint**
 A synthetic or academic reference point used for simulator-internal guidance.
-It is not a target, aimpoint, terminal objective, or payload-delivery point.
 
 **HIL Pattern**
 An optional generic socket bridge using an in-house wire format. It is not a

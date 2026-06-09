@@ -60,9 +60,7 @@ zonal harmonic (J2). Higher-degree zonal and tesseral harmonics
 WGS84 is the U.S. Department of Defense's published world geodetic
 system, freely available, with a stable citation at the NGA portal.
 The values used here are the *defining parameters* and the *zonal
-J2* of the reference ellipsoid. They are not derived from any
-fielded vehicle's parameters and they are not subject to export
-control.
+J2* of the reference ellipsoid.
 
 ## Why the values are pinned in code as well
 

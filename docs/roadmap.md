@@ -162,10 +162,9 @@ per mission phase with `[[forces.phase_override]]`, emit live
   and codec ship; the transport and any hardware adapter are downstream-adopter
   territory by design).
 
-## Permanently out of scope
+## Out of Scope for Upstream
 
-Independent of demand, OpenBMP never ships targeting or terminal-guidance
-logic, real fielded-vehicle or operational thermal-protection parameter sets,
-real device drivers or bus protocols, in-repo CFD / DSMC solvers, non-Earth
-atmospheres, or any weapon-employment capability. See
-[`safety-boundaries.md`](safety-boundaries.md) for the binding contract.
+OpenBMP keeps real device drivers or bus protocols, in-repo CFD / DSMC
+solvers, non-Earth atmospheres, and undocumented fielded-vehicle parameter
+sets outside the upstream roadmap. See
+[`safety-boundaries.md`](safety-boundaries.md) for the repository scope.

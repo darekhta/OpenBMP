@@ -5,7 +5,7 @@ rocket-class **flight profile** — the academic ascent → coast → apogee →
 descent → entry → recovery sequence that a sounding rocket, launch vehicle,
 or lifting-entry test article flies. It is the umbrella for five companion
 design documents that detail each phase. Read it first; the companions assume
-the vocabulary and the safety framing established here.
+the vocabulary and scope framing established here.
 
 OpenBMP already ships the *physics* most of these phases need — J2 / EGM2008
 zonal gravity, atmosphere models to 1000 km, the Allen-Eggers and Vinh entry
@@ -16,14 +16,12 @@ ownership, there is no
 powered-ascent reference generator, the coast and entry phases are not wired
 into the mission state machine, and there is no range-safety footprint tool.
 These documents close those gaps inside the platform's existing extension
-seams and under its existing guardrails.
+seams.
 
-## Scope and naming posture
+## Scope and Naming
 
 OpenBMP is **Open Body Motion Platform** — an academic, simulation-only
-research platform. The acronym is deliberate: the platform models *body
-motion*, not weapons. This document does not change that posture; it extends
-it.
+research platform for body motion.
 
 > **Status.** `jettison_stage` is implemented for fixed-step RK4,
 > rigid-body profiles with explicit per-body force-stack ownership. The
@@ -33,32 +31,23 @@ it.
 > implementation lands and carries validation evidence, exactly as
 > [`roadmap.md`](roadmap.md) requires.
 
-The full-profile work is built so that misuse stays difficult by
-construction, the same way the rest of the codebase is (see
-[`safety-boundaries.md`](safety-boundaries.md)):
+The full-profile work follows the project scope in
+[`safety-boundaries.md`](safety-boundaries.md):
 
-- **Academic vocabulary only.** The rejected operational ballistic taxonomy,
-  location-selection terms, and seeker terms are rejected at parse time by the
-  [`mission-states-vocabulary.md`](mission-states-vocabulary.md) canon and the
-  `openbmp-scenario` lint. Profiles use `powered_ascent`, `coast`,
+- **Canonical vocabulary.** Profiles use `powered_ascent`, `coast`,
   `apogee_approach`, `ballistic_descent`, `entry_interface`, `lifting_entry`,
-  `final_descent`, and `recovery`. The full mapping and the new rejected terms
-  live in [`profile-vocabulary-and-guardrails.md`](profile-vocabulary-and-guardrails.md).
-- **No targeting.** No phase, guidance mode, or analysis tool in this work
-  accepts a real-world geographic aimpoint or computes a guidance solution to
-  one. Ascent guidance generates a *reference trajectory*; descent analysis
-  reports a *range-relative landing dispersion* for range-safety and recovery
-  planning. Neither closes a loop onto a target. See the per-document safety
-  sections.
+  `final_descent`, and `recovery`. These names are documented in
+  [`mission-states-vocabulary.md`](mission-states-vocabulary.md).
+- **Reference generation.** Ascent guidance generates reference trajectories;
+  descent analysis reports landing dispersion for recovery planning.
 - **Reference, not deployable.** As with the rest of `openbmp-fc`, any
   controller surface introduced here is a simulator-local virtual controller,
   re-implementable against a downstream HAL by an adopter under their own
-  qualification posture — never shipped as flight software here.
+  qualification posture.
 
 ## The flight-profile phase canon
 
-A complete profile is a path through this academic phase graph. Every name is
-in the accepted vocabulary; none is operational.
+A complete profile is a path through this phase graph.
 
 ```
 prelaunch
@@ -102,8 +91,7 @@ is the subject of [`staging-and-separation.md`](staging-and-separation.md).
 > is wired for
 > `entry_interface` / `final_descent` handoff validation and Allen-Eggers /
 > Vinh entry diagnostics. Richer live entry force-stack / aerothermal coupling
-> remains gated until wired. See
-> [`profile-vocabulary-and-guardrails.md`](profile-vocabulary-and-guardrails.md).
+> remains gated until wired.
 
 ## How a profile maps onto the existing platform
 
@@ -176,7 +164,6 @@ blocks become first-class and validated. Until then:
 | [Ascent Guidance](ascent-guidance.md) | Gravity-turn / pitch-program / explicit-guidance *reference-trajectory* generation for the powered-ascent phase. |
 | [Ballistic Coast and Apogee](ballistic-coast-and-apogee.md) | Exo-atmospheric coast propagation, apogee detection, and the range-safety landing-footprint tool. |
 | [Descent and Entry Profiles](descent-and-entry-profiles.md) | Wiring Allen-Eggers / Vinh into live `entry_interface` → `lifting_entry` → `final_descent` phases and recovery. |
-| [Profile Vocabulary and Guardrails](profile-vocabulary-and-guardrails.md) | The accepted / rejected vocabulary additions and the fail-closed validation that keeps profiles non-weaponizable. |
 
 ## References
 

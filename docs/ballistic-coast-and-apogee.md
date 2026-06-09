@@ -10,7 +10,7 @@ come down. It is a companion to
 These phases are unpowered ballistic propagation under gravity and (near the
 ends) atmospheric drag. OpenBMP already has the propagators and gravity fields;
 the work here is phase wiring and a post-processing analysis tool, both framed
-for academic trajectory study and range-safety / recovery planning.
+for trajectory study and recovery planning.
 
 ## Current state
 
@@ -77,25 +77,20 @@ documented in
 > `at_altitude_descending`) already ship. `entry_interface` and later entry
 > phases remain reserved for the descent/entry slice.
 
-### Range-safety footprint
+### Landing Footprint
 
 A flight-profile study wants to know *where the body lands* — for recovery
-planning (where do we send the boat) and range-safety analysis (does the
-predicted descent stay inside the cleared range). This is a standard,
-non-operational astrodynamics output, and OpenBMP frames it carefully to keep
-it on the safe side of the line.
+planning and dispersion analysis.
 
 The new trait reports a landing prediction in **range-relative coordinates**
 — downrange / crossrange distance and bearing from the launch point, plus
 optional WGS84-geodetic latitude/longitude **only when the scenario declares a
-launch-site origin** (the existing `LocalGeodeticOrigin`). It never accepts a
-desired landing location and never computes a steering command:
+launch-site origin** (the existing `LocalGeodeticOrigin`):
 
 ```rust
-/// Range-safety / recovery landing-footprint estimate for an
+/// Recovery landing-footprint estimate for an
 /// unpowered body. Reports where a body is predicted to come down,
-/// in range-relative coordinates. It accepts no desired landing
-/// location and produces no guidance command. (`profile` module.)
+/// in range-relative coordinates. (`profile` module.)
 pub trait RangeSafetyFootprint {
     /// Predicted nominal landing point and dispersion for a body
     /// propagated from `state` to ground (or cull altitude).
@@ -130,25 +125,11 @@ pub trait RangeSafetyFootprint {
     origin
 ```
 
-> **Naming.** The output is a **landing footprint** / **dispersion ellipse**,
-> not an "impact point." The term `impact-point` is rejected by the lint; the
-> range-safety vocabulary (`landing_footprint`, `dispersion_ellipse`,
-> `downrange_m`, `crossrange_m`) is the accepted academic form. See
-> [`profile-vocabulary-and-guardrails.md`](profile-vocabulary-and-guardrails.md).
-
 The footprint tool is **post-processing**: it runs over telemetry or a forward
 propagation after the fact, in the offline analysis path. It is not on the
 flight-controller's control loop, and producing it never feeds back into any
 actuator command. This is the same boundary the platform draws for telemetry
 viewers — *offline analysis only*.
-
-### Why this is not targeting
-
-The footprint answers "given this trajectory, where does the body land?" — the
-forward question. Targeting answers the inverse: "given a desired landing
-place, what trajectory/steering gets there?" OpenBMP implements only the
-forward question, accepts no desired-landing input, and emits no steering. The
-inverse problem and any geographic aimpoint are rejected at load.
 
 ## Fail-closed validation
 
@@ -158,8 +139,6 @@ inverse problem and any geographic aimpoint are rejected at load.
 - The footprint's geodetic output requires a declared launch-site
   `LocalGeodeticOrigin`; absent one, only range-relative output is produced —
   never a fabricated geographic coordinate.
-- Any footprint-config field naming a *desired* landing location, aimpoint, or
-  miss-distance is rejected by the lint.
 - Monte-Carlo dispersion requires declared input-uncertainty blocks under
   `wind`, `ballistic_coefficient`, or `burnout_state`; a dispersion request
   with no uncertainty source fails closed rather than reporting a degenerate
@@ -181,7 +160,7 @@ inverse problem and any geographic aimpoint are rejected at load.
 | `RangeSafetyFootprint` trait + `LandingFootprint` / `BallisticState` | `openbmp-physics/src/profile.rs` | Consumed by `ConstantGravityRangeSafetyFootprint` and `NumericalGravityRangeSafetyFootprint`. |
 | `coast`, `ballistic_descent` phases | mission vocabulary | Accepted with existing event machinery. |
 | Footprint post-processing path | offline analysis (`openbmp-runner`) | `landing_footprint_for_state` consumes schema-v3 `[landing_footprint]` for constant-gravity, J2, and EGM2008 methods. |
-| Footprint Monte-Carlo dispersion diagnostics | offline analysis (`openbmp-runner`) | `footprint-mc` writes `radial_dispersion_p50_m`, nominal-referenced radial-offset quantiles, and sample-cloud radial offsets without accepting a target input. |
+| Footprint Monte-Carlo dispersion diagnostics | offline analysis (`openbmp-runner`) | `footprint-mc` writes `radial_dispersion_p50_m`, nominal-referenced radial-offset quantiles, and sample-cloud radial offsets from the declared sample set. |
 
 ## References
 

@@ -1,20 +1,16 @@
 # Contributing to OpenBMP
 
 Thanks for your interest in OpenBMP. This document describes how to
-contribute and the safety-boundary review every change goes through.
+contribute and the scope review every change goes through.
 
 ## Project posture
 
 OpenBMP is an academic, simulation-only research platform with explicit
 scope limits. Contributions are welcome — within the boundaries set in
-[`docs/safety-boundaries.md`](docs/safety-boundaries.md). Anything
-outside those boundaries is rejected on safety grounds, regardless of
-technical merit.
+[`docs/safety-boundaries.md`](docs/safety-boundaries.md).
 
 All contributors are also expected to follow
-[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), the
-[`ACCEPTABLE-USE.md`](ACCEPTABLE-USE.md) policy, and the export-control
-posture in [`EXPORT-CONTROL.md`](EXPORT-CONTROL.md).
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Workflow
 
@@ -25,7 +21,7 @@ posture in [`EXPORT-CONTROL.md`](EXPORT-CONTROL.md).
    Documentation below.
 4. Run the full local check sequence (§ Local Verification).
 5. Open a pull request. The PR description must explicitly answer the
-   safety-boundary review questions (§ Safety Review).
+   scope and validation review questions (§ Scope Review).
 6. CI runs the full gate suite. Reviewers add comments; address them
    and push fixes. We prefer many small commits over a single large
    commit during review.
@@ -35,9 +31,9 @@ posture in [`EXPORT-CONTROL.md`](EXPORT-CONTROL.md).
 
 The `main` branch must be protected in GitHub repository settings. Pull
 requests may merge only after the required CI status checks below pass
-and after code-owner review from `.github/CODEOWNERS`; the safety and
-dual-use checks are not optional even for maintainer or solo-author
-changes.
+and after code-owner review from `.github/CODEOWNERS`; project-scope
+and validation checks are not optional even for maintainer or
+solo-author changes.
 
 Required status checks from `CI`:
 
@@ -57,18 +53,13 @@ Required status checks from `CI`:
 - `HAL portability`
 - `FC dependency graph tripwire`
 - `lockstep-clock tripwire`
-- `mission-vocabulary tripwire`
-- `dual-use field audit`
-- `dual-use compile-fail audit`
-- `dual-use reachability audit`
-- `optimizer gate`
 - `requirements traceability`
 - `fc HAL build-time gate`
 - `determinism-gate`
 
 Changes that alter these job names, remove one of the checks, or make a
-dual-use tripwire advisory-only must be reviewed as a governance change
-and reflected in this list in the same PR.
+required check advisory-only must be reviewed as a governance change and
+reflected in this list in the same PR.
 
 ## Code
 
@@ -105,7 +96,7 @@ Every change ships its own tests. The test classes per
 For new physics models, follow the model README template in
 [`docs/modeling-guide.md`](docs/modeling-guide.md) and document
 **purpose, inputs/outputs, units/frames, validity range, assumptions,
-determinism, validation status, data provenance, and safety boundary**.
+determinism, validation status, data provenance, and scope boundary**.
 
 ## Documentation
 
@@ -113,67 +104,33 @@ A change is not complete without documentation. Whenever any of the
 following shifts, update the relevant doc in `docs/`:
 
 - API surface, trait shapes, or workspace layout.
-- Safety boundary, accept/reject rules.
+- Project scope, validation boundaries, or data-provenance rules.
 - Frame, time, units, or telemetry conventions.
 - Data sources or provenance requirements.
 - Determinism profile or CI-gate behavior.
 
 The [`docs/`](docs/) set is the source of truth.
 
-## Safety Review
+## Scope Review
 
 Every PR must answer these questions in the PR description (per
-[`docs/safety-boundaries.md`](docs/safety-boundaries.md) Review
-Questions):
+[`docs/safety-boundaries.md`](docs/safety-boundaries.md)):
 
 1. Can this run without any physical hardware?
-2. Does it avoid real fielded-vehicle parameters and operational
-   performance claims?
-3. Is every controller output consumed only by simulator-local models,
-   or by the optional generic socket bridge in test scenarios?
-4. Does it avoid targeting, terminal homing to real-world locations,
-   and payload-delivery behaviour?
-5. Is the feature useful for academic simulation even if all real-world
-   vehicle data is removed?
-6. Are assumptions, units, frames, noise models, and validation status
+2. Are data sources synthetic, public, or user-supplied with provenance?
+3. Does the change avoid claims of operational flight readiness or
+   certification?
+4. Are assumptions, units, frames, noise models, and validation status
    documented?
-7. Does the feature introduce hard real-time guarantees, real-bus
-   protocols, or device-driver code? **(If yes, the contribution is
-   rejected.)**
-
-If the answer to any of 1–6 is "no," the contribution is outside the
-project boundary. PR authors must reframe the contribution or accept
-that it will be declined on safety grounds, not on quality grounds.
-
-## Dual-Use Review Gate
-
-Changes that touch guidance, the landing / footprint / dispersion surface,
-entry, the estimator lanes, MPC, or scenario **input types** are
-"near-the-line" and carry an extra gate on top of the Safety Review above
-(see [`docs/dual-use-assessment.md`](docs/dual-use-assessment.md)):
-
-- The change must be **forward-only**: it answers *given vehicle and
-  trajectory, what happens?* — never *given a place to reach, what to do?*
-- It must add **no input** that names or accepts a desired location, target,
-  aimpoint, real-world waypoint, or miss-distance, and **no** accuracy / CEP
-  metric scored against a target.
-- The PR must declare the **enforcement tier** that binds it. A near-the-line
-  capability lands only when a **Tier-1 (architectural)** constraint binds it —
-  an input type in which the operational objective is *unconstructible*.
-  Documentation and policy are layered on top, never in place of it.
-
-The forward-not-inverse checklist is built into the
-[pull request template](.github/pull_request_template.md).
+5. Does the feature introduce real-bus protocols, device-driver code,
+   or hard real-time guarantees? If yes, document the boundary clearly.
 
 ## Naming Discipline
 
-Avoid operational vocabulary in code, scenario fields, telemetry
-channels, and documentation. The parser-level lint will reject names
-matching the operational reject list (see
-[`docs/safety-boundaries.md`](docs/safety-boundaries.md) Naming Rules
-and [`docs/scenario-format.md`](docs/scenario-format.md)
-Safety-Limited Names). Prefer the academic vocabulary documented in
-[`docs/glossary.md`](docs/glossary.md).
+Use clear domain names in code, scenario fields, telemetry channels, and
+documentation. Scenario parser lints enforce unit suffixes and vector-frame
+suffixes; vocabulary choices are handled through ordinary review and
+documentation clarity.
 
 ## Local Verification
 

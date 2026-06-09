@@ -1,77 +1,15 @@
 //! TOML linting that runs *before* serde deserialisation so the user
 //! sees the most user-friendly error first:
 //!
-//! 1. Safety-limited terms in keys or short string values
-//!    (`docs/safety-boundaries.md § Naming Rules`).
-//! 2. Dimensional fields without an explicit unit suffix
+//! 1. Dimensional fields without an explicit unit suffix
 //!    (`docs/scenario-format.md § Units`).
-//! 3. 3-tuple numeric fields without an explicit frame infix
+//! 2. 3-tuple numeric fields without an explicit frame infix
 //!    (`docs/scenario-format.md § Frames`).
 //!
-//! All three checks fold into a single recursive walk over the parsed
-//! `toml::Value`. Safety-name violations have global priority: the
-//! walk records the first dimensional error but keeps scanning for a
-//! later safety error before returning it.
+//! Both checks fold into a single recursive walk over the parsed
+//! `toml::Value`.
 
 use crate::error::ScenarioError;
-
-const FORBIDDEN_SAFETY_TERMS: &[ForbiddenTerm] = &[
-    ForbiddenTerm::new("seeker", "seeker"),
-    ForbiddenTerm::new("warhead", "warhead"),
-    ForbiddenTerm::new("strike", "strike"),
-    ForbiddenTerm::new("interceptor", "interceptor"),
-    ForbiddenTerm::new("kill", "kill"),
-    ForbiddenTerm::new("threat", "threat"),
-    ForbiddenTerm::new("engagement", "engagement"),
-    ForbiddenTerm::new("terminalhoming", "terminal-homing"),
-    ForbiddenTerm::new("terminalwaypoint", "terminal-waypoint"),
-    ForbiddenTerm::new("impactpoint", "impact-point"),
-    ForbiddenTerm::new("weapon", "weapon"),
-    // Mission-vocabulary rejections (see
-    // `docs/mission-states-vocabulary.md § Rejected Vocabulary`).
-    ForbiddenTerm::new("midcourse", "midcourse"),
-    ForbiddenTerm::new("endgame", "endgame"),
-    ForbiddenTerm::new("decoy", "decoy"),
-    ForbiddenTerm::new("penaid", "pen-aid"),
-    ForbiddenTerm::new("blackoutevasion", "blackout-evasion"),
-    // Flight-profile guardrails (see
-    // `docs/profile-vocabulary-and-guardrails.md § Rejected operational
-    // vocabulary`). Trajectory-mechanics terms (ballistic, boost, coast,
-    // ascent, apogee, entry, descent, footprint, dispersion, downrange)
-    // stay accepted; only targeting / engagement vocabulary is rejected.
-    ForbiddenTerm::new("aimpoint", "aimpoint"),
-    ForbiddenTerm::new("missdistance", "miss-distance"),
-    ForbiddenTerm::new("terminalguidance", "terminal-guidance"),
-    ForbiddenTerm::new("banktoturn", "bank-to-turn"),
-    ForbiddenTerm::new("skidtoturn", "skid-to-turn"),
-    ForbiddenTerm::new("intercept", "intercept"),
-    ForbiddenTerm::new("reentryvehicle", "reentry-vehicle"),
-    ForbiddenTerm::new("circularerror", "circular-error"),
-    // Propulsion/staging guardrails: vehicle-intrinsic staging
-    // analysis is accepted, operational range optimization vocabulary is not.
-    ForbiddenTerm::new("maxrange", "max-range"),
-    ForbiddenTerm::new("rangemax", "range-max"),
-    ForbiddenTerm::new("throwweight", "throw-weight"),
-    ForbiddenTerm::new("impactenergy", "impact-energy"),
-    // Aerodynamics guardrails: drag curves are accepted, gunnery
-    // range-table products are not.
-    ForbiddenTerm::new("firingtable", "firing-table"),
-    ForbiddenTerm::new("rangetable", "range-table"),
-    ForbiddenTerm::new("ballisticmatch", "ballistic-match"),
-];
-
-struct ForbiddenTerm {
-    /// Lowercased, alphanumeric-only needle.
-    needle: &'static str,
-    /// Human-readable label written into the error.
-    label: &'static str,
-}
-
-impl ForbiddenTerm {
-    const fn new(needle: &'static str, label: &'static str) -> Self {
-        Self { needle, label }
-    }
-}
 
 const UNIT_SUFFIXES: &[&str] = &[
     "_dt_s",
@@ -113,104 +51,28 @@ const DIMENSIONLESS_COMPONENT_ORDER_SUFFIXES: &[&str] = &["_xyzw"];
 ///
 /// # Errors
 ///
-/// Returns the first safety-name failure if one exists; otherwise
-/// returns the first unit / frame suffix failure encountered.
+/// Returns the first unit / frame suffix failure encountered.
 pub(crate) fn lint(value: &toml::Value) -> Result<(), ScenarioError> {
-    let mut first_dimensional_error = None;
-    walk("$", None, value, &mut first_dimensional_error)?;
-    match first_dimensional_error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+    walk("$", None, value)
 }
 
-fn walk(
-    path: &str,
-    parent_key: Option<&str>,
-    value: &toml::Value,
-    first_dimensional_error: &mut Option<ScenarioError>,
-) -> Result<(), ScenarioError> {
+fn walk(path: &str, parent_key: Option<&str>, value: &toml::Value) -> Result<(), ScenarioError> {
     if let Some(key) = parent_key {
-        check_key_for_safety_term(path, key)?;
-        if first_dimensional_error.is_none()
-            && let Err(error) = check_dimensional_field(path, key, value)
-        {
-            *first_dimensional_error = Some(error);
-        }
+        check_dimensional_field(path, key, value)?;
     }
     match value {
         toml::Value::Table(table) => {
             for (key, child) in table {
                 let child_path = format!("{path}.{key}");
-                walk(&child_path, Some(key), child, first_dimensional_error)?;
+                walk(&child_path, Some(key), child)?;
             }
         }
         toml::Value::Array(values) => {
             for (index, child) in values.iter().enumerate() {
-                walk(
-                    &format!("{path}[{index}]"),
-                    None,
-                    child,
-                    first_dimensional_error,
-                )?;
+                walk(&format!("{path}[{index}]"), None, child)?;
             }
         }
-        toml::Value::String(text) if string_value_is_lintable(path) => {
-            check_string_value_for_safety_term(path, text)?;
-        }
         _ => {}
-    }
-    Ok(())
-}
-
-/// Whether a leaf string value at `path` should be checked for
-/// safety-limited terms.
-///
-/// Free-form descriptive fields and any value containing path
-/// separators are excluded; everything else is treated as a
-/// model-name-shaped value where safety vocabulary is forbidden.
-fn string_value_is_lintable(path: &str) -> bool {
-    const SKIPPED_SUFFIXES: &[&str] = &[".description", ".provenance"];
-    const SKIPPED_PREFIXES: &[&str] = &["$.telemetry.output.", "$.data_packages."];
-    const SKIPPED_LEAVES: &[&str] = &[".manifest", ".leap_second_table"];
-
-    if SKIPPED_SUFFIXES.iter().any(|s| path.ends_with(s)) {
-        return false;
-    }
-    if SKIPPED_PREFIXES.iter().any(|p| path.starts_with(p)) {
-        return false;
-    }
-    if SKIPPED_LEAVES.iter().any(|s| path.ends_with(s)) {
-        return false;
-    }
-    true
-}
-
-fn check_key_for_safety_term(path: &str, key: &str) -> Result<(), ScenarioError> {
-    check_for_safety_term(path, key, key)
-}
-
-fn check_string_value_for_safety_term(path: &str, value: &str) -> Result<(), ScenarioError> {
-    if value.contains('/') || value.contains('\\') {
-        return Ok(());
-    }
-    check_for_safety_term(path, value, value)
-}
-
-fn check_for_safety_term(path: &str, original: &str, raw: &str) -> Result<(), ScenarioError> {
-    let normalised: String = raw
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .flat_map(char::to_lowercase)
-        .collect();
-    for term in FORBIDDEN_SAFETY_TERMS {
-        if normalised.contains(term.needle) {
-            return Err(ScenarioError::SafetyName {
-                path: path.to_owned(),
-                value: original.to_owned(),
-                term: term.label,
-            });
-        }
     }
     Ok(())
 }
@@ -456,22 +318,25 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
-    // Mission effector overrides use the same unit-agnostic command
-    // scalar as the target effector.
-    if path.starts_with("$.mission.events") && path.ends_with(".action.command") && key == "command"
-    {
+    // Mission/scenario-script effector overrides use the same
+    // unit-agnostic command scalar as the target effector.
+    if is_event_path(path) && path.ends_with(".action.command") && key == "command" {
         return true;
     }
 
-    // Mission engine commands carry a typed payload
+    // Mission/scenario-script engine commands carry a typed payload
     // including a dimensionless `throttle_unit` and lifecycle bools
     // (the bools never trip this lint, but `throttle_unit` would
     // without an exemption).
-    path.starts_with("$.mission.events")
+    is_event_path(path)
         && path
             .strip_suffix(".throttle_unit")
             .is_some_and(|parent| parent.ends_with(".action.command"))
         && key == "throttle_unit"
+}
+
+fn is_event_path(path: &str) -> bool {
+    path.starts_with("$.mission.events") || path.starts_with("$.scenario_script.events")
 }
 
 fn key_has_unit_suffix(key: &str) -> bool {

@@ -34,10 +34,10 @@ OpenBMP does **not** ship:
   generic in-house socket transport — see § "Optional: generic lab
   HIL bridge").
 
-The boundary is explicit: **OpenBMP's safety stance applies to the
-OpenBMP repository**. Downstream consumers integrating real data,
-custom models, or lab hardware do that in their own repositories under
-their own provenance, export-control, and qualification posture. See
+The boundary is explicit: **OpenBMP's upstream scope applies to this
+repository**. Downstream consumers integrating real data, custom models,
+or lab hardware do that in their own repositories under their own
+provenance, data-rights, and qualification posture. See
 [`safety-boundaries.md`](safety-boundaries.md) and
 [`software-architecture.md` § Extensibility for Downstream
 Integration](software-architecture.md#extensibility-for-downstream-integration).
@@ -64,7 +64,7 @@ Integration](software-architecture.md#extensibility-for-downstream-integration).
 │  • Real-data packages (with credibility metadata, see below)     │
 │  • Optional: lab HIL adapter for your test rig                   │
 │  • Validation harness against your references                    │
-│  • Your provenance + export-control + qualification posture      │
+│  • Your provenance + data-rights + qualification posture         │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -610,7 +610,7 @@ OpenBMP provides:
 - Deterministic kernel + RK4 / DOPRI integrators
 - Event timeline + multi-body staging machinery
 - Telemetry archive
-- Scenario parser + safety-name lint
+- Scenario parser + unit/frame lint
 - Aerodynamic deck format + interpolation
 - Tracing + tooling
 - Cross-validation harness against in-tree analytic-toy + public-benchmark
@@ -679,7 +679,7 @@ same `step` and `sim_time_s`; mismatches are rejected by the bridge validators.
 **You write the lab-side adapter** that translates your specific test
 rig's protocol to the in-house wire format. That adapter lives in your
 repository, with your protocol stack, your timing posture, your
-export-control compliance. OpenBMP does not ship adapters for any
+qualification process. OpenBMP does not ship adapters for any
 specific bus, controller, vendor, or vehicle.
 
 ## Public-data integration for observed vehicles
@@ -717,22 +717,21 @@ operator, or programme. (A synthetic demonstration vehicle whose name
 *evokes* a class — see § "Synthetic demonstration vehicles" — is not such a
 parameter set: its numbers are synthetic, and the prohibition is on real
 parameter content, not on an evocative name.) The framework is intended to
-remain strictly civilian-academic and free of restricted content; OpenBMP does not make
-an EAR, ITAR, MTCR, or national export-control classification for any
-downstream integration.
+remain free of restricted content; OpenBMP does not classify any downstream
+integration.
 
 For hypersonic or re-entry integrations, the same rule applies with stricter
 metadata. Downstream users may load their own real-data packages for civilian
 or academic vehicles, but those packages live outside this repository and must
 declare solver/profile assumptions, validity envelopes, uncertainty,
-provenance, and safety review. Typical downstream package kinds are
+provenance, and review status. Typical downstream package kinds are
 `continuum_cfd_aero`, `rarefied_dsmc_aero`, `radiation_reference`,
 `thermal_response_reference`, `thermochemistry_reference`, and
 `trajectory_reference`; see
 [data-provenance.md § Real-Data Package Credibility Format](data-provenance.md#real-data-package-credibility-format).
 OpenBMP records package ids and hashes in telemetry so runs are reproducible,
-but the downstream owner remains responsible for data rights, export-control
-posture, and validation claims.
+but the downstream owner remains responsible for data rights, qualification,
+and validation claims.
 
 ## Validation-against-public-references playbook
 
@@ -765,7 +764,7 @@ A synthetic demonstration vehicle is an in-tree showcase whose name may
 *evoke* a real vehicle class (so the demo is legible — "a medium-lift
 two-stage launcher" reads faster as `Phalcon-9` than as `MLV-Ref-Config-A`)
 while every number remains synthetic. It is permitted **only** under all
-of the following, which keep the actual safety boundary untouched:
+of the following, which keep the actual scope boundary untouched:
 
 1. **Synthetic parameters only.** Every mass, thrust, Isp, dimension, and
    coefficient is a rounded, order-of-magnitude class figure — never a
@@ -778,9 +777,8 @@ of the following, which keep the actual safety boundary untouched:
    state plainly that the vehicle is wholly synthetic, is not a model of
    or claim about any fielded vehicle/operator/engine, and is tagged
    `validation = "experimental"`.
-3. **Forward-only, no targeting.** No target, aimpoint, range,
-   throw-weight, or terminal-guidance field — the Tier-1/Tier-2 locks
-   and lint apply unchanged.
+3. **Documented scenario scope.** The scenario header and provenance file
+   describe which quantities are synthetic, estimated, or directly sourced.
 
 Under these conditions an evocative name is a **demonstration aid, not an
 endorsement** of or a performance claim about any operator or programme,

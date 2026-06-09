@@ -202,8 +202,8 @@ safety_review:
   decision: accepted
   notes: >-
     Public motor data from a hobby motor (Estes D12) certified by
-    the NAR. No export control or manufacturer-proprietary
-    restrictions; no operational vehicle parameters.
+    the NAR. No manufacturer-proprietary restrictions are noted;
+    no operational vehicle parameters.
 ```
 
 ### Source-file SHA-256 pin
@@ -284,9 +284,9 @@ safety_review:
   decision: accepted
   notes: >-
     Public motor curve from a NAR-certified hobby motor (Estes C6)
-    rescaled to a published academic reference impulse. No export
-    control or manufacturer-proprietary restrictions; no
-    operational vehicle parameters.
+    rescaled to a published academic reference impulse. No
+    manufacturer-proprietary restrictions are noted; no operational
+    vehicle parameters.
 ```
 
 ### Public motor import policy
@@ -406,8 +406,8 @@ safety_review:
     Public-domain user-contributed simfile for the Estes B4 hobby
     motor. The source is an 18 mm model-rocket motor curve and
     cross-references Niskanen 2009 Chapter 6 Table 6.1 experimental
-    apogee (64.0 m) only as future validation context. No export
-    control or manufacturer-proprietary restrictions; no operational
+    apogee (64.0 m) only as future validation context. No
+    manufacturer-proprietary restrictions are noted; no operational
     vehicle parameters.
 ```
 
@@ -417,8 +417,8 @@ The OpenBMP motor format keeps the deck format open and the data
 either synthetic (the default) or transcribed from a
 public corpus with explicit provenance (the converted-public path).
 Fielded-motor thrust curves from non-public corpora are explicitly
-rejected at the project level: those datasets often carry export-
-control or manufacturer-proprietary restrictions that OpenBMP
+rejected at the project level: those datasets often carry
+manufacturer-proprietary or redistribution restrictions that OpenBMP
 cannot ship under its CC0 / open-research positioning.
 
 The architecture's
@@ -469,8 +469,8 @@ license_or_terms: >-
   ThrustCurve.org corpus is distributed under terms that permit
   re-use with attribution and no warranty. The motor is a
   publicly-sold high-power-rocketry reload (Cesaroni Pro75 M1670)
-  with no export-control or manufacturer-proprietary restrictions
-  beyond the standard hobby-rocketry channels.
+  with no manufacturer-proprietary restrictions noted beyond the
+  standard hobby-rocketry channels.
 retrieved_utc:    2026-04-29
 transformation:
   method: >-
@@ -516,9 +516,8 @@ safety_review:
     Public hobby-rocketry reload from a publicly-sold motor
     family (Cesaroni Pro75). The thrust curve is the manufacturer-
     supplied RASP file used by RocketPy for the canonical
-    cross-tool Calisto example. No export-control or
-    manufacturer-proprietary restrictions beyond the standard
-    hobby-rocketry channels.
+    cross-tool Calisto example. No manufacturer-proprietary
+    restrictions are noted beyond the standard hobby-rocketry channels.
 ```
 
 ## `data/motors/rocketpy-calisto-m1670.toml`

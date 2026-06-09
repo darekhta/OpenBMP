@@ -136,6 +136,13 @@ pub struct ScenarioDocument {
     /// config. When absent, the kernel runs in missionless mode with
     /// no event evaluation.
     pub mission: Option<MissionConfig>,
+    /// Optional simulator-owned scenario script block (v3 extension).
+    ///
+    /// Script events carry actions that are not HAL-portable mission
+    /// data: engine commands, effector overrides, recovery commands,
+    /// and multi-body jettison commands.
+    #[serde(default)]
+    pub scenario_script: ScenarioScriptConfig,
     /// Optional first-class multi-rate scheduling block (v3 only).
     ///
     /// Parsed under v3 only. Scenarios that declare a
@@ -355,6 +362,14 @@ impl ScenarioDocument {
         if let Some(mission) = &self.mission {
             mission.validate()?;
         }
+        if self.mission.is_none() && !self.scenario_script.is_empty() {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "scenario_script.events".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "mission".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
         self.validate_force_phase_overrides()?;
         if let Some(fc) = &self.fc {
             fc.validate()?;
@@ -370,6 +385,7 @@ impl ScenarioDocument {
         self.validate_recovery_references()?;
         self.validate_relative_distance_trigger_references()?;
         self.validate_multi_body_attitude_target_references()?;
+        self.validate_multi_body_landing_controller_references()?;
         self.validate_propulsion_unambiguous()?;
         self.validate_v3_blocks()?;
         self.validate_initial_multi_body_references()?;
@@ -440,7 +456,7 @@ impl ScenarioDocument {
     }
 
     fn validate_fc_relative_nav_observability(&self) -> Result<(), ScenarioError> {
-        if self.fc.is_none() {
+        if self.fc.is_none() || !self.flight_controller_owns_mission_state() {
             return Ok(());
         }
         let Some(mission) = &self.mission else {
@@ -450,13 +466,16 @@ impl ScenarioDocument {
             let kind = match event.trigger {
                 EventTriggerConfig::AtRelativeDistance { .. } => "at_relative_distance",
                 EventTriggerConfig::AtRelativeSpeed { .. } => "at_relative_speed",
+                EventTriggerConfig::AtBodyAltitudeDescending { .. } => {
+                    "at_body_altitude_descending"
+                }
                 _ => continue,
             };
             return Err(ScenarioError::InvalidFc {
                 reason: format!(
                     "[fc] scenarios may not use mission.events[{event_index}].trigger.kind = \
                      \"{kind}\" until an onboard relative-navigation observable is wired; \
-                     simulator truth-relative maps are not available to the flight controller"
+                     simulator truth body-lane maps are not available to the flight controller"
                 ),
             });
         }
@@ -557,6 +576,16 @@ impl ScenarioDocument {
     }
 
     fn validate_v3_top_level_blocks(&self, header: u16) -> Result<(), ScenarioError> {
+        if !self.scenario_script.is_empty() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "scenario_script".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            self.scenario_script.validate()?;
+        }
         gate_v3_block(
             header,
             "schedule",
@@ -1205,21 +1234,21 @@ impl ScenarioDocument {
     }
 
     fn validate_stage_separation_agreement(&self) -> Result<(), ScenarioError> {
-        let Some(mission) = &self.mission else {
-            if let Some(multi_body) = &self.multi_body
-                && !multi_body.separations.is_empty()
-            {
-                return Err(ScenarioError::InconsistentSection {
-                    field_a: "multi_body.separation".to_owned(),
-                    value_a: "declared".to_owned(),
-                    field_b: "mission.events".to_owned(),
-                    value_b: "missing".to_owned(),
-                });
-            }
-            return Ok(());
-        };
+        if self.mission.is_none()
+            && self.scenario_script.events.is_empty()
+            && let Some(multi_body) = &self.multi_body
+            && !multi_body.separations.is_empty()
+        {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "multi_body.separation".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "mission.events|scenario_script.events".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
 
-        let jettisons = collect_jettison_stage_actions(mission);
+        let jettisons =
+            collect_jettison_stage_actions(self.mission.as_ref(), &self.scenario_script);
         let multi_body_separations = self
             .multi_body
             .as_ref()
@@ -1259,9 +1288,6 @@ impl ScenarioDocument {
     }
 
     fn validate_engine_references(&self) -> Result<(), ScenarioError> {
-        let Some(mission) = &self.mission else {
-            return Ok(());
-        };
         let declared: BTreeSet<&str> = self
             .vehicle
             .assembly
@@ -1270,36 +1296,48 @@ impl ScenarioDocument {
             .map(|e| e.id.as_str())
             .collect();
 
-        for (phase_index, phase) in mission.phases.iter().enumerate() {
-            for (engine_index, id) in phase.allowed_engines.iter().enumerate() {
-                if !declared.contains(id.as_str()) {
+        if let Some(mission) = &self.mission {
+            for (phase_index, phase) in mission.phases.iter().enumerate() {
+                for (engine_index, id) in phase.allowed_engines.iter().enumerate() {
+                    if !declared.contains(id.as_str()) {
+                        return Err(ScenarioError::UnknownEngineReference {
+                            field: format!(
+                                "mission.phases[{phase_index}].allowed_engines[{engine_index}]"
+                            ),
+                            id: id.clone(),
+                        });
+                    }
+                }
+            }
+            for (state_index, state) in mission.states.iter().enumerate() {
+                for (engine_index, id) in state.allowed_engines.iter().enumerate() {
+                    if !declared.contains(id.as_str()) {
+                        return Err(ScenarioError::UnknownEngineReference {
+                            field: format!(
+                                "mission.states[{state_index}].allowed_engines[{engine_index}]"
+                            ),
+                            id: id.clone(),
+                        });
+                    }
+                }
+            }
+            for (event_index, event) in mission.events.iter().enumerate() {
+                if let ScenarioActionConfig::EngineCommand { id, .. } = &event.action
+                    && !declared.contains(id.as_str())
+                {
                     return Err(ScenarioError::UnknownEngineReference {
-                        field: format!(
-                            "mission.phases[{phase_index}].allowed_engines[{engine_index}]"
-                        ),
+                        field: format!("mission.events[{event_index}].action.id"),
                         id: id.clone(),
                     });
                 }
             }
         }
-        for (state_index, state) in mission.states.iter().enumerate() {
-            for (engine_index, id) in state.allowed_engines.iter().enumerate() {
-                if !declared.contains(id.as_str()) {
-                    return Err(ScenarioError::UnknownEngineReference {
-                        field: format!(
-                            "mission.states[{state_index}].allowed_engines[{engine_index}]"
-                        ),
-                        id: id.clone(),
-                    });
-                }
-            }
-        }
-        for (event_index, event) in mission.events.iter().enumerate() {
+        for (event_index, event) in self.scenario_script.events.iter().enumerate() {
             if let ScenarioActionConfig::EngineCommand { id, .. } = &event.action
                 && !declared.contains(id.as_str())
             {
                 return Err(ScenarioError::UnknownEngineReference {
-                    field: format!("mission.events[{event_index}].action.id"),
+                    field: format!("scenario_script.events[{event_index}].action.id"),
                     id: id.clone(),
                 });
             }
@@ -1308,9 +1346,6 @@ impl ScenarioDocument {
     }
 
     fn validate_recovery_references(&self) -> Result<(), ScenarioError> {
-        let Some(mission) = &self.mission else {
-            return Ok(());
-        };
         let recovery_kinds: BTreeMap<&str, &'static str> = self
             .vehicle
             .assembly
@@ -1319,30 +1354,34 @@ impl ScenarioDocument {
             .map(|r| (r.id.as_str(), r.kind.kind_name()))
             .collect();
 
-        for (event_index, event) in mission.events.iter().enumerate() {
-            if let ScenarioActionConfig::DeployRecovery { id, command } = &event.action {
-                let Some(kind_name) = recovery_kinds.get(id.as_str()) else {
-                    return Err(ScenarioError::UnknownRecoveryReference {
-                        field: format!("mission.events[{event_index}].action.id"),
-                        id: id.clone(),
-                    });
-                };
-                if !is_recovery_command_compatible(kind_name, command) {
-                    return Err(ScenarioError::IncompatibleRecoveryCommand {
-                        field: format!("mission.events[{event_index}].action.command"),
-                        command: command.clone(),
-                        kind: (*kind_name).to_owned(),
-                    });
-                }
+        if let Some(mission) = &self.mission {
+            for (event_index, event) in mission.events.iter().enumerate() {
+                validate_recovery_event_reference(
+                    event,
+                    &format!("mission.events[{event_index}]"),
+                    &recovery_kinds,
+                )?;
             }
+        }
+        for (event_index, event) in self.scenario_script.events.iter().enumerate() {
+            validate_recovery_event_reference(
+                event,
+                &format!("scenario_script.events[{event_index}]"),
+                &recovery_kinds,
+            )?;
         }
         Ok(())
     }
 
     fn validate_relative_distance_trigger_references(&self) -> Result<(), ScenarioError> {
-        let Some(mission) = &self.mission else {
+        if self
+            .mission
+            .as_ref()
+            .is_none_or(|mission| mission.events.is_empty())
+            && self.scenario_script.events.is_empty()
+        {
             return Ok(());
-        };
+        }
         let body_ids: BTreeSet<&str> = self
             .vehicle
             .assembly
@@ -1351,55 +1390,81 @@ impl ScenarioDocument {
             .map(|body| body.id.as_str())
             .collect();
 
-        for (event_index, event) in mission.events.iter().enumerate() {
-            let (kind, body, reference_body) = match &event.trigger {
-                EventTriggerConfig::AtRelativeDistance {
-                    body,
-                    reference_body,
-                    ..
-                } => ("at_relative_distance", body, reference_body),
-                EventTriggerConfig::AtRelativeSpeed {
-                    body,
-                    reference_body,
-                    ..
-                } => ("at_relative_speed", body, reference_body),
-                _ => continue,
-            };
-            if self.vehicle.kind != "rigid_body" {
-                return Err(ScenarioError::IncompatibleAssemblyEntry {
-                    field: format!("mission.events[{event_index}].trigger.kind"),
-                    reason: format!("{kind} requires vehicle.kind = \"rigid_body\""),
-                });
+        if let Some(mission) = &self.mission {
+            for (event_index, event) in mission.events.iter().enumerate() {
+                self.validate_relative_event_trigger_references(
+                    event,
+                    &format!("mission.events[{event_index}]"),
+                    &body_ids,
+                )?;
             }
-            if self.multi_body.is_none() {
+        }
+        for (event_index, event) in self.scenario_script.events.iter().enumerate() {
+            self.validate_relative_event_trigger_references(
+                event,
+                &format!("scenario_script.events[{event_index}]"),
+                &body_ids,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_relative_event_trigger_references(
+        &self,
+        event: &EventConfig,
+        event_path: &str,
+        body_ids: &BTreeSet<&str>,
+    ) -> Result<(), ScenarioError> {
+        let (kind, body, reference_body) = match &event.trigger {
+            EventTriggerConfig::AtRelativeDistance {
+                body,
+                reference_body,
+                ..
+            } => ("at_relative_distance", body, reference_body.as_ref()),
+            EventTriggerConfig::AtRelativeSpeed {
+                body,
+                reference_body,
+                ..
+            } => ("at_relative_speed", body, reference_body.as_ref()),
+            EventTriggerConfig::AtBodyAltitudeDescending { body, .. } => {
+                ("at_body_altitude_descending", body, None)
+            }
+            _ => return Ok(()),
+        };
+        if self.vehicle.kind != "rigid_body" {
+            return Err(ScenarioError::IncompatibleAssemblyEntry {
+                field: format!("{event_path}.trigger.kind"),
+                reason: format!("{kind} requires vehicle.kind = \"rigid_body\""),
+            });
+        }
+        if self.multi_body.is_none() {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: format!("{event_path}.trigger.kind"),
+                value_a: kind.to_owned(),
+                field_b: "multi_body".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
+        if !body_ids.contains(body.as_str()) {
+            return Err(ScenarioError::UnknownBodyReference {
+                field: format!("{event_path}.trigger.body"),
+                value: body.clone(),
+            });
+        }
+        if let Some(reference_body) = reference_body {
+            if reference_body == body {
                 return Err(ScenarioError::InconsistentSection {
-                    field_a: format!("mission.events[{event_index}].trigger.kind"),
-                    value_a: kind.to_owned(),
-                    field_b: "multi_body".to_owned(),
-                    value_b: "missing".to_owned(),
+                    field_a: format!("{event_path}.trigger.body"),
+                    value_a: body.clone(),
+                    field_b: format!("{event_path}.trigger.reference_body"),
+                    value_b: reference_body.clone(),
                 });
             }
-            if !body_ids.contains(body.as_str()) {
+            if !body_ids.contains(reference_body.as_str()) {
                 return Err(ScenarioError::UnknownBodyReference {
-                    field: format!("mission.events[{event_index}].trigger.body"),
-                    value: body.clone(),
+                    field: format!("{event_path}.trigger.reference_body"),
+                    value: reference_body.clone(),
                 });
-            }
-            if let Some(reference_body) = reference_body {
-                if reference_body == body {
-                    return Err(ScenarioError::InconsistentSection {
-                        field_a: format!("mission.events[{event_index}].trigger.body"),
-                        value_a: body.clone(),
-                        field_b: format!("mission.events[{event_index}].trigger.reference_body"),
-                        value_b: reference_body.clone(),
-                    });
-                }
-                if !body_ids.contains(reference_body.as_str()) {
-                    return Err(ScenarioError::UnknownBodyReference {
-                        field: format!("mission.events[{event_index}].trigger.reference_body"),
-                        value: reference_body.clone(),
-                    });
-                }
             }
         }
         Ok(())
@@ -1474,9 +1539,6 @@ impl ScenarioDocument {
     }
 
     fn validate_effector_references(&self) -> Result<(), ScenarioError> {
-        let Some(mission) = &self.mission else {
-            return Ok(());
-        };
         let declared: BTreeSet<&str> = self
             .vehicle
             .assembly
@@ -1485,36 +1547,48 @@ impl ScenarioDocument {
             .map(|e| e.id.as_str())
             .collect();
 
-        for (phase_index, phase) in mission.phases.iter().enumerate() {
-            for (effector_index, id) in phase.allowed_effectors.iter().enumerate() {
-                if !declared.contains(id.as_str()) {
+        if let Some(mission) = &self.mission {
+            for (phase_index, phase) in mission.phases.iter().enumerate() {
+                for (effector_index, id) in phase.allowed_effectors.iter().enumerate() {
+                    if !declared.contains(id.as_str()) {
+                        return Err(ScenarioError::UnknownEffectorReference {
+                            field: format!(
+                                "mission.phases[{phase_index}].allowed_effectors[{effector_index}]"
+                            ),
+                            id: id.clone(),
+                        });
+                    }
+                }
+            }
+            for (state_index, state) in mission.states.iter().enumerate() {
+                for (effector_index, id) in state.allowed_effectors.iter().enumerate() {
+                    if !declared.contains(id.as_str()) {
+                        return Err(ScenarioError::UnknownEffectorReference {
+                            field: format!(
+                                "mission.states[{state_index}].allowed_effectors[{effector_index}]"
+                            ),
+                            id: id.clone(),
+                        });
+                    }
+                }
+            }
+            for (event_index, event) in mission.events.iter().enumerate() {
+                if let ScenarioActionConfig::EffectorOverride { id, .. } = &event.action
+                    && !declared.contains(id.as_str())
+                {
                     return Err(ScenarioError::UnknownEffectorReference {
-                        field: format!(
-                            "mission.phases[{phase_index}].allowed_effectors[{effector_index}]"
-                        ),
+                        field: format!("mission.events[{event_index}].action.id"),
                         id: id.clone(),
                     });
                 }
             }
         }
-        for (state_index, state) in mission.states.iter().enumerate() {
-            for (effector_index, id) in state.allowed_effectors.iter().enumerate() {
-                if !declared.contains(id.as_str()) {
-                    return Err(ScenarioError::UnknownEffectorReference {
-                        field: format!(
-                            "mission.states[{state_index}].allowed_effectors[{effector_index}]"
-                        ),
-                        id: id.clone(),
-                    });
-                }
-            }
-        }
-        for (event_index, event) in mission.events.iter().enumerate() {
+        for (event_index, event) in self.scenario_script.events.iter().enumerate() {
             if let ScenarioActionConfig::EffectorOverride { id, .. } = &event.action
                 && !declared.contains(id.as_str())
             {
                 return Err(ScenarioError::UnknownEffectorReference {
-                    field: format!("mission.events[{event_index}].action.id"),
+                    field: format!("scenario_script.events[{event_index}].action.id"),
                     id: id.clone(),
                 });
             }
@@ -1581,6 +1655,59 @@ impl ScenarioDocument {
                 TorqueAxis::Yaw,
                 &effectors,
             )?;
+        }
+        Ok(())
+    }
+
+    fn validate_multi_body_landing_controller_references(&self) -> Result<(), ScenarioError> {
+        let Some(multi_body) = &self.multi_body else {
+            return Ok(());
+        };
+        if multi_body.landing_controllers.is_empty() {
+            return Ok(());
+        }
+        if self.vehicle.kind != "rigid_body" {
+            return Err(ScenarioError::IncompatibleAssemblyEntry {
+                field: "multi_body.landing_controller".to_owned(),
+                reason: "multi-body landing controllers require vehicle.kind = \"rigid_body\""
+                    .to_owned(),
+            });
+        }
+        let body_ids: BTreeSet<&str> = self
+            .vehicle
+            .assembly
+            .bodies
+            .iter()
+            .map(|body| body.id.as_str())
+            .collect();
+        let engines: BTreeMap<&str, &EngineConfig> = self
+            .vehicle
+            .assembly
+            .engines
+            .iter()
+            .map(|engine| (engine.id.as_str(), engine))
+            .collect();
+        for (index, controller) in multi_body.landing_controllers.iter().enumerate() {
+            if !body_ids.contains(controller.body_id.as_str()) {
+                return Err(ScenarioError::UnknownBodyReference {
+                    field: format!("multi_body.landing_controller[{index}].body_id"),
+                    value: controller.body_id.clone(),
+                });
+            }
+            let Some(engine) = engines.get(controller.engine_id.as_str()) else {
+                return Err(ScenarioError::UnknownEngineReference {
+                    field: format!("multi_body.landing_controller[{index}].engine_id"),
+                    id: controller.engine_id.clone(),
+                });
+            };
+            if engine.mounted_to.as_deref() != Some(controller.body_id.as_str()) {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: format!("multi_body.landing_controller[{index}].engine_id"),
+                    value_a: controller.engine_id.clone(),
+                    field_b: format!("vehicle.assembly.engines.{}.mounted_to", engine.id),
+                    value_b: engine.mounted_to.clone().unwrap_or_default(),
+                });
+            }
         }
         Ok(())
     }
@@ -1830,35 +1957,55 @@ fn terminal_mission_id(id: &str) -> &str {
 
 #[derive(Clone, Debug)]
 struct JettisonStageAction<'a> {
-    event_index: usize,
     event_id: &'a str,
     body: &'a str,
+    body_field: String,
 }
 
-fn collect_jettison_stage_actions(mission: &MissionConfig) -> Vec<JettisonStageAction<'_>> {
+fn collect_jettison_stage_actions<'a>(
+    mission: Option<&'a MissionConfig>,
+    scenario_script: &'a ScenarioScriptConfig,
+) -> Vec<JettisonStageAction<'a>> {
     let mut actions = Vec::new();
-    for (event_index, event) in mission.events.iter().enumerate() {
+    if let Some(mission) = mission {
+        collect_jettison_stage_actions_from_events(&mission.events, "mission.events", &mut actions);
+    }
+    collect_jettison_stage_actions_from_events(
+        &scenario_script.events,
+        "scenario_script.events",
+        &mut actions,
+    );
+    actions
+}
+
+fn collect_jettison_stage_actions_from_events<'a>(
+    events: &'a [EventConfig],
+    event_path: &str,
+    actions: &mut Vec<JettisonStageAction<'a>>,
+) {
+    for (event_index, event) in events.iter().enumerate() {
         match &event.action {
             ScenarioActionConfig::JettisonStage { body } => {
                 actions.push(JettisonStageAction {
-                    event_index,
                     event_id: event.id.as_str(),
                     body: body.as_str(),
+                    body_field: format!("{event_path}[{event_index}].action.body"),
                 });
             }
             ScenarioActionConfig::JettisonBodies { bodies } => {
-                for body in bodies {
+                for (body_index, body) in bodies.iter().enumerate() {
                     actions.push(JettisonStageAction {
-                        event_index,
                         event_id: event.id.as_str(),
                         body: body.as_str(),
+                        body_field: format!(
+                            "{event_path}[{event_index}].action.bodies[{body_index}]"
+                        ),
                     });
                 }
             }
             _ => {}
         }
     }
-    actions
 }
 
 fn assembly_body_mass_lookup(assembly: &AssemblyConfig) -> BTreeMap<&str, f64> {
@@ -1931,7 +2078,7 @@ fn validate_stage_separation_body_references(
     for action in jettisons {
         if !body_masses.contains_key(action.body) {
             return Err(ScenarioError::UnknownBodyReference {
-                field: format!("mission.events[{}].action.body", action.event_index),
+                field: action.body_field.clone(),
                 value: action.body.to_owned(),
             });
         }
@@ -1961,7 +2108,7 @@ fn validate_stage_separation_uniqueness(
     for action in jettisons {
         if !seen_jettisoned_bodies.insert(action.body) {
             return Err(ScenarioError::DuplicateValue {
-                field: format!("mission.events[{}].action.body", action.event_index),
+                field: action.body_field.clone(),
                 value: action.body.to_owned(),
             });
         }
@@ -1989,7 +2136,7 @@ fn validate_stage_separation_symmetry_and_momentum(
         });
         if !matching {
             return Err(ScenarioError::InconsistentSection {
-                field_a: format!("mission.events[{}].action.body", action.event_index),
+                field_a: action.body_field.clone(),
                 value_a: format!("{} at {}", action.body, action.event_id),
                 field_b: "multi_body.separation".to_owned(),
                 value_b: "no matching event_id/lower_body_id".to_owned(),
@@ -2004,7 +2151,7 @@ fn validate_stage_separation_symmetry_and_momentum(
             return Err(ScenarioError::InconsistentSection {
                 field_a: format!("multi_body.separation[{index}]"),
                 value_a: format!("{} at {}", separation.lower_body_id, separation.event_id),
-                field_b: "mission.events.action.kind".to_owned(),
+                field_b: "mission.events.action.kind|scenario_script.events.action.kind".to_owned(),
                 value_b: "no matching jettison_stage".to_owned(),
             });
         }
@@ -5946,6 +6093,39 @@ pub struct MissionConfig {
     pub test_only_state_override: bool,
 }
 
+/// Top-level `[scenario_script]` block.
+///
+/// The block is simulator-owned test stimulus. It deliberately reuses
+/// the event trigger shape so existing deterministic event evaluation
+/// can drive script actions without making those actions part of the
+/// HAL-portable mission graph.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioScriptConfig {
+    /// Simulator-only event bindings.
+    #[serde(default)]
+    pub events: Vec<EventConfig>,
+}
+
+impl ScenarioScriptConfig {
+    fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn validate(&self) -> Result<(), ScenarioError> {
+        let event_ids: Vec<String> = self.events.iter().map(|event| event.id.clone()).collect();
+        require_unique("scenario_script.events.id", &event_ids)?;
+        for (event_index, event) in self.events.iter().enumerate() {
+            event.validate_at(event_index, "scenario_script.events")?;
+            require_script_only_action(
+                &format!("scenario_script.events[{event_index}].action"),
+                &event.action,
+            )?;
+        }
+        Ok(())
+    }
+}
+
 /// Scenario-scope classifier.
 ///
 /// Accepts both the documented table form
@@ -6151,7 +6331,34 @@ fn require_mission_only_action(
         | ScenarioActionConfig::JettisonBodies { .. }
         | ScenarioActionConfig::SelectGuidanceProfile { .. }
         | ScenarioActionConfig::DeployRecovery { .. } => Err(ScenarioError::MissionGraph {
-            reason: format!("{field} may contain only mission actions"),
+            reason: format!(
+                "{field} may contain only HAL-portable mission actions; move simulator-only actions to [[scenario_script.events]]"
+            ),
+        }),
+    }
+}
+
+fn require_script_only_action(
+    field: &str,
+    action: &ScenarioActionConfig,
+) -> Result<(), ScenarioError> {
+    match action {
+        ScenarioActionConfig::EffectorOverride { .. }
+        | ScenarioActionConfig::EngineCommand { .. }
+        | ScenarioActionConfig::Separation
+        | ScenarioActionConfig::JettisonStage { .. }
+        | ScenarioActionConfig::JettisonBodies { .. }
+        | ScenarioActionConfig::SelectGuidanceProfile { .. }
+        | ScenarioActionConfig::DeployRecovery { .. } => Ok(()),
+        ScenarioActionConfig::EnterPhase { .. }
+        | ScenarioActionConfig::EmitTelemetryMarker { .. }
+        | ScenarioActionConfig::Stop { .. }
+        | ScenarioActionConfig::RaiseHealthAlarm { .. }
+        | ScenarioActionConfig::SetRegionState { .. }
+        | ScenarioActionConfig::RequestSafeState { .. } => Err(ScenarioError::MissionGraph {
+            reason: format!(
+                "{field} may contain only simulator-owned scenario script actions; keep HAL-portable mission actions in [[mission.events]]"
+            ),
         }),
     }
 }
@@ -6187,6 +6394,7 @@ impl MissionConfig {
         }
         for (i, event) in self.events.iter().enumerate() {
             event.validate(i)?;
+            require_mission_only_action(&format!("mission.events[{i}].action"), &event.action)?;
         }
         for (i, transition) in self.transitions.iter().enumerate() {
             transition.validate(i)?;
@@ -6426,9 +6634,13 @@ const fn default_once() -> bool {
 
 impl EventConfig {
     fn validate(&self, index: usize) -> Result<(), ScenarioError> {
-        require_non_empty(&format!("mission.events[{index}].id"), &self.id)?;
-        self.trigger.validate(index)?;
-        self.action.validate(index)?;
+        self.validate_at(index, "mission.events")
+    }
+
+    fn validate_at(&self, index: usize, event_path: &str) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("{event_path}[{index}].id"), &self.id)?;
+        self.trigger.validate_at(index, event_path)?;
+        self.action.validate_at(index, event_path)?;
         Ok(())
     }
 }
@@ -6452,6 +6664,15 @@ pub enum EventTriggerConfig {
     },
     /// Altitude crossing on the way down.
     AtAltitudeDescending {
+        /// Altitude threshold (m).
+        altitude_m: f64,
+    },
+    /// Named body altitude crossing on the way down. Evaluated from a
+    /// rigid-body lane, so it is available only when multi-body
+    /// propagation has created or declared that lane.
+    AtBodyAltitudeDescending {
+        /// Assembly body id to monitor.
+        body: String,
         /// Altitude threshold (m).
         altitude_m: f64,
     },
@@ -6518,14 +6739,18 @@ pub enum EventTriggerConfig {
 }
 
 impl EventTriggerConfig {
-    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
-        let path = |field: &str| format!("mission.events[{index}].trigger.{field}");
+    fn validate_at(&self, index: usize, event_path: &str) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("{event_path}[{index}].trigger.{field}");
         match self {
             Self::AtTime { time_s } => {
                 require_finite(&path("time_s"), *time_s)?;
             }
             Self::AtAltitudeAscending { altitude_m }
             | Self::AtAltitudeDescending { altitude_m } => {
+                require_finite(&path("altitude_m"), *altitude_m)?;
+            }
+            Self::AtBodyAltitudeDescending { body, altitude_m } => {
+                require_non_empty(&path("body"), body)?;
                 require_finite(&path("altitude_m"), *altitude_m)?;
             }
             Self::AtApogee => {}
@@ -6633,7 +6858,7 @@ pub enum ScenarioActionConfig {
         /// Human-readable reason published alongside the request.
         reason: String,
     },
-    /// Per-engine command targeting a declared
+    /// Per-engine command addressing a declared
     /// `[[vehicle.assembly.engines]]` by id. The kernel records the
     /// firing; the runner-side `EngineRack` drains and applies the
     /// command on the next rack tick.
@@ -6677,7 +6902,7 @@ pub enum ScenarioActionConfig {
         /// Guidance profile id to activate.
         profile: String,
     },
-    /// Deploy / stow command targeting a declared
+    /// Deploy / stow command addressing a declared
     /// `[[vehicle.assembly.recovery]]` device by id. The command
     /// string must be one of `"deploy"`, `"deploy_drogue"`,
     /// `"deploy_main"`, or `"stow"`; scenario validation checks the
@@ -6695,7 +6920,11 @@ pub enum ScenarioActionConfig {
 
 impl ScenarioActionConfig {
     fn validate(&self, index: usize) -> Result<(), ScenarioError> {
-        let path = |field: &str| format!("mission.events[{index}].action.{field}");
+        self.validate_at(index, "mission.events")
+    }
+
+    fn validate_at(&self, index: usize, event_path: &str) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("{event_path}[{index}].action.{field}");
         match self {
             Self::EnterPhase { phase } => {
                 require_non_empty(&path("phase"), phase)?;
@@ -6768,6 +6997,30 @@ fn require_recovery_command_name(path: &str, command: &str) -> Result<(), Scenar
             value: other.to_owned(),
         }),
     }
+}
+
+fn validate_recovery_event_reference(
+    event: &EventConfig,
+    event_path: &str,
+    recovery_kinds: &BTreeMap<&str, &'static str>,
+) -> Result<(), ScenarioError> {
+    let ScenarioActionConfig::DeployRecovery { id, command } = &event.action else {
+        return Ok(());
+    };
+    let Some(kind_name) = recovery_kinds.get(id.as_str()) else {
+        return Err(ScenarioError::UnknownRecoveryReference {
+            field: format!("{event_path}.action.id"),
+            id: id.clone(),
+        });
+    };
+    if !is_recovery_command_compatible(kind_name, command) {
+        return Err(ScenarioError::IncompatibleRecoveryCommand {
+            field: format!("{event_path}.action.command"),
+            command: command.clone(),
+            kind: (*kind_name).to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Returns `true` when the canonical command name is meaningful for
@@ -6992,7 +7245,7 @@ pub struct AssemblyConfig {
     /// `Box<dyn RecoveryModel>` instances from these configs and
     /// assembles them into a runner-side `RecoveryRack`. Deploy /
     /// stow events are driven by `[mission.events]` declarations
-    /// with `action.kind = "deploy_recovery"` targeting the
+    /// with `action.kind = "deploy_recovery"` addressing the
     /// device's id.
     #[serde(default)]
     pub recovery: Vec<RecoveryConfig>,
@@ -8727,9 +8980,7 @@ impl FcSchedulerConfig {
 /// Powered-ascent reference generator configuration.
 ///
 /// The reference it produces is a *reference trajectory the
-/// three-loop autopilot tracks* — never a guidance solution to a
-/// real-world location. See `docs/ascent-guidance.md` and
-/// `docs/profile-vocabulary-and-guardrails.md`.
+/// three-loop autopilot tracks*. See `docs/ascent-guidance.md`.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FcAscentReferenceConfig {
@@ -8829,7 +9080,7 @@ pub enum FcAscentReferenceMethod {
     /// `theta_min_rad` / `theta_max_rad` / `downrange_axis_eci`.
     ClosedLoopInsertion,
     /// Powered Explicit Guidance: closed-form fuel-optimal insertion
-    /// targeting orbital radius + circular speed + zero radial velocity.
+    /// constraining orbital radius + circular speed + zero radial velocity.
     /// Requires `insertion_radius_m`, `exhaust_velocity_m_s`,
     /// `initial_thrust_accel_m_s2`; intended for the fast (upper-stage)
     /// phase — pair with a gravity turn for the launch phase.
@@ -10297,6 +10548,12 @@ pub struct MultiBodyConfig {
     /// `attitude_targets` in Rust.
     #[serde(default, rename = "attitude_target")]
     pub attitude_targets: Vec<MultiBodyAttitudeTargetConfig>,
+    /// Simulator-side terminal closed-loop controllers for separated
+    /// rigid-body lanes. Serde key is
+    /// `[[multi_body.landing_controller]]`; the field is exposed as
+    /// `landing_controllers` in Rust.
+    #[serde(default, rename = "landing_controller")]
+    pub landing_controllers: Vec<MultiBodyLandingControllerConfig>,
 }
 
 impl MultiBodyConfig {
@@ -10304,11 +10561,11 @@ impl MultiBodyConfig {
         if self.initial_lanes.is_empty()
             && self.separations.is_empty()
             && self.attitude_targets.is_empty()
+            && self.landing_controllers.is_empty()
         {
             return Err(ScenarioError::EmptyList {
-                field:
-                    "multi_body.initial_lane, multi_body.separation, or multi_body.attitude_target"
-                        .to_owned(),
+                field: "multi_body.initial_lane, multi_body.separation, multi_body.attitude_target, or multi_body.landing_controller"
+                    .to_owned(),
             });
         }
         if !self.initial_lanes.is_empty() {
@@ -10351,6 +10608,9 @@ impl MultiBodyConfig {
         }
         for (index, target) in self.attitude_targets.iter().enumerate() {
             target.validate(index)?;
+        }
+        for (index, controller) in self.landing_controllers.iter().enumerate() {
+            controller.validate(index)?;
         }
         Ok(())
     }
@@ -10683,6 +10943,151 @@ impl MultiBodyAttitudeTargetKindConfig {
         }
         Ok(())
     }
+}
+
+/// One entry under `[[multi_body.landing_controller]]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MultiBodyLandingControllerConfig {
+    /// Separated body id this terminal controller acts on.
+    pub body_id: String,
+    /// Engine id mounted to `body_id` and commanded by the controller.
+    pub engine_id: String,
+    /// Controller becomes active at or below this altitude (m).
+    pub start_altitude_m: f64,
+    /// Target altitude for shutdown and vertical-speed targeting (m).
+    #[serde(default)]
+    pub target_altitude_m: f64,
+    /// Desired radial vertical velocity at target altitude (m/s).
+    /// Descending velocities are negative.
+    pub target_vertical_speed_m_s: f64,
+    /// Optional declared landing-site target in ECI metres. When set,
+    /// the runner-side scenario director adds local-tangent lateral
+    /// acceleration feedback and gimbal commands toward this point.
+    #[serde(default)]
+    pub target_position_eci_m: Option<[f64; 3]>,
+    /// Proportional lateral acceleration gain for declared-site
+    /// targeting (`m/s²` per metre).
+    #[serde(default = "default_landing_lateral_kp_s2")]
+    pub lateral_kp_s2: f64,
+    /// Lateral velocity damping gain for declared-site targeting
+    /// (`m/s²` per `m/s`).
+    #[serde(default = "default_landing_lateral_kd_s")]
+    pub lateral_kd_s: f64,
+    /// Lateral acceleration clamp for declared-site targeting (m/s²).
+    #[serde(default = "default_landing_max_lateral_accel_m_s2")]
+    pub max_lateral_accel_m_s2: f64,
+    /// Constant upward acceleration margin used to counter gravity (m/s²).
+    #[serde(default = "default_standard_gravity")]
+    pub gravity_margin_m_s2: f64,
+    /// Minimum throttle clamp while the controller is active.
+    #[serde(default)]
+    pub min_throttle_unit: f64,
+    /// Maximum throttle clamp while the controller is active.
+    #[serde(default = "default_unit")]
+    pub max_throttle_unit: f64,
+}
+
+impl MultiBodyLandingControllerConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("multi_body.landing_controller[{index}].{field}");
+        require_non_empty(&path("body_id"), &self.body_id)?;
+        require_non_empty(&path("engine_id"), &self.engine_id)?;
+        require_finite(&path("start_altitude_m"), self.start_altitude_m)?;
+        require_positive(&path("start_altitude_m"), self.start_altitude_m)?;
+        require_finite(&path("target_altitude_m"), self.target_altitude_m)?;
+        if self.target_altitude_m < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("target_altitude_m"),
+                value: self.target_altitude_m,
+                rule: "must be greater than or equal to zero",
+            });
+        }
+        if self.start_altitude_m <= self.target_altitude_m {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("start_altitude_m"),
+                value: self.start_altitude_m,
+                rule: "must be greater than target_altitude_m",
+            });
+        }
+        require_finite(
+            &path("target_vertical_speed_m_s"),
+            self.target_vertical_speed_m_s,
+        )?;
+        if self.target_vertical_speed_m_s > 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("target_vertical_speed_m_s"),
+                value: self.target_vertical_speed_m_s,
+                rule: "must be less than or equal to zero",
+            });
+        }
+        if let Some(target_position_eci_m) = self.target_position_eci_m {
+            require_finite_array(&path("target_position_eci_m"), &target_position_eci_m)?;
+            require_nonzero_vector(&path("target_position_eci_m"), &target_position_eci_m)?;
+        }
+        require_finite(&path("lateral_kp_s2"), self.lateral_kp_s2)?;
+        if self.lateral_kp_s2 < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("lateral_kp_s2"),
+                value: self.lateral_kp_s2,
+                rule: "must be greater than or equal to zero",
+            });
+        }
+        require_finite(&path("lateral_kd_s"), self.lateral_kd_s)?;
+        if self.lateral_kd_s < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("lateral_kd_s"),
+                value: self.lateral_kd_s,
+                rule: "must be greater than or equal to zero",
+            });
+        }
+        require_finite(&path("max_lateral_accel_m_s2"), self.max_lateral_accel_m_s2)?;
+        if self.max_lateral_accel_m_s2 < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("max_lateral_accel_m_s2"),
+                value: self.max_lateral_accel_m_s2,
+                rule: "must be greater than or equal to zero",
+            });
+        }
+        require_finite(&path("gravity_margin_m_s2"), self.gravity_margin_m_s2)?;
+        if self.gravity_margin_m_s2 < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("gravity_margin_m_s2"),
+                value: self.gravity_margin_m_s2,
+                rule: "must be greater than or equal to zero",
+            });
+        }
+        validate_unit_interval(&path("min_throttle_unit"), self.min_throttle_unit)?;
+        validate_unit_interval(&path("max_throttle_unit"), self.max_throttle_unit)?;
+        if self.min_throttle_unit > self.max_throttle_unit {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("min_throttle_unit"),
+                value: self.min_throttle_unit,
+                rule: "must be less than or equal to max_throttle_unit",
+            });
+        }
+        Ok(())
+    }
+}
+
+fn default_standard_gravity() -> f64 {
+    9.80665
+}
+
+fn default_landing_lateral_kp_s2() -> f64 {
+    2.0e-5
+}
+
+fn default_landing_lateral_kd_s() -> f64 {
+    0.05
+}
+
+fn default_landing_max_lateral_accel_m_s2() -> f64 {
+    3.0
+}
+
+fn default_unit() -> f64 {
+    1.0
 }
 
 /// Multi-instance estimator-routing block (`[fc.estimator_lanes]`, v3 only).

@@ -9,16 +9,12 @@ to exercise and showcase OpenBMP's two-stage powered-ascent path
 lanes). It is **not** a model of, and makes **no performance claim
 about**, any real fielded vehicle, operator, engine, or programme.
 
-The name is deliberately evocative of the medium-lift class it
-represents. Per the project's revised doctrine (see
-[`docs/real-rocket-integration.md`](../../docs/real-rocket-integration.md)
-§ "Synthetic demonstration vehicles"), clearly-labelled synthetic
-demonstration vehicles whose names *evoke* a class are permitted in-tree
-**provided** (a) every parameter is a rounded, order-of-magnitude class
-figure rather than a fielded value, (b) the artifact is tagged
-`validation = "experimental"` and labelled synthetic, and (c) the
-forward-only / no-targeting safety core is untouched (there is no
-target, aimpoint, range, or terminal-guidance field anywhere here).
+The name is deliberately evocative of the medium-lift class it represents.
+Per [`docs/real-rocket-integration.md`](../../docs/real-rocket-integration.md)
+§ "Synthetic demonstration vehicles", clearly labelled synthetic
+demonstration vehicles whose names evoke a class are acceptable in-tree when
+every parameter is a rounded, order-of-magnitude class figure rather than a
+fielded value and the artifact is tagged `validation = "experimental"`.
 
 ## Parameter basis (class anchors, not fielded values)
 
@@ -198,15 +194,24 @@ This provenance record covers the following synthetic scenario files:
   still-attached fairing/payload until each departs).
 - `scenarios/phalcon9/phalcon9-orbit-boostback.toml` — the same ascent with an
   **integrated booster boostback**: the booster carries a dedicated ~6 t
-  boostback propellant tank + a 400 kN on-axis boostback engine (idle during
-  ascent), separates at MECO, **flips retrograde** (separation attitude
-  offset), and fires the boostback engine on a scripted ignite→cut window
-  (t≈250–290 s) — all in the SAME run as the ascent. The upper stage still
+  boostback propellant tank + a 400 kN restartable gimballed boostback/landing
+  engine (idle during ascent), separates at MECO, **flips retrograde**
+  (separation attitude offset), and fires the boostback engine from
+  separated-lane range and relative-speed triggers (ignite at ~600 m lane
+  range, cut at ~1200 m/s relative speed; t≈249.7–290.0 s in the nominal run)
+  — all in the SAME run as the ascent. The upper stage still
   reaches a bound near-circular LEO (perigee ~239 km × apogee ~439 km, e
   ~0.015), while the separated booster lane burns its reserve (~5.4 t) and
-  decelerates ~441 m/s (a partial boostback). This is an OPEN-LOOP (scripted)
-  boostback; closed-loop guided boostback+landing needs a per-lane control
-  loop (see `docs/launch-vehicle-fidelity-frontier.md`). Verified by
+  decelerates ~1245 m/s (a partial boostback). This is an event-triggered
+  deceleration-only boostback plus simulator-director terminal recovery, not
+  fielded landing guidance. Below the terminal window a simulator-side
+  `[[multi_body.landing_controller]]` commands the booster-owned engine toward
+  a vertical touchdown-speed target and laterally toward a declared ECI site.
+  The boostback SIL package records independent
+  `booster` and `upper_stage` mission-region traces, including booster
+  entry-interface, terminal-window, and ground-crossing states driven by
+  separated-lane altitude triggers.
+  Verified by
   `crates/openbmp-cli/tests/phalcon9_orbit_boostback_e2e.rs`.
 - `scenarios/phalcon9/phalcon9-orbit-flex.toml` — the same vehicle carrying a
   first lateral structural **bending mode** (`[vehicle.bending]`, ~1.5 Hz)

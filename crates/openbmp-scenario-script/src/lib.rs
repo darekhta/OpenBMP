@@ -32,7 +32,7 @@ use openbmp_core::{BodyId, EffectorId, EngineId, RecoveryId};
 /// [`docs/mission-graph-architecture.md § Action taxonomy`](../../docs/mission-graph-architecture.md).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScenarioScriptAction {
-    /// Per-engine command targeting a declared engine by
+    /// Per-engine command addressing a declared engine by
     /// [`EngineId`]. The event consumer records the firing; the
     /// runner-side `EngineRack::apply_commands` drains it and applies
     /// the command to the engine on the next rack tick.

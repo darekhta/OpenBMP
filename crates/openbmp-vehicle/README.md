@@ -80,7 +80,7 @@ engine cluster + drogue/main recovery hot path within an audited
 Toy vehicles are synthetic. Any public example vehicle data must include
 provenance and must not be a real operational parameter set.
 
-## Safety Boundary
+## Scope Boundary
 
 Generic vehicle composition only. No real fielded-vehicle parameter
 sets ship in this crate; toy academic vehicles only.

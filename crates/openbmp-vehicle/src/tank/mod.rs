@@ -277,7 +277,7 @@ impl BaffleModel {
 /// the [`crate::tank`]-rack adapter.
 #[derive(Debug)]
 pub struct Tank {
-    /// Stable identifier for telemetry and event-action targeting.
+    /// Stable identifier for telemetry and event-action addressing.
     id: TankId,
     /// Closed-form geometry (cylinder / sphere / ellipsoid).
     geometry: TankGeometry,

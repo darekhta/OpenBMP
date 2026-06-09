@@ -23,7 +23,7 @@
 //!   propulsion-side [`openbmp_propulsion::EngineCluster`]; the
 //!   rack iterates that order verbatim.
 //! - `apply_commands` walks the fired-event slice in order and
-//!   rejects multiple commands targeting the same engine in one step.
+//!   rejects multiple commands addressing the same engine in one step.
 //!   This keeps same-step command bundles explicit instead of
 //!   depending on event-id ordering.
 //! - The kernel-pushed snapshot map is `BTreeMap<EngineId,
@@ -179,7 +179,7 @@ impl EngineRack {
 
     /// Apply any scenario-script engine-command actions drained from
     /// the kernel's per-step fired-event queue. Multiple commands
-    /// targeting the same engine in one step are rejected so the
+    /// addressing the same engine in one step are rejected so the
     /// scenario author must resolve the command bundle explicitly.
     ///
     /// # Errors

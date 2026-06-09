@@ -1,4 +1,4 @@
-//! Forward-only differential corrector (Gauss-Newton targeting).
+//! Differential corrector (Gauss-Newton shooting).
 //!
 //! [`DifferentialCorrector`] drives a caller-supplied forward
 //! "shooting" map — a set of free control variables mapped to a

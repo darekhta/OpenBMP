@@ -28,7 +28,7 @@ shipping real device drivers or real bus protocols.
 Downstream consumers wishing to integrate with a specific external
 system are responsible for writing that integration **outside the
 OpenBMP repository** under their own license, governance, and
-export-control posture (see
+qualification posture (see
 [`docs/software-architecture.md`](../../docs/software-architecture.md)
 § Extensibility for Downstream Integration).
 
@@ -73,8 +73,8 @@ responses.
 
 This crate ships no data files.
 
-## Safety Boundary
+## Scope Boundary
 
 The bridge is intentionally generic — it does not negotiate with any
 real protocol. Adding a real protocol implementation here would
-violate the safety boundary; such code lives downstream.
+violate the scope boundary; such code lives downstream.

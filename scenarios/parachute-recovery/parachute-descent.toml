@@ -1,30 +1,4 @@
-# Exit-criterion scenario — point-mass vehicle with
-# two-stage drogue + main parachute descent.
-#
-# The scenario demonstrates the full recovery path:
-#   - recovery scenario block parses through the structured
-#     `RecoveryConfig` family;
-#   - the runner-side `RecoveryRack` is built with three devices
-#     (only `dual_chute` is exercised via deploy events; the others
-#     stay stowed with zero drag);
-#   - per-step the rack publishes a `RecoverySnapshot` to the kernel
-#     via `set_recovery_snapshot`;
-#   - the kernel-side `RecoveryRackForceAdapter` reads the snapshot
-#     and adds the deployed devices' drag force to the point-mass
-#     force-breakdown.
-#   - mission events drive the state machine: `at_apogee` fires
-#     `deploy_drogue` against the drogue+main device; an altitude
-#     crossing on the way down at 300 m AGL fires `deploy_main`.
-#
-# Vehicle starts at altitude 1000 m with upward velocity 50 m/s.
-# Apogee is at ≈ 1127 m (50 m/s + free-fall climb of 50²/(2g) ≈ 127 m).
-# After apogee, gravity pulls the vehicle back. Drogue opens (small
-# canopy) until altitude crosses 300 m, then main deploys (large
-# canopy) and the vehicle decelerates toward terminal velocity.
-#
-# Synthetic round numbers; not a benchmark.
-
-openbmp.scenario = 2
+openbmp.scenario = 3
 
 [meta]
 name        = "parachute-descent"
@@ -94,10 +68,22 @@ label = "main_descent"
 [[mission.events]]
 id      = "evt_apogee"
 trigger = { kind = "at_apogee" }
+action = { kind = "emit_telemetry_marker", tag = "evt_apogee" }
+
+# Apogee fires `deploy_drogue` against the dual_chute device.
+[[scenario_script.events]]
+id      = "evt_apogee"
+trigger = { kind = "at_apogee" }
 action  = { kind = "deploy_recovery", id = "dual_chute", command = "deploy_drogue" }
 
 # Crossing 300 m AGL on the way down fires `deploy_main`.
 [[mission.events]]
+id      = "evt_main"
+trigger = { kind = "at_altitude_descending", altitude_m = 300.0 }
+action = { kind = "emit_telemetry_marker", tag = "evt_main" }
+
+# Crossing 300 m AGL on the way down fires `deploy_main`.
+[[scenario_script.events]]
 id      = "evt_main"
 trigger = { kind = "at_altitude_descending", altitude_m = 300.0 }
 action  = { kind = "deploy_recovery", id = "dual_chute", command = "deploy_main" }
@@ -112,3 +98,5 @@ event = "evt_apogee"
 from  = "drogue_descent"
 to    = "main_descent"
 event = "evt_main"
+
+[scenario_script]

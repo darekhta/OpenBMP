@@ -362,6 +362,10 @@ where
     /// triggers. Empty for point-mass kernels and before rigid-body
     /// lanes have detached.
     previous_event_relative_speeds_m_s: Option<BTreeMap<crate::events::RelativeDistanceKey, f64>>,
+    /// Previous-step named-body altitude samples for body-lane event
+    /// triggers. Empty for point-mass kernels and before rigid-body
+    /// lanes have detached.
+    previous_event_body_altitudes_m: Option<BTreeMap<openbmp_core::BodyId, f64>>,
     /// Kernel-owned snapshot of effector-actuals values
     /// keyed by deck-axis name. The runner refreshes this map via
     /// [`Self::set_effector_actuals`] before each `step()` call so
@@ -497,6 +501,7 @@ where
             previous_event_scalars: None,
             previous_event_relative_distances_m: None,
             previous_event_relative_speeds_m_s: None,
+            previous_event_body_altitudes_m: None,
             effector_actuals: std::collections::BTreeMap::new(),
             engine_snapshot: std::collections::BTreeMap::new(),
             tank_snapshot: std::collections::BTreeMap::new(),
@@ -681,6 +686,7 @@ where
             };
             self.evaluate_events(
                 scalars,
+                BTreeMap::new(),
                 BTreeMap::new(),
                 BTreeMap::new(),
                 next_step,
@@ -1135,6 +1141,7 @@ where
         scalars: crate::events::EventScalars,
         relative_distances_m: BTreeMap<crate::events::RelativeDistanceKey, f64>,
         relative_speeds_m_s: BTreeMap<crate::events::RelativeDistanceKey, f64>,
+        body_altitudes_m: BTreeMap<openbmp_core::BodyId, f64>,
         step: StepIndex,
         time: SimTime,
     ) {
@@ -1147,6 +1154,8 @@ where
             previous_relative_distances_m: self.previous_event_relative_distances_m.clone(),
             relative_speeds_m_s: relative_speeds_m_s.clone(),
             previous_relative_speeds_m_s: self.previous_event_relative_speeds_m_s.clone(),
+            body_altitudes_m: body_altitudes_m.clone(),
+            previous_body_altitudes_m: self.previous_event_body_altitudes_m.clone(),
         };
         let fc_owned = self.mission_state_authority == MissionStateAuthority::FlightController;
         let mut transitioned = false;
@@ -1229,6 +1238,7 @@ where
         self.previous_event_scalars = Some(scalars);
         self.previous_event_relative_distances_m = Some(relative_distances_m);
         self.previous_event_relative_speeds_m_s = Some(relative_speeds_m_s);
+        self.previous_event_body_altitudes_m = Some(body_altitudes_m);
     }
 
     fn apply_graph_transition_for_event(
@@ -1476,6 +1486,7 @@ where
             previous_event_scalars: None,
             previous_event_relative_distances_m: None,
             previous_event_relative_speeds_m_s: None,
+            previous_event_body_altitudes_m: None,
             effector_actuals: std::collections::BTreeMap::new(),
             engine_snapshot: std::collections::BTreeMap::new(),
             tank_snapshot: std::collections::BTreeMap::new(),
@@ -1794,6 +1805,13 @@ where
                         &self.separated_rigid_bodies,
                     ));
                 }
+                if self.previous_event_body_altitudes_m.is_none() {
+                    self.previous_event_body_altitudes_m = Some(rigid_body_altitudes_m(
+                        self.primary_rigid_body,
+                        &self.state,
+                        &self.separated_rigid_bodies,
+                    ));
+                }
             }
             let event_env = self.environment.sample(EnvironmentQuery {
                 time: SimTime::from_seconds(canonical_time_s),
@@ -1824,10 +1842,16 @@ where
                 &new_state,
                 &self.separated_rigid_bodies,
             );
+            let body_altitudes_m = rigid_body_altitudes_m(
+                self.primary_rigid_body,
+                &new_state,
+                &self.separated_rigid_bodies,
+            );
             self.evaluate_events(
                 scalars,
                 relative_distances_m,
                 relative_speeds_m_s,
+                body_altitudes_m,
                 next_step,
                 SimTime::from_seconds(canonical_time_s),
             );
@@ -2441,6 +2465,27 @@ where
         }
     }
     speeds
+}
+
+fn rigid_body_altitudes_m(
+    primary_body: Option<BodyId>,
+    primary_state: &openbmp_state::RigidBodyState,
+    separated_bodies: &[SeparatedRigidBody],
+) -> BTreeMap<BodyId, f64> {
+    let mut altitudes = BTreeMap::new();
+    if let Some(primary_body) = primary_body {
+        altitudes.insert(
+            primary_body,
+            geometric_altitude_m(&primary_state.position.vector),
+        );
+    }
+    for separated in separated_bodies {
+        altitudes.insert(
+            separated.body,
+            geometric_altitude_m(&separated.state.position.vector),
+        );
+    }
+    altitudes
 }
 
 // ---------------------------------------------------------------------

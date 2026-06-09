@@ -212,6 +212,8 @@ impl Commander {
             previous_relative_distances_m: None,
             relative_speeds_m_s: std::collections::BTreeMap::new(),
             previous_relative_speeds_m_s: None,
+            body_altitudes_m: std::collections::BTreeMap::new(),
+            previous_body_altitudes_m: None,
         }
     }
 

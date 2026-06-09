@@ -24,7 +24,8 @@ use openbmp_mission::{
 };
 use openbmp_scenario::{
     EventConfig, EventTriggerConfig, MissionConfig, PhaseConfig, PhaseTransitionConfig,
-    RegionConfig, RegionStateConfig, ScenarioActionConfig, ScenarioDocument, StateConfig,
+    RegionConfig, RegionStateConfig, ScenarioActionConfig, ScenarioDocument, ScenarioScriptConfig,
+    StateConfig,
 };
 use openbmp_sim::{
     AlarmCode, BuiltInEventTrigger, EventBinding, EventId, MissionAction, MissionPhaseGraph, Phase,
@@ -59,7 +60,11 @@ pub(crate) fn uses_dynamic_pressure_trigger(document: &ScenarioDocument) -> bool
             .events
             .iter()
             .any(|event| matches!(&event.trigger, EventTriggerConfig::AtDynamicPressure { .. }))
-    })
+    }) || document
+        .scenario_script
+        .events
+        .iter()
+        .any(|event| matches!(&event.trigger, EventTriggerConfig::AtDynamicPressure { .. }))
 }
 
 enum RuntimeEventBinding {
@@ -153,6 +158,42 @@ fn region_to_cli_error(err: &RegionError) -> RunnerError {
 /// unknown phase or event id, the phase graph is invalid, or
 /// `mission.initial_phase` references an unknown id.
 pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRuntime, RunnerError> {
+    build_mission_runtime_typed_with_script(mission, &ScenarioScriptConfig::default())
+}
+
+/// Convert a parsed [`ScenarioDocument`] into typed mission runtime
+/// values when the document declares a `[mission]` block.
+///
+/// The mission graph comes from `[mission]`, while simulator-owned
+/// bindings are the union of legacy script actions in
+/// `[[mission.events]]` and new `[[scenario_script.events]]` entries.
+///
+/// # Errors
+///
+/// Returns [`RunnerError::Scenario`] when mission conversion or script
+/// binding conversion fails.
+pub fn build_mission_runtime_from_document(
+    document: &ScenarioDocument,
+) -> Result<Option<MissionRuntime>, RunnerError> {
+    let Some(mission) = &document.mission else {
+        return Ok(None);
+    };
+    build_mission_runtime_typed_with_script(mission, &document.scenario_script).map(Some)
+}
+
+/// Convert a parsed [`MissionConfig`] plus simulator-owned script
+/// events into the typed runtime values consumed by the kernel and FC
+/// commander.
+///
+/// # Errors
+///
+/// Returns [`RunnerError::Scenario`] when a transition references an
+/// unknown phase or event id, the phase graph is invalid, or
+/// `mission.initial_phase` references an unknown id.
+pub fn build_mission_runtime_typed_with_script(
+    mission: &MissionConfig,
+    scenario_script: &ScenarioScriptConfig,
+) -> Result<MissionRuntime, RunnerError> {
     let phase_id_lookup = phase_lookup(mission);
     let event_id_lookup: BTreeMap<&str, EventId> = mission
         .events
@@ -164,7 +205,7 @@ pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRun
     let runtime_bindings: Vec<RuntimeEventBinding> = mission
         .events
         .iter()
-        .map(|event| build_event_binding(event, &phase_id_lookup))
+        .map(|event| build_event_binding(event, event_id(&event.id), &phase_id_lookup))
         .collect::<Result<_, _>>()?;
     let mut mission_bindings = Vec::new();
     let mut script_bindings = Vec::new();
@@ -180,6 +221,11 @@ pub fn build_mission_runtime_typed(mission: &MissionConfig) -> Result<MissionRun
                 script_bindings.push(binding);
             }
         }
+    }
+    for event in &scenario_script.events {
+        let binding = build_script_event_binding(event)?;
+        declared_event_ids.push(binding.id);
+        script_bindings.push(binding);
     }
     mission_bindings.sort_by_key(|event| event.id.value());
     script_bindings.sort_by_key(|event| event.id.value());
@@ -244,6 +290,14 @@ fn event_id(id: &str) -> EventId {
         EventId::from_path(id)
     } else {
         EventId::from_path(&format!("mission.events.{id}"))
+    }
+}
+
+fn script_event_id(id: &str) -> EventId {
+    if id.starts_with("scenario_script.events.") {
+        EventId::from_path(id)
+    } else {
+        EventId::from_path(&format!("scenario_script.events.{id}"))
     }
 }
 
@@ -344,9 +398,9 @@ fn mission_actions(
 #[allow(clippy::too_many_lines)] // expanded with RaiseHealthAlarm / RequestSafeState branches.
 fn build_event_binding(
     config: &EventConfig,
+    id: EventId,
     phase_id_lookup: &BTreeMap<&str, PhaseId>,
 ) -> Result<RuntimeEventBinding, RunnerError> {
-    let id = event_id(&config.id);
     let trigger = build_trigger(&config.trigger)?;
     Ok(match &config.action {
         ScenarioActionConfig::EnterPhase { phase } => {
@@ -505,6 +559,22 @@ fn build_event_binding(
     })
 }
 
+fn build_script_event_binding(
+    config: &EventConfig,
+) -> Result<EventBinding<ScenarioScriptAction>, RunnerError> {
+    match build_event_binding(config, script_event_id(&config.id), &BTreeMap::new())? {
+        RuntimeEventBinding::Script(binding) => Ok(binding),
+        RuntimeEventBinding::Mission(_) => Err(RunnerError::Scenario(
+            openbmp_scenario::ScenarioError::MissionGraph {
+                reason: format!(
+                    "scenario_script.events.{} may contain only simulator-owned scenario script actions",
+                    config.id
+                ),
+            },
+        )),
+    }
+}
+
 /// Resolve a scenario-text region id to a stable `RegionId`. Bare
 /// names (e.g. `"health"`) resolve to the canonical region path
 /// `"mission.regions.<id>"`; absent / empty values default to
@@ -543,6 +613,12 @@ fn build_trigger(config: &EventTriggerConfig) -> Result<BuiltInEventTrigger, Run
         }
         EventTriggerConfig::AtAltitudeDescending { altitude_m } => {
             BuiltInEventTrigger::AtAltitudeDescending {
+                meters: *altitude_m,
+            }
+        }
+        EventTriggerConfig::AtBodyAltitudeDescending { body, altitude_m } => {
+            BuiltInEventTrigger::AtBodyAltitudeDescending {
+                target: openbmp_core::BodyId::from_path(&format!("vehicle.assembly.bodies.{body}")),
                 meters: *altitude_m,
             }
         }
@@ -1031,6 +1107,23 @@ mod tests {
     }
 
     #[test]
+    fn at_body_altitude_descending_trigger_builds_runtime_trigger() -> Result<(), RunnerError> {
+        let trigger = build_trigger(&EventTriggerConfig::AtBodyAltitudeDescending {
+            body: "lower".to_owned(),
+            altitude_m: 10_000.0,
+        })?;
+
+        assert_eq!(
+            trigger,
+            BuiltInEventTrigger::AtBodyAltitudeDescending {
+                target: openbmp_core::BodyId::from_path("vehicle.assembly.bodies.lower"),
+                meters: 10_000.0,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
     fn at_relative_speed_trigger_builds_runtime_trigger() -> Result<(), RunnerError> {
         let trigger = build_trigger(&EventTriggerConfig::AtRelativeSpeed {
             body: "rv1".to_owned(),
@@ -1065,7 +1158,7 @@ mod tests {
         };
         let phase_lookup = BTreeMap::new();
 
-        let binding = build_event_binding(&event, &phase_lookup)?;
+        let binding = build_event_binding(&event, event_id(&event.id), &phase_lookup)?;
         let binding = match binding {
             RuntimeEventBinding::Script(binding) => binding,
             RuntimeEventBinding::Mission(_) => {
@@ -1086,6 +1179,42 @@ mod tests {
     }
 
     #[test]
+    fn scenario_script_event_uses_script_namespace() -> Result<(), RunnerError> {
+        let event = EventConfig {
+            id: "main_engine_start".to_owned(),
+            trigger: EventTriggerConfig::AtTime { time_s: 0.0 },
+            action: ScenarioActionConfig::EngineCommand {
+                id: "main".to_owned(),
+                command: openbmp_scenario::EngineCommandConfig {
+                    throttle_unit: 1.0,
+                    gimbal_pitch_rad: 0.0,
+                    gimbal_yaw_rad: 0.0,
+                    ignite: true,
+                    shutdown: false,
+                },
+            },
+            once: true,
+        };
+
+        let binding = build_script_event_binding(&event)?;
+
+        assert_eq!(binding.id, script_event_id("main_engine_start"));
+        assert_ne!(binding.id, event_id("main_engine_start"));
+        assert_eq!(
+            binding.action,
+            ScenarioScriptAction::EngineCommand {
+                id: openbmp_core::EngineId::from_path("vehicle.assembly.engines.main"),
+                throttle_unit: 1.0,
+                gimbal_pitch_rad: 0.0,
+                gimbal_yaw_rad: 0.0,
+                ignite: true,
+                shutdown: false,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
     fn set_region_state_event_builds_mission_action() -> Result<(), RunnerError> {
         let event = EventConfig {
             id: "estimator_boost".to_owned(),
@@ -1098,7 +1227,7 @@ mod tests {
         };
         let phase_lookup = BTreeMap::new();
 
-        let binding = build_event_binding(&event, &phase_lookup)?;
+        let binding = build_event_binding(&event, event_id(&event.id), &phase_lookup)?;
         let binding = match binding {
             RuntimeEventBinding::Mission(binding) => binding,
             RuntimeEventBinding::Script(_) => {
@@ -1165,7 +1294,7 @@ mod tests {
         };
         let phase_lookup = BTreeMap::new();
 
-        let binding = build_event_binding(&event, &phase_lookup)?;
+        let binding = build_event_binding(&event, event_id(&event.id), &phase_lookup)?;
         let binding = match binding {
             RuntimeEventBinding::Script(binding) => binding,
             RuntimeEventBinding::Mission(_) => {

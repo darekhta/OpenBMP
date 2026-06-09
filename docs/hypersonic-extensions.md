@@ -10,17 +10,16 @@ The extensions are designed to plug into the existing trait surfaces defined
 in [software-architecture.md](software-architecture.md) while extending the
 solver, coupling, validation, and data-package infrastructure needed for
 research-grade hypersonic work. They are **research extensions** and are
-subject to the additional accept/reject rules in
-[safety-boundaries.md § Hypersonic Extensions](safety-boundaries.md#hypersonic-extensions).
+subject to the repository scope and validation rules in
+[safety-boundaries.md](safety-boundaries.md).
 
 ## Scope
 
 OpenBMP supports the **physics of hypersonic flight** — the engineering and
 academic study of vehicles flying at Mach > 5 — using public, textbook, and
-synthetic data. It does **not** ship operational hypersonic-weapon parameter
-sets, terminal-evasion logic, penetration aids, or targeting in any phase.
-The civilian and academic literature (Anderson, Vinh, Park, Bertin, Hirschel,
-NASA technical reports, ESA IXV documentation) is the reference frame.
+synthetic data. The civilian and academic literature (Anderson, Vinh, Park,
+Bertin, Hirschel, NASA technical reports, ESA IXV documentation) is the
+reference frame.
 
 ### Physics regimes covered
 
@@ -60,13 +59,12 @@ data ships in the repository.
   [real-rocket-integration.md](real-rocket-integration.md) walks through
   the lifting-reentry assembly using fictional ARV-Reference numbers.
 
-### Vehicle classes NOT targeted
+### Vehicle classes not currently in the roadmap
 
-- Operational HGVs, MaRVs, hypersonic cruise weapons (see safety boundaries).
-- Re-entry vehicles whose stated purpose is delivering a payload to a
-  real-world ground location.
-- Any vehicle whose modeled performance is benchmarked against operational
-  miss-distance or impact-dispersion criteria.
+- Non-Earth planetary aerocapture or aerobraking vehicles.
+- Vehicle studies requiring proprietary or non-public parameter sets.
+- Vehicle studies whose validation data cannot be checked into the repository
+  or described with enough provenance for review.
 
 ## Research Baseline
 
@@ -1109,9 +1107,9 @@ to keep the rigid-body formulation valid.
   of (re-radiation + conduction + ablation enthalpy + sensible heating)
   to <0.1 %.
 
-#### What ablation does *not* include
+#### Ablation Scope
 
-Per safety boundaries, the ablation toy does **not** ship:
+The ablation toy ships only generic demonstrator material models:
 
 - Any specific real fielded TPS material parameter set: PICA, AVCOAT,
   RCC, SLA-561V, FRSI, AFRSI, LI-900, MA-25S, or any other operational
@@ -1297,13 +1295,12 @@ validation cases:
   through atmosphere, terminate at a scenario-defined altitude.
 - **Equilibrium glide** — constant-altitude lifting glide at academic
   L/D ratio.
-- **Aerocapture textbook problem** — single-pass aerocapture into a target
+- **Aerocapture textbook problem** — single-pass aerocapture into a desired
   apoapsis altitude (toy two-body capture).
 
-All trajectories terminate at scenario-defined altitudes or velocities, not
-at real-world locations. Waypoints are inertial points, not target
-coordinates. The mission state machine extends with two phases for these
-profiles:
+Trajectories terminate at scenario-defined altitudes or velocities. Waypoints
+are inertial points. The mission state machine extends with two phases for
+these profiles:
 
 ```rust
 pub enum MissionPhase {
@@ -1320,8 +1317,7 @@ pub enum MissionPhase {
 }
 ```
 
-The phase machine is **driven by simulator-observable state**, never by
-target acquisition.
+The phase machine is **driven by simulator-observable state**.
 
 ## Validation Suite
 
@@ -1591,7 +1587,6 @@ multiple independent textbook references.
 
 Permanently out of scope, regardless of demand:
 
-- Real fielded HGV / MaRV / hypersonic-cruise-weapon parameter sets.
 - **Operational tunings** of Park two-temperature reaction rates calibrated
   to any specific fielded vehicle. (Generic public-textbook Park'87 / '90 /
   '93 reaction sets are supported.)
@@ -1605,20 +1600,13 @@ Permanently out of scope, regardless of demand:
   flight-dynamics simulator, not a CFD code. CFD-derived aero decks,
   pressure maps, or heat-flux histories may be ingested offline with
   provenance and V&V evidence.
-- Automatic design optimization for real hypersonic vehicles. UQ and
-  sensitivity studies are acceptable for academic scenarios; vehicle-sizing,
-  trajectory optimization, TPS sizing, or control-law tuning for a specific
-  real operational vehicle is out of scope.
+- Automatic design optimization for a specific fielded vehicle when the
+  required data cannot be checked into the repository with reviewable
+  provenance.
 - Non-Earth atmospheres (Mars, Titan, Venus, Jupiter) and interplanetary
   aerocapture / aerobraking. The framework could host them later via a
   planet-aware atmosphere registry, but no planetary atmosphere data
   ships in the repository.
-- Plasma sheath modeling for radio-blackout exploitation, RCS reduction
-  during re-entry, or any defense-penetration purpose.
-- Skip-glide trajectories with terminal evasion logic, defense-penetration
-  optimization, or impact-dispersion analysis.
-- Decoy modeling, penetration aids, or counter-defense logic at any phase.
-- Targeting at any phase of hypersonic flight.
 - Specific TPS-design optimisation tools or sizing logic for any real
   vehicle programme.
 

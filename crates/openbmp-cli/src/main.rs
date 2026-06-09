@@ -5,9 +5,10 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use openbmp_cli::cli::{Cli, Command};
+use openbmp_cli::cli::{Cli, Command, DictCommand, MigrateCommand, PackageCommand, SilCommand};
 use openbmp_cli::commands::{
-    check, compare_telemetry, conform, diff, footprint_mc, provenance, run,
+    check, compare_telemetry, conform, dict, diff, footprint_mc, migrate, package, provenance, run,
+    sil,
 };
 use openbmp_cli::tracing;
 
@@ -213,5 +214,232 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
             }
             Ok(())
         }
+        Command::Dict { command } => match command {
+            DictCommand::Export {
+                format,
+                output,
+                experimental,
+            } => {
+                let report = dict::export(format, output.as_deref(), experimental)?;
+                if report.output.is_none() {
+                    print!("{}", report.content);
+                } else if let Some(path) = report.output {
+                    println!(
+                        "openbmp dict export: ok — {} topics as {} -> {}",
+                        report.topics,
+                        report.format,
+                        path.display(),
+                    );
+                }
+                Ok(())
+            }
+        },
+        Command::Package { command } => match command {
+            PackageCommand::Check { package: manifest } => {
+                let report = package::check(&manifest)?;
+                println!(
+                    "openbmp package check: ok — {} {}",
+                    report.package_id, report.package_version,
+                );
+                println!("  scenario {}", report.scenario_path.display());
+                for (key, digest) in report.hashes {
+                    println!("  sha256 {key} {digest}");
+                }
+                Ok(())
+            }
+            PackageCommand::MaterializeSidecars { package: manifest } => {
+                let report = package::materialize_sidecars(&manifest)?;
+                println!(
+                    "openbmp package materialize-sidecars: ok — {} {}",
+                    report.package_id, report.package_version,
+                );
+                for sidecar in report.sidecars {
+                    println!(
+                        "  wrote {} {} sha256 {}",
+                        sidecar.field,
+                        sidecar.path.display(),
+                        sidecar.sha256,
+                    );
+                }
+                Ok(())
+            }
+        },
+        Command::RunPackage {
+            package,
+            case,
+            evidence,
+        } => {
+            let (report, evidence_path) = sil::run(&package, case.as_deref(), evidence.as_deref())?;
+            println!(
+                "openbmp run-package: ok — package={}, case={}, {} steps, t = {:.6} s, stop = {}",
+                report.package_id,
+                report.case_id,
+                report.final_step,
+                report.final_time_s,
+                report.stop_label,
+            );
+            if let Some(path) = evidence_path {
+                println!("  wrote evidence {}", path.display());
+            }
+            Ok(())
+        }
+        Command::Sil { command } => match command {
+            SilCommand::Run {
+                package,
+                case,
+                evidence,
+            } => {
+                let (report, evidence_path) =
+                    sil::run(&package, case.as_deref(), evidence.as_deref())?;
+                println!(
+                    "openbmp sil run: ok — package={}, case={}, {} steps, t = {:.6} s, stop = {}",
+                    report.package_id,
+                    report.case_id,
+                    report.final_step,
+                    report.final_time_s,
+                    report.stop_label,
+                );
+                if let Some(path) = evidence_path {
+                    println!("  wrote evidence {}", path.display());
+                }
+                Ok(())
+            }
+            SilCommand::Step {
+                package,
+                ticks,
+                case,
+                evidence,
+            } => {
+                let (report, evidence_path) =
+                    sil::step(&package, case.as_deref(), ticks, evidence.as_deref())?;
+                println!(
+                    "openbmp sil step: ok — package={}, case={}, requested_ticks={}, final_step={}, t = {:.6} s, stop = {}",
+                    report.package_id,
+                    report.case_id,
+                    ticks,
+                    report.final_step,
+                    report.final_time_s,
+                    report.stop_label,
+                );
+                if let Some(path) = evidence_path {
+                    println!("  wrote evidence {}", path.display());
+                }
+                Ok(())
+            }
+            SilCommand::RunUntil {
+                package,
+                case,
+                time_s,
+                event,
+                phase,
+                evidence,
+            } => {
+                let target = sil::run_until_target(time_s, event, phase)?;
+                let (report, evidence_path) =
+                    sil::run_until(&package, case.as_deref(), target, evidence.as_deref())?;
+                println!(
+                    "openbmp sil run-until: ok — package={}, case={}, {} steps, t = {:.6} s, stop = {}",
+                    report.package_id,
+                    report.case_id,
+                    report.final_step,
+                    report.final_time_s,
+                    report.stop_label,
+                );
+                if let Some(path) = evidence_path {
+                    println!("  wrote evidence {}", path.display());
+                }
+                Ok(())
+            }
+            SilCommand::ReadChannel {
+                package,
+                channel,
+                case,
+                ticks,
+                max_samples,
+            } => {
+                let report =
+                    sil::read_channel(&package, case.as_deref(), ticks, &channel, max_samples)?;
+                println!(
+                    "openbmp sil read-channel: ok — channel={}, kind={}, samples={}",
+                    report.channel, report.kind, report.samples,
+                );
+                if let Some(first) = &report.first {
+                    println!(
+                        "  first step={} t={:.6} value={}",
+                        first.step, first.time_s, first.value
+                    );
+                }
+                if let Some(last) = &report.last {
+                    println!(
+                        "  last  step={} t={:.6} value={}",
+                        last.step, last.time_s, last.value
+                    );
+                }
+                if let (Some(min), Some(max)) = (&report.min, &report.max) {
+                    println!("  range min={min} max={max}");
+                }
+                for sample in report.preview {
+                    println!(
+                        "  sample step={} t={:.6} value={}",
+                        sample.step, sample.time_s, sample.value
+                    );
+                }
+                Ok(())
+            }
+            SilCommand::CaptureBus {
+                package,
+                case,
+                ticks,
+                output,
+            } => {
+                let frames = sil::capture_bus(&package, case.as_deref(), ticks, output.as_deref())?;
+                println!("openbmp sil capture-bus: ok — frames={}", frames.len());
+                if let Some(path) = output {
+                    println!("  wrote frames {}", path.display());
+                } else {
+                    for frame in frames.iter().take(16) {
+                        println!(
+                            "  frame step={} t={:.6} stream={} subject={} value={}",
+                            frame.step, frame.time_s, frame.stream, frame.subject, frame.value
+                        );
+                    }
+                }
+                Ok(())
+            }
+            SilCommand::Evidence {
+                package,
+                case,
+                output,
+            } => {
+                let path = sil::evidence(&package, case.as_deref(), &output)?;
+                println!("openbmp sil evidence: ok — wrote {}", path.display());
+                Ok(())
+            }
+            SilCommand::Verdict { evidence } => {
+                let report = sil::verdict(&evidence)?;
+                println!(
+                    "openbmp sil verdict: {} — package={}, case={}, scenario={}, stop={}, events={}",
+                    report.verdict,
+                    report.package_id,
+                    report.case_id,
+                    report.scenario_name,
+                    report.stop_label,
+                    report.event_trace.len(),
+                );
+                Ok(())
+            }
+        },
+        Command::Migrate { command } => match command {
+            MigrateCommand::MissionScriptSplit { scenario } => {
+                let report = migrate::mission_script_split(&scenario)?;
+                println!(
+                    "openbmp migrate mission-script-split: ok — moved {} event(s){} in {}",
+                    report.moved_events,
+                    if report.written { "" } else { " (no write)" },
+                    report.path.display(),
+                );
+                Ok(())
+            }
+        },
     }
 }

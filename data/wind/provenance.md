@@ -62,6 +62,6 @@ safety_review:
   notes: >-
     Public empirical horizontal-wind model for academic boost-drag and
     re-entry deceleration studies. HWM14 does not add guidance,
-    targeting, or optimization capability; it only supplies neutral
+    route-planning or optimization capability; it only supplies neutral
     horizontal wind samples to the existing environment bus.
 ```

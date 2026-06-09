@@ -74,14 +74,20 @@ impl FcBridge {
             return Ok(None);
         };
         require_bridge_frame(&scenario.document)?;
-        let Some(mission) = &scenario.document.mission else {
+        if scenario.document.mission.is_none() {
             return Err(RunnerError::UnsupportedScenario {
                 what:
                     "[fc] requires a [mission] graph so the FC commander and kernel share phase ids"
                         .to_owned(),
             });
-        };
-        let mission_runtime = crate::mission::build_mission_runtime_typed(mission)?;
+        }
+        let mission_runtime = crate::mission::build_mission_runtime_from_document(
+            &scenario.document,
+        )?
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "[fc] requires a [mission] graph so the FC commander and kernel share phase ids"
+                .to_owned(),
+        })?;
         let start_phase = mission_runtime.graph.initial;
         let fc_mission = FcRunnerMission::new(
             mission_runtime.graph,

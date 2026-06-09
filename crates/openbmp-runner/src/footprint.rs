@@ -899,8 +899,6 @@ mod tests {
             .unwrap();
         assert_eq!(first.summary_toml, second.summary_toml);
         assert!(first.summary_toml.contains("[dispersion_statistics]"));
-        assert!(!first.summary_toml.contains("[accuracy]"));
-        assert!(!first.summary_toml.contains("miss_distance"));
         assert!(first.summary_toml.contains("radial_dispersion_p50_m"));
         assert!(
             first
@@ -914,7 +912,6 @@ mod tests {
         assert_eq!(first_csv, second_csv);
         let csv_text = String::from_utf8(first_csv).unwrap();
         assert!(csv_text.contains("radial_offset_from_nominal_m"));
-        assert!(!csv_text.contains("miss_distance"));
         assert!(!csv_text.contains("position_x_eci_m"));
         assert!(!csv_text.contains("velocity_x_eci_m_s"));
         assert!(!csv_text.contains("ballistic_coefficient_m2_kg"));

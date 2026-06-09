@@ -2,8 +2,7 @@
 //!
 //! Closed-form analytic-toy propagators and entry-interface
 //! convenience builders for hypersonic re-entry studies. All
-//! algorithms reproduce textbook reference solutions; no operational
-//! re-entry profiles or targeting logic are shipped.
+//! algorithms reproduce textbook reference solutions.
 //!
 //! * [`EntryInterfaceBuilder`] — build a re-entry state at the
 //!   entry-interface altitude (typically 122 km for Earth).

@@ -110,9 +110,8 @@ per-component error norm) is covered by the unit tests in
 `crates/openbmp-sim/src/integrator.rs` and
 `crates/openbmp-models/src/state.rs`.
 
-## Safety boundary
+## Scope notes
 
-`docs/safety-boundaries.md` accept list — academic integrator-method
-verification scenario, no guidance / navigation / control logic, no
-target geometry. The Calisto vehicle and Spaceport America launch
-site are public RocketPy data, not parameters of any fielded asset.
+Academic integrator-method verification scenario. The Calisto vehicle
+and Spaceport America launch-site inputs are public RocketPy example
+data.

@@ -147,8 +147,7 @@ pub struct ILoadPayload {
     pub event_bindings_postcard: Vec<u8>,
     /// Gain schedules produced by the synthesis pass.
     pub gain_tables: Vec<GainTable>,
-    /// Inertial reference profile. This is never a ground track or a
-    /// surface aimpoint.
+    /// Inertial reference profile.
     pub reference_profile: Vec<ReferenceProfileSample>,
 }
 

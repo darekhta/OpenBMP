@@ -393,7 +393,7 @@ At scenario load:
    needs surface).
 7. **History policy consistency** — a state with
    `history: Some(_)` must be a composite state.
-8. **Scope guardrail (vocabulary)** — every state name must satisfy
+8. **Scope boundary (vocabulary)** — every state name must satisfy
    the canonical vocabulary check from
    [`mission-states-vocabulary.md`](mission-states-vocabulary.md). At
    load time, names matching the rejection list are refused with an

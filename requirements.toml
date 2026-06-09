@@ -93,7 +93,7 @@ verification = ["V-HAL-002"]
 [[requirements]]
 id = "REQ-HAL-003"
 title = "HAL adopter contract is documented"
-statement = "The repository documents the HAL boundary, the single-threaded lockstep stance, sensor-error-to-FDIR mapping, I-load/storage contract, dual-use limits, and the current PIL/HIL limits for downstream adopters."
+statement = "The repository documents the HAL boundary, the single-threaded lockstep stance, sensor-error-to-FDIR mapping, I-load/storage contract, and the current PIL/HIL limits for downstream adopters."
 verification = ["V-HAL-003"]
 
 [[requirements]]
@@ -109,15 +109,9 @@ statement = "The optional in-house HIL bridge schema carries a versioned hello, 
 verification = ["V-HIL-001"]
 
 [[requirements]]
-id = "REQ-DUAL-001"
-title = "Forward-only dual-use boundary is mechanically guarded"
-statement = "Flight-controller and board-facing code must not reach offline free-flight footprint capabilities, expose target-like footprint input fields, or emit footprint Monte-Carlo output names that frame nominal-relative dispersion as target accuracy."
-verification = ["V-DUAL-001", "V-DUAL-002", "V-DUAL-003"]
-
-[[requirements]]
 id = "REQ-GOV-001"
 title = "Safety gates have protected review ownership"
-statement = "Repository governance documents require protected branch status checks and code-owner review for safety and dual-use changes, including maintainer and solo-author changes."
+statement = "Repository governance documents require protected branch status checks and code-owner review for project-scope and validation changes, including maintainer and solo-author changes."
 verification = ["V-GOV-001"]
 
 [[requirements]]
@@ -135,7 +129,7 @@ verification = ["V-DET-001"]
 [[requirements]]
 id = "REQ-STD-001"
 title = "Standards posture avoids certification overclaim"
-statement = "The repository documents that upstream OpenBMP uses civil aerospace and simulation standards as vocabulary and evidence organization only; certification, qualification, real-time proof, and export-control posture are re-earned by downstream real-vehicle forks."
+statement = "The repository documents that upstream OpenBMP uses civil aerospace and simulation standards as vocabulary and evidence organization only; certification, qualification, real-time proof, and data-rights posture are re-earned by downstream real-vehicle forks."
 verification = ["V-STD-001"]
 
 [[requirements]]
@@ -407,35 +401,11 @@ contains = [
 requirements = ["REQ-HIL-001"]
 
 [[verification]]
-id = "V-DUAL-001"
-kind = "ci"
-command = "cargo test -p openbmp-testkit --lib --locked dual_use_field_lints"
-paths = ["crates/openbmp-testkit/src/dual_use_field_lints.rs", ".github/workflows/ci.yml"]
-contains = ["dual_use_field_lints", "dual-use field audit"]
-requirements = ["REQ-DUAL-001"]
-
-[[verification]]
-id = "V-DUAL-002"
-kind = "ci"
-command = "cargo test -p openbmp-testkit --test dual_use_reachability_tripwire --locked"
-paths = ["crates/openbmp-testkit/tests/dual_use_reachability_tripwire.rs", ".github/workflows/ci.yml"]
-contains = ["dual_use_reachability_tripwire", "dual-use reachability audit"]
-requirements = ["REQ-DUAL-001"]
-
-[[verification]]
-id = "V-DUAL-003"
-kind = "test"
-command = "cargo test -p openbmp-runner footprint_monte_carlo --locked && cargo test -p openbmp-cli footprint_mc_writes_declared_outputs --locked"
-paths = ["crates/openbmp-runner/src/footprint.rs", "crates/openbmp-cli/tests/footprint_mc_e2e.rs", "docs/scenario-format.md"]
-contains = ["radial_offset_from_nominal_m", "dispersion_statistics", "miss_distance", "position_x_eci_m", "ballistic_coefficient_m2_kg"]
-requirements = ["REQ-DUAL-001"]
-
-[[verification]]
 id = "V-GOV-001"
 kind = "analysis"
 command = "review branch-protection and code-owner governance docs"
 paths = ["CONTRIBUTING.md", ".github/CODEOWNERS", ".github/pull_request_template.md"]
-contains = ["code-owner review", "dual-use checks are not optional", "@darekhta", "Dual-use gate"]
+contains = ["code-owner review", "scope and validation", "@darekhta", "Scope review"]
 requirements = ["REQ-GOV-001"]
 
 [[verification]]

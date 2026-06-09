@@ -8,10 +8,10 @@ deployment claim. The most realistic security concerns are:
 - Build-system or scenario-parser bugs that allow malformed input to
   cause panics, memory unsafety, or unexpected file writes.
 
-Operational-flight, weapon, hardware-deployment, or
-mission-critical-software security guarantees are explicitly **not in
-scope**. OpenBMP makes no compliance claims under IEC 61508, ISO 26262,
-DO-178C, or equivalent regimes.
+Operational-flight, hardware-deployment, or mission-critical-software
+security guarantees are explicitly **not in scope**. OpenBMP makes no
+compliance claims under IEC 61508, ISO 26262, DO-178C, or equivalent
+regimes.
 
 ## Reporting a Vulnerability
 
@@ -63,6 +63,6 @@ embedding OpenBMP into a larger stack should:
 - Run `cargo audit` and `cargo deny` against their integration build.
 - Keep `tokio` confined to `openbmp-bridge` (or omit `openbmp-bridge`
   entirely from their build).
-- Treat any safety-boundary expansion as a downstream responsibility
+- Treat any hardware or deployment expansion as a downstream responsibility
   per [`docs/software-architecture.md`](docs/software-architecture.md)
   § Extensibility for Downstream Integration.

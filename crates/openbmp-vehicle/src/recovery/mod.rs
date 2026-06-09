@@ -97,7 +97,7 @@ impl RecoveryPhase {
     }
 }
 
-/// Command targeting one recovery device, dispatched by a deploy-recovery
+/// Command addressing one recovery device, dispatched by a deploy-recovery
 /// event firing.
 ///
 /// Each command's effect depends on the receiving model's kind:

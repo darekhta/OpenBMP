@@ -47,12 +47,9 @@
 # rate-loop output is uncapped to the RCS torque range and the RCS provides
 # the authority. The RCS effectiveness is sized so the powered-phase
 # spurious torque is a negligible fraction of the gimbal moment while the
-# coast authority is sufficient to damp the residual slosh rate.
-#
-# Forward-only: vehicle-intrinsic ascent toward an insertion RADIUS; no
-# target / aimpoint / range / terminal-guidance field anywhere. RCS is an
-# attitude-control subsystem (body-frame torque), not a guidance or
-# targeting capability.
+# coast authority is sufficient to damp the residual slosh rate. RCS is an
+# attitude-control subsystem (body-frame torque), not a translational
+# controller.
 
 openbmp.scenario = 3
 
@@ -327,43 +324,43 @@ allowed_engines = ["eng_vac"]
 allowed_effectors = ["rcs_roll", "rcs_pitch", "rcs_yaw"]
 
 # Stage-1 ignition: light the cluster just after t=0.
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_0"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_0", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_1"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_1", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_2"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_2", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_3"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_3", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_4"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_4", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_5"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_5", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_6"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_6", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_7"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_7", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_8"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_8", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_vac"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_vac", command = { throttle_unit = 0.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
@@ -376,7 +373,7 @@ trigger = { kind = "at_velocity", velocity_m_s = 2765.0, falling = false }
 action  = { kind = "emit_telemetry_marker", tag = "meco1" }
 
 # Stage separation: jettison the spent booster at MECO-1.
-[[mission.events]]
+[[scenario_script.events]]
 id      = "sep"
 once    = true
 trigger = { kind = "at_velocity", velocity_m_s = 2765.0, falling = false }
@@ -557,3 +554,5 @@ engines_allowed   = true
 [fc.phase_authority."mission.phases.orbit"]
 autopilot_allowed = true
 engines_allowed   = false
+
+[scenario_script]

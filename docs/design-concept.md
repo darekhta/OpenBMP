@@ -11,8 +11,8 @@ prototyping, autotest-driven aerospace software experiments, and reproducible
 trajectory studies. The project ships a simulator; **its abstractions are
 designed to be re-implementable against real hardware** through a downstream
 HAL, but the OpenBMP repository itself ships no HAL and does not validate or
-support hardware deployment. See [Safety Boundaries](safety-boundaries.md)
-for the project-side acceptance and rejection list.
+support hardware deployment. See [Scope Boundaries](safety-boundaries.md)
+for the project scope and validation boundaries.
 
 ## Purpose
 
@@ -33,19 +33,16 @@ academic rocket teams, and software engineers who want a Rust-native sandbox
 for studying flight dynamics without touching real hardware or real
 fielded-vehicle data.
 
-## Safety Boundary (Summary)
+## Scope Boundary (Summary)
 
-The OpenBMP repository must remain **non-weapon and non-deployable by
-design**. Targeting, intercept, terminal guidance to real-world
-locations, real fielded-vehicle parameters, operational mission
-planning, and counter-defense techniques are all **out-of-scope and
-rejected**. Real device drivers, board support packages, and real bus
-protocols do not land in this repository — downstream HAL adopters who
-build those on top of the controller-side trait surfaces ship them in
-their own repositories under their own qualification posture.
-Synthetic and public/educational physics parameters are accepted.
-Detailed acceptance and rejection rules are maintained in
-[safety-boundaries.md](safety-boundaries.md).
+The OpenBMP repository ships a simulator and keeps concrete hardware
+integration outside the upstream tree. Real device drivers, board support
+packages, and real bus protocols do not land in this repository; downstream
+HAL adopters who build those on top of the controller-side trait surfaces ship
+them in their own repositories under their own qualification posture.
+Synthetic, public, and user-supplied physics parameters are accepted when their
+provenance and applicability are documented. Detailed scope and validation
+rules are maintained in [safety-boundaries.md](safety-boundaries.md).
 
 Every release artifact must include the non-suitability disclaimer:
 
@@ -77,18 +74,7 @@ OpenBMP is designed to simulate the following classes of virtual vehicles:
   high altitude, with solver profiles beyond RK4, real-gas thermodynamics,
   aerothermal heating, boundary-layer transition, continuum-to-rarefied
   bridging, offline high-fidelity reference packages, and uncertainty
-  reporting. Driven by scenario waypoints in inertial space, never by
-  real-world targets.
-
-OpenBMP does not simulate:
-
-- Operational missile profiles, guided weapons, terminal-homing engagements.
-- Multi-vehicle adversarial scenarios, intercept geometries, decoy logic.
-- Re-entry vehicles for warhead delivery, MaRVs, or HGVs.
-- Hypersonic skip-glide trajectories whose stated objective is to reach a
-  real-world target location.
-- Penetration aids, plasma-sheath blackout exploitation, defense penetration,
-  or any counter-defense logic.
+  reporting.
 
 ## Design Principles
 
@@ -155,7 +141,7 @@ code to physical sensors, real buses, real actuators, or real flight
 computers. The optional HIL pattern is a generic socket bridge with no
 real device drivers and no real bus protocols. Downstream consumers
 building lab or independently qualified hardware integrations may add
-such paths in their own repositories under their own export-control and
+such paths in their own repositories under their own data-rights and
 qualification posture
 (see [software-architecture.md § Extensibility for Downstream
 Integration](software-architecture.md#extensibility-for-downstream-integration));
@@ -335,4 +321,3 @@ outside its envelope. For the precise map of what is shipped and validated,
 shipped at research grade, or deferred, see [`roadmap.md`](roadmap.md). For the
 binding list of what OpenBMP will never ship, see
 [`safety-boundaries.md`](safety-boundaries.md).
-

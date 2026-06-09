@@ -40,9 +40,6 @@
 # velocity and never drops the position fix. Frame: wgs84-uniform-rotation
 # (uniform Earth rotation); the launch boost is carried by the initial
 # co-rotation velocity.
-#
-# Forward-only: vehicle-intrinsic ascent toward an insertion RADIUS; no
-# target / aimpoint / range / terminal-guidance field anywhere.
 
 openbmp.scenario = 3
 
@@ -300,39 +297,39 @@ label           = "orbital insertion (engines idle)"
 allowed_engines = ["eng_vac"]
 
 # Stage-1 ignition: light the cluster just after t=0.
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_0"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_0", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_1"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_1", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_2"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_2", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_3"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_3", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_4"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_4", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_5"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_5", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_6"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_6", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_7"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_7", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_8"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_s1_8", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
@@ -342,7 +339,7 @@ action = { kind = "engine_command", id = "eng_s1_8", command = { throttle_unit =
 # throttles it up; the orbit phase throttles it back to zero (SECO). This
 # keeps ignition synchronised with PEG instead of a kernel engine_command
 # firing at the truth apogee while the commander phase still lags.
-[[mission.events]]
+[[scenario_script.events]]
 id = "ign_vac"
 trigger = { kind = "at_time", time_s = 0.05 }
 action = { kind = "engine_command", id = "eng_vac", command = { throttle_unit = 0.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
@@ -355,7 +352,7 @@ trigger = { kind = "at_velocity", velocity_m_s = 2765.0, falling = false }
 action  = { kind = "emit_telemetry_marker", tag = "meco1" }
 
 # Stage separation: jettison the spent booster at MECO-1.
-[[mission.events]]
+[[scenario_script.events]]
 id      = "sep"
 once    = true
 trigger = { kind = "at_velocity", velocity_m_s = 2765.0, falling = false }
@@ -544,3 +541,5 @@ engines_allowed   = true
 [fc.phase_authority."mission.phases.orbit"]
 autopilot_allowed = true
 engines_allowed   = false
+
+[scenario_script]

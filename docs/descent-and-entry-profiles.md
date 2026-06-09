@@ -11,14 +11,12 @@ The entry phase of a flight profile is the academically richest: it couples
 the rigid-body dynamics, the atmosphere, hypersonic aerodynamics, and (for a
 lifting body) the descent controller. OpenBMP now wires the live entry force
 stack through mission-phase selection: a coast phase can run gravity only,
-then `entry_interface` can activate aero and aerothermal diagnostics without
-introducing any targeting surface.
+then `entry_interface` can activate aero and aerothermal diagnostics.
 
 ## Current state
 
 - `EntryInterfaceBuilder` builds an entry state at ≈ 122 km; `AllenEggers` and
-  `Vinh` reproduce textbook entry solutions. The module states plainly: *"no
-  operational re-entry profiles or targeting logic are shipped."*
+  `Vinh` reproduce textbook entry solutions.
 - These are *analysis tools*, run standalone against benchmarks (Apollo 4,
   Stardust). Schema v3 now adds `[entry_profile]` so a scenario can declare
   and validate the `ballistic_descent → entry_interface → final_descent`
@@ -27,8 +25,7 @@ introducing any targeting surface.
   `[[forces.phase_override]]` wiring. Rigid-body scenarios receive both
   aerodynamic force and pitching moment; optional ablation mass feedback is
   routed through the rigid mass model.
-- `maneuvering` entry is a rejected operational term; `lifting_entry` is its
-  accepted academic replacement (already in the vocabulary canon).
+- `lifting_entry` is the canonical state name for non-zero-lift entry.
 
 ## Design
 
@@ -78,15 +75,10 @@ entry_interface
    └─ lifting_entry ──► Vinh L/D, bank-angle modulation ──► final_descent
 ```
 
-> **Safety boundary — bank-angle control.** The bank-angle control here
-> modulates the **vertical lift component** to manage the deceleration /
-> heat-rate profile and downrange extension — the academic entry-corridor
-> problem. It is **not** a terminal-homing or skid-to-turn / bank-to-turn
-> end-game autopilot steering to a location; those are categorically rejected
-> by [`safety-boundaries.md`](safety-boundaries.md). The bank command is driven
-> by an *entry-corridor* reference (heat-rate, load-factor, flight-path-angle
-> limits), never by a target. The lint forbids `terminal-homing`,
-> `bank-to-turn`-shaped, and aimpoint fields in the entry block.
+> **Bank-angle control.** The bank-angle control here modulates the
+> **vertical lift component** to manage the deceleration / heat-rate profile
+> and downrange extension. The bank command is driven by an *entry-corridor*
+> reference: heat-rate, load-factor, and flight-path-angle limits.
 
 ### Descent-phase control and recovery
 
@@ -130,9 +122,8 @@ mass model.
 - An entry profile whose peak altitude or velocity exceeds the atmosphere
   model's validity ceiling is rejected (e.g. requesting USSA76 above 86 km for
   the entire entry).
-- The entry-corridor reference accepts only corridor limits (heat-rate,
-  load-factor, flight-path-angle); any aimpoint / geographic field is rejected
-  by the lint.
+- The entry-corridor reference validates its corridor limits: heat-rate,
+  load-factor, and flight-path-angle.
 - `deploy_recovery` ordering is validated as today (drogue before main; device
   references resolve).
 

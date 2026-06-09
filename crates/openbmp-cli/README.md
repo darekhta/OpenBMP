@@ -29,6 +29,12 @@ batch sweeps.
 | `openbmp diff <golden.parquet> <actual.parquet>` | Report the first divergent row and column with strict value strings. |
 | `openbmp check <scenario.toml>` | Lint: schema, provenance, units / frames, safety names, deterministic schedule. Surfaces the SHA-256 digests for every external-file reference. |
 | `openbmp check-provenance <data/>` | Walk a data tree and verify provenance records. |
+| `openbmp migrate mission-script-split <scenario.toml>` | Move simulator-owned mission-event actions into `[[scenario_script.events]]` and promote rewritten files to schema v3. |
+| `openbmp dict export --format json` | Export the stable OpenBMP command/telemetry dictionary from `openbmp-msgs`. |
+| `openbmp package check <mission-package.toml>` | Validate a mission package manifest, sidecar references, scenario, and declared hashes. |
+| `openbmp package materialize-sidecars <mission-package.toml>` | Generate declared plant, mission-graph, scenario-script, and HAL `OBIL` I-load sidecars from the package scenario. |
+| `openbmp run-package <mission-package.toml> --case <id>` | Run a package test case through the native SIL path and optionally write an evidence bundle. |
+| `openbmp sil step/run/run-until/read-channel/capture-bus/evidence/verdict ...` | Native SIL testbench operations backed by `openbmp-sil`; the Rust API also supports in-memory fault/parameter/command stimulation. |
 
 ## Errors and Diagnostics
 
@@ -83,7 +89,7 @@ redirected to verify no tracing leak into deterministic output.
 This crate ships no data files. It checks provenance records for files that
 scenarios reference.
 
-## Safety Boundary
+## Scope Boundary
 
 CLI is a thin wrapper. All safety enforcement lives in the underlying
 crates. The project-wide accept/reject list and the rejected-naming

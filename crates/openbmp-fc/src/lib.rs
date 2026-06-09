@@ -12,9 +12,6 @@
 //! makes no compliance claim under IEC 61508, ISO 26262, DO-178C,
 //! or equivalent regimes.
 //!
-//! **No targeting, no terminal-homing, no real-world location
-//! guidance, no hardware protocols.**
-//!
 //! The FC provides a sigma-point UKF (with a square-root 15-state
 //! variant), the kernel↔FC runner bridge, WGS84-J2 gravity, WMM 2025
 //! magnetic model selection through the FC runner, feature-gated

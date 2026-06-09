@@ -178,7 +178,7 @@ Public benchmark cases require:
 
 Benchmarks from real operational systems are rejected unless the case is a
 public civilian/academic reference and does not introduce real fielded-vehicle
-parameter sets outside the safety boundary.
+parameter sets outside the scope boundary.
 
 ## Sounding-Rocket Reference Case
 
@@ -275,7 +275,7 @@ Before accepting a model:
 - Does the model avoid wall-clock time, system RNG, network access, and
   unordered iteration?
 - Is all external data covered by provenance?
-- Does the model stay inside the safety boundary?
+- Does the model stay inside the scope boundary?
 
 If any answer is unclear, the validation label remains `experimental`.
 

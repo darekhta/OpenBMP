@@ -1,9 +1,8 @@
 //! Physics-benchmark validation for the `phalcon9-orbit` scenario.
 //!
-//! This is the doctrine-compatible answer to "is the result credible?":
-//! the synthetic Phalcon-9 is NOT benchmarked against any real fielded
-//! vehicle or trajectory (that would require fielded parameters the
-//! project forbids). Instead its insertion is validated against
+//! This is the validation answer to "is the result credible?":
+//! the synthetic Phalcon-9 is not benchmarked against any real fielded
+//! vehicle or trajectory. Instead its insertion is validated against
 //! first-principles ORBITAL MECHANICS invariants that hold for any
 //! body in a central + axisymmetric gravity field:
 //!

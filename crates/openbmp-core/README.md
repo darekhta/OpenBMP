@@ -67,7 +67,7 @@ round trips and composition, deterministic RNG replay, and validation labels.
 
 This crate ships no data files.
 
-## Safety Boundary
+## Scope Boundary
 
 Foundational; no operational vocabulary, no real-vehicle data.
 See `docs/safety-boundaries.md`.

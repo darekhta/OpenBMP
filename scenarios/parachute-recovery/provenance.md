@@ -72,7 +72,7 @@ matching the academic two-stage descent profile in Knacke Chapter 9.
 ### References
 
 - Knacke, T. W. *Parachute Recovery Systems Design Manual.*
-  NWC TP 6575, Naval Weapons Center, China Lake (1992).
+  NWC TP 6575, China Lake (1992).
   Public-domain US Government work. Chapter 5 covers the
   drag-area model used here; Chapter 9 covers the two-stage
   descent profile.

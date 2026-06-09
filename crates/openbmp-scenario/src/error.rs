@@ -94,17 +94,6 @@ pub enum ScenarioError {
         /// Actual registered role.
         actual: ModelRole,
     },
-    /// A safety-limited term was found in a scenario key or
-    /// model-like value.
-    #[error("safety-limited term {term} found at {path}: {value}")]
-    SafetyName {
-        /// TOML path where the term was found.
-        path: String,
-        /// Original string value.
-        value: String,
-        /// Forbidden term.
-        term: &'static str,
-    },
     /// A dimensional field did not carry a unit suffix.
     #[error("dimensional field {field} is missing an explicit unit suffix")]
     MissingUnitSuffix {

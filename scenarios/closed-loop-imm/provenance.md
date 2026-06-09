@@ -89,13 +89,9 @@ Scenario-validator coverage:
   transition-matrix-row-sum rejection, initial-probability sum
   rejection, and mode-count vs matrix-size mismatch rejection.
 
-## Safety boundary
+## Scope notes
 
-`docs/safety-boundaries.md` accept list — academic estimator
-verification scenario. The IMM is used strictly for
+Academic estimator verification scenario. The IMM is used for
 self-state-estimation under regime change (the textbook IMM use
-case); the project-side scope guardrail in `docs/safety-boundaries.md`
-explicitly forbids any multi-target tracking extension.
-No guidance / navigation / control logic beyond the existing
-closed-loop attitude-hold pipeline; no target geometry; no
-real-world locations.
+case) inside the existing closed-loop attitude-hold pipeline, with
+scenario-internal state and synthetic measurements.

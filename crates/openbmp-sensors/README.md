@@ -79,7 +79,7 @@ published academic methodology (tactical-grade / consumer-MEMS IMU
 classes). **No noise budgets are lifted from real fielded sensor
 datasheets** -- academic ranges only.
 
-## Safety Boundary
+## Scope Boundary
 
 Synthetic sensors are not deployable, not real device drivers, not
 hardware integrations. The project-wide accept/reject list lives in

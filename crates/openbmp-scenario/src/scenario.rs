@@ -1,5 +1,5 @@
 //! Top-level [`Scenario`] entry point: parses TOML once, runs the
-//! safety-and-units lint, deserialises into [`ScenarioDocument`], and
+//! units-and-frames lint, deserialises into [`ScenarioDocument`], and
 //! resolves relative paths against the scenario file directory.
 
 use std::collections::BTreeMap;
@@ -43,8 +43,8 @@ impl Scenario {
         source_dir: Option<impl Into<PathBuf>>,
     ) -> Result<Self, ScenarioError> {
         // Parse TOML once. We lint the untyped representation first so
-        // the user gets a unit / frame / safety-name error before the
-        // less-helpful serde "unknown field" error fires.
+        // the user gets a unit / frame error before the less-helpful
+        // serde "unknown field" error fires.
         let value: toml::Value = toml::from_str(toml)?;
         lint::lint(&value)?;
 
@@ -2468,7 +2468,7 @@ kind = "piecewise_exponential"
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::ParseToml(_)),
-            "target_range_m should reach schema validation, not safety-name lint: {err:?}"
+            "target_range_m should reach schema validation, not the units/frames lint: {err:?}"
         );
 
         let toml = MINIMAL.replace(
@@ -2478,40 +2478,17 @@ kind = "piecewise_exponential"
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::ParseToml(_)),
-            "target_schema should reach schema validation, not safety-name lint: {err:?}"
+            "target_schema should reach schema validation, not the units/frames lint: {err:?}"
         );
     }
 
     #[test]
-    fn rejects_safety_limited_names() {
-        let toml = MINIMAL.replace(
-            r#"name = "constant-acceleration-drop""#,
-            r#"name = "seeker-demo""#,
-        );
-        let err = Scenario::from_toml_str(&toml).unwrap_err();
-        assert!(matches!(err, ScenarioError::SafetyName { .. }));
-    }
-
-    #[test]
-    fn rejects_staging_range_optimization_vocabulary() {
+    fn accepts_domain_vocabulary_in_names() {
         let toml = MINIMAL.replace(
             r#"name = "constant-acceleration-drop""#,
             r#"name = "maxrange-demo""#,
         );
-        let err = Scenario::from_toml_str(&toml).unwrap_err();
-        assert!(matches!(err, ScenarioError::SafetyName { term, .. } if term == "max-range"));
-    }
-
-    #[test]
-    fn safety_lint_has_global_priority_over_unit_lint() {
-        let toml = MINIMAL
-            .replace(
-                r#"name = "constant-acceleration-drop""#,
-                r#"name = "seeker-demo""#,
-            )
-            .replace("[environment]\n", "[environment]\nbad = 1.0\n");
-        let err = Scenario::from_toml_str(&toml).unwrap_err();
-        assert!(matches!(err, ScenarioError::SafetyName { .. }));
+        Scenario::from_toml_str(&toml).expect("scenario names are not policy-linted");
     }
 
     #[test]
@@ -3880,26 +3857,70 @@ action  = { kind = "stop", label = "scripted-stop" }
     }
 
     #[test]
-    fn accepts_engine_command_action_with_typed_payload() {
-        let scenario = Scenario::from_toml_str(ASSEMBLY_ENGINE_CLUSTER_WITH_ENGINE_COMMAND)
-            .expect("scenario parses");
+    fn rejects_engine_command_under_mission_events() {
+        let err = Scenario::from_toml_str(ASSEMBLY_ENGINE_CLUSTER_WITH_ENGINE_COMMAND).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissionGraph { ref reason }
+                if reason.contains("HAL-portable mission actions")
+                    && reason.contains("[[scenario_script.events]]")),
+            "expected mission-event script-action rejection, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn accepts_engine_command_under_scenario_script_events() {
+        let toml = ASSEMBLY_ENGINE_CLUSTER_WITH_ENGINE_COMMAND
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace("[[mission.events]]", "[[scenario_script.events]]");
+
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
         let mission = scenario.document.mission.as_ref().expect("mission present");
-        assert_eq!(mission.events.len(), 1);
-        match &mission.events[0].action {
+        assert!(mission.events.is_empty());
+        assert_eq!(scenario.document.scenario_script.events.len(), 1);
+        match &scenario.document.scenario_script.events[0].action {
             crate::ScenarioActionConfig::EngineCommand { id, command } => {
                 assert_eq!(id, "engine_a");
                 assert!((command.throttle_unit - 0.5).abs() < 1e-12);
                 assert!(command.ignite);
                 assert!(!command.shutdown);
             }
-            other => panic!("expected EngineCommand action, got {other:?}"),
+            other => panic!("expected EngineCommand script action, got {other:?}"),
         }
     }
 
     #[test]
+    fn rejects_mission_action_under_scenario_script_events() {
+        let toml = with_mission(
+            r#"
+[mission]
+initial_phase = "ascent"
+
+[[mission.phases]]
+id    = "ascent"
+label = "ascent"
+
+[[scenario_script.events]]
+id      = "done"
+trigger = { kind = "at_time", time_s = 1.0 }
+action  = { kind = "stop", label = "done" }
+"#,
+        )
+        .replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissionGraph { ref reason }
+                if reason.contains("simulator-owned scenario script actions")),
+            "expected scenario_script mission-action rejection, got {err:?}",
+        );
+    }
+
+    #[test]
     fn rejects_engine_command_action_referencing_unknown_engine_id() {
-        let err =
-            Scenario::from_toml_str(ASSEMBLY_ENGINE_CLUSTER_WITH_UNKNOWN_ENGINE_ID).unwrap_err();
+        let toml = ASSEMBLY_ENGINE_CLUSTER_WITH_UNKNOWN_ENGINE_ID
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace("[[mission.events]]", "[[scenario_script.events]]");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -4148,6 +4169,96 @@ target = {{ kind = "eci_vector", vector_eci = [0.0, 1.0, 0.0] }}
     }
 
     #[test]
+    fn accepts_multi_body_landing_controller_with_owned_engine() {
+        let toml = VALID_STAGE_SEPARATION_SCENARIO
+            .replace(
+                "[[mission.events]]\nid      = \"stage_separation\"",
+                "[[scenario_script.events]]\nid      = \"stage_separation\"",
+            )
+            .replace(r#"models = ["gravity"]"#, r#"models = ["gravity", "thrust"]"#)
+            .replace(
+                "\n[environment]\n",
+                r#"
+[[vehicle.assembly.engines]]
+id                 = "lower-land"
+mounted_to         = "lower"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, -0.5]
+limits             = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }
+
+[environment]
+"#,
+            )
+            .replace(
+                "\n[[multi_body.separation]]\n",
+                r#"
+[[multi_body.landing_controller]]
+body_id                   = "lower"
+engine_id                 = "lower-land"
+start_altitude_m          = 1000.0
+target_altitude_m         = 0.0
+target_vertical_speed_m_s = -5.0
+
+[[multi_body.separation]]
+"#,
+            );
+        let scenario = Scenario::from_toml_str(&toml).expect("landing controller should validate");
+        let controller = &scenario
+            .document
+            .multi_body
+            .as_ref()
+            .expect("multi_body present")
+            .landing_controllers[0];
+        assert_eq!(controller.body_id, "lower");
+        assert_eq!(controller.engine_id, "lower-land");
+    }
+
+    #[test]
+    fn rejects_multi_body_landing_controller_engine_owned_by_other_body() {
+        let toml = VALID_STAGE_SEPARATION_SCENARIO
+            .replace(
+                "[[mission.events]]\nid      = \"stage_separation\"",
+                "[[scenario_script.events]]\nid      = \"stage_separation\"",
+            )
+            .replace(r#"models = ["gravity"]"#, r#"models = ["gravity", "thrust"]"#)
+            .replace(
+                "\n[environment]\n",
+                r#"
+[[vehicle.assembly.engines]]
+id                 = "upper-land"
+mounted_to         = "upper"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, -0.5]
+limits             = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }
+
+[environment]
+"#,
+            )
+            .replace(
+                "\n[[multi_body.separation]]\n",
+                r#"
+[[multi_body.landing_controller]]
+body_id                   = "lower"
+engine_id                 = "upper-land"
+start_altitude_m          = 1000.0
+target_altitude_m         = 0.0
+target_vertical_speed_m_s = -5.0
+
+[[multi_body.separation]]
+"#,
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref value_a, ref field_b, ref value_b }
+                if field_a == "multi_body.landing_controller[0].engine_id"
+                    && value_a == "upper-land"
+                    && field_b == "vehicle.assembly.engines.upper-land.mounted_to"
+                    && value_b == "upper"),
+            "expected landing controller engine/body mismatch, got {err:?}",
+        );
+    }
+
+    #[test]
     fn rejects_initial_multi_body_lane_without_primary_body() {
         let prefix = VALID_STAGE_SEPARATION_SCENARIO
             .split("\n[mission]\n")
@@ -4214,6 +4325,32 @@ once    = true
             mission.events[1].trigger,
             crate::EventTriggerConfig::AtRelativeSpeed { ref body, speed_m_s, .. }
                 if body == "lower" && (speed_m_s - 0.5).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn accepts_body_altitude_descending_trigger_for_multi_body_lane() {
+        let body_altitude_event = r#"
+[[mission.events]]
+id      = "lower_entry_interface"
+trigger = { kind = "at_body_altitude_descending", body = "lower", altitude_m = 120000.0 }
+action  = { kind = "emit_telemetry_marker", tag = "lower_entry_interface" }
+once    = true
+"#;
+        let toml = VALID_STAGE_SEPARATION_SCENARIO.replace(
+            "[[mission.events]]\nid      = \"stage_separation\"",
+            "[[scenario_script.events]]\nid      = \"stage_separation\"",
+        );
+        let toml = toml.replace(
+            "\n[multi_body]\n",
+            &format!("{body_altitude_event}\n[multi_body]\n"),
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
+        let mission = scenario.document.mission.as_ref().expect("mission present");
+        assert!(matches!(
+            mission.events[0].trigger,
+            crate::EventTriggerConfig::AtBodyAltitudeDescending { ref body, altitude_m }
+                if body == "lower" && (altitude_m - 120000.0).abs() < f64::EPSILON
         ));
     }
 

@@ -89,8 +89,7 @@ The math-side correctness of `Dopri853Adaptive` itself
 convergence on a polynomial trajectory) is covered by the unit
 tests in `crates/openbmp-sim/src/integrator.rs`.
 
-## Safety boundary
+## Scope notes
 
-`docs/safety-boundaries.md` accept list — academic integrator-method
-verification scenario, no guidance / navigation / control logic, no
-target geometry, no real-world locations.
+Academic integrator-method verification scenario with
+scenario-internal orbital parameters and synthetic initial state.

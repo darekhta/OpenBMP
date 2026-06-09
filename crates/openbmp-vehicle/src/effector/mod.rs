@@ -217,7 +217,7 @@ pub enum EffectorError {
 /// scalar-only — effectors operate on `f64` commands and produce
 /// `f64` deflections.
 pub trait ControlEffector: std::fmt::Debug + Send + Sync {
-    /// Stable identifier for telemetry and event-action targeting.
+    /// Stable identifier for telemetry and event-action addressing.
     fn id(&self) -> EffectorId;
 
     /// Advance the effector by one kernel base tick.

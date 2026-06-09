@@ -67,12 +67,10 @@ asserts:
   deterministic; combined with the existing rigid-body byte
   stability this propagates through the closed-loop pipeline).
 
-## Safety boundary
+## Scope notes
 
-`docs/safety-boundaries.md` accept list — academic guidance laws
-(attitude tracking, scenario-defined waypoint navigation in
-inertial space). The waypoints are scenario-internal points in
-inertial space, not real-world locations or targets. No
-proportional-navigation or terminal-homing logic. The redundant
+Academic guidance-law scenario (attitude tracking and
+scenario-defined waypoint navigation in inertial space). The
+waypoints are scenario-internal points in inertial space. The redundant
 roll effectors are a synthetic over-actuation demo, not a model of
 a fielded effector configuration.

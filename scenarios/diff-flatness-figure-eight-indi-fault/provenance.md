@@ -54,11 +54,6 @@ deterministically; consumed by the controller
 comparison harness alongside the PID baseline, PID + L1, and LQR
 fault-bearing siblings.
 
-## Safety boundary
+## Scope notes
 
-`docs/safety-boundaries.md` accept list — academic guidance laws
-(attitude tracking, scenario-defined waypoint navigation in inertial
-space). The waypoints are scenario-internal points in inertial space,
-not real-world locations or targets. No proportional-navigation or
-terminal-homing logic. The fault injection is a synthetic actuator
-disturbance, not a model of any real fielded effector.
+Scenario-defined waypoints are inertial-space references for controller-regression tests. The fault injection is a synthetic actuator disturbance.

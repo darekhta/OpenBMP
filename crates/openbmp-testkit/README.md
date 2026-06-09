@@ -55,6 +55,6 @@ self-tests.
 Fixture data follows `docs/data-provenance.md`; analytic toys cite their
 derivation.
 
-## Safety Boundary
+## Scope Boundary
 
 Test helpers only; no operational vocabulary.

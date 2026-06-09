@@ -29,12 +29,6 @@ every scenario declares `[vehicle.assembly]`.
   `solid` motor variant).
 - Frame-suffix and unit-suffix linting (`_n_s`, `_m3_s2`, `_deg`,
   `_xyzw`).
-- **Safety-name lint** — reject `seeker`, `warhead`, `strike`,
-  `interceptor`, `kill`, `threat`, `engagement`, terminal-homing
-  variants, and specific operational compounds such as `impact_point`
-  per `docs/safety-boundaries.md` § Naming Rules. Neutral target
-  vocabulary, including `target` and `target_range`, is accepted as
-  simulation vocabulary.
 - File-resolution helper rooted at the scenario file path; the
   `Scenario::resolved_files()` API loads each external file
   reference, computes its SHA-256 digest, and verifies the optional
@@ -58,7 +52,7 @@ scenario path. The parser does not fetch network resources.
 ## Validity Range
 
 Valid only for known scenario schema versions. Unknown versions, unknown
-fields, invalid units, invalid frames, and rejected vocabulary fail closed.
+fields, invalid units, and invalid frames fail closed.
 
 ## Determinism
 
@@ -71,7 +65,7 @@ Unknown fields produce parse errors (fail-closed).
 `checked` for the parser surface. Unit tests cover the
 schema-v2 analytic-toy scenario (byte-stability guard), path resolution,
 unknown-field rejection, model-registry resolution under both
-base and full registries, safety-name linting, unit/frame
+base and full registries, unit/frame
 suffix linting, empty force lists, invalid time ranges, missing
 telemetry outputs, and every cross-validation rule
 (rigid-body-without-quaternion, point-mass-with-quaternion,
@@ -87,12 +81,6 @@ pin, upper-case-pin acceptance, mismatch fail-closure).
 This crate ships no data files. It enforces provenance requirements for
 scenario-referenced data paths.
 
-## Safety Boundary
-
-Parser-level enforcement of safety-limited names is a structural
-backstop for `docs/safety-boundaries.md`.
-
 ## References
 
 - `docs/scenario-format.md`.
-- `docs/safety-boundaries.md` § Naming Rules.

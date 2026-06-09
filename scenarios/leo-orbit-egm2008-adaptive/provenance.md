@@ -87,11 +87,8 @@ convergence on a polynomial trajectory, tableau row-sums and
 simplifying assumption b·c² = c²/2, PI-factor monotonicity) is
 covered by the unit tests in `crates/openbmp-sim/src/integrator.rs`.
 
-## Safety boundary
+## Scope notes
 
-`docs/safety-boundaries.md` accept list — academic integrator-method
-verification scenario, no guidance / navigation / control logic, no
-target geometry, no real-world locations. The orbit altitude and
-inclination are scenario-internal numbers that demonstrate the
-adaptive-integrator dispatch path, not parameters of any fielded
-asset.
+Academic integrator-method verification scenario. The orbit altitude
+and inclination are scenario-internal numbers that demonstrate the
+adaptive-integrator dispatch path; no geodetic site data is used.

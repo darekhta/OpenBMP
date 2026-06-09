@@ -144,11 +144,9 @@ schema boundary
 > ships only synthetic textbook decks for canonical shapes (sphere,
 > cone, simple finned cylinder).
 
-This is a project-level safety policy. Fielded-vehicle aerodynamic
-decks contain operational data that may be subject to export
-control, vehicle-program-restricted disclosure, or competitive
-sensitivity. OpenBMP keeps the deck format open and the data
-synthetic so the platform stays a research / academic tool.
+Fielded-vehicle aerodynamic decks can contain vehicle-program-restricted
+disclosure or competitively sensitive data. OpenBMP keeps the deck format open
+and the in-tree data synthetic or public so the platform stays reviewable.
 
 ## Why the values are mirrored against a closed-form generator
 
@@ -436,8 +434,8 @@ safety_review:
   decision: accepted
   notes: >-
     Public hobby-rocketry-class drag curve from the
-    MIT-licensed RocketPy Calisto example. No export-control or
-    manufacturer-proprietary restrictions; OpenBMP's use is
+    MIT-licensed RocketPy Calisto example. No manufacturer-proprietary
+    restrictions are noted; OpenBMP's use is
     purely for cross-tool validation against a published
     open-source rocket-trajectory simulator.
 ```
@@ -507,5 +505,5 @@ safety_review:
   notes: >-
     Wholly synthetic, rounded order-of-magnitude drag polar for a
     clearly-labelled synthetic demonstration launcher. No
-    export-controlled, fielded, or manufacturer-proprietary content.
+    fielded or manufacturer-proprietary content.
 ```

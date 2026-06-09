@@ -44,6 +44,7 @@ extern crate alloc;
 pub mod derivative;
 pub mod error;
 pub mod models;
+pub mod port;
 pub mod state;
 
 pub use derivative::{PointMassDerivative, RigidBodyDerivative, SimStateDerivative};
@@ -54,6 +55,12 @@ pub use models::{
     ForceModel, LinearBurnMass, LinearBurnMassRigid, MassContext, MassModel, MassPropertiesRate,
     MomentContext, MomentModel, NullEnvironment, PhaseGatedForceModel, RecoverySnapshot,
     RecoverySnapshotView, RigidMassModel, TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
+};
+#[cfg(feature = "std")]
+pub use port::{FmuArchive, FmuArchiveError, FmuModelDescription};
+pub use port::{
+    FmuCoSimulationBackend, FmuCoSimulationModelPort, FmuCoSimulationPortSpec, ModelPort,
+    ModelPortKind, ModelPortMetadata, NativeModelPort,
 };
 pub use state::{
     Integratable, RigidBodyKinematicState, SimState, TranslationalState, VehicleState,

@@ -40,6 +40,8 @@ fn step(curr: EventScalars, prev: Option<EventScalars>) -> EventEvalState {
         previous_relative_distances_m: Some(BTreeMap::new()),
         relative_speeds_m_s: BTreeMap::new(),
         previous_relative_speeds_m_s: Some(BTreeMap::new()),
+        body_altitudes_m: BTreeMap::new(),
+        previous_body_altitudes_m: Some(BTreeMap::new()),
     }
 }
 
@@ -119,6 +121,46 @@ fn at_altitude_descending_does_not_fire_going_up() {
     let s = step(curr, Some(prev));
     assert!(
         !BuiltInEventTrigger::AtAltitudeDescending { meters: 100.0 }.fired(&s, ANY_TIME, ANY_STEP)
+    );
+}
+
+#[test]
+fn at_body_altitude_descending_fires_for_body_lane() {
+    let target = BodyId::from_path("vehicle.assembly.bodies.lower");
+    let mut prev_altitudes = BTreeMap::new();
+    prev_altitudes.insert(target, 10_500.0);
+    let mut curr_altitudes = BTreeMap::new();
+    curr_altitudes.insert(target, 9_500.0);
+    let mut s = step(
+        scalars(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+        Some(scalars(0.0, 0.0, 0.0, 0.0, 1.0, 0.0)),
+    );
+    s.previous_body_altitudes_m = Some(prev_altitudes);
+    s.body_altitudes_m = curr_altitudes;
+
+    assert!(
+        BuiltInEventTrigger::AtBodyAltitudeDescending {
+            target,
+            meters: 10_000.0,
+        }
+        .fired(&s, ANY_TIME, ANY_STEP)
+    );
+}
+
+#[test]
+fn at_body_altitude_descending_ignores_missing_predeployment_body() {
+    let target = BodyId::from_path("vehicle.assembly.bodies.lower");
+    let s = step(
+        scalars(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+        Some(scalars(0.0, 0.0, 0.0, 0.0, 1.0, 0.0)),
+    );
+
+    assert!(
+        !BuiltInEventTrigger::AtBodyAltitudeDescending {
+            target,
+            meters: 10_000.0,
+        }
+        .fired(&s, ANY_TIME, ANY_STEP)
     );
 }
 

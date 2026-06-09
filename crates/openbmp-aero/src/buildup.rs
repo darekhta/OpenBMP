@@ -9,8 +9,7 @@
 //! and the small-angle drag polar.
 //!
 //! The correlations are intentionally engineering-level and
-//! provenance-pinned to open textbook relations. No inverse range,
-//! target, or aimpoint inputs exist in this module.
+//! provenance-pinned to open textbook relations.
 
 #[cfg(not(feature = "std"))]
 use alloc::{vec, vec::Vec};
