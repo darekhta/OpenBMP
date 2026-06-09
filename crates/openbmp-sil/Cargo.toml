@@ -1,0 +1,26 @@
+[package]
+name                    = "openbmp-sil"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP host SIL package, testbench, and evidence API."
+
+[dependencies]
+openbmp-hal       = { workspace = true }
+openbmp-runner    = { workspace = true }
+openbmp-scenario  = { workspace = true }
+openbmp-telemetry = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+sha2              = { workspace = true }
+thiserror         = { workspace = true }
+toml              = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

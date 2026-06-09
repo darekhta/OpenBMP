@@ -1,0 +1,43 @@
+[package]
+name                    = "openbmp-sil-py"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "Python extension bindings for the OpenBMP native SIL testbench API."
+
+[lib]
+name = "openbmp_sil"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+openbmp-sil-native = { package = "openbmp-sil", path = "../openbmp-sil", version = "0.0.1" }
+pyo3                = { workspace = true }
+serde               = { workspace = true }
+serde_json          = { workspace = true }
+toml                = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[build-dependencies]
+pyo3-build-config = { workspace = true }
+
+[lints.rust]
+missing_docs = "deny"
+missing_debug_implementations = "warn"
+unsafe_code = "allow"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+float_cmp = "deny"

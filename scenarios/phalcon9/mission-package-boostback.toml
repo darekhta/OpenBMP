@@ -1,0 +1,25 @@
+[package]
+id      = "openbmp.phalcon9.orbit-boostback"
+version = "0.1.0"
+
+[files]
+scenario        = "phalcon9-orbit-boostback.toml"
+plant_config    = "plant-config-boostback.toml"
+iload           = "fc-boostback.iload"
+mission_graph   = "mission-graph-boostback.toml"
+scenario_script = "scenario-script-boostback.toml"
+dictionary      = "dictionary.json"
+provenance      = "provenance.md"
+
+[hashes]
+"phalcon9-orbit-boostback.toml" = "183ecd3978a7fef0176adc6d171dc56a732f06da058b8493bfdfca6b24a14480"
+"plant-config-boostback.toml" = "26ae00de5b1e3a200cbd4107b77769099b0fd3bc1b92ef658612467a0c6d59f4"
+"fc-boostback.iload" = "428739b530ab36ad790a82d94a66a1412c7374023fac064c6beb3e715621a164"
+"mission-graph-boostback.toml" = "61d0ab2d010ac4414dbf513a2b7f0606b262fd1494f46a5c3cb6b92035a6605a"
+"scenario-script-boostback.toml" = "62db629b79cdbd9044fc931d207affe7ea23dc2122b03d7915eb5ab94789c46e"
+"dictionary.json" = "5b7e227b99d52506dd2e1c94ad7938d291c30d3c3e52600329cabb4049e8458f"
+"provenance.md" = "4096e7ca1a4e66a6695f63ba923b5eb86c2194517629c00ace785f4940ecb0d2"
+
+[[test_cases]]
+id        = "orbit-boostback"
+objective = "Run the synthetic Phalcon-9 orbit insertion plus separated-booster boostback scenario through the native host SIL path and capture lane-region evidence."

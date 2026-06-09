@@ -1,0 +1,231 @@
+{
+  "schema": "openbmp.dictionary.v1",
+  "standards_posture": {
+    "ccsds_pus": "not claimed",
+    "xtce": "not claimed"
+  },
+  "topics": [
+    {
+      "index": 0,
+      "name": "sensor.imu",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 1,
+      "name": "sensor.barometer",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 2,
+      "name": "sensor.gnss",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 3,
+      "name": "sensor.magnetometer",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 4,
+      "name": "sensor.star_tracker",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 5,
+      "name": "sensor.status",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 6,
+      "name": "estimator.attitude",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 7,
+      "name": "estimator.position",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 8,
+      "name": "estimator.environment",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 9,
+      "name": "propulsion.propellant_state",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 10,
+      "name": "estimator.status",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 11,
+      "name": "estimator.lane_selection",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 12,
+      "name": "commander.vehicle_status",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 13,
+      "name": "commander.mission_state",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 14,
+      "name": "commander.mission_actions",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 15,
+      "name": "commander.region.mission",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 16,
+      "name": "commander.region.health",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 17,
+      "name": "commander.region.comms",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 18,
+      "name": "commander.region.estimator_regime",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 19,
+      "name": "commander.scenario_state_override",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 20,
+      "name": "health.failsafe_flags",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 21,
+      "name": "autopilot.actuator_cmd",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 22,
+      "name": "autopilot.status",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 23,
+      "name": "actuator.effector_cmds",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 24,
+      "name": "autopilot.engine_cmd",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 25,
+      "name": "actuator.engine_cmds",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 26,
+      "name": "fdir.status",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 27,
+      "name": "fdir.glrt.diagnostic",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 28,
+      "name": "estimator.mode",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 29,
+      "name": "guidance.reference",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 30,
+      "name": "guidance.cutoff",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 31,
+      "name": "scheduler.overrun",
+      "reserved": true,
+      "version": 0
+    },
+    {
+      "index": 32,
+      "name": "scheduler.deadline_slip",
+      "reserved": true,
+      "version": 0
+    },
+    {
+      "index": 33,
+      "name": "scheduler.timing_budget_report",
+      "reserved": true,
+      "version": 0
+    },
+    {
+      "index": 34,
+      "name": "health.actuator_status",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 35,
+      "name": "health.watchdog_status",
+      "reserved": false,
+      "version": 1
+    },
+    {
+      "index": 36,
+      "name": "health.storage_status",
+      "reserved": false,
+      "version": 1
+    }
+  ]
+}

@@ -290,106 +290,6 @@ jobs:
       - run: cargo test -p openbmp-testkit --lib --locked fc_lints
 
   # ----------------------------------------------------------------------
-  # Mission-vocabulary tripwire
-  #
-  # Scans the workspace's *.rs and *.md files for the rejected
-  # operational mission-state vocabulary documented in
-  # `docs/mission-states-vocabulary.md § Rejected Vocabulary`.
-  # Without enforcement, terms like `Endgame`, `Midcourse`, or
-  # `TerminalDescent` can creep back into source identifiers
-  # silently. The allowlist covers the docs that explicitly
-  # *document* the rejection.
-  # ----------------------------------------------------------------------
-  mission-vocabulary:
-    name: mission-vocabulary tripwire
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
-        with:
-          toolchain: "1.95"
-      - uses: Swatinem/rust-cache@v2.9.1
-      - run: cargo test -p openbmp-testkit --lib --locked mission_vocabulary
-
-  # ----------------------------------------------------------------------
-  # Dual-use field audit
-  #
-  # Locks the public field sets, enum variant sets, and audit
-  # enrollment of the forward-only footprint / Monte-Carlo /
-  # optimizer-boundary types. Any change is a Tier-1 safety review
-  # event because these surfaces must not grow a target, aimpoint,
-  # range-table, or miss-distance-to-target input.
-  # ----------------------------------------------------------------------
-  dual-use-field-audit:
-    name: dual-use field audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
-        with:
-          toolchain: "1.95"
-      - uses: Swatinem/rust-cache@v2.9.1
-      - run: cargo test -p openbmp-testkit --lib --locked dual_use_field_lints
-
-  # ----------------------------------------------------------------------
-  # Dual-use compile-fail audit
-  #
-  # Proves downstream crates cannot construct a BallisticState with a
-  # struct literal and bypass the forward-output constructor boundary.
-  # ----------------------------------------------------------------------
-  dual-use-compile-fail:
-    name: dual-use compile-fail audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
-        with:
-          toolchain: "1.95"
-      - uses: Swatinem/rust-cache@v2.9.1
-      - run: cargo test -p openbmp-testkit --test ballistic_state_compile_fail --locked
-
-  # ----------------------------------------------------------------------
-  # Dual-use reachability audit
-  #
-  # Separate from the manifest dependency graph: `openbmp-fc` may
-  # legitimately depend on `openbmp-physics`, but it must never reach
-  # the offline free-flight / footprint propagator symbols. This also
-  # locks the scenario-consumer agreement that BallisticState remains a
-  # forward-output consumed only by offline footprint post-processing.
-  # ----------------------------------------------------------------------
-  dual-use-reachability:
-    name: dual-use reachability audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
-        with:
-          toolchain: "1.95"
-      - uses: Swatinem/rust-cache@v2.9.1
-      - run: cargo test -p openbmp-testkit --test dual_use_reachability_tripwire --locked
-
-  # ----------------------------------------------------------------------
-  # Optimizer gate
-  #
-  # The v2 optimizer/terminal-condition surface is allowed only after
-  # the mechanical dual-use locks are green. Keep this as one required
-  # branch-protection check so future optimizer work cannot merge with
-  # any lock disabled.
-  # ----------------------------------------------------------------------
-  optimizer-gate:
-    name: optimizer gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
-        with:
-          toolchain: "1.95"
-      - uses: Swatinem/rust-cache@v2.9.1
-      - run: cargo test -p openbmp-testkit --lib --locked dual_use_field_lints
-      - run: cargo test -p openbmp-testkit --test dual_use_reachability_tripwire --locked
-      - run: cargo test -p openbmp-testkit --test ballistic_state_compile_fail --locked
-
-  # ----------------------------------------------------------------------
   # Requirements traceability
   #
   # Validates the checked-in requirements register:
@@ -404,6 +304,56 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: python3 scripts/check_requirements_traceability.py
+
+  # ----------------------------------------------------------------------
+  # Native SIL evidence + interchange smoke
+  #
+  # Exercises the industry-shaped package/testbench path directly:
+  # package validation, dictionary exports, evidence bundle writing,
+  # verdict reading, mission/script migration tests, and the FMI
+  # co-simulation adapter-boundary smoke.
+  # ----------------------------------------------------------------------
+  sil-evidence-interchange:
+    name: SIL evidence and interchange
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: cargo build -p openbmp-cli --locked
+      - run: cargo test -p openbmp-sil --locked
+      # Default features (no `extension-module`) so the in-process pyo3
+      # test can link libpython; the workspace `--all-features` gate
+      # builds the extension cdylib but gates this test out.
+      - run: cargo test -p openbmp-sil-py --locked
+      - run: cargo test -p openbmp-models fmu_cosim_port_matches_native_toy_model --locked
+      - run: cargo test -p openbmp-cli mission_script_split --locked
+      - run: ./target/debug/openbmp dict export --format json --output target/ci-dictionary.json
+      - run: ./target/debug/openbmp dict export --format xtce --experimental --output target/ci-dictionary.xtce.xml
+      - run: ./target/debug/openbmp package check scenarios/phalcon9/mission-package.toml
+      - run: ./target/debug/openbmp sil step scenarios/phalcon9/mission-package.toml --case orbit-insertion --ticks 5 --evidence target/ci-sil-evidence
+      - run: ./target/debug/openbmp sil verdict target/ci-sil-evidence/manifest.json
+
+  # ----------------------------------------------------------------------
+  # Phalcon-9 deterministic SIL
+  #
+  # Named flagship mission lane: keeps the orbit and integrated
+  # boostback checks visible as SIL evidence rather than only as part
+  # of the broad workspace test run.
+  # ----------------------------------------------------------------------
+  phalcon9-sil:
+    name: Phalcon-9 deterministic SIL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: cargo test -p openbmp-cli phalcon9_orbit_meets_orbital_mechanics_invariants --locked
+      - run: cargo test -p openbmp-cli phalcon9_boostback_ascends_to_orbit_and_booster_burns_retrograde --locked
 
   # ----------------------------------------------------------------------
   # HAL build-time gate

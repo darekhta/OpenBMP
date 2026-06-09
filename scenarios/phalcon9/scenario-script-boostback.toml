@@ -1,0 +1,236 @@
+[[scenario_script.events]]
+id = "ign_0"
+
+[scenario_script.events.action]
+id = "eng_s1_0"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = true
+shutdown = false
+throttle_unit = 1.0
+
+[scenario_script.events.trigger]
+kind = "at_time"
+time_s = 0.05
+
+[[scenario_script.events]]
+id = "ign_1"
+
+[scenario_script.events.action]
+id = "eng_s1_1"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = true
+shutdown = false
+throttle_unit = 1.0
+
+[scenario_script.events.trigger]
+kind = "at_time"
+time_s = 0.05
+
+[[scenario_script.events]]
+id = "ign_2"
+
+[scenario_script.events.action]
+id = "eng_s1_2"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = true
+shutdown = false
+throttle_unit = 1.0
+
+[scenario_script.events.trigger]
+kind = "at_time"
+time_s = 0.05
+
+[[scenario_script.events]]
+id = "ign_3"
+
+[scenario_script.events.action]
+id = "eng_s1_3"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = true
+shutdown = false
+throttle_unit = 1.0
+
+[scenario_script.events.trigger]
+kind = "at_time"
+time_s = 0.05
+
+[[scenario_script.events]]
+id = "ign_4"
+
+[scenario_script.events.action]
+id = "eng_s1_4"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = true
+shutdown = false
+throttle_unit = 1.0
+
+[scenario_script.events.trigger]
+kind = "at_time"
+time_s = 0.05
+
+[[scenario_script.events]]
+id = "ign_5"
+
+[scenario_script.events.action]
+id = "eng_s1_5"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = true
+shutdown = false
+throttle_unit = 1.0
+
+[scenario_script.events.trigger]
+kind = "at_time"
+time_s = 0.05
+
+[[scenario_script.events]]
+id = "ign_6"
+
+[scenario_script.events.action]
+id = "eng_s1_6"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = true
+shutdown = false
+throttle_unit = 1.0
+
+[scenario_script.events.trigger]
+kind = "at_time"
+time_s = 0.05
+
+[[scenario_script.events]]
+id = "ign_7"
+
+[scenario_script.events.action]
+id = "eng_s1_7"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = true
+shutdown = false
+throttle_unit = 1.0
+
+[scenario_script.events.trigger]
+kind = "at_time"
+time_s = 0.05
+
+[[scenario_script.events]]
+id = "ign_8"
+
+[scenario_script.events.action]
+id = "eng_s1_8"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = true
+shutdown = false
+throttle_unit = 1.0
+
+[scenario_script.events.trigger]
+kind = "at_time"
+time_s = 0.05
+
+[[scenario_script.events]]
+id = "ign_vac"
+
+[scenario_script.events.action]
+id = "eng_vac"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = true
+shutdown = false
+throttle_unit = 0.0
+
+[scenario_script.events.trigger]
+kind = "at_time"
+time_s = 0.05
+
+[[scenario_script.events]]
+id = "sep"
+once = true
+
+[scenario_script.events.action]
+body = "lower"
+kind = "jettison_stage"
+
+[scenario_script.events.trigger]
+falling = false
+kind = "at_velocity"
+velocity_m_s = 2765.0
+
+[[scenario_script.events]]
+id = "boostback_ignite"
+once = true
+
+[scenario_script.events.action]
+id = "eng_boost"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = true
+shutdown = false
+throttle_unit = 1.0
+
+[scenario_script.events.trigger]
+body = "lower"
+distance_m = 600.0
+falling = false
+kind = "at_relative_distance"
+reference_body = "upper"
+
+[[scenario_script.events]]
+id = "boostback_cut"
+once = true
+
+[scenario_script.events.action]
+id = "eng_boost"
+kind = "engine_command"
+
+[scenario_script.events.action.command]
+gimbal_pitch_rad = 0.0
+gimbal_yaw_rad = 0.0
+ignite = false
+shutdown = true
+throttle_unit = 0.0
+
+[scenario_script.events.trigger]
+body = "lower"
+falling = false
+kind = "at_relative_speed"
+reference_body = "upper"
+speed_m_s = 1200.0

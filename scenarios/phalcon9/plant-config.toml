@@ -1,0 +1,452 @@
+[aero]
+deck = "../../data/aero/phalcon9-drag.toml"
+deck_sha256 = "88259d8f3400538535be070ce4d6045a1c24b38033267dc9e326780cc927921f"
+mounted_to = "lower"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[environment]
+atmosphere = "us_standard_1976"
+frame_profile = "wgs84-uniform-rotation"
+gravity = "egm2008"
+magnetic = "wmm_2025"
+wind = "none"
+
+[forces]
+models = [
+    "gravity",
+    "thrust",
+    "aero",
+]
+
+[frames]
+profile = "wgs84-uniform-rotation"
+
+[frames.local_origin]
+height_m = 0.0
+latitude_deg = 0.0
+longitude_deg = 0.0
+source = "Synthetic equatorial launch site (lat 0, lon 0) for the due-east demo; not a real range."
+
+[[multi_body.separation]]
+conserve_momentum = false
+event_id = "sep"
+lower_body_id = "lower"
+lower_delta_v_body_m_s = [
+    0.0,
+    0.0,
+    -0.3,
+]
+upper_body_id = "upper"
+upper_delta_v_body_m_s = [
+    0.0,
+    0.0,
+    0.3,
+]
+
+[sensors.gnss]
+file = "../../data/sensors/gnss-textbook.toml"
+kind = "gnss"
+
+[sensors.imu]
+file = "../../data/sensors/imu-tactical.toml"
+kind = "imu"
+
+[sensors.star_tracker]
+file = "../../data/sensors/star-tracker-textbook.toml"
+kind = "star_tracker"
+
+[vehicle]
+initial_angular_velocity_body_rad_s = [
+    0.0,
+    0.0,
+    0.0,
+]
+initial_position_eci_m = [
+    6370000.0,
+    0.0,
+    0.0,
+]
+initial_quaternion_body_to_eci_xyzw = [
+    0.0,
+    0.7071067811865476,
+    0.0,
+    0.7071067811865476,
+]
+initial_velocity_eci_m_s = [
+    0.0,
+    464.5,
+    0.0,
+]
+kind = "rigid_body"
+
+[vehicle.assembly]
+cluster_layout = "octaweb"
+id = "phalcon9"
+
+[[vehicle.assembly.bodies]]
+dry_cg_body_m = [
+    0.0,
+    0.0,
+    -2.0,
+]
+dry_inertia_body_kg_m2 = [
+    [
+    30000000.0,
+    0.0,
+    0.0,
+],
+    [
+    0.0,
+    30000000.0,
+    0.0,
+],
+    [
+    0.0,
+    0.0,
+    500000.0,
+],
+]
+dry_mass_kg = 10000.0
+id = "lower"
+
+[vehicle.assembly.bodies.geometry]
+diameter_m = 3.7
+kind = "cylinder"
+length_m = 30.0
+
+[[vehicle.assembly.bodies]]
+dry_cg_body_m = [
+    0.0,
+    0.0,
+    16.0,
+]
+dry_inertia_body_kg_m2 = [
+    [
+    1200000.0,
+    0.0,
+    0.0,
+],
+    [
+    0.0,
+    1200000.0,
+    0.0,
+],
+    [
+    0.0,
+    0.0,
+    60000.0,
+],
+]
+dry_mass_kg = 9000.0
+id = "upper"
+
+[vehicle.assembly.bodies.geometry]
+diameter_m = 3.7
+kind = "cylinder"
+length_m = 11.0
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_0"
+mount_point_body_m = [
+    0.0,
+    0.0,
+    -14.0,
+]
+mounted_to = "lower"
+
+[vehicle.assembly.engines.kind]
+kind = "liquid_engine"
+
+[vehicle.assembly.engines.limits]
+gimbal_slew_rad_per_s = 1.0
+ignition_transient_s = 0.3
+isp_s = 340.0
+max_gimbal_rad = 0.087
+max_thrust_n = 433000.0
+shutdown_transient_s = 0.3
+
+[vehicle.assembly.engines.propellant]
+feed = "regulated"
+fuel_tank = "s1_prop"
+oxidizer_fuel_ratio = 0.0
+residual_reserve_kg = 50.0
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_1"
+mount_point_body_m = [
+    1.6,
+    0.0,
+    -14.0,
+]
+mounted_to = "lower"
+
+[vehicle.assembly.engines.kind]
+kind = "liquid_engine"
+
+[vehicle.assembly.engines.limits]
+gimbal_slew_rad_per_s = 1.0
+ignition_transient_s = 0.3
+isp_s = 340.0
+max_gimbal_rad = 0.087
+max_thrust_n = 433000.0
+shutdown_transient_s = 0.3
+
+[vehicle.assembly.engines.propellant]
+feed = "regulated"
+fuel_tank = "s1_prop"
+oxidizer_fuel_ratio = 0.0
+residual_reserve_kg = 50.0
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_2"
+mount_point_body_m = [
+    1.13137,
+    1.13137,
+    -14.0,
+]
+mounted_to = "lower"
+
+[vehicle.assembly.engines.kind]
+kind = "liquid_engine"
+
+[vehicle.assembly.engines.limits]
+gimbal_slew_rad_per_s = 1.0
+ignition_transient_s = 0.3
+isp_s = 340.0
+max_gimbal_rad = 0.087
+max_thrust_n = 433000.0
+shutdown_transient_s = 0.3
+
+[vehicle.assembly.engines.propellant]
+feed = "regulated"
+fuel_tank = "s1_prop"
+oxidizer_fuel_ratio = 0.0
+residual_reserve_kg = 50.0
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_3"
+mount_point_body_m = [
+    0.0,
+    1.6,
+    -14.0,
+]
+mounted_to = "lower"
+
+[vehicle.assembly.engines.kind]
+kind = "liquid_engine"
+
+[vehicle.assembly.engines.limits]
+gimbal_slew_rad_per_s = 1.0
+ignition_transient_s = 0.3
+isp_s = 340.0
+max_gimbal_rad = 0.087
+max_thrust_n = 433000.0
+shutdown_transient_s = 0.3
+
+[vehicle.assembly.engines.propellant]
+feed = "regulated"
+fuel_tank = "s1_prop"
+oxidizer_fuel_ratio = 0.0
+residual_reserve_kg = 50.0
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_4"
+mount_point_body_m = [
+    -1.6,
+    0.0,
+    -14.0,
+]
+mounted_to = "lower"
+
+[vehicle.assembly.engines.kind]
+kind = "liquid_engine"
+
+[vehicle.assembly.engines.limits]
+gimbal_slew_rad_per_s = 1.0
+ignition_transient_s = 0.3
+isp_s = 340.0
+max_gimbal_rad = 0.087
+max_thrust_n = 433000.0
+shutdown_transient_s = 0.3
+
+[vehicle.assembly.engines.propellant]
+feed = "regulated"
+fuel_tank = "s1_prop"
+oxidizer_fuel_ratio = 0.0
+residual_reserve_kg = 50.0
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_5"
+mount_point_body_m = [
+    -1.13137,
+    1.13137,
+    -14.0,
+]
+mounted_to = "lower"
+
+[vehicle.assembly.engines.kind]
+kind = "liquid_engine"
+
+[vehicle.assembly.engines.limits]
+gimbal_slew_rad_per_s = 1.0
+ignition_transient_s = 0.3
+isp_s = 340.0
+max_gimbal_rad = 0.087
+max_thrust_n = 433000.0
+shutdown_transient_s = 0.3
+
+[vehicle.assembly.engines.propellant]
+feed = "regulated"
+fuel_tank = "s1_prop"
+oxidizer_fuel_ratio = 0.0
+residual_reserve_kg = 50.0
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_6"
+mount_point_body_m = [
+    -1.13137,
+    -1.13137,
+    -14.0,
+]
+mounted_to = "lower"
+
+[vehicle.assembly.engines.kind]
+kind = "liquid_engine"
+
+[vehicle.assembly.engines.limits]
+gimbal_slew_rad_per_s = 1.0
+ignition_transient_s = 0.3
+isp_s = 340.0
+max_gimbal_rad = 0.087
+max_thrust_n = 433000.0
+shutdown_transient_s = 0.3
+
+[vehicle.assembly.engines.propellant]
+feed = "regulated"
+fuel_tank = "s1_prop"
+oxidizer_fuel_ratio = 0.0
+residual_reserve_kg = 50.0
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_7"
+mount_point_body_m = [
+    0.0,
+    -1.6,
+    -14.0,
+]
+mounted_to = "lower"
+
+[vehicle.assembly.engines.kind]
+kind = "liquid_engine"
+
+[vehicle.assembly.engines.limits]
+gimbal_slew_rad_per_s = 1.0
+ignition_transient_s = 0.3
+isp_s = 340.0
+max_gimbal_rad = 0.087
+max_thrust_n = 433000.0
+shutdown_transient_s = 0.3
+
+[vehicle.assembly.engines.propellant]
+feed = "regulated"
+fuel_tank = "s1_prop"
+oxidizer_fuel_ratio = 0.0
+residual_reserve_kg = 50.0
+
+[[vehicle.assembly.engines]]
+id = "eng_s1_8"
+mount_point_body_m = [
+    1.13137,
+    -1.13137,
+    -14.0,
+]
+mounted_to = "lower"
+
+[vehicle.assembly.engines.kind]
+kind = "liquid_engine"
+
+[vehicle.assembly.engines.limits]
+gimbal_slew_rad_per_s = 1.0
+ignition_transient_s = 0.3
+isp_s = 340.0
+max_gimbal_rad = 0.087
+max_thrust_n = 433000.0
+shutdown_transient_s = 0.3
+
+[vehicle.assembly.engines.propellant]
+feed = "regulated"
+fuel_tank = "s1_prop"
+oxidizer_fuel_ratio = 0.0
+residual_reserve_kg = 50.0
+
+[[vehicle.assembly.engines]]
+id = "eng_vac"
+mount_point_body_m = [
+    0.0,
+    0.0,
+    10.0,
+]
+mounted_to = "upper"
+
+[vehicle.assembly.engines.kind]
+kind = "liquid_engine"
+
+[vehicle.assembly.engines.limits]
+gimbal_slew_rad_per_s = 1.0
+ignition_transient_s = 0.3
+isp_s = 348.0
+max_gimbal_rad = 0.087
+max_thrust_n = 981000.0
+shutdown_transient_s = 0.3
+
+[vehicle.assembly.engines.propellant]
+feed = "regulated"
+fuel_tank = "s2_prop"
+oxidizer_fuel_ratio = 0.0
+residual_reserve_kg = 50.0
+
+[[vehicle.assembly.tanks]]
+id = "s1_prop"
+initial_fill_fraction = 1.0
+mount_point_body_m = [
+    0.0,
+    0.0,
+    -2.0,
+]
+mounted_to = "lower"
+
+[vehicle.assembly.tanks.geometry]
+height_m = 19.86
+kind = "cylinder"
+radius_m = 1.85
+
+[vehicle.assembly.tanks.moving_mass]
+kind = "rigid_liquid"
+
+[vehicle.assembly.tanks.propellant]
+density_kg_m3 = 1030.0
+label = "synthetic_kerolox_bulk"
+
+[[vehicle.assembly.tanks]]
+id = "s2_prop"
+initial_fill_fraction = 1.0
+mount_point_body_m = [
+    0.0,
+    0.0,
+    15.0,
+]
+mounted_to = "upper"
+
+[vehicle.assembly.tanks.geometry]
+height_m = 4.97
+kind = "cylinder"
+radius_m = 1.85
+
+[vehicle.assembly.tanks.moving_mass]
+kind = "rigid_liquid"
+
+[vehicle.assembly.tanks.propellant]
+density_kg_m3 = 1030.0
+label = "synthetic_kerolox_bulk"

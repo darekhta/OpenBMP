@@ -1,0 +1,83 @@
+[mission]
+initial_phase = "mission.phases.powered_ascent"
+
+[[mission.events]]
+id = "meco1"
+once = true
+
+[mission.events.action]
+kind = "emit_telemetry_marker"
+tag = "meco1"
+
+[mission.events.trigger]
+falling = false
+kind = "at_velocity"
+velocity_m_s = 2765.0
+
+[[mission.events]]
+id = "apogee"
+once = false
+
+[mission.events.action]
+kind = "emit_telemetry_marker"
+tag = "apogee"
+
+[mission.events.trigger]
+kind = "at_apogee"
+
+[[mission.events]]
+id = "seco"
+once = true
+
+[mission.events.action]
+kind = "emit_telemetry_marker"
+tag = "seco"
+
+[mission.events.trigger]
+kind = "at_guidance_cutoff"
+time_to_go_s = 0.0
+
+[[mission.phases]]
+allowed_engines = [
+    "eng_s1_0",
+    "eng_s1_1",
+    "eng_s1_2",
+    "eng_s1_3",
+    "eng_s1_4",
+    "eng_s1_5",
+    "eng_s1_6",
+    "eng_s1_7",
+    "eng_s1_8",
+]
+id = "mission.phases.powered_ascent"
+label = "stage-1 closed-loop ascent (TVC)"
+
+[[mission.phases]]
+allowed_engines = []
+id = "mission.phases.coast"
+label = "post-MECO coast to apogee (booster jettisoned)"
+
+[[mission.phases]]
+allowed_engines = ["eng_vac"]
+id = "mission.phases.circularize"
+label = "stage-2 PEG circularisation (TVC)"
+
+[[mission.phases]]
+allowed_engines = ["eng_vac"]
+id = "mission.phases.orbit"
+label = "orbital insertion (engines idle)"
+
+[[mission.transitions]]
+event = "meco1"
+from = "mission.phases.powered_ascent"
+to = "mission.phases.coast"
+
+[[mission.transitions]]
+event = "apogee"
+from = "mission.phases.coast"
+to = "mission.phases.circularize"
+
+[[mission.transitions]]
+event = "seco"
+from = "mission.phases.circularize"
+to = "mission.phases.orbit"

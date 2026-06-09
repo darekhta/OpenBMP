@@ -1,0 +1,258 @@
+[mission]
+initial_phase = "mission.phases.powered_ascent"
+
+[[mission.events]]
+id = "meco1"
+once = true
+
+[mission.events.action]
+kind = "emit_telemetry_marker"
+tag = "meco1"
+
+[mission.events.trigger]
+falling = false
+kind = "at_velocity"
+velocity_m_s = 2765.0
+
+[[mission.events]]
+id = "booster_sep"
+once = true
+
+[mission.events.action]
+kind = "set_region_state"
+region = "booster"
+state = "post_sep_reorient"
+
+[mission.events.trigger]
+falling = false
+kind = "at_velocity"
+velocity_m_s = 2765.0
+
+[[mission.events]]
+id = "upper_stage_coast"
+once = true
+
+[mission.events.action]
+kind = "set_region_state"
+region = "upper_stage"
+state = "coast"
+
+[mission.events.trigger]
+falling = false
+kind = "at_velocity"
+velocity_m_s = 2765.0
+
+[[mission.events]]
+id = "boostback_ignite"
+once = true
+
+[mission.events.action]
+kind = "set_region_state"
+region = "booster"
+state = "boostback_burn"
+
+[mission.events.trigger]
+falling = true
+kind = "at_velocity"
+velocity_m_s = 2575.0
+
+[[mission.events]]
+id = "boostback_cut"
+once = true
+
+[mission.events.action]
+kind = "set_region_state"
+region = "booster"
+state = "coast_entry"
+
+[mission.events.trigger]
+falling = true
+kind = "at_velocity"
+velocity_m_s = 2527.0
+
+[[mission.events]]
+id = "booster_entry_interface"
+once = true
+
+[mission.events.action]
+kind = "set_region_state"
+region = "booster"
+state = "entry_attitude"
+
+[mission.events.trigger]
+altitude_m = 120000.0
+body = "lower"
+kind = "at_body_altitude_descending"
+
+[[mission.events]]
+id = "booster_terminal_window"
+once = true
+
+[mission.events.action]
+kind = "set_region_state"
+region = "booster"
+state = "landing_burn"
+
+[mission.events.trigger]
+altitude_m = 10000.0
+body = "lower"
+kind = "at_body_altitude_descending"
+
+[[mission.events]]
+id = "booster_ground_crossing"
+once = true
+
+[mission.events.action]
+kind = "set_region_state"
+region = "booster"
+state = "touchdown_or_safed"
+
+[mission.events.trigger]
+altitude_m = 0.0
+body = "lower"
+kind = "at_body_altitude_descending"
+
+[[mission.events]]
+id = "apogee"
+once = false
+
+[mission.events.action]
+kind = "emit_telemetry_marker"
+tag = "apogee"
+
+[mission.events.trigger]
+kind = "at_apogee"
+
+[[mission.events]]
+id = "upper_stage_circularize"
+once = false
+
+[mission.events.action]
+kind = "set_region_state"
+region = "upper_stage"
+state = "circularize"
+
+[mission.events.trigger]
+kind = "at_apogee"
+
+[[mission.events]]
+id = "seco"
+once = true
+
+[mission.events.action]
+kind = "emit_telemetry_marker"
+tag = "seco"
+
+[mission.events.trigger]
+kind = "at_guidance_cutoff"
+time_to_go_s = 0.0
+
+[[mission.events]]
+id = "upper_stage_orbit"
+once = true
+
+[mission.events.action]
+kind = "set_region_state"
+region = "upper_stage"
+state = "orbit"
+
+[mission.events.trigger]
+kind = "at_guidance_cutoff"
+time_to_go_s = 0.0
+
+[[mission.phases]]
+allowed_engines = [
+    "eng_s1_0",
+    "eng_s1_1",
+    "eng_s1_2",
+    "eng_s1_3",
+    "eng_s1_4",
+    "eng_s1_5",
+    "eng_s1_6",
+    "eng_s1_7",
+    "eng_s1_8",
+]
+id = "mission.phases.powered_ascent"
+label = "stage-1 closed-loop ascent (TVC)"
+
+[[mission.phases]]
+allowed_engines = []
+id = "mission.phases.coast"
+label = "post-MECO coast to apogee (booster jettisoned)"
+
+[[mission.phases]]
+allowed_engines = ["eng_vac"]
+id = "mission.phases.circularize"
+label = "stage-2 PEG circularisation (TVC)"
+
+[[mission.phases]]
+allowed_engines = ["eng_vac"]
+id = "mission.phases.orbit"
+label = "orbital insertion (engines idle)"
+
+[[mission.regions]]
+id = "booster"
+initial_state = "attached"
+
+[[mission.regions.states]]
+id = "attached"
+label = "booster attached to ascent stack"
+
+[[mission.regions.states]]
+id = "post_sep_reorient"
+label = "separated booster reorienting retrograde"
+
+[[mission.regions.states]]
+id = "boostback_burn"
+label = "booster boostback burn"
+
+[[mission.regions.states]]
+id = "coast_entry"
+label = "booster coast toward entry"
+
+[[mission.regions.states]]
+id = "entry_attitude"
+label = "booster entry-attitude interface"
+
+[[mission.regions.states]]
+id = "landing_burn"
+label = "booster terminal burn window"
+
+[[mission.regions.states]]
+id = "touchdown_or_safed"
+label = "booster ground crossing or safed terminal state"
+
+[[mission.regions]]
+id = "upper_stage"
+initial_state = "attached"
+
+[[mission.regions.states]]
+id = "attached"
+label = "upper stage attached to ascent stack"
+
+[[mission.regions.states]]
+id = "coast"
+label = "upper-stage coast to apogee"
+
+[[mission.regions.states]]
+id = "circularize"
+label = "upper-stage circularization burn"
+
+[[mission.regions.states]]
+id = "orbit"
+label = "upper-stage orbital insertion complete"
+
+[[mission.transitions]]
+event = "meco1"
+from = "mission.phases.powered_ascent"
+to = "mission.phases.coast"
+
+[[mission.transitions]]
+event = "apogee"
+from = "mission.phases.coast"
+to = "mission.phases.circularize"
+
+[[mission.transitions]]
+event = "seco"
+from = "mission.phases.circularize"
+to = "mission.phases.orbit"
