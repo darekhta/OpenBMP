@@ -113,6 +113,7 @@ const MISSING_AEROTHERMAL_DIAGNOSTICS_MESSAGE: &str =
 pub fn run(
     scenario: &Scenario,
     resolved_files: &BTreeMap<String, ResolvedFile>,
+    mut monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
 ) -> Result<RunOutcome, RunnerError> {
     let document = &scenario.document;
     require_supported_shape(document)?;
@@ -355,6 +356,7 @@ pub fn run(
                 // state — contemporaneous with the body rate read above
                 // (one-step lag, mirroring the slosh rack). Zero when rigid.
                 structural_rack.gyro_pickup_rad_s(),
+                monitor.as_deref_mut(),
             )?;
             if document.flight_controller_owns_mission_state() {
                 // Forward the FC commander's published mission state into

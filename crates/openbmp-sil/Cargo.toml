@@ -9,10 +9,13 @@ authors.workspace       = true
 description             = "OpenBMP host SIL package, testbench, and evidence API."
 
 [dependencies]
+openbmp-core      = { workspace = true }
 openbmp-hal       = { workspace = true }
 openbmp-runner    = { workspace = true }
 openbmp-scenario  = { workspace = true }
+openbmp-sensors   = { workspace = true }
 openbmp-telemetry = { workspace = true }
+nalgebra          = { workspace = true }
 serde             = { workspace = true }
 serde_json        = { workspace = true }
 sha2              = { workspace = true }

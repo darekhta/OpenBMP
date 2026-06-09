@@ -513,6 +513,61 @@ impl FcRunner {
             .map(|(a, _)| a)
     }
 
+    /// Returns the latest translational state estimate
+    /// (`estimator.position`), if any. Published unconditionally every
+    /// estimator tick.
+    #[must_use]
+    pub fn latest_position_estimate(&self) -> Option<PositionEstimate> {
+        self.fc
+            .bus()
+            .latest::<PositionEstimate>()
+            .ok()
+            .flatten()
+            .map(|(p, _)| p)
+    }
+
+    /// Returns the latest estimator-health snapshot
+    /// (`estimator.status`), if any. Published unconditionally every
+    /// estimator tick.
+    #[must_use]
+    pub fn latest_estimator_status(&self) -> Option<EstimatorStatus> {
+        self.fc
+            .bus()
+            .latest::<EstimatorStatus>()
+            .ok()
+            .flatten()
+            .map(|(s, _)| s)
+    }
+
+    /// Returns the latest FDIR status (`fdir.status`), if any. Published
+    /// every tick the FDIR job runs.
+    #[must_use]
+    pub fn latest_fdir_status(&self) -> Option<FdirStatus> {
+        self.fc
+            .bus()
+            .latest::<FdirStatus>()
+            .ok()
+            .flatten()
+            .map(|(s, _)| s)
+    }
+
+    /// Returns the latest IMM estimator-mode snapshot
+    /// (`estimator.mode`), if any.
+    ///
+    /// Publish-on-availability: this is `None` for a single-lane
+    /// estimator (e.g. a plain EKF) that does not run the IMM
+    /// mode-probability filter, so callers must treat `None` as
+    /// "mode not applicable", never as a failure.
+    #[must_use]
+    pub fn latest_estimator_mode(&self) -> Option<EstimatorMode> {
+        self.fc
+            .bus()
+            .latest::<EstimatorMode>()
+            .ok()
+            .flatten()
+            .map(|(m, _)| m)
+    }
+
     /// Returns the latest guidance reference, if any.
     #[must_use]
     pub fn latest_reference_state(&self) -> Option<ReferenceState> {
@@ -2066,6 +2121,7 @@ mod tests {
             autopilot_allocation: None,
             trajectory: None,
             ascent_reference_by_phase: None,
+            sil_stimulus: None,
             ascent_reference: None,
         };
         let (graph, bindings, pad) = minimal_graph();
@@ -2144,6 +2200,7 @@ mod tests {
             autopilot_allocation: None,
             trajectory: None,
             ascent_reference_by_phase: None,
+            sil_stimulus: None,
             ascent_reference: None,
         };
         let (graph, bindings, pad) = minimal_graph();
@@ -2216,6 +2273,7 @@ mod tests {
             autopilot_allocation: None,
             trajectory: None,
             ascent_reference_by_phase: None,
+            sil_stimulus: None,
             ascent_reference: Some(FcAscentReferenceConfig {
                 method: FcAscentReferenceMethod::PitchProgram,
                 schedule_s: Some(vec![0.0, 10.0, 30.0]),

@@ -8,12 +8,19 @@
 //! stimulation, signal readout, bus-frame capture, evidence export) without
 //! claiming ASAM XIL conformance.
 
+pub mod checks;
+pub mod monitor;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use crate::checks::SilCheck;
+pub use crate::monitor::{
+    EstimateVsTruthMonitor, SilObservationReport, SilObservationSample, SilObservationSummary,
+};
 use openbmp_hal::{decode_iload_envelope, encode_iload_envelope};
 use openbmp_runner::{RunOutcome, RunnerError};
 use openbmp_scenario::{Scenario, ScenarioError};
@@ -129,7 +136,7 @@ pub struct MissionPackage {
 }
 
 /// Versioned OpenBMP mission package manifest.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MissionPackageManifest {
     /// Package identity and version.
@@ -184,7 +191,7 @@ pub struct PackageFiles {
 }
 
 /// One SIL test case declared by a mission package.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PackageTestCase {
     /// Case id selected from the CLI/API.
@@ -195,6 +202,11 @@ pub struct PackageTestCase {
     /// Optional human-readable objective.
     #[serde(default)]
     pub objective: Option<String>,
+    /// Declared SIL acceptance checks evaluated over the run's
+    /// estimate-vs-truth observations. Empty preserves the run-health
+    /// verdict; any declared check that fails fails the run.
+    #[serde(default)]
+    pub checks: Vec<SilCheck>,
 }
 
 /// Result of validating a package manifest.
@@ -466,6 +478,11 @@ pub struct EvidenceBundle {
     /// [`RequirementVerdict`]; empty exactly when [`Self::verdict`] is
     /// `pass`.
     pub failures: Vec<EvidenceFailure>,
+    /// Estimate-vs-truth observation record for an in-loop SIL run, when the
+    /// case was run with a [`monitor::EstimateVsTruthMonitor`] installed.
+    /// `None` for a plain run (the field is omitted from legacy evidence).
+    #[serde(default)]
+    pub observations: Option<SilObservationReport>,
     /// Telemetry inventory and bounds.
     pub telemetry_summary: TelemetrySummary,
     /// Telemetry row count.
@@ -713,6 +730,57 @@ impl MissionPackage {
         self.report_from_outcome(&case.id, &scenario, &outcome)
     }
 
+    /// Run a package test case with an estimate-vs-truth SIL monitor
+    /// installed, attaching the residual observation record to the
+    /// evidence bundle.
+    ///
+    /// This is the in-loop "observe the flight controller" operation: when
+    /// the scenario wires an `[fc]` block the monitor compares the FC's
+    /// published nav estimate / estimator health / FDIR status against
+    /// truth each tick. `decimation` records every Nth tick in the sample
+    /// series (the summary always covers every tick); `1` records all ticks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SilError`] for package, scenario, or runner failures.
+    pub fn run_case_observed(
+        &self,
+        case_id: Option<&str>,
+        decimation: u64,
+    ) -> Result<SilRunReport, SilError> {
+        let case = self.resolve_case(case_id)?;
+        let scenario_path = self.resolve(&case.scenario_path);
+        let scenario = Scenario::from_file(&scenario_path)?;
+        let mut monitor = EstimateVsTruthMonitor::new(decimation);
+        let outcome = openbmp_runner::run_with_monitor(&scenario, &mut monitor)?;
+        let mut report = self.report_from_outcome(&case.id, &scenario, &outcome)?;
+        let observations = monitor.into_report();
+
+        // Evaluate the case's declared SIL acceptance checks over the
+        // observations and fold them into the verdict. A failing check fails
+        // the run; an absent observable skips. Cases with no declared checks
+        // keep the run-health verdict computed above.
+        if !case.checks.is_empty() {
+            let stop_label = report.evidence.stop_label.clone();
+            for check in &case.checks {
+                report
+                    .evidence
+                    .requirement_verdicts
+                    .push(check.evaluate(&observations, &stop_label));
+            }
+            let failures = evidence_failures(
+                &report.evidence.requirement_verdicts,
+                report.evidence.final_time_s,
+                report.evidence.final_step,
+            );
+            report.evidence.verdict = aggregate_verdict(&failures).to_owned();
+            report.evidence.failures = failures;
+        }
+
+        report.evidence.observations = Some(observations);
+        Ok(report)
+    }
+
     /// Run a package test case after shortening the scenario stop time
     /// to `ticks * dt_s` after the scenario start.
     ///
@@ -923,6 +991,7 @@ impl MissionPackage {
                     .scenario
                     .clone()
                     .unwrap_or_else(|| self.manifest.files.scenario.clone()),
+                checks: case.checks.clone(),
             });
         }
         if self.manifest.test_cases.len() == 1 {
@@ -933,11 +1002,13 @@ impl MissionPackage {
                     .scenario
                     .clone()
                     .unwrap_or_else(|| self.manifest.files.scenario.clone()),
+                checks: case.checks.clone(),
             });
         }
         Ok(ResolvedCase {
             id: "default".to_owned(),
             scenario_path: self.manifest.files.scenario.clone(),
+            checks: Vec::new(),
         })
     }
 
@@ -988,6 +1059,7 @@ impl MissionPackage {
             bus_frames: bus_frames(&outcome.table),
             requirement_verdicts,
             failures,
+            observations: None,
             telemetry_rows: telemetry_summary.rows,
             telemetry_channels: telemetry_summary.channels,
             telemetry_summary,
@@ -1070,6 +1142,21 @@ impl SilTestbench {
     /// Returns [`SilError`] for package, scenario, or runner failures.
     pub fn run(&self, case_id: Option<&str>) -> Result<SilRunReport, SilError> {
         self.package.run_case(case_id)
+    }
+
+    /// Run the selected case with an estimate-vs-truth SIL monitor
+    /// installed, attaching the residual observation record to the
+    /// evidence bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SilError`] for package, scenario, or runner failures.
+    pub fn run_observed(
+        &self,
+        case_id: Option<&str>,
+        decimation: u64,
+    ) -> Result<SilRunReport, SilError> {
+        self.package.run_case_observed(case_id, decimation)
     }
 
     /// Run the selected case until a target condition is reached.
@@ -1187,6 +1274,7 @@ pub fn sha256_file(path: impl AsRef<Path>) -> Result<String, SilError> {
 struct ResolvedCase {
     id: String,
     scenario_path: PathBuf,
+    checks: Vec<SilCheck>,
 }
 
 const PLANT_CONFIG_KEYS: &[&str] = &[

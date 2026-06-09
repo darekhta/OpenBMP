@@ -181,6 +181,23 @@ pub enum SilCommand {
         #[arg(long = "evidence")]
         evidence: Option<PathBuf>,
     },
+    /// Run a case with the estimate-vs-truth SIL monitor, evaluating the
+    /// case's declared SIL acceptance checks against the in-loop flight
+    /// controller's response.
+    Observe {
+        /// Mission package manifest.
+        package: PathBuf,
+        /// Optional package test-case id.
+        #[arg(long = "case")]
+        case: Option<String>,
+        /// Record every Nth tick in the observation sample series
+        /// (the summary always covers every tick).
+        #[arg(long = "decimation", default_value_t = 1)]
+        decimation: u64,
+        /// Evidence bundle output directory.
+        #[arg(long = "evidence")]
+        evidence: Option<PathBuf>,
+    },
     /// Step a package test case for a fixed number of ticks.
     Step {
         /// Mission package manifest.

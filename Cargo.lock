@@ -1680,9 +1680,12 @@ dependencies = [
 name = "openbmp-sil"
 version = "0.0.1"
 dependencies = [
+ "nalgebra",
+ "openbmp-core",
  "openbmp-hal",
  "openbmp-runner",
  "openbmp-scenario",
+ "openbmp-sensors",
  "openbmp-telemetry",
  "serde",
  "serde_json",

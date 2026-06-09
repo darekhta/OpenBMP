@@ -41,6 +41,7 @@
 // these.
 pub mod error;
 pub mod sensor;
+pub mod stimulus;
 
 // Synthetic-side parser for IMU noise-budget TOML configs. Stays
 // gated with the synthetic implementations because it parses
@@ -50,6 +51,7 @@ pub mod parser;
 
 pub use error::SensorError;
 pub use sensor::{Sensor, SensorMeasurement, SensorTruth, Timestamped};
+pub use stimulus::MeasurementStimulus;
 #[cfg(feature = "synthetic")]
 pub use sensor::{SyntheticSensor, SyntheticSensorAdapter};
 

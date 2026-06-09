@@ -30,6 +30,28 @@ pub fn run(
     Ok((report, evidence_path))
 }
 
+/// Run a package case with the estimate-vs-truth SIL monitor and the
+/// case's declared acceptance checks.
+///
+/// # Errors
+///
+/// Returns [`CliError`] for package, scenario, runner, evidence, or IO
+/// failures.
+pub fn observe(
+    package: &Path,
+    case: Option<&str>,
+    decimation: u64,
+    evidence_dir: Option<&Path>,
+) -> Result<(SilRunReport, Option<PathBuf>), CliError> {
+    let bench = SilTestbench::load(package)?;
+    let report = bench.run_observed(case, decimation)?;
+    let evidence_path = match evidence_dir {
+        Some(path) => Some(write_evidence_bundle(path, &report.evidence)?),
+        None => None,
+    };
+    Ok((report, evidence_path))
+}
+
 /// Step a package case for a fixed number of ticks.
 ///
 /// # Errors

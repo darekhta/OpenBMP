@@ -33,6 +33,14 @@ const EFFECTOR_COMPONENT_DOMAIN_TAG: [u8; 4] = *b"EFFC";
 /// effector streams even if integer payloads happen to overlap.
 const WIND_COMPONENT_DOMAIN_TAG: [u8; 4] = *b"WIND";
 
+/// Domain tag for [`DeterministicRng::for_stimulus_component`].
+/// Distinct from the other domain tags so SIL fault-injection noise can
+/// never collide with channel / sensor / effector / wind streams even if
+/// integer payloads happen to overlap. This is what guarantees that adding
+/// a fault-stimulus stream cannot perturb any existing draw: an unarmed
+/// stimulus draws zero numbers from this independent stream family.
+const STIMULUS_COMPONENT_DOMAIN_TAG: [u8; 4] = *b"STIM";
+
 /// Deterministic pseudo-random number generator.
 ///
 /// Implements [`rand::Rng`] and is therefore usable anywhere the
@@ -139,6 +147,36 @@ impl DeterministicRng {
         bytes[16..24].copy_from_slice(&effector_id.value().to_le_bytes());
         bytes[24..28].copy_from_slice(&component_id.to_le_bytes());
         bytes[28..32].copy_from_slice(&EFFECTOR_COMPONENT_DOMAIN_TAG);
+        Self::from_raw_seed(bytes)
+    }
+
+    /// Construct a per-sensor SIL-stimulus deterministic stream.
+    ///
+    /// This constructor serves measurement-domain fault injection at the
+    /// FC/sensor boundary. The seed is derived from
+    /// `(scenario_seed, step_index, sensor_id, component_id)` plus the
+    /// `STIMULUS_COMPONENT_DOMAIN_TAG` (`b"STIM"`) in the trailing 4 bytes.
+    ///
+    /// The domain tag guarantees no collision with [`Self::for_channel`]
+    /// (zero in [24..32]), [`Self::for_sensor_component`] (`b"SENS"`),
+    /// [`Self::for_effector_component`] (`b"EFFC"`), or
+    /// [`Self::for_wind_component`] (`b"WIND"`). Because every draw
+    /// reconstructs its own stream from this tuple — there is no shared
+    /// cursor — an unarmed fault simply never constructs or draws from this
+    /// stream, so the simulated sensor noise is byte-identical.
+    #[must_use]
+    pub fn for_stimulus_component(
+        scenario_seed: u64,
+        step: StepIndex,
+        sensor_id: SensorId,
+        component_id: u32,
+    ) -> Self {
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(&scenario_seed.to_le_bytes());
+        bytes[8..16].copy_from_slice(&step.value().to_le_bytes());
+        bytes[16..24].copy_from_slice(&sensor_id.value().to_le_bytes());
+        bytes[24..28].copy_from_slice(&component_id.to_le_bytes());
+        bytes[28..32].copy_from_slice(&STIMULUS_COMPONENT_DOMAIN_TAG);
         Self::from_raw_seed(bytes)
     }
 
@@ -480,6 +518,84 @@ mod tests {
         0x72, 0x33, 0xae, 0x9e, 0x83, 0xfd, 0xb1, 0x2b, 0x86, 0xee, 0xf2, 0x75, 0xd0, 0x51, 0xbf,
         0x54, 0x63, 0xcb, 0x7b, 0xbd, 0x57, 0x4c, 0x51, 0x42, 0xa4, 0x96, 0x3c, 0x25, 0x94, 0xac,
         0x99, 0xee,
+    ];
+
+    // -----------------------------------------------------------------
+    // for_stimulus_component (SIL fault injection, `b"STIM"`)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn for_stimulus_component_is_deterministic() {
+        let scenario = 0x5151_2727u64;
+        let step = StepIndex::new(42);
+        let mut a = DeterministicRng::for_stimulus_component(scenario, step, SensorId::new(9), 1);
+        let mut b = DeterministicRng::for_stimulus_component(scenario, step, SensorId::new(9), 1);
+        for _ in 0..1024 {
+            assert_eq!(a.next_u64(), b.next_u64());
+        }
+    }
+
+    #[test]
+    fn for_stimulus_component_distinct_component_ids_diverge() {
+        let scenario = 0x5151_2727u64;
+        let step = StepIndex::new(42);
+        let mut a = DeterministicRng::for_stimulus_component(scenario, step, SensorId::new(9), 1);
+        let mut b = DeterministicRng::for_stimulus_component(scenario, step, SensorId::new(9), 2);
+        assert!((0..8).any(|_| a.next_u64() != b.next_u64()));
+    }
+
+    #[test]
+    fn for_stimulus_component_never_collides_with_other_families() {
+        // `b"STIM"` in bytes [28..32] guarantees the stimulus family never
+        // shares a stream with channel / sensor / effector / wind, even when
+        // the integer payloads overlap exactly.
+        let scenario = 0x9999_aaaau64;
+        let step = StepIndex::new(7);
+        let payload = 0xBABEu64;
+        let mut stim =
+            DeterministicRng::for_stimulus_component(scenario, step, SensorId::new(payload), 3);
+        let mut sensor =
+            DeterministicRng::for_sensor_component(scenario, step, SensorId::new(payload), 3);
+        let mut effector =
+            DeterministicRng::for_effector_component(scenario, step, EffectorId::new(payload), 3);
+        let mut channel =
+            DeterministicRng::for_channel(scenario, step, ChannelId::new(payload));
+        let mut wind = DeterministicRng::for_wind_component(scenario, step, WindAxis::U);
+
+        let stim_sample = stim.next_u64();
+        // Re-derive each comparison stream's first draw independently.
+        assert!((0..8).any(|_| stim.next_u64() != sensor.next_u64()));
+        assert_ne!(
+            stim_sample,
+            sensor.next_u64(),
+            "stimulus must not collide with sensor"
+        );
+        assert!((0..8).any(|_| stim.next_u64() != effector.next_u64()));
+        assert!((0..8).any(|_| stim.next_u64() != channel.next_u64()));
+        assert!((0..8).any(|_| stim.next_u64() != wind.next_u64()));
+    }
+
+    #[test]
+    fn for_stimulus_component_reference_stream_is_locked() {
+        let mut rng = DeterministicRng::for_stimulus_component(
+            0x0123_4567_89ab_cdef,
+            StepIndex::new(0x1020_3040_5060_7080),
+            SensorId::new(0x1122_3344_5566_7788),
+            0x0AABB,
+        );
+        let mut actual = [0u8; 32];
+        rng.fill_bytes(&mut actual);
+        // Pinned reference stream — any drift fails this test before it can
+        // perturb downstream stimulus reproducibility.
+        let expected = PINNED_STIMULUS_REFERENCE_STREAM;
+        assert_eq!(actual, expected);
+    }
+
+    /// Pinned reference stream for `for_stimulus_component_reference_stream_is_locked`.
+    const PINNED_STIMULUS_REFERENCE_STREAM: [u8; 32] = [
+        0xe0, 0x66, 0xeb, 0xe6, 0x15, 0xda, 0x8c, 0x55, 0x0d, 0x9a, 0x98, 0x36, 0x8d, 0xe1, 0x8b,
+        0xd8, 0xc4, 0x42, 0xd9, 0x75, 0xbd, 0xf0, 0x7f, 0xa1, 0x59, 0x53, 0xed, 0x89, 0x42, 0x65,
+        0xc0, 0x24,
     ];
 
     // -----------------------------------------------------------------

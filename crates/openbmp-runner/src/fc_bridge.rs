@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use nalgebra::{UnitQuaternion, Vector3};
-use openbmp_core::{Position3, SensorId, StepIndex, Velocity3};
+use openbmp_core::{DeterministicRng, Position3, SensorId, StepIndex, Velocity3};
 use openbmp_fc::topics::{
     BarometerSample, EnvironmentEstimate, GnssSample, ImuSample, MagnetometerSample,
     PropellantState, StarTrackerSample,
@@ -20,14 +20,14 @@ use openbmp_mission::{FiredEvent, MissionAction};
 use openbmp_physics::atmosphere::{AtmosphereModel, ExoatmosphericPolicy, UsStandard1976};
 use openbmp_physics::magnetic::{EarthDipoleField, MagneticFieldEci, Wmm2025};
 use openbmp_scenario::{
-    FcConfig, FcEstimatorKind, FcMagFieldKind, ResolvedFile, Scenario, ScenarioDocument,
-    SensorConfig,
+    FcConfig, FcEstimatorKind, FcMagFieldKind, FcSilFaultKind, ResolvedFile, Scenario,
+    ScenarioDocument, SensorConfig,
 };
 use openbmp_sensors::{
     GnssNoiseBudget, IdealStateSensor, ImuNoiseBudget, MagnetometerNoiseBudget,
-    Sensor as SensorTrait, SensorMeasurement, SensorTruth, StarTrackerNoiseBudget,
-    SyntheticBarometer, SyntheticGnss, SyntheticImu, SyntheticMagnetometer, SyntheticSensorAdapter,
-    SyntheticStarTracker,
+    MeasurementStimulus, Sensor as SensorTrait, SensorMeasurement, SensorTruth,
+    StarTrackerNoiseBudget, SyntheticBarometer, SyntheticGnss, SyntheticImu, SyntheticMagnetometer,
+    SyntheticSensorAdapter, SyntheticStarTracker,
 };
 use openbmp_state::{PointMassState, RigidBodyState};
 
@@ -51,11 +51,114 @@ pub struct FcBridge {
     geocentric_surface_radius_m: Option<f64>,
     magnetic: Box<dyn MagneticFieldEci>,
     scenario_seed: u64,
+    stimulus_schedule: StimulusSchedule,
     previous_velocity_eci_m_s: Option<Vector3<f64>>,
     previous_time_s: Option<f64>,
     previous_angular_velocity_body_rad_s: Option<Vector3<f64>>,
     previous_angular_time_s: Option<f64>,
     last_mission_action_sequence: Option<u64>,
+}
+
+/// One armed, open-loop sensor fault: a measurement-domain transform that
+/// applies to a single sensor while the simulation clock is inside
+/// `[start_s, stop_s)`.
+#[derive(Debug)]
+struct ArmedFault {
+    sensor_id: SensorId,
+    start_s: f64,
+    stop_s: f64,
+    stimulus: MeasurementStimulus,
+    /// Distinguishes this fault's RNG stream from sibling faults on the
+    /// same sensor so adding a fault never shifts another's draws.
+    component_id: u32,
+}
+
+/// The scenario-declared SIL fault schedule, frozen before the run.
+///
+/// Empty for any scenario without an `[fc.sil_stimulus]` block, in which
+/// case [`Self::apply`] is a no-op and draws nothing — the run is
+/// byte-identical to an unstimulated run.
+#[derive(Debug, Default)]
+struct StimulusSchedule {
+    faults: Vec<ArmedFault>,
+}
+
+impl StimulusSchedule {
+    /// Build the schedule from the scenario `[fc.sil_stimulus]` block,
+    /// failing closed if a fault names a sensor absent from `[sensors]`.
+    fn build(document: &ScenarioDocument) -> Result<Self, RunnerError> {
+        let mut faults = Vec::new();
+        let Some(fc) = &document.fc else {
+            return Ok(Self::default());
+        };
+        let Some(config) = &fc.sil_stimulus else {
+            return Ok(Self::default());
+        };
+        for (index, fault) in config.faults.iter().enumerate() {
+            let declared = document
+                .sensors
+                .as_ref()
+                .is_some_and(|sensors| sensors.contains_key(&fault.sensor));
+            if !declared {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "[fc.sil_stimulus] fault targets sensor `{}`, which is not declared in [sensors]",
+                        fault.sensor
+                    ),
+                });
+            }
+            if fault.stop_s <= fault.start_s {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "[fc.sil_stimulus] fault on `{}` requires stop_s > start_s (got start_s = {}, stop_s = {})",
+                        fault.sensor, fault.start_s, fault.stop_s
+                    ),
+                });
+            }
+            let stimulus = match &fault.fault {
+                FcSilFaultKind::Bias { offset } => MeasurementStimulus::Bias {
+                    offset: Vector3::from(*offset),
+                },
+            };
+            faults.push(ArmedFault {
+                sensor_id: SensorId::from_path(&format!("sensors.{}", fault.sensor)),
+                start_s: fault.start_s,
+                stop_s: fault.stop_s,
+                stimulus,
+                component_id: u32::try_from(index).unwrap_or(u32::MAX),
+            });
+        }
+        Ok(Self { faults })
+    }
+
+    /// Whether any fault is scheduled. When empty, the seam is an identity.
+    fn is_empty(&self) -> bool {
+        self.faults.is_empty()
+    }
+
+    /// Apply every armed fault for `sensor_id` whose window contains
+    /// `time_s`, in declaration order, mutating the freshly-read
+    /// measurement before the flight controller sees it.
+    fn apply(
+        &self,
+        sensor_id: SensorId,
+        measurement: &mut SensorMeasurement,
+        step: StepIndex,
+        time_s: f64,
+        scenario_seed: u64,
+    ) {
+        for fault in &self.faults {
+            if fault.sensor_id == sensor_id && time_s >= fault.start_s && time_s < fault.stop_s {
+                let mut rng = DeterministicRng::for_stimulus_component(
+                    scenario_seed,
+                    step,
+                    sensor_id,
+                    fault.component_id,
+                );
+                fault.stimulus.apply(measurement, &mut rng);
+            }
+        }
+    }
 }
 
 impl FcBridge {
@@ -147,6 +250,7 @@ impl FcBridge {
             geocentric_surface_radius_m: document_geocentric_surface_radius_m(&scenario.document),
             magnetic,
             scenario_seed: scenario.document.time.seed,
+            stimulus_schedule: StimulusSchedule::build(&scenario.document)?,
             previous_velocity_eci_m_s: None,
             previous_time_s: None,
             previous_angular_velocity_body_rad_s: None,
@@ -200,6 +304,7 @@ impl FcBridge {
     /// # Errors
     ///
     /// Propagates sensor, controller, or rack errors as [`RunnerError`].
+    #[allow(clippy::too_many_arguments)]
     pub fn tick_point_mass(
         &mut self,
         state: &PointMassState,
@@ -208,9 +313,10 @@ impl FcBridge {
         propellant_state: Option<PropellantState>,
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
+        monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
     ) -> Result<(), RunnerError> {
         let truth = self.point_mass_truth(state, gravity_eci_m_s2);
-        self.step_from_truth(truth, step, propellant_state, effectors, engines)
+        self.step_from_truth(truth, step, propellant_state, effectors, engines, monitor)
     }
 
     /// Run one rigid-body bridge tick and push FC commands into the
@@ -229,11 +335,27 @@ impl FcBridge {
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
         gyro_pickup_rad_s: Vector3<f64>,
+        monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
     ) -> Result<(), RunnerError> {
         let truth = self.rigid_body_truth(state, gravity_eci_m_s2, gyro_pickup_rad_s);
-        self.step_from_truth(truth, step, propellant_state, effectors, engines)
+        self.step_from_truth(truth, step, propellant_state, effectors, engines, monitor)
     }
 
+    /// Assemble a read-only observation of the controller's latest
+    /// published estimates and health. Only called when a SIL monitor is
+    /// installed, so it is dead work on the default (`monitor = None`) path.
+    fn collect_observation(&self) -> crate::sil::FcObservation {
+        crate::sil::FcObservation {
+            attitude: self.runner.latest_attitude_estimate(),
+            position: self.runner.latest_position_estimate(),
+            estimator: self.runner.latest_estimator_status(),
+            fdir: self.runner.latest_fdir_status(),
+            mode: self.runner.latest_estimator_mode(),
+            reference: self.runner.latest_reference_state(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn step_from_truth(
         &mut self,
         truth: SensorTruth,
@@ -241,13 +363,27 @@ impl FcBridge {
         propellant_state: Option<PropellantState>,
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
+        monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
     ) -> Result<(), RunnerError> {
         for index in 0..self.sensors.len() {
-            let measurement = {
+            let sensor_id = self.sensors[index].sensor_id();
+            let mut measurement = {
                 let sensor = &mut self.sensors[index];
                 sensor.prime(truth, step, self.scenario_seed);
                 sensor.read()?
             };
+            // Open-loop SIL fault injection at the read -> publish seam.
+            // With no armed fault the schedule is empty, so this draws
+            // nothing and leaves the measurement byte-identical.
+            if !self.stimulus_schedule.is_empty() {
+                self.stimulus_schedule.apply(
+                    sensor_id,
+                    &mut measurement.value,
+                    step,
+                    truth.time.as_seconds(),
+                    self.scenario_seed,
+                );
+            }
             self.publish_measurement(&measurement);
         }
         self.runner.publish_environment(EnvironmentEstimate {
@@ -264,6 +400,13 @@ impl FcBridge {
             .map_err(|err| RunnerError::UnsupportedScenario {
                 what: format!("flight-controller tick failed: {err}"),
             })?;
+        // Observe AFTER the controller steps (estimate is fresh) and BEFORE
+        // its commands reach the racks. Guard-gated so the default path
+        // does zero extra work and remains byte-identical.
+        if let Some(monitor) = monitor {
+            let observation = self.collect_observation();
+            monitor.observe(step, &truth, &observation);
+        }
         if let Some(commands) = self.runner.latest_effector_command_set()
             && !effectors.is_empty()
         {
@@ -511,6 +654,19 @@ enum BridgeSensor {
 }
 
 impl BridgeSensor {
+    /// Canonical id of the wrapped sensor (`sensors.<name>`), used to match
+    /// SIL fault-injection targets.
+    fn sensor_id(&self) -> SensorId {
+        match self {
+            Self::Imu(s) => s.sensor_id(),
+            Self::Barometer(s) => s.sensor_id(),
+            Self::Gnss(s) => s.sensor_id(),
+            Self::Magnetometer(s) => s.sensor_id(),
+            Self::StarTracker(s) => s.sensor_id(),
+            Self::Ideal(s) => s.sensor_id(),
+        }
+    }
+
     fn prime(&mut self, truth: SensorTruth, step: StepIndex, seed: u64) {
         match self {
             Self::Imu(s) => s.prime(truth, step, seed),

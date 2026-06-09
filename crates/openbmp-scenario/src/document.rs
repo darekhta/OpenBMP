@@ -8895,6 +8895,52 @@ pub struct FcConfig {
     /// powered-ascent phase not listed here).
     #[serde(default)]
     pub ascent_reference_by_phase: Option<BTreeMap<String, FcAscentReferenceConfig>>,
+    /// Optional software-in-the-loop fault-injection schedule. Declares
+    /// open-loop, arm-before-run sensor faults applied at the FC/sensor
+    /// boundary during the run. Absent for an unstimulated scenario, in
+    /// which case the run is byte-identical to a normal run.
+    #[serde(default)]
+    pub sil_stimulus: Option<FcSilStimulusConfig>,
+}
+
+/// Software-in-the-loop fault-injection schedule (`[fc.sil_stimulus]`).
+///
+/// All faults are open-loop (their parameters do not reference vehicle
+/// state) and armed before the run; this is a test-harness perturbation of
+/// a forward simulation, never a feedback or targeting law.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcSilStimulusConfig {
+    /// Scheduled sensor faults. Empty is equivalent to no block.
+    #[serde(default)]
+    pub faults: Vec<FcSilFaultConfig>,
+}
+
+/// One scheduled, open-loop sensor fault.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcSilFaultConfig {
+    /// Name of the sensor (key under `[sensors]`) the fault targets.
+    pub sensor: String,
+    /// Arm-window start time (s, inclusive) on the simulation clock.
+    pub start_s: f64,
+    /// Arm-window stop time (s, exclusive) on the simulation clock.
+    pub stop_s: f64,
+    /// The measurement-domain fault applied while the window is armed.
+    pub fault: FcSilFaultKind,
+}
+
+/// A measurement-domain fault kind for `[fc.sil_stimulus]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FcSilFaultKind {
+    /// Add a constant offset to the sensor's primary measured vector
+    /// (accelerometer for IMU, position for GNSS, field for magnetometer;
+    /// the offset's `x` component for the scalar barometer).
+    Bias {
+        /// Constant additive offset in the sensor's measurement units.
+        offset: [f64; 3],
+    },
 }
 
 /// Optional scheduler I-loads for FC job cadences and declared budgets.

@@ -304,6 +304,33 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                 }
                 Ok(())
             }
+            SilCommand::Observe {
+                package,
+                case,
+                decimation,
+                evidence,
+            } => {
+                let (report, evidence_path) =
+                    sil::observe(&package, case.as_deref(), decimation, evidence.as_deref())?;
+                let observed_ticks = report
+                    .evidence
+                    .observations
+                    .as_ref()
+                    .map_or(0, |observations| observations.summary.ticks);
+                println!(
+                    "openbmp sil observe: {} — package={}, case={}, observed_ticks={}, t = {:.6} s, stop = {}",
+                    report.evidence.verdict,
+                    report.package_id,
+                    report.case_id,
+                    observed_ticks,
+                    report.final_time_s,
+                    report.stop_label,
+                );
+                if let Some(path) = evidence_path {
+                    println!("  wrote evidence {}", path.display());
+                }
+                Ok(())
+            }
             SilCommand::Step {
                 package,
                 ticks,

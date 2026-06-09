@@ -128,6 +128,7 @@ struct LoadedModels {
 pub fn run(
     scenario: &Scenario,
     resolved_files: &BTreeMap<String, ResolvedFile>,
+    mut monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
 ) -> Result<RunOutcome, RunnerError> {
     let document = &scenario.document;
     require_supported_shape(document)?;
@@ -331,6 +332,7 @@ pub fn run(
                 propellant_state,
                 &mut effector_rack,
                 &mut engine_rack,
+                monitor.as_deref_mut(),
             )?;
             if document.flight_controller_owns_mission_state() {
                 // Forward the FC commander's published mission state into
@@ -2102,7 +2104,7 @@ require_monotonic_time = true
         let scenario = Scenario::from_toml_str(POINT_MASS_ENTRY_SCENARIO)
             .expect("point-mass live entry scenario must parse");
         let resolved_files = scenario.resolved_files().expect("resolve files");
-        let outcome = run(&scenario, &resolved_files).expect("point-mass live entry run succeeds");
+        let outcome = run(&scenario, &resolved_files, None).expect("point-mass live entry run succeeds");
 
         for channel in [
             "force.aerothermal_diagnostics.x_n",
@@ -2146,7 +2148,7 @@ require_monotonic_time = true
         assert!(resolved_files.contains_key("aero.deck"));
         assert!(!resolved_files.contains_key("propulsion.motor.file"));
 
-        let outcome = run(&scenario, &resolved_files).expect("motorless aero run succeeds");
+        let outcome = run(&scenario, &resolved_files, None).expect("motorless aero run succeeds");
         assert_eq!(outcome.final_step, 10);
         assert!(
             outcome
@@ -2165,7 +2167,7 @@ require_monotonic_time = true
             Scenario::from_toml_str(USSA76_EXO_AERO_SCENARIO).expect("scenario must parse");
         let resolved_files = scenario.resolved_files().expect("resolve files");
         let outcome =
-            run(&scenario, &resolved_files).expect("USSA76 above ceiling should not fault");
+            run(&scenario, &resolved_files, None).expect("USSA76 above ceiling should not fault");
 
         let aero_force_z = f64_column(&outcome, "force.aero.z_n");
         assert!(
@@ -2181,7 +2183,7 @@ require_monotonic_time = true
         let scenario =
             Scenario::from_toml_str(GROUND_IMPACT_AUTO_STOP_SCENARIO).expect("scenario must parse");
         let resolved_files = scenario.resolved_files().expect("resolve files");
-        let outcome = run(&scenario, &resolved_files).expect("ground-impact run succeeds");
+        let outcome = run(&scenario, &resolved_files, None).expect("ground-impact run succeeds");
 
         assert_eq!(outcome.final_step, 1);
         assert!(matches!(
@@ -2198,7 +2200,7 @@ require_monotonic_time = true
         let scenario =
             Scenario::from_toml_str(DYNAMIC_PRESSURE_EVENT_SCENARIO).expect("scenario must parse");
         let resolved_files = scenario.resolved_files().expect("resolve files");
-        let outcome = run(&scenario, &resolved_files).expect("dynamic-pressure event run succeeds");
+        let outcome = run(&scenario, &resolved_files, None).expect("dynamic-pressure event run succeeds");
 
         assert_eq!(outcome.final_step, 1);
         assert!(matches!(
@@ -2212,7 +2214,7 @@ require_monotonic_time = true
         let scenario = Scenario::from_toml_str(THIRD_BODY_POINT_MASS_SCENARIO)
             .expect("third-body scenario must parse");
         let resolved_files = scenario.resolved_files().expect("resolve files");
-        let outcome = run(&scenario, &resolved_files).expect("third-body run succeeds");
+        let outcome = run(&scenario, &resolved_files, None).expect("third-body run succeeds");
 
         let gravity_y = f64_column(&outcome, "force.gravity.y_n");
         assert!(
@@ -2231,7 +2233,7 @@ require_monotonic_time = true
             .expect("scenario has aero")
             .method = None;
         let resolved_files = scenario.resolved_files().expect("resolve files");
-        let err = run(&scenario, &resolved_files).expect_err("deck-only Mach-20 entry rejects");
+        let err = run(&scenario, &resolved_files, None).expect_err("deck-only Mach-20 entry rejects");
 
         assert!(
             matches!(&err, RunnerError::UnsupportedScenario { what }
@@ -2291,7 +2293,7 @@ require_monotonic_time = true
             expected_initial_mass_kg.to_bits()
         );
 
-        let outcome = run(&scenario, &resolved_files).expect("run succeeds");
+        let outcome = run(&scenario, &resolved_files, None).expect("run succeeds");
         assert_eq!(
             first_mass_kg(&outcome).to_bits(),
             expected_initial_mass_kg.to_bits()
@@ -2364,7 +2366,7 @@ require_monotonic_time = true
             .resolved_files()
             .expect("resolve parachute scenario");
 
-        let outcome = run(&scenario, &resolved_files).expect("short parachute run succeeds");
+        let outcome = run(&scenario, &resolved_files, None).expect("short parachute run succeeds");
 
         assert_eq!(
             first_row_value(&outcome, "recovery.dual_chute.deployed"),

@@ -46,6 +46,7 @@ pub mod propulsion;
 pub mod recovery;
 pub mod rigid_body;
 pub mod separated_attitude;
+pub mod sil;
 pub mod separated_landing;
 pub mod structural;
 pub mod tanks;
@@ -267,6 +268,35 @@ pub struct RunOutcome {
 /// - [`RunnerError::Simulation`] / [`RunnerError::Telemetry`] for kernel- or
 ///   telemetry-side failures.
 pub fn run(scenario: &Scenario) -> Result<RunOutcome, RunnerError> {
+    run_dispatch(scenario, None)
+}
+
+/// Run a scenario while observing the in-loop flight controller each tick.
+///
+/// Identical to [`run`] except that, when the scenario wires a flight
+/// controller, `monitor` is invoked once per kernel tick (after the
+/// controller steps, before its commands reach the racks) with a read-only
+/// [`sil::FcObservation`] and the matching [`openbmp_sensors::SensorTruth`].
+/// For a scenario without an `[fc]` block the monitor is never called.
+///
+/// This shares [`run`]'s exact code path with `monitor = None`; an installed
+/// monitor only adds a read-only observation tap and cannot change the
+/// telemetry bytes a plain [`run`] would produce.
+///
+/// # Errors
+///
+/// Returns the same errors as [`run`].
+pub fn run_with_monitor(
+    scenario: &Scenario,
+    monitor: &mut dyn sil::SilMonitor,
+) -> Result<RunOutcome, RunnerError> {
+    run_dispatch(scenario, Some(monitor))
+}
+
+fn run_dispatch(
+    scenario: &Scenario,
+    monitor: Option<&mut (dyn sil::SilMonitor + '_)>,
+) -> Result<RunOutcome, RunnerError> {
     // Pin verification fires before kernel construction so a bad
     // SHA-256 cannot reach the integrator. Resolved digests are then
     // threaded into the telemetry header so a downstream Parquet
@@ -274,10 +304,10 @@ pub fn run(scenario: &Scenario) -> Result<RunOutcome, RunnerError> {
     let resolved_files = scenario.resolved_files()?;
 
     if scenario.document.vehicle.kind == "rigid_body" {
-        return rigid_body::run(scenario, &resolved_files);
+        return rigid_body::run(scenario, &resolved_files, monitor);
     }
 
-    point_mass::run(scenario, &resolved_files)
+    point_mass::run(scenario, &resolved_files, monitor)
 }
 
 fn append_solver_metadata(document: &ScenarioDocument, metadata: &mut BTreeMap<String, String>) {
