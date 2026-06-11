@@ -3195,7 +3195,7 @@ kind = "piecewise_exponential"
     }
 
     #[test]
-    fn rejects_propulsion_thermochem_without_inline_grain() {
+    fn rejects_propulsion_thermochem_without_inline_grain_or_feed_network() {
         let toml = format!(
             "{}\n\
              [propulsion.motor]\n\
@@ -3214,8 +3214,28 @@ kind = "piecewise_exponential"
             err,
             ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
                 if field_a == "propulsion.thermochem"
-                    && field_b == "propulsion.motor.grain"
+                    && field_b == "propulsion.motor.grain or propulsion.feed_network"
         ));
+    }
+
+    #[test]
+    fn parses_propulsion_thermochem_with_feed_network_schema() {
+        let toml = format!(
+            "{}\n\
+             [propulsion.thermochem]\n\
+             file = \"thermochem/synthetic.toml\"\n\
+             chamber_pressure_pa = 2000000.0\n\
+             mixture_ratio = 2.5\n\
+             {}\n",
+            assembly_with_engine_propellant_budget(),
+            feed_network_block("engine_a")
+        );
+
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+
+        let propulsion = scenario.document.propulsion.as_ref().unwrap();
+        assert!(propulsion.thermochem.is_some());
+        assert_eq!(propulsion.feed_networks.len(), 1);
     }
 
     #[test]

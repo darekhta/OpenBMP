@@ -21,7 +21,11 @@ use openbmp_feedsystem::{
 use openbmp_scenario::{
     PropulsionFeedNetworkConfig, PropulsionFeedNetworkControllerConfig,
     PropulsionFeedNetworkLineConfig, PropulsionFeedNetworkTurbopumpConfig,
-    PropulsionMixtureRatioRunawayRuleConfig, ScenarioDocument,
+    PropulsionMixtureRatioRunawayRuleConfig, PropulsionThermochemConfig, ResolvedFile,
+    ScenarioDocument,
+};
+use openbmp_thermochem::{
+    ThermochemDeck, ThermochemQuery, ThermochemTable, UNIVERSAL_GAS_CONSTANT_J_PER_MOL_K,
 };
 use openbmp_vehicle::PropellantBudgetReport;
 
@@ -43,6 +47,13 @@ pub struct FeedPumpCavitationEvent {
     pub engine_id: EngineId,
     /// Pump leg that is cavitating.
     pub leg: FeedPumpLeg,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ThermochemFeedConstants {
+    gas_temperature_k: f64,
+    gas_constant_j_per_kg_k: f64,
+    c_star_m_s: f64,
 }
 
 #[derive(Debug)]
@@ -305,6 +316,38 @@ fn pump_augmented_pressure_pa(
     Ok((pressure_pa, Some(snapshot.cavitation)))
 }
 
+fn load_thermochem_feed_constants(
+    thermochem: Option<&PropulsionThermochemConfig>,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<Option<ThermochemFeedConstants>, RunnerError> {
+    let Some(thermochem) = thermochem else {
+        return Ok(None);
+    };
+    let resolved = resolved_files
+        .get("propulsion.thermochem.file")
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "internal invariant: resolved file `propulsion.thermochem.file` missing after pin verification".to_owned(),
+        })?;
+    let text =
+        std::str::from_utf8(&resolved.bytes).map_err(|e| RunnerError::UnsupportedScenario {
+            what: format!(
+                "could not read thermochemistry deck {} as UTF-8: {e}",
+                resolved.path.display()
+            ),
+        })?;
+    let deck = ThermochemTable::load_from_str(text)?;
+    let state = deck.lookup(ThermochemQuery {
+        chamber_pressure_pa: thermochem.chamber_pressure_pa,
+        mixture_ratio: thermochem.mixture_ratio,
+    })?;
+    Ok(Some(ThermochemFeedConstants {
+        gas_temperature_k: state.chamber_temperature_k,
+        gas_constant_j_per_kg_k: UNIVERSAL_GAS_CONSTANT_J_PER_MOL_K
+            / state.molecular_weight_kg_per_mol,
+        c_star_m_s: state.c_star_m_s,
+    }))
+}
+
 impl FeedNetworkEntry {
     fn engine_id(&self) -> EngineId {
         match self {
@@ -415,10 +458,18 @@ impl FeedNetworkRack {
     ///
     /// Returns [`RunnerError`] when the reduced feed-network config fails
     /// validation in `openbmp-feedsystem`.
-    pub fn build(document: &ScenarioDocument) -> Result<Self, RunnerError> {
+    pub fn build(
+        document: &ScenarioDocument,
+        resolved_files: &BTreeMap<String, ResolvedFile>,
+    ) -> Result<Self, RunnerError> {
         let Some(propulsion) = &document.propulsion else {
             return Ok(Self::default());
         };
+        if propulsion.feed_networks.is_empty() {
+            return Ok(Self::default());
+        }
+        let thermochem_constants =
+            load_thermochem_feed_constants(propulsion.thermochem.as_ref(), resolved_files)?;
         let mut entries = Vec::with_capacity(propulsion.feed_networks.len());
         for config in &propulsion.feed_networks {
             match config {
@@ -433,13 +484,15 @@ impl FeedNetworkRack {
                     reference_chamber_pressure_pa,
                     valve_open_fraction,
                 } => {
+                    let c_star_m_s =
+                        thermochem_constants.map_or(*c_star_m_s, |state| state.c_star_m_s);
                     let network = TankValveChamberNetwork::new(TankValveChamberConfig {
                         tank_pressure_pa: *tank_pressure_pa,
                         propellant_density_kg_m3: *propellant_density_kg_m3,
                         valve_area_m2: *valve_area_m2,
                         valve_discharge_coefficient: *valve_discharge_coefficient,
                         throat_area_m2: *throat_area_m2,
-                        c_star_m_s: *c_star_m_s,
+                        c_star_m_s,
                     })?;
                     entries.push(FeedNetworkEntry::TankValveChamber {
                         engine_id: EngineId::from_path(&format!(
@@ -475,6 +528,14 @@ impl FeedNetworkRack {
                     fuel_open_fraction,
                     controller,
                 } => {
+                    let gas_temperature_k = thermochem_constants
+                        .map_or(*gas_temperature_k, |state| state.gas_temperature_k);
+                    let gas_constant_j_per_kg_k = thermochem_constants
+                        .map_or(*gas_constant_j_per_kg_k, |state| {
+                            state.gas_constant_j_per_kg_k
+                        });
+                    let c_star_m_s =
+                        thermochem_constants.map_or(*c_star_m_s, |state| state.c_star_m_s);
                     let (oxidizer_feed_pressure_pa, oxidizer_cavitation) =
                         pump_augmented_pressure_pa(
                             *oxidizer_tank_pressure_pa,
@@ -508,10 +569,10 @@ impl FeedNetworkRack {
                             },
                             chamber: TransientChamberConfig {
                                 chamber_volume_m3: *chamber_volume_m3,
-                                gas_temperature_k: *gas_temperature_k,
-                                gas_constant_j_per_kg_k: *gas_constant_j_per_kg_k,
+                                gas_temperature_k,
+                                gas_constant_j_per_kg_k,
                                 throat_area_m2: *throat_area_m2,
-                                c_star_m_s: *c_star_m_s,
+                                c_star_m_s,
                             },
                         })?;
                     let valve_commands = ValveCommandPair {
@@ -624,7 +685,7 @@ impl FeedNetworkRack {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{collections::BTreeSet, path::PathBuf};
 
     use openbmp_core::TankId;
 
@@ -696,6 +757,35 @@ mod tests {
             upstream_head_m: 100.0,
             downstream_velocity_m_s: 0.0,
         }
+    }
+
+    #[test]
+    fn feed_network_thermochem_deck_overrides_chamber_constants() {
+        let bytes = include_bytes!("../tests/fixtures/thermochem/synthetic-grain.toml").to_vec();
+        let mut resolved_files = BTreeMap::new();
+        resolved_files.insert(
+            "propulsion.thermochem.file".to_owned(),
+            ResolvedFile {
+                path: PathBuf::from("tests/fixtures/thermochem/synthetic-grain.toml"),
+                sha256_hex: String::new(),
+                bytes,
+            },
+        );
+        let constants = load_thermochem_feed_constants(
+            Some(&PropulsionThermochemConfig {
+                file: PathBuf::from("tests/fixtures/thermochem/synthetic-grain.toml"),
+                file_sha256: None,
+                chamber_pressure_pa: 2_000_000.0,
+                mixture_ratio: 2.5,
+            }),
+            &resolved_files,
+        )
+        .unwrap()
+        .expect("thermochem constants");
+
+        assert!((constants.gas_temperature_k - 3_150.0).abs() < 1.0e-12);
+        assert!((constants.c_star_m_s - 1_658.024_003_983_371_8).abs() < 1.0e-12);
+        assert!((constants.gas_constant_j_per_kg_k - 369.531_671_917_921_76).abs() < 1.0e-12);
     }
 
     fn transient_network() -> TransientDualValveFeedNetwork {

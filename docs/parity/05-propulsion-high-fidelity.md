@@ -747,11 +747,11 @@ Effort sizes are from the research ladder.
 - **status:** initial L2 crate, Schema-1 parser, closed-form `c*`
   consistency check, log-`pc` × mixture-ratio interpolation, and fail-closed
   lookup behavior implemented and traced by `REQ-PROP-004` / `V-PROP-004`;
-  inline solid-grain scenario/runner consumption through
-  `[propulsion.thermochem]` is implemented and traced by `REQ-PROP-005` /
-  `V-PROP-005`. Liquid-engine consumption, higher-fidelity chamber coupling,
-  and CEARUN/Cantera tolerance tables remain future evidence before this WP is
-  complete.
+  inline solid-grain scenario/runner consumption and reduced feed-network
+  chamber-constant consumption through `[propulsion.thermochem]` are
+  implemented and traced by `REQ-PROP-005` / `V-PROP-005`. Higher-fidelity
+  liquid-engine performance coupling and CEARUN/Cantera tolerance tables
+  remain future evidence before this WP is complete.
 - **goal:** Derive `c*(pc,MR)`, `Tc`, `γ`, `MW` from a CEA/Cantera deck instead
   of hardcoded constants; enable mixture-ratio-aware liquid performance and the
   documented efficiency band.

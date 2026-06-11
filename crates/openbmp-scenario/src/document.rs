@@ -6462,16 +6462,16 @@ impl PropulsionConfig {
         }
         if let Some(thermochem) = &self.thermochem {
             thermochem.validate()?;
-            if self
+            let has_inline_grain = self
                 .motor
                 .as_ref()
                 .and_then(|motor| motor.grain.as_ref())
-                .is_none()
-            {
+                .is_some();
+            if !has_inline_grain && self.feed_networks.is_empty() {
                 return Err(ScenarioError::InconsistentSection {
                     field_a: "propulsion.thermochem".to_owned(),
                     value_a: "declared".to_owned(),
-                    field_b: "propulsion.motor.grain".to_owned(),
+                    field_b: "propulsion.motor.grain or propulsion.feed_network".to_owned(),
                     value_b: "missing".to_owned(),
                 });
             }

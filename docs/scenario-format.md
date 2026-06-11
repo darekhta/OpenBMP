@@ -1070,12 +1070,15 @@ API.
 `propellant_volume_m3`. All parameters are synthetic/textbook/public and are
 rejected if non-finite or outside the selected regression envelope.
 
-Inline grain motors may also declare a pinned Schema-1 thermochemistry
-deck. The runner resolves the deck through the same referenced-file SHA-256
-path as aero and motor files, samples it at the declared nominal chamber
-pressure and mixture ratio, and uses the returned `c_star_m_s` and `gamma`
-for the generated motor curve. When the block is omitted, the inline
-`[propulsion.motor.grain.propellant]` constants are preserved.
+Inline grain motors and feed-network engines may also declare a pinned
+Schema-1 thermochemistry deck. The runner resolves the deck through the
+same referenced-file SHA-256 path as aero and motor files, samples it at the
+declared nominal chamber pressure and mixture ratio, and uses the returned
+state for reduced propulsion constants. Inline grains consume `c_star_m_s`
+and `gamma`; feed networks consume `c_star_m_s`, chamber temperature, and
+the molecular-weight-derived gas constant. When the block is omitted, the
+inline `[propulsion.motor.grain.propellant]` and `[[propulsion.feed_network]]`
+constants are preserved.
 
 ```toml
 [propulsion.thermochem]

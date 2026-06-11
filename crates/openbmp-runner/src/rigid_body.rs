@@ -129,7 +129,8 @@ pub fn run(
     // Tank rack mirroring the point-mass runner.
     let mut tank_rack = crate::tanks::TankRack::build(document)?;
     let propellant_budget = crate::propulsion::build_propellant_budget(document)?;
-    let mut feed_network_rack = crate::feed_network::FeedNetworkRack::build(document)?;
+    let mut feed_network_rack =
+        crate::feed_network::FeedNetworkRack::build(document, resolved_files)?;
     let _pogo_rack = crate::pogo::PogoStabilityRack::build(document)?;
     let landing_gear_runtime = crate::landing_gear::LandingGearRuntime::maybe_build(document)?;
     // Recovery rack mirroring the point-mass runner.

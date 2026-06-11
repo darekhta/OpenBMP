@@ -150,7 +150,8 @@ pub fn run(
     // byte-stable path is preserved.
     let mut tank_rack = crate::tanks::TankRack::build(document)?;
     let propellant_budget = crate::propulsion::build_propellant_budget(document)?;
-    let mut feed_network_rack = crate::feed_network::FeedNetworkRack::build(document)?;
+    let mut feed_network_rack =
+        crate::feed_network::FeedNetworkRack::build(document, resolved_files)?;
     let _pogo_rack = crate::pogo::PogoStabilityRack::build(document)?;
     // Build the runner-side recovery rack. Empty when no
     // `[[vehicle.assembly.recovery]]` are declared, in which case
