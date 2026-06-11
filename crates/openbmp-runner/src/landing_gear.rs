@@ -8,7 +8,10 @@ use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
 use nalgebra::Vector3;
-use openbmp_contact::ContactGeometry;
+use openbmp_contact::{
+    ContactEnergyAudit, ContactGeometry, RestDetector, RestDetectorConfig, RestDetectorState,
+    RestStatus,
+};
 use openbmp_core::{BodyId, ChannelId, ModelId, SimTime, ValidationStatus};
 use openbmp_scenario::{
     ContactGeometryConfig, LandingGearConfig, LandingGearLegConfig, ScenarioDocument,
@@ -19,6 +22,9 @@ use openbmp_telemetry::{ChannelMetadata, TelemetryChannel, TelemetryRow};
 use openbmp_vehicle::{CrushCore, LandingGearLeg, OleoStage};
 
 use crate::RunnerError;
+
+const REST_SPEED_TOLERANCE_M_S: f64 = 1.5e-2;
+const REST_HOLD_SAMPLES: u32 = 8;
 
 /// Runner-owned, cloneable landing-gear runtime.
 #[derive(Clone)]
@@ -264,13 +270,31 @@ impl RuntimeLeg {
         };
 
         let mut force_n = 0.0;
+        let mut elastic_energy_j = 0.0;
+        let mut dissipated_power_w = 0.0;
+        let mut plastic_dissipated_energy_j = 0.0;
         if let Some(oleo) = self.leg.oleo() {
-            force_n += oleo
-                .force_n(stroke_m.min(oleo.stroke_max_m()), compression_rate_m_s)
-                .map_err(|err| ModelEvalError::InvalidState {
+            let oleo_stroke_m = stroke_m.min(oleo.stroke_max_m());
+            let gas_force_n =
+                oleo.force_n(oleo_stroke_m, 0.0)
+                    .map_err(|err| ModelEvalError::InvalidState {
+                        model: LANDING_GEAR_INTERNAL_MODEL_ID,
+                        reason: Cow::Owned(err.to_string()),
+                    })?;
+            let oleo_force_n =
+                oleo.force_n(oleo_stroke_m, compression_rate_m_s)
+                    .map_err(|err| ModelEvalError::InvalidState {
+                        model: LANDING_GEAR_INTERNAL_MODEL_ID,
+                        reason: Cow::Owned(err.to_string()),
+                    })?;
+            force_n += oleo_force_n;
+            elastic_energy_j += oleo.stored_energy_j(oleo_stroke_m).map_err(|err| {
+                ModelEvalError::InvalidState {
                     model: LANDING_GEAR_INTERNAL_MODEL_ID,
                     reason: Cow::Owned(err.to_string()),
-                })?;
+                }
+            })?;
+            dissipated_power_w += (oleo_force_n - gas_force_n).max(0.0) * compression_rate_m_s;
         }
         if let Some(crush) = &mut self.crush {
             let crush_stroke_m = (stroke_m - oleo_stroke_max)
@@ -292,6 +316,7 @@ impl RuntimeLeg {
                     }
                 })?;
                 crush_force_n = crush_force_n.max(response.force_n);
+                plastic_dissipated_energy_j += response.absorbed_energy_j;
             }
             force_n += crush_force_n;
         }
@@ -304,6 +329,7 @@ impl RuntimeLeg {
         let force_eci_n = Vector3::new(0.0, 0.0, force_n);
         let force_body_n = state.orientation.q.inverse() * force_eci_n;
         let moment_body_n_m = foot_body.cross(&force_body_n);
+        let contact_power_on_vehicle_w = force_eci_n.dot(&foot_velocity_eci);
         Ok(InternalLegSample {
             force_eci_n,
             moment_body_n_m,
@@ -311,9 +337,14 @@ impl RuntimeLeg {
                 id: self.id.clone(),
                 stroke_m,
                 gap_m,
+                normal_velocity_m_s: foot_velocity_eci.z,
                 compression_rate_m_s,
                 force_n,
                 crushed_m: self.crush.map_or(0.0, CrushCore::crushed_m),
+                elastic_energy_j,
+                dissipated_power_w,
+                plastic_dissipated_energy_j,
+                contact_power_on_vehicle_w,
                 in_contact: true,
             },
         })
@@ -353,9 +384,14 @@ impl InternalLegSample {
                 id,
                 stroke_m: 0.0,
                 gap_m,
+                normal_velocity_m_s: 0.0,
                 compression_rate_m_s: 0.0,
                 force_n: 0.0,
                 crushed_m: 0.0,
+                elastic_energy_j: 0.0,
+                dissipated_power_w: 0.0,
+                plastic_dissipated_energy_j: 0.0,
+                contact_power_on_vehicle_w: 0.0,
                 in_contact: false,
             },
         }
@@ -364,14 +400,273 @@ impl InternalLegSample {
 
 /// Public per-leg diagnostic sample used by telemetry and tests.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct LandingGearLegSample {
-    pub(crate) id: String,
-    pub(crate) stroke_m: f64,
-    pub(crate) gap_m: f64,
-    pub(crate) compression_rate_m_s: f64,
-    pub(crate) force_n: f64,
-    pub(crate) crushed_m: f64,
-    pub(crate) in_contact: bool,
+pub struct LandingGearLegSample {
+    /// Scenario-declared leg id.
+    pub id: String,
+    /// Total compressed stroke in meters.
+    pub stroke_m: f64,
+    /// Signed footpad gap to the ground plane in meters.
+    pub gap_m: f64,
+    /// Signed footpad normal velocity in m/s; negative values are closing.
+    pub normal_velocity_m_s: f64,
+    /// Non-negative closing speed in m/s.
+    pub compression_rate_m_s: f64,
+    /// Scalar compressive leg load in newtons.
+    pub force_n: f64,
+    /// Irreversible crushed coordinate in meters.
+    pub crushed_m: f64,
+    /// Elastic energy currently stored in recoverable gear compliance.
+    pub elastic_energy_j: f64,
+    /// Instantaneous oleo damping dissipation power in watts.
+    pub dissipated_power_w: f64,
+    /// Irreversible crush energy increment consumed by this evaluation.
+    pub plastic_dissipated_energy_j: f64,
+    /// Instantaneous gear-force power on the vehicle in watts.
+    pub contact_power_on_vehicle_w: f64,
+    /// Whether the footpad is in contact with the ground plane.
+    pub in_contact: bool,
+}
+
+/// One row-boundary landing-gear summary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LandingGearStepSummary {
+    /// Number of legs represented in this sample.
+    pub leg_count: usize,
+    /// `true` when at least one leg is in contact.
+    pub any_in_contact: bool,
+    /// `true` when every declared leg is in contact.
+    pub all_in_contact: bool,
+    /// Sum of scalar per-leg loads, newtons.
+    pub total_force_n: f64,
+    /// Largest scalar leg load, newtons.
+    pub max_leg_force_n: f64,
+    /// Largest compressed stroke, meters.
+    pub max_stroke_m: f64,
+    /// Largest irreversible crushed coordinate, meters.
+    pub max_crushed_m: f64,
+    /// Largest absolute normal footpad speed, m/s.
+    pub max_abs_normal_velocity_m_s: f64,
+    /// Sum of recoverable gear elastic energy, joules.
+    pub elastic_energy_j: f64,
+    /// Sum of gear-force power on the vehicle, watts.
+    pub contact_power_on_vehicle_w: f64,
+    /// Sum of oleo damping dissipation power, watts.
+    pub dissipated_power_w: f64,
+    /// Sum of irreversible crush energy increments in this sample, joules.
+    pub plastic_dissipated_energy_j: f64,
+}
+
+impl LandingGearStepSummary {
+    fn from_samples(samples: &[LandingGearLegSample]) -> Self {
+        let leg_count = samples.len();
+        let any_in_contact = samples.iter().any(|sample| sample.in_contact);
+        let all_in_contact = leg_count > 0 && samples.iter().all(|sample| sample.in_contact);
+        Self {
+            leg_count,
+            any_in_contact,
+            all_in_contact,
+            total_force_n: samples.iter().map(|sample| sample.force_n).sum(),
+            max_leg_force_n: samples
+                .iter()
+                .map(|sample| sample.force_n)
+                .fold(0.0, f64::max),
+            max_stroke_m: samples
+                .iter()
+                .map(|sample| sample.stroke_m)
+                .fold(0.0, f64::max),
+            max_crushed_m: samples
+                .iter()
+                .map(|sample| sample.crushed_m)
+                .fold(0.0, f64::max),
+            max_abs_normal_velocity_m_s: samples
+                .iter()
+                .map(|sample| sample.normal_velocity_m_s.abs())
+                .fold(0.0, f64::max),
+            elastic_energy_j: samples.iter().map(|sample| sample.elastic_energy_j).sum(),
+            contact_power_on_vehicle_w: samples
+                .iter()
+                .map(|sample| sample.contact_power_on_vehicle_w)
+                .sum(),
+            dissipated_power_w: samples.iter().map(|sample| sample.dissipated_power_w).sum(),
+            plastic_dissipated_energy_j: samples
+                .iter()
+                .map(|sample| sample.plastic_dissipated_energy_j)
+                .sum(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LandingGearEnergySample {
+    time_s: f64,
+    dissipated_power_w: f64,
+    contact_power_on_vehicle_w: f64,
+}
+
+/// Run-level landing-gear touchdown report emitted outside telemetry bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LandingGearRunReport {
+    /// Closed classification of the run endpoint.
+    pub outcome: crate::contact::ContactOutcomeKind,
+    /// Number of row-boundary samples accumulated.
+    pub samples: u64,
+    /// Number of samples with at least one contacting leg.
+    pub contact_samples: u64,
+    /// Maximum sum of scalar leg loads, newtons.
+    pub max_total_force_n: f64,
+    /// Maximum scalar load on any one leg, newtons.
+    pub max_leg_force_n: f64,
+    /// Maximum total stroke observed on any leg, meters.
+    pub max_stroke_m: f64,
+    /// Maximum irreversible crush coordinate observed on any leg, meters.
+    pub max_crushed_m: f64,
+    /// Final row-boundary landing-gear summary.
+    pub final_summary: LandingGearStepSummary,
+    /// Final per-leg samples in scenario-declared order.
+    pub final_legs: Vec<LandingGearLegSample>,
+    /// Run-level gear energy balance.
+    pub energy: crate::contact::ContactRunEnergyAudit,
+}
+
+/// Accumulates landing-gear endpoint classification and energy evidence.
+#[derive(Debug)]
+pub(crate) struct LandingGearRunAccumulator {
+    samples: u64,
+    contact_samples: u64,
+    max_total_force_n: f64,
+    max_leg_force_n: f64,
+    max_stroke_m: f64,
+    max_crushed_m: f64,
+    rest_detector: RestDetector,
+    rest_state: RestDetectorState,
+    final_rest_status: RestStatus,
+    initial_elastic_energy_j: Option<f64>,
+    final_elastic_energy_j: f64,
+    contact_work_on_vehicle_j: f64,
+    dissipated_energy_j: f64,
+    previous_energy_sample: Option<LandingGearEnergySample>,
+    final_summary: Option<LandingGearStepSummary>,
+    final_legs: Vec<LandingGearLegSample>,
+}
+
+impl LandingGearRunAccumulator {
+    pub(crate) fn new() -> Result<Self, RunnerError> {
+        let rest_config =
+            RestDetectorConfig::new(0.5 * REST_SPEED_TOLERANCE_M_S.powi(2), REST_HOLD_SAMPLES)
+                .map_err(landing_gear_contact_error)?;
+        Ok(Self {
+            samples: 0,
+            contact_samples: 0,
+            max_total_force_n: 0.0,
+            max_leg_force_n: 0.0,
+            max_stroke_m: 0.0,
+            max_crushed_m: 0.0,
+            rest_detector: RestDetector::new(rest_config),
+            rest_state: RestDetectorState::new(),
+            final_rest_status: RestStatus {
+                quiet_steps: 0,
+                at_rest: false,
+            },
+            initial_elastic_energy_j: None,
+            final_elastic_energy_j: 0.0,
+            contact_work_on_vehicle_j: 0.0,
+            dissipated_energy_j: 0.0,
+            previous_energy_sample: None,
+            final_summary: None,
+            final_legs: Vec::new(),
+        })
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        time_s: f64,
+        _mass_kg: f64,
+        samples: &[LandingGearLegSample],
+    ) -> Result<(), RunnerError> {
+        let summary = LandingGearStepSummary::from_samples(samples);
+        self.samples = self.samples.saturating_add(1);
+        if summary.any_in_contact {
+            self.contact_samples = self.contact_samples.saturating_add(1);
+        }
+        self.max_total_force_n = self.max_total_force_n.max(summary.total_force_n);
+        self.max_leg_force_n = self.max_leg_force_n.max(summary.max_leg_force_n);
+        self.max_stroke_m = self.max_stroke_m.max(summary.max_stroke_m);
+        self.max_crushed_m = self.max_crushed_m.max(summary.max_crushed_m);
+        self.initial_elastic_energy_j
+            .get_or_insert(summary.elastic_energy_j);
+        self.final_elastic_energy_j = summary.elastic_energy_j;
+
+        let energy_sample = LandingGearEnergySample {
+            time_s,
+            dissipated_power_w: summary.dissipated_power_w,
+            contact_power_on_vehicle_w: summary.contact_power_on_vehicle_w,
+        };
+        if let Some(previous) = self.previous_energy_sample {
+            let dt_s = (energy_sample.time_s - previous.time_s).max(0.0);
+            self.contact_work_on_vehicle_j += 0.5
+                * (previous.contact_power_on_vehicle_w + energy_sample.contact_power_on_vehicle_w)
+                * dt_s;
+            self.dissipated_energy_j +=
+                0.5 * (previous.dissipated_power_w + energy_sample.dissipated_power_w) * dt_s;
+        }
+        self.dissipated_energy_j += summary.plastic_dissipated_energy_j;
+        self.previous_energy_sample = Some(energy_sample);
+
+        // Use a unit-mass normal kinetic-energy proxy so rest classification
+        // depends only on footpad normal speed, not on vehicle mass scaling.
+        let kinetic_proxy_j = 0.5 * summary.max_abs_normal_velocity_m_s.powi(2);
+        self.final_rest_status = self
+            .rest_detector
+            .update(
+                &mut self.rest_state,
+                kinetic_proxy_j,
+                summary.all_in_contact,
+            )
+            .map_err(landing_gear_contact_error)?;
+        self.final_summary = Some(summary);
+        self.final_legs = samples.to_vec();
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> Result<Option<LandingGearRunReport>, RunnerError> {
+        let Some(final_summary) = self.final_summary else {
+            return Ok(None);
+        };
+        let outcome = if self.contact_samples == 0 {
+            crate::contact::ContactOutcomeKind::NoContact
+        } else if final_summary.all_in_contact && self.final_rest_status.at_rest {
+            crate::contact::ContactOutcomeKind::Rest
+        } else {
+            crate::contact::ContactOutcomeKind::Unsettled
+        };
+        let initial_elastic_energy_j = self.initial_elastic_energy_j.unwrap_or(0.0);
+        let audit = ContactEnergyAudit::new(
+            initial_elastic_energy_j,
+            self.final_elastic_energy_j,
+            -self.contact_work_on_vehicle_j,
+            self.dissipated_energy_j,
+        )
+        .map_err(landing_gear_contact_error)?;
+        Ok(Some(LandingGearRunReport {
+            outcome,
+            samples: self.samples,
+            contact_samples: self.contact_samples,
+            max_total_force_n: self.max_total_force_n,
+            max_leg_force_n: self.max_leg_force_n,
+            max_stroke_m: self.max_stroke_m,
+            max_crushed_m: self.max_crushed_m,
+            final_summary,
+            final_legs: self.final_legs,
+            energy: crate::contact::ContactRunEnergyAudit {
+                initial_elastic_energy_j,
+                final_elastic_energy_j: self.final_elastic_energy_j,
+                contact_work_on_vehicle_j: self.contact_work_on_vehicle_j,
+                dissipated_energy_j: self.dissipated_energy_j,
+                closure_error_j: audit.closure_error_j(),
+                relative_closure_error: audit.relative_closure_error(),
+            },
+        }))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -530,9 +825,14 @@ impl LandingGearTelemetryChannels {
                     id: channels.id.clone(),
                     stroke_m: 0.0,
                     gap_m: f64::INFINITY,
+                    normal_velocity_m_s: 0.0,
                     compression_rate_m_s: 0.0,
                     force_n: 0.0,
                     crushed_m: 0.0,
+                    elastic_energy_j: 0.0,
+                    dissipated_power_w: 0.0,
+                    plastic_dissipated_energy_j: 0.0,
+                    contact_power_on_vehicle_w: 0.0,
                     in_contact: false,
                 });
             channels.insert(row, &sample)?;
@@ -640,6 +940,12 @@ fn body_id_from_scenario_text(id: &str) -> BodyId {
 
 fn finite_or_zero(value: f64) -> f64 {
     if value.is_finite() { value } else { 0.0 }
+}
+
+fn landing_gear_contact_error(err: openbmp_contact::ContactError) -> RunnerError {
+    RunnerError::UnsupportedScenario {
+        what: format!("invalid landing gear run report: {err}"),
+    }
 }
 
 /// Build a zero-height rigid body state for unit tests.

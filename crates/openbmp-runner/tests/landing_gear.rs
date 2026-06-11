@@ -62,8 +62,8 @@ fn bool_column(outcome: &openbmp_runner::RunOutcome, name: &str) -> Vec<bool> {
 fn landing_gear_four_leg_drop_publishes_loads_and_leg_telemetry() {
     let outcome = run_drop_fixture();
 
-    assert_eq!(outcome.final_step, 3000);
-    assert!((outcome.final_time_s - 3.0).abs() < 1.0e-12);
+    assert_eq!(outcome.final_step, 10_000);
+    assert!((outcome.final_time_s - 10.0).abs() < 1.0e-12);
     assert_eq!(
         outcome
             .table
@@ -72,6 +72,33 @@ fn landing_gear_four_leg_drop_publishes_loads_and_leg_telemetry() {
             .get("openbmp.scenario_files.vehicle.landing_gear.data_file")
             .map(String::as_str),
         Some(SYNTHETIC_GEAR_SHA256)
+    );
+    let report = outcome
+        .landing_gear
+        .as_ref()
+        .expect("landing gear run report");
+    assert_eq!(
+        report.outcome,
+        openbmp_runner::contact::ContactOutcomeKind::Rest,
+        "landing gear report: {report:#?}"
+    );
+    assert_eq!(report.final_legs.len(), 4);
+    assert!(report.samples >= 10_000);
+    assert!(report.contact_samples > 0);
+    assert!(report.max_total_force_n > 1.0);
+    assert!(report.max_leg_force_n > 0.0);
+    assert!(report.max_stroke_m <= 0.80 + 1.0e-12);
+    assert!(report.max_crushed_m <= 0.25 + 1.0e-12);
+    assert!(report.final_summary.all_in_contact);
+    assert!(report.final_summary.max_abs_normal_velocity_m_s <= 1.5e-2);
+    assert!(report.energy.final_elastic_energy_j.is_finite());
+    assert!(report.energy.contact_work_on_vehicle_j.is_finite());
+    assert!(report.energy.dissipated_energy_j.is_finite());
+    assert!(report.energy.relative_closure_error.is_finite());
+    assert!(
+        report.energy.relative_closure_error <= 1.0e-2,
+        "landing gear audit should close to 1%: {:#?}",
+        report.energy
     );
 
     let total_z = f64_column(&outcome, "force.landing_gear.z_n");

@@ -507,6 +507,7 @@ pub fn run(
         realtime: realtime_pacer.finish(),
         actuator_stream,
         contact,
+        landing_gear: None,
     })
 }
 

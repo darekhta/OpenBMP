@@ -277,6 +277,11 @@ pub fn run(
         .as_ref()
         .map(crate::contact::ContactRunAccumulator::from_config)
         .transpose()?;
+    let mut landing_gear_accumulator = if landing_gear_runtime.is_some() {
+        Some(crate::landing_gear::LandingGearRunAccumulator::new()?)
+    } else {
+        None
+    };
     let geocentric_surface_radius_m = document_geocentric_surface_radius_m(document);
     let breakdown_atmosphere = if channel_set.has_atmosphere {
         Some(build_document_runtime_atmosphere(document)?)
@@ -344,6 +349,7 @@ pub fn run(
         geocentric_surface_radius_m,
         aerothermal_driver.as_ref().map(|driver| driver.output()),
         landing_gear_runtime.as_ref(),
+        landing_gear_accumulator.as_mut(),
         fc_bridge.as_ref(),
         &[],
         &mut mission_region_trace,
@@ -560,6 +566,7 @@ pub fn run(
             geocentric_surface_radius_m,
             aerothermal_driver.as_ref().map(|driver| driver.output()),
             landing_gear_runtime.as_ref(),
+            landing_gear_accumulator.as_mut(),
             fc_bridge.as_ref(),
             &mission_fired,
             &mut mission_region_trace,
@@ -597,6 +604,10 @@ pub fn run(
         .map(crate::contact::ContactRunAccumulator::finish)
         .transpose()?
         .flatten();
+    let landing_gear = landing_gear_accumulator
+        .map(crate::landing_gear::LandingGearRunAccumulator::finish)
+        .transpose()?
+        .flatten();
 
     Ok(RunOutcome {
         final_step: kernel.current_step().value(),
@@ -606,6 +617,7 @@ pub fn run(
         realtime: realtime_pacer.finish(),
         actuator_stream,
         contact,
+        landing_gear,
     })
 }
 
@@ -3159,6 +3171,7 @@ fn record_step<I, F, MOM, MM, E, SC>(
     geocentric_surface_radius_m: Option<f64>,
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
     landing_gear_runtime: Option<&crate::landing_gear::LandingGearRuntime>,
+    landing_gear_accumulator: Option<&mut crate::landing_gear::LandingGearRunAccumulator>,
     fc_bridge: Option<&crate::fc_bridge::FcBridge>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
     mission_region_trace: &mut crate::MissionRegionTraceState,
@@ -3295,6 +3308,13 @@ where
         })?;
         let samples = runtime.samples()?;
         landing_gear_channels.insert(&mut row, &samples)?;
+        if let Some(accumulator) = landing_gear_accumulator {
+            accumulator.record(
+                state.time.as_seconds(),
+                state.mass_props.mass_kg(),
+                &samples,
+            )?;
+        }
     }
 
     if let Some(channel) = &channels.active_models {
