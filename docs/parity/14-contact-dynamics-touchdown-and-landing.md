@@ -916,6 +916,18 @@ sibling notation (`WP-NN.t`, doc `NN`).
 ### WP-14.4 — Landing-gear legs: oleo + crush core + footpads (massless struts)
 
 - **title:** Per-leg strut force elements with elasto-plastic crush cores and footpad contact on the rigid body.
+- **implementation_status:** partial vehicle-crate substrate implemented and
+  traced by `REQ-CONTACT-006` / `V-CONTACT-006`: `openbmp-vehicle` now exposes
+  `LandingGearLeg`, `OleoStage`, and `CrushCore` primitives. The leg validates
+  body hardpoints, normalizes strut axes, and carries optional footpad geometry;
+  the oleo stage implements a polytropic gas curve, quadratic compression
+  damping, and closed-form stored-energy reporting; the crush core exposes an
+  irreversible absorbed-energy update whose crushed coordinate is monotone and
+  follows the plateau identity `stroke = energy / force`, with tests for the
+  oleo closed-form curve/integral and crush monotonicity. Remaining WP-14.4
+  work: scenario `[vehicle.landing_gear]` schema, runner rack wiring, per-leg
+  telemetry, provenance-pinned synthetic gear data, and the 3-D four-leg drop
+  fixture.
 - **goal:** The T2 landing vehicle: N-leg gear rack (mirroring the `recovery/`
   rack pattern) with polytropic oleo stage, monotone-coordinate crush core,
   and per-pad `ContactPair`s; 1-D and 3-D drop tests; gear loads telemetered
