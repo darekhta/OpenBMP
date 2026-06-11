@@ -126,6 +126,7 @@ openbmp/
 │   │   └── tank/                        #     TankModel + MovingMassModel
 │   ├── openbmp-aero/                    # L2: aero decks + hypersonic methods
 │   ├── openbmp-aerothermal/             # L2: heat transfer, BL, thermal toy
+│   ├── openbmp-contact/                 # L2: compliant contact primitives
 │   ├── openbmp-thermochem/              # L2: thermochemistry decks
 │   ├── openbmp-feedsystem/              # L2: feed-network primitives
 │   ├── openbmp-propulsion/              # L2: motors, EngineModel + EngineCluster

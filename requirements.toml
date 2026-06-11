@@ -205,6 +205,12 @@ statement = "The CLI exposes a conformance command that validates and runs one o
 verification = ["V-CONFORM-001"]
 
 [[requirements]]
+id = "REQ-CONTACT-001"
+title = "Contact substrate exposes deterministic half-space force laws"
+statement = "The contact dynamics substrate is an L2 crate that exposes point and sphere half-space kinematics, Kelvin-Voigt, Hertz, and Hunt-Crossley normal laws, regularized Coulomb friction, a fixed-step penalty-contact stability bound, and energy-audit closure helpers without depending on runner, simulator, or flight-controller crates."
+verification = ["V-CONTACT-001"]
+
+[[requirements]]
 id = "REQ-MC-001"
 title = "Seeded Monte-Carlo evidence has a visible CI lane"
 statement = "The repository exposes a scheduled or manually runnable CI lane for the seeded footprint and ascent Monte-Carlo checks, so dispersion acceptance evidence is reproducible outside ad hoc local runs."
@@ -1255,6 +1261,37 @@ contains = [
   "conform_runs_reference_scenario_without_writing_outputs",
 ]
 requirements = ["REQ-CONFORM-001"]
+
+[[verification]]
+id = "V-CONTACT-001"
+kind = "test"
+command = "cargo test -p openbmp-contact --locked"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-contact/Cargo.toml",
+  "crates/openbmp-contact/src/lib.rs",
+  "crates/openbmp-contact/src/error.rs",
+  "docs/software-architecture.md",
+  "docs/parity/14-contact-dynamics-touchdown-and-landing.md",
+]
+contains = [
+  "openbmp-contact",
+  "compliant contact primitives",
+  "ContactPair",
+  "HalfSpace",
+  "KelvinVoigtNormal",
+  "HertzNormal",
+  "HuntCrossleyNormal",
+  "RegularizedCoulombFriction",
+  "ContactStabilityConfig",
+  "ContactEnergyAudit",
+  "half_space_sphere_kinematics_subtracts_radius_and_velocity_normal",
+  "kelvin_voigt_static_penetration_balances_weight",
+  "regularized_coulomb_sliding_block_decelerates_at_mu_g",
+  "stability_bound_fails_closed_for_too_large_substep",
+  "energy_audit_closes_with_dissipation",
+]
+requirements = ["REQ-CONTACT-001"]
 
 [[verification]]
 id = "V-MC-001"

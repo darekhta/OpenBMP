@@ -120,9 +120,11 @@ item is the deliverable:
 
 ## 2. Current state in source
 
-Verified against the working tree. The honest summary: **touchdown is a stop
-condition, landing guidance primitives exist, footprint Monte Carlo exists —
-contact dynamics does not exist anywhere in the workspace.**
+Verified against the working tree. The honest summary: **touchdown is still a
+stop condition in scenario runs, landing guidance primitives exist, footprint
+Monte Carlo exists, and the first contact-dynamics substrate now exists in
+`openbmp-contact`; runner/schema wiring and touchdown outcome classification
+remain open.**
 
 ### 2.1 What already exists (the regress-against baseline)
 
@@ -134,6 +136,12 @@ contact dynamics does not exist anywhere in the workspace.**
   near-surface ground radius for separated lanes, and ground-crossing separated
   lanes are marked non-propagating (asserted at rigid_body.rs:4286). Nothing
   models what happens at or after contact.
+- **Initial contact substrate.** `crates/openbmp-contact/src/lib.rs` now ships
+  the dependency-light L2 primitives for half-space point/sphere kinematics,
+  Kelvin-Voigt, Hertz, and Hunt-Crossley normal laws, regularized Coulomb
+  friction, explicit penalty-contact stability checks, and contact energy-audit
+  closure. This is not yet scenario-reachable; it is the crate-boundary and
+  force-law substrate WP-14.1 requires before runner integration.
 - **A runner-side terminal landing throttle controller.**
   `crates/openbmp-runner/src/separated_landing.rs` is a deterministic
   *scenario-director* controller (its own doc comment: "not flight software…
@@ -187,7 +195,7 @@ contact dynamics does not exist anywhere in the workspace.**
 
 | Sub-dimension | Current | Target tier |
 |---|---|---|
-| Ground contact | `GroundImpact` stop condition (sim ends) | T1 compliant contact + friction |
+| Ground contact | `GroundImpact` stop condition in runs; `openbmp-contact` substrate exists | T1 compliant contact + friction wired through runner |
 | Stiction / rest | none | T2 anchored stiction + rest detection |
 | Joint stops / backlash / latches | actuator-path deadband only | T1/T2 scalar penalty primitives |
 | Closed kinematic loops | none (doc `01` is tree-only) | T3 CFE + Baumgarte on the tree |
@@ -766,6 +774,13 @@ sibling notation (`WP-NN.t`, doc `NN`).
 ### WP-14.1 — `openbmp-contact` substrate: ground plane + compliant normal + regularized Coulomb
 
 - **title:** New L2 contact crate with half-space contact, Hertz/Hunt-Crossley/Kelvin-Voigt normal laws, regularized Coulomb friction, fixed sub-stepping, energy audit.
+- **implementation_status:** partial substrate implemented and traced by
+  `REQ-CONTACT-001` / `V-CONTACT-001`: `openbmp-contact` exists as an L2 crate
+  with point/sphere half-space kinematics, Kelvin-Voigt, Hertz, and
+  Hunt-Crossley normal laws, regularized Coulomb friction, the fixed-step
+  stability bound, and energy-audit closure tests. Runner force-accumulator
+  wiring, `[contact]` scenario schema, telemetry, and outcome classification
+  remain future slices before WP-14.1 is complete.
 - **goal:** The sim stops ending at the ground. A `ContactPair` registry on the
   existing rigid-body kernel evaluates gap/normal/friction forces into the
   force accumulator at a fixed sub-step rate, with a fail-closed

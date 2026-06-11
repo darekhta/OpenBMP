@@ -13,6 +13,7 @@ members = [
     "crates/openbmp-vehicle",
     "crates/openbmp-aero",
     "crates/openbmp-aerothermal",
+    "crates/openbmp-contact",
     "crates/openbmp-thermochem",
     "crates/openbmp-feedsystem",
     "crates/openbmp-propulsion",
@@ -145,6 +146,7 @@ openbmp-sim        = { version = "0.0.1", path = "crates/openbmp-sim" }
 openbmp-vehicle    = { version = "0.0.1", path = "crates/openbmp-vehicle" }
 openbmp-aero       = { version = "0.0.1", path = "crates/openbmp-aero" }
 openbmp-aerothermal = { version = "0.0.1", path = "crates/openbmp-aerothermal" }
+openbmp-contact    = { version = "0.0.1", path = "crates/openbmp-contact" }
 openbmp-thermochem = { version = "0.0.1", path = "crates/openbmp-thermochem" }
 openbmp-feedsystem = { version = "0.0.1", path = "crates/openbmp-feedsystem" }
 openbmp-propulsion = { version = "0.0.1", path = "crates/openbmp-propulsion" }
