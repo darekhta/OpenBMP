@@ -26,6 +26,72 @@ pub struct ThermochemState {
     pub molecular_weight_kg_per_mol: f64,
     /// Ideal characteristic velocity in m/s.
     pub c_star_m_s: f64,
+    /// Empirical `c*` efficiency band applied by runtime consumers.
+    ///
+    /// `c_star_m_s` remains the ideal value validated from temperature,
+    /// gamma, and molecular weight; consumers use this band when they need an
+    /// effective `c* = c*_ideal * eta_c*`.
+    pub c_star_efficiency: CStarEfficiencyBand,
+}
+
+/// Empirical characteristic-velocity efficiency band.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct CStarEfficiencyBand {
+    /// Lower efficiency bound.
+    pub min: f64,
+    /// Nominal efficiency used for deterministic runtime propagation.
+    pub nominal: f64,
+    /// Upper efficiency bound.
+    pub max: f64,
+}
+
+impl Default for CStarEfficiencyBand {
+    fn default() -> Self {
+        Self {
+            min: 1.0,
+            nominal: 1.0,
+            max: 1.0,
+        }
+    }
+}
+
+impl CStarEfficiencyBand {
+    /// Validate a finite physical efficiency band.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThermochemError`] if any scalar is non-finite, non-positive,
+    /// greater than one, or if the band is not ordered as
+    /// `min <= nominal <= max`.
+    pub fn validate(self) -> Result<Self, ThermochemError> {
+        for value in [self.min, self.nominal, self.max] {
+            if !value.is_finite() {
+                return Err(ThermochemError::NonFinite {
+                    reason: "c_star efficiency band contains NaN or infinity",
+                });
+            }
+            if value <= 0.0 || value > 1.0 {
+                return Err(ThermochemError::InvalidParameter {
+                    reason: "c_star efficiency values must lie in (0, 1]",
+                });
+            }
+        }
+        if self.min > self.nominal || self.nominal > self.max {
+            return Err(ThermochemError::InvalidParameter {
+                reason: "c_star efficiency band must satisfy min <= nominal <= max",
+            });
+        }
+        Ok(self)
+    }
+
+    fn lerp(a: Self, b: Self, f: f64) -> Self {
+        let omf = 1.0 - f;
+        Self {
+            min: omf * a.min + f * b.min,
+            nominal: omf * a.nominal + f * b.nominal,
+            max: omf * a.max + f * b.max,
+        }
+    }
 }
 
 impl ThermochemState {
@@ -68,6 +134,7 @@ impl ThermochemState {
                 reason: "characteristic velocity must be positive",
             });
         }
+        self.c_star_efficiency.validate()?;
         Ok(self)
     }
 
@@ -79,6 +146,11 @@ impl ThermochemState {
             molecular_weight_kg_per_mol: omf * a.molecular_weight_kg_per_mol
                 + f * b.molecular_weight_kg_per_mol,
             c_star_m_s: omf * a.c_star_m_s + f * b.c_star_m_s,
+            c_star_efficiency: CStarEfficiencyBand::lerp(
+                a.c_star_efficiency,
+                b.c_star_efficiency,
+                f,
+            ),
         }
     }
 }
@@ -320,6 +392,7 @@ mod tests {
             gamma,
             molecular_weight_kg_per_mol: mw,
             c_star_m_s: characteristic_velocity_m_s(temperature, gamma, mw).unwrap(),
+            c_star_efficiency: CStarEfficiencyBand::default(),
         }
     }
 
@@ -365,6 +438,48 @@ mod tests {
             expected.molecular_weight_kg_per_mol,
             epsilon = 1.0e-12
         );
+    }
+
+    #[test]
+    fn lookup_interpolates_c_star_efficiency_band() {
+        let mut states = vec![
+            state(3_000.0, 1.20, 0.024),
+            state(3_100.0, 1.21, 0.023),
+            state(3_200.0, 1.22, 0.022),
+            state(3_300.0, 1.23, 0.021),
+        ];
+        states[0].c_star_efficiency = CStarEfficiencyBand {
+            min: 0.94,
+            nominal: 0.96,
+            max: 0.98,
+        };
+        states[1].c_star_efficiency = CStarEfficiencyBand {
+            min: 0.95,
+            nominal: 0.97,
+            max: 0.99,
+        };
+        states[2].c_star_efficiency = CStarEfficiencyBand {
+            min: 0.96,
+            nominal: 0.98,
+            max: 1.0,
+        };
+        states[3].c_star_efficiency = CStarEfficiencyBand {
+            min: 0.97,
+            nominal: 0.985,
+            max: 1.0,
+        };
+        let deck = ThermochemTable::new(vec![1.0e6, 4.0e6], vec![2.0, 3.0], states).unwrap();
+
+        let got = deck
+            .lookup(ThermochemQuery {
+                chamber_pressure_pa: 2.0e6,
+                mixture_ratio: 2.5,
+            })
+            .unwrap();
+
+        assert!(got.c_star_efficiency.min > 0.95);
+        assert!(got.c_star_efficiency.nominal > got.c_star_efficiency.min);
+        assert!(got.c_star_efficiency.max >= got.c_star_efficiency.nominal);
     }
 
     #[test]

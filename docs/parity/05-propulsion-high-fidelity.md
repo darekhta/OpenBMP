@@ -118,7 +118,8 @@ this exactly.
 with the T1 pressure-thrust correction plus algebraic nozzle separation and a
 synthetic/toy transient solid-chamber regression path from T2 available behind
 explicit config. The next propulsion gap is external thermochemistry evidence
-and higher-fidelity validation, not the ambient pressure term.
+from CEARUN/Cantera tolerance tables and higher-fidelity validation, not the
+ambient pressure term.
 
 ---
 
@@ -756,7 +757,10 @@ Effort sizes are from the research ladder.
   (`REQ-PROP-028` / `V-PROP-028`), and schema-v3 liquid engines can opt into
   that path through `thermochemical_performance` while reusing the SHA-pinned
   `[propulsion.thermochem]` deck lookup (`REQ-PROP-029` / `V-PROP-029`).
-  CEARUN/Cantera tolerance tables and empirical efficiency-band propagation
+  Schema-1 state rows now carry an optional empirical `c_star_efficiency`
+  band; the deck interpolator preserves it and the liquid-engine bridge uses
+  its nominal value for deterministic mass flow/`Isp` while retaining min/max
+  mass-flow and `Isp` envelope evidence. CEARUN/Cantera tolerance tables
   remain future evidence before this WP is complete.
 - **goal:** Derive `c*(pc,MR)`, `Tc`, `γ`, `MW` from a CEA/Cantera deck instead
   of hardcoded constants; enable mixture-ratio-aware liquid performance and the

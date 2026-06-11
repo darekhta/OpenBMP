@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 
-use crate::deck::{ThermochemState, ThermochemTable};
+use crate::deck::{CStarEfficiencyBand, ThermochemState, ThermochemTable};
 use crate::error::ThermochemError;
 use openbmp_core::ValidationStatus;
 
@@ -47,6 +47,36 @@ struct StateRow {
     gamma: f64,
     molecular_weight_kg_per_mol: f64,
     c_star_m_s: f64,
+    #[serde(default)]
+    c_star_efficiency: CStarEfficiencyBandRow,
+}
+
+#[derive(Copy, Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CStarEfficiencyBandRow {
+    min: f64,
+    nominal: f64,
+    max: f64,
+}
+
+impl Default for CStarEfficiencyBandRow {
+    fn default() -> Self {
+        Self {
+            min: 1.0,
+            nominal: 1.0,
+            max: 1.0,
+        }
+    }
+}
+
+impl From<CStarEfficiencyBandRow> for CStarEfficiencyBand {
+    fn from(row: CStarEfficiencyBandRow) -> Self {
+        Self {
+            min: row.min,
+            nominal: row.nominal,
+            max: row.max,
+        }
+    }
 }
 
 impl ThermochemTable {
@@ -96,6 +126,7 @@ impl ThermochemTable {
                 gamma: row.gamma,
                 molecular_weight_kg_per_mol: row.molecular_weight_kg_per_mol,
                 c_star_m_s: row.c_star_m_s,
+                c_star_efficiency: row.c_star_efficiency.into(),
             });
         }
         let states = states.into_iter().collect::<Option<Vec<_>>>().ok_or(
@@ -169,6 +200,7 @@ mod tests {
             })
             .unwrap();
         assert!(state.c_star_m_s > 1_500.0);
+        assert!(state.c_star_efficiency.nominal < 1.0);
     }
 
     #[test]
@@ -177,6 +209,19 @@ mod tests {
         assert!(matches!(
             ThermochemTable::load_from_str(&toml),
             Err(ThermochemError::MalformedDeck { .. })
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_malformed_efficiency_band() {
+        let toml = fixture().replacen(
+            "c_star_efficiency = { min = 0.955, nominal = 0.975, max = 0.995 }",
+            "c_star_efficiency = { min = 0.995, nominal = 0.975, max = 0.955 }",
+            1,
+        );
+        assert!(matches!(
+            ThermochemTable::load_from_str(&toml),
+            Err(ThermochemError::InvalidParameter { .. })
         ));
     }
 }

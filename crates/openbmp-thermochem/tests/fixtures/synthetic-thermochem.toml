@@ -16,6 +16,7 @@ chamber_temperature_k = 3000.0
 gamma = 1.2
 molecular_weight_kg_per_mol = 0.024
 c_star_m_s = 1571.959108027441
+c_star_efficiency = { min = 0.955, nominal = 0.975, max = 0.995 }
 
 [[state]]
 chamber_pressure_pa = 1000000.0
@@ -24,6 +25,7 @@ chamber_temperature_k = 3100.0
 gamma = 1.21
 molecular_weight_kg_per_mol = 0.023
 c_star_m_s = 1627.4569656993267
+c_star_efficiency = { min = 0.958, nominal = 0.978, max = 0.997 }
 
 [[state]]
 chamber_pressure_pa = 4000000.0
@@ -32,6 +34,7 @@ chamber_temperature_k = 3200.0
 gamma = 1.22
 molecular_weight_kg_per_mol = 0.022
 c_star_m_s = 1685.682799213349
+c_star_efficiency = { min = 0.962, nominal = 0.982, max = 0.999 }
 
 [[state]]
 chamber_pressure_pa = 4000000.0
@@ -40,3 +43,4 @@ chamber_temperature_k = 3300.0
 gamma = 1.23
 molecular_weight_kg_per_mol = 0.021
 c_star_m_s = 1746.9971429933705
+c_star_efficiency = { min = 0.964, nominal = 0.984, max = 1.0 }

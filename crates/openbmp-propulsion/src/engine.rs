@@ -214,6 +214,38 @@ pub struct LiquidEngineThermochemistry {
     pub gamma: f64,
 }
 
+/// Empirical `c*` efficiency band for thermochemical performance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiquidEngineCStarEfficiencyBand {
+    /// Lower efficiency bound.
+    pub min: f64,
+    /// Nominal efficiency used for deterministic runtime propagation.
+    pub nominal: f64,
+    /// Upper efficiency bound.
+    pub max: f64,
+}
+
+impl Default for LiquidEngineCStarEfficiencyBand {
+    fn default() -> Self {
+        Self {
+            min: 1.0,
+            nominal: 1.0,
+            max: 1.0,
+        }
+    }
+}
+
+/// Scalar nominal value plus lower/upper envelope.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiquidEngineScalarBand {
+    /// Lower bound.
+    pub min: f64,
+    /// Nominal value used by the deterministic engine model.
+    pub nominal: f64,
+    /// Upper bound.
+    pub max: f64,
+}
+
 /// Nozzle and ambient inputs for a liquid-engine performance solve.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LiquidEngineNozzle {
@@ -238,6 +270,12 @@ pub struct LiquidEnginePerformance {
     pub mass_flow_kg_per_s: f64,
     /// Underlying ideal-nozzle solution used to derive thrust and `Isp`.
     pub nozzle: NozzleSolution,
+    /// Empirical `c*` efficiency band used to derive the nominal/envelope values.
+    pub c_star_efficiency: LiquidEngineCStarEfficiencyBand,
+    /// Choked throat mass-flow envelope in kg/s.
+    pub mass_flow_band_kg_per_s: LiquidEngineScalarBand,
+    /// Effective specific-impulse envelope in seconds.
+    pub isp_band_s: LiquidEngineScalarBand,
 }
 
 impl LiquidEnginePerformance {
@@ -257,11 +295,36 @@ impl LiquidEnginePerformance {
         thermochemistry: LiquidEngineThermochemistry,
         nozzle: LiquidEngineNozzle,
     ) -> Result<Self, EngineError> {
+        Self::from_thermochemistry_with_efficiency(
+            thermochemistry,
+            nozzle,
+            LiquidEngineCStarEfficiencyBand::default(),
+        )
+    }
+
+    /// Solve thermochemistry-derived liquid-engine performance with an
+    /// empirical `c*` efficiency band.
+    ///
+    /// The deterministic engine model uses the nominal efficiency. The
+    /// returned [`LiquidEnginePerformance`] also carries min/max mass-flow and
+    /// `Isp` bands so validation and UQ layers can retain the documented
+    /// empirical performance envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if any scalar is non-finite or outside the
+    /// nozzle/thermochemistry/efficiency envelope.
+    pub fn from_thermochemistry_with_efficiency(
+        thermochemistry: LiquidEngineThermochemistry,
+        nozzle: LiquidEngineNozzle,
+        efficiency: LiquidEngineCStarEfficiencyBand,
+    ) -> Result<Self, EngineError> {
         validate_liquid_thermochemistry(thermochemistry)?;
         validate_liquid_nozzle(nozzle)?;
+        validate_liquid_efficiency(efficiency)?;
 
-        let mass_flow_kg_per_s = thermochemistry.chamber_pressure_pa * nozzle.throat_area_m2
-            / thermochemistry.c_star_m_s;
+        let mass_flow_kg_per_s =
+            liquid_mass_flow_for_efficiency(thermochemistry, nozzle, efficiency.nominal)?;
         if !mass_flow_kg_per_s.is_finite() || mass_flow_kg_per_s <= 0.0 {
             return Err(EngineError::InvalidParameter {
                 reason: "thermochemical liquid-engine mass flow must be finite and positive",
@@ -287,11 +350,26 @@ impl LiquidEnginePerformance {
                 reason: "thermochemical liquid-engine performance must produce positive thrust and Isp",
             });
         }
+        let mass_flow_band_kg_per_s = LiquidEngineScalarBand {
+            min: liquid_mass_flow_for_efficiency(thermochemistry, nozzle, efficiency.max)?,
+            nominal: mass_flow_kg_per_s,
+            max: liquid_mass_flow_for_efficiency(thermochemistry, nozzle, efficiency.min)?,
+        };
+        let isp_band_s = LiquidEngineScalarBand {
+            min: isp_for_mass_flow(solution.total_thrust_n, mass_flow_band_kg_per_s.max)?,
+            nominal: solution.effective_isp_s,
+            max: isp_for_mass_flow(solution.total_thrust_n, mass_flow_band_kg_per_s.min)?,
+        };
+        validate_scalar_band(mass_flow_band_kg_per_s, "mass-flow")?;
+        validate_scalar_band(isp_band_s, "Isp")?;
         Ok(Self {
             max_thrust_n: solution.total_thrust_n,
             isp_s: solution.effective_isp_s,
             mass_flow_kg_per_s,
             nozzle: solution,
+            c_star_efficiency: efficiency,
+            mass_flow_band_kg_per_s,
+            isp_band_s,
         })
     }
 }
@@ -777,6 +855,84 @@ fn validate_liquid_nozzle(nozzle: LiquidEngineNozzle) -> Result<(), EngineError>
         return Err(EngineError::InvalidParameter {
             reason: "thermochemical liquid-engine ambient pressure must be non-negative",
         });
+    }
+    Ok(())
+}
+
+fn validate_liquid_efficiency(
+    efficiency: LiquidEngineCStarEfficiencyBand,
+) -> Result<(), EngineError> {
+    for value in [efficiency.min, efficiency.nominal, efficiency.max] {
+        if !value.is_finite() {
+            return Err(EngineError::InvalidParameter {
+                reason: "thermochemical liquid-engine c_star efficiency must be finite",
+            });
+        }
+        if value <= 0.0 || value > 1.0 {
+            return Err(EngineError::InvalidParameter {
+                reason: "thermochemical liquid-engine c_star efficiency must lie in (0, 1]",
+            });
+        }
+    }
+    if efficiency.min > efficiency.nominal || efficiency.nominal > efficiency.max {
+        return Err(EngineError::InvalidParameter {
+            reason: "thermochemical liquid-engine c_star efficiency must satisfy min <= nominal <= max",
+        });
+    }
+    Ok(())
+}
+
+fn liquid_mass_flow_for_efficiency(
+    thermochemistry: LiquidEngineThermochemistry,
+    nozzle: LiquidEngineNozzle,
+    efficiency: f64,
+) -> Result<f64, EngineError> {
+    let effective_c_star_m_s = thermochemistry.c_star_m_s * efficiency;
+    if !effective_c_star_m_s.is_finite() || effective_c_star_m_s <= 0.0 {
+        return Err(EngineError::InvalidParameter {
+            reason: "thermochemical liquid-engine effective c_star must be finite and positive",
+        });
+    }
+    let mass_flow_kg_per_s =
+        thermochemistry.chamber_pressure_pa * nozzle.throat_area_m2 / effective_c_star_m_s;
+    if !mass_flow_kg_per_s.is_finite() || mass_flow_kg_per_s <= 0.0 {
+        return Err(EngineError::InvalidParameter {
+            reason: "thermochemical liquid-engine mass flow must be finite and positive",
+        });
+    }
+    Ok(mass_flow_kg_per_s)
+}
+
+fn isp_for_mass_flow(total_thrust_n: f64, mass_flow_kg_per_s: f64) -> Result<f64, EngineError> {
+    if !total_thrust_n.is_finite()
+        || !mass_flow_kg_per_s.is_finite()
+        || total_thrust_n <= 0.0
+        || mass_flow_kg_per_s <= 0.0
+    {
+        return Err(EngineError::InvalidParameter {
+            reason: "thermochemical liquid-engine Isp inputs must be finite and positive",
+        });
+    }
+    let isp_s = total_thrust_n / (STANDARD_GRAVITY_M_S2 * mass_flow_kg_per_s);
+    if !isp_s.is_finite() || isp_s <= 0.0 {
+        return Err(EngineError::InvalidParameter {
+            reason: "thermochemical liquid-engine Isp must be finite and positive",
+        });
+    }
+    Ok(isp_s)
+}
+
+fn validate_scalar_band(
+    band: LiquidEngineScalarBand,
+    field: &'static str,
+) -> Result<(), EngineError> {
+    for value in [band.min, band.nominal, band.max] {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(EngineError::InvalidParameter { reason: field });
+        }
+    }
+    if band.min > band.nominal || band.nominal > band.max {
+        return Err(EngineError::InvalidParameter { reason: field });
     }
     Ok(())
 }
@@ -1560,6 +1716,31 @@ mod tests {
         );
         assert!((performance.isp_s - expected_isp).abs() < 1e-12);
         assert!(performance.isp_s > 0.0);
+        assert_eq!(performance.c_star_efficiency, Default::default());
+    }
+
+    #[test]
+    fn liquid_engine_performance_propagates_c_star_efficiency_band() {
+        let efficiency = LiquidEngineCStarEfficiencyBand {
+            min: 0.96,
+            nominal: 0.98,
+            max: 1.0,
+        };
+        let performance = LiquidEnginePerformance::from_thermochemistry_with_efficiency(
+            liquid_thermochemistry(),
+            liquid_nozzle(),
+            efficiency,
+        )
+        .unwrap();
+        let ideal_mass_flow = liquid_thermochemistry().chamber_pressure_pa
+            * liquid_nozzle().throat_area_m2
+            / liquid_thermochemistry().c_star_m_s;
+
+        assert!((performance.mass_flow_kg_per_s - ideal_mass_flow / 0.98).abs() < 1e-12);
+        assert!((performance.mass_flow_band_kg_per_s.min - ideal_mass_flow).abs() < 1e-12);
+        assert!((performance.mass_flow_band_kg_per_s.max - ideal_mass_flow / 0.96).abs() < 1e-12);
+        assert!(performance.isp_band_s.min < performance.isp_s);
+        assert!(performance.isp_s < performance.isp_band_s.max);
     }
 
     #[test]

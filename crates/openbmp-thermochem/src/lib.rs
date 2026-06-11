@@ -19,7 +19,7 @@ pub mod error;
 pub mod parser;
 
 pub use deck::{
-    ThermochemDeck, ThermochemQuery, ThermochemState, ThermochemTable,
+    CStarEfficiencyBand, ThermochemDeck, ThermochemQuery, ThermochemState, ThermochemTable,
     UNIVERSAL_GAS_CONSTANT_J_PER_MOL_K, characteristic_velocity_m_s, choked_mass_flux_gamma,
 };
 pub use error::ThermochemError;

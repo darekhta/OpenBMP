@@ -35,8 +35,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use openbmp_core::{Body, BodyId, Duration, EngineId, Position3, StepIndex};
 use openbmp_propulsion::{
     ClusterLayout as PropulsionClusterLayout, EngineCluster, EngineFault, EngineLimits,
-    EngineModel, EngineState, LiquidEngine, LiquidEngineNozzle, LiquidEnginePerformance,
-    LiquidEngineThermochemistry, NozzleSeparationCriterion,
+    EngineModel, EngineState, LiquidEngine, LiquidEngineCStarEfficiencyBand, LiquidEngineNozzle,
+    LiquidEnginePerformance, LiquidEngineThermochemistry, NozzleSeparationCriterion,
 };
 use openbmp_scenario::{
     ClusterLayoutConfig, EngineConfig, EngineFaultConfig, EngineKindConfig,
@@ -617,7 +617,7 @@ fn load_liquid_engine_performance(
         NozzleSeparationConfig::Summerfield => NozzleSeparationCriterion::Summerfield,
         NozzleSeparationConfig::Schmucker => NozzleSeparationCriterion::Schmucker,
     };
-    LiquidEnginePerformance::from_thermochemistry(
+    LiquidEnginePerformance::from_thermochemistry_with_efficiency(
         LiquidEngineThermochemistry {
             chamber_pressure_pa: thermochem.chamber_pressure_pa,
             c_star_m_s: state.c_star_m_s,
@@ -628,6 +628,11 @@ fn load_liquid_engine_performance(
             exit_area_m2: config.exit_area_m2,
             ambient_pressure_pa: config.ambient_pressure_pa,
             separation,
+        },
+        LiquidEngineCStarEfficiencyBand {
+            min: state.c_star_efficiency.min,
+            nominal: state.c_star_efficiency.nominal,
+            max: state.c_star_efficiency.max,
         },
     )
     .map_err(|err| RunnerError::Engine {
@@ -991,7 +996,7 @@ mod tests {
             mixture_ratio: thermochem.mixture_ratio,
         })
         .unwrap();
-        let expected = LiquidEnginePerformance::from_thermochemistry(
+        let expected = LiquidEnginePerformance::from_thermochemistry_with_efficiency(
             LiquidEngineThermochemistry {
                 chamber_pressure_pa: thermochem.chamber_pressure_pa,
                 c_star_m_s: expected_state.c_star_m_s,
@@ -1003,6 +1008,11 @@ mod tests {
                 ambient_pressure_pa: performance_config.ambient_pressure_pa,
                 separation: NozzleSeparationCriterion::Off,
             },
+            LiquidEngineCStarEfficiencyBand {
+                min: expected_state.c_star_efficiency.min,
+                nominal: expected_state.c_star_efficiency.nominal,
+                max: expected_state.c_star_efficiency.max,
+            },
         )
         .unwrap();
 
@@ -1013,6 +1023,9 @@ mod tests {
             expected.max_thrust_n.to_bits()
         );
         assert_eq!(engine.limits().isp_s.to_bits(), expected.isp_s.to_bits());
+        assert!(expected.c_star_efficiency.nominal < 1.0);
+        assert!(expected.mass_flow_band_kg_per_s.max > expected.mass_flow_kg_per_s);
+        assert!(expected.isp_band_s.min < expected.isp_s);
         engine
             .apply_command(EngineCommand {
                 throttle_unit: 1.0,

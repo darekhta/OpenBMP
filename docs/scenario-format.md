@@ -1078,8 +1078,9 @@ declared nominal chamber pressure and mixture ratio, and uses the returned
 state for reduced propulsion constants. Inline grains consume `c_star_m_s`
 and `gamma`; feed networks consume `c_star_m_s`, chamber temperature, and
 the molecular-weight-derived gas constant; liquid-engine performance consumes
-`c_star_m_s` and `gamma` plus per-engine nozzle geometry to derive max thrust,
-choked mass flow, and effective `Isp`. When the block is omitted, the inline
+ideal `c_star_m_s`, optional per-state `c_star_efficiency = { min, nominal,
+max }`, and `gamma` plus per-engine nozzle geometry to derive max thrust,
+nominal choked mass flow, and the effective-`Isp` envelope. When the block is omitted, the inline
 `[propulsion.motor.grain.propellant]`, `[[propulsion.feed_network]]`, and
 constant-`Isp` liquid-engine limits are preserved.
 
@@ -1089,6 +1090,9 @@ file = "../../data/thermochem/synthetic/schema-1.toml"
 file_sha256 = "<64 hex chars>"
 chamber_pressure_pa = 2000000.0
 mixture_ratio = 2.5
+
+# inside each [[state]] row of the referenced deck:
+# c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
 ```
 
 `[propulsion.nozzle]` is an optional runtime override for the single
@@ -2053,8 +2057,10 @@ limits              = { max_thrust_n = 5000.0, isp_s = 250.0,
 Schema v3 liquid engines can opt into thermochemistry-derived performance by
 adding a subtable to the engine. This requires `[propulsion.thermochem]`.
 Only `limits.max_thrust_n` and `limits.isp_s` are replaced at runner
-construction; lifecycle, gimbal, throttle, propellant-budget, and fault
-settings remain unchanged.
+construction. The runner uses the deck state's nominal `c_star_efficiency`
+for deterministic `Isp` and preserves the min/max mass-flow and `Isp` envelope
+in the derived performance result; lifecycle, gimbal, throttle,
+propellant-budget, and fault settings remain unchanged.
 
 ```toml
 [vehicle.assembly.engines.thermochemical_performance]

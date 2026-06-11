@@ -387,7 +387,7 @@ verification = ["V-PROP-003"]
 [[requirements]]
 id = "REQ-PROP-004"
 title = "Thermochemistry decks parse and interpolate deterministically"
-statement = "The L2 thermochemistry crate ingests Schema-1 offline CEA/Cantera-style decks, validates ideal c* consistency from chamber temperature, gamma, and molecular weight, interpolates locked-order over log chamber pressure and mixture ratio, and fails closed for out-of-envelope queries."
+statement = "The L2 thermochemistry crate ingests Schema-1 offline CEA/Cantera-style decks, validates ideal c* consistency from chamber temperature, gamma, and molecular weight, carries an optional empirical c_star_efficiency band while keeping c* ideal, interpolates locked-order over log chamber pressure and mixture ratio, and fails closed for out-of-envelope queries or malformed efficiency bands."
 verification = ["V-PROP-004"]
 
 [[requirements]]
@@ -531,13 +531,13 @@ verification = ["V-PROP-027"]
 [[requirements]]
 id = "REQ-PROP-028"
 title = "Liquid engine performance can be derived from thermochemistry"
-statement = "The propulsion crate exposes a deterministic liquid-engine performance helper that consumes looked-up thermochemical chamber pressure, c*, gamma, and nozzle geometry, computes choked throat mass flow, solves the existing ideal pressure-thrust nozzle model with optional separation, derives max thrust and effective Isp from the same state, validates non-finite and out-of-envelope inputs fail-closed, and can construct a LiquidEngine by replacing only max_thrust_n and isp_s while preserving existing lifecycle and control limits."
+statement = "The propulsion crate exposes a deterministic liquid-engine performance helper that consumes looked-up thermochemical chamber pressure, ideal c*, gamma, optional empirical c_star_efficiency band, and nozzle geometry, computes nominal and bounded choked throat mass flow from effective c*, solves the existing ideal pressure-thrust nozzle model with optional separation, derives max thrust plus nominal and bounded effective Isp from the same state, validates non-finite and out-of-envelope inputs fail-closed, and can construct a LiquidEngine by replacing only max_thrust_n and nominal isp_s while preserving existing lifecycle and control limits."
 verification = ["V-PROP-028"]
 
 [[requirements]]
 id = "REQ-PROP-029"
 title = "Liquid engine scenarios can consume thermochemistry decks"
-statement = "A liquid engine may declare an optional thermochemical_performance block under [[vehicle.assembly.engines]] with throat area, exit area, ambient pressure, and optional nozzle separation; scenario validation requires a SHA-pinnable [propulsion.thermochem] deck lookup when any engine opts in, rejects malformed nozzle scalars fail-closed, keeps the no-block constant-thrust/Isp path unchanged, and the point-mass and rigid-body runners build the engine with deck-derived max thrust, choked mass flow, and effective Isp through LiquidEnginePerformance."
+statement = "A liquid engine may declare an optional thermochemical_performance block under [[vehicle.assembly.engines]] with throat area, exit area, ambient pressure, and optional nozzle separation; scenario validation requires a SHA-pinnable [propulsion.thermochem] deck lookup when any engine opts in, rejects malformed nozzle scalars fail-closed, keeps the no-block constant-thrust/Isp path unchanged, and the point-mass and rigid-body runners build the engine with deck-derived max thrust, nominal effective-Isp, and choked mass-flow/Isp efficiency envelope through LiquidEnginePerformance."
 verification = ["V-PROP-029"]
 
 [[verification]]
@@ -2325,10 +2325,14 @@ contains = [
   "ThermochemQuery",
   "characteristic_velocity_m_s",
   "choked_mass_flux_gamma",
+  "CStarEfficiencyBand",
+  "c_star_efficiency",
   "openbmp.thermochem_deck = 1",
   "lookup_interpolates_in_log_pressure_then_mixture_ratio",
+  "lookup_interpolates_c_star_efficiency_band",
   "lookup_rejects_out_of_envelope_queries",
   "parser_loads_schema_one_deck",
+  "parser_rejects_malformed_efficiency_band",
 ]
 requirements = ["REQ-PROP-004"]
 
@@ -2950,9 +2954,13 @@ contains = [
   "LiquidEnginePerformance",
   "LiquidEngineThermochemistry",
   "LiquidEngineNozzle",
+  "LiquidEngineCStarEfficiencyBand",
+  "LiquidEngineScalarBand",
+  "from_thermochemistry_with_efficiency",
   "with_liquid_performance",
   "new_with_performance",
   "liquid_engine_performance_derives_thrust_and_isp_from_thermochemistry",
+  "liquid_engine_performance_propagates_c_star_efficiency_band",
   "liquid_engine_new_with_performance_uses_thermochemical_mass_flow",
 ]
 requirements = ["REQ-PROP-028"]
@@ -2976,7 +2984,10 @@ contains = [
   "thermochemical_performance",
   "EngineThermochemicalPerformanceConfig",
   "load_liquid_engine_performance",
-  "LiquidEnginePerformance::from_thermochemistry",
+  "LiquidEnginePerformance::from_thermochemistry_with_efficiency",
+  "c_star_efficiency",
+  "mass_flow_band_kg_per_s",
+  "isp_band_s",
   "parses_propulsion_thermochem_with_engine_performance_schema",
   "rejects_engine_thermochemical_performance_without_propulsion_thermochem",
   "build_engine_applies_thermochemical_performance",

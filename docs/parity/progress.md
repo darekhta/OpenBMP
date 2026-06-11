@@ -31,7 +31,7 @@ As of this snapshot: **20 implemented · 17 partial · 0 in progress ·
 | 02 | Structural, loads, slosh, POGO | T0 (+ feed-side POGO prerequisite now exists via 05) | 0/0/9 | WP-02.1-a |
 | 03 | Aero database & CFD | T0 baseline | 0/0/9 | WP-03.1 |
 | 04 | Aerothermal, real-gas, TPS | T0 (+ shared `openbmp-thermochem` scaffold) | 0/0/11 | WP-04.1-a |
-| 05 | Propulsion high-fidelity | **T1+T2 implemented**; T3 partial; T4/T5 wired-substrate partial | 3/6/9 | finish WP-05.3 (deck consumption) |
+| 05 | Propulsion high-fidelity | **T1+T2 implemented**; T3 partial; T4/T5 wired-substrate partial | 3/6/9 | finish WP-05.3 (CEARUN/Cantera tolerance tables) |
 | 06 | Coupled MIMO GNC | T0 (+ lane-voting diagnostic improvement) | 0/0/10 | WP-06.1 (after 01) |
 | 07 | Trajectory optimization | T0; corrector exists, unwired | 0/0/8 | WP-07.0 |
 | 08 | Environment, gravity, frames | T0 baseline (zonal degree-6 cap) | 0/0/7 | WP-08.1 |
@@ -106,7 +106,7 @@ WP-04.1-a … WP-04.4-b: **not started**.
 | WP-05.1 pressure-thrust + altitude | **implemented** | `NozzlePerformance` in `crates/openbmp-propulsion/src/motor.rs`; scenario `ambient_pressure_correction = "pressure_thrust"`; `crates/openbmp-runner/tests/pressure_thrust.rs` + fixture; REQ-PROP-001/V-PROP-001 |
 | WP-05.2-a nozzle separation clipping | **implemented** | `NozzleSeparationCriterion::{Summerfield,Schmucker}`; scenario opt-in; test in `pressure_thrust.rs`; REQ-PROP-002 |
 | WP-05.2-b transient solid ballistics | **implemented** | `TransientChamber` pc(t) ODE + erosive hook in `grain.rs`; `[propulsion.motor.grain] mode = "transient"`; test; REQ-PROP-003 |
-| WP-05.3 thermochem deck ingestion | **partial** | crate + parser + scenario block + SHA pin + fixtures + inline grain, reduced feed-network, and liquid-engine thermochemical runtime consumption landed; `LiquidEnginePerformance` derives thrust, choked mass flow, and `Isp` from looked-up thermochemical state + nozzle geometry; missing: CEARUN/Cantera tolerance tables and empirical efficiency-band propagation |
+| WP-05.3 thermochem deck ingestion | **partial** | crate + parser + scenario block + SHA pin + fixtures + inline grain, reduced feed-network, liquid-engine thermochemical runtime consumption, and empirical `c_star_efficiency` band propagation landed; `LiquidEnginePerformance` derives thrust, nominal choked mass flow, `Isp`, and mass-flow/`Isp` envelopes from looked-up thermochemical state + nozzle geometry; missing: CEARUN/Cantera tolerance tables |
 | WP-05.4-a feed network + transient chamber | **partial** | `openbmp-feedsystem` (graph/network/line/chamber/control/transient) + `crates/openbmp-runner/src/feed_network.rs` + scenario `propulsion.feed_networks` validation; missing: dedicated acceptance tests + tolerance tables |
 | WP-05.4-b turbopump map + NPSH | **partial** | `pump.rs` (`Turbopump`, normalized map, design point) + scenario pump blocks + runner pressure/cavitation coupling + synthetic provenance-backed tolerance table; missing: public real-pump calibration |
 | WP-05.4-c MOC line transients | **partial** | `line.rs` (`MocLine`) + scenario line blocks + runner pressure perturbation coupling + synthetic provenance-backed Joukowsky tolerance table; missing: richer boundary library, standalone line topology, public benchmark tables |
