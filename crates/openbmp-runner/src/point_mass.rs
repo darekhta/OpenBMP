@@ -1677,8 +1677,11 @@ where
         let evaluator = contact_evaluator.ok_or_else(|| RunnerError::UnsupportedScenario {
             what: "[contact] telemetry requested without a contact evaluator".to_owned(),
         })?;
-        let diagnostics = evaluator
-            .diagnostics_from_state_vectors(state.position.vector, state.velocity.vector)?;
+        let diagnostics = evaluator.diagnostics_from_state_vectors(
+            state.position.vector,
+            state.velocity.vector,
+            state.time.as_seconds(),
+        )?;
         contact_channels.insert(&mut row, diagnostics)?;
         if let Some(accumulator) = contact_accumulator {
             accumulator.record(state.time.as_seconds(), diagnostics);
@@ -2390,6 +2393,34 @@ require_monotonic_time = true
         assert_eq!(
             contact.outcome,
             crate::contact::ContactOutcomeKind::Unsettled
+        );
+    }
+
+    #[test]
+    fn point_mass_contact_anchored_stiction_slides_with_kinetic_force() {
+        let scenario_toml = CONTACT_POINT_MASS_SCENARIO
+            .replace(
+                "initial_velocity_eci_m_s = [0.0, 0.0, 0.0]",
+                "initial_velocity_eci_m_s = [1.0, 0.0, 0.0]",
+            )
+            .replace(
+                "friction_coefficient = 0.0",
+                "friction_law = \"anchored_stiction\"\nstatic_friction_coefficient = 0.5\nkinetic_friction_coefficient = 0.25\ntangential_stiffness_n_m = 1000.0\ntangential_damping_n_s_m = 0.0\nrestick_speed_m_s = 0.01",
+            );
+        let scenario = Scenario::from_toml_str(&scenario_toml).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("contact run succeeds");
+
+        assert!((first_row_f64(&outcome, "force.contact.x_n") + 5.0).abs() <= 1.0e-12);
+        assert!((first_row_f64(&outcome, "force.contact.z_n") - 20.0).abs() <= 1.0e-12);
+        let contact = outcome
+            .contact
+            .as_ref()
+            .expect("contact report should be present");
+        assert!(
+            contact.energy.dissipated_energy_j > 0.0,
+            "anchored stiction sliding should dissipate energy: {:?}",
+            contact.energy
         );
     }
 

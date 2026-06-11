@@ -208,8 +208,10 @@ WP-14.3: **partial** — `openbmp-contact` now exposes anchored stick/slip
 friction with static cone breakaway, kinetic sliding, Karnopp restick window,
 deterministic anchor state updates, incline stiction/sliding closed-form
 helpers, a consecutive-hold rest detector, and Housner rocking-block threshold
-and period anchors (`REQ-CONTACT-004`). Runner outcome integration, oscillator
-fixtures, and long-run landing rest evidence remain future slices.
+and period anchors (`REQ-CONTACT-004`). Schema-v3 `[contact]` can now select
+`friction_law = "anchored_stiction"` and the runner contact adapters route it
+through time-gated anchor state (`REQ-CONTACT-005`). Oscillator fixtures and
+long-run landing rest evidence remain future slices.
 WP-14.4 … WP-14.10: **not started**.
 
 ### 15 — Plume environments & SRP

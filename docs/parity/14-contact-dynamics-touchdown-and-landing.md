@@ -873,13 +873,16 @@ sibling notation (`WP-NN.t`, doc `NN`).
 
 - **title:** True stick/slip friction with stick-point anchoring, Karnopp window, deterministic rest detection.
 - **implementation_status:** partial crate-level primitives implemented and
-  traced by `REQ-CONTACT-004` / `V-CONTACT-004`: `openbmp-contact` exposes
-  `AnchoredStictionFriction` with deterministic anchor state, static-cone
-  breakaway, kinetic sliding, a Karnopp restick window, and dissipation
-  reporting; incline stiction/sliding closed-form helpers; a consecutive-hold
-  `RestDetector`; and `HousnerRockingBlock` threshold/frequency/period
-  anchors. Runner outcome integration, stick-slip oscillator fixtures, and
-  long-run landing rest evidence remain future slices.
+  traced by `REQ-CONTACT-004` / `V-CONTACT-004`, plus first scenario/runner
+  integration traced by `REQ-CONTACT-005` / `V-CONTACT-005`: `openbmp-contact`
+  exposes `AnchoredStictionFriction` with deterministic anchor state,
+  static-cone breakaway, kinetic sliding, a Karnopp restick window, and
+  dissipation reporting; incline stiction/sliding closed-form helpers; a
+  consecutive-hold `RestDetector`; and `HousnerRockingBlock`
+  threshold/frequency/period anchors. Schema-v3 `[contact]` can select
+  `friction_law = "anchored_stiction"`, and point-mass/rigid-body contact
+  force adapters route it through a time-gated anchor state. Stick-slip
+  oscillator fixtures and long-run landing rest evidence remain future slices.
 - **goal:** Replace creep-prone regularized friction for statics: tangential
   anchor spring-damper, cone-break to kinetic slip, re-stick window, and a
   rest detector (energy floor + all-pads-sticking hold) — the prerequisites

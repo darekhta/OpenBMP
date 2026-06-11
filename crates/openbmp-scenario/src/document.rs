@@ -3310,6 +3310,17 @@ pub enum ContactNormalLawConfig {
     HuntCrossley,
 }
 
+/// Tangential friction law selector for `[contact]`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactFrictionLawConfig {
+    /// Tanh-regularized kinetic Coulomb friction.
+    #[default]
+    RegularizedCoulomb,
+    /// Stateful anchored static friction with kinetic slip and restick window.
+    AnchoredStiction,
+}
+
 /// Opt-in compliant contact force block.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -3347,9 +3358,22 @@ pub struct ContactConfig {
     /// Kinetic friction coefficient. Defaults to frictionless contact.
     #[serde(default)]
     pub friction_coefficient: f64,
+    /// Tangential friction law. Defaults to regularized Coulomb.
+    #[serde(default)]
+    pub friction_law: ContactFrictionLawConfig,
     /// Positive tanh smoothing speed for Coulomb friction. Defaults
     /// to 1 mm/s when omitted.
     pub friction_regularization_speed_m_s: Option<f64>,
+    /// Static friction coefficient for `friction_law = "anchored_stiction"`.
+    pub static_friction_coefficient: Option<f64>,
+    /// Kinetic friction coefficient for `friction_law = "anchored_stiction"`.
+    pub kinetic_friction_coefficient: Option<f64>,
+    /// Tangential anchor stiffness for `friction_law = "anchored_stiction"`.
+    pub tangential_stiffness_n_m: Option<f64>,
+    /// Tangential anchor damping for `friction_law = "anchored_stiction"`.
+    pub tangential_damping_n_s_m: Option<f64>,
+    /// Karnopp restick velocity window for `friction_law = "anchored_stiction"`.
+    pub restick_speed_m_s: Option<f64>,
     /// Effective contact mass used in the load-time stability bound.
     pub effective_mass_kg: f64,
     /// Fixed integer contact sub-steps per scenario major step.
@@ -3373,11 +3397,7 @@ impl ContactConfig {
         require_finite("contact.ground_altitude_m", self.ground_altitude_m)?;
         self.validate_geometry()?;
         let stability_stiffness_n_m = self.validate_normal_law()?;
-        require_non_negative("contact.friction_coefficient", self.friction_coefficient)?;
-        require_positive(
-            "contact.friction_regularization_speed_m_s",
-            self.friction_regularization_speed_m_s(),
-        )?;
+        self.validate_friction_law()?;
         require_positive("contact.effective_mass_kg", self.effective_mass_kg)?;
         require_positive_u32("contact.substeps", self.substeps)?;
 
@@ -3513,6 +3533,101 @@ impl ContactConfig {
                 Ok(stability_stiffness_n_m)
             }
         }
+    }
+
+    fn validate_friction_law(&self) -> Result<(), ScenarioError> {
+        match self.friction_law {
+            ContactFrictionLawConfig::RegularizedCoulomb => {
+                require_non_negative("contact.friction_coefficient", self.friction_coefficient)?;
+                require_positive(
+                    "contact.friction_regularization_speed_m_s",
+                    self.friction_regularization_speed_m_s(),
+                )?;
+                reject_contact_field(
+                    self.static_friction_coefficient,
+                    "contact.static_friction_coefficient",
+                    "regularized_coulomb",
+                )?;
+                reject_contact_field(
+                    self.kinetic_friction_coefficient,
+                    "contact.kinetic_friction_coefficient",
+                    "regularized_coulomb",
+                )?;
+                reject_contact_field(
+                    self.tangential_stiffness_n_m,
+                    "contact.tangential_stiffness_n_m",
+                    "regularized_coulomb",
+                )?;
+                reject_contact_field(
+                    self.tangential_damping_n_s_m,
+                    "contact.tangential_damping_n_s_m",
+                    "regularized_coulomb",
+                )?;
+                reject_contact_field(
+                    self.restick_speed_m_s,
+                    "contact.restick_speed_m_s",
+                    "regularized_coulomb",
+                )?;
+            }
+            ContactFrictionLawConfig::AnchoredStiction => {
+                if self.friction_coefficient != 0.0 {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "contact.friction_coefficient".to_owned(),
+                        role: ModelRole::Force,
+                        name: "contact anchored_stiction".to_owned(),
+                    });
+                }
+                reject_contact_field(
+                    self.friction_regularization_speed_m_s,
+                    "contact.friction_regularization_speed_m_s",
+                    "anchored_stiction",
+                )?;
+                let static_friction_coefficient = required_contact_field(
+                    self.static_friction_coefficient,
+                    "contact.static_friction_coefficient",
+                    "anchored_stiction",
+                )?;
+                let kinetic_friction_coefficient = required_contact_field(
+                    self.kinetic_friction_coefficient,
+                    "contact.kinetic_friction_coefficient",
+                    "anchored_stiction",
+                )?;
+                require_non_negative(
+                    "contact.static_friction_coefficient",
+                    static_friction_coefficient,
+                )?;
+                require_non_negative(
+                    "contact.kinetic_friction_coefficient",
+                    kinetic_friction_coefficient,
+                )?;
+                if static_friction_coefficient < kinetic_friction_coefficient {
+                    return Err(ScenarioError::InvalidContact {
+                        reason: "anchored_stiction requires static_friction_coefficient >= kinetic_friction_coefficient".to_owned(),
+                    });
+                }
+                require_positive(
+                    "contact.tangential_stiffness_n_m",
+                    required_contact_field(
+                        self.tangential_stiffness_n_m,
+                        "contact.tangential_stiffness_n_m",
+                        "anchored_stiction",
+                    )?,
+                )?;
+                require_non_negative(
+                    "contact.tangential_damping_n_s_m",
+                    self.tangential_damping_n_s_m.unwrap_or(0.0),
+                )?;
+                require_positive(
+                    "contact.restick_speed_m_s",
+                    required_contact_field(
+                        self.restick_speed_m_s,
+                        "contact.restick_speed_m_s",
+                        "anchored_stiction",
+                    )?,
+                )?;
+            }
+        }
+        Ok(())
     }
 }
 

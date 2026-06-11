@@ -35,7 +35,10 @@ use nalgebra::Vector3;
 use openbmp_aero::{
     AeroContext, AeroDeck, AeroError, AeroMethod, knudsen_number, mean_free_path_m,
 };
-use openbmp_contact::{ContactPair, HalfSpace};
+use openbmp_contact::{
+    AnchoredStictionFriction, AnchoredStictionState, ContactGeometry, ContactPair, HalfSpace,
+    NormalLaw, half_space_kinematics,
+};
 use openbmp_models::{
     ForceContext, ForceModel, MassModel, MassPropertiesRate, ModelEvalError, MomentContext,
     MomentModel, RigidMassModel,
@@ -47,6 +50,7 @@ use openbmp_state::{MassProperties, PointMassState, RigidBodyState};
 use openbmp_core::{Body, BodyId, ModelId, Position3, SimTime, ValidationStatus};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
 
@@ -192,10 +196,10 @@ impl<G: GravityModel> ForceModel<RigidBodyState> for GravityForceAdapter<G> {
 
 /// Wraps an [`openbmp_contact::ContactPair`] as a kernel-side force
 /// model against a fixed half-space.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct HalfSpaceContactForceAdapter {
     half_space: HalfSpace,
-    pair: ContactPair,
+    force: HalfSpaceContactForce,
     model_id: ModelId,
 }
 
@@ -205,7 +209,28 @@ impl HalfSpaceContactForceAdapter {
     pub const fn new(half_space: HalfSpace, pair: ContactPair, model_id: ModelId) -> Self {
         Self {
             half_space,
-            pair,
+            force: HalfSpaceContactForce::RegularizedCoulomb { pair },
+            model_id,
+        }
+    }
+
+    /// Construct a stateful anchored-stiction half-space adapter.
+    #[must_use]
+    pub fn new_anchored_stiction(
+        half_space: HalfSpace,
+        geometry: ContactGeometry,
+        normal_law: NormalLaw,
+        friction: AnchoredStictionFriction,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            half_space,
+            force: HalfSpaceContactForce::AnchoredStiction {
+                geometry,
+                normal_law,
+                friction,
+                state: Mutex::new(AnchoredContactState::default()),
+            },
             model_id,
         }
     }
@@ -214,19 +239,54 @@ impl HalfSpaceContactForceAdapter {
         &self,
         position_m: Vector3<f64>,
         velocity_m_s: Vector3<f64>,
+        time: SimTime,
     ) -> Result<Vector3<f64>, ModelEvalError> {
-        let force = self
-            .pair
-            .evaluate_half_space(
-                self.half_space,
-                [position_m.x, position_m.y, position_m.z],
-                [velocity_m_s.x, velocity_m_s.y, velocity_m_s.z],
-            )
-            .map_err(|err| ModelEvalError::InvalidState {
-                model: self.model_id,
-                reason: Cow::Owned(err.to_string()),
-            })?
-            .total_force_n();
+        let position = [position_m.x, position_m.y, position_m.z];
+        let velocity = [velocity_m_s.x, velocity_m_s.y, velocity_m_s.z];
+        let force = match &self.force {
+            HalfSpaceContactForce::RegularizedCoulomb { pair } => pair
+                .evaluate_half_space(self.half_space, position, velocity)
+                .map_err(|err| ModelEvalError::InvalidState {
+                    model: self.model_id,
+                    reason: Cow::Owned(err.to_string()),
+                })?
+                .total_force_n(),
+            HalfSpaceContactForce::AnchoredStiction {
+                geometry,
+                normal_law,
+                friction,
+                state,
+            } => {
+                let kinematics =
+                    half_space_kinematics(self.half_space, *geometry, position, velocity).map_err(
+                        |err| ModelEvalError::InvalidState {
+                            model: self.model_id,
+                            reason: Cow::Owned(err.to_string()),
+                        },
+                    )?;
+                let normal = normal_law.evaluate(kinematics);
+                let mut state = state.lock().map_err(|_| ModelEvalError::InvalidState {
+                    model: self.model_id,
+                    reason: Cow::Borrowed("anchored stiction state lock poisoned"),
+                })?;
+                let dt_s = state.advance_dt_s(time.as_seconds());
+                let friction = friction
+                    .evaluate(
+                        &mut state.stiction,
+                        normal.normal_force_n,
+                        kinematics.tangential_velocity_m_s,
+                        dt_s,
+                    )
+                    .map_err(|err| ModelEvalError::InvalidState {
+                        model: self.model_id,
+                        reason: Cow::Owned(err.to_string()),
+                    })?;
+                add_contact_vectors(
+                    scale_contact_vector(self.half_space.normal(), normal.normal_force_n),
+                    friction.friction_force_n,
+                )
+            }
+        };
         let force = Vector3::new(force[0], force[1], force[2]);
         if force.x.is_finite() && force.y.is_finite() && force.z.is_finite() {
             Ok(force)
@@ -243,11 +303,15 @@ impl ForceModel<PointMassState> for HalfSpaceContactForceAdapter {
         &self,
         ctx: ForceContext<'_, PointMassState>,
     ) -> Result<Vector3<f64>, ModelEvalError> {
-        self.force_from_state_vectors(ctx.state.position.vector, ctx.state.velocity.vector)
+        self.force_from_state_vectors(
+            ctx.state.position.vector,
+            ctx.state.velocity.vector,
+            ctx.time,
+        )
     }
 
     fn supports_separated_body_propagation(&self) -> bool {
-        true
+        matches!(self.force, HalfSpaceContactForce::RegularizedCoulomb { .. })
     }
 
     fn validation(&self) -> ValidationStatus {
@@ -260,16 +324,63 @@ impl ForceModel<RigidBodyState> for HalfSpaceContactForceAdapter {
         &self,
         ctx: ForceContext<'_, RigidBodyState>,
     ) -> Result<Vector3<f64>, ModelEvalError> {
-        self.force_from_state_vectors(ctx.state.position.vector, ctx.state.velocity.vector)
+        self.force_from_state_vectors(
+            ctx.state.position.vector,
+            ctx.state.velocity.vector,
+            ctx.time,
+        )
     }
 
     fn supports_separated_body_propagation(&self) -> bool {
-        true
+        matches!(self.force, HalfSpaceContactForce::RegularizedCoulomb { .. })
     }
 
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::ValidatedToy
     }
+}
+
+#[derive(Debug)]
+enum HalfSpaceContactForce {
+    RegularizedCoulomb {
+        pair: ContactPair,
+    },
+    AnchoredStiction {
+        geometry: ContactGeometry,
+        normal_law: NormalLaw,
+        friction: AnchoredStictionFriction,
+        state: Mutex<AnchoredContactState>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct AnchoredContactState {
+    stiction: AnchoredStictionState,
+    last_time_s: Option<f64>,
+}
+
+impl AnchoredContactState {
+    fn advance_dt_s(&mut self, time_s: f64) -> f64 {
+        match self.last_time_s {
+            Some(last_time_s) if time_s > last_time_s => {
+                self.last_time_s = Some(time_s);
+                time_s - last_time_s
+            }
+            Some(_) => 0.0,
+            None => {
+                self.last_time_s = Some(time_s);
+                0.0
+            }
+        }
+    }
+}
+
+fn scale_contact_vector(vector: [f64; 3], scalar: f64) -> [f64; 3] {
+    [vector[0] * scalar, vector[1] * scalar, vector[2] * scalar]
+}
+
+fn add_contact_vectors(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 // ---------------------------------------------------------------------

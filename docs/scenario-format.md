@@ -1202,6 +1202,7 @@ radius_m = 0.25            # required only for sphere
 normal_law = "kelvin_voigt" # "kelvin_voigt" | "hertz" | "hunt_crossley"
 stiffness_n_m = 1000.0
 damping_n_s_m = 0.0
+friction_law = "regularized_coulomb" # default; or "anchored_stiction"
 friction_coefficient = 0.1
 friction_regularization_speed_m_s = 0.01
 effective_mass_kg = 1.0
@@ -1219,6 +1220,13 @@ For `normal_law = "hertz"`, use `stiffness_n_m_3_2` plus
 `[contact]` is present, the simulation kernel advances at
 `time.dt_s / contact.substeps`, so contact force, diagnostics, and
 `RunOutcome.contact` samples are produced at fixed substep boundaries.
+For `friction_law = "anchored_stiction"`, replace
+`friction_coefficient` and `friction_regularization_speed_m_s` with
+`static_friction_coefficient`, `kinetic_friction_coefficient`,
+`tangential_stiffness_n_m`, optional `tangential_damping_n_s_m`, and
+`restick_speed_m_s`. The runner routes this through a time-gated anchor state
+so repeated RK-stage force evaluations at the same timestamp do not advance
+the tangential anchor twice.
 
 Contact remains off by default. With `[contact]` present, the point-mass
 and rigid-body runners disable the default `GroundImpact` stop and

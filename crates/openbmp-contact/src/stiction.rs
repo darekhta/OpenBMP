@@ -114,8 +114,8 @@ impl AnchoredStictionFriction {
     /// # Errors
     ///
     /// Returns [`ContactError::InvalidParameter`] or
-    /// [`ContactError::InvalidVector`] for non-finite state inputs or invalid
-    /// step size.
+    /// [`ContactError::InvalidVector`] for non-finite state inputs or a
+    /// negative/non-finite step size.
     pub fn evaluate(
         self,
         state: &mut AnchoredStictionState,
@@ -126,7 +126,7 @@ impl AnchoredStictionFriction {
         let normal_force_n = require_non_negative("normal_force_n", normal_force_n)?;
         let tangential_velocity_m_s =
             finite_vector("tangential_velocity_m_s", tangential_velocity_m_s)?;
-        let dt_s = require_positive("dt_s", dt_s)?;
+        let dt_s = require_non_negative("dt_s", dt_s)?;
         let speed_m_s = norm(tangential_velocity_m_s);
 
         if normal_force_n <= 0.0 {

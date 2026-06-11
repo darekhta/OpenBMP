@@ -1,16 +1,18 @@
 //! Runner-side construction, diagnostics, and reports for compliant contact.
 
 use openbmp_contact::{
-    ContactEnergyAudit, ContactError, ContactGeometry, ContactPair, HalfSpace, HertzNormal,
-    HuntCrossleyNormal, KelvinVoigtNormal, NormalLaw, RegularizedCoulombFriction,
-    half_space_kinematics,
+    AnchoredStictionFriction, AnchoredStictionState, ContactEnergyAudit, ContactError,
+    ContactGeometry, ContactPair, HalfSpace, HertzNormal, HuntCrossleyNormal, KelvinVoigtNormal,
+    NormalLaw, RegularizedCoulombFriction, half_space_kinematics,
 };
 use openbmp_core::{ChannelId, ModelId};
 use openbmp_scenario::{
-    ContactConfig, ContactGeometryConfig, ContactNormalLawConfig, ScenarioDocument,
+    ContactConfig, ContactFrictionLawConfig, ContactGeometryConfig, ContactNormalLawConfig,
+    ScenarioDocument,
 };
 use openbmp_telemetry::{ChannelMetadata, TelemetryChannel, TelemetryRow};
 use openbmp_vehicle::HalfSpaceContactForceAdapter;
+use std::sync::Mutex;
 
 use crate::RunnerError;
 
@@ -93,20 +95,21 @@ pub struct ContactRunReport {
     pub energy: ContactRunEnergyAudit,
 }
 
-#[derive(Clone, Copy, Debug)]
 pub(crate) struct ContactDiagnosticsEvaluator {
     half_space: HalfSpace,
     geometry: ContactGeometry,
-    pair: ContactPair,
+    normal_law: NormalLaw,
+    friction: ContactDiagnosticsFriction,
 }
 
 impl ContactDiagnosticsEvaluator {
     pub(crate) fn from_config(config: &ContactConfig) -> Result<Self, RunnerError> {
-        let (half_space, geometry, pair) = build_half_space_contact_parts(config)?;
+        let parts = build_half_space_contact_parts(config)?;
         Ok(Self {
-            half_space,
-            geometry,
-            pair,
+            half_space: parts.half_space,
+            geometry: parts.geometry,
+            normal_law: parts.normal_law,
+            friction: ContactDiagnosticsFriction::from_runtime(parts.friction),
         })
     }
 
@@ -114,29 +117,116 @@ impl ContactDiagnosticsEvaluator {
         &self,
         position_m: nalgebra::Vector3<f64>,
         velocity_m_s: nalgebra::Vector3<f64>,
+        time_s: f64,
     ) -> Result<ContactStepDiagnostics, RunnerError> {
         let position = [position_m.x, position_m.y, position_m.z];
         let velocity = [velocity_m_s.x, velocity_m_s.y, velocity_m_s.z];
         let kinematics = half_space_kinematics(self.half_space, self.geometry, position, velocity)
             .map_err(contact_build_error)?;
-        let force = self
-            .pair
-            .evaluate_half_space(self.half_space, position, velocity)
-            .map_err(contact_build_error)?;
-        let total_force_n = force.total_force_n();
-        let tangential_dissipated_power_w =
-            (0.0 - dot(force.tangential_force_n, kinematics.tangential_velocity_m_s)).max(0.0);
-        let dissipated_power_w = force.damping_power_w + tangential_dissipated_power_w;
+        let normal = self.normal_law.evaluate(kinematics);
+        let (tangential_force_n, tangential_dissipated_power_w) =
+            self.friction
+                .evaluate(kinematics, normal.normal_force_n, time_s)?;
+        let total_force_n = add(
+            scale(self.half_space.normal(), normal.normal_force_n),
+            tangential_force_n,
+        );
+        let dissipated_power_w = normal.damping_power_w + tangential_dissipated_power_w;
         let contact_power_on_vehicle_w = dot(total_force_n, velocity);
         Ok(ContactStepDiagnostics {
             gap_m: kinematics.gap_m,
             penetration_m: kinematics.penetration_m(),
             normal_velocity_m_s: kinematics.normal_velocity_m_s,
-            normal_force_n: force.normal_force_n,
-            elastic_energy_j: force.elastic_energy_j,
+            normal_force_n: normal.normal_force_n,
+            elastic_energy_j: normal.elastic_energy_j,
             dissipated_power_w,
             contact_power_on_vehicle_w,
         })
+    }
+}
+
+enum ContactDiagnosticsFriction {
+    RegularizedCoulomb(RegularizedCoulombFriction),
+    AnchoredStiction {
+        friction: AnchoredStictionFriction,
+        state: Mutex<TimeGatedStictionState>,
+    },
+}
+
+impl ContactDiagnosticsFriction {
+    fn from_runtime(friction: ContactFrictionRuntime) -> Self {
+        match friction {
+            ContactFrictionRuntime::RegularizedCoulomb(friction) => {
+                Self::RegularizedCoulomb(friction)
+            }
+            ContactFrictionRuntime::AnchoredStiction(friction) => Self::AnchoredStiction {
+                friction,
+                state: Mutex::new(TimeGatedStictionState::default()),
+            },
+        }
+    }
+
+    fn evaluate(
+        &self,
+        kinematics: openbmp_contact::ContactKinematics,
+        normal_force_n: f64,
+        time_s: f64,
+    ) -> Result<([f64; 3], f64), RunnerError> {
+        match self {
+            Self::RegularizedCoulomb(friction) => {
+                let force = friction.force_n(kinematics, normal_force_n);
+                Ok((
+                    force,
+                    (0.0 - dot(force, kinematics.tangential_velocity_m_s)).max(0.0),
+                ))
+            }
+            Self::AnchoredStiction { friction, state } => {
+                let mut state = state.lock().map_err(|_| RunnerError::UnsupportedScenario {
+                    what: "anchored stiction diagnostics state lock poisoned".to_owned(),
+                })?;
+                let dt_s = state.advance_dt_s(time_s);
+                let response = friction
+                    .evaluate(
+                        &mut state.stiction,
+                        normal_force_n,
+                        kinematics.tangential_velocity_m_s,
+                        dt_s,
+                    )
+                    .map_err(contact_build_error)?;
+                let power_w = if dt_s > 0.0 {
+                    response.dissipated_energy_j / dt_s
+                } else {
+                    (0.0 - dot(
+                        response.friction_force_n,
+                        kinematics.tangential_velocity_m_s,
+                    ))
+                    .max(0.0)
+                };
+                Ok((response.friction_force_n, power_w))
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct TimeGatedStictionState {
+    stiction: AnchoredStictionState,
+    last_time_s: Option<f64>,
+}
+
+impl TimeGatedStictionState {
+    fn advance_dt_s(&mut self, time_s: f64) -> f64 {
+        match self.last_time_s {
+            Some(last_time_s) if time_s > last_time_s => {
+                self.last_time_s = Some(time_s);
+                time_s - last_time_s
+            }
+            Some(_) => 0.0,
+            None => {
+                self.last_time_s = Some(time_s);
+                0.0
+            }
+        }
     }
 }
 
@@ -284,15 +374,41 @@ pub(crate) fn build_half_space_contact_force_adapter(
     config: &ContactConfig,
     model_id: ModelId,
 ) -> Result<HalfSpaceContactForceAdapter, RunnerError> {
-    let (half_space, _, pair) = build_half_space_contact_parts(config)?;
-    Ok(HalfSpaceContactForceAdapter::new(
-        half_space, pair, model_id,
-    ))
+    let parts = build_half_space_contact_parts(config)?;
+    Ok(match parts.friction {
+        ContactFrictionRuntime::RegularizedCoulomb(friction) => HalfSpaceContactForceAdapter::new(
+            parts.half_space,
+            ContactPair::new(parts.geometry, parts.normal_law, friction),
+            model_id,
+        ),
+        ContactFrictionRuntime::AnchoredStiction(friction) => {
+            HalfSpaceContactForceAdapter::new_anchored_stiction(
+                parts.half_space,
+                parts.geometry,
+                parts.normal_law,
+                friction,
+                model_id,
+            )
+        }
+    })
+}
+
+struct HalfSpaceContactParts {
+    half_space: HalfSpace,
+    geometry: ContactGeometry,
+    normal_law: NormalLaw,
+    friction: ContactFrictionRuntime,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ContactFrictionRuntime {
+    RegularizedCoulomb(RegularizedCoulombFriction),
+    AnchoredStiction(AnchoredStictionFriction),
 }
 
 fn build_half_space_contact_parts(
     config: &ContactConfig,
-) -> Result<(HalfSpace, ContactGeometry, ContactPair), RunnerError> {
+) -> Result<HalfSpaceContactParts, RunnerError> {
     let half_space =
         HalfSpace::new([0.0, 0.0, 1.0], config.ground_altitude_m).map_err(contact_build_error)?;
     let geometry = match config.geometry {
@@ -303,16 +419,13 @@ fn build_half_space_contact_parts(
         }
     };
     let normal_law = build_normal_law(config)?;
-    let friction = RegularizedCoulombFriction::new(
-        config.friction_coefficient,
-        config.friction_regularization_speed_m_s(),
-    )
-    .map_err(contact_build_error)?;
-    Ok((
+    let friction = build_friction_law(config)?;
+    Ok(HalfSpaceContactParts {
         half_space,
         geometry,
-        ContactPair::new(geometry, normal_law, friction),
-    ))
+        normal_law,
+        friction,
+    })
 }
 
 fn build_normal_law(config: &ContactConfig) -> Result<NormalLaw, RunnerError> {
@@ -352,6 +465,39 @@ fn build_normal_law(config: &ContactConfig) -> Result<NormalLaw, RunnerError> {
     }
 }
 
+fn build_friction_law(config: &ContactConfig) -> Result<ContactFrictionRuntime, RunnerError> {
+    match config.friction_law {
+        ContactFrictionLawConfig::RegularizedCoulomb => {
+            Ok(ContactFrictionRuntime::RegularizedCoulomb(
+                RegularizedCoulombFriction::new(
+                    config.friction_coefficient,
+                    config.friction_regularization_speed_m_s(),
+                )
+                .map_err(contact_build_error)?,
+            ))
+        }
+        ContactFrictionLawConfig::AnchoredStiction => Ok(ContactFrictionRuntime::AnchoredStiction(
+            AnchoredStictionFriction::new(
+                require_config(
+                    config.static_friction_coefficient,
+                    "contact.static_friction_coefficient",
+                )?,
+                require_config(
+                    config.kinetic_friction_coefficient,
+                    "contact.kinetic_friction_coefficient",
+                )?,
+                require_config(
+                    config.tangential_stiffness_n_m,
+                    "contact.tangential_stiffness_n_m",
+                )?,
+                config.tangential_damping_n_s_m.unwrap_or(0.0),
+                require_config(config.restick_speed_m_s, "contact.restick_speed_m_s")?,
+            )
+            .map_err(contact_build_error)?,
+        )),
+    }
+}
+
 fn require_config(value: Option<f64>, field: &'static str) -> Result<f64, RunnerError> {
     value.ok_or_else(|| RunnerError::UnsupportedScenario {
         what: format!("{field} is required by contact force construction"),
@@ -366,6 +512,14 @@ fn contact_build_error(err: ContactError) -> RunnerError {
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn scale(a: [f64; 3], scalar: f64) -> [f64; 3] {
+    [a[0] * scalar, a[1] * scalar, a[2] * scalar]
+}
+
+fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 fn classify_contact_outcome(
@@ -457,7 +611,13 @@ mod tests {
             reference_impact_speed_m_s: None,
             stability_stiffness_n_m: None,
             friction_coefficient: 0.0,
+            friction_law: ContactFrictionLawConfig::RegularizedCoulomb,
             friction_regularization_speed_m_s: None,
+            static_friction_coefficient: None,
+            kinetic_friction_coefficient: None,
+            tangential_stiffness_n_m: None,
+            tangential_damping_n_s_m: None,
+            restick_speed_m_s: None,
             effective_mass_kg: 1.0,
             substeps: 1,
         };
@@ -466,6 +626,7 @@ mod tests {
             .diagnostics_from_state_vectors(
                 nalgebra::Vector3::new(0.0, 0.0, -0.01),
                 nalgebra::Vector3::zeros(),
+                0.0,
             )
             .unwrap();
 
