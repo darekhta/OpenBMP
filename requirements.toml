@@ -231,8 +231,14 @@ verification = ["V-ENV-001"]
 [[requirements]]
 id = "REQ-ENV-002"
 title = "Third-body perturbations use Battin's cancellation-free form"
-statement = "The physics layer's ThirdBodyGravity path keeps its existing central-gravity plus ephemeris API but evaluates each third-body perturbing acceleration with Battin's f(q) formulation instead of the naive subtractive difference, remains finite in a documented |r| much less than |r_b| case where the naive expression loses a small component, and still reports singular/non-finite inputs fail-closed without claiming the remaining WP-08.2 SRP, shadow, Schwarzschild, or Orekit force-stack work is complete."
+statement = "The physics layer's ThirdBodyGravity path keeps its existing central-gravity plus ephemeris API but evaluates each third-body perturbing acceleration with Battin's f(q) formulation instead of the naive subtractive difference, remains finite in a documented |r| much less than |r_b| case where the naive expression loses a small component, and still reports singular/non-finite inputs fail-closed without claiming the remaining WP-08.2 Orekit force-stack validation work is complete."
 verification = ["V-ENV-002"]
+
+[[requirements]]
+id = "REQ-ENV-003"
+title = "The physics layer exposes analytic SRP and Schwarzschild perturbations"
+statement = "The HAL-portable physics crate exposes opt-in SolarRadiationPressure and RelativisticCorrection force surfaces: cannonball SRP uses configurable area, mass, reflectivity, 1 AU pressure scaling, Sun ephemeris input, and a conical Earth-shadow factor from apparent solar/Earth disk overlap; the Schwarzschild correction uses typed ECI position and velocity, WGS84 defaults, named speed of light, and the standard beta equals gamma equals one first-post-Newtonian formula, with tests for full sunlight, umbra/penumbra behavior, circular-disk overlap, the near-3e-10 m/s^2 circular-orbit correction scale, and fail-closed invalid geometry while making no claim that the WP-08.2 Orekit code-to-code force-stack fixture is complete."
+verification = ["V-ENV-003"]
 
 [[requirements]]
 id = "REQ-CONTACT-001"
@@ -1568,6 +1574,33 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-ENV-002"]
+
+[[verification]]
+id = "V-ENV-003"
+kind = "test"
+command = "cargo test -p openbmp-physics gravity::tests::srp --locked && cargo test -p openbmp-physics gravity::tests::solar_disk --locked && cargo test -p openbmp-physics gravity::tests::schwarzschild --locked"
+paths = [
+  "crates/openbmp-physics/src/gravity.rs",
+  "crates/openbmp-physics/src/lib.rs",
+  "docs/parity/08-environment-gravity-and-frames.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "SolarRadiationPressure",
+  "RelativisticCorrection",
+  "SOLAR_RADIATION_PRESSURE_1_AU_N_M2",
+  "SPEED_OF_LIGHT_M_S",
+  "conical_shadow_factor",
+  "solar_disk_visible_fraction",
+  "schwarzschild_perturbation",
+  "srp_returns_cannonball_acceleration_in_full_sunlight",
+  "srp_conical_shadow_covers_umbra_penumbra_and_full_sun",
+  "solar_disk_visible_fraction_matches_equal_disk_segment_area",
+  "schwarzschild_correction_matches_circular_orbit_closed_form",
+  "WP-08.2 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-ENV-003"]
 
 [[verification]]
 id = "V-CONTACT-001"

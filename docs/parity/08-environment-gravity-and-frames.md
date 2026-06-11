@@ -90,9 +90,9 @@ above. No artifact in this dimension ever claims `flight-qualified` / `certified
 
 Verified by reading the actual files (paths absolute under the repo root).
 
-### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (1163 lines)
+### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (2307 lines)
 
-- `trait GravityModel { fn gravity_eci_m_s2(&self, position_eci, time) -> Result<Vector3<f64>, PhysicsError> }` — the single environment-side gravity surface; time-parameterized for forward compatibility but no model currently varies with it.
+- `trait GravityModel { fn gravity_eci_m_s2(&self, position_eci, time) -> Result<Vector3<f64>, PhysicsError> }` — the single environment-side acceleration surface used by current gravity/perturbation models; ephemeris-backed paths vary with time.
 - `ConstantGravity`, `PointMassGravity` (`−µ/r² r̂`), `J2Gravity` (point-mass + J₂ in closed Cartesian form, Vallado §8.6).
 - `Egm2008ZonalGravity` — **zonal-only** truncation J₂…J₆, **hard-capped at `EGM2008_MAX_DEGREE = 6`** (fixed-size arrays; `new(...)` rejects `degree ∉ [2,6]`).
 - `TesseralGravity` — first WP-08.1 substrate: a static degree-2/order-2 ECI
@@ -108,7 +108,16 @@ Verified by reading the actual files (paths absolute under the repo root).
   to the naive difference in a well-conditioned case and documents the
   pathological |r| ≪ |r_b| case where the naive difference drops a small
   component to zero.
-- No SRP, no relativity, no tides anywhere in the file.
+- `SolarRadiationPressure<E>` — opt-in cannonball SRP with 1 AU pressure
+  scaling, configurable `C_r·A/m`, and conical Earth shadow from exact apparent
+  solar/Earth disk overlap. Tests cover full sunlight magnitude, umbra,
+  penumbra symmetry, full-sun exit, and the circular-segment overlap formula.
+- `RelativisticCorrection` — opt-in Schwarzschild first-post-Newtonian term
+  with named `c`, `β=γ=1`, and typed `Position3<Eci>`/`Velocity3<Eci>` input.
+  Tests cover the circular-orbit closed-form magnitude near the published
+  ≈3e-10 m/s² scale at GNSS altitude and fail-closed singular/non-finite state.
+- No tides, no SRP macro-model/re-radiation, and no Lense-Thirring/de Sitter
+  terms anywhere in the file.
 
 ### 2.2 Frames — `crates/openbmp-physics/src/frames.rs` (2835 lines)
 
@@ -662,8 +671,11 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   `ThirdBodyGravity` API. Tests prove agreement with the naive expression in a
   well-conditioned Moon-like case and document a |r| ≪ |r_b| case where the
   naive difference loses the small x-component entirely while Battin preserves
-  the finite value. Remaining WP-08.2 work: cannonball SRP with conical shadow,
-  Schwarzschild acceleration, and an Orekit code-to-code force-stack fixture.
+  the finite value. `SolarRadiationPressure<E>` now adds opt-in cannonball SRP
+  with conical umbra/penumbra shadow, and `RelativisticCorrection` adds the
+  Schwarzschild acceleration with named `c`. Remaining WP-08.2 work: an Orekit
+  code-to-code force-stack fixture proving the combined LEO + Sun/Moon + SRP
+  secular position-growth tolerance.
 - **goal:** Fix the cancellation bug in the existing third-body path and add the two cheap, high-value perturbations enabling credible high-altitude/coast runs.
 - **fidelity_tier:** T2
 - **depends_on:** [WP-08.1]

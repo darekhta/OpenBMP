@@ -27,10 +27,10 @@
 use nalgebra::Vector3;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
-use openbmp_core::{Eci, Position3, SimTime};
+use openbmp_core::{Eci, Position3, SimTime, Velocity3};
 
 #[cfg(feature = "std")]
-use crate::ephemeris::{CelestialBody, EphemerisModel};
+use crate::ephemeris::{ASTRONOMICAL_UNIT_M, CelestialBody, EphemerisModel};
 use crate::error::PhysicsError;
 use crate::frames::{WGS84_A_M, WGS84_MU_M3_S2};
 
@@ -41,6 +41,18 @@ pub const WGS84_J2: f64 = 1.082_626_683e-3;
 
 /// ISO / USSA76 standard gravity (m/s²).
 pub const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
+
+/// Speed of light in vacuum, m/s (SI exact).
+pub const SPEED_OF_LIGHT_M_S: f64 = 299_792_458.0;
+
+/// Solar radiation pressure at 1 astronomical unit, in N/m².
+///
+/// This is the standard cannonball-SRP engineering constant used by
+/// Montenbruck-Gill style force models.
+pub const SOLAR_RADIATION_PRESSURE_1_AU_N_M2: f64 = 4.56e-6;
+
+/// IAU 2015 nominal solar radius, in metres.
+pub const IAU_NOMINAL_SOLAR_RADIUS_M: f64 = 695_700_000.0;
 
 /// Constant ECI gravity vector along negative z using standard
 /// gravity.
@@ -371,6 +383,497 @@ fn third_body_perturbation(
         });
     }
     Ok(perturbation)
+}
+
+// ---------------------------------------------------------------------
+// SolarRadiationPressure
+// ---------------------------------------------------------------------
+
+/// Cannonball solar-radiation-pressure perturbation with conical Earth shadow.
+///
+/// The model uses a scalar reflectivity coefficient `C_r`, area-to-mass ratio,
+/// inverse-square solar pressure scaling from 1 AU, and a conical
+/// umbra/penumbra shadow factor from the apparent overlap of the solar and
+/// Earth disks. It returns SRP acceleration only; central gravity remains an
+/// explicit separate model so existing force stacks stay byte-identical until
+/// this model is deliberately composed.
+#[derive(Clone, Debug)]
+#[cfg(feature = "std")]
+pub struct SolarRadiationPressure<E> {
+    ephemeris: E,
+    area_m2: f64,
+    mass_kg: f64,
+    coefficient_reflectivity: f64,
+    solar_pressure_1_au_n_m2: f64,
+    occulting_radius_m: f64,
+    solar_radius_m: f64,
+}
+
+#[cfg(feature = "std")]
+impl<E> SolarRadiationPressure<E> {
+    /// Construct a cannonball SRP model using OpenBMP's default solar and
+    /// Earth constants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if area, mass, or
+    /// reflectivity are not strictly positive and finite.
+    pub fn new(
+        ephemeris: E,
+        area_m2: f64,
+        mass_kg: f64,
+        coefficient_reflectivity: f64,
+    ) -> Result<Self, PhysicsError> {
+        Self::with_constants(
+            ephemeris,
+            area_m2,
+            mass_kg,
+            coefficient_reflectivity,
+            SOLAR_RADIATION_PRESSURE_1_AU_N_M2,
+            WGS84_A_M,
+            IAU_NOMINAL_SOLAR_RADIUS_M,
+        )
+    }
+
+    /// Construct a cannonball SRP model with explicit solar-pressure, occulting
+    /// body, and solar-radius constants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if any scalar parameter is
+    /// not strictly positive and finite.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_constants(
+        ephemeris: E,
+        area_m2: f64,
+        mass_kg: f64,
+        coefficient_reflectivity: f64,
+        solar_pressure_1_au_n_m2: f64,
+        occulting_radius_m: f64,
+        solar_radius_m: f64,
+    ) -> Result<Self, PhysicsError> {
+        if !area_m2.is_finite() || area_m2 <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SRP cannonball area must be strictly positive and finite",
+            });
+        }
+        if !mass_kg.is_finite() || mass_kg <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SRP cannonball mass must be strictly positive and finite",
+            });
+        }
+        if !coefficient_reflectivity.is_finite() || coefficient_reflectivity <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SRP reflectivity coefficient must be strictly positive and finite",
+            });
+        }
+        if !solar_pressure_1_au_n_m2.is_finite() || solar_pressure_1_au_n_m2 <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SRP solar pressure must be strictly positive and finite",
+            });
+        }
+        if !occulting_radius_m.is_finite() || occulting_radius_m <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SRP occulting radius must be strictly positive and finite",
+            });
+        }
+        if !solar_radius_m.is_finite() || solar_radius_m <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "SRP solar radius must be strictly positive and finite",
+            });
+        }
+        Ok(Self {
+            ephemeris,
+            area_m2,
+            mass_kg,
+            coefficient_reflectivity,
+            solar_pressure_1_au_n_m2,
+            occulting_radius_m,
+            solar_radius_m,
+        })
+    }
+
+    /// Wrapped ephemeris model.
+    #[must_use]
+    pub const fn ephemeris(&self) -> &E {
+        &self.ephemeris
+    }
+
+    /// Cannonball cross-sectional area in m².
+    #[must_use]
+    pub const fn area_m2(&self) -> f64 {
+        self.area_m2
+    }
+
+    /// Spacecraft mass in kg.
+    #[must_use]
+    pub const fn mass_kg(&self) -> f64 {
+        self.mass_kg
+    }
+
+    /// Cannonball reflectivity coefficient `C_r`.
+    #[must_use]
+    pub const fn coefficient_reflectivity(&self) -> f64 {
+        self.coefficient_reflectivity
+    }
+
+    /// Cross-sectional area-to-mass ratio in m²/kg.
+    #[must_use]
+    pub fn area_to_mass_m2_kg(&self) -> f64 {
+        self.area_m2 / self.mass_kg
+    }
+
+    /// Solar pressure at 1 AU in N/m².
+    #[must_use]
+    pub const fn solar_pressure_1_au_n_m2(&self) -> f64 {
+        self.solar_pressure_1_au_n_m2
+    }
+
+    /// Radius of the occulting body in metres.
+    #[must_use]
+    pub const fn occulting_radius_m(&self) -> f64 {
+        self.occulting_radius_m
+    }
+
+    /// Solar radius in metres.
+    #[must_use]
+    pub const fn solar_radius_m(&self) -> f64 {
+        self.solar_radius_m
+    }
+
+    /// Evaluate only the conical-shadow sunlight fraction `ν`.
+    ///
+    /// `ν = 1` means full sunlight, `ν = 0` means umbra, and intermediate
+    /// values are penumbra from exact circular-disk overlap on the apparent
+    /// sky.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] if the ephemeris query fails, the spacecraft is
+    /// inside the occulting body, or the geometry is singular/non-finite.
+    pub fn shadow_factor(
+        &self,
+        position_eci: Position3<Eci>,
+        time: SimTime,
+    ) -> Result<f64, PhysicsError>
+    where
+        E: EphemerisModel,
+    {
+        let sun_position = self
+            .ephemeris
+            .body_position_eci_m(CelestialBody::Sun, time)?;
+        conical_shadow_factor(
+            position_eci.vector,
+            sun_position,
+            self.occulting_radius_m,
+            self.solar_radius_m,
+        )
+    }
+
+    /// Solar-radiation-pressure acceleration in ECI, in m/s².
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] if the ephemeris query fails or if the SRP
+    /// geometry is singular/out of envelope.
+    pub fn acceleration_eci_m_s2(
+        &self,
+        position_eci: Position3<Eci>,
+        time: SimTime,
+    ) -> Result<Vector3<f64>, PhysicsError>
+    where
+        E: EphemerisModel,
+    {
+        let sun_position = self
+            .ephemeris
+            .body_position_eci_m(CelestialBody::Sun, time)?;
+        solar_radiation_pressure_perturbation(
+            position_eci.vector,
+            sun_position,
+            self.area_m2,
+            self.mass_kg,
+            self.coefficient_reflectivity,
+            self.solar_pressure_1_au_n_m2,
+            self.occulting_radius_m,
+            self.solar_radius_m,
+        )
+    }
+}
+
+#[cfg(feature = "std")]
+impl<E: EphemerisModel> GravityModel for SolarRadiationPressure<E> {
+    fn gravity_eci_m_s2(
+        &self,
+        position_eci: Position3<Eci>,
+        time: SimTime,
+    ) -> Result<Vector3<f64>, PhysicsError> {
+        self.acceleration_eci_m_s2(position_eci, time)
+    }
+}
+
+#[cfg(feature = "std")]
+#[allow(clippy::too_many_arguments)]
+fn solar_radiation_pressure_perturbation(
+    vehicle_position: Vector3<f64>,
+    sun_position: Vector3<f64>,
+    area_m2: f64,
+    mass_kg: f64,
+    coefficient_reflectivity: f64,
+    solar_pressure_1_au_n_m2: f64,
+    occulting_radius_m: f64,
+    solar_radius_m: f64,
+) -> Result<Vector3<f64>, PhysicsError> {
+    let sun_to_vehicle = vehicle_position - sun_position;
+    let sun_to_vehicle_r2 = sun_to_vehicle.dot(&sun_to_vehicle);
+    if sun_to_vehicle_r2 == 0.0 {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "SRP is singular at the solar centre",
+        });
+    }
+    let sun_to_vehicle_r = sun_to_vehicle_r2.sqrt();
+    let shadow_factor = conical_shadow_factor(
+        vehicle_position,
+        sun_position,
+        occulting_radius_m,
+        solar_radius_m,
+    )?;
+    let pressure_scale =
+        solar_pressure_1_au_n_m2 * (ASTRONOMICAL_UNIT_M * ASTRONOMICAL_UNIT_M) / sun_to_vehicle_r2;
+    let acceleration = shadow_factor
+        * pressure_scale
+        * coefficient_reflectivity
+        * (area_m2 / mass_kg)
+        * (sun_to_vehicle / sun_to_vehicle_r);
+    if !acceleration.iter().all(|v| v.is_finite()) {
+        return Err(PhysicsError::NonFinite {
+            reason: "SRP produced non-finite acceleration",
+        });
+    }
+    Ok(acceleration)
+}
+
+#[cfg(feature = "std")]
+fn conical_shadow_factor(
+    vehicle_position: Vector3<f64>,
+    sun_position: Vector3<f64>,
+    occulting_radius_m: f64,
+    solar_radius_m: f64,
+) -> Result<f64, PhysicsError> {
+    if !vehicle_position.iter().all(|v| v.is_finite())
+        || !sun_position.iter().all(|v| v.is_finite())
+    {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "SRP shadow geometry vectors must be finite",
+        });
+    }
+    let earth_to_vehicle_r2 = vehicle_position.dot(&vehicle_position);
+    if earth_to_vehicle_r2 == 0.0 {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "SRP shadow is singular at the occulting-body centre",
+        });
+    }
+    let sun_from_vehicle = sun_position - vehicle_position;
+    let sun_from_vehicle_r2 = sun_from_vehicle.dot(&sun_from_vehicle);
+    if sun_from_vehicle_r2 == 0.0 {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "SRP shadow is singular at the solar centre",
+        });
+    }
+    let earth_from_vehicle = -vehicle_position;
+    let earth_from_vehicle_r = earth_to_vehicle_r2.sqrt();
+    let sun_from_vehicle_r = sun_from_vehicle_r2.sqrt();
+    if earth_from_vehicle_r <= occulting_radius_m {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "SRP shadow is undefined inside the occulting body",
+        });
+    }
+    if sun_from_vehicle_r <= solar_radius_m {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "SRP shadow is undefined inside the solar body",
+        });
+    }
+    let occulting_angular_radius = (occulting_radius_m / earth_from_vehicle_r).asin();
+    let solar_angular_radius = (solar_radius_m / sun_from_vehicle_r).asin();
+    let cos_separation = clamp_unit(
+        sun_from_vehicle.dot(&earth_from_vehicle) / (sun_from_vehicle_r * earth_from_vehicle_r),
+    );
+    let separation = cos_separation.acos();
+    let shadow_factor =
+        solar_disk_visible_fraction(solar_angular_radius, occulting_angular_radius, separation);
+    if !shadow_factor.is_finite() {
+        return Err(PhysicsError::NonFinite {
+            reason: "SRP shadow factor produced non-finite output",
+        });
+    }
+    Ok(shadow_factor)
+}
+
+#[cfg(feature = "std")]
+fn solar_disk_visible_fraction(
+    solar_angular_radius: f64,
+    occulting_angular_radius: f64,
+    center_separation_angle: f64,
+) -> f64 {
+    let sun_r = solar_angular_radius;
+    let occ_r = occulting_angular_radius;
+    let separation = center_separation_angle;
+    if separation >= sun_r + occ_r {
+        return 1.0;
+    }
+    if separation <= (occ_r - sun_r).abs() {
+        if occ_r >= sun_r {
+            return 0.0;
+        }
+        return clamp_unit_interval(1.0 - (occ_r * occ_r) / (sun_r * sun_r));
+    }
+
+    let sun_r2 = sun_r * sun_r;
+    let occ_r2 = occ_r * occ_r;
+    let separation2 = separation * separation;
+    let sun_segment =
+        sun_r2 * clamp_unit((separation2 + sun_r2 - occ_r2) / (2.0 * separation * sun_r)).acos();
+    let occ_segment =
+        occ_r2 * clamp_unit((separation2 + occ_r2 - sun_r2) / (2.0 * separation * occ_r)).acos();
+    let triangle = 0.5
+        * ((-separation + sun_r + occ_r)
+            * (separation + sun_r - occ_r)
+            * (separation - sun_r + occ_r)
+            * (separation + sun_r + occ_r))
+            .max(0.0)
+            .sqrt();
+    let overlap_area = sun_segment + occ_segment - triangle;
+    clamp_unit_interval(1.0 - overlap_area / (core::f64::consts::PI * sun_r2))
+}
+
+#[cfg(feature = "std")]
+fn clamp_unit(value: f64) -> f64 {
+    value.clamp(-1.0, 1.0)
+}
+
+#[cfg(feature = "std")]
+fn clamp_unit_interval(value: f64) -> f64 {
+    value.clamp(0.0, 1.0)
+}
+
+// ---------------------------------------------------------------------
+// RelativisticCorrection
+// ---------------------------------------------------------------------
+
+/// First post-Newtonian Schwarzschild correction for a central body.
+///
+/// The correction uses `β = γ = 1` and the named speed of light `c`:
+///
+/// ```text
+/// a_rel = μ/(c²r³) · [ (4μ/r − v²) r + 4(r·v)v ]
+/// ```
+///
+/// It intentionally excludes Lense-Thirring and de Sitter terms; those remain
+/// outside the WP-08.2 parity ceiling.
+#[derive(Copy, Clone, Debug)]
+pub struct RelativisticCorrection {
+    mu_m3_s2: f64,
+    speed_of_light_m_s: f64,
+}
+
+impl RelativisticCorrection {
+    /// Construct a Schwarzschild correction with explicit central-body `µ` and
+    /// speed of light.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if either scalar is not
+    /// strictly positive and finite.
+    pub fn new(mu_m3_s2: f64, speed_of_light_m_s: f64) -> Result<Self, PhysicsError> {
+        if !mu_m3_s2.is_finite() || mu_m3_s2 <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "relativistic correction µ must be strictly positive and finite",
+            });
+        }
+        if !speed_of_light_m_s.is_finite() || speed_of_light_m_s <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "relativistic correction c must be strictly positive and finite",
+            });
+        }
+        Ok(Self {
+            mu_m3_s2,
+            speed_of_light_m_s,
+        })
+    }
+
+    /// WGS84 Earth Schwarzschild correction using the exact SI speed of light.
+    #[must_use]
+    pub const fn wgs84_schwarzschild() -> Self {
+        Self {
+            mu_m3_s2: WGS84_MU_M3_S2,
+            speed_of_light_m_s: SPEED_OF_LIGHT_M_S,
+        }
+    }
+
+    /// Configured gravitational parameter in m³/s².
+    #[must_use]
+    pub const fn mu_m3_s2(&self) -> f64 {
+        self.mu_m3_s2
+    }
+
+    /// Configured speed of light in m/s.
+    #[must_use]
+    pub const fn speed_of_light_m_s(&self) -> f64 {
+        self.speed_of_light_m_s
+    }
+
+    /// Schwarzschild correction acceleration in ECI, in m/s².
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] if the position is singular, the velocity is
+    /// non-finite, or the resulting correction is non-finite.
+    pub fn acceleration_eci_m_s2(
+        &self,
+        position_eci: Position3<Eci>,
+        velocity_eci_m_s: Velocity3<Eci>,
+    ) -> Result<Vector3<f64>, PhysicsError> {
+        schwarzschild_perturbation(
+            position_eci.vector,
+            velocity_eci_m_s.vector,
+            self.mu_m3_s2,
+            self.speed_of_light_m_s,
+        )
+    }
+}
+
+fn schwarzschild_perturbation(
+    position_eci_m: Vector3<f64>,
+    velocity_eci_m_s: Vector3<f64>,
+    mu_m3_s2: f64,
+    speed_of_light_m_s: f64,
+) -> Result<Vector3<f64>, PhysicsError> {
+    let r2 = position_eci_m.dot(&position_eci_m);
+    if r2 == 0.0 {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "Schwarzschild correction is singular at r = 0",
+        });
+    }
+    if !position_eci_m.iter().all(|v| v.is_finite())
+        || !velocity_eci_m_s.iter().all(|v| v.is_finite())
+    {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "Schwarzschild state vectors must be finite",
+        });
+    }
+    let r = r2.sqrt();
+    let v2 = velocity_eci_m_s.dot(&velocity_eci_m_s);
+    let radial_rate_term = position_eci_m.dot(&velocity_eci_m_s);
+    let c2 = speed_of_light_m_s * speed_of_light_m_s;
+    let coefficient = mu_m3_s2 / (c2 * r2 * r);
+    let acceleration = coefficient
+        * (((4.0 * mu_m3_s2 / r) - v2) * position_eci_m
+            + 4.0 * radial_rate_term * velocity_eci_m_s);
+    if !acceleration.iter().all(|v| v.is_finite()) {
+        return Err(PhysicsError::NonFinite {
+            reason: "Schwarzschild correction produced non-finite acceleration",
+        });
+    }
+    Ok(acceleration)
 }
 
 // ---------------------------------------------------------------------
@@ -1213,6 +1716,147 @@ mod tests {
         assert!(battin.x < 0.0);
         assert_abs_diff_eq!(battin.x, -1.5e-64, epsilon = 1.0e-76);
         assert_abs_diff_eq!(battin.y, naive.y, epsilon = 1.0e-62);
+    }
+
+    #[test]
+    fn srp_returns_cannonball_acceleration_in_full_sunlight() {
+        let sun_position = Vector3::new(ASTRONOMICAL_UNIT_M, 0.0, 0.0);
+        let srp = SolarRadiationPressure::new(
+            FixedEphemeris {
+                position: sun_position,
+            },
+            20.0,
+            1_000.0,
+            1.2,
+        )
+        .unwrap();
+        let vehicle_position = Position3::new(0.0, 7_000_000.0, 0.0);
+
+        let shadow = srp.shadow_factor(vehicle_position, SimTime::ZERO).unwrap();
+        let acceleration = srp
+            .acceleration_eci_m_s2(vehicle_position, SimTime::ZERO)
+            .unwrap();
+
+        let sun_to_vehicle = vehicle_position.vector - sun_position;
+        let expected_magnitude = SOLAR_RADIATION_PRESSURE_1_AU_N_M2
+            * (ASTRONOMICAL_UNIT_M * ASTRONOMICAL_UNIT_M)
+            / sun_to_vehicle.dot(&sun_to_vehicle)
+            * 1.2
+            * (20.0 / 1_000.0);
+
+        assert_abs_diff_eq!(shadow, 1.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(acceleration.norm(), expected_magnitude, epsilon = 1.0e-15);
+        assert!(acceleration.x < 0.0);
+        assert!(acceleration.y > 0.0);
+    }
+
+    #[test]
+    fn srp_conical_shadow_covers_umbra_penumbra_and_full_sun() {
+        let sun_position = Vector3::new(ASTRONOMICAL_UNIT_M, 0.0, 0.0);
+        let srp = SolarRadiationPressure::new(
+            FixedEphemeris {
+                position: sun_position,
+            },
+            12.0,
+            600.0,
+            1.3,
+        )
+        .unwrap();
+        let umbra = srp
+            .shadow_factor(Position3::new(-42_000_000.0, 0.0, 0.0), SimTime::ZERO)
+            .unwrap();
+        let penumbra_plus = srp
+            .shadow_factor(
+                Position3::new(-42_000_000.0, 6_450_000.0, 0.0),
+                SimTime::ZERO,
+            )
+            .unwrap();
+        let penumbra_minus = srp
+            .shadow_factor(
+                Position3::new(-42_000_000.0, -6_450_000.0, 0.0),
+                SimTime::ZERO,
+            )
+            .unwrap();
+        let full_sun = srp
+            .shadow_factor(
+                Position3::new(-42_000_000.0, 7_000_000.0, 0.0),
+                SimTime::ZERO,
+            )
+            .unwrap();
+
+        assert_abs_diff_eq!(umbra, 0.0, epsilon = 1.0e-15);
+        assert!(penumbra_plus > 0.0 && penumbra_plus < 1.0);
+        assert_abs_diff_eq!(penumbra_plus, penumbra_minus, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(full_sun, 1.0, epsilon = 1.0e-15);
+    }
+
+    #[test]
+    fn solar_disk_visible_fraction_matches_equal_disk_segment_area() {
+        let visible = solar_disk_visible_fraction(1.0, 1.0, 1.0);
+        let overlap = 2.0 * (core::f64::consts::PI / 3.0) - (3.0_f64.sqrt() * 0.5);
+        let expected = 1.0 - overlap / core::f64::consts::PI;
+
+        assert_abs_diff_eq!(visible, expected, epsilon = 1.0e-15);
+    }
+
+    #[test]
+    fn srp_rejects_spacecraft_inside_occulting_body() {
+        let sun_position = Vector3::new(ASTRONOMICAL_UNIT_M, 0.0, 0.0);
+        let srp = SolarRadiationPressure::new(
+            FixedEphemeris {
+                position: sun_position,
+            },
+            10.0,
+            500.0,
+            1.0,
+        )
+        .unwrap();
+
+        let err = srp
+            .acceleration_eci_m_s2(Position3::new(WGS84_A_M - 1.0, 0.0, 0.0), SimTime::ZERO)
+            .unwrap_err();
+
+        assert!(matches!(err, PhysicsError::OutOfEnvelope { .. }));
+    }
+
+    #[test]
+    fn schwarzschild_correction_matches_circular_orbit_closed_form() {
+        let r = 26_560_000.0;
+        let circular_speed = (WGS84_MU_M3_S2 / r).sqrt();
+        let correction = RelativisticCorrection::wgs84_schwarzschild();
+
+        let acceleration = correction
+            .acceleration_eci_m_s2(
+                Position3::new(r, 0.0, 0.0),
+                Velocity3::new(0.0, circular_speed, 0.0),
+            )
+            .unwrap();
+        let expected_magnitude =
+            3.0 * WGS84_MU_M3_S2 * WGS84_MU_M3_S2 / (SPEED_OF_LIGHT_M_S.powi(2) * r.powi(3));
+
+        assert!(acceleration.x > 0.0);
+        assert_abs_diff_eq!(acceleration.y, 0.0, epsilon = 1.0e-20);
+        assert_abs_diff_eq!(acceleration.z, 0.0, epsilon = 1.0e-20);
+        assert_abs_diff_eq!(acceleration.norm(), expected_magnitude, epsilon = 1.0e-22);
+        assert!(acceleration.norm() > 2.7e-10 && acceleration.norm() < 2.9e-10);
+    }
+
+    #[test]
+    fn schwarzschild_correction_rejects_singular_or_nonfinite_state() {
+        let correction = RelativisticCorrection::wgs84_schwarzschild();
+
+        let singular = correction
+            .acceleration_eci_m_s2(Position3::origin(), Velocity3::zero())
+            .unwrap_err();
+        let nonfinite = correction
+            .acceleration_eci_m_s2(
+                Position3::new(7_000_000.0, 0.0, 0.0),
+                Velocity3::new(0.0, f64::NAN, 0.0),
+            )
+            .unwrap_err();
+
+        assert!(matches!(singular, PhysicsError::OutOfEnvelope { .. }));
+        assert!(matches!(nonfinite, PhysicsError::InvalidParameter { .. }));
     }
 
     #[test]
