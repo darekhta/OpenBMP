@@ -85,6 +85,12 @@ statement = "A scenario can declare FDIR redline watchpoints; the runner maps th
 verification = ["V-FDIR-003"]
 
 [[requirements]]
+id = "REQ-FDIR-004"
+title = "Covariance-trace estimator voting uses exposed covariance diagnostics"
+statement = "The multi-lane estimator best_by_covariance_trace voter selects the healthy lane with the smallest positive finite exposed position, velocity, and attitude covariance diagonal trace, treats non-finite or negative covariance diagnostics as unusable, falls back to the deterministic innovation chi-square proxy only when no covariance diagonal block is exposed, and keeps deterministic lowest-index tie breaking."
+verification = ["V-FDIR-004"]
+
+[[requirements]]
 id = "REQ-HAL-001"
 title = "Shared and flight-math contracts compile without std"
 statement = "The shared core, state, model, mission, HAL, bare sensor-trait, no_std flight-math physics, propulsion core, aerodynamics core, and alloc-aware flight controller crates compile for the embedded thumb target with default features disabled."
@@ -717,6 +723,25 @@ contains = [
   "body_rate_rad_s",
 ]
 requirements = ["REQ-FDIR-003"]
+
+[[verification]]
+id = "V-FDIR-004"
+kind = "test"
+command = "cargo test -p openbmp-fc best_by_covariance_trace --locked"
+paths = [
+  "crates/openbmp-fc/src/estimator_lanes.rs",
+  "docs/scenario-format.md",
+]
+contains = [
+  "covariance_trace_proxy",
+  "position_variance_eci_m2",
+  "velocity_variance_eci_m2_s2",
+  "attitude_variance_rad2",
+  "best_by_covariance_trace_picks_minimum_exposed_trace",
+  "best_by_covariance_trace_falls_back_to_innovation_proxy_without_covariance",
+  "best_by_covariance_trace_ties_choose_lowest_index",
+]
+requirements = ["REQ-FDIR-004"]
 
 [[verification]]
 id = "V-HAL-001"

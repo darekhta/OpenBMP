@@ -2951,10 +2951,13 @@ estimator = "mekf"
 ```
 
 `voter` is one of `simplex_pass_through`, `mid_value_select_by_innovation`,
-or `best_by_covariance_trace`. Lane ids must be unique. The
-consumer wires parallel filter instances to the controller's pub/sub
-bus and selects the active lane each tick. Multi-lane estimators publish
-`estimator.lane_selection`; FDIR latches
+or `best_by_covariance_trace`. The covariance-trace voter selects the healthy
+lane with the smallest exposed position/velocity/attitude covariance diagonal
+trace; if a lane exposes no covariance diagonal block, it falls back to the
+innovation chi-square proxy. Lane ids must be unique. The consumer wires
+parallel filter instances to the controller's pub/sub bus and selects the
+active lane each tick. Multi-lane estimators publish `estimator.lane_selection`;
+FDIR latches
 `FDIR_BIT_ESTIMATOR_LANE_FAILOVER` when the active lane moves away from
 lane 0 or when all lanes fail.
 
