@@ -2856,6 +2856,12 @@ pub struct LandingGearLegConfig {
     /// Required when `footpad = "sphere"`.
     #[serde(default)]
     pub footpad_radius_m: Option<f64>,
+    /// Regularized Coulomb coefficient for footpad tangential contact.
+    #[serde(default)]
+    pub footpad_friction_coefficient: f64,
+    /// Tanh smoothing speed for footpad tangential contact, m/s.
+    #[serde(default = "default_landing_gear_footpad_friction_regularization_speed_m_s")]
+    pub footpad_friction_regularization_speed_m_s: f64,
     /// Optional polytropic oleo stage.
     #[serde(default)]
     pub oleo: Option<LandingGearOleoConfig>,
@@ -2911,6 +2917,14 @@ impl LandingGearLegConfig {
                 require_non_negative(&path("footpad_radius_m"), radius)?;
             }
         }
+        require_non_negative(
+            &path("footpad_friction_coefficient"),
+            self.footpad_friction_coefficient,
+        )?;
+        require_positive(
+            &path("footpad_friction_regularization_speed_m_s"),
+            self.footpad_friction_regularization_speed_m_s,
+        )?;
         if self.oleo.is_none() && self.crush.is_none() {
             return Err(ScenarioError::MissingRequiredField {
                 field: path("oleo or crush"),
@@ -2926,6 +2940,10 @@ impl LandingGearLegConfig {
         }
         Ok(())
     }
+}
+
+fn default_landing_gear_footpad_friction_regularization_speed_m_s() -> f64 {
+    1.0e-3
 }
 
 /// Polytropic oleo stage config.

@@ -22,7 +22,7 @@ same PR as any WP merge.
 ## 1. Roll-up
 
 Across the series: **207 work packages** (108 in `01`–`12`, 99 in `14`–`25`).
-As of this snapshot: **19 implemented · 18 partial · 0 in progress ·
+As of this snapshot: **20 implemented · 17 partial · 0 in progress ·
 170 not started.**
 
 | Doc | Dimension | Position on its tier ladder | WPs impl/partial/total | Next unblocked WP |
@@ -39,7 +39,7 @@ As of this snapshot: **19 implemented · 18 partial · 0 in progress ·
 | 10 | Flight SW in the loop (XIL) | **T1–T3 implemented**; T4 partial | 3/2/8 | finish WP-10.4, or WP-10.6 in parallel |
 | 11 | Monte Carlo, UQ, validation | **T0–T1 implemented**; T2–T4 partial | 3/5/9 | WP-11.7 |
 | 12 | Determinism, real-time, compute | **substantially implemented**; Linux aarch64 bit-stable CI lane present; GPU offload boundary pending | 9/0/10 | WP-12.4-b |
-| 14 | Contact, touchdown, landing | WP-14.1 crate + runner force/diagnostic path present; WP-14.2 crate primitives landed; WP-14.3 implemented; WP-14.4 runner/schema/drop/report/line-load path partial | 1/3/10 | finish WP-14.4 per-pad ContactPair coupling |
+| 14 | Contact, touchdown, landing | WP-14.1 crate + runner force/diagnostic path present; WP-14.2 crate primitives landed; WP-14.3 implemented; WP-14.4 massless oleo/crush gear with per-pad ContactPair footpads implemented | 2/2/10 | WP-14.5 after WP-09.7, or WP-14.7 after terrain substrate |
 | 15 | Plume & SRP | not started (05 nozzle state now available) | 0/0/12 | WP-15.1 |
 | 16 | Parachute & recovery | T0 baseline (`recovery/` rack) | 0/0/11 | WP-16.1 |
 | 17 | Cryogenic fluid management | not started | 0/0/8 | WP-17.1 |
@@ -215,7 +215,7 @@ anchors (`REQ-CONTACT-004`). Schema-v3 `[contact]` can now select
 through time-gated anchor state; contact diagnostics now carry tangential
 speed/sticking state and runner rest classification uses a kinetic-energy floor
 plus consecutive sticking hold (`REQ-CONTACT-005`).
-WP-14.4: **partial** — `openbmp-vehicle` now exposes validated
+WP-14.4: **implemented** — `openbmp-vehicle` now exposes validated
 `LandingGearLeg`, `OleoStage`, and `CrushCore` primitives with oleo
 polytropic-force/energy tests and irreversible crush-core plateau-stroke plus
 monotonicity tests (`REQ-CONTACT-006`). Schema-v3 rigid-body scenarios can
@@ -227,8 +227,11 @@ SHA, and verifies the checked-in 3-D four-leg drop fixture
 drop as `Rest` under a consecutive quiet-speed hold and carries a deterministic
 energy audit that closes to <1% on the fixture; the runner can recover body-x
 section loads from final per-leg samples and the fixture cross-checks mid-body
-shear/bending against independently read final front-leg telemetry. Remaining:
-full per-pad `ContactPair` coupling.
+shear/bending against independently read final front-leg telemetry. Each
+runtime leg now owns a per-pad `ContactPair` in external-normal mode, so the
+contact substrate owns pad geometry, gap/rate evaluation, opt-in regularized
+friction, tangential-speed evidence, and friction-force contribution while the
+oleo/crush strut supplies the normal load.
 WP-14.5 … WP-14.10: **not started**.
 
 ### 15 — Plume environments & SRP

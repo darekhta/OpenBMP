@@ -607,6 +607,8 @@ strut_axis_body = [0.0, 0.0, -1.0]
 free_length_m = 1.0
 footpad = "sphere" # "point" | "sphere"
 footpad_radius_m = 0.12
+footpad_friction_coefficient = 0.0
+footpad_friction_regularization_speed_m_s = 0.001
 oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 800000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
 crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
 ```
@@ -614,8 +616,12 @@ crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
 Each leg id must be unique, `mounted_to` must name a declared
 `[[vehicle.assembly.bodies]]` id, `strut_axis_body` must be nonzero, and
 `free_length_m` must be positive. Sphere footpads require
-`footpad_radius_m`; point footpads reject it. At least one of `oleo` or
-`crush` is required per leg. Oleo pressure, volume, exponent (`gamma_unit`),
+`footpad_radius_m`; point footpads reject it. Footpad friction defaults to
+zero and, when supplied, uses the same tanh-regularized Coulomb convention as
+`[contact]`: the coefficient must be non-negative and
+`footpad_friction_regularization_speed_m_s` must be positive. At least one of
+`oleo` or `crush` is required per leg. Oleo pressure, volume, exponent
+(`gamma_unit`),
 stroke, and piston area must be positive; damping may be zero; and
 `piston_area_m2 * stroke_max_m` must stay below `v0_m3`. Crush force,
 stroke, and elastic stiffness must be positive.
@@ -627,7 +633,8 @@ relative to the scenario file and recorded in telemetry metadata under
 `openbmp.scenario_files.vehicle.landing_gear.data_file`. The runner also
 emits `RunOutcome.landing_gear` outside canonical telemetry bytes with
 NoContact/Rest/Unsettled classification, final per-leg samples, load/stroke
-maxima, and a deterministic gear energy audit. The helper
+maxima, per-pad tangential speed/friction evidence, and a deterministic gear
+energy audit. The helper
 `openbmp_runner::landing_gear::recover_section_loads_body_x` recovers
 structural body-x section loads from those final per-leg samples for line-load
 consumers.
