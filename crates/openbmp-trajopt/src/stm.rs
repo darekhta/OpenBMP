@@ -289,6 +289,7 @@ fn norm3(value: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_complex::Complex64;
     use openbmp_physics::WGS84_MU_M3_S2;
 
     #[test]
@@ -339,5 +340,106 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn stm_matches_complex_step_columns() -> Result<(), TrajoptError> {
+        let state = TwoBodyCartesianState::new([6_778_000.0, 0.0, 0.0], [0.0, 7_668.635_675, 0.0])?;
+        let duration_s = 120.0;
+        let step_s = 10.0;
+        let propagated = propagate_two_body_variational(state, duration_s, step_s, WGS84_MU_M3_S2)?;
+        let base = state.to_array();
+        let imaginary_step = 1.0e-30;
+
+        for column in 0..6 {
+            let mut complex_state = [Complex64::new(0.0, 0.0); 6];
+            for i in 0..6 {
+                complex_state[i] = Complex64::new(base[i], 0.0);
+            }
+            complex_state[column].im = imaginary_step;
+            let terminal =
+                propagate_two_body_complex(complex_state, duration_s, step_s, WGS84_MU_M3_S2)?;
+
+            for (row, terminal_component) in terminal.iter().enumerate() {
+                let complex_step = terminal_component.im / imaginary_step;
+                let stm_value = propagated.stm.get(row, column);
+                assert!(
+                    (complex_step - stm_value).abs() < 1.0e-8,
+                    "row={row} column={column} complex_step={complex_step} stm={stm_value}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn propagate_two_body_complex(
+        mut state: [Complex64; 6],
+        duration_s: f64,
+        step_s: f64,
+        mu_m3_s2: f64,
+    ) -> Result<[Complex64; 6], TrajoptError> {
+        let mut elapsed_s = 0.0_f64;
+        while elapsed_s < duration_s {
+            let dt_s = (duration_s - elapsed_s).min(step_s);
+            state = rk4_complex_step(state, dt_s, mu_m3_s2)?;
+            elapsed_s += dt_s;
+        }
+        Ok(state)
+    }
+
+    fn rk4_complex_step(
+        state: [Complex64; 6],
+        dt_s: f64,
+        mu_m3_s2: f64,
+    ) -> Result<[Complex64; 6], TrajoptError> {
+        let k1 = complex_state_derivative(state, mu_m3_s2)?;
+        let k2 = complex_state_derivative(offset_complex_state(state, k1, 0.5 * dt_s), mu_m3_s2)?;
+        let k3 = complex_state_derivative(offset_complex_state(state, k2, 0.5 * dt_s), mu_m3_s2)?;
+        let k4 = complex_state_derivative(offset_complex_state(state, k3, dt_s), mu_m3_s2)?;
+        let mut next = state;
+        let one_sixth_dt = dt_s / 6.0;
+        for i in 0..6 {
+            next[i] += (k1[i] + k2[i] * 2.0 + k3[i] * 2.0 + k4[i]) * one_sixth_dt;
+            if !next[i].re.is_finite() || !next[i].im.is_finite() {
+                return Err(TrajoptError::InvalidPayload {
+                    reason: "complex-step propagation produced non-finite state",
+                });
+            }
+        }
+        Ok(next)
+    }
+
+    fn offset_complex_state(
+        state: [Complex64; 6],
+        derivative: [Complex64; 6],
+        dt_s: f64,
+    ) -> [Complex64; 6] {
+        let mut offset = state;
+        for i in 0..6 {
+            offset[i] += derivative[i] * dt_s;
+        }
+        offset
+    }
+
+    fn complex_state_derivative(
+        state: [Complex64; 6],
+        mu_m3_s2: f64,
+    ) -> Result<[Complex64; 6], TrajoptError> {
+        let radius_squared = state[0] * state[0] + state[1] * state[1] + state[2] * state[2];
+        let radius = radius_squared.sqrt();
+        if radius.norm() <= f64::EPSILON {
+            return Err(TrajoptError::InvalidPayload {
+                reason: "complex-step state radius is degenerate",
+            });
+        }
+        let inv_r3 = Complex64::new(1.0, 0.0) / (radius_squared * radius);
+        Ok([
+            state[3],
+            state[4],
+            state[5],
+            -mu_m3_s2 * state[0] * inv_r3,
+            -mu_m3_s2 * state[1] * inv_r3,
+            -mu_m3_s2 * state[2] * inv_r3,
+        ])
     }
 }

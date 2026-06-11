@@ -1918,6 +1918,7 @@ dependencies = [
 name = "openbmp-trajopt"
 version = "0.0.1"
 dependencies = [
+ "num-complex",
  "openbmp-core",
  "openbmp-physics",
  "postcard",

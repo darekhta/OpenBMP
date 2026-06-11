@@ -145,8 +145,8 @@ against):
   or powered-descent optimization.
 - `src/stm.rs` — the first T1 substrate: a deterministic two-body Cartesian
   variational propagator that integrates state plus 6x6 STM with fixed-step RK4
-  and validates the STM against central-difference columns. It is a sensitivity
-  path only; it adds no target vocabulary.
+  and validates the STM against central-difference and complex-step columns. It
+  is a sensitivity path only; it adds no target vocabulary.
 - `src/shooting.rs` — a fixed-duration M-segment multiple-shooting continuity
   evaluator. It seeds dynamically consistent two-body nodes, reports stacked
   defects `phi_i(x_i) - x_{i+1}`, and builds the row-major block-bidiagonal
@@ -739,7 +739,8 @@ gates green and answers the §3 per-PR checklist.
 
 - **title:** Generalize the corrector from M=1 to M-segment multiple shooting.
 - **implementation_status:** partial. `src/stm.rs` integrates deterministic
-  two-body variational equations with a state-transition matrix, and
+  two-body variational equations with a state-transition matrix and verifies
+  the STM against complex-step sensitivities, and
   `src/shooting.rs` evaluates fixed-duration M-segment continuity defects plus
   a block-bidiagonal `[STM_i, -I]` Jacobian. `MultipleShootingCorrector` now
   performs damped fixed-endpoint interior-node correction and reports honest
@@ -748,7 +749,7 @@ gates green and answers the §3 per-PR checklist.
   residuals. A trybuild UI test proves the public multiple-shooting node surface
   cannot carry target latitude/longitude fields. Remaining acceptance work: the
   control/free-time part of the full free vector, T0 cross-tier regression
-  tolerance table, STM-vs-complex-step gate, and box/path penalty handling.
+  tolerance table, and box/path penalty handling.
 - **goal:** Robust ascent-to-orbit reference generation that reuses the existing
   physics propagator, replacing the single-shooting limitation with block-
   bidiagonal continuity defects and an STM-based Jacobian.

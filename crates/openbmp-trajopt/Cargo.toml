@@ -23,5 +23,8 @@ postcard        = { workspace = true }
 serde           = { workspace = true }
 thiserror       = { workspace = true }
 
+[dev-dependencies]
+num-complex = { workspace = true, features = ["std"] }
+
 [lints]
 workspace = true
