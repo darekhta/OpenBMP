@@ -229,6 +229,12 @@ statement = "The contact dynamics substrate exposes one-sided scalar stop, two-s
 verification = ["V-CONTACT-003"]
 
 [[requirements]]
+id = "REQ-CONTACT-004"
+title = "Contact substrate exposes anchored stiction and rest anchors"
+statement = "The contact dynamics substrate exposes anchored stick-slip friction with a static friction cone, kinetic sliding force, Karnopp restick velocity window, deterministic anchor-state updates, non-negative dissipation reporting, incline stiction and sliding closed-form helpers, a consecutive-hold rest detector, and Housner rocking-block closed-form threshold and period anchors without depending on runner, simulator, or flight-controller crates."
+verification = ["V-CONTACT-004"]
+
+[[requirements]]
 id = "REQ-MC-001"
 title = "Seeded Monte-Carlo evidence has a visible CI lane"
 statement = "The repository exposes a scheduled or manually runnable CI lane for the seeded footprint and ascent Monte-Carlo checks, so dispersion acceptance evidence is reproducible outside ad hoc local runs."
@@ -1419,6 +1425,36 @@ contains = [
   "latch_monotone_property_engages_once_and_never_releases",
 ]
 requirements = ["REQ-CONTACT-003"]
+
+[[verification]]
+id = "V-CONTACT-004"
+kind = "test"
+command = "cargo test -p openbmp-contact stiction_ --locked && cargo test -p openbmp-contact rest_detector_ --locked && cargo test -p openbmp-contact rocking_ --locked"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-contact/Cargo.toml",
+  "crates/openbmp-contact/src/lib.rs",
+  "crates/openbmp-contact/src/stiction.rs",
+  "docs/parity/14-contact-dynamics-touchdown-and-landing.md",
+]
+contains = [
+  "AnchoredStictionFriction",
+  "AnchoredStictionState",
+  "AnchoredStictionResponse",
+  "StictionMode",
+  "incline_required_static_coefficient",
+  "incline_sliding_acceleration_m_s2",
+  "RestDetector",
+  "RestDetectorConfig",
+  "RestDetectorState",
+  "HousnerRockingBlock",
+  "stiction_incline_threshold_is_exact",
+  "stiction_anchor_does_not_drift_at_rest_over_10000_steps",
+  "stiction_breaks_to_kinetic_when_static_cone_is_exceeded",
+  "rest_detector_requires_energy_floor_sticking_and_hold_count",
+  "rocking_block_static_tip_threshold_and_period_match_housner_forms",
+]
+requirements = ["REQ-CONTACT-004"]
 
 [[verification]]
 id = "V-MC-001"

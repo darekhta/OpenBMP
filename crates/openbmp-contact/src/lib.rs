@@ -3,10 +3,10 @@
 //! `openbmp-contact` is the L2 contact-mechanics substrate. It owns
 //! fail-closed, allocation-free primitives for half-space gap evaluation,
 //! compliant normal forces, regularized Coulomb friction, explicit
-//! sub-step stability checks, scalar stops/backlash/latches, and
-//! contact-energy accounting. It does not depend on `openbmp-sim`,
-//! `openbmp-runner`, or `openbmp-fc`; higher layers opt in by adapting these
-//! primitives into force accumulators.
+//! sub-step stability checks, scalar stops/backlash/latches, anchored
+//! stiction/rest helpers, and contact-energy accounting. It does not depend
+//! on `openbmp-sim`, `openbmp-runner`, or `openbmp-fc`; higher layers opt in
+//! by adapting these primitives into force accumulators.
 //!
 //! The initial tier intentionally covers point/sphere contact against a
 //! plane plus scalar mechanism constraints. Runner scenario wiring, gear-leg
@@ -19,11 +19,17 @@
 pub mod backlash;
 pub mod error;
 pub mod latch;
+pub mod stiction;
 pub mod stop;
 
 pub use backlash::{BacklashFlank, BacklashGap, BacklashResponse};
 pub use error::ContactError;
 pub use latch::{LatchState, LatchTransition, LatchWindow, MonotoneLatch};
+pub use stiction::{
+    AnchoredStictionFriction, AnchoredStictionResponse, AnchoredStictionState, HousnerRockingBlock,
+    RestDetector, RestDetectorConfig, RestDetectorState, RestStatus, StictionMode,
+    incline_required_static_coefficient, incline_sliding_acceleration_m_s2, incline_stiction_holds,
+};
 pub use stop::{ScalarStop, ScalarStopResponse, StopSide};
 
 use error::{require_finite, require_non_negative, require_positive};
@@ -704,7 +710,7 @@ fn no_normal_response() -> NormalResponse {
     }
 }
 
-fn finite_vector(
+pub(crate) fn finite_vector(
     field: &'static str,
     vector: ContactVector3,
 ) -> Result<ContactVector3, ContactError> {
@@ -734,23 +740,23 @@ fn unit_vector(
     }
 }
 
-fn dot(a: ContactVector3, b: ContactVector3) -> f64 {
+pub(crate) fn dot(a: ContactVector3, b: ContactVector3) -> f64 {
     (a[0] * b[0]) + (a[1] * b[1]) + (a[2] * b[2])
 }
 
-fn norm(a: ContactVector3) -> f64 {
+pub(crate) fn norm(a: ContactVector3) -> f64 {
     dot(a, a).sqrt()
 }
 
-fn scale(a: ContactVector3, scalar: f64) -> ContactVector3 {
+pub(crate) fn scale(a: ContactVector3, scalar: f64) -> ContactVector3 {
     [a[0] * scalar, a[1] * scalar, a[2] * scalar]
 }
 
-fn add(a: ContactVector3, b: ContactVector3) -> ContactVector3 {
+pub(crate) fn add(a: ContactVector3, b: ContactVector3) -> ContactVector3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-fn sub(a: ContactVector3, b: ContactVector3) -> ContactVector3 {
+pub(crate) fn sub(a: ContactVector3, b: ContactVector3) -> ContactVector3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
