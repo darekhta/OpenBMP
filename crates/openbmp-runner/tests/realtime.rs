@@ -4,51 +4,7 @@
 
 use openbmp_scenario::Scenario;
 
-const BASE_SCENARIO: &str = r#"
-openbmp.scenario = 3
-
-[meta]
-name = "realtime-runner-regression"
-description = "Tiny point-mass run for realtime pacing checks."
-validation = "validated-toy"
-
-[time]
-start_s = 0.0
-stop_s = 0.003
-dt_s = 0.001
-seed = 41
-
-[vehicle]
-kind = "point_mass"
-initial_position_eci_m = [0.0, 0.0, 10.0]
-initial_velocity_eci_m_s = [1.0, 0.0, 0.0]
-
-[vehicle.assembly]
-id = "realtime-runner-regression"
-
-[[vehicle.assembly.bodies]]
-id = "body"
-geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
-dry_mass_kg = 1.0
-dry_cg_body_m = [0.0, 0.0, 0.0]
-
-[environment]
-frame_profile = "toy-fixed-earth"
-gravity = "constant"
-gravity_m_s2 = 0.0
-atmosphere = "none"
-wind = "none"
-
-[forces]
-models = ["gravity"]
-
-[telemetry]
-output.csv = "out/realtime-runner-regression.csv"
-
-[validation]
-require_finite_state = true
-require_monotonic_time = true
-"#;
+const BASE_SCENARIO: &str = include_str!("fixtures/realtime-runner-regression.toml");
 
 #[test]
 fn realtime_pacing_modes_preserve_telemetry_bytes() {

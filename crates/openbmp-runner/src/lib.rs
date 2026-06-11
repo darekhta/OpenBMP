@@ -32,6 +32,7 @@ pub mod aerothermal;
 pub mod assembly;
 pub mod atmosphere;
 pub mod celestial;
+pub mod contact;
 pub mod determinism;
 pub mod effectors;
 pub mod engines;

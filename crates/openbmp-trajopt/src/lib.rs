@@ -7,7 +7,6 @@
 //! payloads for a flight controller to validate before use. It is not
 //! linked by `openbmp-fc`.
 
-#![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 

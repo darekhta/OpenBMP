@@ -412,6 +412,12 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
+    // Contact-block fields. Coulomb friction coefficient is
+    // dimensionless; the smoothing speed carries `_m_s`.
+    if path.starts_with("$.contact") && matches!(key, "friction_coefficient" | "substeps") {
+        return true;
+    }
+
     // Recovery-block fields. `c_d`, `drogue_c_d`, and
     // `main_c_d` are dimensionless drag coefficients per Knacke
     // 1992 Chapter 5.

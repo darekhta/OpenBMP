@@ -41,6 +41,9 @@
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
 
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use crate::error::MotorError;
 
 const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;

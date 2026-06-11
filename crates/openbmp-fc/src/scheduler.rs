@@ -31,6 +31,9 @@
 use std::boxed::Box;
 use std::vec::Vec;
 
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use crate::bus::{Bus, Sequence, Topic};
 use crate::clock::Clock;
 use crate::error::{ControllerError, SchedulerError};

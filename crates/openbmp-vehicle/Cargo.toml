@@ -11,6 +11,7 @@ description             = "OpenBMP vehicle composition: rigid-body trait, mass m
 [dependencies]
 nalgebra          = { workspace = true }
 openbmp-aero      = { workspace = true }
+openbmp-contact   = { workspace = true }
 openbmp-core      = { workspace = true }
 openbmp-models    = { workspace = true }
 openbmp-physics   = { workspace = true }

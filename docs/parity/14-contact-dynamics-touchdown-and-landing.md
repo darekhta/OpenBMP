@@ -120,11 +120,11 @@ item is the deliverable:
 
 ## 2. Current state in source
 
-Verified against the working tree. The honest summary: **touchdown is still a
-stop condition in scenario runs, landing guidance primitives exist, footprint
-Monte Carlo exists, and the first contact-dynamics substrate now exists in
-`openbmp-contact`; runner/schema wiring and touchdown outcome classification
-remain open.**
+Verified against the working tree. The honest summary: **touchdown remains a
+stop condition by default, landing guidance primitives exist, footprint Monte
+Carlo exists, the `openbmp-contact` substrate exists, and schema-v3 scenarios
+can now opt into a half-space `contact` force; gear-leg contact, run-level
+contact energy audit, and touchdown outcome classification remain open.**
 
 ### 2.1 What already exists (the regress-against baseline)
 
@@ -140,8 +140,17 @@ remain open.**
   the dependency-light L2 primitives for half-space point/sphere kinematics,
   Kelvin-Voigt, Hertz, and Hunt-Crossley normal laws, regularized Coulomb
   friction, explicit penalty-contact stability checks, and contact energy-audit
-  closure. This is not yet scenario-reachable; it is the crate-boundary and
-  force-law substrate WP-14.1 requires before runner integration.
+  closure. It is the crate-boundary and force-law substrate WP-14.1 requires
+  for runner integration.
+- **Scenario-reachable half-space contact force.** Schema-v3 `[contact]`
+  declares point/sphere contact against `z = ground_altitude_m`, normal-law
+  parameters, friction smoothing, effective mass, and fixed substeps.
+  Scenario load derives/requires the `contact` force-model entry and fails
+  closed on the same penalty-contact stability bound as `openbmp-contact`.
+  The point-mass and rigid-body runners wire the contact force through the
+  existing force accumulator and standard `force.contact.{x,y,z}_n` telemetry,
+  while disabling the legacy terminal `GroundImpact` stop for that opt-in
+  scenario.
 - **A runner-side terminal landing throttle controller.**
   `crates/openbmp-runner/src/separated_landing.rs` is a deterministic
   *scenario-director* controller (its own doc comment: "not flight software…
@@ -195,7 +204,7 @@ remain open.**
 
 | Sub-dimension | Current | Target tier |
 |---|---|---|
-| Ground contact | `GroundImpact` stop condition in runs; `openbmp-contact` substrate exists | T1 compliant contact + friction wired through runner |
+| Ground contact | `GroundImpact` default; schema-v3 `[contact]` half-space point/sphere force wired through runner | T1 gear/leg contact + friction + outcome classification |
 | Stiction / rest | none | T2 anchored stiction + rest detection |
 | Joint stops / backlash / latches | actuator-path deadband only | T1/T2 scalar penalty primitives |
 | Closed kinematic loops | none (doc `01` is tree-only) | T3 CFE + Baumgarte on the tree |
@@ -774,13 +783,17 @@ sibling notation (`WP-NN.t`, doc `NN`).
 ### WP-14.1 — `openbmp-contact` substrate: ground plane + compliant normal + regularized Coulomb
 
 - **title:** New L2 contact crate with half-space contact, Hertz/Hunt-Crossley/Kelvin-Voigt normal laws, regularized Coulomb friction, fixed sub-stepping, energy audit.
-- **implementation_status:** partial substrate implemented and traced by
-  `REQ-CONTACT-001` / `V-CONTACT-001`: `openbmp-contact` exists as an L2 crate
+- **implementation_status:** partial substrate plus first runner integration
+  implemented and traced by `REQ-CONTACT-001` / `V-CONTACT-001` and
+  `REQ-CONTACT-002` / `V-CONTACT-002`: `openbmp-contact` exists as an L2 crate
   with point/sphere half-space kinematics, Kelvin-Voigt, Hertz, and
   Hunt-Crossley normal laws, regularized Coulomb friction, the fixed-step
-  stability bound, and energy-audit closure tests. Runner force-accumulator
-  wiring, `[contact]` scenario schema, telemetry, and outcome classification
-  remain future slices before WP-14.1 is complete.
+  stability bound, and energy-audit closure tests. Schema-v3 `[contact]` is now
+  scenario-reachable as a point/sphere half-space force in the point-mass and
+  rigid-body runners with standard force telemetry and load-time stability
+  checks. Gear-leg assemblies, run-level contact energy audit, Rest/NoContact
+  outcome classification, and contact substep integration remain future slices
+  before WP-14.1 is complete.
 - **goal:** The sim stops ending at the ground. A `ContactPair` registry on the
   existing rigid-body kernel evaluates gap/normal/friction forces into the
   force accumulator at a fixed sub-step rate, with a fail-closed
@@ -796,8 +809,9 @@ sibling notation (`WP-NN.t`, doc `NN`).
   (schema + fail-closed stability lint), telemetry channels (gated).
 - **approach:** §3.2 (eqs 3.2.1–3.2.4). Registration-order evaluation, fixed
   integer sub-steps, locked operand order, no allocation per sub-step.
-  `GroundImpact` remains the default; `[contact]` switches termination to
-  outcome classification (`Rest`/`NoContact` only at this tier).
+  `GroundImpact` remains the default; `[contact]` disables the terminal
+  ground-impact stop and routes the compliant force through the force stack.
+  Outcome classification (`Rest`/`NoContact` only at this tier) remains open.
 - **acceptance:**
   - `[contact]` off by default; canonical goldens byte-identical
   - static penetration `mg/k` to `< 1e-12` rel; undamped Hertz bounce conserves

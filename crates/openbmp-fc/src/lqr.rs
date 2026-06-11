@@ -53,6 +53,8 @@
 //! - Lewis F.L., Vrabie D., Syrmos V.L. (2012). *Optimal Control*,
 //!   3rd ed. Wiley.
 
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 use thiserror::Error;
 
 /// Maximum DARE iterations before the doubling algorithm gives up.

@@ -579,8 +579,9 @@ pub struct Dopri54Adaptive {
 /// and the seven DOPRI5 stages (`k1..k7`). Interpolation evaluates
 /// the Shampine/SciPy quartic continuous extension as
 /// `state + h * Σ b_i(theta) * k_i`. This keeps the generic state
-/// abstraction intact: it only needs [`SimState::advance_by`] plus
-/// derivative addition/scalar multiplication.
+/// abstraction intact: it only needs
+/// [`openbmp_models::Integratable::advance_by`] plus derivative
+/// addition/scalar multiplication.
 #[derive(Clone, Debug)]
 pub struct Dopri54DenseOutput<S: SimState> {
     start_state: S,

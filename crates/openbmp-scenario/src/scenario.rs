@@ -625,9 +625,10 @@ fn substitute_spice_path_symbols(
 mod tests {
     use super::*;
     use crate::document::{
-        EventTriggerConfig, FcAntiWindupConfig, FcAttitudeLoopKind, FcAttitudeMpcConfig,
-        FcFdirDetectorKindV5, FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind,
-        GrainGeometryConfig, GrainRegressionModeConfig, MissionScope, MissionScopeKind,
+        ContactGeometryConfig, ContactNormalLawConfig, EventTriggerConfig, FcAntiWindupConfig,
+        FcAttitudeLoopKind, FcAttitudeMpcConfig, FcFdirDetectorKindV5, FcIndiConfig,
+        FcIndiFilterKind, FcLqrConfig, FcRateLoopKind, GrainGeometryConfig,
+        GrainRegressionModeConfig, MissionScope, MissionScopeKind,
         NozzleAmbientPressureCorrectionConfig, NozzleSeparationConfig, PropulsionFeedNetworkConfig,
         WGS84_J2_DEFAULT,
     };
@@ -787,8 +788,8 @@ wcet_s = 0.002
         let err = Scenario::from_toml_str(&v3).unwrap_err();
         assert!(
             matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
-                if field_a == "multi_body.separation" && field_b == "mission.events"),
-            "expected multi_body to require matching mission events under v3, got {err:?}",
+                if field_a == "multi_body.separation" && field_b == "mission.events|scenario_script.events"),
+            "expected multi_body to require matching event bindings under v3, got {err:?}",
         );
     }
 
@@ -4855,9 +4856,9 @@ action  = { kind = "separation" }
     fn validates_jettison_stage_with_matching_multi_body_block() {
         let scenario =
             Scenario::from_toml_str(VALID_STAGE_SEPARATION_SCENARIO).expect("scenario validates");
-        let mission = scenario.document.mission.as_ref().expect("mission present");
+        let script = &scenario.document.scenario_script;
         assert!(matches!(
-            mission.events[0].action,
+            script.events[0].action,
             crate::ScenarioActionConfig::JettisonStage { ref body } if body == "lower"
         ));
         let multi_body = scenario
@@ -5083,7 +5084,7 @@ once    = true
         let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
         let mission = scenario.document.mission.as_ref().expect("mission present");
         assert!(matches!(
-            mission.events[1].trigger,
+            mission.events[0].trigger,
             crate::EventTriggerConfig::AtRelativeDistance { ref body, distance_m, .. }
                 if body == "lower" && (distance_m - 1.0).abs() < f64::EPSILON
         ));
@@ -5105,7 +5106,7 @@ once    = true
         let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
         let mission = scenario.document.mission.as_ref().expect("mission present");
         assert!(matches!(
-            mission.events[1].trigger,
+            mission.events[0].trigger,
             crate::EventTriggerConfig::AtRelativeSpeed { ref body, speed_m_s, .. }
                 if body == "lower" && (speed_m_s - 0.5).abs() < f64::EPSILON
         ));
@@ -5153,7 +5154,7 @@ once    = true
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::UnknownBodyReference { ref field, ref value }
-                if field == "mission.events[1].trigger.body" && value == "typo"),
+                if field == "mission.events[0].trigger.body" && value == "typo"),
             "expected UnknownBodyReference, got {err:?}",
         );
     }
@@ -5268,7 +5269,7 @@ kind = { kind = "parachute_drag", c_d = 1.5, area_inflated_m2 = 2.0 }
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::UnknownBodyReference { ref field, ref value }
-                if field == "mission.events[0].action.body" && value == "typo"),
+                if field == "scenario_script.events[0].action.body" && value == "typo"),
             "expected UnknownBodyReference, got {err:?}",
         );
     }
@@ -5318,7 +5319,7 @@ kind = { kind = "parachute_drag", c_d = 1.5, area_inflated_m2 = 2.0 }
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
-                if field_a == "mission.events[0].action.body" && field_b == "multi_body.separation"),
+                if field_a == "scenario_script.events[0].action.body" && field_b == "multi_body.separation"),
             "expected InconsistentSection for unmatched body, got {err:?}",
         );
     }
@@ -5326,7 +5327,7 @@ kind = { kind = "parachute_drag", c_d = 1.5, area_inflated_m2 = 2.0 }
     #[test]
     fn rejects_duplicate_jettisoned_body() {
         let duplicate_event = r#"
-[[mission.events]]
+[[scenario_script.events]]
 id      = "stage_separation_again"
 trigger = { kind = "at_time", time_s = 0.3 }
 action  = { kind = "jettison_stage", body = "lower" }
@@ -5339,7 +5340,7 @@ once    = true
         let err = Scenario::from_toml_str(&toml).unwrap_err();
         assert!(
             matches!(err, ScenarioError::DuplicateValue { ref field, ref value }
-                if field == "mission.events[1].action.body" && value == "lower"),
+                if field == "scenario_script.events[1].action.body" && value == "lower"),
             "expected DuplicateValue for duplicate jettison, got {err:?}",
         );
     }
@@ -5407,8 +5408,9 @@ action  = { kind = "deploy_recovery", id = "main", command = "unfurl" }
     #[test]
     fn accepts_effector_override_action_kind() {
         // Scenario-script effector override actions are wired.
+        let base = ASSEMBLY_WITH_EFFECTOR.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let parse_result = Scenario::from_toml_str(&format!(
-            "{ASSEMBLY_WITH_EFFECTOR}\n{}",
+            "{base}\n{}",
             r#"
 [mission]
 initial_phase = "ascent"
@@ -5417,7 +5419,7 @@ initial_phase = "ascent"
 id    = "ascent"
 label = "ascent"
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "evt"
 trigger = { kind = "at_apogee" }
 action  = { kind = "effector_override", id = "delta_e", command = 0.087 }
@@ -5427,8 +5429,7 @@ action  = { kind = "effector_override", id = "delta_e", command = 0.087 }
             Ok(s) => s,
             Err(e) => panic!("parse with EffectorOverride action failed: {e:?}"),
         };
-        let mission = scenario.document.mission.as_ref().expect("mission present");
-        let action = &mission.events[0].action;
+        let action = &scenario.document.scenario_script.events[0].action;
         assert!(matches!(
             action,
             crate::ScenarioActionConfig::EffectorOverride { id, command }
@@ -5459,8 +5460,9 @@ action  = { kind = "effector_override", id = "", command = 0.0 }
 
     #[test]
     fn rejects_effector_override_action_with_unknown_id() {
+        let base = ASSEMBLY_WITH_EFFECTOR.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let err = Scenario::from_toml_str(&format!(
-            "{ASSEMBLY_WITH_EFFECTOR}\n{}",
+            "{base}\n{}",
             r#"
 [mission]
 initial_phase = "ascent"
@@ -5469,7 +5471,7 @@ initial_phase = "ascent"
 id    = "ascent"
 label = "ascent"
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "evt"
 trigger = { kind = "at_apogee" }
 action  = { kind = "effector_override", id = "delta_typo", command = 0.087 }
@@ -5479,7 +5481,7 @@ action  = { kind = "effector_override", id = "delta_typo", command = 0.087 }
         assert!(matches!(
             err,
             ScenarioError::UnknownEffectorReference { ref field, ref id }
-                if field.contains("mission.events") && id == "delta_typo"
+                if field.contains("scenario_script.events") && id == "delta_typo"
         ));
     }
 
@@ -5709,6 +5711,86 @@ action  = { kind = "stop", label = "max-q" }
             .iter()
             .map(String::as_str)
             .collect()
+    }
+
+    fn with_contact_block(toml: &str) -> String {
+        format!(
+            r#"{toml}
+
+[contact]
+kind = "half_space"
+ground_altitude_m = 0.0
+geometry = "sphere"
+radius_m = 0.25
+normal_law = "kelvin_voigt"
+stiffness_n_m = 1000.0
+damping_n_s_m = 0.0
+friction_coefficient = 0.1
+friction_regularization_speed_m_s = 0.01
+effective_mass_kg = 1.0
+substeps = 32
+"#
+        )
+    }
+
+    #[test]
+    fn contact_block_derives_contact_force_when_forces_absent() {
+        let toml = with_contact_block(
+            &without_forces(MINIMAL).replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("contact block parses");
+        assert_eq!(force_names(&scenario), ["gravity", "contact"]);
+        let contact = scenario.document.contact.as_ref().expect("contact block");
+        assert_eq!(contact.geometry, ContactGeometryConfig::Sphere);
+        assert_eq!(contact.normal_law, ContactNormalLawConfig::KelvinVoigt);
+    }
+
+    #[test]
+    fn contact_block_requires_contact_force_when_forces_are_explicit() {
+        let toml =
+            with_contact_block(&MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"));
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "contact" && field_b == "forces.models"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn contact_force_requires_contact_block() {
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                r#"models = ["gravity"]"#,
+                r#"models = ["gravity", "contact"]"#,
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, role, ref name }
+                if field == "contact" && role == crate::ModelRole::Force && name == "contact"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn contact_stability_bound_fails_closed_at_scenario_load() {
+        let toml = with_contact_block(
+            &MINIMAL
+                .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+                .replace(
+                    r#"models = ["gravity"]"#,
+                    r#"models = ["gravity", "contact"]"#,
+                ),
+        )
+        .replace("stiffness_n_m = 1000.0", "stiffness_n_m = 1000000.0")
+        .replace("substeps = 32", "substeps = 1");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidContact { ref reason }
+                if reason.contains("contact stability bound violated")),
+            "got {err:?}",
+        );
     }
 
     #[test]
@@ -6820,8 +6902,9 @@ action  = { kind = "stop", label = "max-q" }
 
     #[test]
     fn rejects_deploy_recovery_event_referencing_unknown_id() {
+        let base = ASSEMBLY_WITH_RECOVERY.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let toml = format!(
-            "{ASSEMBLY_WITH_RECOVERY}{}",
+            "{base}{}",
             r#"
 [mission]
 initial_phase = "ascent"
@@ -6830,7 +6913,7 @@ initial_phase = "ascent"
 id    = "ascent"
 label = "ascent"
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "evt_deploy"
 trigger = { kind = "at_apogee" }
 action  = { kind = "deploy_recovery", id = "no_such_device", command = "deploy" }
@@ -6847,8 +6930,9 @@ action  = { kind = "deploy_recovery", id = "no_such_device", command = "deploy" 
     fn rejects_deploy_drogue_against_parachute_drag_kind() {
         // The `main_chute` device is `parachute_drag`, which only
         // accepts `deploy`. `deploy_drogue` is incompatible.
+        let base = ASSEMBLY_WITH_RECOVERY.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let toml = format!(
-            "{ASSEMBLY_WITH_RECOVERY}{}",
+            "{base}{}",
             r#"
 [mission]
 initial_phase = "ascent"
@@ -6857,7 +6941,7 @@ initial_phase = "ascent"
 id    = "ascent"
 label = "ascent"
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "evt_deploy"
 trigger = { kind = "at_apogee" }
 action  = { kind = "deploy_recovery", id = "main_chute", command = "deploy_drogue" }
@@ -6876,8 +6960,9 @@ action  = { kind = "deploy_recovery", id = "main_chute", command = "deploy_drogu
 
     #[test]
     fn accepts_deploy_recovery_event_with_compatible_command() {
+        let base = ASSEMBLY_WITH_RECOVERY.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
         let toml = format!(
-            "{ASSEMBLY_WITH_RECOVERY}{}",
+            "{base}{}",
             r#"
 [mission]
 initial_phase = "ascent"
@@ -6886,7 +6971,7 @@ initial_phase = "ascent"
 id    = "ascent"
 label = "ascent"
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "evt_deploy"
 trigger = { kind = "at_apogee" }
 action  = { kind = "deploy_recovery", id = "main_chute", command = "deploy" }
@@ -6896,8 +6981,7 @@ action  = { kind = "deploy_recovery", id = "main_chute", command = "deploy" }
             Ok(s) => s,
             Err(e) => panic!("parse failed: {e:?}"),
         };
-        let mission = scenario.document.mission.as_ref().expect("mission");
-        assert_eq!(mission.events.len(), 1);
+        assert_eq!(scenario.document.scenario_script.events.len(), 1);
     }
 
     // -----------------------------------------------------------------

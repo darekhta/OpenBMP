@@ -28,6 +28,8 @@
 //! This math is wired into the rate loop, replacing an earlier
 //! L1-inspired interim channel.
 
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 use thiserror::Error;
 
 /// L1 adaptive control errors.

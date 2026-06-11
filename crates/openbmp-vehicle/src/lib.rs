@@ -61,9 +61,9 @@ pub mod vehicle;
 pub use adapters::{
     AeroMethodForceAdapter, AeroMethodMomentAdapter, DeckDragForceAdapter, DirectTorqueBinding,
     DirectTorqueMomentAdapter, EngineClusterForceAdapter, EngineClusterMassAdapter,
-    EngineClusterMomentAdapter, GravityForceAdapter, MotorMassAdapter, MotorThrustForceAdapter,
-    RecoveryRackForceAdapter, RigidMotorMassAdapter, TankRackForceAdapter, TankRackMassAdapter,
-    TankRackMomentAdapter,
+    EngineClusterMomentAdapter, GravityForceAdapter, HalfSpaceContactForceAdapter,
+    MotorMassAdapter, MotorThrustForceAdapter, RecoveryRackForceAdapter, RigidMotorMassAdapter,
+    TankRackForceAdapter, TankRackMassAdapter, TankRackMomentAdapter,
 };
 pub use assembly::{
     Assembly, AssemblyBuilder, AssemblyError, Body, BodyGeometry, KernelModelBundle,

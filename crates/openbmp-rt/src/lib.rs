@@ -742,7 +742,9 @@ mod tests {
 
     #[test]
     fn openbmp_fc_manifest_does_not_depend_on_openbmp_rt() {
-        let fc_manifest = include_str!("../../openbmp-fc/Cargo.toml");
+        let fc_manifest_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../openbmp-fc/Cargo.toml");
+        let fc_manifest = std::fs::read_to_string(fc_manifest_path).expect("read fc manifest");
         assert!(!fc_manifest.contains("openbmp-rt"));
     }
 }

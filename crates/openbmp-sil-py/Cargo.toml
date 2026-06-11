@@ -11,6 +11,7 @@ description             = "Python extension bindings for the OpenBMP native SIL 
 [lib]
 name = "openbmp_sil"
 crate-type = ["cdylib", "rlib"]
+doc = false
 
 [features]
 default = []

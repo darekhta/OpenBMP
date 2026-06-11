@@ -37,6 +37,7 @@ fields over compact syntax.
 | `[vehicle]` | yes | Vehicle kind and initial state |
 | `[environment]` | yes | Gravity, atmosphere, wind, magnetic models |
 | `[forces]` | no | Optional force and moment model ordering override; omitted scenarios derive `["gravity", "thrust"?, "aero"?]` from the assembly and model blocks |
+| `[contact]` | no | Schema-v3 opt-in compliant half-space contact force |
 | `[telemetry]` | yes | Output files and schema options |
 | `[validation]` | yes | Runtime validation rules |
 | `[epoch]` | no | Absolute time metadata |
@@ -1157,6 +1158,7 @@ Force-model names accepted in `[forces].models`:
 | `gravity` | `openbmp-physics` | Constant, point-mass, or J2 (selected by `[environment].gravity`) |
 | `aero` | `openbmp-aero` | Requires `[aero]` block with `deck` or `buildup` |
 | `thrust` | `openbmp-propulsion` | Requires `[propulsion.motor]` block |
+| `contact` | `openbmp-contact` | Requires schema-v3 `[contact]`; disables the legacy terminal ground-impact stop |
 
 The list is ordered and deterministic; reordering changes telemetry
 bytes.
@@ -1178,6 +1180,47 @@ phases without an override only `[forces].models` plus runtime internal
 models such as recovery drag are active. When overrides are present,
 telemetry includes `forces.active_models` so the selected stack is
 observable after the run.
+
+### Contact block
+
+`[contact]` is schema-v3 only and opts a scenario into compliant
+half-space contact. The initial runner wiring evaluates a point or
+sphere attached to the vehicle state position against the fixed plane
+`z = ground_altitude_m`. When `[forces]` is omitted, declaring
+`[contact]` derives `contact` into the force stack after `gravity`.
+When `[forces]` is explicit, `models` must include `"contact"`.
+
+```toml
+[forces]
+models = ["gravity", "contact"]
+
+[contact]
+kind = "half_space"
+ground_altitude_m = 0.0
+geometry = "sphere"        # "point" | "sphere"
+radius_m = 0.25            # required only for sphere
+normal_law = "kelvin_voigt" # "kelvin_voigt" | "hertz" | "hunt_crossley"
+stiffness_n_m = 1000.0
+damping_n_s_m = 0.0
+friction_coefficient = 0.1
+friction_regularization_speed_m_s = 0.01
+effective_mass_kg = 1.0
+substeps = 32
+```
+
+For `normal_law = "hertz"`, use `stiffness_n_m_3_2` plus
+`stability_stiffness_n_m`. For `normal_law = "hunt_crossley"`, use
+`stiffness_n_m_3_2`, `stability_stiffness_n_m`, and either
+`damping_factor_s_m` or both `restitution` and
+`reference_impact_speed_m_s`. Scenario validation fails closed when
+`dt_s / substeps` violates the contact stability bound derived from
+`stability_stiffness_n_m` or Kelvin-Voigt `stiffness_n_m` and
+`effective_mass_kg`.
+
+Contact remains off by default. With `[contact]` present, the point-mass
+and rigid-body runners disable the default `GroundImpact` stop and
+publish the standard per-force telemetry channels
+`force.contact.{x,y,z}_n`.
 
 ### Hash pinning
 

@@ -36,28 +36,28 @@ const DAY_ANGLE_RATE: f64 = 2.0 * PI / 365.25;
 const HOURS_TO_RAD: f64 = PI / 12.0; // hours to radians
 const GAS_CONSTANT: f64 = 831.4; // gas constant [J/(kmol*K)] adjusted for km
 
-/// Reference altitudes for lower thermosphere spline [km].
+/// Reference altitudes for lower thermosphere spline \[km\].
 const SPLINE_ALTITUDES: [f64; 5] = [120.0, 110.0, 100.0, 90.0, 72.5];
 
 /// Thermal diffusion coefficients (alpha) per species.
 /// He, O, N2, O2, Ar, (unused), H, N
 const ALPHA: [f64; 9] = [-0.38, 0.0, 0.0, 0.0, 0.17, 0.0, -0.38, 0.0, 0.0];
 
-/// Altitude limits [km] for turbopause mixing and composition corrections.
+/// Altitude limits \[km\] for turbopause mixing and composition corrections.
 /// Above these altitudes, species are in pure diffusive equilibrium.
-/// [He, O, N2, O2, Ar, (unused), H, N]
+/// \[He, O, N2, O2, Ar, (unused), H, N\]
 const MIXING_ALT_LIMITS: [f64; 8] = [200.0, 300.0, 160.0, 250.0, 240.0, 450.0, 320.0, 450.0];
 
-/// Molecular masses [amu].
+/// Molecular masses \[amu\].
 #[allow(dead_code)]
 const MOLECULAR_MASS: [f64; 9] = [4.0, 16.0, 28.0, 32.0, 40.0, 1.0, 1.0, 14.0, 16.0];
 
-/// Atomic mass unit [g].
+/// Atomic mass unit \[g\].
 const ATOMIC_MASS_UNIT: f64 = 1.66e-24;
 
 // --- Surface gravity and effective radius ---
 
-/// Compute surface gravity [cm/s^2] and effective Earth radius [km].
+/// Compute surface gravity \[cm/s^2\] and effective Earth radius \[km\].
 fn surface_gravity_and_radius(lat_deg: f64) -> (f64, f64) {
     let c2 = (2.0 * lat_deg * DEG_TO_RAD).cos();
     let gv = 980.616 * (1.0 - 0.0026373 * c2);
@@ -65,7 +65,7 @@ fn surface_gravity_and_radius(lat_deg: f64) -> (f64, f64) {
     (gv, reff)
 }
 
-/// Geopotential height [km].
+/// Geopotential height \[km\].
 fn geopotential_height(z: f64, zl: f64, re: f64) -> f64 {
     (z - zl) * (re + zl) / (re + z)
 }
@@ -495,7 +495,7 @@ fn cubic_spline_interpolate(xa: &[f64], ya: &[f64], y2a: &[f64], n: usize, x: f6
         + ((a * a * a - a) * y2a[klo] + (b * b * b - b) * y2a[khi]) * h * h / 6.0
 }
 
-/// Cubic spline integral from xa[0] to x.
+/// Cubic spline integral from `xa[0]` to x.
 fn cubic_spline_integrate(xa: &[f64], ya: &[f64], y2a: &[f64], n: usize, x: f64) -> f64 {
     let mut yi = 0.0;
     let mut klo = 0;
@@ -528,7 +528,7 @@ fn cubic_spline_integrate(xa: &[f64], ya: &[f64], y2a: &[f64], n: usize, x: f64)
 /// Compute temperature and density using Bates-Walker profile above ZA,
 /// with spline profile below.
 ///
-/// ZA = zn1[0] is the joining altitude between Bates-Walker and the spline.
+/// ZA = `zn1[0]` is the joining altitude between Bates-Walker and the spline.
 /// zlb is the reference altitude for the Bates-Walker profile (where T = tlb).
 /// ZA may differ from zlb (e.g., ZA = 123.435 km, zlb = 120 km).
 ///
