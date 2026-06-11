@@ -3220,8 +3220,11 @@ where
         let evaluator = contact_evaluator.ok_or_else(|| RunnerError::UnsupportedScenario {
             what: "[contact] telemetry requested without a contact evaluator".to_owned(),
         })?;
-        let diagnostics = evaluator
-            .diagnostics_from_state_vectors(state.position.vector, state.velocity.vector)?;
+        let diagnostics = evaluator.diagnostics_from_state_vectors(
+            state.position.vector,
+            state.velocity.vector,
+            state.time.as_seconds(),
+        )?;
         contact_channels.insert(&mut row, diagnostics)?;
         if let Some(accumulator) = contact_accumulator {
             accumulator.record(state.time.as_seconds(), diagnostics);

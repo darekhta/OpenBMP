@@ -625,10 +625,10 @@ fn substitute_spice_path_symbols(
 mod tests {
     use super::*;
     use crate::document::{
-        ContactGeometryConfig, ContactNormalLawConfig, EventTriggerConfig, FcAntiWindupConfig,
-        FcAttitudeLoopKind, FcAttitudeMpcConfig, FcFdirDetectorKindV5, FcIndiConfig,
-        FcIndiFilterKind, FcLqrConfig, FcRateLoopKind, GrainGeometryConfig,
-        GrainRegressionModeConfig, MissionScope, MissionScopeKind,
+        ContactFrictionLawConfig, ContactGeometryConfig, ContactNormalLawConfig,
+        EventTriggerConfig, FcAntiWindupConfig, FcAttitudeLoopKind, FcAttitudeMpcConfig,
+        FcFdirDetectorKindV5, FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind,
+        GrainGeometryConfig, GrainRegressionModeConfig, MissionScope, MissionScopeKind,
         NozzleAmbientPressureCorrectionConfig, NozzleSeparationConfig, PropulsionFeedNetworkConfig,
         WGS84_J2_DEFAULT,
     };
@@ -5743,6 +5743,10 @@ substeps = 32
         let contact = scenario.document.contact.as_ref().expect("contact block");
         assert_eq!(contact.geometry, ContactGeometryConfig::Sphere);
         assert_eq!(contact.normal_law, ContactNormalLawConfig::KelvinVoigt);
+        assert_eq!(
+            contact.friction_law,
+            ContactFrictionLawConfig::RegularizedCoulomb
+        );
     }
 
     #[test]
@@ -5789,6 +5793,52 @@ substeps = 32
         assert!(
             matches!(err, ScenarioError::InvalidContact { ref reason }
                 if reason.contains("contact stability bound violated")),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn contact_anchored_stiction_block_parses() {
+        let toml = with_contact_block(
+            &MINIMAL
+                .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+                .replace(
+                    r#"models = ["gravity"]"#,
+                    r#"models = ["gravity", "contact"]"#,
+                ),
+        )
+        .replace(
+            "friction_coefficient = 0.1\nfriction_regularization_speed_m_s = 0.01",
+            "friction_law = \"anchored_stiction\"\nstatic_friction_coefficient = 0.6\nkinetic_friction_coefficient = 0.4\ntangential_stiffness_n_m = 1000.0\ntangential_damping_n_s_m = 2.0\nrestick_speed_m_s = 0.01",
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("anchored stiction parses");
+        let contact = scenario.document.contact.as_ref().expect("contact block");
+        assert_eq!(
+            contact.friction_law,
+            ContactFrictionLawConfig::AnchoredStiction
+        );
+        assert_eq!(contact.static_friction_coefficient, Some(0.6));
+        assert_eq!(contact.kinetic_friction_coefficient, Some(0.4));
+    }
+
+    #[test]
+    fn contact_anchored_stiction_requires_static_and_kinetic_coefficients() {
+        let toml = with_contact_block(
+            &MINIMAL
+                .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+                .replace(
+                    r#"models = ["gravity"]"#,
+                    r#"models = ["gravity", "contact"]"#,
+                ),
+        )
+        .replace(
+            "friction_coefficient = 0.1\nfriction_regularization_speed_m_s = 0.01",
+            "friction_law = \"anchored_stiction\"\nkinetic_friction_coefficient = 0.4\ntangential_stiffness_n_m = 1000.0\nrestick_speed_m_s = 0.01",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. }
+                if field == "contact.static_friction_coefficient"),
             "got {err:?}",
         );
     }

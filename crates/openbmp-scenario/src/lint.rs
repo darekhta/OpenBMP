@@ -414,7 +414,15 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
 
     // Contact-block fields. Coulomb friction coefficient is
     // dimensionless; the smoothing speed carries `_m_s`.
-    if path.starts_with("$.contact") && matches!(key, "friction_coefficient" | "substeps") {
+    if path.starts_with("$.contact")
+        && matches!(
+            key,
+            "friction_coefficient"
+                | "static_friction_coefficient"
+                | "kinetic_friction_coefficient"
+                | "substeps"
+        )
+    {
         return true;
     }
 

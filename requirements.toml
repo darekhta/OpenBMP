@@ -235,6 +235,12 @@ statement = "The contact dynamics substrate exposes anchored stick-slip friction
 verification = ["V-CONTACT-004"]
 
 [[requirements]]
+id = "REQ-CONTACT-005"
+title = "Anchored stiction contact is scenario-reachable"
+statement = "Schema-v3 [contact] blocks can select regularized_coulomb or anchored_stiction friction, validate anchored static and kinetic coefficients plus tangential stiffness, damping, and restick speed fields fail-closed, and route anchored_stiction through the point-mass and rigid-body contact force adapters with deterministic time-gated anchor updates while preserving the default regularized_coulomb behavior for existing contact scenarios."
+verification = ["V-CONTACT-005"]
+
+[[requirements]]
 id = "REQ-MC-001"
 title = "Seeded Monte-Carlo evidence has a visible CI lane"
 statement = "The repository exposes a scheduled or manually runnable CI lane for the seeded footprint and ascent Monte-Carlo checks, so dispersion acceptance evidence is reproducible outside ad hoc local runs."
@@ -1455,6 +1461,38 @@ contains = [
   "rocking_block_static_tip_threshold_and_period_match_housner_forms",
 ]
 requirements = ["REQ-CONTACT-004"]
+
+[[verification]]
+id = "V-CONTACT-005"
+kind = "test"
+command = "cargo test -p openbmp-scenario contact_anchored_stiction --locked && cargo test -p openbmp-runner point_mass_contact_anchored_stiction --locked"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-contact/src/stiction.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-vehicle/src/adapters.rs",
+  "crates/openbmp-runner/src/contact.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "docs/scenario-format.md",
+  "docs/parity/14-contact-dynamics-touchdown-and-landing.md",
+]
+contains = [
+  "ContactFrictionLawConfig",
+  "AnchoredStiction",
+  "friction_law",
+  "static_friction_coefficient",
+  "kinetic_friction_coefficient",
+  "tangential_stiffness_n_m",
+  "restick_speed_m_s",
+  "new_anchored_stiction",
+  "TimeGatedStictionState",
+  "contact_anchored_stiction_block_parses",
+  "contact_anchored_stiction_requires_static_and_kinetic_coefficients",
+  "point_mass_contact_anchored_stiction_slides_with_kinetic_force",
+]
+requirements = ["REQ-CONTACT-005"]
 
 [[verification]]
 id = "V-MC-001"
