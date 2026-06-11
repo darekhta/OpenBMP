@@ -243,9 +243,11 @@ pub fn run(
         .as_ref()
         .map(crate::contact::ContactDiagnosticsEvaluator::from_config)
         .transpose()?;
-    let mut contact_accumulator = contact_evaluator
+    let mut contact_accumulator = document
+        .contact
         .as_ref()
-        .map(|_| crate::contact::ContactRunAccumulator::default());
+        .map(crate::contact::ContactRunAccumulator::from_config)
+        .transpose()?;
     let geocentric_surface_radius_m = document_geocentric_surface_radius_m(document);
     let breakdown_atmosphere = if channel_set.has_atmosphere {
         Some(build_document_runtime_atmosphere(document)?)
@@ -2421,6 +2423,44 @@ require_monotonic_time = true
             contact.energy.dissipated_energy_j > 0.0,
             "anchored stiction sliding should dissipate energy: {:?}",
             contact.energy
+        );
+    }
+
+    #[test]
+    fn point_mass_contact_anchored_stiction_reports_sticking_rest() {
+        let scenario_toml = CONTACT_POINT_MASS_SCENARIO
+            .replace("gravity_m_s2 = 9.80665", "gravity_m_s2 = 20.0")
+            .replace(
+                "friction_coefficient = 0.0",
+                "friction_law = \"anchored_stiction\"\nstatic_friction_coefficient = 0.5\nkinetic_friction_coefficient = 0.25\ntangential_stiffness_n_m = 1000.0\ntangential_damping_n_s_m = 0.0\nrestick_speed_m_s = 0.01",
+            );
+        let scenario = Scenario::from_toml_str(&scenario_toml).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("contact run succeeds");
+
+        let contact = outcome
+            .contact
+            .as_ref()
+            .expect("contact report should be present");
+        assert_eq!(contact.outcome, crate::contact::ContactOutcomeKind::Rest);
+        assert!(contact.final_diagnostics.sticking);
+        assert_eq!(
+            contact.final_diagnostics.tangential_speed_m_s.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            contact.energy.contact_work_on_vehicle_j.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            contact.energy.dissipated_energy_j.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(contact.energy.closure_error_j.to_bits(), 0.0_f64.to_bits());
+        assert!(
+            f64_column(&outcome, "force.contact.z_n")
+                .iter()
+                .all(|value| (*value - 20.0).abs() <= 1.0e-12)
         );
     }
 

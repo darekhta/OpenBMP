@@ -231,13 +231,13 @@ verification = ["V-CONTACT-003"]
 [[requirements]]
 id = "REQ-CONTACT-004"
 title = "Contact substrate exposes anchored stiction and rest anchors"
-statement = "The contact dynamics substrate exposes anchored stick-slip friction with a static friction cone, kinetic sliding force, Karnopp restick velocity window, deterministic anchor-state updates, non-negative dissipation reporting, incline stiction and sliding closed-form helpers, a consecutive-hold rest detector, and Housner rocking-block closed-form threshold and period anchors without depending on runner, simulator, or flight-controller crates."
+statement = "The contact dynamics substrate exposes anchored stick-slip friction with a static friction cone, kinetic sliding force, Karnopp restick velocity window, deterministic anchor-state updates, tangential anchor elastic-energy and non-negative dissipation reporting, incline stiction and sliding closed-form helpers, a consecutive-hold rest detector, and Housner rocking-block closed-form threshold and period anchors without depending on runner, simulator, or flight-controller crates."
 verification = ["V-CONTACT-004"]
 
 [[requirements]]
 id = "REQ-CONTACT-005"
 title = "Anchored stiction contact is scenario-reachable"
-statement = "Schema-v3 [contact] blocks can select regularized_coulomb or anchored_stiction friction, validate anchored static and kinetic coefficients plus tangential stiffness, damping, and restick speed fields fail-closed, and route anchored_stiction through the point-mass and rigid-body contact force adapters with deterministic time-gated anchor updates while preserving the default regularized_coulomb behavior for existing contact scenarios."
+statement = "Schema-v3 [contact] blocks can select regularized_coulomb or anchored_stiction friction, validate anchored static and kinetic coefficients plus tangential stiffness, damping, and restick speed fields fail-closed, route anchored_stiction through the point-mass and rigid-body contact force adapters with deterministic time-gated anchor updates, and classify contact rest from a kinetic-energy floor plus sticking hold while preserving the default regularized_coulomb behavior for existing contact scenarios."
 verification = ["V-CONTACT-005"]
 
 [[requirements]]
@@ -1447,6 +1447,7 @@ contains = [
   "AnchoredStictionFriction",
   "AnchoredStictionState",
   "AnchoredStictionResponse",
+  "elastic_energy_j",
   "StictionMode",
   "incline_required_static_coefficient",
   "incline_sliding_acceleration_m_s2",
@@ -1488,9 +1489,14 @@ contains = [
   "restick_speed_m_s",
   "new_anchored_stiction",
   "TimeGatedStictionState",
+  "tangential_speed_m_s",
+  "sticking",
+  "RestDetector",
   "contact_anchored_stiction_block_parses",
   "contact_anchored_stiction_requires_static_and_kinetic_coefficients",
+  "contact_diagnostics_anchored_stiction_time_gates_static_anchor_energy",
   "point_mass_contact_anchored_stiction_slides_with_kinetic_force",
+  "point_mass_contact_anchored_stiction_reports_sticking_rest",
 ]
 requirements = ["REQ-CONTACT-005"]
 

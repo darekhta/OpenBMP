@@ -206,12 +206,14 @@ closed-form stop restitution evidence, and engage-once latch property tests
 articulated mechanism wiring.
 WP-14.3: **partial** — `openbmp-contact` now exposes anchored stick/slip
 friction with static cone breakaway, kinetic sliding, Karnopp restick window,
-deterministic anchor state updates, incline stiction/sliding closed-form
-helpers, a consecutive-hold rest detector, and Housner rocking-block threshold
-and period anchors (`REQ-CONTACT-004`). Schema-v3 `[contact]` can now select
-`friction_law = "anchored_stiction"` and the runner contact adapters route it
-through time-gated anchor state (`REQ-CONTACT-005`). Oscillator fixtures and
-long-run landing rest evidence remain future slices.
+deterministic anchor state updates, tangential anchor elastic-energy reporting,
+incline stiction/sliding closed-form helpers, a consecutive-hold rest detector,
+and Housner rocking-block threshold and period anchors (`REQ-CONTACT-004`).
+Schema-v3 `[contact]` can now select `friction_law = "anchored_stiction"` and
+the runner contact adapters route it through time-gated anchor state; contact
+diagnostics now carry tangential speed/sticking state and runner rest
+classification uses a kinetic-energy floor plus consecutive sticking hold
+(`REQ-CONTACT-005`). Stick-slip oscillator fixtures remain a future slice.
 WP-14.4 … WP-14.10: **not started**.
 
 ### 15 — Plume environments & SRP

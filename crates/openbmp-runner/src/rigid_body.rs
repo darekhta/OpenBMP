@@ -267,9 +267,11 @@ pub fn run(
         .as_ref()
         .map(crate::contact::ContactDiagnosticsEvaluator::from_config)
         .transpose()?;
-    let mut contact_accumulator = contact_evaluator
+    let mut contact_accumulator = document
+        .contact
         .as_ref()
-        .map(|_| crate::contact::ContactRunAccumulator::default());
+        .map(crate::contact::ContactRunAccumulator::from_config)
+        .transpose()?;
     let geocentric_surface_radius_m = document_geocentric_surface_radius_m(document);
     let breakdown_atmosphere = if channel_set.has_atmosphere {
         Some(build_document_runtime_atmosphere(document)?)
