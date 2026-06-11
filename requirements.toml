@@ -570,6 +570,12 @@ title = "Rigid-body plume merge telemetry derives active engine spacing"
 statement = "For rigid-body thermochemical liquid-engine plume telemetry, the runner pairs liquid plume metadata with the EngineRack engine ids and body-frame mount points, derives the active center-to-center spacing from the minimum distance between currently firing engines, uses active-engine count and summed exit area when assembling PlumeClusterGeometry, and drives plume.merge_distance_m and plume.cluster_merged from that live cluster geometry instead of the static [aero.plume].center_spacing_m declaration."
 verification = ["V-PLUME-004"]
 
+[[requirements]]
+id = "REQ-PLUME-005"
+title = "Plume telemetry remains byte-identical when not declared"
+statement = "Point-mass and rigid-body runners must keep canonical telemetry bytes unchanged when a scenario has no [aero.plume] block, including the compatible case where an otherwise unused [aero] block is present; in that state the runner must allocate no plume.* channels, build no plume evaluator, and preserve the baseline canonical CSV byte stream."
+verification = ["V-PLUME-005"]
+
 [[verification]]
 id = "V-SIL-001"
 kind = "test"
@@ -3155,3 +3161,23 @@ contains = [
   "rigid_liquid_plume_derives_cluster_spacing_from_engine_mounts",
 ]
 requirements = ["REQ-PLUME-004"]
+
+[[verification]]
+id = "V-PLUME-005"
+kind = "test"
+command = "cargo test -p openbmp-runner --test pressure_thrust plume_absent_aero_block_is_byte_identical_for_point_mass --locked && cargo test -p openbmp-runner rigid_body::tests::rigid_plume_absent_aero_block_is_byte_identical --locked"
+paths = [
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-runner/tests/pressure_thrust.rs",
+  "docs/scenario-format.md",
+  "docs/parity/15-plume-environments-and-supersonic-retropropulsion.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "plume_absent_aero_block_is_byte_identical_for_point_mass",
+  "rigid_plume_absent_aero_block_is_byte_identical",
+  "telemetry_csv_bytes",
+  "plume.nozzle_pressure_ratio",
+]
+requirements = ["REQ-PLUME-005"]

@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-11, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (95 requirement ids).
+traceability (96 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -40,7 +40,7 @@ As of this snapshot: **20 implemented · 18 partial · 0 in progress ·
 | 11 | Monte Carlo, UQ, validation | **T0–T1 implemented**; T2–T4 partial | 3/5/9 | WP-11.7 |
 | 12 | Determinism, real-time, compute | **substantially implemented**; Linux aarch64 bit-stable CI lane present; GPU offload boundary pending | 9/0/10 | WP-12.4-b |
 | 14 | Contact, touchdown, landing | WP-14.1 crate + runner force/diagnostic path present; WP-14.2 crate primitives landed; WP-14.3 implemented; WP-14.4 massless oleo/crush gear with per-pad ContactPair footpads implemented | 2/2/10 | WP-14.5 after WP-09.7, or WP-14.7 after terrain substrate |
-| 15 | Plume & SRP | WP-15.1 L2 substrate plus point-mass solid-motor and rigid-body thermochemical liquid telemetry with active mount-derived spacing landed | 0/1/12 | finish WP-15.1 byte-goldens/liquid calibration |
+| 15 | Plume & SRP | WP-15.1 L2 substrate plus point-mass solid-motor and rigid-body thermochemical liquid telemetry with active mount-derived spacing and off-byte-goldens landed | 0/1/12 | finish WP-15.1 liquid calibration/full geometry |
 | 16 | Parachute & recovery | T0 baseline (`recovery/` rack) | 0/0/11 | WP-16.1 |
 | 17 | Cryogenic fluid management | not started | 0/0/8 | WP-17.1 |
 | 18 | Ground segment & countdown | not started | 0/0/8 | WP-18.1 |
@@ -249,9 +249,11 @@ telemetry from chamber/nozzle state plus the sampled atmosphere
 the same plume telemetry from live engine mass-flow snapshots, sampled
 atmosphere, and ideal-nozzle reconstruction (`REQ-PLUME-003`), with active
 cluster spacing derived from engine mount points for merge telemetry
-(`REQ-PLUME-004`). Missing for WP completion: canonical byte-identity coverage
-when off, full derived geometry beyond active spacing, and liquid-engine
-calibration beyond the ideal-nozzle aggregate.
+(`REQ-PLUME-004`). Point-mass and rigid-body canonical telemetry bytes are now
+covered for the no-`[aero.plume]` path, including an otherwise empty `[aero]`
+block (`REQ-PLUME-005`). Missing for WP completion: full derived geometry
+beyond active spacing and liquid-engine calibration beyond the ideal-nozzle
+aggregate.
 
 ### 16 — Parachute, decelerator & recovery
 

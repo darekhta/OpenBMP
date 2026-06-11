@@ -34,6 +34,15 @@ fn has_channel(outcome: &openbmp_runner::RunOutcome, name: &str) -> bool {
         .any(|channel| channel.name == name)
 }
 
+fn telemetry_csv_bytes(outcome: &openbmp_runner::RunOutcome) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    outcome
+        .table
+        .write_csv(&mut bytes)
+        .expect("telemetry CSV should serialize");
+    bytes
+}
+
 fn run_scenario(toml: &str) -> openbmp_runner::RunOutcome {
     let scenario = openbmp_scenario::Scenario::from_toml_str(toml).expect("scenario parses");
     openbmp_runner::run(&scenario).expect("scenario runs")
@@ -78,6 +87,25 @@ fn plume_telemetry_is_opt_in_and_uses_live_nozzle_state() {
     assert!(
         thrust_coefficient.iter().any(|value| *value > 0.0),
         "live plume telemetry should report powered thrust coefficient: {thrust_coefficient:?}"
+    );
+}
+
+#[test]
+fn plume_absent_aero_block_is_byte_identical_for_point_mass() {
+    let baseline = run_scenario(include_str!("fixtures/point-mass-pressure-thrust.toml"));
+    let empty_aero = run_scenario(
+        &include_str!("fixtures/point-mass-pressure-thrust.toml").replace(
+            "[forces]",
+            "[aero]\n\
+             \n\
+             [forces]",
+        ),
+    );
+
+    assert!(!has_channel(&empty_aero, "plume.nozzle_pressure_ratio"));
+    assert_eq!(
+        telemetry_csv_bytes(&baseline),
+        telemetry_csv_bytes(&empty_aero)
     );
 }
 

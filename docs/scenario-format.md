@@ -853,7 +853,9 @@ Declaring both `deck` and `[aero.buildup]` fails with
 Schema v3 also accepts an opt-in plume telemetry block under `[aero]`.
 This block is not an aerodynamic coefficient source; it may be declared
 without `deck`, `[aero.buildup]`, or `[aero.method]` only when `aero` is
-not in the active force model list.
+not in the active force model list. An `[aero]` block without
+`[aero.plume]` does not allocate plume telemetry channels and preserves the
+same canonical telemetry bytes as omitting `[aero]`.
 
 ```toml
 [aero]

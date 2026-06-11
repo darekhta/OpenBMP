@@ -4361,6 +4361,15 @@ require_monotonic_time = true
             .any(|channel| channel.name == name)
     }
 
+    fn telemetry_csv_bytes(outcome: &RunOutcome) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        outcome
+            .table
+            .write_csv(&mut bytes)
+            .expect("telemetry CSV should serialize");
+        bytes
+    }
+
     fn f64_column(outcome: &RunOutcome, name: &str) -> Vec<f64> {
         let id = channel_id(outcome, name);
         outcome
@@ -4794,6 +4803,33 @@ require_monotonic_time = true
         assert!(
             thrust_coefficient.iter().any(|value| *value > 0.0),
             "rigid plume telemetry should emit thrust coefficient during burn: {thrust_coefficient:?}"
+        );
+    }
+
+    #[test]
+    fn rigid_plume_absent_aero_block_is_byte_identical() {
+        let baseline = openbmp_scenario::Scenario::from_toml_str(RIGID_ENGINE_TELEMETRY_SCENARIO)
+            .expect("baseline engine telemetry scenario must parse");
+        let baseline_outcome =
+            crate::run(&baseline).expect("baseline engine telemetry scenario must run");
+        let empty_aero =
+            openbmp_scenario::Scenario::from_toml_str(&RIGID_ENGINE_TELEMETRY_SCENARIO.replace(
+                "[forces]\n",
+                "[aero]\n\
+                 \n\
+                 [forces]\n",
+            ))
+            .expect("empty-aero rigid telemetry scenario must parse");
+        let empty_aero_outcome =
+            crate::run(&empty_aero).expect("empty-aero rigid telemetry scenario must run");
+
+        assert!(!has_channel(
+            &empty_aero_outcome,
+            "plume.nozzle_pressure_ratio"
+        ));
+        assert_eq!(
+            telemetry_csv_bytes(&baseline_outcome),
+            telemetry_csv_bytes(&empty_aero_outcome)
         );
     }
 

@@ -156,7 +156,7 @@ plan (doc `03`), and an aerothermal correlation surface (doc `04`).
 | Nozzle exit state | `crates/openbmp-propulsion/src/motor.rs:349-470` (`NozzlePerformance`, `IdealNozzlePerformance`, `NozzleSolution`) | **Shipped** (doc `05` WP-05.1 class): exit Mach, exit static pressure, momentum + pressure thrust, ambient-aware via `AmbientPressureCorrection::PressureThrust`. `NPR` and `p_e/p_∞` are computable live today — the plume similarity inputs already exist. |
 | Solid motor geometry | `crates/openbmp-propulsion/src/grain.rs:368-433` | Throat area + expansion ratio validated at load; `exit_area_m2 = throat·ε` (`grain.rs:522`). |
 | Cluster geometry | `crates/openbmp-propulsion/src/cluster.rs:60-133` (`EngineCluster::mount_points_body`) | Per-engine body-frame mount points exist — the spacing input the multi-engine merge criterion needs. No plume use. |
-| Plume similarity substrate | `crates/openbmp-plume/src/lib.rs` (`PlumeState`, `PlumeNozzle`, `PlumeFreestream`, `PlumeClusterGeometry`); `crates/openbmp-runner/src/plume.rs` | **Partial WP-15.1.** Computes NPR, exit-pressure ratio, `C_T`, momentum-flux ratio, Prandtl-Meyer initial turn angle, reduced cluster-merge distance, and PIFS onset from coordinate-free nozzle/freestream/geometry scalars. Point-mass solid-motor scenarios can opt into telemetry via `[aero.plume]`; rigid-body thermochemical liquid-engine scenarios can also emit plume telemetry from live engine mass-flow snapshots, with active merge spacing derived from engine mount points. Full derived cluster-geometry assembly remains pending. |
+| Plume similarity substrate | `crates/openbmp-plume/src/lib.rs` (`PlumeState`, `PlumeNozzle`, `PlumeFreestream`, `PlumeClusterGeometry`); `crates/openbmp-runner/src/plume.rs` | **Partial WP-15.1.** Computes NPR, exit-pressure ratio, `C_T`, momentum-flux ratio, Prandtl-Meyer initial turn angle, reduced cluster-merge distance, and PIFS onset from coordinate-free nozzle/freestream/geometry scalars. Point-mass solid-motor scenarios can opt into telemetry via `[aero.plume]`; rigid-body thermochemical liquid-engine scenarios can also emit plume telemetry from live engine mass-flow snapshots, with active merge spacing derived from engine mount points. Off-byte-golden coverage now proves absent `[aero.plume]` leaves point-mass and rigid-body telemetry bytes unchanged. Full derived cluster-geometry assembly remains pending. |
 | Rarefied substrate | `crates/openbmp-aero/src/knudsen.rs` | Mean free path, Knudsen number, three bridge functions, Schaaf-Chambré free-molecular aero, `HybridAeroMethod`. Built for freestream rarefaction; directly reusable for plume-impingement regime handoff (§3.6). |
 | Aerothermal surface | `crates/openbmp-aerothermal/src/stagnation.rs` | Fay-Riddell, Sutton-Graves, Tauber-Sutton-reserved — **forebody stagnation only**. No base heating, no separated-zone heating, no plume radiation. |
 | Force composition | `crates/openbmp-runner/src/point_mass.rs:59` (`EngineClusterForceAdapter`, `AeroMethodForceAdapter`, `DeckDragForceAdapter`), `crates/openbmp-runner/src/aero.rs` | Thrust and aero are **independent summed adapters** — no coupling. During the Phalcon-9 boostback/entry burn the deck applies full power-off drag while the engine fires retrograde; the SRP drag-collapse physics is absent. This is the headline wrongness this doc exists to fix. |
@@ -702,9 +702,10 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
   telemetry is implemented with `LiquidPlumeEngine` / `RigidPlumeEvaluator`
   and traced by `REQ-PLUME-003` / `V-PLUME-003`; active center spacing for
   merge telemetry is derived from engine mount points and traced by
-  `REQ-PLUME-004` / `V-PLUME-004`. Full derived multi-engine geometry, broader
-  liquid-engine calibration, and byte-identity golden coverage remain to
-  complete the WP.
+  `REQ-PLUME-004` / `V-PLUME-004`. Canonical byte-identity for the absent
+  `[aero.plume]` path is traced by `REQ-PLUME-005` / `V-PLUME-005`. Full
+  derived multi-engine geometry and broader liquid-engine calibration remain
+  to complete the WP.
 - **goal:** Create the L2 crate (first commit = skeleton + §3.0 placement
   justification, reviewed) and ship `PlumeState` assembled per step from
   `NozzleSolution` + cluster geometry + atmosphere: NPR, exit-pressure ratio,
