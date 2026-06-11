@@ -1,0 +1,38 @@
+# Tolerance table for the WP-10.1 ZOH coupling-error scaling gate.
+#
+# Analytic command ramp:
+#   u(t) = u0 + 2.0 * t
+#
+# For a zero-order hold sampled at the start of each controller minor frame,
+# the input extrapolation error inside a frame is:
+#   e(t) = u(t) - u_k = 2.0 * tau, tau in [0, h_c)
+#
+# The mean absolute error over a frame is therefore:
+#   mean(|e|) = |du/dt| * h_c / 2
+#
+# With h_c = 0.10 s, mean(|e|) = 0.1.
+# With h_c = 0.05 s, mean(|e|) = 0.05.
+# The halving ratio is 0.5, matching the first-order ZOH coupling-error
+# formulation in docs/parity/10-flight-software-in-the-loop-xil.md.
+
+case = "zoh-linear-ramp-coupling-error-scaling"
+source = "Analytic ZOH input-extrapolation error for u(t)=u0+slope*t; mean |u(t)-u_k| = |slope|*h_c/2"
+validation = "validated-toy"
+
+[[metric]]
+name = "coarse_mean_abs_error"
+expected = 0.1
+absolute_tolerance = 1.0e-12
+relative_tolerance = 1.0e-12
+
+[[metric]]
+name = "fine_mean_abs_error"
+expected = 0.05
+absolute_tolerance = 1.0e-12
+relative_tolerance = 1.0e-12
+
+[[metric]]
+name = "mean_abs_error_halving_ratio"
+expected = 0.5
+absolute_tolerance = 0.05
+relative_tolerance = 0.1

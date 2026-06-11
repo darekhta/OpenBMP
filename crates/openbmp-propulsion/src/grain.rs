@@ -13,13 +13,18 @@ use num_traits::Float;
 
 use crate::error::MotorError;
 use crate::motor::{
-    AmbientPressureCorrection, BurnSpec, MotorGeometry, MotorMeta, SolidMotor, ThrustCurve,
-    Validation,
+    AmbientPressureCorrection, BurnSpec, MotorGeometry, MotorMeta, NozzleSeparationCriterion,
+    SolidMotor, ThrustCurve, Validation, ideal_momentum_thrust_coefficient,
 };
 
 const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
+const TRANSIENT_CHAMBER_VOLUME_FRACTION: f64 = 1.0;
+const TRANSIENT_IGNITION_PRESSURE_PA: f64 = 101_325.0;
+const TRANSIENT_EROSIVE_REFERENCE_MASS_FLUX_KG_M2_S: f64 = 1_000.0;
+const TRANSIENT_PRESSURE_CFL: f64 = 0.2;
+const TRANSIENT_WEB_CFL: f64 = 0.25;
+const TRANSIENT_MAX_STEPS_PER_WEB_STEP: u32 = 2_048;
 const MIN_POSITIVE: f64 = 1.0e-15;
-const NOZZLE_MACH_BISECTION_ITERS: usize = 96;
 
 /// Burning area as a function of regressed web distance.
 pub trait GrainGeometry {
@@ -52,6 +57,16 @@ pub trait GrainRegressionModel {
     fn regress(&self, geom: &dyn GrainGeometry) -> Result<SolidMotor, MotorError>;
 }
 
+/// Internal-ballistics regression mode for inline solid grains.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum GrainRegressionMode {
+    /// Current equilibrium `pc(Kn)` march. This preserves legacy output.
+    #[default]
+    QuasiStatic,
+    /// Explicit lumped-volume chamber-pressure integration.
+    Transient,
+}
+
 /// Propellant constants for Saint-Robert burn-rate regression.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GrainPropellant {
@@ -67,6 +82,148 @@ pub struct GrainPropellant {
     pub c_star_m_s: f64,
     /// Specific heat ratio.
     pub gamma: f64,
+}
+
+/// Reduced lumped-volume chamber model used by transient grain regression.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransientChamber {
+    /// Chamber free-volume scale relative to propellant volume.
+    pub volume_fraction_of_propellant: f64,
+    /// Initial pressure used to ignite the pressure ODE, in Pa.
+    pub ignition_pressure_pa: f64,
+    /// Lenoir-Robert-style erosive burn-rate coefficient.
+    pub erosive_coefficient: f64,
+    /// Reference nozzle mass flux for the erosive term, in kg/(m² s).
+    pub erosive_reference_mass_flux_kg_m2_s: f64,
+}
+
+impl Default for TransientChamber {
+    fn default() -> Self {
+        Self {
+            volume_fraction_of_propellant: TRANSIENT_CHAMBER_VOLUME_FRACTION,
+            ignition_pressure_pa: TRANSIENT_IGNITION_PRESSURE_PA,
+            erosive_coefficient: 0.0,
+            erosive_reference_mass_flux_kg_m2_s: TRANSIENT_EROSIVE_REFERENCE_MASS_FLUX_KG_M2_S,
+        }
+    }
+}
+
+impl TransientChamber {
+    /// Construct a transient chamber with the requested free-volume scale.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MotorError`] if the volume scale is non-finite or not positive.
+    pub fn new(volume_fraction_of_propellant: f64) -> Result<Self, MotorError> {
+        Self {
+            volume_fraction_of_propellant,
+            ..Self::default()
+        }
+        .require_valid()
+    }
+
+    /// Return a copy with a nonzero erosive burn-rate term.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MotorError`] if either coefficient is outside the
+    /// deterministic reduced-model envelope.
+    pub fn with_erosive_term(
+        mut self,
+        erosive_coefficient: f64,
+        erosive_reference_mass_flux_kg_m2_s: f64,
+    ) -> Result<Self, MotorError> {
+        self.erosive_coefficient = erosive_coefficient;
+        self.erosive_reference_mass_flux_kg_m2_s = erosive_reference_mass_flux_kg_m2_s;
+        self.require_valid()
+    }
+
+    fn require_valid(self) -> Result<Self, MotorError> {
+        if !self.volume_fraction_of_propellant.is_finite()
+            || self.volume_fraction_of_propellant <= 0.0
+        {
+            return Err(MotorError::InvalidParameter {
+                reason: "transient chamber volume fraction must be finite and positive",
+            });
+        }
+        if !self.ignition_pressure_pa.is_finite() || self.ignition_pressure_pa <= 0.0 {
+            return Err(MotorError::InvalidParameter {
+                reason: "transient chamber ignition pressure must be finite and positive",
+            });
+        }
+        if !self.erosive_coefficient.is_finite() || self.erosive_coefficient < 0.0 {
+            return Err(MotorError::InvalidParameter {
+                reason: "transient chamber erosive coefficient must be finite and non-negative",
+            });
+        }
+        if !self.erosive_reference_mass_flux_kg_m2_s.is_finite()
+            || self.erosive_reference_mass_flux_kg_m2_s <= 0.0
+        {
+            return Err(MotorError::InvalidParameter {
+                reason: "transient chamber erosive reference mass flux must be finite and positive",
+            });
+        }
+        Ok(self)
+    }
+
+    fn volume_m3(self, propellant_volume_m3: f64) -> Result<f64, MotorError> {
+        let volume_m3 = self.volume_fraction_of_propellant * propellant_volume_m3;
+        if !volume_m3.is_finite() || volume_m3 <= 0.0 {
+            return Err(MotorError::InvalidParameter {
+                reason: "transient chamber volume must be finite and positive",
+            });
+        }
+        Ok(volume_m3)
+    }
+
+    fn burn_rate_multiplier(self, nozzle_mass_flux_kg_m2_s: f64) -> Result<f64, MotorError> {
+        if !nozzle_mass_flux_kg_m2_s.is_finite() || nozzle_mass_flux_kg_m2_s < 0.0 {
+            return Err(MotorError::NonFinite {
+                reason: "transient chamber mass flux is non-finite",
+            });
+        }
+        let multiplier = if self.erosive_coefficient == 0.0 {
+            1.0
+        } else {
+            1.0 + self.erosive_coefficient
+                * (nozzle_mass_flux_kg_m2_s / self.erosive_reference_mass_flux_kg_m2_s).powf(0.8)
+        };
+        if !multiplier.is_finite() || multiplier < 1.0 {
+            return Err(MotorError::NonFinite {
+                reason: "transient chamber erosive multiplier is non-finite",
+            });
+        }
+        Ok(multiplier)
+    }
+
+    fn pressure_derivative_pa_s(
+        self,
+        propellant: &GrainPropellant,
+        chamber_volume_m3: f64,
+        burn_area_m2: f64,
+        throat_area_m2: f64,
+        chamber_pressure_pa: f64,
+    ) -> Result<f64, MotorError> {
+        let nozzle_mass_flow_kg_s = chamber_pressure_pa * throat_area_m2 / propellant.c_star_m_s;
+        let nozzle_mass_flux_kg_m2_s = nozzle_mass_flow_kg_s / throat_area_m2;
+        let burn_rate_m_s = transient_burn_rate_m_s(
+            self,
+            propellant,
+            chamber_pressure_pa,
+            nozzle_mass_flux_kg_m2_s,
+        )?;
+        let generated_mass_flow_kg_s = propellant.density_kg_m3 * burn_area_m2 * burn_rate_m_s;
+        let dpdt = propellant.c_star_m_s
+            * propellant.c_star_m_s
+            * (generated_mass_flow_kg_s - nozzle_mass_flow_kg_s)
+            / chamber_volume_m3;
+        if !dpdt.is_finite() {
+            return Err(MotorError::NonFinite {
+                reason: "transient chamber pressure derivative is non-finite",
+            });
+        }
+        Ok(dpdt)
+    }
 }
 
 impl GrainPropellant {
@@ -383,6 +540,10 @@ pub struct EquilibriumInternalBallistics {
     pub provenance: String,
     /// Validation label carried into [`SolidMotor`].
     pub validation: Validation,
+    /// Internal-ballistics regression mode.
+    pub mode: GrainRegressionMode,
+    /// Reduced transient chamber configuration.
+    pub transient_chamber: TransientChamber,
 }
 
 impl EquilibriumInternalBallistics {
@@ -438,15 +599,40 @@ impl EquilibriumInternalBallistics {
             name,
             provenance,
             validation,
+            mode: GrainRegressionMode::QuasiStatic,
+            transient_chamber: TransientChamber::default(),
         })
+    }
+
+    /// Return a copy using a different grain-regression mode.
+    #[must_use]
+    pub const fn with_regression_mode(mut self, mode: GrainRegressionMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Return a copy with explicit transient chamber settings.
+    #[must_use]
+    pub const fn with_transient_chamber(mut self, chamber: TransientChamber) -> Self {
+        self.transient_chamber = chamber;
+        self
     }
 }
 
 impl GrainRegressionModel for EquilibriumInternalBallistics {
     fn regress(&self, geom: &dyn GrainGeometry) -> Result<SolidMotor, MotorError> {
+        match self.mode {
+            GrainRegressionMode::QuasiStatic => self.regress_quasi_static(geom),
+            GrainRegressionMode::Transient => self.regress_transient(geom),
+        }
+    }
+}
+
+impl EquilibriumInternalBallistics {
+    fn regress_quasi_static(&self, geom: &dyn GrainGeometry) -> Result<SolidMotor, MotorError> {
         self.propellant.require_valid()?;
         validate_geometry_surface(geom)?;
-        let cf = optimum_thrust_coefficient(self.propellant.gamma, self.expansion_ratio)?;
+        let cf = ideal_momentum_thrust_coefficient(self.propellant.gamma, self.expansion_ratio)?;
         let web_total_m = geom.web_total_m();
         let web_step_m = web_total_m / f64::from(self.web_steps);
         let mut times = Vec::with_capacity(self.web_steps as usize + 1);
@@ -495,6 +681,112 @@ impl GrainRegressionModel for EquilibriumInternalBallistics {
             .map(|(t, f)| [*t, *f])
             .collect();
         let curve = ThrustCurve::new(points)?;
+        self.motor_from_curve(geom, curve)
+    }
+
+    fn regress_transient(&self, geom: &dyn GrainGeometry) -> Result<SolidMotor, MotorError> {
+        self.propellant.require_valid()?;
+        validate_geometry_surface(geom)?;
+        let chamber = self.transient_chamber.require_valid()?;
+        let chamber_volume_m3 = chamber.volume_m3(geom.propellant_volume_m3())?;
+        let cf = ideal_momentum_thrust_coefficient(self.propellant.gamma, self.expansion_ratio)?;
+        let web_total_m = geom.web_total_m();
+        let web_step_m = web_total_m / f64::from(self.web_steps);
+        let pressure_time_step_s = TRANSIENT_PRESSURE_CFL * chamber_volume_m3
+            / (self.propellant.c_star_m_s * self.throat_area_m2);
+        if !pressure_time_step_s.is_finite() || pressure_time_step_s <= 0.0 {
+            return Err(MotorError::InvalidParameter {
+                reason: "transient chamber pressure time step is outside envelope",
+            });
+        }
+        let max_steps = self
+            .web_steps
+            .checked_mul(TRANSIENT_MAX_STEPS_PER_WEB_STEP)
+            .ok_or(MotorError::OutOfEnvelope {
+                reason: "transient chamber integration step cap overflowed",
+            })?;
+
+        let mut points = Vec::with_capacity(self.web_steps as usize + 2);
+        points.push([0.0, 0.0]);
+        let mut t_s = 0.0;
+        let mut web_m = 0.0;
+        let mut chamber_pressure_pa = chamber.ignition_pressure_pa;
+        let mut steps = 0_u32;
+
+        while web_m < web_total_m {
+            if steps >= max_steps {
+                return Err(MotorError::OutOfEnvelope {
+                    reason: "transient chamber integration exceeded fixed step cap",
+                });
+            }
+            let burn_area_m2 = geom.burn_area_m2(web_m)?;
+            if burn_area_m2 <= 0.0 {
+                break;
+            }
+            let nozzle_mass_flux_kg_m2_s = chamber_pressure_pa / self.propellant.c_star_m_s;
+            let burn_rate_m_s = transient_burn_rate_m_s(
+                chamber,
+                &self.propellant,
+                chamber_pressure_pa,
+                nozzle_mass_flux_kg_m2_s,
+            )?;
+            let web_time_step_s = TRANSIENT_WEB_CFL * web_step_m / burn_rate_m_s;
+            let burnout_time_step_s = (web_total_m - web_m) / burn_rate_m_s;
+            let dt_s = pressure_time_step_s
+                .min(web_time_step_s)
+                .min(burnout_time_step_s);
+            if !dt_s.is_finite() || dt_s <= 0.0 {
+                return Err(MotorError::NonFinite {
+                    reason: "transient chamber integration produced invalid time step",
+                });
+            }
+
+            let dpdt = chamber.pressure_derivative_pa_s(
+                &self.propellant,
+                chamber_volume_m3,
+                burn_area_m2,
+                self.throat_area_m2,
+                chamber_pressure_pa,
+            )?;
+            chamber_pressure_pa =
+                explicit_pressure_euler_step(chamber_pressure_pa, dpdt, dt_s)?.max(MIN_POSITIVE);
+            web_m += burn_rate_m_s * dt_s;
+            t_s += dt_s;
+            let thrust_n = cf * self.throat_area_m2 * chamber_pressure_pa;
+            if !t_s.is_finite()
+                || !web_m.is_finite()
+                || !chamber_pressure_pa.is_finite()
+                || !thrust_n.is_finite()
+                || thrust_n < 0.0
+            {
+                return Err(MotorError::NonFinite {
+                    reason: "transient chamber integration produced non-finite output",
+                });
+            }
+            if points.last().is_some_and(|point| t_s <= point[0]) {
+                return Err(MotorError::NonFinite {
+                    reason: "transient chamber integration produced invalid time grid",
+                });
+            }
+            points.push([t_s, thrust_n]);
+            steps += 1;
+        }
+        if points.len() < 2 {
+            return Err(MotorError::OutOfEnvelope {
+                reason: "transient chamber integration produced no burn",
+            });
+        }
+        let last = points.len() - 1;
+        points[last][1] = 0.0;
+        let curve = ThrustCurve::new(points)?;
+        self.motor_from_curve(geom, curve)
+    }
+
+    fn motor_from_curve(
+        &self,
+        geom: &dyn GrainGeometry,
+        curve: ThrustCurve,
+    ) -> Result<SolidMotor, MotorError> {
         let total_impulse_n_s = curve.integrated_impulse_n_s();
         let propellant_mass_kg = self.propellant.density_kg_m3 * geom.propellant_volume_m3();
         if !propellant_mass_kg.is_finite() || propellant_mass_kg <= 0.0 {
@@ -522,7 +814,10 @@ impl GrainRegressionModel for EquilibriumInternalBallistics {
         };
         let geometry = MotorGeometry {
             exit_area_m2: self.throat_area_m2 * self.expansion_ratio,
+            throat_area_m2: Some(self.throat_area_m2),
+            gamma: Some(self.propellant.gamma),
             ambient_pressure_correction: AmbientPressureCorrection::Constant,
+            separation: NozzleSeparationCriterion::Off,
         };
         SolidMotor::new(meta, burn, curve, geometry)
     }
@@ -570,54 +865,50 @@ fn equilibrium_chamber_pressure_pa(
     Ok(pc_pa)
 }
 
-fn optimum_thrust_coefficient(gamma: f64, expansion_ratio: f64) -> Result<f64, MotorError> {
-    if !gamma.is_finite() || gamma <= 1.0 || !expansion_ratio.is_finite() || expansion_ratio < 1.0 {
+fn transient_burn_rate_m_s(
+    chamber: TransientChamber,
+    propellant: &GrainPropellant,
+    chamber_pressure_pa: f64,
+    nozzle_mass_flux_kg_m2_s: f64,
+) -> Result<f64, MotorError> {
+    if !chamber_pressure_pa.is_finite() || chamber_pressure_pa <= 0.0 {
         return Err(MotorError::InvalidParameter {
-            reason: "nozzle gamma and expansion_ratio are outside envelope",
+            reason: "transient chamber pressure must be finite and positive",
         });
     }
-    let exit_mach = supersonic_mach_for_area_ratio(gamma, expansion_ratio)?;
-    let pe_pc = (1.0 + 0.5 * (gamma - 1.0) * exit_mach * exit_mach).powf(-gamma / (gamma - 1.0));
-    let term = 1.0 - pe_pc.powf((gamma - 1.0) / gamma);
-    let coeff = ((2.0 * gamma * gamma / (gamma - 1.0))
-        * (2.0 / (gamma + 1.0)).powf((gamma + 1.0) / (gamma - 1.0))
-        * term)
-        .sqrt();
-    if !coeff.is_finite() || coeff <= 0.0 {
+    let base_burn_rate_m_s =
+        propellant.burn_rate_a * chamber_pressure_pa.powf(propellant.burn_rate_n);
+    let burn_rate_m_s =
+        base_burn_rate_m_s * chamber.burn_rate_multiplier(nozzle_mass_flux_kg_m2_s)?;
+    if !burn_rate_m_s.is_finite() || burn_rate_m_s <= 0.0 {
         return Err(MotorError::NonFinite {
-            reason: "nozzle thrust coefficient is non-finite",
+            reason: "transient chamber burn rate is non-finite",
         });
     }
-    Ok(coeff)
+    Ok(burn_rate_m_s)
 }
 
-fn supersonic_mach_for_area_ratio(gamma: f64, expansion_ratio: f64) -> Result<f64, MotorError> {
-    if (expansion_ratio - 1.0).abs() <= MIN_POSITIVE {
-        return Ok(1.0);
-    }
-    let mut lo = 1.0;
-    let mut hi = 50.0;
-    if nozzle_area_ratio(gamma, hi) < expansion_ratio {
-        return Err(MotorError::OutOfEnvelope {
-            reason: "nozzle expansion_ratio is outside the fixed Mach bracket",
+fn explicit_pressure_euler_step(
+    pressure_pa: f64,
+    pressure_derivative_pa_s: f64,
+    dt_s: f64,
+) -> Result<f64, MotorError> {
+    if !pressure_pa.is_finite()
+        || !pressure_derivative_pa_s.is_finite()
+        || !dt_s.is_finite()
+        || dt_s <= 0.0
+    {
+        return Err(MotorError::NonFinite {
+            reason: "transient chamber pressure step is non-finite",
         });
     }
-    for _ in 0..NOZZLE_MACH_BISECTION_ITERS {
-        let mid = 0.5 * (lo + hi);
-        if nozzle_area_ratio(gamma, mid) < expansion_ratio {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
+    let next = pressure_pa + pressure_derivative_pa_s * dt_s;
+    if !next.is_finite() {
+        return Err(MotorError::NonFinite {
+            reason: "transient chamber pressure step produced non-finite output",
+        });
     }
-    Ok(0.5 * (lo + hi))
-}
-
-fn nozzle_area_ratio(gamma: f64, mach: f64) -> f64 {
-    let gm1 = gamma - 1.0;
-    let gp1 = gamma + 1.0;
-    let bracket = (2.0 / gp1) * (1.0 + 0.5 * gm1 * mach * mach);
-    (1.0 / mach) * bracket.powf(gp1 / (2.0 * gm1))
+    Ok(next)
 }
 
 #[cfg(test)]
@@ -689,6 +980,77 @@ mod tests {
             a.total_impulse_n_s().to_bits(),
             b.total_impulse_n_s().to_bits()
         );
+    }
+
+    #[test]
+    fn quasi_static_mode_preserves_existing_curve() {
+        let grain = BatesGrain::new(3, 0.03, 0.012, 0.08).unwrap();
+        let baseline = solver(100).regress(&grain).unwrap();
+        let explicit_quasi_static = solver(100)
+            .with_regression_mode(GrainRegressionMode::QuasiStatic)
+            .regress(&grain)
+            .unwrap();
+
+        assert_eq!(
+            baseline.thrust_curve().points(),
+            explicit_quasi_static.thrust_curve().points()
+        );
+        assert_eq!(
+            baseline.total_impulse_n_s().to_bits(),
+            explicit_quasi_static.total_impulse_n_s().to_bits()
+        );
+    }
+
+    #[test]
+    fn transient_end_burner_regression_relaxes_to_constant_thrust() {
+        let grain = EndBurnerGrain::new(0.002, 0.05).unwrap();
+        let chamber = TransientChamber::new(4.0).unwrap();
+        let motor = solver(64)
+            .with_regression_mode(GrainRegressionMode::Transient)
+            .with_transient_chamber(chamber)
+            .regress(&grain)
+            .unwrap();
+
+        let f_a = motor.thrust_n_at(motor.burn_duration_s() * 0.60).unwrap();
+        let f_b = motor.thrust_n_at(motor.burn_duration_s() * 0.85).unwrap();
+        assert!(motor.thrust_curve().points().len() > 64);
+        assert!((f_a - f_b).abs() / f_b.abs() < 2.0e-2);
+    }
+
+    #[test]
+    fn transient_pressure_mms_recovers_first_order_solution() {
+        fn integrate(dt_s: f64) -> f64 {
+            let mut pressure_pa = 5.0;
+            let mut t_s = 0.0;
+            while t_s < 1.0 {
+                let step_s = dt_s.min(1.0 - t_s);
+                let derivative_pa_s = 2.0 * t_s + 3.0;
+                pressure_pa =
+                    explicit_pressure_euler_step(pressure_pa, derivative_pa_s, step_s).unwrap();
+                t_s += step_s;
+            }
+            pressure_pa
+        }
+
+        let exact = 9.0;
+        let coarse_error = (integrate(0.1) - exact).abs();
+        let fine_error = (integrate(0.05) - exact).abs();
+        assert!(fine_error < 0.6 * coarse_error);
+    }
+
+    #[test]
+    fn transient_chamber_erosive_term_increases_burn_rate() {
+        let base = TransientChamber::default();
+        let erosive = base.with_erosive_term(0.15, 1_000.0).unwrap();
+        let pressure_pa = 2.0e6;
+        let mass_flux_kg_m2_s = 1_500.0;
+
+        let base_rate =
+            transient_burn_rate_m_s(base, &propellant(), pressure_pa, mass_flux_kg_m2_s).unwrap();
+        let erosive_rate =
+            transient_burn_rate_m_s(erosive, &propellant(), pressure_pa, mass_flux_kg_m2_s)
+                .unwrap();
+        assert!(erosive_rate > base_rate);
     }
 
     #[test]

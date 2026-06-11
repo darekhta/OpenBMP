@@ -56,12 +56,13 @@ pub use models::{
     MomentContext, MomentModel, NullEnvironment, PhaseGatedForceModel, RecoverySnapshot,
     RecoverySnapshotView, RigidMassModel, TankSnapshot, TankSnapshotView, ZeroForce, ZeroMoment,
 };
+pub use port::{
+    FmiClockIntervalVariability, FmiClockVariable, FmiClockedVariable, FmiScalarVariable,
+    FmiVariableCausality, FmiVariableType, FmuCoSimulationBackend, FmuCoSimulationModelPort,
+    FmuCoSimulationPortSpec, ModelPort, ModelPortKind, ModelPortMetadata, NativeModelPort,
+};
 #[cfg(feature = "std")]
 pub use port::{FmuArchive, FmuArchiveError, FmuModelDescription};
-pub use port::{
-    FmuCoSimulationBackend, FmuCoSimulationModelPort, FmuCoSimulationPortSpec, ModelPort,
-    ModelPortKind, ModelPortMetadata, NativeModelPort,
-};
 pub use state::{
     Integratable, RigidBodyKinematicState, SimState, TranslationalState, VehicleState,
 };

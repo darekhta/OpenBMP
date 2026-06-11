@@ -83,9 +83,10 @@ pub use engine::{
 pub use error::{EngineError, MotorError};
 pub use grain::{
     BatesGrain, EndBurnerGrain, EquilibriumInternalBallistics, GrainGeometry, GrainPropellant,
-    GrainRegressionModel, TabulatedGrain,
+    GrainRegressionMode, GrainRegressionModel, TabulatedGrain, TransientChamber,
 };
 pub use motor::{
-    AmbientPressureCorrection, BurnSpec, Motor, MotorGeometry, MotorMeta, MotorVariant, SolidMotor,
-    ThrustCurve, Validation,
+    AmbientPressureCorrection, BurnSpec, Motor, MotorGeometry, MotorMeta, MotorVariant,
+    NozzleSeparationCriterion, SolidMotor, ThrustCurve, Validation,
 };
+pub use motor::{ChamberState, IdealNozzlePerformance, NozzlePerformance, NozzleSolution};

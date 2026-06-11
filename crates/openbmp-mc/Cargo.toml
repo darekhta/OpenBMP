@@ -1,0 +1,26 @@
+[package]
+name                    = "openbmp-mc"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP deterministic Monte Carlo campaign primitives."
+
+[dependencies]
+nalgebra     = { workspace = true }
+openbmp-core = { workspace = true }
+openbmp-uq   = { workspace = true }
+rayon        = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+statrs       = { workspace = true }
+thiserror    = { workspace = true }
+
+[dev-dependencies]
+openbmp-scenario = { workspace = true }
+tempfile         = { workspace = true }
+
+[lints]
+workspace = true

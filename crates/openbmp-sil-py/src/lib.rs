@@ -560,69 +560,7 @@ mod tests {
             let scenario = root.path().join("scenario.toml");
             fs::write(
                 &scenario,
-                r#"
-openbmp.scenario = 3
-
-[meta]
-name = "py-sil-fixture"
-description = "Python SIL binding fixture."
-validation = "validated-toy"
-
-[time]
-start_s = 0.0
-stop_s = 0.05
-dt_s = 0.01
-seed = 1
-
-[vehicle]
-kind = "point_mass"
-initial_position_eci_m = [0.0, 0.0, 10.0]
-initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
-
-[vehicle.assembly]
-id = "body"
-
-[[vehicle.assembly.bodies]]
-id = "body"
-geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
-dry_mass_kg = 1.0
-
-[[vehicle.assembly.effectors]]
-id = "delta"
-kind = { kind = "linear_actuator" }
-limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
-initial_position = 0.0
-unit = "rad"
-
-[environment]
-frame_profile = "toy-fixed-earth"
-gravity = "constant"
-gravity_m_s2 = 0.0
-atmosphere = "none"
-wind = "none"
-
-[forces]
-models = ["gravity"]
-
-[telemetry]
-output.csv = "out/py-sil-fixture.csv"
-
-[validation]
-require_finite_state = true
-require_monotonic_time = true
-
-[mission]
-initial_phase = "mission.phases.ascent"
-
-[[mission.phases]]
-id = "mission.phases.ascent"
-label = "ascent"
-
-[[mission.events]]
-id = "mission.events.mark"
-trigger = { kind = "at_time", time_s = 0.02 }
-action = { kind = "emit_telemetry_marker", tag = "mark" }
-"#,
+                include_str!("../tests/fixtures/py-sil-scenario.toml"),
             )
             .expect("write scenario");
             let digest = openbmp_sil_native::sha256_file(&scenario).expect("scenario digest");

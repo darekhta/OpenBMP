@@ -9,11 +9,13 @@ authors.workspace       = true
 description             = "OpenBMP optional generic socket-bridge schema for the academic HIL pattern. No real device drivers, no real bus protocols."
 
 [dependencies]
-postcard  = { workspace = true }
-serde     = { workspace = true }
-thiserror = { workspace = true }
+openbmp-core = { workspace = true }
+postcard     = { workspace = true }
+serde        = { workspace = true }
+thiserror    = { workspace = true }
 
 [dev-dependencies]
+openbmp-testkit = { workspace = true }
 proptest = { workspace = true }
 
 [lints]

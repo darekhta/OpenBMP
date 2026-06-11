@@ -78,6 +78,16 @@ fn build_runtime_integrator_from_solver(
     let profile = solver.profile.as_deref().unwrap_or("fixed-step-explicit");
     let method = solver.trajectory_method.as_deref().unwrap_or("rk4");
     let determinism = solver.determinism.as_deref().unwrap_or("bit-stable");
+    if let Some(adaptive) = solver.adaptive.as_ref()
+        && adaptive.dense_output
+        && profile != "adaptive-explicit"
+    {
+        return Err(RunnerError::UnsupportedScenario {
+            what: "solver.adaptive.dense_output = true requires \
+                 solver.profile = \"adaptive-explicit\""
+                .to_owned(),
+        });
+    }
 
     match (profile, method, determinism) {
         ("fixed-step-explicit", "rk4" | "dopri54" | "dopri853", "bit-stable") => {
@@ -93,6 +103,7 @@ fn build_runtime_integrator_from_solver(
                         .to_owned(),
                 }
             })?;
+            validate_dense_output_support(method, adaptive)?;
             RuntimeIntegrator::from_adaptive_method(
                 ExplicitMethod::DormandPrince54,
                 adaptive.rtol,
@@ -111,6 +122,7 @@ fn build_runtime_integrator_from_solver(
                         .to_owned(),
                 }
             })?;
+            validate_dense_output_support(method, adaptive)?;
             RuntimeIntegrator::from_adaptive_method(
                 ExplicitMethod::DormandPrince853,
                 adaptive.rtol,
@@ -176,6 +188,22 @@ fn explicit_method(method: &str) -> Result<ExplicitMethod, RunnerError> {
             what: format!("solver.trajectory_method = {method:?} is not supported"),
         }),
     }
+}
+
+fn validate_dense_output_support(
+    method: &str,
+    adaptive: &openbmp_scenario::AdaptiveSolverConfig,
+) -> Result<(), RunnerError> {
+    if adaptive.dense_output && !matches!(method, "dopri54" | "dopri853") {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "solver.adaptive.dense_output = true is wired only for adaptive-explicit \
+                 + dopri54 or dopri853; method {method:?} still requires its \
+                 method-specific dense-output interpolant"
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn solver_profile_error(error: &SolverProfileError) -> RunnerError {
@@ -329,6 +357,20 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_explicit_dopri54_accepts_dense_output_flag() {
+        let mut adaptive = well_formed_adaptive();
+        adaptive.dense_output = true;
+        let s = solver(
+            "adaptive-explicit",
+            "dopri54",
+            "state-stable",
+            Some(adaptive),
+        );
+        let result = build_runtime_integrator_from_solver(Some(&s)).unwrap();
+        assert!(matches!(result, RuntimeIntegrator::Dopri54Adaptive(_)));
+    }
+
+    #[test]
     fn fixed_step_dopri853_bit_stable_selects_dopri853_fixed() {
         let s = solver("fixed-step-explicit", "dopri853", "bit-stable", None);
         let result = build_runtime_integrator_from_solver(Some(&s)).unwrap();
@@ -357,6 +399,37 @@ mod tests {
             <RuntimeIntegrator as Integrator<openbmp_state::PointMassState>>::determinism(&result),
             IntegratorDeterminism::StateStable
         );
+    }
+
+    #[test]
+    fn adaptive_explicit_dopri853_accepts_dense_output_flag() {
+        let mut adaptive = well_formed_adaptive();
+        adaptive.dense_output = true;
+        let s = solver(
+            "adaptive-explicit",
+            "dopri853",
+            "state-stable",
+            Some(adaptive),
+        );
+        let result = build_runtime_integrator_from_solver(Some(&s)).unwrap();
+        assert!(matches!(result, RuntimeIntegrator::Dopri853Adaptive(_)));
+    }
+
+    #[test]
+    fn fixed_step_rejects_dense_output_flag() {
+        let mut adaptive = well_formed_adaptive();
+        adaptive.dense_output = true;
+        let s = solver(
+            "fixed-step-explicit",
+            "dopri54",
+            "bit-stable",
+            Some(adaptive),
+        );
+        let err = build_runtime_integrator_from_solver(Some(&s)).unwrap_err();
+        let RunnerError::UnsupportedScenario { what } = err else {
+            panic!("expected UnsupportedScenario, got {err:?}");
+        };
+        assert!(what.contains("adaptive-explicit"));
     }
 
     #[test]

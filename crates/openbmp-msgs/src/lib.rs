@@ -481,6 +481,21 @@ pub struct EstimatorStatus {
     pub mag_updated_this_tick: bool,
     /// Maximum attitude-error covariance diagonal entry, rad².
     pub attitude_variance_max_rad2: f64,
+    /// Position error-state covariance diagonal, ECI axes, m².
+    ///
+    /// A zero entry means that the active estimator does not expose that
+    /// block and downstream NEES reducers must skip it.
+    pub position_variance_eci_m2: [f64; 3],
+    /// Velocity error-state covariance diagonal, ECI axes, (m/s)².
+    ///
+    /// A zero entry means that the active estimator does not expose that
+    /// block and downstream NEES reducers must skip it.
+    pub velocity_variance_eci_m2_s2: [f64; 3],
+    /// Attitude error-state covariance diagonal, rad².
+    ///
+    /// A zero entry means that the active estimator does not expose that
+    /// block and downstream NEES reducers must skip it.
+    pub attitude_variance_rad2: [f64; 3],
     /// Diagonal covariance condition proxy (`max_diag / min_diag`).
     pub covariance_condition_proxy: f64,
     /// `true` when the attitude covariance indicates under-observable
@@ -1127,6 +1142,19 @@ impl Topic for GuidanceCutoff {
     const INDEX: usize = topic_index::GUIDANCE_CUTOFF;
 }
 
+#[cfg(not(feature = "hal"))]
+const fn scenario_state_override_descriptor() -> TopicDescriptor {
+    TopicDescriptor::of::<ScenarioStateOverride>()
+}
+
+#[cfg(feature = "hal")]
+const fn scenario_state_override_descriptor() -> TopicDescriptor {
+    TopicDescriptor::reserved(
+        topic_index::COMMANDER_SCENARIO_STATE_OVERRIDE,
+        "commander.scenario_state_override",
+    )
+}
+
 /// Canonical OpenBMP command/telemetry topic dictionary.
 ///
 /// The table is ordered by stable topic index. Reserved entries keep
@@ -1152,7 +1180,7 @@ pub const CANONICAL_TOPIC_DESCRIPTORS: [TopicDescriptor; topic_index::COUNT] = [
     TopicDescriptor::of::<HealthRegionStatePublish>(),
     TopicDescriptor::of::<CommsRegionStatePublish>(),
     TopicDescriptor::of::<EstimatorRegimeRegionStatePublish>(),
-    TopicDescriptor::of::<ScenarioStateOverride>(),
+    scenario_state_override_descriptor(),
     TopicDescriptor::of::<FailsafeFlags>(),
     TopicDescriptor::of::<ActuatorCommand>(),
     TopicDescriptor::of::<AutopilotStatus>(),

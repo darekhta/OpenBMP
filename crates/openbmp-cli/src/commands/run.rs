@@ -54,6 +54,10 @@ pub struct RunReport {
     pub stop_label: String,
     /// Output paths that were written, sorted lexicographically.
     pub written: Vec<PathBuf>,
+    /// Optional host realtime pacing report.
+    pub realtime: Option<runner::rt::RealtimeRunReport>,
+    /// Optional FC actuator command-stream digest report.
+    pub actuator_stream: Option<runner::determinism::ActuatorStreamReport>,
 }
 
 /// Entry point with no overrides — uses the scenario's declared
@@ -124,6 +128,8 @@ pub fn run_with_overrides(
         final_time_s: outcome.final_time_s,
         stop_label: outcome.stop_reason.label().to_owned(),
         written,
+        realtime: outcome.realtime,
+        actuator_stream: outcome.actuator_stream,
     })
 }
 

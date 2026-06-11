@@ -1,0 +1,23 @@
+[package]
+name                    = "openbmp-feedsystem"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP deterministic feed-system network primitives."
+
+[features]
+default = ["std"]
+std     = ["openbmp-core/std", "thiserror/std"]
+
+[dependencies]
+openbmp-core = { version = "0.0.1", path = "../openbmp-core", default-features = false }
+thiserror    = { version = "2.0.18", default-features = false }
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[lints]
+workspace = true

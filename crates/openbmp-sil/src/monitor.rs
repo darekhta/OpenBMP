@@ -189,9 +189,9 @@ impl SilMonitor for EstimateVsTruthMonitor {
 
         // ---- Estimator health ----
         let (nees, dead_reckoning, innovation_rejected, gnss_chi2, baro_chi2, mag_chi2) =
-            observation.estimator.map_or(
-                (None, false, false, 0.0, 0.0, 0.0),
-                |estimator| {
+            observation
+                .estimator
+                .map_or((None, false, false, 0.0, 0.0, 0.0), |estimator| {
                     let nees = estimator.gnss_updated_this_tick.then(|| {
                         estimator
                             .gnss_innovation_whitened
@@ -207,8 +207,7 @@ impl SilMonitor for EstimateVsTruthMonitor {
                         estimator.baro_chi2,
                         estimator.mag_chi2,
                     )
-                },
-            );
+                });
 
         // ---- FDIR / mode ----
         let (fdir_triggered, fdir_tripped_mask) = observation
@@ -279,8 +278,7 @@ mod tests {
         // Truth eci->body is some non-trivial rotation; the estimate's
         // body->eci is its inverse, i.e. a perfect estimate. The error
         // must be exactly 0.
-        let truth_eci_to_body =
-            UnitQuaternion::from_euler_angles(0.3, -0.7, 1.1);
+        let truth_eci_to_body = UnitQuaternion::from_euler_angles(0.3, -0.7, 1.1);
         let truth_body_to_eci = truth_eci_to_body.inverse();
         let q = truth_body_to_eci.into_inner();
         let xyzw = [q.i, q.j, q.k, q.w];
@@ -297,8 +295,7 @@ mod tests {
         // Truth identity (eci==body); estimate body->eci is a 0.2 rad yaw.
         // The geodesic error must be 0.2 rad.
         let truth_eci_to_body = UnitQuaternion::identity();
-        let est_body_to_eci =
-            UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.2);
+        let est_body_to_eci = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.2);
         let q = est_body_to_eci.into_inner();
         let err = attitude_error_rad([q.i, q.j, q.k, q.w], &truth_eci_to_body);
         assert!(

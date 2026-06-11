@@ -21,6 +21,8 @@ Thumbs.db
 out/
 *.parquet.tmp
 *.csv.tmp
+__pycache__/
+*.pyc
 
 # Fuzz corpora (committed selectively per cargo-fuzz convention)
 crates/*/fuzz/corpus/

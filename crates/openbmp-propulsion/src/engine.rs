@@ -15,12 +15,13 @@
 //! - [`EngineState`] enum — `Idle`, `Igniting`, `Burning`,
 //!   `Shutdown`, `Failed`. Lifecycle is one-shot: `Shutdown` is
 //!   terminal for nominal operation; `Failed` is terminal for
-//!   load-time fault.
+//!   load-time or scheduled runtime faults.
 //! - [`EngineSnapshot`] — per-step output: gimbal-applied
 //!   body-frame thrust vector, mass-flow rate, integrated
 //!   propellant consumption, current state.
-//! - [`EngineFault`] — four canonical fault modes (`Stuck`,
-//!   `HardOff`, `OverThrust`, `GimbalLocked`).
+//! - [`EngineFault`] — canonical fault modes (`Stuck`, `HardOff`,
+//!   `OverThrust`, `HardStartOverpressure`, `CavitationThrustLoss`,
+//!   `GimbalLocked`).
 //! - [`LiquidEngine`] — reference impl: linear ignition transient
 //!   (0 → commanded thrust over `ignition_transient_s`), rate-limited
 //!   throttle tracking in burn, linear shutdown transient (current → 0
@@ -289,8 +290,8 @@ impl EngineSnapshot {
 /// effector-fault taxonomy (Patton, Frank & Clark 1989 *Fault
 /// Diagnosis in Dynamic Systems*).
 ///
-/// Load-time fault injection only; run-time
-/// injection is not supported. A `Failed` engine never recovers.
+/// Faults may be injected at construction or through runner-scheduled
+/// runtime rules. A `Failed` engine never recovers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EngineFault {
     /// Throttle stuck at `at_throttle`; engine ignores command
@@ -306,6 +307,19 @@ pub enum EngineFault {
     /// `factor ≥ 1` → over-thrust; `factor < 1` → under-thrust.
     OverThrust {
         /// Thrust multiplier. Non-negative finite.
+        factor: f64,
+    },
+    /// Ignition transient over-pressure. Scales thrust only while the engine is
+    /// igniting and `elapsed_in_state_s <= duration_s`.
+    HardStartOverpressure {
+        /// Ignition over-pressure multiplier. Must be finite and at least 1.
+        factor: f64,
+        /// Duration in seconds from ignition start. Must be finite and positive.
+        duration_s: f64,
+    },
+    /// Pump-cavitation thrust loss. Scales thrust by `factor` once injected.
+    CavitationThrustLoss {
+        /// Thrust multiplier after cavitation onset. Must be finite in `[0, 1]`.
         factor: f64,
     },
     /// Gimbal frozen at the given angles, regardless of command.
@@ -515,6 +529,40 @@ impl LiquidEngine {
                     });
                 }
             }
+            EngineFault::HardStartOverpressure { factor, duration_s } => {
+                if !factor.is_finite() {
+                    return Err(EngineError::InvalidFault {
+                        reason: "HardStartOverpressure.factor must be finite",
+                    });
+                }
+                if factor < 1.0 {
+                    return Err(EngineError::InvalidFault {
+                        reason: "HardStartOverpressure.factor must be at least 1",
+                    });
+                }
+                if !duration_s.is_finite() {
+                    return Err(EngineError::InvalidFault {
+                        reason: "HardStartOverpressure.duration_s must be finite",
+                    });
+                }
+                if duration_s <= 0.0 {
+                    return Err(EngineError::InvalidFault {
+                        reason: "HardStartOverpressure.duration_s must be positive",
+                    });
+                }
+            }
+            EngineFault::CavitationThrustLoss { factor } => {
+                if !factor.is_finite() {
+                    return Err(EngineError::InvalidFault {
+                        reason: "CavitationThrustLoss.factor must be finite",
+                    });
+                }
+                if !(0.0..=1.0).contains(&factor) {
+                    return Err(EngineError::InvalidFault {
+                        reason: "CavitationThrustLoss.factor must lie in [0, 1]",
+                    });
+                }
+            }
             EngineFault::GimbalLocked { pitch_rad, yaw_rad } => {
                 if !pitch_rad.is_finite() || !yaw_rad.is_finite() {
                     return Err(EngineError::InvalidFault {
@@ -710,6 +758,16 @@ impl EngineModel for LiquidEngine {
                 };
             }
             Some(EngineFault::OverThrust { factor }) => {
+                thrust_z_n *= factor;
+            }
+            Some(EngineFault::HardStartOverpressure { factor, duration_s }) => {
+                if matches!(self.state, EngineState::Igniting)
+                    && self.elapsed_in_state_s <= duration_s
+                {
+                    thrust_z_n *= factor;
+                }
+            }
+            Some(EngineFault::CavitationThrustLoss { factor }) => {
                 thrust_z_n *= factor;
             }
             Some(EngineFault::GimbalLocked { pitch_rad, yaw_rad }) => {
@@ -1324,6 +1382,43 @@ mod tests {
     }
 
     #[test]
+    fn liquid_engine_fault_hard_start_overpressure_boosts_ignition_only() {
+        let mut e = fresh_engine();
+        e.inject_fault(EngineFault::HardStartOverpressure {
+            factor: 2.0,
+            duration_s: 0.05,
+        })
+        .unwrap();
+        e.apply_command(EngineCommand {
+            throttle_unit: 1.0,
+            gimbal_pitch_rad: 0.0,
+            gimbal_yaw_rad: 0.0,
+            ignite: true,
+            shutdown: false,
+        })
+        .unwrap();
+        let first = e.step(Duration::from_seconds(0.025)).unwrap();
+        let second = e.step(Duration::from_seconds(0.025)).unwrap();
+        let after = e.step(Duration::from_seconds(0.025)).unwrap();
+
+        assert_eq!(first.thrust_body.z.to_bits(), 500.0_f64.to_bits());
+        assert_eq!(second.thrust_body.z.to_bits(), 1000.0_f64.to_bits());
+        assert!((after.thrust_body.z - 750.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn liquid_engine_fault_cavitation_thrust_loss_scales_thrust_by_factor() {
+        let mut e = fresh_engine();
+        ignite_to_burning(&mut e);
+        e.inject_fault(EngineFault::CavitationThrustLoss { factor: 0.4 })
+            .unwrap();
+
+        let snap = e.step(dt()).unwrap();
+
+        assert_eq!(snap.thrust_body.z.to_bits(), 400.0_f64.to_bits());
+    }
+
+    #[test]
     fn liquid_engine_fault_gimbal_locked_freezes_pitch_yaw() {
         let mut e = fresh_engine();
         ignite_to_burning(&mut e);
@@ -1361,6 +1456,38 @@ mod tests {
         ignite_to_burning(&mut e);
         let snap = e.step(dt()).unwrap();
         assert_eq!(snap.thrust_body.z.to_bits(), 1500.0_f64.to_bits());
+    }
+
+    #[test]
+    fn invalid_hard_start_fault_payload_rejected() {
+        let mut e = fresh_engine();
+        assert!(matches!(
+            e.inject_fault(EngineFault::HardStartOverpressure {
+                factor: 0.9,
+                duration_s: 0.05,
+            }),
+            Err(EngineError::InvalidFault { .. })
+        ));
+        assert!(matches!(
+            e.inject_fault(EngineFault::HardStartOverpressure {
+                factor: 1.5,
+                duration_s: 0.0,
+            }),
+            Err(EngineError::InvalidFault { .. })
+        ));
+    }
+
+    #[test]
+    fn invalid_cavitation_fault_payload_rejected() {
+        let mut e = fresh_engine();
+        assert!(matches!(
+            e.inject_fault(EngineFault::CavitationThrustLoss { factor: -0.1 }),
+            Err(EngineError::InvalidFault { .. })
+        ));
+        assert!(matches!(
+            e.inject_fault(EngineFault::CavitationThrustLoss { factor: 1.1 }),
+            Err(EngineError::InvalidFault { .. })
+        ));
     }
 
     // -----------------------------------------------------------------

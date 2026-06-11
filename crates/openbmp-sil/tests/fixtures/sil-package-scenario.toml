@@ -1,0 +1,75 @@
+openbmp.scenario = 3
+
+[meta]
+name = "sil-package-fixture"
+description = "fixture"
+validation = "experimental"
+
+[time]
+start_s = 0.0
+stop_s = 0.03
+dt_s = 0.01
+seed = 1
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "body"
+
+[[vehicle.assembly.bodies]]
+id = "body"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+
+[[vehicle.assembly.effectors]]
+id = "delta"
+kind = { kind = "linear_actuator" }
+limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+initial_position = 0.0
+unit = "rad"
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/sil.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "mission.phases.pad"
+
+[[mission.phases]]
+id = "mission.phases.pad"
+label = "pad"
+
+[[mission.phases]]
+id = "mission.phases.coast"
+label = "coast"
+
+[[mission.events]]
+id = "mission.events.marker"
+trigger = { kind = "at_time", time_s = 0.01 }
+action = { kind = "emit_telemetry_marker", tag = "sil.fixture" }
+
+[[mission.events]]
+id = "mission.events.coast"
+trigger = { kind = "at_time", time_s = 0.02 }
+action = { kind = "emit_telemetry_marker", tag = "sil.coast" }
+
+[[mission.transitions]]
+from = "mission.phases.pad"
+to = "mission.phases.coast"
+event = "mission.events.coast"

@@ -2122,6 +2122,8 @@ mod tests {
             trajectory: None,
             ascent_reference_by_phase: None,
             sil_stimulus: None,
+            transport: None,
+            transport_faults: None,
             ascent_reference: None,
         };
         let (graph, bindings, pad) = minimal_graph();
@@ -2201,6 +2203,8 @@ mod tests {
             trajectory: None,
             ascent_reference_by_phase: None,
             sil_stimulus: None,
+            transport: None,
+            transport_faults: None,
             ascent_reference: None,
         };
         let (graph, bindings, pad) = minimal_graph();
@@ -2274,6 +2278,8 @@ mod tests {
             trajectory: None,
             ascent_reference_by_phase: None,
             sil_stimulus: None,
+            transport: None,
+            transport_faults: None,
             ascent_reference: Some(FcAscentReferenceConfig {
                 method: FcAscentReferenceMethod::PitchProgram,
                 schedule_s: Some(vec![0.0, 10.0, 30.0]),

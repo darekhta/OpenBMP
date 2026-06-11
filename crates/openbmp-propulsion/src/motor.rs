@@ -46,6 +46,8 @@ use crate::error::MotorError;
 const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
 const TOTAL_IMPULSE_REL_TOL: f64 = 1.0e-6;
 const SPECIFIC_IMPULSE_REL_TOL: f64 = 1.0e-6;
+const MIN_POSITIVE: f64 = 1.0e-15;
+const NOZZLE_MACH_BISECTION_ITERS: usize = 96;
 
 // ---------------------------------------------------------------------
 // MotorVariant
@@ -82,6 +84,32 @@ pub trait Motor {
     /// Returns [`MotorError::NonFinite`] when `t_since_ignition_s`
     /// is `NaN` or `Inf`.
     fn thrust_n_at(&self, t_since_ignition_s: f64) -> Result<f64, MotorError>;
+
+    /// Instantaneous thrust at `t_since_ignition_s`, corrected for
+    /// local ambient static pressure in Pa when the motor's nozzle
+    /// model opts into it.
+    ///
+    /// The default implementation preserves the legacy time-only
+    /// thrust curve. Implementations with an ambient-aware nozzle
+    /// override this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MotorError::NonFinite`] when
+    /// `ambient_pressure_pa` is non-finite and otherwise returns the
+    /// same errors as [`Motor::thrust_n_at`].
+    fn thrust_n_at_ambient_pressure(
+        &self,
+        t_since_ignition_s: f64,
+        ambient_pressure_pa: f64,
+    ) -> Result<f64, MotorError> {
+        if !ambient_pressure_pa.is_finite() || ambient_pressure_pa < 0.0 {
+            return Err(MotorError::NonFinite {
+                reason: "ambient pressure is NaN, infinite, or negative",
+            });
+        }
+        self.thrust_n_at(t_since_ignition_s)
+    }
 
     /// Total motor mass at `t_since_ignition_s`, in kg.
     ///
@@ -318,6 +346,22 @@ pub enum AmbientPressureCorrection {
     /// Simplified model: assume sea-level ambient pressure correction
     /// is already baked into the thrust curve. No altitude correction.
     Constant,
+    /// Ambient-aware ideal nozzle: the stored thrust curve is the
+    /// momentum-thrust curve at the optimum point (`p_a = p_e`), and
+    /// runtime thrust adds `(p_e - p_a) A_e`.
+    PressureThrust,
+}
+
+/// Opt-in overexpanded-nozzle flow separation criterion.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum NozzleSeparationCriterion {
+    /// Disable separation clipping and use the full geometric exit area.
+    #[default]
+    Off,
+    /// Summerfield fixed-ratio criterion, `p_sep / p_a = 0.4`.
+    Summerfield,
+    /// Schmucker Mach-dependent criterion for free-shock separation.
+    Schmucker,
 }
 
 /// `[geometry]` block of the motor file.
@@ -325,8 +369,154 @@ pub enum AmbientPressureCorrection {
 pub struct MotorGeometry {
     /// Nozzle exit area (m²).
     pub exit_area_m2: f64,
+    /// Nozzle throat area (m²), required for pressure-thrust
+    /// correction and optional for legacy constant correction.
+    pub throat_area_m2: Option<f64>,
+    /// Nozzle gas specific-heat ratio, required for pressure-thrust
+    /// correction and optional for legacy constant correction.
+    pub gamma: Option<f64>,
     /// Ambient-pressure correction strategy.
     pub ambient_pressure_correction: AmbientPressureCorrection,
+    /// Optional overexpanded-nozzle separation clipping criterion.
+    pub separation: NozzleSeparationCriterion,
+}
+
+/// Chamber state supplied to a nozzle-performance model.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ChamberState {
+    /// Chamber pressure in Pa.
+    pub chamber_pressure_pa: f64,
+    /// Exhaust mass flow in kg/s.
+    pub mass_flow_kg_s: f64,
+    /// Gas specific-heat ratio.
+    pub gamma: f64,
+    /// Nozzle throat area in m².
+    pub throat_area_m2: f64,
+    /// Nozzle exit area in m².
+    pub exit_area_m2: f64,
+}
+
+/// Ideal-nozzle solution at one chamber state and ambient pressure.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct NozzleSolution {
+    /// Exit Mach number on the supersonic branch.
+    pub exit_mach: f64,
+    /// Exit static pressure in Pa.
+    pub exit_pressure_pa: f64,
+    /// Whether an overexpanded-flow separation criterion clipped the nozzle.
+    pub separated: bool,
+    /// Effective expansion ratio used for thrust calculation.
+    pub effective_expansion_ratio: f64,
+    /// Effective exit area used for pressure thrust, in m².
+    pub effective_exit_area_m2: f64,
+    /// Momentum thrust `mdot * Ve`, in N.
+    pub momentum_thrust_n: f64,
+    /// Pressure thrust `(pe - pa) * Ae`, in N.
+    pub pressure_thrust_n: f64,
+    /// Total thrust in N.
+    pub total_thrust_n: f64,
+    /// Effective specific impulse at this ambient pressure, in s.
+    pub effective_isp_s: f64,
+}
+
+/// Deterministic nozzle-performance surface.
+pub trait NozzlePerformance {
+    /// Solve the nozzle state at a chamber condition and ambient pressure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MotorError`] when the chamber/nozzle state is outside
+    /// the ideal-nozzle envelope or produces non-finite output.
+    fn solve(
+        &self,
+        chamber: ChamberState,
+        ambient_pressure_pa: f64,
+    ) -> Result<NozzleSolution, MotorError>;
+}
+
+/// Isentropic ideal-nozzle performance model.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct IdealNozzlePerformance {
+    /// Separation criterion used by the solve.
+    pub separation: NozzleSeparationCriterion,
+}
+
+impl IdealNozzlePerformance {
+    /// Construct an ideal-nozzle solver with the requested separation mode.
+    #[must_use]
+    pub const fn new(separation: NozzleSeparationCriterion) -> Self {
+        Self { separation }
+    }
+}
+
+impl NozzlePerformance for IdealNozzlePerformance {
+    fn solve(
+        &self,
+        chamber: ChamberState,
+        ambient_pressure_pa: f64,
+    ) -> Result<NozzleSolution, MotorError> {
+        validate_chamber_state(chamber)?;
+        if !ambient_pressure_pa.is_finite() || ambient_pressure_pa < 0.0 {
+            return Err(MotorError::NonFinite {
+                reason: "ambient pressure is NaN, infinite, or negative",
+            });
+        }
+        let geometric_expansion_ratio = chamber.exit_area_m2 / chamber.throat_area_m2;
+        let geometric_exit_mach =
+            supersonic_mach_for_area_ratio(chamber.gamma, geometric_expansion_ratio)?;
+        let geometric_exit_pressure_pa =
+            chamber.chamber_pressure_pa * exit_pressure_ratio(chamber.gamma, geometric_exit_mach);
+        let (
+            separated,
+            exit_mach,
+            exit_pressure_pa,
+            effective_expansion_ratio,
+            effective_exit_area_m2,
+        ) = effective_nozzle_state(
+            self.separation,
+            chamber,
+            ambient_pressure_pa,
+            geometric_exit_mach,
+            geometric_exit_pressure_pa,
+        )?;
+        let cf_momentum =
+            ideal_momentum_thrust_coefficient(chamber.gamma, effective_expansion_ratio)?;
+        let momentum_thrust_n = cf_momentum * chamber.throat_area_m2 * chamber.chamber_pressure_pa;
+        let pressure_thrust_n = (exit_pressure_pa - ambient_pressure_pa) * effective_exit_area_m2;
+        let total_thrust_n = momentum_thrust_n + pressure_thrust_n;
+        let effective_isp_s = if chamber.mass_flow_kg_s > 0.0 {
+            total_thrust_n / (STANDARD_GRAVITY_M_S2 * chamber.mass_flow_kg_s)
+        } else {
+            0.0
+        };
+        for value in [
+            exit_mach,
+            exit_pressure_pa,
+            momentum_thrust_n,
+            pressure_thrust_n,
+            total_thrust_n,
+            effective_isp_s,
+            effective_expansion_ratio,
+            effective_exit_area_m2,
+        ] {
+            if !value.is_finite() {
+                return Err(MotorError::NonFinite {
+                    reason: "nozzle solution is non-finite",
+                });
+            }
+        }
+        Ok(NozzleSolution {
+            exit_mach,
+            exit_pressure_pa,
+            separated,
+            effective_expansion_ratio,
+            effective_exit_area_m2,
+            momentum_thrust_n,
+            pressure_thrust_n,
+            total_thrust_n,
+            effective_isp_s,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -414,6 +604,92 @@ impl SolidMotor {
     pub fn initial_mass_kg(&self) -> f64 {
         self.burn.dry_mass_kg + self.burn.propellant_mass_kg
     }
+
+    /// Return a copy with a different ambient-pressure correction
+    /// strategy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MotorError`] when the requested correction requires
+    /// nozzle geometry the motor does not carry.
+    pub fn with_ambient_pressure_correction(
+        mut self,
+        correction: AmbientPressureCorrection,
+    ) -> Result<Self, MotorError> {
+        self.geometry.ambient_pressure_correction = correction;
+        validate_geometry(self.geometry)?;
+        Ok(self)
+    }
+
+    /// Return a copy with a different overexpanded-nozzle separation mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MotorError`] when separation is enabled without the
+    /// pressure-thrust nozzle geometry needed to solve it.
+    pub fn with_nozzle_separation(
+        mut self,
+        separation: NozzleSeparationCriterion,
+    ) -> Result<Self, MotorError> {
+        self.geometry.separation = separation;
+        validate_geometry(self.geometry)?;
+        Ok(self)
+    }
+
+    /// Solve the ambient-aware nozzle at one motor time.
+    ///
+    /// Returns `Ok(None)` outside the burn window or at zero thrust.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MotorError`] when the motor does not carry the
+    /// nozzle parameters required for pressure-thrust correction or
+    /// when the ideal-nozzle solve fails.
+    pub fn nozzle_solution_at(
+        &self,
+        t_since_ignition_s: f64,
+        ambient_pressure_pa: f64,
+    ) -> Result<Option<NozzleSolution>, MotorError> {
+        let momentum_thrust_n = self.thrust_n_at(t_since_ignition_s)?;
+        if momentum_thrust_n == 0.0 {
+            return Ok(None);
+        }
+        let chamber = self.chamber_state_from_momentum_thrust(
+            momentum_thrust_n,
+            -self.mass_rate_kg_s(t_since_ignition_s)?,
+        )?;
+        IdealNozzlePerformance::new(self.geometry.separation)
+            .solve(chamber, ambient_pressure_pa)
+            .map(Some)
+    }
+
+    fn chamber_state_from_momentum_thrust(
+        &self,
+        momentum_thrust_n: f64,
+        mass_flow_kg_s: f64,
+    ) -> Result<ChamberState, MotorError> {
+        let throat_area_m2 = self
+            .geometry
+            .throat_area_m2
+            .ok_or(MotorError::InvalidParameter {
+                reason: "pressure-thrust correction requires geometry.throat_area_m2",
+            })?;
+        let gamma = self.geometry.gamma.ok_or(MotorError::InvalidParameter {
+            reason: "pressure-thrust correction requires geometry.gamma",
+        })?;
+        let expansion_ratio = self.geometry.exit_area_m2 / throat_area_m2;
+        let cf_momentum = ideal_momentum_thrust_coefficient(gamma, expansion_ratio)?;
+        let chamber_pressure_pa = momentum_thrust_n / (cf_momentum * throat_area_m2);
+        let chamber = ChamberState {
+            chamber_pressure_pa,
+            mass_flow_kg_s,
+            gamma,
+            throat_area_m2,
+            exit_area_m2: self.geometry.exit_area_m2,
+        };
+        validate_chamber_state(chamber)?;
+        Ok(chamber)
+    }
 }
 
 impl Motor for SolidMotor {
@@ -427,6 +703,24 @@ impl Motor for SolidMotor {
             return Ok(0.0);
         }
         Ok(self.thrust_curve.thrust_at(t_since_ignition_s))
+    }
+
+    fn thrust_n_at_ambient_pressure(
+        &self,
+        t_since_ignition_s: f64,
+        ambient_pressure_pa: f64,
+    ) -> Result<f64, MotorError> {
+        if !ambient_pressure_pa.is_finite() || ambient_pressure_pa < 0.0 {
+            return Err(MotorError::NonFinite {
+                reason: "ambient pressure is NaN, infinite, or negative",
+            });
+        }
+        match self.geometry.ambient_pressure_correction {
+            AmbientPressureCorrection::Constant => self.thrust_n_at(t_since_ignition_s),
+            AmbientPressureCorrection::PressureThrust => Ok(self
+                .nozzle_solution_at(t_since_ignition_s, ambient_pressure_pa)?
+                .map_or(0.0, |solution| solution.total_thrust_n)),
+        }
     }
 
     fn mass_kg(&self, t_since_ignition_s: f64) -> Result<f64, MotorError> {
@@ -587,7 +881,254 @@ fn validate_geometry(geometry: MotorGeometry) -> Result<(), MotorError> {
             reason: "exit area must be positive",
         });
     }
+    if let Some(throat_area_m2) = geometry.throat_area_m2 {
+        if !throat_area_m2.is_finite() || throat_area_m2 <= 0.0 {
+            return Err(MotorError::InvalidParameter {
+                reason: "throat area must be finite and positive",
+            });
+        }
+        if throat_area_m2 > geometry.exit_area_m2 {
+            return Err(MotorError::InvalidParameter {
+                reason: "throat area must not exceed exit area",
+            });
+        }
+    }
+    if let Some(gamma) = geometry.gamma
+        && (!gamma.is_finite() || gamma <= 1.0)
+    {
+        return Err(MotorError::InvalidParameter {
+            reason: "nozzle gamma must be finite and greater than 1",
+        });
+    }
+    if matches!(
+        geometry.ambient_pressure_correction,
+        AmbientPressureCorrection::PressureThrust
+    ) && (geometry.throat_area_m2.is_none() || geometry.gamma.is_none())
+    {
+        return Err(MotorError::InvalidParameter {
+            reason: "pressure-thrust correction requires throat_area_m2 and gamma",
+        });
+    }
+    if geometry.separation != NozzleSeparationCriterion::Off
+        && geometry.ambient_pressure_correction != AmbientPressureCorrection::PressureThrust
+    {
+        return Err(MotorError::InvalidParameter {
+            reason: "nozzle separation requires pressure-thrust correction",
+        });
+    }
     Ok(())
+}
+
+fn validate_chamber_state(chamber: ChamberState) -> Result<(), MotorError> {
+    for value in [
+        chamber.chamber_pressure_pa,
+        chamber.mass_flow_kg_s,
+        chamber.gamma,
+        chamber.throat_area_m2,
+        chamber.exit_area_m2,
+    ] {
+        if !value.is_finite() {
+            return Err(MotorError::NonFinite {
+                reason: "chamber state is non-finite",
+            });
+        }
+    }
+    if chamber.chamber_pressure_pa <= 0.0 {
+        return Err(MotorError::InvalidParameter {
+            reason: "chamber pressure must be positive",
+        });
+    }
+    if chamber.mass_flow_kg_s < 0.0 {
+        return Err(MotorError::InvalidParameter {
+            reason: "mass flow must be non-negative",
+        });
+    }
+    if chamber.gamma <= 1.0 {
+        return Err(MotorError::InvalidParameter {
+            reason: "nozzle gamma must be greater than 1",
+        });
+    }
+    if chamber.throat_area_m2 <= 0.0 || chamber.exit_area_m2 < chamber.throat_area_m2 {
+        return Err(MotorError::InvalidParameter {
+            reason: "nozzle areas must satisfy exit_area >= throat_area > 0",
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn ideal_momentum_thrust_coefficient(
+    gamma: f64,
+    expansion_ratio: f64,
+) -> Result<f64, MotorError> {
+    if !gamma.is_finite() || gamma <= 1.0 || !expansion_ratio.is_finite() || expansion_ratio < 1.0 {
+        return Err(MotorError::InvalidParameter {
+            reason: "nozzle gamma and expansion_ratio are outside envelope",
+        });
+    }
+    let exit_mach = supersonic_mach_for_area_ratio(gamma, expansion_ratio)?;
+    let pe_pc = exit_pressure_ratio(gamma, exit_mach);
+    let term = 1.0 - pe_pc.powf((gamma - 1.0) / gamma);
+    let coeff = ((2.0 * gamma * gamma / (gamma - 1.0))
+        * (2.0 / (gamma + 1.0)).powf((gamma + 1.0) / (gamma - 1.0))
+        * term)
+        .sqrt();
+    if !coeff.is_finite() || coeff <= 0.0 {
+        return Err(MotorError::NonFinite {
+            reason: "nozzle thrust coefficient is non-finite",
+        });
+    }
+    Ok(coeff)
+}
+
+pub(crate) fn exit_pressure_ratio(gamma: f64, exit_mach: f64) -> f64 {
+    (1.0 + 0.5 * (gamma - 1.0) * exit_mach * exit_mach).powf(-gamma / (gamma - 1.0))
+}
+
+fn effective_nozzle_state(
+    separation: NozzleSeparationCriterion,
+    chamber: ChamberState,
+    ambient_pressure_pa: f64,
+    geometric_exit_mach: f64,
+    geometric_exit_pressure_pa: f64,
+) -> Result<(bool, f64, f64, f64, f64), MotorError> {
+    let geometric_expansion_ratio = chamber.exit_area_m2 / chamber.throat_area_m2;
+    if separation == NozzleSeparationCriterion::Off || ambient_pressure_pa == 0.0 {
+        return Ok((
+            false,
+            geometric_exit_mach,
+            geometric_exit_pressure_pa,
+            geometric_expansion_ratio,
+            chamber.exit_area_m2,
+        ));
+    }
+
+    let full_residual = separation_residual(
+        separation,
+        chamber.gamma,
+        chamber.chamber_pressure_pa,
+        ambient_pressure_pa,
+        geometric_exit_mach,
+    )?;
+    if full_residual >= 0.0 {
+        return Ok((
+            false,
+            geometric_exit_mach,
+            geometric_exit_pressure_pa,
+            geometric_expansion_ratio,
+            chamber.exit_area_m2,
+        ));
+    }
+
+    let mut lo = 1.0;
+    let mut hi = geometric_exit_mach;
+    if separation_residual(
+        separation,
+        chamber.gamma,
+        chamber.chamber_pressure_pa,
+        ambient_pressure_pa,
+        lo,
+    )? <= 0.0
+    {
+        hi = lo;
+    } else {
+        for _ in 0..NOZZLE_MACH_BISECTION_ITERS {
+            let mid = 0.5 * (lo + hi);
+            if separation_residual(
+                separation,
+                chamber.gamma,
+                chamber.chamber_pressure_pa,
+                ambient_pressure_pa,
+                mid,
+            )? > 0.0
+            {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+    }
+
+    let exit_mach = hi;
+    let exit_pressure_pa =
+        chamber.chamber_pressure_pa * exit_pressure_ratio(chamber.gamma, exit_mach);
+    let effective_expansion_ratio = nozzle_area_ratio(chamber.gamma, exit_mach);
+    let effective_exit_area_m2 = chamber.throat_area_m2 * effective_expansion_ratio;
+    Ok((
+        true,
+        exit_mach,
+        exit_pressure_pa,
+        effective_expansion_ratio,
+        effective_exit_area_m2,
+    ))
+}
+
+fn separation_residual(
+    separation: NozzleSeparationCriterion,
+    gamma: f64,
+    chamber_pressure_pa: f64,
+    ambient_pressure_pa: f64,
+    mach: f64,
+) -> Result<f64, MotorError> {
+    let Some(separation_ratio) = separation_pressure_ratio(separation, mach) else {
+        return Err(MotorError::OutOfEnvelope {
+            reason: "nozzle separation criterion is outside the fixed Mach bracket",
+        });
+    };
+    let residual = chamber_pressure_pa * exit_pressure_ratio(gamma, mach)
+        - ambient_pressure_pa * separation_ratio;
+    if !residual.is_finite() {
+        return Err(MotorError::NonFinite {
+            reason: "nozzle separation residual is non-finite",
+        });
+    }
+    Ok(residual)
+}
+
+fn separation_pressure_ratio(separation: NozzleSeparationCriterion, mach: f64) -> Option<f64> {
+    let ratio = match separation {
+        NozzleSeparationCriterion::Off => return None,
+        NozzleSeparationCriterion::Summerfield => 0.4,
+        NozzleSeparationCriterion::Schmucker => {
+            let base = 1.88 * mach - 1.0;
+            if base <= 0.0 {
+                return None;
+            }
+            base.powf(-0.64)
+        }
+    };
+    ratio.is_finite().then_some(ratio)
+}
+
+pub(crate) fn supersonic_mach_for_area_ratio(
+    gamma: f64,
+    expansion_ratio: f64,
+) -> Result<f64, MotorError> {
+    if (expansion_ratio - 1.0).abs() <= MIN_POSITIVE {
+        return Ok(1.0);
+    }
+    let mut lo = 1.0;
+    let mut hi = 50.0;
+    if nozzle_area_ratio(gamma, hi) < expansion_ratio {
+        return Err(MotorError::OutOfEnvelope {
+            reason: "nozzle expansion_ratio is outside the fixed Mach bracket",
+        });
+    }
+    for _ in 0..NOZZLE_MACH_BISECTION_ITERS {
+        let mid = 0.5 * (lo + hi);
+        if nozzle_area_ratio(gamma, mid) < expansion_ratio {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Ok(0.5 * (lo + hi))
+}
+
+fn nozzle_area_ratio(gamma: f64, mach: f64) -> f64 {
+    let gm1 = gamma - 1.0;
+    let gp1 = gamma + 1.0;
+    let bracket = (2.0 / gp1) * (1.0 + 0.5 * gm1 * mach * mach);
+    (1.0 / mach) * bracket.powf(gp1 / (2.0 * gm1))
 }
 
 #[cfg(test)]
@@ -616,9 +1157,30 @@ mod tests {
             ThrustCurve::new(vec![[0.0, 0.0], [0.5, 1000.0], [3.5, 1000.0], [4.0, 0.0]]).unwrap();
         let geom = MotorGeometry {
             exit_area_m2: 0.0019,
+            throat_area_m2: None,
+            gamma: None,
             ambient_pressure_correction: AmbientPressureCorrection::Constant,
+            separation: NozzleSeparationCriterion::Off,
         };
         SolidMotor::new(meta, burn, curve, geom).unwrap()
+    }
+
+    fn pressure_thrust_motor() -> SolidMotor {
+        let mut motor = trapezoidal_motor();
+        motor.geometry = MotorGeometry {
+            exit_area_m2: 2.0e-3,
+            throat_area_m2: Some(1.0e-4),
+            gamma: Some(1.2),
+            ambient_pressure_correction: AmbientPressureCorrection::PressureThrust,
+            separation: NozzleSeparationCriterion::Off,
+        };
+        SolidMotor::new(
+            motor.meta().clone(),
+            *motor.burn(),
+            motor.thrust_curve().clone(),
+            motor.geometry,
+        )
+        .unwrap()
     }
 
     // -----------------------------------------------------------------
@@ -681,6 +1243,141 @@ mod tests {
         assert!(matches!(
             m.thrust_n_at(f64::INFINITY),
             Err(MotorError::NonFinite { .. })
+        ));
+    }
+
+    #[test]
+    fn pressure_thrust_requires_nozzle_state() {
+        assert!(matches!(
+            trapezoidal_motor()
+                .with_ambient_pressure_correction(AmbientPressureCorrection::PressureThrust),
+            Err(MotorError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn pressure_thrust_matches_optimum_curve_when_ambient_equals_exit_pressure() {
+        let m = pressure_thrust_motor();
+        let optimum = m.thrust_n_at(2.0).unwrap();
+        let solution_at_vacuum = m.nozzle_solution_at(2.0, 0.0).unwrap().unwrap();
+        let corrected = m
+            .thrust_n_at_ambient_pressure(2.0, solution_at_vacuum.exit_pressure_pa)
+            .unwrap();
+        assert_abs_diff_eq!(corrected, optimum, epsilon = 1.0e-12);
+    }
+
+    #[test]
+    fn pressure_thrust_lifts_vacuum_and_reduces_sea_level_by_area_term() {
+        let m = pressure_thrust_motor();
+        let optimum = m.thrust_n_at(2.0).unwrap();
+        let solution_at_vacuum = m.nozzle_solution_at(2.0, 0.0).unwrap().unwrap();
+        let sea_level = m.thrust_n_at_ambient_pressure(2.0, 101_325.0).unwrap();
+        let vacuum = m.thrust_n_at_ambient_pressure(2.0, 0.0).unwrap();
+        assert!(vacuum > optimum);
+        assert!(sea_level < optimum);
+        assert_abs_diff_eq!(
+            vacuum - sea_level,
+            101_325.0 * m.geometry().exit_area_m2,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            vacuum - optimum,
+            solution_at_vacuum.exit_pressure_pa * m.geometry().exit_area_m2,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn separation_off_preserves_ideal_pressure_thrust_solution() {
+        let m = pressure_thrust_motor();
+        let chamber = m
+            .chamber_state_from_momentum_thrust(1000.0, -m.mass_rate_kg_s(2.0).unwrap())
+            .unwrap();
+        let off = IdealNozzlePerformance::default()
+            .solve(chamber, 101_325.0)
+            .unwrap();
+        let explicit_off = IdealNozzlePerformance::new(NozzleSeparationCriterion::Off)
+            .solve(chamber, 101_325.0)
+            .unwrap();
+
+        assert_eq!(off, explicit_off);
+        assert!(!off.separated);
+        assert_abs_diff_eq!(
+            off.effective_expansion_ratio,
+            m.geometry().exit_area_m2 / m.geometry().throat_area_m2.unwrap(),
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            off.effective_exit_area_m2,
+            m.geometry().exit_area_m2,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn summerfield_separation_clips_heavily_overexpanded_nozzle() {
+        let baseline = pressure_thrust_motor();
+        let separated_motor = baseline
+            .clone()
+            .with_nozzle_separation(NozzleSeparationCriterion::Summerfield)
+            .unwrap();
+
+        let full = baseline
+            .nozzle_solution_at(2.0, 101_325.0)
+            .unwrap()
+            .unwrap();
+        let separated = separated_motor
+            .nozzle_solution_at(2.0, 101_325.0)
+            .unwrap()
+            .unwrap();
+
+        assert!(!full.separated);
+        assert!(separated.separated);
+        assert!(separated.effective_expansion_ratio < full.effective_expansion_ratio);
+        assert!(separated.effective_exit_area_m2 < full.effective_exit_area_m2);
+        assert!(separated.total_thrust_n > full.total_thrust_n);
+        assert_abs_diff_eq!(
+            separated.exit_pressure_pa / 101_325.0,
+            0.4,
+            epsilon = 1.0e-10
+        );
+    }
+
+    #[test]
+    fn schmucker_separation_clips_heavily_overexpanded_nozzle() {
+        let baseline = pressure_thrust_motor();
+        let separated_motor = baseline
+            .clone()
+            .with_nozzle_separation(NozzleSeparationCriterion::Schmucker)
+            .unwrap();
+
+        let full = baseline
+            .nozzle_solution_at(2.0, 101_325.0)
+            .unwrap()
+            .unwrap();
+        let separated = separated_motor
+            .nozzle_solution_at(2.0, 101_325.0)
+            .unwrap()
+            .unwrap();
+        let expected_ratio =
+            separation_pressure_ratio(NozzleSeparationCriterion::Schmucker, separated.exit_mach)
+                .unwrap();
+
+        assert!(separated.separated);
+        assert!(separated.effective_expansion_ratio < full.effective_expansion_ratio);
+        assert!(separated.total_thrust_n > full.total_thrust_n);
+        assert_abs_diff_eq!(
+            separated.exit_pressure_pa / 101_325.0,
+            expected_ratio,
+            epsilon = 1.0e-10
+        );
+    }
+
+    #[test]
+    fn nozzle_separation_requires_pressure_thrust_correction() {
+        assert!(matches!(
+            trapezoidal_motor().with_nozzle_separation(NozzleSeparationCriterion::Summerfield),
+            Err(MotorError::InvalidParameter { .. })
         ));
     }
 
@@ -882,7 +1579,10 @@ mod tests {
     fn valid_geom() -> MotorGeometry {
         MotorGeometry {
             exit_area_m2: 1.0e-4,
+            throat_area_m2: None,
+            gamma: None,
             ambient_pressure_correction: AmbientPressureCorrection::Constant,
+            separation: NozzleSeparationCriterion::Off,
         }
     }
 

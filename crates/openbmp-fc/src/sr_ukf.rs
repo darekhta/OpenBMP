@@ -449,6 +449,14 @@ fn covariance_diag_condition(p: &DMatrix<f64>) -> f64 {
     }
 }
 
+fn covariance_diag3(p: &DMatrix<f64>, start: usize) -> [f64; 3] {
+    [
+        p[(start, start)],
+        p[(start + 1, start + 1)],
+        p[(start + 2, start + 2)],
+    ]
+}
+
 // =====================================================================
 // `SquareRootUkf` (15-state error-state filter)
 // =====================================================================
@@ -795,11 +803,17 @@ impl SquareRootUkf {
         (0..SRUKF_STATE_DIM).map(|i| p[(i, i)]).fold(0.0, f64::max)
     }
 
-    fn observability_metrics(&self) -> (f64, f64, bool) {
+    fn covariance_diagnostics(&self) -> ([f64; 3], [f64; 3], [f64; 3], f64, f64, bool) {
         let p = covariance_from_cholesky(&self.s);
-        let attitude_variance_max_rad2 = (6..9).map(|i| p[(i, i)]).fold(0.0, f64::max);
+        let position_variance_eci_m2 = covariance_diag3(&p, 0);
+        let velocity_variance_eci_m2_s2 = covariance_diag3(&p, 3);
+        let attitude_variance_rad2 = covariance_diag3(&p, 6);
+        let attitude_variance_max_rad2 = attitude_variance_rad2.iter().copied().fold(0.0, f64::max);
         let condition_proxy = covariance_diag_condition(&p);
         (
+            position_variance_eci_m2,
+            velocity_variance_eci_m2_s2,
+            attitude_variance_rad2,
             attitude_variance_max_rad2,
             condition_proxy,
             !attitude_variance_max_rad2.is_finite()
@@ -1351,8 +1365,14 @@ impl crate::estimator::Estimator for SquareRootUkf {
     }
 
     fn status(&self) -> EstimatorStatus {
-        let (attitude_variance_max_rad2, covariance_condition_proxy, attitude_under_observable) =
-            self.observability_metrics();
+        let (
+            position_variance_eci_m2,
+            velocity_variance_eci_m2_s2,
+            attitude_variance_rad2,
+            attitude_variance_max_rad2,
+            covariance_condition_proxy,
+            attitude_under_observable,
+        ) = self.covariance_diagnostics();
         EstimatorStatus {
             time: SimTime::ZERO,
             initialized: self.initialized,
@@ -1370,6 +1390,9 @@ impl crate::estimator::Estimator for SquareRootUkf {
             mag_innovation_whitened: self.last_mag_innovation_whitened,
             mag_updated_this_tick: self.last_mag_updated_this_tick,
             attitude_variance_max_rad2,
+            position_variance_eci_m2,
+            velocity_variance_eci_m2_s2,
+            attitude_variance_rad2,
             covariance_condition_proxy,
             attitude_under_observable,
         }
@@ -1522,6 +1545,8 @@ impl crate::estimator::Estimator for SquareRootUkfAttitude {
         let mut s = self.inner.status();
         // Override dead_reckoning — meaningless for attitude-only.
         s.dead_reckoning = false;
+        s.position_variance_eci_m2 = [0.0; 3];
+        s.velocity_variance_eci_m2_s2 = [0.0; 3];
         s
     }
 

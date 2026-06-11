@@ -429,6 +429,9 @@ pub struct EnvironmentSample {
     /// Local atmospheric mass density, kg/m³. Defaults to zero so
     /// environments without an atmosphere preserve vacuum semantics.
     pub atmosphere_density_kg_m3: f64,
+    /// Local atmospheric static pressure, Pa. Defaults to zero so
+    /// environments without an atmosphere preserve vacuum semantics.
+    pub atmosphere_pressure_pa: f64,
     /// Inertial ECI velocity of a still atmosphere parcel at the
     /// query point, m/s. WGS84/IERS runner environments populate this
     /// from the ECEF↔ECI state transform; toy fixed-Earth and null

@@ -41,6 +41,12 @@ const WIND_COMPONENT_DOMAIN_TAG: [u8; 4] = *b"WIND";
 /// stimulus draws zero numbers from this independent stream family.
 const STIMULUS_COMPONENT_DOMAIN_TAG: [u8; 4] = *b"STIM";
 
+/// Domain tag for [`DeterministicRng::for_mc_sample`].
+/// Distinct from every runtime model stream so campaign sampling can
+/// add dimensions without perturbing sensor, effector, wind, or
+/// telemetry-channel streams.
+const MC_SAMPLE_DOMAIN_TAG: [u8; 4] = *b"MCRN";
+
 /// Deterministic pseudo-random number generator.
 ///
 /// Implements [`rand::Rng`] and is therefore usable anywhere the
@@ -213,6 +219,41 @@ impl DeterministicRng {
         // `WindModelId` if multi-source wind composition lands.
         bytes[24..28].copy_from_slice(&axis.value().to_le_bytes());
         bytes[28..32].copy_from_slice(&WIND_COMPONENT_DOMAIN_TAG);
+        Self::from_raw_seed(bytes)
+    }
+
+    /// Construct a per-Monte-Carlo-sample deterministic stream.
+    ///
+    /// The seed is derived from `(campaign_seed, sample_index,
+    /// dimension_id)` plus the `MC_SAMPLE_DOMAIN_TAG` (`b"MCRN"`) in
+    /// the trailing 4 bytes. This is the campaign-layer analogue of
+    /// the runtime model component streams: a sample's draws depend
+    /// only on its explicit index and dimension, never on thread
+    /// count, scheduling order, or completion order.
+    ///
+    /// Seed layout:
+    ///
+    /// | bytes  | content                                  |
+    /// |--------|------------------------------------------|
+    /// | 0..8   | `campaign_seed.to_le_bytes()`            |
+    /// | 8..16  | `sample_index.to_le_bytes()`             |
+    /// | 16..24 | reserved zero (future campaign field)    |
+    /// | 24..28 | `dimension_id.to_le_bytes()`             |
+    /// | 28..32 | `b"MCRN"`                                |
+    ///
+    /// The domain tag guarantees no collision with [`Self::for_channel`],
+    /// [`Self::for_sensor_component`], [`Self::for_effector_component`],
+    /// [`Self::for_stimulus_component`], or [`Self::for_wind_component`],
+    /// even if the integer payloads overlap.
+    #[must_use]
+    pub fn for_mc_sample(campaign_seed: u64, sample_index: u64, dimension_id: u32) -> Self {
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(&campaign_seed.to_le_bytes());
+        bytes[8..16].copy_from_slice(&sample_index.to_le_bytes());
+        // bytes[16..24] left zero — reserved for a future campaign
+        // stream id without changing the base sample-index contract.
+        bytes[24..28].copy_from_slice(&dimension_id.to_le_bytes());
+        bytes[28..32].copy_from_slice(&MC_SAMPLE_DOMAIN_TAG);
         Self::from_raw_seed(bytes)
     }
 
@@ -558,8 +599,7 @@ mod tests {
             DeterministicRng::for_sensor_component(scenario, step, SensorId::new(payload), 3);
         let mut effector =
             DeterministicRng::for_effector_component(scenario, step, EffectorId::new(payload), 3);
-        let mut channel =
-            DeterministicRng::for_channel(scenario, step, ChannelId::new(payload));
+        let mut channel = DeterministicRng::for_channel(scenario, step, ChannelId::new(payload));
         let mut wind = DeterministicRng::for_wind_component(scenario, step, WindAxis::U);
 
         let stim_sample = stim.next_u64();
@@ -705,6 +745,72 @@ mod tests {
         0x7c, 0xcd, 0x0e, 0xe2, 0x1e, 0x12, 0xfe, 0x5d, 0x3b, 0xec, 0x18, 0x5f, 0x05, 0x30, 0xb9,
         0xbd, 0xc2, 0x1d, 0x36, 0x02, 0xdd, 0xd1, 0x9d, 0x15, 0x4b, 0x3d, 0xb5, 0x84, 0xea, 0x7f,
         0xa6, 0x79,
+    ];
+
+    // -----------------------------------------------------------------
+    // for_mc_sample
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn for_mc_sample_is_deterministic() {
+        let mut a = DeterministicRng::for_mc_sample(0x5151_2727, 42, 3);
+        let mut b = DeterministicRng::for_mc_sample(0x5151_2727, 42, 3);
+        for _ in 0..1024 {
+            assert_eq!(a.next_u64(), b.next_u64());
+        }
+    }
+
+    #[test]
+    fn for_mc_sample_distinct_sample_indices_diverge() {
+        let mut a = DeterministicRng::for_mc_sample(0x5151_2727, 42, 3);
+        let mut b = DeterministicRng::for_mc_sample(0x5151_2727, 43, 3);
+        assert!((0..8).any(|_| a.next_u64() != b.next_u64()));
+    }
+
+    #[test]
+    fn for_mc_sample_distinct_dimensions_diverge() {
+        let mut a = DeterministicRng::for_mc_sample(0x5151_2727, 42, 3);
+        let mut b = DeterministicRng::for_mc_sample(0x5151_2727, 42, 4);
+        assert!((0..8).any(|_| a.next_u64() != b.next_u64()));
+    }
+
+    #[test]
+    fn for_mc_sample_never_collides_with_other_families() {
+        let scenario = 0x9999_aaaau64;
+        let step = StepIndex::new(7);
+        let payload = 0xBABEu64;
+        let mut mc = DeterministicRng::for_mc_sample(scenario, step.value(), 3);
+        let mut stim =
+            DeterministicRng::for_stimulus_component(scenario, step, SensorId::new(payload), 3);
+        let mut sensor =
+            DeterministicRng::for_sensor_component(scenario, step, SensorId::new(payload), 3);
+        let mut effector =
+            DeterministicRng::for_effector_component(scenario, step, EffectorId::new(payload), 3);
+        let mut channel = DeterministicRng::for_channel(scenario, step, ChannelId::new(payload));
+        let mut wind = DeterministicRng::for_wind_component(scenario, step, WindAxis::U);
+
+        assert!((0..8).any(|_| mc.next_u64() != stim.next_u64()));
+        assert!((0..8).any(|_| mc.next_u64() != sensor.next_u64()));
+        assert!((0..8).any(|_| mc.next_u64() != effector.next_u64()));
+        assert!((0..8).any(|_| mc.next_u64() != channel.next_u64()));
+        assert!((0..8).any(|_| mc.next_u64() != wind.next_u64()));
+    }
+
+    #[test]
+    fn for_mc_sample_reference_stream_is_locked() {
+        let mut rng =
+            DeterministicRng::for_mc_sample(0x0123_4567_89ab_cdef, 0x1020_3040_5060_7080, 0x0AABB);
+        let mut actual = [0u8; 32];
+        rng.fill_bytes(&mut actual);
+        let expected = PINNED_MC_REFERENCE_STREAM;
+        assert_eq!(actual, expected);
+    }
+
+    /// Pinned reference stream for `for_mc_sample_reference_stream_is_locked`.
+    const PINNED_MC_REFERENCE_STREAM: [u8; 32] = [
+        0x34, 0xab, 0xd7, 0x04, 0x76, 0xb0, 0x3e, 0xf2, 0xe7, 0x5a, 0x90, 0xd6, 0x5d, 0x07, 0x6c,
+        0xde, 0x1d, 0xc6, 0xbd, 0x27, 0xba, 0x07, 0xa9, 0xe9, 0xec, 0x5e, 0x8e, 0x0b, 0x22, 0xc1,
+        0xff, 0x57,
     ];
 
     proptest! {

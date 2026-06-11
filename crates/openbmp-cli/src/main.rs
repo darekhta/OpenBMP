@@ -5,10 +5,13 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use openbmp_cli::cli::{Cli, Command, DictCommand, MigrateCommand, PackageCommand, SilCommand};
+use openbmp_cli::cli::{
+    Cli, Command, DictCommand, McCommand, McWilksSide, MigrateCommand, PackageCommand,
+    ReconstructCommand, SilCommand,
+};
 use openbmp_cli::commands::{
-    check, compare_telemetry, conform, dict, diff, footprint_mc, migrate, package, provenance, run,
-    sil,
+    check, compare_telemetry, conform, dict, diff, footprint_mc, mc, migrate, package, provenance,
+    reconstruct, run, sil, verify_order,
 };
 use openbmp_cli::tracing;
 
@@ -48,7 +51,45 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                 "openbmp run: ok — {} steps, t = {:.6} s, stop = {}",
                 report.final_step, report.final_time_s, report.stop_label,
             );
-            for path in report.written {
+            if let Some(realtime) = &report.realtime {
+                let rtf = realtime
+                    .real_time_factor
+                    .map_or_else(|| "n/a".to_owned(), |value| format!("{value:.6}"));
+                let jitter = realtime.jitter.as_ref().map_or_else(
+                    || "jitter=n/a".to_owned(),
+                    |summary| {
+                        format!(
+                            "jitter_ns[p50={}, p99={}, p99.9={}, max={}]",
+                            summary.p50_ns, summary.p99_ns, summary.p999_ns, summary.max_ns
+                        )
+                    },
+                );
+                println!(
+                    "  realtime: mode={}, frames={}, rtf={}, overruns={}, {}",
+                    realtime.mode, realtime.frame_count, rtf, realtime.overrun_count, jitter,
+                );
+                if let Some(execution) = &realtime.frame_execution {
+                    let budget = execution
+                        .wall_budget_ns
+                        .map_or_else(|| "n/a".to_owned(), |value| value.to_string());
+                    println!(
+                        "  realtime execution: frame_ns[p50={}, p99={}, p99.9={}, max={}], budget={}, budget_overruns={}",
+                        execution.p50_ns,
+                        execution.p99_ns,
+                        execution.p999_ns,
+                        execution.max_ns,
+                        budget,
+                        execution.over_budget_count,
+                    );
+                }
+            }
+            if let Some(actuator_stream) = &report.actuator_stream {
+                println!(
+                    "  actuator stream: packets={}, sha256={}",
+                    actuator_stream.packet_count, actuator_stream.sha256_hex,
+                );
+            }
+            for path in &report.written {
                 println!("  wrote {}", path.display());
             }
             Ok(())
@@ -131,6 +172,111 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
             }
             Ok(())
         }
+        Command::VerifyOrder {
+            method,
+            output_toml,
+        } => {
+            let report = verify_order::run(method, output_toml.as_deref())?;
+            println!(
+                "openbmp verify-order: ok - {} method(s)",
+                report.methods.len()
+            );
+            for method in &report.methods {
+                println!(
+                    "  {}: p(coarse/medium)={:.6}, p(medium/fine)={:.6}, gci_fine={:.12e}, passed={}",
+                    method.report.method,
+                    method.report.observed_order_coarse_medium,
+                    method.report.observed_order_medium_fine,
+                    method.report.gci_fine,
+                    method.passed,
+                );
+            }
+            if let Some(path) = report.output_toml {
+                println!("  wrote verify-order report {}", path.display());
+            }
+            Ok(())
+        }
+        Command::Reconstruct { command } => match command {
+            ReconstructCommand::SyntheticLinear { output_toml } => {
+                let report = reconstruct::run_synthetic_linear(output_toml.as_deref())?;
+                println!(
+                    "openbmp reconstruct synthetic-linear: ok - NEES {:.6}, NIS {:.6}, batch_error={:.12e}, passed={}",
+                    report.reconstruction.nees.in_bounds_fraction,
+                    report.reconstruction.nis.in_bounds_fraction,
+                    report.reconstruction.batch_update_error_norm,
+                    report.reconstruction.passed,
+                );
+                if let Some(path) = report.output_toml {
+                    println!("  wrote reconstruction report {}", path.display());
+                }
+                Ok(())
+            }
+            ReconstructCommand::ObserveFc {
+                scenario,
+                output_toml,
+            } => {
+                let report = reconstruct::run_observe_fc(&scenario, output_toml.as_deref())?;
+                println!(
+                    "openbmp reconstruct observe-fc: ok - ticks={}, estimator_samples={}, nis_reports={}, nees_reports={}",
+                    report.ticks_observed,
+                    report.estimator_samples,
+                    report.nis_reports.len(),
+                    report.nees_reports.len(),
+                );
+                for nis in &report.nis_reports {
+                    println!(
+                        "  {}: samples={}, in_bounds_fraction={:.6}, mean_chi2={:.6e}, max_chi2={:.6e}",
+                        nis.report.label,
+                        nis.report.samples,
+                        nis.report.in_bounds_fraction,
+                        nis.mean_chi2,
+                        nis.max_chi2,
+                    );
+                }
+                for nees in &report.nees_reports {
+                    println!(
+                        "  {}: samples={}, in_bounds_fraction={:.6}, mean_chi2={:.6e}, max_chi2={:.6e}",
+                        nees.report.label,
+                        nees.report.samples,
+                        nees.report.in_bounds_fraction,
+                        nees.mean_chi2,
+                        nees.max_chi2,
+                    );
+                }
+                if let Some(path) = report.output_toml {
+                    println!("  wrote FC observation report {}", path.display());
+                }
+                Ok(())
+            }
+            ReconstructCommand::ExportTrajectory {
+                scenario,
+                output_csv,
+            } => {
+                let report = reconstruct::run_export_trajectory(&scenario, &output_csv)?;
+                println!(
+                    "openbmp reconstruct export-trajectory: ok - samples={}, final_time_s={:.6}, stop={}",
+                    report.samples, report.final_time_s, report.stop_label,
+                );
+                println!("  wrote trajectory CSV {}", report.output_csv.display());
+                Ok(())
+            }
+            ReconstructCommand::ExportTrajectoryMapping { output_toml, pack } => {
+                let report = reconstruct::run_export_trajectory_mapping(&output_toml, pack)?;
+                println!(
+                    "openbmp reconstruct export-trajectory-mapping: ok - pack={:?}, metrics={}, time_tol={:.6e}, pos_tol={:.6e}, vel_tol={:.6e}",
+                    report.pack,
+                    report.metrics,
+                    report.time_tolerance_s,
+                    report.position_tolerance_m,
+                    report.velocity_tolerance_m_s,
+                );
+                println!(
+                    "  wrote trajectory mapping {}",
+                    report.output_toml.display()
+                );
+                Ok(())
+            }
+        },
         Command::CompareTelemetry {
             scenario,
             reference_csv,
@@ -191,17 +337,383 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                 })
             }
         }
-        Command::FootprintMc { scenario } => {
-            let report = footprint_mc::run(&scenario)?;
+        Command::FootprintMc {
+            scenario,
+            checkpoint_json,
+            max_new_samples,
+            toolchain_profile,
+            uq_toml,
+            credibility_floor,
+            credibility_report_md,
+        } => {
+            let credibility_options = build_mc_credibility_options(
+                uq_toml.as_ref(),
+                &credibility_floor,
+                credibility_report_md.as_ref(),
+            )?;
+            let report = footprint_mc::run(
+                &scenario,
+                checkpoint_json.as_deref(),
+                max_new_samples,
+                &toolchain_profile,
+                credibility_options,
+            )?;
             println!(
-                "openbmp footprint-mc: ok — {} requested, {} succeeded, {} failed",
-                report.samples_requested, report.samples_succeeded, report.samples_failed,
+                "openbmp footprint-mc: ok - {} requested, {} completed, {} succeeded, {} failed",
+                report.samples_requested,
+                report.samples_completed,
+                report.samples_succeeded,
+                report.samples_failed,
             );
+            if !report.complete {
+                println!("  checkpoint incomplete; final outputs were not written");
+            }
+            if let Some(credibility) = &report.credibility {
+                println!(
+                    "  credibility: binding={}, floor={}, label={}, aggregate_1sigma={:.12e}, accepted={}",
+                    credibility.binding_level.as_label(),
+                    credibility.floor.as_label(),
+                    credibility.legacy_label.as_label(),
+                    credibility.aggregate_one_sigma,
+                    credibility.accepted,
+                );
+            }
+            if let Some(path) = &report.credibility_report_md {
+                println!("  wrote credibility report {}", path.display());
+            }
             for path in report.written {
                 println!("  wrote {}", path.display());
             }
             Ok(())
         }
+        Command::Mc { command } => match command {
+            McCommand::Summarize {
+                samples_csv,
+                value_column,
+                success_column,
+                confidence,
+                uq_toml,
+                credibility_floor,
+                credibility_report_md,
+            } => {
+                let credibility_options = build_mc_credibility_options(
+                    uq_toml.as_ref(),
+                    &credibility_floor,
+                    credibility_report_md.as_ref(),
+                )?;
+                let report = mc::summarize_with_credibility(
+                    &samples_csv,
+                    &value_column,
+                    success_column.as_deref(),
+                    confidence,
+                    credibility_options,
+                )?;
+                let summary = report.summary;
+                println!(
+                    "openbmp mc summarize: ok — {} samples, mean = {:.12e}",
+                    summary.samples, summary.mean,
+                );
+                if let Some(variance) = summary.sample_variance {
+                    println!("  sample_variance = {variance:.12e}");
+                }
+                if let Some(standard_error) = summary.standard_error {
+                    println!("  standard_error = {standard_error:.12e}");
+                }
+                if let Some(success) = summary.success {
+                    println!(
+                        "  success = {}/{} ({:.6}), {:.3} CI [{:.6}, {:.6}]",
+                        success.successes,
+                        success.trials,
+                        success.fraction,
+                        success.confidence,
+                        success.lower,
+                        success.upper,
+                    );
+                }
+                if let Some(credibility) = report.credibility {
+                    println!(
+                        "  credibility: binding={}, floor={}, label={}, aggregate_1sigma={:.12e}, accepted={}",
+                        credibility.binding_level.as_label(),
+                        credibility.floor.as_label(),
+                        credibility.legacy_label.as_label(),
+                        credibility.aggregate_one_sigma,
+                        credibility.accepted,
+                    );
+                    if let Some(path) = report.credibility_report_md {
+                        println!("  wrote credibility report {}", path.display());
+                    }
+                }
+                Ok(())
+            }
+            McCommand::NestedSummarize {
+                samples_csv,
+                epistemic_column,
+                value_column,
+                threshold,
+                minimum_probability,
+                pbox_csv,
+            } => {
+                let report = mc::summarize_nested(
+                    &samples_csv,
+                    &epistemic_column,
+                    &value_column,
+                    threshold,
+                    minimum_probability,
+                    pbox_csv.as_deref(),
+                )?;
+                let analysis = report.analysis;
+                println!(
+                    "openbmp mc nested-summarize: ok - {} epistemic conditions, aleatory samples min={}, max={}",
+                    analysis.epistemic_samples,
+                    analysis.min_aleatory_samples,
+                    analysis.max_aleatory_samples,
+                );
+                println!(
+                    "  variance: aleatory={:.12e}, epistemic={:.12e}, total={:.12e}",
+                    analysis.variance_split.aleatory,
+                    analysis.variance_split.epistemic,
+                    analysis.variance_split.total,
+                );
+                if let (Some(probability), Some(passed)) = (
+                    analysis.lower_bound_probability,
+                    analysis.requirement_passed,
+                ) {
+                    println!(
+                        "  lower_pbox P(y <= {:.12e}) = {:.12e}; required >= {:.12e}; passed={}",
+                        threshold, probability, minimum_probability, passed,
+                    );
+                }
+                if let Some(path) = report.pbox_csv {
+                    println!("  wrote p-box {}", path.display());
+                }
+                Ok(())
+            }
+            McCommand::RareEvent {
+                scenario,
+                output_toml,
+            } => {
+                let report = mc::run_rare_event_scenario(mc::McRareEventScenarioOptions {
+                    scenario_path: &scenario,
+                    output_toml: output_toml.as_deref(),
+                })?;
+                println!(
+                    "openbmp mc rare-event: ok - {} estimate(s), label={}, dimension={}, seed={}",
+                    report.estimates.len(),
+                    report.limit_state_label,
+                    report.dimension,
+                    report.seed,
+                );
+                for estimate in &report.estimates {
+                    println!(
+                        "  {}: p_fail={:.12e}, cov={:.6}, evaluations={}",
+                        estimate.method.as_str(),
+                        estimate.failure_probability,
+                        estimate.coefficient_of_variation,
+                        estimate.evaluations,
+                    );
+                    if let Some(error) = estimate.abs_log10_error {
+                        println!("    abs_log10_error = {error:.6}");
+                    }
+                }
+                if let Some(path) = report.output_toml {
+                    println!("  wrote rare-event report {}", path.display());
+                }
+                Ok(())
+            }
+            McCommand::Wilks {
+                coverage,
+                confidence,
+                side,
+            } => {
+                let side = match side {
+                    McWilksSide::OneSided => mc::WilksSide::OneSided,
+                    McWilksSide::TwoSided => mc::WilksSide::TwoSided,
+                };
+                let report = mc::wilks_sample_size(side, coverage, confidence)?;
+                println!(
+                    "openbmp mc wilks: ok — {} N = {}, coverage = {:.8}, confidence = {:.8}, attained = {:.8}",
+                    report.side.label(),
+                    report.samples,
+                    report.coverage,
+                    report.confidence,
+                    report.attained_confidence,
+                );
+                Ok(())
+            }
+            McCommand::Lhs {
+                samples,
+                dimensions,
+                seed,
+                output_csv,
+            } => {
+                let report = mc::write_latin_hypercube(samples, dimensions, seed, &output_csv)?;
+                println!(
+                    "openbmp mc lhs: ok — wrote {} samples x {} dimensions to {}",
+                    report.samples,
+                    report.dimensions,
+                    report.output_csv.display(),
+                );
+                Ok(())
+            }
+            McCommand::Sobol {
+                samples,
+                dimensions,
+                scramble_seed,
+                output_csv,
+            } => {
+                let report = mc::write_sobol(samples, dimensions, scramble_seed, &output_csv)?;
+                if let Some(seed) = report.scramble_seed {
+                    println!(
+                        "openbmp mc sobol: ok — wrote {} samples x {} dimensions to {} (owen scramble seed {seed})",
+                        report.samples,
+                        report.dimensions,
+                        report.output_csv.display(),
+                    );
+                } else {
+                    println!(
+                        "openbmp mc sobol: ok — wrote {} samples x {} dimensions to {}",
+                        report.samples,
+                        report.dimensions,
+                        report.output_csv.display(),
+                    );
+                }
+                Ok(())
+            }
+            McCommand::ImanConover {
+                design_csv,
+                correlation_csv,
+                output_csv,
+            } => {
+                let report = mc::write_iman_conover(&design_csv, &correlation_csv, &output_csv)?;
+                println!(
+                    "openbmp mc iman-conover: ok — wrote {} samples x {} dimensions to {}",
+                    report.samples,
+                    report.dimensions,
+                    report.output_csv.display(),
+                );
+                Ok(())
+            }
+            McCommand::PropulsionFaults {
+                scenario,
+                library_toml,
+                samples,
+                campaign_seed,
+                dimension_id,
+                metric_channel,
+                success_min,
+                success_max,
+                output_csv,
+                confidence,
+                uq_toml,
+                credibility_floor,
+                credibility_report_md,
+            } => {
+                let credibility_options = build_mc_credibility_options(
+                    uq_toml.as_ref(),
+                    &credibility_floor,
+                    credibility_report_md.as_ref(),
+                )?;
+                let report =
+                    mc::run_propulsion_fault_campaign(mc::McPropulsionFaultCampaignOptions {
+                        scenario_path: &scenario,
+                        library_toml: &library_toml,
+                        samples,
+                        campaign_seed,
+                        dimension_id,
+                        metric_channel: &metric_channel,
+                        success_min,
+                        success_max,
+                        output_csv: &output_csv,
+                        confidence,
+                        credibility: credibility_options,
+                    })?;
+                println!(
+                    "openbmp mc propulsion-faults: ok - {} samples, {} activated, mean = {:.12e}, wrote {}",
+                    report.samples,
+                    report.activated_samples,
+                    report.summary.mean,
+                    report.output_csv.display(),
+                );
+                if let Some(success) = report.summary.success {
+                    println!(
+                        "  success = {}/{} ({:.6}), {:.3} CI [{:.6}, {:.6}]",
+                        success.successes,
+                        success.trials,
+                        success.fraction,
+                        success.confidence,
+                        success.lower,
+                        success.upper,
+                    );
+                }
+                if let Some(credibility) = &report.credibility {
+                    println!(
+                        "  credibility: binding={}, floor={}, label={}, aggregate_1sigma={:.12e}, accepted={}",
+                        credibility.binding_level.as_label(),
+                        credibility.floor.as_label(),
+                        credibility.legacy_label.as_label(),
+                        credibility.aggregate_one_sigma,
+                        credibility.accepted,
+                    );
+                }
+                if let Some(path) = &report.credibility_report_md {
+                    println!("  wrote credibility report {}", path.display());
+                }
+                Ok(())
+            }
+            McCommand::ResumeScalar {
+                samples_csv,
+                checkpoint_json,
+                value_column,
+                success_column,
+                sample_count,
+                campaign_seed,
+                dimension_id,
+                scenario_sha256,
+                toolchain_profile,
+                max_new_samples,
+                workers,
+                confidence,
+            } => {
+                let report = mc::resume_scalar_checkpoint(
+                    &samples_csv,
+                    &checkpoint_json,
+                    &value_column,
+                    success_column.as_deref(),
+                    sample_count,
+                    campaign_seed,
+                    dimension_id,
+                    &scenario_sha256,
+                    &toolchain_profile,
+                    max_new_samples,
+                    workers,
+                    confidence,
+                )?;
+                println!(
+                    "openbmp mc resume-scalar: ok - checkpointed {}/{} samples at {}",
+                    report.completed,
+                    report.sample_count,
+                    report.checkpoint_json.display(),
+                );
+                if let Some(summary) = report.summary {
+                    println!(
+                        "  complete: mean = {:.12e}, samples = {}",
+                        summary.mean, summary.samples,
+                    );
+                    if let Some(success) = summary.success {
+                        println!(
+                            "  success = {}/{} ({:.6}), {:.3} CI [{:.6}, {:.6}]",
+                            success.successes,
+                            success.trials,
+                            success.fraction,
+                            success.confidence,
+                            success.lower,
+                            success.upper,
+                        );
+                    }
+                }
+                Ok(())
+            }
+        },
         Command::CheckProvenance { root } => {
             let report = provenance::run(&root)?;
             println!(
@@ -469,4 +981,22 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
             }
         },
     }
+}
+
+fn build_mc_credibility_options<'a>(
+    uq_toml: Option<&'a std::path::PathBuf>,
+    credibility_floor: &str,
+    credibility_report_md: Option<&'a std::path::PathBuf>,
+) -> Result<Option<mc::McCredibilityOptions<'a>>, openbmp_cli::CliError> {
+    let floor = mc::parse_credibility_floor(credibility_floor)?;
+    if uq_toml.is_none() && credibility_report_md.is_some() {
+        return Err(openbmp_cli::CliError::MonteCarlo {
+            summary: "--credibility-report-md requires --uq-toml".to_owned(),
+        });
+    }
+    Ok(uq_toml.map(|path| mc::McCredibilityOptions {
+        uq_toml: path.as_path(),
+        floor,
+        report_md: credibility_report_md.map(|path| path.as_path()),
+    }))
 }

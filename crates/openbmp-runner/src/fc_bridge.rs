@@ -8,20 +8,39 @@
 //! runner-side effector / engine racks.
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::net::TcpStream;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+#[cfg(unix)]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use nalgebra::{UnitQuaternion, Vector3};
+#[cfg(unix)]
+use openbmp_bridge::UnixBridgeListener;
+use openbmp_bridge::{
+    ActuatorCommandPacket, BridgeEndpointRole, BridgeFaultRule, BridgeFaultTransformSet,
+    BridgeHelloPacket, BridgeMessage, BridgePacketDirection, BridgePacketDisposition,
+    BridgePacketFaultRule, BridgePacketTransform, BridgeScalarSignal, BridgeScalarTransform,
+    EngineCommandPacket as BridgeEngineCommandPacket, QuaternionAxis, SensorPacket,
+    SplitStreamTransport, StreamTransport, TcpBridgeListener, Transport, VectorAxis,
+    in_process_transport_pair, validate_ack_for_sensor, validate_command_for_sensor,
+    validate_protocol_version,
+};
 use openbmp_core::{DeterministicRng, Position3, SensorId, StepIndex, Velocity3};
 use openbmp_fc::topics::{
-    BarometerSample, EnvironmentEstimate, GnssSample, ImuSample, MagnetometerSample,
-    PropellantState, StarTrackerSample,
+    BarometerSample, EffectorCommand, EffectorCommandSet, EngineCommand, EngineCommandSet,
+    EnvironmentEstimate, GnssSample, ImuSample, MagnetometerSample, PropellantState,
+    StarTrackerSample,
 };
 pub(crate) use openbmp_fc::topics::{GuidanceCutoff, ReferenceState};
 use openbmp_mission::{FiredEvent, MissionAction};
 use openbmp_physics::atmosphere::{AtmosphereModel, ExoatmosphericPolicy, UsStandard1976};
 use openbmp_physics::magnetic::{EarthDipoleField, MagneticFieldEci, Wmm2025};
 use openbmp_scenario::{
-    FcConfig, FcEstimatorKind, FcMagFieldKind, FcSilFaultKind, ResolvedFile, Scenario,
-    ScenarioDocument, SensorConfig,
+    FcConfig, FcEstimatorKind, FcMagFieldKind, FcSilFaultKind, FcTransportFaultSignalConfig,
+    FcTransportFaultTransformConfig, FcTransportModeConfig, FcTransportPacketDirectionConfig,
+    FcTransportPacketTransformConfig, FcTransportQuaternionAxisConfig, FcTransportVectorAxisConfig,
+    ResolvedFile, Scenario, ScenarioDocument, SensorConfig,
 };
 use openbmp_sensors::{
     GnssNoiseBudget, IdealStateSensor, ImuNoiseBudget, MagnetometerNoiseBudget,
@@ -40,6 +59,9 @@ use crate::error::RunnerError;
 use crate::fc::{EstimatorSeed, FcAutopilotLqrContext, FcRunner, FcRunnerMission};
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
+const DEFAULT_FC_TRANSPORT_MAX_PAYLOAD_LEN: u32 = 4096;
+#[cfg(unix)]
+static UNIX_LOOPBACK_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Optional FC bridge. Absent when the scenario has no `[fc]` block.
 #[derive(Debug)]
@@ -57,6 +79,9 @@ pub struct FcBridge {
     previous_angular_velocity_body_rad_s: Option<Vector3<f64>>,
     previous_angular_time_s: Option<f64>,
     last_mission_action_sequence: Option<u64>,
+    transport_session: Option<FcTransportSession>,
+    transport_faults: BridgeFaultTransformSet,
+    actuator_stream: Vec<ActuatorCommandPacket>,
 }
 
 /// One armed, open-loop sensor fault: a measurement-domain transform that
@@ -81,6 +106,259 @@ struct ArmedFault {
 #[derive(Debug, Default)]
 struct StimulusSchedule {
     faults: Vec<ArmedFault>,
+}
+
+struct FcTransportSession {
+    simulator: Box<dyn Transport>,
+    controller_peer: FcControllerPeer,
+    mode: &'static str,
+    max_payload_len: u32,
+    peer_protocol_version: u16,
+    handshaken: bool,
+}
+
+enum FcControllerPeer {
+    Local(Box<dyn Transport>),
+    ExternalProcess(ExternalFcProcess),
+}
+
+struct ExternalFcProcess {
+    child: Child,
+}
+
+impl Drop for ExternalFcProcess {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+impl FcTransportSession {
+    fn new_in_process(max_payload_len: u32, peer_protocol_version: u16) -> Self {
+        let (simulator, controller) = in_process_transport_pair();
+        Self {
+            simulator: Box::new(simulator),
+            controller_peer: FcControllerPeer::Local(Box::new(controller)),
+            mode: "in_process",
+            max_payload_len,
+            peer_protocol_version,
+            handshaken: false,
+        }
+    }
+
+    fn new_tcp_loopback(
+        max_payload_len: u32,
+        peer_protocol_version: u16,
+    ) -> Result<Self, RunnerError> {
+        let max_payload_len_usize = usize::try_from(max_payload_len).unwrap_or(usize::MAX);
+        let listener = TcpBridgeListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let controller_stream =
+            TcpStream::connect(addr).map_err(openbmp_bridge::BridgeError::Io)?;
+        controller_stream
+            .set_nodelay(true)
+            .map_err(openbmp_bridge::BridgeError::Io)?;
+        let (simulator_transport, _) = listener.accept()?;
+        let simulator_stream = simulator_transport.into_inner();
+        simulator_stream
+            .set_nodelay(true)
+            .map_err(openbmp_bridge::BridgeError::Io)?;
+        Ok(Self {
+            simulator: Box::new(StreamTransport::with_max_payload_len(
+                simulator_stream,
+                max_payload_len_usize,
+            )),
+            controller_peer: FcControllerPeer::Local(Box::new(
+                StreamTransport::with_max_payload_len(controller_stream, max_payload_len_usize),
+            )),
+            mode: "tcp_loopback",
+            max_payload_len,
+            peer_protocol_version,
+            handshaken: false,
+        })
+    }
+
+    #[cfg(unix)]
+    fn new_unix_loopback(
+        max_payload_len: u32,
+        peer_protocol_version: u16,
+    ) -> Result<Self, RunnerError> {
+        let max_payload_len_usize = usize::try_from(max_payload_len).unwrap_or(usize::MAX);
+        let socket_path = std::env::temp_dir().join(format!(
+            "openbmp-fc-{}-{}.sock",
+            std::process::id(),
+            UNIX_LOOPBACK_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixBridgeListener::bind(&socket_path)?;
+        let controller_stream = StreamTransport::connect_unix(listener.path())?.into_inner();
+        let simulator_stream = listener.accept()?.into_inner();
+        let _ = std::fs::remove_file(listener.path());
+        Ok(Self {
+            simulator: Box::new(StreamTransport::with_max_payload_len(
+                simulator_stream,
+                max_payload_len_usize,
+            )),
+            controller_peer: FcControllerPeer::Local(Box::new(
+                StreamTransport::with_max_payload_len(controller_stream, max_payload_len_usize),
+            )),
+            mode: "unix_loopback",
+            max_payload_len,
+            peer_protocol_version,
+            handshaken: false,
+        })
+    }
+
+    fn new_external_process(
+        command: &str,
+        args: &[String],
+        working_dir: Option<&std::path::Path>,
+        max_payload_len: u32,
+        peer_protocol_version: u16,
+    ) -> Result<Self, RunnerError> {
+        let max_payload_len_usize = usize::try_from(max_payload_len).unwrap_or(usize::MAX);
+        let mut process = Command::new(command);
+        process
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        if let Some(working_dir) = working_dir {
+            process.current_dir(working_dir);
+        }
+        let mut child = process
+            .spawn()
+            .map_err(|err| RunnerError::UnsupportedScenario {
+                what: format!("fc.transport external_process spawn failed for `{command}`: {err}"),
+            })?;
+        let child_stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "fc.transport external_process child stdin was not piped".to_owned(),
+            })?;
+        let child_stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "fc.transport external_process child stdout was not piped".to_owned(),
+            })?;
+        Ok(Self {
+            simulator: Box::new(
+                SplitStreamTransport::<ChildStdout, ChildStdin>::with_max_payload_len(
+                    child_stdout,
+                    child_stdin,
+                    max_payload_len_usize,
+                ),
+            ),
+            controller_peer: FcControllerPeer::ExternalProcess(ExternalFcProcess { child }),
+            mode: "external_process",
+            max_payload_len,
+            peer_protocol_version,
+            handshaken: false,
+        })
+    }
+
+    fn local_controller_mut(&mut self) -> Result<&mut dyn Transport, RunnerError> {
+        match &mut self.controller_peer {
+            FcControllerPeer::Local(controller) => Ok(controller.as_mut()),
+            FcControllerPeer::ExternalProcess(_) => Err(RunnerError::UnsupportedScenario {
+                what: "fc.transport external_process has no local controller endpoint".to_owned(),
+            }),
+        }
+    }
+
+    fn has_external_controller(&self) -> bool {
+        matches!(self.controller_peer, FcControllerPeer::ExternalProcess(_))
+    }
+
+    fn ensure_handshake(&mut self) -> Result<(), RunnerError> {
+        if self.handshaken {
+            return Ok(());
+        }
+
+        self.simulator
+            .send(&BridgeMessage::Hello(BridgeHelloPacket::new(
+                BridgeEndpointRole::Simulator,
+                self.max_payload_len,
+            )))?;
+        if matches!(self.controller_peer, FcControllerPeer::Local(_)) {
+            let BridgeMessage::Hello(sim_hello) = self.local_controller_mut()?.recv()? else {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: "fc.transport expected simulator hello during local handshake".to_owned(),
+                });
+            };
+            validate_protocol_version(sim_hello.protocol_version).map_err(|err| {
+                RunnerError::UnsupportedScenario {
+                    what: format!("fc.transport protocol validation failed: {err}"),
+                }
+            })?;
+            if sim_hello.role != BridgeEndpointRole::Simulator {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: "fc.transport local handshake expected simulator role".to_owned(),
+                });
+            }
+
+            let max_payload_len = self.max_payload_len;
+            let peer_protocol_version = self.peer_protocol_version;
+            self.local_controller_mut()?
+                .send(&BridgeMessage::Hello(BridgeHelloPacket {
+                    protocol_version: peer_protocol_version,
+                    role: BridgeEndpointRole::FlightController,
+                    max_payload_len,
+                }))?;
+        }
+        let BridgeMessage::Hello(fc_hello) = self.simulator.recv()? else {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "fc.transport expected controller hello during local handshake".to_owned(),
+            });
+        };
+        validate_protocol_version(fc_hello.protocol_version).map_err(|err| {
+            RunnerError::UnsupportedScenario {
+                what: format!("fc.transport protocol validation failed: {err}"),
+            }
+        })?;
+        if fc_hello.role != BridgeEndpointRole::FlightController {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "fc.transport local handshake expected flight-controller role".to_owned(),
+            });
+        }
+
+        self.handshaken = true;
+        Ok(())
+    }
+}
+
+impl fmt::Debug for FcTransportSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FcTransportSession")
+            .field("mode", &self.mode)
+            .field("max_payload_len", &self.max_payload_len)
+            .field("peer_protocol_version", &self.peer_protocol_version)
+            .field("handshaken", &self.handshaken)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for FcControllerPeer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Local(_) => f.write_str("Local(..)"),
+            Self::ExternalProcess(process) => {
+                f.debug_tuple("ExternalProcess").field(process).finish()
+            }
+        }
+    }
+}
+
+impl fmt::Debug for ExternalFcProcess {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExternalFcProcess")
+            .field("id", &self.child.id())
+            .finish()
+    }
 }
 
 impl StimulusSchedule {
@@ -234,6 +512,8 @@ impl FcBridge {
             what: format!("flight-controller construction failed: {err}"),
         })?;
         let sensors = build_sensors(&scenario.document, resolved_files)?;
+        let transport_session = build_transport_session(fc_config, &scenario.document)?;
+        let transport_faults = build_transport_faults(fc_config);
         let atmosphere_kind = scenario_atmosphere_kind(&scenario.document);
         let atmosphere = if is_runtime_atmosphere_kind(atmosphere_kind) {
             Some(build_document_runtime_atmosphere(&scenario.document)?)
@@ -256,7 +536,21 @@ impl FcBridge {
             previous_angular_velocity_body_rad_s: None,
             previous_angular_time_s: None,
             last_mission_action_sequence: None,
+            transport_session,
+            transport_faults,
+            actuator_stream: Vec::new(),
         }))
+    }
+
+    /// Return a compact digest report for applied FC actuator packets.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::Bridge`] if bridge command serialization fails.
+    pub fn actuator_stream_report(
+        &self,
+    ) -> Result<Option<crate::determinism::ActuatorStreamReport>, RunnerError> {
+        crate::determinism::actuator_stream_report(&self.actuator_stream).map_err(Into::into)
     }
 
     /// Returns the FC commander's most recent
@@ -365,6 +659,25 @@ impl FcBridge {
         engines: &mut crate::engines::EngineRack,
         monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
     ) -> Result<(), RunnerError> {
+        let mut bridge_packet = SensorPacket {
+            sim_time_s: truth.time.as_seconds(),
+            step: step.value(),
+            imu_accel_body_m_s2: [0.0; 3],
+            imu_gyro_body_rad_s: [0.0; 3],
+            baro_altitude_m: None,
+            gnss_position_eci_m: None,
+            gnss_velocity_eci_m_s: None,
+            gnss_position_bias_eci_m: None,
+            mag_body_tesla: None,
+            mag_body_nt: None,
+            mag_hard_iron_body_nt: None,
+            baro_pressure_pa: None,
+            baro_bias_pa: None,
+            star_tracker_attitude_eci_to_body_xyzw: None,
+        };
+        let mut has_bridge_measurement = false;
+        let use_transport = self.transport_session.is_some();
+
         for index in 0..self.sensors.len() {
             let sensor_id = self.sensors[index].sensor_id();
             let mut measurement = {
@@ -384,7 +697,12 @@ impl FcBridge {
                     self.scenario_seed,
                 );
             }
-            self.publish_measurement(&measurement);
+            if use_transport {
+                has_bridge_measurement =
+                    append_bridge_measurement(&mut bridge_packet, &measurement.value)?;
+            } else {
+                self.publish_measurement(&measurement);
+            }
         }
         self.runner.publish_environment(EnvironmentEstimate {
             time: truth.time,
@@ -395,11 +713,27 @@ impl FcBridge {
         if let Some(state) = propellant_state {
             self.runner.publish_propellant_state(state);
         }
-        self.runner
-            .step(truth.time, step)
-            .map_err(|err| RunnerError::UnsupportedScenario {
-                what: format!("flight-controller tick failed: {err}"),
-            })?;
+        let transport_command = if use_transport {
+            if !has_bridge_measurement {
+                return Err(RunnerError::UnsupportedScenario {
+                    what:
+                        "[fc.transport] requires at least one bridge-representable sensor measurement"
+                            .to_owned(),
+                });
+            }
+            Some(self.step_controller_via_transport(bridge_packet, truth.time, step)?)
+        } else {
+            self.step_controller_direct(truth.time, step)?;
+            None
+        };
+        let evidence_command = if let Some(command) = transport_command.as_ref() {
+            Some(command.clone())
+        } else {
+            self.latest_bridge_command_packet(truth.time, step).ok()
+        };
+        if let Some(command) = evidence_command {
+            self.actuator_stream.push(command);
+        }
         // Observe AFTER the controller steps (estimate is fresh) and BEFORE
         // its commands reach the racks. Guard-gated so the default path
         // does zero extra work and remains byte-identical.
@@ -407,14 +741,338 @@ impl FcBridge {
             let observation = self.collect_observation();
             monitor.observe(step, &truth, &observation);
         }
-        if let Some(commands) = self.runner.latest_effector_command_set()
-            && !effectors.is_empty()
+        if let Some(command) = transport_command {
+            self.apply_transport_command(&command, effectors, engines)?;
+        } else {
+            if let Some(commands) = self.runner.latest_effector_command_set()
+                && !effectors.is_empty()
+            {
+                effectors.apply_fc_commands(&commands)?;
+            }
+            if let Some(commands) = self.runner.latest_engine_command_set()
+                && !engines.is_empty()
+            {
+                engines.apply_fc_commands(&commands)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn step_controller_direct(
+        &mut self,
+        time: openbmp_core::SimTime,
+        step: StepIndex,
+    ) -> Result<(), RunnerError> {
+        self.runner
+            .step(time, step)
+            .map_err(|err| RunnerError::UnsupportedScenario {
+                what: format!("flight-controller tick failed: {err}"),
+            })?;
+        Ok(())
+    }
+
+    fn step_controller_via_transport(
+        &mut self,
+        sensor: SensorPacket,
+        time: openbmp_core::SimTime,
+        step: StepIndex,
+    ) -> Result<ActuatorCommandPacket, RunnerError> {
+        let mut session =
+            self.transport_session
+                .take()
+                .ok_or_else(|| RunnerError::UnsupportedScenario {
+                    what: "fc.transport session was not configured".to_owned(),
+                })?;
+
+        let result = (|| {
+            session.ensure_handshake()?;
+            if session.has_external_controller() {
+                let mut transmitted_sensor = sensor.clone();
+                self.apply_sensor_transport_faults(&mut transmitted_sensor)?;
+                session
+                    .simulator
+                    .send(&BridgeMessage::Sensor(transmitted_sensor))?;
+            } else {
+                session
+                    .simulator
+                    .send(&BridgeMessage::Sensor(sensor.clone()))?;
+
+                let BridgeMessage::Sensor(received_sensor) =
+                    session.local_controller_mut()?.recv()?
+                else {
+                    return Err(RunnerError::UnsupportedScenario {
+                        what: "fc.transport expected sensor frame on controller endpoint"
+                            .to_owned(),
+                    });
+                };
+                let mut received_sensor = received_sensor;
+                self.apply_sensor_transport_faults(&mut received_sensor)?;
+                self.publish_bridge_sensor_packet(&received_sensor);
+                self.step_controller_direct(time, step)?;
+                let command = self.latest_bridge_command_packet(time, step)?;
+                session
+                    .local_controller_mut()?
+                    .send(&BridgeMessage::Command(command))?;
+            }
+
+            let command = match session.simulator.recv()? {
+                BridgeMessage::Command(command) => command,
+                BridgeMessage::Ack(ack) => {
+                    validate_ack_for_sensor(&sensor, &ack).map_err(|err| {
+                        RunnerError::UnsupportedScenario {
+                            what: format!("fc.transport lockstep validation failed: {err}"),
+                        }
+                    })?;
+                    ActuatorCommandPacket {
+                        sim_time_s: ack.sim_time_s,
+                        step: ack.step,
+                        effector_commands: Vec::new(),
+                        engine_throttles: Vec::new(),
+                        engine_commands: Vec::new(),
+                    }
+                }
+                BridgeMessage::Fault(fault) => {
+                    return Err(RunnerError::UnsupportedScenario {
+                        what: format!("fc.transport peer reported fault: {:?}", fault.code),
+                    });
+                }
+                _ => {
+                    return Err(RunnerError::UnsupportedScenario {
+                        what: "fc.transport expected command frame on simulator endpoint"
+                            .to_owned(),
+                    });
+                }
+            };
+            let mut command = command;
+            self.apply_command_transport_faults(&mut command)?;
+            validate_command_for_sensor(&sensor, &command).map_err(|err| {
+                RunnerError::UnsupportedScenario {
+                    what: format!("fc.transport lockstep validation failed: {err}"),
+                }
+            })?;
+            Ok(command)
+        })();
+
+        self.transport_session = Some(session);
+        result
+    }
+
+    fn apply_sensor_transport_faults(&self, sensor: &mut SensorPacket) -> Result<(), RunnerError> {
+        let sensor_faults = self
+            .transport_faults
+            .apply_sensor_frame(sensor)
+            .map_err(|err| RunnerError::UnsupportedScenario {
+                what: format!("fc.transport fault transform failed: {err}"),
+            })?;
+        match sensor_faults.disposition {
+            BridgePacketDisposition::Deliver => Ok(()),
+            BridgePacketDisposition::Drop => Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "fc.transport sensor frame step {} dropped by fault rule(s): {}",
+                    sensor.step,
+                    sensor_faults.applied_rule_ids.join(", ")
+                ),
+            }),
+            BridgePacketDisposition::Duplicate => Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "fc.transport sensor frame step {} duplicated by fault rule(s): {}",
+                    sensor.step,
+                    sensor_faults.applied_rule_ids.join(", ")
+                ),
+            }),
+            BridgePacketDisposition::Delay { steps } => Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "fc.transport sensor frame step {} delayed by {} step(s) by fault rule(s): {}",
+                    sensor.step,
+                    steps,
+                    sensor_faults.applied_rule_ids.join(", ")
+                ),
+            }),
+            BridgePacketDisposition::BitFlip { mask } => Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "fc.transport sensor frame step {} corrupted by bit-flip mask 0x{mask:02x} by fault rule(s): {}",
+                    sensor.step,
+                    sensor_faults.applied_rule_ids.join(", ")
+                ),
+            }),
+        }
+    }
+
+    fn apply_command_transport_faults(
+        &self,
+        command: &mut ActuatorCommandPacket,
+    ) -> Result<(), RunnerError> {
+        let command_faults = self
+            .transport_faults
+            .apply_command_frame(command)
+            .map_err(|err| RunnerError::UnsupportedScenario {
+                what: format!("fc.transport fault transform failed: {err}"),
+            })?;
+        match command_faults.disposition {
+            BridgePacketDisposition::Deliver => Ok(()),
+            BridgePacketDisposition::Drop => Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "fc.transport command frame step {} dropped by fault rule(s): {}",
+                    command.step,
+                    command_faults.applied_rule_ids.join(", ")
+                ),
+            }),
+            BridgePacketDisposition::Duplicate => Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "fc.transport command frame step {} duplicated by fault rule(s): {}",
+                    command.step,
+                    command_faults.applied_rule_ids.join(", ")
+                ),
+            }),
+            BridgePacketDisposition::Delay { steps } => Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "fc.transport command frame step {} delayed by {} step(s) by fault rule(s): {}",
+                    command.step,
+                    steps,
+                    command_faults.applied_rule_ids.join(", ")
+                ),
+            }),
+            BridgePacketDisposition::BitFlip { mask } => Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "fc.transport command frame step {} corrupted by bit-flip mask 0x{mask:02x} by fault rule(s): {}",
+                    command.step,
+                    command_faults.applied_rule_ids.join(", ")
+                ),
+            }),
+        }
+    }
+
+    fn latest_bridge_command_packet(
+        &self,
+        time: openbmp_core::SimTime,
+        step: StepIndex,
+    ) -> Result<ActuatorCommandPacket, RunnerError> {
+        let mut effector_commands = Vec::new();
+        if let Some(commands) = self.runner.latest_effector_command_set() {
+            for command in commands.commands.iter().take(usize::from(commands.count)) {
+                let effector_id = u32::try_from(command.effector_id).map_err(|_| {
+                    RunnerError::UnsupportedScenario {
+                        what: format!(
+                            "fc.transport effector id {} exceeds bridge u32 id range",
+                            command.effector_id
+                        ),
+                    }
+                })?;
+                effector_commands.push((effector_id, command.command));
+            }
+        }
+
+        let mut engine_throttles = Vec::new();
+        if let Some(commands) = self.runner.latest_engine_command_set() {
+            for command in commands.commands.iter().take(usize::from(commands.count)) {
+                let engine_id = u32::try_from(command.engine_id).map_err(|_| {
+                    RunnerError::UnsupportedScenario {
+                        what: format!(
+                            "fc.transport engine id {} exceeds bridge u32 id range",
+                            command.engine_id
+                        ),
+                    }
+                })?;
+                engine_throttles.push((engine_id, command.throttle_unit));
+            }
+        }
+
+        Ok(ActuatorCommandPacket {
+            sim_time_s: time.as_seconds(),
+            step: step.value(),
+            effector_commands,
+            engine_throttles,
+            engine_commands: self.latest_bridge_engine_commands()?,
+        })
+    }
+
+    fn latest_bridge_engine_commands(&self) -> Result<Vec<BridgeEngineCommandPacket>, RunnerError> {
+        let mut engine_commands = Vec::new();
+        if let Some(commands) = self.runner.latest_engine_command_set() {
+            for command in commands.commands.iter().take(usize::from(commands.count)) {
+                let engine_id = u32::try_from(command.engine_id).map_err(|_| {
+                    RunnerError::UnsupportedScenario {
+                        what: format!(
+                            "fc.transport engine id {} exceeds bridge u32 id range",
+                            command.engine_id
+                        ),
+                    }
+                })?;
+                engine_commands.push(BridgeEngineCommandPacket {
+                    engine_id,
+                    throttle_unit: command.throttle_unit,
+                    gimbal_pitch_rad: command.gimbal_pitch_rad,
+                    gimbal_yaw_rad: command.gimbal_yaw_rad,
+                    ignite: command.ignite,
+                    shutdown: command.shutdown,
+                });
+            }
+        }
+        Ok(engine_commands)
+    }
+
+    fn publish_bridge_sensor_packet(&self, sensor: &SensorPacket) {
+        let time = openbmp_core::SimTime::from_seconds(sensor.sim_time_s);
+        self.runner.publish_imu(ImuSample {
+            time,
+            gyro_rad_s: Vector3::from(sensor.imu_gyro_body_rad_s),
+            accel_m_s2: Vector3::from(sensor.imu_accel_body_m_s2),
+            healthy: true,
+        });
+        if let (Some(position_eci_m), Some(velocity_eci_m_s), Some(position_bias_eci_m)) = (
+            sensor.gnss_position_eci_m,
+            sensor.gnss_velocity_eci_m_s,
+            sensor.gnss_position_bias_eci_m,
+        ) {
+            self.runner.publish_gnss(GnssSample {
+                time,
+                position_eci_m: Vector3::from(position_eci_m),
+                velocity_eci_m_s: Vector3::from(velocity_eci_m_s),
+                position_bias_eci_m: Vector3::from(position_bias_eci_m),
+                healthy: true,
+            });
+        }
+        if let (Some(pressure_pa), Some(bias_pa)) = (sensor.baro_pressure_pa, sensor.baro_bias_pa) {
+            self.runner.publish_barometer(BarometerSample {
+                time,
+                pressure_pa,
+                bias_pa,
+                healthy: true,
+            });
+        }
+        if let (Some(field_body_nt), Some(hard_iron_body_nt)) =
+            (sensor.mag_body_nt, sensor.mag_hard_iron_body_nt)
         {
+            self.runner.publish_magnetometer(MagnetometerSample {
+                time,
+                field_body_nt: Vector3::from(field_body_nt),
+                hard_iron_body_nt: Vector3::from(hard_iron_body_nt),
+                healthy: true,
+            });
+        }
+        if let Some(q) = sensor.star_tracker_attitude_eci_to_body_xyzw {
+            self.runner.publish_star_tracker(StarTrackerSample {
+                time,
+                q_eci_to_body_xyzw: q,
+                healthy: true,
+            });
+        }
+    }
+
+    fn apply_transport_command(
+        &self,
+        command: &ActuatorCommandPacket,
+        effectors: &mut crate::effectors::EffectorRack,
+        engines: &mut crate::engines::EngineRack,
+    ) -> Result<(), RunnerError> {
+        if !command.effector_commands.is_empty() && !effectors.is_empty() {
+            let commands = effector_command_set_from_packet(command)?;
             effectors.apply_fc_commands(&commands)?;
         }
-        if let Some(commands) = self.runner.latest_engine_command_set()
+        if (!command.engine_commands.is_empty() || !command.engine_throttles.is_empty())
             && !engines.is_empty()
         {
+            let commands = engine_command_set_from_packet(command)?;
             engines.apply_fc_commands(&commands)?;
         }
         Ok(())
@@ -641,6 +1299,718 @@ pub(crate) fn propellant_state_from_tanks(
         mass_initial_kg: initial_kg,
         depleted: remaining_kg <= f64::EPSILON * initial_kg.max(1.0),
     })
+}
+
+fn build_transport_session(
+    fc_config: &FcConfig,
+    document: &ScenarioDocument,
+) -> Result<Option<FcTransportSession>, RunnerError> {
+    let Some(transport) = fc_config.transport.as_ref() else {
+        return Ok(None);
+    };
+
+    let Some(sensors) = document.sensors.as_ref() else {
+        return Err(RunnerError::UnsupportedScenario {
+            what: "[fc.transport] requires an IMU sensor declaration".to_owned(),
+        });
+    };
+    let mut has_imu = false;
+    for (name, sensor) in sensors {
+        if sensor.kind == "imu" {
+            has_imu = true;
+        } else if !matches!(
+            sensor.kind.as_str(),
+            "gnss" | "magnetometer" | "barometer" | "star_tracker"
+        ) {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "[fc.transport] does not support sensors.<name>.kind = `{}`; \
+                     `{name}` declares kind `{}`",
+                    sensor.kind, sensor.kind
+                ),
+            });
+        }
+    }
+    if !has_imu {
+        return Err(RunnerError::UnsupportedScenario {
+            what: "[fc.transport] requires an IMU sensor declaration".to_owned(),
+        });
+    }
+
+    let max_payload_len = transport
+        .max_payload_len
+        .unwrap_or(DEFAULT_FC_TRANSPORT_MAX_PAYLOAD_LEN);
+    let peer_protocol_version = transport
+        .peer_protocol_version
+        .unwrap_or(openbmp_bridge::PROTOCOL_VERSION);
+    match transport.mode {
+        FcTransportModeConfig::InProcess => Ok(Some(FcTransportSession::new_in_process(
+            max_payload_len,
+            peer_protocol_version,
+        ))),
+        FcTransportModeConfig::TcpLoopback => {
+            FcTransportSession::new_tcp_loopback(max_payload_len, peer_protocol_version).map(Some)
+        }
+        FcTransportModeConfig::UnixLoopback => {
+            #[cfg(unix)]
+            {
+                FcTransportSession::new_unix_loopback(max_payload_len, peer_protocol_version)
+                    .map(Some)
+            }
+            #[cfg(not(unix))]
+            {
+                Err(RunnerError::UnsupportedScenario {
+                    what: "[fc.transport] mode = \"unix_loopback\" is only supported on Unix platforms"
+                        .to_owned(),
+                })
+            }
+        }
+        FcTransportModeConfig::ExternalProcess => {
+            let command =
+                transport
+                    .command
+                    .as_deref()
+                    .ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "[fc.transport] mode = \"external_process\" requires command"
+                            .to_owned(),
+                    })?;
+            FcTransportSession::new_external_process(
+                command,
+                &transport.args,
+                transport.working_dir.as_deref(),
+                max_payload_len,
+                peer_protocol_version,
+            )
+            .map(Some)
+        }
+    }
+}
+
+fn build_transport_faults(fc_config: &FcConfig) -> BridgeFaultTransformSet {
+    let Some(faults) = &fc_config.transport_faults else {
+        return BridgeFaultTransformSet::default();
+    };
+    BridgeFaultTransformSet::new_with_packet_rules(
+        faults
+            .rules
+            .iter()
+            .map(|rule| {
+                BridgeFaultRule::new(
+                    rule.id.clone(),
+                    rule.start_step,
+                    rule.end_step,
+                    bridge_fault_signal(&rule.signal),
+                    bridge_fault_transform(rule.transform),
+                )
+            })
+            .collect(),
+        faults
+            .packet_rules
+            .iter()
+            .map(|rule| {
+                BridgePacketFaultRule::new(
+                    rule.id.clone(),
+                    rule.start_step,
+                    rule.end_step,
+                    packet_direction(rule.direction),
+                    packet_transform(rule.transform),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn bridge_fault_signal(signal: &FcTransportFaultSignalConfig) -> BridgeScalarSignal {
+    match signal {
+        FcTransportFaultSignalConfig::ImuAccelBodyMps2 { axis } => {
+            BridgeScalarSignal::ImuAccelBodyMps2(vector_axis(*axis))
+        }
+        FcTransportFaultSignalConfig::ImuGyroBodyRadS { axis } => {
+            BridgeScalarSignal::ImuGyroBodyRadS(vector_axis(*axis))
+        }
+        FcTransportFaultSignalConfig::BaroAltitudeM => BridgeScalarSignal::BaroAltitudeM,
+        FcTransportFaultSignalConfig::BaroPressurePa => BridgeScalarSignal::BaroPressurePa,
+        FcTransportFaultSignalConfig::BaroBiasPa => BridgeScalarSignal::BaroBiasPa,
+        FcTransportFaultSignalConfig::GnssPositionEciM { axis } => {
+            BridgeScalarSignal::GnssPositionEciM(vector_axis(*axis))
+        }
+        FcTransportFaultSignalConfig::GnssVelocityEciMS { axis } => {
+            BridgeScalarSignal::GnssVelocityEciMS(vector_axis(*axis))
+        }
+        FcTransportFaultSignalConfig::GnssPositionBiasEciM { axis } => {
+            BridgeScalarSignal::GnssPositionBiasEciM(vector_axis(*axis))
+        }
+        FcTransportFaultSignalConfig::MagBodyTesla { axis } => {
+            BridgeScalarSignal::MagBodyTesla(vector_axis(*axis))
+        }
+        FcTransportFaultSignalConfig::MagBodyNt { axis } => {
+            BridgeScalarSignal::MagBodyNt(vector_axis(*axis))
+        }
+        FcTransportFaultSignalConfig::MagHardIronBodyNt { axis } => {
+            BridgeScalarSignal::MagHardIronBodyNt(vector_axis(*axis))
+        }
+        FcTransportFaultSignalConfig::StarTrackerAttitudeEciToBody { axis } => {
+            BridgeScalarSignal::StarTrackerAttitudeEciToBody(quaternion_axis(*axis))
+        }
+        FcTransportFaultSignalConfig::EffectorCommand { effector_id } => {
+            BridgeScalarSignal::EffectorCommand {
+                effector_id: *effector_id,
+            }
+        }
+        FcTransportFaultSignalConfig::EngineThrottle { engine_id } => {
+            BridgeScalarSignal::EngineThrottle {
+                engine_id: *engine_id,
+            }
+        }
+        FcTransportFaultSignalConfig::EngineGimbalPitch { engine_id } => {
+            BridgeScalarSignal::EngineGimbalPitch {
+                engine_id: *engine_id,
+            }
+        }
+        FcTransportFaultSignalConfig::EngineGimbalYaw { engine_id } => {
+            BridgeScalarSignal::EngineGimbalYaw {
+                engine_id: *engine_id,
+            }
+        }
+    }
+}
+
+fn bridge_fault_transform(transform: FcTransportFaultTransformConfig) -> BridgeScalarTransform {
+    match transform {
+        FcTransportFaultTransformConfig::AdditiveBias { offset } => {
+            BridgeScalarTransform::AdditiveBias { offset }
+        }
+        FcTransportFaultTransformConfig::Scale { factor } => {
+            BridgeScalarTransform::Scale { factor }
+        }
+        FcTransportFaultTransformConfig::Stuck { value } => BridgeScalarTransform::Stuck { value },
+        FcTransportFaultTransformConfig::Saturate { min, max } => {
+            BridgeScalarTransform::Saturate { min, max }
+        }
+        FcTransportFaultTransformConfig::Quantize { quantum } => {
+            BridgeScalarTransform::Quantize { quantum }
+        }
+        FcTransportFaultTransformConfig::Drift {
+            rate_per_s,
+            reference_time_s,
+        } => BridgeScalarTransform::Drift {
+            rate_per_s,
+            reference_time_s,
+        },
+        FcTransportFaultTransformConfig::NoiseBurst { amplitude, seed } => {
+            BridgeScalarTransform::NoiseBurst { amplitude, seed }
+        }
+        FcTransportFaultTransformConfig::ReverseSign => BridgeScalarTransform::ReverseSign,
+    }
+}
+
+const fn vector_axis(axis: FcTransportVectorAxisConfig) -> VectorAxis {
+    match axis {
+        FcTransportVectorAxisConfig::X => VectorAxis::X,
+        FcTransportVectorAxisConfig::Y => VectorAxis::Y,
+        FcTransportVectorAxisConfig::Z => VectorAxis::Z,
+    }
+}
+
+const fn quaternion_axis(axis: FcTransportQuaternionAxisConfig) -> QuaternionAxis {
+    match axis {
+        FcTransportQuaternionAxisConfig::X => QuaternionAxis::X,
+        FcTransportQuaternionAxisConfig::Y => QuaternionAxis::Y,
+        FcTransportQuaternionAxisConfig::Z => QuaternionAxis::Z,
+        FcTransportQuaternionAxisConfig::W => QuaternionAxis::W,
+    }
+}
+
+const fn packet_direction(direction: FcTransportPacketDirectionConfig) -> BridgePacketDirection {
+    match direction {
+        FcTransportPacketDirectionConfig::Sensor => BridgePacketDirection::Sensor,
+        FcTransportPacketDirectionConfig::Command => BridgePacketDirection::Command,
+    }
+}
+
+const fn packet_transform(transform: FcTransportPacketTransformConfig) -> BridgePacketTransform {
+    match transform {
+        FcTransportPacketTransformConfig::Drop => BridgePacketTransform::Drop,
+        FcTransportPacketTransformConfig::Duplicate => BridgePacketTransform::Duplicate,
+        FcTransportPacketTransformConfig::Delay { steps } => BridgePacketTransform::Delay { steps },
+        FcTransportPacketTransformConfig::BitFlip { mask } => {
+            BridgePacketTransform::BitFlip { mask }
+        }
+        FcTransportPacketTransformConfig::StepOffset { offset } => {
+            BridgePacketTransform::StepOffset { offset }
+        }
+        FcTransportPacketTransformConfig::TimeOffset { offset_s } => {
+            BridgePacketTransform::TimeOffset { offset_s }
+        }
+    }
+}
+
+fn append_bridge_measurement(
+    packet: &mut SensorPacket,
+    measurement: &SensorMeasurement,
+) -> Result<bool, RunnerError> {
+    match measurement {
+        SensorMeasurement::Imu {
+            gyro_rad_s,
+            accel_m_s2,
+        } => {
+            packet.imu_accel_body_m_s2 = [accel_m_s2.x, accel_m_s2.y, accel_m_s2.z];
+            packet.imu_gyro_body_rad_s = [gyro_rad_s.x, gyro_rad_s.y, gyro_rad_s.z];
+            Ok(true)
+        }
+        SensorMeasurement::Barometer {
+            pressure_pa,
+            bias_pa,
+        } => {
+            packet.baro_pressure_pa = Some(*pressure_pa);
+            packet.baro_bias_pa = Some(*bias_pa);
+            Ok(true)
+        }
+        SensorMeasurement::Gnss {
+            position_eci_m,
+            velocity_eci_m_s,
+            position_bias_eci_m,
+        } => {
+            packet.gnss_position_eci_m =
+                Some([position_eci_m.x, position_eci_m.y, position_eci_m.z]);
+            packet.gnss_velocity_eci_m_s =
+                Some([velocity_eci_m_s.x, velocity_eci_m_s.y, velocity_eci_m_s.z]);
+            packet.gnss_position_bias_eci_m = Some([
+                position_bias_eci_m.x,
+                position_bias_eci_m.y,
+                position_bias_eci_m.z,
+            ]);
+            Ok(true)
+        }
+        SensorMeasurement::Magnetometer {
+            field_body_nt,
+            hard_iron_body_nt,
+        } => {
+            packet.mag_body_nt = Some([field_body_nt.x, field_body_nt.y, field_body_nt.z]);
+            packet.mag_hard_iron_body_nt = Some([
+                hard_iron_body_nt.x,
+                hard_iron_body_nt.y,
+                hard_iron_body_nt.z,
+            ]);
+            Ok(true)
+        }
+        SensorMeasurement::StarTracker {
+            attitude_eci_to_body,
+        } => {
+            let q = attitude_eci_to_body.into_inner();
+            packet.star_tracker_attitude_eci_to_body_xyzw = Some([q.i, q.j, q.k, q.w]);
+            Ok(true)
+        }
+        SensorMeasurement::IdealState(_) => Err(RunnerError::UnsupportedScenario {
+            what: "[fc.transport] does not support ideal_state sensor packets".to_owned(),
+        }),
+    }
+}
+
+fn effector_command_set_from_packet(
+    packet: &ActuatorCommandPacket,
+) -> Result<EffectorCommandSet, RunnerError> {
+    let mut set = EffectorCommandSet {
+        time: openbmp_core::SimTime::from_seconds(packet.sim_time_s),
+        ..EffectorCommandSet::default()
+    };
+    if packet.effector_commands.len() > set.commands.len() {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "fc.transport command carries {} effector commands but runner capacity is {}",
+                packet.effector_commands.len(),
+                set.commands.len()
+            ),
+        });
+    }
+    set.count = u8::try_from(packet.effector_commands.len()).map_err(|_| {
+        RunnerError::UnsupportedScenario {
+            what: "fc.transport effector command count exceeds u8 range".to_owned(),
+        }
+    })?;
+    for (slot, (effector_id, command)) in set
+        .commands
+        .iter_mut()
+        .zip(packet.effector_commands.iter().copied())
+    {
+        *slot = EffectorCommand {
+            effector_id: u64::from(effector_id),
+            command,
+            saturated: false,
+        };
+    }
+    Ok(set)
+}
+
+fn engine_command_set_from_packet(
+    packet: &ActuatorCommandPacket,
+) -> Result<EngineCommandSet, RunnerError> {
+    let mut set = EngineCommandSet {
+        time: openbmp_core::SimTime::from_seconds(packet.sim_time_s),
+        ..EngineCommandSet::default()
+    };
+    let command_count = if packet.engine_commands.is_empty() {
+        packet.engine_throttles.len()
+    } else {
+        packet.engine_commands.len()
+    };
+    if command_count > set.commands.len() {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "fc.transport command carries {} engine commands but runner capacity is {}",
+                command_count,
+                set.commands.len()
+            ),
+        });
+    }
+    set.count = u8::try_from(command_count).map_err(|_| RunnerError::UnsupportedScenario {
+        what: "fc.transport engine command count exceeds u8 range".to_owned(),
+    })?;
+    if !packet.engine_commands.is_empty() {
+        for (slot, command) in set
+            .commands
+            .iter_mut()
+            .zip(packet.engine_commands.iter().copied())
+        {
+            *slot = EngineCommand {
+                engine_id: u64::from(command.engine_id),
+                throttle_unit: command.throttle_unit,
+                gimbal_pitch_rad: command.gimbal_pitch_rad,
+                gimbal_yaw_rad: command.gimbal_yaw_rad,
+                ignite: command.ignite,
+                shutdown: command.shutdown,
+            };
+        }
+        return Ok(set);
+    }
+
+    for (slot, (engine_id, throttle_unit)) in set
+        .commands
+        .iter_mut()
+        .zip(packet.engine_throttles.iter().copied())
+    {
+        *slot = EngineCommand {
+            engine_id: u64::from(engine_id),
+            throttle_unit,
+            ..EngineCommand::default()
+        };
+    }
+    Ok(set)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod fc_transport_packet_tests {
+    use super::*;
+
+    #[test]
+    fn engine_command_set_from_packet_preserves_full_engine_fields() {
+        let packet = ActuatorCommandPacket {
+            sim_time_s: 1.25,
+            step: 125,
+            effector_commands: Vec::new(),
+            engine_throttles: vec![(3, 0.1)],
+            engine_commands: vec![BridgeEngineCommandPacket {
+                engine_id: 3,
+                throttle_unit: 0.75,
+                gimbal_pitch_rad: 0.02,
+                gimbal_yaw_rad: -0.03,
+                ignite: true,
+                shutdown: false,
+            }],
+        };
+        let set = engine_command_set_from_packet(&packet).unwrap();
+        assert_eq!(set.time.as_seconds().to_bits(), 1.25f64.to_bits());
+        assert_eq!(set.count, 1);
+        assert_eq!(set.commands[0].engine_id, 3);
+        assert_eq!(set.commands[0].throttle_unit.to_bits(), 0.75f64.to_bits());
+        assert_eq!(
+            set.commands[0].gimbal_pitch_rad.to_bits(),
+            0.02f64.to_bits()
+        );
+        assert_eq!(
+            set.commands[0].gimbal_yaw_rad.to_bits(),
+            (-0.03f64).to_bits()
+        );
+        assert!(set.commands[0].ignite);
+        assert!(!set.commands[0].shutdown);
+    }
+
+    #[test]
+    fn engine_command_set_from_packet_keeps_throttle_fallback() {
+        let packet = ActuatorCommandPacket {
+            sim_time_s: 2.0,
+            step: 200,
+            effector_commands: Vec::new(),
+            engine_throttles: vec![(4, 0.4)],
+            engine_commands: Vec::new(),
+        };
+        let set = engine_command_set_from_packet(&packet).unwrap();
+        assert_eq!(set.count, 1);
+        assert_eq!(set.commands[0].engine_id, 4);
+        assert_eq!(set.commands[0].throttle_unit.to_bits(), 0.4f64.to_bits());
+        assert_eq!(set.commands[0].gimbal_pitch_rad.to_bits(), 0.0f64.to_bits());
+        assert!(!set.commands[0].ignite);
+    }
+
+    #[test]
+    fn transport_fault_config_mapping_mutates_sensor_packet() {
+        let mut packet = SensorPacket {
+            sim_time_s: 0.125,
+            step: 2,
+            imu_accel_body_m_s2: [1.0, 2.0, 3.0],
+            imu_gyro_body_rad_s: [0.01, 0.02, 0.026],
+            baro_pressure_pa: Some(100_000.0),
+            ..SensorPacket::default()
+        };
+        let mut repeat = packet.clone();
+        let faults = BridgeFaultTransformSet::new(vec![
+            BridgeFaultRule::new(
+                "imu-x-bias",
+                2,
+                Some(2),
+                bridge_fault_signal(&FcTransportFaultSignalConfig::ImuAccelBodyMps2 {
+                    axis: FcTransportVectorAxisConfig::X,
+                }),
+                bridge_fault_transform(FcTransportFaultTransformConfig::AdditiveBias {
+                    offset: 0.25,
+                }),
+            ),
+            BridgeFaultRule::new(
+                "gyro-z-quantize",
+                2,
+                Some(2),
+                bridge_fault_signal(&FcTransportFaultSignalConfig::ImuGyroBodyRadS {
+                    axis: FcTransportVectorAxisConfig::Z,
+                }),
+                bridge_fault_transform(FcTransportFaultTransformConfig::Quantize { quantum: 0.01 }),
+            ),
+            BridgeFaultRule::new(
+                "baro-drift",
+                2,
+                Some(2),
+                bridge_fault_signal(&FcTransportFaultSignalConfig::BaroPressurePa),
+                bridge_fault_transform(FcTransportFaultTransformConfig::Drift {
+                    rate_per_s: 128.0,
+                    reference_time_s: 0.0,
+                }),
+            ),
+            BridgeFaultRule::new(
+                "gyro-y-noise",
+                2,
+                Some(2),
+                bridge_fault_signal(&FcTransportFaultSignalConfig::ImuGyroBodyRadS {
+                    axis: FcTransportVectorAxisConfig::Y,
+                }),
+                bridge_fault_transform(FcTransportFaultTransformConfig::NoiseBurst {
+                    amplitude: 0.01,
+                    seed: 42,
+                }),
+            ),
+        ]);
+
+        let applied = faults.apply_to_sensor(&mut packet).unwrap();
+        let repeat_applied = faults.apply_to_sensor(&mut repeat).unwrap();
+
+        assert_eq!(
+            applied,
+            vec![
+                "imu-x-bias",
+                "gyro-z-quantize",
+                "baro-drift",
+                "gyro-y-noise"
+            ]
+        );
+        assert_eq!(repeat_applied, applied);
+        assert_eq!(repeat, packet);
+        assert_eq!(
+            packet.imu_accel_body_m_s2.map(f64::to_bits),
+            [1.25_f64.to_bits(), 2.0_f64.to_bits(), 3.0_f64.to_bits()]
+        );
+        assert!((packet.imu_gyro_body_rad_s[1] - 0.02).abs() <= 0.01);
+        assert_ne!(packet.imu_gyro_body_rad_s[1].to_bits(), 0.02_f64.to_bits());
+        assert_eq!(packet.imu_gyro_body_rad_s[0].to_bits(), 0.01_f64.to_bits());
+        assert_eq!(packet.imu_gyro_body_rad_s[2].to_bits(), 0.03_f64.to_bits());
+        assert_eq!(
+            packet.baro_pressure_pa.map(f64::to_bits),
+            Some(100_016.0_f64.to_bits())
+        );
+    }
+
+    #[test]
+    fn transport_fault_config_mapping_mutates_command_packet() {
+        let mut packet = ActuatorCommandPacket {
+            sim_time_s: 0.003,
+            step: 3,
+            effector_commands: Vec::new(),
+            engine_throttles: vec![(9, 0.8)],
+            engine_commands: vec![BridgeEngineCommandPacket {
+                engine_id: 9,
+                throttle_unit: 0.8,
+                gimbal_pitch_rad: 0.01,
+                gimbal_yaw_rad: 0.02,
+                ignite: true,
+                shutdown: false,
+            }],
+        };
+        let faults = BridgeFaultTransformSet::new(vec![BridgeFaultRule::new(
+            "engine-limit",
+            3,
+            None,
+            bridge_fault_signal(&FcTransportFaultSignalConfig::EngineThrottle { engine_id: 9 }),
+            bridge_fault_transform(FcTransportFaultTransformConfig::Saturate {
+                min: 0.0,
+                max: 0.5,
+            }),
+        )]);
+
+        let applied = faults.apply_to_command(&mut packet).unwrap();
+
+        assert_eq!(applied, vec!["engine-limit"]);
+        assert_eq!(packet.engine_throttles[0].1.to_bits(), 0.5_f64.to_bits());
+        assert_eq!(
+            packet.engine_commands[0].throttle_unit.to_bits(),
+            0.5_f64.to_bits()
+        );
+        assert_eq!(
+            packet.engine_commands[0].gimbal_pitch_rad.to_bits(),
+            0.01_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn transport_packet_fault_mapping_drops_sensor_frame() {
+        let mut packet = SensorPacket {
+            sim_time_s: 0.004,
+            step: 4,
+            imu_accel_body_m_s2: [1.0, 2.0, 3.0],
+            ..SensorPacket::default()
+        };
+        let faults = BridgeFaultTransformSet::new_with_packet_rules(
+            Vec::new(),
+            vec![BridgePacketFaultRule::new(
+                "drop-sensor",
+                4,
+                Some(4),
+                packet_direction(FcTransportPacketDirectionConfig::Sensor),
+                packet_transform(FcTransportPacketTransformConfig::Drop),
+            )],
+        );
+
+        let application = faults.apply_sensor_frame(&mut packet).unwrap();
+
+        assert_eq!(application.applied_rule_ids, vec!["drop-sensor"]);
+        assert_eq!(application.disposition, BridgePacketDisposition::Drop);
+    }
+
+    #[test]
+    fn transport_packet_fault_mapping_drops_command_frame() {
+        let mut packet = ActuatorCommandPacket {
+            sim_time_s: 0.005,
+            step: 5,
+            effector_commands: vec![(1, 0.2)],
+            engine_throttles: Vec::new(),
+            engine_commands: Vec::new(),
+        };
+        let faults = BridgeFaultTransformSet::new_with_packet_rules(
+            Vec::new(),
+            vec![BridgePacketFaultRule::new(
+                "drop-command",
+                5,
+                None,
+                packet_direction(FcTransportPacketDirectionConfig::Command),
+                packet_transform(FcTransportPacketTransformConfig::Drop),
+            )],
+        );
+
+        let application = faults.apply_command_frame(&mut packet).unwrap();
+
+        assert_eq!(application.applied_rule_ids, vec!["drop-command"]);
+        assert_eq!(application.disposition, BridgePacketDisposition::Drop);
+    }
+
+    #[test]
+    fn transport_packet_fault_mapping_duplicates_command_frame() {
+        let mut packet = ActuatorCommandPacket {
+            sim_time_s: 0.006,
+            step: 6,
+            effector_commands: vec![(1, 0.2)],
+            engine_throttles: Vec::new(),
+            engine_commands: Vec::new(),
+        };
+        let faults = BridgeFaultTransformSet::new_with_packet_rules(
+            Vec::new(),
+            vec![BridgePacketFaultRule::new(
+                "duplicate-command",
+                6,
+                None,
+                packet_direction(FcTransportPacketDirectionConfig::Command),
+                packet_transform(FcTransportPacketTransformConfig::Duplicate),
+            )],
+        );
+
+        let application = faults.apply_command_frame(&mut packet).unwrap();
+
+        assert_eq!(application.applied_rule_ids, vec!["duplicate-command"]);
+        assert_eq!(application.disposition, BridgePacketDisposition::Duplicate);
+    }
+
+    #[test]
+    fn transport_packet_fault_mapping_delays_sensor_frame() {
+        let mut packet = SensorPacket {
+            sim_time_s: 0.007,
+            step: 7,
+            imu_accel_body_m_s2: [1.0, 2.0, 3.0],
+            ..SensorPacket::default()
+        };
+        let faults = BridgeFaultTransformSet::new_with_packet_rules(
+            Vec::new(),
+            vec![BridgePacketFaultRule::new(
+                "delay-sensor",
+                7,
+                None,
+                packet_direction(FcTransportPacketDirectionConfig::Sensor),
+                packet_transform(FcTransportPacketTransformConfig::Delay { steps: 3 }),
+            )],
+        );
+
+        let application = faults.apply_sensor_frame(&mut packet).unwrap();
+
+        assert_eq!(application.applied_rule_ids, vec!["delay-sensor"]);
+        assert_eq!(
+            application.disposition,
+            BridgePacketDisposition::Delay { steps: 3 }
+        );
+    }
+
+    #[test]
+    fn transport_packet_fault_mapping_bit_flips_command_frame() {
+        let mut packet = ActuatorCommandPacket {
+            sim_time_s: 0.008,
+            step: 8,
+            effector_commands: vec![(1, 0.2)],
+            engine_throttles: Vec::new(),
+            engine_commands: Vec::new(),
+        };
+        let faults = BridgeFaultTransformSet::new_with_packet_rules(
+            Vec::new(),
+            vec![BridgePacketFaultRule::new(
+                "bit-flip-command",
+                8,
+                None,
+                packet_direction(FcTransportPacketDirectionConfig::Command),
+                packet_transform(FcTransportPacketTransformConfig::BitFlip { mask: 0x05 }),
+            )],
+        );
+
+        let application = faults.apply_command_frame(&mut packet).unwrap();
+
+        assert_eq!(application.applied_rule_ids, vec!["bit-flip-command"]);
+        assert_eq!(
+            application.disposition,
+            BridgePacketDisposition::BitFlip { mask: 0x05 }
+        );
+    }
 }
 
 #[derive(Debug)]

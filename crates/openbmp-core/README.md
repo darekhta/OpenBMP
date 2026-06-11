@@ -10,8 +10,9 @@ append-only typed ids (`EffectorId`, `TankId`,
 `DeterministicRng::for_wind_component` domain-separated streams.
 The `SensorId` /
 `DeterministicRng::for_sensor_component` stream provides the sensor
-RNG surface. The foundation surface covers frames, units, time, and
-validation labels.
+RNG surface. `DeterministicRng::for_mc_sample` provides the campaign-layer
+Monte Carlo sample stream using the `b"MCRN"` domain tag. The foundation
+surface covers frames, units, time, and validation labels.
 
 ## Purpose
 
@@ -55,7 +56,9 @@ profile. See `docs/frames-time.md`.
 ## Determinism
 
 This crate **defines** the determinism contract for the rest of
-OpenBMP. See `docs/software-architecture.md` § Determinism Profile.
+OpenBMP. `FpEnvironment` reads and validates the host floating-point
+control register on supported architectures before deterministic kernels
+run. See `docs/software-architecture.md` § Determinism Profile.
 
 ## Validation
 

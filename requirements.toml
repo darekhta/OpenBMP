@@ -43,6 +43,12 @@ statement = "The scheduler dispatch hot path must use a registration-time cached
 verification = ["V-RT-001"]
 
 [[requirements]]
+id = "REQ-RT-002"
+title = "Host frame pacing is timing-only and observable"
+statement = "The host real-time substrate exposes FreeRun, RealTime, and Paced frame modes with absolute-time scheduling, signed jitter percentiles, host frame-execution percentiles, overrun and frame-budget-overrun counting, real-time-factor reporting, and a Liu-Layland schedulability advisory; runner integration is opt-in through a v3 [realtime] block with optional [[realtime.task]] budgets, preserves identical functional telemetry across pacing modes, reports timing outside telemetry, and keeps openbmp-fc independent of openbmp-rt."
+verification = ["V-RT-002"]
+
+[[requirements]]
 id = "REQ-BUS-001"
 title = "Canonical FC topics have static bus indices"
 statement = "Every canonical flight-controller topic exposes a stable compile-time topic-table index for static bus dictionaries and downstream fixed-storage backends."
@@ -79,6 +85,12 @@ statement = "A scenario can declare FDIR redline watchpoints; the runner maps th
 verification = ["V-FDIR-003"]
 
 [[requirements]]
+id = "REQ-FDIR-004"
+title = "Covariance-trace estimator voting uses exposed covariance diagnostics"
+statement = "The multi-lane estimator best_by_covariance_trace voter selects the healthy lane with the smallest positive finite exposed position, velocity, and attitude covariance diagonal trace, treats non-finite or negative covariance diagnostics as unusable, falls back to the deterministic innovation chi-square proxy only when no covariance diagonal block is exposed, and keeps deterministic lowest-index tie breaking."
+verification = ["V-FDIR-004"]
+
+[[requirements]]
 id = "REQ-HAL-001"
 title = "Shared and flight-math contracts compile without std"
 statement = "The shared core, state, model, mission, HAL, bare sensor-trait, no_std flight-math physics, propulsion core, aerodynamics core, and alloc-aware flight controller crates compile for the embedded thumb target with default features disabled."
@@ -105,8 +117,44 @@ verification = ["V-HAL-004"]
 [[requirements]]
 id = "REQ-HIL-001"
 title = "HIL bridge lockstep messages are versioned and step-matched"
-statement = "The optional in-house HIL bridge schema carries a versioned hello, sensor/command/ack/fault messages, and validators that reject command or acknowledgement packets whose step or simulation timestamp does not match the outstanding sensor frame."
+statement = "The optional in-house HIL bridge schema carries a versioned hello, sensor/command/ack/fault messages, validators that reject command or acknowledgement packets whose step or simulation timestamp does not match the outstanding sensor frame, and a simulator-side lockstep master that emits fail-closed fault packets on invalid peer responses."
 verification = ["V-HIL-001"]
+
+[[requirements]]
+id = "REQ-HIL-002"
+title = "HIL bridge transports preserve message boundaries"
+statement = "The optional in-house HIL bridge exposes a message-level Transport trait, an in-process endpoint pair, a Read+Write stream transport, a split Read/Write stream transport for child stdio, TCP loopback listener/connect helpers, and Unix-domain-socket helpers on Unix platforms that exchange whole BridgeMessage values with length-prefixed postcard framing, close reporting, and payload-size limits while still shipping no real bus protocol or device driver."
+verification = ["V-HIL-002"]
+
+[[requirements]]
+id = "REQ-HIL-003"
+title = "FC transport path is opt-in and byte-stable"
+statement = "The runner accepts v3 [fc.transport] mode = \"in_process\", mode = \"tcp_loopback\", Unix-only mode = \"unix_loopback\", and stdio-coupled mode = \"external_process\" blocks that route the lossless sensor/effector/engine-command FC boundary through openbmp-bridge messages, preserve canonical telemetry bytes, canonical telemetry SHA-256, and the actuator command-stream SHA-256 relative to the default direct path for the supported local subset, prove deterministic actuator-stream evidence across spawned external-process runs, fail closed on configured peer protocol-version and command step/time mismatches, prove the ZOH coupling-error halving ratio against a tolerance table, and keep default scenarios on the existing direct path."
+verification = ["V-HIL-003"]
+
+[[requirements]]
+id = "REQ-XIL-001"
+title = "Bridge faults mutate abstract signals deterministically"
+statement = "The in-house bridge exposes an ordered, step-windowed fault-transform set over named scalar sensor and actuator signals plus packet-level sensor/command drop, duplicate, delay, bit-flip, step-offset, and time-offset rules; v3 [fc.transport_faults] scenarios map those rules onto the opt-in [fc.transport] path; active rules mutate only the targeted SensorPacket or ActuatorCommandPacket fields, skip absent optional signals without side effects, return applied rule ids for evidence, validate saturation, quantization, drift, bounded noise-burst, delay, bit-flip, step-offset, and time-offset parameters, derive noise-burst draws from deterministic rule-local bridge-fault streams, fail closed on configured packet dispositions and lockstep step/time mismatches, expose ASAM-XIL-shaped MaPort/EesPort traits with symbolic signal mapping and a deterministic testbench lifecycle FSM, provide a native in-memory SIL implementation that records XIL actions into evidence records, and remain abstract signal transforms rather than real bus or device-driver faults."
+verification = ["V-XIL-001"]
+
+[[requirements]]
+id = "REQ-FMI-001"
+title = "FMI import bindings are typed and value-reference based"
+statement = "The host-only FMI importer reads stored and deflated FMU ZIP entries, can safely materialize packaged FMU resources, parses FMU modelDescription.xml metadata into a root instantiationToken, typed Float64, Int32, and UInt64 scalar variables, direct FMI 3 Clock variables, and scalar-variable clock dependencies with required valueReference fields, infers safe current-platform FMI 3 binary entries from modelIdentifier values, builds a positive-step co-simulation master plan with declared coupling order and Clock bindings, owns FMI 3 co-simulation instantiation/init/termination/free through a drop-backed instance wrapper, exposes typed Float64/Int32/UInt64/Clock get/set plus doStep early-return reporting, exposes optional FMU-state snapshot/restore/free wrappers for rollback-capable FMUs, can execute a single-FMU typed macro step that publishes inputs, advances master time using complete-step or early-return timing, reads typed outputs, can restore a pre-step FMU-state checkpoint on early return through an explicit rollback policy, can route typed Float64/UInt64 connections across multiple existing FMU instances using deterministic Gauss-Seidel or Jacobi ordering, and validates that the current-platform packaged point-mass FMU runs through the OpenBMP importer with byte-stable fixed-step output across repeated fresh materializations and a pinned FMPy final-sample cross-check, plus pinned Dahlquist, VanDerPol, pre-event BouncingBall, Stair, and Resource Reference-FMU smoke cross-checks against FMPy, while still making no full FMI conformance claim."
+verification = ["V-FMI-001"]
+
+[[requirements]]
+id = "REQ-FMI-002"
+title = "FMI export artifacts are typed and packaged"
+statement = "The host-only FMI exporter artifact helper generates restricted FMI 3 modelDescription.xml metadata with a required instantiationToken, direct Float64, Int32, and UInt64 variable elements, valueReference fields, ModelStructure output entries, and typed input start values, validates that restricted schema contract through a reusable parser before returning generated XML, validates the generated point-mass modelDescription.xml against a checked-in restricted XSD contract and the pinned official FMI 3.0 XSD set with xmllint, provides an ABI-aligned OpenBMP point-mass export model for time, throttle, altitude, step, and velocity, exposes supported-target FMU binary-entry helpers for both the openbmp-fmi cdylib and the point-mass modelIdentifier binary expected by standard importers, rejects duplicate exported names and value references, XML-escapes exported identifiers, writes stored-entry .fmu archives containing modelDescription.xml plus a caller-supplied binary payload, writes current-platform point-mass FMU archives through a first-class helper that returns the materialized binary entry, round-trips those archives through the in-repo FMU metadata reader, builds the expected typed binding plan from the packaged point-mass metadata, proves the current-platform point-mass FMU binary entry can be materialized and smoke-loaded through the FMI loader, runs the packaged point-mass FMU inside pinned FMPy against the native trace tolerance table, and still makes no full FMI conformance claim."
+verification = ["V-FMI-001"]
+
+[[requirements]]
+id = "REQ-FMI-003"
+title = "FMI export C symbols step deterministic native state"
+statement = "The host-only FMI exporter builds openbmp-fmi as an rlib and cdylib, exposes restricted FMI 3 C symbols for version, instantiation, initialization, typed Float64/Int32/UInt64 get/set, doStep, FMU-state snapshot/restore/free, termination, instance free, and fail-closed unsupported FMI 3 symbols needed by full-symbol-table importers, consumes the shared point-mass export value-reference constants, advances a deterministic point-mass-like plant state without wall-clock reads, preserves FMPy-applied input start values across initialization, directly tests fixed-step state advance plus state snapshot/restore, and gates multi-step ABI output against an independent native trace with a checked-in tolerance table while still making no full FMI conformance claim."
+verification = ["V-FMI-001"]
 
 [[requirements]]
 id = "REQ-GOV-001"
@@ -121,10 +169,28 @@ statement = "Every requirement in this register has verification evidence, and e
 verification = ["V-TRACE-001"]
 
 [[requirements]]
+id = "REQ-PROV-001"
+title = "Data and scenario provenance is enforced in CI"
+statement = "The CI workflow runs the OpenBMP provenance checker over the committed data and scenario trees, so source data and scenario files without sibling provenance records fail before merge."
+verification = ["V-PROV-001"]
+
+[[requirements]]
 id = "REQ-DET-001"
 title = "Telemetry diffs can emit determinism provenance"
 statement = "The diff tool can write a machine-readable report containing the comparison result, first divergence if present, host/toolchain provenance, floating-point contract, and Parquet archive metadata."
 verification = ["V-DET-001"]
+
+[[requirements]]
+id = "REQ-DET-002"
+title = "Floating-point environment guard is cross-architecture"
+statement = "The deterministic simulation kernel asserts the current floating-point control environment through openbmp-core before running, rejecting flush-to-zero modes or non-nearest rounding on supported x86_64 and aarch64 targets."
+verification = ["V-DET-002"]
+
+[[requirements]]
+id = "REQ-DET-003"
+title = "Adaptive dense output is state-stable and opt-in"
+statement = "The DOPRI5 and DOP853 adaptive integrators expose opt-in dense-output interpolants for accepted substeps, verify the expected interpolation order on an analytic ODE, preserve the normal adaptive endpoint, and reject dense-output scenario requests for methods without a wired interpolant."
+verification = ["V-DET-003"]
 
 [[requirements]]
 id = "REQ-STD-001"
@@ -143,6 +209,276 @@ id = "REQ-MC-001"
 title = "Seeded Monte-Carlo evidence has a visible CI lane"
 statement = "The repository exposes a scheduled or manually runnable CI lane for the seeded footprint and ascent Monte-Carlo checks, so dispersion acceptance evidence is reproducible outside ad hoc local runs."
 verification = ["V-MC-001"]
+
+[[requirements]]
+id = "REQ-MC-002"
+title = "Monte-Carlo campaigns use deterministic sample streams and reusable reducers"
+statement = "Monte-Carlo campaign sampling uses the project deterministic RNG with a dedicated sample domain, and reusable campaign reports, Welford reducers, and Clopper-Pearson reducers provide deterministic campaign statistics instead of ad hoc per-test samplers."
+verification = ["V-MC-002"]
+
+[[requirements]]
+id = "REQ-MC-003"
+title = "Monte-Carlo campaigns expose Wilks sizing and convergence gates"
+statement = "Monte-Carlo campaign planning can compute one-sided and two-sided Wilks sample counts for a requested coverage and confidence level, and campaign traces can be evaluated by a deterministic relative half-width convergence gate."
+verification = ["V-MC-003"]
+
+[[requirements]]
+id = "REQ-MC-004"
+title = "Monte-Carlo campaigns expose deterministic Latin hypercube designs"
+statement = "Monte-Carlo design-of-experiments support can generate a deterministic Latin hypercube unit-cube design with one sample in each marginal stratum for every dispersion dimension."
+verification = ["V-MC-004"]
+
+[[requirements]]
+id = "REQ-MC-005"
+title = "Monte-Carlo designs support Iman-Conover rank correlation"
+statement = "Monte-Carlo design-of-experiments support can reorder an existing unit-cube design with an Iman-Conover transform so requested rank correlation is induced while each marginal column's samples are preserved exactly."
+verification = ["V-MC-005"]
+
+[[requirements]]
+id = "REQ-MC-006"
+title = "Monte-Carlo campaigns expose native Sobol base designs"
+statement = "Monte-Carlo design-of-experiments support can generate a native unscrambled Sobol unit-cube design from a provenance-pinned Joe/Kuo direction-number table and CSV output for local evidence workflows."
+verification = ["V-MC-006"]
+
+[[requirements]]
+id = "REQ-MC-007"
+title = "Sobol campaigns support deterministic Owen-style scrambling"
+statement = "Monte-Carlo Sobol design support can apply deterministic nested binary scrambling keyed by a campaign-local seed, so repeated runs are reproducible while independent scramble seeds produce distinct randomized QMC designs."
+verification = ["V-MC-007"]
+
+[[requirements]]
+id = "REQ-MC-008"
+title = "Parallel Monte-Carlo fan-out is worker-count deterministic"
+statement = "Monte-Carlo scalar campaigns expose bounded rayon fan-out whose per-sample streams and fixed merge-tree reducers produce bit-identical reports across worker counts, and worker-side floating-point environment checks fail closed before sample evaluation."
+verification = ["V-MC-008"]
+
+[[requirements]]
+id = "REQ-MC-009"
+title = "Monte-Carlo scalar checkpoints resume bit-identically"
+statement = "Monte-Carlo scalar and footprint campaigns can persist completed-index checkpoint data in JSON, validate scenario and toolchain metadata before resume, skip completed samples through library and CLI surfaces, and finalize resumed chunks to the same report bits as one-shot execution."
+verification = ["V-MC-009"]
+
+[[requirements]]
+id = "REQ-MC-010"
+title = "Synthetic rare-event estimators stay closed to real vehicle risk"
+statement = "The Monte-Carlo crate exposes synthetic-only standard-normal rare-event limit-state primitives, a sealed LimitState trait, a linear analytic limit state with exact Phi(-beta) truth, deterministic Au-Beck-style Subset Simulation with modified-Metropolis conditional sampling, deterministic cross-entropy Gaussian importance sampling, replay-identical probability reports with coefficient-of-variation and analytic log10-error evidence, a fail-closed runtime guard that rejects non synthetic-limit-state labels, and a compile-fail tripwire proving external crates cannot implement a ground-aimpoint LimitState. The scenario parser accepts only schema-v3 synthetic rare-event Monte-Carlo manifests, rejects ground-aimpoint or target vocabulary under monte_carlo.limit_state before serde deserialization, and the CLI can execute those synthetic scenario manifests through openbmp mc rare-event with deterministic TOML evidence output."
+verification = ["V-MC-010"]
+
+[[requirements]]
+id = "REQ-MC-011"
+title = "Code verification reports observed order and GCI"
+statement = "The testkit exposes a smooth manufactured scalar ODE with exact state, exact derivative, and source term, plus an observed-order and Richardson/GCI reducer over three halved step sizes; the CLI exposes openbmp verify-order to run the real fixed-step RK4 and DOP853 integrators against that manufactured case, fail closed when observed order or GCI acceptance fails, and optionally write deterministic TOML evidence."
+verification = ["V-MC-011"]
+
+[[requirements]]
+id = "REQ-MC-012"
+title = "Synthetic reconstruction reports RTS, batch GN, and NEES/NIS evidence"
+statement = "The testkit exposes pure linear-Gaussian reconstruction helpers for normalized-error-squared statistics, chi-square consistency bands, NEES/NIS in-bounds fractions, Rauch-Tung-Striebel smoothing, and linear batch Gauss-Newton normal-equation solves without depending on openbmp-fc; the CLI exposes openbmp reconstruct synthetic-linear to run the deterministic synthetic fixture, fail closed outside the [0.93, 0.97] NEES/NIS fraction band or nonzero batch-update tolerance, and optionally write deterministic TOML evidence."
+verification = ["V-MC-012"]
+
+[[requirements]]
+id = "REQ-MC-013"
+title = "FC observation reconstruction consumes real estimator innovation histories"
+statement = "The CLI reconstruction layer can run an existing scenario with the read-only SIL monitor, consume real estimator.status innovation histories from the in-loop flight controller, reduce GNSS, barometer, and magnetometer NIS samples through the testkit chi-square consistency helpers when those measurement updates are present, report estimator-sample counts, rejected-innovation counts, covariance-condition proxy maxima, and per-sensor in-bounds fractions, fail closed when no FC estimator diagnostics or innovation samples are observed, and optionally write deterministic TOML evidence without perturbing the underlying run."
+verification = ["V-MC-013"]
+
+[[requirements]]
+id = "REQ-MC-014"
+title = "FC observation reconstruction reports covariance-backed NEES"
+statement = "The flight-controller estimator status topic publishes finite covariance diagonal blocks for exposed position, velocity, and attitude error-state subspaces while using zero diagonal blocks for unavailable subspaces; the CLI reconstruction layer consumes those diagnostics through the read-only SIL monitor, computes estimate-vs-truth position, velocity, and attitude NEES samples only when the corresponding diagonal block is positive and finite, reduces each populated block through the testkit chi-square consistency helpers, fails closed when no covariance-backed NEES samples are observed, and writes deterministic TOML evidence alongside the existing NIS report."
+verification = ["V-MC-014"]
+
+[[requirements]]
+id = "REQ-MC-015"
+title = "Reconstruction layer exports deterministic ECI trajectories for code-to-code exchange"
+statement = "The CLI reconstruction layer can run an existing scenario through openbmp reconstruct export-trajectory, require the primary time, ECI position, and ECI velocity telemetry channels to be present as float64 data, write a deterministic CSV containing time_s, step, position_x/y/z_eci_m, and velocity_x/y/z_eci_m_s columns, report sample count, final time, and stop reason, fail closed when no complete trajectory rows are available, and keep external solver data outside the repository for local compare-telemetry workflows."
+verification = ["V-MC-015"]
+
+[[requirements]]
+id = "REQ-MC-016"
+title = "Reconstruction layer exports trajectory compare tolerance mappings"
+statement = "The CLI reconstruction layer can write deterministic compare-telemetry mapping TOML for exported trajectory CSVs through openbmp reconstruct export-trajectory-mapping, provides a strict round-trip pack and a leo-research external-code starter pack, maps all three ECI position and velocity CSV columns to the corresponding OpenBMP telemetry channels with declared absolute tolerances and time interpolation tolerance, and proves the strict pack by exporting a trajectory CSV and comparing it back against the same scenario through the existing compare-telemetry engine."
+verification = ["V-MC-016"]
+
+[[requirements]]
+id = "REQ-UQ-001"
+title = "UQ budgets expose correlated source tags and 7009B credibility records"
+statement = "The workspace exposes an L1 openbmp-uq crate that uses the canonical openbmp-core ValidationStatus, preserves the legacy flat RSS-plus-bias ErrorBudget for compatibility, provides source-tagged CorrelatedErrorBudget aggregation via sqrt(s^T Sigma s), reports aleatory and epistemic sub-aggregates, validates finite symmetric unit-diagonal bounded positive-semidefinite correlation matrices fail-closed, exposes NASA-STD-7009B-shaped eight-factor CredibilityRecord scoring with absent factors binding to L0, maps binding credibility back to the four public validation labels, and leaves openbmp-physics::uq as a compatibility re-export rather than a duplicate implementation."
+verification = ["V-UQ-001"]
+
+[[requirements]]
+id = "REQ-UQ-002"
+title = "Monte-Carlo campaign reports enforce UQ credibility floors"
+statement = "Monte-Carlo scalar summaries, landing-footprint campaigns, and sampled propulsion-fault campaigns can read a TOML UQ budget into openbmp-uq CorrelatedErrorBudget data, evaluate campaign credibility through openbmp-mc, preserve ordinary reports when no UQ budget is supplied, optionally write a deterministic Markdown credibility report, fail closed before final campaign evidence is accepted when the binding credibility level is below the requested floor, allow landing-footprint scenario manifests to declare the UQ budget, floor, and report path under landing_footprint.monte_carlo.uq, and allow propulsion-fault library manifests to declare the same campaign UQ sidecar under uq."
+verification = ["V-UQ-002"]
+
+[[requirements]]
+id = "REQ-UQ-003"
+title = "Nested UQ reducers emit p-boxes and variance splits"
+statement = "The UQ, Monte-Carlo, scenario, runner, and CLI layers can reduce nested aleatory-within-epistemic scalar sample sets into a conditional-CDF probability-box envelope, compute the law-of-total-variance split E_theta[Var_a] plus Var_theta[E_a], reject empty or non-finite nested samples fail-closed, verify lower-tail scalar probability requirements against the lower p-box bound rather than a mean conditional CDF, group materialized nested sample CSVs by epistemic condition, execute landing-footprint nested Monte-Carlo campaigns from source uncertainty_class tags and landing_footprint.monte_carlo.nested sample counts, and optionally write deterministic p-box CSV evidence."
+verification = ["V-UQ-003"]
+
+[[requirements]]
+id = "REQ-PROP-001"
+title = "Solid-motor pressure thrust uses ambient static pressure"
+statement = "A solid motor that opts into pressure-thrust correction computes thrust from the stored momentum-thrust curve plus the ideal nozzle pressure term using the runtime atmosphere static pressure, while existing constant-correction motors preserve the legacy thrust curve."
+verification = ["V-PROP-001"]
+
+[[requirements]]
+id = "REQ-PROP-002"
+title = "Solid-motor nozzle separation clips overexpanded pressure thrust"
+statement = "A solid motor that opts into nozzle separation with pressure-thrust correction detects heavily overexpanded operation, clips the effective expansion ratio with Summerfield or Schmucker criteria, and preserves the legacy full-nozzle pressure-thrust solution when separation is off."
+verification = ["V-PROP-002"]
+
+[[requirements]]
+id = "REQ-PROP-003"
+title = "Inline solid-grain transient chamber regression is opt-in"
+statement = "Inline solid-grain motors can opt into a deterministic lumped-volume chamber-pressure integration mode that produces a validated SolidMotor curve, preserves the quasi-static equilibrium regression by default, and exposes an erosive burn-rate augmentation hook for transient internal-ballistics studies."
+verification = ["V-PROP-003"]
+
+[[requirements]]
+id = "REQ-PROP-004"
+title = "Thermochemistry decks parse and interpolate deterministically"
+statement = "The L2 thermochemistry crate ingests Schema-1 offline CEA/Cantera-style decks, validates ideal c* consistency from chamber temperature, gamma, and molecular weight, interpolates locked-order over log chamber pressure and mixture ratio, and fails closed for out-of-envelope queries."
+verification = ["V-PROP-004"]
+
+[[requirements]]
+id = "REQ-PROP-005"
+title = "Inline grain motors can consume thermochemistry decks"
+statement = "An inline solid-grain motor may declare a SHA-pinned [propulsion.thermochem] Schema-1 deck; the runner samples it at the declared chamber pressure and mixture ratio, overrides the inline grain c_star_m_s and gamma constants with the looked-up state, and preserves those constants when the block is omitted."
+verification = ["V-PROP-005"]
+
+[[requirements]]
+id = "REQ-PROP-006"
+title = "Feed-system crate exposes a deterministic tank-valve-chamber solve"
+statement = "The L2 feed-system crate provides an off-runner FeedNetwork boundary and a validated tank-valve-chamber equilibrium solve that balances incompressible valve inflow against choked throat outflow with fixed deterministic iteration, finite/positive parameter validation, fail-closed non-convergence handling, and zero-flow closed-valve behavior."
+verification = ["V-PROP-006"]
+
+[[requirements]]
+id = "REQ-PROP-007"
+title = "Liquid engine feed networks can override feed pressure scale"
+statement = "A tank-coupled liquid engine may declare one [[propulsion.feed_network]] tank_valve_chamber block; scenario validation rejects duplicate or unknown engine ids and engines without propellant budgets, and the runner samples the configured feed network to override that engine's existing feed_pressure_scale while preserving depletion shutdown precedence and the legacy regulated/blowdown path when the block is omitted."
+verification = ["V-PROP-007"]
+
+[[requirements]]
+id = "REQ-PROP-008"
+title = "Feed-system graphs solve deterministic node-branch mass balance"
+statement = "The feed-system crate exposes a steady node/branch graph with fixed-pressure, junction, and chamber nodes, signed incompressible valve branches, choked chamber-throat outflow, fixed-cap deterministic Newton iteration, dense linear solve fail-closed handling, and node-pressure/branch-flow snapshots with bounded mass residuals."
+verification = ["V-PROP-008"]
+
+[[requirements]]
+id = "REQ-PROP-009"
+title = "Feed-system chambers integrate transient pressure deterministically"
+statement = "The feed-system crate exposes a lumped transient chamber-pressure stepper that validates finite non-negative state and feed inputs, advances dp/dt = (R*T/V)*(m_dot_in - p*At/c*) with an exact constant-input update, reports inlet/outlet mass flow, pressure rate, optional oxidizer/fuel mixture ratio, validation status, and fails closed for non-finite intermediate values."
+verification = ["V-PROP-009"]
+
+[[requirements]]
+id = "REQ-PROP-010"
+title = "Feed-system controllers produce bounded throttle and mixture commands"
+statement = "The feed-system crate exposes a deterministic dual-valve throttle/MR controller that validates finite chamber-pressure and optional mixture-ratio setpoints/measurements, applies pressure PI correction to both valve commands, applies mixture-ratio PI correction with opposite oxidizer/fuel signs, clamps outputs to declared valve bounds, applies deterministic slew limiting, and fails closed when an MR setpoint lacks an MR measurement."
+verification = ["V-PROP-010"]
+
+[[requirements]]
+id = "REQ-PROP-011"
+title = "Feed-system transient dual-valve networks couple feed legs to chamber pressure"
+statement = "The feed-system crate exposes a stateful transient dual-valve feed network with independent oxidizer and fuel tank/valve legs, finite/positive leg validation, bounded valve command validation, start-of-step incompressible valve inflows, exact lumped chamber-pressure integration, oxidizer/fuel mass-flow and mixture-ratio reporting, zero-time hold behavior, and fail-closed handling for invalid values."
+verification = ["V-PROP-011"]
+
+[[requirements]]
+id = "REQ-PROP-012"
+title = "Feed-system turbopump maps apply affinity scaling and NPSH cavitation"
+statement = "The feed-system crate exposes a generic normalized turbopump map with finite coefficient validation, design-point affinity scaling of flow and pressure rise, speed-scaled NPSH required versus available NPSH cavitation detection, cavitation head derating, efficiency and power reporting, specific-speed family metadata, and fail-closed handling for invalid map or operating values."
+verification = ["V-PROP-012"]
+
+[[requirements]]
+id = "REQ-PROP-013"
+title = "Feed-system line transients advance a fixed-grid MOC water-hammer step"
+statement = "The feed-system crate exposes a frictionless fixed-grid Method-of-Characteristics line transient primitive with Courant-exact dx/a time step reporting, finite line-state validation, upstream fixed-head and downstream valve-velocity boundaries, characteristic interior updates, downstream pressure/head snapshots, and a valve-closure surge matching the Joukowsky bound."
+verification = ["V-PROP-013"]
+
+[[requirements]]
+id = "REQ-PROP-014"
+title = "Liquid engine feed networks can run transient dual-valve chamber state"
+statement = "A tank-coupled liquid engine may declare one [[propulsion.feed_network]] transient_dual_valve_chamber block; scenario validation rejects malformed leg, chamber, and command values through strict typed fields, and the runner stores chamber pressure state in the feed-network rack, advances it once per simulation tick using the scenario time step, maps the updated chamber pressure to the existing feed_pressure_scale, and preserves depletion shutdown precedence."
+verification = ["V-PROP-014"]
+
+[[requirements]]
+id = "REQ-PROP-015"
+title = "Transient feed networks can close pressure and mixture-ratio control loops"
+statement = "A transient_dual_valve_chamber feed network may declare a controller block with chamber-pressure and optional mixture-ratio setpoints, PI gains, integral clamps, valve bounds, and slew limits; scenario validation rejects malformed controller parameters, and the runner stores controller state, updates valve commands before each transient network step, carries the latest mixture-ratio measurement, and preserves the fixed-command path when the controller block is omitted."
+verification = ["V-PROP-015"]
+
+[[requirements]]
+id = "REQ-PROP-016"
+title = "Transient feed-network legs can use scenario-declared turbopump pressure rise"
+statement = "A transient_dual_valve_chamber feed network may declare oxidizer_pump and fuel_pump blocks with generic normalized turbopump design points, map coefficients, NPSH parameters, and operating points; scenario validation rejects malformed pump scalars and coefficients, and the runner solves each configured pump at build time, applies NPSH derating through openbmp-feedsystem, adds the solved pressure rise to the corresponding feed-leg tank pressure, and preserves the no-pump path when the pump block is omitted."
+verification = ["V-PROP-016"]
+
+[[requirements]]
+id = "REQ-PROP-017"
+title = "Transient feed-network legs can use scenario-declared MOC line pressure perturbations"
+statement = "A transient_dual_valve_chamber feed network may declare oxidizer_line and fuel_line fixed-grid Method-of-Characteristics line blocks with length, wave speed, density, area, segment count, initial state, and boundary values; scenario validation rejects malformed line parameters, the runner enforces that the line Courant time step equals scenario time.dt_s, advances each configured line once per simulation tick, applies the downstream pressure perturbation around that leg's tank-plus-pump feed pressure, steps the transient dual-valve network with dynamic feed pressures, and preserves the no-line path when line blocks are omitted."
+verification = ["V-PROP-017"]
+
+[[requirements]]
+id = "REQ-PROP-018"
+title = "Feed-system POGO stability primitive evaluates accumulator-detuned closed-loop margins"
+statement = "The feed-system crate exposes a deterministic reduced POGO stability primitive that validates one longitudinal structural mode, a first-order feed response, mass-flow-gain phase lead, cavitation compliance, and accumulator compliance; it attenuates open-loop feed gain by the cavitation-to-accumulator compliance ratio, assembles the cubic closed-loop characteristic, evaluates static and Routh-Hurwitz dynamic stability margins, reports stable, static-divergence, or dynamic-instability verdicts, exposes the neutral accumulator compliance boundary, and remains an off-runner primitive until scenario-facing POGO wiring is added."
+verification = ["V-PROP-018"]
+
+[[requirements]]
+id = "REQ-PROP-019"
+title = "Propulsion POGO scenarios can gate startup on reduced stability verdicts"
+statement = "A scenario may declare an optional [propulsion.pogo] block with reduced longitudinal-mode, feed-lag, mass-flow-gain, cavitation-compliance, accumulator-compliance, and require_stable parameters; scenario validation rejects malformed POGO scalars through unit-suffixed typed fields, the point-mass and rigid-body runners evaluate the feed-system POGO primitive at startup, require_stable rejects non-stable verdicts fail-closed, and the no-block path remains inert."
+verification = ["V-PROP-019"]
+
+[[requirements]]
+id = "REQ-PROP-020"
+title = "Propulsion faults can be scheduled deterministically by engine and step"
+statement = "A scenario may declare an optional [propulsion.faults] schedule with ordered [[propulsion.faults.rules]] entries carrying unique ids, engine ids, start_step values, and engine fault payloads; scenario validation rejects duplicate rule ids, unknown engine ids, and payloads outside the target engine envelope, EngineCluster exposes id-routed fault injection, and the point-mass and rigid-body runners inject each scheduled fault exactly once before the engine rack step whose kernel step is at or beyond start_step while preserving the no-fault path when the block is omitted."
+verification = ["V-PROP-020"]
+
+[[requirements]]
+id = "REQ-PROP-021"
+title = "Engine faults include deterministic hard-start over-pressure transients"
+statement = "EngineFault supports a hard_start_overpressure mode with finite factor at least one and positive duration_s; the liquid-engine model applies the thrust multiplier only while the engine is Igniting and its in-state timer is within duration_s, scenario validation rejects malformed load-time or scheduled payloads, and the runner maps the typed scenario payload into both construction-time faults and [propulsion.faults] scheduled injections."
+verification = ["V-PROP-021"]
+
+[[requirements]]
+id = "REQ-PROP-022"
+title = "Pump cavitation can trigger deterministic one-shot engine faults"
+statement = "A scenario may declare [[propulsion.faults.cavitation_rules]] entries keyed by engine id and oxidizer, fuel, or any pump leg; scenario validation rejects duplicate ids, malformed fault payloads, unknown engines, and rules without a matching transient feed-network pump source, the feed-network runner preserves pump NPSH cavitation verdicts as deterministic events, and the point-mass and rigid-body runners inject each matching cavitation fault exactly once before the engine rack step while preserving the no-trigger path when pumps are nominal or absent."
+verification = ["V-PROP-022"]
+
+[[requirements]]
+id = "REQ-PROP-023"
+title = "Mixture-ratio runaway rules drift transient feed-network valve commands"
+statement = "A scenario may declare [[propulsion.faults.mixture_ratio_runaway_rules]] entries keyed by engine id and start_step with finite oxidizer and fuel valve-opening drift rates; scenario validation rejects duplicate ids, unknown engines, all-zero rates, and rules without a matching transient_dual_valve_chamber feed network, and the point-mass and rigid-body runners apply the scheduled deterministic drift after controller updates and before each transient feed-network step while clamping valve commands to [0, 1]."
+verification = ["V-PROP-023"]
+
+[[requirements]]
+id = "REQ-PROP-024"
+title = "SIL stimulation can arm scheduled propulsion engine faults"
+statement = "A native SIL package run may use SilStimulation to append a scheduled [propulsion.faults] engine rule in memory without modifying package scenario files; the stimulation records the scheduled rule in EvidenceBundle.stimuli, uses the normal scenario parser and validator for engine ids and fault payloads, and produces an observable scheduled hard-off response in rigid-body engine telemetry."
+verification = ["V-PROP-024"]
+
+[[requirements]]
+id = "REQ-PROP-025"
+title = "Monte Carlo fault libraries materialize scheduled propulsion faults"
+statement = "The Monte Carlo crate exposes a deterministic PropulsionFaultLibrary with validated scheduled engine-fault templates, per-template activation probabilities keyed by SampleRng, and materialized PropulsionFaultOverlay TOML fragments using the scenario [propulsion.faults] schema; duplicate ids, invalid probabilities, and invalid fault payloads are rejected, and emitted overlays parse through the normal scenario validator."
+verification = ["V-PROP-025"]
+
+[[requirements]]
+id = "REQ-PROP-026"
+title = "SIL observed runs capture closed-loop propulsion fault response"
+statement = "A native SIL package run may combine SilStimulation with the estimate-vs-truth monitor; scheduled propulsion faults remain recorded as EvidenceBundle.stimuli, the observed run attaches EKF residual evidence, and a shortened closed-loop TVC engine-out scenario shows the scheduled hard-off reducing terminal thrust and vehicle velocity while preserving parser-validated scenario mutation."
+verification = ["V-PROP-026"]
+
+[[requirements]]
+id = "REQ-PROP-027"
+title = "Monte Carlo propulsion fault campaigns execute sampled overlays"
+statement = "The CLI Monte Carlo layer can run a sampled scheduled-propulsion-fault campaign by reading a base scenario and a PropulsionFaultLibrary TOML manifest, materializing deterministic per-sample PropulsionFaultOverlay fragments, parsing each mutated scenario through the normal scenario validator, executing the standard runner, reading a terminal telemetry metric, writing one CSV row per sample with activated fault ids and success state, and summarizing the metric with Welford statistics plus a Clopper-Pearson success interval."
+verification = ["V-PROP-027"]
 
 [[verification]]
 id = "V-SIL-001"
@@ -181,6 +517,7 @@ id = "V-SIL-005"
 kind = "test"
 command = "cargo test -p openbmp-scenario rejects_fc_scenario_with_relative_nav_trigger --locked"
 paths = [
+  "crates/openbmp-bridge/src/packet.rs",
   "crates/openbmp-scenario/src/document.rs",
   "crates/openbmp-scenario/src/scenario.rs",
   "docs/scenario-format.md",
@@ -234,6 +571,56 @@ contains = [
   "lockstep-clock tripwire",
 ]
 requirements = ["REQ-RT-001"]
+
+[[verification]]
+id = "V-RT-002"
+kind = "test"
+command = "cargo test -p openbmp-rt --locked && cargo test -p openbmp-scenario realtime --locked && cargo test -p openbmp-runner --test realtime --locked && cargo check -p openbmp-rt -p openbmp-scenario -p openbmp-runner -p openbmp-cli --locked && cargo clippy -p openbmp-rt -p openbmp-scenario -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-rt/Cargo.toml",
+  "crates/openbmp-rt/src/lib.rs",
+  "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/rt.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-runner/tests/realtime.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-fc/Cargo.toml",
+  "docs/scenario-format.md",
+  "docs/parity/12-determinism-realtime-and-compute.md",
+  "docs/parity/10-flight-software-in-the-loop-xil.md",
+]
+contains = [
+  "openbmp-rt",
+  "PaceMode",
+  "FramePacer",
+  "JitterHistogram",
+  "real_time_factor",
+  "RealtimeFrameExecutionReport",
+  "begin_frame_execution",
+  "finish_frame_execution",
+  "SchedulabilityTask",
+  "pacer_modes_do_not_change_deterministic_state",
+  "pacer_records_jitter_and_overruns",
+  "schedulability_advisory_matches_hand_checked_sets",
+  "openbmp_fc_manifest_does_not_depend_on_openbmp_rt",
+  "RealtimeConfig",
+  "RealtimeTaskConfig",
+  "realtime_block_is_v3_only_and_validates_under_v3",
+  "realtime_task_budgets_are_validated",
+  "RunnerRealtimePacer",
+  "RealtimeSchedulabilityReport",
+  "realtime_pacing_modes_preserve_telemetry_bytes",
+  "realtime_run_reports_jitter_and_overruns_outside_telemetry",
+  "realtime_run_reports_frame_execution_budget_evidence",
+  "realtime_schedulability_tasks_reported_by_runner",
+  "realtime execution",
+]
+requirements = ["REQ-RT-002"]
 
 [[verification]]
 id = "V-BUS-001"
@@ -338,6 +725,25 @@ contains = [
 requirements = ["REQ-FDIR-003"]
 
 [[verification]]
+id = "V-FDIR-004"
+kind = "test"
+command = "cargo test -p openbmp-fc best_by_covariance_trace --locked"
+paths = [
+  "crates/openbmp-fc/src/estimator_lanes.rs",
+  "docs/scenario-format.md",
+]
+contains = [
+  "covariance_trace_proxy",
+  "position_variance_eci_m2",
+  "velocity_variance_eci_m2_s2",
+  "attitude_variance_rad2",
+  "best_by_covariance_trace_picks_minimum_exposed_trace",
+  "best_by_covariance_trace_falls_back_to_innovation_proxy_without_covariance",
+  "best_by_covariance_trace_ties_choose_lowest_index",
+]
+requirements = ["REQ-FDIR-004"]
+
+[[verification]]
 id = "V-HAL-001"
 kind = "ci"
 command = "cargo check -p openbmp-core -p openbmp-state -p openbmp-models -p openbmp-mission -p openbmp-physics -p openbmp-propulsion -p openbmp-aero -p openbmp-sensors -p openbmp-hal -p openbmp-fc --no-default-features --target thumbv7em-none-eabihf --locked"
@@ -390,15 +796,348 @@ requirements = ["REQ-HAL-004"]
 id = "V-HIL-001"
 kind = "test"
 command = "cargo test -p openbmp-bridge lockstep --locked"
-paths = ["crates/openbmp-bridge/src/packet.rs", "crates/openbmp-bridge/src/lockstep.rs", "docs/real-rocket-integration.md"]
+paths = ["crates/openbmp-bridge/src/packet.rs", "crates/openbmp-bridge/src/lockstep.rs", "crates/openbmp-bridge/src/transport.rs", "docs/real-rocket-integration.md"]
 contains = [
   "BridgeHelloPacket",
   "BridgeMessage",
+  "LockstepSimMaster",
   "StepAckPacket",
   "validate_command_for_sensor",
   "command_for_wrong_step_is_rejected",
+  "lockstep_master_rejects_step_mismatch_and_emits_fault",
 ]
 requirements = ["REQ-HIL-001"]
+
+[[verification]]
+id = "V-HIL-002"
+kind = "test"
+command = "cargo test -p openbmp-bridge transport --locked && cargo check -p openbmp-bridge --locked && cargo clippy -p openbmp-bridge --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-bridge/src/transport.rs",
+  "crates/openbmp-bridge/src/error.rs",
+  "crates/openbmp-bridge/src/lib.rs",
+  "docs/real-rocket-integration.md",
+  "docs/software-architecture.md",
+  "docs/parity/10-flight-software-in-the-loop-xil.md",
+]
+contains = [
+  "Transport",
+  "InProcessTransport",
+  "StreamTransport",
+  "SplitStreamTransport",
+  "TcpBridgeListener",
+  "UnixBridgeListener",
+  "in_process_transport_pair",
+  "in_process_transport_pair_exchanges_bridge_messages",
+  "stream_transport_writes_and_reads_framed_messages",
+  "split_stream_transport_writes_and_reads_framed_messages",
+  "tcp_bridge_listener_accepts_stream_transport",
+  "unix_bridge_listener_accepts_stream_transport",
+]
+requirements = ["REQ-HIL-002"]
+
+[[verification]]
+id = "V-HIL-003"
+kind = "test"
+command = "cargo test -p openbmp-bridge zoh --locked && cargo test -p openbmp-scenario fc_transport --locked && cargo test -p openbmp-runner --test fc_transport --locked && cargo check -p openbmp-bridge -p openbmp-scenario -p openbmp-runner -p openbmp-cli --locked && cargo clippy -p openbmp-bridge -p openbmp-runner --test fc_transport --locked -- -D warnings"
+paths = [
+  "crates/openbmp-bridge/Cargo.toml",
+  "crates/openbmp-bridge/src/lib.rs",
+  "crates/openbmp-bridge/src/zoh.rs",
+  "crates/openbmp-bridge/tests/expected/zoh-coupling.toml",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-runner/src/fc_bridge.rs",
+  "crates/openbmp-runner/src/bin/openbmp-fc-stdio-echo.rs",
+  "crates/openbmp-runner/src/determinism.rs",
+  "crates/openbmp-runner/tests/fc_transport.rs",
+  "crates/openbmp-cli/src/commands/run.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "docs/scenario-format.md",
+  "docs/parity/10-flight-software-in-the-loop-xil.md",
+]
+contains = [
+  "FcTransportConfig",
+  "FcTransportModeConfig",
+  "TcpLoopback",
+  "UnixLoopback",
+  "ExternalProcess",
+  "SplitStreamTransport",
+  "openbmp-fc-stdio-echo",
+  "peer_protocol_version",
+  "ZohCouplingHalvingReport",
+  "zoh_linear_ramp_halving_report",
+  "zoh_coupling_error_halves_as_controller_frame_halves",
+  "zoh-coupling.toml",
+  "build_transport_session",
+  "step_controller_via_transport",
+  "EngineCommandPacket",
+  "telemetry_sha256_hex",
+  "ActuatorStreamReport",
+  "actuator_stream_sha256_hex",
+  "actuator_stream_report",
+  "actuator stream",
+  "engine_command_set_from_packet_preserves_full_engine_fields",
+  "in_process_fc_transport_preserves_telemetry_bytes",
+  "tcp_loopback_fc_transport_preserves_telemetry_bytes",
+  "unix_loopback_fc_transport_preserves_telemetry_bytes",
+  "external_process_fc_transport_runs_stdio_peer",
+  "fc_transport_accepts_tcp_loopback_mode",
+  "fc_transport_accepts_unix_loopback_mode",
+  "fc_transport_accepts_external_process_mode",
+  "fc_transport_external_process_requires_command",
+  "fc_transport_protocol_version_mismatch_fails_closed",
+  "fc_transport_command_step_offset_fault_fails_closed",
+  "fc_transport_command_time_offset_fault_fails_closed",
+  "fc_transport_rejects_missing_imu_sensor",
+]
+requirements = ["REQ-HIL-003"]
+
+[[verification]]
+id = "V-XIL-001"
+kind = "test"
+command = "cargo test -p openbmp-bridge fault --locked && cargo test -p openbmp-bridge ports --locked && cargo test -p openbmp-scenario fc_transport --locked && cargo test -p openbmp-runner fc_transport --locked && cargo test -p openbmp-sil xil --locked && cargo check -p openbmp-bridge -p openbmp-scenario -p openbmp-runner -p openbmp-sil --locked && cargo clippy -p openbmp-bridge -p openbmp-scenario -p openbmp-runner -p openbmp-sil --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-bridge/Cargo.toml",
+  "crates/openbmp-bridge/src/fault.rs",
+  "crates/openbmp-bridge/src/lib.rs",
+  "crates/openbmp-bridge/src/ports.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/fc_bridge.rs",
+  "crates/openbmp-runner/tests/fc_transport.rs",
+  "crates/openbmp-sil/Cargo.toml",
+  "crates/openbmp-sil/src/lib.rs",
+  "crates/openbmp-sil/src/xil.rs",
+  "crates/openbmp-sil/tests/observed_run.rs",
+  "docs/scenario-format.md",
+  "docs/real-rocket-integration.md",
+  "docs/parity/10-flight-software-in-the-loop-xil.md",
+]
+contains = [
+  "BridgeFaultTransformSet",
+  "BridgePacketFaultRule",
+  "BridgePacketDisposition",
+  "BridgeFaultRule",
+  "BridgeScalarSignal",
+  "BridgeScalarTransform",
+  "MaPort",
+  "EesPort",
+  "SignalMapping",
+  "TestbenchLifecycle",
+  "mapping_resolves_signal_and_scales_raw_value",
+  "fault_window_validates_order_and_contains_steps",
+  "lifecycle_rejects_invalid_transition",
+  "sensor_bias_mutates_target_axis_only",
+  "inactive_or_absent_signal_is_not_reported",
+  "command_fault_mutates_effector_and_engine_fields",
+  "saturate_rejects_invalid_range",
+  "quantize_rounds_to_nearest_step_and_rejects_invalid_quantum",
+  "drift_adds_time_ramp_relative_to_reference_time",
+  "noise_burst_is_deterministic_bounded_and_step_local",
+  "drift_and_noise_burst_reject_invalid_parameters",
+  "packet_drop_marks_sensor_frame_disposition_after_scalar_rules",
+  "inactive_packet_drop_delivers_command_frame",
+  "packet_duplicate_marks_command_frame_disposition",
+  "packet_delay_marks_sensor_frame_disposition",
+  "packet_bit_flip_marks_command_frame_disposition",
+  "packet_step_and_time_offsets_mutate_frame_and_deliver",
+  "packet_step_offset_saturates_at_zero",
+  "packet_level_faults_reject_invalid_parameters",
+  "FcTransportFaultsConfig",
+  "FcTransportFaultSignalConfig",
+  "fc_transport_faults_block_is_v3_only_and_validates_under_v3",
+  "fc_transport_faults_require_transport_block",
+  "fc_transport_faults_reject_invalid_quantization_step",
+  "fc_transport_faults_reject_invalid_drift_rate",
+  "fc_transport_faults_reject_invalid_noise_amplitude",
+  "fc_transport_faults_reject_packet_rule_end_before_start",
+  "fc_transport_faults_reject_invalid_packet_delay",
+  "fc_transport_faults_reject_invalid_bit_flip_mask",
+  "fc_transport_faults_reject_invalid_packet_step_offset",
+  "fc_transport_faults_reject_invalid_packet_time_offset",
+  "build_transport_faults",
+  "transport_fault_config_mapping_mutates_sensor_packet",
+  "transport_fault_config_mapping_mutates_command_packet",
+  "transport_packet_fault_mapping_drops_sensor_frame",
+  "transport_packet_fault_mapping_drops_command_frame",
+  "transport_packet_fault_mapping_duplicates_command_frame",
+  "transport_packet_fault_mapping_delays_sensor_frame",
+  "transport_packet_fault_mapping_bit_flips_command_frame",
+  "StepOffset",
+  "TimeOffset",
+  "fc_transport_sensor_drop_fault_fails_closed",
+  "fc_transport_command_duplicate_fault_fails_closed",
+  "fc_transport_sensor_delay_fault_fails_closed",
+  "fc_transport_command_bit_flip_fault_fails_closed",
+  "fc_transport_command_step_offset_fault_fails_closed",
+  "fc_transport_command_time_offset_fault_fails_closed",
+  "InMemoryXilBench",
+  "run_case_with_xil",
+  "run_case_observed_with_xil",
+  "run_with_xil",
+  "in_memory_xil_bench_reads_writes_captures_and_generates",
+  "in_memory_xil_bench_records_ees_errors_and_lifecycle_frames",
+  "in_memory_xil_bench_rejects_unknown_signal_or_pin",
+  "observed_run_can_attach_xil_evidence",
+]
+requirements = ["REQ-XIL-001"]
+
+[[verification]]
+id = "V-FMI-001"
+kind = "test"
+command = "python3 scripts/check_fmi_export_schema.py && python3 scripts/check_fmi_import_point_mass.py && python3 scripts/check_fmi_import_fmpy.py && python3 scripts/check_fmi_reference_smoke.py && python3 scripts/check_fmi_export_fmpy.py && cargo test -p openbmp-models fmu --locked && cargo test -p openbmp-fmi --locked && cargo build -p openbmp-fmi --lib --locked && cargo check -p openbmp-models -p openbmp-fmi --locked && cargo clippy -p openbmp-models -p openbmp-fmi --all-targets --locked -- -D warnings"
+paths = [
+  "scripts/check_fmi_export_schema.py",
+  "scripts/check_fmi_import_point_mass.py",
+  "scripts/check_fmi_import_fmpy.py",
+  "scripts/check_fmi_reference_smoke.py",
+  "scripts/check_fmi_export_fmpy.py",
+  "tests/fixtures/fmi/reference-fmus/provenance.md",
+  "Cargo.toml",
+  "Cargo.lock",
+  "crates/openbmp-fmi/Cargo.toml",
+  "crates/openbmp-models/Cargo.toml",
+  "crates/openbmp-models/src/port.rs",
+  "crates/openbmp-models/src/lib.rs",
+  "crates/openbmp-fmi/src/lib.rs",
+  "crates/openbmp-fmi/src/export.rs",
+  "crates/openbmp-fmi/src/export_abi.rs",
+  "crates/openbmp-fmi/examples/export_point_mass_model_description.rs",
+  "crates/openbmp-fmi/examples/write_point_mass_fmu.rs",
+  "crates/openbmp-fmi/examples/import_point_mass_fmu.rs",
+  "crates/openbmp-fmi/examples/import_fmu_final_sample.rs",
+  "crates/openbmp-fmi/tests/expected/export-point-mass-trace.toml",
+  "crates/openbmp-fmi/README.md",
+  ".github/workflows/ci.yml",
+  "docs/software-architecture.md",
+  "docs/standards-posture.md",
+  "docs/parity/10-flight-software-in-the-loop-xil.md",
+]
+contains = [
+  "FmiScalarVariable",
+  "FmiVariableType",
+  "Int32",
+  "instantiation_token",
+  "deflated_fmu_archive_parses_metadata_and_resources",
+  "materialize_archive_resources",
+  "materializes_fmu_resources_safely",
+  "FmiClockIntervalVariability",
+  "FmiClockVariable",
+  "FmiClockedVariable",
+  "fmu_archive_parses_typed_value_references",
+  "fmu_archive_parses_fmi3_clock_subset_metadata",
+  "fmu_archive_rejects_invalid_clock_reference_list",
+  "fmu_archive_rejects_scalar_variable_without_value_reference",
+  "Fmi3VariableBindings",
+  "Fmi3MasterPlan",
+  "fmi3_binary_entry_for_current_platform",
+  "fmi3_binary_entry_for_target",
+  "import_fmu_final_sample",
+  "Fmi3ClockBinding",
+  "Fmi3ClockedVariableBinding",
+  "Fmi3CoSimulationInstantiation",
+  "Fmi3CoSimulationInstance",
+  "instantiate_co_simulation",
+  "enter_initialization_mode",
+  "exit_initialization_mode",
+  "free_instance",
+  "set_clock",
+  "get_clock",
+  "Fmi3SingleFmuMaster",
+  "Fmi3DoStepOutcome",
+  "Fmi3RollbackPolicy",
+  "Fmi3RollbackAction",
+  "Fmi3RollbackStepResult",
+  "step_with_rollback_policy",
+  "Fmi3FmuNode",
+  "Fmi3Float64Connection",
+  "Fmi3UInt64Connection",
+  "Fmi3MultiFmuMaster",
+  "Fmi3MultiFmuStepResult",
+  "add_float64_connection",
+  "add_uint64_connection",
+  "multi_fmu_master_applies_gauss_seidel_connections_in_step",
+  "multi_fmu_master_applies_jacobi_connections_from_previous_outputs",
+  "FMI3_FMU_STATE_SYMBOLS",
+  "Fmi3ExportModel",
+  "FmiExportError",
+  "RestrictedFmi3ModelDescription",
+  "fmi3_export_scalar_variable",
+  "validate_restricted_fmi3_model_description_xml",
+  "check_fmi_export_schema.py",
+  "fmi export schema: restricted and official FMI 3.0 XSD validated",
+  "check_fmi_import_point_mass.py",
+  "fmi import point-mass: trace validated and byte-stable",
+  "importer output is not byte-stable",
+  "check_fmi_import_fmpy.py",
+  "fmi import fmpy: OpenBMP importer matches FMPy point-mass trace",
+  "check_fmi_reference_smoke.py",
+  "fmi reference smoke: 5 Reference-FMUs match FMPy",
+  "VanDerPol",
+  "BouncingBall",
+  "Stair",
+  "Resource",
+  "Reference-FMUs-0.0.39.zip",
+  "6863d55e5818e1ca4e4614c4d4ba4047a921b4495f6336e7002874ed791f6c2a",
+  "check_fmi_export_fmpy.py",
+  "fmi export fmpy: point-mass trace validated",
+  "FMPy==0.3.26",
+  "export_point_mass_model_description",
+  "write_point_mass_fmu",
+  "import_fmu_final_sample",
+  "import_point_mass_fmu",
+  "FMI_SCHEMA_BASE_URL",
+  "fmi-export-schema",
+  "fmi-reference-smoke",
+  "fmi-export-fmpy",
+  "xmllint",
+  "openbmp_point_mass_export_model",
+  "instantiationToken",
+  "openbmp_fmi_binary_entry_for_target",
+  "openbmp_point_mass_fmi_binary_entry_for_target",
+  "write_openbmp_point_mass_fmu_archive_for_current_platform",
+  "OPENBMP_POINT_MASS_VR_VELOCITY_M_S",
+  "crate-type = [\"rlib\", \"cdylib\"]",
+  "fmi3ActivateModelPartition",
+  "fmi3InstantiateCoSimulation",
+  "fmi3EnterInitializationMode",
+  "fmi3SetFloat64",
+  "fmi3GetFloat64",
+  "fmi3SetInt32",
+  "fmi3GetInt32",
+  "fmi3SetUInt64",
+  "fmi3GetUInt64",
+  "fmi3SetClock",
+  "fmi3GetClock",
+  "fmi3DoStep",
+  "fmi3GetFMUState",
+  "exported_fmi_symbols_match_native_point_mass_trace_tolerance",
+  "export-point-mass-trace.toml",
+  "calls_typed_float64_int32_uint64_and_do_step_symbols",
+  "builds_clock_bindings_from_archive",
+  "co_simulation_instance_initializes_steps_and_frees",
+  "instantiate_rejects_interior_nul_string_argument",
+  "calls_optional_fmu_state_snapshot_restore_symbols",
+  "single_fmu_master_steps_typed_inputs_and_outputs",
+  "single_fmu_master_restores_fmu_state_on_early_return_policy",
+  "single_fmu_master_rejects_input_count_mismatch",
+  "master_plan_rejects_invalid_communication_step",
+  "export_model_description_uses_restricted_fmi3_schema_shape",
+  "restricted_model_description_validator_rejects_output_mismatch",
+  "export_model_description_round_trips_through_fmu_archive",
+  "point_mass_export_model_value_references_build_expected_bindings",
+  "openbmp_fmi_binary_entries_match_supported_targets",
+  "point_mass_export_archive_materializes_current_platform_binary",
+  "export_model_description_rejects_duplicate_value_reference",
+  "export_model_description_escapes_xml_attributes",
+  "export_fmu_archive_rejects_unsafe_binary_entry",
+  "exported_fmi_symbols_step_deterministic_point_mass_state",
+  "exported_fmi_state_snapshot_restore_round_trips",
+]
+requirements = ["REQ-FMI-001", "REQ-FMI-002", "REQ-FMI-003"]
 
 [[verification]]
 id = "V-GOV-001"
@@ -417,12 +1156,81 @@ contains = ["check_requirements_traceability.py", "requirements traceability"]
 requirements = ["REQ-TRACE-001"]
 
 [[verification]]
+id = "V-PROV-001"
+kind = "ci"
+command = "cargo build -p openbmp-cli --locked && openbmp check-provenance data && openbmp check-provenance scenarios"
+paths = [
+  ".github/workflows/ci.yml",
+  "crates/openbmp-cli/src/commands/provenance.rs",
+  "docs/verification.md",
+  "docs/parity/12-determinism-realtime-and-compute.md",
+]
+contains = [
+  "provenance:",
+  "cargo build -p openbmp-cli --locked",
+  "openbmp check-provenance data",
+  "openbmp check-provenance scenarios",
+  "Generated scenario `out/` telemetry directories",
+]
+requirements = ["REQ-PROV-001"]
+
+[[verification]]
 id = "V-DET-001"
 kind = "test"
 command = "cargo test -p openbmp-cli diff_reports_identical_for_self_compare --locked"
 paths = ["crates/openbmp-cli/src/cli.rs", "crates/openbmp-cli/src/commands/diff.rs", "crates/openbmp-cli/src/main.rs", "crates/openbmp-cli/tests/cli_snapshots.rs", "docs/verification.md"]
 contains = ["report_json", "DiffProvenance", "fp_contract", "golden_metadata", "diff_reports_identical_for_self_compare"]
 requirements = ["REQ-DET-001"]
+
+[[verification]]
+id = "V-DET-002"
+kind = "test"
+command = "cargo test -p openbmp-core fp --locked && cargo test -p openbmp-sim fp_environment_is_clean_under_default_test_runner --locked && cargo check -p openbmp-core -p openbmp-sim --locked && cargo check -p openbmp-core --no-default-features --locked && cargo check -p openbmp-core --target aarch64-unknown-linux-gnu --locked"
+paths = [
+  ".cargo/config.toml",
+  "crates/openbmp-core/src/fp.rs",
+  "crates/openbmp-core/src/lib.rs",
+  "crates/openbmp-sim/src/error.rs",
+  "crates/openbmp-sim/src/kernel.rs",
+  "crates/openbmp-sim/src/lib.rs",
+  "docs/software-architecture.md",
+  "docs/parity/12-determinism-realtime-and-compute.md",
+]
+contains = [
+  "FpEnvironment",
+  "from_aarch64_fpcr",
+  "mrs {0}, fpcr",
+  "stmxcsr [{0}]",
+  "aarch64_fpcr_decoder_rejects_dirty_modes",
+  "fp_environment_is_clean_under_default_test_runner",
+  "target.aarch64-unknown-linux-gnu",
+  "--fp-contract=off",
+]
+requirements = ["REQ-DET-002"]
+
+[[verification]]
+id = "V-DET-003"
+kind = "test"
+command = "cargo test -p openbmp-sim dopri54_dense_output --locked && cargo test -p openbmp-sim dopri54_advance_with_dense_output --locked && cargo test -p openbmp-sim dopri853_dense_output --locked && cargo test -p openbmp-sim dopri853_advance_with_dense_output --locked && cargo test -p openbmp-runner dense_output --locked"
+paths = [
+  "crates/openbmp-sim/src/integrator.rs",
+  "crates/openbmp-sim/src/error.rs",
+  "crates/openbmp-sim/src/lib.rs",
+  "crates/openbmp-runner/src/integrator.rs",
+  "docs/scenario-format.md",
+  "docs/parity/12-determinism-realtime-and-compute.md",
+]
+contains = [
+  "DenseOutput",
+  "Dopri54DenseOutput",
+  "Dopri853DenseOutput",
+  "advance_with_dense_output",
+  "dopri54_dense_output_midpoint_error_has_fourth_order_ratio",
+  "dopri853_dense_output_midpoint_error_has_order_seven_ratio",
+  "adaptive_explicit_dopri853_accepts_dense_output_flag",
+  "solver.adaptive.dense_output = true",
+]
+requirements = ["REQ-DET-003"]
 
 [[verification]]
 id = "V-STD-001"
@@ -462,3 +1270,1289 @@ contains = [
   "phalcon9_orbit_monte_carlo_robustness",
 ]
 requirements = ["REQ-MC-001"]
+
+[[verification]]
+id = "V-MC-002"
+kind = "test"
+command = "cargo test -p openbmp-core for_mc_sample --locked && cargo test -p openbmp-mc --locked && cargo test -p openbmp-cli --test mc_cli --locked && cargo test -p openbmp-cli --test phalcon9_orbit_monte_carlo phalcon9_orbit_monte_carlo_is_deterministic --locked"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-core/src/rng.rs",
+  "crates/openbmp-mc/src/lib.rs",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/tests/mc_cli.rs",
+  "crates/openbmp-cli/tests/phalcon9_orbit_monte_carlo.rs",
+  "docs/software-architecture.md",
+  "docs/verification.md",
+]
+contains = [
+  "openbmp-mc",
+  "for_mc_sample",
+  "SampleRng",
+  "Welford",
+  "run_scalar_campaign",
+  "clopper_pearson",
+  "mc_summarize_reads_scalar_samples_and_success_interval",
+  "phalcon9_orbit_monte_carlo_is_deterministic",
+]
+requirements = ["REQ-MC-002"]
+
+[[verification]]
+id = "V-MC-003"
+kind = "test"
+command = "cargo test -p openbmp-mc --locked wilks && cargo test -p openbmp-mc --locked convergence_gate && cargo test -p openbmp-cli --test mc_cli --locked mc_wilks"
+paths = [
+  "crates/openbmp-mc/src/lib.rs",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/tests/mc_cli.rs",
+  "docs/software-architecture.md",
+  "docs/verification.md",
+]
+contains = [
+  "wilks_two_sided_n",
+  "wilks_one_sided_n",
+  "ConvergenceGate",
+  "CampaignStop::Converged",
+  "McCommand::Wilks",
+  "mc_wilks_reports_two_sided_sample_size",
+]
+requirements = ["REQ-MC-003"]
+
+[[verification]]
+id = "V-MC-004"
+kind = "test"
+command = "cargo test -p openbmp-mc --locked latin_hypercube && cargo test -p openbmp-cli --test mc_cli --locked mc_lhs"
+paths = [
+  "crates/openbmp-mc/src/lib.rs",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/tests/mc_cli.rs",
+  "docs/software-architecture.md",
+  "docs/verification.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "DesignMatrix",
+  "LatinHypercube",
+  "latin_hypercube",
+  "latin_hypercube_stratifies_each_column",
+  "McCommand::Lhs",
+  "mc_lhs_writes_unit_cube_design_csv",
+  "one sample in every marginal",
+]
+requirements = ["REQ-MC-004"]
+
+[[verification]]
+id = "V-MC-005"
+kind = "test"
+command = "cargo test -p openbmp-mc --locked iman_conover && cargo test -p openbmp-cli --test mc_cli --locked mc_iman_conover"
+paths = [
+  "crates/openbmp-mc/src/lib.rs",
+  "crates/openbmp-mc/Cargo.toml",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/tests/mc_cli.rs",
+  "docs/software-architecture.md",
+  "docs/verification.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "CorrelationMatrix",
+  "ImanConover",
+  "iman_conover",
+  "iman_conover_preserves_marginals_and_induces_correlation",
+  "McCommand::ImanConover",
+  "mc_iman_conover_writes_correlated_design_csv",
+  "marginal values are preserved exactly",
+]
+requirements = ["REQ-MC-005"]
+
+[[verification]]
+id = "V-MC-006"
+kind = "test"
+command = "cargo test -p openbmp-mc --locked sobol && cargo test -p openbmp-cli --test mc_cli --locked mc_sobol"
+paths = [
+  "data/sobol/new-joe-kuo-6.21201",
+  "data/sobol/provenance.md",
+  "crates/openbmp-mc/src/lib.rs",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/tests/mc_cli.rs",
+  "docs/software-architecture.md",
+  "docs/verification.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "SobolSequence",
+  "JOE_KUO_DIRECTION_NUMBERS",
+  "sobol",
+  "sobol_matches_reference_first_points_2d",
+  "sobol_loads_provenance_pinned_joe_kuo_asset",
+  "new-joe-kuo-6.21201",
+  "68eedd2a4e3b659b9695e7aff0f8ac68718bcf620730fc3d3a8c65df2a067441",
+  "McCommand::Sobol",
+  "mc_sobol_writes_reference_design_csv",
+  "native unscrambled Sobol",
+]
+requirements = ["REQ-MC-006"]
+
+[[verification]]
+id = "V-MC-007"
+kind = "test"
+command = "cargo test -p openbmp-mc --locked owen_scrambled_sobol && cargo test -p openbmp-cli --test mc_cli --locked mc_sobol_writes_scrambled_design_csv"
+paths = [
+  "crates/openbmp-mc/src/lib.rs",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/tests/mc_cli.rs",
+  "docs/software-architecture.md",
+  "docs/verification.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "OwenScramble",
+  "owen_scrambled_sobol",
+  "owen_scrambled_sobol_is_deterministic_and_seeded",
+  "scramble_seed",
+  "mc_sobol_writes_scrambled_design_csv",
+  "nested bit scramble",
+]
+requirements = ["REQ-MC-007"]
+
+[[verification]]
+id = "V-MC-008"
+kind = "test"
+command = "cargo test -p openbmp-mc scalar_campaign_parallel --locked"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-mc/Cargo.toml",
+  "crates/openbmp-mc/src/lib.rs",
+  "docs/parity/12-determinism-realtime-and-compute.md",
+]
+contains = [
+  "rayon",
+  "run_scalar_campaign_parallel",
+  "into_par_iter",
+  "worker_count",
+  "FpEnvironmentDirty",
+  "scalar_campaign_parallel_matches_serial_for_worker_counts",
+]
+requirements = ["REQ-MC-008"]
+
+[[verification]]
+id = "V-MC-009"
+kind = "test"
+command = "cargo test -p openbmp-mc checkpoint --locked && cargo test -p openbmp-cli --test mc_cli mc_resume_scalar_checkpoint --locked && cargo test -p openbmp-cli --test footprint_mc_e2e footprint_mc_checkpoint_resume_matches_one_shot_outputs --locked"
+paths = [
+  "crates/openbmp-mc/Cargo.toml",
+  "crates/openbmp-mc/src/lib.rs",
+  "crates/openbmp-physics/src/profile.rs",
+  "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/footprint.rs",
+  "crates/openbmp-cli/Cargo.toml",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/footprint_mc.rs",
+  "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/tests/footprint_mc_e2e.rs",
+  "crates/openbmp-cli/tests/mc_cli.rs",
+  "docs/parity/12-determinism-realtime-and-compute.md",
+]
+contains = [
+  "serde_json",
+  "ScalarCampaignCheckpoint",
+  "FileCheckpointStore",
+  "run_scalar_campaign_resumable",
+  "ResumeScalar",
+  "resume_scalar_checkpoint",
+  "FootprintMonteCarloCheckpointOptions",
+  "landing_footprint_monte_carlo_for_initial_state_checkpointed",
+  "checkpoint_json",
+  "CheckpointMismatch",
+  "scalar_campaign_checkpoint_resume_matches_one_shot",
+  "scalar_campaign_file_checkpoint_roundtrips_and_checks_metadata",
+  "mc_resume_scalar_checkpoint_records_chunks_and_final_summary",
+  "footprint_mc_checkpoint_resume_matches_one_shot_outputs",
+]
+requirements = ["REQ-MC-009"]
+
+[[verification]]
+id = "V-MC-010"
+kind = "test"
+command = "cargo test -p openbmp-mc synthetic_linear --locked && cargo test -p openbmp-mc rare_event --locked && cargo test -p openbmp-scenario rare_event_monte_carlo --locked && cargo test -p openbmp-cli rare_event_scenario --locked && cargo test -p openbmp-testkit limit_state_cannot_be_implemented_outside_openbmp_mc --locked"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-mc/src/lib.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-testkit/Cargo.toml",
+  "crates/openbmp-testkit/tests/limit_state_no_aimpoint_compile_fail.rs",
+  "crates/openbmp-testkit/tests/ui/limit_state_ground_aimpoint.rs",
+  "crates/openbmp-testkit/tests/ui/limit_state_ground_aimpoint.stderr",
+  "docs/scenario-format.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "StandardNormalPoint",
+  "LimitState",
+  "LimitStateSealed",
+  "SyntheticLinearLimitState",
+  "RareEventMethod",
+  "RareEventEstimateReport",
+  "SubsetSimulation",
+  "CrossEntropyIs",
+  "conditional_mma_samples",
+  "standard_normal_to_diagonal_proposal_weight",
+  "MonteCarloConfig",
+  "MonteCarloLimitStateConfig",
+  "MonteCarloSubsetSimulationConfig",
+  "MonteCarloCrossEntropyConfig",
+  "check_rare_event_limit_state_terms",
+  "McRareEventScenarioOptions",
+  "McRareEventScenarioReport",
+  "run_rare_event_scenario",
+  "write_rare_event_report_toml",
+  "RareEvent",
+  "rare_event_scenario_runs_estimators_and_writes_toml",
+  "rare_event_scenario_requires_monte_carlo_block",
+  "parses_rare_event_monte_carlo_config",
+  "rejects_rare_event_monte_carlo_under_v2_schema",
+  "rejects_rare_event_monte_carlo_without_estimator",
+  "rejects_rare_event_monte_carlo_ground_aimpoint_label",
+  "rejects_rare_event_monte_carlo_target_key_by_lint",
+  "synthetic_linear_limit_state_reports_exact_normal_tail",
+  "subset_simulation_recovers_synthetic_linear_tail_and_replays",
+  "cross_entropy_is_recovers_synthetic_linear_tail_and_replays",
+  "rare_event_estimators_reject_non_synthetic_limit_state_label",
+  "limit_state_cannot_be_implemented_outside_openbmp_mc",
+  "GroundAimpointLimitState",
+]
+requirements = ["REQ-MC-010"]
+
+[[verification]]
+id = "V-MC-011"
+kind = "test"
+command = "cargo test -p openbmp-testkit order_report --locked && cargo test -p openbmp-cli verify_order --locked && cargo run -p openbmp-cli --locked -- verify-order --method all"
+paths = [
+  "crates/openbmp-cli/Cargo.toml",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/mod.rs",
+  "crates/openbmp-cli/src/commands/verify_order.rs",
+  "crates/openbmp-cli/src/error.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-testkit/src/analytic.rs",
+  "crates/openbmp-testkit/src/error.rs",
+  "crates/openbmp-testkit/src/lib.rs",
+  "crates/openbmp-testkit/src/verification.rs",
+  "docs/verification.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "ManufacturedScalarOde",
+  "exact_at",
+  "source_at",
+  "rhs",
+  "InvalidVerificationInput",
+  "pub mod verification",
+  "StepError",
+  "OrderVerificationReport",
+  "order_verification_report",
+  "observed_order_in_band",
+  "VerifyOrderMethod",
+  "VerifyOrder",
+  "verify_order",
+  "VerifyOrderCliReport",
+  "VerifyOrderMethodReport",
+  "Rk4FixedStep",
+  "Dopri853FixedStep",
+  "verify_order_runs_rk4_and_dop853",
+  "verify_order_writes_toml",
+  "order_report_recovers_fourth_order_and_monotone_gci",
+  "order_report_rejects_non_halving_steps",
+  "openbmp verify-order",
+]
+requirements = ["REQ-MC-011"]
+
+[[verification]]
+id = "V-MC-012"
+kind = "test"
+command = "cargo test -p openbmp-testkit reconstruction --locked && cargo test -p openbmp-cli synthetic_linear_reconstruction --locked && cargo run -p openbmp-cli --locked -- reconstruct synthetic-linear"
+paths = [
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/mod.rs",
+  "crates/openbmp-cli/src/commands/reconstruct.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-testkit/src/error.rs",
+  "crates/openbmp-testkit/src/lib.rs",
+  "crates/openbmp-testkit/src/reconstruction.rs",
+  "docs/verification.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "InvalidReconstructionInput",
+  "ReconstructionSolveFailed",
+  "pub mod reconstruction",
+  "ChiSquareBounds",
+  "ConsistencyReport",
+  "LinearFilterStep",
+  "LinearSmootherStep",
+  "BatchObservation",
+  "BatchGaussNewtonReport",
+  "SyntheticReconstructionReport",
+  "chi_square_95_bounds",
+  "normalized_error_squared",
+  "consistency_report",
+  "rts_smooth",
+  "batch_gauss_newton",
+  "synthetic_linear_reconstruction_report",
+  "ReconstructCommand",
+  "Reconstruct",
+  "reconstruct",
+  "SyntheticLinearReconstructionCliReport",
+  "run_synthetic_linear",
+  "synthetic_linear_reconstruction_passes_and_writes_toml",
+  "synthetic_reconstruction_report_passes_first_slice_gate",
+  "openbmp reconstruct synthetic-linear",
+]
+requirements = ["REQ-MC-012"]
+
+[[verification]]
+id = "V-MC-013"
+kind = "test"
+command = "cargo test -p openbmp-cli observe_fc_reduces_estimator_innovation_history --locked && cargo run -p openbmp-cli --locked -- reconstruct observe-fc scenarios/closed-loop-attitude-hold/scenario.toml"
+paths = [
+  "crates/openbmp-cli/Cargo.toml",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/reconstruct.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "docs/verification.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "openbmp-sensors",
+  "ObserveFc",
+  "run_observe_fc",
+  "FcInnovationMonitor",
+  "FcObservationConsistencyCliReport",
+  "FcNisConsistencyReport",
+  "push_nis_report",
+  "chi_square_95_bounds",
+  "consistency_report",
+  "observe_fc_reduces_estimator_innovation_history",
+  "openbmp reconstruct observe-fc",
+]
+requirements = ["REQ-MC-013"]
+
+[[verification]]
+id = "V-MC-014"
+kind = "test"
+command = "cargo test -p openbmp-cli observe_fc_reduces_estimator_innovation_history --locked && cargo run -p openbmp-cli --locked -- reconstruct observe-fc scenarios/closed-loop-attitude-hold/scenario.toml"
+paths = [
+  "crates/openbmp-msgs/src/lib.rs",
+  "crates/openbmp-fc/src/estimator.rs",
+  "crates/openbmp-fc/src/sr_ukf.rs",
+  "crates/openbmp-cli/Cargo.toml",
+  "crates/openbmp-cli/src/commands/reconstruct.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "docs/verification.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "position_variance_eci_m2",
+  "velocity_variance_eci_m2_s2",
+  "attitude_variance_rad2",
+  "covariance_diag3",
+  "FcNeesConsistencyReport",
+  "nees_reports",
+  "push_nees_report",
+  "diagonal_nees",
+  "attitude_error_vector_rad",
+  "[[fc_observation.nees]]",
+  "position_nees",
+  "velocity_nees",
+  "attitude_nees",
+]
+requirements = ["REQ-MC-014"]
+
+[[verification]]
+id = "V-MC-015"
+kind = "test"
+command = "cargo test -p openbmp-cli export_trajectory_writes_code_to_code_csv --locked && cargo run -p openbmp-cli --locked -- reconstruct export-trajectory scenarios/closed-loop-attitude-hold/scenario.toml --output-csv /tmp/openbmp-observe-fc-trajectory.csv"
+paths = [
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/reconstruct.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "docs/verification.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "ExportTrajectory",
+  "TrajectoryExportCliReport",
+  "run_export_trajectory",
+  "write_trajectory_csv",
+  "TrajectoryChannels",
+  "TrajectorySample",
+  "require_float_channel",
+  "trajectory_sample",
+  "time_s,step,position_x_eci_m",
+  "export_trajectory_writes_code_to_code_csv",
+  "openbmp reconstruct export-trajectory",
+]
+requirements = ["REQ-MC-015"]
+
+[[verification]]
+id = "V-MC-016"
+kind = "test"
+command = "cargo test -p openbmp-cli export_trajectory_mapping_round_trips_with_compare_telemetry --locked && cargo run -p openbmp-cli --locked -- reconstruct export-trajectory-mapping --output-toml /tmp/openbmp-trajectory-map.toml --pack strict"
+paths = [
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/reconstruct.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "docs/verification.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "TrajectoryTolerancePack",
+  "ExportTrajectoryMapping",
+  "TrajectoryMappingCliReport",
+  "run_export_trajectory_mapping",
+  "TrajectoryMappingTolerances",
+  "write_trajectory_mapping_toml",
+  "write_trajectory_mapping_metric",
+  "export_trajectory_mapping_round_trips_with_compare_telemetry",
+  "leo-research",
+  "openbmp reconstruct export-trajectory-mapping",
+]
+requirements = ["REQ-MC-016"]
+
+[[verification]]
+id = "V-UQ-001"
+kind = "test"
+command = "cargo test -p openbmp-uq --locked && cargo test -p openbmp-physics uq --locked"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-uq/Cargo.toml",
+  "crates/openbmp-uq/src/lib.rs",
+  "crates/openbmp-physics/Cargo.toml",
+  "crates/openbmp-physics/src/uq.rs",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+  "docs/software-architecture.md",
+  "README.md",
+]
+contains = [
+  "openbmp-uq",
+  "CorrelatedErrorBudget",
+  "CorrelationMatrix",
+  "UncertaintyClass",
+  "CredibilityRecord",
+  "CredibilityFactor::ALL",
+  "legacy_budget_preserves_rss_plus_bias",
+  "correlated_budget_identity_matches_legacy_rss_without_bias",
+  "non_psd_correlation_matrix_rejected",
+  "binding_credibility_reduces_sources_factorwise",
+  "pub use openbmp_uq",
+]
+requirements = ["REQ-UQ-001"]
+
+[[verification]]
+id = "V-UQ-002"
+kind = "test"
+command = "cargo test -p openbmp-mc campaign_credibility --locked && cargo test -p openbmp-scenario landing_footprint_monte_carlo_uq --locked && cargo test -p openbmp-cli mc_summarize --locked && cargo test -p openbmp-cli footprint_mc_ --locked && cargo test -p openbmp-cli mc_propulsion_fault_campaign_ --locked"
+paths = [
+  "crates/openbmp-mc/Cargo.toml",
+  "crates/openbmp-mc/src/lib.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-cli/Cargo.toml",
+  "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/src/commands/footprint_mc.rs",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/tests/mc_cli.rs",
+  "crates/openbmp-cli/tests/footprint_mc_e2e.rs",
+  "docs/scenario-format.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "CampaignCredibilityReport",
+  "evaluate_campaign_credibility",
+  "summarize_with_credibility",
+  "McCredibilityOptions",
+  "evaluate_credibility_options",
+  "FootprintMonteCarloCliReport",
+  "McPropulsionFaultCampaignOptions",
+  "PropulsionFaultLibraryUqDocument",
+  "LandingFootprintMonteCarloUqConfig",
+  "landing_footprint.monte_carlo.uq",
+  "propulsion_fault_library_credibility_options",
+  "uq-toml",
+  "credibility-floor",
+  "parses_landing_footprint_monte_carlo_uq_config_and_paths",
+  "rejects_landing_footprint_monte_carlo_uq_invalid_floor",
+  "mc_summarize_attaches_uq_credibility_report_and_floor",
+  "mc_summarize_refuses_uq_below_credibility_floor",
+  "footprint_mc_attaches_uq_credibility_report_and_floor",
+  "footprint_mc_refuses_uq_below_credibility_floor",
+  "footprint_mc_uses_scenario_declared_uq_credibility_report",
+  "footprint_mc_refuses_scenario_uq_below_credibility_floor",
+  "mc_propulsion_fault_campaign_attaches_uq_credibility_report",
+  "mc_propulsion_fault_campaign_refuses_uq_below_credibility_floor",
+  "mc_propulsion_fault_campaign_uses_library_declared_uq_report",
+  "mc_propulsion_fault_campaign_refuses_library_uq_below_floor",
+]
+requirements = ["REQ-UQ-002"]
+
+[[verification]]
+id = "V-UQ-003"
+kind = "test"
+command = "cargo test -p openbmp-uq probability_box --locked && cargo test -p openbmp-uq variance_split --locked && cargo test -p openbmp-uq nested_uq --locked && cargo test -p openbmp-mc nested_scalar --locked && cargo test -p openbmp-cli mc_nested_summarize --locked && cargo test -p openbmp-scenario landing_footprint_nested_monte_carlo --locked && cargo test -p openbmp-runner runner_footprint_nested_monte_carlo --locked && cargo test -p openbmp-cli footprint_mc_nested --locked"
+paths = [
+  "crates/openbmp-uq/src/lib.rs",
+  "crates/openbmp-mc/src/lib.rs",
+  "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/footprint.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-cli/src/commands/footprint_mc.rs",
+  "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/tests/footprint_mc_e2e.rs",
+  "crates/openbmp-cli/tests/mc_cli.rs",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "ProbabilityBox",
+  "VarianceSplit",
+  "from_conditional_samples",
+  "verify_lower_tail_probability",
+  "NestedLowerTailRequirement",
+  "NestedScalarAnalysisReport",
+  "analyze_nested_scalar_samples",
+  "McNestedSummaryReport",
+  "summarize_nested",
+  "NestedSummarize",
+  "nested-summarize",
+  "write_pbox_csv",
+  "read_nested_scalar_samples",
+  "LandingFootprintMonteCarloNestedConfig",
+  "LandingFootprintMonteCarloNestedMetric",
+  "LandingFootprintMonteCarloUncertaintyClass",
+  "FootprintNestedMonteCarloReport",
+  "nested_monte_carlo_report",
+  "nested_metric_value",
+  "probability_box_envelopes_conditional_cdfs_and_uses_lower_bound",
+  "variance_split_matches_law_of_total_variance_for_separable_samples",
+  "nested_uq_rejects_empty_or_non_finite_samples",
+  "nested_scalar_analysis_reports_pbox_and_variance_split",
+  "nested_scalar_requirement_uses_lower_pbox_bound_not_mean_cdf",
+  "mc_nested_summarize_reports_pbox_variance_split_and_writes_csv",
+  "mc_nested_summarize_requirement_uses_lower_pbox_bound",
+  "parses_landing_footprint_nested_monte_carlo_config_and_paths",
+  "rejects_landing_footprint_nested_monte_carlo_sample_mismatch",
+  "runner_footprint_nested_monte_carlo_reports_pbox_and_variance_split",
+  "footprint_mc_nested_writes_pbox_csv_and_summary",
+]
+requirements = ["REQ-UQ-003"]
+
+[[verification]]
+id = "V-PROP-001"
+kind = "test"
+command = "cargo test -p openbmp-propulsion pressure_thrust --locked && cargo test -p openbmp-scenario propulsion_nozzle --locked && cargo test -p openbmp-runner --test pressure_thrust --locked"
+paths = [
+  "crates/openbmp-propulsion/src/motor.rs",
+  "crates/openbmp-propulsion/src/parser.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/tests/pressure_thrust.rs",
+  "crates/openbmp-runner/tests/fixtures/point-mass-pressure-thrust.toml",
+  "crates/openbmp-runner/src/atmosphere.rs",
+  "crates/openbmp-vehicle/src/adapters.rs",
+  "crates/openbmp-scenario/src/document.rs",
+]
+contains = [
+  "AmbientPressureCorrection::PressureThrust",
+  "thrust_n_at_ambient_pressure",
+  "parses_propulsion_nozzle_override_schema",
+  "pressure_thrust_uses_runtime_atmosphere_pressure",
+  "atmosphere_pressure_pa",
+  "ambient_pressure_correction = \"pressure_thrust\"",
+]
+requirements = ["REQ-PROP-001"]
+
+[[verification]]
+id = "V-PROP-002"
+kind = "test"
+command = "cargo test -p openbmp-propulsion separation --locked && cargo test -p openbmp-scenario propulsion_nozzle --locked && cargo test -p openbmp-runner --locked --test pressure_thrust nozzle_separation"
+paths = [
+  "crates/openbmp-propulsion/src/motor.rs",
+  "crates/openbmp-propulsion/src/parser.rs",
+  "crates/openbmp-propulsion/src/grain.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/propulsion.rs",
+  "crates/openbmp-runner/tests/pressure_thrust.rs",
+]
+contains = [
+  "NozzleSeparationCriterion",
+  "NozzleSeparationConfig",
+  "with_nozzle_separation",
+  "effective_expansion_ratio",
+  "separation = \"summerfield\"",
+  "summerfield_separation_clips_heavily_overexpanded_nozzle",
+  "schmucker_separation_clips_heavily_overexpanded_nozzle",
+  "nozzle_separation_clips_overexpanded_pressure_penalty",
+]
+requirements = ["REQ-PROP-002"]
+
+[[verification]]
+id = "V-PROP-003"
+kind = "test"
+command = "cargo test -p openbmp-propulsion transient --locked && cargo test -p openbmp-propulsion quasi_static_mode_preserves_existing_curve --locked && cargo test -p openbmp-scenario parses_inline_grain_motor_schema --locked && cargo test -p openbmp-runner --locked --test pressure_thrust inline_grain_transient_mode"
+paths = [
+  "crates/openbmp-propulsion/src/grain.rs",
+  "crates/openbmp-propulsion/src/lib.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-runner/src/propulsion.rs",
+  "crates/openbmp-runner/tests/pressure_thrust.rs",
+  "docs/scenario-format.md",
+]
+contains = [
+  "GrainRegressionMode",
+  "TransientChamber",
+  "with_regression_mode",
+  "mode = \"transient\"",
+  "quasi_static_mode_preserves_existing_curve",
+  "transient_end_burner_regression_relaxes_to_constant_thrust",
+  "transient_pressure_mms_recovers_first_order_solution",
+  "transient_chamber_erosive_term_increases_burn_rate",
+  "inline_grain_transient_mode_runs_through_runner",
+]
+requirements = ["REQ-PROP-003"]
+
+[[verification]]
+id = "V-PROP-004"
+kind = "test"
+command = "cargo test -p openbmp-thermochem --locked"
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "crates/openbmp-thermochem/Cargo.toml",
+  "crates/openbmp-thermochem/src/lib.rs",
+  "crates/openbmp-thermochem/src/deck.rs",
+  "crates/openbmp-thermochem/src/parser.rs",
+  "crates/openbmp-thermochem/src/error.rs",
+  "crates/openbmp-thermochem/tests/fixtures/synthetic-thermochem.toml",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "openbmp-thermochem",
+  "ThermochemTable",
+  "ThermochemDeck",
+  "ThermochemQuery",
+  "characteristic_velocity_m_s",
+  "choked_mass_flux_gamma",
+  "openbmp.thermochem_deck = 1",
+  "lookup_interpolates_in_log_pressure_then_mixture_ratio",
+  "lookup_rejects_out_of_envelope_queries",
+  "parser_loads_schema_one_deck",
+]
+requirements = ["REQ-PROP-004"]
+
+[[verification]]
+id = "V-PROP-005"
+kind = "test"
+command = "cargo test -p openbmp-scenario propulsion_thermochem --locked && cargo test -p openbmp-runner --locked --test pressure_thrust thermochem"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/error.rs",
+  "crates/openbmp-runner/src/propulsion.rs",
+  "crates/openbmp-runner/tests/pressure_thrust.rs",
+  "crates/openbmp-runner/tests/fixtures/thermochem/synthetic-grain.toml",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "PropulsionThermochemConfig",
+  "propulsion.thermochem.file",
+  "ThermochemTable::load_from_str",
+  "ThermochemQuery",
+  "mixture_ratio",
+  "inline_grain_thermochem_deck_overrides_propellant_constants",
+  "[propulsion.thermochem]",
+]
+requirements = ["REQ-PROP-005"]
+
+[[verification]]
+id = "V-PROP-006"
+kind = "test"
+command = "cargo test -p openbmp-feedsystem --locked"
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "crates/openbmp-feedsystem/Cargo.toml",
+  "crates/openbmp-feedsystem/src/lib.rs",
+  "crates/openbmp-feedsystem/src/error.rs",
+  "crates/openbmp-feedsystem/src/network.rs",
+  "docs/software-architecture.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "openbmp-feedsystem",
+  "FeedNetwork",
+  "TankValveChamberNetwork",
+  "TankValveChamberConfig",
+  "FeedNetworkSnapshot",
+  "tank_valve_chamber_balances_valve_and_choked_throat",
+  "closed_valve_returns_zero_flow",
+  "invalid_command_fails_closed",
+]
+requirements = ["REQ-PROP-006"]
+
+[[verification]]
+id = "V-PROP-007"
+kind = "test"
+command = "cargo test -p openbmp-scenario feed_network --locked && cargo test -p openbmp-runner feed_network --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/error.rs",
+  "crates/openbmp-runner/src/feed_network.rs",
+  "crates/openbmp-runner/src/lib.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "PropulsionFeedNetworkConfig",
+  "propulsion.feed_network",
+  "FeedNetworkRack",
+  "apply_to_report",
+  "feed_network_rack.apply_to_report",
+  "parses_propulsion_feed_network_schema",
+  "rejects_propulsion_feed_network_unknown_engine",
+  "feed_network_overrides_existing_feed_pressure_scale",
+  "[[propulsion.feed_network]]",
+]
+requirements = ["REQ-PROP-007"]
+
+[[verification]]
+id = "V-PROP-008"
+kind = "test"
+command = "cargo test -p openbmp-feedsystem graph --locked"
+paths = [
+  "crates/openbmp-feedsystem/src/lib.rs",
+  "crates/openbmp-feedsystem/src/error.rs",
+  "crates/openbmp-feedsystem/src/graph.rs",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "SteadyFeedGraph",
+  "SteadyFeedGraphConfig",
+  "FeedGraphNodeKind::PressureBoundary",
+  "FeedGraphNodeKind::Junction",
+  "FeedGraphNodeKind::Chamber",
+  "ValveBranch",
+  "solve_dense_linear",
+  "graph_matches_reduced_tank_valve_chamber_solution",
+  "graph_solves_two_valve_junction_chamber_ladder",
+]
+requirements = ["REQ-PROP-008"]
+
+[[verification]]
+id = "V-PROP-009"
+kind = "test"
+command = "cargo test -p openbmp-feedsystem chamber --locked"
+paths = [
+  "crates/openbmp-feedsystem/src/lib.rs",
+  "crates/openbmp-feedsystem/src/error.rs",
+  "crates/openbmp-feedsystem/src/chamber.rs",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "TransientChamber",
+  "TransientChamberConfig",
+  "TransientChamberSnapshot",
+  "TransientChamberState",
+  "ChamberFeedInput",
+  "transient_chamber_exact_step_matches_closed_form",
+  "transient_chamber_can_hold_graph_equilibrium",
+  "transient_chamber_reports_mixture_ratio",
+]
+requirements = ["REQ-PROP-009"]
+
+[[verification]]
+id = "V-PROP-010"
+kind = "test"
+command = "cargo test -p openbmp-feedsystem controller --locked"
+paths = [
+  "crates/openbmp-feedsystem/src/lib.rs",
+  "crates/openbmp-feedsystem/src/error.rs",
+  "crates/openbmp-feedsystem/src/control.rs",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "ThrottleMixtureController",
+  "ThrottleMixtureControllerConfig",
+  "ThrottleMixtureControllerState",
+  "ThrottleMixtureSetpoint",
+  "ThrottleMixtureMeasurement",
+  "ValveCommandPair",
+  "controller_opens_both_valves_for_low_chamber_pressure",
+  "controller_biases_valves_for_mixture_ratio_error",
+  "controller_applies_clamp_and_slew_limit",
+]
+requirements = ["REQ-PROP-010"]
+
+[[verification]]
+id = "V-PROP-011"
+kind = "test"
+command = "cargo test -p openbmp-feedsystem transient_dual --locked"
+paths = [
+  "crates/openbmp-feedsystem/src/lib.rs",
+  "crates/openbmp-feedsystem/src/error.rs",
+  "crates/openbmp-feedsystem/src/chamber.rs",
+  "crates/openbmp-feedsystem/src/control.rs",
+  "crates/openbmp-feedsystem/src/transient.rs",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "TransientDualValveFeedNetwork",
+  "TransientDualValveFeedNetworkConfig",
+  "TransientDualValveFeedNetworkState",
+  "TransientDualValveFeedNetworkSnapshot",
+  "ValveFeedLegConfig",
+  "transient_dual_valve_network_builds_pressure_and_reports_mr",
+  "transient_dual_valve_network_pressure_decays_with_closed_valves",
+  "transient_dual_valve_network_holds_state_for_zero_dt",
+]
+requirements = ["REQ-PROP-011"]
+
+[[verification]]
+id = "V-PROP-012"
+kind = "test"
+command = "cargo test -p openbmp-feedsystem turbopump --locked"
+paths = [
+  "crates/openbmp-feedsystem/src/lib.rs",
+  "crates/openbmp-feedsystem/src/error.rs",
+  "crates/openbmp-feedsystem/src/pump.rs",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "Turbopump",
+  "TurbopumpConfig",
+  "TurbopumpDesignPoint",
+  "TurbopumpOperatingPoint",
+  "NormalizedPumpMap",
+  "PumpCavitationState",
+  "turbopump_affinity_scales_head_with_speed_squared",
+  "turbopump_npsh_gate_applies_cavitation_multiplier",
+  "turbopump_reports_power_and_efficiency",
+]
+requirements = ["REQ-PROP-012"]
+
+[[verification]]
+id = "V-PROP-013"
+kind = "test"
+command = "cargo test -p openbmp-feedsystem moc_line --locked"
+paths = [
+  "crates/openbmp-feedsystem/src/lib.rs",
+  "crates/openbmp-feedsystem/src/error.rs",
+  "crates/openbmp-feedsystem/src/line.rs",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "MocLine",
+  "MocLineConfig",
+  "MocLineState",
+  "MocLineBoundary",
+  "MocLineSnapshot",
+  "moc_line_courant_dt_is_dx_over_wave_speed",
+  "moc_line_valve_closure_matches_joukowsky_bound",
+  "moc_line_interior_node_uses_neighbor_characteristics",
+]
+requirements = ["REQ-PROP-013"]
+
+[[verification]]
+id = "V-PROP-014"
+kind = "test"
+command = "cargo test -p openbmp-scenario feed_network --locked && cargo test -p openbmp-runner feed_network --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-runner/src/feed_network.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "TransientDualValveChamber",
+  "transient_dual_valve_chamber",
+  "TransientDualValveFeedNetwork",
+  "TransientDualValveFeedNetworkState",
+  "ValveCommandPair",
+  "parses_transient_propulsion_feed_network_schema",
+  "transient_feed_network_advances_chamber_pressure_scale",
+  "feed_network_rack.apply_to_report",
+]
+requirements = ["REQ-PROP-014"]
+
+[[verification]]
+id = "V-PROP-015"
+kind = "test"
+command = "cargo test -p openbmp-scenario feed_network --locked && cargo test -p openbmp-runner feed_network --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-runner/src/feed_network.rs",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "PropulsionFeedNetworkControllerConfig",
+  "ThrottleMixtureController",
+  "FeedNetworkControllerRuntime",
+  "controller.update_commands",
+  "controller.update_mixture_ratio",
+  "parses_transient_propulsion_feed_network_controller_schema",
+  "transient_feed_network_controller_updates_valve_commands",
+]
+requirements = ["REQ-PROP-015"]
+
+[[verification]]
+id = "V-PROP-016"
+kind = "test"
+command = "cargo test -p openbmp-scenario feed_network --locked && cargo test -p openbmp-runner feed_network --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-runner/src/feed_network.rs",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "PropulsionFeedNetworkTurbopumpConfig",
+  "oxidizer_pump",
+  "fuel_pump",
+  "pump_augmented_pressure_pa",
+  "Turbopump::new",
+  "parses_transient_propulsion_feed_network_pump_schema",
+  "turbopump_augments_transient_feed_pressure",
+  "pump_fed_transient_network_builds_pressure_faster",
+]
+requirements = ["REQ-PROP-016"]
+
+[[verification]]
+id = "V-PROP-017"
+kind = "test"
+command = "cargo test -p openbmp-feedsystem transient_dual --locked && cargo test -p openbmp-scenario feed_network --locked && cargo test -p openbmp-runner feed_network --locked"
+paths = [
+  "crates/openbmp-feedsystem/src/lib.rs",
+  "crates/openbmp-feedsystem/src/line.rs",
+  "crates/openbmp-feedsystem/src/transient.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-runner/src/feed_network.rs",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "FeedLegPressures",
+  "step_with_feed_pressures",
+  "pressure_from_head_pa",
+  "PropulsionFeedNetworkLineConfig",
+  "oxidizer_line",
+  "fuel_line",
+  "FeedLineRuntime",
+  "feed_pressure_pa",
+  "parses_transient_propulsion_feed_network_line_schema",
+  "moc_line_runtime_applies_joukowsky_pressure_delta",
+  "moc_line_coupled_transient_network_builds_pressure_faster",
+]
+requirements = ["REQ-PROP-017"]
+
+[[verification]]
+id = "V-PROP-018"
+kind = "test"
+command = "cargo test -p openbmp-feedsystem pogo --locked"
+paths = [
+  "crates/openbmp-feedsystem/src/lib.rs",
+  "crates/openbmp-feedsystem/src/error.rs",
+  "crates/openbmp-feedsystem/src/pogo.rs",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "PogoStability",
+  "PogoStabilityConfig",
+  "PogoModeConfig",
+  "PogoFeedCouplingConfig",
+  "PogoStabilityVerdict",
+  "neutral_accumulator_compliance_m3_per_pa",
+  "pogo_stability_reports_stable_low_gain",
+  "pogo_stability_detects_static_divergence",
+  "pogo_stability_detects_dynamic_instability",
+  "pogo_accumulator_compliance_detunes_unstable_case",
+]
+requirements = ["REQ-PROP-018"]
+
+[[verification]]
+id = "V-PROP-019"
+kind = "test"
+command = "cargo test -p openbmp-scenario pogo --locked && cargo test -p openbmp-runner pogo --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-runner/src/lib.rs",
+  "crates/openbmp-runner/src/pogo.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "PropulsionPogoConfig",
+  "propulsion.pogo",
+  "open_loop_gain_rad2_s2",
+  "PogoStabilityRack",
+  "require_stable",
+  "PogoStability::new",
+  "parses_propulsion_pogo_schema",
+  "rejects_propulsion_pogo_invalid_numeric_values",
+  "pogo_rack_accepts_stable_required_config",
+  "pogo_rack_rejects_required_unstable_config",
+]
+requirements = ["REQ-PROP-019"]
+
+[[verification]]
+id = "V-PROP-020"
+kind = "test"
+command = "cargo test -p openbmp-propulsion cluster_inject_fault --locked && cargo test -p openbmp-scenario propulsion_fault --locked && cargo test -p openbmp-runner scheduled_fault --locked"
+paths = [
+  "crates/openbmp-propulsion/src/cluster.rs",
+  "crates/openbmp-propulsion/src/engine.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-runner/src/engines.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "PropulsionFaultsConfig",
+  "PropulsionFaultRuleConfig",
+  "propulsion.faults",
+  "EngineCluster::inject_fault",
+  "scheduled_faults",
+  "apply_scheduled_faults",
+  "parses_propulsion_fault_schedule_schema",
+  "rejects_propulsion_fault_schedule_unknown_engine",
+  "cluster_inject_fault_routes_to_correct_engine",
+  "scheduled_fault_injects_once_when_step_arrives",
+]
+requirements = ["REQ-PROP-020"]
+
+[[verification]]
+id = "V-PROP-021"
+kind = "test"
+command = "cargo test -p openbmp-propulsion hard_start --locked && cargo test -p openbmp-scenario hard_start --locked && cargo test -p openbmp-runner hard_start --locked"
+paths = [
+  "crates/openbmp-propulsion/src/engine.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-runner/src/engines.rs",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "HardStartOverpressure",
+  "hard_start_overpressure",
+  "liquid_engine_fault_hard_start_overpressure_boosts_ignition_only",
+  "invalid_hard_start_fault_payload_rejected",
+  "parses_propulsion_fault_hard_start_overpressure_schema",
+  "rejects_propulsion_fault_hard_start_invalid_duration",
+  "engine_fault_config_maps_hard_start_overpressure",
+]
+requirements = ["REQ-PROP-021"]
+
+[[verification]]
+id = "V-PROP-022"
+kind = "test"
+command = "cargo test -p openbmp-propulsion cavitation --locked && cargo test -p openbmp-scenario cavitation --locked && cargo test -p openbmp-runner cavitation --locked"
+paths = [
+  "crates/openbmp-propulsion/src/engine.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-runner/src/feed_network.rs",
+  "crates/openbmp-runner/src/engines.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "CavitationThrustLoss",
+  "cavitation_thrust_loss",
+  "PropulsionCavitationFaultRuleConfig",
+  "PropulsionCavitationFaultLegConfig",
+  "cavitation_rules",
+  "FeedPumpCavitationEvent",
+  "FeedPumpLeg",
+  "cavitation_events",
+  "apply_cavitation_faults",
+  "liquid_engine_fault_cavitation_thrust_loss_scales_thrust_by_factor",
+  "invalid_cavitation_fault_payload_rejected",
+  "parses_propulsion_fault_cavitation_rule_schema",
+  "rejects_propulsion_fault_cavitation_rule_without_matching_pump",
+  "feed_network_reports_pump_cavitation_events",
+  "cavitation_fault_injects_once_when_event_matches",
+  "engine_fault_config_maps_cavitation_thrust_loss",
+]
+requirements = ["REQ-PROP-022"]
+
+[[verification]]
+id = "V-PROP-023"
+kind = "test"
+command = "cargo test -p openbmp-scenario mixture_ratio --locked && cargo test -p openbmp-runner mixture_ratio --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-runner/src/feed_network.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "PropulsionMixtureRatioRunawayRuleConfig",
+  "mixture_ratio_runaway_rules",
+  "MixtureRatioRunawayFaultRuntime",
+  "ValveCommandBias",
+  "update_mixture_ratio_runaway_bias",
+  "oxidizer_open_fraction_rate_per_s",
+  "fuel_open_fraction_rate_per_s",
+  "parses_propulsion_fault_mixture_ratio_runaway_schema",
+  "rejects_propulsion_fault_mixture_ratio_runaway_without_transient_network",
+  "rejects_propulsion_fault_mixture_ratio_runaway_zero_rates",
+  "mixture_ratio_runaway_drifts_valve_commands_after_start_step",
+]
+requirements = ["REQ-PROP-023"]
+
+[[verification]]
+id = "V-PROP-024"
+kind = "test"
+command = "cargo test -p openbmp-sil scheduled_propulsion_fault_stimulation_changes_engine_telemetry --locked"
+paths = [
+  "crates/openbmp-sil/src/lib.rs",
+  "crates/openbmp-sil/tests/propulsion_stimulus.rs",
+  "crates/openbmp-sil/README.md",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "FaultTarget::ScheduledEngine",
+  "append_scheduled_engine_fault_rule",
+  "propulsion_fault_rules_mut",
+  "scheduled_propulsion_fault_stimulation_changes_engine_telemetry",
+  "propulsion.faults.rules.sil-main-hardoff",
+]
+requirements = ["REQ-PROP-024"]
+
+[[verification]]
+id = "V-PROP-025"
+kind = "test"
+command = "cargo test -p openbmp-mc propulsion_fault_library --locked"
+paths = [
+  "crates/openbmp-mc/Cargo.toml",
+  "crates/openbmp-mc/src/lib.rs",
+  "docs/parity/05-propulsion-high-fidelity.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "PropulsionFaultLibrary",
+  "PropulsionFaultTemplate",
+  "PropulsionFaultOverlay",
+  "propulsion_fault_library_materializes_parseable_overlay",
+  "propulsion_fault_library_is_deterministic_and_validated",
+]
+requirements = ["REQ-PROP-025"]
+
+[[verification]]
+id = "V-PROP-026"
+kind = "test"
+command = "cargo test -p openbmp-sil observed_stimulated_tvc_engine_fault_records_ekf_response --locked"
+paths = [
+  "crates/openbmp-sil/src/lib.rs",
+  "crates/openbmp-sil/tests/propulsion_stimulus.rs",
+  "scenarios/phalcon9/phalcon9-tvc-probe.toml",
+  "docs/parity/05-propulsion-high-fidelity.md",
+]
+contains = [
+  "run_case_observed_with_stimulation",
+  "run_observed_with_stimulation",
+  "observed_stimulated_tvc_engine_fault_records_ekf_response",
+  "sil-eng0-hardoff",
+]
+requirements = ["REQ-PROP-026"]
+
+[[verification]]
+id = "V-PROP-027"
+kind = "test"
+command = "cargo test -p openbmp-cli mc_propulsion_fault_campaign --locked"
+paths = [
+  "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/tests/mc_cli.rs",
+  "docs/parity/05-propulsion-high-fidelity.md",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+]
+contains = [
+  "run_propulsion_fault_campaign",
+  "McPropulsionFaultCampaignOptions",
+  "PropulsionFaults",
+  "mc_propulsion_fault_campaign_runs_sampled_overlays",
+  "openbmp mc propulsion-faults",
+]
+requirements = ["REQ-PROP-027"]

@@ -39,12 +39,11 @@
 //!   innovation should be the most central / least extreme of the
 //!   healthy set, which is a robust choice when any single lane
 //!   might be drifting. Requires ≥ 3 lanes.
-//! - [`VoterPolicy::BestByCovarianceTrace`] — minimum covariance-trace
-//!   proxy wins. `EstimatorStatus` does not yet expose a covariance
-//!   trace, so this slice uses the sum of the per-sensor innovation
-//!   chi-square values as a deterministic stand-in until the follow-on
-//!   status field lands. Cheap fallback for ≤ 2 lanes (where the
-//!   median rule degenerates).
+//! - [`VoterPolicy::BestByCovarianceTrace`] — minimum exposed covariance
+//!   diagonal trace wins. Lanes that do not expose any covariance
+//!   diagonal block fall back to the deterministic innovation chi-square
+//!   proxy. Cheap fallback for ≤ 2 lanes (where the median rule
+//!   degenerates).
 //!
 //! # Determinism
 //!
@@ -117,9 +116,9 @@ pub enum VoterPolicy {
     /// tick). Requires ≥ 3 healthy lanes; with fewer healthy lanes,
     /// degrades to [`VoterPolicy::SimplexPassThrough`].
     MidValueSelectByInnovation,
-    /// Minimum covariance-trace proxy wins. Until `EstimatorStatus`
-    /// exposes a real covariance trace, this uses the sum of
-    /// per-sensor innovation chi-square values.
+    /// Minimum exposed covariance diagonal trace wins. Lanes without
+    /// covariance diagonal diagnostics fall back to the innovation
+    /// chi-square proxy.
     BestByCovarianceTrace,
 }
 
@@ -319,19 +318,32 @@ impl MultiLaneEstimator {
 }
 
 fn covariance_trace_proxy(status: &EstimatorStatus) -> f64 {
-    // The shipped EstimatorStatus does not expose covariance trace.
-    // Until the follow-on adds that field, the sum of per-sensor
-    // chi-square readings is only a deterministic proxy for "tighter"
-    // belief; it is not true covariance algebra.
-    status.imu_chi2 + status.gnss_chi2 + status.baro_chi2 + status.mag_chi2
+    let mut trace = 0.0_f64;
+    let mut observed_covariance = false;
+    for diagonal in [
+        status.position_variance_eci_m2,
+        status.velocity_variance_eci_m2_s2,
+        status.attitude_variance_rad2,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !diagonal.is_finite() || diagonal < 0.0 {
+            return f64::INFINITY;
+        }
+        if diagonal > 0.0 {
+            observed_covariance = true;
+            trace += diagonal;
+        }
+    }
+    if observed_covariance {
+        trace
+    } else {
+        innovation_chi2_proxy(status)
+    }
 }
 
 fn innovation_chi2_proxy(status: &EstimatorStatus) -> f64 {
-    // Median-by-innovation policy looks at the same sum-of-chi² proxy
-    // as the covariance-trace policy. The two policies coincide
-    // arithmetically but diverge in the *selection rule* (min vs
-    // median); keeping them in separate helpers leaves room for the
-    // proxy to evolve independently per follow-on slice.
     status.imu_chi2 + status.gnss_chi2 + status.baro_chi2 + status.mag_chi2
 }
 
@@ -667,6 +679,20 @@ mod tests {
         Box::new(FakeEstimator::with_score(score))
     }
 
+    fn fake_lane_with_covariance_trace(score: f64, trace: f64) -> Box<dyn Estimator + Send> {
+        Box::new(FakeEstimator {
+            status: EstimatorStatus {
+                time: SimTime::ZERO,
+                initialized: true,
+                gnss_chi2: score,
+                position_variance_eci_m2: [trace, 0.0, 0.0],
+                ..EstimatorStatus::default()
+            },
+            predict_failure: FakeFailure::None,
+            update_failure: FakeFailure::None,
+        })
+    }
+
     fn fake_update_failure_lane(failure: FakeFailure) -> Box<dyn Estimator + Send> {
         Box::new(FakeEstimator::with_update_failure(failure))
     }
@@ -755,7 +781,24 @@ mod tests {
     }
 
     #[test]
-    fn best_by_covariance_trace_picks_minimum_proxy() {
+    fn best_by_covariance_trace_picks_minimum_exposed_trace() {
+        let lanes = vec![
+            (
+                LaneId::from("low_innovation_high_cov"),
+                fake_lane_with_covariance_trace(1.0, 9.0),
+            ),
+            (
+                LaneId::from("high_innovation_low_cov"),
+                fake_lane_with_covariance_trace(8.0, 2.0),
+            ),
+        ];
+        let mut m = MultiLaneEstimator::new(lanes, VoterPolicy::BestByCovarianceTrace);
+        m.vote();
+        assert_eq!(m.active_lane_id().as_str(), "high_innovation_low_cov");
+    }
+
+    #[test]
+    fn best_by_covariance_trace_falls_back_to_innovation_proxy_without_covariance() {
         let lanes = vec![
             (LaneId::from("high"), fake_lane(8.0)),
             (LaneId::from("low"), fake_lane(1.0)),

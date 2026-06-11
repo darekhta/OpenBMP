@@ -78,9 +78,12 @@ fn migrate_document(document: &mut DocumentMut, path: &Path) -> Result<usize, Cl
     let mut moved = Vec::new();
     let mut index = 0;
     while index < mission_events.len() {
-        let table = mission_events
-            .get(index)
-            .expect("index guarded by mission_events.len()");
+        let Some(table) = mission_events.get(index) else {
+            return Err(CliError::Migrate {
+                path: path.to_path_buf(),
+                summary: "mission.events changed while migrating".to_owned(),
+            });
+        };
         if is_script_action_event(table) {
             let event_id = event_id(table).map(str::to_owned);
             if event_id
@@ -88,9 +91,12 @@ fn migrate_document(document: &mut DocumentMut, path: &Path) -> Result<usize, Cl
                 .is_some_and(|event_id| transition_events.iter().any(|event| event == event_id))
             {
                 let script_event = table.clone();
-                let table = mission_events
-                    .get_mut(index)
-                    .expect("index guarded by mission_events.len()");
+                let Some(table) = mission_events.get_mut(index) else {
+                    return Err(CliError::Migrate {
+                        path: path.to_path_buf(),
+                        summary: "mission.events changed while migrating".to_owned(),
+                    });
+                };
                 replace_action_with_marker(table, event_id.as_deref().unwrap_or("event"));
                 moved.push(script_event);
                 index += 1;

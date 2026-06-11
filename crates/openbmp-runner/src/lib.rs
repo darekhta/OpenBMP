@@ -32,22 +32,26 @@ pub mod aerothermal;
 pub mod assembly;
 pub mod atmosphere;
 pub mod celestial;
+pub mod determinism;
 pub mod effectors;
 pub mod engines;
 pub mod entry;
 pub mod fc;
 pub mod fc_bridge;
+pub mod feed_network;
 pub mod footprint;
 pub mod frames;
 pub mod integrator;
 pub mod mission;
+pub mod pogo;
 pub mod point_mass;
 pub mod propulsion;
 pub mod recovery;
 pub mod rigid_body;
+pub mod rt;
 pub mod separated_attitude;
-pub mod sil;
 pub mod separated_landing;
+pub mod sil;
 pub mod structural;
 pub mod tanks;
 pub mod wind;
@@ -246,6 +250,10 @@ pub struct RunOutcome {
     pub final_step: u64,
     /// Final simulation time in seconds.
     pub final_time_s: f64,
+    /// Optional host realtime pacing report.
+    pub realtime: Option<rt::RealtimeRunReport>,
+    /// Optional FC actuator command-stream digest report.
+    pub actuator_stream: Option<determinism::ActuatorStreamReport>,
 }
 
 /// Run a scenario through the appropriate kernel path.

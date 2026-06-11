@@ -150,6 +150,7 @@ impl EnvironmentModel for RuntimeEnvironment {
             }
         })?;
         sample.atmosphere_density_kg_m3 = atmosphere_sample.density_kg_m3;
+        sample.atmosphere_pressure_pa = atmosphere_sample.pressure_pa;
         Ok(sample)
     }
 }

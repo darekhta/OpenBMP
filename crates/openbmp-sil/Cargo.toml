@@ -9,6 +9,7 @@ authors.workspace       = true
 description             = "OpenBMP host SIL package, testbench, and evidence API."
 
 [dependencies]
+openbmp-bridge    = { workspace = true }
 openbmp-core      = { workspace = true }
 openbmp-hal       = { workspace = true }
 openbmp-runner    = { workspace = true }

@@ -473,6 +473,14 @@ fn covariance_diag_condition<const N: usize>(p: &SMatrix<f64, N, N>) -> f64 {
     }
 }
 
+fn covariance_diag3<const N: usize>(p: &SMatrix<f64, N, N>, start: usize) -> [f64; 3] {
+    [
+        p[(start, start)],
+        p[(start + 1, start + 1)],
+        p[(start + 2, start + 2)],
+    ]
+}
+
 fn attitude_variance_max<const N: usize>(p: &SMatrix<f64, N, N>, start: usize) -> f64 {
     (start..start + 3).map(|i| p[(i, i)]).fold(0.0, f64::max)
 }
@@ -845,6 +853,9 @@ impl Estimator for Ekf {
             mag_innovation_whitened: self.last_mag_innovation_whitened,
             mag_updated_this_tick: self.last_mag_updated_this_tick,
             attitude_variance_max_rad2,
+            position_variance_eci_m2: covariance_diag3(&self.p, 0),
+            velocity_variance_eci_m2_s2: covariance_diag3(&self.p, 3),
+            attitude_variance_rad2: covariance_diag3(&self.p, 6),
             covariance_condition_proxy: covariance_diag_condition(&self.p),
             attitude_under_observable: attitude_under_observable(attitude_variance_max_rad2),
         }
@@ -2094,6 +2105,9 @@ impl Estimator for Mekf {
             mag_innovation_whitened: self.last_mag_innovation_whitened,
             mag_updated_this_tick: self.last_mag_updated_this_tick,
             attitude_variance_max_rad2,
+            position_variance_eci_m2: [0.0; 3],
+            velocity_variance_eci_m2_s2: [0.0; 3],
+            attitude_variance_rad2: covariance_diag3(&self.p, 0),
             covariance_condition_proxy: covariance_diag_condition(&self.p),
             attitude_under_observable: attitude_under_observable(attitude_variance_max_rad2),
         }

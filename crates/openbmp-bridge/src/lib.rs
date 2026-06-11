@@ -4,17 +4,17 @@
 //! OpenBMP is simulation-only. For lab HIL studies, a downstream
 //! adopter may run the virtual flight controller (or a real one) on
 //! a separate process or board and exchange messages with the
-//! simulator over a socket. This crate ships **only the abstract,
-//! transport-agnostic message schema, lockstep validators, and its
-//! `postcard` wire codec** — the simulator emits [`SensorPacket`]s and
-//! accepts matching [`ActuatorCommandPacket`]s or [`StepAckPacket`]s.
+//! simulator over a socket. This crate ships **only the abstract message
+//! schema, lockstep validators, a `postcard` wire codec, and generic
+//! host transports** — the simulator emits [`SensorPacket`]s and accepts
+//! matching [`ActuatorCommandPacket`]s or [`StepAckPacket`]s.
 //!
 //! It deliberately ships **no real device drivers, no real bus
 //! protocols** (MAVLink / CAN / MIL-STD-1553 / I²C / SPI / UART), and
-//! no concrete transport. The socket loop and any hardware adapter are
-//! the adopter's responsibility, under their own qualification and
-//! data-rights posture, in their own repository. See
-//! `docs/safety-boundaries.md`.
+//! no vehicle-specific hardware adapter. Socket selection, lifecycle,
+//! retry policy, and any hardware adapter are the adopter's
+//! responsibility, under their own qualification and data-rights posture,
+//! in their own repository. See `docs/safety-boundaries.md`.
 //!
 //! # Wire format
 //!
@@ -33,6 +33,7 @@
 //!     step: 150,
 //!     effector_commands: vec![(0, 0.25), (1, -0.25)],
 //!     engine_throttles: vec![(0, 0.8)],
+//!     engine_commands: vec![],
 //! };
 //! let bytes = encode(&cmd).unwrap();
 //! let _wire = frame(&bytes);
@@ -45,15 +46,41 @@
 
 pub mod codec;
 pub mod error;
+pub mod fault;
 pub mod lockstep;
 pub mod packet;
+pub mod ports;
+pub mod transport;
+pub mod zoh;
 
 pub use codec::{decode, deframe, encode, frame};
 pub use error::BridgeError;
+pub use fault::{
+    BridgeFaultApplication, BridgeFaultError, BridgeFaultRule, BridgeFaultTransformSet,
+    BridgePacketDirection, BridgePacketDisposition, BridgePacketFaultRule, BridgePacketTransform,
+    BridgeScalarSignal, BridgeScalarTransform, QuaternionAxis, VectorAxis,
+};
 pub use lockstep::{
-    validate_ack_for_sensor, validate_command_for_sensor, validate_protocol_version,
+    LockstepResponse, LockstepSimMaster, validate_ack_for_sensor, validate_command_for_sensor,
+    validate_protocol_version,
 };
 pub use packet::{
     ActuatorCommandPacket, BridgeEndpointRole, BridgeFaultCode, BridgeFaultPacket,
-    BridgeHelloPacket, BridgeMessage, PROTOCOL_VERSION, SensorPacket, StepAckPacket, StepAckStatus,
+    BridgeHelloPacket, BridgeMessage, EngineCommandPacket, PROTOCOL_VERSION, SensorPacket,
+    StepAckPacket, StepAckStatus,
+};
+pub use ports::{
+    CaptureHandle, CaptureTrigger, EesPort, ElectricalErrorType, FaultWindow, MaPort, PinId,
+    SignalBinding, SignalDescription, SignalId, SignalMapping, StimHandle, TestbenchLifecycle,
+    TestbenchState, TestbenchTransition, XilPortError, XilValue,
+};
+#[cfg(unix)]
+pub use transport::UnixBridgeListener;
+pub use transport::{
+    InProcessTransport, SplitStreamTransport, StreamTransport, TcpBridgeListener, Transport,
+    in_process_transport_pair,
+};
+pub use zoh::{
+    ZohCouplingError, ZohCouplingErrorSample, ZohCouplingHalvingReport,
+    zoh_linear_ramp_halving_report, zoh_linear_ramp_mean_abs_error,
 };

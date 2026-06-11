@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -584,6 +590,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc32fast"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "criterion"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -616,6 +631,31 @@ dependencies = [
  "cast",
  "itertools 0.13.0",
 ]
+
+[[package]]
+name = "crossbeam-deque"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9dd111b7b7f7d55b72c0a6ae361660ee5853c9af73f70c3c2ef6858b950e2e51"
+dependencies = [
+ "crossbeam-epoch",
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-epoch"
+version = "0.9.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-utils"
+version = "0.8.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "crunchy"
@@ -808,6 +848,16 @@ checksum = "35f6839d7b3b98adde531effaf34f0c2badc6f4735d26fe74709d8e513a96ef3"
 dependencies = [
  "bitflags",
  "rustc_version",
+]
+
+[[package]]
+name = "flate2"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
 ]
 
 [[package]]
@@ -1331,6 +1381,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+ "simd-adler32",
+]
+
+[[package]]
 name = "nalgebra"
 version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1463,6 +1523,8 @@ dependencies = [
 name = "openbmp-bridge"
 version = "0.0.1"
 dependencies = [
+ "openbmp-core",
+ "openbmp-testkit",
  "postcard",
  "proptest",
  "serde",
@@ -1482,17 +1544,22 @@ dependencies = [
  "nalgebra",
  "openbmp-core",
  "openbmp-fc",
+ "openbmp-mc",
  "openbmp-msgs",
  "openbmp-physics",
  "openbmp-runner",
  "openbmp-scenario",
+ "openbmp-sensors",
  "openbmp-sil",
+ "openbmp-sim",
  "openbmp-telemetry",
  "openbmp-testkit",
+ "openbmp-uq",
  "parquet",
  "predicates",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "toml",
@@ -1537,6 +1604,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbmp-feedsystem"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "openbmp-core",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "openbmp-fmi"
 version = "0.0.1"
 dependencies = [
@@ -1555,6 +1631,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbmp-mc"
+version = "0.0.1"
+dependencies = [
+ "nalgebra",
+ "openbmp-core",
+ "openbmp-scenario",
+ "openbmp-uq",
+ "rayon",
+ "serde",
+ "serde_json",
+ "statrs",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "openbmp-mission"
 version = "0.0.1"
 dependencies = [
@@ -1568,6 +1660,7 @@ name = "openbmp-models"
 version = "0.0.1"
 dependencies = [
  "approx",
+ "flate2",
  "nalgebra",
  "openbmp-core",
  "openbmp-state",
@@ -1596,6 +1689,7 @@ dependencies = [
  "openbmp-aero",
  "openbmp-aerothermal",
  "openbmp-core",
+ "openbmp-uq",
  "proptest",
  "sgp4",
  "sha2",
@@ -1620,6 +1714,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbmp-rt"
+version = "0.0.1"
+dependencies = [
+ "openbmp-core",
+]
+
+[[package]]
 name = "openbmp-runner"
 version = "0.0.1"
 dependencies = [
@@ -1627,18 +1728,26 @@ dependencies = [
  "nalgebra",
  "openbmp-aero",
  "openbmp-aerothermal",
+ "openbmp-bridge",
  "openbmp-core",
  "openbmp-fc",
+ "openbmp-feedsystem",
+ "openbmp-mc",
  "openbmp-mission",
  "openbmp-physics",
  "openbmp-propulsion",
+ "openbmp-rt",
  "openbmp-scenario",
  "openbmp-sensors",
  "openbmp-sim",
  "openbmp-state",
  "openbmp-telemetry",
  "openbmp-testkit",
+ "openbmp-thermochem",
  "openbmp-vehicle",
+ "serde",
+ "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "toml",
  "uom",
@@ -1681,6 +1790,7 @@ name = "openbmp-sil"
 version = "0.0.1"
 dependencies = [
  "nalgebra",
+ "openbmp-bridge",
  "openbmp-core",
  "openbmp-hal",
  "openbmp-runner",
@@ -1757,6 +1867,7 @@ dependencies = [
  "approx",
  "nalgebra",
  "openbmp-core",
+ "openbmp-mc",
  "openbmp-physics",
  "openbmp-state",
  "proptest",
@@ -1769,6 +1880,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbmp-thermochem"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "openbmp-core",
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
 name = "openbmp-trajopt"
 version = "0.0.1"
 dependencies = [
@@ -1776,6 +1898,15 @@ dependencies = [
  "openbmp-physics",
  "postcard",
  "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "openbmp-uq"
+version = "0.0.1"
+dependencies = [
+ "num-traits",
+ "openbmp-core",
  "thiserror 2.0.18",
 ]
 
@@ -2128,6 +2259,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60a357793950651c4ed0f3f52338f53b2f809f32d83a07f72909fa13e4c6c1e3"
 
 [[package]]
+name = "rayon"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb39b166781f92d482534ef4b4b1b2568f42613b53e5b6c160e24cfbfa30926d"
+dependencies = [
+ "either",
+ "rayon-core",
+]
+
+[[package]]
+name = "rayon-core"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
+dependencies = [
+ "crossbeam-deque",
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "regex"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2323,6 +2474,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "simd-adler32"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
+
+[[package]]
 name = "similar"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2339,6 +2496,16 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "statrs"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a3fe7c28c6512e766b0874335db33c94ad7b8f9054228ae1c2abd47ce7d335e"
+dependencies = [
+ "approx",
+ "num-traits",
+]
 
 [[package]]
 name = "strsim"

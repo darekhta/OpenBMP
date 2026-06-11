@@ -6,23 +6,32 @@
 //! registered as a flight-controller job and it never produces an
 //! actuator command.
 
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use nalgebra::Vector3;
 use openbmp_core::{ChannelId, DeterministicRng, SimTime, StepIndex};
+use openbmp_mc::{
+    NestedLowerTailRequirement, NestedScalarAnalysisReport, analyze_nested_scalar_samples,
+};
 use openbmp_physics::profile::{
     BallisticState, ConstantGravityRangeSafetyFootprint, FootprintDispersionInput,
     FootprintEnvironment, FootprintGeodeticOrigin, FootprintMonteCarloInput,
-    FootprintMonteCarloResult, FootprintSampleInput, ForwardSimulationProvenance,
-    ForwardSimulationSource, LandingFootprint, NumericalGravityRangeSafetyFootprint,
-    RangeSafetyFootprint, constant_gravity_footprint_monte_carlo,
-    numerical_gravity_footprint_monte_carlo,
+    FootprintMonteCarloResult, FootprintSample, FootprintSampleFailure, FootprintSampleInput,
+    ForwardSimulationProvenance, ForwardSimulationSource, LandingFootprint,
+    NumericalGravityRangeSafetyFootprint, RangeSafetyFootprint,
+    constant_gravity_footprint_monte_carlo, numerical_gravity_footprint_monte_carlo,
 };
 use openbmp_physics::{Egm2008ZonalGravity, J2Gravity, STANDARD_GRAVITY_M_S2, WGS84_J2};
 use openbmp_scenario::{
     LandingFootprintConfig, LandingFootprintMethod, LandingFootprintMonteCarloConfig,
-    LandingFootprintMonteCarloDistribution, LandingFootprintMonteCarloWindConfig, ModelRole,
+    LandingFootprintMonteCarloDistribution, LandingFootprintMonteCarloNestedMetric,
+    LandingFootprintMonteCarloUncertaintyClass, LandingFootprintMonteCarloWindConfig, ModelRole,
     Scenario, ScenarioDocument, ScenarioError,
 };
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
+use serde::{Deserialize, Serialize};
 
 use crate::RunnerError;
 
@@ -69,6 +78,382 @@ pub struct FootprintMonteCarloReport {
     pub samples: TelemetryTable,
     /// Deterministic TOML summary text.
     pub summary_toml: String,
+    /// Optional nested aleatory/epistemic analysis evidence.
+    pub nested: Option<FootprintNestedMonteCarloReport>,
+}
+
+/// Runner-side nested footprint Monte-Carlo analysis evidence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FootprintNestedMonteCarloReport {
+    /// Scalar metric reduced into the p-box.
+    pub metric: LandingFootprintMonteCarloNestedMetric,
+    /// P-box and aleatory/epistemic variance report.
+    pub analysis: NestedScalarAnalysisReport,
+}
+
+/// Options for opt-in footprint Monte-Carlo checkpoint/resume.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FootprintMonteCarloCheckpointOptions<'a> {
+    /// JSON checkpoint file to load and update.
+    pub checkpoint_json: &'a Path,
+    /// Scenario digest bound into the checkpoint metadata.
+    pub scenario_sha256: &'a str,
+    /// Toolchain / determinism profile bound into the checkpoint metadata.
+    pub toolchain_profile: &'a str,
+    /// Maximum not-yet-completed samples to propagate during this invocation.
+    pub max_new_samples: u32,
+}
+
+/// Result of a checkpointed footprint Monte-Carlo invocation.
+#[derive(Debug)]
+pub struct FootprintMonteCarloCheckpointReport {
+    /// Total configured sample count.
+    pub sample_count: u32,
+    /// Completed samples, including both successes and failures.
+    pub completed: u32,
+    /// Complete report, present only when all samples have completed and at
+    /// least one sample propagated successfully.
+    pub report: Option<FootprintMonteCarloReport>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct FootprintCheckpointFile {
+    schema_version: u32,
+    method: String,
+    campaign_seed: u64,
+    sample_count: u32,
+    scenario_sha256: String,
+    toolchain_profile: String,
+    nominal: Option<StoredLandingFootprint>,
+    samples: Vec<StoredFootprintSample>,
+    failures: Vec<StoredFootprintFailure>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+struct StoredFootprintSample {
+    sample_index: u32,
+    landing: StoredLandingFootprint,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+struct StoredFootprintFailure {
+    sample_index: u32,
+    reason: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+struct StoredLandingFootprint {
+    downrange_m_bits: u64,
+    crossrange_m_bits: u64,
+    bearing_rad_bits: u64,
+    time_to_cull_s_bits: u64,
+    latitude_deg_bits: Option<u64>,
+    longitude_deg_bits: Option<u64>,
+}
+
+impl From<LandingFootprint> for StoredLandingFootprint {
+    fn from(landing: LandingFootprint) -> Self {
+        Self {
+            downrange_m_bits: landing.downrange_m.to_bits(),
+            crossrange_m_bits: landing.crossrange_m.to_bits(),
+            bearing_rad_bits: landing.bearing_rad.to_bits(),
+            time_to_cull_s_bits: landing.time_to_cull_s.to_bits(),
+            latitude_deg_bits: landing.latitude_deg.map(f64::to_bits),
+            longitude_deg_bits: landing.longitude_deg.map(f64::to_bits),
+        }
+    }
+}
+
+impl From<StoredLandingFootprint> for LandingFootprint {
+    fn from(landing: StoredLandingFootprint) -> Self {
+        Self {
+            downrange_m: f64::from_bits(landing.downrange_m_bits),
+            crossrange_m: f64::from_bits(landing.crossrange_m_bits),
+            bearing_rad: f64::from_bits(landing.bearing_rad_bits),
+            time_to_cull_s: f64::from_bits(landing.time_to_cull_s_bits),
+            latitude_deg: landing.latitude_deg_bits.map(f64::from_bits),
+            longitude_deg: landing.longitude_deg_bits.map(f64::from_bits),
+            dispersion_ellipse: None,
+        }
+    }
+}
+
+impl FootprintCheckpointFile {
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn new(
+        method: &str,
+        campaign_seed: u64,
+        sample_count: u32,
+        scenario_sha256: &str,
+        toolchain_profile: &str,
+    ) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            method: method.to_owned(),
+            campaign_seed,
+            sample_count,
+            scenario_sha256: scenario_sha256.to_owned(),
+            toolchain_profile: toolchain_profile.to_owned(),
+            nominal: None,
+            samples: Vec::new(),
+            failures: Vec::new(),
+        }
+    }
+
+    fn validate(
+        &self,
+        method: &str,
+        campaign_seed: u64,
+        sample_count: u32,
+        scenario_sha256: &str,
+        toolchain_profile: &str,
+    ) -> Result<(), RunnerError> {
+        self.validate_content()?;
+        if self.method != method {
+            return Err(footprint_checkpoint_error("metadata mismatch in method"));
+        }
+        if self.campaign_seed != campaign_seed {
+            return Err(footprint_checkpoint_error(
+                "metadata mismatch in campaign_seed",
+            ));
+        }
+        if self.sample_count != sample_count {
+            return Err(footprint_checkpoint_error(
+                "metadata mismatch in sample_count",
+            ));
+        }
+        if self.scenario_sha256 != scenario_sha256 {
+            return Err(footprint_checkpoint_error(
+                "metadata mismatch in scenario_sha256",
+            ));
+        }
+        if self.toolchain_profile != toolchain_profile {
+            return Err(footprint_checkpoint_error(
+                "metadata mismatch in toolchain_profile",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_content(&self) -> Result<(), RunnerError> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(footprint_checkpoint_error(
+                "metadata mismatch in schema_version",
+            ));
+        }
+        if self.sample_count == 0 {
+            return Err(footprint_checkpoint_error("sample_count must be positive"));
+        }
+        if self.scenario_sha256.is_empty() {
+            return Err(footprint_checkpoint_error(
+                "scenario_sha256 must not be empty",
+            ));
+        }
+        if self.toolchain_profile.is_empty() {
+            return Err(footprint_checkpoint_error(
+                "toolchain_profile must not be empty",
+            ));
+        }
+        let mut completed = BTreeSet::new();
+        for sample in &self.samples {
+            if sample.sample_index >= self.sample_count {
+                return Err(footprint_checkpoint_error(
+                    "sample index exceeds sample_count",
+                ));
+            }
+            if !completed.insert(sample.sample_index) {
+                return Err(footprint_checkpoint_error("duplicate sample index"));
+            }
+        }
+        for failure in &self.failures {
+            if failure.sample_index >= self.sample_count {
+                return Err(footprint_checkpoint_error(
+                    "failure index exceeds sample_count",
+                ));
+            }
+            if !completed.insert(failure.sample_index) {
+                return Err(footprint_checkpoint_error("duplicate sample index"));
+            }
+        }
+        Ok(())
+    }
+
+    fn completed_count(&self) -> Result<u32, RunnerError> {
+        self.validate_content()?;
+        let count = self
+            .samples
+            .len()
+            .checked_add(self.failures.len())
+            .ok_or_else(|| footprint_checkpoint_error("completed sample count overflow"))?;
+        u32::try_from(count)
+            .map_err(|_| footprint_checkpoint_error("completed sample count overflow"))
+    }
+
+    fn missing_indices(&self, limit: u32) -> Vec<u32> {
+        let completed = self
+            .samples
+            .iter()
+            .map(|sample| sample.sample_index)
+            .chain(self.failures.iter().map(|failure| failure.sample_index))
+            .collect::<BTreeSet<_>>();
+        (0..self.sample_count)
+            .filter(|sample_index| !completed.contains(sample_index))
+            .take(limit as usize)
+            .collect()
+    }
+
+    fn record_batch(&mut self, result: &FootprintMonteCarloResult) -> Result<(), RunnerError> {
+        self.validate_content()?;
+        let nominal = StoredLandingFootprint::from(result.nominal);
+        if let Some(existing) = self.nominal {
+            if existing != nominal {
+                return Err(footprint_checkpoint_error("nominal footprint changed"));
+            }
+        } else {
+            self.nominal = Some(nominal);
+        }
+
+        let mut completed = self
+            .samples
+            .iter()
+            .map(|sample| sample.sample_index)
+            .chain(self.failures.iter().map(|failure| failure.sample_index))
+            .collect::<BTreeSet<_>>();
+        for sample in &result.samples {
+            if !completed.insert(sample.sample_index) {
+                return Err(footprint_checkpoint_error("duplicate sample index"));
+            }
+            self.samples.push(StoredFootprintSample {
+                sample_index: sample.sample_index,
+                landing: StoredLandingFootprint::from(sample.landing),
+            });
+        }
+        for failure in &result.failures {
+            if !completed.insert(failure.sample_index) {
+                return Err(footprint_checkpoint_error("duplicate sample index"));
+            }
+            self.failures.push(StoredFootprintFailure {
+                sample_index: failure.sample_index,
+                reason: failure.reason.clone(),
+            });
+        }
+        self.samples.sort_by_key(|sample| sample.sample_index);
+        self.failures.sort_by_key(|failure| failure.sample_index);
+        Ok(())
+    }
+
+    fn to_report(
+        &self,
+        confidence_levels: &[f64],
+    ) -> Result<FootprintMonteCarloResult, RunnerError> {
+        self.validate_content()?;
+        if self.completed_count()? != self.sample_count {
+            return Err(footprint_checkpoint_error("checkpoint is incomplete"));
+        }
+        let nominal = self
+            .nominal
+            .ok_or_else(|| footprint_checkpoint_error("checkpoint has no nominal footprint"))?;
+        let samples = self
+            .samples
+            .iter()
+            .map(|sample| FootprintSample {
+                sample_index: sample.sample_index,
+                landing: LandingFootprint::from(sample.landing),
+            })
+            .collect::<Vec<_>>();
+        let failures = self
+            .failures
+            .iter()
+            .map(|failure| FootprintSampleFailure {
+                sample_index: failure.sample_index,
+                reason: failure.reason.clone(),
+            })
+            .collect::<Vec<_>>();
+        Ok(FootprintMonteCarloResult::from_samples(
+            LandingFootprint::from(nominal),
+            samples,
+            failures,
+            confidence_levels,
+        )?)
+    }
+}
+
+fn load_or_create_footprint_checkpoint(
+    path: &Path,
+    method: &str,
+    campaign_seed: u64,
+    sample_count: u32,
+    scenario_sha256: &str,
+    toolchain_profile: &str,
+) -> Result<FootprintCheckpointFile, RunnerError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(FootprintCheckpointFile::new(
+                method,
+                campaign_seed,
+                sample_count,
+                scenario_sha256,
+                toolchain_profile,
+            ));
+        }
+        Err(source) => {
+            return Err(footprint_checkpoint_error(format!(
+                "failed to read {}: {source}",
+                path.display()
+            )));
+        }
+    };
+    let checkpoint = serde_json::from_str::<FootprintCheckpointFile>(&text).map_err(|source| {
+        footprint_checkpoint_error(format!("failed to parse {}: {source}", path.display()))
+    })?;
+    checkpoint.validate(
+        method,
+        campaign_seed,
+        sample_count,
+        scenario_sha256,
+        toolchain_profile,
+    )?;
+    Ok(checkpoint)
+}
+
+fn save_footprint_checkpoint(
+    path: &Path,
+    checkpoint: &FootprintCheckpointFile,
+) -> Result<(), RunnerError> {
+    checkpoint.validate_content()?;
+    let text = serde_json::to_string_pretty(checkpoint).map_err(|source| {
+        footprint_checkpoint_error(format!("failed to serialize {}: {source}", path.display()))
+    })?;
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|source| {
+            footprint_checkpoint_error(format!("failed to create {}: {source}", parent.display()))
+        })?;
+    }
+    let tmp_path = footprint_checkpoint_tmp_path(path);
+    fs::write(&tmp_path, text).map_err(|source| {
+        footprint_checkpoint_error(format!("failed to write {}: {source}", tmp_path.display()))
+    })?;
+    fs::rename(&tmp_path, path).map_err(|source| {
+        footprint_checkpoint_error(format!("failed to replace {}: {source}", path.display()))
+    })?;
+    Ok(())
+}
+
+fn footprint_checkpoint_tmp_path(path: &Path) -> PathBuf {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) => path.with_extension(format!("{extension}.tmp")),
+        None => path.with_extension("tmp"),
+    }
+}
+
+fn footprint_checkpoint_error(what: impl Into<String>) -> RunnerError {
+    RunnerError::UnsupportedScenario {
+        what: format!("footprint checkpoint: {}", what.into()),
+    }
 }
 
 /// Build the nominal burnout state from the scenario's initial state.
@@ -113,6 +498,23 @@ pub fn landing_footprint_monte_carlo_for_initial_state(
     landing_footprint_monte_carlo_for_state(scenario, &state)
 }
 
+/// Run configured Monte-Carlo footprint analysis with opt-in checkpoint/resume
+/// from the scenario initial state.
+///
+/// Returns `Ok(None)` when `[landing_footprint.monte_carlo]` is not declared.
+///
+/// # Errors
+///
+/// Returns [`RunnerError`] when scenario loading, checkpoint validation, file
+/// IO, JSON parsing, sampling, or propagation fails.
+pub fn landing_footprint_monte_carlo_for_initial_state_checkpointed(
+    scenario: &Scenario,
+    options: FootprintMonteCarloCheckpointOptions<'_>,
+) -> Result<Option<FootprintMonteCarloCheckpointReport>, RunnerError> {
+    let state = nominal_ballistic_state_from_scenario(scenario)?;
+    landing_footprint_monte_carlo_for_state_checkpointed(scenario, &state, options)
+}
+
 /// Run configured Monte-Carlo footprint analysis from a caller-supplied
 /// nominal burnout state.
 ///
@@ -148,13 +550,233 @@ pub fn landing_footprint_monte_carlo_for_state(
             numerical_gravity_footprint_monte_carlo(&gravity, &env, &input)?
         }
     };
+    Ok(Some(monte_carlo_report(monte_carlo, result)?))
+}
+
+/// Run configured Monte-Carlo footprint analysis from a caller-supplied nominal
+/// burnout state with opt-in checkpoint/resume.
+///
+/// Returns `Ok(None)` when `[landing_footprint.monte_carlo]` is not declared.
+///
+/// # Errors
+///
+/// Returns [`RunnerError`] when scenario loading, checkpoint validation, file
+/// IO, JSON parsing, sampling, or propagation fails.
+pub fn landing_footprint_monte_carlo_for_state_checkpointed(
+    scenario: &Scenario,
+    state: &BallisticState,
+    options: FootprintMonteCarloCheckpointOptions<'_>,
+) -> Result<Option<FootprintMonteCarloCheckpointReport>, RunnerError> {
+    let Some(config) = scenario.document.landing_footprint.as_ref() else {
+        return Ok(None);
+    };
+    let Some(monte_carlo) = config.monte_carlo.as_ref() else {
+        return Ok(None);
+    };
+    let env = footprint_environment(&scenario.document, config)?;
+    let input = monte_carlo_input(&scenario.document, &env, monte_carlo, state)?;
+    let seed = monte_carlo.seed.unwrap_or(scenario.document.time.seed);
+    let report = checkpointed_footprint_monte_carlo(
+        &scenario.document,
+        config.method,
+        &env,
+        monte_carlo,
+        &input,
+        seed,
+        options,
+    )?;
+    Ok(Some(report))
+}
+
+fn checkpointed_footprint_monte_carlo(
+    document: &ScenarioDocument,
+    method: LandingFootprintMethod,
+    env: &FootprintEnvironment,
+    config: &LandingFootprintMonteCarloConfig,
+    input: &FootprintMonteCarloInput,
+    seed: u64,
+    options: FootprintMonteCarloCheckpointOptions<'_>,
+) -> Result<FootprintMonteCarloCheckpointReport, RunnerError> {
+    if options.max_new_samples == 0 {
+        return Err(footprint_checkpoint_error(
+            "max_new_samples must be greater than zero",
+        ));
+    }
+    if options.scenario_sha256.is_empty() {
+        return Err(footprint_checkpoint_error(
+            "scenario_sha256 must not be empty",
+        ));
+    }
+    if options.toolchain_profile.is_empty() {
+        return Err(footprint_checkpoint_error(
+            "toolchain_profile must not be empty",
+        ));
+    }
+
+    let method = footprint_method_label(method);
+    let mut checkpoint = load_or_create_footprint_checkpoint(
+        options.checkpoint_json,
+        method,
+        seed,
+        config.samples,
+        options.scenario_sha256,
+        options.toolchain_profile,
+    )?;
+    checkpoint.validate(
+        method,
+        seed,
+        config.samples,
+        options.scenario_sha256,
+        options.toolchain_profile,
+    )?;
+
+    let missing = checkpoint.missing_indices(options.max_new_samples);
+    if !missing.is_empty() {
+        let missing = missing.into_iter().collect::<BTreeSet<_>>();
+        let batch_samples = input
+            .samples
+            .iter()
+            .copied()
+            .filter(|sample| missing.contains(&sample.sample_index))
+            .collect::<Vec<_>>();
+        let mut batch_input = input.clone();
+        batch_input.samples = batch_samples;
+        let batch = run_footprint_monte_carlo_for_method(document, method, env, &batch_input)?;
+        checkpoint.record_batch(&batch)?;
+        save_footprint_checkpoint(options.checkpoint_json, &checkpoint)?;
+    } else {
+        save_footprint_checkpoint(options.checkpoint_json, &checkpoint)?;
+    }
+
+    let completed = checkpoint.completed_count()?;
+    let report = if completed == config.samples {
+        Some(checkpoint.to_report(&input.confidence_levels)?)
+    } else {
+        None
+    };
+    Ok(FootprintMonteCarloCheckpointReport {
+        sample_count: config.samples,
+        completed,
+        report: report
+            .map(|result| monte_carlo_report(config, result))
+            .transpose()?,
+    })
+}
+
+fn monte_carlo_report(
+    config: &LandingFootprintMonteCarloConfig,
+    result: FootprintMonteCarloResult,
+) -> Result<FootprintMonteCarloReport, RunnerError> {
+    let nested = nested_monte_carlo_report(config, &result)?;
     let samples = monte_carlo_samples_table(&result)?;
-    let summary_toml = monte_carlo_summary_toml(monte_carlo, &result);
-    Ok(Some(FootprintMonteCarloReport {
+    let summary_toml = monte_carlo_summary_toml(config, &result, nested.as_ref());
+    Ok(FootprintMonteCarloReport {
         result,
         samples,
         summary_toml,
+        nested,
+    })
+}
+
+fn nested_monte_carlo_report(
+    config: &LandingFootprintMonteCarloConfig,
+    result: &FootprintMonteCarloResult,
+) -> Result<Option<FootprintNestedMonteCarloReport>, RunnerError> {
+    let Some(nested) = &config.nested else {
+        return Ok(None);
+    };
+    let mut conditional_samples = vec![Vec::new(); nested.epistemic_samples as usize];
+    for sample in &result.samples {
+        let epistemic_index = sample.sample_index / nested.aleatory_samples;
+        let group =
+            conditional_samples
+                .get_mut(epistemic_index as usize)
+                .ok_or_else(|| RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "landing_footprint.monte_carlo.nested sample index {} is outside configured epistemic grid",
+                        sample.sample_index,
+                    ),
+                })?;
+        group.push(nested_metric_value(nested.metric, result, sample));
+    }
+    if let Some((index, _)) = conditional_samples
+        .iter()
+        .enumerate()
+        .find(|(_, group)| group.is_empty())
+    {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "landing_footprint.monte_carlo.nested epistemic condition {index} has no successful aleatory samples",
+            ),
+        });
+    }
+    let analysis = analyze_nested_scalar_samples(
+        &conditional_samples,
+        Some(NestedLowerTailRequirement {
+            threshold: nested.threshold,
+            minimum_probability: nested.minimum_probability,
+        }),
+    )
+    .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("landing_footprint.monte_carlo.nested analysis failed: {err}"),
+    })?;
+    Ok(Some(FootprintNestedMonteCarloReport {
+        metric: nested.metric,
+        analysis,
     }))
+}
+
+fn nested_metric_value(
+    metric: LandingFootprintMonteCarloNestedMetric,
+    result: &FootprintMonteCarloResult,
+    sample: &FootprintSample,
+) -> f64 {
+    match metric {
+        LandingFootprintMonteCarloNestedMetric::DownrangeM => sample.landing.downrange_m,
+        LandingFootprintMonteCarloNestedMetric::CrossrangeM => sample.landing.crossrange_m,
+        LandingFootprintMonteCarloNestedMetric::RadialOffsetFromNominalM => radial_distance_m(
+            sample.landing.downrange_m - result.nominal.downrange_m,
+            sample.landing.crossrange_m - result.nominal.crossrange_m,
+        ),
+        LandingFootprintMonteCarloNestedMetric::RadialDistanceFromMeanM => radial_distance_m(
+            sample.landing.downrange_m - result.mean_downrange_m,
+            sample.landing.crossrange_m - result.mean_crossrange_m,
+        ),
+    }
+}
+
+fn run_footprint_monte_carlo_for_method(
+    document: &ScenarioDocument,
+    method: &str,
+    env: &FootprintEnvironment,
+    input: &FootprintMonteCarloInput,
+) -> Result<FootprintMonteCarloResult, RunnerError> {
+    match method {
+        "constant_gravity" => Ok(constant_gravity_footprint_monte_carlo(env, input)?),
+        "j2" => {
+            let gravity = build_j2_gravity(document)?;
+            Ok(numerical_gravity_footprint_monte_carlo(
+                &gravity, env, input,
+            )?)
+        }
+        "egm2008" => {
+            let gravity = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+            Ok(numerical_gravity_footprint_monte_carlo(
+                &gravity, env, input,
+            )?)
+        }
+        other => Err(footprint_checkpoint_error(format!(
+            "unsupported footprint method in checkpoint path: {other}"
+        ))),
+    }
+}
+
+fn footprint_method_label(method: LandingFootprintMethod) -> &'static str {
+    match method {
+        LandingFootprintMethod::ConstantGravity => "constant_gravity",
+        LandingFootprintMethod::J2 => "j2",
+        LandingFootprintMethod::Egm2008 => "egm2008",
+    }
 }
 
 fn monte_carlo_input(
@@ -177,10 +799,11 @@ fn monte_carlo_input(
     let mut samples = Vec::with_capacity(config.samples as usize);
     let base_wind_ned_m_s = base_wind_ned_m_s(document);
     for sample_index in 0..config.samples {
-        let state = sampled_state(seed, sample_index, config, nominal)?;
+        let nested_index = NestedFootprintSampleIndex::from_flat_index(sample_index, config);
+        let state = sampled_state(seed, nested_index, config, nominal)?;
         let wind_eci_m_s = sampled_wind(
             seed,
-            sample_index,
+            nested_index,
             config.wind.as_ref(),
             env,
             base_wind_ned_m_s,
@@ -198,27 +821,63 @@ fn monte_carlo_input(
     ))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NestedFootprintSampleIndex {
+    epistemic: u32,
+    aleatory: u32,
+}
+
+impl NestedFootprintSampleIndex {
+    fn from_flat_index(flat: u32, config: &LandingFootprintMonteCarloConfig) -> Self {
+        if let Some(nested) = &config.nested {
+            Self {
+                epistemic: flat / nested.aleatory_samples,
+                aleatory: flat % nested.aleatory_samples,
+            }
+        } else {
+            Self {
+                epistemic: flat,
+                aleatory: flat,
+            }
+        }
+    }
+
+    const fn for_class(self, uncertainty_class: LandingFootprintMonteCarloUncertaintyClass) -> u32 {
+        match uncertainty_class {
+            LandingFootprintMonteCarloUncertaintyClass::Aleatory => self.aleatory,
+            LandingFootprintMonteCarloUncertaintyClass::Epistemic => self.epistemic,
+        }
+    }
+}
+
 fn sampled_state(
     seed: u64,
-    sample_index: u32,
+    sample_index: NestedFootprintSampleIndex,
     config: &LandingFootprintMonteCarloConfig,
     mut nominal: BallisticState,
 ) -> Result<BallisticState, RunnerError> {
     if let Some(burnout) = &config.burnout_state {
+        let source_sample_index = sample_index.for_class(burnout.uncertainty_class);
         let mut position_eci_m = nominal.position_eci_m();
         let mut velocity_eci_m_s = nominal.velocity_eci_m_s();
         let mut time = nominal.time();
         if let Some(position_sigma_eci_m) = burnout.position_sigma_eci_m {
             for (axis, sigma) in position_sigma_eci_m.iter().copied().enumerate() {
-                position_eci_m[axis] += sample_normal(seed, sample_index, axis as u32, sigma);
+                position_eci_m[axis] +=
+                    sample_normal(seed, source_sample_index, axis as u32, sigma);
             }
         }
         if let Some(speed_sigma_m_s) = burnout.speed_sigma_m_s {
-            velocity_eci_m_s =
-                sampled_speed_magnitude(seed, sample_index, 3, velocity_eci_m_s, speed_sigma_m_s);
+            velocity_eci_m_s = sampled_speed_magnitude(
+                seed,
+                source_sample_index,
+                3,
+                velocity_eci_m_s,
+                speed_sigma_m_s,
+            );
         }
         if let Some(time_sigma_s) = burnout.time_sigma_s {
-            let t = time.as_seconds() + sample_normal(seed, sample_index, 6, time_sigma_s);
+            let t = time.as_seconds() + sample_normal(seed, source_sample_index, 6, time_sigma_s);
             time = SimTime::from_seconds(t);
         }
         nominal = ballistic_state_from_forward_simulation(
@@ -230,9 +889,10 @@ fn sampled_state(
         )?;
     }
     if let Some(ballistic_coefficient) = &config.ballistic_coefficient {
+        let source_sample_index = sample_index.for_class(ballistic_coefficient.uncertainty_class);
         let mut sampled_ballistic_coefficient_m2_kg = sample_distribution(
             seed,
-            sample_index,
+            source_sample_index,
             7,
             ballistic_coefficient.nominal_m2_kg,
             ballistic_coefficient.sigma_m2_kg,
@@ -309,7 +969,7 @@ fn norm3(values: [f64; 3]) -> f64 {
 
 fn sampled_wind(
     seed: u64,
-    sample_index: u32,
+    sample_index: NestedFootprintSampleIndex,
     wind: Option<&LandingFootprintMonteCarloWindConfig>,
     env: &FootprintEnvironment,
     base_wind_ned_m_s: [f64; 3],
@@ -318,21 +978,22 @@ fn sampled_wind(
     let Some(wind) = wind else {
         return base_wind_eci_m_s;
     };
+    let source_sample_index = sample_index.for_class(wind.uncertainty_class);
     let mut wind_ned_m_s = base_wind_ned_m_s;
     if let Some(scale_sigma) = wind.speed_scale_sigma {
-        let scale = 1.0 + sample_normal(seed, sample_index, 11, scale_sigma);
+        let scale = 1.0 + sample_normal(seed, source_sample_index, 11, scale_sigma);
         for component in &mut wind_ned_m_s {
             *component *= scale;
         }
     }
     if let Some(members) = &wind.ensemble_members_ned_m_s {
-        let mut rng = footprint_sample_rng(seed, sample_index, 12);
+        let mut rng = footprint_sample_rng(seed, source_sample_index, 12);
         let index = (rng.next_u64() as usize) % members.len();
         wind_ned_m_s = members[index];
     }
     if let Some(sigma_ned_m_s) = wind.sigma_ned_m_s {
         for (axis, sigma) in sigma_ned_m_s.iter().copied().enumerate() {
-            wind_ned_m_s[axis] += sample_normal(seed, sample_index, 8 + axis as u32, sigma);
+            wind_ned_m_s[axis] += sample_normal(seed, source_sample_index, 8 + axis as u32, sigma);
         }
     }
     local_ned_to_propagation_frame(env, wind_ned_m_s)
@@ -534,6 +1195,7 @@ fn monte_carlo_samples_table(
 fn monte_carlo_summary_toml(
     config: &LandingFootprintMonteCarloConfig,
     result: &FootprintMonteCarloResult,
+    nested: Option<&FootprintNestedMonteCarloReport>,
 ) -> String {
     let mut out = String::new();
     push_summary_integer(&mut out, "samples_requested", u64::from(config.samples));
@@ -621,6 +1283,49 @@ fn monte_carlo_summary_toml(
             "radial_offset_from_nominal_m",
             quantile.radial_distance_m,
         );
+    }
+    if let Some(nested) = nested {
+        out.push_str("\n[nested_uq]\n");
+        out.push_str("metric = ");
+        push_toml_string(&mut out, nested.metric.as_str());
+        out.push('\n');
+        push_summary_integer(
+            &mut out,
+            "epistemic_samples",
+            nested.analysis.epistemic_samples as u64,
+        );
+        push_summary_integer(
+            &mut out,
+            "min_aleatory_samples",
+            nested.analysis.min_aleatory_samples as u64,
+        );
+        push_summary_integer(
+            &mut out,
+            "max_aleatory_samples",
+            nested.analysis.max_aleatory_samples as u64,
+        );
+        push_summary_line(
+            &mut out,
+            "variance_aleatory",
+            nested.analysis.variance_split.aleatory,
+        );
+        push_summary_line(
+            &mut out,
+            "variance_epistemic",
+            nested.analysis.variance_split.epistemic,
+        );
+        push_summary_line(
+            &mut out,
+            "variance_total",
+            nested.analysis.variance_split.total,
+        );
+        if let Some(probability) = nested.analysis.lower_bound_probability {
+            push_summary_line(&mut out, "lower_bound_probability", probability);
+        }
+        if let Some(passed) = nested.analysis.requirement_passed {
+            out.push_str("requirement_passed = ");
+            out.push_str(if passed { "true\n" } else { "false\n" });
+        }
     }
     for failure in &result.failures {
         out.push_str("\n[[failures]]\n");
@@ -916,6 +1621,46 @@ mod tests {
         assert!(!csv_text.contains("velocity_x_eci_m_s"));
         assert!(!csv_text.contains("ballistic_coefficient_m2_kg"));
         assert!(!csv_text.contains("wind_x_m_s"));
+    }
+
+    #[test]
+    fn runner_footprint_nested_monte_carlo_reports_pbox_and_variance_split() {
+        let toml = COAST_FOOTPRINT_MC_SCENARIO
+            .replace(
+                "[landing_footprint.monte_carlo.wind]\nkind = \"constant\"",
+                "[landing_footprint.monte_carlo.wind]\nuncertainty_class = \"epistemic\"\nkind = \"constant\"",
+            )
+            + "\n[landing_footprint.monte_carlo.nested]\n\
+               epistemic_samples = 4\n\
+               aleatory_samples = 8\n\
+               metric = \"radial_offset_from_nominal_m\"\n\
+               threshold = 1.0e9\n\
+               minimum_probability = 1.0\n";
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let report = landing_footprint_monte_carlo_for_initial_state(&scenario)
+            .unwrap()
+            .unwrap();
+        let nested = report.nested.as_ref().unwrap();
+        assert_eq!(
+            nested.metric,
+            LandingFootprintMonteCarloNestedMetric::RadialOffsetFromNominalM,
+        );
+        assert_eq!(nested.analysis.epistemic_samples, 4);
+        assert_eq!(nested.analysis.min_aleatory_samples, 8);
+        assert_eq!(nested.analysis.max_aleatory_samples, 8);
+        assert_eq!(
+            nested.analysis.lower_bound_probability.map(f64::to_bits),
+            Some(1.0_f64.to_bits()),
+        );
+        assert_eq!(nested.analysis.requirement_passed, Some(true));
+        assert!(nested.analysis.variance_split.total >= 0.0);
+        assert!(report.summary_toml.contains("[nested_uq]"));
+        assert!(
+            report
+                .summary_toml
+                .contains("metric = \"radial_offset_from_nominal_m\"")
+        );
+        assert!(report.summary_toml.contains("requirement_passed = true"));
     }
 
     #[test]

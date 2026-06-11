@@ -118,6 +118,7 @@ openbmp/
 │   ├── openbmp-models/                  # L1: model trait surface + contexts
 │   ├── openbmp-mission/                 # L1: mission graph, events, HSM
 │   ├── openbmp-sim/                     # L1: kernel, scheduler, integrators
+│   ├── openbmp-uq/                      # L1: uncertainty budgets + credibility
 │   ├── openbmp-physics/                 # L2: atmosphere, gravity, wind, magnetic, error
 │   ├── openbmp-vehicle/                 # L2: rigid body, mass models,
 │   │   ├── assembly/                    #     VehicleAssembly tree
@@ -125,6 +126,8 @@ openbmp/
 │   │   └── tank/                        #     TankModel + MovingMassModel
 │   ├── openbmp-aero/                    # L2: aero decks + hypersonic methods
 │   ├── openbmp-aerothermal/             # L2: heat transfer, BL, thermal toy
+│   ├── openbmp-thermochem/              # L2: thermochemistry decks
+│   ├── openbmp-feedsystem/              # L2: feed-network primitives
 │   ├── openbmp-propulsion/              # L2: motors, EngineModel + EngineCluster
 │   ├── openbmp-sensors/                 # L3: synthetic sensors, fault models
 │   ├── openbmp-fc/                      # L4: flight controller
@@ -148,6 +151,7 @@ openbmp/
 │   ├── openbmp-scenario-script/         # L6: simulator-only scripted overrides
 │   ├── openbmp-testkit/                 # L6: helpers (proptest strategies,
 │   │                                    #     analytic-toy fixtures, fuzzers)
+│   ├── openbmp-mc/                      # L7: deterministic MC sampling/reducers
 │   ├── openbmp-runner/                  # L7: scenario → kernel → telemetry orchestration
 │   ├── openbmp-fmi/                     # L7: host FMI dynamic-library smoke adapter
 │   ├── openbmp-cli/                     # L7: `openbmp` binary, checks, diff tool
@@ -312,12 +316,34 @@ pub struct DeterministicRng { /* ChaCha8 internally */ }
 
 impl DeterministicRng {
     pub fn for_channel(scenario_seed: u64, step: StepIndex, channel: ChannelId) -> Self;
+    pub fn for_mc_sample(campaign_seed: u64, sample_index: u64, dimension_id: u32) -> Self;
 }
 ```
 
 The same `(scenario_seed, step, channel)` always produces the same RNG stream.
 This lets us generate noise per-sensor per-step deterministically and replay
 byte-identical telemetry across runs.
+
+Monte Carlo campaign sampling uses the same discipline through
+`DeterministicRng::for_mc_sample`, with the `b"MCRN"` domain tag in the seed.
+`openbmp-mc` wraps that stream in `SampleRng` and provides deterministic
+Welford and Clopper-Pearson reducers for campaign statistics. Its serial
+`run_scalar_campaign` helper produces ordered sample records plus a Welford
+convergence trace, and the CLI exposes `openbmp mc summarize` for local scalar
+sample CSV summaries using the same reducers. The same crate also owns Wilks
+one-sided/two-sided sample-size calculators and a `ConvergenceGate` that checks
+relative CI half-width stability across a trace window; the calculator is
+available as `openbmp mc wilks`. `LatinHypercube` is the first native
+design-of-experiments generator: it returns a row-major `DesignMatrix` in the
+unit cube with one sample in every marginal stratum per dimension, and
+`openbmp mc lhs` writes the same design as a local CSV. `ImanConover` consumes a
+`CorrelationMatrix` and reorders an existing `DesignMatrix` to induce rank
+correlation while preserving each marginal column exactly; the CSV workflow is
+available through `openbmp mc iman-conover`. `SobolSequence` provides a native
+Sobol base design from the provenance-pinned Joe/Kuo
+`data/sobol/new-joe-kuo-6.21201` direction-number asset, with CSV output
+through `openbmp mc sobol`; `OwenScramble` applies a reproducible nested bit
+scramble when the CLI receives `--scramble-seed`.
 
 ## Simulation Kernel
 
@@ -1465,7 +1491,9 @@ points = [
 
 [geometry]
 exit_area_m2 = 0.0019
-ambient_pressure_correction = "constant"   # toy
+throat_area_m2 = 0.000095                  # required for pressure_thrust
+gamma = 1.2                                # required for pressure_thrust
+ambient_pressure_correction = "constant"   # constant | pressure_thrust
 ```
 
 The format is RASP-shaped (rocket motor format common in amateur rocketry)
@@ -2089,8 +2117,15 @@ archive reader, and native-vs-FMU toy co-simulation equivalence tests.
 `openbmp-fmi` is the host-only unsafe adapter boundary: it can materialize an
 explicit FMU binary entry, open the shared library with `libloading`, call
 `fmi3GetVersion`, and verify a small FMI 3 co-simulation lifecycle/step symbol
-set including Float64 get/set entry points. This is a dynamic-library import smoke probe, not a full FMI conformance
-or variable-access implementation.
+set including Float64 and UInt64 get/set entry points. The metadata reader now
+parses typed Float64/UInt64 scalar variables with required value references,
+and the host adapter exposes typed value-reference calls plus `fmi3DoStep`
+early-return reporting. `Fmi3SingleFmuMaster` can perform one typed macro step
+over an already-instantiated FMU by publishing inputs, advancing master time,
+and reading outputs, and optional FMU-state wrappers expose the rollback handle
+primitive. This is still not full FMI lifecycle orchestration,
+predictor/corrector rollback policy, Reference-FMU validation, or a conformance
+claim.
 
 CI runs the full SIL test corpus on every PR.
 
@@ -2112,14 +2147,15 @@ diffs are expected; intra-platform-profile bit identity is required.
 ## HIL Pattern (Optional, Generic)
 
 The HIL pattern is **optional** and lives in `openbmp-bridge`. It is **not**
-a hardware integration framework. It exposes a **generic socket bridge**
-schema that emits simulated sensor packets and accepts abstract normalized
-command or acknowledgement packets, using an in-house `postcard`-encoded wire
-format.
+a hardware integration framework. It exposes a **generic bridge** schema and
+message-level transports that emit simulated sensor packets and accept
+abstract normalized command or acknowledgement packets, using an in-house
+`postcard`-encoded wire format.
 
 ```rust
 use openbmp_bridge::{
     ActuatorCommandPacket, BridgeEndpointRole, BridgeHelloPacket, SensorPacket,
+    BridgeMessage, LockstepSimMaster, Transport, in_process_transport_pair,
     validate_command_for_sensor,
 };
 
@@ -2132,6 +2168,11 @@ let command = ActuatorCommandPacket {
     engine_throttles: vec![(0, 0.8)],
 };
 validate_command_for_sensor(&sensor, &command).unwrap();
+
+let (mut sim, mut fc) = in_process_transport_pair();
+sim.send(&BridgeMessage::Hello(hello)).unwrap();
+assert!(matches!(fc.recv().unwrap(), BridgeMessage::Hello(_)));
+let _master = LockstepSimMaster::new(sim, 4096);
 ```
 
 The bridge ships:
@@ -2139,6 +2180,14 @@ The bridge ships:
 - Length-prefixed `postcard` framing plus lockstep validators that reject
   commands or acknowledgements whose `step` / `sim_time_s` do not match the
   outstanding sensor frame.
+- A message-level `Transport` trait, an in-process transport pair, and a
+  generic `Read + Write` stream transport for caller-owned host streams,
+  plus TCP and Unix-domain-socket listener/connect helpers.
+- A simulator-side `LockstepSimMaster` that validates hello/version/role
+  and sends fail-closed fault messages on step/time mismatches.
+- An opt-in v3 runner path, `[fc.transport] mode = "in_process"`, for the
+  currently lossless sensor/effector/engine-command subset. The default
+  `[fc]` path remains direct and byte-stable.
 
 The bridge does **not** ship:
 - MAVLink, DDS, MIL-STD-1553, CAN, I2C, SPI, UART, or any real bus protocol.
@@ -2202,6 +2251,10 @@ The default determinism profile guarantees:
 - No use of `f32::mul_add` / `f64::mul_add` (FMA) on hot deterministic
   paths unless the FMA emission is locked by build flags. Cross-CPU FMA
   pathway differences silently break bit-stable replay.
+- `openbmp-core::FpEnvironment` checks the current FP control environment
+  before deterministic kernels run. On x86_64 it rejects MXCSR FTZ, DAZ, and
+  non-nearest rounding; on aarch64 it rejects FPCR FZ, FZ16, and non-nearest
+  RMode.
 
 Performance optimizations must not change deterministic outputs unless they
 introduce a new explicit profile flag (`--profile=adaptive`, etc.).

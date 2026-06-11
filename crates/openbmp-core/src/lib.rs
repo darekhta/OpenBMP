@@ -43,9 +43,10 @@
 //! * [`validation`] — [`ValidationStatus`] enum.
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 pub mod error;
+pub mod fp;
 pub mod frames;
 pub mod ids;
 pub mod quantities;
@@ -54,6 +55,7 @@ pub mod time;
 pub mod validation;
 
 pub use error::{CoreError, FrameError, TimeError};
+pub use fp::{FpArchitecture, FpEnvironment, FpEnvironmentDirty};
 pub use frames::{
     Acceleration3, AngularVelocity3, Body, Displacement3, Ecef, Eci, Enu, Frame, FrameId, Ned,
     Position3, Quaternion, Velocity3, VelocityDelta3,

@@ -18,6 +18,7 @@ const UNIT_SUFFIXES: &[&str] = &[
     "_m3_s2",
     "_n_m",
     "_n_s",
+    "_rad2_s2",
     "_rad_s",
     "_hz",
     "_kg_m3",
@@ -58,6 +59,7 @@ pub(crate) fn lint(value: &toml::Value) -> Result<(), ScenarioError> {
 
 fn walk(path: &str, parent_key: Option<&str>, value: &toml::Value) -> Result<(), ScenarioError> {
     if let Some(key) = parent_key {
+        check_rare_event_limit_state_terms(path, key, value)?;
         check_dimensional_field(path, key, value)?;
     }
     match value {
@@ -75,6 +77,45 @@ fn walk(path: &str, parent_key: Option<&str>, value: &toml::Value) -> Result<(),
         _ => {}
     }
     Ok(())
+}
+
+fn check_rare_event_limit_state_terms(
+    path: &str,
+    key: &str,
+    value: &toml::Value,
+) -> Result<(), ScenarioError> {
+    if !path.starts_with("$.monte_carlo.limit_state") {
+        return Ok(());
+    }
+    if contains_banned_rare_event_term(key) {
+        return Err(ScenarioError::UnsupportedValue {
+            field: path.to_owned(),
+            value: key.to_owned(),
+        });
+    }
+    if let toml::Value::String(text) = value
+        && contains_banned_rare_event_term(text)
+    {
+        return Err(ScenarioError::UnsupportedValue {
+            field: path.to_owned(),
+            value: text.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn contains_banned_rare_event_term(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase().replace('_', "-");
+    [
+        "ground-aimpoint",
+        "aimpoint",
+        "target",
+        "cep",
+        "impact",
+        "miss-distance",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term))
 }
 
 fn check_dimensional_field(
@@ -148,6 +189,9 @@ fn is_frame_exempt_3vector(path: &str, key: &str) -> bool {
         (path, key),
         ("$.wind.intensity_m_s", "intensity_m_s") | ("$.wind.length_scale_m", "length_scale_m")
     ) || (path.starts_with("$.landing_footprint.monte_carlo") && key == "confidence_levels")
+        || (path.starts_with("$.propulsion.feed_network")
+            && (path.contains(".oxidizer_pump") || path.contains(".fuel_pump"))
+            && matches!(key, "head_coefficients" | "efficiency_coefficients"))
 }
 
 fn is_numeric_4vector(value: &toml::Value) -> bool {
@@ -255,6 +299,80 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
+    if path.starts_with("$.propulsion.thermochem") && key == "mixture_ratio" {
+        return true;
+    }
+
+    if path.starts_with("$.propulsion.feed_network")
+        && matches!(key, "valve_discharge_coefficient" | "valve_open_fraction")
+    {
+        return true;
+    }
+    if path.starts_with("$.propulsion.feed_network")
+        && matches!(
+            key,
+            "oxidizer_valve_discharge_coefficient"
+                | "fuel_valve_discharge_coefficient"
+                | "oxidizer_open_fraction"
+                | "fuel_open_fraction"
+        )
+    {
+        return true;
+    }
+    if path.starts_with("$.propulsion.feed_network")
+        && path.contains(".controller")
+        && matches!(
+            key,
+            "target_mixture_ratio"
+                | "pressure_proportional_gain_per_pa"
+                | "pressure_integral_gain_per_pa_s"
+                | "pressure_integral_limit_pa_s"
+                | "mixture_proportional_gain"
+                | "mixture_integral_gain_per_s"
+                | "mixture_integral_limit_s"
+                | "min_open_fraction"
+                | "max_open_fraction"
+                | "max_open_fraction_slew_per_s"
+        )
+    {
+        return true;
+    }
+    if path.starts_with("$.propulsion.feed_network")
+        && (path.contains(".oxidizer_pump") || path.contains(".fuel_pump"))
+        && matches!(
+            key,
+            "design_efficiency"
+                | "specific_speed"
+                | "head_coefficients"
+                | "efficiency_coefficients"
+                | "cavitation_head_multiplier"
+        )
+    {
+        return true;
+    }
+    if path.starts_with("$.propulsion.feed_network")
+        && (path.contains(".oxidizer_line") || path.contains(".fuel_line"))
+        && key == "segment_count"
+    {
+        return true;
+    }
+    if path.starts_with("$.propulsion.pogo") && key == "mode_damping_ratio" {
+        return true;
+    }
+    if path.starts_with("$.propulsion.faults.rules") && key == "start_step" {
+        return true;
+    }
+    if path.starts_with("$.propulsion.faults.mixture_ratio_runaway_rules") && key == "start_step" {
+        return true;
+    }
+    if (path.starts_with("$.propulsion.faults.rules")
+        || path.starts_with("$.propulsion.faults.cavitation_rules"))
+        && path.contains(".fault")
+        && matches!(key, "at_throttle" | "factor")
+    {
+        return true;
+    }
+
     if path.starts_with("$.staging_analysis") && matches!(key, "structural_coefficient") {
         return true;
     }
@@ -309,11 +427,55 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
+    // Realtime target factor is dimensionless:
+    // simulation seconds per wall-clock second.
+    if path.starts_with("$.realtime") && key == "target_rtf" {
+        return true;
+    }
+
     // Landing-footprint Monte Carlo fields. Sample counts,
     // confidence levels, and multiplicative wind-scale uncertainty are
-    // dimensionless; typed validation owns their ranges.
+    // dimensionless; nested threshold units are defined by the selected
+    // metric, and typed validation owns their ranges.
     if path.starts_with("$.landing_footprint.monte_carlo")
-        && matches!(key, "samples" | "confidence_levels" | "speed_scale_sigma")
+        && matches!(
+            key,
+            "samples"
+                | "confidence_levels"
+                | "speed_scale_sigma"
+                | "uncertainty_class"
+                | "epistemic_samples"
+                | "aleatory_samples"
+                | "metric"
+                | "threshold"
+                | "minimum_probability"
+        )
+    {
+        return true;
+    }
+
+    // Top-level rare-event Monte-Carlo manifests are synthetic-only
+    // metadata. Typed validation owns the supported ranges and the
+    // consumer-agreement lint above owns forbidden target vocabulary.
+    if path.starts_with("$.monte_carlo")
+        && matches!(
+            key,
+            "seed"
+                | "kind"
+                | "label"
+                | "dimension"
+                | "beta"
+                | "samples_per_level"
+                | "conditional_probability"
+                | "max_levels"
+                | "proposal_sigma"
+                | "dimension_id"
+                | "samples"
+                | "elite_fraction"
+                | "iterations"
+                | "smoothing"
+                | "min_std_dev"
+        )
     {
         return true;
     }

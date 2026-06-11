@@ -10,6 +10,7 @@
 
 pub mod checks;
 pub mod monitor;
+pub mod xil;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -21,6 +22,7 @@ pub use crate::checks::SilCheck;
 pub use crate::monitor::{
     EstimateVsTruthMonitor, SilObservationReport, SilObservationSample, SilObservationSummary,
 };
+pub use crate::xil::{InMemoryXilBench, XilCaptureRecord, XilErrorRecord, XilGeneratorRecord};
 use openbmp_hal::{decode_iload_envelope, encode_iload_envelope};
 use openbmp_runner::{RunOutcome, RunnerError};
 use openbmp_scenario::{Scenario, ScenarioError};
@@ -307,12 +309,21 @@ pub enum FaultTarget {
     Engine(String),
     /// Effector id from `[[vehicle.assembly.effectors]]`.
     Effector(String),
+    /// Scheduled engine-fault rule appended under `[propulsion.faults]`.
+    ScheduledEngine {
+        /// Stable rule id for diagnostics and evidence.
+        rule_id: String,
+        /// Engine id from `[[vehicle.assembly.engines]]`.
+        engine_id: String,
+        /// Kernel step at which the rule injects before the engine rack steps.
+        start_step: u64,
+    },
 }
 
-/// One load-time SIL fault injection.
+/// One SIL fault injection.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FaultInjection {
-    /// Engine or effector target.
+    /// Engine, effector, or scheduled propulsion target.
     pub target: FaultTarget,
     /// Fault payload using the scenario fault table shape.
     ///
@@ -781,6 +792,82 @@ impl MissionPackage {
         Ok(report)
     }
 
+    /// Run a package test case and attach native XIL bench actions to the
+    /// evidence bundle.
+    ///
+    /// The current native implementation records the already-authored XIL
+    /// bench actions as stimuli and bus frames; it does not mutate the
+    /// scenario source. Use `[fc.transport_faults]` or SIL stimulation for
+    /// run-time fault effects.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SilError`] for package, scenario, or runner failures.
+    pub fn run_case_with_xil(
+        &self,
+        case_id: Option<&str>,
+        xil: &InMemoryXilBench,
+    ) -> Result<SilRunReport, SilError> {
+        let case = self.resolve_case(case_id)?;
+        let scenario_path = self.resolve(&case.scenario_path);
+        let scenario = Scenario::from_file(&scenario_path)?;
+        let outcome = openbmp_runner::run(&scenario)?;
+        self.report_from_outcome_with_artifacts(
+            &case.id,
+            &scenario,
+            &outcome,
+            xil.stimulus_records(),
+            xil.bus_frames(),
+        )
+    }
+
+    /// Run a package test case with both an estimate-vs-truth monitor and
+    /// native XIL bench evidence attached.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SilError`] for package, scenario, or runner failures.
+    pub fn run_case_observed_with_xil(
+        &self,
+        case_id: Option<&str>,
+        decimation: u64,
+        xil: &InMemoryXilBench,
+    ) -> Result<SilRunReport, SilError> {
+        let case = self.resolve_case(case_id)?;
+        let scenario_path = self.resolve(&case.scenario_path);
+        let scenario = Scenario::from_file(&scenario_path)?;
+        let mut monitor = EstimateVsTruthMonitor::new(decimation);
+        let outcome = openbmp_runner::run_with_monitor(&scenario, &mut monitor)?;
+        let mut report = self.report_from_outcome_with_artifacts(
+            &case.id,
+            &scenario,
+            &outcome,
+            xil.stimulus_records(),
+            xil.bus_frames(),
+        )?;
+        let observations = monitor.into_report();
+
+        if !case.checks.is_empty() {
+            let stop_label = report.evidence.stop_label.clone();
+            for check in &case.checks {
+                report
+                    .evidence
+                    .requirement_verdicts
+                    .push(check.evaluate(&observations, &stop_label));
+            }
+            let failures = evidence_failures(
+                &report.evidence.requirement_verdicts,
+                report.evidence.final_time_s,
+                report.evidence.final_step,
+            );
+            report.evidence.verdict = aggregate_verdict(&failures).to_owned();
+            report.evidence.failures = failures;
+        }
+
+        report.evidence.observations = Some(observations);
+        Ok(report)
+    }
+
     /// Run a package test case after shortening the scenario stop time
     /// to `ticks * dt_s` after the scenario start.
     ///
@@ -861,6 +948,24 @@ impl MissionPackage {
         stimulation: &SilStimulation,
     ) -> Result<SilRunReport, SilError> {
         self.run_mutated_case(case_id, |scenario, _base| {
+            apply_stimulation(scenario, stimulation)
+        })
+    }
+
+    /// Run a package test case with both in-memory SIL stimulation and an
+    /// estimate-vs-truth monitor installed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SilError`] for invalid stimulation, package, scenario,
+    /// TOML, or runner failures.
+    pub fn run_case_observed_with_stimulation(
+        &self,
+        case_id: Option<&str>,
+        decimation: u64,
+        stimulation: &SilStimulation,
+    ) -> Result<SilRunReport, SilError> {
+        self.run_mutated_case_observed(case_id, decimation, |scenario, _base| {
             apply_stimulation(scenario, stimulation)
         })
     }
@@ -1028,13 +1133,29 @@ impl MissionPackage {
         outcome: &RunOutcome,
         stimuli: Vec<StimulusRecord>,
     ) -> Result<SilRunReport, SilError> {
+        self.report_from_outcome_with_artifacts(case_id, scenario, outcome, stimuli, Vec::new())
+    }
+
+    fn report_from_outcome_with_artifacts(
+        &self,
+        case_id: &str,
+        scenario: &Scenario,
+        outcome: &RunOutcome,
+        stimuli: Vec<StimulusRecord>,
+        extra_bus_frames: Vec<BusFrameEntry>,
+    ) -> Result<SilRunReport, SilError> {
         let check = self.check()?;
         let telemetry_summary = telemetry_summary(&outcome.table);
         let stop_label = outcome.stop_reason.label().to_owned();
         let requirement_verdicts = requirement_verdicts(&outcome.table, &stop_label);
-        let failures =
-            evidence_failures(&requirement_verdicts, outcome.final_time_s, outcome.final_step);
+        let failures = evidence_failures(
+            &requirement_verdicts,
+            outcome.final_time_s,
+            outcome.final_step,
+        );
         let verdict = aggregate_verdict(&failures).to_owned();
+        let mut bus_frames = bus_frames(&outcome.table);
+        bus_frames.extend(extra_bus_frames);
         let evidence = EvidenceBundle {
             schema: "openbmp.sil.evidence.v1".to_owned(),
             package_id: self.manifest.package.id.clone(),
@@ -1056,7 +1177,7 @@ impl MissionPackage {
             phase_trace: phase_trace(&outcome.table),
             region_trace: region_trace(&outcome.table),
             command_trace: command_trace(&outcome.table),
-            bus_frames: bus_frames(&outcome.table),
+            bus_frames,
             requirement_verdicts,
             failures,
             observations: None,
@@ -1098,6 +1219,55 @@ impl MissionPackage {
         let scenario = Scenario::from_toml_str_with_source_dir(&text, source_dir)?;
         let outcome = openbmp_runner::run(&scenario)?;
         self.report_from_outcome_with_stimuli(&case.id, &scenario, &outcome, stimuli)
+    }
+
+    fn run_mutated_case_observed(
+        &self,
+        case_id: Option<&str>,
+        decimation: u64,
+        mutator: impl FnOnce(&mut toml::Value, &Scenario) -> Result<Vec<StimulusRecord>, SilError>,
+    ) -> Result<SilRunReport, SilError> {
+        let case = self.resolve_case(case_id)?;
+        let scenario_path = self.resolve(&case.scenario_path);
+        let content = fs::read_to_string(&scenario_path).map_err(|source| SilError::Io {
+            path: scenario_path.clone(),
+            source,
+        })?;
+        let base = Scenario::from_file(&scenario_path)?;
+        let mut value: toml::Value =
+            toml::from_str(&content).map_err(|source| SilError::PackageToml {
+                path: scenario_path.clone(),
+                source,
+            })?;
+        let stimuli = mutator(&mut value, &base)?;
+        let text = toml::to_string(&value)?;
+        let source_dir = scenario_path.parent().map(Path::to_path_buf);
+        let scenario = Scenario::from_toml_str_with_source_dir(&text, source_dir)?;
+        let mut monitor = EstimateVsTruthMonitor::new(decimation);
+        let outcome = openbmp_runner::run_with_monitor(&scenario, &mut monitor)?;
+        let mut report =
+            self.report_from_outcome_with_stimuli(&case.id, &scenario, &outcome, stimuli)?;
+        let observations = monitor.into_report();
+
+        if !case.checks.is_empty() {
+            let stop_label = report.evidence.stop_label.clone();
+            for check in &case.checks {
+                report
+                    .evidence
+                    .requirement_verdicts
+                    .push(check.evaluate(&observations, &stop_label));
+            }
+            let failures = evidence_failures(
+                &report.evidence.requirement_verdicts,
+                report.evidence.final_time_s,
+                report.evidence.final_step,
+            );
+            report.evidence.verdict = aggregate_verdict(&failures).to_owned();
+            report.evidence.failures = failures;
+        }
+
+        report.evidence.observations = Some(observations);
+        Ok(report)
     }
 }
 
@@ -1184,6 +1354,52 @@ impl SilTestbench {
         stimulation: &SilStimulation,
     ) -> Result<SilRunReport, SilError> {
         self.package.run_case_with_stimulation(case_id, stimulation)
+    }
+
+    /// Run the selected case with in-memory SIL stimulation and an
+    /// estimate-vs-truth monitor installed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SilError`] for stimulation, package, scenario, or runner
+    /// failures.
+    pub fn run_observed_with_stimulation(
+        &self,
+        case_id: Option<&str>,
+        decimation: u64,
+        stimulation: &SilStimulation,
+    ) -> Result<SilRunReport, SilError> {
+        self.package
+            .run_case_observed_with_stimulation(case_id, decimation, stimulation)
+    }
+
+    /// Run the selected case and attach native XIL bench evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SilError`] for package, scenario, or runner failures.
+    pub fn run_with_xil(
+        &self,
+        case_id: Option<&str>,
+        xil: &InMemoryXilBench,
+    ) -> Result<SilRunReport, SilError> {
+        self.package.run_case_with_xil(case_id, xil)
+    }
+
+    /// Run the selected case with the estimate-vs-truth monitor and native
+    /// XIL bench evidence attached.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SilError`] for package, scenario, or runner failures.
+    pub fn run_observed_with_xil(
+        &self,
+        case_id: Option<&str>,
+        decimation: u64,
+        xil: &InMemoryXilBench,
+    ) -> Result<SilRunReport, SilError> {
+        self.package
+            .run_case_observed_with_xil(case_id, decimation, xil)
     }
 
     /// Step the selected case with in-memory SIL stimulation.
@@ -1403,9 +1619,25 @@ fn apply_fault_injection(
     scenario: &mut toml::Value,
     fault: &FaultInjection,
 ) -> Result<StimulusRecord, SilError> {
+    if let FaultTarget::ScheduledEngine {
+        rule_id,
+        engine_id,
+        start_step,
+    } = &fault.target
+    {
+        return append_scheduled_engine_fault_rule(
+            scenario,
+            rule_id,
+            engine_id,
+            *start_step,
+            &fault.fault,
+        );
+    }
+
     let (array_key, id, target) = match &fault.target {
         FaultTarget::Engine(id) => ("engines", id.as_str(), format!("engine.{id}")),
         FaultTarget::Effector(id) => ("effectors", id.as_str(), format!("effector.{id}")),
+        FaultTarget::ScheduledEngine { .. } => unreachable!("handled above"),
     };
     let entries = scenario
         .get_mut("vehicle")
@@ -1434,6 +1666,90 @@ fn apply_fault_injection(
         target,
         summary: format!("fault {}", telemetry_value_safe_toml(&fault.fault)),
     })
+}
+
+fn append_scheduled_engine_fault_rule(
+    scenario: &mut toml::Value,
+    rule_id: &str,
+    engine_id: &str,
+    start_step: u64,
+    fault: &toml::Value,
+) -> Result<StimulusRecord, SilError> {
+    if rule_id.trim().is_empty() {
+        return Err(SilError::Stimulation {
+            summary: "scheduled engine fault rule_id must not be empty".to_owned(),
+        });
+    }
+    if engine_id.trim().is_empty() {
+        return Err(SilError::Stimulation {
+            summary: "scheduled engine fault engine_id must not be empty".to_owned(),
+        });
+    }
+    let start_step = i64::try_from(start_step).map_err(|_| SilError::Stimulation {
+        summary: "scheduled engine fault start_step exceeds TOML integer range".to_owned(),
+    })?;
+
+    let mut rule = toml::map::Map::new();
+    rule.insert("id".to_owned(), toml::Value::String(rule_id.to_owned()));
+    rule.insert(
+        "engine_id".to_owned(),
+        toml::Value::String(engine_id.to_owned()),
+    );
+    rule.insert("start_step".to_owned(), toml::Value::Integer(start_step));
+    rule.insert("fault".to_owned(), fault.clone());
+    propulsion_fault_rules_mut(scenario)?.push(toml::Value::Table(rule));
+
+    Ok(StimulusRecord {
+        kind: "fault_injection".to_owned(),
+        target: format!("propulsion.faults.rules.{rule_id}"),
+        summary: format!(
+            "engine.{engine_id} scheduled at step {start_step}: fault {}",
+            telemetry_value_safe_toml(fault)
+        ),
+    })
+}
+
+fn propulsion_fault_rules_mut(
+    scenario: &mut toml::Value,
+) -> Result<&mut Vec<toml::Value>, SilError> {
+    let Some(root) = scenario.as_table_mut() else {
+        return Err(SilError::Stimulation {
+            summary: "scenario root is not a TOML table".to_owned(),
+        });
+    };
+    if !root.contains_key("propulsion") {
+        root.insert(
+            "propulsion".to_owned(),
+            toml::Value::Table(toml::map::Map::new()),
+        );
+    }
+    let propulsion = root
+        .get_mut("propulsion")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| SilError::Stimulation {
+            summary: "propulsion is not a table".to_owned(),
+        })?;
+    if !propulsion.contains_key("faults") {
+        propulsion.insert(
+            "faults".to_owned(),
+            toml::Value::Table(toml::map::Map::new()),
+        );
+    }
+    let faults = propulsion
+        .get_mut("faults")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| SilError::Stimulation {
+            summary: "propulsion.faults is not a table".to_owned(),
+        })?;
+    if !faults.contains_key("rules") {
+        faults.insert("rules".to_owned(), toml::Value::Array(Vec::new()));
+    }
+    faults
+        .get_mut("rules")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or_else(|| SilError::Stimulation {
+            summary: "propulsion.faults.rules is not an array".to_owned(),
+        })
 }
 
 fn append_command_write(
@@ -2286,6 +2602,10 @@ fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use openbmp_bridge::{
+        CaptureTrigger, EesPort, ElectricalErrorType, FaultWindow, MaPort, PinId,
+        SignalDescription, SignalId, TestbenchTransition, XilValue,
+    };
 
     #[test]
     fn package_check_validates_scenario_and_hashes() {
@@ -2293,83 +2613,7 @@ mod tests {
         let scenario = dir.path().join("scenario.toml");
         fs::write(
             &scenario,
-            r#"
-openbmp.scenario = 3
-
-[meta]
-name = "sil-package-fixture"
-description = "fixture"
-validation = "experimental"
-
-[time]
-start_s = 0.0
-stop_s = 0.03
-dt_s = 0.01
-seed = 1
-
-[vehicle]
-kind = "point_mass"
-initial_position_eci_m = [0.0, 0.0, 0.0]
-initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
-
-[vehicle.assembly]
-id = "body"
-
-[[vehicle.assembly.bodies]]
-id = "body"
-geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
-dry_mass_kg = 1.0
-
-[[vehicle.assembly.effectors]]
-id = "delta"
-kind = { kind = "linear_actuator" }
-limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
-initial_position = 0.0
-unit = "rad"
-
-[environment]
-frame_profile = "toy-fixed-earth"
-gravity = "constant"
-gravity_m_s2 = 9.80665
-atmosphere = "none"
-wind = "none"
-
-[forces]
-models = ["gravity"]
-
-[telemetry]
-output.csv = "out/sil.csv"
-
-[validation]
-require_finite_state = true
-require_monotonic_time = true
-
-[mission]
-initial_phase = "mission.phases.pad"
-
-[[mission.phases]]
-id = "mission.phases.pad"
-label = "pad"
-
-[[mission.phases]]
-id = "mission.phases.coast"
-label = "coast"
-
-[[mission.events]]
-id = "mission.events.marker"
-trigger = { kind = "at_time", time_s = 0.01 }
-action = { kind = "emit_telemetry_marker", tag = "sil.fixture" }
-
-[[mission.events]]
-id = "mission.events.coast"
-trigger = { kind = "at_time", time_s = 0.02 }
-action = { kind = "emit_telemetry_marker", tag = "sil.coast" }
-
-[[mission.transitions]]
-from = "mission.phases.pad"
-to = "mission.phases.coast"
-event = "mission.events.coast"
-"#,
+            include_str!("../tests/fixtures/sil-package-scenario.toml"),
         )
         .expect("write scenario");
         let manifest = dir.path().join("mission-package.toml");
@@ -2422,14 +2666,9 @@ id = "smoke"
         assert_eq!(run.stop_label, "end-time");
         assert_eq!(run.evidence.verdict, "pass");
         assert!(run.evidence.failures.is_empty());
-        assert!(
-            run.evidence
-                .requirement_verdicts
-                .iter()
-                .any(|verdict| {
-                    verdict.id == "SIL-NOMINAL-TERMINATION" && verdict.verdict == "pass"
-                })
-        );
+        assert!(run.evidence.requirement_verdicts.iter().any(|verdict| {
+            verdict.id == "SIL-NOMINAL-TERMINATION" && verdict.verdict == "pass"
+        }));
         assert!(
             run.evidence
                 .bus_frames
@@ -2473,6 +2712,77 @@ id = "smoke"
                 .phase_trace
                 .iter()
                 .any(|entry| entry.phase == "mission.phases.coast")
+        );
+
+        let mut xil = InMemoryXilBench::new();
+        xil.declare_signal("fc.imu.ax", XilValue::Float64(0.0));
+        xil.declare_pin("imu.vcc");
+        xil.transition(TestbenchTransition::Initialize)
+            .expect("xil initialize");
+        xil.transition(TestbenchTransition::Connect)
+            .expect("xil connect");
+        xil.transition(TestbenchTransition::Start)
+            .expect("xil start");
+        xil.write(SignalId::from("fc.imu.ax"), XilValue::Float64(1.25))
+            .expect("xil write");
+        xil.create_capture(&[SignalId::from("fc.imu.ax")], CaptureTrigger::Immediate, 1)
+            .expect("xil capture");
+        xil.create_signal_generator(
+            SignalId::from("fc.imu.ax"),
+            SignalDescription::Constant {
+                value: XilValue::Float64(1.25),
+            },
+        )
+        .expect("xil generator");
+        xil.set_error(
+            PinId::from("imu.vcc"),
+            ElectricalErrorType::ShortToGround,
+            FaultWindow::new(1, Some(2)).expect("xil fault window"),
+        )
+        .expect("xil EES error");
+
+        let xil_run = package
+            .run_case_with_xil(Some("smoke"), &xil)
+            .expect("run package with xil evidence");
+        assert!(
+            xil_run
+                .evidence
+                .stimuli
+                .iter()
+                .any(|record| record.kind == "xil.ma.write" && record.target == "fc.imu.ax")
+        );
+        assert!(
+            xil_run
+                .evidence
+                .stimuli
+                .iter()
+                .any(|record| record.kind == "xil.ees.error" && record.target == "imu.vcc")
+        );
+        assert!(
+            xil_run
+                .evidence
+                .bus_frames
+                .iter()
+                .any(|frame| frame.stream == "xil.lifecycle" && frame.value == "Running")
+        );
+        assert!(
+            xil_run
+                .evidence
+                .bus_frames
+                .iter()
+                .any(|frame| frame.stream == "xil.ees.error" && frame.subject == "imu.vcc")
+        );
+
+        let testbench = SilTestbench::load(&manifest).expect("load SIL testbench");
+        let testbench_xil = testbench
+            .run_with_xil(Some("smoke"), &xil)
+            .expect("testbench run with xil evidence");
+        assert!(
+            testbench_xil
+                .evidence
+                .bus_frames
+                .iter()
+                .any(|frame| frame.stream == "xil.ma.write")
         );
 
         let command_stimulus = SilStimulation {
@@ -2550,7 +2860,9 @@ id = "smoke"
         // run-until stops — are nominal.
         assert!(stop_label_is_nominal("end-time"));
         assert!(stop_label_is_nominal("mission-ended"));
-        assert!(stop_label_is_nominal("sil.until.event.mission.events.cutoff"));
+        assert!(stop_label_is_nominal(
+            "sil.until.event.mission.events.cutoff"
+        ));
         // Divergences, ground impact, and guard-rail truncation are not.
         assert!(!stop_label_is_nominal("ground-impact"));
         assert!(!stop_label_is_nominal("non-finite-state"));
