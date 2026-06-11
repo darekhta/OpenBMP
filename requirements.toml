@@ -231,7 +231,7 @@ verification = ["V-CONTACT-003"]
 [[requirements]]
 id = "REQ-CONTACT-004"
 title = "Contact substrate exposes anchored stiction and rest anchors"
-statement = "The contact dynamics substrate exposes anchored stick-slip friction with a static friction cone, kinetic sliding force, Karnopp restick velocity window, deterministic anchor-state updates, tangential anchor elastic-energy and non-negative dissipation reporting, incline stiction and sliding closed-form helpers, a consecutive-hold rest detector, and Housner rocking-block closed-form threshold and period anchors without depending on runner, simulator, or flight-controller crates."
+statement = "The contact dynamics substrate exposes anchored stick-slip friction with a static friction cone, kinetic sliding force, Karnopp restick velocity window, deterministic anchor-state updates, tangential anchor elastic-energy and non-negative dissipation reporting, incline stiction and sliding closed-form helpers, a drive-spring stick-slip oscillator fixture matched against an independent ideal Karnopp reference, a consecutive-hold rest detector, and Housner rocking-block closed-form threshold and period anchors without depending on runner, simulator, or flight-controller crates."
 verification = ["V-CONTACT-004"]
 
 [[requirements]]
@@ -1458,6 +1458,7 @@ contains = [
   "stiction_incline_threshold_is_exact",
   "stiction_anchor_does_not_drift_at_rest_over_10000_steps",
   "stiction_breaks_to_kinetic_when_static_cone_is_exceeded",
+  "stiction_drive_spring_oscillator_matches_karnopp_reference",
   "rest_detector_requires_energy_floor_sticking_and_hold_count",
   "rocking_block_static_tip_threshold_and_period_match_housner_forms",
 ]

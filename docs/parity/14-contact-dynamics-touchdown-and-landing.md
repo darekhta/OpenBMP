@@ -872,21 +872,21 @@ sibling notation (`WP-NN.t`, doc `NN`).
 ### WP-14.3 — Anchored stiction + rest detection + Housner rocking case
 
 - **title:** True stick/slip friction with stick-point anchoring, Karnopp window, deterministic rest detection.
-- **implementation_status:** partial crate-level primitives implemented and
-  traced by `REQ-CONTACT-004` / `V-CONTACT-004`, plus first scenario/runner
-  integration traced by `REQ-CONTACT-005` / `V-CONTACT-005`: `openbmp-contact`
-  exposes `AnchoredStictionFriction` with deterministic anchor state,
-  static-cone breakaway, kinetic sliding, a Karnopp restick window, and
-  tangential elastic-energy plus dissipation reporting; incline
-  stiction/sliding closed-form helpers; a consecutive-hold `RestDetector`; and
-  `HousnerRockingBlock`
-  threshold/frequency/period anchors. Schema-v3 `[contact]` can select
+- **implementation_status:** implemented and traced by `REQ-CONTACT-004` /
+  `V-CONTACT-004` plus scenario/runner integration traced by
+  `REQ-CONTACT-005` / `V-CONTACT-005`: `openbmp-contact` exposes
+  `AnchoredStictionFriction` with deterministic anchor state, static-cone
+  breakaway, kinetic sliding, a Karnopp restick window, and tangential
+  elastic-energy plus dissipation reporting; incline stiction/sliding
+  closed-form helpers; a drive-spring stick-slip oscillator fixture matched
+  against an independent ideal Karnopp reference; a consecutive-hold
+  `RestDetector`; and `HousnerRockingBlock` threshold/frequency/period
+  anchors. Schema-v3 `[contact]` can select
   `friction_law = "anchored_stiction"`, and point-mass/rigid-body contact
   force adapters route it through a time-gated anchor state. Runner contact
-  diagnostics now carry tangential speed and sticking state, include tangential
+  diagnostics carry tangential speed and sticking state, include tangential
   anchor energy in the contact energy audit, and classify rest through a
-  kinetic-energy floor plus consecutive sticking hold. Stick-slip oscillator
-  fixtures remain a future slice.
+  kinetic-energy floor plus consecutive sticking hold.
 - **goal:** Replace creep-prone regularized friction for statics: tangential
   anchor spring-damper, cone-break to kinetic slip, re-stick window, and a
   rest detector (energy floor + all-pads-sticking hold) — the prerequisites
@@ -894,7 +894,7 @@ sibling notation (`WP-NN.t`, doc `NN`).
 - **fidelity_tier:** T2
 - **depends_on:** [WP-14.1]
 - **new_crates:** none.
-- **touched:** `crates/openbmp-contact/src/friction.rs`, outcome
+- **touched:** `crates/openbmp-contact/src/stiction.rs`, outcome
   classification in `openbmp-runner`.
 - **approach:** §3.2 (eq 3.2.5). Transitions at sub-step boundaries with
   μ_s/μ_k + velocity-window hysteresis; anchor state in the contact state
