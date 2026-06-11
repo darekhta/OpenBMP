@@ -219,7 +219,7 @@ verification = ["V-TRAJOPT-001"]
 [[requirements]]
 id = "REQ-TRAJOPT-002"
 title = "The trajectory optimizer exposes an STM multiple-shooting substrate"
-statement = "The host-side trajectory optimization crate exposes a deterministic two-body variational STM propagator with complex-step column verification, a multiple-shooting continuity evaluator whose defects and state Jacobian are block-bidiagonal and whose segment-duration sensitivity columns are verified, soft box/path exterior-penalty rows for node state components and state norms, a damped fixed-endpoint interior-node corrector, and fixed-initial-state terminal-condition correctors, including a free-duration variant, that target only the closed TerminalCondition equality vocabulary, report non-convergence honestly, and remain independent of any surface-coordinate target vocabulary."
+statement = "The host-side trajectory optimization crate exposes a deterministic two-body variational STM propagator with complex-step column verification, a multiple-shooting continuity evaluator whose defects and state Jacobian are block-bidiagonal and whose segment-duration sensitivity columns are verified, soft box/path exterior-penalty rows for node state components, state norms, rotating-atmosphere qbar, and qbar-alpha, a damped fixed-endpoint interior-node corrector, and fixed-initial-state terminal-condition correctors, including a free-duration variant, that target only the closed TerminalCondition equality vocabulary, report non-convergence honestly, and remain independent of any surface-coordinate target vocabulary."
 verification = ["V-TRAJOPT-002"]
 
 [[requirements]]
@@ -1468,6 +1468,10 @@ contains = [
   "MultipleShootingFreeDurationTargetCorrection",
   "MultipleShootingSoftConstraint",
   "MultipleShootingSoftConstraintKind",
+  "DynamicPressure",
+  "DynamicPressureAngleOfAttack",
+  "dynamic_pressure_box",
+  "dynamic_pressure_angle_of_attack_box",
   "evaluate_multiple_shooting_soft_constraints",
   "MultipleShootingCorrector",
   "MultipleShootingTargetCorrection",
@@ -1483,6 +1487,8 @@ contains = [
   "free_duration_terminal_corrector_restores_total_time",
   "terminal_condition_corrector_reports_non_convergence_for_incompatible_target",
   "soft_constraints_report_box_and_path_penalty_rows",
+  "aero_path_constraints_report_qbar_and_qalpha_rows",
+  "aero_path_constraints_reject_malformed_inputs",
   "terminal_condition_solver_reports_soft_constraint_residuals",
   "multiple_shooting_node_cannot_carry_surface_coordinates",
   "target_latitude_rad",

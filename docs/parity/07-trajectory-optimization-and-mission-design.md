@@ -157,11 +157,11 @@ against):
   terminal-condition correction using the closed `TerminalCondition` equality
   vocabulary, including a free-duration variant that solves downstream node
   states and segment times together. `MultipleShootingSoftConstraint` appends
-  signed exterior-penalty rows for Cartesian state-component boxes plus
-  radius/speed norm path limits; qbar/q-alpha vehicle path mappings remain
-  future work. This is traced by `REQ-TRAJOPT-002`, including a downstream
-  compile-fail tripwire that refuses surface-coordinate fields on the multiple-
-  shooting node surface; it is not yet full WP-07.1 acceptance closure.
+  signed exterior-penalty rows for Cartesian state-component boxes, radius/speed
+  norm path limits, rotating-atmosphere dynamic pressure, and qbar-alpha using a
+  declared body-forward axis. This is traced by `REQ-TRAJOPT-002`, including a
+  downstream compile-fail tripwire that refuses surface-coordinate fields on the
+  multiple-shooting node surface; it is not yet full WP-07.1 acceptance closure.
 
 **`crates/openbmp-physics/src/profile.rs` — the vocabulary + propagator pieces.**
 
@@ -207,12 +207,13 @@ against):
 T0 offline two-body and scenario-backed apogee CLI I-load paths; WP-07.1 has a
 partial STM, multiple-shooting continuity, and fixed-endpoint interior-node
 correction substrate, fixed-initial terminal-condition correction, soft
-node/path penalties, free-duration terminal correction, and a no-surface-
-coordinate compile-fail tripwire; the closed terminal-condition vocabulary
-still holds; a Clarabel SOCP epigraph smoke test, a forward propagator, and a
-PEG-style closed-loop ascent reference exist. No multiple-shooting control solve,
-NLP transcription, pseudospectral method, LCvx/SCvx horizon problem, closed-loop
-wiring of an optimized reference, or indirect cross-check exists.
+node/path penalties including qbar/q-alpha, free-duration terminal correction,
+and a no-surface-coordinate compile-fail tripwire; the closed terminal-condition
+vocabulary still holds; a Clarabel SOCP epigraph smoke test, a forward
+propagator, and a PEG-style closed-loop ascent reference exist. No multiple-
+shooting control solve, NLP transcription, pseudospectral method, LCvx/SCvx
+horizon problem, closed-loop wiring of an optimized reference, or indirect
+cross-check exists.
 
 ---
 
@@ -751,11 +752,12 @@ gates green and answers the §3 per-PR checklist.
   correction and reports honest non-convergence for inconsistent endpoints; it
   also performs fixed-initial terminal-condition correction against closed
   `TerminalCondition` equality residuals, including a free-duration variant
-  that solves downstream nodes and segment times together. A trybuild UI test
-  proves the public multiple-shooting node surface cannot carry target
-  latitude/longitude fields. Remaining acceptance work: the control part of the
-  full free vector, T0 cross-tier regression tolerance table, and qbar/q-alpha
-  vehicle path mappings.
+  that solves downstream nodes and segment times together. Soft path rows now
+  include qbar and qbar-alpha mappings from node state, density, and a declared
+  body-forward axis. A trybuild UI test proves the public multiple-shooting node
+  surface cannot carry target latitude/longitude fields. Remaining acceptance
+  work: the control part of the full free vector and T0 cross-tier regression
+  tolerance table.
 - **goal:** Robust ascent-to-orbit reference generation that reuses the existing
   physics propagator, replacing the single-shooting limitation with block-
   bidiagonal continuity defects and an STM-based Jacobian.

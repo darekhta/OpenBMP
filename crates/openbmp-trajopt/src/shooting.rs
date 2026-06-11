@@ -1,14 +1,14 @@
 //! Multiple-shooting continuity defects for T1 trajectory optimization.
 //!
-//! The first implementation evaluates fixed-duration two-body segment
-//! continuity and the block-bidiagonal Jacobian built from each segment STM.
-//! It also exposes soft node/path penalty rows for the terminal targeting
-//! corrector. It is a solver substrate, not a new target surface.
+//! The first implementation evaluates two-body segment continuity plus the
+//! block-bidiagonal Jacobian built from each segment STM. It also exposes soft
+//! node/path penalty rows for the terminal targeting corrector. It is a solver
+//! substrate, not a new target surface.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
-use openbmp_physics::profile::TerminalCondition;
+use openbmp_physics::{WGS84_OMEGA_RAD_S, profile::TerminalCondition};
 
 use crate::corrector::solve_linear_system;
 use crate::iload::TrajoptError;
@@ -129,10 +129,52 @@ impl MultipleShootingSoftConstraint {
             weight,
         }
     }
+
+    /// Bound rotating-atmosphere dynamic pressure at a node.
+    #[must_use]
+    pub const fn dynamic_pressure_box(
+        node_index: usize,
+        atmosphere_density_kg_m3: f64,
+        lower: Option<f64>,
+        upper: Option<f64>,
+        weight: f64,
+    ) -> Self {
+        Self {
+            node_index,
+            kind: MultipleShootingSoftConstraintKind::DynamicPressure {
+                atmosphere_density_kg_m3,
+            },
+            lower,
+            upper,
+            weight,
+        }
+    }
+
+    /// Bound `q * alpha` at a node using a declared ECI body-forward axis.
+    #[must_use]
+    pub const fn dynamic_pressure_angle_of_attack_box(
+        node_index: usize,
+        atmosphere_density_kg_m3: f64,
+        body_forward_eci: [f64; 3],
+        lower: Option<f64>,
+        upper: Option<f64>,
+        weight: f64,
+    ) -> Self {
+        Self {
+            node_index,
+            kind: MultipleShootingSoftConstraintKind::DynamicPressureAngleOfAttack {
+                atmosphere_density_kg_m3,
+                body_forward_eci,
+            },
+            lower,
+            upper,
+            weight,
+        }
+    }
 }
 
 /// Built-in node scalar values for soft path and box penalties.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MultipleShootingSoftConstraintKind {
     /// One flattened Cartesian state component:
     /// `[x, y, z, vx, vy, vz]`.
@@ -144,6 +186,18 @@ pub enum MultipleShootingSoftConstraintKind {
     RadiusNorm,
     /// Inertial speed norm `|v|`.
     SpeedNorm,
+    /// Rotating-atmosphere dynamic pressure `q = 0.5 * rho * |v_air|^2`.
+    DynamicPressure {
+        /// Local atmospheric mass density, in kg/m^3.
+        atmosphere_density_kg_m3: f64,
+    },
+    /// Dynamic pressure multiplied by angle of attack, `q * alpha`.
+    DynamicPressureAngleOfAttack {
+        /// Local atmospheric mass density, in kg/m^3.
+        atmosphere_density_kg_m3: f64,
+        /// Body-forward unit direction in ECI; non-unit vectors are normalized.
+        body_forward_eci: [f64; 3],
+    },
 }
 
 /// Soft-constraint residual/Jacobian report.
@@ -1051,6 +1105,7 @@ fn validate_soft_constraint(
             reason: "soft constraint state component index must be in 0..6",
         });
     }
+    validate_soft_constraint_kind(constraint.kind)?;
     if constraint.lower.is_none() && constraint.upper.is_none() {
         return Err(TrajoptError::InvalidPayload {
             reason: "soft constraint requires at least one bound",
@@ -1080,6 +1135,42 @@ fn validate_soft_constraint(
     if !constraint.weight.is_finite() || constraint.weight <= 0.0 {
         return Err(TrajoptError::InvalidPayload {
             reason: "soft constraint weight must be finite and positive",
+        });
+    }
+    Ok(())
+}
+
+fn validate_soft_constraint_kind(
+    kind: MultipleShootingSoftConstraintKind,
+) -> Result<(), TrajoptError> {
+    match kind {
+        MultipleShootingSoftConstraintKind::StateComponent { component } => {
+            if component >= 6 {
+                return Err(TrajoptError::InvalidPayload {
+                    reason: "soft constraint state component index must be in 0..6",
+                });
+            }
+        }
+        MultipleShootingSoftConstraintKind::RadiusNorm
+        | MultipleShootingSoftConstraintKind::SpeedNorm => {}
+        MultipleShootingSoftConstraintKind::DynamicPressure {
+            atmosphere_density_kg_m3,
+        } => validate_aero_path_density(atmosphere_density_kg_m3)?,
+        MultipleShootingSoftConstraintKind::DynamicPressureAngleOfAttack {
+            atmosphere_density_kg_m3,
+            body_forward_eci,
+        } => {
+            validate_aero_path_density(atmosphere_density_kg_m3)?;
+            normalize3(body_forward_eci).map(|_| ())?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_aero_path_density(atmosphere_density_kg_m3: f64) -> Result<(), TrajoptError> {
+    if !atmosphere_density_kg_m3.is_finite() || atmosphere_density_kg_m3 < 0.0 {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft aero path density must be finite and non-negative",
         });
     }
     Ok(())
@@ -1139,6 +1230,17 @@ fn soft_constraint_value_gradient(
                 ],
             ))
         }
+        MultipleShootingSoftConstraintKind::DynamicPressure {
+            atmosphere_density_kg_m3,
+        } => dynamic_pressure_value_gradient(state, atmosphere_density_kg_m3),
+        MultipleShootingSoftConstraintKind::DynamicPressureAngleOfAttack {
+            atmosphere_density_kg_m3,
+            body_forward_eci,
+        } => dynamic_pressure_angle_of_attack_value_gradient(
+            state,
+            atmosphere_density_kg_m3,
+            body_forward_eci,
+        ),
     }
 }
 
@@ -1160,8 +1262,133 @@ fn soft_constraint_signed_violation(
     None
 }
 
+fn dynamic_pressure_value_gradient(
+    state: TwoBodyCartesianState,
+    atmosphere_density_kg_m3: f64,
+) -> Result<(f64, [f64; 6]), TrajoptError> {
+    validate_aero_path_density(atmosphere_density_kg_m3)?;
+    let (air_relative_velocity_m_s, air_relative_gradient) =
+        air_relative_velocity_and_gradient(state);
+    let dynamic_pressure_pa =
+        0.5 * atmosphere_density_kg_m3 * norm3_squared(air_relative_velocity_m_s);
+    if !dynamic_pressure_pa.is_finite() {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft aero path dynamic pressure is non-finite",
+        });
+    }
+    let mut gradient = [0.0_f64; 6];
+    for column in 0..6 {
+        gradient[column] = atmosphere_density_kg_m3
+            * dot3(
+                air_relative_velocity_m_s,
+                [
+                    air_relative_gradient[0][column],
+                    air_relative_gradient[1][column],
+                    air_relative_gradient[2][column],
+                ],
+            );
+    }
+    Ok((dynamic_pressure_pa, gradient))
+}
+
+fn dynamic_pressure_angle_of_attack_value_gradient(
+    state: TwoBodyCartesianState,
+    atmosphere_density_kg_m3: f64,
+    body_forward_eci: [f64; 3],
+) -> Result<(f64, [f64; 6]), TrajoptError> {
+    let body_forward_eci = normalize3(body_forward_eci)?;
+    let (dynamic_pressure_pa, dynamic_pressure_gradient) =
+        dynamic_pressure_value_gradient(state, atmosphere_density_kg_m3)?;
+    let (air_relative_velocity_m_s, air_relative_gradient) =
+        air_relative_velocity_and_gradient(state);
+    let speed_m_s = norm3(air_relative_velocity_m_s);
+    if speed_m_s <= f64::EPSILON {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft aero path air-relative speed is degenerate",
+        });
+    }
+    let cosine_alpha =
+        (dot3(body_forward_eci, air_relative_velocity_m_s) / speed_m_s).clamp(-1.0, 1.0);
+    let sine_alpha = (1.0 - cosine_alpha * cosine_alpha).max(0.0).sqrt();
+    if sine_alpha <= f64::EPSILON {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft aero path angle-of-attack gradient is degenerate",
+        });
+    }
+    let alpha_rad = cosine_alpha.acos();
+    let body_dot_velocity = dot3(body_forward_eci, air_relative_velocity_m_s);
+    let speed_cubed = speed_m_s * speed_m_s * speed_m_s;
+    let mut alpha_velocity_gradient = [0.0_f64; 3];
+    for component in 0..3 {
+        let cosine_gradient = body_forward_eci[component] / speed_m_s
+            - body_dot_velocity * air_relative_velocity_m_s[component] / speed_cubed;
+        alpha_velocity_gradient[component] = -cosine_gradient / sine_alpha;
+    }
+    let mut alpha_state_gradient = [0.0_f64; 6];
+    for column in 0..6 {
+        alpha_state_gradient[column] = dot3(
+            alpha_velocity_gradient,
+            [
+                air_relative_gradient[0][column],
+                air_relative_gradient[1][column],
+                air_relative_gradient[2][column],
+            ],
+        );
+    }
+    let value = dynamic_pressure_pa * alpha_rad;
+    if !value.is_finite() {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft aero path q-alpha is non-finite",
+        });
+    }
+    let mut gradient = [0.0_f64; 6];
+    for column in 0..6 {
+        gradient[column] = alpha_rad * dynamic_pressure_gradient[column]
+            + dynamic_pressure_pa * alpha_state_gradient[column];
+    }
+    Ok((value, gradient))
+}
+
+fn air_relative_velocity_and_gradient(state: TwoBodyCartesianState) -> ([f64; 3], [[f64; 6]; 3]) {
+    let velocity = [
+        state.velocity_eci_m_s[0] + WGS84_OMEGA_RAD_S * state.position_eci_m[1],
+        state.velocity_eci_m_s[1] - WGS84_OMEGA_RAD_S * state.position_eci_m[0],
+        state.velocity_eci_m_s[2],
+    ];
+    let mut gradient = [[0.0_f64; 6]; 3];
+    gradient[0][1] = WGS84_OMEGA_RAD_S;
+    gradient[0][3] = 1.0;
+    gradient[1][0] = -WGS84_OMEGA_RAD_S;
+    gradient[1][4] = 1.0;
+    gradient[2][5] = 1.0;
+    (velocity, gradient)
+}
+
 fn norm3(value: [f64; 3]) -> f64 {
     (value[0] * value[0] + value[1] * value[1] + value[2] * value[2]).sqrt()
+}
+
+fn norm3_squared(value: [f64; 3]) -> f64 {
+    value[0] * value[0] + value[1] * value[1] + value[2] * value[2]
+}
+
+fn normalize3(value: [f64; 3]) -> Result<[f64; 3], TrajoptError> {
+    if !value.iter().all(|component| component.is_finite()) {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft aero path body-forward axis must be finite",
+        });
+    }
+    let norm = norm3(value);
+    if norm <= f64::EPSILON {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft aero path body-forward axis is degenerate",
+        });
+    }
+    Ok([value[0] / norm, value[1] / norm, value[2] / norm])
+}
+
+fn dot3(lhs: [f64; 3], rhs: [f64; 3]) -> f64 {
+    lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
 }
 
 fn insert_segment_defect(
@@ -1636,6 +1863,70 @@ mod tests {
         );
         assert!(report.residuals[3].abs() < f64::EPSILON);
         assert!(report.jacobian[3 * 12 + 2].abs() < f64::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn aero_path_constraints_report_qbar_and_qalpha_rows() -> Result<(), TrajoptError> {
+        let state = TwoBodyCartesianState::new([0.0, 0.0, 6_371_000.0], [100.0, 0.0, 0.0])?;
+        let nodes = [MultipleShootingNode::new(state)];
+        let dynamic_pressure_pa = 5_000.0;
+        let q_alpha_pa_rad = dynamic_pressure_pa * core::f64::consts::FRAC_PI_2;
+        let constraints = [
+            MultipleShootingSoftConstraint::dynamic_pressure_box(
+                0,
+                1.0,
+                None,
+                Some(dynamic_pressure_pa - 10.0),
+                4.0,
+            ),
+            MultipleShootingSoftConstraint::dynamic_pressure_angle_of_attack_box(
+                0,
+                1.0,
+                [0.0, 1.0, 0.0],
+                None,
+                Some(q_alpha_pa_rad - 20.0),
+                9.0,
+            ),
+        ];
+
+        let report = evaluate_multiple_shooting_soft_constraints(&nodes, 0, &constraints)?;
+
+        assert_eq!(report.constraint_count, 2);
+        assert_eq!(report.free_state_count, 6);
+        assert!((report.residuals[0] - 20.0).abs() < 1.0e-9);
+        assert!((report.jacobian[3] - 200.0).abs() < 1.0e-9);
+        assert!((report.residuals[1] - 60.0).abs() < 1.0e-9);
+        assert!((report.jacobian[6 + 3] - 300.0 * core::f64::consts::FRAC_PI_2).abs() < 1.0e-9);
+        assert!((report.jacobian[6 + 4] + 150.0).abs() < 1.0e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn aero_path_constraints_reject_malformed_inputs() -> Result<(), TrajoptError> {
+        let state = TwoBodyCartesianState::new([0.0, 0.0, 6_371_000.0], [100.0, 0.0, 0.0])?;
+        let nodes = [MultipleShootingNode::new(state)];
+
+        let negative_density = [MultipleShootingSoftConstraint::dynamic_pressure_box(
+            0,
+            -1.0,
+            None,
+            Some(1.0),
+            1.0,
+        )];
+        let degenerate_axis = [
+            MultipleShootingSoftConstraint::dynamic_pressure_angle_of_attack_box(
+                0,
+                1.0,
+                [0.0, 0.0, 0.0],
+                None,
+                Some(1.0),
+                1.0,
+            ),
+        ];
+
+        assert!(evaluate_multiple_shooting_soft_constraints(&nodes, 0, &negative_density).is_err());
+        assert!(evaluate_multiple_shooting_soft_constraints(&nodes, 0, &degenerate_axis).is_err());
         Ok(())
     }
 
