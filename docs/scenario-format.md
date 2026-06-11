@@ -875,12 +875,14 @@ For point-mass solid-motor scenarios with a runner-sampled atmosphere,
 `plume.exit_pressure_ratio`, `plume.thrust_coefficient`,
 `plume.momentum_flux_ratio`, `plume.initial_turn_angle_rad`,
 `plume.merge_distance_m`, `plume.cluster_merged`, and
-`plume.pifs_onset`. The point-mass path derives single-engine plume
-geometry from the solid motor: the runtime geometry uses `engine_count = 1`,
-the motor nozzle exit area, and zero center spacing even though the static
-geometry fields remain required for schema compatibility. Rigid-body
-liquid-engine scenarios may emit the same telemetry when every declared
-liquid engine has
+`plume.pifs_onset`. `plume.momentum_flux_ratio` uses total nozzle thrust
+over `rho_inf * V_inf^2 * reference_area_m2`, with dynamic pressure supplying
+one half of `rho_inf * V_inf^2`. The point-mass path derives single-engine
+plume geometry from the solid motor: the runtime geometry uses
+`engine_count = 1`, the motor nozzle exit area, and zero center spacing even
+though the static geometry fields remain required for schema compatibility.
+Rigid-body liquid-engine scenarios may emit the same telemetry when every
+declared liquid engine has
 `[vehicle.assembly.engines.thermochemical_performance]`; the runner uses
 the thermochemical nozzle metadata plus live engine mass-flow snapshots.
 For that rigid-body liquid path, active engine count, summed exit area, and

@@ -582,6 +582,12 @@ title = "Point-mass plume geometry derives from the solid motor"
 statement = "For point-mass solid-motor plume telemetry, the runner must derive the PlumeClusterGeometry engine count, total exit area, and center spacing from the single solid motor instead of trusting the compatibility fields in [aero.plume]: engine_count is one, exit_area_total_m2 is the motor nozzle exit area, center_spacing_m is zero, and valid but misleading static [aero.plume] geometry values cannot change the canonical plume telemetry byte stream."
 verification = ["V-PLUME-006"]
 
+[[requirements]]
+id = "REQ-PLUME-007"
+title = "Plume momentum-flux ratio follows the documented similarity equation"
+statement = "The openbmp-plume PlumeState momentum_flux_ratio diagnostic must implement the WP-15.1 similarity equation as total nozzle thrust divided by rho_inf * V_inf^2 * S_ref, using the runner-provided dynamic pressure as one half rho_inf * V_inf^2; the value must include pressure thrust through total_thrust_n, use reference_area_m2 rather than nozzle exit area in the denominator, and reject non-finite results fail-closed through PlumeState validation."
+verification = ["V-PLUME-007"]
+
 [[verification]]
 id = "V-SIL-001"
 kind = "test"
@@ -3206,3 +3212,21 @@ contains = [
   "plume.momentum_flux_ratio",
 ]
 requirements = ["REQ-PLUME-006"]
+
+[[verification]]
+id = "V-PLUME-007"
+kind = "test"
+command = "cargo test -p openbmp-plume momentum_flux_ratio_uses_total_thrust_and_reference_area --locked"
+paths = [
+  "crates/openbmp-plume/src/lib.rs",
+  "docs/scenario-format.md",
+  "docs/parity/15-plume-environments-and-supersonic-retropropulsion.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "T_total / (rho_inf * V_inf^2 * S_ref)",
+  "rho_inf * V_inf^2 * reference_area_m2",
+  "2.0 * freestream.dynamic_pressure_pa * freestream.reference_area_m2",
+  "momentum_flux_ratio_uses_total_thrust_and_reference_area",
+]
+requirements = ["REQ-PLUME-007"]

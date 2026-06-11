@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-12, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (97 requirement ids).
+traceability (98 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -40,7 +40,7 @@ As of this snapshot: **20 implemented · 18 partial · 0 in progress ·
 | 11 | Monte Carlo, UQ, validation | **T0–T1 implemented**; T2–T4 partial | 3/5/9 | WP-11.7 |
 | 12 | Determinism, real-time, compute | **substantially implemented**; Linux aarch64 bit-stable CI lane present; GPU offload boundary pending | 9/0/10 | WP-12.4-b |
 | 14 | Contact, touchdown, landing | WP-14.1 crate + runner force/diagnostic path present; WP-14.2 crate primitives landed; WP-14.3 implemented; WP-14.4 massless oleo/crush gear with per-pad ContactPair footpads implemented | 2/2/10 | WP-14.5 after WP-09.7, or WP-14.7 after terrain substrate |
-| 15 | Plume & SRP | WP-15.1 L2 substrate plus point-mass solid-motor and rigid-body thermochemical liquid telemetry with point-mass nozzle-derived geometry, active mount-derived spacing, and off-byte-goldens landed | 0/1/12 | finish WP-15.1 liquid calibration/rigid full geometry |
+| 15 | Plume & SRP | WP-15.1 L2 substrate plus point-mass solid-motor and rigid-body thermochemical liquid telemetry with documented MFR, point-mass nozzle-derived geometry, active mount-derived spacing, and off-byte-goldens landed | 0/1/12 | finish WP-15.1 liquid calibration/rigid full geometry |
 | 16 | Parachute & recovery | T0 baseline (`recovery/` rack) | 0/0/11 | WP-16.1 |
 | 17 | Cryogenic fluid management | not started | 0/0/8 | WP-17.1 |
 | 18 | Ground segment & countdown | not started | 0/0/8 | WP-18.1 |
@@ -255,7 +255,10 @@ block (`REQ-PLUME-005`). The point-mass path now derives its single-engine
 count, nozzle exit area, and zero center spacing from the solid motor instead
 of the static compatibility fields (`REQ-PLUME-006`). Missing for WP
 completion: rigid full geometry beyond active spacing and liquid-engine
-calibration beyond the ideal-nozzle aggregate.
+calibration beyond the ideal-nozzle aggregate. The substrate
+`momentum_flux_ratio` diagnostic now follows the documented total-thrust
+similarity equation, including pressure thrust and reference area
+(`REQ-PLUME-007`).
 
 ### 16 — Parachute, decelerator & recovery
 

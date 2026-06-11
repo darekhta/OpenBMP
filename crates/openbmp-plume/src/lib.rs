@@ -152,7 +152,7 @@ pub struct PlumeState {
     pub exit_pressure_ratio: f64,
     /// Thrust coefficient, `T / (q_inf * S_ref)`.
     pub thrust_coefficient: f64,
-    /// Momentum-flux ratio, `(mdot Ve) / (q_inf * A_e,total)`.
+    /// Momentum-flux ratio, `T_total / (rho_inf * V_inf^2 * S_ref)`.
     pub momentum_flux_ratio: f64,
     /// Initial underexpanded-plume turn angle in radians.
     pub initial_turn_angle_rad: f64,
@@ -185,8 +185,8 @@ impl PlumeState {
         let exit_pressure_ratio = nozzle.exit_pressure_pa / freestream.ambient_pressure_pa;
         let thrust_coefficient =
             nozzle.total_thrust_n / (freestream.dynamic_pressure_pa * freestream.reference_area_m2);
-        let momentum_flux_ratio = nozzle.momentum_thrust_n
-            / (freestream.dynamic_pressure_pa * geometry.exit_area_total_m2);
+        let momentum_flux_ratio = nozzle.total_thrust_n
+            / (2.0 * freestream.dynamic_pressure_pa * freestream.reference_area_m2);
         let initial_turn_angle_rad = initial_turn_angle_rad(
             nozzle.exit_mach,
             nozzle.gamma,
@@ -462,10 +462,32 @@ mod tests {
         assert_abs_diff_eq!(state.nozzle_pressure_ratio, 80.0, epsilon = 1.0e-15);
         assert_abs_diff_eq!(state.exit_pressure_ratio, 2.0, epsilon = 1.0e-15);
         assert_abs_diff_eq!(state.thrust_coefficient, 1.25, epsilon = 1.0e-15);
-        assert_abs_diff_eq!(state.momentum_flux_ratio, 20.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(state.momentum_flux_ratio, 0.625, epsilon = 1.0e-15);
         assert!(state.initial_turn_angle_rad > 0.0);
         assert!(state.cluster_merged);
         assert!(state.pifs_onset);
+    }
+
+    #[test]
+    fn momentum_flux_ratio_uses_total_thrust_and_reference_area() {
+        let freestream = PlumeFreestream {
+            dynamic_pressure_pa: 20_000.0,
+            reference_area_m2: 4.0,
+            ..freestream()
+        };
+        let nozzle = PlumeNozzle {
+            total_thrust_n: 120_000.0,
+            momentum_thrust_n: 80_000.0,
+            ..nozzle()
+        };
+        let geometry = PlumeClusterGeometry {
+            exit_area_total_m2: 3.0,
+            ..geometry()
+        };
+
+        let state = PlumeState::from_inputs(freestream, nozzle, geometry).unwrap();
+
+        assert_abs_diff_eq!(state.momentum_flux_ratio, 0.75, epsilon = 1.0e-15);
     }
 
     #[test]
