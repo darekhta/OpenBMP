@@ -1442,11 +1442,15 @@ requirements = ["REQ-TRAJOPT-001"]
 [[verification]]
 id = "V-TRAJOPT-002"
 kind = "test"
-command = "cargo test -p openbmp-trajopt --locked"
+command = "cargo test -p openbmp-trajopt --locked && cargo test -p openbmp-testkit --test trajopt_no_surface_coordinate_compile_fail --locked"
 paths = [
   "crates/openbmp-trajopt/src/stm.rs",
   "crates/openbmp-trajopt/src/shooting.rs",
   "crates/openbmp-trajopt/src/lib.rs",
+  "crates/openbmp-testkit/Cargo.toml",
+  "crates/openbmp-testkit/tests/trajopt_no_surface_coordinate_compile_fail.rs",
+  "crates/openbmp-testkit/tests/ui/trajopt_multiple_shooting_surface_coordinate.rs",
+  "crates/openbmp-testkit/tests/ui/trajopt_multiple_shooting_surface_coordinate.stderr",
   "docs/parity/07-trajectory-optimization-and-mission-design.md",
   "docs/parity/progress.md",
 ]
@@ -1461,6 +1465,9 @@ contains = [
   "continuity_jacobian_has_block_bidiagonal_shape",
   "fixed_endpoint_corrector_restores_perturbed_interior_nodes",
   "fixed_endpoint_corrector_reports_non_convergence_for_inconsistent_endpoint",
+  "multiple_shooting_node_cannot_carry_surface_coordinates",
+  "target_latitude_rad",
+  "target_longitude_rad",
   "WP-07.1: **partial**",
   "**implementation_status:** partial",
 ]

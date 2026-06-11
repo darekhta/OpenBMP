@@ -153,7 +153,9 @@ against):
   Jacobian `[STM_i, -I]`. `MultipleShootingCorrector` adds the first solve
   loop by holding endpoints fixed and applying damped Gauss-Newton corrections
   to interior nodes through that STM Jacobian. This is traced by
-  `REQ-TRAJOPT-002`; it is not yet full WP-07.1 acceptance closure.
+  `REQ-TRAJOPT-002`, including a downstream compile-fail tripwire that refuses
+  surface-coordinate fields on the multiple-shooting node surface; it is not yet
+  full WP-07.1 acceptance closure.
 
 **`crates/openbmp-physics/src/profile.rs` — the vocabulary + propagator pieces.**
 
@@ -198,12 +200,12 @@ against):
 **Summary maturity:** WP-07.0 is implemented: the differential corrector now has
 T0 offline two-body and scenario-backed apogee CLI I-load paths; WP-07.1 has a
 partial STM, multiple-shooting continuity, and fixed-endpoint interior-node
-correction substrate; the closed terminal-condition vocabulary still holds; a
-Clarabel SOCP epigraph smoke test, a forward propagator, and a PEG-style
-closed-loop ascent reference exist. No full multiple-shooting solve with
-controls/terminal targeting, NLP transcription, pseudospectral method,
-LCvx/SCvx horizon problem, closed-loop wiring of an optimized reference, or
-indirect cross-check exists.
+correction substrate plus a no-surface-coordinate compile-fail tripwire; the
+closed terminal-condition vocabulary still holds; a Clarabel SOCP epigraph
+smoke test, a forward propagator, and a PEG-style closed-loop ascent reference
+exist. No full multiple-shooting solve with controls/terminal targeting, NLP
+transcription, pseudospectral method, LCvx/SCvx horizon problem, closed-loop
+wiring of an optimized reference, or indirect cross-check exists.
 
 ---
 
@@ -738,10 +740,11 @@ gates green and answers the §3 per-PR checklist.
   `src/shooting.rs` evaluates fixed-duration M-segment continuity defects plus
   a block-bidiagonal `[STM_i, -I]` Jacobian. `MultipleShootingCorrector` now
   performs damped fixed-endpoint interior-node correction and reports honest
-  non-convergence for inconsistent endpoints. Remaining acceptance work: the
-  full free-vector solve with controls/terminal targeting, T0 cross-tier
-  regression tolerance table, STM-vs-complex-step gate, compile-fail
-  no-surface-coordinate tripwire, and box/path penalty handling.
+  non-convergence for inconsistent endpoints. A trybuild UI test proves the
+  public multiple-shooting node surface cannot carry target latitude/longitude
+  fields. Remaining acceptance work: the full free-vector solve with
+  controls/terminal targeting, T0 cross-tier regression tolerance table,
+  STM-vs-complex-step gate, and box/path penalty handling.
 - **goal:** Robust ascent-to-orbit reference generation that reuses the existing
   physics propagator, replacing the single-shooting limitation with block-
   bidiagonal continuity defects and an STM-based Jacobian.

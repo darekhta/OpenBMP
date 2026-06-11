@@ -1,0 +1,15 @@
+error[E0560]: struct `MultipleShootingNode` has no field named `target_latitude_rad`
+ --> tests/ui/trajopt_multiple_shooting_surface_coordinate.rs:9:9
+  |
+9 |         target_latitude_rad: 0.0,
+  |         ^^^^^^^^^^^^^^^^^^^ `MultipleShootingNode` does not have this field
+  |
+  = note: all struct fields are already assigned
+
+error[E0560]: struct `MultipleShootingNode` has no field named `target_longitude_rad`
+  --> tests/ui/trajopt_multiple_shooting_surface_coordinate.rs:10:9
+   |
+10 |         target_longitude_rad: 0.0,
+   |         ^^^^^^^^^^^^^^^^^^^^ `MultipleShootingNode` does not have this field
+   |
+   = note: all struct fields are already assigned
