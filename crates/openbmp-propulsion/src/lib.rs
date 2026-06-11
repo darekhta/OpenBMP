@@ -78,7 +78,7 @@ pub mod parser;
 pub use cluster::{ClusterLayout, EngineCluster};
 pub use engine::{
     EngineCommand, EngineFault, EngineLimits, EngineModel, EngineSnapshot, EngineState,
-    LiquidEngine,
+    LiquidEngine, LiquidEngineNozzle, LiquidEnginePerformance, LiquidEngineThermochemistry,
 };
 pub use error::{EngineError, MotorError};
 pub use grain::{

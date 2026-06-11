@@ -749,9 +749,13 @@ Effort sizes are from the research ladder.
   lookup behavior implemented and traced by `REQ-PROP-004` / `V-PROP-004`;
   inline solid-grain scenario/runner consumption and reduced feed-network
   chamber-constant consumption through `[propulsion.thermochem]` are
-  implemented and traced by `REQ-PROP-005` / `V-PROP-005`. Higher-fidelity
-  liquid-engine performance coupling and CEARUN/Cantera tolerance tables
-  remain future evidence before this WP is complete.
+  implemented and traced by `REQ-PROP-005` / `V-PROP-005`. The
+  `LiquidEnginePerformance` helper in `openbmp-propulsion` now derives
+  liquid-engine max thrust, choked mass flow, and effective `Isp` from a
+  looked-up thermochemical state plus the pressure-thrust nozzle solver
+  (`REQ-PROP-028` / `V-PROP-028`). Scenario/runner construction of liquid
+  engines directly from deck metadata and CEARUN/Cantera tolerance tables remain
+  future evidence before this WP is complete.
 - **goal:** Derive `c*(pc,MR)`, `Tc`, `γ`, `MW` from a CEA/Cantera deck instead
   of hardcoded constants; enable mixture-ratio-aware liquid performance and the
   documented efficiency band.
@@ -761,9 +765,10 @@ Effort sizes are from the research ladder.
   justification (depends only on `openbmp-core`/`openbmp-models` + math; no FC
   edge).
 - **touched:** new crate (`ThermochemDeck` trait, schema, parser, bilinear
-  interpolator, optional reduced min-G tier); `src/engine.rs`/`src/grain.rs`
-  consume `ChamberState` from the deck; `data/thermochem/<pair>/` + `provenance.md`;
-  `[propulsion.thermochem]` scenario block.
+  interpolator, optional reduced min-G tier); `src/grain.rs` consumes
+  `ChamberState` constants from the deck; `src/engine.rs` exposes the
+  thermochemical liquid-performance bridge; `data/thermochem/<pair>/` +
+  `provenance.md`; `[propulsion.thermochem]` scenario block.
 - **approach:** §3.3 **(M4)**. CEA/Cantera offline → table; bilinear interp in
   `log pc` × `MR` with locked corner order. Delivered `c* = c*_ideal·η_c*` from
   the band, propagated by `openbmp-uq`.

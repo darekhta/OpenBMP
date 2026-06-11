@@ -19,12 +19,14 @@ cold-gas / chamber-pressure engine variants remain deferred.
   is `Idle → Igniting → Burning → Shutdown`. Mass flow `mdot =
   thrust / (g0 · Isp)`. Gimbal applied as locked-order pitch-then-yaw
   rotation of nominal body-`+z` thrust.
+- `LiquidEnginePerformance`: construction-time bridge from a looked-up
+  thermochemical chamber state (`pc`, `c*`, `gamma`) plus nozzle geometry to
+  liquid-engine `max_thrust_n`, choked mass flow, and effective `Isp`.
 - `EngineCluster` propulsion-side container: holds
   `Vec<Box<dyn EngineModel>>`, body-frame mount points, and a
   layout tag (`Axial | Ring | Octaweb | Custom`). Supports
   `apply_command(id, cmd)` and `step(dt)`.
-- Four canonical fault modes for both `Motor` and `EngineModel`:
-  load-time injection only.
+- Canonical fault modes for both `Motor` and `EngineModel`.
 - In-house TOML thrust-curve format (RASP `.eng`-shaped) with strict
   `serde(deny_unknown_fields)` schema-1 parser for solid motors.
 - Kernel-side adapters (`MotorThrustForceAdapter`, `MotorMassAdapter`,
@@ -71,8 +73,8 @@ Liquid engines: `Checked` per `LiquidEngine::validation()`.
 In-crate tests cover the lifecycle state machine,
 ignition / shutdown transient linearity, throttle clamping, gimbal
 clamping + locked-order rotation, mass-flow derivation from thrust
-/ Isp, all four fault modes, bit-stable replay, and cluster
-summation. End-to-end exercise via
+/ Isp, thermochemical performance-derived thrust / mass-flow / `Isp`,
+engine fault modes, bit-stable replay, and cluster summation. End-to-end exercise via
 `crates/openbmp-cli/tests/engine_cluster_e2e.rs` against the
 canonical 4-engine octaweb scenario.
 
