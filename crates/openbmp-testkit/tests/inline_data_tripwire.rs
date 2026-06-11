@@ -9,7 +9,7 @@
 //!    multi-line Rust string literal in a `*.rs` file whose body
 //!    contains an OpenBMP schema header (`openbmp.scenario`,
 //!    `openbmp.aero_deck`, `openbmp.thermochem_deck`,
-//!    `openbmp.feed_turbopump_map`, `openbmp.motor`,
+//!    `openbmp.feed_turbopump_map`, `openbmp.feed_moc_line`, `openbmp.motor`,
 //!    `openbmp.imu_noise_budget`, `openbmp.benchmark`) or a `[[metric]]`
 //!    table marker is
 //!    forbidden, regardless of enclosing context (module-level
@@ -81,6 +81,7 @@ const TOML_SCHEMA_MARKERS: &[&str] = &[
     "openbmp.aero_deck",
     "openbmp.thermochem_deck",
     "openbmp.feed_turbopump_map",
+    "openbmp.feed_moc_line",
     "openbmp.motor",
     "openbmp.imu_noise_budget",
     "openbmp.benchmark",
@@ -1013,6 +1014,7 @@ const DATA_SCHEMA_MARKERS: &[&str] = &[
     "openbmp.aero_deck",
     "openbmp.thermochem_deck",
     "openbmp.feed_turbopump_map",
+    "openbmp.feed_moc_line",
     "openbmp.motor",
     "openbmp.imu_noise_budget",
 ];
@@ -1121,6 +1123,10 @@ fn schema_marker_detector_recognises_canonical_forms() {
     assert!(toml_declares_schema_marker(
         "openbmp.feed_turbopump_map = 1\n",
         "openbmp.feed_turbopump_map",
+    ));
+    assert!(toml_declares_schema_marker(
+        "openbmp.feed_moc_line = 1\n",
+        "openbmp.feed_moc_line",
     ));
 }
 

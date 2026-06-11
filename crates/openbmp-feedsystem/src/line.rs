@@ -281,6 +281,7 @@ fn require_positive_finite(value: f64, reason: &'static str) -> Result<(), FeedS
 #[allow(clippy::unwrap_used)]
 mod tests {
     use approx::assert_abs_diff_eq;
+    use toml::value::Table;
 
     use super::*;
 
@@ -357,6 +358,91 @@ mod tests {
     }
 
     #[test]
+    fn moc_line_matches_provenance_tolerance_table() {
+        let data: toml::Value = toml::from_str(include_str!(
+            "../../../data/feed_system/generic-moc-line-v1.toml"
+        ))
+        .unwrap();
+        assert_eq!(
+            table("openbmp", &data)["feed_moc_line"]
+                .as_integer()
+                .unwrap(),
+            1
+        );
+        let config = MocLineConfig {
+            length_m: float(table("config", &data), "length_m"),
+            wave_speed_m_s: float(table("config", &data), "wave_speed_m_s"),
+            density_kg_m3: float(table("config", &data), "density_kg_m3"),
+            cross_section_area_m2: float(table("config", &data), "cross_section_area_m2"),
+            segment_count: integer(table("config", &data), "segment_count") as usize,
+        };
+        let line = MocLine::new(config).unwrap();
+        let tolerances = table("tolerances", &data);
+
+        for case in data
+            .get("case")
+            .and_then(toml::Value::as_array)
+            .expect("case array")
+        {
+            let case = case.as_table().unwrap();
+            let state = MocLineState::uniform(
+                config,
+                float(case, "initial_head_m"),
+                float(case, "initial_velocity_m_s"),
+            )
+            .unwrap();
+            let snapshot = line
+                .step(
+                    &state,
+                    MocLineBoundary {
+                        upstream_head_m: float(case, "upstream_head_m"),
+                        downstream_velocity_m_s: float(case, "downstream_velocity_m_s"),
+                    },
+                )
+                .unwrap();
+
+            assert_abs_diff_eq!(
+                snapshot.dt_s,
+                float(case, "expected_dt_s"),
+                epsilon = float(tolerances, "absolute_dt_s")
+            );
+            assert_abs_diff_eq!(
+                snapshot.downstream_head_m,
+                float(case, "expected_downstream_head_m"),
+                epsilon = float(tolerances, "absolute_head_m")
+            );
+            assert_abs_diff_eq!(
+                snapshot.downstream_pressure_pa,
+                float(case, "expected_downstream_pressure_pa"),
+                epsilon = float(tolerances, "absolute_pressure_pa")
+            );
+            assert_abs_diff_eq!(
+                snapshot.downstream_pressure_pa
+                    - config.pressure_from_head_pa(float(case, "initial_head_m")),
+                float(case, "expected_pressure_delta_pa"),
+                epsilon = float(tolerances, "absolute_pressure_pa")
+            );
+            assert_abs_diff_eq!(
+                snapshot.downstream_head_m - float(case, "initial_head_m"),
+                float(case, "expected_joukowsky_head_delta_m"),
+                epsilon = float(tolerances, "absolute_head_m")
+            );
+            assert_abs_diff_eq!(
+                snapshot.min_head_m,
+                float(case, "expected_min_head_m"),
+                epsilon = float(tolerances, "absolute_head_m")
+            );
+            assert_abs_diff_eq!(
+                snapshot.max_head_m,
+                float(case, "expected_max_head_m"),
+                epsilon = float(tolerances, "absolute_head_m")
+            );
+            assert_eq!(string(case, "expected_validation"), "validated-toy");
+            assert_eq!(snapshot.validation, ValidationStatus::ValidatedToy);
+        }
+    }
+
+    #[test]
     fn moc_line_rejects_invalid_state_shape() {
         let line = MocLine::new(config()).unwrap();
         let state = MocLineState {
@@ -374,5 +460,21 @@ mod tests {
             ),
             Err(FeedSystemError::InvalidParameter { .. })
         ));
+    }
+
+    fn table<'a>(key: &str, value: &'a toml::Value) -> &'a Table {
+        value.get(key).and_then(toml::Value::as_table).unwrap()
+    }
+
+    fn float(table: &Table, key: &str) -> f64 {
+        table.get(key).and_then(toml::Value::as_float).unwrap()
+    }
+
+    fn integer(table: &Table, key: &str) -> i64 {
+        table.get(key).and_then(toml::Value::as_integer).unwrap()
+    }
+
+    fn string<'a>(table: &'a Table, key: &str) -> &'a str {
+        table.get(key).and_then(toml::Value::as_str).unwrap()
     }
 }
