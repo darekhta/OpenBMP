@@ -838,10 +838,12 @@ Effort sizes are from the research ladder.
 - **status:** generic normalized turbopump map, affinity-law pressure scaling,
   speed-scaled NPSH gate, cavitation head derating, efficiency/power reporting,
   and specific-speed metadata are implemented in `openbmp-feedsystem` and traced
-  by `REQ-PROP-012` / `V-PROP-012`. Scenario-facing turbopump blocks for
-  transient feed-network legs are implemented and traced by `REQ-PROP-016` /
-  `V-PROP-016`. Public calibration/provenance remains future work before this WP
-  is complete.
+  by `REQ-PROP-012` / `V-PROP-012`; a provenance-backed synthetic tolerance
+  table under `data/feed_system/` now covers affinity scaling, NPSH thresholding,
+  cavitation derating, efficiency, and power. Scenario-facing turbopump blocks
+  for transient feed-network legs are implemented and traced by `REQ-PROP-016`
+  / `V-PROP-016`. Public real-pump calibration remains future work before this
+  WP is complete.
 - **goal:** Set pump-fed feed pressure from a normalized turbopump map + affinity
   laws + NPSH cavitation gate, feeding cavitation compliance into POGO.
 - **fidelity_tier:** T4

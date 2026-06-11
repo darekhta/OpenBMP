@@ -1618,6 +1618,7 @@ dependencies = [
  "approx",
  "openbmp-core",
  "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]

@@ -1,5 +1,8 @@
 # Landing Gear Data Provenance
 
+files:
+- data/landing_gear/synthetic-four-leg-oleo-crush.toml
+
 `synthetic-four-leg-oleo-crush.toml` is a synthetic representative data set for
 the WP-14.4 runner fixture. It is not calibrated to any flight article or drop
 test. The values are rounded to keep the validation target transparent:

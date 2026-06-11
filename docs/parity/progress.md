@@ -108,8 +108,8 @@ WP-04.1-a … WP-04.4-b: **not started**.
 | WP-05.2-b transient solid ballistics | **implemented** | `TransientChamber` pc(t) ODE + erosive hook in `grain.rs`; `[propulsion.motor.grain] mode = "transient"`; test; REQ-PROP-003 |
 | WP-05.3 thermochem deck ingestion | **partial** | crate + parser + scenario block + SHA pin + fixtures + inline grain and reduced feed-network runtime consumption landed; missing: CEARUN/Cantera tolerance tables and full liquid-engine performance coupling |
 | WP-05.4-a feed network + transient chamber | **partial** | `openbmp-feedsystem` (graph/network/line/chamber/control/transient) + `crates/openbmp-runner/src/feed_network.rs` + scenario `propulsion.feed_networks` validation; missing: dedicated acceptance tests + tolerance tables |
-| WP-05.4-b turbopump map + NPSH | **partial** | `pump.rs` (`Turbopump`, normalized map, design point) substrate; runner/test coverage not found |
-| WP-05.4-c MOC line transients | **partial** | `line.rs` (`MocLine`) substrate; no scenario/test coverage found |
+| WP-05.4-b turbopump map + NPSH | **partial** | `pump.rs` (`Turbopump`, normalized map, design point) + scenario pump blocks + runner pressure/cavitation coupling + synthetic provenance-backed tolerance table; missing: public real-pump calibration |
+| WP-05.4-c MOC line transients | **partial** | `line.rs` (`MocLine`) + scenario line blocks + runner pressure perturbation coupling + Joukowsky tests; missing: richer boundary library, standalone line topology, public benchmark tables |
 | WP-05.5-a POGO feed half | **partial** | `pogo.rs` (feedsystem + runner) + `propulsion.pogo` schema; method-level validation cases not found; structural half is doc 02's |
 | WP-05.5-b engine-out & fault library | **partial** | `crates/openbmp-sil/tests/propulsion_stimulus.rs`; `openbmp mc` propulsion-fault campaign path with UQ flags; full doc fault set unverified |
 

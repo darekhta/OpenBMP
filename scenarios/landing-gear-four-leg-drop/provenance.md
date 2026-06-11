@@ -1,5 +1,8 @@
 # Landing Gear Four-Leg Drop Scenario
 
+files:
+- scenarios/landing-gear-four-leg-drop/scenario.toml
+
 Synthetic WP-14.4 fixture for runner/schema/report plumbing. The scenario pins
 `data/landing_gear/synthetic-four-leg-oleo-crush.toml` by SHA-256 and uses
 rounded toy parameters for a four-leg vertical drop. Inline oleo damping and
