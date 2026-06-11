@@ -1,0 +1,96 @@
+openbmp.scenario = 3
+
+[meta]
+name        = "landing-gear-four-leg-drop"
+description = "WP-14.4 synthetic rigid-body four-leg landing gear drop with oleo and crush-core legs. Validated-toy fixture, not flight hardware."
+validation  = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s  = 3.0
+dt_s    = 0.001
+seed    = 0x4c_616e_6447_6561 # "LandGea"
+
+[vehicle]
+kind                                = "rigid_body"
+initial_position_eci_m              = [0.0, 0.0, 1.20]
+initial_velocity_eci_m_s            = [0.0, 0.0, -1.50]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "landing-gear-four-leg-drop"
+
+[[vehicle.assembly.bodies]]
+id            = "core"
+geometry      = { kind = "reference", length_m = 2.0, area_m2 = 1.0 }
+dry_mass_kg   = 1000.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [
+  [900.0,   0.0,   0.0],
+  [  0.0, 900.0,   0.0],
+  [  0.0,   0.0, 1200.0],
+]
+
+[vehicle.landing_gear]
+data_file = "../../data/landing_gear/synthetic-four-leg-oleo-crush.toml"
+data_file_sha256 = "efef5b573d83551fecd724383c9420de712bd62665e5ff989642916bbf2a2d5b"
+ground_altitude_m = 0.0
+
+[[vehicle.landing_gear.legs]]
+id = "front_left"
+mounted_to = "core"
+attach_body_m = [1.0, 1.0, 0.0]
+strut_axis_body = [0.0, 0.0, -1.0]
+free_length_m = 1.0
+footpad = "sphere"
+footpad_radius_m = 0.12
+oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 200000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
+crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
+
+[[vehicle.landing_gear.legs]]
+id = "front_right"
+mounted_to = "core"
+attach_body_m = [1.0, -1.0, 0.0]
+strut_axis_body = [0.0, 0.0, -1.0]
+free_length_m = 1.0
+footpad = "sphere"
+footpad_radius_m = 0.12
+oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 200000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
+crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
+
+[[vehicle.landing_gear.legs]]
+id = "rear_left"
+mounted_to = "core"
+attach_body_m = [-1.0, 1.0, 0.0]
+strut_axis_body = [0.0, 0.0, -1.0]
+free_length_m = 1.0
+footpad = "sphere"
+footpad_radius_m = 0.12
+oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 200000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
+crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
+
+[[vehicle.landing_gear.legs]]
+id = "rear_right"
+mounted_to = "core"
+attach_body_m = [-1.0, -1.0, 0.0]
+strut_axis_body = [0.0, 0.0, -1.0]
+free_length_m = 1.0
+footpad = "sphere"
+footpad_radius_m = 0.12
+oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 200000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
+crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "constant"
+gravity_m_s2  = 9.80665
+atmosphere    = "none"
+wind          = "none"
+
+[telemetry]
+output.parquet = "out/landing-gear-four-leg-drop.parquet"
+
+[validation]
+require_finite_state   = true
+require_monotonic_time = true

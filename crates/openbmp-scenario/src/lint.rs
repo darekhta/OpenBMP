@@ -189,6 +189,7 @@ fn is_frame_exempt_3vector(path: &str, key: &str) -> bool {
         (path, key),
         ("$.wind.intensity_m_s", "intensity_m_s") | ("$.wind.length_scale_m", "length_scale_m")
     ) || (path.starts_with("$.landing_footprint.monte_carlo") && key == "confidence_levels")
+        || (path.starts_with("$.vehicle.landing_gear.legs") && key == "strut_axis_body")
         || (path.starts_with("$.propulsion.feed_network")
             && (path.contains(".oxidizer_pump") || path.contains(".fuel_pump"))
             && matches!(key, "head_coefficients" | "efficiency_coefficients"))
@@ -422,6 +423,15 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
                 | "kinetic_friction_coefficient"
                 | "substeps"
         )
+    {
+        return true;
+    }
+
+    // Landing-gear direction vectors and oleo polytropic exponent are
+    // dimensionless; hardpoints, pressure, volume, damping, stroke, and piston
+    // area keep explicit suffixes.
+    if path.starts_with("$.vehicle.landing_gear.legs")
+        && matches!(key, "strut_axis_body" | "gamma_unit")
     {
         return true;
     }

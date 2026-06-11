@@ -43,6 +43,7 @@ pub mod feed_network;
 pub mod footprint;
 pub mod frames;
 pub mod integrator;
+pub mod landing_gear;
 pub mod mission;
 pub mod pogo;
 pub mod point_mass;

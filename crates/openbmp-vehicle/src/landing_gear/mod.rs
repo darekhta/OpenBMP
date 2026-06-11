@@ -2,8 +2,9 @@
 //!
 //! This module is the vehicle-side substrate for contact WP-14.4. It keeps
 //! gear mechanics independent from runner scenario plumbing: validated leg
-//! geometry, a polytropic oleo stage, and an irreversible crush core. Runner
-//! racks and per-leg telemetry are layered on top in later slices.
+//! geometry, unloaded strut length, a polytropic oleo stage, and an
+//! irreversible crush core. Runner racks and per-leg telemetry are layered on
+//! top in later slices.
 
 use openbmp_contact::ContactGeometry;
 use thiserror::Error;
@@ -34,6 +35,7 @@ pub enum LandingGearError {
 pub struct LandingGearLeg {
     attach_body_m: [f64; 3],
     strut_axis_body: [f64; 3],
+    free_length_m: f64,
     oleo: Option<OleoStage>,
     crush: Option<CrushCore>,
     footpad: ContactGeometry,
@@ -53,6 +55,7 @@ impl LandingGearLeg {
     pub fn new(
         attach_body_m: [f64; 3],
         strut_axis_body: [f64; 3],
+        free_length_m: f64,
         oleo: Option<OleoStage>,
         crush: Option<CrushCore>,
         footpad: ContactGeometry,
@@ -66,6 +69,7 @@ impl LandingGearLeg {
         Ok(Self {
             attach_body_m: finite_vector("attach_body_m", attach_body_m)?,
             strut_axis_body: unit_vector("strut_axis_body", strut_axis_body)?,
+            free_length_m: require_positive("free_length_m", free_length_m)?,
             oleo,
             crush,
             footpad,
@@ -82,6 +86,12 @@ impl LandingGearLeg {
     #[must_use]
     pub const fn strut_axis_body(self) -> [f64; 3] {
         self.strut_axis_body
+    }
+
+    /// Returns the unloaded distance from hardpoint to footpad centre.
+    #[must_use]
+    pub const fn free_length_m(self) -> f64 {
+        self.free_length_m
     }
 
     /// Returns the optional oleo stage.
@@ -254,6 +264,24 @@ impl CrushCore {
     #[must_use]
     pub const fn crushed_m(self) -> f64 {
         self.crushed_m
+    }
+
+    /// Returns the crush plateau force.
+    #[must_use]
+    pub const fn f_crush_n(self) -> f64 {
+        self.f_crush_n
+    }
+
+    /// Returns maximum crush stroke.
+    #[must_use]
+    pub const fn stroke_max_m(self) -> f64 {
+        self.stroke_max_m
+    }
+
+    /// Returns the elastic stiffness before plateau.
+    #[must_use]
+    pub const fn k_elastic_n_m(self) -> f64 {
+        self.k_elastic_n_m
     }
 
     /// Returns total plastic energy absorbed by the core.
@@ -469,6 +497,7 @@ mod tests {
         let leg = LandingGearLeg::new(
             [1.0, 2.0, 3.0],
             [0.0, 0.0, -2.0],
+            0.75,
             None,
             Some(crush),
             ContactGeometry::Point,
@@ -481,11 +510,13 @@ mod tests {
         assert_abs_diff_eq!(leg.strut_axis_body()[0], 0.0, epsilon = 0.0);
         assert_abs_diff_eq!(leg.strut_axis_body()[1], 0.0, epsilon = 0.0);
         assert_abs_diff_eq!(leg.strut_axis_body()[2], -1.0, epsilon = 0.0);
+        assert_abs_diff_eq!(leg.free_length_m(), 0.75, epsilon = 0.0);
         assert_eq!(leg.footpad(), ContactGeometry::Point);
         assert!(
             LandingGearLeg::new(
                 [0.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0],
+                1.0,
                 None,
                 None,
                 ContactGeometry::Point,

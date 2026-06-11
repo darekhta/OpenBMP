@@ -585,6 +585,47 @@ rigid-kernel construction applies the full physical validity checks.
 The rigid-body-only initial-state fields are rejected when
 `kind = "point_mass"`.
 
+### Landing gear
+
+Schema v3 rigid-body scenarios may opt into a massless landing-gear rack with
+`[vehicle.landing_gear]`. When `[forces]` is omitted, the parser derives the
+`landing_gear` force model automatically. When `[forces]` is explicit, it must
+include `"landing_gear"` whenever this block is present. The block is rejected
+for schema v2 and for point-mass vehicles.
+
+```toml
+[vehicle.landing_gear]
+data_file = "../../data/landing_gear/synthetic-four-leg-oleo-crush.toml"
+data_file_sha256 = "efef5b573d83551fecd724383c9420de712bd62665e5ff989642916bbf2a2d5b"
+ground_altitude_m = 0.0
+
+[[vehicle.landing_gear.legs]]
+id = "front_left"
+mounted_to = "core"
+attach_body_m = [1.0, 1.0, 0.0]
+strut_axis_body = [0.0, 0.0, -1.0]
+free_length_m = 1.0
+footpad = "sphere" # "point" | "sphere"
+footpad_radius_m = 0.12
+oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 200000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
+crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
+```
+
+Each leg id must be unique, `mounted_to` must name a declared
+`[[vehicle.assembly.bodies]]` id, `strut_axis_body` must be nonzero, and
+`free_length_m` must be positive. Sphere footpads require
+`footpad_radius_m`; point footpads reject it. At least one of `oleo` or
+`crush` is required per leg. Oleo pressure, volume, exponent (`gamma_unit`),
+stroke, and piston area must be positive; damping may be zero; and
+`piston_area_m2 * stroke_max_m` must stay below `v0_m3`. Crush force,
+stroke, and elastic stiffness must be positive.
+
+The rigid-body runner publishes `force.landing_gear.{x,y,z}_n` plus per-leg
+`landing_gear.<id>.stroke_m`, `.gap_m`, `.compression_rate_m_s`, `.force_n`,
+`.crushed_m`, and `.in_contact`. Referenced gear data files are resolved
+relative to the scenario file and recorded in telemetry metadata under
+`openbmp.scenario_files.vehicle.landing_gear.data_file`.
+
 ### Gravity coefficients
 
 `[environment].gravity` selects one of `constant`, `point_mass`, `j2`,

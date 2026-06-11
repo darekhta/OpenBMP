@@ -1,0 +1,32 @@
+# Synthetic representative four-leg landing gear parameters for WP-14.4.
+#
+# Values are deliberately rounded engineering numbers, not flight hardware
+# measurements. They are chosen to exercise the OpenBMP landing-gear rack:
+# finite body hardpoints, vertical unloaded struts, spherical footpads,
+# polytropic oleos, and crush-core plateau parameters.
+
+[source]
+label = "synthetic_apollo_viking_inspired_four_leg_drop"
+validation = "validated-toy"
+notes = "Representative toy data derived from public descriptions of lunar/Mars lander leg architecture; no flight qualification implied."
+
+[rack]
+ground_altitude_m = 0.0
+body = "core"
+leg_count = 4
+
+[oleo]
+p0_pa = 250000.0
+v0_m3 = 0.06
+gamma = 1.25
+orifice_c_n_s2_m2 = 120000.0
+stroke_max_m = 0.55
+piston_area_m2 = 0.015
+
+[crush]
+f_crush_n = 40000.0
+stroke_max_m = 0.25
+k_elastic_n_m = 400000.0
+
+[footpad]
+radius_m = 0.12
