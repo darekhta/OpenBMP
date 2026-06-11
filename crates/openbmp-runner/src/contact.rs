@@ -3,7 +3,8 @@
 use openbmp_contact::{
     AnchoredStictionFriction, AnchoredStictionState, ContactEnergyAudit, ContactError,
     ContactGeometry, ContactPair, HalfSpace, HertzNormal, HuntCrossleyNormal, KelvinVoigtNormal,
-    NormalLaw, RegularizedCoulombFriction, half_space_kinematics,
+    NormalLaw, RegularizedCoulombFriction, RestDetector, RestDetectorConfig, RestDetectorState,
+    RestStatus, half_space_kinematics,
 };
 use openbmp_core::{ChannelId, ModelId};
 use openbmp_scenario::{
@@ -18,6 +19,7 @@ use crate::RunnerError;
 
 const REST_GAP_TOLERANCE_M: f64 = 1.0e-9;
 const REST_SPEED_TOLERANCE_M_S: f64 = 1.0e-9;
+const REST_HOLD_SAMPLES: u32 = 3;
 
 /// Returns the runner kernel step size after contact fixed sub-stepping.
 #[must_use]
@@ -51,10 +53,14 @@ pub struct ContactStepDiagnostics {
     pub penetration_m: f64,
     /// Relative normal velocity in meters per second.
     pub normal_velocity_m_s: f64,
+    /// Relative tangential speed in meters per second.
+    pub tangential_speed_m_s: f64,
     /// Non-negative scalar normal force in newtons.
     pub normal_force_n: f64,
-    /// Elastic energy stored in the normal law.
+    /// Elastic energy stored in the normal law and tangential anchor.
     pub elastic_energy_j: f64,
+    /// `true` when the contact is statically stuck for rest detection.
+    pub sticking: bool,
     /// Instantaneous damping/friction dissipation power in watts.
     pub dissipated_power_w: f64,
     /// Instantaneous contact-force power on the vehicle in watts.
@@ -124,25 +130,35 @@ impl ContactDiagnosticsEvaluator {
         let kinematics = half_space_kinematics(self.half_space, self.geometry, position, velocity)
             .map_err(contact_build_error)?;
         let normal = self.normal_law.evaluate(kinematics);
-        let (tangential_force_n, tangential_dissipated_power_w) =
-            self.friction
-                .evaluate(kinematics, normal.normal_force_n, time_s)?;
+        let friction = self
+            .friction
+            .evaluate(kinematics, normal.normal_force_n, time_s)?;
         let total_force_n = add(
             scale(self.half_space.normal(), normal.normal_force_n),
-            tangential_force_n,
+            friction.force_n,
         );
-        let dissipated_power_w = normal.damping_power_w + tangential_dissipated_power_w;
+        let dissipated_power_w = normal.damping_power_w + friction.dissipated_power_w;
         let contact_power_on_vehicle_w = dot(total_force_n, velocity);
         Ok(ContactStepDiagnostics {
             gap_m: kinematics.gap_m,
             penetration_m: kinematics.penetration_m(),
             normal_velocity_m_s: kinematics.normal_velocity_m_s,
+            tangential_speed_m_s: kinematics.tangential_speed_m_s(),
             normal_force_n: normal.normal_force_n,
-            elastic_energy_j: normal.elastic_energy_j,
+            elastic_energy_j: normal.elastic_energy_j + friction.elastic_energy_j,
+            sticking: friction.sticking,
             dissipated_power_w,
             contact_power_on_vehicle_w,
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ContactFrictionDiagnostics {
+    force_n: [f64; 3],
+    elastic_energy_j: f64,
+    sticking: bool,
+    dissipated_power_w: f64,
 }
 
 enum ContactDiagnosticsFriction {
@@ -171,14 +187,18 @@ impl ContactDiagnosticsFriction {
         kinematics: openbmp_contact::ContactKinematics,
         normal_force_n: f64,
         time_s: f64,
-    ) -> Result<([f64; 3], f64), RunnerError> {
+    ) -> Result<ContactFrictionDiagnostics, RunnerError> {
         match self {
             Self::RegularizedCoulomb(friction) => {
                 let force = friction.force_n(kinematics, normal_force_n);
-                Ok((
-                    force,
-                    (0.0 - dot(force, kinematics.tangential_velocity_m_s)).max(0.0),
-                ))
+                Ok(ContactFrictionDiagnostics {
+                    force_n: force,
+                    elastic_energy_j: 0.0,
+                    sticking: normal_force_n > 0.0
+                        && kinematics.tangential_speed_m_s() <= REST_SPEED_TOLERANCE_M_S,
+                    dissipated_power_w: (0.0 - dot(force, kinematics.tangential_velocity_m_s))
+                        .max(0.0),
+                })
             }
             Self::AnchoredStiction { friction, state } => {
                 let mut state = state.lock().map_err(|_| RunnerError::UnsupportedScenario {
@@ -202,7 +222,12 @@ impl ContactDiagnosticsFriction {
                     ))
                     .max(0.0)
                 };
-                Ok((response.friction_force_n, power_w))
+                Ok(ContactFrictionDiagnostics {
+                    force_n: response.friction_force_n,
+                    elastic_energy_j: response.elastic_energy_j,
+                    sticking: response.sticking,
+                    dissipated_power_w: power_w,
+                })
             }
         }
     }
@@ -237,11 +262,15 @@ struct ContactEnergySample {
     contact_power_on_vehicle_w: f64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ContactRunAccumulator {
     samples: u64,
     max_penetration_m: f64,
     max_normal_force_n: f64,
+    effective_mass_kg: f64,
+    rest_detector: RestDetector,
+    rest_state: RestDetectorState,
+    final_rest_status: RestStatus,
     initial_elastic_energy_j: Option<f64>,
     final_elastic_energy_j: f64,
     contact_work_on_vehicle_j: f64,
@@ -251,6 +280,31 @@ pub(crate) struct ContactRunAccumulator {
 }
 
 impl ContactRunAccumulator {
+    pub(crate) fn from_config(config: &ContactConfig) -> Result<Self, RunnerError> {
+        let rest_kinetic_energy_floor_j =
+            0.5 * config.effective_mass_kg * REST_SPEED_TOLERANCE_M_S * REST_SPEED_TOLERANCE_M_S;
+        let rest_config = RestDetectorConfig::new(rest_kinetic_energy_floor_j, REST_HOLD_SAMPLES)
+            .map_err(contact_build_error)?;
+        Ok(Self {
+            samples: 0,
+            max_penetration_m: 0.0,
+            max_normal_force_n: 0.0,
+            effective_mass_kg: config.effective_mass_kg,
+            rest_detector: RestDetector::new(rest_config),
+            rest_state: RestDetectorState::new(),
+            final_rest_status: RestStatus {
+                quiet_steps: 0,
+                at_rest: false,
+            },
+            initial_elastic_energy_j: None,
+            final_elastic_energy_j: 0.0,
+            contact_work_on_vehicle_j: 0.0,
+            dissipated_energy_j: 0.0,
+            previous_energy_sample: None,
+            final_diagnostics: None,
+        })
+    }
+
     pub(crate) fn record(&mut self, time_s: f64, diagnostics: ContactStepDiagnostics) {
         self.samples += 1;
         self.max_penetration_m = self.max_penetration_m.max(diagnostics.penetration_m);
@@ -272,6 +326,21 @@ impl ContactRunAccumulator {
                 0.5 * (previous.dissipated_power_w + sample.dissipated_power_w) * dt_s;
         }
         self.previous_energy_sample = Some(sample);
+        let kinetic_energy_j = 0.5
+            * self.effective_mass_kg
+            * (diagnostics.normal_velocity_m_s * diagnostics.normal_velocity_m_s
+                + diagnostics.tangential_speed_m_s * diagnostics.tangential_speed_m_s);
+        self.final_rest_status = self
+            .rest_detector
+            .update(
+                &mut self.rest_state,
+                kinetic_energy_j,
+                diagnostics.sticking && diagnostics.penetration_m > REST_GAP_TOLERANCE_M,
+            )
+            .unwrap_or(RestStatus {
+                quiet_steps: 0,
+                at_rest: false,
+            });
         self.final_diagnostics = Some(diagnostics);
     }
 
@@ -282,8 +351,8 @@ impl ContactRunAccumulator {
         let outcome = classify_contact_outcome(
             final_diagnostics,
             self.max_penetration_m,
+            self.final_rest_status,
             REST_GAP_TOLERANCE_M,
-            REST_SPEED_TOLERANCE_M_S,
         );
         let initial_elastic_energy_j = self.initial_elastic_energy_j.unwrap_or(0.0);
         let audit = ContactEnergyAudit::new(
@@ -525,14 +594,12 @@ fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 fn classify_contact_outcome(
     final_diagnostics: ContactStepDiagnostics,
     max_penetration_m: f64,
+    final_rest_status: RestStatus,
     gap_tolerance_m: f64,
-    speed_tolerance_m_s: f64,
 ) -> ContactOutcomeKind {
     if max_penetration_m <= gap_tolerance_m && final_diagnostics.gap_m >= -gap_tolerance_m {
         ContactOutcomeKind::NoContact
-    } else if final_diagnostics.penetration_m > gap_tolerance_m
-        && final_diagnostics.normal_velocity_m_s.abs() <= speed_tolerance_m_s
-    {
+    } else if final_diagnostics.penetration_m > gap_tolerance_m && final_rest_status.at_rest {
         ContactOutcomeKind::Rest
     } else {
         ContactOutcomeKind::Unsettled
@@ -551,14 +618,19 @@ mod tests {
                 gap_m: 1.0,
                 penetration_m: 0.0,
                 normal_velocity_m_s: 0.0,
+                tangential_speed_m_s: 0.0,
                 normal_force_n: 0.0,
                 elastic_energy_j: 0.0,
+                sticking: false,
                 dissipated_power_w: 0.0,
                 contact_power_on_vehicle_w: 0.0,
             },
             0.0,
+            RestStatus {
+                quiet_steps: 0,
+                at_rest: false,
+            },
             REST_GAP_TOLERANCE_M,
-            REST_SPEED_TOLERANCE_M_S,
         );
         assert_eq!(no_contact, ContactOutcomeKind::NoContact);
 
@@ -567,14 +639,19 @@ mod tests {
                 gap_m: -0.01,
                 penetration_m: 0.01,
                 normal_velocity_m_s: 0.0,
+                tangential_speed_m_s: 0.0,
                 normal_force_n: 20.0,
                 elastic_energy_j: 0.1,
+                sticking: true,
                 dissipated_power_w: 0.0,
                 contact_power_on_vehicle_w: 0.0,
             },
             0.01,
+            RestStatus {
+                quiet_steps: REST_HOLD_SAMPLES,
+                at_rest: true,
+            },
             REST_GAP_TOLERANCE_M,
-            REST_SPEED_TOLERANCE_M_S,
         );
         assert_eq!(rest, ContactOutcomeKind::Rest);
 
@@ -583,14 +660,19 @@ mod tests {
                 gap_m: -0.01,
                 penetration_m: 0.01,
                 normal_velocity_m_s: 1.0e-3,
+                tangential_speed_m_s: 0.0,
                 normal_force_n: 20.0,
                 elastic_energy_j: 0.1,
+                sticking: true,
                 dissipated_power_w: 0.0,
                 contact_power_on_vehicle_w: 0.02,
             },
             0.01,
+            RestStatus {
+                quiet_steps: 0,
+                at_rest: false,
+            },
             REST_GAP_TOLERANCE_M,
-            REST_SPEED_TOLERANCE_M_S,
         );
         assert_eq!(unsettled, ContactOutcomeKind::Unsettled);
     }
@@ -633,12 +715,71 @@ mod tests {
         assert_eq!(diagnostics.gap_m.to_bits(), (-0.01_f64).to_bits());
         assert_eq!(diagnostics.penetration_m.to_bits(), 0.01_f64.to_bits());
         assert_eq!(diagnostics.normal_velocity_m_s.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            diagnostics.tangential_speed_m_s.to_bits(),
+            0.0_f64.to_bits()
+        );
         assert!((diagnostics.normal_force_n - 20.0).abs() <= 1.0e-12);
         assert!((diagnostics.elastic_energy_j - 0.1).abs() <= 1.0e-15);
+        assert!(diagnostics.sticking);
         assert_eq!(diagnostics.dissipated_power_w.to_bits(), 0.0_f64.to_bits());
         assert_eq!(
             diagnostics.contact_power_on_vehicle_w.to_bits(),
             0.0_f64.to_bits()
         );
+    }
+
+    #[test]
+    fn contact_diagnostics_anchored_stiction_time_gates_static_anchor_energy() {
+        let config = ContactConfig {
+            kind: "half_space".to_owned(),
+            ground_altitude_m: 0.0,
+            geometry: ContactGeometryConfig::Point,
+            radius_m: None,
+            normal_law: ContactNormalLawConfig::KelvinVoigt,
+            stiffness_n_m: Some(2000.0),
+            stiffness_n_m_3_2: None,
+            damping_n_s_m: Some(0.0),
+            damping_factor_s_m: None,
+            restitution: None,
+            reference_impact_speed_m_s: None,
+            stability_stiffness_n_m: None,
+            friction_coefficient: 0.0,
+            friction_law: ContactFrictionLawConfig::AnchoredStiction,
+            friction_regularization_speed_m_s: None,
+            static_friction_coefficient: Some(1.0),
+            kinetic_friction_coefficient: Some(0.5),
+            tangential_stiffness_n_m: Some(1000.0),
+            tangential_damping_n_s_m: Some(0.0),
+            restick_speed_m_s: Some(0.01),
+            effective_mass_kg: 1.0,
+            substeps: 1,
+        };
+        let evaluator = ContactDiagnosticsEvaluator::from_config(&config).unwrap();
+        let position = nalgebra::Vector3::new(0.0, 0.0, -0.01);
+        let velocity = nalgebra::Vector3::new(0.001, 0.0, 0.0);
+
+        let first = evaluator
+            .diagnostics_from_state_vectors(position, velocity, 0.0)
+            .unwrap();
+        let second = evaluator
+            .diagnostics_from_state_vectors(position, velocity, 0.001)
+            .unwrap();
+        let repeated = evaluator
+            .diagnostics_from_state_vectors(position, velocity, 0.001)
+            .unwrap();
+
+        assert!(first.sticking);
+        assert!(second.sticking);
+        assert!(repeated.sticking);
+        assert_eq!(first.tangential_speed_m_s.to_bits(), 0.001_f64.to_bits());
+        assert!((first.elastic_energy_j - 0.1).abs() <= 1.0e-15);
+        assert!((second.elastic_energy_j - 0.100_000_000_5).abs() <= 1.0e-15);
+        assert_eq!(
+            second.elastic_energy_j.to_bits(),
+            repeated.elastic_energy_j.to_bits()
+        );
+        assert!(second.contact_power_on_vehicle_w < 0.0);
+        assert_eq!(second.dissipated_power_w.to_bits(), 0.0_f64.to_bits());
     }
 }

@@ -164,11 +164,16 @@ impl AnchoredStictionFriction {
                 let trial_magnitude_n = norm(trial_force_n);
 
                 if trial_magnitude_n <= static_limit_n {
+                    let anchor_displacement_m = norm(state.anchor_displacement_m);
                     Ok(AnchoredStictionResponse {
                         mode: StictionMode::Sticking,
                         sticking: true,
                         friction_force_n: trial_force_n,
                         static_limit_n,
+                        elastic_energy_j: 0.5
+                            * self.tangential_stiffness_n_m
+                            * anchor_displacement_m
+                            * anchor_displacement_m,
                         dissipated_energy_j: self.tangential_damping_n_s_m
                             * speed_m_s
                             * speed_m_s
@@ -200,6 +205,7 @@ impl AnchoredStictionFriction {
                 sticking: false,
                 friction_force_n: [0.0, 0.0, 0.0],
                 static_limit_n,
+                elastic_energy_j: 0.0,
                 dissipated_energy_j: 0.0,
             };
         }
@@ -209,6 +215,7 @@ impl AnchoredStictionFriction {
             sticking: false,
             friction_force_n: scale(tangential_velocity_m_s, -magnitude_n / speed_m_s),
             static_limit_n,
+            elastic_energy_j: 0.0,
             dissipated_energy_j: magnitude_n * speed_m_s * dt_s,
         }
     }
@@ -225,6 +232,8 @@ pub struct AnchoredStictionResponse {
     pub friction_force_n: ContactVector3,
     /// Static friction cone limit `mu_s * normal_force_n`.
     pub static_limit_n: f64,
+    /// Elastic energy stored in the tangential anchor.
+    pub elastic_energy_j: f64,
     /// Non-negative work dissipated during the sub-step.
     pub dissipated_energy_j: f64,
 }
@@ -236,6 +245,7 @@ impl AnchoredStictionResponse {
             sticking: false,
             friction_force_n: [0.0, 0.0, 0.0],
             static_limit_n: 0.0,
+            elastic_energy_j: 0.0,
             dissipated_energy_j: 0.0,
         }
     }
