@@ -258,6 +258,9 @@ pub struct RunOutcome {
     pub actuator_stream: Option<determinism::ActuatorStreamReport>,
     /// Optional contact diagnostics report for `[contact]` scenarios.
     pub contact: Option<contact::ContactRunReport>,
+    /// Optional landing-gear touchdown report for `[vehicle.landing_gear]`
+    /// scenarios.
+    pub landing_gear: Option<landing_gear::LandingGearRunReport>,
 }
 
 /// Run a scenario through the appropriate kernel path.

@@ -7,7 +7,7 @@ validation  = "validated-toy"
 
 [time]
 start_s = 0.0
-stop_s  = 3.0
+stop_s  = 10.0
 dt_s    = 0.001
 seed    = 0x4c_616e_6447_6561 # "LandGea"
 
@@ -45,7 +45,7 @@ strut_axis_body = [0.0, 0.0, -1.0]
 free_length_m = 1.0
 footpad = "sphere"
 footpad_radius_m = 0.12
-oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 200000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
+oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 800000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
 crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
 
 [[vehicle.landing_gear.legs]]
@@ -56,7 +56,7 @@ strut_axis_body = [0.0, 0.0, -1.0]
 free_length_m = 1.0
 footpad = "sphere"
 footpad_radius_m = 0.12
-oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 200000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
+oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 800000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
 crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
 
 [[vehicle.landing_gear.legs]]
@@ -67,7 +67,7 @@ strut_axis_body = [0.0, 0.0, -1.0]
 free_length_m = 1.0
 footpad = "sphere"
 footpad_radius_m = 0.12
-oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 200000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
+oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 800000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
 crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
 
 [[vehicle.landing_gear.legs]]
@@ -78,7 +78,7 @@ strut_axis_body = [0.0, 0.0, -1.0]
 free_length_m = 1.0
 footpad = "sphere"
 footpad_radius_m = 0.12
-oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 200000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
+oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 800000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
 crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
 
 [environment]

@@ -607,7 +607,7 @@ strut_axis_body = [0.0, 0.0, -1.0]
 free_length_m = 1.0
 footpad = "sphere" # "point" | "sphere"
 footpad_radius_m = 0.12
-oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 200000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
+oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 800000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
 crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
 ```
 
@@ -624,7 +624,10 @@ The rigid-body runner publishes `force.landing_gear.{x,y,z}_n` plus per-leg
 `landing_gear.<id>.stroke_m`, `.gap_m`, `.compression_rate_m_s`, `.force_n`,
 `.crushed_m`, and `.in_contact`. Referenced gear data files are resolved
 relative to the scenario file and recorded in telemetry metadata under
-`openbmp.scenario_files.vehicle.landing_gear.data_file`.
+`openbmp.scenario_files.vehicle.landing_gear.data_file`. The runner also
+emits `RunOutcome.landing_gear` outside canonical telemetry bytes with
+NoContact/Rest/Unsettled classification, final per-leg samples, load/stroke
+maxima, and a deterministic gear energy audit.
 
 ### Gravity coefficients
 
