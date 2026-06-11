@@ -341,6 +341,8 @@ pub fn run(
     let plume_evaluator = crate::plume::RigidPlumeEvaluator::maybe_new(
         document,
         engine_rack.liquid_plume_metadata(),
+        engine_rack.engine_ids(),
+        engine_rack.mount_points_body(),
     )?;
     record_step(
         document,
@@ -4792,6 +4794,145 @@ require_monotonic_time = true
         assert!(
             thrust_coefficient.iter().any(|value| *value > 0.0),
             "rigid plume telemetry should emit thrust coefficient during burn: {thrust_coefficient:?}"
+        );
+    }
+
+    #[test]
+    fn rigid_liquid_plume_derives_cluster_spacing_from_engine_mounts() {
+        let limits = "limits = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, \
+             shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }\n";
+        let performance = "\n\
+             [vehicle.assembly.engines.thermochemical_performance]\n\
+             throat_area_m2 = 0.02\n\
+             exit_area_m2 = 0.24\n\
+             ambient_pressure_pa = 101325.0\n\
+             separation = \"off\"\n";
+        let second_engine = "\n\
+             [[vehicle.assembly.engines]]\n\
+             id = \"aux\"\n\
+             mounted_to = \"core\"\n\
+             kind = { kind = \"liquid_engine\" }\n\
+             mount_point_body_m = [0.25, 0.0, 0.0]\n\
+             limits = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }\n\
+             \n\
+             [vehicle.assembly.engines.thermochemical_performance]\n\
+             throat_area_m2 = 0.02\n\
+             exit_area_m2 = 0.24\n\
+             ambient_pressure_pa = 101325.0\n\
+             separation = \"off\"\n";
+        let plume_config = "[atmosphere]\n\
+             kind = \"piecewise_exponential\"\n\
+             \n\
+             [propulsion.thermochem]\n\
+             file = \"tests/fixtures/thermochem/synthetic-grain.toml\"\n\
+             file_sha256 = \"fa3ff43bc91d04317d44a141cf5ff28680e4e0b35d89ff3c91d92ee60f1a842b\"\n\
+             chamber_pressure_pa = 2000000.0\n\
+             mixture_ratio = 2.5\n\
+             \n\
+             [aero]\n\
+             \n\
+             [aero.plume]\n\
+             engine_count = 2\n\
+             reference_area_m2 = 1.0\n\
+             exit_area_total_m2 = 0.48\n\
+             base_area_m2 = 1.0\n\
+             center_spacing_m = 100.0\n\
+             merge_evaluation_distance_m = 0.01\n\
+             pifs_onset_angle_rad = 0.0\n\
+             \n\
+             [forces]\n";
+        let toml = RIGID_ENGINE_TELEMETRY_SCENARIO
+            .replace(
+                "initial_position_eci_m = [0.0, 0.0, 10.0]",
+                "initial_position_eci_m = [0.0, 0.0, 50000.0]",
+            )
+            .replace(
+                "initial_velocity_eci_m_s = [0.0, 0.0, 0.0]",
+                "initial_velocity_eci_m_s = [0.0, 0.0, 25.0]",
+            )
+            .replace("atmosphere = \"none\"", "atmosphere = \"piecewise_exponential\"")
+            .replacen(limits, &format!("{limits}{performance}{second_engine}"), 1)
+            .replace("[forces]\n", plume_config)
+            .replace(
+                "once = true\n",
+                "once = true\n\
+                 \n\
+                 [[scenario_script.events]]\n\
+                 id = \"ignite_aux\"\n\
+                 trigger = { kind = \"at_time\", time_s = 0.1 }\n\
+                 action = { kind = \"engine_command\", id = \"aux\", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }\n\
+                 once = true\n",
+            );
+        let source_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str_with_source_dir(&toml, Some(source_dir))
+                .expect("multi-engine plume scenario must parse");
+        let resolved_files = scenario
+            .resolved_files()
+            .expect("resolve thermochemistry deck");
+        let document = &scenario.document;
+        let engine_rack = crate::engines::EngineRack::build(document, &resolved_files)
+            .expect("multi-engine plume rack must build");
+        assert_eq!(engine_rack.len(), 2);
+        let evaluator = crate::plume::RigidPlumeEvaluator::maybe_new(
+            document,
+            engine_rack.liquid_plume_metadata(),
+            engine_rack.engine_ids(),
+            engine_rack.mount_points_body(),
+        )
+        .expect("multi-engine plume evaluator should build")
+        .expect("plume evaluator should be enabled");
+        let state = RigidBodyState::new(
+            SimTime::from_seconds(0.2),
+            Position3::<openbmp_core::Eci>::new(0.0, 0.0, 50_000.0),
+            Velocity3::<openbmp_core::Eci>::new(0.0, 0.0, 25.0),
+            Quaternion::<Body, openbmp_core::Eci>::from_unit_quaternion(
+                nalgebra::UnitQuaternion::identity(),
+            ),
+            AngularVelocity3::<Body>::zero(),
+            MassProperties::with_uniform_inertia(
+                Mass::new::<kilogram>(10_000.0),
+                Position3::<Body>::origin(),
+                1_000_000.0,
+            ),
+        );
+        let engine_snapshot = BTreeMap::from([
+            (
+                EngineId::from_path("vehicle.assembly.engines.main"),
+                openbmp_sim::EngineSnapshot {
+                    thrust_body: Vector3::new(0.0, 0.0, 1000.0),
+                    mass_flow_kg_per_s: 25.0,
+                    consumed_kg: 0.0,
+                    lifecycle_state_index: 2,
+                },
+            ),
+            (
+                EngineId::from_path("vehicle.assembly.engines.aux"),
+                openbmp_sim::EngineSnapshot {
+                    thrust_body: Vector3::new(0.0, 0.0, 1000.0),
+                    mass_flow_kg_per_s: 25.0,
+                    consumed_kg: 0.0,
+                    lifecycle_state_index: 2,
+                },
+            ),
+        ]);
+        let atmosphere = openbmp_physics::AtmosphereSample::new(0.001, 50.0, 250.0, 300.0).unwrap();
+        let plume = evaluator
+            .evaluate(&state, Some(atmosphere), &engine_snapshot)
+            .expect("plume evaluator should run")
+            .expect("active engines should produce plume state");
+
+        assert!(
+            plume.initial_turn_angle_rad > 0.0,
+            "controlled atmosphere should produce an underexpanded plume: {plume:?}"
+        );
+        assert!(
+            plume.cluster_merged,
+            "cluster merge should use active engine mount spacing, not the oversized configured spacing: {plume:?}"
+        );
+        assert_eq!(
+            plume.merge_distance_m.map(f64::to_bits),
+            Some(0.0_f64.to_bits())
         );
     }
 

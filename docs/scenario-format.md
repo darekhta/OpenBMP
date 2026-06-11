@@ -877,6 +877,10 @@ For point-mass solid-motor scenarios with a runner-sampled atmosphere,
 telemetry when every declared liquid engine has
 `[vehicle.assembly.engines.thermochemical_performance]`; the runner uses
 the thermochemical nozzle metadata plus live engine mass-flow snapshots.
+For that rigid-body liquid path, active engine count, summed exit area, and
+center-to-center spacing are derived from active engine snapshots and
+body-frame engine mount points even though the schema still requires the
+static plume geometry fields for compatibility with the point-mass path.
 Inactive or singular rows, such as a stationary pre-burn row with zero
 dynamic pressure, are emitted as zero/false.
 

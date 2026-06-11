@@ -2,8 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use openbmp_core::ChannelId;
-use openbmp_core::EngineId;
+use openbmp_core::{Body, ChannelId, EngineId, Position3};
 use openbmp_physics::atmosphere::AtmosphereSample;
 use openbmp_plume::{PlumeClusterGeometry, PlumeFreestream, PlumeNozzle, PlumeState};
 use openbmp_propulsion::{
@@ -301,22 +300,36 @@ struct NozzleSolutionSample {
 /// Rigid-body plume evaluator for thermochemical liquid-engine clusters.
 #[derive(Debug)]
 pub(crate) struct RigidPlumeEvaluator {
-    engines: BTreeMap<EngineId, LiquidPlumeEngine>,
+    engines: BTreeMap<EngineId, RigidPlumeEngine>,
     reference_area_m2: f64,
     base_area_m2: f64,
-    center_spacing_m: f64,
     merge_evaluation_distance_m: f64,
     pifs_onset_angle_rad: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RigidPlumeEngine {
+    nozzle: LiquidPlumeEngine,
+    mount_point_body_m: [f64; 3],
 }
 
 impl RigidPlumeEvaluator {
     pub(crate) fn maybe_new(
         document: &ScenarioDocument,
         engines: &BTreeMap<EngineId, LiquidPlumeEngine>,
+        engine_ids: &[EngineId],
+        mount_points_body: &[Position3<Body>],
     ) -> Result<Option<Self>, RunnerError> {
         let Some(config) = document.aero.as_ref().and_then(|aero| aero.plume.as_ref()) else {
             return Ok(None);
         };
+        if engine_ids.len() != mount_points_body.len() {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "[aero.plume] rigid-body telemetry requires aligned engine ids and mount \
+                       points"
+                    .to_owned(),
+            });
+        }
         if !is_runtime_atmosphere_kind(scenario_atmosphere_kind(document)) {
             return Err(RunnerError::UnsupportedScenario {
                 what: "[aero.plume] requires a runner-sampled atmosphere".to_owned(),
@@ -338,11 +351,41 @@ impl RigidPlumeEvaluator {
                 });
             }
         }
+        let mount_points_by_id: BTreeMap<EngineId, [f64; 3]> = engine_ids
+            .iter()
+            .copied()
+            .zip(mount_points_body.iter().map(position_to_array))
+            .collect();
+        let mut rigid_engines = BTreeMap::new();
+        for config in &document.vehicle.assembly.engines {
+            let id = EngineId::from_path(&format!("vehicle.assembly.engines.{id}", id = config.id));
+            let Some(nozzle) = engines.get(&id).copied() else {
+                return Err(RunnerError::UnsupportedScenario {
+                    what:
+                        "[aero.plume] rigid-body telemetry currently requires every liquid engine \
+                           to declare thermochemical_performance"
+                            .to_owned(),
+                });
+            };
+            let mount_point_body_m = mount_points_by_id.get(&id).copied().ok_or_else(|| {
+                RunnerError::UnsupportedScenario {
+                    what: "[aero.plume] rigid-body telemetry could not resolve an engine mount \
+                               point"
+                        .to_owned(),
+                }
+            })?;
+            rigid_engines.insert(
+                id,
+                RigidPlumeEngine {
+                    nozzle,
+                    mount_point_body_m,
+                },
+            );
+        }
         Ok(Some(Self {
-            engines: engines.clone(),
+            engines: rigid_engines,
             reference_area_m2: config.reference_area_m2,
             base_area_m2: config.base_area_m2,
-            center_spacing_m: config.center_spacing_m,
             merge_evaluation_distance_m: config.merge_evaluation_distance_m,
             pifs_onset_angle_rad: config.pifs_onset_angle_rad,
         }))
@@ -371,8 +414,11 @@ impl RigidPlumeEvaluator {
             let Some(snapshot) = engine_snapshot.get(id) else {
                 continue;
             };
-            if let Some(sample) = plume.solve_at_snapshot(snapshot, atmosphere.pressure_pa)? {
-                aggregate.add(sample);
+            if let Some(sample) = plume
+                .nozzle
+                .solve_at_snapshot(snapshot, atmosphere.pressure_pa)?
+            {
+                aggregate.add(sample, plume.mount_point_body_m);
             }
         }
         let Some((nozzle, geometry)) = aggregate.finish(self)? else {
@@ -396,6 +442,7 @@ struct AggregateNozzle {
     total_thrust_n: f64,
     momentum_thrust_n: f64,
     exit_area_total_m2: f64,
+    mount_points_body_m: Vec<[f64; 3]>,
     chamber_pressure_weighted_pa_n: f64,
     exit_pressure_weighted_pa_n: f64,
     exit_mach_weighted_n: f64,
@@ -403,7 +450,7 @@ struct AggregateNozzle {
 }
 
 impl AggregateNozzle {
-    fn add(&mut self, sample: NozzleSolutionSample) {
+    fn add(&mut self, sample: NozzleSolutionSample, mount_point_body_m: [f64; 3]) {
         let weight = sample.total_thrust_n.max(0.0);
         if weight == 0.0 {
             return;
@@ -413,6 +460,7 @@ impl AggregateNozzle {
         self.total_thrust_n += sample.total_thrust_n;
         self.momentum_thrust_n += sample.momentum_thrust_n;
         self.exit_area_total_m2 += sample.exit_area_m2;
+        self.mount_points_body_m.push(mount_point_body_m);
         self.chamber_pressure_weighted_pa_n += sample.chamber_pressure_pa * weight;
         self.exit_pressure_weighted_pa_n += sample.exit_pressure_pa * weight;
         self.exit_mach_weighted_n += sample.exit_mach * weight;
@@ -434,11 +482,12 @@ impl AggregateNozzle {
             total_thrust_n: self.total_thrust_n,
             momentum_thrust_n: self.momentum_thrust_n,
         };
+        let center_spacing_m = active_center_spacing_m(&self.mount_points_body_m).unwrap_or(0.0);
         let geometry = PlumeClusterGeometry {
             engine_count: self.active_count,
             exit_area_total_m2: self.exit_area_total_m2,
             base_area_m2: evaluator.base_area_m2,
-            center_spacing_m: evaluator.center_spacing_m,
+            center_spacing_m,
             merge_evaluation_distance_m: evaluator.merge_evaluation_distance_m,
             pifs_onset_angle_rad: evaluator.pifs_onset_angle_rad,
         };
@@ -446,4 +495,25 @@ impl AggregateNozzle {
         geometry.validate()?;
         Ok(Some((nozzle, geometry)))
     }
+}
+
+fn position_to_array(position: &Position3<Body>) -> [f64; 3] {
+    [position.vector.x, position.vector.y, position.vector.z]
+}
+
+fn active_center_spacing_m(mount_points_body_m: &[[f64; 3]]) -> Option<f64> {
+    if mount_points_body_m.len() < 2 {
+        return None;
+    }
+    let mut min_spacing_m = f64::INFINITY;
+    for (index, a) in mount_points_body_m.iter().enumerate() {
+        for b in mount_points_body_m.iter().skip(index + 1) {
+            let dx = a[0] - b[0];
+            let dy = a[1] - b[1];
+            let dz = a[2] - b[2];
+            let spacing_m = (dx * dx + dy * dy + dz * dz).sqrt();
+            min_spacing_m = min_spacing_m.min(spacing_m);
+        }
+    }
+    min_spacing_m.is_finite().then_some(min_spacing_m)
 }

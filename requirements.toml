@@ -564,6 +564,12 @@ title = "Rigid-body thermochemical liquid-engine scenarios can opt into plume te
 statement = "Schema v3 rigid-body scenarios may declare [aero.plume] with a runner-sampled atmosphere and thermochemical_performance on every liquid engine; the runner retains thermochemical liquid-engine plume metadata, reconstructs live chamber pressure from runtime engine mass-flow snapshots, solves the ideal nozzle at the sampled ambient pressure, aggregates active-engine nozzle state into a PlumeState with summed thrust and exit area, emits deterministic plume.* telemetry with inactive rows zeroed, and preserves the default channel set when [aero.plume] is absent."
 verification = ["V-PLUME-003"]
 
+[[requirements]]
+id = "REQ-PLUME-004"
+title = "Rigid-body plume merge telemetry derives active engine spacing"
+statement = "For rigid-body thermochemical liquid-engine plume telemetry, the runner pairs liquid plume metadata with the EngineRack engine ids and body-frame mount points, derives the active center-to-center spacing from the minimum distance between currently firing engines, uses active-engine count and summed exit area when assembling PlumeClusterGeometry, and drives plume.merge_distance_m and plume.cluster_merged from that live cluster geometry instead of the static [aero.plume].center_spacing_m declaration."
+verification = ["V-PLUME-004"]
+
 [[verification]]
 id = "V-SIL-001"
 kind = "test"
@@ -3129,3 +3135,23 @@ contains = [
   "rigid_liquid_plume_telemetry_uses_engine_snapshots",
 ]
 requirements = ["REQ-PLUME-003"]
+
+[[verification]]
+id = "V-PLUME-004"
+kind = "test"
+command = "cargo test -p openbmp-runner rigid_body::tests::rigid_liquid_plume_derives_cluster_spacing_from_engine_mounts --locked"
+paths = [
+  "crates/openbmp-runner/src/plume.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/15-plume-environments-and-supersonic-retropropulsion.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "active_center_spacing_m",
+  "mount_points_body",
+  "PlumeClusterGeometry",
+  "plume.cluster_merged",
+  "rigid_liquid_plume_derives_cluster_spacing_from_engine_mounts",
+]
+requirements = ["REQ-PLUME-004"]
