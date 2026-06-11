@@ -1220,7 +1220,13 @@ For `normal_law = "hertz"`, use `stiffness_n_m_3_2` plus
 Contact remains off by default. With `[contact]` present, the point-mass
 and rigid-body runners disable the default `GroundImpact` stop and
 publish the standard per-force telemetry channels
-`force.contact.{x,y,z}_n`.
+`force.contact.{x,y,z}_n` plus scalar diagnostics
+`contact.gap_m`, `contact.penetration_m`,
+`contact.normal_velocity_m_s`, and `contact.normal_force_n`. Library callers
+also receive `RunOutcome.contact`, an out-of-band run report with the final
+diagnostics, max penetration, max normal force, sample count, and a closed
+`NoContact` / `Rest` / `Unsettled` classification. The report is not part of
+canonical telemetry bytes.
 
 ### Hash pinning
 

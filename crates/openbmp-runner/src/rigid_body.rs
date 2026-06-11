@@ -261,6 +261,14 @@ pub fn run(
         &initial_tank_snapshot,
     )?;
     let channel_set = RigidChannelSet::new(document)?;
+    let contact_evaluator = document
+        .contact
+        .as_ref()
+        .map(crate::contact::ContactDiagnosticsEvaluator::from_config)
+        .transpose()?;
+    let mut contact_accumulator = contact_evaluator
+        .as_ref()
+        .map(|_| crate::contact::ContactRunAccumulator::default());
     let geocentric_surface_radius_m = document_geocentric_surface_radius_m(document);
     let breakdown_atmosphere = if channel_set.has_atmosphere {
         Some(build_document_runtime_atmosphere(document)?)
@@ -322,6 +330,8 @@ pub fn run(
         &kernel,
         &channel_set,
         &breakdown_vehicle,
+        contact_evaluator.as_ref(),
+        contact_accumulator.as_mut(),
         breakdown_atmosphere.as_ref(),
         geocentric_surface_radius_m,
         aerothermal_driver.as_ref().map(|driver| driver.output()),
@@ -539,6 +549,8 @@ pub fn run(
             &kernel,
             &channel_set,
             &breakdown_vehicle,
+            contact_evaluator.as_ref(),
+            contact_accumulator.as_mut(),
             breakdown_atmosphere.as_ref(),
             geocentric_surface_radius_m,
             aerothermal_driver.as_ref().map(|driver| driver.output()),
@@ -583,6 +595,7 @@ pub fn run(
         table,
         realtime: realtime_pacer.finish(),
         actuator_stream,
+        contact: contact_accumulator.and_then(crate::contact::ContactRunAccumulator::finish),
     })
 }
 
@@ -2422,6 +2435,7 @@ struct RigidChannelSet {
     atmosphere_temperature: Option<TelemetryChannel<f64>>,
     atmosphere_speed_of_sound: Option<TelemetryChannel<f64>>,
     force_components: ForceComponentChannels,
+    contact: Option<crate::contact::ContactTelemetryChannels>,
     active_models: Option<TelemetryChannel<String>>,
     aerothermal: Option<AerothermalTelemetryChannels>,
     /// Effector deflection channels, in scenario-declared
@@ -2776,6 +2790,12 @@ impl RigidChannelSet {
             force_components.push((name.clone(), x_channel, y_channel, z_channel));
         }
 
+        let contact = document
+            .contact
+            .is_some()
+            .then(|| crate::contact::ContactTelemetryChannels::new(&mut alloc))
+            .transpose()?;
+
         let active_models = document
             .forces
             .as_ref()
@@ -2945,6 +2965,7 @@ impl RigidChannelSet {
             atmosphere_temperature,
             atmosphere_speed_of_sound,
             force_components,
+            contact,
             active_models,
             aerothermal,
             effector_actuals,
@@ -3029,6 +3050,9 @@ impl RigidChannelSet {
             channels.push(y.metadata().clone());
             channels.push(z.metadata().clone());
         }
+        if let Some(contact) = &self.contact {
+            contact.push_metadata(&mut channels);
+        }
         if let Some(active_models) = &self.active_models {
             channels.push(active_models.metadata().clone());
         }
@@ -3072,6 +3096,8 @@ fn record_step<I, F, MOM, MM, E, SC>(
     kernel: &SimulationKernel<RigidBodyState, I, F, RigidModels<MOM, MM>, E, SC>,
     channels: &RigidChannelSet,
     breakdown_vehicle: &KernelVehicle<RigidBodyState>,
+    contact_evaluator: Option<&crate::contact::ContactDiagnosticsEvaluator>,
+    contact_accumulator: Option<&mut crate::contact::ContactRunAccumulator>,
     breakdown_atmosphere: Option<&RuntimeAtmosphere>,
     geocentric_surface_radius_m: Option<f64>,
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
@@ -3187,6 +3213,18 @@ where
         row.insert(x_channel, component.x)?;
         row.insert(y_channel, component.y)?;
         row.insert(z_channel, component.z)?;
+    }
+
+    if let Some(contact_channels) = &channels.contact {
+        let evaluator = contact_evaluator.ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "[contact] telemetry requested without a contact evaluator".to_owned(),
+        })?;
+        let diagnostics = evaluator
+            .diagnostics_from_state_vectors(state.position.vector, state.velocity.vector)?;
+        contact_channels.insert(&mut row, diagnostics)?;
+        if let Some(accumulator) = contact_accumulator {
+            accumulator.record(diagnostics);
+        }
     }
 
     if let Some(channel) = &channels.active_models {
@@ -4112,6 +4150,66 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const CONTACT_RIGID_BODY_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "contact-rigid-body-test"
+description = "Synthetic rigid-body contact run with an initial half-space penetration."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.002
+dt_s = 0.001
+seed = 17
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, -0.01]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "contact-rigid-body-test"
+
+[[vehicle.assembly.bodies]]
+id = "body"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity", "contact"]
+
+[contact]
+kind = "half_space"
+ground_altitude_m = 0.0
+geometry = "point"
+normal_law = "kelvin_voigt"
+stiffness_n_m = 2000.0
+damping_n_s_m = 0.0
+friction_coefficient = 0.0
+effective_mass_kg = 1.0
+substeps = 1
+
+[telemetry]
+output.csv = "out/contact-rigid-body-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn valid_stage_separation_document() -> ScenarioDocument {
         openbmp_scenario::Scenario::from_toml_str(include_str!(
             "../../openbmp-scenario/tests/fixtures/stage-separation-valid.toml"
@@ -4181,6 +4279,42 @@ require_monotonic_time = true
                 other => panic!("unexpected value in {name}: {other:?}"),
             })
             .collect()
+    }
+
+    #[test]
+    fn rigid_body_contact_publishes_diagnostics_and_report() {
+        let scenario =
+            Scenario::from_toml_str(CONTACT_RIGID_BODY_SCENARIO).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("contact run succeeds");
+
+        assert!(
+            matches!(outcome.stop_reason, StopReason::EndTime { .. }),
+            "contact scenario should run to end time, got {:?}",
+            outcome.stop_reason
+        );
+        let contact_z = f64_column(&outcome, "force.contact.z_n");
+        assert!(
+            contact_z.iter().any(|value| *value > 0.0),
+            "contact force should push upward for the initial penetration: {contact_z:?}"
+        );
+        assert_eq!(
+            f64_column(&outcome, "contact.gap_m")[0].to_bits(),
+            (-0.01_f64).to_bits()
+        );
+        assert!((f64_column(&outcome, "contact.normal_force_n")[0] - 20.0).abs() <= 1.0e-12);
+
+        let report = outcome
+            .contact
+            .as_ref()
+            .expect("contact report should be present");
+        assert_eq!(report.samples as usize, outcome.table.rows().len());
+        assert_eq!(report.max_penetration_m.to_bits(), 0.01_f64.to_bits());
+        assert!((report.max_normal_force_n - 20.0).abs() <= 1.0e-12);
+        assert_eq!(
+            report.outcome,
+            crate::contact::ContactOutcomeKind::Unsettled
+        );
     }
 
     #[test]

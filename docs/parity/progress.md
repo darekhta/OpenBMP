@@ -39,7 +39,7 @@ As of this snapshot: **18 implemented · 16 partial · 0 in progress ·
 | 10 | Flight SW in the loop (XIL) | **T1–T3 implemented**; T4 partial | 3/2/8 | finish WP-10.4, or WP-10.6 in parallel |
 | 11 | Monte Carlo, UQ, validation | **T0–T1 implemented**; T2–T4 partial | 3/5/9 | WP-11.7 |
 | 12 | Determinism, real-time, compute | **substantially implemented**; Linux aarch64 bit-stable CI lane present; GPU offload boundary pending | 9/0/10 | WP-12.4-b |
-| 14 | Contact, touchdown, landing | WP-14.1 crate + runner force path present; acceptance remains partial | 0/1/10 | finish WP-14.1, then WP-14.2 |
+| 14 | Contact, touchdown, landing | WP-14.1 crate + runner force/diagnostic path present; acceptance remains partial | 0/1/10 | finish WP-14.1, then WP-14.2 |
 | 15 | Plume & SRP | not started (05 nozzle state now available) | 0/0/12 | WP-15.1 |
 | 16 | Parachute & recovery | T0 baseline (`recovery/` rack) | 0/0/11 | WP-16.1 |
 | 17 | Cryogenic fluid management | not started | 0/0/8 | WP-17.1 |
@@ -194,9 +194,10 @@ half-space geometry, Kelvin-Voigt/Hertz/Hunt-Crossley normal laws,
 regularized Coulomb, fixed sub-step stability bound, energy audit;
 REQ-CONTACT-001). Scenario `[contact]` schema (`ContactConfig`) and runner
 force-adapter wiring are present (`crates/openbmp-runner/src/contact.rs` plus
-point-mass/rigid-body/vehicle edits), with a point-mass runner regression.
-Missing for full acceptance: telemetry channels, outcome classification, and
-goldens proof.
+point-mass/rigid-body/vehicle edits), with contact diagnostics telemetry,
+`RunOutcome.contact` endpoint classification, and point-mass golden-stability
+proof. Missing for full acceptance: gear-leg assemblies, run-level contact
+energy audit, and contact substep integration.
 WP-14.2 … WP-14.10: **not started**.
 
 ### 15 — Plume environments & SRP
@@ -287,8 +288,8 @@ verifier, or capture logic.
 ## 4. Recommended next moves (from this snapshot)
 
 1. **Close the open partials before opening new fronts:** WP-05.3 runtime
-   deck consumption; WP-14.1 telemetry/outcome/golden acceptance closure;
-   WP-12.3-b aarch64 CI lane (config-only).
+   deck consumption; WP-14.1 gear-leg/energy/substep closure; WP-12.4-b GPU
+   boundary.
 2. **Start the two unstarted Phase-A gates:** WP-01.1 (spatial-vector tree)
    and WP-08.1 (tesseral gravity) — they block most of Phase B/C (02, 06,
    07 closed-loop quality).

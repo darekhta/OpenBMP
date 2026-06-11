@@ -255,6 +255,8 @@ pub struct RunOutcome {
     pub realtime: Option<rt::RealtimeRunReport>,
     /// Optional FC actuator command-stream digest report.
     pub actuator_stream: Option<determinism::ActuatorStreamReport>,
+    /// Optional contact diagnostics report for `[contact]` scenarios.
+    pub contact: Option<contact::ContactRunReport>,
 }
 
 /// Run a scenario through the appropriate kernel path.

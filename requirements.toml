@@ -219,7 +219,7 @@ verification = ["V-CONTACT-001"]
 [[requirements]]
 id = "REQ-CONTACT-002"
 title = "Contact force is scenario-reachable without changing default ground impact"
-statement = "Schema-v3 scenarios can opt into a [contact] half-space force with point or sphere geometry, load-time stability validation, automatic force-stack derivation when [forces] is omitted, explicit-force consistency checks when [forces] is present, runner-side GroundImpact disablement for contact scenarios, and standard force.contact.{x,y,z}_n telemetry without depending on flight-controller crates."
+statement = "Schema-v3 scenarios can opt into a [contact] half-space force with point or sphere geometry, load-time stability validation, automatic force-stack derivation when [forces] is omitted, explicit-force consistency checks when [forces] is present, runner-side GroundImpact disablement for contact scenarios, standard force.contact.{x,y,z}_n telemetry, contact.gap_m, contact.penetration_m, contact.normal_velocity_m_s, and contact.normal_force_n diagnostics telemetry, and an out-of-band RunOutcome contact report with NoContact, Rest, and Unsettled classification without depending on flight-controller crates."
 verification = ["V-CONTACT-002"]
 
 [[requirements]]
@@ -1331,7 +1331,7 @@ requirements = ["REQ-CONTACT-001"]
 [[verification]]
 id = "V-CONTACT-002"
 kind = "test"
-command = "cargo test -p openbmp-scenario contact_ --locked && cargo test -p openbmp-runner point_mass_contact_force_disables_ground_stop_and_publishes_force --locked"
+command = "cargo test -p openbmp-scenario contact_ --locked && cargo test -p openbmp-runner contact --locked"
 paths = [
   "Cargo.toml",
   "crates/openbmp-scenario/Cargo.toml",
@@ -1358,11 +1358,22 @@ contains = [
   "contact_force_requires_contact_block",
   "contact_stability_bound_fails_closed_at_scenario_load",
   "HalfSpaceContactForceAdapter",
+  "ContactDiagnosticsEvaluator",
+  "ContactRunReport",
+  "ContactOutcomeKind",
+  "ContactTelemetryChannels",
   "build_half_space_contact_force_adapter",
   "POINT_MASS_CONTACT_MODEL_ID",
   "RIGID_BODY_CONTACT_MODEL_ID",
   "point_mass_contact_force_disables_ground_stop_and_publishes_force",
+  "point_mass_contact_report_classifies_no_contact",
+  "point_mass_contact_diagnostics_are_golden_stable",
+  "rigid_body_contact_publishes_diagnostics_and_report",
   "force.contact.z_n",
+  "contact.gap_m",
+  "contact.penetration_m",
+  "contact.normal_velocity_m_s",
+  "contact.normal_force_n",
 ]
 requirements = ["REQ-CONTACT-002"]
 
