@@ -2535,12 +2535,16 @@ id = "V-PROP-013"
 kind = "test"
 command = "cargo test -p openbmp-feedsystem moc_line --locked"
 paths = [
+  "data/feed_system/generic-moc-line-v1.toml",
+  "data/feed_system/provenance.md",
   "crates/openbmp-feedsystem/src/lib.rs",
   "crates/openbmp-feedsystem/src/error.rs",
   "crates/openbmp-feedsystem/src/line.rs",
+  "docs/data-provenance.md",
   "docs/parity/05-propulsion-high-fidelity.md",
 ]
 contains = [
+  "openbmp.feed_moc_line",
   "MocLine",
   "MocLineConfig",
   "MocLineState",
@@ -2549,6 +2553,8 @@ contains = [
   "moc_line_courant_dt_is_dx_over_wave_speed",
   "moc_line_valve_closure_matches_joukowsky_bound",
   "moc_line_interior_node_uses_neighbor_characteristics",
+  "moc_line_matches_provenance_tolerance_table",
+  "Synthetic fixed-grid MOC Joukowsky tolerance table",
 ]
 requirements = ["REQ-PROP-013"]
 

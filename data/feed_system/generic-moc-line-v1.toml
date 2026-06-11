@@ -1,0 +1,36 @@
+openbmp.feed_moc_line = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.generic_moc_line.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic fixed-grid MOC Joukowsky tolerance table"
+provenance = "OpenBMP synthetic analytic fixture derived from frictionless MOC characteristics and the Joukowsky valve-closure bound; not a real feed-line benchmark."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[config]
+length_m = 40.0
+wave_speed_m_s = 1000.0
+density_kg_m3 = 1000.0
+cross_section_area_m2 = 0.01
+segment_count = 4
+
+[tolerances]
+absolute_head_m = 1.0e-12
+absolute_pressure_pa = 1.0e-6
+absolute_dt_s = 1.0e-15
+
+[[case]]
+name = "instant_valve_closure"
+initial_head_m = 100.0
+initial_velocity_m_s = 2.0
+upstream_head_m = 100.0
+downstream_velocity_m_s = 0.0
+expected_dt_s = 0.01
+expected_downstream_head_m = 303.9432425955857
+expected_downstream_pressure_pa = 2980665.0
+expected_pressure_delta_pa = 2000000.0
+expected_joukowsky_head_delta_m = 203.94324259558567
+expected_min_head_m = 100.0
+expected_max_head_m = 303.9432425955857
+expected_validation = "validated-toy"

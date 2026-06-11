@@ -872,7 +872,10 @@ Effort sizes are from the research ladder.
 - **status:** a frictionless fixed-grid MOC line primitive with Courant-exact
   step sizing, upstream fixed-head/downstream valve-velocity boundaries, and a
   Joukowsky valve-closure verification case is implemented in
-  `openbmp-feedsystem` and traced by `REQ-PROP-013` / `V-PROP-013`.
+  `openbmp-feedsystem` and traced by `REQ-PROP-013` / `V-PROP-013`; a
+  provenance-backed synthetic tolerance table under `data/feed_system/` now
+  covers Courant step size, downstream surge head/pressure, and the Joukowsky
+  pressure/head delta.
   Scenario-facing `oxidizer_line` / `fuel_line` blocks for
   `transient_dual_valve_chamber` feed-network legs are implemented and traced
   by `REQ-PROP-017` / `V-PROP-017`; the runner enforces the line Courant time
